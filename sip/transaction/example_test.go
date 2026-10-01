@@ -42,6 +42,7 @@ func ExampleLayer_Go() {
 	r := &registrar{}
 
 	r.layer = transaction.New(transaction.Config{Handler: r})
+
 	defer func() { _ = r.layer.Close() }()
 
 	if _, err := r.layer.Listen(context.Background(), netip.MustParseAddrPort("127.0.0.1:5060")); err != nil {
