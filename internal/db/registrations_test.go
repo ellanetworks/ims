@@ -36,6 +36,7 @@ func testRegistration(impi, msisdn string) Registration {
 		CallID:     "reg-" + msisdn,
 		CSeq:       1,
 		UEAddress:  netip.MustParseAddr("2001:db8::1"),
+		Path:       "<sip:term@pcscf.ims.mnc001.mcc001.3gppnetwork.org;lr>",
 		IPsec:      testSAs(4096),
 		Identities: []PublicIdentity{
 			{URI: "sip:" + impi, Barred: true},
@@ -222,7 +223,13 @@ func TestRefreshRegistration(t *testing.T) {
 	r := testRegistration(testIMPI, "15551230001")
 	mustPutRegistration(t, d, r)
 
-	u := RegistrationRefresh{CallID: "reg-2", CSeq: 2, IPsec: testSAs(5000), ExpiresAt: testNow.Add(2 * time.Hour)}
+	u := RegistrationRefresh{
+		CallID:    "reg-2",
+		CSeq:      2,
+		Path:      "<sip:term@pcscf2.ims.mnc001.mcc001.3gppnetwork.org;lr>",
+		IPsec:     testSAs(5000),
+		ExpiresAt: testNow.Add(2 * time.Hour),
+	}
 	if err := d.RefreshRegistration(ctx, testIMPI, u); err != nil {
 		t.Fatalf("RefreshRegistration: %v", err)
 	}
@@ -232,7 +239,7 @@ func TestRefreshRegistration(t *testing.T) {
 		t.Fatalf("GetRegistration: %v", err)
 	}
 
-	if got.CallID != u.CallID || got.CSeq != u.CSeq || *got.IPsec != *u.IPsec || !got.ExpiresAt.Equal(u.ExpiresAt) ||
+	if got.CallID != u.CallID || got.CSeq != u.CSeq || got.Path != u.Path || *got.IPsec != *u.IPsec || !got.ExpiresAt.Equal(u.ExpiresAt) ||
 		!got.RegisteredAt.Equal(r.RegisteredAt) || len(got.Identities) != len(r.Identities) {
 		t.Fatalf("registration = %+v", got)
 	}

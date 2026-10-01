@@ -25,12 +25,11 @@ const (
 	defaultSIPSPort = 5061
 )
 
-const placeholderAllow = "INVITE, ACK, CANCEL, OPTIONS"
+const placeholderAllow = "INVITE, ACK, CANCEL, OPTIONS, REGISTER"
 
 const placeholderInviteTimeout = 64 * transaction.DefaultT1
 
 var knownMethods = map[string]bool{
-	"REGISTER":  true,
 	"BYE":       true,
 	"PRACK":     true,
 	"UPDATE":    true,
@@ -48,8 +47,14 @@ type sipServer struct {
 	listeners []netip.AddrPort
 }
 
-func startSIP(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sipServer, error) {
+// registrar answers REGISTER.
+type registrar interface {
+	HandleRequest(tx *transaction.ServerTransaction, req *sip.Request)
+}
+
+func startSIP(ctx context.Context, cfg config.Config, reg registrar, logger *slog.Logger) (*sipServer, error) {
 	h := newPlaceholderHandler(logger, cfg.SIPAliases())
+	h.registrar = reg
 
 	layer := transaction.New(transaction.Config{
 		Handler:   h,
@@ -86,6 +91,7 @@ func (s *sipServer) Close() error {
 
 type placeholderHandler struct {
 	log           *slog.Logger
+	registrar     registrar
 	inviteTimeout time.Duration
 	aliases       map[string]bool
 
@@ -126,6 +132,8 @@ func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, re
 		h.respond(tx, sip.NewResponse(req, 480, ""))
 	case req.Method == "INVITE":
 		h.holdInvite(tx)
+	case req.Method == "REGISTER":
+		h.registrar.HandleRequest(tx, req)
 	case knownMethods[req.Method]:
 		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)

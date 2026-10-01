@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/scscf"
 )
 
 const (
@@ -30,6 +31,7 @@ type Server struct {
 	database    *db.DB
 	node        *diameter.Node
 	diameter    Diameter
+	registrar   *scscf.Registrar
 	sip         SIP
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -74,8 +76,22 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	sipServer, err := startSIP(ctx, cfg, s.Logger)
+	hss := cfg.Diameter.CxPeer()
+	registrar := scscf.New(scscf.Config{
+		HomeDomain: cfg.IMS.HomeDomain,
+		Port:       cfg.SIP.Port,
+		MinExpires: time.Duration(cfg.Registrar.MinExpires) * time.Second,
+		MaxExpires: time.Duration(cfg.Registrar.MaxExpires) * time.Second,
+		HSS:        scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
+		Diameter:   node,
+		DB:         database,
+		Logger:     s.Logger,
+	})
+
+	sipServer, err := startSIP(ctx, cfg, registrar, s.Logger)
 	if err != nil {
+		registrar.Close()
+
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -86,6 +102,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.database = database
 	s.node = node
 	s.diameter = node
+	s.registrar = registrar
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
@@ -147,6 +164,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.sip.Close(); err != nil {
 		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
 	}
+
+	s.registrar.Close()
 
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
 		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))

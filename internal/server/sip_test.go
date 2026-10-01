@@ -89,10 +89,21 @@ func TestSIPPlaceholder(t *testing.T) {
 					wantResponse(t, ue, 480, "OPTIONS")
 				})
 
-				t.Run("REGISTER", func(t *testing.T) {
-					ue.Send(tr, pcscf, siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr()))
+				t.Run("REGISTER with the HSS down", func(t *testing.T) {
+					register := siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr())
+					register.Header.Set("To", "<sip:001010000000001@"+imsRealm+">")
+					ue.Send(tr, pcscf, register)
 
-					res := wantResponse(t, ue, 405, "REGISTER")
+					res := wantResponse(t, ue, 500, "REGISTER")
+					if !res.Header.Has("Retry-After") {
+						t.Fatal("500 without Retry-After")
+					}
+				})
+
+				t.Run("SUBSCRIBE", func(t *testing.T) {
+					ue.Send(tr, pcscf, siptest.NewRequest("SUBSCRIBE", "sip:"+imsRealm, tr, ue.Addr()))
+
+					res := wantResponse(t, ue, 405, "SUBSCRIBE")
 					if got := res.Header.Get("Allow"); got != placeholderAllow {
 						t.Fatalf("Allow = %q, want %q", got, placeholderAllow)
 					}

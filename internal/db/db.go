@@ -27,6 +27,7 @@ var migrations = []string{
 		call_id TEXT NOT NULL,
 		cseq INTEGER NOT NULL,
 		ue_address TEXT NOT NULL,
+		path TEXT,
 		ue_port_c INTEGER,
 		ue_port_s INTEGER,
 		pcscf_port_c INTEGER,

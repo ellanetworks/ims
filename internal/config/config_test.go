@@ -56,6 +56,7 @@ func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  port: 5070\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
+		"registrar:\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -72,6 +73,7 @@ func TestLoad(t *testing.T) {
 			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org"},
 			MaxConnections: 100,
 		},
+		Registrar: Registrar{MinExpires: 120, MaxExpires: 7200},
 		Diameter: Diameter{
 			OriginHost:  "ims.ims.mnc001.mcc001.3gppnetwork.org",
 			OriginRealm: "ims.mnc001.mcc001.3gppnetwork.org",
@@ -174,7 +176,15 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("call_history.retention = %v, want %v", cfg.CallHistory.Retention, defaultCallRetention)
 	}
 
+	if cfg.Registrar.MinExpires != defaultMinExpires || cfg.Registrar.MaxExpires != defaultMaxExpires {
+		t.Fatalf("registrar = %+v, want min %d and max %d", cfg.Registrar, defaultMinExpires, defaultMaxExpires)
+	}
+
 	hss := cfg.Diameter.Peers[0]
+	if cx := cfg.Diameter.CxPeer(); cx.ID != "hss" {
+		t.Fatalf("CxPeer = %q, want hss", cx.ID)
+	}
+
 	if hss.Port != defaultDiameterPort || hss.Transport != TransportTCP {
 		t.Fatalf("hss port and transport = %d %s, want %d %s", hss.Port, hss.Transport, defaultDiameterPort, TransportTCP)
 	}
@@ -220,6 +230,8 @@ func TestLoadInvalid(t *testing.T) {
 		{"duplicate sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
 		{"sip port out of range", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  port: 70000\n" + validDiameter, "sip.port 70000 is out of range"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
+		{"negative min expires", valid + "registrar:\n  min_expires: -1\n" + validDiameter, "registrar.min_expires -1 must be positive"},
+		{"max expires below min", valid + "registrar:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "registrar.max_expires 300 is below registrar.min_expires 600"},
 		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
 		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
 		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},

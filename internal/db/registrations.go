@@ -52,7 +52,8 @@ type PublicIdentity struct {
 }
 
 // Registration is a registered phone. IPsec is nil for a plain-SIP phone.
-// Identities are in profile order: the first one is the default IMPU.
+// Path is the REGISTER's Path header value, as received. Identities are in
+// profile order: the first one is the default IMPU.
 type Registration struct {
 	ID           int64
 	IMPI         string
@@ -61,6 +62,7 @@ type Registration struct {
 	CallID       string
 	CSeq         int64
 	UEAddress    netip.Addr
+	Path         string
 	IPsec        *SecurityAssociations
 	RxSessionID  string
 	Identities   []PublicIdentity
@@ -72,11 +74,12 @@ type Registration struct {
 type RegistrationRefresh struct {
 	CallID    string
 	CSeq      int64
+	Path      string
 	IPsec     *SecurityAssociations
 	ExpiresAt time.Time
 }
 
-const registrationColumns = `id, impi, contact, instance_id, call_id, cseq, ue_address,
+const registrationColumns = `id, impi, contact, instance_id, call_id, cseq, ue_address, path,
 	ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg,
 	rx_session_id, registered_at, expires_at`
 
@@ -98,15 +101,15 @@ func (d *DB) PutRegistration(ctx context.Context, r Registration) (int64, error)
 		return 0, fmt.Errorf("put registration: %w", err)
 	}
 
-	args := []any{r.IMPI, r.Contact, nullableString(r.InstanceID), r.CallID, r.CSeq, r.UEAddress.String()}
+	args := []any{r.IMPI, r.Contact, nullableString(r.InstanceID), r.CallID, r.CSeq, r.UEAddress.String(), nullableString(r.Path)}
 	args = append(args, securityAssociationArgs(r.IPsec)...)
 	args = append(args, nullableString(r.RxSessionID), r.RegisteredAt.UTC().UnixNano(), r.ExpiresAt.UTC().UnixNano())
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO registrations (impi, contact, instance_id, call_id, cseq, ue_address,
+		`INSERT INTO registrations (impi, contact, instance_id, call_id, cseq, ue_address, path,
 			ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg,
 			rx_session_id, registered_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("put registration: %w", err)
 	}
@@ -137,14 +140,14 @@ func (d *DB) PutRegistration(ctx context.Context, r Registration) (int64, error)
 }
 
 // RefreshRegistration records a re-registration. Re-registration creates new
-// SAs, so they are replaced too.
+// SAs and may come through a new Path, so they are replaced too.
 func (d *DB) RefreshRegistration(ctx context.Context, impi string, u RegistrationRefresh) error {
-	args := []any{u.CallID, u.CSeq}
+	args := []any{u.CallID, u.CSeq, nullableString(u.Path)}
 	args = append(args, securityAssociationArgs(u.IPsec)...)
 	args = append(args, u.ExpiresAt.UTC().UnixNano(), impi)
 
 	res, err := d.conn.ExecContext(ctx,
-		`UPDATE registrations SET call_id = ?, cseq = ?,
+		`UPDATE registrations SET call_id = ?, cseq = ?, path = ?,
 			ue_port_c = ?, ue_port_s = ?, pcscf_port_c = ?, pcscf_port_s = ?,
 			spi_uc = ?, spi_us = ?, spi_pc = ?, spi_ps = ?, alg = ?, ealg = ?, expires_at = ?
 		WHERE impi = ?`, args...)
@@ -343,14 +346,14 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration) error {
 func scanRegistration(row scanner) (Registration, error) {
 	var (
 		r                                        Registration
-		instanceID, rxSessionID, alg, ealg       sql.NullString
+		instanceID, path, rxSessionID, alg, ealg sql.NullString
 		ueAddress                                string
 		uePortC, uePortS, pcscfPortC, pcscfPortS sql.Null[uint16]
 		spiUC, spiUS, spiPC, spiPS               sql.Null[uint32]
 		registeredAt, expiresAt                  int64
 	)
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.Contact, &instanceID, &r.CallID, &r.CSeq, &ueAddress,
+	if err := row.Scan(&r.ID, &r.IMPI, &r.Contact, &instanceID, &r.CallID, &r.CSeq, &ueAddress, &path,
 		&uePortC, &uePortS, &pcscfPortC, &pcscfPortS, &spiUC, &spiUS, &spiPC, &spiPS, &alg, &ealg,
 		&rxSessionID, &registeredAt, &expiresAt); err != nil {
 		return Registration{}, err
@@ -363,6 +366,7 @@ func scanRegistration(row scanner) (Registration, error) {
 
 	r.UEAddress = addr
 	r.InstanceID = instanceID.String
+	r.Path = path.String
 	r.RxSessionID = rxSessionID.String
 	r.RegisteredAt = time.Unix(0, registeredAt).UTC()
 	r.ExpiresAt = time.Unix(0, expiresAt).UTC()
