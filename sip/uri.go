@@ -46,7 +46,7 @@ func (u URI) HostPort() string {
 }
 
 func (u URI) Addr() (netip.Addr, bool) {
-	return hostAddr(u.Host)
+	return HostAddr(u.Host)
 }
 
 func (u URI) equal(v URI) bool {
@@ -321,7 +321,7 @@ func parsePort(s string) (uint16, error) {
 	return uint16(n), nil
 }
 
-func hostAddr(host string) (netip.Addr, bool) {
+func HostAddr(host string) (netip.Addr, bool) {
 	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 
 	a, err := netip.ParseAddr(host)

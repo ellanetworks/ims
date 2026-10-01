@@ -291,3 +291,43 @@ func TestHeaderInsert(t *testing.T) {
 		t.Errorf("fields %s, want A,B,Content-Length", got)
 	}
 }
+
+func TestPopLast(t *testing.T) {
+	h := Header{{Name: "Route", Value: "<sip:a;lr>"}, {Name: "Via", Value: "x"}, {Name: "route", Value: `"q, r" <sip:b;lr>, <sip:c;lr>`}}
+
+	for _, want := range []string{"<sip:c;lr>", `"q, r" <sip:b;lr>`, "<sip:a;lr>"} {
+		if got, ok := h.PopLast("Route"); !ok || got != want {
+			t.Fatalf("PopLast = %q, %v, want %q", got, ok, want)
+		}
+	}
+
+	if _, ok := h.PopLast("Route"); ok || len(h) != 1 {
+		t.Errorf("PopLast on no Route: %v, header %v", ok, h)
+	}
+}
+
+func TestInsertTop(t *testing.T) {
+	names := func(h Header) string {
+		var out []string
+		for _, f := range h {
+			out = append(out, f.Name+"="+f.Value)
+		}
+
+		return strings.Join(out, " ")
+	}
+
+	h := Header{{Name: "v", Value: "1"}, {Name: "Via", Value: "2"}, {Name: "From", Value: "f"}}
+	h.InsertTop(Field{Name: "Record-Route", Value: "b"}, Field{Name: "Record-Route", Value: "c"})
+	h.InsertTop(Field{Name: "record-route", Value: "a"})
+
+	if got := names(h); got != "v=1 Via=2 record-route=a Record-Route=b Record-Route=c From=f" {
+		t.Errorf("InsertTop: %s", got)
+	}
+
+	h = Header{{Name: "From", Value: "f"}}
+	h.InsertTop(Field{Name: "Record-Route", Value: "a"})
+
+	if got := names(h); got != "Record-Route=a From=f" {
+		t.Errorf("InsertTop without Via: %s", got)
+	}
+}

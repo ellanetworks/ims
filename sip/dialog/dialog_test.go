@@ -365,7 +365,7 @@ func TestStrictRouteSet(t *testing.T) {
 		t.Errorf("Request-URI = %s, want sip:proxy1;transport=tcp", got)
 	}
 
-	if got := bye.Header.Get("Route"); got != "<sip:proxy2>, <sip:proxy3;lr>, <sip:proxy4>, <sip:user@remoteua>" {
+	if got := bye.Header.Elements("Route"); strings.Join(got, ", ") != "<sip:proxy2>, <sip:proxy3;lr>, <sip:proxy4>, <sip:user@remoteua>" {
 		t.Errorf("Route = %s", got)
 	}
 }

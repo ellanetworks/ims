@@ -102,14 +102,9 @@ func (s *StreamReader) Next() (Message, Keepalive, error) {
 		}
 	}
 
-	msg, err := newMessage(start, fields)
+	msg, err := assemble(start, fields, ferr)
 	if err != nil {
 		return nil, KeepaliveNone, err
-	}
-
-	if ferr != nil {
-		ferr.Request = asRequest(msg)
-		return nil, KeepaliveNone, ferr
 	}
 
 	setMessageBody(msg, body)

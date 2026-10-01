@@ -38,7 +38,7 @@ type branch struct {
 	responded bool
 
 	timerC, timer transaction.Timer
-	genC, gen     int
+	genC          int
 }
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
@@ -88,9 +88,7 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 		}
 
 		if b.timeout > 0 && !b.responded {
-			b.gen++
-			gen := b.gen
-			b.timer = c.p.clock.AfterFunc(b.timeout, func() { b.timeoutFired(gen) })
+			b.timer = c.p.clock.AfterFunc(b.timeout, b.timeoutFired)
 		}
 	}
 
@@ -148,12 +146,12 @@ func (b *branch) timerCFired(gen int) {
 	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: Timer C", transaction.ErrTimeout)})
 }
 
-func (b *branch) timeoutFired(gen int) {
+func (b *branch) timeoutFired() {
 	c := b.c
 
 	c.mu.Lock()
 
-	if b.done || b.responded || gen != b.gen {
+	if b.done || b.responded {
 		c.mu.Unlock()
 		return
 	}

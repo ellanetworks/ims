@@ -10,8 +10,8 @@ type Timer interface {
 	Stop() bool
 }
 
-type realClock struct{}
+type SystemClock struct{}
 
-func (realClock) AfterFunc(d time.Duration, f func()) Timer {
+func (SystemClock) AfterFunc(d time.Duration, f func()) Timer {
 	return time.AfterFunc(d, f)
 }

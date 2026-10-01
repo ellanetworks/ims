@@ -44,14 +44,9 @@ func Parse(data []byte) (Message, error) {
 	start, fields, ferr := splitHead(string(data[:end]))
 	body := data[end+len(crlfcrlf):]
 
-	msg, err := newMessage(start, fields)
+	msg, err := assemble(start, fields, ferr)
 	if err != nil {
 		return nil, err
-	}
-
-	if ferr != nil {
-		ferr.Request = asRequest(msg)
-		return nil, ferr
 	}
 
 	if fields.Has("Content-Length") {
@@ -78,6 +73,20 @@ func contentLength(fields Header) (int, error) {
 	}
 
 	return fields.ContentLength()
+}
+
+func assemble(start string, fields Header, ferr *ParseError) (Message, error) {
+	msg, err := newMessage(start, fields)
+	if err != nil {
+		return nil, err
+	}
+
+	if ferr != nil {
+		ferr.Request = asRequest(msg)
+		return nil, ferr
+	}
+
+	return msg, nil
 }
 
 func asRequest(m Message) *Request {

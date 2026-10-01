@@ -62,8 +62,8 @@ func tcpDestination(via sip.Via) (netip.AddrPort, error) {
 
 func viaAddr(via sip.Via) (netip.Addr, error) {
 	if r := via.Received(); r != "" {
-		a, err := netip.ParseAddr(trimBrackets(r))
-		if err != nil {
+		a, ok := sip.HostAddr(r)
+		if !ok {
 			return netip.Addr{}, fmt.Errorf("top Via received %q: not an IP address", r)
 		}
 
@@ -78,17 +78,9 @@ func viaAddr(via sip.Via) (netip.Addr, error) {
 	return a.Unmap(), nil
 }
 
-func trimBrackets(s string) string {
-	if len(s) >= 2 && s[0] == '[' && s[len(s)-1] == ']' {
-		return s[1 : len(s)-1]
-	}
-
-	return s
-}
-
 func defaultPortIfZero(p uint16) uint16 {
 	if p == 0 {
-		return defaultPort
+		return sip.DefaultPort
 	}
 
 	return p

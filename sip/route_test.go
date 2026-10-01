@@ -3,6 +3,7 @@ package sip
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,33 @@ func TestTopRouteAndDestination(t *testing.T) {
 
 	if tr, addr, err := Destination(r.URI); err != nil || tr != TCP || addr.String() != "10.0.0.1:5070" {
 		t.Errorf("Destination = %s %s %v", tr, addr, err)
+	}
+}
+
+func TestApplyStrictRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, routes, uri, wantURI, wantRoute string
+	}{
+		{"no Route", "", "sip:b@x", "sip:b@x", ""},
+		{"loose", "<sip:p1;lr>", "sip:b@x", "sip:b@x", "<sip:p1;lr>"},
+		{"strict", "<sip:p1;method=INVITE?h=v>, <sip:p2;lr>", "sip:b@x", "sip:p1", "<sip:p2;lr>|<sip:b@x>"},
+		{"strict alone", "<sip:p1>", "sip:b@x", "sip:p1", "<sip:b@x>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, _ := ParseURI(tc.uri)
+			r := NewRequest("BYE", u)
+
+			if tc.routes != "" {
+				r.Header.Add("Route", tc.routes)
+			}
+
+			if err := ApplyStrictRoute(r); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := strings.Join(r.Header.Elements("Route"), "|"); r.URI.String() != tc.wantURI || got != tc.wantRoute {
+				t.Errorf("URI %s, Route %s; want %s, %s", r.URI, got, tc.wantURI, tc.wantRoute)
+			}
+		})
 	}
 }

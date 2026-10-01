@@ -204,6 +204,62 @@ func (fs *Header) PopFirst(name string) (string, bool) {
 	}
 }
 
+func (fs *Header) PopLast(name string) (string, bool) {
+	h := nameOf(name)
+
+	for i := len(*fs) - 1; i >= 0; i-- {
+		if !h.matches((*fs)[i].Name) {
+			continue
+		}
+
+		elems := SplitList((*fs)[i].Value)
+		if len(elems) <= 1 {
+			*fs = slices.Delete(*fs, i, i+1)
+		} else {
+			(*fs)[i].Value = strings.Join(elems[:len(elems)-1], ", ")
+		}
+
+		return elems[len(elems)-1], true
+	}
+
+	return "", false
+}
+
+func (fs *Header) InsertTop(fields ...Field) {
+	if len(fields) == 0 {
+		return
+	}
+
+	h := nameOf(fields[0].Name)
+
+	i := slices.IndexFunc(*fs, func(f Field) bool { return h.matches(f.Name) })
+	if i < 0 {
+		via := nameOf("Via")
+		i = 0
+
+		for j, f := range *fs {
+			if via.matches(f.Name) {
+				i = j + 1
+			}
+		}
+	}
+
+	*fs = slices.Insert(*fs, i, fields...)
+}
+
+func (fs *Header) addLast(name, value string) {
+	h := nameOf(name)
+
+	for i := len(*fs) - 1; i >= 0; i-- {
+		if h.matches((*fs)[i].Name) {
+			*fs = slices.Insert(*fs, i+1, Field{Name: name, Value: value})
+			return
+		}
+	}
+
+	fs.Add(name, value)
+}
+
 func (fs Header) Clone() Header {
 	return slices.Clone(fs)
 }

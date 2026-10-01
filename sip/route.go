@@ -29,6 +29,28 @@ func (fs Header) TopRoute() (Address, error) {
 	return ParseAddress(top)
 }
 
+func ApplyStrictRoute(r *Request) error {
+	route, err := r.Header.TopRoute()
+
+	switch {
+	case errors.Is(err, ErrMissingHeader):
+		return nil
+	case err != nil:
+		return err
+	case route.URI.IsLooseRouter():
+		return nil
+	}
+
+	r.Header.addLast("Route", "<"+r.URI.String()+">")
+	r.Header.PopFirst("Route")
+
+	r.URI = route.URI
+	r.URI.Headers = ""
+	r.URI.Params.Del("method")
+
+	return nil
+}
+
 func NextHop(r *Request) (Transport, netip.AddrPort, error) {
 	route, err := r.Header.TopRoute()
 
@@ -54,7 +76,7 @@ func Destination(u URI) (Transport, netip.AddrPort, error) {
 
 	port := u.Port
 	if port == 0 {
-		port = 5060
+		port = DefaultPort
 	}
 
 	tr := UDP

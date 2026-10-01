@@ -15,10 +15,16 @@ const (
 	TCP Transport = "TCP"
 )
 
+const DefaultPort = 5060
+
 type Flow struct {
 	Transport Transport
 	Local     netip.AddrPort
 	Remote    netip.AddrPort
+}
+
+func (f Flow) String() string {
+	return string(f.Transport) + " " + f.Local.String() + " <-> " + f.Remote.String()
 }
 
 type Message interface {
