@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"path/filepath"
@@ -21,7 +22,32 @@ func testConfig(t *testing.T) config.Config {
 		DB:          config.DB{Path: filepath.Join(t.TempDir(), "ims.db")},
 		CallHistory: config.CallHistory{Retention: 24 * time.Hour},
 		API:         config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
+		Diameter: diameterConfig(
+			config.DiameterPeer{
+				ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: imsRealm,
+				Address: loopback, Port: unusedPort(t), Transport: config.TransportTCP,
+				Applications: []config.Application{config.ApplicationCx, config.ApplicationRx},
+			},
+		),
 	}
+}
+
+// unusedPort returns a loopback TCP port nothing listens on, so the IMS keeps
+// failing to reach the peer.
+func unusedPort(t *testing.T) int {
+	t.Helper()
+
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	return port
 }
 
 func TestServerStartShutdown(t *testing.T) {

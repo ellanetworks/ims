@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
@@ -27,6 +28,8 @@ type Server struct {
 	Logger *slog.Logger
 
 	database    *db.DB
+	node        *diameter.Node
+	diameter    Diameter
 	apiServer   *http.Server
 	apiListener net.Listener
 	stopPurge   context.CancelFunc
@@ -62,12 +65,23 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
+	node, err := newDiameterNode(cfg.Diameter, s.Logger)
+	if err != nil {
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return fmt.Errorf("start Diameter: %w", err)
+	}
+
 	s.database = database
+	s.node = node
+	s.diameter = node
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
-			Version: version,
-			Logger:  s.Logger,
+			Version:  version,
+			Diameter: s.diameter,
+			Logger:   s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -110,6 +124,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopPurge()
 	<-s.purgeDone
+
+	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
+		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
+	}
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
