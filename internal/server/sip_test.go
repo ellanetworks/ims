@@ -89,10 +89,21 @@ func TestSIPPlaceholder(t *testing.T) {
 					wantResponse(t, ue, 480, "OPTIONS")
 				})
 
-				t.Run("REGISTER", func(t *testing.T) {
-					ue.Send(tr, pcscf, siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr()))
+				t.Run("REGISTER with the HSS down", func(t *testing.T) {
+					register := siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr())
+					register.Header.Set("To", "<sip:001010000000001@"+imsRealm+">")
+					ue.Send(tr, pcscf, register)
 
-					res := wantResponse(t, ue, 405, "REGISTER")
+					res := wantResponse(t, ue, 500, "REGISTER")
+					if !res.Header.Has("Retry-After") {
+						t.Fatal("500 without Retry-After")
+					}
+				})
+
+				t.Run("SUBSCRIBE", func(t *testing.T) {
+					ue.Send(tr, pcscf, siptest.NewRequest("SUBSCRIBE", "sip:"+imsRealm, tr, ue.Addr()))
+
+					res := wantResponse(t, ue, 405, "SUBSCRIBE")
 					if got := res.Header.Get("Allow"); got != placeholderAllow {
 						t.Fatalf("Allow = %q, want %q", got, placeholderAllow)
 					}
@@ -266,5 +277,18 @@ func TestSIPPlaceholderIsSelf(t *testing.T) {
 		if got := h.isSelf(u); got != tt.want {
 			t.Errorf("isSelf(%s) = %t, want %t", tt.uri, got, tt.want)
 		}
+	}
+}
+
+func TestRemoveAKAKeys(t *testing.T) {
+	res := sip.NewResponse(siptest.NewRequest("REGISTER", "sip:"+imsRealm, sip.UDP, netip.MustParseAddrPort("127.0.0.1:5060")), 401, "")
+	res.Header.Add("WWW-Authenticate", `Digest realm="`+imsRealm+`", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth", `+
+		`ck="d53c02758b376066fad0af7daa6df765", ik="e1763cf28cc2e584588800193137ec92"`)
+
+	removeAKAKeys(res)
+
+	want := `Digest realm="` + imsRealm + `", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth"`
+	if got := res.Header.Get("WWW-Authenticate"); got != want {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, want)
 	}
 }

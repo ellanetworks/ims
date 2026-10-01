@@ -11,7 +11,10 @@ import (
 
 var testNow = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
-const testIMPI = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org"
+const (
+	testIMPI   = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org"
+	testDomain = "ims.mnc001.mcc001.3gppnetwork.org"
+)
 
 func testSAs(base uint32) *SecurityAssociations {
 	return &SecurityAssociations{
@@ -28,254 +31,245 @@ func testSAs(base uint32) *SecurityAssociations {
 	}
 }
 
-func testRegistration(impi, msisdn string) Registration {
-	return Registration{
-		IMPI:       impi,
-		Contact:    "<sip:" + msisdn + "@[2001:db8::1]:5100>",
-		InstanceID: "<urn:gsma:imei:35000000-000000-0>",
-		CallID:     "reg-" + msisdn,
-		CSeq:       1,
-		UEAddress:  netip.MustParseAddr("2001:db8::1"),
-		IPsec:      testSAs(4096),
-		Identities: []PublicIdentity{
-			{URI: "sip:" + impi, Barred: true},
-			{URI: "sip:+" + msisdn + "@ims.mnc001.mcc001.3gppnetwork.org"},
-			{URI: "tel:+" + msisdn},
-		},
-		RegisteredAt: testNow,
-		ExpiresAt:    testNow.Add(time.Hour),
+func identity(uri string, barred bool) PublicIdentity {
+	return PublicIdentity{URI: uri, Key: uri, Barred: barred}
+}
+
+func testContact(host string) Contact {
+	return Contact{
+		URI:       "sip:ue@[" + host + "]:5100",
+		Params:    `;+sip.instance="<urn:gsma:imei:35000000-000000-0>";+g.3gpp.smsip`,
+		Path:      "<sip:term@pcscf." + testDomain + ";lr>",
+		UEAddress: netip.MustParseAddr(host),
+		IPsec:     testSAs(4096),
 	}
 }
 
-func mustPutRegistration(t *testing.T, d *DB, r Registration) int64 {
+func testRegistration(impi, msisdn string) Registration {
+	msisdnURI := "sip:+" + msisdn + "@" + testDomain + ";user=phone"
+
+	return Registration{
+		IMPI: impi,
+		IMPU: "sip:" + impi,
+		Identities: []PublicIdentity{
+			identity("sip:"+impi, true),
+			{URI: msisdnURI, Key: msisdnURI, DisplayName: "Alice"},
+			identity("tel:+"+msisdn, false),
+		},
+		UserData: []byte("<IMSSubscription/>"),
+		Bindings: []Binding{{
+			Contact:   testContact("2001:db8::1"),
+			CallID:    "reg-" + msisdn,
+			CSeq:      1,
+			ExpiresAt: testNow.Add(time.Hour),
+		}},
+	}
+}
+
+func mustSaveRegistration(t *testing.T, d *DB, r Registration) Registration {
 	t.Helper()
 
-	id, err := d.PutRegistration(context.Background(), r)
+	saved, err := d.SaveRegistration(context.Background(), r)
 	if err != nil {
-		t.Fatalf("PutRegistration: %v", err)
+		t.Fatalf("SaveRegistration: %v", err)
 	}
 
-	return id
+	return saved
+}
+
+func listByIMPI(t *testing.T, d *DB) []Registration {
+	t.Helper()
+
+	regs, err := d.ListRegistrationsByIMPI(context.Background(), testIMPI)
+	if err != nil {
+		t.Fatalf("ListRegistrationsByIMPI: %v", err)
+	}
+
+	return regs
 }
 
 func TestRegistrationRoundTrip(t *testing.T) {
-	ctx := context.Background()
 	d := openTestDB(t)
 
-	want := testRegistration(testIMPI, "15551230001")
-	want.RxSessionID = "pcscf.ims;1;2"
-	want.ID = mustPutRegistration(t, d, want)
-
-	got, err := d.GetRegistration(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
+	want := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	if want.ID == 0 || want.Bindings[0].Contact.ID == 0 || want.Bindings[0].Contact.IMPI != testIMPI {
+		t.Fatalf("saved = %+v, want IDs and the contact's IMPI set", want)
 	}
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("GetRegistration =\n%+v\nwant\n%+v", got, want)
-	}
-
-	got, err = d.GetRegistrationByIdentity(ctx, "tel:+15551230001")
-	if err != nil {
-		t.Fatalf("GetRegistrationByIdentity: %v", err)
-	}
-
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("GetRegistrationByIdentity =\n%+v\nwant\n%+v", got, want)
+	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("registrations = %+v, want %+v", got, want)
 	}
 }
 
-func TestPlainSIPRegistration(t *testing.T) {
-	ctx := context.Background()
+func TestPlainSIPContact(t *testing.T) {
 	d := openTestDB(t)
 
 	r := testRegistration(testIMPI, "15551230001")
-	r.IPsec = nil
-	r.InstanceID = ""
-	r.UEAddress = netip.MustParseAddr("10.45.0.2")
-	mustPutRegistration(t, d, r)
+	r.Bindings[0].Contact.IPsec = nil
+	mustSaveRegistration(t, d, r)
 
-	got, err := d.GetRegistration(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
-	}
-
-	if got.IPsec != nil || got.InstanceID != "" || got.RxSessionID != "" || got.UEAddress != r.UEAddress {
-		t.Fatalf("registration = %+v", got)
+	if got := listByIMPI(t, d)[0].Bindings[0].Contact.IPsec; got != nil {
+		t.Fatalf("IPsec = %+v, want nil", got)
 	}
 }
 
-func TestRegistrationRejectsPartialSAs(t *testing.T) {
+func TestContactRejectsPartialSAs(t *testing.T) {
 	d := openTestDB(t)
-
-	if _, err := d.conn.ExecContext(context.Background(),
-		`INSERT INTO registrations (impi, contact, call_id, cseq, ue_address, alg, ealg, registered_at, expires_at)
-		VALUES ('x', 'c', 'i', 1, '10.0.0.1', 'hmac-sha-1-96', 'null', 0, 0)`); err == nil {
-		t.Fatal("insert with partial SAs succeeded")
-	}
-}
-
-func TestRegistrationRejectsUnknownAlgorithm(t *testing.T) {
-	d := openTestDB(t)
-
 	r := testRegistration(testIMPI, "15551230001")
-	r.IPsec.Integrity = "hmac-sha-256-128"
+	r.Bindings[0].Contact.IPsec.Integrity = ""
 
-	if _, err := d.PutRegistration(context.Background(), r); err == nil {
-		t.Fatal("PutRegistration succeeded with an unknown algorithm")
+	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
+		t.Fatal("SaveRegistration with partial SAs succeeded")
+	}
+
+	if got := listByIMPI(t, d); len(got) != 0 {
+		t.Fatalf("registrations = %+v, want none after a failed save", got)
 	}
 }
 
-func TestPutRegistrationReplaces(t *testing.T) {
-	ctx := context.Background()
+func TestContactRejectsUnknownAlgorithm(t *testing.T) {
+	d := openTestDB(t)
+	r := testRegistration(testIMPI, "15551230001")
+	r.Bindings[0].Contact.IPsec.Integrity = "des"
+
+	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
+		t.Fatal("SaveRegistration with an unknown algorithm succeeded")
+	}
+}
+
+func TestSaveRegistrationUpdates(t *testing.T) {
 	d := openTestDB(t)
 
-	oldID := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	contactID := r.Bindings[0].Contact.ID
 
-	if _, err := d.PutRegSubscription(ctx, testSubscription(oldID)); err != nil {
-		t.Fatalf("PutRegSubscription: %v", err)
-	}
-
-	r := testRegistration(testIMPI, "15551230009")
+	r.IMPU = "tel:+15551230001"
 	r.Identities = r.Identities[1:]
-	newID := mustPutRegistration(t, d, r)
+	r.UserData = []byte("<IMSSubscription>2</IMSSubscription>")
+	r.Bindings[0].CSeq = 2
+	r.Bindings[0].ExpiresAt = testNow.Add(2 * time.Hour)
+	r.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"
+	r.Bindings[0].Contact.ID = 0
 
-	if newID == oldID {
-		t.Fatalf("replacement kept id %d", oldID)
+	saved := mustSaveRegistration(t, d, r)
+	if saved.Bindings[0].Contact.ID != contactID {
+		t.Fatalf("contact ID = %d, want %d: the same URI is the same contact", saved.Bindings[0].Contact.ID, contactID)
 	}
 
-	if _, err := d.GetRegistrationByIdentity(ctx, "tel:+15551230001"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("old identity lookup err = %v, want ErrNotFound", err)
-	}
-
-	got, err := d.GetRegistration(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
-	}
-
-	if got.ID != newID || !reflect.DeepEqual(got.Identities, r.Identities) {
-		t.Fatalf("registration = %+v", got)
-	}
-
-	subs, err := d.ListRegSubscriptions(ctx, oldID)
-	if err != nil {
-		t.Fatalf("ListRegSubscriptions: %v", err)
-	}
-
-	if len(subs) != 0 {
-		t.Fatalf("old subscriptions = %+v, want none", subs)
+	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
+		t.Fatalf("registrations = %+v, want %+v", got, saved)
 	}
 }
 
-func TestPutRegistrationIdentityConflict(t *testing.T) {
-	ctx := context.Background()
+func TestSeveralSetsShareAContact(t *testing.T) {
 	d := openTestDB(t)
 
-	first := testRegistration(testIMPI, "15551230001")
-	firstID := mustPutRegistration(t, d, first)
+	a := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	second := testRegistration("001010000000002@ims.mnc001.mcc001.3gppnetwork.org", "15551230001")
-	if _, err := d.PutRegistration(ctx, second); !errors.Is(err, ErrIdentityConflict) {
-		t.Fatalf("PutRegistration err = %v, want ErrIdentityConflict", err)
+	b := testRegistration(testIMPI, "15551230002")
+	b.IMPU = "sip:second@" + testDomain
+	b.Identities = []PublicIdentity{identity(b.IMPU, false)}
+	b = mustSaveRegistration(t, d, b)
+
+	if a.Bindings[0].Contact.ID != b.Bindings[0].Contact.ID {
+		t.Fatalf("contacts %d and %d, want one contact bound to both sets", a.Bindings[0].Contact.ID, b.Bindings[0].Contact.ID)
 	}
 
-	if _, err := d.GetRegistration(ctx, second.IMPI); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("conflicting registration was stored: err = %v", err)
+	a.Bindings = nil
+	mustSaveRegistration(t, d, a)
+
+	regs := listByIMPI(t, d)
+	if len(regs) != 2 || len(regs[0].Bindings) != 0 || len(regs[1].Bindings) != 1 {
+		t.Fatalf("registrations = %+v", regs)
 	}
 
-	got, err := d.GetRegistrationByIdentity(ctx, "tel:+15551230001")
-	if err != nil {
-		t.Fatalf("GetRegistrationByIdentity: %v", err)
+	if err := d.DeleteRegistration(context.Background(), b.ID); err != nil {
+		t.Fatalf("DeleteRegistration: %v", err)
 	}
 
-	if got.ID != firstID {
-		t.Fatalf("identity moved to registration %d, want %d", got.ID, firstID)
+	var contacts int
+	if err := d.conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM contacts`).Scan(&contacts); err != nil {
+		t.Fatal(err)
+	}
+
+	if contacts != 0 {
+		t.Fatalf("%d contacts left, want none once unbound", contacts)
 	}
 }
 
-func TestPutRegistrationConflictKeepsReplacedRow(t *testing.T) {
-	ctx := context.Background()
+func TestSharedIdentity(t *testing.T) {
 	d := openTestDB(t)
 
-	mustPutRegistration(t, d, testRegistration("001010000000002@ims.mnc001.mcc001.3gppnetwork.org", "15551230002"))
-	originalID := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	phone := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	conflicting := testRegistration(testIMPI, "15551230002")
-	if _, err := d.PutRegistration(ctx, conflicting); !errors.Is(err, ErrIdentityConflict) {
-		t.Fatalf("PutRegistration err = %v, want ErrIdentityConflict", err)
-	}
+	tablet := testRegistration("tablet@"+testDomain, "15551230001")
+	tablet.Bindings[0].Contact = testContact("2001:db8::2")
+	tablet = mustSaveRegistration(t, d, tablet)
 
-	got, err := d.GetRegistration(ctx, testIMPI)
+	regs, err := d.ListRegistrationsByIdentity(context.Background(), "tel:+15551230001")
 	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
+		t.Fatalf("ListRegistrationsByIdentity: %v", err)
 	}
 
-	if got.ID != originalID {
-		t.Fatalf("registration id = %d, want the original %d", got.ID, originalID)
+	if len(regs) != 2 || regs[0].ID != phone.ID || regs[1].ID != tablet.ID {
+		t.Fatalf("registrations = %+v, want the phone's and the tablet's", regs)
 	}
 }
 
-func TestRefreshRegistration(t *testing.T) {
-	ctx := context.Background()
+func TestIdentityConflictWithinIMPI(t *testing.T) {
 	d := openTestDB(t)
 
-	r := testRegistration(testIMPI, "15551230001")
-	mustPutRegistration(t, d, r)
+	a := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	u := RegistrationRefresh{CallID: "reg-2", CSeq: 2, IPsec: testSAs(5000), ExpiresAt: testNow.Add(2 * time.Hour)}
-	if err := d.RefreshRegistration(ctx, testIMPI, u); err != nil {
-		t.Fatalf("RefreshRegistration: %v", err)
+	b := testRegistration(testIMPI, "15551230001")
+	b.IMPU = "sip:second@" + testDomain
+	b.Identities = []PublicIdentity{identity(b.IMPU, false), identity("tel:+15551230001", false)}
+
+	if _, err := d.SaveRegistration(context.Background(), b); !errors.Is(err, ErrIdentityConflict) {
+		t.Fatalf("SaveRegistration err = %v, want ErrIdentityConflict", err)
 	}
 
-	got, err := d.GetRegistration(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
-	}
-
-	if got.CallID != u.CallID || got.CSeq != u.CSeq || *got.IPsec != *u.IPsec || !got.ExpiresAt.Equal(u.ExpiresAt) ||
-		!got.RegisteredAt.Equal(r.RegisteredAt) || len(got.Identities) != len(r.Identities) {
-		t.Fatalf("registration = %+v", got)
-	}
-
-	if err := d.RefreshRegistration(ctx, "unknown", u); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("RefreshRegistration unknown err = %v, want ErrNotFound", err)
+	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], a) {
+		t.Fatalf("registrations = %+v, want only %+v", got, a)
 	}
 }
 
-func TestSetRegistrationRxSession(t *testing.T) {
-	ctx := context.Background()
+func TestSaveRegistrationOfOtherIMPI(t *testing.T) {
 	d := openTestDB(t)
 
-	mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	r.IMPI = "other@" + testDomain
 
-	if err := d.SetRegistrationRxSession(ctx, testIMPI, "pcscf.ims;1;2"); err != nil {
-		t.Fatalf("SetRegistrationRxSession: %v", err)
-	}
-
-	got, err := d.GetRegistration(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("GetRegistration: %v", err)
-	}
-
-	if got.RxSessionID != "pcscf.ims;1;2" {
-		t.Fatalf("RxSessionID = %q", got.RxSessionID)
-	}
-
-	if err := d.SetRegistrationRxSession(ctx, "unknown", "x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetRegistrationRxSession unknown err = %v, want ErrNotFound", err)
+	if _, err := d.SaveRegistration(context.Background(), r); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SaveRegistration err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestGetRegistrationNotFound(t *testing.T) {
+func TestSetContactRxSession(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	if _, err := d.GetRegistration(ctx, testIMPI); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetRegistration err = %v, want ErrNotFound", err)
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	id := r.Bindings[0].Contact.ID
+
+	if err := d.SetContactRxSession(ctx, id, "pcscf.ims;1;2"); err != nil {
+		t.Fatalf("SetContactRxSession: %v", err)
 	}
 
-	if _, err := d.GetRegistrationByIdentity(ctx, "tel:+15551230001"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetRegistrationByIdentity err = %v, want ErrNotFound", err)
+	if got := listByIMPI(t, d)[0].Bindings[0].Contact.RxSessionID; got != "pcscf.ims;1;2" {
+		t.Fatalf("RxSessionID = %q", got)
+	}
+
+	if err := d.SetContactRxSession(ctx, id, ""); err != nil {
+		t.Fatalf("SetContactRxSession clear: %v", err)
+	}
+
+	if got := listByIMPI(t, d)[0].Bindings[0].Contact.RxSessionID; got != "" {
+		t.Fatalf("RxSessionID = %q, want cleared", got)
+	}
+
+	if err := d.SetContactRxSession(ctx, id+1, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetContactRxSession unknown err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -283,13 +277,10 @@ func TestListRegistrations(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	var ids []int64
-
-	for i := range 5 {
-		r := testRegistration(
-			"00101000000000"+string(rune('1'+i))+"@ims.mnc001.mcc001.3gppnetwork.org",
-			"1555123000"+string(rune('1'+i)))
-		ids = append(ids, mustPutRegistration(t, d, r))
+	for i, msisdn := range []string{"15551230001", "15551230002", "15551230003"} {
+		r := testRegistration("ue"+msisdn+"@"+testDomain, msisdn)
+		r.Bindings[0].Contact = testContact("2001:db8::" + string(rune('1'+i)))
+		mustSaveRegistration(t, d, r)
 	}
 
 	regs, total, err := d.ListRegistrations(ctx, 2, 2)
@@ -297,14 +288,8 @@ func TestListRegistrations(t *testing.T) {
 		t.Fatalf("ListRegistrations: %v", err)
 	}
 
-	if total != 5 || len(regs) != 2 || regs[0].ID != ids[2] || regs[1].ID != ids[3] {
-		t.Fatalf("ListRegistrations = %d rows, total %d", len(regs), total)
-	}
-
-	for _, r := range regs {
-		if len(r.Identities) != 3 {
-			t.Fatalf("registration %d identities = %+v", r.ID, r.Identities)
-		}
+	if total != 3 || len(regs) != 1 || regs[0].IMPI != "ue15551230003@"+testDomain || len(regs[0].Bindings) != 1 {
+		t.Fatalf("ListRegistrations = %+v, %d", regs, total)
 	}
 }
 
@@ -312,71 +297,54 @@ func TestDeleteRegistrationCascades(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	id := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	if _, err := d.PutRegSubscription(ctx, testSubscription(id)); err != nil {
+	if _, err := d.PutRegSubscription(ctx, testSubscription()); err != nil {
 		t.Fatalf("PutRegSubscription: %v", err)
 	}
 
-	if err := d.DeleteRegistration(ctx, testIMPI); err != nil {
+	if err := d.DeleteRegistration(ctx, r.ID); err != nil {
 		t.Fatalf("DeleteRegistration: %v", err)
 	}
 
-	assertCount(t, d, "registration_identities", 0)
-	assertCount(t, d, "reg_subscriptions", 0)
+	if subs, err := d.ListRegSubscriptions(ctx, testIMPI); err != nil || len(subs) != 1 {
+		t.Fatalf("ListRegSubscriptions = %v, %v; want the subscription kept", subs, err)
+	}
 
-	if err := d.DeleteRegistration(ctx, testIMPI); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second DeleteRegistration err = %v, want ErrNotFound", err)
+	for _, table := range []string{"registration_identities", "bindings", "contacts"} {
+		var n int
+		if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+
+		if n != 0 {
+			t.Errorf("%d rows left in %s", n, table)
+		}
+	}
+
+	if err := d.DeleteRegistration(ctx, r.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteRegistration again err = %v, want ErrNotFound", err)
 	}
 }
 
-func TestDeleteExpiredRegistrations(t *testing.T) {
+func TestListExpiredIMPIs(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
 	expired := testRegistration(testIMPI, "15551230001")
-	expired.ExpiresAt = testNow
-	expiredID := mustPutRegistration(t, d, expired)
+	expired.Bindings[0].ExpiresAt = testNow
+	mustSaveRegistration(t, d, expired)
 
-	if _, err := d.PutRegSubscription(ctx, testSubscription(expiredID)); err != nil {
-		t.Fatalf("PutRegSubscription: %v", err)
-	}
+	live := testRegistration("live@"+testDomain, "15551230002")
+	live.Bindings[0].Contact = testContact("2001:db8::2")
+	mustSaveRegistration(t, d, live)
 
-	live := testRegistration("001010000000002@ims.mnc001.mcc001.3gppnetwork.org", "15551230002")
-	live.ExpiresAt = testNow.Add(time.Nanosecond)
-	liveID := mustPutRegistration(t, d, live)
-
-	deleted, err := d.DeleteExpiredRegistrations(ctx, testNow)
+	impis, err := d.ListExpiredIMPIs(ctx, testNow)
 	if err != nil {
-		t.Fatalf("DeleteExpiredRegistrations: %v", err)
+		t.Fatalf("ListExpiredIMPIs: %v", err)
 	}
 
-	if len(deleted) != 1 || deleted[0].ID != expiredID || len(deleted[0].Identities) != 3 || deleted[0].IPsec == nil {
-		t.Fatalf("deleted = %+v", deleted)
-	}
-
-	regs, _, err := d.ListRegistrations(ctx, 1, 10)
-	if err != nil {
-		t.Fatalf("ListRegistrations: %v", err)
-	}
-
-	if len(regs) != 1 || regs[0].ID != liveID {
-		t.Fatalf("remaining = %+v", regs)
-	}
-
-	assertCount(t, d, "reg_subscriptions", 0)
-	assertCount(t, d, "registration_identities", 3)
-}
-
-func assertCount(t *testing.T, d *DB, table string, want int) {
-	t.Helper()
-
-	var n int
-	if err := d.conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-
-	if n != want {
-		t.Fatalf("%s rows = %d, want %d", table, n, want)
+	if !reflect.DeepEqual(impis, []string{testIMPI}) {
+		t.Fatalf("ListExpiredIMPIs = %v, want [%s]", impis, testIMPI)
 	}
 }

@@ -12,6 +12,9 @@ sip:
   addresses: [10.0.0.5]
   port: 5060
   aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
+registrar:
+  min_expires: 60
+  max_expires: 3600
 diameter:
   origin_host: ims.ims.mnc001.mcc001.3gppnetwork.org
   origin_realm: ims.mnc001.mcc001.3gppnetwork.org

@@ -17,34 +17,30 @@ var ErrSubscriptionExists = errors.New("subscription dialog already exists")
 // subscription is stored with the values of its initial NOTIFY, and NextNotify
 // returns the values for each later one.
 type RegSubscription struct {
-	ID             int64
-	RegistrationID int64
-	CallID         string
-	RemoteTag      string
-	LocalTag       string
-	RemoteTarget   string
-	RemoteCSeq     int64
-	LocalCSeq      int64
-	Version        int64
-	ExpiresAt      time.Time
+	ID           int64
+	IMPI         string
+	CallID       string
+	RemoteTag    string
+	LocalTag     string
+	RemoteTarget string
+	RemoteCSeq   int64
+	LocalCSeq    int64
+	Version      int64
+	ExpiresAt    time.Time
 }
 
-const regSubscriptionColumns = `id, registration_id, call_id, remote_tag, local_tag, remote_target,
+const regSubscriptionColumns = `id, impi, call_id, remote_tag, local_tag, remote_target,
 	remote_cseq, local_cseq, version, expires_at`
 
-// PutRegSubscription stores a new subscription dialog. It returns ErrNotFound
-// if the registration no longer exists.
 func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (int64, error) {
 	res, err := d.conn.ExecContext(ctx,
-		`INSERT INTO reg_subscriptions (registration_id, call_id, remote_tag, local_tag, remote_target,
+		`INSERT INTO reg_subscriptions (impi, call_id, remote_tag, local_tag, remote_target,
 			remote_cseq, local_cseq, version, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.RegistrationID, s.CallID, s.RemoteTag, s.LocalTag, s.RemoteTarget,
+		s.IMPI, s.CallID, s.RemoteTag, s.LocalTag, s.RemoteTarget,
 		s.RemoteCSeq, s.LocalCSeq, s.Version, s.ExpiresAt.UTC().UnixNano())
 
 	switch {
-	case isConstraint(err, sqlite3.ErrConstraintForeignKey):
-		return 0, fmt.Errorf("put reg subscription: registration %d: %w", s.RegistrationID, ErrNotFound)
 	case isConstraint(err, sqlite3.ErrConstraintUnique):
 		return 0, fmt.Errorf("put reg subscription: %w", ErrSubscriptionExists)
 	case err != nil:
@@ -92,9 +88,9 @@ func (d *DB) NextNotify(ctx context.Context, id int64) (cseq, version int64, err
 	return cseq, version, nil
 }
 
-func (d *DB) ListRegSubscriptions(ctx context.Context, registrationID int64) ([]RegSubscription, error) {
+func (d *DB) ListRegSubscriptions(ctx context.Context, impi string) ([]RegSubscription, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE registration_id = ? ORDER BY id`, registrationID)
+		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
 		return nil, fmt.Errorf("list reg subscriptions: %w", err)
 	}
@@ -109,7 +105,7 @@ func (d *DB) ListRegSubscriptions(ctx context.Context, registrationID int64) ([]
 			expiresAt int64
 		)
 
-		if err := rows.Scan(&s.ID, &s.RegistrationID, &s.CallID, &s.RemoteTag, &s.LocalTag, &s.RemoteTarget,
+		if err := rows.Scan(&s.ID, &s.IMPI, &s.CallID, &s.RemoteTag, &s.LocalTag, &s.RemoteTarget,
 			&s.RemoteCSeq, &s.LocalCSeq, &s.Version, &expiresAt); err != nil {
 			return nil, fmt.Errorf("list reg subscriptions: %w", err)
 		}

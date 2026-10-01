@@ -25,9 +25,7 @@ const (
 	EncryptionAESCBC EncryptionAlgorithm = "aes-cbc"
 )
 
-// ErrIdentityConflict is returned when a public identity is already part of
-// another phone's registration.
-var ErrIdentityConflict = errors.New("public identity registered by another phone")
+var ErrIdentityConflict = errors.New("public identity in another registration set of the private identity")
 
 // SecurityAssociations identifies the four IPsec SAs of a registration
 // (TS 33.203 §7). The keys stay in the kernel and aren't stored.
@@ -44,169 +42,216 @@ type SecurityAssociations struct {
 	Encryption EncryptionAlgorithm
 }
 
-// PublicIdentity is one IMPU of the implicit registration set. URI is in
-// normalized form.
 type PublicIdentity struct {
-	URI    string
-	Barred bool
+	URI         string
+	Key         string
+	DisplayName string
+	Barred      bool
 }
 
-// Registration is a registered phone. IPsec is nil for a plain-SIP phone.
-// Identities are in profile order: the first one is the default IMPU.
 type Registration struct {
-	ID           int64
-	IMPI         string
-	Contact      string
-	InstanceID   string
-	CallID       string
-	CSeq         int64
-	UEAddress    netip.Addr
-	IPsec        *SecurityAssociations
-	RxSessionID  string
-	Identities   []PublicIdentity
-	RegisteredAt time.Time
-	ExpiresAt    time.Time
+	ID         int64
+	IMPI       string
+	IMPU       string
+	Identities []PublicIdentity
+	UserData   []byte
+	Bindings   []Binding
 }
 
-// RegistrationRefresh is what a re-registration changes.
-type RegistrationRefresh struct {
+type Contact struct {
+	ID          int64
+	IMPI        string
+	URI         string
+	Params      string
+	Path        string
+	UEAddress   netip.Addr
+	IPsec       *SecurityAssociations
+	RxSessionID string
+}
+
+type Binding struct {
+	Contact   Contact
 	CallID    string
 	CSeq      int64
-	IPsec     *SecurityAssociations
 	ExpiresAt time.Time
 }
 
-const registrationColumns = `id, impi, contact, instance_id, call_id, cseq, ue_address,
-	ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg,
-	rx_session_id, registered_at, expires_at`
+const (
+	registrationColumns = `id, impi, impu, user_data`
 
-// PutRegistration stores an initial registration. It replaces any registration
-// of the same IMPI, with its identities and subscriptions.
-func (d *DB) PutRegistration(ctx context.Context, r Registration) (int64, error) {
-	if !r.UEAddress.IsValid() {
-		return 0, errors.New("put registration: UE address is required")
-	}
+	contactColumns = `c.id, c.impi, c.uri, c.params, c.path, c.ue_address,
+	c.ue_port_c, c.ue_port_s, c.pcscf_port_c, c.pcscf_port_s, c.spi_uc, c.spi_us, c.spi_pc, c.spi_ps, c.alg, c.ealg,
+	c.rx_session_id`
+)
 
+func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("put registration: %w", err)
+		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM registrations WHERE impi = ?`, r.IMPI); err != nil {
-		return 0, fmt.Errorf("put registration: %w", err)
-	}
-
-	args := []any{r.IMPI, r.Contact, nullableString(r.InstanceID), r.CallID, r.CSeq, r.UEAddress.String()}
-	args = append(args, securityAssociationArgs(r.IPsec)...)
-	args = append(args, nullableString(r.RxSessionID), r.RegisteredAt.UTC().UnixNano(), r.ExpiresAt.UTC().UnixNano())
-
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO registrations (impi, contact, instance_id, call_id, cseq, ue_address,
-			ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg,
-			rx_session_id, registered_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
-	if err != nil {
-		return 0, fmt.Errorf("put registration: %w", err)
-	}
-
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("put registration: %w", err)
-	}
-
-	for i, identity := range r.Identities {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO registration_identities (registration_id, position, uri, barred) VALUES (?, ?, ?, ?)`,
-			id, i, identity.URI, identity.Barred)
-		if isConstraint(err, sqlite3.ErrConstraintUnique) {
-			return 0, fmt.Errorf("put registration: %s: %w", identity.URI, ErrIdentityConflict)
-		}
-
+	if r.ID == 0 {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO registrations (impi, impu, user_data) VALUES (?, ?, ?)`, r.IMPI, r.IMPU, r.UserData)
 		if err != nil {
-			return 0, fmt.Errorf("put registration: %w", err)
+			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
+
+		if r.ID, err = res.LastInsertId(); err != nil {
+			return Registration{}, fmt.Errorf("save registration: %w", err)
+		}
+	} else {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE registrations SET impu = ?, user_data = ? WHERE id = ? AND impi = ?`, r.IMPU, r.UserData, r.ID, r.IMPI)
+		if err != nil {
+			return Registration{}, fmt.Errorf("save registration: %w", err)
+		}
+
+		if err := checkAffected(res); err != nil {
+			return Registration{}, fmt.Errorf("save registration %d: %w", r.ID, err)
+		}
+	}
+
+	if err := saveIdentities(ctx, tx, r); err != nil {
+		return Registration{}, fmt.Errorf("save registration: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bindings WHERE registration_id = ?`, r.ID); err != nil {
+		return Registration{}, fmt.Errorf("save registration: %w", err)
+	}
+
+	r.Bindings = append([]Binding(nil), r.Bindings...)
+
+	for i := range r.Bindings {
+		b := &r.Bindings[i]
+		b.Contact.IMPI = r.IMPI
+
+		if b.Contact.ID, err = saveContact(ctx, tx, b.Contact); err != nil {
+			return Registration{}, fmt.Errorf("save registration: %w", err)
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at) VALUES (?, ?, ?, ?, ?)`,
+			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano()); err != nil {
+			return Registration{}, fmt.Errorf("save registration: %w", err)
+		}
+	}
+
+	if err := deleteUnboundContacts(ctx, tx, r.IMPI); err != nil {
+		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("put registration: %w", err)
+		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
-	return id, nil
+	return r, nil
 }
 
-// RefreshRegistration records a re-registration. Re-registration creates new
-// SAs, so they are replaced too.
-func (d *DB) RefreshRegistration(ctx context.Context, impi string, u RegistrationRefresh) error {
-	args := []any{u.CallID, u.CSeq}
-	args = append(args, securityAssociationArgs(u.IPsec)...)
-	args = append(args, u.ExpiresAt.UTC().UnixNano(), impi)
-
-	res, err := d.conn.ExecContext(ctx,
-		`UPDATE registrations SET call_id = ?, cseq = ?,
-			ue_port_c = ?, ue_port_s = ?, pcscf_port_c = ?, pcscf_port_s = ?,
-			spi_uc = ?, spi_us = ?, spi_pc = ?, spi_ps = ?, alg = ?, ealg = ?, expires_at = ?
-		WHERE impi = ?`, args...)
-	if err != nil {
-		return fmt.Errorf("refresh registration: %w", err)
+func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM registration_identities WHERE registration_id = ?`, r.ID); err != nil {
+		return err
 	}
 
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("refresh registration: %w", err)
+	for i, id := range r.Identities {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO registration_identities (registration_id, impi, position, uri, key, display_name, barred)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.IMPI, i, id.URI, id.Key, nullableString(id.DisplayName), id.Barred)
+		if isConstraint(err, sqlite3.ErrConstraintUnique) {
+			return fmt.Errorf("%s: %w", id.URI, ErrIdentityConflict)
+		}
+
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-// SetRegistrationRxSession records the Session-Id of the registration's
-// AF_SIGNALLING Rx session. An empty sessionID clears it.
-func (d *DB) SetRegistrationRxSession(ctx context.Context, impi, sessionID string) error {
-	res, err := d.conn.ExecContext(ctx,
-		`UPDATE registrations SET rx_session_id = ? WHERE impi = ?`, nullableString(sessionID), impi)
-	if err != nil {
-		return fmt.Errorf("set registration Rx session: %w", err)
+func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (int64, error) {
+	if !c.UEAddress.IsValid() {
+		return 0, errors.New("contact without a UE address")
 	}
 
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("set registration Rx session: %w", err)
+	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), c.UEAddress.String()}
+	args = append(args, securityAssociationArgs(c.IPsec)...)
+	args = append(args, nullableString(c.RxSessionID))
+
+	var id int64
+
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO contacts (impi, uri, params, path, ue_address,
+			ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg, rx_session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path,
+			ue_address = excluded.ue_address,
+			ue_port_c = excluded.ue_port_c, ue_port_s = excluded.ue_port_s,
+			pcscf_port_c = excluded.pcscf_port_c, pcscf_port_s = excluded.pcscf_port_s,
+			spi_uc = excluded.spi_uc, spi_us = excluded.spi_us, spi_pc = excluded.spi_pc, spi_ps = excluded.spi_ps,
+			alg = excluded.alg, ealg = excluded.ealg, rx_session_id = excluded.rx_session_id
+		RETURNING id`, args...).Scan(&id)
+
+	return id, err
+}
+
+func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM contacts WHERE impi = ? AND id NOT IN (SELECT contact_id FROM bindings)`, impi)
+
+	return err
+}
+
+func (d *DB) DeleteRegistration(ctx context.Context, id int64) error {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete registration: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	var impi string
+	if err := tx.QueryRowContext(ctx, `DELETE FROM registrations WHERE id = ? RETURNING impi`, id).Scan(&impi); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			err = ErrNotFound
+		}
+
+		return fmt.Errorf("delete registration %d: %w", id, err)
+	}
+
+	if err := deleteUnboundContacts(ctx, tx, impi); err != nil {
+		return fmt.Errorf("delete registration %d: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
 
 	return nil
 }
 
-// GetRegistration returns the registration of an IMPI. Expired registrations
-// are returned until they are deleted, so the caller checks ExpiresAt.
-func (d *DB) GetRegistration(ctx context.Context, impi string) (Registration, error) {
+func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) ([]Registration, error) {
 	regs, err := queryRegistrations(ctx, d.conn,
-		`SELECT `+registrationColumns+` FROM registrations WHERE impi = ?`, impi)
+		`SELECT `+registrationColumns+` FROM registrations WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
-		return Registration{}, fmt.Errorf("get registration: %w", err)
+		return nil, fmt.Errorf("list registrations of %s: %w", impi, err)
 	}
 
-	if len(regs) == 0 {
-		return Registration{}, ErrNotFound
-	}
-
-	return regs[0], nil
+	return regs, nil
 }
 
-// GetRegistrationByIdentity returns the registration holding a normalized
-// public identity, barred or not. Expired registrations are returned until
-// they are deleted, so the caller checks ExpiresAt.
-func (d *DB) GetRegistrationByIdentity(ctx context.Context, uri string) (Registration, error) {
+func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) ([]Registration, error) {
 	regs, err := queryRegistrations(ctx, d.conn,
 		`SELECT `+registrationColumns+` FROM registrations
-		WHERE id = (SELECT registration_id FROM registration_identities WHERE uri = ?)`, uri)
+		WHERE id IN (SELECT registration_id FROM registration_identities WHERE key = ?) ORDER BY id`, key)
 	if err != nil {
-		return Registration{}, fmt.Errorf("get registration by identity: %w", err)
+		return nil, fmt.Errorf("list registrations of %s: %w", key, err)
 	}
 
-	if len(regs) == 0 {
-		return Registration{}, ErrNotFound
-	}
-
-	return regs[0], nil
+	return regs, nil
 }
 
 func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Registration, int, error) {
@@ -224,47 +269,46 @@ func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Regist
 	return regs, total, nil
 }
 
-func (d *DB) DeleteRegistration(ctx context.Context, impi string) error {
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM registrations WHERE impi = ?`, impi)
+func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := d.conn.QueryContext(ctx,
+		`SELECT DISTINCT r.impi FROM bindings b JOIN registrations r ON r.id = b.registration_id
+		WHERE b.expires_at <= ? ORDER BY r.impi`, now.UTC().UnixNano())
 	if err != nil {
-		return fmt.Errorf("delete registration: %w", err)
+		return nil, fmt.Errorf("list expired private identities: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	impis := []string{}
+
+	for rows.Next() {
+		var impi string
+		if err := rows.Scan(&impi); err != nil {
+			return nil, fmt.Errorf("list expired private identities: %w", err)
+		}
+
+		impis = append(impis, impi)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list expired private identities: %w", err)
+	}
+
+	return impis, nil
+}
+
+func (d *DB) SetContactRxSession(ctx context.Context, contactID int64, sessionID string) error {
+	res, err := d.conn.ExecContext(ctx,
+		`UPDATE contacts SET rx_session_id = ? WHERE id = ?`, nullableString(sessionID), contactID)
+	if err != nil {
+		return fmt.Errorf("set contact Rx session: %w", err)
 	}
 
 	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("delete registration: %w", err)
+		return fmt.Errorf("set contact Rx session: %w", err)
 	}
 
 	return nil
-}
-
-// DeleteExpiredRegistrations deletes registrations whose expiry is at or before
-// now, and returns them so the caller can tear down their SAs and Rx sessions
-// and tell the HSS.
-func (d *DB) DeleteExpiredRegistrations(ctx context.Context, now time.Time) ([]Registration, error) {
-	at := now.UTC().UnixNano()
-
-	tx, err := d.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("delete expired registrations: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	regs, err := queryRegistrations(ctx, tx,
-		`SELECT `+registrationColumns+` FROM registrations WHERE expires_at <= ? ORDER BY id`, at)
-	if err != nil {
-		return nil, fmt.Errorf("delete expired registrations: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM registrations WHERE expires_at <= ?`, at); err != nil {
-		return nil, fmt.Errorf("delete expired registrations: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("delete expired registrations: %w", err)
-	}
-
-	return regs, nil
 }
 
 func queryRegistrations(ctx context.Context, q querier, query string, args ...any) ([]Registration, error) {
@@ -294,16 +338,8 @@ func queryRegistrations(ctx context.Context, q querier, query string, args ...an
 		return nil, err
 	}
 
-	if err := loadIdentities(ctx, q, regs); err != nil {
-		return nil, err
-	}
-
-	return regs, nil
-}
-
-func loadIdentities(ctx context.Context, q querier, regs []Registration) error {
 	if len(regs) == 0 {
-		return nil
+		return regs, nil
 	}
 
 	index := make(map[int64]int, len(regs))
@@ -314,8 +350,20 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration) error {
 		ids = append(ids, r.ID)
 	}
 
+	if err := loadIdentities(ctx, q, regs, index, ids); err != nil {
+		return nil, err
+	}
+
+	if err := loadBindings(ctx, q, regs, index, ids); err != nil {
+		return nil, err
+	}
+
+	return regs, nil
+}
+
+func loadIdentities(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
-		`SELECT registration_id, uri, barred FROM registration_identities
+		`SELECT registration_id, uri, key, display_name, barred FROM registration_identities
 		WHERE registration_id IN (`+placeholders(len(ids))+`) ORDER BY registration_id, position`, ids...)
 	if err != nil {
 		return err
@@ -327,11 +375,14 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration) error {
 		var (
 			registrationID int64
 			identity       PublicIdentity
+			displayName    sql.NullString
 		)
 
-		if err := rows.Scan(&registrationID, &identity.URI, &identity.Barred); err != nil {
+		if err := rows.Scan(&registrationID, &identity.URI, &identity.Key, &displayName, &identity.Barred); err != nil {
 			return err
 		}
+
+		identity.DisplayName = displayName.String
 
 		r := &regs[index[registrationID]]
 		r.Identities = append(r.Identities, identity)
@@ -340,36 +391,74 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration) error {
 	return rows.Err()
 }
 
+func loadBindings(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
+	rows, err := q.QueryContext(ctx,
+		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, `+contactColumns+`
+		FROM bindings b JOIN contacts c ON c.id = b.contact_id
+		WHERE b.registration_id IN (`+placeholders(len(ids))+`) ORDER BY b.registration_id, c.id`, ids...)
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			registrationID, expiresAt int64
+			b                         Binding
+		)
+
+		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt); err != nil {
+			return err
+		}
+
+		b.ExpiresAt = time.Unix(0, expiresAt).UTC()
+
+		r := &regs[index[registrationID]]
+		r.Bindings = append(r.Bindings, b)
+	}
+
+	return rows.Err()
+}
+
 func scanRegistration(row scanner) (Registration, error) {
+	var r Registration
+
+	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.UserData); err != nil {
+		return Registration{}, err
+	}
+
+	return r, nil
+}
+
+func scanContact(row scanner, leading ...any) (Contact, error) {
 	var (
-		r                                        Registration
-		instanceID, rxSessionID, alg, ealg       sql.NullString
+		c                                        Contact
+		path, rxSessionID, alg, ealg             sql.NullString
 		ueAddress                                string
 		uePortC, uePortS, pcscfPortC, pcscfPortS sql.Null[uint16]
 		spiUC, spiUS, spiPC, spiPS               sql.Null[uint32]
-		registeredAt, expiresAt                  int64
 	)
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.Contact, &instanceID, &r.CallID, &r.CSeq, &ueAddress,
-		&uePortC, &uePortS, &pcscfPortC, &pcscfPortS, &spiUC, &spiUS, &spiPC, &spiPS, &alg, &ealg,
-		&rxSessionID, &registeredAt, &expiresAt); err != nil {
-		return Registration{}, err
+	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path, &ueAddress,
+		&uePortC, &uePortS, &pcscfPortC, &pcscfPortS, &spiUC, &spiUS, &spiPC, &spiPS, &alg, &ealg, &rxSessionID)
+
+	if err := row.Scan(dest...); err != nil {
+		return Contact{}, err
 	}
 
 	addr, err := netip.ParseAddr(ueAddress)
 	if err != nil {
-		return Registration{}, fmt.Errorf("registration %d: %w", r.ID, err)
+		return Contact{}, fmt.Errorf("contact %d: %w", c.ID, err)
 	}
 
-	r.UEAddress = addr
-	r.InstanceID = instanceID.String
-	r.RxSessionID = rxSessionID.String
-	r.RegisteredAt = time.Unix(0, registeredAt).UTC()
-	r.ExpiresAt = time.Unix(0, expiresAt).UTC()
+	c.UEAddress = addr
+	c.Path = path.String
+	c.RxSessionID = rxSessionID.String
 
 	// The table's CHECK constraint keeps the SA columns all set or all NULL.
 	if alg.Valid {
-		r.IPsec = &SecurityAssociations{
+		c.IPsec = &SecurityAssociations{
 			UEPortC:    uePortC.V,
 			UEPortS:    uePortS.V,
 			PCSCFPortC: pcscfPortC.V,
@@ -383,7 +472,7 @@ func scanRegistration(row scanner) (Registration, error) {
 		}
 	}
 
-	return r, nil
+	return c, nil
 }
 
 // securityAssociationArgs returns the values of ue_port_c through ealg.

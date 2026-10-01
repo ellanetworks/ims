@@ -55,6 +55,39 @@ func (u URI) equal(v URI) bool {
 		slices.Equal(u.Params, v.Params)
 }
 
+func (u URI) Equivalent(v URI) bool {
+	if !strings.EqualFold(u.Scheme, v.Scheme) {
+		return false
+	}
+
+	if !u.IsSIP() {
+		v.Scheme = u.Scheme
+		return u.equal(v)
+	}
+
+	if u.User != v.User || u.Password != v.Password || !strings.EqualFold(u.Host, v.Host) ||
+		u.Port != v.Port || !strings.EqualFold(u.Headers, v.Headers) {
+		return false
+	}
+
+	return paramsEquivalent(u.Params, v.Params) && paramsEquivalent(v.Params, u.Params)
+}
+
+func paramsEquivalent(a, b Params) bool {
+	for _, p := range a {
+		value, ok := b.Get(p.Name)
+
+		switch {
+		case ok && !strings.EqualFold(p.Value, value):
+			return false
+		case !ok && slices.Contains([]string{"user", "ttl", "method", "maddr"}, strings.ToLower(p.Name)):
+			return false
+		}
+	}
+
+	return true
+}
+
 func (u URI) Clone() URI {
 	u.Params = u.Params.Clone()
 	return u

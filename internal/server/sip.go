@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
@@ -25,12 +26,11 @@ const (
 	defaultSIPSPort = 5061
 )
 
-const placeholderAllow = "INVITE, ACK, CANCEL, OPTIONS"
+const placeholderAllow = "INVITE, ACK, CANCEL, OPTIONS, REGISTER"
 
 const placeholderInviteTimeout = 64 * transaction.DefaultT1
 
 var knownMethods = map[string]bool{
-	"REGISTER":  true,
 	"BYE":       true,
 	"PRACK":     true,
 	"UPDATE":    true,
@@ -48,8 +48,13 @@ type sipServer struct {
 	listeners []netip.AddrPort
 }
 
-func startSIP(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sipServer, error) {
+type registrar interface {
+	Register(ctx context.Context, req scscf.Request) *sip.Response
+}
+
+func startSIP(ctx context.Context, cfg config.Config, reg registrar, logger *slog.Logger) (*sipServer, error) {
 	h := newPlaceholderHandler(logger, cfg.SIPAliases())
+	h.registrar = reg
 
 	layer := transaction.New(transaction.Config{
 		Handler:   h,
@@ -58,6 +63,7 @@ func startSIP(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sip
 		Aliases:   cfg.SIPAliases(),
 	})
 
+	h.layer = layer
 	s := &sipServer{layer: layer, handler: h}
 
 	for _, a := range cfg.SIP.Addresses {
@@ -86,6 +92,8 @@ func (s *sipServer) Close() error {
 
 type placeholderHandler struct {
 	log           *slog.Logger
+	layer         *transaction.Layer
+	registrar     registrar
 	inviteTimeout time.Duration
 	aliases       map[string]bool
 
@@ -126,6 +134,8 @@ func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, re
 		h.respond(tx, sip.NewResponse(req, 480, ""))
 	case req.Method == "INVITE":
 		h.holdInvite(tx)
+	case req.Method == "REGISTER":
+		h.register(tx, req)
 	case knownMethods[req.Method]:
 		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)
@@ -224,9 +234,38 @@ func (h *placeholderHandler) release(tx *transaction.ServerTransaction) bool {
 	return ok
 }
 
+func (h *placeholderHandler) register(tx *transaction.ServerTransaction, req *sip.Request) {
+	err := h.layer.Go(func(ctx context.Context) {
+		res := h.registrar.Register(ctx, scscf.Request{SIP: req, UEAddress: req.Flow.Remote.Addr()})
+		if res.StatusCode == 401 {
+			removeAKAKeys(res)
+		}
+
+		h.respond(tx, res)
+	})
+	if err != nil {
+		h.log.Debug("dropped SIP REGISTER", slog.String("call-id", req.Header.CallID()), slog.Any("error", err))
+	}
+}
+
+func removeAKAKeys(res *sip.Response) {
+	values := res.Header.Values("WWW-Authenticate")
+	res.Header.Del("WWW-Authenticate")
+
+	for _, v := range values {
+		a, err := sip.ParseAuth(v)
+		if err != nil {
+			continue
+		}
+
+		a.Params.Del("ck")
+		a.Params.Del("ik")
+		res.Header.Add("WWW-Authenticate", a.String())
+	}
+}
+
 func (h *placeholderHandler) close() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	h.closed = true
 
@@ -234,6 +273,8 @@ func (h *placeholderHandler) close() {
 		t.Stop()
 		delete(h.invites, tx)
 	}
+
+	h.mu.Unlock()
 }
 
 func (h *placeholderHandler) respond(tx *transaction.ServerTransaction, res *sip.Response) {

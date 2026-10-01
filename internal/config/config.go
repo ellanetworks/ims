@@ -18,6 +18,8 @@ const (
 	defaultCallRetention = 90 * 24 * time.Hour
 	defaultDiameterPort  = 3868
 	defaultSIPPort       = 5060
+	defaultMinExpires    = 60
+	defaultMaxExpires    = 3600
 )
 
 type Transport string
@@ -40,6 +42,7 @@ type Config struct {
 	API         API         `yaml:"api"`
 	IMS         IMS         `yaml:"ims"`
 	SIP         SIP         `yaml:"sip"`
+	Registrar   Registrar   `yaml:"registrar"`
 	Diameter    Diameter    `yaml:"diameter"`
 }
 
@@ -61,6 +64,7 @@ type IMS struct {
 	MNC string `yaml:"mnc"`
 
 	HomeDomain string `yaml:"home_domain"`
+	SCSCFName  string `yaml:"scscf_name"`
 }
 
 type SIP struct {
@@ -68,6 +72,11 @@ type SIP struct {
 	Port           int          `yaml:"port"`
 	Aliases        []string     `yaml:"aliases"`
 	MaxConnections int          `yaml:"max_connections"`
+}
+
+type Registrar struct {
+	MinExpires int `yaml:"min_expires"`
+	MaxExpires int `yaml:"max_expires"`
 }
 
 func HomeDomain(mcc, mnc string) string {
@@ -79,7 +88,12 @@ func HomeDomain(mcc, mnc string) string {
 }
 
 func (c Config) SIPAliases() []string {
-	return append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
+	aliases := append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
+	if !slices.Contains(aliases, c.IMS.SCSCFName) {
+		aliases = append(aliases, c.IMS.SCSCFName)
+	}
+
+	return aliases
 }
 
 type Diameter struct {
@@ -101,6 +115,16 @@ type DiameterPeer struct {
 
 func (p DiameterPeer) Serves(app Application) bool {
 	return slices.Contains(p.Applications, app)
+}
+
+func (d Diameter) CxPeer() DiameterPeer {
+	for _, p := range d.Peers {
+		if p.Serves(ApplicationCx) {
+			return p
+		}
+	}
+
+	return DiameterPeer{}
 }
 
 func Load(path string) (Config, error) {
@@ -130,6 +154,11 @@ func Load(path string) (Config, error) {
 		cfg.IMS.HomeDomain = HomeDomain(cfg.IMS.MCC, cfg.IMS.MNC)
 	}
 
+	cfg.IMS.SCSCFName = strings.ToLower(cfg.IMS.SCSCFName)
+	if cfg.IMS.SCSCFName == "" {
+		cfg.IMS.SCSCFName = "scscf." + cfg.IMS.HomeDomain
+	}
+
 	if cfg.SIP.Port == 0 {
 		cfg.SIP.Port = defaultSIPPort
 	}
@@ -140,6 +169,14 @@ func Load(path string) (Config, error) {
 
 	for i, a := range cfg.SIP.Aliases {
 		cfg.SIP.Aliases[i] = strings.ToLower(a)
+	}
+
+	if cfg.Registrar.MinExpires == 0 {
+		cfg.Registrar.MinExpires = defaultMinExpires
+	}
+
+	if cfg.Registrar.MaxExpires == 0 {
+		cfg.Registrar.MaxExpires = defaultMaxExpires
 	}
 
 	for i := range cfg.Diameter.Peers {
@@ -181,6 +218,10 @@ func (c Config) validate() error {
 		return err
 	}
 
+	if err := c.Registrar.validate(); err != nil {
+		return err
+	}
+
 	return c.Diameter.validate()
 }
 
@@ -192,6 +233,8 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
 	case !isDomainName(i.HomeDomain):
 		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
+	case !isDomainName(i.SCSCFName):
+		return fmt.Errorf("ims.scscf_name %q is not a domain name", i.SCSCFName)
 	}
 
 	return nil
@@ -237,6 +280,17 @@ func (s SIP) validate(homeDomain string) error {
 		}
 
 		names[alias] = true
+	}
+
+	return nil
+}
+
+func (r Registrar) validate() error {
+	switch {
+	case r.MinExpires < 1:
+		return fmt.Errorf("registrar.min_expires %d must be positive", r.MinExpires)
+	case r.MaxExpires < r.MinExpires:
+		return fmt.Errorf("registrar.max_expires %d is below registrar.min_expires %d", r.MaxExpires, r.MinExpires)
 	}
 
 	return nil
