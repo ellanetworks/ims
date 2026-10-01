@@ -1,0 +1,10 @@
+OPTIONS sip:001011234567893@192.168.101.2:6300 SIP/2.0
+Via: SIP/2.0/UDP 10.4.128.21;branch=z9hG4bKa896.752cc521000000000000000000000000.0
+To: <sip:001011234567893@192.168.101.2:6300>
+From: <sip:pcscf.ims.mnc001.mcc001.3gppnetwork.org:5060>;tag=e2e7adbd78741b945f071315c250103c-e75c4dec
+CSeq: 10 OPTIONS
+Call-ID: 228f59cd5b16328f-30449@10.4.128.21
+Max-Forwards: 70
+Content-Length: 0
+User-Agent: TelcoSuite Proxy-CSCF
+
