@@ -226,6 +226,13 @@ func (s *Socket) RecvNone(d time.Duration) {
 }
 
 func (s *Socket) track(c net.Conn) {
+	select {
+	case <-s.done:
+		_ = c.Close()
+		return
+	default:
+	}
+
 	remote := c.RemoteAddr().(*net.TCPAddr).AddrPort()
 	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
 	s.conns[remote] = c
