@@ -124,3 +124,21 @@ func TestStreamMaxSize(t *testing.T) {
 		t.Errorf("message of exactly maxSize: %v", err)
 	}
 }
+
+func TestStreamTooLargeKeepsRequest(t *testing.T) {
+	_, _, err := NewStreamReader(strings.NewReader(streamOptions), len(streamOptions)-1).Next()
+
+	var terr *TooLargeError
+	if !errors.As(err, &terr) || !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("err = %v, want a *TooLargeError", err)
+	}
+
+	if terr.Request == nil || terr.Request.Method != "OPTIONS" || terr.Request.Header.Get("Via") == "" {
+		t.Errorf("Request = %v", terr.Request)
+	}
+
+	_, _, err = NewStreamReader(strings.NewReader(streamOptions), 20).Next()
+	if !errors.As(err, &terr) || terr.Request != nil {
+		t.Errorf("head too large: err = %v", err)
+	}
+}

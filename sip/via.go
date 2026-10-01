@@ -3,6 +3,7 @@ package sip
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 )
 
@@ -135,4 +136,8 @@ func parseVia(s string) (Via, error) {
 	}
 
 	return v, nil
+}
+
+func (v Via) Addr() (netip.Addr, bool) {
+	return hostAddr(v.Host)
 }

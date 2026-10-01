@@ -3,6 +3,7 @@ package sip
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -142,6 +143,24 @@ func (fs Header) TopVia() (Via, error) {
 	top, _ := firstListElement(v)
 
 	return ParseVia(top)
+}
+
+func (fs *Header) SetTopVia(v Via) error {
+	h := nameOf("Via")
+
+	i := slices.IndexFunc(*fs, func(f Field) bool { return h.matches(f.Name) })
+	if i < 0 {
+		return missing("Via")
+	}
+
+	value := v.String()
+	if _, rest := firstListElement((*fs)[i].Value); rest != "" {
+		value += ", " + rest
+	}
+
+	(*fs)[i].Value = value
+
+	return nil
 }
 
 func (fs Header) From() (Address, error) {

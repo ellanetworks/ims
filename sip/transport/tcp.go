@@ -1,0 +1,285 @@
+package transport
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/internal/sockopt"
+)
+
+var errNoConn = errors.New("no connection for the flow")
+
+var crlf = []byte("\r\n")
+
+type conn struct {
+	flow  sip.Flow
+	ready chan struct{}
+	nc    *net.TCPConn
+	err   error
+
+	wmu    sync.Mutex
+	active atomic.Int64
+	closed atomic.Bool
+}
+
+func (c *conn) touch() {
+	c.active.Store(time.Now().UnixNano())
+}
+
+func (c *conn) lastActive() time.Time {
+	return time.Unix(0, c.active.Load())
+}
+
+func (c *conn) close() {
+	c.closed.Store(true)
+
+	if c.nc != nil {
+		_ = c.nc.Close()
+	}
+}
+
+func (t *Transport) sendTCP(ctx context.Context, f sip.Flow, b []byte, dial bool) error {
+	c, err := t.conn(ctx, f, dial)
+	if err != nil {
+		return err
+	}
+
+	return t.write(c, b)
+}
+
+func (t *Transport) write(c *conn, b []byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+
+	_ = c.nc.SetWriteDeadline(time.Now().Add(t.writeTimeout))
+
+	if _, err := c.nc.Write(b); err != nil {
+		c.close()
+		return err
+	}
+
+	c.touch()
+
+	return nil
+}
+
+func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, error) {
+	t.mu.Lock()
+
+	if t.closed {
+		t.mu.Unlock()
+		return nil, ErrClosed
+	}
+
+	c, ok := t.conns[f]
+	if ok && c.closed.Load() {
+		delete(t.conns, f)
+
+		ok = false
+	}
+
+	switch {
+	case ok:
+		t.mu.Unlock()
+	case !dial:
+		t.mu.Unlock()
+		return nil, errNoConn
+	default:
+		c = &conn{flow: f, ready: make(chan struct{})}
+		t.conns[f] = c
+		t.mu.Unlock()
+
+		t.dial(ctx, c)
+	}
+
+	select {
+	case <-c.ready:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if c.err != nil {
+		return nil, c.err
+	}
+
+	return c, nil
+}
+
+func (t *Transport) dial(ctx context.Context, c *conn) {
+	d := net.Dialer{
+		LocalAddr: net.TCPAddrFromAddrPort(c.flow.Local),
+		Timeout:   t.dialTimeout,
+		Control:   sockopt.ReusePort,
+	}
+
+	nc, err := d.DialContext(ctx, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	defer close(c.ready)
+
+	if err == nil && t.closed {
+		_ = nc.Close()
+		err = ErrClosed
+	}
+
+	if err != nil {
+		c.err = err
+
+		if t.conns[c.flow] == c {
+			delete(t.conns, c.flow)
+		}
+
+		return
+	}
+
+	c.nc = nc.(*net.TCPConn)
+	c.touch()
+	t.wg.Add(1)
+
+	go t.readTCP(c)
+
+	t.log.Debug("SIP connection dialed", slog.String("flow", flowString(c.flow)))
+}
+
+func (t *Transport) accept(l *listener) {
+	defer t.wg.Done()
+
+	for {
+		nc, err := l.tcp.AcceptTCP()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+
+		if err != nil {
+			t.log.Warn("SIP accept failed", slog.String("local", l.local.String()), slog.Any("error", err))
+			time.Sleep(50 * time.Millisecond)
+
+			continue
+		}
+
+		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
+		c := &conn{flow: f, ready: make(chan struct{}), nc: nc}
+		c.touch()
+		close(c.ready)
+
+		t.mu.Lock()
+
+		if t.closed {
+			t.mu.Unlock()
+
+			_ = nc.Close()
+
+			return
+		}
+
+		if old := t.conns[f]; old != nil {
+			old.close()
+		}
+
+		t.conns[f] = c
+		t.wg.Add(1)
+
+		go t.readTCP(c)
+
+		t.mu.Unlock()
+
+		t.log.Debug("SIP connection accepted", slog.String("flow", flowString(f)))
+	}
+}
+
+func (t *Transport) readTCP(c *conn) {
+	defer t.wg.Done()
+	defer t.forget(c)
+
+	sr := sip.NewStreamReader(idleReader{c: c, idle: t.idleTimeout}, t.maxSize)
+
+	for {
+		m, ka, err := sr.Next()
+
+		var (
+			perr *sip.ParseError
+			terr *sip.TooLargeError
+		)
+
+		switch {
+		case err == nil && m != nil:
+			t.deliver(m, c.flow)
+		case err == nil:
+			if ka == sip.KeepalivePing {
+				if err := t.write(c, crlf); err != nil {
+					return
+				}
+			}
+		case errors.As(err, &terr):
+			t.tooLarge(c, terr)
+			return
+		case errors.As(err, &perr):
+			t.malformed(err, c.flow)
+		default:
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+				t.log.Debug("SIP connection closed", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
+			}
+
+			return
+		}
+	}
+}
+
+func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
+	t.log.Debug("closing connection after an oversized message", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
+
+	req := err.Request
+	if req == nil {
+		return
+	}
+
+	req.Flow = c.flow
+
+	if stampVia(req) != nil {
+		return
+	}
+
+	_ = t.write(c, sip.NewResponse(req, 513, "").Bytes())
+}
+
+func (t *Transport) forget(c *conn) {
+	c.close()
+
+	t.mu.Lock()
+	if t.conns[c.flow] == c {
+		delete(t.conns, c.flow)
+	}
+	t.mu.Unlock()
+}
+
+type idleReader struct {
+	c    *conn
+	idle time.Duration
+}
+
+func (r idleReader) Read(p []byte) (int, error) {
+	for {
+		_ = r.c.nc.SetReadDeadline(r.c.lastActive().Add(r.idle))
+
+		n, err := r.c.nc.Read(p)
+		if n > 0 {
+			r.c.touch()
+			return n, nil
+		}
+
+		if errors.Is(err, os.ErrDeadlineExceeded) && time.Since(r.c.lastActive()) < r.idle {
+			continue
+		}
+
+		return n, err
+	}
+}
