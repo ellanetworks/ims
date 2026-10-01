@@ -9,44 +9,34 @@ import (
 	"strings"
 )
 
-// URI is a sip:, sips: or tel: URI (RFC 3261 §19.1, RFC 3966), or any other
-// absolute URI kept opaque. Components are kept as written, escapes
-// included, so that String returns the text the URI was parsed from.
 type URI struct {
-	// Scheme is kept as written. Compare it with IsSIP, IsSIPS and IsTel.
 	Scheme string
-	// User is the user part of a sip: URI, or the number of a tel: URI.
+
 	User     string
 	Password string
-	// Host is a host name, an IPv4 address or an IPv6 reference in
-	// brackets (RFC 5954). It is empty for tel: URIs.
+
 	Host string
-	// Port is 0 when the URI has none. A port of 0 as written is kept only
-	// while the Request-Line or header field holding the URI is unchanged.
+
 	Port   uint16
 	Params Params
-	// Headers is the text after '?', as written.
+
 	Headers string
-	// Opaque is everything after "scheme:" for other schemes.
+
 	Opaque string
 }
 
-// IsSIP reports whether the scheme is sip or sips.
 func (u URI) IsSIP() bool {
 	return strings.EqualFold(u.Scheme, "sip") || u.IsSIPS()
 }
 
-// IsSIPS reports whether the scheme is sips.
 func (u URI) IsSIPS() bool {
 	return strings.EqualFold(u.Scheme, "sips")
 }
 
-// IsTel reports whether the scheme is tel.
 func (u URI) IsTel() bool {
 	return strings.EqualFold(u.Scheme, "tel")
 }
 
-// HostPort returns the host and, when present, the port.
 func (u URI) HostPort() string {
 	if u.Port == 0 {
 		return u.Host
@@ -55,26 +45,21 @@ func (u URI) HostPort() string {
 	return u.Host + ":" + strconv.Itoa(int(u.Port))
 }
 
-// Addr returns the host as an IP address, when it is one.
 func (u URI) Addr() (netip.Addr, bool) {
 	return hostAddr(u.Host)
 }
 
-// equal reports whether u and v have the same components, as written.
-// It is not URI comparison (RFC 3261 §19.1.4).
 func (u URI) equal(v URI) bool {
 	return u.Scheme == v.Scheme && u.User == v.User && u.Password == v.Password &&
 		u.Host == v.Host && u.Port == v.Port && u.Headers == v.Headers && u.Opaque == v.Opaque &&
 		slices.Equal(u.Params, v.Params)
 }
 
-// Clone returns a copy that shares no storage with u.
 func (u URI) Clone() URI {
 	u.Params = u.Params.Clone()
 	return u
 }
 
-// String returns the URI in wire form.
 func (u URI) String() string {
 	return string(u.appendTo(nil))
 }
@@ -115,7 +100,6 @@ func (u URI) appendTo(b []byte) []byte {
 	return b
 }
 
-// ParseURI parses an absolute URI.
 func ParseURI(s string) (URI, error) {
 	u, err := parseURI(s)
 	if err != nil {
@@ -155,7 +139,6 @@ func parseURI(s string) (URI, error) {
 	return u, nil
 }
 
-// isScheme checks scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
 func isScheme(s string) bool {
 	if s == "" || !isAlpha(s[0]) {
 		return false
@@ -175,12 +158,18 @@ func isAlpha(c byte) bool {
 }
 
 func (u *URI) parseSIP(s string) error {
-	// userinfo cannot hold an unescaped '@', and neither can the
-	// parameters nor the headers that follow the host.
 	if i := strings.IndexByte(s, '@'); i >= 0 {
 		u.User, u.Password, _ = strings.Cut(s[:i], ":")
 		if u.User == "" {
 			return errors.New("empty user part")
+		}
+
+		if err := checkEscaped(u.User, userMarks); err != nil {
+			return fmt.Errorf("user part: %w", err)
+		}
+
+		if err := checkEscaped(u.Password, passwordMarks); err != nil {
+			return fmt.Errorf("password: %w", err)
 		}
 
 		s = s[i+1:]
@@ -223,16 +212,14 @@ func (u *URI) parseSIP(s string) error {
 	return nil
 }
 
-// parseTel parses the part of a tel: URI after the scheme (RFC 3966). The
-// number is kept as written; its characters are not checked further.
 func (u *URI) parseTel(s string) error {
 	number, params, hasParams := strings.Cut(s, ";")
 	if number == "" {
 		return errors.New("empty telephone number")
 	}
 
-	if strings.ContainsAny(number, "?@") {
-		return errors.New("invalid telephone number")
+	if !isTelNumber(number) {
+		return fmt.Errorf("invalid telephone number %q", number)
 	}
 
 	u.User = number
@@ -247,9 +234,6 @@ func (u *URI) parseTel(s string) error {
 	return nil
 }
 
-// parseHost reads a host at the start of s: a hostname, an IPv4 address
-// or an IPv6 reference (RFC 3261 §25.1, RFC 5954). It returns the host as
-// written and the rest of s.
 func parseHost(s string) (host, rest string, err error) {
 	if s != "" && s[0] == '[' {
 		end := strings.IndexByte(s, ']')
@@ -274,11 +258,56 @@ func parseHost(s string) (host, rest string, err error) {
 		return "", "", errors.New("empty host")
 	}
 
+	labels := strings.Split(strings.TrimSuffix(s[:n], "."), ".")
+	for _, l := range labels {
+		if l == "" || l[0] == '-' || l[len(l)-1] == '-' {
+			return "", "", fmt.Errorf("invalid host %q", s[:n])
+		}
+	}
+
 	return s[:n], s[n:], nil
 }
 
-// isHostByte accepts hostname and IPv4 characters, and '_', which real
-// deployments use in container host names.
+const (
+	userMarks     = "-_.!~*'()&=+$,;?/"
+	passwordMarks = "-_.!~*'()&=+$,"
+)
+
+func checkEscaped(s, marks string) error {
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case isAlpha(c), '0' <= c && c <= '9', strings.IndexByte(marks, c) >= 0:
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			i += 2
+		default:
+			return fmt.Errorf("invalid character %q", c)
+		}
+	}
+
+	return nil
+}
+
+func isHex(c byte) bool {
+	return ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
+}
+
+func isTelNumber(s string) bool {
+	s = strings.TrimPrefix(s, "+")
+	digits := 0
+
+	for i := range len(s) {
+		switch c := s[i]; {
+		case isHex(c), c == '*', c == '#':
+			digits++
+		case strings.IndexByte("-.()", c) >= 0:
+		default:
+			return false
+		}
+	}
+
+	return digits > 0
+}
+
 func isHostByte(c byte) bool {
 	return isAlpha(c) || ('0' <= c && c <= '9') || c == '-' || c == '.' || c == '_'
 }
@@ -292,7 +321,6 @@ func parsePort(s string) (uint16, error) {
 	return uint16(n), nil
 }
 
-// hostAddr returns the address of a host that is an IP literal.
 func hostAddr(host string) (netip.Addr, bool) {
 	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 
@@ -304,7 +332,6 @@ func hostAddr(host string) (netip.Addr, bool) {
 	return a, true
 }
 
-// FormatHost returns the host form of an address: IPv6 addresses in brackets.
 func FormatHost(a netip.Addr) string {
 	if a.Is6() && !a.Is4In6() {
 		return "[" + a.String() + "]"

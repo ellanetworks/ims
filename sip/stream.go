@@ -8,45 +8,32 @@ import (
 	"io"
 )
 
-// DefaultMaxMessageSize bounds a message read from a stream when no other
-// limit is given.
 const DefaultMaxMessageSize = 64 << 10
 
-// Keepalive is a CRLF keepalive read from a stream (RFC 5626 §3.5.1).
 type Keepalive int
 
 const (
-	// KeepaliveNone means a message was read.
 	KeepaliveNone Keepalive = iota
-	// KeepalivePing is a double CRLF, possibly split across reads. The receiver
-	// answers with a single CRLF.
+
 	KeepalivePing
-	// KeepalivePong is a single CRLF. A second one before any message makes a Ping.
+
 	KeepalivePong
 )
 
-// Errors that end a stream, returned wrapped by StreamReader.Next.
 var (
-	// ErrMissingContentLength is a message without Content-Length, which
-	// cannot be framed on a stream (RFC 3261 §18.3).
 	ErrMissingContentLength = errors.New("missing Content-Length on a stream")
-	// ErrMessageTooLarge is a message above the reader's size limit. The
-	// peer may be told with a 513 before the connection is closed.
+
 	ErrMessageTooLarge = errors.New("message too large")
 )
 
-// StreamReader reads messages from a stream transport such as TCP,
-// framing them by Content-Length.
 type StreamReader struct {
 	r       *bufio.Reader
 	maxSize int
 	head    []byte
-	// crlfs counts the CRLFs read since the last message or ping.
+
 	crlfs int
 }
 
-// NewStreamReader returns a reader of messages up to maxSize bytes, or
-// DefaultMaxMessageSize when maxSize is 0.
 func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
 	if maxSize <= 0 {
 		maxSize = DefaultMaxMessageSize
@@ -55,19 +42,12 @@ func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
 	return &StreamReader{r: bufio.NewReader(r), maxSize: maxSize}
 }
 
-// Next returns the next message, or the next keepalive with a nil message.
-//
-// A *ParseError means the message was framed but could not be parsed: the
-// stream is still in sync and Next may be called again. Any other error,
-// io.EOF at a message boundary included, ends the stream.
 func (s *StreamReader) Next() (Message, Keepalive, error) {
 	n, err := s.skipCRLF()
 	if err != nil {
 		return nil, KeepaliveNone, err
 	}
 
-	// A ping may arrive split across reads: count CRLFs across calls, so
-	// that a second lone CRLF completes it.
 	if n > 0 {
 		s.crlfs += n
 		if s.crlfs >= 2 {
@@ -85,8 +65,6 @@ func (s *StreamReader) Next() (Message, Keepalive, error) {
 		return nil, KeepaliveNone, err
 	}
 
-	// Framing needs only Content-Length: a malformed field or start line
-	// is reported once the body is read, and the stream stays in sync.
 	start, fields, ferr := splitHead(string(head))
 
 	if !fields.Has("Content-Length") {
@@ -126,9 +104,6 @@ func (s *StreamReader) Next() (Message, Keepalive, error) {
 	return msg, KeepaliveNone, nil
 }
 
-// skipCRLF consumes the CRLFs before a message and returns how many there
-// were. It blocks for the first two bytes only, so that a lone CRLF is
-// reported as soon as it arrives.
 func (s *StreamReader) skipCRLF() (int, error) {
 	n := 0
 
@@ -153,8 +128,6 @@ func (s *StreamReader) skipCRLF() (int, error) {
 	return n, nil
 }
 
-// readHead reads up to the empty line ending the header section and
-// returns the section without it.
 func (s *StreamReader) readHead() ([]byte, error) {
 	s.head = s.head[:0]
 

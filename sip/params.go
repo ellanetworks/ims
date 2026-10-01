@@ -7,19 +7,13 @@ import (
 	"strings"
 )
 
-// Param is a URI or header parameter. Value is empty for a parameter that
-// has none. A quoted-string value keeps its quotes (see Unquote).
 type Param struct {
 	Name  string
 	Value string
 }
 
-// Params is a parameter list in wire order, duplicates included. Names are
-// compared ignoring case.
 type Params []Param
 
-// Get returns the value of the first parameter with this name, and whether
-// it is present.
 func (ps Params) Get(name string) (string, bool) {
 	for _, p := range ps {
 		if strings.EqualFold(p.Name, name) {
@@ -30,16 +24,11 @@ func (ps Params) Get(name string) (string, bool) {
 	return "", false
 }
 
-// Has reports whether a parameter with this name is present.
 func (ps Params) Has(name string) bool {
 	_, ok := ps.Get(name)
 	return ok
 }
 
-// Set sets the value of the first parameter with this name, or appends it.
-//
-// Set and Del never write to the list's existing storage: a URI, Via or
-// Address copied by value keeps its own parameters when the copy changes.
 func (ps *Params) Set(name, value string) {
 	for i, p := range *ps {
 		if strings.EqualFold(p.Name, name) {
@@ -54,7 +43,6 @@ func (ps *Params) Set(name, value string) {
 	*ps = append(slices.Clip(*ps), Param{Name: name, Value: value})
 }
 
-// Del removes every parameter with this name.
 func (ps *Params) Del(name string) {
 	if !ps.Has(name) {
 		return
@@ -71,7 +59,6 @@ func (ps *Params) Del(name string) {
 	*ps = out
 }
 
-// Clone returns a copy of the list that shares no storage with ps.
 func (ps Params) Clone() Params {
 	if ps == nil {
 		return nil
@@ -80,7 +67,6 @@ func (ps Params) Clone() Params {
 	return append(Params(nil), ps...)
 }
 
-// String returns the list in wire form, each parameter preceded by ';'.
 func (ps Params) String() string {
 	return string(ps.appendTo(nil))
 }
@@ -99,9 +85,6 @@ func (ps Params) appendTo(b []byte) []byte {
 	return b
 }
 
-// parseHeaderParams parses generic-params (RFC 3261 §25.1): ";" name
-// ["=" value], with optional whitespace around the separators. s is empty
-// or starts with ';' after optional whitespace.
 func parseHeaderParams(s string) (Params, error) {
 	var ps Params
 
@@ -117,7 +100,6 @@ func parseHeaderParams(s string) (Params, error) {
 
 		s = trimLeftWSP(s[1:])
 		if s == "" {
-			// A trailing ';', as some implementations send.
 			return ps, nil
 		}
 
@@ -143,9 +125,6 @@ func parseHeaderParams(s string) (Params, error) {
 	}
 }
 
-// headerParamValue reads a gen-value: a token, a host or a quoted-string.
-// Bytes outside those grammars are accepted, apart from separators, so
-// that values from real implementations survive.
 func headerParamValue(s string) (value, rest string, err error) {
 	if s != "" && s[0] == '"' {
 		n, err := quotedLen(s)
@@ -156,7 +135,6 @@ func headerParamValue(s string) (value, rest string, err error) {
 		return s[:n], s[n:], nil
 	}
 
-	// An empty value, as in "expires=", is read as no value.
 	n := 0
 	for n < len(s) && isHeaderParamValueByte(s[n]) {
 		n++
@@ -169,12 +147,9 @@ func isHeaderParamValueByte(c byte) bool {
 	return c > ' ' && c != 0x7f && strings.IndexByte(`;,"<>@`, c) < 0
 }
 
-// parseURIParams parses uri-parameters (RFC 3261 §19.1.1). s is the text
-// after the first ';', up to the headers.
 func parseURIParams(s string) (Params, error) {
 	var ps Params
 
-	// A trailing ';', as in <sip:a@b;>, is tolerated.
 	s = strings.TrimSuffix(s, ";")
 	if s == "" {
 		return nil, nil

@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// isTokenByte reports whether c may appear in a token (RFC 3261 §25.1).
 func isTokenByte(c byte) bool {
 	switch {
 	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
@@ -19,7 +18,6 @@ func isToken(s string) bool {
 	return s != "" && tokenLen(s) == len(s)
 }
 
-// tokenLen returns the length of the token at the start of s.
 func tokenLen(s string) int {
 	n := 0
 	for n < len(s) && isTokenByte(s[n]) {
@@ -60,8 +58,6 @@ var (
 	errRange  = errors.New("number out of range")
 )
 
-// parseUint parses a decimal number of at most maxValue. Leading zeros are
-// allowed, as RFC 3261 numbers are 1*DIGIT.
 func parseUint(s string, maxValue uint64) (uint64, error) {
 	if !isDigits(s) {
 		return 0, errSyntax
@@ -79,9 +75,6 @@ func parseUint(s string, maxValue uint64) (uint64, error) {
 	return n, nil
 }
 
-// quotedLen returns the length of the quoted-string at the start of s,
-// quotes included (RFC 3261 §25.1). Bare CR and LF are rejected when a
-// message is parsed (see checkFieldOctets), not here.
 func quotedLen(s string) (int, error) {
 	if s == "" || s[0] != '"' {
 		return 0, errors.New("missing opening quote")
@@ -99,8 +92,6 @@ func quotedLen(s string) (int, error) {
 	return 0, errors.New("unterminated quoted string")
 }
 
-// Unquote returns the content of a quoted-string, with quoted-pairs
-// resolved. A value that is not quoted is returned unchanged.
 func Unquote(s string) string {
 	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
 		return s
@@ -124,8 +115,6 @@ func Unquote(s string) string {
 	return b.String()
 }
 
-// Quote returns s as a quoted-string. CR and LF, which a quoted-string
-// cannot hold, are replaced by spaces.
 func Quote(s string) string {
 	var b strings.Builder
 
@@ -148,9 +137,6 @@ func Quote(s string) string {
 	return b.String()
 }
 
-// SplitList splits a header field value on the commas that separate list
-// elements (RFC 3261 §7.3.1), ignoring commas inside quoted strings and
-// angle brackets. Elements are trimmed; empty elements are kept.
 func SplitList(v string) []string {
 	var (
 		out    []string
@@ -179,8 +165,6 @@ func SplitList(v string) []string {
 	return append(out, trimWSP(v[start:]))
 }
 
-// firstListElement returns the first element of a list value and the
-// rest of the value after its separating comma, or "" when it has only one.
 func firstListElement(v string) (first, rest string) {
 	quoted, angle := false, false
 

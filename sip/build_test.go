@@ -45,8 +45,6 @@ func TestNewResponse(t *testing.T) {
 		t.Error("SetToTag changed the request")
 	}
 
-	// Within a dialog the To tag is already there and must be kept
-	// (RFC 3261 §8.2.6.2).
 	if err := res.Header.SetToTag("other"); err != nil || res.Header.Get("To") != "<sip:b@x>;tag=t9" {
 		t.Errorf("SetToTag replaced the tag: %s", res.Header.Get("To"))
 	}

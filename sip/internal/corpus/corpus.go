@@ -1,10 +1,3 @@
-// Package corpus holds the acceptance corpus of the sip package and its
-// checks: real IMS traffic captured from Open5GS and Kamailio, synthetic
-// IMS messages (IPv6, tel: URIs, compact and folded headers) and the
-// RFC 4475 torture messages, each with its expected outcome.
-//
-// The checks compare the sip package against scan, a deliberately simple
-// reference split of the raw text that shares no code with the parser.
 package corpus
 
 import (
@@ -24,13 +17,11 @@ import (
 //go:embed testdata
 var testdata embed.FS
 
-// Fixture is one SIP message from the corpus.
 type Fixture struct {
-	Name string // path below testdata
+	Name string
 	Raw  []byte
 }
 
-// Corpus returns the captured and synthetic IMS messages, sorted by name.
 func Corpus() []Fixture {
 	var out []Fixture
 
@@ -50,7 +41,7 @@ func Corpus() []Fixture {
 			return nil
 		})
 		if err != nil {
-			panic(err) // the corpus is embedded
+			panic(err)
 		}
 	}
 
@@ -59,10 +50,8 @@ func Corpus() []Fixture {
 	return out
 }
 
-// Mismatch is one difference between the reference scan of a fixture and
-// what the sip package did with it.
 type Mismatch struct {
-	Check  string // parse, start-line, parsed-view, body, bytes, validate, reparse, uri
+	Check  string
 	Header string
 	Got    string
 	Want   string
@@ -76,9 +65,6 @@ func (m Mismatch) String() string {
 	return fmt.Sprintf("%s %s: got %s, want %s", m.Check, m.Header, m.Got, m.Want)
 }
 
-// CheckRoundTrip parses raw and checks that the start line, every header
-// value and the body match the reference scan, that the message passes
-// validation, and that it serializes back to the same bytes.
 func CheckRoundTrip(raw []byte) []Mismatch {
 	ref, ok := scan(raw)
 	if !ok {
@@ -107,7 +93,6 @@ func CheckRoundTrip(raw []byte) []Mismatch {
 		out = append(out, Mismatch{Check: "body", Got: strconv.Quote(string(body)), Want: strconv.Quote(string(ref.Body))})
 	}
 
-	// Octets after Content-Length are not part of the message.
 	want := raw[:bytes.Index(raw, []byte("\r\n\r\n"))+4+len(ref.Body)]
 	if got := msg.Bytes(); !bytes.Equal(got, want) {
 		out = append(out, Mismatch{Check: "bytes", Got: strconv.Quote(string(got)), Want: strconv.Quote(string(want))})
@@ -124,32 +109,27 @@ func CheckRoundTrip(raw []byte) []Mismatch {
 	return out
 }
 
-// addressHeaders are the headers whose URIs the IMS reads.
 var addressHeaders = []string{
 	"From", "To", "Contact", "P-Asserted-Identity", "P-Preferred-Identity",
 	"P-Associated-URI", "P-Called-Party-ID", "Path", "Service-Route", "Route", "Record-Route",
 }
 
-// refURI is the part of a refURI the IMS routes on.
 type refURI struct {
-	Scheme string // lower case: "sip", "sips", "tel", "urn", ...
-	User   string // sip user part without password; for tel: the number
-	Host   string // empty for tel:
+	Scheme string
+	User   string
+	Host   string
 	Port   int
-	Text   string // the URI as serialized
+	Text   string
 }
 
 func (u refURI) String() string {
 	return fmt.Sprintf("{scheme=%q user=%q host=%q port=%d text=%q}", u.Scheme, u.User, u.Host, u.Port, u.Text)
 }
 
-// fromURI returns the comparable view of a parsed URI.
 func fromURI(u sip.URI) refURI {
 	return refURI{Scheme: strings.ToLower(u.Scheme), User: u.User, Host: u.Host, Port: int(u.Port), Text: u.String()}
 }
 
-// CheckURIs compares the typed view of the Request-URI and of every
-// address header with a reference split of the raw text.
 func CheckURIs(raw []byte) []Mismatch {
 	ref, ok := scan(raw)
 	if !ok {
@@ -187,8 +167,6 @@ func CheckURIs(raw []byte) []Mismatch {
 
 		as, err := msg.Env().Header.Addresses(name)
 
-		// Kamailio sends P-Asserted-Identity: <sip:user@<null>>. Such a
-		// value must be rejected by the typed view and kept intact.
 		if slices.ContainsFunc(want, func(u refURI) bool { return strings.ContainsAny(u.Text, "<>") }) {
 			if err == nil {
 				out = append(out, Mismatch{Check: "uri", Header: name, Got: "accepted", Want: "invalid URI rejected"})
@@ -215,7 +193,6 @@ func CheckURIs(raw []byte) []Mismatch {
 	return out
 }
 
-// addressURI extracts the URI text from a name-addr or addr-spec value.
 func addressURI(v string) (string, bool) {
 	if v == "*" {
 		return "", false
@@ -230,15 +207,11 @@ func addressURI(v string) (string, bool) {
 		return v[i+1 : i+j], true
 	}
 
-	// addr-spec: header parameters start at the first ';' (RFC 3261 §20.10).
 	u, _, _ := strings.Cut(v, ";")
 
 	return strings.TrimSpace(u), true
 }
 
-// referenceURI splits a URI the way RFC 3261 §19.1.1 and RFC 3966 define
-// it. It covers the forms seen in IMS traffic, not every corner of the
-// grammar.
 func referenceURI(s string) refURI {
 	u := refURI{Text: s}
 
@@ -284,7 +257,6 @@ func referenceURI(s string) refURI {
 	return u
 }
 
-// RunCorpus runs check on every fixture as a subtest.
 func RunCorpus(t *testing.T, check func([]byte) []Mismatch) {
 	t.Helper()
 

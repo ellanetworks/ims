@@ -23,6 +23,8 @@ func TestParseURI(t *testing.T) {
 		{"tel:+1-555-123-0001", URI{Scheme: "tel", User: "+1-555-123-0001"}},
 		{"tel:0398765432100;phone-context=ims.example.org", URI{Scheme: "tel", User: "0398765432100", Params: Params{{"phone-context", "ims.example.org"}}}},
 		{"urn:service:sos", URI{Scheme: "urn", Opaque: "service:sos"}},
+		{"sip:pcscf.ims.example.org.;lr", URI{Scheme: "sip", Host: "pcscf.ims.example.org.", Params: Params{{"lr", ""}}}},
+		{"tel:*31#", URI{Scheme: "tel", User: "*31#"}},
 		{"soap.beep://192.0.2.103:3002", URI{Scheme: "soap.beep", Opaque: "//192.0.2.103:3002"}},
 	} {
 		got, err := ParseURI(tc.in)
@@ -53,6 +55,8 @@ func TestParseURIErrors(t *testing.T) {
 		"sip:@example.com", "sip:[2001:db8::1", "sip:[10.0.0.1]", "sip:2001:db8::1",
 		"sip:a@b:99999", "sip:a@b:x", "sip:a@b;;lr", "sip:a@b?", "tel:", "tel:;x=y",
 		"sip:a@<null>", "sip:[fe80::1%eth0]",
+		"sip:a[b@host", "sip:a%2@host", "sip:a:p{w@host", "sip:a@-x.example", "sip:a@b..c", "sip:a@.b",
+		"tel:+", "tel:12x3", "tel:+1 555",
 	} {
 		if u, err := ParseURI(in); err == nil {
 			t.Errorf("ParseURI(%q) = %+v, want an error", in, u)
@@ -110,8 +114,6 @@ func TestParams(t *testing.T) {
 	}
 }
 
-// TestParamsCopyOnWrite checks that a URI, Via or Address copied by value
-// does not share parameter changes with the original.
 func TestParamsCopyOnWrite(t *testing.T) {
 	u, err := ParseURI("sip:b@x;transport=tcp;lr;x=1")
 	if err != nil {

@@ -3,19 +3,15 @@ package sip
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"strconv"
 )
 
-// NewResponse builds a response to req (RFC 3261 §8.2.6): Via, From, To,
-// Call-ID and CSeq are copied as received, Timestamp too for a 100, and
-// the response goes out on the request's flow. An empty reason gives the
-// default phrase.
-//
-// The response has Content-Length: 0; use SetBody to add a body. The UAS
-// adds its To tag with SetToTag, using the same tag in every response of
-// the transaction. Record-Route is not copied: dialog-creating responses
-// get it from the dialog layer (§12.1.1).
 func NewResponse(req *Request, code int, reason string) *Response {
+	if code < 100 || code > 699 {
+		panic(fmt.Sprintf("sip: invalid status code %d", code))
+	}
+
 	if reason == "" {
 		reason = ReasonPhrase(code)
 	}
@@ -41,10 +37,6 @@ func NewResponse(req *Request, code int, reason string) *Response {
 	return res
 }
 
-// NewCancel builds the CANCEL of an INVITE (RFC 3261 §9.1): same
-// Request-URI, Call-ID, From, To, CSeq number and Route set, and a single
-// Via equal to the INVITE's top Via, so that it matches the INVITE's
-// transaction downstream. It goes out on the INVITE's flow.
 func NewCancel(invite *Request) (*Request, error) {
 	if invite.Method != "INVITE" {
 		return nil, errors.New("sip: CANCEL of a non-INVITE request")
@@ -88,12 +80,10 @@ func NewCancel(invite *Request) (*Request, error) {
 	return c, nil
 }
 
-// NewTag returns a random tag for From or To (RFC 3261 §19.3).
 func NewTag() string {
 	return rand.Text()
 }
 
-// NewBranch returns a random RFC 3261 branch (§8.1.1.7).
 func NewBranch() string {
 	return MagicCookie + rand.Text()
 }
@@ -164,7 +154,6 @@ var reasonPhrases = map[int]string{
 	606: "Not Acceptable",
 }
 
-// ReasonPhrase returns the usual reason phrase of a status code.
 func ReasonPhrase(code int) string {
 	if r, ok := reasonPhrases[code]; ok {
 		return r

@@ -67,7 +67,7 @@ func TestStreamReader(t *testing.T) {
 		want []event
 	}{
 		{"whole", strings.NewReader(in), append([]event{{ka: KeepalivePing}}, msgs...)},
-		// A double CRLF split across reads completes as a ping.
+
 		{"byte by byte", iotest.OneByteReader(strings.NewReader(in)), append([]event{{ka: KeepalivePong}, {ka: KeepalivePing}}, msgs...)},
 	} {
 		if got := readAll(tc.r, 0); !slices.Equal(got, tc.want) {

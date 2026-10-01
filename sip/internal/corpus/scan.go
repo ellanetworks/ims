@@ -5,15 +5,11 @@ import (
 	"strings"
 )
 
-// scannedField is one header field as it appears on the wire, after unfolding.
 type scannedField struct {
-	Name  string // canonical long form, e.g. "Via" for "v"
-	Value string // value with surrounding whitespace removed
+	Name  string
+	Value string
 }
 
-// scanned is a message split into its parts without interpreting any
-// header. It is the reference the corpus tests compare implementations
-// against, so it stays deliberately simple and independent of any parser.
 type scanned struct {
 	StartLine string
 	Fields    []scannedField
@@ -42,9 +38,6 @@ var compactForms = map[string]string{
 	"y": "Identity",
 }
 
-// canonicalName maps a header name to the long form used in fixtures and
-// comparisons: compact forms are expanded and case is normalised to the
-// usual spelling for the headers the IMS cares about.
 func canonicalName(name string) string {
 	name = strings.TrimSpace(name)
 	if long, ok := compactForms[strings.ToLower(name)]; ok {
@@ -75,8 +68,6 @@ var canonicalSpelling = func() map[string]string {
 	return m
 }()
 
-// listHeaders are header fields whose values are comma-separated lists
-// (RFC 3261 §7.3.1) and may be split or merged across lines by a proxy.
 var listHeaders = map[string]bool{
 	"Via": true, "Contact": true, "Route": true, "Record-Route": true, "Path": true,
 	"Service-Route": true, "P-Associated-URI": true, "P-Asserted-Identity": true,
@@ -86,15 +77,10 @@ var listHeaders = map[string]bool{
 	"Unsupported": true, "Privacy": true,
 }
 
-// isList reports whether the canonical header name holds a comma list.
 func isList(name string) bool {
 	return listHeaders[name]
 }
 
-// scan splits a message into start line, unfolded header fields and body.
-// The body is everything after the empty line, cut to Content-Length when
-// one is present (RFC 3261 §18.3: trailing octets in a datagram are
-// ignored).
 func scan(raw []byte) (scanned, bool) {
 	head, body, ok := bytes.Cut(raw, []byte("\r\n\r\n"))
 	if !ok {
@@ -130,7 +116,6 @@ func scan(raw []byte) (scanned, bool) {
 	return s, true
 }
 
-// ContentLength returns the Content-Length value, if present and numeric.
 func (s scanned) ContentLength() (int, bool) {
 	for _, f := range s.Fields {
 		if f.Name != "Content-Length" {
@@ -153,8 +138,6 @@ func (s scanned) ContentLength() (int, bool) {
 	return 0, false
 }
 
-// values returns every value of the named header in order. For list
-// headers, comma-separated values are split into elements.
 func (s scanned) values(name string) []string {
 	var out []string
 
@@ -167,8 +150,6 @@ func (s scanned) values(name string) []string {
 	return elements(name, out)
 }
 
-// Names returns the distinct canonical header names in order of first
-// appearance.
 func (s scanned) Names() []string {
 	var names []string
 
@@ -184,9 +165,6 @@ func (s scanned) Names() []string {
 	return names
 }
 
-// elements normalises the values of one header for comparison: list
-// headers are split on top-level commas, and whitespace around each
-// element is removed. Other headers are returned as they are.
 func elements(name string, values []string) []string {
 	if !isList(name) {
 		out := make([]string, 0, len(values))
@@ -210,8 +188,6 @@ func elements(name string, values []string) []string {
 	return out
 }
 
-// splitTopLevel splits on commas that are not inside a quoted string or
-// angle brackets.
 func splitTopLevel(v string) []string {
 	var (
 		out     []string

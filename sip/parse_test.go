@@ -96,19 +96,19 @@ func TestParseErrors(t *testing.T) {
 		raw         string
 		withRequest bool
 	}{
-		{"INVITE sip:a@b SIP/2.0\r\nVia: x\r\n", false},                         // no end of header section
-		{" INVITE sip:a@b SIP/2.0\r\n\r\n", false},                              // whitespace before start line
-		{"INVITE sip:a@b SIP/2.0\r\nNoColon\r\nCall-ID: x\r\n\r\n", true},       // header line without colon
-		{"INVITE sip:a@b SIP/2.0\r\nBad Name: x\r\nCall-ID: x\r\n\r\n", true},   // invalid header name
-		{"INV<ITE sip:a@b SIP/2.0\r\n\r\n", false},                              // invalid method
-		{"SIP/2.0 2000 OK\r\n\r\n", false},                                      // status code
-		{"SIP/2.0 099 Low\r\n\r\n", false},                                      // status code
-		{"SIP 200 OK\r\nCall-ID: x\r\n\r\n", true},                              // read as a request
-		{"INVITE <sip:a@b> SIP/2.0\r\nCall-ID: x\r\n\r\n", true},                // Request-URI
-		{"INVITE sip:a@b; lr SIP/2.0\r\nCall-ID: x\r\n\r\n", true},              // LWS in Request-URI
-		{"INVITE sip:a@b SIP/2.0 \r\nCall-ID: x\r\n\r\n", true},                 // trailing SP
-		{"INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\nl: 9\r\n\r\nabc", true},       // short body
-		{"INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\nl: 1\r\nl: 1\r\n\r\na", true}, // two Content-Length
+		{"INVITE sip:a@b SIP/2.0\r\nVia: x\r\n", false},
+		{" INVITE sip:a@b SIP/2.0\r\n\r\n", false},
+		{"INVITE sip:a@b SIP/2.0\r\nNoColon\r\nCall-ID: x\r\n\r\n", true},
+		{"INVITE sip:a@b SIP/2.0\r\nBad Name: x\r\nCall-ID: x\r\n\r\n", true},
+		{"INV<ITE sip:a@b SIP/2.0\r\n\r\n", false},
+		{"SIP/2.0 2000 OK\r\n\r\n", false},
+		{"SIP/2.0 099 Low\r\n\r\n", false},
+		{"SIP 200 OK\r\nCall-ID: x\r\n\r\n", true},
+		{"INVITE <sip:a@b> SIP/2.0\r\nCall-ID: x\r\n\r\n", true},
+		{"INVITE sip:a@b; lr SIP/2.0\r\nCall-ID: x\r\n\r\n", true},
+		{"INVITE sip:a@b SIP/2.0 \r\nCall-ID: x\r\n\r\n", true},
+		{"INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\nl: 9\r\n\r\nabc", true},
+		{"INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\nl: 1\r\nl: 1\r\n\r\na", true},
 	} {
 		_, err := Parse([]byte(tc.raw))
 
@@ -162,8 +162,6 @@ func TestParseResponse(t *testing.T) {
 	}
 }
 
-// TestFieldWireForm checks that unmodified fields keep their bytes and
-// that modified ones are written in normal form.
 func TestFieldWireForm(t *testing.T) {
 	raw := "MESSAGE sip:a@b SIP/2.0\r\n" +
 		"TO :\r\n sip:x@y ;  lr\r\n" +
@@ -214,9 +212,6 @@ func TestParseLongHeader(t *testing.T) {
 	}
 }
 
-// TestRejectHeaderInjection checks that a line break or a control
-// character cannot hide inside a header value (RFC 3261 §25.1), while
-// folding and quoted-pairs stay valid (RFC 4475 §3.1.1.1, §3.1.1.2).
 func TestRejectHeaderInjection(t *testing.T) {
 	const head = "OPTIONS sip:a@b SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n"
 

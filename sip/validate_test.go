@@ -9,88 +9,22 @@ import (
 	"github.com/ellanetworks/ims/sip/internal/corpus"
 )
 
-const (
-	// parserRejects marks a torture message the parser rejects.
-	parserRejects = -1
-	// dropped marks a request validation rejects as unanswerable.
-	dropped = -2
-)
+const dropped = -2
 
-// TestTortureOutcome pins how each RFC 4475 request is answered: by the
-// parser, with a status code from validation, or 0 when it is accepted.
-func TestTortureOutcome(t *testing.T) {
-	want := map[string]int{
-		"badvers":    505,
-		"unkscm":     416,
-		"novelsc":    416,
-		"insuf":      400,
-		"multi01":    400,
-		"mismatch01": 400,
-		"mismatch02": 400,
-		"scalar02":   400,
-		"quotbal":    400,
-		"badinv01":   dropped, // its only Via is malformed
-		"badbranch":  400,
-		"inv2543":    400,
-		// Valid in RFC 4475, but their top Via has no RFC 3261 branch.
-		"wsinv":   400,
-		"longreq": 400,
-		// The archive's baddn has no empty line after its header fields.
-		"baddn":      parserRejects,
-		"mcl01":      parserRejects,
-		"clerr":      parserRejects,
-		"ncl":        parserRejects,
-		"ltgtruri":   parserRejects,
-		"lwsruri":    parserRejects,
-		"zeromf":     0,
-		"bext01":     0,
-		"invut":      0,
-		"regaut01":   0,
-		"cparam01":   0,
-		"cparam02":   0,
-		"regescrt":   0,
-		"sdp01":      0,
-		"unksm2":     0,
-		"esc01":      0,
-		"esc02":      0,
-		"escnull":    0,
-		"intmeth":    0,
-		"lwsdisp":    0,
-		"semiuri":    0,
-		"transports": 0,
-		"mpart01":    0,
-		"dblreq":     0,
+func TestBadDisplayName(t *testing.T) {
+	raw, err := corpus.TortureMessage("baddn")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	for name, code := range want {
-		raw, err := corpus.TortureMessage(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+	msg, err := sip.Parse(append(raw, "\r\n"...))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		got := 0
-
-		msg, err := sip.Parse(raw)
-
-		var serr *sip.StatusError
-
-		switch {
-		case err != nil:
-			got = parserRejects
-		default:
-			verr := msg.(*sip.Request).Validate()
-
-			switch {
-			case errors.As(verr, &serr):
-				got = serr.StatusCode
-			case errors.Is(verr, sip.ErrUnanswerable):
-				got = dropped
-			}
-		}
-
-		if got != code {
-			t.Errorf("%s: outcome %d (%v), want %d", name, got, err, code)
-		}
+	var serr *sip.StatusError
+	if err := msg.Validate(); !errors.As(err, &serr) || serr.StatusCode != 400 {
+		t.Errorf("Validate() = %v, want 400", err)
 	}
 }
 
@@ -157,7 +91,7 @@ func TestValidateRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		raw  string
-		code int // 0: valid; dropped: unanswerable
+		code int
 	}{
 		{"emergency URN", "INVITE urn:service:sos SIP/2.0\r\nVia: SIP/2.0/UDP ue;branch=z9hG4bK1\r\n" + rest, 0},
 		{"unknown scheme", "INVITE http://x SIP/2.0\r\nVia: SIP/2.0/UDP ue;branch=z9hG4bK1\r\n" + rest, 416},

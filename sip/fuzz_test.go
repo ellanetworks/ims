@@ -25,8 +25,6 @@ func addCorpus(f *testing.F) {
 	}
 }
 
-// checkStable checks that a parsed message serializes into a message that
-// parses, and that serializing that one gives the same bytes.
 func checkStable(t *testing.T, m sip.Message) {
 	t.Helper()
 
@@ -41,7 +39,6 @@ func checkStable(t *testing.T, m sip.Message) {
 		t.Fatalf("unstable serialization:\n%q\n%q", out, got)
 	}
 
-	// Typed views must not panic.
 	h := again.Env().Header
 	_, _ = h.Vias()
 	_, _ = h.CSeq()
@@ -65,8 +62,6 @@ func FuzzParse(f *testing.F) {
 			return
 		}
 
-		// An unmodified message serializes to the bytes it was parsed
-		// from, apart from leading CRLFs and octets after the body.
 		for bytes.HasPrefix(data, []byte("\r\n")) {
 			data = data[2:]
 		}
@@ -103,8 +98,6 @@ func FuzzStream(f *testing.F) {
 
 			checkStable(t, m)
 
-			// A stream message is framed by Content-Length, so it reads
-			// back from a stream as itself.
 			m2, _, err := sip.NewStreamReader(bytes.NewReader(m.Bytes()), 0).Next()
 			if err != nil || !bytes.Equal(m2.Bytes(), m.Bytes()) {
 				t.Fatalf("stream message %q does not read back: %v", m.Bytes(), err)

@@ -7,45 +7,23 @@ import (
 	"strings"
 )
 
-// StatusError is a request rejected by validation, with the status code
-// to answer it with.
 type StatusError struct {
 	StatusCode int
 	Err        error
 }
 
-// Error returns the status and the cause.
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("sip: %d %s: %v", e.StatusCode, ReasonPhrase(e.StatusCode), e.Err)
 }
 
-// Unwrap returns the cause.
 func (e *StatusError) Unwrap() error { return e.Err }
 
 func badRequest(err error) *StatusError {
 	return &StatusError{StatusCode: 400, Err: err}
 }
 
-// ErrUnanswerable is returned, wrapped, for a request that cannot be
-// answered because it has no usable top Via (RFC 3261 §18.2.2). Such a
-// request is dropped.
 var ErrUnanswerable = errors.New("request cannot be answered")
 
-// Validate checks a received request before a transaction is created
-// (RFC 3261 §8.2, §16.3, RFC 4475). It returns an error wrapping
-// ErrUnanswerable when the top Via is missing or malformed. Otherwise it
-// returns a *StatusError:
-//   - 400 for missing, repeated or malformed core header fields (Call-ID,
-//     CSeq, From, To, Max-Forwards, Content-Length, the top Via and its
-//     received and rport parameters), a CSeq method that differs from the
-//     request method, or a top Via without an RFC 3261 branch: RFC 2543
-//     peers are not supported;
-//   - 505 for a SIP-Version other than 2.0;
-//   - 416 for a Request-URI scheme other than sip, sips, tel and urn
-//     (emergency service URNs, RFC 5031).
-//
-// Validate leaves to the proxy and the UAS the checks that depend on their
-// role, such as Max-Forwards reaching 0, Require, Content-Type and Expires.
 func (r *Request) Validate() error {
 	top, err := r.Header.TopVia()
 	if err != nil {
@@ -77,8 +55,14 @@ func (r *Request) Validate() error {
 		return badRequest(fmt.Errorf("CSeq method %s in a %s request", cseq.Method, r.Method))
 	}
 
-	if r.Header.Count("Max-Forwards") > 1 {
-		return badRequest(errors.New("several Max-Forwards fields"))
+	for _, name := range []string{"Max-Forwards", "Expires", "Content-Type"} {
+		if r.Header.Count(name) > 1 {
+			return badRequest(fmt.Errorf("several %s fields", name))
+		}
+	}
+
+	if len(r.Body) > 0 && !r.Header.Has("Content-Type") {
+		return badRequest(errors.New("body without Content-Type"))
 	}
 
 	if r.Header.Has("Max-Forwards") {
@@ -90,8 +74,6 @@ func (r *Request) Validate() error {
 	return nil
 }
 
-// checkVia checks the parameters of a top Via that the transport uses to
-// send responses (RFC 3261 §18.2.2, RFC 3581).
 func checkVia(v Via) error {
 	if r, ok := v.Params.Get("rport"); ok && r != "" {
 		if _, err := parsePort(r); err != nil {
@@ -109,9 +91,6 @@ func checkVia(v Via) error {
 	return nil
 }
 
-// Validate checks a received response (RFC 3261 §8.1.3, §18.1.2). A
-// response that fails is to be dropped. Whether it carries exactly one
-// Via depends on the role of the receiver and is left to the caller.
 func (r *Response) Validate() error {
 	if r.Version != "" && !strings.EqualFold(r.Version, Version) {
 		return fmt.Errorf("sip: SIP-Version %s", r.Version)
@@ -132,8 +111,6 @@ func (r *Response) Validate() error {
 	return nil
 }
 
-// checkCommon checks the fields that requests and responses share. Only
-// the top Via is checked: lower ones belong to other hops.
 func checkCommon(fs Header) error {
 	for _, name := range []string{"Call-ID", "CSeq", "From", "To"} {
 		switch n := fs.Count(name); {

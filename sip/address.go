@@ -7,33 +7,24 @@ import (
 	"strings"
 )
 
-// Address is a name-addr or addr-spec with header parameters, as found in
-// From, To, Contact, Route, Record-Route and the many headers that share
-// their form (RFC 3261 §20.10).
 type Address struct {
-	// Display is the display name as written: a quoted-string, quotes
-	// included, or a sequence of tokens. See DisplayName.
 	Display string
 	URI     URI
-	// Params are the header parameters after the URI, such as tag,
-	// expires or +sip.instance.
+
 	Params Params
-	// Star is set for the Contact value "*". Other fields are then empty.
+
 	Star bool
 }
 
-// DisplayName returns the display name without quotes.
 func (a Address) DisplayName() string {
 	return Unquote(a.Display)
 }
 
-// Tag returns the tag parameter.
 func (a Address) Tag() string {
 	t, _ := a.Params.Get("tag")
 	return t
 }
 
-// Clone returns a copy that shares no storage with a.
 func (a Address) Clone() Address {
 	a.URI = a.URI.Clone()
 	a.Params = a.Params.Clone()
@@ -41,8 +32,6 @@ func (a Address) Clone() Address {
 	return a
 }
 
-// String returns the address in name-addr form, so that URI parameters
-// cannot be mistaken for header parameters.
 func (a Address) String() string {
 	if a.Star {
 		return "*"
@@ -63,7 +52,6 @@ func (a Address) String() string {
 	return string(b)
 }
 
-// ParseAddress parses one name-addr or addr-spec with its parameters.
 func ParseAddress(s string) (Address, error) {
 	a, err := parseAddress(trimWSP(s))
 	if err != nil {
@@ -86,8 +74,6 @@ func parseAddress(s string) (Address, error) {
 		display string
 	)
 
-	// An unquoted display name holds no ';': a '<' after one belongs to a
-	// header parameter of an addr-spec, as in +sip.instance="<urn:...>".
 	if semi := strings.IndexByte(s, ';'); semi >= 0 && angle > semi {
 		angle = -1
 	}
@@ -126,8 +112,6 @@ func parseAddress(s string) (Address, error) {
 
 		uri, rest = s[:end], s[end+1:]
 	default:
-		// In an addr-spec, parameters after the URI belong to the header
-		// (RFC 3261 §20.10).
 		uri, rest, _ = strings.Cut(s, ";")
 		if rest != "" || strings.HasSuffix(s, ";") {
 			rest = ";" + rest
@@ -150,8 +134,6 @@ func parseAddress(s string) (Address, error) {
 	return a, nil
 }
 
-// checkTokens checks an unquoted display name: tokens separated by
-// whitespace.
 func checkTokens(s string) error {
 	for _, t := range strings.Fields(s) {
 		if !isToken(t) {
@@ -162,8 +144,6 @@ func checkTokens(s string) error {
 	return nil
 }
 
-// ParseAddressList parses a comma-separated list of addresses. Empty
-// elements are skipped. "*" is only valid alone (RFC 3261 §20.10).
 func ParseAddressList(v string) ([]Address, error) {
 	var out []Address
 

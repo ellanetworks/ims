@@ -17,7 +17,6 @@ const register = "REGISTER sip:ims.example.org SIP/2.0\r\n" +
 	"Contact: <sip:alice@10.0.0.5:5060>;expires=600\r\n" +
 	"Content-Length: 0\r\n\r\n"
 
-// A UAS parses a request, validates it and answers it.
 func Example() {
 	msg, err := sip.Parse([]byte(register))
 	if err != nil {
@@ -47,8 +46,6 @@ func Example() {
 	// Expires: 600
 }
 
-// A proxy removes the top Route when it names the proxy itself
-// (RFC 3261 §16.4).
 func ExampleHeader_PopFirst() {
 	h := sip.Header{
 		{Name: "Route", Value: "<sip:pcscf.ims.example.org;lr>, <sip:scscf.ims.example.org;lr>"},
@@ -62,7 +59,6 @@ func ExampleHeader_PopFirst() {
 	// <sip:scscf.ims.example.org;lr>
 }
 
-// A TCP reader answers pings and passes messages on.
 func ExampleStreamReader_Next() {
 	r := sip.NewStreamReader(strings.NewReader("\r\n\r\n"+register), 0)
 
