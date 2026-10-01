@@ -3,6 +3,7 @@ package siptest
 import (
 	"context"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,13 +16,19 @@ type ServerRequest struct {
 	Req *sip.Request
 }
 
+type TransactionError struct {
+	Tx  *transaction.ServerTransaction
+	Err error
+}
+
 type TU struct {
 	t        testing.TB
 	requests chan ServerRequest
 	cancels  chan ServerRequest
 	acks     chan *sip.Request
-	strays   chan *sip.Response
+	errs     chan TransactionError
 	done     chan struct{}
+	stop     sync.Once
 }
 
 func NewTU(t testing.TB) *TU {
@@ -30,13 +37,17 @@ func NewTU(t testing.TB) *TU {
 		requests: make(chan ServerRequest, 256),
 		cancels:  make(chan ServerRequest, 256),
 		acks:     make(chan *sip.Request, 256),
-		strays:   make(chan *sip.Response, 256),
+		errs:     make(chan TransactionError, 256),
 		done:     make(chan struct{}),
 	}
 
-	t.Cleanup(func() { close(u.done) })
+	t.Cleanup(u.Stop)
 
 	return u
+}
+
+func (u *TU) Stop() {
+	u.stop.Do(func() { close(u.done) })
 }
 
 func (u *TU) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
@@ -51,8 +62,8 @@ func (u *TU) HandleAck(ack *sip.Request) {
 	put(u.acks, ack, u.done)
 }
 
-func (u *TU) HandleStrayResponse(res *sip.Response) {
-	put(u.strays, res, u.done)
+func (u *TU) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+	put(u.errs, TransactionError{Tx: tx, Err: err}, u.done)
 }
 
 func (u *TU) NextRequest() ServerRequest {
@@ -70,9 +81,9 @@ func (u *TU) NextAck() *sip.Request {
 	return get(u.t, u.acks, "ACK")
 }
 
-func (u *TU) NextStray() *sip.Response {
+func (u *TU) NextError() TransactionError {
 	u.t.Helper()
-	return get(u.t, u.strays, "stray response")
+	return get(u.t, u.errs, "transaction error")
 }
 
 func (u *TU) None(d time.Duration) {
@@ -85,8 +96,8 @@ func (u *TU) None(d time.Duration) {
 		u.t.Fatalf("siptest: unexpected CANCEL %q", r.Req.StartLine())
 	case a := <-u.acks:
 		u.t.Fatalf("siptest: unexpected ACK %q", a.StartLine())
-	case r := <-u.strays:
-		u.t.Fatalf("siptest: unexpected stray response %q", r.StartLine())
+	case e := <-u.errs:
+		u.t.Fatalf("siptest: unexpected transaction error: %v", e.Err)
 	case <-time.After(d):
 	}
 }
@@ -151,7 +162,11 @@ func NewLayer(t testing.TB, cfg transaction.Config) (*transaction.Layer, *TU) {
 
 	l := transaction.New(cfg)
 
-	t.Cleanup(func() { _ = l.Close() })
+	t.Cleanup(func() {
+		tu.Stop()
+
+		_ = l.Close()
+	})
 
 	return l, tu
 }

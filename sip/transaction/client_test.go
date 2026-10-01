@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -91,8 +90,8 @@ func TestClientInviteAccepted(t *testing.T) {
 			wantTerminated(t, tx, nil)
 
 			h.peer.Send(tr, h.local, ok)
-			wantCode(t, h.tu.NextStray(), 200)
 			rs.None(quiet)
+			h.tu.None(quiet)
 		})
 	}
 }
@@ -239,7 +238,7 @@ func TestClientNonInviteProceeding(t *testing.T) {
 	wantTerminated(t, tx, nil)
 
 	h.peer.Send(sip.UDP, h.local, ok)
-	wantCode(t, h.tu.NextStray(), 200)
+	rs.None(quiet)
 	h.peer.RecvNone(quiet)
 }
 
@@ -288,28 +287,15 @@ func TestClientDropsForeignSentBy(t *testing.T) {
 	_ = stray.Header.SetTopVia(via)
 	h.peer.Send(sip.UDP, h.local, stray)
 
-	rs.None(quiet)
-	h.tu.None(quiet)
-}
-
-func TestClientStrayResponse(t *testing.T) {
-	h := newHarness(t)
-	req := h.newRequest("INVITE", sip.UDP)
-	h.peer.Send(sip.UDP, h.local, sip.NewResponse(req, 200, ""))
-
-	res := h.tu.NextStray()
-	wantCode(t, res, 200)
-
-	if res.Flow.Remote != h.peer.Addr() {
-		t.Errorf("stray flow %+v", res.Flow)
-	}
+	h.barrier()
+	rs.None(0)
+	h.tu.None(0)
 }
 
 func TestClientRejectsRequests(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
 
-	if _, err := h.l.Request(ctx, h.newRequest("ACK", sip.UDP), nil); !errors.Is(err, transaction.ErrAck) {
+	if _, err := h.l.Request(h.newRequest("ACK", sip.UDP), nil); !errors.Is(err, transaction.ErrAck) {
 		t.Errorf("ACK: %v", err)
 	}
 
@@ -318,61 +304,31 @@ func TestClientRejectsRequests(t *testing.T) {
 	via.Params.Set("branch", "1234")
 	_ = old.Header.SetTopVia(via)
 
-	if _, err := h.l.Request(ctx, old, nil); err == nil {
+	if _, err := h.l.Request(old, nil); err == nil {
 		t.Error("accepted an RFC 2543 branch")
 	}
 
 	req := h.newRequest("OPTIONS", sip.UDP)
-	if _, err := h.l.Request(ctx, req, nil); err != nil {
+	if _, err := h.l.Request(req, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := h.l.Request(ctx, req, nil); !errors.Is(err, transaction.ErrExists) {
+	if _, err := h.l.Request(req, nil); !errors.Is(err, transaction.ErrExists) {
 		t.Errorf("duplicate: %v", err)
 	}
 
 	unrouted := h.newRequest("OPTIONS", sip.UDP)
 	unrouted.Flow.Local = netip.AddrPortFrom(loopback, 1)
 
-	if _, err := h.l.Request(ctx, unrouted, nil); err == nil {
+	if _, err := h.l.Request(unrouted, nil); err == nil {
 		t.Error("sent from a socket we do not listen on")
 	}
 
 	retry := unrouted.Clone()
 	retry.Flow = req.Flow
 
-	if _, err := h.l.Request(ctx, retry, nil); err != nil {
+	if _, err := h.l.Request(retry, nil); err != nil {
 		t.Errorf("branch still held after a failed send: %v", err)
-	}
-}
-
-func TestClientHostnameSentBy(t *testing.T) {
-	clock := siptest.NewClock()
-	l, tu := siptest.NewLayer(t, transaction.Config{Clock: clock, Hostnames: []string{"pcscf.ims.example"}})
-	local := siptest.ListenLayer(t, l, loopback)
-	peer := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
-
-	for _, tt := range []struct {
-		host string
-		port uint16
-		ours bool
-	}{
-		{"PCSCF.ims.example", local.Port(), true},
-		{"pcscf.ims.example", local.Port() + 1, false},
-		{"other.ims.example", local.Port(), false},
-	} {
-		req := siptest.NewRequest("OPTIONS", "sip:ue@"+peer.Addr().String(), sip.UDP, local)
-		via := topVia(t, req)
-		via.Host, via.Port = tt.host, tt.port
-		_ = req.Header.SetTopVia(via)
-
-		peer.Send(sip.UDP, local, sip.NewResponse(req, 200, ""))
-
-		if tt.ours {
-			tu.NextStray()
-		} else {
-			tu.None(quiet)
-		}
 	}
 }
 

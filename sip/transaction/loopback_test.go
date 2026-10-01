@@ -48,7 +48,7 @@ func (r *relay) HandleRequest(stx *transaction.ServerTransaction, req *sip.Reque
 	via.Params.Set("branch", sip.NewBranch())
 	out.Header.Prepend("Via", via.String())
 
-	ctx, err := r.l.Request(context.Background(), out, branch{r: r, stx: stx})
+	ctx, err := r.l.Request(out, branch{r: r, stx: stx})
 	if err != nil {
 		r.t.Error(err)
 		return
@@ -64,7 +64,7 @@ func (r *relay) HandleCancel(stx *transaction.ServerTransaction, _ *sip.Request)
 	ctx := r.branches[stx]
 	r.mu.Unlock()
 
-	if err := ctx.Cancel(context.Background()); err != nil {
+	if err := ctx.Cancel(); err != nil {
 		r.t.Error(err)
 	}
 }
@@ -73,8 +73,10 @@ func (r *relay) HandleAck(ack *sip.Request) {
 	r.t.Errorf("unexpected ACK %q", ack.StartLine())
 }
 
-func (r *relay) HandleStrayResponse(res *sip.Response) {
-	r.t.Errorf("unexpected stray %q", res.StartLine())
+func (r *relay) HandleTransactionError(_ *transaction.ServerTransaction, err error) {
+	if !errors.Is(err, transaction.ErrClosed) {
+		r.t.Error(err)
+	}
 }
 
 type branch struct {
@@ -90,13 +92,15 @@ func (b branch) HandleResponse(res *sip.Response) {
 	up := res.Clone()
 	up.Header.PopFirst("Via")
 
-	if err := b.stx.Respond(context.Background(), up); err != nil {
+	if err := b.stx.Respond(up); err != nil {
 		b.r.t.Error(err)
 	}
 }
 
 func (b branch) HandleError(err error) {
-	b.r.t.Error(err)
+	if !errors.Is(err, transaction.ErrClosed) {
+		b.r.t.Error(err)
+	}
 }
 
 func TestCancelRelaysDownstreamFinal(t *testing.T) {
@@ -183,11 +187,20 @@ func TestCloseEndsTransactions(t *testing.T) {
 	wantTerminated(t, ctx, transaction.ErrClosed)
 	wantTerminated(t, stx, transaction.ErrClosed)
 
+	if err := rs.NextError(); !errors.Is(err, transaction.ErrClosed) {
+		t.Errorf("client error %v", err)
+	}
+
+	if e := h.tu.NextError(); e.Tx != stx || !errors.Is(e.Err, transaction.ErrClosed) {
+		t.Errorf("HandleTransactionError(%p, %v)", e.Tx, e.Err)
+	}
+
 	h.advance(64 * t1)
 	rs.None(quiet)
+	h.tu.None(quiet)
 	h.peer.RecvNone(quiet)
 
-	if _, err := h.l.Request(context.Background(), h.newRequest("OPTIONS", sip.UDP), nil); !errors.Is(err, transaction.ErrClosed) {
+	if _, err := h.l.Request(h.newRequest("OPTIONS", sip.UDP), nil); !errors.Is(err, transaction.ErrClosed) {
 		t.Errorf("Request after Close: %v", err)
 	}
 

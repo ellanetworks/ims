@@ -1,7 +1,6 @@
 package transaction_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -51,7 +50,7 @@ func TestServerInviteCompleted(t *testing.T) {
 	h.peer.Send(sip.UDP, h.local, req)
 	h.wantResponse(486)
 
-	if err := tx.Respond(context.Background(), sip.NewResponse(req, 500, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
+	if err := tx.Respond(sip.NewResponse(req, 500, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
 		t.Errorf("second final response: %v", err)
 	}
 
@@ -65,8 +64,9 @@ func TestServerInviteCompleted(t *testing.T) {
 
 	h.peer.Send(sip.UDP, h.local, ack)
 	h.peer.Send(sip.UDP, h.local, req)
-	h.peer.RecvNone(quiet)
-	h.tu.None(quiet)
+	h.serverBarrier()
+	h.peer.RecvNone(0)
+	h.tu.None(0)
 
 	h.advance(t4)
 	wantTerminated(t, tx, nil)
@@ -96,6 +96,11 @@ func TestServerInviteTimerGH(t *testing.T) {
 
 	h.advance(64*t1 - h.clock.Now())
 	wantTerminated(t, tx, transaction.ErrTimeout)
+
+	if e := h.tu.NextError(); e.Tx != tx || !errors.Is(e.Err, transaction.ErrTimeout) {
+		t.Fatalf("HandleTransactionError(%p, %v)", e.Tx, e.Err)
+	}
+
 	h.peer.RecvNone(quiet)
 }
 
@@ -129,7 +134,6 @@ func TestServerInviteConfirmedTimerI(t *testing.T) {
 func TestServerInviteAccepted(t *testing.T) {
 	h := newHarness(t)
 	tx, req := h.serve("INVITE", sip.UDP)
-	ctx := context.Background()
 
 	ok := h.respond(tx, 200)
 	h.wantResponse(200)
@@ -138,13 +142,13 @@ func TestServerInviteAccepted(t *testing.T) {
 	h.peer.Send(sip.UDP, h.local, req)
 	h.peer.RecvNone(quiet)
 
-	if err := tx.Respond(ctx, ok); err != nil {
+	if err := tx.Respond(ok); err != nil {
 		t.Fatalf("2xx retransmission: %v", err)
 	}
 
 	h.wantResponse(200)
 
-	if err := tx.Respond(ctx, sip.NewResponse(req, 486, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
+	if err := tx.Respond(sip.NewResponse(req, 486, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
 		t.Errorf("486 after 200: %v", err)
 	}
 
@@ -176,7 +180,7 @@ func TestServerInviteAccepted(t *testing.T) {
 	h.advance(time.Millisecond)
 	wantTerminated(t, tx, nil)
 
-	if err := tx.Respond(ctx, ok); !errors.Is(err, transaction.ErrTerminated) {
+	if err := tx.Respond(ok); !errors.Is(err, transaction.ErrTerminated) {
 		t.Errorf("Respond after Timer L: %v", err)
 	}
 }
@@ -190,7 +194,9 @@ func TestServerNonInvite(t *testing.T) {
 	h.peer.RecvNone(quiet)
 	h.tu.None(quiet)
 
-	h.respond(tx, 100)
+	h.advance(trying100 - time.Millisecond)
+	h.peer.RecvNone(quiet)
+	h.advance(time.Millisecond)
 	h.wantResponse(100)
 	wantState(t, tx, transaction.Proceeding)
 
@@ -201,6 +207,8 @@ func TestServerNonInvite(t *testing.T) {
 	h.wantResponse(200)
 	wantState(t, tx, transaction.Completed)
 
+	end := h.clock.Now() + 64*t1
+
 	h.advance(time.Minute / 2)
 	h.peer.RecvNone(quiet)
 
@@ -208,17 +216,50 @@ func TestServerNonInvite(t *testing.T) {
 	h.wantResponse(200)
 	h.tu.None(quiet)
 
-	if err := tx.Respond(context.Background(), sip.NewResponse(req, 500, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
+	if err := tx.Respond(sip.NewResponse(req, 500, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
 		t.Errorf("second final response: %v", err)
 	}
 
-	h.advance(64*t1 - h.clock.Now() - time.Millisecond)
+	h.advance(end - h.clock.Now() - time.Millisecond)
 	wantState(t, tx, transaction.Completed)
 	h.advance(time.Millisecond)
 	wantTerminated(t, tx, nil)
 
 	h.peer.Send(sip.UDP, h.local, req)
 	h.tu.NextRequest()
+}
+
+func TestServerNonInviteRFC4320(t *testing.T) {
+	h := newHarness(t)
+	udp, req := h.serve("SUBSCRIBE", sip.UDP)
+
+	for _, code := range []int{100, 180, 183, 408} {
+		if err := udp.Respond(sip.NewResponse(req, code, "")); !errors.Is(err, transaction.ErrInvalidResponse) {
+			t.Errorf("%d over UDP at once: %v", code, err)
+		}
+	}
+
+	tcp, _ := h.serve("MESSAGE", sip.TCP)
+	h.respond(tcp, 100)
+	h.wantResponse(100)
+
+	idle, _ := h.serve("OPTIONS", sip.TCP)
+
+	h.advance(trying100)
+	h.wantResponse(100)
+	h.wantResponse(100)
+	wantState(t, udp, transaction.Proceeding)
+	wantState(t, idle, transaction.Proceeding)
+
+	h.respond(udp, 100)
+	h.wantResponse(100)
+
+	if err := udp.Respond(sip.NewResponse(req, 408, "")); !errors.Is(err, transaction.ErrInvalidResponse) {
+		t.Errorf("408: %v", err)
+	}
+
+	h.respond(udp, 200)
+	h.wantResponse(200)
 }
 
 func TestServerNonInviteTCP(t *testing.T) {
@@ -246,7 +287,7 @@ func TestServerRespondsOnRequestFlow(t *testing.T) {
 	res := sip.NewResponse(tx.Request(), 202, "")
 	res.Flow = sip.Flow{}
 
-	if err := tx.Respond(context.Background(), res); err != nil {
+	if err := tx.Respond(res); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,8 +304,12 @@ func TestServerRespondsOnRequestFlow(t *testing.T) {
 func TestServerCancel(t *testing.T) {
 	h := newHarness(t)
 	tx, req := h.serve("INVITE", sip.UDP)
-	ringing := h.respond(tx, 180)
-	h.wantResponse(180)
+	h.respond(tx, 180)
+
+	ringing := h.wantResponse(180)
+	if to, _ := ringing.Header.To(); to.Tag() != tx.ToTag() {
+		t.Fatalf("180 To tag %q, want the transaction's %q", to.Tag(), tx.ToTag())
+	}
 
 	cancel, err := sip.NewCancel(req)
 	if err != nil {
@@ -326,7 +371,8 @@ func TestServerCancelAfterFinal(t *testing.T) {
 	cancel, _ := sip.NewCancel(req)
 	h.peer.Send(sip.UDP, h.local, cancel)
 	h.wantResponse(200)
-	h.tu.None(quiet)
+	h.serverBarrier()
+	h.tu.None(0)
 }
 
 func siptestInvite(h *harness) *sip.Request {
@@ -358,19 +404,21 @@ func TestServerTransportError(t *testing.T) {
 
 	h.peer.Close()
 
-	var err error
-
-	for deadline := time.Now().Add(5 * time.Second); err == nil; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("Respond kept succeeding with the peer gone")
+	for range 2 {
+		if err := tx.Respond(sip.NewResponse(tx.Request(), 180, "")); err != nil {
+			t.Fatal(err)
 		}
 
-		err = tx.Respond(context.Background(), sip.NewResponse(tx.Request(), 180, ""))
+		time.Sleep(quiet)
 	}
 
-	wantTerminated(t, tx, err)
+	if e := h.tu.NextError(); e.Tx != tx || e.Err == nil {
+		t.Fatalf("HandleTransactionError(%p, %v)", e.Tx, e.Err)
+	}
 
-	if err := tx.Respond(context.Background(), sip.NewResponse(tx.Request(), 486, "")); !errors.Is(err, transaction.ErrTerminated) {
-		t.Errorf("Respond after a transport error: %v", err)
+	wantState(t, tx, transaction.Proceeding)
+
+	if err := tx.Err(); err != nil {
+		t.Errorf("Err() = %v after a failed send", err)
 	}
 }

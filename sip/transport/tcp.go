@@ -290,7 +290,7 @@ func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
 
 func tooLargeResponse(req *sip.Request) *sip.Response {
 	res := sip.NewResponse(req, 513, "")
-	_ = res.Header.SetToTag(sip.NewTag())
+	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
 	return res
 }

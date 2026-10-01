@@ -1,9 +1,6 @@
 package transaction
 
 import (
-	"context"
-	"log/slog"
-
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -12,13 +9,24 @@ type ServerTransaction struct {
 
 	req    *sip.Request
 	invite bool
+	flow   sip.Flow
+	exact  bool
+	tag    string
+	trying *sip.Response
 	last   *sip.Response
+	may100 bool
 }
 
 func newServer(l *Layer, req *sip.Request) *ServerTransaction {
-	tx := &ServerTransaction{req: req, invite: req.Method == "INVITE"}
+	tx := &ServerTransaction{req: req, invite: req.Method == "INVITE", tag: sip.NewTag(), trying: sip.NewResponse(req, 100, "")}
 	tx.init(l, Trying)
-	tx.reliable = isReliable(req.Flow)
+	tx.flow, tx.exact = l.responseFlow(req)
+	tx.reliable = isReliable(tx.flow)
+	tx.may100 = tx.invite || tx.reliable
+
+	if req.Method != "CANCEL" {
+		tx.onError = func(err error) { l.h.HandleTransactionError(tx, err) }
+	}
 
 	if tx.invite {
 		tx.state = Proceeding
@@ -31,25 +39,30 @@ func (tx *ServerTransaction) Request() *sip.Request {
 	return tx.req
 }
 
-func (tx *ServerTransaction) Respond(ctx context.Context, res *sip.Response) error {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
+func (tx *ServerTransaction) ToTag() string {
+	return tx.tag
+}
 
-	return tx.respond(ctx, res.Clone())
+func (tx *ServerTransaction) Respond(res *sip.Response) error {
+	res = res.Clone()
+
+	tx.mu.Lock()
+	defer tx.unlock()
+
+	return tx.respond(res)
 }
 
 func (tx *ServerTransaction) start() {
-	trying := sip.NewResponse(tx.req, 100, "")
-
-	if err := tx.respond(tx.layer.ctx, trying); err != nil {
-		tx.layer.log.Debug("100 Trying failed", slog.String("flow", flowString(tx.req.Flow)), slog.Any("error", err))
-		return
+	if tx.invite {
+		_ = tx.respond(tx.trying)
+	} else {
+		tx.after(tx.layer.t100, tx.timer100)
 	}
 
 	tx.emit(func() { tx.layer.h.HandleRequest(tx, tx.req) })
 }
 
-func (tx *ServerTransaction) respond(ctx context.Context, res *sip.Response) error {
+func (tx *ServerTransaction) respond(res *sip.Response) error {
 	switch tx.state {
 	case Terminated:
 		return ErrTerminated
@@ -61,14 +74,20 @@ func (tx *ServerTransaction) respond(ctx context.Context, res *sip.Response) err
 		}
 	}
 
-	res.Flow = tx.req.Flow
+	if !tx.invite {
+		if err := tx.checkNonInvite(res); err != nil {
+			return err
+		}
+	}
 
-	if err := tx.layer.tr.Send(ctx, res); err != nil {
-		tx.terminate(err)
-		return err
+	if res.StatusCode > 100 {
+		if err := res.Header.SetToTag(tx.tag); err != nil {
+			return err
+		}
 	}
 
 	tx.last = res
+	tx.transmit()
 
 	switch {
 	case tx.state == Accepted:
@@ -94,15 +113,44 @@ func (tx *ServerTransaction) respond(ctx context.Context, res *sip.Response) err
 	return nil
 }
 
-func (tx *ServerTransaction) receive() {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-
-	if tx.last == nil || (tx.state != Proceeding && tx.state != Completed) {
-		return
+func (tx *ServerTransaction) checkNonInvite(res *sip.Response) error {
+	switch {
+	case res.StatusCode == 408:
+		return errInvalid(res, "408 to a non-INVITE request (RFC 4320)")
+	case res.IsProvisional() && res.StatusCode != 100:
+		return errInvalid(res, "provisional response other than 100 to a non-INVITE request (RFC 4320)")
+	case res.StatusCode == 100 && !tx.may100:
+		return errInvalid(res, "100 to a non-INVITE request over UDP before Timer E reaches T2 (RFC 4320)")
 	}
 
-	tx.retransmit()
+	return nil
+}
+
+func (tx *ServerTransaction) transmit() {
+	res := tx.last.Clone()
+	res.Flow = tx.flow
+
+	tx.push(func() error {
+		if tx.exact {
+			return tx.layer.tr.SendOnFlow(tx.layer.ctx, res)
+		}
+
+		return tx.layer.tr.Send(tx.layer.ctx, res)
+	}, func(err error) {
+		if err != nil {
+			tx.report(err)
+		}
+	})
+}
+
+func (tx *ServerTransaction) receive() {
+	tx.mu.Lock()
+
+	if tx.last != nil && len(tx.out) == 0 && (tx.state == Proceeding || tx.state == Completed) {
+		tx.transmit()
+	}
+
+	tx.unlockInOrder()
 }
 
 func (tx *ServerTransaction) receiveAck(ack *sip.Request) {
@@ -117,8 +165,7 @@ func (tx *ServerTransaction) receiveAck(ack *sip.Request) {
 		tx.emit(func() { tx.layer.h.HandleAck(ack) })
 	}
 
-	tx.mu.Unlock()
-	tx.drain()
+	tx.unlockInOrder()
 }
 
 func (tx *ServerTransaction) receiveCancel(cancel *sip.Request) {
@@ -128,24 +175,15 @@ func (tx *ServerTransaction) receiveCancel(cancel *sip.Request) {
 		tx.emit(func() { tx.layer.h.HandleCancel(tx, cancel) })
 	}
 
-	tx.mu.Unlock()
-	tx.drain()
+	tx.unlockInOrder()
 }
 
-func (tx *ServerTransaction) toTag() string {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
+func (tx *ServerTransaction) timer100() {
+	tx.may100 = true
 
-	if tx.last == nil {
-		return ""
+	if tx.state == Trying {
+		_ = tx.respond(tx.trying)
 	}
-
-	to, err := tx.last.Header.To()
-	if err != nil {
-		return ""
-	}
-
-	return to.Tag()
 }
 
 func (tx *ServerTransaction) timerG() {
@@ -153,8 +191,8 @@ func (tx *ServerTransaction) timerG() {
 		return
 	}
 
-	if !tx.retransmit() {
-		return
+	if len(tx.out) == 0 {
+		tx.transmit()
 	}
 
 	tx.interval = min(2*tx.interval, tx.layer.t2)
@@ -163,21 +201,6 @@ func (tx *ServerTransaction) timerG() {
 
 func (tx *ServerTransaction) timerH() {
 	if tx.state == Completed {
-		tx.terminate(ErrTimeout)
+		tx.fail(ErrTimeout)
 	}
-}
-
-func (tx *ServerTransaction) retransmit() bool {
-	if err := tx.layer.tr.Send(tx.layer.ctx, tx.last); err != nil {
-		tx.terminate(err)
-		return false
-	}
-
-	return true
-}
-
-func (tx *ServerTransaction) shutdown() {
-	tx.mu.Lock()
-	tx.terminate(ErrClosed)
-	tx.mu.Unlock()
 }

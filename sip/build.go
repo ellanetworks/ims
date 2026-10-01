@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 func NewResponse(req *Request, code int, reason string) *Response {
@@ -56,7 +57,7 @@ func NewAck(invite *Request, res *Response) (*Request, error) {
 	}
 
 	if res.StatusCode < 300 {
-		return nil, fmt.Errorf("sip: ACK to a %d response is built by the dialog", res.StatusCode)
+		return nil, fmt.Errorf("sip: no transaction ACK for a %d response", res.StatusCode)
 	}
 
 	to, err := res.Header.first("To")
@@ -111,8 +112,18 @@ func newInviteRequest(method string, invite *Request, to string) (*Request, erro
 	return r, nil
 }
 
+var statelessTagPrefix = "sl" + strings.ToLower(rand.Text()[:8])
+
 func NewTag() string {
 	return rand.Text()
+}
+
+func NewStatelessTag() string {
+	return statelessTagPrefix + rand.Text()
+}
+
+func IsStatelessTag(tag string) bool {
+	return strings.HasPrefix(tag, statelessTagPrefix)
 }
 
 func NewBranch() string {

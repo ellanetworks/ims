@@ -44,16 +44,16 @@ func TestInvalidRequests(t *testing.T) {
 
 			h.peer.SendRaw(sip.UDP, h.local, []byte(msg))
 
-			if tt.want == 0 {
-				h.peer.RecvNone(quiet)
-			} else {
+			if tt.want != 0 {
 				res := h.wantResponse(tt.want)
 				if to, _ := res.Header.To(); to.Tag() == "" {
 					t.Errorf("%d without a To tag", tt.want)
 				}
 			}
 
-			h.tu.None(quiet)
+			h.serverBarrier()
+			h.peer.RecvNone(0)
+			h.tu.None(0)
 		})
 	}
 }

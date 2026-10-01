@@ -1,7 +1,6 @@
 package transaction_test
 
 import (
-	"context"
 	"errors"
 	"net/netip"
 	"strings"
@@ -18,6 +17,8 @@ const (
 	t2    = transaction.DefaultT2
 	t4    = transaction.DefaultT4
 	quiet = 50 * time.Millisecond
+
+	trying100 = 3500 * time.Millisecond
 )
 
 var loopback = netip.MustParseAddr("127.0.0.1")
@@ -36,8 +37,15 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
+	return newHarnessConfig(t, transaction.Config{})
+}
+
+func newHarnessConfig(t *testing.T, cfg transaction.Config) *harness {
+	t.Helper()
+
 	clock := siptest.NewClock()
-	l, tu := siptest.NewLayer(t, transaction.Config{Clock: clock})
+	cfg.Clock = clock
+	l, tu := siptest.NewLayer(t, cfg)
 
 	return &harness{
 		t:     t,
@@ -67,14 +75,17 @@ func (h *harness) send(req *sip.Request) (*transaction.ClientTransaction, *sipte
 
 	rs := siptest.NewResponses(h.t)
 
-	tx, err := h.l.Request(context.Background(), req, rs)
+	tx, err := h.l.Request(req, rs)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 
 	got, f := h.peer.RecvRequest()
-	if f.Transport != tx.Request().Flow.Transport {
-		h.t.Fatalf("%s received over %s, sent over %s", got.Method, f.Transport, tx.Request().Flow.Transport)
+
+	for deadline := time.Now().Add(siptest.Timeout); tx.Request().Flow.Transport != f.Transport; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s received over %s, sent over %s", got.Method, f.Transport, tx.Request().Flow.Transport)
+		}
 	}
 
 	return tx, rs, got
@@ -121,11 +132,8 @@ func (h *harness) respond(tx *transaction.ServerTransaction, code int) *sip.Resp
 	h.t.Helper()
 
 	res := sip.NewResponse(tx.Request(), code, "")
-	if code > 100 {
-		_ = res.Header.SetToTag("tu")
-	}
 
-	if err := tx.Respond(context.Background(), res); err != nil {
+	if err := tx.Respond(res); err != nil {
 		h.t.Fatal(err)
 	}
 
@@ -179,11 +187,11 @@ func wantTerminated(t *testing.T, tx stater, wantErr error) {
 
 	select {
 	case <-tx.Done():
-	default:
+	case <-time.After(siptest.Timeout):
 		t.Fatal("Done not closed")
 	}
 
-	if err := tx.Err(); !errors.Is(err, wantErr) || (wantErr == nil && err != nil) {
+	if err := tx.Err(); !errors.Is(err, wantErr) {
 		t.Fatalf("Err() = %v, want %v", err, wantErr)
 	}
 }

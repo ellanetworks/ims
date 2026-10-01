@@ -9,6 +9,8 @@ import (
 )
 
 type Clock struct {
+	advance sync.Mutex
+
 	mu     sync.Mutex
 	now    time.Duration
 	seq    uint64
@@ -45,9 +47,12 @@ func (c *Clock) Now() time.Duration {
 }
 
 func (c *Clock) Advance(d time.Duration) {
+	c.advance.Lock()
+	defer c.advance.Unlock()
+
 	c.mu.Lock()
 
-	end := c.now + d
+	end := c.now + max(d, 0)
 
 	for {
 		i := c.next(end)

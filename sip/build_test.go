@@ -162,6 +162,17 @@ func TestNewBranchAndTag(t *testing.T) {
 	}
 }
 
+func TestStatelessTag(t *testing.T) {
+	tag := NewStatelessTag()
+	if !IsStatelessTag(tag) || !isToken(tag) || tag == NewStatelessTag() {
+		t.Errorf("stateless tag %q", tag)
+	}
+
+	if IsStatelessTag(NewTag()) {
+		t.Error("NewTag is recognized as stateless")
+	}
+}
+
 func TestReasonPhrase(t *testing.T) {
 	if ReasonPhrase(494) != "Security Agreement Required" || ReasonPhrase(299) != "Status 299" {
 		t.Error("ReasonPhrase")

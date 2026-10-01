@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,8 @@ var (
 	ErrExists = errors.New("sip/transaction: transaction already exists")
 
 	ErrAck = errors.New("sip/transaction: ACK has no client transaction")
+
+	ErrInvalidResponse = errors.New("sip/transaction: response not allowed")
 )
 
 type Handler interface {
@@ -46,7 +49,7 @@ type Handler interface {
 
 	HandleAck(ack *sip.Request)
 
-	HandleStrayResponse(res *sip.Response)
+	HandleTransactionError(tx *ServerTransaction, err error)
 }
 
 type Config struct {
@@ -55,7 +58,11 @@ type Config struct {
 
 	Transport transport.Config
 
-	Hostnames []string
+	Aliases []string
+
+	Filter func(m sip.Message) error
+
+	ResponseFlow func(req *sip.Request) (sip.Flow, bool)
 
 	T1, T2, T4 time.Duration
 
@@ -63,13 +70,15 @@ type Config struct {
 }
 
 type Layer struct {
-	h         Handler
-	log       *slog.Logger
-	tr        *transport.Transport
-	clock     Clock
-	hostnames []string
+	h        Handler
+	log      *slog.Logger
+	tr       *transport.Transport
+	clock    Clock
+	aliases  map[string]struct{}
+	filter   func(m sip.Message) error
+	respFlow func(req *sip.Request) (sip.Flow, bool)
 
-	t1, t2, t4 time.Duration
+	t1, t2, t4, t100 time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -79,6 +88,7 @@ type Layer struct {
 	locals  map[netip.AddrPort]struct{}
 	clients map[clientKey]*ClientTransaction
 	servers map[serverKey]*ServerTransaction
+	pending map[branchKey]*ServerTransaction
 	wg      sync.WaitGroup
 }
 
@@ -86,8 +96,14 @@ type clientKey struct {
 	branch, method string
 }
 
+type branchKey struct {
+	branch, sentBy string
+}
+
 type serverKey struct {
-	branch, sentBy, method string
+	branchKey
+
+	method string
 }
 
 func New(cfg Config) *Layer {
@@ -95,17 +111,28 @@ func New(cfg Config) *Layer {
 		panic("sip/transaction: nil Handler")
 	}
 
+	if cfg.Transport.Handler != nil {
+		panic("sip/transaction: Transport.Handler is set by the transaction layer")
+	}
+
 	l := &Layer{
-		h:         cfg.Handler,
-		log:       cfg.Logger,
-		clock:     cfg.Clock,
-		hostnames: cfg.Hostnames,
-		t1:        cfg.T1,
-		t2:        cfg.T2,
-		t4:        cfg.T4,
-		locals:    make(map[netip.AddrPort]struct{}),
-		clients:   make(map[clientKey]*ClientTransaction),
-		servers:   make(map[serverKey]*ServerTransaction),
+		h:        cfg.Handler,
+		log:      cfg.Logger,
+		clock:    cfg.Clock,
+		aliases:  make(map[string]struct{}),
+		filter:   cfg.Filter,
+		respFlow: cfg.ResponseFlow,
+		t1:       cfg.T1,
+		t2:       cfg.T2,
+		t4:       cfg.T4,
+		locals:   make(map[netip.AddrPort]struct{}),
+		clients:  make(map[clientKey]*ClientTransaction),
+		servers:  make(map[serverKey]*ServerTransaction),
+		pending:  make(map[branchKey]*ServerTransaction),
+	}
+
+	for _, a := range cfg.Aliases {
+		l.aliases[normalizeHost(a)] = struct{}{}
 	}
 
 	if l.log == nil {
@@ -127,6 +154,8 @@ func New(cfg Config) *Layer {
 	if l.t4 <= 0 {
 		l.t4 = DefaultT4
 	}
+
+	l.t100 = timerEReachesT2(l.t1, l.t2)
 
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 
@@ -167,6 +196,14 @@ func (l *Layer) SendResponse(ctx context.Context, res *sip.Response) error {
 	return l.tr.Send(ctx, res)
 }
 
+func (l *Layer) SendOnFlow(ctx context.Context, m sip.Message) error {
+	return l.tr.SendOnFlow(ctx, m)
+}
+
+func (l *Layer) CloseFlow(f sip.Flow) {
+	l.tr.CloseFlow(f)
+}
+
 func (l *Layer) Close() error {
 	l.mu.Lock()
 
@@ -176,14 +213,14 @@ func (l *Layer) Close() error {
 	}
 
 	l.closed = true
-	l.cancel()
-
-	clients, servers := l.clients, l.servers
-	l.clients, l.servers = nil, nil
-
 	l.mu.Unlock()
 
 	err := l.tr.Close()
+
+	l.mu.Lock()
+	clients, servers := l.clients, l.servers
+	l.clients, l.servers = nil, nil
+	l.mu.Unlock()
 
 	for _, tx := range clients {
 		tx.shutdown()
@@ -193,6 +230,7 @@ func (l *Layer) Close() error {
 		tx.shutdown()
 	}
 
+	l.cancel()
 	l.wg.Wait()
 
 	return err
@@ -262,15 +300,32 @@ func (l *Layer) addServer(key serverKey, tx *ServerTransaction) (*ServerTransact
 	}
 
 	l.servers[key] = tx
+
+	if key.method != "CANCEL" {
+		l.pending[key.branchKey] = tx
+	}
+
 	tx.forget = func() {
 		l.mu.Lock()
+		defer l.mu.Unlock()
+
 		if l.servers[key] == tx {
 			delete(l.servers, key)
 		}
-		l.mu.Unlock()
+
+		if l.pending[key.branchKey] == tx {
+			delete(l.pending, key.branchKey)
+		}
 	}
 
 	return tx, true
+}
+
+func (l *Layer) cancelTarget(key branchKey) *ServerTransaction {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.pending[key]
 }
 
 type transportHandler struct {
@@ -288,7 +343,30 @@ func (h transportHandler) HandleMessage(m sip.Message) {
 
 func (h transportHandler) HandleParseError(err *sip.ParseError) {
 	h.l.log.Debug("malformed SIP request", slog.String("flow", flowString(err.Request.Flow)), slog.Any("error", err))
-	h.l.reject(err.Request, 400)
+
+	if h.l.admit(err.Request) {
+		h.l.reject(err.Request, 400)
+	}
+}
+
+func (l *Layer) admit(m sip.Message) bool {
+	if l.filter == nil {
+		return true
+	}
+
+	err := l.filter(m)
+	if err == nil {
+		return true
+	}
+
+	l.log.Debug("SIP message refused", slog.String("message", m.StartLine()), slog.String("flow", flowString(m.Env().Flow)), slog.Any("error", err))
+
+	var serr *sip.StatusError
+	if req, ok := m.(*sip.Request); ok && errors.As(err, &serr) {
+		l.reject(req, serr.StatusCode)
+	}
+
+	return false
 }
 
 func (l *Layer) handleRequest(req *sip.Request) {
@@ -304,15 +382,24 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		return
 	}
 
+	if !l.admit(req) {
+		return
+	}
+
 	via, _ := req.Header.TopVia()
-	key := serverKey{branch: via.Branch(), sentBy: strings.ToLower(via.SentBy()), method: req.Method}
+	key := serverKey{branchKey: branchKey{branch: via.Branch(), sentBy: sentByKey(via)}, method: req.Method}
 
 	if req.Method == "ACK" {
 		key.method = "INVITE"
 
-		if tx := l.server(key); tx != nil {
+		tx := l.server(key)
+
+		switch {
+		case tx != nil:
 			tx.receiveAck(req)
-		} else {
+		case l.isStatelessAck(req):
+			l.log.Debug("absorbed ACK to a stateless response", slog.String("flow", flowString(req.Flow)))
+		default:
 			l.h.HandleAck(req)
 		}
 
@@ -334,42 +421,31 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		return
 	}
 
-	var invite *ServerTransaction
+	var target *ServerTransaction
 
-	switch req.Method {
-	case "CANCEL":
-		key.method = "INVITE"
-		invite = l.server(key)
-		l.answerCancel(tx, invite)
-	case "INVITE":
+	if req.Method == "CANCEL" {
+		target = l.cancelTarget(key.branchKey)
+		l.answerCancel(tx, target)
+	} else {
 		tx.start()
-	default:
-		tx.emit(func() { l.h.HandleRequest(tx, req) })
 	}
 
-	tx.mu.Unlock()
-	tx.drain()
+	tx.unlockInOrder()
 
-	if invite != nil {
-		invite.receiveCancel(req)
+	if target != nil && target.invite {
+		target.receiveCancel(req)
 	}
 }
 
-func (l *Layer) answerCancel(tx, invite *ServerTransaction) {
-	code, tag := 481, ""
-	if invite != nil {
-		code, tag = 200, invite.toTag()
+func (l *Layer) answerCancel(tx, target *ServerTransaction) {
+	res := sip.NewResponse(tx.req, 481, "")
+	if target != nil {
+		res = sip.NewResponse(tx.req, 200, "")
+		_ = res.Header.SetToTag(target.ToTag())
 	}
 
-	if tag == "" {
-		tag = sip.NewTag()
-	}
-
-	res := sip.NewResponse(tx.req, code, "")
-	_ = res.Header.SetToTag(tag)
-
-	if err := tx.respond(l.ctx, res); err != nil {
-		l.log.Debug("response to CANCEL failed", slog.String("flow", flowString(tx.req.Flow)), slog.Any("error", err))
+	if err := tx.respond(res); err != nil {
+		l.log.Debug("response to CANCEL failed", slog.String("flow", flowString(tx.flow)), slog.Any("error", err))
 	}
 }
 
@@ -379,11 +455,70 @@ func (l *Layer) reject(req *sip.Request, code int) {
 	}
 
 	res := sip.NewResponse(req, code, "")
-	_ = res.Header.SetToTag(sip.NewTag())
+	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
-	if err := l.tr.Send(l.ctx, res); err != nil {
-		l.log.Debug("stateless response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+	f, exact := l.responseFlow(req)
+	res.Flow = f
+
+	send := l.tr.Send
+	if exact {
+		send = l.tr.SendOnFlow
 	}
+
+	l.spawn(func() {
+		if err := send(l.ctx, res); err != nil {
+			l.log.Debug("stateless response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+	})
+}
+
+func (l *Layer) spawn(f func()) {
+	if !l.enter() {
+		return
+	}
+
+	go func() {
+		defer l.wg.Done()
+
+		f()
+	}()
+}
+
+func (l *Layer) isStatelessAck(ack *sip.Request) bool {
+	to, err := ack.Header.To()
+	return err == nil && sip.IsStatelessTag(to.Tag())
+}
+
+func (l *Layer) checkFlow(f sip.Flow) error {
+	if f.Transport != sip.UDP && f.Transport != sip.TCP {
+		return fmt.Errorf("sip/transaction: %w %q", transport.ErrUnsupportedTransport, f.Transport)
+	}
+
+	if !f.Remote.IsValid() {
+		return errors.New("sip/transaction: no remote address in the flow")
+	}
+
+	local := netip.AddrPortFrom(f.Local.Addr().Unmap(), f.Local.Port())
+
+	l.mu.Lock()
+	_, ok := l.locals[local]
+	l.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("sip/transaction: %w %s", transport.ErrNoListener, f.Local)
+	}
+
+	return nil
+}
+
+func (l *Layer) responseFlow(req *sip.Request) (sip.Flow, bool) {
+	if l.respFlow != nil {
+		if f, ok := l.respFlow(req); ok {
+			return f, true
+		}
+	}
+
+	return req.Flow, false
 }
 
 func (l *Layer) handleResponse(res *sip.Response) {
@@ -393,11 +528,15 @@ func (l *Layer) handleResponse(res *sip.Response) {
 		return
 	}
 
+	if !l.admit(res) {
+		return
+	}
+
 	cseq, _ := res.Header.CSeq()
 
 	tx := l.client(clientKey{branch: via.Branch(), method: cseq.Method})
 	if tx == nil {
-		l.h.HandleStrayResponse(res)
+		l.log.Debug("discarded response without a transaction", slog.String("response", res.StartLine()), slog.String("flow", flowString(res.Flow)))
 		return
 	}
 
@@ -405,36 +544,67 @@ func (l *Layer) handleResponse(res *sip.Response) {
 }
 
 func (l *Layer) isLocal(via sip.Via) bool {
-	port := via.Port
-	if port == 0 {
-		port = defaultPort
-	}
+	port := sentByPort(via)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if a, ok := via.Addr(); ok {
-		_, ok := l.locals[netip.AddrPortFrom(a.Unmap(), port)]
-		return ok
+		if _, ok := l.locals[netip.AddrPortFrom(a.Unmap(), port)]; ok {
+			return true
+		}
 	}
 
-	for _, h := range l.hostnames {
-		if !strings.EqualFold(h, via.Host) {
-			continue
-		}
+	if _, ok := l.aliases[normalizeHost(via.Host)]; !ok {
+		return false
+	}
 
-		for local := range l.locals {
-			if local.Port() == port {
-				return true
-			}
+	for local := range l.locals {
+		if local.Port() == port {
+			return true
 		}
 	}
 
 	return false
 }
 
+func sentByKey(via sip.Via) string {
+	return normalizeHost(via.Host) + ":" + strconv.Itoa(int(sentByPort(via)))
+}
+
+func sentByPort(via sip.Via) uint16 {
+	if via.Port == 0 {
+		return defaultPort
+	}
+
+	return via.Port
+}
+
+func normalizeHost(host string) string {
+	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
+		return a.Unmap().String()
+	}
+
+	return strings.ToLower(host)
+}
+
 func flowString(f sip.Flow) string {
 	return string(f.Transport) + " " + f.Local.String() + " <-> " + f.Remote.String()
+}
+
+func errInvalid(res *sip.Response, why string) error {
+	return fmt.Errorf("%w: %d: %s", ErrInvalidResponse, res.StatusCode, why)
+}
+
+func timerEReachesT2(t1, t2 time.Duration) time.Duration {
+	var d time.Duration
+
+	for interval := t1; ; {
+		d += interval
+		if interval = min(2*interval, t2); interval >= t2 {
+			return d
+		}
+	}
 }
 
 func isReliable(f sip.Flow) bool {
