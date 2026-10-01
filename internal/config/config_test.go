@@ -13,6 +13,8 @@ import (
 const (
 	validDB  = "db:\n  path: ims.db\n"
 	validAPI = "api:\n  address: 127.0.0.1\n"
+	validIMS = "ims:\n  mcc: \"001\"\n  mnc: \"01\"\n"
+	validSIP = "sip:\n  addresses: [10.0.0.5]\n"
 
 	diameterIdentity = `diameter:
   origin_host: ims.ims.mnc001.mcc001.3gppnetwork.org
@@ -51,7 +53,10 @@ func writeConfig(t *testing.T, content string) string {
 }
 
 func TestLoad(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+validDiameter))
+	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
+		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  port: 5070\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
+		validDiameter))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -60,6 +65,13 @@ func TestLoad(t *testing.T) {
 		DB:          DB{Path: "ims.db"},
 		CallHistory: CallHistory{Retention: 24 * time.Hour},
 		API:         API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
+		IMS:         IMS{MCC: "310", MNC: "410", HomeDomain: "ims.mnc410.mcc310.3gppnetwork.org"},
+		SIP: SIP{
+			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
+			Port:           5070,
+			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org"},
+			MaxConnections: 100,
+		},
 		Diameter: Diameter{
 			OriginHost:  "ims.ims.mnc001.mcc001.3gppnetwork.org",
 			OriginRealm: "ims.mnc001.mcc001.3gppnetwork.org",
@@ -89,12 +101,69 @@ func TestLoad(t *testing.T) {
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load = %+v, want %+v", cfg, want)
 	}
+
+	wantAliases := []string{"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org"}
+	if got := cfg.SIPAliases(); !reflect.DeepEqual(got, wantAliases) {
+		t.Fatalf("SIPAliases = %v, want %v", got, wantAliases)
+	}
+}
+
+func TestHomeDomain(t *testing.T) {
+	tests := []struct {
+		mcc, mnc, want string
+	}{
+		{"001", "01", "ims.mnc001.mcc001.3gppnetwork.org"},
+		{"234", "15", "ims.mnc015.mcc234.3gppnetwork.org"},
+		{"310", "410", "ims.mnc410.mcc310.3gppnetwork.org"},
+	}
+
+	for _, tt := range tests {
+		cfg, err := Load(writeConfig(t, validDB+validAPI+"ims:\n  mcc: \""+tt.mcc+"\"\n  mnc: \""+tt.mnc+"\"\n"+validSIP+validDiameter))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		if cfg.IMS.HomeDomain != tt.want {
+			t.Fatalf("home domain for %s/%s = %q, want %q", tt.mcc, tt.mnc, cfg.IMS.HomeDomain, tt.want)
+		}
+	}
+}
+
+func TestHomeDomainOverride(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+"  home_domain: IMS.Example.org\n"+validSIP+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.IMS.HomeDomain != "ims.example.org" {
+		t.Fatalf("home domain = %q, want ims.example.org", cfg.IMS.HomeDomain)
+	}
+
+	if got := cfg.SIPAliases(); !reflect.DeepEqual(got, []string{"ims.example.org"}) {
+		t.Fatalf("SIPAliases = %v, want [ims.example.org]", got)
+	}
+}
+
+func TestLoadIPAliases(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+"sip:\n  addresses: [10.0.0.5]\n  aliases: [192.0.2.1, \"[2001:DB8::1]\", 2001:db8::2]\n"+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := []string{"192.0.2.1", "[2001:db8::1]", "2001:db8::2"}
+	if !reflect.DeepEqual(cfg.SIP.Aliases, want) {
+		t.Fatalf("aliases = %v, want %v", cfg.SIP.Aliases, want)
+	}
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validDiameter))
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.SIP.Port != defaultSIPPort || cfg.SIP.MaxConnections != 0 {
+		t.Fatalf("sip port and max_connections = %d %d, want %d 0", cfg.SIP.Port, cfg.SIP.MaxConnections, defaultSIPPort)
 	}
 
 	if cfg.API.Port != defaultAPIPort {
@@ -119,7 +188,7 @@ func TestLoadOnePeerServesCxAndRx(t *testing.T) {
       applications: [cx, rx]
 `
 
-	cfg, err := Load(writeConfig(t, validDB+validAPI+diameterIdentity+"  peers:\n"+core))
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+diameterIdentity+"  peers:\n"+core))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -130,7 +199,7 @@ func TestLoadOnePeerServesCxAndRx(t *testing.T) {
 }
 
 func TestLoadInvalid(t *testing.T) {
-	valid := validDB + validAPI
+	valid := validDB + validAPI + validIMS + validSIP
 
 	tests := []struct {
 		name    string
@@ -139,6 +208,26 @@ func TestLoadInvalid(t *testing.T) {
 	}{
 		{"missing db path", validAPI + validDiameter, "db.path is required"},
 		{"negative retention", validDB + "call_history:\n  retention: -1h\n" + validAPI + validDiameter, "call_history.retention must be positive"},
+		{"missing mcc", validDB + validAPI + "ims:\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "" must be 3 digits`},
+		{"short mcc", validDB + validAPI + "ims:\n  mcc: \"01\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "01" must be 3 digits`},
+		{"mcc not digits", validDB + validAPI + "ims:\n  mcc: \"0a1\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "0a1" must be 3 digits`},
+		{"short mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"1\"\n" + validSIP + validDiameter, `ims.mnc "1" must be 2 or 3 digits`},
+		{"long mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"0001\"\n" + validSIP + validDiameter, `ims.mnc "0001" must be 2 or 3 digits`},
+		{"no sip addresses", validDB + validAPI + validIMS + validDiameter, "sip.addresses needs at least one address"},
+		{"unspecified sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
+		{"unspecified sip ipv6 address", validDB + validAPI + validIMS + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
+		{"sip address with zone", validDB + validAPI + validIMS + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
+		{"duplicate sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
+		{"sip port out of range", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  port: 70000\n" + validDiameter, "sip.port 70000 is out of range"},
+		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
+		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
+		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
+		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},
+		{"home domain label too long", validDB + validAPI + validIMS + "  home_domain: " + strings.Repeat("a", 64) + ".org\n" + validSIP + validDiameter, "is not a domain name"},
+		{"alias not a domain name", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf_1.example.org]\n" + validDiameter, `sip.aliases: "pcscf_1.example.org" is neither a domain name nor an IP address`},
+		{"empty alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [\"\"]\n" + validDiameter, "sip.aliases: an alias is empty"},
+		{"duplicate alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf.example.org, PCSCF.example.org]\n" + validDiameter, "sip.aliases: pcscf.example.org is listed twice"},
+		{"alias is the home domain", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [ims.mnc001.mcc001.3gppnetwork.org]\n" + validDiameter, "is listed twice or is the home domain"},
 		{"missing api address", validDB + "api:\n  port: 8080\n" + validDiameter, "api.address is required"},
 		{"port out of range", validDB + "api:\n  address: 127.0.0.1\n  port: 70000\n" + validDiameter, "api.port 70000 is out of range"},
 		{"unknown field", valid + validDiameter + "foo: bar\n", "field foo not found"},

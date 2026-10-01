@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,7 @@ const (
 	defaultAPIPort       = 5020
 	defaultCallRetention = 90 * 24 * time.Hour
 	defaultDiameterPort  = 3868
+	defaultSIPPort       = 5060
 )
 
 type Transport string
@@ -36,6 +38,8 @@ type Config struct {
 	DB          DB          `yaml:"db"`
 	CallHistory CallHistory `yaml:"call_history"`
 	API         API         `yaml:"api"`
+	IMS         IMS         `yaml:"ims"`
+	SIP         SIP         `yaml:"sip"`
 	Diameter    Diameter    `yaml:"diameter"`
 }
 
@@ -50,6 +54,32 @@ type CallHistory struct {
 type API struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
+}
+
+type IMS struct {
+	MCC string `yaml:"mcc"`
+	MNC string `yaml:"mnc"`
+
+	HomeDomain string `yaml:"home_domain"`
+}
+
+type SIP struct {
+	Addresses      []netip.Addr `yaml:"addresses"`
+	Port           int          `yaml:"port"`
+	Aliases        []string     `yaml:"aliases"`
+	MaxConnections int          `yaml:"max_connections"`
+}
+
+func HomeDomain(mcc, mnc string) string {
+	if len(mnc) == 2 {
+		mnc = "0" + mnc
+	}
+
+	return "ims.mnc" + mnc + ".mcc" + mcc + ".3gppnetwork.org"
+}
+
+func (c Config) SIPAliases() []string {
+	return append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
 }
 
 type Diameter struct {
@@ -95,6 +125,23 @@ func Load(path string) (Config, error) {
 		cfg.API.Port = defaultAPIPort
 	}
 
+	cfg.IMS.HomeDomain = strings.ToLower(cfg.IMS.HomeDomain)
+	if cfg.IMS.HomeDomain == "" && isDigits(cfg.IMS.MCC) && isDigits(cfg.IMS.MNC) {
+		cfg.IMS.HomeDomain = HomeDomain(cfg.IMS.MCC, cfg.IMS.MNC)
+	}
+
+	if cfg.SIP.Port == 0 {
+		cfg.SIP.Port = defaultSIPPort
+	}
+
+	for i, a := range cfg.SIP.Addresses {
+		cfg.SIP.Addresses[i] = a.Unmap()
+	}
+
+	for i, a := range cfg.SIP.Aliases {
+		cfg.SIP.Aliases[i] = strings.ToLower(a)
+	}
+
 	for i := range cfg.Diameter.Peers {
 		p := &cfg.Diameter.Peers[i]
 
@@ -126,7 +173,108 @@ func (c Config) validate() error {
 		return fmt.Errorf("api.port %d is out of range", c.API.Port)
 	}
 
+	if err := c.IMS.validate(); err != nil {
+		return err
+	}
+
+	if err := c.SIP.validate(c.IMS.HomeDomain); err != nil {
+		return err
+	}
+
 	return c.Diameter.validate()
+}
+
+func (i IMS) validate() error {
+	switch {
+	case len(i.MCC) != 3 || !isDigits(i.MCC):
+		return fmt.Errorf("ims.mcc %q must be 3 digits", i.MCC)
+	case len(i.MNC) != 2 && len(i.MNC) != 3 || !isDigits(i.MNC):
+		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
+	case !isDomainName(i.HomeDomain):
+		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
+	}
+
+	return nil
+}
+
+func (s SIP) validate(homeDomain string) error {
+	switch {
+	case len(s.Addresses) == 0:
+		return errors.New("sip.addresses needs at least one address")
+	case s.Port < 1 || s.Port > 65535:
+		return fmt.Errorf("sip.port %d is out of range", s.Port)
+	case s.MaxConnections < 0:
+		return fmt.Errorf("sip.max_connections %d must not be negative", s.MaxConnections)
+	}
+
+	seen := make(map[netip.Addr]bool, len(s.Addresses))
+
+	for _, a := range s.Addresses {
+		switch {
+		case !a.IsValid():
+			return errors.New("sip.addresses: an address is empty")
+		case a.IsUnspecified():
+			return fmt.Errorf("sip.addresses: %s must be a specific address, since it is given to UEs", a)
+		case a.Zone() != "":
+			return fmt.Errorf("sip.addresses: %s must not have a zone", a)
+		case seen[a]:
+			return fmt.Errorf("sip.addresses: %s is listed twice", a)
+		}
+
+		seen[a] = true
+	}
+
+	names := map[string]bool{homeDomain: true}
+
+	for _, alias := range s.Aliases {
+		switch {
+		case alias == "":
+			return errors.New("sip.aliases: an alias is empty")
+		case !isDomainName(alias) && !isIPLiteral(alias):
+			return fmt.Errorf("sip.aliases: %q is neither a domain name nor an IP address", alias)
+		case names[alias]:
+			return fmt.Errorf("sip.aliases: %s is listed twice or is the home domain", alias)
+		}
+
+		names[alias] = true
+	}
+
+	return nil
+}
+
+func isDomainName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+
+	for label := range strings.SplitSeq(s, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func isIPLiteral(s string) bool {
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]"))
+	return err == nil && a.Zone() == ""
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+
+	return s != ""
 }
 
 func (d Diameter) validate() error {

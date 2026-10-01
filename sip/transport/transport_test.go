@@ -222,19 +222,39 @@ func TestMaxConnections(t *testing.T) {
 }
 
 func TestListenRefusesHeldPort(t *testing.T) {
-	var lc net.ListenConfig
+	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
+		var lc net.ListenConfig
 
-	other, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+		other, err := lc.Listen(context.Background(), "tcp", netip.AddrPortFrom(addr, 0).String())
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	defer func() { _ = other.Close() }()
+		defer func() { _ = other.Close() }()
 
-	tr, _ := siptest.NewTransport(t, transport.Config{})
-	if _, err := tr.Listen(context.Background(), other.Addr().(*net.TCPAddr).AddrPort()); err == nil {
-		t.Error("listened on a port another socket listens on")
-	}
+		tr, _ := siptest.NewTransport(t, transport.Config{})
+		if _, err := tr.Listen(context.Background(), other.Addr().(*net.TCPAddr).AddrPort()); err == nil {
+			t.Error("listened on a port another socket listens on")
+		}
+	})
+}
+
+func TestListenFixedPort(t *testing.T) {
+	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
+		tr, _ := siptest.NewTransport(t, transport.Config{})
+		free := siptest.Listen(t, tr, addr)
+
+		if err := tr.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		tr, _ = siptest.NewTransport(t, transport.Config{})
+
+		got, err := tr.Listen(context.Background(), free)
+		if err != nil || got != free {
+			t.Fatalf("Listen(%s) = %s, %v", free, got, err)
+		}
+	})
 }
 
 func TestSTUNBinding(t *testing.T) {
