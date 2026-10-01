@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -131,38 +132,109 @@ func TestTooLargeOverTCP(t *testing.T) {
 	rec.None(50 * time.Millisecond)
 }
 
-func TestTooLargeOverUDP(t *testing.T) {
+func TestNo513ForACK(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{MaxMessageSize: 1000})
+	local := siptest.Listen(t, tr, lo)
+	c := dialTCP(t, local)
+
+	ack := siptest.NewRequest("ACK", "sip:a@127.0.0.1", sip.TCP, netip.MustParseAddrPort("127.0.0.1:1"))
+	ack.SetBody("text/plain", []byte(strings.Repeat("x", 1000)))
+
+	if _, err := c.Write(ack.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := c.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read %d bytes, %v; want EOF without a 513", n, err)
+	}
+
+	rec.None(10 * time.Millisecond)
+}
+
+func TestLargeUDPRequestAccepted(t *testing.T) {
 	tr, rec := siptest.NewTransport(t, transport.Config{MaxMessageSize: 1000})
 	local := siptest.Listen(t, tr, lo)
 	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
 
 	req := siptest.NewRequest("MESSAGE", "sip:a@127.0.0.1", sip.UDP, u.Addr())
-	req.SetBody("text/plain", []byte(strings.Repeat("x", 1000)))
+	req.SetBody("text/plain", []byte(strings.Repeat("x", 60000)))
 	u.Send(sip.UDP, local, req)
 
-	res, _ := u.RecvResponse()
-	if res.StatusCode != 513 {
-		t.Errorf("got %s, want 513", res.StartLine())
+	if got := rec.NextRequest(); len(got.Body) != 60000 {
+		t.Errorf("body of %d bytes", len(got.Body))
 	}
-
-	if to, err := res.Header.To(); err != nil || to.Tag() == "" {
-		t.Errorf("513 To = %q, want a tag", res.Header.Get("To"))
-	}
-
-	rec.None(50 * time.Millisecond)
 }
 
-func TestNo513ForACK(t *testing.T) {
-	tr, rec := siptest.NewTransport(t, transport.Config{MaxMessageSize: 1000})
+func TestFirstMessageTimeout(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{FirstMessageTimeout: 200 * time.Millisecond})
 	local := siptest.Listen(t, tr, lo)
-	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
 
-	ack := siptest.NewRequest("ACK", "sip:a@127.0.0.1", sip.UDP, u.Addr())
-	ack.SetBody("text/plain", []byte(strings.Repeat("x", 1000)))
-	u.Send(sip.UDP, local, ack)
+	silent := dialTCP(t, local)
+	active := dialTCP(t, local)
 
-	u.RecvNone(100 * time.Millisecond)
-	rec.None(10 * time.Millisecond)
+	if _, err := active.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bK1"))); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.NextRequest()
+
+	start := time.Now()
+
+	if _, err := silent.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("silent connection: %v, want a reset", err)
+	}
+
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("silent connection closed after %v", d)
+	}
+
+	_ = active.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, err := active.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("active connection: %v, want it still open", err)
+	}
+}
+
+func TestMaxConnections(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{MaxConnections: 2})
+	local := siptest.Listen(t, tr, lo)
+
+	for i := range 2 {
+		c := dialTCP(t, local)
+		if _, err := c.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bK" + strconv.Itoa(i)))); err != nil {
+			t.Fatal(err)
+		}
+
+		rec.NextRequest()
+	}
+
+	d := net.Dialer{Timeout: siptest.Timeout}
+
+	extra, err := d.DialContext(context.Background(), "tcp", local.String())
+	if err == nil {
+		defer func() { _ = extra.Close() }()
+
+		_, err = extra.Read(make([]byte, 1))
+	}
+
+	if !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("third connection: %v, want a reset", err)
+	}
+}
+
+func TestListenRefusesHeldPort(t *testing.T) {
+	var lc net.ListenConfig
+
+	other, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = other.Close() }()
+
+	tr, _ := siptest.NewTransport(t, transport.Config{})
+	if _, err := tr.Listen(context.Background(), other.Addr().(*net.TCPAddr).AddrPort()); err == nil {
+		t.Error("listened on a port another socket listens on")
+	}
 }
 
 func TestSTUNBinding(t *testing.T) {

@@ -2,6 +2,11 @@
 
 package sockopt
 
-import "syscall"
+import (
+	"net/netip"
+	"syscall"
+)
 
 func ReusePort(_, _ string, _ syscall.RawConn) error { return nil }
+
+func CheckNoListener(_ netip.AddrPort) error { return nil }

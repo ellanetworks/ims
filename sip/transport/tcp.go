@@ -29,6 +29,7 @@ type conn struct {
 
 	wmu    sync.Mutex
 	active atomic.Int64
+	limit  atomic.Int64
 	closed atomic.Bool
 }
 
@@ -155,6 +156,7 @@ func (t *Transport) dial(c *conn) {
 	}
 
 	c.nc = nc.(*net.TCPConn)
+	c.limit.Store(int64(t.idleTimeout))
 	c.touch()
 	t.wg.Add(1)
 
@@ -181,6 +183,7 @@ func (t *Transport) accept(l *listener) {
 
 		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
 		c := &conn{flow: f, ready: make(chan struct{}), nc: nc}
+		c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
 		c.touch()
 		close(c.ready)
 
@@ -192,6 +195,14 @@ func (t *Transport) accept(l *listener) {
 			_ = nc.Close()
 
 			return
+		}
+
+		if len(t.conns) >= t.maxConns {
+			t.mu.Unlock()
+			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", flowString(f)), slog.Int("limit", t.maxConns))
+			c.abort()
+
+			continue
 		}
 
 		if old := t.conns[f]; old != nil {
@@ -213,7 +224,7 @@ func (t *Transport) readTCP(c *conn) {
 	defer t.wg.Done()
 	defer t.forget(c)
 
-	sr := sip.NewStreamReader(idleReader{c: c, idle: t.idleTimeout}, t.maxSize)
+	sr := sip.NewStreamReader(idleReader{c: c}, t.maxSize)
 
 	for {
 		m, ka, err := sr.Next()
@@ -225,6 +236,7 @@ func (t *Transport) readTCP(c *conn) {
 
 		switch {
 		case err == nil && m != nil:
+			c.limit.Store(int64(t.idleTimeout))
 			t.deliver(m, c.flow)
 		case err == nil:
 			if ka == sip.KeepalivePing {
@@ -236,6 +248,7 @@ func (t *Transport) readTCP(c *conn) {
 			t.tooLarge(c, terr)
 			return
 		case errors.As(err, &perr):
+			c.limit.Store(int64(t.idleTimeout))
 			t.malformed(err, c.flow)
 		case errors.Is(err, os.ErrDeadlineExceeded):
 			t.log.Debug("closing idle SIP connection", slog.String("flow", flowString(c.flow)))
@@ -293,13 +306,13 @@ func (t *Transport) forget(c *conn) {
 }
 
 type idleReader struct {
-	c    *conn
-	idle time.Duration
+	c *conn
 }
 
 func (r idleReader) Read(p []byte) (int, error) {
 	for {
-		_ = r.c.nc.SetReadDeadline(r.c.lastActive().Add(r.idle))
+		idle := time.Duration(r.c.limit.Load())
+		_ = r.c.nc.SetReadDeadline(r.c.lastActive().Add(idle))
 
 		n, err := r.c.nc.Read(p)
 		if n > 0 {
@@ -307,7 +320,7 @@ func (r idleReader) Read(p []byte) (int, error) {
 			return n, nil
 		}
 
-		if errors.Is(err, os.ErrDeadlineExceeded) && time.Since(r.c.lastActive()) < r.idle {
+		if errors.Is(err, os.ErrDeadlineExceeded) && time.Since(r.c.lastActive()) < idle {
 			continue
 		}
 

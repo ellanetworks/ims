@@ -19,13 +19,16 @@ import (
 const (
 	MaxUDPRequest = 1300
 
-	DefaultIdleTimeout  = time.Hour
-	DefaultDialTimeout  = 10 * time.Second
-	DefaultWriteTimeout = 10 * time.Second
+	DefaultIdleTimeout         = time.Hour
+	DefaultFirstMessageTimeout = 20 * time.Second
+	DefaultDialTimeout         = 10 * time.Second
+	DefaultWriteTimeout        = 10 * time.Second
+	DefaultMaxConnections      = 2048
 
 	defaultPort   = 5060
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
+	readBackoff   = 50 * time.Millisecond
 	bindRetries   = 16
 )
 
@@ -49,16 +52,21 @@ type Config struct {
 
 	MaxMessageSize int
 
-	IdleTimeout  time.Duration
-	DialTimeout  time.Duration
-	WriteTimeout time.Duration
+	MaxConnections int
+
+	IdleTimeout         time.Duration
+	FirstMessageTimeout time.Duration
+	DialTimeout         time.Duration
+	WriteTimeout        time.Duration
 }
 
 type Transport struct {
 	handler      Handler
 	log          *slog.Logger
 	maxSize      int
+	maxConns     int
 	idleTimeout  time.Duration
+	firstTimeout time.Duration
 	dialTimeout  time.Duration
 	writeTimeout time.Duration
 
@@ -87,7 +95,9 @@ func New(cfg Config) *Transport {
 		handler:      cfg.Handler,
 		log:          cfg.Logger,
 		maxSize:      cfg.MaxMessageSize,
+		maxConns:     cfg.MaxConnections,
 		idleTimeout:  cfg.IdleTimeout,
+		firstTimeout: cfg.FirstMessageTimeout,
 		dialTimeout:  cfg.DialTimeout,
 		writeTimeout: cfg.WriteTimeout,
 		listeners:    make(map[netip.AddrPort]*listener),
@@ -104,8 +114,16 @@ func New(cfg Config) *Transport {
 		t.maxSize = sip.DefaultMaxMessageSize
 	}
 
+	if t.maxConns <= 0 {
+		t.maxConns = DefaultMaxConnections
+	}
+
 	if t.idleTimeout <= 0 {
 		t.idleTimeout = DefaultIdleTimeout
+	}
+
+	if t.firstTimeout <= 0 {
+		t.firstTimeout = DefaultFirstMessageTimeout
 	}
 
 	if t.dialTimeout <= 0 {
@@ -163,6 +181,12 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 }
 
 func bind(ctx context.Context, local netip.AddrPort) (*listener, error) {
+	if local.Port() != 0 {
+		if err := sockopt.CheckNoListener(local); err != nil {
+			return nil, fmt.Errorf("port held by another socket: %w", err)
+		}
+	}
+
 	lc := net.ListenConfig{Control: sockopt.ReusePort}
 
 	tl, err := lc.Listen(ctx, network("tcp", local.Addr()), local.String())
@@ -451,7 +475,9 @@ func (t *Transport) readUDP(l *listener) {
 		}
 
 		if err != nil {
-			t.log.Debug("UDP read failed", slog.String("local", l.local.String()), slog.Any("error", err))
+			t.log.Warn("UDP read failed", slog.String("local", l.local.String()), slog.Any("error", err))
+			time.Sleep(readBackoff)
+
 			continue
 		}
 
@@ -471,40 +497,12 @@ func (t *Transport) readUDP(l *listener) {
 		f := sip.Flow{Transport: sip.UDP, Local: l.local, Remote: unmap(src)}
 
 		m, err := sip.Parse(data)
-
-		switch {
-		case n > t.maxSize:
-			t.udpTooLarge(m, err, f)
-		case err != nil:
+		if err != nil {
 			t.malformed(err, f)
-		default:
-			t.deliver(m, f)
+			continue
 		}
-	}
-}
 
-func (t *Transport) udpTooLarge(m sip.Message, err error, f sip.Flow) {
-	t.log.Debug("dropped oversized datagram", slog.String("flow", flowString(f)), slog.Int("size_limit", t.maxSize))
-
-	var perr *sip.ParseError
-	if errors.As(err, &perr) {
-		m = perr.Request
-	}
-
-	req, ok := m.(*sip.Request)
-	if !ok || req == nil || req.Method == "ACK" {
-		return
-	}
-
-	req.Flow = f
-
-	if stampVia(req) != nil {
-		return
-	}
-
-	res := tooLargeResponse(req)
-	if err := t.sendResponse(context.Background(), res); err != nil {
-		t.log.Debug("could not send 513", slog.String("flow", flowString(f)), slog.Any("error", err))
+		t.deliver(m, f)
 	}
 }
 
