@@ -544,18 +544,24 @@ func (l *Layer) handleResponse(res *sip.Response) {
 }
 
 func (l *Layer) isLocal(via sip.Via) bool {
-	port := sentByPort(via)
+	return l.IsLocal(via.Host, via.Port)
+}
+
+func (l *Layer) IsLocal(host string, port uint16) bool {
+	if port == 0 {
+		port = defaultPort
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if a, ok := via.Addr(); ok {
+	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
 		if _, ok := l.locals[netip.AddrPortFrom(a.Unmap(), port)]; ok {
 			return true
 		}
 	}
 
-	if _, ok := l.aliases[normalizeHost(via.Host)]; !ok {
+	if _, ok := l.aliases[normalizeHost(host)]; !ok {
 		return false
 	}
 
