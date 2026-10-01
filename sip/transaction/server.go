@@ -49,20 +49,35 @@ func (tx *ServerTransaction) Respond(res *sip.Response) error {
 	tx.mu.Lock()
 	defer tx.unlock()
 
-	return tx.respond(res)
+	return tx.respond(res, res.StatusCode > 100)
+}
+
+func (tx *ServerTransaction) Relay(res *sip.Response) error {
+	res = res.Clone()
+
+	tx.mu.Lock()
+	defer tx.unlock()
+
+	if tx.invite && res.IsSuccess() && tx.state != Proceeding && tx.state != Accepted {
+		tx.layer.sendStateless(res, tx.flow, tx.exact)
+		return nil
+	}
+
+	return tx.respond(res, res.StatusCode >= 300)
 }
 
 func (tx *ServerTransaction) start() {
 	if tx.invite {
-		_ = tx.respond(tx.trying)
+		_ = tx.respond(tx.trying, false)
 	} else {
 		tx.after(tx.layer.t100, tx.timer100)
+		tx.after(64*tx.layer.t1, tx.expire)
 	}
 
 	tx.emit(func() { tx.layer.h.HandleRequest(tx, tx.req) })
 }
 
-func (tx *ServerTransaction) respond(res *sip.Response) error {
+func (tx *ServerTransaction) respond(res *sip.Response, tag bool) error {
 	switch tx.state {
 	case Terminated:
 		return ErrTerminated
@@ -80,7 +95,7 @@ func (tx *ServerTransaction) respond(res *sip.Response) error {
 		}
 	}
 
-	if res.StatusCode > 100 {
+	if tag {
 		if err := res.Header.SetToTag(tx.tag); err != nil {
 			return err
 		}
@@ -182,7 +197,13 @@ func (tx *ServerTransaction) timer100() {
 	tx.may100 = true
 
 	if tx.state == Trying {
-		_ = tx.respond(tx.trying)
+		_ = tx.respond(tx.trying, false)
+	}
+}
+
+func (tx *ServerTransaction) expire() {
+	if tx.state == Trying || tx.state == Proceeding {
+		tx.fail(ErrTimeout)
 	}
 }
 

@@ -46,6 +46,7 @@ type core struct {
 	layer   *Layer
 	forget  func()
 	onError func(error)
+	onEnd   []func()
 
 	mu       sync.Mutex
 	cond     sync.Cond
@@ -255,7 +256,25 @@ func (tx *core) terminate(err error) {
 		tx.forget()
 	}
 
+	for _, f := range tx.onEnd {
+		tx.emit(f)
+	}
+
+	tx.onEnd = nil
+
 	tx.closeDone()
+}
+
+func (tx *core) OnTerminated(f func()) {
+	tx.mu.Lock()
+
+	if tx.state == Terminated {
+		tx.emit(f)
+	} else {
+		tx.onEnd = append(tx.onEnd, f)
+	}
+
+	tx.unlock()
 }
 
 func (tx *core) closeDone() {
