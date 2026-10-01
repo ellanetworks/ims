@@ -144,6 +144,18 @@ func TestHomeDomainOverride(t *testing.T) {
 	}
 }
 
+func TestLoadIPAliases(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+"sip:\n  addresses: [10.0.0.5]\n  aliases: [192.0.2.1, \"[2001:DB8::1]\", 2001:db8::2]\n"+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := []string{"192.0.2.1", "[2001:db8::1]", "2001:db8::2"}
+	if !reflect.DeepEqual(cfg.SIP.Aliases, want) {
+		t.Fatalf("aliases = %v, want %v", cfg.SIP.Aliases, want)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
 	if err != nil {
@@ -208,6 +220,11 @@ func TestLoadInvalid(t *testing.T) {
 		{"duplicate sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
 		{"sip port out of range", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  port: 70000\n" + validDiameter, "sip.port 70000 is out of range"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
+		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
+		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
+		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},
+		{"home domain label too long", validDB + validAPI + validIMS + "  home_domain: " + strings.Repeat("a", 64) + ".org\n" + validSIP + validDiameter, "is not a domain name"},
+		{"alias not a domain name", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf_1.example.org]\n" + validDiameter, `sip.aliases: "pcscf_1.example.org" is neither a domain name nor an IP address`},
 		{"empty alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [\"\"]\n" + validDiameter, "sip.aliases: an alias is empty"},
 		{"duplicate alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf.example.org, PCSCF.example.org]\n" + validDiameter, "sip.aliases: pcscf.example.org is listed twice"},
 		{"alias is the home domain", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [ims.mnc001.mcc001.3gppnetwork.org]\n" + validDiameter, "is listed twice or is the home domain"},

@@ -8,7 +8,6 @@ api:
 ims:
   mcc: "001"
   mnc: "01"
-  # home_domain: ims.mnc001.mcc001.3gppnetwork.org
 sip:
   addresses: [10.0.0.5]
   port: 5060

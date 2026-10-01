@@ -56,32 +56,20 @@ type API struct {
 	Port    int        `yaml:"port"`
 }
 
-// IMS identifies the operator's IMS network.
 type IMS struct {
 	MCC string `yaml:"mcc"`
 	MNC string `yaml:"mnc"`
 
-	// HomeDomain defaults to the domain derived from the PLMN.
 	HomeDomain string `yaml:"home_domain"`
 }
 
-// SIP is the P-CSCF's unprotected SIP endpoint.
 type SIP struct {
-	// Addresses are the P-CSCF addresses given to UEs.
-	Addresses []netip.Addr `yaml:"addresses"`
-	// Port is the unprotected port, for both UDP and TCP.
-	Port int `yaml:"port"`
-	// Aliases are host names, besides the home domain, that the IMS treats
-	// as its own in a Via sent-by.
-	Aliases []string `yaml:"aliases"`
-	// MaxConnections caps the inbound TCP connections. 0 is the transport
-	// default.
-	MaxConnections int `yaml:"max_connections"`
+	Addresses      []netip.Addr `yaml:"addresses"`
+	Port           int          `yaml:"port"`
+	Aliases        []string     `yaml:"aliases"`
+	MaxConnections int          `yaml:"max_connections"`
 }
 
-// HomeDomain derives the IMS home network domain name from the PLMN, as
-// ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org with the MNC padded to three digits
-// (TS 23.003 §13.2).
 func HomeDomain(mcc, mnc string) string {
 	if len(mnc) == 2 {
 		mnc = "0" + mnc
@@ -90,8 +78,6 @@ func HomeDomain(mcc, mnc string) string {
 	return "ims.mnc" + mnc + ".mcc" + mcc + ".3gppnetwork.org"
 }
 
-// SIPAliases returns the host names the IMS treats as its own: the home
-// domain followed by the configured aliases.
 func (c Config) SIPAliases() []string {
 	return append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
 }
@@ -204,6 +190,8 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.mcc %q must be 3 digits", i.MCC)
 	case len(i.MNC) != 2 && len(i.MNC) != 3 || !isDigits(i.MNC):
 		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
+	case !isDomainName(i.HomeDomain):
+		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
 	}
 
 	return nil
@@ -242,6 +230,8 @@ func (s SIP) validate(homeDomain string) error {
 		switch {
 		case alias == "":
 			return errors.New("sip.aliases: an alias is empty")
+		case !isDomainName(alias) && !isIPLiteral(alias):
+			return fmt.Errorf("sip.aliases: %q is neither a domain name nor an IP address", alias)
 		case names[alias]:
 			return fmt.Errorf("sip.aliases: %s is listed twice or is the home domain", alias)
 		}
@@ -250,6 +240,31 @@ func (s SIP) validate(homeDomain string) error {
 	}
 
 	return nil
+}
+
+func isDomainName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+
+	for label := range strings.SplitSeq(s, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func isIPLiteral(s string) bool {
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]"))
+	return err == nil && a.Zone() == ""
 }
 
 func isDigits(s string) bool {

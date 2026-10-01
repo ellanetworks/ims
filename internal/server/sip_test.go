@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,6 @@ func startServer(t *testing.T) *Server {
 	return srv
 }
 
-// sipListener returns the SIP listener of the address family of a.
 func sipListener(t *testing.T, srv *Server, a netip.Addr) netip.AddrPort {
 	t.Helper()
 
@@ -67,20 +67,40 @@ func TestSIPPlaceholder(t *testing.T) {
 			t.Run(addr.String()+"/"+string(tr), func(t *testing.T) {
 				pcscf := sipListener(t, srv, addr)
 				ue := siptest.NewSocket(t, netip.AddrPortFrom(addr, 0))
-				target := "sip:" + imsRealm
+				self := "sip:" + imsRealm + ":" + strconv.Itoa(int(pcscf.Port()))
 
 				t.Run("OPTIONS", func(t *testing.T) {
-					ue.Send(tr, pcscf, siptest.NewRequest("OPTIONS", target, tr, ue.Addr()))
+					ue.Send(tr, pcscf, siptest.NewRequest("OPTIONS", self, tr, ue.Addr()))
 
 					res := wantResponse(t, ue, 200, "OPTIONS")
+
+					want := map[string]string{
+						"Allow": placeholderAllow, "Accept": "", "Accept-Encoding": "", "Accept-Language": "en", "Supported": "",
+					}
+					for name, value := range want {
+						if !res.Header.Has(name) || res.Header.Get(name) != value {
+							t.Errorf("%s = %q (present %t), want %q", name, res.Header.Get(name), res.Header.Has(name), value)
+						}
+					}
+				})
+
+				t.Run("OPTIONS to a user", func(t *testing.T) {
+					ue.Send(tr, pcscf, siptest.NewRequest("OPTIONS", "sip:+15551230002@"+imsRealm, tr, ue.Addr()))
+					wantResponse(t, ue, 480, "OPTIONS")
+				})
+
+				t.Run("REGISTER", func(t *testing.T) {
+					ue.Send(tr, pcscf, siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr()))
+
+					res := wantResponse(t, ue, 405, "REGISTER")
 					if got := res.Header.Get("Allow"); got != placeholderAllow {
 						t.Fatalf("Allow = %q, want %q", got, placeholderAllow)
 					}
 				})
 
-				t.Run("REGISTER", func(t *testing.T) {
-					ue.Send(tr, pcscf, siptest.NewRequest("REGISTER", target, tr, ue.Addr()))
-					wantResponse(t, ue, 501, "REGISTER")
+				t.Run("unknown method", func(t *testing.T) {
+					ue.Send(tr, pcscf, siptest.NewRequest("FOO", "sip:"+imsRealm, tr, ue.Addr()))
+					wantResponse(t, ue, 501, "FOO")
 				})
 
 				t.Run("INVITE CANCEL", func(t *testing.T) {
@@ -95,7 +115,6 @@ func TestSIPPlaceholder(t *testing.T) {
 
 					ue.Send(tr, pcscf, cancel)
 
-					// The two transactions answer independently, in any order.
 					got := map[string]*sip.Response{}
 
 					for range 2 {
@@ -154,7 +173,6 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 			t.Fatalf("TCP connect to %s succeeded after Shutdown", l)
 		}
 
-		// The UDP port is free again.
 		var lc net.ListenConfig
 
 		pc, err := lc.ListenPacket(ctx, "udp", l.String())
@@ -171,7 +189,6 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.SIP.Port = int(taken.Addr().Port())
-	// ::1 binds first, so the failure on 127.0.0.1 must release it.
 	cfg.SIP.Addresses = []netip.Addr{loopback6, loopback}
 
 	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
@@ -203,7 +220,7 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 }
 
 func TestSIPPlaceholderRefusesUncancelledInvite(t *testing.T) {
-	h := newPlaceholderHandler(slog.New(slog.DiscardHandler))
+	h := newPlaceholderHandler(slog.New(slog.DiscardHandler), nil)
 	h.inviteTimeout = 50 * time.Millisecond
 
 	layer, _ := siptest.NewLayer(t, transaction.Config{Handler: h, Logger: slog.New(slog.DiscardHandler)})
@@ -212,5 +229,42 @@ func TestSIPPlaceholderRefusesUncancelledInvite(t *testing.T) {
 
 	ue.Send(sip.UDP, pcscf, siptest.NewRequest("INVITE", "sip:+15551230002@"+imsRealm, sip.UDP, ue.Addr()))
 	wantResponse(t, ue, 100, "INVITE")
-	wantResponse(t, ue, 501, "INVITE")
+	wantResponse(t, ue, 480, "INVITE")
+}
+
+func TestSIPPlaceholderIsSelf(t *testing.T) {
+	h := newPlaceholderHandler(slog.New(slog.DiscardHandler), []string{imsRealm, "pcscf.example.org"})
+	h.addListener(netip.MustParseAddrPort("10.0.0.5:5060"))
+	h.addListener(netip.MustParseAddrPort("[2001:db8::5]:5070"))
+
+	tests := []struct {
+		uri  string
+		want bool
+	}{
+		{"sip:" + imsRealm, true},
+		{"sip:" + strings.ToUpper(imsRealm) + ":5060", true},
+		{"sip:pcscf.example.org;transport=tcp", true},
+		{"sip:pcscf.example.org:5070", true},
+		{"sip:10.0.0.5", true},
+		{"sip:[2001:db8::5]:5070", true},
+		{"sip:pcscf.example.org:5080", false},
+		{"sips:pcscf.example.org", false},
+		{"sip:10.0.0.5:5070", false},
+		{"sip:[2001:db8::5]", false},
+		{"sip:10.0.0.6", false},
+		{"sip:other.example.org", false},
+		{"sip:+15551230002@" + imsRealm, false},
+		{"tel:+15551230002", false},
+	}
+
+	for _, tt := range tests {
+		u, err := sip.ParseURI(tt.uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := h.isSelf(u); got != tt.want {
+			t.Errorf("isSelf(%s) = %t, want %t", tt.uri, got, tt.want)
+		}
+	}
 }

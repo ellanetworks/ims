@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,20 +15,32 @@ import (
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
-// SIP is what the API and the tests need from the SIP stack.
 type SIP interface {
-	// Listeners returns the bound addresses, each serving UDP and TCP.
 	Listeners() []netip.AddrPort
 	Close() error
 }
 
-// placeholderAllow lists the methods the placeholder handler answers.
+const (
+	defaultSIPPort  = 5060
+	defaultSIPSPort = 5061
+)
+
 const placeholderAllow = "INVITE, ACK, CANCEL, OPTIONS"
 
-// placeholderInviteTimeout bounds how long an INVITE waits for a CANCEL
-// before it is refused. The INVITE server transaction has no timer of its
-// own in Proceeding, so the TU must end it (RFC 3261 §16.6 Timer C).
 const placeholderInviteTimeout = 64 * transaction.DefaultT1
+
+var knownMethods = map[string]bool{
+	"REGISTER":  true,
+	"BYE":       true,
+	"PRACK":     true,
+	"UPDATE":    true,
+	"SUBSCRIBE": true,
+	"NOTIFY":    true,
+	"MESSAGE":   true,
+	"INFO":      true,
+	"REFER":     true,
+	"PUBLISH":   true,
+}
 
 type sipServer struct {
 	layer     *transaction.Layer
@@ -35,9 +48,8 @@ type sipServer struct {
 	listeners []netip.AddrPort
 }
 
-// startSIP listens on each SIP address at the SIP port, over UDP and TCP.
 func startSIP(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sipServer, error) {
-	h := newPlaceholderHandler(logger)
+	h := newPlaceholderHandler(logger, cfg.SIPAliases())
 
 	layer := transaction.New(transaction.Config{
 		Handler:   h,
@@ -55,6 +67,7 @@ func startSIP(ctx context.Context, cfg config.Config, logger *slog.Logger) (*sip
 		}
 
 		s.listeners = append(s.listeners, bound)
+		h.addListener(bound)
 	}
 
 	return s, nil
@@ -71,46 +84,109 @@ func (s *sipServer) Close() error {
 	return err
 }
 
-// placeholderHandler answers requests until the CSCFs take them over.
 type placeholderHandler struct {
 	log           *slog.Logger
 	inviteTimeout time.Duration
+	aliases       map[string]bool
 
-	mu      sync.Mutex
-	closed  bool
-	invites map[*transaction.ServerTransaction]*time.Timer
+	mu        sync.Mutex
+	closed    bool
+	listeners map[netip.AddrPort]bool
+	invites   map[*transaction.ServerTransaction]*time.Timer
 }
 
-func newPlaceholderHandler(logger *slog.Logger) *placeholderHandler {
-	return &placeholderHandler{
+func newPlaceholderHandler(logger *slog.Logger, aliases []string) *placeholderHandler {
+	h := &placeholderHandler{
 		log:           logger,
 		inviteTimeout: placeholderInviteTimeout,
+		aliases:       make(map[string]bool, len(aliases)),
+		listeners:     make(map[netip.AddrPort]bool),
 		invites:       make(map[*transaction.ServerTransaction]*time.Timer),
 	}
+
+	for _, a := range aliases {
+		h.aliases[strings.ToLower(a)] = true
+	}
+
+	return h
+}
+
+func (h *placeholderHandler) addListener(local netip.AddrPort) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.listeners[local] = true
 }
 
 func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	switch req.Method {
-	case "OPTIONS":
-		res := sip.NewResponse(req, 200, "")
+	switch {
+	case req.Method == "OPTIONS" && h.isSelf(req.URI):
+		h.respond(tx, optionsResponse(req))
+	case req.Method == "OPTIONS":
+		h.respond(tx, sip.NewResponse(req, 480, ""))
+	case req.Method == "INVITE":
+		h.holdInvite(tx)
+	case knownMethods[req.Method]:
+		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)
 		h.respond(tx, res)
-	case "INVITE":
-		h.holdInvite(tx)
 	default:
 		h.respond(tx, sip.NewResponse(req, 501, ""))
 	}
 }
 
-// HandleCancel answers the INVITE with 487; the layer has already answered
-// the CANCEL (RFC 3261 §9.2).
+func optionsResponse(req *sip.Request) *sip.Response {
+	res := sip.NewResponse(req, 200, "")
+	res.Header.Set("Allow", placeholderAllow)
+	res.Header.Set("Accept", "")
+	res.Header.Set("Accept-Encoding", "")
+	res.Header.Set("Accept-Language", "en")
+	res.Header.Set("Supported", "")
+
+	return res
+}
+
+func (h *placeholderHandler) isSelf(u sip.URI) bool {
+	if !u.IsSIP() && !u.IsSIPS() || u.User != "" {
+		return false
+	}
+
+	port := u.Port
+
+	switch {
+	case port != 0:
+	case u.IsSIPS():
+		port = defaultSIPSPort
+	default:
+		port = defaultSIPPort
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if a, ok := u.Addr(); ok {
+		return h.listeners[netip.AddrPortFrom(a.Unmap(), port)]
+	}
+
+	if !h.aliases[strings.ToLower(u.Host)] {
+		return false
+	}
+
+	for l := range h.listeners {
+		if l.Port() == port {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *placeholderHandler) HandleCancel(tx *transaction.ServerTransaction, _ *sip.Request) {
 	if h.release(tx) {
 		h.respond(tx, sip.NewResponse(tx.Request(), 487, ""))
 	}
 }
 
-// HandleAck drops ACKs to 2xx responses, which the placeholder never sends.
 func (h *placeholderHandler) HandleAck(ack *sip.Request) {
 	h.log.Debug("dropped SIP ACK", slog.String("call-id", ack.Header.CallID()))
 }
@@ -120,8 +196,6 @@ func (h *placeholderHandler) HandleTransactionError(tx *transaction.ServerTransa
 	h.log.Debug("SIP server transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
 }
 
-// holdInvite leaves the INVITE pending so that a CANCEL can end it, and
-// refuses it after inviteTimeout.
 func (h *placeholderHandler) holdInvite(tx *transaction.ServerTransaction) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -132,12 +206,11 @@ func (h *placeholderHandler) holdInvite(tx *transaction.ServerTransaction) {
 
 	h.invites[tx] = time.AfterFunc(h.inviteTimeout, func() {
 		if h.release(tx) {
-			h.respond(tx, sip.NewResponse(tx.Request(), 501, ""))
+			h.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
 		}
 	})
 }
 
-// release forgets a held INVITE and reports whether it was held.
 func (h *placeholderHandler) release(tx *transaction.ServerTransaction) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
