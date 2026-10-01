@@ -140,6 +140,18 @@ func (fs *Header) Add(name, value string) {
 	*fs = append(*fs, Field{Name: name, Value: value})
 }
 
+func (fs *Header) Insert(name, value string) {
+	h := nameOf("Content-Length")
+
+	i := slices.IndexFunc(*fs, func(f Field) bool { return h.matches(f.Name) })
+	if i < 0 {
+		fs.Add(name, value)
+		return
+	}
+
+	*fs = slices.Insert(*fs, i, Field{Name: name, Value: value})
+}
+
 func (fs *Header) Prepend(name, value string) {
 	*fs = slices.Insert(*fs, 0, Field{Name: name, Value: value})
 }

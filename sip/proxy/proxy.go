@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,7 +19,11 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-const DefaultTimerC = 3*time.Minute + 30*time.Second
+const (
+	DefaultTimerC = 3*time.Minute + 30*time.Second
+
+	minTimerC = 3*time.Minute + time.Second
+)
 
 var (
 	ErrForwarded = errors.New("sip/proxy: request already forwarded")
@@ -49,6 +54,40 @@ type Proxy struct {
 	contexts map[*transaction.ServerTransaction]*responseContext
 }
 
+type Target struct {
+	Flow sip.Flow
+
+	SentBy netip.AddrPort
+}
+
+type RecordRoute struct {
+	User   string
+	Params sip.Params
+
+	Upstream netip.AddrPort
+}
+
+type Options struct {
+	RecordRoute *RecordRoute
+
+	Timeout time.Duration
+
+	OnReply func(r Reply) Verdict
+}
+
+type Reply struct {
+	Response *sip.Response
+
+	Err error
+}
+
+type Verdict int
+
+const (
+	Relay Verdict = iota
+	Hold
+)
+
 func New(cfg Config) *Proxy {
 	if cfg.Layer == nil {
 		panic("sip/proxy: nil Layer")
@@ -68,8 +107,11 @@ func New(cfg Config) *Proxy {
 		p.log = slog.Default()
 	}
 
-	if p.timerC <= 0 {
+	switch {
+	case p.timerC <= 0:
 		p.timerC = DefaultTimerC
+	case p.timerC < minTimerC:
+		p.timerC = minTimerC
 	}
 
 	if p.clock == nil {
@@ -80,6 +122,10 @@ func New(cfg Config) *Proxy {
 }
 
 func (p *Proxy) Check(req *sip.Request) *sip.Response {
+	if req.Method == "ACK" {
+		return nil
+	}
+
 	if mf, err := req.Header.MaxForwards(); err == nil && mf == 0 {
 		return sip.NewResponse(req, 483, "")
 	}
@@ -94,7 +140,7 @@ func (p *Proxy) Check(req *sip.Request) *sip.Response {
 
 	if len(unsupported) > 0 {
 		res := sip.NewResponse(req, 420, "")
-		res.Header = slices.Insert(res.Header, len(res.Header)-1, sip.Field{Name: "Unsupported", Value: strings.Join(unsupported, ", ")})
+		res.Header.Insert("Unsupported", strings.Join(unsupported, ", "))
 
 		return res
 	}
@@ -107,142 +153,129 @@ func (p *Proxy) Check(req *sip.Request) *sip.Response {
 }
 
 func (p *Proxy) IsLocal(u sip.URI) bool {
-	return u.IsSIP() && !u.Params.Has("gr") && p.layer.IsLocal(u.Host, u.Port)
+	return strings.EqualFold(u.Scheme, "sip") && !u.Params.Has("gr") && p.layer.IsLocal(u.Host, u.Port)
 }
 
-func (p *Proxy) Preprocess(req *sip.Request) ([]sip.URI, error) {
+func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
 	routes, err := req.Header.Routes()
 	if err != nil {
-		return nil, fmt.Errorf("sip/proxy: %w", err)
+		return nil, nil, fmt.Errorf("sip/proxy: %w", err)
 	}
+
+	out := req.Clone()
 
 	var removed []sip.URI
 
-	if to, err := req.Header.To(); err == nil && to.Tag() != "" && len(routes) > 0 && p.IsLocal(req.URI) {
-		removed = append(removed, req.URI)
-		req.URI = routes[len(routes)-1].URI
-		popLast(&req.Header, "Route")
+	if to, err := out.Header.To(); err == nil && to.Tag() != "" && len(routes) > 0 && p.IsLocal(out.URI) {
+		removed = append(removed, out.URI)
+		out.URI = routes[len(routes)-1].URI
+		popLast(&out.Header, "Route")
 
 		routes = routes[:len(routes)-1]
 	}
 
 	if len(routes) == 0 || !p.IsLocal(routes[0].URI) {
-		return removed, nil
+		return out, removed, nil
 	}
 
-	req.Header.PopFirst("Route")
+	out.Header.PopFirst("Route")
 
 	removed = append(removed, routes[0].URI)
 
 	if routes[0].URI.Params.Has("r2") && len(routes) > 1 && routes[1].URI.Params.Has("r2") && p.IsLocal(routes[1].URI) {
-		req.Header.PopFirst("Route")
+		out.Header.PopFirst("Route")
 
 		removed = append(removed, routes[1].URI)
 	}
 
-	return removed, nil
+	return out, removed, nil
 }
 
-type Options struct {
-	Flow sip.Flow
-
-	RecordRoute bool
-
-	Response func(res *sip.Response)
-}
-
-func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, opts Options) error {
+func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to Target, opts Options) error {
 	if req.Method == "ACK" || req.Method == "CANCEL" {
-		return fmt.Errorf("sip/proxy: Forward of a %s request", req.Method)
+		return internal(fmt.Errorf("sip/proxy: Forward of a %s request", req.Method))
 	}
 
-	out := req.Clone()
-
-	if err := decrementMaxForwards(out); err != nil {
-		return err
-	}
-
-	if opts.RecordRoute {
-		recordRoute(out, tx.Request().Flow, opts.Flow)
-	}
-
-	if err := strictNextHop(out); err != nil {
-		return err
-	}
-
-	out.Header.Prepend("Via", sip.NewVia(opts.Flow.Transport, opts.Flow.Local).String())
-	out.Flow = opts.Flow
-
-	c := &responseContext{p: p, stx: tx, invite: out.Method == "INVITE", hook: opts.Response}
-
-	p.mu.Lock()
-
-	cur, forwarded := p.contexts[tx]
-
-	if s := tx.State(); (forwarded && cur == nil) || (s != transaction.Trying && s != transaction.Proceeding) {
-		p.mu.Unlock()
-		return ErrAnswered
-	}
-
-	if forwarded {
-		p.mu.Unlock()
-		return ErrForwarded
-	}
-
-	p.contexts[tx] = c
-	p.mu.Unlock()
-
-	client, err := p.layer.Request(out, c)
+	out, err := p.prepare(req, to)
 	if err != nil {
-		p.forget(tx, c)
 		return err
 	}
 
-	c.mu.Lock()
-
-	c.client = client
-
-	if c.invite && !c.final {
-		c.timer = p.clock.AfterFunc(p.timerC, c.timerC)
+	if opts.RecordRoute != nil {
+		recordRoute(out, tx.Request().Flow, to, opts.RecordRoute)
 	}
 
-	cancel := c.cancelled && !c.final
-
-	c.mu.Unlock()
-
-	if cancel {
-		_ = client.Cancel()
+	c, fresh, err := p.context(tx)
+	if err != nil {
+		return err
 	}
+
+	if fresh {
+		tx.OnTerminated(func() { p.forget(c) })
+	}
+
+	b, err := c.open(opts)
+	if err != nil {
+		return err
+	}
+
+	client, err := p.layer.Request(out, b)
+	if err != nil {
+		c.abandon(b, fresh)
+		return internal(err)
+	}
+
+	c.started(b, client)
 
 	return nil
 }
 
-func (p *Proxy) Cancel(tx *transaction.ServerTransaction) {
+func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) error {
+	p.mu.Lock()
+	c := p.contexts[tx]
+	p.mu.Unlock()
+
+	if c == nil {
+		if tx.Request().Method == "INVITE" && res.IsSuccess() {
+			return tx.Relay(res)
+		}
+
+		return ErrAnswered
+	}
+
+	return c.relay(res.Clone())
+}
+
+func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	var reason []sip.Field
+
+	if cancel != nil {
+		for _, v := range cancel.Header.Values("Reason") {
+			reason = append(reason, sip.Field{Name: "Reason", Value: v})
+		}
+	}
+
 	p.mu.Lock()
 
 	c, ok := p.contexts[tx]
 	if !ok {
-		p.contexts[tx] = nil
+		c = newContext(p, tx)
+		c.final = true
+		p.contexts[tx] = c
 	}
 
 	p.mu.Unlock()
 
-	switch {
-	case c != nil:
-		c.cancel()
-	case !ok:
-		go func() {
-			<-tx.Done()
-			p.forget(tx, nil)
-		}()
-
-		if err := tx.Respond(sip.NewResponse(tx.Request(), 487, "")); err != nil {
-			p.log.Debug("487 to a cancelled request failed", slog.Any("error", err))
-		}
+	if ok {
+		c.cancel(reason)
+		return
 	}
+
+	p.answer(tx, 487)
+	p.forget(c)
 }
 
-func (p *Proxy) ForwardAck(ctx context.Context, ack *sip.Request, flow sip.Flow) error {
+func (p *Proxy) ForwardAck(ack *sip.Request, to Target) error {
 	if ack.Method != "ACK" {
 		return fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)
 	}
@@ -252,43 +285,89 @@ func (p *Proxy) ForwardAck(ctx context.Context, ack *sip.Request, flow sip.Flow)
 		return err
 	}
 
-	out := ack.Clone()
+	out, err := p.prepare(ack, to)
+	if err != nil {
+		return err
+	}
+
+	sum := sha256.Sum256([]byte(p.secret + via.Branch()))
+
+	top, _ := out.Header.TopVia()
+	top.Params.Set("branch", sip.MagicCookie+"-ack-"+hex.EncodeToString(sum[:12]))
+	_ = out.Header.SetTopVia(top)
+
+	return p.layer.Go(func(ctx context.Context) {
+		if err := p.layer.SendAck(ctx, out); err != nil {
+			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+		}
+	})
+}
+
+func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
+	out := req.Clone()
 
 	if err := decrementMaxForwards(out); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := strictNextHop(out); err != nil {
-		return err
+		return nil, err
 	}
 
-	v := sip.NewVia(flow.Transport, flow.Local)
-	sum := sha256.Sum256([]byte(p.secret + via.Branch()))
-	v.Params.Set("branch", sip.MagicCookie+"-ack-"+hex.EncodeToString(sum[:12]))
+	out.Header.Prepend("Via", sip.NewVia(to.Flow.Transport, to.sentBy()).String())
+	out.Flow = to.Flow
 
-	out.Header.Prepend("Via", v.String())
-	out.Flow = flow
-
-	return p.layer.SendAck(ctx, out)
+	return out, nil
 }
 
-func (p *Proxy) relayStateless(tx *transaction.ServerTransaction, res *sip.Response) {
-	res.Flow = tx.Request().Flow
-
-	go func() {
-		if err := p.layer.SendResponse(context.Background(), res); err != nil {
-			p.log.Debug("stateless relay failed", slog.String("response", res.StartLine()), slog.Any("error", err))
-		}
-	}()
-}
-
-func (p *Proxy) forget(tx *transaction.ServerTransaction, c *responseContext) {
+func (p *Proxy) context(tx *transaction.ServerTransaction) (*responseContext, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if cur, ok := p.contexts[tx]; ok && cur == c {
-		delete(p.contexts, tx)
+	if c, ok := p.contexts[tx]; ok {
+		return c, false, nil
 	}
+
+	if s := tx.State(); s != transaction.Trying && s != transaction.Proceeding {
+		return nil, false, ErrAnswered
+	}
+
+	c := newContext(p, tx)
+	p.contexts[tx] = c
+
+	return c, true, nil
+}
+
+func (p *Proxy) forget(c *responseContext) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.contexts[c.tx] == c {
+		delete(p.contexts, c.tx)
+	}
+}
+
+func (p *Proxy) answer(tx *transaction.ServerTransaction, code int) {
+	if err := tx.Respond(sip.NewResponse(tx.Request(), code, "")); err != nil {
+		p.log.Debug("proxy response failed", slog.Int("code", code), slog.Any("error", err))
+	}
+}
+
+func internal(err error) error {
+	var serr *sip.StatusError
+	if errors.As(err, &serr) {
+		return err
+	}
+
+	return &sip.StatusError{StatusCode: 500, Err: err}
+}
+
+func (t Target) sentBy() netip.AddrPort {
+	if t.SentBy.IsValid() {
+		return t.SentBy
+	}
+
+	return t.Flow.Local
 }
 
 func decrementMaxForwards(r *sip.Request) error {
@@ -311,27 +390,38 @@ func decrementMaxForwards(r *sip.Request) error {
 	return nil
 }
 
-func recordRoute(r *sip.Request, in, out sip.Flow) {
-	if in.Local == out.Local && in.Transport == out.Transport {
-		insertTop(&r.Header, "Record-Route", recordRouteValue(out, false))
+func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
+	up := rr.Upstream
+	if !up.IsValid() {
+		up = in.Local
+	}
+
+	down := to.sentBy()
+
+	if up == down && in.Transport == to.Flow.Transport {
+		insertTop(&r.Header, "Record-Route", recordRouteValue(rr, down, to.Flow.Transport, false))
 		return
 	}
 
-	insertTop(&r.Header, "Record-Route", recordRouteValue(in, true))
-	insertTop(&r.Header, "Record-Route", recordRouteValue(out, true))
+	insertTop(&r.Header, "Record-Route", recordRouteValue(rr, up, in.Transport, true))
+	insertTop(&r.Header, "Record-Route", recordRouteValue(rr, down, to.Flow.Transport, true))
 }
 
-func recordRouteValue(f sip.Flow, double bool) string {
-	u := sip.URI{Scheme: "sip", Host: sip.FormatHost(f.Local.Addr()), Port: f.Local.Port()}
+func recordRouteValue(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool) string {
+	u := sip.URI{Scheme: "sip", User: rr.User, Host: sip.FormatHost(addr.Addr()), Port: addr.Port()}
 
-	if f.Transport != sip.UDP {
-		u.Params.Set("transport", strings.ToLower(string(f.Transport)))
+	if tr != sip.UDP {
+		u.Params.Set("transport", strings.ToLower(string(tr)))
 	}
 
 	u.Params.Set("lr", "")
 
 	if double {
 		u.Params.Set("r2", "on")
+	}
+
+	for _, p := range rr.Params {
+		u.Params.Set(p.Name, p.Value)
 	}
 
 	return "<" + u.String() + ">"
@@ -353,12 +443,14 @@ func insertTop(h *sip.Header, name, value string) {
 }
 
 func strictNextHop(r *sip.Request) error {
-	route, ok, err := r.Header.TopRoute()
-	if err != nil {
-		return &sip.StatusError{StatusCode: 400, Err: err}
-	}
+	route, err := r.Header.TopRoute()
 
-	if !ok || route.URI.IsLooseRouter() {
+	switch {
+	case errors.Is(err, sip.ErrMissingHeader):
+		return nil
+	case err != nil:
+		return &sip.StatusError{StatusCode: 400, Err: err}
+	case route.URI.IsLooseRouter():
 		return nil
 	}
 

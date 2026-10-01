@@ -18,6 +18,7 @@ type State int
 const (
 	Early State = iota
 	Confirmed
+	Terminated
 )
 
 func (s State) String() string {
@@ -26,6 +27,8 @@ func (s State) String() string {
 		return "Early"
 	case Confirmed:
 		return "Confirmed"
+	case Terminated:
+		return "Terminated"
 	}
 
 	return "State(?)"
@@ -37,6 +40,8 @@ var (
 	ErrMismatch = errors.New("sip/dialog: message belongs to another dialog")
 
 	ErrCSeqExhausted = errors.New("sip/dialog: local CSeq exhausted")
+
+	ErrTerminated = errors.New("sip/dialog: dialog terminated")
 )
 
 type ID struct {
@@ -81,25 +86,11 @@ type Dialog struct {
 }
 
 func NewUAC(req *sip.Request, res *sip.Response) (*Dialog, error) {
-	if res.StatusCode <= 100 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: %d response", ErrNoDialog, res.StatusCode)
-	}
-
-	from, err := req.Header.From()
-	if err != nil {
+	if err := creates(res); err != nil {
 		return nil, err
 	}
 
-	to, err := res.Header.To()
-	if err != nil {
-		return nil, err
-	}
-
-	if to.Tag() == "" {
-		return nil, fmt.Errorf("%w: no To tag", ErrNoDialog)
-	}
-
-	cseq, err := req.Header.CSeq()
+	from, to, cseq, err := endpoints(req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -109,18 +100,15 @@ func NewUAC(req *sip.Request, res *sip.Response) (*Dialog, error) {
 		return nil, err
 	}
 
-	d := &Dialog{
-		id:           ID{CallID: req.Header.CallID(), LocalTag: from.Tag(), RemoteTag: to.Tag()},
-		local:        from,
-		remote:       to,
-		target:       target,
-		route:        res.Header.Elements("Record-Route"),
-		localSeq:     cseq.Seq,
-		haveLocalSeq: true,
-		origin:       cseq,
+	route := res.Header.Elements("Record-Route")
+	slices.Reverse(route)
+
+	d, err := newDialog(req.Header.CallID(), from, to, target, route, cseq)
+	if err != nil {
+		return nil, err
 	}
 
-	slices.Reverse(d.route)
+	d.localSeq, d.haveLocalSeq = cseq.Seq, true
 
 	if res.IsSuccess() {
 		d.state = Confirmed
@@ -130,25 +118,11 @@ func NewUAC(req *sip.Request, res *sip.Response) (*Dialog, error) {
 }
 
 func NewUAS(req *sip.Request, res *sip.Response) (*Dialog, error) {
-	if res.StatusCode <= 100 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: %d response", ErrNoDialog, res.StatusCode)
-	}
-
-	from, err := req.Header.From()
-	if err != nil {
+	if err := creates(res); err != nil {
 		return nil, err
 	}
 
-	to, err := res.Header.To()
-	if err != nil {
-		return nil, err
-	}
-
-	if to.Tag() == "" {
-		return nil, fmt.Errorf("%w: no To tag in the response", ErrNoDialog)
-	}
-
-	cseq, err := req.Header.CSeq()
+	from, to, cseq, err := endpoints(req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -158,33 +132,142 @@ func NewUAS(req *sip.Request, res *sip.Response) (*Dialog, error) {
 		return nil, err
 	}
 
-	d := &Dialog{
-		id:            ID{CallID: req.Header.CallID(), LocalTag: to.Tag(), RemoteTag: from.Tag()},
-		local:         to,
-		remote:        from,
-		target:        target,
-		route:         req.Header.Elements("Record-Route"),
-		remoteSeq:     cseq.Seq,
-		haveRemoteSeq: true,
-		origin:        cseq,
+	d, err := newDialog(req.Header.CallID(), to, from, target, req.Header.Elements("Record-Route"), cseq)
+	if err != nil {
+		return nil, err
 	}
 
-	d.Respond(req, res)
+	d.remoteSeq, d.haveRemoteSeq = cseq.Seq, true
+	d.PrepareResponse(req, res)
 
 	return d, nil
 }
 
+func NewFromNotify(subscribe, notify *sip.Request) (*Dialog, error) {
+	if notify.Method != "NOTIFY" {
+		return nil, fmt.Errorf("%w: %s request", ErrNoDialog, notify.Method)
+	}
+
+	if state, _, _ := strings.Cut(notify.Header.Get("Subscription-State"), ";"); strings.EqualFold(strings.TrimSpace(state), "terminated") {
+		return nil, fmt.Errorf("%w: subscription terminated", ErrNoDialog)
+	}
+
+	from, err := subscribe.Header.From()
+	if err != nil {
+		return nil, err
+	}
+
+	notifier, err := notify.Header.From()
+	if err != nil {
+		return nil, err
+	}
+
+	if id := RequestID(notify); id.CallID != subscribe.Header.CallID() || id.LocalTag != from.Tag() {
+		return nil, ErrMismatch
+	}
+
+	cseq, err := subscribe.Header.CSeq()
+	if err != nil {
+		return nil, err
+	}
+
+	remote, err := notify.Header.CSeq()
+	if err != nil {
+		return nil, err
+	}
+
+	target, err := contact(notify.Header)
+	if err != nil {
+		return nil, err
+	}
+
+	d, err := newDialog(subscribe.Header.CallID(), from, notifier, target, notify.Header.Elements("Record-Route"), cseq)
+	if err != nil {
+		return nil, err
+	}
+
+	d.state = Confirmed
+	d.localSeq, d.haveLocalSeq = cseq.Seq, true
+	d.remoteSeq, d.haveRemoteSeq = remote.Seq, true
+
+	return d, nil
+}
+
+func creates(res *sip.Response) error {
+	if res.StatusCode <= 100 || res.StatusCode >= 300 {
+		return fmt.Errorf("%w: %d response", ErrNoDialog, res.StatusCode)
+	}
+
+	return nil
+}
+
+func endpoints(req *sip.Request, res *sip.Response) (from, to sip.Address, cseq sip.CSeq, err error) {
+	if from, err = req.Header.From(); err != nil {
+		return
+	}
+
+	if to, err = res.Header.To(); err != nil {
+		return
+	}
+
+	cseq, err = req.Header.CSeq()
+
+	return
+}
+
+func newDialog(callID string, local, remote sip.Address, target sip.URI, route []string, origin sip.CSeq) (*Dialog, error) {
+	if local.Tag() == "" || remote.Tag() == "" {
+		return nil, fmt.Errorf("%w: missing tag", ErrNoDialog)
+	}
+
+	if err := checkRoute(route); err != nil {
+		return nil, err
+	}
+
+	return &Dialog{
+		id:     ID{CallID: callID, LocalTag: local.Tag(), RemoteTag: remote.Tag()},
+		local:  local,
+		remote: remote,
+		target: target,
+		route:  route,
+		origin: origin,
+	}, nil
+}
+
+func checkRoute(route []string) error {
+	for _, r := range route {
+		if _, err := sip.ParseAddress(r); err != nil {
+			return fmt.Errorf("sip/dialog: route set: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func contact(h sip.Header) (sip.URI, error) {
+	u, ok, err := optionalContact(h)
+	if err == nil && !ok {
+		err = fmt.Errorf("%w: no Contact", ErrNoDialog)
+	}
+
+	return u, err
+}
+
+func optionalContact(h sip.Header) (sip.URI, bool, error) {
 	cs, err := h.Contacts()
 	if err != nil {
-		return sip.URI{}, err
+		return sip.URI{}, false, err
 	}
 
-	if len(cs) == 0 || cs[0].Star {
-		return sip.URI{}, fmt.Errorf("%w: no Contact", ErrNoDialog)
+	if len(cs) == 0 {
+		return sip.URI{}, false, nil
 	}
 
-	return cs[0].URI, nil
+	if cs[0].Star {
+		return sip.URI{}, false, errors.New("sip/dialog: Contact * in a dialog")
+	}
+
+	return cs[0].URI, true, nil
 }
 
 func (d *Dialog) ID() ID {
@@ -196,6 +279,12 @@ func (d *Dialog) State() State {
 	defer d.mu.Unlock()
 
 	return d.state
+}
+
+func (d *Dialog) Terminate() {
+	d.mu.Lock()
+	d.state = Terminated
+	d.mu.Unlock()
 }
 
 func (d *Dialog) RemoteTarget() sip.URI {
@@ -210,6 +299,19 @@ func (d *Dialog) RouteSet() []string {
 	defer d.mu.Unlock()
 
 	return slices.Clone(d.route)
+}
+
+func (d *Dialog) NextHop() sip.URI {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.route) == 0 {
+		return d.target.Clone()
+	}
+
+	first, _ := sip.ParseAddress(d.route[0])
+
+	return first.URI
 }
 
 func (d *Dialog) LocalSeq() (uint32, bool) {
@@ -254,18 +356,27 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 	res.Header = slices.Insert(res.Header, i, rr...)
 }
 
-func (d *Dialog) Respond(req *sip.Request, res *sip.Response) {
+func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	cseq, err := req.Header.CSeq()
-	if err != nil || cseq != d.origin || res.StatusCode <= 100 || res.StatusCode >= 300 {
+	if err != nil || cseq != d.origin || res.StatusCode <= 100 {
 		return
 	}
 
-	CopyRecordRoute(res, req)
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	if res.IsSuccess() {
-		d.mu.Lock()
-		d.state = Confirmed
-		d.mu.Unlock()
+	switch {
+	case res.StatusCode >= 300:
+		if d.state == Early {
+			d.state = Terminated
+		}
+	case d.state == Terminated:
+	default:
+		CopyRecordRoute(res, req)
+
+		if res.IsSuccess() {
+			d.state = Confirmed
+		}
 	}
 }
 
@@ -292,17 +403,23 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 		return err
 	}
 
-	var target sip.URI
+	var (
+		target  sip.URI
+		refresh bool
+	)
 
-	refresh := isTargetRefresh(req.Method) && req.Header.Has("Contact")
-	if refresh {
-		if target, err = contact(req.Header); err != nil {
+	if isTargetRefresh(req.Method) {
+		if target, refresh, err = optionalContact(req.Header); err != nil {
 			return &sip.StatusError{StatusCode: 400, Err: err}
 		}
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if d.state == Terminated {
+		return &sip.StatusError{StatusCode: 481, Err: ErrTerminated}
+	}
 
 	if d.haveRemoteSeq && cseq.Seq < d.remoteSeq {
 		return &sip.StatusError{StatusCode: 500, Err: fmt.Errorf("CSeq %d below %d", cseq.Seq, d.remoteSeq)}
@@ -314,49 +431,64 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 		d.target = target
 	}
 
+	if req.Method == "BYE" {
+		d.state = Terminated
+	}
+
 	return nil
 }
 
 func (d *Dialog) ReceiveResponse(res *sip.Response) error {
-	if id := ResponseID(res); id != d.id {
-		return ErrMismatch
-	}
-
 	cseq, err := res.Header.CSeq()
 	if err != nil {
 		return err
 	}
 
 	creating := cseq == d.origin
+	id := ResponseID(res)
 
-	refresh := res.IsSuccess() && isTargetRefresh(cseq.Method)
+	if id.CallID != d.id.CallID || id.LocalTag != d.id.LocalTag || (id.RemoteTag != d.id.RemoteTag && (!creating || res.StatusCode < 300)) {
+		return ErrMismatch
+	}
 
-	if res.StatusCode <= 100 || res.StatusCode >= 300 || (!creating && !refresh) {
+	if res.StatusCode <= 100 {
 		return nil
 	}
 
-	target, err := contact(res.Header)
+	target, hasTarget, err := optionalContact(res.Header)
 	if err != nil {
-		if res.IsProvisional() {
-			return nil
-		}
+		return err
+	}
 
+	route := res.Header.Elements("Record-Route")
+	slices.Reverse(route)
+
+	if err := checkRoute(route); err != nil {
 		return err
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if creating && d.state == Confirmed && res.IsProvisional() {
-		return nil
-	}
+	switch {
+	case d.state == Terminated:
+	case creating && res.StatusCode >= 300:
+		if d.state == Early {
+			d.state = Terminated
+		}
+	case cseq.Method == "BYE" && res.StatusCode >= 200:
+		d.state = Terminated
+	case creating && d.state == Early:
+		if hasTarget {
+			d.target = target
+		}
 
-	d.target = target
-
-	if creating && res.IsSuccess() && d.state == Early {
-		d.state = Confirmed
-		d.route = res.Header.Elements("Record-Route")
-		slices.Reverse(d.route)
+		if res.IsSuccess() {
+			d.state = Confirmed
+			d.route = route
+		}
+	case res.IsSuccess() && isTargetRefresh(cseq.Method) && hasTarget:
+		d.target = target
 	}
 
 	return nil
@@ -371,6 +503,8 @@ func (d *Dialog) NewRequest(method string) (*sip.Request, error) {
 	defer d.mu.Unlock()
 
 	switch {
+	case d.state == Terminated:
+		return nil, ErrTerminated
 	case !d.haveLocalSeq:
 		d.localSeq, d.haveLocalSeq = initialSeq(), true
 	case d.localSeq == math.MaxUint32:
@@ -379,7 +513,7 @@ func (d *Dialog) NewRequest(method string) (*sip.Request, error) {
 		d.localSeq++
 	}
 
-	return d.build(method, d.localSeq)
+	return d.build(method, d.localSeq), nil
 }
 
 func (d *Dialog) NewAck(invite *sip.Request) (*sip.Request, error) {
@@ -393,16 +527,12 @@ func (d *Dialog) NewAck(invite *sip.Request) (*sip.Request, error) {
 	}
 
 	d.mu.Lock()
-	ack, err := d.build("ACK", cseq.Seq)
+	ack := d.build("ACK", cseq.Seq)
 	d.mu.Unlock()
-
-	if err != nil {
-		return nil, err
-	}
 
 	for _, f := range invite.Header {
 		if strings.EqualFold(f.Name, "Authorization") || strings.EqualFold(f.Name, "Proxy-Authorization") {
-			ack.Header = slices.Insert(ack.Header, len(ack.Header)-1, f)
+			ack.Header.Insert(f.Name, f.Value)
 		}
 	}
 
@@ -425,21 +555,17 @@ func (d *Dialog) NewPrack(res *sip.Response) (*sip.Request, error) {
 		return nil, err
 	}
 
-	rack := sip.RAck{RSeq: rseq, CSeq: cseq.Seq, Method: cseq.Method}
-	prack.Header = slices.Insert(prack.Header, len(prack.Header)-1, sip.Field{Name: "RAck", Value: rack.String()})
+	prack.Header.Insert("RAck", sip.RAck{RSeq: rseq, CSeq: cseq.Seq, Method: cseq.Method}.String())
 
 	return prack, nil
 }
 
-func (d *Dialog) build(method string, seq uint32) (*sip.Request, error) {
+func (d *Dialog) build(method string, seq uint32) *sip.Request {
 	uri := d.target
 	route := d.route
 
 	if len(route) > 0 {
-		first, err := sip.ParseAddress(route[0])
-		if err != nil {
-			return nil, fmt.Errorf("sip/dialog: route set: %w", err)
-		}
+		first, _ := sip.ParseAddress(route[0])
 
 		if !first.URI.IsLooseRouter() {
 			uri = first.URI
@@ -464,7 +590,7 @@ func (d *Dialog) build(method string, seq uint32) (*sip.Request, error) {
 	req.Header.Add("CSeq", sip.CSeq{Seq: seq, Method: method}.String())
 	req.Header.Add("Content-Length", "0")
 
-	return req, nil
+	return req
 }
 
 func initialSeq() uint32 {

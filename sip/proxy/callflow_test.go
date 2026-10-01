@@ -7,6 +7,7 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -110,8 +111,8 @@ func want(t *testing.T, m sip.Message, method string, vias, recordRoutes, maxFor
 func TestCallThroughTwoProxies(t *testing.T) {
 	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
 		forEachTransport(t, func(t *testing.T, tr sip.Transport) {
-			p2 := newRouter(t, addr, routerConfig{recordRoute: true})
-			p1 := newRouter(t, addr, routerConfig{recordRoute: true, next: p2.uri() + uriParam(tr) + ";lr"})
+			p2 := newRouter(t, addr, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}})
+			p1 := newRouter(t, addr, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, next: p2.uri() + uriParam(tr) + ";lr"})
 			alice := newUA(t, addr, tr)
 			bob := newUA(t, addr, tr)
 
@@ -188,7 +189,7 @@ func TestCallThroughTwoProxies(t *testing.T) {
 			}
 
 			ok := bob.respond(in, 200, "Contact", bob.contact())
-			bd.Respond(in.Req, ok)
+			bd.PrepareResponse(in.Req, ok)
 
 			if err := in.Tx.Respond(ok); err != nil {
 				t.Fatal(err)

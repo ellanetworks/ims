@@ -3,6 +3,7 @@ package sip
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -271,5 +272,22 @@ func TestViaAddr(t *testing.T) {
 		if got := map[bool]string{true: a.String(), false: ""}[ok]; got != want {
 			t.Errorf("%s: Addr() = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestHeaderInsert(t *testing.T) {
+	var h Header
+
+	h.Insert("A", "1")
+	h.Add("Content-Length", "0")
+	h.Insert("B", "2")
+
+	var names []string
+	for _, f := range h {
+		names = append(names, f.Name)
+	}
+
+	if got := strings.Join(names, ","); got != "A,B,Content-Length" {
+		t.Errorf("fields %s, want A,B,Content-Length", got)
 	}
 }

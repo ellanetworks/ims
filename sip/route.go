@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -17,41 +18,38 @@ func (u URI) IsLooseRouter() bool {
 	return u.Params.Has("lr")
 }
 
-func (fs Header) TopRoute() (Address, bool, error) {
+func (fs Header) TopRoute() (Address, error) {
 	v, err := fs.first("Route")
 	if err != nil {
-		return Address{}, false, nil
+		return Address{}, err
 	}
 
 	top, _ := firstListElement(v)
 
-	a, err := ParseAddress(top)
-	if err != nil {
-		return Address{}, true, err
-	}
-
-	return a, true, nil
+	return ParseAddress(top)
 }
 
 func NextHop(r *Request) (Transport, netip.AddrPort, error) {
-	u := r.URI
+	route, err := r.Header.TopRoute()
 
-	route, ok, err := r.Header.TopRoute()
-	if err != nil {
+	switch {
+	case err == nil:
+		return Destination(route.URI)
+	case errors.Is(err, ErrMissingHeader):
+		return Destination(r.URI)
+	default:
 		return "", netip.AddrPort{}, err
 	}
+}
 
-	if ok {
-		u = route.URI
-	}
-
+func Destination(u URI) (Transport, netip.AddrPort, error) {
 	if !u.IsSIP() || u.IsSIPS() {
-		return "", netip.AddrPort{}, fmt.Errorf("sip: no next hop in %s", u)
+		return "", netip.AddrPort{}, fmt.Errorf("sip: no destination in %s", u)
 	}
 
 	a, ok := u.Addr()
 	if !ok {
-		return "", netip.AddrPort{}, fmt.Errorf("sip: next hop %s is not an IP address", u.Host)
+		return "", netip.AddrPort{}, fmt.Errorf("sip: destination %s is not an IP address", u.Host)
 	}
 
 	port := u.Port
@@ -65,7 +63,7 @@ func NextHop(r *Request) (Transport, netip.AddrPort, error) {
 		switch tr = Transport(strings.ToUpper(t)); tr {
 		case UDP, TCP:
 		default:
-			return "", netip.AddrPort{}, fmt.Errorf("sip: next hop transport %s", t)
+			return "", netip.AddrPort{}, fmt.Errorf("sip: destination transport %s", t)
 		}
 	}
 

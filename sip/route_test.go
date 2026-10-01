@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 )
@@ -78,5 +79,24 @@ func TestRAckAndRSeq(t *testing.T) {
 
 	if _, err := h.RSeq(); err == nil {
 		t.Error("RSeq 0 accepted")
+	}
+}
+
+func TestTopRouteAndDestination(t *testing.T) {
+	var h Header
+
+	if _, err := h.TopRoute(); !errors.Is(err, ErrMissingHeader) {
+		t.Errorf("TopRoute without Route: %v", err)
+	}
+
+	h.Add("Route", "<sip:10.0.0.1:5070;transport=tcp;lr>, <sip:x;lr>")
+
+	r, err := h.TopRoute()
+	if err != nil || r.URI.String() != "sip:10.0.0.1:5070;transport=tcp;lr" {
+		t.Fatalf("TopRoute = %v, %v", r, err)
+	}
+
+	if tr, addr, err := Destination(r.URI); err != nil || tr != TCP || addr.String() != "10.0.0.1:5070" {
+		t.Errorf("Destination = %s %s %v", tr, addr, err)
 	}
 }

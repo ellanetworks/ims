@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,25 +28,33 @@ type router struct {
 	p     *proxy.Proxy
 	local netip.AddrPort
 
-	recordRoute bool
-	next        string
-	hook        func(*sip.Response)
-	held        chan *transaction.ServerTransaction
+	opts      proxy.Options
+	onReply   func(tx *transaction.ServerTransaction, req *sip.Request, r proxy.Reply) proxy.Verdict
+	sentBy    atomic.Pointer[netip.AddrPort]
+	out       atomic.Pointer[netip.AddrPort]
+	next      string
+	held      chan *transaction.ServerTransaction
+	cancelled chan struct{}
 }
 
 type routerConfig struct {
-	recordRoute bool
-	next        string
-	hold        bool
-	hook        func(*sip.Response)
-	clock       *siptest.Clock
-	timerC      time.Duration
+	opts    proxy.Options
+	onReply func(tx *transaction.ServerTransaction, req *sip.Request, r proxy.Reply) proxy.Verdict
+	sentBy  netip.AddrPort
+	next    string
+	hold    bool
+	clock   *siptest.Clock
+	timerC  time.Duration
 }
+
+var recordRoute = &proxy.RecordRoute{}
 
 func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 	t.Helper()
 
-	r := &router{t: t, recordRoute: cfg.recordRoute, next: cfg.next, hook: cfg.hook}
+	r := &router{t: t, opts: cfg.opts, onReply: cfg.onReply, next: cfg.next, cancelled: make(chan struct{}, 16)}
+	r.sentBy.Store(&cfg.sentBy)
+
 	if cfg.hold {
 		r.held = make(chan *transaction.ServerTransaction, 16)
 	}
@@ -80,10 +89,8 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	out := req.Clone()
-
-	if _, err := r.p.Preprocess(out); err != nil {
-		r.t.Error(err)
+	out := r.preprocess(req)
+	if out == nil {
 		return
 	}
 
@@ -91,39 +98,59 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		out.Header.Prepend("Route", "<"+r.next+">")
 	}
 
-	if err := r.p.Forward(tx, out, r.options(out, req.Flow.Local)); err != nil {
+	opts := r.opts
+	if r.onReply != nil {
+		opts.OnReply = func(rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
+	}
+
+	local := req.Flow.Local
+	if o := r.out.Load(); o != nil {
+		local = *o
+	}
+
+	if err := r.p.Forward(tx, out, r.target(out, local), opts); err != nil {
 		r.t.Error(err)
 	}
 }
 
-func (r *router) options(out *sip.Request, local netip.AddrPort) proxy.Options {
+func (r *router) preprocess(req *sip.Request) *sip.Request {
+	out, _, err := r.p.Preprocess(req)
+	if err != nil {
+		r.t.Error(err)
+		return nil
+	}
+
+	return out
+}
+
+func (r *router) target(out *sip.Request, local netip.AddrPort) proxy.Target {
 	tr, to, err := sip.NextHop(out)
 	if err != nil {
 		r.t.Error(err)
 	}
 
-	return proxy.Options{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}, RecordRoute: r.recordRoute, Response: r.hook}
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}, SentBy: *r.sentBy.Load()}
 }
 
-func (r *router) HandleCancel(tx *transaction.ServerTransaction, _ *sip.Request) {
-	r.p.Cancel(tx)
+func (r *router) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	r.p.Cancel(tx, cancel)
+
+	r.cancelled <- struct{}{}
 }
 
 func (r *router) HandleAck(ack *sip.Request) {
-	out := ack.Clone()
-
-	if _, err := r.p.Preprocess(out); err != nil {
-		r.t.Error(err)
+	out := r.preprocess(ack)
+	if out == nil {
 		return
 	}
 
-	if err := r.p.ForwardAck(context.Background(), out, r.options(out, ack.Flow.Local).Flow); err != nil {
+	if err := r.p.ForwardAck(out, r.target(out, ack.Flow.Local)); err != nil {
 		r.t.Error(err)
 	}
 }
 
 func (r *router) HandleTransactionError(_ *transaction.ServerTransaction, err error) {
-	if !errors.Is(err, transaction.ErrClosed) {
+	if !errors.Is(err, transaction.ErrClosed) && !errors.Is(err, transaction.ErrTimeout) {
 		r.t.Error(err)
 	}
 }

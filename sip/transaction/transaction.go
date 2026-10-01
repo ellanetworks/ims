@@ -444,7 +444,7 @@ func (l *Layer) answerCancel(tx, target *ServerTransaction) {
 		_ = res.Header.SetToTag(target.ToTag())
 	}
 
-	if err := tx.respond(res); err != nil {
+	if err := tx.respond(res, true); err != nil {
 		l.log.Debug("response to CANCEL failed", slog.String("flow", flowString(tx.flow)), slog.Any("error", err))
 	}
 }
@@ -458,6 +458,10 @@ func (l *Layer) reject(req *sip.Request, code int) {
 	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
 	f, exact := l.responseFlow(req)
+	l.sendStateless(res, f, exact)
+}
+
+func (l *Layer) sendStateless(res *sip.Response, f sip.Flow, exact bool) {
 	res.Flow = f
 
 	send := l.tr.Send
@@ -470,6 +474,20 @@ func (l *Layer) reject(req *sip.Request, code int) {
 			l.log.Debug("stateless response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 	})
+}
+
+func (l *Layer) Go(f func(ctx context.Context)) error {
+	if !l.enter() {
+		return ErrClosed
+	}
+
+	go func() {
+		defer l.wg.Done()
+
+		f(l.ctx)
+	}()
+
+	return nil
 }
 
 func (l *Layer) spawn(f func()) {

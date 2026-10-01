@@ -1,7 +1,9 @@
 package proxy_test
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"strings"
 	"testing"
@@ -53,7 +55,10 @@ func (s *scene) forwarded() (*sip.Request, sip.Flow) {
 
 func TestForwardInvite(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, tr sip.Transport) {
-		s := newScene(t, tr, routerConfig{recordRoute: true, hook: func(res *sip.Response) { res.Header.Add("X-Relayed", "yes") }})
+		s := newScene(t, tr, routerConfig{opts: proxy.Options{RecordRoute: recordRoute, OnReply: func(r proxy.Reply) proxy.Verdict {
+			r.Response.Header.Add("X-Relayed", "yes")
+			return proxy.Relay
+		}}})
 
 		invite := s.request("INVITE")
 		s.send(invite)
@@ -164,6 +169,10 @@ func TestForwardNonInvite(t *testing.T) {
 		reply(t, s.callee, fwd, f, 202)
 		wantResponse(t, s.caller, 202)
 
+		if n := s.r.p.Pending(); n != 0 {
+			t.Errorf("%d pending contexts after the final response", n)
+		}
+
 		s.caller.RecvNone(quiet)
 	})
 }
@@ -220,6 +229,9 @@ func TestPreprocess(t *testing.T) {
 		{name: "double", uri: "sip:b@10.0.0.9", routes: "<sip:" + self + ";transport=tcp;lr;r2=on>, <sip:" + self + ";lr;r2=on>, <sip:next;lr>", wantURI: "sip:b@10.0.0.9", wantRoute: "<sip:next;lr>", removed: 2},
 		{name: "single then own", uri: "sip:b@10.0.0.9", routes: "<sip:" + self + ";lr>, <sip:" + self + ";lr;r2=on>", wantURI: "sip:b@10.0.0.9", wantRoute: "<sip:" + self + ";lr;r2=on>", removed: 1},
 		{name: "tel", uri: "tel:+15551234", routes: "<sip:" + self + ";lr>", wantURI: "tel:+15551234", removed: 1},
+		{name: "r2 then own without r2", uri: "sip:b@10.0.0.9", routes: "<sip:" + self + ";lr;r2=on>, <sip:" + self + ";lr>", wantURI: "sip:b@10.0.0.9", wantRoute: "<sip:" + self + ";lr>", removed: 1},
+		{name: "r2 then foreign r2", uri: "sip:b@10.0.0.9", routes: "<sip:" + self + ";lr;r2=on>, <sip:127.0.0.1:1;lr;r2=on>", wantURI: "sip:b@10.0.0.9", wantRoute: "<sip:127.0.0.1:1;lr;r2=on>", removed: 1},
+		{name: "sips", uri: "sip:b@10.0.0.9", routes: "<sips:" + self + ";lr>", wantURI: "sip:b@10.0.0.9", wantRoute: "<sips:" + self + ";lr>"},
 	}
 
 	for _, c := range cases {
@@ -231,20 +243,26 @@ func TestPreprocess(t *testing.T) {
 				req.Header.Add("Route", v)
 			}
 
-			removed, err := r.p.Preprocess(req)
+			before := req.String()
+
+			out, removed, err := r.p.Preprocess(req)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if req.URI.String() != c.wantURI || strings.Join(req.Header.Values("Route"), ", ") != c.wantRoute || len(removed) != c.removed {
-				t.Errorf("got %s, Route %q, removed %v", req.URI, req.Header.Values("Route"), removed)
+			if out.URI.String() != c.wantURI || strings.Join(out.Header.Values("Route"), ", ") != c.wantRoute || len(removed) != c.removed {
+				t.Errorf("got %s, Route %q, removed %v", out.URI, out.Header.Values("Route"), removed)
+			}
+
+			if req.String() != before {
+				t.Error("Preprocess modified its argument")
 			}
 		})
 	}
 }
 
 func TestDoubleRecordRoute(t *testing.T) {
-	s := newScene(t, sip.UDP, routerConfig{recordRoute: true})
+	s := newScene(t, sip.UDP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}})
 
 	invite := s.request("INVITE")
 	invite.URI, _ = sip.ParseURI(target(s.callee, sip.TCP))
@@ -296,7 +314,7 @@ func TestStrictNextHop(t *testing.T) {
 
 	req := s.request("OPTIONS")
 	req.URI, _ = sip.ParseURI("sip:bob@example.com")
-	req.Header.Set("Route", "<"+s.r.uri()+";lr>, <sip:"+s.callee.Addr().String()+">, <sip:p3;lr>")
+	req.Header.Set("Route", "<"+s.r.uri()+";lr>, <sip:"+s.callee.Addr().String()+";method=INVITE?x=y>, <sip:p3;lr>")
 	s.send(req)
 
 	fwd, _ := s.forwarded()
@@ -329,12 +347,17 @@ func TestServiceUnavailableBecomes500(t *testing.T) {
 func TestUnreachableNextHop(t *testing.T) {
 	s := newScene(t, sip.UDP, routerConfig{})
 
-	gone := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
-	addr := gone.Addr()
-	gone.Close()
+	var lc net.ListenConfig
+
+	udp, err := lc.ListenPacket(context.Background(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = udp.Close() }()
 
 	req := s.request("MESSAGE")
-	req.URI, _ = sip.ParseURI("sip:bob@" + addr.String() + ";transport=tcp")
+	req.URI, _ = sip.ParseURI("sip:bob@" + udp.LocalAddr().String() + ";transport=tcp")
 	s.send(req)
 
 	wantResponse(t, s.caller, 500)
@@ -410,12 +433,9 @@ func TestCancelBeforeForward(t *testing.T) {
 		t.Fatalf("got %v, want 200 and 487", codes)
 	}
 
-	out := tx.Request().Clone()
-	if _, err := s.r.p.Preprocess(out); err != nil {
-		t.Fatal(err)
-	}
+	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.options(out, s.r.local)); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Forward after CANCEL: %v", err)
 	}
 
@@ -429,21 +449,24 @@ func TestForwardTwice(t *testing.T) {
 	wantResponse(t, s.caller, 100)
 
 	tx := <-s.r.held
-	out := tx.Request().Clone()
-	_, _ = s.r.p.Preprocess(out)
+	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.options(out, s.r.local)); err != nil {
+	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.r.p.Forward(tx, out, s.r.options(out, s.r.local)); !errors.Is(err, proxy.ErrForwarded) {
+	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrForwarded) {
 		t.Errorf("second Forward: %v", err)
 	}
 }
 
 func TestTimerC(t *testing.T) {
 	clock := siptest.NewClock()
-	s := newScene(t, sip.TCP, routerConfig{clock: clock})
+	codes := make(chan int, 8)
+	s := newScene(t, sip.TCP, routerConfig{clock: clock, onReply: func(_ *transaction.ServerTransaction, _ *sip.Request, r proxy.Reply) proxy.Verdict {
+		codes <- r.Response.StatusCode
+		return proxy.Relay
+	}})
 
 	s.send(s.request("INVITE"))
 	wantResponse(t, s.caller, 100)
@@ -457,7 +480,10 @@ func TestTimerC(t *testing.T) {
 	wantResponse(t, s.caller, 183)
 
 	clock.Advance(proxy.DefaultTimerC - transaction.DefaultT1)
-	s.caller.RecvNone(quiet)
+
+	if got := drain(codes); len(got) != 2 || got[0] != 180 || got[1] != 183 {
+		t.Fatalf("OnReply saw %v before Timer C, want [180 183]", got)
+	}
 
 	clock.Advance(transaction.DefaultT1)
 	wantResponse(t, s.caller, 408)
@@ -467,6 +493,7 @@ func TestTimerC(t *testing.T) {
 		t.Fatalf("got %s, want CANCEL", fc.Method)
 	}
 
+	reply(t, s.callee, fwd, f, 180)
 	reply(t, s.callee, fc, cf, 200)
 	reply(t, s.callee, fwd, f, 487)
 
@@ -475,6 +502,89 @@ func TestTimerC(t *testing.T) {
 	}
 
 	s.caller.RecvNone(quiet)
+
+	if got := drain(codes); len(got) != 1 || got[0] != 408 {
+		t.Errorf("OnReply saw %v after Timer C, want [408]", got)
+	}
+}
+
+func drain(ch chan int) []int {
+	var out []int
+
+	for {
+		select {
+		case v := <-ch:
+			out = append(out, v)
+		default:
+			return out
+		}
+	}
+}
+
+func TestNoReplyOnClose(t *testing.T) {
+	codes := make(chan int, 8)
+	s := newScene(t, sip.UDP, routerConfig{onReply: func(_ *transaction.ServerTransaction, _ *sip.Request, r proxy.Reply) proxy.Verdict {
+		codes <- r.Response.StatusCode
+		return proxy.Relay
+	}})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+	s.forwarded()
+
+	if err := s.r.l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := drain(codes); len(got) != 0 {
+		t.Errorf("OnReply saw %v on Close", got)
+	}
+}
+
+func TestDoubleRecordRouteOnSocketChange(t *testing.T) {
+	s := newScene(t, sip.UDP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}})
+	out := siptest.ListenLayer(t, s.r.l, loopback)
+	s.r.out.Store(&out)
+
+	s.send(s.request("MESSAGE"))
+
+	fwd, f := s.forwarded()
+	if f.Remote != out {
+		t.Errorf("sent from %s, want %s", f.Remote, out)
+	}
+
+	want := "<sip:" + out.String() + ";lr;r2=on>, <" + s.r.uri() + ";lr;r2=on>"
+	if got := strings.Join(fwd.Header.Values("Record-Route"), ", "); got != want {
+		t.Errorf("Record-Route %s, want %s", got, want)
+	}
+}
+
+func TestForwardErrors(t *testing.T) {
+	s := newScene(t, sip.UDP, routerConfig{hold: true})
+
+	s.send(s.request("MESSAGE"))
+	tx := <-s.r.held
+	out := s.r.preprocess(tx.Request())
+
+	to := s.r.target(out, netip.MustParseAddrPort("127.0.0.1:1"))
+
+	var serr *sip.StatusError
+	if err := s.r.p.Forward(tx, out, to, proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 500 {
+		t.Errorf("Forward from a socket the layer doesn't listen on: %v", err)
+	}
+
+	out.Header.Set("Max-Forwards", "0")
+
+	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 483 {
+		t.Errorf("Forward with Max-Forwards 0: %v", err)
+	}
+
+	ack := s.request("ACK")
+	ack.Header.Set("Max-Forwards", "0")
+
+	if res := s.r.p.Check(ack); res != nil {
+		t.Errorf("Check answered an ACK with %s", res.StartLine())
+	}
 }
 
 func TestTimerCThen2xx(t *testing.T) {
