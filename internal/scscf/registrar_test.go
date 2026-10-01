@@ -860,11 +860,11 @@ func TestHSSErrors(t *testing.T) {
 	}{
 		{"MAR user unknown", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorUserUnknown }, false, 403, false},
 		{"MAR identities don't match", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorIdentitiesDontMatch }, false, 403, false},
-		{"MAR unable to comply", func(h *fakeHSS) { h.marResult = diameter.ResultUnableToComply }, false, 500, true},
+		{"MAR unable to comply", func(h *fakeHSS) { h.marResult = diameter.ResultUnableToComply }, false, 500, false},
 		{"MAR without an AKAv1 vector", func(h *fakeHSS) { h.akaScheme = cx.SchemeDigestAKAv2MD5 }, false, 500, false},
 		{"SAR user unknown", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorUserUnknown }, true, 403, false},
 		{"SAR identities don't match", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorIdentitiesDontMatch }, true, 403, false},
-		{"SAR unable to comply", func(h *fakeHSS) { h.sarResult = diameter.ResultUnableToComply }, true, 500, true},
+		{"SAR unable to comply", func(h *fakeHSS) { h.sarResult = diameter.ResultUnableToComply }, true, 500, false},
 		{"MAR too busy", func(h *fakeHSS) { h.marResult = diameter.ResultTooBusy }, false, 500, true},
 		{"MAR roaming not allowed", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorRoamingNotAllowed }, false, 403, false},
 		{"MAR auth scheme not supported", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorAuthSchemeNotSupported }, false, 403, false},
