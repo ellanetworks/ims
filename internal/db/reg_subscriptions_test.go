@@ -9,17 +9,17 @@ import (
 	"time"
 )
 
-func testSubscription(registrationID int64) RegSubscription {
+func testSubscription() RegSubscription {
 	return RegSubscription{
-		RegistrationID: registrationID,
-		CallID:         "sub-1",
-		RemoteTag:      "ue-tag",
-		LocalTag:       "scscf-tag",
-		RemoteTarget:   "sip:[2001:db8::1]:5100",
-		RemoteCSeq:     1,
-		LocalCSeq:      1,
-		Version:        0,
-		ExpiresAt:      testNow.Add(time.Hour),
+		IMPI:         testIMPI,
+		CallID:       "sub-1",
+		RemoteTag:    "ue-tag",
+		LocalTag:     "scscf-tag",
+		RemoteTarget: "sip:[2001:db8::1]:5100",
+		RemoteCSeq:   1,
+		LocalCSeq:    1,
+		Version:      0,
+		ExpiresAt:    testNow.Add(time.Hour),
 	}
 }
 
@@ -27,9 +27,7 @@ func TestRegSubscriptionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	regID := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-
-	want := testSubscription(regID)
+	want := testSubscription()
 
 	id, err := d.PutRegSubscription(ctx, want)
 	if err != nil {
@@ -38,7 +36,7 @@ func TestRegSubscriptionLifecycle(t *testing.T) {
 
 	want.ID = id
 
-	subs, err := d.ListRegSubscriptions(ctx, regID)
+	subs, err := d.ListRegSubscriptions(ctx, testIMPI)
 	if err != nil {
 		t.Fatalf("ListRegSubscriptions: %v", err)
 	}
@@ -61,7 +59,7 @@ func TestRegSubscriptionLifecycle(t *testing.T) {
 		t.Fatalf("NextNotify = (%d, %d), want (2, 1)", cseq, version)
 	}
 
-	subs, err = d.ListRegSubscriptions(ctx, regID)
+	subs, err = d.ListRegSubscriptions(ctx, testIMPI)
 	if err != nil {
 		t.Fatalf("ListRegSubscriptions: %v", err)
 	}
@@ -92,17 +90,11 @@ func TestPutRegSubscriptionErrors(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	if _, err := d.PutRegSubscription(ctx, testSubscription(42)); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("PutRegSubscription without registration err = %v, want ErrNotFound", err)
-	}
-
-	regID := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-
-	if _, err := d.PutRegSubscription(ctx, testSubscription(regID)); err != nil {
+	if _, err := d.PutRegSubscription(ctx, testSubscription()); err != nil {
 		t.Fatalf("PutRegSubscription: %v", err)
 	}
 
-	if _, err := d.PutRegSubscription(ctx, testSubscription(regID)); !errors.Is(err, ErrSubscriptionExists) {
+	if _, err := d.PutRegSubscription(ctx, testSubscription()); !errors.Is(err, ErrSubscriptionExists) {
 		t.Fatalf("duplicate PutRegSubscription err = %v, want ErrSubscriptionExists", err)
 	}
 }
@@ -111,9 +103,7 @@ func TestNextNotifyConcurrent(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	regID := mustPutRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-
-	id, err := d.PutRegSubscription(ctx, testSubscription(regID))
+	id, err := d.PutRegSubscription(ctx, testSubscription())
 	if err != nil {
 		t.Fatalf("PutRegSubscription: %v", err)
 	}

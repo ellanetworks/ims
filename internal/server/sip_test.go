@@ -279,3 +279,16 @@ func TestSIPPlaceholderIsSelf(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveAKAKeys(t *testing.T) {
+	res := sip.NewResponse(siptest.NewRequest("REGISTER", "sip:"+imsRealm, sip.UDP, netip.MustParseAddrPort("127.0.0.1:5060")), 401, "")
+	res.Header.Add("WWW-Authenticate", `Digest realm="`+imsRealm+`", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth", `+
+		`ck="d53c02758b376066fad0af7daa6df765", ik="e1763cf28cc2e584588800193137ec92"`)
+
+	removeAKAKeys(res)
+
+	want := `Digest realm="` + imsRealm + `", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth"`
+	if got := res.Header.Get("WWW-Authenticate"); got != want {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, want)
+	}
+}

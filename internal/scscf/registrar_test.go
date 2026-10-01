@@ -3,9 +3,8 @@ package scscf
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
@@ -19,29 +18,62 @@ import (
 )
 
 var wantIdentities = []db.PublicIdentity{
-	{URI: testIMPU},
-	{URI: testBarred, Barred: true},
-	{URI: testMSISDN},
-	{URI: testTel},
+	{URI: testIMPU, Key: testIMPU, Barred: true},
+	{URI: testMSISDN, Key: testMSISDN, DisplayName: "Alice"},
+	{URI: testTel, Key: testTel},
+	{URI: testAlias, Key: testAlias},
 }
 
-func (h *harness) registration() db.Registration {
+const wantAssociated = `"Alice" <` + testMSISDN + `>, <` + testTel + `>, <` + testAlias + `>`
+
+func (h *harness) registrations(impi string) []db.Registration {
 	h.t.Helper()
 
-	reg, err := h.db.GetRegistration(context.Background(), testIMPI)
+	regs, err := h.db.ListRegistrationsByIMPI(context.Background(), impi)
 	if err != nil {
-		h.t.Fatalf("GetRegistration: %v", err)
+		h.t.Fatalf("ListRegistrationsByIMPI: %v", err)
 	}
 
-	return reg
+	return regs
+}
+
+func (h *harness) registration(impu string) db.Registration {
+	h.t.Helper()
+
+	for _, reg := range h.registrations(testIMPI) {
+		if holds(reg.Identities, identityKeyOf(impu)) {
+			return reg
+		}
+	}
+
+	h.t.Fatalf("no registration holds %s", impu)
+
+	return db.Registration{}
 }
 
 func (h *harness) wantUnregistered() {
 	h.t.Helper()
 
-	if _, err := h.db.GetRegistration(context.Background(), testIMPI); !errors.Is(err, db.ErrNotFound) {
-		h.t.Fatalf("GetRegistration err = %v, want ErrNotFound", err)
+	if regs := h.registrations(testIMPI); len(regs) != 0 {
+		h.t.Fatalf("registrations = %+v, want none", regs)
 	}
+}
+
+func contacts(t *testing.T, res *sip.Response) map[string]string {
+	t.Helper()
+
+	addrs, err := res.Header.Contacts()
+	if err != nil {
+		t.Fatalf("Contact: %v", err)
+	}
+
+	out := make(map[string]string, len(addrs))
+
+	for _, a := range addrs {
+		out[a.URI.String()], _ = a.Params.Get("expires")
+	}
+
+	return out
 }
 
 func TestInitialRegistration(t *testing.T) {
@@ -77,14 +109,18 @@ func TestInitialRegistration(t *testing.T) {
 		t.Fatalf("SAR = %+v", sar)
 	}
 
-	reg := h.registration()
+	reg := h.registration(testIMPU)
+	if len(reg.Bindings) != 1 {
+		t.Fatalf("bindings = %+v, want one", reg.Bindings)
+	}
+
+	contact := reg.Bindings[0].Contact
 
 	wantHeaders := map[string]string{
-		"Path":              testPath,
-		"Service-Route":     "<sip:orig-" + strconv.FormatInt(reg.ID, 10) + "@scscf." + homeDomain + ":5060;lr>",
-		"P-Associated-URI":  "<" + testIMPU + ">, <" + testMSISDN + ">, <" + testTel + ">",
-		"Contact":           "<" + u.contact + ">;+sip.instance=" + testInstance + ";+g.3gpp.smsip;expires=600",
-		"P-Charging-Vector": "icid-value=" + testICID,
+		"Path":             testPath,
+		"Service-Route":    "<sip:orig-" + strconv.FormatInt(contact.ID, 10) + "@scscf." + homeDomain + ":5060;lr>",
+		"P-Associated-URI": wantAssociated,
+		"Contact":          "<" + u.contact + ">;+sip.instance=" + testInstance + ";+g.3gpp.smsip;expires=600",
 	}
 	for name, value := range wantHeaders {
 		if got := res.Header.Get(name); got != value {
@@ -92,22 +128,31 @@ func TestInitialRegistration(t *testing.T) {
 		}
 	}
 
-	if res.Header.Get("To") == "" || !bytes.Contains([]byte(res.Header.Get("To")), []byte("tag=")) {
+	if !bytes.Contains([]byte(res.Header.Get("To")), []byte("tag=")) {
 		t.Errorf("To = %q, want a tag", res.Header.Get("To"))
 	}
 
+	sub, _ := cx.MarshalUserData(testSubscriptions()[0])
+
 	wantReg := db.Registration{
-		ID:           reg.ID,
-		IMPI:         testIMPI,
-		Contact:      "<" + u.contact + ">",
-		InstanceID:   "<urn:gsma:imei:35622410-483840-0>",
-		CallID:       u.callID,
-		CSeq:         2,
-		UEAddress:    loopback,
-		Path:         testPath,
-		Identities:   wantIdentities,
-		RegisteredAt: testEpoch,
-		ExpiresAt:    testEpoch.Add(600 * time.Second),
+		ID:         reg.ID,
+		IMPI:       testIMPI,
+		IMPU:       testIMPU,
+		Identities: wantIdentities,
+		UserData:   sub,
+		Bindings: []db.Binding{{
+			Contact: db.Contact{
+				ID:        contact.ID,
+				IMPI:      testIMPI,
+				URI:       u.contact,
+				Params:    ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
+				Path:      testPath,
+				UEAddress: loopback,
+			},
+			CallID:    u.callID,
+			CSeq:      2,
+			ExpiresAt: testEpoch.Add(600 * time.Second),
+		}},
 	}
 	if !reflect.DeepEqual(reg, wantReg) {
 		t.Fatalf("registration = %+v, want %+v", reg, wantReg)
@@ -131,8 +176,7 @@ func TestWrongResponse(t *testing.T) {
 
 	h.wantUnregistered()
 
-	// The challenge is gone: even the right answer is refused.
-	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 403)
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 500)
 	h.hss.noCx(t)
 }
 
@@ -148,8 +192,9 @@ func TestChallengeChecks(t *testing.T) {
 		{"other algorithm", func(u *ue, o *registerOptions, nonce string) {
 			o.auth = u.protected(nonce, testVector.XRES) + ", algorithm=MD5"
 		}},
-		{"other nonce", func(u *ue, o *registerOptions, _ string) {
-			o.auth = u.protected(base64.StdEncoding.EncodeToString(make([]byte, 32)), testVector.XRES)
+		{"other IMPU", func(u *ue, o *registerOptions, nonce string) {
+			u.impu = testMSISDN
+			o.auth = u.protected(nonce, testVector.XRES)
 		}},
 	}
 
@@ -175,7 +220,6 @@ func TestUnprotectedResponseIsIgnored(t *testing.T) {
 
 	nonce := u.challenged(registerOptions{})
 
-	// The P-CSCF says the REGISTER didn't come over the SAs: a new challenge.
 	auth := u.protected(nonce, testVector.XRES)
 	auth = auth[:len(auth)-len(`"yes"`)] + `"no"`
 
@@ -185,25 +229,62 @@ func TestUnprotectedResponseIsIgnored(t *testing.T) {
 }
 
 func TestResync(t *testing.T) {
+	for _, protected := range []bool{false, true} {
+		t.Run("protected "+strconv.FormatBool(protected), func(t *testing.T) {
+			h := newHarness(t)
+			u := h.newUE()
+
+			nonce := u.challenged(registerOptions{})
+
+			auts := bytes.Repeat([]byte{0x0a}, autsLen)
+			wantStatus(t, u.send(registerOptions{auth: u.resync(nonce, auts, protected)}), 401)
+
+			mar := h.hss.nextMAR(t)
+			if mar.Resync == nil || !bytes.Equal(mar.Resync.RAND, testVector.RAND) || !bytes.Equal(mar.Resync.AUTS, auts) {
+				t.Fatalf("MAR resync = %+v, want RAND‖AUTS", mar.Resync)
+			}
+
+			wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+			h.hss.wantSAR(t, cx.AssignmentRegistration)
+		})
+	}
+}
+
+func TestResyncLimit(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	nonce := u.challenged(registerOptions{})
+	auts := bytes.Repeat([]byte{0x0a}, autsLen)
+
+	for range maxResyncs {
+		wantStatus(t, u.send(registerOptions{auth: u.resync(nonce, auts, false)}), 401)
+		h.hss.nextMAR(t)
+	}
+
+	wantStatus(t, u.send(registerOptions{auth: u.resync(nonce, auts, false)}), 403)
+	h.hss.wantSAR(t, cx.AssignmentAuthenticationFailure)
+	h.hss.noCx(t)
+}
+
+func TestNetworkAuthenticationFailure(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
 	nonce := u.challenged(registerOptions{})
 
-	auts := bytes.Repeat([]byte{0x0a}, autsLen)
-	res := u.send(registerOptions{
-		auth: u.protected(nonce, nil) + `, auts="` + base64.StdEncoding.EncodeToString(auts) + `"`,
-	})
-	wantStatus(t, res, 401)
+	auth := fmt.Sprintf(`Digest username="%s", realm="%s", uri="sip:%s", nonce="%s", response="", `+
+		`algorithm=AKAv1-MD5, integrity-protected="no"`, u.impi, homeDomain, homeDomain, nonce)
 
-	mar := h.hss.nextMAR(t)
-	if mar.Resync == nil || !bytes.Equal(mar.Resync.RAND, testVector.RAND) || !bytes.Equal(mar.Resync.AUTS, auts) {
-		t.Fatalf("MAR resync = %+v, want RAND‖AUTS", mar.Resync)
+	res := u.send(registerOptions{auth: auth})
+	wantStatus(t, res, 403)
+
+	if res.Header.Has("WWW-Authenticate") {
+		t.Errorf("WWW-Authenticate = %q, want none", res.Header.Get("WWW-Authenticate"))
 	}
 
-	// The new challenge registers.
-	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
-	h.hss.wantSAR(t, cx.AssignmentRegistration)
+	h.hss.wantSAR(t, cx.AssignmentAuthenticationFailure)
+	h.hss.noCx(t)
 }
 
 func TestRegAwaitAuthExpiry(t *testing.T) {
@@ -214,8 +295,68 @@ func TestRegAwaitAuthExpiry(t *testing.T) {
 
 	h.clock.Advance(regAwaitAuth)
 
-	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 403)
+	if sar := h.hss.wantSAR(t, cx.AssignmentAuthenticationTimeout); !reflect.DeepEqual(sar.PublicIdentities, []string{testIMPU}) {
+		t.Fatalf("SAR = %+v", sar)
+	}
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 500)
 	h.wantUnregistered()
+	h.hss.noCx(t)
+}
+
+func TestRegAwaitAuthExpiryKeepsRegistration(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	u.challenged(registerOptions{})
+	h.clock.Advance(regAwaitAuth)
+	h.hss.wantSAR(t, cx.AssignmentAuthenticationTimeout)
+
+	h.registration(testIMPU)
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+}
+
+func TestIntegrityProtectedParameterIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	nonce := u.challenged(registerOptions{})
+
+	res := h.reg.Register(t.Context(), Request{
+		SIP:       u.request(registerOptions{auth: u.protected(nonce, testVector.XRES)}),
+		Protected: false,
+		UEAddress: loopback,
+	})
+	wantStatus(t, res, 401)
+	h.hss.nextMAR(t)
+	h.wantUnregistered()
+}
+
+func TestStrangersChallengeDoesNotBlockRefresh(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	h.hss.set(func(h *fakeHSS) { h.vector.RAND = bytes.Repeat([]byte{0x11}, 16) })
+
+	stranger := h.newUE()
+	stranger.challenged(registerOptions{})
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.noCx(t)
+}
+
+func TestProtectedRegisterWithoutRegistration(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 500)
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 500)
 	h.hss.noCx(t)
 }
 
@@ -226,7 +367,7 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	u.register(registerOptions{expires: "600"})
 	h.hss.nextSAR(t)
 
-	before := h.registration()
+	before := h.registration(testIMPU)
 
 	h.clock.Advance(5 * time.Minute)
 
@@ -234,13 +375,17 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	wantStatus(t, res, 200)
 	h.hss.noCx(t)
 
-	if got := res.Header.Get("Service-Route"); got != serviceRoute(homeDomain, sipPort, before.ID) {
+	if got := res.Header.Get("Service-Route"); got != serviceRoute(scscfName, sipPort, before.Bindings[0].Contact.ID) {
 		t.Errorf("Service-Route = %q", got)
 	}
 
-	after := h.registration()
-	if after.ID != before.ID || after.CSeq != 3 || !after.ExpiresAt.Equal(h.clock.Now().Add(1200*time.Second)) ||
-		!after.RegisteredAt.Equal(before.RegisteredAt) {
+	if got := res.Header.Get("P-Associated-URI"); got != wantAssociated {
+		t.Errorf("P-Associated-URI = %q, want %q", got, wantAssociated)
+	}
+
+	after := h.registration(testIMPU)
+	if b := after.Bindings[0]; after.ID != before.ID || b.Contact.ID != before.Bindings[0].Contact.ID || b.CSeq != 3 ||
+		!b.ExpiresAt.Equal(h.clock.Now().Add(1200*time.Second)) {
 		t.Fatalf("registration = %+v", after)
 	}
 }
@@ -252,7 +397,7 @@ func TestReRegistrationWithChallenge(t *testing.T) {
 	u.register(registerOptions{})
 	h.hss.nextSAR(t)
 
-	before := h.registration()
+	before := h.registration(testIMPU)
 
 	u.register(registerOptions{})
 
@@ -260,21 +405,120 @@ func TestReRegistrationWithChallenge(t *testing.T) {
 		t.Fatalf("SAR = %+v, want User-Data-Already-Available", sar)
 	}
 
-	after := h.registration()
-	if after.ID != before.ID || !reflect.DeepEqual(after.Identities, wantIdentities) {
-		t.Fatalf("registration = %+v", after)
+	after := h.registration(testIMPU)
+	if after.ID != before.ID || !reflect.DeepEqual(after.Identities, wantIdentities) ||
+		!bytes.Equal(after.UserData, before.UserData) {
+		t.Fatalf("registration = %+v, want %+v kept", after, before)
 	}
 }
 
-func TestReRegistrationFromNewContact(t *testing.T) {
+func TestOutOfOrderRegister(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
 	u.register(registerOptions{})
 	h.hss.nextSAR(t)
 
-	before := h.registration()
+	before := h.registration(testIMPU)
 
+	u.cseq = 0
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 500)
+
+	if after := h.registration(testIMPU); !reflect.DeepEqual(after, before) {
+		t.Fatalf("registration = %+v, want %+v", after, before)
+	}
+}
+
+func TestIMPUAsReceived(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	u.impu = "sip:+15551230001@IMS.mnc001.mcc001.3gppnetwork.org;user=phone"
+
+	wantStatus(t, u.send(registerOptions{auth: u.unprotected()}), 401)
+
+	if mar := h.hss.nextMAR(t); mar.PublicIdentity != u.impu {
+		t.Fatalf("MAR Public-Identity = %q, want %q", mar.PublicIdentity, u.impu)
+	}
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+
+	if sar := h.hss.wantSAR(t, cx.AssignmentRegistration); !reflect.DeepEqual(sar.PublicIdentities, []string{u.impu}) {
+		t.Fatalf("SAR = %+v, want %s", sar, u.impu)
+	}
+
+	if reg := h.registration(testIMPU); reg.IMPU != u.impu || !reflect.DeepEqual(reg.Identities, wantIdentities) {
+		t.Fatalf("registration = %+v", reg)
+	}
+
+	u.impu = "sip:+15551230001@" + homeDomain
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
+	h.hss.nextSAR(t)
+}
+
+func TestAllBarredSet(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	h.hss.set(func(h *fakeHSS) {
+		h.subscriptions = []cx.IMSSubscription{{
+			PrivateIdentity: testIMPI,
+			ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{{Identity: testIMPU, Barred: true}}}},
+		}}
+	})
+
+	nonce := u.challenged(registerOptions{})
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 403)
+	h.hss.wantSAR(t, cx.AssignmentRegistration)
+	h.wantUnregistered()
+}
+
+func TestRegisterAnotherIMPU(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	u.impu = secondIMPU
+	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)})
+	wantStatus(t, res, 200)
+
+	if sar := h.hss.wantSAR(t, cx.AssignmentRegistration); sar.UserDataAlreadyAvailable ||
+		!reflect.DeepEqual(sar.PublicIdentities, []string{secondIMPU}) {
+		t.Fatalf("SAR = %+v", sar)
+	}
+
+	h.hss.noCx(t)
+
+	if got := res.Header.Get("P-Associated-URI"); got != "<"+secondIMPU+">" {
+		t.Errorf("P-Associated-URI = %q", got)
+	}
+
+	first, second := h.registration(testIMPU), h.registration(secondIMPU)
+	if first.ID == second.ID || first.Bindings[0].Contact.ID != second.Bindings[0].Contact.ID {
+		t.Fatalf("registrations %+v and %+v, want two sets bound to one contact", first, second)
+	}
+
+	u.impu = unknownIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
+	h.hss.nextSAR(t)
+}
+
+func TestNewContactReplacesOldOne(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.nextSAR(t)
+
+	old := h.registration(testIMPU).Bindings[0].Contact
+
+	u.impu = testIMPU
 	u.contact = "sip:001010000000001@127.0.0.2:5060"
 	u.callID = "new@127.0.0.1"
 
@@ -282,20 +526,60 @@ func TestReRegistrationFromNewContact(t *testing.T) {
 
 	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 
-	after := h.registration()
-	if after.ID == before.ID || after.Contact != "<"+u.contact+">" || after.CallID != u.callID ||
-		!reflect.DeepEqual(after.Identities, wantIdentities) {
-		t.Fatalf("registration = %+v, want a new one at %s", after, u.contact)
+	if sar := h.hss.wantSAR(t, cx.AssignmentAdministrativeDeregistration); !reflect.DeepEqual(sar.PublicIdentities, []string{secondIMPU}) {
+		t.Fatalf("SAR = %+v", sar)
 	}
 
-	if got := res.Header.Get("Service-Route"); got != serviceRoute(homeDomain, sipPort, after.ID) {
-		t.Errorf("Service-Route = %q", got)
+	regs := h.registrations(testIMPI)
+	if len(regs) != 1 || len(regs[0].Bindings) != 1 || regs[0].Bindings[0].Contact.URI != u.contact {
+		t.Fatalf("registrations = %+v, want the first set bound to %s only", regs, u.contact)
 	}
 
-	// The old contact can no longer refresh.
-	u.contact = "sip:001010000000001@127.0.0.1:" + strconv.Itoa(int(u.sock.Addr().Port()))
+	if got := contacts(t, res); !reflect.DeepEqual(got, map[string]string{u.contact: "3600"}) {
+		t.Errorf("Contact = %v", got)
+	}
+
+	if got, want := res.Header.Get("Service-Route"), serviceRoute(scscfName, sipPort, regs[0].Bindings[0].Contact.ID); got != want ||
+		regs[0].Bindings[0].Contact.ID == old.ID {
+		t.Errorf("Service-Route = %q, want %q for the new contact", got, want)
+	}
+
+	u.contact = old.URI
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
 	h.hss.noCx(t)
+}
+
+func TestSeveralContacts(t *testing.T) {
+	t.Run("same address", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		res := u.register(registerOptions{contact: "<sip:a@127.0.0.1:5070>, <sip:b@127.0.0.1:5070>;+g.3gpp.smsip, <sip:a@127.0.0.1:5070>"})
+
+		h.hss.nextSAR(t)
+
+		want := map[string]string{"sip:a@127.0.0.1:5070": "3600", "sip:b@127.0.0.1:5070": "3600"}
+		if got := contacts(t, res); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Contact = %v, want %v", got, want)
+		}
+
+		if reg := h.registration(testIMPU); len(reg.Bindings) != 2 || reg.Bindings[1].Contact.Params != ";+g.3gpp.smsip" {
+			t.Fatalf("bindings = %+v", reg.Bindings)
+		}
+	})
+
+	t.Run("different addresses", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		res := u.register(registerOptions{contact: "<sip:a@127.0.0.2>;q=0.5, <sip:b@127.0.0.3>;q=0.9"})
+
+		h.hss.nextSAR(t)
+
+		if got := contacts(t, res); !reflect.DeepEqual(got, map[string]string{"sip:b@127.0.0.3": "3600"}) {
+			t.Fatalf("Contact = %v", got)
+		}
+	})
 }
 
 func TestDeregistration(t *testing.T) {
@@ -330,11 +614,101 @@ func TestDeregistration(t *testing.T) {
 
 			h.wantUnregistered()
 
-			if res.Header.Has("Contact") {
-				t.Errorf("Contact = %q, want none", res.Header.Get("Contact"))
+			if got := contacts(t, res); !reflect.DeepEqual(got, map[string]string{u.contact: "0"}) {
+				t.Errorf("Contact = %v", got)
 			}
 		})
 	}
+}
+
+func TestPartialDeregistration(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{contact: "<sip:a@127.0.0.1:5070>, <sip:b@127.0.0.1:5070>", expires: "600"})
+	h.hss.nextSAR(t)
+
+	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<sip:a@127.0.0.1:5070>;expires=0"})
+	wantStatus(t, res, 200)
+	h.hss.noCx(t)
+
+	want := map[string]string{"sip:a@127.0.0.1:5070": "0", "sip:b@127.0.0.1:5070": "600"}
+	if got := contacts(t, res); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Contact = %v, want %v", got, want)
+	}
+
+	if reg := h.registration(testIMPU); len(reg.Bindings) != 1 || reg.Bindings[0].Contact.URI != "sip:b@127.0.0.1:5070" {
+		t.Fatalf("bindings = %+v", reg.Bindings)
+	}
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<sip:b@127.0.0.1:5070>;expires=0"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentUserDeregistration)
+	h.wantUnregistered()
+}
+
+func TestDeregistrationWithoutBinding(t *testing.T) {
+	t.Run("other contact", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		u.register(registerOptions{})
+		h.hss.nextSAR(t)
+
+		u.contact = "sip:001010000000001@127.0.0.2:5060"
+		wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 481)
+		h.hss.noCx(t)
+		h.registration(testIMPU)
+	})
+
+	t.Run("unregistered IMPU", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		u.register(registerOptions{})
+		h.hss.nextSAR(t)
+
+		u.impu = secondIMPU
+		wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 481)
+		h.hss.noCx(t)
+		h.registration(testIMPU)
+	})
+
+	t.Run("after a challenge", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		nonce := u.challenged(registerOptions{expires: "0"})
+		wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES), expires: "0"}), 481)
+		h.hss.noCx(t)
+	})
+}
+
+func TestSharedIMPU(t *testing.T) {
+	h := newHarness(t)
+
+	phone := h.newUE()
+	phone.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	tablet := h.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = testAlias
+	tablet.contact = "sip:tablet@127.0.0.1:5090"
+
+	res := tablet.register(registerOptions{})
+
+	h.hss.nextSAR(t)
+
+	want := map[string]string{phone.contact: "3600", tablet.contact: "3600"}
+	if got := contacts(t, res); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Contact = %v, want %v", got, want)
+	}
+
+	if regs := h.registrations(tablet.impi); len(regs) != 1 || !reflect.DeepEqual(regs[0].Identities, wantIdentities) {
+		t.Fatalf("tablet registrations = %+v", regs)
+	}
+
+	h.registration(testIMPU)
 }
 
 func TestTimeoutDeregistration(t *testing.T) {
@@ -345,7 +719,7 @@ func TestTimeoutDeregistration(t *testing.T) {
 	h.hss.nextSAR(t)
 
 	h.clock.Advance(600*time.Second - sweepInterval)
-	h.registration()
+	h.registration(testIMPU)
 	h.hss.noCx(t)
 
 	h.clock.Advance(sweepInterval)
@@ -356,8 +730,28 @@ func TestTimeoutDeregistration(t *testing.T) {
 
 	h.wantUnregistered()
 
-	// An expired registration can't be refreshed without a challenge.
-	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 500)
+}
+
+func TestSweepWaitsForBusyIMPI(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{expires: "600"})
+	h.hss.nextSAR(t)
+
+	if !h.reg.tryLock(testIMPI) {
+		t.Fatal("IMPI busy")
+	}
+
+	h.clock.Advance(600 * time.Second)
+	h.hss.noCx(t)
+
+	h.reg.unlock(testIMPI)
+	h.clock.Advance(sweepInterval)
+
+	h.hss.wantSAR(t, cx.AssignmentTimeoutDeregistration)
+	h.wantUnregistered()
 }
 
 func TestExpires(t *testing.T) {
@@ -389,8 +783,8 @@ func TestExpires(t *testing.T) {
 			}
 
 			n, _ := strconv.Atoi(tt.granted)
-			if reg := h.registration(); !reg.ExpiresAt.Equal(testEpoch.Add(time.Duration(n) * time.Second)) {
-				t.Fatalf("ExpiresAt = %v, want %s after %v", reg.ExpiresAt, tt.granted, testEpoch)
+			if b := h.registration(testIMPU).Bindings[0]; !b.ExpiresAt.Equal(testEpoch.Add(time.Duration(n) * time.Second)) {
+				t.Fatalf("ExpiresAt = %v, want %s after %v", b.ExpiresAt, tt.granted, testEpoch)
 			}
 		})
 	}
@@ -425,7 +819,7 @@ func TestBadRequests(t *testing.T) {
 		"no Contact":             {noContact: true},
 		"star without expires 0": {contact: "*", expires: "60"},
 		"star without expires":   {contact: "*"},
-		"two contacts":           {contact: "<sip:a@127.0.0.1>, <sip:b@127.0.0.1>"},
+		"star and a contact":     {contact: "*, <sip:a@127.0.0.1>", expires: "0"},
 		"bad Expires":            {expires: "soon"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -435,18 +829,6 @@ func TestBadRequests(t *testing.T) {
 	}
 
 	h.hss.noCx(t)
-}
-
-func TestBarredIdentity(t *testing.T) {
-	h := newHarness(t)
-	u := h.newUE()
-	u.impu = testBarred
-
-	nonce := u.challenged(registerOptions{})
-
-	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 403)
-	h.hss.wantSAR(t, cx.AssignmentRegistration)
-	h.wantUnregistered()
 }
 
 func TestHSSErrors(t *testing.T) {
@@ -464,6 +846,11 @@ func TestHSSErrors(t *testing.T) {
 		{"SAR user unknown", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorUserUnknown }, true, 403, false},
 		{"SAR identities don't match", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorIdentitiesDontMatch }, true, 403, false},
 		{"SAR unable to comply", func(h *fakeHSS) { h.sarResult = diameter.ResultUnableToComply }, true, 500, true},
+		{"MAR too busy", func(h *fakeHSS) { h.marResult = diameter.ResultTooBusy }, false, 500, true},
+		{"MAR roaming not allowed", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorRoamingNotAllowed }, false, 403, false},
+		{"MAR auth scheme not supported", func(h *fakeHSS) { h.marResult = tgpp.ResultErrorAuthSchemeNotSupported }, false, 403, false},
+		{"SAR identity already registered", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorIdentityAlreadyRegistered }, true, 500, false},
+		{"SAR error in assignment type", func(h *fakeHSS) { h.sarResult = tgpp.ResultErrorInAssignmentType }, true, 500, false},
 	}
 
 	for _, tt := range tests {
@@ -535,7 +922,6 @@ func TestRegisterWhileMARInFlight(t *testing.T) {
 }
 
 func TestVerifyRFC2617Example(t *testing.T) {
-	// RFC 2617 §3.5, with the password as the AKA XRES.
 	c := &credentials{
 		username: "Mufasa",
 		realm:    "testrealm@host.com",
@@ -556,15 +942,28 @@ func TestVerifyRFC2617Example(t *testing.T) {
 	}
 }
 
-func TestNormalizeIdentity(t *testing.T) {
+func TestIdentityKey(t *testing.T) {
 	for in, want := range map[string]string{
-		"sip:+15551230001@IMS.Example.org;user=phone": "sip:+15551230001@ims.example.org",
-		"SIP:alice@example.org:5060":                  "sip:alice@example.org:5060",
-		"tel:+1-555-123-0001;phone-context=x":         "tel:+15551230001",
-		"sip:example.org":                             "sip:example.org",
+		"sip:+15551230001@IMS.Example.org;user=Phone;transport=tcp": "sip:+15551230001@ims.example.org;user=phone",
+		"SIP:alice@example.org:5060":                                "sip:alice@example.org:5060",
+		"sip:Alice@example.org":                                     "sip:Alice@example.org",
+		"tel:+1-555-123-0001":                                       "tel:+15551230001",
+		"tel:1234;phone-context=IMS.Example.org":                    "tel:1234;phone-context=ims.example.org",
+		"sip:example.org":                                           "sip:example.org",
 	} {
-		if got := normalizeIdentity(in); got != want {
-			t.Errorf("normalizeIdentity(%q) = %q, want %q", in, got, want)
+		if got := identityKeyOf(in); got != want {
+			t.Errorf("identityKeyOf(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestPrivateIdentity(t *testing.T) {
+	u, err := sip.ParseURI("sip:001010000000001@IMS.mnc001.mcc001.3gppnetwork.org:5060;transport=tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := privateIdentity(u), "001010000000001@IMS.mnc001.mcc001.3gppnetwork.org"; got != want {
+		t.Fatalf("privateIdentity = %q, want %q", got, want)
 	}
 }

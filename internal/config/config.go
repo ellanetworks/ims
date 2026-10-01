@@ -64,6 +64,7 @@ type IMS struct {
 	MNC string `yaml:"mnc"`
 
 	HomeDomain string `yaml:"home_domain"`
+	SCSCFName  string `yaml:"scscf_name"`
 }
 
 type SIP struct {
@@ -73,7 +74,6 @@ type SIP struct {
 	MaxConnections int          `yaml:"max_connections"`
 }
 
-// Registrar bounds the registration expiry granted to UEs, in seconds.
 type Registrar struct {
 	MinExpires int `yaml:"min_expires"`
 	MaxExpires int `yaml:"max_expires"`
@@ -88,7 +88,12 @@ func HomeDomain(mcc, mnc string) string {
 }
 
 func (c Config) SIPAliases() []string {
-	return append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
+	aliases := append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
+	if !slices.Contains(aliases, c.IMS.SCSCFName) {
+		aliases = append(aliases, c.IMS.SCSCFName)
+	}
+
+	return aliases
 }
 
 type Diameter struct {
@@ -112,7 +117,6 @@ func (p DiameterPeer) Serves(app Application) bool {
 	return slices.Contains(p.Applications, app)
 }
 
-// CxPeer returns the peer serving Cx. A valid configuration has exactly one.
 func (d Diameter) CxPeer() DiameterPeer {
 	for _, p := range d.Peers {
 		if p.Serves(ApplicationCx) {
@@ -148,6 +152,11 @@ func Load(path string) (Config, error) {
 	cfg.IMS.HomeDomain = strings.ToLower(cfg.IMS.HomeDomain)
 	if cfg.IMS.HomeDomain == "" && isDigits(cfg.IMS.MCC) && isDigits(cfg.IMS.MNC) {
 		cfg.IMS.HomeDomain = HomeDomain(cfg.IMS.MCC, cfg.IMS.MNC)
+	}
+
+	cfg.IMS.SCSCFName = strings.ToLower(cfg.IMS.SCSCFName)
+	if cfg.IMS.SCSCFName == "" {
+		cfg.IMS.SCSCFName = "scscf." + cfg.IMS.HomeDomain
 	}
 
 	if cfg.SIP.Port == 0 {
@@ -224,6 +233,8 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
 	case !isDomainName(i.HomeDomain):
 		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
+	case !isDomainName(i.SCSCFName):
+		return fmt.Errorf("ims.scscf_name %q is not a domain name", i.SCSCFName)
 	}
 
 	return nil

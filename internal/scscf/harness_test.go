@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,16 +30,17 @@ const (
 	homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 	imsHost    = "ims." + homeDomain
 	hssHost    = "hss." + homeDomain
+	scscfName  = "scscf." + homeDomain
 	sipPort    = 5060
 
 	testIMPI     = "001010000000001@" + homeDomain
 	testIMPU     = "sip:001010000000001@" + homeDomain
-	testMSISDN   = "sip:+15551230001@" + homeDomain
+	testMSISDN   = "sip:+15551230001@" + homeDomain + ";user=phone"
 	testTel      = "tel:+15551230001"
-	testBarred   = "sip:barred@" + homeDomain
-	otherIMPU    = "sip:other@" + homeDomain
+	testAlias    = "sip:alice@" + homeDomain
+	secondIMPU   = "sip:second@" + homeDomain
+	unknownIMPU  = "sip:unknown@" + homeDomain
 	testPath     = "<sip:term@pcscf." + homeDomain + ";lr>"
-	testICID     = "1234bc9876e"
 	testInstance = `"<urn:gsma:imei:35622410-483840-0>"`
 )
 
@@ -55,7 +57,6 @@ var (
 	}
 )
 
-// fakeClock is a siptest.Clock that also tells the time.
 type fakeClock struct {
 	*siptest.Clock
 }
@@ -64,7 +65,6 @@ func (c fakeClock) Now() time.Time {
 	return testEpoch.Add(c.Clock.Now())
 }
 
-// fakeHSS is a passive Diameter node answering MAR and SAR.
 type fakeHSS struct {
 	node *diameter.Node
 	port int
@@ -72,24 +72,24 @@ type fakeHSS struct {
 	mars chan cx.MultimediaAuthRequest
 	sars chan cx.ServerAssignmentRequest
 
-	mu sync.Mutex
-	// marResult and sarResult, when set, fail the requests with that
-	// Experimental-Result (or base Result-Code below 5000).
-	marResult uint32
-	sarResult uint32
-	// akaScheme is the scheme of the vector the MAA carries.
-	akaScheme cx.AuthenticationScheme
-	// marGate, when set, holds MARs until it is closed.
-	marGate chan struct{}
+	mu            sync.Mutex
+	marResult     uint32
+	sarResult     uint32
+	akaScheme     cx.AuthenticationScheme
+	vector        cx.AKAVector
+	subscriptions []cx.IMSSubscription
+	marGate       chan struct{}
 }
 
 func newFakeHSS(t *testing.T) *fakeHSS {
 	t.Helper()
 
 	h := &fakeHSS{
-		mars:      make(chan cx.MultimediaAuthRequest, 16),
-		sars:      make(chan cx.ServerAssignmentRequest, 16),
-		akaScheme: cx.SchemeDigestAKAv1MD5,
+		mars:          make(chan cx.MultimediaAuthRequest, 16),
+		sars:          make(chan cx.ServerAssignmentRequest, 16),
+		akaScheme:     cx.SchemeDigestAKAv1MD5,
+		vector:        testVector,
+		subscriptions: testSubscriptions(),
 	}
 
 	var lc net.ListenConfig
@@ -154,9 +154,9 @@ func (h *fakeHSS) set(f func(h *fakeHSS)) {
 }
 
 func failure(req *diameter.Message, id diameter.Identity, code uint32) *diameter.Message {
-	r := tgpp.Result{Code: code}
-	if code >= 5000 && code < 5100 {
-		r = tgpp.Experimental(code)
+	r := tgpp.Experimental(code)
+	if code == diameter.ResultUnableToComply || code == diameter.ResultTooBusy {
+		r = tgpp.Result{Code: code}
 	}
 
 	return cx.NewAnswer(req, id, r, 0)
@@ -171,7 +171,7 @@ func (h *fakeHSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diame
 	h.mars <- mar
 
 	h.mu.Lock()
-	code, scheme, gate := h.marResult, h.akaScheme, h.marGate
+	code, scheme, gate, v := h.marResult, h.akaScheme, h.marGate, h.vector
 	h.mu.Unlock()
 
 	if gate != nil {
@@ -181,8 +181,6 @@ func (h *fakeHSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diame
 	if code != 0 {
 		return failure(req, c.LocalIdentity(), code)
 	}
-
-	v := testVector
 
 	ans, err := cx.NewMultimediaAuthAnswer(req, c.LocalIdentity(), cx.MultimediaAuth{
 		Items: []cx.AuthItem{{Scheme: scheme, AKA: &v}},
@@ -210,15 +208,23 @@ func (h *fakeHSS) serverAssignment(_ context.Context, c *diameter.Conn, req *dia
 		return failure(req, c.LocalIdentity(), code)
 	}
 
-	var data []byte
+	var a cx.ServerAssignment
 
 	if (sar.Type == cx.AssignmentRegistration || sar.Type == cx.AssignmentReRegistration) && !sar.UserDataAlreadyAvailable {
-		if data, err = cx.MarshalUserData(testSubscription()); err != nil {
+		h.mu.Lock()
+		sub, ok := h.subscription(sar.PublicIdentities[0])
+		h.mu.Unlock()
+
+		if !ok {
+			return failure(req, c.LocalIdentity(), tgpp.ResultErrorUserUnknown)
+		}
+
+		if a.UserData, err = cx.MarshalUserData(sub); err != nil {
 			panic(err)
 		}
 	}
 
-	ans, err := cx.NewServerAssignmentAnswer(req, c.LocalIdentity(), cx.ServerAssignment{UserData: data})
+	ans, err := cx.NewServerAssignmentAnswer(req, c.LocalIdentity(), a)
 	if err != nil {
 		panic(err)
 	}
@@ -226,19 +232,36 @@ func (h *fakeHSS) serverAssignment(_ context.Context, c *diameter.Conn, req *dia
 	return ans
 }
 
-// testSubscription has the test IMPU's profile, with a barred identity, and
-// a profile the IMPU isn't in.
-func testSubscription() cx.IMSSubscription {
-	return cx.IMSSubscription{
-		PrivateIdentity: testIMPI,
-		ServiceProfiles: []cx.ServiceProfile{
-			{PublicIdentities: []cx.ProfileIdentity{{Identity: otherIMPU}}},
-			{PublicIdentities: []cx.ProfileIdentity{
-				{Identity: testIMPU},
-				{Identity: testBarred, Barred: true},
-				{Identity: testMSISDN + ";user=phone"},
-				{Identity: testTel},
-			}},
+func (h *fakeHSS) subscription(impu string) (cx.IMSSubscription, bool) {
+	for _, sub := range h.subscriptions {
+		for _, profile := range sub.ServiceProfiles {
+			for _, pi := range profile.PublicIdentities {
+				if identityKeyOf(pi.Identity) == identityKeyOf(impu) {
+					return sub, true
+				}
+			}
+		}
+	}
+
+	return cx.IMSSubscription{}, false
+}
+
+func testSubscriptions() []cx.IMSSubscription {
+	return []cx.IMSSubscription{
+		{
+			PrivateIdentity: testIMPI,
+			ServiceProfiles: []cx.ServiceProfile{
+				{PublicIdentities: []cx.ProfileIdentity{
+					{Identity: testIMPU, Barred: true},
+					{Identity: testMSISDN, DisplayName: "Alice"},
+					{Identity: testTel},
+				}},
+				{PublicIdentities: []cx.ProfileIdentity{{Identity: testAlias}}},
+			},
+		},
+		{
+			PrivateIdentity: testIMPI,
+			ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{{Identity: secondIMPU}}}},
 		},
 	}
 }
@@ -280,7 +303,6 @@ func (h *fakeHSS) wantSAR(t *testing.T, want cx.AssignmentType) cx.ServerAssignm
 	return sar
 }
 
-// noCx checks that no MAR or SAR has been received.
 func (h *fakeHSS) noCx(t *testing.T) {
 	t.Helper()
 
@@ -303,13 +325,53 @@ type harness struct {
 	scscf netip.AddrPort
 }
 
-type registrarHandler struct{ *Registrar }
+type fakePCSCF struct {
+	reg *Registrar
+	wg  sync.WaitGroup
+}
 
-func (registrarHandler) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	protected := takeIntegrityProtected(req)
 
-func (registrarHandler) HandleAck(*sip.Request) {}
+	p.wg.Go(func() {
+		res := p.reg.Register(context.Background(), Request{SIP: req, Protected: protected, UEAddress: req.Flow.Remote.Addr()})
+		_ = tx.Respond(res)
+	})
+}
 
-func (registrarHandler) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (*fakePCSCF) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+
+func (*fakePCSCF) HandleAck(*sip.Request) {}
+
+func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) {}
+
+func takeIntegrityProtected(req *sip.Request) bool {
+	v := req.Header.Get("Authorization")
+	if v == "" {
+		return false
+	}
+
+	scheme, rest, _ := strings.Cut(v, " ")
+
+	var (
+		kept      []string
+		protected bool
+	)
+
+	for _, p := range sip.SplitList(rest) {
+		name, value, _ := strings.Cut(strings.TrimSpace(p), "=")
+		if name == "integrity-protected" {
+			protected = sip.Unquote(value) == "yes"
+			continue
+		}
+
+		kept = append(kept, strings.TrimSpace(p))
+	}
+
+	req.Header.Set("Authorization", scheme+" "+strings.Join(kept, ", "))
+
+	return protected
+}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -362,6 +424,7 @@ func newHarness(t *testing.T) *harness {
 
 	h.reg = New(Config{
 		HomeDomain: homeDomain,
+		Name:       scscfName,
 		Port:       sipPort,
 		MinExpires: 60 * time.Second,
 		MaxExpires: 3600 * time.Second,
@@ -373,8 +436,11 @@ func newHarness(t *testing.T) *harness {
 	})
 	t.Cleanup(h.reg.Close)
 
+	pcscf := &fakePCSCF{reg: h.reg}
+	t.Cleanup(pcscf.wg.Wait)
+
 	layer, _ := siptest.NewLayer(t, transaction.Config{
-		Handler: registrarHandler{h.reg},
+		Handler: pcscf,
 		Logger:  slog.New(slog.DiscardHandler),
 	})
 	h.scscf = siptest.ListenLayer(t, layer, loopback)
@@ -400,7 +466,6 @@ func (h *harness) waitHSS(want diameter.PeerState) {
 	}
 }
 
-// ue is a UE behind a P-CSCF: it sends REGISTERs as the P-CSCF forwards them.
 type ue struct {
 	h       *harness
 	sock    *siptest.Socket
@@ -425,11 +490,9 @@ func (h *harness) newUE() *ue {
 }
 
 type registerOptions struct {
-	// auth is the Authorization header, empty for none.
-	auth    string
-	expires string
-	contact string
-	// noContact leaves out the Contact header.
+	auth      string
+	expires   string
+	contact   string
 	noContact bool
 }
 
@@ -460,7 +523,6 @@ func (u *ue) request(o registerOptions) *sip.Request {
 	}
 
 	req.Header.Add("Path", testPath)
-	req.Header.Add("P-Charging-Vector", "icid-value="+testICID+";icid-generated-at=10.0.0.5")
 
 	return req
 }
@@ -484,14 +546,11 @@ func (u *ue) recv() *sip.Response {
 	}
 }
 
-// unprotected is the Authorization of an initial REGISTER (TS 24.229
-// §5.2.2.1).
 func (u *ue) unprotected() string {
 	return fmt.Sprintf(`Digest username="%s", realm="%s", uri="sip:%s", nonce="", response="", integrity-protected="no"`,
 		u.impi, homeDomain, homeDomain)
 }
 
-// protected answers a challenge with XRES as the password.
 func (u *ue) protected(nonce string, xres []byte) string {
 	const nc, cnonce = "00000001", "0a4f113b"
 
@@ -502,6 +561,18 @@ func (u *ue) protected(nonce string, xres []byte) string {
 
 	return fmt.Sprintf(`Digest username="%s", realm="%s", uri="%s", nonce="%s", response="%s", algorithm=AKAv1-MD5, `+
 		`qop=auth, nc=%s, cnonce="%s", integrity-protected="yes"`, u.impi, homeDomain, uri, nonce, response, nc, cnonce)
+}
+
+func (u *ue) resync(nonce string, auts []byte, protected bool) string {
+	integrity := "no"
+	if protected {
+		integrity = "yes"
+	}
+
+	auth := u.protected(nonce, nil)
+	auth = auth[:strings.LastIndex(auth, "integrity-protected=")]
+
+	return auth + `integrity-protected="` + integrity + `", auts="` + base64.StdEncoding.EncodeToString(auts) + `"`
 }
 
 func hexMD5(parts ...[]byte) string {
@@ -517,7 +588,6 @@ func testNonce() string {
 	return base64.StdEncoding.EncodeToString(append(append([]byte(nil), testVector.RAND...), testVector.AUTN...))
 }
 
-// wantStatus checks a response's status code.
 func wantStatus(t *testing.T, res *sip.Response, code int) {
 	t.Helper()
 
@@ -526,7 +596,6 @@ func wantStatus(t *testing.T, res *sip.Response, code int) {
 	}
 }
 
-// challenged sends an unprotected REGISTER and returns the nonce of the 401.
 func (u *ue) challenged(o registerOptions) string {
 	u.h.t.Helper()
 
@@ -538,7 +607,6 @@ func (u *ue) challenged(o registerOptions) string {
 	return sip.Unquote(challengeParams(u.h.t, res)["nonce"])
 }
 
-// register runs the whole registration and returns the 200.
 func (u *ue) register(o registerOptions) *sip.Response {
 	u.h.t.Helper()
 

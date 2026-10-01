@@ -21,13 +21,30 @@ type DB struct {
 var migrations = []string{
 	`CREATE TABLE registrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		impi TEXT NOT NULL UNIQUE,
-		contact TEXT NOT NULL,
-		instance_id TEXT,
-		call_id TEXT NOT NULL,
-		cseq INTEGER NOT NULL,
-		ue_address TEXT NOT NULL,
+		impi TEXT NOT NULL,
+		impu TEXT NOT NULL,
+		user_data BLOB
+	);
+	CREATE INDEX registrations_impi ON registrations (impi);
+	CREATE TABLE registration_identities (
+		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
+		impi TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		uri TEXT NOT NULL,
+		key TEXT NOT NULL,
+		display_name TEXT,
+		barred INTEGER NOT NULL CHECK (barred IN (0, 1)),
+		PRIMARY KEY (registration_id, position),
+		UNIQUE (impi, key)
+	);
+	CREATE INDEX registration_identities_key ON registration_identities (key);
+	CREATE TABLE contacts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		impi TEXT NOT NULL,
+		uri TEXT NOT NULL,
+		params TEXT NOT NULL,
 		path TEXT,
+		ue_address TEXT NOT NULL,
 		ue_port_c INTEGER,
 		ue_port_s INTEGER,
 		pcscf_port_c INTEGER,
@@ -39,25 +56,26 @@ var migrations = []string{
 		alg TEXT CHECK (alg IN ('hmac-md5-96', 'hmac-sha-1-96')),
 		ealg TEXT CHECK (ealg IN ('null', 'aes-cbc')),
 		rx_session_id TEXT,
-		registered_at INTEGER NOT NULL,
-		expires_at INTEGER NOT NULL,
+		UNIQUE (impi, uri),
 		CHECK ((alg IS NULL) = (ealg IS NULL)
 			AND (alg IS NULL) = (ue_port_c IS NULL) AND (alg IS NULL) = (ue_port_s IS NULL)
 			AND (alg IS NULL) = (pcscf_port_c IS NULL) AND (alg IS NULL) = (pcscf_port_s IS NULL)
 			AND (alg IS NULL) = (spi_uc IS NULL) AND (alg IS NULL) = (spi_us IS NULL)
 			AND (alg IS NULL) = (spi_pc IS NULL) AND (alg IS NULL) = (spi_ps IS NULL))
 	);
-	CREATE INDEX registrations_expires_at ON registrations (expires_at);
-	CREATE TABLE registration_identities (
+	CREATE TABLE bindings (
 		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
-		position INTEGER NOT NULL,
-		uri TEXT NOT NULL UNIQUE,
-		barred INTEGER NOT NULL CHECK (barred IN (0, 1)),
-		PRIMARY KEY (registration_id, position)
+		contact_id INTEGER NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
+		call_id TEXT NOT NULL,
+		cseq INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		PRIMARY KEY (registration_id, contact_id)
 	);
+	CREATE INDEX bindings_contact_id ON bindings (contact_id);
+	CREATE INDEX bindings_expires_at ON bindings (expires_at);
 	CREATE TABLE reg_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
+		impi TEXT NOT NULL,
 		call_id TEXT NOT NULL,
 		remote_tag TEXT NOT NULL,
 		local_tag TEXT NOT NULL,
@@ -68,7 +86,7 @@ var migrations = []string{
 		expires_at INTEGER NOT NULL,
 		UNIQUE (call_id, remote_tag, local_tag)
 	);
-	CREATE INDEX reg_subscriptions_registration_id ON reg_subscriptions (registration_id);
+	CREATE INDEX reg_subscriptions_impi ON reg_subscriptions (impi);
 	CREATE TABLE calls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		call_id TEXT NOT NULL,

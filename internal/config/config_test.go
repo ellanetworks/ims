@@ -54,7 +54,7 @@ func writeConfig(t *testing.T, content string) string {
 
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
-		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n"+
+		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  scscf_name: SCSCF.example.org\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  port: 5070\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
 		"registrar:\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
@@ -66,7 +66,12 @@ func TestLoad(t *testing.T) {
 		DB:          DB{Path: "ims.db"},
 		CallHistory: CallHistory{Retention: 24 * time.Hour},
 		API:         API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
-		IMS:         IMS{MCC: "310", MNC: "410", HomeDomain: "ims.mnc410.mcc310.3gppnetwork.org"},
+		IMS: IMS{
+			MCC:        "310",
+			MNC:        "410",
+			HomeDomain: "ims.mnc410.mcc310.3gppnetwork.org",
+			SCSCFName:  "scscf.example.org",
+		},
 		SIP: SIP{
 			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
 			Port:           5070,
@@ -104,7 +109,7 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("Load = %+v, want %+v", cfg, want)
 	}
 
-	wantAliases := []string{"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org"}
+	wantAliases := []string{"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"}
 	if got := cfg.SIPAliases(); !reflect.DeepEqual(got, wantAliases) {
 		t.Fatalf("SIPAliases = %v, want %v", got, wantAliases)
 	}
@@ -141,8 +146,8 @@ func TestHomeDomainOverride(t *testing.T) {
 		t.Fatalf("home domain = %q, want ims.example.org", cfg.IMS.HomeDomain)
 	}
 
-	if got := cfg.SIPAliases(); !reflect.DeepEqual(got, []string{"ims.example.org"}) {
-		t.Fatalf("SIPAliases = %v, want [ims.example.org]", got)
+	if got, want := cfg.SIPAliases(), []string{"ims.example.org", "scscf.ims.example.org"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SIPAliases = %v, want %v", got, want)
 	}
 }
 
@@ -174,6 +179,10 @@ func TestLoadDefaults(t *testing.T) {
 
 	if cfg.CallHistory.Retention != defaultCallRetention {
 		t.Fatalf("call_history.retention = %v, want %v", cfg.CallHistory.Retention, defaultCallRetention)
+	}
+
+	if cfg.IMS.SCSCFName != "scscf.ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("ims.scscf_name = %q, want scscf.<home domain>", cfg.IMS.SCSCFName)
 	}
 
 	if cfg.Registrar.MinExpires != defaultMinExpires || cfg.Registrar.MaxExpires != defaultMaxExpires {
@@ -232,6 +241,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
 		{"negative min expires", valid + "registrar:\n  min_expires: -1\n" + validDiameter, "registrar.min_expires -1 must be positive"},
 		{"max expires below min", valid + "registrar:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "registrar.max_expires 300 is below registrar.min_expires 600"},
+		{"S-CSCF name not a domain name", validDB + validAPI + validIMS + "  scscf_name: scscf_1.example.org\n" + validSIP + validDiameter, `ims.scscf_name "scscf_1.example.org" is not a domain name`},
 		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
 		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
 		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},

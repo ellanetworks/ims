@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
@@ -47,9 +48,8 @@ type sipServer struct {
 	listeners []netip.AddrPort
 }
 
-// registrar answers REGISTER.
 type registrar interface {
-	HandleRequest(tx *transaction.ServerTransaction, req *sip.Request)
+	Register(ctx context.Context, req scscf.Request) *sip.Response
 }
 
 func startSIP(ctx context.Context, cfg config.Config, reg registrar, logger *slog.Logger) (*sipServer, error) {
@@ -99,6 +99,7 @@ type placeholderHandler struct {
 	closed    bool
 	listeners map[netip.AddrPort]bool
 	invites   map[*transaction.ServerTransaction]*time.Timer
+	registers sync.WaitGroup
 }
 
 func newPlaceholderHandler(logger *slog.Logger, aliases []string) *placeholderHandler {
@@ -133,7 +134,7 @@ func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, re
 	case req.Method == "INVITE":
 		h.holdInvite(tx)
 	case req.Method == "REGISTER":
-		h.registrar.HandleRequest(tx, req)
+		h.register(tx, req)
 	case knownMethods[req.Method]:
 		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)
@@ -232,9 +233,46 @@ func (h *placeholderHandler) release(tx *transaction.ServerTransaction) bool {
 	return ok
 }
 
-func (h *placeholderHandler) close() {
+func (h *placeholderHandler) register(tx *transaction.ServerTransaction, req *sip.Request) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.closed {
+		return
+	}
+
+	h.registers.Go(func() {
+		res := h.registrar.Register(context.Background(), scscf.Request{SIP: req, UEAddress: req.Flow.Remote.Addr()})
+		if res.StatusCode == 401 {
+			removeAKAKeys(res)
+		}
+
+		h.respond(tx, res)
+	})
+}
+
+func removeAKAKeys(res *sip.Response) {
+	values := res.Header.Values("WWW-Authenticate")
+	res.Header.Del("WWW-Authenticate")
+
+	for _, v := range values {
+		scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
+
+		var kept []string
+
+		for _, p := range sip.SplitList(rest) {
+			name, _, _ := strings.Cut(p, "=")
+			if n := strings.ToLower(strings.TrimSpace(name)); n != "ck" && n != "ik" {
+				kept = append(kept, strings.TrimSpace(p))
+			}
+		}
+
+		res.Header.Add("WWW-Authenticate", scheme+" "+strings.Join(kept, ", "))
+	}
+}
+
+func (h *placeholderHandler) close() {
+	h.mu.Lock()
 
 	h.closed = true
 
@@ -242,6 +280,10 @@ func (h *placeholderHandler) close() {
 		t.Stop()
 		delete(h.invites, tx)
 	}
+
+	h.mu.Unlock()
+
+	h.registers.Wait()
 }
 
 func (h *placeholderHandler) respond(tx *transaction.ServerTransaction, res *sip.Response) {

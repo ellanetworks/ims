@@ -79,6 +79,7 @@ func (s *Server) Start(ctx context.Context) error {
 	hss := cfg.Diameter.CxPeer()
 	registrar := scscf.New(scscf.Config{
 		HomeDomain: cfg.IMS.HomeDomain,
+		Name:       cfg.IMS.SCSCFName,
 		Port:       cfg.SIP.Port,
 		MinExpires: time.Duration(cfg.Registrar.MinExpires) * time.Second,
 		MaxExpires: time.Duration(cfg.Registrar.MaxExpires) * time.Second,
@@ -161,11 +162,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopPurge()
 	<-s.purgeDone
 
+	s.registrar.Close()
+
 	if err := s.sip.Close(); err != nil {
 		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
 	}
-
-	s.registrar.Close()
 
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
 		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))

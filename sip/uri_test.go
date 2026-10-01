@@ -135,3 +135,43 @@ func TestParamsCopyOnWrite(t *testing.T) {
 		t.Errorf("copy = %s", c)
 	}
 }
+
+func TestURIEquivalent(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"sip:alice@atlanta.com;transport=TCP", "sip:alice@AtLanTa.CoM;Transport=tcp", true},
+		{"sip:carol@chicago.com", "sip:carol@chicago.com;newparam=5", true},
+		{"sip:carol@chicago.com;security=on", "sip:carol@chicago.com;newparam=5", true},
+		{"SIP:alice@atlanta.com", "sip:alice@atlanta.com", true},
+		{"sip:ALICE@AtLanTa.CoM;Transport=udp", "sip:alice@AtLanTa.CoM;Transport=UDP", false},
+		{"sip:bob@biloxi.com", "sip:bob@biloxi.com:5060", false},
+		{"sip:bob@biloxi.com", "sip:bob@biloxi.com;user=phone", false},
+		{"sip:bob@biloxi.com;transport=udp", "sip:bob@biloxi.com;transport=tcp", false},
+		{"sip:bob@biloxi.com;maddr=10.0.0.1", "sip:bob@biloxi.com", false},
+		{"sip:bob@biloxi.com", "sips:bob@biloxi.com", false},
+		{"tel:+15551230001", "TEL:+15551230001", true},
+		{"tel:+15551230001", "tel:+15551230002", false},
+	}
+
+	for _, tt := range tests {
+		a, err := ParseURI(tt.a)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		b, err := ParseURI(tt.b)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := a.Equivalent(b); got != tt.want {
+			t.Errorf("%s ≡ %s = %t, want %t", tt.a, tt.b, got, tt.want)
+		}
+
+		if got := b.Equivalent(a); got != tt.want {
+			t.Errorf("%s ≡ %s = %t, want %t", tt.b, tt.a, got, tt.want)
+		}
+	}
+}

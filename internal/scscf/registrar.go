@@ -1,10 +1,10 @@
-// Package scscf is the S-CSCF: it registers UEs (TS 24.229 §5.4.1).
 package scscf
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -16,20 +16,23 @@ import (
 )
 
 const (
-	// regAwaitAuth is how long a challenge waits for its answer (TS 24.229
-	// Table 7.7.1).
 	regAwaitAuth = 4 * time.Minute
 
 	sweepInterval = 30 * time.Second
 
-	// cxTimeout bounds one MAR or SAR.
 	cxTimeout = 10 * time.Second
 
-	// retryAfter is the Retry-After of a 500, in seconds.
 	retryAfter = 30
+
+	maxResyncs = 2
 )
 
-// Diameter is what the registrar needs from the Diameter node.
+type Request struct {
+	SIP       *sip.Request
+	Protected bool
+	UEAddress netip.Addr
+}
+
 type Diameter interface {
 	Identity() diameter.Identity
 	NewSessionID() string
@@ -37,14 +40,12 @@ type Diameter interface {
 	Do(ctx context.Context, peerID string, req *diameter.Message) (*diameter.Message, error)
 }
 
-// HSS is the Cx peer.
 type HSS struct {
 	ID    string
 	Host  string
 	Realm string
 }
 
-// Clock tells the time and runs the reg-await-auth and sweep timers.
 type Clock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) transaction.Timer
@@ -60,7 +61,7 @@ func (systemClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 
 type Config struct {
 	HomeDomain string
-	// Port is the SIP port, in the S-CSCF's name and the Service-Route.
+	Name       string
 	Port       int
 	MinExpires time.Duration
 	MaxExpires time.Duration
@@ -69,12 +70,10 @@ type Config struct {
 	Diameter Diameter
 	DB       *db.DB
 
-	// Clock defaults to the system clock.
 	Clock  Clock
 	Logger *slog.Logger
 }
 
-// Registrar answers REGISTER.
 type Registrar struct {
 	cfg        Config
 	log        *slog.Logger
@@ -86,18 +85,19 @@ type Registrar struct {
 
 	mu         sync.Mutex
 	closed     bool
-	busy       map[string]bool
+	busy       map[string]chan struct{}
 	challenges map[string]*challenge
 	sweep      transaction.Timer
 }
 
-// challenge is an AKA challenge waiting for the UE's answer, keyed by IMPI.
 type challenge struct {
-	callID string
-	impu   string
-	nonce  string
-	vector authVector
-	timer  transaction.Timer
+	callID  string
+	impu    string
+	impuKey string
+	nonce   string
+	vector  authVector
+	resyncs int
+	timer   transaction.Timer
 }
 
 func New(cfg Config) *Registrar {
@@ -115,10 +115,10 @@ func New(cfg Config) *Registrar {
 		cfg:        cfg,
 		log:        cfg.Logger,
 		clock:      cfg.Clock,
-		serverName: "sip:scscf." + cfg.HomeDomain + ":" + strconv.Itoa(cfg.Port),
+		serverName: "sip:" + cfg.Name + ":" + strconv.Itoa(cfg.Port),
 		ctx:        ctx,
 		cancel:     cancel,
-		busy:       make(map[string]bool),
+		busy:       make(map[string]chan struct{}),
 		challenges: make(map[string]*challenge),
 	}
 
@@ -129,22 +129,22 @@ func New(cfg Config) *Registrar {
 	return r
 }
 
-// HandleRequest answers a REGISTER. The Cx exchanges run on their own
-// goroutine, so it returns at once.
-func (r *Registrar) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (r *Registrar) Register(ctx context.Context, req Request) *sip.Response {
 	if !r.start() {
-		r.respond(tx, retryLater(req))
-		return
+		return retryLater(req.SIP)
 	}
 
-	go func() {
-		defer r.wg.Done()
+	defer r.wg.Done()
 
-		r.respond(tx, r.register(r.ctx, req))
-	}()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	stop := context.AfterFunc(r.ctx, cancel)
+	defer stop()
+
+	return r.register(ctx, req)
 }
 
-// Close stops the timers and waits for the REGISTERs being handled.
 func (r *Registrar) Close() {
 	r.mu.Lock()
 
@@ -162,8 +162,6 @@ func (r *Registrar) Close() {
 	r.wg.Wait()
 }
 
-// start registers a goroutine with the wait group, unless the registrar is
-// closed.
 func (r *Registrar) start() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -177,36 +175,49 @@ func (r *Registrar) start() bool {
 	return true
 }
 
-func (r *Registrar) respond(tx *transaction.ServerTransaction, res *sip.Response) {
-	if err := tx.Respond(res); err != nil {
-		r.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
-	}
-}
-
-// lock marks an IMPI busy for the time of one REGISTER. It fails when another
-// REGISTER of the IMPI is being handled.
-func (r *Registrar) lock(impi string) bool {
+func (r *Registrar) tryLock(impi string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.busy[impi] {
+	if _, busy := r.busy[impi]; busy {
 		return false
 	}
 
-	r.busy[impi] = true
+	r.busy[impi] = make(chan struct{})
 
 	return true
+}
+
+func (r *Registrar) lock(ctx context.Context, impi string) error {
+	for {
+		r.mu.Lock()
+
+		released, busy := r.busy[impi]
+		if !busy {
+			r.busy[impi] = make(chan struct{})
+			r.mu.Unlock()
+
+			return nil
+		}
+
+		r.mu.Unlock()
+
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (r *Registrar) unlock(impi string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	close(r.busy[impi])
 	delete(r.busy, impi)
 }
 
-// putChallenge stores a challenge, replacing the IMPI's previous one, and
-// drops it when reg-await-auth expires.
 func (r *Registrar) putChallenge(impi string, ch *challenge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -215,16 +226,43 @@ func (r *Registrar) putChallenge(impi string, ch *challenge) {
 		old.timer.Stop()
 	}
 
-	ch.timer = r.clock.AfterFunc(regAwaitAuth, func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-
-		if r.challenges[impi] == ch {
-			delete(r.challenges, impi)
-			r.log.Debug("reg-await-auth expired", slog.String("impi", impi))
-		}
-	})
+	ch.timer = r.clock.AfterFunc(regAwaitAuth, func() { r.challengeExpired(impi, ch) })
 	r.challenges[impi] = ch
+}
+
+func (r *Registrar) challengeExpired(impi string, ch *challenge) {
+	if !r.start() {
+		return
+	}
+
+	go func() {
+		defer r.wg.Done()
+
+		if err := r.lock(r.ctx, impi); err != nil {
+			return
+		}
+
+		defer r.unlock(impi)
+
+		r.mu.Lock()
+
+		current := r.challenges[impi] == ch
+		if current {
+			delete(r.challenges, impi)
+		}
+
+		r.mu.Unlock()
+
+		if !current {
+			return
+		}
+
+		r.log.Info("reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
+
+		if _, err := r.serverAssignment(r.ctx, impi, []string{ch.impu}, assignAuthenticationTimeout, false); err != nil {
+			r.log.Warn("failed to tell the HSS of an authentication timeout", slog.String("impi", impi), slog.Any("error", err))
+		}
+	}()
 }
 
 func (r *Registrar) pendingChallenge(impi string) *challenge {
@@ -244,7 +282,6 @@ func (r *Registrar) dropChallenge(impi string, ch *challenge) {
 	}
 }
 
-// scheduleSweep arms the expiry sweep. The caller holds r.mu.
 func (r *Registrar) scheduleSweep() {
 	r.sweep = r.clock.AfterFunc(sweepInterval, func() {
 		if !r.start() {
@@ -263,29 +300,57 @@ func (r *Registrar) scheduleSweep() {
 	})
 }
 
-// sweepExpired deletes the expired registrations and tells the HSS.
 func (r *Registrar) sweepExpired(ctx context.Context) {
-	regs, err := r.cfg.DB.DeleteExpiredRegistrations(ctx, r.clock.Now())
+	impis, err := r.cfg.DB.ListExpiredIMPIs(ctx, r.clock.Now())
 	if err != nil {
-		r.log.Warn("failed to delete expired registrations", slog.Any("error", err))
+		r.log.Warn("failed to list expired registrations", slog.Any("error", err))
 		return
 	}
 
-	for _, reg := range regs {
-		var impus []string
-		if len(reg.Identities) > 0 {
-			impus = []string{reg.Identities[0].URI}
+	for _, impi := range impis {
+		if !r.tryLock(impi) {
+			continue
 		}
 
-		r.log.Info("registration expired", slog.String("impi", reg.IMPI))
+		r.sweepIMPI(ctx, impi)
+		r.unlock(impi)
+	}
+}
 
-		if _, err := r.serverAssignment(ctx, reg.IMPI, impus, assignTimeoutDeregistration, false); err != nil {
-			r.log.Warn("failed to tell the HSS of an expired registration",
-				slog.String("impi", reg.IMPI), slog.Any("error", err))
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) {
+	st, err := r.load(ctx, impi)
+	if err != nil {
+		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		return
+	}
+
+	for _, reg := range st.regs {
+		live := st.live(reg.Bindings)
+		if len(live) == len(reg.Bindings) {
+			continue
+		}
+
+		if len(live) > 0 {
+			reg.Bindings = live
+			if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
+				r.log.Warn("failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
+			}
+
+			continue
+		}
+
+		r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
+
+		if _, err := r.serverAssignment(ctx, impi, []string{reg.IMPU}, assignTimeoutDeregistration, false); err != nil {
+			r.log.Warn("failed to tell the HSS of an expired registration", slog.String("impi", impi), slog.Any("error", err))
+		}
+
+		if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil {
+			r.log.Warn("failed to delete an expired registration", slog.String("impi", impi), slog.Any("error", err))
 		}
 	}
 }
 
-func serviceRoute(homeDomain string, port int, id int64) string {
-	return fmt.Sprintf("<sip:orig-%d@scscf.%s:%d;lr>", id, homeDomain, port)
+func serviceRoute(name string, port int, contactID int64) string {
+	return fmt.Sprintf("<sip:orig-%d@%s:%d;lr>", contactID, name, port)
 }

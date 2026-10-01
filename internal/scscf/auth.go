@@ -16,29 +16,23 @@ const (
 	qopAuth        = "auth"
 )
 
-// credentials are the parameters of an Authorization: Digest header.
 type credentials struct {
-	username           string
-	realm              string
-	nonce              string
-	uri                string
-	response           string
-	algorithm          string
-	qop                string
-	nc                 string
-	cnonce             string
-	auts               string
-	integrityProtected string
+	username  string
+	realm     string
+	nonce     string
+	uri       string
+	response  string
+	algorithm string
+	qop       string
+	nc        string
+	cnonce    string
+	auts      string
 }
 
-// protected reports whether the P-CSCF received the REGISTER over the SAs
-// (TS 24.229 §5.2.2.1).
-func (c *credentials) protected() bool {
-	return c != nil && c.integrityProtected == "yes"
+func (c *credentials) answers(ch *challenge) bool {
+	return c != nil && ch != nil && c.nonce != "" && c.nonce == ch.nonce
 }
 
-// parseAuthorization returns the Digest credentials for the home realm. It
-// returns nil when the request has none.
 func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
 	var first *credentials
 
@@ -64,8 +58,6 @@ func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
 	return first, nil
 }
 
-// parseCredentials parses one Authorization value. It returns nil for a
-// scheme other than Digest.
 func parseCredentials(v string) (*credentials, error) {
 	scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
 	if !strings.EqualFold(scheme, "Digest") {
@@ -103,8 +95,6 @@ func parseCredentials(v string) (*credentials, error) {
 			c.cnonce = value
 		case "auts":
 			c.auts = value
-		case "integrity-protected":
-			c.integrityProtected = value
 		}
 	}
 
@@ -115,8 +105,6 @@ func parseCredentials(v string) (*credentials, error) {
 	return c, nil
 }
 
-// wwwAuthenticate is the AKA challenge (TS 24.229 §5.4.1.2.1). ck and ik are
-// for the P-CSCF, which removes them.
 func wwwAuthenticate(realm, nonce string, v authVector) string {
 	return "Digest realm=" + sip.Quote(realm) +
 		", nonce=" + sip.Quote(nonce) +
@@ -130,8 +118,6 @@ func akaNonce(v authVector) string {
 	return base64.StdEncoding.EncodeToString(append(append([]byte(nil), v.rand...), v.autn...))
 }
 
-// verify checks the digest response, with XRES as the password (RFC 3310
-// §3.4) and qop=auth (RFC 2617 §3.2.2).
 func verify(c *credentials, method, nonce string, xres []byte) bool {
 	if c.qop != qopAuth || c.nc == "" || c.cnonce == "" || c.response == "" {
 		return false
