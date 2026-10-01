@@ -102,7 +102,6 @@ func TestGetDiameterStatus(t *testing.T) {
 				Transport:    "sctp",
 				State:        "down",
 				Since:        "2026-10-01T12:00:00.000Z",
-				LastError:    "connection refused",
 				Applications: []string{},
 			},
 		},

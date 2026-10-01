@@ -23,7 +23,6 @@ type DiameterPeer struct {
 	Address      string   `json:"address"`
 	State        string   `json:"state"`
 	Since        string   `json:"since"`
-	LastError    string   `json:"last_error,omitempty"`
 	Applications []string `json:"applications"`
 }
 
@@ -51,7 +50,6 @@ func GetDiameterStatus(cfg Config) http.Handler {
 				Transport:    p.Transport.String(),
 				State:        p.State.String(),
 				Since:        formatTime(p.Since),
-				LastError:    p.LastError,
 				Applications: []string{},
 			}
 
