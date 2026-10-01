@@ -1,0 +1,24 @@
+name: Go Fuzz
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  go-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzParse, FuzzStream, FuzzURI, FuzzAddress, FuzzVia]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+
+      - name: Fuzz ${{ matrix.target }}
+        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=60s ./sip/

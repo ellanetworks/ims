@@ -1,0 +1,16 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.4.128.21:5100;branch=z9hG4bK4a83.d2a65550f49f2837e37031e566fc266d.0
+Via: SIP/2.0/UDP 10.4.128.21:6060;branch=z9hG4bK4a83.118c8bc64aaace269eb2ef9059d603b3.0
+Via: SIP/2.0/UDP 10.4.128.21:6060;branch=z9hG4bK4a83.19ad26d3aca024b9bed33790685ca329.0
+Via: SIP/2.0/UDP 10.4.128.21:5100;branch=z9hG4bK4a83.aee42600580a2caed1a7de78c4939f44.0
+Via: SIP/2.0/UDP 192.168.101.3:6400;received=192.168.101.3;branch=z9hG4bK-524287-1---44c7f219aac590b6;rport=6401;transport=UDP
+Max-Forwards: 70
+Contact: <sip:0398765432100@192.168.101.2:6300>;+sip.instance="<urn:gsma:imei:35622410-483840-0>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.mid-call;+g.3gpp.srvcc-alerting;+g.3gpp.ps2cs-srvcc-orig-pre-alerting;video
+To: <sip:0398765432100;phone-context=0498765432100@0498765432100;user=phone>;tag=4cbb9622
+From: <tel:0498765432100>;tag=7b3fae13
+Call-ID: TF0lR-e_t0o7Jp-w5kq58A..@192.168.101.3
+CSeq: 2 PRACK
+User-Agent: SM-T515-TB4 Samsung IMS 6.0
+P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=001010001000019b
+Content-Length: 0
+

@@ -1,0 +1,20 @@
+REGISTER sip:scscf.ims.mnc001.mcc001.3gppnetwork.org:6060 SIP/2.0
+From: <sip:001011234567895@ims.mnc001.mcc001.3gppnetwork.org>;tag=4130282241
+To: <sip:001011234567895@ims.mnc001.mcc001.3gppnetwork.org>
+CSeq: 909056610 REGISTER
+Call-ID: 4130282081_47464792@192.168.101.2
+Via: SIP/2.0/UDP 10.4.128.21:4060;branch=z9hG4bK8a72.764e9abbf34d7436f069680620e20444.0
+Via: SIP/2.0/UDP 10.4.128.21;branch=z9hG4bK8a72.5913ddc401418c0a8877bb06726dcf12.1
+Via: SIP/2.0/UDP 192.168.101.2:5060;rport=5060;branch=z9hG4bK1308331859
+Max-Forwards: 68
+P-Access-Network-Info: 3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=001010001000019B
+Content-Length: 0
+Authorization: Digest username="001011234567895@ims.mnc001.mcc001.3gppnetwork.org",realm="ims.mnc001.mcc001.3gppnetwork.org",uri="sip:ims.mnc001.mcc001.3gppnetwork.org",qop=auth,nonce="8SA0p/qltIMlBqyAM/vqAFr2Rj1SH4AAMadojvfm1sU=",nc=00000001,cnonce="4130282079",algorithm=AKAv1-MD5,response="9dad9da7bd3272620d55ecb91d2ac017"
+Expires: 600000
+Allow: INVITE,BYE,CANCEL,ACK,NOTIFY,UPDATE,PRACK,INFO,MESSAGE,OPTIONS
+Contact: <sip:192.168.101.2:5060;alias=192.168.101.2~5060~1>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;video;+sip.instance="<urn:gsma:imei:86728703-952237-0>";+g.3gpp.accesstype="cellular2"
+Path: <sip:term@pcscf.ims.mnc001.mcc001.3gppnetwork.org;lr>
+Supported: path
+Require: path
+P-Visited-Network-ID: ims.mnc001.mcc001.3gppnetwork.org
+
