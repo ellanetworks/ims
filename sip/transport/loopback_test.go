@@ -309,6 +309,7 @@ func TestLargeRequestFallsBackToUDP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
 		defer func() { _ = pc.Close() }()
 
 		dst := pc.LocalAddr().(*net.UDPAddr).AddrPort()

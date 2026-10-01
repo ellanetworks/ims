@@ -34,6 +34,7 @@ func CheckNoListener(ap netip.AddrPort) error {
 	if err != nil {
 		return err
 	}
+
 	defer func() { _ = unix.Close(fd) }()
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
