@@ -755,6 +755,24 @@ func TestSweepWaitsForBusyIMPI(t *testing.T) {
 	h.wantUnregistered()
 }
 
+func TestRegisterWaitsForBackgroundWork(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	if err := h.reg.lock(t.Context(), testIMPI); err != nil {
+		t.Fatal(err)
+	}
+
+	u.sock.Send(sip.UDP, h.scscf, u.request(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}))
+	u.sock.RecvNone(100 * time.Millisecond)
+
+	h.reg.unlock(testIMPI)
+	wantStatus(t, u.recv(), 200)
+}
+
 func TestExpires(t *testing.T) {
 	tests := []struct {
 		name    string

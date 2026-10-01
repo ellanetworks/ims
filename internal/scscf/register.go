@@ -66,7 +66,12 @@ func (r *Registrar) register(ctx context.Context, req Request) *sip.Response {
 		}
 	}
 
-	if !r.tryLock(rr.impi) {
+	locked, err := r.lockForRegister(ctx, rr.impi)
+	if err != nil {
+		return retryLater(req.SIP)
+	}
+
+	if !locked {
 		r.log.Debug("REGISTER while another one is being handled", slog.String("impi", rr.impi))
 		return retryLater(req.SIP)
 	}

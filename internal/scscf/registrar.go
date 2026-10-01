@@ -85,7 +85,7 @@ type Registrar struct {
 
 	mu         sync.Mutex
 	closed     bool
-	busy       map[string]chan struct{}
+	busy       map[string]*hold
 	challenges map[string]*challenge
 	sweep      transaction.Timer
 }
@@ -98,6 +98,11 @@ type challenge struct {
 	vector  authVector
 	resyncs int
 	timer   transaction.Timer
+}
+
+type hold struct {
+	released chan struct{}
+	register bool
 }
 
 func New(cfg Config) *Registrar {
@@ -118,7 +123,7 @@ func New(cfg Config) *Registrar {
 		serverName: "sip:" + cfg.Name + ":" + strconv.Itoa(cfg.Port),
 		ctx:        ctx,
 		cancel:     cancel,
-		busy:       make(map[string]chan struct{}),
+		busy:       make(map[string]*hold),
 		challenges: make(map[string]*challenge),
 	}
 
@@ -183,29 +188,42 @@ func (r *Registrar) tryLock(impi string) bool {
 		return false
 	}
 
-	r.busy[impi] = make(chan struct{})
+	r.busy[impi] = &hold{released: make(chan struct{})}
 
 	return true
 }
 
 func (r *Registrar) lock(ctx context.Context, impi string) error {
+	_, err := r.acquire(ctx, impi, false)
+	return err
+}
+
+func (r *Registrar) lockForRegister(ctx context.Context, impi string) (bool, error) {
+	return r.acquire(ctx, impi, true)
+}
+
+func (r *Registrar) acquire(ctx context.Context, impi string, register bool) (bool, error) {
 	for {
 		r.mu.Lock()
 
-		released, busy := r.busy[impi]
+		h, busy := r.busy[impi]
 		if !busy {
-			r.busy[impi] = make(chan struct{})
+			r.busy[impi] = &hold{released: make(chan struct{}), register: register}
 			r.mu.Unlock()
 
-			return nil
+			return true, nil
 		}
 
 		r.mu.Unlock()
 
+		if register && h.register {
+			return false, nil
+		}
+
 		select {
-		case <-released:
+		case <-h.released:
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 	}
 }
@@ -214,7 +232,7 @@ func (r *Registrar) unlock(impi string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	close(r.busy[impi])
+	close(r.busy[impi].released)
 	delete(r.busy, impi)
 }
 
