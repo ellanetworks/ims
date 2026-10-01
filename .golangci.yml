@@ -1,0 +1,28 @@
+version: "2"
+linters:
+  enable:
+    - asciicheck
+    - bodyclose
+    - dogsled
+    - godox
+    - gomodguard
+    - misspell
+    - nakedret
+    - noctx
+    - predeclared
+    - staticcheck
+    - unconvert
+    - unparam
+    - whitespace
+    - govet
+    - wsl_v5
+issues:
+  new-from-rev: ""
+  new: false
+severity:
+  default: error
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt

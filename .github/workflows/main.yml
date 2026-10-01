@@ -1,0 +1,31 @@
+name: Main workflow
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go-unit-test:
+    uses: ./.github/workflows/go-unittest.yaml
+  go-lint:
+    uses: ./.github/workflows/go-lint.yaml
+  image-build:
+    uses: ./.github/workflows/image-build.yaml
+  image-publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [go-unit-test, go-lint, image-build]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image-publish.yaml
