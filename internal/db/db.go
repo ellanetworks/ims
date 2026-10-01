@@ -44,7 +44,7 @@ var migrations = []string{
 		uri TEXT NOT NULL,
 		params TEXT NOT NULL,
 		path TEXT,
-		ue_address TEXT NOT NULL,
+		ue_address TEXT,
 		ue_port_c INTEGER,
 		ue_port_s INTEGER,
 		pcscf_port_c INTEGER,

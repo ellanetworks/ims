@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-type fakeSIP []netip.AddrPort
+type fakeSIP []SIPEndpoint
 
-func (f fakeSIP) Listeners() []netip.AddrPort { return f }
+func (f fakeSIP) Listeners() []SIPEndpoint { return f }
 
 func getSIPStatus(t *testing.T, cfg Config) SIPStatus {
 	t.Helper()
@@ -38,7 +38,10 @@ func getSIPStatus(t *testing.T, cfg Config) SIPStatus {
 
 func TestGetSIPStatus(t *testing.T) {
 	got := getSIPStatus(t, Config{
-		SIP:        fakeSIP{netip.MustParseAddrPort("10.0.0.5:5060"), netip.MustParseAddrPort("[2001:db8::5]:5060")},
+		SIP: fakeSIP{
+			{Role: "pcscf", Address: netip.MustParseAddrPort("10.0.0.5:5060")},
+			{Role: "icscf", Address: netip.MustParseAddrPort("[2001:db8::5]:5070")},
+		},
 		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
 		SIPAliases: []string{"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org"},
 	})
@@ -47,8 +50,8 @@ func TestGetSIPStatus(t *testing.T) {
 		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
 		Aliases:    []string{"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org"},
 		Listeners: []SIPListener{
-			{Address: "10.0.0.5:5060", Transports: []string{"udp", "tcp"}},
-			{Address: "[2001:db8::5]:5060", Transports: []string{"udp", "tcp"}},
+			{Role: "pcscf", Address: "10.0.0.5:5060", Transports: []string{"udp", "tcp"}},
+			{Role: "icscf", Address: "[2001:db8::5]:5070", Transports: []string{"udp", "tcp"}},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

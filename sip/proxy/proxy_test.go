@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -258,6 +259,40 @@ func TestPreprocess(t *testing.T) {
 				t.Error("Preprocess modified its argument")
 			}
 		})
+	}
+}
+
+func TestIsLocalOnPort(t *testing.T) {
+	l, _ := siptest.NewLayer(t, transaction.Config{Aliases: []string{"ims.example.org"}})
+	a := siptest.ListenLayer(t, l, loopback)
+	b := siptest.ListenLayer(t, l, loopback)
+
+	p := proxy.New(proxy.Config{Layer: l, Port: a.Port()})
+
+	cases := []struct {
+		uri  string
+		want bool
+	}{
+		{"sip:" + a.String(), true},
+		{"sip:ims.example.org:" + strconv.Itoa(int(a.Port())) + ";lr", true},
+		{"sip:" + b.String(), false},
+		{"sip:ims.example.org:" + strconv.Itoa(int(b.Port())) + ";lr", false},
+		{"sip:ims.example.org", false},
+	}
+
+	for _, c := range cases {
+		u, err := sip.ParseURI(c.uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := p.IsLocal(u); got != c.want {
+			t.Errorf("IsLocal(%s) = %t, want %t", c.uri, got, c.want)
+		}
+	}
+
+	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l}).IsLocal(u) {
+		t.Errorf("IsLocal(%s) without a port = false, want true", u)
 	}
 }
 

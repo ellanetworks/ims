@@ -54,9 +54,10 @@ func writeConfig(t *testing.T, content string) string {
 
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
-		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  scscf_name: SCSCF.example.org\n"+
-		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  port: 5070\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
-		"registrar:\n  min_expires: 120\n  max_expires: 7200\n"+
+		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
+		"pcscf:\n  port: 5062\nicscf:\n  port: 5072\n"+
+		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -70,15 +71,25 @@ func TestLoad(t *testing.T) {
 			MCC:        "310",
 			MNC:        "410",
 			HomeDomain: "ims.mnc410.mcc310.3gppnetwork.org",
-			SCSCFName:  "scscf.example.org",
+			TrustedNetworks: []netip.Prefix{
+				netip.MustParsePrefix("192.0.2.0/24"),
+				netip.MustParsePrefix("198.51.100.0/24"),
+			},
 		},
 		SIP: SIP{
 			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
-			Port:           5070,
 			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org"},
 			MaxConnections: 100,
 		},
-		Registrar: Registrar{MinExpires: 120, MaxExpires: 7200},
+		PCSCF: PCSCF{Port: 5062},
+		ICSCF: ICSCF{Port: 5072},
+		SCSCF: SCSCF{
+			Port:         5082,
+			Name:         "sip:scscf.example.org:5082",
+			Capabilities: []uint32{1, 2},
+			MinExpires:   120,
+			MaxExpires:   7200,
+		},
 		Diameter: Diameter{
 			OriginHost:  "ims.ims.mnc001.mcc001.3gppnetwork.org",
 			OriginRealm: "ims.mnc001.mcc001.3gppnetwork.org",
@@ -169,8 +180,9 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.SIP.Port != defaultSIPPort || cfg.SIP.MaxConnections != 0 {
-		t.Fatalf("sip port and max_connections = %d %d, want %d 0", cfg.SIP.Port, cfg.SIP.MaxConnections, defaultSIPPort)
+	if cfg.PCSCF.Port != 5060 || cfg.ICSCF.Port != 5070 || cfg.SCSCF.Port != 5080 || cfg.SIP.MaxConnections != 0 {
+		t.Fatalf("ports and max_connections = %d %d %d %d, want 5060 5070 5080 0",
+			cfg.PCSCF.Port, cfg.ICSCF.Port, cfg.SCSCF.Port, cfg.SIP.MaxConnections)
 	}
 
 	if cfg.API.Port != defaultAPIPort {
@@ -181,12 +193,12 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("call_history.retention = %v, want %v", cfg.CallHistory.Retention, defaultCallRetention)
 	}
 
-	if cfg.IMS.SCSCFName != "scscf.ims.mnc001.mcc001.3gppnetwork.org" {
-		t.Fatalf("ims.scscf_name = %q, want scscf.<home domain>", cfg.IMS.SCSCFName)
+	if cfg.SCSCF.Name != "sip:scscf.ims.mnc001.mcc001.3gppnetwork.org:5080" {
+		t.Fatalf("scscf.name = %q, want sip:scscf.<home domain>:<scscf port>", cfg.SCSCF.Name)
 	}
 
-	if cfg.Registrar.MinExpires != defaultMinExpires || cfg.Registrar.MaxExpires != defaultMaxExpires {
-		t.Fatalf("registrar = %+v, want min %d and max %d", cfg.Registrar, defaultMinExpires, defaultMaxExpires)
+	if cfg.SCSCF.MinExpires != defaultMinExpires || cfg.SCSCF.MaxExpires != defaultMaxExpires {
+		t.Fatalf("scscf = %+v, want min %d and max %d", cfg.SCSCF, defaultMinExpires, defaultMaxExpires)
 	}
 
 	hss := cfg.Diameter.Peers[0]
@@ -237,11 +249,19 @@ func TestLoadInvalid(t *testing.T) {
 		{"unspecified sip ipv6 address", validDB + validAPI + validIMS + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
 		{"sip address with zone", validDB + validAPI + validIMS + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
 		{"duplicate sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
-		{"sip port out of range", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  port: 70000\n" + validDiameter, "sip.port 70000 is out of range"},
+		{"pcscf port out of range", valid + "pcscf:\n  port: 70000\n" + validDiameter, "pcscf.port 70000 is out of range"},
+		{"icscf port out of range", valid + "icscf:\n  port: -1\n" + validDiameter, "icscf.port -1 is out of range"},
+		{"same ports", valid + "pcscf:\n  port: 5080\n" + validDiameter, "pcscf.port and scscf.port are both 5080"},
+		{"bad trusted network", validDB + validAPI + validIMS + "  trusted_networks: [10.0.0.0]\n" + validSIP + validDiameter, "no '/'"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
-		{"negative min expires", valid + "registrar:\n  min_expires: -1\n" + validDiameter, "registrar.min_expires -1 must be positive"},
-		{"max expires below min", valid + "registrar:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "registrar.max_expires 300 is below registrar.min_expires 600"},
-		{"S-CSCF name not a domain name", validDB + validAPI + validIMS + "  scscf_name: scscf_1.example.org\n" + validSIP + validDiameter, `ims.scscf_name "scscf_1.example.org" is not a domain name`},
+		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},
+		{"max expires below min", valid + "scscf:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "scscf.max_expires 300 is below scscf.min_expires 600"},
+		{"S-CSCF name not a URI", valid + "scscf:\n  name: scscf.example.org\n" + validDiameter, `scscf.name "scscf.example.org" is not a SIP URI`},
+		{"S-CSCF name with a user", valid + "scscf:\n  name: sip:s@scscf.example.org:5080\n" + validDiameter, "must have no user part"},
+		{"S-CSCF name with parameters", valid + "scscf:\n  name: sip:scscf.example.org:5080;transport=tcp\n" + validDiameter, "must have no user part, parameters"},
+		{"S-CSCF name on another port", valid + "scscf:\n  name: sip:scscf.example.org\n" + validDiameter, "must have the port of scscf.port 5080"},
+		{"S-CSCF name not a domain name", valid + "scscf:\n  name: sip:scscf_1.example.org:5080\n" + validDiameter, `"scscf_1.example.org" is not a domain name`},
+		{"S-CSCF name on another address", valid + "scscf:\n  name: sip:10.0.0.6:5080\n" + validDiameter, "10.0.0.6 is not one of sip.addresses"},
 		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
 		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
 		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},

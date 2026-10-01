@@ -6,10 +6,17 @@ import (
 )
 
 type SIP interface {
-	Listeners() []netip.AddrPort
+	Listeners() []SIPEndpoint
+}
+
+// SIPEndpoint is a listener of one of the CSCF roles.
+type SIPEndpoint struct {
+	Role    string
+	Address netip.AddrPort
 }
 
 type SIPListener struct {
+	Role       string   `json:"role"`
 	Address    string   `json:"address"`
 	Transports []string `json:"transports"`
 }
@@ -29,7 +36,7 @@ func GetSIPStatus(cfg Config) http.Handler {
 		}
 
 		for _, l := range cfg.SIP.Listeners() {
-			resp.Listeners = append(resp.Listeners, SIPListener{Address: l.String(), Transports: []string{"udp", "tcp"}})
+			resp.Listeners = append(resp.Listeners, SIPListener{Role: l.Role, Address: l.Address.String(), Transports: []string{"udp", "tcp"}})
 		}
 
 		writeResponse(w, resp, http.StatusOK, cfg.Logger)

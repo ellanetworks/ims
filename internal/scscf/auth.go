@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	algorithmAKAv1 = "AKAv1-MD5"
-	qopAuth        = "auth"
+	algorithmAKAv1        = "AKAv1-MD5"
+	qopAuth               = "auth"
+	integrityProtectedYes = "yes"
 )
 
 type credentials struct {
@@ -27,6 +28,8 @@ type credentials struct {
 	nc        string
 	cnonce    string
 	auts      string
+
+	integrityProtected string
 }
 
 func (c *credentials) answers(ch *challenge) bool {
@@ -84,6 +87,8 @@ func parseCredentials(v string) (*credentials, error) {
 		nc:        get("nc"),
 		cnonce:    get("cnonce"),
 		auts:      get("auts"),
+
+		integrityProtected: get("integrity-protected"),
 	}
 
 	if c.username == "" {

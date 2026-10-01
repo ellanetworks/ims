@@ -143,12 +143,11 @@ func TestInitialRegistration(t *testing.T) {
 		UserData:   sub,
 		Bindings: []db.Binding{{
 			Contact: db.Contact{
-				ID:        contact.ID,
-				IMPI:      testIMPI,
-				URI:       u.contact,
-				Params:    ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
-				Path:      testPath,
-				UEAddress: loopback,
+				ID:     contact.ID,
+				IMPI:   testIMPI,
+				URI:    u.contact,
+				Params: ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
+				Path:   testPath,
 			},
 			CallID:    u.callID,
 			CSeq:      2,
@@ -320,18 +319,16 @@ func TestRegAwaitAuthExpiryKeepsRegistration(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
 }
 
-func TestIntegrityProtectedParameterIsIgnored(t *testing.T) {
+func TestResponseWithoutIntegrityProtectedIsIgnored(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
 	nonce := u.challenged(registerOptions{})
 
-	res := h.reg.Register(t.Context(), Request{
-		SIP:       u.request(registerOptions{auth: u.protected(nonce, testVector.XRES)}),
-		Protected: false,
-		UEAddress: loopback,
-	})
-	wantStatus(t, res, 401)
+	auth := u.protected(nonce, testVector.XRES)
+	auth = auth[:strings.LastIndex(auth, ", integrity-protected=")]
+
+	wantStatus(t, u.send(registerOptions{auth: auth}), 401)
 	h.hss.nextMAR(t)
 	h.wantUnregistered()
 }
@@ -376,7 +373,7 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	wantStatus(t, res, 200)
 	h.hss.noCx(t)
 
-	if got := res.Header.Get("Service-Route"); got != serviceRoute(scscfName, sipPort, before.Bindings[0].Contact.ID) {
+	if got := res.Header.Get("Service-Route"); got != serviceRoute(h.reg.cfg.Name, before.Bindings[0].Contact.ID) {
 		t.Errorf("Service-Route = %q", got)
 	}
 
@@ -540,7 +537,7 @@ func TestNewContactReplacesOldOne(t *testing.T) {
 		t.Errorf("Contact = %v", got)
 	}
 
-	if got, want := res.Header.Get("Service-Route"), serviceRoute(scscfName, sipPort, regs[0].Bindings[0].Contact.ID); got != want ||
+	if got, want := res.Header.Get("Service-Route"), serviceRoute(h.reg.cfg.Name, regs[0].Bindings[0].Contact.ID); got != want ||
 		regs[0].Bindings[0].Contact.ID == old.ID {
 		t.Errorf("Service-Route = %q, want %q for the new contact", got, want)
 	}

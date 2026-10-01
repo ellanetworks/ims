@@ -173,11 +173,12 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 }
 
 func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (int64, error) {
-	if !c.UEAddress.IsValid() {
-		return 0, errors.New("contact without a UE address")
+	var ueAddress any
+	if c.UEAddress.IsValid() {
+		ueAddress = c.UEAddress.String()
 	}
 
-	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), c.UEAddress.String()}
+	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), ueAddress}
 	args = append(args, securityAssociationArgs(c.IPsec)...)
 	args = append(args, nullableString(c.RxSessionID))
 
@@ -434,8 +435,7 @@ func scanRegistration(row scanner) (Registration, error) {
 func scanContact(row scanner, leading ...any) (Contact, error) {
 	var (
 		c                                        Contact
-		path, rxSessionID, alg, ealg             sql.NullString
-		ueAddress                                string
+		path, rxSessionID, alg, ealg, ueAddress  sql.NullString
 		uePortC, uePortS, pcscfPortC, pcscfPortS sql.Null[uint16]
 		spiUC, spiUS, spiPC, spiPS               sql.Null[uint32]
 	)
@@ -447,12 +447,15 @@ func scanContact(row scanner, leading ...any) (Contact, error) {
 		return Contact{}, err
 	}
 
-	addr, err := netip.ParseAddr(ueAddress)
-	if err != nil {
-		return Contact{}, fmt.Errorf("contact %d: %w", c.ID, err)
+	if ueAddress.Valid {
+		addr, err := netip.ParseAddr(ueAddress.String)
+		if err != nil {
+			return Contact{}, fmt.Errorf("contact %d: %w", c.ID, err)
+		}
+
+		c.UEAddress = addr
 	}
 
-	c.UEAddress = addr
 	c.Path = path.String
 	c.RxSessionID = rxSessionID.String
 

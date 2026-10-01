@@ -113,6 +113,19 @@ func TestPlainSIPContact(t *testing.T) {
 	}
 }
 
+func TestContactWithoutUEAddress(t *testing.T) {
+	d := openTestDB(t)
+
+	r := testRegistration(testIMPI, "15551230001")
+	r.Bindings[0].Contact.UEAddress = netip.Addr{}
+	r.Bindings[0].Contact.IPsec = nil
+	mustSaveRegistration(t, d, r)
+
+	if got := listByIMPI(t, d)[0].Bindings[0].Contact.UEAddress; got.IsValid() {
+		t.Fatalf("UE address = %s, want none", got)
+	}
+}
+
 func TestContactRejectsPartialSAs(t *testing.T) {
 	d := openTestDB(t)
 	r := testRegistration(testIMPI, "15551230001")

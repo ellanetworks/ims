@@ -7,9 +7,11 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/sip"
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,7 +19,9 @@ const (
 	defaultAPIPort       = 5020
 	defaultCallRetention = 90 * 24 * time.Hour
 	defaultDiameterPort  = 3868
-	defaultSIPPort       = 5060
+	defaultPCSCFPort     = 5060
+	defaultICSCFPort     = 5070
+	defaultSCSCFPort     = 5080
 	defaultMinExpires    = 60
 	defaultMaxExpires    = 3600
 )
@@ -42,7 +46,9 @@ type Config struct {
 	API         API         `yaml:"api"`
 	IMS         IMS         `yaml:"ims"`
 	SIP         SIP         `yaml:"sip"`
-	Registrar   Registrar   `yaml:"registrar"`
+	PCSCF       PCSCF       `yaml:"pcscf"`
+	ICSCF       ICSCF       `yaml:"icscf"`
+	SCSCF       SCSCF       `yaml:"scscf"`
 	Diameter    Diameter    `yaml:"diameter"`
 }
 
@@ -63,20 +69,35 @@ type IMS struct {
 	MCC string `yaml:"mcc"`
 	MNC string `yaml:"mnc"`
 
-	HomeDomain string `yaml:"home_domain"`
-	SCSCFName  string `yaml:"scscf_name"`
+	HomeDomain      string         `yaml:"home_domain"`
+	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
 }
 
 type SIP struct {
 	Addresses      []netip.Addr `yaml:"addresses"`
-	Port           int          `yaml:"port"`
 	Aliases        []string     `yaml:"aliases"`
 	MaxConnections int          `yaml:"max_connections"`
 }
 
-type Registrar struct {
-	MinExpires int `yaml:"min_expires"`
-	MaxExpires int `yaml:"max_expires"`
+type PCSCF struct {
+	Port int `yaml:"port"`
+}
+
+type ICSCF struct {
+	Port int `yaml:"port"`
+}
+
+type SCSCF struct {
+	Port         int      `yaml:"port"`
+	Name         string   `yaml:"name"`
+	Capabilities []uint32 `yaml:"capabilities"`
+	MinExpires   int      `yaml:"min_expires"`
+	MaxExpires   int      `yaml:"max_expires"`
+}
+
+// DefaultSCSCFName is the S-CSCF name used when scscf.name is not set.
+func DefaultSCSCFName(homeDomain string, port int) string {
+	return "sip:scscf." + homeDomain + ":" + strconv.Itoa(port)
 }
 
 func HomeDomain(mcc, mnc string) string {
@@ -89,8 +110,15 @@ func HomeDomain(mcc, mnc string) string {
 
 func (c Config) SIPAliases() []string {
 	aliases := append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
-	if !slices.Contains(aliases, c.IMS.SCSCFName) {
-		aliases = append(aliases, c.IMS.SCSCFName)
+
+	name := c.SCSCF.Name
+	if name == "" {
+		name = DefaultSCSCFName(c.IMS.HomeDomain, c.SCSCF.Port)
+	}
+
+	u, err := sip.ParseURI(name)
+	if err == nil && !isIPLiteral(u.Host) && !slices.Contains(aliases, strings.ToLower(u.Host)) {
+		aliases = append(aliases, strings.ToLower(u.Host))
 	}
 
 	return aliases
@@ -154,13 +182,25 @@ func Load(path string) (Config, error) {
 		cfg.IMS.HomeDomain = HomeDomain(cfg.IMS.MCC, cfg.IMS.MNC)
 	}
 
-	cfg.IMS.SCSCFName = strings.ToLower(cfg.IMS.SCSCFName)
-	if cfg.IMS.SCSCFName == "" {
-		cfg.IMS.SCSCFName = "scscf." + cfg.IMS.HomeDomain
+	for i, p := range cfg.IMS.TrustedNetworks {
+		cfg.IMS.TrustedNetworks[i] = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-unmappedBits(p)).Masked()
 	}
 
-	if cfg.SIP.Port == 0 {
-		cfg.SIP.Port = defaultSIPPort
+	if cfg.PCSCF.Port == 0 {
+		cfg.PCSCF.Port = defaultPCSCFPort
+	}
+
+	if cfg.ICSCF.Port == 0 {
+		cfg.ICSCF.Port = defaultICSCFPort
+	}
+
+	if cfg.SCSCF.Port == 0 {
+		cfg.SCSCF.Port = defaultSCSCFPort
+	}
+
+	cfg.SCSCF.Name = strings.ToLower(cfg.SCSCF.Name)
+	if cfg.SCSCF.Name == "" {
+		cfg.SCSCF.Name = DefaultSCSCFName(cfg.IMS.HomeDomain, cfg.SCSCF.Port)
 	}
 
 	for i, a := range cfg.SIP.Addresses {
@@ -171,12 +211,12 @@ func Load(path string) (Config, error) {
 		cfg.SIP.Aliases[i] = strings.ToLower(a)
 	}
 
-	if cfg.Registrar.MinExpires == 0 {
-		cfg.Registrar.MinExpires = defaultMinExpires
+	if cfg.SCSCF.MinExpires == 0 {
+		cfg.SCSCF.MinExpires = defaultMinExpires
 	}
 
-	if cfg.Registrar.MaxExpires == 0 {
-		cfg.Registrar.MaxExpires = defaultMaxExpires
+	if cfg.SCSCF.MaxExpires == 0 {
+		cfg.SCSCF.MaxExpires = defaultMaxExpires
 	}
 
 	for i := range cfg.Diameter.Peers {
@@ -218,11 +258,36 @@ func (c Config) validate() error {
 		return err
 	}
 
-	if err := c.Registrar.validate(); err != nil {
+	if err := c.validatePorts(); err != nil {
+		return err
+	}
+
+	if err := c.SCSCF.validate(c.SIP.Addresses); err != nil {
 		return err
 	}
 
 	return c.Diameter.validate()
+}
+
+func (c Config) validatePorts() error {
+	ports := []struct {
+		name string
+		port int
+	}{{"pcscf.port", c.PCSCF.Port}, {"icscf.port", c.ICSCF.Port}, {"scscf.port", c.SCSCF.Port}}
+
+	for i, p := range ports {
+		if p.port < 1 || p.port > 65535 {
+			return fmt.Errorf("%s %d is out of range", p.name, p.port)
+		}
+
+		for _, q := range ports[:i] {
+			if q.port == p.port {
+				return fmt.Errorf("%s and %s are both %d", q.name, p.name, p.port)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (i IMS) validate() error {
@@ -233,8 +298,12 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
 	case !isDomainName(i.HomeDomain):
 		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
-	case !isDomainName(i.SCSCFName):
-		return fmt.Errorf("ims.scscf_name %q is not a domain name", i.SCSCFName)
+	}
+
+	for _, p := range i.TrustedNetworks {
+		if !p.IsValid() || p.Addr().Zone() != "" {
+			return fmt.Errorf("ims.trusted_networks: %s is not a network", p)
+		}
 	}
 
 	return nil
@@ -244,8 +313,6 @@ func (s SIP) validate(homeDomain string) error {
 	switch {
 	case len(s.Addresses) == 0:
 		return errors.New("sip.addresses needs at least one address")
-	case s.Port < 1 || s.Port > 65535:
-		return fmt.Errorf("sip.port %d is out of range", s.Port)
 	case s.MaxConnections < 0:
 		return fmt.Errorf("sip.max_connections %d must not be negative", s.MaxConnections)
 	}
@@ -285,15 +352,46 @@ func (s SIP) validate(homeDomain string) error {
 	return nil
 }
 
-func (r Registrar) validate() error {
+func (s SCSCF) validate(addresses []netip.Addr) error {
 	switch {
-	case r.MinExpires < 1:
-		return fmt.Errorf("registrar.min_expires %d must be positive", r.MinExpires)
-	case r.MaxExpires < r.MinExpires:
-		return fmt.Errorf("registrar.max_expires %d is below registrar.min_expires %d", r.MaxExpires, r.MinExpires)
+	case s.MinExpires < 1:
+		return fmt.Errorf("scscf.min_expires %d must be positive", s.MinExpires)
+	case s.MaxExpires < s.MinExpires:
+		return fmt.Errorf("scscf.max_expires %d is below scscf.min_expires %d", s.MaxExpires, s.MinExpires)
+	}
+
+	u, err := sip.ParseURI(s.Name)
+
+	switch {
+	case err != nil || !strings.EqualFold(u.Scheme, "sip"):
+		return fmt.Errorf("scscf.name %q is not a SIP URI", s.Name)
+	case u.User != "" || len(u.Params) > 0 || u.Headers != "":
+		return fmt.Errorf("scscf.name %q must have no user part, parameters or headers", s.Name)
+	case int(u.Port) != s.Port:
+		return fmt.Errorf("scscf.name %q must have the port of scscf.port %d", s.Name, s.Port)
+	}
+
+	if a, ok := sip.HostAddr(u.Host); ok {
+		if !slices.Contains(addresses, a.Unmap()) {
+			return fmt.Errorf("scscf.name %q: %s is not one of sip.addresses", s.Name, a)
+		}
+
+		return nil
+	}
+
+	if !isDomainName(u.Host) {
+		return fmt.Errorf("scscf.name %q: %q is not a domain name", s.Name, u.Host)
 	}
 
 	return nil
+}
+
+func unmappedBits(p netip.Prefix) int {
+	if p.Addr().Is4In6() && p.Bits() >= 96 {
+		return 96
+	}
+
+	return 0
 }
 
 func isDomainName(s string) bool {

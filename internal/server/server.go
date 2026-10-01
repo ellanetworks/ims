@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/scscf"
 )
 
 const (
@@ -31,7 +30,6 @@ type Server struct {
 	database    *db.DB
 	node        *diameter.Node
 	diameter    Diameter
-	registrar   *scscf.Registrar
 	sip         SIP
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -76,23 +74,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	hss := cfg.Diameter.CxPeer()
-	registrar := scscf.New(scscf.Config{
-		HomeDomain: cfg.IMS.HomeDomain,
-		Name:       cfg.IMS.SCSCFName,
-		Port:       cfg.SIP.Port,
-		MinExpires: time.Duration(cfg.Registrar.MinExpires) * time.Second,
-		MaxExpires: time.Duration(cfg.Registrar.MaxExpires) * time.Second,
-		HSS:        scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
-		Diameter:   node,
-		DB:         database,
-		Logger:     s.Logger,
-	})
-
-	sipServer, err := startSIP(ctx, cfg, registrar, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, node, database, s.Logger)
 	if err != nil {
-		registrar.Close()
-
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -103,7 +86,6 @@ func (s *Server) Start(ctx context.Context) error {
 	s.database = database
 	s.node = node
 	s.diameter = node
-	s.registrar = registrar
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
@@ -132,7 +114,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	sipAttrs := make([]string, 0, len(sipServer.Listeners()))
 	for _, l := range sipServer.Listeners() {
-		sipAttrs = append(sipAttrs, l.String())
+		sipAttrs = append(sipAttrs, l.Role+" "+l.Address.String())
 	}
 
 	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs))
@@ -161,8 +143,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopPurge()
 	<-s.purgeDone
-
-	s.registrar.Close()
 
 	if err := s.sip.Close(); err != nil {
 		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))

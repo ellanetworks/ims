@@ -23,7 +23,7 @@ func testConfig(t *testing.T) config.Config {
 		CallHistory: config.CallHistory{Retention: 24 * time.Hour},
 		API:         config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
 		IMS:         config.IMS{MCC: "001", MNC: "01", HomeDomain: imsRealm},
-		SIP:         config.SIP{Addresses: []netip.Addr{loopback, loopback6}, Port: 0},
+		SIP:         config.SIP{Addresses: []netip.Addr{loopback, loopback6}},
 		Diameter: diameterConfig(
 			config.DiameterPeer{
 				ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: imsRealm,
