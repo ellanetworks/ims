@@ -20,11 +20,7 @@ const (
 	assignAdministrative        = cx.AssignmentAdministrativeDeregistration
 )
 
-var (
-	errNoAKAVector = errors.New("no Digest-AKAv1-MD5 vector in the MAA")
-
-	errHSSDown = errors.New("the HSS is not connected")
-)
+var errNoAKAVector = errors.New("no Digest-AKAv1-MD5 vector in the MAA")
 
 type authVector struct {
 	rand, autn, xres, ck, ik []byte
@@ -98,14 +94,10 @@ func (r *Registrar) serverAssignment(ctx context.Context, impi string, impus []s
 }
 
 func (r *Registrar) do(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
-	if p, ok := r.cfg.Diameter.Peer(r.cfg.HSS.ID); !ok || p.State != diameter.PeerOpen {
-		return nil, errHSSDown
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, cxTimeout)
 	defer cancel()
 
-	return r.cfg.Diameter.Do(ctx, r.cfg.HSS.ID, req)
+	return r.cfg.Diameter.Do(ctx, r.cfg.HSS.ID, req, diameter.FailFast())
 }
 
 func refused(err error) bool {
@@ -115,7 +107,7 @@ func refused(err error) bool {
 
 func permanent(err error) bool {
 	var re *cx.ResultError
-	return errors.As(err, &re) && re.Experimental
+	return errors.As(err, &re) && re.Permanent()
 }
 
 func resultIs(err error, codes ...uint32) bool {

@@ -18,7 +18,7 @@ const productName = "ims"
 type Diameter interface {
 	Identity() diameter.Identity
 	Peers() []diameter.PeerStatus
-	Do(ctx context.Context, peerID string, req *diameter.Message) (*diameter.Message, error)
+	Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error)
 }
 
 var applications = map[config.Application]diameter.Application{

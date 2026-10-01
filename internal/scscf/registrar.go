@@ -36,8 +36,7 @@ type Request struct {
 type Diameter interface {
 	Identity() diameter.Identity
 	NewSessionID() string
-	Peer(id string) (diameter.PeerStatus, bool)
-	Do(ctx context.Context, peerID string, req *diameter.Message) (*diameter.Message, error)
+	Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error)
 }
 
 type HSS struct {
