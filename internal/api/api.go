@@ -6,14 +6,16 @@ import (
 )
 
 type Config struct {
-	Version string
-	Logger  *slog.Logger
+	Version  string
+	Diameter Diameter
+	Logger   *slog.Logger
 }
 
 func NewHandler(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /api/v1/status", GetStatus(cfg))
+	mux.Handle("GET /api/v1/diameter", GetDiameterStatus(cfg))
 
 	return mux
 }
