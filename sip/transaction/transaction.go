@@ -20,8 +20,7 @@ const (
 	DefaultT2 = 4 * time.Second
 	DefaultT4 = 5 * time.Second
 
-	timerD      = 32 * time.Second
-	defaultPort = 5060
+	timerD = 32 * time.Second
 )
 
 var (
@@ -140,7 +139,7 @@ func New(cfg Config) *Layer {
 	}
 
 	if l.clock == nil {
-		l.clock = realClock{}
+		l.clock = SystemClock{}
 	}
 
 	if l.t1 <= 0 {
@@ -342,7 +341,7 @@ func (h transportHandler) HandleMessage(m sip.Message) {
 }
 
 func (h transportHandler) HandleParseError(err *sip.ParseError) {
-	h.l.log.Debug("malformed SIP request", slog.String("flow", flowString(err.Request.Flow)), slog.Any("error", err))
+	h.l.log.Debug("malformed SIP request", slog.String("flow", err.Request.Flow.String()), slog.Any("error", err))
 
 	if h.l.admit(err.Request) {
 		h.l.reject(err.Request, 400)
@@ -359,7 +358,7 @@ func (l *Layer) admit(m sip.Message) bool {
 		return true
 	}
 
-	l.log.Debug("SIP message refused", slog.String("message", m.StartLine()), slog.String("flow", flowString(m.Env().Flow)), slog.Any("error", err))
+	l.log.Debug("SIP message refused", slog.String("message", m.StartLine()), slog.String("flow", m.Env().Flow.String()), slog.Any("error", err))
 
 	var serr *sip.StatusError
 	if req, ok := m.(*sip.Request); ok && errors.As(err, &serr) {
@@ -373,7 +372,7 @@ func (l *Layer) handleRequest(req *sip.Request) {
 	var serr *sip.StatusError
 
 	if err := req.Validate(); err != nil {
-		l.log.Debug("invalid SIP request", slog.String("flow", flowString(req.Flow)), slog.Any("error", err))
+		l.log.Debug("invalid SIP request", slog.String("flow", req.Flow.String()), slog.Any("error", err))
 
 		if errors.As(err, &serr) {
 			l.reject(req, serr.StatusCode)
@@ -398,7 +397,7 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		case tx != nil:
 			tx.receiveAck(req)
 		case l.isStatelessAck(req):
-			l.log.Debug("absorbed ACK to a stateless response", slog.String("flow", flowString(req.Flow)))
+			l.log.Debug("absorbed ACK to a stateless response", slog.String("flow", req.Flow.String()))
 		default:
 			l.h.HandleAck(req)
 		}
@@ -445,7 +444,7 @@ func (l *Layer) answerCancel(tx, target *ServerTransaction) {
 	}
 
 	if err := tx.respond(res, true); err != nil {
-		l.log.Debug("response to CANCEL failed", slog.String("flow", flowString(tx.flow)), slog.Any("error", err))
+		l.log.Debug("response to CANCEL failed", slog.String("flow", tx.flow.String()), slog.Any("error", err))
 	}
 }
 
@@ -542,7 +541,7 @@ func (l *Layer) responseFlow(req *sip.Request) (sip.Flow, bool) {
 func (l *Layer) handleResponse(res *sip.Response) {
 	via, _ := res.Header.TopVia()
 	if !l.isLocal(via) {
-		l.log.Debug("dropped response for another sent-by", slog.String("flow", flowString(res.Flow)), slog.String("sent-by", via.SentBy()))
+		l.log.Debug("dropped response for another sent-by", slog.String("flow", res.Flow.String()), slog.String("sent-by", via.SentBy()))
 		return
 	}
 
@@ -554,7 +553,7 @@ func (l *Layer) handleResponse(res *sip.Response) {
 
 	tx := l.client(clientKey{branch: via.Branch(), method: cseq.Method})
 	if tx == nil {
-		l.log.Debug("discarded response without a transaction", slog.String("response", res.StartLine()), slog.String("flow", flowString(res.Flow)))
+		l.log.Debug("discarded response without a transaction", slog.String("response", res.StartLine()), slog.String("flow", res.Flow.String()))
 		return
 	}
 
@@ -567,13 +566,13 @@ func (l *Layer) isLocal(via sip.Via) bool {
 
 func (l *Layer) IsLocal(host string, port uint16) bool {
 	if port == 0 {
-		port = defaultPort
+		port = sip.DefaultPort
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
+	if a, ok := sip.HostAddr(host); ok {
 		if _, ok := l.locals[netip.AddrPortFrom(a.Unmap(), port)]; ok {
 			return true
 		}
@@ -598,22 +597,18 @@ func sentByKey(via sip.Via) string {
 
 func sentByPort(via sip.Via) uint16 {
 	if via.Port == 0 {
-		return defaultPort
+		return sip.DefaultPort
 	}
 
 	return via.Port
 }
 
 func normalizeHost(host string) string {
-	if a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
+	if a, ok := sip.HostAddr(host); ok {
 		return a.Unmap().String()
 	}
 
 	return strings.ToLower(host)
-}
-
-func flowString(f sip.Flow) string {
-	return string(f.Transport) + " " + f.Local.String() + " <-> " + f.Remote.String()
 }
 
 func errInvalid(res *sip.Response, why string) error {

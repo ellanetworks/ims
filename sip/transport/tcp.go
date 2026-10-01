@@ -162,7 +162,7 @@ func (t *Transport) dial(c *conn) {
 
 	go t.readTCP(c)
 
-	t.log.Debug("SIP connection dialed", slog.String("flow", flowString(c.flow)))
+	t.log.Debug("SIP connection dialed", slog.String("flow", c.flow.String()))
 }
 
 func (t *Transport) accept(l *listener) {
@@ -199,7 +199,7 @@ func (t *Transport) accept(l *listener) {
 
 		if len(t.conns) >= t.maxConns {
 			t.mu.Unlock()
-			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", flowString(f)), slog.Int("limit", t.maxConns))
+			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
 			c.abort()
 
 			continue
@@ -216,7 +216,7 @@ func (t *Transport) accept(l *listener) {
 
 		t.mu.Unlock()
 
-		t.log.Debug("SIP connection accepted", slog.String("flow", flowString(f)))
+		t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
 	}
 }
 
@@ -251,13 +251,13 @@ func (t *Transport) readTCP(c *conn) {
 			c.limit.Store(int64(t.idleTimeout))
 			t.malformed(err, c.flow)
 		case errors.Is(err, os.ErrDeadlineExceeded):
-			t.log.Debug("closing idle SIP connection", slog.String("flow", flowString(c.flow)))
+			t.log.Debug("closing idle SIP connection", slog.String("flow", c.flow.String()))
 			c.abort()
 
 			return
 		default:
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-				t.log.Debug("SIP connection closed", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
+				t.log.Debug("SIP connection closed", slog.String("flow", c.flow.String()), slog.Any("error", err))
 			}
 
 			return
@@ -266,7 +266,7 @@ func (t *Transport) readTCP(c *conn) {
 }
 
 func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
-	t.log.Debug("closing connection after an oversized message", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
+	t.log.Debug("closing connection after an oversized message", slog.String("flow", c.flow.String()), slog.Any("error", err))
 
 	req := err.Request
 	if req == nil || req.Method == "ACK" {

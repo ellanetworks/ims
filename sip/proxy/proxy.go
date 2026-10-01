@@ -115,7 +115,7 @@ func New(cfg Config) *Proxy {
 	}
 
 	if p.clock == nil {
-		p.clock = realClock{}
+		p.clock = transaction.SystemClock{}
 	}
 
 	return p
@@ -169,7 +169,7 @@ func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
 	if to, err := out.Header.To(); err == nil && to.Tag() != "" && len(routes) > 0 && p.IsLocal(out.URI) {
 		removed = append(removed, out.URI)
 		out.URI = routes[len(routes)-1].URI
-		popLast(&out.Header, "Route")
+		out.Header.PopLast("Route")
 
 		routes = routes[:len(routes)-1]
 	}
@@ -310,8 +310,8 @@ func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
 		return nil, err
 	}
 
-	if err := strictNextHop(out); err != nil {
-		return nil, err
+	if err := sip.ApplyStrictRoute(out); err != nil {
+		return nil, &sip.StatusError{StatusCode: 400, Err: err}
 	}
 
 	out.Header.Prepend("Via", sip.NewVia(to.Flow.Transport, to.sentBy()).String())
@@ -399,15 +399,15 @@ func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
 	down := to.sentBy()
 
 	if up == down && in.Transport == to.Flow.Transport {
-		insertTop(&r.Header, "Record-Route", recordRouteValue(rr, down, to.Flow.Transport, false))
+		r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, false))
 		return
 	}
 
-	insertTop(&r.Header, "Record-Route", recordRouteValue(rr, up, in.Transport, true))
-	insertTop(&r.Header, "Record-Route", recordRouteValue(rr, down, to.Flow.Transport, true))
+	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true))
+	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true))
 }
 
-func recordRouteValue(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool) string {
+func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool) sip.Field {
 	u := sip.URI{Scheme: "sip", User: rr.User, Host: sip.FormatHost(addr.Addr()), Port: addr.Port()}
 
 	if tr != sip.UDP {
@@ -424,76 +424,5 @@ func recordRouteValue(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, do
 		u.Params.Set(p.Name, p.Value)
 	}
 
-	return "<" + u.String() + ">"
-}
-
-func insertTop(h *sip.Header, name, value string) {
-	i := slices.IndexFunc(*h, func(f sip.Field) bool { return strings.EqualFold(sip.LongName(f.Name), name) })
-	if i < 0 {
-		i = 0
-
-		for j, f := range *h {
-			if strings.EqualFold(sip.LongName(f.Name), "Via") {
-				i = j + 1
-			}
-		}
-	}
-
-	*h = slices.Insert(*h, i, sip.Field{Name: name, Value: value})
-}
-
-func strictNextHop(r *sip.Request) error {
-	route, err := r.Header.TopRoute()
-
-	switch {
-	case errors.Is(err, sip.ErrMissingHeader):
-		return nil
-	case err != nil:
-		return &sip.StatusError{StatusCode: 400, Err: err}
-	case route.URI.IsLooseRouter():
-		return nil
-	}
-
-	addLast(&r.Header, "Route", "<"+r.URI.String()+">")
-	r.Header.PopFirst("Route")
-
-	r.URI = route.URI
-	r.URI.Headers = ""
-	r.URI.Params.Del("method")
-
-	return nil
-}
-
-func addLast(h *sip.Header, name, value string) {
-	for i := len(*h) - 1; i >= 0; i-- {
-		if strings.EqualFold((*h)[i].Name, name) {
-			*h = slices.Insert(*h, i+1, sip.Field{Name: name, Value: value})
-			return
-		}
-	}
-
-	h.Add(name, value)
-}
-
-func popLast(h *sip.Header, name string) {
-	for i := len(*h) - 1; i >= 0; i-- {
-		if !strings.EqualFold((*h)[i].Name, name) {
-			continue
-		}
-
-		elems := sip.SplitList((*h)[i].Value)
-		if len(elems) <= 1 {
-			*h = slices.Delete(*h, i, i+1)
-		} else {
-			(*h)[i].Value = strings.Join(elems[:len(elems)-1], ", ")
-		}
-
-		return
-	}
-}
-
-type realClock struct{}
-
-func (realClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
-	return time.AfterFunc(d, f)
+	return sip.Field{Name: "Record-Route", Value: "<" + u.String() + ">"}
 }

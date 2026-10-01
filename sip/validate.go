@@ -3,7 +3,6 @@ package sip
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"strings"
 )
 
@@ -82,8 +81,7 @@ func checkVia(v Via) error {
 	}
 
 	if r, ok := v.Params.Get("received"); ok {
-		a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(r, "["), "]"))
-		if err != nil || a.Zone() != "" {
+		if _, ok := HostAddr(r); !ok {
 			return fmt.Errorf("Via received %q: not an IP address", r)
 		}
 	}

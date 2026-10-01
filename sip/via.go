@@ -139,5 +139,5 @@ func parseVia(s string) (Via, error) {
 }
 
 func (v Via) Addr() (netip.Addr, bool) {
-	return hostAddr(v.Host)
+	return HostAddr(v.Host)
 }

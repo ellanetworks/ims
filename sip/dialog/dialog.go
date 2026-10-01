@@ -333,7 +333,7 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 		return
 	}
 
-	var rr sip.Header
+	var rr []sip.Field
 
 	for _, f := range req.Header {
 		if strings.EqualFold(f.Name, "Record-Route") {
@@ -341,19 +341,7 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 		}
 	}
 
-	if len(rr) == 0 {
-		return
-	}
-
-	i := 0
-
-	for j, f := range res.Header {
-		if strings.EqualFold(sip.LongName(f.Name), "Via") {
-			i = j + 1
-		}
-	}
-
-	res.Header = slices.Insert(res.Header, i, rr...)
+	res.Header.InsertTop(rr...)
 }
 
 func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
@@ -561,26 +549,11 @@ func (d *Dialog) NewPrack(res *sip.Response) (*sip.Request, error) {
 }
 
 func (d *Dialog) build(method string, seq uint32) *sip.Request {
-	uri := d.target
-	route := d.route
-
-	if len(route) > 0 {
-		first, _ := sip.ParseAddress(route[0])
-
-		if !first.URI.IsLooseRouter() {
-			uri = first.URI
-			uri.Headers = ""
-			uri.Params.Del("method")
-
-			route = append(slices.Clone(route[1:]), "<"+d.target.String()+">")
-		}
-	}
-
-	req := sip.NewRequest(method, uri)
+	req := sip.NewRequest(method, d.target)
 	req.Header = nil
 
-	if len(route) > 0 {
-		req.Header.Add("Route", strings.Join(route, ", "))
+	if len(d.route) > 0 {
+		req.Header.Add("Route", strings.Join(d.route, ", "))
 	}
 
 	req.Header.Add("Max-Forwards", "70")
@@ -589,6 +562,8 @@ func (d *Dialog) build(method string, seq uint32) *sip.Request {
 	req.Header.Add("Call-ID", d.id.CallID)
 	req.Header.Add("CSeq", sip.CSeq{Seq: seq, Method: method}.String())
 	req.Header.Add("Content-Length", "0")
+
+	_ = sip.ApplyStrictRoute(req)
 
 	return req
 }

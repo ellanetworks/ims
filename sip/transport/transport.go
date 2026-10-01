@@ -25,7 +25,6 @@ const (
 	DefaultWriteTimeout        = 10 * time.Second
 	DefaultMaxConnections      = 2048
 
-	defaultPort   = 5060
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
 	readBackoff   = 50 * time.Millisecond
@@ -270,6 +269,14 @@ func ensureContentLength(env *sip.Envelope) {
 }
 
 func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
+	if r.Flow.Transport == sip.UDP && len(r.Bytes()) > MaxUDPRequest {
+		return t.sendLargeRequest(ctx, r)
+	}
+
+	return t.sendOnFlow(ctx, r)
+}
+
+func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) error {
 	f := normalize(r.Flow)
 	if !f.Remote.IsValid() {
 		return errors.New("no remote address in the flow")
@@ -280,33 +287,6 @@ func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
 		return err
 	}
 
-	if f.Transport == sip.TCP {
-		ensureContentLength(&r.Envelope)
-	}
-
-	b := r.Bytes()
-
-	switch f.Transport {
-	case sip.UDP:
-		if len(b) > MaxUDPRequest {
-			return t.sendLargeRequest(ctx, l, r, f)
-		}
-
-		if err := sendUDP(l, f.Remote, b); err != nil {
-			return err
-		}
-	case sip.TCP:
-		if err := t.sendTCP(ctx, f, b, true); err != nil {
-			return err
-		}
-	}
-
-	r.Flow = f
-
-	return nil
-}
-
-func (t *Transport) sendLargeRequest(ctx context.Context, l *listener, r *sip.Request, f sip.Flow) error {
 	saved := r.Header.Clone()
 
 	via, err := r.Header.TopVia()
@@ -512,12 +492,12 @@ func (t *Transport) deliver(m sip.Message, f sip.Flow) {
 	switch m := m.(type) {
 	case *sip.Request:
 		if err := stampVia(m); err != nil {
-			t.log.Debug("dropped request without a usable Via", slog.String("flow", flowString(f)), slog.Any("error", err))
+			t.log.Debug("dropped request without a usable Via", slog.String("flow", f.String()), slog.Any("error", err))
 			return
 		}
 	case *sip.Response:
 		if err := m.Validate(); err != nil {
-			t.log.Debug("dropped invalid response", slog.String("flow", flowString(f)), slog.Any("error", err))
+			t.log.Debug("dropped invalid response", slog.String("flow", f.String()), slog.Any("error", err))
 			return
 		}
 	}
@@ -528,14 +508,14 @@ func (t *Transport) deliver(m sip.Message, f sip.Flow) {
 func (t *Transport) malformed(err error, f sip.Flow) {
 	var perr *sip.ParseError
 	if !errors.As(err, &perr) || perr.Request == nil {
-		t.log.Debug("dropped malformed message", slog.String("flow", flowString(f)), slog.Any("error", err))
+		t.log.Debug("dropped malformed message", slog.String("flow", f.String()), slog.Any("error", err))
 		return
 	}
 
 	perr.Request.Flow = f
 
 	if err := stampVia(perr.Request); err != nil {
-		t.log.Debug("dropped malformed request without a usable Via", slog.String("flow", flowString(f)), slog.Any("error", err))
+		t.log.Debug("dropped malformed request without a usable Via", slog.String("flow", f.String()), slog.Any("error", err))
 		return
 	}
 
@@ -561,8 +541,4 @@ func normalize(f sip.Flow) sip.Flow {
 	}
 
 	return f
-}
-
-func flowString(f sip.Flow) string {
-	return string(f.Transport) + " " + f.Local.String() + " <-> " + f.Remote.String()
 }
