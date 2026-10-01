@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,7 @@ const (
 	defaultAPIPort       = 5020
 	defaultCallRetention = 90 * 24 * time.Hour
 	defaultDiameterPort  = 3868
+	defaultSIPPort       = 5060
 )
 
 type Transport string
@@ -36,6 +38,8 @@ type Config struct {
 	DB          DB          `yaml:"db"`
 	CallHistory CallHistory `yaml:"call_history"`
 	API         API         `yaml:"api"`
+	IMS         IMS         `yaml:"ims"`
+	SIP         SIP         `yaml:"sip"`
 	Diameter    Diameter    `yaml:"diameter"`
 }
 
@@ -50,6 +54,46 @@ type CallHistory struct {
 type API struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
+}
+
+// IMS identifies the operator's IMS network.
+type IMS struct {
+	MCC string `yaml:"mcc"`
+	MNC string `yaml:"mnc"`
+
+	// HomeDomain defaults to the domain derived from the PLMN.
+	HomeDomain string `yaml:"home_domain"`
+}
+
+// SIP is the P-CSCF's unprotected SIP endpoint.
+type SIP struct {
+	// Addresses are the P-CSCF addresses given to UEs.
+	Addresses []netip.Addr `yaml:"addresses"`
+	// Port is the unprotected port, for both UDP and TCP.
+	Port int `yaml:"port"`
+	// Aliases are host names, besides the home domain, that the IMS treats
+	// as its own in a Via sent-by.
+	Aliases []string `yaml:"aliases"`
+	// MaxConnections caps the inbound TCP connections. 0 is the transport
+	// default.
+	MaxConnections int `yaml:"max_connections"`
+}
+
+// HomeDomain derives the IMS home network domain name from the PLMN, as
+// ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org with the MNC padded to three digits
+// (TS 23.003 §13.2).
+func HomeDomain(mcc, mnc string) string {
+	if len(mnc) == 2 {
+		mnc = "0" + mnc
+	}
+
+	return "ims.mnc" + mnc + ".mcc" + mcc + ".3gppnetwork.org"
+}
+
+// SIPAliases returns the host names the IMS treats as its own: the home
+// domain followed by the configured aliases.
+func (c Config) SIPAliases() []string {
+	return append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
 }
 
 type Diameter struct {
@@ -95,6 +139,23 @@ func Load(path string) (Config, error) {
 		cfg.API.Port = defaultAPIPort
 	}
 
+	cfg.IMS.HomeDomain = strings.ToLower(cfg.IMS.HomeDomain)
+	if cfg.IMS.HomeDomain == "" && isDigits(cfg.IMS.MCC) && isDigits(cfg.IMS.MNC) {
+		cfg.IMS.HomeDomain = HomeDomain(cfg.IMS.MCC, cfg.IMS.MNC)
+	}
+
+	if cfg.SIP.Port == 0 {
+		cfg.SIP.Port = defaultSIPPort
+	}
+
+	for i, a := range cfg.SIP.Addresses {
+		cfg.SIP.Addresses[i] = a.Unmap()
+	}
+
+	for i, a := range cfg.SIP.Aliases {
+		cfg.SIP.Aliases[i] = strings.ToLower(a)
+	}
+
 	for i := range cfg.Diameter.Peers {
 		p := &cfg.Diameter.Peers[i]
 
@@ -126,7 +187,79 @@ func (c Config) validate() error {
 		return fmt.Errorf("api.port %d is out of range", c.API.Port)
 	}
 
+	if err := c.IMS.validate(); err != nil {
+		return err
+	}
+
+	if err := c.SIP.validate(c.IMS.HomeDomain); err != nil {
+		return err
+	}
+
 	return c.Diameter.validate()
+}
+
+func (i IMS) validate() error {
+	switch {
+	case len(i.MCC) != 3 || !isDigits(i.MCC):
+		return fmt.Errorf("ims.mcc %q must be 3 digits", i.MCC)
+	case len(i.MNC) != 2 && len(i.MNC) != 3 || !isDigits(i.MNC):
+		return fmt.Errorf("ims.mnc %q must be 2 or 3 digits", i.MNC)
+	}
+
+	return nil
+}
+
+func (s SIP) validate(homeDomain string) error {
+	switch {
+	case len(s.Addresses) == 0:
+		return errors.New("sip.addresses needs at least one address")
+	case s.Port < 1 || s.Port > 65535:
+		return fmt.Errorf("sip.port %d is out of range", s.Port)
+	case s.MaxConnections < 0:
+		return fmt.Errorf("sip.max_connections %d must not be negative", s.MaxConnections)
+	}
+
+	seen := make(map[netip.Addr]bool, len(s.Addresses))
+
+	for _, a := range s.Addresses {
+		switch {
+		case !a.IsValid():
+			return errors.New("sip.addresses: an address is empty")
+		case a.IsUnspecified():
+			return fmt.Errorf("sip.addresses: %s must be a specific address, since it is given to UEs", a)
+		case a.Zone() != "":
+			return fmt.Errorf("sip.addresses: %s must not have a zone", a)
+		case seen[a]:
+			return fmt.Errorf("sip.addresses: %s is listed twice", a)
+		}
+
+		seen[a] = true
+	}
+
+	names := map[string]bool{homeDomain: true}
+
+	for _, alias := range s.Aliases {
+		switch {
+		case alias == "":
+			return errors.New("sip.aliases: an alias is empty")
+		case names[alias]:
+			return fmt.Errorf("sip.aliases: %s is listed twice or is the home domain", alias)
+		}
+
+		names[alias] = true
+	}
+
+	return nil
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+
+	return s != ""
 }
 
 func (d Diameter) validate() error {

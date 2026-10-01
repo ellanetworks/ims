@@ -41,9 +41,11 @@ func CheckNoListener(ap netip.AddrPort) error {
 		return err
 	}
 
-	var sa unix.Sockaddr = &unix.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().As4()}
+	var sa unix.Sockaddr
 	if ap.Addr().Is6() {
 		sa = &unix.SockaddrInet6{Port: int(ap.Port()), Addr: ap.Addr().As16()}
+	} else {
+		sa = &unix.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().As4()}
 	}
 
 	return unix.Bind(fd, sa)

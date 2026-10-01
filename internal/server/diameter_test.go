@@ -25,7 +25,10 @@ const (
 	imsRealm = "ims.mnc001.mcc001.3gppnetwork.org"
 )
 
-var loopback = netip.MustParseAddr("127.0.0.1")
+var (
+	loopback  = netip.MustParseAddr("127.0.0.1")
+	loopback6 = netip.MustParseAddr("::1")
+)
 
 // fakePeer is a passive Diameter node standing in for the HSS or the PCRF. It
 // accepts the IMS over TCP on loopback and records the states it sees the IMS

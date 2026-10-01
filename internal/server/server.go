@@ -30,6 +30,7 @@ type Server struct {
 	database    *db.DB
 	node        *diameter.Node
 	diameter    Diameter
+	sip         SIP
 	apiServer   *http.Server
 	apiListener net.Listener
 	stopPurge   context.CancelFunc
@@ -73,15 +74,28 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
+	sipServer, err := startSIP(ctx, cfg, s.Logger)
+	if err != nil {
+		_ = node.Shutdown(ctx)
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return fmt.Errorf("start SIP: %w", err)
+	}
+
 	s.database = database
 	s.node = node
 	s.diameter = node
+	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
-			Version:  version,
-			Diameter: s.diameter,
-			Logger:   s.Logger,
+			Version:    version,
+			Diameter:   s.diameter,
+			SIP:        s.sip,
+			HomeDomain: cfg.IMS.HomeDomain,
+			SIPAliases: cfg.SIPAliases(),
+			Logger:     s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -98,7 +112,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go s.runCallHistoryPurge(purgeCtx)
 
-	s.Logger.Info("ims started", "api", apiLn.Addr().String())
+	sipAttrs := make([]string, 0, len(sipServer.Listeners()))
+	for _, l := range sipServer.Listeners() {
+		sipAttrs = append(sipAttrs, l.String())
+	}
+
+	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs))
 
 	return nil
 }
@@ -124,6 +143,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopPurge()
 	<-s.purgeDone
+
+	if err := s.sip.Close(); err != nil {
+		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
+	}
 
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
 		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
