@@ -1,3 +1,7 @@
+db:
+  path: ims.db
+call_history:
+  retention: 2160h
 api:
   address: 127.0.0.1
   port: 5020
