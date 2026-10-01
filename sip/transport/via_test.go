@@ -60,6 +60,12 @@ func TestStampVia(t *testing.T) {
 			"v: SIP/2.0/TCP 10.0.0.1:5060;rport=40000;branch=z9hG4bK1;received=10.0.0.1, SIP/2.0/UDP 10.0.0.8;branch=z9hG4bK0",
 		},
 		{
+			"stale received replaced",
+			"Via: SIP/2.0/UDP 10.0.0.1:5060;received=192.0.2.66;branch=z9hG4bK1",
+			"10.0.0.1:5060",
+			"Via: SIP/2.0/UDP 10.0.0.1:5060;received=10.0.0.1;branch=z9hG4bK1",
+		},
+		{
 			"IPv6",
 			"Via: SIP/2.0/UDP [2001:db8::1]:5060;branch=z9hG4bK1;rport",
 			"[2001:db8::2]:5070",

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -363,3 +364,72 @@ func TestLargeUDPResponse(t *testing.T) {
 func port(s *siptest.Socket) string { return portOf(s.Addr()) }
 
 func portOf(a netip.AddrPort) string { return strconv.Itoa(int(a.Port())) }
+
+func TestDialSurvivesCancelledCaller(t *testing.T) {
+	p, u := newPCSCF(t, loopbacks[0].addr), newUE(t, loopbacks[0].addr)
+	f := sip.Flow{Transport: sip.TCP, Local: p.pc, Remote: u.us.Addr()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := siptest.NewRequest("OPTIONS", "sip:ue@"+u.us.Addr().String(), sip.TCP, p.pc)
+	req.Flow = f
+	_ = p.tr.Send(ctx, req)
+
+	p.request(t, "MESSAGE", f, u.us.Addr())
+
+	for {
+		in, got := u.us.RecvRequest()
+		wantFlow(t, "request", got, sip.TCP, u.us.Addr(), p.pc)
+
+		if in.Method == "MESSAGE" {
+			break
+		}
+	}
+
+	if n := u.us.Opened(); n != 1 {
+		t.Errorf("UE has %d connections, want 1", n)
+	}
+}
+
+func TestProtectedUDPResponseOnFlow(t *testing.T) {
+	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
+		p, u := newPCSCF(t, addr), newUE(t, addr)
+
+		u.uc.Send(sip.UDP, p.ps, siptest.NewRequest("REGISTER", "sip:ims.example.com", sip.UDP, u.us.Addr()))
+
+		reg := p.rec.NextRequest()
+		if rport, ok := topVia(t, reg).RPort(); !ok || rport != u.uc.Addr().Port() {
+			t.Fatalf("rport = %d, %v", rport, ok)
+		}
+
+		res := sip.NewResponse(reg, 200, "")
+		res.Flow = sip.Flow{Transport: sip.UDP, Local: p.pc, Remote: u.us.Addr()}
+
+		if err := p.tr.SendOnFlow(context.Background(), res); err != nil {
+			t.Fatal(err)
+		}
+
+		_, f := u.us.RecvResponse()
+		wantFlow(t, "200 on the port_pc/port_us pair", f, sip.UDP, u.us.Addr(), p.pc)
+		u.uc.RecvNone(50 * time.Millisecond)
+	})
+}
+
+func TestRedialAfterCloseFlow(t *testing.T) {
+	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
+		p, u := newPCSCF(t, addr), newUE(t, addr)
+		f := sip.Flow{Transport: sip.TCP, Local: p.pc, Remote: u.us.Addr()}
+
+		for i := range 3 {
+			p.request(t, "OPTIONS", f, u.us.Addr())
+			u.us.RecvRequest()
+
+			p.tr.CloseFlow(f)
+
+			if n := u.us.Opened(); n != i+1 {
+				t.Fatalf("UE has seen %d connections, want %d", n, i+1)
+			}
+		}
+	})
+}

@@ -19,6 +19,8 @@ var errNoConn = errors.New("no connection for the flow")
 
 var crlf = []byte("\r\n")
 
+const drainTimeout = time.Second
+
 type conn struct {
 	flow  sip.Flow
 	ready chan struct{}
@@ -44,6 +46,14 @@ func (c *conn) close() {
 	if c.nc != nil {
 		_ = c.nc.Close()
 	}
+}
+
+func (c *conn) abort() {
+	if c.nc != nil {
+		_ = c.nc.SetLinger(0)
+	}
+
+	c.close()
 }
 
 func (t *Transport) sendTCP(ctx context.Context, f sip.Flow, b []byte, dial bool) error {
@@ -95,9 +105,10 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 	default:
 		c = &conn{flow: f, ready: make(chan struct{})}
 		t.conns[f] = c
+		t.wg.Add(1)
 		t.mu.Unlock()
 
-		t.dial(ctx, c)
+		go t.dial(c)
 	}
 
 	select {
@@ -113,20 +124,22 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 	return c, nil
 }
 
-func (t *Transport) dial(ctx context.Context, c *conn) {
+func (t *Transport) dial(c *conn) {
+	defer t.wg.Done()
+
 	d := net.Dialer{
 		LocalAddr: net.TCPAddrFromAddrPort(c.flow.Local),
 		Timeout:   t.dialTimeout,
 		Control:   sockopt.ReusePort,
 	}
 
-	nc, err := d.DialContext(ctx, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
+	nc, err := d.DialContext(t.ctx, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	defer close(c.ready)
 
-	if err == nil && t.closed {
+	if err == nil && (t.closed || c.closed.Load() || t.conns[c.flow] != c) {
 		_ = nc.Close()
 		err = ErrClosed
 	}
@@ -224,6 +237,11 @@ func (t *Transport) readTCP(c *conn) {
 			return
 		case errors.As(err, &perr):
 			t.malformed(err, c.flow)
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			t.log.Debug("closing idle SIP connection", slog.String("flow", flowString(c.flow)))
+			c.abort()
+
+			return
 		default:
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				t.log.Debug("SIP connection closed", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
@@ -238,7 +256,7 @@ func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
 	t.log.Debug("closing connection after an oversized message", slog.String("flow", flowString(c.flow)), slog.Any("error", err))
 
 	req := err.Request
-	if req == nil {
+	if req == nil || req.Method == "ACK" {
 		return
 	}
 
@@ -248,7 +266,20 @@ func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
 		return
 	}
 
-	_ = t.write(c, sip.NewResponse(req, 513, "").Bytes())
+	if t.write(c, tooLargeResponse(req).Bytes()) != nil {
+		return
+	}
+
+	_ = c.nc.CloseWrite()
+	_ = c.nc.SetReadDeadline(time.Now().Add(drainTimeout))
+	_, _ = io.CopyN(io.Discard, c.nc, int64(t.maxSize))
+}
+
+func tooLargeResponse(req *sip.Request) *sip.Response {
+	res := sip.NewResponse(req, 513, "")
+	_ = res.Header.SetToTag(sip.NewTag())
+
+	return res
 }
 
 func (t *Transport) forget(c *conn) {

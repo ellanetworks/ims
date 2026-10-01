@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -22,9 +23,10 @@ const (
 	DefaultDialTimeout  = 10 * time.Second
 	DefaultWriteTimeout = 10 * time.Second
 
-	defaultPort = 5060
-	maxDatagram = 65535
-	bindRetries = 16
+	defaultPort   = 5060
+	maxDatagram   = 65535
+	udpReadBuffer = 4 << 20
+	bindRetries   = 16
 )
 
 var (
@@ -60,6 +62,9 @@ type Transport struct {
 	dialTimeout  time.Duration
 	writeTimeout time.Duration
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu        sync.Mutex
 	closed    bool
 	listeners map[netip.AddrPort]*listener
@@ -88,6 +93,8 @@ func New(cfg Config) *Transport {
 		listeners:    make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
 	}
+
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 
 	if t.log == nil {
 		t.log = slog.Default()
@@ -173,7 +180,10 @@ func bind(ctx context.Context, local netip.AddrPort) (*listener, error) {
 		return nil, err
 	}
 
-	return &listener{local: bound, udp: pc.(*net.UDPConn), tcp: tl.(*net.TCPListener)}, nil
+	udp := pc.(*net.UDPConn)
+	_ = udp.SetReadBuffer(udpReadBuffer)
+
+	return &listener{local: bound, udp: udp, tcp: tl.(*net.TCPListener)}, nil
 }
 
 func (t *Transport) Send(ctx context.Context, m sip.Message) error {
@@ -193,6 +203,48 @@ func (t *Transport) Send(ctx context.Context, m sip.Message) error {
 	return nil
 }
 
+func (t *Transport) SendOnFlow(ctx context.Context, m sip.Message) error {
+	if err := t.sendOnFlow(ctx, m); err != nil {
+		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
+	}
+
+	return nil
+}
+
+func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
+	f := normalize(m.Env().Flow)
+	if !f.Remote.IsValid() {
+		return errors.New("no remote address in the flow")
+	}
+
+	l, err := t.listener(f)
+	if err != nil {
+		return err
+	}
+
+	switch f.Transport {
+	case sip.UDP:
+		err = sendUDP(l, f.Remote, m.Bytes())
+	case sip.TCP:
+		ensureContentLength(m.Env())
+		err = t.sendTCP(ctx, f, m.Bytes(), true)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	m.Env().Flow = f
+
+	return nil
+}
+
+func ensureContentLength(env *sip.Envelope) {
+	if !env.Header.Has("Content-Length") {
+		env.Header.Set("Content-Length", strconv.Itoa(len(env.Body)))
+	}
+}
+
 func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
 	f := normalize(r.Flow)
 	if !f.Remote.IsValid() {
@@ -202,6 +254,10 @@ func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
 	l, err := t.listener(f)
 	if err != nil {
 		return err
+	}
+
+	if f.Transport == sip.TCP {
+		ensureContentLength(&r.Envelope)
 	}
 
 	b := r.Bytes()
@@ -239,6 +295,8 @@ func (t *Transport) sendLargeRequest(ctx context.Context, l *listener, r *sip.Re
 		return err
 	}
 
+	ensureContentLength(&r.Envelope)
+
 	tf := f
 	tf.Transport = sip.TCP
 
@@ -250,7 +308,7 @@ func (t *Transport) sendLargeRequest(ctx context.Context, l *listener, r *sip.Re
 
 	r.Header = saved
 
-	if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ECONNRESET) {
+	if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, syscall.ENOPROTOOPT) {
 		return err
 	}
 
@@ -276,6 +334,10 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 	via, err := r.Header.TopVia()
 	if err != nil {
 		return err
+	}
+
+	if f.Transport == sip.TCP {
+		ensureContentLength(&r.Envelope)
 	}
 
 	b := r.Bytes()
@@ -346,7 +408,7 @@ func (t *Transport) CloseFlow(f sip.Flow) {
 	defer t.mu.Unlock()
 
 	if c := t.conns[f]; c != nil {
-		c.close()
+		c.abort()
 	}
 }
 
@@ -359,6 +421,7 @@ func (t *Transport) Close() error {
 	}
 
 	t.closed = true
+	t.cancel()
 
 	for _, l := range t.listeners {
 		_ = l.tcp.Close()
@@ -393,7 +456,15 @@ func (t *Transport) readUDP(l *listener) {
 		}
 
 		data := buf[:n]
-		if sip.IsKeepalive(data) || isSTUN(data) {
+		if src.Port() == 0 || sip.IsKeepalive(data) {
+			continue
+		}
+
+		if isSTUN(data) {
+			if res := stunBindingReply(data, src); res != nil {
+				_, _ = l.udp.WriteToUDPAddrPort(res, src)
+			}
+
 			continue
 		}
 
@@ -421,7 +492,7 @@ func (t *Transport) udpTooLarge(m sip.Message, err error, f sip.Flow) {
 	}
 
 	req, ok := m.(*sip.Request)
-	if !ok || req == nil {
+	if !ok || req == nil || req.Method == "ACK" {
 		return
 	}
 
@@ -431,14 +502,10 @@ func (t *Transport) udpTooLarge(m sip.Message, err error, f sip.Flow) {
 		return
 	}
 
-	res := sip.NewResponse(req, 513, "")
+	res := tooLargeResponse(req)
 	if err := t.sendResponse(context.Background(), res); err != nil {
 		t.log.Debug("could not send 513", slog.String("flow", flowString(f)), slog.Any("error", err))
 	}
-}
-
-func isSTUN(data []byte) bool {
-	return len(data) > 0 && data[0] <= 1
 }
 
 func (t *Transport) deliver(m sip.Message, f sip.Flow) {

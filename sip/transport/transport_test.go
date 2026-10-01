@@ -2,13 +2,16 @@ package transport_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -142,7 +145,101 @@ func TestTooLargeOverUDP(t *testing.T) {
 		t.Errorf("got %s, want 513", res.StartLine())
 	}
 
+	if to, err := res.Header.To(); err != nil || to.Tag() == "" {
+		t.Errorf("513 To = %q, want a tag", res.Header.Get("To"))
+	}
+
 	rec.None(50 * time.Millisecond)
+}
+
+func TestNo513ForACK(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{MaxMessageSize: 1000})
+	local := siptest.Listen(t, tr, lo)
+	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	ack := siptest.NewRequest("ACK", "sip:a@127.0.0.1", sip.UDP, u.Addr())
+	ack.SetBody("text/plain", []byte(strings.Repeat("x", 1000)))
+	u.Send(sip.UDP, local, ack)
+
+	u.RecvNone(100 * time.Millisecond)
+	rec.None(10 * time.Millisecond)
+}
+
+func TestSTUNBinding(t *testing.T) {
+	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
+		tr, rec := siptest.NewTransport(t, transport.Config{})
+		local := siptest.Listen(t, tr, addr)
+
+		var lc net.ListenConfig
+
+		pc, err := lc.ListenPacket(context.Background(), "udp", netip.AddrPortFrom(addr, 0).String())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer func() { _ = pc.Close() }()
+
+		src := pc.LocalAddr().(*net.UDPAddr).AddrPort()
+		req := []byte{0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+
+		if _, err := pc.WriteTo(req, net.UDPAddrFromAddrPort(local)); err != nil {
+			t.Fatal(err)
+		}
+
+		_ = pc.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+		buf := make([]byte, 128)
+
+		n, _, err := pc.ReadFrom(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		res := buf[:n]
+		if binary.BigEndian.Uint16(res[0:2]) != 0x0101 || !bytes.Equal(res[4:20], req[4:20]) {
+			t.Fatalf("not a Binding success response for our transaction: % x", res)
+		}
+
+		attr := res[20:]
+		if binary.BigEndian.Uint16(attr[0:2]) != 0x0020 {
+			t.Fatalf("attribute %#x, want XOR-MAPPED-ADDRESS", binary.BigEndian.Uint16(attr[0:2]))
+		}
+
+		port := binary.BigEndian.Uint16(attr[6:8]) ^ 0x2112
+		ip := make([]byte, len(attr)-8)
+
+		for i := range ip {
+			ip[i] = attr[8+i] ^ req[4+i]
+		}
+
+		got, _ := netip.AddrFromSlice(ip)
+		if mapped := netip.AddrPortFrom(got, port); mapped != src {
+			t.Errorf("XOR-MAPPED-ADDRESS = %s, want %s", mapped, src)
+		}
+
+		rec.None(10 * time.Millisecond)
+	})
+}
+
+func TestTCPAddsContentLength(t *testing.T) {
+	tr, _ := siptest.NewTransport(t, transport.Config{})
+	local := siptest.Listen(t, tr, lo)
+	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("MESSAGE", "sip:a@127.0.0.1", sip.TCP, local)
+	req.Header.Del("Content-Length")
+	req.Body = []byte("hello")
+	req.Header.Set("Content-Type", "text/plain")
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: u.Addr()}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	in, _ := u.RecvRequest()
+	if string(in.Body) != "hello" || in.Header.Get("Content-Length") != "5" {
+		t.Errorf("got body %q, Content-Length %q", in.Body, in.Header.Get("Content-Length"))
+	}
 }
 
 func TestTCPFramingErrorCloses(t *testing.T) {
@@ -230,8 +327,8 @@ func TestIdleTimeout(t *testing.T) {
 
 	start := time.Now()
 
-	if _, err := r.ReadByte(); !errors.Is(err, io.EOF) {
-		t.Fatalf("read: %v, want EOF", err)
+	if _, err := r.ReadByte(); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("read: %v, want a reset", err)
 	}
 
 	if d := time.Since(start); d < 150*time.Millisecond || d > 2*time.Second {

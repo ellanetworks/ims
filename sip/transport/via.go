@@ -18,7 +18,7 @@ func stampVia(r *sip.Request) error {
 	_, rport := via.Params.Get("rport")
 	changed := false
 
-	if a, ok := via.Addr(); rport || !ok || a.Unmap() != src.Addr() {
+	if a, ok := via.Addr(); rport || !ok || a.Unmap() != src.Addr() || via.Params.Has("received") {
 		via.Params.Set("received", src.Addr().String())
 
 		changed = true
