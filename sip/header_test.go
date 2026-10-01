@@ -222,3 +222,54 @@ func TestQuote(t *testing.T) {
 		t.Errorf("Quote = %s, Unquote = %s", q, Unquote(q))
 	}
 }
+
+func TestSetTopVia(t *testing.T) {
+	m, err := Parse([]byte("OPTIONS sip:a@b SIP/2.0\r\nX: 1\r\nv: SIP/2.0/UDP a:1;branch=z9hG4bK1 , SIP/2.0/UDP b;branch=z9hG4bK0\r\n" +
+		"Via:  SIP/2.0/UDP c;branch=z9hG4bK9\r\nl: 0\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &m.Env().Header
+
+	top, err := h.TopVia()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	top.Transport = TCP
+	top.Params.Set("received", "10.0.0.1")
+
+	if err := h.SetTopVia(top); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "OPTIONS sip:a@b SIP/2.0\r\nX: 1\r\nv: SIP/2.0/TCP a:1;branch=z9hG4bK1;received=10.0.0.1, SIP/2.0/UDP b;branch=z9hG4bK0\r\n" +
+		"Via:  SIP/2.0/UDP c;branch=z9hG4bK9\r\nl: 0\r\n\r\n"
+	if got := m.String(); got != want {
+		t.Errorf("got\n%q\nwant\n%q", got, want)
+	}
+
+	var empty Header
+	if err := empty.SetTopVia(top); !errors.Is(err, ErrMissingHeader) {
+		t.Errorf("no Via: err = %v", err)
+	}
+}
+
+func TestViaAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"SIP/2.0/UDP 10.0.0.1:5060": "10.0.0.1",
+		"SIP/2.0/UDP [2001:db8::1]": "2001:db8::1",
+		"SIP/2.0/UDP host.example":  "",
+	} {
+		v, err := ParseVia(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		a, ok := v.Addr()
+		if got := map[bool]string{true: a.String(), false: ""}[ok]; got != want {
+			t.Errorf("%s: Addr() = %q, want %q", in, got, want)
+		}
+	}
+}

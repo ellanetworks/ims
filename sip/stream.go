@@ -26,6 +26,18 @@ var (
 	ErrMessageTooLarge = errors.New("message too large")
 )
 
+type TooLargeError struct {
+	Limit int
+
+	Request *Request
+}
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("sip: %v: above %d bytes", ErrMessageTooLarge, e.Limit)
+}
+
+func (e *TooLargeError) Is(target error) bool { return target == ErrMessageTooLarge }
+
 type StreamReader struct {
 	r       *bufio.Reader
 	maxSize int
@@ -77,7 +89,8 @@ func (s *StreamReader) Next() (Message, Keepalive, error) {
 	}
 
 	if len(head)+len(crlfcrlf)+size > s.maxSize {
-		return nil, KeepaliveNone, fmt.Errorf("sip: %w: above %d bytes", ErrMessageTooLarge, s.maxSize)
+		msg, _ := newMessage(start, fields)
+		return nil, KeepaliveNone, &TooLargeError{Limit: s.maxSize, Request: asRequest(msg)}
 	}
 
 	var body []byte
@@ -136,7 +149,7 @@ func (s *StreamReader) readHead() ([]byte, error) {
 		s.head = append(s.head, line...)
 
 		if len(s.head) > s.maxSize {
-			return nil, fmt.Errorf("sip: %w: header section above %d bytes", ErrMessageTooLarge, s.maxSize)
+			return nil, &TooLargeError{Limit: s.maxSize}
 		}
 
 		switch {
