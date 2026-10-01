@@ -42,6 +42,32 @@ func NewCancel(invite *Request) (*Request, error) {
 		return nil, errors.New("sip: CANCEL of a non-INVITE request")
 	}
 
+	to, err := invite.Header.first("To")
+	if err != nil {
+		return nil, err
+	}
+
+	return newInviteRequest("CANCEL", invite, to)
+}
+
+func NewAck(invite *Request, res *Response) (*Request, error) {
+	if invite.Method != "INVITE" {
+		return nil, errors.New("sip: ACK of a non-INVITE request")
+	}
+
+	if res.StatusCode < 300 {
+		return nil, fmt.Errorf("sip: ACK to a %d response is built by the dialog", res.StatusCode)
+	}
+
+	to, err := res.Header.first("To")
+	if err != nil {
+		return nil, err
+	}
+
+	return newInviteRequest("ACK", invite, to)
+}
+
+func newInviteRequest(method string, invite *Request, to string) (*Request, error) {
 	cseq, err := invite.Header.CSeq()
 	if err != nil {
 		return nil, err
@@ -54,30 +80,35 @@ func NewCancel(invite *Request) (*Request, error) {
 
 	top, _ := firstListElement(via)
 
-	c := &Request{Method: "CANCEL", URI: invite.URI.Clone(), Version: Version, Envelope: Envelope{Flow: invite.Flow}}
-	c.Header.Add("Via", top)
+	r := &Request{Method: method, URI: invite.URI.Clone(), Version: Version, Envelope: Envelope{Flow: invite.Flow}}
+	r.Header.Add("Via", top)
 
 	for _, f := range invite.Header {
 		if nameOf("Route").matches(f.Name) {
-			c.Header = append(c.Header, f)
+			r.Header = append(r.Header, f)
 		}
 	}
 
-	c.Header.Add("Max-Forwards", "70")
+	r.Header.Add("Max-Forwards", "70")
 
-	for _, name := range []string{"From", "To", "Call-ID"} {
-		v, err := invite.Header.first(name)
-		if err != nil {
-			return nil, err
-		}
-
-		c.Header.Add(name, v)
+	from, err := invite.Header.first("From")
+	if err != nil {
+		return nil, err
 	}
 
-	c.Header.Add("CSeq", CSeq{Seq: cseq.Seq, Method: "CANCEL"}.String())
-	c.Header.Add("Content-Length", "0")
+	r.Header.Add("From", from)
+	r.Header.Add("To", to)
 
-	return c, nil
+	callID, err := invite.Header.first("Call-ID")
+	if err != nil {
+		return nil, err
+	}
+
+	r.Header.Add("Call-ID", callID)
+	r.Header.Add("CSeq", CSeq{Seq: cseq.Seq, Method: method}.String())
+	r.Header.Add("Content-Length", "0")
+
+	return r, nil
 }
 
 func NewTag() string {

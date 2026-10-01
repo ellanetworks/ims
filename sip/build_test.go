@@ -102,6 +102,55 @@ func TestNewCancel(t *testing.T) {
 	}
 }
 
+func TestNewAck(t *testing.T) {
+	inv := mustParse(t, "INVITE sip:b@x SIP/2.0\r\n"+
+		"v: SIP/2.0/UDP ue;branch=z9hG4bK1;rport=5060;received=192.0.2.1, SIP/2.0/UDP old;branch=z9hG4bK0\r\n"+
+		"Route: <sip:p1;lr>, <sip:p2;lr>\r\n"+
+		"Max-Forwards: 69\r\n"+
+		"f: <sip:a@x>;tag=1\r\n"+
+		"t: <sip:b@x>\r\n"+
+		"i: c\r\n"+
+		"CSeq: 42 INVITE\r\n"+
+		"Content-Type: application/sdp\r\n"+
+		"Content-Length: 3\r\n\r\nv=0").(*Request)
+
+	res := NewResponse(inv, 486, "")
+	if err := res.Header.SetToTag("b"); err != nil {
+		t.Fatal(err)
+	}
+
+	ack, err := NewAck(inv, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := "ACK sip:b@x SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP ue;branch=z9hG4bK1;rport=5060;received=192.0.2.1\r\n" +
+		"Route: <sip:p1;lr>, <sip:p2;lr>\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"From: <sip:a@x>;tag=1\r\n" +
+		"To: <sip:b@x>;tag=b\r\n" +
+		"Call-ID: c\r\n" +
+		"CSeq: 42 ACK\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	if got := ack.String(); got != want {
+		t.Errorf("ACK =\n%s\nwant\n%s", got, want)
+	}
+
+	if err := ack.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+
+	if _, err := NewAck(inv, NewResponse(inv, 200, "")); err == nil {
+		t.Error("NewAck accepted a 2xx")
+	}
+
+	inv.Method = "BYE"
+	if _, err := NewAck(inv, res); err == nil {
+		t.Error("NewAck accepted a BYE")
+	}
+}
+
 func TestNewBranchAndTag(t *testing.T) {
 	b1, b2 := NewBranch(), NewBranch()
 	if b1 == b2 || !strings.HasPrefix(b1, MagicCookie) || len(b1) < len(MagicCookie)+16 {
