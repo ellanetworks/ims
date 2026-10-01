@@ -63,6 +63,7 @@ func startSIP(ctx context.Context, cfg config.Config, reg registrar, logger *slo
 		Aliases:   cfg.SIPAliases(),
 	})
 
+	h.layer = layer
 	s := &sipServer{layer: layer, handler: h}
 
 	for _, a := range cfg.SIP.Addresses {
@@ -91,6 +92,7 @@ func (s *sipServer) Close() error {
 
 type placeholderHandler struct {
 	log           *slog.Logger
+	layer         *transaction.Layer
 	registrar     registrar
 	inviteTimeout time.Duration
 	aliases       map[string]bool
@@ -99,7 +101,6 @@ type placeholderHandler struct {
 	closed    bool
 	listeners map[netip.AddrPort]bool
 	invites   map[*transaction.ServerTransaction]*time.Timer
-	registers sync.WaitGroup
 }
 
 func newPlaceholderHandler(logger *slog.Logger, aliases []string) *placeholderHandler {
@@ -234,21 +235,17 @@ func (h *placeholderHandler) release(tx *transaction.ServerTransaction) bool {
 }
 
 func (h *placeholderHandler) register(tx *transaction.ServerTransaction, req *sip.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.closed {
-		return
-	}
-
-	h.registers.Go(func() {
-		res := h.registrar.Register(context.Background(), scscf.Request{SIP: req, UEAddress: req.Flow.Remote.Addr()})
+	err := h.layer.Go(func(ctx context.Context) {
+		res := h.registrar.Register(ctx, scscf.Request{SIP: req, UEAddress: req.Flow.Remote.Addr()})
 		if res.StatusCode == 401 {
 			removeAKAKeys(res)
 		}
 
 		h.respond(tx, res)
 	})
+	if err != nil {
+		h.log.Debug("dropped SIP REGISTER", slog.String("call-id", req.Header.CallID()), slog.Any("error", err))
+	}
 }
 
 func removeAKAKeys(res *sip.Response) {
@@ -256,18 +253,14 @@ func removeAKAKeys(res *sip.Response) {
 	res.Header.Del("WWW-Authenticate")
 
 	for _, v := range values {
-		scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
-
-		var kept []string
-
-		for _, p := range sip.SplitList(rest) {
-			name, _, _ := strings.Cut(p, "=")
-			if n := strings.ToLower(strings.TrimSpace(name)); n != "ck" && n != "ik" {
-				kept = append(kept, strings.TrimSpace(p))
-			}
+		a, err := sip.ParseAuth(v)
+		if err != nil {
+			continue
 		}
 
-		res.Header.Add("WWW-Authenticate", scheme+" "+strings.Join(kept, ", "))
+		a.Params.Del("ck")
+		a.Params.Del("ik")
+		res.Header.Add("WWW-Authenticate", a.String())
 	}
 }
 
@@ -282,8 +275,6 @@ func (h *placeholderHandler) close() {
 	}
 
 	h.mu.Unlock()
-
-	h.registers.Wait()
 }
 
 func (h *placeholderHandler) respond(tx *transaction.ServerTransaction, res *sip.Response) {

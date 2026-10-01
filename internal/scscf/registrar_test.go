@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,7 +191,7 @@ func TestChallengeChecks(t *testing.T) {
 			o.auth = u.protected(nonce, testVector.XRES)
 		}},
 		{"other algorithm", func(u *ue, o *registerOptions, nonce string) {
-			o.auth = u.protected(nonce, testVector.XRES) + ", algorithm=MD5"
+			o.auth = strings.Replace(u.protected(nonce, testVector.XRES), "algorithm=AKAv1-MD5", "algorithm=MD5", 1)
 		}},
 		{"other IMPU", func(u *ue, o *registerOptions, nonce string) {
 			u.impu = testMSISDN

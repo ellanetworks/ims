@@ -85,6 +85,36 @@ func (ps Params) appendTo(b []byte) []byte {
 	return b
 }
 
+func ParseParams(s string) (Params, error) {
+	t := trimLeftWSP(s)
+	if t != "" && t[0] != ';' {
+		t = ";" + t
+	}
+
+	ps, err := parseHeaderParams(t)
+	if err != nil {
+		return nil, fmt.Errorf("parameters %q: %w", s, err)
+	}
+
+	return ps, nil
+}
+
+func ParseTokenParams(s string) (string, Params, error) {
+	t := trimWSP(s)
+
+	n := tokenLen(t)
+	if n == 0 {
+		return "", nil, fmt.Errorf("%q: missing token", s)
+	}
+
+	ps, err := parseHeaderParams(t[n:])
+	if err != nil {
+		return "", nil, fmt.Errorf("%q: %w", s, err)
+	}
+
+	return t[:n], ps, nil
+}
+
 func parseHeaderParams(s string) (Params, error) {
 	var ps Params
 

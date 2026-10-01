@@ -183,3 +183,27 @@ func FuzzVia(f *testing.F) {
 		}
 	})
 }
+
+func FuzzAuth(f *testing.F) {
+	for _, s := range []string{
+		`Digest realm="ims.example.org", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth", ck="00ff", ik="ff00"`,
+		`Digest username="a@b", uri="sip:b", response="", qop=auth, nc=00000001, integrity-protected="yes"`,
+		"Digest\trealm = \"a, b\" ,nonce=x==",
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		a, err := sip.ParseAuth(s)
+		if err != nil {
+			return
+		}
+
+		out := a.String()
+
+		again, err := sip.ParseAuth(out)
+		if err != nil || again.String() != out {
+			t.Fatalf("%q serializes to %q, which does not round-trip: %v", s, out, err)
+		}
+	})
+}

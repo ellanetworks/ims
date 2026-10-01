@@ -59,43 +59,31 @@ func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
 }
 
 func parseCredentials(v string) (*credentials, error) {
-	scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
-	if !strings.EqualFold(scheme, "Digest") {
+	a, err := sip.ParseAuth(v)
+	if err != nil {
+		return nil, err
+	}
+
+	if !strings.EqualFold(a.Scheme, "Digest") {
 		return nil, nil
 	}
 
-	c := &credentials{}
+	get := func(name string) string {
+		v, _ := a.Params.Get(name)
+		return sip.Unquote(v)
+	}
 
-	for _, p := range sip.SplitList(rest) {
-		name, value, ok := strings.Cut(p, "=")
-		if !ok {
-			return nil, errors.New("authorization parameter without a value")
-		}
-
-		value = sip.Unquote(strings.TrimSpace(value))
-
-		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "username":
-			c.username = value
-		case "realm":
-			c.realm = value
-		case "nonce":
-			c.nonce = value
-		case "uri":
-			c.uri = value
-		case "response":
-			c.response = value
-		case "algorithm":
-			c.algorithm = value
-		case "qop":
-			c.qop = value
-		case "nc":
-			c.nc = value
-		case "cnonce":
-			c.cnonce = value
-		case "auts":
-			c.auts = value
-		}
+	c := &credentials{
+		username:  get("username"),
+		realm:     get("realm"),
+		nonce:     get("nonce"),
+		uri:       get("uri"),
+		response:  get("response"),
+		algorithm: get("algorithm"),
+		qop:       get("qop"),
+		nc:        get("nc"),
+		cnonce:    get("cnonce"),
+		auts:      get("auts"),
 	}
 
 	if c.username == "" {
@@ -106,12 +94,14 @@ func parseCredentials(v string) (*credentials, error) {
 }
 
 func wwwAuthenticate(realm, nonce string, v authVector) string {
-	return "Digest realm=" + sip.Quote(realm) +
-		", nonce=" + sip.Quote(nonce) +
-		", algorithm=" + algorithmAKAv1 +
-		", qop=" + sip.Quote(qopAuth) +
-		`, ck="` + hex.EncodeToString(v.ck) + `"` +
-		`, ik="` + hex.EncodeToString(v.ik) + `"`
+	return sip.Auth{Scheme: "Digest", Params: sip.Params{
+		{Name: "realm", Value: sip.Quote(realm)},
+		{Name: "nonce", Value: sip.Quote(nonce)},
+		{Name: "algorithm", Value: algorithmAKAv1},
+		{Name: "qop", Value: sip.Quote(qopAuth)},
+		{Name: "ck", Value: sip.Quote(hex.EncodeToString(v.ck))},
+		{Name: "ik", Value: sip.Quote(hex.EncodeToString(v.ik))},
+	}}.String()
 }
 
 func akaNonce(v authVector) string {

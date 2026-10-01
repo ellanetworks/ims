@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [FuzzParse, FuzzStream, FuzzURI, FuzzAddress, FuzzVia]
+        target: [FuzzParse, FuzzStream, FuzzURI, FuzzAddress, FuzzVia, FuzzAuth]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

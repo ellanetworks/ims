@@ -351,26 +351,16 @@ func takeIntegrityProtected(req *sip.Request) bool {
 		return false
 	}
 
-	scheme, rest, _ := strings.Cut(v, " ")
-
-	var (
-		kept      []string
-		protected bool
-	)
-
-	for _, p := range sip.SplitList(rest) {
-		name, value, _ := strings.Cut(strings.TrimSpace(p), "=")
-		if name == "integrity-protected" {
-			protected = sip.Unquote(value) == "yes"
-			continue
-		}
-
-		kept = append(kept, strings.TrimSpace(p))
+	a, err := sip.ParseAuth(v)
+	if err != nil {
+		return false
 	}
 
-	req.Header.Set("Authorization", scheme+" "+strings.Join(kept, ", "))
+	protected, _ := a.Params.Get("integrity-protected")
+	a.Params.Del("integrity-protected")
+	req.Header.Set("Authorization", a.String())
 
-	return protected
+	return sip.Unquote(protected) == "yes"
 }
 
 func newHarness(t *testing.T) *harness {
@@ -624,16 +614,15 @@ func challengeParams(t *testing.T, res *sip.Response) map[string]string {
 
 	v := res.Header.Get("WWW-Authenticate")
 
-	scheme, rest, _ := bytes.Cut([]byte(v), []byte(" "))
-	if string(scheme) != "Digest" {
+	a, err := sip.ParseAuth(v)
+	if err != nil || a.Scheme != "Digest" {
 		t.Fatalf("WWW-Authenticate = %q, want Digest", v)
 	}
 
 	params := map[string]string{}
 
-	for _, p := range sip.SplitList(string(rest)) {
-		name, value, _ := bytes.Cut([]byte(p), []byte("="))
-		params[string(bytes.TrimSpace(name))] = string(value)
+	for _, p := range a.Params {
+		params[p.Name] = p.Value
 	}
 
 	return params
