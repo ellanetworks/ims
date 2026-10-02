@@ -743,11 +743,15 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		t.Fatalf("NOTIFY Via %s, %v; want the protected server port %d", via, err, s.ps.Port())
 	}
 
-	u.uc.Send(sip.UDP, s.ps, sip.NewResponse(notify, 200, ""))
-	wantStatus(t, first(s.scscf.RecvResponse()), 200)
-
 	routes := slices.Clone(d.rr)
 	slices.Reverse(routes)
+
+	if got := notify.Header.Elements("Record-Route"); !slices.Equal(got, routes) {
+		t.Fatalf("NOTIFY Record-Route = %q, want the UE's route set %q", got, routes)
+	}
+
+	u.uc.Send(sip.UDP, s.ps, sip.NewResponse(notify, 200, ""))
+	wantStatus(t, first(s.scscf.RecvResponse()), 200)
 
 	r := siptest.NewRequest("SUBSCRIBE", "sip:"+s.scscf.Addr().String(), sip.UDP, u.us.Addr())
 	r.Header.Set("From", "<"+testIMPU+">;tag="+d.ueTag)
