@@ -2,8 +2,9 @@ package icscf
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"slices"
+	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -18,6 +19,9 @@ type session struct {
 	identity    string
 	originating bool
 
+	// deadline is when a non-INVITE request is answered at the latest.
+	deadline time.Time
+
 	caps     *cx.ServerCapabilities
 	assigned bool
 	tried    []*SCSCF
@@ -31,13 +35,10 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 	originating := false
 
 	if route, err := req.Header.TopRoute(); err == nil {
-		originating = route.URI.Params.Has("orig")
+		originating = route.URI.Params.Has("orig") && i.cfg.Proxy.IsLocal(route.URI)
 	}
 
-	if originating && !trusted {
-		i.log.Info("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
-		i.respond(tx, sip.NewResponse(req, 403, ""))
-
+	if !trusted && i.rejectOrig(tx, req) {
 		return
 	}
 
@@ -68,6 +69,22 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 }
 
+// rejectOrig answers 403 to a request from outside the trust domain with
+// "orig" in any Route (§5.3.2.1A): below the top one, it would reach the
+// S-CSCF from the I-CSCF, which the S-CSCF trusts.
+func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) bool {
+	routes, _ := req.Header.Routes()
+
+	if !slices.ContainsFunc(routes, func(r sip.Address) bool { return r.URI.Params.Has("orig") }) {
+		return false
+	}
+
+	i.log.Info("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+	i.respond(tx, sip.NewResponse(req, 403, ""))
+
+	return true
+}
+
 func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request) {
 	if !out.URI.IsSIP() && !out.URI.IsTel() {
 		i.respond(tx, sip.NewResponse(tx.Request(), 416, ""))
@@ -84,13 +101,13 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 		out.URI = tel
 	}
 
-	identity, err := publicIdentity(out.URI)
+	identity, err := sessionIdentity(out.URI)
 	if err != nil {
 		i.respond(tx, sip.NewResponse(tx.Request(), 400, "Bad Request-URI"))
 		return
 	}
 
-	s := &session{tx: tx, req: out, identity: identity}
+	s := &session{tx: tx, req: out, identity: identity, deadline: i.deadline()}
 	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
@@ -103,7 +120,7 @@ func (i *ICSCF) originating(tx *transaction.ServerTransaction, out *sip.Request)
 		return
 	}
 
-	s := &session{tx: tx, req: out, identity: identity, originating: true}
+	s := &session{tx: tx, req: out, identity: identity, originating: true, deadline: i.deadline()}
 	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
@@ -114,7 +131,7 @@ func servedUser(h sip.Header) (string, error) {
 			continue
 		}
 
-		return publicIdentity(users[0].URI)
+		return sessionIdentity(users[0].URI)
 	}
 
 	return "", errNoIdentity
@@ -151,7 +168,9 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	i.forwardSession(s, scscf, false)
 }
 
-func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) {
+// forwardSession forwards the request to an S-CSCF and reports whether it
+// did.
+func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) bool {
 	s.tried = append(s.tried, scscf)
 
 	out := s.req.Clone()
@@ -174,36 +193,57 @@ func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) {
 		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", scscf.Name.String()))
 		i.answer(s.tx, 480)
 
-		return
+		return false
 	}
 
 	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
 	// A non-INVITE transaction times out upstream when it does here: the
-	// S-CSCF gets less time so that another can be selected.
-	if out.Method != "INVITE" && !s.assigned && i.untried(s.tried) {
-		opts.Timeout = i.cfg.SCSCFTimeout
+	// S-CSCF gets less time so that another can be selected, or so that
+	// the request is answered before then.
+	if out.Method != "INVITE" {
+		opts.Timeout = i.branchTimeout(s.deadline, i.replaceableSession(s))
 	}
 
-	i.forward(s.tx, out, to, opts)
+	return i.forward(s.tx, out, to, opts)
 }
 
+// replaceableSession reports whether another S-CSCF can be selected for the
+// request (TS 24.229 §5.3.2.2). An assigned S-CSCF is not replaced: the
+// I-CSCF does not support S-CSCF restoration.
+func (i *ICSCF) replaceableSession(s *session) bool {
+	return !s.assigned && i.choose(s.caps, s.tried) != nil
+}
+
+// sessionReply holds a response only when the request goes on to another
+// S-CSCF. When it cannot, after a CANCEL for one (RFC 3261 §16.10), the
+// response is relayed.
 func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	res := r.Response
+	invite := s.req.Method == "INVITE"
+	failed := unresponsive(r, invite)
 
 	switch {
-	case res != nil && res.StatusCode == 305 && s.req.Method == "INVITE" && !s.redirect:
+	case res != nil && res.StatusCode == 305 && invite && !s.redirect:
 		s.redirect = true
-		i.useProxy(s, res)
 
-		return proxy.Hold
-	case errors.Is(r.Err, transaction.ErrTimeout) && !s.assigned:
-		if scscf := i.choose(s.caps, s.tried); scscf != nil {
-			i.log.Info("reselecting the S-CSCF", slog.String("impu", s.identity), slog.String("scscf", scscf.Name.String()))
-			i.forwardSession(s, scscf, true)
-
+		if i.useProxy(s, res) {
 			return proxy.Hold
 		}
+	case failed && i.replaceableSession(s) && (invite || i.timeLeft(s.deadline)):
+		scscf := i.choose(s.caps, s.tried)
+		i.log.Info("reselecting the S-CSCF", slog.String("impu", s.identity), slog.String("scscf", scscf.Name.String()))
+
+		if i.forwardSession(s, scscf, true) {
+			return proxy.Hold
+		}
+	}
+
+	// An S-CSCF that cannot be reached makes the user unavailable, but an
+	// INVITE keeps the 408 or 487 the proxy generated.
+	if failed && (res == nil || res.StatusCode == 500) {
+		i.answer(s.tx, 480)
+		return proxy.Hold
 	}
 
 	if res != nil {
@@ -214,12 +254,13 @@ func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 }
 
 // useProxy forwards an initial INVITE to the proxy named in the Contact of a
-// 305 (Use Proxy) from the S-CSCF (TS 24.229 §5.3.2.1).
-func (i *ICSCF) useProxy(s *session, res *sip.Response) {
+// 305 (Use Proxy) from the S-CSCF (TS 24.229 §5.3.2.1), and reports whether it
+// did.
+func (i *ICSCF) useProxy(s *session, res *sip.Response) bool {
 	contacts, err := res.Header.Contacts()
 	if err != nil || len(contacts) == 0 || contacts[0].Star {
 		i.answer(s.tx, 480)
-		return
+		return false
 	}
 
 	scscf := i.lookup(contacts[0].URI)
@@ -227,22 +268,27 @@ func (i *ICSCF) useProxy(s *session, res *sip.Response) {
 		i.log.Info("305 to an unknown proxy", slog.String("contact", contacts[0].URI.String()))
 		i.answer(s.tx, 480)
 
-		return
+		return false
 	}
 
 	out := s.req.Clone()
 
 	route := contacts[0].URI.Clone()
 	route.Params.Set("lr", "")
+
+	if s.originating {
+		route.Params.Set("orig", "")
+	}
+
 	out.Header.Prepend("Route", "<"+route.String()+">")
 
 	to, ok := i.target(scscf, s.req.Flow, contacts[0].URI)
 	if !ok {
 		i.answer(s.tx, 480)
-		return
+		return false
 	}
 
-	i.forward(s.tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
+	return i.forward(s.tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
 		if r.Response != nil {
 			i.outgoing(s.req, r.Response)
 		}
@@ -254,10 +300,15 @@ func (i *ICSCF) useProxy(s *session, res *sip.Response) {
 // subsequent handles a request inside a dialog (TS 24.229 §5.3.5). The
 // I-CSCF does not Record-Route, so it only sees one that was routed to it.
 func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) {
+	trusted := i.trusted(req)
+	if !trusted && i.rejectOrig(tx, req) {
+		return
+	}
+
 	out := req.Clone()
 	out.Header.Del("P-Profile-Key")
 
-	if !i.trusted(req) {
+	if !trusted {
 		out.Header.Del("P-Charging-Vector")
 		trust.StripRequest(out)
 	}

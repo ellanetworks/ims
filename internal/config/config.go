@@ -108,6 +108,9 @@ func HomeDomain(mcc, mnc string) string {
 	return "ims.mnc" + mnc + ".mcc" + mcc + ".3gppnetwork.org"
 }
 
+// SIPAliases are the hosts the IMS answers to: the home domain, sip.aliases,
+// and the host of scscf.name when it is a domain name not listed already.
+// Validation allows only scscf.<home domain> there.
 func (c Config) SIPAliases() []string {
 	aliases := append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
 
@@ -183,6 +186,12 @@ func Load(path string) (Config, error) {
 	}
 
 	for i, p := range cfg.IMS.TrustedNetworks {
+		// An IPv4-mapped network shorter than /96 is left for validate to
+		// report.
+		if p.Addr().Is4In6() && p.Bits() < 96 {
+			continue
+		}
+
 		cfg.IMS.TrustedNetworks[i] = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-unmappedBits(p)).Masked()
 	}
 
@@ -262,7 +271,7 @@ func (c Config) validate() error {
 		return err
 	}
 
-	if err := c.SCSCF.validate(c.SIP.Addresses); err != nil {
+	if err := c.SCSCF.validate(c.SIP, c.IMS.HomeDomain); err != nil {
 		return err
 	}
 
@@ -275,6 +284,8 @@ func (c Config) validatePorts() error {
 		port int
 	}{{"pcscf.port", c.PCSCF.Port}, {"icscf.port", c.ICSCF.Port}, {"scscf.port", c.SCSCF.Port}}
 
+	shared := c.apiSharesSIPAddress()
+
 	for i, p := range ports {
 		if p.port < 1 || p.port > 65535 {
 			return fmt.Errorf("%s %d is out of range", p.name, p.port)
@@ -285,9 +296,31 @@ func (c Config) validatePorts() error {
 				return fmt.Errorf("%s and %s are both %d", q.name, p.name, p.port)
 			}
 		}
+
+		if shared && p.port == c.API.Port {
+			return fmt.Errorf("%s and api.port are both %d on %s", p.name, p.port, c.API.Address)
+		}
 	}
 
 	return nil
+}
+
+// apiSharesSIPAddress reports whether the API listens on an address the SIP
+// roles listen on too: 0.0.0.0 covers every IPv4 address, and :: every
+// address.
+func (c Config) apiSharesSIPAddress() bool {
+	api := c.API.Address.Unmap()
+
+	return slices.ContainsFunc(c.SIP.Addresses, func(a netip.Addr) bool {
+		switch {
+		case api == netip.IPv6Unspecified():
+			return true
+		case api == netip.IPv4Unspecified():
+			return a.Is4()
+		default:
+			return a == api
+		}
+	})
 }
 
 func (i IMS) validate() error {
@@ -301,8 +334,13 @@ func (i IMS) validate() error {
 	}
 
 	for _, p := range i.TrustedNetworks {
-		if !p.IsValid() || p.Addr().Zone() != "" {
+		switch {
+		case !p.IsValid() || p.Addr().Zone() != "":
 			return fmt.Errorf("ims.trusted_networks: %s is not a network", p)
+		case p.Addr().Is4In6():
+			return fmt.Errorf("ims.trusted_networks: %s is IPv4-mapped and must be /96 or longer", p)
+		case p.Bits() == 0:
+			return fmt.Errorf("ims.trusted_networks: %s would trust every address, UEs included", p)
 		}
 	}
 
@@ -352,7 +390,11 @@ func (s SIP) validate(homeDomain string) error {
 	return nil
 }
 
-func (s SCSCF) validate(addresses []netip.Addr) error {
+// validate checks scscf.name. Its host must be one the IMS answers to: one
+// of sip.addresses, the home domain, an alias, or scscf.<home domain>, which
+// SIPAliases adds. Any other host would make the IMS take Routes meant for
+// another one.
+func (s SCSCF) validate(sipConfig SIP, homeDomain string) error {
 	switch {
 	case s.MinExpires < 1:
 		return fmt.Errorf("scscf.min_expires %d must be positive", s.MinExpires)
@@ -372,15 +414,20 @@ func (s SCSCF) validate(addresses []netip.Addr) error {
 	}
 
 	if a, ok := sip.HostAddr(u.Host); ok {
-		if !slices.Contains(addresses, a.Unmap()) {
+		if !slices.Contains(sipConfig.Addresses, a.Unmap()) {
 			return fmt.Errorf("scscf.name %q: %s is not one of sip.addresses", s.Name, a)
 		}
 
 		return nil
 	}
 
-	if !isDomainName(u.Host) {
+	host := strings.ToLower(u.Host)
+
+	switch {
+	case !isDomainName(host):
 		return fmt.Errorf("scscf.name %q: %q is not a domain name", s.Name, u.Host)
+	case host != homeDomain && host != "scscf."+homeDomain && !slices.Contains(sipConfig.Aliases, host):
+		return fmt.Errorf("scscf.name %q: %s must be the home domain, scscf.%s or one of sip.aliases", s.Name, u.Host, homeDomain)
 	}
 
 	return nil

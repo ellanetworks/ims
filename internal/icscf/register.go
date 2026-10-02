@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/sip"
@@ -23,8 +25,18 @@ type registration struct {
 	// "integrity-protected" is absent or "no".
 	reselect bool
 
+	// deadline is when the REGISTER is answered at the latest.
+	deadline time.Time
+
 	assigned bool
-	tried    []*SCSCF
+
+	// caps are the capabilities the HSS requires of the S-CSCF, from the
+	// first UAA or, after an assigned S-CSCF failed, from a
+	// REGISTRATION_AND_CAPABILITIES one. known is false until then.
+	caps  *cx.ServerCapabilities
+	known bool
+
+	tried []*SCSCF
 }
 
 func (i *ICSCF) register(tx *transaction.ServerTransaction, req *sip.Request) {
@@ -63,7 +75,7 @@ func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Reques
 		return nil, sip.NewResponse(req, 400, bad)
 	}
 
-	reg := &registration{tx: tx, req: req, uar: cx.UserAuthorizationRequest{
+	reg := &registration{tx: tx, req: req, deadline: i.deadline(), uar: cx.UserAuthorizationRequest{
 		PublicIdentity:    impu,
 		PrivateIdentity:   privateIdentity(to.URI),
 		VisitedNetwork:    visitedNetwork(req.Header),
@@ -110,6 +122,13 @@ func authorizationType(h sip.Header) (cx.AuthorizationType, string) {
 		}
 	}
 
+	// "*" removes every binding: it stands alone, with Expires 0 (RFC 3261
+	// §10.3 step 6).
+	if slices.ContainsFunc(contacts, func(c sip.Address) bool { return c.Star }) &&
+		(len(contacts) > 1 || !hasExpires || expires != 0) {
+		return 0, "Bad Contact"
+	}
+
 	for _, c := range contacts {
 		if c.Star {
 			continue
@@ -142,37 +161,50 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 		return
 	}
 
-	var s *SCSCF
-
 	if uaa.ServerName != "" {
 		reg.assigned = true
 
-		if s = i.lookupName(uaa.ServerName); s == nil {
+		s := i.lookupName(uaa.ServerName)
+		if s == nil {
 			i.log.Warn("the HSS assigned an unknown S-CSCF", slog.String("impu", reg.uar.PublicIdentity),
 				slog.String("server-name", uaa.ServerName))
 			i.answer(reg.tx, 480)
 
 			return
 		}
-	} else if s = i.choose(uaa.Capabilities, nil); s == nil {
+
+		// The Request-URI is the Server-Name as the HSS sent it (§5.3.1.2),
+		// which may differ from the table's in its parameters.
+		name, _ := sip.ParseURI(uaa.ServerName)
+		i.forwardRegister(reg, s, name, false)
+
+		return
+	}
+
+	reg.caps, reg.known = uaa.Capabilities, true
+
+	s := i.choose(reg.caps, nil)
+	if s == nil {
 		i.answer(reg.tx, 600)
 		return
 	}
 
-	i.forwardRegister(reg, s, false)
+	i.forwardRegister(reg, s, s.Name, false)
 }
 
-func (i *ICSCF) forwardRegister(reg *registration, s *SCSCF, reselected bool) {
+// forwardRegister forwards the REGISTER to an S-CSCF, with name as its
+// Request-URI.
+func (i *ICSCF) forwardRegister(reg *registration, s *SCSCF, name sip.URI, reselected bool) {
 	reg.tried = append(reg.tried, s)
 
 	out := reg.req.Clone()
-	out.URI = s.Name.Clone()
+	out.URI = name.Clone()
 
 	if reselected {
 		out.URI.Params.Set("scscf-reselection", "")
 	}
 
-	to, ok := i.target(s, reg.req.Flow, s.Name)
+	to, ok := i.target(s, reg.req.Flow, name)
 	if !ok {
 		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", s.Name.String()))
 		i.answer(reg.tx, 480)
@@ -181,21 +213,41 @@ func (i *ICSCF) forwardRegister(reg *registration, s *SCSCF, reselected bool) {
 	}
 
 	i.forward(reg.tx, out, to, proxy.Options{
-		Timeout: i.cfg.SCSCFTimeout,
+		Timeout: i.branchTimeout(reg.deadline, i.replaceable(reg)),
 		OnReply: func(r proxy.Reply) proxy.Verdict { return i.registerReply(reg, r) },
 	})
 }
 
-func (i *ICSCF) registerReply(reg *registration, r proxy.Reply) proxy.Verdict {
-	timedOut := r.Response == nil && errors.Is(r.Err, transaction.ErrTimeout)
-	refused := r.Response != nil && (r.Response.StatusCode/100 == 3 || r.Response.StatusCode == 480)
+// replaceable reports whether another S-CSCF can be selected for the
+// REGISTER (TS 24.229 §5.3.1.3). The capabilities of an assigned S-CSCF are
+// not known yet: any other S-CSCF may then meet them.
+func (i *ICSCF) replaceable(reg *registration) bool {
+	switch {
+	case !reg.reselect:
+		return false
+	case !reg.known:
+		return i.untried(reg.tried)
+	default:
+		return i.choose(reg.caps, reg.tried) != nil
+	}
+}
 
-	if (timedOut || refused) && reg.reselect && i.untried(reg.tried) {
-		i.spawn(reg.tx, func(ctx context.Context) { i.reselectRegister(ctx, reg, r.Response) })
+func (i *ICSCF) registerReply(reg *registration, r proxy.Reply) proxy.Verdict {
+	failed := unresponsive(r, false)
+	refused := r.Err == nil && (r.Response.StatusCode/100 == 3 || r.Response.StatusCode == 480)
+
+	if (failed || refused) && i.replaceable(reg) && i.timeLeft(reg.deadline) {
+		var res *sip.Response
+		if refused {
+			res = r.Response
+		}
+
+		i.spawn(reg.tx, func(ctx context.Context) { i.reselectRegister(ctx, reg, res) })
+
 		return proxy.Hold
 	}
 
-	if timedOut {
+	if failed {
 		i.answer(reg.tx, 504)
 		return proxy.Hold
 	}
@@ -211,36 +263,43 @@ func (i *ICSCF) registerReply(reg *registration, r proxy.Reply) proxy.Verdict {
 // or 480 (TS 24.229 §5.3.1.3). When the HSS had assigned it, the HSS is asked
 // for the capabilities first.
 func (i *ICSCF) reselectRegister(ctx context.Context, reg *registration, failed *sip.Response) {
-	var caps *cx.ServerCapabilities
+	if !reg.known {
+		// The query must leave the new S-CSCF time to answer.
+		ctx, cancel := context.WithDeadline(ctx, reg.deadline.Add(-minBranch*i.t1))
+		defer cancel()
 
-	if reg.assigned {
 		uar := reg.uar
 		uar.AuthorizationType = cx.AuthorizationRegistrationAndCapabilities
 
 		uaa, err := i.userAuthorization(ctx, uar)
-		if err != nil {
+
+		switch {
+		case err != nil && ctx.Err() != nil:
+			i.log.Info("no time left to reselect the S-CSCF", slog.String("impu", reg.uar.PublicIdentity))
+			i.endRegister(reg, failed)
+
+			return
+		case err != nil:
 			i.log.Info("capabilities query failed", slog.String("impu", reg.uar.PublicIdentity), slog.Any("error", err))
 			i.answer(reg.tx, registrationFailure(err))
 
 			return
-		}
-
-		if uaa.ServerName != "" {
+		case uaa.ServerName != "":
 			i.endRegister(reg, failed)
 			return
 		}
 
-		caps = uaa.Capabilities
+		reg.caps, reg.known = uaa.Capabilities, true
 	}
 
-	s := i.choose(caps, reg.tried)
+	s := i.choose(reg.caps, reg.tried)
 	if s == nil {
 		i.endRegister(reg, failed)
 		return
 	}
 
 	i.log.Info("reselecting the S-CSCF", slog.String("impu", reg.uar.PublicIdentity), slog.String("scscf", s.Name.String()))
-	i.forwardRegister(reg, s, true)
+	i.forwardRegister(reg, s, s.Name, true)
 }
 
 // endRegister ends a REGISTER whose S-CSCF cannot be replaced: with the

@@ -1,8 +1,11 @@
 package icscf
 
 import (
+	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
@@ -115,6 +118,63 @@ func TestInviteToTelNumber(t *testing.T) {
 	u.ack(invite, u.wantFinal(486))
 }
 
+// TestInviteIdentities queries the HSS with the identity the HSS knows: no
+// visual separators in a number (RFC 3966 §4), and sip for sips.
+func TestInviteIdentities(t *testing.T) {
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{"tel:+1-555-123-0002", "tel:+15551230002"},
+		{"tel:+1.555.(123).0002;phone-context=" + homeDomain, "tel:+15551230002"},
+		{"sip:+1-555-123-0002@" + homeDomain + ";user=phone", "tel:+15551230002"},
+		{"sips:alice@" + strings.ToUpper(homeDomain), "sip:alice@" + homeDomain},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{})
+			s := h.scscfs[0]
+			u := h.newUE(loopback)
+
+			h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: s.uri()})
+
+			invite := u.invite(tt.target)
+			u.send(invite)
+
+			if lir := h.hss.nextLIR(t); lir.PublicIdentity != tt.want {
+				t.Fatalf("LIR identity = %s, want %s", lir.PublicIdentity, tt.want)
+			}
+
+			req, f := s.recv()
+			s.respond(req, f, 486)
+			u.ack(invite, u.wantFinal(486))
+		})
+	}
+}
+
+// TestInviteToSCSCFOnAnotherAddress sends from the I-CSCF's own address when
+// the S-CSCF listens on another.
+func TestInviteToSCSCFOnAnotherAddress(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfAddr: netip.MustParseAddr("127.0.0.3")})
+	s := h.scscfs[0]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: s.uri()})
+
+	invite := u.invite(callee)
+	u.send(invite)
+	h.hss.nextLIR(t)
+
+	req, f := s.recv()
+	if f.Remote != h.icscf {
+		t.Fatalf("INVITE from %s, want it from the I-CSCF's %s", f.Remote, h.icscf)
+	}
+
+	s.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
+}
+
 func TestInviteToGRUU(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscfs[0]
@@ -126,8 +186,8 @@ func TestInviteToGRUU(t *testing.T) {
 	invite := u.invite(target)
 	u.send(invite)
 
-	if lir := h.hss.nextLIR(t); lir.PublicIdentity != "sip:+15551230002@"+homeDomain {
-		t.Fatalf("LIR identity = %s", lir.PublicIdentity)
+	if lir := h.hss.nextLIR(t); lir.PublicIdentity != "tel:+15551230002" {
+		t.Fatalf("LIR identity = %s, want tel:+15551230002", lir.PublicIdentity)
 	}
 
 	req, f := s.recv()
@@ -173,43 +233,83 @@ func TestInviteHSSFailures(t *testing.T) {
 	}
 }
 
+// TestInviteCancelledDuringLIR cancels an INVITE while the LIR is pending:
+// the INVITE gets its 487, and the LIA that arrives afterwards does not
+// forward it.
 func TestInviteCancelledDuringLIR(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	u := h.newUE(loopback)
+
+	gate := make(chan struct{})
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: h.scscfs[0].uri(), gate: gate})
 
 	invite := u.invite(callee)
 	u.send(invite)
 	h.hss.nextLIR(t)
 
-	cancel, err := sip.NewCancel(invite)
-	if err != nil {
-		t.Fatal(err)
-	}
+	u.cancel(invite)
 
-	u.send(cancel)
-
-	got := map[string]int{}
-
-	for len(got) < 2 {
-		res, _ := u.sock.RecvResponse()
-		if res.IsProvisional() {
-			continue
-		}
-
-		cseq, _ := res.Header.CSeq()
-		got[cseq.Method] = res.StatusCode
-
-		if cseq.Method == "INVITE" {
-			u.ack(invite, res)
-		}
-	}
-
-	if got["CANCEL"] != 200 || got["INVITE"] != 487 {
+	if got := u.finals(invite); got["CANCEL"] != 200 || got["INVITE"] != 487 {
 		t.Fatalf("responses = %v, want 200 to CANCEL and 487 to INVITE", got)
 	}
 
-	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: h.scscfs[0].uri()})
-	h.scscfs[0].sock.RecvNone(cxTimeout + quiet)
+	close(gate)
+	h.scscfs[0].sock.RecvNone(quiet)
+}
+
+// TestInviteCancelledBeforeReselection cancels an INVITE whose S-CSCF never
+// answers: no other S-CSCF is tried after the CANCEL (RFC 3261 §16.10), and
+// the INVITE gets its 487.
+func TestInviteCancelledBeforeReselection(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(tgpp.ResultUnregisteredService)})
+
+	invite := u.invite("sip:alice@" + homeDomain)
+	u.send(invite)
+	h.hss.nextLIR(t)
+	first.recv()
+
+	u.cancel(invite)
+
+	if got := u.finals(invite); got["CANCEL"] != 200 || got["INVITE"] != 487 {
+		t.Fatalf("responses = %v, want 200 to CANCEL and 487 to INVITE", got)
+	}
+
+	second.sock.RecvNone(quiet)
+}
+
+// TestInviteCancelledBeforeUseProxy cancels an INVITE whose S-CSCF then
+// answers 305: the INVITE is not forwarded again, and the 305 ends it.
+func TestInviteCancelledBeforeUseProxy(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: first.uri()})
+
+	invite := u.invite(callee)
+	u.send(invite)
+	h.hss.nextLIR(t)
+
+	req, f := first.recv()
+	first.respond(req, f, 100)
+
+	u.cancel(invite)
+
+	if cancel, _ := first.recv(); cancel.Method != "CANCEL" {
+		t.Fatalf("got %s, want CANCEL", cancel.Method)
+	}
+
+	first.respond(req, f, 305, func(res *sip.Response) { res.Header.Set("Contact", "<"+second.uri()+">") })
+
+	if got := u.finals(invite); got["CANCEL"] != 200 || got["INVITE"] != 305 {
+		t.Fatalf("responses = %v, want 200 to CANCEL and 305 to INVITE", got)
+	}
+
+	second.sock.RecvNone(quiet)
 }
 
 func TestInviteFromOutsideTheTrustDomain(t *testing.T) {
@@ -263,6 +363,7 @@ func TestOriginating(t *testing.T) {
 			"P-Asserted-Identity": "<sip:bob@" + homeDomain + ">",
 		}, "sip:alice@" + homeDomain},
 		{"P-Asserted-Identity", map[string]string{"P-Asserted-Identity": "<tel:+15551230001>, <sip:bob@" + homeDomain + ">"}, "tel:+15551230001"},
+		{"global number", map[string]string{"P-Served-User": "<sip:+1-555-123-0001@" + homeDomain + ";user=phone>"}, "tel:+15551230001"},
 	}
 
 	for _, tt := range tests {
@@ -299,6 +400,60 @@ func TestOriginating(t *testing.T) {
 			u.ack(invite, u.wantFinal(486))
 		})
 	}
+}
+
+// TestOrigBelowTheTopRoute sends "orig" below the I-CSCF's Route from
+// outside the trust domain: it would reach the S-CSCF from the I-CSCF.
+func TestOrigBelowTheTopRoute(t *testing.T) {
+	for _, method := range []string{"INVITE", "BYE"} {
+		t.Run(method, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{})
+			s := h.scscfs[0]
+			u := h.newUE(untrusted)
+
+			req := u.invite(callee, func(r *sip.Request) {
+				r.Method = method
+				r.Header.Set("CSeq", "1 "+method)
+				r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr;orig>")
+
+				if method == "BYE" {
+					r.Header.Set("To", "<"+callee+">;tag=abc")
+				}
+			})
+			u.send(req)
+
+			res := u.wantFinal(403)
+			if method == "INVITE" {
+				u.ack(req, res)
+			}
+
+			s.sock.RecvNone(quiet)
+			h.hss.noCx(t)
+		})
+	}
+}
+
+// TestOrigOnAnotherHop leaves the originating procedure to the hop the top
+// Route names, when that is not the I-CSCF.
+func TestOrigOnAnotherHop(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscfs[0]
+	u := h.newUE(loopback)
+
+	invite := u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+s.uri()+";lr;orig>")
+		r.Header.Add("P-Asserted-Identity", "<sip:bob@"+homeDomain+">")
+	})
+	u.send(invite)
+
+	req, f := s.recv()
+	if got, want := routes(t, req), []string{s.uri() + ";lr;orig"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	s.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
+	h.hss.noCx(t)
 }
 
 func TestOriginatingFailures(t *testing.T) {
@@ -404,6 +559,34 @@ func TestInviteUseProxy(t *testing.T) {
 
 	req, f = second.recv()
 	if got, want := routes(t, req), []string{second.uri() + ";lr"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	second.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
+}
+
+// TestOriginatingUseProxy keeps "orig" on the Route to the proxy a 305
+// names (§5.3.2.1A).
+func TestOriginatingUseProxy(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: first.uri()})
+
+	invite := u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>")
+		r.Header.Add("P-Asserted-Identity", "<sip:bob@"+homeDomain+">")
+	})
+	u.send(invite)
+	h.hss.nextLIR(t)
+
+	req, f := first.recv()
+	first.respond(req, f, 305, func(res *sip.Response) { res.Header.Set("Contact", "<"+second.uri()+">") })
+
+	req, f = second.recv()
+	if got, want := routes(t, req), []string{second.uri() + ";lr;orig"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Routes = %v, want %v", got, want)
 	}
 
@@ -539,4 +722,114 @@ func TestMessageReselection(t *testing.T) {
 
 	second.respond(req, f, 202)
 	u.wantFinal(202)
+}
+
+func message(u *ue, target string) *sip.Request {
+	return u.invite(target, func(r *sip.Request) {
+		r.Method = "MESSAGE"
+		r.Header.Set("CSeq", "1 MESSAGE")
+	})
+}
+
+// TestMessageLateAnswerWithoutReselection waits for the only S-CSCF that has
+// the mandatory capabilities past SCSCFTimeout: with no other to select, its
+// late answer is relayed.
+func TestMessageLateAnswerWithoutReselection(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{7}, {}}})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{
+		result: success(tgpp.ResultUnregisteredService),
+		caps:   &cx.ServerCapabilities{Mandatory: []uint32{7}},
+	})
+
+	u.send(message(u, "sip:alice@"+homeDomain))
+	h.hss.nextLIR(t)
+
+	req, f := first.recv()
+
+	time.Sleep(32*testT1 + quiet)
+	first.respond(req, f, 202)
+
+	u.wantFinal(202)
+	second.sock.RecvNone(quiet)
+}
+
+// TestMessageSCSCFTimeout answers a MESSAGE whose S-CSCF never does before
+// the transaction ends.
+func TestMessageSCSCFTimeout(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscfs[0]
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: s.uri()})
+
+	sent := time.Now()
+
+	u.send(message(u, callee))
+	h.hss.nextLIR(t)
+
+	req, f := s.recv()
+	s.respond(req, f, 100)
+
+	u.wantFinal(480)
+
+	if elapsed := time.Since(sent); elapsed >= 64*testT1 {
+		t.Fatalf("480 after %s, want it before the transaction ends at %s", elapsed, 64*testT1)
+	}
+}
+
+// TestSessionSCSCFRefusesConnections reselects when the S-CSCF cannot be
+// reached at all (RFC 3261 §16.9), and answers 480 when no other is left.
+func TestSessionSCSCFRefusesConnections(t *testing.T) {
+	for _, method := range []string{"INVITE", "MESSAGE"} {
+		t.Run(method+" reselection", func(t *testing.T) {
+			h := newHarness(t, harnessOptions{scscfs: 2, down: 1})
+			second := h.scscfs[1]
+			u := h.newUE(loopback)
+
+			h.hss.answerLIR(&hssAnswer{result: success(tgpp.ResultUnregisteredService)})
+
+			req := u.invite("sip:alice@" + homeDomain)
+			if method == "MESSAGE" {
+				req = message(u, "sip:alice@"+homeDomain)
+			}
+
+			u.send(req)
+			h.hss.nextLIR(t)
+
+			fwd, f := second.recv()
+			if fwd.URI.String() != "sip:alice@"+homeDomain+";scscf-reselection" {
+				t.Fatalf("Request-URI = %s, want scscf-reselection", fwd.URI)
+			}
+
+			second.respond(fwd, f, 486)
+
+			res := u.wantFinal(486)
+			if method == "INVITE" {
+				u.ack(req, res)
+			}
+		})
+
+		t.Run(method+" no other S-CSCF", func(t *testing.T) {
+			h := newHarness(t, harnessOptions{down: 1})
+			u := h.newUE(loopback)
+
+			h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: h.scscfs[0].uri()})
+
+			req := u.invite(callee)
+			if method == "MESSAGE" {
+				req = message(u, callee)
+			}
+
+			u.send(req)
+			h.hss.nextLIR(t)
+
+			res := u.wantFinal(480)
+			if method == "INVITE" {
+				u.ack(req, res)
+			}
+		})
+	}
 }

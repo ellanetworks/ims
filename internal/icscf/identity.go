@@ -9,17 +9,55 @@ import (
 
 var errNoIdentity = errors.New("no public identity")
 
-// publicIdentity is the identity the HSS is queried with: a SIP URI reduced
-// to its scheme, user and host, or a tel URI without parameters.
+// publicIdentity is the identity the HSS is queried with: a SIP or SIPS URI
+// reduced to "sip", user and host, as Kamailio builds it, or a tel URI
+// without parameters or visual separators (RFC 3966 §4).
 func publicIdentity(u sip.URI) (string, error) {
 	switch {
 	case u.IsSIP() && u.Host != "":
-		return sip.URI{Scheme: strings.ToLower(u.Scheme), User: u.User, Host: strings.ToLower(u.Host)}.String(), nil
+		return sip.URI{Scheme: "sip", User: u.User, Host: strings.ToLower(u.Host)}.String(), nil
 	case u.IsTel() && u.User != "":
-		return sip.URI{Scheme: "tel", User: u.User}.String(), nil
+		return sip.URI{Scheme: "tel", User: withoutSeparators(u.User)}.String(), nil
 	default:
 		return "", errNoIdentity
 	}
+}
+
+// sessionIdentity is the identity of the user a request is for or from. A
+// SIP URI for a global number with "user=phone" names the tel URI of that
+// number (TS 24.229 §5.3.2.1 1b), and so does a GRUU on such a URI (1c).
+func sessionIdentity(u sip.URI) (string, error) {
+	if number, ok := globalNumber(u); ok {
+		return publicIdentity(sip.URI{Scheme: "tel", User: number})
+	}
+
+	return publicIdentity(u)
+}
+
+// globalNumber returns the global number of a SIP URI with "user=phone",
+// without the tel parameters of its user part.
+func globalNumber(u sip.URI) (string, bool) {
+	user, _ := u.Params.Get("user")
+
+	if !u.IsSIP() || !strings.EqualFold(user, "phone") || !strings.HasPrefix(u.User, "+") {
+		return "", false
+	}
+
+	number, _, _ := strings.Cut(u.User, ";")
+
+	return number, len(number) > 1
+}
+
+// withoutSeparators removes the visual separators of a telephone number,
+// which do not take part in comparisons (RFC 3966 §4).
+func withoutSeparators(number string) string {
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune("-.()", r) {
+			return -1
+		}
+
+		return r
+	}, number)
 }
 
 // privateIdentity derives the IMPI from the IMPU being registered: the URI
@@ -36,9 +74,7 @@ func privateIdentity(u sip.URI) string {
 // telURI converts a SIP URI for a global number with "user=phone" to a tel
 // URI that keeps the number's parameters (TS 24.229 §5.3.2.1 1b).
 func telURI(u sip.URI) (sip.URI, bool, error) {
-	user, _ := u.Params.Get("user")
-
-	if !u.IsSIP() || u.Params.Has("gr") || !strings.EqualFold(user, "phone") || !strings.HasPrefix(u.User, "+") {
+	if _, ok := globalNumber(u); !ok || u.Params.Has("gr") {
 		return u, false, nil
 	}
 

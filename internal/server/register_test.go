@@ -121,3 +121,53 @@ func next[T any](t *testing.T, ch <-chan T) T {
 
 	return zero
 }
+
+// TestRegisterToSCSCFFromOutsideTheTrustDomain sends a REGISTER straight to
+// the S-CSCF port, claiming the integrity protection only the P-CSCF can
+// vouch for (TS 33.203 §6.1): it is refused without reaching the HSS.
+func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
+	requests := make(chan uint32, 4)
+
+	mux := diameter.NewMux()
+
+	for _, cmd := range []uint32{cx.CommandMultimediaAuth, cx.CommandServerAssignment} {
+		mux.Handle(cx.ApplicationID, cmd, diameter.HandlerFunc(
+			func(_ context.Context, _ *diameter.Conn, req *diameter.Message) *diameter.Message {
+				requests <- req.CommandCode
+				return nil
+			}))
+	}
+
+	hss := newFakePeerWithHandler(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, mux,
+		config.ApplicationCx, config.ApplicationRx)
+
+	cfg := testConfig(t)
+	cfg.SIP.Addresses = []netip.Addr{loopback}
+	cfg.Diameter = diameterConfig(hss.config("hss"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss")
+
+	scscf := sipListener(t, srv, roleSCSCF, loopback)
+	ue := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), 0))
+
+	impi := "001010000000001@" + imsRealm
+	impu := "sip:" + impi
+
+	register := siptest.NewRequest("REGISTER", "sip:"+imsRealm, sip.UDP, ue.Addr())
+	register.Header.Set("To", "<"+impu+">")
+	register.Header.Set("From", "<"+impu+">;tag="+sip.NewTag())
+	register.Header.Set("Contact", "*")
+	register.Header.Set("Expires", "0")
+	register.Header.Add("Authorization", `Digest username="`+impi+`", realm="`+imsRealm+`", uri="sip:`+imsRealm+
+		`", nonce="", response="", integrity-protected="yes"`)
+	ue.Send(sip.UDP, scscf, register)
+
+	wantResponse(t, ue, 403, "REGISTER")
+
+	select {
+	case cmd := <-requests:
+		t.Fatalf("the S-CSCF sent Cx command %d", cmd)
+	case <-time.After(100 * time.Millisecond):
+	}
+}

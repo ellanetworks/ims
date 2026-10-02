@@ -87,7 +87,7 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 			b.startTimerC()
 		}
 
-		if b.timeout > 0 && !b.responded {
+		if b.timeout > 0 && !b.stopsTimeout() {
 			b.timer = c.p.clock.AfterFunc(b.timeout, b.timeoutFired)
 		}
 	}
@@ -134,6 +134,7 @@ func (b *branch) timerCFired(gen int) {
 
 	b.finish()
 	client := b.client
+	responded := b.responded
 
 	c.mu.Unlock()
 
@@ -143,7 +144,7 @@ func (b *branch) timerCFired(gen int) {
 		_ = client.Cancel()
 	}
 
-	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: Timer C", transaction.ErrTimeout)})
+	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: Timer C", transaction.ErrTimeout), Responded: responded})
 }
 
 func (b *branch) timeoutFired() {
@@ -151,13 +152,14 @@ func (b *branch) timeoutFired() {
 
 	c.mu.Lock()
 
-	if b.done || b.responded {
+	if b.done || b.stopsTimeout() {
 		c.mu.Unlock()
 		return
 	}
 
 	b.finish()
 	client := b.client
+	responded := b.responded
 
 	c.mu.Unlock()
 
@@ -171,7 +173,14 @@ func (b *branch) timeoutFired() {
 		res = c.generate(408)
 	}
 
-	c.dispatch(b, Reply{Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout)})
+	c.dispatch(b, Reply{Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout), Responded: responded})
+}
+
+// stopsTimeout reports whether the branch got the response that ends
+// Options.Timeout: any response to an INVITE, a final one otherwise, which
+// finishes the branch.
+func (b *branch) stopsTimeout() bool {
+	return b.c.invite && b.responded
 }
 
 func (b *branch) HandleResponse(res *sip.Response) {
@@ -185,12 +194,10 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 	c.mu.Lock()
 
-	if !b.responded {
-		b.responded = true
+	b.responded = true
 
-		if b.timer != nil {
-			b.timer.Stop()
-		}
+	if b.timer != nil && b.stopsTimeout() {
+		b.timer.Stop()
 	}
 
 	switch {
@@ -236,7 +243,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 	c.mu.Unlock()
 
-	c.dispatch(b, Reply{Response: res})
+	c.dispatch(b, Reply{Response: res, Responded: true})
 }
 
 func (b *branch) HandleError(err error) {
@@ -260,6 +267,8 @@ func (b *branch) HandleError(err error) {
 
 	var res *sip.Response
 
+	responded := b.responded
+
 	switch {
 	case !c.invite && errors.Is(err, transaction.ErrTimeout):
 	case c.cancelled:
@@ -273,7 +282,7 @@ func (b *branch) HandleError(err error) {
 	c.mu.Unlock()
 
 	c.p.log.Debug("proxied request failed", slog.String("request", c.tx.Request().StartLine()), slog.Any("error", err))
-	c.dispatch(b, Reply{Response: res, Err: err})
+	c.dispatch(b, Reply{Response: res, Err: err, Responded: responded})
 }
 
 func (c *responseContext) generate(code int) *sip.Response {

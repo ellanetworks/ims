@@ -58,6 +58,10 @@ type Registration struct {
 	Bindings   []Binding
 }
 
+// Contact is a registered contact. The S-CSCF owns its URI, Params and
+// Path. The P-CSCF owns UEAddress, IPsec and RxSessionID: SaveRegistration
+// sets them only on a new contact, and SetContactFlow and
+// SetContactRxSession change them.
 type Contact struct {
 	ID          int64
 	IMPI        string
@@ -82,6 +86,9 @@ const (
 	contactColumns = `c.id, c.impi, c.uri, c.params, c.path, c.ue_address,
 	c.ue_port_c, c.ue_port_s, c.pcscf_port_c, c.pcscf_port_s, c.spi_uc, c.spi_us, c.spi_pc, c.spi_ps, c.alg, c.ealg,
 	c.rx_session_id`
+
+	returnedContactColumns = `id, impi, uri, params, path, ue_address,
+	ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg, rx_session_id`
 )
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
@@ -128,7 +135,7 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration
 		b := &r.Bindings[i]
 		b.Contact.IMPI = r.IMPI
 
-		if b.Contact.ID, err = saveContact(ctx, tx, b.Contact); err != nil {
+		if b.Contact, err = saveContact(ctx, tx, b.Contact); err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 
@@ -172,31 +179,28 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 	return nil
 }
 
-func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (int64, error) {
-	var ueAddress any
-	if c.UEAddress.IsValid() {
-		ueAddress = c.UEAddress.String()
-	}
-
-	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), ueAddress}
+// saveContact inserts a contact, or updates the S-CSCF's columns of an
+// existing one: the P-CSCF's may have changed since the S-CSCF read them. It
+// returns the contact as stored.
+func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
+	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), addressArg(c.UEAddress)}
 	args = append(args, securityAssociationArgs(c.IPsec)...)
 	args = append(args, nullableString(c.RxSessionID))
 
-	var id int64
-
-	err := tx.QueryRowContext(ctx,
+	return scanContact(tx.QueryRowContext(ctx,
 		`INSERT INTO contacts (impi, uri, params, path, ue_address,
 			ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg, rx_session_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path,
-			ue_address = excluded.ue_address,
-			ue_port_c = excluded.ue_port_c, ue_port_s = excluded.ue_port_s,
-			pcscf_port_c = excluded.pcscf_port_c, pcscf_port_s = excluded.pcscf_port_s,
-			spi_uc = excluded.spi_uc, spi_us = excluded.spi_us, spi_pc = excluded.spi_pc, spi_ps = excluded.spi_ps,
-			alg = excluded.alg, ealg = excluded.ealg, rx_session_id = excluded.rx_session_id
-		RETURNING id`, args...).Scan(&id)
+		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path
+		RETURNING `+returnedContactColumns, args...))
+}
 
-	return id, err
+func addressArg(a netip.Addr) any {
+	if !a.IsValid() {
+		return nil
+	}
+
+	return a.String()
 }
 
 func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
@@ -296,6 +300,29 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	}
 
 	return impis, nil
+}
+
+// SetContactFlow records the address the UE registered the contact from and
+// the IPsec SAs protecting it, nil for none.
+func (d *DB) SetContactFlow(ctx context.Context, contactID int64, ueAddress netip.Addr, sa *SecurityAssociations) error {
+	args := []any{addressArg(ueAddress)}
+	args = append(args, securityAssociationArgs(sa)...)
+	args = append(args, contactID)
+
+	res, err := d.conn.ExecContext(ctx,
+		`UPDATE contacts SET ue_address = ?,
+			ue_port_c = ?, ue_port_s = ?, pcscf_port_c = ?, pcscf_port_s = ?,
+			spi_uc = ?, spi_us = ?, spi_pc = ?, spi_ps = ?, alg = ?, ealg = ?
+		WHERE id = ?`, args...)
+	if err != nil {
+		return fmt.Errorf("set contact flow: %w", err)
+	}
+
+	if err := checkAffected(res); err != nil {
+		return fmt.Errorf("set contact flow: %w", err)
+	}
+
+	return nil
 }
 
 func (d *DB) SetContactRxSession(ctx context.Context, contactID int64, sessionID string) error {

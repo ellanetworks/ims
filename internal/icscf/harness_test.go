@@ -42,11 +42,13 @@ var (
 )
 
 // hssAnswer is what the fake HSS answers: a result, with a Server-Name or
-// Server-Capabilities on success. A nil answer means no answer at all.
+// Server-Capabilities on success. A nil answer means no answer at all. A
+// gate, when set, holds the answer until it is closed.
 type hssAnswer struct {
 	result tgpp.Result
 	name   string
 	caps   *cx.ServerCapabilities
+	gate   chan struct{}
 }
 
 func success(code uint32) tgpp.Result {
@@ -162,6 +164,19 @@ func (h *fakeHSS) next(queue *[]*hssAnswer) *hssAnswer {
 	return a
 }
 
+// wait waits for a gate to open, until the HSS stops for a nil one, and
+// reports whether it opened.
+func (h *fakeHSS) wait(ctx context.Context, gate chan struct{}) bool {
+	select {
+	case <-gate:
+		return true
+	case <-h.stop:
+	case <-ctx.Done():
+	}
+
+	return false
+}
+
 func (h *fakeHSS) userAuthorization(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	uar, err := cx.ParseUserAuthorizationRequest(req)
 	if err != nil {
@@ -172,11 +187,11 @@ func (h *fakeHSS) userAuthorization(ctx context.Context, c *diameter.Conn, req *
 
 	a := h.next(&h.uaa)
 	if a == nil {
-		select {
-		case <-h.stop:
-		case <-ctx.Done():
-		}
+		h.wait(ctx, nil)
+		return nil
+	}
 
+	if a.gate != nil && !h.wait(ctx, a.gate) {
 		return nil
 	}
 
@@ -204,11 +219,11 @@ func (h *fakeHSS) locationInfo(ctx context.Context, c *diameter.Conn, req *diame
 
 	a := h.next(&h.lia)
 	if a == nil {
-		select {
-		case <-h.stop:
-		case <-ctx.Done():
-		}
+		h.wait(ctx, nil)
+		return nil
+	}
 
+	if a.gate != nil && !h.wait(ctx, a.gate) {
 		return nil
 	}
 
@@ -325,6 +340,13 @@ type harnessOptions struct {
 	scscfs       int
 	capabilities [][]uint32
 	hssDown      bool
+
+	// scscfAddr is the address of the S-CSCFs, the I-CSCF's by default.
+	scscfAddr netip.Addr
+
+	// down is the number of S-CSCFs, first in the table, that refuse
+	// connections: they are reached over TCP, on a closed socket.
+	down int
 }
 
 // lateHandler lets the layer start before the I-CSCF, which needs the port
@@ -403,9 +425,20 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 
 	var table []SCSCF
 
+	if !o.scscfAddr.IsValid() {
+		o.scscfAddr = loopback
+	}
+
 	for k := range o.scscfs {
-		sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+		sock := siptest.NewSocket(t, netip.AddrPortFrom(o.scscfAddr, 0))
 		name := "sip:scscf" + strconv.Itoa(k+1) + "." + homeDomain + ":" + strconv.Itoa(int(sock.Addr().Port()))
+
+		if k < o.down {
+			sock.Close()
+
+			name += ";transport=tcp"
+		}
+
 		h.scscfs = append(h.scscfs, &fakeSCSCF{t: t, sock: sock, name: name, seen: map[string]bool{}})
 
 		u, _ := sip.ParseURI(name)
@@ -546,6 +579,38 @@ func (u *ue) wantFinal(code int) *sip.Response {
 	}
 
 	return res
+}
+
+func (u *ue) cancel(invite *sip.Request) {
+	u.h.t.Helper()
+
+	cancel, err := sip.NewCancel(invite)
+	if err != nil {
+		u.h.t.Fatal(err)
+	}
+
+	u.send(cancel)
+}
+
+// finals returns the final responses to a cancelled INVITE and its CANCEL,
+// by method, and acknowledges the INVITE's.
+func (u *ue) finals(invite *sip.Request) map[string]int {
+	u.h.t.Helper()
+
+	got := map[string]int{}
+
+	for len(got) < 2 {
+		res := u.final()
+
+		cseq, _ := res.Header.CSeq()
+		got[cseq.Method] = res.StatusCode
+
+		if cseq.Method == "INVITE" {
+			u.ack(invite, res)
+		}
+	}
+
+	return got
 }
 
 // ack acknowledges a non-2xx final response to an INVITE.

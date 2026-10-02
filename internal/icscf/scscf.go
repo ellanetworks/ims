@@ -31,7 +31,7 @@ func (i *ICSCF) lookupName(name string) *SCSCF {
 	return i.lookup(u)
 }
 
-// choose selects an S-CSCF from Server-Capabilities (TS 29.228 Annex A),
+// choose selects an S-CSCF from Server-Capabilities (TS 29.228 §6.7),
 // excluding the S-CSCFs already tried. Without capabilities, any S-CSCF fits.
 func (i *ICSCF) choose(caps *cx.ServerCapabilities, tried []*SCSCF) *SCSCF {
 	if caps != nil && len(caps.ServerNames) > 0 {
@@ -93,8 +93,8 @@ func supportsAll(s *SCSCF, capabilities []uint32) bool {
 }
 
 // target is the flow towards an S-CSCF, from the I-CSCF listener on the
-// address the request arrived on. The URI's transport parameter picks the
-// transport.
+// address the request arrived on, preferably to the S-CSCF listener on that
+// address. The URI's transport parameter picks the transport.
 func (i *ICSCF) target(s *SCSCF, in sip.Flow, u sip.URI) (proxy.Target, bool) {
 	tr := sip.UDP
 
@@ -119,7 +119,7 @@ func (i *ICSCF) target(s *SCSCF, in sip.Flow, u sip.URI) (proxy.Target, bool) {
 
 	return proxy.Target{Flow: sip.Flow{
 		Transport: tr,
-		Local:     netip.AddrPortFrom(remote.Addr(), i.cfg.Port),
+		Local:     netip.AddrPortFrom(in.Local.Addr(), i.cfg.Port),
 		Remote:    remote,
 	}}, true
 }

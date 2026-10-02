@@ -170,6 +170,12 @@ func New(cfg Config) *Layer {
 	return l
 }
 
+// T1 is the round-trip time estimate the layer's timers derive from: a
+// non-INVITE transaction lasts 64·T1.
+func (l *Layer) T1() time.Duration {
+	return l.t1
+}
+
 func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPort, error) {
 	bound, err := l.tr.Listen(ctx, local)
 	if err != nil {

@@ -278,8 +278,8 @@ func TestTimeoutRetry(t *testing.T) {
 	clock.Advance(2 * time.Second)
 
 	r := <-failures
-	if !errors.Is(r.Err, transaction.ErrTimeout) || r.Response == nil || r.Response.StatusCode != 408 {
-		t.Errorf("timeout reply: %v, %v", r.Response, r.Err)
+	if !errors.Is(r.Err, transaction.ErrTimeout) || r.Response == nil || r.Response.StatusCode != 408 || r.Responded {
+		t.Errorf("timeout reply: %v, %v, responded %v", r.Response, r.Err, r.Responded)
 	}
 
 	retry, rf := second.RecvRequest()
@@ -310,6 +310,34 @@ func TestNonInviteTimeout(t *testing.T) {
 
 	wantResponse(t, s.caller, 100)
 	s.caller.RecvNone(quiet)
+}
+
+// TestNonInviteTimeoutAfterTrying keeps Options.Timeout running through a
+// 100 to a non-INVITE request: only a final response stops it.
+func TestNonInviteTimeoutAfterTrying(t *testing.T) {
+	clock := siptest.NewClock()
+	replies := make(chan held, 1)
+	s := newScene(t, sip.TCP, routerConfig{clock: clock, opts: proxy.Options{Timeout: 2 * time.Second}, onReply: holdAll(replies)})
+
+	s.send(s.request("MESSAGE"))
+
+	fwd, f := s.forwarded()
+	reply(t, s.callee, fwd, f, 100)
+
+	for deadline := time.Now().Add(siptest.Timeout); !s.r.p.Responded(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the 100 never reached the branch")
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	clock.Advance(2 * time.Second)
+
+	h := nextHeld(t, replies)
+	if h.r.Response != nil || !errors.Is(h.r.Err, transaction.ErrTimeout) || !h.r.Responded {
+		t.Fatalf("reply %v, %v, responded %v; want a timeout after the 100", h.r.Response, h.r.Err, h.r.Responded)
+	}
 }
 
 func TestLate2xxAfterTimerCOverTCP(t *testing.T) {
@@ -353,6 +381,31 @@ func TestLate2xxAfterTimerCOverTCP(t *testing.T) {
 
 	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, sip.TCP)+">")
 	wantResponse(t, s.caller, 200)
+}
+
+// TestTimerCReplyResponded tells Timer C from a branch that never answered:
+// the reply reports the 180 the branch received.
+func TestTimerCReplyResponded(t *testing.T) {
+	clock := siptest.NewClock()
+	replies := make(chan held, 2)
+	s := newScene(t, sip.UDP, routerConfig{clock: clock, onReply: holdAll(replies)})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+
+	fwd, f := s.forwarded()
+	reply(t, s.callee, fwd, f, 180)
+
+	if h := nextHeld(t, replies); h.r.Response.StatusCode != 180 || !h.r.Responded {
+		t.Fatalf("got %v, responded %v; want 180", h.r.Response, h.r.Responded)
+	}
+
+	clock.Advance(proxy.DefaultTimerC)
+
+	h := nextHeld(t, replies)
+	if !errors.Is(h.r.Err, transaction.ErrTimeout) || !h.r.Responded {
+		t.Fatalf("Timer C reply: %v, responded %v; want ErrTimeout after a response", h.r.Err, h.r.Responded)
+	}
 }
 
 func TestTaglessResponses(t *testing.T) {

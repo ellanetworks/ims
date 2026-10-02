@@ -55,7 +55,7 @@ func writeConfig(t *testing.T, content string) string {
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
-		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org]\n  max_connections: 100\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
 		"pcscf:\n  port: 5062\nicscf:\n  port: 5072\n"+
 		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
@@ -78,7 +78,7 @@ func TestLoad(t *testing.T) {
 		},
 		SIP: SIP{
 			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
-			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org"},
+			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"},
 			MaxConnections: 100,
 		},
 		PCSCF: PCSCF{Port: 5062},
@@ -211,6 +211,20 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadSCSCFNameOnTheHomeDomain names the S-CSCF on a host the IMS
+// answers to already: no alias is added.
+func TestLoadSCSCFNameOnTheHomeDomain(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+
+		"scscf:\n  name: sip:IMS.mnc001.mcc001.3gppnetwork.org:5080\n"+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := cfg.SIPAliases(), []string{"ims.mnc001.mcc001.3gppnetwork.org"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("SIPAliases = %v, want %v", got, want)
+	}
+}
+
 func TestLoadOnePeerServesCxAndRx(t *testing.T) {
 	core := `    - id: core
       host: core.mnc001.mcc001.3gppnetwork.org
@@ -262,6 +276,28 @@ func TestLoadInvalid(t *testing.T) {
 		{"S-CSCF name on another port", valid + "scscf:\n  name: sip:scscf.example.org\n" + validDiameter, "must have the port of scscf.port 5080"},
 		{"S-CSCF name not a domain name", valid + "scscf:\n  name: sip:scscf_1.example.org:5080\n" + validDiameter, `"scscf_1.example.org" is not a domain name`},
 		{"S-CSCF name on another address", valid + "scscf:\n  name: sip:10.0.0.6:5080\n" + validDiameter, "10.0.0.6 is not one of sip.addresses"},
+		{
+			"S-CSCF name on another domain",
+			valid + "scscf:\n  name: sip:scscf.example.org:5080\n" + validDiameter,
+			"scscf.example.org must be the home domain, scscf.ims.mnc001.mcc001.3gppnetwork.org or one of sip.aliases",
+		},
+		{
+			"role port on the API's address",
+			validDB + "api:\n  address: 10.0.0.5\n  port: 5060\n" + validIMS + validSIP + validDiameter,
+			"pcscf.port and api.port are both 5060 on 10.0.0.5",
+		},
+		{
+			"role port on the API's wildcard address",
+			validDB + "api:\n  address: 0.0.0.0\n  port: 5070\n" + validIMS + validSIP + validDiameter,
+			"icscf.port and api.port are both 5070 on 0.0.0.0",
+		},
+		{"trusting every IPv4 address", validDB + validAPI + validIMS + "  trusted_networks: [0.0.0.0/0]\n" + validSIP + validDiameter, "0.0.0.0/0 would trust every address"},
+		{"trusting every address", validDB + validAPI + validIMS + "  trusted_networks: [\"::/0\"]\n" + validSIP + validDiameter, "::/0 would trust every address"},
+		{
+			"short IPv4-mapped network",
+			validDB + validAPI + validIMS + "  trusted_networks: [\"::ffff:10.0.0.0/64\"]\n" + validSIP + validDiameter,
+			"::ffff:10.0.0.0/64 is IPv4-mapped and must be /96 or longer",
+		},
 		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
 		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
 		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},

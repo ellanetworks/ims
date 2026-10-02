@@ -20,6 +20,14 @@ const (
 	defaultCxTimeout = 10 * time.Second
 
 	defaultSCSCFTimeout = 32 * transaction.DefaultT1
+
+	// budgetMargin, in T1, is kept from the 64·T1 that a non-INVITE
+	// transaction lasts, for the I-CSCF's final response to reach the UE
+	// before the hops in between give up.
+	budgetMargin = 4
+
+	// minBranch, in T1, is the least time worth giving another S-CSCF.
+	minBranch = 8
 )
 
 type Diameter interface {
@@ -54,8 +62,9 @@ type Config struct {
 	Diameter  Diameter
 	CxTimeout time.Duration
 
-	// SCSCFTimeout is how long an S-CSCF has to answer a REGISTER before it
-	// is replaced (TS 24.229 §5.3.1.3 NOTE 2).
+	// SCSCFTimeout is how long an S-CSCF has to send a final response to a
+	// REGISTER or another non-INVITE request before another S-CSCF replaces
+	// it (TS 24.229 §5.3.1.3 NOTE 2). It applies only when one can.
 	SCSCFTimeout time.Duration
 
 	Logger *slog.Logger
@@ -64,11 +73,16 @@ type Config struct {
 type ICSCF struct {
 	cfg    Config
 	log    *slog.Logger
+	t1     time.Duration
 	scscfs []*SCSCF
 }
 
 func New(cfg Config) *ICSCF {
-	i := &ICSCF{cfg: cfg, log: cfg.Logger}
+	i := &ICSCF{cfg: cfg, log: cfg.Logger, t1: transaction.DefaultT1}
+
+	if cfg.Layer != nil {
+		i.t1 = cfg.Layer.T1()
+	}
 
 	if i.log == nil {
 		i.log = slog.Default()
@@ -123,6 +137,45 @@ func (i *ICSCF) HandleTransactionError(tx *transaction.ServerTransaction, err er
 	i.log.Debug("I-CSCF transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
 }
 
+// deadline is when the I-CSCF answers a non-INVITE request that arrives now,
+// at the latest: its server transaction ends at 64·T1.
+func (i *ICSCF) deadline() time.Time {
+	return time.Now().Add((64 - budgetMargin) * i.t1)
+}
+
+// branchTimeout is how long an S-CSCF has to answer a non-INVITE request: the
+// time left before the deadline, and no more than SCSCFTimeout when another
+// S-CSCF can replace it.
+func (i *ICSCF) branchTimeout(deadline time.Time, replaceable bool) time.Duration {
+	d := time.Until(deadline)
+
+	if replaceable {
+		d = min(d, i.cfg.SCSCFTimeout)
+	}
+
+	return max(d, i.t1)
+}
+
+// timeLeft reports whether another S-CSCF can be tried before the deadline.
+func (i *ICSCF) timeLeft(deadline time.Time) bool {
+	return time.Until(deadline) >= minBranch*i.t1
+}
+
+// unresponsive reports whether the S-CSCF could not be reached (TS 24.229
+// §5.3.1.3, §5.3.2.2): it sent no final response in time, or the request
+// could not be sent to it, which RFC 3261 §16.9 treats like a 503. An
+// INVITE that got a provisional response and then hit Timer C was answered.
+func unresponsive(r proxy.Reply, invite bool) bool {
+	switch {
+	case r.Err == nil:
+		return false
+	case errors.Is(r.Err, transaction.ErrTimeout):
+		return !invite || !r.Responded
+	default:
+		return true
+	}
+}
+
 func (i *ICSCF) trusted(req *sip.Request) bool {
 	return i.cfg.Trust.Trusted(req.Flow.Remote.Addr())
 }
@@ -136,17 +189,18 @@ func (i *ICSCF) outgoing(req *sip.Request, res *sip.Response) {
 	}
 }
 
-// forward sends the request statefully. A failure is answered with its status
-// code, unless the request was answered already.
-func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
+// forward sends the request statefully and reports whether it did. A failure
+// is answered with its status code, unless the request was answered already:
+// cancelled, for one.
+func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) bool {
 	err := i.cfg.Proxy.Forward(tx, out, to, opts)
 	if err == nil {
-		return
+		return true
 	}
 
 	if errors.Is(err, proxy.ErrAnswered) {
 		i.log.Debug("request answered before it was forwarded", slog.String("request", out.StartLine()))
-		return
+		return false
 	}
 
 	code := 500
@@ -158,6 +212,8 @@ func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to 
 
 	i.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
 	i.answer(tx, code)
+
+	return false
 }
 
 // answer sends a final response, through the proxy once the request has been
@@ -178,8 +234,11 @@ func (i *ICSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	}
 }
 
+// spawn runs f in the background, or answers 500 when it cannot: the layer
+// is closing.
 func (i *ICSCF) spawn(tx *transaction.ServerTransaction, f func(ctx context.Context)) {
 	if err := i.cfg.Layer.Go(f); err != nil {
 		i.log.Debug("dropped a request", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
+		i.answer(tx, 500)
 	}
 }

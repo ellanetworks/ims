@@ -75,6 +75,10 @@ type RecordRoute struct {
 type Options struct {
 	RecordRoute *RecordRoute
 
+	// Timeout, when set, ends the branch when it gets no response in time:
+	// no response at all to an INVITE, no final response to another
+	// request. A 100 (Trying) to a non-INVITE request only says that the
+	// request arrived.
 	Timeout time.Duration
 
 	OnReply func(r Reply) Verdict
@@ -84,6 +88,10 @@ type Reply struct {
 	Response *sip.Response
 
 	Err error
+
+	// Responded reports whether the branch received any response, a 100
+	// included, before it ended. Timer C, for one, fires only after one.
+	Responded bool
 }
 
 type Verdict int

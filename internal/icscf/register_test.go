@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
@@ -83,6 +84,29 @@ func TestRegisterToAssignedSCSCF(t *testing.T) {
 	}
 }
 
+// TestRegisterRequestURIIsServerName forwards the REGISTER to the
+// Server-Name as the HSS sent it, matched to the table by URI equivalence
+// (§5.3.1.2, RFC 3261 §19.1.4).
+func TestRegisterRequestURIIsServerName(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscfs[0]
+	u := h.newUE(loopback)
+
+	name := strings.Replace(s.uri(), "scscf1", "SCSCF1", 1) + ";foo=bar"
+
+	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: name})
+	u.send(u.register())
+	h.hss.nextUAR(t)
+
+	req, f := s.recv()
+	if req.URI.String() != name {
+		t.Fatalf("Request-URI = %s, want %s", req.URI, name)
+	}
+
+	s.respond(req, f, 401)
+	u.wantFinal(401)
+}
+
 func TestRegisterSelection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -158,6 +182,24 @@ func TestRegisterIdentities(t *testing.T) {
 			},
 			"tel:+15551230001",
 			"+15551230001",
+		},
+		{
+			"sips and a number with visual separators",
+			func(r *sip.Request) {
+				r.Header.Del("Authorization")
+				r.Header.Set("To", "<sips:alice@"+homeDomain+">")
+			},
+			"sip:alice@" + homeDomain,
+			"alice@" + homeDomain,
+		},
+		{
+			"tel URI with visual separators",
+			func(r *sip.Request) {
+				r.Header.Del("Authorization")
+				r.Header.Set("To", "<tel:+1-555-123-0001>")
+			},
+			"tel:+15551230001",
+			"+1-555-123-0001",
 		},
 		{
 			"Authorization for another realm",
@@ -324,6 +366,15 @@ func TestRegisterBadRequests(t *testing.T) {
 		{"URN To", func(r *sip.Request) { r.Header.Set("To", "<urn:service:sos>") }},
 		{"bad Contact", func(r *sip.Request) { r.Header.Set("Contact", "<sip:ue@") }},
 		{"bad Expires", func(r *sip.Request) { r.Header.Set("Expires", "soon") }},
+		{"star with Expires", func(r *sip.Request) { r.Header.Set("Contact", "*") }},
+		{"star without Expires", func(r *sip.Request) {
+			r.Header.Set("Contact", "*")
+			r.Header.Del("Expires")
+		}},
+		{"star and a contact", func(r *sip.Request) {
+			r.Header.Set("Contact", "*, <sip:ue@127.0.0.1:5100>")
+			r.Header.Set("Expires", "0")
+		}},
 	}
 
 	for _, tt := range tests {
@@ -378,12 +429,109 @@ func TestRegisterSCSCFTimeout(t *testing.T) {
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: s.uri()})
+
+	sent := time.Now()
+
 	u.send(u.register())
 	h.hss.nextUAR(t)
 	s.recv()
 
 	u.wantFinal(504)
+
+	if elapsed := time.Since(sent); elapsed >= 64*testT1 {
+		t.Fatalf("504 after %s, want it before the transaction ends at %s", elapsed, 64*testT1)
+	}
+
 	h.hss.noCx(t)
+}
+
+// TestRegisterSCSCFTrying keeps the reselection timer running through a 100
+// (Trying): the S-CSCFs are alive but never answer, and the REGISTER gets a
+// 504 before its transaction ends.
+func TestRegisterSCSCFTrying(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
+
+	sent := time.Now()
+
+	u.send(u.register())
+	h.hss.nextUAR(t)
+
+	req, f := first.recv()
+	first.respond(req, f, 100)
+
+	req, f = second.recv()
+	if want := second.uri() + ";scscf-reselection"; req.URI.String() != want {
+		t.Fatalf("Request-URI = %s, want %s", req.URI, want)
+	}
+
+	second.respond(req, f, 100)
+
+	u.wantFinal(504)
+
+	if elapsed := time.Since(sent); elapsed >= 64*testT1 {
+		t.Fatalf("504 after %s, want it before the transaction ends at %s", elapsed, 64*testT1)
+	}
+
+	h.hss.noCx(t)
+}
+
+// TestRegisterReselectionKeepsCapabilities replaces an S-CSCF only with one
+// that has the mandatory capabilities of the first UAA (TS 29.228 §6.7).
+func TestRegisterReselectionKeepsCapabilities(t *testing.T) {
+	h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{7}, {}}})
+	first, second := h.scscfs[0], h.scscfs[1]
+	u := h.newUE(loopback)
+
+	h.hss.answerUAR(&hssAnswer{
+		result: success(tgpp.ResultFirstRegistration),
+		caps:   &cx.ServerCapabilities{Mandatory: []uint32{7}},
+	})
+	u.send(u.register())
+	h.hss.nextUAR(t)
+
+	req, f := first.recv()
+	first.respond(req, f, 480)
+
+	u.wantFinal(480)
+	second.sock.RecvNone(quiet)
+	h.hss.noCx(t)
+}
+
+// TestRegisterSCSCFRefusesConnections reselects when the S-CSCF cannot be
+// reached at all (RFC 3261 §16.9), and answers 504 when no other is left.
+func TestRegisterSCSCFRefusesConnections(t *testing.T) {
+	t.Run("reselection", func(t *testing.T) {
+		h := newHarness(t, harnessOptions{scscfs: 2, down: 1})
+		second := h.scscfs[1]
+		u := h.newUE(loopback)
+
+		h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
+		u.send(u.register())
+		h.hss.nextUAR(t)
+
+		req, f := second.recv()
+		if want := second.uri() + ";scscf-reselection"; req.URI.String() != want {
+			t.Fatalf("Request-URI = %s, want %s", req.URI, want)
+		}
+
+		second.respond(req, f, 401)
+		u.wantFinal(401)
+	})
+
+	t.Run("no other S-CSCF", func(t *testing.T) {
+		h := newHarness(t, harnessOptions{down: 1})
+		u := h.newUE(loopback)
+
+		h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
+		u.send(u.register())
+		h.hss.nextUAR(t)
+
+		u.wantFinal(504)
+	})
 }
 
 func TestRegisterSCSCFRefuses(t *testing.T) {
@@ -504,7 +652,10 @@ func TestRegisterReselectionKeepsAssignedSCSCF(t *testing.T) {
 	req, f := first.recv()
 	first.respond(req, f, 480)
 
-	h.hss.nextUAR(t)
+	if got := h.hss.nextUAR(t).AuthorizationType; got != cx.AuthorizationRegistrationAndCapabilities {
+		t.Fatalf("User-Authorization-Type = %s, want REGISTRATION_AND_CAPABILITIES", got)
+	}
+
 	u.wantFinal(480)
 	h.scscfs[1].sock.RecvNone(quiet)
 }

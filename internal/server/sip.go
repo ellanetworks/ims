@@ -104,6 +104,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 	}
 
 	hss := cfg.Diameter.CxPeer()
+	domain := trust.New(cfg.SIP.Addresses, cfg.IMS.TrustedNetworks)
 
 	s.registrar = scscf.New(scscf.Config{
 		HomeDomain: cfg.IMS.HomeDomain,
@@ -128,7 +129,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 		Layer:      layer,
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
 		Port:       icscfPort,
-		Trust:      trust.New(cfg.SIP.Addresses, cfg.IMS.TrustedNetworks),
+		Trust:      domain,
 		SCSCFs: []icscf.SCSCF{{
 			Name:         scscfName,
 			Capabilities: cfg.SCSCF.Capabilities,
@@ -139,7 +140,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 		Logger:   logger,
 	}))
 
-	roles.set(scscfPort, &scscfHandler{log: logger, layer: layer, registrar: s.registrar, fallback: ph})
+	roles.set(scscfPort, &scscfHandler{log: logger, layer: layer, trust: domain, registrar: s.registrar, fallback: ph})
 
 	return s, nil
 }
@@ -256,14 +257,30 @@ type registrar interface {
 }
 
 // scscfHandler is the S-CSCF's SIP side: REGISTER goes to the registrar.
+// Only the trust domain reaches it: the registrar relies on the P-CSCF for
+// "integrity-protected" and receives "ck" and "ik" in its challenges
+// (TS 33.203 §6.1, TS 24.229 §5.4.1.2.2).
 type scscfHandler struct {
 	log       *slog.Logger
 	layer     *transaction.Layer
+	trust     *trust.Domain
 	registrar registrar
 	fallback  transaction.Handler
 }
 
 func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	if !h.trust.Trusted(req.Flow.Remote.Addr()) {
+		h.log.Info("S-CSCF request from outside the trust domain", slog.String("method", req.Method),
+			slog.String("source", req.Flow.Remote.String()))
+
+		res := sip.NewResponse(req, 403, "")
+		if err := tx.Respond(res); err != nil {
+			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+
+		return
+	}
+
 	if req.Method != "REGISTER" {
 		h.fallback.HandleRequest(tx, req)
 		return
