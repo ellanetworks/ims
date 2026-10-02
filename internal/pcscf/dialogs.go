@@ -14,6 +14,9 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
+// ueFacing marks the P-CSCF's Record-Route entry that faces the UE.
+const ueFacing = "ue"
+
 // SCSCF is how the P-CSCF reaches the S-CSCF of a Service-Route without DNS.
 type SCSCF struct {
 	Name      sip.URI
@@ -62,7 +65,7 @@ func (p *PCSCF) ueRegistration(req *sip.Request) (db.PCSCFRegistration, bool) {
 		return p.regs.get(v.impi, ue)
 	}
 
-	return p.regs.fromAddress(ue)
+	return p.regs.fromSource(req.Flow.Remote)
 }
 
 // ueSubscribe forwards a UE's initial SUBSCRIBE to its reg event along its
@@ -109,6 +112,7 @@ func (p *PCSCF) ueSubscribe(tx *transaction.ServerTransaction, req *sip.Request)
 	}
 
 	fromUE(out)
+	stripSecAgree(out)
 	out.Header.Del("P-Preferred-Identity")
 	out.Header.Add("P-Asserted-Identity", "<"+asserted+">")
 
@@ -126,7 +130,7 @@ func (p *PCSCF) ueSubscribe(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	rr := &proxy.RecordRoute{User: reg.FlowToken}
+	rr := &proxy.RecordRoute{User: reg.FlowToken, Double: true, UpstreamParams: sip.Params{{Name: ueFacing}}}
 	if contactParam(req, "ob") {
 		rr.Params.Set("ob", "")
 	}
@@ -216,49 +220,34 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 		return
 	}
 
-	if p.towardUE(req, removed) {
+	if p.towardUE(removed) {
 		p.toUEFlow(tx, req, out, removed)
 		return
 	}
 
-	p.toCore(tx, req, out)
+	p.toCore(tx, req, out, removed)
 }
 
-// towardUE tells the direction of an in-dialog request from the Route entries
-// it carried: the UE-facing entry, on a protected port, comes first in the
-// UE's requests.
-func (p *PCSCF) towardUE(req *sip.Request, removed []sip.URI) bool {
-	if p.sas != nil && p.sas.protected(req.Flow.Local.Port()) {
-		return false
-	}
-
-	if port := removed[0].Port; p.sas != nil && p.sas.protected(port) {
-		return false
-	}
-
-	if len(removed) > 1 {
-		return true
-	}
-
-	_, fromUE := p.regs.fromAddress(req.Flow.Remote.Addr())
-
-	return !fromUE
+// towardUE tells the direction of an in-dialog request from the first Route
+// entry it carried: the UE's requests start with the P-CSCF's UE-facing
+// entry, which its Record-Route marks.
+func (p *PCSCF) towardUE(removed []sip.URI) bool {
+	return !removed[0].Params.Has(ueFacing)
 }
 
-func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI) {
-	var (
-		f  flow
-		ok bool
-	)
-
+// flowToken returns the flow token the P-CSCF's Route entries carry.
+func flowToken(removed []sip.URI) string {
 	for _, u := range removed {
 		if u.User != "" {
-			if f, ok = p.regs.flow(u.User); ok {
-				break
-			}
+			return u.User
 		}
 	}
 
+	return ""
+}
+
+func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI) {
+	f, ok := p.regs.flow(flowToken(removed))
 	if !ok {
 		p.respond(tx, sip.NewResponse(req, 480, "No Flow"))
 		return
@@ -270,7 +259,10 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 		return
 	}
 
-	p.forward(tx, req, out, proxy.Target{Flow: to}, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
+	out.Header.Del("P-Charging-Vector")
+	out.Header.Del("P-Charging-Function-Addresses")
+
+	p.forward(tx, req, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
 			trust.StripResponse(rep.Response)
 		}
@@ -279,9 +271,13 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 	}})
 }
 
-// ueFlow is the flow of a request to a UE: over its security associations,
-// else to the address it registered from.
-func (p *PCSCF) ueFlow(f flow) (sip.Flow, bool) {
+// ueFlow is where a request to a UE goes: over its security associations,
+// from the protected client port, with the protected server port in the Via
+// so that the UE's responses arrive on it (TS 24.229 §5.2.2.2 1A, TS 33.203
+// §7.1). A UE without security associations gets it from the P-CSCF port at
+// the address it registered from; one that registered over security
+// associations it no longer has gets nothing.
+func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
 	tr := f.transport
 	if tr == "" {
 		tr = sip.UDP
@@ -289,19 +285,29 @@ func (p *PCSCF) ueFlow(f flow) (sip.Flow, bool) {
 
 	if p.sas != nil {
 		if out, ok := p.sas.requestFlow(f.impi, f.ue.Addr(), tr); ok {
-			return out, true
+			return proxy.Target{Flow: out, SentBy: netip.AddrPortFrom(out.Local.Addr(), p.sas.cfg.ServerPort)}, true
 		}
 	}
 
-	if !f.ue.IsValid() || f.ue.Port() == 0 {
-		return sip.Flow{}, false
+	if f.protected || !f.ue.IsValid() || f.ue.Port() == 0 {
+		return proxy.Target{}, false
 	}
 
-	return sip.Flow{Transport: tr, Local: netip.AddrPortFrom(f.local, p.cfg.Port), Remote: f.ue}, true
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(f.local, p.cfg.Port), Remote: f.ue}}, true
 }
 
-func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request) {
-	trust.StripRequest(out)
+// toCore forwards a UE's in-dialog request. The flow token of its Route must
+// be that of the UE's own flow: a UE cannot relay through another's dialog.
+func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI) {
+	if !p.ownFlow(req, flowToken(removed)) {
+		p.log.Info("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
+		p.respond(tx, sip.NewResponse(req, 403, ""))
+
+		return
+	}
+
+	fromUE(out)
+	stripSecAgree(out)
 
 	u := out.URI
 	if route, err := out.Header.TopRoute(); err == nil {
@@ -321,4 +327,30 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request)
 
 		return proxy.Relay
 	}})
+}
+
+// ownFlow tells whether a flow token is that of the UE that sent a request:
+// same address, and same private identity over security associations.
+func (p *PCSCF) ownFlow(req *sip.Request, token string) bool {
+	f, ok := p.regs.flow(token)
+	if !ok || f.ue.Addr() != req.Flow.Remote.Addr().Unmap() {
+		return false
+	}
+
+	if p.sas != nil && p.sas.protected(req.Flow.Local.Port()) {
+		v, ok := p.sas.lookup(req.Flow)
+		return ok && v.impi == f.impi
+	}
+
+	return !f.protected && f.ue.Port() == req.Flow.Remote.Port()
+}
+
+// stripSecAgree removes the security agreement header fields of a UE's
+// request (RFC 3329 §2.3.1: a proxy "MUST remove the 'sec-agree' value from
+// both the Require and Proxy-Require header fields").
+func stripSecAgree(req *sip.Request) {
+	req.Header.Del("Security-Client")
+	req.Header.Del("Security-Verify")
+	removeSecAgree(req, "Require")
+	removeSecAgree(req, "Proxy-Require")
 }

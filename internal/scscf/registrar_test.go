@@ -149,10 +149,12 @@ func TestInitialRegistration(t *testing.T) {
 				Params: ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
 				Path:   testPath,
 			},
-			CallID:    u.callID,
-			CSeq:      2,
-			ExpiresAt: testEpoch.Add(600 * time.Second),
-			Event:     db.BindingRegistered,
+			CallID:       u.callID,
+			CSeq:         2,
+			ExpiresAt:    testEpoch.Add(600 * time.Second),
+			Event:        db.BindingRegistered,
+			IMPU:         testIMPU,
+			RegisteredAt: testEpoch,
 		}},
 	}
 	if !reflect.DeepEqual(reg, wantReg) {

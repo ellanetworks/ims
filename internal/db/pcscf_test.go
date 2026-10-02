@@ -14,12 +14,16 @@ func testPCSCFRegistration() PCSCFRegistration {
 		IMPI:           testIMPI,
 		FlowToken:      "f1",
 		Transport:      "UDP",
+		Protected:      true,
 		UEAddress:      netip.MustParseAddrPort("[2001:db8::1]:5100"),
 		PCSCFAddress:   netip.MustParseAddr("2001:db8::10"),
 		Contacts:       []string{"sip:ue@[2001:db8::1]:5100"},
 		AssociatedURIs: []string{"sip:+15551230001@" + testDomain, "tel:+15551230001"},
-		ServiceRoute:   []string{"<sip:orig-1@scscf." + testDomain + ";lr>"},
-		ExpiresAt:      testNow.Add(time.Hour),
+		Sets: map[string][]string{
+			"sip:+15551230001@" + testDomain: {"sip:+15551230001@" + testDomain, "tel:+15551230001"},
+		},
+		ServiceRoute: []string{"<sip:orig-1@scscf." + testDomain + ";lr>"},
+		ExpiresAt:    testNow.Add(time.Hour),
 	}
 }
 
@@ -52,6 +56,39 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 
 	if err := d.DeletePCSCFRegistration(ctx, got.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("DeletePCSCFRegistration again err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListPCSCFRegistrationsSkipsAndDeletesBadRows(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	good, err := d.SavePCSCFRegistration(ctx, testPCSCFRegistration())
+	if err != nil {
+		t.Fatalf("SavePCSCFRegistration: %v", err)
+	}
+
+	for i, row := range []struct{ ue, pcscf, contacts string }{
+		{"invalid IP", "2001:db8::10", "[]"},
+		{"2001:db8::3", "bogus", "[]"},
+		{"2001:db8::4", "2001:db8::10", "{not json"},
+	} {
+		if _, err := d.conn.ExecContext(ctx, `INSERT INTO pcscf_registrations (impi, flow_token, transport, protected,
+			ue_address, ue_port, pcscf_address, contacts, associated_uris, sets, service_route, expires_at)
+			VALUES (?, ?, 'UDP', 0, ?, 5060, ?, ?, '[]', '{}', '[]', 0)`,
+			testIMPI, "bad"+string(rune('0'+i)), row.ue, row.pcscf, []byte(row.contacts)); err != nil {
+			t.Fatalf("insert bad row %d: %v", i, err)
+		}
+	}
+
+	regs, err := d.ListPCSCFRegistrations(ctx)
+	if err != nil || len(regs) != 1 || !reflect.DeepEqual(regs[0], good) {
+		t.Fatalf("ListPCSCFRegistrations = %+v, %v; want only %+v", regs, err, good)
+	}
+
+	var n int
+	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pcscf_registrations`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows left = %d, %v; want the bad rows deleted", n, err)
 	}
 }
 

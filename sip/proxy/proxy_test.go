@@ -683,3 +683,19 @@ func TestUpstreamCancelWithoutDownstreamAnswer(t *testing.T) {
 	clock.Advance(64 * transaction.DefaultT1)
 	wantResponse(t, s.caller, 487)
 }
+
+func TestForcedDoubleRecordRoute(t *testing.T) {
+	rr := &proxy.RecordRoute{User: "flow", Double: true, UpstreamParams: sip.Params{{Name: "ue"}}}
+	s := newScene(t, sip.UDP, routerConfig{opts: proxy.Options{RecordRoute: rr}})
+
+	s.send(s.request("MESSAGE"))
+
+	fwd, _ := s.forwarded()
+
+	self := "sip:flow@" + s.r.local.String()
+	want := "<" + self + ";lr;r2=on>, <" + self + ";lr;r2=on;ue>"
+
+	if got := strings.Join(fwd.Header.Values("Record-Route"), ", "); got != want {
+		t.Errorf("Record-Route %s, want %s", got, want)
+	}
+}

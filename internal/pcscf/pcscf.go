@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -334,8 +335,8 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 
 	out.Header.Del("Security-Client")
 	out.Header.Del("Security-Verify")
-	removeOptionTag(out, "Require", secAgree)
-	removeOptionTag(out, "Proxy-Require", secAgree)
+	removeSecAgree(out, "Require")
+	removeSecAgree(out, "Proxy-Require")
 
 	if err := setIntegrityProtected(out, integrity); err != nil {
 		return sip.NewResponse(req, 400, "Bad Authorization")
@@ -363,8 +364,9 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	toUE(res)
 
+	ended := false
 	if res.IsSuccess() {
-		p.registered(req, res, r)
+		ended = p.registered(req, res, r)
 	}
 
 	if p.sas == nil {
@@ -402,7 +404,10 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		res.Header.Add("Security-Server", s.String())
 		addOptionTag(res, "Supported", secAgree)
 	case res.IsSuccess() && r.in != nil:
-		p.sas.registered(r.in.s, registrationOutcome(req, res))
+		// The SAs are shortened only when the UE has no registration left.
+		o := registrationOutcome(req, res)
+		o.dereg = o.dereg && ended
+		p.sas.registered(r.in.s, o)
 	case r.in != nil && r.in.state == temporary:
 		p.sas.failed(r.in.s)
 	}
@@ -412,29 +417,40 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 // registered stores the registration a 200 to a REGISTER created, refreshed
 // or ended (TS 24.229 §5.2.2.1, §5.2.5.1), and subscribes to the private
-// identity's reg event on its first registration (§5.2.3).
-func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) {
+// identity's reg event on its first registration (§5.2.3). Each registered
+// public identity brings its implicit set; a deregistration ends only that
+// set. It tells whether the UE has no registration left.
+func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) bool {
 	o := registrationOutcome(req, res)
+	impu := registeredIdentity(req)
+
+	existing, known := p.regs.get(r.impi, r.ue)
 
 	if o.dereg {
-		if _, ok := p.regs.remove(r.impi, r.ue); ok {
+		if known {
+			delete(existing.Sets, impu)
+
+			if len(existing.Sets) > 0 {
+				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
+				p.regs.save(existing)
+
+				p.log.Info("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
+
+				return false
+			}
+		}
+
+		if p.regs.remove(r.impi, r.ue) {
 			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
 		}
 
-		return
+		p.unsubscribeIfIdle(r.impi)
+
+		return true
 	}
 
 	if o.lifetime <= 0 {
-		return
-	}
-
-	var contacts []string
-
-	requested, _ := req.Header.Contacts()
-	for _, c := range requested {
-		if v, ok := c.Params.Get("expires"); !ok || v != "0" {
-			contacts = append(contacts, c.URI.String())
-		}
+		return false
 	}
 
 	var associated []string
@@ -444,20 +460,103 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 		associated = append(associated, a.URI.String())
 	}
 
-	p.regs.save(db.PCSCFRegistration{
-		IMPI:           r.impi,
-		FlowToken:      r.token,
-		Transport:      string(req.Flow.Transport),
-		UEAddress:      netip.AddrPortFrom(r.ue, req.Flow.Remote.Port()),
-		PCSCFAddress:   r.local,
-		Contacts:       contacts,
-		AssociatedURIs: associated,
-		ServiceRoute:   res.Header.Elements("Service-Route"),
-		ExpiresAt:      p.clock.Now().Add(o.lifetime),
-	})
+	reg := db.PCSCFRegistration{
+		IMPI:         r.impi,
+		FlowToken:    r.token,
+		Transport:    string(req.Flow.Transport),
+		Protected:    r.in != nil,
+		UEAddress:    netip.AddrPortFrom(r.ue, req.Flow.Remote.Port()),
+		PCSCFAddress: r.local,
+		Sets:         map[string][]string{},
+		ServiceRoute: res.Header.Elements("Service-Route"),
+		ExpiresAt:    p.clock.Now().Add(o.lifetime),
+	}
 
-	if len(associated) > 0 && !p.subs.has(r.impi) && p.cfg.Layer != nil {
+	if known {
+		reg.Contacts = existing.Contacts
+		reg.Sets = maps.Clone(existing.Sets)
+		reg.AssociatedURIs = existing.AssociatedURIs
+		reg.ExpiresAt = later(reg.ExpiresAt, existing.ExpiresAt)
+	}
+
+	requested, _ := req.Header.Contacts()
+	for _, c := range requested {
+		uri := c.URI.String()
+		reg.Contacts = slices.DeleteFunc(reg.Contacts, func(k string) bool { return k == uri })
+
+		if v, ok := c.Params.Get("expires"); !ok || v != "0" {
+			reg.Contacts = append(reg.Contacts, uri)
+		}
+	}
+
+	reg.Sets[impu] = associated
+	reg.AssociatedURIs = union(append(slices.Clone(reg.AssociatedURIs), associated...), reg.Sets)
+
+	p.regs.save(reg)
+
+	if len(associated) == 0 || p.cfg.Layer == nil {
+		return false
+	}
+
+	// A new registration subscribes again even if a subscription is held: the
+	// S-CSCF may have ended it without the P-CSCF hearing of it, and it
+	// replaces the old one (TS 24.229 §5.2.3).
+	if !known {
+		p.subs.stop(r.impi)
+	}
+
+	if !p.subs.has(r.impi) {
 		p.subs.start(r.impi)
+	}
+
+	return false
+}
+
+// registeredIdentity is the public identity a REGISTER registers: its To.
+func registeredIdentity(req *sip.Request) string {
+	to, err := req.Header.To()
+	if err != nil {
+		return ""
+	}
+
+	return to.URI.String()
+}
+
+// union keeps, in order and once each, the identities of list that one of
+// the sets holds.
+func union(list []string, sets map[string][]string) []string {
+	var out []string
+
+	for _, a := range list {
+		if slices.Contains(out, a) {
+			continue
+		}
+
+		for _, set := range sets {
+			if slices.Contains(set, a) {
+				out = append(out, a)
+				break
+			}
+		}
+	}
+
+	return out
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+
+	return b
+}
+
+// unsubscribeIfIdle drops the P-CSCF's subscription of a private identity it
+// no longer holds a registration of; the S-CSCF's next NOTIFY gets 481 and
+// ends it there.
+func (p *PCSCF) unsubscribeIfIdle(impi string) {
+	if _, ok := p.regs.forIMPI(impi); !ok {
+		p.subs.stop(impi)
 	}
 }
 
@@ -708,11 +807,12 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
-func removeOptionTag(req *sip.Request, name, tag string) {
+// removeSecAgree removes the sec-agree option tag from a header field.
+func removeSecAgree(req *sip.Request, name string) {
 	var kept []string
 
 	for _, t := range req.Header.Elements(name) {
-		if !strings.EqualFold(t, tag) {
+		if !strings.EqualFold(t, secAgree) {
 			kept = append(kept, t)
 		}
 	}

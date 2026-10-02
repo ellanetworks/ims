@@ -12,8 +12,8 @@ import (
 )
 
 // Terminate handles a Registration-Termination-Request (TS 29.228 §6.1.3,
-// TS 24.229 §5.4.1.5). It returns the private identities processed, once
-// local state is removed; the NOTIFYs follow.
+// TS 24.229 §5.4.1.5). Once local state is removed it returns the
+// Associated-Identities processed, for the RTA; the NOTIFYs follow.
 func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error) {
 	if !r.start() {
 		return nil, errors.New("registrar closed")
@@ -54,7 +54,7 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 
 	r.send(out)
 
-	return impis, nil
+	return impis[1:], nil
 }
 
 func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, reason cx.ReasonCode) ([]*outgoing, error) {
@@ -80,6 +80,12 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 	}
 
 	ch := change{reason: subReason}
+
+	// SERVER_CHANGE de-registers every registration of the subscription
+	// (TS 29.228 §6.1.3.1), whatever Public-Identities the RTR names.
+	if reason == cx.ReasonServerChange {
+		keys = nil
+	}
 
 	for _, reg := range st.regs {
 		if len(keys) > 0 && !slices.ContainsFunc(keys, func(k string) bool { return holds(reg.Identities, k) }) {

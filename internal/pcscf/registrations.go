@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -35,14 +36,20 @@ type regKey struct {
 type flow struct {
 	impi      string
 	transport sip.Transport
+	protected bool
 	ue        netip.AddrPort
 	local     netip.Addr
 }
 
 type retired struct {
 	f       flow
+	token   string
 	expires time.Time
 }
+
+// pendingToken is how long a flow token waits for the 200 to the REGISTER
+// that got it: the authentication of an IMS-AKA registration.
+const pendingToken = DefaultAwaitAuth
 
 // registrations holds the UEs registered through this P-CSCF (TS 24.229
 // §5.2.2.1). A removed registration's flow token keeps mapping to its flow
@@ -58,6 +65,7 @@ type registrations struct {
 	byKey   map[regKey]*db.PCSCFRegistration
 	byToken map[string]*db.PCSCFRegistration
 	retired map[string]retired
+	pending map[regKey]retired
 }
 
 func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger) *registrations {
@@ -69,6 +77,7 @@ func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration,
 		byKey:   make(map[regKey]*db.PCSCFRegistration),
 		byToken: make(map[string]*db.PCSCFRegistration),
 		retired: make(map[string]retired),
+		pending: make(map[regKey]retired),
 	}
 }
 
@@ -103,21 +112,42 @@ func (rs *registrations) restore(ctx context.Context) error {
 }
 
 func (rs *registrations) add(r *db.PCSCFRegistration) {
+	delete(rs.pending, regKey{r.IMPI, r.UEAddress.Addr()})
 	rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}] = r
 	rs.byToken[r.FlowToken] = r
 	delete(rs.retired, r.FlowToken)
 }
 
-// token returns the flow token of the UE's registration, or a new one.
+// token returns the flow token of the UE's registration. Until a 200 stores
+// one, the token given to the UE's first REGISTER is kept for the next ones
+// of the registration, so that every Path of it is the same
+// (TS 24.229 §5.2.2.1).
 func (rs *registrations) token(impi string, ue netip.Addr) string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	if r, ok := rs.byKey[regKey{impi, ue.Unmap()}]; ok {
+	k := regKey{impi, ue.Unmap()}
+
+	if r, ok := rs.byKey[k]; ok {
 		return r.FlowToken
 	}
 
-	return strings.ToLower(rand.Text())
+	now := rs.clock.Now()
+
+	for pk, p := range rs.pending {
+		if !p.expires.After(now) {
+			delete(rs.pending, pk)
+		}
+	}
+
+	if p, ok := rs.pending[k]; ok {
+		return p.token
+	}
+
+	token := strings.ToLower(rand.Text())
+	rs.pending[k] = retired{token: token, expires: now.Add(pendingToken)}
+
+	return token
 }
 
 // save stores the registration a 200 to a REGISTER created or refreshed.
@@ -152,11 +182,13 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 }
 
 // remove deletes a registration; its flow token stays usable for the grace.
-func (rs *registrations) remove(impi string, ue netip.Addr) (db.PCSCFRegistration, bool) {
+func (rs *registrations) remove(impi string, ue netip.Addr) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	return rs.removeLocked(regKey{impi, ue.Unmap()})
+	_, ok := rs.removeLocked(regKey{impi, ue.Unmap()})
+
+	return ok
 }
 
 func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
@@ -197,6 +229,7 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 		c := *r
 		c.Contacts = slices.Clone(r.Contacts)
 		c.AssociatedURIs = slices.Clone(r.AssociatedURIs)
+		c.Sets = maps.Clone(r.Sets)
 
 		if !f(&c) {
 			if old, ok := rs.removeLocked(k); ok {
@@ -233,16 +266,17 @@ func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, 
 	return *r, true
 }
 
-// fromAddress returns a registration of the UE at an address.
-func (rs *registrations) fromAddress(ue netip.Addr) (db.PCSCFRegistration, bool) {
+// fromSource returns the registration of a UE without security
+// associations: the one it registered from that address and port.
+func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	ue = ue.Unmap()
+	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
 	now := rs.clock.Now()
 
-	for k, r := range rs.byKey {
-		if k.ue == ue && r.ExpiresAt.After(now) {
+	for _, r := range rs.byKey {
+		if !r.Protected && r.UEAddress == src && r.ExpiresAt.After(now) {
 			return *r, true
 		}
 	}
@@ -275,7 +309,7 @@ func (rs *registrations) flow(token string) (flow, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	if r, ok := rs.byToken[token]; ok {
+	if r, ok := rs.byToken[token]; ok && r.ExpiresAt.Add(rs.grace).After(rs.clock.Now()) {
 		return flowOf(r), true
 	}
 
@@ -293,7 +327,9 @@ func (rs *registrations) flow(token string) (flow, bool) {
 }
 
 func flowOf(r *db.PCSCFRegistration) flow {
-	return flow{impi: r.IMPI, transport: sip.Transport(r.Transport), ue: r.UEAddress, local: r.PCSCFAddress}
+	return flow{
+		impi: r.IMPI, transport: sip.Transport(r.Transport), protected: r.Protected, ue: r.UEAddress, local: r.PCSCFAddress,
+	}
 }
 
 // defaultIdentity is the first SIP URI of the P-Associated-URI list, else its

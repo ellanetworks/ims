@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +29,10 @@ func IsRegEvent(req *sip.Request) bool {
 }
 
 // Subscribe handles a SUBSCRIBE to the reg event package (TS 24.229
-// §5.4.2.1.1). The caller has removed its own Route. respond sends the
-// response; NOTIFYs follow it.
-func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
+// §5.4.2.1.1). The caller has removed its own Routes and passes them: a
+// UE's SUBSCRIBE carries the Service-Route of its registration. respond
+// sends the response; NOTIFYs follow it.
+func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {
 	if !r.start() {
 		respond(retryLater(req))
 		return
@@ -58,7 +60,7 @@ func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, respond fun
 	if to.Tag() != "" {
 		res, out = r.resubscribe(ctx, req)
 	} else {
-		res, out = r.subscribe(ctx, req)
+		res, out = r.subscribe(ctx, req, routes)
 	}
 
 	respond(res)
@@ -72,14 +74,14 @@ type subscribeRequest struct {
 	expires    time.Duration
 }
 
-func (r *Registrar) subscribe(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing) {
+func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []sip.URI) (*sip.Response, []*outgoing) {
 	if !req.URI.IsSIP() && !req.URI.IsTel() {
 		return sip.NewResponse(req, 416, ""), nil
 	}
 
 	key := identityKey(req.URI)
 
-	sr, res := r.authorize(ctx, req, key)
+	sr, res := r.authorize(ctx, req, key, routes)
 	if res != nil {
 		return res, nil
 	}
@@ -136,8 +138,22 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request) (*sip.Respo
 		ExpiresAt:    st.now.Add(expires),
 	}
 
+	subState := activeState(s.ExpiresAt, st.now)
 	if expires == 0 {
-		return res, r.fetch(ctx, st, s)
+		subState = "terminated;reason=" + reasonTimeout
+	}
+
+	// The NOTIFY is built before anything is stored: a SUBSCRIBE that gets a
+	// 200 always gets its NOTIFY (RFC 6665 §4.2.2).
+	o, err := r.newNotify(ctx, st, &s, nil, subState)
+	if err != nil {
+		r.log.Warn("failed to build a NOTIFY", slog.String("impi", sr.impi), slog.Any("error", err))
+		return sip.NewResponse(req, 500, ""), nil
+	}
+
+	if expires == 0 {
+		o.final = true
+		return res, []*outgoing{o}
 	}
 
 	r.replaceDuplicates(ctx, s)
@@ -147,37 +163,21 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request) (*sip.Respo
 		return retryLater(req), nil
 	}
 
+	o.subID = s.ID
+
 	r.log.Info("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
 		slog.String("subscriber", string(sr.subscriber)))
 
 	r.armSweep(s.ExpiresAt)
 
-	var out []*outgoing
-	if o := r.buildNotify(ctx, st, s, change{}, activeState(s.ExpiresAt, st.now)); o != nil {
-		out = append(out, o)
-	}
-
-	return res, out
-}
-
-// fetch answers a SUBSCRIBE with Expires 0 with one terminated NOTIFY, and
-// keeps no subscription (RFC 6665 §4.4.3).
-func (r *Registrar) fetch(ctx context.Context, st *state, s db.RegSubscription) []*outgoing {
-	o, err := r.newNotify(ctx, st, &s, change{}, "terminated;reason="+reasonTimeout)
-	if err != nil {
-		r.log.Warn("failed to build a NOTIFY", slog.String("impi", s.IMPI), slog.Any("error", err))
-		return nil
-	}
-
-	o.final = true
-
-	return []*outgoing{o}
+	return res, []*outgoing{o}
 }
 
 // authorize finds the subscriber and the user (§5.4.2.1.1 steps 1 and 4):
 // the UE, asserted as a non-barred IMPU of the user, or the P-CSCF, asserted
 // as the Path of one of the IMPU's bindings.
-func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string) (*subscribeRequest, *sip.Response) {
+func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string, routes []sip.URI,
+) (*subscribeRequest, *sip.Response) {
 	if accept := req.Header.Values("Accept"); len(accept) > 0 && !accepts(req.Header.Elements("Accept")) {
 		res := sip.NewResponse(req, 406, "")
 		res.Header.Add("Accept", regevent.ContentType)
@@ -218,6 +218,12 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string)
 		}
 	}
 
+	// The UE's user is the one whose registration gave the Service-Route the
+	// SUBSCRIBE came along (§5.4.2.1.1 step 4 a); a shared IMPU has several.
+	if impi, ok := serviceRouteUser(regs, routes); ok {
+		regs = slices.DeleteFunc(slices.Clone(regs), func(reg db.Registration) bool { return reg.IMPI != impi })
+	}
+
 	for _, a := range asserted {
 		for _, reg := range regs {
 			if r.ownedBy(ctx, reg.IMPI, identityKey(a.URI)) {
@@ -232,10 +238,40 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string)
 	return nil, sip.NewResponse(req, 403, "")
 }
 
+// serviceRouteUser returns the IMPI of the binding whose Service-Route
+// (orig-<contact ID>) the request came along.
+func serviceRouteUser(regs []db.Registration, routes []sip.URI) (string, bool) {
+	for _, u := range routes {
+		id, ok := strings.CutPrefix(u.User, "orig-")
+		if !ok {
+			continue
+		}
+
+		contactID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			continue
+		}
+
+		for _, reg := range regs {
+			for _, b := range reg.Bindings {
+				if b.Contact.ID == contactID {
+					return reg.IMPI, true
+				}
+			}
+		}
+	}
+
+	return "", false
+}
+
+// accepts tells whether an Accept header field admits reginfo documents,
+// media ranges included (RFC 3261 §20.1).
 func accepts(types []string) bool {
 	for _, t := range types {
 		mt, _, _ := strings.Cut(t, ";")
-		if strings.EqualFold(strings.TrimSpace(mt), regevent.ContentType) {
+
+		switch strings.ToLower(strings.TrimSpace(mt)) {
+		case regevent.ContentType, "application/*", "*/*":
 			return true
 		}
 	}
@@ -385,7 +421,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 	}
 
 	var out []*outgoing
-	if o := r.buildNotify(ctx, st, s, change{}, subState); o != nil {
+	if o := r.buildNotify(ctx, st, s, nil, subState); o != nil {
 		out = append(out, o)
 	}
 

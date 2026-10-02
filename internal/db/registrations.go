@@ -45,12 +45,18 @@ const (
 	BindingRefreshed  BindingEvent = "refreshed"
 )
 
+// Binding is a contact bound to a registration set. IMPU is the identity key
+// of the public identity whose REGISTER created or last refreshed it, and
+// RegisteredAt is when it was created: a new binding of the same contact gets
+// a new one.
 type Binding struct {
-	Contact   Contact
-	CallID    string
-	CSeq      int64
-	ExpiresAt time.Time
-	Event     BindingEvent
+	Contact      Contact
+	CallID       string
+	CSeq         int64
+	ExpiresAt    time.Time
+	Event        BindingEvent
+	IMPU         string
+	RegisteredAt time.Time
 }
 
 const (
@@ -111,8 +117,10 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration
 		}
 
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at, event) VALUES (?, ?, ?, ?, ?, ?)`,
-			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano(), b.Event); err != nil {
+			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at, event, impu, registered_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano(), b.Event, b.IMPU,
+			b.RegisteredAt.UTC().UnixNano()); err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 	}
@@ -373,7 +381,7 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration, index m
 
 func loadBindings(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
-		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, b.event, `+contactColumns+`
+		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, b.event, b.impu, b.registered_at, `+contactColumns+`
 		FROM bindings b JOIN contacts c ON c.id = b.contact_id
 		WHERE b.registration_id IN (`+placeholders(len(ids))+`) ORDER BY b.registration_id, c.id`, ids...)
 	if err != nil {
@@ -384,15 +392,17 @@ func loadBindings(ctx context.Context, q querier, regs []Registration, index map
 
 	for rows.Next() {
 		var (
-			registrationID, expiresAt int64
-			b                         Binding
+			registrationID, expiresAt, registeredAt int64
+			b                                       Binding
 		)
 
-		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt, &b.Event); err != nil {
+		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt, &b.Event, &b.IMPU,
+			&registeredAt); err != nil {
 			return err
 		}
 
 		b.ExpiresAt = time.Unix(0, expiresAt).UTC()
+		b.RegisteredAt = time.Unix(0, registeredAt).UTC()
 
 		r := &regs[index[registrationID]]
 		r.Bindings = append(r.Bindings, b)

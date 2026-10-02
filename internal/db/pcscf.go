@@ -17,20 +17,26 @@ type PCSCFRegistration struct {
 	IMPI           string
 	FlowToken      string
 	Transport      string
+	Protected      bool
 	UEAddress      netip.AddrPort
 	PCSCFAddress   netip.Addr
 	Contacts       []string
 	AssociatedURIs []string
+	Sets           map[string][]string // the P-Associated-URIs of each registered IMPU's implicit set
 	ServiceRoute   []string
 	ExpiresAt      time.Time
 }
 
-const pcscfRegistrationColumns = `id, impi, flow_token, transport, ue_address, ue_port, pcscf_address,
-	contacts, associated_uris, service_route, expires_at`
+const pcscfRegistrationColumns = `id, impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
+	contacts, associated_uris, sets, service_route, expires_at`
 
 // SavePCSCFRegistration inserts or replaces the registration of its private
 // identity and UE address.
 func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PCSCFRegistration, error) {
+	if !r.UEAddress.IsValid() || !r.PCSCFAddress.IsValid() {
+		return PCSCFRegistration{}, errors.New("save P-CSCF registration: invalid address")
+	}
+
 	contacts, err := json.Marshal(r.Contacts)
 	if err != nil {
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
@@ -46,17 +52,27 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
 	}
 
+	if r.Sets == nil {
+		r.Sets = map[string][]string{}
+	}
+
+	sets, err := json.Marshal(r.Sets)
+	if err != nil {
+		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
+	}
+
 	saved, err := scanPCSCFRegistration(d.conn.QueryRowContext(ctx,
-		`INSERT INTO pcscf_registrations (impi, flow_token, transport, ue_address, ue_port, pcscf_address,
-			contacts, associated_uris, service_route, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO pcscf_registrations (impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
+			contacts, associated_uris, sets, service_route, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (impi, ue_address) DO UPDATE SET flow_token = excluded.flow_token, transport = excluded.transport,
+			protected = excluded.protected,
 			ue_port = excluded.ue_port, pcscf_address = excluded.pcscf_address, contacts = excluded.contacts,
-			associated_uris = excluded.associated_uris, service_route = excluded.service_route,
+			associated_uris = excluded.associated_uris, sets = excluded.sets, service_route = excluded.service_route,
 			expires_at = excluded.expires_at
 		RETURNING `+pcscfRegistrationColumns,
-		r.IMPI, r.FlowToken, r.Transport, r.UEAddress.Addr().String(), r.UEAddress.Port(), r.PCSCFAddress.String(),
-		contacts, associated, route, r.ExpiresAt.UTC().UnixNano()))
+		r.IMPI, r.FlowToken, r.Transport, r.Protected, r.UEAddress.Addr().String(), r.UEAddress.Port(), r.PCSCFAddress.String(),
+		contacts, associated, sets, route, r.ExpiresAt.UTC().UnixNano()))
 	if err != nil {
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
 	}
@@ -77,68 +93,117 @@ func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ListPCSCFRegistrations returns the stored registrations. A row that no
+// longer parses (bad address or JSON) is skipped and deleted, so that one
+// corrupt row does not prevent restoring the others.
 func (d *DB) ListPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations ORDER BY id`)
+	regs, bad, err := d.listPCSCFRegistrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF registrations: %w", err)
 	}
 
+	// The rows are closed by now: the database has a single connection.
+	for _, id := range bad {
+		if _, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id); err != nil {
+			return nil, fmt.Errorf("list P-CSCF registrations: delete unparsable row %d: %w", id, err)
+		}
+	}
+
+	return regs, nil
+}
+
+func (d *DB) listPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, []int64, error) {
+	rows, err := d.conn.QueryContext(ctx, `SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations ORDER BY id`)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	defer func() { _ = rows.Close() }()
 
-	regs := []PCSCFRegistration{}
+	var (
+		regs = []PCSCFRegistration{}
+		bad  []int64
+	)
 
 	for rows.Next() {
-		r, err := scanPCSCFRegistration(rows)
+		raw, err := scanRawPCSCFRegistration(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list P-CSCF registrations: %w", err)
+			return nil, nil, err
+		}
+
+		r, err := raw.parse()
+		if err != nil {
+			bad = append(bad, raw.ID)
+			continue
 		}
 
 		regs = append(regs, r)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list P-CSCF registrations: %w", err)
+		return nil, nil, err
 	}
 
-	return regs, nil
+	return regs, bad, nil
 }
 
-func scanPCSCFRegistration(row scanner) (PCSCFRegistration, error) {
-	var (
-		r                           PCSCFRegistration
-		ue, pcscf                   string
-		port                        uint16
-		contacts, associated, route []byte
-		expiresAt                   int64
-	)
+// rawPCSCFRegistration is a row before its addresses and lists are parsed.
+type rawPCSCFRegistration struct {
+	PCSCFRegistration
+	ue, pcscf                   string
+	port                        uint16
+	contacts, associated, route []byte
+	sets                        []byte
+	expiresAt                   int64
+}
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.FlowToken, &r.Transport, &ue, &port, &pcscf,
-		&contacts, &associated, &route, &expiresAt); err != nil {
-		return PCSCFRegistration{}, err
-	}
+func scanRawPCSCFRegistration(row scanner) (rawPCSCFRegistration, error) {
+	var raw rawPCSCFRegistration
 
-	ueAddr, err := netip.ParseAddr(ue)
+	err := row.Scan(&raw.ID, &raw.IMPI, &raw.FlowToken, &raw.Transport, &raw.Protected, &raw.ue, &raw.port, &raw.pcscf,
+		&raw.contacts, &raw.associated, &raw.sets, &raw.route, &raw.expiresAt)
+
+	return raw, err
+}
+
+func (raw rawPCSCFRegistration) parse() (PCSCFRegistration, error) {
+	r := raw.PCSCFRegistration
+
+	ueAddr, err := netip.ParseAddr(raw.ue)
 	if err != nil {
 		return PCSCFRegistration{}, err
 	}
 
-	if r.PCSCFAddress, err = netip.ParseAddr(pcscf); err != nil {
+	if r.PCSCFAddress, err = netip.ParseAddr(raw.pcscf); err != nil {
 		return PCSCFRegistration{}, err
 	}
 
-	r.UEAddress = netip.AddrPortFrom(ueAddr, port)
-	r.ExpiresAt = time.Unix(0, expiresAt).UTC()
+	r.UEAddress = netip.AddrPortFrom(ueAddr, raw.port)
+	r.ExpiresAt = time.Unix(0, raw.expiresAt).UTC()
 
 	for _, f := range []struct {
 		b []byte
 		v *[]string
-	}{{contacts, &r.Contacts}, {associated, &r.AssociatedURIs}, {route, &r.ServiceRoute}} {
+	}{{raw.contacts, &r.Contacts}, {raw.associated, &r.AssociatedURIs}, {raw.route, &r.ServiceRoute}} {
 		if err := json.Unmarshal(f.b, f.v); err != nil {
 			return PCSCFRegistration{}, err
 		}
 	}
 
+	if err := json.Unmarshal(raw.sets, &r.Sets); err != nil {
+		return PCSCFRegistration{}, err
+	}
+
 	return r, nil
+}
+
+func scanPCSCFRegistration(row scanner) (PCSCFRegistration, error) {
+	raw, err := scanRawPCSCFRegistration(row)
+	if err != nil {
+		return PCSCFRegistration{}, err
+	}
+
+	return raw.parse()
 }
 
 // PCSCFSubscription is the P-CSCF's own subscription to the reg event

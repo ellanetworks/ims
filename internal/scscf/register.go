@@ -358,9 +358,9 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 		return r.assign(ctx, rr, st, set, false)
 	}
 
-	res := r.bind(ctx, rr, st, *set, false)
+	res, removed := r.bind(ctx, rr, st, *set, false)
 	if res.StatusCode == 200 {
-		rr.out = r.notifyChange(ctx, rr.impi, change{})
+		rr.out = r.notifyChange(ctx, rr.impi, change{removed: removed})
 	}
 
 	return res
@@ -384,9 +384,13 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		reg = *set
 	}
 
-	if !registered {
-		reg.Bindings = nil
+	var ch change
+
+	if expired := without(reg.Bindings, st.live(reg.Bindings)); len(expired) > 0 {
+		ch.removed = append(ch.removed, removal{reg: reg, bindings: expired, event: regevent.Expired})
 	}
+
+	reg.Bindings = st.live(reg.Bindings)
 
 	switch {
 	case len(saa.UserData) > 0:
@@ -417,22 +421,22 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		}
 	}
 
-	var ch change
-
 	if replace {
 		kept := only(reg.Bindings, rr.contacts)
 
-		if dropped := without(st.live(reg.Bindings), kept); len(dropped) > 0 {
+		if dropped := without(reg.Bindings, kept); len(dropped) > 0 {
 			ch.removed = append(ch.removed, removal{reg: reg, bindings: dropped, event: regevent.Unregistered})
 		}
 
 		reg.Bindings = kept
 	}
 
-	res := r.bind(ctx, rr, st, reg, !registered)
+	res, removed := r.bind(ctx, rr, st, reg, !registered)
 	if res.StatusCode != 200 {
 		return res
 	}
+
+	ch.removed = append(ch.removed, removed...)
 
 	if replace {
 		ch.removed = append(ch.removed, r.replaceContacts(ctx, rr, st, reg.ID)...)
@@ -443,23 +447,35 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	return res
 }
 
-func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, reg db.Registration, initial bool) *sip.Response {
+// bind stores the request's contacts in a set. It returns the bindings it
+// removed: those the request deregistered and those found expired, which the
+// sweep has not reported yet (TS 24.229 §5.4.2.1.2).
+func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, reg db.Registration,
+	initial bool,
+) (*sip.Response, []removal) {
 	now := r.clock.Now()
+	set := reg
 	reg.IMPU = rr.impu
 	bindings := st.live(reg.Bindings)
+
+	var deregistered []db.Binding
 
 	for _, c := range rr.contacts {
 		i := bindingIndex(bindings, c.addr.URI)
 
 		if i >= 0 && bindings[i].CallID == rr.callID && bindings[i].CSeq >= int64(rr.cseq) {
 			r.log.Info("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
-			return sip.NewResponse(rr.req, 500, "Out Of Order")
+			return sip.NewResponse(rr.req, 500, "Out Of Order"), nil
 		}
 
-		event := db.BindingRegistered
+		event, registeredAt := db.BindingRegistered, now
 
 		if i >= 0 {
-			event = db.BindingRefreshed
+			event, registeredAt = db.BindingRefreshed, bindings[i].RegisteredAt
+
+			if c.expires == 0 {
+				deregistered = append(deregistered, bindings[i])
+			}
 
 			bindings = append(bindings[:i], bindings[i+1:]...)
 		}
@@ -480,11 +496,13 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		contact.Path = rr.path
 
 		bindings = append(bindings, db.Binding{
-			Contact:   contact,
-			CallID:    rr.callID,
-			CSeq:      int64(rr.cseq),
-			ExpiresAt: now.Add(c.expires),
-			Event:     event,
+			Contact:      contact,
+			CallID:       rr.callID,
+			CSeq:         int64(rr.cseq),
+			ExpiresAt:    now.Add(c.expires),
+			Event:        event,
+			IMPU:         rr.impuKey,
+			RegisteredAt: registeredAt,
 		})
 	}
 
@@ -493,7 +511,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	saved, err := r.cfg.DB.SaveRegistration(ctx, reg)
 	if err != nil {
 		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
-		return retryLater(rr.req)
+		return retryLater(rr.req), nil
 	}
 
 	if initial {
@@ -502,7 +520,17 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		r.log.Debug("registration refreshed", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 	}
 
-	return r.ok(ctx, rr, saved, nil)
+	var removed []removal
+
+	if len(deregistered) > 0 {
+		removed = append(removed, removal{reg: set, bindings: deregistered, event: regevent.Unregistered})
+	}
+
+	if expired := without(set.Bindings, st.live(set.Bindings)); len(expired) > 0 {
+		removed = append(removed, removal{reg: set, bindings: expired, event: regevent.Expired})
+	}
+
+	return r.ok(ctx, rr, saved, deregistered), removed
 }
 
 func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st *state, keep int64) []removal {

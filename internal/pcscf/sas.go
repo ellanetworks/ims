@@ -455,11 +455,23 @@ func (a *associations) registered(s *saSet, o outcome) {
 }
 
 // requestFlow returns the flow for a request to a UE: from the P-CSCF's
-// protected client port to the UE's protected server port, over its newest
-// established set (TS 24.229 §5.2.2.2 1A, TS 33.203 §7.1).
+// protected client port to the UE's protected server port
+// (TS 24.229 §5.2.2.2 1A, TS 33.203 §7.1). It uses the newest set once the UE
+// has used it, and the old one until then (TS 33.203 §7.4).
 func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	rank := func(s *saSet) int {
+		switch {
+		case s.state == established && s.inUse:
+			return 3
+		case s.state == old:
+			return 2
+		default:
+			return 1
+		}
+	}
 
 	var best *saSet
 
@@ -468,8 +480,7 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport)
 			continue
 		}
 
-		if best == nil || s.state == established && best.state != established ||
-			s.state == best.state && s.expires.After(best.expires) {
+		if best == nil || rank(s) > rank(best) || rank(s) == rank(best) && s.expires.After(best.expires) {
 			best = s
 		}
 	}

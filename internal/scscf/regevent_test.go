@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ type subscriber struct {
 	impu    string // the Request-URI
 	pai     string // P-Asserted-Identity, also the From
 	accept  string
+	route   string // a Route, e.g. the Service-Route
 	callID  string
 	fromTag string
 	toTag   string
@@ -100,6 +102,10 @@ func (s *subscriber) request(expires string) *sip.Request {
 
 	if s.accept != "" {
 		req.Header.Add("Accept", s.accept)
+	}
+
+	if s.route != "" && s.toTag == "" {
+		req.Header.Add("Route", s.route)
 	}
 
 	if expires != "" {
@@ -887,7 +893,7 @@ func TestRTRNotify(t *testing.T) {
 				PrivateIdentity: testIMPI,
 				Reason:          cx.DeregistrationReason{Code: tt.reason},
 			})
-			if err != nil || !reflect.DeepEqual(impis, []string{testIMPI}) {
+			if err != nil || len(impis) != 0 {
 				t.Fatalf("Terminate = %v, %v", impis, err)
 			}
 
@@ -1007,7 +1013,7 @@ func TestRTRAssociatedIdentities(t *testing.T) {
 		AssociatedIdentities: []string{tablet.impi, testIMPI},
 		Reason:               cx.DeregistrationReason{Code: cx.ReasonPermanentTermination},
 	})
-	if err != nil || !reflect.DeepEqual(impis, []string{testIMPI, tablet.impi}) {
+	if err != nil || !reflect.DeepEqual(impis, []string{tablet.impi}) {
 		t.Fatalf("Terminate = %v, %v", impis, err)
 	}
 
@@ -1028,7 +1034,7 @@ func TestRTRUnknownIdentity(t *testing.T) {
 		PublicIdentities: []string{unknownIMPU},
 		Reason:           cx.DeregistrationReason{Code: cx.ReasonPermanentTermination},
 	})
-	if err != nil || !reflect.DeepEqual(impis, []string{"nobody@" + homeDomain}) {
+	if err != nil || len(impis) != 0 {
 		t.Fatalf("Terminate = %v, %v", impis, err)
 	}
 
@@ -1159,4 +1165,232 @@ func TestNotifyAfterRestart(t *testing.T) {
 	}
 
 	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Refreshed)
+}
+
+func TestMixedRegisterReportsTheRemovedContact(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+
+	port := strconv.Itoa(int(u.inbox.Addr().Port()))
+	a, b := "sip:a@127.0.0.1:"+port, "sip:b@127.0.0.1:"+port
+	u.contact = a
+
+	_, pcscfSub := h.subscribeBoth(u, p, registerOptions{contact: "<" + a + ">, <" + b + ">"})
+
+	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + a + ">;expires=0, <" + b + ">"})
+	wantStatus(t, res, 200)
+
+	if got := contacts(t, res); got[a] != "0" || got[b] != "3600" {
+		t.Fatalf("Contact = %v, want %s with expires 0 and %s refreshed", got, a, b)
+	}
+
+	n := pcscfSub.recvNotify()
+	wantState(t, n, "active;expires=600", 1)
+	wantContact(t, n.contact(t, testMSISDN, a), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, n.contact(t, testMSISDN, b), regevent.Active, regevent.Refreshed)
+}
+
+func TestRegisterReportsExpiredContacts(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+
+	port := strconv.Itoa(int(u.inbox.Addr().Port()))
+	a, b := "sip:a@127.0.0.1:"+port, "sip:b@127.0.0.1:"+port
+	u.contact = a
+
+	_, pcscfSub := h.subscribeBoth(u, p, registerOptions{contact: "<" + a + ">;expires=300, <" + b + ">"})
+
+	// The REGISTER holds the IMPI while a's binding expires: the sweep skips
+	// it, and the REGISTER reports it.
+	if !h.reg.tryLock(testIMPI) {
+		t.Fatal("IMPI busy")
+	}
+
+	h.clock.Advance(300 * time.Second)
+	h.reg.unlock(testIMPI)
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + b + ">"}), 200)
+
+	n := pcscfSub.recvNotify()
+	wantContact(t, n.contact(t, testMSISDN, a), regevent.Terminated, regevent.Expired)
+	wantContact(t, n.contact(t, testMSISDN, b), regevent.Active, regevent.Refreshed)
+}
+
+func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
+	h := newHarness(t)
+	p := h.newPCSCF()
+
+	phone := h.newUE()
+	phone.path = p.path()
+	phone.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	s := h.pcscfSubscriber(p)
+	s.impu = testAlias
+	s.subscribed()
+
+	// The tablet's registration is reported to the phone's subscriber: its
+	// document lists the shared identity's contacts.
+	tablet := h.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = testAlias
+	tablet.contact = "sip:tablet@127.0.0.1:5090"
+	tablet.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	n := s.recvNotify()
+	wantContact(t, n.contact(t, testAlias, tablet.contact), regevent.Active, regevent.Registered)
+
+	// The phone deregisters: its subscription stays active while the shared
+	// identity has the tablet's contact (§5.4.2.1.2).
+	wantStatus(t, phone.send(registerOptions{auth: phone.protected(testNonce(), testVector.XRES), contact: "*", expires: "0"}), 200)
+	h.hss.nextSAR(t)
+
+	n = s.recvNotify()
+	if !strings.HasPrefix(n.state, "active") {
+		t.Fatalf("Subscription-State %q, want active while the shared identity is registered", n.state)
+	}
+
+	if r := n.registration(t, testAlias); r.State != regevent.Active {
+		t.Fatalf("shared registration = %+v, want active", r)
+	}
+
+	wantContact(t, n.contact(t, testAlias, phone.contact), regevent.Terminated, regevent.Unregistered)
+}
+
+func TestSubscribeUserFromTheServiceRoute(t *testing.T) {
+	h := newHarness(t)
+
+	phone := h.newUE()
+	phone.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	tablet := h.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = testAlias
+	tablet.contact = "sip:tablet@127.0.0.1:" + strconv.Itoa(int(tablet.inbox.Addr().Port()))
+	res := tablet.register(registerOptions{})
+
+	h.hss.nextSAR(t)
+
+	// The tablet subscribes to the shared identity along its Service-Route:
+	// its own user is chosen, though the phone's owns the identity too.
+	s := h.ueSubscriber(tablet)
+	s.impu = testAlias
+	s.pai = "<" + testAlias + ">"
+	s.route = res.Header.Get("Service-Route")
+	s.subscribed()
+
+	if subs := h.subscriptions(); len(subs) != 0 {
+		t.Fatalf("phone subscriptions = %+v, want none", subs)
+	}
+
+	subs, err := h.db.ListRegSubscriptions(t.Context(), tablet.impi)
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("tablet subscriptions = %+v, %v; want one", subs, err)
+	}
+}
+
+func TestNewBindingGetsANewContactID(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+
+	_, s := h.subscribeBoth(u, p, registerOptions{})
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.nextSAR(t)
+
+	first := s.recvNotify().contact(t, secondIMPU, u.contact)
+
+	// The contact stays bound in the first set, so its row survives the
+	// deregistration of the second.
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)
+	h.hss.nextSAR(t)
+	wantContact(t, s.recvNotify().contact(t, secondIMPU, u.contact), regevent.Terminated, regevent.Unregistered)
+
+	h.clock.Advance(time.Second)
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.nextSAR(t)
+
+	again := s.recvNotify().contact(t, secondIMPU, u.contact)
+	if again.ID == first.ID || again.Event != regevent.Registered {
+		t.Fatalf("new binding: id %s event %s, want a new id than %s and registered", again.ID, again.Event, first.ID)
+	}
+}
+
+func TestUnchangedBindingKeepsItsEvent(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+
+	port := strconv.Itoa(int(u.inbox.Addr().Port()))
+	other := "sip:other@127.0.0.1:" + port
+
+	u.impu = testMSISDN
+	_, s := h.subscribeBoth(u, p, registerOptions{contact: "<" + u.contact + ">, <" + other + ">"})
+
+	// Refreshing one contact through another IMPU of the set leaves the
+	// other contact's event as it was (§5.4.2.1.2 4 e III).
+	u.impu = testAlias
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + other + ">"}), 200)
+
+	n := s.recvNotify()
+	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Registered)
+	wantContact(t, n.contact(t, testAlias, u.contact), regevent.Active, regevent.Created)
+	wantContact(t, n.contact(t, testMSISDN, other), regevent.Active, regevent.Refreshed)
+}
+
+func TestSubscribeAcceptsMediaRanges(t *testing.T) {
+	for _, accept := range []string{"*/*", "application/*", "text/plain, application/reginfo+xml;q=0.5"} {
+		t.Run(accept, func(t *testing.T) {
+			h := newHarness(t)
+			u := h.newUE()
+			u.register(registerOptions{})
+			h.hss.nextSAR(t)
+
+			s := h.ueSubscriber(u)
+			s.accept = accept
+			s.subscribed()
+		})
+	}
+}
+
+func TestSubscribeWithoutNotifyIsRefused(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	// No listener can send the NOTIFY.
+	h.cfg.Listeners = nil
+	h.restart()
+
+	wantStatus(t, h.ueSubscriber(u).subscribe("600"), 500)
+	h.waitSubscriptions(0)
+}
+
+func TestRTRServerChangeDeregistersEverything(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.nextSAR(t)
+
+	if _, err := h.reg.Terminate(t.Context(), cx.RegistrationTerminationRequest{
+		PrivateIdentity:  testIMPI,
+		PublicIdentities: []string{secondIMPU},
+		Reason:           cx.DeregistrationReason{Code: cx.ReasonServerChange},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.wantUnregistered()
 }

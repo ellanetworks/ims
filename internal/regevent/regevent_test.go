@@ -162,19 +162,7 @@ func TestDecodeErrors(t *testing.T) {
 		{"version invalid", `<reginfo ` + ns + ` version="x" state="full"/>`},
 		{"state missing", `<reginfo ` + ns + ` version="0"/>`},
 		{"state invalid", `<reginfo ` + ns + ` version="0" state="bogus"/>`},
-		{"aor missing", `<reginfo ` + ns + ` version="0" state="full"><registration id="1" state="active"/></reginfo>`},
-		{"registration id missing", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" state="active"/></reginfo>`},
-		{"registration state missing", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" id="1"/></reginfo>`},
-		{"contact id missing", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" id="1" state="active">` +
-			`<contact state="active" event="registered"><uri>sip:a@c</uri></contact></registration></reginfo>`},
-		{"contact event missing", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" id="1" state="active">` +
-			`<contact id="2" state="active"><uri>sip:a@c</uri></contact></registration></reginfo>`},
-		{"contact uri missing", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" id="1" state="active">` +
-			`<contact id="2" state="active" event="registered"/></registration></reginfo>`},
-		{"contact expires invalid", `<reginfo ` + ns + ` version="0" state="full"><registration aor="sip:a@b" id="1" state="active">` +
-			`<contact id="2" state="active" event="registered" expires="-1"><uri>sip:a@c</uri></contact></registration></reginfo>`},
-		{"prefixed required attribute", `<reginfo ` + ns + ` xmlns:x="urn:x" version="0" state="full">` +
-			`<registration x:aor="sip:a@b" id="1" state="active"/></reginfo>`},
+		{"unknown charset", `<?xml version="1.0" encoding="EBCDIC"?><reginfo ` + ns + ` version="0" state="full"/>`},
 		{"malformed", `<reginfo ` + ns + ` version="0" state="full">`},
 		{"too large", `<reginfo ` + ns + ` version="0" state="full">` + strings.Repeat(" ", 1<<20) + `</reginfo>`},
 	}
@@ -183,6 +171,140 @@ func TestDecodeErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := regevent.Decode([]byte(tt.doc)); err == nil {
 				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestDecodeSkipsInvalidElements(t *testing.T) {
+	const ns = `xmlns="urn:ietf:params:xml:ns:reginfo"`
+
+	good := `<contact id="1" state="active" event="registered"><uri>sip:a@good</uri></contact>`
+	goodReg := `<registration aor="sip:a@b" id="1" state="active">` + good + `</registration>`
+
+	contacts := []struct {
+		name    string
+		contact string
+	}{
+		{"contact id missing", `<contact state="active" event="registered"><uri>sip:a@c</uri></contact>`},
+		{"contact state missing", `<contact id="2" event="registered"><uri>sip:a@c</uri></contact>`},
+		{"contact state invalid", `<contact id="2" state="bogus" event="registered"><uri>sip:a@c</uri></contact>`},
+		{"contact event missing", `<contact id="2" state="active"><uri>sip:a@c</uri></contact>`},
+		{"contact event invalid", `<contact id="2" state="active" event="bogus"><uri>sip:a@c</uri></contact>`},
+		{"contact uri missing", `<contact id="2" state="active" event="registered"/>`},
+		{"contact uri empty", `<contact id="2" state="active" event="registered"><uri> </uri></contact>`},
+		{"contact expires invalid", `<contact id="2" state="active" event="registered" expires="-1"><uri>sip:a@c</uri></contact>`},
+		{"contact cseq invalid", `<contact id="2" state="active" event="registered" cseq="x"><uri>sip:a@c</uri></contact>`},
+		{"unknown-param name missing", `<contact id="2" state="active" event="registered"><uri>sip:a@c</uri>` +
+			`<unknown-param>v</unknown-param></contact>`},
+	}
+
+	for _, tt := range contacts {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := `<reginfo ` + ns + ` version="3" state="full"><registration aor="sip:a@b" id="1" state="active">` +
+				good + tt.contact + good + `</registration></reginfo>`
+
+			r, err := regevent.Decode([]byte(doc))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			if len(r.Registrations) != 1 || len(r.Registrations[0].Contacts) != 2 {
+				t.Fatalf("got %+v, want one registration with the two good contacts", r)
+			}
+
+			for _, c := range r.Registrations[0].Contacts {
+				if c.URI != "sip:a@good" {
+					t.Fatalf("kept contact %+v", c)
+				}
+			}
+		})
+	}
+
+	registrations := []struct {
+		name string
+		reg  string
+	}{
+		{"aor missing", `<registration id="1" state="active"/>`},
+		{"registration id missing", `<registration aor="sip:a@b" state="active"/>`},
+		{"registration state missing", `<registration aor="sip:a@b" id="1"/>`},
+		{"registration state invalid", `<registration aor="sip:a@b" id="1" state="bogus"/>`},
+		{"prefixed required attribute", `<registration xmlns:x="urn:x" x:aor="sip:a@b" id="1" state="active"/>`},
+	}
+
+	for _, tt := range registrations {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := `<reginfo ` + ns + ` version="3" state="full">` + goodReg + tt.reg + goodReg + `</reginfo>`
+
+			r, err := regevent.Decode([]byte(doc))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			if len(r.Registrations) != 2 {
+				t.Fatalf("got %+v, want the two good registrations", r)
+			}
+
+			for _, reg := range r.Registrations {
+				if reg.AOR != "sip:a@b" || len(reg.Contacts) != 1 {
+					t.Fatalf("kept registration %+v", reg)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeLargeNumbers(t *testing.T) {
+	doc := `<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="18446744073709551615" state="full">` +
+		`<registration aor="sip:a@b" id="1" state="active">` +
+		`<contact id="2" state="active" event="registered" expires="4294967296" retry-after="18446744073709551615" cseq="4294967295">` +
+		`<uri>sip:a@c</uri></contact></registration></reginfo>`
+
+	r, err := regevent.Decode([]byte(doc))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if r.Version != 18446744073709551615 {
+		t.Fatalf("version = %d", r.Version)
+	}
+
+	c := r.Registrations[0].Contacts[0]
+	for name, got := range map[string]*uint32{"expires": c.Expires, "retry-after": c.RetryAfter, "cseq": c.CSeq} {
+		if got == nil || *got != 4294967295 {
+			t.Fatalf("%s = %v, want clamped to 4294967295", name, got)
+		}
+	}
+}
+
+func TestDecodeCharsets(t *testing.T) {
+	const body = `<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="0" state="full">` +
+		`<registration aor="sip:a@b" id="1" state="active">` +
+		`<contact id="2" state="active" event="registered"><uri>sip:a@c</uri>` +
+		"<display-name>Ren\xe9 M\xfcller</display-name></contact></registration></reginfo>"
+
+	tests := []struct {
+		name     string
+		encoding string
+		body     string
+		want     string
+	}{
+		{"ISO-8859-1", "ISO-8859-1", body, "Ren\u00e9 M\u00fcller"},
+		{"latin1", "latin1", body, "Ren\u00e9 M\u00fcller"},
+		{"us-ascii", "US-ASCII", strings.NewReplacer("\xe9", "e", "\xfc", "u").Replace(body), "Rene Muller"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := `<?xml version="1.0" encoding="` + tt.encoding + `"?>` + tt.body
+
+			r, err := regevent.Decode([]byte(doc))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			if got := r.Registrations[0].Contacts[0].DisplayName; got != tt.want {
+				t.Fatalf("display name = %q, want %q", got, tt.want)
 			}
 		})
 	}

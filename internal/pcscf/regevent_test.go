@@ -12,6 +12,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
+	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -766,7 +767,15 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		t.Fatalf("NOTIFY from %s, want the protected client port %s", f.Remote, want)
 	}
 
-	u.us.Send(sip.UDP, f.Remote, sip.NewResponse(notify, 200, ""))
+	// The Via names the protected server port, and the UE answers there from
+	// its protected client port, as the Samsung of the corpus does
+	// (open5gs/ipsec_reg/023).
+	via, err := notify.Header.TopVia()
+	if err != nil || via.Port != s.ps.Port() {
+		t.Fatalf("NOTIFY Via %s, %v; want the protected server port %d", via, err, s.ps.Port())
+	}
+
+	u.uc.Send(sip.UDP, s.ps, sip.NewResponse(notify, 200, ""))
 	wantStatus(t, first(s.scscf.RecvResponse()), 200)
 
 	// The UE's re-SUBSCRIBE goes to the S-CSCF's Contact.
@@ -792,6 +801,19 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 
 	s.scscf.Send(rf.Transport, rf.Remote, sip.NewResponse(refresh, 200, ""))
 	wantStatus(t, first(u.us.RecvResponse()), 200)
+
+	// The UE cannot send through another flow's Route.
+	forged := slices.Clone(routes)
+	for i, e := range forged {
+		forged[i] = strings.Replace(e, token+"@", "otherflow@", 1)
+	}
+
+	r.Header.Set("CSeq", "3 SUBSCRIBE")
+	r.Header.Set("Route", strings.Join(forged, ", "))
+	_ = r.Header.SetTopVia(sip.NewVia(sip.UDP, u.us.Addr()))
+	u.uc.Send(sip.UDP, s.ps, r)
+	wantStatus(t, first(u.us.RecvResponse()), 403)
+	s.scscf.RecvNone(quiet)
 
 	// A flow token without a flow.
 	unknown := make([]string, len(d.rr))
@@ -891,4 +913,239 @@ func TestRegistrationsAndSubscriptionSurviveRestart(t *testing.T) {
 
 	u.us.Send(sip.UDP, f.Remote, sip.NewResponse(notify, 200, ""))
 	wantStatus(t, first(s.scscf.RecvResponse()), 200)
+}
+
+func TestOwnSubscriptionFollowsTheRegistrations(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(600)
+	o := answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
+
+	// A re-registration keeps the subscription.
+	req, rf := s.register(nil)
+	answerRegister(s.icscf, s.scscf.Addr(), req, rf, 600)
+	wantStatus(t, first(s.ue.RecvResponse()), 200)
+	s.icscf.RecvNone(quiet)
+
+	// Deregistering the last registration drops it: the S-CSCF's NOTIFY gets
+	// 481.
+	req, rf = s.register(func(r *sip.Request) { r.Header.Set("Expires", "0") })
+	answerRegister(s.icscf, s.scscf.Addr(), req, rf, 0)
+	wantStatus(t, first(s.ue.RecvResponse()), 200)
+
+	if s.p.subs.has(testIMPI) {
+		t.Fatal("subscription kept without a registration")
+	}
+
+	wantStatus(t, o.notify(t, "active;expires=3000", reginfo(1, regevent.Active, regevent.Active, nil)), 481)
+
+	// A new registration subscribes again.
+	s.registered(600)
+}
+
+func TestNewRegistrationSubscribesAgain(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(600)
+	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
+
+	// The registration is lost, as on an expiry the P-CSCF heard nothing of;
+	// the subscription is still held.
+	s.p.regs.remove(testIMPI, s.ue.Addr().Addr())
+
+	_, again, _ := s.registered(600)
+	if again.Header.CallID() == sub.Header.CallID() {
+		t.Fatal("the new registration reused the old subscription's dialog")
+	}
+}
+
+func TestRefreshFailureAfterExpirySubscribesAgain(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(7200)
+	answerSubscribe(s.icscf, s.scscf, sub, f, 1000)
+
+	eventually(t, "the refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
+	s.clock.Advance(1000 * time.Second)
+
+	refresh, rf := s.scscf.RecvRequest()
+	s.scscf.Send(rf.Transport, rf.Remote, sip.NewResponse(refresh, 500, ""))
+
+	initial, _ := s.icscf.RecvRequest()
+	if initial.Method != "SUBSCRIBE" || toTag(initial) != "" || initial.Header.CallID() == sub.Header.CallID() {
+		t.Fatalf("got %s, want a new initial SUBSCRIBE once the subscription expired", initial.StartLine())
+	}
+
+	s.scscf.RecvNone(quiet)
+}
+
+func TestChallengedRegistrationKeepsItsFlowToken(t *testing.T) {
+	s := newRegScene(t)
+
+	req, f := s.register(nil)
+	path := onlyPath(t, req)
+
+	res := sip.NewResponse(req, 401, "")
+	_ = res.Header.SetToTag(sip.NewTag())
+	s.icscf.Send(f.Transport, f.Remote, res)
+	wantStatus(t, first(s.ue.RecvResponse()), 401)
+
+	again, _ := s.register(nil)
+	if p := onlyPath(t, again); p.User != path.User {
+		t.Fatalf("flow token %q after the challenge, want %q", p.User, path.User)
+	}
+}
+
+// answerRegisterWith answers a REGISTER 200 with the given implicit set.
+func answerRegisterWith(s *regScene, req *sip.Request, f sip.Flow, associated ...string) {
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag(sip.NewTag())
+	res.Header.Add("Service-Route", "<sip:orig@"+s.scscf.Addr().String()+";lr>")
+
+	var uris []string
+	for _, a := range associated {
+		uris = append(uris, "<"+a+">")
+	}
+
+	res.Header.Add("P-Associated-URI", strings.Join(uris, ", "))
+
+	expires := "600"
+	if req.Header.Get("Expires") == "0" {
+		expires = "0"
+	}
+
+	for _, c := range req.Header.Values("Contact") {
+		res.Header.Add("Contact", c+";expires="+expires)
+	}
+
+	s.icscf.Send(f.Transport, f.Remote, res)
+	wantStatus(s.t, first(s.ue.RecvResponse()), 200)
+}
+
+func TestDeregisteringOneSetKeepsTheOthers(t *testing.T) {
+	s := newRegScene(t)
+
+	const other = "sip:other@" + homeDomain
+
+	req, f := s.register(nil)
+	answerRegisterWith(s, req, f, testIMPU, testTel)
+
+	sub, sf := s.icscf.RecvRequest()
+	answerSubscribe(s.icscf, s.scscf, sub, sf, 600000)
+
+	setTo := func(r *sip.Request) {
+		r.Header.Set("To", "<"+other+">")
+		r.Header.Set("Authorization", `Digest username="`+testIMPI+`", realm="`+homeDomain+`", uri="sip:`+homeDomain+
+			`", nonce="", response=""`)
+	}
+
+	req, f = s.register(setTo)
+	answerRegisterWith(s, req, f, other)
+
+	if r, ok := s.p.regs.get(testIMPI, ueAddr); !ok || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel, other}) {
+		t.Fatalf("registration = %+v, want both sets", r)
+	}
+
+	req, f = s.register(func(r *sip.Request) {
+		setTo(r)
+		r.Header.Set("Expires", "0")
+	})
+	answerRegisterWith(s, req, f)
+
+	r, ok := s.p.regs.get(testIMPI, ueAddr)
+	if !ok || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel}) {
+		t.Fatalf("registration = %+v, %v; want the first set kept", r, ok)
+	}
+
+	if !s.p.subs.has(testIMPI) {
+		t.Fatal("subscription dropped while a set is registered")
+	}
+}
+
+func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(600)
+	o := answerSubscribe(s.icscf, s.scscf, sub, f, 600000)
+
+	// The UE moved to a new contact; the S-CSCF's NOTIFY reports the old one
+	// terminated and the new one, at the UE's address, before the 200 to the
+	// REGISTER reaches the P-CSCF.
+	mine := "sip:ue@" + s.ue.Addr().String()
+	moved := "sip:ue@" + netip.AddrPortFrom(ueAddr, 6000).String()
+
+	info := reginfo(1, regevent.Active, regevent.Active, map[string]string{mine: regevent.Terminated, moved: regevent.Active})
+	info.Registrations = append(info.Registrations, regevent.Registration{
+		AOR: "sip:alias@" + homeDomain, ID: "r3", State: regevent.Active,
+		Contacts: []regevent.Contact{{ID: "c9", State: regevent.Active, Event: regevent.Created, URI: moved, Expires: u32(600)}},
+	})
+
+	wantStatus(t, o.notify(t, "active;expires=600000", info), 200)
+
+	r, ok := s.p.regs.get(testIMPI, ueAddr)
+	if !ok {
+		t.Fatal("registration removed by a NOTIFY that overtook the 200")
+	}
+
+	if !slices.Contains(r.AssociatedURIs, "sip:alias@"+homeDomain) {
+		t.Errorf("associated URIs = %v, want the identity the NOTIFY reported active", r.AssociatedURIs)
+	}
+}
+
+func TestRegistrationsFromOneAddress(t *testing.T) {
+	rs := newRegistrations(nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+
+	a := netip.AddrPortFrom(ueAddr, 5060)
+	b := netip.AddrPortFrom(ueAddr, 5070)
+
+	for i, src := range []netip.AddrPort{a, b} {
+		rs.save(db.PCSCFRegistration{
+			IMPI: "ue" + strconv.Itoa(i) + "@" + homeDomain, FlowToken: "t" + strconv.Itoa(i), UEAddress: src,
+			PCSCFAddress: loopback, ExpiresAt: testEpoch.Add(time.Hour),
+		})
+	}
+
+	for i, src := range []netip.AddrPort{a, b} {
+		if r, ok := rs.fromSource(src); !ok || r.IMPI != "ue"+strconv.Itoa(i)+"@"+homeDomain {
+			t.Errorf("fromSource(%s) = %+v, %v", src, r, ok)
+		}
+	}
+
+	if _, ok := rs.fromSource(netip.AddrPortFrom(ueAddr, 5080)); ok {
+		t.Error("fromSource matched another port")
+	}
+}
+
+func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
+	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel()}, slog.New(slog.DiscardHandler))
+	t.Cleanup(a.close)
+
+	set := func(portC uint16, state saState, inUse bool) *saSet {
+		return &saSet{
+			impi: testIMPI, state: state, inUse: inUse, expires: time.Now().Add(time.Hour),
+			set: ipsec.Set{
+				Local:  ipsec.Endpoint{Addr: loopback, PortC: portC, PortS: 5100},
+				Remote: ipsec.Endpoint{Addr: ueAddr, PortC: portC + 1000, PortS: portC + 2000},
+			},
+		}
+	}
+
+	a.mu.Lock()
+	a.add(set(5101, old, true))
+	a.add(set(5102, established, false))
+	a.mu.Unlock()
+
+	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5101 {
+		t.Fatalf("requestFlow = %v, %v; want the old set until the new one is used", f, ok)
+	}
+
+	for s := range a.sets {
+		if s.state == established {
+			a.received(s)
+		}
+	}
+
+	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5102 {
+		t.Fatalf("requestFlow = %v, %v; want the new set once used", f, ok)
+	}
 }

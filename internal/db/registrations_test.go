@@ -40,11 +40,13 @@ func testRegistration(impi, msisdn string) Registration {
 		},
 		UserData: []byte("<IMSSubscription/>"),
 		Bindings: []Binding{{
-			Contact:   testContact("2001:db8::1"),
-			CallID:    "reg-" + msisdn,
-			CSeq:      1,
-			ExpiresAt: testNow.Add(time.Hour),
-			Event:     BindingRegistered,
+			Contact:      testContact("2001:db8::1"),
+			CallID:       "reg-" + msisdn,
+			CSeq:         1,
+			ExpiresAt:    testNow.Add(time.Hour),
+			Event:        BindingRegistered,
+			IMPU:         msisdnURI,
+			RegisteredAt: testNow,
 		}},
 	}
 }

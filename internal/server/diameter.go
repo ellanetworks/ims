@@ -139,16 +139,15 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 	h.log.Info("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
 		slog.String("reason", rtr.Reason.Code.String()))
 
-	impis, err := (*t).Terminate(ctx, rtr)
+	associated, err := (*t).Terminate(ctx, rtr)
 	if err != nil {
 		h.log.Warn("Cx RTR failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	var a cx.RegistrationTermination
-	if len(rtr.AssociatedIdentities) > 0 {
-		a.AssociatedIdentities = impis
-	}
+	// Associated-Identities lists the private identities de-registered
+	// together with the User-Name's (TS 29.228 Table 6.1.3.2).
+	a := cx.RegistrationTermination{AssociatedIdentities: associated}
 
 	ans, err := cx.NewRegistrationTerminationAnswer(req, c.LocalIdentity(), a)
 	if err != nil {

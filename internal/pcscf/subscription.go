@@ -282,11 +282,28 @@ func (ss *subscriptions) failed(s *subscription, req *sip.Request, code int) {
 		ss.start(s.impi)
 
 		return
+	case !s.expires.After(ss.p.clock.Now()):
+		// Past the most recently known Expires, subscribe anew (§5.2.3).
+		ss.removeLocked(s)
+		ss.mu.Unlock()
+		ss.start(s.impi)
+
+		return
 	default:
 		ss.schedule(s)
 	}
 
 	ss.mu.Unlock()
+}
+
+// stop drops the subscription of a private identity.
+func (ss *subscriptions) stop(impi string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	if s, ok := ss.byIMPI[impi]; ok {
+		ss.removeLocked(s)
+	}
 }
 
 func toTag(req *sip.Request) string {
@@ -536,7 +553,10 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 		active := map[string]bool{}
 		mentioned := map[string]bool{}
 
-		var longest time.Duration
+		var (
+			longest time.Duration
+			unknown bool
+		)
 
 		for _, reg := range info.Registrations {
 			here := false
@@ -544,6 +564,13 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			for _, c := range reg.Contacts {
 				uri, ok := matchURI(r.Contacts, c.URI)
 				if !ok {
+					// A contact at the UE's address that the P-CSCF does not
+					// know yet, e.g. one whose 200 the NOTIFY overtook, keeps
+					// the identity and the registration.
+					if c.State == regevent.Active && reg.State != regevent.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
+						here, unknown = true, true
+					}
+
 					continue
 				}
 
@@ -560,9 +587,21 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				}
 			}
 
-			if !here {
-				if aor, ok := matchURI(r.AssociatedURIs, reg.AOR); ok {
-					r.AssociatedURIs = slices.DeleteFunc(r.AssociatedURIs, func(a string) bool { return a == aor })
+			aor, listed := matchURI(r.AssociatedURIs, reg.AOR)
+
+			switch {
+			case here && !listed:
+				// An identity registered for the UE (§5.2.4 3)).
+				r.AssociatedURIs = append(r.AssociatedURIs, reg.AOR)
+			case !here && listed:
+				r.AssociatedURIs = slices.DeleteFunc(r.AssociatedURIs, func(a string) bool { return a == aor })
+
+				for k, set := range r.Sets {
+					if set = slices.DeleteFunc(slices.Clone(set), func(a string) bool { return a == aor }); len(set) > 0 {
+						r.Sets[k] = set
+					} else {
+						delete(r.Sets, k)
+					}
 				}
 			}
 		}
@@ -573,7 +612,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			r.ExpiresAt = now.Add(longest)
 		}
 
-		return len(r.Contacts) > 0 && len(r.AssociatedURIs) > 0
+		return (len(r.Contacts) > 0 || unknown) && len(r.AssociatedURIs) > 0
 	})
 
 	for _, r := range removed {
@@ -583,6 +622,22 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			p.sas.deregistered(impi, r.UEAddress.Addr())
 		}
 	}
+
+	if len(removed) > 0 {
+		p.unsubscribeIfIdle(impi)
+	}
+}
+
+// contactAt tells whether a contact URI is at the UE's address.
+func contactAt(contact string, ue netip.Addr) bool {
+	u, err := sip.ParseURI(contact)
+	if err != nil {
+		return false
+	}
+
+	a, ok := u.Addr()
+
+	return ok && a.Unmap() == ue.Unmap()
 }
 
 func matchURI(list []string, s string) (string, bool) {

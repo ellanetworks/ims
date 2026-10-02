@@ -1,11 +1,15 @@
 package regevent
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -159,45 +163,71 @@ func Encode(r Reginfo) ([]byte, error) {
 }
 
 func validate(r Reginfo) error {
-	if r.State != Full && r.State != Partial {
-		return fmt.Errorf("invalid reginfo state %q", r.State)
+	if err := validateState(r.State); err != nil {
+		return err
 	}
 
 	for _, reg := range r.Registrations {
-		if reg.AOR == "" {
-			return errors.New("registration without aor")
-		}
-
-		if reg.ID == "" {
-			return fmt.Errorf("registration %s without id", reg.AOR)
-		}
-
-		if reg.State != Init && reg.State != Active && reg.State != Terminated {
-			return fmt.Errorf("registration %s: invalid state %q", reg.AOR, reg.State)
+		if err := validateRegistration(reg); err != nil {
+			return err
 		}
 
 		for _, c := range reg.Contacts {
-			if c.ID == "" {
-				return fmt.Errorf("registration %s: contact without id", reg.AOR)
+			if err := validateContact(c); err != nil {
+				return fmt.Errorf("registration %s: %w", reg.AOR, err)
 			}
+		}
+	}
 
-			if c.State != Active && c.State != Terminated {
-				return fmt.Errorf("contact %s: invalid state %q", c.ID, c.State)
-			}
+	return nil
+}
 
-			if !validEvent(c.Event) {
-				return fmt.Errorf("contact %s: invalid event %q", c.ID, c.Event)
-			}
+func validateState(state string) error {
+	if state != Full && state != Partial {
+		return fmt.Errorf("invalid reginfo state %q", state)
+	}
 
-			if c.URI == "" {
-				return fmt.Errorf("contact %s without uri", c.ID)
-			}
+	return nil
+}
 
-			for _, p := range c.UnknownParams {
-				if p.Name == "" {
-					return fmt.Errorf("contact %s: unknown-param without name", c.ID)
-				}
-			}
+// validateRegistration checks a registration's own attributes, not its
+// contacts.
+func validateRegistration(reg Registration) error {
+	if reg.AOR == "" {
+		return errors.New("registration without aor")
+	}
+
+	if reg.ID == "" {
+		return fmt.Errorf("registration %s without id", reg.AOR)
+	}
+
+	if reg.State != Init && reg.State != Active && reg.State != Terminated {
+		return fmt.Errorf("registration %s: invalid state %q", reg.AOR, reg.State)
+	}
+
+	return nil
+}
+
+func validateContact(c Contact) error {
+	if c.ID == "" {
+		return errors.New("contact without id")
+	}
+
+	if c.State != Active && c.State != Terminated {
+		return fmt.Errorf("contact %s: invalid state %q", c.ID, c.State)
+	}
+
+	if !validEvent(c.Event) {
+		return fmt.Errorf("contact %s: invalid event %q", c.ID, c.Event)
+	}
+
+	if c.URI == "" {
+		return fmt.Errorf("contact %s without uri", c.ID)
+	}
+
+	for _, p := range c.UnknownParams {
+		if p.Name == "" {
+			return fmt.Errorf("contact %s: unknown-param without name", c.ID)
 		}
 	}
 
@@ -242,12 +272,13 @@ func (a attrs) uint32(elem, local string) (*uint32, error) {
 		return nil, nil
 	}
 
-	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+	// RFC 3680 types these xs:unsignedLong; larger values are clamped.
+	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("%s: invalid %s attribute %q: %w", elem, local, v, err)
 	}
 
-	u := uint32(n)
+	u := uint32(min(n, math.MaxUint32))
 
 	return &u, nil
 }
@@ -285,8 +316,11 @@ func Decode(b []byte) (Reginfo, error) {
 		return Reginfo{}, fmt.Errorf("decode reginfo: document of %d bytes exceeds %d", len(b), maxDocumentSize)
 	}
 
+	dec := xml.NewDecoder(bytes.NewReader(b))
+	dec.CharsetReader = charsetReader
+
 	var doc inReginfo
-	if err := xml.Unmarshal(b, &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return Reginfo{}, fmt.Errorf("decode reginfo: %w", err)
 	}
 
@@ -295,11 +329,35 @@ func Decode(b []byte) (Reginfo, error) {
 		return Reginfo{}, fmt.Errorf("decode reginfo: %w", err)
 	}
 
-	if err := validate(r); err != nil {
-		return Reginfo{}, fmt.Errorf("decode reginfo: %w", err)
+	return r, nil
+}
+
+// charsetReader accepts the charsets other than UTF-8 that a reginfo
+// document may declare: US-ASCII, a subset of UTF-8, and ISO-8859-1.
+func charsetReader(label string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "us-ascii", "ascii", "iso646-us", "ansi_x3.4-1968":
+		return input, nil
+	case "iso-8859-1", "iso8859-1", "iso_8859-1", "latin1", "l1":
+		return latin1Reader(input)
 	}
 
-	return r, nil
+	return nil, fmt.Errorf("unsupported charset %q", label)
+}
+
+// latin1Reader converts ISO-8859-1 to UTF-8: each byte is the code point.
+func latin1Reader(input io.Reader) (io.Reader, error) {
+	in, err := io.ReadAll(input)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 0, len(in))
+	for _, c := range in {
+		out = utf8.AppendRune(out, rune(c))
+	}
+
+	return bytes.NewReader(out), nil
 }
 
 func fromXML(doc inReginfo) (Reginfo, error) {
@@ -319,10 +377,16 @@ func fromXML(doc inReginfo) (Reginfo, error) {
 		return r, err
 	}
 
+	if err := validateState(r.State); err != nil {
+		return r, err
+	}
+
+	// Like Kamailio's ims_registrar_pcscf, an invalid registration or
+	// contact is skipped rather than failing the whole document.
 	for _, xr := range doc.Registrations {
 		reg, err := registrationFromXML(xr)
 		if err != nil {
-			return r, err
+			continue
 		}
 
 		r.Registrations = append(r.Registrations, reg)
@@ -349,10 +413,14 @@ func registrationFromXML(xr inRegistration) (Registration, error) {
 		return reg, err
 	}
 
+	if err := validateRegistration(reg); err != nil {
+		return reg, err
+	}
+
 	for _, xc := range xr.Contacts {
 		c, err := contactFromXML(xc)
 		if err != nil {
-			return reg, fmt.Errorf("registration %s: %w", reg.AOR, err)
+			continue
 		}
 
 		reg.Contacts = append(reg.Contacts, c)
@@ -423,6 +491,10 @@ func contactFromXML(xc inContact) (Contact, error) {
 		}
 
 		c.UnknownParams = append(c.UnknownParams, UnknownParam{Name: name, Value: p.Value})
+	}
+
+	if err := validateContact(c); err != nil {
+		return c, err
 	}
 
 	return c, nil

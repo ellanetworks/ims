@@ -125,9 +125,14 @@ func New(cfg Config) *Registrar {
 		challenges: make(map[string]*challenge),
 	}
 
-	r.scheduleSweep(ctx)
-
 	return r
+}
+
+// Start arms the sweep of the bindings and subscriptions stored before a
+// restart. The server calls it once every role can receive the NOTIFYs the
+// sweep sends.
+func (r *Registrar) Start(ctx context.Context) {
+	r.scheduleSweep(ctx)
 }
 
 // Register handles a REGISTER. respond sends the response; the NOTIFYs the
@@ -384,20 +389,44 @@ func (r *Registrar) sweepExpired(ctx context.Context) bool {
 			continue
 		}
 
-		out := r.sweepIMPI(ctx, impi)
-		r.unlock(impi)
+		out, expired := r.sweepIMPI(ctx, impi)
+
+		// The NOTIFYs leave at once; the SARs follow without holding up the
+		// other IMPIs' NOTIFYs, the IMPI staying locked until they are done.
 		r.send(out)
+
+		if len(expired) == 0 || !r.start() {
+			r.unlock(impi)
+			continue
+		}
+
+		go func() {
+			defer r.wg.Done()
+			defer r.unlock(impi)
+
+			for _, impu := range expired {
+				if _, err := r.serverAssignment(r.ctx, impi, []string{impu}, assignTimeoutDeregistration, false); err != nil {
+					r.log.Warn("failed to tell the HSS of an expired registration", slog.String("impi", impi),
+						slog.Any("error", err))
+				}
+			}
+		}()
 	}
 
 	return skipped
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
+// sweepIMPI removes the IMPI's expired bindings and subscriptions. It returns
+// the NOTIFYs reporting them, and the IMPUs of the sets that expired, for
+// the HSS.
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []string) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil
+		return nil, nil
 	}
+
+	var expiredIMPUs []string
 
 	out := r.expireSubscriptions(ctx, st, impi)
 
@@ -424,20 +453,18 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
 
 		r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
 
-		if _, err := r.serverAssignment(ctx, impi, []string{reg.IMPU}, assignTimeoutDeregistration, false); err != nil {
-			r.log.Warn("failed to tell the HSS of an expired registration", slog.String("impi", impi), slog.Any("error", err))
-		}
-
 		if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil {
 			r.log.Warn("failed to delete an expired registration", slog.String("impi", impi), slog.Any("error", err))
 		}
+
+		expiredIMPUs = append(expiredIMPUs, reg.IMPU)
 	}
 
 	if len(ch.removed) == 0 {
-		return out
+		return out, expiredIMPUs
 	}
 
-	return append(out, r.notifyChange(ctx, impi, ch)...)
+	return append(out, r.notifyChange(ctx, impi, ch)...), expiredIMPUs
 }
 
 // expireSubscriptions ends the IMPI's expired subscriptions with a terminated
@@ -458,7 +485,7 @@ func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi str
 
 		r.log.Info("reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
 
-		if o := r.buildNotify(ctx, st, s, change{}, "terminated;reason="+reasonTimeout); o != nil {
+		if o := r.buildNotify(ctx, st, s, nil, "terminated;reason="+reasonTimeout); o != nil {
 			out = append(out, o)
 		}
 	}

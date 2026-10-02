@@ -342,12 +342,26 @@ func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Re
 
 	p.wg.Go(func() {
 		if req.Method == "SUBSCRIBE" {
-			p.reg.Load().Subscribe(context.Background(), req, respond)
+			p.reg.Load().Subscribe(context.Background(), req, routes(req), respond)
 			return
 		}
 
 		p.reg.Load().Register(context.Background(), req, respond)
 	})
+}
+
+// routes are the request's Routes, which the S-CSCF's proxy would have
+// removed.
+func routes(req *sip.Request) []sip.URI {
+	var out []sip.URI
+
+	if rs, err := req.Header.Routes(); err == nil {
+		for _, r := range rs {
+			out = append(out, r.URI)
+		}
+	}
+
+	return out
 }
 
 func (*fakePCSCF) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
@@ -440,6 +454,7 @@ func (h *harness) start() {
 	h.t.Cleanup(h.reg.Close)
 
 	h.pcscf.reg.Store(h.reg)
+	h.reg.Start(h.t.Context())
 }
 
 // restart closes the registrar and creates a new one, as a restart of the

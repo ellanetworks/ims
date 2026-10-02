@@ -54,6 +54,8 @@ var migrations = []string{
 		cseq INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		event TEXT NOT NULL CHECK (event IN ('registered', 'refreshed')),
+		impu TEXT NOT NULL,
+		registered_at INTEGER NOT NULL,
 		PRIMARY KEY (registration_id, contact_id)
 	);
 	CREATE INDEX bindings_contact_id ON bindings (contact_id);
@@ -114,11 +116,13 @@ var migrations = []string{
 		impi TEXT NOT NULL,
 		flow_token TEXT NOT NULL UNIQUE,
 		transport TEXT NOT NULL,
+		protected INTEGER NOT NULL CHECK (protected IN (0, 1)),
 		ue_address TEXT NOT NULL,
 		ue_port INTEGER NOT NULL,
 		pcscf_address TEXT NOT NULL,
 		contacts TEXT NOT NULL,
 		associated_uris TEXT NOT NULL,
+		sets TEXT NOT NULL,
 		service_route TEXT NOT NULL,
 		expires_at INTEGER NOT NULL,
 		UNIQUE (impi, ue_address)

@@ -273,6 +273,9 @@ func (e *e2e) subscribe(serviceRoute string) *sip.Response {
 	req.Header.Add("Accept", regevent.ContentType)
 	req.Header.Add("Expires", "600000")
 	req.Header.Add("P-Preferred-Identity", "<"+e2eTel+">")
+	req.Header.Add("Proxy-Require", "sec-agree")
+	req.Header.Add("Require", "sec-agree")
+	req.Header.Add("Security-Verify", e.server.String())
 	e.uc.Send(sip.UDP, e.ps, req)
 
 	return e.response(200, "SUBSCRIBE")
@@ -308,7 +311,18 @@ func (e *e2e) notified() (string, regevent.Reginfo) {
 		e.t.Fatalf("reginfo: %v\n%s", err, req.Body)
 	}
 
-	e.us.Send(f.Transport, f.Remote, sip.NewResponse(req, 200, ""))
+	// As the Samsung of the corpus does (ipsec_reg/023), answer from the
+	// protected client port to the Via's port.
+	via, err := req.Header.TopVia()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+
+	if f.Transport == sip.UDP {
+		e.uc.Send(sip.UDP, netip.AddrPortFrom(loopback, via.Port), sip.NewResponse(req, 200, ""))
+	} else {
+		e.us.Send(f.Transport, f.Remote, sip.NewResponse(req, 200, ""))
+	}
 
 	return req.Header.Get("Subscription-State"), info
 }

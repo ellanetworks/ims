@@ -52,8 +52,16 @@ type outgoing struct {
 
 // notifyChange builds the NOTIFYs that report a change of the IMPI's
 // registrations to each of its subscriptions (TS 24.229 §5.4.2.1.2). The
-// caller holds the IMPI's lock and has stored the change.
+// caller holds the IMPI's lock and has stored the change. The subscriptions
+// of other IMPIs sharing a public identity of the change are notified too,
+// in the background under their own locks.
 func (r *Registrar) notifyChange(ctx context.Context, impi string, ch change) []*outgoing {
+	r.notifySharing(ctx, impi, ch)
+
+	return r.notifySubscriptions(ctx, impi, ch)
+}
+
+func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch change) []*outgoing {
 	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
@@ -70,12 +78,22 @@ func (r *Registrar) notifyChange(ctx context.Context, impi string, ch change) []
 		return nil
 	}
 
+	info, err := r.reginfo(ctx, st, ch)
+	if err != nil {
+		r.log.Warn("failed to build the reg event state", slog.String("impi", impi), slog.Any("error", err))
+		return nil
+	}
+
 	reason := ch.reason
 	if reason == "" {
 		reason = reasonNoResource
 	}
 
-	active := st.any()
+	// The subscriptions end when the document reports no registration
+	// active, including those of other users of a shared identity.
+	active := slices.ContainsFunc(info.Registrations, func(reg regevent.Registration) bool {
+		return reg.State == regevent.Active
+	})
 
 	var out []*outgoing
 
@@ -95,12 +113,50 @@ func (r *Registrar) notifyChange(ctx context.Context, impi string, ch change) []
 			state = activeState(s.ExpiresAt, st.now)
 		}
 
-		if o := r.buildNotify(ctx, st, s, ch, state); o != nil {
+		if o := r.buildNotify(ctx, st, s, &info, state); o != nil {
 			out = append(out, o)
 		}
 	}
 
 	return out
+}
+
+// notifySharing notifies, in the background, the subscriptions of the other
+// IMPIs that share a public identity of the change: their documents list
+// this IMPI's contacts (TS 24.229 §5.4.2.1.2).
+func (r *Registrar) notifySharing(ctx context.Context, impi string, ch change) {
+	var sets []db.Registration
+
+	for _, rm := range ch.removed {
+		sets = append(sets, rm.reg)
+	}
+
+	if st, err := r.load(ctx, impi); err == nil {
+		sets = append(sets, st.regs...)
+	}
+
+	others := map[string]bool{}
+
+	for _, set := range sets {
+		for _, id := range set.Identities {
+			regs, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, id.Key)
+			if err != nil {
+				continue
+			}
+
+			for _, reg := range regs {
+				if reg.IMPI != impi {
+					others[reg.IMPI] = true
+				}
+			}
+		}
+	}
+
+	for other := range others {
+		r.background(other, func(ctx context.Context) {
+			r.send(r.notifySubscriptions(ctx, other, ch))
+		})
+	}
 }
 
 // ueGone tells whether a UE's own subscription lost the last of that UE's
@@ -167,10 +223,12 @@ func (r *Registrar) dropSubscription(ctx context.Context, s db.RegSubscription) 
 
 // buildNotify builds the next NOTIFY of a subscription and stores its dialog
 // and version. A terminated NOTIFY deletes the subscription.
-func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscription, ch change, subState string) *outgoing {
+func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscription, info *regevent.Reginfo,
+	subState string,
+) *outgoing {
 	final := strings.HasPrefix(subState, "terminated")
 
-	o, err := r.newNotify(ctx, st, &s, ch, subState)
+	o, err := r.newNotify(ctx, st, &s, info, subState)
 	if err != nil {
 		r.log.Warn("failed to build a NOTIFY", slog.String("impi", s.IMPI), slog.Any("error", err))
 		r.dropSubscription(ctx, s)
@@ -190,7 +248,11 @@ func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscrip
 	return o
 }
 
-func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscription, ch change, subState string) (*outgoing, error) {
+// newNotify builds the next NOTIFY of a subscription, with the document of
+// info, or the current state when it is nil.
+func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscription, info *regevent.Reginfo,
+	subState string,
+) (*outgoing, error) {
 	d, err := restoreDialog(s.Dialog)
 	if err != nil {
 		return nil, err
@@ -201,14 +263,21 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 		return nil, err
 	}
 
-	s.Version++
+	if info == nil {
+		current, err := r.reginfo(ctx, st, change{})
+		if err != nil {
+			return nil, err
+		}
 
-	info, err := r.reginfo(ctx, st, ch, s.Version)
-	if err != nil {
-		return nil, err
+		info = &current
 	}
 
-	body, err := regevent.Encode(info)
+	s.Version++
+
+	doc := *info
+	doc.Version = uint64(max(s.Version, 0))
+
+	body, err := regevent.Encode(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -276,8 +345,8 @@ func contactURI(local netip.AddrPort, tr sip.Transport) string {
 
 // reginfo builds the full state of the IMPI's registrations, with the
 // removed contacts of the change reported as terminated.
-func (r *Registrar) reginfo(ctx context.Context, st *state, ch change, version int64) (regevent.Reginfo, error) {
-	info := regevent.Reginfo{Version: uint64(max(version, 0)), State: regevent.Full}
+func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent.Reginfo, error) {
+	info := regevent.Reginfo{State: regevent.Full}
 
 	var sets []db.Registration
 
@@ -287,8 +356,12 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change, version i
 		}
 	}
 
+	// Another IMPI's removed sets only show through the identities it shares
+	// with this one.
 	for _, rm := range ch.removed {
-		sets = append(sets, rm.reg)
+		if rm.reg.IMPI == st.impi {
+			sets = append(sets, rm.reg)
+		}
 	}
 
 	seen := map[string]bool{}
@@ -329,7 +402,13 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 
 			if b.Event != db.BindingRefreshed {
 				event = regevent.Created
-				if identityKeyOf(set.IMPU) == id.Key {
+
+				registering := b.IMPU
+				if registering == "" {
+					registering = identityKeyOf(set.IMPU)
+				}
+
+				if registering == id.Key {
 					event = regevent.Registered
 				}
 			}
@@ -367,7 +446,8 @@ func contactElement(b db.Binding, key, state string, event regevent.Event, now t
 	cseq := uint32(b.CSeq)
 
 	c := regevent.Contact{
-		ID:      elementID("c", strconv.FormatInt(b.Contact.ID, 10)+"|"+key),
+		ID: elementID("c", strconv.FormatInt(b.Contact.ID, 10)+"|"+key+"|"+
+			strconv.FormatInt(b.RegisteredAt.UnixNano(), 10)),
 		State:   state,
 		Event:   event,
 		Expires: &expires,

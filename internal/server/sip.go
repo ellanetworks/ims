@@ -230,6 +230,8 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		fallback:  ph,
 	})
 
+	s.registrar.Start(ctx)
+
 	return s, nil
 }
 
@@ -371,7 +373,7 @@ func (d *dispatcher) HandleTransactionError(tx *transaction.ServerTransaction, e
 
 type registrar interface {
 	Register(ctx context.Context, req *sip.Request, respond func(*sip.Response))
-	Subscribe(ctx context.Context, req *sip.Request, respond func(*sip.Response))
+	Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response))
 }
 
 type scscfHandler struct {
@@ -413,13 +415,13 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 			return
 		}
 
-		out, _, err := h.proxy.Preprocess(req)
+		out, removed, err := h.proxy.Preprocess(req)
 		if err != nil {
 			respond(sip.NewResponse(req, 400, "Bad Route"))
 			return
 		}
 
-		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, respond) }
+		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, removed, respond) }
 	default:
 		h.fallback.HandleRequest(tx, req)
 		return

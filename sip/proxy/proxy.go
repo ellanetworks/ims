@@ -73,6 +73,12 @@ type RecordRoute struct {
 	Params sip.Params
 
 	Upstream netip.AddrPort
+
+	// Double inserts two entries even when both sides are the same, and
+	// UpstreamParams marks the entry facing the request's sender, so that
+	// the direction of later requests can be told from their Route.
+	Double         bool
+	UpstreamParams sip.Params
 }
 
 type Options struct {
@@ -419,16 +425,16 @@ func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
 
 	down := to.sentBy()
 
-	if up == down && in.Transport == to.Flow.Transport {
-		r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, false))
+	if up == down && in.Transport == to.Flow.Transport && !rr.Double {
+		r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, false, nil))
 		return
 	}
 
-	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true))
-	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true))
+	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true, rr.UpstreamParams))
+	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true, nil))
 }
 
-func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool) sip.Field {
+func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool, extra sip.Params) sip.Field {
 	u := sip.URI{Scheme: "sip", User: rr.User, Host: sip.FormatHost(addr.Addr()), Port: addr.Port()}
 
 	if tr != sip.UDP {
@@ -442,6 +448,10 @@ func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, do
 	}
 
 	for _, p := range rr.Params {
+		u.Params.Set(p.Name, p.Value)
+	}
+
+	for _, p := range extra {
 		u.Params.Set(p.Name, p.Value)
 	}
 
