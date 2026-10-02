@@ -404,7 +404,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	ended, open := false, false
 	if res.IsSuccess() {
 		ended = p.registered(req, res, r)
-		open = !ended && p.rx != nil && !emergency(res) && p.regs.withoutRx(r.impi, r.ue)
+		open = !ended && p.rx != nil && !emergency(req, res) && p.regs.withoutRx(r.impi, r.ue)
 	}
 
 	// The Rx session is opened once the 200 has been relayed (TS 29.213
@@ -568,13 +568,19 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	return false
 }
 
-// emergency reports whether the 200 is to an emergency registration, marked
-// by the "sos" parameter on its Contact (TS 24.229 §5.2.10.1). It gets no Rx
-// session (TS 29.214 Annex A.4 NOTE 2; TS 29.213 Annex B.0).
-func emergency(res *sip.Response) bool {
-	contacts, _ := res.Header.Contacts()
+// emergency reports whether the 200 completes an emergency registration: the
+// Contact the REGISTER registered carries the "sos" parameter in the 200 (TS
+// 24.229 §5.2.10.1). It gets no Rx session (TS 29.214 Annex A.4 NOTE 2; TS
+// 29.213 Annex B.0).
+func emergency(req *sip.Request, res *sip.Response) bool {
+	requested, _ := req.Header.Contacts()
+	granted, _ := res.Header.Contacts()
 
-	return slices.ContainsFunc(contacts, func(c sip.Address) bool { return c.URI.Params.Has("sos") })
+	return slices.ContainsFunc(granted, func(g sip.Address) bool {
+		return g.URI.Params.Has("sos") && slices.ContainsFunc(requested, func(c sip.Address) bool {
+			return c.URI.String() == g.URI.String()
+		})
+	})
 }
 
 func registeredIdentity(req *sip.Request) string {

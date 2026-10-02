@@ -215,10 +215,7 @@ func (rs *registrations) expire(k regKey) {
 	// Early by the wall clock, which may have stepped back since the timer
 	// was armed.
 	if r.ExpiresAt.After(rs.clock.Now()) {
-		if rs.timers[k] != nil {
-			rs.armLocked(k, r.ExpiresAt)
-		}
-
+		rs.armLocked(k, r.ExpiresAt)
 		rs.mu.Unlock()
 
 		return

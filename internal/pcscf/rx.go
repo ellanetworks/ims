@@ -247,20 +247,21 @@ func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 	return a.Class, err
 }
 
-// endLocked closes s with an STR (§4.4.4), unless it has ended already. The
-// caller holds s.mu.
-func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.Duration) {
+// endLocked closes s with an STR (§4.4.4), unless it has ended already, and
+// returns the STR's outcome. The caller holds s.mu, and forgets s once the
+// record no longer names it, so that a removal of the record meanwhile finds
+// the same, ended, session.
+func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.Duration) error {
 	if s.ended {
-		return
+		return nil
 	}
 
 	s.ended = true
-	defer c.forget(s)
 
 	req, err := rx.NewSessionTerminationRequest(c.envelope(s.id), rx.SessionTerminationRequest{Cause: cause, Class: s.class})
 	if err != nil {
 		c.log.Warn("building the Rx STR failed", slog.String("session", s.id), slog.Any("error", err))
-		return
+		return err
 	}
 
 	attrs := []any{
@@ -275,19 +276,23 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 
 	if err != nil {
 		c.log.Warn("Rx session termination failed", append(attrs, slog.Any("error", err))...)
-		return
+		return err
 	}
 
 	c.log.Info("Rx session terminated", attrs...)
+
+	return nil
 }
 
-// end closes s in the background, once any outstanding request is answered.
+// end closes the session of a removed record in the background, once any
+// outstanding request is answered.
 func (c *rxClient) end(s *rxSession, cause rx.TerminationCause, wait time.Duration) {
 	c.spawn(func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		c.endLocked(s, cause, wait)
+		_ = c.endLocked(s, cause, wait)
+		c.forget(s)
 	})
 }
 
@@ -346,36 +351,50 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 		return
 	}
 
+	attrs = append(attrs, slog.Any("error", err))
+	if result, ok := tgpp.ResultOf(err); ok {
+		attrs = append(attrs, slog.String("result", result.String()))
+	}
+
+	var refused *rx.ResultError
+
+	// The PCRF holds no session: it refused it, or the AAR was not sent.
+	if errors.As(err, &refused) || errors.Is(err, diameter.ErrUnknownPeer) ||
+		errors.Is(err, diameter.ErrApplicationUnsupported) {
+		p.log.Warn("Rx session for IMS signalling refused", attrs...)
+		p.detachRx(s)
+
+		s.ended = true
+		p.rx.forget(s)
+
+		return
+	}
+
 	// Shutting down: the record keeps the session, which the PCRF may hold,
 	// and which is ended after the restart.
 	if errors.Is(err, context.Canceled) || p.rx.closing() {
 		return
 	}
 
-	attrs = append(attrs, slog.Any("error", err))
-	if result, ok := tgpp.ResultOf(err); ok {
-		attrs = append(attrs, slog.String("result", result.String()))
-	}
-
-	p.log.Warn("Rx session for IMS signalling refused", attrs...)
+	p.log.Warn("Rx session for IMS signalling failed", attrs...)
 	p.detachRx(s)
 
-	var refused *rx.ResultError
+	// The PCRF may have authorized the session (RFC 6733 §8.4): after a
+	// timeout, a lost connection or a malformed answer (RFC 6733 §7.2; RFC
+	// 3588 §8.15 DIAMETER_BAD_ANSWER).
+	cause, wait := rx.TerminationAdministrative, time.Duration(0)
 
 	switch {
-	case errors.As(err, &refused), errors.Is(err, diameter.ErrUnknownPeer),
-		errors.Is(err, diameter.ErrApplicationUnsupported):
-		// The PCRF holds no session: it refused it, or the AAR was not sent.
-		s.ended = true
-		p.rx.forget(s)
 	case errors.Is(err, rx.ErrMalformedAnswer):
-		// RFC 6733 §7.2, §8.4; RFC 3588 §8.15.
-		p.rx.endLocked(s, rx.TerminationBadAnswer, 0)
-	default:
-		// A timeout or a lost connection: the PCRF may have authorized the
-		// session (RFC 6733 §8.4).
-		p.rx.endLocked(s, rx.TerminationAdministrative, 0)
+		cause = rx.TerminationBadAnswer
+	case errors.Is(err, diameter.ErrNotConnected):
+		// Not connected either before the AAR was sent or after it was:
+		// the STR waits for the connection, up to the timeout.
+		wait = p.rx.cfg.Timeout
 	}
+
+	_ = p.rx.endLocked(s, cause, wait)
+	p.rx.forget(s)
 }
 
 func (p *PCSCF) detachRx(s *rxSession) {
@@ -461,13 +480,22 @@ func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 
 		s := p.rx.track(r.RxSessionID, regKey{r.IMPI, r.UEAddress.Addr()}, r.RxClass)
 
-		// Detached first, so that a removal of the record meanwhile does not
-		// end the session again.
-		p.detachRx(s)
-
 		p.rx.spawn(func() {
 			s.mu.Lock()
-			p.rx.endLocked(s, rx.TerminationAdministrative, restoreWait)
+
+			err := p.rx.endLocked(s, rx.TerminationAdministrative, restoreWait)
+
+			// Shutting down again: the record keeps the session for the next
+			// start.
+			if err != nil && (errors.Is(err, context.Canceled) || p.rx.closing()) {
+				p.rx.forget(s)
+				s.mu.Unlock()
+
+				return
+			}
+
+			p.detachRx(s)
+			p.rx.forget(s)
 			s.mu.Unlock()
 
 			p.openRx(s.key, restoreWait)

@@ -827,6 +827,25 @@ func TestRxNoSessionForEmergencyRegistrations(t *testing.T) {
 	}
 }
 
+func TestRxSessionForARegistrationBesideAnEmergencyContact(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	req, f := s.register(nil)
+
+	// The 200 to a normal REGISTER also lists another, emergency, contact.
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag(sip.NewTag())
+	res.Header.Add("Service-Route", "<sip:orig@"+s.scscf.Addr().String()+";lr>")
+	res.Header.Add("P-Associated-URI", "<"+testIMPU+">")
+	res.Header.Add("Contact", s.contact()+";expires=600")
+	res.Header.Add("Contact", "<sip:sos@"+s.ue.Addr().String()+";sos>;expires=600")
+	s.icscf.Send(f.Transport, f.Remote, res)
+	wantStatus(t, first(s.ue.RecvResponse()), 200)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+}
+
 func TestRxSignallingLostDuringARegistration(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 
@@ -1030,6 +1049,38 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 	if _, ok := rs.sourceKey(b); ok || len(rs.bySource) != 0 {
 		t.Fatalf("index = %v after the removal", rs.bySource)
 	}
+}
+
+func TestRxShutdownDuringTheRestoreKeepsTheSession(t *testing.T) {
+	s, pcrf := newRxScene(t, 200*time.Millisecond)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	// The first STR after the restart waits until the P-CSCF shuts down.
+	var held atomic.Bool
+
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandSessionTermination && held.CompareAndSwap(false, true) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		return succeed(req)
+	})
+
+	s.restart()
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	s.restart()
+
+	// The record kept the session: the next start ends it and opens another.
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	again, _ := pcrf.aar()
+	s.wantSession(again)
 }
 
 func TestTerminationCauseOfMixedEvents(t *testing.T) {
