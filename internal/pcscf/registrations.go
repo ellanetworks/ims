@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"log/slog"
-	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -115,6 +114,22 @@ func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, e
 	return expired, nil
 }
 
+func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
+	c := *r
+	c.Contacts = slices.Clone(r.Contacts)
+	c.AssociatedURIs = slices.Clone(r.AssociatedURIs)
+	c.ServiceRoute = slices.Clone(r.ServiceRoute)
+
+	if r.Sets != nil {
+		c.Sets = make(map[string][]string, len(r.Sets))
+		for k, v := range r.Sets {
+			c.Sets[k] = slices.Clone(v)
+		}
+	}
+
+	return c
+}
+
 func (rs *registrations) add(r *db.PCSCFRegistration) {
 	k := regKey{r.IMPI, r.UEAddress.Addr()}
 
@@ -209,6 +224,7 @@ func (rs *registrations) token(impi string, ue netip.Addr) string {
 }
 
 func (rs *registrations) save(r db.PCSCFRegistration) {
+	r = clone(&r)
 	r.UEAddress = netip.AddrPortFrom(r.UEAddress.Addr().Unmap(), r.UEAddress.Port())
 
 	rs.mu.Lock()
@@ -271,7 +287,7 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 		cancel()
 	}
 
-	return *r, true
+	return clone(r), true
 }
 
 func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) bool) []db.PCSCFRegistration {
@@ -285,10 +301,7 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 			continue
 		}
 
-		c := *r
-		c.Contacts = slices.Clone(r.Contacts)
-		c.AssociatedURIs = slices.Clone(r.AssociatedURIs)
-		c.Sets = maps.Clone(r.Sets)
+		c := clone(r)
 
 		if !f(&c) {
 			if old, ok := rs.removeLocked(k); ok {
@@ -346,7 +359,7 @@ func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, 
 		return db.PCSCFRegistration{}, false
 	}
 
-	return *r, true
+	return clone(r), true
 }
 
 func (rs *registrations) signallingLost(token string) bool {
@@ -376,7 +389,7 @@ func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, b
 
 	for _, r := range rs.byKey {
 		if !r.Protected && r.UEAddress == src && r.ExpiresAt.After(now) {
-			return *r, true
+			return clone(r), true
 		}
 	}
 
@@ -399,7 +412,7 @@ func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
 		return db.PCSCFRegistration{}, false
 	}
 
-	return *best, true
+	return clone(best), true
 }
 
 func (rs *registrations) flow(token string) (flow, bool) {

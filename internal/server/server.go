@@ -96,12 +96,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
-			Version:    version,
-			Diameter:   s.diameter,
-			SIP:        s.sip,
-			HomeDomain: cfg.IMS.HomeDomain,
-			SIPAliases: cfg.SIPAliases(),
-			Logger:     s.Logger,
+			Version:       version,
+			Diameter:      s.diameter,
+			SIP:           s.sip,
+			Registrations: s.sip,
+			HomeDomain:    cfg.IMS.HomeDomain,
+			SIPAliases:    cfg.SIPAliases(),
+			Logger:        s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,

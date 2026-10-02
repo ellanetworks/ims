@@ -53,6 +53,7 @@ type network struct {
 	addr       netip.Addr
 	ealg       string
 	associated string
+	regEvent   bool
 }
 
 func newNetwork(t *testing.T) *network {
@@ -86,6 +87,7 @@ func (n *network) newUE(cfg Config) (*UE, *ipsectest.Kernel) {
 
 	cfg.IMSI, cfg.IMEI = imsi, imei
 	cfg.PCSCF, cfg.Local = n.pcscf.Addr(), n.addr
+	cfg.NoRegEvent = !n.regEvent
 
 	if cfg.K == nil {
 		cfg.K, cfg.OPc = testK, testOPc

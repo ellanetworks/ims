@@ -26,6 +26,8 @@ const (
 	retryAfter = 30
 
 	maxResyncs = 2
+
+	DefaultReauthExpires = 60 * time.Second
 )
 
 type Diameter interface {
@@ -60,6 +62,7 @@ type Config struct {
 	MaxExpires time.Duration
 
 	ReauthInterval time.Duration
+	ReauthExpires  time.Duration
 
 	HSS      HSS
 	Diameter Diameter
@@ -86,6 +89,7 @@ type Registrar struct {
 	busy       map[string]*hold
 	challenges map[string]*challenge
 	authAt     map[string]time.Time
+	reauth     map[string]bool
 	sweep      transaction.Timer
 	sweepAt    time.Time
 }
@@ -114,6 +118,10 @@ func New(cfg Config) *Registrar {
 		cfg.Logger = slog.Default()
 	}
 
+	if cfg.ReauthExpires <= 0 {
+		cfg.ReauthExpires = DefaultReauthExpires
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := &Registrar{
@@ -126,6 +134,7 @@ func New(cfg Config) *Registrar {
 		busy:       make(map[string]*hold),
 		challenges: make(map[string]*challenge),
 		authAt:     make(map[string]time.Time),
+		reauth:     make(map[string]bool),
 	}
 
 	return r

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -523,7 +522,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 
 	if known {
 		reg.Contacts = existing.Contacts
-		reg.Sets = maps.Clone(existing.Sets)
+		reg.Sets = existing.Sets
 		reg.AssociatedURIs = existing.AssociatedURIs
 		reg.ExpiresAt = later(reg.ExpiresAt, existing.ExpiresAt)
 	}
