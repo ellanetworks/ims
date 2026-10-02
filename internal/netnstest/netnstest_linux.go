@@ -104,6 +104,39 @@ func New(t testing.TB) *Netns {
 	return n
 }
 
+func Current(t testing.TB) *Netns {
+	t.Helper()
+
+	if skip != "" {
+		Unavailable(t, skip)
+	}
+
+	if _, err := exec.LookPath("ip"); err != nil {
+		Unavailable(t, "no ip command (iproute2)")
+	}
+
+	n := &Netns{work: make(chan func())}
+	ready := make(chan struct{})
+
+	go func() {
+		runtime.LockOSThread()
+
+		n.tid = unix.Gettid()
+
+		close(ready)
+
+		for f := range n.work {
+			f()
+		}
+	}()
+
+	<-ready
+
+	t.Cleanup(func() { close(n.work) })
+
+	return n
+}
+
 func (n *Netns) Do(f func()) {
 	done := make(chan struct{})
 

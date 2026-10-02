@@ -986,3 +986,40 @@ func TestPrivateIdentity(t *testing.T) {
 		t.Fatalf("privateIdentity = %q, want %q", got, want)
 	}
 }
+
+func TestReauthInterval(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.ReauthInterval = 10 * time.Minute
+	h.restart()
+
+	u := h.newUE()
+
+	u.register(registerOptions{expires: "3600"})
+	h.hss.nextSAR(t)
+
+	h.clock.Advance(5 * time.Minute)
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"}), 200)
+	h.hss.noCx(t)
+
+	h.clock.Advance(6 * time.Minute)
+
+	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"})
+	wantStatus(t, res, 401)
+	h.hss.nextMAR(t)
+
+	nonce := sip.Unquote(challengeParams(t, res)["nonce"])
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES), expires: "3600"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
+
+	h.clock.Advance(5 * time.Minute)
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"}), 200)
+	h.hss.noCx(t)
+
+	h.clock.Advance(20 * time.Minute)
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentUserDeregistration)
+}

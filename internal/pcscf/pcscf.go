@@ -270,6 +270,16 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		}
 	}
 
+	if p.sas != nil && r.in == nil && !ipsecOffered {
+		p.log.Info("REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
+			slog.String("security-client", req.Header.Get("Security-Client")))
+
+		res := sip.NewResponse(req, 421, "")
+		res.Header.Add("Require", secAgree)
+
+		return res
+	}
+
 	if ipsecOffered && p.sas != nil {
 		o, err := p.cfg.IPsec.Policy.Select(offers)
 		if err != nil {
