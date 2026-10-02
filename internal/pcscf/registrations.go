@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
@@ -54,6 +55,10 @@ type registrations struct {
 	// expired is called, outside the lock, with each record removed at its
 	// expiry.
 	expired func(db.PCSCFRegistration)
+
+	// lost counts the records marked signalling lost, so that requests skip
+	// the lookup while none is.
+	lost atomic.Int64
 
 	mu      sync.Mutex
 	closed  bool
@@ -119,6 +124,7 @@ func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
 	c.Contacts = slices.Clone(r.Contacts)
 	c.AssociatedURIs = slices.Clone(r.AssociatedURIs)
 	c.ServiceRoute = slices.Clone(r.ServiceRoute)
+	c.RxClass = slices.Clone(r.RxClass)
 
 	if r.Sets != nil {
 		c.Sets = make(map[string][]string, len(r.Sets))
@@ -133,11 +139,27 @@ func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
 func (rs *registrations) add(r *db.PCSCFRegistration) {
 	k := regKey{r.IMPI, r.UEAddress.Addr()}
 
+	var was bool
+	if old, ok := rs.byKey[k]; ok {
+		was = old.SignallingLost
+	}
+
+	rs.countLost(was, r.SignallingLost)
+
 	delete(rs.pending, k)
 	rs.byKey[k] = r
 	rs.byToken[r.FlowToken] = r
 	delete(rs.retired, r.FlowToken)
 	rs.armLocked(k, r.ExpiresAt)
+}
+
+func (rs *registrations) countLost(was, is bool) {
+	switch {
+	case is && !was:
+		rs.lost.Add(1)
+	case was && !is:
+		rs.lost.Add(-1)
+	}
 }
 
 func (rs *registrations) armLocked(k regKey, at time.Time) {
@@ -156,8 +178,20 @@ func (rs *registrations) expire(k regKey) {
 	rs.mu.Lock()
 
 	r, ok := rs.byKey[k]
-	if rs.closed || !ok || r.ExpiresAt.After(rs.clock.Now()) {
+	if rs.closed || !ok {
 		rs.mu.Unlock()
+		return
+	}
+
+	// Early by the wall clock, which may have stepped back since the timer
+	// was armed.
+	if r.ExpiresAt.After(rs.clock.Now()) {
+		if rs.timers[k] != nil {
+			rs.armLocked(k, r.ExpiresAt)
+		}
+
+		rs.mu.Unlock()
+
 		return
 	}
 
@@ -232,11 +266,15 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 
 	if old, ok := rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}]; ok {
 		r.ID = old.ID
-		r.RxSessionID = old.RxSessionID
+		r.RxSessionID, r.RxClass, r.SignallingLost = old.RxSessionID, old.RxClass, old.SignallingLost
 
 		if old.FlowToken != r.FlowToken {
 			delete(rs.byToken, old.FlowToken)
 		}
+	} else {
+		// The snapshot r was taken from may have been removed since, and its
+		// session ended.
+		r.RxSessionID, r.RxClass, r.SignallingLost = "", nil, false
 	}
 
 	if rs.store != nil {
@@ -270,6 +308,7 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 
 	delete(rs.byKey, k)
 	delete(rs.byToken, r.FlowToken)
+	rs.countLost(r.SignallingLost, false)
 
 	if t, ok := rs.timers[k]; ok {
 		t.Stop()
@@ -315,6 +354,7 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 			rs.armLocked(k, c.ExpiresAt)
 		}
 
+		rs.countLost(r.SignallingLost, c.SignallingLost)
 		*r = c
 		rs.storeLocked(r)
 	}
@@ -328,13 +368,38 @@ func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bo
 	defer rs.mu.Unlock()
 
 	r, ok := rs.byKey[k]
-	if !ok || !f(r) {
+	if !ok {
 		return false
 	}
 
+	was := r.SignallingLost
+
+	if !f(r) {
+		return false
+	}
+
+	rs.countLost(was, r.SignallingLost)
 	rs.storeLocked(r)
 
 	return true
+}
+
+// restoreSignalling clears the signalling lost mark of k's record, and
+// reports whether it was set.
+func (rs *registrations) restoreSignalling(k regKey) bool {
+	if rs.lost.Load() == 0 {
+		return false
+	}
+
+	return rs.edit(k, func(r *db.PCSCFRegistration) bool {
+		if !r.SignallingLost {
+			return false
+		}
+
+		r.SignallingLost = false
+
+		return true
+	})
 }
 
 func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {

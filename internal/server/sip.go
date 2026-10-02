@@ -211,14 +211,13 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	})
 
 	if err := pc.Restore(ctx); err != nil {
-		return nil, errors.Join(fmt.Errorf("restore IPsec security associations: %w", err), s.Close())
+		pc.Close()
+		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), s.Close())
 	}
 
 	s.pcscf.Store(pc)
 
-	if rxh != nil {
-		rxh.bind(pc)
-	}
+	rxh.bind(pc)
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
 		roles.set(port, pc)

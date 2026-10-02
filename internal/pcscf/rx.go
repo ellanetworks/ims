@@ -19,9 +19,9 @@ import (
 const (
 	DefaultRxTimeout = 10 * time.Second
 
-	// restoredSTRWait bounds the wait for the PCRF connection when ending the
-	// sessions of records that expired while the P-CSCF was down.
-	restoredSTRWait = time.Minute
+	// restoreWait bounds the wait for the PCRF connection when the P-CSCF
+	// re-establishes, after a restart, the sessions of its stored records.
+	restoreWait = time.Minute
 )
 
 type Diameter interface {
@@ -53,6 +53,8 @@ type rxSession struct {
 
 	mu    sync.Mutex
 	ended bool
+	// class holds the AAA's Class values, echoed in the STR (RFC 6733 §8.20).
+	class [][]byte
 }
 
 type rxClient struct {
@@ -122,7 +124,7 @@ func (c *rxClient) begin(k regKey) *rxSession {
 	return s
 }
 
-func (c *rxClient) track(id string, k regKey) *rxSession {
+func (c *rxClient) track(id string, k regKey, class [][]byte) *rxSession {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -130,7 +132,7 @@ func (c *rxClient) track(id string, k regKey) *rxSession {
 		return s
 	}
 
-	s := &rxSession{id: id, key: k}
+	s := &rxSession{id: id, key: k, class: class}
 	c.sessions[id] = s
 
 	return s
@@ -163,7 +165,20 @@ func (c *rxClient) envelope(id string) tgpp.Envelope {
 	}
 }
 
-func (c *rxClient) do(ctx context.Context, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error) {
+// do sends req to the PCRF. With a zero wait, it fails at once when the PCRF
+// is not connected and waits the configured timeout for the answer; with a
+// positive wait, it waits that long for the connection and the answer.
+func (c *rxClient) do(req *diameter.Message, wait time.Duration) (*diameter.Message, error) {
+	opts := []diameter.DoOption{diameter.FailFast()}
+	if wait > 0 {
+		opts = nil
+	} else {
+		wait = c.cfg.Timeout
+	}
+
+	ctx, cancel := context.WithTimeout(c.ctx, wait)
+	defer cancel()
+
 	return c.cfg.Diameter.Do(ctx, c.cfg.PCRF.ID, req, opts...)
 }
 
@@ -171,7 +186,7 @@ func (c *rxClient) do(ctx context.Context, req *diameter.Message, opts ...diamet
 // signalling component and the bearer loss and release actions, which are
 // non-one-time and so only allowed in the initial AAR (§5.3.13). Media-Type
 // CONTROL is added for PCRFs that select the QoS from it, such as open5gs.
-func (c *rxClient) aar(s *rxSession) error {
+func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 	initial := rx.RequestInitial
 	control := rx.MediaControl
 	signalling := rx.FlowUsageAFSignalling
@@ -194,20 +209,17 @@ func (c *rxClient) aar(s *rxSession) error {
 
 	req, err := rx.NewAARequest(c.envelope(s.id), r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.Timeout)
-	defer cancel()
-
-	ans, err := c.do(ctx, req, diameter.FailFast())
+	ans, err := c.do(req, wait)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	_, err = rx.ParseAAAnswer(ans)
+	a, err := rx.ParseAAAnswer(ans)
 
-	return err
+	return a.Class, err
 }
 
 // endLocked closes s with an STR (§4.4.4), unless it has ended already. The
@@ -220,28 +232,18 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 	s.ended = true
 	defer c.forget(s)
 
-	req, err := rx.NewSessionTerminationRequest(c.envelope(s.id), rx.SessionTerminationRequest{Cause: cause})
+	req, err := rx.NewSessionTerminationRequest(c.envelope(s.id), rx.SessionTerminationRequest{Cause: cause, Class: s.class})
 	if err != nil {
 		c.log.Warn("building the Rx STR failed", slog.String("session", s.id), slog.Any("error", err))
 		return
 	}
-
-	opts := []diameter.DoOption{diameter.FailFast()}
-	if wait > 0 {
-		opts = nil
-	} else {
-		wait = c.cfg.Timeout
-	}
-
-	ctx, cancel := context.WithTimeout(c.ctx, wait)
-	defer cancel()
 
 	attrs := []any{
 		slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()), slog.String("session", s.id),
 		slog.String("cause", cause.String()),
 	}
 
-	ans, err := c.do(ctx, req, opts...)
+	ans, err := c.do(req, wait)
 	if err == nil {
 		_, err = rx.ParseSessionTerminationAnswer(ans)
 	}
@@ -265,8 +267,9 @@ func (c *rxClient) end(s *rxSession, cause rx.TerminationCause, wait time.Durati
 }
 
 // openRx opens the Rx session of the record k, if it has none. It runs once
-// the 200 to the REGISTER has been relayed (TS 29.213 Annex B.1).
-func (p *PCSCF) openRx(k regKey) {
+// the 200 to the REGISTER has been relayed (TS 29.213 Annex B.1), or after a
+// restart.
+func (p *PCSCF) openRx(k regKey, wait time.Duration) {
 	s := p.rx.begin(k)
 
 	attached := p.regs.edit(k, func(r *db.PCSCFRegistration) bool {
@@ -279,7 +282,7 @@ func (p *PCSCF) openRx(k regKey) {
 		return true
 	})
 
-	if attached && p.rx.spawn(func() { p.initialAAR(s) }) {
+	if attached && p.rx.spawn(func() { p.initialAAR(s, wait) }) {
 		return
 	}
 
@@ -292,19 +295,34 @@ func (p *PCSCF) openRx(k regKey) {
 	s.mu.Unlock()
 }
 
-func (p *PCSCF) initialAAR(s *rxSession) {
+func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 	defer s.mu.Unlock()
 
 	attrs := []any{slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()), slog.String("session", s.id)}
 
-	err := p.rx.aar(s)
+	class, err := p.rx.aar(s, wait)
 	if err == nil {
+		s.class = class
+
+		if len(class) > 0 {
+			p.regs.edit(s.key, func(r *db.PCSCFRegistration) bool {
+				if r.RxSessionID != s.id {
+					return false
+				}
+
+				r.RxClass = class
+
+				return true
+			})
+		}
+
 		p.log.Info("Rx session for IMS signalling opened", attrs...)
+
 		return
 	}
 
 	// Shutting down: the record keeps the session, which the PCRF may hold,
-	// for its STR after the restart.
+	// and which is ended after the restart.
 	if errors.Is(err, context.Canceled) {
 		return
 	}
@@ -317,14 +335,22 @@ func (p *PCSCF) initialAAR(s *rxSession) {
 	p.log.Warn("Rx session for IMS signalling refused", attrs...)
 	p.detachRx(s)
 
-	// The AAA may yet have succeeded at the PCRF (RFC 6733 §8.4).
-	if errors.Is(err, context.DeadlineExceeded) {
-		p.rx.endLocked(s, rx.TerminationAdministrative, 0)
-		return
-	}
+	var refused *rx.ResultError
 
-	s.ended = true
-	p.rx.forget(s)
+	switch {
+	case errors.As(err, &refused), errors.Is(err, diameter.ErrUnknownPeer),
+		errors.Is(err, diameter.ErrApplicationUnsupported):
+		// The PCRF holds no session: it refused it, or the AAR was not sent.
+		s.ended = true
+		p.rx.forget(s)
+	case errors.Is(err, rx.ErrMalformedAnswer):
+		// RFC 6733 §7.2, §8.4; RFC 3588 §8.15.
+		p.rx.endLocked(s, rx.TerminationBadAnswer, 0)
+	default:
+		// A timeout or a lost connection: the PCRF may have authorized the
+		// session (RFC 6733 §8.4).
+		p.rx.endLocked(s, rx.TerminationAdministrative, 0)
+	}
 }
 
 func (p *PCSCF) detachRx(s *rxSession) {
@@ -333,7 +359,7 @@ func (p *PCSCF) detachRx(s *rxSession) {
 			return false
 		}
 
-		r.RxSessionID = ""
+		r.RxSessionID, r.RxClass = "", nil
 
 		return true
 	})
@@ -353,29 +379,74 @@ func terminationCause(e regevent.Event) rx.TerminationCause {
 	}
 }
 
+// graver returns whichever of two contact events maps to the graver
+// Termination-Cause: the network's own decisions, then the UE's
+// deregistration, then expiry. The order of the contacts in the NOTIFY does
+// not matter.
+func graver(a, b regevent.Event) regevent.Event {
+	rank := func(e regevent.Event) int {
+		switch {
+		case e == "":
+			return 0
+		case terminationCause(e) == rx.TerminationAuthExpired:
+			return 1
+		case terminationCause(e) == rx.TerminationLogout:
+			return 2
+		default:
+			return 3
+		}
+	}
+
+	if rank(b) > rank(a) {
+		return b
+	}
+
+	return a
+}
+
 // endRx closes the Rx session of a removed record.
 func (p *PCSCF) endRx(r db.PCSCFRegistration, cause rx.TerminationCause, wait time.Duration) {
 	if p.rx == nil || r.RxSessionID == "" {
 		return
 	}
 
-	s := p.rx.track(r.RxSessionID, regKey{r.IMPI, r.UEAddress.Addr()})
+	s := p.rx.track(r.RxSessionID, regKey{r.IMPI, r.UEAddress.Addr()}, r.RxClass)
 	p.rx.end(s, cause, wait)
 }
 
+// restoreRx ends the sessions of the records that expired while the P-CSCF
+// was down, and re-establishes those of the others. The PCRF may have dropped
+// them: the P-CSCF advertises a new Origin-State-Id at each start (RFC 6733
+// §8.16), and a session can have been pending at shutdown. Each is closed
+// with an STR and replaced by a new one, so that the loss and release of the
+// signalling bearer stay reported.
 func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 	if p.rx == nil {
 		return
 	}
 
-	for _, r := range p.regs.all() {
-		if r.RxSessionID != "" {
-			p.rx.track(r.RxSessionID, regKey{r.IMPI, r.UEAddress.Addr()})
-		}
+	for _, r := range expired {
+		p.endRx(r, rx.TerminationAuthExpired, restoreWait)
 	}
 
-	for _, r := range expired {
-		p.endRx(r, rx.TerminationAuthExpired, restoredSTRWait)
+	for _, r := range p.regs.all() {
+		if r.RxSessionID == "" {
+			continue
+		}
+
+		s := p.rx.track(r.RxSessionID, regKey{r.IMPI, r.UEAddress.Addr()}, r.RxClass)
+
+		// Detached first, so that a removal of the record meanwhile does not
+		// end the session again.
+		p.detachRx(s)
+
+		p.rx.spawn(func() {
+			s.mu.Lock()
+			p.rx.endLocked(s, rx.TerminationAdministrative, restoreWait)
+			s.mu.Unlock()
+
+			p.openRx(s.key, restoreWait)
+		})
 	}
 }
 
@@ -400,22 +471,25 @@ func (p *PCSCF) signallingLost(req *sip.Request) bool {
 // request from the UE arrives on: the path to the UE is back (TS 24.229
 // §5.2.6.4.3 NOTE 1).
 func (p *PCSCF) signallingRestored(req *sip.Request) {
-	reg, ok := p.ueRegistration(req)
-	if !ok || !reg.SignallingLost {
+	if p.regs.lost.Load() == 0 {
 		return
 	}
 
-	if p.regs.edit(regKey{reg.IMPI, reg.UEAddress.Addr()}, func(r *db.PCSCFRegistration) bool {
-		if !r.SignallingLost {
-			return false
+	// A REGISTER clears it on arrival (NOTE 1), on whatever flow it comes.
+	k := regKey{privateIdentity(req), req.Flow.Remote.Addr().Unmap()}
+
+	if req.Method != "REGISTER" {
+		reg, ok := p.ueRegistration(req)
+		if !ok {
+			return
 		}
 
-		r.SignallingLost = false
+		k = regKey{reg.IMPI, reg.UEAddress.Addr()}
+	}
 
-		return true
-	}) {
-		p.log.Info("IMS signalling path restored", slog.String("impi", reg.IMPI),
-			slog.String("ue", reg.UEAddress.Addr().String()), slog.String("method", req.Method))
+	if p.regs.restoreSignalling(k) {
+		p.log.Info("IMS signalling path restored", slog.String("impi", k.impi), slog.String("ue", k.ue.String()),
+			slog.String("method", req.Method))
 	}
 }
 
@@ -452,16 +526,18 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 }
 
 // AbortSession handles an Rx ASR (TS 29.214 §4.4.6.1): the registration is
-// marked as having lost its signalling path, and the session is closed with an
-// STR once the ASA is sent. It reports whether the session is known.
-func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) bool {
+// marked as having lost its signalling path. It reports whether the session is
+// known, and returns the session's termination, which the caller runs once
+// the ASA is sent: "After that the AF shall initiate an AF session
+// termination procedure".
+func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool) {
 	if p.rx == nil {
-		return false
+		return nil, false
 	}
 
 	s, ok := p.rx.lookup(sessionID)
 	if !ok {
-		return false
+		return nil, false
 	}
 
 	p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {
@@ -469,7 +545,7 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) bool {
 			return false
 		}
 
-		reg.RxSessionID = ""
+		reg.RxSessionID, reg.RxClass = "", nil
 		reg.SignallingLost = true
 
 		return true
@@ -478,7 +554,5 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) bool {
 	p.log.Info("IMS signalling path aborted by the PCRF", slog.String("impi", s.key.impi),
 		slog.String("ue", s.key.ue.String()), slog.String("cause", r.Cause.String()))
 
-	p.rx.end(s, rx.TerminationAdministrative, 0)
-
-	return true
+	return func() { p.rx.end(s, rx.TerminationAdministrative, 0) }, true
 }

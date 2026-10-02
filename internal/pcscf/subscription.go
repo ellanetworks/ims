@@ -556,7 +556,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				mentioned[uri] = true
 
 				if c.State != regevent.Active || reg.State == regevent.Terminated {
-					ended[r.UEAddress.Addr()] = c.Event
+					ended[r.UEAddress.Addr()] = graver(ended[r.UEAddress.Addr()], c.Event)
 					continue
 				}
 

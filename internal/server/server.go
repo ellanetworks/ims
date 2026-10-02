@@ -70,7 +70,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	rtr := newRTRHandler(s.Logger)
-	rxh := newRxHandler(s.Logger)
+	pcrf, _ := cfg.Diameter.RxPeer()
+	rxh := newRxHandler(pcrf.ID, s.Logger)
 
 	node, err := newDiameterNode(cfg.Diameter, rtr, rxh, s.Logger)
 	if err != nil {

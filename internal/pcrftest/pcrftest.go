@@ -1,5 +1,7 @@
 // Package pcrftest is a PCRF for tests: it answers the IMS's Rx AARs and STRs
-// with success, records them, and sends RARs and ASRs on request.
+// with success, records them, and sends RARs and ASRs on request. Each AAA
+// carries a Class AVP holding the Session-Id, which the AF echoes in its STR
+// (RFC 6733 §8.20).
 package pcrftest
 
 import (
@@ -203,9 +205,10 @@ func (p *PCRF) aa(_ context.Context, c *diameter.Conn, req *diameter.Message) *d
 		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	p.record(Request{SessionID: tgpp.ParseEnvelope(req).SessionID, AAR: &aar})
+	session := tgpp.ParseEnvelope(req).SessionID
+	p.record(Request{SessionID: session, AAR: &aar})
 
-	return must(rx.NewAAAnswer(req, c.LocalIdentity(), rx.AAAnswer{}))
+	return must(rx.NewAAAnswer(req, c.LocalIdentity(), rx.AAAnswer{Class: [][]byte{[]byte(session)}}))
 }
 
 func (p *PCRF) sessionTermination(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {

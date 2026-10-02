@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -87,9 +88,13 @@ func (f *fakePCRF) answerWith(a func(ctx context.Context, req *diameter.Message)
 func (f *fakePCRF) holdAA() (release func()) {
 	ch := make(chan struct{})
 
-	f.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+	f.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandAA {
-			<-ch
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 
 		return succeed(req)
@@ -205,6 +210,7 @@ func (s *regScene) reregister(expires int) {
 func TestRxSessionOnInitialRegistration(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 	release := pcrf.holdAA()
+	t.Cleanup(release)
 
 	req, f := s.register(nil)
 	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
@@ -269,7 +275,7 @@ func TestRxAARForIPv6(t *testing.T) {
 	ue := netip.MustParseAddr("2001:db8::1")
 	s := c.begin(regKey{testIMPI, ue})
 
-	if err := c.aar(s); err != nil {
+	if _, err := c.aar(s, 0); err != nil {
 		t.Fatalf("aar: %v", err)
 	}
 
@@ -368,8 +374,13 @@ func TestRxPartialDeregistrationKeepsTheSession(t *testing.T) {
 }
 
 func TestRxRefusedAAAKeepsTheRegistration(t *testing.T) {
-	refusals := map[string]func(ctx context.Context, req *diameter.Message) (*diameter.Message, error){
-		"refused": func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+	refusals := map[string]struct {
+		answer func(ctx context.Context, req *diameter.Message) (*diameter.Message, error)
+		// str is the cause of the STR that follows, for an AAR the PCRF may
+		// have authorized (RFC 6733 §7.2, §8.4); 0 for none.
+		str rx.TerminationCause
+	}{
+		"refused": {answer: func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
 			if req.CommandCode != rx.CommandAA {
 				return succeed(req)
 			}
@@ -377,21 +388,44 @@ func TestRxRefusedAAAKeepsTheRegistration(t *testing.T) {
 			return rx.NewAAErrorAnswer(req, pcrfIdentity, rx.AAError{ResultError: rx.ResultError{Result: tgpp.Result{
 				Code: tgpp.ResultRequestedServiceNotAuthorized, Experimental: true, VendorID: tgpp.VendorID,
 			}}})
+		}},
+		"not negotiated": {answer: func(context.Context, *diameter.Message) (*diameter.Message, error) {
+			return nil, diameter.ErrApplicationUnsupported
+		}},
+		"connection lost": {
+			answer: func(context.Context, *diameter.Message) (*diameter.Message, error) {
+				return nil, diameter.ErrNotConnected
+			},
+			str: rx.TerminationAdministrative,
 		},
-		"unreachable": func(context.Context, *diameter.Message) (*diameter.Message, error) {
-			return nil, diameter.ErrNotConnected
+		"malformed answer": {
+			answer: func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+				ans, err := succeed(req)
+				if err == nil && req.CommandCode == rx.CommandAA {
+					ans.AVPs = slices.DeleteFunc(ans.AVPs, func(a diameter.AVP) bool { return a.Code == diameter.AVPResultCode })
+				}
+
+				return ans, err
+			},
+			str: rx.TerminationBadAnswer,
 		},
 	}
 
-	for name, refuse := range refusals {
+	for name, refusal := range refusals {
 		t.Run(name, func(t *testing.T) {
 			s, pcrf := newRxScene(t, 0)
-			pcrf.answerWith(refuse)
+			pcrf.answerWith(refusal.answer)
 
 			s.registered(600)
 
-			pcrf.aar()
+			id, _ := pcrf.aar()
+
 			s.wantSession("")
+
+			if refusal.str != 0 {
+				pcrf.wantSTR(id, refusal.str)
+			}
+
 			pcrf.none()
 
 			if _, ok := s.record(); !ok {
@@ -401,8 +435,8 @@ func TestRxRefusedAAAKeepsTheRegistration(t *testing.T) {
 			pcrf.answerWith(nil)
 			s.reregister(600)
 
-			id, _ := pcrf.aar()
-			s.wantSession(id)
+			again, _ := pcrf.aar()
+			s.wantSession(again)
 		})
 	}
 }
@@ -667,15 +701,21 @@ func TestRxAbortSession(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	if !s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}) {
+	terminate, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	if !ok {
 		t.Fatal("AbortSession reported an unknown session")
 	}
 
-	pcrf.wantSTR(id, rx.TerminationAdministrative)
 	s.wantSession("")
 	s.wantSignallingLost(true)
 
-	if s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}) {
+	// The STR waits for the ASA to be sent (TS 29.214 §4.4.6.1).
+	pcrf.none()
+
+	terminate()
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	if _, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
 		t.Fatal("AbortSession accepted the ended session")
 	}
 
@@ -695,10 +735,12 @@ func TestRxAbortSessionWhileTheAAAIsOutstanding(t *testing.T) {
 
 	id, _ := pcrf.aar()
 
-	if !s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}) {
+	terminate, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	if !ok {
 		t.Fatal("AbortSession did not find the pending session")
 	}
 
+	terminate()
 	pcrf.none()
 
 	release()
@@ -709,7 +751,7 @@ func TestRxAbortSessionWhileTheAAAIsOutstanding(t *testing.T) {
 	}
 }
 
-func TestRxSessionSurvivesRestart(t *testing.T) {
+func TestRxSessionsReestablishedAfterRestart(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 
 	s.registered(600)
@@ -719,12 +761,199 @@ func TestRxSessionSurvivesRestart(t *testing.T) {
 
 	s.restart()
 
-	if !s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
-		t.Fatal("restored session unknown")
+	// The PCRF may have dropped it on the new Origin-State-Id (RFC 6733
+	// §8.16): it is closed, and a new one opened.
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	again, r := pcrf.aar()
+	if again == id || r.FramedIPAddress != ueAddr {
+		t.Fatalf("AAR %s for %s after the restart, want a new session for %s", again, r.FramedIPAddress, ueAddr)
+	}
+
+	s.wantSession(again)
+
+	if s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+		t.Fatal("the old session still known")
+	}
+
+	if !s.p.ReAuth(again, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+		t.Fatal("the new session unknown")
 	}
 
 	s.wantSignallingLost(true)
 	pcrf.none()
+}
+
+func TestRxSessionPendingAtShutdownEndedAfterRestart(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+	release := pcrf.holdAA()
+	t.Cleanup(release)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+
+	s.restart()
+	pcrf.answerWith(nil)
+
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	again, _ := pcrf.aar()
+	s.wantSession(again)
+}
+
+func TestRxNoSessionForEmergencyRegistrations(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	req, f := s.register(func(r *sip.Request) { r.Header.Set("Contact", "<sip:ue@"+s.ue.Addr().String()+";sos>") })
+	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
+	wantStatus(t, first(s.ue.RecvResponse()), 200)
+
+	pcrf.none()
+
+	if r, ok := s.record(); !ok || r.RxSessionID != "" {
+		t.Fatalf("record = %+v, %v; want an emergency registration without an Rx session", r, ok)
+	}
+}
+
+func TestRxSignallingLostDuringARegistration(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+
+	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
+	s.wantSignallingLost(true)
+
+	// A new REGISTER clears it on arrival (TS 24.229 §5.2.6.4.3 NOTE 1).
+	req, f := s.register(nil)
+	s.wantSignallingLost(false)
+
+	// Lost again before the 200: the 200 keeps it.
+	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
+	s.wantSignallingLost(true)
+
+	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
+	wantStatus(t, first(s.ue.RecvResponse()), 200)
+
+	s.wantSignallingLost(true)
+}
+
+func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	snapshot, _ := s.record()
+
+	s.clock.Advance(600 * time.Second)
+	pcrf.wantSTR(id, rx.TerminationAuthExpired)
+
+	// A partial deregistration saving the snapshot after the removal.
+	s.p.regs.save(snapshot)
+
+	if r, _ := s.record(); r.RxSessionID != "" {
+		t.Fatalf("session = %q, want the ended session not brought back", r.RxSessionID)
+	}
+
+	s.reregister(600)
+
+	again, _ := pcrf.aar()
+	s.wantSession(again)
+}
+
+// classAA answers AARs with Class values, and records the STRs' Class.
+func (f *fakePCRF) classAA(class [][]byte) <-chan [][]byte {
+	strs := make(chan [][]byte, 8)
+
+	f.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		switch req.CommandCode {
+		case rx.CommandAA:
+			return rx.NewAAAnswer(req, pcrfIdentity, rx.AAAnswer{Class: class})
+		case rx.CommandSessionTermination:
+			str, err := rx.ParseSessionTerminationRequest(req)
+			if err != nil {
+				return nil, err
+			}
+
+			strs <- str.Class
+		}
+
+		return succeed(req)
+	})
+
+	return strs
+}
+
+func TestRxClassEchoedInTheSTR(t *testing.T) {
+	class := [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}
+
+	s, pcrf := newRxScene(t, 0)
+	strs := pcrf.classAA(class)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+
+	eventually(t, "the Class on the stored record", func() bool {
+		regs, err := s.store.ListPCSCFRegistrations(context.Background())
+		return err == nil && len(regs) == 1 && regs[0].RxSessionID == id && reflect.DeepEqual(regs[0].RxClass, class)
+	})
+
+	s.reregister(0)
+	pcrf.wantSTR(id, rx.TerminationLogout)
+
+	if got := <-strs; !reflect.DeepEqual(got, class) {
+		t.Fatalf("STR Class = %q, want the AAA's %q", got, class)
+	}
+}
+
+func TestRxClassSurvivesRestart(t *testing.T) {
+	class := [][]byte{[]byte("pcrf-state")}
+
+	s, pcrf := newRxScene(t, 0)
+	strs := pcrf.classAA(class)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+
+	eventually(t, "the Class on the record", func() bool {
+		r, ok := s.record()
+		return ok && reflect.DeepEqual(r.RxClass, class)
+	})
+
+	s.restart()
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	if got := <-strs; !reflect.DeepEqual(got, class) {
+		t.Fatalf("STR Class after the restart = %q, want %q", got, class)
+	}
+}
+
+func TestTerminationCauseOfMixedEvents(t *testing.T) {
+	for _, events := range [][]regevent.Event{
+		{regevent.Unregistered, regevent.Deactivated},
+		{regevent.Deactivated, regevent.Unregistered},
+		{regevent.Expired, regevent.Rejected, regevent.Unregistered},
+	} {
+		var e regevent.Event
+		for _, ev := range events {
+			e = graver(e, ev)
+		}
+
+		if c := terminationCause(e); c != rx.TerminationAdministrative {
+			t.Errorf("%v: cause %s, want DIAMETER_ADMINISTRATIVE", events, c)
+		}
+	}
+
+	if c := terminationCause(graver(graver("", regevent.Expired), regevent.Unregistered)); c != rx.TerminationLogout {
+		t.Errorf("expired and unregistered: cause %s, want DIAMETER_LOGOUT", c)
+	}
 }
 
 func TestNoRxWithoutAPCRF(t *testing.T) {
@@ -736,7 +965,7 @@ func TestNoRxWithoutAPCRF(t *testing.T) {
 		t.Fatalf("session = %q without a PCRF", r.RxSessionID)
 	}
 
-	if s.p.ReAuth("ims.test;1;1", rx.ReAuthRequest{}) || s.p.AbortSession("ims.test;1;1", rx.AbortSessionRequest{}) {
+	if _, known := s.p.AbortSession("ims.test;1;1", rx.AbortSessionRequest{}); known || s.p.ReAuth("ims.test;1;1", rx.ReAuthRequest{}) {
 		t.Fatal("a session found without a PCRF")
 	}
 }

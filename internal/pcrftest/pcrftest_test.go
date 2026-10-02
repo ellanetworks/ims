@@ -133,8 +133,8 @@ func TestSession(t *testing.T) {
 		FramedIPAddress: ue,
 		MediaComponents: []rx.MediaComponent{{SubComponents: []rx.MediaSubComponent{{FlowUsage: &signalling}}}},
 	}))
-	if _, err := rx.ParseAAAnswer(ans); err != nil {
-		t.Fatalf("AAA: %v", err)
+	if aaa, err := rx.ParseAAAnswer(ans); err != nil || len(aaa.Class) != 1 || string(aaa.Class[0]) != session {
+		t.Fatalf("AAA = %+v, %v; want the Session-Id as Class", aaa, err)
 	}
 
 	if r := c.pcrf.Next(t); r.SessionID != session || r.AAR == nil || r.AAR.FramedIPAddress != ue {

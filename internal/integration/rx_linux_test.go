@@ -35,8 +35,13 @@ func (s *scene) aar(v6 bool) string {
 func (s *scene) wantSTR(session string, cause rx.TerminationCause) {
 	s.t.Helper()
 
-	if r := s.pcrf.Next(s.t); r.STR == nil || r.SessionID != session || r.STR.Cause != cause {
+	r := s.pcrf.Next(s.t)
+	if r.STR == nil || r.SessionID != session || r.STR.Cause != cause {
 		s.t.Fatalf("got %s, want the STR of %s with %s", r, session, cause)
+	}
+
+	if len(r.STR.Class) != 1 || string(r.STR.Class[0]) != session {
+		s.t.Fatalf("STR Class = %q, want the AAA's %q", r.STR.Class, session)
 	}
 }
 

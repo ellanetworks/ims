@@ -146,16 +146,19 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 // rxSessions is what the Rx handlers need from the P-CSCF.
 type rxSessions interface {
 	ReAuth(sessionID string, r rx.ReAuthRequest) bool
-	AbortSession(sessionID string, r rx.AbortSessionRequest) bool
+	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
 
+// rxHandler answers the PCRF's RARs and ASRs. Only the Rx peer holds the
+// sessions: another peer's requests name no session of its own.
 type rxHandler struct {
 	log    *slog.Logger
+	peer   string
 	target atomic.Pointer[rxSessions]
 }
 
-func newRxHandler(logger *slog.Logger) *rxHandler {
-	return &rxHandler{log: logger}
+func newRxHandler(peer string, logger *slog.Logger) *rxHandler {
+	return &rxHandler{log: logger, peer: peer}
 }
 
 func (h *rxHandler) bind(s rxSessions) {
@@ -183,7 +186,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	if !(*t).ReAuth(session, rar) {
+	if c.PeerID() != h.peer || !(*t).ReAuth(session, rar) {
 		h.log.Info("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
@@ -197,8 +200,9 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 	return ans
 }
 
-// abortSession answers an Rx ASR (TS 29.214 §4.4.6.1).
-func (h *rxHandler) abortSession(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+// abortSession answers an Rx ASR (TS 29.214 §4.4.6.1), and closes the session
+// with an STR once the ASA is written.
+func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
 	asr, err := rx.ParseAbortSessionRequest(req)
@@ -213,9 +217,23 @@ func (h *rxHandler) abortSession(_ context.Context, c *diameter.Conn, req *diame
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	if !(*t).AbortSession(session, asr) {
+	var (
+		terminate func()
+		known     bool
+	)
+
+	if c.PeerID() == h.peer {
+		terminate, known = (*t).AbortSession(session, asr)
+	}
+
+	if !known {
 		h.log.Info("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
+	}
+
+	// Even when the ASA could not be written: the session is gone here.
+	if !diameter.AfterAnswer(ctx, func(error) { terminate() }) {
+		terminate()
 	}
 
 	ans, err := rx.NewAbortSessionAnswer(req, c.LocalIdentity(), rx.AbortSessionAnswer{})

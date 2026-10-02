@@ -40,10 +40,12 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 	update.ExpiresAt = testNow.Add(2 * time.Hour)
 	update.AssociatedURIs = update.AssociatedURIs[:1]
 	update.RxSessionID = "pcscf.ims;1;2"
+	update.RxClass = [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}
 	update.SignallingLost = true
 
 	got, err := d.SavePCSCFRegistration(ctx, update)
-	if err != nil || got.ID != want.ID || got.RxSessionID != update.RxSessionID || !got.SignallingLost {
+	if err != nil || got.ID != want.ID || got.RxSessionID != update.RxSessionID || !reflect.DeepEqual(got.RxClass, update.RxClass) ||
+		!got.SignallingLost {
 		t.Fatalf("SavePCSCFRegistration again = %+v, %v; want the same row with the Rx session", got, err)
 	}
 
@@ -52,9 +54,10 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("ListPCSCFRegistrations = %+v, %v; want %+v", regs, err, got)
 	}
 
-	update.RxSessionID, update.SignallingLost = "", false
+	update.RxSessionID, update.RxClass, update.SignallingLost = "", nil, false
 
-	if got, err = d.SavePCSCFRegistration(ctx, update); err != nil || got.RxSessionID != "" || got.SignallingLost {
+	if got, err = d.SavePCSCFRegistration(ctx, update); err != nil || got.RxSessionID != "" || got.RxClass != nil ||
+		got.SignallingLost {
 		t.Fatalf("SavePCSCFRegistration cleared = %+v, %v; want no Rx session", got, err)
 	}
 

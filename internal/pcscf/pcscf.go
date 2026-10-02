@@ -183,9 +183,7 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 }
 
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	if req.Method != "REGISTER" {
-		p.signallingRestored(req)
-	}
+	p.signallingRestored(req)
 
 	switch {
 	case req.Method == "REGISTER":
@@ -275,6 +273,10 @@ type registration struct {
 	in        *view
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
+
+	// removed is the record the 200 deregistered, whose Rx session ends once
+	// the 200 is relayed.
+	removed *db.PCSCFRegistration
 }
 
 func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
@@ -402,13 +404,14 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	ended, open := false, false
 	if res.IsSuccess() {
 		ended = p.registered(req, res, r)
-		open = !ended && p.rx != nil && p.regs.withoutRx(r.impi, r.ue)
+		open = !ended && p.rx != nil && !emergency(res) && p.regs.withoutRx(r.impi, r.ue)
 	}
 
 	// The Rx session is opened once the 200 has been relayed (TS 29.213
-	// Annex B.1).
+	// Annex B.1), and closed after the 200 to a deregistration (TS 23.228
+	// §5.3.1).
 	relay := func() proxy.Verdict {
-		if !open {
+		if !open && r.removed == nil {
 			return proxy.Relay
 		}
 
@@ -416,7 +419,13 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 			p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
-		p.openRx(regKey{r.impi, r.ue})
+		if r.removed != nil {
+			p.endRx(*r.removed, rx.TerminationLogout, 0)
+		}
+
+		if open {
+			p.openRx(regKey{r.impi, r.ue}, 0)
+		}
 
 		return proxy.Hold
 	}
@@ -478,7 +487,6 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 
 			if len(existing.Sets) > 0 {
 				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
-				existing.SignallingLost = false
 				p.regs.save(existing)
 
 				p.log.Info("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
@@ -489,7 +497,10 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 
 		if old, ok := p.regs.remove(r.impi, r.ue); ok {
 			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
-			p.endRx(old, rx.TerminationLogout, 0)
+
+			if old.RxSessionID != "" {
+				r.removed = &old
+			}
 		}
 
 		p.unsubscribeIfIdle(r.impi)
@@ -555,6 +566,15 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	}
 
 	return false
+}
+
+// emergency reports whether the 200 is to an emergency registration, marked
+// by the "sos" parameter on its Contact (TS 24.229 §5.2.10.1). It gets no Rx
+// session (TS 29.214 Annex A.4 NOTE 2; TS 29.213 Annex B.0).
+func emergency(res *sip.Response) bool {
+	contacts, _ := res.Header.Contacts()
+
+	return slices.ContainsFunc(contacts, func(c sip.Address) bool { return c.URI.Params.Has("sos") })
 }
 
 func registeredIdentity(req *sip.Request) string {
