@@ -131,7 +131,7 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 }
 
 func testLogger(t *testing.T) *slog.Logger {
-	return slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 func (s *scene) newUE(v6 bool, cfg testue.Config) *testue.UE {
@@ -423,7 +423,7 @@ func drain(u *testue.UE) {
 
 func TestReAuthentication(t *testing.T) {
 	s := newSceneWith(t, func(c *config.Config) { c.SCSCF.ReauthInterval = time.Nanosecond })
-	u := s.newUE(false, testue.Config{})
+	u := s.newUE(false, testue.Config{NoRegEvent: true})
 
 	s.register(u)
 

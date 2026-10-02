@@ -121,6 +121,7 @@ type SCSCF struct {
 	MaxExpires   int      `yaml:"max_expires"`
 
 	ReauthInterval time.Duration `yaml:"reauth_interval"`
+	ReauthExpires  time.Duration `yaml:"reauth_expires"`
 }
 
 func DefaultSCSCFName(homeDomain string, port int) string {
@@ -452,6 +453,8 @@ func (s SCSCF) validate(sipConfig SIP, homeDomain string) error {
 		return fmt.Errorf("scscf.max_expires %d is below scscf.min_expires %d", s.MaxExpires, s.MinExpires)
 	case s.ReauthInterval < 0:
 		return fmt.Errorf("scscf.reauth_interval %s is negative", s.ReauthInterval)
+	case s.ReauthExpires < 0:
+		return fmt.Errorf("scscf.reauth_expires %s is negative", s.ReauthExpires)
 	}
 
 	u, err := sip.ParseURI(s.Name)

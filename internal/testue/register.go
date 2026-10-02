@@ -48,6 +48,12 @@ func (u *UE) Register(ctx context.Context) error {
 			continue
 		}
 
+		if err == nil && !u.cfg.NoRegEvent {
+			if err := u.subscribe(ctx); err != nil {
+				u.event(Event{Err: err})
+			}
+		}
+
 		return err
 	}
 }
@@ -404,9 +410,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 			u.dropLocked(s)
 		}
 
-		u.stopTimersLocked()
-		u.state = State{}
-		u.auth = ""
+		u.forgetLocked()
 
 		return
 	}
@@ -418,6 +422,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	case temp != nil:
 		temp.state, temp.ownsSPIs = Established, true
 		p.client = client{}
+		u.retired = nil
 
 		if p.origin != nil && p.origin.expires.After(life) {
 			life = p.origin.expires
@@ -451,6 +456,11 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		}
 	}
 
+	var impus []string
+	if u.state.Registered {
+		impus = u.state.IMPUs
+	}
+
 	u.auth = p.auth
 	u.state = State{
 		Registered:     true,
@@ -458,6 +468,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		AssociatedURIs: associated,
 		ServiceRoute:   res.Header.Values("Service-Route"),
 		Barred:         !slices.ContainsFunc(associated, func(a string) bool { return sameURI(a, u.id.impu) }),
+		IMPUs:          impus,
 	}
 
 	if len(associated) > 0 {

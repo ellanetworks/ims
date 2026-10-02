@@ -102,15 +102,20 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 }
 
 func (r *Registrar) reauthDue(rr *registerRequest) bool {
-	if r.cfg.ReauthInterval <= 0 || rr.deregister() {
+	if rr.deregister() {
 		return false
 	}
 
 	r.mu.Lock()
 	at, ok := r.authAt[rr.impi]
+	requested := r.reauth[rr.impi]
 	r.mu.Unlock()
 
-	return !ok || r.clock.Now().Sub(at) >= r.cfg.ReauthInterval
+	if requested {
+		return true
+	}
+
+	return r.cfg.ReauthInterval > 0 && (!ok || r.clock.Now().Sub(at) >= r.cfg.ReauthInterval)
 }
 
 func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
@@ -302,6 +307,7 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 
 	r.mu.Lock()
 	r.authAt[rr.impi] = r.clock.Now()
+	delete(r.reauth, rr.impi)
 	r.mu.Unlock()
 
 	return r.authenticated(ctx, rr)

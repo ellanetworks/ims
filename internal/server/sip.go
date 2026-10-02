@@ -28,6 +28,7 @@ import (
 
 type SIP interface {
 	Listeners() []api.SIPEndpoint
+	Reauthenticate(ctx context.Context, impi string) error
 	Close() error
 }
 
@@ -163,6 +164,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		MaxExpires: time.Duration(cfg.SCSCF.MaxExpires) * time.Second,
 
 		ReauthInterval: cfg.SCSCF.ReauthInterval,
+		ReauthExpires:  cfg.SCSCF.ReauthExpires,
 
 		HSS:       scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
 		Diameter:  node,
@@ -269,6 +271,15 @@ func (s *sipServer) bound(role string) []netip.AddrPort {
 
 func (s *sipServer) Listeners() []api.SIPEndpoint {
 	return s.listeners
+}
+
+func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
+	err := s.registrar.Reauthenticate(ctx, impi)
+	if errors.Is(err, scscf.ErrNotRegistered) {
+		return api.ErrNotRegistered
+	}
+
+	return err
 }
 
 func (s *sipServer) Close() error {

@@ -6,12 +6,13 @@ import (
 )
 
 type Config struct {
-	Version    string
-	Diameter   Diameter
-	SIP        SIP
-	HomeDomain string
-	SIPAliases []string
-	Logger     *slog.Logger
+	Version       string
+	Diameter      Diameter
+	SIP           SIP
+	Registrations Registrations
+	HomeDomain    string
+	SIPAliases    []string
+	Logger        *slog.Logger
 }
 
 func NewHandler(cfg Config) http.Handler {
@@ -20,6 +21,7 @@ func NewHandler(cfg Config) http.Handler {
 	mux.Handle("GET /api/v1/status", GetStatus(cfg))
 	mux.Handle("GET /api/v1/diameter", GetDiameterStatus(cfg))
 	mux.Handle("GET /api/v1/sip", GetSIPStatus(cfg))
+	mux.Handle("POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg))
 
 	return mux
 }
