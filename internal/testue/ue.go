@@ -175,6 +175,10 @@ type saSet struct {
 	timer   *time.Timer
 	server  []string
 	removed bool
+
+	// ownsSPIs is set once the procedure that installed the set hands its
+	// SPIs over to it.
+	ownsSPIs bool
 }
 
 // client is the UE's side of a Security-Client: port_us is the UE's.
@@ -201,6 +205,9 @@ type UE struct {
 
 	mu          sync.Mutex
 	closed      bool
+	clientPorts []uint16
+	pending     int
+	newSAUsed   bool
 	sqn         uint64
 	expires     time.Duration
 	callID      string
@@ -241,7 +248,11 @@ func New(cfg Config) (*UE, error) {
 		cfg.Expires = DefaultExpires
 	}
 
-	if cfg.AccessNetworkInfo == "" {
+	if cfg.AccessNetworkInfo == "" && !cfg.Plain {
+		if id.mcc == "" {
+			return nil, errors.New("testue: no AccessNetworkInfo, and no IMSI to derive it from")
+		}
+
 		cfg.AccessNetworkInfo = accessNetworkInfo(id.mcc, id.mnc)
 	}
 
@@ -274,9 +285,10 @@ func New(cfg Config) (*UE, error) {
 	do := cfg.Do
 
 	u.layer = transaction.New(transaction.Config{
-		Handler: u,
-		Logger:  cfg.Logger,
-		Filter:  u.filter,
+		Handler:      u,
+		Logger:       cfg.Logger,
+		Filter:       u.filter,
+		ResponseFlow: u.responseFlow,
 		Transport: transport.Config{
 			Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 				var (
@@ -386,7 +398,8 @@ func (u *UE) SetAutoReregister(on bool) {
 	}
 }
 
-// Close removes the SAs and closes the sockets, without deregistering.
+// Close removes the SAs and closes the sockets, without deregistering. A
+// procedure under way fails, and Close waits for it.
 func (u *UE) Close() error {
 	u.mu.Lock()
 
@@ -397,14 +410,21 @@ func (u *UE) Close() error {
 
 	u.closed = true
 	u.stopTimersLocked()
+	u.mu.Unlock()
+
+	err := u.layer.Close()
+
+	u.op.Lock()
+	defer u.op.Unlock()
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	for _, s := range slices.Clone(u.sets) {
 		u.dropLocked(s)
 	}
 
-	u.mu.Unlock()
-
-	return u.layer.Close()
+	return err
 }
 
 func (u *UE) stopTimersLocked() {
@@ -433,33 +453,82 @@ func (u *UE) HandleAck(*sip.Request) {}
 
 func (u *UE) HandleTransactionError(*transaction.ServerTransaction, error) {}
 
-// filter deletes the old SAs once a message arrives on the established SAs
-// that replaced them (TS 33.203 §7.4.1a).
+var (
+	errUnprotected = errors.New("testue: request on the unprotected port")
+	errNoSA        = errors.New("testue: message on a protected port outside the SAs")
+)
+
+// filter takes only responses on the unprotected port, and on the protected
+// ports only what arrives through a set of SAs (TS 33.203 §7.1). A message
+// through the established set lets the old one go (§7.4.1a).
 func (u *UE) filter(m sip.Message) error {
+	if u.cfg.Plain {
+		return nil
+	}
+
 	f := m.Env().Flow
+
+	if f.Local.Port() == u.unprotected.Port() {
+		if _, ok := m.(*sip.Request); ok {
+			return errUnprotected
+		}
+
+		return nil
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	var est *saSet
+	i := slices.IndexFunc(u.sets, func(s *saSet) bool { return inbound(s.set, f) })
+	if i < 0 {
+		return errNoSA
+	}
+
+	if u.sets[i].state == Established {
+		u.newSAUsed = true
+		u.dropOldLocked()
+	}
+
+	return nil
+}
+
+// responseFlow sends the responses to requests that came through a set of
+// SAs from port_uc to port_ps over UDP (TS 33.203 §7.1); over TCP they go
+// back on the connection.
+func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
+	f := req.Flow
+	if u.cfg.Plain || f.Transport != sip.UDP {
+		return sip.Flow{}, false, nil
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	for _, s := range u.sets {
-		if s.state == Established && inbound(s.set, f) {
-			est = s
+		if inbound(s.set, f) {
+			return sip.Flow{
+				Transport: sip.UDP,
+				Local:     netip.AddrPortFrom(f.Local.Addr(), s.set.Local.PortC),
+				Remote:    netip.AddrPortFrom(s.set.Remote.Addr, s.set.Remote.PortS),
+			}, true, nil
 		}
 	}
 
-	if est == nil {
-		return nil
+	return sip.Flow{}, false, nil
+}
+
+// dropOldLocked deletes the old set once a message has arrived through the
+// new one and no transaction is pending (TS 33.203 §7.4.1a).
+func (u *UE) dropOldLocked() {
+	if !u.newSAUsed || u.pending > 0 {
+		return
 	}
 
-	for _, s := range u.sets {
+	for _, s := range slices.Clone(u.sets) {
 		if s.state == Old {
 			u.dropLocked(s)
 		}
 	}
-
-	return nil
 }
 
 // inbound is whether a message on f arrived through the set.
@@ -497,6 +566,18 @@ func (w *waiter) HandleError(err error) {
 }
 
 func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, error) {
+	u.mu.Lock()
+	u.pending++
+	u.mu.Unlock()
+
+	defer func() {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+
+		u.pending--
+		u.dropOldLocked()
+	}()
+
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
 	if _, err := u.layer.Request(req, w); err != nil {
@@ -513,10 +594,34 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 	}
 }
 
-func (u *UE) newClient() (client, error) {
-	bound, err := u.listen(0)
-	if err != nil {
-		return client{}, err
+// newClient takes new SPIs and a protected client port that no set uses and
+// that differs from the one offered last, from the ports the UE already
+// listens on when it can.
+func (u *UE) newClient(last uint16) (client, error) {
+	u.mu.Lock()
+
+	port := uint16(0)
+
+	for _, p := range u.clientPorts {
+		if p != last && !slices.ContainsFunc(u.sets, func(s *saSet) bool { return s.set.Local.PortC == p }) {
+			port = p
+			break
+		}
+	}
+
+	u.mu.Unlock()
+
+	if port == 0 {
+		bound, err := u.listen(0)
+		if err != nil {
+			return client{}, err
+		}
+
+		port = bound.Port()
+
+		u.mu.Lock()
+		u.clientPorts = append(u.clientPorts, port)
+		u.mu.Unlock()
 	}
 
 	spiC, spiS, err := u.spis.Allocate()
@@ -524,7 +629,7 @@ func (u *UE) newClient() (client, error) {
 		return client{}, fmt.Errorf("testue: %w", err)
 	}
 
-	return client{portC: bound.Port(), spiC: spiC, spiS: spiS}, nil
+	return client{portC: port, spiC: spiC, spiS: spiS}, nil
 }
 
 func (u *UE) securityClient(c client) []string {
@@ -547,7 +652,8 @@ func (u *UE) securityClient(c client) []string {
 }
 
 // selectServer takes the first Security-Server mechanism the UE offered
-// (TS 33.203 §7.2).
+// (TS 33.203 §7.2). A Security-Server without the parameters of a set of SAs
+// counts as missing (TS 24.229 §5.1.1.5.1).
 func (u *UE) selectServer(res *sip.Response) (ipsec.Offer, []string, error) {
 	values := res.Header.Values("Security-Server")
 	if len(values) == 0 {
@@ -556,18 +662,30 @@ func (u *UE) selectServer(res *sip.Response) (ipsec.Offer, []string, error) {
 
 	ms, err := res.Header.SecurityMechanisms("Security-Server")
 	if err != nil {
-		return ipsec.Offer{}, nil, fmt.Errorf("testue: %w", err)
+		return ipsec.Offer{}, nil, fmt.Errorf("%w: %w", ErrNoSecurityServer, err)
 	}
+
+	usable := false
 
 	for _, m := range ms {
 		o, err := ipsec.ParseOffer(m)
+		if errors.Is(err, ipsec.ErrUnsupportedOffer) {
+			usable = true
+		}
+
 		if err != nil {
 			continue
 		}
 
+		usable = true
+
 		if slices.Contains(u.offers, Offer{o.Integrity, o.Encryption}) {
 			return o, values, nil
 		}
+	}
+
+	if !usable {
+		return ipsec.Offer{}, nil, fmt.Errorf("%w: no ipsec-3gpp mechanism with its parameters", ErrNoSecurityServer)
 	}
 
 	return ipsec.Offer{}, nil, ErrNoAcceptableOffer
@@ -584,14 +702,18 @@ func (u *UE) install(c client, o ipsec.Offer, keys ipsec.Keys, server []string) 
 	}
 	set.Remote.Addr = u.cfg.PCSCF.Addr()
 
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.closed {
+		return nil, ErrClosed
+	}
+
 	if err := u.cfg.Kernel.Install(set, keys); err != nil {
 		return nil, fmt.Errorf("testue: %w", err)
 	}
 
 	s := &saSet{set: set, keys: keys, state: Temporary, server: server}
-
-	u.mu.Lock()
-	defer u.mu.Unlock()
 
 	u.sets = append(u.sets, s)
 	u.lifetimeLocked(s, time.Now().Add(RegAwaitAuth))
@@ -648,7 +770,9 @@ func (u *UE) drop(s *saSet) {
 }
 
 func (u *UE) removeSet(s *saSet) error {
-	u.spis.Release(s.set.Local.SPIC, s.set.Local.SPIS)
+	if s.ownsSPIs {
+		u.spis.Release(s.set.Local.SPIC, s.set.Local.SPIS)
+	}
 
 	if u.cfg.Transport == sip.TCP {
 		go u.layer.CloseFlow(protectedFlow(s, sip.TCP))

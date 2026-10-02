@@ -7,11 +7,13 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/milenage"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 const icsiMMTel = `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
@@ -136,20 +138,21 @@ func (u *UE) unprotectedFlow() sip.Flow {
 	return sip.Flow{Transport: u.cfg.Transport, Local: u.unprotected, Remote: u.cfg.PCSCF}
 }
 
-func (u *UE) contactPort() uint16 {
-	if u.cfg.Plain {
-		return u.unprotected.Port()
+// port is the port in the Via and the Contact: the protected server port when
+// the REGISTER goes over SAs, the unprotected one otherwise (TS 24.229
+// §5.1.1.2.1 d, §5.1.1.2.2 b and c).
+func (u *UE) port(protected bool) uint16 {
+	if protected {
+		return u.portS
 	}
 
-	return u.portS
+	return u.unprotected.Port()
 }
 
-func (u *UE) contactURI() sip.URI {
-	return sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.contactPort()}
-}
+func (u *UE) contact(port uint16) string {
+	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
-func (u *UE) contact() string {
-	return sip.Address{URI: u.contactURI(), Params: sip.Params{
+	return sip.Address{URI: uri, Params: sip.Params{
 		{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")},
 		{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel},
 		{Name: "+g.3gpp.smsip"},
@@ -162,9 +165,10 @@ func (u *UE) newClientFor(p *procedure) error {
 		return nil
 	}
 
+	last := p.client.portC
 	u.releaseClient(p)
 
-	c, err := u.newClient()
+	c, err := u.newClient(last)
 	if err != nil {
 		return err
 	}
@@ -194,7 +198,9 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 	req := sip.NewRequest("REGISTER", sip.URI{Scheme: "sip", Host: u.id.domain})
 	req.Flow = p.flow
 
-	via := sip.NewVia(p.flow.Transport, netip.AddrPortFrom(u.cfg.Local, u.contactPort()))
+	port := u.port(protected)
+
+	via := sip.NewVia(p.flow.Transport, netip.AddrPortFrom(u.cfg.Local, port))
 	via.Params.Set("rport", "")
 
 	req.Header.Add("Via", via.String())
@@ -203,7 +209,7 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 	req.Header.Add("To", "<"+u.id.impu+">")
 	req.Header.Add("Call-ID", callID)
 	req.Header.Add("CSeq", strconv.FormatUint(uint64(cseq), 10)+" REGISTER")
-	req.Header.Add("Contact", u.contact())
+	req.Header.Add("Contact", u.contact(port))
 	req.Header.Add("Expires", strconv.FormatInt(int64(expires/time.Second), 10))
 	req.Header.Add("Supported", "path")
 	req.Header.Add("Authorization", p.auth)
@@ -312,6 +318,17 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 				continue
 			}
 
+			var (
+				offer  ipsec.Offer
+				server []string
+			)
+
+			if !u.cfg.Plain {
+				if offer, server, err = u.selectServer(res); err != nil {
+					return fail(err)
+				}
+			}
+
 			invalid, macFailure = 0, false
 
 			u.mu.Lock()
@@ -324,11 +341,9 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 				continue
 			}
 
-			offer, server, err := u.selectServer(res)
-			if err != nil {
-				return fail(err)
-			}
-
+			// The Security-Client stays that of the challenged REGISTER (TS
+			// 24.229 §5.1.1.5.1), so a set dropped above is set up again on the
+			// same SPIs and ports.
 			if temp, err = u.install(p.client, offer, ipsec.Keys{CK: r.CK, IK: r.IK}, server); err != nil {
 				return fail(err)
 			}
@@ -365,11 +380,9 @@ func (u *UE) adoptMinExpires(res *sip.Response) error {
 
 // granted is the expiry of the UE's binding in the 200.
 func (u *UE) granted(res *sip.Response) time.Duration {
-	own := u.contactURI()
-
 	contacts, _ := res.Header.Contacts()
 	for _, c := range contacts {
-		if !c.URI.Equivalent(own) {
+		if c.URI.User != u.user || !strings.EqualFold(c.URI.Host, sip.FormatHost(u.cfg.Local)) {
 			continue
 		}
 
@@ -396,7 +409,12 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if p.dereg {
+	if u.closed {
+		return
+	}
+
+	// A binding granted no time is gone as after a deregistration.
+	if p.dereg || granted == 0 {
 		u.releaseClient(p)
 
 		for _, s := range slices.Clone(u.sets) {
@@ -415,7 +433,8 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 
 	switch {
 	case temp != nil:
-		temp.state = Established
+		temp.state, temp.ownsSPIs = Established, true
+		p.client = client{}
 
 		if p.origin != nil && p.origin.expires.After(life) {
 			life = p.origin.expires
@@ -423,11 +442,14 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 
 		u.lifetimeLocked(temp, life)
 
+		// The old set stays until a further message arrives through the new
+		// one (TS 33.203 §7.4.1a); the 200 does not count.
 		for _, s := range slices.Clone(u.sets) {
-			switch {
-			case s == temp:
-			case s == p.origin && !inbound(temp.set, res.Flow):
+			switch s {
+			case temp:
+			case p.origin:
 				s.state = Old
+				u.newSAUsed = false
 			default:
 				u.dropLocked(s)
 			}
@@ -498,7 +520,8 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 	}
 
 	u.reregTimer = time.AfterFunc(at, func() {
-		if err := u.Reregister(context.Background()); err != nil {
+		err := u.Reregister(context.Background())
+		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {
 			u.event(Event{Err: err})
 		}
 	})
