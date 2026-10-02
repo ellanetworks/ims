@@ -76,23 +76,25 @@ func openStore(t *testing.T) *db.DB {
 	return d
 }
 
-func newIPsecScene(t *testing.T, policy ipsec.Policy) *ipsecScene {
+func newIPsecScene(t *testing.T, policy ipsec.Policy, opts ...func(*Config)) *ipsecScene {
 	t.Helper()
 
-	return newIPsecSceneWith(t, policy, ipsectest.NewKernel(), openStore(t))
+	return newIPsecSceneWith(t, policy, ipsectest.NewKernel(), openStore(t), opts...)
 }
 
-func newIPsecSceneWith(t *testing.T, policy ipsec.Policy, kernel *ipsectest.Kernel, store *db.DB) *ipsecScene {
+func newIPsecSceneWith(t *testing.T, policy ipsec.Policy, kernel *ipsectest.Kernel, store *db.DB, opts ...func(*Config)) *ipsecScene {
 	t.Helper()
 
-	s := newIPsecSceneAt(t, loopback, policy, kernel, store, transport.Config{})
+	s := newIPsecSceneAt(t, loopback, policy, kernel, store, transport.Config{}, opts...)
 	s.kernel = kernel
 	s.ue = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	return s
 }
 
-func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, tc transport.Config) *ipsecScene {
+func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, tc transport.Config,
+	opts ...func(*Config),
+) *ipsecScene {
 	t.Helper()
 
 	s := &ipsecScene{t: t, store: store, late: &lateHandler{}}
@@ -108,7 +110,7 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	s.ps = siptest.ListenLayer(t, layer, addr)
 	s.pcs = [2]netip.AddrPort{siptest.ListenLayer(t, layer, addr), siptest.ListenLayer(t, layer, addr)}
 
-	s.p = New(Config{
+	cfg := Config{
 		Layer:      layer,
 		Proxy:      s.newProxy(),
 		Port:       s.pcscf.Port(),
@@ -130,7 +132,13 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 		},
 		Fallback: fallback,
 		Logger:   slog.New(slog.DiscardHandler),
-	})
+	}
+
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	s.p = New(cfg)
 	t.Cleanup(s.p.Close)
 
 	if err := s.p.Restore(context.Background()); err != nil {

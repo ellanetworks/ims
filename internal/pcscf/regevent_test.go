@@ -47,12 +47,15 @@ type regScene struct {
 	clock fakeClock
 	store *db.DB
 	p     *PCSCF
+	late  *lateHandler
+
+	fallback *siptest.TU
 
 	callID string
 	cseq   int
 }
 
-func newRegScene(t *testing.T) *regScene {
+func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 	t.Helper()
 
 	s := &regScene{
@@ -65,11 +68,12 @@ func newRegScene(t *testing.T) *regScene {
 		callID: sip.NewTag(),
 	}
 
-	late := &lateHandler{}
-	layer, fallback := siptest.NewLayer(t, transaction.Config{Handler: late, Logger: slog.New(slog.DiscardHandler)})
+	s.late = &lateHandler{}
+	layer, fallback := siptest.NewLayer(t, transaction.Config{Handler: s.late, Logger: slog.New(slog.DiscardHandler)})
 	s.pcscf = siptest.ListenLayer(t, layer, loopback)
+	s.fallback = fallback
 
-	s.p = New(Config{
+	cfg := Config{
 		Layer:      layer,
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Port: s.pcscf.Port()}),
 		Port:       s.pcscf.Port(),
@@ -83,16 +87,41 @@ func newRegScene(t *testing.T) *regScene {
 		Fallback:      fallback,
 		Clock:         s.clock,
 		Logger:        slog.New(slog.DiscardHandler),
-	})
+	}
+
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	s.p = New(cfg)
 	t.Cleanup(s.p.Close)
 
 	if err := s.p.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	late.h.Store(s.p)
+	s.late.h.Store(s.p)
 
 	return s
+}
+
+func (s *regScene) restart() {
+	s.t.Helper()
+
+	s.p.Close()
+
+	cfg := s.p.cfg
+	cfg.Proxy = proxy.New(proxy.Config{Layer: cfg.Layer, Port: s.pcscf.Port()})
+
+	p := New(cfg)
+	s.t.Cleanup(p.Close)
+
+	if err := p.Restore(context.Background()); err != nil {
+		s.t.Fatal(err)
+	}
+
+	s.p = p
+	s.late.h.Store(p)
 }
 
 func (s *regScene) contact() string {
@@ -364,7 +393,7 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 	_, sub, f := s.registered(7200)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	eventually(t, "the refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
+	eventually(t, "the refresh and the registration expiry to be scheduled", func() bool { return s.clock.Pending() == 2 })
 
 	s.clock.Advance(2399 * time.Second)
 	s.scscf.RecvNone(quiet)
@@ -396,7 +425,7 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 	res.Header.Add("Expires", "1000")
 	s.scscf.Send(rf.Transport, rf.Remote, res)
 
-	eventually(t, "the next refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
+	eventually(t, "the next refresh and the registration expiry to be scheduled", func() bool { return s.clock.Pending() == 2 })
 
 	s.clock.Advance(499 * time.Second)
 	s.scscf.RecvNone(quiet)
@@ -423,7 +452,7 @@ func TestOwnSubscriptionNotRefreshedWithoutRegistration(t *testing.T) {
 	_, sub, f := s.registered(1000)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	eventually(t, "the refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
+	eventually(t, "the refresh and the registration expiry to be scheduled", func() bool { return s.clock.Pending() == 2 })
 
 	s.clock.Advance(2400 * time.Second)
 	s.scscf.RecvNone(quiet)
@@ -536,10 +565,10 @@ func TestOwnNotifyUnknownDialog(t *testing.T) {
 	wantStatus(t, o.notify(t, "active;expires=600000", nil), 481)
 }
 
-func newIPsecRegScene(t *testing.T) (*ipsecScene, *ue) {
+func newIPsecRegScene(t *testing.T, opts ...func(*Config)) (*ipsecScene, *ue) {
 	t.Helper()
 
-	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	s := newIPsecScene(t, ipsec.DefaultPolicy(), opts...)
 	s.ue = siptest.NewSocket(t, netip.AddrPortFrom(ueAddr, 0))
 
 	return s, newUEAt(t, ueAddr, 25656)
@@ -924,7 +953,7 @@ func TestRefreshFailureAfterExpirySubscribesAgain(t *testing.T) {
 	_, sub, f := s.registered(7200)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 1000)
 
-	eventually(t, "the refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
+	eventually(t, "the refresh and the registration expiry to be scheduled", func() bool { return s.clock.Pending() == 2 })
 	s.clock.Advance(1000 * time.Second)
 
 	refresh, rf := s.scscf.RecvRequest()

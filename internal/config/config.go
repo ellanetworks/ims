@@ -182,6 +182,16 @@ func (d Diameter) CxPeer() DiameterPeer {
 	return DiameterPeer{}
 }
 
+func (d Diameter) RxPeer() (DiameterPeer, bool) {
+	for _, p := range d.Peers {
+		if p.Serves(ApplicationRx) {
+			return p, true
+		}
+	}
+
+	return DiameterPeer{}, false
+}
+
 func Load(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -567,8 +577,8 @@ func (d Diameter) validate() error {
 	switch {
 	case cx != 1:
 		return fmt.Errorf("exactly one diameter peer must serve cx, found %d", cx)
-	case rx == 0:
-		return errors.New("at least one diameter peer must serve rx")
+	case rx > 1:
+		return fmt.Errorf("at most one diameter peer may serve rx, found %d", rx)
 	}
 
 	return nil

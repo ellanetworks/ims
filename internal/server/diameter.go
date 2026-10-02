@@ -32,7 +32,7 @@ var transports = map[config.Transport]diameter.Transport{
 	config.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, logger *slog.Logger) (*diameter.Node, error) {
+func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, rxh *rxHandler, logger *slog.Logger) (*diameter.Node, error) {
 	node, err := diameter.New(diameter.Config{
 		Identity: diameter.Identity{
 			OriginHost:      cfg.OriginHost,
@@ -40,7 +40,7 @@ func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, logger *slog.Logger) 
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:           newDiameterMux(rtr, logger),
+		Handler:           newDiameterMux(rtr, rxh),
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
 		Logger:            logger,
 	})
@@ -78,20 +78,12 @@ func diameterPeers(peers []config.DiameterPeer) []diameter.Peer {
 	return out
 }
 
-func newDiameterMux(rtr *rtrHandler, logger *slog.Logger) *diameter.Mux {
-	unableToComply := tgpp.Result{Code: diameter.ResultUnableToComply}
-
+func newDiameterMux(rtr *rtrHandler, rxh *rxHandler) *diameter.Mux {
 	mux := diameter.NewMux()
 
 	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, rtr)
-	mux.Handle(rx.ApplicationID, rx.CommandReAuth, unimplemented(logger, "Rx RAR",
-		func(c *diameter.Conn, req *diameter.Message) *diameter.Message {
-			return rx.NewAnswer(req, c.LocalIdentity(), unableToComply, 0)
-		}))
-	mux.Handle(rx.ApplicationID, rx.CommandAbortSession, unimplemented(logger, "Rx ASR",
-		func(c *diameter.Conn, req *diameter.Message) *diameter.Message {
-			return rx.NewAnswer(req, c.LocalIdentity(), unableToComply, 0)
-		}))
+	mux.Handle(rx.ApplicationID, rx.CommandReAuth, diameter.HandlerFunc(rxh.reAuth))
+	mux.Handle(rx.ApplicationID, rx.CommandAbortSession, diameter.HandlerFunc(rxh.abortSession))
 
 	return mux
 }
@@ -151,18 +143,88 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 	return ans
 }
 
-func unimplemented(logger *slog.Logger, name string, answer func(*diameter.Conn, *diameter.Message) *diameter.Message) diameter.Handler {
-	return diameter.HandlerFunc(func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
-		var session string
-		if a, ok := req.Find(diameter.AVPSessionID, 0); ok {
-			session = a.UTF8String()
-		}
+// rxSessions is what the Rx handlers need from the P-CSCF.
+type rxSessions interface {
+	ReAuth(sessionID string, r rx.ReAuthRequest) bool
+	AbortSession(sessionID string, r rx.AbortSessionRequest) bool
+}
 
-		logger.Warn("refusing unsupported Diameter request",
-			slog.String("request", name), slog.String("peer", c.PeerID()), slog.String("session", session))
+type rxHandler struct {
+	log    *slog.Logger
+	target atomic.Pointer[rxSessions]
+}
 
-		return answer(c, req)
-	})
+func newRxHandler(logger *slog.Logger) *rxHandler {
+	return &rxHandler{log: logger}
+}
+
+func (h *rxHandler) bind(s rxSessions) {
+	if s == nil {
+		h.target.Store(nil)
+		return
+	}
+
+	h.target.Store(&s)
+}
+
+// reAuth answers an Rx RAR (TS 29.214 §4.4.6.3).
+func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+	session := tgpp.ParseEnvelope(req).SessionID
+
+	rar, err := rx.ParseReAuthRequest(req)
+	if err != nil {
+		h.log.Info("invalid Rx RAR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+	}
+
+	t := h.target.Load()
+	if t == nil {
+		h.log.Warn("Rx RAR before the P-CSCF started", slog.String("session", session))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	if !(*t).ReAuth(session, rar) {
+		h.log.Info("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
+	}
+
+	ans, err := rx.NewReAuthAnswer(req, c.LocalIdentity(), rx.ReAuthAnswer{})
+	if err != nil {
+		h.log.Warn("building the Rx RAA failed", slog.String("session", session), slog.Any("error", err))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	return ans
+}
+
+// abortSession answers an Rx ASR (TS 29.214 §4.4.6.1).
+func (h *rxHandler) abortSession(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+	session := tgpp.ParseEnvelope(req).SessionID
+
+	asr, err := rx.ParseAbortSessionRequest(req)
+	if err != nil {
+		h.log.Info("invalid Rx ASR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+	}
+
+	t := h.target.Load()
+	if t == nil {
+		h.log.Warn("Rx ASR before the P-CSCF started", slog.String("session", session))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	if !(*t).AbortSession(session, asr) {
+		h.log.Info("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
+	}
+
+	ans, err := rx.NewAbortSessionAnswer(req, c.LocalIdentity(), rx.AbortSessionAnswer{})
+	if err != nil {
+		h.log.Warn("building the Rx ASA failed", slog.String("session", session), slog.Any("error", err))
+		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	return ans
 }
 
 func logPeerState(logger *slog.Logger, p diameter.PeerStatus) {

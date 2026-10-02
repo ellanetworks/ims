@@ -529,6 +529,7 @@ func mediaType(ct string) string {
 
 func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 	now := p.clock.Now()
+	ended := map[netip.Addr]regevent.Event{}
 
 	removed := p.regs.update(impi, func(r *db.PCSCFRegistration) bool {
 		active := map[string]bool{}
@@ -555,6 +556,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				mentioned[uri] = true
 
 				if c.State != regevent.Active || reg.State == regevent.Terminated {
+					ended[r.UEAddress.Addr()] = c.Event
 					continue
 				}
 
@@ -598,6 +600,8 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 		if p.sas != nil {
 			p.sas.deregistered(impi, r.UEAddress.Addr())
 		}
+
+		p.endRx(r, terminationCause(ended[r.UEAddress.Addr()]), 0)
 	}
 
 	if len(removed) > 0 {

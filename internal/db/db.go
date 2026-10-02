@@ -44,7 +44,6 @@ var migrations = []string{
 		uri TEXT NOT NULL,
 		params TEXT NOT NULL,
 		path TEXT,
-		rx_session_id TEXT,
 		UNIQUE (impi, uri)
 	);
 	CREATE TABLE bindings (
@@ -125,6 +124,8 @@ var migrations = []string{
 		sets TEXT NOT NULL,
 		service_route TEXT NOT NULL,
 		expires_at INTEGER NOT NULL,
+		rx_session_id TEXT,
+		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1)),
 		UNIQUE (impi, ue_address)
 	);
 	CREATE TABLE pcscf_subscriptions (

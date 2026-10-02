@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -37,6 +38,7 @@ type Config struct {
 	HomeDomain string
 	SCSCF      SCSCF
 	IPsec      IPsec
+	Rx         Rx
 
 	Registrations RegistrationStore
 
@@ -52,6 +54,7 @@ type PCSCF struct {
 	sas   *associations
 	regs  *registrations
 	subs  *subscriptions
+	rx    *rxClient
 }
 
 func New(cfg Config) *PCSCF {
@@ -72,6 +75,8 @@ func New(cfg Config) *PCSCF {
 
 	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
 	p.subs = newSubscriptions(p)
+	p.rx = newRxClient(cfg.Rx, p.log)
+	p.regs.expired = p.expired
 
 	if cfg.IPsec.Kernel != nil {
 		p.sas = newAssociations(cfg.IPsec, p.log)
@@ -91,9 +96,12 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 		}
 	}
 
-	if err := p.regs.restore(ctx); err != nil {
+	expired, err := p.regs.restore(ctx)
+	if err != nil {
 		return fmt.Errorf("restore registrations: %w", err)
 	}
+
+	p.restoreRx(expired)
 
 	if err := p.subs.restore(ctx); err != nil {
 		return fmt.Errorf("restore reg event subscriptions: %w", err)
@@ -104,10 +112,23 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 
 func (p *PCSCF) Close() {
 	p.subs.close()
+	p.regs.close()
+
+	if p.rx != nil {
+		p.rx.close()
+	}
 
 	if p.sas != nil {
 		p.sas.close()
 	}
+}
+
+func (p *PCSCF) expired(r db.PCSCFRegistration) {
+	if p.sas != nil {
+		p.sas.deregistered(r.IMPI, r.UEAddress.Addr())
+	}
+
+	p.endRx(r, rx.TerminationAuthExpired, 0)
 }
 
 func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
@@ -163,6 +184,10 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 }
 
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	if req.Method != "REGISTER" {
+		p.signallingRestored(req)
+	}
+
 	switch {
 	case req.Method == "REGISTER":
 	case toTag(req) != "":
@@ -170,6 +195,9 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		return
 	case req.Method == "SUBSCRIBE" && isRegEvent(req):
 		p.ueSubscribe(tx, req)
+		return
+	case p.signallingLost(req):
+		p.respond(tx, sip.NewResponse(req, 500, ""))
 		return
 	default:
 		p.cfg.Fallback.HandleRequest(tx, req)
@@ -372,13 +400,30 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	toUE(res)
 
-	ended := false
+	ended, open := false, false
 	if res.IsSuccess() {
 		ended = p.registered(req, res, r)
+		open = !ended && p.rx != nil && p.regs.withoutRx(r.impi, r.ue)
+	}
+
+	// The Rx session is opened once the 200 has been relayed (TS 29.213
+	// Annex B.1).
+	relay := func() proxy.Verdict {
+		if !open {
+			return proxy.Relay
+		}
+
+		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
+			p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+
+		p.openRx(regKey{r.impi, r.ue})
+
+		return proxy.Hold
 	}
 
 	if p.sas == nil {
-		return proxy.Relay
+		return relay()
 	}
 
 	switch {
@@ -419,7 +464,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		p.sas.failed(r.in.s)
 	}
 
-	return proxy.Relay
+	return relay()
 }
 
 func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) bool {
@@ -434,6 +479,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 
 			if len(existing.Sets) > 0 {
 				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
+				existing.SignallingLost = false
 				p.regs.save(existing)
 
 				p.log.Info("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
@@ -442,8 +488,9 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 			}
 		}
 
-		if p.regs.remove(r.impi, r.ue) {
+		if old, ok := p.regs.remove(r.impi, r.ue); ok {
 			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
+			p.endRx(old, rx.TerminationLogout, 0)
 		}
 
 		p.unsubscribeIfIdle(r.impi)

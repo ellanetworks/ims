@@ -30,12 +30,11 @@ type Registration struct {
 }
 
 type Contact struct {
-	ID          int64
-	IMPI        string
-	URI         string
-	Params      string
-	Path        string
-	RxSessionID string
+	ID     int64
+	IMPI   string
+	URI    string
+	Params string
+	Path   string
 }
 
 type BindingEvent string
@@ -58,9 +57,9 @@ type Binding struct {
 const (
 	registrationColumns = `id, impi, impu, user_data`
 
-	contactColumns = `c.id, c.impi, c.uri, c.params, c.path, c.rx_session_id`
+	contactColumns = `c.id, c.impi, c.uri, c.params, c.path`
 
-	returnedContactColumns = `id, impi, uri, params, path, rx_session_id`
+	returnedContactColumns = `id, impi, uri, params, path`
 )
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
@@ -156,11 +155,11 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 
 func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
 	return scanContact(tx.QueryRowContext(ctx,
-		`INSERT INTO contacts (impi, uri, params, path, rx_session_id)
-		VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO contacts (impi, uri, params, path)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path
 		RETURNING `+returnedContactColumns,
-		c.IMPI, c.URI, c.Params, nullableString(c.Path), nullableString(c.RxSessionID)))
+		c.IMPI, c.URI, c.Params, nullableString(c.Path)))
 }
 
 func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
@@ -277,20 +276,6 @@ func (d *DB) NextExpiry(ctx context.Context) (time.Time, bool, error) {
 	}
 
 	return time.Unix(0, next.Int64).UTC(), true, nil
-}
-
-func (d *DB) SetContactRxSession(ctx context.Context, contactID int64, sessionID string) error {
-	res, err := d.conn.ExecContext(ctx,
-		`UPDATE contacts SET rx_session_id = ? WHERE id = ?`, nullableString(sessionID), contactID)
-	if err != nil {
-		return fmt.Errorf("set contact Rx session: %w", err)
-	}
-
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("set contact Rx session: %w", err)
-	}
-
-	return nil
 }
 
 func queryRegistrations(ctx context.Context, q querier, query string, args ...any) ([]Registration, error) {
@@ -417,18 +402,17 @@ func scanRegistration(row scanner) (Registration, error) {
 
 func scanContact(row scanner, leading ...any) (Contact, error) {
 	var (
-		c                 Contact
-		path, rxSessionID sql.NullString
+		c    Contact
+		path sql.NullString
 	)
 
-	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path, &rxSessionID)
+	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path)
 
 	if err := row.Scan(dest...); err != nil {
 		return Contact{}, err
 	}
 
 	c.Path = path.String
-	c.RxSessionID = rxSessionID.String
 
 	return c, nil
 }

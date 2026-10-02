@@ -329,13 +329,13 @@ func TestDiameterRequestsAreAnswered(t *testing.T) {
 	rar, err := rx.NewReAuthRequest(pcrf.envelope(), rx.ReAuthRequest{
 		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer},
 	})
-	if r := pcrf.send(t, rar, err); r.Code != diameter.ResultUnableToComply || r.Experimental {
-		t.Errorf("RAA result = %s, want DIAMETER_UNABLE_TO_COMPLY", r)
+	if r := pcrf.send(t, rar, err); r.Code != diameter.ResultUnknownSessionID || r.Experimental {
+		t.Errorf("RAA result = %s, want DIAMETER_UNKNOWN_SESSION_ID", r)
 	}
 
 	asr, err := rx.NewAbortSessionRequest(pcrf.envelope(), rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
-	if r := pcrf.send(t, asr, err); r.Code != diameter.ResultUnableToComply || r.Experimental {
-		t.Errorf("ASA result = %s, want DIAMETER_UNABLE_TO_COMPLY", r)
+	if r := pcrf.send(t, asr, err); r.Code != diameter.ResultUnknownSessionID || r.Experimental {
+		t.Errorf("ASA result = %s, want DIAMETER_UNKNOWN_SESSION_ID", r)
 	}
 }
 

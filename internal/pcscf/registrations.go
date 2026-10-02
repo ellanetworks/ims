@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 type RegistrationStore interface {
@@ -51,9 +52,15 @@ type registrations struct {
 	clock Clock
 	grace time.Duration
 
+	// expired is called, outside the lock, with each record removed at its
+	// expiry.
+	expired func(db.PCSCFRegistration)
+
 	mu      sync.Mutex
+	closed  bool
 	byKey   map[regKey]*db.PCSCFRegistration
 	byToken map[string]*db.PCSCFRegistration
+	timers  map[regKey]transaction.Timer
 	retired map[string]retired
 	pending map[regKey]retired
 }
@@ -66,19 +73,22 @@ func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration,
 		grace:   grace,
 		byKey:   make(map[regKey]*db.PCSCFRegistration),
 		byToken: make(map[string]*db.PCSCFRegistration),
+		timers:  make(map[regKey]transaction.Timer),
 		retired: make(map[string]retired),
 		pending: make(map[regKey]retired),
 	}
 }
 
-func (rs *registrations) restore(ctx context.Context) error {
+// restore loads the stored records and deletes the expired ones, which it
+// returns.
+func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, error) {
 	if rs.store == nil {
-		return nil
+		return nil, nil
 	}
 
 	regs, err := rs.store.ListPCSCFRegistrations(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	rs.mu.Lock()
@@ -86,11 +96,15 @@ func (rs *registrations) restore(ctx context.Context) error {
 
 	now := rs.clock.Now()
 
+	var expired []db.PCSCFRegistration
+
 	for _, r := range regs {
 		if !r.ExpiresAt.After(now) {
 			if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
-				return err
+				return nil, err
 			}
+
+			expired = append(expired, r)
 
 			continue
 		}
@@ -98,14 +112,72 @@ func (rs *registrations) restore(ctx context.Context) error {
 		rs.add(&r)
 	}
 
-	return nil
+	return expired, nil
 }
 
 func (rs *registrations) add(r *db.PCSCFRegistration) {
-	delete(rs.pending, regKey{r.IMPI, r.UEAddress.Addr()})
-	rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}] = r
+	k := regKey{r.IMPI, r.UEAddress.Addr()}
+
+	delete(rs.pending, k)
+	rs.byKey[k] = r
 	rs.byToken[r.FlowToken] = r
 	delete(rs.retired, r.FlowToken)
+	rs.armLocked(k, r.ExpiresAt)
+}
+
+func (rs *registrations) armLocked(k regKey, at time.Time) {
+	if t, ok := rs.timers[k]; ok {
+		t.Stop()
+	}
+
+	if rs.closed {
+		return
+	}
+
+	rs.timers[k] = rs.clock.AfterFunc(at.Sub(rs.clock.Now()), func() { rs.expire(k) })
+}
+
+func (rs *registrations) expire(k regKey) {
+	rs.mu.Lock()
+
+	r, ok := rs.byKey[k]
+	if rs.closed || !ok || r.ExpiresAt.After(rs.clock.Now()) {
+		rs.mu.Unlock()
+		return
+	}
+
+	old, _ := rs.removeLocked(k)
+	rs.mu.Unlock()
+
+	rs.log.Info("registration expired", slog.String("impi", k.impi), slog.String("ue", k.ue.String()))
+
+	if rs.expired != nil {
+		rs.expired(old)
+	}
+}
+
+func (rs *registrations) all() []db.PCSCFRegistration {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	out := make([]db.PCSCFRegistration, 0, len(rs.byKey))
+	for _, r := range rs.byKey {
+		out = append(out, *r)
+	}
+
+	return out
+}
+
+func (rs *registrations) close() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	rs.closed = true
+
+	for k, t := range rs.timers {
+		t.Stop()
+		delete(rs.timers, k)
+	}
 }
 
 func (rs *registrations) token(impi string, ue netip.Addr) string {
@@ -144,6 +216,7 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 
 	if old, ok := rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}]; ok {
 		r.ID = old.ID
+		r.RxSessionID = old.RxSessionID
 
 		if old.FlowToken != r.FlowToken {
 			delete(rs.byToken, old.FlowToken)
@@ -166,13 +239,11 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	rs.add(&r)
 }
 
-func (rs *registrations) remove(impi string, ue netip.Addr) bool {
+func (rs *registrations) remove(impi string, ue netip.Addr) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	_, ok := rs.removeLocked(regKey{impi, ue.Unmap()})
-
-	return ok
+	return rs.removeLocked(regKey{impi, ue.Unmap()})
 }
 
 func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
@@ -183,6 +254,12 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 
 	delete(rs.byKey, k)
 	delete(rs.byToken, r.FlowToken)
+
+	if t, ok := rs.timers[k]; ok {
+		t.Stop()
+		delete(rs.timers, k)
+	}
+
 	rs.retired[r.FlowToken] = retired{f: flowOf(r), expires: rs.clock.Now().Add(rs.grace)}
 
 	if rs.store != nil && r.ID != 0 {
@@ -221,19 +298,43 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 			continue
 		}
 
-		*r = c
-
-		if rs.store != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-			if _, err := rs.store.SavePCSCFRegistration(ctx, c); err != nil {
-				rs.log.Error("saving the registration failed", slog.String("impi", impi), slog.Any("error", err))
-			}
-
-			cancel()
+		if !c.ExpiresAt.Equal(r.ExpiresAt) {
+			rs.armLocked(k, c.ExpiresAt)
 		}
+
+		*r = c
+		rs.storeLocked(r)
 	}
 
 	return removed
+}
+
+// edit applies f to the record of k, and stores it if f returns true.
+func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	r, ok := rs.byKey[k]
+	if !ok || !f(r) {
+		return false
+	}
+
+	rs.storeLocked(r)
+
+	return true
+}
+
+func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {
+	if rs.store == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+
+	if _, err := rs.store.SavePCSCFRegistration(ctx, *r); err != nil {
+		rs.log.Error("saving the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
+	}
 }
 
 func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, bool) {
@@ -246,6 +347,24 @@ func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, 
 	}
 
 	return *r, true
+}
+
+func (rs *registrations) signallingLost(token string) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	r, ok := rs.byToken[token]
+
+	return ok && r.SignallingLost
+}
+
+func (rs *registrations) withoutRx(impi string, ue netip.Addr) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	r, ok := rs.byKey[regKey{impi, ue.Unmap()}]
+
+	return ok && r.RxSessionID == ""
 }
 
 func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, bool) {
