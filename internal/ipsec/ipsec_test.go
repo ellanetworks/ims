@@ -35,7 +35,7 @@ func TestParseOffers(t *testing.T) {
 		want []Offer
 	}{
 		{
-			"Samsung", // from sip/internal/corpus/testdata/open5gs/ipsec_reg
+			"Samsung",
 			[]string{"ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;port-c=6301;port-s=6300;alg=hmac-md5-96;ealg=null"},
 			[]Offer{{ue, HMACMD596, EncryptionNull}},
 		},
@@ -85,19 +85,67 @@ func TestParseOffersErrors(t *testing.T) {
 	if _, err := ParseOffers(nil); !errors.Is(err, ErrNoOffer) {
 		t.Errorf("no Security-Client: %v, want ErrNoOffer", err)
 	}
+}
 
-	for _, in := range []string{
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-s=2;port-c=3;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=0;spi-s=2;port-c=3;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=4294967296;spi-s=2;port-c=3;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=65536;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=x;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=-1;spi-s=2;port-c=3;port-s=4",
-		"ipsec-3gpp;spi-c=1;spi-s=2;port-c=3;port-s=4",
-		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=3;port-s=4, ipsec-3gpp;alg=hmac-md5-96;spi-c=9;spi-s=2;port-c=3;port-s=4",
+func TestParseOffersSkipsBadMechanisms(t *testing.T) {
+	good := "ipsec-3gpp;alg=hmac-sha-1-96;spi-c=11;spi-s=12;port-c=6301;port-s=6300"
+	other := "ipsec-3gpp;alg=hmac-md5-96;spi-c=21;spi-s=22;port-c=7301;port-s=7300"
+
+	got, err := ParseOffers(mechanisms(t,
+		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=0;spi-s=2;port-c=6301;port-s=6300", good, other))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []Offer{
+		{Endpoint{PortC: 6301, PortS: 6300, SPIC: 11, SPIS: 12}, HMACSHA196, EncryptionNull},
+		{Endpoint{PortC: 7301, PortS: 7300, SPIC: 21, SPIS: 22}, HMACMD596, EncryptionNull},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("ParseOffers = %+v, want %+v", got, want)
+	}
+
+	md5 := Policy{Integrity: []Integrity{HMACMD596}, Encryption: EncryptionOff}
+	if o, err := md5.Select(got); err != nil || o != want[1] {
+		t.Errorf("Select = %+v, %v; want %+v", o, err, want[1])
+	}
+}
+
+func TestParseOffer(t *testing.T) {
+	for _, tc := range []struct {
+		in          string
+		unsupported bool
+	}{
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-s=2;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=0;spi-s=2;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=4294967296;spi-s=2;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=-1;spi-s=2;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=65536;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=x;port-s=6300", false},
+		{"ipsec-3gpp;spi-c=1;spi-s=2;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=7;spi-s=7;port-c=6301;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=6300;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=5060;port-s=6300", false},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=6301;port-s=5061", false},
+		{"ipsec-3gpp;alg=hmac-sha2-256-128;spi-c=1;spi-s=2;port-c=6301;port-s=6300", true},
+		{"ipsec-3gpp;alg=hmac-sha-1-96;ealg=des-ede3-cbc;spi-c=1;spi-s=2;port-c=6301;port-s=6300", true},
+		{"ipsec-3gpp;prot=ah;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=6301;port-s=6300", true},
+		{"ipsec-3gpp;mod=tun;alg=hmac-sha-1-96;spi-c=1;spi-s=2;port-c=6301;port-s=6300", true},
+		{"tls;q=0.1", true},
 	} {
-		if got, err := ParseOffers(mechanisms(t, in)); err == nil {
-			t.Errorf("ParseOffers(%q) = %+v, want error", in, got)
+		m, err := sip.ParseSecurityMechanism(tc.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		o, err := ParseOffer(m)
+		if err == nil {
+			t.Errorf("ParseOffer(%q) = %+v, want error", tc.in, o)
+			continue
+		}
+
+		if errors.Is(err, ErrUnsupportedOffer) != tc.unsupported {
+			t.Errorf("ParseOffer(%q) = %v, unsupported: want %v", tc.in, err, tc.unsupported)
 		}
 	}
 }
@@ -120,7 +168,12 @@ func TestSelect(t *testing.T) {
 	}{
 		{"off", EncryptionOff, all, offer(HMACSHA196, EncryptionNull), nil},
 		{"off, md5 only", EncryptionOff, []Offer{offer(HMACMD596, EncryptionNull)}, offer(HMACMD596, EncryptionNull), nil},
-		{"off, null not listed", EncryptionOff, []Offer{offer(HMACSHA196, AESCBC)}, offer(HMACSHA196, EncryptionNull), nil},
+		{"off, null not offered", EncryptionOff, []Offer{offer(HMACSHA196, AESCBC)}, offer(HMACSHA196, AESCBC), nil},
+		{
+			"off, null before integrity order", EncryptionOff,
+			[]Offer{offer(HMACSHA196, AESCBC), offer(HMACMD596, EncryptionNull)},
+			offer(HMACMD596, EncryptionNull), nil,
+		},
 		{"preferred", EncryptionPreferred, all, offer(HMACSHA196, AESCBC), nil},
 		{
 			"preferred, encryption before integrity order", EncryptionPreferred,
@@ -176,7 +229,6 @@ func TestServer(t *testing.T) {
 		t.Errorf("Server() = %q, want %q", got, want)
 	}
 
-	// The UE's Security-Verify mirrors it.
 	v, err := sip.ParseSecurityMechanism("ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-c=70000;spi-s=70001;port-c=5064;port-s=5063;alg=hmac-sha-1-96;ealg=null")
 	if err != nil || !v.Equal(s.Server()) {
 		t.Errorf("Security-Verify does not match: %v", err)
@@ -206,7 +258,6 @@ func TestKeys(t *testing.T) {
 		t.Fatalf("KeysFromChallenge = %x %x", k.CK, k.IK)
 	}
 
-	// TS 33.203 Annex I.
 	for _, tc := range []struct {
 		i    Integrity
 		want []byte
@@ -255,7 +306,7 @@ func TestSPIs(t *testing.T) {
 		}
 
 		for _, spi := range []uint32{c, s} {
-			if spi <= MinSPI || spi == 1<<32-1 || seen[spi] {
+			if spi <= MinSPI || spi > MaxSPI || seen[spi] {
 				t.Fatalf("Allocate returned %d", spi)
 			}
 

@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && (amd64 || arm64)
 
 package ipsec
 
@@ -18,9 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The tests run in a user namespace with its own network namespace, where they
-// have CAP_NET_ADMIN without root. Each test makes two more network
-// namespaces, a P-CSCF and a UE, joined by a veth pair.
 const netnsEnv = "IMS_IPSEC_NETNS"
 
 var netnsSkip string
@@ -43,7 +40,7 @@ func TestMain(m *testing.M) {
 		}
 
 		if exit, ok := err.(*exec.ExitError); ok {
-			os.Exit(exit.ExitCode())
+			os.Exit(max(exit.ExitCode(), 1))
 		}
 
 		netnsSkip = fmt.Sprintf("no user namespace (%v): allow unprivileged user namespaces or run as root", err)
@@ -52,8 +49,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// unavailable skips a test that needs namespaces, except in CI where they
-// must run.
 func unavailable(t *testing.T, reason string) {
 	t.Helper()
 
@@ -64,8 +59,6 @@ func unavailable(t *testing.T, reason string) {
 	t.Skip(reason)
 }
 
-// netns runs functions on a thread in its own network namespace. Sockets
-// opened there stay in it.
 type netns struct {
 	tid  int
 	work chan func()
@@ -82,7 +75,6 @@ func newNetns(t *testing.T) *netns {
 	ready := make(chan error)
 
 	go func() {
-		// The thread is never unlocked, so it exits with the goroutine.
 		runtime.LockOSThread()
 
 		if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
@@ -201,7 +193,6 @@ func newLab(t *testing.T) *lab {
 	return l
 }
 
-// set returns a new set from the P-CSCF's side, with fresh ports and SPIs.
 func (l *lab) set(t *testing.T, v6 bool, i Integrity, e Encryption) Set {
 	t.Helper()
 
@@ -262,8 +253,6 @@ func listenUDP(t *testing.T, n *netns, a netip.Addr, port uint16) *net.UDPConn {
 	return c
 }
 
-// udpDelivered sends one datagram from one socket to another and reports
-// whether it arrived.
 func udpDelivered(t *testing.T, from, to *net.UDPConn, wait time.Duration) bool {
 	t.Helper()
 
@@ -289,8 +278,6 @@ func udpDelivered(t *testing.T, from, to *net.UDPConn, wait time.Duration) bool 
 	return true
 }
 
-// tcpExchange connects from (client address and port) to a listener, and
-// sends one message each way.
 func tcpExchange(t *testing.T, cn *netns, from netip.AddrPort, sn *netns, to netip.AddrPort) {
 	t.Helper()
 
@@ -360,8 +347,6 @@ func tcpExchange(t *testing.T, cn *netns, from netip.AddrPort, sn *netns, to net
 	}
 }
 
-// owned returns the packet counts of our SAs by SPI, and the number of our
-// policies.
 func (x *XFRM) owned(t *testing.T) (map[uint32]uint64, int) {
 	t.Helper()
 

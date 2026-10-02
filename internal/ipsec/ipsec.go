@@ -1,7 +1,3 @@
-// Package ipsec negotiates and installs the IPsec ESP security associations
-// between a UE and the P-CSCF (TS 33.203 §6-7, Annexes H and I). The kernel
-// does ESP; this package selects the algorithms, derives the keys and manages
-// the SAs and policies through netlink XFRM.
 package ipsec
 
 import (
@@ -24,27 +20,22 @@ const (
 	AESCBC         Encryption = "aes-cbc"
 )
 
-// EncryptionPolicy is the P-CSCF's policy on confidentiality (TS 33.203 §7.2).
 type EncryptionPolicy string
 
 const (
-	// EncryptionOff selects null encryption.
-	EncryptionOff EncryptionPolicy = "off"
-	// EncryptionPreferred encrypts when the UE offers an encryption algorithm.
+	EncryptionOff       EncryptionPolicy = "off"
 	EncryptionPreferred EncryptionPolicy = "preferred"
-	// EncryptionRequired rejects a UE that offers no encryption algorithm.
-	EncryptionRequired EncryptionPolicy = "required"
+	EncryptionRequired  EncryptionPolicy = "required"
 )
 
 var (
-	ErrNoOffer       = errors.New("no ipsec-3gpp mechanism offered")
-	ErrNoAlgorithm   = errors.New("no acceptable algorithm offered")
-	ErrBadKeys       = errors.New("ck and ik must be 128 bits")
-	ErrSPIsExhausted = errors.New("no free SPI")
+	ErrNoOffer          = errors.New("no ipsec-3gpp mechanism offered")
+	ErrUnsupportedOffer = errors.New("unsupported protocol, mode or algorithm")
+	ErrNoAlgorithm      = errors.New("no acceptable algorithm offered")
+	ErrBadKeys          = errors.New("ck and ik must be 128 bits")
+	ErrSPIsExhausted    = errors.New("no free SPI")
 )
 
-// Endpoint is one side of a set of SAs: its address, its protected client and
-// server ports, and the SPIs of its inbound SAs at those ports.
 type Endpoint struct {
 	Addr  netip.Addr
 	PortC uint16
@@ -53,7 +44,6 @@ type Endpoint struct {
 	SPIS  uint32
 }
 
-// Set is the two pairs of SAs between Local and Remote (TS 33.203 §7.1).
 type Set struct {
 	Local      Endpoint
 	Remote     Endpoint
@@ -61,7 +51,6 @@ type Set struct {
 	Encryption Encryption
 }
 
-// Reverse returns the same set seen from Remote.
 func (s Set) Reverse() Set {
 	s.Local, s.Remote = s.Remote, s.Local
 	return s
@@ -99,7 +88,6 @@ func (s Set) String() string {
 		s.Integrity, s.Encryption)
 }
 
-// Keys are the IMS-AKA keys CK and IK of the challenge (TS 33.203 §6.1).
 type Keys struct {
 	CK []byte
 	IK []byte
@@ -111,9 +99,6 @@ type algo struct {
 	key   []byte
 }
 
-// integrityKey and encryptionKey expand IK and CK for ESP (TS 33.203
-// Annex I). hmac-md5-96 is no longer in Annex H but phones still offer it;
-// its key is IK.
 func (k Keys) integrityKey(i Integrity) ([]byte, error) {
 	if len(k.IK) != 16 {
 		return nil, ErrBadKeys

@@ -1,9 +1,11 @@
-//go:build linux
+//go:build linux && (amd64 || arm64)
 
 package ipsec
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -16,10 +18,6 @@ import (
 )
 
 func TestKernelStructSizes(t *testing.T) {
-	if unsafe.Sizeof(uintptr(0)) != 8 {
-		t.Skip("sizes are for 64-bit platforms")
-	}
-
 	for _, tc := range []struct {
 		name      string
 		got, want uintptr
@@ -62,9 +60,6 @@ func TestInstallCarriesTraffic(t *testing.T) {
 				pc, ps := listenUDP(t, l.p, p.Addr, p.PortC), listenUDP(t, l.p, p.Addr, p.PortS)
 				uc, us := listenUDP(t, l.u, u.Addr, u.PortC), listenUDP(t, l.u, u.Addr, u.PortS)
 
-				// TS 33.203 §7.1: over UDP, the UE sends from port_uc to
-				// port_ps and the P-CSCF from port_pc to port_us. Every path
-				// is checked, as replies over TCP use the others.
 				for _, c := range []struct {
 					name string
 					ok   bool
@@ -165,8 +160,6 @@ func TestInstallConflictRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// b reuses a's outbound SPIs towards the same UE: its first two SAs are
-	// added, the third collides.
 	b := l.set(t, false, HMACSHA196, EncryptionNull)
 	b.Remote.SPIC, b.Remote.SPIS = a.Remote.SPIC, a.Remote.SPIS
 
@@ -259,10 +252,16 @@ func TestReconcile(t *testing.T) {
 func TestProbe(t *testing.T) {
 	l := newLab(t)
 
-	// An interrupted probe left an SA behind.
-	l.p.ip(t, "xfrm", "state", "add", "src", "192.0.2.1", "dst", "10.0.0.1", "proto", "esp", "spi", "0x1001",
-		"mode", "transport", "auth-trunc", "hmac(sha1)", "0x"+fmt.Sprintf("%040x", 1), "96", "enc", "ecb(cipher_null)", "",
-		"sel", "src", "192.0.2.1", "dst", "10.0.0.1", "sport", "1", "dport", "2")
+	leftover := sa{l.u4, l.p4, 1, 2, MinSPI - 3, xfrmPolicyIn}
+
+	auth, crypt, err := (Keys{CK: make([]byte, 16), IK: make([]byte, 16)}).algos(Set{Integrity: HMACSHA196, Encryption: EncryptionNull})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.px.newSA(leftover, auth, crypt); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, a := range []netip.Addr{l.p4, l.p6} {
 		if err := l.px.Probe(a); err != nil {
@@ -272,6 +271,50 @@ func TestProbe(t *testing.T) {
 
 	if packets, policies := l.px.owned(t); len(packets) != 0 || policies != 0 {
 		t.Errorf("Probe left %d SAs and %d policies", len(packets), policies)
+	}
+}
+
+func TestRemoveSparesForeignSAs(t *testing.T) {
+	l := newLab(t)
+	s := l.set(t, false, HMACSHA196, EncryptionNull)
+
+	if err := l.px.Install(s, l.keys); err != nil {
+		t.Fatal(err)
+	}
+
+	out := s.sas()[2]
+	if err := l.px.deleteSA(out); err != nil {
+		t.Fatal(err)
+	}
+
+	l.p.ip(t, "xfrm", "state", "add", "src", out.src.String(), "dst", out.dst.String(), "proto", "esp",
+		"spi", fmt.Sprint(out.spi), "mode", "transport", "auth-trunc", "hmac(sha1)", "0x"+fmt.Sprintf("%040x", 1), "96",
+		"enc", "ecb(cipher_null)", "")
+
+	if err := l.px.Remove(s); err != nil {
+		t.Fatal(err)
+	}
+
+	var foreign []byte
+
+	l.p.do(func() {
+		foreign, _ = exec.CommandContext(context.Background(), "ip", "xfrm", "state", "list", "spi", fmt.Sprint(out.spi)).Output()
+	})
+
+	if len(foreign) == 0 {
+		t.Error("Remove deleted an SA it does not own")
+	}
+
+	if packets, policies := l.px.owned(t); len(packets) != 0 || policies != 0 {
+		t.Errorf("Remove left %d SAs and %d policies", len(packets), policies)
+	}
+
+	l.p.ip(t, "xfrm", "state", "add", "src", "192.0.2.1", "dst", l.p4.String(), "proto", "esp",
+		"spi", fmt.Sprint(MinSPI-3), "mode", "transport", "auth-trunc", "hmac(sha1)", "0x"+fmt.Sprintf("%040x", 1), "96",
+		"enc", "ecb(cipher_null)", "")
+
+	if err := l.px.Probe(l.p4); !errors.Is(err, unix.EEXIST) {
+		t.Errorf("Probe with its SPIs taken = %v, want EEXIST", err)
 	}
 }
 
@@ -310,7 +353,58 @@ func TestNetlinkErrorMessage(t *testing.T) {
 	err := l.px.newSA(s.sas()[0], bad, crypt)
 
 	var ne *NetlinkError
-	if !errors.As(err, &ne) {
-		t.Fatalf("newSA(unknown algorithm) = %v, want a NetlinkError", err)
+	if !errors.As(err, &ne) || ne.Errno != unix.ENOSYS || ne.Message == "" {
+		t.Fatalf("newSA(unknown algorithm) = %#v, want ENOSYS with the kernel's message", err)
+	}
+}
+
+func TestAckError(t *testing.T) {
+	msg := func(typ, flags uint16, data ...[]byte) netlinkMessage {
+		return netlinkMessage{Header: unix.NlMsghdr{Type: typ, Flags: flags}, Data: bytes.Join(data, nil)}
+	}
+
+	errno := func(e unix.Errno) []byte {
+		return binary.NativeEndian.AppendUint32(nil, uint32(-int32(e)))
+	}
+
+	inner := make([]byte, unix.NLMSG_HDRLEN)
+	binary.NativeEndian.PutUint32(inner, unix.NLMSG_HDRLEN+8)
+
+	text := attr(nlmsgerrAttrMsg, []byte("bad thing\x00"))
+
+	for _, tc := range []struct {
+		name string
+		m    netlinkMessage
+		want *NetlinkError
+	}{
+		{"ack", msg(unix.NLMSG_ERROR, 0, errno(0), inner), nil},
+		{"done", msg(unix.NLMSG_DONE, unix.NLM_F_MULTI, errno(0)), nil},
+		{"error", msg(unix.NLMSG_ERROR, 0, errno(unix.EINVAL), inner), &NetlinkError{Errno: unix.EINVAL}},
+		{
+			"capped error", msg(unix.NLMSG_ERROR, unix.NLM_F_CAPPED|unix.NLM_F_ACK_TLVS, errno(unix.EINVAL), inner, text),
+			&NetlinkError{Errno: unix.EINVAL, Message: "bad thing"},
+		},
+		{
+			"error with request", msg(unix.NLMSG_ERROR, unix.NLM_F_ACK_TLVS, errno(unix.EINVAL), inner, make([]byte, 8), text),
+			&NetlinkError{Errno: unix.EINVAL, Message: "bad thing"},
+		},
+		{
+			"done error", msg(unix.NLMSG_DONE, unix.NLM_F_MULTI|unix.NLM_F_ACK_TLVS, errno(unix.ENOMEM), text),
+			&NetlinkError{Errno: unix.ENOMEM, Message: "bad thing"},
+		},
+	} {
+		err := ackError(tc.m)
+		if tc.want == nil {
+			if err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+
+			continue
+		}
+
+		var ne *NetlinkError
+		if !errors.As(err, &ne) || *ne != *tc.want {
+			t.Errorf("%s: %#v, want %#v", tc.name, err, tc.want)
+		}
 	}
 }

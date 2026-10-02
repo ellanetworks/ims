@@ -6,12 +6,11 @@ import (
 	"sync"
 )
 
-// MinSPI is the lowest SPI the P-CSCF allocates. RFC 4303 reserves 1-255, and
-// some phones reject SPIs below 4096.
-const MinSPI = 1 << 16
+const (
+	MinSPI = 1 << 16
+	MaxSPI = 1<<28 - 1
+)
 
-// SPIs allocates the SPIs of the P-CSCF's inbound SAs. They are unique among
-// the SAs in use and differ from the UE's (TS 33.203 §7.1, §7.2).
 type SPIs struct {
 	mu   sync.Mutex
 	used map[uint32]bool
@@ -21,7 +20,6 @@ func NewSPIs() *SPIs {
 	return &SPIs{used: make(map[uint32]bool)}
 }
 
-// Allocate returns two distinct free SPIs, none of them in avoid.
 func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -38,7 +36,7 @@ func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 				return 0, 0, ErrSPIsExhausted
 			}
 
-			spi := MinSPI + rand.Uint32N(1<<32-MinSPI)
+			spi := MinSPI + rand.Uint32N(MaxSPI-MinSPI+1)
 			if a.used[spi] || slices.Contains(avoid, spi) {
 				continue
 			}
@@ -53,7 +51,6 @@ func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 	return out[0], out[1], nil
 }
 
-// Reserve marks SPIs in use, as found at startup.
 func (a *SPIs) Reserve(spis ...uint32) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

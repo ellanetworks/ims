@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && (amd64 || arm64)
 
 package ipsec
 
@@ -14,21 +14,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// owner tags the selectors of our SAs and policies, so that we never touch
-// anyone else's. The kernel does not match on it.
-const owner = 0x454c4c41 // "ELLA"
+const owner = 0x454c4c41
 
 const (
 	policyPriority = 1024
-	replayWindow   = 32
+	replayWindow   = 64
 	recvTimeout    = 5 * time.Second
 )
 
-// Kernel structures of <linux/xfrm.h>. Addresses are [4]uint32 so that Go
-// aligns them as the kernel's xfrm_address_t union.
 type xfrmAddress [4]uint32
 
-// Fields we never set or read are blank, with their kernel names in comments.
 type xfrmSelector struct {
 	daddr      xfrmAddress
 	saddr      xfrmAddress
@@ -39,8 +34,8 @@ type xfrmSelector struct {
 	family     uint16
 	prefixlenD uint8
 	prefixlenS uint8
-	_          uint8 // proto: 0, any transport protocol
-	_          int32 // ifindex
+	proto      uint8
+	ifindex    int32
 	user       uint32
 }
 
@@ -53,14 +48,14 @@ type xfrmID struct {
 type xfrmLifetimeCfg struct {
 	softByteLimit, hardByteLimit     uint64
 	softPacketLimit, hardPacketLimit uint64
-	_, _                             uint64 // soft and hard add_expires_seconds
-	_, _                             uint64 // soft and hard use_expires_seconds
+	_, _                             uint64
+	_, _                             uint64
 }
 
 type xfrmLifetimeCur struct {
-	_       uint64 // bytes
+	_       uint64
 	packets uint64
-	_, _    uint64 // add_time, use_time
+	_, _    uint64
 }
 
 type xfrmUsersaInfo struct {
@@ -69,13 +64,13 @@ type xfrmUsersaInfo struct {
 	saddr        xfrmAddress
 	lft          xfrmLifetimeCfg
 	curlft       xfrmLifetimeCur
-	_            [3]uint32 // stats
-	_            uint32    // seq
+	_            [3]uint32
+	_            uint32
 	reqid        uint32
 	family       uint16
 	mode         uint8
 	replayWindow uint8
-	_            uint8 // flags
+	_            uint8
 }
 
 type xfrmUsersaID struct {
@@ -88,18 +83,18 @@ type xfrmUsersaID struct {
 type xfrmUserpolicyInfo struct {
 	sel      xfrmSelector
 	lft      xfrmLifetimeCfg
-	_        xfrmLifetimeCur // curlft
+	_        xfrmLifetimeCur
 	priority uint32
-	_        uint32 // index
+	_        uint32
 	dir      uint8
-	_        uint8 // action: allow
-	_        uint8 // flags
-	_        uint8 // share
+	_        uint8
+	_        uint8
+	_        uint8
 }
 
 type xfrmUserpolicyID struct {
 	sel xfrmSelector
-	_   uint32 // index
+	_   uint32
 	dir uint8
 }
 
@@ -109,12 +104,27 @@ type xfrmUserTmpl struct {
 	saddr  xfrmAddress
 	reqid  uint32
 	mode   uint8
-	_      uint8 // share
-	_      uint8 // optional
+	_      uint8
+	_      uint8
 	aalgos uint32
 	ealgos uint32
 	calgos uint32
 }
+
+var (
+	_ [unsafe.Sizeof(xfrmSelector{}) - 56]byte
+	_ [56 - unsafe.Sizeof(xfrmSelector{})]byte
+	_ [unsafe.Sizeof(xfrmUsersaInfo{}) - 224]byte
+	_ [224 - unsafe.Sizeof(xfrmUsersaInfo{})]byte
+	_ [unsafe.Sizeof(xfrmUsersaID{}) - 24]byte
+	_ [24 - unsafe.Sizeof(xfrmUsersaID{})]byte
+	_ [unsafe.Sizeof(xfrmUserpolicyInfo{}) - 168]byte
+	_ [168 - unsafe.Sizeof(xfrmUserpolicyInfo{})]byte
+	_ [unsafe.Sizeof(xfrmUserpolicyID{}) - 64]byte
+	_ [64 - unsafe.Sizeof(xfrmUserpolicyID{})]byte
+	_ [unsafe.Sizeof(xfrmUserTmpl{}) - 64]byte
+	_ [64 - unsafe.Sizeof(xfrmUserTmpl{})]byte
+)
 
 const (
 	xfrmMsgNewSA      = 0x10
@@ -195,7 +205,6 @@ func infinite() xfrmLifetimeCfg {
 	}
 }
 
-// sa is one unidirectional SA with its policy.
 type sa struct {
 	src, dst     netip.Addr
 	sport, dport uint16
@@ -203,8 +212,6 @@ type sa struct {
 	dir          uint8
 }
 
-// sas returns the four SAs of a set as seen from Local (TS 33.203 §7.1).
-// The SPI of an SA is the one its receiver allocated.
 func (s Set) sas() [4]sa {
 	l, r := s.Local, s.Remote
 
@@ -216,8 +223,6 @@ func (s Set) sas() [4]sa {
 	}
 }
 
-// selector matches one address and port pair, for any transport protocol, so
-// that one SA carries both UDP and TCP.
 func (a sa) selector() xfrmSelector {
 	bits := uint8(128)
 	if a.src.Is4() {
@@ -230,7 +235,9 @@ func (a sa) selector() xfrmSelector {
 		sport: be16(a.sport), sportMask: 0xffff,
 		family:     family(a.src),
 		prefixlenD: bits, prefixlenS: bits,
-		user: owner,
+		proto:   0,
+		ifindex: 0,
+		user:    owner,
 	}
 }
 
@@ -253,8 +260,6 @@ type policyKey struct {
 	dir uint8
 }
 
-// NetlinkError is an error reported by the kernel, with its extended
-// acknowledgement message when there is one.
 type NetlinkError struct {
 	Errno   unix.Errno
 	Message string
@@ -272,8 +277,6 @@ func (e *NetlinkError) Unwrap() error {
 	return e.Errno
 }
 
-// XFRM manages our SAs and policies in the network namespace of the thread
-// that opened it.
 type XFRM struct {
 	mu  sync.Mutex
 	fd  int
@@ -289,9 +292,10 @@ func Open() (*XFRM, error) {
 
 	tv := unix.NsecToTimeval(recvTimeout.Nanoseconds())
 
+	_ = unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_EXT_ACK, 1)
+	_ = unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_CAP_ACK, 1)
+
 	for _, o := range []func() error{
-		func() error { return unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_EXT_ACK, 1) },
-		func() error { return unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_CAP_ACK, 1) },
 		func() error { return unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv) },
 		func() error { return unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}) },
 	} {
@@ -318,8 +322,6 @@ func (x *XFRM) Close() error {
 	return err
 }
 
-// Install adds the four SAs and four policies of s. On failure, it removes
-// what it added.
 func (x *XFRM) Install(s Set, k Keys) error {
 	if err := s.validate(); err != nil {
 		return fmt.Errorf("install %s: %w", s, err)
@@ -366,7 +368,6 @@ func (x *XFRM) Install(s Set, k Keys) error {
 	return nil
 }
 
-// Remove deletes the SAs and policies of s. Those already gone are ignored.
 func (x *XFRM) Remove(s Set) error {
 	var errs []error
 
@@ -377,7 +378,7 @@ func (x *XFRM) Remove(s Set) error {
 	}
 
 	for _, a := range s.sas() {
-		if err := x.deleteSA(a); err != nil && !errors.Is(err, unix.ESRCH) && !errors.Is(err, unix.ENOENT) {
+		if err := x.deleteSA(a); err != nil && !errors.Is(err, unix.ESRCH) {
 			errs = append(errs, fmt.Errorf("SA %s spi %d: %w", a.dst, a.spi, err))
 		}
 	}
@@ -389,9 +390,6 @@ func (x *XFRM) Remove(s Set) error {
 	return nil
 }
 
-// Reconcile deletes our SAs and policies that belong to no set in keep, and
-// returns the sets in keep that are not fully installed. Removing those is
-// left to the caller.
 func (x *XFRM) Reconcile(keep []Set) ([]Set, error) {
 	sas, err := x.dump(xfrmMsgGetSA)
 	if err != nil {
@@ -451,7 +449,7 @@ func (x *XFRM) Reconcile(keep []Set) ([]Set, error) {
 	for k := range installedSAs {
 		if !wantSAs[k] {
 			id := xfrmUsersaID{daddr: k.daddr, spi: be32(k.spi), family: k.family, proto: unix.IPPROTO_ESP}
-			if err := x.request(xfrmMsgDelSA, 0, bytesOf(&id)); err != nil && !errors.Is(err, unix.ESRCH) && !errors.Is(err, unix.ENOENT) {
+			if err := x.request(xfrmMsgDelSA, 0, bytesOf(&id)); err != nil && !errors.Is(err, unix.ESRCH) {
 				errs = append(errs, fmt.Errorf("delete stale SA spi %d: %w", k.spi, err))
 			}
 		}
@@ -460,8 +458,6 @@ func (x *XFRM) Reconcile(keep []Set) ([]Set, error) {
 	return missing, errors.Join(errs...)
 }
 
-// Probe installs and removes test SAs on local with every supported
-// algorithm, to find a missing capability or kernel module at startup.
 func (x *XFRM) Probe(local netip.Addr) error {
 	remote := netip.MustParseAddr("192.0.2.1")
 	if !local.Is4() {
@@ -470,24 +466,25 @@ func (x *XFRM) Probe(local netip.Addr) error {
 
 	k := Keys{CK: make([]byte, 16), IK: make([]byte, 16)}
 
-	// The SPIs are below MinSPI, so they never collide with ours.
 	for _, alg := range []struct {
 		i Integrity
 		e Encryption
 	}{{HMACSHA196, AESCBC}, {HMACMD596, EncryptionNull}} {
 		s := Set{
-			Local:      Endpoint{Addr: local, PortC: 1, PortS: 2, SPIC: 0x1000, SPIS: 0x1001},
-			Remote:     Endpoint{Addr: remote, PortC: 1, PortS: 2, SPIC: 0x1002, SPIS: 0x1003},
+			Local:      Endpoint{Addr: local, PortC: 1, PortS: 2, SPIC: MinSPI - 4, SPIS: MinSPI - 3},
+			Remote:     Endpoint{Addr: remote, PortC: 1, PortS: 2, SPIC: MinSPI - 2, SPIS: MinSPI - 1},
 			Integrity:  alg.i,
 			Encryption: alg.e,
 		}
 
-		// Leftovers of a probe interrupted by a crash.
 		_ = x.Remove(s)
 
 		if err := x.Install(s, k); err != nil {
-			if errors.Is(err, unix.EPERM) {
+			switch {
+			case errors.Is(err, unix.EPERM):
 				return fmt.Errorf("IPsec needs CAP_NET_ADMIN: %w", err)
+			case errors.Is(err, unix.EEXIST):
+				return fmt.Errorf("IPsec probe SPIs held by another program: %w", err)
 			}
 
 			return fmt.Errorf("IPsec %s/%s on %s (are esp4, esp6 and authenc available?): %w", alg.i, alg.e, local, err)
@@ -543,6 +540,15 @@ func (x *XFRM) newPolicy(a sa) error {
 func (x *XFRM) deleteSA(a sa) error {
 	id := xfrmUsersaID{daddr: address(a.dst), spi: be32(a.spi), family: family(a.dst), proto: unix.IPPROTO_ESP}
 
+	b, err := x.get(xfrmMsgGetSA, bytesOf(&id))
+	if err != nil {
+		return err
+	}
+
+	if v, ok := decode[xfrmUsersaInfo](b); !ok || v.sel.user != owner {
+		return unix.ESRCH
+	}
+
 	return x.request(xfrmMsgDelSA, 0, bytesOf(&id))
 }
 
@@ -552,7 +558,6 @@ func (x *XFRM) deletePolicy(a sa) error {
 	return x.request(xfrmMsgDelPolicy, 0, bytesOf(&id))
 }
 
-// algoAuth and algoCrypt encode struct xfrm_algo_auth and struct xfrm_algo.
 func algoAuth(a algo) []byte {
 	b := make([]byte, 72+len(a.key))
 	copy(b, a.name)
@@ -589,7 +594,6 @@ func nlmAlign(n int) int {
 	return (n + unix.NLMSG_ALIGNTO - 1) &^ (unix.NLMSG_ALIGNTO - 1)
 }
 
-// request sends one message and waits for its acknowledgement.
 func (x *XFRM) request(typ uint16, flags uint16, payload []byte, attrs ...[]byte) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -615,7 +619,39 @@ func (x *XFRM) request(typ uint16, flags uint16, payload []byte, attrs ...[]byte
 	}
 }
 
-// dump returns the payloads of a dump request.
+func (x *XFRM) get(typ uint16, payload []byte) ([]byte, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+
+	seq, err := x.send(typ, unix.NLM_F_REQUEST, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		msgs, err := x.recv()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, m := range msgs {
+			if m.Header.Seq != seq {
+				continue
+			}
+
+			if m.Header.Type == unix.NLMSG_ERROR {
+				if err := ackError(m); err != nil {
+					return nil, err
+				}
+
+				return nil, errors.New("no reply")
+			}
+
+			return append([]byte(nil), m.Data...), nil
+		}
+	}
+}
+
 func (x *XFRM) dump(typ uint16) ([][]byte, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -639,9 +675,7 @@ func (x *XFRM) dump(typ uint16) ([][]byte, error) {
 			}
 
 			switch m.Header.Type {
-			case unix.NLMSG_DONE:
-				return out, nil
-			case unix.NLMSG_ERROR:
+			case unix.NLMSG_DONE, unix.NLMSG_ERROR:
 				if err := ackError(m); err != nil {
 					return nil, err
 				}
@@ -690,6 +724,10 @@ func (x *XFRM) recv() ([]netlinkMessage, error) {
 			continue
 		}
 
+		if errors.Is(err, unix.EAGAIN) {
+			return nil, fmt.Errorf("no answer from the kernel in %s: %w", recvTimeout, err)
+		}
+
 		if err != nil {
 			return nil, err
 		}
@@ -724,7 +762,6 @@ func parseMessages(b []byte) ([]netlinkMessage, error) {
 	return out, nil
 }
 
-// ackError decodes struct nlmsgerr and its extended acknowledgement.
 func ackError(m netlinkMessage) error {
 	if len(m.Data) < 4 {
 		return errors.New("truncated netlink acknowledgement")
@@ -737,12 +774,20 @@ func ackError(m netlinkMessage) error {
 
 	e := &NetlinkError{Errno: unix.Errno(errno)}
 
-	if m.Header.Flags&unix.NLM_F_ACK_TLVS == 0 || len(m.Data) < 4+unix.NLMSG_HDRLEN {
+	if m.Header.Flags&unix.NLM_F_ACK_TLVS == 0 {
 		return e
 	}
 
-	attrs := m.Data[4+unix.NLMSG_HDRLEN:]
-	if m.Header.Flags&unix.NLM_F_CAPPED == 0 {
+	var attrs []byte
+
+	switch {
+	case m.Header.Type == unix.NLMSG_DONE:
+		attrs = m.Data[4:]
+	case len(m.Data) < 4+unix.NLMSG_HDRLEN:
+		return e
+	case m.Header.Flags&unix.NLM_F_CAPPED != 0:
+		attrs = m.Data[4+unix.NLMSG_HDRLEN:]
+	default:
 		inner, _ := decode[unix.NlMsghdr](m.Data[4:])
 		attrs = m.Data[min(4+nlmAlign(int(inner.Len)), len(m.Data)):]
 	}

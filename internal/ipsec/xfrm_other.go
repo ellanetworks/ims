@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux || !(amd64 || arm64)
 
 package ipsec
 
@@ -7,7 +7,6 @@ import (
 	"net/netip"
 )
 
-// XFRM is only available on Linux.
 type XFRM struct{}
 
 func Open() (*XFRM, error) {

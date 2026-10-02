@@ -16,8 +16,6 @@ jobs:
         with:
           go-version-file: "go.mod"
 
-      # internal/ipsec tests run ESP between network namespaces inside an
-      # unprivileged user namespace, which Ubuntu's AppArmor restricts.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
