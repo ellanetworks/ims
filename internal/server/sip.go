@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
@@ -15,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/icscf"
+	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -51,9 +53,10 @@ var knownMethods = map[string]bool{
 }
 
 const (
-	rolePCSCF = "pcscf"
-	roleICSCF = "icscf"
-	roleSCSCF = "scscf"
+	rolePCSCF          = "pcscf"
+	rolePCSCFProtected = "pcscf-protected"
+	roleICSCF          = "icscf"
+	roleSCSCF          = "scscf"
 )
 
 type sipServer struct {
@@ -61,26 +64,72 @@ type sipServer struct {
 	roles       *dispatcher
 	placeholder *placeholderHandler
 	registrar   *scscf.Registrar
+	pcscf       atomic.Pointer[pcscf.PCSCF]
+	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, database *db.DB, logger *slog.Logger) (*sipServer, error) {
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, database *db.DB, kernel pcscf.Kernel,
+	logger *slog.Logger,
+) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
+	s := &sipServer{roles: roles, placeholder: ph}
 
-	layer := transaction.New(transaction.Config{
+	if kernel == nil {
+		x, err := openXFRM(cfg.SIP.Addresses)
+		if err != nil {
+			return nil, err
+		}
+
+		s.xfrm, kernel = x, x
+	}
+
+	s.layer = transaction.New(transaction.Config{
 		Handler:   roles,
 		Logger:    logger,
 		Transport: transport.Config{MaxConnections: cfg.SIP.MaxConnections},
 		Aliases:   cfg.SIPAliases(),
+		Filter: func(m sip.Message) error {
+			if p := s.pcscf.Load(); p != nil {
+				return p.Filter(m)
+			}
+
+			return nil
+		},
+		ResponseFlow: func(req *sip.Request) (sip.Flow, bool) {
+			if p := s.pcscf.Load(); p != nil {
+				return p.ResponseFlow(req)
+			}
+
+			return sip.Flow{}, false
+		},
 	})
 
+	layer := s.layer
 	ph.layer = layer
-	s := &sipServer{layer: layer, roles: roles, placeholder: ph}
 
 	pcscfPort, err := s.listen(ctx, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
+	}
+
+	ipsecServer, err := s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, cfg.PCSCF.IPsec.ServerPort)
+	if err != nil {
+		return nil, errors.Join(err, s.Close())
+	}
+
+	var ipsecClients [2]uint16
+
+	for i := range ipsecClients {
+		port := 0
+		if i < len(cfg.PCSCF.IPsec.ClientPorts) {
+			port = cfg.PCSCF.IPsec.ClientPorts[i]
+		}
+
+		if ipsecClients[i], err = s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, port); err != nil {
+			return nil, errors.Join(err, s.Close())
+		}
 	}
 
 	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
@@ -117,12 +166,32 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 		Logger:     logger,
 	})
 
-	roles.set(pcscfPort, pcscf.New(pcscf.Config{
-		Proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: pcscfPort}),
+	pc := pcscf.New(pcscf.Config{
+		Proxy: proxy.New(proxy.Config{
+			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
+		}),
+		Port:      pcscfPort,
 		ICSCFPort: icscfPort,
-		Fallback:  ph,
-		Logger:    logger,
-	}))
+		IPsec: pcscf.IPsec{
+			Kernel:      kernel,
+			Store:       database,
+			Policy:      cfg.PCSCF.IPsec.Policy(),
+			ServerPort:  ipsecServer,
+			ClientPorts: ipsecClients,
+		},
+		Fallback: ph,
+		Logger:   logger,
+	})
+
+	if err := pc.Restore(ctx); err != nil {
+		return nil, errors.Join(fmt.Errorf("restore IPsec security associations: %w", err), s.Close())
+	}
+
+	s.pcscf.Store(pc)
+
+	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
+		roles.set(port, pc)
+	}
 
 	roles.set(icscfPort, icscf.New(icscf.Config{
 		HomeDomain: cfg.IMS.HomeDomain,
@@ -183,10 +252,39 @@ func (s *sipServer) Close() error {
 		s.registrar.Close()
 	}
 
-	err := s.layer.Close()
+	if p := s.pcscf.Load(); p != nil {
+		p.Close()
+	}
+
+	var err error
+
+	if s.layer != nil {
+		err = s.layer.Close()
+	}
+
 	s.placeholder.close()
 
+	if s.xfrm != nil {
+		err = errors.Join(err, s.xfrm.Close())
+	}
+
 	return err
+}
+
+func openXFRM(addrs []netip.Addr) (*ipsec.XFRM, error) {
+	x, err := ipsec.Open()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, a := range addrs {
+		if err := x.Probe(a); err != nil {
+			_ = x.Close()
+			return nil, err
+		}
+	}
+
+	return x, nil
 }
 
 type dispatcher struct {

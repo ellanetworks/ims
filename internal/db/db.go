@@ -44,25 +44,8 @@ var migrations = []string{
 		uri TEXT NOT NULL,
 		params TEXT NOT NULL,
 		path TEXT,
-		ue_address TEXT,
-		ue_port_c INTEGER,
-		ue_port_s INTEGER,
-		pcscf_port_c INTEGER,
-		pcscf_port_s INTEGER,
-		spi_uc INTEGER,
-		spi_us INTEGER,
-		spi_pc INTEGER,
-		spi_ps INTEGER,
-		alg TEXT CHECK (alg IN ('hmac-md5-96', 'hmac-sha-1-96')),
-		ealg TEXT CHECK (ealg IN ('null', 'aes-cbc')),
 		rx_session_id TEXT,
-		UNIQUE (impi, uri),
-		CHECK ((alg IS NULL) = (ealg IS NULL)
-			AND (alg IS NULL) = (ue_port_c IS NULL) AND (alg IS NULL) = (ue_port_s IS NULL)
-			AND (alg IS NULL) = (pcscf_port_c IS NULL) AND (alg IS NULL) = (pcscf_port_s IS NULL)
-			AND (alg IS NULL) = (spi_uc IS NULL) AND (alg IS NULL) = (spi_us IS NULL)
-			AND (alg IS NULL) = (spi_pc IS NULL) AND (alg IS NULL) = (spi_ps IS NULL)
-			AND (alg IS NULL OR ue_address IS NOT NULL))
+		UNIQUE (impi, uri)
 	);
 	CREATE TABLE bindings (
 		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
@@ -103,7 +86,26 @@ var migrations = []string{
 	);
 	CREATE INDEX calls_ended_at ON calls (ended_at);
 	CREATE INDEX calls_caller ON calls (caller, id);
-	CREATE INDEX calls_callee ON calls (callee, id);`,
+	CREATE INDEX calls_callee ON calls (callee, id);
+	CREATE TABLE security_associations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		impi TEXT NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('established', 'old')),
+		pcscf_address TEXT NOT NULL,
+		ue_address TEXT NOT NULL,
+		pcscf_port_c INTEGER NOT NULL,
+		pcscf_port_s INTEGER NOT NULL,
+		ue_port_c INTEGER NOT NULL,
+		ue_port_s INTEGER NOT NULL,
+		spi_pc INTEGER NOT NULL,
+		spi_ps INTEGER NOT NULL,
+		spi_uc INTEGER NOT NULL,
+		spi_us INTEGER NOT NULL,
+		alg TEXT NOT NULL,
+		ealg TEXT NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE INDEX security_associations_impi ON security_associations (impi);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {

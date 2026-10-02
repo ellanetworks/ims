@@ -12,11 +12,20 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
 func TestRegisterThroughTheRoles(t *testing.T) {
+	testRegisterThroughTheRoles(t, false)
+}
+
+func TestRegisterWithIPsecThroughTheRoles(t *testing.T) {
+	testRegisterThroughTheRoles(t, true)
+}
+
+func testRegisterThroughTheRoles(t *testing.T, secAgree bool) {
 	uars := make(chan cx.UserAuthorizationRequest, 4)
 	mars := make(chan cx.MultimediaAuthRequest, 4)
 
@@ -63,7 +72,8 @@ func TestRegisterThroughTheRoles(t *testing.T) {
 	cfg.SIP.Addresses = []netip.Addr{loopback}
 	cfg.Diameter = diameterConfig(hss.config("hss"))
 
-	srv := startIMS(t, cfg)
+	kernel := ipsectest.NewKernel()
+	srv := startIMSWith(t, cfg, kernel)
 	waitOpen(t, srv, "hss")
 
 	pcscf := sipListener(t, srv, rolePCSCF, loopback)
@@ -79,6 +89,14 @@ func TestRegisterThroughTheRoles(t *testing.T) {
 	register.Header.Add("Expires", "600")
 	register.Header.Add("Authorization", `Digest username="`+impi+`", realm="`+imsRealm+`", uri="sip:`+imsRealm+
 		`", nonce="", response=""`)
+
+	if secAgree {
+		register.Header.Add("Security-Client", "ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;port-c=6301;"+
+			"port-s=6300;alg=hmac-sha-1-96;ealg=null")
+		register.Header.Add("Require", "sec-agree")
+		register.Header.Add("Proxy-Require", "sec-agree")
+	}
+
 	ue.Send(sip.UDP, pcscf, register)
 
 	uar := next(t, uars)
@@ -101,6 +119,29 @@ func TestRegisterThroughTheRoles(t *testing.T) {
 
 	if a.Params.Has("ck") || a.Params.Has("ik") || !a.Params.Has("nonce") {
 		t.Fatalf("WWW-Authenticate = %q, want a challenge without ck and ik", res.Header.Get("WWW-Authenticate"))
+	}
+
+	installed := kernel.Installed()
+
+	if !secAgree {
+		if res.Header.Has("Security-Server") || len(installed) != 0 {
+			t.Fatalf("Security-Server %q and %d sets for a REGISTER without sec-agree", res.Header.Get("Security-Server"), len(installed))
+		}
+
+		return
+	}
+
+	if len(installed) != 1 {
+		t.Fatalf("installed = %v, want one set", installed)
+	}
+
+	for set, keys := range installed {
+		protected := sipListener(t, srv, rolePCSCFProtected, loopback)
+
+		if set.Server().String() != res.Header.Get("Security-Server") || !bytes.Equal(keys.CK, bytes.Repeat([]byte{4}, 16)) ||
+			!bytes.Equal(keys.IK, bytes.Repeat([]byte{5}, 16)) || set.Local.PortS != protected.Port() {
+			t.Fatalf("set %s with keys %x %x for Security-Server %q", set, keys.CK, keys.IK, res.Header.Get("Security-Server"))
+		}
 	}
 }
 

@@ -46,6 +46,7 @@ func TestRegisterGoesToTheICSCF(t *testing.T) {
 
 	late.h.Store(New(Config{
 		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
+		Port:      pcscf.Port(),
 		ICSCFPort: icscf.Addr().Port(),
 		Fallback:  fallback,
 		Logger:    slog.New(slog.DiscardHandler),
@@ -116,6 +117,7 @@ func newScene(t *testing.T) *scene {
 
 	late.h.Store(New(Config{
 		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
+		Port:      pcscf.Port(),
 		ICSCFPort: icscf.Addr().Port(),
 		Fallback:  fallback,
 		Logger:    slog.New(slog.DiscardHandler),

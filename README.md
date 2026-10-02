@@ -32,11 +32,20 @@ rockcraft pack
 ./ims --config ims.yaml
 ```
 
+The IMS installs IPsec security associations for phones, so it needs
+`CAP_NET_ADMIN` and the `xfrm_user`, `esp4`, `esp6` and `authenc` kernel
+modules. It refuses to start without them. Firewalls between phones and the
+IMS must pass ESP (IP protocol 50).
+
 ### Test
 
 ```sh
 go test ./...
 ```
+
+The IPsec tests run real ESP between network namespaces in an unprivileged
+user namespace. They are skipped where user namespaces are unavailable, and
+fail instead when `CI` is set.
 
 ## Reference
 

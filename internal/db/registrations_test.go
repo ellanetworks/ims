@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -16,32 +15,15 @@ const (
 	testDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 )
 
-func testSAs(base uint32) *SecurityAssociations {
-	return &SecurityAssociations{
-		UEPortC:    5100,
-		UEPortS:    5101,
-		PCSCFPortC: 5200,
-		PCSCFPortS: 5201,
-		SPIUC:      base,
-		SPIUS:      base + 1,
-		SPIPC:      base + 2,
-		SPIPS:      base + 3,
-		Integrity:  IntegrityHMACSHA196,
-		Encryption: EncryptionNull,
-	}
-}
-
 func identity(uri string, barred bool) PublicIdentity {
 	return PublicIdentity{URI: uri, Key: uri, Barred: barred}
 }
 
 func testContact(host string) Contact {
 	return Contact{
-		URI:       "sip:ue@[" + host + "]:5100",
-		Params:    `;+sip.instance="<urn:gsma:imei:35000000-000000-0>";+g.3gpp.smsip`,
-		Path:      "<sip:term@pcscf." + testDomain + ";lr>",
-		UEAddress: netip.MustParseAddr(host),
-		IPsec:     testSAs(4096),
+		URI:    "sip:ue@[" + host + "]:5100",
+		Params: `;+sip.instance="<urn:gsma:imei:35000000-000000-0>";+g.3gpp.smsip`,
+		Path:   "<sip:term@pcscf." + testDomain + ";lr>",
 	}
 }
 
@@ -101,77 +83,12 @@ func TestRegistrationRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPlainSIPContact(t *testing.T) {
-	d := openTestDB(t)
-
-	r := testRegistration(testIMPI, "15551230001")
-	r.Bindings[0].Contact.IPsec = nil
-	mustSaveRegistration(t, d, r)
-
-	if got := listByIMPI(t, d)[0].Bindings[0].Contact.IPsec; got != nil {
-		t.Fatalf("IPsec = %+v, want nil", got)
-	}
-}
-
-func TestContactWithoutUEAddress(t *testing.T) {
-	d := openTestDB(t)
-
-	r := testRegistration(testIMPI, "15551230001")
-	r.Bindings[0].Contact.UEAddress = netip.Addr{}
-	r.Bindings[0].Contact.IPsec = nil
-	mustSaveRegistration(t, d, r)
-
-	if got := listByIMPI(t, d)[0].Bindings[0].Contact.UEAddress; got.IsValid() {
-		t.Fatalf("UE address = %s, want none", got)
-	}
-}
-
-func TestContactRejectsPartialSAs(t *testing.T) {
-	d := openTestDB(t)
-	r := testRegistration(testIMPI, "15551230001")
-	r.Bindings[0].Contact.IPsec.Integrity = ""
-
-	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
-		t.Fatal("SaveRegistration with partial SAs succeeded")
-	}
-
-	if got := listByIMPI(t, d); len(got) != 0 {
-		t.Fatalf("registrations = %+v, want none after a failed save", got)
-	}
-}
-
-func TestContactRejectsUnknownAlgorithm(t *testing.T) {
-	d := openTestDB(t)
-	r := testRegistration(testIMPI, "15551230001")
-	r.Bindings[0].Contact.IPsec.Integrity = "des"
-
-	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
-		t.Fatal("SaveRegistration with an unknown algorithm succeeded")
-	}
-}
-
-func TestContactRejectsSAsWithoutUEAddress(t *testing.T) {
-	d := openTestDB(t)
-
-	r := testRegistration(testIMPI, "15551230001")
-	r.Bindings[0].Contact.UEAddress = netip.Addr{}
-
-	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
-		t.Fatal("SaveRegistration accepted SAs without a UE address")
-	}
-}
-
-func TestSaveRegistrationKeepsPCSCFColumns(t *testing.T) {
+func TestSaveRegistrationKeepsTheRxSession(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
 	stale := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 	id := stale.Bindings[0].Contact.ID
-
-	addr := netip.MustParseAddr("2001:db8::2")
-	if err := d.SetContactFlow(ctx, id, addr, testSAs(8192)); err != nil {
-		t.Fatalf("SetContactFlow: %v", err)
-	}
 
 	if err := d.SetContactRxSession(ctx, id, "pcscf.ims;1;2"); err != nil {
 		t.Fatalf("SetContactRxSession: %v", err)
@@ -182,8 +99,8 @@ func TestSaveRegistrationKeepsPCSCFColumns(t *testing.T) {
 	saved := mustSaveRegistration(t, d, stale)
 
 	c := saved.Bindings[0].Contact
-	if c.UEAddress != addr || !reflect.DeepEqual(c.IPsec, testSAs(8192)) || c.RxSessionID != "pcscf.ims;1;2" {
-		t.Fatalf("contact = %+v, want the P-CSCF's flow and Rx session", c)
+	if c.RxSessionID != "pcscf.ims;1;2" {
+		t.Fatalf("contact = %+v, want the P-CSCF's Rx session", c)
 	}
 
 	if c.Path != stale.Bindings[0].Contact.Path {
@@ -193,28 +110,9 @@ func TestSaveRegistrationKeepsPCSCFColumns(t *testing.T) {
 	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
 		t.Fatalf("registrations = %+v, want %+v", got, saved)
 	}
-}
 
-func TestSetContactFlow(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-
-	id := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001")).Bindings[0].Contact.ID
-
-	if err := d.SetContactFlow(ctx, id, netip.Addr{}, nil); err != nil {
-		t.Fatalf("SetContactFlow clear: %v", err)
-	}
-
-	if c := listByIMPI(t, d)[0].Bindings[0].Contact; c.UEAddress.IsValid() || c.IPsec != nil {
-		t.Fatalf("contact = %+v, want no flow", c)
-	}
-
-	if err := d.SetContactFlow(ctx, id, netip.Addr{}, testSAs(1)); err == nil {
-		t.Fatal("SetContactFlow accepted SAs without a UE address")
-	}
-
-	if err := d.SetContactFlow(ctx, id+1, netip.Addr{}, nil); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetContactFlow unknown err = %v, want ErrNotFound", err)
+	if err := d.SetContactRxSession(ctx, id+1, ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetContactRxSession unknown err = %v, want ErrNotFound", err)
 	}
 }
 

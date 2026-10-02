@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -18,7 +19,7 @@ import (
 func startServer(t *testing.T) *Server {
 	t.Helper()
 
-	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestSIPPlaceholder(t *testing.T) {
 }
 
 func TestSIPShutdownClosesListeners(t *testing.T) {
-	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 	if err := srv.Start(ctx); err != nil {
@@ -171,8 +172,8 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 		listeners = append(listeners, l.Address)
 	}
 
-	if len(listeners) != 6 {
-		t.Fatalf("listeners = %v, want one per role and address", listeners)
+	if len(listeners) != 12 {
+		t.Fatalf("listeners = %v, want one per role or protected port, and address", listeners)
 	}
 
 	srv.Shutdown(ctx)
@@ -204,7 +205,7 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 	cfg.PCSCF.Port = int(taken.Addr().Port())
 	cfg.SIP.Addresses = []netip.Addr{loopback6, loopback}
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 

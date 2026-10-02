@@ -7,12 +7,15 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 )
 
 func testConfig(t *testing.T) config.Config {
@@ -34,8 +37,6 @@ func testConfig(t *testing.T) config.Config {
 	}
 }
 
-// unusedPort returns a loopback TCP port nothing listens on, so the IMS keeps
-// failing to reach the peer.
 func unusedPort(t *testing.T) int {
 	t.Helper()
 
@@ -53,7 +54,7 @@ func unusedPort(t *testing.T) int {
 }
 
 func TestServerStartShutdown(t *testing.T) {
-	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 
@@ -107,7 +108,7 @@ func TestServerPurgesCallHistoryAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -121,5 +122,23 @@ func TestServerPurgesCallHistoryAtStart(t *testing.T) {
 
 	if total != 1 || !calls[0].EndedAt.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("calls after start = %+v", calls)
+	}
+}
+
+func TestStartNeedsIPsec(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can install SAs")
+	}
+
+	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler)}
+
+	err := srv.Start(t.Context())
+	if err == nil {
+		srv.Shutdown(context.Background())
+		t.Fatal("Start succeeded without CAP_NET_ADMIN")
+	}
+
+	if !strings.Contains(err.Error(), "CAP_NET_ADMIN") {
+		t.Fatalf("Start = %v, want an error naming CAP_NET_ADMIN", err)
 	}
 }

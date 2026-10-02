@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/pcscf"
 )
 
 const (
@@ -26,6 +27,8 @@ var ErrAlreadyStarted = errors.New("server: already started")
 type Server struct {
 	Config config.Config
 	Logger *slog.Logger
+
+	IPsec pcscf.Kernel
 
 	database    *db.DB
 	node        *diameter.Node
@@ -74,7 +77,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, database, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, node, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()
