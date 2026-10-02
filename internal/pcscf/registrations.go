@@ -311,15 +311,9 @@ func flowOf(r *db.PCSCFRegistration) flow {
 }
 
 func defaultIdentity(associated []string) string {
-	for _, a := range associated {
-		if u, err := sip.ParseURI(a); err == nil && u.IsSIP() {
-			return a
-		}
+	if len(associated) == 0 {
+		return ""
 	}
 
-	if len(associated) > 0 {
-		return associated[0]
-	}
-
-	return ""
+	return associated[0]
 }

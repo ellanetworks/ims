@@ -1104,3 +1104,18 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 		t.Fatalf("requestFlow = %v, %v; want the new set once used", f, ok)
 	}
 }
+
+func TestDefaultIdentityIsTheFirstAssociatedURI(t *testing.T) {
+	for _, tt := range []struct {
+		associated []string
+		want       string
+	}{
+		{[]string{testIMPU, testTel}, testIMPU},
+		{[]string{testTel, testIMPU}, testTel},
+		{nil, ""},
+	} {
+		if got := defaultIdentity(tt.associated); got != tt.want {
+			t.Errorf("defaultIdentity(%q) = %q, want %q", tt.associated, got, tt.want)
+		}
+	}
+}
