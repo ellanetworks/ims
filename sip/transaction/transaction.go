@@ -61,7 +61,7 @@ type Config struct {
 
 	Filter func(m sip.Message) error
 
-	ResponseFlow func(req *sip.Request) (sip.Flow, bool)
+	ResponseFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
 	T1, T2, T4 time.Duration
 
@@ -75,7 +75,7 @@ type Layer struct {
 	clock    Clock
 	aliases  map[string]struct{}
 	filter   func(m sip.Message) error
-	respFlow func(req *sip.Request) (sip.Flow, bool)
+	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
 	t1, t2, t4, t100 time.Duration
 
@@ -460,11 +460,16 @@ func (l *Layer) reject(req *sip.Request, code int) {
 	res := sip.NewResponse(req, code, "")
 	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
-	f, exact := l.responseFlow(req)
-	l.sendStateless(res, f, exact)
+	l.sendStateless(req, res)
 }
 
-func (l *Layer) sendStateless(res *sip.Response, f sip.Flow, exact bool) {
+func (l *Layer) sendStateless(req *sip.Request, res *sip.Response) {
+	f, exact, err := l.responseFlow(req, res)
+	if err != nil {
+		l.log.Debug("stateless response dropped", slog.String("response", res.StartLine()), slog.Any("error", err))
+		return
+	}
+
 	res.Flow = f
 
 	send := l.tr.Send
@@ -532,14 +537,19 @@ func (l *Layer) checkFlow(f sip.Flow) error {
 	return nil
 }
 
-func (l *Layer) responseFlow(req *sip.Request) (sip.Flow, bool) {
+func (l *Layer) responseFlow(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
 	if l.respFlow != nil {
-		if f, ok := l.respFlow(req); ok {
-			return f, true
+		f, ok, err := l.respFlow(req, res)
+		if err != nil {
+			return sip.Flow{}, false, err
+		}
+
+		if ok {
+			return f, true, nil
 		}
 	}
 
-	return req.Flow, false
+	return req.Flow, false, nil
 }
 
 func (l *Layer) handleResponse(res *sip.Response) {

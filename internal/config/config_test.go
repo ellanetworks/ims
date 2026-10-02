@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ellanetworks/ims/internal/ipsec"
 )
 
 const (
@@ -56,7 +58,8 @@ func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"call_history:\n  retention: 24h\napi:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
-		"pcscf:\n  port: 5062\nicscf:\n  port: 5072\n"+
+		"pcscf:\n  port: 5062\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
+		"icscf:\n  port: 5072\n"+
 		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
 	if err != nil {
@@ -81,7 +84,12 @@ func TestLoad(t *testing.T) {
 			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"},
 			MaxConnections: 100,
 		},
-		PCSCF: PCSCF{Port: 5062},
+		PCSCF: PCSCF{Port: 5062, IPsec: IPsec{
+			ServerPort:  5163,
+			ClientPorts: []int{5164, 5165},
+			Integrity:   []ipsec.Integrity{ipsec.HMACMD596},
+			Encryption:  ipsec.EncryptionPreferred,
+		}},
 		ICSCF: ICSCF{Port: 5072},
 		SCSCF: SCSCF{
 			Port:         5082,
@@ -185,6 +193,16 @@ func TestLoadDefaults(t *testing.T) {
 			cfg.PCSCF.Port, cfg.ICSCF.Port, cfg.SCSCF.Port, cfg.SIP.MaxConnections)
 	}
 
+	wantIPsec := IPsec{
+		ServerPort:  5063,
+		ClientPorts: []int{5064, 5065},
+		Integrity:   []ipsec.Integrity{ipsec.HMACSHA196, ipsec.HMACMD596},
+		Encryption:  ipsec.EncryptionOff,
+	}
+	if !reflect.DeepEqual(cfg.PCSCF.IPsec, wantIPsec) {
+		t.Fatalf("pcscf.ipsec = %+v, want %+v", cfg.PCSCF.IPsec, wantIPsec)
+	}
+
 	if cfg.API.Port != defaultAPIPort {
 		t.Fatalf("api.port = %d, want %d", cfg.API.Port, defaultAPIPort)
 	}
@@ -264,6 +282,14 @@ func TestLoadInvalid(t *testing.T) {
 		{"pcscf port out of range", valid + "pcscf:\n  port: 70000\n" + validDiameter, "pcscf.port 70000 is out of range"},
 		{"icscf port out of range", valid + "icscf:\n  port: -1\n" + validDiameter, "icscf.port -1 is out of range"},
 		{"same ports", valid + "pcscf:\n  port: 5080\n" + validDiameter, "pcscf.port and scscf.port are both 5080"},
+		{"IPsec server port on a role port", valid + "pcscf:\n  ipsec:\n    server_port: 5070\n" + validDiameter, "icscf.port and pcscf.ipsec.server_port are both 5070"},
+		{"IPsec client ports equal", valid + "pcscf:\n  ipsec:\n    client_ports: [5064, 5064]\n" + validDiameter, "pcscf.ipsec.client_ports[0] and pcscf.ipsec.client_ports[1] are both 5064"},
+		{"IPsec client port on the server port", valid + "pcscf:\n  ipsec:\n    client_ports: [5063, 5064]\n" + validDiameter, "pcscf.ipsec.server_port and pcscf.ipsec.client_ports[0] are both 5063"},
+		{"one IPsec client port", valid + "pcscf:\n  ipsec:\n    client_ports: [5064]\n" + validDiameter, "pcscf.ipsec.client_ports must list 2 ports"},
+		{"IPsec on 5061", valid + "pcscf:\n  ipsec:\n    server_port: 5061\n" + validDiameter, "pcscf.ipsec.server_port 5061 is a standard SIP port"},
+		{"IPsec port out of range", valid + "pcscf:\n  ipsec:\n    client_ports: [5064, 70000]\n" + validDiameter, "pcscf.ipsec.client_ports[1] 70000 is out of range"},
+		{"unknown integrity", valid + "pcscf:\n  ipsec:\n    integrity: [hmac-sha2-256-128]\n" + validDiameter, `pcscf.ipsec: unsupported integrity algorithm "hmac-sha2-256-128"`},
+		{"unknown encryption policy", valid + "pcscf:\n  ipsec:\n    encryption: always\n" + validDiameter, `pcscf.ipsec: unknown encryption policy "always"`},
 		{"bad trusted network", validDB + validAPI + validIMS + "  trusted_networks: [10.0.0.0]\n" + validSIP + validDiameter, "no '/'"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
 		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},

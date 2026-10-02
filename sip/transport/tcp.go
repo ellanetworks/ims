@@ -134,7 +134,7 @@ func (t *Transport) dial(c *conn) {
 		Control:   sockopt.ReusePort,
 	}
 
-	nc, err := d.DialContext(t.ctx, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
+	nc, err := t.dialFunc(t.ctx, &d, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

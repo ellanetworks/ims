@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/sip"
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +25,10 @@ const (
 	defaultSCSCFPort     = 5080
 	defaultMinExpires    = 60
 	defaultMaxExpires    = 3600
+	defaultIPsecServer   = 5063
 )
+
+var defaultIPsecClients = []int{5064, 5065}
 
 type Transport string
 
@@ -80,7 +84,29 @@ type SIP struct {
 }
 
 type PCSCF struct {
-	Port int `yaml:"port"`
+	Port  int   `yaml:"port"`
+	IPsec IPsec `yaml:"ipsec"`
+}
+
+type IPsec struct {
+	ServerPort  int                    `yaml:"server_port"`
+	ClientPorts []int                  `yaml:"client_ports"`
+	Integrity   []ipsec.Integrity      `yaml:"integrity"`
+	Encryption  ipsec.EncryptionPolicy `yaml:"encryption"`
+}
+
+func (i IPsec) Policy() ipsec.Policy {
+	p := ipsec.DefaultPolicy()
+
+	if len(i.Integrity) > 0 {
+		p.Integrity = i.Integrity
+	}
+
+	if i.Encryption != "" {
+		p.Encryption = i.Encryption
+	}
+
+	return p
 }
 
 type ICSCF struct {
@@ -193,6 +219,17 @@ func Load(path string) (Config, error) {
 		cfg.PCSCF.Port = defaultPCSCFPort
 	}
 
+	if cfg.PCSCF.IPsec.ServerPort == 0 {
+		cfg.PCSCF.IPsec.ServerPort = defaultIPsecServer
+	}
+
+	if len(cfg.PCSCF.IPsec.ClientPorts) == 0 {
+		cfg.PCSCF.IPsec.ClientPorts = slices.Clone(defaultIPsecClients)
+	}
+
+	policy := cfg.PCSCF.IPsec.Policy()
+	cfg.PCSCF.IPsec.Integrity, cfg.PCSCF.IPsec.Encryption = policy.Integrity, policy.Encryption
+
 	if cfg.ICSCF.Port == 0 {
 		cfg.ICSCF.Port = defaultICSCFPort
 	}
@@ -269,6 +306,10 @@ func (c Config) validate() error {
 		return err
 	}
 
+	if err := c.PCSCF.IPsec.Policy().Validate(); err != nil {
+		return fmt.Errorf("pcscf.ipsec: %w", err)
+	}
+
 	return c.Diameter.validate()
 }
 
@@ -276,7 +317,23 @@ func (c Config) validatePorts() error {
 	ports := []struct {
 		name string
 		port int
-	}{{"pcscf.port", c.PCSCF.Port}, {"icscf.port", c.ICSCF.Port}, {"scscf.port", c.SCSCF.Port}}
+	}{
+		{"pcscf.port", c.PCSCF.Port},
+		{"icscf.port", c.ICSCF.Port},
+		{"scscf.port", c.SCSCF.Port},
+		{"pcscf.ipsec.server_port", c.PCSCF.IPsec.ServerPort},
+	}
+
+	if len(c.PCSCF.IPsec.ClientPorts) != 2 {
+		return errors.New("pcscf.ipsec.client_ports must list 2 ports")
+	}
+
+	for i, p := range c.PCSCF.IPsec.ClientPorts {
+		ports = append(ports, struct {
+			name string
+			port int
+		}{fmt.Sprintf("pcscf.ipsec.client_ports[%d]", i), p})
+	}
 
 	shared := c.apiSharesSIPAddress()
 
@@ -289,6 +346,10 @@ func (c Config) validatePorts() error {
 			if q.port == p.port {
 				return fmt.Errorf("%s and %s are both %d", q.name, p.name, p.port)
 			}
+		}
+
+		if strings.HasPrefix(p.name, "pcscf.ipsec.") && (p.port == 5060 || p.port == 5061) {
+			return fmt.Errorf("%s %d is a standard SIP port", p.name, p.port)
 		}
 
 		if shared && p.port == c.API.Port {

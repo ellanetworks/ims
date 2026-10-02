@@ -13,6 +13,11 @@ sip:
   aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
 pcscf:
   port: 5060
+  ipsec:
+    server_port: 5063
+    client_ports: [5064, 5065]
+    integrity: [hmac-sha-1-96, hmac-md5-96]
+    encryption: off
 icscf:
   port: 5070
 scscf:

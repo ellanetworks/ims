@@ -5,42 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/netip"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
 )
 
-type IntegrityAlgorithm string
-
-const (
-	IntegrityHMACMD596  IntegrityAlgorithm = "hmac-md5-96"
-	IntegrityHMACSHA196 IntegrityAlgorithm = "hmac-sha-1-96"
-)
-
-type EncryptionAlgorithm string
-
-const (
-	EncryptionNull   EncryptionAlgorithm = "null"
-	EncryptionAESCBC EncryptionAlgorithm = "aes-cbc"
-)
-
 var ErrIdentityConflict = errors.New("public identity in another registration set of the private identity")
-
-// SecurityAssociations identifies the four IPsec SAs of a registration
-// (TS 33.203 §7). The keys stay in the kernel and aren't stored.
-type SecurityAssociations struct {
-	UEPortC    uint16
-	UEPortS    uint16
-	PCSCFPortC uint16
-	PCSCFPortS uint16
-	SPIUC      uint32
-	SPIUS      uint32
-	SPIPC      uint32
-	SPIPS      uint32
-	Integrity  IntegrityAlgorithm
-	Encryption EncryptionAlgorithm
-}
 
 type PublicIdentity struct {
 	URI         string
@@ -64,8 +34,6 @@ type Contact struct {
 	URI         string
 	Params      string
 	Path        string
-	UEAddress   netip.Addr
-	IPsec       *SecurityAssociations
 	RxSessionID string
 }
 
@@ -79,12 +47,9 @@ type Binding struct {
 const (
 	registrationColumns = `id, impi, impu, user_data`
 
-	contactColumns = `c.id, c.impi, c.uri, c.params, c.path, c.ue_address,
-	c.ue_port_c, c.ue_port_s, c.pcscf_port_c, c.pcscf_port_s, c.spi_uc, c.spi_us, c.spi_pc, c.spi_ps, c.alg, c.ealg,
-	c.rx_session_id`
+	contactColumns = `c.id, c.impi, c.uri, c.params, c.path, c.rx_session_id`
 
-	returnedContactColumns = `id, impi, uri, params, path, ue_address,
-	ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg, rx_session_id`
+	returnedContactColumns = `id, impi, uri, params, path, rx_session_id`
 )
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
@@ -176,24 +141,12 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 }
 
 func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
-	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), addressArg(c.UEAddress)}
-	args = append(args, securityAssociationArgs(c.IPsec)...)
-	args = append(args, nullableString(c.RxSessionID))
-
 	return scanContact(tx.QueryRowContext(ctx,
-		`INSERT INTO contacts (impi, uri, params, path, ue_address,
-			ue_port_c, ue_port_s, pcscf_port_c, pcscf_port_s, spi_uc, spi_us, spi_pc, spi_ps, alg, ealg, rx_session_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO contacts (impi, uri, params, path, rx_session_id)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path
-		RETURNING `+returnedContactColumns, args...))
-}
-
-func addressArg(a netip.Addr) any {
-	if !a.IsValid() {
-		return nil
-	}
-
-	return a.String()
+		RETURNING `+returnedContactColumns,
+		c.IMPI, c.URI, c.Params, nullableString(c.Path), nullableString(c.RxSessionID)))
 }
 
 func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
@@ -293,27 +246,6 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	}
 
 	return impis, nil
-}
-
-func (d *DB) SetContactFlow(ctx context.Context, contactID int64, ueAddress netip.Addr, sa *SecurityAssociations) error {
-	args := []any{addressArg(ueAddress)}
-	args = append(args, securityAssociationArgs(sa)...)
-	args = append(args, contactID)
-
-	res, err := d.conn.ExecContext(ctx,
-		`UPDATE contacts SET ue_address = ?,
-			ue_port_c = ?, ue_port_s = ?, pcscf_port_c = ?, pcscf_port_s = ?,
-			spi_uc = ?, spi_us = ?, spi_pc = ?, spi_ps = ?, alg = ?, ealg = ?
-		WHERE id = ?`, args...)
-	if err != nil {
-		return fmt.Errorf("set contact flow: %w", err)
-	}
-
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("set contact flow: %w", err)
-	}
-
-	return nil
 }
 
 func (d *DB) SetContactRxSession(ctx context.Context, contactID int64, sessionID string) error {
@@ -452,58 +384,18 @@ func scanRegistration(row scanner) (Registration, error) {
 
 func scanContact(row scanner, leading ...any) (Contact, error) {
 	var (
-		c                                        Contact
-		path, rxSessionID, alg, ealg, ueAddress  sql.NullString
-		uePortC, uePortS, pcscfPortC, pcscfPortS sql.Null[uint16]
-		spiUC, spiUS, spiPC, spiPS               sql.Null[uint32]
+		c                 Contact
+		path, rxSessionID sql.NullString
 	)
 
-	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path, &ueAddress,
-		&uePortC, &uePortS, &pcscfPortC, &pcscfPortS, &spiUC, &spiUS, &spiPC, &spiPS, &alg, &ealg, &rxSessionID)
+	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path, &rxSessionID)
 
 	if err := row.Scan(dest...); err != nil {
 		return Contact{}, err
 	}
 
-	if ueAddress.Valid {
-		addr, err := netip.ParseAddr(ueAddress.String)
-		if err != nil {
-			return Contact{}, fmt.Errorf("contact %d: %w", c.ID, err)
-		}
-
-		c.UEAddress = addr
-	}
-
 	c.Path = path.String
 	c.RxSessionID = rxSessionID.String
 
-	// The table's CHECK constraint keeps the SA columns all set or all NULL.
-	if alg.Valid {
-		c.IPsec = &SecurityAssociations{
-			UEPortC:    uePortC.V,
-			UEPortS:    uePortS.V,
-			PCSCFPortC: pcscfPortC.V,
-			PCSCFPortS: pcscfPortS.V,
-			SPIUC:      spiUC.V,
-			SPIUS:      spiUS.V,
-			SPIPC:      spiPC.V,
-			SPIPS:      spiPS.V,
-			Integrity:  IntegrityAlgorithm(alg.String),
-			Encryption: EncryptionAlgorithm(ealg.String),
-		}
-	}
-
 	return c, nil
-}
-
-// securityAssociationArgs returns the values of ue_port_c through ealg.
-func securityAssociationArgs(sa *SecurityAssociations) []any {
-	if sa == nil {
-		return make([]any, 10)
-	}
-
-	return []any{
-		sa.UEPortC, sa.UEPortS, sa.PCSCFPortC, sa.PCSCFPortS,
-		sa.SPIUC, sa.SPIUS, sa.SPIPC, sa.SPIPS, sa.Integrity, sa.Encryption,
-	}
 }

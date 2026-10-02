@@ -49,6 +49,8 @@ type Config struct {
 	Handler Handler
 	Logger  *slog.Logger
 
+	Dial func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
+
 	MaxMessageSize int
 
 	MaxConnections int
@@ -62,6 +64,7 @@ type Config struct {
 type Transport struct {
 	handler      Handler
 	log          *slog.Logger
+	dialFunc     func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
 	maxSize      int
 	maxConns     int
 	idleTimeout  time.Duration
@@ -93,6 +96,7 @@ func New(cfg Config) *Transport {
 	t := &Transport{
 		handler:      cfg.Handler,
 		log:          cfg.Logger,
+		dialFunc:     cfg.Dial,
 		maxSize:      cfg.MaxMessageSize,
 		maxConns:     cfg.MaxConnections,
 		idleTimeout:  cfg.IdleTimeout,
@@ -131,6 +135,12 @@ func New(cfg Config) *Transport {
 
 	if t.writeTimeout <= 0 {
 		t.writeTimeout = DefaultWriteTimeout
+	}
+
+	if t.dialFunc == nil {
+		t.dialFunc = func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+			return d.DialContext(ctx, network, address)
+		}
 	}
 
 	return t

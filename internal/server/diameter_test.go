@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 )
 
 const (
@@ -183,7 +184,13 @@ func diameterConfig(peers ...config.DiameterPeer) config.Diameter {
 func startIMS(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
+	return startIMSWith(t, cfg, ipsectest.NewKernel())
+}
+
+func startIMSWith(t *testing.T, cfg config.Config, kernel *ipsectest.Kernel) *Server {
+	t.Helper()
+
+	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: kernel}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -339,7 +346,7 @@ func TestDiameterShutdownSendsDPR(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -7,124 +7,33 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
-	"os/exec"
-	"runtime"
-	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/ellanetworks/ims/internal/netnstest"
 )
 
-const netnsEnv = "IMS_IPSEC_NETNS"
-
-var netnsSkip string
-
 func TestMain(m *testing.M) {
-	if os.Getenv(netnsEnv) == "" {
-		cmd := exec.CommandContext(context.Background(), os.Args[0], os.Args[1:]...)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-
-		cmd.Env = append(os.Environ(), netnsEnv+"=1")
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
-			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		}
-
-		err := cmd.Run()
-		if err == nil {
-			os.Exit(0)
-		}
-
-		if exit, ok := err.(*exec.ExitError); ok {
-			os.Exit(max(exit.ExitCode(), 1))
-		}
-
-		netnsSkip = fmt.Sprintf("no user namespace (%v): allow unprivileged user namespaces or run as root", err)
-	}
-
-	os.Exit(m.Run())
-}
-
-func unavailable(t *testing.T, reason string) {
-	t.Helper()
-
-	if os.Getenv("CI") != "" {
-		t.Fatal(reason)
-	}
-
-	t.Skip(reason)
+	netnstest.Main(m)
 }
 
 type netns struct {
-	tid  int
-	work chan func()
+	*netnstest.Netns
 }
 
 func newNetns(t *testing.T) *netns {
 	t.Helper()
 
-	if netnsSkip != "" {
-		unavailable(t, netnsSkip)
-	}
-
-	n := &netns{work: make(chan func())}
-	ready := make(chan error)
-
-	go func() {
-		runtime.LockOSThread()
-
-		if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-			ready <- err
-			return
-		}
-
-		n.tid = unix.Gettid()
-
-		ready <- nil
-
-		for f := range n.work {
-			f()
-		}
-	}()
-
-	if err := <-ready; err != nil {
-		unavailable(t, fmt.Sprintf("unshare network namespace: %v", err))
-	}
-
-	t.Cleanup(func() { close(n.work) })
-
-	return n
+	return &netns{netnstest.New(t)}
 }
 
 func (n *netns) do(f func()) {
-	done := make(chan struct{})
-
-	n.work <- func() {
-		defer close(done)
-
-		f()
-	}
-
-	<-done
+	n.Do(f)
 }
 
 func (n *netns) ip(t *testing.T, args ...string) {
 	t.Helper()
-
-	var (
-		out []byte
-		err error
-	)
-
-	n.do(func() { out, err = exec.CommandContext(context.Background(), "ip", args...).CombinedOutput() })
-
-	if err != nil {
-		t.Fatalf("ip %s: %v: %s", strings.Join(args, " "), err, out)
-	}
+	n.IP(t, args...)
 }
 
 func (n *netns) xfrm(t *testing.T) *XFRM {
@@ -159,10 +68,6 @@ type lab struct {
 func newLab(t *testing.T) *lab {
 	t.Helper()
 
-	if _, err := exec.LookPath("ip"); err != nil {
-		unavailable(t, "no ip command (iproute2)")
-	}
-
 	l := &lab{
 		p: newNetns(t), u: newNetns(t),
 		p4: netip.MustParseAddr("10.0.0.1"), u4: netip.MustParseAddr("10.0.0.2"),
@@ -175,18 +80,9 @@ func newLab(t *testing.T) *lab {
 		nextPort: 6000,
 	}
 
-	l.p.ip(t, "link", "add", "p0", "type", "veth", "peer", "name", "u0", "netns", fmt.Sprint(l.u.tid))
-
-	for _, side := range []struct {
-		n      *netns
-		dev    string
-		v4, v6 netip.Addr
-	}{{l.p, "p0", l.p4, l.p6}, {l.u, "u0", l.u4, l.u6}} {
-		side.n.ip(t, "link", "set", "lo", "up")
-		side.n.ip(t, "addr", "add", side.v4.String()+"/24", "dev", side.dev)
-		side.n.ip(t, "addr", "add", side.v6.String()+"/64", "dev", side.dev, "nodad")
-		side.n.ip(t, "link", "set", side.dev, "up")
-	}
+	netnstest.Link(t, l.p.Netns, l.u.Netns,
+		[]netip.Prefix{netip.PrefixFrom(l.p4, 24), netip.PrefixFrom(l.p6, 64)},
+		[]netip.Prefix{netip.PrefixFrom(l.u4, 24), netip.PrefixFrom(l.u6, 64)})
 
 	l.px, l.ux = l.p.xfrm(t), l.u.xfrm(t)
 

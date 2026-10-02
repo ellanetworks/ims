@@ -19,12 +19,12 @@ func TestResponseFlow(t *testing.T) {
 	var route atomic.Pointer[sip.Flow]
 
 	h := newHarnessConfig(t, transaction.Config{
-		ResponseFlow: func(*sip.Request) (sip.Flow, bool) {
+		ResponseFlow: func(*sip.Request, *sip.Response) (sip.Flow, bool, error) {
 			if f := route.Load(); f != nil {
-				return *f, true
+				return *f, true, nil
 			}
 
-			return sip.Flow{}, false
+			return sip.Flow{}, false, nil
 		},
 	})
 
@@ -62,7 +62,7 @@ func TestResponseFlow(t *testing.T) {
 func TestFailedTryingStillDelivers(t *testing.T) {
 	nowhere := sip.Flow{Transport: sip.UDP, Local: netip.AddrPortFrom(loopback, 1), Remote: netip.AddrPortFrom(loopback, 2)}
 	h := newHarnessConfig(t, transaction.Config{
-		ResponseFlow: func(*sip.Request) (sip.Flow, bool) { return nowhere, true },
+		ResponseFlow: func(*sip.Request, *sip.Response) (sip.Flow, bool, error) { return nowhere, true, nil },
 	})
 
 	h.peerRequest("INVITE", sip.UDP)
@@ -194,4 +194,67 @@ func TestSendOnFlow(t *testing.T) {
 	if _, f := h.peer.RecvRequest(); f.Transport != sip.UDP {
 		t.Fatalf("SendOnFlow switched to %s", f.Transport)
 	}
+}
+
+func TestResponseFlowPerResponse(t *testing.T) {
+	pcs := make(chan netip.AddrPort, 2)
+	dropped := errors.New("dropped")
+
+	var h *harness
+
+	h = newHarnessConfig(t, transaction.Config{
+		ResponseFlow: func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
+			switch res.StatusCode {
+			case 100:
+				return sip.Flow{}, false, nil
+			case 503:
+				return sip.Flow{}, false, dropped
+			}
+
+			pc := <-pcs
+			pcs <- pc
+
+			return sip.Flow{Transport: sip.UDP, Local: pc, Remote: h.peer.Addr()}, true, nil
+		},
+	})
+
+	first, second := siptest.ListenLayer(t, h.l, loopback), siptest.ListenLayer(t, h.l, loopback)
+
+	h.peerRequest("INVITE", sip.UDP)
+	h.wantResponse(100)
+
+	tx := h.tu.NextRequest().Tx
+
+	pcs <- first
+
+	if err := tx.Respond(sip.NewResponse(tx.Request(), 180, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	if res, f := h.peer.RecvResponse(); res.StatusCode != 180 || f.Remote != first {
+		t.Fatalf("got %q from %s, want 180 from %s", res.StartLine(), f.Remote, first)
+	}
+
+	<-pcs
+
+	pcs <- second
+
+	h.respond(tx, 486)
+
+	if res, f := h.peer.RecvResponse(); res.StatusCode != 486 || f.Remote != second {
+		t.Fatalf("got %q from %s, want 486 from %s", res.StartLine(), f.Remote, second)
+	}
+
+	h.peerRequest("OPTIONS", sip.UDP)
+	options := h.tu.NextRequest()
+
+	if err := options.Tx.Respond(sip.NewResponse(options.Req, 503, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	if e := h.tu.NextError(); e.Tx != options.Tx || !errors.Is(e.Err, dropped) {
+		t.Fatalf("HandleTransactionError(%p, %v), want the hook's error", e.Tx, e.Err)
+	}
+
+	h.peer.RecvNone(quiet)
 }
