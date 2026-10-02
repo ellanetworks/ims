@@ -192,8 +192,10 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 		t.Fatalf("Request-URI %s, want the default IMPU %s", req.URI, msisdn)
 	case req.Header.Get("To") != "<"+msisdn+">":
 		t.Fatalf("To = %q", req.Header.Get("To"))
-	case req.Header.Get("Route") != "<sip:orig@scscf."+domain+":6060;lr>":
-		t.Fatalf("Route = %q, want the Service-Route", req.Header.Get("Route"))
+	case !slices.Equal(req.Header.Elements("Route"), []string{
+		"<sip:" + n.ps.Addr().String() + ";lr>", "<sip:orig@scscf." + domain + ":6060;lr>",
+	}):
+		t.Fatalf("Route = %q, want the P-CSCF's protected server port and the Service-Route", req.Header.Values("Route"))
 	case req.Header.Get("Event") != "reg" || req.Header.Get("Accept") != regevent.ContentType ||
 		req.Header.Get("Expires") != "600000":
 		t.Fatalf("SUBSCRIBE:\n%s", req)
@@ -511,5 +513,110 @@ func TestSubscriptionTerminatedByTimeout(t *testing.T) {
 
 	if !u.State().Registered {
 		t.Fatal("registration forgotten with the subscription")
+	}
+}
+
+func TestNoNotifyWithinTimerN(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, _ := n.newUE(Config{T1: 10 * time.Millisecond})
+
+	n.registerSubscribing(u)
+
+	if !u.Subscription().Active {
+		t.Fatal("no subscription after the 200")
+	}
+
+	eventually(t, "Timer N", func() bool { return !u.Subscription().Active })
+
+	for {
+		e := <-u.Events()
+		if errors.Is(e.Err, ErrNoNotify) {
+			break
+		}
+	}
+
+	if !u.State().Registered {
+		t.Fatal("registration forgotten with the subscription")
+	}
+}
+
+func TestReginfoVersions(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, _ := n.newUE(Config{})
+
+	no := n.registerSubscribing(u)
+	no.active()
+	nextReginfo(t, u)
+
+	no.ver = 0
+
+	stale := no.reginfo(regevent.Active, regevent.Active, regevent.Shortened, 2)
+	if res := no.notify("active;expires=600000", stale); res.StatusCode != 200 {
+		t.Fatalf("stale NOTIFY answered %q", res.StartLine())
+	}
+
+	if time.Until(u.State().Expires) < time.Hour-time.Minute {
+		t.Fatalf("expires %s: the stale document was applied", u.State().Expires)
+	}
+
+	no.ver = 5
+
+	if res := no.notify("active;expires=600000", no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)); res.StatusCode != 200 {
+		t.Fatalf("NOTIFY answered %q", res.StartLine())
+	}
+
+	req, f := n.recv(n.ps)
+	if to, _ := req.Header.To(); req.Method != "SUBSCRIBE" || to.Tag() != no.toTag {
+		t.Fatalf("got\n%s\nwant a refresh for the full state after the version gap", req)
+	}
+
+	no.accept(req, f)
+}
+
+func TestFullStateReplacesIMPUs(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, _ := n.newUE(Config{})
+
+	no := n.registerSubscribing(u)
+	no.active()
+	nextReginfo(t, u)
+
+	info := no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)
+	info.Registrations = info.Registrations[:1]
+
+	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {
+		t.Fatalf("NOTIFY answered %q", res.StartLine())
+	}
+
+	if st := u.State(); !slices.Equal(st.IMPUs, []string{msisdn}) {
+		t.Fatalf("IMPUs = %v after a full document listing only %s", st.IMPUs, msisdn)
+	}
+
+	info = no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)
+	info.State = regevent.Partial
+	info.Registrations = info.Registrations[1:]
+
+	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {
+		t.Fatalf("NOTIFY answered %q", res.StartLine())
+	}
+
+	if st := u.State(); !slices.Equal(st.IMPUs, []string{msisdn, telIMPU}) {
+		t.Fatalf("IMPUs = %v after a partial document adding %s", st.IMPUs, telIMPU)
+	}
+}
+
+func TestRefreshIn(t *testing.T) {
+	for _, tc := range []struct {
+		remaining, duration, want time.Duration
+	}{
+		{600000 * time.Second, 600000 * time.Second, 599400 * time.Second},
+		{1000 * time.Second, 600000 * time.Second, 400 * time.Second},
+		{1200 * time.Second, 1200 * time.Second, 600 * time.Second},
+		{100 * time.Second, 1200 * time.Second, 0},
+	} {
+		got := refreshIn(time.Now().Add(tc.remaining), tc.duration)
+		if d := got - tc.want; d > time.Second || d < -time.Second {
+			t.Errorf("refreshIn(%s, %s) = %s, want %s", tc.remaining, tc.duration, got, tc.want)
+		}
 	}
 }

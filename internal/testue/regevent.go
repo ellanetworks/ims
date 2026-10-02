@@ -18,6 +18,8 @@ import (
 
 const DefaultSubscriptionExpires = 600000 * time.Second
 
+var ErrNoNotify = errors.New("testue: no NOTIFY within Timer N")
+
 type Subscription struct {
 	Active  bool
 	Expires time.Time
@@ -25,10 +27,17 @@ type Subscription struct {
 }
 
 type subscription struct {
-	req     *sip.Request
-	d       *dialog.Dialog
-	expires time.Time
-	timer   *time.Timer
+	req      *sip.Request
+	d        *dialog.Dialog
+	expires  time.Time
+	duration time.Duration
+	timer    *time.Timer
+
+	timerN    *time.Timer
+	confirmed bool
+
+	version     uint64
+	haveVersion bool
 }
 
 func (s *subscription) matches(req *sip.Request) bool {
@@ -75,9 +84,13 @@ func (u *UE) resubscribe(ctx context.Context) error {
 		return u.subscribe(ctx)
 	}
 
-	if err := u.subscribeHeaders(req); err != nil {
+	if _, err := u.subscribeHeaders(req); err != nil {
 		return err
 	}
+
+	u.mu.Lock()
+	u.awaitNotifyLocked(s)
+	u.mu.Unlock()
 
 	res, err := u.request(ctx, req)
 	if err != nil {
@@ -120,6 +133,13 @@ func (u *UE) subscribe(ctx context.Context) error {
 
 	req := sip.NewRequest("SUBSCRIBE", target)
 
+	flow, err := u.subscribeHeaders(req)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Add("Route", "<"+preloadedRoute(flow).String()+">")
+
 	for _, r := range route {
 		req.Header.Add("Route", r)
 	}
@@ -130,10 +150,6 @@ func (u *UE) subscribe(ctx context.Context) error {
 	req.Header.Add("Call-ID", timeUUID()+"@"+sip.FormatHost(u.cfg.Local))
 	req.Header.Add("CSeq", "1 SUBSCRIBE")
 
-	if err := u.subscribeHeaders(req); err != nil {
-		return err
-	}
-
 	s := &subscription{req: req}
 
 	u.mu.Lock()
@@ -142,6 +158,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	}
 
 	u.sub = s
+	u.awaitNotifyLocked(s)
 	u.mu.Unlock()
 
 	res, err := u.request(ctx, req)
@@ -179,10 +196,21 @@ func (u *UE) subscribe(ctx context.Context) error {
 	return nil
 }
 
-func (u *UE) subscribeHeaders(req *sip.Request) error {
+func preloadedRoute(f sip.Flow) sip.URI {
+	u := sip.URI{Scheme: "sip", Host: sip.FormatHost(f.Remote.Addr()), Port: f.Remote.Port()}
+	if f.Transport != sip.UDP {
+		u.Params.Set("transport", strings.ToLower(string(f.Transport)))
+	}
+
+	u.Params.Set("lr", "")
+
+	return u
+}
+
+func (u *UE) subscribeHeaders(req *sip.Request) (sip.Flow, error) {
 	flow, verify, err := u.requestFlow()
 	if err != nil {
-		return err
+		return sip.Flow{}, err
 	}
 
 	req.Flow = flow
@@ -209,7 +237,7 @@ func (u *UE) subscribeHeaders(req *sip.Request) error {
 		req.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
 	}
 
-	return nil
+	return flow, nil
 }
 
 func (u *UE) requestFlow() (sip.Flow, []string, error) {
@@ -226,15 +254,46 @@ func (u *UE) requestFlow() (sip.Flow, []string, error) {
 }
 
 func (u *UE) subscribedLocked(s *subscription, res *sip.Response) {
-	if s.expires.IsZero() || res.Header.Has("Expires") {
-		if v, err := res.Header.Expires(); err == nil {
-			s.expires = time.Now().Add(time.Duration(v) * time.Second)
-		} else if s.expires.IsZero() {
-			s.expires = time.Now().Add(DefaultSubscriptionExpires)
-		}
+	if v, err := res.Header.Expires(); err == nil {
+		s.duration = time.Duration(v) * time.Second
+		s.expires = time.Now().Add(s.duration)
+	} else if s.expires.IsZero() {
+		s.duration = DefaultSubscriptionExpires
+		s.expires = time.Now().Add(s.duration)
 	}
 
 	u.scheduleRefreshLocked(s)
+}
+
+func (u *UE) awaitNotifyLocked(s *subscription) {
+	s.confirmed = false
+
+	if s.timerN != nil {
+		s.timerN.Stop()
+	}
+
+	s.timerN = time.AfterFunc(64*u.layer.T1(), func() {
+		u.mu.Lock()
+
+		expired := u.sub == s && !s.confirmed
+		if expired {
+			u.stopSubscriptionLocked(s)
+		}
+
+		u.mu.Unlock()
+
+		if expired {
+			u.event(Event{Err: ErrNoNotify})
+		}
+	})
+}
+
+func refreshIn(expires time.Time, duration time.Duration) time.Duration {
+	if duration > 1200*time.Second {
+		return max(time.Until(expires)-600*time.Second, 0)
+	}
+
+	return max(time.Until(expires)-duration/2, 0)
 }
 
 func (u *UE) scheduleRefreshLocked(s *subscription) {
@@ -247,7 +306,7 @@ func (u *UE) scheduleRefreshLocked(s *subscription) {
 		return
 	}
 
-	s.timer = time.AfterFunc(reregisterIn(time.Until(s.expires)), func() {
+	s.timer = time.AfterFunc(refreshIn(s.expires, s.duration), func() {
 		err := u.Resubscribe(context.Background())
 		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {
 			u.event(Event{Err: err})
@@ -265,9 +324,11 @@ func (u *UE) endSubscription(s *subscription) {
 }
 
 func (u *UE) stopSubscriptionLocked(s *subscription) {
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
+	for _, t := range []**time.Timer{&s.timer, &s.timerN} {
+		if *t != nil {
+			(*t).Stop()
+			*t = nil
+		}
 	}
 
 	if s.d != nil {
@@ -336,9 +397,20 @@ func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
 		}
 	}
 
+	s.confirmed = true
+
+	if s.timerN != nil {
+		s.timerN.Stop()
+		s.timerN = nil
+	}
+
 	if v, ok := params.Get("expires"); ok && !terminated {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 			s.expires = time.Now().Add(time.Duration(n) * time.Second)
+			if s.duration == 0 {
+				s.duration = time.Duration(n) * time.Second
+			}
+
 			u.scheduleRefreshLocked(s)
 		}
 	}
@@ -358,9 +430,20 @@ func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
 		infoErr = fmt.Errorf("testue: NOTIFY body of type %q", req.Header.ContentType())
 	}
 
-	var a action
+	var (
+		a     action
+		stale bool
+	)
+
 	if infoErr == nil {
-		a = u.applyLocked(info, terminated)
+		stale = s.haveVersion && info.Version <= s.version
+		gap := s.haveVersion && info.Version > s.version+1
+
+		if !stale {
+			s.version, s.haveVersion = info.Version, true
+			a = u.applyLocked(info, terminated)
+			a.resubscribe = gap && !terminated && !a.teardown
+		}
 	}
 
 	if terminated && !a.teardown {
@@ -371,7 +454,7 @@ func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
 	u.mu.Unlock()
 
 	e := Event{Request: req, Err: infoErr}
-	if infoErr == nil {
+	if infoErr == nil && !stale {
 		e.Reginfo = &info
 	}
 
@@ -413,7 +496,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {
 		mine, gone            int
 		deactivated, rejected bool
 		registered, removed   []string
-		allClosed             = len(info.Registrations) > 0
+		allClosed             = info.State == regevent.Full && len(info.Registrations) > 0
 	)
 
 	for _, reg := range info.Registrations {
@@ -466,6 +549,10 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {
 
 	if !u.state.Registered {
 		return action{}
+	}
+
+	if info.State == regevent.Full {
+		u.state.IMPUs = nil
 	}
 
 	for _, aor := range registered {
