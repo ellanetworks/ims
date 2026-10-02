@@ -557,3 +557,31 @@ func TestOrderPerFlow(t *testing.T) {
 		}
 	})
 }
+
+func TestDialHook(t *testing.T) {
+	dialed := make(chan string, 1)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+			dialed <- address
+			return d.DialContext(ctx, network, address)
+		},
+	})
+	local := siptest.Listen(t, tr, lo)
+	peer := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+peer.Addr().String(), sip.TCP, local)
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: peer.Addr()}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := <-dialed; got != peer.Addr().String() {
+		t.Fatalf("dialed %s, want %s", got, peer.Addr())
+	}
+
+	if got, _ := peer.RecvRequest(); got.Method != "OPTIONS" {
+		t.Fatalf("got %s", got.Method)
+	}
+}

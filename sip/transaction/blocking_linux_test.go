@@ -53,12 +53,12 @@ func TestReaderNeverBlocksOnSend(t *testing.T) {
 	stalled := stalledListener(t)
 
 	h := newHarnessConfig(t, transaction.Config{
-		ResponseFlow: func(req *sip.Request) (sip.Flow, bool) {
+		ResponseFlow: func(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
 			if req.Method != "INVITE" {
-				return sip.Flow{}, false
+				return sip.Flow{}, false, nil
 			}
 
-			return sip.Flow{Transport: sip.TCP, Local: req.Flow.Local, Remote: stalled}, true
+			return sip.Flow{Transport: sip.TCP, Local: req.Flow.Local, Remote: stalled}, true, nil
 		},
 	})
 

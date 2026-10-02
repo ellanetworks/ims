@@ -140,8 +140,8 @@ func TestServerNonInviteTryingToCompleted(t *testing.T) {
 
 func TestServerRetransmissionFailure(t *testing.T) {
 	h := newHarnessConfig(t, transaction.Config{
-		ResponseFlow: func(req *sip.Request) (sip.Flow, bool) {
-			return sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: netip.MustParseAddrPort("[::1]:5060")}, true
+		ResponseFlow: func(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
+			return sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: netip.MustParseAddrPort("[::1]:5060")}, true, nil
 		},
 	})
 

@@ -97,12 +97,12 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 
 			return nil
 		},
-		ResponseFlow: func(req *sip.Request) (sip.Flow, bool) {
+		ResponseFlow: func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
 			if p := s.pcscf.Load(); p != nil {
-				return p.ResponseFlow(req)
+				return p.ResponseFlow(req, res)
 			}
 
-			return sip.Flow{}, false
+			return sip.Flow{}, false, nil
 		},
 	})
 
@@ -167,6 +167,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 	})
 
 	pc := pcscf.New(pcscf.Config{
+		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
 			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
 		}),

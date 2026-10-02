@@ -10,7 +10,6 @@ type ServerTransaction struct {
 	req    *sip.Request
 	invite bool
 	flow   sip.Flow
-	exact  bool
 	tag    string
 	trying *sip.Response
 	last   *sip.Response
@@ -20,7 +19,7 @@ type ServerTransaction struct {
 func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 	tx := &ServerTransaction{req: req, invite: req.Method == "INVITE", tag: sip.NewTag(), trying: sip.NewResponse(req, 100, "")}
 	tx.init(l, Trying)
-	tx.flow, tx.exact = l.responseFlow(req)
+	tx.flow = req.Flow
 	tx.reliable = isReliable(tx.flow)
 	tx.may100 = tx.invite || tx.reliable
 
@@ -59,7 +58,7 @@ func (tx *ServerTransaction) Relay(res *sip.Response) error {
 	defer tx.unlock()
 
 	if tx.invite && res.IsSuccess() && tx.state != Proceeding && tx.state != Accepted {
-		tx.layer.sendStateless(res, tx.flow, tx.exact)
+		tx.layer.sendStateless(tx.req, res)
 		return nil
 	}
 
@@ -143,10 +142,16 @@ func (tx *ServerTransaction) checkNonInvite(res *sip.Response) error {
 
 func (tx *ServerTransaction) transmit() {
 	res := tx.last.Clone()
-	res.Flow = tx.flow
 
 	tx.push(func() error {
-		if tx.exact {
+		f, exact, err := tx.layer.responseFlow(tx.req, res)
+		if err != nil {
+			return err
+		}
+
+		res.Flow = f
+
+		if exact {
 			return tx.layer.tr.SendOnFlow(tx.layer.ctx, res)
 		}
 

@@ -21,6 +21,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"github.com/ellanetworks/ims/sip/transport"
 )
 
 const (
@@ -39,12 +40,12 @@ func (l *lateHandler) filter(m sip.Message) error {
 	return nil
 }
 
-func (l *lateHandler) responseFlow(req *sip.Request) (sip.Flow, bool) {
+func (l *lateHandler) responseFlow(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
 	if p := l.h.Load(); p != nil {
-		return p.ResponseFlow(req)
+		return p.ResponseFlow(req, res)
 	}
 
-	return sip.Flow{}, false
+	return sip.Flow{}, false, nil
 }
 
 type ipsecScene struct {
@@ -83,14 +84,14 @@ func newIPsecScene(t *testing.T, policy ipsec.Policy) *ipsecScene {
 func newIPsecSceneWith(t *testing.T, policy ipsec.Policy, kernel *ipsectest.Kernel, store *db.DB) *ipsecScene {
 	t.Helper()
 
-	s := newIPsecSceneAt(t, loopback, policy, kernel, store)
+	s := newIPsecSceneAt(t, loopback, policy, kernel, store, transport.Config{})
 	s.kernel = kernel
 	s.ue = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	return s
 }
 
-func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB) *ipsecScene {
+func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, tc transport.Config) *ipsecScene {
 	t.Helper()
 
 	s := &ipsecScene{t: t, store: store, late: &lateHandler{}}
@@ -98,6 +99,7 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 
 	layer, fallback := siptest.NewLayer(t, transaction.Config{
 		Handler: s.late, Logger: slog.New(slog.DiscardHandler), Filter: s.late.filter, ResponseFlow: s.late.responseFlow,
+		Transport: tc,
 	})
 	s.layer = layer
 	s.pcscf = siptest.ListenLayer(t, layer, addr)
@@ -105,6 +107,7 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	s.pcs = [2]netip.AddrPort{siptest.ListenLayer(t, layer, addr), siptest.ListenLayer(t, layer, addr)}
 
 	s.p = New(Config{
+		Layer:     layer,
 		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: s.pcscf.Port(), Supported: []string{secAgree}}),
 		Port:      s.pcscf.Port(),
 		ICSCFPort: s.icscf.Addr().Port(),
@@ -266,6 +269,8 @@ func (s *ipsecScene) installed() []ipsec.Set {
 func (s *ipsecScene) stored() []db.SecurityAssociation {
 	s.t.Helper()
 
+	s.p.sas.sync()
+
 	sas, err := s.store.ListSecurityAssociations(context.Background())
 	if err != nil {
 		s.t.Fatal(err)
@@ -420,6 +425,16 @@ func TestSecurityAgreementChecks(t *testing.T) {
 			_ = r.Header.SetTopVia(via)
 			r.Header.Add("Security-Verify", m.String())
 		}, 403},
+		{"Via with a host name", func(r *sip.Request, m sip.SecurityMechanism) {
+			via, _ := r.Header.TopVia()
+			via.Host = "ue.example.org"
+			_ = r.Header.SetTopVia(via)
+			r.Header.Add("Security-Verify", m.String())
+		}, 403},
+		{"two Vias", func(r *sip.Request, m sip.SecurityMechanism) {
+			r.Header.Add("Via", "SIP/2.0/UDP 192.0.2.9;branch=z9hG4bKother")
+			r.Header.Add("Security-Verify", m.String())
+		}, 403},
 		{"another private identity", func(r *sip.Request, m sip.SecurityMechanism) {
 			r.Header.Set("Authorization", `Digest username="mallory@`+homeDomain+`", realm="`+homeDomain+
 				`", uri="sip:`+homeDomain+`", nonce="bm9uY2U=", response="c4c4"`)
@@ -484,7 +499,8 @@ func TestUnprotectedRequestsFromAProtectedUE(t *testing.T) {
 	s.authenticate(u, s.challenge(u))
 
 	s.ue.Send(sip.UDP, s.pcscf, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, s.ue.Addr()))
-	s.ue.RecvNone(quiet)
+	wantStatus(t, first(s.ue.RecvResponse()), 403)
+	s.p.cfg.Fallback.(*siptest.TU).None(quiet)
 
 	other := siptest.NewSocket(t, netip.MustParseAddrPort("127.0.0.2:0"))
 	other.Send(sip.UDP, s.pcscf, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, other.Addr()))
@@ -533,15 +549,36 @@ func TestReRegistrationWithoutAuthentication(t *testing.T) {
 	}
 }
 
-func TestReRegistrationNeedsSecurityClient(t *testing.T) {
+func TestReRegistrationWithoutSecurityClient(t *testing.T) {
 	s := newIPsecScene(t, ipsec.DefaultPolicy())
 	u := s.newUE(25656)
 	s.authenticate(u, s.challenge(u))
 
-	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) { r.Header.Del("Security-Client") }))
+	without := func(r *sip.Request) { r.Header.Del("Security-Client") }
 
-	res, _ := u.us.RecvResponse()
-	wantStatus(t, res, 400)
+	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", without))
+
+	req, f, integrity := s.forwarded()
+	if integrity != "yes" {
+		t.Fatalf("integrity-protected = %q, want yes", integrity)
+	}
+
+	s.answer(req, f, 200)
+	wantStatus(t, first(u.us.RecvResponse()), 200)
+
+	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", without))
+
+	req, f, _ = s.forwarded()
+	s.answer(req, f, 401)
+	wantStatus(t, first(u.us.RecvResponse()), 403)
+
+	if len(s.installed()) != 1 {
+		t.Fatalf("installed = %v, want the established set only", s.installed())
+	}
+}
+
+func first[T, U any](t T, _ U) T {
+	return t
 }
 
 func TestReAuthentication(t *testing.T) {
@@ -762,8 +799,8 @@ func TestFailedAuthenticationKeepsTheRegistration(t *testing.T) {
 	req, f, _ = s.forwarded()
 	s.answer(req, f, 403)
 
-	if res, _ := u.us.RecvResponse(); res.StatusCode != 403 {
-		t.Fatalf("got %q, want 403", res.StartLine())
+	if res, from := u.us.RecvResponse(); res.StatusCode != 403 || from.Remote != s.pcs[0] {
+		t.Fatalf("got %q from %s, want 403 over the set being re-authenticated, from %s", res.StartLine(), from.Remote, s.pcs[0])
 	}
 
 	eventually(t, "the temporary set to be removed", func() bool {
@@ -913,5 +950,253 @@ func TestSamsungRegistration(t *testing.T) {
 
 	if res, from := u.uc.RecvResponse(); res.StatusCode != 200 || from.Transport != sip.TCP {
 		t.Fatalf("got %q over %s, want 200 on the Samsung's TCP connection", res.StartLine(), from)
+	}
+}
+
+func TestReAuthenticationMismatchAnswersOnTheOldSet(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	s.authenticate(u, s.challenge(u))
+
+	next := u.rekeyed(t)
+	u.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", nil))
+
+	req, f, _ := s.forwarded()
+	s.answer(req, f, 401)
+	s.securityServer(first(u.us.RecvResponse()))
+
+	next.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", nil))
+
+	if res, from := u.us.RecvResponse(); res.StatusCode != 400 || from.Remote != s.pcs[0] {
+		t.Fatalf("got %q from %s, want 400 over the set being re-authenticated, from %s", res.StartLine(), from.Remote, s.pcs[0])
+	}
+}
+
+func TestReAuthenticationKeepsTheLongerLifetime(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	s.authenticate(u, s.challenge(u))
+
+	before := s.stored()[0].ExpiresAt
+	next := u.rekeyed(t)
+
+	u.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", nil))
+
+	req, f, _ := s.forwarded()
+	s.answer(req, f, 401)
+	server := s.securityServer(first(u.us.RecvResponse()))
+
+	next.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) {
+		r.Header.Set("Expires", "60")
+		r.Header.Add("Security-Verify", server.String())
+	}))
+
+	req, f, _ = s.forwarded()
+	s.answer(req, f, 200)
+	wantStatus(t, first(u.us.RecvResponse()), 200)
+
+	for _, sa := range s.stored() {
+		if sa.State == db.SecurityAssociationEstablished && sa.ExpiresAt.Before(before) {
+			t.Fatalf("new set expires %v, before the old set's %v", sa.ExpiresAt, before)
+		}
+	}
+}
+
+func TestMovingUE(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	s.authenticate(u, s.challenge(u))
+
+	for i, addr := range []string{"127.0.0.2", "127.0.0.3", "127.0.0.4"} {
+		moved := newUEAt(t, netip.MustParseAddr(addr), uint32(30000+10*i))
+		moved.callID = u.callID
+		moved.cseq = u.cseq + 10*(i+1)
+		unprotected := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr(addr), 0))
+
+		unprotected.Send(sip.UDP, s.pcscf, moved.register(t, unprotected.Addr(), "", nil))
+
+		req, f, _ := s.forwarded()
+		s.answer(req, f, 401)
+
+		res, _ := unprotected.RecvResponse()
+		server := s.securityServer(res)
+
+		moved.uc.Send(sip.UDP, s.ps, moved.register(t, moved.us.Addr(), "c4c4", func(r *sip.Request) {
+			r.Header.Add("Security-Verify", server.String())
+		}))
+
+		req, f, _ = s.forwarded()
+		s.answer(req, f, 200)
+		wantStatus(t, first(moved.us.RecvResponse()), 200)
+	}
+
+	eventually(t, "the sets on old addresses to go", func() bool {
+		sets := s.installed()
+		return len(sets) == 1 && sets[0].Remote.Addr == netip.MustParseAddr("127.0.0.4")
+	})
+}
+
+func TestRegistrationOutcome(t *testing.T) {
+	req := func(contact, expires string) *sip.Request {
+		r := siptest.NewRequest("REGISTER", "sip:"+homeDomain, sip.UDP, netip.MustParseAddrPort("127.0.0.1:5060"))
+		r.Header.Set("Contact", contact)
+
+		if expires != "" {
+			r.Header.Set("Expires", expires)
+		}
+
+		return r
+	}
+
+	res := func(r *sip.Request, contacts ...string) *sip.Response {
+		out := sip.NewResponse(r, 200, "")
+		for _, c := range contacts {
+			out.Header.Add("Contact", c)
+		}
+
+		return out
+	}
+
+	ue := "<sip:ue@127.0.0.1:6300>"
+
+	for _, tc := range []struct {
+		name string
+		req  *sip.Request
+		res  []string
+		want outcome
+	}{
+		{"granted", req(ue, "600"), []string{ue + ";expires=300", "<sip:other@192.0.2.1>;expires=900"}, outcome{lifetime: 300 * time.Second}},
+		{"removed", req(ue, "0"), []string{ue + ";expires=0"}, outcome{dereg: true}},
+		{"star", req("*", "0"), nil, outcome{dereg: true}},
+		{"no match, requested", req(ue, "600"), []string{"<sip:other@192.0.2.1>;expires=900"}, outcome{lifetime: 600 * time.Second}},
+		{"no match, removal requested", req(ue+";expires=0", "600"), nil, outcome{dereg: true}},
+		{"no match, no expiry", req(ue, ""), nil, outcome{}},
+	} {
+		if got := registrationOutcome(tc.req, res(tc.req, tc.res...)); got != tc.want {
+			t.Errorf("%s: outcome = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+
+	fetch := siptest.NewRequest("REGISTER", "sip:"+homeDomain, sip.UDP, netip.MustParseAddrPort("127.0.0.1:5060"))
+	fetch.Header.Del("Contact")
+
+	if got := registrationOutcome(fetch, res(fetch, ue+";expires=300")); got != (outcome{}) {
+		t.Errorf("fetch: outcome = %+v, want none", got)
+	}
+}
+
+func TestPromotionWithoutMatchingContact(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	server := s.challenge(u)
+
+	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) { r.Header.Add("Security-Verify", server.String()) }))
+
+	req, f, _ := s.forwarded()
+
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag(sip.NewTag())
+	res.Header.Add("Contact", "<sip:ue@192.0.2.1:6300>;expires=900")
+	s.icscf.Send(f.Transport, f.Remote, res)
+
+	wantStatus(t, first(u.us.RecvResponse()), 200)
+
+	if stored := s.stored(); len(stored) != 1 || time.Until(stored[0].ExpiresAt) < 600*time.Second {
+		t.Fatalf("stored = %+v, want the set established for the requested 600 s", stored)
+	}
+}
+
+func TestResponsesNeverLeaveAProtectedPortInClear(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	server := s.challenge(u)
+
+	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) { r.Header.Add("Security-Verify", server.String()) }))
+
+	req, f, _ := s.forwarded()
+
+	for set := range s.kernel.Installed() {
+		s.p.sas.mu.Lock()
+		for x := range s.p.sas.sets {
+			if x.set == set {
+				s.p.sas.remove(x)
+			}
+		}
+		s.p.sas.mu.Unlock()
+	}
+
+	s.answer(req, f, 200)
+	u.us.RecvNone(quiet)
+	u.uc.RecvNone(quiet)
+}
+
+func TestRestoreBeforeTheNewSetIsUsed(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	s.authenticate(u, s.challenge(u))
+
+	next := u.rekeyed(t)
+	u.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", nil))
+
+	req, f, _ := s.forwarded()
+	s.answer(req, f, 401)
+	server := s.securityServer(first(u.us.RecvResponse()))
+
+	next.uc.Send(sip.UDP, s.ps, next.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) { r.Header.Add("Security-Verify", server.String()) }))
+
+	req, f, _ = s.forwarded()
+	s.answer(req, f, 200)
+	wantStatus(t, first(u.us.RecvResponse()), 200)
+
+	restart(t, s)
+
+	next.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
+	fallbackRequest(t, s)
+
+	eventually(t, "the old set to be removed", func() bool { return len(s.installed()) == 1 })
+}
+
+func TestSecurityClientOrderAndPreference(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	server := s.challenge(u)
+
+	u.uc.Send(sip.UDP, s.ps, u.register(t, u.us.Addr(), "c4c4", func(r *sip.Request) {
+		ms, _ := r.Header.SecurityMechanisms("Security-Client")
+		ms[0].Params.Set("q", "0.5")
+
+		r.Header.Del("Security-Client")
+		r.Header.Add("Security-Client", "sdes-srtp;mediasec")
+		r.Header.Add("Security-Client", ms[1].String())
+		r.Header.Add("Security-Client", ms[0].String())
+		r.Header.Add("Security-Verify", server.String())
+	}))
+
+	if _, _, integrity := s.forwarded(); integrity != "yes" {
+		t.Fatalf("integrity-protected = %q, want yes", integrity)
+	}
+}
+
+func TestTemporarySetCarriesOnlyREGISTER(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	u := s.newUE(25656)
+	s.challenge(u)
+
+	u.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
+	u.us.RecvNone(quiet)
+	s.p.cfg.Fallback.(*siptest.TU).None(0)
+}
+
+func TestTCPWithoutSecurityAssociationsIsClosed(t *testing.T) {
+	s := newIPsecScene(t, ipsec.DefaultPolicy())
+	stranger := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	stranger.Send(sip.TCP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.TCP, stranger.Addr()))
+
+	conn := stranger.Conn(s.ps)
+	_ = conn.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("connection without security associations still open: %v", err)
 	}
 }

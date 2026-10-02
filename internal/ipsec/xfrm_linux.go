@@ -372,14 +372,14 @@ func (x *XFRM) Remove(s Set) error {
 	var errs []error
 
 	for _, a := range s.sas() {
-		if err := x.deletePolicy(a); err != nil && !errors.Is(err, unix.ENOENT) {
-			errs = append(errs, fmt.Errorf("policy %s:%d -> %s:%d: %w", a.src, a.sport, a.dst, a.dport, err))
+		if err := x.deleteSA(a); err != nil && !errors.Is(err, unix.ESRCH) {
+			errs = append(errs, fmt.Errorf("SA %s spi %d: %w", a.dst, a.spi, err))
 		}
 	}
 
 	for _, a := range s.sas() {
-		if err := x.deleteSA(a); err != nil && !errors.Is(err, unix.ESRCH) {
-			errs = append(errs, fmt.Errorf("SA %s spi %d: %w", a.dst, a.spi, err))
+		if err := x.deletePolicy(a); err != nil && !errors.Is(err, unix.ENOENT) {
+			errs = append(errs, fmt.Errorf("policy %s:%d -> %s:%d: %w", a.src, a.sport, a.dst, a.dport, err))
 		}
 	}
 

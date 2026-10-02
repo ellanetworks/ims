@@ -20,10 +20,14 @@ const secAgree = "sec-agree"
 
 var (
 	errNoSecurityAssociation = errors.New("no security association for this flow")
-	errUnprotected           = errors.New("unprotected request from a UE with security associations")
+	errUnprotected           = &sip.StatusError{
+		StatusCode: 403, Err: errors.New("unprotected request from a UE with security associations"),
+	}
+	errTemporary = errors.New("request other than REGISTER on a temporary set of security associations")
 )
 
 type Config struct {
+	Layer     *transaction.Layer
 	Proxy     *proxy.Proxy
 	Port      uint16
 	ICSCFPort uint16
@@ -47,6 +51,10 @@ func New(cfg Config) *PCSCF {
 
 	if cfg.IPsec.Kernel != nil {
 		p.sas = newAssociations(cfg.IPsec, p.log)
+
+		if cfg.Layer != nil {
+			p.sas.closeFlow = cfg.Layer.CloseFlow
+		}
 	}
 
 	return p
@@ -73,40 +81,45 @@ func (p *PCSCF) Filter(m sip.Message) error {
 
 	f := m.Env().Flow
 
+	req, isRequest := m.(*sip.Request)
+
 	if p.sas.protected(f.Local.Port()) {
-		s := p.sas.lookup(f)
-		if s == nil {
+		v, ok := p.sas.lookup(f)
+		if !ok {
+			if f.Transport == sip.TCP && p.cfg.Layer != nil {
+				go p.cfg.Layer.CloseFlow(f)
+			}
+
 			return errNoSecurityAssociation
 		}
 
-		p.sas.received(s)
+		if v.state == temporary && isRequest && req.Method != "REGISTER" {
+			return errTemporary
+		}
+
+		p.sas.received(v.s)
 
 		return nil
 	}
 
-	req, ok := m.(*sip.Request)
-	if ok && f.Local.Port() == p.cfg.Port && req.Method != "REGISTER" && p.sas.hasEstablished(f.Remote.Addr().Unmap()) {
+	if isRequest && f.Local.Port() == p.cfg.Port && req.Method != "REGISTER" && p.sas.hasEstablished(f.Remote.Addr().Unmap()) {
 		return errUnprotected
 	}
 
 	return nil
 }
 
-func (p *PCSCF) ResponseFlow(req *sip.Request) (sip.Flow, bool) {
-	if p.sas == nil || req.Flow.Transport != sip.UDP || req.Flow.Local.Port() != p.cfg.IPsec.ServerPort {
-		return sip.Flow{}, false
+func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
+	if p.sas == nil || !p.sas.protected(req.Flow.Local.Port()) {
+		return sip.Flow{}, false, nil
 	}
 
-	s := p.sas.lookup(req.Flow)
-	if s == nil {
-		return sip.Flow{}, false
+	f, err := p.sas.responseFlow(req.Flow, res)
+	if err != nil {
+		return sip.Flow{}, false, err
 	}
 
-	return sip.Flow{
-		Transport: sip.UDP,
-		Local:     netip.AddrPortFrom(req.Flow.Local.Addr(), s.set.Local.PortC),
-		Remote:    netip.AddrPortFrom(s.set.Remote.Addr, s.set.Remote.PortS),
-	}, true
+	return f, true, nil
 }
 
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
@@ -133,12 +146,14 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if p.sas != nil {
-		r.in = p.sas.lookup(req.Flow)
+		if v, ok := p.sas.lookup(req.Flow); ok {
+			r.in = &v
+		}
 	}
 
 	if res := p.secAgree(req, out, r); res != nil {
 		if r.in != nil {
-			p.sas.failed(r.in)
+			p.sas.failed(r.in.s)
 		}
 
 		p.respond(tx, res)
@@ -173,7 +188,7 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 type registration struct {
 	ue, local netip.Addr
 	impi      string
-	in        *saSet
+	in        *view
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
 }
@@ -211,8 +226,8 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	}
 
 	if r.in != nil && !viaMatches(req, r.ue) {
-		p.log.Info("protected REGISTER with a Via address other than its source", slog.String("impi", r.impi),
-			slog.String("source", r.ue.String()))
+		p.log.Info("protected REGISTER whose Via is not its source address alone", slog.String("impi", r.impi),
+			slog.String("source", r.ue.String()), slog.Any("via", req.Header.Values("Via")))
 
 		return sip.NewResponse(req, 403, "")
 	}
@@ -225,8 +240,16 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		switch {
 		case len(verify) == 0 || len(clients) == 0:
 			return sip.NewResponse(req, 400, "Missing Security-Verify or Security-Client")
-		case !verifies(verify, r.in.server) || !sip.EqualSecurityMechanisms(clients, r.in.client):
-			p.log.Info("Security-Verify or Security-Client differs from the challenge", slog.String("impi", r.impi))
+		case !verifies(verify, r.in.server):
+			p.log.Info("Security-Verify differs from the Security-Server", slog.String("impi", r.impi),
+				slog.String("security-verify", req.Header.Get("Security-Verify")), slog.String("security-server", r.in.server.String()))
+
+			return sip.NewResponse(req, 403, "Security Agreement Mismatch")
+		case !sameIPsecMechanisms(clients, r.in.client):
+			p.log.Info("Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
+				slog.String("security-client", req.Header.Get("Security-Client")),
+				slog.String("challenged", mechanismsString(r.in.client)))
+
 			return sip.NewResponse(req, 403, "Security Agreement Mismatch")
 		case r.impi != r.in.impi:
 			return sip.NewResponse(req, 403, "")
@@ -238,11 +261,12 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 
 		r.offer, r.client = nil, nil
 	default:
-		switch {
-		case r.offer == nil:
-			return sip.NewResponse(req, 400, "Missing Security-Client")
-		case r.impi != r.in.impi:
+		if r.impi != r.in.impi {
 			return sip.NewResponse(req, 403, "")
+		}
+
+		if r.offer == nil {
+			p.log.Info("protected REGISTER without Security-Client", slog.String("impi", r.impi))
 		}
 
 		if r.in.state == established {
@@ -267,7 +291,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	if res == nil || res.StatusCode < 200 {
 		if res == nil && r.in != nil && p.sas != nil {
-			p.sas.failed(r.in)
+			p.sas.failed(r.in.s)
 		}
 
 		if res != nil {
@@ -286,6 +310,9 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	}
 
 	switch {
+	case res.StatusCode == 401 && r.offer == nil && r.in != nil && r.in.state != temporary:
+		p.log.Info("re-authentication of a UE that sent no Security-Client", slog.String("impi", r.impi))
+		return p.replace(tx, req, 403)
 	case res.StatusCode == 401 && r.offer != nil:
 		if keysErr != nil {
 			p.log.Error("401 without usable ck and ik", slog.String("impi", r.impi), slog.Any("error", keysErr))
@@ -293,8 +320,8 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		}
 
 		var origin *saSet
-		if r.in != nil && r.in.state != temporary {
-			origin = r.in
+		if r.in != nil {
+			origin = r.in.s
 		}
 
 		s, err := p.sas.challenged(challenge{
@@ -310,18 +337,12 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 			return p.replace(tx, req, 500)
 		}
 
-		res.Header.Add("Security-Server", s.server.String())
+		res.Header.Add("Security-Server", s.String())
 		addOptionTag(res, "Supported", secAgree)
-
-		if r.in != nil && r.in.state == temporary {
-			p.sas.failed(r.in)
-		}
 	case res.IsSuccess() && r.in != nil:
-		if lifetime, ok := registeredLifetime(req, res); ok {
-			p.sas.registered(r.in, lifetime)
-		}
+		p.sas.registered(r.in.s, registrationOutcome(req, res))
 	case r.in != nil && r.in.state == temporary:
-		p.sas.failed(r.in)
+		p.sas.failed(r.in.s)
 	}
 
 	return proxy.Relay
@@ -439,14 +460,60 @@ func verifies(verify []sip.SecurityMechanism, server sip.SecurityMechanism) bool
 }
 
 func viaMatches(req *sip.Request, source netip.Addr) bool {
-	via, err := req.Header.TopVia()
-	if err != nil {
+	vias, err := req.Header.Vias()
+	if err != nil || len(vias) != 1 {
 		return false
 	}
 
-	a, ok := via.Addr()
+	a, ok := vias[0].Addr()
 
-	return !ok || a.Unmap() == source
+	return ok && a.Unmap() == source
+}
+
+func sameIPsecMechanisms(a, b []sip.SecurityMechanism) bool {
+	x, y := ipsecMechanisms(a), ipsecMechanisms(b)
+	if len(x) != len(y) {
+		return false
+	}
+
+	used := make([]bool, len(y))
+
+next:
+	for _, m := range x {
+		for i, o := range y {
+			if !used[i] && m.Equal(o) {
+				used[i] = true
+				continue next
+			}
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func ipsecMechanisms(ms []sip.SecurityMechanism) []sip.SecurityMechanism {
+	var out []sip.SecurityMechanism
+
+	for _, m := range ms {
+		if strings.EqualFold(m.Name, ipsec.Mechanism) {
+			m.Params = m.Params.Clone()
+			m.Params.Del("q")
+			out = append(out, m)
+		}
+	}
+
+	return out
+}
+
+func mechanismsString(ms []sip.SecurityMechanism) string {
+	parts := make([]string, len(ms))
+	for i, m := range ms {
+		parts[i] = m.String()
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 func challengeOf(res *sip.Response) sip.Auth {
@@ -459,19 +526,27 @@ func challengeOf(res *sip.Response) sip.Auth {
 	return sip.Auth{}
 }
 
-func registeredLifetime(req *sip.Request, res *sip.Response) (time.Duration, bool) {
+type outcome struct {
+	lifetime time.Duration
+	dereg    bool
+}
+
+func registrationOutcome(req *sip.Request, res *sip.Response) outcome {
 	if strings.TrimSpace(req.Header.Get("Contact")) == "*" {
-		return 0, true
+		return outcome{dereg: true}
 	}
 
 	requested, err := req.Header.Contacts()
 	if err != nil || len(requested) == 0 {
-		return 0, false
+		return outcome{}
 	}
 
 	granted, _ := res.Header.Contacts()
 
-	var longest uint64
+	var (
+		longest uint64
+		matched bool
+	)
 
 	for _, g := range granted {
 		if !slices.ContainsFunc(requested, func(c sip.Address) bool { return c.URI.String() == g.URI.String() }) {
@@ -479,12 +554,27 @@ func registeredLifetime(req *sip.Request, res *sip.Response) (time.Duration, boo
 		}
 
 		v, _ := g.Params.Get("expires")
-		if n, err := parseSeconds(v); err == nil && n > longest {
-			longest = n
+		if n, err := parseSeconds(v); err == nil {
+			matched = true
+			longest = max(longest, n)
 		}
 	}
 
-	return time.Duration(longest) * time.Second, true
+	if !matched {
+		for _, c := range requested {
+			v, ok := c.Params.Get("expires")
+			if !ok {
+				v = req.Header.Get("Expires")
+			}
+
+			if n, err := parseSeconds(v); err == nil {
+				matched = true
+				longest = max(longest, n)
+			}
+		}
+	}
+
+	return outcome{lifetime: time.Duration(longest) * time.Second, dereg: matched && longest == 0}
 }
 
 func parseSeconds(s string) (uint64, error) {
