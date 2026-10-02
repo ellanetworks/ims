@@ -37,8 +37,6 @@ func (l *lateHandler) HandleTransactionError(tx *transaction.ServerTransaction, 
 	l.h.Load().HandleTransactionError(tx, err)
 }
 
-// TestRegisterGoesToTheICSCF runs the P-CSCF and the I-CSCF on the same
-// address, as the server does.
 func TestRegisterGoesToTheICSCF(t *testing.T) {
 	icscf := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 

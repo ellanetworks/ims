@@ -170,8 +170,6 @@ func New(cfg Config) *Layer {
 	return l
 }
 
-// T1 is the round-trip time estimate the layer's timers derive from: a
-// non-INVITE transaction lasts 64·T1.
 func (l *Layer) T1() time.Duration {
 	return l.t1
 }

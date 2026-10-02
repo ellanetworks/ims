@@ -1,6 +1,3 @@
-// Package trust implements the IMS trust domain (TS 24.229 §4.4): which
-// sources are trusted, and the header fields and URI parameters removed when
-// signalling crosses the domain's boundary.
 package trust
 
 import (
@@ -10,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// boundary lists the header fields that a trust domain applies to (§4.4.1).
 var boundary = []string{
 	"P-Asserted-Identity",
 	"P-Access-Network-Info",
@@ -38,8 +34,6 @@ type Domain struct {
 	networks []netip.Prefix
 }
 
-// New returns the trust domain made of the IMS's own addresses and the
-// networks with an interconnect agreement.
 func New(addresses []netip.Addr, networks []netip.Prefix) *Domain {
 	d := &Domain{}
 
@@ -67,9 +61,6 @@ func (d *Domain) Trusted(a netip.Addr) bool {
 	return false
 }
 
-// StripRequest removes what a request from outside the trust domain must not
-// carry into it: the boundary header fields, and the "cpc", "oli" (§4.4.12)
-// and "iotl" (§4.4.15) parameters of the Request-URI.
 func StripRequest(r *sip.Request) {
 	for _, name := range boundary {
 		r.Header.Del(name)
@@ -78,9 +69,6 @@ func StripRequest(r *sip.Request) {
 	r.URI = stripURIParams(r.URI)
 }
 
-// StripResponse removes what a response must not carry out of the trust
-// domain: the boundary header fields, Reason (§4.4.7) and
-// P-Charging-Function-Addresses (TS 24.229 §5.3.2.1).
 func StripResponse(r *sip.Response) {
 	for _, name := range boundary {
 		r.Header.Del(name)
@@ -108,8 +96,6 @@ func stripURIParams(u sip.URI) sip.URI {
 	return u
 }
 
-// stripUserParams removes "cpc" and "oli" from the tel parameters carried in
-// the user part of a SIP URI.
 func stripUserParams(s string) string {
 	var b strings.Builder
 

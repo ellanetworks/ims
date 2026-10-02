@@ -7,8 +7,6 @@ func (p *Proxy) Pending() int {
 	return len(p.contexts)
 }
 
-// Responded reports whether the branch of every pending context got a
-// response.
 func (p *Proxy) Responded() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

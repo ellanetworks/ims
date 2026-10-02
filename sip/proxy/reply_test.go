@@ -312,8 +312,6 @@ func TestNonInviteTimeout(t *testing.T) {
 	s.caller.RecvNone(quiet)
 }
 
-// TestNonInviteTimeoutAfterTrying keeps Options.Timeout running through a
-// 100 to a non-INVITE request: only a final response stops it.
 func TestNonInviteTimeoutAfterTrying(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 1)
@@ -383,8 +381,6 @@ func TestLate2xxAfterTimerCOverTCP(t *testing.T) {
 	wantResponse(t, s.caller, 200)
 }
 
-// TestTimerCReplyResponded tells Timer C from a branch that never answered:
-// the reply reports the 180 the branch received.
 func TestTimerCReplyResponded(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 2)

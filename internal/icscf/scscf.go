@@ -11,7 +11,6 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
-// lookup returns the S-CSCF a URI names (RFC 3261 §19.1.4).
 func (i *ICSCF) lookup(u sip.URI) *SCSCF {
 	for _, s := range i.scscfs {
 		if s.Name.Equivalent(u) {
@@ -31,8 +30,6 @@ func (i *ICSCF) lookupName(name string) *SCSCF {
 	return i.lookup(u)
 }
 
-// choose selects an S-CSCF from Server-Capabilities (TS 29.228 §6.7),
-// excluding the S-CSCFs already tried. Without capabilities, any S-CSCF fits.
 func (i *ICSCF) choose(caps *cx.ServerCapabilities, tried []*SCSCF) *SCSCF {
 	if caps != nil && len(caps.ServerNames) > 0 {
 		for _, name := range caps.ServerNames {
@@ -77,7 +74,6 @@ func (i *ICSCF) choose(caps *cx.ServerCapabilities, tried []*SCSCF) *SCSCF {
 	return best
 }
 
-// untried reports whether an S-CSCF is left to select.
 func (i *ICSCF) untried(tried []*SCSCF) bool {
 	return slices.ContainsFunc(i.scscfs, func(s *SCSCF) bool { return !slices.Contains(tried, s) })
 }
@@ -92,9 +88,6 @@ func supportsAll(s *SCSCF, capabilities []uint32) bool {
 	return true
 }
 
-// target is the flow towards an S-CSCF, from the I-CSCF listener on the
-// address the request arrived on, preferably to the S-CSCF listener on that
-// address. The URI's transport parameter picks the transport.
 func (i *ICSCF) target(s *SCSCF, in sip.Flow, u sip.URI) (proxy.Target, bool) {
 	tr := sip.UDP
 

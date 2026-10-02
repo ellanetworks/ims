@@ -84,9 +84,6 @@ func TestRegisterToAssignedSCSCF(t *testing.T) {
 	}
 }
 
-// TestRegisterRequestURIIsServerName forwards the REGISTER to the
-// Server-Name as the HSS sent it, matched to the table by URI equivalence
-// (§5.3.1.2, RFC 3261 §19.1.4).
 func TestRegisterRequestURIIsServerName(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscfs[0]
@@ -445,9 +442,6 @@ func TestRegisterSCSCFTimeout(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TestRegisterSCSCFTrying keeps the reselection timer running through a 100
-// (Trying): the S-CSCFs are alive but never answer, and the REGISTER gets a
-// 504 before its transaction ends.
 func TestRegisterSCSCFTrying(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -479,8 +473,6 @@ func TestRegisterSCSCFTrying(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TestRegisterReselectionKeepsCapabilities replaces an S-CSCF only with one
-// that has the mandatory capabilities of the first UAA (TS 29.228 §6.7).
 func TestRegisterReselectionKeepsCapabilities(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{7}, {}}})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -501,8 +493,6 @@ func TestRegisterReselectionKeepsCapabilities(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TestRegisterSCSCFRefusesConnections reselects when the S-CSCF cannot be
-// reached at all (RFC 3261 §16.9), and answers 504 when no other is left.
 func TestRegisterSCSCFRefusesConnections(t *testing.T) {
 	t.Run("reselection", func(t *testing.T) {
 		h := newHarness(t, harnessOptions{scscfs: 2, down: 1})

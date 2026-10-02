@@ -41,9 +41,6 @@ var (
 	untrusted = netip.MustParseAddr("127.0.0.2")
 )
 
-// hssAnswer is what the fake HSS answers: a result, with a Server-Name or
-// Server-Capabilities on success. A nil answer means no answer at all. A
-// gate, when set, holds the answer until it is closed.
 type hssAnswer struct {
 	result tgpp.Result
 	name   string
@@ -135,7 +132,6 @@ func newFakeHSS(t *testing.T) *fakeHSS {
 	return h
 }
 
-// answerUAR queues the answers to the next UARs.
 func (h *fakeHSS) answerUAR(answers ...*hssAnswer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -164,8 +160,6 @@ func (h *fakeHSS) next(queue *[]*hssAnswer) *hssAnswer {
 	return a
 }
 
-// wait waits for a gate to open, until the HSS stops for a nil one, and
-// reports whether it opened.
 func (h *fakeHSS) wait(ctx context.Context, gate chan struct{}) bool {
 	select {
 	case <-gate:
@@ -279,7 +273,6 @@ func (h *fakeHSS) noCx(t *testing.T) {
 	}
 }
 
-// fakeSCSCF is an S-CSCF listening on its own socket.
 type fakeSCSCF struct {
 	t    *testing.T
 	sock *siptest.Socket
@@ -291,7 +284,6 @@ func (s *fakeSCSCF) uri() string {
 	return s.name
 }
 
-// recv returns the next request, skipping retransmissions.
 func (s *fakeSCSCF) recv() (*sip.Request, sip.Flow) {
 	s.t.Helper()
 
@@ -341,16 +333,11 @@ type harnessOptions struct {
 	capabilities [][]uint32
 	hssDown      bool
 
-	// scscfAddr is the address of the S-CSCFs, the I-CSCF's by default.
 	scscfAddr netip.Addr
 
-	// down is the number of S-CSCFs, first in the table, that refuse
-	// connections: they are reached over TCP, on a closed socket.
 	down int
 }
 
-// lateHandler lets the layer start before the I-CSCF, which needs the port
-// the layer bound.
 type lateHandler struct {
 	h atomic.Pointer[ICSCF]
 }
@@ -517,7 +504,6 @@ func (h *harness) icscfURI() string {
 	return "sip:" + homeDomain + ":" + strconv.Itoa(int(h.icscf.Port()))
 }
 
-// ue sends requests to the I-CSCF, as the P-CSCF or the S-CSCF would.
 type ue struct {
 	h    *harness
 	sock *siptest.Socket
@@ -558,7 +544,6 @@ func (u *ue) send(req *sip.Request) {
 	u.sock.Send(sip.UDP, u.h.icscf, req)
 }
 
-// final returns the next final response, skipping provisional ones.
 func (u *ue) final() *sip.Response {
 	u.h.t.Helper()
 
@@ -592,8 +577,6 @@ func (u *ue) cancel(invite *sip.Request) {
 	u.send(cancel)
 }
 
-// finals returns the final responses to a cancelled INVITE and its CANCEL,
-// by method, and acknowledges the INVITE's.
 func (u *ue) finals(invite *sip.Request) map[string]int {
 	u.h.t.Helper()
 
@@ -613,7 +596,6 @@ func (u *ue) finals(invite *sip.Request) map[string]int {
 	return got
 }
 
-// ack acknowledges a non-2xx final response to an INVITE.
 func (u *ue) ack(invite *sip.Request, res *sip.Response) {
 	u.h.t.Helper()
 

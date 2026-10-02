@@ -20,19 +20,12 @@ type registration struct {
 	req *sip.Request
 	uar cx.UserAuthorizationRequest
 
-	// reselect is set when a failed S-CSCF may be replaced (TS 24.229
-	// §5.3.1.3): the REGISTER has an Authorization header field whose
-	// "integrity-protected" is absent or "no".
 	reselect bool
 
-	// deadline is when the REGISTER is answered at the latest.
 	deadline time.Time
 
 	assigned bool
 
-	// caps are the capabilities the HSS requires of the S-CSCF, from the
-	// first UAA or, after an assigned S-CSCF failed, from a
-	// REGISTRATION_AND_CAPABILITIES one. known is false until then.
 	caps  *cx.ServerCapabilities
 	known bool
 
@@ -102,9 +95,6 @@ func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Reques
 	return reg, nil
 }
 
-// authorizationType is DE_REGISTRATION when every contact's expiry is zero
-// (TS 29.228 Table 6.1.1.1). A malformed header field is named in the reason
-// phrase of a 400.
 func authorizationType(h sip.Header) (cx.AuthorizationType, string) {
 	contacts, err := h.Contacts()
 
@@ -122,8 +112,6 @@ func authorizationType(h sip.Header) (cx.AuthorizationType, string) {
 		}
 	}
 
-	// "*" removes every binding: it stands alone, with Expires 0 (RFC 3261
-	// §10.3 step 6).
 	if slices.ContainsFunc(contacts, func(c sip.Address) bool { return c.Star }) &&
 		(len(contacts) > 1 || !hasExpires || expires != 0) {
 		return 0, "Bad Contact"
@@ -173,8 +161,6 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 			return
 		}
 
-		// The Request-URI is the Server-Name as the HSS sent it (§5.3.1.2),
-		// which may differ from the table's in its parameters.
 		name, _ := sip.ParseURI(uaa.ServerName)
 		i.forwardRegister(reg, s, name, false)
 
@@ -192,8 +178,6 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 	i.forwardRegister(reg, s, s.Name, false)
 }
 
-// forwardRegister forwards the REGISTER to an S-CSCF, with name as its
-// Request-URI.
 func (i *ICSCF) forwardRegister(reg *registration, s *SCSCF, name sip.URI, reselected bool) {
 	reg.tried = append(reg.tried, s)
 
@@ -218,9 +202,6 @@ func (i *ICSCF) forwardRegister(reg *registration, s *SCSCF, name sip.URI, resel
 	})
 }
 
-// replaceable reports whether another S-CSCF can be selected for the
-// REGISTER (TS 24.229 §5.3.1.3). The capabilities of an assigned S-CSCF are
-// not known yet: any other S-CSCF may then meet them.
 func (i *ICSCF) replaceable(reg *registration) bool {
 	switch {
 	case !reg.reselect:
@@ -259,12 +240,8 @@ func (i *ICSCF) registerReply(reg *registration, r proxy.Reply) proxy.Verdict {
 	return proxy.Relay
 }
 
-// reselectRegister replaces an S-CSCF that did not respond, or answered 3xx
-// or 480 (TS 24.229 §5.3.1.3). When the HSS had assigned it, the HSS is asked
-// for the capabilities first.
 func (i *ICSCF) reselectRegister(ctx context.Context, reg *registration, failed *sip.Response) {
 	if !reg.known {
-		// The query must leave the new S-CSCF time to answer.
 		ctx, cancel := context.WithDeadline(ctx, reg.deadline.Add(-minBranch*i.t1))
 		defer cancel()
 
@@ -302,8 +279,6 @@ func (i *ICSCF) reselectRegister(ctx context.Context, reg *registration, failed 
 	i.forwardRegister(reg, s, s.Name, true)
 }
 
-// endRegister ends a REGISTER whose S-CSCF cannot be replaced: with the
-// S-CSCF's response, or 504 when it did not respond.
 func (i *ICSCF) endRegister(reg *registration, failed *sip.Response) {
 	if failed == nil {
 		i.answer(reg.tx, 504)

@@ -145,8 +145,6 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 	return s, nil
 }
 
-// listen binds a role's port on every address. Port 0 binds the port the
-// first address gets on the others.
 func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr, port int) (uint16, error) {
 	p := uint16(port)
 
@@ -191,8 +189,6 @@ func (s *sipServer) Close() error {
 	return err
 }
 
-// dispatcher hands each message to the role that owns the local port it
-// arrived on.
 type dispatcher struct {
 	log *slog.Logger
 
@@ -256,10 +252,6 @@ type registrar interface {
 	Register(ctx context.Context, req *sip.Request) *sip.Response
 }
 
-// scscfHandler is the S-CSCF's SIP side: REGISTER goes to the registrar.
-// Only the trust domain reaches it: the registrar relies on the P-CSCF for
-// "integrity-protected" and receives "ck" and "ik" in its challenges
-// (TS 33.203 §6.1, TS 24.229 §5.4.1.2.2).
 type scscfHandler struct {
 	log       *slog.Logger
 	layer     *transaction.Layer

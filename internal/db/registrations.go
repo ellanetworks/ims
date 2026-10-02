@@ -58,10 +58,6 @@ type Registration struct {
 	Bindings   []Binding
 }
 
-// Contact is a registered contact. The S-CSCF owns its URI, Params and
-// Path. The P-CSCF owns UEAddress, IPsec and RxSessionID: SaveRegistration
-// sets them only on a new contact, and SetContactFlow and
-// SetContactRxSession change them.
 type Contact struct {
 	ID          int64
 	IMPI        string
@@ -179,9 +175,6 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 	return nil
 }
 
-// saveContact inserts a contact, or updates the S-CSCF's columns of an
-// existing one: the P-CSCF's may have changed since the S-CSCF read them. It
-// returns the contact as stored.
 func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
 	args := []any{c.IMPI, c.URI, c.Params, nullableString(c.Path), addressArg(c.UEAddress)}
 	args = append(args, securityAssociationArgs(c.IPsec)...)
@@ -302,8 +295,6 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	return impis, nil
 }
 
-// SetContactFlow records the address the UE registered the contact from and
-// the IPsec SAs protecting it, nil for none.
 func (d *DB) SetContactFlow(ctx context.Context, contactID int64, ueAddress netip.Addr, sa *SecurityAssociations) error {
 	args := []any{addressArg(ueAddress)}
 	args = append(args, securityAssociationArgs(sa)...)

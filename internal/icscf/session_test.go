@@ -118,8 +118,6 @@ func TestInviteToTelNumber(t *testing.T) {
 	u.ack(invite, u.wantFinal(486))
 }
 
-// TestInviteIdentities queries the HSS with the identity the HSS knows: no
-// visual separators in a number (RFC 3966 §4), and sip for sips.
 func TestInviteIdentities(t *testing.T) {
 	tests := []struct {
 		target string
@@ -153,8 +151,6 @@ func TestInviteIdentities(t *testing.T) {
 	}
 }
 
-// TestInviteToSCSCFOnAnotherAddress sends from the I-CSCF's own address when
-// the S-CSCF listens on another.
 func TestInviteToSCSCFOnAnotherAddress(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfAddr: netip.MustParseAddr("127.0.0.3")})
 	s := h.scscfs[0]
@@ -233,9 +229,6 @@ func TestInviteHSSFailures(t *testing.T) {
 	}
 }
 
-// TestInviteCancelledDuringLIR cancels an INVITE while the LIR is pending:
-// the INVITE gets its 487, and the LIA that arrives afterwards does not
-// forward it.
 func TestInviteCancelledDuringLIR(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	u := h.newUE(loopback)
@@ -257,9 +250,6 @@ func TestInviteCancelledDuringLIR(t *testing.T) {
 	h.scscfs[0].sock.RecvNone(quiet)
 }
 
-// TestInviteCancelledBeforeReselection cancels an INVITE whose S-CSCF never
-// answers: no other S-CSCF is tried after the CANCEL (RFC 3261 §16.10), and
-// the INVITE gets its 487.
 func TestInviteCancelledBeforeReselection(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -281,8 +271,6 @@ func TestInviteCancelledBeforeReselection(t *testing.T) {
 	second.sock.RecvNone(quiet)
 }
 
-// TestInviteCancelledBeforeUseProxy cancels an INVITE whose S-CSCF then
-// answers 305: the INVITE is not forwarded again, and the 305 ends it.
 func TestInviteCancelledBeforeUseProxy(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -402,8 +390,6 @@ func TestOriginating(t *testing.T) {
 	}
 }
 
-// TestOrigBelowTheTopRoute sends "orig" below the I-CSCF's Route from
-// outside the trust domain: it would reach the S-CSCF from the I-CSCF.
 func TestOrigBelowTheTopRoute(t *testing.T) {
 	for _, method := range []string{"INVITE", "BYE"} {
 		t.Run(method, func(t *testing.T) {
@@ -433,8 +419,6 @@ func TestOrigBelowTheTopRoute(t *testing.T) {
 	}
 }
 
-// TestOrigOnAnotherHop leaves the originating procedure to the hop the top
-// Route names, when that is not the I-CSCF.
 func TestOrigOnAnotherHop(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscfs[0]
@@ -566,8 +550,6 @@ func TestInviteUseProxy(t *testing.T) {
 	u.ack(invite, u.wantFinal(486))
 }
 
-// TestOriginatingUseProxy keeps "orig" on the Route to the proxy a 305
-// names (§5.3.2.1A).
 func TestOriginatingUseProxy(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -731,9 +713,6 @@ func message(u *ue, target string) *sip.Request {
 	})
 }
 
-// TestMessageLateAnswerWithoutReselection waits for the only S-CSCF that has
-// the mandatory capabilities past SCSCFTimeout: with no other to select, its
-// late answer is relayed.
 func TestMessageLateAnswerWithoutReselection(t *testing.T) {
 	h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{7}, {}}})
 	first, second := h.scscfs[0], h.scscfs[1]
@@ -756,8 +735,6 @@ func TestMessageLateAnswerWithoutReselection(t *testing.T) {
 	second.sock.RecvNone(quiet)
 }
 
-// TestMessageSCSCFTimeout answers a MESSAGE whose S-CSCF never does before
-// the transaction ends.
 func TestMessageSCSCFTimeout(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscfs[0]
@@ -780,8 +757,6 @@ func TestMessageSCSCFTimeout(t *testing.T) {
 	}
 }
 
-// TestSessionSCSCFRefusesConnections reselects when the S-CSCF cannot be
-// reached at all (RFC 3261 §16.9), and answers 480 when no other is left.
 func TestSessionSCSCFRefusesConnections(t *testing.T) {
 	for _, method := range []string{"INVITE", "MESSAGE"} {
 		t.Run(method+" reselection", func(t *testing.T) {

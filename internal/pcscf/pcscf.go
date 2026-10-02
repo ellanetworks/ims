@@ -1,5 +1,3 @@
-// Package pcscf is the P-CSCF. It forwards REGISTER to the I-CSCF without
-// sec-agree, and hands every other request to a fallback handler.
 package pcscf
 
 import (
@@ -104,8 +102,6 @@ func (p *PCSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	}
 }
 
-// unprotected marks the REGISTER as received without integrity protection
-// (TS 24.229 §5.2.2.1), replacing every value the UE claimed.
 func unprotected(req *sip.Request) error {
 	values := req.Header.Values("Authorization")
 
@@ -131,9 +127,6 @@ func unprotected(req *sip.Request) error {
 	return nil
 }
 
-// fromUE removes what the UE must not assert: the trust domain's header
-// fields (§4.4), the charging header fields (§5.2.1), and the
-// P-Visited-Network-ID and Path that the P-CSCF alone inserts (§5.2.2.1).
 func fromUE(req *sip.Request) {
 	trust.StripRequest(req)
 
@@ -142,8 +135,6 @@ func fromUE(req *sip.Request) {
 	}
 }
 
-// toUE removes what the UE must not see: the trust domain's header fields,
-// the charging header fields (§5.2.1), and the keys in a 401.
 func toUE(res *sip.Response) {
 	trust.StripResponse(res)
 	res.Header.Del("P-Charging-Vector")
@@ -153,8 +144,6 @@ func toUE(res *sip.Response) {
 	}
 }
 
-// removeAKAKeys removes the ck and ik the S-CSCF sends to the P-CSCF in a 401
-// (TS 24.229 §5.2.2.1).
 func removeAKAKeys(res *sip.Response) {
 	values := res.Header.Values("WWW-Authenticate")
 	res.Header.Del("WWW-Authenticate")

@@ -211,8 +211,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadSCSCFNameOnTheHomeDomain names the S-CSCF on a host the IMS
-// answers to already: no alias is added.
 func TestLoadSCSCFNameOnTheHomeDomain(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+
 		"scscf:\n  name: sip:IMS.mnc001.mcc001.3gppnetwork.org:5080\n"+validDiameter))

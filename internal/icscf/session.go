@@ -19,7 +19,6 @@ type session struct {
 	identity    string
 	originating bool
 
-	// deadline is when a non-INVITE request is answered at the latest.
 	deadline time.Time
 
 	caps     *cx.ServerCapabilities
@@ -28,8 +27,6 @@ type session struct {
 	redirect bool
 }
 
-// initial handles an initial request for a dialog or a standalone transaction
-// (TS 24.229 §5.3.2.1).
 func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 	trusted := i.trusted(req)
 	originating := false
@@ -69,9 +66,6 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 }
 
-// rejectOrig answers 403 to a request from outside the trust domain with
-// "orig" in any Route (§5.3.2.1A): below the top one, it would reach the
-// S-CSCF from the I-CSCF, which the S-CSCF trusts.
 func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) bool {
 	routes, _ := req.Header.Routes()
 
@@ -111,8 +105,6 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
-// originating handles a request with "orig" in its top Route: the S-CSCF of
-// the calling user is located (TS 24.229 §5.3.2.1A).
 func (i *ICSCF) originating(tx *transaction.ServerTransaction, out *sip.Request) {
 	identity, err := servedUser(out.Header)
 	if err != nil {
@@ -168,8 +160,6 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	i.forwardSession(s, scscf, false)
 }
 
-// forwardSession forwards the request to an S-CSCF and reports whether it
-// did.
 func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) bool {
 	s.tried = append(s.tried, scscf)
 
@@ -198,9 +188,6 @@ func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) bool {
 
 	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
-	// A non-INVITE transaction times out upstream when it does here: the
-	// S-CSCF gets less time so that another can be selected, or so that
-	// the request is answered before then.
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline, i.replaceableSession(s))
 	}
@@ -208,16 +195,10 @@ func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) bool {
 	return i.forward(s.tx, out, to, opts)
 }
 
-// replaceableSession reports whether another S-CSCF can be selected for the
-// request (TS 24.229 §5.3.2.2). An assigned S-CSCF is not replaced: the
-// I-CSCF does not support S-CSCF restoration.
 func (i *ICSCF) replaceableSession(s *session) bool {
 	return !s.assigned && i.choose(s.caps, s.tried) != nil
 }
 
-// sessionReply holds a response only when the request goes on to another
-// S-CSCF. When it cannot, after a CANCEL for one (RFC 3261 §16.10), the
-// response is relayed.
 func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	res := r.Response
 	invite := s.req.Method == "INVITE"
@@ -239,8 +220,6 @@ func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 		}
 	}
 
-	// An S-CSCF that cannot be reached makes the user unavailable, but an
-	// INVITE keeps the 408 or 487 the proxy generated.
 	if failed && (res == nil || res.StatusCode == 500) {
 		i.answer(s.tx, 480)
 		return proxy.Hold
@@ -253,9 +232,6 @@ func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	return proxy.Relay
 }
 
-// useProxy forwards an initial INVITE to the proxy named in the Contact of a
-// 305 (Use Proxy) from the S-CSCF (TS 24.229 §5.3.2.1), and reports whether it
-// did.
 func (i *ICSCF) useProxy(s *session, res *sip.Response) bool {
 	contacts, err := res.Header.Contacts()
 	if err != nil || len(contacts) == 0 || contacts[0].Star {
@@ -297,8 +273,6 @@ func (i *ICSCF) useProxy(s *session, res *sip.Response) bool {
 	}})
 }
 
-// subsequent handles a request inside a dialog (TS 24.229 §5.3.5). The
-// I-CSCF does not Record-Route, so it only sees one that was routed to it.
 func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) {
 	trusted := i.trusted(req)
 	if !trusted && i.rejectOrig(tx, req) {
@@ -322,8 +296,6 @@ func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) 
 	i.forwardOnRoute(tx, out)
 }
 
-// forwardOnRoute forwards a request on its top Route, which must name a
-// known S-CSCF: there is no other next hop.
 func (i *ICSCF) forwardOnRoute(tx *transaction.ServerTransaction, out *sip.Request) {
 	route, err := out.Header.TopRoute()
 	if err != nil {

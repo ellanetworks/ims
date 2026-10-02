@@ -95,7 +95,6 @@ type SCSCF struct {
 	MaxExpires   int      `yaml:"max_expires"`
 }
 
-// DefaultSCSCFName is the S-CSCF name used when scscf.name is not set.
 func DefaultSCSCFName(homeDomain string, port int) string {
 	return "sip:scscf." + homeDomain + ":" + strconv.Itoa(port)
 }
@@ -108,9 +107,6 @@ func HomeDomain(mcc, mnc string) string {
 	return "ims.mnc" + mnc + ".mcc" + mcc + ".3gppnetwork.org"
 }
 
-// SIPAliases are the hosts the IMS answers to: the home domain, sip.aliases,
-// and the host of scscf.name when it is a domain name not listed already.
-// Validation allows only scscf.<home domain> there.
 func (c Config) SIPAliases() []string {
 	aliases := append([]string{c.IMS.HomeDomain}, c.SIP.Aliases...)
 
@@ -186,8 +182,6 @@ func Load(path string) (Config, error) {
 	}
 
 	for i, p := range cfg.IMS.TrustedNetworks {
-		// An IPv4-mapped network shorter than /96 is left for validate to
-		// report.
 		if p.Addr().Is4In6() && p.Bits() < 96 {
 			continue
 		}
@@ -305,9 +299,6 @@ func (c Config) validatePorts() error {
 	return nil
 }
 
-// apiSharesSIPAddress reports whether the API listens on an address the SIP
-// roles listen on too: 0.0.0.0 covers every IPv4 address, and :: every
-// address.
 func (c Config) apiSharesSIPAddress() bool {
 	api := c.API.Address.Unmap()
 
@@ -390,10 +381,6 @@ func (s SIP) validate(homeDomain string) error {
 	return nil
 }
 
-// validate checks scscf.name. Its host must be one the IMS answers to: one
-// of sip.addresses, the home domain, an alias, or scscf.<home domain>, which
-// SIPAliases adds. Any other host would make the IMS take Routes meant for
-// another one.
 func (s SCSCF) validate(sipConfig SIP, homeDomain string) error {
 	switch {
 	case s.MinExpires < 1:

@@ -16,9 +16,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// TestRegisterThroughTheRoles sends a REGISTER to the P-CSCF port: it crosses
-// the I-CSCF, which queries the HSS, and reaches the S-CSCF, which challenges
-// it.
 func TestRegisterThroughTheRoles(t *testing.T) {
 	uars := make(chan cx.UserAuthorizationRequest, 4)
 	mars := make(chan cx.MultimediaAuthRequest, 4)
@@ -122,9 +119,6 @@ func next[T any](t *testing.T, ch <-chan T) T {
 	return zero
 }
 
-// TestRegisterToSCSCFFromOutsideTheTrustDomain sends a REGISTER straight to
-// the S-CSCF port, claiming the integrity protection only the P-CSCF can
-// vouch for (TS 33.203 §6.1): it is refused without reaching the HSS.
 func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
 	requests := make(chan uint32, 4)
 

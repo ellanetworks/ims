@@ -9,7 +9,6 @@ type SIP interface {
 	Listeners() []SIPEndpoint
 }
 
-// SIPEndpoint is a listener of one of the CSCF roles.
 type SIPEndpoint struct {
 	Role    string
 	Address netip.AddrPort

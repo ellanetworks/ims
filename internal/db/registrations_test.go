@@ -161,9 +161,6 @@ func TestContactRejectsSAsWithoutUEAddress(t *testing.T) {
 	}
 }
 
-// TestSaveRegistrationKeepsPCSCFColumns saves a registration from a copy
-// read before the P-CSCF changed the contact's flow and Rx session: the
-// P-CSCF's values stay, and are returned.
 func TestSaveRegistrationKeepsPCSCFColumns(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

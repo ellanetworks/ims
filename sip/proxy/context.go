@@ -176,9 +176,6 @@ func (b *branch) timeoutFired() {
 	c.dispatch(b, Reply{Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout), Responded: responded})
 }
 
-// stopsTimeout reports whether the branch got the response that ends
-// Options.Timeout: any response to an INVITE, a final one otherwise, which
-// finishes the branch.
 func (b *branch) stopsTimeout() bool {
 	return b.c.invite && b.responded
 }
