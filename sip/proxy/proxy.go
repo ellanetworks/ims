@@ -39,19 +39,24 @@ type Config struct {
 
 	Port uint16
 
+	// LocalPorts are further ports of this proxy, e.g. the P-CSCF's
+	// protected ports, whose Route entries it removes.
+	LocalPorts []uint16
+
 	TimerC time.Duration
 
 	Clock transaction.Clock
 }
 
 type Proxy struct {
-	layer     *transaction.Layer
-	log       *slog.Logger
-	supported []string
-	port      uint16
-	timerC    time.Duration
-	clock     transaction.Clock
-	secret    string
+	layer      *transaction.Layer
+	log        *slog.Logger
+	supported  []string
+	port       uint16
+	localPorts []uint16
+	timerC     time.Duration
+	clock      transaction.Clock
+	secret     string
 
 	mu       sync.Mutex
 	contexts map[*transaction.ServerTransaction]*responseContext
@@ -99,14 +104,15 @@ func New(cfg Config) *Proxy {
 	}
 
 	p := &Proxy{
-		layer:     cfg.Layer,
-		log:       cfg.Logger,
-		supported: cfg.Supported,
-		port:      cfg.Port,
-		timerC:    cfg.TimerC,
-		clock:     cfg.Clock,
-		secret:    rand.Text(),
-		contexts:  make(map[*transaction.ServerTransaction]*responseContext),
+		layer:      cfg.Layer,
+		log:        cfg.Logger,
+		supported:  cfg.Supported,
+		port:       cfg.Port,
+		localPorts: slices.Clone(cfg.LocalPorts),
+		timerC:     cfg.TimerC,
+		clock:      cfg.Clock,
+		secret:     rand.Text(),
+		contexts:   make(map[*transaction.ServerTransaction]*responseContext),
 	}
 
 	if p.log == nil {
@@ -168,7 +174,7 @@ func (p *Proxy) IsLocal(u sip.URI) bool {
 		port = sip.DefaultPort
 	}
 
-	return (p.port == 0 || port == p.port) && p.layer.IsLocal(u.Host, port)
+	return (p.port == 0 || port == p.port || slices.Contains(p.localPorts, port)) && p.layer.IsLocal(u.Host, port)
 }
 
 func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {

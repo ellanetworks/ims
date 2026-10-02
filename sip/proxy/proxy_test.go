@@ -291,6 +291,10 @@ func TestIsLocalOnPort(t *testing.T) {
 		}
 	}
 
+	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l, Port: a.Port(), LocalPorts: []uint16{b.Port()}}).IsLocal(u) {
+		t.Errorf("IsLocal(%s) on a further local port = false, want true", u)
+	}
+
 	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l}).IsLocal(u) {
 		t.Errorf("IsLocal(%s) without a port = false, want true", u)
 	}

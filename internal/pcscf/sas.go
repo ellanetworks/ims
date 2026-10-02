@@ -454,6 +454,50 @@ func (a *associations) registered(s *saSet, o outcome) {
 	a.extend(s, expires)
 }
 
+// requestFlow returns the flow for a request to a UE: from the P-CSCF's
+// protected client port to the UE's protected server port, over its newest
+// established set (TS 24.229 §5.2.2.2 1A, TS 33.203 §7.1).
+func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var best *saSet
+
+	for s := range a.sets {
+		if s.impi != impi || s.set.Remote.Addr != ue.Unmap() || s.state == temporary {
+			continue
+		}
+
+		if best == nil || s.state == established && best.state != established ||
+			s.state == best.state && s.expires.After(best.expires) {
+			best = s
+		}
+	}
+
+	if best == nil {
+		return sip.Flow{}, false
+	}
+
+	return sip.Flow{
+		Transport: tr,
+		Local:     netip.AddrPortFrom(best.set.Local.Addr, best.set.Local.PortC),
+		Remote:    netip.AddrPortFrom(best.set.Remote.Addr, best.set.Remote.PortS),
+	}, true
+}
+
+// deregistered shortens a UE's sets to the grace, on a deregistration by the
+// network (TS 24.229 §5.2.5.2).
+func (a *associations) deregistered(impi string, ue netip.Addr) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for s := range a.sets {
+		if s.impi == impi && s.set.Remote.Addr == ue.Unmap() {
+			a.shorten(s, a.cfg.Grace)
+		}
+	}
+}
+
 func (a *associations) failed(s *saSet) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,16 +324,29 @@ type harness struct {
 	clock fakeClock
 	reg   *Registrar
 	scscf netip.AddrPort
+
+	// sipClock drives the transaction layer's timers, apart from clock so
+	// that advancing the registrar's time does not retransmit NOTIFYs.
+	sipClock *siptest.Clock
+	cfg      Config
+	pcscf    *fakePCSCF
 }
 
 type fakePCSCF struct {
-	reg *Registrar
+	reg atomic.Pointer[Registrar]
 	wg  sync.WaitGroup
 }
 
 func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	respond := func(res *sip.Response) { _ = tx.Respond(res) }
+
 	p.wg.Go(func() {
-		_ = tx.Respond(p.reg.Register(context.Background(), req))
+		if req.Method == "SUBSCRIBE" {
+			p.reg.Load().Subscribe(context.Background(), req, respond)
+			return
+		}
+
+		p.reg.Load().Register(context.Background(), req, respond)
 	})
 }
 
@@ -345,7 +359,7 @@ func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	h := &harness{t: t, hss: newFakeHSS(t), clock: fakeClock{siptest.NewClock()}}
+	h := &harness{t: t, hss: newFakeHSS(t), clock: fakeClock{siptest.NewClock()}, sipClock: siptest.NewClock()}
 
 	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
 	if err != nil {
@@ -391,7 +405,17 @@ func newHarness(t *testing.T) *harness {
 	h.node = node
 	h.waitHSS(diameter.PeerOpen)
 
-	h.reg = New(Config{
+	h.pcscf = &fakePCSCF{}
+	t.Cleanup(h.pcscf.wg.Wait)
+
+	layer, _ := siptest.NewLayer(t, transaction.Config{
+		Handler: h.pcscf,
+		Logger:  slog.New(slog.DiscardHandler),
+		Clock:   h.sipClock,
+	})
+	h.scscf = siptest.ListenLayer(t, layer, loopback)
+
+	h.cfg = Config{
 		HomeDomain: homeDomain,
 		Name:       sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
 		MinExpires: 60 * time.Second,
@@ -401,19 +425,28 @@ func newHarness(t *testing.T) *harness {
 		DB:         database,
 		Clock:      h.clock,
 		Logger:     slog.New(slog.DiscardHandler),
-	})
-	t.Cleanup(h.reg.Close)
+		Layer:      layer,
+		Listeners:  []netip.AddrPort{h.scscf},
+	}
 
-	pcscf := &fakePCSCF{reg: h.reg}
-	t.Cleanup(pcscf.wg.Wait)
-
-	layer, _ := siptest.NewLayer(t, transaction.Config{
-		Handler: pcscf,
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	h.scscf = siptest.ListenLayer(t, layer, loopback)
+	h.start()
 
 	return h
+}
+
+// start creates the registrar on the harness's database and layer.
+func (h *harness) start() {
+	h.reg = New(h.cfg)
+	h.t.Cleanup(h.reg.Close)
+
+	h.pcscf.reg.Store(h.reg)
+}
+
+// restart closes the registrar and creates a new one, as a restart of the
+// process would.
+func (h *harness) restart() {
+	h.reg.Close()
+	h.start()
 }
 
 func (h *harness) waitHSS(want diameter.PeerState) {
@@ -437,22 +470,29 @@ func (h *harness) waitHSS(want diameter.PeerState) {
 type ue struct {
 	h       *harness
 	sock    *siptest.Socket
+	inbox   *siptest.Socket
 	impi    string
 	impu    string
 	contact string
+	path    string
 	callID  string
 	cseq    int
 }
 
+// newUE returns a UE that sends from sock and whose contact is inbox, where
+// the S-CSCF's NOTIFYs arrive.
 func (h *harness) newUE() *ue {
 	sock := siptest.NewSocket(h.t, netip.AddrPortFrom(loopback, 0))
+	inbox := siptest.NewSocket(h.t, netip.AddrPortFrom(loopback, 0))
 
 	return &ue{
 		h:       h,
 		sock:    sock,
+		inbox:   inbox,
 		impi:    testIMPI,
 		impu:    testIMPU,
-		contact: "sip:001010000000001@127.0.0.1:" + strconv.Itoa(int(sock.Addr().Port())),
+		contact: "sip:001010000000001@127.0.0.1:" + strconv.Itoa(int(inbox.Addr().Port())),
+		path:    testPath,
 		callID:  sip.NewTag() + "@127.0.0.1",
 	}
 }
@@ -490,7 +530,7 @@ func (u *ue) request(o registerOptions) *sip.Request {
 		req.Header.Add("Authorization", o.auth)
 	}
 
-	req.Header.Add("Path", testPath)
+	req.Header.Add("Path", u.path)
 
 	return req
 }

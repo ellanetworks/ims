@@ -44,6 +44,7 @@ func testRegistration(impi, msisdn string) Registration {
 			CallID:    "reg-" + msisdn,
 			CSeq:      1,
 			ExpiresAt: testNow.Add(time.Hour),
+			Event:     BindingRegistered,
 		}},
 	}
 }

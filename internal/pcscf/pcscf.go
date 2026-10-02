@@ -3,12 +3,14 @@ package pcscf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -27,27 +29,50 @@ var (
 )
 
 type Config struct {
-	Layer     *transaction.Layer
-	Proxy     *proxy.Proxy
-	Port      uint16
-	ICSCFPort uint16
-	IPsec     IPsec
-	Fallback  transaction.Handler
-	Logger    *slog.Logger
+	Layer      *transaction.Layer
+	Proxy      *proxy.Proxy
+	Port       uint16
+	ICSCFPort  uint16
+	HomeDomain string
+	SCSCF      SCSCF
+	IPsec      IPsec
+
+	// Registrations keeps the registrations and the reg event subscriptions
+	// across restarts; nil keeps them in memory only.
+	Registrations RegistrationStore
+
+	Fallback transaction.Handler
+	Clock    Clock
+	Logger   *slog.Logger
 }
 
 type PCSCF struct {
-	cfg Config
-	log *slog.Logger
-	sas *associations
+	cfg   Config
+	log   *slog.Logger
+	clock Clock
+	sas   *associations
+	regs  *registrations
+	subs  *subscriptions
 }
 
 func New(cfg Config) *PCSCF {
-	p := &PCSCF{cfg: cfg, log: cfg.Logger}
+	p := &PCSCF{cfg: cfg, log: cfg.Logger, clock: cfg.Clock}
 
 	if p.log == nil {
 		p.log = slog.Default()
 	}
+
+	if p.clock == nil {
+		p.clock = systemClock{}
+	}
+
+	grace := cfg.IPsec.Grace
+	if grace <= 0 {
+		grace = DefaultGrace
+	}
+
+	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
+	p.subs = newSubscriptions(p)
 
 	if cfg.IPsec.Kernel != nil {
 		p.sas = newAssociations(cfg.IPsec, p.log)
@@ -61,17 +86,33 @@ func New(cfg Config) *PCSCF {
 }
 
 func (p *PCSCF) Restore(ctx context.Context) error {
-	if p.sas == nil {
-		return nil
+	if p.sas != nil {
+		if err := p.sas.restore(ctx); err != nil {
+			return err
+		}
 	}
 
-	return p.sas.restore(ctx)
+	if err := p.regs.restore(ctx); err != nil {
+		return fmt.Errorf("restore registrations: %w", err)
+	}
+
+	if err := p.subs.restore(ctx); err != nil {
+		return fmt.Errorf("restore reg event subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func (p *PCSCF) Close() {
+	p.subs.close()
+
 	if p.sas != nil {
 		p.sas.close()
 	}
+}
+
+func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
+	return p.regs.forIMPI(impi)
 }
 
 func (p *PCSCF) Filter(m sip.Message) error {
@@ -123,7 +164,15 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 }
 
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	if req.Method != "REGISTER" {
+	switch {
+	case req.Method == "REGISTER":
+	case toTag(req) != "":
+		p.inDialog(tx, req)
+		return
+	case req.Method == "SUBSCRIBE" && isRegEvent(req):
+		p.ueSubscribe(tx, req)
+		return
+	default:
 		p.cfg.Fallback.HandleRequest(tx, req)
 		return
 	}
@@ -163,6 +212,14 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 
 	fromUE(out)
 
+	r.token = p.regs.token(r.impi, r.ue)
+	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port, contactParam(req, "reg-id")).String()+">")
+	addRequestOptionTag(out, "Require", "path")
+
+	if p.cfg.HomeDomain != "" {
+		out.Header.Set("P-Visited-Network-ID", p.cfg.HomeDomain)
+	}
+
 	to := proxy.Target{Flow: sip.Flow{
 		Transport: req.Flow.Transport,
 		Local:     netip.AddrPortFrom(req.Flow.Local.Addr(), p.cfg.Port),
@@ -188,6 +245,7 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 type registration struct {
 	ue, local netip.Addr
 	impi      string
+	token     string
 	in        *view
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
@@ -305,6 +363,10 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	toUE(res)
 
+	if res.IsSuccess() {
+		p.registered(req, res, r)
+	}
+
 	if p.sas == nil {
 		return proxy.Relay
 	}
@@ -346,6 +408,57 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	}
 
 	return proxy.Relay
+}
+
+// registered stores the registration a 200 to a REGISTER created, refreshed
+// or ended (TS 24.229 §5.2.2.1, §5.2.5.1), and subscribes to the private
+// identity's reg event on its first registration (§5.2.3).
+func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) {
+	o := registrationOutcome(req, res)
+
+	if o.dereg {
+		if _, ok := p.regs.remove(r.impi, r.ue); ok {
+			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
+		}
+
+		return
+	}
+
+	if o.lifetime <= 0 {
+		return
+	}
+
+	var contacts []string
+
+	requested, _ := req.Header.Contacts()
+	for _, c := range requested {
+		if v, ok := c.Params.Get("expires"); !ok || v != "0" {
+			contacts = append(contacts, c.URI.String())
+		}
+	}
+
+	var associated []string
+
+	identities, _ := res.Header.Addresses("P-Associated-URI")
+	for _, a := range identities {
+		associated = append(associated, a.URI.String())
+	}
+
+	p.regs.save(db.PCSCFRegistration{
+		IMPI:           r.impi,
+		FlowToken:      r.token,
+		Transport:      string(req.Flow.Transport),
+		UEAddress:      netip.AddrPortFrom(r.ue, req.Flow.Remote.Port()),
+		PCSCFAddress:   r.local,
+		Contacts:       contacts,
+		AssociatedURIs: associated,
+		ServiceRoute:   res.Header.Elements("Service-Route"),
+		ExpiresAt:      p.clock.Now().Add(o.lifetime),
+	})
+
+	if len(associated) > 0 && !p.subs.has(r.impi) && p.cfg.Layer != nil {
+		p.subs.start(r.impi)
+	}
 }
 
 func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
@@ -609,6 +722,16 @@ func removeOptionTag(req *sip.Request, name, tag string) {
 	if len(kept) > 0 {
 		req.Header.Add(name, strings.Join(kept, ", "))
 	}
+}
+
+func addRequestOptionTag(req *sip.Request, name, tag string) {
+	for _, t := range req.Header.Elements(name) {
+		if strings.EqualFold(t, tag) {
+			return
+		}
+	}
+
+	req.Header.Add(name, tag)
 }
 
 func addOptionTag(res *sip.Response, name, tag string) {

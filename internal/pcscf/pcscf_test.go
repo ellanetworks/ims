@@ -3,6 +3,7 @@ package pcscf
 import (
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,11 +117,12 @@ func newScene(t *testing.T) *scene {
 	pcscf := siptest.ListenLayer(t, layer, loopback)
 
 	late.h.Store(New(Config{
-		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
-		Port:      pcscf.Port(),
-		ICSCFPort: icscf.Addr().Port(),
-		Fallback:  fallback,
-		Logger:    slog.New(slog.DiscardHandler),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
+		Port:       pcscf.Port(),
+		ICSCFPort:  icscf.Addr().Port(),
+		HomeDomain: homeDomain,
+		Fallback:   fallback,
+		Logger:     slog.New(slog.DiscardHandler),
 	}))
 
 	return &scene{t: t, icscf: icscf, pcscf: pcscf, ue: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
@@ -137,7 +139,6 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 
 	stripped := []string{
 		"P-Asserted-Identity", "P-Access-Network-Info", "P-Charging-Vector", "P-Charging-Function-Addresses",
-		"P-Visited-Network-ID", "Path",
 	}
 
 	s.register(func(r *sip.Request) {
@@ -155,6 +156,14 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 		if req.Header.Has(name) {
 			t.Errorf("%s forwarded from the UE", name)
 		}
+	}
+
+	if paths := req.Header.Values("Path"); len(paths) != 1 || strings.Contains(paths[0], "attacker") {
+		t.Errorf("Path = %q, want the P-CSCF's only", paths)
+	}
+
+	if v := req.Header.Get("P-Visited-Network-ID"); v != homeDomain {
+		t.Errorf("P-Visited-Network-ID = %q, want %q", v, homeDomain)
 	}
 
 	res := sip.NewResponse(req, 200, "")

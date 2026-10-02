@@ -3,12 +3,15 @@ package scscf
 import (
 	"context"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -16,7 +19,7 @@ import (
 const (
 	regAwaitAuth = 4 * time.Minute
 
-	sweepInterval = 30 * time.Second
+	sweepRetry = time.Second
 
 	cxTimeout = 10 * time.Second
 
@@ -60,6 +63,10 @@ type Config struct {
 	Diameter Diameter
 	DB       *db.DB
 
+	// Layer sends the NOTIFYs, from one of Listeners: the S-CSCF's.
+	Layer     *transaction.Layer
+	Listeners []netip.AddrPort
+
 	Clock  Clock
 	Logger *slog.Logger
 }
@@ -78,6 +85,7 @@ type Registrar struct {
 	busy       map[string]*hold
 	challenges map[string]*challenge
 	sweep      transaction.Timer
+	sweepAt    time.Time
 }
 
 type challenge struct {
@@ -117,16 +125,17 @@ func New(cfg Config) *Registrar {
 		challenges: make(map[string]*challenge),
 	}
 
-	r.mu.Lock()
-	r.scheduleSweep()
-	r.mu.Unlock()
+	r.scheduleSweep(ctx)
 
 	return r
 }
 
-func (r *Registrar) Register(ctx context.Context, req *sip.Request) *sip.Response {
+// Register handles a REGISTER. respond sends the response; the NOTIFYs the
+// registration causes follow it.
+func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
 	if !r.start() {
-		return retryLater(req)
+		respond(retryLater(req))
+		return
 	}
 
 	defer r.wg.Done()
@@ -137,14 +146,20 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request) *sip.Respons
 	stop := context.AfterFunc(r.ctx, cancel)
 	defer stop()
 
-	return r.register(ctx, req)
+	res, out := r.register(ctx, req)
+
+	respond(res)
+	r.send(out)
 }
 
 func (r *Registrar) Close() {
 	r.mu.Lock()
 
 	r.closed = true
-	r.sweep.Stop()
+
+	if r.sweep != nil {
+		r.sweep.Stop()
+	}
 
 	for impi, ch := range r.challenges {
 		ch.timer.Stop()
@@ -290,52 +305,112 @@ func (r *Registrar) dropChallenge(impi string, ch *challenge) {
 	}
 }
 
-func (r *Registrar) scheduleSweep() {
-	r.sweep = r.clock.AfterFunc(sweepInterval, func() {
-		if !r.start() {
-			return
-		}
+// scheduleSweep arms the sweep at the earliest binding or subscription
+// expiry.
+func (r *Registrar) scheduleSweep(ctx context.Context) {
+	next, ok, err := r.cfg.DB.NextExpiry(ctx)
+	if err != nil {
+		r.log.Warn("failed to read the next expiry", slog.Any("error", err))
+		next, ok = r.clock.Now().Add(sweepRetry), true
+	}
 
-		r.sweepExpired(r.ctx)
-		r.wg.Done()
-
-		r.mu.Lock()
-		defer r.mu.Unlock()
-
-		if !r.closed {
-			r.scheduleSweep()
-		}
-	})
+	if ok {
+		r.armSweep(next)
+	}
 }
 
-func (r *Registrar) sweepExpired(ctx context.Context) {
+// armSweep makes the sweep run at the latest at the given time.
+func (r *Registrar) armSweep(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed || r.sweep != nil && !r.sweepAt.After(at) {
+		return
+	}
+
+	if r.sweep != nil {
+		r.sweep.Stop()
+	}
+
+	r.sweepAt = at
+	r.sweep = r.clock.AfterFunc(at.Sub(r.clock.Now()), r.runSweep)
+}
+
+func (r *Registrar) runSweep() {
+	if !r.start() {
+		return
+	}
+
+	defer r.wg.Done()
+
+	r.mu.Lock()
+	r.sweep = nil
+	r.mu.Unlock()
+
+	skipped := r.sweepExpired(r.ctx)
+
+	now := r.clock.Now()
+
+	next, ok, err := r.cfg.DB.NextExpiry(r.ctx)
+	if err != nil {
+		r.log.Warn("failed to read the next expiry", slog.Any("error", err))
+
+		next, ok = now.Add(sweepRetry), true
+	}
+
+	if ok && !next.After(now) || skipped {
+		next, ok = now.Add(sweepRetry), true
+	}
+
+	if ok {
+		r.armSweep(next)
+	}
+}
+
+// sweepExpired removes the expired bindings and subscriptions, and tells
+// whether an IMPI was skipped because it was busy.
+func (r *Registrar) sweepExpired(ctx context.Context) bool {
 	impis, err := r.cfg.DB.ListExpiredIMPIs(ctx, r.clock.Now())
 	if err != nil {
 		r.log.Warn("failed to list expired registrations", slog.Any("error", err))
-		return
+		return true
 	}
+
+	skipped := false
 
 	for _, impi := range impis {
 		if !r.tryLock(impi) {
+			skipped = true
 			continue
 		}
 
-		r.sweepIMPI(ctx, impi)
+		out := r.sweepIMPI(ctx, impi)
 		r.unlock(impi)
+		r.send(out)
 	}
+
+	return skipped
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return
+		return nil
 	}
+
+	out := r.expireSubscriptions(ctx, st, impi)
+
+	var ch change
 
 	for _, reg := range st.regs {
 		live := st.live(reg.Bindings)
 		if len(live) == len(reg.Bindings) {
 			continue
+		}
+
+		if expired := without(reg.Bindings, live); len(expired) > 0 {
+			ch.removed = append(ch.removed, removal{reg: reg, bindings: expired, event: regevent.Expired})
 		}
 
 		if len(live) > 0 {
@@ -357,6 +432,50 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) {
 			r.log.Warn("failed to delete an expired registration", slog.String("impi", impi), slog.Any("error", err))
 		}
 	}
+
+	if len(ch.removed) == 0 {
+		return out
+	}
+
+	return append(out, r.notifyChange(ctx, impi, ch)...)
+}
+
+// expireSubscriptions ends the IMPI's expired subscriptions with a terminated
+// NOTIFY.
+func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi string) []*outgoing {
+	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
+	if err != nil {
+		r.log.Warn("failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
+		return nil
+	}
+
+	var out []*outgoing
+
+	for _, s := range subs {
+		if s.ExpiresAt.After(st.now) {
+			continue
+		}
+
+		r.log.Info("reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
+
+		if o := r.buildNotify(ctx, st, s, change{}, "terminated;reason="+reasonTimeout); o != nil {
+			out = append(out, o)
+		}
+	}
+
+	return out
+}
+
+func without(all, kept []db.Binding) []db.Binding {
+	var out []db.Binding
+
+	for _, b := range all {
+		if !slices.ContainsFunc(kept, func(k db.Binding) bool { return k.Contact.ID == b.Contact.ID }) {
+			out = append(out, b)
+		}
+	}
+
+	return out
 }
 
 func serviceRoute(name sip.URI, contactID int64) string {

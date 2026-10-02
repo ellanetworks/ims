@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
@@ -31,7 +32,7 @@ var transports = map[config.Transport]diameter.Transport{
 	config.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, logger *slog.Logger) (*diameter.Node, error) {
+func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, logger *slog.Logger) (*diameter.Node, error) {
 	node, err := diameter.New(diameter.Config{
 		Identity: diameter.Identity{
 			OriginHost:      cfg.OriginHost,
@@ -39,7 +40,7 @@ func newDiameterNode(cfg config.Diameter, logger *slog.Logger) (*diameter.Node, 
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:           newDiameterMux(logger),
+		Handler:           newDiameterMux(rtr, logger),
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
 		Logger:            logger,
 	})
@@ -77,18 +78,15 @@ func diameterPeers(peers []config.DiameterPeer) []diameter.Peer {
 	return out
 }
 
-// newDiameterMux registers the requests the HSS and the PCRF send. Until
-// registration and calls handle them, each one is refused with
-// DIAMETER_UNABLE_TO_COMPLY.
-func newDiameterMux(logger *slog.Logger) *diameter.Mux {
+// newDiameterMux registers the requests the HSS and the PCRF send. RTR goes
+// to the registrar once it exists. Until calls handle them, the Rx requests
+// are refused with DIAMETER_UNABLE_TO_COMPLY.
+func newDiameterMux(rtr *rtrHandler, logger *slog.Logger) *diameter.Mux {
 	unableToComply := tgpp.Result{Code: diameter.ResultUnableToComply}
 
 	mux := diameter.NewMux()
 
-	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, unimplemented(logger, "Cx RTR",
-		func(c *diameter.Conn, req *diameter.Message) *diameter.Message {
-			return cx.NewAnswer(req, c.LocalIdentity(), unableToComply, 0)
-		}))
+	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, rtr)
 	mux.Handle(rx.ApplicationID, rx.CommandReAuth, unimplemented(logger, "Rx RAR",
 		func(c *diameter.Conn, req *diameter.Message) *diameter.Message {
 			return rx.NewAnswer(req, c.LocalIdentity(), unableToComply, 0)
@@ -99,6 +97,66 @@ func newDiameterMux(logger *slog.Logger) *diameter.Mux {
 		}))
 
 	return mux
+}
+
+type terminator interface {
+	Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error)
+}
+
+// rtrHandler answers Registration-Termination-Requests (TS 29.228 §6.1.3)
+// through the registrar bound to it, and DIAMETER_UNABLE_TO_COMPLY until then.
+type rtrHandler struct {
+	log    *slog.Logger
+	target atomic.Pointer[terminator]
+}
+
+func newRTRHandler(logger *slog.Logger) *rtrHandler {
+	return &rtrHandler{log: logger}
+}
+
+func (h *rtrHandler) bind(t terminator) {
+	if t == nil {
+		h.target.Store(nil)
+		return
+	}
+
+	h.target.Store(&t)
+}
+
+func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+	rtr, err := cx.ParseRegistrationTerminationRequest(req)
+	if err != nil {
+		h.log.Info("invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
+		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+	}
+
+	t := h.target.Load()
+	if t == nil {
+		h.log.Warn("Cx RTR before the registrar started", slog.String("impi", rtr.PrivateIdentity))
+		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	h.log.Info("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
+		slog.String("reason", rtr.Reason.Code.String()))
+
+	impis, err := (*t).Terminate(ctx, rtr)
+	if err != nil {
+		h.log.Warn("Cx RTR failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
+		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	var a cx.RegistrationTermination
+	if len(rtr.AssociatedIdentities) > 0 {
+		a.AssociatedIdentities = impis
+	}
+
+	ans, err := cx.NewRegistrationTerminationAnswer(req, c.LocalIdentity(), a)
+	if err != nil {
+		h.log.Warn("building the RTA failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
+		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	return ans
 }
 
 func unimplemented(logger *slog.Logger, name string, answer func(*diameter.Conn, *diameter.Message) *diameter.Message) diameter.Handler {

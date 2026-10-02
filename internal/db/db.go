@@ -53,6 +53,7 @@ var migrations = []string{
 		call_id TEXT NOT NULL,
 		cseq INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
+		event TEXT NOT NULL CHECK (event IN ('registered', 'refreshed')),
 		PRIMARY KEY (registration_id, contact_id)
 	);
 	CREATE INDEX bindings_contact_id ON bindings (contact_id);
@@ -60,17 +61,19 @@ var migrations = []string{
 	CREATE TABLE reg_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
+		impu TEXT NOT NULL,
+		subscriber TEXT NOT NULL CHECK (subscriber IN ('ue', 'pcscf')),
 		call_id TEXT NOT NULL,
-		remote_tag TEXT NOT NULL,
 		local_tag TEXT NOT NULL,
+		remote_tag TEXT NOT NULL,
 		remote_target TEXT NOT NULL,
-		remote_cseq INTEGER NOT NULL,
-		local_cseq INTEGER NOT NULL,
+		dialog BLOB NOT NULL,
 		version INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
-		UNIQUE (call_id, remote_tag, local_tag)
+		UNIQUE (call_id, local_tag, remote_tag)
 	);
 	CREATE INDEX reg_subscriptions_impi ON reg_subscriptions (impi);
+	CREATE INDEX reg_subscriptions_expires_at ON reg_subscriptions (expires_at);
 	CREATE TABLE calls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		call_id TEXT NOT NULL,
@@ -105,7 +108,31 @@ var migrations = []string{
 		ealg TEXT NOT NULL,
 		expires_at INTEGER NOT NULL
 	);
-	CREATE INDEX security_associations_impi ON security_associations (impi);`,
+	CREATE INDEX security_associations_impi ON security_associations (impi);
+	CREATE TABLE pcscf_registrations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		impi TEXT NOT NULL,
+		flow_token TEXT NOT NULL UNIQUE,
+		transport TEXT NOT NULL,
+		ue_address TEXT NOT NULL,
+		ue_port INTEGER NOT NULL,
+		pcscf_address TEXT NOT NULL,
+		contacts TEXT NOT NULL,
+		associated_uris TEXT NOT NULL,
+		service_route TEXT NOT NULL,
+		expires_at INTEGER NOT NULL,
+		UNIQUE (impi, ue_address)
+	);
+	CREATE TABLE pcscf_subscriptions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		impi TEXT NOT NULL UNIQUE,
+		impu TEXT NOT NULL,
+		call_id TEXT NOT NULL,
+		local_tag TEXT NOT NULL,
+		dialog BLOB,
+		version INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {

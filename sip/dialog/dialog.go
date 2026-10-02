@@ -575,3 +575,73 @@ func initialSeq() uint32 {
 
 	return binary.BigEndian.Uint32(b[:])%(1<<31-1) + 1
 }
+
+// Snapshot is a dialog's state, for storage. Its fields are plain values so that it can be stored as JSON.
+type Snapshot struct {
+	ID            ID
+	State         State
+	Local         string   // local address (name-addr with tag)
+	Remote        string   // remote address (name-addr with tag)
+	Target        string   // remote target URI
+	Route         []string // route set
+	LocalSeq      uint32
+	HaveLocalSeq  bool
+	RemoteSeq     uint32
+	HaveRemoteSeq bool
+	Origin        sip.CSeq // the CSeq of the request that created the dialog
+}
+
+func (d *Dialog) Snapshot() Snapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return Snapshot{
+		ID:            d.id,
+		State:         d.state,
+		Local:         d.local.String(),
+		Remote:        d.remote.String(),
+		Target:        d.target.String(),
+		Route:         slices.Clone(d.route),
+		LocalSeq:      d.localSeq,
+		HaveLocalSeq:  d.haveLocalSeq,
+		RemoteSeq:     d.remoteSeq,
+		HaveRemoteSeq: d.haveRemoteSeq,
+		Origin:        d.origin,
+	}
+}
+
+func Restore(s Snapshot) (*Dialog, error) {
+	if s.State < Early || s.State > Terminated {
+		return nil, fmt.Errorf("sip/dialog: invalid state %d", s.State)
+	}
+
+	local, err := sip.ParseAddress(s.Local)
+	if err != nil {
+		return nil, fmt.Errorf("sip/dialog: local address: %w", err)
+	}
+
+	remote, err := sip.ParseAddress(s.Remote)
+	if err != nil {
+		return nil, fmt.Errorf("sip/dialog: remote address: %w", err)
+	}
+
+	target, err := sip.ParseURI(s.Target)
+	if err != nil {
+		return nil, fmt.Errorf("sip/dialog: remote target: %w", err)
+	}
+
+	d, err := newDialog(s.ID.CallID, local, remote, target, slices.Clone(s.Route), s.Origin)
+	if err != nil {
+		return nil, err
+	}
+
+	if d.id != s.ID {
+		return nil, fmt.Errorf("%w: tags do not match the ID", ErrMismatch)
+	}
+
+	d.state = s.State
+	d.localSeq, d.haveLocalSeq = s.LocalSeq, s.HaveLocalSeq
+	d.remoteSeq, d.haveRemoteSeq = s.RemoteSeq, s.HaveRemoteSeq
+
+	return d, nil
+}

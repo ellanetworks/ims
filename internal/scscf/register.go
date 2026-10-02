@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -28,6 +29,7 @@ type registerRequest struct {
 	callID    string
 	cseq      uint32
 	path      string
+	out       []*outgoing
 }
 
 type contactRequest struct {
@@ -49,11 +51,23 @@ func (rr *registerRequest) deregister() bool {
 	return true
 }
 
-func (r *Registrar) register(ctx context.Context, req *sip.Request) *sip.Response {
+func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing) {
 	rr, res := r.parse(req)
 	if res != nil {
-		return res
+		return res, nil
 	}
+
+	res = r.handleRegister(ctx, rr)
+
+	if res.StatusCode == 200 {
+		r.scheduleSweep(ctx)
+	}
+
+	return res, rr.out
+}
+
+func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *sip.Response {
+	req := rr.req
 
 	for _, c := range rr.contacts {
 		if c.expires != 0 && c.expires < r.cfg.MinExpires {
@@ -344,7 +358,12 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 		return r.assign(ctx, rr, st, set, false)
 	}
 
-	return r.bind(ctx, rr, st, *set, false)
+	res := r.bind(ctx, rr, st, *set, false)
+	if res.StatusCode == 200 {
+		rr.out = r.notifyChange(ctx, rr.impi, change{})
+	}
+
+	return res
 }
 
 func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, set *db.Registration, replace bool) *sip.Response {
@@ -398,14 +417,28 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		}
 	}
 
+	var ch change
+
 	if replace {
-		reg.Bindings = only(reg.Bindings, rr.contacts)
+		kept := only(reg.Bindings, rr.contacts)
+
+		if dropped := without(st.live(reg.Bindings), kept); len(dropped) > 0 {
+			ch.removed = append(ch.removed, removal{reg: reg, bindings: dropped, event: regevent.Unregistered})
+		}
+
+		reg.Bindings = kept
 	}
 
 	res := r.bind(ctx, rr, st, reg, !registered)
-	if res.StatusCode == 200 && replace {
-		r.replaceContacts(ctx, rr, st, reg.ID)
+	if res.StatusCode != 200 {
+		return res
 	}
+
+	if replace {
+		ch.removed = append(ch.removed, r.replaceContacts(ctx, rr, st, reg.ID)...)
+	}
+
+	rr.out = r.notifyChange(ctx, rr.impi, ch)
 
 	return res
 }
@@ -423,7 +456,11 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			return sip.NewResponse(rr.req, 500, "Out Of Order")
 		}
 
+		event := db.BindingRegistered
+
 		if i >= 0 {
+			event = db.BindingRefreshed
+
 			bindings = append(bindings[:i], bindings[i+1:]...)
 		}
 
@@ -447,6 +484,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			CallID:    rr.callID,
 			CSeq:      int64(rr.cseq),
 			ExpiresAt: now.Add(c.expires),
+			Event:     event,
 		})
 	}
 
@@ -467,13 +505,21 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	return r.ok(ctx, rr, saved, nil)
 }
 
-func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st *state, keep int64) {
+func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st *state, keep int64) []removal {
+	var removed []removal
+
 	for _, reg := range st.regs {
 		if reg.ID == keep || !st.registered(&reg) {
 			continue
 		}
 
-		reg.Bindings = only(st.live(reg.Bindings), rr.contacts)
+		live := st.live(reg.Bindings)
+
+		reg.Bindings = only(live, rr.contacts)
+		if dropped := without(live, reg.Bindings); len(dropped) > 0 {
+			removed = append(removed, removal{reg: reg, bindings: dropped, event: regevent.Unregistered})
+		}
+
 		if len(reg.Bindings) > 0 {
 			if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
 				r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
@@ -492,6 +538,8 @@ func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st
 
 		r.log.Info("registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
 	}
+
+	return removed
 }
 
 func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, set *db.Registration) *sip.Response {
@@ -514,6 +562,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, set *db.Reg
 		}
 	}
 
+	ch := change{removed: []removal{{reg: *set, bindings: removed, event: regevent.Unregistered, byUE: true}}}
 	reg.Bindings = bindings
 
 	if len(bindings) > 0 {
@@ -524,6 +573,8 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, set *db.Reg
 
 		r.log.Info("contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
 			slog.Int("contacts", len(removed)))
+
+		rr.out = r.notifyChange(ctx, rr.impi, ch)
 
 		return r.ok(ctx, rr, reg, removed)
 	}
@@ -538,6 +589,8 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, set *db.Reg
 	}
 
 	r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+
+	rr.out = r.notifyChange(ctx, rr.impi, ch)
 
 	return r.ok(ctx, rr, reg, removed)
 }
