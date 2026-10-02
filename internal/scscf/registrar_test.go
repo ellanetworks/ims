@@ -149,9 +149,12 @@ func TestInitialRegistration(t *testing.T) {
 				Params: ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
 				Path:   testPath,
 			},
-			CallID:    u.callID,
-			CSeq:      2,
-			ExpiresAt: testEpoch.Add(600 * time.Second),
+			CallID:       u.callID,
+			CSeq:         2,
+			ExpiresAt:    testEpoch.Add(600 * time.Second),
+			Event:        db.BindingRegistered,
+			IMPU:         testIMPU,
+			RegisteredAt: testEpoch,
 		}},
 	}
 	if !reflect.DeepEqual(reg, wantReg) {
@@ -716,11 +719,11 @@ func TestTimeoutDeregistration(t *testing.T) {
 	u.register(registerOptions{expires: "600"})
 	h.hss.nextSAR(t)
 
-	h.clock.Advance(600*time.Second - sweepInterval)
+	h.clock.Advance(600*time.Second - time.Millisecond)
 	h.registration(testIMPU)
 	h.hss.noCx(t)
 
-	h.clock.Advance(sweepInterval)
+	h.clock.Advance(sweepRetry)
 
 	if sar := h.hss.wantSAR(t, cx.AssignmentTimeoutDeregistration); !reflect.DeepEqual(sar.PublicIdentities, []string{testIMPU}) {
 		t.Fatalf("SAR = %+v", sar)
@@ -746,7 +749,7 @@ func TestSweepWaitsForBusyIMPI(t *testing.T) {
 	h.hss.noCx(t)
 
 	h.reg.unlock(testIMPI)
-	h.clock.Advance(sweepInterval)
+	h.clock.Advance(sweepRetry)
 
 	h.hss.wantSAR(t, cx.AssignmentTimeoutDeregistration)
 	h.wantUnregistered()

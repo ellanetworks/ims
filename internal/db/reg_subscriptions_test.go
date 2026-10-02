@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 )
@@ -12,12 +11,13 @@ import (
 func testSubscription() RegSubscription {
 	return RegSubscription{
 		IMPI:         testIMPI,
+		IMPU:         "sip:+15551230001@" + testDomain,
+		Subscriber:   SubscriberUE,
 		CallID:       "sub-1",
 		RemoteTag:    "ue-tag",
 		LocalTag:     "scscf-tag",
 		RemoteTarget: "sip:[2001:db8::1]:5100",
-		RemoteCSeq:   1,
-		LocalCSeq:    1,
+		Dialog:       []byte(`{"ID":{}}`),
 		Version:      0,
 		ExpiresAt:    testNow.Add(time.Hour),
 	}
@@ -45,27 +45,22 @@ func TestRegSubscriptionLifecycle(t *testing.T) {
 		t.Fatalf("subscriptions = %+v, want %+v", subs, want)
 	}
 
-	expires := testNow.Add(2 * time.Hour)
-	if err := d.RefreshRegSubscription(ctx, id, 2, expires); err != nil {
-		t.Fatalf("RefreshRegSubscription: %v", err)
+	got, err := d.GetRegSubscription(ctx, want.CallID, want.LocalTag, want.RemoteTag)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetRegSubscription = %+v, %v", got, err)
 	}
 
-	cseq, version, err := d.NextNotify(ctx, id)
-	if err != nil {
-		t.Fatalf("NextNotify: %v", err)
+	want.Dialog = []byte(`{"ID":{"CallID":"sub-1"}}`)
+	want.Version = 3
+	want.RemoteTarget = "sip:[2001:db8::2]:5100"
+	want.ExpiresAt = testNow.Add(2 * time.Hour)
+
+	if err := d.UpdateRegSubscription(ctx, want); err != nil {
+		t.Fatalf("UpdateRegSubscription: %v", err)
 	}
 
-	if cseq != 2 || version != 1 {
-		t.Fatalf("NextNotify = (%d, %d), want (2, 1)", cseq, version)
-	}
-
-	subs, err = d.ListRegSubscriptions(ctx, testIMPI)
-	if err != nil {
-		t.Fatalf("ListRegSubscriptions: %v", err)
-	}
-
-	if s := subs[0]; s.RemoteCSeq != 2 || !s.ExpiresAt.Equal(expires) || s.LocalCSeq != 2 || s.Version != 1 {
-		t.Fatalf("subscription = %+v", s)
+	if got, err := d.GetRegSubscriptionByID(ctx, id); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetRegSubscriptionByID = %+v, %v; want %+v", got, err, want)
 	}
 
 	if err := d.DeleteRegSubscription(ctx, id); err != nil {
@@ -73,16 +68,16 @@ func TestRegSubscriptionLifecycle(t *testing.T) {
 	}
 
 	for name, err := range map[string]error{
-		"RefreshRegSubscription": d.RefreshRegSubscription(ctx, id, 3, expires),
-		"DeleteRegSubscription":  d.DeleteRegSubscription(ctx, id),
+		"UpdateRegSubscription": d.UpdateRegSubscription(ctx, want),
+		"DeleteRegSubscription": d.DeleteRegSubscription(ctx, id),
 	} {
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("%s after delete err = %v, want ErrNotFound", name, err)
 		}
 	}
 
-	if _, _, err := d.NextNotify(ctx, id); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("NextNotify after delete err = %v, want ErrNotFound", err)
+	if _, err := d.GetRegSubscription(ctx, want.CallID, want.LocalTag, want.RemoteTag); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetRegSubscription after delete err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -97,48 +92,40 @@ func TestPutRegSubscriptionErrors(t *testing.T) {
 	if _, err := d.PutRegSubscription(ctx, testSubscription()); !errors.Is(err, ErrSubscriptionExists) {
 		t.Fatalf("duplicate PutRegSubscription err = %v, want ErrSubscriptionExists", err)
 	}
+
+	bad := testSubscription()
+	bad.CallID = "sub-2"
+	bad.Subscriber = "as"
+
+	if _, err := d.PutRegSubscription(ctx, bad); err == nil {
+		t.Fatal("PutRegSubscription accepted an unknown subscriber")
+	}
 }
 
-func TestNextNotifyConcurrent(t *testing.T) {
+func TestNextExpiry(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	id, err := d.PutRegSubscription(ctx, testSubscription())
-	if err != nil {
+	if _, ok, err := d.NextExpiry(ctx); err != nil || ok {
+		t.Fatalf("NextExpiry on an empty database = %v, %v", ok, err)
+	}
+
+	sub := testSubscription()
+	sub.ExpiresAt = testNow.Add(time.Minute)
+
+	if _, err := d.PutRegSubscription(ctx, sub); err != nil {
 		t.Fatalf("PutRegSubscription: %v", err)
 	}
 
-	const callers = 50
+	mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		versions = map[int64]bool{}
-	)
-
-	for range callers {
-		wg.Go(func() {
-			cseq, version, err := d.NextNotify(ctx, id)
-			if err != nil {
-				t.Errorf("NextNotify: %v", err)
-				return
-			}
-
-			if cseq != version+1 {
-				t.Errorf("NextNotify = (%d, %d), CSeq and version out of step", cseq, version)
-			}
-
-			mu.Lock()
-			versions[version] = true
-			mu.Unlock()
-		})
+	next, ok, err := d.NextExpiry(ctx)
+	if err != nil || !ok || !next.Equal(sub.ExpiresAt) {
+		t.Fatalf("NextExpiry = %v, %v, %v; want %v", next, ok, err, sub.ExpiresAt)
 	}
 
-	wg.Wait()
-
-	for v := int64(1); v <= callers; v++ {
-		if !versions[v] {
-			t.Fatalf("version %d was never returned; got %v", v, versions)
-		}
+	impis, err := d.ListExpiredIMPIs(ctx, testNow.Add(2*time.Minute))
+	if err != nil || len(impis) != 1 || impis[0] != testIMPI {
+		t.Fatalf("ListExpiredIMPIs = %v, %v; want the subscription's IMPI", impis, err)
 	}
 }

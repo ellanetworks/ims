@@ -12,33 +12,37 @@ import (
 
 var ErrSubscriptionExists = errors.New("subscription dialog already exists")
 
-// RegSubscription is a phone's subscription to its own registration state
-// (RFC 3680). LocalCSeq and Version are those of the last NOTIFY built: a new
-// subscription is stored with the values of its initial NOTIFY, and NextNotify
-// returns the values for each later one.
+type Subscriber string
+
+const (
+	SubscriberUE    Subscriber = "ue"
+	SubscriberPCSCF Subscriber = "pcscf"
+)
+
 type RegSubscription struct {
 	ID           int64
 	IMPI         string
+	IMPU         string
+	Subscriber   Subscriber
 	CallID       string
-	RemoteTag    string
 	LocalTag     string
+	RemoteTag    string
 	RemoteTarget string
-	RemoteCSeq   int64
-	LocalCSeq    int64
+	Dialog       []byte
 	Version      int64
 	ExpiresAt    time.Time
 }
 
-const regSubscriptionColumns = `id, impi, call_id, remote_tag, local_tag, remote_target,
-	remote_cseq, local_cseq, version, expires_at`
+const regSubscriptionColumns = `id, impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,
+	dialog, version, expires_at`
 
 func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (int64, error) {
 	res, err := d.conn.ExecContext(ctx,
-		`INSERT INTO reg_subscriptions (impi, call_id, remote_tag, local_tag, remote_target,
-			remote_cseq, local_cseq, version, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.IMPI, s.CallID, s.RemoteTag, s.LocalTag, s.RemoteTarget,
-		s.RemoteCSeq, s.LocalCSeq, s.Version, s.ExpiresAt.UTC().UnixNano())
+		`INSERT INTO reg_subscriptions (impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,
+			dialog, version, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.IMPI, s.IMPU, s.Subscriber, s.CallID, s.LocalTag, s.RemoteTag, s.RemoteTarget,
+		s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano())
 
 	switch {
 	case isConstraint(err, sqlite3.ErrConstraintUnique):
@@ -55,37 +59,48 @@ func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (int64, 
 	return id, nil
 }
 
-// RefreshRegSubscription records an accepted in-dialog SUBSCRIBE.
-func (d *DB) RefreshRegSubscription(ctx context.Context, id int64, remoteCSeq int64, expiresAt time.Time) error {
+func (d *DB) UpdateRegSubscription(ctx context.Context, s RegSubscription) error {
 	res, err := d.conn.ExecContext(ctx,
-		`UPDATE reg_subscriptions SET remote_cseq = ?, expires_at = ? WHERE id = ?`,
-		remoteCSeq, expiresAt.UTC().UnixNano(), id)
+		`UPDATE reg_subscriptions SET remote_target = ?, dialog = ?, version = ?, expires_at = ? WHERE id = ?`,
+		s.RemoteTarget, s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano(), s.ID)
 	if err != nil {
-		return fmt.Errorf("refresh reg subscription: %w", err)
+		return fmt.Errorf("update reg subscription: %w", err)
 	}
 
 	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("refresh reg subscription: %w", err)
+		return fmt.Errorf("update reg subscription: %w", err)
 	}
 
 	return nil
 }
 
-// NextNotify increments the subscription's NOTIFY CSeq and reginfo version
-// together, and returns the new values.
-func (d *DB) NextNotify(ctx context.Context, id int64) (cseq, version int64, err error) {
-	err = d.conn.QueryRowContext(ctx,
-		`UPDATE reg_subscriptions SET local_cseq = local_cseq + 1, version = version + 1
-		WHERE id = ? RETURNING local_cseq, version`, id).Scan(&cseq, &version)
+func (d *DB) GetRegSubscription(ctx context.Context, callID, localTag, remoteTag string) (RegSubscription, error) {
+	s, err := scanRegSubscription(d.conn.QueryRowContext(ctx,
+		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE call_id = ? AND local_tag = ? AND remote_tag = ?`,
+		callID, localTag, remoteTag))
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, ErrNotFound
+		err = ErrNotFound
 	}
 
 	if err != nil {
-		return 0, 0, fmt.Errorf("next notify: %w", err)
+		return RegSubscription{}, fmt.Errorf("get reg subscription: %w", err)
 	}
 
-	return cseq, version, nil
+	return s, nil
+}
+
+func (d *DB) GetRegSubscriptionByID(ctx context.Context, id int64) (RegSubscription, error) {
+	s, err := scanRegSubscription(d.conn.QueryRowContext(ctx,
+		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+
+	if err != nil {
+		return RegSubscription{}, fmt.Errorf("get reg subscription %d: %w", id, err)
+	}
+
+	return s, nil
 }
 
 func (d *DB) ListRegSubscriptions(ctx context.Context, impi string) ([]RegSubscription, error) {
@@ -100,17 +115,11 @@ func (d *DB) ListRegSubscriptions(ctx context.Context, impi string) ([]RegSubscr
 	subs := []RegSubscription{}
 
 	for rows.Next() {
-		var (
-			s         RegSubscription
-			expiresAt int64
-		)
-
-		if err := rows.Scan(&s.ID, &s.IMPI, &s.CallID, &s.RemoteTag, &s.LocalTag, &s.RemoteTarget,
-			&s.RemoteCSeq, &s.LocalCSeq, &s.Version, &expiresAt); err != nil {
+		s, err := scanRegSubscription(rows)
+		if err != nil {
 			return nil, fmt.Errorf("list reg subscriptions: %w", err)
 		}
 
-		s.ExpiresAt = time.Unix(0, expiresAt).UTC()
 		subs = append(subs, s)
 	}
 
@@ -132,4 +141,20 @@ func (d *DB) DeleteRegSubscription(ctx context.Context, id int64) error {
 	}
 
 	return nil
+}
+
+func scanRegSubscription(row scanner) (RegSubscription, error) {
+	var (
+		s         RegSubscription
+		expiresAt int64
+	)
+
+	if err := row.Scan(&s.ID, &s.IMPI, &s.IMPU, &s.Subscriber, &s.CallID, &s.LocalTag, &s.RemoteTag, &s.RemoteTarget,
+		&s.Dialog, &s.Version, &expiresAt); err != nil {
+		return RegSubscription{}, err
+	}
+
+	s.ExpiresAt = time.Unix(0, expiresAt).UTC()
+
+	return s, nil
 }

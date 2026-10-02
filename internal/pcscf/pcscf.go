@@ -3,12 +3,15 @@ package pcscf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -27,27 +30,48 @@ var (
 )
 
 type Config struct {
-	Layer     *transaction.Layer
-	Proxy     *proxy.Proxy
-	Port      uint16
-	ICSCFPort uint16
-	IPsec     IPsec
-	Fallback  transaction.Handler
-	Logger    *slog.Logger
+	Layer      *transaction.Layer
+	Proxy      *proxy.Proxy
+	Port       uint16
+	ICSCFPort  uint16
+	HomeDomain string
+	SCSCF      SCSCF
+	IPsec      IPsec
+
+	Registrations RegistrationStore
+
+	Fallback transaction.Handler
+	Clock    Clock
+	Logger   *slog.Logger
 }
 
 type PCSCF struct {
-	cfg Config
-	log *slog.Logger
-	sas *associations
+	cfg   Config
+	log   *slog.Logger
+	clock Clock
+	sas   *associations
+	regs  *registrations
+	subs  *subscriptions
 }
 
 func New(cfg Config) *PCSCF {
-	p := &PCSCF{cfg: cfg, log: cfg.Logger}
+	p := &PCSCF{cfg: cfg, log: cfg.Logger, clock: cfg.Clock}
 
 	if p.log == nil {
 		p.log = slog.Default()
 	}
+
+	if p.clock == nil {
+		p.clock = systemClock{}
+	}
+
+	grace := cfg.IPsec.Grace
+	if grace <= 0 {
+		grace = DefaultGrace
+	}
+
+	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
+	p.subs = newSubscriptions(p)
 
 	if cfg.IPsec.Kernel != nil {
 		p.sas = newAssociations(cfg.IPsec, p.log)
@@ -61,17 +85,33 @@ func New(cfg Config) *PCSCF {
 }
 
 func (p *PCSCF) Restore(ctx context.Context) error {
-	if p.sas == nil {
-		return nil
+	if p.sas != nil {
+		if err := p.sas.restore(ctx); err != nil {
+			return err
+		}
 	}
 
-	return p.sas.restore(ctx)
+	if err := p.regs.restore(ctx); err != nil {
+		return fmt.Errorf("restore registrations: %w", err)
+	}
+
+	if err := p.subs.restore(ctx); err != nil {
+		return fmt.Errorf("restore reg event subscriptions: %w", err)
+	}
+
+	return nil
 }
 
 func (p *PCSCF) Close() {
+	p.subs.close()
+
 	if p.sas != nil {
 		p.sas.close()
 	}
+}
+
+func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
+	return p.regs.forIMPI(impi)
 }
 
 func (p *PCSCF) Filter(m sip.Message) error {
@@ -123,7 +163,15 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 }
 
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	if req.Method != "REGISTER" {
+	switch {
+	case req.Method == "REGISTER":
+	case toTag(req) != "":
+		p.inDialog(tx, req)
+		return
+	case req.Method == "SUBSCRIBE" && isRegEvent(req):
+		p.ueSubscribe(tx, req)
+		return
+	default:
 		p.cfg.Fallback.HandleRequest(tx, req)
 		return
 	}
@@ -163,6 +211,14 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 
 	fromUE(out)
 
+	r.token = p.regs.token(r.impi, r.ue)
+	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port, contactParam(req, "reg-id")).String()+">")
+	addRequestOptionTag(out, "Require", "path")
+
+	if p.cfg.HomeDomain != "" {
+		out.Header.Set("P-Visited-Network-ID", p.cfg.HomeDomain)
+	}
+
 	to := proxy.Target{Flow: sip.Flow{
 		Transport: req.Flow.Transport,
 		Local:     netip.AddrPortFrom(req.Flow.Local.Addr(), p.cfg.Port),
@@ -188,6 +244,7 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 type registration struct {
 	ue, local netip.Addr
 	impi      string
+	token     string
 	in        *view
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
@@ -276,8 +333,8 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 
 	out.Header.Del("Security-Client")
 	out.Header.Del("Security-Verify")
-	removeOptionTag(out, "Require", secAgree)
-	removeOptionTag(out, "Proxy-Require", secAgree)
+	removeSecAgree(out, "Require")
+	removeSecAgree(out, "Proxy-Require")
 
 	if err := setIntegrityProtected(out, integrity); err != nil {
 		return sip.NewResponse(req, 400, "Bad Authorization")
@@ -304,6 +361,11 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	keys, keysErr := ipsec.KeysFromChallenge(challengeOf(res))
 
 	toUE(res)
+
+	ended := false
+	if res.IsSuccess() {
+		ended = p.registered(req, res, r)
+	}
 
 	if p.sas == nil {
 		return proxy.Relay
@@ -340,12 +402,145 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		res.Header.Add("Security-Server", s.String())
 		addOptionTag(res, "Supported", secAgree)
 	case res.IsSuccess() && r.in != nil:
-		p.sas.registered(r.in.s, registrationOutcome(req, res))
+		o := registrationOutcome(req, res)
+		o.dereg = o.dereg && ended
+		p.sas.registered(r.in.s, o)
 	case r.in != nil && r.in.state == temporary:
 		p.sas.failed(r.in.s)
 	}
 
 	return proxy.Relay
+}
+
+func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) bool {
+	o := registrationOutcome(req, res)
+	impu := registeredIdentity(req)
+
+	existing, known := p.regs.get(r.impi, r.ue)
+
+	if o.dereg {
+		if known {
+			delete(existing.Sets, impu)
+
+			if len(existing.Sets) > 0 {
+				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
+				p.regs.save(existing)
+
+				p.log.Info("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
+
+				return false
+			}
+		}
+
+		if p.regs.remove(r.impi, r.ue) {
+			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
+		}
+
+		p.unsubscribeIfIdle(r.impi)
+
+		return true
+	}
+
+	if o.lifetime <= 0 {
+		return false
+	}
+
+	var associated []string
+
+	identities, _ := res.Header.Addresses("P-Associated-URI")
+	for _, a := range identities {
+		associated = append(associated, a.URI.String())
+	}
+
+	reg := db.PCSCFRegistration{
+		IMPI:         r.impi,
+		FlowToken:    r.token,
+		Transport:    string(req.Flow.Transport),
+		Protected:    r.in != nil,
+		UEAddress:    netip.AddrPortFrom(r.ue, req.Flow.Remote.Port()),
+		PCSCFAddress: r.local,
+		Sets:         map[string][]string{},
+		ServiceRoute: res.Header.Elements("Service-Route"),
+		ExpiresAt:    p.clock.Now().Add(o.lifetime),
+	}
+
+	if known {
+		reg.Contacts = existing.Contacts
+		reg.Sets = maps.Clone(existing.Sets)
+		reg.AssociatedURIs = existing.AssociatedURIs
+		reg.ExpiresAt = later(reg.ExpiresAt, existing.ExpiresAt)
+	}
+
+	requested, _ := req.Header.Contacts()
+	for _, c := range requested {
+		uri := c.URI.String()
+		reg.Contacts = slices.DeleteFunc(reg.Contacts, func(k string) bool { return k == uri })
+
+		if v, ok := c.Params.Get("expires"); !ok || v != "0" {
+			reg.Contacts = append(reg.Contacts, uri)
+		}
+	}
+
+	reg.Sets[impu] = associated
+	reg.AssociatedURIs = union(append(slices.Clone(reg.AssociatedURIs), associated...), reg.Sets)
+
+	p.regs.save(reg)
+
+	if len(associated) == 0 || p.cfg.Layer == nil {
+		return false
+	}
+
+	if !known {
+		p.subs.stop(r.impi)
+	}
+
+	if !p.subs.has(r.impi) {
+		p.subs.start(r.impi)
+	}
+
+	return false
+}
+
+func registeredIdentity(req *sip.Request) string {
+	to, err := req.Header.To()
+	if err != nil {
+		return ""
+	}
+
+	return to.URI.String()
+}
+
+func union(list []string, sets map[string][]string) []string {
+	var out []string
+
+	for _, a := range list {
+		if slices.Contains(out, a) {
+			continue
+		}
+
+		for _, set := range sets {
+			if slices.Contains(set, a) {
+				out = append(out, a)
+				break
+			}
+		}
+	}
+
+	return out
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+
+	return b
+}
+
+func (p *PCSCF) unsubscribeIfIdle(impi string) {
+	if _, ok := p.regs.forIMPI(impi); !ok {
+		p.subs.stop(impi)
+	}
 }
 
 func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
@@ -595,11 +790,11 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
-func removeOptionTag(req *sip.Request, name, tag string) {
+func removeSecAgree(req *sip.Request, name string) {
 	var kept []string
 
 	for _, t := range req.Header.Elements(name) {
-		if !strings.EqualFold(t, tag) {
+		if !strings.EqualFold(t, secAgree) {
 			kept = append(kept, t)
 		}
 	}
@@ -609,6 +804,16 @@ func removeOptionTag(req *sip.Request, name, tag string) {
 	if len(kept) > 0 {
 		req.Header.Add(name, strings.Join(kept, ", "))
 	}
+}
+
+func addRequestOptionTag(req *sip.Request, name, tag string) {
+	for _, t := range req.Header.Elements(name) {
+		if strings.EqualFold(t, tag) {
+			return
+		}
+	}
+
+	req.Header.Add(name, tag)
 }
 
 func addOptionTag(res *sip.Response, name, tag string) {

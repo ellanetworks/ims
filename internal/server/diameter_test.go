@@ -308,7 +308,7 @@ func TestDiameterOnePeerServesCxAndRx(t *testing.T) {
 	}
 }
 
-func TestDiameterRequestsAreRefused(t *testing.T) {
+func TestDiameterRequestsAreAnswered(t *testing.T) {
 	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
 	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
 
@@ -322,8 +322,8 @@ func TestDiameterRequestsAreRefused(t *testing.T) {
 		PrivateIdentity: "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
 		Reason:          cx.DeregistrationReason{Code: cx.ReasonPermanentTermination},
 	})
-	if r := hss.send(t, rtr, err); r.Code != diameter.ResultUnableToComply || r.Experimental {
-		t.Errorf("RTA result = %s, want DIAMETER_UNABLE_TO_COMPLY", r)
+	if r := hss.send(t, rtr, err); r.Code != diameter.ResultSuccess || r.Experimental {
+		t.Errorf("RTA result for an unregistered user = %s, want DIAMETER_SUCCESS", r)
 	}
 
 	rar, err := rx.NewReAuthRequest(pcrf.envelope(), rx.ReAuthRequest{

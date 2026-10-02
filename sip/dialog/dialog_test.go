@@ -1,8 +1,10 @@
 package dialog_test
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -734,5 +736,174 @@ func TestStrictRouteStripsMethodAndHeaders(t *testing.T) {
 	bye, _ := d.NewRequest("BYE")
 	if got := bye.URI.String(); got != "sip:10.0.0.4;maddr=10.0.0.5" {
 		t.Errorf("Request-URI %s", got)
+	}
+}
+
+func roundTrip(t *testing.T, d *dialog.Dialog) *dialog.Dialog {
+	t.Helper()
+
+	b, err := json.Marshal(d.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var s dialog.Snapshot
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := dialog.Restore(s)
+	if err != nil {
+		t.Fatalf("Restore: %v\n%s", err, b)
+	}
+
+	return r
+}
+
+func TestSnapshotRoundTrip(t *testing.T) {
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 180, "")
+	_ = res.Header.SetToTag("bt")
+
+	uas, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notifier, err := dialog.NewFromNotify(parse[*sip.Request](t, subscribe), notify(t, "ps", "active"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, d := range map[string]*dialog.Dialog{"UAS": uas, "UAC": newUAC(t), "NOTIFY": notifier} {
+		r := roundTrip(t, d)
+
+		if r.ID() != d.ID() || r.State() != d.State() {
+			t.Errorf("%s: ID %+v, state %v, want %+v, %v", name, r.ID(), r.State(), d.ID(), d.State())
+		}
+
+		if r.RemoteTarget().String() != d.RemoteTarget().String() || !slices.Equal(r.RouteSet(), d.RouteSet()) {
+			t.Errorf("%s: target %s, route set %v, want %s, %v", name, r.RemoteTarget(), r.RouteSet(), d.RemoteTarget(), d.RouteSet())
+		}
+
+		ls, lok := r.LocalSeq()
+		rs, rok := r.RemoteSeq()
+		wantLS, wantLOK := d.LocalSeq()
+		wantRS, wantROK := d.RemoteSeq()
+
+		if ls != wantLS || lok != wantLOK || rs != wantRS || rok != wantROK {
+			t.Errorf("%s: CSeqs %d/%v %d/%v, want %d/%v %d/%v", name, ls, lok, rs, rok, wantLS, wantLOK, wantRS, wantROK)
+		}
+
+		if r.Snapshot().Origin != d.Snapshot().Origin {
+			t.Errorf("%s: origin %v, want %v", name, r.Snapshot().Origin, d.Snapshot().Origin)
+		}
+	}
+
+	ok := sip.NewResponse(req, 200, "")
+	_ = ok.Header.SetToTag("bt")
+
+	restored := roundTrip(t, uas)
+	restored.PrepareResponse(req, ok)
+
+	if restored.State() != dialog.Confirmed {
+		t.Errorf("200 to the INVITE after restore: state %v", restored.State())
+	}
+}
+
+func TestRestoredLocalSeq(t *testing.T) {
+	d := roundTrip(t, newUAC(t))
+
+	n, err := d.NewRequest("NOTIFY")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cseq, _ := n.Header.CSeq(); cseq.Seq != 11 {
+		t.Errorf("NOTIFY CSeq %d, want 11", cseq.Seq)
+	}
+
+	if got := n.Header.Get("To"); got != "<sip:bob@b.example>;tag=bt" {
+		t.Errorf("To = %s", got)
+	}
+
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag("bt")
+
+	uas, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := roundTrip(t, uas)
+	if _, ok := r.LocalSeq(); ok {
+		t.Fatal("restored UAS has a local CSeq")
+	}
+
+	bye, err := r.NewRequest("BYE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cseq, _ := bye.Header.CSeq(); cseq.Seq == 0 || cseq.Seq >= 1<<31 {
+		t.Errorf("first local CSeq %d not in [1, 2^31)", cseq.Seq)
+	}
+}
+
+func TestRestoredRemoteSeq(t *testing.T) {
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag("bt")
+
+	uas, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := uas.ReceiveRequest(inDialog(t, "INFO", 20, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	d := roundTrip(t, uas)
+
+	err = d.ReceiveRequest(inDialog(t, "INFO", 19, ""))
+
+	var serr *sip.StatusError
+	if !errors.As(err, &serr) || serr.StatusCode != 500 {
+		t.Errorf("lower CSeq after restore: err = %v, want 500", err)
+	}
+
+	if err := d.ReceiveRequest(inDialog(t, "INFO", 21, "")); err != nil {
+		t.Errorf("higher CSeq after restore: %v", err)
+	}
+}
+
+func TestRestoreErrors(t *testing.T) {
+	good := newUAC(t).Snapshot()
+
+	for name, mutate := range map[string]func(*dialog.Snapshot){
+		"bad target":    func(s *dialog.Snapshot) { s.Target = "not a uri" },
+		"bad local":     func(s *dialog.Snapshot) { s.Local = "<sip:" },
+		"bad route":     func(s *dialog.Snapshot) { s.Route = []string{"<sip:"} },
+		"no remote tag": func(s *dialog.Snapshot) { s.Remote = "<sip:bob@b.example>" },
+		"ID mismatch":   func(s *dialog.Snapshot) { s.ID.LocalTag = "zz" },
+		"invalid state": func(s *dialog.Snapshot) { s.State = 7 },
+		"no local tag":  func(s *dialog.Snapshot) { s.Local = "<sip:alice@a.example>" },
+	} {
+		s := good
+		s.Route = slices.Clone(good.Route)
+		mutate(&s)
+
+		if _, err := dialog.Restore(s); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+
+	s := good
+	s.Remote = "<sip:bob@b.example>"
+
+	if _, err := dialog.Restore(s); !errors.Is(err, dialog.ErrNoDialog) {
+		t.Errorf("missing tag: err = %v, want ErrNoDialog", err)
 	}
 }

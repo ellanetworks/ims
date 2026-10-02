@@ -69,7 +69,9 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
-	node, err := newDiameterNode(cfg.Diameter, s.Logger)
+	rtr := newRTRHandler(s.Logger)
+
+	node, err := newDiameterNode(cfg.Diameter, rtr, s.Logger)
 	if err != nil {
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -77,7 +79,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, database, s.IPsec, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, node, rtr, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()

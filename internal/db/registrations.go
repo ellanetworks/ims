@@ -1,6 +1,7 @@
 package db
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -37,11 +38,21 @@ type Contact struct {
 	RxSessionID string
 }
 
+type BindingEvent string
+
+const (
+	BindingRegistered BindingEvent = "registered"
+	BindingRefreshed  BindingEvent = "refreshed"
+)
+
 type Binding struct {
-	Contact   Contact
-	CallID    string
-	CSeq      int64
-	ExpiresAt time.Time
+	Contact      Contact
+	CallID       string
+	CSeq         int64
+	ExpiresAt    time.Time
+	Event        BindingEvent
+	IMPU         string
+	RegisteredAt time.Time
 }
 
 const (
@@ -95,14 +106,17 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration
 	for i := range r.Bindings {
 		b := &r.Bindings[i]
 		b.Contact.IMPI = r.IMPI
+		b.Event = cmp.Or(b.Event, BindingRegistered)
 
 		if b.Contact, err = saveContact(ctx, tx, b.Contact); err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at) VALUES (?, ?, ?, ?, ?)`,
-			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano()); err != nil {
+			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at, event, impu, registered_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano(), b.Event, b.IMPU,
+			b.RegisteredAt.UTC().UnixNano()); err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 	}
@@ -222,8 +236,9 @@ func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Regist
 
 func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT DISTINCT r.impi FROM bindings b JOIN registrations r ON r.id = b.registration_id
-		WHERE b.expires_at <= ? ORDER BY r.impi`, now.UTC().UnixNano())
+		`SELECT r.impi FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.expires_at <= ?
+		UNION SELECT impi FROM reg_subscriptions WHERE expires_at <= ?
+		ORDER BY 1`, now.UTC().UnixNano(), now.UTC().UnixNano())
 	if err != nil {
 		return nil, fmt.Errorf("list expired private identities: %w", err)
 	}
@@ -246,6 +261,22 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	}
 
 	return impis, nil
+}
+
+func (d *DB) NextExpiry(ctx context.Context) (time.Time, bool, error) {
+	var next sql.NullInt64
+
+	if err := d.conn.QueryRowContext(ctx,
+		`SELECT MIN(t) FROM (SELECT MIN(expires_at) AS t FROM bindings UNION ALL SELECT MIN(expires_at) FROM reg_subscriptions)`,
+	).Scan(&next); err != nil {
+		return time.Time{}, false, fmt.Errorf("next expiry: %w", err)
+	}
+
+	if !next.Valid {
+		return time.Time{}, false, nil
+	}
+
+	return time.Unix(0, next.Int64).UTC(), true, nil
 }
 
 func (d *DB) SetContactRxSession(ctx context.Context, contactID int64, sessionID string) error {
@@ -344,7 +375,7 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration, index m
 
 func loadBindings(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
-		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, `+contactColumns+`
+		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, b.event, b.impu, b.registered_at, `+contactColumns+`
 		FROM bindings b JOIN contacts c ON c.id = b.contact_id
 		WHERE b.registration_id IN (`+placeholders(len(ids))+`) ORDER BY b.registration_id, c.id`, ids...)
 	if err != nil {
@@ -355,15 +386,17 @@ func loadBindings(ctx context.Context, q querier, regs []Registration, index map
 
 	for rows.Next() {
 		var (
-			registrationID, expiresAt int64
-			b                         Binding
+			registrationID, expiresAt, registeredAt int64
+			b                                       Binding
 		)
 
-		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt); err != nil {
+		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt, &b.Event, &b.IMPU,
+			&registeredAt); err != nil {
 			return err
 		}
 
 		b.ExpiresAt = time.Unix(0, expiresAt).UTC()
+		b.RegisteredAt = time.Unix(0, registeredAt).UTC()
 
 		r := &regs[index[registrationID]]
 		r.Bindings = append(r.Bindings, b)

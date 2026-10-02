@@ -39,19 +39,22 @@ type Config struct {
 
 	Port uint16
 
+	LocalPorts []uint16
+
 	TimerC time.Duration
 
 	Clock transaction.Clock
 }
 
 type Proxy struct {
-	layer     *transaction.Layer
-	log       *slog.Logger
-	supported []string
-	port      uint16
-	timerC    time.Duration
-	clock     transaction.Clock
-	secret    string
+	layer      *transaction.Layer
+	log        *slog.Logger
+	supported  []string
+	port       uint16
+	localPorts []uint16
+	timerC     time.Duration
+	clock      transaction.Clock
+	secret     string
 
 	mu       sync.Mutex
 	contexts map[*transaction.ServerTransaction]*responseContext
@@ -68,6 +71,9 @@ type RecordRoute struct {
 	Params sip.Params
 
 	Upstream netip.AddrPort
+
+	Double         bool
+	UpstreamParams sip.Params
 }
 
 type Options struct {
@@ -99,14 +105,15 @@ func New(cfg Config) *Proxy {
 	}
 
 	p := &Proxy{
-		layer:     cfg.Layer,
-		log:       cfg.Logger,
-		supported: cfg.Supported,
-		port:      cfg.Port,
-		timerC:    cfg.TimerC,
-		clock:     cfg.Clock,
-		secret:    rand.Text(),
-		contexts:  make(map[*transaction.ServerTransaction]*responseContext),
+		layer:      cfg.Layer,
+		log:        cfg.Logger,
+		supported:  cfg.Supported,
+		port:       cfg.Port,
+		localPorts: slices.Clone(cfg.LocalPorts),
+		timerC:     cfg.TimerC,
+		clock:      cfg.Clock,
+		secret:     rand.Text(),
+		contexts:   make(map[*transaction.ServerTransaction]*responseContext),
 	}
 
 	if p.log == nil {
@@ -168,7 +175,7 @@ func (p *Proxy) IsLocal(u sip.URI) bool {
 		port = sip.DefaultPort
 	}
 
-	return (p.port == 0 || port == p.port) && p.layer.IsLocal(u.Host, port)
+	return (p.port == 0 || port == p.port || slices.Contains(p.localPorts, port)) && p.layer.IsLocal(u.Host, port)
 }
 
 func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
@@ -413,16 +420,16 @@ func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
 
 	down := to.sentBy()
 
-	if up == down && in.Transport == to.Flow.Transport {
-		r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, false))
+	if up == down && in.Transport == to.Flow.Transport && !rr.Double {
+		r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, false, nil))
 		return
 	}
 
-	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true))
-	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true))
+	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true, rr.UpstreamParams))
+	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true, nil))
 }
 
-func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool) sip.Field {
+func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool, extra sip.Params) sip.Field {
 	u := sip.URI{Scheme: "sip", User: rr.User, Host: sip.FormatHost(addr.Addr()), Port: addr.Port()}
 
 	if tr != sip.UDP {
@@ -436,6 +443,10 @@ func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, do
 	}
 
 	for _, p := range rr.Params {
+		u.Params.Set(p.Name, p.Value)
+	}
+
+	for _, p := range extra {
 		u.Params.Set(p.Name, p.Value)
 	}
 

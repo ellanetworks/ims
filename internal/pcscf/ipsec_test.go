@@ -51,6 +51,7 @@ func (l *lateHandler) responseFlow(req *sip.Request, res *sip.Response) (sip.Flo
 type ipsecScene struct {
 	t      *testing.T
 	icscf  *siptest.Socket
+	scscf  *siptest.Socket
 	pcscf  netip.AddrPort
 	ps     netip.AddrPort
 	pcs    [2]netip.AddrPort
@@ -96,6 +97,7 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 
 	s := &ipsecScene{t: t, store: store, late: &lateHandler{}}
 	s.icscf = siptest.NewSocket(t, netip.AddrPortFrom(addr, 0))
+	s.scscf = siptest.NewSocket(t, netip.AddrPortFrom(addr, 0))
 
 	layer, fallback := siptest.NewLayer(t, transaction.Config{
 		Handler: s.late, Logger: slog.New(slog.DiscardHandler), Filter: s.late.filter, ResponseFlow: s.late.responseFlow,
@@ -107,10 +109,16 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	s.pcs = [2]netip.AddrPort{siptest.ListenLayer(t, layer, addr), siptest.ListenLayer(t, layer, addr)}
 
 	s.p = New(Config{
-		Layer:     layer,
-		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: s.pcscf.Port(), Supported: []string{secAgree}}),
-		Port:      s.pcscf.Port(),
-		ICSCFPort: s.icscf.Addr().Port(),
+		Layer:      layer,
+		Proxy:      s.newProxy(),
+		Port:       s.pcscf.Port(),
+		ICSCFPort:  s.icscf.Addr().Port(),
+		HomeDomain: homeDomain,
+		SCSCF: SCSCF{
+			Name:      sip.URI{Scheme: "sip", Host: "scscf." + homeDomain},
+			Listeners: []netip.AddrPort{s.scscf.Addr()},
+		},
+		Registrations: store,
 		IPsec: IPsec{
 			Kernel:      kernel,
 			Store:       store,
@@ -132,6 +140,13 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	s.late.h.Store(s.p)
 
 	return s
+}
+
+func (s *ipsecScene) newProxy() *proxy.Proxy {
+	return proxy.New(proxy.Config{
+		Layer: s.layer, Port: s.pcscf.Port(), Supported: []string{secAgree},
+		LocalPorts: []uint16{s.ps.Port(), s.pcs[0].Port(), s.pcs[1].Port()},
+	})
 }
 
 type ue struct {
@@ -205,10 +220,12 @@ func (s *ipsecScene) forwarded() (*sip.Request, sip.Flow, string) {
 		}
 	}
 
-	for _, name := range []string{"Require", "Proxy-Require"} {
-		if req.Header.Has(name) {
-			s.t.Errorf("%s: %s forwarded to the I-CSCF", name, req.Header.Get(name))
-		}
+	if v := req.Header.Get("Require"); v != "path" {
+		s.t.Errorf("Require: %s forwarded to the I-CSCF, want path only", v)
+	}
+
+	if req.Header.Has("Proxy-Require") {
+		s.t.Errorf("Proxy-Require: %s forwarded to the I-CSCF", req.Header.Get("Proxy-Require"))
 	}
 
 	a, err := sip.ParseAuth(req.Header.Get("Authorization"))
@@ -881,7 +898,7 @@ func restart(t *testing.T, s *ipsecScene) {
 	s.p.Close()
 
 	cfg := s.p.cfg
-	cfg.Proxy = proxy.New(proxy.Config{Layer: s.layer, Port: s.pcscf.Port(), Supported: []string{secAgree}})
+	cfg.Proxy = s.newProxy()
 
 	p := New(cfg)
 	t.Cleanup(p.Close)

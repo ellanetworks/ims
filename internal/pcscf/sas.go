@@ -454,6 +454,55 @@ func (a *associations) registered(s *saSet, o outcome) {
 	a.extend(s, expires)
 }
 
+func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	rank := func(s *saSet) int {
+		switch {
+		case s.state == established && s.inUse:
+			return 3
+		case s.state == old:
+			return 2
+		default:
+			return 1
+		}
+	}
+
+	var best *saSet
+
+	for s := range a.sets {
+		if s.impi != impi || s.set.Remote.Addr != ue.Unmap() || s.state == temporary {
+			continue
+		}
+
+		if best == nil || rank(s) > rank(best) || rank(s) == rank(best) && s.expires.After(best.expires) {
+			best = s
+		}
+	}
+
+	if best == nil {
+		return sip.Flow{}, false
+	}
+
+	return sip.Flow{
+		Transport: tr,
+		Local:     netip.AddrPortFrom(best.set.Local.Addr, best.set.Local.PortC),
+		Remote:    netip.AddrPortFrom(best.set.Remote.Addr, best.set.Remote.PortS),
+	}, true
+}
+
+func (a *associations) deregistered(impi string, ue netip.Addr) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for s := range a.sets {
+		if s.impi == impi && s.set.Remote.Addr == ue.Unmap() {
+			a.shorten(s, a.cfg.Grace)
+		}
+	}
+}
+
 func (a *associations) failed(s *saSet) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

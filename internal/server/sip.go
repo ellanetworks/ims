@@ -64,17 +64,18 @@ type sipServer struct {
 	roles       *dispatcher
 	placeholder *placeholderHandler
 	registrar   *scscf.Registrar
+	rtr         *rtrHandler
 	pcscf       atomic.Pointer[pcscf.PCSCF]
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, database *db.DB, kernel pcscf.Kernel,
-	logger *slog.Logger,
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler, database *db.DB,
+	kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
-	s := &sipServer{roles: roles, placeholder: ph}
+	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr}
 
 	if kernel == nil {
 		x, err := openXFRM(cfg.SIP.Addresses)
@@ -163,16 +164,26 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 		HSS:        scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
 		Diameter:   node,
 		DB:         database,
+		Layer:      layer,
+		Listeners:  s.bound(roleSCSCF),
 		Logger:     logger,
 	})
+
+	if rtr != nil {
+		rtr.bind(s.registrar)
+	}
 
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
 			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
+			LocalPorts: []uint16{ipsecServer, ipsecClients[0], ipsecClients[1]},
 		}),
-		Port:      pcscfPort,
-		ICSCFPort: icscfPort,
+		Port:          pcscfPort,
+		ICSCFPort:     icscfPort,
+		HomeDomain:    cfg.IMS.HomeDomain,
+		SCSCF:         pcscf.SCSCF{Name: scscfName, Listeners: s.bound(roleSCSCF)},
+		Registrations: database,
 		IPsec: pcscf.IPsec{
 			Kernel:      kernel,
 			Store:       database,
@@ -210,7 +221,16 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, datab
 		Logger:   logger,
 	}))
 
-	roles.set(scscfPort, &scscfHandler{log: logger, layer: layer, trust: domain, registrar: s.registrar, fallback: ph})
+	roles.set(scscfPort, &scscfHandler{
+		log:       logger,
+		layer:     layer,
+		proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort}),
+		trust:     domain,
+		registrar: s.registrar,
+		fallback:  ph,
+	})
+
+	s.registrar.Start(ctx)
 
 	return s, nil
 }
@@ -249,6 +269,10 @@ func (s *sipServer) Listeners() []api.SIPEndpoint {
 }
 
 func (s *sipServer) Close() error {
+	if s.rtr != nil {
+		s.rtr.bind(nil)
+	}
+
 	if s.registrar != nil {
 		s.registrar.Close()
 	}
@@ -348,12 +372,14 @@ func (d *dispatcher) HandleTransactionError(tx *transaction.ServerTransaction, e
 }
 
 type registrar interface {
-	Register(ctx context.Context, req *sip.Request) *sip.Response
+	Register(ctx context.Context, req *sip.Request, respond func(*sip.Response))
+	Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response))
 }
 
 type scscfHandler struct {
 	log       *slog.Logger
 	layer     *transaction.Layer
+	proxy     *proxy.Proxy
 	trust     *trust.Domain
 	registrar registrar
 	fallback  transaction.Handler
@@ -372,19 +398,38 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 		return
 	}
 
-	if req.Method != "REGISTER" {
+	respond := func(res *sip.Response) {
+		if err := tx.Respond(res); err != nil {
+			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+	}
+
+	var handle func(ctx context.Context)
+
+	switch {
+	case req.Method == "REGISTER":
+		handle = func(ctx context.Context) { h.registrar.Register(ctx, req, respond) }
+	case req.Method == "SUBSCRIBE" && scscf.IsRegEvent(req):
+		if res := h.proxy.Check(req); res != nil {
+			respond(res)
+			return
+		}
+
+		out, removed, err := h.proxy.Preprocess(req)
+		if err != nil {
+			respond(sip.NewResponse(req, 400, "Bad Route"))
+			return
+		}
+
+		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, removed, respond) }
+	default:
 		h.fallback.HandleRequest(tx, req)
 		return
 	}
 
-	err := h.layer.Go(func(ctx context.Context) {
-		res := h.registrar.Register(ctx, req)
-		if err := tx.Respond(res); err != nil {
-			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
-		}
-	})
-	if err != nil {
-		h.log.Debug("dropped SIP REGISTER", slog.String("call-id", req.Header.CallID()), slog.Any("error", err))
+	if err := h.layer.Go(handle); err != nil {
+		h.log.Debug("dropped SIP request", slog.String("method", req.Method), slog.String("call-id", req.Header.CallID()),
+			slog.Any("error", err))
 	}
 }
 
