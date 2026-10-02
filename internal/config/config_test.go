@@ -259,6 +259,26 @@ func TestLoadOnePeerServesCxAndRx(t *testing.T) {
 	}
 }
 
+func TestLoadRxPeer(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if p, ok := cfg.Diameter.RxPeer(); !ok || p.ID != "pcrf" {
+		t.Fatalf("RxPeer = %+v, %v; want pcrf", p, ok)
+	}
+
+	cfg, err = Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+diameterIdentity+"  peers:\n"+hssPeer))
+	if err != nil {
+		t.Fatalf("Load without an rx peer: %v", err)
+	}
+
+	if p, ok := cfg.Diameter.RxPeer(); ok {
+		t.Fatalf("RxPeer = %+v, want none", p)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	valid := validDB + validAPI + validIMS + validSIP
 
@@ -359,7 +379,12 @@ func TestLoadInvalid(t *testing.T) {
 				strings.NewReplacer("id: hss", "id: hss2", "hss.ims", "hss2.ims").Replace(hssPeer),
 			"exactly one diameter peer must serve cx, found 2",
 		},
-		{"no rx peer", valid + diameterIdentity + "  peers:\n" + hssPeer, "at least one diameter peer must serve rx"},
+		{
+			"two rx peers",
+			valid + diameterIdentity + "  peers:\n" + hssPeer + pcrfPeer +
+				strings.NewReplacer("id: pcrf", "id: pcrf2", "pcrf.epc", "pcrf2.epc").Replace(pcrfPeer),
+			"at most one diameter peer may serve rx, found 2",
+		},
 		{
 			"duplicate peer id",
 			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "id: pcrf", "id: hss", 1),

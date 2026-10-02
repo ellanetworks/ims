@@ -39,15 +39,26 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 	update := testPCSCFRegistration()
 	update.ExpiresAt = testNow.Add(2 * time.Hour)
 	update.AssociatedURIs = update.AssociatedURIs[:1]
+	update.RxSessionID = "pcscf.ims;1;2"
+	update.RxClass = [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}
+	update.SignallingLost = true
 
 	got, err := d.SavePCSCFRegistration(ctx, update)
-	if err != nil || got.ID != want.ID {
-		t.Fatalf("SavePCSCFRegistration again = %+v, %v; want the same row", got, err)
+	if err != nil || got.ID != want.ID || got.RxSessionID != update.RxSessionID || !reflect.DeepEqual(got.RxClass, update.RxClass) ||
+		!got.SignallingLost {
+		t.Fatalf("SavePCSCFRegistration again = %+v, %v; want the same row with the Rx session", got, err)
 	}
 
 	regs, err := d.ListPCSCFRegistrations(ctx)
 	if err != nil || len(regs) != 1 || !reflect.DeepEqual(regs[0], got) {
 		t.Fatalf("ListPCSCFRegistrations = %+v, %v; want %+v", regs, err, got)
+	}
+
+	update.RxSessionID, update.RxClass, update.SignallingLost = "", nil, false
+
+	if got, err = d.SavePCSCFRegistration(ctx, update); err != nil || got.RxSessionID != "" || got.RxClass != nil ||
+		got.SignallingLost {
+		t.Fatalf("SavePCSCFRegistration cleared = %+v, %v; want no Rx session", got, err)
 	}
 
 	if err := d.DeletePCSCFRegistration(ctx, got.ID); err != nil {
@@ -74,8 +85,8 @@ func TestListPCSCFRegistrationsSkipsAndDeletesBadRows(t *testing.T) {
 		{"2001:db8::4", "2001:db8::10", "{not json"},
 	} {
 		if _, err := d.conn.ExecContext(ctx, `INSERT INTO pcscf_registrations (impi, flow_token, transport, protected,
-			ue_address, ue_port, pcscf_address, contacts, associated_uris, sets, service_route, expires_at)
-			VALUES (?, ?, 'UDP', 0, ?, 5060, ?, ?, '[]', '{}', '[]', 0)`,
+			ue_address, ue_port, pcscf_address, contacts, associated_uris, sets, service_route, expires_at, signalling_lost)
+			VALUES (?, ?, 'UDP', 0, ?, 5060, ?, ?, '[]', '{}', '[]', 0, 0)`,
 			testIMPI, "bad"+string(rune('0'+i)), row.ue, row.pcscf, []byte(row.contacts)); err != nil {
 			t.Fatalf("insert bad row %d: %v", i, err)
 		}

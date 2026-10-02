@@ -86,36 +86,20 @@ func TestRegistrationRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSaveRegistrationKeepsTheRxSession(t *testing.T) {
-	ctx := context.Background()
+func TestSaveRegistrationUpdatesTheContactPath(t *testing.T) {
 	d := openTestDB(t)
 
 	stale := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-	id := stale.Bindings[0].Contact.ID
-
-	if err := d.SetContactRxSession(ctx, id, "pcscf.ims;1;2"); err != nil {
-		t.Fatalf("SetContactRxSession: %v", err)
-	}
-
 	stale.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"
 
 	saved := mustSaveRegistration(t, d, stale)
 
-	c := saved.Bindings[0].Contact
-	if c.RxSessionID != "pcscf.ims;1;2" {
-		t.Fatalf("contact = %+v, want the P-CSCF's Rx session", c)
-	}
-
-	if c.Path != stale.Bindings[0].Contact.Path {
+	if c := saved.Bindings[0].Contact; c.Path != stale.Bindings[0].Contact.Path {
 		t.Fatalf("Path = %q, want the S-CSCF's update", c.Path)
 	}
 
 	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
 		t.Fatalf("registrations = %+v, want %+v", got, saved)
-	}
-
-	if err := d.SetContactRxSession(ctx, id+1, ""); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetContactRxSession unknown err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -224,34 +208,6 @@ func TestSaveRegistrationOfOtherIMPI(t *testing.T) {
 
 	if _, err := d.SaveRegistration(context.Background(), r); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SaveRegistration err = %v, want ErrNotFound", err)
-	}
-}
-
-func TestSetContactRxSession(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-
-	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-	id := r.Bindings[0].Contact.ID
-
-	if err := d.SetContactRxSession(ctx, id, "pcscf.ims;1;2"); err != nil {
-		t.Fatalf("SetContactRxSession: %v", err)
-	}
-
-	if got := listByIMPI(t, d)[0].Bindings[0].Contact.RxSessionID; got != "pcscf.ims;1;2" {
-		t.Fatalf("RxSessionID = %q", got)
-	}
-
-	if err := d.SetContactRxSession(ctx, id, ""); err != nil {
-		t.Fatalf("SetContactRxSession clear: %v", err)
-	}
-
-	if got := listByIMPI(t, d)[0].Bindings[0].Contact.RxSessionID; got != "" {
-		t.Fatalf("RxSessionID = %q, want cleared", got)
-	}
-
-	if err := d.SetContactRxSession(ctx, id+1, "x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetContactRxSession unknown err = %v, want ErrNotFound", err)
 	}
 }
 

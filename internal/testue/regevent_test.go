@@ -107,6 +107,40 @@ func (no *notifier) notify(state string, info regevent.Reginfo) *sip.Response {
 	return res
 }
 
+// notifyAndRefresh sends a NOTIFY that makes the UE refresh its subscription,
+// and returns the UE's response and its SUBSCRIBE. The UE sends both
+// concurrently, so they arrive in either order.
+func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {
+	no.n.t.Helper()
+
+	no.send(no.request(state, info))
+
+	var (
+		res *sip.Response
+		req *sip.Request
+		f   sip.Flow
+	)
+
+	for res == nil || req == nil {
+		r := no.n.ps.Recv()
+
+		switch m := r.Msg.(type) {
+		case *sip.Response:
+			res = m
+		case *sip.Request:
+			via, _ := m.Header.TopVia()
+			if no.n.seen[via.Branch()] {
+				continue
+			}
+
+			no.n.seen[via.Branch()] = true
+			req, f = m, r.Flow
+		}
+	}
+
+	return res, req, f
+}
+
 func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
 	no.n.t.Helper()
 
@@ -502,11 +536,12 @@ func TestSubscriptionTerminatedByTimeout(t *testing.T) {
 	no := n.registerSubscribing(u)
 	no.active()
 
-	if res := no.notify("terminated;reason=timeout", no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)); res.StatusCode != 200 {
+	res, req, _ := no.notifyAndRefresh("terminated;reason=timeout",
+		no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600))
+	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 
-	req, _ := n.recv(n.ps)
 	if to, _ := req.Header.To(); req.Method != "SUBSCRIBE" || to.Tag() != "" {
 		t.Fatalf("got\n%s\nwant a new SUBSCRIBE", req)
 	}
@@ -561,11 +596,12 @@ func TestReginfoVersions(t *testing.T) {
 
 	no.ver = 5
 
-	if res := no.notify("active;expires=600000", no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)); res.StatusCode != 200 {
+	res, req, f := no.notifyAndRefresh("active;expires=600000",
+		no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600))
+	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 
-	req, f := n.recv(n.ps)
 	if to, _ := req.Header.To(); req.Method != "SUBSCRIBE" || to.Tag() != no.toTag {
 		t.Fatalf("got\n%s\nwant a refresh for the full state after the version gap", req)
 	}

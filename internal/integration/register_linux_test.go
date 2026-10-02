@@ -20,6 +20,7 @@ import (
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/netnstest"
+	"github.com/ellanetworks/ims/internal/pcrftest"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/testue"
@@ -55,6 +56,7 @@ type scene struct {
 	ims  *netnstest.Netns
 	ue   *netnstest.Netns
 	hss  *hsstest.HSS
+	pcrf *pcrftest.PCRF
 	srv  *server.Server
 	xfrm *ipsec.XFRM
 	db   string
@@ -85,6 +87,8 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 		IMPUs: []cx.ProfileIdentity{{Identity: tempIMPU, Barred: true}, {Identity: msisdn}, {Identity: "tel:+15550001"}},
 	})
 
+	s.pcrf = pcrftest.New(t, pcrftest.Config{Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain})
+
 	s.srv = &server.Server{Config: config.Config{
 		DB:          config.DB{Path: s.db},
 		CallHistory: config.CallHistory{Retention: 24 * time.Hour},
@@ -101,6 +105,9 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 			Peers: []config.DiameterPeer{{
 				ID: "hss", Host: s.hss.Host(), Realm: domain, Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
 				Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+			}, {
+				ID: "pcrf", Host: s.pcrf.Host(), Realm: s.pcrf.Realm(), Address: s.pcrf.Addr().Addr(),
+				Port: int(s.pcrf.Addr().Port()), Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationRx},
 			}},
 		},
 	}, Logger: testLogger(t)}
@@ -116,6 +123,7 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 	t.Cleanup(func() { s.srv.Shutdown(context.Background()) })
 
 	s.hss.WaitConnected(t)
+	s.pcrf.WaitConnected(t)
 
 	var err error
 

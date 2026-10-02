@@ -167,6 +167,10 @@ type saSet struct {
 	removed bool
 
 	ownsSPIs bool
+
+	// keepFlows leaves the set's TCP connections open on removal, for the set
+	// that replaces it over the same ports.
+	keepFlows bool
 }
 
 type client struct {
@@ -769,8 +773,10 @@ func (u *UE) removeSet(s *saSet) error {
 		Remote:    netip.AddrPortFrom(s.set.Remote.Addr, s.set.Remote.PortC),
 	}
 
-	for _, f := range []sip.Flow{protectedFlow(s, sip.TCP), inbound} {
-		go u.layer.CloseFlow(f)
+	if !s.keepFlows {
+		for _, f := range []sip.Flow{protectedFlow(s, sip.TCP), inbound} {
+			go u.layer.CloseFlow(f)
+		}
 	}
 
 	return u.cfg.Kernel.Remove(s.set)

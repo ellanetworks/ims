@@ -66,17 +66,18 @@ type sipServer struct {
 	placeholder *placeholderHandler
 	registrar   *scscf.Registrar
 	rtr         *rtrHandler
+	rx          *rxHandler
 	pcscf       atomic.Pointer[pcscf.PCSCF]
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler, database *db.DB,
-	kernel pcscf.Kernel, logger *slog.Logger,
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler, rxh *rxHandler,
+	database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
-	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr}
+	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
 
 	if kernel == nil {
 		x, err := openXFRM(cfg.SIP.Addresses)
@@ -178,6 +179,14 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		rtr.bind(s.registrar)
 	}
 
+	var pcrf pcscf.Rx
+
+	if p, ok := cfg.Diameter.RxPeer(); ok {
+		pcrf = pcscf.Rx{Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}}
+	} else {
+		logger.Info("no diameter peer serves rx: the P-CSCF runs without Rx sessions")
+	}
+
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
@@ -196,15 +205,19 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
+		Rx:       pcrf,
 		Fallback: ph,
 		Logger:   logger,
 	})
 
 	if err := pc.Restore(ctx); err != nil {
-		return nil, errors.Join(fmt.Errorf("restore IPsec security associations: %w", err), s.Close())
+		pc.Close()
+		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), s.Close())
 	}
 
 	s.pcscf.Store(pc)
+
+	rxh.bind(pc)
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
 		roles.set(port, pc)
@@ -285,6 +298,10 @@ func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
 func (s *sipServer) Close() error {
 	if s.rtr != nil {
 		s.rtr.bind(nil)
+	}
+
+	if s.rx != nil {
+		s.rx.bind(nil)
 	}
 
 	if s.registrar != nil {

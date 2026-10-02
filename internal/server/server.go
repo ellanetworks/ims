@@ -70,8 +70,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	rtr := newRTRHandler(s.Logger)
+	pcrf, _ := cfg.Diameter.RxPeer()
+	rxh := newRxHandler(pcrf.ID, s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, rtr, s.Logger)
+	node, err := newDiameterNode(cfg.Diameter, rtr, rxh, s.Logger)
 	if err != nil {
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -79,7 +81,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, rtr, database, s.IPsec, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()

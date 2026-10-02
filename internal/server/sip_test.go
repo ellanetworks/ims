@@ -228,6 +228,11 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 
 	taken.Close()
 
+	// One address: with port 0 the other roles take an ephemeral port on the
+	// first address and the same number on the next, which another process
+	// may hold on 127.0.0.1.
+	srv.Config.SIP.Addresses = []netip.Addr{loopback}
+
 	if err := srv.Start(ctx); err != nil {
 		t.Fatalf("Start after the port is free: %v", err)
 	}
