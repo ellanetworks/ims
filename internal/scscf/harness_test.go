@@ -331,11 +331,8 @@ type fakePCSCF struct {
 }
 
 func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	protected := takeIntegrityProtected(req)
-
 	p.wg.Go(func() {
-		res := p.reg.Register(context.Background(), Request{SIP: req, Protected: protected, UEAddress: req.Flow.Remote.Addr()})
-		_ = tx.Respond(res)
+		_ = tx.Respond(p.reg.Register(context.Background(), req))
 	})
 }
 
@@ -344,24 +341,6 @@ func (*fakePCSCF) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
 func (*fakePCSCF) HandleAck(*sip.Request) {}
 
 func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) {}
-
-func takeIntegrityProtected(req *sip.Request) bool {
-	v := req.Header.Get("Authorization")
-	if v == "" {
-		return false
-	}
-
-	a, err := sip.ParseAuth(v)
-	if err != nil {
-		return false
-	}
-
-	protected, _ := a.Params.Get("integrity-protected")
-	a.Params.Del("integrity-protected")
-	req.Header.Set("Authorization", a.String())
-
-	return sip.Unquote(protected) == "yes"
-}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -414,8 +393,7 @@ func newHarness(t *testing.T) *harness {
 
 	h.reg = New(Config{
 		HomeDomain: homeDomain,
-		Name:       scscfName,
-		Port:       sipPort,
+		Name:       sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
 		MinExpires: 60 * time.Second,
 		MaxExpires: 3600 * time.Second,
 		HSS:        HSS{ID: "hss", Host: hssHost, Realm: homeDomain},

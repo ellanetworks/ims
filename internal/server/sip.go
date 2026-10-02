@@ -3,21 +3,29 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/icscf"
+	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
 type SIP interface {
-	Listeners() []netip.AddrPort
+	Listeners() []api.SIPEndpoint
 	Close() error
 }
 
@@ -42,58 +50,260 @@ var knownMethods = map[string]bool{
 	"PUBLISH":   true,
 }
 
+const (
+	rolePCSCF = "pcscf"
+	roleICSCF = "icscf"
+	roleSCSCF = "scscf"
+)
+
 type sipServer struct {
-	layer     *transaction.Layer
-	handler   *placeholderHandler
-	listeners []netip.AddrPort
+	layer       *transaction.Layer
+	roles       *dispatcher
+	placeholder *placeholderHandler
+	registrar   *scscf.Registrar
+	listeners   []api.SIPEndpoint
 }
 
-type registrar interface {
-	Register(ctx context.Context, req scscf.Request) *sip.Response
-}
-
-func startSIP(ctx context.Context, cfg config.Config, reg registrar, logger *slog.Logger) (*sipServer, error) {
-	h := newPlaceholderHandler(logger, cfg.SIPAliases())
-	h.registrar = reg
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, database *db.DB, logger *slog.Logger) (*sipServer, error) {
+	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
+	roles := newDispatcher(logger)
 
 	layer := transaction.New(transaction.Config{
-		Handler:   h,
+		Handler:   roles,
 		Logger:    logger,
 		Transport: transport.Config{MaxConnections: cfg.SIP.MaxConnections},
 		Aliases:   cfg.SIPAliases(),
 	})
 
-	h.layer = layer
-	s := &sipServer{layer: layer, handler: h}
+	ph.layer = layer
+	s := &sipServer{layer: layer, roles: roles, placeholder: ph}
 
-	for _, a := range cfg.SIP.Addresses {
-		bound, err := layer.Listen(ctx, netip.AddrPortFrom(a, uint16(cfg.SIP.Port)))
-		if err != nil {
-			return nil, errors.Join(err, s.Close())
-		}
-
-		s.listeners = append(s.listeners, bound)
-		h.addListener(bound)
+	pcscfPort, err := s.listen(ctx, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.Port)
+	if err != nil {
+		return nil, errors.Join(err, s.Close())
 	}
+
+	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
+	if err != nil {
+		return nil, errors.Join(err, s.Close())
+	}
+
+	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
+	if err != nil {
+		return nil, errors.Join(err, s.Close())
+	}
+
+	name := cfg.SCSCF.Name
+	if name == "" {
+		name = config.DefaultSCSCFName(cfg.IMS.HomeDomain, int(scscfPort))
+	}
+
+	scscfName, err := sip.ParseURI(name)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close())
+	}
+
+	hss := cfg.Diameter.CxPeer()
+	domain := trust.New(cfg.SIP.Addresses, cfg.IMS.TrustedNetworks)
+
+	s.registrar = scscf.New(scscf.Config{
+		HomeDomain: cfg.IMS.HomeDomain,
+		Name:       scscfName,
+		MinExpires: time.Duration(cfg.SCSCF.MinExpires) * time.Second,
+		MaxExpires: time.Duration(cfg.SCSCF.MaxExpires) * time.Second,
+		HSS:        scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
+		Diameter:   node,
+		DB:         database,
+		Logger:     logger,
+	})
+
+	roles.set(pcscfPort, pcscf.New(pcscf.Config{
+		Proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: pcscfPort}),
+		ICSCFPort: icscfPort,
+		Fallback:  ph,
+		Logger:    logger,
+	}))
+
+	roles.set(icscfPort, icscf.New(icscf.Config{
+		HomeDomain: cfg.IMS.HomeDomain,
+		Layer:      layer,
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
+		Port:       icscfPort,
+		Trust:      domain,
+		SCSCFs: []icscf.SCSCF{{
+			Name:         scscfName,
+			Capabilities: cfg.SCSCF.Capabilities,
+			Listeners:    s.bound(roleSCSCF),
+		}},
+		HSS:      icscf.HSS{ID: hss.ID, Realm: hss.Realm},
+		Diameter: node,
+		Logger:   logger,
+	}))
+
+	roles.set(scscfPort, &scscfHandler{log: logger, layer: layer, trust: domain, registrar: s.registrar, fallback: ph})
 
 	return s, nil
 }
 
-func (s *sipServer) Listeners() []netip.AddrPort {
+func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr, port int) (uint16, error) {
+	p := uint16(port)
+
+	for _, a := range addrs {
+		bound, err := s.layer.Listen(ctx, netip.AddrPortFrom(a, p))
+		if err != nil {
+			return 0, err
+		}
+
+		p = bound.Port()
+		s.listeners = append(s.listeners, api.SIPEndpoint{Role: role, Address: bound})
+		s.placeholder.addListener(bound)
+	}
+
+	return p, nil
+}
+
+func (s *sipServer) bound(role string) []netip.AddrPort {
+	var out []netip.AddrPort
+
+	for _, l := range s.listeners {
+		if l.Role == role {
+			out = append(out, l.Address)
+		}
+	}
+
+	return out
+}
+
+func (s *sipServer) Listeners() []api.SIPEndpoint {
 	return s.listeners
 }
 
 func (s *sipServer) Close() error {
+	if s.registrar != nil {
+		s.registrar.Close()
+	}
+
 	err := s.layer.Close()
-	s.handler.close()
+	s.placeholder.close()
 
 	return err
+}
+
+type dispatcher struct {
+	log *slog.Logger
+
+	mu    sync.RWMutex
+	roles map[uint16]transaction.Handler
+}
+
+func newDispatcher(logger *slog.Logger) *dispatcher {
+	return &dispatcher{log: logger, roles: make(map[uint16]transaction.Handler)}
+}
+
+func (d *dispatcher) set(port uint16, h transaction.Handler) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.roles[port] = h
+}
+
+func (d *dispatcher) role(f sip.Flow) transaction.Handler {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.roles[f.Local.Port()]
+}
+
+func (d *dispatcher) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	h := d.role(req.Flow)
+	if h == nil {
+		res := sip.NewResponse(req, 503, "")
+		res.Header.Set("Retry-After", "1")
+
+		if err := tx.Respond(res); err != nil {
+			d.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+
+		return
+	}
+
+	h.HandleRequest(tx, req)
+}
+
+func (d *dispatcher) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	if h := d.role(tx.Request().Flow); h != nil {
+		h.HandleCancel(tx, cancel)
+	}
+}
+
+func (d *dispatcher) HandleAck(ack *sip.Request) {
+	if h := d.role(ack.Flow); h != nil {
+		h.HandleAck(ack)
+	}
+}
+
+func (d *dispatcher) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+	if h := d.role(tx.Request().Flow); h != nil {
+		h.HandleTransactionError(tx, err)
+	}
+}
+
+type registrar interface {
+	Register(ctx context.Context, req *sip.Request) *sip.Response
+}
+
+type scscfHandler struct {
+	log       *slog.Logger
+	layer     *transaction.Layer
+	trust     *trust.Domain
+	registrar registrar
+	fallback  transaction.Handler
+}
+
+func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	if !h.trust.Trusted(req.Flow.Remote.Addr()) {
+		h.log.Info("S-CSCF request from outside the trust domain", slog.String("method", req.Method),
+			slog.String("source", req.Flow.Remote.String()))
+
+		res := sip.NewResponse(req, 403, "")
+		if err := tx.Respond(res); err != nil {
+			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+
+		return
+	}
+
+	if req.Method != "REGISTER" {
+		h.fallback.HandleRequest(tx, req)
+		return
+	}
+
+	err := h.layer.Go(func(ctx context.Context) {
+		res := h.registrar.Register(ctx, req)
+		if err := tx.Respond(res); err != nil {
+			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		}
+	})
+	if err != nil {
+		h.log.Debug("dropped SIP REGISTER", slog.String("call-id", req.Header.CallID()), slog.Any("error", err))
+	}
+}
+
+func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	h.fallback.HandleCancel(tx, cancel)
+}
+
+func (h *scscfHandler) HandleAck(ack *sip.Request) {
+	h.fallback.HandleAck(ack)
+}
+
+func (h *scscfHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+	h.fallback.HandleTransactionError(tx, err)
 }
 
 type placeholderHandler struct {
 	log           *slog.Logger
 	layer         *transaction.Layer
-	registrar     registrar
 	inviteTimeout time.Duration
 	aliases       map[string]bool
 
@@ -134,8 +344,6 @@ func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, re
 		h.respond(tx, sip.NewResponse(req, 480, ""))
 	case req.Method == "INVITE":
 		h.holdInvite(tx)
-	case req.Method == "REGISTER":
-		h.register(tx, req)
 	case knownMethods[req.Method]:
 		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)
@@ -232,36 +440,6 @@ func (h *placeholderHandler) release(tx *transaction.ServerTransaction) bool {
 	}
 
 	return ok
-}
-
-func (h *placeholderHandler) register(tx *transaction.ServerTransaction, req *sip.Request) {
-	err := h.layer.Go(func(ctx context.Context) {
-		res := h.registrar.Register(ctx, scscf.Request{SIP: req, UEAddress: req.Flow.Remote.Addr()})
-		if res.StatusCode == 401 {
-			removeAKAKeys(res)
-		}
-
-		h.respond(tx, res)
-	})
-	if err != nil {
-		h.log.Debug("dropped SIP REGISTER", slog.String("call-id", req.Header.CallID()), slog.Any("error", err))
-	}
-}
-
-func removeAKAKeys(res *sip.Response) {
-	values := res.Header.Values("WWW-Authenticate")
-	res.Header.Del("WWW-Authenticate")
-
-	for _, v := range values {
-		a, err := sip.ParseAuth(v)
-		if err != nil {
-			continue
-		}
-
-		a.Params.Del("ck")
-		a.Params.Del("ik")
-		res.Header.Add("WWW-Authenticate", a.String())
-	}
 }
 
 func (h *placeholderHandler) close() {

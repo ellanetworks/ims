@@ -37,6 +37,8 @@ type Config struct {
 
 	Supported []string
 
+	Port uint16
+
 	TimerC time.Duration
 
 	Clock transaction.Clock
@@ -46,6 +48,7 @@ type Proxy struct {
 	layer     *transaction.Layer
 	log       *slog.Logger
 	supported []string
+	port      uint16
 	timerC    time.Duration
 	clock     transaction.Clock
 	secret    string
@@ -79,6 +82,8 @@ type Reply struct {
 	Response *sip.Response
 
 	Err error
+
+	Responded bool
 }
 
 type Verdict int
@@ -97,6 +102,7 @@ func New(cfg Config) *Proxy {
 		layer:     cfg.Layer,
 		log:       cfg.Logger,
 		supported: cfg.Supported,
+		port:      cfg.Port,
 		timerC:    cfg.TimerC,
 		clock:     cfg.Clock,
 		secret:    rand.Text(),
@@ -153,7 +159,16 @@ func (p *Proxy) Check(req *sip.Request) *sip.Response {
 }
 
 func (p *Proxy) IsLocal(u sip.URI) bool {
-	return strings.EqualFold(u.Scheme, "sip") && !u.Params.Has("gr") && p.layer.IsLocal(u.Host, u.Port)
+	if !strings.EqualFold(u.Scheme, "sip") || u.Params.Has("gr") {
+		return false
+	}
+
+	port := u.Port
+	if port == 0 {
+		port = sip.DefaultPort
+	}
+
+	return (p.port == 0 || port == p.port) && p.layer.IsLocal(u.Host, port)
 }
 
 func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {

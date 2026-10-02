@@ -10,9 +10,14 @@ ims:
   mnc: "01"
 sip:
   addresses: [10.0.0.5]
-  port: 5060
   aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
-registrar:
+pcscf:
+  port: 5060
+icscf:
+  port: 5070
+scscf:
+  port: 5080
+  name: sip:scscf.ims.mnc001.mcc001.3gppnetwork.org:5080
   min_expires: 60
   max_expires: 3600
 diameter:

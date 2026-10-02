@@ -170,6 +170,10 @@ func New(cfg Config) *Layer {
 	return l
 }
 
+func (l *Layer) T1() time.Duration {
+	return l.t1
+}
+
 func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPort, error) {
 	bound, err := l.tr.Listen(ctx, local)
 	if err != nil {

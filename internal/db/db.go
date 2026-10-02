@@ -44,7 +44,7 @@ var migrations = []string{
 		uri TEXT NOT NULL,
 		params TEXT NOT NULL,
 		path TEXT,
-		ue_address TEXT NOT NULL,
+		ue_address TEXT,
 		ue_port_c INTEGER,
 		ue_port_s INTEGER,
 		pcscf_port_c INTEGER,
@@ -61,7 +61,8 @@ var migrations = []string{
 			AND (alg IS NULL) = (ue_port_c IS NULL) AND (alg IS NULL) = (ue_port_s IS NULL)
 			AND (alg IS NULL) = (pcscf_port_c IS NULL) AND (alg IS NULL) = (pcscf_port_s IS NULL)
 			AND (alg IS NULL) = (spi_uc IS NULL) AND (alg IS NULL) = (spi_us IS NULL)
-			AND (alg IS NULL) = (spi_pc IS NULL) AND (alg IS NULL) = (spi_ps IS NULL))
+			AND (alg IS NULL) = (spi_pc IS NULL) AND (alg IS NULL) = (spi_ps IS NULL)
+			AND (alg IS NULL OR ue_address IS NOT NULL))
 	);
 	CREATE TABLE bindings (
 		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,

@@ -47,6 +47,12 @@ type fakePeer struct {
 func newFakePeer(t *testing.T, host, realm string, apps ...config.Application) *fakePeer {
 	t.Helper()
 
+	return newFakePeerWithHandler(t, host, realm, diameter.NewMux(), apps...)
+}
+
+func newFakePeerWithHandler(t *testing.T, host, realm string, handler diameter.Handler, apps ...config.Application) *fakePeer {
+	t.Helper()
+
 	f := &fakePeer{host: host, realm: realm, apps: apps}
 
 	var lc net.ListenConfig
@@ -65,7 +71,7 @@ func newFakePeer(t *testing.T, host, realm string, apps ...config.Application) *
 			HostIPAddresses: []netip.Addr{loopback},
 			ProductName:     "fake",
 		},
-		Handler:           diameter.NewMux(),
+		Handler:           handler,
 		OnPeerStateChange: f.peerStateChanged,
 		Logger:            slog.New(slog.DiscardHandler),
 	})

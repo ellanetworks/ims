@@ -113,6 +113,19 @@ func TestPlainSIPContact(t *testing.T) {
 	}
 }
 
+func TestContactWithoutUEAddress(t *testing.T) {
+	d := openTestDB(t)
+
+	r := testRegistration(testIMPI, "15551230001")
+	r.Bindings[0].Contact.UEAddress = netip.Addr{}
+	r.Bindings[0].Contact.IPsec = nil
+	mustSaveRegistration(t, d, r)
+
+	if got := listByIMPI(t, d)[0].Bindings[0].Contact.UEAddress; got.IsValid() {
+		t.Fatalf("UE address = %s, want none", got)
+	}
+}
+
 func TestContactRejectsPartialSAs(t *testing.T) {
 	d := openTestDB(t)
 	r := testRegistration(testIMPI, "15551230001")
@@ -134,6 +147,74 @@ func TestContactRejectsUnknownAlgorithm(t *testing.T) {
 
 	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
 		t.Fatal("SaveRegistration with an unknown algorithm succeeded")
+	}
+}
+
+func TestContactRejectsSAsWithoutUEAddress(t *testing.T) {
+	d := openTestDB(t)
+
+	r := testRegistration(testIMPI, "15551230001")
+	r.Bindings[0].Contact.UEAddress = netip.Addr{}
+
+	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
+		t.Fatal("SaveRegistration accepted SAs without a UE address")
+	}
+}
+
+func TestSaveRegistrationKeepsPCSCFColumns(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	stale := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	id := stale.Bindings[0].Contact.ID
+
+	addr := netip.MustParseAddr("2001:db8::2")
+	if err := d.SetContactFlow(ctx, id, addr, testSAs(8192)); err != nil {
+		t.Fatalf("SetContactFlow: %v", err)
+	}
+
+	if err := d.SetContactRxSession(ctx, id, "pcscf.ims;1;2"); err != nil {
+		t.Fatalf("SetContactRxSession: %v", err)
+	}
+
+	stale.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"
+
+	saved := mustSaveRegistration(t, d, stale)
+
+	c := saved.Bindings[0].Contact
+	if c.UEAddress != addr || !reflect.DeepEqual(c.IPsec, testSAs(8192)) || c.RxSessionID != "pcscf.ims;1;2" {
+		t.Fatalf("contact = %+v, want the P-CSCF's flow and Rx session", c)
+	}
+
+	if c.Path != stale.Bindings[0].Contact.Path {
+		t.Fatalf("Path = %q, want the S-CSCF's update", c.Path)
+	}
+
+	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
+		t.Fatalf("registrations = %+v, want %+v", got, saved)
+	}
+}
+
+func TestSetContactFlow(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	id := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001")).Bindings[0].Contact.ID
+
+	if err := d.SetContactFlow(ctx, id, netip.Addr{}, nil); err != nil {
+		t.Fatalf("SetContactFlow clear: %v", err)
+	}
+
+	if c := listByIMPI(t, d)[0].Bindings[0].Contact; c.UEAddress.IsValid() || c.IPsec != nil {
+		t.Fatalf("contact = %+v, want no flow", c)
+	}
+
+	if err := d.SetContactFlow(ctx, id, netip.Addr{}, testSAs(1)); err == nil {
+		t.Fatal("SetContactFlow accepted SAs without a UE address")
+	}
+
+	if err := d.SetContactFlow(ctx, id+1, netip.Addr{}, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetContactFlow unknown err = %v, want ErrNotFound", err)
 	}
 }
 

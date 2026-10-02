@@ -28,12 +28,12 @@ func startServer(t *testing.T) *Server {
 	return srv
 }
 
-func sipListener(t *testing.T, srv *Server, a netip.Addr) netip.AddrPort {
+func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.AddrPort {
 	t.Helper()
 
 	for _, l := range srv.sip.Listeners() {
-		if l.Addr() == a {
-			return l
+		if l.Role == role && l.Address.Addr() == a {
+			return l.Address
 		}
 	}
 
@@ -65,7 +65,7 @@ func TestSIPPlaceholder(t *testing.T) {
 	for _, addr := range []netip.Addr{loopback, loopback6} {
 		for _, tr := range []sip.Transport{sip.UDP, sip.TCP} {
 			t.Run(addr.String()+"/"+string(tr), func(t *testing.T) {
-				pcscf := sipListener(t, srv, addr)
+				pcscf := sipListener(t, srv, rolePCSCF, addr)
 				ue := siptest.NewSocket(t, netip.AddrPortFrom(addr, 0))
 				self := "sip:" + imsRealm + ":" + strconv.Itoa(int(pcscf.Port()))
 
@@ -94,10 +94,7 @@ func TestSIPPlaceholder(t *testing.T) {
 					register.Header.Set("To", "<sip:001010000000001@"+imsRealm+">")
 					ue.Send(tr, pcscf, register)
 
-					res := wantResponse(t, ue, 500, "REGISTER")
-					if !res.Header.Has("Retry-After") {
-						t.Fatal("500 without Retry-After")
-					}
+					wantResponse(t, ue, 480, "REGISTER")
 				})
 
 				t.Run("SUBSCRIBE", func(t *testing.T) {
@@ -168,9 +165,14 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	listeners := srv.sip.Listeners()
-	if len(listeners) != 2 {
-		t.Fatalf("listeners = %v, want one per address", listeners)
+	var listeners []netip.AddrPort
+
+	for _, l := range srv.sip.Listeners() {
+		listeners = append(listeners, l.Address)
+	}
+
+	if len(listeners) != 6 {
+		t.Fatalf("listeners = %v, want one per role and address", listeners)
 	}
 
 	srv.Shutdown(ctx)
@@ -199,7 +201,7 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 	taken := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	cfg := testConfig(t)
-	cfg.SIP.Port = int(taken.Addr().Port())
+	cfg.PCSCF.Port = int(taken.Addr().Port())
 	cfg.SIP.Addresses = []netip.Addr{loopback6, loopback}
 
 	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
@@ -277,18 +279,5 @@ func TestSIPPlaceholderIsSelf(t *testing.T) {
 		if got := h.isSelf(u); got != tt.want {
 			t.Errorf("isSelf(%s) = %t, want %t", tt.uri, got, tt.want)
 		}
-	}
-}
-
-func TestRemoveAKAKeys(t *testing.T) {
-	res := sip.NewResponse(siptest.NewRequest("REGISTER", "sip:"+imsRealm, sip.UDP, netip.MustParseAddrPort("127.0.0.1:5060")), 401, "")
-	res.Header.Add("WWW-Authenticate", `Digest realm="`+imsRealm+`", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth", `+
-		`ck="d53c02758b376066fad0af7daa6df765", ik="e1763cf28cc2e584588800193137ec92"`)
-
-	removeAKAKeys(res)
-
-	want := `Digest realm="` + imsRealm + `", nonce="bm9uY2U=", algorithm=AKAv1-MD5, qop="auth"`
-	if got := res.Header.Get("WWW-Authenticate"); got != want {
-		t.Fatalf("WWW-Authenticate = %q, want %q", got, want)
 	}
 }

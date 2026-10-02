@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
-	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +28,6 @@ type registerRequest struct {
 	callID    string
 	cseq      uint32
 	path      string
-	ueAddress netip.Addr
 }
 
 type contactRequest struct {
@@ -51,7 +49,7 @@ func (rr *registerRequest) deregister() bool {
 	return true
 }
 
-func (r *Registrar) register(ctx context.Context, req Request) *sip.Response {
+func (r *Registrar) register(ctx context.Context, req *sip.Request) *sip.Response {
 	rr, res := r.parse(req)
 	if res != nil {
 		return res
@@ -59,7 +57,7 @@ func (r *Registrar) register(ctx context.Context, req Request) *sip.Response {
 
 	for _, c := range rr.contacts {
 		if c.expires != 0 && c.expires < r.cfg.MinExpires {
-			res := sip.NewResponse(req.SIP, 423, "")
+			res := sip.NewResponse(req, 423, "")
 			res.Header.Add("Min-Expires", strconv.Itoa(int(r.cfg.MinExpires/time.Second)))
 
 			return res
@@ -68,12 +66,12 @@ func (r *Registrar) register(ctx context.Context, req Request) *sip.Response {
 
 	locked, err := r.lockForRegister(ctx, rr.impi)
 	if err != nil {
-		return retryLater(req.SIP)
+		return retryLater(req)
 	}
 
 	if !locked {
 		r.log.Debug("REGISTER while another one is being handled", slog.String("impi", rr.impi))
-		return retryLater(req.SIP)
+		return retryLater(req)
 	}
 
 	defer r.unlock(rr.impi)
@@ -89,9 +87,7 @@ func (r *Registrar) register(ctx context.Context, req Request) *sip.Response {
 	return r.refresh(ctx, rr)
 }
 
-func (r *Registrar) parse(in Request) (*registerRequest, *sip.Response) {
-	req := in.SIP
-
+func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	to, err := req.Header.To()
 	if err != nil || !to.URI.IsSIP() {
 		return nil, sip.NewResponse(req, 400, "Bad To")
@@ -119,14 +115,12 @@ func (r *Registrar) parse(in Request) (*registerRequest, *sip.Response) {
 	}
 
 	rr := &registerRequest{
-		req:       req,
-		protected: in.Protected,
-		impu:      receivedIdentity(to.URI),
-		impuKey:   identityKey(to.URI),
-		callID:    req.Header.CallID(),
-		cseq:      cseq.Seq,
-		path:      strings.Join(req.Header.Values("Path"), ", "),
-		ueAddress: in.UEAddress.Unmap(),
+		req:     req,
+		impu:    receivedIdentity(to.URI),
+		impuKey: identityKey(to.URI),
+		callID:  req.Header.CallID(),
+		cseq:    cseq.Seq,
+		path:    strings.Join(req.Header.Values("Path"), ", "),
 	}
 
 	star := false
@@ -164,6 +158,7 @@ func (r *Registrar) parse(in Request) (*registerRequest, *sip.Response) {
 
 	if rr.creds != nil {
 		rr.impi = rr.creds.username
+		rr.protected = strings.EqualFold(rr.creds.integrityProtected, integrityProtectedYes)
 	} else {
 		rr.impi = privateIdentity(to.URI)
 	}
@@ -446,7 +441,6 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 
 		contact.Params = params.String()
 		contact.Path = rr.path
-		contact.UEAddress = rr.ueAddress
 
 		bindings = append(bindings, db.Binding{
 			Contact:   contact,
@@ -562,7 +556,7 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 	if !rr.deregister() {
 		for _, c := range rr.contacts {
 			if i := bindingIndex(reg.Bindings, c.addr.URI); i >= 0 {
-				res.Header.Add("Service-Route", serviceRoute(r.cfg.Name, r.cfg.Port, reg.Bindings[i].Contact.ID))
+				res.Header.Add("Service-Route", serviceRoute(r.cfg.Name, reg.Bindings[i].Contact.ID))
 				break
 			}
 		}

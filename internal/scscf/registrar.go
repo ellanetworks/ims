@@ -2,9 +2,7 @@ package scscf
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -26,12 +24,6 @@ const (
 
 	maxResyncs = 2
 )
-
-type Request struct {
-	SIP       *sip.Request
-	Protected bool
-	UEAddress netip.Addr
-}
 
 type Diameter interface {
 	Identity() diameter.Identity
@@ -60,8 +52,7 @@ func (systemClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 
 type Config struct {
 	HomeDomain string
-	Name       string
-	Port       int
+	Name       sip.URI
 	MinExpires time.Duration
 	MaxExpires time.Duration
 
@@ -119,7 +110,7 @@ func New(cfg Config) *Registrar {
 		cfg:        cfg,
 		log:        cfg.Logger,
 		clock:      cfg.Clock,
-		serverName: "sip:" + cfg.Name + ":" + strconv.Itoa(cfg.Port),
+		serverName: cfg.Name.String(),
 		ctx:        ctx,
 		cancel:     cancel,
 		busy:       make(map[string]*hold),
@@ -133,9 +124,9 @@ func New(cfg Config) *Registrar {
 	return r
 }
 
-func (r *Registrar) Register(ctx context.Context, req Request) *sip.Response {
+func (r *Registrar) Register(ctx context.Context, req *sip.Request) *sip.Response {
 	if !r.start() {
-		return retryLater(req.SIP)
+		return retryLater(req)
 	}
 
 	defer r.wg.Done()
@@ -368,6 +359,10 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) {
 	}
 }
 
-func serviceRoute(name string, port int, contactID int64) string {
-	return fmt.Sprintf("<sip:orig-%d@%s:%d;lr>", contactID, name, port)
+func serviceRoute(name sip.URI, contactID int64) string {
+	u := name.Clone()
+	u.User = "orig-" + strconv.FormatInt(contactID, 10)
+	u.Params.Set("lr", "")
+
+	return "<" + u.String() + ">"
 }
