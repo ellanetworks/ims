@@ -8,6 +8,10 @@ IP Multimedia Subsystem for private cellular networks.
 
 ## Key Features
 
+- Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
+- SIM-based phone authentication with your existing HSS (IMS-AKA over Cx;  works with Ella Core)
+- IPsec between phones and the IMS
+- Embedded database (SQLite)
 - HTTP API
 
 ## How-to Guides
