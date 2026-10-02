@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/config"
 )
 
 func (e *e2e) aar() (string, rx.AARequest) {
@@ -164,10 +167,11 @@ func TestRxAbortSession(t *testing.T) {
 		return len(regs) == 1 && regs[0].SignallingLost && regs[0].RxSessionID == ""
 	})
 
-	asr, err = rx.NewAbortSessionRequest(e.rxEnvelope(id), rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
-	if r := e.hss.send(t, asr, err); r.Code != diameter.ResultUnknownSessionID {
-		t.Fatalf("ASA result for the ended session = %s, want DIAMETER_UNKNOWN_SESSION_ID", r)
-	}
+	// Unknown once its STA is received.
+	eventually(t, "an ASR for the ended session to get DIAMETER_UNKNOWN_SESSION_ID", func() bool {
+		asr, err := rx.NewAbortSessionRequest(e.rxEnvelope(id), rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+		return e.hss.send(t, asr, err).Code == diameter.ResultUnknownSessionID
+	})
 
 	e.protectedRegister("600", digestAuth("", false))
 
@@ -180,4 +184,29 @@ func TestRxAbortSession(t *testing.T) {
 		regs := e.pcscfRegistrations()
 		return len(regs) == 1 && !regs[0].SignallingLost && regs[0].RxSessionID == again
 	})
+}
+
+func TestRxRequestsOnlyFromTheRxPeer(t *testing.T) {
+	// The HSS advertises Rx too, but is configured for Cx only.
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx, config.ApplicationRx)
+	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
+
+	cfg := testConfig(t)
+	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.Diameter.Peers[0].Applications = []config.Application{config.ApplicationCx}
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss", "pcrf")
+
+	asr, err := rx.NewAbortSessionRequest(hss.envelope(), rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	if _, err := hss.node.Do(ctx, "ims", asr); !errors.Is(err, diameter.ErrApplicationUnsupported) {
+		t.Fatalf("ASR from the HSS: err = %v, want Rx not negotiated with it", err)
+	}
 }

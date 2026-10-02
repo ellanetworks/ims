@@ -213,6 +213,10 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 	t.Cleanup(release)
 
 	req, f := s.register(nil)
+
+	// No AAR before the registration completes (TS 29.213 Annex B.1).
+	pcrf.none()
+
 	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
 
 	// The 200 reaches the UE while the AAR is unanswered.
@@ -480,9 +484,10 @@ func TestRxSTROnUEDeregistration(t *testing.T) {
 	s.reregister(0)
 	pcrf.wantSTR(id, rx.TerminationLogout)
 
-	if _, ok := s.p.rx.lookup(id); ok {
-		t.Fatal("session kept after its STR")
-	}
+	eventually(t, "the session to be forgotten after its STA", func() bool {
+		_, ok := s.p.rx.lookup(id)
+		return !ok
+	})
 }
 
 func TestRxSTROnNetworkDeregistration(t *testing.T) {
@@ -715,6 +720,11 @@ func TestRxAbortSession(t *testing.T) {
 	terminate()
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 
+	eventually(t, "the session to be forgotten after its STA", func() bool {
+		_, ok := s.p.rx.lookup(id)
+		return !ok
+	})
+
 	if _, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
 		t.Fatal("AbortSession accepted the ended session")
 	}
@@ -785,7 +795,8 @@ func TestRxSessionsReestablishedAfterRestart(t *testing.T) {
 }
 
 func TestRxSessionPendingAtShutdownEndedAfterRestart(t *testing.T) {
-	s, pcrf := newRxScene(t, 0)
+	// The shutdown waits for the held AAR up to the timeout, then cancels it.
+	s, pcrf := newRxScene(t, 200*time.Millisecond)
 	release := pcrf.holdAA()
 	t.Cleanup(release)
 
@@ -932,6 +943,92 @@ func TestRxClassSurvivesRestart(t *testing.T) {
 
 	if got := <-strs; !reflect.DeepEqual(got, class) {
 		t.Fatalf("STR Class after the restart = %q, want %q", got, class)
+	}
+}
+
+func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
+	s, pcrf := newRxScene(t, time.Second)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	release := make(chan struct{})
+	result := make(chan error, 1)
+
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		<-release
+
+		result <- ctx.Err()
+
+		return succeed(req)
+	})
+
+	s.reregister(0)
+	pcrf.wantSTR(id, rx.TerminationLogout)
+
+	closed := make(chan struct{})
+
+	go func() {
+		s.p.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close returned with the STR in flight")
+	case <-time.After(quiet):
+	}
+
+	close(release)
+
+	if err := <-result; err != nil {
+		t.Fatalf("STR context = %v, want it alive until answered", err)
+	}
+
+	<-closed
+}
+
+func TestSourceIndexFollowsTheRecords(t *testing.T) {
+	rs := newRegistrations(nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+
+	a := netip.AddrPortFrom(ueAddr, 5060)
+	b := netip.AddrPortFrom(ueAddr, 5070)
+	r := db.PCSCFRegistration{
+		IMPI: testIMPI, FlowToken: "t", UEAddress: a, PCSCFAddress: loopback, ExpiresAt: testEpoch.Add(time.Hour),
+	}
+
+	rs.save(r)
+
+	if k, ok := rs.sourceKey(a); !ok || k != (regKey{testIMPI, ueAddr}) {
+		t.Fatalf("sourceKey(%s) = %v, %v", a, k, ok)
+	}
+
+	r.UEAddress = b
+	rs.save(r)
+
+	if _, ok := rs.sourceKey(a); ok {
+		t.Fatal("the old port still indexed after the record moved")
+	}
+
+	if _, ok := rs.sourceKey(b); !ok {
+		t.Fatal("the new port not indexed")
+	}
+
+	r.Protected = true
+	rs.save(r)
+
+	if _, ok := rs.sourceKey(b); ok {
+		t.Fatal("a protected record indexed by its source")
+	}
+
+	r.Protected = false
+	rs.save(r)
+	rs.remove(testIMPI, ueAddr)
+
+	if _, ok := rs.sourceKey(b); ok || len(rs.bySource) != 0 {
+		t.Fatalf("index = %v after the removal", rs.bySource)
 	}
 }
 

@@ -84,13 +84,38 @@ func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
 	return &rxClient{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, sessions: make(map[string]*rxSession)}
 }
 
+// close lets the requests in flight finish, for at most the Rx timeout: an STR
+// for a record already deleted is not retried after a restart. It then
+// cancels the rest.
 func (c *rxClient) close() {
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
 
+	done := make(chan struct{})
+
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(c.cfg.Timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+
 	c.cancel()
-	c.wg.Wait()
+	<-done
+}
+
+func (c *rxClient) closing() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.closed
 }
 
 func (c *rxClient) spawn(f func()) bool {
@@ -323,7 +348,7 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 
 	// Shutting down: the record keeps the session, which the PCRF may hold,
 	// and which is ended after the restart.
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || p.rx.closing() {
 		return
 	}
 
@@ -479,12 +504,10 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 	k := regKey{privateIdentity(req), req.Flow.Remote.Addr().Unmap()}
 
 	if req.Method != "REGISTER" {
-		reg, ok := p.ueRegistration(req)
-		if !ok {
+		var ok bool
+		if k, ok = p.ueKey(req); !ok {
 			return
 		}
-
-		k = regKey{reg.IMPI, reg.UEAddress.Addr()}
 	}
 
 	if p.regs.restoreSignalling(k) {

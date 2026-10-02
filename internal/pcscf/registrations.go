@@ -64,22 +64,26 @@ type registrations struct {
 	closed  bool
 	byKey   map[regKey]*db.PCSCFRegistration
 	byToken map[string]*db.PCSCFRegistration
-	timers  map[regKey]transaction.Timer
-	retired map[string]retired
-	pending map[regKey]retired
+	// bySource indexes the unprotected records by the UE's address and port,
+	// which several IMPIs can share.
+	bySource map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}
+	timers   map[regKey]transaction.Timer
+	retired  map[string]retired
+	pending  map[regKey]retired
 }
 
 func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger) *registrations {
 	return &registrations{
-		store:   store,
-		log:     logger,
-		clock:   clock,
-		grace:   grace,
-		byKey:   make(map[regKey]*db.PCSCFRegistration),
-		byToken: make(map[string]*db.PCSCFRegistration),
-		timers:  make(map[regKey]transaction.Timer),
-		retired: make(map[string]retired),
-		pending: make(map[regKey]retired),
+		store:    store,
+		log:      logger,
+		clock:    clock,
+		grace:    grace,
+		byKey:    make(map[regKey]*db.PCSCFRegistration),
+		byToken:  make(map[string]*db.PCSCFRegistration),
+		bySource: make(map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}),
+		timers:   make(map[regKey]transaction.Timer),
+		retired:  make(map[string]retired),
+		pending:  make(map[regKey]retired),
 	}
 }
 
@@ -142,15 +146,40 @@ func (rs *registrations) add(r *db.PCSCFRegistration) {
 	var was bool
 	if old, ok := rs.byKey[k]; ok {
 		was = old.SignallingLost
+		rs.unindex(old)
 	}
 
 	rs.countLost(was, r.SignallingLost)
+	rs.index(r)
 
 	delete(rs.pending, k)
 	rs.byKey[k] = r
 	rs.byToken[r.FlowToken] = r
 	delete(rs.retired, r.FlowToken)
 	rs.armLocked(k, r.ExpiresAt)
+}
+
+func (rs *registrations) index(r *db.PCSCFRegistration) {
+	if r.Protected {
+		return
+	}
+
+	m, ok := rs.bySource[r.UEAddress]
+	if !ok {
+		m = make(map[*db.PCSCFRegistration]struct{})
+		rs.bySource[r.UEAddress] = m
+	}
+
+	m[r] = struct{}{}
+}
+
+func (rs *registrations) unindex(r *db.PCSCFRegistration) {
+	m := rs.bySource[r.UEAddress]
+	delete(m, r)
+
+	if len(m) == 0 {
+		delete(rs.bySource, r.UEAddress)
+	}
 }
 
 func (rs *registrations) countLost(was, is bool) {
@@ -308,6 +337,7 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 
 	delete(rs.byKey, k)
 	delete(rs.byToken, r.FlowToken)
+	rs.unindex(r)
 	rs.countLost(r.SignallingLost, false)
 
 	if t, ok := rs.timers[k]; ok {
@@ -355,7 +385,9 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 		}
 
 		rs.countLost(r.SignallingLost, c.SignallingLost)
+		rs.unindex(r)
 		*r = c
+		rs.index(r)
 		rs.storeLocked(r)
 	}
 
@@ -449,16 +481,36 @@ func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, b
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
-	now := rs.clock.Now()
-
-	for _, r := range rs.byKey {
-		if !r.Protected && r.UEAddress == src && r.ExpiresAt.After(now) {
-			return clone(r), true
-		}
+	if r := rs.fromSourceLocked(src); r != nil {
+		return clone(r), true
 	}
 
 	return db.PCSCFRegistration{}, false
+}
+
+// sourceKey is fromSource without the copy.
+func (rs *registrations) sourceKey(src netip.AddrPort) (regKey, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if r := rs.fromSourceLocked(src); r != nil {
+		return regKey{r.IMPI, r.UEAddress.Addr()}, true
+	}
+
+	return regKey{}, false
+}
+
+func (rs *registrations) fromSourceLocked(src netip.AddrPort) *db.PCSCFRegistration {
+	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
+	now := rs.clock.Now()
+
+	for r := range rs.bySource[src] {
+		if r.ExpiresAt.After(now) {
+			return r
+		}
+	}
+
+	return nil
 }
 
 func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
