@@ -207,3 +207,27 @@ func FuzzAuth(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSecurityMechanism(f *testing.F) {
+	for _, s := range []string{
+		"ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;port-c=6301;port-s=6300;alg=hmac-md5-96;ealg=null",
+		"ipsec-3gpp ; q=0.1 ;alg=hmac-sha-1-96",
+		"sdes-srtp;mediasec",
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		m, err := sip.ParseSecurityMechanism(s)
+		if err != nil {
+			return
+		}
+
+		out := m.String()
+
+		again, err := sip.ParseSecurityMechanism(out)
+		if err != nil || again.String() != out || !again.Equal(m) {
+			t.Fatalf("%q serializes to %q, which does not round-trip: %v", s, out, err)
+		}
+	})
+}
