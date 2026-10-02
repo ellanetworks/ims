@@ -99,6 +99,20 @@ func testRegisterThroughTheRoles(t *testing.T, secAgree bool) {
 
 	ue.Send(sip.UDP, pcscf, register)
 
+	if !secAgree {
+		if res := wantResponse(t, ue, 421, "REGISTER"); res.Header.Get("Require") != "sec-agree" {
+			t.Fatalf("Require = %q, want sec-agree", res.Header.Get("Require"))
+		}
+
+		select {
+		case uar := <-uars:
+			t.Fatalf("UAR %+v for a REGISTER without IPsec", uar)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		return
+	}
+
 	uar := next(t, uars)
 	if uar.PrivateIdentity != impi || uar.PublicIdentity != impu || uar.VisitedNetwork != imsRealm ||
 		uar.AuthorizationType != cx.AuthorizationRegistration {

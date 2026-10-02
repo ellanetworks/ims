@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -14,7 +15,6 @@ type testSet struct {
 	f1, f1Star, f2, f5, f3, f4, f5Star string
 }
 
-// TS 35.207 §4 to §6.
 var implementorsSets = []testSet{
 	{1, "465b5ce8b199b49faa5f0a2ee238a6bc", "23553cbe9637a89d218ae64dae47bf35", "ff9bb4d0b607", "b9b9", "cdc202d5123e20f62b6d676ac72cb318", "cd63cb71954a9f4e48a5994e37a02baf", "4a9ffac354dfafb3", "01cfaf9ec4e871e9", "a54211d5e3ba50bf", "aa689c648370", "b40ba9a3c58b2a05bbf0d987b21bf8cb", "f769bcd751044604127672711c6d3441", "451e8beca43b"},
 	{2, "0396eb317b6d1c36f19c1c84cd6ffd16", "c00d603103dcee52c4478119494202e8", "fd8eef40df7d", "af17", "ff53bade17df5d4e793073ce9d7579fa", "53c15671c60a4b731c55b4a441c0bde2", "5df5b31807e258b0", "a8c016e51ef4a343", "d3a628ed988620f0", "c47783995f72", "58c433ff7a7082acd424220f2b67c556", "21a8c1f929702adb3e738488b9f5c5da", "30f1197061c1"},
@@ -24,7 +24,6 @@ var implementorsSets = []testSet{
 	{6, "6c38a116ac280c454f59332ee35c8c4f", "ee6466bc96202c5a557abbeff8babf63", "414b98222181", "4464", "1ba00a1a7c6700ac8c3ff3e96ad08725", "3803ef5363b947c6aaa225e58fae3934", "078adfb488241a57", "80246b8d0186bcf1", "16c8233f05a0ac28", "45b0f69ab06c", "3f8c7587fe8e4b233af676aede30ba3b", "a7466cc1e6b2a1337d49d3b66e95d7b4", "1f53cd2b1113"},
 }
 
-// TS 35.208 §4.3.
 var conformanceSets = []testSet{
 	{1, "465b5ce8b199b49faa5f0a2ee238a6bc", "23553cbe9637a89d218ae64dae47bf35", "ff9bb4d0b607", "b9b9", "cdc202d5123e20f62b6d676ac72cb318", "cd63cb71954a9f4e48a5994e37a02baf", "4a9ffac354dfafb3", "01cfaf9ec4e871e9", "a54211d5e3ba50bf", "aa689c648370", "b40ba9a3c58b2a05bbf0d987b21bf8cb", "f769bcd751044604127672711c6d3441", "451e8beca43b"},
 	{2, "465b5ce8b199b49faa5f0a2ee238a6bc", "23553cbe9637a89d218ae64dae47bf35", "ff9bb4d0b607", "b9b9", "cdc202d5123e20f62b6d676ac72cb318", "cd63cb71954a9f4e48a5994e37a02baf", "4a9ffac354dfafb3", "01cfaf9ec4e871e9", "a54211d5e3ba50bf", "aa689c648370", "b40ba9a3c58b2a05bbf0d987b21bf8cb", "f769bcd751044604127672711c6d3441", "451e8beca43b"},
@@ -59,7 +58,6 @@ func unhex(t *testing.T, s string) []byte {
 	return b
 }
 
-// TS 35.207 §3: the kernel function is AES-128.
 func TestRijndael(t *testing.T) {
 	for _, tc := range []struct{ k, plain, cipher string }{
 		{"465b5ce8b199b49faa5f0a2ee238a6bc", "ee36f7cf037d37d3692f7f0399e7949a", "9e2980c59739da67b136355e3cede6a2"},
@@ -131,8 +129,10 @@ func testFunctions(t *testing.T, sets []testSet) {
 	}
 }
 
+var akaSets = append(slices.Clone(implementorsSets), conformanceSets...)
+
 func TestVectorAndRespond(t *testing.T) {
-	for _, ts := range conformanceSets {
+	for _, ts := range akaSets {
 		k, opc, rand, amf := unhex(t, ts.k), unhex(t, ts.opc), unhex(t, ts.rand), unhex(t, ts.amf)
 		sqn := sqnValue(unhex(t, ts.sqn))
 
@@ -178,7 +178,7 @@ func TestVectorAndRespond(t *testing.T) {
 }
 
 func TestAUTS(t *testing.T) {
-	for _, ts := range conformanceSets {
+	for _, ts := range akaSets {
 		k, opc, rand := unhex(t, ts.k), unhex(t, ts.opc), unhex(t, ts.rand)
 		sqnMS := sqnValue(unhex(t, ts.sqn))
 
@@ -208,22 +208,62 @@ func TestAUTS(t *testing.T) {
 	}
 }
 
+func TestAUTSKnownAnswers(t *testing.T) {
+	for i, want := range []string{
+		"ba853f3c123ccf44e93596e355c6",
+		"cd7ff630bebc1fb5eba74924b0e0",
+		"43aeaaddd33a9f8be774d095d08b",
+	} {
+		ts := implementorsSets[i]
+
+		auts, err := AUTS(unhex(t, ts.k), unhex(t, ts.opc), unhex(t, ts.rand), sqnValue(unhex(t, ts.sqn)))
+		if err != nil || hex.EncodeToString(auts) != want {
+			t.Errorf("set %d: AUTS = %x, %v, want %s", ts.n, auts, err, want)
+		}
+	}
+}
+
 func TestLengths(t *testing.T) {
-	k, opc := make([]byte, 16), make([]byte, 16)
+	k, opc, rand, amf := make([]byte, 16), make([]byte, 16), make([]byte, 16), []byte{0, 0}
+	c, _ := New(k, opc)
 
 	for name, err := range map[string]error{
-		"short K":    func() error { _, err := New(k[:15], opc); return err }(),
-		"short OP":   func() error { _, err := OPc(k, opc[:15]); return err }(),
-		"short RAND": func() error { _, err := GenerateVector(k, opc, make([]byte, 15), 1, []byte{0, 0}); return err }(),
-		"long AMF":   func() error { _, err := GenerateVector(k, opc, make([]byte, 16), 1, []byte{0, 0, 0}); return err }(),
-		"SQN":        func() error { _, err := GenerateVector(k, opc, make([]byte, 16), MaxSQN+1, []byte{0, 0}); return err }(),
-		"AUTN":       func() error { _, err := Respond(k, opc, make([]byte, 16), make([]byte, 15)); return err }(),
-		"AUTS":       func() error { _, err := Resync(k, opc, make([]byte, 16), make([]byte, 13)); return err }(),
-		"SQN_MS":     func() error { _, err := AUTS(k, opc, make([]byte, 16), MaxSQN+1); return err }(),
+		"short K":         func() error { _, err := New(k[:15], opc); return err }(),
+		"short OPc":       func() error { _, err := New(k, opc[:15]); return err }(),
+		"short OP":        func() error { _, err := OPc(k, opc[:15]); return err }(),
+		"short RAND":      func() error { _, err := GenerateVector(k, opc, rand[:15], 1, amf); return err }(),
+		"long AMF":        func() error { _, err := GenerateVector(k, opc, rand, 1, []byte{0, 0, 0}); return err }(),
+		"short AMF":       func() error { _, err := GenerateVector(k, opc, rand, 1, amf[:1]); return err }(),
+		"AUTN":            func() error { _, err := Respond(k, opc, rand, make([]byte, 15)); return err }(),
+		"RAND to Respond": func() error { _, err := Respond(k, opc, rand[:15], make([]byte, AUTNLen)); return err }(),
+		"AUTS":            func() error { _, err := Resync(k, opc, rand, make([]byte, 13)); return err }(),
+		"RAND to Resync":  func() error { _, err := Resync(k, opc, rand[:15], make([]byte, AUTSLen)); return err }(),
+		"RAND to AUTS":    func() error { _, err := AUTS(k, opc, rand[:15], 1); return err }(),
+		"SQN to F1":       func() error { _, err := c.F1(rand, make([]byte, 5), amf); return err }(),
+		"AMF to F1Star":   func() error { _, err := c.F1Star(rand, make([]byte, SQNLen), amf[:1]); return err }(),
+		"RAND to F2345":   func() error { _, _, _, _, err := c.F2345(rand[:15]); return err }(),
+		"RAND to F5Star":  func() error { _, err := c.F5Star(rand[:15]); return err }(),
 	} {
 		if !errors.Is(err, ErrLength) {
 			t.Errorf("%s: %v, want ErrLength", name, err)
 		}
+	}
+
+	if _, err := GenerateVector(k, opc, rand, MaxSQN+1, amf); !errors.Is(err, ErrSQN) {
+		t.Errorf("SQN above 48 bits: %v, want ErrSQN", err)
+	}
+
+	if _, err := AUTS(k, opc, rand, MaxSQN+1); !errors.Is(err, ErrSQN) {
+		t.Errorf("SQN_MS above 48 bits: %v, want ErrSQN", err)
+	}
+
+	v, err := GenerateVector(k, opc, rand, MaxSQN, amf)
+	if err != nil {
+		t.Fatalf("GenerateVector with SQN 2^48-1: %v", err)
+	}
+
+	if r, err := Respond(k, opc, rand, v.AUTN); err != nil || r.SQN != MaxSQN {
+		t.Fatalf("Respond = %+v, %v, want SQN 2^48-1", r, err)
 	}
 }
 

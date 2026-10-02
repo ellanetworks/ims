@@ -26,6 +26,7 @@ const (
 
 var (
 	ErrLength     = errors.New("milenage: wrong length")
+	ErrSQN        = errors.New("milenage: SQN above 48 bits")
 	ErrMACFailure = errors.New("milenage: MAC failure")
 )
 
@@ -76,7 +77,6 @@ func (c *Cipher) temp(rand []byte) [blockLen]byte {
 	return t
 }
 
-// out computes E_K(rot(in, r) ⊕ c) ⊕ OPc (TS 35.206 §4.1).
 func (c *Cipher) out(in [blockLen]byte, r int, cn byte) [blockLen]byte {
 	var x [blockLen]byte
 
@@ -156,7 +156,6 @@ func (c *Cipher) F1Star(rand, sqn, amf []byte) ([]byte, error) {
 	return o[MACLen:], nil
 }
 
-// F2345 returns RES, CK, IK and AK.
 func (c *Cipher) F2345(rand []byte) (res, ck, ik, ak []byte, err error) {
 	if err := checkRAND(rand); err != nil {
 		return nil, nil, nil, nil, err

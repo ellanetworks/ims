@@ -1,6 +1,3 @@
-// Package hsstest is a fake HSS for tests: a passive Diameter node answering
-// the Cx requests of the IMS from a table of subscribers, with Milenage
-// vectors.
 package hsstest
 
 import (
@@ -11,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,18 +22,14 @@ import (
 
 const imsPeer = "ims"
 
-// The AMF on the IMS path (ims_integration).
 var amf = []byte{0, 0}
 
 type Config struct {
 	Host  string
 	Realm string
 
-	// Address the HSS listens on, on a random port; loopback by default.
 	Address netip.Addr
 
-	// IMSHost and IMSRealm are the Origin-Host and Origin-Realm of the IMS,
-	// which connects to the HSS. IMSRealm defaults to Realm.
 	IMSHost  string
 	IMSRealm string
 
@@ -50,32 +44,46 @@ type Subscriber struct {
 	OPc []byte
 	SQN uint64
 
-	// IMPUs is the implicit registration set.
 	IMPUs []cx.ProfileIdentity
+
+	UnregisteredServices bool
 
 	ServerName string
 	State      State
+
+	AuthPending bool
+
+	ReassignPending bool
 }
 
-// State is the registration state of the IMPI's implicit set (TS 29.228
-// §6.1.2): a stored ServerName with NotRegistered is an authentication
-// pending.
 type State int
 
 const (
 	NotRegistered State = iota
 	Registered
+
 	Unregistered
 )
 
-func (s Subscriber) has(impu string) bool {
-	for _, p := range s.IMPUs {
-		if strings.EqualFold(p.Identity, impu) {
-			return true
-		}
+func (s State) String() string {
+	switch s {
+	case NotRegistered:
+		return "not registered"
+	case Registered:
+		return "registered"
+	case Unregistered:
+		return "unregistered"
 	}
 
-	return false
+	return fmt.Sprintf("State(%d)", int(s))
+}
+
+func (s Subscriber) has(impu string) bool {
+	return slices.ContainsFunc(s.IMPUs, func(p cx.ProfileIdentity) bool { return strings.EqualFold(p.Identity, impu) })
+}
+
+func (s Subscriber) allBarred() bool {
+	return !slices.ContainsFunc(s.IMPUs, func(p cx.ProfileIdentity) bool { return !p.Barred })
 }
 
 func (s Subscriber) clone() Subscriber {
@@ -86,7 +94,6 @@ func (s Subscriber) clone() Subscriber {
 	return s
 }
 
-// Request is one Cx request the HSS received; exactly one field is set.
 type Request struct {
 	UAR *cx.UserAuthorizationRequest
 	MAR *cx.MultimediaAuthRequest
@@ -118,6 +125,8 @@ type HSS struct {
 
 	mu          sync.Mutex
 	subscribers map[string]*Subscriber
+	order       []string
+	dropped     int
 }
 
 func New(t testing.TB, cfg Config) *HSS {
@@ -136,7 +145,7 @@ func New(t testing.TB, cfg Config) *HSS {
 	}
 
 	if cfg.Logger == nil {
-		cfg.Logger = slog.New(slog.DiscardHandler)
+		cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelWarn}))
 	}
 
 	h := &HSS{
@@ -194,6 +203,10 @@ func New(t testing.TB, cfg Config) *HSS {
 		defer cancel()
 
 		_ = node.Shutdown(ctx)
+
+		if n := h.Dropped(); n > 0 {
+			t.Errorf("hsstest: %d Cx requests dropped from the full request channel", n)
+		}
 	})
 
 	return h
@@ -211,7 +224,6 @@ func (h *HSS) Addr() netip.AddrPort {
 	return h.addr
 }
 
-// WaitConnected waits for the IMS to connect.
 func (h *HSS) WaitConnected(t testing.TB) {
 	t.Helper()
 
@@ -231,6 +243,11 @@ func (h *HSS) Add(s Subscriber) {
 	defer h.mu.Unlock()
 
 	c := s.clone()
+
+	if _, ok := h.subscribers[s.IMPI]; !ok {
+		h.order = append(h.order, s.IMPI)
+	}
+
 	h.subscribers[s.IMPI] = &c
 }
 
@@ -255,20 +272,25 @@ func (h *HSS) Update(impi string, f func(*Subscriber)) {
 	}
 }
 
-// Requests delivers the Cx requests in the order they arrived. Requests
-// beyond its buffer are dropped.
 func (h *HSS) Requests() <-chan Request {
 	return h.requests
 }
 
-func (h *HSS) record(r Request) {
+func (h *HSS) Dropped() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.dropped
+}
+
+func (h *HSS) recordLocked(r Request) {
 	select {
 	case h.requests <- r:
 	default:
+		h.dropped++
 	}
 }
 
-// Next waits for the next request.
 func (h *HSS) Next(t testing.TB) Request {
 	t.Helper()
 
@@ -282,7 +304,6 @@ func (h *HSS) Next(t testing.TB) Request {
 	return Request{}
 }
 
-// Drain discards the requests received so far.
 func (h *HSS) Drain() {
 	for {
 		select {
@@ -297,6 +318,10 @@ func experimental(req *diameter.Message, id diameter.Identity, code uint32) *dia
 	return cx.NewAnswer(req, id, tgpp.Experimental(code), 0)
 }
 
+func base(req *diameter.Message, id diameter.Identity, code uint32) *diameter.Message {
+	return cx.NewAnswer(req, id, tgpp.Result{Code: code}, 0)
+}
+
 func must(ans *diameter.Message, err error) *diameter.Message {
 	if err != nil {
 		panic(fmt.Sprintf("hsstest: build answer: %v", err))
@@ -305,11 +330,13 @@ func must(ans *diameter.Message, err error) *diameter.Message {
 	return ans
 }
 
-// lookup finds the subscriber, answering USER_UNKNOWN or
-// IDENTITIES_DONT_MATCH when it fails. Called with h.mu held.
+func (h *HSS) knownIMPU(impu string) bool {
+	return slices.ContainsFunc(h.order, func(impi string) bool { return h.subscribers[impi].has(impu) })
+}
+
 func (h *HSS) lookup(req *diameter.Message, id diameter.Identity, impi, impu string) (*Subscriber, *diameter.Message) {
 	s, ok := h.subscribers[impi]
-	if !ok {
+	if !ok || impu != "" && !h.knownIMPU(impu) {
 		return nil, experimental(req, id, tgpp.ResultErrorUserUnknown)
 	}
 
@@ -320,28 +347,35 @@ func (h *HSS) lookup(req *diameter.Message, id diameter.Identity, impi, impu str
 	return s, nil
 }
 
-// userAuthorization follows TS 29.228 §6.1.1.1.
 func (h *HSS) userAuthorization(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	uar, err := cx.ParseUserAuthorizationRequest(req)
 	if err != nil {
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.record(Request{UAR: &uar})
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	s, ans := h.lookup(req, c.LocalIdentity(), uar.PrivateIdentity, uar.PublicIdentity)
+	h.recordLocked(Request{UAR: &uar})
+
+	id := c.LocalIdentity()
+
+	s, ans := h.lookup(req, id, uar.PrivateIdentity, uar.PublicIdentity)
 	if ans != nil {
 		return ans
+	}
+
+	if s.allBarred() {
+		return base(req, id, diameter.ResultAuthorizationRejected)
 	}
 
 	var a cx.UserAuthorization
 
 	switch {
-	case uar.AuthorizationType == cx.AuthorizationDeregistration && s.State == NotRegistered:
-		return experimental(req, c.LocalIdentity(), tgpp.ResultErrorIdentityNotRegistered)
+	case uar.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:
+		s.ReassignPending = s.ServerName != ""
+	case uar.AuthorizationType == cx.AuthorizationDeregistration && s.State == NotRegistered && !s.AuthPending:
+		return experimental(req, id, tgpp.ResultErrorIdentityNotRegistered)
 	case uar.AuthorizationType == cx.AuthorizationDeregistration:
 		a.ServerName = s.ServerName
 	case s.ServerName != "":
@@ -350,32 +384,32 @@ func (h *HSS) userAuthorization(_ context.Context, c *diameter.Conn, req *diamet
 		a.Result = tgpp.Experimental(tgpp.ResultFirstRegistration)
 	}
 
-	return must(cx.NewUserAuthorizationAnswer(req, c.LocalIdentity(), a))
+	return must(cx.NewUserAuthorizationAnswer(req, id, a))
 }
 
-// multimediaAuth follows TS 29.228 §6.3.1 and, for resynchronisation, TS
-// 33.102 §6.3.5.
 func (h *HSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	mar, err := cx.ParseMultimediaAuthRequest(req)
 	if err != nil {
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.record(Request{MAR: &mar})
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	s, ans := h.lookup(req, c.LocalIdentity(), mar.PrivateIdentity, mar.PublicIdentity)
+	h.recordLocked(Request{MAR: &mar})
+
+	id := c.LocalIdentity()
+
+	s, ans := h.lookup(req, id, mar.PrivateIdentity, mar.PublicIdentity)
 	if ans != nil {
 		return ans
 	}
 
-	if mar.Scheme != cx.SchemeDigestAKAv1MD5 && mar.Scheme != cx.SchemeUnknown {
-		return experimental(req, c.LocalIdentity(), tgpp.ResultErrorAuthSchemeNotSupported)
+	if mar.Scheme != cx.SchemeDigestAKAv1MD5 {
+		return experimental(req, id, tgpp.ResultErrorAuthSchemeNotSupported)
 	}
 
-	if mar.Resync != nil {
+	if mar.Resync != nil && (s.ServerName == "" || s.ServerName == mar.ServerName) {
 		if sqn, err := milenage.Resync(s.K, s.OPc, mar.Resync.RAND, mar.Resync.AUTS); err == nil {
 			s.SQN = sqn
 		}
@@ -388,14 +422,16 @@ func (h *HSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diameter.
 
 	v, err := milenage.GenerateVector(s.K, s.OPc, r, s.SQN, amf)
 	if err != nil {
-		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+		return base(req, id, diameter.ResultUnableToComply)
 	}
 
-	if mar.ServerName != "" && s.State == NotRegistered {
-		s.ServerName = mar.ServerName
+	if mar.ServerName != s.ServerName {
+		s.ServerName, s.ReassignPending = mar.ServerName, false
 	}
 
-	return must(cx.NewMultimediaAuthAnswer(req, c.LocalIdentity(), cx.MultimediaAuth{
+	s.AuthPending = true
+
+	return must(cx.NewMultimediaAuthAnswer(req, id, cx.MultimediaAuth{
 		PublicIdentity: mar.PublicIdentity,
 		Items: []cx.AuthItem{{
 			ItemNumber: 1,
@@ -405,45 +441,71 @@ func (h *HSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diameter.
 	}))
 }
 
-// serverAssignment follows TS 29.228 §6.1.2.1.
 func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	sar, err := cx.ParseServerAssignmentRequest(req)
 	if err != nil {
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.record(Request{SAR: &sar})
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	impu := ""
-	if len(sar.PublicIdentities) > 0 {
-		impu = sar.PublicIdentities[0]
+	h.recordLocked(Request{SAR: &sar})
+
+	id := c.LocalIdentity()
+
+	for _, impu := range sar.PublicIdentities {
+		if _, ans := h.lookup(req, id, sar.PrivateIdentity, impu); ans != nil {
+			return ans
+		}
 	}
 
-	s, ans := h.lookup(req, c.LocalIdentity(), sar.PrivateIdentity, impu)
+	s, ans := h.lookup(req, id, sar.PrivateIdentity, "")
 	if ans != nil {
 		return ans
 	}
 
+	other := s.ServerName != "" && s.ServerName != sar.ServerName && !s.ReassignPending
 	userData := false
 
 	switch sar.Type {
-	case cx.AssignmentRegistration, cx.AssignmentReRegistration:
-		s.ServerName, s.State, userData = sar.ServerName, Registered, !sar.UserDataAlreadyAvailable
-	case cx.AssignmentUnregisteredUser:
-		s.ServerName, s.State, userData = sar.ServerName, Unregistered, true
+	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
+		if other {
+			return must(cx.NewServerAssignmentErrorAnswer(req, id, cx.ServerAssignmentError{
+				ResultError: cx.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorIdentityAlreadyRegistered)},
+				ServerName:  s.ServerName,
+			}))
+		}
+
+		s.ServerName, s.ReassignPending = sar.ServerName, false
+		s.State, userData = Registered, !sar.UserDataAlreadyAvailable
+
+		if sar.Type == cx.AssignmentUnregisteredUser {
+			s.State, userData = Unregistered, true
+		} else {
+			s.AuthPending = false
+		}
 	case cx.AssignmentNoAssignment:
+		if other {
+			return base(req, id, diameter.ResultUnableToComply)
+		}
+
 		userData = true
 	case cx.AssignmentTimeoutDeregistrationStoreServer, cx.AssignmentUserDeregistrationStoreServer:
-		s.State = Unregistered
+		if s.State == Registered {
+			s.State = Unregistered
+		}
 	case cx.AssignmentAuthenticationFailure, cx.AssignmentAuthenticationTimeout:
 		if s.State == NotRegistered {
 			s.ServerName = ""
 		}
+
+		s.AuthPending = false
+	case cx.AssignmentTimeoutDeregistration, cx.AssignmentUserDeregistration,
+		cx.AssignmentAdministrativeDeregistration, cx.AssignmentDeregistrationTooMuchData:
+		s.ServerName, s.State, s.AuthPending, s.ReassignPending = "", NotRegistered, false, false
 	default:
-		s.ServerName, s.State = "", NotRegistered
+		return experimental(req, id, tgpp.ResultErrorInAssignmentType)
 	}
 
 	a := cx.ServerAssignment{PrivateIdentity: s.IMPI}
@@ -454,7 +516,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		}
 	}
 
-	return must(cx.NewServerAssignmentAnswer(req, c.LocalIdentity(), a))
+	return must(cx.NewServerAssignmentAnswer(req, id, a))
 }
 
 func (s *Subscriber) subscription() cx.IMSSubscription {
@@ -465,46 +527,43 @@ func (s *Subscriber) subscription() cx.IMSSubscription {
 	}
 }
 
-// locationInfo follows TS 29.228 §6.1.4.1.
 func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	lir, err := cx.ParseLocationInfoRequest(req)
 	if err != nil {
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.record(Request{LIR: &lir})
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	var s *Subscriber
+	h.recordLocked(Request{LIR: &lir})
 
-	for _, sub := range h.subscribers {
-		if sub.has(lir.PublicIdentity) {
-			s = sub
-			break
-		}
+	id := c.LocalIdentity()
+
+	i := slices.IndexFunc(h.order, func(impi string) bool { return h.subscribers[impi].has(lir.PublicIdentity) })
+	if i < 0 {
+		return experimental(req, id, tgpp.ResultErrorUserUnknown)
 	}
+
+	s := h.subscribers[h.order[i]]
 
 	switch {
-	case s == nil:
-		return experimental(req, c.LocalIdentity(), tgpp.ResultErrorUserUnknown)
-	case s.State == Registered:
-		return must(cx.NewLocationInfoAnswer(req, c.LocalIdentity(), cx.LocationInfo{ServerName: s.ServerName}))
-	case s.State == Unregistered:
-		return must(cx.NewLocationInfoAnswer(req, c.LocalIdentity(), cx.LocationInfo{
-			Result: tgpp.Experimental(tgpp.ResultUnregisteredService), ServerName: s.ServerName,
-		}))
+	case lir.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:
+		s.ReassignPending = s.ServerName != ""
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{}))
+	case s.State != NotRegistered:
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName}))
+	case !s.UnregisteredServices && !lir.Originating:
+		return experimental(req, id, tgpp.ResultErrorIdentityNotRegistered)
+	case s.ServerName != "":
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName}))
 	}
 
-	return experimental(req, c.LocalIdentity(), tgpp.ResultErrorIdentityNotRegistered)
+	return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{Result: tgpp.Experimental(tgpp.ResultUnregisteredService)}))
 }
 
 var ErrNotConnected = errors.New("hsstest: the IMS is not connected")
 
-// RTR sends a Registration-Termination-Request for the private identity, or
-// only the given public identities of it (TS 29.228 §6.1.3). On success
-// without public identities, the subscriber is no longer registered.
 func (h *HSS) RTR(ctx context.Context, reason cx.DeregistrationReason, impi string, impus ...string) (cx.RegistrationTermination, error) {
 	if p, ok := h.node.Peer(imsPeer); !ok || p.State != diameter.PeerOpen {
 		return cx.RegistrationTermination{}, ErrNotConnected
@@ -524,19 +583,14 @@ func (h *HSS) RTR(ctx context.Context, reason cx.DeregistrationReason, impi stri
 		return cx.RegistrationTermination{}, err
 	}
 
+	h.Update(impi, func(s *Subscriber) {
+		s.ServerName, s.State, s.AuthPending, s.ReassignPending = "", NotRegistered, false, false
+	})
+
 	ans, err := h.node.Do(ctx, imsPeer, req)
 	if err != nil {
 		return cx.RegistrationTermination{}, err
 	}
 
-	rta, err := cx.ParseRegistrationTerminationAnswer(ans)
-	if err != nil {
-		return rta, err
-	}
-
-	if len(impus) == 0 {
-		h.Update(impi, func(s *Subscriber) { s.ServerName, s.State = "", NotRegistered })
-	}
-
-	return rta, nil
+	return cx.ParseRegistrationTerminationAnswer(ans)
 }

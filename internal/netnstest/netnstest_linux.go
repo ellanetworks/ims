@@ -104,13 +104,15 @@ func New(t testing.TB) *Netns {
 	return n
 }
 
-// Current is the network namespace the test binary runs in, the one Main made
-// for it, so that it can be linked to others.
 func Current(t testing.TB) *Netns {
 	t.Helper()
 
 	if skip != "" {
 		Unavailable(t, skip)
+	}
+
+	if _, err := exec.LookPath("ip"); err != nil {
+		Unavailable(t, "no ip command (iproute2)")
 	}
 
 	n := &Netns{work: make(chan func())}

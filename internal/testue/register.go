@@ -18,11 +18,7 @@ import (
 
 const icsiMMTel = `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
 
-// procedure is one registration, re-registration or deregistration, from its
-// first REGISTER to its final response.
 type procedure struct {
-	// start is where the procedure's REGISTERs go until SAs are set up for
-	// it, with startVerify the Security-Verify they carry.
 	start       sip.Flow
 	startVerify []string
 
@@ -34,7 +30,6 @@ type procedure struct {
 	dereg  bool
 }
 
-// Register performs an initial registration (TS 24.229 §5.1.1.2, §5.1.1.5).
 func (u *UE) Register(ctx context.Context) error {
 	u.op.Lock()
 	defer u.op.Unlock()
@@ -57,8 +52,6 @@ func (u *UE) Register(ctx context.Context) error {
 	}
 }
 
-// Reregister refreshes the registration over the established SAs, or
-// re-authenticates when the network challenges it (TS 24.229 §5.1.1.4).
 func (u *UE) Reregister(ctx context.Context) error {
 	u.op.Lock()
 	defer u.op.Unlock()
@@ -66,8 +59,6 @@ func (u *UE) Reregister(ctx context.Context) error {
 	return u.refresh(ctx, false)
 }
 
-// Deregister ends the registration and deletes the SAs (TS 24.229
-// §5.1.1.6).
 func (u *UE) Deregister(ctx context.Context) error {
 	u.op.Lock()
 	defer u.op.Unlock()
@@ -138,9 +129,6 @@ func (u *UE) unprotectedFlow() sip.Flow {
 	return sip.Flow{Transport: u.cfg.Transport, Local: u.unprotected, Remote: u.cfg.PCSCF}
 }
 
-// port is the port in the Via and the Contact: the protected server port when
-// the REGISTER goes over SAs, the unprotected one otherwise (TS 24.229
-// §5.1.1.2.1 d, §5.1.1.2.2 b and c).
 func (u *UE) port(protected bool) uint16 {
 	if protected {
 		return u.portS
@@ -341,9 +329,6 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 				continue
 			}
 
-			// The Security-Client stays that of the challenged REGISTER (TS
-			// 24.229 §5.1.1.5.1), so a set dropped above is set up again on the
-			// same SPIs and ports.
 			if temp, err = u.install(p.client, offer, ipsec.Keys{CK: r.CK, IK: r.IK}, server); err != nil {
 				return fail(err)
 			}
@@ -378,7 +363,6 @@ func (u *UE) adoptMinExpires(res *sip.Response) error {
 	return nil
 }
 
-// granted is the expiry of the UE's binding in the 200.
 func (u *UE) granted(res *sip.Response) time.Duration {
 	contacts, _ := res.Header.Contacts()
 	for _, c := range contacts {
@@ -413,7 +397,6 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		return
 	}
 
-	// A binding granted no time is gone as after a deregistration.
 	if p.dereg || granted == 0 {
 		u.releaseClient(p)
 
@@ -442,8 +425,6 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 
 		u.lifetimeLocked(temp, life)
 
-		// The old set stays until a further message arrives through the new
-		// one (TS 33.203 §7.4.1a); the 200 does not count.
 		for _, s := range slices.Clone(u.sets) {
 			switch s {
 			case temp:
@@ -493,9 +474,14 @@ func sameURI(a, b string) bool {
 	return errA == nil && errB == nil && ua.Equivalent(ub)
 }
 
-// scheduleLocked arms the re-registration timer, 600 s before expiry when
-// the registration lasts more than 1200 s and at half-time otherwise (TS
-// 24.229 §5.1.1.4.1), and the expiry.
+func reregisterIn(remaining time.Duration) time.Duration {
+	if remaining > 1200*time.Second {
+		return remaining - 600*time.Second
+	}
+
+	return remaining / 2
+}
+
 func (u *UE) scheduleLocked(remaining time.Duration) {
 	u.stopTimersLocked()
 
@@ -514,12 +500,7 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 		return
 	}
 
-	at := remaining / 2
-	if remaining > 1200*time.Second {
-		at = remaining - 600*time.Second
-	}
-
-	u.reregTimer = time.AfterFunc(at, func() {
+	u.reregTimer = time.AfterFunc(reregisterIn(remaining), func() {
 		err := u.Reregister(context.Background())
 		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {
 			u.event(Event{Err: err})

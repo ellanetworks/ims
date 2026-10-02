@@ -59,6 +59,8 @@ type Config struct {
 	MinExpires time.Duration
 	MaxExpires time.Duration
 
+	ReauthInterval time.Duration
+
 	HSS      HSS
 	Diameter Diameter
 	DB       *db.DB
@@ -83,6 +85,7 @@ type Registrar struct {
 	closed     bool
 	busy       map[string]*hold
 	challenges map[string]*challenge
+	authAt     map[string]time.Time
 	sweep      transaction.Timer
 	sweepAt    time.Time
 }
@@ -122,6 +125,7 @@ func New(cfg Config) *Registrar {
 		cancel:     cancel,
 		busy:       make(map[string]*hold),
 		challenges: make(map[string]*challenge),
+		authAt:     make(map[string]time.Time),
 	}
 
 	return r

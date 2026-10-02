@@ -1,6 +1,3 @@
-// Package testue is a test UE that registers with the IMS as an IR.92 phone
-// does: IMS-AKA with its own Milenage, sec-agree and IPsec with real SAs,
-// re-registration and deregistration (TS 24.229 §5.1.1, TS 33.203).
 package testue
 
 import (
@@ -23,18 +20,16 @@ import (
 const (
 	DefaultExpires = 600000 * time.Second
 
-	// RegAwaitAuth is the lifetime of the temporary SAs (TS 24.229
-	// §5.1.1.5.1).
 	RegAwaitAuth = 4 * time.Minute
 
 	saMargin = 30 * time.Second
 
-	// The UE answers at most two consecutive invalid challenges (TS 24.229
-	// §5.1.1.5.12).
 	maxInvalidChallenges = 2
 
 	maxChallenges = 4
 )
+
+var regAwaitAuth = RegAwaitAuth
 
 var (
 	ErrNotRegistered = errors.New("testue: not registered")
@@ -50,7 +45,6 @@ var (
 	ErrClosed = errors.New("testue: closed")
 )
 
-// ResponseError is a final response that ended a procedure.
 type ResponseError struct {
 	Response *sip.Response
 }
@@ -77,8 +71,6 @@ type Kernel interface {
 }
 
 type Config struct {
-	// IMSI and the length of its MNC (2 by default) give the USIM-only
-	// identities. IMPI, IMPU and HomeDomain, from an ISIM, override them.
 	IMSI       string
 	MNCLength  int
 	IMPI       string
@@ -88,32 +80,24 @@ type Config struct {
 	K   []byte
 	OPc []byte
 
-	// SQN is the initial SQN_MS: the highest sequence number accepted.
 	SQN uint64
 
 	IMEI string
 
-	// PCSCF is the P-CSCF's address and unprotected port.
 	PCSCF     netip.AddrPort
 	Local     netip.Addr
 	Transport sip.Transport
 
-	// Offers are the Security-Client mechanisms; DefaultOffers when empty.
 	Offers []Offer
 
-	// Plain sends no Security-Client, for the plain-SIP path of the P-CSCF.
 	Plain bool
 
-	// AccessNetworkInfo is the P-Access-Network-Info of protected requests.
 	AccessNetworkInfo string
 
 	Expires time.Duration
 
-	// Kernel installs the SAs; required unless Plain.
 	Kernel Kernel
 
-	// Do runs f in the UE's network namespace; the UE creates its sockets
-	// and dials inside it. Nil runs f directly.
 	Do func(f func())
 
 	Logger *slog.Logger
@@ -154,13 +138,9 @@ type State struct {
 	AssociatedURIs []string
 	ServiceRoute   []string
 
-	// Barred is whether the registered IMPU is absent from the
-	// P-Associated-URI.
 	Barred bool
 }
 
-// Event is a request or a response the UE received, or an error of an
-// automatic re-registration.
 type Event struct {
 	Request  *sip.Request
 	Response *sip.Response
@@ -176,12 +156,9 @@ type saSet struct {
 	server  []string
 	removed bool
 
-	// ownsSPIs is set once the procedure that installed the set hands its
-	// SPIs over to it.
 	ownsSPIs bool
 }
 
-// client is the UE's side of a Security-Client: port_us is the UE's.
 type client struct {
 	portC      uint16
 	spiC, spiS uint32
@@ -205,6 +182,7 @@ type UE struct {
 
 	mu          sync.Mutex
 	closed      bool
+	dropped     int
 	clientPorts []uint16
 	pending     int
 	newSAUsed   bool
@@ -336,15 +314,24 @@ func (u *UE) IMPI() string       { return u.id.impi }
 func (u *UE) IMPU() string       { return u.id.impu }
 func (u *UE) HomeDomain() string { return u.id.domain }
 
-// Unprotected is the address of the UE's unprotected socket.
 func (u *UE) Unprotected() netip.AddrPort { return u.unprotected }
 
 func (u *UE) Events() <-chan Event { return u.events }
+
+func (u *UE) Dropped() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	return u.dropped
+}
 
 func (u *UE) event(e Event) {
 	select {
 	case u.events <- e:
 	default:
+		u.mu.Lock()
+		u.dropped++
+		u.mu.Unlock()
 	}
 }
 
@@ -359,7 +346,6 @@ func (u *UE) State() State {
 	return s
 }
 
-// SQN is the UE's SQN_MS.
 func (u *UE) SQN() uint64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -367,7 +353,6 @@ func (u *UE) SQN() uint64 {
 	return u.sqn
 }
 
-// SAs are the SA sets the UE has installed.
 func (u *UE) SAs() []SA {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -380,8 +365,6 @@ func (u *UE) SAs() []SA {
 	return out
 }
 
-// SetAutoReregister turns the re-registration timer on or off; it is on by
-// default.
 func (u *UE) SetAutoReregister(on bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -398,8 +381,6 @@ func (u *UE) SetAutoReregister(on bool) {
 	}
 }
 
-// Close removes the SAs and closes the sockets, without deregistering. A
-// procedure under way fails, and Close waits for it.
 func (u *UE) Close() error {
 	u.mu.Lock()
 
@@ -458,9 +439,6 @@ var (
 	errNoSA        = errors.New("testue: message on a protected port outside the SAs")
 )
 
-// filter takes only responses on the unprotected port, and on the protected
-// ports only what arrives through a set of SAs (TS 33.203 §7.1). A message
-// through the established set lets the old one go (§7.4.1a).
 func (u *UE) filter(m sip.Message) error {
 	if u.cfg.Plain {
 		return nil
@@ -492,9 +470,6 @@ func (u *UE) filter(m sip.Message) error {
 	return nil
 }
 
-// responseFlow sends the responses to requests that came through a set of
-// SAs from port_uc to port_ps over UDP (TS 33.203 §7.1); over TCP they go
-// back on the connection.
 func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
 	f := req.Flow
 	if u.cfg.Plain || f.Transport != sip.UDP {
@@ -517,8 +492,6 @@ func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, er
 	return sip.Flow{}, false, nil
 }
 
-// dropOldLocked deletes the old set once a message has arrived through the
-// new one and no transaction is pending (TS 33.203 §7.4.1a).
 func (u *UE) dropOldLocked() {
 	if !u.newSAUsed || u.pending > 0 {
 		return
@@ -531,7 +504,6 @@ func (u *UE) dropOldLocked() {
 	}
 }
 
-// inbound is whether a message on f arrived through the set.
 func inbound(s ipsec.Set, f sip.Flow) bool {
 	local, remote := f.Local.Port(), f.Remote.Port()
 	if f.Remote.Addr().Unmap() != s.Remote.Addr {
@@ -594,9 +566,6 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 	}
 }
 
-// newClient takes new SPIs and a protected client port that no set uses and
-// that differs from the one offered last, from the ports the UE already
-// listens on when it can.
 func (u *UE) newClient(last uint16) (client, error) {
 	u.mu.Lock()
 
@@ -651,9 +620,6 @@ func (u *UE) securityClient(c client) []string {
 	return out
 }
 
-// selectServer takes the first Security-Server mechanism the UE offered
-// (TS 33.203 §7.2). A Security-Server without the parameters of a set of SAs
-// counts as missing (TS 24.229 §5.1.1.5.1).
 func (u *UE) selectServer(res *sip.Response) (ipsec.Offer, []string, error) {
 	values := res.Header.Values("Security-Server")
 	if len(values) == 0 {
@@ -716,12 +682,11 @@ func (u *UE) install(c client, o ipsec.Offer, keys ipsec.Keys, server []string) 
 	s := &saSet{set: set, keys: keys, state: Temporary, server: server}
 
 	u.sets = append(u.sets, s)
-	u.lifetimeLocked(s, time.Now().Add(RegAwaitAuth))
+	u.lifetimeLocked(s, time.Now().Add(regAwaitAuth))
 
 	return s, nil
 }
 
-// lifetimeLocked sets the time the set is deleted at.
 func (u *UE) lifetimeLocked(s *saSet, at time.Time) {
 	s.expires = at
 
@@ -739,7 +704,6 @@ func (u *UE) lifetimeLocked(s *saSet, at time.Time) {
 	})
 }
 
-// dropLocked forgets the set and deletes it from the kernel.
 func (u *UE) dropLocked(s *saSet) {
 	if s.removed {
 		return

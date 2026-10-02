@@ -40,14 +40,12 @@ func sqnValue(b []byte) uint64 {
 
 func checkSQN(sqn uint64) error {
 	if sqn > MaxSQN {
-		return fmt.Errorf("%w: SQN must be 48 bits", ErrLength)
+		return ErrSQN
 	}
 
 	return nil
 }
 
-// GenerateVector builds an authentication vector, with AUTN = SQN ⊕ AK ‖ AMF
-// ‖ MAC-A (TS 33.102 §6.3.2).
 func GenerateVector(k, opc, rand []byte, sqn uint64, amf []byte) (Vector, error) {
 	c, err := New(k, opc)
 	if err != nil {
@@ -79,9 +77,6 @@ func GenerateVector(k, opc, rand []byte, sqn uint64, amf []byte) (Vector, error)
 	return Vector{RAND: clone(rand), XRES: res, CK: ck, IK: ik, AUTN: autn}, nil
 }
 
-// Respond is the USIM's side of the challenge (TS 33.102 §6.3.3): it recovers
-// SQN with AK = f5(RAND) and checks MAC-A. The caller checks that SQN is in
-// range.
 func Respond(k, opc, rand, autn []byte) (Response, error) {
 	c, err := New(k, opc)
 	if err != nil {
@@ -113,11 +108,8 @@ func Respond(k, opc, rand, autn []byte) (Response, error) {
 	return Response{SQN: sqnValue(s), AMF: clone(amf), RES: res, CK: ck, IK: ik}, nil
 }
 
-var resyncAMF = make([]byte, AMFLen)
+var resyncAMF = [AMFLen]byte{}
 
-// AUTS builds the resynchronisation token SQN_MS ⊕ f5*(RAND) ‖ MAC-S, with
-// MAC-S = f1*(SQN_MS ‖ RAND ‖ AMF) and the dummy AMF 0x0000 (TS 33.102
-// §6.3.3).
 func AUTS(k, opc, rand []byte, sqnMS uint64) ([]byte, error) {
 	c, err := New(k, opc)
 	if err != nil {
@@ -130,7 +122,7 @@ func AUTS(k, opc, rand []byte, sqnMS uint64) ([]byte, error) {
 
 	s := sqnBytes(sqnMS)
 
-	macS, err := c.F1Star(rand, s, resyncAMF)
+	macS, err := c.F1Star(rand, s, resyncAMF[:])
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +139,6 @@ func AUTS(k, opc, rand []byte, sqnMS uint64) ([]byte, error) {
 	return append(auts, macS...), nil
 }
 
-// Resync is the network's side of AUTS (TS 33.102 §6.3.5): it recovers
-// SQN_MS and checks MAC-S.
 func Resync(k, opc, rand, auts []byte) (uint64, error) {
 	c, err := New(k, opc)
 	if err != nil {
@@ -167,7 +157,7 @@ func Resync(k, opc, rand, auts []byte) (uint64, error) {
 	s := make([]byte, SQNLen)
 	subtle.XORBytes(s, auts[:SQNLen], ak)
 
-	xmac, err := c.F1Star(rand, s, resyncAMF)
+	xmac, err := c.F1Star(rand, s, resyncAMF[:])
 	if err != nil {
 		return 0, err
 	}

@@ -29,8 +29,6 @@ type challenge struct {
 	autn  []byte
 }
 
-// parseChallenge takes the first WWW-Authenticate with algorithm=AKAv1-MD5,
-// whose nonce is base64(RAND ‖ AUTN ‖ server data) (RFC 3310 §3.2).
 func parseChallenge(res *sip.Response) (challenge, error) {
 	for _, v := range res.Header.Values("WWW-Authenticate") {
 		a, err := sip.ParseAuth(v)
@@ -82,8 +80,6 @@ func cnonce() string {
 	return hex.EncodeToString(b)
 }
 
-// emptyAuthorization is the Authorization of a REGISTER without a challenge
-// to answer (TS 24.229 §5.1.1.2.1).
 func emptyAuthorization(impi, domain string) string {
 	return sip.Auth{Scheme: "Digest", Params: sip.Params{
 		{Name: "username", Value: sip.Quote(impi)},
@@ -95,10 +91,6 @@ func emptyAuthorization(impi, domain string) string {
 	}}.String()
 }
 
-// answer is the Authorization answering ch with the password, the RES as raw
-// octets (RFC 3310 §3.4), or an empty one for a resynchronisation. auts is
-// added when it is set; an empty response with neither marks a network
-// authentication failure (TS 24.229 §5.1.1.5.3).
 func answer(impi, domain string, ch challenge, password []byte, auts []byte, emptyResponse bool) string {
 	uri := "sip:" + domain
 	ps := sip.Params{

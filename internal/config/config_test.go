@@ -294,6 +294,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
 		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},
 		{"max expires below min", valid + "scscf:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "scscf.max_expires 300 is below scscf.min_expires 600"},
+		{"negative reauth interval", valid + "scscf:\n  reauth_interval: -1m\n" + validDiameter, "scscf.reauth_interval -1m0s is negative"},
 		{"S-CSCF name not a URI", valid + "scscf:\n  name: scscf.example.org\n" + validDiameter, `scscf.name "scscf.example.org" is not a SIP URI`},
 		{"S-CSCF name with a user", valid + "scscf:\n  name: sip:s@scscf.example.org:5080\n" + validDiameter, "must have no user part"},
 		{"S-CSCF name with parameters", valid + "scscf:\n  name: sip:scscf.example.org:5080;transport=tcp\n" + validDiameter, "must have no user part, parameters"},

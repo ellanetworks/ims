@@ -26,9 +26,6 @@ func isDigits(s string) bool {
 	return s != ""
 }
 
-// deriveIdentities derives the IMPI, the temporary IMPU and the home domain
-// from the IMSI (TS 23.003 §13.2, §13.3, §13.4B), unless the ISIM's are given
-// (TS 24.229 §5.1.1.1A).
 func deriveIdentities(c Config) (identities, error) {
 	var id identities
 
@@ -67,7 +64,6 @@ func deriveIdentities(c Config) (identities, error) {
 	return id, nil
 }
 
-// instanceID is the IMEI URN (TS 23.003 §13.8): TAC, SNR and a spare digit 0.
 func instanceID(imei string) (string, error) {
 	if !isDigits(imei) || (len(imei) != 14 && len(imei) != 15) {
 		return "", fmt.Errorf("testue: IMEI %q is not 14 or 15 digits", imei)
@@ -76,7 +72,6 @@ func instanceID(imei string) (string, error) {
 	return "urn:gsma:imei:" + imei[:8] + "-" + imei[8:14] + "-0", nil
 }
 
-// accessNetworkInfo is the default P-Access-Network-Info (TS 24.229 §7.2A.4).
 func accessNetworkInfo(mcc, mnc string) string {
 	return "3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=" + mcc + mnc + "0001" + "0000001"
 }
@@ -88,7 +83,6 @@ var uuidState struct {
 	node  [6]byte
 }
 
-// timeUUID returns a version 1 UUID (RFC 9562 §5.1) with a random node ID.
 func timeUUID() string {
 	s := &uuidState
 
@@ -103,7 +97,6 @@ func timeUUID() string {
 		s.node[0] |= 0x01
 	}
 
-	// 100-ns intervals since 1582-10-15.
 	ts := uint64(time.Now().UnixNano()/100) + 0x01b21dd213814000
 	if ts <= s.last {
 		ts = s.last + 1

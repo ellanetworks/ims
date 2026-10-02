@@ -161,12 +161,15 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		Name:       scscfName,
 		MinExpires: time.Duration(cfg.SCSCF.MinExpires) * time.Second,
 		MaxExpires: time.Duration(cfg.SCSCF.MaxExpires) * time.Second,
-		HSS:        scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
-		Diameter:   node,
-		DB:         database,
-		Layer:      layer,
-		Listeners:  s.bound(roleSCSCF),
-		Logger:     logger,
+
+		ReauthInterval: cfg.SCSCF.ReauthInterval,
+
+		HSS:       scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
+		Diameter:  node,
+		DB:        database,
+		Layer:     layer,
+		Listeners: s.bound(roleSCSCF),
+		Logger:    logger,
 	})
 
 	if rtr != nil {

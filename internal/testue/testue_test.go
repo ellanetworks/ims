@@ -36,10 +36,6 @@ var (
 	testOPc  = []byte("fedcba9876543210")
 )
 
-// network plays the P-CSCF and the S-CSCF: an unprotected socket, and a
-// protected server port and two client ports as if SAs were in place. Like
-// the P-CSCF, it offers each new set on the client port the last one did not
-// use; pc is the one of the last set.
 type network struct {
 	t      *testing.T
 	sqn    uint64
@@ -53,22 +49,33 @@ type network struct {
 	vector milenage.Vector
 	nonce  string
 	seen   map[string]bool
+
+	addr       netip.Addr
+	ealg       string
+	associated string
 }
 
 func newNetwork(t *testing.T) *network {
+	return newNetworkAt(t, loopback)
+}
+
+func newNetworkAt(t *testing.T, addr netip.Addr) *network {
 	return &network{
 		t:     t,
 		sqn:   100,
 		k:     testK,
-		pcscf: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
-		ps:    siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
+		pcscf: siptest.NewSocket(t, netip.AddrPortFrom(addr, 0)),
+		ps:    siptest.NewSocket(t, netip.AddrPortFrom(addr, 0)),
 		pcs: [2]*siptest.Socket{
-			siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
-			siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
+			siptest.NewSocket(t, netip.AddrPortFrom(addr, 0)),
+			siptest.NewSocket(t, netip.AddrPortFrom(addr, 0)),
 		},
-		spiC: 1000,
-		spiS: 1001,
-		seen: make(map[string]bool),
+		spiC:       1000,
+		spiS:       1001,
+		seen:       make(map[string]bool),
+		addr:       addr,
+		ealg:       "null",
+		associated: "<" + msisdn + ">, <tel:+15550001>",
 	}
 }
 
@@ -78,7 +85,7 @@ func (n *network) newUE(cfg Config) (*UE, *ipsectest.Kernel) {
 	kernel := ipsectest.NewKernel()
 
 	cfg.IMSI, cfg.IMEI = imsi, imei
-	cfg.PCSCF, cfg.Local = n.pcscf.Addr(), loopback
+	cfg.PCSCF, cfg.Local = n.pcscf.Addr(), n.addr
 
 	if cfg.K == nil {
 		cfg.K, cfg.OPc = testK, testOPc
@@ -98,7 +105,6 @@ func (n *network) newUE(cfg Config) (*UE, *ipsectest.Kernel) {
 	return u, kernel
 }
 
-// recv takes the next request on the socket, skipping retransmissions.
 func (n *network) recv(s *siptest.Socket) (*sip.Request, sip.Flow) {
 	n.t.Helper()
 
@@ -158,17 +164,12 @@ func (n *network) securityServer(res *sip.Response, server bool) {
 			n.pc = n.pcs[0]
 		}
 
-		for _, alg := range []string{"hmac-md5-96", "hmac-sha-1-96"} {
-			res.Header.Add("Security-Server", "ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-c="+strconv.Itoa(int(n.spiC))+
-				";spi-s="+strconv.Itoa(int(n.spiS))+";port-c="+strconv.Itoa(int(n.pc.Addr().Port()))+
-				";port-s="+strconv.Itoa(int(n.ps.Addr().Port()))+";alg="+alg+";ealg=null")
+		for _, v := range n.pcscfServer(n.t) {
+			res.Header.Add("Security-Server", v)
 		}
 	}
 }
 
-// reply answers on the request's connection over TCP and, over UDP, from
-// the given socket: the protected client port sends to the UE's protected
-// server port.
 func (n *network) reply(from *siptest.Socket, f sip.Flow, res *sip.Response) {
 	n.t.Helper()
 
@@ -183,7 +184,7 @@ func (n *network) reply(from *siptest.Socket, f sip.Flow, res *sip.Response) {
 		}
 	case from == n.pcs[0] || from == n.pcs[1]:
 		via, _ := res.Header.TopVia()
-		to = netip.AddrPortFrom(loopback, via.Port)
+		to = netip.AddrPortFrom(n.addr, via.Port)
 	}
 
 	from.Send(f.Transport, to, res)
@@ -200,7 +201,7 @@ func (n *network) ok(req *sip.Request, f sip.Flow, from *siptest.Socket, expires
 	}
 
 	res.Header.Add("Service-Route", "<sip:orig@scscf."+domain+":6060;lr>")
-	res.Header.Add("P-Associated-URI", "<"+msisdn+">, <tel:+15550001>")
+	res.Header.Add("P-Associated-URI", n.associated)
 
 	n.reply(from, f, res)
 }
@@ -221,7 +222,6 @@ func authParams(t *testing.T, req *sip.Request) map[string]string {
 	return out
 }
 
-// verify checks the response the way the S-CSCF does.
 func verify(ps map[string]string, xres []byte) bool {
 	h := func(parts ...[]byte) string {
 		m := md5.New()
@@ -264,7 +264,6 @@ func wait(t *testing.T, done chan error) error {
 	return nil
 }
 
-// register runs an initial registration through to the 200.
 func (n *network) register(u *UE) {
 	n.t.Helper()
 
@@ -417,7 +416,7 @@ func (n *network) pcscfServer(t *testing.T) []string {
 	for _, alg := range []string{"hmac-md5-96", "hmac-sha-1-96"} {
 		out = append(out, "ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-c="+strconv.Itoa(int(n.spiC))+
 			";spi-s="+strconv.Itoa(int(n.spiS))+";port-c="+strconv.Itoa(int(n.pc.Addr().Port()))+
-			";port-s="+strconv.Itoa(int(n.ps.Addr().Port()))+";alg="+alg+";ealg=null")
+			";port-s="+strconv.Itoa(int(n.ps.Addr().Port()))+";alg="+alg+";ealg="+n.ealg)
 	}
 
 	return out
@@ -694,15 +693,12 @@ func TestReAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The 200 came through the new set, but the old one stays until a further
-	// message does (TS 33.203 §7.4.1a).
 	sas := u.SAs()
 	if len(sas) != 2 || sas[0].State != Old || sas[0].Set != old.Set || sas[1].State != Established ||
 		sas[1].Set.Local.PortC != o.Endpoint.PortC || len(kernel.Installed()) != 2 {
 		t.Fatalf("SAs = %+v, want the old set kept beside the new one", sas)
 	}
 
-	// A request through the old set is still taken.
 	n.request(n.pcs[0], old.Set)
 
 	if len(u.SAs()) != 2 {
@@ -717,12 +713,10 @@ func TestReAuthentication(t *testing.T) {
 	}
 }
 
-// options is a request as the P-CSCF sends it to the UE's protected server
-// port: its Via has the protected server port, without rport.
 func (n *network) options(port uint16) *sip.Request {
 	n.t.Helper()
 
-	r := siptest.NewRequest("OPTIONS", "sip:"+loopback.String()+":"+strconv.Itoa(int(port)), sip.UDP, n.ps.Addr())
+	r := siptest.NewRequest("OPTIONS", "sip:"+sip.FormatHost(n.addr)+":"+strconv.Itoa(int(port)), sip.UDP, n.ps.Addr())
 
 	via, _ := r.Header.TopVia()
 	via.Params.Del("rport")
@@ -731,13 +725,10 @@ func (n *network) options(port uint16) *sip.Request {
 	return r
 }
 
-// request sends a request from a P-CSCF client port through the set, and
-// checks that the 200 comes back from the UE's port_uc to port_ps (TS 33.203
-// §7.1).
 func (n *network) request(from *siptest.Socket, set ipsec.Set) {
 	n.t.Helper()
 
-	from.Send(sip.UDP, netip.AddrPortFrom(loopback, set.Local.PortS), n.options(set.Local.PortS))
+	from.Send(sip.UDP, netip.AddrPortFrom(n.addr, set.Local.PortS), n.options(set.Local.PortS))
 
 	res, f := n.ps.RecvResponse()
 	if res.StatusCode != 200 || f.Remote.Port() != set.Local.PortC {
@@ -992,7 +983,6 @@ func TestProtectedRegisterChallengedAgain(t *testing.T) {
 		t.Fatalf("SAs = %+v, removed %v, want the second set alone", sas, kernel.Removed())
 	}
 
-	// The established set owns its SPIs: new ones are allocated around them.
 	c, err := u.newClient(0)
 	if err != nil || c.spiC == sas[0].Set.Local.SPIC || c.spiS == sas[0].Set.Local.SPIS ||
 		c.spiC == sas[0].Set.Local.SPIS || c.spiS == sas[0].Set.Local.SPIC {
@@ -1076,4 +1066,288 @@ func TestZeroExpiry(t *testing.T) {
 	}
 
 	n.ps.RecvNone(200 * time.Millisecond)
+}
+
+func TestTCPRegistration(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{Transport: sip.TCP})
+
+	done := start(u.Register)
+
+	req, f := n.recv(n.pcscf)
+	if f.Transport != sip.TCP || f.Remote != u.Unprotected() {
+		t.Fatalf("REGISTER over %s, want TCP from the unprotected port %s", f, u.Unprotected())
+	}
+
+	n.challenge(req, f, n.pcscf, true)
+
+	req, f = n.recv(n.ps)
+
+	via, _ := req.Header.TopVia()
+	if f.Transport != sip.TCP || via.Transport != sip.TCP {
+		t.Fatalf("protected REGISTER over %s with Via %s, want TCP", f, via)
+	}
+
+	n.ok(req, f, n.pc, 3600)
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	done = start(u.Reregister)
+
+	req, f = n.recv(n.ps)
+	if f.Transport != sip.TCP || f.Remote.Port() != u.SAs()[0].Set.Local.PortC {
+		t.Fatalf("re-REGISTER over %s, want TCP from port_uc", f)
+	}
+
+	n.ok(req, f, n.pc, 3600)
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIPv6Registration(t *testing.T) {
+	ipv6 := netip.MustParseAddr("::1")
+	n := newNetworkAt(t, ipv6)
+	u, kernel := n.newUE(Config{})
+
+	n.register(u)
+
+	for set := range kernel.Installed() {
+		if set.Local.Addr != ipv6 || set.Remote.Addr != ipv6 {
+			t.Fatalf("set %s, want IPv6", set)
+		}
+	}
+
+	n.request(n.pc, u.SAs()[0].Set)
+}
+
+func TestAESCBC(t *testing.T) {
+	n := newNetwork(t)
+	n.ealg = "aes-cbc"
+	u, kernel := n.newUE(Config{Offers: []Offer{{ipsec.HMACSHA196, ipsec.AESCBC}}})
+
+	done := start(u.Register)
+
+	req, f := n.recv(n.pcscf)
+	if v := req.Header.Get("Security-Client"); !strings.Contains(v, "alg=hmac-sha-1-96") || !strings.Contains(v, "ealg=aes-cbc") {
+		t.Fatalf("Security-Client = %q", v)
+	}
+
+	n.challenge(req, f, n.pcscf, true)
+
+	req, f = n.recv(n.ps)
+	n.ok(req, f, n.pc, 3600)
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	for set, keys := range kernel.Installed() {
+		if set.Integrity != ipsec.HMACSHA196 || set.Encryption != ipsec.AESCBC || !bytes.Equal(keys.CK, n.vector.CK) {
+			t.Fatalf("set %s, want hmac-sha-1-96/aes-cbc keyed with CK", set)
+		}
+	}
+}
+
+func TestResyncDuringReRegistration(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{})
+	n.register(u)
+
+	established := u.SAs()[0].Set
+	sqnMS := u.SQN()
+
+	done := start(u.Reregister)
+
+	req, f := n.recv(n.ps)
+
+	n.sqn = 10
+	n.challenge(req, f, n.pc, true)
+
+	resync, f := n.recv(n.ps)
+	if f.Remote.Port() != established.Local.PortC {
+		t.Fatalf("resync REGISTER from %s, want the established port_uc %d", f.Remote, established.Local.PortC)
+	}
+
+	auts, _ := base64.StdEncoding.DecodeString(authParams(t, resync)["auts"])
+	if got, err := milenage.Resync(testK, testOPc, n.vector.RAND, auts); err != nil || got != sqnMS {
+		t.Fatalf("AUTS for %d, %v, want %d", got, err, sqnMS)
+	}
+
+	if slices.Equal(resync.Header.Values("Security-Client"), req.Header.Values("Security-Client")) {
+		t.Fatal("resync REGISTER with the same Security-Client")
+	}
+
+	n.sqn = sqnMS
+	n.challenge(resync, f, n.pc, true)
+
+	req, f = n.recv(n.ps)
+	n.ok(req, f, n.pc, 3600)
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	if sas := u.SAs(); len(sas) != 2 || sas[1].State != Established || sas[0].Set != established {
+		t.Fatalf("SAs = %+v, want the new set beside the old one", sas)
+	}
+}
+
+func TestMACFailureDuringReRegistration(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{})
+	n.register(u)
+
+	established := u.SAs()[0].Set
+
+	done := start(u.Reregister)
+
+	req, f := n.recv(n.ps)
+
+	n.k = []byte("the wrong K!!!!!")
+	n.challenge(req, f, n.pc, true)
+
+	failure, f := n.recv(n.ps)
+	if ps := authParams(t, failure); ps["response"] != "" || ps["auts"] != "" || f.Remote.Port() != established.Local.PortC {
+		t.Fatalf("REGISTER from %s with Authorization %q, want an empty response over the established SAs",
+			f.Remote, failure.Header.Get("Authorization"))
+	}
+
+	n.reply(n.pc, f, sip.NewResponse(failure, 403, ""))
+
+	if err := wait(t, done); !errors.Is(err, ErrNetworkAuthentication) {
+		t.Fatalf("Reregister = %v, want ErrNetworkAuthentication", err)
+	}
+
+	if sas := u.SAs(); len(sas) != 1 || sas[0].Set != established || !u.State().Registered {
+		t.Fatalf("SAs = %+v, state %+v, want the registration and its SAs kept", sas, u.State())
+	}
+}
+
+func TestIntervalTooBriefOnReRegistration(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{Expires: 30 * time.Second})
+	u.SetAutoReregister(false)
+	n.register(u)
+
+	done := start(u.Reregister)
+
+	req, f := n.recv(n.ps)
+
+	res := sip.NewResponse(req, 423, "")
+	res.Header.Add("Min-Expires", "60")
+	n.reply(n.pc, f, res)
+
+	req, f = n.recv(n.ps)
+	if req.Header.Get("Expires") != "60" || f.Remote.Port() != u.SAs()[0].Set.Local.PortC {
+		t.Fatalf("re-REGISTER after a 423 from %s with Expires %q", f.Remote, req.Header.Get("Expires"))
+	}
+
+	n.ok(req, f, n.pc, 60)
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChallengedDeregistration(t *testing.T) {
+	n := newNetwork(t)
+	u, kernel := n.newUE(Config{})
+	n.register(u)
+
+	done := start(u.Deregister)
+
+	req, f := n.recv(n.ps)
+	n.challenge(req, f, n.pc, true)
+
+	req, f = n.recv(n.ps)
+	if req.Header.Get("Expires") != "0" || !verify(authParams(t, req), n.vector.XRES) {
+		t.Fatalf("deregistration after the challenge:\n%s", req)
+	}
+
+	n.reply(n.pc, f, sip.NewResponse(req, 200, ""))
+
+	if err := wait(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(kernel.Installed()) != 0 || len(u.SAs()) != 0 || u.State().Registered {
+		t.Fatalf("SAs %v and state %+v after deregistration", kernel.Installed(), u.State())
+	}
+}
+
+func TestTemporarySAsExpire(t *testing.T) {
+	saved := regAwaitAuth
+	regAwaitAuth = 200 * time.Millisecond
+
+	t.Cleanup(func() { regAwaitAuth = saved })
+
+	n := newNetwork(t)
+	u, kernel := n.newUE(Config{})
+
+	done := start(u.Register)
+
+	req, f := n.recv(n.pcscf)
+	n.challenge(req, f, n.pcscf, true)
+	n.recv(n.ps)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(kernel.Installed()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("temporary SAs %v still installed after reg-await-auth", kernel.Installed())
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := u.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wait(t, done); err == nil {
+		t.Fatal("Register succeeded without an answer")
+	}
+}
+
+func TestReregisterIn(t *testing.T) {
+	for remaining, want := range map[time.Duration]time.Duration{
+		3600 * time.Second: 3000 * time.Second,
+		1201 * time.Second: 601 * time.Second,
+		1200 * time.Second: 600 * time.Second,
+		600 * time.Second:  300 * time.Second,
+		2 * time.Second:    time.Second,
+	} {
+		if got := reregisterIn(remaining); got != want {
+			t.Errorf("reregisterIn(%s) = %s, want %s", remaining, got, want)
+		}
+	}
+}
+
+func TestRegisteredIMPUNotBarred(t *testing.T) {
+	n := newNetwork(t)
+	n.associated = "<" + impu + ">, <" + msisdn + ">"
+	u, _ := n.newUE(Config{})
+
+	n.register(u)
+
+	if st := u.State(); st.Barred || st.DefaultIMPU != impu {
+		t.Fatalf("state = %+v, want %s registered and the default IMPU", st, impu)
+	}
+}
+
+func TestInstanceID(t *testing.T) {
+	for _, imei := range []string{"35693803564380", "356938035643809"} {
+		if got, err := instanceID(imei); err != nil || got != "urn:gsma:imei:35693803-564380-0" {
+			t.Errorf("instanceID(%s) = %q, %v", imei, got, err)
+		}
+	}
+
+	for _, imei := range []string{"3569380356438", "3569380356438a", "3569380356438090"} {
+		if _, err := instanceID(imei); err == nil {
+			t.Errorf("instanceID(%s) accepted", imei)
+		}
+	}
 }

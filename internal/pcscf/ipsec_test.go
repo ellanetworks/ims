@@ -712,23 +712,28 @@ func TestDeregistrationRemovesTheSets(t *testing.T) {
 	eventually(t, "the set to be removed", func() bool { return len(s.installed()) == 0 && len(s.stored()) == 0 })
 }
 
-func TestPlainSIPRegistration(t *testing.T) {
-	s := newIPsecScene(t, ipsec.DefaultPolicy())
-	u := s.newUE(25656)
+func TestRegisterWithoutIPsecIsRejected(t *testing.T) {
+	for name, client := range map[string]string{"no Security-Client": "", "no ipsec-3gpp": "digest;q=0.1"} {
+		t.Run(name, func(t *testing.T) {
+			s := newIPsecScene(t, ipsec.DefaultPolicy())
+			u := s.newUE(25656)
 
-	s.ue.Send(sip.UDP, s.pcscf, u.register(t, s.ue.Addr(), "", func(r *sip.Request) {
-		r.Header.Del("Security-Client")
-		r.Header.Del("Require")
-		r.Header.Del("Proxy-Require")
-	}))
+			s.ue.Send(sip.UDP, s.pcscf, u.register(t, s.ue.Addr(), "", func(r *sip.Request) {
+				r.Header.Del("Security-Client")
 
-	req, f, _ := s.forwarded()
-	s.answer(req, f, 401)
+				if client != "" {
+					r.Header.Add("Security-Client", client)
+				}
+			}))
 
-	res, _ := s.ue.RecvResponse()
-	if res.StatusCode != 401 || res.Header.Has("Security-Server") || len(s.installed()) != 0 {
-		t.Fatalf("got %q with Security-Server %q and %d sets, want a plain 401", res.StartLine(),
-			res.Header.Get("Security-Server"), len(s.installed()))
+			res, _ := s.ue.RecvResponse()
+			if res.StatusCode != 421 || res.Header.Get("Require") != "sec-agree" || len(s.installed()) != 0 {
+				t.Fatalf("got %q with Require %q and %d sets, want 421 requiring sec-agree", res.StartLine(),
+					res.Header.Get("Require"), len(s.installed()))
+			}
+
+			s.icscf.RecvNone(quiet)
+		})
 	}
 }
 

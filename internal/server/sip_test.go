@@ -93,6 +93,8 @@ func TestSIPPlaceholder(t *testing.T) {
 				t.Run("REGISTER with the HSS down", func(t *testing.T) {
 					register := siptest.NewRequest("REGISTER", "sip:"+imsRealm, tr, ue.Addr())
 					register.Header.Set("To", "<sip:001010000000001@"+imsRealm+">")
+					register.Header.Add("Security-Client", "ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;"+
+						"port-c=6301;port-s=6300;alg=hmac-sha-1-96;ealg=null")
 					ue.Send(tr, pcscf, register)
 
 					wantResponse(t, ue, 480, "REGISTER")
