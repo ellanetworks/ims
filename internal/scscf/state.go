@@ -10,6 +10,7 @@ import (
 )
 
 type state struct {
+	impi string
 	regs []db.Registration
 	now  time.Time
 }
@@ -20,7 +21,7 @@ func (r *Registrar) load(ctx context.Context, impi string) (*state, error) {
 		return nil, err
 	}
 
-	return &state{regs: regs, now: r.clock.Now()}, nil
+	return &state{impi: impi, regs: regs, now: r.clock.Now()}, nil
 }
 
 func (s *state) set(key string) *db.Registration {
