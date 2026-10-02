@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
+	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
@@ -50,7 +51,9 @@ type ResponseError struct {
 }
 
 func (e *ResponseError) Error() string {
-	return "testue: REGISTER answered " + e.Response.StartLine()
+	cseq, _ := e.Response.Header.CSeq()
+
+	return "testue: " + cseq.Method + " answered " + e.Response.StartLine()
 }
 
 type Offer struct {
@@ -96,6 +99,10 @@ type Config struct {
 
 	Expires time.Duration
 
+	NoRegEvent bool
+
+	T1 time.Duration
+
 	Kernel Kernel
 
 	Do func(f func())
@@ -139,11 +146,14 @@ type State struct {
 	ServiceRoute   []string
 
 	Barred bool
+
+	IMPUs []string
 }
 
 type Event struct {
 	Request  *sip.Request
 	Response *sip.Response
+	Reginfo  *regevent.Reginfo
 	Err      error
 }
 
@@ -184,6 +194,7 @@ type UE struct {
 	closed      bool
 	dropped     int
 	clientPorts []uint16
+	retired     []uint16
 	pending     int
 	newSAUsed   bool
 	sqn         uint64
@@ -197,6 +208,7 @@ type UE struct {
 	auto        bool
 	reregTimer  *time.Timer
 	expiryTimer *time.Timer
+	sub         *subscription
 }
 
 func New(cfg Config) (*UE, error) {
@@ -267,6 +279,7 @@ func New(cfg Config) (*UE, error) {
 		Logger:       cfg.Logger,
 		Filter:       u.filter,
 		ResponseFlow: u.responseFlow,
+		T1:           cfg.T1,
 		Transport: transport.Config{
 			Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 				var (
@@ -342,6 +355,7 @@ func (u *UE) State() State {
 	s := u.state
 	s.AssociatedURIs = slices.Clone(s.AssociatedURIs)
 	s.ServiceRoute = slices.Clone(s.ServiceRoute)
+	s.IMPUs = slices.Clone(s.IMPUs)
 
 	return s
 }
@@ -391,6 +405,11 @@ func (u *UE) Close() error {
 
 	u.closed = true
 	u.stopTimersLocked()
+
+	if u.sub != nil {
+		u.stopSubscriptionLocked(u.sub)
+	}
+
 	u.mu.Unlock()
 
 	err := u.layer.Close()
@@ -418,6 +437,11 @@ func (u *UE) stopTimersLocked() {
 }
 
 func (u *UE) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+	if req.Method == "NOTIFY" {
+		u.notify(tx, req)
+		return
+	}
+
 	u.event(Event{Request: req})
 
 	code := 200
@@ -553,14 +577,14 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
 	if _, err := u.layer.Request(req, w); err != nil {
-		return nil, fmt.Errorf("testue: send REGISTER: %w", err)
+		return nil, fmt.Errorf("testue: send %s: %w", req.Method, err)
 	}
 
 	select {
 	case res := <-w.final:
 		return res, nil
 	case err := <-w.err:
-		return nil, fmt.Errorf("testue: REGISTER: %w", err)
+		return nil, fmt.Errorf("testue: %s: %w", req.Method, err)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -572,7 +596,7 @@ func (u *UE) newClient(last uint16) (client, error) {
 	port := uint16(0)
 
 	for _, p := range u.clientPorts {
-		if p != last && !slices.ContainsFunc(u.sets, func(s *saSet) bool { return s.set.Local.PortC == p }) {
+		if p != last && !slices.Contains(u.retired, p) && !slices.ContainsFunc(u.sets, func(s *saSet) bool { return s.set.Local.PortC == p }) {
 			port = p
 			break
 		}
@@ -716,6 +740,7 @@ func (u *UE) dropLocked(s *saSet) {
 	}
 
 	u.sets = slices.DeleteFunc(u.sets, func(x *saSet) bool { return x == s })
+	u.retired = append(u.retired, s.set.Local.PortC)
 
 	if err := u.removeSet(s); err != nil {
 		u.log.Warn("failed to delete SAs", slog.String("set", s.set.String()), slog.Any("error", err))
@@ -738,8 +763,14 @@ func (u *UE) removeSet(s *saSet) error {
 		u.spis.Release(s.set.Local.SPIC, s.set.Local.SPIS)
 	}
 
-	if u.cfg.Transport == sip.TCP {
-		go u.layer.CloseFlow(protectedFlow(s, sip.TCP))
+	inbound := sip.Flow{
+		Transport: sip.TCP,
+		Local:     netip.AddrPortFrom(s.set.Local.Addr, s.set.Local.PortS),
+		Remote:    netip.AddrPortFrom(s.set.Remote.Addr, s.set.Remote.PortC),
+	}
+
+	for _, f := range []sip.Flow{protectedFlow(s, sip.TCP), inbound} {
+		go u.layer.CloseFlow(f)
 	}
 
 	return u.cfg.Kernel.Remove(s.set)

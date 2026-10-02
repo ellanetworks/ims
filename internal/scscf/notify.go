@@ -35,8 +35,9 @@ type removal struct {
 }
 
 type change struct {
-	removed []removal
-	reason  string
+	removed   []removal
+	reason    string
+	shortened string
 }
 
 type outgoing struct {
@@ -376,7 +377,10 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		for _, b := range liveAt(set.Bindings, st.now) {
 			event := regevent.Refreshed
 
-			if b.Event != db.BindingRefreshed {
+			switch {
+			case ch.shortened != "" && set.IMPI == ch.shortened:
+				event = regevent.Shortened
+			case b.Event != db.BindingRefreshed:
 				event = regevent.Created
 
 				registering := b.IMPU
