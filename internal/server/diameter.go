@@ -78,9 +78,6 @@ func diameterPeers(peers []config.DiameterPeer) []diameter.Peer {
 	return out
 }
 
-// newDiameterMux registers the requests the HSS and the PCRF send. RTR goes
-// to the registrar once it exists. Until calls handle them, the Rx requests
-// are refused with DIAMETER_UNABLE_TO_COMPLY.
 func newDiameterMux(rtr *rtrHandler, logger *slog.Logger) *diameter.Mux {
 	unableToComply := tgpp.Result{Code: diameter.ResultUnableToComply}
 
@@ -103,8 +100,6 @@ type terminator interface {
 	Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error)
 }
 
-// rtrHandler answers Registration-Termination-Requests (TS 29.228 §6.1.3)
-// through the registrar bound to it, and DIAMETER_UNABLE_TO_COMPLY until then.
 type rtrHandler struct {
 	log    *slog.Logger
 	target atomic.Pointer[terminator]
@@ -145,8 +140,6 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	// Associated-Identities lists the private identities de-registered
-	// together with the User-Name's (TS 29.228 Table 6.1.3.2).
 	a := cx.RegistrationTermination{AssociatedIdentities: associated}
 
 	ans, err := cx.NewRegistrationTerminationAnswer(req, c.LocalIdentity(), a)

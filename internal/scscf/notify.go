@@ -27,8 +27,6 @@ const (
 	reasonTimeout     = "timeout"
 )
 
-// removal is a registration set's bindings removed by a change, reported once
-// as terminated contacts.
 type removal struct {
 	reg      db.Registration
 	bindings []db.Binding
@@ -41,8 +39,6 @@ type change struct {
 	reason  string
 }
 
-// outgoing is a NOTIFY built under the IMPI's lock, sent once the lock is
-// released.
 type outgoing struct {
 	impi  string
 	subID int64
@@ -50,11 +46,6 @@ type outgoing struct {
 	final bool
 }
 
-// notifyChange builds the NOTIFYs that report a change of the IMPI's
-// registrations to each of its subscriptions (TS 24.229 §5.4.2.1.2). The
-// caller holds the IMPI's lock and has stored the change. The subscriptions
-// of other IMPIs sharing a public identity of the change are notified too,
-// in the background under their own locks.
 func (r *Registrar) notifyChange(ctx context.Context, impi string, ch change) []*outgoing {
 	r.notifySharing(ctx, impi, ch)
 
@@ -89,8 +80,6 @@ func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch cha
 		reason = reasonNoResource
 	}
 
-	// The subscriptions end when the document reports no registration
-	// active, including those of other users of a shared identity.
 	active := slices.ContainsFunc(info.Registrations, func(reg regevent.Registration) bool {
 		return reg.State == regevent.Active
 	})
@@ -121,9 +110,6 @@ func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch cha
 	return out
 }
 
-// notifySharing notifies, in the background, the subscriptions of the other
-// IMPIs that share a public identity of the change: their documents list
-// this IMPI's contacts (TS 24.229 §5.4.2.1.2).
 func (r *Registrar) notifySharing(ctx context.Context, impi string, ch change) {
 	var sets []db.Registration
 
@@ -159,8 +145,6 @@ func (r *Registrar) notifySharing(ctx context.Context, impi string, ch change) {
 	}
 }
 
-// ueGone tells whether a UE's own subscription lost the last of that UE's
-// contacts, and whether the UE removed them itself.
 func ueGone(s db.RegSubscription, st *state, ch change) (gone, byUE bool) {
 	if s.Subscriber != db.SubscriberUE {
 		return false, false
@@ -221,8 +205,6 @@ func (r *Registrar) dropSubscription(ctx context.Context, s db.RegSubscription) 
 	}
 }
 
-// buildNotify builds the next NOTIFY of a subscription and stores its dialog
-// and version. A terminated NOTIFY deletes the subscription.
 func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscription, info *regevent.Reginfo,
 	subState string,
 ) *outgoing {
@@ -248,8 +230,6 @@ func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscrip
 	return o
 }
 
-// newNotify builds the next NOTIFY of a subscription, with the document of
-// info, or the current state when it is nil.
 func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscription, info *regevent.Reginfo,
 	subState string,
 ) (*outgoing, error) {
@@ -343,8 +323,6 @@ func contactURI(local netip.AddrPort, tr sip.Transport) string {
 	return "<" + u.String() + ">"
 }
 
-// reginfo builds the full state of the IMPI's registrations, with the
-// removed contacts of the change reported as terminated.
 func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent.Reginfo, error) {
 	info := regevent.Reginfo{State: regevent.Full}
 
@@ -356,8 +334,6 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent
 		}
 	}
 
-	// Another IMPI's removed sets only show through the identities it shares
-	// with this one.
 	for _, rm := range ch.removed {
 		if rm.reg.IMPI == st.impi {
 			sets = append(sets, rm.reg)
@@ -480,7 +456,6 @@ func elementID(prefix, key string) string {
 	return prefix + hex.EncodeToString(sum[:8])
 }
 
-// send sends NOTIFYs built under a lock that is now released.
 func (r *Registrar) send(out []*outgoing) {
 	for _, o := range out {
 		if _, err := r.cfg.Layer.Request(o.req, &notifyTransaction{r: r, o: o}); err != nil {
@@ -513,8 +488,6 @@ func (t *notifyTransaction) HandleError(err error) {
 	t.r.notifyFailed(t.o)
 }
 
-// endsSubscription tells whether a NOTIFY response ends its subscription
-// (RFC 6665 §4.2.2).
 func endsSubscription(code int) bool {
 	switch {
 	case code == 404, code == 405, code == 410, code == 416, code >= 480 && code <= 485, code == 489, code == 501,
@@ -541,7 +514,6 @@ func (r *Registrar) notifyFailed(o *outgoing) {
 	})
 }
 
-// notified records the remote target a 2xx to a NOTIFY may refresh.
 func (r *Registrar) notified(o *outgoing, res *sip.Response) {
 	if o.final || !res.Header.Has("Contact") {
 		return
@@ -570,7 +542,6 @@ func (r *Registrar) notified(o *outgoing, res *sip.Response) {
 	})
 }
 
-// background runs f under the IMPI's lock, outside the caller's goroutine.
 func (r *Registrar) background(impi string, f func(ctx context.Context)) {
 	if !r.start() {
 		return

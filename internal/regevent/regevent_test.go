@@ -310,8 +310,6 @@ func TestDecodeCharsets(t *testing.T) {
 	}
 }
 
-// Example in the style of 3GPP TS 24.229 with GRUU (RFC 5628) and wildcarded
-// identity (TS 24.229 §7.10) extensions.
 const extendedDoc = `<?xml version="1.0"?>
 <reginfo xmlns="urn:ietf:params:xml:ns:reginfo"
          xmlns:gr="urn:ietf:params:xml:ns:gruuinfo"

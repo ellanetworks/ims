@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// PCSCFRegistration is a UE's registration as the P-CSCF sees it
-// (TS 24.229 §5.2.2): one per private identity and UE address.
 type PCSCFRegistration struct {
 	ID             int64
 	IMPI           string
@@ -22,7 +20,7 @@ type PCSCFRegistration struct {
 	PCSCFAddress   netip.Addr
 	Contacts       []string
 	AssociatedURIs []string
-	Sets           map[string][]string // the P-Associated-URIs of each registered IMPU's implicit set
+	Sets           map[string][]string
 	ServiceRoute   []string
 	ExpiresAt      time.Time
 }
@@ -30,8 +28,6 @@ type PCSCFRegistration struct {
 const pcscfRegistrationColumns = `id, impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
 	contacts, associated_uris, sets, service_route, expires_at`
 
-// SavePCSCFRegistration inserts or replaces the registration of its private
-// identity and UE address.
 func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PCSCFRegistration, error) {
 	if !r.UEAddress.IsValid() || !r.PCSCFAddress.IsValid() {
 		return PCSCFRegistration{}, errors.New("save P-CSCF registration: invalid address")
@@ -93,16 +89,12 @@ func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ListPCSCFRegistrations returns the stored registrations. A row that no
-// longer parses (bad address or JSON) is skipped and deleted, so that one
-// corrupt row does not prevent restoring the others.
 func (d *DB) ListPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, error) {
 	regs, bad, err := d.listPCSCFRegistrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF registrations: %w", err)
 	}
 
-	// The rows are closed by now: the database has a single connection.
 	for _, id := range bad {
 		if _, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id); err != nil {
 			return nil, fmt.Errorf("list P-CSCF registrations: delete unparsable row %d: %w", id, err)
@@ -147,7 +139,6 @@ func (d *DB) listPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, [
 	return regs, bad, nil
 }
 
-// rawPCSCFRegistration is a row before its addresses and lists are parsed.
 type rawPCSCFRegistration struct {
 	PCSCFRegistration
 	ue, pcscf                   string
@@ -206,9 +197,6 @@ func scanPCSCFRegistration(row scanner) (PCSCFRegistration, error) {
 	return raw.parse()
 }
 
-// PCSCFSubscription is the P-CSCF's own subscription to the reg event
-// package of a private identity (TS 24.229 §5.2.3). Dialog is empty until
-// the dialog exists.
 type PCSCFSubscription struct {
 	ID        int64
 	IMPI      string
@@ -222,8 +210,6 @@ type PCSCFSubscription struct {
 
 const pcscfSubscriptionColumns = `id, impi, impu, call_id, local_tag, dialog, version, expires_at`
 
-// SavePCSCFSubscription inserts or replaces the subscription of its private
-// identity.
 func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (PCSCFSubscription, error) {
 	saved, err := scanPCSCFSubscription(d.conn.QueryRowContext(ctx,
 		`INSERT INTO pcscf_subscriptions (impi, impu, call_id, local_tag, dialog, version, expires_at)

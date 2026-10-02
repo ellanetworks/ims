@@ -38,8 +38,6 @@ type Config struct {
 	SCSCF      SCSCF
 	IPsec      IPsec
 
-	// Registrations keeps the registrations and the reg event subscriptions
-	// across restarts; nil keeps them in memory only.
 	Registrations RegistrationStore
 
 	Fallback transaction.Handler
@@ -404,7 +402,6 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		res.Header.Add("Security-Server", s.String())
 		addOptionTag(res, "Supported", secAgree)
 	case res.IsSuccess() && r.in != nil:
-		// The SAs are shortened only when the UE has no registration left.
 		o := registrationOutcome(req, res)
 		o.dereg = o.dereg && ended
 		p.sas.registered(r.in.s, o)
@@ -415,11 +412,6 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	return proxy.Relay
 }
 
-// registered stores the registration a 200 to a REGISTER created, refreshed
-// or ended (TS 24.229 §5.2.2.1, §5.2.5.1), and subscribes to the private
-// identity's reg event on its first registration (§5.2.3). Each registered
-// public identity brings its implicit set; a deregistration ends only that
-// set. It tells whether the UE has no registration left.
 func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) bool {
 	o := registrationOutcome(req, res)
 	impu := registeredIdentity(req)
@@ -498,9 +490,6 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 		return false
 	}
 
-	// A new registration subscribes again even if a subscription is held: the
-	// S-CSCF may have ended it without the P-CSCF hearing of it, and it
-	// replaces the old one (TS 24.229 §5.2.3).
 	if !known {
 		p.subs.stop(r.impi)
 	}
@@ -512,7 +501,6 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	return false
 }
 
-// registeredIdentity is the public identity a REGISTER registers: its To.
 func registeredIdentity(req *sip.Request) string {
 	to, err := req.Header.To()
 	if err != nil {
@@ -522,8 +510,6 @@ func registeredIdentity(req *sip.Request) string {
 	return to.URI.String()
 }
 
-// union keeps, in order and once each, the identities of list that one of
-// the sets holds.
 func union(list []string, sets map[string][]string) []string {
 	var out []string
 
@@ -551,9 +537,6 @@ func later(a, b time.Time) time.Time {
 	return b
 }
 
-// unsubscribeIfIdle drops the P-CSCF's subscription of a private identity it
-// no longer holds a registration of; the S-CSCF's next NOTIFY gets 481 and
-// ends it there.
 func (p *PCSCF) unsubscribeIfIdle(impi string) {
 	if _, ok := p.regs.forIMPI(impi); !ok {
 		p.subs.stop(impi)
@@ -807,7 +790,6 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
-// removeSecAgree removes the sec-agree option tag from a header field.
 func removeSecAgree(req *sip.Request, name string) {
 	var kept []string
 

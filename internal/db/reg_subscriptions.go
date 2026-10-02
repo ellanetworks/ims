@@ -19,9 +19,6 @@ const (
 	SubscriberPCSCF Subscriber = "pcscf"
 )
 
-// RegSubscription is a subscription to the reg event package at the S-CSCF
-// (RFC 3680). Dialog is the stored dialog snapshot; Version is that of the
-// last NOTIFY built.
 type RegSubscription struct {
 	ID           int64
 	IMPI         string
@@ -62,8 +59,6 @@ func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (int64, 
 	return id, nil
 }
 
-// UpdateRegSubscription stores the subscription's dialog, version, remote
-// target and expiry.
 func (d *DB) UpdateRegSubscription(ctx context.Context, s RegSubscription) error {
 	res, err := d.conn.ExecContext(ctx,
 		`UPDATE reg_subscriptions SET remote_target = ?, dialog = ?, version = ?, expires_at = ? WHERE id = ?`,

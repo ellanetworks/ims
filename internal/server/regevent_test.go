@@ -35,8 +35,6 @@ var (
 	e2eXRES = bytes.Repeat([]byte{3}, 8)
 )
 
-// e2e runs the IMS with a fake HSS and a UE that registers over IPsec (with a
-// fake kernel: the protected ports carry plain SIP).
 type e2e struct {
 	t      *testing.T
 	srv    *Server
@@ -193,8 +191,6 @@ func md5Hex(parts ...[]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// registerIPsec registers the UE: a challenge, then the authenticated
-// REGISTER over the new security associations.
 func (e *e2e) registerIPsec(expires string) *sip.Response {
 	e.t.Helper()
 
@@ -235,8 +231,6 @@ func (e *e2e) protectedRegister(expires, auth string) *sip.Response {
 	return e.response(200, "REGISTER")
 }
 
-// response receives a response on the UE's protected server port, keeping
-// the NOTIFYs that overtake it: they take one hop fewer.
 func (e *e2e) response(code int, method string) *sip.Response {
 	e.t.Helper()
 
@@ -259,8 +253,6 @@ func (e *e2e) response(code int, method string) *sip.Response {
 	}
 }
 
-// subscribe sends the UE's reg event SUBSCRIBE over its security
-// associations and returns the 200.
 func (e *e2e) subscribe(serviceRoute string) *sip.Response {
 	e.t.Helper()
 
@@ -281,8 +273,6 @@ func (e *e2e) subscribe(serviceRoute string) *sip.Response {
 	return e.response(200, "SUBSCRIBE")
 }
 
-// notified receives a NOTIFY on the UE's protected server port, answers it
-// and returns its Subscription-State and body.
 func (e *e2e) notified() (string, regevent.Reginfo) {
 	e.t.Helper()
 
@@ -311,8 +301,6 @@ func (e *e2e) notified() (string, regevent.Reginfo) {
 		e.t.Fatalf("reginfo: %v\n%s", err, req.Body)
 	}
 
-	// As the Samsung of the corpus does (ipsec_reg/023), answer from the
-	// protected client port to the Via's port.
 	via, err := req.Header.TopVia()
 	if err != nil {
 		e.t.Fatal(err)
@@ -373,7 +361,6 @@ func (e *e2e) subscriber(s db.Subscriber) (db.RegSubscription, bool) {
 	return db.RegSubscription{}, false
 }
 
-// setUp registers the UE and has both the UE and the P-CSCF subscribed.
 func (e *e2e) setUp(expires string) {
 	e.t.Helper()
 

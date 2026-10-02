@@ -45,10 +45,6 @@ const (
 	BindingRefreshed  BindingEvent = "refreshed"
 )
 
-// Binding is a contact bound to a registration set. IMPU is the identity key
-// of the public identity whose REGISTER created or last refreshed it, and
-// RegisteredAt is when it was created: a new binding of the same contact gets
-// a new one.
 type Binding struct {
 	Contact      Contact
 	CallID       string
@@ -267,8 +263,6 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	return impis, nil
 }
 
-// NextExpiry returns the earliest expiry of a binding or a reg event
-// subscription.
 func (d *DB) NextExpiry(ctx context.Context) (time.Time, bool, error) {
 	var next sql.NullInt64
 

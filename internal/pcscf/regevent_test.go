@@ -25,9 +25,6 @@ const (
 	testTel  = "tel:+15551230001"
 )
 
-// ueAddr is where the UEs of these tests live. The fake core stays on
-// loopback, from which the P-CSCF accepts unprotected requests only while no
-// UE there has security associations.
 var (
 	ueAddr    = netip.MustParseAddr("127.0.0.2")
 	testEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -41,8 +38,6 @@ func (c fakeClock) Now() time.Time {
 	return testEpoch.Add(c.Clock.Now())
 }
 
-// regScene is a P-CSCF without IPsec, with a fake clock, a fake I-CSCF and a
-// fake S-CSCF.
 type regScene struct {
 	t     *testing.T
 	icscf *siptest.Socket
@@ -104,7 +99,6 @@ func (s *regScene) contact() string {
 	return "<sip:ue@" + s.ue.Addr().String() + ">"
 }
 
-// register sends a REGISTER of testIMPI and returns it as the I-CSCF gets it.
 func (s *regScene) register(edit func(*sip.Request)) (*sip.Request, sip.Flow) {
 	s.t.Helper()
 
@@ -127,8 +121,6 @@ func (s *regScene) register(edit func(*sip.Request)) (*sip.Request, sip.Flow) {
 	return s.icscf.RecvRequest()
 }
 
-// registered registers testIMPI for expires seconds and returns the Path the
-// P-CSCF inserted and its own SUBSCRIBE.
 func (s *regScene) registered(expires int) (sip.URI, *sip.Request, sip.Flow) {
 	s.t.Helper()
 
@@ -157,8 +149,6 @@ func onlyPath(t *testing.T, req *sip.Request) sip.URI {
 	return paths[0].URI
 }
 
-// answerRegister answers a REGISTER 200 as the S-CSCF would, through the
-// I-CSCF.
 func answerRegister(icscf *siptest.Socket, scscf netip.AddrPort, req *sip.Request, f sip.Flow, expires int) {
 	res := sip.NewResponse(req, 200, "")
 	_ = res.Header.SetToTag(sip.NewTag())
@@ -172,7 +162,6 @@ func answerRegister(icscf *siptest.Socket, scscf netip.AddrPort, req *sip.Reques
 	icscf.Send(f.Transport, f.Remote, res)
 }
 
-// ownSub is the fake S-CSCF's side of the P-CSCF's own subscription.
 type ownSub struct {
 	sub   *sip.Request
 	tag   string
@@ -181,8 +170,6 @@ type ownSub struct {
 	pcscf netip.AddrPort
 }
 
-// answerSubscribe answers the P-CSCF's SUBSCRIBE 200 through the I-CSCF, with
-// the fake S-CSCF as the dialog's remote target.
 func answerSubscribe(icscf, scscf *siptest.Socket, sub *sip.Request, f sip.Flow, expires int) *ownSub {
 	res := sip.NewResponse(sub, 200, "")
 	tag := sip.NewTag()
@@ -194,7 +181,6 @@ func answerSubscribe(icscf, scscf *siptest.Socket, sub *sip.Request, f sip.Flow,
 	return &ownSub{sub: sub, tag: tag, from: scscf, pcscf: f.Remote}
 }
 
-// notify sends a NOTIFY of the subscription and returns the response.
 func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip.Response {
 	t.Helper()
 
@@ -234,8 +220,6 @@ func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip
 
 func u32(v uint32) *uint32 { return &v }
 
-// reginfo describes testIMPU and testTel, each with the given contacts in the
-// given state.
 func reginfo(version uint64, impuState, telState string, contacts map[string]string) *regevent.Reginfo {
 	reg := func(aor, id, state string) regevent.Registration {
 		r := regevent.Registration{AOR: aor, ID: id, State: state}
@@ -382,7 +366,6 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 
 	eventually(t, "the refresh to be scheduled", func() bool { return s.clock.Pending() == 1 })
 
-	// Longer than 1200 s: 600 s before expiry.
 	s.clock.Advance(2399 * time.Second)
 	s.scscf.RecvNone(quiet)
 
@@ -409,7 +392,6 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 		t.Errorf("refresh without P-Asserted-Identity or Event: %s", refresh)
 	}
 
-	// 1200 s or shorter: at half-time.
 	res := sip.NewResponse(refresh, 200, "")
 	res.Header.Add("Expires", "1000")
 	s.scscf.Send(rf.Transport, rf.Remote, res)
@@ -426,7 +408,6 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 		t.Fatalf("got %s %v, want the second refresh", refresh.StartLine(), cseq)
 	}
 
-	// A 481 starts a new subscription, through the I-CSCF.
 	s.scscf.Send(rf.Transport, rf.Remote, sip.NewResponse(refresh, 481, ""))
 
 	initial, _ := s.icscf.RecvRequest()
@@ -555,7 +536,6 @@ func TestOwnNotifyUnknownDialog(t *testing.T) {
 	wantStatus(t, o.notify(t, "active;expires=600000", nil), 481)
 }
 
-// ipsecRegScene is an IPsec scene whose UE lives on ueAddr.
 func newIPsecRegScene(t *testing.T) (*ipsecScene, *ue) {
 	t.Helper()
 
@@ -565,9 +545,6 @@ func newIPsecRegScene(t *testing.T) (*ipsecScene, *ue) {
 	return s, newUEAt(t, ueAddr, 25656)
 }
 
-// registerOverIPsec registers u and answers the P-CSCF's own SUBSCRIBE; it
-// returns the Path's flow token and the fake S-CSCF's side of the
-// subscription.
 func (s *ipsecScene) registerOverIPsec(u *ue) (string, *ownSub) {
 	s.t.Helper()
 
@@ -596,8 +573,6 @@ func ueContact(u *ue) string {
 	return "<sip:ue@" + u.us.Addr().String() + ">"
 }
 
-// ueSubscribe sends the UE's initial SUBSCRIBE over its security
-// associations.
 func ueSubscribe(t *testing.T, u *ue, to netip.AddrPort, edit func(*sip.Request)) {
 	t.Helper()
 
@@ -678,10 +653,8 @@ func TestUESubscribe(t *testing.T) {
 	}
 }
 
-// ueDialog is a reg event subscription of the UE through the P-CSCF, as seen
-// by the fake S-CSCF.
 type ueDialog struct {
-	sub      *sip.Request // as the S-CSCF got it
+	sub      *sip.Request
 	ueTag    string
 	scscfTag string
 	rr       []string
@@ -719,7 +692,6 @@ func (s *ipsecScene) subscribeUE(t *testing.T, u *ue) *ueDialog {
 	return d
 }
 
-// notify sends the S-CSCF's in-dialog NOTIFY to the UE.
 func (d *ueDialog) notify(t *testing.T, s *ipsecScene, cseq int, routes []string) {
 	t.Helper()
 
@@ -755,7 +727,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		t.Fatalf("installed = %v, want one set", sets)
 	}
 
-	// The S-CSCF's NOTIFY reaches the UE over its security associations.
 	d.notify(t, s, 1, d.rr)
 
 	notify, f := u.us.RecvRequest()
@@ -767,9 +738,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		t.Fatalf("NOTIFY from %s, want the protected client port %s", f.Remote, want)
 	}
 
-	// The Via names the protected server port, and the UE answers there from
-	// its protected client port, as the Samsung of the corpus does
-	// (open5gs/ipsec_reg/023).
 	via, err := notify.Header.TopVia()
 	if err != nil || via.Port != s.ps.Port() {
 		t.Fatalf("NOTIFY Via %s, %v; want the protected server port %d", via, err, s.ps.Port())
@@ -778,7 +746,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 	u.uc.Send(sip.UDP, s.ps, sip.NewResponse(notify, 200, ""))
 	wantStatus(t, first(s.scscf.RecvResponse()), 200)
 
-	// The UE's re-SUBSCRIBE goes to the S-CSCF's Contact.
 	routes := slices.Clone(d.rr)
 	slices.Reverse(routes)
 
@@ -802,7 +769,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 	s.scscf.Send(rf.Transport, rf.Remote, sip.NewResponse(refresh, 200, ""))
 	wantStatus(t, first(u.us.RecvResponse()), 200)
 
-	// The UE cannot send through another flow's Route.
 	forged := slices.Clone(routes)
 	for i, e := range forged {
 		forged[i] = strings.Replace(e, token+"@", "otherflow@", 1)
@@ -815,7 +781,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 403)
 	s.scscf.RecvNone(quiet)
 
-	// A flow token without a flow.
 	unknown := make([]string, len(d.rr))
 	for i, e := range d.rr {
 		unknown[i] = strings.Replace(e, token+"@", "nosuchflow@", 1)
@@ -921,14 +886,11 @@ func TestOwnSubscriptionFollowsTheRegistrations(t *testing.T) {
 	_, sub, f := s.registered(600)
 	o := answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	// A re-registration keeps the subscription.
 	req, rf := s.register(nil)
 	answerRegister(s.icscf, s.scscf.Addr(), req, rf, 600)
 	wantStatus(t, first(s.ue.RecvResponse()), 200)
 	s.icscf.RecvNone(quiet)
 
-	// Deregistering the last registration drops it: the S-CSCF's NOTIFY gets
-	// 481.
 	req, rf = s.register(func(r *sip.Request) { r.Header.Set("Expires", "0") })
 	answerRegister(s.icscf, s.scscf.Addr(), req, rf, 0)
 	wantStatus(t, first(s.ue.RecvResponse()), 200)
@@ -939,7 +901,6 @@ func TestOwnSubscriptionFollowsTheRegistrations(t *testing.T) {
 
 	wantStatus(t, o.notify(t, "active;expires=3000", reginfo(1, regevent.Active, regevent.Active, nil)), 481)
 
-	// A new registration subscribes again.
 	s.registered(600)
 }
 
@@ -949,8 +910,6 @@ func TestNewRegistrationSubscribesAgain(t *testing.T) {
 	_, sub, f := s.registered(600)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	// The registration is lost, as on an expiry the P-CSCF heard nothing of;
-	// the subscription is still held.
 	s.p.regs.remove(testIMPI, s.ue.Addr().Addr())
 
 	_, again, _ := s.registered(600)
@@ -996,7 +955,6 @@ func TestChallengedRegistrationKeepsItsFlowToken(t *testing.T) {
 	}
 }
 
-// answerRegisterWith answers a REGISTER 200 with the given implicit set.
 func answerRegisterWith(s *regScene, req *sip.Request, f sip.Flow, associated ...string) {
 	res := sip.NewResponse(req, 200, "")
 	_ = res.Header.SetToTag(sip.NewTag())
@@ -1068,9 +1026,6 @@ func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
 	_, sub, f := s.registered(600)
 	o := answerSubscribe(s.icscf, s.scscf, sub, f, 600000)
 
-	// The UE moved to a new contact; the S-CSCF's NOTIFY reports the old one
-	// terminated and the new one, at the UE's address, before the 200 to the
-	// REGISTER reaches the P-CSCF.
 	mine := "sip:ue@" + s.ue.Addr().String()
 	moved := "sip:ue@" + netip.AddrPortFrom(ueAddr, 6000).String()
 

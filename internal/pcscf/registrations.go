@@ -15,8 +15,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// RegistrationStore keeps the P-CSCF's registrations and its own reg event
-// subscriptions across restarts.
 type RegistrationStore interface {
 	SavePCSCFRegistration(context.Context, db.PCSCFRegistration) (db.PCSCFRegistration, error)
 	DeletePCSCFRegistration(context.Context, int64) error
@@ -31,8 +29,6 @@ type regKey struct {
 	ue   netip.Addr
 }
 
-// flow is where requests to a registered UE go: over its security
-// associations when it has some, else to the address it registered from.
 type flow struct {
 	impi      string
 	transport sip.Transport
@@ -47,14 +43,8 @@ type retired struct {
 	expires time.Time
 }
 
-// pendingToken is how long a flow token waits for the 200 to the REGISTER
-// that got it: the authentication of an IMS-AKA registration.
 const pendingToken = DefaultAwaitAuth
 
-// registrations holds the UEs registered through this P-CSCF (TS 24.229
-// §5.2.2.1). A removed registration's flow token keeps mapping to its flow
-// for the grace, so that the NOTIFY reporting the removal still reaches the
-// UE.
 type registrations struct {
 	store RegistrationStore
 	log   *slog.Logger
@@ -118,10 +108,6 @@ func (rs *registrations) add(r *db.PCSCFRegistration) {
 	delete(rs.retired, r.FlowToken)
 }
 
-// token returns the flow token of the UE's registration. Until a 200 stores
-// one, the token given to the UE's first REGISTER is kept for the next ones
-// of the registration, so that every Path of it is the same
-// (TS 24.229 §5.2.2.1).
 func (rs *registrations) token(impi string, ue netip.Addr) string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -150,7 +136,6 @@ func (rs *registrations) token(impi string, ue netip.Addr) string {
 	return token
 }
 
-// save stores the registration a 200 to a REGISTER created or refreshed.
 func (rs *registrations) save(r db.PCSCFRegistration) {
 	r.UEAddress = netip.AddrPortFrom(r.UEAddress.Addr().Unmap(), r.UEAddress.Port())
 
@@ -181,7 +166,6 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	rs.add(&r)
 }
 
-// remove deletes a registration; its flow token stays usable for the grace.
 func (rs *registrations) remove(impi string, ue netip.Addr) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -213,8 +197,6 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 	return *r, true
 }
 
-// update applies f to the private identity's registrations, stores the ones
-// it keeps and removes the ones it rejects. It returns the removed ones.
 func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) bool) []db.PCSCFRegistration {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -266,8 +248,6 @@ func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, 
 	return *r, true
 }
 
-// fromSource returns the registration of a UE without security
-// associations: the one it registered from that address and port.
 func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -284,7 +264,6 @@ func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, b
 	return db.PCSCFRegistration{}, false
 }
 
-// forIMPI returns the private identity's registration that lasts longest.
 func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -304,7 +283,6 @@ func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
 	return *best, true
 }
 
-// flow returns the flow of a flow token, current or retired.
 func (rs *registrations) flow(token string) (flow, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -332,8 +310,6 @@ func flowOf(r *db.PCSCFRegistration) flow {
 	}
 }
 
-// defaultIdentity is the first SIP URI of the P-Associated-URI list, else its
-// first entry (TS 24.229 §5.2.2.1).
 func defaultIdentity(associated []string) string {
 	for _, a := range associated {
 		if u, err := sip.ParseURI(a); err == nil && u.IsSIP() {

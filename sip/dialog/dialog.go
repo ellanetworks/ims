@@ -576,19 +576,18 @@ func initialSeq() uint32 {
 	return binary.BigEndian.Uint32(b[:])%(1<<31-1) + 1
 }
 
-// Snapshot is a dialog's state, for storage. Its fields are plain values so that it can be stored as JSON.
 type Snapshot struct {
 	ID            ID
 	State         State
-	Local         string   // local address (name-addr with tag)
-	Remote        string   // remote address (name-addr with tag)
-	Target        string   // remote target URI
-	Route         []string // route set
+	Local         string
+	Remote        string
+	Target        string
+	Route         []string
 	LocalSeq      uint32
 	HaveLocalSeq  bool
 	RemoteSeq     uint32
 	HaveRemoteSeq bool
-	Origin        sip.CSeq // the CSeq of the request that created the dialog
+	Origin        sip.CSeq
 }
 
 func (d *Dialog) Snapshot() Snapshot {

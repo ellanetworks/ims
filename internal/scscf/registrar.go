@@ -63,7 +63,6 @@ type Config struct {
 	Diameter Diameter
 	DB       *db.DB
 
-	// Layer sends the NOTIFYs, from one of Listeners: the S-CSCF's.
 	Layer     *transaction.Layer
 	Listeners []netip.AddrPort
 
@@ -128,15 +127,10 @@ func New(cfg Config) *Registrar {
 	return r
 }
 
-// Start arms the sweep of the bindings and subscriptions stored before a
-// restart. The server calls it once every role can receive the NOTIFYs the
-// sweep sends.
 func (r *Registrar) Start(ctx context.Context) {
 	r.scheduleSweep(ctx)
 }
 
-// Register handles a REGISTER. respond sends the response; the NOTIFYs the
-// registration causes follow it.
 func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
 	if !r.start() {
 		respond(retryLater(req))
@@ -310,8 +304,6 @@ func (r *Registrar) dropChallenge(impi string, ch *challenge) {
 	}
 }
 
-// scheduleSweep arms the sweep at the earliest binding or subscription
-// expiry.
 func (r *Registrar) scheduleSweep(ctx context.Context) {
 	next, ok, err := r.cfg.DB.NextExpiry(ctx)
 	if err != nil {
@@ -324,7 +316,6 @@ func (r *Registrar) scheduleSweep(ctx context.Context) {
 	}
 }
 
-// armSweep makes the sweep run at the latest at the given time.
 func (r *Registrar) armSweep(at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -372,8 +363,6 @@ func (r *Registrar) runSweep() {
 	}
 }
 
-// sweepExpired removes the expired bindings and subscriptions, and tells
-// whether an IMPI was skipped because it was busy.
 func (r *Registrar) sweepExpired(ctx context.Context) bool {
 	impis, err := r.cfg.DB.ListExpiredIMPIs(ctx, r.clock.Now())
 	if err != nil {
@@ -391,8 +380,6 @@ func (r *Registrar) sweepExpired(ctx context.Context) bool {
 
 		out, expired := r.sweepIMPI(ctx, impi)
 
-		// The NOTIFYs leave at once; the SARs follow without holding up the
-		// other IMPIs' NOTIFYs, the IMPI staying locked until they are done.
 		r.send(out)
 
 		if len(expired) == 0 || !r.start() {
@@ -416,9 +403,6 @@ func (r *Registrar) sweepExpired(ctx context.Context) bool {
 	return skipped
 }
 
-// sweepIMPI removes the IMPI's expired bindings and subscriptions. It returns
-// the NOTIFYs reporting them, and the IMPUs of the sets that expired, for
-// the HSS.
 func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []string) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
@@ -467,8 +451,6 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 	return append(out, r.notifyChange(ctx, impi, ch)...), expiredIMPUs
 }
 
-// expireSubscriptions ends the IMPI's expired subscriptions with a terminated
-// NOTIFY.
 func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi string) []*outgoing {
 	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
 	if err != nil {

@@ -11,9 +11,6 @@ import (
 	"github.com/ellanetworks/ims/internal/regevent"
 )
 
-// Terminate handles a Registration-Termination-Request (TS 29.228 §6.1.3,
-// TS 24.229 §5.4.1.5). Once local state is removed it returns the
-// Associated-Identities processed, for the RTA; the NOTIFYs follow.
 func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error) {
 	if !r.start() {
 		return nil, errors.New("registrar closed")
@@ -81,8 +78,6 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 
 	ch := change{reason: subReason}
 
-	// SERVER_CHANGE de-registers every registration of the subscription
-	// (TS 29.228 §6.1.3.1), whatever Public-Identities the RTR names.
 	if reason == cx.ReasonServerChange {
 		keys = nil
 	}

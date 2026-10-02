@@ -190,8 +190,6 @@ func validateState(state string) error {
 	return nil
 }
 
-// validateRegistration checks a registration's own attributes, not its
-// contacts.
 func validateRegistration(reg Registration) error {
 	if reg.AOR == "" {
 		return errors.New("registration without aor")
@@ -243,8 +241,6 @@ func validEvent(e Event) bool {
 	return false
 }
 
-// Decoding collects attributes with ",any,attr" so that only unprefixed
-// attributes are read: a named attr field would also match e.g. gr:id.
 type attrs []xml.Attr
 
 func (a attrs) get(local string) (string, bool) {
@@ -272,7 +268,6 @@ func (a attrs) uint32(elem, local string) (*uint32, error) {
 		return nil, nil
 	}
 
-	// RFC 3680 types these xs:unsignedLong; larger values are clamped.
 	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("%s: invalid %s attribute %q: %w", elem, local, v, err)
@@ -332,8 +327,6 @@ func Decode(b []byte) (Reginfo, error) {
 	return r, nil
 }
 
-// charsetReader accepts the charsets other than UTF-8 that a reginfo
-// document may declare: US-ASCII, a subset of UTF-8, and ISO-8859-1.
 func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	switch strings.ToLower(strings.TrimSpace(label)) {
 	case "us-ascii", "ascii", "iso646-us", "ansi_x3.4-1968":
@@ -345,7 +338,6 @@ func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	return nil, fmt.Errorf("unsupported charset %q", label)
 }
 
-// latin1Reader converts ISO-8859-1 to UTF-8: each byte is the code point.
 func latin1Reader(input io.Reader) (io.Reader, error) {
 	in, err := io.ReadAll(input)
 	if err != nil {
@@ -381,8 +373,6 @@ func fromXML(doc inReginfo) (Reginfo, error) {
 		return r, err
 	}
 
-	// Like Kamailio's ims_registrar_pcscf, an invalid registration or
-	// contact is skipped rather than failing the whole document.
 	for _, xr := range doc.Registrations {
 		reg, err := registrationFromXML(xr)
 		if err != nil {

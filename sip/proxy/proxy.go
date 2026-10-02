@@ -39,8 +39,6 @@ type Config struct {
 
 	Port uint16
 
-	// LocalPorts are further ports of this proxy, e.g. the P-CSCF's
-	// protected ports, whose Route entries it removes.
 	LocalPorts []uint16
 
 	TimerC time.Duration
@@ -74,9 +72,6 @@ type RecordRoute struct {
 
 	Upstream netip.AddrPort
 
-	// Double inserts two entries even when both sides are the same, and
-	// UpstreamParams marks the entry facing the request's sender, so that
-	// the direction of later requests can be told from their Route.
 	Double         bool
 	UpstreamParams sip.Params
 }

@@ -142,8 +142,6 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	return s
 }
 
-// newProxy builds the P-CSCF's proxy core, which treats the protected ports
-// as its own.
 func (s *ipsecScene) newProxy() *proxy.Proxy {
 	return proxy.New(proxy.Config{
 		Layer: s.layer, Port: s.pcscf.Port(), Supported: []string{secAgree},

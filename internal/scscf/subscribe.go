@@ -21,17 +21,12 @@ const (
 	maxSubscriptionExpires     = 1000000 * time.Second
 )
 
-// IsRegEvent tells whether a request is for the reg event package.
 func IsRegEvent(req *sip.Request) bool {
 	event, _, err := sip.ParseTokenParams(req.Header.Get("Event"))
 
 	return err == nil && strings.EqualFold(event, "reg")
 }
 
-// Subscribe handles a SUBSCRIBE to the reg event package (TS 24.229
-// §5.4.2.1.1). The caller has removed its own Routes and passes them: a
-// UE's SUBSCRIBE carries the Service-Route of its registration. respond
-// sends the response; NOTIFYs follow it.
 func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {
 	if !r.start() {
 		respond(retryLater(req))
@@ -143,8 +138,6 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		subState = "terminated;reason=" + reasonTimeout
 	}
 
-	// The NOTIFY is built before anything is stored: a SUBSCRIBE that gets a
-	// 200 always gets its NOTIFY (RFC 6665 §4.2.2).
 	o, err := r.newNotify(ctx, st, &s, nil, subState)
 	if err != nil {
 		r.log.Warn("failed to build a NOTIFY", slog.String("impi", sr.impi), slog.Any("error", err))
@@ -173,9 +166,6 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 	return res, []*outgoing{o}
 }
 
-// authorize finds the subscriber and the user (§5.4.2.1.1 steps 1 and 4):
-// the UE, asserted as a non-barred IMPU of the user, or the P-CSCF, asserted
-// as the Path of one of the IMPU's bindings.
 func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string, routes []sip.URI,
 ) (*subscribeRequest, *sip.Response) {
 	if accept := req.Header.Values("Accept"); len(accept) > 0 && !accepts(req.Header.Elements("Accept")) {
@@ -218,8 +208,6 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		}
 	}
 
-	// The UE's user is the one whose registration gave the Service-Route the
-	// SUBSCRIBE came along (§5.4.2.1.1 step 4 a); a shared IMPU has several.
 	if impi, ok := serviceRouteUser(regs, routes); ok {
 		regs = slices.DeleteFunc(slices.Clone(regs), func(reg db.Registration) bool { return reg.IMPI != impi })
 	}
@@ -238,8 +226,6 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 	return nil, sip.NewResponse(req, 403, "")
 }
 
-// serviceRouteUser returns the IMPI of the binding whose Service-Route
-// (orig-<contact ID>) the request came along.
 func serviceRouteUser(regs []db.Registration, routes []sip.URI) (string, bool) {
 	for _, u := range routes {
 		id, ok := strings.CutPrefix(u.User, "orig-")
@@ -264,8 +250,6 @@ func serviceRouteUser(regs []db.Registration, routes []sip.URI) (string, bool) {
 	return "", false
 }
 
-// accepts tells whether an Accept header field admits reginfo documents,
-// media ranges included (RFC 3261 §20.1).
 func accepts(types []string) bool {
 	for _, t := range types {
 		mt, _, _ := strings.Cut(t, ";")
@@ -328,9 +312,6 @@ func subscriptionExpires(req *sip.Request) (time.Duration, *sip.Response) {
 	return min(time.Duration(v)*time.Second, maxSubscriptionExpires), nil
 }
 
-// replaceDuplicates deletes the subscriptions a new one replaces: same IMPU,
-// subscriber and remote target. UEs subscribe again with a new Call-ID after
-// a reboot.
 func (r *Registrar) replaceDuplicates(ctx context.Context, s db.RegSubscription) {
 	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, s.IMPI)
 	if err != nil {

@@ -454,10 +454,6 @@ func (a *associations) registered(s *saSet, o outcome) {
 	a.extend(s, expires)
 }
 
-// requestFlow returns the flow for a request to a UE: from the P-CSCF's
-// protected client port to the UE's protected server port
-// (TS 24.229 §5.2.2.2 1A, TS 33.203 §7.1). It uses the newest set once the UE
-// has used it, and the old one until then (TS 33.203 §7.4).
 func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -496,8 +492,6 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport)
 	}, true
 }
 
-// deregistered shortens a UE's sets to the grace, on a deregistration by the
-// network (TS 24.229 §5.2.5.2).
 func (a *associations) deregistered(impi string, ue netip.Addr) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

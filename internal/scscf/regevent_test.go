@@ -17,24 +17,21 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// subscriber subscribes to the reg event package of an IMPU: the UE, or the
-// P-CSCF.
 type subscriber struct {
 	h       *harness
-	sock    *siptest.Socket // sends the SUBSCRIBEs and gets their responses
-	inbox   *siptest.Socket // the Contact, where the NOTIFYs arrive
+	sock    *siptest.Socket
+	inbox   *siptest.Socket
 	contact string
-	impu    string // the Request-URI
-	pai     string // P-Asserted-Identity, also the From
+	impu    string
+	pai     string
 	accept  string
-	route   string // a Route, e.g. the Service-Route
+	route   string
 	callID  string
 	fromTag string
 	toTag   string
 	cseq    int
 }
 
-// fakeProxy is a P-CSCF whose Path URI, flow token included, is its socket.
 type fakeProxy struct {
 	sock  *siptest.Socket
 	inbox *siptest.Socket
@@ -115,8 +112,6 @@ func (s *subscriber) request(expires string) *sip.Request {
 	return req
 }
 
-// subscribe sends a SUBSCRIBE, in the dialog once one exists, and returns
-// its final response.
 func (s *subscriber) subscribe(expires string) *sip.Response {
 	s.h.t.Helper()
 
@@ -187,8 +182,6 @@ func (s *subscriber) recvNotify() notification {
 	return s.answerNotify(200)
 }
 
-// answerNotify receives the next NOTIFY of the subscription, checks its
-// headers, and answers it with code on the flow it came on.
 func (s *subscriber) answerNotify(code int) notification {
 	t := s.h.t
 	t.Helper()
@@ -266,7 +259,6 @@ func (h *harness) subscriptions() []db.RegSubscription {
 	return subs
 }
 
-// waitSubscriptions waits for the IMPI to have n subscriptions.
 func (h *harness) waitSubscriptions(n int) []db.RegSubscription {
 	h.t.Helper()
 
@@ -286,7 +278,6 @@ func (h *harness) waitSubscriptions(n int) []db.RegSubscription {
 	}
 }
 
-// subscribed subscribes and takes the first NOTIFY.
 func (s *subscriber) subscribed() notification {
 	s.h.t.Helper()
 
@@ -669,8 +660,6 @@ func deref(p *uint32) any {
 	return *p
 }
 
-// checkIDs checks that registration and contact ids are set and unique
-// within the document (RFC 3680 §5.1).
 func checkIDs(t *testing.T, n notification) {
 	t.Helper()
 
@@ -724,8 +713,6 @@ func TestNotifySharedIMPU(t *testing.T) {
 	n.contact(t, testAlias, tablet.contact)
 }
 
-// subscribeBoth registers u through the P-CSCF p with the given options, and
-// subscribes the UE and the P-CSCF.
 func (h *harness) subscribeBoth(u *ue, p *fakeProxy, o registerOptions) (ueSub, pcscfSub *subscriber) {
 	h.t.Helper()
 
@@ -1202,8 +1189,6 @@ func TestRegisterReportsExpiredContacts(t *testing.T) {
 
 	_, pcscfSub := h.subscribeBoth(u, p, registerOptions{contact: "<" + a + ">;expires=300, <" + b + ">"})
 
-	// The REGISTER holds the IMPI while a's binding expires: the sweep skips
-	// it, and the REGISTER reports it.
 	if !h.reg.tryLock(testIMPI) {
 		t.Fatal("IMPI busy")
 	}
@@ -1231,8 +1216,6 @@ func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
 	s.impu = testAlias
 	s.subscribed()
 
-	// The tablet's registration is reported to the phone's subscriber: its
-	// document lists the shared identity's contacts.
 	tablet := h.newUE()
 	tablet.impi = "tablet@" + homeDomain
 	tablet.impu = testAlias
@@ -1243,8 +1226,6 @@ func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
 	n := s.recvNotify()
 	wantContact(t, n.contact(t, testAlias, tablet.contact), regevent.Active, regevent.Registered)
 
-	// The phone deregisters: its subscription stays active while the shared
-	// identity has the tablet's contact (§5.4.2.1.2).
 	wantStatus(t, phone.send(registerOptions{auth: phone.protected(testNonce(), testVector.XRES), contact: "*", expires: "0"}), 200)
 	h.hss.nextSAR(t)
 
@@ -1275,8 +1256,6 @@ func TestSubscribeUserFromTheServiceRoute(t *testing.T) {
 
 	h.hss.nextSAR(t)
 
-	// The tablet subscribes to the shared identity along its Service-Route:
-	// its own user is chosen, though the phone's owns the identity too.
 	s := h.ueSubscriber(tablet)
 	s.impu = testAlias
 	s.pai = "<" + testAlias + ">"
@@ -1306,8 +1285,6 @@ func TestNewBindingGetsANewContactID(t *testing.T) {
 
 	first := s.recvNotify().contact(t, secondIMPU, u.contact)
 
-	// The contact stays bound in the first set, so its row survives the
-	// deregistration of the second.
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)
 	h.hss.nextSAR(t)
 	wantContact(t, s.recvNotify().contact(t, secondIMPU, u.contact), regevent.Terminated, regevent.Unregistered)
@@ -1333,8 +1310,6 @@ func TestUnchangedBindingKeepsItsEvent(t *testing.T) {
 	u.impu = testMSISDN
 	_, s := h.subscribeBoth(u, p, registerOptions{contact: "<" + u.contact + ">, <" + other + ">"})
 
-	// Refreshing one contact through another IMPU of the set leaves the
-	// other contact's event as it was (§5.4.2.1.2 4 e III).
 	u.impu = testAlias
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + other + ">"}), 200)
 
@@ -1365,7 +1340,6 @@ func TestSubscribeWithoutNotifyIsRefused(t *testing.T) {
 	u.register(registerOptions{})
 	h.hss.nextSAR(t)
 
-	// No listener can send the NOTIFY.
 	h.cfg.Listeners = nil
 	h.restart()
 

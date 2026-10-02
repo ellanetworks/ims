@@ -325,8 +325,6 @@ type harness struct {
 	reg   *Registrar
 	scscf netip.AddrPort
 
-	// sipClock drives the transaction layer's timers, apart from clock so
-	// that advancing the registrar's time does not retransmit NOTIFYs.
 	sipClock *siptest.Clock
 	cfg      Config
 	pcscf    *fakePCSCF
@@ -350,8 +348,6 @@ func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Re
 	})
 }
 
-// routes are the request's Routes, which the S-CSCF's proxy would have
-// removed.
 func routes(req *sip.Request) []sip.URI {
 	var out []sip.URI
 
@@ -448,7 +444,6 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// start creates the registrar on the harness's database and layer.
 func (h *harness) start() {
 	h.reg = New(h.cfg)
 	h.t.Cleanup(h.reg.Close)
@@ -457,8 +452,6 @@ func (h *harness) start() {
 	h.reg.Start(h.t.Context())
 }
 
-// restart closes the registrar and creates a new one, as a restart of the
-// process would.
 func (h *harness) restart() {
 	h.reg.Close()
 	h.start()
@@ -494,8 +487,6 @@ type ue struct {
 	cseq    int
 }
 
-// newUE returns a UE that sends from sock and whose contact is inbox, where
-// the S-CSCF's NOTIFYs arrive.
 func (h *harness) newUE() *ue {
 	sock := siptest.NewSocket(h.t, netip.AddrPortFrom(loopback, 0))
 	inbox := siptest.NewSocket(h.t, netip.AddrPortFrom(loopback, 0))

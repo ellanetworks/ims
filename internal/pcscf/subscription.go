@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	// subscriptionExpires is longer than any registration (TS 24.229 §5.2.3).
 	subscriptionExpires = 600000 * time.Second
 
 	refreshAhead     = 600 * time.Second
@@ -41,8 +40,6 @@ func (systemClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 	return time.AfterFunc(d, f)
 }
 
-// subscription is the P-CSCF's own subscription to the reg event package of
-// a private identity (TS 24.229 §5.2.3).
 type subscription struct {
 	impi      string
 	impu      string
@@ -141,8 +138,6 @@ func (ss *subscriptions) has(impi string) bool {
 	return ok
 }
 
-// start sends the initial SUBSCRIBE of a private identity, to the I-CSCF
-// (TS 24.229 §5.2.3).
 func (ss *subscriptions) start(impi string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -283,7 +278,6 @@ func (ss *subscriptions) failed(s *subscription, req *sip.Request, code int) {
 
 		return
 	case !s.expires.After(ss.p.clock.Now()):
-		// Past the most recently known Expires, subscribe anew (§5.2.3).
 		ss.removeLocked(s)
 		ss.mu.Unlock()
 		ss.start(s.impi)
@@ -296,7 +290,6 @@ func (ss *subscriptions) failed(s *subscription, req *sip.Request, code int) {
 	ss.mu.Unlock()
 }
 
-// stop drops the subscription of a private identity.
 func (ss *subscriptions) stop(impi string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -315,8 +308,6 @@ func toTag(req *sip.Request) string {
 	return to.Tag()
 }
 
-// schedule arms the refresh: 600 s before expiry when the subscription is
-// longer than 1200 s, else at half-time (TS 24.229 §5.2.3).
 func (ss *subscriptions) schedule(s *subscription) {
 	if s.timer != nil {
 		s.timer.Stop()
@@ -336,9 +327,6 @@ func (ss *subscriptions) schedule(s *subscription) {
 	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.refresh(s) })
 }
 
-// refresh sends a re-SUBSCRIBE while the P-CSCF holds a registration of the
-// private identity; otherwise the subscription is left to expire (TS 24.229
-// §5.2.4).
 func (ss *subscriptions) refresh(s *subscription) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -436,7 +424,6 @@ func (ss *subscriptions) saveLocked(s *subscription) {
 	}
 }
 
-// match returns the subscription a NOTIFY belongs to.
 func (ss *subscriptions) match(req *sip.Request) *subscription {
 	id := dialog.RequestID(req)
 
@@ -452,8 +439,6 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	return nil
 }
 
-// notified handles a NOTIFY of the P-CSCF's own subscription (TS 24.229
-// §5.2.4, §5.2.5.2).
 func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Response {
 	state, params, err := sip.ParseTokenParams(req.Header.Get("Subscription-State"))
 	if err != nil {
@@ -542,10 +527,6 @@ func mediaType(ct string) string {
 	return strings.TrimSpace(mt)
 }
 
-// apply updates the private identity's registrations from a reginfo
-// document: terminated contacts and identities are removed, and a
-// registration left without either is removed and its SAs shortened
-// (TS 24.229 §5.2.5.2).
 func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 	now := p.clock.Now()
 
@@ -564,9 +545,6 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			for _, c := range reg.Contacts {
 				uri, ok := matchURI(r.Contacts, c.URI)
 				if !ok {
-					// A contact at the UE's address that the P-CSCF does not
-					// know yet, e.g. one whose 200 the NOTIFY overtook, keeps
-					// the identity and the registration.
 					if c.State == regevent.Active && reg.State != regevent.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
 						here, unknown = true, true
 					}
@@ -591,7 +569,6 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 
 			switch {
 			case here && !listed:
-				// An identity registered for the UE (§5.2.4 3)).
 				r.AssociatedURIs = append(r.AssociatedURIs, reg.AOR)
 			case !here && listed:
 				r.AssociatedURIs = slices.DeleteFunc(r.AssociatedURIs, func(a string) bool { return a == aor })
@@ -628,7 +605,6 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 	}
 }
 
-// contactAt tells whether a contact URI is at the UE's address.
 func contactAt(contact string, ue netip.Addr) bool {
 	u, err := sip.ParseURI(contact)
 	if err != nil {

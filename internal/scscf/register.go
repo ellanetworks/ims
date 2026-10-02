@@ -447,9 +447,6 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	return res
 }
 
-// bind stores the request's contacts in a set. It returns the bindings it
-// removed: those the request deregistered and those found expired, which the
-// sweep has not reported yet (TS 24.229 §5.4.2.1.2).
 func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, reg db.Registration,
 	initial bool,
 ) (*sip.Response, []removal) {
