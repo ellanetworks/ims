@@ -39,6 +39,10 @@ type branch struct {
 
 	timerC, timer transaction.Timer
 	genC          int
+
+	dialog  *Dialog
+	req     *sip.Request
+	initial bool
 }
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
@@ -211,10 +215,13 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		if relayed, seen := c.answers[tag]; seen {
 			c.mu.Unlock()
 
-			if relayed && c.invite {
+			switch {
+			case relayed && c.invite:
 				if err := c.tx.Relay(res); err != nil {
 					c.p.log.Debug("relaying a 2xx retransmission failed", slog.Any("error", err))
 				}
+			case b.dialog != nil && b.initial:
+				b.dialog.retransmitted(res)
 			}
 
 			return
@@ -313,6 +320,10 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 }
 
 func (c *responseContext) deliver(b *branch, r Reply) {
+	if b.dialog != nil && b.dialog.response(b.req, b.initial, r, c.isFinal()) {
+		return
+	}
+
 	if b.onReply != nil && b.onReply(r) == Hold {
 		return
 	}
@@ -408,6 +419,24 @@ func (c *responseContext) cancel(reason []sip.Field) {
 	if client != nil {
 		_ = client.Cancel(reason...)
 	}
+}
+
+func (c *responseContext) isFinal() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.final
+}
+
+func (c *responseContext) dialog() *Dialog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.branch == nil {
+		return nil
+	}
+
+	return c.branch.dialog
 }
 
 func toTag(res *sip.Response) string {

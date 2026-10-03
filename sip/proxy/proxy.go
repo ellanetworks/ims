@@ -44,6 +44,12 @@ type Config struct {
 	TimerC time.Duration
 
 	Clock transaction.Clock
+
+	// DialogLifetime bounds a dialog without a session timer;
+	// DefaultDialogLifetime when zero.
+	DialogLifetime time.Duration
+
+	OnDialog func(DialogEvent)
 }
 
 type Proxy struct {
@@ -56,8 +62,13 @@ type Proxy struct {
 	clock      transaction.Clock
 	secret     string
 
+	dialogLifetime time.Duration
+	lingerBye      time.Duration
+	onDialog       func(DialogEvent)
+
 	mu       sync.Mutex
 	contexts map[*transaction.ServerTransaction]*responseContext
+	dialogs  map[string]*Dialog
 }
 
 type Target struct {
@@ -82,6 +93,10 @@ type Options struct {
 	Timeout time.Duration
 
 	OnReply func(r Reply) Verdict
+
+	// Dialog tracks the INVITE dialog the request starts or belongs to. Its id
+	// goes in the Record-Route, which an initial INVITE must have.
+	Dialog *Dialog
 }
 
 type Reply struct {
@@ -114,6 +129,15 @@ func New(cfg Config) *Proxy {
 		clock:      cfg.Clock,
 		secret:     rand.Text(),
 		contexts:   make(map[*transaction.ServerTransaction]*responseContext),
+		dialogs:    make(map[string]*Dialog),
+
+		dialogLifetime: cfg.DialogLifetime,
+		lingerBye:      64 * cfg.Layer.T1(),
+		onDialog:       cfg.OnDialog,
+	}
+
+	if p.dialogLifetime <= 0 {
+		p.dialogLifetime = DefaultDialogLifetime
 	}
 
 	if p.log == nil {
@@ -223,6 +247,28 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 		return err
 	}
 
+	d := opts.Dialog
+	initial := false
+
+	if d != nil {
+		toTag, err := out.Header.To()
+		if err != nil {
+			return &sip.StatusError{StatusCode: 400, Err: err}
+		}
+
+		initial = toTag.Tag() == "" && out.Method == "INVITE"
+
+		switch {
+		case initial && opts.RecordRoute == nil:
+			return internal(errors.New("sip/proxy: a tracked dialog without Record-Route"))
+		case opts.RecordRoute != nil:
+			rr := *opts.RecordRoute
+			rr.Params = rr.Params.Clone()
+			rr.Params.Set(dialogParam, d.id)
+			opts.RecordRoute = &rr
+		}
+	}
+
 	if opts.RecordRoute != nil {
 		recordRoute(out, tx.Request().Flow, to, opts.RecordRoute)
 	}
@@ -241,9 +287,29 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 		return err
 	}
 
+	if d != nil {
+		if initial {
+			err = d.begin(tx, c, out, to, opts.RecordRoute)
+		} else {
+			_, err = d.request(out)
+		}
+
+		if err != nil {
+			c.abandon(b, fresh)
+			return err
+		}
+
+		b.dialog, b.req, b.initial = d, out, initial
+	}
+
 	client, err := p.layer.Request(out, b)
 	if err != nil {
 		c.abandon(b, fresh)
+
+		if initial {
+			d.abandon()
+		}
+
 		return internal(err)
 	}
 
@@ -289,7 +355,12 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	p.mu.Unlock()
 
 	if ok {
+		if d := c.dialog(); d != nil {
+			d.cancelledByCaller()
+		}
+
 		c.cancel(reason)
+
 		return
 	}
 
@@ -297,9 +368,17 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	p.forget(c)
 }
 
-func (p *Proxy) ForwardAck(ack *sip.Request, to Target) error {
+// ForwardAck relays an ACK to a 2xx. With a dialog, the ACK confirms it, and
+// is dropped when the proxy released the dialog.
+func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
 	if ack.Method != "ACK" {
 		return fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)
+	}
+
+	if d != nil {
+		if err := d.ack(ack); err != nil {
+			return err
+		}
 	}
 
 	via, err := ack.Header.TopVia()
