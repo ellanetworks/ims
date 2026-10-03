@@ -6,6 +6,10 @@ api:
 ims:
   mcc: "001"
   mnc: "01"
+  numbering:
+    country_code: "1"
+    national_prefix: "1"
+    international_prefix: "011"
 sip:
   addresses: [10.80.0.5]
   aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
@@ -33,10 +37,3 @@ diameter:
       port: 3868
       transport: tcp
       applications: [cx]
-    - id: pcrf
-      host: pcrf.localdomain
-      realm: localdomain
-      address: 10.80.0.11
-      port: 3868
-      transport: tcp
-      applications: [rx]

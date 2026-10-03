@@ -1,40 +1,5 @@
 name: ims-e2e
 
-x-enb: &enb
-  image: gradiant/srsran-4g:23_11
-  privileged: true
-  restart: unless-stopped
-  depends_on: [open5gs]
-  volumes:
-    - ./srsenb/rb.conf:/etc/srsran/rb.conf:ro
-
-x-enb-env: &enb-env
-  MCC: "001"
-  MNC: "01"
-  TAC: "1"
-  MME_ADDR: 10.80.1.10
-  N_PRB: "50"
-  TX_GAIN: "50"
-  RX_GAIN: "40"
-  ZMQ: "true"
-
-x-ue: &ue
-  image: gradiant/srsran-4g:23_11
-  privileged: true
-  restart: on-failure
-  entrypoint: ["/bin/bash", "/route.sh"]
-  volumes:
-    - ./srsue/route.sh:/route.sh:ro
-
-x-ue-env: &ue-env
-  ZMQ: "true"
-  ALGO: milenage
-  KEY: 465b5ce8b199b49faa5f0a2ee238a6bc
-  OPC: cd63cb71954a9f4e48a5994e37a02baf
-  MCC: "001"
-  MNC: "01"
-  IMS_SUBNET: 10.80.0.0/24
-
 services:
   mongo:
     image: mongo:8.2
@@ -43,21 +8,17 @@ services:
         ipv4_address: 10.80.0.20
 
   open5gs:
-    image: ella-ims-e2e/open5gs
+    image: ghcr.io/ellanetworks/ella-ims-e2e-open5gs:${OPEN5GS_TAG:?run through env.sh or set OPEN5GS_TAG}
     build: ./open5gs
     privileged: true
     depends_on: [mongo]
     command: ["/start.sh"]
     volumes:
       - ./open5gs/start.sh:/start.sh:ro
-      - ./open5gs/config/open5gs/mme.yaml:/etc/open5gs/mme.yaml:ro
-      - ./open5gs/config/open5gs/sgwu.yaml:/etc/open5gs/sgwu.yaml:ro
+      - ./open5gs/config/open5gs/nrf.yaml:/etc/open5gs/nrf.yaml:ro
       - ./open5gs/config/open5gs/smf.yaml:/etc/open5gs/smf.yaml:ro
-      - ./open5gs/config/open5gs/upf.yaml:/etc/open5gs/upf.yaml:ro
       - ./open5gs/config/open5gs/hss.yaml:/etc/open5gs/hss.yaml:ro
-      - ./open5gs/config/open5gs/pcrf.yaml:/etc/open5gs/pcrf.yaml:ro
       - ./open5gs/config/freeDiameter/hss.conf:/etc/freeDiameter/hss.conf:ro
-      - ./open5gs/config/freeDiameter/pcrf.conf:/etc/freeDiameter/pcrf.conf:ro
     networks:
       core:
         ipv4_address: 10.80.0.10
@@ -65,6 +26,8 @@ services:
           com.docker.network.endpoint.ifname: eth0
       s1:
         ipv4_address: 10.80.1.10
+        driver_opts:
+          com.docker.network.endpoint.ifname: s1
 
   ims:
     image: ella-ims-e2e/ims
@@ -77,69 +40,11 @@ services:
       - /bin/sh
       - -c
       - ip route replace 10.46.0.0/16 via 10.80.0.10 && mkdir -p /var/lib/ims && exec ims --config /ims.yaml
-    volumes:
-      - ./ims/ims.yaml:/ims.yaml:ro
     ports:
       - "127.0.0.1:5020:5020"
     networks:
       core:
         ipv4_address: 10.80.0.5
-
-  enb1:
-    <<: *enb
-    command: ["enb", "--rf.device_args=tx_port=tcp://*:2000,rx_port=tcp://10.80.2.3:2001,id=enb,base_srate=23.04e6", "--expert.rrc_inactivity_timer=3600000"]
-    environment:
-      <<: *enb-env
-      ENB_ID: "0x19B"
-      GTP_BIND_ADDR: 10.80.1.21
-      S1C_BIND_ADDR: 10.80.1.21
-      UE_ADDRESS: 10.80.2.3
-    networks:
-      s1:
-        ipv4_address: 10.80.1.21
-      radio1:
-        ipv4_address: 10.80.2.2
-
-  ue1:
-    <<: *ue
-    depends_on: [enb1]
-    command: ["ue", "--rf.device_args=tx_port=tcp://10.80.2.3:2001,rx_port=tcp://10.80.2.2:2000,id=ue,base_srate=23.04e6", "--nas.apn=ims", "--nas.apn_protocol=ipv4"]
-    environment:
-      <<: *ue-env
-      MSISDN: "0000000001"
-      ENB_ADDRESS: 10.80.2.2
-      UE_ADDRESS: 10.80.2.3
-    networks:
-      radio1:
-        ipv4_address: 10.80.2.3
-
-  enb2:
-    <<: *enb
-    command: ["enb", "--rf.device_args=tx_port=tcp://*:2000,rx_port=tcp://10.80.3.3:2001,id=enb,base_srate=23.04e6", "--expert.rrc_inactivity_timer=3600000"]
-    environment:
-      <<: *enb-env
-      ENB_ID: "0x19C"
-      GTP_BIND_ADDR: 10.80.1.22
-      S1C_BIND_ADDR: 10.80.1.22
-      UE_ADDRESS: 10.80.3.3
-    networks:
-      s1:
-        ipv4_address: 10.80.1.22
-      radio2:
-        ipv4_address: 10.80.3.2
-
-  ue2:
-    <<: *ue
-    depends_on: [enb2]
-    command: ["ue", "--rf.device_args=tx_port=tcp://10.80.3.3:2001,rx_port=tcp://10.80.3.2:2000,id=ue,base_srate=23.04e6", "--nas.apn=ims", "--nas.apn_protocol=ipv4"]
-    environment:
-      <<: *ue-env
-      MSISDN: "0000000002"
-      ENB_ADDRESS: 10.80.3.2
-      UE_ADDRESS: 10.80.3.3
-    networks:
-      radio2:
-        ipv4_address: 10.80.3.3
 
 networks:
   core:
@@ -152,13 +57,3 @@ networks:
     ipam:
       config:
         - subnet: 10.80.1.0/24
-  radio1:
-    internal: true
-    ipam:
-      config:
-        - subnet: 10.80.2.0/24
-  radio2:
-    internal: true
-    ipam:
-      config:
-        - subnet: 10.80.3.0/24

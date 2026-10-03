@@ -14,10 +14,17 @@ ip addr replace 10.46.0.1/16 dev ogstun2
 sysctl -qw net.ipv4.ip_forward=1
 
 mkdir -p /var/log/open5gs
-nfs=(nrfd scpd hssd pcrfd upfd sgwud smfd sgwcd mmed)
+case "${CORE:-}" in
+4g) nfs=(nrfd scpd hssd pcrfd "upfd -c /etc/open5gs/upf-4g.yaml" sgwud smfd sgwcd mmed) ;;
+5g) nfs=(nrfd scpd hssd udrd udmd ausfd pcfd bsfd nssfd "upfd -c /etc/open5gs/upf-5g.yaml" smfd amfd) ;;
+*) echo "CORE must be 4g or 5g, not '${CORE:-}'" >&2; exit 1 ;;
+esac
+
 for nf in "${nfs[@]}"; do
-	: > "/var/log/open5gs/${nf%d}.log"
-	"open5gs-$nf" >/dev/null 2>&1 &
+	read -r name args <<<"$nf"
+	: > "/var/log/open5gs/${name%d}.log"
+	# shellcheck disable=SC2086
+	"open5gs-$name" $args >/dev/null 2>&1 &
 	sleep 0.3
 done
 

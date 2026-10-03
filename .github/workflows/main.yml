@@ -23,6 +23,9 @@ jobs:
   go-fuzz:
     uses: ./.github/workflows/go-fuzz.yaml
   e2e:
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/e2e.yaml
   image-build:
     uses: ./.github/workflows/image-build.yaml

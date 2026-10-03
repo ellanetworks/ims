@@ -22,10 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
-	tunDevice  = "tun_srsue"
-)
+const homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 
 var pcscf = netip.MustParseAddrPort("10.80.0.5:5060")
 
@@ -107,6 +104,8 @@ func (n *netns) Do(f func()) {
 }
 
 func tunAddr() (netip.Addr, error) {
+	tunDevice := os.Getenv("E2E_TUN")
+
 	ifc, err := net.InterfaceByName(tunDevice)
 	if err != nil {
 		return netip.Addr{}, err
@@ -276,11 +275,10 @@ func TestRegister(t *testing.T) {
 }
 
 func TestCall(t *testing.T) {
-	// The Open5GS HSS stores numbers as tel:<digits>, without the "+" of
-	// RFC 3966, so only home-local numbers and SIP URIs reach the callee.
+	// The Open5GS HSS provisions numbers as tel:<digits>, without the "+"
+	// TS 23.003 §13.4 requires, so calls by number cannot reach the callee.
 	targets := map[string]string{
 		"sip-msisdn": "sip:" + subscribers[1].msisdn + "@" + homeDomain,
-		"local-tel":  "tel:" + subscribers[1].msisdn + ";phone-context=" + homeDomain,
 	}
 
 	for _, tr := range []sip.Transport{sip.UDP, sip.TCP} {

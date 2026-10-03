@@ -1,5 +1,7 @@
 FROM ubuntu:24.04
 
+LABEL org.opencontainers.image.source="https://github.com/ellanetworks/ims"
+
 # Unreleased upstream main: v2.8.0's HSS rejects IMPIs with digits in the
 # realm (open5gs 100ee681e, "hss/cx: Stop IMSI extraction at IMPI realm separator").
 ARG OPEN5GS_REF=4107085fefa91b84ca7c81986c61ab8bd0319e67
