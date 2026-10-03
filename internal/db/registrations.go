@@ -262,23 +262,7 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	return impis, nil
 }
 
-func (d *DB) NextExpiry(ctx context.Context) (time.Time, bool, error) {
-	var next sql.NullInt64
-
-	if err := d.conn.QueryRowContext(ctx,
-		`SELECT MIN(t) FROM (SELECT MIN(expires_at) AS t FROM bindings UNION ALL SELECT MIN(expires_at) FROM reg_subscriptions)`,
-	).Scan(&next); err != nil {
-		return time.Time{}, false, fmt.Errorf("next expiry: %w", err)
-	}
-
-	if !next.Valid {
-		return time.Time{}, false, nil
-	}
-
-	return time.Unix(0, next.Int64).UTC(), true, nil
-}
-
-func queryRegistrations(ctx context.Context, q querier, query string, args ...any) ([]Registration, error) {
+func queryRegistrations(ctx context.Context, q *sql.DB, query string, args ...any) ([]Registration, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -328,7 +312,7 @@ func queryRegistrations(ctx context.Context, q querier, query string, args ...an
 	return regs, nil
 }
 
-func loadIdentities(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
+func loadIdentities(ctx context.Context, q *sql.DB, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
 		`SELECT registration_id, uri, key, display_name, barred FROM registration_identities
 		WHERE registration_id IN (`+placeholders(len(ids))+`) ORDER BY registration_id, position`, ids...)
@@ -358,7 +342,7 @@ func loadIdentities(ctx context.Context, q querier, regs []Registration, index m
 	return rows.Err()
 }
 
-func loadBindings(ctx context.Context, q querier, regs []Registration, index map[int64]int, ids []any) error {
+func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
 		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, b.event, b.impu, b.registered_at, `+contactColumns+`
 		FROM bindings b JOIN contacts c ON c.id = b.contact_id

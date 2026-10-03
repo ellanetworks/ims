@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -84,6 +85,7 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 			Listeners: []netip.AddrPort{s.scscf.Addr()},
 		},
 		Registrations: s.store,
+		Trust:         trust.New([]netip.Addr{s.scscf.Addr().Addr()}, nil),
 		Fallback:      fallback,
 		Clock:         s.clock,
 		Logger:        slog.New(slog.DiscardHandler),
@@ -1149,6 +1151,73 @@ func TestDefaultIdentityIsTheFirstAssociatedURI(t *testing.T) {
 	} {
 		if got := defaultIdentity(tt.associated); got != tt.want {
 			t.Errorf("defaultIdentity(%q) = %q, want %q", tt.associated, got, tt.want)
+		}
+	}
+}
+
+func TestRequestTowardTheUEOnlyFromTheCore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(s *ipsecScene, u *ue, n *sip.Request)
+	}{
+		{"from outside the core on the unprotected port", func(s *ipsecScene, _ *ue, n *sip.Request) {
+			outsider := siptest.NewSocket(s.t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.3"), 0))
+			outsider.Send(sip.UDP, s.pcscf, n)
+			wantStatus(s.t, first(outsider.RecvResponse()), 403)
+		}},
+		{"from the UE over its security associations", func(s *ipsecScene, u *ue, n *sip.Request) {
+			u.uc.Send(sip.UDP, s.ps, n)
+			wantStatus(s.t, first(u.us.RecvResponse()), 403)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, u := newIPsecRegScene(t)
+			s.registerOverIPsec(u)
+			d := s.subscribeUE(t, u)
+
+			contacts, _ := d.sub.Header.Contacts()
+
+			n := siptest.NewRequest("MESSAGE", contacts[0].URI.String(), sip.UDP, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.3"), 5060))
+			n.Header.Set("From", "<sip:mallory@"+homeDomain+">;tag="+sip.NewTag())
+			n.Header.Set("To", "<"+testIMPU+">;tag="+d.ueTag)
+			n.Header.Set("CSeq", "1 MESSAGE")
+			n.Header.Add("Route", strings.Join(d.rr, ", "))
+
+			tc.send(s, u, n)
+
+			u.us.RecvNone(100 * time.Millisecond)
+		})
+	}
+}
+
+func TestResponseHeaderFieldsFromTheUE(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+	d := s.subscribeUE(t, u)
+
+	d.notify(t, s, 1, d.rr)
+
+	notify, _ := u.us.RecvRequest()
+
+	const pani = "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000001"
+
+	res := sip.NewResponse(notify, 200, "")
+	res.Header.Add("P-Access-Network-Info", pani)
+	res.Header.Add("P-Access-Network-Info", "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000002; network-provided")
+	res.Header.Add("P-Charging-Vector", "icid-value=1234")
+	res.Header.Add("P-Charging-Function-Addresses", "ccf=192.0.2.1")
+	u.uc.Send(sip.UDP, s.ps, res)
+
+	got, _ := s.scscf.RecvResponse()
+	wantStatus(t, got, 200)
+
+	if v := got.Header.Elements("P-Access-Network-Info"); !slices.Equal(v, []string{pani}) {
+		t.Errorf("P-Access-Network-Info = %q, want the UE's own value only", v)
+	}
+
+	for _, name := range []string{"P-Charging-Vector", "P-Charging-Function-Addresses"} {
+		if got.Header.Has(name) {
+			t.Errorf("%s relayed from the UE", name)
 		}
 	}
 }

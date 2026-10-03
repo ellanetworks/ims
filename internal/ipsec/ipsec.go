@@ -29,11 +29,11 @@ const (
 )
 
 var (
-	ErrNoOffer          = errors.New("no ipsec-3gpp mechanism offered")
+	errNoOffer          = errors.New("no ipsec-3gpp mechanism offered")
 	ErrUnsupportedOffer = errors.New("unsupported protocol, mode or algorithm")
-	ErrNoAlgorithm      = errors.New("no acceptable algorithm offered")
-	ErrBadKeys          = errors.New("ck and ik must be 128 bits")
-	ErrSPIsExhausted    = errors.New("no free SPI")
+	errNoAlgorithm      = errors.New("no acceptable algorithm offered")
+	errBadKeys          = errors.New("ck and ik must be 128 bits")
+	errSPIsExhausted    = errors.New("no free SPI")
 )
 
 type Endpoint struct {
@@ -49,11 +49,6 @@ type Set struct {
 	Remote     Endpoint
 	Integrity  Integrity
 	Encryption Encryption
-}
-
-func (s Set) Reverse() Set {
-	s.Local, s.Remote = s.Remote, s.Local
-	return s
 }
 
 func (s Set) validate() error {
@@ -101,7 +96,7 @@ type algo struct {
 
 func (k Keys) integrityKey(i Integrity) ([]byte, error) {
 	if len(k.IK) != 16 {
-		return nil, ErrBadKeys
+		return nil, errBadKeys
 	}
 
 	switch i {
@@ -120,7 +115,7 @@ func (k Keys) encryptionKey(e Encryption) ([]byte, error) {
 		return nil, nil
 	case AESCBC:
 		if len(k.CK) != 16 {
-			return nil, ErrBadKeys
+			return nil, errBadKeys
 		}
 
 		return append([]byte(nil), k.CK...), nil

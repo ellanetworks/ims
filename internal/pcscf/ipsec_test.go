@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -130,6 +132,7 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 			AwaitAuth:   2 * time.Second,
 			Grace:       testGrace,
 		},
+		Trust:    trust.New([]netip.Addr{s.scscf.Addr().Addr()}, nil),
 		Fallback: fallback,
 		Logger:   slog.New(slog.DiscardHandler),
 	}
@@ -721,23 +724,53 @@ func TestDeregistrationRemovesTheSets(t *testing.T) {
 }
 
 func TestRegisterWithoutIPsecIsRejected(t *testing.T) {
-	for name, client := range map[string]string{"no Security-Client": "", "no ipsec-3gpp": "digest;q=0.1"} {
-		t.Run(name, func(t *testing.T) {
-			s := newIPsecScene(t, ipsec.DefaultPolicy())
+	policy := ipsec.DefaultPolicy()
+
+	var want []string
+	for _, m := range policy.Mechanisms() {
+		want = append(want, m.String())
+	}
+
+	tests := []struct {
+		name   string
+		client string
+		tags   map[string]string
+		code   int
+	}{
+		{"no sec-agree", "", nil, 421},
+		{"sec-agree required, no Security-Client", "", map[string]string{"Require": "sec-agree", "Proxy-Require": "sec-agree"}, 494},
+		{"sec-agree required, no ipsec-3gpp", "digest;q=0.1", map[string]string{"Require": "sec-agree", "Proxy-Require": "sec-agree"}, 494},
+		{"sec-agree supported", "", map[string]string{"Supported": "path, sec-agree"}, 494},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newIPsecScene(t, policy)
 			u := s.newUE(25656)
 
 			s.ue.Send(sip.UDP, s.pcscf, u.register(t, s.ue.Addr(), "", func(r *sip.Request) {
-				r.Header.Del("Security-Client")
+				for _, name := range []string{"Security-Client", "Require", "Proxy-Require", "Supported"} {
+					r.Header.Del(name)
+				}
 
-				if client != "" {
-					r.Header.Add("Security-Client", client)
+				if tt.client != "" {
+					r.Header.Add("Security-Client", tt.client)
+				}
+
+				for name, v := range tt.tags {
+					r.Header.Add(name, v)
 				}
 			}))
 
 			res, _ := s.ue.RecvResponse()
-			if res.StatusCode != 421 || res.Header.Get("Require") != "sec-agree" || len(s.installed()) != 0 {
-				t.Fatalf("got %q with Require %q and %d sets, want 421 requiring sec-agree", res.StartLine(),
-					res.Header.Get("Require"), len(s.installed()))
+			wantStatus(t, res, tt.code)
+
+			if got := res.Header.Elements("Security-Server"); !slices.Equal(got, want) {
+				t.Errorf("Security-Server = %q, want the policy's list %q", got, want)
+			}
+
+			if res.Header.Get("Require") != "sec-agree" || len(s.installed()) != 0 {
+				t.Errorf("Require = %q and %d sets, want sec-agree required and none", res.Header.Get("Require"), len(s.installed()))
 			}
 
 			s.icscf.RecvNone(quiet)

@@ -2,7 +2,6 @@ package sip
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -44,10 +43,6 @@ next:
 	}
 
 	return true
-}
-
-func EqualSecurityMechanisms(a, b []SecurityMechanism) bool {
-	return slices.EqualFunc(a, b, SecurityMechanism.Equal)
 }
 
 func (fs Header) SecurityMechanisms(name string) ([]SecurityMechanism, error) {

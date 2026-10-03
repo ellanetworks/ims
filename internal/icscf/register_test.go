@@ -2,6 +2,7 @@ package icscf
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 
 func TestRegisterToAssignedSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	s := h.scscfs[0]
+	s := h.scscf
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: s.uri()})
@@ -70,7 +71,7 @@ func TestRegisterToAssignedSCSCF(t *testing.T) {
 	req, f = s.recv()
 	s.respond(req, f, 200, func(res *sip.Response) {
 		res.Header.Add("Path", req.Header.Get("Path"))
-		res.Header.Add("Service-Route", "<sip:orig@scscf1."+homeDomain+";lr>")
+		res.Header.Add("Service-Route", "<sip:orig@scscf."+homeDomain+";lr>")
 		res.Header.Add("P-Profile-Key", "<sip:!.*!@"+homeDomain+">")
 	})
 
@@ -86,10 +87,10 @@ func TestRegisterToAssignedSCSCF(t *testing.T) {
 
 func TestRegisterRequestURIIsServerName(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	s := h.scscfs[0]
+	s := h.scscf
 	u := h.newUE(loopback)
 
-	name := strings.Replace(s.uri(), "scscf1", "SCSCF1", 1) + ";foo=bar"
+	name := strings.Replace(s.uri(), "scscf.", "SCSCF.", 1) + ";foo=bar"
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: name})
 	u.send(u.register())
@@ -104,34 +105,30 @@ func TestRegisterRequestURIIsServerName(t *testing.T) {
 	u.wantFinal(401)
 }
 
-func TestRegisterSelection(t *testing.T) {
+func TestRegisterCapabilities(t *testing.T) {
 	tests := []struct {
 		name string
-		caps *cx.ServerCapabilities
-		want int
+		caps func(h *harness) *cx.ServerCapabilities
 	}{
-		{"no capabilities", nil, 0},
-		{"mandatory capabilities", &cx.ServerCapabilities{Mandatory: []uint32{2}}, 1},
-		{"most optional capabilities", &cx.ServerCapabilities{Optional: []uint32{2, 3}}, 1},
-		{"server name", &cx.ServerCapabilities{ServerNames: []string{"sip:unknown." + homeDomain, "second"}}, 1},
+		{"no capabilities", func(*harness) *cx.ServerCapabilities { return nil }},
+		{"mandatory capabilities", func(*harness) *cx.ServerCapabilities {
+			return &cx.ServerCapabilities{Mandatory: []uint32{2}, Optional: []uint32{9}}
+		}},
+		{"server names", func(h *harness) *cx.ServerCapabilities {
+			return &cx.ServerCapabilities{ServerNames: []string{"sip:unknown." + homeDomain, h.scscf.uri()}, Mandatory: []uint32{9}}
+		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{1}, {2, 3}}})
+			h := newHarness(t, harnessOptions{capabilities: []uint32{2, 3}})
+			s := h.scscf
 
-			caps := tt.caps
-			if caps != nil && len(caps.ServerNames) > 0 {
-				caps = &cx.ServerCapabilities{ServerNames: []string{caps.ServerNames[0], h.scscfs[1].uri()}}
-			}
-
-			h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration), caps: caps})
+			h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration), caps: tt.caps(h)})
 
 			u := h.newUE(loopback)
 			u.send(u.register())
 			h.hss.nextUAR(t)
-
-			s := h.scscfs[tt.want]
 
 			req, f := s.recv()
 			if req.URI.String() != s.uri() {
@@ -144,15 +141,45 @@ func TestRegisterSelection(t *testing.T) {
 	}
 }
 
-func TestRegisterWithoutAMatchingSCSCF(t *testing.T) {
-	h := newHarness(t, harnessOptions{capabilities: [][]uint32{{1}}})
+func TestRegisterWithoutTheCapabilities(t *testing.T) {
+	tests := []struct {
+		name string
+		caps *cx.ServerCapabilities
+	}{
+		{"mandatory capabilities", &cx.ServerCapabilities{Mandatory: []uint32{1, 7}}},
+		{"server names", &cx.ServerCapabilities{ServerNames: []string{"sip:unknown." + homeDomain}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{capabilities: []uint32{1}})
+			u := h.newUE(loopback)
+
+			h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration), caps: tt.caps})
+			u.send(u.register())
+			h.hss.nextUAR(t)
+			u.wantFinal(600)
+			h.scscf.sock.RecvNone(quiet)
+		})
+	}
+}
+
+func TestRegisterToAnotherAssignedSCSCF(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
 	u := h.newUE(loopback)
 
-	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration), caps: &cx.ServerCapabilities{Mandatory: []uint32{1, 7}}})
+	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: "sip:old-scscf." + homeDomain + ":6060"})
 	u.send(u.register())
 	h.hss.nextUAR(t)
-	u.wantFinal(600)
-	h.scscfs[0].sock.RecvNone(quiet)
+
+	req, f := s.recv()
+	if req.URI.String() != s.uri() {
+		t.Fatalf("Request-URI = %s, want %s", req.URI, s.uri())
+	}
+
+	s.respond(req, f, 401)
+	u.wantFinal(401)
 }
 
 func TestRegisterIdentities(t *testing.T) {
@@ -318,7 +345,6 @@ func TestRegisterHSSFailures(t *testing.T) {
 		{"unable to comply", &hssAnswer{result: tgpp.Result{Code: diameter.ResultUnableToComply}}, 480},
 		{"too busy", &hssAnswer{result: tgpp.Result{Code: diameter.ResultTooBusy}}, 480},
 		{"timeout", nil, 480},
-		{"unknown S-CSCF", &hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: "sip:unknown." + homeDomain}, 480},
 	}
 
 	for _, tt := range tests {
@@ -333,7 +359,7 @@ func TestRegisterHSSFailures(t *testing.T) {
 			u.send(u.register())
 			h.hss.nextUAR(t)
 			u.wantFinal(tt.want)
-			h.scscfs[0].sock.RecvNone(quiet)
+			h.scscf.sock.RecvNone(quiet)
 		})
 	}
 }
@@ -404,7 +430,7 @@ func TestRegisterProxyChecks(t *testing.T) {
 
 func TestRegisterDropsOwnRoute(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	s := h.scscfs[0]
+	s := h.scscf
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: s.uri()})
@@ -422,7 +448,7 @@ func TestRegisterDropsOwnRoute(t *testing.T) {
 
 func TestRegisterSCSCFTimeout(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	s := h.scscfs[0]
+	s := h.scscf
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: s.uri()})
@@ -442,210 +468,39 @@ func TestRegisterSCSCFTimeout(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-func TestRegisterSCSCFTrying(t *testing.T) {
-	h := newHarness(t, harnessOptions{scscfs: 2})
-	first, second := h.scscfs[0], h.scscfs[1]
+func TestRegisterSCSCFRefusesConnections(t *testing.T) {
+	h := newHarness(t, harnessOptions{down: true})
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-
-	sent := time.Now()
-
 	u.send(u.register())
 	h.hss.nextUAR(t)
-
-	req, f := first.recv()
-	first.respond(req, f, 100)
-
-	req, f = second.recv()
-	if want := second.uri() + ";scscf-reselection"; req.URI.String() != want {
-		t.Fatalf("Request-URI = %s, want %s", req.URI, want)
-	}
-
-	second.respond(req, f, 100)
 
 	u.wantFinal(504)
-
-	if elapsed := time.Since(sent); elapsed >= 64*testT1 {
-		t.Fatalf("504 after %s, want it before the transaction ends at %s", elapsed, 64*testT1)
-	}
-
-	h.hss.noCx(t)
-}
-
-func TestRegisterReselectionKeepsCapabilities(t *testing.T) {
-	h := newHarness(t, harnessOptions{scscfs: 2, capabilities: [][]uint32{{7}, {}}})
-	first, second := h.scscfs[0], h.scscfs[1]
-	u := h.newUE(loopback)
-
-	h.hss.answerUAR(&hssAnswer{
-		result: success(tgpp.ResultFirstRegistration),
-		caps:   &cx.ServerCapabilities{Mandatory: []uint32{7}},
-	})
-	u.send(u.register())
-	h.hss.nextUAR(t)
-
-	req, f := first.recv()
-	first.respond(req, f, 480)
-
-	u.wantFinal(480)
-	second.sock.RecvNone(quiet)
-	h.hss.noCx(t)
-}
-
-func TestRegisterSCSCFRefusesConnections(t *testing.T) {
-	t.Run("reselection", func(t *testing.T) {
-		h := newHarness(t, harnessOptions{scscfs: 2, down: 1})
-		second := h.scscfs[1]
-		u := h.newUE(loopback)
-
-		h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-		u.send(u.register())
-		h.hss.nextUAR(t)
-
-		req, f := second.recv()
-		if want := second.uri() + ";scscf-reselection"; req.URI.String() != want {
-			t.Fatalf("Request-URI = %s, want %s", req.URI, want)
-		}
-
-		second.respond(req, f, 401)
-		u.wantFinal(401)
-	})
-
-	t.Run("no other S-CSCF", func(t *testing.T) {
-		h := newHarness(t, harnessOptions{down: 1})
-		u := h.newUE(loopback)
-
-		h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-		u.send(u.register())
-		h.hss.nextUAR(t)
-
-		u.wantFinal(504)
-	})
 }
 
 func TestRegisterSCSCFRefuses(t *testing.T) {
-	h := newHarness(t, harnessOptions{})
-	s := h.scscfs[0]
-	u := h.newUE(loopback)
-
-	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-	u.send(u.register())
-	h.hss.nextUAR(t)
-
-	req, f := s.recv()
-	s.respond(req, f, 480, func(res *sip.Response) { res.Header.Add("P-Profile-Key", "<sip:x@"+homeDomain+">") })
-
-	if res := u.wantFinal(480); res.Header.Has("P-Profile-Key") {
-		t.Fatal("P-Profile-Key relayed")
-	}
-
-	h.hss.noCx(t)
-}
-
-func TestRegisterReselection(t *testing.T) {
-	tests := []struct {
-		name     string
-		assigned bool
-		fail     func(s *fakeSCSCF, req *sip.Request, f sip.Flow)
-	}{
-		{"timeout with capabilities", false, func(*fakeSCSCF, *sip.Request, sip.Flow) {}},
-		{"480 with capabilities", false, func(s *fakeSCSCF, req *sip.Request, f sip.Flow) { s.respond(req, f, 480) }},
-		{"302 with a Server-Name", true, func(s *fakeSCSCF, req *sip.Request, f sip.Flow) {
-			s.respond(req, f, 302, func(res *sip.Response) { res.Header.Set("Contact", "<sip:elsewhere@example.org>") })
-		}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t, harnessOptions{scscfs: 2})
-			first, second := h.scscfs[0], h.scscfs[1]
-			u := h.newUE(loopback)
-
-			if tt.assigned {
-				h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: first.uri()})
-			} else {
-				h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-			}
-
-			u.send(u.register())
-			h.hss.nextUAR(t)
-
-			req, f := first.recv()
-
-			if tt.assigned {
-				h.hss.answerUAR(&hssAnswer{result: tgpp.Result{Code: diameter.ResultSuccess}})
-			}
-
-			tt.fail(first, req, f)
-
-			if tt.assigned {
-				if got := h.hss.nextUAR(t).AuthorizationType; got != cx.AuthorizationRegistrationAndCapabilities {
-					t.Fatalf("User-Authorization-Type = %s, want REGISTRATION_AND_CAPABILITIES", got)
-				}
-			}
-
-			req, f = second.recv()
-			if want := second.uri() + ";scscf-reselection"; req.URI.String() != want {
-				t.Fatalf("Request-URI = %s, want %s", req.URI, want)
-			}
-
-			second.respond(req, f, 401)
-			u.wantFinal(401)
-		})
-	}
-}
-
-func TestRegisterNoReselection(t *testing.T) {
-	tests := []struct {
-		name string
-		edit func(*sip.Request)
-		want int
-	}{
-		{"integrity protected", func(r *sip.Request) {
-			r.Header.Set("Authorization", strings.Replace(r.Header.Get("Authorization"), `"no"`, `"yes"`, 1))
-		}, 480},
-		{"no Authorization", func(r *sip.Request) { r.Header.Del("Authorization") }, 480},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t, harnessOptions{scscfs: 2})
-			first := h.scscfs[0]
+	for _, code := range []int{302, 480} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			h := newHarness(t, harnessOptions{})
+			s := h.scscf
 			u := h.newUE(loopback)
 
 			h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultFirstRegistration)})
-			u.send(u.register(tt.edit))
+			u.send(u.register())
 			h.hss.nextUAR(t)
 
-			req, f := first.recv()
-			first.respond(req, f, 480)
+			req, f := s.recv()
+			s.respond(req, f, code, func(res *sip.Response) {
+				res.Header.Set("Contact", "<sip:elsewhere@example.org>")
+				res.Header.Add("P-Profile-Key", "<sip:x@"+homeDomain+">")
+			})
 
-			u.wantFinal(tt.want)
-			h.scscfs[1].sock.RecvNone(quiet)
+			if res := u.wantFinal(code); res.Header.Has("P-Profile-Key") {
+				t.Fatal("P-Profile-Key relayed")
+			}
+
+			h.hss.noCx(t)
 		})
 	}
-}
-
-func TestRegisterReselectionKeepsAssignedSCSCF(t *testing.T) {
-	h := newHarness(t, harnessOptions{scscfs: 2})
-	first := h.scscfs[0]
-	u := h.newUE(loopback)
-
-	h.hss.answerUAR(
-		&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: first.uri()},
-		&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: first.uri()},
-	)
-	u.send(u.register())
-	h.hss.nextUAR(t)
-
-	req, f := first.recv()
-	first.respond(req, f, 480)
-
-	if got := h.hss.nextUAR(t).AuthorizationType; got != cx.AuthorizationRegistrationAndCapabilities {
-		t.Fatalf("User-Authorization-Type = %s, want REGISTRATION_AND_CAPABILITIES", got)
-	}
-
-	u.wantFinal(480)
-	h.scscfs[1].sock.RecvNone(quiet)
 }

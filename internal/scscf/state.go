@@ -42,6 +42,12 @@ func (s *state) any() bool {
 	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool { return s.registered(&reg) })
 }
 
+func (s *state) registeredAny(ids []db.PublicIdentity) bool {
+	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool {
+		return s.registered(&reg) && slices.ContainsFunc(ids, func(id db.PublicIdentity) bool { return holds(reg.Identities, id.Key) })
+	})
+}
+
 func (s *state) contact(u sip.URI) (db.Contact, bool) {
 	for _, reg := range s.regs {
 		bindings := s.live(reg.Bindings)

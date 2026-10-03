@@ -3,7 +3,6 @@ package hsstest
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/netip"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/milenage"
 )
 
@@ -72,48 +72,20 @@ func newClient(t *testing.T) *client {
 			return ans
 		}))
 
-	node, err := diameter.New(diameter.Config{
+	c.node = diametertest.Dial(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost:      imsHost,
 			OriginRealm:     realm,
 			HostIPAddresses: []netip.Addr{h.Addr().Addr()},
 			ProductName:     "client",
 		},
+		Peer: diameter.Peer{
+			ID:           "hss",
+			Host:         h.Host(),
+			Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
+		},
 		Handler: mux,
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "hss",
-		Host:         h.Host(),
-		Addresses:    []netip.Addr{h.Addr().Addr()},
-		Port:         h.Addr().Port(),
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
-
-	c.node = node
-
-	deadline := time.Now().Add(10 * time.Second)
-	for p, _ := node.Peer("hss"); p.State != diameter.PeerOpen; p, _ = node.Peer("hss") {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the HSS")
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
+	}, h.Addr())
 
 	return c
 }

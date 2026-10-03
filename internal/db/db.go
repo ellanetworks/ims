@@ -75,22 +75,6 @@ var migrations = []string{
 	);
 	CREATE INDEX reg_subscriptions_impi ON reg_subscriptions (impi);
 	CREATE INDEX reg_subscriptions_expires_at ON reg_subscriptions (expires_at);
-	CREATE TABLE calls (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		call_id TEXT NOT NULL,
-		caller TEXT NOT NULL,
-		callee TEXT NOT NULL,
-		started_at INTEGER NOT NULL,
-		answered_at INTEGER,
-		ended_at INTEGER NOT NULL,
-		outcome TEXT NOT NULL CHECK (outcome IN ('answered', 'busy', 'no_answer', 'cancelled', 'rejected', 'not_found', 'unreachable', 'failed')),
-		sip_status INTEGER NOT NULL,
-		ended_by TEXT NOT NULL CHECK (ended_by IN ('caller', 'callee', 'network')),
-		reason TEXT
-	);
-	CREATE INDEX calls_ended_at ON calls (ended_at);
-	CREATE INDEX calls_caller ON calls (caller, id);
-	CREATE INDEX calls_callee ON calls (callee, id);
 	CREATE TABLE security_associations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
@@ -199,10 +183,6 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-type querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 type scanner interface {

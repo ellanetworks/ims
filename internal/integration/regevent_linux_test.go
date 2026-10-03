@@ -273,6 +273,11 @@ func TestRegEventExpired(t *testing.T) {
 
 	eventually(t, "the subscriptions to end", func() bool { return len(s.subscriptions()) == 0 })
 	s.pcscfSAsShortened()
+
+	eventually(t, "the HSS to see the timeout deregistration", func() bool {
+		sub, _ := s.hss.Subscriber(impi)
+		return sub.State == hsstest.NotRegistered && sub.ServerName == ""
+	})
 }
 
 func TestRegEventDeactivated(t *testing.T) {

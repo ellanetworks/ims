@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/netip"
 	"sync"
 	"testing"
@@ -18,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/diametertest"
 )
 
 const imsPeer = "ims"
@@ -83,54 +83,27 @@ func New(t testing.TB, cfg Config) *PCRF {
 
 	p := &PCRF{cfg: cfg, requests: make(chan Request, 1024)}
 
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", netip.AddrPortFrom(cfg.Address, 0).String())
-	if err != nil {
-		t.Fatalf("pcrftest: listen: %v", err)
-	}
-
-	p.addr = ln.Addr().(*net.TCPAddr).AddrPort()
-
 	mux := diameter.NewMux()
 	mux.Handle(rx.ApplicationID, rx.CommandAA, diameter.HandlerFunc(p.aa))
 	mux.Handle(rx.ApplicationID, rx.CommandSessionTermination, diameter.HandlerFunc(p.sessionTermination))
 
-	node, err := diameter.New(diameter.Config{
+	p.node, p.addr = diametertest.Listen(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost:      cfg.Host,
 			OriginRealm:     cfg.Realm,
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     "pcrftest",
 		},
+		Peer: diameter.Peer{
+			ID:           imsPeer,
+			Host:         cfg.IMSHost,
+			Applications: []diameter.Application{{ID: rx.ApplicationID, VendorID: tgpp.VendorID}},
+		},
 		Handler: mux,
 		Logger:  cfg.Logger,
 	})
-	if err != nil {
-		t.Fatalf("pcrftest: %v", err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           imsPeer,
-		Host:         cfg.IMSHost,
-		Addresses:    []netip.Addr{cfg.Address},
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: rx.ApplicationID, VendorID: tgpp.VendorID}},
-		Passive:      true,
-	}}); err != nil {
-		t.Fatalf("pcrftest: %v", err)
-	}
-
-	go func() { _ = node.Serve(diameter.NewTCPListener(ln.(*net.TCPListener))) }()
-
-	p.node = node
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-
 		if n := p.Dropped(); n > 0 {
 			t.Errorf("pcrftest: %d Rx requests dropped from the full request channel", n)
 		}
@@ -154,15 +127,7 @@ func (p *PCRF) Addr() netip.AddrPort {
 func (p *PCRF) WaitConnected(t testing.TB) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
-
-	for s, _ := p.node.Peer(imsPeer); s.State != diameter.PeerOpen; s, _ = p.node.Peer(imsPeer) {
-		if time.Now().After(deadline) {
-			t.Fatal("pcrftest: timed out waiting for the IMS to connect")
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
+	diametertest.WaitOpen(t, p.node, imsPeer)
 }
 
 func (p *PCRF) Requests() <-chan Request {

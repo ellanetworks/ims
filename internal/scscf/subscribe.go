@@ -28,18 +28,13 @@ func IsRegEvent(req *sip.Request) bool {
 }
 
 func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		respond(retryLater(req))
 		return
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	to, err := req.Header.To()
 	if err != nil {
@@ -160,8 +155,6 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 
 	r.log.Info("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
 		slog.String("subscriber", string(sr.subscriber)))
-
-	r.armSweep(s.ExpiresAt)
 
 	return res, []*outgoing{o}
 }
@@ -397,8 +390,6 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 		subState = "terminated;reason=" + reasonTimeout
 
 		r.log.Info("unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
-	} else {
-		r.armSweep(s.ExpiresAt)
 	}
 
 	var out []*outgoing

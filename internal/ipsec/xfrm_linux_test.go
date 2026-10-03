@@ -111,7 +111,7 @@ func TestProtectedPortsRejectBadPackets(t *testing.T) {
 	}
 
 	wrong := Keys{CK: l.keys.CK, IK: []byte("0000000000000000")}
-	if err := l.ux.Install(s.Reverse(), wrong); err != nil {
+	if err := l.ux.Install(s.reverse(), wrong); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,11 +119,11 @@ func TestProtectedPortsRejectBadPackets(t *testing.T) {
 		t.Error("packet with a bad integrity check delivered")
 	}
 
-	if err := l.ux.Remove(s.Reverse()); err != nil {
+	if err := l.ux.Remove(s.reverse()); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := l.ux.Install(s.Reverse(), l.keys); err != nil {
+	if err := l.ux.Install(s.reverse(), l.keys); err != nil {
 		t.Fatal(err)
 	}
 
@@ -135,7 +135,7 @@ func TestProtectedPortsRejectBadPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := l.ux.Remove(s.Reverse()); err != nil {
+	if err := l.ux.Remove(s.reverse()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,8 +334,8 @@ func TestInstallValidates(t *testing.T) {
 		}
 	}
 
-	if err := l.px.Install(good, Keys{CK: l.keys.CK, IK: []byte("short")}); !errors.Is(err, ErrBadKeys) {
-		t.Errorf("Install(short IK) = %v, want ErrBadKeys", err)
+	if err := l.px.Install(good, Keys{CK: l.keys.CK, IK: []byte("short")}); !errors.Is(err, errBadKeys) {
+		t.Errorf("Install(short IK) = %v, want errBadKeys", err)
 	}
 
 	if packets, policies := l.px.owned(t); len(packets) != 0 || policies != 0 {

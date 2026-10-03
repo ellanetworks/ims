@@ -7,22 +7,16 @@ import (
 	"slices"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 )
 
 func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error) {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		return nil, errors.New("registrar closed")
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	impis := []string{rtr.PrivateIdentity}
 
@@ -87,12 +81,13 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 			continue
 		}
 
-		if live := st.live(reg.Bindings); len(live) > 0 {
-			ch.removed = append(ch.removed, removal{reg: reg, bindings: live, event: event})
+		rm, _, err := r.removeBindings(ctx, st, reg, st.live(reg.Bindings), event)
+		if err != nil {
+			return nil, err
 		}
 
-		if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
-			return nil, err
+		if len(rm.bindings) > 0 {
+			ch.removed = append(ch.removed, rm)
 		}
 
 		r.log.Info("registration terminated by the HSS", slog.String("impi", impi), slog.String("impu", reg.IMPU),

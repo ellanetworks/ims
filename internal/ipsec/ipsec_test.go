@@ -65,7 +65,7 @@ func TestParseOffers(t *testing.T) {
 			nil,
 		},
 	} {
-		got, err := ParseOffers(mechanisms(t, tc.in...))
+		got, _, err := ParseOffers(mechanisms(t, tc.in...))
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue
@@ -78,12 +78,12 @@ func TestParseOffers(t *testing.T) {
 }
 
 func TestParseOffersErrors(t *testing.T) {
-	if _, err := ParseOffers(mechanisms(t, "digest, tls")); !errors.Is(err, ErrNoOffer) {
-		t.Errorf("no ipsec-3gpp: %v, want ErrNoOffer", err)
+	if _, _, err := ParseOffers(mechanisms(t, "digest, tls")); !errors.Is(err, errNoOffer) {
+		t.Errorf("no ipsec-3gpp: %v, want errNoOffer", err)
 	}
 
-	if _, err := ParseOffers(nil); !errors.Is(err, ErrNoOffer) {
-		t.Errorf("no Security-Client: %v, want ErrNoOffer", err)
+	if _, _, err := ParseOffers(nil); !errors.Is(err, errNoOffer) {
+		t.Errorf("no Security-Client: %v, want errNoOffer", err)
 	}
 }
 
@@ -91,7 +91,7 @@ func TestParseOffersSkipsBadMechanisms(t *testing.T) {
 	good := "ipsec-3gpp;alg=hmac-sha-1-96;spi-c=11;spi-s=12;port-c=6301;port-s=6300"
 	other := "ipsec-3gpp;alg=hmac-md5-96;spi-c=21;spi-s=22;port-c=7301;port-s=7300"
 
-	got, err := ParseOffers(mechanisms(t,
+	got, _, err := ParseOffers(mechanisms(t,
 		"ipsec-3gpp;alg=hmac-sha-1-96;spi-c=0;spi-s=2;port-c=6301;port-s=6300", good, other))
 	if err != nil {
 		t.Fatal(err)
@@ -182,8 +182,8 @@ func TestSelect(t *testing.T) {
 		},
 		{"preferred, no encryption", EncryptionPreferred, []Offer{offer(HMACMD596, EncryptionNull)}, offer(HMACMD596, EncryptionNull), nil},
 		{"required", EncryptionRequired, all, offer(HMACSHA196, AESCBC), nil},
-		{"required, no encryption", EncryptionRequired, []Offer{offer(HMACSHA196, EncryptionNull)}, Offer{}, ErrNoAlgorithm},
-		{"nothing offered", EncryptionOff, nil, Offer{}, ErrNoAlgorithm},
+		{"required, no encryption", EncryptionRequired, []Offer{offer(HMACSHA196, EncryptionNull)}, Offer{}, errNoAlgorithm},
+		{"nothing offered", EncryptionOff, nil, Offer{}, errNoAlgorithm},
 	} {
 		p := DefaultPolicy()
 		p.Encryption = tc.policy
@@ -195,8 +195,8 @@ func TestSelect(t *testing.T) {
 	}
 
 	sha1Only := Policy{Integrity: []Integrity{HMACSHA196}, Encryption: EncryptionOff}
-	if _, err := sha1Only.Select([]Offer{offer(HMACMD596, EncryptionNull)}); !errors.Is(err, ErrNoAlgorithm) {
-		t.Errorf("integrity not on our list: %v, want ErrNoAlgorithm", err)
+	if _, err := sha1Only.Select([]Offer{offer(HMACMD596, EncryptionNull)}); !errors.Is(err, errNoAlgorithm) {
+		t.Errorf("integrity not on our list: %v, want errNoAlgorithm", err)
 	}
 }
 
@@ -234,7 +234,7 @@ func TestServer(t *testing.T) {
 		t.Errorf("Security-Verify does not match: %v", err)
 	}
 
-	if r := s.Reverse(); r.Local != s.Remote || r.Remote != s.Local || r.Reverse() != s {
+	if r := s.reverse(); r.Local != s.Remote || r.Remote != s.Local || r.reverse() != s {
 		t.Errorf("Reverse() = %+v", r)
 	}
 }
@@ -320,5 +320,45 @@ func TestSPIs(t *testing.T) {
 
 	if !b.used[2] || b.used[1] {
 		t.Errorf("Reserve and Release: %v", b.used)
+	}
+}
+
+func (s Set) reverse() Set {
+	s.Local, s.Remote = s.Remote, s.Local
+	return s
+}
+
+func TestPolicyMechanisms(t *testing.T) {
+	integrity := []Integrity{HMACSHA196, HMACMD596}
+
+	tests := []struct {
+		encryption EncryptionPolicy
+		want       []string
+	}{
+		{EncryptionOff, []string{
+			"ipsec-3gpp;q=0.9;prot=esp;mod=trans;alg=hmac-sha-1-96;ealg=null",
+			"ipsec-3gpp;q=0.8;prot=esp;mod=trans;alg=hmac-md5-96;ealg=null",
+		}},
+		{EncryptionPreferred, []string{
+			"ipsec-3gpp;q=0.9;prot=esp;mod=trans;alg=hmac-sha-1-96;ealg=aes-cbc",
+			"ipsec-3gpp;q=0.8;prot=esp;mod=trans;alg=hmac-md5-96;ealg=aes-cbc",
+			"ipsec-3gpp;q=0.7;prot=esp;mod=trans;alg=hmac-sha-1-96;ealg=null",
+			"ipsec-3gpp;q=0.6;prot=esp;mod=trans;alg=hmac-md5-96;ealg=null",
+		}},
+		{EncryptionRequired, []string{
+			"ipsec-3gpp;q=0.9;prot=esp;mod=trans;alg=hmac-sha-1-96;ealg=aes-cbc",
+			"ipsec-3gpp;q=0.8;prot=esp;mod=trans;alg=hmac-md5-96;ealg=aes-cbc",
+		}},
+	}
+
+	for _, tt := range tests {
+		var got []string
+		for _, m := range (Policy{Integrity: integrity, Encryption: tt.encryption}).Mechanisms() {
+			got = append(got, m.String())
+		}
+
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: Mechanisms = %q, want %q", tt.encryption, got, tt.want)
+		}
 	}
 }

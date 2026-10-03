@@ -3,6 +3,7 @@ package pcscf
 import (
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -138,12 +139,15 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 	s := newScene(t)
 
 	stripped := []string{
-		"P-Asserted-Identity", "P-Access-Network-Info", "P-Charging-Vector", "P-Charging-Function-Addresses",
+		"P-Asserted-Identity", "P-Charging-Vector", "P-Charging-Function-Addresses",
 	}
+
+	const pani = "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000001"
 
 	s.register(func(r *sip.Request) {
 		r.Header.Add("P-Asserted-Identity", "<sip:bob@"+homeDomain+">")
-		r.Header.Add("P-Access-Network-Info", "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000001")
+		r.Header.Add("P-Access-Network-Info", pani)
+		r.Header.Add("P-Access-Network-Info", "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000002; network-provided")
 		r.Header.Add("P-Charging-Vector", "icid-value=1234")
 		r.Header.Add("P-Charging-Function-Addresses", "ccf=192.0.2.1")
 		r.Header.Add("P-Visited-Network-ID", `"visited.example.org"`)
@@ -156,6 +160,10 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 		if req.Header.Has(name) {
 			t.Errorf("%s forwarded from the UE", name)
 		}
+	}
+
+	if got := req.Header.Elements("P-Access-Network-Info"); !slices.Equal(got, []string{pani}) {
+		t.Errorf("P-Access-Network-Info = %q, want the UE's own value only", got)
 	}
 
 	if paths := req.Header.Values("Path"); len(paths) != 1 || strings.Contains(paths[0], "attacker") {

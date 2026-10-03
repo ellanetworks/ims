@@ -322,7 +322,7 @@ func TestInitialRegistration(t *testing.T) {
 
 	clients, _ := req.Header.SecurityMechanisms("Security-Client")
 
-	offers, err := ipsec.ParseOffers(clients)
+	offers, _, err := ipsec.ParseOffers(clients)
 	if err != nil || len(offers) != 2 || offers[0].Integrity != ipsec.HMACSHA196 || offers[1].Integrity != ipsec.HMACMD596 ||
 		offers[0].Endpoint != offers[1].Endpoint {
 		t.Fatalf("Security-Client = %q", req.Header.Values("Security-Client"))

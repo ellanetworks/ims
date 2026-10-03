@@ -90,14 +90,13 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 	s.pcrf = pcrftest.New(t, pcrftest.Config{Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain})
 
 	s.srv = &server.Server{Config: config.Config{
-		DB:          config.DB{Path: s.db},
-		CallHistory: config.CallHistory{Retention: 24 * time.Hour},
-		API:         config.API{Address: netip.MustParseAddr("127.0.0.1")},
-		IMS:         config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
-		SIP:         config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
-		PCSCF:       config.PCSCF{Port: pcscfPort, IPsec: config.IPsec{ServerPort: 5063, ClientPorts: []int{5064, 5065}}},
-		ICSCF:       config.ICSCF{Port: 5070},
-		SCSCF:       config.SCSCF{Port: 5080, MinExpires: 60, MaxExpires: 3600},
+		DB:    config.DB{Path: s.db},
+		API:   config.API{Address: netip.MustParseAddr("127.0.0.1")},
+		IMS:   config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
+		SIP:   config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
+		PCSCF: config.PCSCF{Port: pcscfPort, IPsec: config.IPsec{ServerPort: 5063, ClientPorts: []int{5064, 5065}}},
+		ICSCF: config.ICSCF{Port: 5070},
+		SCSCF: config.SCSCF{Port: 5080, MinExpires: 60, MaxExpires: 3600},
 		Diameter: config.Diameter{
 			OriginHost:  imsHost,
 			OriginRealm: domain,
@@ -524,15 +523,16 @@ func TestDeregistration(t *testing.T) {
 	}
 }
 
-func TestPlainSIPRegistration(t *testing.T) {
+func TestPlainSIPRegistrationRejected(t *testing.T) {
 	s := newScene(t)
 	u := s.newUE(false, testue.Config{Plain: true})
 
 	err := u.Register(s.ctx())
 
 	var re *testue.ResponseError
-	if !errors.As(err, &re) || re.Response.StatusCode != 421 || re.Response.Header.Get("Require") != "sec-agree" {
-		t.Fatalf("Register = %v, want 421 requiring sec-agree", err)
+	if !errors.As(err, &re) || re.Response.StatusCode != 421 || re.Response.Header.Get("Require") != "sec-agree" ||
+		!re.Response.Header.Has("Security-Server") {
+		t.Fatalf("Register = %v, want 421 requiring sec-agree, with Security-Server", err)
 	}
 
 	if u.State().Registered || len(espPackets(t, s.ue)) != 0 {

@@ -15,13 +15,6 @@ import (
 
 const productName = "ims"
 
-// Diameter is what the API and the CSCFs need from the Diameter node.
-type Diameter interface {
-	Identity() diameter.Identity
-	Peers() []diameter.PeerStatus
-	Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error)
-}
-
 var applications = map[config.Application]diameter.Application{
 	config.ApplicationCx: {ID: cx.ApplicationID, VendorID: tgpp.VendorID},
 	config.ApplicationRx: {ID: rx.ApplicationID, VendorID: tgpp.VendorID},
@@ -149,16 +142,15 @@ type rxSessions interface {
 	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
 
-// rxHandler answers the PCRF's RARs and ASRs. Only the Rx peer holds the
-// sessions: another peer's requests name no session of its own.
+// rxHandler answers the PCRF's RARs and ASRs. The node negotiates Rx with the
+// one Rx peer only, and answers 3007 to any other.
 type rxHandler struct {
 	log    *slog.Logger
-	peer   string
 	target atomic.Pointer[rxSessions]
 }
 
-func newRxHandler(peer string, logger *slog.Logger) *rxHandler {
-	return &rxHandler{log: logger, peer: peer}
+func newRxHandler(logger *slog.Logger) *rxHandler {
+	return &rxHandler{log: logger}
 }
 
 func (h *rxHandler) bind(s rxSessions) {
@@ -186,7 +178,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	if c.PeerID() != h.peer || !(*t).ReAuth(session, rar) {
+	if !(*t).ReAuth(session, rar) {
 		h.log.Info("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
@@ -217,15 +209,7 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	var (
-		terminate func()
-		known     bool
-	)
-
-	if c.PeerID() == h.peer {
-		terminate, known = (*t).AbortSession(session, asr)
-	}
-
+	terminate, known := (*t).AbortSession(session, asr)
 	if !known {
 		h.log.Info("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)

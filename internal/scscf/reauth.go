@@ -9,17 +9,12 @@ import (
 var ErrNotRegistered = errors.New("scscf: not registered")
 
 func (r *Registrar) Reauthenticate(ctx context.Context, impi string) error {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		return errors.New("registrar closed")
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	out, err := r.reauthenticate(ctx, impi)
 
@@ -68,8 +63,6 @@ func (r *Registrar) reauthenticate(ctx context.Context, impi string) ([]*outgoin
 	r.mu.Lock()
 	r.reauth[impi] = true
 	r.mu.Unlock()
-
-	r.armSweep(at)
 
 	r.log.Info("network-initiated re-authentication", slog.String("impi", impi),
 		slog.Duration("expires", r.cfg.ReauthExpires))

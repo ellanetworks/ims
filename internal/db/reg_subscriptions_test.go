@@ -102,12 +102,12 @@ func TestPutRegSubscriptionErrors(t *testing.T) {
 	}
 }
 
-func TestNextExpiry(t *testing.T) {
+func TestListExpiredIMPIsIncludesSubscriptions(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	if _, ok, err := d.NextExpiry(ctx); err != nil || ok {
-		t.Fatalf("NextExpiry on an empty database = %v, %v", ok, err)
+	if impis, err := d.ListExpiredIMPIs(ctx, testNow); err != nil || len(impis) != 0 {
+		t.Fatalf("ListExpiredIMPIs on an empty database = %v, %v", impis, err)
 	}
 
 	sub := testSubscription()
@@ -118,11 +118,6 @@ func TestNextExpiry(t *testing.T) {
 	}
 
 	mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-
-	next, ok, err := d.NextExpiry(ctx)
-	if err != nil || !ok || !next.Equal(sub.ExpiresAt) {
-		t.Fatalf("NextExpiry = %v, %v, %v; want %v", next, ok, err, sub.ExpiresAt)
-	}
 
 	impis, err := d.ListExpiredIMPIs(ctx, testNow.Add(2*time.Minute))
 	if err != nil || len(impis) != 1 || impis[0] != testIMPI {

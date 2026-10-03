@@ -17,10 +17,7 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 )
 
-const (
-	version               = "0.0.1"
-	callHistoryPurgeEvery = time.Hour
-)
+const version = "0.0.1"
 
 var ErrAlreadyStarted = errors.New("server: already started")
 
@@ -32,12 +29,9 @@ type Server struct {
 
 	database    *db.DB
 	node        *diameter.Node
-	diameter    Diameter
-	sip         SIP
+	sip         *sipServer
 	apiServer   *http.Server
 	apiListener net.Listener
-	stopPurge   context.CancelFunc
-	purgeDone   chan struct{}
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -56,11 +50,6 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := s.purgeCallHistory(ctx, database); err != nil {
-		_ = database.Close()
-		return err
-	}
-
 	var apiLC net.ListenConfig
 
 	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
@@ -70,8 +59,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	rtr := newRTRHandler(s.Logger)
-	pcrf, _ := cfg.Diameter.RxPeer()
-	rxh := newRxHandler(pcrf.ID, s.Logger)
+	rxh := newRxHandler(s.Logger)
 
 	node, err := newDiameterNode(cfg.Diameter, rtr, rxh, s.Logger)
 	if err != nil {
@@ -92,13 +80,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.database = database
 	s.node = node
-	s.diameter = node
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
 			Version:       version,
-			Diameter:      s.diameter,
+			Diameter:      s.node,
 			SIP:           s.sip,
 			Registrations: s.sip,
 			HomeDomain:    cfg.IMS.HomeDomain,
@@ -113,12 +100,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	go func() { _ = s.apiServer.Serve(apiLn) }()
-
-	purgeCtx, stopPurge := context.WithCancel(context.Background())
-	s.stopPurge = stopPurge
-	s.purgeDone = make(chan struct{})
-
-	go s.runCallHistoryPurge(purgeCtx)
 
 	sipAttrs := make([]string, 0, len(sipServer.Listeners()))
 	for _, l := range sipServer.Listeners() {
@@ -149,9 +130,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.Logger.Warn("failed to stop the API cleanly", slog.Any("error", err))
 	}
 
-	s.stopPurge()
-	<-s.purgeDone
-
 	if err := s.sip.Close(); err != nil {
 		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
 	}
@@ -163,35 +141,4 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
 	}
-}
-
-func (s *Server) runCallHistoryPurge(ctx context.Context) {
-	defer close(s.purgeDone)
-
-	ticker := time.NewTicker(callHistoryPurgeEvery)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := s.purgeCallHistory(ctx, s.database); err != nil {
-				s.Logger.Warn("failed to purge call history", slog.Any("error", err))
-			}
-		}
-	}
-}
-
-func (s *Server) purgeCallHistory(ctx context.Context, database *db.DB) error {
-	n, err := database.DeleteCallsEndedBefore(ctx, time.Now().Add(-s.Config.CallHistory.Retention))
-	if err != nil {
-		return err
-	}
-
-	if n > 0 {
-		s.Logger.Info("purged call history", "calls", n)
-	}
-
-	return nil
 }

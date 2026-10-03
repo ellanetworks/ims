@@ -17,15 +17,14 @@ import (
 )
 
 const (
-	defaultAPIPort       = 5020
-	defaultCallRetention = 90 * 24 * time.Hour
-	defaultDiameterPort  = 3868
-	defaultPCSCFPort     = 5060
-	defaultICSCFPort     = 5070
-	defaultSCSCFPort     = 5080
-	defaultMinExpires    = 60
-	defaultMaxExpires    = 3600
-	defaultIPsecServer   = 5063
+	defaultAPIPort      = 5020
+	defaultDiameterPort = 3868
+	defaultPCSCFPort    = 5060
+	defaultICSCFPort    = 5070
+	defaultSCSCFPort    = 5080
+	defaultMinExpires   = 60
+	defaultMaxExpires   = 3600
+	defaultIPsecServer  = 5063
 )
 
 var defaultIPsecClients = []int{5064, 5065}
@@ -45,23 +44,18 @@ const (
 )
 
 type Config struct {
-	DB          DB          `yaml:"db"`
-	CallHistory CallHistory `yaml:"call_history"`
-	API         API         `yaml:"api"`
-	IMS         IMS         `yaml:"ims"`
-	SIP         SIP         `yaml:"sip"`
-	PCSCF       PCSCF       `yaml:"pcscf"`
-	ICSCF       ICSCF       `yaml:"icscf"`
-	SCSCF       SCSCF       `yaml:"scscf"`
-	Diameter    Diameter    `yaml:"diameter"`
+	DB       DB       `yaml:"db"`
+	API      API      `yaml:"api"`
+	IMS      IMS      `yaml:"ims"`
+	SIP      SIP      `yaml:"sip"`
+	PCSCF    PCSCF    `yaml:"pcscf"`
+	ICSCF    ICSCF    `yaml:"icscf"`
+	SCSCF    SCSCF    `yaml:"scscf"`
+	Diameter Diameter `yaml:"diameter"`
 }
 
 type DB struct {
 	Path string `yaml:"path"`
-}
-
-type CallHistory struct {
-	Retention time.Duration `yaml:"retention"`
 }
 
 type API struct {
@@ -207,10 +201,6 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 
-	if cfg.CallHistory.Retention == 0 {
-		cfg.CallHistory.Retention = defaultCallRetention
-	}
-
 	if cfg.API.Port == 0 {
 		cfg.API.Port = defaultAPIPort
 	}
@@ -295,8 +285,6 @@ func (c Config) validate() error {
 	switch {
 	case c.DB.Path == "":
 		return errors.New("db.path is required")
-	case c.CallHistory.Retention < 0:
-		return errors.New("call_history.retention must be positive")
 	case !c.API.Address.IsValid():
 		return errors.New("api.address is required")
 	case c.API.Port < 1 || c.API.Port > 65535:
