@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
@@ -545,6 +546,46 @@ func TestTimerC(t *testing.T) {
 	if got := drain(codes); len(got) != 1 || got[0] != 408 {
 		t.Errorf("OnReply saw %v after Timer C, want [408]", got)
 	}
+}
+
+func TestNoAnswer(t *testing.T) {
+	clock := siptest.NewClock()
+	s := newScene(t, sip.TCP, routerConfig{clock: clock, opts: proxy.Options{NoAnswer: 30 * time.Second}})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+
+	fwd, f := s.forwarded()
+
+	clock.Advance(20 * time.Second)
+	reply(t, s.callee, fwd, f, 180)
+	wantResponse(t, s.caller, 180)
+
+	clock.Advance(10*time.Second - transaction.DefaultT1)
+	s.caller.RecvNone(quiet)
+
+	clock.Advance(transaction.DefaultT1)
+	wantResponse(t, s.caller, 408)
+
+	if fc, _ := s.forwarded(); fc.Method != "CANCEL" {
+		t.Fatalf("got %s, want CANCEL", fc.Method)
+	}
+}
+
+func TestNoAnswerStopsOnTheAnswer(t *testing.T) {
+	clock := siptest.NewClock()
+	s := newScene(t, sip.TCP, routerConfig{clock: clock, opts: proxy.Options{NoAnswer: 30 * time.Second}})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+
+	fwd, f := s.forwarded()
+	reply(t, s.callee, fwd, f, 200, "Contact", "<sip:callee@127.0.0.1>")
+	wantResponse(t, s.caller, 200)
+
+	clock.Advance(time.Minute)
+	s.caller.RecvNone(quiet)
+	s.callee.RecvNone(quiet)
 }
 
 func drain(ch chan int) []int {

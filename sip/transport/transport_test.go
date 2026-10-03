@@ -585,3 +585,43 @@ func TestDialHook(t *testing.T) {
 		t.Fatalf("got %s", got.Method)
 	}
 }
+
+func TestTrace(t *testing.T) {
+	type traced struct {
+		line   string
+		remote netip.AddrPort
+		sent   bool
+		via    string
+	}
+
+	seen := make(chan traced, 2)
+
+	tr, rec := siptest.NewTransport(t, transport.Config{Trace: func(m sip.Message, f sip.Flow, sent bool) {
+		seen <- traced{m.StartLine(), f.Remote, sent, m.Env().Header.Get("Via")}
+	}})
+	local := siptest.Listen(t, tr, lo)
+	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("OPTIONS", "sip:a@127.0.0.1", sip.UDP, u.Addr())
+	via, _ := req.Header.TopVia()
+	via.Params.Set("rport", "")
+	_ = req.Header.SetTopVia(via)
+	wire := req.Header.Get("Via")
+
+	u.Send(sip.UDP, local, req)
+
+	got := rec.NextRequest()
+	if err := tr.Send(t.Context(), sip.NewResponse(got, 200, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	u.RecvResponse()
+
+	if r := <-seen; r.line != "OPTIONS sip:a@127.0.0.1 SIP/2.0" || r.sent || r.remote != u.Addr() || r.via != wire {
+		t.Errorf("traced %+v, want the OPTIONS received from %s with Via %q", r, u.Addr(), wire)
+	}
+
+	if r := <-seen; r.line != "SIP/2.0 200 OK" || !r.sent || r.remote != u.Addr() {
+		t.Errorf("traced %+v, want the 200 sent to %s", r, u.Addr())
+	}
+}

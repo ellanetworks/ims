@@ -211,11 +211,7 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 		return
 	}
 
-	if req.Method == "NOTIFY" {
-		for _, u := range removed {
-			out.Header.InsertTop(sip.Field{Name: "Record-Route", Value: "<" + u.String() + ">"})
-		}
-	}
+	recordRouteRefresh(out, removed)
 
 	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil && rep.Err == nil {
@@ -298,6 +294,7 @@ func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI, d *proxy.Di
 
 	fromUE(out)
 	p.inDialogCharging(req, d).set(out)
+	recordRouteRefresh(out, removed)
 
 	u := out.URI
 	if route, err := out.Header.TopRoute(); err == nil {
@@ -324,6 +321,19 @@ func (p *PCSCF) ownFlow(req *sip.Request, token string) bool {
 	}
 
 	return !f.protected && f.ue.Port() == req.Flow.Remote.Port()
+}
+
+// TS 24.229 §5.2.6.3.5, §5.2.6.3.6, §5.2.6.4.5, §5.2.6.4.6, RFC 3261 §16.6 step 4
+func recordRouteRefresh(out *sip.Request, removed []sip.URI) {
+	switch out.Method {
+	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY":
+	default:
+		return
+	}
+
+	for _, u := range removed {
+		out.Header.InsertTop(sip.Field{Name: "Record-Route", Value: "<" + u.String() + ">"})
+	}
 }
 
 func stripSecAgree(req *sip.Request) {

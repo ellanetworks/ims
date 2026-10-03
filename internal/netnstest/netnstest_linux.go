@@ -177,20 +177,47 @@ func Link(t testing.TB, a, b *Netns, aAddrs, bAddrs []netip.Prefix) {
 
 	a.IP(t, "link", "add", "veth0", "type", "veth", "peer", "name", "veth1", "netns", fmt.Sprint(b.tid))
 
-	for _, side := range []struct {
-		n     *Netns
-		dev   string
-		addrs []netip.Prefix
-	}{{a, "veth0", aAddrs}, {b, "veth1", bAddrs}} {
-		for _, p := range side.addrs {
-			args := []string{"addr", "add", p.String(), "dev", side.dev}
-			if p.Addr().Is6() {
-				args = append(args, "nodad")
-			}
+	a.up(t, "veth0", aAddrs)
+	b.up(t, "veth1", bAddrs)
+}
 
-			side.n.IP(t, args...)
+func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
+	t.Helper()
+
+	n.IP(t, "link", "add", name, "type", "bridge")
+	t.Cleanup(func() { n.del(t, name) })
+
+	n.up(t, name, addrs)
+}
+
+func Attach(t testing.TB, n *Netns, bridge, port string, peer *Netns, addrs []netip.Prefix) {
+	t.Helper()
+
+	n.IP(t, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", fmt.Sprint(peer.tid))
+	t.Cleanup(func() { n.del(t, port) })
+
+	n.IP(t, "link", "set", port, "master", bridge)
+	n.up(t, port, nil)
+	peer.up(t, "eth0", addrs)
+}
+
+func (n *Netns) del(t testing.TB, dev string) {
+	if _, err := n.Command("ip", "link", "del", dev); err != nil {
+		t.Logf("delete %s: %v", dev, err)
+	}
+}
+
+func (n *Netns) up(t testing.TB, dev string, addrs []netip.Prefix) {
+	t.Helper()
+
+	for _, p := range addrs {
+		args := []string{"addr", "add", p.String(), "dev", dev}
+		if p.Addr().Is6() {
+			args = append(args, "nodad")
 		}
 
-		side.n.IP(t, "link", "set", side.dev, "up")
+		n.IP(t, args...)
 	}
+
+	n.IP(t, "link", "set", dev, "up")
 }

@@ -595,6 +595,103 @@ func TestSecondAnswerCanBeEnded(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.2.6.3.1, §5.2.2 NOTE 3
+func TestProtectedRPortIsThePortUS(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	u.uc.Send(sip.UDP, s.ps, s.ueInvite(u, func(r *sip.Request) {
+		via, _ := r.Header.TopVia()
+		via.Params.Set("rport", "")
+		_ = r.Header.SetTopVia(via)
+	}))
+	wantStatus(t, first(u.us.RecvResponse()), 100)
+
+	got, _ := s.scscf.RecvRequest()
+
+	vias, err := got.Header.Vias()
+	if err != nil || len(vias) != 2 {
+		t.Fatalf("Via = %q, want the P-CSCF's and the UE's", got.Header.Values("Via"))
+	}
+
+	if port, ok := vias[1].RPort(); !ok || port != u.us.Addr().Port() {
+		t.Errorf("UE Via %s, want rport the protected server port %d", vias[1], u.us.Addr().Port())
+	}
+}
+
+// TS 24.229 §5.2.6.3.5, §5.2.6.3.6, §5.2.6.4.5, §5.2.6.4.6
+func TestTargetRefreshesAreRecordRouted(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	c := s.originatingCall(t, u)
+	ok := c.answer(t, 200, sip.NewTag(), nil)
+
+	u.uc.Send(sip.UDP, s.ps, c.request("ACK", "1", ok))
+	s.scscf.RecvRequest()
+
+	dialog := uris(ok.Header.RecordRoutes())
+	if len(dialog) != 3 {
+		t.Fatalf("200 Record-Route = %q, want the S-CSCF's and the P-CSCF's two", dialog)
+	}
+
+	u.uc.Send(sip.UDP, s.ps, c.request("UPDATE", "2", ok))
+
+	got, f := s.scscf.RecvRequest()
+	if got.Method != "UPDATE" {
+		t.Fatalf("S-CSCF got %s, want the UPDATE", got.Method)
+	}
+
+	if rr := uris(got.Header.RecordRoutes()); !slices.Equal(rr, dialog[1:]) {
+		t.Errorf("UPDATE Record-Route = %q, want the P-CSCF's entries of the dialog %q", rr, dialog[1:])
+	}
+
+	res := sip.NewResponse(got, 200, "")
+	res.Header.Del("Record-Route")
+	res.Header.Add("Record-Route", "<sip:mt@"+s.scscf.Addr().String()+";lr>")
+
+	for _, rr := range got.Header.Values("Record-Route") {
+		res.Header.Add("Record-Route", rr)
+	}
+
+	s.scscf.Send(f.Transport, f.Remote, res)
+
+	updated, _ := u.us.RecvResponse()
+	wantStatus(t, updated, 200)
+
+	if rr := uris(updated.Header.RecordRoutes()); !slices.Equal(rr, dialog) {
+		t.Errorf("200 UPDATE Record-Route = %q, want the dialog's %q", rr, dialog)
+	}
+
+	from, _ := c.invite.Header.From()
+	to, _ := ok.Header.To()
+
+	core := siptest.NewRequest("UPDATE", ueContact(u)[1:len(ueContact(u))-1], sip.UDP, s.scscf.Addr())
+	core.Header.Set("From", to.String())
+	core.Header.Set("To", from.String())
+	core.Header.Set("Call-ID", c.invite.Header.CallID())
+	core.Header.Set("CSeq", "8 UPDATE")
+	core.Header.Add("Route", strings.Join(c.core.Header.Values("Record-Route"), ", "))
+	core.Header.Add("Record-Route", "<sip:mt@"+s.scscf.Addr().String()+";lr>")
+	s.scscf.Send(sip.UDP, s.pcscf, core)
+
+	toUE, _ := u.us.RecvRequest()
+	if toUE.Method != "UPDATE" {
+		t.Fatalf("UE got %s, want the UPDATE", toUE.Method)
+	}
+
+	want := slices.Clone(dialog)
+	slices.Reverse(want)
+
+	if rr := uris(toUE.Header.RecordRoutes()); !slices.Equal(rr, want) {
+		t.Errorf("UPDATE toward the UE Record-Route = %q, want %q", rr, want)
+	}
+
+	if top := mustURI(t, uris(toUE.Header.RecordRoutes())[0]); top.Port != s.ps.Port() || !top.Params.Has(ueFacing) {
+		t.Errorf("top Record-Route %s, want the protected server port %d", top, s.ps.Port())
+	}
+}
+
 // TS 24.229 §5.2.6.4.10
 func TestCoreRequestOnACall(t *testing.T) {
 	s, u := newIPsecRegScene(t)

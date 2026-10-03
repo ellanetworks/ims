@@ -92,6 +92,8 @@ type Options struct {
 
 	Timeout time.Duration
 
+	NoAnswer time.Duration
+
 	OnReply func(r Reply) Verdict
 
 	Dialog *Dialog

@@ -417,9 +417,20 @@ func (u *UE) callContact() string {
 	}}.String()
 }
 
+// RFC 3261 §8.1.2, RFC 3263 §4.1
+func (u *UE) requestTransport(req *sip.Request) sip.Transport {
+	if route, err := req.Header.TopRoute(); err == nil {
+		if v, ok := route.URI.Params.Get("transport"); ok && v != "" {
+			return sip.Transport(strings.ToUpper(v))
+		}
+	}
+
+	return u.cfg.Transport
+}
+
 // TS 24.229 §5.1.2A.1
 func (u *UE) prepare(req *sip.Request) error {
-	flow, verify, err := u.requestFlow()
+	flow, verify, err := u.requestFlow(u.requestTransport(req))
 	if err != nil {
 		return err
 	}
@@ -516,7 +527,7 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 	req.Header.Add("P-Preferred-Identity", "<"+impu+">")
 	req.Header.Add("P-Preferred-Service", mmtelService)
 	req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
-	req.Header.Add("Supported", c.supportedLocked())
+	req.Header.Add("Supported", c.supportedLocked()+", 199")
 	req.Header.Add("Allow", allow)
 	req.Header.Add("Accept", sdp.ContentType+", application/3gpp-ims+xml")
 
@@ -678,7 +689,7 @@ func (c *Call) earlyLocked(res *sip.Response) bool {
 
 func (c *Call) provisionalReceived(res *sip.Response) {
 	to, _ := res.Header.To()
-	if to.Tag() == "" {
+	if to.Tag() == "" || res.StatusCode == 199 {
 		return
 	}
 
@@ -1603,6 +1614,10 @@ func (c *Call) responseLocked(code int) (*sip.Response, error) {
 	res.Header.Add("Contact", c.u.callContact())
 	res.Header.Add("Allow", allow)
 	res.Header.Add("Supported", c.supportedLocked())
+
+	if code > 100 && code < 200 && c.u.cfg.EarlyMedia != "" {
+		res.Header.Add("P-Early-Media", c.u.cfg.EarlyMedia)
+	}
 
 	if c.d == nil {
 		d, err := dialog.NewUAS(c.invite, res)

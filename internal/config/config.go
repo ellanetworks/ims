@@ -88,6 +88,8 @@ type SIP struct {
 type PCSCF struct {
 	Port  int   `yaml:"port"`
 	IPsec IPsec `yaml:"ipsec"`
+
+	NoAnswerTimeout time.Duration `yaml:"no_answer_timeout"`
 }
 
 type IPsec struct {
@@ -313,6 +315,10 @@ func (c Config) validate() error {
 
 	if err := c.SCSCF.validate(c.SIP, c.IMS.HomeDomain); err != nil {
 		return err
+	}
+
+	if c.PCSCF.NoAnswerTimeout < 0 {
+		return fmt.Errorf("pcscf.no_answer_timeout %s is negative", c.PCSCF.NoAnswerTimeout)
 	}
 
 	if err := c.PCSCF.IPsec.Policy().Validate(); err != nil {

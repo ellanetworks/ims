@@ -202,6 +202,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			ClientPorts: ipsecClients,
 		},
 		Rx:       pcrf,
+		NoAnswer: cfg.PCSCF.NoAnswerTimeout,
 		Trust:    domain,
 		Fallback: ph,
 		Logger:   logger,

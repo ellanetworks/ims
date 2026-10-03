@@ -348,6 +348,32 @@ func TestServerCancel(t *testing.T) {
 	h.tu.None(quiet)
 }
 
+// RFC 3261 §9.2
+func TestServerCancelTagOfARelayedResponse(t *testing.T) {
+	h := newHarness(t)
+	tx, req := h.serve("INVITE", sip.UDP)
+
+	ringing := sip.NewResponse(req, 180, "")
+	_ = ringing.Header.SetToTag("callee")
+
+	if err := tx.Relay(ringing); err != nil {
+		t.Fatal(err)
+	}
+
+	h.wantResponse(180)
+
+	cancel, err := sip.NewCancel(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.peer.Send(sip.UDP, h.local, cancel)
+
+	if to, _ := h.wantResponse(200).Header.To(); to.Tag() != "callee" {
+		t.Errorf("200 to CANCEL To tag %q, want the relayed 180's %q", to.Tag(), "callee")
+	}
+}
+
 func TestServerCancelWithoutInvite(t *testing.T) {
 	h := newHarness(t)
 

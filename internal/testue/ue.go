@@ -103,11 +103,19 @@ type Config struct {
 
 	AcceptCalls bool
 
+	EarlyMedia string
+
+	LargeUDP bool
+
+	TCPResponsesFromClientPort bool
+
 	T1 time.Duration
 
 	Kernel Kernel
 
 	Do func(f func())
+
+	Trace func(m sip.Message, f sip.Flow, sent bool)
 
 	Logger *slog.Logger
 }
@@ -294,6 +302,8 @@ func New(cfg Config) (*UE, error) {
 		ResponseFlow: u.responseFlow,
 		T1:           cfg.T1,
 		Transport: transport.Config{
+			Trace:    cfg.Trace,
+			LargeUDP: cfg.LargeUDP,
 			Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 				var (
 					c   net.Conn
@@ -568,9 +578,10 @@ func (u *UE) filter(m sip.Message) error {
 	return nil
 }
 
+// TS 33.203 §7.1
 func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
 	f := req.Flow
-	if u.cfg.Plain || f.Transport != sip.UDP {
+	if u.cfg.Plain || f.Transport != sip.UDP && !u.cfg.TCPResponsesFromClientPort {
 		return sip.Flow{}, false, nil
 	}
 
@@ -580,7 +591,7 @@ func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, er
 	for _, s := range u.sets {
 		if inbound(s.set, f) {
 			return sip.Flow{
-				Transport: sip.UDP,
+				Transport: f.Transport,
 				Local:     netip.AddrPortFrom(f.Local.Addr(), s.set.Local.PortC),
 				Remote:    netip.AddrPortFrom(s.set.Remote.Addr, s.set.Remote.PortS),
 			}, true, nil

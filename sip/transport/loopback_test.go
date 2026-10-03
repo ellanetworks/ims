@@ -338,6 +338,111 @@ func TestLargeRequestFallsBackToUDP(t *testing.T) {
 	})
 }
 
+// RFC 3261 §18.1.1
+func TestLargeRequestFallsBackToUDPWhenTCPHangs(t *testing.T) {
+	addr := loopbacks[0].addr
+	dialed := make(chan struct{}, 1)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		FallbackTimeout: 100 * time.Millisecond,
+		Dial: func(ctx context.Context, d *net.Dialer, _, _ string) (net.Conn, error) {
+			dialed <- struct{}{}
+
+			select {
+			case <-ctx.Done():
+			case <-time.After(d.Timeout):
+			}
+
+			return nil, context.DeadlineExceeded
+		},
+	})
+	local := siptest.Listen(t, tr, addr)
+
+	pc, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = pc.Close() }()
+
+	dst := pc.LocalAddr().(*net.UDPAddr).AddrPort()
+
+	req := siptest.NewRequest("MESSAGE", "sip:ue@"+dst.String(), sip.UDP, local)
+	req.SetBody("text/plain", []byte(strings.Repeat("x", 2000)))
+	req.Flow = sip.Flow{Transport: sip.UDP, Local: local, Remote: dst}
+
+	start := time.Now()
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Send took %s, want the fallback after 100ms", elapsed)
+	}
+
+	select {
+	case <-dialed:
+	default:
+		t.Error("no TCP attempt before the fallback")
+	}
+
+	if req.Flow.Transport != sip.UDP {
+		t.Errorf("flow %+v after the fallback, want UDP", req.Flow)
+	}
+
+	_ = pc.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+	buf := make([]byte, 65535)
+	if n, _, err := pc.ReadFromUDPAddrPort(buf); err != nil || n < 2000 {
+		t.Fatalf("datagram of %d bytes, %v; want the request", n, err)
+	}
+}
+
+func TestLargeUDPRequestKept(t *testing.T) {
+	addr := loopbacks[0].addr
+	dialed := make(chan struct{}, 1)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		LargeUDP: true,
+		Dial: func(context.Context, *net.Dialer, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return nil, context.Canceled
+		},
+	})
+	local := siptest.Listen(t, tr, addr)
+
+	pc, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = pc.Close() }()
+
+	dst := pc.LocalAddr().(*net.UDPAddr).AddrPort()
+
+	req := siptest.NewRequest("INVITE", "sip:ue@"+dst.String(), sip.UDP, local)
+	req.SetBody("text/plain", []byte(strings.Repeat("x", 2000)))
+	req.Flow = sip.Flow{Transport: sip.UDP, Local: local, Remote: dst}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-dialed:
+		t.Error("TCP attempted for a large request with LargeUDP")
+	default:
+	}
+
+	_ = pc.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+	buf := make([]byte, 65535)
+	if n, _, err := pc.ReadFromUDPAddrPort(buf); err != nil || n < 2000 {
+		t.Fatalf("datagram of %d bytes, %v; want the request", n, err)
+	}
+}
+
 func TestLargeUDPResponse(t *testing.T) {
 	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
 		p, u := newPCSCF(t, addr), newUE(t, addr)
