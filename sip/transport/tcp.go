@@ -57,15 +57,6 @@ func (c *conn) abort() {
 	c.close()
 }
 
-func (t *Transport) sendTCP(ctx context.Context, f sip.Flow, b []byte, dial bool) error {
-	c, err := t.conn(ctx, f, dial)
-	if err != nil {
-		return err
-	}
-
-	return t.write(c, b)
-}
-
 func (t *Transport) write(c *conn, b []byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()

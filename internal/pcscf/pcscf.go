@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,8 @@ type Config struct {
 	SCSCF      SCSCF
 	IPsec      IPsec
 	Rx         Rx
+
+	NoAnswer time.Duration
 
 	Registrations RegistrationStore
 
@@ -169,6 +172,10 @@ func (p *PCSCF) Filter(m sip.Message) error {
 			return errTemporary
 		}
 
+		if isRequest && f.Transport == sip.UDP {
+			protectedRPort(req, v.s.set.Remote.PortS)
+		}
+
 		p.sas.received(v.s)
 	case isRequest && f.Local.Port() == p.cfg.Port && req.Method != "REGISTER" && p.sas.hasEstablished(f.Remote.Addr().Unmap()):
 		return errUnprotected
@@ -179,6 +186,21 @@ func (p *PCSCF) Filter(m sip.Message) error {
 	}
 
 	return nil
+}
+
+// TS 24.229 §5.2.6.3.1, §5.2.2 NOTE 3
+func protectedRPort(req *sip.Request, portUS uint16) {
+	via, err := req.Header.TopVia()
+	if err != nil {
+		return
+	}
+
+	if _, ok := via.Params.Get("rport"); !ok {
+		return
+	}
+
+	via.Params.Set("rport", strconv.Itoa(int(portUS)))
+	_ = req.Header.SetTopVia(via)
 }
 
 func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {

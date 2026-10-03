@@ -221,9 +221,12 @@ func (u *UE) subscribeHeaders(req *sip.Request) (sip.Flow, error) {
 	return req.Flow, nil
 }
 
-func (u *UE) requestFlow() (sip.Flow, []string, error) {
+func (u *UE) requestFlow(tr sip.Transport) (sip.Flow, []string, error) {
 	if u.cfg.Plain {
-		return u.unprotectedFlow(), nil, nil
+		f := u.unprotectedFlow()
+		f.Transport = tr
+
+		return f, nil, nil
 	}
 
 	est := u.established()
@@ -231,7 +234,7 @@ func (u *UE) requestFlow() (sip.Flow, []string, error) {
 		return sip.Flow{}, nil, fmt.Errorf("%w: no established SAs", ErrNotRegistered)
 	}
 
-	return protectedFlow(est, u.cfg.Transport), est.server, nil
+	return protectedFlow(est, tr), est.server, nil
 }
 
 func (u *UE) subscribedLocked(s *subscription, res *sip.Response) {

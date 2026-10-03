@@ -21,6 +21,8 @@ import (
 
 const (
 	DefaultTimerC = 3*time.Minute + 30*time.Second
+
+	minTimerC = 3*time.Minute + time.Second
 )
 
 var (
@@ -90,6 +92,8 @@ type Options struct {
 
 	Timeout time.Duration
 
+	NoAnswer time.Duration
+
 	OnReply func(r Reply) Verdict
 
 	Dialog *Dialog
@@ -140,8 +144,11 @@ func New(cfg Config) *Proxy {
 		p.log = slog.Default()
 	}
 
-	if p.timerC <= 0 {
+	switch {
+	case p.timerC <= 0:
 		p.timerC = DefaultTimerC
+	case p.timerC < minTimerC:
+		p.timerC = minTimerC
 	}
 
 	if p.clock == nil {

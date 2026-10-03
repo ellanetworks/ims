@@ -152,6 +152,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	switch out.Method {
 	case "INVITE":
+		opts.NoAnswer = p.cfg.NoAnswer
 		opts.Dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
 			Value: &call{ue: proxy.Caller, icid: cv.icid}, Target: p.dialogTarget(proxy.Caller, reg.FlowToken, req.Flow.Local.Addr()),
 		})

@@ -23,6 +23,7 @@ const (
 	DefaultIdleTimeout         = time.Hour
 	DefaultFirstMessageTimeout = 20 * time.Second
 	DefaultDialTimeout         = 10 * time.Second
+	DefaultFallbackTimeout     = 2 * time.Second
 	DefaultWriteTimeout        = 10 * time.Second
 	DefaultMaxConnections      = 2048
 
@@ -58,9 +59,12 @@ type Config struct {
 	IdleTimeout         time.Duration
 	FirstMessageTimeout time.Duration
 	DialTimeout         time.Duration
-	WriteTimeout        time.Duration
+	FallbackTimeout     time.Duration
 
-	Trace func(m sip.Message, sent bool)
+	LargeUDP     bool
+	WriteTimeout time.Duration
+
+	Trace func(m sip.Message, f sip.Flow, sent bool)
 }
 
 type Transport struct {
@@ -72,8 +76,10 @@ type Transport struct {
 	idleTimeout  time.Duration
 	firstTimeout time.Duration
 	dialTimeout  time.Duration
+	fallback     time.Duration
+	largeUDP     bool
 	writeTimeout time.Duration
-	trace        func(m sip.Message, sent bool)
+	trace        func(m sip.Message, f sip.Flow, sent bool)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -105,6 +111,8 @@ func New(cfg Config) *Transport {
 		idleTimeout:  cfg.IdleTimeout,
 		firstTimeout: cfg.FirstMessageTimeout,
 		dialTimeout:  cfg.DialTimeout,
+		fallback:     cfg.FallbackTimeout,
+		largeUDP:     cfg.LargeUDP,
 		writeTimeout: cfg.WriteTimeout,
 		trace:        cfg.Trace,
 		listeners:    make(map[netip.AddrPort]*listener),
@@ -135,6 +143,10 @@ func New(cfg Config) *Transport {
 
 	if t.dialTimeout <= 0 {
 		t.dialTimeout = DefaultDialTimeout
+	}
+
+	if t.fallback <= 0 {
+		t.fallback = DefaultFallbackTimeout
 	}
 
 	if t.writeTimeout <= 0 {
@@ -214,8 +226,6 @@ func (t *Transport) Send(ctx context.Context, m sip.Message) error {
 		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
 	}
 
-	t.traced(m, true)
-
 	return nil
 }
 
@@ -224,15 +234,30 @@ func (t *Transport) SendOnFlow(ctx context.Context, m sip.Message) error {
 		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
 	}
 
-	t.traced(m, true)
-
 	return nil
 }
 
-func (t *Transport) traced(m sip.Message, sent bool) {
+func (t *Transport) traced(m sip.Message, f sip.Flow, sent bool) {
 	if t.trace != nil {
-		t.trace(m, sent)
+		t.trace(m, f, sent)
 	}
+}
+
+func (t *Transport) sendUDPTraced(l *listener, m sip.Message, f sip.Flow, b []byte) error {
+	t.traced(m, f, true)
+
+	return sendUDP(l, f.Remote, b)
+}
+
+func (t *Transport) sendTCPTraced(ctx context.Context, m sip.Message, f sip.Flow, b []byte, dial bool) error {
+	c, err := t.conn(ctx, f, dial)
+	if err != nil {
+		return err
+	}
+
+	t.traced(m, f, true)
+
+	return t.write(c, b)
 }
 
 func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
@@ -248,10 +273,10 @@ func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
 
 	switch f.Transport {
 	case sip.UDP:
-		err = sendUDP(l, f.Remote, m.Bytes())
+		err = t.sendUDPTraced(l, m, f, m.Bytes())
 	case sip.TCP:
 		ensureContentLength(m.Env())
-		err = t.sendTCP(ctx, f, m.Bytes(), true)
+		err = t.sendTCPTraced(ctx, m, f, m.Bytes(), true)
 	}
 
 	if err != nil {
@@ -270,7 +295,7 @@ func ensureContentLength(env *sip.Envelope) {
 }
 
 func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
-	if r.Flow.Transport == sip.UDP && len(r.Bytes()) > MaxUDPRequest {
+	if r.Flow.Transport == sip.UDP && !t.largeUDP && len(r.Bytes()) > MaxUDPRequest {
 		return t.sendLargeRequest(ctx, r)
 	}
 
@@ -305,7 +330,11 @@ func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) error 
 	tf := f
 	tf.Transport = sip.TCP
 
-	err = t.sendTCP(ctx, tf, r.Bytes(), true)
+	tcpCtx, cancel := context.WithTimeout(ctx, t.fallback)
+	err = t.sendTCPTraced(tcpCtx, r, tf, r.Bytes(), true)
+
+	cancel()
+
 	if err == nil {
 		r.Flow = tf
 		return nil
@@ -313,19 +342,27 @@ func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) error 
 
 	r.Header = saved
 
-	if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ECONNRESET) && !errors.Is(err, syscall.ENOPROTOOPT) {
+	if ctx.Err() != nil || !tcpFailed(err) {
 		return err
 	}
 
-	t.log.Debug("TCP refused, sending large request over UDP", slog.String("remote", f.Remote.String()), slog.Any("error", err))
+	t.log.Debug("TCP failed, sending large request over UDP", slog.String("remote", f.Remote.String()), slog.Any("error", err))
 
-	if err := sendUDP(l, f.Remote, r.Bytes()); err != nil {
+	if err := t.sendUDPTraced(l, r, f, r.Bytes()); err != nil {
 		return err
 	}
 
 	r.Flow = f
 
 	return nil
+}
+
+// RFC 3261 §18.1.1
+func tcpFailed(err error) bool {
+	var ne net.Error
+
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENOPROTOOPT) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout()
 }
 
 func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
@@ -353,17 +390,17 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 			return err
 		}
 
-		if err := sendUDP(l, f.Remote, b); err != nil {
+		if err := t.sendUDPTraced(l, r, f, b); err != nil {
 			return err
 		}
 	case sip.TCP:
-		err := t.sendTCP(ctx, f, b, false)
+		err := t.sendTCPTraced(ctx, r, f, b, false)
 		if err != nil && ctx.Err() == nil {
 			if f.Remote, err = tcpDestination(via); err != nil {
 				return err
 			}
 
-			err = t.sendTCP(ctx, f, b, true)
+			err = t.sendTCPTraced(ctx, r, f, b, true)
 		}
 
 		if err != nil {
@@ -490,6 +527,8 @@ func (t *Transport) readUDP(l *listener) {
 func (t *Transport) deliver(m sip.Message, f sip.Flow) {
 	m.Env().Flow = f
 
+	t.traced(m, f, false)
+
 	switch m := m.(type) {
 	case *sip.Request:
 		if err := stampVia(m); err != nil {
@@ -503,7 +542,6 @@ func (t *Transport) deliver(m sip.Message, f sip.Flow) {
 		}
 	}
 
-	t.traced(m, false)
 	t.handler.HandleMessage(m)
 }
 

@@ -452,7 +452,7 @@ func (l *Layer) answerCancel(tx, target *ServerTransaction) {
 	res := sip.NewResponse(tx.req, 481, "")
 	if target != nil {
 		res = sip.NewResponse(tx.req, 200, "")
-		_ = res.Header.SetToTag(target.ToTag())
+		_ = res.Header.SetToTag(target.cancelTag())
 	}
 
 	if err := tx.respond(res, true); err != nil {

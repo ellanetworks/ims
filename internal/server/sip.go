@@ -186,7 +186,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
-			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"}, TimerC: cfg.SIP.NoAnswerTimeout,
+			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
 			LocalPorts: []uint16{ipsecServer, ipsecClients[0], ipsecClients[1]},
 		}),
 		Port:          pcscfPort,
@@ -202,6 +202,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			ClientPorts: ipsecClients,
 		},
 		Rx:       pcrf,
+		NoAnswer: cfg.PCSCF.NoAnswerTimeout,
 		Trust:    domain,
 		Fallback: ph,
 		Logger:   logger,
@@ -223,7 +224,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	roles.set(icscfPort, icscf.New(icscf.Config{
 		HomeDomain: cfg.IMS.HomeDomain,
 		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort, TimerC: cfg.SIP.NoAnswerTimeout}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
 		Port:       icscfPort,
 		Trust:      domain,
 		SCSCF: icscf.SCSCF{
@@ -236,7 +237,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		Logger:   logger,
 	}))
 
-	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort, TimerC: cfg.SIP.NoAnswerTimeout})
+	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
 
 	roles.set(scscfPort, &scscfHandler{
 		log:       logger,

@@ -1,11 +1,11 @@
 CANCEL sip:+15550002@ims.mnc001.mcc001.3gppnetwork.org;user=phone SIP/2.0
-Via: SIP/2.0/TCP 10.0.0.2:34253;branch=z9hG4bKAV4K5HH6JF7JUTE7WJHJPCNG5A;rport
+Via: SIP/2.0/TCP 10.0.0.2:46783;branch=z9hG4bKWWB2JEAIVIOONJKWBW4B7F4VCX;rport
 Route: <sip:10.0.0.1:5063;lr>
 Route: <sip:orig-1@scscf.ims.mnc001.mcc001.3gppnetwork.org:5080;lr>
 Max-Forwards: 70
-From: <sip:+15550001@ims.mnc001.mcc001.3gppnetwork.org>;tag=NHPSGW3YBBMNXVJDHW53XDVNGU
+From: <sip:+15550001@ims.mnc001.mcc001.3gppnetwork.org>;tag=FDVPAJ22ZGPUS67COMQ6HW7A5T
 To: <sip:+15550002@ims.mnc001.mcc001.3gppnetwork.org;user=phone>
-Call-ID: 4603afff-bf70-11f1-81ff-2bcf73babbc9@10.0.0.2
+Call-ID: 665e1dd8-bf75-11f1-86b4-4d6ade81ba5e@10.0.0.2
 CSeq: 1 CANCEL
 Content-Length: 0
 

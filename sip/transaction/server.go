@@ -42,6 +42,20 @@ func (tx *ServerTransaction) ToTag() string {
 	return tx.tag
 }
 
+// RFC 3261 §9.2
+func (tx *ServerTransaction) cancelTag() string {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.last != nil {
+		if to, err := tx.last.Header.To(); err == nil && to.Tag() != "" {
+			return to.Tag()
+		}
+	}
+
+	return tx.tag
+}
+
 func (tx *ServerTransaction) Respond(res *sip.Response) error {
 	res = res.Clone()
 

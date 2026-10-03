@@ -29,16 +29,17 @@ type responseContext struct {
 }
 
 type branch struct {
-	c       *responseContext
-	onReply func(r Reply) Verdict
-	timeout time.Duration
+	c        *responseContext
+	onReply  func(r Reply) Verdict
+	timeout  time.Duration
+	noAnswer time.Duration
 
 	client    *transaction.ClientTransaction
 	done      bool
 	responded bool
 
-	timerC, timer transaction.Timer
-	genC          int
+	timerC, timer, noAnswerTimer transaction.Timer
+	genC                         int
 
 	dialog  *Dialog
 	req     *sip.Request
@@ -60,7 +61,7 @@ func (c *responseContext) open(opts Options) (*branch, error) {
 		return nil, ErrForwarded
 	}
 
-	b := &branch{c: c, onReply: opts.OnReply, timeout: opts.Timeout}
+	b := &branch{c: c, onReply: opts.OnReply, timeout: opts.Timeout, noAnswer: opts.NoAnswer}
 	c.branch = b
 
 	return b, nil
@@ -89,6 +90,10 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 	if !b.done {
 		if c.invite {
 			b.startTimerC()
+
+			if b.noAnswer > 0 {
+				b.noAnswerTimer = c.p.clock.AfterFunc(b.noAnswer, b.noAnswerFired)
+			}
 		}
 
 		if b.timeout > 0 && !b.stopsTimeout() {
@@ -119,19 +124,28 @@ func (b *branch) startTimerC() {
 func (b *branch) finish() {
 	b.done = true
 
-	for _, t := range []transaction.Timer{b.timerC, b.timer} {
+	for _, t := range []transaction.Timer{b.timerC, b.timer, b.noAnswerTimer} {
 		if t != nil {
 			t.Stop()
 		}
 	}
 }
 
+// RFC 3261 §16.8
 func (b *branch) timerCFired(gen int) {
+	b.expire(func() bool { return gen == b.genC }, "Timer C")
+}
+
+func (b *branch) noAnswerFired() {
+	b.expire(func() bool { return true }, "no answer")
+}
+
+func (b *branch) expire(current func() bool, cause string) {
 	c := b.c
 
 	c.mu.Lock()
 
-	if b.done || gen != b.genC {
+	if b.done || !current() {
 		c.mu.Unlock()
 		return
 	}
@@ -142,13 +156,13 @@ func (b *branch) timerCFired(gen int) {
 
 	c.mu.Unlock()
 
-	c.p.log.Debug("Timer C fired", slog.String("request", c.tx.Request().StartLine()))
+	c.p.log.Debug("INVITE branch expired", slog.String("cause", cause), slog.String("request", c.tx.Request().StartLine()))
 
 	if client != nil {
 		_ = client.Cancel()
 	}
 
-	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: Timer C", transaction.ErrTimeout), Responded: responded})
+	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause), Responded: responded})
 }
 
 func (b *branch) timeoutFired() {

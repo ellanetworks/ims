@@ -29,14 +29,12 @@ import (
 )
 
 const (
-	domain   = "ims.mnc001.mcc001.3gppnetwork.org"
-	imsHost  = "ims." + domain
-	imsi     = "001010000000001"
-	impi     = imsi + "@" + domain
-	tempIMPU = "sip:" + impi
-	msisdn   = "sip:+15550001@" + domain
+	domain  = "ims.mnc001.mcc001.3gppnetwork.org"
+	imsHost = "ims." + domain
 
 	pcscfPort = 5060
+
+	pcscfIPsecServerPort = 5063
 )
 
 const subscribers = 4
@@ -67,6 +65,10 @@ func ueAddrsAt(i int) []netip.Prefix {
 }
 
 var (
+	impi     = subscriberAt(0).impi
+	tempIMPU = "sip:" + impi
+	msisdn   = subscriberAt(0).msisdn
+
 	imsAddrs = []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24"), netip.MustParsePrefix("fd00::1/64")}
 	ueAddrs  = ueAddrsAt(0)
 
@@ -86,9 +88,16 @@ type scene struct {
 	hss   *hsstest.HSS
 	pcrf  *pcrftest.PCRF
 	srv   *server.Server
-	xfrm  *ipsec.XFRM
 	db    string
-	rec   recorder
+	wire  *wireLog
+	rec   *recorder
+}
+
+func (s *scene) in(t *testing.T) *scene {
+	c := *s
+	c.t = t
+
+	return &c
 }
 
 type host struct {
@@ -105,7 +114,10 @@ func newScene(t *testing.T) *scene {
 func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 	t.Helper()
 
-	s := &scene{t: t, ims: netnstest.Current(t), hosts: map[int]*host{}, db: filepath.Join(t.TempDir(), "ims.db")}
+	s := &scene{
+		t: t, ims: netnstest.Current(t), hosts: map[int]*host{}, db: filepath.Join(t.TempDir(), "ims.db"),
+		wire: &wireLog{}, rec: &recorder{},
+	}
 
 	netnstest.Bridge(t, s.ims, "br0", imsAddrs)
 
@@ -132,7 +144,7 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 		API:   config.API{Address: netip.MustParseAddr("127.0.0.1")},
 		IMS:   config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
 		SIP:   config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
-		PCSCF: config.PCSCF{Port: pcscfPort, IPsec: config.IPsec{ServerPort: 5063, ClientPorts: []int{5064, 5065}}},
+		PCSCF: config.PCSCF{Port: pcscfPort, IPsec: config.IPsec{ServerPort: pcscfIPsecServerPort, ClientPorts: []int{5064, 5065}}},
 		ICSCF: config.ICSCF{Port: 5070},
 		SCSCF: config.SCSCF{Port: 5080, MinExpires: 60, MaxExpires: 3600},
 		Diameter: config.Diameter{
@@ -164,8 +176,7 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 
 	t.Cleanup(func() { s.record("") })
 
-	first := s.host(0)
-	s.ue, s.xfrm = first.ns, first.xfrm
+	s.ue = s.host(0).ns
 
 	return s
 }
@@ -221,7 +232,7 @@ func (s *scene) newUEAt(i int, v6 bool, cfg testue.Config) *testue.UE {
 	cfg.Local = ueAddrsAt(i)[family].Addr()
 	cfg.Do = h.ns.Do
 	cfg.Logger = testLogger(s.t).With("ue", i)
-	cfg.Trace = s.trace
+	cfg.Trace = s.tracer(i, cfg.Plain)
 
 	if cfg.K == nil {
 		cfg.K, cfg.OPc = testK, testOPc

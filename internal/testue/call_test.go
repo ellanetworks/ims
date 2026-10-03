@@ -166,7 +166,7 @@ func TestBasicCall(t *testing.T) {
 	for name, want := range map[string]string{
 		"P-Preferred-Service": mmtelService,
 		"Session-Expires":     "1800",
-		"Supported":           "100rel, timer",
+		"Supported":           "100rel, timer, 199",
 	} {
 		if got := invite.Header.Get(name); got != want {
 			t.Errorf("INVITE %s = %q, want %q", name, got, want)
@@ -1218,7 +1218,17 @@ func TestMessage(t *testing.T) {
 		t.Fatalf("Message = %v, %v, want 200", res, err)
 	}
 
-	for e := range b.Events() {
+	timeout := time.After(10 * time.Second)
+
+	for {
+		var e Event
+
+		select {
+		case e = <-b.Events():
+		case <-timeout:
+			t.Fatal("no MESSAGE reached the callee")
+		}
+
 		if e.Request == nil || e.Request.Method != "MESSAGE" {
 			continue
 		}
@@ -1229,5 +1239,28 @@ func TestMessage(t *testing.T) {
 		}
 
 		return
+	}
+}
+
+// RFC 3261 §8.1.2, RFC 3263 §4.1
+func TestRequestTransportFollowsTheRoute(t *testing.T) {
+	u := newCallUE(t, "001010000000001", netip.AddrPortFrom(loopback, 9), Config{})
+
+	for _, tc := range []struct {
+		route string
+		want  sip.Transport
+	}{
+		{"", sip.UDP},
+		{"<sip:127.0.0.1:5063;lr>", sip.UDP},
+		{"<sip:127.0.0.1:5063;transport=tcp;lr>, <sip:127.0.0.1:5060;lr>", sip.TCP},
+	} {
+		req := sip.NewRequest("BYE", sip.URI{Scheme: "sip", Host: "127.0.0.1"})
+		if tc.route != "" {
+			req.Header.Add("Route", tc.route)
+		}
+
+		if got := u.requestTransport(req); got != tc.want {
+			t.Errorf("Route %q: transport %s, want %s", tc.route, got, tc.want)
+		}
 	}
 }

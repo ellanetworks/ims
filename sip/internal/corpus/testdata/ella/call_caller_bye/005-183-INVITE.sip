@@ -1,31 +1,32 @@
 SIP/2.0 183 Session Progress
-Via: SIP/2.0/TCP 10.0.0.1:5063;branch=z9hG4bKYQL2HB6XSZK7NWBKIUA6UYLA6M
-Via: SIP/2.0/UDP 10.0.0.1:5080;branch=z9hG4bKBU2JRQRX27ANS6R3KARTMBH3ME
-Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bKGMCI7LMKHJQZMQ5CKSIZKA2W4M
-Via: SIP/2.0/UDP 10.0.0.1:5080;branch=z9hG4bKU72WRQSL52BNV6HHVKNZTB52DH
-Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKDJM2EXHZ5QIEJMXHYPUD5GH74Z
-Via: SIP/2.0/TCP 10.0.0.2:38873;branch=z9hG4bKFGRSOV5F7SLFZSS5NP2ISLCO25;rport=45067;received=10.0.0.2
-Record-Route: <sip:dmigbowgjhlyfhiyff53dy5zs3@10.0.0.1:5063;transport=tcp;lr;r2=on;did=AREWF3EVUTIQZAPC;ue>
-Record-Route: <sip:dmigbowgjhlyfhiyff53dy5zs3@10.0.0.1:5060;lr;r2=on;did=AREWF3EVUTIQZAPC>
-Record-Route: <sip:mt@10.0.0.1:5080;lr;did=PZJ7LAPP47A5KB7T>
-Record-Route: <sip:mo@10.0.0.1:5080;lr;did=4NIXFEQLROT7M6HP>
-Record-Route: <sip:7qi7n3eiqts4aak3xd3aop3cjh@10.0.0.1:5060;lr;r2=on;did=YRUSJYMQF73FRANU>
-Record-Route: <sip:7qi7n3eiqts4aak3xd3aop3cjh@10.0.0.1:5063;transport=tcp;lr;r2=on;did=YRUSJYMQF73FRANU;ue>
-From: <sip:+15550001@ims.mnc001.mcc001.3gppnetwork.org>;tag=B4GII4SE6BTWFZPJVJCHLBPG24
-To: <sip:+15550002@ims.mnc001.mcc001.3gppnetwork.org;user=phone>;tag=CSL6GIEWFVT6NIDLWWEAISEMIL
-Call-ID: 4552e3a2-bf70-11f1-81ff-2bcf73babbc9@10.0.0.2
+Via: SIP/2.0/TCP 10.0.0.1:5063;branch=z9hG4bK7AJ4U5W4YGYDPO5FJ2CD254DV6
+Via: SIP/2.0/UDP 10.0.0.1:5080;branch=z9hG4bKOUTABYRQUSVEDJYMO5YJF3ORD6
+Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bKAPUEEGBHGLWW4I6TA2UOA7ENNQ
+Via: SIP/2.0/UDP 10.0.0.1:5080;branch=z9hG4bKRE5L7XEMLJNGZOA43U4YEYCDNB
+Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKR4KZXOHWONBWEW364YVAF4ZF5J
+Via: SIP/2.0/TCP 10.0.0.2:38889;branch=z9hG4bKN2W5RLM7OASABZ6SP32GPA23SA;rport=44803;received=10.0.0.2
+Record-Route: <sip:zfh2lgtqhm5cnong5mbtqesooq@10.0.0.1:5063;transport=tcp;lr;r2=on;did=OEMTOR2JHJYATYM3;ue>
+Record-Route: <sip:zfh2lgtqhm5cnong5mbtqesooq@10.0.0.1:5060;lr;r2=on;did=OEMTOR2JHJYATYM3>
+Record-Route: <sip:mt@10.0.0.1:5080;lr;did=HIBKNCKAGBRTF3WP>
+Record-Route: <sip:mo@10.0.0.1:5080;lr;did=UDWTBO5ZV72KW7J2>
+Record-Route: <sip:fch555hos5mgc3rtk3lovlciov@10.0.0.1:5060;lr;r2=on;did=3WVWD42GP5R4HKAL>
+Record-Route: <sip:fch555hos5mgc3rtk3lovlciov@10.0.0.1:5063;transport=tcp;lr;r2=on;did=3WVWD42GP5R4HKAL;ue>
+From: <sip:+15550001@ims.mnc001.mcc001.3gppnetwork.org>;tag=PW7SQXHCQTXO6C5IMA73U6MNJA
+To: <sip:+15550002@ims.mnc001.mcc001.3gppnetwork.org;user=phone>;tag=DLT2KVKAMKLPY4ILHK37GIPRQX
+Call-ID: 657c1234-bf75-11f1-86b4-4d6ade81ba5e@10.0.0.2
 CSeq: 1 INVITE
 Content-Length: 307
 P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=0010100010000001
-Contact: <sip:4542e7f2-bf70-11f1-81ff-2bcf73babbc9@10.0.0.3:35047>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio
+Contact: <sip:656c296f-bf75-11f1-86b4-4d6ade81ba5e@10.0.0.3:46761>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio
 Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, PRACK, NOTIFY, MESSAGE
 Supported: 100rel, timer
+P-Early-Media: sendrecv
 Content-Type: application/sdp
 Require: 100rel
-RSeq: 317222256
+RSeq: 827209909
 
 v=0
-o=- 117379067674626 0 IN IP4 10.0.0.3
+o=- 117379211919362 0 IN IP4 10.0.0.3
 s=-
 c=IN IP4 10.0.0.3
 t=0 0

@@ -185,7 +185,7 @@ func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
 	t.Helper()
 
 	n.IP(t, "link", "add", name, "type", "bridge")
-	t.Cleanup(func() { _, _ = n.Command("ip", "link", "del", name) })
+	t.Cleanup(func() { n.del(t, name) })
 
 	n.up(t, name, addrs)
 }
@@ -194,11 +194,17 @@ func Attach(t testing.TB, n *Netns, bridge, port string, peer *Netns, addrs []ne
 	t.Helper()
 
 	n.IP(t, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", fmt.Sprint(peer.tid))
-	t.Cleanup(func() { _, _ = n.Command("ip", "link", "del", port) })
+	t.Cleanup(func() { n.del(t, port) })
 
 	n.IP(t, "link", "set", port, "master", bridge)
 	n.up(t, port, nil)
 	peer.up(t, "eth0", addrs)
+}
+
+func (n *Netns) del(t testing.TB, dev string) {
+	if _, err := n.Command("ip", "link", "del", dev); err != nil {
+		t.Logf("delete %s: %v", dev, err)
+	}
 }
 
 func (n *Netns) up(t testing.TB, dev string, addrs []netip.Prefix) {

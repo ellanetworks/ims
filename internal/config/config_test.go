@@ -58,8 +58,8 @@ func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
 		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n    international_prefix: \"011\"\n"+
-		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n  no_answer_timeout: 2m\n"+
-		"pcscf:\n  port: 5062\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
+		"pcscf:\n  port: 5062\n  no_answer_timeout: 2m\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
 		"icscf:\n  port: 5072\n"+
 		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
@@ -84,15 +84,13 @@ func TestLoad(t *testing.T) {
 			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
 			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"},
 			MaxConnections: 100,
-
-			NoAnswerTimeout: 2 * time.Minute,
 		},
 		PCSCF: PCSCF{Port: 5062, IPsec: IPsec{
 			ServerPort:  5163,
 			ClientPorts: []int{5164, 5165},
 			Integrity:   []ipsec.Integrity{ipsec.HMACMD596},
 			Encryption:  ipsec.EncryptionPreferred,
-		}},
+		}, NoAnswerTimeout: 2 * time.Minute},
 		ICSCF: ICSCF{Port: 5072},
 		SCSCF: SCSCF{
 			Port:         5082,
@@ -317,7 +315,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"unknown encryption policy", valid + "pcscf:\n  ipsec:\n    encryption: always\n" + validDiameter, `pcscf.ipsec: unknown encryption policy "always"`},
 		{"bad trusted network", validDB + validAPI + validIMS + "  trusted_networks: [10.0.0.0]\n" + validSIP + validDiameter, "no '/'"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
-		{"negative no answer timeout", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  no_answer_timeout: -1s\n" + validDiameter, "sip.no_answer_timeout -1s is negative"},
+		{"negative no answer timeout", valid + "pcscf:\n  no_answer_timeout: -1s\n" + validDiameter, "pcscf.no_answer_timeout -1s is negative"},
 		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},
 		{"max expires below min", valid + "scscf:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "scscf.max_expires 300 is below scscf.min_expires 600"},
 		{"negative reauth interval", valid + "scscf:\n  reauth_interval: -1m\n" + validDiameter, "scscf.reauth_interval -1m0s is negative"},
