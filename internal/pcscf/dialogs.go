@@ -48,18 +48,27 @@ func contactParam(req *sip.Request, name string) bool {
 }
 
 func (p *PCSCF) ueRegistration(req *sip.Request) (db.PCSCFRegistration, bool) {
-	ue := req.Flow.Remote.Addr().Unmap()
+	k, ok := p.ueKey(req)
+	if !ok {
+		return db.PCSCFRegistration{}, false
+	}
 
+	return p.regs.get(k.impi, k.ue)
+}
+
+// ueKey identifies the registration a request from the UE arrives on: by its
+// security associations, or by its source without IPsec.
+func (p *PCSCF) ueKey(req *sip.Request) (regKey, bool) {
 	if p.sas != nil && p.sas.protected(req.Flow.Local.Port()) {
 		v, ok := p.sas.lookup(req.Flow)
 		if !ok {
-			return db.PCSCFRegistration{}, false
+			return regKey{}, false
 		}
 
-		return p.regs.get(v.impi, ue)
+		return regKey{v.impi, req.Flow.Remote.Addr().Unmap()}, true
 	}
 
-	return p.regs.fromSource(req.Flow.Remote)
+	return p.regs.sourceKey(req.Flow.Remote)
 }
 
 func (p *PCSCF) ueSubscribe(tx *transaction.ServerTransaction, req *sip.Request) {

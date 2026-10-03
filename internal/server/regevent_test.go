@@ -15,6 +15,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
@@ -40,6 +41,7 @@ type e2e struct {
 	srv    *Server
 	hss    *fakePeer
 	sars   chan cx.ServerAssignmentRequest
+	rx     chan *diameter.Message
 	pcscf  netip.AddrPort
 	ps     netip.AddrPort
 	scscf  netip.AddrPort
@@ -54,9 +56,28 @@ type e2e struct {
 func newE2E(t *testing.T) *e2e {
 	t.Helper()
 
-	e := &e2e{t: t, sars: make(chan cx.ServerAssignmentRequest, 16), callID: sip.NewTag() + "@" + ueAddr.String()}
+	e := &e2e{
+		t: t, sars: make(chan cx.ServerAssignmentRequest, 16), rx: make(chan *diameter.Message, 64),
+		callID: sip.NewTag() + "@" + ueAddr.String(),
+	}
 
 	mux := diameter.NewMux()
+	mux.Handle(rx.ApplicationID, rx.CommandAA, diameter.HandlerFunc(
+		func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+			e.rx <- req
+
+			ans, _ := rx.NewAAAnswer(req, c.LocalIdentity(), rx.AAAnswer{})
+
+			return ans
+		}))
+	mux.Handle(rx.ApplicationID, rx.CommandSessionTermination, diameter.HandlerFunc(
+		func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+			e.rx <- req
+
+			ans, _ := rx.NewSessionTerminationAnswer(req, c.LocalIdentity(), rx.SessionTerminationAnswer{})
+
+			return ans
+		}))
 	mux.Handle(cx.ApplicationID, cx.CommandUserAuthorization, diameter.HandlerFunc(
 		func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 			ans, _ := cx.NewUserAuthorizationAnswer(req, c.LocalIdentity(), cx.UserAuthorization{

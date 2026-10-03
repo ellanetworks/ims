@@ -3,7 +3,7 @@ module github.com/ellanetworks/ims
 go 1.26.5
 
 require (
-	github.com/ellanetworks/core/diameter v0.0.0-20261001195432-4c22ba0c097e
+	github.com/ellanetworks/core/diameter v0.0.0-20261002215553-fc4b8bdb8313
 	github.com/mattn/go-sqlite3 v1.14.42
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
