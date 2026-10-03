@@ -288,10 +288,12 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 	}
 
 	if d != nil {
+		tracked := initial
+
 		if initial {
 			err = d.begin(tx, c, out, to, opts.RecordRoute)
 		} else {
-			_, err = d.request(out)
+			tracked, err = d.request(out)
 		}
 
 		if err != nil {
@@ -299,7 +301,9 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 			return err
 		}
 
-		b.dialog, b.req, b.initial = d, out, initial
+		if tracked {
+			b.dialog, b.req, b.initial = d, out, initial
+		}
 	}
 
 	client, err := p.layer.Request(out, b)

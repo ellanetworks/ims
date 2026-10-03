@@ -589,10 +589,9 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		toward proxy.Side
-		want   int
 	}{
-		{"originating", proxy.Callee, 487},
-		{"terminating", proxy.Both, 500},
+		{"originating", proxy.Callee},
+		{"terminating", proxy.Both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
@@ -623,6 +622,9 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 
 			ok := answer(t, s.callee, c.fwd, c.f, 200)
 
+			// RFC 3261 §16.7: the 2xx is relayed even after a final response.
+			res := wantResponse(t, s.caller, 200)
+
 			ack, _ := wantRequest(t, s.callee, "ACK")
 			bye, _ := wantRequest(t, s.callee, "BYE")
 
@@ -643,11 +645,19 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 			wantCSeq(t, ack, invite.Seq)
 			wantCSeq(t, bye, invite.Seq+1)
 
-			if tc.toward&proxy.Caller == 0 {
-				wantResponse(t, s.caller, tc.want)
+			caller, err := dialog.NewUAC(c.invite, res)
+			if err != nil {
+				t.Fatal(err)
 			}
 
-			s.caller.RecvNone(quiet)
+			callerAck, _ := caller.NewAck(c.invite)
+			sendFrom(t, s.caller, s.tr, callerAck)
+
+			callerBye, _ := caller.NewRequest("BYE")
+			sendFrom(t, s.caller, s.tr, callerBye)
+			wantResponse(t, s.caller, 481)
+
+			s.callee.RecvNone(quiet)
 			s.r.noEvent()
 		})
 	}
@@ -664,15 +674,144 @@ func TestDialogLate2xxAfterTimerC(t *testing.T) {
 	clock.Advance(proxy.DefaultTimerC)
 	wantResponse(t, s.caller, 408)
 	wantRequest(t, s.callee, "CANCEL")
+	s.r.noEvent()
+
+	c.answerCall(false)
+
+	bye, _ := c.caller.NewRequest("BYE")
+	sendFrom(t, s.caller, s.tr, bye)
+	got, f := wantRequest(t, s.callee, "BYE")
+	answer(t, s.callee, got, f, 200)
+	wantResponse(t, s.caller, 200)
+
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndBye || e.By != proxy.Caller {
+		t.Errorf("ended event %+v", e)
+	}
+}
+
+func TestDialogTimerCWithoutAnswer(t *testing.T) {
+	clock := siptest.NewClock()
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
+
+	c := ring(s)
+	answer(t, s.callee, c.fwd, c.f, 180)
+	wantResponse(t, s.caller, 180)
+
+	clock.Advance(proxy.DefaultTimerC)
+	wantResponse(t, s.caller, 408)
+	s.r.noEvent()
+
+	clock.Advance(64 * transaction.DefaultT1)
 
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
 
-	answer(t, s.callee, c.fwd, c.f, 200)
+	wantState(t, c.d, proxy.Ended)
+}
+
+func TestDialogEarlyUpdate(t *testing.T) {
+	clock := siptest.NewClock()
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
+
+	c := ring(s)
+	progress := answer(t, s.callee, c.fwd, c.f, 183)
+	early := wantResponse(t, s.caller, 183)
+
+	ad, err := dialog.NewUAC(c.invite, early)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bd, err := dialog.NewUAS(c.fwd, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update, _ := bd.NewRequest("UPDATE")
+	update.Header.Add("Contact", "<sip:moved@"+s.callee.Addr().String()+";transport=tcp>")
+	sendFrom(t, s.callee, s.tr, update)
+
+	got, f := wantRequest(t, s.caller, "UPDATE")
+	answer(t, s.caller, got, f, 200, "Session-Expires", "90;refresher=uas")
+	_ = ad.ReceiveRequest(got)
+
+	wantResponse(t, s.callee, 200)
+
+	clock.Advance(91 * time.Second)
+	wantState(t, c.d, proxy.Early)
+
+	// A 2xx without a Contact leaves the target the early UPDATE set.
+	ok := sip.NewResponse(c.fwd, 200, "")
+	_ = ok.Header.SetToTag("callee")
+	dialog.CopyRecordRoute(ok, c.fwd)
+	s.callee.Send(c.f.Transport, c.f.Remote, ok)
+	wantResponse(t, s.caller, 200)
+
+	if got := c.d.Contact(proxy.Callee); got.User != "moved" {
+		t.Errorf("callee contact %s, want the one from the early UPDATE", got)
+	}
+}
+
+func TestDialogEarlyByeFromCaller(t *testing.T) {
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+	c := ring(s)
+	answer(t, s.callee, c.fwd, c.f, 180)
+	early := wantResponse(t, s.caller, 180)
+
+	ad, err := dialog.NewUAC(c.invite, early)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bye, _ := ad.NewRequest("BYE")
+	sendFrom(t, s.caller, s.tr, bye)
+
+	got, f := wantRequest(t, s.callee, "BYE")
+	answer(t, s.callee, got, f, 200)
+	wantResponse(t, s.caller, 200)
+
+	answer(t, s.callee, c.fwd, c.f, 487)
+	wantResponse(t, s.caller, 487)
+
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.By != proxy.Caller || e.Code != 487 {
+		t.Errorf("ended event %+v", e)
+	}
+}
+
+func TestDialogForkedLegRelayed(t *testing.T) {
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+	c := ring(s)
+	c.answerCall(false)
+
+	// A second 2xx from another leg of a fork downstream.
+	other := sip.NewResponse(c.fwd, 200, "")
+	_ = other.Header.SetToTag("other")
+	dialog.CopyRecordRoute(other, c.fwd)
+	other.Header.Add("Contact", "<"+target(s.callee, sip.TCP)+">")
+	s.callee.Send(c.f.Transport, c.f.Remote, other)
+
+	res := wantResponse(t, s.caller, 200)
+
+	ad, err := dialog.NewUAC(c.invite, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ack, _ := ad.NewAck(c.invite)
+	sendFrom(t, s.caller, s.tr, ack)
 	wantRequest(t, s.callee, "ACK")
-	wantRequest(t, s.callee, "BYE")
-	s.caller.RecvNone(quiet)
+
+	bye, _ := ad.NewRequest("BYE")
+	sendFrom(t, s.caller, s.tr, bye)
+	got, f := wantRequest(t, s.callee, "BYE")
+	answer(t, s.callee, got, f, 200)
+	wantResponse(t, s.caller, 200)
+
+	wantState(t, c.d, proxy.Confirmed)
+	s.r.noEvent()
 }
 
 func TestDialogByeCSeqAfterReinvites(t *testing.T) {
