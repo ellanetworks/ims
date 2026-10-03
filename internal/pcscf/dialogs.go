@@ -217,6 +217,13 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	d := p.cfg.Proxy.Dialog(removed)
 
+	// TS 24.229 §5.2.8.1.3: a dialog the P-CSCF released answers 481, before
+	// its flow, possibly gone, is looked up.
+	if d != nil && d.Released() {
+		p.respond(tx, sip.NewResponse(req, 481, ""))
+		return
+	}
+
 	if p.towardUE(removed) {
 		p.toUEFlow(tx, req, out, removed, d)
 		return
@@ -261,7 +268,16 @@ func (p *PCSCF) towardUE(removed []sip.URI) bool {
 }
 
 func (p *PCSCF) fromCore(req *sip.Request) bool {
-	return req.Flow.Local.Port() == p.cfg.Port && p.cfg.Trust != nil && p.cfg.Trust.Trusted(req.Flow.Remote.Addr())
+	return req.Flow.Local.Port() == p.cfg.Port && p.trusted(req.Flow.Remote.Addr())
+}
+
+func (p *PCSCF) trusted(a netip.Addr) bool {
+	return p.cfg.Trust != nil && p.cfg.Trust.Trusted(a)
+}
+
+// ownPort reports whether a local port is the P-CSCF's, protected or not.
+func (p *PCSCF) ownPort(port uint16) bool {
+	return port == p.cfg.Port || p.sas != nil && p.sas.protected(port)
 }
 
 func flowToken(removed []sip.URI) string {

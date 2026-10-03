@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -102,6 +104,9 @@ const (
 	EndNoAck
 	EndExpired
 	EndDiscarded
+	// EndLost is a dialog a party answered 481 or 408 to a request in
+	// (RFC 3261 §12.2.1.2).
+	EndLost
 )
 
 func (c EndCause) String() string {
@@ -118,6 +123,8 @@ func (c EndCause) String() string {
 		return "expired"
 	case EndDiscarded:
 		return "discarded"
+	case EndLost:
+		return "lost"
 	}
 
 	return "EndCause(?)"
@@ -167,6 +174,16 @@ type party struct {
 	route   []sip.Address
 }
 
+// closingLeg is a leg answered by a 2xx after the proxy released the dialog,
+// or after it answered the caller itself. The proxy ACKs and BYEs the callee
+// on it, and BYEs the caller once the caller ACKs the 2xx (RFC 3261 §15).
+type closingLeg struct {
+	callee party
+	ack    *sip.Request
+	sent   *sip.Request
+	bye    bool
+}
+
 type txKey struct {
 	from   Side
 	seq    uint32
@@ -193,10 +210,13 @@ type Dialog struct {
 	state    DialogState
 	released bool
 	silent   bool
-	closing  map[string]*sip.Request
+	reasons  []sip.Reason
+	closing  map[string]*closingLeg
 	byeFrom  Side
 	ended    bool
-	failing  bool
+
+	outbox   []DialogEvent
+	flushing bool
 
 	ctx      *responseContext
 	inviteTx txKey
@@ -211,6 +231,10 @@ type Dialog struct {
 	answerTag string
 	code      int
 	cancelled bool
+
+	// offered is set once the INVITE or a provisional response carried the
+	// initial offer, after which a 2xx to the INVITE carries none.
+	offered bool
 
 	invites  map[Side]uint32
 	refresh  map[txKey]sip.URI
@@ -228,7 +252,7 @@ func (p *Proxy) NewDialog(cfg DialogConfig) *Dialog {
 		early:   make(map[string]*party),
 		invites: make(map[Side]uint32),
 		refresh: make(map[txKey]sip.URI),
-		closing: make(map[string]*sip.Request),
+		closing: make(map[string]*closingLeg),
 	}
 }
 
@@ -257,14 +281,37 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 	}
 }
 
-func (p *Proxy) emit(events []DialogEvent) {
-	if p.onDialog == nil {
+// publish queues an event; flush delivers the queue in order, outside d.mu, so
+// that events reach OnDialog in the order the dialog changed. publish must be
+// called with d.mu held.
+func (d *Dialog) publish(e DialogEvent) {
+	if d.p.onDialog != nil {
+		e.Dialog = d
+		d.outbox = append(d.outbox, e)
+	}
+}
+
+func (d *Dialog) flush() {
+	d.mu.Lock()
+
+	if d.flushing {
+		d.mu.Unlock()
 		return
 	}
 
-	for _, e := range events {
-		p.onDialog(e)
+	d.flushing = true
+
+	for len(d.outbox) > 0 {
+		e := d.outbox[0]
+		d.outbox = d.outbox[1:]
+
+		d.mu.Unlock()
+		d.p.onDialog(e)
+		d.mu.Lock()
 	}
+
+	d.flushing = false
+	d.mu.Unlock()
 }
 
 func (d *Dialog) ID() string {
@@ -403,6 +450,7 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	d.callID = out.Header.CallID()
 	d.caller = party{addr: from, contact: contact, seq: cseq.Seq, haveSeq: true, route: route}
 	d.invites[Caller] = cseq.Seq
+	_, d.offered = sessionBody(Caller, out.Envelope)
 	d.offer(Caller, d.inviteTx, out.Envelope)
 	d.arm(d.p.dialogLifetime)
 
@@ -412,17 +460,37 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	d.p.dialogs[d.id] = d
 	d.p.mu.Unlock()
 
-	d.p.emit([]DialogEvent{{Kind: EventStarted, Dialog: d}})
-
 	return nil
+}
+
+// started reports the dialog once its INVITE is sent.
+func (d *Dialog) started() {
+	d.mu.Lock()
+	d.publish(DialogEvent{Kind: EventStarted})
+	d.mu.Unlock()
+
+	d.flush()
 }
 
 func (d *Dialog) abandon() {
 	d.mu.Lock()
+	d.ended = true
+	d.state = Ended
 	d.stopTimers()
 	d.mu.Unlock()
 
 	d.p.forgetDialog(d)
+}
+
+// Party reports which party of the dialog sent an in-dialog request, by its
+// tags; false when the request belongs to no leg of the dialog.
+func (d *Dialog) Party(req *sip.Request) (Side, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	side, _, err := d.sender(req)
+
+	return side, err == nil
 }
 
 // sender finds the party that sent an in-dialog request, by its tags.
@@ -527,11 +595,30 @@ func (d *Dialog) ack(ack *sip.Request) error {
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	if d.released {
+		var bye *sip.Request
+
+		to, _ := ack.Header.To()
+
+		// The caller ACKs a 2xx the proxy already ACKed and ended on the
+		// callee's side: absorb it, and end the caller's side now that it
+		// may be BYEd.
+		if leg := d.closing[to.Tag()]; leg != nil && leg.bye && cseq.Seq == d.inviteTx.seq {
+			leg.bye = false
+			bye = d.byeWithReason(Caller, &leg.callee)
+		}
+
+		d.mu.Unlock()
+
+		if bye != nil {
+			d.send(bye, Caller)
+		}
+
 		return ErrDialogEnded
 	}
+
+	defer d.mu.Unlock()
 
 	side, _, err := d.sender(ack)
 	if err != nil {
@@ -578,8 +665,10 @@ func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 		return
 	}
 
+	downstream := r.Err == nil
+
 	if initial {
-		d.inviteResponse(res, r.Err == nil)
+		d.inviteResponse(res, downstream)
 		return
 	}
 
@@ -597,8 +686,6 @@ func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 	}
 
 	key := txKey{from: side, seq: cseq.Seq, method: req.Method}
-
-	var events []DialogEvent
 
 	switch {
 	case res.StatusCode <= 100:
@@ -622,13 +709,25 @@ func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 
 	d.responseBody(side.other(), key, res)
 
-	if req.Method == "BYE" && res.StatusCode >= 200 && !d.ended && (d.state == Ending || d.state == Confirmed || d.state == Answered) {
-		events = d.end(EndBye, d.byeFrom, d.p.lingerBye)
+	confirmed := d.state == Ending || d.state == Confirmed || d.state == Answered
+
+	switch {
+	case d.ended || !confirmed || res.StatusCode < 200:
+	case req.Method == "BYE":
+		d.end(EndBye, d.byeFrom, d.p.lingerBye)
+	case res.StatusCode == 481 || res.StatusCode == 408:
+		// RFC 3261 §12.2.1.2: the dialog is gone at the other party.
+		by := side.other()
+		if !downstream {
+			by = 0
+		}
+
+		d.end(EndLost, by, d.p.lingerBye)
 	}
 
 	d.mu.Unlock()
 
-	d.p.emit(events)
+	d.flush()
 }
 
 func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
@@ -636,8 +735,6 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 	tag := to.Tag()
 
 	d.mu.Lock()
-
-	var events []DialogEvent
 
 	switch {
 	case res.StatusCode <= 100:
@@ -660,26 +757,26 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 			pt.route = rr
 		}
 
+		if _, ok := sessionBody(Callee, res.Envelope); ok {
+			d.offered = true
+		}
+
 		d.responseBody(Callee, d.inviteTx, res)
 	case res.IsSuccess():
 		switch {
 		case d.silent:
 			d.state = Ended
 		case d.released:
-			// The 2xx is relayed all the same (RFC 3261 §16.7 step 5). The
-			// proxy completes and ends the callee's session itself; the
-			// caller's ACK and BYE then meet a released dialog.
-			ack, bye := d.close(res, tag)
+			// The 2xx is relayed all the same (RFC 3261 §16.7 step 5), and
+			// the proxy ends the session it opens.
+			leg, fresh := d.close(res, tag)
 			d.mu.Unlock()
 
-			_ = d.p.layer.Go(func(ctx context.Context) {
-				d.sendAck(ctx, ack)
+			if fresh {
+				d.p.log.Debug("ending a 2xx to a released INVITE", slog.String("dialog", d.id))
+			}
 
-				if bye != nil {
-					d.p.log.Debug("ending a 2xx to a released INVITE", slog.String("dialog", d.id))
-					d.send(bye, Callee)
-				}
-			})
+			d.closeCallee(leg, fresh)
 
 			return
 		}
@@ -687,8 +784,6 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		if d.ended || d.answerTag != "" {
 			break
 		}
-
-		d.failing = false
 
 		pt := d.early[tag]
 		if pt == nil {
@@ -712,7 +807,7 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		d.arm(sessionExpires(res, d.p.dialogLifetime))
 		d.noAck = d.p.clock.AfterFunc(2*64*d.p.layer.T1(), d.noAckFired)
 
-		events = append(events, DialogEvent{Kind: EventAnswered, Dialog: d, Code: res.StatusCode})
+		d.publish(DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
 	default:
 		if d.state != Early {
 			break
@@ -727,11 +822,12 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		}
 
 		if !downstream {
-			// A 2xx may still follow a response the proxy generated, after
-			// Timer C or a timeout, and must then be relayed (RFC 3261
-			// §16.7). The dialog ends if none comes.
-			d.failing = true
-			d.arm(64 * d.p.layer.T1())
+			// The proxy answered the caller itself, after Timer C or a
+			// timeout. A 2xx may still come; the caller's transaction no
+			// longer takes it (RFC 6026 §8.4), so the proxy ends it as for
+			// a released dialog.
+			d.released = true
+			d.end(EndFailed, 0, d.p.timerC)
 
 			break
 		}
@@ -741,73 +837,128 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 			by = Caller
 		}
 
-		events = d.end(EndFailed, by, d.p.lingerBye)
+		d.end(EndFailed, by, d.p.lingerBye)
 	}
 
 	d.mu.Unlock()
 
-	d.p.emit(events)
+	d.flush()
 }
 
-// close builds the ACK for a 2xx to a released INVITE, and the BYE that
-// follows it, the first time it sees that To-tag. A retransmission only needs
-// the stored ACK again.
-func (d *Dialog) close(res *sip.Response, tag string) (ack, bye *sip.Request) {
-	if ack, ok := d.closing[tag]; ok {
-		return ack.Clone(), nil
+// close records a leg answered by a 2xx to a released INVITE, the first time
+// it sees its To-tag, with the ACK the proxy owes the callee. The ACK carries
+// an answer when the 2xx carries an offer (RFC 3261 §13.2.2.4). The caller is
+// BYEd once it ACKs the 2xx, if the 2xx can still reach it. It must be called
+// with d.mu held.
+func (d *Dialog) close(res *sip.Response, tag string) (*closingLeg, bool) {
+	if leg, ok := d.closing[tag]; ok {
+		return leg, false
 	}
 
 	to, _ := res.Header.To()
-	pt := &party{addr: to}
+	leg := &closingLeg{callee: party{addr: to}, bye: true}
 
 	if c, ok := firstContact(res.Header); ok {
-		pt.contact = c
+		leg.callee.contact = c
 	}
 
 	if rr, err := res.Header.RecordRoutes(); err == nil {
-		pt.route = rr
+		leg.callee.route = rr
 	}
 
 	if d.answerTag == "" {
-		d.callee = *pt
+		d.callee = leg.callee
 		d.answerTag = tag
 	}
 
-	ack = d.build("ACK", Callee, pt, d.inviteTx.seq)
-	d.closing[tag] = ack
+	leg.ack = d.build("ACK", Callee, &leg.callee, d.inviteTx.seq)
 
-	return ack.Clone(), d.build("BYE", Callee, pt, 0)
+	if offer, ok := sessionBody(Callee, res.Envelope); ok && !d.offered {
+		if answer, err := rejectOffer(offer.Data); err == nil {
+			leg.ack.SetBody("application/sdp", answer)
+		}
+	}
+
+	d.closing[tag] = leg
+
+	return leg, true
 }
 
-// retransmitted sends the ACK again for a retransmission of a 2xx to a
-// released INVITE.
+// closeCallee ACKs the 2xx of a closing leg, the same ACK for each
+// retransmission, and BYEs the callee after the first one.
+func (d *Dialog) closeCallee(leg *closingLeg, fresh bool) {
+	var bye *sip.Request
+
+	if fresh {
+		d.mu.Lock()
+		bye = d.byeWithReason(Callee, &leg.callee)
+		d.mu.Unlock()
+	}
+
+	_ = d.p.layer.Go(func(ctx context.Context) {
+		d.sendAck(ctx, leg)
+
+		if bye != nil {
+			d.send(bye, Callee)
+		}
+	})
+}
+
+// retransmitted sends the ACK again for a retransmission of a 2xx on a
+// closing leg.
 func (d *Dialog) retransmitted(res *sip.Response) {
 	to, _ := res.Header.To()
 
 	d.mu.Lock()
-	ack := d.closing[to.Tag()]
+	leg := d.closing[to.Tag()]
 	d.mu.Unlock()
 
-	if ack != nil {
-		_ = d.p.layer.Go(func(ctx context.Context) { d.sendAck(ctx, ack.Clone()) })
+	if leg != nil {
+		d.closeCallee(leg, false)
 	}
 }
 
-func (d *Dialog) sendAck(ctx context.Context, ack *sip.Request) {
-	to, err := d.target(Callee, ack)
-	if err != nil {
-		d.p.log.Debug("no target for a generated ACK", slog.String("dialog", d.id), slog.Any("error", err))
-		return
+func (d *Dialog) sendAck(ctx context.Context, leg *closingLeg) {
+	d.mu.Lock()
+	out := leg.sent
+	d.mu.Unlock()
+
+	if out == nil {
+		ack := leg.ack.Clone()
+
+		to, err := d.target(Callee, ack)
+		if err != nil {
+			d.p.log.Debug("no target for a generated ACK", slog.String("dialog", d.id), slog.Any("error", err))
+			return
+		}
+
+		if out, err = d.p.prepare(ack, to); err != nil {
+			return
+		}
+
+		d.mu.Lock()
+		if leg.sent == nil {
+			leg.sent = out
+		}
+
+		out = leg.sent
+		d.mu.Unlock()
 	}
 
-	out, err := d.p.prepare(ack, to)
-	if err != nil {
-		return
-	}
-
-	if err := d.p.layer.SendAck(ctx, out); err != nil {
+	if err := d.p.layer.SendAck(ctx, out.Clone()); err != nil {
 		d.p.log.Debug("sending a generated ACK failed", slog.String("dialog", d.id), slog.Any("error", err))
 	}
+}
+
+// byeWithReason builds a BYE carrying the release Reason. It must be called
+// with d.mu held.
+func (d *Dialog) byeWithReason(toward Side, callee *party) *sip.Request {
+	bye := d.build("BYE", toward, callee, 0)
+	if len(d.reasons) > 0 {
+		bye.Header.Add("Reason", reasons(d.reasons))
+	}
+
+	return bye
 }
 
 // Release ends the dialog from the proxy (TS 24.229 §5.2.8.1, §5.4.5.1).
@@ -824,89 +975,124 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 	}
 
 	d.released = true
+	d.reasons = slices.Clone(r.Reason)
 
-	early := d.state == Early
+	state := d.state
 	c := d.ctx
 
-	type generatedBye struct {
-		req    *sip.Request
-		toward Side
-	}
+	var (
+		byes []*sip.Request
+		leg  *closingLeg
+	)
 
-	var byes []generatedBye
+	switch state {
+	case Early:
+	case Answered:
+		// The callee still waits for its ACK, which the proxy now sends
+		// itself; the caller's is absorbed (RFC 3261 §15 keeps the BYE to
+		// the caller until then).
+		leg = &closingLeg{callee: d.callee, ack: d.build("ACK", Callee, &d.callee, d.inviteTx.seq), bye: r.Toward&Caller != 0}
+		d.closing[d.answerTag] = leg
 
-	if !early {
+		if r.Toward&Callee != 0 {
+			byes = append(byes, d.byeWithReason(Callee, &d.callee))
+		}
+	default:
 		for _, s := range []Side{Callee, Caller} {
-			if r.Toward&s == 0 {
-				continue
+			if r.Toward&s != 0 {
+				byes = append(byes, d.byeWithReason(s, &d.callee))
 			}
-
-			bye := d.build("BYE", s, &d.callee, 0)
-			if len(r.Reason) > 0 {
-				bye.Header.Add("Reason", reasons(r.Reason))
-			}
-
-			byes = append(byes, generatedBye{req: bye, toward: s})
 		}
 	}
 
-	events := d.end(cause, 0, d.p.timerC)
+	d.end(cause, 0, d.p.timerC)
 
 	d.mu.Unlock()
 
-	d.p.emit(events)
+	d.flush()
 
-	for _, b := range byes {
-		d.send(b.req, b.toward)
-	}
+	switch {
+	case state == Early:
+		if c == nil {
+			return nil
+		}
 
-	if !early || c == nil {
+		c.cancel(reasonFields(r.Reason))
+
+		if r.Toward&Caller != 0 {
+			_ = c.relay(releaseResponse(c, r))
+		}
+	case leg != nil:
+		// A 2xx a role holds, for an AAA say, never reaches the caller,
+		// which gets the error response instead.
+		if r.Toward&Caller != 0 && c != nil && c.relay(releaseResponse(c, r)) == nil {
+			d.mu.Lock()
+			leg.bye = false
+			d.mu.Unlock()
+		}
+
+		_ = d.p.layer.Go(func(ctx context.Context) {
+			d.sendAck(ctx, leg)
+
+			for _, bye := range byes {
+				d.send(bye, Callee)
+			}
+		})
+
 		return nil
 	}
 
-	c.cancel(reasonFields(r.Reason))
-
-	if r.Toward&Caller != 0 {
-		code := r.Code
-		if code == 0 {
-			code = 500
+	for _, bye := range byes {
+		toward := Callee
+		if to, _ := bye.Header.To(); to.Tag() == d.caller.addr.Tag() {
+			toward = Caller
 		}
 
-		res := c.generate(code)
-		if len(r.ResponseReason) > 0 {
-			res.Header.Add("Reason", reasons(r.ResponseReason))
-		}
-
-		_ = c.relay(res)
+		d.send(bye, toward)
 	}
 
 	return nil
+}
+
+// releaseResponse is the final response a release sends the caller.
+func releaseResponse(c *responseContext, r Release) *sip.Response {
+	code := r.Code
+	if code == 0 {
+		code = 500
+	}
+
+	res := c.generate(code)
+	if len(r.ResponseReason) > 0 {
+		res.Header.Add("Reason", reasons(r.ResponseReason))
+	}
+
+	return res
 }
 
 // Discard drops the dialog without any SIP (TS 24.229 §5.2.8.1.4).
 func (d *Dialog) Discard() {
 	d.mu.Lock()
 
-	if d.ended {
+	if !d.begun || d.ended {
 		d.mu.Unlock()
 		return
 	}
 
 	d.released = true
 	d.silent = true
-	events := d.end(EndDiscarded, 0, d.p.timerC)
+	d.end(EndDiscarded, 0, d.p.timerC)
 
 	d.mu.Unlock()
 
-	d.p.emit(events)
+	d.flush()
 }
 
 // end marks the dialog ended and keeps it for linger, so that late requests
 // still match it. A dialog released while being set up stays Early until the
 // final response to its INVITE. It must be called with d.mu held.
-func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) []DialogEvent {
+func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) {
 	if d.ended {
-		return nil
+		return
 	}
 
 	d.ended = true
@@ -921,8 +1107,7 @@ func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) []DialogEven
 	}
 
 	d.arm(linger)
-
-	return []DialogEvent{{Kind: EventEnded, Dialog: d, Code: d.code, By: by, End: cause}}
+	d.publish(DialogEvent{Kind: EventEnded, Code: d.code, By: by, End: cause})
 }
 
 func (d *Dialog) arm(after time.Duration) {
@@ -953,23 +1138,12 @@ func (d *Dialog) expire(gen int) {
 		return
 	}
 
-	var events []DialogEvent
-
-	if d.failing && !d.ended {
-		events = d.end(EndFailed, 0, d.p.lingerBye)
-		d.mu.Unlock()
-
-		d.p.emit(events)
-
-		return
-	}
-
 	if !d.ended {
 		d.p.log.Debug("dialog expired", slog.String("dialog", d.id), slog.String("call-id", d.callID))
 
 		d.ended = true
 		d.state = Ended
-		events = []DialogEvent{{Kind: EventEnded, Dialog: d, Code: d.code, End: EndExpired}}
+		d.publish(DialogEvent{Kind: EventEnded, Code: d.code, End: EndExpired})
 	}
 
 	d.stopTimers()
@@ -977,25 +1151,23 @@ func (d *Dialog) expire(gen int) {
 	d.mu.Unlock()
 
 	d.p.forgetDialog(d)
-	d.p.emit(events)
+	d.flush()
 }
 
-// noAckFired ends a dialog whose 2xx was never ACKed. The callee should have
-// sent a BYE by then (RFC 3261 §13.3.1.4); the proxy does it for both parties
-// when it did not.
+// noAckFired ends a dialog whose 2xx was never ACKed, without SIP: the callee
+// ends its side with a BYE (RFC 3261 §13.3.1.4), and every CSCF on the path
+// keeps a dialog of its own.
 func (d *Dialog) noAckFired() {
-	d.p.log.Debug("2xx never ACKed", slog.String("dialog", d.id))
-
 	d.mu.Lock()
-	answered := d.state == Answered
-	d.mu.Unlock()
 
-	if !answered {
-		return
+	if d.state == Answered && !d.ended {
+		d.p.log.Debug("2xx never ACKed", slog.String("dialog", d.id))
+		d.end(EndNoAck, 0, d.p.lingerBye)
 	}
 
-	reason, _ := sip.NewReason(sip.ReasonReleaseCause, sip.ReleaseNoACK, "")
-	_ = d.release(Release{Toward: Both, Reason: []sip.Reason{reason}}, EndNoAck)
+	d.mu.Unlock()
+
+	d.flush()
 }
 
 // build makes a request toward a party on behalf of the other one (TS 24.229
@@ -1011,7 +1183,8 @@ func (d *Dialog) build(method string, toward Side, callee *party, seq uint32) *s
 	}
 
 	if seq == 0 {
-		seq = 1
+		// TS 24.229 §5.4.5.1.2: a random CSeq when none is stored.
+		seq = randomSeq()
 		if sender.haveSeq {
 			seq = sender.seq + 1
 		}
@@ -1038,11 +1211,21 @@ func (d *Dialog) build(method string, toward Side, callee *party, seq uint32) *s
 	req.Header.Add("CSeq", sip.CSeq{Seq: seq, Method: method}.String())
 	req.Header.Add("Content-Length", "0")
 
-	_ = sip.ApplyStrictRoute(req)
-
 	return req
 }
 
+func randomSeq() uint32 {
+	var b [4]byte
+
+	_, _ = rand.Read(b[:])
+
+	return binary.BigEndian.Uint32(b[:])%(1<<31-1) + 1
+}
+
+// target is the next hop of a generated request: DialogConfig.Target, or by
+// default the request's own next hop, sent from the local address and Via the
+// proxy uses toward that party. A role whose flows need more, such as the
+// P-CSCF's security associations, sets DialogConfig.Target.
 func (d *Dialog) target(toward Side, req *sip.Request) (Target, error) {
 	if d.cfg.Target != nil {
 		return d.cfg.Target(toward, req)
@@ -1172,6 +1355,26 @@ func (d *Dialog) rollback(key txKey) {
 	} else {
 		d.sdp = negotiation{}
 	}
+}
+
+// rejectOffer answers an offer by rejecting all its media streams (RFC 3264
+// §6), for an ACK the proxy sends to a session it ends at once.
+func rejectOffer(offer []byte) ([]byte, error) {
+	s, err := sdp.Parse(offer)
+	if err != nil {
+		return nil, err
+	}
+
+	if o, err := s.Origin(); err == nil {
+		o.Username, o.SessionID, o.SessionVersion = "-", strconv.FormatUint(uint64(randomSeq()), 10), "1"
+		s.SetOrigin(o)
+	}
+
+	for _, m := range s.Media {
+		m.Disable()
+	}
+
+	return s.Bytes(), nil
 }
 
 func sessionBody(from Side, e sip.Envelope) (Body, bool) {

@@ -153,3 +153,33 @@ func mustTopVia(t *testing.T, m sip.Message) sip.Via {
 
 	return v
 }
+
+func TestCancelFromAnotherUE(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+	d := s.subscribeUE(t, u)
+
+	invite := d.fromUE(s, u, "INVITE", "2", ueRoutes(d))
+	invite.Header.Set("Contact", ueContact(u))
+	u.uc.Send(sip.UDP, s.ps, invite)
+	wantStatus(t, first(u.us.RecvResponse()), 100)
+
+	fwd, f := s.scscf.RecvRequest()
+	s.scscf.Send(f.Transport, f.Remote, sip.NewResponse(fwd, 100, ""))
+
+	cancel, err := sip.NewCancel(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The same branch and sent-by, from another address.
+	outsider := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.3"), 0))
+	outsider.Send(sip.UDP, s.pcscf, cancel)
+	s.scscf.RecvNone(quiet)
+
+	u.uc.Send(sip.UDP, s.ps, cancel)
+
+	if fc, _ := s.scscf.RecvRequest(); fc.Method != "CANCEL" {
+		t.Fatalf("S-CSCF got %s, want the UE's CANCEL", fc.Method)
+	}
+}

@@ -10,17 +10,22 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-func sdp(port int) []byte {
+func sdpsession(b []byte) (*sdp.Session, error) {
+	return sdp.Parse(b)
+}
+
+func sdpBody(port int) []byte {
 	return fmt.Appendf(nil, "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"+
 		"m=audio %d RTP/AVP 96\r\na=rtpmap:96 AMR-WB/16000\r\n", port)
 }
 
 func withSDP[M interface{ Env() *sip.Envelope }](m M, port int) M {
-	m.Env().SetBody("application/sdp", sdp(port))
+	m.Env().SetBody("application/sdp", sdpBody(port))
 	return m
 }
 
@@ -441,45 +446,23 @@ func TestDialogAckNeverArrives(t *testing.T) {
 	c.answerCall(true)
 	wantState(t, c.d, proxy.Answered)
 
-	clock.Advance(64 * transaction.DefaultT1)
-	s.callee.RecvNone(quiet)
+	clock.Advance(2*64*transaction.DefaultT1 - time.Second)
+	s.r.noEvent()
 
-	clock.Advance(64 * transaction.DefaultT1)
+	clock.Advance(time.Second)
 
-	late, _ := c.caller.NewRequest("BYE")
-
-	toCallee, _ := wantRequest(t, s.callee, "BYE")
-	toCaller, _ := wantRequest(t, s.caller, "BYE")
-
-	invite, _ := c.invite.Header.CSeq()
-	wantCSeq(t, toCallee, invite.Seq+1)
-	wantCSeq(t, toCaller, 1)
-
-	if err := c.callee.ReceiveRequest(toCallee); err != nil {
-		t.Errorf("BYE toward the callee: %v\n%s", err, toCallee)
-	}
-
-	if err := c.caller.ReceiveRequest(toCaller); err != nil {
-		t.Errorf("BYE toward the caller: %v\n%s", err, toCaller)
-	}
-
-	for _, bye := range []*sip.Request{toCallee, toCaller} {
-		if r := bye.Header.Get("Reason"); !strings.Contains(r, "RELEASE_CAUSE;cause=4") {
-			t.Errorf("Reason %q", r)
-		}
-	}
-
+	// The callee BYEs its side (RFC 3261 §13.3.1.4); the proxy only drops the
+	// dialog, as each CSCF on the path does.
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndNoAck || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
 
-	if !c.d.Released() {
-		t.Error("dialog not released")
-	}
-
-	sendFrom(t, s.caller, s.tr, late)
-	wantResponse(t, s.caller, 481)
+	s.caller.RecvNone(quiet)
 	s.callee.RecvNone(quiet)
+
+	bye, _ := c.callee.NewRequest("BYE")
+	sendFrom(t, s.callee, s.tr, bye)
+	wantRequest(t, s.caller, "BYE")
 }
 
 func TestDialogReinviteGlare(t *testing.T) {
@@ -645,17 +628,30 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 			wantCSeq(t, ack, invite.Seq)
 			wantCSeq(t, bye, invite.Seq+1)
 
+			if r := bye.Header.Get("Reason"); r != "SIP;cause=503" {
+				t.Errorf("BYE Reason %q", r)
+			}
+
 			caller, err := dialog.NewUAC(c.invite, res)
 			if err != nil {
 				t.Fatal(err)
 			}
 
+			// The caller's ACK is absorbed, and the caller BYEd only then
+			// (RFC 3261 §15).
+			s.caller.RecvNone(quiet)
+
 			callerAck, _ := caller.NewAck(c.invite)
 			sendFrom(t, s.caller, s.tr, callerAck)
 
-			callerBye, _ := caller.NewRequest("BYE")
-			sendFrom(t, s.caller, s.tr, callerBye)
-			wantResponse(t, s.caller, 481)
+			toCaller, _ := wantRequest(t, s.caller, "BYE")
+			if err := caller.ReceiveRequest(toCaller); err != nil {
+				t.Errorf("BYE toward the caller: %v\n%s", err, toCaller)
+			}
+
+			if r := toCaller.Header.Get("Reason"); r != "SIP;cause=503" {
+				t.Errorf("BYE Reason %q", r)
+			}
 
 			s.callee.RecvNone(quiet)
 			s.r.noEvent()
@@ -674,19 +670,63 @@ func TestDialogLate2xxAfterTimerC(t *testing.T) {
 	clock.Advance(proxy.DefaultTimerC)
 	wantResponse(t, s.caller, 408)
 	wantRequest(t, s.callee, "CANCEL")
-	s.r.noEvent()
 
-	c.answerCall(false)
-
-	bye, _ := c.caller.NewRequest("BYE")
-	sendFrom(t, s.caller, s.tr, bye)
-	got, f := wantRequest(t, s.callee, "BYE")
-	answer(t, s.callee, got, f, 200)
-	wantResponse(t, s.caller, 200)
-
-	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndBye || e.By != proxy.Caller {
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
+
+	// The 2xx is relayed (RFC 3261 §16.7), but the caller's transaction no
+	// longer takes it (RFC 6026 §8.4): the proxy ends the callee's session.
+	answer(t, s.callee, c.fwd, c.f, 200)
+	wantResponse(t, s.caller, 200)
+
+	ack, _ := wantRequest(t, s.callee, "ACK")
+	if len(ack.Body) != 0 {
+		t.Errorf("ACK with a body for a 2xx without an offer:\n%s", ack)
+	}
+
+	wantRequest(t, s.callee, "BYE")
+	s.caller.RecvNone(quiet)
+	s.r.noEvent()
+}
+
+func TestDialogLate2xxWithAnOffer(t *testing.T) {
+	clock := siptest.NewClock()
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
+
+	invite := s.request("INVITE")
+	s.send(invite)
+	wantResponse(t, s.caller, 100)
+	s.r.nextDialog()
+
+	fwd, f := s.forwarded()
+	answer(t, s.callee, fwd, f, 180)
+	wantResponse(t, s.caller, 180)
+
+	clock.Advance(proxy.DefaultTimerC)
+	wantResponse(t, s.caller, 408)
+	wantRequest(t, s.callee, "CANCEL")
+
+	ok := sip.NewResponse(fwd, 200, "")
+	_ = ok.Header.SetToTag("callee")
+	dialog.CopyRecordRoute(ok, fwd)
+	ok.Header.Add("Contact", "<"+target(s.callee, sip.TCP)+">")
+	s.callee.Send(f.Transport, f.Remote, withSDP(ok, 5000))
+	wantResponse(t, s.caller, 200)
+
+	// RFC 3261 §13.2.2.4: the ACK answers the offer of the 2xx.
+	ack, _ := wantRequest(t, s.callee, "ACK")
+
+	answer, err := sdpsession(ack.Body)
+	if err != nil {
+		t.Fatalf("ACK body: %v\n%s", err, ack)
+	}
+
+	if len(answer.Media) != 1 || answer.Media[0].Port() != 0 {
+		t.Errorf("ACK answer does not reject the offered stream:\n%s", ack.Body)
+	}
+
+	wantRequest(t, s.callee, "BYE")
 }
 
 func TestDialogTimerCWithoutAnswer(t *testing.T) {
@@ -699,15 +739,120 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 
 	clock.Advance(proxy.DefaultTimerC)
 	wantResponse(t, s.caller, 408)
-	s.r.noEvent()
-
-	clock.Advance(64 * transaction.DefaultT1)
 
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
 
 	wantState(t, c.d, proxy.Ended)
+
+	answer(t, s.callee, c.fwd, c.f, 487)
+	s.caller.RecvNone(quiet)
+	s.r.noEvent()
+}
+
+func TestDialogReleaseAnswered(t *testing.T) {
+	cause, _ := sip.NewReason(sip.ReasonSIP, 503, "")
+
+	t.Run("2xx relayed", func(t *testing.T) {
+		s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+		c := ring(s)
+		c.answerCall(true)
+
+		if err := c.d.Release(proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}}); err != nil {
+			t.Fatal(err)
+		}
+
+		invite, _ := c.invite.Header.CSeq()
+
+		ack, _ := wantRequest(t, s.callee, "ACK")
+		wantCSeq(t, ack, invite.Seq)
+
+		bye, _ := wantRequest(t, s.callee, "BYE")
+		if err := c.callee.ReceiveRequest(bye); err != nil {
+			t.Errorf("BYE toward the callee: %v", err)
+		}
+
+		s.caller.RecvNone(quiet)
+
+		callerAck, _ := c.caller.NewAck(c.invite)
+		sendFrom(t, s.caller, s.tr, callerAck)
+
+		toCaller, _ := wantRequest(t, s.caller, "BYE")
+		if err := c.caller.ReceiveRequest(toCaller); err != nil {
+			t.Errorf("BYE toward the caller: %v", err)
+		}
+
+		s.callee.RecvNone(quiet)
+	})
+
+	t.Run("2xx held", func(t *testing.T) {
+		// A role holds the 2xx, as the P-CSCF does for the AAA.
+		s := newScene(t, sip.TCP, routerConfig{
+			opts: proxy.Options{RecordRoute: recordRoute}, track: true,
+			onReply: func(_ *transaction.ServerTransaction, _ *sip.Request, r proxy.Reply) proxy.Verdict {
+				if r.Response.StatusCode == 200 {
+					return proxy.Hold
+				}
+
+				return proxy.Relay
+			},
+		})
+
+		c := ring(s)
+		answer(t, s.callee, c.fwd, c.f, 200)
+		s.r.nextEvent(proxy.EventAnswered)
+
+		failure, _ := sip.NewReason(sip.ReasonFailureCause, sip.FailureResourcesAllocation, "")
+		if err := c.d.Release(proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}, ResponseReason: []sip.Reason{failure}}); err != nil {
+			t.Fatal(err)
+		}
+
+		res := wantResponse(t, s.caller, 500)
+		if r := res.Header.Get("Reason"); !strings.Contains(r, "FAILURE_CAUSE;cause=3") {
+			t.Errorf("Reason %q in the 500", r)
+		}
+
+		wantRequest(t, s.callee, "ACK")
+		wantRequest(t, s.callee, "BYE")
+		s.caller.RecvNone(quiet)
+	})
+}
+
+func TestDialogLostOn481(t *testing.T) {
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+	c := ring(s)
+	c.answerCall(false)
+
+	_, got, f := c.request(proxy.Caller, "INVITE", 0)
+	answer(t, s.callee, got, f, 481)
+	wantResponse(t, s.caller, 481)
+
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndLost || e.By != proxy.Callee {
+		t.Errorf("ended event %+v", e)
+	}
+
+	wantState(t, c.d, proxy.Ended)
+}
+
+func TestDialogNotStartedWhenTheInviteFails(t *testing.T) {
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+	nowhere := netip.MustParseAddrPort("127.0.0.1:1")
+	s.r.out.Store(&nowhere)
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+	wantResponse(t, s.caller, 500)
+
+	d := s.r.nextDialog()
+	s.r.noEvent()
+
+	if err := d.Release(proxy.Release{Toward: proxy.Both}); err == nil {
+		t.Error("released a dialog that never started")
+	}
 }
 
 func TestDialogEarlyUpdate(t *testing.T) {

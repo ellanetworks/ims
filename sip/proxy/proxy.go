@@ -302,7 +302,9 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 		}
 
 		if tracked {
+			c.mu.Lock()
 			b.dialog, b.req, b.initial = d, out, initial
+			c.mu.Unlock()
 		}
 	}
 
@@ -310,11 +312,20 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 	if err != nil {
 		c.abandon(b, fresh)
 
-		if initial {
+		switch {
+		case initial:
 			d.abandon()
+		case b.dialog != nil:
+			// The request never left: undo what it changed, as a failure
+			// response would.
+			d.response(out, false, Reply{Response: sip.NewResponse(out, 500, ""), Err: err})
 		}
 
 		return internal(err)
+	}
+
+	if initial {
+		d.started()
 	}
 
 	c.started(b, client)
@@ -339,7 +350,9 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 }
 
 // Proxied reports whether the proxy forwarded the request of tx and has not
-// answered it yet.
+// answered it yet. A role that forwards an INVITE before HandleRequest returns
+// can route a CANCEL by it; one that forwards later calls Cancel whatever it
+// reports, which also handles a CANCEL that comes first.
 func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
