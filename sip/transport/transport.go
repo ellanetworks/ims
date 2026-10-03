@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/internal/listen"
 	"github.com/ellanetworks/ims/sip/internal/sockopt"
 )
 
@@ -28,7 +29,6 @@ const (
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
 	readBackoff   = 50 * time.Millisecond
-	bindRetries   = 16
 )
 
 var (
@@ -163,17 +163,7 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: already listening on %s", local)
 	}
 
-	var (
-		l   *listener
-		err error
-	)
-
-	for range bindRetries {
-		if l, err = bind(ctx, local); err == nil || local.Port() != 0 || !errors.Is(err, syscall.EADDRINUSE) {
-			break
-		}
-	}
-
+	l, err := bind(ctx, local)
 	if err != nil {
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: listen on %s: %w", local, err)
 	}
@@ -196,27 +186,14 @@ func bind(ctx context.Context, local netip.AddrPort) (*listener, error) {
 		}
 	}
 
-	lc := net.ListenConfig{Control: sockopt.ReusePort}
-
-	tl, err := lc.Listen(ctx, network("tcp", local.Addr()), local.String())
+	tl, udp, err := listen.Pair(ctx, local)
 	if err != nil {
 		return nil, err
 	}
 
-	bound := unmap(tl.Addr().(*net.TCPAddr).AddrPort())
-
-	var plain net.ListenConfig
-
-	pc, err := plain.ListenPacket(ctx, network("udp", local.Addr()), bound.String())
-	if err != nil {
-		_ = tl.Close()
-		return nil, err
-	}
-
-	udp := pc.(*net.UDPConn)
 	_ = udp.SetReadBuffer(udpReadBuffer)
 
-	return &listener{local: bound, udp: udp, tcp: tl.(*net.TCPListener)}, nil
+	return &listener{local: unmap(tl.Addr().(*net.TCPAddr).AddrPort()), udp: udp, tcp: tl}, nil
 }
 
 func (t *Transport) Send(ctx context.Context, m sip.Message) error {
