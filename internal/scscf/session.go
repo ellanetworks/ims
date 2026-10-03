@@ -176,6 +176,13 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 		out.URI = u
 	}
 
+	if localNumber(out.URI, s.r.cfg.HomeDomain) {
+		s.log.Info("local number not translated to a global number", slog.String("impu", served.URI.String()), slog.String("dialled", out.URI.String()))
+		s.answer(tx, sip.NewResponse(req, 404, ""))
+
+		return
+	}
+
 	to, ok := s.icscf(req.Flow)
 	if !ok {
 		s.log.Warn("no I-CSCF listener for an originating request", slog.String("local", req.Flow.Local.String()))

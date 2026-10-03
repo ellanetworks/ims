@@ -1,0 +1,65 @@
+x-ue: &ue
+  image: ghcr.io/ellanetworks/ueransim:3.2.7
+  privileged: true
+  restart: on-failure
+  depends_on: [gnb]
+  entrypoint: ["/bin/bash", "/route.sh", "nr-ue", "-c", "/ue.yaml"]
+
+x-ue-env: &ue-env
+  IMS_SUBNET: 10.80.0.0/24
+  TUN: uesimtun0
+
+services:
+  open5gs:
+    environment:
+      CORE: 5g
+    volumes:
+      - ./open5gs/config/open5gs/amf.yaml:/etc/open5gs/amf.yaml:ro
+      - ./open5gs/config/open5gs/upf-5g.yaml:/etc/open5gs/upf-5g.yaml:ro
+      - ./open5gs/config/open5gs/udr.yaml:/etc/open5gs/udr.yaml:ro
+      - ./open5gs/config/open5gs/pcf.yaml:/etc/open5gs/pcf.yaml:ro
+
+  ims:
+    volumes:
+      - ./ims/ims-5g.yaml:/ims.yaml:ro
+
+  gnb:
+    image: ghcr.io/ellanetworks/ueransim:3.2.7
+    privileged: true
+    restart: unless-stopped
+    depends_on: [open5gs]
+    entrypoint: ["nr-gnb", "-c", "/gnb.yaml"]
+    volumes:
+      - ./ueransim/gnb.yaml:/gnb.yaml:ro
+    networks:
+      s1:
+        ipv4_address: 10.80.1.31
+      radio5g:
+        ipv4_address: 10.80.4.2
+
+  ue1:
+    <<: *ue
+    environment: *ue-env
+    volumes:
+      - ./route.sh:/route.sh:ro
+      - ./ueransim/ue1.yaml:/ue.yaml:ro
+    networks:
+      radio5g:
+        ipv4_address: 10.80.4.3
+
+  ue2:
+    <<: *ue
+    environment: *ue-env
+    volumes:
+      - ./route.sh:/route.sh:ro
+      - ./ueransim/ue2.yaml:/ue.yaml:ro
+    networks:
+      radio5g:
+        ipv4_address: 10.80.4.4
+
+networks:
+  radio5g:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.80.4.0/24

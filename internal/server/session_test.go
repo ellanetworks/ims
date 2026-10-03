@@ -312,13 +312,14 @@ func TestCallToAHomeLocalNumber(t *testing.T) {
 	}
 }
 
-func TestCallToALocalIdentity(t *testing.T) {
+func TestCallToAnUntranslatedLocalNumber(t *testing.T) {
 	sc := newCallScene(t, config.Numbering{})
 
-	sc.alice.Send(sip.UDP, sc.scscf, sc.invite(bobLocal+";phone-context="+imsRealm))
+	invite := sc.invite(bobLocal + ";phone-context=" + imsRealm)
+	sc.alice.Send(sip.UDP, sc.scscf, invite)
 
-	if got, _ := sc.bob.RecvRequest(); got.URI.String() != sc.bobContact {
-		t.Fatalf("Request-URI = %s, want bob's contact %s", got.URI, sc.bobContact)
+	if res := failedInvite(t, sc.alice, sc.scscf, invite); res.StatusCode != 404 {
+		t.Fatalf("got %q, want 404 even though the HSS knows %s", res.StartLine(), bobLocal)
 	}
 }
 

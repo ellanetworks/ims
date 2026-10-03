@@ -107,6 +107,18 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	return sip.URI{Scheme: "tel", User: "+" + digits, Params: params}, true
 }
 
+// TS 24.229 §5.4.3.2 step 10
+func localNumber(u sip.URI, homeDomain string) bool {
+	number, _, _, ok := telephoneNumber(u)
+	if !ok || strings.HasPrefix(number, "+") {
+		return false
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(u.Host, "."))
+
+	return u.IsTel() || host == homeDomain || strings.HasSuffix(host, "."+homeDomain)
+}
+
 // TS 24.229 §7.2A.10.3, RFC 3966
 func (n Numbering) homeContext(context, homeDomain string) bool {
 	context = strings.ToLower(strings.TrimSuffix(context, "."))

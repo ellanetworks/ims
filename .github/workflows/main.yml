@@ -22,11 +22,16 @@ jobs:
     uses: ./.github/workflows/go-lint.yaml
   go-fuzz:
     uses: ./.github/workflows/go-fuzz.yaml
+  e2e:
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/e2e.yaml
   image-build:
     uses: ./.github/workflows/image-build.yaml
   image-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [go-unit-test, go-lint, go-fuzz, image-build]
+    needs: [go-unit-test, go-lint, go-fuzz, e2e, image-build]
     permissions:
       contents: read
       packages: write

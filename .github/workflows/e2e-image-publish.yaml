@@ -1,0 +1,39 @@
+name: E2E Image Publish
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - e2e/open5gs/Dockerfile
+  workflow_dispatch:
+
+jobs:
+  publish-open5gs:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the Open5GS image
+        run: |
+          image="ghcr.io/ellanetworks/ella-ims-e2e-open5gs:$(e2e/open5gs/tag.sh)"
+
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "$image is already published"
+            exit 0
+          fi
+
+          docker build -t "$image" e2e/open5gs
+          docker push "$image"

@@ -1,0 +1,59 @@
+name: ims-e2e
+
+services:
+  mongo:
+    image: mongo:8.2
+    networks:
+      core:
+        ipv4_address: 10.80.0.20
+
+  open5gs:
+    image: ghcr.io/ellanetworks/ella-ims-e2e-open5gs:${OPEN5GS_TAG:?run through env.sh or set OPEN5GS_TAG}
+    build: ./open5gs
+    privileged: true
+    depends_on: [mongo]
+    command: ["/start.sh"]
+    volumes:
+      - ./open5gs/start.sh:/start.sh:ro
+      - ./open5gs/config/open5gs/nrf.yaml:/etc/open5gs/nrf.yaml:ro
+      - ./open5gs/config/open5gs/smf.yaml:/etc/open5gs/smf.yaml:ro
+      - ./open5gs/config/open5gs/hss.yaml:/etc/open5gs/hss.yaml:ro
+      - ./open5gs/config/freeDiameter/hss.conf:/etc/freeDiameter/hss.conf:ro
+    networks:
+      core:
+        ipv4_address: 10.80.0.10
+        driver_opts:
+          com.docker.network.endpoint.ifname: eth0
+      s1:
+        ipv4_address: 10.80.1.10
+        driver_opts:
+          com.docker.network.endpoint.ifname: s1
+
+  ims:
+    image: ella-ims-e2e/ims
+    build:
+      context: ..
+      dockerfile: e2e/ims/Dockerfile
+    privileged: true
+    depends_on: [open5gs]
+    entrypoint:
+      - /bin/sh
+      - -c
+      - ip route replace 10.46.0.0/16 via 10.80.0.10 && mkdir -p /var/lib/ims && exec ims --config /ims.yaml
+    ports:
+      - "127.0.0.1:5020:5020"
+    networks:
+      core:
+        ipv4_address: 10.80.0.5
+
+networks:
+  core:
+    ipam:
+      config:
+        - subnet: 10.80.0.0/24
+          ip_range: 10.80.0.128/25
+  s1:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.80.1.0/24

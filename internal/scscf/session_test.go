@@ -395,6 +395,32 @@ func TestOriginatingHomeLocalNumber(t *testing.T) {
 	}
 }
 
+func TestOriginatingLocalNumberNotTranslated(t *testing.T) {
+	tests := []struct {
+		name      string
+		numbering Numbering
+		uri       string
+	}{
+		{"no numbering rule", Numbering{}, "tel:15559990000;phone-context=" + homeDomain},
+		{"no numbering rule, SIP", Numbering{}, "sip:15559990000;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone"},
+		{"short code", Numbering{CountryCode: "1", NationalPrefix: "1"}, "tel:999;phone-context=" + homeDomain},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sh := newSessionHarness(t)
+			sh.numbering = tt.numbering
+			sh.restart()
+
+			sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", tt.uri, "<"+testMSISDN+">"))
+
+			if res := final(t, sh.orig); res.StatusCode != 404 {
+				t.Fatalf("got %q, want 404", res.StartLine())
+			}
+		})
+	}
+}
+
 func TestTerminatingInvite(t *testing.T) {
 	sh := newSessionHarness(t)
 
@@ -813,6 +839,35 @@ func TestNormalise(t *testing.T) {
 	u, _ := sip.ParseURI("tel:02079460000;phone-context=" + homeDomain)
 	if _, ok := (Numbering{}).normalise(u, homeDomain); ok {
 		t.Error("normalised without a numbering rule")
+	}
+}
+
+func TestLocalNumber(t *testing.T) {
+	tests := []struct {
+		uri  string
+		want bool
+	}{
+		{"tel:02079460000;phone-context=" + homeDomain, true},
+		{"tel:02079460000;phone-context=other.example.org", true},
+		{"tel:*21#;phone-context=" + homeDomain, true},
+		{"sip:02079460000;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", true},
+		{"sip:02079460000@" + strings.ToUpper(homeDomain) + ".;user=phone", true},
+		{"tel:+442079460000", false},
+		{"sip:+442079460000@" + homeDomain + ";user=phone", false},
+		{"sip:02079460000@other.example.org;user=phone", false},
+		{"sip:02079460000@" + homeDomain, false},
+		{"sip:alice@" + homeDomain, false},
+	}
+
+	for _, tt := range tests {
+		u, err := sip.ParseURI(tt.uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := localNumber(u, homeDomain); got != tt.want {
+			t.Errorf("localNumber(%s) = %v, want %v", tt.uri, got, tt.want)
+		}
 	}
 }
 

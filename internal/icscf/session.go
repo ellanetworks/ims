@@ -96,8 +96,12 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	case lia.ServerName != "":
 		name = i.assigned(lia.ServerName, s.identity)
 	case !i.capable(lia.Capabilities):
+		i.log.Info("no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 		i.answer(s.tx, 480)
+
 		return
+	default:
+		i.log.Info("no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 	}
 
 	out := s.req.Clone()
