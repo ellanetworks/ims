@@ -39,6 +39,10 @@ type branch struct {
 
 	timerC, timer transaction.Timer
 	genC          int
+
+	dialog  *Dialog
+	req     *sip.Request
+	initial bool
 }
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
@@ -217,6 +221,10 @@ func (b *branch) HandleResponse(res *sip.Response) {
 				}
 			}
 
+			if b.dialog != nil && b.initial {
+				b.dialog.retransmitted(res)
+			}
+
 			return
 		}
 
@@ -313,6 +321,10 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 }
 
 func (c *responseContext) deliver(b *branch, r Reply) {
+	if b.dialog != nil {
+		b.dialog.response(b.req, b.initial, r)
+	}
+
 	if b.onReply != nil && b.onReply(r) == Hold {
 		return
 	}
@@ -408,6 +420,17 @@ func (c *responseContext) cancel(reason []sip.Field) {
 	if client != nil {
 		_ = client.Cancel(reason...)
 	}
+}
+
+func (c *responseContext) dialog() *Dialog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.branch == nil {
+		return nil
+	}
+
+	return c.branch.dialog
 }
 
 func toTag(res *sip.Response) string {

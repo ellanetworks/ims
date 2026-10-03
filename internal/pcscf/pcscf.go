@@ -27,6 +27,8 @@ var (
 		StatusCode: 403, Err: errors.New("unprotected request from a UE with security associations"),
 	}
 	errTemporary = errors.New("request other than REGISTER on a temporary set of security associations")
+
+	errForeignCancel = errors.New("CANCEL from another address than its Via sent-by")
 )
 
 type Config struct {
@@ -139,13 +141,22 @@ func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
 }
 
 func (p *PCSCF) Filter(m sip.Message) error {
-	if p.sas == nil {
-		return nil
-	}
-
 	f := m.Env().Flow
 
 	req, isRequest := m.(*sip.Request)
+
+	// A CANCEL matches its INVITE by Via branch and sent-by alone (RFC 3261
+	// §17.2.3). One from a UE whose sent-by is not its source could cancel,
+	// or block the CANCEL of, another UE's INVITE, so it is dropped before
+	// matching.
+	if isRequest && req.Method == "CANCEL" && p.ownPort(f.Local.Port()) && !p.trusted(f.Remote.Addr()) &&
+		!topViaFrom(req, f.Remote.Addr()) {
+		return errForeignCancel
+	}
+
+	if p.sas == nil {
+		return nil
+	}
 
 	if p.sas.protected(f.Local.Port()) {
 		v, ok := p.sas.lookup(f)
@@ -632,12 +643,18 @@ func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, cod
 	return proxy.Hold
 }
 
+// HandleCancel cancels an INVITE the P-CSCF proxies. The layer delivers the
+// CANCEL after HandleRequest returned, by which time the INVITE was forwarded
+// or handed to the fallback.
+// A CANCEL from a UE that another host could have forged is dropped earlier,
+// by Filter.
 func (p *PCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	p.cfg.Fallback.HandleCancel(tx, cancel)
-}
+	if p.cfg.Proxy.Proxied(tx) {
+		p.cfg.Proxy.Cancel(tx, cancel)
+		return
+	}
 
-func (p *PCSCF) HandleAck(ack *sip.Request) {
-	p.cfg.Fallback.HandleAck(ack)
+	p.cfg.Fallback.HandleCancel(tx, cancel)
 }
 
 func (p *PCSCF) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
@@ -733,6 +750,17 @@ func verifies(verify []sip.SecurityMechanism, server sip.SecurityMechanism) bool
 	}
 
 	return n == 1
+}
+
+func topViaFrom(req *sip.Request, source netip.Addr) bool {
+	via, err := req.Header.TopVia()
+	if err != nil {
+		return false
+	}
+
+	a, ok := via.Addr()
+
+	return ok && a.Unmap() == source.Unmap()
 }
 
 func viaMatches(req *sip.Request, source netip.Addr) bool {
