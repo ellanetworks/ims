@@ -136,6 +136,7 @@ func connect(t *testing.T, ctx context.Context, a, b *UE, opts CallOptions) (*Ca
 	}
 
 	done := make(chan error, 1)
+
 	go func() { done <- bc.Answer(ctx) }()
 
 	res, err := ac.Wait(ctx)
@@ -591,6 +592,7 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 	c := incoming(t, p.u)
 
 	ring := make(chan error, 1)
+
 	go func() { ring <- c.Ring(ctx) }()
 
 	p.response(100, "INVITE")
@@ -657,6 +659,7 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 	}
 
 	answered := make(chan error, 1)
+
 	go func() { answered <- c.Answer(ctx) }()
 
 	res = p.response(200, "INVITE")
@@ -792,6 +795,7 @@ func TestNoPrack(t *testing.T) {
 	c := incoming(t, p.u)
 
 	ring := make(chan error, 1)
+
 	go func() { ring <- c.Ring(ctx) }()
 
 	p.response(100, "INVITE")
@@ -834,6 +838,7 @@ func TestNoAck(t *testing.T) {
 	c := incoming(t, p.u)
 
 	answered := make(chan error, 1)
+
 	go func() { answered <- c.Answer(ctx) }()
 
 	p.response(100, "INVITE")
@@ -1030,6 +1035,7 @@ func TestSessionTimerWithoutTimerSupport(t *testing.T) {
 	c.mu.Unlock()
 
 	answered := make(chan error, 1)
+
 	go func() { answered <- c.Answer(ctx) }()
 
 	p.response(100, "INVITE")
@@ -1117,6 +1123,7 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	c := incoming(t, p.u)
 
 	ring := make(chan error, 1)
+
 	go func() { ring <- c.Ring(ctx) }()
 
 	p.response(100, "INVITE")
