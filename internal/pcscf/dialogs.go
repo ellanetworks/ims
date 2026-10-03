@@ -31,12 +31,6 @@ func pathURI(token string, addr netip.Addr, port uint16, ob bool) sip.URI {
 	return u
 }
 
-func isRegEvent(req *sip.Request) bool {
-	event, _, err := sip.ParseTokenParams(req.Header.Get("Event"))
-
-	return err == nil && strings.EqualFold(event, "reg")
-}
-
 func contactParam(req *sip.Request, name string) bool {
 	contacts, err := req.Header.Contacts()
 	if err != nil {
@@ -68,80 +62,6 @@ func (p *PCSCF) ueKey(req *sip.Request) (regKey, bool) {
 	}
 
 	return p.regs.sourceKey(req.Flow.Remote)
-}
-
-func (p *PCSCF) ueSubscribe(tx *transaction.ServerTransaction, req *sip.Request) {
-	reg, ok := p.ueRegistration(req)
-	if !ok {
-		p.log.Info("reg event SUBSCRIBE from an unregistered UE", slog.String("source", req.Flow.Remote.String()))
-		p.respond(tx, sip.NewResponse(req, 403, ""))
-
-		return
-	}
-
-	if res := p.cfg.Proxy.Check(req); res != nil {
-		p.respond(tx, res)
-		return
-	}
-
-	out, _, err := p.cfg.Proxy.Preprocess(req)
-	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
-		return
-	}
-
-	if len(reg.ServiceRoute) == 0 {
-		p.respond(tx, sip.NewResponse(req, 403, "No Service-Route"))
-		return
-	}
-
-	routes := out.Header.Elements("Route")
-	if !slices.Equal(routes, reg.ServiceRoute) {
-		out.Header.Del("Route")
-		out.Header.Add("Route", strings.Join(reg.ServiceRoute, ", "))
-	}
-
-	preferred, _ := req.Header.Addresses("P-Preferred-Identity")
-	asserted := defaultIdentity(reg.AssociatedURIs)
-
-	for _, a := range preferred {
-		if uri, ok := matchURI(reg.AssociatedURIs, a.URI.String()); ok {
-			asserted = uri
-			break
-		}
-	}
-
-	fromUE(out)
-	stripSecAgree(out)
-	out.Header.Del("P-Preferred-Identity")
-	out.Header.Add("P-Asserted-Identity", "<"+asserted+">")
-
-	first, err := sip.ParseAddress(reg.ServiceRoute[0])
-	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 500, ""))
-		return
-	}
-
-	to, ok := p.target(first.URI, req.Flow.Local.Addr())
-	if !ok {
-		p.log.Warn("no route to the Service-Route", slog.String("route", reg.ServiceRoute[0]))
-		p.respond(tx, sip.NewResponse(req, 503, ""))
-
-		return
-	}
-
-	rr := &proxy.RecordRoute{User: reg.FlowToken, Double: true, UpstreamParams: sip.Params{{Name: ueFacing}}}
-	if contactParam(req, "ob") {
-		rr.Params.Set("ob", "")
-	}
-
-	p.forward(tx, req, out, to, proxy.Options{RecordRoute: rr, OnReply: func(rep proxy.Reply) proxy.Verdict {
-		if rep.Response != nil {
-			toUE(rep.Response)
-		}
-
-		return proxy.Relay
-	}})
 }
 
 func (p *PCSCF) target(u sip.URI, local netip.Addr) (proxy.Target, bool) {
@@ -247,10 +167,12 @@ func (p *PCSCF) HandleAck(ack *sip.Request) {
 		reject *sip.Response
 	)
 
+	d := p.cfg.Proxy.Dialog(removed)
+
 	if p.towardUE(removed) {
 		to, reject = p.ueTarget(ack, out, removed)
 	} else {
-		to, reject = p.coreTarget(ack, out, removed)
+		to, reject = p.coreTarget(ack, out, removed, d)
 	}
 
 	if reject != nil {
@@ -258,7 +180,7 @@ func (p *PCSCF) HandleAck(ack *sip.Request) {
 		return
 	}
 
-	if err := p.cfg.Proxy.ForwardAck(out, to, p.cfg.Proxy.Dialog(removed)); err != nil {
+	if err := p.cfg.Proxy.ForwardAck(out, to, d); err != nil {
 		p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 	}
 }
@@ -307,8 +229,12 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 	}
 
 	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
-		if rep.Response != nil {
+		if rep.Response != nil && rep.Err == nil {
 			fromUEResponse(rep.Response)
+
+			if c := callOf(d); c != nil {
+				c.charging.respond(rep.Response, p.cfg.HomeDomain)
+			}
 		}
 
 		return proxy.Relay
@@ -335,8 +261,7 @@ func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target
 		return proxy.Target{}, sip.NewResponse(req, 480, "No Flow")
 	}
 
-	out.Header.Del("P-Charging-Vector")
-	out.Header.Del("P-Charging-Function-Addresses")
+	toUERequest(out)
 
 	return to, nil
 }
@@ -361,7 +286,7 @@ func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
 }
 
 func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) {
-	to, reject := p.coreTarget(req, out, removed)
+	to, reject := p.coreTarget(req, out, removed, d)
 	if reject != nil {
 		p.respond(tx, reject)
 		return
@@ -369,7 +294,7 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 
 	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
-			toUE(rep.Response)
+			toUEResponse(rep.Response)
 		}
 
 		return proxy.Relay
@@ -377,15 +302,21 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 }
 
 // coreTarget routes an in-dialog request from the UE toward the core: only on
-// the UE's own flow, with the header fields the UE may not send removed.
-func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
+// the UE's own flow and, on a call the P-CSCF knows, from its party of the
+// dialog, with the header fields the UE may not send removed and the call's
+// charging vector (TS 24.229 §5.2.6.3.5, §5.2.6.3.9).
+func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
 		p.log.Info("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
+	if res := p.fromUEInDialog(req, out, d); res != nil {
+		return proxy.Target{}, res
+	}
+
 	fromUE(out)
-	stripSecAgree(out)
+	p.inDialogCharging(req, d).set(out)
 
 	u := out.URI
 	if route, err := out.Header.TopRoute(); err == nil {

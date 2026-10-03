@@ -85,6 +85,10 @@ type RecordRoute struct {
 
 	Double         bool
 	UpstreamParams sip.Params
+
+	// DownstreamParams go in the entry toward the request's next hop when
+	// the proxy record-routes twice.
+	DownstreamParams sip.Params
 }
 
 type Options struct {
@@ -533,7 +537,7 @@ func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
 	}
 
 	r.Header.InsertTop(recordRouteField(rr, up, in.Transport, true, rr.UpstreamParams))
-	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true, nil))
+	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true, rr.DownstreamParams))
 }
 
 func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool, extra sip.Params) sip.Field {

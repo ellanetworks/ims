@@ -29,6 +29,9 @@ var (
 	errTemporary = errors.New("request other than REGISTER on a temporary set of security associations")
 
 	errForeignCancel = errors.New("CANCEL from another address than its Via sent-by")
+
+	// TS 24.229 §5.2.6.3.2A: discarded, without a 100 (Trying).
+	errUnregistered = errors.New("initial request from a UE without a registration")
 )
 
 type Config struct {
@@ -154,11 +157,9 @@ func (p *PCSCF) Filter(m sip.Message) error {
 		return errForeignCancel
 	}
 
-	if p.sas == nil {
-		return nil
-	}
-
-	if p.sas.protected(f.Local.Port()) {
+	switch {
+	case p.sas == nil:
+	case p.sas.protected(f.Local.Port()):
 		v, ok := p.sas.lookup(f)
 		if !ok {
 			if f.Transport == sip.TCP && p.cfg.Layer != nil {
@@ -173,12 +174,12 @@ func (p *PCSCF) Filter(m sip.Message) error {
 		}
 
 		p.sas.received(v.s)
-
-		return nil
+	case isRequest && f.Local.Port() == p.cfg.Port && req.Method != "REGISTER" && p.sas.hasEstablished(f.Remote.Addr().Unmap()):
+		return errUnprotected
 	}
 
-	if isRequest && f.Local.Port() == p.cfg.Port && req.Method != "REGISTER" && p.sas.hasEstablished(f.Remote.Addr().Unmap()) {
-		return errUnprotected
+	if isRequest && p.unregisteredOrigin(req) {
+		return errUnregistered
 	}
 
 	return nil
@@ -200,19 +201,18 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
 	p.signallingRestored(req)
 
-	switch {
-	case req.Method == "REGISTER":
-	case toTag(req) != "":
-		p.inDialog(tx, req)
-		return
-	case req.Method == "SUBSCRIBE" && isRegEvent(req):
-		p.ueSubscribe(tx, req)
-		return
-	case p.signallingLost(req):
-		p.respond(tx, sip.NewResponse(req, 500, ""))
-		return
-	default:
-		p.cfg.Fallback.HandleRequest(tx, req)
+	if req.Method != "REGISTER" {
+		switch top, ok := p.terminatingRoute(req); {
+		case toTag(req) != "":
+			p.inDialog(tx, req)
+		case ok:
+			p.terminating(tx, req, top)
+		case p.fromCore(req):
+			p.cfg.Fallback.HandleRequest(tx, req)
+		default:
+			p.originating(tx, req)
+		}
+
 		return
 	}
 
@@ -945,29 +945,42 @@ func addOptionTag(res *sip.Response, name, tag string) {
 	res.Header.Add(name, tag)
 }
 
-// fromUE prepares a request from the UE for the core. The trust-domain header
-// fields go, but the UE's own P-Access-Network-Info stays: TS 24.229 §5.2.1
-// step 3 removes only values with "network-provided".
+// fromUE prepares a request from the UE for the core (TS 24.229 §5.2.1, RFC
+// 3325 §6, RFC 3329 §2.3.1). The trust-domain header fields go, but the UE's
+// own P-Access-Network-Info stays: step 3 removes only values with
+// "network-provided". So does its P-Early-Media "supported" (Decision 7).
 func fromUE(req *sip.Request) {
 	pani := ueAccessNetworkInfo(req.Header)
+	early := earlyMediaSupported(req.Header)
 
 	trust.StripRequest(req)
+	dropFromAll(req.Header.Del)
+	stripSecAgree(req)
+	removeLocationSource(req)
 
-	for _, name := range []string{"P-Charging-Vector", "P-Charging-Function-Addresses", "P-Visited-Network-ID", "Path"} {
+	for _, name := range []string{"P-Preferred-Identity", "P-Visited-Network-ID", "Path"} {
 		req.Header.Del(name)
 	}
 
 	for _, v := range pani {
 		req.Header.Add("P-Access-Network-Info", v)
 	}
+
+	if early {
+		req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
+	}
 }
 
 // fromUEResponse does the same for a response from the UE (§5.2.1 steps 1-3).
+// Its P-Asserted-Identity and P-Early-Media go with the rest: the P-CSCF
+// asserts the identity itself (§5.2.6.4.4), and authorises no early media
+// (§5.2.6.4.2, Decision 7).
 func fromUEResponse(res *sip.Response) {
 	pani := ueAccessNetworkInfo(res.Header)
 
 	trust.StripResponse(res)
-	res.Header.Del("P-Charging-Vector")
+	dropFromAll(res.Header.Del)
+	res.Header.Del("P-Preferred-Identity")
 
 	for _, v := range pani {
 		res.Header.Add("P-Access-Network-Info", v)
@@ -988,7 +1001,7 @@ func ueAccessNetworkInfo(h sip.Header) []string {
 
 func toUE(res *sip.Response) {
 	trust.StripResponse(res)
-	res.Header.Del("P-Charging-Vector")
+	dropFromAll(res.Header.Del)
 
 	if res.StatusCode == 401 {
 		removeAKAKeys(res)

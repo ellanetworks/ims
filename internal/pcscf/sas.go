@@ -454,16 +454,25 @@ func (a *associations) registered(s *saSet, o outcome) {
 	a.extend(s, expires)
 }
 
+// requestFlow is the flow of a request toward the UE. After a protected
+// re-authentication, the old set carries it until the UE uses the new one, or
+// until the old one is about to expire (TS 33.203 §7.4.2a, TS 24.229 Table
+// 5.2.2-1): within the grace period, the lifetime an old set is cut to once
+// the new one is used.
 func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	expiring := time.Now().Add(a.cfg.Grace)
 
 	rank := func(s *saSet) int {
 		switch {
 		case s.state == established && s.inUse:
 			return 3
-		case s.state == old:
+		case s.state == old && s.expires.After(expiring):
 			return 2
+		case s.state == old:
+			return 0
 		default:
 			return 1
 		}

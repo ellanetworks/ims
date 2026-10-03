@@ -145,6 +145,9 @@ type DialogConfig struct {
 	// Target gives the next hop of a request the tracker generates. By
 	// default it is sent on the flows the initial INVITE used.
 	Target func(toward Side, req *sip.Request) (Target, error)
+
+	// Value is the role's own record of the dialog, which Value returns.
+	Value any
 }
 
 // Release asks the proxy to end a dialog. While it is being set up, a CANCEL
@@ -316,6 +319,11 @@ func (d *Dialog) flush() {
 
 func (d *Dialog) ID() string {
 	return d.id
+}
+
+// Value is DialogConfig.Value.
+func (d *Dialog) Value() any {
+	return d.cfg.Value
 }
 
 func (d *Dialog) CallID() string {

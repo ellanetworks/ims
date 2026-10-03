@@ -530,18 +530,19 @@ func TestUnprotectedRequestsFromAProtectedUE(t *testing.T) {
 	wantStatus(t, first(s.ue.RecvResponse()), 403)
 	s.p.cfg.Fallback.(*siptest.TU).None(quiet)
 
+	// TS 24.229 §5.2.6.3.2A: a request from a UE without a registration is
+	// discarded, unanswered.
 	other := siptest.NewSocket(t, netip.MustParseAddrPort("127.0.0.2:0"))
-	other.Send(sip.UDP, s.pcscf, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, other.Addr()))
-
-	if req := fallbackRequest(t, s); req.Method != "OPTIONS" {
-		t.Fatalf("fallback got %s", req.Method)
-	}
+	other.Send(sip.UDP, s.pcscf, siptest.NewRequest("INVITE", "sip:"+homeDomain, sip.UDP, other.Addr()))
+	other.RecvNone(quiet)
+	s.p.cfg.Fallback.(*siptest.TU).None(quiet)
 }
 
-func fallbackRequest(t *testing.T, s *ipsecScene) *sip.Request {
+// fallbackRequest waits for the fallback to get a request.
+func fallbackRequest(t *testing.T, s *ipsecScene) {
 	t.Helper()
 
-	return s.p.cfg.Fallback.(*siptest.TU).NextRequest().Req
+	s.p.cfg.Fallback.(*siptest.TU).NextRequest()
 }
 
 func TestReRegistrationWithoutAuthentication(t *testing.T) {
@@ -668,7 +669,7 @@ func TestReAuthentication(t *testing.T) {
 		t.Fatal("the old set was removed before the UE used the new one")
 	}
 
-	next.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
+	next.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+s.ps.String(), sip.UDP, u.us.Addr()))
 	fallbackRequest(t, s)
 
 	eventually(t, "the old set to be removed", func() bool {
@@ -1213,7 +1214,7 @@ func TestRestoreBeforeTheNewSetIsUsed(t *testing.T) {
 
 	restart(t, s)
 
-	next.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
+	next.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+s.ps.String(), sip.UDP, u.us.Addr()))
 	fallbackRequest(t, s)
 
 	eventually(t, "the old set to be removed", func() bool { return len(s.installed()) == 1 })
