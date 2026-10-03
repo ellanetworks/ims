@@ -194,6 +194,8 @@ var reasonPhrases = map[int]string{
 	603: "Decline",
 	604: "Does Not Exist Anywhere",
 	606: "Not Acceptable",
+	607: "Unwanted",
+	608: "Rejected",
 }
 
 func ReasonPhrase(code int) string {
