@@ -31,9 +31,6 @@ var (
 	loopback6 = netip.MustParseAddr("::1")
 )
 
-// fakePeer is a passive Diameter node standing in for the HSS or the PCRF. It
-// accepts the IMS over TCP on loopback and records the states it sees the IMS
-// go through.
 type fakePeer struct {
 	host  string
 	realm string
@@ -327,8 +324,6 @@ func TestDiameterShutdownSendsDPR(t *testing.T) {
 
 	srv.Shutdown(ctx)
 
-	// A peer enters Closing only when it receives a DPR; a dropped connection
-	// goes straight to Down.
 	for _, f := range []*fakePeer{hss, pcrf} {
 		eventually(t, f.host+" to see the IMS disconnect", func() bool {
 			return f.sawState(diameter.PeerDown)

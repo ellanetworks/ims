@@ -818,8 +818,6 @@ func TestSlowSARDoesNotDelayOtherExpiries(t *testing.T) {
 
 	h.clock.Advance(600*time.Second - sweepInterval)
 
-	// Keep the sweep ticking from another goroutine: a sweep that waited for
-	// the held SAR would stop the ticks, and the second SAR would never come.
 	stop := make(chan struct{})
 	ticking := make(chan struct{})
 

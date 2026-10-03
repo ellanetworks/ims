@@ -131,8 +131,6 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		}
 	}
 
-	// The I-CSCF and S-CSCF have no sockets: the other roles reach them in
-	// memory, at addresses that only name them in Via, Route and Path.
 	icscfPort, err := s.serve(roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
@@ -498,8 +496,6 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 	}
 }
 
-// addressedToSelf reports whether a request is for the S-CSCF itself, once
-// its own Route entries are removed, as keep-alive OPTIONS are.
 func (h *scscfHandler) addressedToSelf(req *sip.Request) bool {
 	out, _, err := h.proxy.Preprocess(req)
 
@@ -510,8 +506,6 @@ func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *s
 	h.sessions.HandleCancel(tx, cancel)
 }
 
-// HandleAck relays an ACK to a 2xx along the route set of a dialog the S-CSCF
-// record-routed.
 func (h *scscfHandler) HandleAck(ack *sip.Request) {
 	if !h.trust.Trusted(ack.Flow.Remote.Addr()) {
 		h.log.Debug("dropped an ACK from outside the trust domain", slog.String("source", ack.Flow.Remote.String()))

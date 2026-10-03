@@ -1,5 +1,3 @@
-// Package listen binds the TCP listener and the UDP socket of a SIP address,
-// which share one port.
 package listen
 
 import (
@@ -12,17 +10,8 @@ import (
 	"github.com/ellanetworks/ims/sip/internal/sockopt"
 )
 
-// attempts bounds the search for a port free for both TCP and UDP. Each
-// attempt rules out the port before it, so it only runs out when nearly every
-// port is taken.
 const attempts = 64
 
-// Pair listens for TCP and UDP on local. The TCP listener can share its port
-// with outgoing connections (sockopt.ReusePort); the UDP socket cannot be
-// shared. For port 0 the kernel picks a port free for TCP, which UDP may
-// already hold: the attempt is then repeated, with the listeners on the ports
-// that failed kept open until the end, as otherwise the kernel can pick them
-// again, and some of them again and again.
 func Pair(ctx context.Context, local netip.AddrPort) (*net.TCPListener, *net.UDPConn, error) {
 	var held []net.Listener
 

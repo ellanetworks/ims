@@ -17,8 +17,6 @@ func (s *ipsecScene) serviceRoute() string {
 	return "<sip:orig@" + s.scscf.Addr().String() + ";lr>"
 }
 
-// ueInvite builds an INVITE from the UE as a Samsung phone sends it: a tel URI
-// in From, and the P-CSCF's protected port and the Service-Route preloaded.
 func (s *ipsecScene) ueInvite(u *ue, edit func(*sip.Request)) *sip.Request {
 	r := siptest.NewRequest("INVITE", callee, sip.UDP, u.us.Addr())
 	r.Header.Set("From", "<"+testTel+">;tag="+sip.NewTag())
@@ -32,8 +30,6 @@ func (s *ipsecScene) ueInvite(u *ue, edit func(*sip.Request)) *sip.Request {
 	return r
 }
 
-// coreResponse answers a request the S-CSCF received, record-routing it as the
-// rest of the core would.
 func (s *ipsecScene) coreResponse(req *sip.Request, code int, tag string) *sip.Response {
 	res := sip.NewResponse(req, code, "")
 	_ = res.Header.SetToTag(tag)
@@ -47,7 +43,6 @@ func (s *ipsecScene) coreResponse(req *sip.Request, code int, tag string) *sip.R
 	return res
 }
 
-// uris are the URIs of a parsed header field, nil when it fails to parse.
 func uris(as []sip.Address, err error) []string {
 	if err != nil {
 		return nil
@@ -161,8 +156,6 @@ func TestOriginatingCall(t *testing.T) {
 			rr, s.pcscf.Port(), s.ps.Port())
 	}
 
-	// The callee's identity reaches the caller, unless it asks for privacy;
-	// the core's own header fields do not.
 	tag := sip.NewTag()
 
 	ringing := s.coreResponse(got, 180, tag)
@@ -182,7 +175,6 @@ func TestOriginatingCall(t *testing.T) {
 
 	wantAbsent(t, res.Header, "P-Charging-Vector", "P-Asserted-Service", "P-Access-Network-Info")
 
-	// The core may signal early media to the caller (RFC 5009 §6).
 	if v := res.Header.Get("P-Early-Media"); v != "sendrecv" {
 		t.Errorf("P-Early-Media to the caller = %q, want the core's sendrecv", v)
 	}
@@ -196,7 +188,6 @@ func TestOriginatingCall(t *testing.T) {
 	wantStatus(t, res, 200)
 	wantAbsent(t, res.Header, "P-Asserted-Identity")
 
-	// The UE's route set is the 200's Record-Route reversed.
 	routes := res.Header.Values("Record-Route")
 	slices.Reverse(routes)
 
@@ -224,12 +215,10 @@ func TestOriginatingCall(t *testing.T) {
 
 	wantAbsent(t, ack.Header, "P-Preferred-Identity", "Security-Verify")
 
-	// TS 24.229 §5.2.6.3.9: only a party of the dialog may send on it.
 	u.uc.Send(sip.UDP, s.ps, inDialog("BYE", "2", routes, "stranger"))
 	wantStatus(t, first(u.us.RecvResponse()), 403)
 	s.scscf.RecvNone(quiet)
 
-	// The routes are the dialog's, whatever the UE puts there.
 	forged := slices.Clone(routes)
 	forged[len(forged)-1] = "<sip:attacker@192.0.2.1;lr>"
 
@@ -267,7 +256,6 @@ func TestOriginatingRoutesAreTheServiceRoute(t *testing.T) {
 		t.Errorf("Route = %q, want the Service-Route in place of the UE's", r)
 	}
 
-	// Without a P-Preferred-Identity, the default identity is asserted.
 	if pai := got.Header.Values("P-Asserted-Identity"); !slices.Equal(pai, []string{"<" + testIMPU + ">"}) {
 		t.Errorf("P-Asserted-Identity = %q, want the default identity", pai)
 	}
@@ -288,8 +276,6 @@ func TestRequestsOutsideADialogAreRefused(t *testing.T) {
 	s.scscf.RecvNone(quiet)
 }
 
-// coreRequest builds a request from the terminating S-CSCF to the UE's
-// contact, along its Path.
 func (s *ipsecScene) coreRequest(u *ue, method, path string, edit func(*sip.Request)) *sip.Request {
 	r := siptest.NewRequest(method, "sip:ue@"+u.us.Addr().String(), sip.UDP, s.scscf.Addr())
 	r.Header.Set("From", "<sip:caller@"+homeDomain+">;tag="+sip.NewTag())
@@ -358,8 +344,6 @@ func TestTerminatingCall(t *testing.T) {
 		t.Errorf("Record-Route = %q, want the UE side on the protected port %d and the core side on %d", rr, s.ps.Port(), s.pcscf.Port())
 	}
 
-	// The UE's responses carry the identity it was called on, and no early
-	// media authorisation (TS 24.229 §5.2.6.4.4, Decision 7).
 	tag := sip.NewTag()
 
 	ringing := sip.NewResponse(got, 180, "")
@@ -401,8 +385,6 @@ func TestTerminatingCall(t *testing.T) {
 	u.us.Send(sip.UDP, f.Remote, answer)
 	wantStatus(t, first(s.scscf.RecvResponse()), 200)
 
-	// The callee's route set is the INVITE's Record-Route, in order. Its BYE
-	// follows the dialog's routes toward the caller, with the call's icid.
 	from, _ := got.Header.From()
 	routes := got.Header.Values("Record-Route")
 	routes[len(routes)-1] = "<sip:attacker@192.0.2.1;lr>"
@@ -496,14 +478,12 @@ func TestAssertedIdentities(t *testing.T) {
 	}
 }
 
-// moCall is an originating call through the P-CSCF, as the UE and the S-CSCF
-// see it.
 type moCall struct {
 	s      *ipsecScene
 	u      *ue
-	invite *sip.Request // as the UE sent it
-	core   *sip.Request // as the S-CSCF got it
-	flow   sip.Flow     // the S-CSCF's flow from the P-CSCF
+	invite *sip.Request
+	core   *sip.Request
+	flow   sip.Flow
 }
 
 func (s *ipsecScene) originatingCall(t *testing.T, u *ue) *moCall {
@@ -518,8 +498,6 @@ func (s *ipsecScene) originatingCall(t *testing.T, u *ue) *moCall {
 	return &moCall{s: s, u: u, invite: invite, core: got, flow: f}
 }
 
-// answer sends a response of the callee with the given To-tag, and returns it
-// as the UE got it.
 func (c *moCall) answer(t *testing.T, code int, tag string, edit func(*sip.Response)) *sip.Response {
 	t.Helper()
 
@@ -536,8 +514,6 @@ func (c *moCall) answer(t *testing.T, code int, tag string, edit func(*sip.Respo
 	return got
 }
 
-// request builds a request of the UE on the leg a response opened, along its
-// route set.
 func (c *moCall) request(method, cseq string, res *sip.Response) *sip.Request {
 	routes := res.Header.Values("Record-Route")
 	slices.Reverse(routes)
@@ -571,8 +547,7 @@ func (c *moCall) dialog(t *testing.T) *proxy.Dialog {
 	return d
 }
 
-// TS 24.229 §5.2.6.3.9 step 2 holds on early dialogs too: a PRACK follows the
-// routes of the leg the reliable 183 opened.
+// TS 24.229 §5.2.6.3.9 step 2
 func TestEarlyRoutesAreTheDialogs(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -598,8 +573,7 @@ func TestEarlyRoutesAreTheDialogs(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4: the caller ACKs and BYEs a second 2xx a forking proxy
-// downstream sent, on a leg the tracker does not follow.
+// RFC 3261 §13.2.2.4
 func TestSecondAnswerCanBeEnded(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -621,9 +595,7 @@ func TestSecondAnswerCanBeEnded(t *testing.T) {
 	}
 }
 
-// Requests from the core toward the UE lose the core's header fields, and
-// the UE's responses carry the request's charging vector with the P-CSCF's
-// term-ioi (TS 24.229 §5.2.6.4.10).
+// TS 24.229 §5.2.6.4.10
 func TestCoreRequestOnACall(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -670,8 +642,7 @@ func TestCoreRequestOnACall(t *testing.T) {
 	}
 }
 
-// A BYE the P-CSCF sends itself (TS 24.229 §5.2.8.1) reaches the UE on its
-// security associations, from port_pc to port_us.
+// TS 24.229 §5.2.8.1
 func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)

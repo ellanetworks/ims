@@ -30,16 +30,12 @@ const (
 	carolTel  = "tel:+15550013"
 )
 
-// callScene is the IMS with two registered subscribers, alice and bob, whose
-// P-CSCFs are test sockets: the S-CSCF, I-CSCF and HSS are real.
 type callScene struct {
 	scscf netip.AddrPort
 
-	// alice is the originating P-CSCF; aliceRoute is her Service-Route.
 	alice      *siptest.Peer
 	aliceRoute string
 
-	// bob is the terminating P-CSCF on bob's Path; bobContact his contact.
 	bob        *siptest.Peer
 	bobContact string
 }
@@ -90,9 +86,6 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 	return sc
 }
 
-// registerAtSCSCF registers a subscriber at the S-CSCF as the P-CSCF does,
-// with the P-CSCF's socket in Path, and returns the Service-Route on the
-// S-CSCF's address.
 func registerAtSCSCF(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Peer, impi, contact string) string {
 	t.Helper()
 
@@ -179,8 +172,6 @@ func (sc *callScene) invite(target string) *sip.Request {
 	return req
 }
 
-// responseTo is the first response to req other than 100, skipping the
-// retransmitted responses to earlier requests.
 func responseTo(t *testing.T, s node, req *sip.Request) *sip.Response {
 	t.Helper()
 
@@ -197,8 +188,6 @@ func responseTo(t *testing.T, s node, req *sip.Request) *sip.Response {
 	}
 }
 
-// failedInvite is the final response to an INVITE that fails, which it ACKs
-// so that the S-CSCF stops retransmitting it.
 func failedInvite(t *testing.T, s node, to netip.AddrPort, invite *sip.Request) *sip.Response {
 	t.Helper()
 
@@ -323,8 +312,6 @@ func TestCallToAHomeLocalNumber(t *testing.T) {
 	}
 }
 
-// TestCallToALocalIdentity calls a local number the HSS lists as such, without
-// a numbering rule: the I-CSCF and the S-CSCF must agree on its identity.
 func TestCallToALocalIdentity(t *testing.T) {
 	sc := newCallScene(t, config.Numbering{})
 
@@ -335,8 +322,6 @@ func TestCallToALocalIdentity(t *testing.T) {
 	}
 }
 
-// TestCallFromSamsung dials as the Samsung phone of the Open5GS capture does,
-// with its own number as phone-context and host.
 func TestCallFromSamsung(t *testing.T) {
 	sc := newCallScene(t, config.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"})
 
@@ -381,6 +366,5 @@ func TestCallFailures(t *testing.T) {
 		}
 	})
 
-	// The ACKs stopped the failures' retransmissions (Timer G, T1).
 	sc.alice.RecvNone(2 * transaction.DefaultT1)
 }

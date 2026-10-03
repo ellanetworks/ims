@@ -10,28 +10,17 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Numbering turns local numbers dialled in the home network into global
-// ones (TS 24.229 §5.4.3.2 step 10, IR.92 §2.2): an international prefix
-// becomes "+", a national prefix gives way to the country code, and any other
-// number gains the country code. A Numbering without a country code leaves
-// local numbers as dialled.
 type Numbering struct {
 	CountryCode         string
 	NationalPrefix      string
 	InternationalPrefix string
 }
 
-// E.164 numbers are at most 15 digits, country code included (ITU-T E.164
-// §6.1). Shorter local numbers than minE164 are short codes, not subscriber
-// numbers, and are left as dialled.
 const (
 	minE164 = 7
 	maxE164 = 15
 )
 
-// telephoneNumber splits a tel URI, or a SIP URI with user=phone, into its
-// number, phone-context and other parameters. A SIP URI without
-// phone-context is in the context of its host.
 func telephoneNumber(u sip.URI) (number, context string, params sip.Params, ok bool) {
 	switch {
 	case u.IsTel():
@@ -78,8 +67,6 @@ func telephoneNumber(u sip.URI) (number, context string, params sip.Params, ok b
 	return "", "", nil, false
 }
 
-// globalNumber is the E.164 number, "+" included, of a tel URI or a SIP URI
-// with user=phone that holds a global number.
 func globalNumber(u sip.URI) (string, bool) {
 	number, _, _, ok := telephoneNumber(u)
 	if !ok {
@@ -91,9 +78,7 @@ func globalNumber(u sip.URI) (string, bool) {
 	return number, len(number) > 1 && number[0] == '+' && isDigits(number[1:])
 }
 
-// normalise rewrites a local number of the home network as a global tel URI,
-// keeping its other parameters (RFC 3966 §5.4). It reports false, leaving u
-// as it is, for anything else.
+// RFC 3966 §5.4
 func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	if n.CountryCode == "" {
 		return u, false
@@ -122,18 +107,7 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	return sip.URI{Scheme: "tel", User: "+" + digits, Params: params}, true
 }
 
-// homeContext reports whether a phone-context places a local number in the
-// home network:
-//   - the home domain, or one of its subdomains, which is where geo-local
-//     contexts live (TS 24.229 §7.2A.10.3: geo-local.<home>,
-//     <mcc>.<mnc>.eps.<home>, <mcc>.<mnc>.5gs.<home>); a private network has
-//     a single geography;
-//   - the home country code: the number is national. A longer global number
-//     would name an area whose code the number then lacks;
-//   - a value that is no RFC 3966 descriptor at all, such as the digits of
-//     the caller's own number some Samsung phones send (the Open5GS capture
-//     sip/internal/corpus/testdata/open5gs/ipsec_to_ipsec_call): the phone
-//     can only mean its own network.
+// TS 24.229 §7.2A.10.3, RFC 3966
 func (n Numbering) homeContext(context, homeDomain string) bool {
 	context = strings.ToLower(strings.TrimSuffix(context, "."))
 
@@ -147,8 +121,7 @@ func (n Numbering) homeContext(context, homeDomain string) bool {
 	return !isDomainName(context)
 }
 
-// isDomainName is the domainname of RFC 3966 §3: labels of letters, digits
-// and hyphens, the last starting with a letter.
+// RFC 3966
 func isDomainName(s string) bool {
 	if s == "" {
 		return false
@@ -171,12 +144,8 @@ func isDomainName(s string) bool {
 	return top[0] >= 'a' && top[0] <= 'z'
 }
 
-// numberPortability are the tel URI parameters of RFC 4694 that a
-// P-Called-Party-ID leaves out (TS 24.229 §5.4.3.3 step 10c): the S-CSCF
-// receives no Loose-Route Indication from the HSS.
 var numberPortability = []string{"rn", "npdi"}
 
-// calledPartyID is the Request-URI as the P-Called-Party-ID carries it.
 func calledPartyID(u sip.URI) sip.URI {
 	u = u.Clone()
 	ported := func(name string) bool {
@@ -206,11 +175,6 @@ func calledPartyID(u sip.URI) sip.URI {
 	return u
 }
 
-// identityKeys are the keys under which a public identity may be stored: its
-// own; for a global number both its tel and its home SIP form; and for a local
-// tel number also the number without its phone-context, the identity the
-// I-CSCF asks the HSS about (internal/icscf publicIdentity), so that a number
-// the LIR finds is found here too.
 func identityKeys(u sip.URI, homeDomain string) []string {
 	keys := []string{identityKey(u)}
 
@@ -241,9 +205,7 @@ func phoneURI(number, homeDomain string) sip.URI {
 	return u
 }
 
-// assertedAlias is the second P-Asserted-Identity of TS 24.229 §5.4.3.2 step 9
-// and §5.4.3.3: the tel URI a SIP URI is an alias of, or the home SIP form of
-// a tel URI.
+// TS 24.229 §5.4.3.2 step 9, §5.4.3.3
 func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string) (sip.Address, bool) {
 	number, global := globalNumber(asserted.URI)
 
@@ -253,8 +215,6 @@ func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string)
 	case asserted.URI.IsTel() || !asserted.URI.IsSIP():
 		return sip.Address{}, false
 	case global:
-		// A SIP URI with user=phone is the alias of the tel URI of its number,
-		// by the construction of step 9 b), whether or not the HSS lists both.
 		tel := sip.URI{Scheme: "tel", User: number}
 		a := sip.Address{Display: asserted.Display, URI: tel}
 
@@ -289,7 +249,6 @@ func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string)
 	return a, true
 }
 
-// profileIdentity finds an identity in the user data the HSS sent.
 func profileIdentity(reg db.Registration, key string) (cx.ProfileIdentity, bool) {
 	sub, err := cx.ParseUserData(reg.UserData)
 	if err != nil {
@@ -307,9 +266,7 @@ func profileIdentity(reg db.Registration, key string) (cx.ProfileIdentity, bool)
 	return cx.ProfileIdentity{}, false
 }
 
-// telAlias finds the unbarred tel URI that is an alias of an identity: in the
-// same service profile and, when the HSS groups aliases, the same alias group
-// (TS 29.228 §6.6.4).
+// TS 29.228 §6.6.4
 func telAlias(reg db.Registration, key string) (cx.ProfileIdentity, bool) {
 	sub, err := cx.ParseUserData(reg.UserData)
 	if err != nil {

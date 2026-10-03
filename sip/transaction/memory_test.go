@@ -17,8 +17,6 @@ var (
 	servedB = netip.MustParseAddrPort("127.0.0.1:5080")
 )
 
-// memoryHarness is a layer serving two addresses with no sockets, and a peer
-// attached in memory.
 type memoryHarness struct {
 	t     *testing.T
 	clock *siptest.Clock
@@ -82,8 +80,6 @@ func TestServedAddressesTalkInMemory(t *testing.T) {
 
 			wantCode(t, rs.Next(), 100)
 
-			// In memory is reliable: no retransmission, however long the
-			// answer takes.
 			h.clock.Advance(10 * t1)
 			h.tu.None(quiet)
 
@@ -137,8 +133,6 @@ func TestServedAddressCancel(t *testing.T) {
 
 	wantCode(t, rs.Next(), 487)
 
-	// The ACK to the 487 goes in memory too, and confirms the server
-	// transaction without Timer G retransmitting the 487.
 	h.clock.Advance(4 * t1)
 	rs.None(quiet)
 	wantState(t, got.Tx, transaction.Terminated)
@@ -156,7 +150,6 @@ func TestNonInviteInMemoryIsReliable(t *testing.T) {
 
 	wantCode(t, rs.Next(), 200)
 
-	// Timer K and Timer J are zero on a reliable flow.
 	wantTerminated(t, client, nil)
 	wantTerminated(t, got.Tx, nil)
 }
@@ -181,8 +174,6 @@ func TestPeerTalksToServedAddress(t *testing.T) {
 		t.Fatalf("peer got %q on %s", res.StartLine(), f)
 	}
 
-	// A large request stays on its transport: there is no TCP switch in
-	// memory.
 	large := newFlowRequest("MESSAGE", sip.UDP, servedA, h.peer.Addr())
 	pad(large, 2*transport.MaxUDPRequest)
 

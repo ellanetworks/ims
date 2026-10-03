@@ -530,15 +530,12 @@ func TestUnprotectedRequestsFromAProtectedUE(t *testing.T) {
 	wantStatus(t, first(s.ue.RecvResponse()), 403)
 	s.p.cfg.Fallback.(*siptest.TU).None(quiet)
 
-	// TS 24.229 §5.2.6.3.2A: a request from a UE without a registration is
-	// discarded, unanswered.
 	other := siptest.NewSocket(t, netip.MustParseAddrPort("127.0.0.2:0"))
 	other.Send(sip.UDP, s.pcscf, siptest.NewRequest("INVITE", "sip:"+homeDomain, sip.UDP, other.Addr()))
 	other.RecvNone(quiet)
 	s.p.cfg.Fallback.(*siptest.TU).None(quiet)
 }
 
-// fallbackRequest waits for the fallback to get a request.
 func fallbackRequest(t *testing.T, s *ipsecScene) {
 	t.Helper()
 

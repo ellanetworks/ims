@@ -33,9 +33,6 @@ func TestPairSharesThePort(t *testing.T) {
 	}
 }
 
-// TestPairAvoidsHeldUDPPorts holds the UDP side of many ports free for TCP:
-// the kernel's choice for TCP then often lands on one, and Pair must still
-// find a port free for both, without leaving TCP listeners behind.
 func TestPairAvoidsHeldUDPPorts(t *testing.T) {
 	var held []net.PacketConn
 

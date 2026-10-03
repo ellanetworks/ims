@@ -73,10 +73,6 @@ type IMS struct {
 	Numbering Numbering `yaml:"numbering"`
 }
 
-// Numbering turns the local numbers subscribers dial in the home network into
-// E.164 numbers: an international prefix becomes "+", a national prefix gives
-// way to the country code, and other numbers gain the country code. Without a
-// country code, local numbers are routed as dialled.
 type Numbering struct {
 	CountryCode         string `yaml:"country_code"`
 	NationalPrefix      string `yaml:"national_prefix"`

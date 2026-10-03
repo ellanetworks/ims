@@ -49,8 +49,6 @@ func (p *PCSCF) ueRegistration(req *sip.Request) (db.PCSCFRegistration, bool) {
 	return p.regs.get(k.impi, k.ue)
 }
 
-// ueKey identifies the registration a request from the UE arrives on: by its
-// security associations, or by its source without IPsec.
 func (p *PCSCF) ueKey(req *sip.Request) (regKey, bool) {
 	if p.sas != nil && p.sas.protected(req.Flow.Local.Port()) {
 		v, ok := p.sas.lookup(req.Flow)
@@ -137,8 +135,6 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	d := p.cfg.Proxy.Dialog(removed)
 
-	// TS 24.229 §5.2.8.1.3: a dialog the P-CSCF released answers 481, before
-	// its flow, possibly gone, is looked up.
 	if d != nil && d.Released() {
 		p.respond(tx, sip.NewResponse(req, 481, ""))
 		return
@@ -152,9 +148,6 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 	p.toCore(tx, req, out, removed, d)
 }
 
-// HandleAck relays an ACK to a 2xx along the dialog's route, with the checks
-// of the other in-dialog requests. An ACK that fails them is dropped, as an
-// ACK has no response.
 func (p *PCSCF) HandleAck(ack *sip.Request) {
 	out, removed, err := p.cfg.Proxy.Preprocess(ack)
 	if err != nil || len(removed) == 0 {
@@ -197,7 +190,6 @@ func (p *PCSCF) trusted(a netip.Addr) bool {
 	return p.cfg.Trust != nil && p.cfg.Trust.Trusted(a)
 }
 
-// ownPort reports whether a local port is the P-CSCF's, protected or not.
 func (p *PCSCF) ownPort(port uint16) bool {
 	return port == p.cfg.Port || p.sas != nil && p.sas.protected(port)
 }
@@ -219,9 +211,6 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 		return
 	}
 
-	// RFC 6665 §4.3: a proxy that record-routed the SUBSCRIBE record-routes
-	// its NOTIFYs, so a UE that sees the NOTIFY before the 2xx still builds
-	// the dialog's route set through us.
 	if req.Method == "NOTIFY" {
 		for _, u := range removed {
 			out.Header.InsertTop(sip.Field{Name: "Record-Route", Value: "<" + u.String() + ">"})
@@ -238,8 +227,6 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 	}})
 }
 
-// ueTarget routes an in-dialog request toward the UE: only from the core, and
-// on the flow its Route names.
 func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
 	if !p.fromCore(req) {
 		p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
@@ -298,10 +285,7 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 	}})
 }
 
-// coreTarget routes an in-dialog request from the UE toward the core: only on
-// the UE's own flow and, on a call the P-CSCF knows, from its party of the
-// dialog, with the header fields the UE may not send removed and the call's
-// charging vector (TS 24.229 §5.2.6.3.5, §5.2.6.3.9).
+// TS 24.229 §5.2.6.3.5, §5.2.6.3.9
 func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
 		p.log.Info("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))

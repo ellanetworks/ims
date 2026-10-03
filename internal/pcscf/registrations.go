@@ -52,20 +52,14 @@ type registrations struct {
 	clock Clock
 	grace time.Duration
 
-	// expired is called, outside the lock, with each record removed at its
-	// expiry.
 	expired func(db.PCSCFRegistration)
 
-	// lost counts the records marked signalling lost, so that requests skip
-	// the lookup while none is.
 	lost atomic.Int64
 
-	mu      sync.Mutex
-	closed  bool
-	byKey   map[regKey]*db.PCSCFRegistration
-	byToken map[string]*db.PCSCFRegistration
-	// bySource indexes the unprotected records by the UE's address and port,
-	// which several IMPIs can share.
+	mu       sync.Mutex
+	closed   bool
+	byKey    map[regKey]*db.PCSCFRegistration
+	byToken  map[string]*db.PCSCFRegistration
 	bySource map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}
 	timers   map[regKey]transaction.Timer
 	retired  map[string]retired
@@ -87,8 +81,6 @@ func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration,
 	}
 }
 
-// restore loads the stored records and deletes the expired ones, which it
-// returns.
 func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, error) {
 	if rs.store == nil {
 		return nil, nil
@@ -212,8 +204,6 @@ func (rs *registrations) expire(k regKey) {
 		return
 	}
 
-	// Early by the wall clock, which may have stepped back since the timer
-	// was armed.
 	if r.ExpiresAt.After(rs.clock.Now()) {
 		rs.armLocked(k, r.ExpiresAt)
 		rs.mu.Unlock()
@@ -298,8 +288,6 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 			delete(rs.byToken, old.FlowToken)
 		}
 	} else {
-		// The snapshot r was taken from may have been removed since, and its
-		// session ended.
 		r.RxSessionID, r.RxClass, r.SignallingLost = "", nil, false
 	}
 
@@ -391,7 +379,6 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 	return removed
 }
 
-// edit applies f to the record of k, and stores it if f returns true.
 func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -413,8 +400,6 @@ func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bo
 	return true
 }
 
-// restoreSignalling clears the signalling lost mark of k's record, and
-// reports whether it was set.
 func (rs *registrations) restoreSignalling(k regKey) bool {
 	if rs.lost.Load() == 0 {
 		return false
@@ -485,7 +470,6 @@ func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, b
 	return db.PCSCFRegistration{}, false
 }
 
-// sourceKey is fromSource without the copy.
 func (rs *registrations) sourceKey(src netip.AddrPort) (regKey, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

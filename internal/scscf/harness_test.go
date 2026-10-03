@@ -83,7 +83,6 @@ type fakeHSS struct {
 	marGate       chan struct{}
 	sarGate       chan struct{}
 
-	// userData replaces the SAA's User-Data when set; noUserData omits it.
 	userData   []byte
 	noUserData bool
 }
@@ -317,7 +316,6 @@ type harness struct {
 	cfg      Config
 	pcscf    *fakePCSCF
 
-	// icscf stands for the I-CSCF that originating requests go to.
 	icscf      *siptest.Socket
 	numbering  Numbering
 	sessions   *Sessions
@@ -325,9 +323,6 @@ type harness struct {
 	scscfLayer *transaction.Layer
 }
 
-// fakePCSCF is the S-CSCF's SIP role: registrations to the registrar, reg
-// event subscriptions included, and every other request to the session
-// router.
 type fakePCSCF struct {
 	reg      atomic.Pointer[Registrar]
 	sessions atomic.Pointer[Sessions]
