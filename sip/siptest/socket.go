@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/internal/listen"
 	"github.com/ellanetworks/ims/sip/internal/sockopt"
 )
 
@@ -38,18 +39,7 @@ type Socket struct {
 func NewSocket(t testing.TB, addr netip.AddrPort) *Socket {
 	t.Helper()
 
-	var (
-		tl  net.Listener
-		pc  net.PacketConn
-		err error
-	)
-
-	for range 16 {
-		if tl, pc, err = bind(addr); err == nil || addr.Port() != 0 {
-			break
-		}
-	}
-
+	tl, udp, err := listen.Pair(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("siptest: listen on %s: %v", addr, err)
 	}
@@ -59,7 +49,7 @@ func NewSocket(t testing.TB, addr netip.AddrPort) *Socket {
 	s := &Socket{
 		t:     t,
 		addr:  netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()),
-		udp:   pc.(*net.UDPConn),
+		udp:   udp,
 		tcp:   tl,
 		recv:  make(chan Received, 256),
 		done:  make(chan struct{}),
@@ -74,26 +64,6 @@ func NewSocket(t testing.TB, addr netip.AddrPort) *Socket {
 	t.Cleanup(s.Close)
 
 	return s
-}
-
-func bind(addr netip.AddrPort) (net.Listener, net.PacketConn, error) {
-	ctx := context.Background()
-	lc := net.ListenConfig{Control: sockopt.ReusePort}
-
-	tl, err := lc.Listen(ctx, network("tcp", addr.Addr()), addr.String())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var plain net.ListenConfig
-
-	pc, err := plain.ListenPacket(ctx, network("udp", addr.Addr()), tl.Addr().String())
-	if err != nil {
-		_ = tl.Close()
-		return nil, nil, err
-	}
-
-	return tl, pc, nil
 }
 
 func (s *Socket) Addr() netip.AddrPort { return s.addr }

@@ -1136,9 +1136,29 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	setToTag(t, &prack.Header, tag)
 	prack.Header.Set("RAck", sip.RAck{RSeq: rseq, CSeq: 1, Method: "INVITE"}.String())
 	p.send(prack)
-	p.response(200, "PRACK")
 
-	update := p.request("UPDATE")
+	// The UPDATE follows the PRACK, but the two transactions send
+	// independently: it may overtake the 200 to the PRACK.
+	var update *sip.Request
+
+	for gotOK := false; !gotOK || update == nil; {
+		switch m := p.s.Recv().Msg.(type) {
+		case *sip.Request:
+			if m.Method != "UPDATE" || update != nil {
+				t.Fatalf("got %s, want the UPDATE", m.StartLine())
+			}
+
+			update = m
+		case *sip.Response:
+			cseq, _ := m.Header.CSeq()
+			if m.StatusCode != 200 || cseq.Method != "PRACK" || gotOK {
+				t.Fatalf("got %s for %s, want 200 for PRACK", m.StartLine(), cseq.Method)
+			}
+
+			gotOK = true
+		}
+	}
+
 	assertQoS(t, "UPDATE", audio(t, sdpOf(t, update.Body)), "curr:qos local sendrecv", "curr:qos remote sendrecv")
 
 	ok := sip.NewResponse(update, 200, "")
