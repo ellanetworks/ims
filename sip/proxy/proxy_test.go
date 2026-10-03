@@ -699,3 +699,32 @@ func TestForcedDoubleRecordRoute(t *testing.T) {
 		t.Errorf("Record-Route %s, want %s", got, want)
 	}
 }
+
+func TestProxied(t *testing.T) {
+	s := newScene(t, sip.UDP, routerConfig{hold: true})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+
+	tx := <-s.r.held
+	if s.r.p.Proxied(tx) {
+		t.Error("proxied before Forward")
+	}
+
+	out := s.r.preprocess(tx.Request())
+	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !s.r.p.Proxied(tx) {
+		t.Error("not proxied after Forward")
+	}
+
+	fwd, f := s.forwarded()
+	reply(t, s.callee, fwd, f, 486)
+	wantResponse(t, s.caller, 486)
+
+	if s.r.p.Proxied(tx) {
+		t.Error("proxied after the final response")
+	}
+}

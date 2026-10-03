@@ -632,12 +632,16 @@ func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, cod
 	return proxy.Hold
 }
 
+// HandleCancel cancels an INVITE the P-CSCF proxies. The layer delivers the
+// CANCEL after HandleRequest returned, by which time the INVITE was forwarded
+// or handed to the fallback.
 func (p *PCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	p.cfg.Fallback.HandleCancel(tx, cancel)
-}
+	if p.cfg.Proxy.Proxied(tx) {
+		p.cfg.Proxy.Cancel(tx, cancel)
+		return
+	}
 
-func (p *PCSCF) HandleAck(ack *sip.Request) {
-	p.cfg.Fallback.HandleAck(ack)
+	p.cfg.Fallback.HandleCancel(tx, cancel)
 }
 
 func (p *PCSCF) HandleTransactionError(tx *transaction.ServerTransaction, err error) {

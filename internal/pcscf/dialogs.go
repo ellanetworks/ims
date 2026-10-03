@@ -215,21 +215,45 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 		return
 	}
 
+	d := p.cfg.Proxy.Dialog(removed)
+
 	if p.towardUE(removed) {
-		if !p.fromCore(req) {
-			p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
-				slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
-			p.respond(tx, sip.NewResponse(req, 403, ""))
-
-			return
-		}
-
-		p.toUEFlow(tx, req, out, removed)
-
+		p.toUEFlow(tx, req, out, removed, d)
 		return
 	}
 
-	p.toCore(tx, req, out, removed)
+	p.toCore(tx, req, out, removed, d)
+}
+
+// HandleAck relays an ACK to a 2xx along the dialog's route, with the checks
+// of the other in-dialog requests. An ACK that fails them is dropped, as an
+// ACK has no response.
+func (p *PCSCF) HandleAck(ack *sip.Request) {
+	out, removed, err := p.cfg.Proxy.Preprocess(ack)
+	if err != nil || len(removed) == 0 {
+		p.cfg.Fallback.HandleAck(ack)
+		return
+	}
+
+	var (
+		to     proxy.Target
+		reject *sip.Response
+	)
+
+	if p.towardUE(removed) {
+		to, reject = p.ueTarget(ack, out, removed)
+	} else {
+		to, reject = p.coreTarget(ack, out, removed)
+	}
+
+	if reject != nil {
+		p.log.Debug("dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Int("code", reject.StatusCode))
+		return
+	}
+
+	if err := p.cfg.Proxy.ForwardAck(out, to, p.cfg.Proxy.Dialog(removed)); err != nil {
+		p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+	}
 }
 
 func (p *PCSCF) towardUE(removed []sip.URI) bool {
@@ -250,21 +274,12 @@ func flowToken(removed []sip.URI) string {
 	return ""
 }
 
-func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI) {
-	f, ok := p.regs.flow(flowToken(removed))
-	if !ok {
-		p.respond(tx, sip.NewResponse(req, 480, "No Flow"))
+func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) {
+	to, reject := p.ueTarget(req, out, removed)
+	if reject != nil {
+		p.respond(tx, reject)
 		return
 	}
-
-	to, ok := p.ueFlow(f)
-	if !ok {
-		p.respond(tx, sip.NewResponse(req, 480, "No Flow"))
-		return
-	}
-
-	out.Header.Del("P-Charging-Vector")
-	out.Header.Del("P-Charging-Function-Addresses")
 
 	// RFC 6665 §4.3: a proxy that record-routed the SUBSCRIBE record-routes
 	// its NOTIFYs, so a UE that sees the NOTIFY before the 2xx still builds
@@ -275,13 +290,39 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 		}
 	}
 
-	p.forward(tx, req, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
+	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
 			fromUEResponse(rep.Response)
 		}
 
 		return proxy.Relay
 	}})
+}
+
+// ueTarget routes an in-dialog request toward the UE: only from the core, and
+// on the flow its Route names.
+func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
+	if !p.fromCore(req) {
+		p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
+			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
+
+		return proxy.Target{}, sip.NewResponse(req, 403, "")
+	}
+
+	f, ok := p.regs.flow(flowToken(removed))
+	if !ok {
+		return proxy.Target{}, sip.NewResponse(req, 480, "No Flow")
+	}
+
+	to, ok := p.ueFlow(f)
+	if !ok {
+		return proxy.Target{}, sip.NewResponse(req, 480, "No Flow")
+	}
+
+	out.Header.Del("P-Charging-Vector")
+	out.Header.Del("P-Charging-Function-Addresses")
+
+	return to, nil
 }
 
 func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
@@ -303,12 +344,28 @@ func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(f.local, p.cfg.Port), Remote: f.ue}}, true
 }
 
-func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI) {
+func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) {
+	to, reject := p.coreTarget(req, out, removed)
+	if reject != nil {
+		p.respond(tx, reject)
+		return
+	}
+
+	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
+		if rep.Response != nil {
+			toUE(rep.Response)
+		}
+
+		return proxy.Relay
+	}})
+}
+
+// coreTarget routes an in-dialog request from the UE toward the core: only on
+// the UE's own flow, with the header fields the UE may not send removed.
+func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
 		p.log.Info("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
-		p.respond(tx, sip.NewResponse(req, 403, ""))
-
-		return
+		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
 	fromUE(out)
@@ -321,17 +378,10 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 
 	to, ok := p.target(u, req.Flow.Local.Addr())
 	if !ok {
-		p.respond(tx, sip.NewResponse(req, 404, "No Route"))
-		return
+		return proxy.Target{}, sip.NewResponse(req, 404, "No Route")
 	}
 
-	p.forward(tx, req, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
-		if rep.Response != nil {
-			toUE(rep.Response)
-		}
-
-		return proxy.Relay
-	}})
+	return to, nil
 }
 
 func (p *PCSCF) ownFlow(req *sip.Request, token string) bool {

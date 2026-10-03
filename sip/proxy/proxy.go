@@ -338,6 +338,17 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 	return c.relay(res.Clone())
 }
 
+// Proxied reports whether the proxy forwarded the request of tx and has not
+// answered it yet.
+func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	_, ok := p.contexts[tx]
+
+	return ok
+}
+
 func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	var reason []sip.Field
 
