@@ -320,22 +320,21 @@ func (s *fakeSCSCF) respond(req *sip.Request, f sip.Flow, code int, edit ...func
 }
 
 type harness struct {
-	t      *testing.T
-	hss    *fakeHSS
-	node   *diameter.Node
-	icscf  netip.AddrPort
-	scscfs []*fakeSCSCF
-	ic     *ICSCF
+	t     *testing.T
+	hss   *fakeHSS
+	node  *diameter.Node
+	icscf netip.AddrPort
+	scscf *fakeSCSCF
+	ic    *ICSCF
 }
 
 type harnessOptions struct {
-	scscfs       int
-	capabilities [][]uint32
+	capabilities []uint32
 	hssDown      bool
 
 	scscfAddr netip.Addr
 
-	down int
+	down bool
 }
 
 type lateHandler struct {
@@ -360,10 +359,6 @@ func (l *lateHandler) HandleTransactionError(tx *transaction.ServerTransaction, 
 
 func newHarness(t *testing.T, o harnessOptions) *harness {
 	t.Helper()
-
-	if o.scscfs == 0 {
-		o.scscfs = 1
-	}
 
 	h := &harness{t: t, hss: newFakeHSS(t)}
 
@@ -410,56 +405,43 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		h.waitHSS()
 	}
 
-	var table []SCSCF
-
 	if !o.scscfAddr.IsValid() {
 		o.scscfAddr = loopback
 	}
 
-	for k := range o.scscfs {
-		sock := siptest.NewSocket(t, netip.AddrPortFrom(o.scscfAddr, 0))
-		name := "sip:scscf" + strconv.Itoa(k+1) + "." + homeDomain + ":" + strconv.Itoa(int(sock.Addr().Port()))
+	sock := siptest.NewSocket(t, netip.AddrPortFrom(o.scscfAddr, 0))
+	name := "sip:scscf." + homeDomain + ":" + strconv.Itoa(int(sock.Addr().Port()))
 
-		if k < o.down {
-			sock.Close()
+	if o.down {
+		sock.Close()
 
-			name += ";transport=tcp"
-		}
-
-		h.scscfs = append(h.scscfs, &fakeSCSCF{t: t, sock: sock, name: name, seen: map[string]bool{}})
-
-		u, _ := sip.ParseURI(name)
-
-		var capabilities []uint32
-		if k < len(o.capabilities) {
-			capabilities = o.capabilities[k]
-		}
-
-		table = append(table, SCSCF{Name: u, Capabilities: capabilities, Listeners: []netip.AddrPort{sock.Addr()}})
+		name += ";transport=tcp"
 	}
+
+	h.scscf = &fakeSCSCF{t: t, sock: sock, name: name, seen: map[string]bool{}}
+	scscfName, _ := sip.ParseURI(name)
 
 	late := &lateHandler{}
 
 	layer, _ := siptest.NewLayer(t, transaction.Config{
 		Handler: late,
 		Logger:  slog.New(slog.DiscardHandler),
-		Aliases: []string{homeDomain, "scscf1." + homeDomain, "scscf2." + homeDomain},
+		Aliases: []string{homeDomain, "scscf." + homeDomain},
 		T1:      testT1,
 	})
 	h.icscf = siptest.ListenLayer(t, layer, loopback)
 
 	h.ic = New(Config{
-		HomeDomain:   homeDomain,
-		Layer:        layer,
-		Proxy:        proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Port: h.icscf.Port()}),
-		Port:         h.icscf.Port(),
-		Trust:        trust.New([]netip.Addr{loopback}, nil),
-		SCSCFs:       table,
-		HSS:          HSS{ID: "hss", Realm: homeDomain},
-		Diameter:     node,
-		CxTimeout:    cxTimeout,
-		SCSCFTimeout: 32 * testT1,
-		Logger:       testLogger(),
+		HomeDomain: homeDomain,
+		Layer:      layer,
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Port: h.icscf.Port()}),
+		Port:       h.icscf.Port(),
+		Trust:      trust.New([]netip.Addr{loopback}, nil),
+		SCSCF:      SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
+		HSS:        HSS{ID: "hss", Realm: homeDomain},
+		Diameter:   node,
+		CxTimeout:  cxTimeout,
+		Logger:     testLogger(),
 	})
 	late.h.Store(h.ic)
 

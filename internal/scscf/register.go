@@ -57,13 +57,7 @@ func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Respon
 		return res, nil
 	}
 
-	res = r.handleRegister(ctx, rr)
-
-	if res.StatusCode == 200 {
-		r.scheduleSweep(ctx)
-	}
-
-	return res, rr.out
+	return r.handleRegister(ctx, rr), rr.out
 }
 
 func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *sip.Response {
@@ -78,13 +72,7 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 		}
 	}
 
-	locked, err := r.lockForRegister(ctx, rr.impi)
-	if err != nil {
-		return retryLater(req)
-	}
-
-	if !locked {
-		r.log.Debug("REGISTER while another one is being handled", slog.String("impi", rr.impi))
+	if err := r.lock(ctx, rr.impi); err != nil {
 		return retryLater(req)
 	}
 
@@ -339,7 +327,7 @@ func (r *Registrar) authenticated(ctx context.Context, rr *registerRequest) *sip
 			return noBinding(rr)
 		}
 
-		return r.unbind(ctx, rr, set)
+		return r.unbind(ctx, rr, st, set)
 	}
 
 	return r.assign(ctx, rr, st, set, true)
@@ -364,7 +352,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 			return noBinding(rr)
 		}
 
-		return r.unbind(ctx, rr, set)
+		return r.unbind(ctx, rr, st, set)
 	}
 
 	for _, c := range rr.contacts {
@@ -562,84 +550,63 @@ func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st
 
 		live := st.live(reg.Bindings)
 
-		reg.Bindings = only(live, rr.contacts)
-		if dropped := without(live, reg.Bindings); len(dropped) > 0 {
-			removed = append(removed, removal{reg: reg, bindings: dropped, event: regevent.Unregistered})
-		}
-
-		if len(reg.Bindings) > 0 {
-			if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
-				r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
-			}
-
+		dropped := without(live, only(live, rr.contacts))
+		if len(dropped) == 0 {
 			continue
 		}
 
-		if _, err := r.serverAssignment(ctx, rr.impi, []string{reg.IMPU}, assignAdministrative, false); err != nil {
-			r.log.Warn("failed to tell the HSS of a replaced registration", slog.String("impi", rr.impi), slog.Any("error", err))
+		rm, deleted, err := r.removeBindings(ctx, st, reg, dropped, regevent.Unregistered)
+		if err != nil {
+			r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		}
 
-		if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
-			r.log.Warn("failed to delete the registration", slog.String("impi", rr.impi), slog.Any("error", err))
-		}
+		removed = append(removed, rm)
 
-		r.log.Info("registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
+		if deleted {
+			r.log.Info("registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
+			r.deregisterAtHSS(ctx, rr.impi, reg.IMPU, assignAdministrative)
+		}
 	}
 
 	return removed
 }
 
-func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, set *db.Registration) *sip.Response {
-	reg := *set
-	bindings := liveAt(reg.Bindings, r.clock.Now())
+func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, set *db.Registration) *sip.Response {
+	removed := st.live(set.Bindings)
 
-	var removed []db.Binding
+	if !rr.star {
+		live := removed
+		removed = nil
 
-	if rr.star {
-		removed, bindings = bindings, nil
-	} else {
 		for _, c := range rr.contacts {
-			i := bindingIndex(bindings, c.addr.URI)
+			i := bindingIndex(live, c.addr.URI)
 			if i < 0 {
 				return noBinding(rr)
 			}
 
-			removed = append(removed, bindings[i])
-			bindings = append(bindings[:i], bindings[i+1:]...)
+			removed = append(removed, live[i])
 		}
 	}
 
-	ch := change{removed: []removal{{reg: *set, bindings: removed, event: regevent.Unregistered, byUE: true}}}
-	reg.Bindings = bindings
-
-	if len(bindings) > 0 {
-		if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
-			r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
-			return retryLater(rr.req)
-		}
-
-		r.log.Info("contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
-			slog.Int("contacts", len(removed)))
-
-		rr.out = r.notifyChange(ctx, rr.impi, ch)
-
-		return r.ok(ctx, rr, reg, removed)
-	}
-
-	if _, err := r.serverAssignment(ctx, rr.impi, []string{rr.impu}, assignUserDeregistration, false); err != nil {
-		r.log.Warn("failed to tell the HSS of a deregistration", slog.String("impi", rr.impi), slog.Any("error", err))
-	}
-
-	if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
-		r.log.Warn("failed to delete the registration", slog.String("impi", rr.impi), slog.Any("error", err))
+	rm, deleted, err := r.removeBindings(ctx, st, *set, removed, regevent.Unregistered)
+	if err != nil {
+		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 
-	r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+	rm.byUE = true
 
-	rr.out = r.notifyChange(ctx, rr.impi, ch)
+	if deleted {
+		r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.deregisterAtHSS(ctx, rr.impi, rr.impu, assignUserDeregistration)
+	} else {
+		r.log.Info("contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
+			slog.Int("contacts", len(removed)))
+	}
 
-	return r.ok(ctx, rr, reg, removed)
+	rr.out = r.notifyChange(ctx, rr.impi, change{removed: []removal{rm}})
+
+	return r.ok(ctx, rr, *set, removed)
 }
 
 func noBinding(rr *registerRequest) *sip.Response {

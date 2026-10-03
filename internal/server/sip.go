@@ -229,11 +229,11 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
 		Port:       icscfPort,
 		Trust:      domain,
-		SCSCFs: []icscf.SCSCF{{
+		SCSCF: icscf.SCSCF{
 			Name:         scscfName,
 			Capabilities: cfg.SCSCF.Capabilities,
 			Listeners:    s.bound(roleSCSCF),
-		}},
+		},
 		HSS:      icscf.HSS{ID: hss.ID, Realm: hss.Realm},
 		Diameter: node,
 		Logger:   logger,
@@ -248,7 +248,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		fallback:  ph,
 	})
 
-	s.registrar.Start(ctx)
+	s.registrar.Start()
 
 	return s, nil
 }

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -14,69 +13,39 @@ import (
 )
 
 type session struct {
-	tx          *transaction.ServerTransaction
-	req         *sip.Request
-	identity    string
-	originating bool
+	tx       *transaction.ServerTransaction
+	req      *sip.Request
+	identity string
 
 	deadline time.Time
-
-	caps     *cx.ServerCapabilities
-	assigned bool
-	tried    []*SCSCF
-	redirect bool
 }
 
 func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
-	trusted := i.trusted(req)
-	originating := false
-
-	if route, err := req.Header.TopRoute(); err == nil {
-		originating = route.URI.Params.Has("orig") && i.cfg.Proxy.IsLocal(route.URI)
-	}
-
-	if !trusted && i.rejectOrig(tx, req) {
-		return
-	}
-
 	out := req.Clone()
 	out.Header.Del("P-Profile-Key")
 
-	if !trusted {
+	if !i.trusted(req) {
 		out.Header.Del("P-Charging-Vector")
 		out.Header.Del("P-Charging-Function-Addresses")
 		trust.StripRequest(out)
 	}
 
-	out, _, err := i.cfg.Proxy.Preprocess(out)
+	out, removed, err := i.cfg.Proxy.Preprocess(out)
 	if err != nil {
 		i.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
 	switch {
-	case originating:
-		i.originating(tx, out)
-	case out.Header.Has("Route"):
-		i.forwardOnRoute(tx, out)
+	case out.Header.Has("Route") || slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has("orig") }):
+		i.log.Info("request routed beyond the I-CSCF", slog.String("request", req.StartLine()),
+			slog.String("source", req.Flow.Remote.String()))
+		i.respond(tx, sip.NewResponse(req, 403, ""))
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
 		i.terminating(tx, out)
 	}
-}
-
-func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) bool {
-	routes, _ := req.Header.Routes()
-
-	if !slices.ContainsFunc(routes, func(r sip.Address) bool { return r.URI.Params.Has("orig") }) {
-		return false
-	}
-
-	i.log.Info("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
-	i.respond(tx, sip.NewResponse(req, 403, ""))
-
-	return true
 }
 
 func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request) {
@@ -105,122 +74,52 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
-func (i *ICSCF) originating(tx *transaction.ServerTransaction, out *sip.Request) {
-	identity, err := servedUser(out.Header)
-	if err != nil {
-		i.respond(tx, sip.NewResponse(tx.Request(), 403, "No Served User"))
-		return
-	}
-
-	s := &session{tx: tx, req: out, identity: identity, originating: true, deadline: i.deadline()}
-	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
-}
-
-func servedUser(h sip.Header) (string, error) {
-	for _, name := range []string{"P-Served-User", "P-Asserted-Identity"} {
-		users, err := h.Addresses(name)
-		if err != nil || len(users) == 0 {
-			continue
-		}
-
-		return sessionIdentity(users[0].URI)
-	}
-
-	return "", errNoIdentity
-}
-
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
-	lia, err := i.locationInfo(ctx, s.identity, s.originating)
+	lia, err := i.locationInfo(ctx, s.identity)
 	if err != nil {
-		i.log.Info("user location query failed", slog.String("impu", s.identity),
-			slog.Bool("originating", s.originating), slog.Any("error", err))
-		i.answer(s.tx, locationFailure(err, s.originating))
+		i.log.Info("user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
+		i.answer(s.tx, locationFailure(err))
 
 		return
 	}
 
-	var scscf *SCSCF
+	name := i.cfg.SCSCF.Name
 
-	if lia.ServerName != "" {
-		s.assigned = true
-
-		if scscf = i.lookupName(lia.ServerName); scscf == nil {
-			i.log.Warn("the HSS located the user on an unknown server", slog.String("impu", s.identity),
-				slog.String("server-name", lia.ServerName))
-			i.answer(s.tx, 480)
-
-			return
-		}
-	} else if scscf = i.choose(lia.Capabilities, nil); scscf == nil {
+	switch {
+	case lia.ServerName != "":
+		name = i.assigned(lia.ServerName, s.identity)
+	case !i.capable(lia.Capabilities):
 		i.answer(s.tx, 480)
 		return
 	}
-
-	s.caps = lia.Capabilities
-	i.forwardSession(s, scscf, false)
-}
-
-func (i *ICSCF) forwardSession(s *session, scscf *SCSCF, reselected bool) bool {
-	s.tried = append(s.tried, scscf)
 
 	out := s.req.Clone()
 
-	if reselected && out.URI.IsSIP() {
-		out.URI.Params.Set("scscf-reselection", "")
-	}
-
-	route := scscf.Name.Clone()
+	route := name.Clone()
 	route.Params.Set("lr", "")
-
-	if s.originating {
-		route.Params.Set("orig", "")
-	}
-
 	out.Header.Prepend("Route", "<"+route.String()+">")
 
-	to, ok := i.target(scscf, s.req.Flow, scscf.Name)
+	to, ok := i.target(s.req.Flow, name)
 	if !ok {
-		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", scscf.Name.String()))
+		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", name.String()))
 		i.answer(s.tx, 480)
 
-		return false
+		return
 	}
 
 	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
 	if out.Method != "INVITE" {
-		opts.Timeout = i.branchTimeout(s.deadline, i.replaceableSession(s))
+		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
-	return i.forward(s.tx, out, to, opts)
-}
-
-func (i *ICSCF) replaceableSession(s *session) bool {
-	return !s.assigned && i.choose(s.caps, s.tried) != nil
+	i.forward(s.tx, out, to, opts)
 }
 
 func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	res := r.Response
-	invite := s.req.Method == "INVITE"
-	failed := unresponsive(r, invite)
 
-	switch {
-	case res != nil && res.StatusCode == 305 && invite && !s.redirect:
-		s.redirect = true
-
-		if i.useProxy(s, res) {
-			return proxy.Hold
-		}
-	case failed && i.replaceableSession(s) && (invite || i.timeLeft(s.deadline)):
-		scscf := i.choose(s.caps, s.tried)
-		i.log.Info("reselecting the S-CSCF", slog.String("impu", s.identity), slog.String("scscf", scscf.Name.String()))
-
-		if i.forwardSession(s, scscf, true) {
-			return proxy.Hold
-		}
-	}
-
-	if failed && (res == nil || res.StatusCode == 500) {
+	if unresponsive(r, s.req.Method == "INVITE") && (res == nil || res.StatusCode == 500) {
 		i.answer(s.tx, 480)
 		return proxy.Hold
 	}
@@ -230,96 +129,4 @@ func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	}
 
 	return proxy.Relay
-}
-
-func (i *ICSCF) useProxy(s *session, res *sip.Response) bool {
-	contacts, err := res.Header.Contacts()
-	if err != nil || len(contacts) == 0 || contacts[0].Star {
-		i.answer(s.tx, 480)
-		return false
-	}
-
-	scscf := i.lookup(contacts[0].URI)
-	if scscf == nil {
-		i.log.Info("305 to an unknown proxy", slog.String("contact", contacts[0].URI.String()))
-		i.answer(s.tx, 480)
-
-		return false
-	}
-
-	out := s.req.Clone()
-
-	route := contacts[0].URI.Clone()
-	route.Params.Set("lr", "")
-
-	if s.originating {
-		route.Params.Set("orig", "")
-	}
-
-	out.Header.Prepend("Route", "<"+route.String()+">")
-
-	to, ok := i.target(scscf, s.req.Flow, contacts[0].URI)
-	if !ok {
-		i.answer(s.tx, 480)
-		return false
-	}
-
-	return i.forward(s.tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
-		if r.Response != nil {
-			i.outgoing(s.req, r.Response)
-		}
-
-		return proxy.Relay
-	}})
-}
-
-func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) {
-	trusted := i.trusted(req)
-	if !trusted && i.rejectOrig(tx, req) {
-		return
-	}
-
-	out := req.Clone()
-	out.Header.Del("P-Profile-Key")
-
-	if !trusted {
-		out.Header.Del("P-Charging-Vector")
-		trust.StripRequest(out)
-	}
-
-	out, _, err := i.cfg.Proxy.Preprocess(out)
-	if err != nil {
-		i.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
-		return
-	}
-
-	i.forwardOnRoute(tx, out)
-}
-
-func (i *ICSCF) forwardOnRoute(tx *transaction.ServerTransaction, out *sip.Request) {
-	route, err := out.Header.TopRoute()
-	if err != nil {
-		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
-		return
-	}
-
-	scscf := i.lookup(route.URI)
-	if scscf == nil {
-		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
-		return
-	}
-
-	to, ok := i.target(scscf, out.Flow, route.URI)
-	if !ok {
-		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
-		return
-	}
-
-	i.forward(tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
-		if r.Response != nil {
-			i.outgoing(tx.Request(), r.Response)
-		}
-
-		return proxy.Relay
-	}})
 }

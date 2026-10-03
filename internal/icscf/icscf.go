@@ -17,11 +17,7 @@ import (
 const (
 	defaultCxTimeout = 10 * time.Second
 
-	defaultSCSCFTimeout = 32 * transaction.DefaultT1
-
 	budgetMargin = 4
-
-	minBranch = 8
 )
 
 type Diameter interface {
@@ -48,23 +44,20 @@ type Config struct {
 	Proxy *proxy.Proxy
 	Port  uint16
 
-	Trust  *trust.Domain
-	SCSCFs []SCSCF
+	Trust *trust.Domain
+	SCSCF SCSCF
 
 	HSS       HSS
 	Diameter  Diameter
 	CxTimeout time.Duration
 
-	SCSCFTimeout time.Duration
-
 	Logger *slog.Logger
 }
 
 type ICSCF struct {
-	cfg    Config
-	log    *slog.Logger
-	t1     time.Duration
-	scscfs []*SCSCF
+	cfg Config
+	log *slog.Logger
+	t1  time.Duration
 }
 
 func New(cfg Config) *ICSCF {
@@ -80,14 +73,6 @@ func New(cfg Config) *ICSCF {
 
 	if i.cfg.CxTimeout <= 0 {
 		i.cfg.CxTimeout = defaultCxTimeout
-	}
-
-	if i.cfg.SCSCFTimeout <= 0 {
-		i.cfg.SCSCFTimeout = defaultSCSCFTimeout
-	}
-
-	for k := range cfg.SCSCFs {
-		i.scscfs = append(i.scscfs, &cfg.SCSCFs[k])
 	}
 
 	return i
@@ -109,7 +94,7 @@ func (i *ICSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	case req.Method == "REGISTER":
 		i.register(tx, req)
 	case to.Tag() != "":
-		i.subsequent(tx, req)
+		i.respond(tx, sip.NewResponse(req, 481, ""))
 	default:
 		i.initial(tx, req)
 	}
@@ -131,18 +116,8 @@ func (i *ICSCF) deadline() time.Time {
 	return time.Now().Add((64 - budgetMargin) * i.t1)
 }
 
-func (i *ICSCF) branchTimeout(deadline time.Time, replaceable bool) time.Duration {
-	d := time.Until(deadline)
-
-	if replaceable {
-		d = min(d, i.cfg.SCSCFTimeout)
-	}
-
-	return max(d, i.t1)
-}
-
-func (i *ICSCF) timeLeft(deadline time.Time) bool {
-	return time.Until(deadline) >= minBranch*i.t1
+func (i *ICSCF) branchTimeout(deadline time.Time) time.Duration {
+	return max(time.Until(deadline), i.t1)
 }
 
 func unresponsive(r proxy.Reply, invite bool) bool {
@@ -168,15 +143,15 @@ func (i *ICSCF) outgoing(req *sip.Request, res *sip.Response) {
 	}
 }
 
-func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) bool {
+func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
 	err := i.cfg.Proxy.Forward(tx, out, to, opts)
 	if err == nil {
-		return true
+		return
 	}
 
 	if errors.Is(err, proxy.ErrAnswered) {
 		i.log.Debug("request answered before it was forwarded", slog.String("request", out.StartLine()))
-		return false
+		return
 	}
 
 	code := 500
@@ -188,8 +163,6 @@ func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to 
 
 	i.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
 	i.answer(tx, code)
-
-	return false
 }
 
 func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {

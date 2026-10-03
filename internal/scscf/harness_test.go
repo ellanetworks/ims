@@ -449,7 +449,7 @@ func (h *harness) start() {
 	h.t.Cleanup(h.reg.Close)
 
 	h.pcscf.reg.Store(h.reg)
-	h.reg.Start(h.t.Context())
+	h.reg.Start()
 }
 
 func (h *harness) restart() {

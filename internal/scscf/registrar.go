@@ -2,6 +2,7 @@ package scscf
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
@@ -19,7 +21,7 @@ import (
 const (
 	regAwaitAuth = 4 * time.Minute
 
-	sweepRetry = time.Second
+	sweepInterval = time.Second
 
 	cxTimeout = 10 * time.Second
 
@@ -86,12 +88,11 @@ type Registrar struct {
 
 	mu         sync.Mutex
 	closed     bool
-	busy       map[string]*hold
+	busy       map[string]chan struct{}
 	challenges map[string]*challenge
 	authAt     map[string]time.Time
 	reauth     map[string]bool
 	sweep      transaction.Timer
-	sweepAt    time.Time
 }
 
 type challenge struct {
@@ -102,11 +103,6 @@ type challenge struct {
 	vector  authVector
 	resyncs int
 	timer   transaction.Timer
-}
-
-type hold struct {
-	released chan struct{}
-	register bool
 }
 
 func New(cfg Config) *Registrar {
@@ -131,7 +127,7 @@ func New(cfg Config) *Registrar {
 		serverName: cfg.Name.String(),
 		ctx:        ctx,
 		cancel:     cancel,
-		busy:       make(map[string]*hold),
+		busy:       make(map[string]chan struct{}),
 		challenges: make(map[string]*challenge),
 		authAt:     make(map[string]time.Time),
 		reauth:     make(map[string]bool),
@@ -140,8 +136,8 @@ func New(cfg Config) *Registrar {
 	return r
 }
 
-func (r *Registrar) Start(ctx context.Context) {
-	r.scheduleSweep(ctx)
+func (r *Registrar) Start() {
+	r.armSweep()
 }
 
 func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
@@ -205,42 +201,29 @@ func (r *Registrar) tryLock(impi string) bool {
 		return false
 	}
 
-	r.busy[impi] = &hold{released: make(chan struct{})}
+	r.busy[impi] = make(chan struct{})
 
 	return true
 }
 
 func (r *Registrar) lock(ctx context.Context, impi string) error {
-	_, err := r.acquire(ctx, impi, false)
-	return err
-}
-
-func (r *Registrar) lockForRegister(ctx context.Context, impi string) (bool, error) {
-	return r.acquire(ctx, impi, true)
-}
-
-func (r *Registrar) acquire(ctx context.Context, impi string, register bool) (bool, error) {
 	for {
 		r.mu.Lock()
 
-		h, busy := r.busy[impi]
+		released, busy := r.busy[impi]
 		if !busy {
-			r.busy[impi] = &hold{released: make(chan struct{}), register: register}
+			r.busy[impi] = make(chan struct{})
 			r.mu.Unlock()
 
-			return true, nil
+			return nil
 		}
 
 		r.mu.Unlock()
 
-		if register && h.register {
-			return false, nil
-		}
-
 		select {
-		case <-h.released:
+		case <-released:
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		}
 	}
 }
@@ -249,7 +232,7 @@ func (r *Registrar) unlock(impi string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	close(r.busy[impi].released)
+	close(r.busy[impi])
 	delete(r.busy, impi)
 }
 
@@ -317,32 +300,13 @@ func (r *Registrar) dropChallenge(impi string, ch *challenge) {
 	}
 }
 
-func (r *Registrar) scheduleSweep(ctx context.Context) {
-	next, ok, err := r.cfg.DB.NextExpiry(ctx)
-	if err != nil {
-		r.log.Warn("failed to read the next expiry", slog.Any("error", err))
-		next, ok = r.clock.Now().Add(sweepRetry), true
-	}
-
-	if ok {
-		r.armSweep(next)
-	}
-}
-
-func (r *Registrar) armSweep(at time.Time) {
+func (r *Registrar) armSweep() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.closed || r.sweep != nil && !r.sweepAt.After(at) {
-		return
+	if !r.closed {
+		r.sweep = r.clock.AfterFunc(sweepInterval, r.runSweep)
 	}
-
-	if r.sweep != nil {
-		r.sweep.Stop()
-	}
-
-	r.sweepAt = at
-	r.sweep = r.clock.AfterFunc(at.Sub(r.clock.Now()), r.runSweep)
 }
 
 func (r *Registrar) runSweep() {
@@ -352,116 +316,89 @@ func (r *Registrar) runSweep() {
 
 	defer r.wg.Done()
 
-	r.mu.Lock()
-	r.sweep = nil
-	r.mu.Unlock()
-
-	skipped := r.sweepExpired(r.ctx)
-
-	now := r.clock.Now()
-
-	next, ok, err := r.cfg.DB.NextExpiry(r.ctx)
-	if err != nil {
-		r.log.Warn("failed to read the next expiry", slog.Any("error", err))
-
-		next, ok = now.Add(sweepRetry), true
-	}
-
-	if ok && !next.After(now) || skipped {
-		next, ok = now.Add(sweepRetry), true
-	}
-
-	if ok {
-		r.armSweep(next)
-	}
+	r.sweepExpired(r.ctx)
+	r.armSweep()
 }
 
-func (r *Registrar) sweepExpired(ctx context.Context) bool {
+func (r *Registrar) sweepExpired(ctx context.Context) {
 	impis, err := r.cfg.DB.ListExpiredIMPIs(ctx, r.clock.Now())
 	if err != nil {
 		r.log.Warn("failed to list expired registrations", slog.Any("error", err))
-		return true
+		return
 	}
-
-	skipped := false
 
 	for _, impi := range impis {
 		if !r.tryLock(impi) {
-			skipped = true
 			continue
 		}
 
-		out, expired := r.sweepIMPI(ctx, impi)
+		out := r.sweepIMPI(ctx, impi)
 
+		r.unlock(impi)
 		r.send(out)
-
-		if len(expired) == 0 || !r.start() {
-			r.unlock(impi)
-			continue
-		}
-
-		go func() {
-			defer r.wg.Done()
-			defer r.unlock(impi)
-
-			for _, impu := range expired {
-				if _, err := r.serverAssignment(r.ctx, impi, []string{impu}, assignTimeoutDeregistration, false); err != nil {
-					r.log.Warn("failed to tell the HSS of an expired registration", slog.String("impi", impi),
-						slog.Any("error", err))
-				}
-			}
-		}()
 	}
-
-	return skipped
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []string) {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil, nil
+		return nil
 	}
-
-	var expiredIMPUs []string
 
 	out := r.expireSubscriptions(ctx, st, impi)
 
 	var ch change
 
 	for _, reg := range st.regs {
-		live := st.live(reg.Bindings)
-		if len(live) == len(reg.Bindings) {
+		expired := without(reg.Bindings, st.live(reg.Bindings))
+		if len(expired) == 0 {
 			continue
 		}
 
-		if expired := without(reg.Bindings, live); len(expired) > 0 {
-			ch.removed = append(ch.removed, removal{reg: reg, bindings: expired, event: regevent.Expired})
+		rm, deleted, err := r.removeBindings(ctx, st, reg, expired, regevent.Expired)
+		if err != nil {
+			r.log.Warn("failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
 		}
 
-		if len(live) > 0 {
-			reg.Bindings = live
-			if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
-				r.log.Warn("failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
-			}
+		ch.removed = append(ch.removed, rm)
 
-			continue
+		if deleted {
+			r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
+			r.deregisterAtHSS(ctx, impi, reg.IMPU, assignTimeoutDeregistration)
 		}
-
-		r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
-
-		if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil {
-			r.log.Warn("failed to delete an expired registration", slog.String("impi", impi), slog.Any("error", err))
-		}
-
-		expiredIMPUs = append(expiredIMPUs, reg.IMPU)
 	}
 
 	if len(ch.removed) == 0 {
-		return out, expiredIMPUs
+		return out
 	}
 
-	return append(out, r.notifyChange(ctx, impi, ch)...), expiredIMPUs
+	return append(out, r.notifyChange(ctx, impi, ch)...)
+}
+
+func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,
+	event regevent.Event,
+) (removal, bool, error) {
+	rm := removal{reg: reg, bindings: removed, event: event}
+
+	reg.Bindings = without(st.live(reg.Bindings), removed)
+	if len(reg.Bindings) > 0 {
+		_, err := r.cfg.DB.SaveRegistration(ctx, reg)
+		return rm, false, err
+	}
+
+	if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
+		return rm, false, err
+	}
+
+	return rm, true, nil
+}
+
+func (r *Registrar) deregisterAtHSS(ctx context.Context, impi, impu string, t cx.AssignmentType) {
+	if _, err := r.serverAssignment(ctx, impi, []string{impu}, t, false); err != nil {
+		r.log.Warn("failed to tell the HSS of a deregistration", slog.String("impi", impi), slog.String("impu", impu),
+			slog.String("type", t.String()), slog.Any("error", err))
+	}
 }
 
 func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi string) []*outgoing {

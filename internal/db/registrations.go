@@ -262,22 +262,6 @@ func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, err
 	return impis, nil
 }
 
-func (d *DB) NextExpiry(ctx context.Context) (time.Time, bool, error) {
-	var next sql.NullInt64
-
-	if err := d.conn.QueryRowContext(ctx,
-		`SELECT MIN(t) FROM (SELECT MIN(expires_at) AS t FROM bindings UNION ALL SELECT MIN(expires_at) FROM reg_subscriptions)`,
-	).Scan(&next); err != nil {
-		return time.Time{}, false, fmt.Errorf("next expiry: %w", err)
-	}
-
-	if !next.Valid {
-		return time.Time{}, false, nil
-	}
-
-	return time.Unix(0, next.Int64).UTC(), true, nil
-}
-
 func queryRegistrations(ctx context.Context, q querier, query string, args ...any) ([]Registration, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {

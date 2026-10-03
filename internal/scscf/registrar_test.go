@@ -723,7 +723,7 @@ func TestTimeoutDeregistration(t *testing.T) {
 	h.registration(testIMPU)
 	h.hss.noCx(t)
 
-	h.clock.Advance(sweepRetry)
+	h.clock.Advance(sweepInterval)
 
 	if sar := h.hss.wantSAR(t, cx.AssignmentTimeoutDeregistration); !reflect.DeepEqual(sar.PublicIdentities, []string{testIMPU}) {
 		t.Fatalf("SAR = %+v", sar)
@@ -749,7 +749,7 @@ func TestSweepWaitsForBusyIMPI(t *testing.T) {
 	h.hss.noCx(t)
 
 	h.reg.unlock(testIMPI)
-	h.clock.Advance(sweepRetry)
+	h.clock.Advance(sweepInterval)
 
 	h.hss.wantSAR(t, cx.AssignmentTimeoutDeregistration)
 	h.wantUnregistered()
@@ -918,7 +918,7 @@ func TestHSSDown(t *testing.T) {
 	}
 }
 
-func TestRegisterWhileMARInFlight(t *testing.T) {
+func TestRegisterWaitsForTheOneInFlight(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
@@ -929,14 +929,13 @@ func TestRegisterWhileMARInFlight(t *testing.T) {
 	u.sock.Send(sip.UDP, h.scscf, u.request(registerOptions{auth: u.unprotected()}))
 	h.hss.nextMAR(t)
 
-	res := u.send(registerOptions{auth: u.unprotected()})
-	wantStatus(t, res, 500)
-
-	if !res.Header.Has("Retry-After") {
-		t.Fatal("500 without Retry-After")
-	}
+	u.sock.Send(sip.UDP, h.scscf, u.request(registerOptions{auth: u.unprotected()}))
+	u.sock.RecvNone(100 * time.Millisecond)
+	h.hss.noCx(t)
 
 	close(gate)
+	wantStatus(t, u.recv(), 401)
+	h.hss.nextMAR(t)
 	wantStatus(t, u.recv(), 401)
 }
 

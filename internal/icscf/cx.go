@@ -37,8 +37,8 @@ func (i *ICSCF) userAuthorization(ctx context.Context, r cx.UserAuthorizationReq
 	return uaa, nil
 }
 
-func (i *ICSCF) locationInfo(ctx context.Context, impu string, originating bool) (cx.LocationInfo, error) {
-	req, err := cx.NewLocationInfoRequest(i.envelope(), cx.LocationInfoRequest{PublicIdentity: impu, Originating: originating})
+func (i *ICSCF) locationInfo(ctx context.Context, impu string) (cx.LocationInfo, error) {
+	req, err := cx.NewLocationInfoRequest(i.envelope(), cx.LocationInfoRequest{PublicIdentity: impu})
 	if err != nil {
 		return cx.LocationInfo{}, fmt.Errorf("LIR: %w", err)
 	}
@@ -84,13 +84,13 @@ func registrationFailure(err error) int {
 	return 480
 }
 
-func locationFailure(err error, originating bool) int {
+func locationFailure(err error) int {
 	var re *cx.ResultError
 
 	switch {
 	case !negative(err):
 		return 480
-	case !originating && errors.As(err, &re) && re.IsExperimental(tgpp.ResultErrorIdentityNotRegistered):
+	case errors.As(err, &re) && re.IsExperimental(tgpp.ResultErrorIdentityNotRegistered):
 		return 480
 	default:
 		return 404

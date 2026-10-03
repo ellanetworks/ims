@@ -370,3 +370,40 @@ func TestDiameterShutdownSendsDPR(t *testing.T) {
 		}
 	}
 }
+
+func TestRTRMalformed(t *testing.T) {
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
+
+	cfg := testConfig(t)
+	cfg.Diameter = diameterConfig(hss.config("hss"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss")
+
+	rtr, err := cx.NewRegistrationTerminationRequest(hss.envelope(), cx.RegistrationTerminationRequest{
+		PrivateIdentity:  testIMPI,
+		Reason:           cx.DeregistrationReason{Code: cx.ReasonNewServerAssigned},
+		PublicIdentities: []string{testIMPU},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rtr.AVPs = slicesDeleteAVP(rtr.AVPs, cx.AVPPublicIdentity)
+
+	if r := hss.send(t, rtr, nil); r.Success() {
+		t.Fatalf("RTA result = %s for an RTR without the Public-Identity NEW_SERVER_ASSIGNED requires", r)
+	}
+}
+
+func slicesDeleteAVP(avps []diameter.AVP, code uint32) []diameter.AVP {
+	var out []diameter.AVP
+
+	for _, a := range avps {
+		if a.Code != code {
+			out = append(out, a)
+		}
+	}
+
+	return out
+}

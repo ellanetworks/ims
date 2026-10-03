@@ -161,8 +161,6 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 	r.log.Info("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
 		slog.String("subscriber", string(sr.subscriber)))
 
-	r.armSweep(s.ExpiresAt)
-
 	return res, []*outgoing{o}
 }
 
@@ -397,8 +395,6 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 		subState = "terminated;reason=" + reasonTimeout
 
 		r.log.Info("unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
-	} else {
-		r.armSweep(s.ExpiresAt)
 	}
 
 	var out []*outgoing
