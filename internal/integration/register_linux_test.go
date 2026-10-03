@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"path/filepath"
@@ -34,14 +35,40 @@ const (
 	impi     = imsi + "@" + domain
 	tempIMPU = "sip:" + impi
 	msisdn   = "sip:+15550001@" + domain
-	imei     = "35693803564380"
 
 	pcscfPort = 5060
 )
 
+const subscribers = 4
+
+type subscriber struct {
+	imsi, impi, imei string
+	msisdn, tel      string
+}
+
+func subscriberAt(i int) subscriber {
+	n := fmt.Sprint(i + 1)
+	imsi := "00101000000000" + n
+
+	return subscriber{
+		imsi:   imsi,
+		impi:   imsi + "@" + domain,
+		imei:   fmt.Sprintf("356938035643%02d", 80+i),
+		msisdn: "sip:+1555000" + n + "@" + domain,
+		tel:    "tel:+1555000" + n,
+	}
+}
+
+func ueAddrsAt(i int) []netip.Prefix {
+	return []netip.Prefix{
+		netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, 0, byte(2 + i)}), 24),
+		netip.PrefixFrom(netip.MustParseAddr(fmt.Sprintf("fd00::%x", 2+i)), 64),
+	}
+}
+
 var (
 	imsAddrs = []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24"), netip.MustParsePrefix("fd00::1/64")}
-	ueAddrs  = []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24"), netip.MustParsePrefix("fd00::2/64")}
+	ueAddrs  = ueAddrsAt(0)
 
 	testK   = []byte("0123456789abcdef")
 	testOPc = []byte("fedcba9876543210")
@@ -52,14 +79,21 @@ func TestMain(m *testing.M) {
 }
 
 type scene struct {
-	t    *testing.T
-	ims  *netnstest.Netns
-	ue   *netnstest.Netns
-	hss  *hsstest.HSS
-	pcrf *pcrftest.PCRF
-	srv  *server.Server
+	t     *testing.T
+	ims   *netnstest.Netns
+	ue    *netnstest.Netns
+	hosts map[int]*host
+	hss   *hsstest.HSS
+	pcrf  *pcrftest.PCRF
+	srv   *server.Server
+	xfrm  *ipsec.XFRM
+	db    string
+	rec   recorder
+}
+
+type host struct {
+	ns   *netnstest.Netns
 	xfrm *ipsec.XFRM
-	db   string
 }
 
 func newScene(t *testing.T) *scene {
@@ -71,21 +105,25 @@ func newScene(t *testing.T) *scene {
 func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 	t.Helper()
 
-	s := &scene{t: t, ims: netnstest.Current(t), ue: netnstest.New(t), db: filepath.Join(t.TempDir(), "ims.db")}
+	s := &scene{t: t, ims: netnstest.Current(t), hosts: map[int]*host{}, db: filepath.Join(t.TempDir(), "ims.db")}
 
-	t.Cleanup(func() { _, _ = s.ims.Command("ip", "link", "del", "veth0") })
-
-	netnstest.Link(t, s.ims, s.ue, imsAddrs, ueAddrs)
+	netnstest.Bridge(t, s.ims, "br0", imsAddrs)
 
 	s.hss = hsstest.New(t, hsstest.Config{Realm: domain, IMSHost: imsHost})
-	s.hss.Add(hsstest.Subscriber{
-		IMPI:  impi,
-		IMSI:  imsi,
-		K:     testK,
-		OPc:   testOPc,
-		SQN:   32,
-		IMPUs: []cx.ProfileIdentity{{Identity: tempIMPU, Barred: true}, {Identity: msisdn}, {Identity: "tel:+15550001"}},
-	})
+
+	for i := range subscribers {
+		sub := subscriberAt(i)
+		s.hss.Add(hsstest.Subscriber{
+			IMPI: sub.impi,
+			IMSI: sub.imsi,
+			K:    testK,
+			OPc:  testOPc,
+			SQN:  32,
+			IMPUs: []cx.ProfileIdentity{
+				{Identity: "sip:" + sub.impi, Barred: true}, {Identity: sub.msisdn}, {Identity: sub.tel},
+			},
+		})
+	}
 
 	s.pcrf = pcrftest.New(t, pcrftest.Config{Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain})
 
@@ -124,17 +162,38 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 	s.hss.WaitConnected(t)
 	s.pcrf.WaitConnected(t)
 
-	var err error
+	t.Cleanup(func() { s.record("") })
 
-	s.ue.Do(func() { s.xfrm, err = ipsec.Open() })
-
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() { _ = s.xfrm.Close() })
+	first := s.host(0)
+	s.ue, s.xfrm = first.ns, first.xfrm
 
 	return s
+}
+
+func (s *scene) host(i int) *host {
+	s.t.Helper()
+
+	if h, ok := s.hosts[i]; ok {
+		return h
+	}
+
+	h := &host{ns: netnstest.New(s.t)}
+
+	netnstest.Attach(s.t, s.ims, "br0", fmt.Sprintf("ue%d", i), h.ns, ueAddrsAt(i))
+
+	var err error
+
+	h.ns.Do(func() { h.xfrm, err = ipsec.Open() })
+
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	s.t.Cleanup(func() { _ = h.xfrm.Close() })
+
+	s.hosts[i] = h
+
+	return h
 }
 
 func testLogger(t *testing.T) *slog.Logger {
@@ -144,23 +203,32 @@ func testLogger(t *testing.T) *slog.Logger {
 func (s *scene) newUE(v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
+	return s.newUEAt(0, v6, cfg)
+}
+
+func (s *scene) newUEAt(i int, v6 bool, cfg testue.Config) *testue.UE {
+	s.t.Helper()
+
 	family := 0
 	if v6 {
 		family = 1
 	}
 
-	cfg.IMSI, cfg.IMEI = imsi, imei
+	h, sub := s.host(i), subscriberAt(i)
+
+	cfg.IMSI, cfg.IMEI = sub.imsi, sub.imei
 	cfg.PCSCF = netip.AddrPortFrom(imsAddrs[family].Addr(), pcscfPort)
-	cfg.Local = ueAddrs[family].Addr()
-	cfg.Do = s.ue.Do
-	cfg.Logger = testLogger(s.t)
+	cfg.Local = ueAddrsAt(i)[family].Addr()
+	cfg.Do = h.ns.Do
+	cfg.Logger = testLogger(s.t).With("ue", i)
+	cfg.Trace = s.trace
 
 	if cfg.K == nil {
 		cfg.K, cfg.OPc = testK, testOPc
 	}
 
 	if !cfg.Plain {
-		cfg.Kernel = s.xfrm
+		cfg.Kernel = h.xfrm
 	}
 
 	u, err := testue.New(cfg)

@@ -83,6 +83,8 @@ type SIP struct {
 	Addresses      []netip.Addr `yaml:"addresses"`
 	Aliases        []string     `yaml:"aliases"`
 	MaxConnections int          `yaml:"max_connections"`
+
+	NoAnswerTimeout time.Duration `yaml:"no_answer_timeout"`
 }
 
 type PCSCF struct {
@@ -435,6 +437,8 @@ func (s SIP) validate(homeDomain string) error {
 		return errors.New("sip.addresses needs at least one address")
 	case s.MaxConnections < 0:
 		return fmt.Errorf("sip.max_connections %d must not be negative", s.MaxConnections)
+	case s.NoAnswerTimeout < 0:
+		return fmt.Errorf("sip.no_answer_timeout %s is negative", s.NoAnswerTimeout)
 	}
 
 	seen := make(map[netip.Addr]bool, len(s.Addresses))

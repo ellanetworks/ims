@@ -59,6 +59,8 @@ type Config struct {
 	FirstMessageTimeout time.Duration
 	DialTimeout         time.Duration
 	WriteTimeout        time.Duration
+
+	Trace func(m sip.Message, sent bool)
 }
 
 type Transport struct {
@@ -71,6 +73,7 @@ type Transport struct {
 	firstTimeout time.Duration
 	dialTimeout  time.Duration
 	writeTimeout time.Duration
+	trace        func(m sip.Message, sent bool)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -103,6 +106,7 @@ func New(cfg Config) *Transport {
 		firstTimeout: cfg.FirstMessageTimeout,
 		dialTimeout:  cfg.DialTimeout,
 		writeTimeout: cfg.WriteTimeout,
+		trace:        cfg.Trace,
 		listeners:    make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
 	}
@@ -210,6 +214,8 @@ func (t *Transport) Send(ctx context.Context, m sip.Message) error {
 		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
 	}
 
+	t.traced(m, true)
+
 	return nil
 }
 
@@ -218,7 +224,15 @@ func (t *Transport) SendOnFlow(ctx context.Context, m sip.Message) error {
 		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
 	}
 
+	t.traced(m, true)
+
 	return nil
+}
+
+func (t *Transport) traced(m sip.Message, sent bool) {
+	if t.trace != nil {
+		t.trace(m, sent)
+	}
 }
 
 func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
@@ -489,6 +503,7 @@ func (t *Transport) deliver(m sip.Message, f sip.Flow) {
 		}
 	}
 
+	t.traced(m, false)
 	t.handler.HandleMessage(m)
 }
 

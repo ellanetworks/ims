@@ -109,6 +109,8 @@ type Config struct {
 
 	Do func(f func())
 
+	Trace func(m sip.Message, sent bool)
+
 	Logger *slog.Logger
 }
 
@@ -294,6 +296,7 @@ func New(cfg Config) (*UE, error) {
 		ResponseFlow: u.responseFlow,
 		T1:           cfg.T1,
 		Transport: transport.Config{
+			Trace: cfg.Trace,
 			Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 				var (
 					c   net.Conn

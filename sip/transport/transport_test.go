@@ -585,3 +585,31 @@ func TestDialHook(t *testing.T) {
 		t.Fatalf("got %s", got.Method)
 	}
 }
+
+func TestTrace(t *testing.T) {
+	type traced struct {
+		line string
+		sent bool
+	}
+
+	seen := make(chan traced, 2)
+
+	tr, rec := siptest.NewTransport(t, transport.Config{Trace: func(m sip.Message, sent bool) { seen <- traced{m.StartLine(), sent} }})
+	local := siptest.Listen(t, tr, lo)
+	u := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	u.Send(sip.UDP, local, siptest.NewRequest("OPTIONS", "sip:a@127.0.0.1", sip.UDP, u.Addr()))
+
+	req := rec.NextRequest()
+	if err := tr.Send(t.Context(), sip.NewResponse(req, 200, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	u.RecvResponse()
+
+	for _, want := range []traced{{"OPTIONS sip:a@127.0.0.1 SIP/2.0", false}, {"SIP/2.0 200 OK", true}} {
+		if got := <-seen; got != want {
+			t.Errorf("traced %+v, want %+v", got, want)
+		}
+	}
+}

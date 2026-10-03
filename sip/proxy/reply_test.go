@@ -499,7 +499,7 @@ func TestForwardAfterAnswer(t *testing.T) {
 	}
 }
 
-func TestTimerCMinimum(t *testing.T) {
+func TestTimerCConfigured(t *testing.T) {
 	clock := siptest.NewClock()
 	s := newScene(t, sip.TCP, routerConfig{clock: clock, timerC: time.Minute})
 
@@ -510,7 +510,7 @@ func TestTimerCMinimum(t *testing.T) {
 	reply(t, s.callee, fwd, f, 180)
 	wantResponse(t, s.caller, 180)
 
-	clock.Advance(3 * time.Minute)
+	clock.Advance(time.Minute - time.Second)
 	s.caller.RecvNone(quiet)
 
 	clock.Advance(time.Second)

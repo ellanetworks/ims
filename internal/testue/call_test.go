@@ -1209,3 +1209,25 @@ func TestCancelDuringRetransmissions(t *testing.T) {
 		ended(t, c, Cancelled)
 	}
 }
+
+func TestMessage(t *testing.T) {
+	a, b := pair(t)
+
+	res, err := a.Message(testContext(t), "tel:+15550002", SMSContentType, []byte{0x00, 0x01})
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("Message = %v, %v, want 200", res, err)
+	}
+
+	for e := range b.Events() {
+		if e.Request == nil || e.Request.Method != "MESSAGE" {
+			continue
+		}
+
+		if ct := e.Request.Header.ContentType(); ct != SMSContentType || string(e.Request.Body) != "\x00\x01" ||
+			e.Request.Header.Get("Accept-Contact") != "*;+g.3gpp.smsip" {
+			t.Fatalf("MESSAGE:\n%s", e.Request)
+		}
+
+		return
+	}
+}

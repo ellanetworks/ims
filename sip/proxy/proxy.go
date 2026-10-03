@@ -21,8 +21,6 @@ import (
 
 const (
 	DefaultTimerC = 3*time.Minute + 30*time.Second
-
-	minTimerC = 3*time.Minute + time.Second
 )
 
 var (
@@ -142,11 +140,8 @@ func New(cfg Config) *Proxy {
 		p.log = slog.Default()
 	}
 
-	switch {
-	case p.timerC <= 0:
+	if p.timerC <= 0 {
 		p.timerC = DefaultTimerC
-	case p.timerC < minTimerC:
-		p.timerC = minTimerC
 	}
 
 	if p.clock == nil {
