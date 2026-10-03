@@ -13,12 +13,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [FuzzParse, FuzzStream, FuzzURI, FuzzAddress, FuzzVia, FuzzAuth, FuzzSecurityMechanism]
+        include:
+          - { package: ./sip/, target: FuzzParse }
+          - { package: ./sip/, target: FuzzStream }
+          - { package: ./sip/, target: FuzzURI }
+          - { package: ./sip/, target: FuzzAddress }
+          - { package: ./sip/, target: FuzzVia }
+          - { package: ./sip/, target: FuzzAuth }
+          - { package: ./sip/, target: FuzzSecurityMechanism }
+          - { package: ./sip/, target: FuzzReason }
+          - { package: ./sip/, target: FuzzWarning }
+          - { package: ./sip/, target: FuzzPrivacy }
+          - { package: ./sip/, target: FuzzEarlyMedia }
+          - { package: ./sip/sdp/, target: FuzzSDP }
+          - { package: ./sip/imsxml/, target: FuzzDecode }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: "go.mod"
 
-      - name: Fuzz ${{ matrix.target }}
-        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=60s ./sip/
+      - name: Fuzz ${{ matrix.package }} ${{ matrix.target }}
+        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=60s ${{ matrix.package }}
