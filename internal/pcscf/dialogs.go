@@ -254,6 +254,15 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 	out.Header.Del("P-Charging-Vector")
 	out.Header.Del("P-Charging-Function-Addresses")
 
+	// RFC 6665 §4.3: a proxy that record-routed the SUBSCRIBE record-routes
+	// its NOTIFYs, so a UE that sees the NOTIFY before the 2xx still builds
+	// the dialog's route set through us.
+	if req.Method == "NOTIFY" {
+		for _, u := range removed {
+			out.Header.InsertTop(sip.Field{Name: "Record-Route", Value: "<" + u.String() + ">"})
+		}
+	}
+
 	p.forward(tx, req, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
 			trust.StripResponse(rep.Response)
