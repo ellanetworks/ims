@@ -56,6 +56,7 @@ func writeConfig(t *testing.T, content string) string {
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
+		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
 		"pcscf:\n  port: 5062\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
 		"icscf:\n  port: 5072\n"+
@@ -76,6 +77,7 @@ func TestLoad(t *testing.T) {
 				netip.MustParsePrefix("192.0.2.0/24"),
 				netip.MustParsePrefix("198.51.100.0/24"),
 			},
+			Numbering: Numbering{CountryCode: "1", NationalPrefix: "1"},
 		},
 		SIP: SIP{
 			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
@@ -287,6 +289,10 @@ func TestLoadInvalid(t *testing.T) {
 		{"mcc not digits", validDB + validAPI + "ims:\n  mcc: \"0a1\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "0a1" must be 3 digits`},
 		{"short mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"1\"\n" + validSIP + validDiameter, `ims.mnc "1" must be 2 or 3 digits`},
 		{"long mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"0001\"\n" + validSIP + validDiameter, `ims.mnc "0001" must be 2 or 3 digits`},
+		{"country code not digits", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"+1\"\n" + validSIP + validDiameter, `ims.numbering.country_code "+1" must be 1 to 3 digits`},
+		{"long country code", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"1234\"\n" + validSIP + validDiameter, `ims.numbering.country_code "1234" must be 1 to 3 digits`},
+		{"national prefix without country code", validDB + validAPI + validIMS + "  numbering:\n    national_prefix: \"0\"\n" + validSIP + validDiameter, "ims.numbering.national_prefix needs ims.numbering.country_code"},
+		{"national prefix not digits", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"44\"\n    national_prefix: \"0x\"\n" + validSIP + validDiameter, `ims.numbering.national_prefix "0x" must be 1 to 4 digits`},
 		{"no sip addresses", validDB + validAPI + validIMS + validDiameter, "sip.addresses needs at least one address"},
 		{"unspecified sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
 		{"unspecified sip ipv6 address", validDB + validAPI + validIMS + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},

@@ -69,6 +69,16 @@ type IMS struct {
 
 	HomeDomain      string         `yaml:"home_domain"`
 	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
+
+	Numbering Numbering `yaml:"numbering"`
+}
+
+// Numbering turns the numbers subscribers dial in the home domain's context
+// into E.164 numbers: the national prefix is removed and the country code
+// added. Without a country code, home-local numbers are routed as dialled.
+type Numbering struct {
+	CountryCode    string `yaml:"country_code"`
+	NationalPrefix string `yaml:"national_prefix"`
 }
 
 type SIP struct {
@@ -386,6 +396,10 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
 	}
 
+	if err := i.Numbering.validate(); err != nil {
+		return err
+	}
+
 	for _, p := range i.TrustedNetworks {
 		switch {
 		case !p.IsValid() || p.Addr().Zone() != "":
@@ -395,6 +409,19 @@ func (i IMS) validate() error {
 		case p.Bits() == 0:
 			return fmt.Errorf("ims.trusted_networks: %s would trust every address, UEs included", p)
 		}
+	}
+
+	return nil
+}
+
+func (n Numbering) validate() error {
+	switch {
+	case n.CountryCode != "" && (len(n.CountryCode) > 3 || !isDigits(n.CountryCode)):
+		return fmt.Errorf("ims.numbering.country_code %q must be 1 to 3 digits", n.CountryCode)
+	case n.NationalPrefix != "" && n.CountryCode == "":
+		return errors.New("ims.numbering.national_prefix needs ims.numbering.country_code")
+	case n.NationalPrefix != "" && (len(n.NationalPrefix) > 4 || !isDigits(n.NationalPrefix)):
+		return fmt.Errorf("ims.numbering.national_prefix %q must be 1 to 4 digits", n.NationalPrefix)
 	}
 
 	return nil
