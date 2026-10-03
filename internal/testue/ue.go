@@ -101,6 +101,10 @@ type Config struct {
 
 	NoRegEvent bool
 
+	// AcceptCalls delivers incoming calls on Calls. Without it, the UE
+	// answers every INVITE with 486.
+	AcceptCalls bool
+
 	T1 time.Duration
 
 	Kernel Kernel
@@ -213,6 +217,12 @@ type UE struct {
 	reregTimer  *time.Timer
 	expiryTimer *time.Timer
 	sub         *subscription
+
+	calls struct {
+		active   map[callKey]*Call
+		incoming chan *Call
+		next     int
+	}
 }
 
 func New(cfg Config) (*UE, error) {
@@ -275,6 +285,9 @@ func New(cfg Config) (*UE, error) {
 	if len(u.offers) == 0 {
 		u.offers = DefaultOffers()
 	}
+
+	u.calls.active = make(map[callKey]*Call)
+	u.calls.incoming = make(chan *Call, 16)
 
 	do := cfg.Do
 
@@ -414,7 +427,16 @@ func (u *UE) Close() error {
 		u.stopSubscriptionLocked(u.sub)
 	}
 
+	calls := make([]*Call, 0, len(u.calls.active))
+	for _, c := range u.calls.active {
+		calls = append(calls, c)
+	}
+
 	u.mu.Unlock()
+
+	for _, c := range calls {
+		c.terminate(Closed)
+	}
 
 	err := u.layer.Close()
 
@@ -448,6 +470,13 @@ func (u *UE) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) 
 
 	u.event(Event{Request: req})
 
+	switch req.Method {
+	case "INVITE", "PRACK", "UPDATE", "BYE":
+		if u.callRequest(tx, req) {
+			return
+		}
+	}
+
 	code := 200
 	if req.Method == "INVITE" {
 		code = 486
@@ -456,9 +485,56 @@ func (u *UE) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) 
 	_ = tx.Respond(sip.NewResponse(req, code, ""))
 }
 
-func (u *UE) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+// callRequest hands a request to its call: a new incoming call, or a request
+// inside a call's dialog, answered 481 without one.
+func (u *UE) callRequest(tx *transaction.ServerTransaction, req *sip.Request) bool {
+	to, err := req.Header.To()
+	if err != nil {
+		return false
+	}
 
-func (u *UE) HandleAck(*sip.Request) {}
+	if to.Tag() == "" {
+		if req.Method != "INVITE" || !u.cfg.AcceptCalls {
+			return false
+		}
+
+		u.incomingCall(tx, req)
+
+		return true
+	}
+
+	if c := u.call(req.Header.CallID(), to.Tag()); c != nil {
+		c.requestReceived(tx, req)
+	} else {
+		_ = tx.Respond(sip.NewResponse(req, 481, ""))
+	}
+
+	return true
+}
+
+func (u *UE) call(callID, tag string) *Call {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	return u.calls.active[callKey{callID: callID, tag: tag}]
+}
+
+func (u *UE) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	if c := u.call(tx.Request().Header.CallID(), tx.ToTag()); c != nil {
+		c.cancelReceived(cancel)
+	}
+}
+
+func (u *UE) HandleAck(ack *sip.Request) {
+	to, err := ack.Header.To()
+	if err != nil {
+		return
+	}
+
+	if c := u.call(ack.Header.CallID(), to.Tag()); c != nil {
+		c.ackReceived(ack)
+	}
+}
 
 func (u *UE) HandleTransactionError(*transaction.ServerTransaction, error) {}
 
