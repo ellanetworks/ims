@@ -16,8 +16,6 @@ type DB struct {
 	conn *sql.DB
 }
 
-// The project is unreleased: the schema stays in migrations[0] and is edited
-// in place. The first release freezes it; later changes append migrations.
 var migrations = []string{
 	`CREATE TABLE registrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

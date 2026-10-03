@@ -1,6 +1,3 @@
-// Package diametertest builds Diameter nodes for tests: a passive node that
-// accepts one peer over TCP, an active node that connects to one, and an
-// in-memory loop that answers requests without a network.
 package diametertest
 
 import (
@@ -18,7 +15,6 @@ import (
 
 const openTimeout = 10 * time.Second
 
-// Config describes a test node and the one peer it talks to, over TCP.
 type Config struct {
 	Identity diameter.Identity
 	Peer     diameter.Peer
@@ -65,8 +61,6 @@ func newNode(t testing.TB, cfg Config) *diameter.Node {
 	return node
 }
 
-// Listen starts a passive node on the first of its HostIPAddresses, port 0,
-// and returns it with the address it accepts the peer on.
 func Listen(t testing.TB, cfg Config) (*diameter.Node, netip.AddrPort) {
 	t.Helper()
 
@@ -91,8 +85,6 @@ func Listen(t testing.TB, cfg Config) (*diameter.Node, netip.AddrPort) {
 	return node, ln.Addr().(*net.TCPAddr).AddrPort()
 }
 
-// Dial starts an active node, connects it to its peer at addr and waits for
-// the connection to open.
 func Dial(t testing.TB, cfg Config, addr netip.AddrPort) *diameter.Node {
 	t.Helper()
 
@@ -105,7 +97,6 @@ func Dial(t testing.TB, cfg Config, addr netip.AddrPort) *diameter.Node {
 	return node
 }
 
-// WaitOpen waits for the node's peer to reach the open state.
 func WaitOpen(t testing.TB, node *diameter.Node, peerID string) {
 	t.Helper()
 
@@ -120,9 +111,6 @@ func WaitOpen(t testing.TB, node *diameter.Node, peerID string) {
 	}
 }
 
-// Loop stands in for a node's client side: Do encodes the request, hands it
-// to Handler and decodes the answer, with no connection. A nil answer means
-// the peer never answers, so Do waits for the context.
 type Loop struct {
 	Local   diameter.Identity
 	Handler func(ctx context.Context, req *diameter.Message) *diameter.Message
@@ -139,7 +127,6 @@ func (l *Loop) NewSessionID() string {
 	return fmt.Sprintf("%s;%d", l.Local.OriginHost, l.seq.Add(1))
 }
 
-// SetDown makes Do fail as it does when the peer is not connected.
 func (l *Loop) SetDown(down bool) {
 	l.down.Store(down)
 }

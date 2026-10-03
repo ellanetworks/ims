@@ -266,8 +266,6 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 			}
 
 			if temp != nil {
-				// The next set keeps the client's ports, and the REGISTER
-				// answering this challenge may already be on its connection.
 				temp.keepFlows = true
 				u.drop(temp)
 				temp, p.flow, p.verify = nil, p.start, p.startVerify

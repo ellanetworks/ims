@@ -10,8 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// fromUE builds a request from the UE on the reg-event dialog, to the S-CSCF's
-// Contact along the given route set.
 func (d *ueDialog) fromUE(s *ipsecScene, u *ue, method, cseq string, routes []string) *sip.Request {
 	r := siptest.NewRequest(method, "sip:"+s.scscf.Addr().String(), sip.UDP, u.us.Addr())
 	r.Header.Set("From", "<"+testIMPU+">;tag="+d.ueTag)
@@ -23,7 +21,6 @@ func (d *ueDialog) fromUE(s *ipsecScene, u *ue, method, cseq string, routes []st
 	return r
 }
 
-// toUE builds a request from the core toward the UE on the reg-event dialog.
 func (d *ueDialog) toUE(s *ipsecScene, method, cseq string, routes []string) *sip.Request {
 	contacts, _ := d.sub.Header.Contacts()
 
@@ -103,7 +100,6 @@ func TestCancelInDialogInvite(t *testing.T) {
 		t.Fatalf("S-CSCF got %s, want the re-INVITE", fwd.Method)
 	}
 
-	// A CANCEL waits for a provisional response (RFC 3261 §9.1).
 	s.scscf.Send(f.Transport, f.Remote, sip.NewResponse(fwd, 100, ""))
 
 	cancel, err := sip.NewCancel(invite)
@@ -172,7 +168,6 @@ func TestCancelFromAnotherUE(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The same branch and sent-by, from another address.
 	outsider := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.3"), 0))
 	outsider.Send(sip.UDP, s.pcscf, cancel)
 	s.scscf.RecvNone(quiet)

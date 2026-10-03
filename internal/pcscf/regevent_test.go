@@ -1140,8 +1140,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 	}
 }
 
-// TS 33.203 §7.4.2a: the new set carries requests once the old one is about
-// to expire, used or not.
+// TS 33.203 §7.4.2a
 func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
 	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)

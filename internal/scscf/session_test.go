@@ -19,15 +19,12 @@ const (
 	remoteTel  = "tel:+15559990000"
 )
 
-// sessionHarness has a registered UE, whose Path leads to term, the
-// terminating P-CSCF; orig stands for the originating P-CSCF.
 type sessionHarness struct {
 	*harness
 	ue   *ue
 	orig *siptest.Socket
 	term *siptest.Socket
 
-	// serviceRoute is the UE's Service-Route, on the S-CSCF's address.
 	serviceRoute string
 }
 
@@ -74,7 +71,6 @@ func (sh *sessionHarness) terminating(method, target string) *sip.Request {
 	return req
 }
 
-// final is the first non-100 response a socket receives.
 func final(t *testing.T, s *siptest.Socket) *sip.Response {
 	t.Helper()
 
@@ -178,7 +174,6 @@ func TestOriginatingInvite(t *testing.T) {
 		t.Fatalf("caller got %q, want 200", ok.StartLine())
 	}
 
-	// The caller ACKs and hangs up along the route set of the 200.
 	inDialog := func(method string, seq string) *sip.Request {
 		r := siptest.NewRequest(method, "sip:callee@"+sh.icscf.Addr().String(), sip.UDP, sh.orig.Addr())
 		r.Header.Set("Call-ID", req.Header.CallID())
@@ -505,8 +500,6 @@ func TestTerminatingAfterExpiry(t *testing.T) {
 	}
 }
 
-// addBinding gives the UE's registration another live contact, newer than
-// the one it registered, which the registrar alone would have replaced.
 func (sh *sessionHarness) addBinding(t *testing.T, uri, params string) {
 	t.Helper()
 
@@ -672,8 +665,6 @@ func TestTerminatingCancel(t *testing.T) {
 	}
 }
 
-// call sets up an originating call answered by the I-CSCF socket, and returns
-// the INVITE as the I-CSCF got it and the 200 the caller got.
 func (sh *sessionHarness) call(t *testing.T) (*sip.Request, *sip.Response) {
 	t.Helper()
 
@@ -782,10 +773,7 @@ func TestNormalise(t *testing.T) {
 		{"geo-local", "tel:02079460000;phone-context=geo-local." + homeDomain, "tel:+442079460000"},
 		{"geo-local EPS", "tel:02079460000;phone-context=001.01.eps." + homeDomain, "tel:+442079460000"},
 		{"geo-local 5GS", "tel:02079460000;phone-context=001.01.5gs." + homeDomain, "tel:+442079460000"},
-		// The Samsung form of the Open5GS capture, whose context and host are
-		// the caller's own number.
 		{"own number as context", "sip:07700900123;phone-context=07700900999@07700900999;user=phone", "tel:+447700900123"},
-		// TS 24.229 §5.1.2A.1.3's example of an international prefix.
 		{"international prefix", "tel:00447700900123;phone-context=" + homeDomain, "tel:+447700900123"},
 		{"international prefix abroad", "tel:0033123456789;phone-context=" + homeDomain, "tel:+33123456789"},
 		{"tel parameters kept", "tel:02079460000;isub=1234;phone-context=" + homeDomain, "tel:+442079460000;isub=1234"},
@@ -942,9 +930,7 @@ func TestSelectBinding(t *testing.T) {
 		{"require and explicit drop them", []db.Binding{plain}, accept(";require;explicit"), ""},
 		{"require drops another ICSI", []db.Binding{binding("sip:other@ue", `;+g.3gpp.icsi-ref="urn%3Aother"`, 9)}, accept(";require"), ""},
 		{"none", nil, nil, ""},
-		// RFC 3841 §7.2.4: caller preferences order only contacts of equal q.
 		{"callee q before caller preference", []db.Binding{low, lowPlain}, accept(""), "sip:lowplain@ue"},
-		// RFC 3841 §7.2.3: a contact without feature parameters is immune.
 		{"immune contact kept", []db.Binding{immune}, accept(";require;explicit"), "sip:immune@ue"},
 		{"immune contact has a full preference", []db.Binding{immune, plain}, accept(""), "sip:immune@ue"},
 		{"predicate without ICSI", []db.Binding{voice, instance}, predicates(`*;+sip.instance="<urn:gsma:imei:35622410-483840-0>";require`), "sip:instance@ue"},
@@ -996,9 +982,6 @@ func TestCalledPartyID(t *testing.T) {
 	}
 }
 
-// TestInDialogDoubleRecordRoute has the caller on TCP and the callee on UDP,
-// so the S-CSCF record-routes twice, and rebuilds both entries for a target
-// refresh from the callee.
 func TestInDialogDoubleRecordRoute(t *testing.T) {
 	sh := newSessionHarness(t)
 

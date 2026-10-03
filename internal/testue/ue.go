@@ -101,8 +101,6 @@ type Config struct {
 
 	NoRegEvent bool
 
-	// AcceptCalls delivers incoming calls on Calls. Without it, the UE
-	// answers every INVITE with 486.
 	AcceptCalls bool
 
 	T1 time.Duration
@@ -172,8 +170,6 @@ type saSet struct {
 
 	ownsSPIs bool
 
-	// keepFlows leaves the set's TCP connections open on removal, for the set
-	// that replaces it over the same ports.
 	keepFlows bool
 }
 
@@ -485,8 +481,6 @@ func (u *UE) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) 
 	_ = tx.Respond(sip.NewResponse(req, code, ""))
 }
 
-// callRequest hands a request to its call: a new incoming call, or a request
-// inside a call's dialog, answered 481 without one.
 func (u *UE) callRequest(tx *transaction.ServerTransaction, req *sip.Request) bool {
 	to, err := req.Header.To()
 	if err != nil {

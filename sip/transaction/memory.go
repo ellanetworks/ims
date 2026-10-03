@@ -11,14 +11,8 @@ import (
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
-// ErrInUse reports an address the layer already serves or a peer holds.
 var ErrInUse = errors.New("sip/transaction: address in use")
 
-// Serve makes the layer answer for an address with no socket behind it. A
-// message the layer sends to one of its own addresses, served or listened
-// on, is handed over in memory: no bytes, no retransmissions, and no switch
-// to TCP for large requests. Nothing outside the process can reach a served
-// address, and nothing can be sent from it to outside the process.
 func (l *Layer) Serve(local netip.AddrPort) error {
 	local = unmap(local)
 
@@ -38,10 +32,6 @@ func (l *Layer) Serve(local netip.AddrPort) error {
 	return nil
 }
 
-// Attach gives an address to an in-process peer outside the layer's
-// transactions, as a test stands in for a SIP node: messages the layer sends
-// to the address are passed to receive, and the peer sends with SendOnFlow
-// from it. The returned function detaches the peer.
 func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), error) {
 	addr = unmap(addr)
 
@@ -66,8 +56,6 @@ func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), 
 	}, nil
 }
 
-// inMemory reports whether an address is the layer's own or a peer's, and
-// the peer's receive function if it is a peer's.
 func (l *Layer) inMemory(addr netip.AddrPort) (func(sip.Message), bool) {
 	if !addr.IsValid() {
 		return nil, false
@@ -97,9 +85,6 @@ func (l *Layer) reliable(f sip.Flow) bool {
 	return ok
 }
 
-// send hands a message to the transport, or delivers it in memory when its
-// flow leads to the layer's own address or a peer's. Exact sends go on the
-// message's flow; others may follow the response's Via.
 func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	if receive, ok := l.inMemory(m.Env().Flow.Remote); ok {
 		if err := l.deliver(m, receive); err != nil {
@@ -116,9 +101,6 @@ func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	return l.tr.Send(ctx, m)
 }
 
-// deliver queues a copy of the message for its in-memory destination. Each
-// flow has its own queue, drained in order on its own goroutine, as a
-// connection would be.
 func (l *Layer) deliver(m sip.Message, receive func(sip.Message)) error {
 	f := m.Env().Flow
 	f.Local, f.Remote = unmap(f.Local), unmap(f.Remote)

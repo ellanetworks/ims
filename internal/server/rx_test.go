@@ -17,7 +17,6 @@ import (
 )
 
 func TestRxNotNegotiatedWithAPeerConfiguredForCx(t *testing.T) {
-	// The HSS advertises Rx too, but is configured for Cx only.
 	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx, config.ApplicationRx)
 	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
 
@@ -41,8 +40,6 @@ func TestRxNotNegotiatedWithAPeerConfiguredForCx(t *testing.T) {
 	}
 }
 
-// stubSessions knows one session, and records the termination of an aborted
-// one.
 type stubSessions struct {
 	session    string
 	aborted    chan struct{}
@@ -63,8 +60,6 @@ func (s *stubSessions) AbortSession(session string, _ rx.AbortSessionRequest) (f
 	return func() { close(s.terminated) }, true
 }
 
-// rxClient connects to a node serving the Rx handler h, as the peer the node
-// knows as "ims".
 func rxClient(t *testing.T, h *rxHandler) (*fakePeer, *diameter.Node) {
 	t.Helper()
 

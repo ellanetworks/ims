@@ -33,7 +33,6 @@ var (
 	errNoFlow  = errors.New("no flow to the UE")
 	errNoRoute = errors.New("no route to the core")
 
-	// TS 24.229 §5.2.6.3.2A: discarded, without a 100 (Trying).
 	errUnregistered = errors.New("initial request from a UE without a registration")
 )
 
@@ -49,8 +48,6 @@ type Config struct {
 
 	Registrations RegistrationStore
 
-	// Trust holds the core's addresses: requests toward a UE are accepted
-	// only from them, on the unprotected port.
 	Trust *trust.Domain
 
 	Fallback transaction.Handler
@@ -151,10 +148,6 @@ func (p *PCSCF) Filter(m sip.Message) error {
 
 	req, isRequest := m.(*sip.Request)
 
-	// A CANCEL matches its INVITE by Via branch and sent-by alone (RFC 3261
-	// §17.2.3). One from a UE whose sent-by is not its source could cancel,
-	// or block the CANCEL of, another UE's INVITE, so it is dropped before
-	// matching.
 	if isRequest && req.Method == "CANCEL" && p.ownPort(f.Local.Port()) && !p.trusted(f.Remote.Addr()) &&
 		!topViaFrom(req, f.Remote.Addr()) {
 		return errForeignCancel
@@ -292,8 +285,6 @@ type registration struct {
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
 
-	// removed is the record the 200 deregistered, whose Rx session ends once
-	// the 200 is relayed.
 	removed *db.PCSCFRegistration
 }
 
@@ -420,9 +411,6 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		open = !ended && p.rx != nil && !emergency(req, res) && p.regs.withoutRx(r.impi, r.ue)
 	}
 
-	// The Rx session is opened once the 200 has been relayed (TS 29.213
-	// Annex B.1), and closed after the 200 to a deregistration (TS 23.228
-	// §5.3.1).
 	relay := func() proxy.Verdict {
 		if !open && r.removed == nil {
 			return proxy.Relay
@@ -581,10 +569,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	return false
 }
 
-// emergency reports whether the 200 completes an emergency registration: the
-// Contact the REGISTER registered carries the "sos" parameter in the 200 (TS
-// 24.229 §5.2.10.1). It gets no Rx session (TS 29.214 Annex A.4 NOTE 2; TS
-// 29.213 Annex B.0).
+// TS 24.229 §5.2.10.1, TS 29.214 Annex A.4, TS 29.213 Annex B.0
 func emergency(req *sip.Request, res *sip.Response) bool {
 	requested, _ := req.Header.Contacts()
 	granted, _ := res.Header.Contacts()
@@ -646,11 +631,6 @@ func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, cod
 	return proxy.Hold
 }
 
-// HandleCancel cancels an INVITE the P-CSCF proxies. The layer delivers the
-// CANCEL after HandleRequest returned, by which time the INVITE was forwarded
-// or handed to the fallback.
-// A CANCEL from a UE that another host could have forged is dropped earlier,
-// by Filter.
 func (p *PCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	if p.cfg.Proxy.Proxied(tx) {
 		p.cfg.Proxy.Cancel(tx, cancel)
@@ -889,9 +869,7 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
-// secAgreeRequired answers a REGISTER the P-CSCF cannot protect (RFC 3329
-// §2.3.1): 421 when it lacks the sec-agree option tag, 494 when it has one, both
-// with the P-CSCF's Security-Server list and Require: sec-agree.
+// RFC 3329 §2.3.1
 func (p *PCSCF) secAgreeRequired(req *sip.Request) *sip.Response {
 	code := 421
 
@@ -948,12 +926,7 @@ func addOptionTag(res *sip.Response, name, tag string) {
 	res.Header.Add(name, tag)
 }
 
-// fromUE prepares a request from the UE for the core (TS 24.229 §5.2.1, RFC
-// 3325 §6, RFC 3329 §2.3.1). The trust-domain header fields go, but the UE's
-// own P-Access-Network-Info stays: step 3 removes only values with
-// "network-provided". So does its P-Early-Media "supported", where RFC 5009
-// Table 1 allows it, which tells the core the UE takes the header field: a UE
-// may not authorise early media itself (§5.2.6.4.2, RFC 5009 §8.1).
+// TS 24.229 §5.2.1, RFC 3325, RFC 3329 §2.3.1, RFC 5009 §5.2.6.4.2, §8.1
 func fromUE(req *sip.Request) {
 	pani := ueAccessNetworkInfo(req.Header)
 	early := earlyMediaSupported(req.Header) && slices.Contains([]string{"INVITE", "PRACK", "UPDATE"}, req.Method)
@@ -976,10 +949,7 @@ func fromUE(req *sip.Request) {
 	}
 }
 
-// fromUEResponse does the same for a response from the UE (§5.2.1 steps 1-3).
-// Its P-Asserted-Identity and P-Early-Media go with the rest: the P-CSCF
-// asserts the identity itself (§5.2.6.4.4), and authorises no early media
-// (§5.2.6.4.2, Decision 7). Its Reason stays (§4.4.7 NOTE).
+// TS 24.229 §5.2.1 steps 1-3, §5.2.6.4.4, §5.2.6.4.2, §4.4.7
 func fromUEResponse(res *sip.Response) {
 	pani := ueAccessNetworkInfo(res.Header)
 	reasons := res.Header.Values("Reason")

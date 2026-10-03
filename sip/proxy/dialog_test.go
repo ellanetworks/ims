@@ -29,9 +29,6 @@ func withSDP[M interface{ Env() *sip.Envelope }](m M, port int) M {
 	return m
 }
 
-// answer sends a response from a raw party. A dialog-creating response gets
-// the callee's tag and Contact, and the request's Record-Route; a 2xx to an
-// INVITE with an offer carries the answer.
 func answer(t *testing.T, s *siptest.Socket, req *sip.Request, f sip.Flow, code int, extra ...string) *sip.Response {
 	t.Helper()
 
@@ -61,7 +58,6 @@ func answer(t *testing.T, s *siptest.Socket, req *sip.Request, f sip.Flow, code 
 	return res
 }
 
-// sendFrom sends a request built by a dialog from a raw socket to its next hop.
 func sendFrom(t *testing.T, s *siptest.Socket, tr sip.Transport, req *sip.Request) {
 	t.Helper()
 
@@ -112,8 +108,6 @@ type call struct {
 	callee *dialog.Dialog
 }
 
-// ring sends an INVITE with an offer through a tracking router and returns
-// it as the callee received it.
 func ring(s *scene) *call {
 	s.t.Helper()
 
@@ -128,7 +122,6 @@ func ring(s *scene) *call {
 	return c
 }
 
-// answerCall sends the callee's 2xx, and the caller's ACK unless noAck.
 func (c *call) answerCall(noAck bool, extra ...string) {
 	t := c.s.t
 	t.Helper()
@@ -164,8 +157,6 @@ func (c *call) answerCall(noAck bool, extra ...string) {
 	wantState(t, c.d, proxy.Confirmed)
 }
 
-// request sends an in-dialog request from one party; it returns the request
-// as the other party received it.
 func (c *call) request(from proxy.Side, method string, port int) (*sip.Request, *sip.Request, sip.Flow) {
 	t := c.s.t
 	t.Helper()
@@ -355,8 +346,6 @@ func TestDialogCallThroughTwoProxies(t *testing.T) {
 	})
 }
 
-// One process proxies several legs of a call with the same Call-ID, so each
-// leg's dialog is matched by the id in its own Record-Route.
 func TestDialogLegsShareCallID(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, tr sip.Transport) {
 		p := newRouter(t, loopback, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
@@ -451,8 +440,6 @@ func TestDialogAckNeverArrives(t *testing.T) {
 
 	clock.Advance(time.Second)
 
-	// The callee BYEs its side (RFC 3261 §13.3.1.4); the proxy only drops the
-	// dialog, as each CSCF on the path does.
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndNoAck || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
@@ -605,7 +592,6 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 
 			ok := answer(t, s.callee, c.fwd, c.f, 200)
 
-			// RFC 3261 §16.7: the 2xx is relayed even after a final response.
 			res := wantResponse(t, s.caller, 200)
 
 			ack, _ := wantRequest(t, s.callee, "ACK")
@@ -637,8 +623,6 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The caller's ACK is absorbed, and the caller BYEd only then
-			// (RFC 3261 §15).
 			s.caller.RecvNone(quiet)
 
 			callerAck, _ := caller.NewAck(c.invite)
@@ -675,8 +659,6 @@ func TestDialogLate2xxAfterTimerC(t *testing.T) {
 		t.Errorf("ended event %+v", e)
 	}
 
-	// The 2xx is relayed (RFC 3261 §16.7), but the caller's transaction no
-	// longer takes it (RFC 6026 §8.4): the proxy ends the callee's session.
 	answer(t, s.callee, c.fwd, c.f, 200)
 	wantResponse(t, s.caller, 200)
 
@@ -714,7 +696,6 @@ func TestDialogLate2xxWithAnOffer(t *testing.T) {
 	s.callee.Send(f.Transport, f.Remote, withSDP(ok, 5000))
 	wantResponse(t, s.caller, 200)
 
-	// RFC 3261 §13.2.2.4: the ACK answers the offer of the 2xx.
 	ack, _ := wantRequest(t, s.callee, "ACK")
 
 	answer, err := sdpsession(ack.Body)
@@ -788,7 +769,6 @@ func TestDialogReleaseAnswered(t *testing.T) {
 	})
 
 	t.Run("2xx held", func(t *testing.T) {
-		// A role holds the 2xx, as the P-CSCF does for the AAA.
 		s := newScene(t, sip.TCP, routerConfig{
 			opts: proxy.Options{RecordRoute: recordRoute}, track: true,
 			onReply: func(_ *transaction.ServerTransaction, _ *sip.Request, r proxy.Reply) proxy.Verdict {
@@ -886,7 +866,6 @@ func TestDialogEarlyUpdate(t *testing.T) {
 	clock.Advance(91 * time.Second)
 	wantState(t, c.d, proxy.Early)
 
-	// A 2xx without a Contact leaves the target the early UPDATE set.
 	ok := sip.NewResponse(c.fwd, 200, "")
 	_ = ok.Header.SetToTag("callee")
 	dialog.CopyRecordRoute(ok, c.fwd)
@@ -931,7 +910,6 @@ func TestDialogForkedLegRelayed(t *testing.T) {
 	c := ring(s)
 	c.answerCall(false)
 
-	// A second 2xx from another leg of a fork downstream.
 	other := sip.NewResponse(c.fwd, 200, "")
 	_ = other.Header.SetToTag("other")
 	dialog.CopyRecordRoute(other, c.fwd)

@@ -14,8 +14,6 @@ type registrar struct {
 }
 
 func (r *registrar) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	// HandleRequest runs on the transport's read loop, so slow work goes to Go:
-	// Close cancels ctx and waits for it to return.
 	err := r.layer.Go(func(ctx context.Context) {
 		res := sip.NewResponse(req, 200, "")
 

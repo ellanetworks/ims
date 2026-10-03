@@ -136,14 +136,11 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 	return ans
 }
 
-// rxSessions is what the Rx handlers need from the P-CSCF.
 type rxSessions interface {
 	ReAuth(sessionID string, r rx.ReAuthRequest) bool
 	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
 
-// rxHandler answers the PCRF's RARs and ASRs. The node negotiates Rx with the
-// one Rx peer only, and answers 3007 to any other.
 type rxHandler struct {
 	log    *slog.Logger
 	target atomic.Pointer[rxSessions]
@@ -162,7 +159,7 @@ func (h *rxHandler) bind(s rxSessions) {
 	h.target.Store(&s)
 }
 
-// reAuth answers an Rx RAR (TS 29.214 §4.4.6.3).
+// TS 29.214 §4.4.6.3
 func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
@@ -192,8 +189,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 	return ans
 }
 
-// abortSession answers an Rx ASR (TS 29.214 §4.4.6.1), and closes the session
-// with an STR once the ASA is written.
+// TS 29.214 §4.4.6.1
 func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
@@ -215,7 +211,6 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
 
-	// Even when the ASA could not be written: the session is gone here.
 	if !diameter.AfterAnswer(ctx, func(error) { terminate() }) {
 		terminate()
 	}

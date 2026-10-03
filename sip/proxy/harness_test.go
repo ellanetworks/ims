@@ -50,7 +50,6 @@ type routerConfig struct {
 	clock   *siptest.Clock
 	timerC  time.Duration
 
-	// track makes the router track the INVITE dialogs it record-routes.
 	track    bool
 	lifetime time.Duration
 }

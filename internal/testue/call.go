@@ -29,8 +29,6 @@ const (
 	firstMediaPort = 40000
 )
 
-// supportedTags are the option tags the test UE understands in Require (RFC
-// 3261 §8.2.2.3).
 var supportedTags = []string{"100rel", "timer", "precondition", "sec-agree"}
 
 var (
@@ -46,7 +44,6 @@ var (
 type CallState int
 
 const (
-	// CallInit is a call whose INVITE has no dialog yet.
 	CallInit CallState = iota
 	CallEarly
 	CallConfirmed
@@ -74,16 +71,9 @@ const (
 	NotEnded EndReason = iota
 	LocalBye
 	RemoteBye
-	// Cancelled is a call the caller cancelled, on either side.
 	Cancelled
-	// Rejected is a call answered with a final response of 300 or above.
 	Rejected
-	// TimedOut is a call whose INVITE, PRACK or ACK never came, or whose
-	// in-dialog request timed out or was answered 481 or 408 (RFC 3261
-	// §12.2.1.2).
 	TimedOut
-	// Expired is a call whose session timer ran out, or whose refresh failed
-	// (RFC 4028 §10).
 	Expired
 	Closed
 )
@@ -112,17 +102,12 @@ func (r EndReason) String() string {
 }
 
 type CallOptions struct {
-	// Preconditions offers qos preconditions, as IR.92 §2.4.1 phones do.
 	Preconditions bool
 
-	// SessionExpires is the INVITE's Session-Expires; DefaultSessionExpires
-	// when zero. Values under 90 seconds, the smallest Min-SE (RFC 4028 §5),
-	// only work without a proxy that checks it.
 	SessionExpires time.Duration
 
 	NoSessionTimer bool
 
-	// Headers are set on the INVITE, replacing the fields of the same name.
 	Headers []sip.Field
 }
 
@@ -130,11 +115,6 @@ type callKey struct {
 	callID, tag string
 }
 
-// Call is one INVITE dialog of the UE, as caller or callee.
-//
-// Responses, requests and CANCELs are handed to the transaction layer
-// without c.mu held: the layer may run a transaction's queued callbacks, which
-// take c.mu, on the goroutine that hands it a message.
 type Call struct {
 	u        *UE
 	incoming bool
@@ -142,8 +122,6 @@ type Call struct {
 	events   chan Event
 	done     chan struct{}
 
-	// out serialises the in-dialog requests this side sends, so that they
-	// leave in the order of their CSeqs (RFC 3261 §12.2.1.1).
 	out sync.Mutex
 
 	mu      sync.Mutex
@@ -154,15 +132,10 @@ type Call struct {
 	d       *dialog.Dialog
 	m       *media
 
-	// offering is set while an offer of ours in an UPDATE or a re-INVITE
-	// waits for its answer.
 	offering bool
 
-	// saHeld keeps the SAs the INVITE transaction uses until it completes
-	// (TS 33.203 §7.4.1a).
 	saHeld bool
 
-	// The caller's side.
 	itx       *transaction.ClientTransaction
 	final     *sip.Response
 	finalErr  error
@@ -173,7 +146,6 @@ type Call struct {
 	cancelled bool
 	retried   bool
 
-	// The callee's side.
 	stx      *transaction.ServerTransaction
 	offer    *sdp.Session
 	answered bool
@@ -182,15 +154,12 @@ type Call struct {
 	unacked  *reliable
 	accepted *accepted
 
-	// The session timer (RFC 4028).
 	interval  time.Duration
 	refresher bool
 	auto      bool
 	timer     *time.Timer
 }
 
-// reliable is a reliable provisional response waiting for its PRACK (RFC
-// 3262 §3).
 type reliable struct {
 	res      *sip.Response
 	rseq     uint32
@@ -198,12 +167,9 @@ type reliable struct {
 	timer    *time.Timer
 	started  time.Time
 
-	// offer is set when the response carries our offer, whose answer comes in
-	// the PRACK.
 	offer bool
 }
 
-// accepted is a 2xx to an INVITE waiting for its ACK (RFC 3261 §13.3.1.4).
 type accepted struct {
 	stx      *transaction.ServerTransaction
 	res      *sip.Response
@@ -214,7 +180,6 @@ type accepted struct {
 	acked    bool
 	initial  bool
 
-	// answerInAck is set when the 2xx carries the offer.
 	answerInAck bool
 }
 
@@ -237,12 +202,10 @@ func (u *UE) newCall(incoming bool, invite *sip.Request, key callKey, preconditi
 	}
 }
 
-// Calls delivers the incoming calls of a UE configured with AcceptCalls.
 func (u *UE) Calls() <-chan *Call { return u.calls.incoming }
 
 func (c *Call) Incoming() bool { return c.incoming }
 
-// Invite returns the initial INVITE, as sent or received.
 func (c *Call) Invite() *sip.Request {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -279,7 +242,6 @@ func (c *Call) ID() dialog.ID {
 	return c.d.ID()
 }
 
-// LocalSDP and RemoteSDP return the last description each side sent.
 func (c *Call) LocalSDP() *sdp.Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -302,8 +264,6 @@ func (c *Call) RemoteSDP() *sdp.Session {
 	return c.m.remote.Clone()
 }
 
-// PreconditionsMet reports whether the qos preconditions, if any, are met on
-// both segments.
 func (c *Call) PreconditionsMet() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -311,8 +271,6 @@ func (c *Call) PreconditionsMet() bool {
 	return c.m.met()
 }
 
-// SessionTimer returns the negotiated session interval, zero without one, and
-// whether this side refreshes it.
 func (c *Call) SessionTimer() (time.Duration, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -320,8 +278,6 @@ func (c *Call) SessionTimer() (time.Duration, bool) {
 	return c.interval, c.refresher
 }
 
-// SetAutoRefresh turns off, or back on, the automatic session refresh and
-// the BYE sent when the session expires.
 func (c *Call) SetAutoRefresh(on bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -433,20 +389,16 @@ func (c *Call) terminate(reason EndReason) {
 	c.terminateLocked(reason)
 }
 
-// localOfferLocked reports whether an offer of ours waits for its answer, in
-// an UPDATE or re-INVITE, a reliable provisional response or a 2xx (RFC 3311
-// §5.1, §5.2).
+// RFC 3311 §5.1, §5.2
 func (c *Call) localOfferLocked() bool {
 	return c.offering || (c.unacked != nil && c.unacked.offer) || (c.accepted != nil && c.accepted.answerInAck)
 }
 
-// remoteOfferLocked reports whether the INVITE's offer has no answer yet.
 func (c *Call) remoteOfferLocked() bool {
 	return c.incoming && c.offer != nil && !c.answered
 }
 
-// supportedLocked is the Supported of the call's requests and responses; RFC
-// 4028 §7.4 has refreshes carry the initial request's.
+// RFC 4028 §7.4
 func (c *Call) supportedLocked() string {
 	if c.m.precondition {
 		return "100rel, timer, precondition"
@@ -455,8 +407,7 @@ func (c *Call) supportedLocked() string {
 	return "100rel, timer"
 }
 
-// The test UE does not include +sip.instance outside REGISTER (TS 24.229
-// §5.1.2A.1.1), unlike the phones of the Open5GS capture.
+// TS 24.229 §5.1.2A.1.1
 func (u *UE) callContact() string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
 
@@ -466,10 +417,7 @@ func (u *UE) callContact() string {
 	}}.String()
 }
 
-// prepare addresses req to the P-CSCF over the established SAs, with the
-// headers TS 24.229 §5.1.2A.1 has the UE put in every request. The ACK keeps
-// Security-Verify and sec-agree, as the phones of the Open5GS capture send
-// it; the P-CSCF removes them.
+// TS 24.229 §5.1.2A.1
 func (u *UE) prepare(req *sip.Request) error {
 	flow, verify, err := u.requestFlow()
 	if err != nil {
@@ -501,8 +449,7 @@ func (u *UE) prepare(req *sip.Request) error {
 	return nil
 }
 
-// response builds a response of the call: TS 24.229 §5.1.2A.2 has the UE put
-// P-Access-Network-Info in every response for a dialog.
+// TS 24.229 §5.1.2A.2
 func (u *UE) response(req *sip.Request, code int) *sip.Response {
 	res := sip.NewResponse(req, code, "")
 
@@ -513,8 +460,7 @@ func (u *UE) response(req *sip.Request, code int) *sip.Response {
 	return res
 }
 
-// retryAfter makes res a 500 with a Retry-After of 0 to 10 seconds (RFC 3261
-// §14.2, RFC 3311 §5.2).
+// RFC 3261 §14.2, RFC 3311 §5.2
 func retryAfter(res *sip.Response) *sip.Response {
 	var b [1]byte
 
@@ -525,8 +471,7 @@ func retryAfter(res *sip.Response) *sip.Response {
 	return res
 }
 
-// Invite calls target (TS 24.229 §5.1.3.1, IR.92 §2.4) and returns once the
-// INVITE is sent. Wait returns its final response.
+// TS 24.229 §5.1.3.1, IR.92 §2.4
 func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 	uri, err := sip.ParseURI(target)
 	if err != nil {
@@ -561,8 +506,6 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 
 	c := u.newCall(false, req, callKey{callID: callID, tag: tag}, opts.Preconditions)
 
-	// IR.92 §2.4.1: precondition is supported, not required (TS 24.229
-	// §5.1.3.1).
 	req.Header.Add("Max-Forwards", "70")
 	req.Header.Add("From", "<"+impu+">;tag="+tag)
 	req.Header.Add("To", "<"+uri.String()+">")
@@ -622,7 +565,6 @@ func seconds(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Second), 10)
 }
 
-// inviteClient handles the responses to the caller's initial INVITE.
 type inviteClient struct {
 	c *Call
 }
@@ -674,9 +616,7 @@ func (h *inviteClient) HandleError(err error) {
 	c.terminateLocked(reason)
 }
 
-// retryInterval sends the INVITE again after a 422 with the interval of its
-// Min-SE (RFC 4028 §7.4, IR.92 §2.2.8). It reports false when there is
-// nothing to retry.
+// RFC 4028 §7.4, IR.92 §2.2.8
 func (c *Call) retryInterval(res *sip.Response) bool {
 	minSE, err := strconv.ParseUint(strings.TrimSpace(strings.Split(res.Header.Get("Min-SE"), ";")[0]), 10, 32)
 
@@ -721,9 +661,6 @@ func (c *Call) retryInterval(res *sip.Response) bool {
 	return true
 }
 
-// earlyLocked creates or updates the dialog from a response to the INVITE.
-// It reports false for a response from another fork, which the single target
-// of the IMS never sends.
 func (c *Call) earlyLocked(res *sip.Response) bool {
 	if c.d == nil {
 		d, err := dialog.NewUAC(c.invite, res)
@@ -760,8 +697,6 @@ func (c *Call) provisionalReceived(res *sip.Response) {
 	reliable := has(res.Header, "Require", "100rel")
 
 	if reliable {
-		// Retransmissions, and responses out of order, get no PRACK (RFC
-		// 3262 §4).
 		rseq, err := res.Header.RSeq()
 		if err != nil || (c.haveRSeq && rseq != c.rseq+1) {
 			c.mu.Unlock()
@@ -783,8 +718,6 @@ func (c *Call) provisionalReceived(res *sip.Response) {
 	}
 }
 
-// answerReceivedLocked takes the first description from the callee as the
-// answer to the INVITE's offer.
 func (c *Call) answerReceivedLocked(contentType string, body []byte) error {
 	if c.m.remote != nil || mediaType(contentType) != sdp.ContentType || len(body) == 0 {
 		return nil
@@ -802,7 +735,6 @@ func (c *Call) successReceived(res *sip.Response) {
 	c.mu.Lock()
 
 	if c.ack != nil {
-		// A retransmission of the 2xx: its ACK again.
 		ack := c.ack.Clone()
 		c.mu.Unlock()
 
@@ -840,7 +772,6 @@ func (c *Call) successReceived(res *sip.Response) {
 	if c.state != CallTerminated {
 		c.state = CallConfirmed
 
-		// The refresher is uac when the 2xx says so (RFC 4028 §7.2).
 		interval, refresher, _ := parseSessionExpires(res.Header)
 		c.sessionTimerLocked(interval, refresher != "uas")
 	}
@@ -849,12 +780,10 @@ func (c *Call) successReceived(res *sip.Response) {
 	c.mu.Unlock()
 
 	if cancelled {
-		// The 2xx crossed the CANCEL (RFC 3261 §9.1).
 		c.background(func(ctx context.Context) error { return c.bye(ctx, Cancelled) })
 	}
 }
 
-// sendAck sends an ACK to a 2xx; the channel is closed once it has left.
 func (c *Call) sendAck(ack *sip.Request) <-chan struct{} {
 	sent := make(chan struct{})
 
@@ -873,8 +802,6 @@ func (c *Call) sendAck(ack *sip.Request) <-chan struct{} {
 	return sent
 }
 
-// background runs f outside the transaction layer's callbacks; its error is
-// an event of the call.
 func (c *Call) background(f func(ctx context.Context) error) {
 	err := c.u.layer.Go(func(ctx context.Context) {
 		if err := f(ctx); err != nil && !errors.Is(err, ErrCallEnded) && !errors.Is(err, transaction.ErrClosed) {
@@ -886,7 +813,6 @@ func (c *Call) background(f func(ctx context.Context) error) {
 	}
 }
 
-// newRequest builds an in-dialog request.
 func (c *Call) newRequest(method string) (*sip.Request, error) {
 	c.mu.Lock()
 
@@ -915,8 +841,6 @@ func (c *Call) newRequest(method string) (*sip.Request, error) {
 	return req, nil
 }
 
-// submit builds an in-dialog request and hands it to the transaction layer,
-// one request of the call at a time.
 func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHandler) (*sip.Request, error) {
 	c.out.Lock()
 	defer c.out.Unlock()
@@ -933,8 +857,6 @@ func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHa
 	return req, nil
 }
 
-// send sends an in-dialog request other than INVITE and returns its final
-// response.
 func (c *Call) send(ctx context.Context, build func() (*sip.Request, error)) (*sip.Response, error) {
 	w := &waiter{u: c.u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
@@ -975,8 +897,7 @@ func (c *Call) send(ctx context.Context, build func() (*sip.Request, error)) (*s
 	return res, nil
 }
 
-// dialogLost reports whether a request's outcome ends the dialog: a 481, a
-// 408, or no response at all (RFC 3261 §12.2.1.2).
+// RFC 3261 §12.2.1.2
 func dialogLost(res *sip.Response, err error) bool {
 	if res != nil {
 		return res.StatusCode == 481 || res.StatusCode == 408
@@ -985,9 +906,7 @@ func dialogLost(res *sip.Response, err error) bool {
 	return errors.Is(err, transaction.ErrTimeout)
 }
 
-// prack acknowledges a reliable provisional response, then, with
-// preconditions not yet met, reports the local resources reserved in an
-// UPDATE (RFC 3312 §7, IR.92 §2.4.1).
+// RFC 3312, IR.92 §2.4.1
 func (c *Call) prack(ctx context.Context, res *sip.Response) error {
 	c.mu.Lock()
 	d := c.d
@@ -1020,9 +939,6 @@ func (c *Call) prack(ctx context.Context, res *sip.Response) error {
 	return c.update(ctx, true)
 }
 
-// update sends an UPDATE, with a new offer or as a session refresh. An
-// exchange with an offer runs to its end even when ctx ends, so that the
-// offer and its answer stay paired.
 func (c *Call) update(ctx context.Context, withOffer bool) error {
 	var (
 		previous *sdp.Session
@@ -1059,7 +975,6 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 			req.SetBody(sdp.ContentType, offer.Bytes())
 
 			if c.m.precondition {
-				// The offer has mandatory strength-tags (RFC 3312 §11).
 				req.Header.Add("Require", "precondition")
 			}
 		}
@@ -1086,11 +1001,9 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 
 	if err != nil {
 		if offered {
-			// A refused offer leaves the session as it was (RFC 3264 §8).
 			c.m.local = previous
 		}
 
-		// A failed refresh is the business of Refresh.
 		if withOffer && dialogLost(res, err) {
 			c.terminateLocked(TimedOut)
 		}
@@ -1113,8 +1026,7 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 	return nil
 }
 
-// refresherLocked is the refresher of a refresh request this side sends: it
-// keeps the current refresher (RFC 4028 §7.4).
+// RFC 4028 §7.4
 func (c *Call) refresherLocked() string {
 	if c.refresher || c.interval == 0 {
 		return "uac"
@@ -1136,8 +1048,6 @@ func (c *Call) answerOfOfferLocked(contentType string, body []byte) error {
 	return c.m.answered(s)
 }
 
-// Wait waits for the final response to the INVITE. It returns a
-// ResponseError for a final response of 300 or above.
 func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 	if c.incoming {
 		return nil, fmt.Errorf("%w: Wait on an incoming call", ErrCallState)
@@ -1151,7 +1061,6 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 	sent := c.ackSent
 	c.mu.Unlock()
 
-	// The ACK leaves before anything that follows the call's answer.
 	if sent != nil {
 		select {
 		case <-sent:
@@ -1175,10 +1084,7 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 	return nil, ErrCallEnded
 }
 
-// Cancel cancels the INVITE and waits for the call to end. A 2xx that crosses
-// the CANCEL is acknowledged, then the call is ended with a BYE. The CANCEL
-// has no Security-Verify, Require or Proxy-Require (RFC 3329 Table 1, RFC
-// 3261 §9.1).
+// RFC 3329, RFC 3261 §9.1
 func (c *Call) Cancel(ctx context.Context) error {
 	c.mu.Lock()
 
@@ -1203,13 +1109,11 @@ func (c *Call) Cancel(ctx context.Context) error {
 	return c.waitFor(ctx, func() bool { return c.state == CallTerminated })
 }
 
-// Bye ends a confirmed call.
 func (c *Call) Bye(ctx context.Context) error {
 	return c.bye(ctx, LocalBye)
 }
 
-// bye sends a BYE. The call ends as the BYE leaves (RFC 3261 §15.1.1), so a
-// second BYE, or an offer from the peer, finds it ended.
+// RFC 3261 §15.1.1
 func (c *Call) bye(ctx context.Context, reason EndReason) error {
 	res, err := c.send(ctx, func() (*sip.Request, error) {
 		req, err := c.newRequest("BYE")
@@ -1229,7 +1133,6 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 		return req, nil
 	})
 
-	// Any response ends the BYE: the call ended as it left.
 	if res != nil {
 		return nil
 	}
@@ -1237,8 +1140,7 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 	return err
 }
 
-// Hold puts the call on hold with a re-INVITE offering sendonly, or inactive
-// when the peer holds it already (RFC 3264 §8.4); Resume takes it off hold.
+// RFC 3264 §8.4
 func (c *Call) Hold(ctx context.Context) error {
 	return c.reinvite(ctx, sdp.SendOnly)
 }
@@ -1247,9 +1149,7 @@ func (c *Call) Resume(ctx context.Context) error {
 	return c.reinvite(ctx, sdp.SendRecv)
 }
 
-// Refresh refreshes the session with an UPDATE without a body (RFC 4028 §7.4,
-// IR.92 §2.2.8). When the refresh times out or gets a 408, the session ends
-// with a BYE, and with a 481 without one (RFC 4028 §10).
+// RFC 4028 §7.4, §10, IR.92 §2.2.8
 func (c *Call) Refresh(ctx context.Context) error {
 	err := c.update(ctx, false)
 
@@ -1267,11 +1167,8 @@ func (c *Call) Refresh(ctx context.Context) error {
 	return err
 }
 
-// reinvite sends a re-INVITE with an offer in direction. Like an UPDATE with
-// an offer, it runs to its end even when ctx ends (RFC 3261 §14.1).
+// RFC 3261 §14.1
 func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
-	// The previous INVITE transaction of the peer ends with its ACK (RFC
-	// 3261 §14.1).
 	if err := c.waitFor(ctx, func() bool { return c.accepted == nil || c.state == CallTerminated }); err != nil {
 		return err
 	}
@@ -1317,8 +1214,6 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		req.Header.Add("Supported", c.supportedLocked())
 
 		if c.m.precondition {
-			// TS 24.229 §5.1.4A.1; the offer has mandatory strength-tags
-			// (RFC 3312 §11).
 			req.Header.Add("Require", "precondition")
 		}
 
@@ -1337,7 +1232,6 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		defer c.mu.Unlock()
 
 		if h.req != nil {
-			// Built but not sent.
 			c.offering = false
 			c.m.direction, c.m.local = previous, previousLocal
 		}
@@ -1359,7 +1253,6 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 	h.mu.Unlock()
 
 	if err == nil && sent != nil {
-		// The ACK leaves before the next offer.
 		<-sent
 	}
 
@@ -1371,7 +1264,6 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 
 	switch {
 	case err != nil || !res.IsSuccess():
-		// A refused offer leaves the session as it was (RFC 3264 §8).
 		c.m.direction, c.m.local = previous, previousLocal
 
 		if dialogLost(res, err) {
@@ -1395,8 +1287,6 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 	return nil
 }
 
-// reinviteClient handles the responses to a re-INVITE: a PRACK for each
-// reliable provisional response (RFC 3262 §4), and the ACK to the 2xx.
 type reinviteClient struct {
 	c     *Call
 	req   *sip.Request
@@ -1509,8 +1399,7 @@ func (h *reinviteClient) HandleError(err error) {
 	}
 }
 
-// parseSessionExpires returns the interval and refresher of a Session-Expires
-// (RFC 4028 §4), and whether there is one.
+// RFC 4028
 func parseSessionExpires(h sip.Header) (time.Duration, string, bool) {
 	v := h.Get("Session-Expires")
 	if v == "" {
@@ -1532,10 +1421,7 @@ func parseSessionExpires(h sip.Header) (time.Duration, string, bool) {
 	return time.Duration(n) * time.Second, strings.ToLower(refresher), true
 }
 
-// sessionTimerAnswer returns the Session-Expires of a 2xx to req, the UAS
-// (RFC 4028 §9): its interval, its refresher and whether the UAC supports
-// timers. An initial INVITE that supports timers without Session-Expires gets
-// the default interval (TS 24.229 §5.1.4.1, IR.92 §2.2.8).
+// RFC 4028, TS 24.229 §5.1.4.1, IR.92 §2.2.8
 func sessionTimerAnswer(req *sip.Request, initial bool) (time.Duration, string, bool) {
 	supported := has(req.Header, "Supported", "timer") || has(req.Header, "Require", "timer")
 
@@ -1553,19 +1439,15 @@ func sessionTimerAnswer(req *sip.Request, initial bool) (time.Duration, string, 
 	case refresher == "" && supported:
 		refresher = "uac"
 	case refresher == "" || !supported:
-		// A UAC without timers cannot refresh (RFC 4028 §9 Table 2).
 		refresher = "uas"
 	}
 
 	return interval, refresher, supported
 }
 
-// addSessionTimerLocked puts the session timer in a 2xx to req and arms it.
 func (c *Call) addSessionTimerLocked(req *sip.Request, res *sip.Response, initial bool) {
 	interval, refresher, supported := sessionTimerAnswer(req, initial)
 	if interval == 0 {
-		// No Session-Expires in the 2xx: no session expiration (RFC 4028
-		// §9).
 		c.sessionTimerLocked(0, false)
 		return
 	}
@@ -1579,9 +1461,7 @@ func (c *Call) addSessionTimerLocked(req *sip.Request, res *sip.Response, initia
 	c.sessionTimerLocked(interval, refresher == "uas")
 }
 
-// sessionTimerLocked arms the session timer of a confirmed call: the
-// refresher refreshes at half the interval, the other side sends a BYE when
-// it runs out (RFC 4028 §10).
+// RFC 4028 §10
 func (c *Call) sessionTimerLocked(interval time.Duration, refresher bool) {
 	if c.timer != nil {
 		c.timer.Stop()
@@ -1607,14 +1487,11 @@ func (c *Call) sessionTimerLocked(interval time.Duration, refresher bool) {
 	})
 }
 
-// has reports whether the option tags of the named field include tag.
 func has(h sip.Header, name, tag string) bool {
 	return slices.ContainsFunc(h.Elements(name), func(e string) bool {
 		return strings.EqualFold(strings.TrimSpace(e), tag)
 	})
 }
-
-// The callee's side.
 
 func (u *UE) incomingCall(tx *transaction.ServerTransaction, req *sip.Request) {
 	reject := func(res *sip.Response) {
@@ -1660,8 +1537,6 @@ func (u *UE) incomingCall(tx *transaction.ServerTransaction, req *sip.Request) {
 		}
 	}
 
-	// Preconditions are used when the INVITE supports them and its offer
-	// has some (TS 24.229 §5.1.4.1).
 	precondition := (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) && offerQoS(offer)
 
 	c := u.newCall(true, req, callKey{callID: req.Header.CallID(), tag: tx.ToTag()}, precondition)
@@ -1686,8 +1561,6 @@ func (u *UE) incomingCall(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 }
 
-// offerAudio reports whether the offer has an audio stream with one of our
-// codecs.
 func offerAudio(offer *sdp.Session) bool {
 	for _, m := range offer.Media {
 		if m.Type() == sdp.Audio && m.Port() != 0 && choose(m) != nil {
@@ -1698,7 +1571,6 @@ func offerAudio(offer *sdp.Session) bool {
 	return false
 }
 
-// offerQoS reports whether the offer has qos preconditions.
 func offerQoS(offer *sdp.Session) bool {
 	if offer == nil {
 		return false
@@ -1722,8 +1594,6 @@ func randomRSeq() uint32 {
 	return binary.BigEndian.Uint32(b[:])%(1<<30) + 1
 }
 
-// responseLocked builds a response to the INVITE that creates or updates the
-// early dialog, or confirms it for a 2xx.
 func (c *Call) responseLocked(code int) (*sip.Response, error) {
 	res := c.u.response(c.invite, code)
 	if err := res.Header.SetToTag(c.stx.ToTag()); err != nil {
@@ -1754,9 +1624,6 @@ func (c *Call) responseLocked(code int) (*sip.Response, error) {
 	return res, nil
 }
 
-// sdpLocked puts the answer to the INVITE's offer in res, or, without an
-// offer, an offer of ours, whose answer comes in the PRACK or the ACK. It
-// reports whether res carries our offer.
 func (c *Call) sdpLocked(res *sip.Response) (bool, error) {
 	if c.answered {
 		return false, nil
@@ -1797,9 +1664,7 @@ func (c *Call) checkIncoming(what string) error {
 	return nil
 }
 
-// Ring alerts the caller. When the caller supports 100rel, a reliable 183
-// carries the answer first, and, with preconditions, the 180 waits until
-// they are met (IR.92 §2.4.1, TS 24.229 §5.1.4.1).
+// IR.92 §2.4.1, TS 24.229 §5.1.4.1
 func (c *Call) Ring(ctx context.Context) error {
 	c.mu.Lock()
 
@@ -1816,9 +1681,6 @@ func (c *Call) Ring(ctx context.Context) error {
 			return err
 		}
 
-		// The caller reports its resources in an UPDATE; when they were
-		// ready from the start, it has nothing to report and the callee
-		// reports its own (RFC 3312 §7).
 		c.mu.Lock()
 		update := c.state == CallEarly && !c.m.met() && c.m.remoteQoS == sdp.QoSSendRecv && !c.localOfferLocked()
 		c.mu.Unlock()
@@ -1837,8 +1699,6 @@ func (c *Call) Ring(ctx context.Context) error {
 	return c.provisional(ctx, 180, has(c.invite.Header, "Require", "100rel"))
 }
 
-// provisional sends a provisional response, and, for a reliable one, waits
-// for its PRACK.
 func (c *Call) provisional(ctx context.Context, code int, reliably bool) error {
 	c.mu.Lock()
 
@@ -1910,8 +1770,7 @@ func (c *Call) provisional(ctx context.Context, code int, reliably bool) error {
 	return ErrCallEnded
 }
 
-// retransmitReliable resends a reliable provisional response until its PRACK,
-// for 64*T1, after which the INVITE is rejected (RFC 3262 §3).
+// RFC 3262
 func (c *Call) retransmitReliable(r *reliable) {
 	c.mu.Lock()
 
@@ -1943,7 +1802,6 @@ func (c *Call) retransmitReliable(r *reliable) {
 	_ = stx.Respond(r.res)
 }
 
-// Answer answers the call with a 200 and waits for its ACK.
 func (c *Call) Answer(ctx context.Context) error {
 	c.mu.Lock()
 
@@ -1999,8 +1857,7 @@ func (c *Call) Answer(ctx context.Context) error {
 	return ErrCallEnded
 }
 
-// acceptLocked starts resending a 2xx to an INVITE until its ACK, for 64*T1,
-// after which the call ends with a BYE (RFC 3261 §13.3.1.4).
+// RFC 3261 §13.3.1.4
 func (c *Call) acceptLocked(stx *transaction.ServerTransaction, res *sip.Response, cseq uint32) *accepted {
 	a := &accepted{stx: stx, res: res, cseq: cseq, interval: c.u.layer.T1(), started: time.Now()}
 	c.accepted = a
@@ -2036,7 +1893,6 @@ func (c *Call) retransmitAccepted(a *accepted) {
 	_ = a.stx.Respond(a.res)
 }
 
-// Reject answers the call with a final response of 300 or above.
 func (c *Call) Reject(code int) error {
 	if code < 300 || code > 699 {
 		return fmt.Errorf("testue: Reject with %d", code)
@@ -2067,7 +1923,7 @@ func (c *Call) Reject(code int) error {
 	return stx.Respond(res)
 }
 
-// cancelReceived ends a call the caller cancelled (RFC 3261 §9.2).
+// RFC 3261 §9.2
 func (c *Call) cancelReceived(cancel *sip.Request) {
 	c.event(Event{Request: cancel})
 
@@ -2127,7 +1983,6 @@ func (c *Call) ackReceived(ack *sip.Request) {
 	c.notifyLocked()
 }
 
-// requestReceived handles a request inside the call's dialog.
 func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Request) {
 	c.event(Event{Request: req})
 
@@ -2142,7 +1997,6 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 	case c.d == nil:
 		res = c.u.response(req, 481)
 	case req.Method == "INVITE" && c.localOfferLocked():
-		// Glare (RFC 3261 §14.2).
 		res = c.u.response(req, 491)
 	case req.Method == "INVITE" && c.accepted != nil:
 		res = retryAfter(c.u.response(req, 500))
@@ -2190,8 +2044,6 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 
 	_ = tx.Respond(res)
 
-	// What waits on the request, like the 180 on the preconditions, follows
-	// its response.
 	c.mu.Lock()
 	c.notifyLocked()
 	c.mu.Unlock()
@@ -2211,7 +2063,6 @@ func (c *Call) prackReceivedLocked(req *sip.Request) *sip.Response {
 	c.unacked = nil
 
 	if r.offer {
-		// The PRACK answers the offer of the reliable provisional response.
 		if err := c.answerOfOfferLocked(req.Header.ContentType(), req.Body); err != nil {
 			c.event(Event{Err: err})
 		}
@@ -2220,13 +2071,11 @@ func (c *Call) prackReceivedLocked(req *sip.Request) *sip.Response {
 	return c.u.response(req, 200)
 }
 
-// offerReceivedLocked answers an UPDATE or a re-INVITE: the answer to its
-// offer, and its session timer (RFC 4028 §9).
+// RFC 4028
 func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.Request) *sip.Response {
 	hasSDP := mediaType(req.Header.ContentType()) == sdp.ContentType && len(req.Body) > 0
 
 	if req.Method == "UPDATE" && hasSDP {
-		// RFC 3311 §5.2.
 		switch {
 		case c.localOfferLocked():
 			return c.u.response(req, 491)
@@ -2260,13 +2109,10 @@ func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.R
 
 		res.SetBody(sdp.ContentType, answer.Bytes())
 
-		// TS 24.229 §5.1.4A.2: only when the request supports them.
 		if c.m.precondition && (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) {
 			res.Header.Add("Require", "precondition")
 		}
 	case req.Method == "INVITE":
-		// A re-INVITE without an offer gets ours; the answer comes in the
-		// ACK.
 		offer, err := c.m.offer(c.m.direction)
 		if err != nil {
 			return c.u.response(req, 500)

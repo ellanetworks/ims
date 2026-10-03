@@ -31,8 +31,6 @@ var (
 	ErrDialogEnded = errors.New("sip/proxy: dialog ended")
 )
 
-// Side names a party of a dialog. Requests generated toward Both go to each
-// party.
 type Side int
 
 const (
@@ -63,7 +61,6 @@ type DialogState int
 
 const (
 	Early DialogState = iota
-	// Answered is a dialog confirmed by a 2xx that has not been ACKed yet.
 	Answered
 	Confirmed
 	Ending
@@ -104,8 +101,6 @@ const (
 	EndNoAck
 	EndExpired
 	EndDiscarded
-	// EndLost is a dialog a party answered 481 or 408 to a request in
-	// (RFC 3261 §12.2.1.2).
 	EndLost
 )
 
@@ -130,9 +125,6 @@ func (c EndCause) String() string {
 	return "EndCause(?)"
 }
 
-// DialogEvent reports a dialog's start, answer and end. Code is the final
-// response to the initial INVITE, and By the party that ended the dialog,
-// zero when the proxy did.
 type DialogEvent struct {
 	Kind   EventKind
 	Dialog *Dialog
@@ -142,18 +134,11 @@ type DialogEvent struct {
 }
 
 type DialogConfig struct {
-	// Target gives the next hop of a request the tracker generates. By
-	// default it is sent on the flows the initial INVITE used.
 	Target func(toward Side, req *sip.Request) (Target, error)
 
-	// Value is the role's own record of the dialog, which Value returns.
 	Value any
 }
 
-// Release asks the proxy to end a dialog. While it is being set up, a CANCEL
-// with Reason goes to the callee and, when Toward includes the caller, a Code
-// response with ResponseReason to the caller. Once answered, a BYE with Reason
-// goes to each party in Toward.
 type Release struct {
 	Toward Side
 	Reason []sip.Reason
@@ -162,7 +147,6 @@ type Release struct {
 	ResponseReason []sip.Reason
 }
 
-// Body is a session description, offered or answered by From.
 type Body struct {
 	From Side
 	Type string
@@ -177,9 +161,6 @@ type party struct {
 	route   []sip.Address
 }
 
-// closingLeg is a leg answered by a 2xx after the proxy released the dialog,
-// or after it answered the caller itself. The proxy ACKs and BYEs the callee
-// on it, and BYEs the caller once the caller ACKs the 2xx (RFC 3261 §15).
 type closingLeg struct {
 	callee party
 	ack    *sip.Request
@@ -200,8 +181,6 @@ type negotiation struct {
 	prev          *negotiation
 }
 
-// Dialog is a proxy's record of an INVITE dialog it record-routes, matched by
-// the dialog id in its Record-Route URI.
 type Dialog struct {
 	p   *Proxy
 	id  string
@@ -235,8 +214,6 @@ type Dialog struct {
 	code      int
 	cancelled bool
 
-	// offered is set once the INVITE or a provisional response carried the
-	// initial offer, after which a 2xx to the INVITE carries none.
 	offered bool
 
 	invites  map[Side]uint32
@@ -259,7 +236,6 @@ func (p *Proxy) NewDialog(cfg DialogConfig) *Dialog {
 	}
 }
 
-// Dialog finds the dialog whose id is in one of the URIs Preprocess removed.
 func (p *Proxy) Dialog(removed []sip.URI) *Dialog {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -284,9 +260,6 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 	}
 }
 
-// publish queues an event; flush delivers the queue in order, outside d.mu, so
-// that events reach OnDialog in the order the dialog changed. publish must be
-// called with d.mu held.
 func (d *Dialog) publish(e DialogEvent) {
 	if d.p.onDialog != nil {
 		e.Dialog = d
@@ -321,7 +294,6 @@ func (d *Dialog) ID() string {
 	return d.id
 }
 
-// Value is DialogConfig.Value.
 func (d *Dialog) Value() any {
 	return d.cfg.Value
 }
@@ -340,8 +312,7 @@ func (d *Dialog) State() DialogState {
 	return d.state
 }
 
-// Released reports whether the proxy released or discarded the dialog, after
-// which requests on it are answered 481 (TS 24.229 §5.2.8.1.3, §5.4.5.1.3).
+// TS 24.229 §5.2.8.1.3, §5.4.5.1.3
 func (d *Dialog) Released() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -349,7 +320,6 @@ func (d *Dialog) Released() bool {
 	return d.released
 }
 
-// Contact is the remote target of a party.
 func (d *Dialog) Contact(s Side) sip.URI {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -357,8 +327,6 @@ func (d *Dialog) Contact(s Side) sip.URI {
 	return d.party(s).contact.Clone()
 }
 
-// Seq is the highest CSeq seen in the requests of a party, including those the
-// proxy generated on its behalf.
 func (d *Dialog) Seq(s Side) (uint32, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -368,8 +336,6 @@ func (d *Dialog) Seq(s Side) (uint32, bool) {
 	return pt.seq, pt.haveSeq
 }
 
-// Routes is the route set from this proxy toward a party, without its own
-// Record-Route entries.
 func (d *Dialog) Routes(toward Side) []sip.Address {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -377,10 +343,6 @@ func (d *Dialog) Routes(toward Side) []sip.Address {
 	return cloneAddresses(d.routes(toward))
 }
 
-// RouteSet is the route set toward the other party of the leg an in-dialog
-// request is on, early legs included, without the proxy's own entries. It
-// reports false for a request on no leg the dialog knows, and for an early
-// leg whose provisional response carried no Record-Route.
 func (d *Dialog) RouteSet(req *sip.Request) ([]sip.Address, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -397,7 +359,6 @@ func (d *Dialog) RouteSet(req *sip.Request) ([]sip.Address, bool) {
 	return cloneAddresses(d.routes(Caller)), true
 }
 
-// CallerTag is the caller's tag, which every leg of the dialog shares.
 func (d *Dialog) CallerTag() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -405,8 +366,6 @@ func (d *Dialog) CallerTag() string {
 	return d.caller.addr.Tag()
 }
 
-// Session returns the latest offer and its answer; answered is false while the
-// offer waits for one.
 func (d *Dialog) Session() (offer, answer Body, answered bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -442,8 +401,6 @@ func (d *Dialog) routes(toward Side) []sip.Address {
 	return rr[i:]
 }
 
-// calleeRoute is the part of a Record-Route list above the proxy's own
-// entries, in the order a request toward the callee visits it.
 func calleeRoute(rr []sip.Address, own func(sip.Address) bool) []sip.Address {
 	end := slices.IndexFunc(rr, own)
 	if end < 0 {
@@ -499,7 +456,6 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	return nil
 }
 
-// started reports the dialog once its INVITE is sent.
 func (d *Dialog) started() {
 	d.mu.Lock()
 	d.publish(DialogEvent{Kind: EventStarted})
@@ -518,8 +474,6 @@ func (d *Dialog) abandon() {
 	d.p.forgetDialog(d)
 }
 
-// Party reports which party of the dialog sent an in-dialog request, by its
-// tags; false when the request belongs to no leg of the dialog.
 func (d *Dialog) Party(req *sip.Request) (Side, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -529,7 +483,6 @@ func (d *Dialog) Party(req *sip.Request) (Side, bool) {
 	return side, err == nil
 }
 
-// sender finds the party that sent an in-dialog request, by its tags.
 func (d *Dialog) sender(m *sip.Request) (Side, *party, error) {
 	from, err := m.Header.From()
 	if err != nil {
@@ -566,10 +519,6 @@ func (d *Dialog) calleeLeg(tag string) *party {
 	return d.early[tag]
 }
 
-// request records an in-dialog request before the proxy forwards it. It
-// reports false for a request on another dialog with the same Call-ID and
-// caller tag, such as one a forking proxy downstream created: the proxy relays
-// it without tracking it.
 func (d *Dialog) request(out *sip.Request) (bool, error) {
 	cseq, err := out.Header.CSeq()
 	if err != nil {
@@ -637,9 +586,6 @@ func (d *Dialog) ack(ack *sip.Request) error {
 
 		to, _ := ack.Header.To()
 
-		// The caller ACKs a 2xx the proxy already ACKed and ended on the
-		// callee's side: absorb it, and end the caller's side now that it
-		// may be BYEd.
 		if leg := d.closing[to.Tag()]; leg != nil && leg.bye && cseq.Seq == d.inviteTx.seq {
 			leg.bye = false
 			bye = d.byeWithReason(Caller, &leg.callee)
@@ -688,8 +634,6 @@ func (d *Dialog) cancelledByCaller() {
 	d.mu.Unlock()
 }
 
-// response records a response to a request forwarded on the dialog, before
-// the proxy relays it.
 func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 	res := r.Response
 	if res == nil {
@@ -752,7 +696,6 @@ func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 	case req.Method == "BYE":
 		d.end(EndBye, d.byeFrom, d.p.lingerBye)
 	case res.StatusCode == 481 || res.StatusCode == 408:
-		// RFC 3261 §12.2.1.2: the dialog is gone at the other party.
 		by := side.other()
 		if !downstream {
 			by = 0
@@ -803,8 +746,6 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		case d.silent:
 			d.state = Ended
 		case d.released:
-			// The 2xx is relayed all the same (RFC 3261 §16.7 step 5), and
-			// the proxy ends the session it opens.
 			leg, fresh := d.close(res, tag)
 			d.mu.Unlock()
 
@@ -858,10 +799,6 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		}
 
 		if !downstream {
-			// The proxy answered the caller itself, after Timer C or a
-			// timeout. A 2xx may still come; the caller's transaction no
-			// longer takes it (RFC 6026 §8.4), so the proxy ends it as for
-			// a released dialog.
 			d.released = true
 			d.end(EndFailed, 0, d.p.timerC)
 
@@ -881,11 +818,7 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 	d.flush()
 }
 
-// close records a leg answered by a 2xx to a released INVITE, the first time
-// it sees its To-tag, with the ACK the proxy owes the callee. The ACK carries
-// an answer when the 2xx carries an offer (RFC 3261 §13.2.2.4). The caller is
-// BYEd once it ACKs the 2xx, if the 2xx can still reach it. It must be called
-// with d.mu held.
+// RFC 3261 §13.2.2.4
 func (d *Dialog) close(res *sip.Response, tag string) (*closingLeg, bool) {
 	if leg, ok := d.closing[tag]; ok {
 		return leg, false
@@ -920,8 +853,6 @@ func (d *Dialog) close(res *sip.Response, tag string) (*closingLeg, bool) {
 	return leg, true
 }
 
-// closeCallee ACKs the 2xx of a closing leg, the same ACK for each
-// retransmission, and BYEs the callee after the first one.
 func (d *Dialog) closeCallee(leg *closingLeg, fresh bool) {
 	var bye *sip.Request
 
@@ -940,8 +871,6 @@ func (d *Dialog) closeCallee(leg *closingLeg, fresh bool) {
 	})
 }
 
-// retransmitted sends the ACK again for a retransmission of a 2xx on a
-// closing leg.
 func (d *Dialog) retransmitted(res *sip.Response) {
 	to, _ := res.Header.To()
 
@@ -986,8 +915,6 @@ func (d *Dialog) sendAck(ctx context.Context, leg *closingLeg) {
 	}
 }
 
-// byeWithReason builds a BYE carrying the release Reason. It must be called
-// with d.mu held.
 func (d *Dialog) byeWithReason(toward Side, callee *party) *sip.Request {
 	bye := d.build("BYE", toward, callee, 0)
 	if len(d.reasons) > 0 {
@@ -997,7 +924,7 @@ func (d *Dialog) byeWithReason(toward Side, callee *party) *sip.Request {
 	return bye
 }
 
-// Release ends the dialog from the proxy (TS 24.229 §5.2.8.1, §5.4.5.1).
+// TS 24.229 §5.2.8.1, §5.4.5.1
 func (d *Dialog) Release(r Release) error {
 	return d.release(r, EndReleased)
 }
@@ -1024,9 +951,6 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 	switch state {
 	case Early:
 	case Answered:
-		// The callee still waits for its ACK, which the proxy now sends
-		// itself; the caller's is absorbed (RFC 3261 §15 keeps the BYE to
-		// the caller until then).
 		leg = &closingLeg{callee: d.callee, ack: d.build("ACK", Callee, &d.callee, d.inviteTx.seq), bye: r.Toward&Caller != 0}
 		d.closing[d.answerTag] = leg
 
@@ -1059,8 +983,6 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 			_ = c.relay(releaseResponse(c, r))
 		}
 	case leg != nil:
-		// A 2xx a role holds, for an AAA say, never reaches the caller,
-		// which gets the error response instead.
 		if r.Toward&Caller != 0 && c != nil && c.relay(releaseResponse(c, r)) == nil {
 			d.mu.Lock()
 			leg.bye = false
@@ -1090,7 +1012,6 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 	return nil
 }
 
-// releaseResponse is the final response a release sends the caller.
 func releaseResponse(c *responseContext, r Release) *sip.Response {
 	code := r.Code
 	if code == 0 {
@@ -1105,7 +1026,7 @@ func releaseResponse(c *responseContext, r Release) *sip.Response {
 	return res
 }
 
-// Discard drops the dialog without any SIP (TS 24.229 §5.2.8.1.4).
+// TS 24.229 §5.2.8.1.4
 func (d *Dialog) Discard() {
 	d.mu.Lock()
 
@@ -1123,9 +1044,6 @@ func (d *Dialog) Discard() {
 	d.flush()
 }
 
-// end marks the dialog ended and keeps it for linger, so that late requests
-// still match it. A dialog released while being set up stays Early until the
-// final response to its INVITE. It must be called with d.mu held.
 func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) {
 	if d.ended {
 		return
@@ -1190,9 +1108,7 @@ func (d *Dialog) expire(gen int) {
 	d.flush()
 }
 
-// noAckFired ends a dialog whose 2xx was never ACKed, without SIP: the callee
-// ends its side with a BYE (RFC 3261 §13.3.1.4), and every CSCF on the path
-// keeps a dialog of its own.
+// RFC 3261 §13.3.1.4
 func (d *Dialog) noAckFired() {
 	d.mu.Lock()
 
@@ -1206,9 +1122,7 @@ func (d *Dialog) noAckFired() {
 	d.flush()
 }
 
-// build makes a request toward a party on behalf of the other one (TS 24.229
-// §5.2.8.1.2), with callee as the callee's leg. A zero seq takes the sender's
-// highest CSeq plus one. It must be called with d.mu held.
+// TS 24.229 §5.2.8.1.2
 func (d *Dialog) build(method string, toward Side, callee *party, seq uint32) *sip.Request {
 	sender, recipient := &d.caller, callee
 	route := calleeRoute(callee.route, d.own)
@@ -1219,7 +1133,6 @@ func (d *Dialog) build(method string, toward Side, callee *party, seq uint32) *s
 	}
 
 	if seq == 0 {
-		// TS 24.229 §5.4.5.1.2: a random CSeq when none is stored.
 		seq = randomSeq()
 		if sender.haveSeq {
 			seq = sender.seq + 1
@@ -1258,10 +1171,6 @@ func randomSeq() uint32 {
 	return binary.BigEndian.Uint32(b[:])%(1<<31-1) + 1
 }
 
-// target is the next hop of a generated request: DialogConfig.Target, or by
-// default the request's own next hop, sent from the local address and Via the
-// proxy uses toward that party. A role whose flows need more, such as the
-// P-CSCF's security associations, sets DialogConfig.Target.
 func (d *Dialog) target(toward Side, req *sip.Request) (Target, error) {
 	if d.cfg.Target != nil {
 		return d.cfg.Target(toward, req)
@@ -1316,11 +1225,6 @@ func (g generated) HandleError(err error) {
 	g.d.p.log.Debug("generated request failed", slog.String("dialog", g.d.id), slog.String("request", g.req.StartLine()),
 		slog.Any("error", err))
 }
-
-// The offer/answer model of RFC 3264, with the PRACK of RFC 3262 and the
-// UPDATE of RFC 3311. A session description is an offer unless it answers
-// the pending offer of the other party in the same transaction, or in the
-// PRACK or ACK that completes it.
 
 func (d *Dialog) requestBody(from Side, key txKey, e sip.Envelope) {
 	body, ok := sessionBody(from, e)
@@ -1379,8 +1283,7 @@ func (d *Dialog) responseBody(from Side, key txKey, res *sip.Response) {
 	}
 }
 
-// rollback restores the previous negotiation when the transaction carrying an
-// offer fails (RFC 3261 §14.1, RFC 3311 §5.2).
+// RFC 3261 §14.1, RFC 3311 §5.2
 func (d *Dialog) rollback(key txKey) {
 	if d.sdp.tx != key || !d.sdp.pending {
 		return
@@ -1393,8 +1296,7 @@ func (d *Dialog) rollback(key txKey) {
 	}
 }
 
-// rejectOffer answers an offer by rejecting all its media streams (RFC 3264
-// §6), for an ACK the proxy sends to a session it ends at once.
+// RFC 3264
 func rejectOffer(offer []byte) ([]byte, error) {
 	s, err := sdp.Parse(offer)
 	if err != nil {
@@ -1426,8 +1328,7 @@ func sessionBody(from Side, e sip.Envelope) (Body, bool) {
 	return Body{From: from, Type: "application/sdp", Data: slices.Clone(e.Body)}, true
 }
 
-// sessionExpires is the session interval negotiated in a 2xx (RFC 4028 §9),
-// or the default lifetime without one.
+// RFC 4028
 func sessionExpires(res *sip.Response, lifetime time.Duration) time.Duration {
 	v, _, err := sip.ParseTokenParams(res.Header.Get("Session-Expires"))
 	if err != nil || v == "" {

@@ -45,8 +45,6 @@ type Config struct {
 
 	Clock transaction.Clock
 
-	// DialogLifetime bounds a dialog without a session timer;
-	// DefaultDialogLifetime when zero.
 	DialogLifetime time.Duration
 
 	OnDialog func(DialogEvent)
@@ -86,8 +84,6 @@ type RecordRoute struct {
 	Double         bool
 	UpstreamParams sip.Params
 
-	// DownstreamParams go in the entry toward the request's next hop when
-	// the proxy record-routes twice.
 	DownstreamParams sip.Params
 }
 
@@ -98,8 +94,6 @@ type Options struct {
 
 	OnReply func(r Reply) Verdict
 
-	// Dialog tracks the INVITE dialog the request starts or belongs to. Its id
-	// goes in the Record-Route, which an initial INVITE must have.
 	Dialog *Dialog
 }
 
@@ -320,8 +314,6 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 		case initial:
 			d.abandon()
 		case b.dialog != nil:
-			// The request never left: undo what it changed, as a failure
-			// response would.
 			d.response(out, false, Reply{Response: sip.NewResponse(out, 500, ""), Err: err})
 		}
 
@@ -353,10 +345,6 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 	return c.relay(res.Clone())
 }
 
-// Proxied reports whether the proxy forwarded the request of tx and has not
-// answered it yet. A role that forwards an INVITE before HandleRequest returns
-// can route a CANCEL by it; one that forwards later calls Cancel whatever it
-// reports, which also handles a CANCEL that comes first.
 func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -400,8 +388,6 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	p.forget(c)
 }
 
-// ForwardAck relays an ACK to a 2xx. With a dialog, the ACK confirms it, and
-// is dropped when the proxy released the dialog.
 func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
 	if ack.Method != "ACK" {
 		return fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)

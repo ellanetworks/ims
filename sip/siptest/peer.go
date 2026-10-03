@@ -10,9 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// Peer is a SIP node attached to a transaction layer in memory, as Socket is
-// one on the network: it sends and receives raw messages, with no
-// transactions of its own.
 type Peer struct {
 	t     testing.TB
 	layer *transaction.Layer

@@ -107,9 +107,6 @@ func (no *notifier) notify(state string, info regevent.Reginfo) *sip.Response {
 	return res
 }
 
-// notifyAndRefresh sends a NOTIFY that makes the UE refresh its subscription,
-// and returns the UE's response and its SUBSCRIBE. The UE sends both
-// concurrently, so they arrive in either order.
 func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {
 	no.n.t.Helper()
 

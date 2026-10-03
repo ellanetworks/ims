@@ -173,9 +173,7 @@ func (p Policy) Validate() error {
 	return fmt.Errorf("unknown encryption policy %q", p.Encryption)
 }
 
-// Mechanisms lists the policy's algorithm combinations in priority order, for
-// a Security-Server that offers no SAs yet (RFC 3329 §2.3.1: a 421 or 494). A
-// policy that never encrypts lists no encryption algorithm (TS 33.203 §7.2).
+// RFC 3329 §2.3.1, TS 33.203 §7.2
 func (p Policy) Mechanisms() []sip.SecurityMechanism {
 	encryptions := []Encryption{EncryptionNull}
 

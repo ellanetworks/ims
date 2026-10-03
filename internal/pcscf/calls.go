@@ -14,16 +14,9 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// call is the P-CSCF's record of an INVITE dialog of one of its UEs, kept as
-// the tracker's dialog value.
 type call struct {
-	// ue is the party of the dialog the P-CSCF serves: the caller on the
-	// originating side, the callee on the terminating side.
 	ue proxy.Side
 
-	// icid is the charging identifier of the initial INVITE, which the
-	// P-CSCF puts in the UE's later requests on the dialog (TS 24.229
-	// §5.2.6.3.5 step 7, §5.2.6.3.9 step 3).
 	icid string
 }
 
@@ -37,9 +30,7 @@ func callOf(d *proxy.Dialog) *call {
 	return c
 }
 
-// terminatingRoute reports whether the top Route of a request is the Path
-// entry of a UE's registration: the P-CSCF's own URI with a flow token, not
-// one of its UE-facing Record-Route entries (TS 24.229 §5.2.6.2).
+// TS 24.229 §5.2.6.2
 func (p *PCSCF) terminatingRoute(req *sip.Request) (sip.URI, bool) {
 	routes, err := req.Header.Routes()
 	if err != nil || len(routes) == 0 || !p.cfg.Proxy.IsLocal(routes[0].URI) {
@@ -51,15 +42,12 @@ func (p *PCSCF) terminatingRoute(req *sip.Request) (sip.URI, bool) {
 	return top, top.User != "" && p.towardUE([]sip.URI{top})
 }
 
-// unregisteredOrigin reports whether an initial request comes from a UE the
-// P-CSCF has no registration for. It is discarded unanswered (TS 24.229
-// §5.2.6.3.2A), before the transaction layer could send a 100 (Trying).
+// TS 24.229 §5.2.6.3.2A
 func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 	if req.Method == "REGISTER" || req.Method == "ACK" || req.Method == "CANCEL" || toTag(req) != "" {
 		return false
 	}
 
-	// Filter sees the messages of every role.
 	if !p.ownPort(req.Flow.Local.Port()) || req.Flow.Local.Port() == p.cfg.Port && p.trusted(req.Flow.Remote.Addr()) {
 		return false
 	}
@@ -69,12 +57,10 @@ func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 	return !ok
 }
 
-// originating routes an initial request from the UE along its Service-Route
-// (TS 24.229 §5.2.6.3.3, §5.2.6.3.7, §5.2.6.3.11).
+// TS 24.229 §5.2.6.3.3, §5.2.6.3.7, §5.2.6.3.11
 func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request) {
 	reg, ok := p.ueRegistration(req)
 	if !ok {
-		// Filter drops these; the registration ended in between.
 		p.log.Info("initial request from an unregistered UE", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()))
 		p.respond(tx, sip.NewResponse(req, 403, ""))
@@ -82,8 +68,6 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	// Requests that belong in a dialog are refused outside one, as Kamailio
-	// does, rather than routed as initial requests.
 	switch req.Method {
 	case "UPDATE":
 		p.respond(tx, sip.NewResponse(req, 403, "Target refresh outside dialog not allowed"))
@@ -104,7 +88,6 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	// A request for the P-CSCF itself, such as a keep-alive OPTIONS.
 	if !out.Header.Has("Route") && p.cfg.Proxy.IsLocal(out.URI) {
 		p.cfg.Fallback.HandleRequest(tx, req)
 		return
@@ -123,8 +106,6 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	// §5.2.6.3.3 step 2: the routes must be the Service-Route, compared per
-	// URI; otherwise the P-CSCF replaces them (option b).
 	if routes, err := out.Header.Routes(); err != nil || !sameRoutes(routes, serviceRoute) {
 		if len(routes) > 0 {
 			p.log.Debug("preloaded routes replaced by the Service-Route", slog.String("impi", reg.IMPI),
@@ -169,9 +150,6 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return proxy.Relay
 	}}
 
-	// §5.2.6.3.3 step 4: the UE-facing entry carries the port where the
-	// P-CSCF awaits the UE's subsequent requests, the protected server
-	// port, and the flow token, which the core-facing one carries too.
 	switch out.Method {
 	case "INVITE":
 		opts.Dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -189,8 +167,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	p.forward(tx, req, out, to, opts)
 }
 
-// terminating routes an initial request from the core to the UE whose Path
-// the top Route is (TS 24.229 §5.2.6.4.3, §5.2.6.4.7).
+// TS 24.229 §5.2.6.4.3, §5.2.6.4.7
 func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
 	if !p.fromCore(req) {
 		p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
@@ -200,8 +177,6 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		return
 	}
 
-	// §5.2.6.4.3 step 1, §5.2.6.4.7: the PCRF reported the UE's signalling
-	// path lost.
 	if p.regs.signallingLost(top.User) {
 		p.respond(tx, sip.NewResponse(req, 500, ""))
 		return
@@ -224,8 +199,6 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		return
 	}
 
-	// §5.2.6.4.3 step 11: the P-Called-Party-ID becomes the asserted identity
-	// of the UE's responses.
 	var called string
 
 	if ids, err := req.Header.Addresses("P-Called-Party-ID"); err == nil && len(ids) > 0 {
@@ -244,8 +217,6 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 		fromUEResponse(res)
 
-		// §5.2.6.4.4 step 1 for the 1xx and 2xx of a dialog, §5.2.6.4.8
-		// step 2 for any response to a standalone request.
 		if called != "" && res.StatusCode > 100 && (res.StatusCode < 300 || !dialogForming) {
 			res.Header.Add("P-Asserted-Identity", called)
 		}
@@ -266,8 +237,6 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		dialogForming = true
 		opts.RecordRoute = &proxy.RecordRoute{User: top.User, Double: true, DownstreamParams: sip.Params{{Name: ueFacing}}}
 
-		// §5.2.6.4.4: the flow token and "ob" of the Route go in the
-		// Record-Route.
 		if top.Params.Has("ob") {
 			opts.RecordRoute.Params.Set("ob", "")
 		}
@@ -276,10 +245,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 	p.forward(tx, req, out, to, opts)
 }
 
-// dialogTarget is the next hop of a request the tracker generates on a call
-// (TS 24.229 §5.2.8.1): toward the UE, on the security associations it would
-// take now (TS 33.203 §7.4.2a), from port_pc to port_us; toward the core, by
-// its Route from the core-facing port.
+// TS 24.229 §5.2.8.1, TS 33.203 §7.4.2a
 func (p *PCSCF) dialogTarget(ue proxy.Side, token string, local netip.Addr) func(proxy.Side, *sip.Request) (proxy.Target, error) {
 	return func(toward proxy.Side, req *sip.Request) (proxy.Target, error) {
 		if toward == ue {
@@ -310,7 +276,6 @@ func (p *PCSCF) dialogTarget(ue proxy.Side, token string, local netip.Addr) func
 	}
 }
 
-// sameRoutes compares a route set with another, URI by URI.
 func sameRoutes(a, b []sip.Address) bool {
 	return slices.EqualFunc(a, b, func(x, y sip.Address) bool { return x.URI.Equivalent(y.URI) })
 }
@@ -330,12 +295,7 @@ func setRoutes(req *sip.Request, routes []sip.Address) {
 	req.Header.Add("Route", strings.Join(values, ", "))
 }
 
-// assertedIdentities are the identities the P-CSCF asserts for a request from
-// the UE (TS 24.229 §5.2.6.3.1): those of the P-Preferred-Identity that are
-// registered, the second being the alternative identity, at most one SIP and
-// one tel URI (RFC 3325 §9.1), else the default identity. A second SIP URI
-// with user=phone stands for its tel URI when that is registered. The From
-// header field takes no part (NOTE 3), nor do display names (NOTE 4).
+// TS 24.229 §5.2.6.3.1, RFC 3325 §9.1
 func assertedIdentities(preferred []sip.Address, associated []string) []string {
 	var (
 		out              []string
@@ -373,9 +333,7 @@ func assertedIdentities(preferred []sip.Address, associated []string) []string {
 	return out
 }
 
-// matchIdentity finds a public identity among the registered ones. A SIP URI
-// with user=phone is compared as the tel URI it stands for (§5.2.6.3.1).
-// The identity as the UE gave it wins over its other form.
+// TS 24.229 §5.2.6.3.1
 func matchIdentity(associated []string, u sip.URI) (string, bool) {
 	if id, ok := matchURI(associated, u.String()); ok {
 		return id, true
@@ -410,11 +368,7 @@ func telForm(u sip.URI) sip.URI {
 	return t
 }
 
-// fromUEInDialog checks an in-dialog request from the UE against the dialog
-// the tracker knows (TS 24.229 §5.2.6.3.5 and §5.2.6.3.9 steps 1 and 2): the
-// UE must be its party, and its routes those of the leg it is on, early or
-// not, which replace them otherwise. Without a known dialog (Decision 2), only
-// the flow check of coreTarget applies.
+// TS 24.229 §5.2.6.3.5, §5.2.6.3.9 steps 1 and 2
 func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Response {
 	c := callOf(d)
 	if c == nil {
@@ -426,9 +380,6 @@ func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Resp
 	switch {
 	case ok && side == c.ue:
 	case !ok && c.ue == proxy.Caller && fromTag(req) == d.CallerTag():
-		// A leg the tracker does not follow, such as one of a second 2xx
-		// that a forking proxy downstream sent: the caller must still ACK
-		// and BYE it (RFC 3261 §13.2.2.4). Its routes are unknown.
 		return nil
 	default:
 		p.log.Info("request from a UE not on the dialog", slog.String("request", req.StartLine()), slog.String("dialog", d.ID()))
@@ -458,7 +409,6 @@ func fromTag(req *sip.Request) string {
 	return from.Tag()
 }
 
-// chargingVector is a P-Charging-Vector (RFC 7315 §4.6).
 type chargingVector struct {
 	icid      string
 	generated string
@@ -513,7 +463,6 @@ func (cv chargingVector) String() string {
 	return s
 }
 
-// set puts the vector in a request toward the core, replacing any other.
 func (cv chargingVector) set(req *sip.Request) {
 	req.Header.Del("P-Charging-Vector")
 
@@ -522,9 +471,7 @@ func (cv chargingVector) set(req *sip.Request) {
 	}
 }
 
-// respondCharging puts in a response from the UE the icid and orig-ioi of the request
-// it answers, and the P-CSCF's type 1 term-ioi (§5.2.6.4.4 step 6,
-// §5.2.6.4.6, §5.2.6.4.8, §5.2.6.4.10).
+// TS 24.229 §5.2.6.4.4 step 6, §5.2.6.4.6, §5.2.6.4.8, §5.2.6.4.10
 func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 	res.Header.Del("P-Charging-Vector")
 
@@ -536,10 +483,7 @@ func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 	res.Header.Add("P-Charging-Vector", chargingVector{icid: cv.icid, origIOI: cv.origIOI, termIOI: p.cfg.HomeDomain}.String())
 }
 
-// inDialogCharging is the P-Charging-Vector of an in-dialog request from the
-// UE: the INVITE's icid on a known call, a new one otherwise, and the
-// P-CSCF's type 1 orig-ioi without a term-ioi (§5.2.6.3.5 step 7, §5.2.6.3.9
-// step 3).
+// TS 24.229 §5.2.6.3.5 step 7, §5.2.6.3.9 step 3
 func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVector {
 	if c := callOf(d); c != nil && c.icid != "" {
 		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain}
@@ -548,8 +492,7 @@ func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVect
 	return p.newChargingVector(req.Flow.Local.Addr())
 }
 
-// toUERequest removes from a request toward the UE what the trust domain
-// keeps to itself (TS 24.229 §4.4, §5.2.1), except what keptTowardUE keeps.
+// TS 24.229 §4.4, §5.2.1
 func toUERequest(req *sip.Request) {
 	kept := keptTowardUE(req.Header)
 
@@ -559,7 +502,6 @@ func toUERequest(req *sip.Request) {
 	req.Header = append(req.Header, kept...)
 }
 
-// toUEResponse does the same for a response toward the UE.
 func toUEResponse(res *sip.Response) {
 	kept := keptTowardUE(res.Header)
 
@@ -568,16 +510,8 @@ func toUEResponse(res *sip.Response) {
 	res.Header = append(res.Header, kept...)
 }
 
-// keptTowardUE are the trust-domain header fields of a message from the core
-// that the UE gets:
-//   - P-Asserted-Identity, unless Privacy asks for "id" (RFC 3325 §7, Decision
-//     12);
-//   - P-Early-Media, which the core is trusted to send (RFC 5009 §6); only the
-//     terminating UE's own is policed (TS 24.229 §5.2.6.4.2);
-//   - Feature-Caps, which §4.4.13 removes only from UEs and external networks,
-//     and TS 24.237 uses toward the UE;
-//   - History-Info, but for the entries privacy covers (§4.4.4, RFC 7044
-//     §10.1.2).
+// RFC 3325, RFC 5009, TS 24.229 §5.2.6.4.2, §4.4.13, TS 24.237 §4.4.4,
+// RFC 7044 §10.1.2
 func keptTowardUE(h sip.Header) []sip.Field {
 	priv, err := h.Privacy()
 	private := err != nil
@@ -606,8 +540,7 @@ func keptTowardUE(h sip.Header) []sip.Field {
 	return kept
 }
 
-// publicHistory drops the hi-entries whose targeted-to URI asks for history
-// privacy (RFC 7044 §10.1.2).
+// RFC 7044 §10.1.2
 func publicHistory(v string) string {
 	var out []string
 
@@ -620,24 +553,20 @@ func publicHistory(v string) string {
 	return strings.Join(out, ", ")
 }
 
-// earlyMediaSupported reports whether a message says its sender supports
-// P-Early-Media. That is all the P-CSCF passes on from a UE, which may not
-// authorise early media itself (TS 24.229 §5.2.6.4.1, RFC 5009 §5).
+// TS 24.229 §5.2.6.4.1, RFC 5009
 func earlyMediaSupported(h sip.Header) bool {
 	em, ok, err := h.EarlyMedia()
 	return ok && err == nil && em.Has(sip.EarlyMediaSupported)
 }
 
-// dropFromAll removes the header fields the P-CSCF removes from every message,
-// whichever its direction (TS 24.229 §5.2.1).
+// TS 24.229 §5.2.1
 func dropFromAll(del func(string) int) {
 	for _, name := range []string{"P-Charging-Vector", "P-Charging-Function-Addresses", "P-Media-Authorization"} {
 		del(name)
 	}
 }
 
-// removeLocationSource removes the "loc-src" parameter of the UE's Geolocation
-// header fields (TS 24.229 §5.2.1 step 8).
+// TS 24.229 §5.2.1 step 8
 func removeLocationSource(req *sip.Request) {
 	values := req.Header.Values("Geolocation")
 	if !slices.ContainsFunc(values, func(v string) bool { return strings.Contains(strings.ToLower(v), "loc-src") }) {

@@ -1,7 +1,3 @@
-// Package pcrftest is a PCRF for tests: it answers the IMS's Rx AARs and STRs
-// with success, records them, and sends RARs and ASRs on request. Each AAA
-// carries a Class AVP holding the Session-Id, which the AF echoes in its STR
-// (RFC 6733 §8.20).
 package pcrftest
 
 import (
@@ -214,7 +210,7 @@ func (p *PCRF) do(ctx context.Context, req *diameter.Message) (*diameter.Message
 	return p.node.Do(ctx, imsPeer, req)
 }
 
-// ASR aborts an Rx session (TS 29.214 §4.4.6.1).
+// TS 29.214 §4.4.6.1
 func (p *PCRF) ASR(ctx context.Context, session string, cause rx.AbortCause) (rx.AbortSessionAnswer, error) {
 	req, err := rx.NewAbortSessionRequest(p.envelope(session), rx.AbortSessionRequest{Cause: cause})
 	if err != nil {
@@ -229,7 +225,7 @@ func (p *PCRF) ASR(ctx context.Context, session string, cause rx.AbortCause) (rx
 	return rx.ParseAbortSessionAnswer(ans)
 }
 
-// RAR reports Specific-Actions on an Rx session (TS 29.214 §4.4.6.3).
+// TS 29.214 §4.4.6.3
 func (p *PCRF) RAR(ctx context.Context, session string, actions ...rx.SpecificAction) (rx.ReAuthAnswer, error) {
 	req, err := rx.NewReAuthRequest(p.envelope(session), rx.ReAuthRequest{SpecificActions: actions})
 	if err != nil {

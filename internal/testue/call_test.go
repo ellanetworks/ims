@@ -36,7 +36,6 @@ func newCallUE(t *testing.T, imsi string, pcscf netip.AddrPort, cfg Config) *UE 
 	return u
 }
 
-// pair returns two plain UEs that are each other's P-CSCF.
 func pair(t *testing.T) (*UE, *UE) {
 	t.Helper()
 
@@ -85,8 +84,6 @@ func ended(t *testing.T, c *Call, want EndReason) {
 	}
 }
 
-// methods lists the requests and responses seen in a call's events, as
-// "INVITE" or "183 INVITE".
 func methods(c *Call) []string {
 	var out []string
 
@@ -180,7 +177,6 @@ func TestBasicCall(t *testing.T) {
 		t.Errorf("INVITE Accept-Contact = %q", invite.Header.Get("Accept-Contact"))
 	}
 
-	// Events of different transactions come in no set order.
 	if got, want := sorted(methods(ac)), "100 INVITE,180 INVITE,183 INVITE,200 INVITE,200 PRACK"; got != want {
 		t.Errorf("caller saw %s, want %s", got, want)
 	}
@@ -249,7 +245,6 @@ func TestPreconditionCall(t *testing.T) {
 	offer := audio(t, sdpOf(t, bc.Invite().Body))
 	assertQoS(t, "offer", offer, "curr:qos local none", "curr:qos remote none", "des:qos mandatory local sendrecv", "des:qos optional remote sendrecv")
 
-	// The callee's last description, the answer to the UPDATE.
 	assertQoS(t, "UPDATE answer", audio(t, bc.LocalSDP()), "curr:qos local sendrecv", "curr:qos remote sendrecv")
 }
 
@@ -363,7 +358,6 @@ func TestCancelBeforeRinging(t *testing.T) {
 
 	bc := incoming(t, b)
 
-	// The CANCEL leaves once the 100 is in.
 	if err := ac.Cancel(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +399,6 @@ func TestHoldAndResume(t *testing.T) {
 		t.Fatalf("states %s and %s", ac.State(), bc.State())
 	}
 
-	// The callee holds too.
 	if err := bc.Hold(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +408,6 @@ func TestHoldAndResume(t *testing.T) {
 	}
 }
 
-// waitMethods waits until the call's events add up to want.
 func waitMethods(t *testing.T, c *Call, want string) {
 	t.Helper()
 
@@ -441,7 +433,6 @@ func TestSessionRefresh(t *testing.T) {
 	_, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 2 * time.Second})
 	methods(bc)
 
-	// The caller refreshes at half the interval, with an UPDATE.
 	waitMethods(t, bc, "UPDATE")
 
 	if bc.State() != CallConfirmed {
@@ -488,7 +479,6 @@ func TestReinviteGlare(t *testing.T) {
 	}
 }
 
-// peer is a raw SIP endpoint facing a UE, standing in for the network.
 type peer struct {
 	t *testing.T
 	s *siptest.Socket
@@ -504,7 +494,6 @@ func newPeer(t *testing.T, cfg Config) *peer {
 	return &peer{t: t, s: s, u: newCallUE(t, "001010000000002", s.Addr(), cfg)}
 }
 
-// capture loads a message of the Open5GS capture, addressed from the peer.
 func (p *peer) capture(name string) sip.Message {
 	p.t.Helper()
 
@@ -532,8 +521,6 @@ func (p *peer) send(m sip.Message) {
 	p.s.Send(sip.UDP, p.u.Unprotected(), m)
 }
 
-// response receives the next response other than a retransmission or a
-// provisional response it skips.
 func (p *peer) response(code int, method string) *sip.Response {
 	p.t.Helper()
 
@@ -566,7 +553,6 @@ func (p *peer) request(method string) *sip.Request {
 	}
 }
 
-// setToTag replaces the To tag of a captured message with the UE's.
 func setToTag(t *testing.T, h *sip.Header, tag string) {
 	t.Helper()
 
@@ -579,9 +565,6 @@ func setToTag(t *testing.T, h *sip.Header, tag string) {
 	h.Set("To", to.String())
 }
 
-// TestCalleeAgainstSamsungCaller replays the Samsung caller's side of the
-// Open5GS capture, as the P-CSCF delivered it, to a test UE: INVITE with
-// preconditions, PRACK, UPDATE, then ACK.
 func TestCalleeAgainstSamsungCaller(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
@@ -631,8 +614,6 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 	setToTag(t, &update.Header, tag)
 	p.send(update)
 
-	// The 180 follows the 200 to the UPDATE, on another transaction, so
-	// the two may cross.
 	res, ringing := nil, false
 
 	for res == nil || !ringing {
@@ -679,7 +660,6 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 		t.Fatalf("Answer: %v", err)
 	}
 
-	// The callee hangs up: the BYE follows the INVITE's route set.
 	go func() { _ = c.Bye(ctx) }()
 
 	bye := p.request("BYE")
@@ -706,8 +686,6 @@ func dialogTag(t *testing.T, res *sip.Response) string {
 	return to.Tag()
 }
 
-// TestCallerAgainstSamsungCallee answers a test UE's INVITE with the Samsung
-// callee's responses of the Open5GS capture.
 func TestCallerAgainstSamsungCallee(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
@@ -720,7 +698,6 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 	invite := p.request("INVITE")
 	p.send(sip.NewResponse(invite, 100, ""))
 
-	// The callee's responses keep their headers but the transaction's.
 	reply := func(name string, to *sip.Request) *sip.Response {
 		res := p.capture(name).(*sip.Response)
 
@@ -752,7 +729,6 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 		t.Errorf("PRACK Route = %q, want the reversed Record-Route", got)
 	}
 
-	// A retransmission of the 183 gets no new PRACK.
 	p.send(r183)
 	reply("024-200-PRACK.sip", prack)
 
@@ -774,14 +750,12 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 		t.Errorf("ACK CSeq %d", cseq.Seq)
 	}
 
-	// The 200 to the UPDATE is handled on its own transaction.
 	eventually(t, "preconditions met", c.PreconditionsMet)
 
 	if interval, refresher := c.SessionTimer(); interval != DefaultSessionExpires || !refresher {
 		t.Errorf("session timer %s, refresher %v", interval, refresher)
 	}
 
-	// A retransmitted 200 is ACKed again.
 	reply("049-200-INVITE.sip", invite)
 	p.request("ACK")
 }
@@ -801,7 +775,6 @@ func TestNoPrack(t *testing.T) {
 	p.response(100, "INVITE")
 	first := p.response(183, "INVITE")
 
-	// Retransmitted, unchanged, until 64*T1.
 	if again := p.response(183, "INVITE"); again.Header.Get("RSeq") != first.Header.Get("RSeq") {
 		t.Errorf("RSeq %q then %q", first.Header.Get("RSeq"), again.Header.Get("RSeq"))
 	}
@@ -843,14 +816,11 @@ func TestNoAck(t *testing.T) {
 
 	p.response(100, "INVITE")
 
-	// The 200, with the answer since nothing came before, then its
-	// retransmissions.
 	res := p.response(200, "INVITE")
 	if len(res.Body) == 0 {
 		t.Error("200 without the answer")
 	}
 
-	// The INVITE supports timer without Session-Expires (IR.92 §2.2.8).
 	if got := res.Header.Get("Session-Expires"); got != "1800;refresher=uac" {
 		t.Errorf("200 Session-Expires = %q", got)
 	}
@@ -941,7 +911,6 @@ func TestAnswerMirrorsAMRParameters(t *testing.T) {
 		t.Errorf("answer fmtp %q", fmtp)
 	}
 
-	// Only an octet-aligned payload type: the answer keeps octet-align.
 	offer = sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
 		"m=audio 5000 RTP/AVP 97\r\na=rtpmap:97 AMR/8000/1\r\na=fmtp:97 octet-align=1\r\n"))
 
@@ -1008,7 +977,6 @@ func TestHoldWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The callee, held, holds too: inactive (RFC 3264 §8.4).
 	if err := bc.Hold(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1022,7 +990,6 @@ func TestSessionTimerWithoutTimerSupport(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	// A proxy put Session-Expires in an INVITE whose UAC has no timers.
 	invite := p.capture("011-INVITE.sip").(*sip.Request)
 	invite.Header.Del("Supported")
 	invite.Header.Add("Supported", "100rel")
@@ -1069,7 +1036,6 @@ func TestIntervalTooSmall(t *testing.T) {
 	res.Header.Add("Min-SE", "90")
 	p.send(res)
 
-	// The transaction's ACK to the 422 and the new INVITE may cross.
 	var retry *sip.Request
 
 	for retry == nil {
@@ -1110,8 +1076,7 @@ func TestUnsupportedRequire(t *testing.T) {
 	}
 }
 
-// TestCalleeReportsItsResources: a caller whose resources are ready from the
-// start does not send an UPDATE; the callee does (RFC 3312 §7).
+// RFC 3312
 func TestCalleeReportsItsResources(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
@@ -1137,8 +1102,6 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	prack.Header.Set("RAck", sip.RAck{RSeq: rseq, CSeq: 1, Method: "INVITE"}.String())
 	p.send(prack)
 
-	// The UPDATE follows the PRACK, but the two transactions send
-	// independently: it may overtake the 200 to the PRACK.
 	var update *sip.Request
 
 	for gotOK := false; !gotOK || update == nil; {
@@ -1182,13 +1145,11 @@ func TestUpdateGlare(t *testing.T) {
 	ac.offering = true
 	ac.mu.Unlock()
 
-	// An UPDATE with an offer crosses ours: 491 (RFC 3311 §5.2).
 	err := bc.update(ctx, true)
 	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)
 	}
 
-	// A refresh has no offer, so no glare.
 	if err := bc.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh = %v", err)
 	}
@@ -1207,7 +1168,6 @@ func TestUpdateBeforeTheAnswer(t *testing.T) {
 
 	c := incoming(t, p.u)
 
-	// A 180 without the answer creates the early dialog.
 	if err := c.provisional(ctx, 180, false); err != nil {
 		t.Fatal(err)
 	}
@@ -1225,10 +1185,6 @@ func TestUpdateBeforeTheAnswer(t *testing.T) {
 	}
 }
 
-// TestCancelDuringRetransmissions cancels a call while its 183 is resent. The
-// deadlock it guards against, a CANCEL callback drained by a Respond made
-// with the call locked, has too narrow a window to reproduce reliably: this
-// is a smoke test of the path.
 func TestCancelDuringRetransmissions(t *testing.T) {
 	for range 20 {
 		p := newPeer(t, Config{T1: 2 * time.Millisecond})

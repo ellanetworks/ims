@@ -27,8 +27,6 @@ var (
 	pcrfIdentity = diameter.Identity{OriginHost: "pcrf.epc.test", OriginRealm: "epc.test"}
 )
 
-// fakePCRF is the P-CSCF's Diameter node with a PCRF behind it. It records
-// every request and answers with answer, or with success.
 type fakePCRF struct {
 	t    *testing.T
 	seq  atomic.Int64
@@ -84,7 +82,6 @@ func (f *fakePCRF) answerWith(a func(ctx context.Context, req *diameter.Message)
 	f.answer = a
 }
 
-// holdAA makes the next AAs wait for release before succeeding.
 func (f *fakePCRF) holdAA() (release func()) {
 	ch := make(chan struct{})
 
@@ -214,12 +211,10 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 
 	req, f := s.register(nil)
 
-	// No AAR before the registration completes (TS 29.213 Annex B.1).
 	pcrf.none()
 
 	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
 
-	// The 200 reaches the UE while the AAR is unanswered.
 	wantStatus(t, first(s.ue.RecvResponse()), 200)
 
 	m := pcrf.next()
@@ -380,9 +375,7 @@ func TestRxPartialDeregistrationKeepsTheSession(t *testing.T) {
 func TestRxRefusedAAAKeepsTheRegistration(t *testing.T) {
 	refusals := map[string]struct {
 		answer func(ctx context.Context, req *diameter.Message) (*diameter.Message, error)
-		// str is the cause of the STR that follows, for an AAR the PCRF may
-		// have authorized (RFC 6733 §7.2, §8.4); 0 for none.
-		str rx.TerminationCause
+		str    rx.TerminationCause
 	}{
 		"refused": {answer: func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
 			if req.CommandCode != rx.CommandAA {
@@ -585,7 +578,6 @@ func TestRxUnknownSessionAtTheSTA(t *testing.T) {
 	})
 }
 
-// terminating sends an initial request towards the UE through its Path.
 func (s *regScene) terminating(path sip.URI) {
 	s.t.Helper()
 
@@ -717,7 +709,6 @@ func TestRxAbortSession(t *testing.T) {
 	s.wantSession("")
 	s.wantSignallingLost(true)
 
-	// The STR waits for the ASA to be sent (TS 29.214 §4.4.6.1).
 	pcrf.none()
 
 	terminate()
@@ -774,8 +765,6 @@ func TestRxSessionsReestablishedAfterRestart(t *testing.T) {
 
 	s.restart()
 
-	// The PCRF may have dropped it on the new Origin-State-Id (RFC 6733
-	// §8.16): it is closed, and a new one opened.
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 
 	again, r := pcrf.aar()
@@ -798,7 +787,6 @@ func TestRxSessionsReestablishedAfterRestart(t *testing.T) {
 }
 
 func TestRxSessionPendingAtShutdownEndedAfterRestart(t *testing.T) {
-	// The shutdown waits for the held AAR up to the timeout, then cancels it.
 	s, pcrf := newRxScene(t, 200*time.Millisecond)
 	release := pcrf.holdAA()
 	t.Cleanup(release)
@@ -835,7 +823,6 @@ func TestRxSessionForARegistrationBesideAnEmergencyContact(t *testing.T) {
 
 	req, f := s.register(nil)
 
-	// The 200 to a normal REGISTER also lists another, emergency, contact.
 	res := sip.NewResponse(req, 200, "")
 	_ = res.Header.SetToTag(sip.NewTag())
 	res.Header.Add("Service-Route", "<sip:orig@"+s.scscf.Addr().String()+";lr>")
@@ -859,11 +846,9 @@ func TestRxSignallingLostDuringARegistration(t *testing.T) {
 	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
 	s.wantSignallingLost(true)
 
-	// A new REGISTER clears it on arrival (TS 24.229 §5.2.6.4.3 NOTE 1).
 	req, f := s.register(nil)
 	s.wantSignallingLost(false)
 
-	// Lost again before the 200: the 200 keeps it.
 	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
 	s.wantSignallingLost(true)
 
@@ -886,7 +871,6 @@ func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
 	s.clock.Advance(600 * time.Second)
 	pcrf.wantSTR(id, rx.TerminationAuthExpired)
 
-	// A partial deregistration saving the snapshot after the removal.
 	s.p.regs.save(snapshot)
 
 	if r, _ := s.record(); r.RxSessionID != "" {
@@ -899,7 +883,6 @@ func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
 	s.wantSession(again)
 }
 
-// classAA answers AARs with Class values, and records the STRs' Class.
 func (f *fakePCRF) classAA(class [][]byte) <-chan [][]byte {
 	strs := make(chan [][]byte, 8)
 
@@ -1062,7 +1045,6 @@ func TestRxShutdownDuringTheRestoreKeepsTheSession(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	// The first STR after the restart waits until the P-CSCF shuts down.
 	var held atomic.Bool
 
 	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
@@ -1079,7 +1061,6 @@ func TestRxShutdownDuringTheRestoreKeepsTheSession(t *testing.T) {
 
 	s.restart()
 
-	// The record kept the session: the next start ends it and opens another.
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 
 	again, _ := pcrf.aar()

@@ -394,8 +394,6 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		reg = *set
 	}
 
-	// The HSS now holds the set registered here. If this REGISTER fails, undo
-	// that, unless the profile overlaps a set already registered here.
 	undo := assignAdministrative
 
 	if !registered {
@@ -420,8 +418,6 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		if err != nil {
 			r.log.Warn("invalid User-Data from the HSS", slog.String("impi", rr.impi), slog.Any("error", err))
 
-			// TS 29.228 Table 6.1.2.2: deregister with DEREGISTRATION_TOO_MUCH_DATA
-			// and answer 480.
 			undo = assignTooMuchData
 
 			return sip.NewResponse(rr.req, 480, "")
