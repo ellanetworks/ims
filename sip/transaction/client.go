@@ -61,7 +61,7 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 		return nil, err
 	}
 
-	if !isReliable(req.Flow) {
+	if !l.reliable(req.Flow) {
 		tx.interval = l.t1
 		tx.after(tx.interval, tx.retransmitTimer)
 	}
@@ -70,7 +70,7 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 
 	out := req.Clone()
 
-	tx.push(func() error { return l.tr.Send(l.ctx, out) }, func(err error) { tx.sentResult(out, err) })
+	tx.push(func() error { return l.send(l.ctx, out, false) }, func(err error) { tx.sentResult(out, err) })
 
 	return tx, nil
 }
@@ -112,7 +112,7 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, err error) {
 
 	tx.sent = true
 	tx.req = sent
-	tx.reliable = isReliable(sent.Flow)
+	tx.reliable = tx.layer.reliable(sent.Flow)
 
 	early := tx.early
 	tx.early = nil
@@ -232,7 +232,7 @@ func (tx *ClientTransaction) handleNonInvite(res *sip.Response) {
 
 func (tx *ClientTransaction) sendAck() {
 	ack := tx.ack.Clone()
-	tx.push(func() error { return tx.layer.tr.SendOnFlow(tx.layer.ctx, ack) }, tx.sendResult)
+	tx.push(func() error { return tx.layer.send(tx.layer.ctx, ack, true) }, tx.sendResult)
 }
 
 func (tx *ClientTransaction) sendResult(err error) {
@@ -256,7 +256,7 @@ func (tx *ClientTransaction) retransmitTimer() {
 
 	if tx.sent {
 		req := tx.req.Clone()
-		tx.push(func() error { return tx.layer.tr.SendOnFlow(tx.layer.ctx, req) }, tx.sendResult)
+		tx.push(func() error { return tx.layer.send(tx.layer.ctx, req, true) }, tx.sendResult)
 	}
 
 	switch {

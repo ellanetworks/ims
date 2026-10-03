@@ -20,7 +20,7 @@ func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 	tx := &ServerTransaction{req: req, invite: req.Method == "INVITE", tag: sip.NewTag(), trying: sip.NewResponse(req, 100, "")}
 	tx.init(l, Trying)
 	tx.flow = req.Flow
-	tx.reliable = isReliable(tx.flow)
+	tx.reliable = l.reliable(tx.flow)
 	tx.may100 = tx.invite || tx.reliable
 
 	if req.Method != "CANCEL" {
@@ -151,11 +151,7 @@ func (tx *ServerTransaction) transmit() {
 
 		res.Flow = f
 
-		if exact {
-			return tx.layer.tr.SendOnFlow(tx.layer.ctx, res)
-		}
-
-		return tx.layer.tr.Send(tx.layer.ctx, res)
+		return tx.layer.send(tx.layer.ctx, res, exact)
 	}, func(err error) {
 		if err != nil {
 			tx.report(err)

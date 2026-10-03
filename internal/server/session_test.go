@@ -36,11 +36,11 @@ type callScene struct {
 	scscf netip.AddrPort
 
 	// alice is the originating P-CSCF; aliceRoute is her Service-Route.
-	alice      *siptest.Socket
+	alice      *siptest.Peer
 	aliceRoute string
 
 	// bob is the terminating P-CSCF on bob's Path; bobContact his contact.
-	bob        *siptest.Socket
+	bob        *siptest.Peer
 	bobContact string
 }
 
@@ -79,8 +79,8 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 
 	sc := &callScene{
 		scscf: sipListener(t, srv, roleSCSCF, loopback),
-		alice: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
-		bob:   siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
+		alice: newPeer(t, srv, netip.AddrPortFrom(loopback, 6100)),
+		bob:   newPeer(t, srv, netip.AddrPortFrom(loopback, 6101)),
 	}
 
 	sc.aliceRoute = registerAtSCSCF(t, sc.scscf, sc.alice, aliceIMPI, "sip:alice@"+loopback.String()+":6000")
@@ -93,7 +93,7 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 // registerAtSCSCF registers a subscriber at the S-CSCF as the P-CSCF does,
 // with the P-CSCF's socket in Path, and returns the Service-Route on the
 // S-CSCF's address.
-func registerAtSCSCF(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Socket, impi, contact string) string {
+func registerAtSCSCF(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Peer, impi, contact string) string {
 	t.Helper()
 
 	impu := "sip:" + impi
@@ -181,7 +181,7 @@ func (sc *callScene) invite(target string) *sip.Request {
 
 // responseTo is the first response to req other than 100, skipping the
 // retransmitted responses to earlier requests.
-func responseTo(t *testing.T, s *siptest.Socket, req *sip.Request) *sip.Response {
+func responseTo(t *testing.T, s node, req *sip.Request) *sip.Response {
 	t.Helper()
 
 	want, err := req.Header.CSeq()
@@ -199,7 +199,7 @@ func responseTo(t *testing.T, s *siptest.Socket, req *sip.Request) *sip.Response
 
 // failedInvite is the final response to an INVITE that fails, which it ACKs
 // so that the S-CSCF stops retransmitting it.
-func failedInvite(t *testing.T, s *siptest.Socket, to netip.AddrPort, invite *sip.Request) *sip.Response {
+func failedInvite(t *testing.T, s node, to netip.AddrPort, invite *sip.Request) *sip.Response {
 	t.Helper()
 
 	res := responseTo(t, s, invite)

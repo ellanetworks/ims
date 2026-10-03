@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,6 +65,7 @@ type sipServer struct {
 	pcscf       atomic.Pointer[pcscf.PCSCF]
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
+	served      []api.SIPEndpoint
 }
 
 func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler, rxh *rxHandler,
@@ -129,12 +131,14 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		}
 	}
 
-	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
+	// The I-CSCF and S-CSCF have no sockets: the other roles reach them in
+	// memory, at addresses that only name them in Via, Route and Path.
+	icscfPort, err := s.serve(roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
 
-	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
+	scscfPort, err := s.serve(roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
@@ -276,10 +280,30 @@ func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr,
 	return p, nil
 }
 
+func (s *sipServer) serve(role string, addrs []netip.Addr, port int) (uint16, error) {
+	if port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("%s port %d: a role served in memory needs a fixed port", role, port)
+	}
+
+	p := uint16(port)
+
+	for _, a := range addrs {
+		local := netip.AddrPortFrom(a, p)
+		if err := s.layer.Serve(local); err != nil {
+			return 0, err
+		}
+
+		s.served = append(s.served, api.SIPEndpoint{Role: role, Address: local})
+		s.placeholder.addListener(local)
+	}
+
+	return p, nil
+}
+
 func (s *sipServer) bound(role string) []netip.AddrPort {
 	var out []netip.AddrPort
 
-	for _, l := range s.listeners {
+	for _, l := range append(slices.Clip(s.listeners), s.served...) {
 		if l.Role == role {
 			out = append(out, l.Address)
 		}

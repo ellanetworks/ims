@@ -20,10 +20,12 @@ func testConfig(t *testing.T) config.Config {
 	t.Helper()
 
 	return config.Config{
-		DB:  config.DB{Path: filepath.Join(t.TempDir(), "ims.db")},
-		API: config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
-		IMS: config.IMS{MCC: "001", MNC: "01", HomeDomain: imsRealm},
-		SIP: config.SIP{Addresses: []netip.Addr{loopback, loopback6}},
+		DB:    config.DB{Path: filepath.Join(t.TempDir(), "ims.db")},
+		API:   config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
+		IMS:   config.IMS{MCC: "001", MNC: "01", HomeDomain: imsRealm},
+		SIP:   config.SIP{Addresses: []netip.Addr{loopback, loopback6}},
+		ICSCF: config.ICSCF{Port: 5070},
+		SCSCF: config.SCSCF{Port: 5080},
 		Diameter: diameterConfig(
 			config.DiameterPeer{
 				ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: imsRealm,

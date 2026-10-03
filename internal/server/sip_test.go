@@ -32,7 +32,7 @@ func startServer(t *testing.T) *Server {
 func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.AddrPort {
 	t.Helper()
 
-	for _, l := range srv.sip.Listeners() {
+	for _, l := range append(srv.sip.Listeners(), srv.sip.served...) {
 		if l.Role == role && l.Address.Addr() == a {
 			return l.Address
 		}
@@ -43,7 +43,24 @@ func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.Add
 	return netip.AddrPort{}
 }
 
-func wantResponse(t *testing.T, ue *siptest.Socket, code int, method string) *sip.Response {
+// newPeer attaches a test SIP node to the server in memory, as the I-CSCF
+// and S-CSCF have no sockets to send to.
+func newPeer(t *testing.T, srv *Server, addr netip.AddrPort) *siptest.Peer {
+	t.Helper()
+
+	return siptest.NewPeer(t, srv.sip.layer, addr)
+}
+
+// node is a test SIP node, on a socket or attached in memory.
+type node interface {
+	Addr() netip.AddrPort
+	Send(tr sip.Transport, to netip.AddrPort, m sip.Message)
+	RecvRequest() (*sip.Request, sip.Flow)
+	RecvResponse() (*sip.Response, sip.Flow)
+	RecvNone(d time.Duration)
+}
+
+func wantResponse(t *testing.T, ue node, code int, method string) *sip.Response {
 	t.Helper()
 
 	res, _ := ue.RecvResponse()
@@ -171,11 +188,15 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 	var listeners []netip.AddrPort
 
 	for _, l := range srv.sip.Listeners() {
+		if l.Role != rolePCSCF && l.Role != rolePCSCFProtected {
+			t.Errorf("%s listens on %s: only the P-CSCF has sockets", l.Role, l.Address)
+		}
+
 		listeners = append(listeners, l.Address)
 	}
 
-	if len(listeners) != 12 {
-		t.Fatalf("listeners = %v, want one per role or protected port, and address", listeners)
+	if len(listeners) != 8 {
+		t.Fatalf("listeners = %v, want one per P-CSCF port and address", listeners)
 	}
 
 	srv.Shutdown(ctx)
@@ -293,10 +314,10 @@ func TestSIPPlaceholderIsSelf(t *testing.T) {
 func TestSCSCFRelaysAck(t *testing.T) {
 	srv := startServer(t)
 	scscf := sipListener(t, srv, roleSCSCF, loopback)
-	caller := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
-	callee := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	caller := newPeer(t, srv, netip.AddrPortFrom(loopback, 6000))
+	callee := newPeer(t, srv, netip.AddrPortFrom(loopback, 6001))
 
-	ack := func(from *siptest.Socket, route bool) *sip.Request {
+	ack := func(from *siptest.Peer, route bool) *sip.Request {
 		r := siptest.NewRequest("ACK", "sip:bob@"+callee.Addr().String(), sip.UDP, from.Addr())
 		r.Header.Set("To", "<sip:bob@"+imsRealm+">;tag="+sip.NewTag())
 
@@ -324,7 +345,7 @@ func TestSCSCFRelaysAck(t *testing.T) {
 	})
 
 	t.Run("from outside the trust domain", func(t *testing.T) {
-		outsider := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), 0))
+		outsider := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
 		outsider.Send(sip.UDP, scscf, ack(outsider, true))
 		callee.RecvNone(100 * time.Millisecond)
 	})
@@ -333,7 +354,7 @@ func TestSCSCFRelaysAck(t *testing.T) {
 func TestSCSCFAnswersOptions(t *testing.T) {
 	srv := startServer(t)
 	scscf := sipListener(t, srv, roleSCSCF, loopback)
-	peer := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	peer := newPeer(t, srv, netip.AddrPortFrom(loopback, 6000))
 
 	for _, route := range []bool{false, true} {
 		options := siptest.NewRequest("OPTIONS", "sip:"+scscf.String(), sip.UDP, peer.Addr())

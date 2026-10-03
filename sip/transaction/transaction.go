@@ -85,6 +85,8 @@ type Layer struct {
 	mu      sync.Mutex
 	closed  bool
 	locals  map[netip.AddrPort]struct{}
+	peers   map[netip.AddrPort]func(sip.Message)
+	lanes   map[sip.Flow]*lane
 	clients map[clientKey]*ClientTransaction
 	servers map[serverKey]*ServerTransaction
 	pending map[branchKey]*ServerTransaction
@@ -125,6 +127,8 @@ func New(cfg Config) *Layer {
 		t2:       cfg.T2,
 		t4:       cfg.T4,
 		locals:   make(map[netip.AddrPort]struct{}),
+		peers:    make(map[netip.AddrPort]func(sip.Message)),
+		lanes:    make(map[sip.Flow]*lane),
 		clients:  make(map[clientKey]*ClientTransaction),
 		servers:  make(map[serverKey]*ServerTransaction),
 		pending:  make(map[branchKey]*ServerTransaction),
@@ -192,18 +196,22 @@ func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
 		return fmt.Errorf("sip/transaction: SendAck of a %s request", ack.Method)
 	}
 
-	return l.tr.Send(ctx, ack)
+	return l.send(ctx, ack, false)
 }
 
 func (l *Layer) SendResponse(ctx context.Context, res *sip.Response) error {
-	return l.tr.Send(ctx, res)
+	return l.send(ctx, res, false)
 }
 
 func (l *Layer) SendOnFlow(ctx context.Context, m sip.Message) error {
-	return l.tr.SendOnFlow(ctx, m)
+	return l.send(ctx, m, true)
 }
 
 func (l *Layer) CloseFlow(f sip.Flow) {
+	if _, ok := l.inMemory(f.Remote); ok {
+		return
+	}
+
 	l.tr.CloseFlow(f)
 }
 
@@ -472,13 +480,8 @@ func (l *Layer) sendStateless(req *sip.Request, res *sip.Response) {
 
 	res.Flow = f
 
-	send := l.tr.Send
-	if exact {
-		send = l.tr.SendOnFlow
-	}
-
 	l.spawn(func() {
-		if err := send(l.ctx, res); err != nil {
+		if err := l.send(l.ctx, res, exact); err != nil {
 			l.log.Debug("stateless response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 	})
@@ -524,10 +527,8 @@ func (l *Layer) checkFlow(f sip.Flow) error {
 		return errors.New("sip/transaction: no remote address in the flow")
 	}
 
-	local := netip.AddrPortFrom(f.Local.Addr().Unmap(), f.Local.Port())
-
 	l.mu.Lock()
-	_, ok := l.locals[local]
+	_, ok := l.locals[unmap(f.Local)]
 	l.mu.Unlock()
 
 	if !ok {
@@ -638,10 +639,6 @@ func timerEReachesT2(t1, t2 time.Duration) time.Duration {
 			return d
 		}
 	}
-}
-
-func isReliable(f sip.Flow) bool {
-	return f.Transport == sip.TCP
 }
 
 func branchOf(req *sip.Request) (string, error) {
