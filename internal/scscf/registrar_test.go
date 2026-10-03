@@ -471,7 +471,71 @@ func TestAllBarredSet(t *testing.T) {
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 403)
 	h.hss.wantSAR(t, cx.AssignmentRegistration)
+	h.hss.wantSAR(t, cx.AssignmentAdministrativeDeregistration)
 	h.wantUnregistered()
+}
+
+func TestRejectAfterRegistrationSAR(t *testing.T) {
+	outside, err := cx.MarshalUserData(cx.IMSSubscription{
+		PrivateIdentity: testIMPI,
+		ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{{Identity: secondIMPU}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		set  func(h *fakeHSS)
+		code int
+		undo cx.AssignmentType
+	}{
+		{"invalid User-Data", func(h *fakeHSS) { h.userData = []byte("<IMSSubscription") }, 480, cx.AssignmentDeregistrationTooMuchData},
+		{"no User-Data", func(h *fakeHSS) { h.noUserData = true }, 500, cx.AssignmentAdministrativeDeregistration},
+		{"IMPU outside the profile", func(h *fakeHSS) { h.userData = outside }, 403, cx.AssignmentAdministrativeDeregistration},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			u := h.newUE()
+
+			nonce := u.challenged(registerOptions{})
+
+			h.hss.set(tt.set)
+
+			wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), tt.code)
+			h.hss.wantSAR(t, cx.AssignmentRegistration)
+
+			if sar := h.hss.wantSAR(t, tt.undo); !reflect.DeepEqual(sar.PublicIdentities, []string{u.impu}) {
+				t.Fatalf("SAR = %+v, want %s for %s", sar, tt.undo, u.impu)
+			}
+
+			h.wantUnregistered()
+		})
+	}
+}
+
+func TestRejectAfterSARKeepsARegisteredSet(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	registered, err := cx.MarshalUserData(testSubscriptions()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.hss.set(func(h *fakeHSS) { h.userData = registered })
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
+	h.hss.wantSAR(t, cx.AssignmentRegistration)
+	h.hss.noCx(t)
+
+	h.registration(testIMPU)
 }
 
 func TestRegisterAnotherIMPU(t *testing.T) {
@@ -734,6 +798,64 @@ func TestTimeoutDeregistration(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 500)
 }
 
+func TestSlowSARDoesNotDelayOtherExpiries(t *testing.T) {
+	h := newHarness(t)
+
+	phone := h.newUE()
+	phone.register(registerOptions{expires: "600"})
+	h.hss.nextSAR(t)
+
+	tablet := h.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = testAlias
+	tablet.contact = "sip:tablet@127.0.0.1:5090"
+	tablet.register(registerOptions{expires: "600"})
+	h.hss.nextSAR(t)
+
+	gate := make(chan struct{})
+
+	h.hss.set(func(h *fakeHSS) { h.sarGate = gate })
+
+	h.clock.Advance(600*time.Second - sweepInterval)
+
+	// Keep the sweep ticking from another goroutine: a sweep that waited for
+	// the held SAR would stop the ticks, and the second SAR would never come.
+	stop := make(chan struct{})
+	ticking := make(chan struct{})
+
+	go func() {
+		defer close(ticking)
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+				h.clock.Advance(sweepInterval)
+			}
+		}
+	}()
+
+	impis := map[string]bool{}
+
+	for len(impis) < 2 {
+		sar := h.hss.nextSAR(t)
+		if sar.Type != cx.AssignmentTimeoutDeregistration {
+			t.Fatalf("SAR = %+v, want TIMEOUT_DEREGISTRATION", sar)
+		}
+
+		impis[sar.PrivateIdentity] = true
+	}
+
+	close(gate)
+	close(stop)
+	<-ticking
+
+	if !impis[testIMPI] || !impis[tablet.impi] {
+		t.Fatalf("timeout SARs for %v, want both private identities while the first is unanswered", impis)
+	}
+}
+
 func TestSweepWaitsForBusyIMPI(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -907,8 +1029,7 @@ func TestHSSDown(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
-	h.hss.shutdown()
-	h.waitHSS(diameter.PeerDown)
+	h.loop.SetDown(true)
 
 	res := u.send(registerOptions{auth: u.unprotected()})
 	wantStatus(t, res, 500)

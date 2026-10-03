@@ -18,6 +18,7 @@ const (
 	assignAuthenticationFailure = cx.AssignmentAuthenticationFailure
 	assignAuthenticationTimeout = cx.AssignmentAuthenticationTimeout
 	assignAdministrative        = cx.AssignmentAdministrativeDeregistration
+	assignTooMuchData           = cx.AssignmentDeregistrationTooMuchData
 )
 
 var errNoAKAVector = errors.New("no Digest-AKAv1-MD5 vector in the MAA")

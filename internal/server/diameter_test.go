@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -18,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 )
 
@@ -56,56 +56,25 @@ func newFakePeerWithHandler(t *testing.T, host, realm string, handler diameter.H
 
 	f := &fakePeer{host: host, realm: realm, apps: apps}
 
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", netip.AddrPortFrom(loopback, 0).String())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	appIDs := make([]diameter.Application, 0, len(apps))
+	for _, a := range apps {
+		appIDs = append(appIDs, applications[a])
 	}
 
-	f.port = ln.Addr().(*net.TCPAddr).Port
+	var addr netip.AddrPort
 
-	node, err := diameter.New(diameter.Config{
+	f.node, addr = diametertest.Listen(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost:      host,
 			OriginRealm:     realm,
 			HostIPAddresses: []netip.Addr{loopback},
 			ProductName:     "fake",
 		},
+		Peer:              diameter.Peer{ID: "ims", Host: imsHost, Applications: appIDs},
 		Handler:           handler,
 		OnPeerStateChange: f.peerStateChanged,
-		Logger:            slog.New(slog.DiscardHandler),
 	})
-	if err != nil {
-		t.Fatalf("diameter.New: %v", err)
-	}
-
-	appIDs := make([]diameter.Application, 0, len(apps))
-	for _, a := range apps {
-		appIDs = append(appIDs, applications[a])
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "ims",
-		Host:         imsHost,
-		Addresses:    []netip.Addr{loopback},
-		Transport:    diameter.TransportTCP,
-		Applications: appIDs,
-		Passive:      true,
-	}}); err != nil {
-		t.Fatalf("SetPeers: %v", err)
-	}
-
-	go func() { _ = node.Serve(diameter.NewTCPListener(ln.(*net.TCPListener))) }()
-
-	f.node = node
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
+	f.port = int(addr.Port())
 
 	return f
 }

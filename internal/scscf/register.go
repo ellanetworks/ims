@@ -376,7 +376,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 	return res
 }
 
-func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, set *db.Registration, replace bool) *sip.Response {
+func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, set *db.Registration, replace bool) (res *sip.Response) {
 	registered := st.registered(set)
 
 	t := assignRegistration
@@ -394,6 +394,18 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		reg = *set
 	}
 
+	// The HSS now holds the set registered here. If this REGISTER fails, undo
+	// that, unless the profile overlaps a set already registered here.
+	undo := assignAdministrative
+
+	if !registered {
+		defer func() {
+			if res.StatusCode != 200 && !st.registeredAny(reg.Identities) {
+				r.deregisterAtHSS(ctx, rr.impi, rr.impu, undo)
+			}
+		}()
+	}
+
 	var ch change
 
 	if expired := without(reg.Bindings, st.live(reg.Bindings)); len(expired) > 0 {
@@ -407,7 +419,12 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		sub, err := cx.ParseUserData(saa.UserData)
 		if err != nil {
 			r.log.Warn("invalid User-Data from the HSS", slog.String("impi", rr.impi), slog.Any("error", err))
-			return sip.NewResponse(rr.req, 500, "")
+
+			// TS 29.228 Table 6.1.2.2: deregister with DEREGISTRATION_TOO_MUCH_DATA
+			// and answer 480.
+			undo = assignTooMuchData
+
+			return sip.NewResponse(rr.req, 480, "")
 		}
 
 		reg.Identities = implicitSet(sub)

@@ -94,7 +94,7 @@ func (i *ICSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	case req.Method == "REGISTER":
 		i.register(tx, req)
 	case to.Tag() != "":
-		i.respond(tx, sip.NewResponse(req, 481, ""))
+		i.subsequent(tx, req)
 	default:
 		i.initial(tx, req)
 	}

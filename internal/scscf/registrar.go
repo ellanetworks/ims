@@ -141,18 +141,13 @@ func (r *Registrar) Start() {
 }
 
 func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		respond(retryLater(req))
 		return
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	res, out := r.register(ctx, req)
 
@@ -178,6 +173,21 @@ func (r *Registrar) Close() {
 
 	r.cancel()
 	r.wg.Wait()
+}
+
+func (r *Registrar) begin(ctx context.Context) (context.Context, func(), bool) {
+	if !r.start() {
+		return nil, nil, false
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(r.ctx, cancel)
+
+	return ctx, func() {
+		stop()
+		cancel()
+		r.wg.Done()
+	}, true
 }
 
 func (r *Registrar) start() bool {
@@ -332,23 +342,39 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 			continue
 		}
 
-		out := r.sweepIMPI(ctx, impi)
+		out, expired := r.sweepIMPI(ctx, impi)
 
-		r.unlock(impi)
 		r.send(out)
+
+		if len(expired) == 0 || !r.start() {
+			r.unlock(impi)
+			continue
+		}
+
+		go func() {
+			defer r.wg.Done()
+			defer r.unlock(impi)
+
+			for _, impu := range expired {
+				r.deregisterAtHSS(r.ctx, impi, impu, assignTimeoutDeregistration)
+			}
+		}()
 	}
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []string) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil
+		return nil, nil
 	}
 
 	out := r.expireSubscriptions(ctx, st, impi)
 
-	var ch change
+	var (
+		ch           change
+		deregistered []string
+	)
 
 	for _, reg := range st.regs {
 		expired := without(reg.Bindings, st.live(reg.Bindings))
@@ -365,15 +391,15 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) []*outgoing {
 
 		if deleted {
 			r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
-			r.deregisterAtHSS(ctx, impi, reg.IMPU, assignTimeoutDeregistration)
+			deregistered = append(deregistered, reg.IMPU)
 		}
 	}
 
 	if len(ch.removed) == 0 {
-		return out
+		return out, deregistered
 	}
 
-	return append(out, r.notifyChange(ctx, impi, ch)...)
+	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered
 }
 
 func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,

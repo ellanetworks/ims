@@ -28,18 +28,13 @@ func IsRegEvent(req *sip.Request) bool {
 }
 
 func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		respond(retryLater(req))
 		return
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	to, err := req.Header.To()
 	if err != nil {

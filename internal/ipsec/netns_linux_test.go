@@ -125,7 +125,7 @@ func (l *lab) install(t *testing.T, s Set) {
 		t.Fatal(err)
 	}
 
-	if err := l.ux.Install(s.Reverse(), l.keys); err != nil {
+	if err := l.ux.Install(s.reverse(), l.keys); err != nil {
 		t.Fatal(err)
 	}
 }

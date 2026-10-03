@@ -41,6 +41,10 @@ type Config struct {
 
 	Registrations RegistrationStore
 
+	// Trust holds the core's addresses: requests toward a UE are accepted
+	// only from them, on the unprotected port.
+	Trust *trust.Domain
+
 	Fallback transaction.Handler
 	Clock    Clock
 	Logger   *slog.Logger
@@ -290,23 +294,18 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		return sip.NewResponse(req, 400, "Bad Security-Verify")
 	}
 
-	offers, err := ipsec.ParseOffers(clients)
+	offers, skipped, err := ipsec.ParseOffers(clients)
 	ipsecOffered := err == nil
 
-	for _, m := range clients {
-		if _, err := ipsec.ParseOffer(m); err != nil && strings.EqualFold(m.Name, ipsec.Mechanism) {
-			p.log.Info("skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
-		}
+	for _, err := range skipped {
+		p.log.Info("skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
 	}
 
 	if p.sas != nil && r.in == nil && !ipsecOffered {
 		p.log.Info("REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
 			slog.String("security-client", req.Header.Get("Security-Client")))
 
-		res := sip.NewResponse(req, 421, "")
-		res.Header.Add("Require", secAgree)
-
-		return res
+		return p.secAgreeRequired(req)
 	}
 
 	if ipsecOffered && p.sas != nil {
@@ -341,7 +340,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 				slog.String("security-verify", req.Header.Get("Security-Verify")), slog.String("security-server", r.in.server.String()))
 
 			return sip.NewResponse(req, 403, "Security Agreement Mismatch")
-		case !sameIPsecMechanisms(clients, r.in.client):
+		case !sameOffers(clients, r.in.client):
 			p.log.Info("Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
 				slog.String("security-client", req.Header.Get("Security-Client")),
 				slog.String("challenged", mechanismsString(r.in.client)))
@@ -747,41 +746,28 @@ func viaMatches(req *sip.Request, source netip.Addr) bool {
 	return ok && a.Unmap() == source
 }
 
-func sameIPsecMechanisms(a, b []sip.SecurityMechanism) bool {
-	x, y := ipsecMechanisms(a), ipsecMechanisms(b)
-	if len(x) != len(y) {
+func sameOffers(a, b []sip.SecurityMechanism) bool {
+	x, xSkipped, _ := ipsec.ParseOffers(a)
+	y, ySkipped, _ := ipsec.ParseOffers(b)
+
+	if len(x) != len(y) || len(xSkipped) != len(ySkipped) {
 		return false
 	}
 
-	used := make([]bool, len(y))
+	n := make(map[ipsec.Offer]int, len(x))
+	for _, o := range x {
+		n[o]++
+	}
 
-next:
-	for _, m := range x {
-		for i, o := range y {
-			if !used[i] && m.Equal(o) {
-				used[i] = true
-				continue next
-			}
+	for _, o := range y {
+		if n[o] == 0 {
+			return false
 		}
 
-		return false
+		n[o]--
 	}
 
 	return true
-}
-
-func ipsecMechanisms(ms []sip.SecurityMechanism) []sip.SecurityMechanism {
-	var out []sip.SecurityMechanism
-
-	for _, m := range ms {
-		if strings.EqualFold(m.Name, ipsec.Mechanism) {
-			m.Params = m.Params.Clone()
-			m.Params.Del("q")
-			out = append(out, m)
-		}
-	}
-
-	return out
 }
 
 func mechanismsString(ms []sip.SecurityMechanism) string {
@@ -872,6 +858,29 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
+// secAgreeRequired answers a REGISTER the P-CSCF cannot protect (RFC 3329
+// §2.3.1): 421 when it lacks the sec-agree option tag, 494 when it has one, both
+// with the P-CSCF's Security-Server list and Require: sec-agree.
+func (p *PCSCF) secAgreeRequired(req *sip.Request) *sip.Response {
+	code := 421
+
+	for _, name := range []string{"Require", "Proxy-Require", "Supported"} {
+		if slices.ContainsFunc(req.Header.Elements(name), func(t string) bool { return strings.EqualFold(t, secAgree) }) {
+			code = 494
+		}
+	}
+
+	res := sip.NewResponse(req, code, "")
+
+	for _, m := range p.cfg.IPsec.Policy.Mechanisms() {
+		res.Header.Add("Security-Server", m.String())
+	}
+
+	res.Header.Add("Require", secAgree)
+
+	return res
+}
+
 func removeSecAgree(req *sip.Request, name string) {
 	var kept []string
 
@@ -908,12 +917,45 @@ func addOptionTag(res *sip.Response, name, tag string) {
 	res.Header.Add(name, tag)
 }
 
+// fromUE prepares a request from the UE for the core. The trust-domain header
+// fields go, but the UE's own P-Access-Network-Info stays: TS 24.229 §5.2.1
+// step 3 removes only values with "network-provided".
 func fromUE(req *sip.Request) {
+	pani := ueAccessNetworkInfo(req.Header)
+
 	trust.StripRequest(req)
 
 	for _, name := range []string{"P-Charging-Vector", "P-Charging-Function-Addresses", "P-Visited-Network-ID", "Path"} {
 		req.Header.Del(name)
 	}
+
+	for _, v := range pani {
+		req.Header.Add("P-Access-Network-Info", v)
+	}
+}
+
+// fromUEResponse does the same for a response from the UE (§5.2.1 steps 1-3).
+func fromUEResponse(res *sip.Response) {
+	pani := ueAccessNetworkInfo(res.Header)
+
+	trust.StripResponse(res)
+	res.Header.Del("P-Charging-Vector")
+
+	for _, v := range pani {
+		res.Header.Add("P-Access-Network-Info", v)
+	}
+}
+
+func ueAccessNetworkInfo(h sip.Header) []string {
+	var out []string
+
+	for _, v := range h.Elements("P-Access-Network-Info") {
+		if _, ps, err := sip.ParseTokenParams(v); err == nil && !ps.Has("network-provided") {
+			out = append(out, v)
+		}
+	}
+
+	return out
 }
 
 func toUE(res *sip.Response) {

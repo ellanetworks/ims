@@ -3,7 +3,6 @@ package icscf
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -57,8 +57,7 @@ func success(code uint32) tgpp.Result {
 }
 
 type fakeHSS struct {
-	node *diameter.Node
-	port int
+	id diameter.Identity
 
 	uars chan cx.UserAuthorizationRequest
 	lirs chan cx.LocationInfoRequest
@@ -73,63 +72,26 @@ func newFakeHSS(t *testing.T) *fakeHSS {
 	t.Helper()
 
 	h := &fakeHSS{
+		id:   diameter.Identity{OriginHost: hssHost, OriginRealm: homeDomain, ProductName: "fake-hss"},
 		uars: make(chan cx.UserAuthorizationRequest, 16),
 		lirs: make(chan cx.LocationInfoRequest, 16),
 		stop: make(chan struct{}),
 	}
 
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", netip.AddrPortFrom(loopback, 0).String())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	h.port = ln.Addr().(*net.TCPAddr).Port
-
-	mux := diameter.NewMux()
-	mux.Handle(cx.ApplicationID, cx.CommandUserAuthorization, diameter.HandlerFunc(h.userAuthorization))
-	mux.Handle(cx.ApplicationID, cx.CommandLocationInfo, diameter.HandlerFunc(h.locationInfo))
-
-	node, err := diameter.New(diameter.Config{
-		Identity: diameter.Identity{
-			OriginHost:      hssHost,
-			OriginRealm:     homeDomain,
-			HostIPAddresses: []netip.Addr{loopback},
-			ProductName:     "fake-hss",
-		},
-		Handler: mux,
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatalf("diameter.New: %v", err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "ims",
-		Host:         imsHost,
-		Addresses:    []netip.Addr{loopback},
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-		Passive:      true,
-	}}); err != nil {
-		t.Fatalf("SetPeers: %v", err)
-	}
-
-	go func() { _ = node.Serve(diameter.NewTCPListener(ln.(*net.TCPListener))) }()
-
-	h.node = node
-
-	t.Cleanup(func() {
-		close(h.stop)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
+	t.Cleanup(func() { close(h.stop) })
 
 	return h
+}
+
+func (h *fakeHSS) serve(ctx context.Context, req *diameter.Message) *diameter.Message {
+	switch req.CommandCode {
+	case cx.CommandUserAuthorization:
+		return h.userAuthorization(ctx, req)
+	case cx.CommandLocationInfo:
+		return h.locationInfo(ctx, req)
+	default:
+		return diameter.NewAnswer(req, h.id, diameter.ResultCommandUnsupported)
+	}
 }
 
 func (h *fakeHSS) answerUAR(answers ...*hssAnswer) {
@@ -171,10 +133,10 @@ func (h *fakeHSS) wait(ctx context.Context, gate chan struct{}) bool {
 	return false
 }
 
-func (h *fakeHSS) userAuthorization(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *fakeHSS) userAuthorization(ctx context.Context, req *diameter.Message) *diameter.Message {
 	uar, err := cx.ParseUserAuthorizationRequest(req)
 	if err != nil {
-		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+		return cx.NewErrorAnswer(req, h.id, err, 0)
 	}
 
 	h.uars <- uar
@@ -190,10 +152,10 @@ func (h *fakeHSS) userAuthorization(ctx context.Context, c *diameter.Conn, req *
 	}
 
 	if a.result.Failure() {
-		return cx.NewAnswer(req, c.LocalIdentity(), a.result, 0)
+		return cx.NewAnswer(req, h.id, a.result, 0)
 	}
 
-	ans, err := cx.NewUserAuthorizationAnswer(req, c.LocalIdentity(), cx.UserAuthorization{
+	ans, err := cx.NewUserAuthorizationAnswer(req, h.id, cx.UserAuthorization{
 		Result: a.result, ServerName: a.name, Capabilities: a.caps,
 	})
 	if err != nil {
@@ -203,10 +165,10 @@ func (h *fakeHSS) userAuthorization(ctx context.Context, c *diameter.Conn, req *
 	return ans
 }
 
-func (h *fakeHSS) locationInfo(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *fakeHSS) locationInfo(ctx context.Context, req *diameter.Message) *diameter.Message {
 	lir, err := cx.ParseLocationInfoRequest(req)
 	if err != nil {
-		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+		return cx.NewErrorAnswer(req, h.id, err, 0)
 	}
 
 	h.lirs <- lir
@@ -222,10 +184,10 @@ func (h *fakeHSS) locationInfo(ctx context.Context, c *diameter.Conn, req *diame
 	}
 
 	if a.result.Failure() {
-		return cx.NewAnswer(req, c.LocalIdentity(), a.result, 0)
+		return cx.NewAnswer(req, h.id, a.result, 0)
 	}
 
-	ans, err := cx.NewLocationInfoAnswer(req, c.LocalIdentity(), cx.LocationInfo{
+	ans, err := cx.NewLocationInfoAnswer(req, h.id, cx.LocationInfo{
 		Result: a.result, ServerName: a.name, Capabilities: a.caps,
 	})
 	if err != nil {
@@ -322,7 +284,6 @@ func (s *fakeSCSCF) respond(req *sip.Request, f sip.Flow, code int, edit ...func
 type harness struct {
 	t     *testing.T
 	hss   *fakeHSS
-	node  *diameter.Node
 	icscf netip.AddrPort
 	scscf *fakeSCSCF
 	ic    *ICSCF
@@ -362,48 +323,11 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 
 	h := &harness{t: t, hss: newFakeHSS(t)}
 
-	hssPort := h.hss.port
-	if o.hssDown {
-		hssPort = unusedPort(t)
+	loop := &diametertest.Loop{
+		Local:   diameter.Identity{OriginHost: imsHost, OriginRealm: homeDomain, ProductName: "ims"},
+		Handler: h.hss.serve,
 	}
-
-	node, err := diameter.New(diameter.Config{
-		Identity: diameter.Identity{
-			OriginHost:      imsHost,
-			OriginRealm:     homeDomain,
-			HostIPAddresses: []netip.Addr{loopback},
-			ProductName:     "ims",
-		},
-		Handler: diameter.NewMux(),
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatalf("diameter.New: %v", err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "hss",
-		Host:         hssHost,
-		Addresses:    []netip.Addr{loopback},
-		Port:         uint16(hssPort),
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-	}}); err != nil {
-		t.Fatalf("SetPeers: %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
-
-	h.node = node
-
-	if !o.hssDown {
-		h.waitHSS()
-	}
+	loop.SetDown(o.hssDown)
 
 	if !o.scscfAddr.IsValid() {
 		o.scscfAddr = loopback
@@ -439,47 +363,13 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		Trust:      trust.New([]netip.Addr{loopback}, nil),
 		SCSCF:      SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
 		HSS:        HSS{ID: "hss", Realm: homeDomain},
-		Diameter:   node,
+		Diameter:   loop,
 		CxTimeout:  cxTimeout,
 		Logger:     testLogger(),
 	})
 	late.h.Store(h.ic)
 
 	return h
-}
-
-func unusedPort(t *testing.T) int {
-	t.Helper()
-
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	return port
-}
-
-func (h *harness) waitHSS() {
-	h.t.Helper()
-
-	deadline := time.Now().Add(siptest.Timeout)
-
-	for {
-		if p, ok := h.node.Peer("hss"); ok && p.State == diameter.PeerOpen {
-			return
-		}
-
-		if time.Now().After(deadline) {
-			h.t.Fatal("timed out waiting for the HSS")
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 func (h *harness) icscfURI() string {

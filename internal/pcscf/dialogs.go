@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -217,7 +216,16 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	if p.towardUE(removed) {
+		if !p.fromCore(req) {
+			p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
+				slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
+			p.respond(tx, sip.NewResponse(req, 403, ""))
+
+			return
+		}
+
 		p.toUEFlow(tx, req, out, removed)
+
 		return
 	}
 
@@ -226,6 +234,10 @@ func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 
 func (p *PCSCF) towardUE(removed []sip.URI) bool {
 	return !removed[0].Params.Has(ueFacing)
+}
+
+func (p *PCSCF) fromCore(req *sip.Request) bool {
+	return req.Flow.Local.Port() == p.cfg.Port && p.cfg.Trust != nil && p.cfg.Trust.Trusted(req.Flow.Remote.Addr())
 }
 
 func flowToken(removed []sip.URI) string {
@@ -265,7 +277,7 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 
 	p.forward(tx, req, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
-			trust.StripResponse(rep.Response)
+			fromUEResponse(rep.Response)
 		}
 
 		return proxy.Relay

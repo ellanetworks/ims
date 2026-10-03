@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/diametertest"
 )
 
 func TestRxNotNegotiatedWithAPeerConfiguredForCx(t *testing.T) {
@@ -70,35 +71,12 @@ func rxClient(t *testing.T, h *rxHandler) (*fakePeer, *diameter.Node) {
 	server := newFakePeerWithHandler(t, "pcscf.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, newDiameterMux(newRTRHandler(h.log), h),
 		config.ApplicationRx)
 
-	node, err := diameter.New(diameter.Config{
+	node := diametertest.Dial(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost: imsHost, OriginRealm: imsRealm, HostIPAddresses: []netip.Addr{loopback}, ProductName: "pcrf",
 		},
-		Handler: diameter.NewMux(),
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID: "server", Host: server.host, Addresses: []netip.Addr{loopback}, Port: uint16(server.port),
-		Transport: diameter.TransportTCP, Applications: []diameter.Application{applications[config.ApplicationRx]},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
-
-	eventually(t, "the Rx client to connect", func() bool {
-		p, _ := node.Peer("server")
-		return p.State == diameter.PeerOpen
-	})
+		Peer: diameter.Peer{ID: "server", Host: server.host, Applications: []diameter.Application{applications[config.ApplicationRx]}},
+	}, netip.AddrPortFrom(loopback, uint16(server.port)))
 
 	return server, node
 }
@@ -129,53 +107,31 @@ func abortSession(t *testing.T, server *fakePeer, node *diameter.Node, session s
 	return r
 }
 
-func TestRxHandlerAnswersOnlyTheRxPeer(t *testing.T) {
+func TestRxHandlerTerminatesAfterTheASA(t *testing.T) {
 	const session = "pcscf;1;1"
 
-	for _, tc := range []struct {
-		name string
-		peer string
-		want uint32
-	}{
-		{"from the Rx peer", "ims", diameter.ResultSuccess},
-		{"from another peer", "pcrf", diameter.ResultUnknownSessionID},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sessions := &stubSessions{session: session, aborted: make(chan struct{}), terminated: make(chan struct{})}
+	sessions := &stubSessions{session: session, aborted: make(chan struct{}), terminated: make(chan struct{})}
 
-			h := newRxHandler(tc.peer, slog.New(slog.DiscardHandler))
-			h.bind(sessions)
+	h := newRxHandler(slog.New(slog.DiscardHandler))
+	h.bind(sessions)
 
-			server, node := rxClient(t, h)
+	server, node := rxClient(t, h)
 
-			if r := abortSession(t, server, node, session); r.Code != tc.want || r.Experimental {
-				t.Fatalf("ASA result = %s, want %d", r, tc.want)
-			}
+	if r := abortSession(t, server, node, session); r.Code != diameter.ResultSuccess || r.Experimental {
+		t.Fatalf("ASA result = %s, want DIAMETER_SUCCESS", r)
+	}
 
-			if tc.want != diameter.ResultSuccess {
-				select {
-				case <-sessions.aborted:
-					t.Fatal("a session aborted by a peer other than the Rx peer")
-				default:
-				}
-
-				return
-			}
-
-			// The termination runs once the ASA is written.
-			select {
-			case <-sessions.terminated:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the session's termination did not run after the ASA")
-			}
-		})
+	select {
+	case <-sessions.terminated:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session's termination did not run after the ASA")
 	}
 }
 
 func TestRxHandlerRejectsAMalformedRAR(t *testing.T) {
 	const session = "pcscf;1;1"
 
-	h := newRxHandler("ims", slog.New(slog.DiscardHandler))
+	h := newRxHandler(slog.New(slog.DiscardHandler))
 	h.bind(&stubSessions{session: session})
 
 	server, node := rxClient(t, h)

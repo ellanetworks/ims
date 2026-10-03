@@ -9,17 +9,12 @@ import (
 var ErrNotRegistered = errors.New("scscf: not registered")
 
 func (r *Registrar) Reauthenticate(ctx context.Context, impi string) error {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		return errors.New("registrar closed")
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	out, err := r.reauthenticate(ctx, impi)
 

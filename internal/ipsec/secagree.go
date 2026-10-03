@@ -18,10 +18,11 @@ type Offer struct {
 	Encryption Encryption
 }
 
-func ParseOffers(ms []sip.SecurityMechanism) ([]Offer, error) {
+func ParseOffers(ms []sip.SecurityMechanism) ([]Offer, []error, error) {
 	var (
-		out   []Offer
-		found bool
+		out     []Offer
+		skipped []error
+		found   bool
 	)
 
 	for _, m := range ms {
@@ -31,16 +32,20 @@ func ParseOffers(ms []sip.SecurityMechanism) ([]Offer, error) {
 
 		found = true
 
-		if o, err := ParseOffer(m); err == nil {
-			out = append(out, o)
+		o, err := ParseOffer(m)
+		if err != nil {
+			skipped = append(skipped, err)
+			continue
 		}
+
+		out = append(out, o)
 	}
 
 	if !found {
-		return nil, ErrNoOffer
+		return nil, nil, errNoOffer
 	}
 
-	return out, nil
+	return out, skipped, nil
 }
 
 func ParseOffer(m sip.SecurityMechanism) (Offer, error) {
@@ -168,6 +173,36 @@ func (p Policy) Validate() error {
 	return fmt.Errorf("unknown encryption policy %q", p.Encryption)
 }
 
+// Mechanisms lists the policy's algorithm combinations in priority order, for
+// a Security-Server that offers no SAs yet (RFC 3329 §2.3.1: a 421 or 494). A
+// policy that never encrypts lists no encryption algorithm (TS 33.203 §7.2).
+func (p Policy) Mechanisms() []sip.SecurityMechanism {
+	encryptions := []Encryption{EncryptionNull}
+
+	switch p.Encryption {
+	case EncryptionPreferred:
+		encryptions = []Encryption{AESCBC, EncryptionNull}
+	case EncryptionRequired:
+		encryptions = []Encryption{AESCBC}
+	}
+
+	var out []sip.SecurityMechanism
+
+	for _, e := range encryptions {
+		for _, i := range p.Integrity {
+			out = append(out, sip.SecurityMechanism{Name: Mechanism, Params: sip.Params{
+				{Name: "q", Value: "0." + strconv.Itoa(max(9-len(out), 1))},
+				{Name: "prot", Value: "esp"},
+				{Name: "mod", Value: "trans"},
+				{Name: "alg", Value: string(i)},
+				{Name: "ealg", Value: string(e)},
+			}})
+		}
+	}
+
+	return out
+}
+
 func (p Policy) Select(offers []Offer) (Offer, error) {
 	find := func(i Integrity, e Encryption) (Offer, bool) {
 		for _, o := range offers {
@@ -196,7 +231,7 @@ func (p Policy) Select(offers []Offer) (Offer, error) {
 		}
 	}
 
-	return Offer{}, ErrNoAlgorithm
+	return Offer{}, errNoAlgorithm
 }
 
 func (s Set) Server() sip.SecurityMechanism {
@@ -227,7 +262,7 @@ func KeysFromChallenge(a sip.Auth) (Keys, error) {
 
 		b, err := hex.DecodeString(sip.Unquote(v))
 		if err != nil || len(b) != 16 {
-			return Keys{}, fmt.Errorf("%s: %w", p.name, ErrBadKeys)
+			return Keys{}, fmt.Errorf("%s: %w", p.name, errBadKeys)
 		}
 
 		*p.dst = b

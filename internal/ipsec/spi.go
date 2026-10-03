@@ -33,7 +33,7 @@ func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 					delete(a.used, s)
 				}
 
-				return 0, 0, ErrSPIsExhausted
+				return 0, 0, errSPIsExhausted
 			}
 
 			spi := MinSPI + rand.Uint32N(MaxSPI-MinSPI+1)

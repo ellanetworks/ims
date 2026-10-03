@@ -8,9 +8,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +22,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -67,8 +68,7 @@ func (c fakeClock) Now() time.Time {
 }
 
 type fakeHSS struct {
-	node *diameter.Node
-	port int
+	id diameter.Identity
 
 	mars chan cx.MultimediaAuthRequest
 	sars chan cx.ServerAssignmentRequest
@@ -80,12 +80,18 @@ type fakeHSS struct {
 	vector        cx.AKAVector
 	subscriptions []cx.IMSSubscription
 	marGate       chan struct{}
+	sarGate       chan struct{}
+
+	// userData replaces the SAA's User-Data when set; noUserData omits it.
+	userData   []byte
+	noUserData bool
 }
 
 func newFakeHSS(t *testing.T) *fakeHSS {
 	t.Helper()
 
 	h := &fakeHSS{
+		id:            diameter.Identity{OriginHost: hssHost, OriginRealm: homeDomain, ProductName: "fake-hss"},
 		mars:          make(chan cx.MultimediaAuthRequest, 16),
 		sars:          make(chan cx.ServerAssignmentRequest, 16),
 		akaScheme:     cx.SchemeDigestAKAv1MD5,
@@ -93,58 +99,18 @@ func newFakeHSS(t *testing.T) *fakeHSS {
 		subscriptions: testSubscriptions(),
 	}
 
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", netip.AddrPortFrom(loopback, 0).String())
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	h.port = ln.Addr().(*net.TCPAddr).Port
-
-	mux := diameter.NewMux()
-	mux.Handle(cx.ApplicationID, cx.CommandMultimediaAuth, diameter.HandlerFunc(h.multimediaAuth))
-	mux.Handle(cx.ApplicationID, cx.CommandServerAssignment, diameter.HandlerFunc(h.serverAssignment))
-
-	node, err := diameter.New(diameter.Config{
-		Identity: diameter.Identity{
-			OriginHost:      hssHost,
-			OriginRealm:     homeDomain,
-			HostIPAddresses: []netip.Addr{loopback},
-			ProductName:     "fake-hss",
-		},
-		Handler: mux,
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatalf("diameter.New: %v", err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "ims",
-		Host:         imsHost,
-		Addresses:    []netip.Addr{loopback},
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-		Passive:      true,
-	}}); err != nil {
-		t.Fatalf("SetPeers: %v", err)
-	}
-
-	go func() { _ = node.Serve(diameter.NewTCPListener(ln.(*net.TCPListener))) }()
-
-	h.node = node
-
-	t.Cleanup(func() { h.shutdown() })
-
 	return h
 }
 
-func (h *fakeHSS) shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_ = h.node.Shutdown(ctx)
+func (h *fakeHSS) serve(ctx context.Context, req *diameter.Message) *diameter.Message {
+	switch req.CommandCode {
+	case cx.CommandMultimediaAuth:
+		return h.multimediaAuth(ctx, req)
+	case cx.CommandServerAssignment:
+		return h.serverAssignment(ctx, req)
+	default:
+		return diameter.NewAnswer(req, h.id, diameter.ResultCommandUnsupported)
+	}
 }
 
 func (h *fakeHSS) set(f func(h *fakeHSS)) {
@@ -163,10 +129,10 @@ func failure(req *diameter.Message, id diameter.Identity, code uint32) *diameter
 	return cx.NewAnswer(req, id, r, 0)
 }
 
-func (h *fakeHSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *fakeHSS) multimediaAuth(_ context.Context, req *diameter.Message) *diameter.Message {
 	mar, err := cx.ParseMultimediaAuthRequest(req)
 	if err != nil {
-		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+		return cx.NewErrorAnswer(req, h.id, err, 0)
 	}
 
 	h.mars <- mar
@@ -180,10 +146,10 @@ func (h *fakeHSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diame
 	}
 
 	if code != 0 {
-		return failure(req, c.LocalIdentity(), code)
+		return failure(req, h.id, code)
 	}
 
-	ans, err := cx.NewMultimediaAuthAnswer(req, c.LocalIdentity(), cx.MultimediaAuth{
+	ans, err := cx.NewMultimediaAuthAnswer(req, h.id, cx.MultimediaAuth{
 		Items: []cx.AuthItem{{Scheme: scheme, AKA: &v}},
 	})
 	if err != nil {
@@ -193,20 +159,28 @@ func (h *fakeHSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diame
 	return ans
 }
 
-func (h *fakeHSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *fakeHSS) serverAssignment(ctx context.Context, req *diameter.Message) *diameter.Message {
 	sar, err := cx.ParseServerAssignmentRequest(req)
 	if err != nil {
-		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+		return cx.NewErrorAnswer(req, h.id, err, 0)
 	}
 
 	h.sars <- sar
 
 	h.mu.Lock()
-	code := h.sarResult
+	code, gate := h.sarResult, h.sarGate
 	h.mu.Unlock()
 
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+
 	if code != 0 {
-		return failure(req, c.LocalIdentity(), code)
+		return failure(req, h.id, code)
 	}
 
 	var a cx.ServerAssignment
@@ -214,10 +188,23 @@ func (h *fakeHSS) serverAssignment(_ context.Context, c *diameter.Conn, req *dia
 	if (sar.Type == cx.AssignmentRegistration || sar.Type == cx.AssignmentReRegistration) && !sar.UserDataAlreadyAvailable {
 		h.mu.Lock()
 		sub, ok := h.subscription(sar.PublicIdentities[0])
+		raw, none := h.userData, h.noUserData
 		h.mu.Unlock()
 
+		switch {
+		case none:
+			a.UserData = []byte("<IMSSubscription/>")
+			ans := must(cx.NewServerAssignmentAnswer(req, h.id, a))
+			ans.AVPs = slices.DeleteFunc(ans.AVPs, func(avp diameter.AVP) bool { return avp.Code == cx.AVPUserData })
+
+			return ans
+		case raw != nil:
+			a.UserData = raw
+			return must(cx.NewServerAssignmentAnswer(req, h.id, a))
+		}
+
 		if !ok {
-			return failure(req, c.LocalIdentity(), tgpp.ResultErrorUserUnknown)
+			return failure(req, h.id, tgpp.ResultErrorUserUnknown)
 		}
 
 		if a.UserData, err = cx.MarshalUserData(sub); err != nil {
@@ -225,7 +212,7 @@ func (h *fakeHSS) serverAssignment(_ context.Context, c *diameter.Conn, req *dia
 		}
 	}
 
-	ans, err := cx.NewServerAssignmentAnswer(req, c.LocalIdentity(), a)
+	ans, err := cx.NewServerAssignmentAnswer(req, h.id, a)
 	if err != nil {
 		panic(err)
 	}
@@ -319,7 +306,7 @@ func (h *fakeHSS) noCx(t *testing.T) {
 type harness struct {
 	t     *testing.T
 	hss   *fakeHSS
-	node  *diameter.Node
+	loop  *diametertest.Loop
 	db    *db.DB
 	clock fakeClock
 	reg   *Registrar
@@ -380,40 +367,10 @@ func newHarness(t *testing.T) *harness {
 
 	h.db = database
 
-	node, err := diameter.New(diameter.Config{
-		Identity: diameter.Identity{
-			OriginHost:      imsHost,
-			OriginRealm:     homeDomain,
-			HostIPAddresses: []netip.Addr{loopback},
-			ProductName:     "ims",
-		},
-		Handler: diameter.NewMux(),
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatalf("diameter.New: %v", err)
+	h.loop = &diametertest.Loop{
+		Local:   diameter.Identity{OriginHost: imsHost, OriginRealm: homeDomain, ProductName: "ims"},
+		Handler: h.hss.serve,
 	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "hss",
-		Host:         hssHost,
-		Addresses:    []netip.Addr{loopback},
-		Port:         uint16(h.hss.port),
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-	}}); err != nil {
-		t.Fatalf("SetPeers: %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
-
-	h.node = node
-	h.waitHSS(diameter.PeerOpen)
 
 	h.pcscf = &fakePCSCF{}
 	t.Cleanup(h.pcscf.wg.Wait)
@@ -431,7 +388,7 @@ func newHarness(t *testing.T) *harness {
 		MinExpires: 60 * time.Second,
 		MaxExpires: 3600 * time.Second,
 		HSS:        HSS{ID: "hss", Host: hssHost, Realm: homeDomain},
-		Diameter:   node,
+		Diameter:   h.loop,
 		DB:         database,
 		Clock:      h.clock,
 		Logger:     slog.New(slog.DiscardHandler),
@@ -455,24 +412,6 @@ func (h *harness) start() {
 func (h *harness) restart() {
 	h.reg.Close()
 	h.start()
-}
-
-func (h *harness) waitHSS(want diameter.PeerState) {
-	h.t.Helper()
-
-	deadline := time.Now().Add(siptest.Timeout)
-
-	for {
-		if p, ok := h.node.Peer("hss"); ok && p.State == want {
-			return
-		}
-
-		if time.Now().After(deadline) {
-			h.t.Fatalf("timed out waiting for the HSS to be %s", want)
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 type ue struct {
@@ -650,4 +589,12 @@ func challengeParams(t *testing.T, res *sip.Response) map[string]string {
 	}
 
 	return params
+}
+
+func must(ans *diameter.Message, err error) *diameter.Message {
+	if err != nil {
+		panic(err)
+	}
+
+	return ans
 }

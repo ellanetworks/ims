@@ -26,12 +26,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
-type SIP interface {
-	Listeners() []api.SIPEndpoint
-	Reauthenticate(ctx context.Context, impi string) error
-	Close() error
-}
-
 const (
 	defaultSIPPort  = 5060
 	defaultSIPSPort = 5061
@@ -206,6 +200,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			ClientPorts: ipsecClients,
 		},
 		Rx:       pcrf,
+		Trust:    domain,
 		Fallback: ph,
 		Logger:   logger,
 	})

@@ -21,10 +21,15 @@ type session struct {
 }
 
 func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
+	trusted := i.trusted(req)
+	if !trusted && i.rejectOrig(tx, req) {
+		return
+	}
+
 	out := req.Clone()
 	out.Header.Del("P-Profile-Key")
 
-	if !i.trusted(req) {
+	if !trusted {
 		out.Header.Del("P-Charging-Vector")
 		out.Header.Del("P-Charging-Function-Addresses")
 		trust.StripRequest(out)
@@ -37,10 +42,12 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	switch {
-	case out.Header.Has("Route") || slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has("orig") }):
-		i.log.Info("request routed beyond the I-CSCF", slog.String("request", req.StartLine()),
+	case slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has("orig") }):
+		i.log.Info("originating request to the I-CSCF", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
+	case out.Header.Has("Route"):
+		i.forwardOnRoute(tx, out)
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
@@ -129,4 +136,62 @@ func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
 	}
 
 	return proxy.Relay
+}
+
+func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) bool {
+	routes, _ := req.Header.Routes()
+
+	if !slices.ContainsFunc(routes, func(r sip.Address) bool { return r.URI.Params.Has("orig") }) {
+		return false
+	}
+
+	i.log.Info("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+	i.respond(tx, sip.NewResponse(req, 403, ""))
+
+	return true
+}
+
+func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) {
+	trusted := i.trusted(req)
+	if !trusted && i.rejectOrig(tx, req) {
+		return
+	}
+
+	out := req.Clone()
+	out.Header.Del("P-Profile-Key")
+
+	if !trusted {
+		out.Header.Del("P-Charging-Vector")
+		trust.StripRequest(out)
+	}
+
+	out, _, err := i.cfg.Proxy.Preprocess(out)
+	if err != nil {
+		i.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		return
+	}
+
+	i.forwardOnRoute(tx, out)
+}
+
+func (i *ICSCF) forwardOnRoute(tx *transaction.ServerTransaction, out *sip.Request) {
+	route, err := out.Header.TopRoute()
+	if err != nil || !i.cfg.SCSCF.Name.Equivalent(route.URI) {
+		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
+		return
+	}
+
+	to, ok := i.target(out.Flow, route.URI)
+	if !ok {
+		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
+		return
+	}
+
+	i.forward(tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
+		if r.Response != nil {
+			i.outgoing(tx.Request(), r.Response)
+		}
+
+		return proxy.Relay
+	}})
 }

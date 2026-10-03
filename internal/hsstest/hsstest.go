@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/milenage"
 )
 
@@ -154,56 +154,29 @@ func New(t testing.TB, cfg Config) *HSS {
 		subscribers: make(map[string]*Subscriber),
 	}
 
-	var lc net.ListenConfig
-
-	ln, err := lc.Listen(t.Context(), "tcp", netip.AddrPortFrom(cfg.Address, 0).String())
-	if err != nil {
-		t.Fatalf("hsstest: listen: %v", err)
-	}
-
-	h.addr = ln.Addr().(*net.TCPAddr).AddrPort()
-
 	mux := diameter.NewMux()
 	mux.Handle(cx.ApplicationID, cx.CommandUserAuthorization, diameter.HandlerFunc(h.userAuthorization))
 	mux.Handle(cx.ApplicationID, cx.CommandMultimediaAuth, diameter.HandlerFunc(h.multimediaAuth))
 	mux.Handle(cx.ApplicationID, cx.CommandServerAssignment, diameter.HandlerFunc(h.serverAssignment))
 	mux.Handle(cx.ApplicationID, cx.CommandLocationInfo, diameter.HandlerFunc(h.locationInfo))
 
-	node, err := diameter.New(diameter.Config{
+	h.node, h.addr = diametertest.Listen(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost:      cfg.Host,
 			OriginRealm:     cfg.Realm,
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     "hsstest",
 		},
+		Peer: diameter.Peer{
+			ID:           imsPeer,
+			Host:         cfg.IMSHost,
+			Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
+		},
 		Handler: mux,
 		Logger:  cfg.Logger,
 	})
-	if err != nil {
-		t.Fatalf("hsstest: %v", err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           imsPeer,
-		Host:         cfg.IMSHost,
-		Addresses:    []netip.Addr{cfg.Address},
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
-		Passive:      true,
-	}}); err != nil {
-		t.Fatalf("hsstest: %v", err)
-	}
-
-	go func() { _ = node.Serve(diameter.NewTCPListener(ln.(*net.TCPListener))) }()
-
-	h.node = node
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-
 		if n := h.Dropped(); n > 0 {
 			t.Errorf("hsstest: %d Cx requests dropped from the full request channel", n)
 		}
@@ -227,15 +200,7 @@ func (h *HSS) Addr() netip.AddrPort {
 func (h *HSS) WaitConnected(t testing.TB) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
-
-	for p, _ := h.node.Peer(imsPeer); p.State != diameter.PeerOpen; p, _ = h.node.Peer(imsPeer) {
-		if time.Now().After(deadline) {
-			t.Fatal("hsstest: timed out waiting for the IMS to connect")
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
+	diametertest.WaitOpen(t, h.node, imsPeer)
 }
 
 func (h *HSS) Add(s Subscriber) {

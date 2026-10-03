@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/diametertest"
 )
 
 const (
@@ -59,41 +59,20 @@ func newClient(t *testing.T) *client {
 			return ans
 		}))
 
-	node, err := diameter.New(diameter.Config{
+	c.node = diametertest.Dial(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost:      imsHost,
 			OriginRealm:     realm,
 			HostIPAddresses: []netip.Addr{p.Addr().Addr()},
 			ProductName:     "client",
 		},
+		Peer: diameter.Peer{
+			ID:           "pcrf",
+			Host:         p.Host(),
+			Applications: []diameter.Application{{ID: rx.ApplicationID, VendorID: tgpp.VendorID}},
+		},
 		Handler: mux,
-		Logger:  slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := node.SetPeers([]diameter.Peer{{
-		ID:           "pcrf",
-		Host:         p.Host(),
-		Addresses:    []netip.Addr{p.Addr().Addr()},
-		Port:         p.Addr().Port(),
-		Transport:    diameter.TransportTCP,
-		Applications: []diameter.Application{{ID: rx.ApplicationID, VendorID: tgpp.VendorID}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_ = node.Shutdown(ctx)
-	})
-
-	c.node = node
-
-	p.WaitConnected(t)
+	}, p.Addr())
 
 	return c
 }

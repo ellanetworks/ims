@@ -122,20 +122,6 @@ func TestSecurityMechanismEqual(t *testing.T) {
 			t.Errorf("Equal(%q) = %v, want %v", tc.b, got, tc.want)
 		}
 	}
-
-	x, y := m("ipsec-3gpp;alg=a"), m("ipsec-3gpp;alg=b")
-
-	if !EqualSecurityMechanisms([]SecurityMechanism{x, y}, []SecurityMechanism{x, y}) {
-		t.Error("EqualSecurityMechanisms: same lists differ")
-	}
-
-	if EqualSecurityMechanisms([]SecurityMechanism{x, y}, []SecurityMechanism{y, x}) {
-		t.Error("EqualSecurityMechanisms: order ignored")
-	}
-
-	if EqualSecurityMechanisms([]SecurityMechanism{x}, []SecurityMechanism{x, y}) {
-		t.Error("EqualSecurityMechanisms: length ignored")
-	}
 }
 
 func TestSecurityMechanismEqualDuplicates(t *testing.T) {

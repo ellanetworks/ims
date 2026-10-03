@@ -327,36 +327,138 @@ func TestInviteFromOutsideTheTrustDomain(t *testing.T) {
 	u.ack(invite, res)
 }
 
-func TestRequestRoutedBeyondTheICSCF(t *testing.T) {
-	tests := []struct {
-		name  string
-		addr  netip.Addr
-		route func(h *harness) string
-	}{
-		{"orig", loopback, func(h *harness) string { return "<" + h.icscfURI() + ";lr;orig>" }},
-		{"orig below the top Route", untrusted, func(h *harness) string {
-			return "<" + h.icscfURI() + ";lr>, <" + h.scscf.uri() + ";lr;orig>"
-		}},
-		{"Route to the S-CSCF", loopback, func(h *harness) string { return "<" + h.icscfURI() + ";lr>, <" + h.scscf.uri() + ";lr>" }},
-		{"Route to another hop", loopback, func(*harness) string { return "<sip:as.example.org;lr>" }},
-	}
+func TestOrigOnTheICSCF(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	u := h.newUE(loopback)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	invite := u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>")
+		r.Header.Add("P-Asserted-Identity", "<"+testIMPU+">")
+	})
+	u.send(invite)
+	u.ack(invite, u.wantFinal(403))
+
+	h.scscf.sock.RecvNone(quiet)
+	h.hss.noCx(t)
+}
+
+func TestOrigBelowTheTopRoute(t *testing.T) {
+	for _, method := range []string{"INVITE", "BYE"} {
+		t.Run(method, func(t *testing.T) {
 			h := newHarness(t, harnessOptions{})
-			u := h.newUE(tt.addr)
+			s := h.scscf
+			u := h.newUE(untrusted)
 
-			invite := u.invite(callee, func(r *sip.Request) {
-				r.Header.Add("Route", tt.route(h))
-				r.Header.Add("P-Asserted-Identity", "<"+testIMPU+">")
+			req := u.invite(callee, func(r *sip.Request) {
+				r.Method = method
+				r.Header.Set("CSeq", "1 "+method)
+				r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr;orig>")
+
+				if method == "BYE" {
+					r.Header.Set("To", "<"+callee+">;tag=abc")
+				}
 			})
-			u.send(invite)
-			u.ack(invite, u.wantFinal(403))
+			u.send(req)
 
-			h.scscf.sock.RecvNone(quiet)
+			res := u.wantFinal(403)
+			if method == "INVITE" {
+				u.ack(req, res)
+			}
+
+			s.sock.RecvNone(quiet)
 			h.hss.noCx(t)
 		})
 	}
+}
+
+func TestOrigOnAnotherHop(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
+	u := h.newUE(loopback)
+
+	invite := u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+s.uri()+";lr;orig>")
+		r.Header.Add("P-Asserted-Identity", "<sip:bob@"+homeDomain+">")
+	})
+	u.send(invite)
+
+	req, f := s.recv()
+	if got, want := routes(t, req), []string{s.uri() + ";lr;orig"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	s.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
+	h.hss.noCx(t)
+}
+
+func TestRequestWithRouteSkipsLIR(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
+	u := h.newUE(loopback)
+
+	message := u.invite(callee, func(r *sip.Request) {
+		r.Method = "MESSAGE"
+		r.Header.Set("CSeq", "1 MESSAGE")
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr>")
+	})
+	u.send(message)
+
+	req, f := s.recv()
+	if got, want := routes(t, req), []string{s.uri() + ";lr"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	s.respond(req, f, 202)
+	u.wantFinal(202)
+	h.hss.noCx(t)
+}
+
+func TestRequestToUnknownRoute(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	u := h.newUE(loopback)
+
+	invite := u.invite(callee, func(r *sip.Request) { r.Header.Add("Route", "<sip:as.example.org;lr>") })
+	u.send(invite)
+	u.ack(invite, u.wantFinal(480))
+	h.hss.noCx(t)
+}
+
+func TestSubsequentRequest(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
+	u := h.newUE(untrusted)
+
+	bye := u.invite(callee, func(r *sip.Request) {
+		r.Method = "BYE"
+		r.Header.Set("CSeq", "2 BYE")
+		r.Header.Set("To", "<"+callee+">;tag=abc")
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr>")
+		r.Header.Add("P-Charging-Vector", "icid-value=1234")
+	})
+	u.send(bye)
+
+	req, f := s.recv()
+	if req.Header.Has("P-Charging-Vector") {
+		t.Fatal("P-Charging-Vector forwarded from outside the trust domain")
+	}
+
+	s.respond(req, f, 200)
+	u.wantFinal(200)
+	h.hss.noCx(t)
+}
+
+func TestSubsequentRequestWithoutRoute(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	u := h.newUE(loopback)
+
+	bye := u.invite(callee, func(r *sip.Request) {
+		r.Method = "BYE"
+		r.Header.Set("CSeq", "2 BYE")
+		r.Header.Set("To", "<"+callee+">;tag=abc")
+	})
+	u.send(bye)
+	u.wantFinal(480)
 }
 
 func TestInviteSCSCFTimeout(t *testing.T) {
@@ -371,23 +473,6 @@ func TestInviteSCSCFTimeout(t *testing.T) {
 	h.scscf.recv()
 
 	u.ack(invite, u.wantFinal(408))
-}
-
-func TestInDialogRequest(t *testing.T) {
-	h := newHarness(t, harnessOptions{})
-	u := h.newUE(loopback)
-
-	bye := u.invite(callee, func(r *sip.Request) {
-		r.Method = "BYE"
-		r.Header.Set("CSeq", "2 BYE")
-		r.Header.Set("To", "<"+callee+">;tag=abc")
-		r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+h.scscf.uri()+";lr>")
-	})
-	u.send(bye)
-	u.wantFinal(481)
-
-	h.scscf.sock.RecvNone(quiet)
-	h.hss.noCx(t)
 }
 
 func TestOptionsToICSCF(t *testing.T) {

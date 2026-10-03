@@ -11,17 +11,12 @@ import (
 )
 
 func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error) {
-	if !r.start() {
+	ctx, done, ok := r.begin(ctx)
+	if !ok {
 		return nil, errors.New("registrar closed")
 	}
 
-	defer r.wg.Done()
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stop := context.AfterFunc(r.ctx, cancel)
-	defer stop()
+	defer done()
 
 	impis := []string{rtr.PrivateIdentity}
 
