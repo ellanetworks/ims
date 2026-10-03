@@ -138,7 +138,7 @@ func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
 	hss.WaitConnected(t)
 
 	scscf := sipListener(t, srv, roleSCSCF, loopback)
-	ue := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), 0))
+	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
 
 	register := newRegister(ue.Addr())
 	register.Header.Set("Contact", "*")
