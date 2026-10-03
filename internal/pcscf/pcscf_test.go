@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -86,15 +87,18 @@ func TestRegisterGoesToTheICSCF(t *testing.T) {
 	}
 }
 
-func TestOtherRequestsGoToTheFallback(t *testing.T) {
+func TestCoreRequestsForThePCSCFGoToTheFallback(t *testing.T) {
 	late := &lateHandler{}
 	layer, fallback := siptest.NewLayer(t, transaction.Config{Handler: late, Logger: slog.New(slog.DiscardHandler)})
 	pcscf := siptest.ListenLayer(t, layer, loopback)
 
-	late.h.Store(New(Config{Proxy: proxy.New(proxy.Config{Layer: layer}), Fallback: fallback}))
+	late.h.Store(New(Config{
+		Proxy: proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}), Port: pcscf.Port(),
+		Trust: trust.New([]netip.Addr{loopback}, nil), Fallback: fallback,
+	}))
 
-	ue := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
-	ue.Send(sip.UDP, pcscf, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, ue.Addr()))
+	core := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	core.Send(sip.UDP, pcscf, siptest.NewRequest("OPTIONS", "sip:"+pcscf.String(), sip.UDP, core.Addr()))
 
 	if req := fallback.NextRequest().Req; req.Method != "OPTIONS" {
 		t.Fatalf("fallback got %s, want OPTIONS", req.Method)

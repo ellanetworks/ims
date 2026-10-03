@@ -145,6 +145,9 @@ type DialogConfig struct {
 	// Target gives the next hop of a request the tracker generates. By
 	// default it is sent on the flows the initial INVITE used.
 	Target func(toward Side, req *sip.Request) (Target, error)
+
+	// Value is the role's own record of the dialog, which Value returns.
+	Value any
 }
 
 // Release asks the proxy to end a dialog. While it is being set up, a CANCEL
@@ -318,6 +321,11 @@ func (d *Dialog) ID() string {
 	return d.id
 }
 
+// Value is DialogConfig.Value.
+func (d *Dialog) Value() any {
+	return d.cfg.Value
+}
+
 func (d *Dialog) CallID() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -367,6 +375,34 @@ func (d *Dialog) Routes(toward Side) []sip.Address {
 	defer d.mu.Unlock()
 
 	return cloneAddresses(d.routes(toward))
+}
+
+// RouteSet is the route set toward the other party of the leg an in-dialog
+// request is on, early legs included, without the proxy's own entries. It
+// reports false for a request on no leg the dialog knows, and for an early
+// leg whose provisional response carried no Record-Route.
+func (d *Dialog) RouteSet(req *sip.Request) ([]sip.Address, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	side, leg, err := d.sender(req)
+	if err != nil {
+		return nil, false
+	}
+
+	if side == Caller {
+		return calleeRoute(leg.route, d.own), len(leg.route) > 0
+	}
+
+	return cloneAddresses(d.routes(Caller)), true
+}
+
+// CallerTag is the caller's tag, which every leg of the dialog shares.
+func (d *Dialog) CallerTag() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.caller.addr.Tag()
 }
 
 // Session returns the latest offer and its answer; answered is false while the

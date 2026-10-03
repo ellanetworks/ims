@@ -503,23 +503,6 @@ func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 	}
 }
 
-// signallingLost reports whether req is an initial request or a standalone
-// transaction towards a UE whose signalling path the PCRF reported lost: the
-// P-CSCF rejects it with 500 (TS 24.229 §5.2.6.4.3, §5.2.6.4.7).
-func (p *PCSCF) signallingLost(req *sip.Request) bool {
-	routes, err := req.Header.Routes()
-	if err != nil || len(routes) == 0 || !p.cfg.Proxy.IsLocal(routes[0].URI) {
-		return false
-	}
-
-	top := routes[0].URI
-	if top.User == "" || !p.towardUE([]sip.URI{top}) {
-		return false
-	}
-
-	return p.regs.signallingLost(top.User)
-}
-
 // signallingRestored clears the signalling lost mark of the registration a
 // request from the UE arrives on: the path to the UE is back (TS 24.229
 // §5.2.6.4.3 NOTE 1).

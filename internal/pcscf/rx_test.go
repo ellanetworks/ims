@@ -637,7 +637,10 @@ func TestRxReAuthMarksTheSignallingLost(t *testing.T) {
 			s.wantSignallingLost(false)
 
 			s.terminating(path)
-			s.fallback.NextRequest()
+
+			if req, _ := s.ue.RecvRequest(); req.Method != "MESSAGE" {
+				t.Fatalf("UE got %s, want the MESSAGE", req.Method)
+			}
 		})
 	}
 }
@@ -673,7 +676,7 @@ func TestRxRequestFromTheUERestoresTheSignalling(t *testing.T) {
 	s.wantSignallingLost(true)
 
 	s.ue.Send(sip.UDP, s.pcscf, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, s.ue.Addr()))
-	s.fallback.NextRequest()
+	s.scscf.RecvRequest()
 
 	s.wantSignallingLost(false)
 }
@@ -691,7 +694,7 @@ func TestRxRequestOnTheSAsRestoresTheSignalling(t *testing.T) {
 	}
 
 	u.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
-	fallbackRequest(t, s)
+	s.scscf.RecvRequest()
 
 	if r, _ := s.p.regs.get(testIMPI, ueAddr); r.SignallingLost {
 		t.Fatal("signalling lost kept after a request on the UE's security associations")

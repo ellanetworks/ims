@@ -1140,6 +1140,32 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 	}
 }
 
+// TS 33.203 §7.4.2a: the new set carries requests once the old one is about
+// to expire, used or not.
+func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
+	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
+	t.Cleanup(a.close)
+
+	set := func(portC uint16, state saState, expires time.Duration) *saSet {
+		return &saSet{
+			impi: testIMPI, state: state, expires: time.Now().Add(expires),
+			set: ipsec.Set{
+				Local:  ipsec.Endpoint{Addr: loopback, PortC: portC, PortS: 5100},
+				Remote: ipsec.Endpoint{Addr: ueAddr, PortC: portC + 1000, PortS: portC + 2000},
+			},
+		}
+	}
+
+	a.mu.Lock()
+	a.add(set(5101, old, 30*time.Second))
+	a.add(set(5102, established, time.Hour))
+	a.mu.Unlock()
+
+	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5102 {
+		t.Fatalf("requestFlow = %v, %v; want the new set once the old one is about to expire", f, ok)
+	}
+}
+
 func TestDefaultIdentityIsTheFirstAssociatedURI(t *testing.T) {
 	for _, tt := range []struct {
 		associated []string
