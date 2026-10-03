@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -208,17 +207,9 @@ func preloadedRoute(f sip.Flow) sip.URI {
 }
 
 func (u *UE) subscribeHeaders(req *sip.Request) (sip.Flow, error) {
-	flow, verify, err := u.requestFlow()
-	if err != nil {
+	if err := u.prepare(req); err != nil {
 		return sip.Flow{}, err
 	}
-
-	req.Flow = flow
-
-	via := sip.NewVia(flow.Transport, netip.AddrPortFrom(u.cfg.Local, u.port(!u.cfg.Plain)))
-	via.Params.Set("rport", "")
-
-	req.Header.Prepend("Via", via.String())
 
 	contact := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
 
@@ -227,17 +218,7 @@ func (u *UE) subscribeHeaders(req *sip.Request) (sip.Flow, error) {
 	req.Header.Add("Accept", regevent.ContentType)
 	req.Header.Add("Expires", strconv.FormatInt(int64(DefaultSubscriptionExpires/time.Second), 10))
 
-	if !u.cfg.Plain {
-		for _, v := range verify {
-			req.Header.Add("Security-Verify", v)
-		}
-
-		req.Header.Add("Require", "sec-agree")
-		req.Header.Add("Proxy-Require", "sec-agree")
-		req.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
-	}
-
-	return flow, nil
+	return req.Flow, nil
 }
 
 func (u *UE) requestFlow() (sip.Flow, []string, error) {
