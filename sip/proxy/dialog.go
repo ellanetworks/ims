@@ -377,6 +377,34 @@ func (d *Dialog) Routes(toward Side) []sip.Address {
 	return cloneAddresses(d.routes(toward))
 }
 
+// RouteSet is the route set toward the other party of the leg an in-dialog
+// request is on, early legs included, without the proxy's own entries. It
+// reports false for a request on no leg the dialog knows, and for an early
+// leg whose provisional response carried no Record-Route.
+func (d *Dialog) RouteSet(req *sip.Request) ([]sip.Address, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	side, leg, err := d.sender(req)
+	if err != nil {
+		return nil, false
+	}
+
+	if side == Caller {
+		return calleeRoute(leg.route, d.own), len(leg.route) > 0
+	}
+
+	return cloneAddresses(d.routes(Caller)), true
+}
+
+// CallerTag is the caller's tag, which every leg of the dialog shares.
+func (d *Dialog) CallerTag() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.caller.addr.Tag()
+}
+
 // Session returns the latest offer and its answer; answered is false while the
 // offer waits for one.
 func (d *Dialog) Session() (offer, answer Body, answered bool) {

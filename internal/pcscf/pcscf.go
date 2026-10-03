@@ -30,6 +30,9 @@ var (
 
 	errForeignCancel = errors.New("CANCEL from another address than its Via sent-by")
 
+	errNoFlow  = errors.New("no flow to the UE")
+	errNoRoute = errors.New("no route to the core")
+
 	// TS 24.229 §5.2.6.3.2A: discarded, without a 100 (Trying).
 	errUnregistered = errors.New("initial request from a UE without a registration")
 )
@@ -948,10 +951,12 @@ func addOptionTag(res *sip.Response, name, tag string) {
 // fromUE prepares a request from the UE for the core (TS 24.229 §5.2.1, RFC
 // 3325 §6, RFC 3329 §2.3.1). The trust-domain header fields go, but the UE's
 // own P-Access-Network-Info stays: step 3 removes only values with
-// "network-provided". So does its P-Early-Media "supported" (Decision 7).
+// "network-provided". So does its P-Early-Media "supported", where RFC 5009
+// Table 1 allows it, which tells the core the UE takes the header field: a UE
+// may not authorise early media itself (§5.2.6.4.2, RFC 5009 §8.1).
 func fromUE(req *sip.Request) {
 	pani := ueAccessNetworkInfo(req.Header)
-	early := earlyMediaSupported(req.Header)
+	early := earlyMediaSupported(req.Header) && slices.Contains([]string{"INVITE", "PRACK", "UPDATE"}, req.Method)
 
 	trust.StripRequest(req)
 	dropFromAll(req.Header.Del)
@@ -974,9 +979,10 @@ func fromUE(req *sip.Request) {
 // fromUEResponse does the same for a response from the UE (§5.2.1 steps 1-3).
 // Its P-Asserted-Identity and P-Early-Media go with the rest: the P-CSCF
 // asserts the identity itself (§5.2.6.4.4), and authorises no early media
-// (§5.2.6.4.2, Decision 7).
+// (§5.2.6.4.2, Decision 7). Its Reason stays (§4.4.7 NOTE).
 func fromUEResponse(res *sip.Response) {
 	pani := ueAccessNetworkInfo(res.Header)
+	reasons := res.Header.Values("Reason")
 
 	trust.StripResponse(res)
 	dropFromAll(res.Header.Del)
@@ -984,6 +990,10 @@ func fromUEResponse(res *sip.Response) {
 
 	for _, v := range pani {
 		res.Header.Add("P-Access-Network-Info", v)
+	}
+
+	for _, v := range reasons {
+		res.Header.Add("Reason", v)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
@@ -179,7 +180,12 @@ func TestOriginatingCall(t *testing.T) {
 		t.Errorf("P-Asserted-Identity to the caller = %q, want the callee's", v)
 	}
 
-	wantAbsent(t, res.Header, "P-Charging-Vector", "P-Asserted-Service", "P-Access-Network-Info", "P-Early-Media")
+	wantAbsent(t, res.Header, "P-Charging-Vector", "P-Asserted-Service", "P-Access-Network-Info")
+
+	// The core may signal early media to the caller (RFC 5009 §6).
+	if v := res.Header.Get("P-Early-Media"); v != "sendrecv" {
+		t.Errorf("P-Early-Media to the caller = %q, want the core's sendrecv", v)
+	}
 
 	ok := s.coreResponse(got, 200, tag)
 	ok.Header.Add("P-Asserted-Identity", "<"+callee+">")
@@ -487,5 +493,284 @@ func TestAssertedIdentities(t *testing.T) {
 				t.Errorf("assertedIdentities = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// moCall is an originating call through the P-CSCF, as the UE and the S-CSCF
+// see it.
+type moCall struct {
+	s      *ipsecScene
+	u      *ue
+	invite *sip.Request // as the UE sent it
+	core   *sip.Request // as the S-CSCF got it
+	flow   sip.Flow     // the S-CSCF's flow from the P-CSCF
+}
+
+func (s *ipsecScene) originatingCall(t *testing.T, u *ue) *moCall {
+	t.Helper()
+
+	invite := s.ueInvite(u, nil)
+	u.uc.Send(sip.UDP, s.ps, invite)
+	wantStatus(t, first(u.us.RecvResponse()), 100)
+
+	got, f := s.scscf.RecvRequest()
+
+	return &moCall{s: s, u: u, invite: invite, core: got, flow: f}
+}
+
+// answer sends a response of the callee with the given To-tag, and returns it
+// as the UE got it.
+func (c *moCall) answer(t *testing.T, code int, tag string, edit func(*sip.Response)) *sip.Response {
+	t.Helper()
+
+	res := c.s.coreResponse(c.core, code, tag)
+	if edit != nil {
+		edit(res)
+	}
+
+	c.s.scscf.Send(c.flow.Transport, c.flow.Remote, res)
+
+	got, _ := c.u.us.RecvResponse()
+	wantStatus(t, got, code)
+
+	return got
+}
+
+// request builds a request of the UE on the leg a response opened, along its
+// route set.
+func (c *moCall) request(method, cseq string, res *sip.Response) *sip.Request {
+	routes := res.Header.Values("Record-Route")
+	slices.Reverse(routes)
+
+	to, _ := res.Header.To()
+	from, _ := c.invite.Header.From()
+
+	r := siptest.NewRequest(method, "sip:callee@"+c.s.scscf.Addr().String(), sip.UDP, c.u.us.Addr())
+	r.Header.Set("From", from.String())
+	r.Header.Set("To", to.String())
+	r.Header.Set("Call-ID", c.invite.Header.CallID())
+	r.Header.Set("CSeq", cseq+" "+method)
+	r.Header.Add("Route", strings.Join(routes, ", "))
+
+	return r
+}
+
+func (c *moCall) dialog(t *testing.T) *proxy.Dialog {
+	t.Helper()
+
+	rr, err := c.core.Header.RecordRoutes()
+	if err != nil || len(rr) == 0 {
+		t.Fatalf("Record-Route = %q", c.core.Header.Values("Record-Route"))
+	}
+
+	d := c.s.p.cfg.Proxy.Dialog([]sip.URI{rr[0].URI})
+	if d == nil {
+		t.Fatal("no dialog for the call")
+	}
+
+	return d
+}
+
+// TS 24.229 §5.2.6.3.9 step 2 holds on early dialogs too: a PRACK follows the
+// routes of the leg the reliable 183 opened.
+func TestEarlyRoutesAreTheDialogs(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	c := s.originatingCall(t, u)
+	progress := c.answer(t, 183, sip.NewTag(), func(r *sip.Response) {
+		r.Header.Add("Require", "100rel")
+		r.Header.Add("RSeq", "1")
+	})
+
+	prack := c.request("PRACK", "2", progress)
+	prack.Header.Set("Route", strings.Replace(prack.Header.Get("Route"), "sip:mt@"+s.scscf.Addr().String(), "sip:attacker@192.0.2.1", 1))
+	prack.Header.Add("RAck", "1 1 INVITE")
+	u.uc.Send(sip.UDP, s.ps, prack)
+
+	got, _ := s.scscf.RecvRequest()
+	if got.Method != "PRACK" {
+		t.Fatalf("S-CSCF got %s, want the PRACK", got.Method)
+	}
+
+	if r := uris(got.Header.Addresses("Route")); !slices.Equal(r, []string{"sip:mt@" + s.scscf.Addr().String() + ";lr"}) {
+		t.Errorf("PRACK Route = %q, want the early leg's", r)
+	}
+}
+
+// RFC 3261 §13.2.2.4: the caller ACKs and BYEs a second 2xx a forking proxy
+// downstream sent, on a leg the tracker does not follow.
+func TestSecondAnswerCanBeEnded(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	c := s.originatingCall(t, u)
+	c.answer(t, 200, sip.NewTag(), nil)
+	second := c.answer(t, 200, sip.NewTag(), nil)
+
+	u.uc.Send(sip.UDP, s.ps, c.request("ACK", "1", second))
+
+	if ack, _ := s.scscf.RecvRequest(); ack.Method != "ACK" {
+		t.Fatalf("S-CSCF got %s, want the ACK of the second 2xx", ack.Method)
+	}
+
+	u.uc.Send(sip.UDP, s.ps, c.request("BYE", "2", second))
+
+	if bye, _ := s.scscf.RecvRequest(); bye.Method != "BYE" {
+		t.Fatalf("S-CSCF got %s, want the BYE of the second leg", bye.Method)
+	}
+}
+
+// Requests from the core toward the UE lose the core's header fields, and
+// the UE's responses carry the request's charging vector with the P-CSCF's
+// term-ioi (TS 24.229 §5.2.6.4.10).
+func TestCoreRequestOnACall(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	c := s.originatingCall(t, u)
+	tag := sip.NewTag()
+	ok := c.answer(t, 200, tag, nil)
+
+	from, _ := c.invite.Header.From()
+	to, _ := ok.Header.To()
+
+	routes := slices.Clone(c.core.Header.Values("Record-Route"))
+
+	bye := siptest.NewRequest("BYE", ueContact(u)[1:len(ueContact(u))-1], sip.UDP, s.scscf.Addr())
+	bye.Header.Set("From", to.String())
+	bye.Header.Set("To", from.String())
+	bye.Header.Set("Call-ID", c.invite.Header.CallID())
+	bye.Header.Set("CSeq", "7 BYE")
+	bye.Header.Add("Route", strings.Join(routes, ", "))
+	bye.Header.Add("P-Charging-Vector", "icid-value=CORE1;orig-ioi=other.example")
+	bye.Header.Add("P-Asserted-Identity", "<"+callee+">")
+	bye.Header.Add("Privacy", "header;id")
+	bye.Header.Add("Reason", "SIP;cause=200")
+	s.scscf.Send(sip.UDP, s.pcscf, bye)
+
+	got, f := u.us.RecvRequest()
+	if got.Method != "BYE" {
+		t.Fatalf("UE got %s, want the BYE", got.Method)
+	}
+
+	wantAbsent(t, got.Header, "P-Charging-Vector", "P-Asserted-Identity")
+
+	if !got.Header.Has("Reason") || got.Header.Get("Privacy") != "header;id" {
+		t.Errorf("Reason = %q, Privacy = %q; want both kept", got.Header.Get("Reason"), got.Header.Get("Privacy"))
+	}
+
+	u.us.Send(sip.UDP, f.Remote, sip.NewResponse(got, 200, ""))
+
+	res, _ := s.scscf.RecvResponse()
+	wantStatus(t, res, 200)
+
+	if v := res.Header.Get("P-Charging-Vector"); v != "icid-value=CORE1;orig-ioi=other.example;term-ioi="+homeDomain {
+		t.Errorf("P-Charging-Vector = %q, want the BYE's icid and orig-ioi with the home term-ioi", v)
+	}
+}
+
+// A BYE the P-CSCF sends itself (TS 24.229 §5.2.8.1) reaches the UE on its
+// security associations, from port_pc to port_us.
+func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+	sets := s.installed()
+
+	c := s.originatingCall(t, u)
+	ok := c.answer(t, 200, sip.NewTag(), nil)
+	u.uc.Send(sip.UDP, s.ps, c.request("ACK", "1", ok))
+	s.scscf.RecvRequest()
+
+	if err := c.dialog(t).Release(proxy.Release{Toward: proxy.Caller}); err != nil {
+		t.Fatal(err)
+	}
+
+	bye, f := u.us.RecvRequest()
+	if bye.Method != "BYE" {
+		t.Fatalf("UE got %s, want the BYE", bye.Method)
+	}
+
+	if want := netip.AddrPortFrom(loopback, sets[0].Local.PortC); f.Remote != want {
+		t.Errorf("BYE from %s, want the protected client port %s", f.Remote, want)
+	}
+
+	if via := mustTopVia(t, bye); via.Port != s.ps.Port() {
+		t.Errorf("Via = %s, want the protected server port %d", via, s.ps.Port())
+	}
+}
+
+func TestUnregisteredUEOnItsSAsIsIgnored(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+	s.p.regs.remove(testIMPI, ueAddr)
+
+	u.uc.Send(sip.UDP, s.ps, s.ueInvite(u, nil))
+	u.us.RecvNone(quiet)
+	s.scscf.RecvNone(quiet)
+}
+
+func TestTerminatingFailureIsNotAsserted(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	token, _ := s.registerOverIPsec(u)
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", nil))
+	wantStatus(t, first(s.scscf.RecvResponse()), 100)
+
+	got, f := u.us.RecvRequest()
+
+	busy := sip.NewResponse(got, 486, "")
+	_ = busy.Header.SetToTag(sip.NewTag())
+	busy.Header.Add("P-Asserted-Identity", "<sip:mallory@"+homeDomain+">")
+	busy.Header.Add("Reason", "SIP;cause=486")
+	u.us.Send(sip.UDP, f.Remote, busy)
+
+	res, _ := s.scscf.RecvResponse()
+	wantStatus(t, res, 486)
+	wantAbsent(t, res.Header, "P-Asserted-Identity")
+
+	if !res.Header.Has("Reason") {
+		t.Error("Reason from the UE removed, want it kept (TS 24.229 §4.4.7)")
+	}
+}
+
+func TestKeptTowardUE(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields []sip.Field
+		want   []string
+	}{
+		{"identity", []sip.Field{{Name: "P-Asserted-Identity", Value: "<tel:+1>"}}, []string{"P-Asserted-Identity: <tel:+1>"}},
+		{
+			"privacy none",
+			[]sip.Field{{Name: "Privacy", Value: "none"}, {Name: "P-Asserted-Identity", Value: "<tel:+1>"}},
+			[]string{"P-Asserted-Identity: <tel:+1>"},
+		},
+		{"privacy id among others", []sip.Field{{Name: "Privacy", Value: "header; ID"}, {Name: "P-Asserted-Identity", Value: "<tel:+1>"}}, nil},
+		{"history", []sip.Field{
+			{Name: "History-Info", Value: "<sip:a@x>;index=1, <sip:b@x?Privacy=history>;index=1.1"},
+			{Name: "Feature-Caps", Value: "*;+g.3gpp.srvcc-alerting"},
+		}, []string{"History-Info: <sip:a@x>;index=1", "Feature-Caps: *;+g.3gpp.srvcc-alerting"}},
+		{"history privacy", []sip.Field{{Name: "Privacy", Value: "history"}, {Name: "History-Info", Value: "<sip:a@x>;index=1"}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, f := range keptTowardUE(sip.Header(tc.fields)) {
+				got = append(got, f.Name+": "+f.Value)
+			}
+
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("kept %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChargingVectorOnIPv6(t *testing.T) {
+	p := &PCSCF{cfg: Config{HomeDomain: homeDomain}}
+
+	cv := p.newChargingVector(netip.MustParseAddr("2001:db8::1"))
+	if !strings.Contains(cv.String(), "icid-generated-at=[2001:db8::1];") {
+		t.Errorf("P-Charging-Vector = %q, want an IPv6 reference (RFC 7315 §5.6)", cv)
 	}
 }

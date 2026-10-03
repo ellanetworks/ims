@@ -231,10 +231,7 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil && rep.Err == nil {
 			fromUEResponse(rep.Response)
-
-			if c := callOf(d); c != nil {
-				c.charging.respond(rep.Response, p.cfg.HomeDomain)
-			}
+			p.respondCharging(req, rep.Response)
 		}
 
 		return proxy.Relay
