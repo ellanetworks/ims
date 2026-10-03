@@ -289,3 +289,43 @@ func TestSIPPlaceholderIsSelf(t *testing.T) {
 		}
 	}
 }
+
+func TestSCSCFRelaysAck(t *testing.T) {
+	srv := startServer(t)
+	scscf := sipListener(t, srv, roleSCSCF, loopback)
+	caller := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	callee := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	ack := func(from *siptest.Socket, route bool) *sip.Request {
+		r := siptest.NewRequest("ACK", "sip:bob@"+callee.Addr().String(), sip.UDP, from.Addr())
+		r.Header.Set("To", "<sip:bob@"+imsRealm+">;tag="+sip.NewTag())
+
+		if route {
+			r.Header.Prepend("Route", "<sip:"+scscf.String()+";lr>")
+		}
+
+		return r
+	}
+
+	caller.Send(sip.UDP, scscf, ack(caller, true))
+
+	got, f := callee.RecvRequest()
+	if vias, _ := got.Header.Vias(); got.Method != "ACK" || got.Header.Has("Route") || len(vias) != 2 {
+		t.Fatalf("callee got:\n%s\nwant the ACK through the S-CSCF without Route", got)
+	}
+
+	if f.Remote != scscf {
+		t.Errorf("ACK from %s, want the S-CSCF %s", f.Remote, scscf)
+	}
+
+	t.Run("not routed through the S-CSCF", func(t *testing.T) {
+		caller.Send(sip.UDP, scscf, ack(caller, false))
+		callee.RecvNone(100 * time.Millisecond)
+	})
+
+	t.Run("from outside the trust domain", func(t *testing.T) {
+		outsider := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), 0))
+		outsider.Send(sip.UDP, scscf, ack(outsider, true))
+		callee.RecvNone(100 * time.Millisecond)
+	})
+}

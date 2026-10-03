@@ -35,6 +35,10 @@ type router struct {
 	next      string
 	held      chan *transaction.ServerTransaction
 	cancelled chan struct{}
+
+	track   bool
+	dialogs chan *proxy.Dialog
+	events  chan proxy.DialogEvent
 }
 
 type routerConfig struct {
@@ -45,6 +49,10 @@ type routerConfig struct {
 	hold    bool
 	clock   *siptest.Clock
 	timerC  time.Duration
+
+	// track makes the router track the INVITE dialogs it record-routes.
+	track    bool
+	lifetime time.Duration
 }
 
 var recordRoute = &proxy.RecordRoute{}
@@ -52,7 +60,7 @@ var recordRoute = &proxy.RecordRoute{}
 func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 	t.Helper()
 
-	r := &router{t: t, opts: cfg.opts, onReply: cfg.onReply, next: cfg.next, cancelled: make(chan struct{}, 16)}
+	r := &router{t: t, opts: cfg.opts, onReply: cfg.onReply, next: cfg.next, cancelled: make(chan struct{}, 16), track: cfg.track}
 	r.sentBy.Store(&cfg.sentBy)
 
 	if cfg.hold {
@@ -60,7 +68,13 @@ func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 	}
 
 	tc := transaction.Config{Handler: r}
-	pc := proxy.Config{Supported: []string{"sec-agree"}, TimerC: cfg.timerC}
+	pc := proxy.Config{Supported: []string{"sec-agree"}, TimerC: cfg.timerC, DialogLifetime: cfg.lifetime}
+
+	if cfg.track {
+		r.dialogs = make(chan *proxy.Dialog, 16)
+		r.events = make(chan proxy.DialogEvent, 64)
+		pc.OnDialog = func(e proxy.DialogEvent) { r.events <- e }
+	}
 
 	if cfg.clock != nil {
 		tc.Clock, pc.Clock = cfg.clock, cfg.clock
@@ -89,12 +103,15 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	out := r.preprocess(req)
-	if out == nil {
+	out, removed, err := r.p.Preprocess(req)
+	if err != nil {
+		r.t.Error(err)
 		return
 	}
 
-	if to, _ := out.Header.To(); to.Tag() == "" && r.next != "" {
+	to, _ := out.Header.To()
+
+	if to.Tag() == "" && r.next != "" {
 		out.Header.Prepend("Route", "<"+r.next+">")
 	}
 
@@ -103,12 +120,30 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		opts.OnReply = func(rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
 	}
 
+	if r.track {
+		switch {
+		case to.Tag() == "" && req.Method == "INVITE":
+			opts.Dialog = r.p.NewDialog(proxy.DialogConfig{})
+			r.dialogs <- opts.Dialog
+		case to.Tag() != "":
+			opts.Dialog = r.p.Dialog(removed)
+		}
+	}
+
 	local := req.Flow.Local
 	if o := r.out.Load(); o != nil {
 		local = *o
 	}
 
-	if err := r.p.Forward(tx, out, r.target(out, local), opts); err != nil {
+	err = r.p.Forward(tx, out, r.target(out, local), opts)
+
+	var serr *sip.StatusError
+
+	switch {
+	case err == nil:
+	case r.track && errors.As(err, &serr):
+		_ = tx.Respond(sip.NewResponse(req, serr.StatusCode, ""))
+	default:
 		r.t.Error(err)
 	}
 }
@@ -139,13 +174,57 @@ func (r *router) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Req
 }
 
 func (r *router) HandleAck(ack *sip.Request) {
-	out := r.preprocess(ack)
-	if out == nil {
+	out, removed, err := r.p.Preprocess(ack)
+	if err != nil {
+		r.t.Error(err)
 		return
 	}
 
-	if err := r.p.ForwardAck(out, r.target(out, ack.Flow.Local)); err != nil {
+	var d *proxy.Dialog
+	if r.track {
+		d = r.p.Dialog(removed)
+	}
+
+	if err := r.p.ForwardAck(out, r.target(out, ack.Flow.Local), d); err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
 		r.t.Error(err)
+	}
+}
+
+func (r *router) nextDialog() *proxy.Dialog {
+	r.t.Helper()
+
+	select {
+	case d := <-r.dialogs:
+		return d
+	case <-time.After(siptest.Timeout):
+		r.t.Fatal("no dialog started")
+		return nil
+	}
+}
+
+func (r *router) nextEvent(kind proxy.EventKind) proxy.DialogEvent {
+	r.t.Helper()
+
+	select {
+	case e := <-r.events:
+		if e.Kind != kind {
+			r.t.Fatalf("got dialog event %+v, want kind %d", e, kind)
+		}
+
+		return e
+	case <-time.After(siptest.Timeout):
+		r.t.Fatalf("no dialog event of kind %d", kind)
+		return proxy.DialogEvent{}
+	}
+}
+
+func (r *router) noEvent() {
+	r.t.Helper()
+
+	select {
+	case e := <-r.events:
+		r.t.Fatalf("unexpected dialog event %+v", e)
+	case <-time.After(quiet):
 	}
 }
 

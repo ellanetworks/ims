@@ -460,11 +460,39 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 }
 
 func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	if h.proxy.Proxied(tx) {
+		h.proxy.Cancel(tx, cancel)
+		return
+	}
+
 	h.fallback.HandleCancel(tx, cancel)
 }
 
+// HandleAck relays an ACK to a 2xx along the route set of a dialog the S-CSCF
+// record-routed.
 func (h *scscfHandler) HandleAck(ack *sip.Request) {
-	h.fallback.HandleAck(ack)
+	if !h.trust.Trusted(ack.Flow.Remote.Addr()) {
+		h.log.Debug("dropped an ACK from outside the trust domain", slog.String("source", ack.Flow.Remote.String()))
+		return
+	}
+
+	out, removed, err := h.proxy.Preprocess(ack)
+	if err != nil || len(removed) == 0 {
+		h.fallback.HandleAck(ack)
+		return
+	}
+
+	tr, dest, err := sip.NextHop(out)
+	if err != nil {
+		h.log.Debug("no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+		return
+	}
+
+	to := proxy.Target{Flow: sip.Flow{Transport: tr, Local: ack.Flow.Local, Remote: dest}}
+
+	if err := h.proxy.ForwardAck(out, to, h.proxy.Dialog(removed)); err != nil {
+		h.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+	}
 }
 
 func (h *scscfHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
