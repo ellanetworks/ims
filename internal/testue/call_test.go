@@ -222,7 +222,7 @@ func TestCalleeHangsUp(t *testing.T) {
 	ended(t, bc, LocalBye)
 	ended(t, ac, RemoteBye)
 
-	if err := ac.Bye(ctx); !errors.Is(err, ErrCallState) {
+	if err := ac.Bye(ctx); !errors.Is(err, ErrCallEnded) {
 		t.Fatalf("Bye after the call = %v", err)
 	}
 }
@@ -845,6 +845,11 @@ func TestNoAck(t *testing.T) {
 		t.Error("200 without the answer")
 	}
 
+	// The INVITE supports timer without Session-Expires (IR.92 §2.2.8).
+	if got := res.Header.Get("Session-Expires"); got != "1800;refresher=uac" {
+		t.Errorf("200 Session-Expires = %q", got)
+	}
+
 	var bye *sip.Request
 
 	for bye == nil {
@@ -895,4 +900,329 @@ func TestInDialogRequestForUnknownCall(t *testing.T) {
 	p.send(bye)
 
 	p.response(481, "BYE")
+}
+
+func TestResponsesCarryAccessNetworkInfo(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{})
+
+	req := siptest.NewRequest("BYE", "sip:ue@127.0.0.1", sip.UDP, n.pcscf.Addr())
+
+	if got := u.response(req, 200).Header.Get("P-Access-Network-Info"); got == "" {
+		t.Fatal("response without P-Access-Network-Info")
+	}
+}
+
+func TestAnswerMirrorsAMRParameters(t *testing.T) {
+	m := newMedia(loopback, 40000, false)
+
+	offer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=audio 5000 RTP/AVP 97 98 100\r\n"+
+		"a=rtpmap:97 AMR-WB/16000/1\r\na=fmtp:97 octet-align=1;mode-set=0,1,2\r\n"+
+		"a=rtpmap:98 AMR-WB/16000/1\r\na=fmtp:98 mode-set=0,1,2\r\n"+
+		"a=rtpmap:100 telephone-event/16000\r\n"))
+
+	answer, err := m.answer(offer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	am := audio(t, answer)
+	if d, _ := am.Desc(); strings.Join(d.Formats, " ") != "98 100" {
+		t.Fatalf("answer formats %v, want the bandwidth-efficient AMR-WB", d.Formats)
+	}
+
+	if fmtp, _ := am.Fmtp("98"); !strings.Contains(fmtp, "mode-set=0,1,2") || strings.Contains(fmtp, "octet-align") {
+		t.Errorf("answer fmtp %q", fmtp)
+	}
+
+	// Only an octet-aligned payload type: the answer keeps octet-align.
+	offer = sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=audio 5000 RTP/AVP 97\r\na=rtpmap:97 AMR/8000/1\r\na=fmtp:97 octet-align=1\r\n"))
+
+	if answer, err = newMedia(loopback, 40000, false).answer(offer); err != nil {
+		t.Fatal(err)
+	}
+
+	if fmtp, _ := audio(t, answer).Fmtp("97"); !strings.Contains(fmtp, "octet-align=1") {
+		t.Errorf("answer fmtp %q, want octet-align=1", fmtp)
+	}
+}
+
+func TestLaterOffersKeepTheStreams(t *testing.T) {
+	m := newMedia(loopback, 40000, false)
+
+	offer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=video 6000 RTP/AVP 99\r\na=rtpmap:99 H264/90000\r\n"+
+		"m=audio 5000 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"))
+
+	if _, err := m.answer(offer); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := m.offer(sdp.SendOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(next.Media) != 2 || next.Media[0].Type() != sdp.Video || next.Media[0].Port() != 0 || next.Media[1].Type() != sdp.Audio {
+		t.Fatalf("later offer:\n%s", next)
+	}
+
+	if codecs, _ := next.Media[1].Codecs(); len(codecs) != 1 || codecs[0].Payload != 116 {
+		t.Errorf("later offer codecs %+v, want the negotiated one", codecs)
+	}
+}
+
+func TestAnswerWithoutPreconditions(t *testing.T) {
+	m := newMedia(loopback, 40000, true)
+
+	if _, err := m.offer(sdp.SendRecv); err != nil {
+		t.Fatal(err)
+	}
+
+	answer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=audio 5000 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"))
+
+	if err := m.answered(answer); err != nil {
+		t.Fatal(err)
+	}
+
+	if m.precondition || !m.met() {
+		t.Fatal("preconditions kept after an answer without them")
+	}
+}
+
+func TestHoldWhileHeld(t *testing.T) {
+	ctx := testContext(t)
+	a, b := pair(t)
+
+	ac, bc := connect(t, ctx, a, b, CallOptions{})
+
+	if err := ac.Hold(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The callee, held, holds too: inactive (RFC 3264 §8.4).
+	if err := bc.Hold(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if d := bc.LocalSDP().MediaDirection(0); d != sdp.Inactive {
+		t.Errorf("hold while held offered %s", d)
+	}
+}
+
+func TestSessionTimerWithoutTimerSupport(t *testing.T) {
+	ctx := testContext(t)
+	p := newPeer(t, Config{})
+
+	// A proxy put Session-Expires in an INVITE whose UAC has no timers.
+	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite.Header.Del("Supported")
+	invite.Header.Add("Supported", "100rel")
+	p.send(invite)
+
+	c := incoming(t, p.u)
+
+	c.mu.Lock()
+	c.rel100 = false
+	c.mu.Unlock()
+
+	answered := make(chan error, 1)
+	go func() { answered <- c.Answer(ctx) }()
+
+	p.response(100, "INVITE")
+	res := p.response(200, "INVITE")
+
+	if got := res.Header.Get("Session-Expires"); got != "1800;refresher=uas" {
+		t.Errorf("Session-Expires = %q, want the UAS refreshing", got)
+	}
+
+	if has(res.Header, "Require", "timer") {
+		t.Error("Require: timer to a UAC without timers")
+	}
+
+	if interval, refresher := c.SessionTimer(); interval != DefaultSessionExpires || !refresher {
+		t.Errorf("session timer %s, refresher %v", interval, refresher)
+	}
+}
+
+func TestIntervalTooSmall(t *testing.T) {
+	ctx := testContext(t)
+	p := newPeer(t, Config{})
+
+	c, err := p.u.Invite("tel:+15550002", CallOptions{SessionExpires: 60 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invite := p.request("INVITE")
+
+	res := sip.NewResponse(invite, 422, "")
+	res.Header.Add("Min-SE", "90")
+	p.send(res)
+
+	// The transaction's ACK to the 422 and the new INVITE may cross.
+	var retry *sip.Request
+
+	for retry == nil {
+		if req, _ := p.s.RecvRequest(); req.Method == "INVITE" {
+			retry = req
+		} else if req.Method != "ACK" {
+			t.Fatalf("got %s, want the INVITE again", req.StartLine())
+		}
+	}
+
+	if got := retry.Header.Get("Session-Expires"); got != "90" || retry.Header.Get("Min-SE") != "90" {
+		t.Errorf("retry Session-Expires %q, Min-SE %q", got, retry.Header.Get("Min-SE"))
+	}
+
+	if cseq, _ := retry.Header.CSeq(); cseq.Seq != 2 {
+		t.Errorf("retry CSeq %d", cseq.Seq)
+	}
+
+	p.send(sip.NewResponse(retry, 486, ""))
+
+	if res, _ := c.Wait(ctx); res == nil || res.StatusCode != 486 {
+		t.Fatalf("Wait = %v", res)
+	}
+}
+
+func TestUnsupportedRequire(t *testing.T) {
+	p := newPeer(t, Config{})
+
+	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite.Header.Add("Require", "foo")
+	p.send(invite)
+
+	p.response(100, "INVITE")
+
+	res := p.response(420, "INVITE")
+	if got := res.Header.Get("Unsupported"); got != "foo" {
+		t.Errorf("Unsupported = %q", got)
+	}
+}
+
+// TestCalleeReportsItsResources: a caller whose resources are ready from the
+// start does not send an UPDATE; the callee does (RFC 3312 §7).
+func TestCalleeReportsItsResources(t *testing.T) {
+	ctx := testContext(t)
+	p := newPeer(t, Config{})
+
+	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite.SetBody(sdp.ContentType, []byte(strings.Replace(string(invite.Body), "a=curr:qos local none", "a=curr:qos local sendrecv", 1)))
+	p.send(invite)
+
+	c := incoming(t, p.u)
+
+	ring := make(chan error, 1)
+	go func() { ring <- c.Ring(ctx) }()
+
+	p.response(100, "INVITE")
+
+	res := p.response(183, "INVITE")
+	tag := dialogTag(t, res)
+	rseq, _ := res.Header.RSeq()
+
+	prack := p.capture("023-PRACK.sip").(*sip.Request)
+	setToTag(t, &prack.Header, tag)
+	prack.Header.Set("RAck", sip.RAck{RSeq: rseq, CSeq: 1, Method: "INVITE"}.String())
+	p.send(prack)
+	p.response(200, "PRACK")
+
+	update := p.request("UPDATE")
+	assertQoS(t, "UPDATE", audio(t, sdpOf(t, update.Body)), "curr:qos local sendrecv", "curr:qos remote sendrecv")
+
+	ok := sip.NewResponse(update, 200, "")
+	ok.SetBody(sdp.ContentType, []byte(strings.Replace(string(invite.Body), "a=curr:qos remote none", "a=curr:qos remote sendrecv", 1)))
+	p.send(ok)
+
+	p.response(180, "INVITE")
+
+	if err := <-ring; err != nil {
+		t.Fatalf("Ring: %v", err)
+	}
+}
+
+func TestUpdateGlare(t *testing.T) {
+	ctx := testContext(t)
+	a, b := pair(t)
+
+	ac, bc := connect(t, ctx, a, b, CallOptions{})
+
+	ac.mu.Lock()
+	ac.offering = true
+	ac.mu.Unlock()
+
+	// An UPDATE with an offer crosses ours: 491 (RFC 3311 §5.2).
+	err := bc.update(ctx, true)
+	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
+		t.Fatalf("UPDATE with an offer = %v, want 491", err)
+	}
+
+	// A refresh has no offer, so no glare.
+	if err := bc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh = %v", err)
+	}
+
+	ac.mu.Lock()
+	ac.offering = false
+	ac.mu.Unlock()
+}
+
+func TestUpdateBeforeTheAnswer(t *testing.T) {
+	ctx := testContext(t)
+	p := newPeer(t, Config{})
+
+	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	p.send(invite)
+
+	c := incoming(t, p.u)
+
+	// A 180 without the answer creates the early dialog.
+	if err := c.provisional(ctx, 180, false); err != nil {
+		t.Fatal(err)
+	}
+
+	p.response(100, "INVITE")
+	tag := dialogTag(t, p.response(180, "INVITE"))
+
+	update := p.capture("035-UPDATE.sip").(*sip.Request)
+	setToTag(t, &update.Header, tag)
+	p.send(update)
+
+	res := p.response(500, "UPDATE")
+	if n, err := strconv.Atoi(res.Header.Get("Retry-After")); err != nil || n < 0 || n > 10 {
+		t.Errorf("Retry-After = %q", res.Header.Get("Retry-After"))
+	}
+}
+
+// TestCancelDuringRetransmissions cancels a call while its 183 is resent. The
+// deadlock it guards against, a CANCEL callback drained by a Respond made
+// with the call locked, has too narrow a window to reproduce reliably: this
+// is a smoke test of the path.
+func TestCancelDuringRetransmissions(t *testing.T) {
+	for range 20 {
+		p := newPeer(t, Config{T1: 2 * time.Millisecond})
+
+		invite := p.capture("011-INVITE.sip").(*sip.Request)
+		p.send(invite)
+
+		c := incoming(t, p.u)
+
+		go func() { _ = c.Ring(context.Background()) }()
+
+		p.response(100, "INVITE")
+		p.response(183, "INVITE")
+
+		cancel, err := sip.NewCancel(invite)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		p.send(cancel)
+
+		ended(t, c, Cancelled)
+	}
 }
