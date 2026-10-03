@@ -69,6 +69,18 @@ type IMS struct {
 
 	HomeDomain      string         `yaml:"home_domain"`
 	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
+
+	Numbering Numbering `yaml:"numbering"`
+}
+
+// Numbering turns the local numbers subscribers dial in the home network into
+// E.164 numbers: an international prefix becomes "+", a national prefix gives
+// way to the country code, and other numbers gain the country code. Without a
+// country code, local numbers are routed as dialled.
+type Numbering struct {
+	CountryCode         string `yaml:"country_code"`
+	NationalPrefix      string `yaml:"national_prefix"`
+	InternationalPrefix string `yaml:"international_prefix"`
 }
 
 type SIP struct {
@@ -386,6 +398,10 @@ func (i IMS) validate() error {
 		return fmt.Errorf("ims.home_domain %q is not a domain name", i.HomeDomain)
 	}
 
+	if err := i.Numbering.validate(); err != nil {
+		return err
+	}
+
 	for _, p := range i.TrustedNetworks {
 		switch {
 		case !p.IsValid() || p.Addr().Zone() != "":
@@ -395,6 +411,23 @@ func (i IMS) validate() error {
 		case p.Bits() == 0:
 			return fmt.Errorf("ims.trusted_networks: %s would trust every address, UEs included", p)
 		}
+	}
+
+	return nil
+}
+
+func (n Numbering) validate() error {
+	switch {
+	case n.CountryCode != "" && (len(n.CountryCode) > 3 || !isDigits(n.CountryCode) || n.CountryCode[0] == '0'):
+		return fmt.Errorf("ims.numbering.country_code %q must be 1 to 3 digits, not starting with 0", n.CountryCode)
+	case (n.NationalPrefix != "" || n.InternationalPrefix != "") && n.CountryCode == "":
+		return errors.New("ims.numbering prefixes need ims.numbering.country_code")
+	case n.NationalPrefix != "" && (len(n.NationalPrefix) > 4 || !isDigits(n.NationalPrefix)):
+		return fmt.Errorf("ims.numbering.national_prefix %q must be 1 to 4 digits", n.NationalPrefix)
+	case n.InternationalPrefix != "" && (len(n.InternationalPrefix) > 4 || !isDigits(n.InternationalPrefix)):
+		return fmt.Errorf("ims.numbering.international_prefix %q must be 1 to 4 digits", n.InternationalPrefix)
+	case n.InternationalPrefix != "" && n.InternationalPrefix == n.NationalPrefix:
+		return errors.New("ims.numbering.international_prefix and national_prefix must differ")
 	}
 
 	return nil

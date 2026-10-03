@@ -6,6 +6,10 @@ api:
 ims:
   mcc: "001"
   mnc: "01"
+  numbering:
+    country_code: "1"
+    national_prefix: "1"
+    international_prefix: "011"
 sip:
   addresses: [10.0.0.5]
   aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]

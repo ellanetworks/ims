@@ -478,6 +478,25 @@ func TestDeregistrationStoringTheServerName(t *testing.T) {
 	}
 }
 
+func TestLocationOfANumber(t *testing.T) {
+	c := newClient(t)
+	c.hss.Add(Subscriber{IMPI: "carol@" + realm, State: Registered, ServerName: scscfName, IMPUs: []cx.ProfileIdentity{
+		{Identity: "sip:+15550002@" + realm + ";user=phone"},
+		{Identity: "tel:+15550003"},
+	}})
+
+	for _, impu := range []string{"tel:+15550002", "tel:+1-555-0002", "sip:+15550003@" + realm + ";user=phone", "tel:+15550003"} {
+		if lia, err := c.lir(impu); err != nil || !sameResult(lia.Result, success) || lia.ServerName != scscfName {
+			t.Errorf("LIA for %s = %+v, %v, want DIAMETER_SUCCESS at %s", impu, lia, err, scscfName)
+		}
+	}
+
+	for _, impu := range []string{"tel:+15550004", "sip:+15550002@" + realm, "tel:15550002;phone-context=" + realm} {
+		_, err := c.lir(impu)
+		wantExperimental(t, err, tgpp.ResultErrorUserUnknown)
+	}
+}
+
 func TestLocationOfAnUnregisteredUser(t *testing.T) {
 	c := newClient(t)
 

@@ -24,6 +24,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -315,24 +316,35 @@ type harness struct {
 	sipClock *siptest.Clock
 	cfg      Config
 	pcscf    *fakePCSCF
+
+	// icscf stands for the I-CSCF that originating requests go to.
+	icscf      *siptest.Socket
+	numbering  Numbering
+	sessions   *Sessions
+	sipProxy   *proxy.Proxy
+	scscfLayer *transaction.Layer
 }
 
+// fakePCSCF is the S-CSCF's SIP role: registrations to the registrar, reg
+// event subscriptions included, and every other request to the session
+// router.
 type fakePCSCF struct {
-	reg atomic.Pointer[Registrar]
-	wg  sync.WaitGroup
+	reg      atomic.Pointer[Registrar]
+	sessions atomic.Pointer[Sessions]
+	wg       sync.WaitGroup
 }
 
 func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
 	respond := func(res *sip.Response) { _ = tx.Respond(res) }
 
-	p.wg.Go(func() {
-		if req.Method == "SUBSCRIBE" {
-			p.reg.Load().Subscribe(context.Background(), req, routes(req), respond)
-			return
-		}
-
-		p.reg.Load().Register(context.Background(), req, respond)
-	})
+	switch {
+	case req.Method == "SUBSCRIBE" && IsRegEvent(req):
+		p.wg.Go(func() { p.reg.Load().Subscribe(context.Background(), req, routes(req), respond) })
+	case req.Method == "REGISTER":
+		p.wg.Go(func() { p.reg.Load().Register(context.Background(), req, respond) })
+	default:
+		p.sessions.Load().HandleRequest(tx, req)
+	}
 }
 
 func routes(req *sip.Request) []sip.URI {
@@ -347,9 +359,13 @@ func routes(req *sip.Request) []sip.URI {
 	return out
 }
 
-func (*fakePCSCF) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+func (p *fakePCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	p.sessions.Load().HandleCancel(tx, cancel)
+}
 
-func (*fakePCSCF) HandleAck(*sip.Request) {}
+func (p *fakePCSCF) HandleAck(ack *sip.Request) {
+	p.sessions.Load().HandleAck(ack)
+}
 
 func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) {}
 
@@ -381,6 +397,8 @@ func newHarness(t *testing.T) *harness {
 		Clock:   h.sipClock,
 	})
 	h.scscf = siptest.ListenLayer(t, layer, loopback)
+	h.scscfLayer = layer
+	h.icscf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	h.cfg = Config{
 		HomeDomain: homeDomain,
@@ -406,6 +424,11 @@ func (h *harness) start() {
 	h.t.Cleanup(h.reg.Close)
 
 	h.pcscf.reg.Store(h.reg)
+
+	h.sipProxy = proxy.New(proxy.Config{Layer: h.scscfLayer, Logger: h.cfg.Logger, Port: h.scscf.Port(), Clock: h.sipClock})
+	h.sessions = h.reg.Sessions(SessionConfig{Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: h.numbering})
+	h.pcscf.sessions.Store(h.sessions)
+
 	h.reg.Start()
 }
 

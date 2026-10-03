@@ -234,13 +234,24 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		Logger:   logger,
 	}))
 
+	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
+
 	roles.set(scscfPort, &scscfHandler{
 		log:       logger,
 		layer:     layer,
-		proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort}),
+		proxy:     scscfProxy,
 		trust:     domain,
 		registrar: s.registrar,
-		fallback:  ph,
+		sessions: s.registrar.Sessions(scscf.SessionConfig{
+			Proxy: scscfProxy,
+			ICSCF: s.bound(roleICSCF),
+			Numbering: scscf.Numbering{
+				CountryCode:         cfg.IMS.Numbering.CountryCode,
+				NationalPrefix:      cfg.IMS.Numbering.NationalPrefix,
+				InternationalPrefix: cfg.IMS.Numbering.InternationalPrefix,
+			},
+		}),
+		fallback: ph,
 	})
 
 	s.registrar.Start()
@@ -408,6 +419,7 @@ type scscfHandler struct {
 	proxy     *proxy.Proxy
 	trust     *trust.Domain
 	registrar registrar
+	sessions  *scscf.Sessions
 	fallback  transaction.Handler
 }
 
@@ -448,8 +460,11 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 		}
 
 		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, removed, respond) }
-	default:
+	case req.Method == "OPTIONS" && h.addressedToSelf(req):
 		h.fallback.HandleRequest(tx, req)
+		return
+	default:
+		h.sessions.HandleRequest(tx, req)
 		return
 	}
 
@@ -459,13 +474,16 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 	}
 }
 
-func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	if h.proxy.Proxied(tx) {
-		h.proxy.Cancel(tx, cancel)
-		return
-	}
+// addressedToSelf reports whether a request is for the S-CSCF itself, once
+// its own Route entries are removed, as keep-alive OPTIONS are.
+func (h *scscfHandler) addressedToSelf(req *sip.Request) bool {
+	out, _, err := h.proxy.Preprocess(req)
 
-	h.fallback.HandleCancel(tx, cancel)
+	return err == nil && !out.Header.Has("Route") && out.URI.User == "" && h.proxy.IsLocal(out.URI)
+}
+
+func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+	h.sessions.HandleCancel(tx, cancel)
 }
 
 // HandleAck relays an ACK to a 2xx along the route set of a dialog the S-CSCF
@@ -476,23 +494,7 @@ func (h *scscfHandler) HandleAck(ack *sip.Request) {
 		return
 	}
 
-	out, removed, err := h.proxy.Preprocess(ack)
-	if err != nil || len(removed) == 0 {
-		h.fallback.HandleAck(ack)
-		return
-	}
-
-	tr, dest, err := sip.NextHop(out)
-	if err != nil {
-		h.log.Debug("no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
-		return
-	}
-
-	to := proxy.Target{Flow: sip.Flow{Transport: tr, Local: ack.Flow.Local, Remote: dest}}
-
-	if err := h.proxy.ForwardAck(out, to, h.proxy.Dialog(removed)); err != nil {
-		h.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
-	}
+	h.sessions.HandleAck(ack)
 }
 
 func (h *scscfHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {

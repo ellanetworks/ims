@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/milenage"
+	"github.com/ellanetworks/ims/sip"
 )
 
 const imsPeer = "ims"
@@ -79,7 +80,41 @@ func (s State) String() string {
 }
 
 func (s Subscriber) has(impu string) bool {
-	return slices.ContainsFunc(s.IMPUs, func(p cx.ProfileIdentity) bool { return strings.EqualFold(p.Identity, impu) })
+	key := identityKey(impu)
+	return slices.ContainsFunc(s.IMPUs, func(p cx.ProfileIdentity) bool { return identityKey(p.Identity) == key })
+}
+
+// identityKey compares public identities the way an HSS serving numbers does:
+// a global number is the same identity as a tel URI and as a SIP URI with
+// user=phone, whatever its visual separators. A real HSS may match only the
+// identities it was provisioned with (the LIR contract with Ella Core in
+// ims_integration.md), which this fake is more lenient than.
+func identityKey(s string) string {
+	u, err := sip.ParseURI(s)
+	if err != nil {
+		return strings.ToLower(s)
+	}
+
+	number := u.User
+	if user, _ := u.Params.Get("user"); u.IsSIP() && strings.EqualFold(user, "phone") {
+		number, _, _ = strings.Cut(number, ";")
+	} else if !u.IsTel() {
+		number = ""
+	}
+
+	number = strings.Map(func(c rune) rune {
+		if strings.ContainsRune("-.()", c) {
+			return -1
+		}
+
+		return c
+	}, number)
+
+	if strings.HasPrefix(number, "+") {
+		return "tel:" + number
+	}
+
+	return strings.ToLower(s)
 }
 
 func (s Subscriber) allBarred() bool {
