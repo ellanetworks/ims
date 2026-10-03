@@ -246,8 +246,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			Proxy: scscfProxy,
 			ICSCF: s.bound(roleICSCF),
 			Numbering: scscf.Numbering{
-				CountryCode:    cfg.IMS.Numbering.CountryCode,
-				NationalPrefix: cfg.IMS.Numbering.NationalPrefix,
+				CountryCode:         cfg.IMS.Numbering.CountryCode,
+				NationalPrefix:      cfg.IMS.Numbering.NationalPrefix,
+				InternationalPrefix: cfg.IMS.Numbering.InternationalPrefix,
 			},
 		}),
 		fallback: ph,
@@ -459,7 +460,7 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 		}
 
 		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, removed, respond) }
-	case req.Method == "OPTIONS" && req.URI.User == "" && !req.Header.Has("Route") && h.proxy.IsLocal(req.URI):
+	case req.Method == "OPTIONS" && h.addressedToSelf(req):
 		h.fallback.HandleRequest(tx, req)
 		return
 	default:
@@ -471,6 +472,14 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 		h.log.Debug("dropped SIP request", slog.String("method", req.Method), slog.String("call-id", req.Header.CallID()),
 			slog.Any("error", err))
 	}
+}
+
+// addressedToSelf reports whether a request is for the S-CSCF itself, once
+// its own Route entries are removed, as keep-alive OPTIONS are.
+func (h *scscfHandler) addressedToSelf(req *sip.Request) bool {
+	out, _, err := h.proxy.Preprocess(req)
+
+	return err == nil && !out.Header.Has("Route") && out.URI.User == "" && h.proxy.IsLocal(out.URI)
 }
 
 func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {

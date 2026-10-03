@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/internal/milenage"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	bobIMPI   = "001010000000012@" + imsRealm
 	bobTel    = "tel:+15550012"
 	bobPhone  = "sip:+15550012@" + imsRealm + ";user=phone"
+	bobLocal  = "tel:5550012"
 	carolIMPI = "001010000000013@" + imsRealm
 	carolTel  = "tel:+15550013"
 )
@@ -52,7 +54,7 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 		impus []string
 	}{
 		{aliceIMPI, []string{"sip:" + aliceIMPI, "sip:+15550011@" + imsRealm + ";user=phone", aliceTel}},
-		{bobIMPI, []string{"sip:" + bobIMPI, bobPhone, bobTel}},
+		{bobIMPI, []string{"sip:" + bobIMPI, bobPhone, bobTel, bobLocal}},
 		{carolIMPI, []string{"sip:" + carolIMPI, carolTel}},
 	} {
 		sub := hsstest.Subscriber{IMPI: s.impi, IMSI: s.impi[:15], K: testK, OPc: testOPc, SQN: 32}
@@ -177,15 +179,42 @@ func (sc *callScene) invite(target string) *sip.Request {
 	return req
 }
 
-func finalResponse(t *testing.T, s *siptest.Socket) *sip.Response {
+// responseTo is the first response to req other than 100, skipping the
+// retransmitted responses to earlier requests.
+func responseTo(t *testing.T, s *siptest.Socket, req *sip.Request) *sip.Response {
 	t.Helper()
+
+	want, err := req.Header.CSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for {
 		res, _ := s.RecvResponse()
-		if res.StatusCode != 100 {
+		if cseq, _ := res.Header.CSeq(); res.StatusCode != 100 && res.Header.CallID() == req.Header.CallID() && cseq == want {
 			return res
 		}
 	}
+}
+
+// failedInvite is the final response to an INVITE that fails, which it ACKs
+// so that the S-CSCF stops retransmitting it.
+func failedInvite(t *testing.T, s *siptest.Socket, to netip.AddrPort, invite *sip.Request) *sip.Response {
+	t.Helper()
+
+	res := responseTo(t, s, invite)
+	if res.StatusCode < 300 {
+		t.Fatalf("got %q, want a failure", res.StartLine())
+	}
+
+	ack, err := sip.NewAck(invite, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.Send(sip.UDP, to, ack)
+
+	return res
 }
 
 func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
@@ -233,7 +262,7 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 
 	answer(180)
 
-	ringing := finalResponse(t, sc.alice)
+	ringing := responseTo(t, sc.alice, invite)
 	if want := []string{"<" + bobPhone + ">", "<" + bobTel + ">"}; ringing.StatusCode != 180 || !slices.Equal(ringing.Header.Values("P-Asserted-Identity"), want) {
 		t.Fatalf("alice got %q with P-Asserted-Identity %v, want 180 with %v", ringing.StartLine(),
 			ringing.Header.Values("P-Asserted-Identity"), want)
@@ -241,7 +270,7 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 
 	answer(200)
 
-	ok := finalResponse(t, sc.alice)
+	ok := responseTo(t, sc.alice, invite)
 	if ok.StatusCode != 200 {
 		t.Fatalf("alice got %q, want 200", ok.StartLine())
 	}
@@ -269,7 +298,8 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 		t.Fatalf("bob's P-CSCF got:\n%s\nwant the ACK", ack)
 	}
 
-	sc.alice.Send(sip.UDP, sc.scscf, inDialog("BYE", 2))
+	byeReq := inDialog("BYE", 2)
+	sc.alice.Send(sip.UDP, sc.scscf, byeReq)
 
 	bye, f := sc.bob.RecvRequest()
 	if bye.Method != "BYE" {
@@ -278,7 +308,7 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 
 	sc.bob.Send(sip.UDP, f.Remote, sip.NewResponse(bye, 200, ""))
 
-	if res := finalResponse(t, sc.alice); res.StatusCode != 200 {
+	if res := responseTo(t, sc.alice, byeReq); res.StatusCode != 200 {
 		t.Fatalf("alice got %q to BYE, want 200", res.StartLine())
 	}
 }
@@ -287,6 +317,30 @@ func TestCallToAHomeLocalNumber(t *testing.T) {
 	sc := newCallScene(t, config.Numbering{CountryCode: "1", NationalPrefix: "0"})
 
 	sc.alice.Send(sip.UDP, sc.scscf, sc.invite("tel:05550012;phone-context="+imsRealm))
+
+	if got, _ := sc.bob.RecvRequest(); got.URI.String() != sc.bobContact {
+		t.Fatalf("Request-URI = %s, want bob's contact %s", got.URI, sc.bobContact)
+	}
+}
+
+// TestCallToALocalIdentity calls a local number the HSS lists as such, without
+// a numbering rule: the I-CSCF and the S-CSCF must agree on its identity.
+func TestCallToALocalIdentity(t *testing.T) {
+	sc := newCallScene(t, config.Numbering{})
+
+	sc.alice.Send(sip.UDP, sc.scscf, sc.invite(bobLocal+";phone-context="+imsRealm))
+
+	if got, _ := sc.bob.RecvRequest(); got.URI.String() != sc.bobContact {
+		t.Fatalf("Request-URI = %s, want bob's contact %s", got.URI, sc.bobContact)
+	}
+}
+
+// TestCallFromSamsung dials as the Samsung phone of the Open5GS capture does,
+// with its own number as phone-context and host.
+func TestCallFromSamsung(t *testing.T) {
+	sc := newCallScene(t, config.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"})
+
+	sc.alice.Send(sip.UDP, sc.scscf, sc.invite("sip:15550012;phone-context=15550011@15550011;user=phone"))
 
 	if got, _ := sc.bob.RecvRequest(); got.URI.String() != sc.bobContact {
 		t.Fatalf("Request-URI = %s, want bob's contact %s", got.URI, sc.bobContact)
@@ -307,9 +361,10 @@ func TestCallFailures(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sc.alice.Send(sip.UDP, sc.scscf, sc.invite(tt.target))
+			invite := sc.invite(tt.target)
+			sc.alice.Send(sip.UDP, sc.scscf, invite)
 
-			if res := finalResponse(t, sc.alice); res.StatusCode != tt.code {
+			if res := failedInvite(t, sc.alice, sc.scscf, invite); res.StatusCode != tt.code {
 				t.Fatalf("got %q, want %d", res.StartLine(), tt.code)
 			}
 		})
@@ -321,8 +376,11 @@ func TestCallFailures(t *testing.T) {
 		msg.Header.Set("CSeq", "1 MESSAGE")
 		sc.alice.Send(sip.UDP, sc.scscf, msg)
 
-		if res := finalResponse(t, sc.alice); res.StatusCode != 403 {
+		if res := responseTo(t, sc.alice, msg); res.StatusCode != 403 {
 			t.Fatalf("got %q, want 403", res.StartLine())
 		}
 	})
+
+	// The ACKs stopped the failures' retransmissions (Timer G, T1).
+	sc.alice.RecvNone(2 * transaction.DefaultT1)
 }

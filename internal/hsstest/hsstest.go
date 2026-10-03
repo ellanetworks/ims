@@ -86,7 +86,9 @@ func (s Subscriber) has(impu string) bool {
 
 // identityKey compares public identities the way an HSS serving numbers does:
 // a global number is the same identity as a tel URI and as a SIP URI with
-// user=phone, whatever its visual separators.
+// user=phone, whatever its visual separators. A real HSS may match only the
+// identities it was provisioned with (the LIR contract with Ella Core in
+// ims_integration.md), which this fake is more lenient than.
 func identityKey(s string) string {
 	u, err := sip.ParseURI(s)
 	if err != nil {

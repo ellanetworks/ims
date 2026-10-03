@@ -329,3 +329,19 @@ func TestSCSCFRelaysAck(t *testing.T) {
 		callee.RecvNone(100 * time.Millisecond)
 	})
 }
+
+func TestSCSCFAnswersOptions(t *testing.T) {
+	srv := startServer(t)
+	scscf := sipListener(t, srv, roleSCSCF, loopback)
+	peer := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	for _, route := range []bool{false, true} {
+		options := siptest.NewRequest("OPTIONS", "sip:"+scscf.String(), sip.UDP, peer.Addr())
+		if route {
+			options.Header.Prepend("Route", "<sip:"+scscf.String()+";lr>")
+		}
+
+		peer.Send(sip.UDP, scscf, options)
+		wantResponse(t, peer, 200, "OPTIONS")
+	}
+}

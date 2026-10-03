@@ -15,14 +15,18 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// messageRejectCode answers an originating MESSAGE: there is no IP-SM-GW, so
-// the UE falls back to SMS over NAS (TS 24.229 §5.4.3.2 step 10). The code
-// that makes phones fall back is still to be checked against TS 24.341 and
-// real phones.
+// messageRejectCode answers an originating MESSAGE (Decision 10). There is no
+// IP-SM-GW, which a MESSAGE would reach through iFC (TS 24.229 §5.4.3.2 step
+// 5, TS 24.341), and IR.92 §6.1 lets a network offer SMS over NAS instead of
+// SMS over IP. Whether phones fall back to NAS on this response is up to
+// TS 24.341 and the vendors, neither of which is checked yet (M3).
 const (
 	messageRejectCode   = 403
 	messageRejectReason = "SMS over IP Not Supported"
 )
+
+// icsiMMTel is the ICSI of MMTel (TS 24.173 §5.2).
+const icsiMMTel = "urn:urn-7:3gpp-service.ims.icsi.mmtel"
 
 const (
 	rrOriginating = "mo"
@@ -78,9 +82,25 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		return
 	}
 
-	contactID, orig := originatingContact(removed)
+	contactID, orig, err := originatingContact(removed)
+	if err != nil {
+		s.log.Info("originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
+		s.respond(tx, sip.NewResponse(req, 403, ""))
+
+		return
+	}
 
 	err = s.r.cfg.Layer.Go(func(ctx context.Context) {
+		// The registrar's lifetime bounds the work: Close cancels it and
+		// waits for it, as for registrations.
+		ctx, done, ok := s.r.begin(ctx)
+		if !ok {
+			s.answer(tx, retryLater(req))
+			return
+		}
+
+		defer done()
+
 		if orig {
 			s.originating(ctx, tx, out, contactID)
 		} else {
@@ -119,21 +139,17 @@ func (s *Sessions) HandleAck(ack *sip.Request) {
 	}
 }
 
-// originatingContact finds the Service-Route entry of a contact among the
-// routes Preprocess removed.
-func originatingContact(removed []sip.URI) (int64, bool) {
+// originatingContact finds the Service-Route entry of a contact, orig-<id>,
+// among the routes Preprocess removed.
+func originatingContact(removed []sip.URI) (int64, bool, error) {
 	for _, u := range removed {
-		if u.User == "orig" {
-			return 0, true
-		}
-
 		if id, ok := strings.CutPrefix(u.User, "orig-"); ok {
-			contactID, _ := strconv.ParseInt(id, 10, 64)
-			return contactID, true
+			contactID, err := strconv.ParseInt(id, 10, 64)
+			return contactID, true, err
 		}
 	}
 
-	return 0, false
+	return 0, false, nil
 }
 
 func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, contactID int64) {
@@ -160,11 +176,13 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 
 	out.Header.Del("P-Served-User")
 	out.Header.Del("P-Access-Network-Info")
+	icsi, ok := s.assertedService(out, served)
+
+	out.Header.Del("P-Preferred-Service")
 	out.Header.Del("P-Asserted-Service")
 
-	if preferred := out.Header.Elements("P-Preferred-Service"); len(preferred) > 0 {
-		out.Header.Del("P-Preferred-Service")
-		out.Header.Add("P-Asserted-Service", preferred[0])
+	if ok {
+		out.Header.Add("P-Asserted-Service", icsi)
 	}
 
 	out.Header.Del("P-Asserted-Identity")
@@ -187,11 +205,45 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
+	// Every originating request goes to the I-CSCF (Decision 4). Routes the
+	// UE preloaded beyond its Service-Route would make the I-CSCF skip the
+	// LIR, and the P-CSCF only ever sends the Service-Route.
+	if out.Header.Has("Route") {
+		s.log.Info("routes after the Service-Route dropped", slog.Any("route", out.Header.Values("Route")))
+		out.Header.Del("Route")
+	}
+
 	route := sip.URI{Scheme: "sip", Host: sip.FormatHost(to.Flow.Remote.Addr()), Port: to.Flow.Remote.Port()}
+	if to.Flow.Transport != sip.UDP {
+		route.Params.Set("transport", strings.ToLower(string(to.Flow.Transport)))
+	}
+
 	route.Params.Set("lr", "")
 	out.Header.Prepend("Route", "<"+route.String()+">")
 
 	s.forward(tx, out, to, s.initialOptions(out, rrOriginating, nil))
+}
+
+// assertedService is the ICSI the S-CSCF asserts for an originating request
+// (TS 24.229 §5.4.3.2 steps 4C and 4D). MMTel is the only IMS communication
+// service, and every subscriber has it: a preferred MMTel ICSI is asserted,
+// any other is dropped, and an INVITE without one is an MMTel call (TS 24.173
+// §5.2), whose ICSI is asserted for it.
+func (s *Sessions) assertedService(out *sip.Request, served sip.Address) (string, bool) {
+	preferred := out.Header.Elements("P-Preferred-Service")
+
+	for _, v := range preferred {
+		if strings.EqualFold(strings.TrimSpace(v), icsiMMTel) {
+			return icsiMMTel, true
+		}
+	}
+
+	if len(preferred) > 0 {
+		s.log.Info("unsupported preferred service dropped", slog.String("impu", served.URI.String()), slog.Any("service", preferred))
+		return "", false
+	}
+
+	return icsiMMTel, out.Method == "INVITE"
 }
 
 // servedUser is the asserted identity of the originating user, which must be
@@ -214,7 +266,13 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 					continue
 				}
 
+				// The identities are read apart from the registration, so a
+				// concurrent REGISTER may have replaced them in between.
 				i := slices.IndexFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Key == key })
+				if i < 0 {
+					continue
+				}
+
 				if reg.Identities[i].Barred {
 					s.log.Info("originating request from a barred identity", slog.String("impu", a.URI.String()))
 					return sip.Address{}, db.Registration{}, sip.NewResponse(req, 403, "Barred")
@@ -266,6 +324,10 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		}
 	}
 
+	// A request that still has a Route is forwarded on it, without a target
+	// from the registrations (TS 24.229 §5.4.3.3 steps 8 and 10 apply only
+	// without one). Its responses still get the alias, whether the user is
+	// registered or not.
 	if out.Header.Has("Route") {
 		to, err := s.nextHop(out, req.Flow)
 		if err != nil {
@@ -273,7 +335,13 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 			return
 		}
 
-		s.forward(tx, out, to, s.initialOptions(out, rrTerminating, nil))
+		var onReply func(proxy.Reply) proxy.Verdict
+
+		if len(regs) > 0 {
+			onReply = s.aliasReply(regs[0])
+		}
+
+		s.forward(tx, out, to, s.initialOptions(out, rrTerminating, onReply))
 
 		return
 	}
@@ -308,7 +376,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 	out.URI = contact
 	out.Header.Del("P-Called-Party-ID")
-	out.Header.Add("P-Called-Party-ID", "<"+called.String()+">")
+	out.Header.Add("P-Called-Party-ID", "<"+calledPartyID(called).String()+">")
 	out.Header.Del("P-User-Database")
 	out.Header.Del("P-Served-User")
 
@@ -325,13 +393,18 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	s.forward(tx, out, to, s.initialOptions(out, rrTerminating, func(r proxy.Reply) proxy.Verdict {
+	s.forward(tx, out, to, s.initialOptions(out, rrTerminating, s.aliasReply(reg)))
+}
+
+// aliasReply adds the alias of the served user to its 1xx and 2xx.
+func (s *Sessions) aliasReply(reg db.Registration) func(proxy.Reply) proxy.Verdict {
+	return func(r proxy.Reply) proxy.Verdict {
 		if res := r.Response; res != nil && res.StatusCode > 100 && res.StatusCode < 300 {
 			s.assertAlias(res, reg)
 		}
 
 		return proxy.Relay
-	}))
+	}
 }
 
 // assertAlias adds the second P-Asserted-Identity to a 1xx or 2xx of the
@@ -391,7 +464,10 @@ func (s *Sessions) inDialog(tx *transaction.ServerTransaction, out *sip.Request,
 
 	opts := proxy.Options{Dialog: d}
 
-	if out.Method == "INVITE" || out.Method == "UPDATE" {
+	// The target refresh requests of INVITE dialogs (RFC 3311) and of
+	// subscriptions (RFC 6665 §4.1.2.1, §4.2.1.1).
+	switch out.Method {
+	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY":
 		opts.RecordRoute = recordRouteOf(removed)
 	}
 
@@ -465,7 +541,14 @@ func (s *Sessions) icscf(in sip.Flow) (proxy.Target, bool) {
 		return proxy.Target{}, false
 	}
 
-	return proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: in.Local, Remote: s.cfg.ICSCF[i]}}, true
+	// The request keeps its transport, so that one Record-Route entry
+	// serves both sides.
+	tr := sip.UDP
+	if in.Transport == sip.TCP {
+		tr = sip.TCP
+	}
+
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.ICSCF[i]}}, true
 }
 
 func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
