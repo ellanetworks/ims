@@ -1,0 +1,40 @@
+name: E2E Tests
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  e2e-open5gs-4g:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+
+      - name: Load kernel modules
+        run: sudo modprobe -a sctp esp4 xfrm_user
+
+      - name: Start Open5GS, Ella IMS and srsRAN
+        run: ./up.sh
+
+      - name: Run E2E tests
+        run: ./run.sh
+
+      - name: Dump logs
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --timestamps
+          docker compose exec -T open5gs sh -c 'tail -n 300 /var/log/open5gs/*.log' || true
+
+      - name: Stop
+        if: always()
+        run: docker compose down -t 5
