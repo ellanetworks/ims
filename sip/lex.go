@@ -125,9 +125,11 @@ func Quote(s string) string {
 		case '"', '\\':
 			b.WriteByte('\\')
 			b.WriteByte(c)
-		case '\r', '\n':
-			b.WriteByte(' ')
 		default:
+			if isTextCTL(c) {
+				c = ' '
+			}
+
 			b.WriteByte(c)
 		}
 	}
@@ -185,4 +187,18 @@ func firstListElement(v string) (first, rest string) {
 	}
 
 	return trimWSP(v), ""
+}
+
+func isTextCTL(c byte) bool {
+	return isCTL(c) && c != '\t'
+}
+
+func hasCTL(s string) bool {
+	for i := range len(s) {
+		if isTextCTL(s[i]) {
+			return true
+		}
+	}
+
+	return false
 }

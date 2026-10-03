@@ -1,0 +1,16 @@
+v=0
+o=- 0 0 IN IP4 192.0.2.1
+s=-
+c=IN IP4 192.0.2.1
+t=0 0
+m=audio 49152 RTP/AVP 97 98
+a=tcap:1 RTP/AVPF
+a=pcfg:1 t=1
+a=rtcp-fb:* trr-int 5000
+a=rtcp-rsize
+a=rtpmap:97 AMR/8000/1
+a=fmtp:97 mode-change-capability=2; max-red=220
+a=rtpmap:98 AMR/8000/1
+a=fmtp:98 mode-change-capability=2; max-red=220; octet-align=1
+a=ptime:20
+a=maxptime:240
