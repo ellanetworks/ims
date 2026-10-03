@@ -1,6 +1,7 @@
 package sdp
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -136,24 +137,29 @@ func (m *Media) Disable() {
 }
 
 func (m *Media) RTPMaps() ([]RTPMap, error) {
-	var out []RTPMap
+	var (
+		out  []RTPMap
+		errs []error
+	)
 
 	for _, v := range m.Attrs("rtpmap") {
 		r, err := ParseRTPMap(v)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
 
 		out = append(out, r)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 func (m *Media) Fmtp(format string) (string, bool) {
 	for _, v := range m.Attrs("fmtp") {
-		if f, params, _ := strings.Cut(v, " "); f == format {
-			return strings.TrimLeft(params, " "), true
+		f, params := cutWSP(v)
+		if f == format {
+			return params, true
 		}
 	}
 
@@ -210,17 +216,19 @@ type RTPMap struct {
 }
 
 func ParseRTPMap(s string) (RTPMap, error) {
-	pt, enc, ok := strings.Cut(s, " ")
-	if !ok {
+	f := strings.Fields(s)
+	if len(f) != 2 {
 		return RTPMap{}, fmt.Errorf("rtpmap %q: want <payload type> <encoding>/<clock rate>", s)
 	}
+
+	pt, enc := f[0], f[1]
 
 	n, err := strconv.ParseUint(pt, 10, 8)
 	if err != nil || !isDigits(pt) || n > 127 {
 		return RTPMap{}, fmt.Errorf("rtpmap %q: invalid payload type", s)
 	}
 
-	parts := strings.SplitN(strings.TrimLeft(enc, " "), "/", 3)
+	parts := strings.SplitN(enc, "/", 3)
 	if len(parts) < 2 || !isToken(parts[0]) || !isDigits(parts[1]) {
 		return RTPMap{}, fmt.Errorf("rtpmap %q: want <encoding>/<clock rate>", s)
 	}
@@ -316,17 +324,77 @@ func (d Direction) Receives() bool {
 }
 
 func Effective(offer, answer Direction) Direction {
-	if offer == Inactive {
-		return Inactive
+	if answer == "" {
+		answer = SendRecv
 	}
 
-	return answer
+	return direction(answer.Sends() && offer.Receives(), answer.Receives() && offer.Sends())
+}
+
+func direction(sends, receives bool) Direction {
+	switch {
+	case sends && receives:
+		return SendRecv
+	case sends:
+		return SendOnly
+	case receives:
+		return RecvOnly
+	}
+
+	return Inactive
+}
+
+func EffectiveDirection(offer, answer *Session, i int) (Direction, bool) {
+	od, ok := offer.sideDirection(i)
+	if !ok {
+		return "", false
+	}
+
+	if answer == nil {
+		return Effective(od, ""), true
+	}
+
+	ad, ok := answer.sideDirection(i)
+	if !ok {
+		return "", false
+	}
+
+	return Effective(od, ad), true
+}
+
+func (s *Session) sideDirection(i int) (Direction, bool) {
+	if i < 0 || i >= len(s.Media) || s.Media[i].Port() == 0 {
+		return "", false
+	}
+
+	d := s.MediaDirection(i)
+
+	if c, err := s.MediaConnection(i); err == nil && c.AddrType == IP4 && c.Address == "0.0.0.0" {
+		d = direction(d.Sends(), false)
+	}
+
+	return d, true
+}
+
+func parseDirection(l Line) (Direction, bool) {
+	if l.Type != 'a' {
+		return "", false
+	}
+
+	v := trimWSP(l.Value)
+	for _, d := range directions {
+		if strings.EqualFold(v, string(d)) {
+			return d, true
+		}
+	}
+
+	return "", false
 }
 
 func (ls Lines) Direction() (Direction, bool) {
 	for _, l := range ls {
-		if l.Type == 'a' && slices.Contains(directions, Direction(l.Value)) {
-			return Direction(l.Value), true
+		if d, ok := parseDirection(l); ok {
+			return d, true
 		}
 	}
 
@@ -346,5 +414,15 @@ func (ls *Lines) SetDirection(d Direction) {
 }
 
 func isDirection(l Line) bool {
-	return l.Type == 'a' && slices.Contains(directions, Direction(l.Value))
+	_, ok := parseDirection(l)
+	return ok
+}
+
+func cutWSP(s string) (before, after string) {
+	i := strings.IndexAny(s, " \t")
+	if i < 0 {
+		return s, ""
+	}
+
+	return s[:i], trimWSP(s[i:])
 }

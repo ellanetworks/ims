@@ -141,18 +141,22 @@ func (b Bandwidth) String() string {
 }
 
 func (ls Lines) Bandwidths() ([]Bandwidth, error) {
-	var out []Bandwidth
+	var (
+		out  []Bandwidth
+		errs []error
+	)
 
 	for _, v := range ls.Values('b') {
 		b, err := ParseBandwidth(v)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
 
 		out = append(out, b)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 func (ls Lines) Bandwidth(typ string) (uint64, bool) {

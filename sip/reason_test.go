@@ -44,7 +44,10 @@ func TestParseReason(t *testing.T) {
 }
 
 func TestParseReasonErrors(t *testing.T) {
-	for _, in := range []string{"", ";cause=1", "SIP;cause=x", "SIP;cause=-1", "SIP;cause=99999999999", "SIP;text=unquoted", `SIP;text="open`, "SIP cause=1", "SIP;text=\"a\r\nb\""} {
+	for _, in := range []string{
+		"", ";cause=1", "SIP;cause=x", "SIP;cause=-1", "SIP;cause=99999999999", "SIP;text=unquoted", `SIP;text="open`, "SIP cause=1", "SIP;text=\"a\r\nb\"",
+		"SIP;text=\"a\x01b\"", "SIP;cause=200;cause=487", `SIP;text="a";TEXT="b"`,
+	} {
 		if r, err := ParseReason(in); err == nil {
 			t.Errorf("ParseReason(%q) = %+v, want error", in, r)
 		}
@@ -53,21 +56,44 @@ func TestParseReasonErrors(t *testing.T) {
 
 func TestNewReason(t *testing.T) {
 	for _, tc := range []struct {
-		r    Reason
-		want string
+		protocol string
+		cause    int
+		text     string
+		want     string
 	}{
-		{NewReason(ReasonSIP, 503, ReasonText(ReasonSIP, 503)), `SIP;cause=503;text="Service Unavailable"`},
-		{NewReason(ReasonSIP, 488, ""), "SIP;cause=488"},
-		{NewReason(ReasonReleaseCause, ReleaseMediaBearerLoss, ReasonText(ReasonReleaseCause, ReleaseMediaBearerLoss)), `RELEASE_CAUSE;cause=3;text="Media bearer loss"`},
-		{NewReason(ReasonFailureCause, FailureSignallingBearerReleased, ReasonText(ReasonFailureCause, FailureSignallingBearerReleased)), `FAILURE_CAUSE;cause=2;text="Release of signalling bearer"`},
-		{NewReason(ReasonQ850, 16, `say "bye"`), `Q.850;cause=16;text="say \"bye\""`},
+		{ReasonSIP, 503, ReasonText(ReasonSIP, 503), `SIP;cause=503;text="Service Unavailable"`},
+		{ReasonSIP, 488, "", "SIP;cause=488"},
+		{ReasonReleaseCause, ReleaseMediaBearerLoss, ReasonText(ReasonReleaseCause, ReleaseMediaBearerLoss), `RELEASE_CAUSE;cause=3;text="Media bearer loss"`},
+		{ReasonFailureCause, FailureSignallingBearerReleased, ReasonText(ReasonFailureCause, FailureSignallingBearerReleased), `FAILURE_CAUSE;cause=2;text="Release of signalling bearer"`},
+		{ReasonFailureCause, FailureResourcesAllocation, ReasonText(ReasonFailureCause, FailureResourcesAllocation), `FAILURE_CAUSE;cause=3;text="Indication of failed resources allocation"`},
+		{ReasonQ850, 16, `say "bye"`, `Q.850;cause=16;text="say \"bye\""`},
+		{ReasonQ850, 0, "a\x00b\x7fc\td", "Q.850;cause=0;text=\"a b c\td\""},
+		{Reason5GMM, 9, "", "5GMM;cause=9"},
+		{ReasonS1APRNL, 21, "", "S1AP-RNL;cause=21"},
 	} {
-		if s := tc.r.String(); s != tc.want {
+		r, err := NewReason(tc.protocol, tc.cause, tc.text)
+		if err != nil {
+			t.Errorf("NewReason(%s, %d, %q): %v", tc.protocol, tc.cause, tc.text, err)
+			continue
+		}
+
+		if s := r.String(); s != tc.want {
 			t.Errorf("String() = %q, want %q", s, tc.want)
 		}
 
-		if _, err := ParseReason(tc.r.String()); err != nil {
-			t.Errorf("ParseReason(%q): %v", tc.r, err)
+		if _, err := ParseReason(r.String()); err != nil {
+			t.Errorf("ParseReason(%q): %v", r, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		protocol string
+		cause    int
+	}{
+		{"", 1}, {"bad proto", 1}, {"SIP;x", 1}, {ReasonSIP, -1}, {ReasonSIP, 1 << 40},
+	} {
+		if r, err := NewReason(tc.protocol, tc.cause, ""); err == nil {
+			t.Errorf("NewReason(%q, %d) = %q, want error", tc.protocol, tc.cause, r)
 		}
 	}
 
@@ -77,6 +103,10 @@ func TestNewReason(t *testing.T) {
 		want     string
 	}{
 		{ReasonSIP, 487, "Request Terminated"},
+		{ReasonSIP, 200, "Call completed elsewhere"},
+		{ReasonSIP, 607, "Unwanted"},
+		{ReasonSIP, 608, "Rejected"},
+		{ReasonNGAPRNL, 20, ""},
 		{ReasonSIP, 799, ""},
 		{ReasonReleaseCause, ReleaseUserEndsCall, "User ends call"},
 		{ReasonReleaseCause, ReleaseRTPTimeout, "RTP/RTCP time-out"},
@@ -86,6 +116,10 @@ func TestNewReason(t *testing.T) {
 		{ReasonReleaseCause, ReleaseRedirectionFailure, "Redirection failure"},
 		{ReasonReleaseCause, 8, ""},
 		{ReasonFailureCause, FailureMediaBearerLost, "Media bearer or QoS lost"},
+		{ReasonFailureCause, FailureResourcesAllocation, "Indication of failed resources allocation"},
+		{"sip", 487, "Request Terminated"},
+		{"release_cause", ReleaseUserEndsCall, "User ends call"},
+		{"q.850", 16, ""},
 		{ReasonQ850, 16, ""},
 	} {
 		if got := ReasonText(tc.protocol, tc.cause); got != tc.want {
@@ -117,7 +151,26 @@ func TestHeaderReasons(t *testing.T) {
 
 	h.Add("Reason", "SIP;cause=x")
 
-	if _, err := h.Reasons(); err == nil {
-		t.Error("Reasons(): no error")
+	if rs, err := h.Reasons(); err == nil || len(rs) != 3 {
+		t.Errorf("Reasons() with a bad element = %d reasons, %v", len(rs), err)
+	}
+}
+
+func TestReasonIs(t *testing.T) {
+	r, err := ParseReason("sip;cause=487")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !r.Is(ReasonSIP) || r.Is(ReasonQ850) {
+		t.Errorf("Is: %+v", r)
+	}
+
+	if got := ReasonText(r.Protocol, 487); got != "Request Terminated" {
+		t.Errorf("ReasonText(%q, 487) = %q", r.Protocol, got)
+	}
+
+	if r, err := ParseReason("SIP;text=\"tab\there\""); err != nil || r.Text() != "tab\there" {
+		t.Errorf("tab in text: %q, %v", r.Text(), err)
 	}
 }

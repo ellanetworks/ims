@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -219,6 +220,12 @@ func TestDirection(t *testing.T) {
 		{SendRecv, Inactive, Inactive},
 		{Inactive, SendRecv, Inactive},
 		{Inactive, Inactive, Inactive},
+		{SendRecv, "", SendRecv},
+		{SendOnly, "", RecvOnly},
+		{RecvOnly, "", SendOnly},
+		{Inactive, "", Inactive},
+		{SendOnly, SendRecv, RecvOnly},
+		{RecvOnly, RecvOnly, Inactive},
 	} {
 		if got := Effective(tc.offer, tc.answer); got != tc.want {
 			t.Errorf("Effective(%s, %s) = %s, want %s", tc.offer, tc.answer, got, tc.want)
@@ -460,9 +467,9 @@ func TestBandwidth(t *testing.T) {
 		}
 	}
 
-	s := mustParse(t, "v=0\r\nm=audio 9 RTP/AVP 0\r\nb=AS:x\r\n")
-	if _, err := s.Media[0].Bandwidths(); err == nil {
-		t.Error("Bandwidths(): no error")
+	s := mustParse(t, "v=0\r\nm=audio 9 RTP/AVP 0\r\nb=AS:x\r\nb=RR:2000\r\n")
+	if bs, err := s.Media[0].Bandwidths(); err == nil || len(bs) != 1 || bs[0] != (Bandwidth{BandwidthRR, 2000}) {
+		t.Errorf("Bandwidths() = %v, %v", bs, err)
 	}
 }
 
@@ -558,8 +565,151 @@ func TestPreconditionErrors(t *testing.T) {
 		}
 	}
 
-	s := mustParse(t, "v=0\r\nm=audio 9 RTP/AVP 0\r\na=curr:qos e2e maybe\r\n")
-	if _, err := s.Media[0].Preconditions(); err == nil {
-		t.Error("Preconditions(): no error")
+	s := mustParse(t, "v=0\r\nm=audio 9 RTP/AVP 0\r\na=curr:qos e2e maybe\r\na=curr:qos local sendrecv\r\n")
+	if ps, err := s.Media[0].Preconditions(); err == nil || len(ps) != 1 || ps[0].Status != StatusLocal {
+		t.Errorf("Preconditions() = %+v, %v", ps, err)
+	}
+}
+
+func TestAttrWhitespaceAndCase(t *testing.T) {
+	in := "v=0\r\nc=IN IP4 10.0.0.1\r\n" +
+		"m=audio 9 RTP/AVP 96 97\r\n" +
+		"a=inactive \r\n" +
+		"a=rtpmap:96 AMR-WB/16000/1 \r\n" +
+		"a=rtpmap:97\ttelephone-event/16000\r\n" +
+		"a=fmtp:97\t0-15 \r\n" +
+		"a=ptime:20 \r\n" +
+		"a=RTCP-MUX \r\n" +
+		"a=des:QOS Mandatory LOCAL sendrecv\r\n" +
+		"a=Curr: qos local none\r\n" +
+		"m=audio 10 RTP/AVP 0\r\n" +
+		"a=SendOnly\r\n"
+
+	s := mustParse(t, in)
+	if s.String() != in {
+		t.Fatalf("round trip changed bytes: %q", s)
+	}
+
+	m := s.Media[0]
+
+	if d := s.MediaDirection(0); d != Inactive {
+		t.Errorf("direction %q, want inactive", d)
+	}
+
+	if d := s.MediaDirection(1); d != SendOnly {
+		t.Errorf("direction %q, want sendonly", d)
+	}
+
+	maps, err := m.RTPMaps()
+	if err != nil || len(maps) != 2 || maps[0].Params != "1" || maps[1].Encoding != "telephone-event" {
+		t.Errorf("RTPMaps() = %+v, %v", maps, err)
+	}
+
+	if f, ok := m.Fmtp("97"); !ok || f != "0-15" {
+		t.Errorf("Fmtp(97) = %q, %v", f, ok)
+	}
+
+	if p, ok := m.Ptime(); !ok || p != 20*time.Millisecond {
+		t.Errorf("Ptime() = %v, %v", p, ok)
+	}
+
+	if !m.RTCPMux() {
+		t.Error("RTCPMux() = false")
+	}
+
+	pre, err := m.Preconditions()
+
+	want := []Precondition{
+		{Desired, QoS, StrengthMandatory, StatusLocal, QoSSendRecv},
+		{Current, QoS, "", StatusLocal, QoSNone},
+	}
+	if err != nil || !slices.Equal(pre, want) {
+		t.Errorf("Preconditions() = %+v, %v", pre, err)
+	}
+
+	m.SetDirection(SendRecv)
+	m.SetPrecondition(Precondition{Current, QoS, "", StatusLocal, QoSSendRecv})
+
+	if n := m.DelAttr("rtcp-mux"); n != 1 {
+		t.Errorf("DelAttr(rtcp-mux) = %d", n)
+	}
+
+	want2 := "m=audio 9 RTP/AVP 96 97\r\na=sendrecv\r\n"
+	if got := s.String(); !strings.Contains(got, want2) || !strings.Contains(got, "a=curr:qos local sendrecv\r\n") || strings.Contains(got, "Curr") {
+		t.Errorf("edits on non-canonical lines:\n%q", got)
+	}
+}
+
+func TestSetPreconditionSplit(t *testing.T) {
+	des := func(strength, dir string) Precondition {
+		return Precondition{Desired, QoS, strength, StatusLocal, dir}
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		set  Precondition
+		want string
+	}{
+		{
+			"replace one half of a split",
+			"a=des:qos mandatory local recv\r\na=des:qos optional local send\r\n",
+			des(StrengthMandatory, QoSSend),
+			"a=des:qos mandatory local recv\r\na=des:qos mandatory local send\r\n",
+		},
+		{
+			"split a sendrecv line",
+			"a=des:qos optional local sendrecv\r\n",
+			des(StrengthMandatory, QoSSend),
+			"a=des:qos mandatory local send\r\na=des:qos optional local recv\r\n",
+		},
+		{
+			"split a sendrecv line, recv half",
+			"a=des:qos optional local sendrecv\r\n",
+			des(StrengthMandatory, QoSRecv),
+			"a=des:qos mandatory local recv\r\na=des:qos optional local send\r\n",
+		},
+		{
+			"merge a split into sendrecv",
+			"a=des:qos mandatory local recv\r\na=des:qos optional local send\r\na=des:qos mandatory remote sendrecv\r\n",
+			des(StrengthMandatory, QoSSendRecv),
+			"a=des:qos mandatory local sendrecv\r\na=des:qos mandatory remote sendrecv\r\n",
+		},
+		{
+			"add a missing half",
+			"a=des:qos mandatory local recv\r\n",
+			des(StrengthOptional, QoSSend),
+			"a=des:qos mandatory local recv\r\na=des:qos optional local send\r\n",
+		},
+		{
+			"curr is unique per status",
+			"a=curr:qos local none\r\na=curr:qos local send\r\na=curr:qos remote none\r\n",
+			Precondition{Current, QoS, "", StatusLocal, QoSSendRecv},
+			"a=curr:qos local sendrecv\r\na=curr:qos remote none\r\n",
+		},
+	} {
+		s := mustParse(t, "v=0\r\nm=audio 9 RTP/AVP 0\r\n"+tc.in)
+		s.Media[0].SetPrecondition(tc.set)
+
+		if got := strings.TrimPrefix(s.String(), "v=0\r\nm=audio 9 RTP/AVP 0\r\n"); got != tc.want {
+			t.Errorf("%s:\n%q\nwant\n%q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestAddrTypesUsesAddress(t *testing.T) {
+	for _, in := range []string{
+		"v=0\r\nc=IN IP4 2001:db8::1\r\nm=audio 9 RTP/AVP 0\r\n",
+		"v=0\r\nc=IN IP6 10.0.0.1\r\nm=audio 9 RTP/AVP 0\r\n",
+		"v=0\r\nc=IN IP4 host.example.com\r\nm=audio 9 RTP/AVP 0\r\n",
+	} {
+		if got, err := mustParse(t, in).AddrTypes(); err == nil {
+			t.Errorf("AddrTypes(%q) = %v, want error", in, got)
+		}
+	}
+
+	s := mustParse(t, "v=0\r\nc=IN IP6 2001:db8::1\r\nm=audio 9 RTP/AVP 0\r\nm=audio 0 RTP/AVP 0\r\nc=IN IP4 host.example.com\r\n")
+	if got, err := s.AddrTypes(); err != nil || !slices.Equal(got, []string{IP6}) {
+		t.Errorf("AddrTypes() = %v, %v", got, err)
 	}
 }

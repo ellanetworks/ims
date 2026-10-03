@@ -22,7 +22,7 @@ type Line struct {
 }
 
 func (l Line) String() string {
-	return string(l.appendTo(nil, true))
+	return string(l.Type) + "=" + string(appendText(nil, l.Value))
 }
 
 func (l Line) appendTo(b []byte, last bool) []byte {
@@ -134,7 +134,11 @@ func rank(t byte) int {
 
 func splitAttr(v string) (name, value string) {
 	name, value, _ = strings.Cut(v, ":")
-	return name, value
+	return trimWSP(name), trimWSP(value)
+}
+
+func trimWSP(s string) string {
+	return strings.Trim(s, " \t")
 }
 
 func (ls Lines) Attr(name string) (string, bool) {
@@ -143,7 +147,7 @@ func (ls Lines) Attr(name string) (string, bool) {
 			continue
 		}
 
-		if n, v := splitAttr(l.Value); n == name {
+		if n, v := splitAttr(l.Value); strings.EqualFold(n, name) {
 			return v, true
 		}
 	}
@@ -159,7 +163,7 @@ func (ls Lines) Attrs(name string) []string {
 			continue
 		}
 
-		if n, v := splitAttr(l.Value); n == name {
+		if n, v := splitAttr(l.Value); strings.EqualFold(n, name) {
 			out = append(out, v)
 		}
 	}
@@ -207,7 +211,7 @@ func isAttr(l Line, name string) bool {
 
 	n, _ := splitAttr(l.Value)
 
-	return n == name
+	return strings.EqualFold(n, name)
 }
 
 func (ls Lines) appendTo(b []byte, last bool) []byte {
@@ -366,8 +370,18 @@ func (s *Session) AddrTypes() ([]string, error) {
 			return nil, fmt.Errorf("media %d: %w", i+1, err)
 		}
 
-		if !slices.Contains(out, c.AddrType) {
-			out = append(out, c.AddrType)
+		a, ok := c.Addr()
+		if !ok {
+			return nil, fmt.Errorf("media %d: c=%s is not an %s address literal", i+1, c, c.AddrType)
+		}
+
+		family := IP6
+		if a.Is4() {
+			family = IP4
+		}
+
+		if !slices.Contains(out, family) {
+			out = append(out, family)
 		}
 	}
 

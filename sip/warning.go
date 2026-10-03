@@ -1,7 +1,9 @@
 package sip
 
 import (
+	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -46,8 +48,20 @@ type Warning struct {
 	Text  string
 }
 
-func NewWarning(code int, agent string) Warning {
-	return Warning{Code: code, Agent: agent, Text: WarningText(code)}
+func NewWarning(code int, agent string) (Warning, error) {
+	if code < 0 || code > 999 {
+		return Warning{}, fmt.Errorf("warn-code %d is not three digits", code)
+	}
+
+	if a, err := netip.ParseAddr(agent); err == nil && a.Is6() && a.Zone() == "" {
+		agent = "[" + agent + "]"
+	}
+
+	if !isWarnAgent(agent) {
+		return Warning{}, fmt.Errorf("warn-agent %q is neither a hostport nor a token", agent)
+	}
+
+	return Warning{Code: code, Agent: agent, Text: WarningText(code)}, nil
 }
 
 func ParseWarning(s string) (Warning, error) {
@@ -71,7 +85,7 @@ func ParseWarning(s string) (Warning, error) {
 	}
 
 	n, err := quotedLen(text)
-	if err != nil || n != len(text) || strings.ContainsAny(text, "\r\n") {
+	if err != nil || n != len(text) || hasCTL(text) {
 		return Warning{}, fmt.Errorf("warning-value %q: warn-text is not a quoted string", s)
 	}
 
@@ -79,13 +93,26 @@ func ParseWarning(s string) (Warning, error) {
 }
 
 func isWarnAgent(s string) bool {
-	for i := range len(s) {
-		if c := s[i]; c <= ' ' || c >= 0x7f || c == '"' || c == ',' {
-			return false
-		}
+	if isToken(s) {
+		return true
 	}
 
-	return true
+	_, rest, err := parseHost(s)
+	if err != nil {
+		return false
+	}
+
+	if rest == "" {
+		return true
+	}
+
+	if rest[0] != ':' {
+		return false
+	}
+
+	_, err = parsePort(rest[1:])
+
+	return err == nil
 }
 
 func (w Warning) String() string {
@@ -93,16 +120,20 @@ func (w Warning) String() string {
 }
 
 func (fs Header) Warnings() ([]Warning, error) {
-	var out []Warning
+	var (
+		out  []Warning
+		errs []error
+	)
 
 	for _, e := range fs.Elements("Warning") {
 		w, err := ParseWarning(e)
 		if err != nil {
-			return nil, fmt.Errorf("Warning: %w", err)
+			errs = append(errs, fmt.Errorf("Warning: %w", err))
+			continue
 		}
 
 		out = append(out, w)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
 }

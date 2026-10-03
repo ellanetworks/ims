@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -33,13 +34,17 @@ type IMS3GPP struct {
 }
 
 type AlternativeService struct {
-	Type   string
+	Types  []string
 	Reason string
 	Action string
 }
 
+func (a *AlternativeService) HasType(t string) bool {
+	return slices.Contains(a.Types, t)
+}
+
 func Emergency(reason string) IMS3GPP {
-	return IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Type: TypeEmergency, Reason: reason}}
+	return IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeEmergency}, Reason: reason}}
 }
 
 type xmlIMS3GPP struct {
@@ -50,9 +55,16 @@ type xmlIMS3GPP struct {
 }
 
 type xmlAlternativeService struct {
-	Type   string `xml:"type"`
-	Reason string `xml:"reason"`
-	Action string `xml:"action,omitempty"`
+	Children []xmlElement `xml:",any"`
+}
+
+type xmlElement struct {
+	XMLName xml.Name
+	Value   string `xml:",chardata"`
+}
+
+func element(name, value string) xmlElement {
+	return xmlElement{XMLName: xml.Name{Local: name}, Value: value}
 }
 
 func Encode(d IMS3GPP) ([]byte, error) {
@@ -63,7 +75,17 @@ func Encode(d IMS3GPP) ([]byte, error) {
 	doc := xmlIMS3GPP{Version: d.Version}
 
 	if a := d.AlternativeService; a != nil {
-		doc.AlternativeService = &xmlAlternativeService{Type: a.Type, Reason: a.Reason, Action: a.Action}
+		xa := &xmlAlternativeService{Children: []xmlElement{element("type", a.Types[0]), element("reason", a.Reason)}}
+
+		if a.Action != "" {
+			xa.Children = append(xa.Children, element("action", a.Action))
+		}
+
+		for _, t := range a.Types[1:] {
+			xa.Children = append(xa.Children, element("type", t))
+		}
+
+		doc.AlternativeService = xa
 	} else {
 		doc.ServiceInfo = &d.ServiceInfo
 	}
@@ -86,7 +108,7 @@ func validate(d IMS3GPP) error {
 			return errors.New("alternative-service and service-info are exclusive")
 		}
 
-		if d.AlternativeService.Type == "" {
+		if len(d.AlternativeService.Types) == 0 || slices.Contains(d.AlternativeService.Types, "") {
 			return errors.New("alternative-service without type")
 		}
 	}
@@ -183,7 +205,7 @@ func fromXML(doc inIMS3GPP) (IMS3GPP, error) {
 	}
 
 	if a := d.AlternativeService; a != nil {
-		if a.Type == "" {
+		if len(a.Types) == 0 {
 			return IMS3GPP{}, errors.New("alternative-service without type")
 		}
 
@@ -200,8 +222,8 @@ func alternativeService(c inChild) *AlternativeService {
 		v := strings.TrimSpace(e.Value)
 
 		switch {
-		case e.XMLName.Local == "type" && a.Type == "":
-			a.Type = v
+		case e.XMLName.Local == "type" && v != "":
+			a.Types = append(a.Types, v)
 		case e.XMLName.Local == "reason" && a.Reason == "":
 			a.Reason = e.Value
 		case e.XMLName.Local == "action" && a.Action == "":

@@ -25,12 +25,16 @@ func TestEncode(t *testing.T) {
 		want string
 	}{
 		{
-			IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Type: TypeEmergency, Action: ActionEmergencyRegistration}},
+			IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeEmergency}, Action: ActionEmergencyRegistration}},
 			`<ims-3gpp version="1"><alternative-service><type>emergency</type><reason></reason><action>emergency-registration</action></alternative-service></ims-3gpp>`,
 		},
 		{
-			IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Type: TypeRestoration, Reason: "a < b & c", Action: ActionInitialRegistration}},
+			IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeRestoration}, Reason: "a < b & c", Action: ActionInitialRegistration}},
 			`<ims-3gpp version="1"><alternative-service><type>restoration</type><reason>a &lt; b &amp; c</reason><action>initial-registration</action></alternative-service></ims-3gpp>`,
+		},
+		{
+			IMS3GPP{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeEmergency, TypeRestoration}, Action: ActionInitialRegistration}},
+			`<ims-3gpp version="1"><alternative-service><type>emergency</type><reason></reason><action>initial-registration</action><type>restoration</type></alternative-service></ims-3gpp>`,
 		},
 		{
 			IMS3GPP{Version: "1.0", ServiceInfo: "opaque"},
@@ -59,11 +63,12 @@ func TestEncode(t *testing.T) {
 
 func TestEncodeErrors(t *testing.T) {
 	for _, d := range []IMS3GPP{
-		{AlternativeService: &AlternativeService{Type: TypeEmergency}},
+		{AlternativeService: &AlternativeService{Types: []string{TypeEmergency}}},
 		{Version: "v1", ServiceInfo: "x"},
 		{Version: "1.", ServiceInfo: "x"},
 		{Version: Version, AlternativeService: &AlternativeService{Reason: "no type"}},
-		{Version: Version, AlternativeService: &AlternativeService{Type: TypeEmergency}, ServiceInfo: "both"},
+		{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeEmergency}}, ServiceInfo: "both"},
+		{Version: Version, AlternativeService: &AlternativeService{Types: []string{TypeEmergency, ""}}},
 	} {
 		if b, err := Encode(d); err == nil {
 			t.Errorf("Encode(%+v) = %s, want error", d, b)
@@ -87,13 +92,13 @@ func TestDecode(t *testing.T) {
     <action>emergency-registration</action>
   </alternative-service>
 </ims-3gpp>`,
-			IMS3GPP{Version: "1", AlternativeService: &AlternativeService{Type: TypeEmergency, Reason: "Emergency call", Action: ActionEmergencyRegistration}},
+			IMS3GPP{Version: "1", AlternativeService: &AlternativeService{Types: []string{TypeEmergency}, Reason: "Emergency call", Action: ActionEmergencyRegistration}},
 		},
 		{
 			"namespaced, extensions and a second type",
 			`<x:ims-3gpp xmlns:x="urn:example" version="1" foo="bar"><x:alternative-service><x:type> emergency </x:type><x:reason/>` +
 				`<x:action>anonymous-emergencycall</x:action><x:type>restoration</x:type><ext>1</ext></x:alternative-service><other/></x:ims-3gpp>`,
-			IMS3GPP{Version: "1", AlternativeService: &AlternativeService{Type: TypeEmergency, Action: ActionAnonymousEmergencyCall}},
+			IMS3GPP{Version: "1", AlternativeService: &AlternativeService{Types: []string{TypeEmergency, TypeRestoration}, Action: ActionAnonymousEmergencyCall}},
 		},
 		{
 			"service-info",
@@ -138,7 +143,7 @@ func TestDecodeErrors(t *testing.T) {
 func FuzzDecode(f *testing.F) {
 	for _, d := range []IMS3GPP{
 		Emergency("x"),
-		{Version: "1", AlternativeService: &AlternativeService{Type: TypeRestoration, Reason: "r", Action: ActionInitialRegistration}},
+		{Version: "1", AlternativeService: &AlternativeService{Types: []string{TypeRestoration}, Reason: "r", Action: ActionInitialRegistration}},
 		{Version: "1.0", ServiceInfo: "<a>"},
 	} {
 		b, err := Encode(d)
@@ -171,4 +176,16 @@ func FuzzDecode(f *testing.F) {
 			t.Fatalf("unstable: %+v became %+v", d, again)
 		}
 	})
+}
+
+func TestHasType(t *testing.T) {
+	d, err := Decode([]byte(`<ims-3gpp version="1"><alternative-service><type>emergency</type><reason/><type>restoration</type></alternative-service></ims-3gpp>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a := d.AlternativeService
+	if !a.HasType(TypeEmergency) || !a.HasType(TypeRestoration) || a.HasType("other") {
+		t.Errorf("HasType: %+v", a)
+	}
 }

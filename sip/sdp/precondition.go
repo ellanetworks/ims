@@ -1,6 +1,7 @@
 package sdp
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -50,7 +51,8 @@ type Precondition struct {
 }
 
 func ParsePrecondition(kind, value string) (Precondition, error) {
-	f := strings.Fields(value)
+	kind = strings.ToLower(kind)
+	f := strings.Fields(strings.ToLower(value))
 
 	want := 3
 	if kind == Desired {
@@ -92,12 +94,25 @@ func (p Precondition) String() string {
 	return p.Type + " " + p.Status + " " + p.Direction
 }
 
-func (p Precondition) same(o Precondition) bool {
-	return p.Kind == o.Kind && p.Type == o.Type && p.Status == o.Status
+func (p Precondition) split() bool {
+	return p.Direction == QoSSend || p.Direction == QoSRecv
+}
+
+func preconditionKind(name string) (string, bool) {
+	for _, k := range []string{Current, Desired, Confirmed} {
+		if strings.EqualFold(name, k) {
+			return k, true
+		}
+	}
+
+	return "", false
 }
 
 func (ls Lines) Preconditions() ([]Precondition, error) {
-	var out []Precondition
+	var (
+		out  []Precondition
+		errs []error
+	)
 
 	for _, l := range ls {
 		if l.Type != 'a' {
@@ -105,37 +120,150 @@ func (ls Lines) Preconditions() ([]Precondition, error) {
 		}
 
 		name, value := splitAttr(l.Value)
-		if name != Current && name != Desired && name != Confirmed {
+
+		kind, ok := preconditionKind(name)
+		if !ok {
 			continue
 		}
 
-		p, err := ParsePrecondition(name, value)
+		p, err := ParsePrecondition(kind, value)
 		if err != nil {
-			return nil, err
+			errs = append(errs, err)
+			continue
 		}
 
 		out = append(out, p)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 func (ls *Lines) SetPrecondition(p Precondition) {
+	var (
+		first = -1
+		whole *Precondition
+		drop  []int
+	)
+
 	for i, l := range *ls {
-		if l.Type != 'a' {
+		q, ok := linePrecondition(l)
+		if !ok || q.Kind != p.Kind || q.Type != p.Type || q.Status != p.Status {
 			continue
 		}
 
-		name, value := splitAttr(l.Value)
-		if name != p.Kind {
+		switch {
+		case p.Kind != Desired || !p.split() || q.Direction == p.Direction:
+		case !q.split():
+			whole = &q
+		default:
 			continue
 		}
 
-		if q, err := ParsePrecondition(name, value); err == nil && q.same(p) {
-			(*ls)[i].Value = attrValue(p.Kind, p.String())
-			return
+		if first < 0 {
+			first = i
+		} else {
+			drop = append(drop, i)
 		}
 	}
 
-	ls.AddAttr(p.Kind, p.String())
+	if first < 0 {
+		ls.AddAttr(p.Kind, p.String())
+		return
+	}
+
+	(*ls)[first].Value = attrValue(p.Kind, p.String())
+
+	for _, i := range slices.Backward(drop) {
+		*ls = slices.Delete(*ls, i, i+1)
+	}
+
+	if whole != nil && whole.Direction == QoSSendRecv {
+		rest := *whole
+		rest.Direction = QoSRecv
+
+		if p.Direction == QoSRecv {
+			rest.Direction = QoSSend
+		}
+
+		*ls = slices.Insert(*ls, first+1, Line{Type: 'a', Value: attrValue(rest.Kind, rest.String()), lf: (*ls)[first].lf})
+	}
+}
+
+func linePrecondition(l Line) (Precondition, bool) {
+	if l.Type != 'a' {
+		return Precondition{}, false
+	}
+
+	name, value := splitAttr(l.Value)
+
+	kind, ok := preconditionKind(name)
+	if !ok {
+		return Precondition{}, false
+	}
+
+	p, err := ParsePrecondition(kind, value)
+
+	return p, err == nil
+}
+
+func (p Precondition) Invert() Precondition {
+	switch p.Status {
+	case StatusLocal:
+		p.Status = StatusRemote
+	case StatusRemote:
+		p.Status = StatusLocal
+	}
+
+	switch p.Direction {
+	case QoSSend:
+		p.Direction = QoSRecv
+	case QoSRecv:
+		p.Direction = QoSSend
+	}
+
+	return p
+}
+
+func PreconditionsMet(ps []Precondition) bool {
+	type row struct{ typ, status, dir string }
+
+	reserved := map[row]bool{}
+
+	for _, p := range ps {
+		if p.Kind == Current {
+			for _, d := range qosRows(p.Direction) {
+				reserved[row{p.Type, p.Status, d}] = true
+			}
+		}
+	}
+
+	for _, p := range ps {
+		if p.Kind != Desired {
+			continue
+		}
+
+		switch p.Strength {
+		case StrengthFailure, StrengthUnknown:
+			return false
+		case StrengthMandatory:
+			for _, d := range qosRows(p.Direction) {
+				if !reserved[row{p.Type, p.Status, d}] {
+					return false
+				}
+			}
+		}
+	}
+
+	return true
+}
+
+func qosRows(dir string) []string {
+	switch dir {
+	case QoSSendRecv:
+		return []string{QoSSend, QoSRecv}
+	case QoSSend, QoSRecv:
+		return []string{dir}
+	}
+
+	return nil
 }

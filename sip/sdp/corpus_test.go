@@ -339,6 +339,20 @@ func roundTrip(t *testing.T, s *sdp.Session) {
 		_, _ = m.Ptime()
 		_, _ = s.MediaConnection(i)
 		_ = s.MediaDirection(i)
+		_, _ = sdp.EffectiveDirection(s, s, i)
+		_, _ = s.RTPEndpoint(i)
+		_, _ = s.RTCPEndpoint(i)
+		_ = m.PayloadTypes("AMR-WB")
+		_ = sdp.RTCPMuxed(s, s, i)
+
+		if ps, err := m.Preconditions(); err == nil {
+			_ = sdp.PreconditionsMet(ps)
+		}
+
+		cd := string(m.CodecData(sdp.Uplink, sdp.CodecOffer))
+		if strings.ContainsAny(cd, "\r\x00") || !strings.HasPrefix(cd, "uplink\noffer\nm=") {
+			t.Fatalf("media %d: bad Codec-Data %q", i, cd)
+		}
 	}
 
 	_, _ = s.AddrTypes()
