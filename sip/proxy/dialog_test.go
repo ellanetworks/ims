@@ -1118,3 +1118,49 @@ func TestDialogOfferInReliableProvisional(t *testing.T) {
 		t.Errorf("session after the PRACK: %+v, %+v, %v", offer, ans, ok)
 	}
 }
+
+func earlyAnswer(t *testing.T, s *scene, fwd *sip.Request, f sip.Flow, tag string, port int) *sip.Response {
+	t.Helper()
+
+	res := withSDP(sip.NewResponse(fwd, 183, ""), port)
+	_ = res.Header.SetToTag(tag)
+	dialog.CopyRecordRoute(res, fwd)
+	res.Header.Add("Contact", "<"+target(s.callee, sip.TCP)+">")
+	s.callee.Send(f.Transport, f.Remote, res)
+
+	return wantResponse(t, s.caller, 183)
+}
+
+// TS 29.214 Annex A.3.2, RFC 3264
+func TestDialogExchangePerEarlyDialog(t *testing.T) {
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+	c := ring(s)
+
+	first := earlyAnswer(t, s, c.fwd, c.f, "one", 5000)
+	second := earlyAnswer(t, s, c.fwd, c.f, "two", 6000)
+
+	x1, ok1 := c.d.Exchange(first)
+	x2, ok2 := c.d.Exchange(second)
+
+	if !ok1 || !ok2 || !strings.Contains(string(x1.Answer.Data), "5000") || !strings.Contains(string(x2.Answer.Data), "6000") ||
+		x1.Seq == x2.Seq || string(x1.Offer.Data) != string(x2.Offer.Data) {
+		t.Fatalf("exchanges %+v %v and %+v %v, want one per early dialog on the same offer", x1, ok1, x2, ok2)
+	}
+
+	ok := withSDP(sip.NewResponse(c.fwd, 200, ""), 5000)
+	_ = ok.Header.SetToTag("one")
+	dialog.CopyRecordRoute(ok, c.fwd)
+	ok.Header.Add("Contact", "<"+target(s.callee, sip.TCP)+">")
+	s.callee.Send(c.f.Transport, c.f.Remote, ok)
+
+	final := wantResponse(t, s.caller, 200)
+
+	if x, found := c.d.Exchange(final); !found || x.Seq != x1.Seq || !strings.Contains(string(x.Answer.Data), "5000") {
+		t.Fatalf("exchange %+v %v after the 2xx, want the first early dialog's, not a new one", x, found)
+	}
+
+	if _, found := c.d.Exchange(second); found {
+		t.Error("the other early dialog still has an exchange after the 2xx")
+	}
+}

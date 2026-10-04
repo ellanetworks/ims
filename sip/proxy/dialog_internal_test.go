@@ -21,12 +21,12 @@ func (s sdpStep) apply(d *Dialog) {
 	}
 
 	if s.code == 0 {
-		d.requestBody(s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
+		d.requestBody(&d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
 		return
 	}
 
 	res := &sip.Response{StatusCode: s.code, Envelope: e}
-	d.responseBody(s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
+	d.responseBody(&d.sdp, s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
 }
 
 func TestNegotiation(t *testing.T) {

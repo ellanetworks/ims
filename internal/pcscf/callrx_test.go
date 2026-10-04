@@ -22,11 +22,11 @@ func sdpBody(addr string, port string, extra ...string) []byte {
 	return []byte(strings.Join(append(lines, extra...), "\r\n") + "\r\n")
 }
 
-func newRxIPsecScene(t *testing.T) (*ipsecScene, *ue, *fakePCRF, string) {
+func newRxIPsecScene(t *testing.T, opts ...func(*Config)) (*ipsecScene, *ue, *fakePCRF, string) {
 	t.Helper()
 
 	f := newFakePCRF(t)
-	s, u := newIPsecRegScene(t, f.config(0))
+	s, u := newIPsecRegScene(t, append([]func(*Config){f.config(0)}, opts...)...)
 	token, _ := s.registerOverIPsec(u)
 
 	if _, r := f.aar(); r.MediaComponents[0].Type == nil || *r.MediaComponents[0].Type != rx.MediaControl {
@@ -49,9 +49,20 @@ func refuseAA(_ context.Context, req *diameter.Message) (*diameter.Message, erro
 func (s *ipsecScene) originate(t *testing.T, u *ue) (*sip.Request, sip.Flow) {
 	t.Helper()
 
+	_, got, f := s.originateWith(t, u, true)
+
+	return got, f
+}
+
+func (s *ipsecScene) originateWith(t *testing.T, u *ue, offer bool) (*sip.Request, *sip.Request, sip.Flow) {
+	t.Helper()
+
 	invite := s.ueInvite(u, func(r *sip.Request) {
 		r.Header.Add("P-Preferred-Identity", "<"+testTel+">")
-		r.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000"))
+
+		if offer {
+			r.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000"))
+		}
 	})
 	u.uc.Send(sip.UDP, s.ps, invite)
 	wantStatus(t, first(u.us.RecvResponse()), 100)
@@ -61,7 +72,7 @@ func (s *ipsecScene) originate(t *testing.T, u *ue) (*sip.Request, sip.Flow) {
 		t.Fatalf("S-CSCF got %s, want the INVITE", got.Method)
 	}
 
-	return got, f
+	return invite, got, f
 }
 
 func TestCallMediaAuthorizedOnTheAnswer(t *testing.T) {
@@ -231,8 +242,8 @@ func TestCallMediaAuthorizedOnTheTerminatingAnswer(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.4
-func TestCallMediaUnansweredEndsTheSession(t *testing.T) {
+// TS 29.214 §4.4.4: no STR without a successful initial AA-Answer.
+func TestCallMediaUnansweredReleasesTheCall(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	got, f := s.originate(t, u)
 
@@ -248,12 +259,12 @@ func TestCallMediaUnansweredEndsTheSession(t *testing.T) {
 	progress.SetBody("application/sdp", sdpBody("192.0.2.9", "5000"))
 	s.scscf.Send(f.Transport, f.Remote, progress)
 
-	session, _ := pcrf.aar()
-	pcrf.wantSTR(session, rx.TerminationAdministrative)
+	pcrf.aar()
 
 	if req, _ := s.scscf.RecvRequest(); req.Method != "CANCEL" {
 		t.Fatalf("S-CSCF got %s, want the CANCEL", req.Method)
 	}
 
 	wantStatus(t, first(u.us.RecvResponse()), 500)
+	pcrf.none()
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/pcrftest"
 	"github.com/ellanetworks/ims/internal/testue"
 )
@@ -175,4 +176,71 @@ func TestCallMediaRefused(t *testing.T) {
 
 	failed(t, ctx, ac, 500)
 	ended(t, bc, testue.Cancelled)
+}
+
+// callSession waits for the first media AAR for the UE at addr.
+func (s *scene) callSession(addr netip.Addr) string {
+	s.t.Helper()
+
+	deadline := time.After(15 * time.Second)
+
+	for {
+		select {
+		case r := <-s.pcrf.Requests():
+			if r.AAR == nil || pcrftest.Signalling(*r.AAR) {
+				continue
+			}
+
+			if r.AAR.FramedIPAddress == addr || r.AAR.FramedIPv6Address == addr {
+				return r.SessionID
+			}
+		case <-deadline:
+			s.t.Fatalf("no media AAR for %s", addr)
+		}
+	}
+}
+
+// TS 24.229 §5.2.8.1.2, TS 29.214 §4.4.6.1
+func TestCallAbortedByThePCRF(t *testing.T) {
+	s := newScene(t)
+	a := s.caller(0, false, testue.Config{})
+	b := s.caller(1, false, testue.Config{})
+
+	ctx := s.ctx()
+	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
+	session := s.callSession(ueAddr(0, false))
+
+	if _, err := s.pcrf.ASR(ctx, session, rx.AbortBearerReleased); err != nil {
+		t.Fatalf("ASR: %v", err)
+	}
+
+	ended(t, bc, testue.RemoteBye)
+
+	if ac.State() != testue.CallConfirmed {
+		t.Errorf("caller's call %s, want it left to the UE that lost its bearer", ac.State())
+	}
+}
+
+// TS 24.229 §5.2.8.1.2, TS 29.214 §4.4.6.2
+func TestCallMediaBearerLost(t *testing.T) {
+	s := newSceneWith(t, func(c *config.Config) { c.PCSCF.MediaLossTimeout = 100 * time.Millisecond })
+	a := s.caller(0, false, testue.Config{})
+	b := s.caller(1, false, testue.Config{})
+
+	ctx := s.ctx()
+	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
+	session := s.callSession(ueAddr(1, false))
+
+	if _, err := s.pcrf.ReAuth(ctx, session, rx.ReAuthRequest{
+		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer},
+		Flows:           []rx.Flows{{MediaComponentNumber: 1}},
+	}); err != nil {
+		t.Fatalf("RAR: %v", err)
+	}
+
+	ended(t, ac, testue.RemoteBye)
+
+	if bc.State() != testue.CallConfirmed {
+		t.Errorf("callee's call %s, want it left to the UE that lost its bearer", bc.State())
+	}
 }

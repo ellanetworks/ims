@@ -316,6 +316,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"bad trusted network", validDB + validAPI + validIMS + "  trusted_networks: [10.0.0.0]\n" + validSIP + validDiameter, "no '/'"},
 		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
 		{"negative no answer timeout", valid + "pcscf:\n  no_answer_timeout: -1s\n" + validDiameter, "pcscf.no_answer_timeout -1s is negative"},
+		{"negative media loss timeout", valid + "pcscf:\n  media_loss_timeout: -1s\n" + validDiameter, "pcscf.media_loss_timeout -1s is negative"},
 		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},
 		{"max expires below min", valid + "scscf:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "scscf.max_expires 300 is below scscf.min_expires 600"},
 		{"negative reauth interval", valid + "scscf:\n  reauth_interval: -1m\n" + validDiameter, "scscf.reauth_interval -1m0s is negative"},

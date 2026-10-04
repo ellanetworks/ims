@@ -173,8 +173,14 @@ func (p *PCSCF) HandleAck(ack *sip.Request) {
 		return
 	}
 
-	if err := p.cfg.Proxy.ForwardAck(out, to, d); err != nil {
-		p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+	forward := func() {
+		if err := p.cfg.Proxy.ForwardAck(out, to, d); err != nil {
+			p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+		}
+	}
+
+	if !p.mediaRequest(d, out, forward, nil) {
+		forward()
 	}
 }
 
@@ -213,14 +219,14 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 
 	recordRouteRefresh(out, removed)
 
-	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
+	p.forwardInDialog(tx, req, out, to, d, func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil && rep.Err == nil {
 			fromUEResponse(rep.Response)
 			p.respondCharging(req, rep.Response)
 		}
 
 		return p.mediaReply(tx, d, rep, false)
-	}})
+	})
 }
 
 func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
@@ -272,13 +278,25 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 		return
 	}
 
-	p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: func(rep proxy.Reply) proxy.Verdict {
+	p.forwardInDialog(tx, req, out, to, d, func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
 			toUEResponse(rep.Response)
 		}
 
 		return p.mediaReply(tx, d, rep, false)
-	}})
+	})
+}
+
+// TS 29.214 Annex A.1
+func (p *PCSCF) forwardInDialog(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, d *proxy.Dialog,
+	onReply func(proxy.Reply) proxy.Verdict,
+) {
+	forward := func() { p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: onReply}) }
+	reject := func() { p.respond(tx, sip.NewResponse(req, 500, "")) }
+
+	if !p.mediaRequest(d, out, forward, reject) {
+		forward()
+	}
 }
 
 // TS 24.229 §5.2.6.3.5, §5.2.6.3.9

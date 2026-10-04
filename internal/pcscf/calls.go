@@ -162,6 +162,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
 			Value: c, Target: p.dialogTarget(proxy.Caller, reg.FlowToken, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
+		c.rx.attach(c, dialog)
 		opts.Dialog = dialog
 
 		fallthrough
@@ -247,6 +248,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
 			Value: c, Target: p.dialogTarget(proxy.Callee, top.User, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
+		c.rx.attach(c, dialog)
 		opts.Dialog = dialog
 
 		fallthrough
@@ -454,6 +456,7 @@ type chargingVector struct {
 	generated string
 	origIOI   string
 	termIOI   string
+	access    string
 }
 
 func (p *PCSCF) newChargingVector(local netip.Addr) chargingVector {
@@ -500,7 +503,16 @@ func (cv chargingVector) String() string {
 		}
 	}
 
+	if cv.access != "" {
+		s += ";" + cv.access
+	}
+
 	return s
+}
+
+func (cv chargingVector) setResponse(res *sip.Response) {
+	res.Header.Del("P-Charging-Vector")
+	res.Header.Add("P-Charging-Vector", cv.String())
 }
 
 func (cv chargingVector) set(req *sip.Request) {
@@ -526,7 +538,7 @@ func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 // TS 24.229 §5.2.6.3.5 step 7, §5.2.6.3.9 step 3
 func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVector {
 	if c := callOf(d); c != nil && c.icid != "" {
-		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain}
+		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain, access: c.rx.takeCharging()}
 	}
 
 	return p.newChargingVector(req.Flow.Local.Addr())

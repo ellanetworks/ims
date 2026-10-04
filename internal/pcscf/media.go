@@ -18,9 +18,8 @@ type flowNumbers struct {
 }
 
 type exchange struct {
-	offer, answer         *sdp.Session
-	offerFromUE           bool
-	offerData, answerData []byte
+	offer, answer *sdp.Session
+	offerFromUE   bool
 }
 
 func (x exchange) uplink() *sdp.Session {
@@ -181,11 +180,7 @@ func tcpTransport(proto string) bool {
 }
 
 func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {
-	if v, ok := s.Media[i].Bandwidth(typ); ok {
-		return v, true
-	}
-
-	return s.Bandwidth(typ)
+	return s.Media[i].Bandwidth(typ)
 }
 
 // TS 29.213 Table 6.2.2, TS 29.214 Annex A.1

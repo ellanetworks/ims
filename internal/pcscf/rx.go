@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"sync"
 	"time"
@@ -39,6 +40,8 @@ type Rx struct {
 	PCRF        PCRF
 	Timeout     time.Duration
 	CallTimeout time.Duration
+
+	MediaLossTimeout time.Duration
 }
 
 type rxSession struct {
@@ -64,6 +67,7 @@ type rxClient struct {
 	mu       sync.Mutex
 	closed   bool
 	sessions map[string]*rxSession
+	retry    map[netip.Addr]retryHold
 }
 
 func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
@@ -79,9 +83,13 @@ func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
 		cfg.CallTimeout = DefaultRxCallTimeout
 	}
 
+	if cfg.MediaLossTimeout <= 0 {
+		cfg.MediaLossTimeout = DefaultMediaLossTimeout
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &rxClient{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, sessions: make(map[string]*rxSession)}
+	return &rxClient{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold)}
 }
 
 func (c *rxClient) close() {
@@ -500,6 +508,8 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 		p.log.Info("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("actions", r.SpecificActions))
 
+		p.mediaLost(s, r)
+
 		return true
 	}
 
@@ -537,6 +547,18 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) (termin
 	if s.call != nil {
 		p.log.Info("call media aborted by the PCRF", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.String("cause", r.Cause.String()))
+
+		cr := s.call
+
+		cr.mu.Lock()
+		if cr.session == s {
+			cr.session = nil
+		}
+		cr.mu.Unlock()
+
+		if cr.dialog != nil {
+			p.releaseCall(cr.call, cr.dialog, true)
+		}
 
 		return func() { p.rx.end(s, rx.TerminationAdministrative, 0) }, true
 	}

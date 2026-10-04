@@ -254,7 +254,12 @@ func (p *PCRF) ASR(ctx context.Context, session string, cause rx.AbortCause) (rx
 
 // TS 29.214 §4.4.6.3
 func (p *PCRF) RAR(ctx context.Context, session string, actions ...rx.SpecificAction) (rx.ReAuthAnswer, error) {
-	req, err := rx.NewReAuthRequest(p.envelope(session), rx.ReAuthRequest{SpecificActions: actions})
+	return p.ReAuth(ctx, session, rx.ReAuthRequest{SpecificActions: actions})
+}
+
+// TS 29.214 §4.4.6.2
+func (p *PCRF) ReAuth(ctx context.Context, session string, r rx.ReAuthRequest) (rx.ReAuthAnswer, error) {
+	req, err := rx.NewReAuthRequest(p.envelope(session), r)
 	if err != nil {
 		return rx.ReAuthAnswer{}, err
 	}

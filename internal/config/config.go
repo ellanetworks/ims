@@ -90,6 +90,8 @@ type PCSCF struct {
 	IPsec IPsec `yaml:"ipsec"`
 
 	NoAnswerTimeout time.Duration `yaml:"no_answer_timeout"`
+
+	MediaLossTimeout time.Duration `yaml:"media_loss_timeout"`
 }
 
 type IPsec struct {
@@ -319,6 +321,10 @@ func (c Config) validate() error {
 
 	if c.PCSCF.NoAnswerTimeout < 0 {
 		return fmt.Errorf("pcscf.no_answer_timeout %s is negative", c.PCSCF.NoAnswerTimeout)
+	}
+
+	if c.PCSCF.MediaLossTimeout < 0 {
+		return fmt.Errorf("pcscf.media_loss_timeout %s is negative", c.PCSCF.MediaLossTimeout)
 	}
 
 	if err := c.PCSCF.IPsec.Policy().Validate(); err != nil {

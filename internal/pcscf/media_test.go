@@ -1,6 +1,8 @@
 package pcscf
 
 import (
+	"bytes"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -273,11 +275,61 @@ func TestSubscriptionIDs(t *testing.T) {
 	got := subscriptionIDs([]string{"sip:+15551234567@ims.test;user=phone", "tel:+15551234567", "sip:alice@ims.test"})
 	want := []rx.SubscriptionID{
 		{Type: rx.SubscriptionIDE164, Data: "15551234567"},
-		{Type: rx.SubscriptionIDE164, Data: "15551234567"},
 		{Type: rx.SubscriptionIDSIPURI, Data: "sip:alice@ims.test"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func corpusSDP(t *testing.T, name string) *sdp.Session {
+	t.Helper()
+
+	b, err := os.ReadFile("../../sip/internal/corpus/testdata/ella/live/4g/crosscall-core-z5/call_precondition_failure_580/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+
+	_, body, ok := bytes.Cut(b, []byte("\n\n"))
+	if !ok {
+		t.Fatalf("%s has no body", name)
+	}
+
+	s, err := sdp.Parse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return s
+}
+
+// The offer and answer of two Crosscall Core-Z5 phones, as the originating P-CSCF sees them.
+func TestMediaComponentFromLivePhones(t *testing.T) {
+	got, err := mediaComponents(exchange{
+		offer: corpusSDP(t, "001-INVITE.sip"), answer: corpusSDP(t, "006-183-INVITE.sip"), offerFromUE: true,
+	}, map[int]flowNumbers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := got[0]
+
+	if *c.Type != rx.MediaAudio || *c.FlowStatus != rx.FlowStatusEnabled || *c.MaxRequestedBandwidthUL != 41000 ||
+		*c.MaxRequestedBandwidthDL != 41000 || *c.RRBandwidth != 2000 || *c.RSBandwidth != 600 {
+		t.Errorf("component %+v, want enabled audio at 41 kbit/s with RR 2000 and RS 600", c)
+	}
+
+	want := [][]string{
+		{"permit in 17 from 10.46.0.10 to 10.46.0.9 50040", "permit out 17 from 10.46.0.9 to 10.46.0.10 50038"},
+		{"permit in 17 from 10.46.0.10 to 10.46.0.9 50041", "permit out 17 from 10.46.0.9 to 10.46.0.10 50039"},
+	}
+
+	for i, s := range c.SubComponents {
+		if !reflect.DeepEqual(s.FlowDescriptions, want[i]) {
+			t.Errorf("flow %d: %q, want %q", s.FlowNumber, s.FlowDescriptions, want[i])
+		}
 	}
 }
