@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -137,6 +138,8 @@ type DialogConfig struct {
 	Target func(toward Side, req *sip.Request) (Target, error)
 
 	Value any
+
+	OnEvent func(DialogEvent)
 }
 
 type Release struct {
@@ -159,6 +162,7 @@ type party struct {
 	seq     uint32
 	haveSeq bool
 	route   []sip.Address
+	sdp     negotiation
 }
 
 type closingLeg struct {
@@ -178,7 +182,14 @@ type negotiation struct {
 	offer, answer Body
 	tx            txKey
 	pending       bool
+	seq           int
 	prev          *negotiation
+}
+
+type Exchange struct {
+	Offer, Answer Body
+
+	Seq int
 }
 
 type Dialog struct {
@@ -214,7 +225,9 @@ type Dialog struct {
 	code      int
 	cancelled bool
 
-	offered bool
+	offered   bool
+	exchanges int
+	lastEarly string
 
 	invites  map[Side]uint32
 	refresh  map[txKey]sip.URI
@@ -261,7 +274,7 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 }
 
 func (d *Dialog) publish(e DialogEvent) {
-	if d.p.onDialog != nil {
+	if d.p.onDialog != nil || d.cfg.OnEvent != nil {
 		e.Dialog = d
 		d.outbox = append(d.outbox, e)
 	}
@@ -282,7 +295,15 @@ func (d *Dialog) flush() {
 		d.outbox = d.outbox[1:]
 
 		d.mu.Unlock()
-		d.p.onDialog(e)
+
+		if d.p.onDialog != nil {
+			d.p.onDialog(e)
+		}
+
+		if d.cfg.OnEvent != nil {
+			d.cfg.OnEvent(e)
+		}
+
 		d.mu.Lock()
 	}
 
@@ -370,7 +391,90 @@ func (d *Dialog) Session() (offer, answer Body, answered bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return d.sdp.offer, d.sdp.answer, d.sdp.offer.Data != nil && !d.sdp.pending
+	n := &d.sdp
+	if pt := d.early[d.lastEarly]; d.answerTag == "" && pt != nil {
+		n = &pt.sdp
+	}
+
+	return n.offer, n.answer, n.offer.Data != nil && !n.pending
+}
+
+// RFC 3264, TS 29.214 Annex A.3.2
+func (d *Dialog) Exchange(m sip.Message) (Exchange, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	n := d.legNegotiation(m)
+	if n == nil || n.pending || n.offer.Data == nil || n.answer.Data == nil {
+		return Exchange{}, false
+	}
+
+	return Exchange{Offer: n.offer, Answer: n.answer, Seq: n.seq}, true
+}
+
+// RFC 3262 §5, RFC 3264
+func (d *Dialog) PendingOffer(req *sip.Request) (Body, bool) {
+	if req.Method != "PRACK" && req.Method != "ACK" {
+		return Body{}, false
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	side, callee, err := d.sender(req)
+	if err != nil {
+		return Body{}, false
+	}
+
+	n := d.negotiation(callee)
+	if !n.pending || n.offer.From == side {
+		return Body{}, false
+	}
+
+	if _, ok := sessionBody(side, req.Envelope); !ok {
+		return Body{}, false
+	}
+
+	return n.offer, true
+}
+
+func (d *Dialog) legNegotiation(m sip.Message) *negotiation {
+	from, err := m.Env().Header.From()
+	if err != nil {
+		return nil
+	}
+
+	to, err := m.Env().Header.To()
+	if err != nil {
+		return nil
+	}
+
+	tag := to.Tag()
+	if from.Tag() != d.caller.addr.Tag() {
+		tag = from.Tag()
+	}
+
+	if d.answerTag != "" {
+		if tag != d.answerTag {
+			return nil
+		}
+
+		return &d.sdp
+	}
+
+	if pt := d.early[tag]; pt != nil {
+		return &pt.sdp
+	}
+
+	return nil
+}
+
+func (d *Dialog) negotiation(callee *party) *negotiation {
+	if callee == nil || d.answerTag != "" {
+		return &d.sdp
+	}
+
+	return &callee.sdp
 }
 
 func (d *Dialog) party(s Side) *party {
@@ -444,7 +548,7 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	d.caller = party{addr: from, contact: contact, seq: cseq.Seq, haveSeq: true, route: route}
 	d.invites[Caller] = cseq.Seq
 	_, d.offered = sessionBody(Caller, out.Envelope)
-	d.offer(Caller, d.inviteTx, out.Envelope)
+	d.offer(&d.sdp, Caller, d.inviteTx, out.Envelope)
 	d.arm(d.p.dialogLifetime)
 
 	d.mu.Unlock()
@@ -568,7 +672,7 @@ func (d *Dialog) request(out *sip.Request) (bool, error) {
 		}
 	}
 
-	d.requestBody(side, key, out.Envelope)
+	d.requestBody(d.negotiation(callee), side, key, out.Envelope)
 
 	return true, nil
 }
@@ -602,7 +706,7 @@ func (d *Dialog) ack(ack *sip.Request) error {
 
 	defer d.mu.Unlock()
 
-	side, _, err := d.sender(ack)
+	side, callee, err := d.sender(ack)
 	if err != nil {
 		return nil
 	}
@@ -623,7 +727,7 @@ func (d *Dialog) ack(ack *sip.Request) error {
 		}
 	}
 
-	d.requestBody(side, txKey{from: side, seq: cseq.Seq, method: "ACK"}, ack.Envelope)
+	d.requestBody(d.negotiation(callee), side, txKey{from: side, seq: cseq.Seq, method: "ACK"}, ack.Envelope)
 
 	return nil
 }
@@ -687,7 +791,7 @@ func (d *Dialog) response(req *sip.Request, initial bool, r Reply) {
 		delete(d.refresh, key)
 	}
 
-	d.responseBody(side.other(), key, res)
+	d.responseBody(d.negotiation(callee), side.other(), key, res)
 
 	confirmed := d.state == Ending || d.state == Confirmed || d.state == Answered
 
@@ -724,9 +828,11 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 
 		pt := d.early[tag]
 		if pt == nil {
-			pt = &party{addr: to}
+			pt = &party{addr: to, sdp: d.sdp}
 			d.early[tag] = pt
 		}
+
+		d.lastEarly = tag
 
 		if c, ok := firstContact(res.Header); ok {
 			pt.contact = c
@@ -740,7 +846,7 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 			d.offered = true
 		}
 
-		d.responseBody(Callee, d.inviteTx, res)
+		d.responseBody(&pt.sdp, Callee, d.inviteTx, res)
 	case res.IsSuccess():
 		switch {
 		case d.silent:
@@ -764,7 +870,7 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 
 		pt := d.early[tag]
 		if pt == nil {
-			pt = &party{addr: to}
+			pt = &party{addr: to, sdp: d.sdp}
 		}
 
 		if c, ok := firstContact(res.Header); ok {
@@ -776,11 +882,13 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		}
 
 		d.callee = *pt
+		d.sdp = pt.sdp
+		d.callee.sdp = negotiation{}
 		d.answerTag = tag
 		d.early = nil
 		d.state = Answered
 		d.code = res.StatusCode
-		d.responseBody(Callee, d.inviteTx, res)
+		d.responseBody(&d.sdp, Callee, d.inviteTx, res)
 		d.arm(sessionExpires(res, d.p.dialogLifetime))
 		d.noAck = d.p.clock.AfterFunc(2*64*d.p.layer.T1(), d.noAckFired)
 
@@ -791,7 +899,7 @@ func (d *Dialog) inviteResponse(res *sip.Response, downstream bool) {
 		}
 
 		d.code = res.StatusCode
-		d.rollback(d.inviteTx)
+		d.rollback(&d.sdp, d.inviteTx)
 
 		if d.ended {
 			d.state = Ended
@@ -1226,73 +1334,81 @@ func (g generated) HandleError(err error) {
 		slog.Any("error", err))
 }
 
-func (d *Dialog) requestBody(from Side, key txKey, e sip.Envelope) {
+func (d *Dialog) requestBody(n *negotiation, from Side, key txKey, e sip.Envelope) {
 	body, ok := sessionBody(from, e)
 	if !ok {
 		return
 	}
 
-	if d.sdp.pending && d.sdp.offer.From != from && (key.method == "PRACK" || key.method == "ACK") {
-		d.sdp.answer = body
-		d.sdp.pending = false
-
+	if n.pending && n.offer.From != from && (key.method == "PRACK" || key.method == "ACK") {
+		d.answered(n, body)
 		return
 	}
 
-	if key.method == "ACK" || key.method == "PRACK" && d.sdp.pending {
+	if key.method == "ACK" || key.method == "PRACK" && n.pending {
 		return
 	}
 
-	d.offer(from, key, e)
+	d.offer(n, from, key, e)
 }
 
-func (d *Dialog) offer(from Side, key txKey, e sip.Envelope) {
+func (d *Dialog) offer(n *negotiation, from Side, key txKey, e sip.Envelope) {
 	body, ok := sessionBody(from, e)
 	if !ok {
 		return
 	}
 
-	prev := d.sdp.prev
-	if !d.sdp.pending {
-		done := d.sdp
+	prev := n.prev
+	if !n.pending {
+		done := *n
 		done.prev = nil
 		prev = &done
 	}
 
-	d.sdp = negotiation{offer: body, tx: key, pending: true, prev: prev}
+	*n = negotiation{offer: body, tx: key, pending: true, prev: prev}
 }
 
-func (d *Dialog) responseBody(from Side, key txKey, res *sip.Response) {
+// RFC 3264, RFC 6337 §3.1
+func (d *Dialog) answered(n *negotiation, body Body) {
+	if n.pending || !bytes.Equal(n.answer.Data, body.Data) {
+		d.exchanges++
+		n.seq = d.exchanges
+	}
+
+	n.answer = body
+	n.pending = false
+}
+
+func (d *Dialog) responseBody(n *negotiation, from Side, key txKey, res *sip.Response) {
 	body, ok := sessionBody(from, res.Envelope)
 
 	switch {
 	case !ok || res.StatusCode >= 300:
-	case d.sdp.tx == key && d.sdp.offer.From != from:
-		d.sdp.answer = body
-		d.sdp.pending = false
-	case d.sdp.tx == key:
-		if d.sdp.pending {
-			d.sdp.offer = body
+	case n.tx == key && n.offer.From != from:
+		d.answered(n, body)
+	case n.tx == key:
+		if n.pending {
+			n.offer = body
 		}
-	case key.method == "INVITE" && !d.sdp.pending:
-		d.offer(from, key, res.Envelope)
+	case key.method == "INVITE" && !n.pending:
+		d.offer(n, from, key, res.Envelope)
 	}
 
 	if res.StatusCode >= 300 {
-		d.rollback(key)
+		d.rollback(n, key)
 	}
 }
 
 // RFC 3261 §14.1, RFC 3311 §5.2
-func (d *Dialog) rollback(key txKey) {
-	if d.sdp.tx != key || !d.sdp.pending {
+func (d *Dialog) rollback(n *negotiation, key txKey) {
+	if n.tx != key || !n.pending {
 		return
 	}
 
-	if d.sdp.prev != nil {
-		d.sdp = *d.sdp.prev
+	if n.prev != nil {
+		*n = *n.prev
 	} else {
-		d.sdp = negotiation{}
+		*n = negotiation{}
 	}
 }
 

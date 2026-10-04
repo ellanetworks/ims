@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
@@ -151,5 +152,97 @@ func TestASRWithoutTheIMS(t *testing.T) {
 
 	if _, err := p.ASR(t.Context(), "ims;1;1", rx.AbortBearerReleased); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("ASR err = %v, want ErrNotConnected", err)
+	}
+}
+
+func resultOf(t *testing.T, ans *diameter.Message) uint32 {
+	t.Helper()
+
+	_, err := rx.ParseAAAnswer(ans)
+	if err == nil {
+		return diameter.ResultSuccess
+	}
+
+	r, ok := tgpp.ResultOf(err)
+	if !ok {
+		t.Fatalf("AAA error %v carries no result", err)
+	}
+
+	return r.Code
+}
+
+func audio(flows ...string) []rx.MediaComponent {
+	return []rx.MediaComponent{{Number: 1, Type: new(rx.MediaAudio), SubComponents: []rx.MediaSubComponent{{FlowNumber: 1, FlowDescriptions: flows}}}}
+}
+
+// The Open5GS PCRF binds every AA-Request and refuses Flow-Descriptions its SMF cannot use.
+func TestAARChecks(t *testing.T) {
+	ue := netip.MustParseAddr("10.0.0.2")
+	update := rx.RequestUpdate
+
+	for name, tc := range map[string]struct {
+		r    rx.AARequest
+		want uint32
+	}{
+		"no binding": {rx.AARequest{MediaComponents: audio()}, tgpp.ResultIPCANSessionNotAvailable},
+		"valid": {rx.AARequest{FramedIPAddress: ue, MediaComponents: audio(
+			"permit in 17 from 10.0.0.2 to 192.0.2.9 5000", "permit out 17 from 192.0.2.9 to 10.0.0.2 4000",
+		)}, diameter.ResultSuccess},
+		"UE on the wrong side": {rx.AARequest{FramedIPAddress: ue, MediaComponents: audio(
+			"permit out 17 from 10.0.0.2 to 192.0.2.9 5000",
+		)}, diameter.ResultInvalidAVPValue},
+		"no destination port": {rx.AARequest{FramedIPAddress: ue, MediaComponents: audio(
+			"permit out 17 from 192.0.2.9 to 10.0.0.2",
+		)}, diameter.ResultInvalidAVPValue},
+		"update of an unknown session": {rx.AARequest{FramedIPAddress: ue, RequestType: &update}, diameter.ResultUnknownSessionID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newClient(t)
+
+			if got := resultOf(t, c.do(rx.NewAARequest(c.envelope(c.node.NewSessionID()), tc.r))); got != tc.want {
+				t.Fatalf("result %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSTRForAnUnknownSession(t *testing.T) {
+	c := newClient(t)
+
+	ans := c.do(rx.NewSessionTerminationRequest(c.envelope(c.node.NewSessionID()), rx.SessionTerminationRequest{
+		Cause: rx.TerminationLogout,
+	}))
+
+	if _, err := rx.ParseSessionTerminationAnswer(ans); err == nil {
+		t.Fatal("STA succeeded for an unknown session")
+	}
+}
+
+func TestHoldAndRefuse(t *testing.T) {
+	c := newClient(t)
+	ue := netip.MustParseAddr("10.0.0.2")
+
+	release := c.pcrf.HoldAA()
+	done := make(chan uint32, 1)
+
+	go func() {
+		done <- resultOf(t, c.do(rx.NewAARequest(c.envelope(c.node.NewSessionID()), rx.AARequest{FramedIPAddress: ue})))
+	}()
+
+	c.pcrf.Next(t)
+
+	select {
+	case <-done:
+		t.Fatal("AAA sent while held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	c.pcrf.RefuseWhen(func(rx.AARequest) *tgpp.Result {
+		return &tgpp.Result{Code: tgpp.ResultRequestedServiceNotAuthorized, Experimental: true, VendorID: tgpp.VendorID}
+	})
+	release()
+
+	if got := <-done; got != tgpp.ResultRequestedServiceNotAuthorized {
+		t.Fatalf("result %d, want the refusal", got)
 	}
 }

@@ -140,7 +140,17 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 		})
 	}
 
-	s.pcrf = pcrftest.New(t, pcrftest.Config{Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain})
+	var ues []netip.Addr
+
+	for i := range subscribers {
+		for _, p := range ueAddrsAt(i) {
+			ues = append(ues, p.Addr())
+		}
+	}
+
+	s.pcrf = pcrftest.New(t, pcrftest.Config{
+		Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain, UEs: ues,
+	})
 
 	s.srv = &server.Server{Config: config.Config{
 		DB:    config.DB{Path: s.db},

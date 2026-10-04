@@ -21,12 +21,12 @@ func (s sdpStep) apply(d *Dialog) {
 	}
 
 	if s.code == 0 {
-		d.requestBody(s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
+		d.requestBody(&d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
 		return
 	}
 
 	res := &sip.Response{StatusCode: s.code, Envelope: e}
-	d.responseBody(s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
+	d.responseBody(&d.sdp, s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
 }
 
 func TestNegotiation(t *testing.T) {
@@ -132,4 +132,103 @@ func TestNegotiation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// RFC 3264, RFC 6337 §3.1: a repeated answer is the same exchange, a changed one is new.
+func TestExchangeSequence(t *testing.T) {
+	d := &Dialog{}
+
+	steps := []sdpStep{
+		{from: Caller, seq: 1, method: "INVITE", sdp: "X"},
+		{from: Caller, seq: 1, method: "INVITE", code: 183, sdp: "x"},
+	}
+
+	for _, s := range steps {
+		s.apply(d)
+	}
+
+	first := d.sdp.seq
+
+	sdpStep{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "x"}.apply(d)
+
+	if d.sdp.seq != first {
+		t.Fatalf("seq %d after a repeated answer, want %d", d.sdp.seq, first)
+	}
+
+	sdpStep{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "y"}.apply(d)
+
+	if d.sdp.seq == first || string(d.sdp.answer.Data) != "y" {
+		t.Fatalf("seq %d answer %q after a changed answer, want a new exchange", d.sdp.seq, d.sdp.answer.Data)
+	}
+
+	sdpStep{from: Callee, seq: 2, method: "UPDATE", sdp: "U"}.apply(d)
+	sdpStep{from: Callee, seq: 2, method: "UPDATE", code: 200, sdp: "u"}.apply(d)
+
+	if d.sdp.seq <= first+1 {
+		t.Fatalf("seq %d after an UPDATE exchange, want it to grow", d.sdp.seq)
+	}
+}
+
+// RFC 3262 §5, RFC 3264: only a PRACK or ACK from the other side answers a pending offer.
+func TestPendingOffer(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		steps   []sdpStep
+		from    Side
+		method  string
+		body    bool
+		pending bool
+	}{
+		{"offer in a reliable 183, answer in the PRACK", []sdpStep{
+			{from: Caller, seq: 1, method: "INVITE"},
+			{from: Caller, seq: 1, method: "INVITE", code: 183, sdp: "O"},
+		}, Caller, "PRACK", true, true},
+		{"PRACK without a body", []sdpStep{
+			{from: Caller, seq: 1, method: "INVITE"},
+			{from: Caller, seq: 1, method: "INVITE", code: 183, sdp: "O"},
+		}, Caller, "PRACK", false, false},
+		{"offer from the same side", []sdpStep{
+			{from: Caller, seq: 1, method: "INVITE", sdp: "O"},
+		}, Caller, "PRACK", true, false},
+		{"offer in the 2xx, answer in the ACK", []sdpStep{
+			{from: Caller, seq: 1, method: "INVITE"},
+			{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "O"},
+		}, Caller, "ACK", true, true},
+		{"UPDATE is not an answer", []sdpStep{
+			{from: Caller, seq: 1, method: "INVITE"},
+			{from: Caller, seq: 1, method: "INVITE", code: 183, sdp: "O"},
+		}, Caller, "UPDATE", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Dialog{answerTag: "callee"}
+			d.caller.addr = mustAddress(t, "<sip:a@x>;tag=caller")
+
+			for _, s := range tc.steps {
+				s.apply(d)
+			}
+
+			req := &sip.Request{Method: tc.method}
+			req.Header.Add("From", "<sip:a@x>;tag=caller")
+			req.Header.Add("To", "<sip:b@x>;tag=callee")
+
+			if tc.body {
+				req.SetBody("application/sdp", []byte("A"))
+			}
+
+			if _, got := d.PendingOffer(req); got != tc.pending {
+				t.Fatalf("PendingOffer = %v, want %v", got, tc.pending)
+			}
+		})
+	}
+}
+
+func mustAddress(t *testing.T, s string) sip.Address {
+	t.Helper()
+
+	as, err := sip.ParseAddressList(s)
+	if err != nil || len(as) != 1 {
+		t.Fatalf("ParseAddressList(%q): %v", s, err)
+	}
+
+	return as[0]
 }

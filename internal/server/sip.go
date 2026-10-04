@@ -178,7 +178,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	var pcrf pcscf.Rx
 
 	if p, ok := cfg.Diameter.RxPeer(); ok {
-		pcrf = pcscf.Rx{Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}}
+		pcrf = pcscf.Rx{
+			Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout,
+		}
 	} else {
 		logger.Info("no diameter peer serves rx: the P-CSCF runs without Rx sessions")
 	}

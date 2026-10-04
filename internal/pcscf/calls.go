@@ -18,6 +18,8 @@ type call struct {
 	ue proxy.Side
 
 	icid string
+
+	rx *callRx
 }
 
 func callOf(d *proxy.Dialog) *call {
@@ -142,20 +144,26 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
+	var dialog *proxy.Dialog
+
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil {
 			toUEResponse(rep.Response)
 		}
 
-		return proxy.Relay
+		return p.mediaReply(tx, dialog, rep, true)
 	}}
 
 	switch out.Method {
 	case "INVITE":
+		c := &call{ue: proxy.Caller, icid: cv.icid, rx: p.newCallRx(regKey{reg.IMPI, reg.UEAddress.Addr().Unmap()}, asserted, "")}
+
 		opts.NoAnswer = p.cfg.NoAnswer
-		opts.Dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
-			Value: &call{ue: proxy.Caller, icid: cv.icid}, Target: p.dialogTarget(proxy.Caller, reg.FlowToken, req.Flow.Local.Addr()),
+		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
+			Value: c, Target: p.dialogTarget(proxy.Caller, reg.FlowToken, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
+		c.rx.attach(c, dialog)
+		opts.Dialog = dialog
 
 		fallthrough
 	case "SUBSCRIBE", "REFER":
@@ -210,10 +218,12 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 	dialogForming := false
 
+	var dialog *proxy.Dialog
+
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		res := rep.Response
 		if res == nil || rep.Err != nil {
-			return proxy.Relay
+			return p.mediaReply(tx, dialog, rep, true)
 		}
 
 		fromUEResponse(res)
@@ -224,14 +234,22 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 		p.respondCharging(req, res)
 
-		return proxy.Relay
+		return p.mediaReply(tx, dialog, rep, true)
 	}}
 
 	switch out.Method {
 	case "INVITE":
-		opts.Dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
-			Value: &call{ue: proxy.Callee, icid: cv.icid}, Target: p.dialogTarget(proxy.Callee, top.User, req.Flow.Local.Addr()),
+		c := &call{ue: proxy.Callee, icid: cv.icid}
+
+		if f, ok := p.regs.flow(top.User); ok {
+			c.rx = p.newCallRx(regKey{f.impi, f.ue.Addr().Unmap()}, p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
+		}
+
+		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
+			Value: c, Target: p.dialogTarget(proxy.Callee, top.User, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
+		c.rx.attach(c, dialog)
+		opts.Dialog = dialog
 
 		fallthrough
 	case "SUBSCRIBE", "REFER":
@@ -244,6 +262,29 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 	}
 
 	p.forward(tx, req, out, to, opts)
+}
+
+func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
+	return func(e proxy.DialogEvent) {
+		if e.Kind == proxy.EventEnded {
+			p.callEnded(c)
+		}
+	}
+}
+
+// TS 29.214 §5.4
+func (p *PCSCF) servedIdentities(f flow, called string) []string {
+	if called != "" {
+		return []string{strings.Trim(called, "<>")}
+	}
+
+	if r, ok := p.regs.get(f.impi, f.ue.Addr().Unmap()); ok {
+		if d := defaultIdentity(r.AssociatedURIs); d != "" {
+			return []string{d}
+		}
+	}
+
+	return nil
 }
 
 // TS 24.229 §5.2.8.1, TS 33.203 §7.4.2a
@@ -415,6 +456,7 @@ type chargingVector struct {
 	generated string
 	origIOI   string
 	termIOI   string
+	access    string
 }
 
 func (p *PCSCF) newChargingVector(local netip.Addr) chargingVector {
@@ -461,7 +503,16 @@ func (cv chargingVector) String() string {
 		}
 	}
 
+	if cv.access != "" {
+		s += ";" + cv.access
+	}
+
 	return s
+}
+
+func (cv chargingVector) setResponse(res *sip.Response) {
+	res.Header.Del("P-Charging-Vector")
+	res.Header.Add("P-Charging-Vector", cv.String())
 }
 
 func (cv chargingVector) set(req *sip.Request) {
@@ -487,7 +538,7 @@ func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 // TS 24.229 §5.2.6.3.5 step 7, §5.2.6.3.9 step 3
 func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVector {
 	if c := callOf(d); c != nil && c.icid != "" {
-		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain}
+		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain, access: c.rx.takeCharging()}
 	}
 
 	return p.newChargingVector(req.Flow.Local.Addr())

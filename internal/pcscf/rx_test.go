@@ -268,7 +268,7 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 func TestRxAARForIPv6(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	c := newRxClient(Rx{Diameter: pcrf, PCRF: PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm}},
-		slog.New(slog.DiscardHandler))
+		slog.New(slog.DiscardHandler), time.Now)
 	t.Cleanup(c.close)
 
 	ue := netip.MustParseAddr("2001:db8::1")
