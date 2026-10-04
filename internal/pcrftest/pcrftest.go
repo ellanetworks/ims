@@ -120,12 +120,6 @@ func (p *PCRF) Addr() netip.AddrPort {
 	return p.addr
 }
 
-func (p *PCRF) WaitConnected(t testing.TB) {
-	t.Helper()
-
-	diametertest.WaitOpen(t, p.node, imsPeer)
-}
-
 func (p *PCRF) Requests() <-chan Request {
 	return p.requests
 }

@@ -4,9 +4,11 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"path/filepath"
 	"regexp"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/hsstest"
@@ -171,8 +174,7 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 
 	t.Cleanup(func() { s.srv.Shutdown(context.Background()) })
 
-	s.hss.WaitConnected(t)
-	s.pcrf.WaitConnected(t)
+	s.diameterOpen("hss", "pcrf")
 
 	t.Cleanup(func() { s.record("") })
 
@@ -257,6 +259,45 @@ func (s *scene) ctx() context.Context {
 	s.t.Cleanup(cancel)
 
 	return ctx
+}
+
+// RFC 6733 §5.6.1
+func (s *scene) diameterOpen(ids ...string) {
+	s.t.Helper()
+
+	eventually(s.t, "the IMS's Diameter peers to open", func() bool {
+		req, err := http.NewRequestWithContext(s.ctx(), http.MethodGet, "http://"+s.srv.APIAddr().String()+"/api/v1/diameter", nil)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+
+		defer func() { _ = res.Body.Close() }()
+
+		var body struct {
+			Result api.DiameterStatus `json:"result"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			s.t.Fatal(err)
+		}
+
+		open := map[string]bool{}
+		for _, p := range body.Result.Peers {
+			open[p.ID] = p.State == "open"
+		}
+
+		for _, id := range ids {
+			if !open[id] {
+				return false
+			}
+		}
+
+		return true
+	})
 }
 
 func (s *scene) register(u *testue.UE) {

@@ -62,7 +62,7 @@ func TestRegisterWithIPsecThroughTheRoles(t *testing.T) {
 
 	kernel := ipsectest.NewKernel()
 	srv := startIMSWith(t, cfg, kernel)
-	hss.WaitConnected(t)
+	waitOpen(t, srv, peer.ID)
 
 	pcscf := sipListener(t, srv, rolePCSCF, loopback)
 	scscf := sipListener(t, srv, roleSCSCF, loopback)
@@ -135,7 +135,7 @@ func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
 	cfg.Diameter = diameterConfig(peer)
 
 	srv := startIMS(t, cfg)
-	hss.WaitConnected(t)
+	waitOpen(t, srv, peer.ID)
 
 	scscf := sipListener(t, srv, roleSCSCF, loopback)
 	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))

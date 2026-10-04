@@ -71,7 +71,7 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 	cfg.SCSCF.MinExpires, cfg.SCSCF.MaxExpires = 60, 3600
 
 	srv := startIMS(t, cfg)
-	hss.WaitConnected(t)
+	waitOpen(t, srv, "hss")
 
 	sc := &callScene{
 		scscf: sipListener(t, srv, roleSCSCF, loopback),
