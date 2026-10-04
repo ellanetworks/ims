@@ -227,12 +227,6 @@ func (h *HSS) Addr() netip.AddrPort {
 	return h.addr
 }
 
-func (h *HSS) WaitConnected(t testing.TB) {
-	t.Helper()
-
-	diametertest.WaitOpen(t, h.node, imsPeer)
-}
-
 func (h *HSS) Add(s Subscriber) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
