@@ -230,6 +230,8 @@ func TestPreconditionCall(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{Preconditions: true})
 
+	eventually(t, "the caller's UPDATE to complete", ac.PreconditionsMet)
+
 	if got, want := strings.Join(methods(bc), ","), "PRACK,UPDATE,ACK"; got != want {
 		t.Errorf("callee saw %s, want %s", got, want)
 	}
@@ -238,8 +240,8 @@ func TestPreconditionCall(t *testing.T) {
 		t.Errorf("caller saw %s, want %s", got, want)
 	}
 
-	if !ac.PreconditionsMet() || !bc.PreconditionsMet() {
-		t.Fatal("preconditions not met")
+	if !bc.PreconditionsMet() {
+		t.Fatal("callee preconditions not met")
 	}
 
 	offer := audio(t, sdpOf(t, bc.Invite().Body))

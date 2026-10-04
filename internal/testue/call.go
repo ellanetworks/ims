@@ -868,44 +868,88 @@ func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHa
 	return req, nil
 }
 
-func (c *Call) send(ctx context.Context, build func() (*sip.Request, error)) (*sip.Response, error) {
-	w := &waiter{u: c.u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
+// RFC 3261 §17.1, §12.2.1.2
+func (c *Call) send(ctx context.Context, build func() (*sip.Request, error),
+	settle func(res *sip.Response, err error) error,
+) (*sip.Response, error) {
+	h := &dialogClient{c: c, settle: settle, done: make(chan outcome, 1)}
 
-	req, err := c.submit(build, w)
+	_, err := c.submit(func() (*sip.Request, error) {
+		req, err := build()
+		if err == nil {
+			h.method = req.Method
+		}
+
+		return req, err
+	}, h)
 	if err != nil {
+		if h.method != "" {
+			h.finish(nil, err)
+		}
+
 		return nil, err
 	}
 
-	var res *sip.Response
-
 	select {
-	case res = <-w.final:
-	case err = <-w.err:
-		err = fmt.Errorf("testue: %s: %w", req.Method, err)
+	case o := <-h.done:
+		return o.res, o.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
 
-	if err != nil {
-		c.event(Event{Err: err})
-		return nil, err
+type outcome struct {
+	res *sip.Response
+	err error
+}
+
+type dialogClient struct {
+	c      *Call
+	method string
+	settle func(res *sip.Response, err error) error
+	once   sync.Once
+	done   chan outcome
+}
+
+func (h *dialogClient) HandleResponse(res *sip.Response) {
+	if res.IsProvisional() {
+		return
 	}
 
-	c.event(Event{Response: res})
+	h.finish(res, nil)
+}
 
-	c.mu.Lock()
-	d := c.d
-	c.mu.Unlock()
+func (h *dialogClient) HandleError(err error) {
+	h.finish(nil, fmt.Errorf("testue: %s: %w", h.method, err))
+}
 
-	if err := d.ReceiveResponse(res); err != nil {
-		return res, fmt.Errorf("testue: %s response: %w", req.Method, err)
-	}
+func (h *dialogClient) finish(res *sip.Response, err error) {
+	h.once.Do(func() {
+		c := h.c
 
-	if !res.IsSuccess() {
-		return res, &ResponseError{Response: res}
-	}
+		c.mu.Lock()
 
-	return res, nil
+		switch {
+		case res == nil:
+			c.event(Event{Err: err})
+		default:
+			c.event(Event{Response: res})
+
+			if rerr := c.d.ReceiveResponse(res); rerr != nil {
+				err = fmt.Errorf("testue: %s response: %w", h.method, rerr)
+			} else if !res.IsSuccess() {
+				err = &ResponseError{Response: res}
+			}
+		}
+
+		if h.settle != nil {
+			err = h.settle(res, err)
+		}
+
+		c.mu.Unlock()
+
+		h.done <- outcome{res: res, err: err}
+	})
 }
 
 // RFC 3261 §12.2.1.2
@@ -923,19 +967,21 @@ func (c *Call) prack(ctx context.Context, res *sip.Response) error {
 	d := c.d
 	c.mu.Unlock()
 
-	r, err := c.send(ctx, func() (*sip.Request, error) {
+	_, err := c.send(ctx, func() (*sip.Request, error) {
 		prack, err := d.NewPrack(res)
 		if err != nil {
 			return nil, fmt.Errorf("testue: %w", err)
 		}
 
 		return prack, c.u.prepare(prack)
-	})
-	if err != nil {
-		if dialogLost(r, err) {
-			c.terminate(TimedOut)
+	}, func(r *sip.Response, err error) error {
+		if err != nil && dialogLost(r, err) {
+			c.terminateLocked(TimedOut)
 		}
 
+		return err
+	})
+	if err != nil {
 		return err
 	}
 
@@ -960,7 +1006,7 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 		ctx = context.WithoutCancel(ctx)
 	}
 
-	res, err := c.send(ctx, func() (*sip.Request, error) {
+	_, err := c.send(ctx, func() (*sip.Request, error) {
 		req, err := c.newRequest("UPDATE")
 		if err != nil {
 			return nil, err
@@ -1001,40 +1047,38 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 		}
 
 		return req, nil
-	})
+	}, func(res *sip.Response, err error) error {
+		defer c.notifyLocked()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if offered {
-		c.offering = false
-	}
-
-	if err != nil {
 		if offered {
-			c.m.local = previous
+			c.offering = false
 		}
 
-		if withOffer && dialogLost(res, err) {
-			c.terminateLocked(TimedOut)
-		}
+		if err != nil {
+			if offered {
+				c.m.local = previous
+			}
 
-		c.notifyLocked()
+			if withOffer && dialogLost(res, err) {
+				c.terminateLocked(TimedOut)
+			}
 
-		return err
-	}
-
-	if withOffer {
-		if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
 			return err
 		}
-	}
 
-	interval, refresher, _ := parseSessionExpires(res.Header)
-	c.sessionTimerLocked(interval, refresher != "uas")
-	c.notifyLocked()
+		if withOffer {
+			if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
+				return err
+			}
+		}
 
-	return nil
+		interval, refresher, _ := parseSessionExpires(res.Header)
+		c.sessionTimerLocked(interval, refresher != "uas")
+
+		return nil
+	})
+
+	return err
 }
 
 // RFC 4028 §7.4
@@ -1142,7 +1186,7 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 		c.terminateLocked(reason)
 
 		return req, nil
-	})
+	}, nil)
 
 	if res != nil {
 		return nil
@@ -1184,14 +1228,41 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		return err
 	}
 
-	ctx = context.WithoutCancel(ctx)
-
 	var (
 		previous      sdp.Direction
 		previousLocal *sdp.Session
 	)
 
-	h := &reinviteClient{c: c, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
+	h := &reinviteClient{c: c, done: make(chan error, 1)}
+
+	h.settle = func(res *sip.Response, err error) error {
+		c.offering = false
+		c.notifyLocked()
+
+		switch {
+		case err != nil || !res.IsSuccess():
+			c.m.direction, c.m.local = previous, previousLocal
+
+			if dialogLost(res, err) {
+				c.terminateLocked(TimedOut)
+			}
+
+			if err != nil {
+				return err
+			}
+
+			return &ResponseError{Response: res}
+		}
+
+		if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
+			return err
+		}
+
+		interval, refresher, _ := parseSessionExpires(res.Header)
+		c.sessionTimerLocked(interval, refresher != "uas")
+
+		return nil
+	}
 
 	_, err := c.submit(func() (*sip.Request, error) {
 		req, err := c.newRequest("INVITE")
@@ -1239,25 +1310,14 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		return req, nil
 	}, h)
 	if err != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
 		if h.req != nil {
-			c.offering = false
-			c.m.direction, c.m.local = previous, previousLocal
+			h.finish(nil, err)
 		}
 
 		return err
 	}
 
-	var res *sip.Response
-
-	select {
-	case res = <-h.final:
-	case err = <-h.err:
-	case <-ctx.Done():
-		err = ctx.Err()
-	}
+	err = <-h.done
 
 	h.mu.Lock()
 	sent := h.sent
@@ -1267,42 +1327,15 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		<-sent
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.offering = false
-	c.notifyLocked()
-
-	switch {
-	case err != nil || !res.IsSuccess():
-		c.m.direction, c.m.local = previous, previousLocal
-
-		if dialogLost(res, err) {
-			c.terminateLocked(TimedOut)
-		}
-
-		if err != nil {
-			return fmt.Errorf("testue: re-INVITE: %w", err)
-		}
-
-		return &ResponseError{Response: res}
-	}
-
-	if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
-		return err
-	}
-
-	interval, refresher, _ := parseSessionExpires(res.Header)
-	c.sessionTimerLocked(interval, refresher != "uas")
-
-	return nil
+	return err
 }
 
 type reinviteClient struct {
-	c     *Call
-	req   *sip.Request
-	final chan *sip.Response
-	err   chan error
+	c      *Call
+	req    *sip.Request
+	settle func(res *sip.Response, err error) error
+	once   sync.Once
+	done   chan error
 
 	mu       sync.Mutex
 	ack      *sip.Request
@@ -1313,10 +1346,11 @@ type reinviteClient struct {
 
 func (h *reinviteClient) HandleResponse(res *sip.Response) {
 	c := h.c
-	c.event(Event{Response: res})
 
 	if res.IsProvisional() {
+		c.event(Event{Response: res})
 		h.provisional(res)
+
 		return
 	}
 
@@ -1355,10 +1389,31 @@ func (h *reinviteClient) HandleResponse(res *sip.Response) {
 		h.mu.Unlock()
 	}
 
-	select {
-	case h.final <- res:
-	default:
+	if !h.finish(res, nil) {
+		c.event(Event{Response: res})
 	}
+}
+
+func (h *reinviteClient) finish(res *sip.Response, err error) bool {
+	first := false
+
+	h.once.Do(func() {
+		first = true
+		c := h.c
+
+		c.mu.Lock()
+
+		if res != nil {
+			c.event(Event{Response: res})
+		}
+
+		err = h.settle(res, err)
+		c.mu.Unlock()
+
+		h.done <- err
+	})
+
+	return first
 }
 
 func (h *reinviteClient) provisional(res *sip.Response) {
@@ -1395,7 +1450,7 @@ func (h *reinviteClient) provisional(res *sip.Response) {
 			}
 
 			return prack, c.u.prepare(prack)
-		})
+		}, nil)
 
 		return err
 	})
@@ -1403,11 +1458,7 @@ func (h *reinviteClient) provisional(res *sip.Response) {
 
 func (h *reinviteClient) HandleError(err error) {
 	h.c.event(Event{Err: err})
-
-	select {
-	case h.err <- err:
-	default:
-	}
+	h.finish(nil, fmt.Errorf("testue: re-INVITE: %w", err))
 }
 
 // RFC 4028
