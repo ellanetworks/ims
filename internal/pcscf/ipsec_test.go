@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -955,40 +954,28 @@ func restart(t *testing.T, s *ipsecScene) {
 	s.late.h.Store(p)
 }
 
+// A Samsung phone offers only hmac-md5-96 and sends its protected REGISTER over TCP from port_uc,
+// with port_us in the Via and rport;keep.
 func TestSamsungRegistration(t *testing.T) {
 	s := newIPsecScene(t, ipsec.DefaultPolicy())
 	u := s.newUE(25656)
 
-	capture := func(name string, verify string) *sip.Request {
-		t.Helper()
+	samsung := func(tr sip.Transport, sentBy netip.AddrPort, verify string) func(*sip.Request) {
+		return func(r *sip.Request) {
+			r.Header.Set("Via", "SIP/2.0/"+string(tr)+" "+sentBy.String()+";branch="+sip.NewBranch()+";rport;keep;transport="+string(tr))
+			r.Header.Set("Contact", "<sip:"+sentBy.String()+`>;+sip.instance="<urn:gsma:imei:35622410-483840-0>";q=1.0;`+
+				`+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip`)
+			r.Header.Set("Expires", "3600")
+			r.Header.Set("Security-Client", fmt.Sprintf("ipsec-3gpp;prot=esp;mod=trans;spi-c=%d;spi-s=%d;port-c=%d;port-s=%d;alg=hmac-md5-96;ealg=null",
+				u.spiC, u.spiS, u.uc.Addr().Port(), u.us.Addr().Port()))
 
-		raw, err := os.ReadFile(filepath.Join("..", "..", "sip", "internal", "corpus", "testdata", "open5gs", "ipsec_reg", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		text := strings.NewReplacer(
-			"192.168.101.5", "127.0.0.1",
-			"6301", strconv.Itoa(int(u.uc.Addr().Port())),
-			"6300", strconv.Itoa(int(u.us.Addr().Port())),
-		).Replace(strings.ReplaceAll(string(raw), "\r\n", "\n"))
-
-		lines := strings.Split(text, "\n")
-		for i, l := range lines {
-			if strings.HasPrefix(l, "Security-Verify:") {
-				lines[i] = "Security-Verify: " + verify
+			if verify != "" {
+				r.Header.Set("Security-Verify", verify)
 			}
 		}
-
-		m, err := sip.Parse([]byte(strings.Join(lines, "\r\n")))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		return m.(*sip.Request)
 	}
 
-	s.ue.Send(sip.UDP, s.pcscf, capture("001-REGISTER.sip", ""))
+	s.ue.Send(sip.UDP, s.pcscf, u.register(t, s.ue.Addr(), "", samsung(sip.UDP, s.ue.Addr(), "")))
 
 	req, f, _ := s.forwarded()
 	s.answer(req, f, 401)
@@ -1000,7 +987,7 @@ func TestSamsungRegistration(t *testing.T) {
 		t.Fatalf("Security-Server = %s, want the Samsung's only algorithm, hmac-md5-96", server)
 	}
 
-	u.uc.Send(sip.TCP, s.ps, capture("009-REGISTER.sip", server.String()))
+	u.uc.Send(sip.TCP, s.ps, u.register(t, u.us.Addr(), "c4c4", samsung(sip.TCP, u.us.Addr(), server.String())))
 
 	req, f, integrity := s.forwarded()
 	if integrity != "yes" {
