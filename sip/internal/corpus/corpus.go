@@ -25,7 +25,7 @@ type Fixture struct {
 func Corpus() []Fixture {
 	var out []Fixture
 
-	for _, root := range []string{"testdata/ella", "testdata/open5gs", "testdata/synthetic"} {
+	for _, root := range []string{"testdata/ella", "testdata/synthetic"} {
 		err := fs.WalkDir(testdata, root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || path.Ext(p) != ".sip" {
 				return err

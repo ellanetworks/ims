@@ -160,7 +160,7 @@ func TestCorpusCall(t *testing.T) {
 	var raw []byte
 
 	for _, fx := range corpus.Corpus() {
-		if fx.Name == "open5gs/ipsec_to_ipsec_call/013-183-INVITE.sip" {
+		if fx.Name == "ella/live/4g/crosscall-core-z5/call_callee_bye/005-183-INVITE.sip" {
 			m, err := sip.Parse(fx.Raw)
 			if err != nil {
 				t.Fatal(err)
@@ -180,7 +180,7 @@ func TestCorpusCall(t *testing.T) {
 	}
 
 	m := s.Media[0]
-	if m.Type() != sdp.Audio || m.Port() != 1234 {
+	if m.Type() != sdp.Audio || m.Port() != 50016 {
 		t.Errorf("m= %s %d", m.Type(), m.Port())
 	}
 

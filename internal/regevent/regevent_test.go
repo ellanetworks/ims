@@ -2,6 +2,7 @@ package regevent_test
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -383,7 +384,15 @@ func sipBody(t *testing.T, path string) []byte {
 }
 
 func TestDecodeCorpus(t *testing.T) {
-	files, err := filepath.Glob("../../sip/internal/corpus/testdata/*/*/*-NOTIFY.sip")
+	var files []string
+
+	err := filepath.WalkDir("../../sip/internal/corpus/testdata", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.HasSuffix(p, "-NOTIFY.sip") && !strings.HasSuffix(p, "-200-NOTIFY.sip") {
+			files = append(files, p)
+		}
+
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,39 +413,44 @@ func TestDecodeCorpus(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 
-			if r.Version != 2 || r.State != regevent.Full {
-				t.Errorf("version/state = %d/%s, want 2/full", r.Version, r.State)
+			if r.State != regevent.Full {
+				t.Errorf("state = %s, want full", r.State)
 			}
 
 			if len(r.Registrations) != 2 {
-				t.Fatalf("registrations = %d, want 2", len(r.Registrations))
+				t.Fatalf("registrations = %d, want the IMPU and its tel alias", len(r.Registrations))
 			}
 
-			if !strings.HasPrefix(r.Registrations[0].AOR, "tel:") {
-				t.Errorf("first aor = %q, want tel URI", r.Registrations[0].AOR)
-			}
+			var tel bool
 
 			for _, reg := range r.Registrations {
-				if reg.State != regevent.Active || len(reg.Contacts) != 1 {
+				tel = tel || strings.HasPrefix(reg.AOR, "tel:")
+
+				if reg.State != regevent.Active || len(reg.Contacts) == 0 {
 					t.Fatalf("registration %s: state %s, %d contacts", reg.AOR, reg.State, len(reg.Contacts))
 				}
 
-				c := reg.Contacts[0]
-				if c.Event != regevent.Registered || c.Expires == nil || !strings.HasPrefix(c.URI, "sip:") {
-					t.Errorf("unexpected contact %+v", c)
-				}
+				for _, c := range reg.Contacts {
+					if c.Expires == nil || !strings.HasPrefix(c.URI, "sip:") {
+						t.Errorf("unexpected contact %+v", c)
+					}
 
-				var instance string
+					var instance string
 
-				for _, p := range c.UnknownParams {
-					if p.Name == "+sip.instance" {
-						instance = p.Value
+					for _, p := range c.UnknownParams {
+						if p.Name == "+sip.instance" {
+							instance = p.Value
+						}
+					}
+
+					if !strings.HasPrefix(instance, `"<urn:gsma:imei:`) || !strings.HasSuffix(instance, `>"`) {
+						t.Errorf("+sip.instance = %q", instance)
 					}
 				}
+			}
 
-				if !strings.HasPrefix(instance, `"<urn:gsma:imei:`) || !strings.HasSuffix(instance, `>"`) {
-					t.Errorf("+sip.instance = %q", instance)
-				}
+			if !tel {
+				t.Error("no tel URI registration")
 			}
 
 			reenc, err := regevent.Encode(r)
@@ -460,35 +474,53 @@ func TestDecodeCorpus(t *testing.T) {
 	}
 }
 
+// A re-registration from a new address: the old contact ends in the same NOTIFY.
 func TestDecodeCorpusValues(t *testing.T) {
-	r, err := regevent.Decode(sipBody(t, "../../sip/internal/corpus/testdata/open5gs/ipsec_reg/020-NOTIFY.sip"))
+	r, err := regevent.Decode(sipBody(t, "../../sip/internal/corpus/testdata/ella/live/4g/motorola-xt2417/reregister/004-NOTIFY.sip"))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
+	if r.Version != 1 || r.State != regevent.Full {
+		t.Errorf("version/state = %d/%s", r.Version, r.State)
+	}
+
 	reg := r.Registrations[0]
-	if reg.AOR != "tel:0398765432100" || reg.ID != "0x7f45bcb27c98" {
+	if reg.AOR != "sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org" || reg.ID != "r57c0916cf3867058" {
 		t.Errorf("registration = %s/%s", reg.AOR, reg.ID)
 	}
 
-	if r.Registrations[1].AOR != "sip:0398765432100" {
+	if r.Registrations[1].AOR != "tel:15550000001" {
 		t.Errorf("second aor = %s", r.Registrations[1].AOR)
 	}
 
+	if len(reg.Contacts) != 2 {
+		t.Fatalf("contacts = %d, want the new one and the old one", len(reg.Contacts))
+	}
+
 	c := reg.Contacts[0]
-	if c.ID != "0x7f45bcb27058" || *c.Expires != 3599 || c.Q != "1.000" {
+	if c.ID != "cb0dae370f17df2d7" || c.State != regevent.Active || c.Event != regevent.Created || *c.Expires != 3600 {
 		t.Errorf("contact = %+v", c)
 	}
 
-	if c.URI != "sip:192.168.101.5:6300;alias=192.168.101.5~6301~2" {
+	if c.URI != "sip:1b4261b8-485f-4f9e-a1af-589ac5cae854@10.46.0.7:41498" {
 		t.Errorf("uri = %q", c.URI)
 	}
 
+	if old := reg.Contacts[1]; old.State != regevent.Terminated || old.Event != regevent.Unregistered || *old.Expires != 0 ||
+		old.URI != "sip:52b461eb-953e-4a68-a0fb-6d71b4ed2da6@10.46.0.6:43472" {
+		t.Errorf("old contact = %+v", old)
+	}
+
 	want := []regevent.UnknownParam{
+		{Name: "+g.3gpp.accesstype", Value: `"cellular2"`},
+		{Name: "+sip.instance", Value: `"<urn:gsma:imei:00000000-000001-0>"`},
+		{Name: "+g.3gpp.ps-data-off", Value: `"inactive"`},
+		{Name: "audio"},
+		{Name: "+g.3gpp.nw-init-ussi"},
 		{Name: "+g.3gpp.smsip"},
+		{Name: "video"},
 		{Name: "+g.3gpp.icsi-ref", Value: `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`},
-		{Name: "q", Value: `"1.0"`},
-		{Name: "+sip.instance", Value: `"<urn:gsma:imei:35622410-483840-0>"`},
 	}
 
 	if !reflect.DeepEqual(c.UnknownParams, want) {
