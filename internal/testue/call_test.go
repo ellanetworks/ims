@@ -177,9 +177,7 @@ func TestBasicCall(t *testing.T) {
 		t.Errorf("INVITE Accept-Contact = %q", invite.Header.Get("Accept-Contact"))
 	}
 
-	if got, want := sorted(methods(ac)), "100 INVITE,180 INVITE,183 INVITE,200 INVITE,200 PRACK"; got != want {
-		t.Errorf("caller saw %s, want %s", got, want)
-	}
+	waitSorted(t, ac, "100 INVITE,180 INVITE,183 INVITE,200 INVITE,200 PRACK")
 
 	if got, want := strings.Join(methods(bc), ","), "PRACK,ACK"; got != want {
 		t.Errorf("callee saw %s, want %s", got, want)
@@ -230,18 +228,14 @@ func TestPreconditionCall(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{Preconditions: true})
 
-	eventually(t, "the caller's UPDATE to complete", ac.PreconditionsMet)
-
 	if got, want := strings.Join(methods(bc), ","), "PRACK,UPDATE,ACK"; got != want {
 		t.Errorf("callee saw %s, want %s", got, want)
 	}
 
-	if got, want := sorted(methods(ac)), "100 INVITE,180 INVITE,183 INVITE,200 INVITE,200 PRACK,200 UPDATE"; got != want {
-		t.Errorf("caller saw %s, want %s", got, want)
-	}
+	waitSorted(t, ac, "100 INVITE,180 INVITE,183 INVITE,200 INVITE,200 PRACK,200 UPDATE")
 
-	if !bc.PreconditionsMet() {
-		t.Fatal("callee preconditions not met")
+	if !ac.PreconditionsMet() || !bc.PreconditionsMet() {
+		t.Fatal("preconditions not met")
 	}
 
 	offer := audio(t, sdpOf(t, bc.Invite().Body))
@@ -413,19 +407,31 @@ func TestHoldAndResume(t *testing.T) {
 func waitMethods(t *testing.T, c *Call, want string) {
 	t.Helper()
 
+	waitEvents(t, c, want, func(got []string) string { return strings.Join(got, ",") })
+}
+
+func waitSorted(t *testing.T, c *Call, want string) {
+	t.Helper()
+
+	waitEvents(t, c, want, func(got []string) string { return sorted(slices.Clone(got)) })
+}
+
+func waitEvents(t *testing.T, c *Call, want string, format func([]string) string) {
+	t.Helper()
+
 	var got []string
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		got = append(got, methods(c)...)
-		if strings.Join(got, ",") == want {
+		if format(got) == want {
 			return
 		}
 
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	t.Fatalf("saw %s, want %s", strings.Join(got, ","), want)
+	t.Fatalf("saw %s, want %s", format(got), want)
 }
 
 func TestSessionRefresh(t *testing.T) {

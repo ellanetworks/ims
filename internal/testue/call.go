@@ -852,20 +852,20 @@ func (c *Call) newRequest(method string) (*sip.Request, error) {
 	return req, nil
 }
 
-func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHandler) (*sip.Request, error) {
+func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHandler) error {
 	c.out.Lock()
 	defer c.out.Unlock()
 
 	req, err := build()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if _, err := c.u.layer.Request(req, h); err != nil {
-		return nil, fmt.Errorf("testue: send %s: %w", req.Method, err)
+		return fmt.Errorf("testue: send %s: %w", req.Method, err)
 	}
 
-	return req, nil
+	return nil
 }
 
 // RFC 3261 §17.1, §12.2.1.2
@@ -874,7 +874,7 @@ func (c *Call) send(ctx context.Context, build func() (*sip.Request, error),
 ) (*sip.Response, error) {
 	h := &dialogClient{c: c, settle: settle, done: make(chan outcome, 1)}
 
-	_, err := c.submit(func() (*sip.Request, error) {
+	err := c.submit(func() (*sip.Request, error) {
 		req, err := build()
 		if err == nil {
 			h.method = req.Method
@@ -929,8 +929,8 @@ func (h *dialogClient) finish(res *sip.Response, err error) {
 
 		c.mu.Lock()
 
-		switch {
-		case res == nil:
+		switch res {
+		case nil:
 			c.event(Event{Err: err})
 		default:
 			c.event(Event{Response: res})
@@ -1264,7 +1264,7 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		return nil
 	}
 
-	_, err := c.submit(func() (*sip.Request, error) {
+	err := c.submit(func() (*sip.Request, error) {
 		req, err := c.newRequest("INVITE")
 		if err != nil {
 			return nil, err
