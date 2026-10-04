@@ -1,0 +1,15 @@
+SIP/2.0 180 Ringing
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKPKQEJO6N67N24RMHHWD43SWLWW,SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKZABMKMLSFKOSUYDKA4DJU72GFH,SIP/2.0/UDP 10.80.0.5:5070;branch=z9hG4bKTAX2JFFOZONYNUB7BIRBNURUJF,SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKR4EX2RPUGQE6QXIWU5PA7YLNQP,SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKNEKPBDZWURKI3TVSFKYGMASF3E,SIP/2.0/TCP 10.46.0.14:40265;branch=z9hG4bK1348763388
+From: <sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org>;tag=827961
+To: <sip:15550000004;phone-context=ims.mnc001.mcc001.3gppnetwork.org@ims.mnc001.mcc001.3gppnetwork.org;user=phone>;tag=828310
+CSeq: 827954 INVITE
+Call-ID: 827954_4111161520@10.46.0.14
+Record-Route: <sip:de3wrydi5e3hcnhjmlpzs4qzn5@10.80.0.5:5063;transport=tcp;lr;r2=on;did=UP3AYB4X5JT7CWGL;ue>,<sip:de3wrydi5e3hcnhjmlpzs4qzn5@10.80.0.5:5060;lr;r2=on;did=UP3AYB4X5JT7CWGL>,<sip:mt@10.80.0.5:5080;lr;did=X2V5MWUMDANBKHPF>,<sip:mo@10.80.0.5:5080;lr;did=KJG6JUBYNV4ECMC2>,<sip:glnc67uf4gsp6g6ksmjaiyh4mr@10.80.0.5:5060;lr;r2=on;did=OTDK4AZQJEZW4RR7>,<sip:glnc67uf4gsp6g6ksmjaiyh4mr@10.80.0.5:5063;transport=tcp;lr;r2=on;did=OTDK4AZQJEZW4RR7;ue>
+Content-Length: 0
+Server: Core-Z5 N1982U.6.02.09.FR00
+RSeq: 2
+P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=0010100015EE0000
+Contact: <sip:ca20d2b6-2524-424e-ac97-40fff9783fc4@10.46.0.15:43435>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio;video;+g.3gpp.nw-init-ussi
+Require: 100rel
+Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,MESSAGE,REFER,NOTIFY,INFO,OPTIONS
+
