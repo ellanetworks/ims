@@ -17,7 +17,7 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-const captureDir = "../../sip/internal/corpus/testdata/open5gs/ipsec_to_ipsec_call"
+const captureDir = "../../sip/internal/corpus/testdata/ella/live/4g"
 
 func newCallUE(t *testing.T, imsi string, pcscf netip.AddrPort, cfg Config) *UE {
 	t.Helper()
@@ -573,11 +573,14 @@ func setToTag(t *testing.T, h *sip.Header, tag string) {
 	h.Set("To", to.String())
 }
 
-func TestCalleeAgainstSamsungCaller(t *testing.T) {
+// What the P-CSCF delivered to the callee when an iPhone 11 called a Crosscall Core-Z5.
+const iphoneCaller = "iphone-11/call_callee_bye/"
+
+func TestCalleeAgainstIPhoneCaller(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	p.send(invite)
 
 	c := incoming(t, p.u)
@@ -593,12 +596,12 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 		t.Errorf("183 Require = %q", got)
 	}
 
-	if got := len(res.Header.Values("Record-Route")); got != 5 {
-		t.Errorf("183 has %d Record-Route, want the INVITE's 5", got)
+	if got := len(res.Header.Values("Record-Route")); got != 6 {
+		t.Errorf("183 has %d Record-Route, want the INVITE's 6", got)
 	}
 
 	answer := audio(t, sdpOf(t, res.Body))
-	if d, _ := answer.Desc(); strings.Join(d.Formats, " ") != "116 111" {
+	if d, _ := answer.Desc(); strings.Join(d.Formats, " ") != "99 105" {
 		t.Errorf("answer formats %v, want AMR-WB and its telephone-event", d.Formats)
 	}
 
@@ -612,13 +615,13 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prack := p.capture("023-PRACK.sip").(*sip.Request)
+	prack := p.capture(iphoneCaller + "008-PRACK.sip").(*sip.Request)
 	setToTag(t, &prack.Header, tag)
 	prack.Header.Set("RAck", sip.RAck{RSeq: rseq, CSeq: 1, Method: "INVITE"}.String())
 	p.send(prack)
 	p.response(200, "PRACK")
 
-	update := p.capture("035-UPDATE.sip").(*sip.Request)
+	update := p.capture(iphoneCaller + "012-UPDATE.sip").(*sip.Request)
 	setToTag(t, &update.Header, tag)
 	p.send(update)
 
@@ -639,8 +642,9 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 
 	assertQoS(t, "200 UPDATE", audio(t, sdpOf(t, res.Body)), "curr:qos local sendrecv", "curr:qos remote sendrecv")
 
-	if got := res.Header.Get("Session-Expires"); got != "1800;refresher=uac" {
-		t.Errorf("200 UPDATE Session-Expires = %q", got)
+	// The iPhone supports timer but asks for no session interval.
+	if got := res.Header.Get("Session-Expires"); got != "" {
+		t.Errorf("200 UPDATE Session-Expires = %q, want none", got)
 	}
 
 	if err := <-ring; err != nil {
@@ -660,7 +664,7 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 		t.Errorf("200 Session-Expires = %q", got)
 	}
 
-	ack := p.capture("059-ACK.sip").(*sip.Request)
+	ack := p.capture(iphoneCaller + "024-ACK.sip").(*sip.Request)
 	setToTag(t, &ack.Header, tag)
 	p.send(ack)
 
@@ -671,11 +675,11 @@ func TestCalleeAgainstSamsungCaller(t *testing.T) {
 	go func() { _ = c.Bye(ctx) }()
 
 	bye := p.request("BYE")
-	if got := bye.Header.Get("Route"); !strings.HasPrefix(got, "<sip:mt@10.4.128.21:5100;") {
+	if got := bye.Header.Get("Route"); !strings.HasPrefix(got, "<sip:de3wrydi5e3hcnhjmlpzs4qzn5@10.80.0.5:5063;transport=tcp;") {
 		t.Errorf("BYE Route = %q", got)
 	}
 
-	if bye.URI.Host != "192.168.101.3" {
+	if bye.URI.Host != "10.46.0.17" {
 		t.Errorf("BYE to %s, want the caller's Contact", bye.URI)
 	}
 
@@ -694,11 +698,15 @@ func dialogTag(t *testing.T, res *sip.Response) string {
 	return to.Tag()
 }
 
-func TestCallerAgainstSamsungCallee(t *testing.T) {
+// What the P-CSCF delivered to the caller when a Crosscall Core-Z5 called a Motorola XT2417,
+// which sends its 180 reliably.
+const motorolaCallee = "crosscall-core-z5/call_to_motorola-xt2417_callee_bye/"
+
+func TestCallerAgainstMotorolaCallee(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	c, err := p.u.Invite("sip:0398765432100;phone-context=0498765432100@0498765432100;user=phone", CallOptions{Preconditions: true})
+	c, err := p.u.Invite("tel:15550000001;phone-context=ims.mnc001.mcc001.3gppnetwork.org", CallOptions{Preconditions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,7 +715,7 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 	p.send(sip.NewResponse(invite, 100, ""))
 
 	reply := func(name string, to *sip.Request) *sip.Response {
-		res := p.capture(name).(*sip.Response)
+		res := p.capture(motorolaCallee + name).(*sip.Response)
 
 		for _, h := range []string{"Via", "From", "Call-ID", "CSeq"} {
 			res.Header.Del(h)
@@ -722,7 +730,7 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 		return res
 	}
 
-	r183 := reply("013-183-INVITE.sip", invite)
+	r183 := reply("006-183-INVITE.sip", invite)
 
 	prack := p.request("PRACK")
 	if got := prack.Header.Get("RAck"); got != "1 1 INVITE" {
@@ -733,20 +741,27 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 		t.Errorf("PRACK To = %q", got)
 	}
 
-	if got := prack.Header.Get("Route"); !strings.HasPrefix(got, "<sip:mo@10.4.128.21:6101;") {
+	if got := prack.Header.Get("Route"); !strings.HasPrefix(got, "<sip:de3wrydi5e3hcnhjmlpzs4qzn5@10.80.0.5:5063;transport=tcp;") {
 		t.Errorf("PRACK Route = %q, want the reversed Record-Route", got)
 	}
 
 	p.send(r183)
-	reply("024-200-PRACK.sip", prack)
+	reply("010-200-PRACK.sip", prack)
 
 	update := p.request("UPDATE")
 	assertQoS(t, "UPDATE", audio(t, sdpOf(t, update.Body)), "curr:qos local sendrecv", "curr:qos remote none",
 		"des:qos mandatory local sendrecv", "des:qos mandatory remote sendrecv")
 
-	reply("038-200-UPDATE.sip", update)
-	reply("039-180-INVITE.sip", invite)
-	reply("049-200-INVITE.sip", invite)
+	reply("016-200-UPDATE.sip", update)
+	reply("015-180-INVITE.sip", invite)
+
+	prack = p.request("PRACK")
+	if got := prack.Header.Get("RAck"); got != "2 1 INVITE" {
+		t.Errorf("RAck for the reliable 180 = %q", got)
+	}
+
+	reply("020-200-PRACK.sip", prack)
+	reply("022-200-INVITE.sip", invite)
 
 	res, err := c.Wait(ctx)
 	if err != nil || res.StatusCode != 200 {
@@ -764,7 +779,7 @@ func TestCallerAgainstSamsungCallee(t *testing.T) {
 		t.Errorf("session timer %s, refresher %v", interval, refresher)
 	}
 
-	reply("049-200-INVITE.sip", invite)
+	reply("022-200-INVITE.sip", invite)
 	p.request("ACK")
 }
 
@@ -772,7 +787,7 @@ func TestNoPrack(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{T1: 10 * time.Millisecond})
 
-	p.send(p.capture("011-INVITE.sip"))
+	p.send(p.capture(iphoneCaller + "003-INVITE.sip"))
 
 	c := incoming(t, p.u)
 
@@ -811,7 +826,7 @@ func TestNoAck(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{T1: 10 * time.Millisecond})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	invite.Header.Set("Supported", "timer")
 	invite.Header.Del("Session-Expires")
 	p.send(invite)
@@ -862,7 +877,7 @@ func TestNoAck(t *testing.T) {
 func TestVideoOnlyOffer(t *testing.T) {
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	body := strings.Replace(string(invite.Body), "m=audio", "m=video", 1)
 	invite.SetBody(sdp.ContentType, []byte(body))
 	p.send(invite)
@@ -998,9 +1013,11 @@ func TestSessionTimerWithoutTimerSupport(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	invite.Header.Del("Supported")
 	invite.Header.Add("Supported", "100rel")
+	// RFC 4028 §8.1: a proxy may ask for a session timer that the UAC does not support.
+	invite.Header.Set("Session-Expires", "1800")
 	p.send(invite)
 
 	c := incoming(t, p.u)
@@ -1072,7 +1089,7 @@ func TestIntervalTooSmall(t *testing.T) {
 func TestUnsupportedRequire(t *testing.T) {
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	invite.Header.Add("Require", "foo")
 	p.send(invite)
 
@@ -1089,7 +1106,7 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	invite.SetBody(sdp.ContentType, []byte(strings.Replace(string(invite.Body), "a=curr:qos local none", "a=curr:qos local sendrecv", 1)))
 	p.send(invite)
 
@@ -1105,7 +1122,7 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	tag := dialogTag(t, res)
 	rseq, _ := res.Header.RSeq()
 
-	prack := p.capture("023-PRACK.sip").(*sip.Request)
+	prack := p.capture(iphoneCaller + "008-PRACK.sip").(*sip.Request)
 	setToTag(t, &prack.Header, tag)
 	prack.Header.Set("RAck", sip.RAck{RSeq: rseq, CSeq: 1, Method: "INVITE"}.String())
 	p.send(prack)
@@ -1133,7 +1150,8 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	assertQoS(t, "UPDATE", audio(t, sdpOf(t, update.Body)), "curr:qos local sendrecv", "curr:qos remote sendrecv")
 
 	ok := sip.NewResponse(update, 200, "")
-	ok.SetBody(sdp.ContentType, []byte(strings.Replace(string(invite.Body), "a=curr:qos remote none", "a=curr:qos remote sendrecv", 1)))
+	ok.SetBody(sdp.ContentType, []byte(strings.NewReplacer("a=curr:qos remote none", "a=curr:qos remote sendrecv",
+		"a=inactive", "a=sendrecv").Replace(string(invite.Body))))
 	p.send(ok)
 
 	p.response(180, "INVITE")
@@ -1171,7 +1189,7 @@ func TestUpdateBeforeTheAnswer(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	invite := p.capture("011-INVITE.sip").(*sip.Request)
+	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	p.send(invite)
 
 	c := incoming(t, p.u)
@@ -1183,7 +1201,7 @@ func TestUpdateBeforeTheAnswer(t *testing.T) {
 	p.response(100, "INVITE")
 	tag := dialogTag(t, p.response(180, "INVITE"))
 
-	update := p.capture("035-UPDATE.sip").(*sip.Request)
+	update := p.capture(iphoneCaller + "012-UPDATE.sip").(*sip.Request)
 	setToTag(t, &update.Header, tag)
 	p.send(update)
 
@@ -1197,7 +1215,7 @@ func TestCancelDuringRetransmissions(t *testing.T) {
 	for range 20 {
 		p := newPeer(t, Config{T1: 2 * time.Millisecond})
 
-		invite := p.capture("011-INVITE.sip").(*sip.Request)
+		invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 		p.send(invite)
 
 		c := incoming(t, p.u)

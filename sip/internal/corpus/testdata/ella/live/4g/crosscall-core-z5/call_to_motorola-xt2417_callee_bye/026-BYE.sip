@@ -1,0 +1,15 @@
+BYE sip:ca20d2b6-2524-424e-ac97-40fff9783fc4@10.46.0.15:43435 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKBM2B33Q7H3XV7RXPKMESHVIOUJ
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKQFRA7CSLNPYG75QHCROV7ZNXSK
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKS25ZKVTMIYQPJWRMZJWXVC3D5N
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bK2V4VO3GGWW5T6MJCRPN7TVJII3
+To: <sip:15550000004@ims.mnc001.mcc001.3gppnetwork.org>;tag=956055
+From: <tel:15550000001;phone-context=ims.mnc001.mcc001.3gppnetwork.org>;tag=956312
+Call-ID: 956048_3070404240@10.46.0.15
+CSeq: 956049 BYE
+Via: SIP/2.0/TCP 10.46.0.14:40265;branch=z9hG4bK1555598670
+Max-Forwards: 66
+Reason: RELEASE_CAUSE ;cause=1 ;text="User ends call"
+User-Agent: PRD-IR92/12 term-Motorola/XT2417-1-V1UFN35H.193-20 device-type/smart-phone
+Content-Length: 0
+

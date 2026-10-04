@@ -1,0 +1,10 @@
+CANCEL sip:ca20d2b6-2524-424e-ac97-40fff9783fc4@10.46.0.15:43435 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKED42NTNYFCT6YKRIWV3GSNFENF
+Max-Forwards: 70
+From: <sip:15550000006@ims.mnc001.mcc001.3gppnetwork.org>;tag=0gspRBhnpF
+To: <tel:+15550000004>
+Call-ID: THOnWNLR7VIfZr9dHlVFUbGr
+CSeq: 1 CANCEL
+Reason: SIP;cause=200;text="Call Rejected By User"
+Content-Length: 0
+

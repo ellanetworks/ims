@@ -1,0 +1,41 @@
+PRACK sip:59ca0608-182c-4e87-aed8-aa1e2a898c87@10.46.0.14:40265 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKAUUMIZOD6JAOEZXIJO76JLCIR5
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bK2EYI3C6S3544NI3MLGVNFFTOBF
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKBUA5B3WJWQC3XGNV3TVHP7VU4Q
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKN5HOIUP7YI7M5GWWISVWC4SDFD
+From: <sip:15550000004@ims.mnc001.mcc001.3gppnetwork.org>;tag=1010352
+To: <tel:15550000001;phone-context=ims.mnc001.mcc001.3gppnetwork.org>;tag=1010648
+CSeq: 1010345 PRACK
+Call-ID: 1010344_3070881744@10.46.0.15
+Content-Length: 473
+Via: SIP/2.0/TCP 10.46.0.15:43435;branch=z9hG4bK1587578122
+Max-Forwards: 66
+RAck: 1 1010344 INVITE
+Content-Type: application/sdp
+User-Agent: Core-Z5 N1982U.6.02.09.FR00
+Supported: timer
+Require: precondition
+
+v=0
+o=- 16 1001 IN IP4 10.46.0.15
+s=QC VOIP
+c=IN IP4 10.46.0.15
+b=AS:37
+b=RS:600
+b=RR:2000
+t=0 0
+m=audio 50020 RTP/AVP 104 96
+b=AS:37
+b=RS:600
+b=RR:2000
+a=rtpmap:104 AMR-WB/16000/1
+a=fmtp:104 mode-set=3,4,5,6;mode-change-capability=2;max-red=0
+a=rtpmap:96 telephone-event/16000
+a=fmtp:96 0-15
+a=curr:qos local sendrecv
+a=curr:qos remote none
+a=des:qos mandatory local sendrecv
+a=des:qos mandatory remote sendrecv
+a=sendrecv
+a=maxptime:240
+a=ptime:20
