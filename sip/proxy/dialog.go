@@ -137,6 +137,8 @@ type DialogConfig struct {
 	Target func(toward Side, req *sip.Request) (Target, error)
 
 	Value any
+
+	OnEvent func(DialogEvent)
 }
 
 type Release struct {
@@ -261,7 +263,7 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 }
 
 func (d *Dialog) publish(e DialogEvent) {
-	if d.p.onDialog != nil {
+	if d.p.onDialog != nil || d.cfg.OnEvent != nil {
 		e.Dialog = d
 		d.outbox = append(d.outbox, e)
 	}
@@ -282,7 +284,15 @@ func (d *Dialog) flush() {
 		d.outbox = d.outbox[1:]
 
 		d.mu.Unlock()
-		d.p.onDialog(e)
+
+		if d.p.onDialog != nil {
+			d.p.onDialog(e)
+		}
+
+		if d.cfg.OnEvent != nil {
+			d.cfg.OnEvent(e)
+		}
+
 		d.mu.Lock()
 	}
 

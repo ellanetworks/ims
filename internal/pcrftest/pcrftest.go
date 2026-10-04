@@ -56,6 +56,7 @@ type PCRF struct {
 
 	mu      sync.Mutex
 	dropped int
+	refusal *tgpp.Result
 }
 
 func New(t testing.TB, cfg Config) *PCRF {
@@ -169,6 +170,14 @@ func (p *PCRF) aa(_ context.Context, c *diameter.Conn, req *diameter.Message) *d
 	session := tgpp.ParseEnvelope(req).SessionID
 	p.record(Request{SessionID: session, AAR: &aar})
 
+	p.mu.Lock()
+	refusal := p.refusal
+	p.mu.Unlock()
+
+	if refusal != nil && !Signalling(aar) {
+		return must(rx.NewAAErrorAnswer(req, c.LocalIdentity(), rx.AAError{ResultError: rx.ResultError{Result: *refusal}}))
+	}
+
 	return must(rx.NewAAAnswer(req, c.LocalIdentity(), rx.AAAnswer{Class: [][]byte{[]byte(session)}}))
 }
 
@@ -181,6 +190,24 @@ func (p *PCRF) sessionTermination(_ context.Context, c *diameter.Conn, req *diam
 	p.record(Request{SessionID: tgpp.ParseEnvelope(req).SessionID, STR: &str})
 
 	return must(rx.NewSessionTerminationAnswer(req, c.LocalIdentity(), rx.SessionTerminationAnswer{}))
+}
+
+// TS 29.214 §5.4
+func (p *PCRF) RefuseMedia(r tgpp.Result) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.refusal = &r
+}
+
+func Signalling(r rx.AARequest) bool {
+	for _, c := range r.MediaComponents {
+		if c.Type == nil || *c.Type != rx.MediaControl {
+			return false
+		}
+	}
+
+	return len(r.MediaComponents) > 0
 }
 
 func must(ans *diameter.Message, err error) *diameter.Message {

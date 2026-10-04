@@ -35,18 +35,22 @@ type PCRF struct {
 }
 
 type Rx struct {
-	Diameter Diameter
-	PCRF     PCRF
-	Timeout  time.Duration
+	Diameter    Diameter
+	PCRF        PCRF
+	Timeout     time.Duration
+	CallTimeout time.Duration
 }
 
 type rxSession struct {
 	id  string
 	key regKey
 
-	mu    sync.Mutex
-	ended bool
-	class [][]byte
+	call *callRx
+
+	mu     sync.Mutex
+	ended  bool
+	opened bool
+	class  [][]byte
 }
 
 type rxClient struct {
@@ -69,6 +73,10 @@ func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
 
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultRxTimeout
+	}
+
+	if cfg.CallTimeout <= 0 {
+		cfg.CallTimeout = DefaultRxCallTimeout
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -488,6 +496,13 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 		return false
 	}
 
+	if s.call != nil {
+		p.log.Info("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+			slog.String("session", s.id), slog.Any("actions", r.SpecificActions))
+
+		return true
+	}
+
 	lost := slices.ContainsFunc(r.SpecificActions, func(a rx.SpecificAction) bool {
 		return a == rx.ActionIndicationOfLossOfBearer || a == rx.ActionIndicationOfReleaseOfBearer
 	})
@@ -517,6 +532,13 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) (termin
 	s, ok := p.rx.lookup(sessionID)
 	if !ok {
 		return nil, false
+	}
+
+	if s.call != nil {
+		p.log.Info("call media aborted by the PCRF", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+			slog.String("session", s.id), slog.String("cause", r.Cause.String()))
+
+		return func() { p.rx.end(s, rx.TerminationAdministrative, 0) }, true
 	}
 
 	p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {

@@ -219,7 +219,7 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 			p.respondCharging(req, rep.Response)
 		}
 
-		return proxy.Relay
+		return p.mediaReply(tx, d, rep, false)
 	}})
 }
 
@@ -277,7 +277,7 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 			toUEResponse(rep.Response)
 		}
 
-		return proxy.Relay
+		return p.mediaReply(tx, d, rep, false)
 	}})
 }
 
