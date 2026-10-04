@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/ellanetworks/core/diameter/rx"
@@ -17,12 +18,25 @@ type flowNumbers struct {
 	sendrecv  bool
 }
 
-type exchange struct {
+type sdpExchange struct {
 	offer, answer *sdp.Session
 	offerFromUE   bool
 }
 
-func (x exchange) uplink() *sdp.Session {
+// TS 29.213 Table 6.2.1: the m-lines sent with Flow-Status REMOVED.
+func (x sdpExchange) removed() []string {
+	var out []string
+
+	for i, m := range x.answer.Media {
+		if i < len(x.offer.Media) && (m.Port() == 0 || x.offer.Media[i].Port() == 0) {
+			out = append(out, strconv.Itoa(i+1)+":"+x.offer.Media[i].Type())
+		}
+	}
+
+	return out
+}
+
+func (x sdpExchange) uplink() *sdp.Session {
 	if x.offerFromUE {
 		return x.offer
 	}
@@ -30,7 +44,7 @@ func (x exchange) uplink() *sdp.Session {
 	return x.answer
 }
 
-func (x exchange) downlink() *sdp.Session {
+func (x sdpExchange) downlink() *sdp.Session {
 	if x.offerFromUE {
 		return x.answer
 	}
@@ -39,7 +53,7 @@ func (x exchange) downlink() *sdp.Session {
 }
 
 // TS 29.213 §6.2, TS 29.214 §5.3.7, Annex A.1
-func mediaComponents(x exchange, flows map[int]flowNumbers) ([]rx.MediaComponent, error) {
+func mediaComponents(x sdpExchange, flows map[int]flowNumbers) ([]rx.MediaComponent, error) {
 	if len(x.offer.Media) != len(x.answer.Media) {
 		return nil, errMediaMismatch
 	}
@@ -58,7 +72,7 @@ func mediaComponents(x exchange, flows map[int]flowNumbers) ([]rx.MediaComponent
 	return out, nil
 }
 
-func mediaComponent(x exchange, i int, flows map[int]flowNumbers) (rx.MediaComponent, error) {
+func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (rx.MediaComponent, error) {
 	offer, answer := x.offer.Media[i], x.answer.Media[i]
 
 	c := rx.MediaComponent{Number: uint32(i + 1), Type: new(rxMediaType(offer.Type()))}
@@ -130,7 +144,7 @@ func mediaComponent(x exchange, i int, flows map[int]flowNumbers) (rx.MediaCompo
 }
 
 // TS 29.213 Table 6.2.1 NOTE 5
-func negotiatedDirection(x exchange, i int) sdp.Direction {
+func negotiatedDirection(x sdpExchange, i int) sdp.Direction {
 	if x.offer.MediaDirection(i) == sdp.Inactive {
 		return sdp.Inactive
 	}
@@ -184,7 +198,7 @@ func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {
 }
 
 // TS 29.213 Table 6.2.2, TS 29.214 Annex A.1
-func subComponents(x exchange, i int, dir sdp.Direction, muxed, tcp bool, flows map[int]flowNumbers) ([]rx.MediaSubComponent, error) {
+func subComponents(x sdpExchange, i int, dir sdp.Direction, muxed, tcp bool, flows map[int]flowNumbers) ([]rx.MediaSubComponent, error) {
 	up, down := x.uplink(), x.downlink()
 
 	ueRTP, err := up.RTPEndpoint(i)

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
@@ -48,7 +49,8 @@ type rxSession struct {
 	id  string
 	key regKey
 
-	call *callRx
+	call    *callRx
+	pending atomic.Bool
 
 	mu     sync.Mutex
 	ended  bool
@@ -63,6 +65,7 @@ type rxClient struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	now    func() time.Time
 
 	mu       sync.Mutex
 	closed   bool
@@ -70,7 +73,7 @@ type rxClient struct {
 	retry    map[netip.Addr]retryHold
 }
 
-func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
+func newRxClient(cfg Rx, logger *slog.Logger, now func() time.Time) *rxClient {
 	if cfg.Diameter == nil {
 		return nil
 	}
@@ -89,10 +92,31 @@ func newRxClient(cfg Rx, logger *slog.Logger) *rxClient {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &rxClient{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold)}
+	return &rxClient{
+		cfg: cfg, log: logger, ctx: ctx, cancel: cancel, now: now,
+		sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold),
+	}
 }
 
+// TS 29.214 §4.4.4
 func (c *rxClient) close() {
+	c.mu.Lock()
+
+	var calls []*rxSession
+
+	for _, s := range c.sessions {
+		if s.call != nil {
+			calls = append(calls, s)
+		}
+	}
+
+	c.mu.Unlock()
+
+	for _, s := range calls {
+		s.call.end()
+		c.end(s, rx.TerminationAdministrative, 0)
+	}
+
 	c.mu.Lock()
 	c.closed = true
 	c.mu.Unlock()
@@ -252,6 +276,10 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 	}
 
 	s.ended = true
+
+	if s.call != nil && !s.opened {
+		return nil
+	}
 
 	req, err := rx.NewSessionTerminationRequest(c.envelope(s.id), rx.SessionTerminationRequest{Cause: cause, Class: s.class})
 	if err != nil {
@@ -508,7 +536,7 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 		p.log.Info("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("actions", r.SpecificActions))
 
-		p.mediaLost(s, r)
+		p.callReAuth(s, r)
 
 		return true
 	}
@@ -556,8 +584,10 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) (termin
 		}
 		cr.mu.Unlock()
 
+		cr.end()
+
 		if cr.dialog != nil {
-			p.releaseCall(cr.call, cr.dialog, true)
+			p.releaseCall(cr.call, cr.dialog, r.Cause != rx.AbortInsufficientBearerResources)
 		}
 
 		return func() { p.rx.end(s, rx.TerminationAdministrative, 0) }, true

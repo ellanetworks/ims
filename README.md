@@ -1,5 +1,9 @@
 # Ella IMS (alpha)
 
+<p align="center">
+  <img src="docs/images/ims_integration.svg" alt="Ella IMS with Ella Core"/>
+</p>
+
 IP Multimedia Subsystem for private cellular networks.
 
 > [!WARNING]

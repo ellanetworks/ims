@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
@@ -36,14 +37,19 @@ func newRxIPsecScene(t *testing.T, opts ...func(*Config)) (*ipsecScene, *ue, *fa
 	return s, u, f, token
 }
 
-func refuseAA(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-	if req.CommandCode != rx.CommandAA {
-		return succeed(req)
-	}
+var refuseAA = refuseAAWith(tgpp.ResultRequestedServiceNotAuthorized, 0)
 
-	return rx.NewAAErrorAnswer(req, pcrfIdentity, rx.AAError{ResultError: rx.ResultError{Result: tgpp.Result{
-		Code: tgpp.ResultRequestedServiceNotAuthorized, Experimental: true, VendorID: tgpp.VendorID,
-	}}})
+func refuseAAWith(code uint32, retry time.Duration) func(context.Context, *diameter.Message) (*diameter.Message, error) {
+	return func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode != rx.CommandAA {
+			return succeed(req)
+		}
+
+		return rx.NewAAErrorAnswer(req, pcrfIdentity, rx.AAError{
+			ResultError:   rx.ResultError{Result: tgpp.Result{Code: code, Experimental: true, VendorID: tgpp.VendorID}},
+			RetryInterval: retry,
+		})
+	}
 }
 
 func (s *ipsecScene) originate(t *testing.T, u *ue) (*sip.Request, sip.Flow) {
@@ -99,8 +105,12 @@ func TestCallMediaAuthorizedOnTheAnswer(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 180)
 
 	if aar.RequestType == nil || *aar.RequestType != rx.RequestInitial || aar.FramedIPAddress != ueAddr ||
-		!slices.Equal(aar.SpecificActions, []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer}) {
-		t.Errorf("AAR %+v, want an initial one for the UE with the bearer events", aar)
+		!slices.Equal(aar.SpecificActions, callActions) || aar.Features != rx.FeatureRel8 || aar.FeaturesRequired {
+		t.Errorf("AAR %+v, want an initial one for the UE with the bearer and charging events and Rel8 offered", aar)
+	}
+
+	if aar.AFChargingIdentifier != "" {
+		t.Errorf("AF-Charging-Identifier %q, want none", aar.AFChargingIdentifier)
 	}
 
 	if aar.AFApplicationIdentifier != icsiForTest {

@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"cmp"
 	"net/netip"
 	"slices"
 	"testing"
@@ -15,19 +16,18 @@ import (
 	"github.com/ellanetworks/ims/internal/testue"
 )
 
-type callSession struct {
-	ue     netip.Addr
-	aars   []rx.AARequest
-	str    *rx.SessionTerminationRequest
-	strSeq int
+type mediaSession struct {
+	ue   netip.Addr
+	aars []rx.AARequest
+	str  *rx.SessionTerminationRequest
 }
 
 // mediaRx reads the PCRF's requests until every call session it saw has
 // ended and want sessions were seen, skipping the IMS signalling sessions.
-func (s *scene) mediaRx(want int) map[string]*callSession {
+func (s *scene) mediaRx(want int) map[string]*mediaSession {
 	s.t.Helper()
 
-	sessions := map[string]*callSession{}
+	sessions := map[string]*mediaSession{}
 	signalling := map[string]bool{}
 	deadline := time.After(15 * time.Second)
 
@@ -45,7 +45,7 @@ func (s *scene) mediaRx(want int) map[string]*callSession {
 		return true
 	}
 
-	for seq := 0; !done(); seq++ {
+	for !done() {
 		var r pcrftest.Request
 
 		select {
@@ -60,7 +60,7 @@ func (s *scene) mediaRx(want int) map[string]*callSession {
 		case r.AAR != nil:
 			c := sessions[r.SessionID]
 			if c == nil {
-				c = &callSession{ue: r.AAR.FramedIPAddress}
+				c = &mediaSession{ue: r.AAR.FramedIPAddress}
 				if !c.ue.IsValid() {
 					c.ue = r.AAR.FramedIPv6Address
 				}
@@ -75,7 +75,7 @@ func (s *scene) mediaRx(want int) map[string]*callSession {
 				s.t.Fatalf("STR for the unknown session %s", r.SessionID)
 			}
 
-			c.str, c.strSeq = r.STR, seq
+			c.str = r.STR
 		}
 	}
 
@@ -122,7 +122,7 @@ func TestCallRxSessions(t *testing.T) {
 				ues = append(ues, c.ue)
 
 				first := c.aars[0]
-				if first.RequestType == nil || *first.RequestType != rx.RequestInitial || len(first.SpecificActions) != 2 {
+				if first.RequestType == nil || *first.RequestType != rx.RequestInitial || len(first.SpecificActions) != 4 {
 					t.Errorf("%s: first AAR %+v, want INITIAL with the bearer events", id, first)
 				}
 
@@ -137,10 +137,28 @@ func TestCallRxSessions(t *testing.T) {
 				}
 
 				for _, r := range c.aars {
+					if ue := cmp.Or(r.FramedIPAddress, r.FramedIPv6Address); ue != c.ue {
+						t.Errorf("%s: AAR for %s, want every AAR bound to %s", id, ue, c.ue)
+					}
+
 					mc := r.MediaComponents
-					if len(mc) != 1 || mc[0].Type == nil || *mc[0].Type != rx.MediaAudio || len(mc[0].SubComponents) == 0 ||
+					if len(mc) != 1 || mc[0].Type == nil || *mc[0].Type != rx.MediaAudio || len(mc[0].SubComponents) != 2 ||
 						mc[0].MaxRequestedBandwidthUL == nil || mc[0].MaxRequestedBandwidthDL == nil {
-						t.Errorf("%s: Media-Component-Description %+v, want the audio with its bandwidth", id, mc)
+						t.Fatalf("%s: Media-Component-Description %+v, want the audio with RTP, RTCP and bandwidth", id, mc)
+					}
+
+					source := c.ue.String()
+					if family.v6 {
+						p, _ := c.ue.Prefix(64)
+						source = p.String()
+					}
+
+					for _, d := range mc[0].SubComponents[0].FlowDescriptions {
+						if f, err := rx.ParseFlowDescription(d); err != nil ||
+							f.Direction == rx.FlowDirectionIn && f.Source.String() != source && f.Source.Addr().String() != source ||
+							f.Direction == rx.FlowDirectionOut && f.Destination.Addr() != c.ue {
+							t.Errorf("%s: flow %q, want the UE %s on its side", id, d, c.ue)
+						}
 					}
 				}
 
@@ -176,10 +194,56 @@ func TestCallMediaRefused(t *testing.T) {
 
 	failed(t, ctx, ac, 500)
 	ended(t, bc, testue.Cancelled)
+
+	s.noMediaSTR(200 * time.Millisecond)
 }
 
-// callSession waits for the first media AAR for the UE at addr.
-func (s *scene) callSession(addr netip.Addr) string {
+// noMediaSTR fails on any STR for a call session within d.
+func (s *scene) noMediaSTR(d time.Duration) {
+	s.t.Helper()
+
+	signalling := map[string]bool{}
+	deadline := time.After(d)
+
+	for {
+		select {
+		case r := <-s.pcrf.Requests():
+			switch {
+			case r.AAR != nil && pcrftest.Signalling(*r.AAR):
+				signalling[r.SessionID] = true
+			case r.STR != nil && !signalling[r.SessionID]:
+				s.t.Fatalf("unexpected STR %s", r)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// wantMediaSTR waits for the STR of session, skipping other requests.
+func (s *scene) wantMediaSTR(session string, cause rx.TerminationCause) {
+	s.t.Helper()
+
+	deadline := time.After(15 * time.Second)
+
+	for {
+		select {
+		case r := <-s.pcrf.Requests():
+			if r.STR != nil && r.SessionID == session {
+				if r.STR.Cause != cause {
+					s.t.Fatalf("STR %s, want %s", r, cause)
+				}
+
+				return
+			}
+		case <-deadline:
+			s.t.Fatalf("no STR for %s", session)
+		}
+	}
+}
+
+// firstMediaAAR waits for the first media AAR for the UE at addr.
+func (s *scene) firstMediaAAR(addr netip.Addr) string {
 	s.t.Helper()
 
 	deadline := time.After(15 * time.Second)
@@ -208,13 +272,15 @@ func TestCallAbortedByThePCRF(t *testing.T) {
 
 	ctx := s.ctx()
 	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
-	session := s.callSession(ueAddr(0, false))
+	session := s.firstMediaAAR(ueAddr(0, false))
 
 	if _, err := s.pcrf.ASR(ctx, session, rx.AbortBearerReleased); err != nil {
 		t.Fatalf("ASR: %v", err)
 	}
 
 	ended(t, bc, testue.RemoteBye)
+
+	s.wantMediaSTR(session, rx.TerminationAdministrative)
 
 	if ac.State() != testue.CallConfirmed {
 		t.Errorf("caller's call %s, want it left to the UE that lost its bearer", ac.State())
@@ -229,7 +295,7 @@ func TestCallMediaBearerLost(t *testing.T) {
 
 	ctx := s.ctx()
 	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
-	session := s.callSession(ueAddr(1, false))
+	session := s.firstMediaAAR(ueAddr(1, false))
 
 	if _, err := s.pcrf.ReAuth(ctx, session, rx.ReAuthRequest{
 		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer},

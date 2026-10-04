@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/siptest"
 )
 
 func (s *ipsecScene) ueSend(u *ue, req *sip.Request) {
@@ -27,7 +28,20 @@ type callUp struct {
 	ue          *dialog.Dialog
 }
 
-// An originating call answered by the core with SDP in a 183, then a 200.
+// An originating call answered by the core with SDP in a 183.
+func (s *ipsecScene) establishEarly(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
+	t.Helper()
+
+	return s.establish(t, u, pcrf, false)
+}
+
+// An originating call answered by the core with SDP in a 183, then a 200, and ACKed.
+func (s *ipsecScene) establishConfirmed(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
+	t.Helper()
+
+	return s.establish(t, u, pcrf, true)
+}
+
 func (s *ipsecScene) establish(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool) *callUp {
 	t.Helper()
 
@@ -82,7 +96,7 @@ func wantReason503(t *testing.T, req *sip.Request) {
 // TS 24.229 §5.2.8.1.2: signalling bearer lost, BYE toward the remote party only.
 func TestCallAbortedWhileEstablished(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
-	e := s.establish(t, u, pcrf, true)
+	e := s.establishConfirmed(t, u, pcrf)
 
 	terminate, ok := s.p.AbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 	if !ok {
@@ -100,12 +114,13 @@ func TestCallAbortedWhileEstablished(t *testing.T) {
 
 	terminate()
 	pcrf.wantSTR(e.session, rx.TerminationAdministrative)
+	pcrf.none()
 }
 
 // TS 24.229 §5.2.8.1.1: signalling bearer lost during setup, CANCEL from the originating P-CSCF.
 func TestCallAbortedDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
-	e := s.establish(t, u, pcrf, false)
+	e := s.establishEarly(t, u, pcrf)
 
 	terminate, _ := s.p.AbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 
@@ -115,9 +130,11 @@ func TestCallAbortedDuringSetup(t *testing.T) {
 	}
 
 	wantReason503(t, cancel)
+	u.us.RecvNone(quiet)
 
 	terminate()
 	pcrf.wantSTR(e.session, rx.TerminationAdministrative)
+	pcrf.none()
 }
 
 // TS 24.229 §5.2.8.1.1: the terminating P-CSCF answers 500.
@@ -154,23 +171,43 @@ func TestTerminatingCallAbortedDuringSetup(t *testing.T) {
 
 	terminate()
 	pcrf.wantSTR(session, rx.TerminationAdministrative)
+	pcrf.none()
 }
 
-func mediaLoss(timeout time.Duration) func(*Config) {
-	return func(c *Config) { c.Rx.MediaLossTimeout = timeout }
+const lossTimeout = 5 * time.Second
+
+func mediaLossClock() (*siptest.Clock, func(*Config)) {
+	clk := siptest.NewClock()
+
+	return clk, func(c *Config) {
+		c.Clock = fakeClock{clk}
+		c.Rx.MediaLossTimeout = lossTimeout
+	}
+}
+
+func lossRAR(t *testing.T, s *ipsecScene, session string, components ...uint32) {
+	t.Helper()
+
+	r := rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}
+	for _, n := range components {
+		r.Flows = append(r.Flows, rx.Flows{MediaComponentNumber: n})
+	}
+
+	if !s.p.ReAuth(session, r) {
+		t.Fatal("ReAuth reported an unknown session")
+	}
 }
 
 // TS 24.229 §5.2.8.1.2: media bearer lost, BYE toward the remote party once the operator timer expires.
 func TestCallMediaLostWhileEstablished(t *testing.T) {
-	s, u, pcrf, _ := newRxIPsecScene(t, mediaLoss(50*time.Millisecond))
-	e := s.establish(t, u, pcrf, true)
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishConfirmed(t, u, pcrf)
 
-	if !s.p.ReAuth(e.session, rx.ReAuthRequest{
-		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer},
-		Flows:           []rx.Flows{{MediaComponentNumber: 1}},
-	}) {
-		t.Fatal("ReAuth reported an unknown session")
-	}
+	lossRAR(t, s, e.session, 1)
+
+	s.scscf.RecvNone(quiet)
+	clk.Advance(lossTimeout)
 
 	bye, _ := s.scscf.RecvRequest()
 	if bye.Method != "BYE" {
@@ -183,10 +220,14 @@ func TestCallMediaLostWhileEstablished(t *testing.T) {
 
 // TS 24.229 §5.2.8.1.1: media bearer lost during setup, 500 to the INVITE and CANCEL with cause 503.
 func TestCallMediaLostDuringSetup(t *testing.T) {
-	s, u, pcrf, _ := newRxIPsecScene(t, mediaLoss(50*time.Millisecond))
-	e := s.establish(t, u, pcrf, false)
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishEarly(t, u, pcrf)
 
 	s.p.ReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
+
+	s.scscf.RecvNone(quiet)
+	clk.Advance(lossTimeout)
 
 	cancel, _ := s.scscf.RecvRequest()
 	if cancel.Method != "CANCEL" {
@@ -199,13 +240,11 @@ func TestCallMediaLostDuringSetup(t *testing.T) {
 
 // TS 24.229 §5.2.8.1.2: a SIP message removing the lost media within the operator time keeps the call.
 func TestCallMediaLostThenRemoved(t *testing.T) {
-	s, u, pcrf, _ := newRxIPsecScene(t, mediaLoss(300*time.Millisecond))
-	e := s.establish(t, u, pcrf, true)
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishConfirmed(t, u, pcrf)
 
-	s.p.ReAuth(e.session, rx.ReAuthRequest{
-		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer},
-		Flows:           []rx.Flows{{MediaComponentNumber: 1}},
-	})
+	lossRAR(t, s, e.session, 1)
 
 	update, err := e.ue.NewRequest("UPDATE")
 	if err != nil {
@@ -231,10 +270,71 @@ func TestCallMediaLostThenRemoved(t *testing.T) {
 	}
 
 	wantStatus(t, first(u.us.RecvResponse()), 200)
-	s.scscf.RecvNone(500 * time.Millisecond)
+
+	clk.Advance(lossTimeout)
+	s.scscf.RecvNone(quiet)
 }
 
-func earlyResponse(s *ipsecScene, got *sip.Request, f sip.Flow, code int, tag, port string) {
+// TS 24.229 §5.2.8.1.2: each indication counts, a later one naming the active media included.
+func TestCallMediaLostIndicationsMerge(t *testing.T) {
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	lossRAR(t, s, e.session, 2)
+	lossRAR(t, s, e.session, 1)
+
+	clk.Advance(lossTimeout)
+
+	if bye, _ := s.scscf.RecvRequest(); bye.Method != "BYE" {
+		t.Fatalf("S-CSCF got %s, want the BYE", bye.Method)
+	}
+}
+
+// TS 24.229 §5.2.8.1.2: only media still authorised counts.
+func TestCallMediaLostOnInactiveMedia(t *testing.T) {
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	lossRAR(t, s, e.session, 2)
+
+	clk.Advance(lossTimeout)
+	s.scscf.RecvNone(quiet)
+}
+
+// The media-loss timer stops with the call.
+func TestCallMediaLossTimerStopsWithTheCall(t *testing.T) {
+	clk, opt := mediaLossClock()
+	s, u, pcrf, _ := newRxIPsecScene(t, opt)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	lossRAR(t, s, e.session, 1)
+
+	bye, err := e.ue.NewRequest("BYE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.ueSend(u, bye)
+
+	fwd, ff := s.scscf.RecvRequest()
+	s.scscf.Send(ff.Transport, ff.Remote, sip.NewResponse(fwd, 200, ""))
+	wantStatus(t, first(u.us.RecvResponse()), 200)
+	pcrf.wantSTR(e.session, rx.TerminationLogout)
+
+	clk.Advance(lossTimeout)
+	s.scscf.RecvNone(quiet)
+
+	if s.p.ReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+		eventually(t, "the ended session to be forgotten", func() bool {
+			return !s.p.ReAuth(e.session, rx.ReAuthRequest{})
+		})
+	}
+}
+
+// coreAnswer sends a response to the INVITE got from the core, with an SDP answer on port unless empty.
+func (s *ipsecScene) coreAnswer(got *sip.Request, f sip.Flow, code int, tag, port string) {
 	res := s.coreResponse(got, code, tag)
 	if port != "" {
 		res.SetBody("application/sdp", sdpBody("192.0.2.9", port))
@@ -248,19 +348,19 @@ func TestForkedCallMedia(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	_, got, f := s.originateWith(t, u, true)
 
-	earlyResponse(s, got, f, 183, "one", "5000")
+	s.coreAnswer(got, f, 183, "one", "5000")
 
 	session, first183 := pcrf.aar()
 
 	wantStatus(t, first(u.us.RecvResponse()), 183)
 
-	earlyResponse(s, got, f, 183, "two", "6000")
+	s.coreAnswer(got, f, 183, "two", "6000")
 
 	id, second := pcrf.aar()
 
 	wantStatus(t, first(u.us.RecvResponse()), 183)
 
-	earlyResponse(s, got, f, 200, "one", "")
+	s.coreAnswer(got, f, 200, "one", "")
 
 	id2, final := pcrf.aar()
 
@@ -274,6 +374,10 @@ func TestForkedCallMedia(t *testing.T) {
 		final.SIPForkingIndication != rx.ForkingSingleDialogue {
 		t.Errorf("forking indications %s %s %s, want single, several, single",
 			first183.SIPForkingIndication, second.SIPForkingIndication, final.SIPForkingIndication)
+	}
+
+	if d := second.MediaComponents[0].SubComponents[0].FlowDescriptions; !strings.Contains(strings.Join(d, " "), "192.0.2.9 6000") {
+		t.Errorf("second flows %q, want the second early dialog's", d)
 	}
 
 	if d := final.MediaComponents[0].SubComponents[0].FlowDescriptions; !strings.Contains(strings.Join(d, " "), "192.0.2.9 5000") {
@@ -346,7 +450,11 @@ func TestCallMediaAnsweredInTheAck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ack, _ := ud.NewAck(invite)
+	ack, err := ud.NewAck(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	ack.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000"))
 	s.ueSend(u, ack)
 
@@ -363,23 +471,12 @@ func TestCallMediaAnsweredInTheAck(t *testing.T) {
 func TestCallMediaRetryInterval(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 
-	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-		if req.CommandCode != rx.CommandAA {
-			return succeed(req)
-		}
-
-		return rx.NewAAErrorAnswer(req, pcrfIdentity, rx.AAError{
-			ResultError: rx.ResultError{Result: tgpp.Result{
-				Code: tgpp.ResultRequestedServiceTemporarilyNotAuthorized, Experimental: true, VendorID: tgpp.VendorID,
-			}},
-			RetryInterval: time.Minute,
-		})
-	})
+	pcrf.answerWith(refuseAAWith(tgpp.ResultRequestedServiceTemporarilyNotAuthorized, time.Minute))
 
 	for i := range 2 {
 		got, f := s.originate(t, u)
 
-		earlyResponse(s, got, f, 183, sip.NewTag(), "5000")
+		s.coreAnswer(got, f, 183, sip.NewTag(), "5000")
 
 		if i == 0 {
 			pcrf.aar()
@@ -412,14 +509,23 @@ func TestCallAccessNetworkChargingInfo(t *testing.T) {
 		})
 	})
 
-	e := s.establish(t, u, pcrf, false)
+	e := s.establishEarly(t, u, pcrf)
 
 	ok := s.coreResponse(e.got, 200, e.tag)
 	s.scscf.Send(e.f.Transport, e.f.Remote, ok)
 
 	res, _ := u.us.RecvResponse()
-	ud, _ := dialog.NewUAC(e.invite, res)
-	ack, _ := ud.NewAck(e.invite)
+
+	ud, err := dialog.NewUAC(e.invite, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ack, err := ud.NewAck(e.invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	s.ueSend(u, ack)
 
 	fwd, _ := s.scscf.RecvRequest()
@@ -429,7 +535,11 @@ func TestCallAccessNetworkChargingInfo(t *testing.T) {
 		t.Errorf("%s P-Charging-Vector = %q, want it to end with %s", fwd.Method, cv, want)
 	}
 
-	bye, _ := ud.NewRequest("BYE")
+	bye, err := ud.NewRequest("BYE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	s.ueSend(u, bye)
 
 	if fwd, _ := s.scscf.RecvRequest(); strings.Contains(fwd.Header.Get("P-Charging-Vector"), "pdngw") {

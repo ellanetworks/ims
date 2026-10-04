@@ -1,7 +1,6 @@
 package pcscf
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/sip"
@@ -32,6 +32,10 @@ var (
 	errCallEnded = errors.New("the call has ended")
 
 	errRetryInterval = errors.New("the same service information was refused and its retry interval has not elapsed")
+
+	errAARPending = errors.New("the previous AA-Request is not acknowledged")
+
+	errAARTimeout = errors.New("no AA-Answer in time")
 )
 
 type callRx struct {
@@ -74,9 +78,22 @@ func (cr *callRx) attach(c *call, d *proxy.Dialog) {
 	}
 }
 
+func (cr *callRx) end() *rxSession {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+
+	cr.ended = true
+
+	if cr.loss != nil {
+		cr.loss.Stop()
+		cr.loss = nil
+	}
+
+	return cr.session
+}
+
 type answerJob struct {
-	x       *exchange
-	seq     int
+	x       *sdpExchange
 	tag     string
 	early   bool
 	initial bool
@@ -103,6 +120,12 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 			return
 		}
 
+		if initial && res.IsSuccess() && d.Released() {
+			res = sip.NewResponse(tx.Request(), 500, "")
+		}
+
+		p.chargeUEResponse(c, res)
+
 		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
 			p.log.Debug("relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
@@ -112,7 +135,16 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 		return proxy.Hold
 	}
 
+	p.chargeUEResponse(c, res)
+
 	return proxy.Relay
+}
+
+// TS 24.229 §5.2.7.3
+func (p *PCSCF) chargeUEResponse(c *call, res *sip.Response) {
+	if c.ue == proxy.Callee && reliable(res) {
+		chargeResponse(c, res)
+	}
 }
 
 // RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1
@@ -144,7 +176,10 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 		}
 
 		switch {
-		case p.authorize(c, d, job, nil), out.Method == "ACK":
+		case out.Method == "ACK":
+			forward()
+			p.authorize(c, d, job, nil)
+		case p.authorize(c, d, job, nil):
 			forward()
 		case reject != nil:
 			reject()
@@ -226,7 +261,7 @@ func (p *PCSCF) drain(cr *callRx, run func()) {
 	}
 }
 
-// TS 29.214 Annex A.1, A.3.2
+// TS 29.214 Annex A.1, A.3
 func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, initial bool) *answerJob {
 	if res.StatusCode <= 100 || res.StatusCode >= 300 {
 		return nil
@@ -238,15 +273,22 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 	}
 
 	final := initial && res.IsSuccess()
+	early := !final && d.State() == proxy.Early
 
 	cr := c.rx
 
 	cr.mu.Lock()
-	fresh := !cr.done[ex.Seq] && len(res.Body) > 0 && bytes.Equal(ex.Answer.Data, res.Body)
-	forked := cr.forked
+
+	fresh := len(res.Body) > 0 && !cr.done[ex.Seq]
+	needed := fresh || final && cr.forked
+
+	if needed {
+		cr.done[ex.Seq] = true
+	}
+
 	cr.mu.Unlock()
 
-	if !fresh && (!final || !forked) {
+	if !needed {
 		return nil
 	}
 
@@ -255,12 +297,10 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 		return nil
 	}
 
-	return &answerJob{
-		x: x, seq: ex.Seq, tag: calleeTag(d, res), early: initial && !final, initial: initial, final: final, headers: res.Header,
-	}
+	return &answerJob{x: x, tag: calleeTag(d, res), early: early, initial: initial || early, final: final, headers: res.Header}
 }
 
-func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *exchange {
+func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpExchange {
 	o, err := sdp.Parse(ex.Offer.Data)
 	if err != nil {
 		p.log.Warn("unusable SDP offer", slog.String("dialog", d.ID()), slog.Any("error", err))
@@ -273,15 +313,15 @@ func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *exch
 		return nil
 	}
 
-	return &exchange{offer: o, answer: a, offerFromUE: ex.Offer.From == c.ue}
+	return &sdpExchange{offer: o, answer: a, offerFromUE: ex.Offer.From == c.ue}
 }
 
 // TS 24.229 §5.2.7.2, TS 29.214 §4.4.1
 func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
 	err := p.callAAR(c, d, job)
 	if err == nil {
-		if res != nil && c.ue == proxy.Callee && reliable(res) {
-			chargeResponse(c, res)
+		if res != nil {
+			p.chargeUEResponse(c, res)
 		}
 
 		return true
@@ -298,6 +338,10 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 
 	if result, ok := tgpp.ResultOf(err); ok {
 		attrs = append(attrs, slog.String("result", result.String()))
+	}
+
+	if removed := job.x.removed(); len(removed) > 0 {
+		attrs = append(attrs, slog.Any("removed_media", removed))
 	}
 
 	if !job.initial {
@@ -319,7 +363,18 @@ func reliable(res *sip.Response) bool {
 	return res.IsSuccess() || res.Header.Has("RSeq")
 }
 
-// TS 29.214 §4.4.1, §4.4.2, Annex A.3
+// TS 29.214 §5.3.13, §5.4.1: FAILED_RESOURCES_ALLOCATION is a Rel8 feature, advertised in the same AA-Request.
+var callActions = []rx.SpecificAction{
+	rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
+	rx.ActionIndicationOfFailedResourcesAllocation,
+}
+
+type aaResult struct {
+	answer rx.AAAnswer
+	err    error
+}
+
+// TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3
 func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	cr := c.rx
 
@@ -343,13 +398,8 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	fork := rx.ForkingSingleDialogue
 
-	if job.early && job.tag != "" {
-		cr.early[job.tag] = true
-		cr.forked = cr.forked || len(cr.early) > 1
-
-		if cr.forked {
-			fork = rx.ForkingSeveralDialogues
-		}
+	if job.early && job.tag != "" && (cr.forked || len(cr.early) > 0 && !cr.early[job.tag]) {
+		fork = rx.ForkingSeveralDialogues
 	}
 
 	if cr.service == "" && c.ue == proxy.Caller {
@@ -365,10 +415,16 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 		return err
 	}
 
+	if !s.pending.CompareAndSwap(false, true) {
+		return errAARPending
+	}
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.ended {
+		s.mu.Unlock()
+		s.pending.Store(false)
+
 		return errCallEnded
 	}
 
@@ -385,7 +441,8 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	if initial {
 		kind = rx.RequestInitial
-		r.SpecificActions = []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer}
+		r.SpecificActions = callActions
+		r.Features = rx.FeatureRel8
 	}
 
 	if cr.key.ue.Is4() {
@@ -394,12 +451,46 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 		r.FramedIPv6Address = cr.key.ue
 	}
 
-	a, err := p.rx.callAAR(s, r)
-	if err != nil {
-		if initial {
+	result := make(chan aaResult, 1)
+
+	if !p.rx.spawn(func() {
+		defer s.pending.Store(false)
+		defer s.mu.Unlock()
+
+		a, err := p.rx.callAAR(s, r)
+
+		switch {
+		case err == nil:
+			s.opened = true
+			if len(a.Class) > 0 {
+				s.class = a.Class
+			}
+		case initial:
 			s.ended = true
 			p.rx.forget(s)
+		}
 
+		result <- aaResult{a, err}
+	}) {
+		s.mu.Unlock()
+		s.pending.Store(false)
+
+		return errCallEnded
+	}
+
+	timer := time.NewTimer(p.rx.cfg.CallTimeout)
+	defer timer.Stop()
+
+	var res aaResult
+
+	select {
+	case res = <-result:
+	case <-timer.C:
+		return errAARTimeout
+	}
+
+	if res.err != nil {
+		if initial {
 			cr.mu.Lock()
 			if cr.session == s {
 				cr.session = nil
@@ -407,18 +498,14 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 			cr.mu.Unlock()
 		}
 
-		return err
-	}
-
-	s.opened = true
-	if len(a.Class) > 0 {
-		s.class = a.Class
+		return res.err
 	}
 
 	cr.mu.Lock()
 
-	if job.seq != 0 {
-		cr.done[job.seq] = true
+	if job.early && job.tag != "" {
+		cr.early[job.tag] = true
+		cr.forked = cr.forked || len(cr.early) > 1
 	}
 
 	if job.final {
@@ -428,7 +515,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	cr.flows = flows
 	cr.active = activeComponents(components)
 
-	if info := chargingInfo(a, flows); info != "" {
+	if info := chargingInfo(res.answer, flows); info != "" {
 		cr.charging = info
 	}
 
@@ -453,24 +540,11 @@ func activeComponents(components []rx.MediaComponent) map[uint32]bool {
 
 // TS 29.213 Annex B.4.1
 func (p *PCSCF) callEnded(c *call) {
-	cr := c.rx
-	if cr == nil {
+	if c.rx == nil {
 		return
 	}
 
-	cr.mu.Lock()
-
-	cr.ended = true
-	s := cr.session
-
-	if cr.loss != nil {
-		cr.loss.Stop()
-		cr.loss = nil
-	}
-
-	cr.mu.Unlock()
-
-	if s != nil {
+	if s := c.rx.end(); s != nil {
 		p.rx.end(s, rx.TerminationLogout, 0)
 	}
 }
@@ -492,14 +566,26 @@ type retryHold struct {
 
 // TS 29.214 §4.4.1
 func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
-	b, _ := json.Marshal(r.MediaComponents)
+	b, err := json.Marshal(r.MediaComponents)
+	if err != nil {
+		return rx.AAAnswer{}, err
+	}
+
 	digest := string(b)
+	now := c.now()
 
 	c.mu.Lock()
+
 	hold, held := c.retry[s.key.ue]
+	if held && !now.Before(hold.until) {
+		delete(c.retry, s.key.ue)
+
+		held = false
+	}
+
 	c.mu.Unlock()
 
-	if held && hold.digest == digest && time.Now().Before(hold.until) {
+	if held && hold.digest == digest {
 		return rx.AAAnswer{}, errRetryInterval
 	}
 
@@ -508,10 +594,10 @@ func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
 		return rx.AAAnswer{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.CallTimeout)
+	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.Timeout)
 	defer cancel()
 
-	ans, err := c.cfg.Diameter.Do(ctx, c.cfg.PCRF.ID, req)
+	ans, err := c.cfg.Diameter.Do(ctx, c.cfg.PCRF.ID, req, diameter.FailFast())
 	if err != nil {
 		return rx.AAAnswer{}, err
 	}
@@ -522,12 +608,15 @@ func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
 	if errors.As(err, &refused) && refused.Code == tgpp.ResultRequestedServiceTemporarilyNotAuthorized &&
 		refused.RetryInterval > 0 {
 		c.mu.Lock()
-		c.retry[s.key.ue] = retryHold{until: time.Now().Add(refused.RetryInterval), digest: digest}
+		c.retry[s.key.ue] = retryHold{until: now.Add(refused.RetryInterval), digest: digest}
 		c.mu.Unlock()
 	}
 
 	return a, err
 }
+
+// TS 24.229 Table 7.2A.5: eps-item is a single DIGIT.
+const maxEPSItems = 9
 
 // TS 24.229 §7.2A.5.2.7, TS 29.214 §5.3.3, Annex B
 func chargingInfo(a rx.AAAnswer, flows map[int]flowNumbers) string {
@@ -539,9 +628,14 @@ func chargingInfo(a rx.AAAnswer, flows map[int]flowNumbers) string {
 		return ""
 	}
 
-	items := make([]string, 0, len(a.AccessNetworkChargingIdentifiers))
+	ids := a.AccessNetworkChargingIdentifiers
+	if len(ids) > maxEPSItems {
+		ids = ids[:maxEPSItems]
+	}
 
-	for i, id := range a.AccessNetworkChargingIdentifiers {
+	items := make([]string, 0, len(ids))
+
+	for i, id := range ids {
 		item := "eps-item=" + strconv.Itoa(i+1) + ";eps-sig=no;ecid=" + strings.ToUpper(hex.EncodeToString(id.Value))
 
 		if ids := flowIDs(id.Flows, flows); ids != "" {
@@ -600,13 +694,13 @@ func (cr *callRx) takeCharging() string {
 }
 
 func chargeResponse(c *call, res *sip.Response) {
-	info := c.rx.takeCharging()
-	if info == "" {
+	cv, ok := parseChargingVector(res.Header.Get("P-Charging-Vector"))
+	if !ok {
 		return
 	}
 
-	cv, ok := parseChargingVector(res.Header.Get("P-Charging-Vector"))
-	if !ok {
+	info := c.rx.takeCharging()
+	if info == "" {
 		return
 	}
 
@@ -614,12 +708,28 @@ func chargeResponse(c *call, res *sip.Response) {
 	cv.setResponse(res)
 }
 
-// TS 29.214 §4.4.6.2, TS 24.229 §5.2.8.1
-func (p *PCSCF) mediaLost(s *rxSession, r rx.ReAuthRequest) {
+// TS 29.214 §4.4.6.2, §4.4.6.5, TS 24.229 §5.2.7.4, §5.2.8.1
+func (p *PCSCF) callReAuth(s *rxSession, r rx.ReAuthRequest) {
 	cr := s.call
 
+	if slices.Contains(r.SpecificActions, rx.ActionChargingCorrelationExchange) {
+		cr.mu.Lock()
+
+		info := chargingInfo(rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: r.AccessNetworkChargingIdentifiers,
+			AccessNetworkChargingAddress:     r.AccessNetworkChargingAddress,
+			AccessNetwork:                    r.AccessNetwork,
+		}, cr.flows)
+		if info != "" {
+			cr.charging = info
+		}
+
+		cr.mu.Unlock()
+	}
+
 	lost := slices.ContainsFunc(r.SpecificActions, func(a rx.SpecificAction) bool {
-		return a == rx.ActionIndicationOfLossOfBearer || a == rx.ActionIndicationOfReleaseOfBearer
+		return a == rx.ActionIndicationOfLossOfBearer || a == rx.ActionIndicationOfReleaseOfBearer ||
+			a == rx.ActionIndicationOfFailedResourcesAllocation
 	})
 	if !lost {
 		return
@@ -633,7 +743,17 @@ func (p *PCSCF) mediaLost(s *rxSession, r rx.ReAuthRequest) {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 
-	if cr.ended || cr.loss != nil {
+	if cr.ended {
+		return
+	}
+
+	if cr.loss != nil {
+		if len(cr.lost) > 0 && len(components) > 0 {
+			cr.lost = append(cr.lost, components...)
+		} else {
+			cr.lost = nil
+		}
+
 		return
 	}
 

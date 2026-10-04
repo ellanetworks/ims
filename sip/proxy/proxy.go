@@ -391,24 +391,47 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 }
 
 func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
+	out, err := p.prepareAck(ack, to, d)
+	if err != nil {
+		return err
+	}
+
+	return p.layer.Go(func(ctx context.Context) {
+		if err := p.layer.SendAck(ctx, out); err != nil {
+			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+		}
+	})
+}
+
+// SendAck forwards ack like ForwardAck, but returns once it is sent.
+func (p *Proxy) SendAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) error {
+	out, err := p.prepareAck(ack, to, d)
+	if err != nil {
+		return err
+	}
+
+	return p.layer.SendAck(ctx, out)
+}
+
+func (p *Proxy) prepareAck(ack *sip.Request, to Target, d *Dialog) (*sip.Request, error) {
 	if ack.Method != "ACK" {
-		return fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)
+		return nil, fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)
 	}
 
 	if d != nil {
 		if err := d.ack(ack); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	via, err := ack.Header.TopVia()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	out, err := p.prepare(ack, to)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	sum := sha256.Sum256([]byte(p.secret + via.Branch()))
@@ -417,11 +440,7 @@ func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
 	top.Params.Set("branch", sip.MagicCookie+"-ack-"+hex.EncodeToString(sum[:12]))
 	_ = out.Header.SetTopVia(top)
 
-	return p.layer.Go(func(ctx context.Context) {
-		if err := p.layer.SendAck(ctx, out); err != nil {
-			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
-		}
-	})
+	return out, nil
 }
 
 func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {

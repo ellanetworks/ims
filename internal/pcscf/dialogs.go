@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -179,7 +180,16 @@ func (p *PCSCF) HandleAck(ack *sip.Request) {
 		}
 	}
 
-	if !p.mediaRequest(d, out, forward, nil) {
+	send := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 64*transaction.DefaultT1)
+		defer cancel()
+
+		if err := p.cfg.Proxy.SendAck(ctx, out, to, d); err != nil {
+			p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+		}
+	}
+
+	if !p.mediaRequest(d, out, send, nil) {
 		forward()
 	}
 }

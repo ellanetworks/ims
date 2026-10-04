@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -1367,14 +1368,14 @@ func (d *Dialog) offer(n *negotiation, from Side, key txKey, e sip.Envelope) {
 	*n = negotiation{offer: body, tx: key, pending: true, prev: prev}
 }
 
+// RFC 3264, RFC 6337 §3.1
 func (d *Dialog) answered(n *negotiation, body Body) {
-	n.answer = body
-
-	if n.pending {
+	if n.pending || !bytes.Equal(n.answer.Data, body.Data) {
 		d.exchanges++
 		n.seq = d.exchanges
 	}
 
+	n.answer = body
 	n.pending = false
 }
 

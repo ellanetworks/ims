@@ -59,7 +59,7 @@ func TestLoad(t *testing.T) {
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
 		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n    international_prefix: \"011\"\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
-		"pcscf:\n  port: 5062\n  no_answer_timeout: 2m\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
+		"pcscf:\n  port: 5062\n  no_answer_timeout: 2m\n  media_loss_timeout: 7s\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
 		"icscf:\n  port: 5072\n"+
 		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
 		validDiameter))
@@ -90,7 +90,7 @@ func TestLoad(t *testing.T) {
 			ClientPorts: []int{5164, 5165},
 			Integrity:   []ipsec.Integrity{ipsec.HMACMD596},
 			Encryption:  ipsec.EncryptionPreferred,
-		}, NoAnswerTimeout: 2 * time.Minute},
+		}, NoAnswerTimeout: 2 * time.Minute, MediaLossTimeout: 7 * time.Second},
 		ICSCF: ICSCF{Port: 5072},
 		SCSCF: SCSCF{
 			Port:         5082,
