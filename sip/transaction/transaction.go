@@ -63,6 +63,10 @@ type Config struct {
 
 	ResponseFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
+	// OnServerDone is called once per server transaction, with its first final
+	// response, or with a nil response if it ended without one.
+	OnServerDone func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+
 	T1, T2, T4 time.Duration
 
 	Clock Clock
@@ -76,6 +80,7 @@ type Layer struct {
 	aliases  map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
+	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
 
 	t1, t2, t4, t100 time.Duration
 
@@ -123,6 +128,7 @@ func New(cfg Config) *Layer {
 		aliases:  make(map[string]struct{}),
 		filter:   cfg.Filter,
 		respFlow: cfg.ResponseFlow,
+		onDone:   cfg.OnServerDone,
 		t1:       cfg.T1,
 		t2:       cfg.T2,
 		t4:       cfg.T4,

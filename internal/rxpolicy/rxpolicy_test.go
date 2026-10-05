@@ -188,3 +188,33 @@ func TestInboundNeedsASink(t *testing.T) {
 		t.Fatal("RAR known after unbinding")
 	}
 }
+
+// RFC 6733 §8.4: only an unanswered request, or one answered with a retry, is transient.
+func TestClassifyTransient(t *testing.T) {
+	result := func(code uint32) error { return &rx.ResultError{Result: tgpp.Result{Code: code}} }
+
+	for _, c := range []struct {
+		err  error
+		want bool
+	}{
+		{diameter.ErrNotConnected, true},
+		{context.DeadlineExceeded, true},
+		{diameter.ErrUnknownPeer, false},
+		{diameter.ErrApplicationUnsupported, false},
+		{diameter.ErrClosed, false},
+		{result(diameter.ResultUnknownSessionID), false},
+		{result(diameter.ResultUnableToComply), false},
+		{result(diameter.ResultTooBusy), true},
+		{result(diameter.ResultUnableToDeliver), true},
+		{result(4001), true},
+		{fmt.Errorf("%w: no Result-Code", rx.ErrMalformedAnswer), false},
+	} {
+		if got := policy.Transient(classify(c.err)); got != c.want {
+			t.Errorf("Transient(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+
+	if policy.Transient(nil) {
+		t.Error("Transient(nil) = true")
+	}
+}

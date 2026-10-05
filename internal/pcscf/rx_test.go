@@ -441,7 +441,8 @@ func TestRxRefusedAAAKeepsTheRegistration(t *testing.T) {
 
 	for name, refusal := range refusals {
 		t.Run(name, func(t *testing.T) {
-			s, pcrf := newRxScene(t, 0)
+			pcrf := newFakePCRF(t)
+			s := newRegScene(t, pcrf.config(0), slowRetry)
 			pcrf.answerWith(refusal.answer)
 
 			s.registered(600)
@@ -1187,4 +1188,157 @@ func TestNoRxWithoutAPCRF(t *testing.T) {
 	if _, known := s.p.rxAbortSession("ims.test;1;1", rx.AbortSessionRequest{}); known || s.p.rxReAuth("ims.test;1;1", rx.ReAuthRequest{}) {
 		t.Fatal("a session found without a PCRF")
 	}
+}
+
+func slowRetry(c *Config) { c.Policy.TerminationRetry = time.Hour }
+
+func fastRetry(c *Config) { c.Policy.TerminationRetry = 20 * time.Millisecond }
+
+func failSTRs(n int64) func(context.Context, *diameter.Message) (*diameter.Message, error) {
+	var failed atomic.Int64
+
+	return func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandSessionTermination && failed.Add(1) <= n {
+			return nil, diameter.ErrNotConnected
+		}
+
+		return succeed(req)
+	}
+}
+
+func TestRxSTRRetriedUntilAnswered(t *testing.T) {
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	pcrf.answerWith(failSTRs(2))
+	s.reregister(0)
+
+	for range 3 {
+		pcrf.wantSTR(id, rx.TerminationLogout)
+	}
+
+	pcrf.none()
+}
+
+func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	release := make(chan struct{})
+
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandSessionTermination {
+			select {
+			case <-release:
+			default:
+				return nil, diameter.ErrNotConnected
+			}
+		}
+
+		return succeed(req)
+	})
+
+	s.restart()
+
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+	s.wantSession(id)
+
+	close(release)
+
+	for {
+		m := pcrf.next()
+		if m.CommandCode == rx.CommandSessionTermination {
+			continue
+		}
+
+		if m.CommandCode != rx.CommandAA {
+			t.Fatalf("Rx request %d, want an AAR", m.CommandCode)
+		}
+
+		again := tgpp.ParseEnvelope(m).SessionID
+		if again == id {
+			t.Fatal("the AAR reused the old session")
+		}
+
+		s.wantSession(again)
+
+		return
+	}
+}
+
+func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
+	s, pcrf := newRxScene(t, 100*time.Millisecond)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	pcrf.answerWith(failSTRs(1 << 30))
+	s.reregister(0)
+	pcrf.wantSTR(id, rx.TerminationLogout)
+
+	closed := make(chan struct{})
+
+	go func() {
+		s.p.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked by the STR retries")
+	}
+}
+
+func TestRxOriginStateID(t *testing.T) {
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(0), func(c *Config) {
+		c.Policy.Backend = rxpolicy.New(rxpolicy.Config{
+			Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+			OriginStateID: 42,
+		})
+	})
+
+	wantState := func(m *diameter.Message) {
+		t.Helper()
+
+		a, ok := m.Find(diameter.AVPOriginStateID, 0)
+		if !ok {
+			t.Fatalf("Rx request %d without Origin-State-Id", m.CommandCode)
+		}
+
+		if v, err := a.Unsigned32(); err != nil || v != 42 {
+			t.Fatalf("Origin-State-Id = %d, %v; want 42", v, err)
+		}
+	}
+
+	s.registered(600)
+
+	aar := pcrf.next()
+	wantState(aar)
+	s.wantSession(tgpp.ParseEnvelope(aar).SessionID)
+
+	s.reregister(0)
+	wantState(pcrf.next())
 }

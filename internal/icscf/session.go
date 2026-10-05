@@ -43,7 +43,7 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	switch {
 	case slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has("orig") }):
-		i.log.Info("originating request to the I-CSCF", slog.String("request", req.StartLine()),
+		i.log.Debug("originating request to the I-CSCF", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
 	case out.Header.Has("Route"):
@@ -84,7 +84,7 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, s.identity)
 	if err != nil {
-		i.log.Info("user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
+		i.log.Debug("user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
 		i.answer(s.tx, locationFailure(err))
 
 		return
@@ -96,12 +96,12 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	case lia.ServerName != "":
 		name = i.assigned(lia.ServerName, s.identity)
 	case !i.capable(lia.Capabilities):
-		i.log.Info("no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
+		i.log.Debug("no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 		i.answer(s.tx, 480)
 
 		return
 	default:
-		i.log.Info("no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
+		i.log.Debug("no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 	}
 
 	out := s.req.Clone()
@@ -149,7 +149,7 @@ func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) 
 		return false
 	}
 
-	i.log.Info("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+	i.log.Warn("originating request from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
 	i.respond(tx, sip.NewResponse(req, 403, ""))
 
 	return true

@@ -63,7 +63,7 @@ func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request) {
 	reg, ok := p.ueRegistration(req)
 	if !ok {
-		p.log.Info("initial request from an unregistered UE", slog.String("method", req.Method),
+		p.log.Debug("initial request from an unregistered UE", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()))
 		p.respond(tx, sip.NewResponse(req, 403, ""))
 
@@ -179,7 +179,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 // TS 24.229 §5.2.6.4.3, §5.2.6.4.7
 func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
 	if !p.fromCore(req) {
-		p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
+		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
 		p.respond(tx, sip.NewResponse(req, 403, ""))
 
@@ -424,7 +424,7 @@ func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Resp
 	case !ok && c.ue == proxy.Caller && fromTag(req) == d.CallerTag():
 		return nil
 	default:
-		p.log.Info("request from a UE not on the dialog", slog.String("request", req.StartLine()), slog.String("dialog", d.ID()))
+		p.log.Debug("request from a UE not on the dialog", slog.String("request", req.StartLine()), slog.String("dialog", d.ID()))
 		return sip.NewResponse(req, 403, "Not on this dialog")
 	}
 

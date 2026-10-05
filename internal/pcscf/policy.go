@@ -19,6 +19,9 @@ const (
 	DefaultPolicyTimeout = 10 * time.Second
 
 	restoreWait = time.Minute
+
+	DefaultTerminationRetry = 5 * time.Second
+	maxTerminationRetry     = 5 * time.Minute
 )
 
 type Policy struct {
@@ -27,6 +30,7 @@ type Policy struct {
 	CallTimeout time.Duration
 
 	MediaLossTimeout time.Duration
+	TerminationRetry time.Duration
 }
 
 var _ policy.Sink = (*PCSCF)(nil)
@@ -57,6 +61,7 @@ type policyClient struct {
 	closed   bool
 	sessions map[string]*policySession
 	retry    map[netip.Addr]retryHold
+	stop     chan struct{}
 }
 
 func newPolicyClient(cfg Policy, logger *slog.Logger, now func() time.Time) *policyClient {
@@ -76,11 +81,15 @@ func newPolicyClient(cfg Policy, logger *slog.Logger, now func() time.Time) *pol
 		cfg.MediaLossTimeout = DefaultMediaLossTimeout
 	}
 
+	if cfg.TerminationRetry <= 0 {
+		cfg.TerminationRetry = DefaultTerminationRetry
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &policyClient{
 		cfg: cfg, log: logger, ctx: ctx, cancel: cancel, now: now,
-		sessions: make(map[string]*policySession), retry: make(map[netip.Addr]retryHold),
+		sessions: make(map[string]*policySession), retry: make(map[netip.Addr]retryHold), stop: make(chan struct{}),
 	}
 }
 
@@ -104,7 +113,10 @@ func (c *policyClient) close() {
 	}
 
 	c.mu.Lock()
-	c.closed = true
+	if !c.closed {
+		c.closed = true
+		close(c.stop)
+	}
 	c.mu.Unlock()
 
 	done := make(chan struct{})
@@ -216,7 +228,7 @@ func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (str
 	return c.cfg.Backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
 }
 
-// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2
+// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: retried until the policy function answers or the P-CSCF stops.
 func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wait time.Duration) error {
 	if s.ended {
 		return nil
@@ -233,23 +245,43 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 		slog.String("cause", cause.String()),
 	}
 
-	ctx, cancel := c.deadline(wait)
-	defer cancel()
+	for delay := c.cfg.TerminationRetry; ; delay = min(2*delay, maxTerminationRetry) {
+		start := time.Now()
 
-	err := c.cfg.Backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
+		ctx, cancel := c.deadline(wait)
+		err := c.cfg.Backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
 
-	switch {
-	case errors.Is(err, policy.ErrUnknownSession):
-		c.log.Info("policy session already ended at the policy function", attrs...)
-		return nil
-	case err != nil:
-		c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
-		return err
+		cancel()
+
+		switch {
+		case err == nil:
+			c.log.Debug("policy session terminated", attrs...)
+			return nil
+		case errors.Is(err, policy.ErrUnknownSession):
+			c.log.Debug("policy session already ended at the policy function", attrs...)
+			return nil
+		case !policy.Transient(err) || c.closing():
+			c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
+			return err
+		}
+
+		c.log.Warn("policy session termination failed, will retry", append(attrs, slog.Any("error", err),
+			slog.Duration("retry_in", delay))...)
+
+		// Without a link, the next attempt waits for it, so it goes out as soon as the policy function is back.
+		if errors.Is(err, policy.ErrUnreachable) {
+			wait = delay
+		}
+
+		timer := time.NewTimer(delay - time.Since(start))
+
+		select {
+		case <-c.stop:
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
 	}
-
-	c.log.Info("policy session terminated", attrs...)
-
-	return nil
 }
 
 func (c *policyClient) end(s *policySession, cause policy.Termination, wait time.Duration) {
@@ -310,7 +342,7 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 			})
 		}
 
-		p.log.Info("policy session for IMS signalling opened", attrs...)
+		p.log.Debug("policy session for IMS signalling opened", attrs...)
 
 		return
 	}
@@ -486,7 +518,7 @@ func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
 	}
 
 	if s.call != nil {
-		p.log.Info("policy event for a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.Debug("policy event for a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("events", e.Kinds))
 
 		p.callNotify(s, e)

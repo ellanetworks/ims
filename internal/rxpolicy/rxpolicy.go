@@ -28,8 +28,9 @@ type PCRF struct {
 }
 
 type Config struct {
-	Diameter Diameter
-	PCRF     PCRF
+	Diameter      Diameter
+	PCRF          PCRF
+	OriginStateID uint32
 }
 
 type Backend struct {
@@ -69,7 +70,17 @@ func (b *Backend) envelope(id string) tgpp.Envelope {
 	}
 }
 
+// RFC 6733 §8.16; TS 29.214 §5.6.1, §5.6.4
+func (b *Backend) withOriginState(req *diameter.Message) {
+	if b.cfg.OriginStateID != 0 {
+		req.AVPs = append(req.AVPs, diameter.Unsigned32(diameter.AVPOriginStateID, diameter.AVPFlagMandatory, 0,
+			b.cfg.OriginStateID))
+	}
+}
+
 func (b *Backend) do(ctx context.Context, req *diameter.Message, wait bool) (*diameter.Message, error) {
+	b.withOriginState(req)
+
 	var opts []diameter.DoOption
 	if !wait {
 		opts = append(opts, diameter.FailFast())
@@ -244,7 +255,24 @@ func classify(err error) error {
 		e.RetryAfter = aa.RetryInterval
 	}
 
+	e.Transient = unanswered(err)
+
 	return e
+}
+
+// RFC 6733 §7.1.3, §7.1.4, §8.4.2: any answer ends the request at the PCRF, except one that asks for a retry.
+func unanswered(err error) bool {
+	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, diameter.ErrUnknownPeer) ||
+		errors.Is(err, diameter.ErrApplicationUnsupported) || errors.Is(err, diameter.ErrClosed) {
+		return false
+	}
+
+	r, ok := tgpp.ResultOf(err)
+	if !ok {
+		return true
+	}
+
+	return r.Transient() || !r.Experimental && (r.Code == diameter.ResultUnableToDeliver || r.Code == diameter.ResultTooBusy)
 }
 
 // The Class AVPs (RFC 6733 §8.20) the PCRF returned, sent back in the STR.

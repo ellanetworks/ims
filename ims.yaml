@@ -1,3 +1,5 @@
+logging:
+  level: info
 db:
   path: ims.db
 api:
@@ -31,6 +33,7 @@ diameter:
   origin_host: ims.ims.mnc001.mcc001.3gppnetwork.org
   origin_realm: ims.mnc001.mcc001.3gppnetwork.org
   address: 10.0.0.5
+  port: 3868
   peers:
     - id: hss
       host: hss.ims.mnc001.mcc001.3gppnetwork.org
