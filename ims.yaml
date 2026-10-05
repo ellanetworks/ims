@@ -1,3 +1,5 @@
+logging:
+  level: info
 db:
   path: ims.db
 api:

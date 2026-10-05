@@ -103,6 +103,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 
 			return sip.Flow{}, false, nil
 		},
+		OnServerDone: roles.logTransaction,
 	})
 
 	layer := s.layer
@@ -221,10 +222,10 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 	rxh.bind(pc)
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
-		roles.set(port, pc)
+		roles.set(port, rolePCSCF, pc)
 	}
 
-	roles.set(icscfPort, icscf.New(icscf.Config{
+	roles.set(icscfPort, roleICSCF, icscf.New(icscf.Config{
 		HomeDomain: cfg.IMS.HomeDomain,
 		Layer:      layer,
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
@@ -242,7 +243,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 
 	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
 
-	roles.set(scscfPort, &scscfHandler{
+	roles.set(scscfPort, roleSCSCF, &scscfHandler{
 		log:       logger,
 		layer:     layer,
 		proxy:     scscfProxy,
@@ -380,17 +381,56 @@ type dispatcher struct {
 
 	mu    sync.RWMutex
 	roles map[uint16]transaction.Handler
+	names map[uint16]string
 }
 
 func newDispatcher(logger *slog.Logger) *dispatcher {
-	return &dispatcher{log: logger, roles: make(map[uint16]transaction.Handler)}
+	return &dispatcher{log: logger, roles: make(map[uint16]transaction.Handler), names: make(map[uint16]string)}
 }
 
-func (d *dispatcher) set(port uint16, h transaction.Handler) {
+func (d *dispatcher) set(port uint16, name string, h transaction.Handler) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.roles[port] = h
+	d.names[port] = name
+}
+
+func (d *dispatcher) logTransaction(req *sip.Request, res *sip.Response, elapsed time.Duration) {
+	level := slog.LevelDebug
+
+	switch req.Method {
+	case "INVITE", "BYE", "CANCEL", "UPDATE", "MESSAGE":
+		level = slog.LevelInfo
+	}
+
+	d.mu.RLock()
+	role := d.names[req.Flow.Local.Port()]
+	d.mu.RUnlock()
+
+	attrs := []slog.Attr{
+		slog.String("role", role),
+		slog.String("method", req.Method),
+		slog.String("call_id", req.Header.CallID()),
+	}
+
+	if from, err := req.Header.From(); err == nil {
+		attrs = append(attrs, slog.String("from", from.URI.String()))
+	}
+
+	if to, err := req.Header.To(); err == nil {
+		attrs = append(attrs, slog.String("to", to.URI.String()))
+	}
+
+	attrs = append(attrs, slog.String("remote", req.Flow.Remote.String()), slog.Duration("duration", elapsed))
+
+	if res == nil {
+		d.log.LogAttrs(context.Background(), level, "SIP transaction ended without a final response", attrs...)
+		return
+	}
+
+	attrs = append(attrs, slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
+	d.log.LogAttrs(context.Background(), level, "SIP transaction", attrs...)
 }
 
 func (d *dispatcher) role(f sip.Flow) transaction.Handler {
@@ -451,7 +491,7 @@ type scscfHandler struct {
 
 func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
 	if !h.trust.Trusted(req.Flow.Remote.Addr()) {
-		h.log.Info("S-CSCF request from outside the trust domain", slog.String("method", req.Method),
+		h.log.Warn("S-CSCF request from outside the trust domain", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()))
 
 		res := sip.NewResponse(req, 403, "")

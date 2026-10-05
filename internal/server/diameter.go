@@ -184,7 +184,7 @@ func (h *rtrHandler) bind(t terminator) {
 func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	rtr, err := cx.ParseRegistrationTerminationRequest(req)
 	if err != nil {
-		h.log.Info("invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
+		h.log.Warn("invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
@@ -194,7 +194,7 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	h.log.Info("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
+	h.log.Debug("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
 		slog.String("reason", rtr.Reason.Code.String()))
 
 	associated, err := (*t).Terminate(ctx, rtr)
@@ -243,7 +243,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 
 	rar, err := rx.ParseReAuthRequest(req)
 	if err != nil {
-		h.log.Info("invalid Rx RAR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		h.log.Warn("invalid Rx RAR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
 		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
@@ -254,7 +254,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 	}
 
 	if !(*t).ReAuth(session, rar) {
-		h.log.Info("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		h.log.Debug("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
 
@@ -273,7 +273,7 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 
 	asr, err := rx.ParseAbortSessionRequest(req)
 	if err != nil {
-		h.log.Info("invalid Rx ASR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		h.log.Warn("invalid Rx ASR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
 		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
@@ -285,7 +285,7 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 
 	terminate, known := (*t).AbortSession(session, asr)
 	if !known {
-		h.log.Info("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		h.log.Debug("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
 
@@ -334,5 +334,5 @@ func logPeerState(logger *slog.Logger, p diameter.PeerStatus) {
 		attrs = append(attrs, slog.String("error", p.LastError))
 	}
 
-	logger.Info("Diameter peer state changed", attrs...)
+	logger.Debug("Diameter peer state changed", attrs...)
 }

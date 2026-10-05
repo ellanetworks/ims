@@ -325,11 +325,11 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	ipsecOffered := err == nil
 
 	for _, err := range skipped {
-		p.log.Info("skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
+		p.log.Debug("skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
 	}
 
 	if p.sas != nil && r.in == nil && !ipsecOffered {
-		p.log.Info("REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
+		p.log.Debug("REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
 			slog.String("security-client", req.Header.Get("Security-Client")))
 
 		return p.secAgreeRequired(req)
@@ -338,7 +338,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	if ipsecOffered && p.sas != nil {
 		o, err := p.cfg.IPsec.Policy.Select(offers)
 		if err != nil {
-			p.log.Info("no acceptable IPsec algorithm", slog.String("impi", r.impi),
+			p.log.Debug("no acceptable IPsec algorithm", slog.String("impi", r.impi),
 				slog.String("security-client", req.Header.Get("Security-Client")))
 
 			return sip.NewResponse(req, 403, "No Acceptable IPsec Algorithm")
@@ -348,7 +348,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	}
 
 	if r.in != nil && !viaMatches(req, r.ue) {
-		p.log.Info("protected REGISTER whose Via is not its source address alone", slog.String("impi", r.impi),
+		p.log.Debug("protected REGISTER whose Via is not its source address alone", slog.String("impi", r.impi),
 			slog.String("source", r.ue.String()), slog.Any("via", req.Header.Values("Via")))
 
 		return sip.NewResponse(req, 403, "")
@@ -363,12 +363,12 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		case len(verify) == 0 || len(clients) == 0:
 			return sip.NewResponse(req, 400, "Missing Security-Verify or Security-Client")
 		case !verifies(verify, r.in.server):
-			p.log.Info("Security-Verify differs from the Security-Server", slog.String("impi", r.impi),
+			p.log.Debug("Security-Verify differs from the Security-Server", slog.String("impi", r.impi),
 				slog.String("security-verify", req.Header.Get("Security-Verify")), slog.String("security-server", r.in.server.String()))
 
 			return sip.NewResponse(req, 403, "Security Agreement Mismatch")
 		case !sameOffers(clients, r.in.client):
-			p.log.Info("Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
+			p.log.Debug("Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
 				slog.String("security-client", req.Header.Get("Security-Client")),
 				slog.String("challenged", mechanismsString(r.in.client)))
 
@@ -388,7 +388,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		}
 
 		if r.offer == nil {
-			p.log.Info("protected REGISTER without Security-Client", slog.String("impi", r.impi))
+			p.log.Debug("protected REGISTER without Security-Client", slog.String("impi", r.impi))
 		}
 
 		if r.in.state == established {
@@ -459,7 +459,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	switch {
 	case res.StatusCode == 401 && r.offer == nil && r.in != nil && r.in.state != temporary:
-		p.log.Info("re-authentication of a UE that sent no Security-Client", slog.String("impi", r.impi))
+		p.log.Debug("re-authentication of a UE that sent no Security-Client", slog.String("impi", r.impi))
 		return p.replace(tx, req, 403)
 	case res.StatusCode == 401 && r.offer != nil:
 		if keysErr != nil {
@@ -512,14 +512,14 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
 				p.regs.save(existing)
 
-				p.log.Info("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
+				p.log.Debug("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
 
 				return false
 			}
 		}
 
 		if old, ok := p.regs.remove(r.impi, r.ue); ok {
-			p.log.Info("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
+			p.log.Debug("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
 
 			if old.RxSessionID != "" {
 				r.removed = &old

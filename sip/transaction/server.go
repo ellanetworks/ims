@@ -1,6 +1,8 @@
 package transaction
 
 import (
+	"time"
+
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -14,11 +16,29 @@ type ServerTransaction struct {
 	trying *sip.Response
 	last   *sip.Response
 	may100 bool
+
+	started time.Time
+	final   bool
 }
 
 func newServer(l *Layer, req *sip.Request) *ServerTransaction {
-	tx := &ServerTransaction{req: req, invite: req.Method == "INVITE", tag: sip.NewTag(), trying: sip.NewResponse(req, 100, "")}
+	tx := &ServerTransaction{
+		req: req, invite: req.Method == "INVITE", tag: sip.NewTag(), trying: sip.NewResponse(req, 100, ""), started: time.Now(),
+	}
 	tx.init(l, Trying)
+
+	if l.onDone != nil {
+		tx.onEnd = append(tx.onEnd, func() {
+			tx.mu.Lock()
+			final := tx.final
+			tx.mu.Unlock()
+
+			if !final {
+				l.onDone(req, nil, time.Since(tx.started))
+			}
+		})
+	}
+
 	tx.flow = req.Flow
 	tx.reliable = l.reliable(tx.flow)
 	tx.may100 = tx.invite || tx.reliable
@@ -116,6 +136,15 @@ func (tx *ServerTransaction) respond(res *sip.Response, tag bool) error {
 
 	tx.last = res
 	tx.transmit()
+
+	if !res.IsProvisional() && !tx.final {
+		tx.final = true
+
+		if f := tx.layer.onDone; f != nil {
+			elapsed := time.Since(tx.started)
+			tx.emit(func() { f(tx.req, res, elapsed) })
+		}
+	}
 
 	switch {
 	case tx.state == Accepted:

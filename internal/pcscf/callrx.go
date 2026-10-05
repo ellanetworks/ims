@@ -521,7 +521,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	cr.mu.Unlock()
 
-	p.log.Info("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
+	p.log.Debug("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
 		slog.String("ue", cr.key.ue.String()), slog.String("session", s.id), slog.String("request", kind.String()),
 		slog.String("forking", fork.String()))
 

@@ -357,7 +357,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 			return sip.SecurityMechanism{}, errSAConflict
 		}
 
-		a.log.Info("replacing security associations the UE no longer uses", slog.String("impi", s.impi),
+		a.log.Debug("replacing security associations the UE no longer uses", slog.String("impi", s.impi),
 			slog.String("set", s.set.String()))
 		a.remove(s)
 	}
@@ -700,7 +700,7 @@ func (a *associations) restore(ctx context.Context) error {
 		}
 
 		if lost[s.set] {
-			a.log.Info("security associations lost by the kernel; the UE must register again",
+			a.log.Warn("security associations lost by the kernel; the UE must register again",
 				slog.String("impi", s.impi), slog.String("set", s.set.String()))
 
 			_ = a.cfg.Kernel.Remove(s.set)

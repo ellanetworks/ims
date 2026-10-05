@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"slices"
@@ -44,6 +45,7 @@ const (
 )
 
 type Config struct {
+	Logging  Logging  `yaml:"logging"`
 	DB       DB       `yaml:"db"`
 	API      API      `yaml:"api"`
 	IMS      IMS      `yaml:"ims"`
@@ -52,6 +54,10 @@ type Config struct {
 	ICSCF    ICSCF    `yaml:"icscf"`
 	SCSCF    SCSCF    `yaml:"scscf"`
 	Diameter Diameter `yaml:"diameter"`
+}
+
+type Logging struct {
+	Level slog.Level `yaml:"level"`
 }
 
 type DB struct {

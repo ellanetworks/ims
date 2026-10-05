@@ -50,7 +50,7 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 
 func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, reason cx.ReasonCode) ([]*outgoing, error) {
 	if reason == cx.ReasonRemoveSCSCF {
-		r.log.Info("RTR REMOVE_S-CSCF: no profile kept", slog.String("impi", impi))
+		r.log.Debug("RTR REMOVE_S-CSCF: no profile kept", slog.String("impi", impi))
 		return nil, nil
 	}
 

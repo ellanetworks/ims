@@ -327,7 +327,7 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 
 		switch {
 		case err == nil:
-			c.log.Info("Rx session terminated", attrs...)
+			c.log.Debug("Rx session terminated", attrs...)
 			return nil
 		case !unanswered(err) || c.closing():
 			c.log.Warn("Rx session termination failed", append(attrs, slog.Any("error", err))...)
@@ -427,7 +427,7 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 			})
 		}
 
-		p.log.Info("Rx session for IMS signalling opened", attrs...)
+		p.log.Debug("Rx session for IMS signalling opened", attrs...)
 
 		return
 	}
@@ -595,7 +595,7 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 	}
 
 	if s.call != nil {
-		p.log.Info("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.Debug("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("actions", r.SpecificActions))
 
 		p.callReAuth(s, r)

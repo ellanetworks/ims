@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -55,7 +56,8 @@ func writeConfig(t *testing.T, content string) string {
 }
 
 func TestLoad(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
+	cfg, err := Load(writeConfig(t, "logging:\n  level: DEBUG\n"+
+		validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
 		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
 		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n    international_prefix: \"011\"\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
@@ -68,8 +70,9 @@ func TestLoad(t *testing.T) {
 	}
 
 	want := Config{
-		DB:  DB{Path: "ims.db"},
-		API: API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
+		Logging: Logging{Level: slog.LevelDebug},
+		DB:      DB{Path: "ims.db"},
+		API:     API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
 		IMS: IMS{
 			MCC:        "310",
 			MNC:        "410",
@@ -290,6 +293,7 @@ func TestLoadInvalid(t *testing.T) {
 		wantErr string
 	}{
 		{"missing db path", validAPI + validDiameter, "db.path is required"},
+		{"unknown log level", "logging:\n  level: trace\n" + valid + validDiameter, `level string "trace": unknown name`},
 		{"missing mcc", validDB + validAPI + "ims:\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "" must be 3 digits`},
 		{"short mcc", validDB + validAPI + "ims:\n  mcc: \"01\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "01" must be 3 digits`},
 		{"mcc not digits", validDB + validAPI + "ims:\n  mcc: \"0a1\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "0a1" must be 3 digits`},
