@@ -1,0 +1,7 @@
+{
+  "type": "/npcf-policyauthorization/v1",
+  "title": "Not found",
+  "status": 404,
+  "detail": "/npcf-policyauthorization/v1/app-sessions",
+  "instance": "/app-sessions"
+}

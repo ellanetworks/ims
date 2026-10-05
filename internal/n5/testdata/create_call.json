@@ -1,0 +1,45 @@
+{
+  "ascReqData": {
+    "afAppId": "urn:urn-7:3gpp-service.ims.icsi.mmtel",
+    "evSubsc": {
+      "events": [
+        {"event": "CHARGING_CORRELATION"},
+        {"event": "FAILED_RESOURCES_ALLOCATION"}
+      ],
+      "notifUri": "http://192.0.2.10:7778/n5/v1/sessions/c1"
+    },
+    "medComponents": {
+      "1": {
+        "codecs": ["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"],
+        "fStatus": "ENABLED",
+        "marBwDl": "49000 bps",
+        "marBwUl": "49000 bps",
+        "medCompN": 1,
+        "medSubComps": {
+          "1": {
+            "fNum": 1,
+            "fDescs": [
+              "permit out 17 from 192.0.2.20 50000 to 10.45.0.2 49000",
+              "permit in 17 from 10.45.0.2 49000 to 192.0.2.20 50000"
+            ]
+          },
+          "2": {
+            "fNum": 2,
+            "fDescs": [
+              "permit out 17 from 192.0.2.20 50001 to 10.45.0.2 49001",
+              "permit in 17 from 10.45.0.2 49001 to 192.0.2.20 50001"
+            ],
+            "flowUsage": "RTCP"
+          }
+        },
+        "medType": "AUDIO",
+        "rrBw": "1837 bps",
+        "rsBw": "612 bps"
+      }
+    },
+    "notifUri": "http://192.0.2.10:7778/n5/v1/sessions/c1",
+    "gpsi": "msisdn-15551234567",
+    "suppFeat": "8000010",
+    "ueIpv4": "10.45.0.2"
+  }
+}
