@@ -19,7 +19,6 @@ import (
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
-	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -70,7 +69,7 @@ type sipServer struct {
 }
 
 func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler,
-	rxh *rxHandler, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
+	rxh *rxHandler, pf *policyFunction, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
@@ -177,18 +176,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		rtr.bind(s.registrar)
 	}
 
-	pol := pcscf.Policy{MediaLossTimeout: cfg.PCSCF.MediaLossTimeout}
-
-	var rxBackend *rxpolicy.Backend
-
-	if p, ok := cfg.Diameter.RxPeer(); ok {
-		rxBackend = rxpolicy.New(rxpolicy.Config{
-			Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
-		})
-		pol.Backend = rxBackend
-	} else {
-		logger.Info("no diameter peer serves rx: the P-CSCF runs without policy sessions")
-	}
+	pol := pcscf.Policy{Backend: pf.backend, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout}
 
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
@@ -222,8 +210,8 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 
 	s.pcscf.Store(pc)
 
-	if rxBackend != nil {
-		rxh.bind(rxBackend)
+	if pf.rx != nil {
+		rxh.bind(pf.rx)
 	}
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {

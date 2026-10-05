@@ -10,6 +10,7 @@ type Config struct {
 	Diameter      Diameter
 	SIP           SIP
 	Registrations Registrations
+	Policy        Policy
 	HomeDomain    string
 	SIPAliases    []string
 	Logger        *slog.Logger
@@ -21,6 +22,7 @@ func NewHandler(cfg Config) http.Handler {
 	mux.Handle("GET /api/v1/status", GetStatus(cfg))
 	mux.Handle("GET /api/v1/diameter", GetDiameterStatus(cfg))
 	mux.Handle("GET /api/v1/sip", GetSIPStatus(cfg))
+	mux.Handle("GET /api/v1/policy", GetPolicyStatus(cfg))
 	mux.Handle("POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg))
 
 	return mux

@@ -295,6 +295,7 @@ func failedComponents(reports []n5.ResourcesAllocationInfo, flows []n5.Flows) ([
 		}
 
 		failed = true
+
 		out = append(out, components(r.Flows)...)
 	}
 

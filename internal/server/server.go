@@ -31,6 +31,7 @@ type Server struct {
 
 	database    *db.DB
 	node        *diameter.Node
+	policy      *policyFunction
 	sip         *sipServer
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -89,8 +90,18 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, database, s.IPsec, s.Logger)
+	pf, err := newPolicyFunction(ctx, cfg, node, s.Logger)
 	if err != nil {
+		_ = node.Shutdown(ctx)
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return err
+	}
+
+	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, pf, database, s.IPsec, s.Logger)
+	if err != nil {
+		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -98,8 +109,11 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start SIP: %w", err)
 	}
 
+	pf.serve(s.Logger)
+
 	s.database = database
 	s.node = node
+	s.policy = pf
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
@@ -108,6 +122,7 @@ func (s *Server) Start(ctx context.Context) error {
 			Diameter:      s.node,
 			SIP:           s.sip,
 			Registrations: s.sip,
+			Policy:        pf,
 			HomeDomain:    cfg.IMS.HomeDomain,
 			SIPAliases:    cfg.SIPAliases(),
 			Logger:        s.Logger,
@@ -131,8 +146,12 @@ func (s *Server) Start(ctx context.Context) error {
 		diameterAttrs = append(diameterAttrs, ln.Addr().Network()+" "+ln.Addr().String())
 	}
 
-	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs),
-		slog.Any("diameter", diameterAttrs))
+	attrs := []any{slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs), slog.Any("diameter", diameterAttrs)}
+	if a := pf.address(); a != "" {
+		attrs = append(attrs, slog.String("n5_notify", a))
+	}
+
+	s.Logger.Info("ims started", attrs...)
 
 	return nil
 }
@@ -158,6 +177,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	if err := s.sip.Close(); err != nil {
 		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
+	}
+
+	if err := s.policy.close(ctx); err != nil {
+		s.Logger.Warn("failed to stop the N5 notification server cleanly", slog.Any("error", err))
 	}
 
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {

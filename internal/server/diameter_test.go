@@ -284,6 +284,7 @@ func TestDiameterRequestsAreAnswered(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.PCSCF.Policy.Rx = "pcrf"
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "hss", "pcrf")
