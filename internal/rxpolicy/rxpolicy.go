@@ -44,7 +44,7 @@ func New(cfg Config) *Backend {
 }
 
 func (b *Backend) Endpoint() string {
-	return b.cfg.PCRF.ID
+	return "rx:" + b.cfg.PCRF.Host
 }
 
 func (b *Backend) NewSessionID() string {
@@ -79,7 +79,7 @@ func (b *Backend) do(ctx context.Context, req *diameter.Message, wait bool) (*di
 }
 
 // TS 29.214 §4.4.5, §5.3.13
-func (b *Backend) OpenSignalling(ctx context.Context, id string, ue netip.Addr, wait bool) (string, error) {
+func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signalling, wait bool) (string, error) {
 	initial := rx.RequestInitial
 	control := rx.MediaControl
 	signalling := rx.FlowUsageAFSignalling
@@ -94,7 +94,7 @@ func (b *Backend) OpenSignalling(ctx context.Context, id string, ue netip.Addr, 
 		RequestType:     &initial,
 	}
 
-	framed(&r, ue)
+	framed(&r, s.UE)
 
 	req, err := rx.NewAARequest(b.envelope(id), r)
 	if err != nil {
@@ -217,17 +217,20 @@ func framed(r *rx.AARequest, ue netip.Addr) {
 	}
 }
 
-// TS 29.214 §4.4.1, §4.4.5
+// TS 29.214 §4.4.1, §4.4.4, §4.4.5
 func classify(err error) error {
 	e := &policy.Error{Err: err}
 
-	if result, ok := tgpp.ResultOf(err); ok {
+	result, answered := tgpp.ResultOf(err)
+	if answered {
 		e.Result = result.String()
 	}
 
 	var refused *rx.ResultError
 
 	switch {
+	case answered && !result.Experimental && result.Code == diameter.ResultUnknownSessionID:
+		e.Kind = policy.ErrUnknownSession
 	case errors.As(err, &refused), errors.Is(err, diameter.ErrUnknownPeer), errors.Is(err, diameter.ErrApplicationUnsupported):
 		e.Kind = policy.ErrRefused
 	case errors.Is(err, rx.ErrMalformedAnswer):
@@ -332,6 +335,8 @@ func charging(ids []rx.AccessNetworkChargingIdentifier, addr netip.Addr, n rx.Ac
 	case n.IPCANType == nil:
 	case *n.IPCANType == rx.IPCAN3GPPEPS:
 		c.Access = policy.AccessEPS
+	case *n.IPCANType == rx.IPCAN3GPP5GS:
+		c.Access = policy.Access5GS
 	default:
 		c.Access = policy.AccessOther
 	}

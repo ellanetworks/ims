@@ -444,7 +444,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 			if g.Ref != "" {
 				s.ref = g.Ref
 			}
-		case initial:
+		case initial, errors.Is(err, policy.ErrUnknownSession):
 			s.ended = true
 			p.policy.forget(s)
 		}
@@ -469,12 +469,21 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	}
 
 	if res.err != nil {
-		if initial {
+		lost := errors.Is(res.err, policy.ErrUnknownSession)
+
+		if initial || lost {
 			cr.mu.Lock()
 			if cr.session == s {
 				cr.session = nil
 			}
 			cr.mu.Unlock()
+		}
+
+		if lost && !initial {
+			p.log.Warn("policy session of a call unknown to the policy function: opening a new one",
+				slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("session", s.id))
+
+			return p.callAAR(c, d, job)
 		}
 
 		return res.err
@@ -587,33 +596,44 @@ func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Gra
 	return g, err
 }
 
-// TS 24.229 Table 7.2A.5: eps-item is a single DIGIT.
-const maxEPSItems = 9
+// TS 24.229 Table 7.2A.5: eps-item and 5gs-item are a single DIGIT.
+const maxItems = 9
 
-// TS 24.229 §7.2A.5.2.7, TS 29.214 §5.3.3, Annex B
+// TS 24.229 §7.2A.5.2.7, §7.2A.5.2.10, TS 29.214 §5.3.3, Annex B
 func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
-	if len(c.Identifiers) == 0 || !c.Address.IsValid() || c.Access == policy.AccessOther {
+	if len(c.Identifiers) == 0 || !c.Address.IsValid() {
+		return ""
+	}
+
+	var gateway, list, item, cid string
+
+	switch c.Access {
+	case policy.AccessUnknown, policy.AccessEPS:
+		gateway, list, item, cid = "pdngw", "eps-info", "eps-item", ";eps-sig=no;ecid="
+	case policy.Access5GS:
+		gateway, list, item, cid = "smf", "5gs-info", "5gs-item", ";5gscid="
+	default:
 		return ""
 	}
 
 	ids := c.Identifiers
-	if len(ids) > maxEPSItems {
-		ids = ids[:maxEPSItems]
+	if len(ids) > maxItems {
+		ids = ids[:maxItems]
 	}
 
 	items := make([]string, 0, len(ids))
 
 	for i, id := range ids {
-		item := "eps-item=" + strconv.Itoa(i+1) + ";eps-sig=no;ecid=" + strings.ToUpper(hex.EncodeToString(id.Value))
+		v := item + "=" + strconv.Itoa(i+1) + cid + strings.ToUpper(hex.EncodeToString(id.Value))
 
 		if ids := flowIDs(id.Flows, flows); ids != "" {
-			item += ";flow-id=" + ids
+			v += ";flow-id=" + ids
 		}
 
-		items = append(items, item)
+		items = append(items, v)
 	}
 
-	return "pdngw=" + sip.FormatHost(c.Address.Unmap()) + `;eps-info="` + strings.Join(items, ",") + `"`
+	return gateway + "=" + sip.FormatHost(c.Address.Unmap()) + ";" + list + `="` + strings.Join(items, ",") + `"`
 }
 
 func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {

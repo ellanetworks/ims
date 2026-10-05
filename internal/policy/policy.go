@@ -12,9 +12,12 @@ var (
 	ErrRefused     = errors.New("refused by the policy function")
 	ErrUnreachable = errors.New("policy function unreachable")
 	ErrMalformed   = errors.New("malformed answer from the policy function")
+	// ErrUnknownSession: the policy function no longer knows the session (TS 29.214 §4.4.1 DIAMETER_UNKNOWN_SESSION_ID,
+	// TS 29.514 §5.7.3 APPLICATION_SESSION_CONTEXT_NOT_FOUND).
+	ErrUnknownSession = errors.New("session unknown to the policy function")
 )
 
-// Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed or none.
+// Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed, ErrUnknownSession or none.
 type Error struct {
 	Kind       error
 	Result     string
@@ -23,15 +26,26 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return e.Err.Error()
+	switch {
+	case e.Err != nil:
+		return e.Err.Error()
+	case e.Kind != nil:
+		return e.Kind.Error()
+	}
+
+	return "policy error"
 }
 
 func (e *Error) Unwrap() []error {
-	if e.Kind == nil {
-		return []error{e.Err}
+	var errs []error
+
+	for _, err := range []error{e.Kind, e.Err} {
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	return []error{e.Kind, e.Err}
+	return errs
 }
 
 // ResultOf returns the policy function's result for err, if it answered.
@@ -55,14 +69,15 @@ func RetryAfter(err error) time.Duration {
 }
 
 // Backend opens, modifies and closes sessions with one policy function. The id names a session locally and on
-// the P-CSCF's side of the interface; the ref is the backend's state for it, kept across restarts.
+// the P-CSCF's side of the interface; the ref is the backend's state for it, kept across restarts. Endpoint
+// identifies the policy function itself, not its local configuration, so stored sessions survive renames.
 type Backend interface {
 	Endpoint() string
 	NewSessionID() string
 	Bind(s Sink)
 
 	// TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
-	OpenSignalling(ctx context.Context, id string, ue netip.Addr, wait bool) (ref string, err error)
+	OpenSignalling(ctx context.Context, id string, s Signalling, wait bool) (ref string, err error)
 	// TS 29.214 §4.4.1, §4.4.2, TS 29.514 §4.2.2.2, §4.2.3.2
 	Authorize(ctx context.Context, id, ref string, r Request) (Grant, error)
 	// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2
@@ -73,6 +88,11 @@ type Backend interface {
 type Sink interface {
 	Notify(id string, e Event) bool
 	Abort(id string, a Abort) (terminate func(), known bool)
+}
+
+// TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
+type Signalling struct {
+	UE netip.Addr
 }
 
 type Request struct {
@@ -127,7 +147,7 @@ const (
 	ProtocolUDP Protocol = 17
 )
 
-// TS 29.213 §6.2, TS 29.513 §7.2
+// TS 29.213 §6.2, TS 29.513 §7.2.3. Bandwidths are in bit/s.
 type MediaComponent struct {
 	Number         uint32
 	Type           MediaType
@@ -155,7 +175,7 @@ type Flow struct {
 	DestinationPort uint16
 }
 
-// TS 29.214 §5.3.7, TS 29.514 §5.6.3.2 (CodecData)
+// TS 29.214 §5.3.7, TS 29.514 §5.6.3.2 (CodecData). Uplink means the SDP came from the UE.
 type Codec struct {
 	Uplink bool
 	Answer bool
@@ -194,10 +214,11 @@ type Access uint8
 const (
 	AccessUnknown Access = iota
 	AccessEPS
+	Access5GS
 	AccessOther
 )
 
-// TS 29.214 §5.3.2, §5.3.3
+// TS 29.214 §5.3.2, §5.3.3, TS 29.514 §5.6.2.32 (AccessNetChargingIdentifier), TS 29.512 (AccNetChargingAddress)
 type Charging struct {
 	Address     netip.Addr
 	Access      Access
@@ -214,7 +235,7 @@ type Flows struct {
 	FlowNumbers []uint32
 }
 
-type EventKind uint8
+type EventKind int
 
 const (
 	EventOther EventKind = iota
@@ -227,16 +248,20 @@ const (
 func (k EventKind) String() string {
 	switch k {
 	case EventChargingCorrelation:
-		return "charging correlation"
+		return "CHARGING_CORRELATION"
 	case EventBearerLost:
-		return "bearer lost"
+		return "BEARER_LOST"
 	case EventBearerReleased:
-		return "bearer released"
+		return "BEARER_RELEASED"
 	case EventResourcesFailed:
-		return "resources allocation failed"
+		return "FAILED_RESOURCES_ALLOCATION"
 	}
 
-	return "other"
+	return "OTHER"
+}
+
+func (k EventKind) MarshalText() ([]byte, error) {
+	return []byte(k.String()), nil
 }
 
 // Event is a notification for one session. Components lists the media components it is about, all of them when

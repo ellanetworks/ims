@@ -387,6 +387,7 @@ func TestSessionLevelBandwidthIgnored(t *testing.T) {
 // TS 24.229 §7.2A.5.2.7
 func TestChargingInfo(t *testing.T) {
 	gprs := rx.IPCAN3GPPGPRS
+	fiveGS := rx.IPCAN3GPP5GS
 	ids := func(n int) []rx.AccessNetworkChargingIdentifier {
 		out := make([]rx.AccessNetworkChargingIdentifier, n)
 		for i := range out {
@@ -406,6 +407,13 @@ func TestChargingInfo(t *testing.T) {
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.1"),
 			AccessNetwork: rx.AccessNetwork{IPCANType: &gprs},
 		}, ""},
+		"5GS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{
+				{Value: []byte{0xab, 0x01}, Flows: []rx.Flows{{MediaComponentNumber: 1, FlowNumbers: []uint32{1}}}},
+			},
+			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB01;flow-id=({1,1})"`},
 		"IPv6 gateway": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("2001:db8::1"),
 		}, `pdngw=[2001:db8::1];eps-info="eps-item=1;eps-sig=no;ecid=00"`},
@@ -418,7 +426,7 @@ func TestChargingInfo(t *testing.T) {
 	}
 
 	many := chargingInfo(rxpolicy.AnswerCharging(rx.AAAnswer{AccessNetworkChargingIdentifiers: ids(12), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.1")}), nil)
-	if strings.Count(many, "eps-item=") != maxEPSItems {
-		t.Fatalf("%q, want at most %d eps-item", many, maxEPSItems)
+	if strings.Count(many, "eps-item=") != maxItems {
+		t.Fatalf("%q, want at most %d eps-item", many, maxItems)
 	}
 }

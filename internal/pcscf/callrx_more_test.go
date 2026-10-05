@@ -1,11 +1,14 @@
 package pcscf
 
 import (
+	"context"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/sip"
@@ -58,6 +61,45 @@ func TestCallModificationRefusedKeepsTheCall(t *testing.T) {
 	pcrf.aar()
 	s.scscf.RecvNone(quiet)
 	pcrf.none()
+}
+
+// TS 29.214 §4.4.1: a PCRF that lost the call's session gets a new one for the modification.
+func TestCallModificationOfAnUnknownSessionOpensANewOne(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	var once sync.Once
+
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		unknown := false
+
+		if req.CommandCode == rx.CommandAA {
+			once.Do(func() { unknown = true })
+		}
+
+		if unknown {
+			return rx.NewAnswer(req, pcrfIdentity, tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0), nil
+		}
+
+		return succeed(req)
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	wantStatus(t, res, 200)
+
+	if id, aar := pcrf.aar(); id != e.session || *aar.RequestType != rx.RequestUpdate {
+		t.Fatalf("AAR %s %s, want the update of %s", id, aar.RequestType, e.session)
+	}
+
+	id, aar := pcrf.aar()
+	if id == e.session || *aar.RequestType != rx.RequestInitial || len(aar.MediaComponents) != 1 {
+		t.Fatalf("AAR %s %s, want an initial one for a new session", id, aar.RequestType)
+	}
+
+	pcrf.none()
+
+	s.p.Close()
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
 }
 
 // TS 29.214 Annex A.2.0, TS 29.213 Table 6.2.1/6.2.2 NOTE 3: hold and resume.

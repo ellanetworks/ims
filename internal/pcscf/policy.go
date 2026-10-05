@@ -213,7 +213,7 @@ func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (str
 	ctx, cancel := c.deadline(wait)
 	defer cancel()
 
-	return c.cfg.Backend.OpenSignalling(ctx, s.id, s.key.ue, wait > 0)
+	return c.cfg.Backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
 }
 
 // TS 29.214 §4.4.4, TS 29.514 §4.2.4.2
@@ -236,7 +236,13 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 	ctx, cancel := c.deadline(wait)
 	defer cancel()
 
-	if err := c.cfg.Backend.Terminate(ctx, s.id, s.ref, cause, wait > 0); err != nil {
+	err := c.cfg.Backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
+
+	switch {
+	case errors.Is(err, policy.ErrUnknownSession):
+		c.log.Info("policy session already ended at the policy function", attrs...)
+		return nil
+	case err != nil:
 		c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
 		return err
 	}
@@ -314,7 +320,7 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 		attrs = append(attrs, slog.String("result", result))
 	}
 
-	if errors.Is(err, policy.ErrRefused) {
+	if errors.Is(err, policy.ErrRefused) || errors.Is(err, policy.ErrUnknownSession) {
 		p.log.Warn("policy session for IMS signalling refused", attrs...)
 		p.detachPolicy(s)
 
@@ -467,7 +473,8 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 	}
 }
 
-// Notify handles an event the policy function reports for a session (TS 29.214 §4.4.6.3, TS 29.514 §4.2.5.2).
+// Notify handles an event the policy function reports for a session (TS 29.214 §4.4.6.2, §4.4.6.3, §4.4.6.5,
+// TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10).
 func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
 	if p.policy == nil {
 		return false
@@ -487,7 +494,7 @@ func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
 		return true
 	}
 
-	if e.Has(policy.EventBearerLost, policy.EventBearerReleased) && p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {
+	if e.Has(policy.EventBearerLost, policy.EventBearerReleased, policy.EventResourcesFailed) && p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {
 		if reg.Policy.ID != s.id {
 			return false
 		}

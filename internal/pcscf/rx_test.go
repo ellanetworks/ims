@@ -91,7 +91,7 @@ func (f *fakePCRF) NewSessionID() string {
 }
 
 func (f *fakePCRF) Do(ctx context.Context, peerID string, req *diameter.Message, _ ...diameter.DoOption) (*diameter.Message, error) {
-	if peerID != "pcrf" {
+	if peerID != "pcrf" && peerID != "pcrf-1" {
 		return nil, diameter.ErrUnknownPeer
 	}
 
@@ -305,7 +305,7 @@ func TestRxAARForIPv6(t *testing.T) {
 
 	ue := netip.MustParseAddr("2001:db8::1")
 
-	if _, err := b.OpenSignalling(t.Context(), b.NewSessionID(), ue, false); err != nil {
+	if _, err := b.OpenSignalling(t.Context(), b.NewSessionID(), policy.Signalling{UE: ue}, false); err != nil {
 		t.Fatalf("OpenSignalling: %v", err)
 	}
 
@@ -634,7 +634,10 @@ func (s *regScene) wantSignallingLost(lost bool) {
 }
 
 func TestRxReAuthMarksTheSignallingLost(t *testing.T) {
-	for _, action := range []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer} {
+	// TS 29.514 §4.2.5.10 reports signalling path loss as FAILED_RESOURCES_ALLOCATION.
+	for _, action := range []rx.SpecificAction{
+		rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer, rx.ActionIndicationOfFailedResourcesAllocation,
+	} {
 		t.Run(action.String(), func(t *testing.T) {
 			s, pcrf := newRxScene(t, 0)
 
@@ -1007,11 +1010,32 @@ func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
 
 	s.wantSession(again)
 
-	if r, _ := s.record(); r.Policy.Endpoint != "pcrf" {
+	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginHost {
 		t.Fatalf("endpoint = %q, want the PCRF", r.Policy.Endpoint)
 	}
 
 	pcrf.none()
+}
+
+// The endpoint is the PCRF, not the local name of its peer: renaming the peer keeps the stored sessions.
+func TestRestartWithARenamedPeerTerminatesTheSession(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	s.p.cfg.Policy.Backend = rxpolicy.New(rxpolicy.Config{
+		Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf-1", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+	})
+
+	s.restart()
+
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	again, _ := pcrf.aar()
+	s.wantSession(again)
 }
 
 func TestRxShutdownLetsTheSTRFinish(t *testing.T) {

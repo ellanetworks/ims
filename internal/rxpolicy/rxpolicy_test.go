@@ -26,6 +26,7 @@ func TestClassify(t *testing.T) {
 		"malformed":       {fmt.Errorf("%w: no Result-Code", rx.ErrMalformedAnswer), policy.ErrMalformed},
 		"not connected":   {diameter.ErrNotConnected, policy.ErrUnreachable},
 		"context expired": {context.DeadlineExceeded, nil},
+		"unknown session": {&rx.ResultError{Result: tgpp.Result{Code: diameter.ResultUnknownSessionID}}, policy.ErrUnknownSession},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := classify(tc.err)
@@ -34,7 +35,7 @@ func TestClassify(t *testing.T) {
 				t.Fatalf("%v does not wrap %v", err, tc.err)
 			}
 
-			for _, k := range []error{policy.ErrRefused, policy.ErrMalformed, policy.ErrUnreachable} {
+			for _, k := range []error{policy.ErrRefused, policy.ErrMalformed, policy.ErrUnreachable, policy.ErrUnknownSession} {
 				if errors.Is(err, k) != (k == tc.kind) {
 					t.Fatalf("errors.Is(%v, %v) = %t, want kind %v", err, k, k != tc.kind, tc.kind)
 				}
@@ -111,6 +112,22 @@ func TestEvent(t *testing.T) {
 
 	if e := event(rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}}); e.Charging != nil {
 		t.Fatalf("charging %+v without CHARGING_CORRELATION_EXCHANGE", e.Charging)
+	}
+}
+
+func TestChargingAccess(t *testing.T) {
+	for in, want := range map[rx.IPCANType]policy.Access{
+		rx.IPCAN3GPPEPS:  policy.AccessEPS,
+		rx.IPCAN3GPP5GS:  policy.Access5GS,
+		rx.IPCAN3GPPGPRS: policy.AccessOther,
+	} {
+		if got := AnswerCharging(rx.AAAnswer{AccessNetwork: rx.AccessNetwork{IPCANType: &in}}).Access; got != want {
+			t.Errorf("IP-CAN-Type %s: access %d, want %d", in, got, want)
+		}
+	}
+
+	if got := AnswerCharging(rx.AAAnswer{}).Access; got != policy.AccessUnknown {
+		t.Errorf("no IP-CAN-Type: access %d, want unknown", got)
 	}
 }
 
