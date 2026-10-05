@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync/atomic"
 
 	"github.com/ellanetworks/core/diameter"
@@ -28,9 +29,8 @@ type PCRF struct {
 }
 
 type Config struct {
-	Diameter      Diameter
-	PCRF          PCRF
-	OriginStateID uint32
+	Diameter Diameter
+	PCRF     PCRF
 }
 
 type Backend struct {
@@ -44,8 +44,10 @@ func New(cfg Config) *Backend {
 	return &Backend{cfg: cfg}
 }
 
+// Endpoint names the PCRF by its DiameterIdentity, an FQDN (RFC 6733 §4.3.1), which DNS compares without case
+// (RFC 4343).
 func (b *Backend) Endpoint() string {
-	return "rx:" + b.cfg.PCRF.Host
+	return "rx:" + strings.ToLower(b.cfg.PCRF.Host)
 }
 
 func (b *Backend) NewSessionID() string {
@@ -70,17 +72,7 @@ func (b *Backend) envelope(id string) tgpp.Envelope {
 	}
 }
 
-// RFC 6733 §8.16; TS 29.214 §5.6.1, §5.6.4
-func (b *Backend) withOriginState(req *diameter.Message) {
-	if b.cfg.OriginStateID != 0 {
-		req.AVPs = append(req.AVPs, diameter.Unsigned32(diameter.AVPOriginStateID, diameter.AVPFlagMandatory, 0,
-			b.cfg.OriginStateID))
-	}
-}
-
 func (b *Backend) do(ctx context.Context, req *diameter.Message, wait bool) (*diameter.Message, error) {
-	b.withOriginState(req)
-
 	var opts []diameter.DoOption
 	if !wait {
 		opts = append(opts, diameter.FailFast())
@@ -361,9 +353,11 @@ func charging(ids []rx.AccessNetworkChargingIdentifier, addr netip.Addr, n rx.Ac
 
 	switch {
 	case n.IPCANType == nil:
+	// TS 24.229 §7.2A.5.2.10 covers 5GS whatever its access (TS 29.214 Table E.2-1). EPS over non-3GPP access
+	// is §7.2A.5.2.3, which defines no ecid.
 	case *n.IPCANType == rx.IPCAN3GPPEPS:
 		c.Access = policy.AccessEPS
-	case *n.IPCANType == rx.IPCAN3GPP5GS:
+	case *n.IPCANType == rx.IPCAN3GPP5GS, *n.IPCANType == rx.IPCANNon3GPP5GS:
 		c.Access = policy.Access5GS
 	default:
 		c.Access = policy.AccessOther

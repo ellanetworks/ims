@@ -388,6 +388,8 @@ func TestSessionLevelBandwidthIgnored(t *testing.T) {
 func TestChargingInfo(t *testing.T) {
 	gprs := rx.IPCAN3GPPGPRS
 	fiveGS := rx.IPCAN3GPP5GS
+	non3GPP5GS := rx.IPCANNon3GPP5GS
+	non3GPPEPS := rx.IPCANNon3GPPEPS
 	ids := func(n int) []rx.AccessNetworkChargingIdentifier {
 		out := make([]rx.AccessNetworkChargingIdentifier, n)
 		for i := range out {
@@ -414,6 +416,37 @@ func TestChargingInfo(t *testing.T) {
 			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
 			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
 		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB01;flow-id=({1,1})"`},
+		// TS 29.214 Table E.2-1, TS 24.229 §7.2A.5.2.10
+		"non-3GPP 5GS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPP5GS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=00"`},
+		// TS 24.229 §7.2A.5.2.3: EPC via WLAN has no ecid.
+		"non-3GPP EPS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPPEPS},
+		}, ""},
+		// TS 24.229 §7.2A.5.2.10: one item per PDU session, whose identifier comes once per QoS flow.
+		"one item per identifier": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{
+				{Value: []byte{0xab}, Flows: []rx.Flows{{MediaComponentNumber: 1, FlowNumbers: []uint32{1}}}},
+				{Value: []byte{0xcd}, Flows: []rx.Flows{{MediaComponentNumber: 3, FlowNumbers: []uint32{1}}}},
+				{Value: []byte{0xab}, Flows: []rx.Flows{
+					{MediaComponentNumber: 2, FlowNumbers: []uint32{1}}, {MediaComponentNumber: 1, FlowNumbers: []uint32{1}},
+				}},
+			},
+			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB;flow-id=({1,1},{2,1}),5gs-item=2;5gscid=CD;flow-id=({3,1})"`},
+		// TS 24.229 Table 7.2A.5: ecid and 5gscid are 1*HEXDIG.
+		"empty identifier": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{}, {Value: []byte{1}}},
+			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.1"),
+		}, `pdngw=192.0.2.1;eps-info="eps-item=1;eps-sig=no;ecid=01"`},
+		"only empty identifiers": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{}},
+			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.1"),
+		}, ""},
 		"IPv6 gateway": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("2001:db8::1"),
 		}, `pdngw=[2001:db8::1];eps-info="eps-item=1;eps-sig=no;ecid=00"`},

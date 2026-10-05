@@ -117,9 +117,11 @@ func TestEvent(t *testing.T) {
 
 func TestChargingAccess(t *testing.T) {
 	for in, want := range map[rx.IPCANType]policy.Access{
-		rx.IPCAN3GPPEPS:  policy.AccessEPS,
-		rx.IPCAN3GPP5GS:  policy.Access5GS,
-		rx.IPCAN3GPPGPRS: policy.AccessOther,
+		rx.IPCAN3GPPEPS:    policy.AccessEPS,
+		rx.IPCANNon3GPPEPS: policy.AccessOther,
+		rx.IPCAN3GPP5GS:    policy.Access5GS,
+		rx.IPCANNon3GPP5GS: policy.Access5GS,
+		rx.IPCAN3GPPGPRS:   policy.AccessOther,
 	} {
 		if got := AnswerCharging(rx.AAAnswer{AccessNetwork: rx.AccessNetwork{IPCANType: &in}}).Access; got != want {
 			t.Errorf("IP-CAN-Type %s: access %d, want %d", in, got, want)
@@ -128,6 +130,15 @@ func TestChargingAccess(t *testing.T) {
 
 	if got := AnswerCharging(rx.AAAnswer{}).Access; got != policy.AccessUnknown {
 		t.Errorf("no IP-CAN-Type: access %d, want unknown", got)
+	}
+}
+
+// RFC 6733 §4.3.1, RFC 4343: the PCRF's DiameterIdentity is an FQDN, compared without case.
+func TestEndpoint(t *testing.T) {
+	b := New(Config{PCRF: PCRF{Host: "PCRF.Example.org"}})
+
+	if got := b.Endpoint(); got != "rx:pcrf.example.org" {
+		t.Fatalf("Endpoint() = %q, want it lower-cased", got)
 	}
 }
 

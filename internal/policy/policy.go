@@ -19,10 +19,13 @@ var (
 
 // Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed, ErrUnknownSession or none.
 // Transient means the policy function may not have handled the request, so sending it again may succeed.
+// RetryAfter holds back the same service information; Backoff holds back any request to an overloaded policy
+// function.
 type Error struct {
 	Kind       error
 	Result     string
 	RetryAfter time.Duration
+	Backoff    time.Duration
 	Transient  bool
 	Err        error
 }
@@ -72,6 +75,16 @@ func RetryAfter(err error) time.Duration {
 	var e *Error
 	if errors.As(err, &e) {
 		return e.RetryAfter
+	}
+
+	return 0
+}
+
+// Backoff returns how long the policy function asked to receive no request after err (TS 29.500 §6.4.2).
+func Backoff(err error) time.Duration {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Backoff
 	}
 
 	return 0

@@ -1,0 +1,19 @@
+{
+  "ascReqData": {
+    "evSubsc": {
+      "events": [{"event": "FAILED_RESOURCES_ALLOCATION"}],
+      "notifUri": "http://192.0.2.10:7778/n5/v1/sessions/s1"
+    },
+    "medComponents": {
+      "0": {
+        "medCompN": 0,
+        "medSubComps": {
+          "0": {"fNum": 0, "flowUsage": "AF_SIGNALLING"}
+        }
+      }
+    },
+    "notifUri": "http://192.0.2.10:7778/n5/v1/sessions/s1",
+    "suppFeat": "8000010",
+    "ueIpv6": "2001:db8::1"
+  }
+}

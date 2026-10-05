@@ -69,7 +69,7 @@ type sipServer struct {
 	served      []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, originState uint32, rtr *rtrHandler,
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler,
 	rxh *rxHandler, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
@@ -183,7 +183,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 
 	if p, ok := cfg.Diameter.RxPeer(); ok {
 		rxBackend = rxpolicy.New(rxpolicy.Config{
-			Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, OriginStateID: originState,
+			Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
 		})
 		pol.Backend = rxBackend
 	} else {

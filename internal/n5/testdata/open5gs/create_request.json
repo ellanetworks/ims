@@ -1,0 +1,53 @@
+{
+  "ascReqData": {
+    "afAppId": "IMS Services",
+    "dnn": "ims",
+    "evSubsc": {
+      "events": [
+        {"event": "CHARGING_CORRELATION"},
+        {"event": "ANI_REPORT", "notifMethod": "ONE_TIME"}
+      ]
+    },
+    "medComponents": {
+      "1": {
+        "codecs": [
+          "downlink\noffer\nm=audio 49000 RTP/AVP 116 99 97 105 100\r\nb=AS:41\r\nb=RS:512\r\nb=RR:1537\r\na=maxptime:240\r\na=des:qos mandatory local sendrecv\r\na=curr:qos local none\r\na=des:qos optional remote sendrecv\r\na=curr:qos remote none\r\na=rtpmap:116 AMR-WB/16000/1\r\na=fmtp:116 mode-change-capability=2;max-red=0\r\na=rtpmap:99 AMR-WB/16000/1\r\na=fmtp:99 mode-change-capability=2;max-red=0\r\na=rtpmap:97 AMR/8000/1\r\na=fmtp:97 mode-change-capability=2;max-red=0\r\na=rtpmap:105 telephone-event/16000\r\na=fmtp:105 0-15\r\na=rtpmap:100 telephone-event/8000\r\na=fmtp:100 0-15\r\na=sendrecv\r\na=rtcp:49001\r\na=ptime:20\r\n",
+          "uplink\nanswer\nm=audio 50020 RTP/AVP 99 105\r\nb=AS:41\r\nb=RS:600\r\nb=RR:2000\r\na=rtpmap:99 AMR-WB/16000/1\r\na=fmtp:99 mode-change-capability=2;max-red=0\r\na=rtpmap:105 telephone-event/16000\r\na=fmtp:105 0-15\r\na=curr:qos local sendrecv\r\na=curr:qos remote none\r\na=des:qos mandatory local sendrecv\r\na=des:qos mandatory remote sendrecv\r\na=conf:qos remote sendrecv\r\na=sendrecv\r\na=maxptime:240\r\na=ptime:20\r\n"
+        ],
+        "fStatus": "ENABLED",
+        "marBwDl": "96000 bps",
+        "marBwUl": "96000 bps",
+        "medCompN": 1,
+        "medSubComps": {
+          "1": {
+            "fNum": 1,
+            "fDescs": [
+              "permit out 17 from 172.20.166.84 to 10.45.0.2 20001",
+              "permit in 17 from 10.45.0.2 to 172.20.166.84 20360"
+            ],
+            "flowUsage": "NO_INFO"
+          },
+          "2": {
+            "fNum": 2,
+            "fDescs": [
+              "permit out 17 from 172.20.166.84 to 10.45.0.2 20002",
+              "permit in 17 from 10.45.0.2 to 172.20.166.84 20361"
+            ],
+            "flowUsage": "RTCP"
+          }
+        },
+        "medType": "AUDIO",
+        "rrBw": "2400 bps",
+        "rsBw": "2400 bps"
+      }
+    },
+    "notifUri": "http://127.0.0.1:7777/npcf-policyauthorization/v1/app-sessions/1",
+    "resPrio": "PRIO_1",
+    "sliceInfo": {"sst": 1, "sd": "000080"},
+    "sponStatus": "SPONSOR_DISABLED",
+    "supi": "imsi-001010000000001",
+    "gpsi": "msisdn-821012345678",
+    "suppFeat": "12",
+    "ueIpv4": "10.45.0.2"
+  }
+}

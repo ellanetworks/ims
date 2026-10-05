@@ -34,7 +34,7 @@ var transports = map[config.Transport]diameter.Transport{
 	config.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, handshake time.Duration, originState uint32, rtr *rtrHandler,
+func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandler,
 	rxh *rxHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
 	if handshake <= 0 {
@@ -49,7 +49,6 @@ func newDiameterNode(cfg config.Diameter, handshake time.Duration, originState u
 			ProductName:     productName,
 		},
 		Handler:           newDiameterMux(rtr, rxh),
-		OriginStateID:     originState,
 		HandshakeTimeout:  handshake,
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
 		Logger:            logger,

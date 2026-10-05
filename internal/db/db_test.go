@@ -27,8 +27,8 @@ func TestOpenReachesLatestVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if version != 1 {
-		t.Fatalf("user_version = %d, want 1", version)
+	if version != len(migrations) {
+		t.Fatalf("user_version = %d, want %d", version, len(migrations))
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -207,9 +208,10 @@ func (c *policyClient) forget(s *policySession) {
 	}
 }
 
-// serves reports whether a stored session was opened with this client's policy function.
+// serves reports whether a stored session was opened with this client's policy function. Endpoints are compared
+// without case, as rows stored before rxpolicy lower-cased its DiameterIdentity still are.
 func (c *policyClient) serves(p db.PolicySession) bool {
-	return p.Endpoint == c.cfg.Backend.Endpoint()
+	return strings.EqualFold(p.Endpoint, c.cfg.Backend.Endpoint())
 }
 
 // deadline bounds a request: a positive wait also lets the backend wait for its peer to connect.
@@ -264,6 +266,8 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 			c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
 			return err
 		}
+
+		delay = max(delay, policy.Backoff(err))
 
 		c.log.Warn("policy session termination failed, will retry", append(attrs, slog.Any("error", err),
 			slog.Duration("retry_in", delay))...)
@@ -394,7 +398,7 @@ func (p *PCSCF) detachPolicy(s *policySession) {
 	})
 }
 
-// RFC 3680 §5.2, RFC 3588 §8.15
+// RFC 3680 §5.2: why the registration ended.
 func terminationCause(e regevent.Event) policy.Termination {
 	switch e {
 	case regevent.Unregistered:
@@ -436,7 +440,7 @@ func (p *PCSCF) endPolicy(r db.PCSCFRegistration, cause policy.Termination, wait
 	p.policy.end(s, cause, wait)
 }
 
-// RFC 6733 §8.16
+// restorePolicy ends, after a restart, the policy sessions stored with the registrations, and opens them again.
 func (p *PCSCF) restorePolicy(expired []db.PCSCFRegistration) {
 	if p.policy == nil {
 		return
