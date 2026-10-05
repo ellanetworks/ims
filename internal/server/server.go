@@ -31,7 +31,6 @@ type Server struct {
 
 	database    *db.DB
 	node        *diameter.Node
-	diameterLns []diameter.Listener
 	sip         *sipServer
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -97,9 +96,6 @@ func (s *Server) Start(ctx context.Context) error {
 	sipServer, err := startSIP(ctx, cfg, node, originState, rtr, rxh, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
-
-		closeListeners(diameterLns)
-
 		_ = apiLn.Close()
 		_ = database.Close()
 
@@ -108,7 +104,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.database = database
 	s.node = node
-	s.diameterLns = diameterLns
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
@@ -172,9 +167,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
 		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
 	}
-
-	// Serve may not have registered a listener with the node yet.
-	closeListeners(s.diameterLns)
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))

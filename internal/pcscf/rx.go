@@ -357,7 +357,7 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 // except one that asks for a retry.
 func unanswered(err error) bool {
 	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, diameter.ErrUnknownPeer) ||
-		errors.Is(err, diameter.ErrApplicationUnsupported) {
+		errors.Is(err, diameter.ErrApplicationUnsupported) || errors.Is(err, diameter.ErrClosed) {
 		return false
 	}
 

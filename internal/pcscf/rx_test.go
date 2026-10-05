@@ -1263,6 +1263,7 @@ func TestRxUnanswered(t *testing.T) {
 		{context.DeadlineExceeded, true},
 		{diameter.ErrUnknownPeer, false},
 		{diameter.ErrApplicationUnsupported, false},
+		{diameter.ErrClosed, false},
 		{result(diameter.ResultUnknownSessionID), false},
 		{result(diameter.ResultUnableToComply), false},
 		{result(diameter.ResultTooBusy), true},
