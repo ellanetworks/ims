@@ -3,6 +3,7 @@ package pcscf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -1225,6 +1226,46 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf.none()
 }
 
+// overloadOnce fails the first termination as an overloaded policy function does (TS 29.500 §6.4.2).
+type overloadOnce struct {
+	policy.Backend
+	backoff time.Duration
+	failed  atomic.Bool
+}
+
+func (b *overloadOnce) Terminate(ctx context.Context, id, ref string, cause policy.Termination, wait bool) error {
+	if !b.failed.Swap(true) {
+		return &policy.Error{Kind: policy.ErrRefused, Transient: true, Backoff: b.backoff, Err: errors.New("overloaded")}
+	}
+
+	return b.Backend.Terminate(ctx, id, ref, cause, wait)
+}
+
+func TestSTRWaitsForTheBackoff(t *testing.T) {
+	const backoff = 300 * time.Millisecond
+
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry, func(c *Config) {
+		c.Policy.Backend = &overloadOnce{Backend: c.Policy.Backend, backoff: backoff}
+	})
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	start := time.Now()
+
+	s.reregister(0)
+	pcrf.wantSTR(id, rx.TerminationLogout)
+
+	if d := time.Since(start); d < backoff {
+		t.Fatalf("STR retried after %s, want at least the %s backoff", d, backoff)
+	}
+
+	pcrf.none()
+}
+
 func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
@@ -1311,34 +1352,25 @@ func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
 	}
 }
 
-func TestRxOriginStateID(t *testing.T) {
+// RFC 6733 §8.16: the P-CSCF keeps its sessions across a restart, so its requests carry no Origin-State-Id.
+func TestRxWithoutOriginStateID(t *testing.T) {
 	pcrf := newFakePCRF(t)
-	s := newRegScene(t, pcrf.config(0), func(c *Config) {
-		c.Policy.Backend = rxpolicy.New(rxpolicy.Config{
-			Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
-			OriginStateID: 42,
-		})
-	})
+	s := newRegScene(t, pcrf.config(0))
 
-	wantState := func(m *diameter.Message) {
+	noState := func(m *diameter.Message) {
 		t.Helper()
 
-		a, ok := m.Find(diameter.AVPOriginStateID, 0)
-		if !ok {
-			t.Fatalf("Rx request %d without Origin-State-Id", m.CommandCode)
-		}
-
-		if v, err := a.Unsigned32(); err != nil || v != 42 {
-			t.Fatalf("Origin-State-Id = %d, %v; want 42", v, err)
+		if _, ok := m.Find(diameter.AVPOriginStateID, 0); ok {
+			t.Fatalf("Rx request %d with an Origin-State-Id", m.CommandCode)
 		}
 	}
 
 	s.registered(600)
 
 	aar := pcrf.next()
-	wantState(aar)
+	noState(aar)
 	s.wantSession(tgpp.ParseEnvelope(aar).SessionID)
 
 	s.reregister(0)
-	wantState(pcrf.next())
+	noState(pcrf.next())
 }

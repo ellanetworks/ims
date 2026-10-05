@@ -1,6 +1,7 @@
 package n5
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -31,11 +32,15 @@ var (
 const (
 	CauseInvalidServiceInformation                = "INVALID_SERVICE_INFORMATION"
 	CauseFilterRestrictions                       = "FILTER_RESTRICTIONS"
+	CauseDuplicatedAFSession                      = "DUPLICATED_AF_SESSION"
 	CauseRequestedServiceNotAuthorized            = "REQUESTED_SERVICE_NOT_AUTHORIZED"
 	CauseRequestedServiceTemporarilyNotAuthorized = "REQUESTED_SERVICE_TEMPORARILY_NOT_AUTHORIZED"
 	CauseTemporaryNetworkFailure                  = "TEMPORARY_NETWORK_FAILURE"
 	CauseAppSessionContextNotFound                = "APPLICATION_SESSION_CONTEXT_NOT_FOUND"
 	CausePDUSessionNotAvailable                   = "PDU_SESSION_NOT_AVAILABLE"
+
+	// TS 29.500 Table 5.2.7.2-1: a notification for a context the consumer does not know.
+	CauseResourceContextNotFound = "RESOURCE_CONTEXT_NOT_FOUND"
 )
 
 // Error is a failed operation. Status is set when an HTTP response came back, from the PCF or an intermediary;
@@ -95,6 +100,9 @@ func transportError(op Op, err error) *Error {
 	return &Error{Op: op, Err: err}
 }
 
+// maxRetryAfter caps a Retry-After, in seconds; a larger one is read as this.
+const maxRetryAfter = 1<<32 - 1
+
 // retryAfter reads a Retry-After header: seconds, or an HTTP-date (TS 29.500 §5.2.2.2, RFC 9110 §10.2.3).
 func retryAfter(h http.Header, now time.Time) time.Duration {
 	v := strings.TrimSpace(h.Get("Retry-After"))
@@ -102,8 +110,13 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 		return 0
 	}
 
-	if s, err := strconv.ParseUint(v, 10, 32); err == nil {
-		return time.Duration(s) * time.Second
+	if digits(v) {
+		s, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			s = maxRetryAfter
+		}
+
+		return time.Duration(min(s, maxRetryAfter)) * time.Second
 	}
 
 	if t, err := http.ParseTime(v); err == nil && t.After(now) {
@@ -111,4 +124,21 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 	}
 
 	return 0
+}
+
+// WriteProblem answers a request with an error status and its ProblemDetails (TS 29.500 §5.2.7, TS 29.514
+// §5.2.2.2). A zero Status is 500.
+func WriteProblem(w http.ResponseWriter, p ProblemDetails) {
+	if p.Status == 0 {
+		p.Status = http.StatusInternalServerError
+	}
+
+	b, err := json.Marshal(p)
+	if err != nil {
+		b = []byte("{}")
+	}
+
+	w.Header().Set("Content-Type", ContentProblem)
+	w.WriteHeader(p.Status)
+	_, _ = w.Write(b)
 }

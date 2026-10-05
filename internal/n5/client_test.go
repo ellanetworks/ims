@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -202,8 +203,8 @@ func TestCreate(t *testing.T) {
 				t.Fatalf("created %+v", got)
 			}
 
-			if f := got.Context.AscRespData.SuppFeat; !f.Has(FeatureIMSSBI) || f.Has(FeaturePatchCorrection) {
-				t.Fatalf("negotiated features %q", f)
+			if got.Features != "10" || got.BodyErr != nil {
+				t.Fatalf("negotiated features %q, body error %v", got.Features, got.BodyErr)
 			}
 		})
 	}
@@ -218,7 +219,7 @@ func TestCreateExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got != (Created{URI: "http://pcf.example:7777/npcf-policyauthorization/v1/app-sessions/7", Existing: true}) {
+	if got != (Created{Result: Result{URI: "http://pcf.example:7777/npcf-policyauthorization/v1/app-sessions/7"}, Existing: true}) {
 		t.Fatalf("created %+v", got)
 	}
 
@@ -232,6 +233,8 @@ func TestCreateLocation(t *testing.T) {
 		"/npcf-policyauthorization/v1/app-sessions/a1":                     "/npcf-policyauthorization/v1/app-sessions/a1",
 		"/npcf-policyauthorization/v1/app-sessions/a1/events-subscription": "/npcf-policyauthorization/v1/app-sessions/a1",
 		"/prefix/npcf-policyauthorization/v1/app-sessions/a1":              "/prefix/npcf-policyauthorization/v1/app-sessions/a1",
+		"/npcf-policyauthorization/v1/app-sessions/a%2Fb":                  "/npcf-policyauthorization/v1/app-sessions/a%2Fb",
+		"/npcf-policyauthorization/v1/app-sessions/a1?x=1#f":               "/npcf-policyauthorization/v1/app-sessions/a1",
 		"": "",
 		"/npcf-policyauthorization/v1/app-sessions":               "",
 		"/npcf-policyauthorization/v1/app-sessions/":              "",
@@ -251,31 +254,64 @@ func TestCreateLocation(t *testing.T) {
 	}
 }
 
-func TestCreateMalformed(t *testing.T) {
+// TS 29.500 §5.2.7.3: the PCF created the context, so a body that cannot be read does not fail the create.
+func TestCreateBody(t *testing.T) {
 	loc := []string{"Location", "/npcf-policyauthorization/v1/app-sessions/1"}
 
-	for name, h := range map[string]http.HandlerFunc{
-		"no body":        reply(http.StatusCreated, ContentJSON, "", loc...),
-		"bad JSON":       reply(http.StatusCreated, ContentJSON, "{", loc...),
-		"wrong type":     reply(http.StatusCreated, ContentJSON, `{"ascRespData":{"suppFeat":16}}`, loc...),
-		"not JSON":       reply(http.StatusCreated, "text/plain", "{}", loc...),
-		"undefined code": reply(http.StatusOK, ContentJSON, "{}", loc...),
+	for name, tc := range map[string]struct {
+		h       http.HandlerFunc
+		bodyErr bool
+	}{
+		"no body":          {reply(http.StatusCreated, ContentJSON, "", loc...), true},
+		"bad JSON":         {reply(http.StatusCreated, ContentJSON, "{", loc...), true},
+		"bad evsNotif":     {reply(http.StatusCreated, ContentJSON, `{"evsNotif":{"evNotifs":7}}`, loc...), true},
+		"bad features":     {reply(http.StatusCreated, ContentJSON, `{"ascRespData":{"suppFeat":16}}`, loc...), true},
+		"not JSON":         {reply(http.StatusCreated, "text/plain", "{}", loc...), true},
+		"too large":        {reply(http.StatusCreated, ContentJSON, `{"x":"`+strings.Repeat("a", maxBody)+`"}`, loc...), true},
+		"undefined 2xx":    {reply(http.StatusOK, ContentJSON, "{}", loc...), false},
+		"undefined, empty": {reply(http.StatusAccepted, "", "", loc...), false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			pcf := newPCF(t, h)
+			pcf := newPCF(t, tc.h)
 
 			got, err := pcf.client.Create(context.Background(), callContext())
-
-			var e *Error
-			if !errors.As(err, &e) || !errors.Is(err, ErrMalformedResponse) || e.Op != OpCreate {
-				t.Fatalf("error %v, want a malformed create", err)
+			if err != nil || got.URI == "" {
+				t.Fatalf("Create = %+v, %v; want the context", got, err)
 			}
 
-			// A context the PCF created can still be deleted.
-			if name != "undefined code" && got.URI == "" {
-				t.Fatalf("created %+v, want the URI", got)
+			if tc.bodyErr != errors.Is(got.BodyErr, ErrMalformedResponse) {
+				t.Fatalf("body error %v, want one: %t", got.BodyErr, tc.bodyErr)
 			}
 		})
+	}
+}
+
+// TS 29.514 §5.8: the negotiated features are in ascRespData, and only there.
+func TestCreateFeatures(t *testing.T) {
+	loc := []string{"Location", "/npcf-policyauthorization/v1/app-sessions/1"}
+
+	for body, want := range map[string]SupportedFeatures{
+		`{"ascRespData":{"suppFeat":"10"},"ascReqData":{"suppFeat":"8000010"}}`: "10",
+		`{"ascReqData":{"suppFeat":"12"}}`:                                      "",
+		`{}`:                                                                    "",
+	} {
+		pcf := newPCF(t, reply(http.StatusCreated, ContentJSON, body, loc...))
+
+		got, err := pcf.client.Create(context.Background(), callContext())
+		if err != nil || got.Features != want || got.BodyErr != nil {
+			t.Errorf("%s: features %q, %v, %v; want %q", body, got.Features, err, got.BodyErr, want)
+		}
+	}
+}
+
+func TestCreateWithoutLocation(t *testing.T) {
+	pcf := newPCF(t, reply(http.StatusCreated, ContentJSON, "{}"))
+
+	_, err := pcf.client.Create(context.Background(), callContext())
+
+	var e *Error
+	if !errors.As(err, &e) || !errors.Is(err, ErrMalformedResponse) || e.Op != OpCreate {
+		t.Fatalf("error %v, want a malformed create", err)
 	}
 }
 
@@ -293,7 +329,8 @@ func TestCreateValidation(t *testing.T) {
 		"mapped IPv6": func(r *AppSessionContextReqData) {
 			r.UEIPv4, r.UEIPv6 = netip.Addr{}, netip.MustParseAddr("::ffff:10.45.0.2")
 		},
-		"no events": func(r *AppSessionContextReqData) { r.EvSubsc.Events = nil },
+		"no events":          func(r *AppSessionContextReqData) { r.EvSubsc.Events = nil },
+		"no events notifUri": func(r *AppSessionContextReqData) { r.EvSubsc.NotifURI = "" },
 	} {
 		asc := callContext()
 		edit(asc.AscReqData)
@@ -316,13 +353,14 @@ func TestCreateValidation(t *testing.T) {
 func TestModify(t *testing.T) {
 	for name, tc := range map[string]struct {
 		h    http.HandlerFunc
-		want *AppSessionContext
+		want *EventsNotification
 	}{
 		"204": {reply(http.StatusNoContent, "", ""), nil},
 		"200": {
-			reply(http.StatusOK, ContentJSON, `{"ascRespData":{"suppFeat":"10"}}`),
-			&AppSessionContext{AscRespData: &AppSessionContextRespData{SuppFeat: "10"}},
+			reply(http.StatusOK, ContentJSON, `{"evsNotif":{"evSubsUri":"x","evNotifs":[{"event":"QOS_NOTIF"}]}}`),
+			&EventsNotification{EvSubsURI: "x", EvNotifs: []AfEventNotification{{Event: EventQoSNotif}}},
 		},
+		"200 unreadable": {reply(http.StatusOK, ContentJSON, `{"evsNotif":1}`), nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pcf := newPCF(t, tc.h)
@@ -332,9 +370,15 @@ func TestModify(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, err := pcf.client.Modify(context.Background(), pcf.URL+"/npcf-policyauthorization/v1/app-sessions/42", patch)
-			if err != nil || !reflect.DeepEqual(got, tc.want) {
+			uri := pcf.URL + "/npcf-policyauthorization/v1/app-sessions/42"
+
+			got, err := pcf.client.Modify(context.Background(), uri, patch)
+			if err != nil || !reflect.DeepEqual(got.Notification, tc.want) || got.URI != uri {
 				t.Fatalf("Modify = %+v, %v; want %+v", got, err, tc.want)
+			}
+
+			if (got.BodyErr != nil) != (name == "200 unreadable") {
+				t.Fatalf("body error %v", got.BodyErr)
 			}
 
 			ex := pcf.last(t)
@@ -354,7 +398,7 @@ func TestDelete(t *testing.T) {
 		pcf := newPCF(t, reply(http.StatusNoContent, "", ""))
 
 		got, err := pcf.client.Delete(context.Background(), pcf.URL+uri, nil)
-		if err != nil || got != nil {
+		if err != nil || got != (Result{}) {
 			t.Fatalf("Delete = %+v, %v", got, err)
 		}
 
@@ -379,8 +423,8 @@ func TestDelete(t *testing.T) {
 			AnChargIDs:  []AccessNetChargingIdentifier{{AccNetChargIDString: "c1", Flows: []Flows{{MedCompN: 1, FNums: []uint32{1, 2}}}}},
 			AnChargAddr: &AccNetChargingAddress{AnChargIPv4Addr: netip.MustParseAddr("192.0.2.1")},
 		}
-		if !reflect.DeepEqual(got.EvsNotif, want) {
-			t.Fatalf("evsNotif %+v, want %+v", got.EvsNotif, want)
+		if !reflect.DeepEqual(got.Notification, want) {
+			t.Fatalf("evsNotif %+v, want %+v", got.Notification, want)
 		}
 
 		ex := pcf.last(t)
@@ -416,6 +460,13 @@ func TestErrors(t *testing.T) {
 		"no body":       {reply(http.StatusServiceUnavailable, "", ""), 503, "", 0},
 		"not a problem": {reply(http.StatusBadRequest, "text/html", `{"cause":"X"}`), 400, "", 0},
 		"bad problem":   {reply(http.StatusBadRequest, ContentProblem, `{"cause":1}`), 400, "", 0},
+		"partly bad problem": {
+			reply(http.StatusForbidden, ContentProblem, `{"status":"403","cause":"REQUESTED_SERVICE_NOT_AUTHORIZED"}`),
+			403, CauseRequestedServiceNotAuthorized, 0,
+		},
+		"huge retry after": {
+			reply(http.StatusServiceUnavailable, "", "", "Retry-After", "99999999999999999999999"), 503, "", maxRetryAfter * time.Second,
+		},
 		"open5gs not found": {
 			func(w http.ResponseWriter, r *http.Request) {
 				reply(http.StatusNotFound, ContentProblem, string(fixture(t, "open5gs/problem_not_found.json")))(w, r)
@@ -447,31 +498,94 @@ func TestErrors(t *testing.T) {
 	}
 }
 
-// RFC 9110 §15.4.8, §15.4.9: 307 and 308 repeat the request at the new URI.
+// RFC 9110 §15.4.8, §15.4.9: 307 and 308 repeat the request at the new URI; only 308 moves the context
+// (TS 29.500 §6.10.9).
 func TestRedirect(t *testing.T) {
 	var pcf *fakePCF
 
 	pcf = newPCF(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/old/") {
-			w.Header().Set("Location", pcf.URL+strings.TrimPrefix(r.URL.Path, "/old"))
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/temporary/"):
+			w.Header().Set("Location", pcf.URL+strings.TrimPrefix(r.URL.Path, "/temporary"))
 			w.WriteHeader(http.StatusTemporaryRedirect)
-
-			return
+		case strings.HasPrefix(r.URL.Path, "/permanent/"):
+			w.Header().Set("Location", "/moved"+strings.TrimPrefix(r.URL.Path, "/permanent"))
+			w.WriteHeader(http.StatusPermanentRedirect)
+		case strings.HasPrefix(r.URL.Path, "/loop/"):
+			w.Header().Set("Location", r.URL.Path)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case strings.HasPrefix(r.URL.Path, "/tls/"):
+			w.Header().Set("Location", "https://"+r.Host+r.URL.Path)
+			w.WriteHeader(http.StatusPermanentRedirect)
+		case r.URL.Path == "/elsewhere"+AppSessionsPath:
+			w.Header().Set("Location", "app-sessions/9")
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusNoContent)
 		}
-
-		w.WriteHeader(http.StatusNoContent)
 	})
 
 	patch, _ := NewPatch(nil, &AppSessionContextUpdateData{AFAppID: "app"})
+	ctx := context.Background()
 
-	if _, err := pcf.client.Modify(context.Background(), pcf.URL+"/old/npcf-policyauthorization/v1/app-sessions/1", patch); err != nil {
-		t.Fatal(err)
+	got, err := pcf.client.Modify(ctx, pcf.URL+"/temporary/npcf-policyauthorization/v1/app-sessions/1", patch)
+	if err != nil || got.URI != pcf.URL+"/temporary/npcf-policyauthorization/v1/app-sessions/1" {
+		t.Fatalf("Modify through 307 = %+v, %v; want the URI unchanged", got, err)
 	}
 
 	ex := pcf.last(t)
 	if ex.method != http.MethodPatch || ex.path != "/npcf-policyauthorization/v1/app-sessions/1" ||
 		ex.contentType != ContentMergePatch || string(ex.body) != `{"ascReqData":{"afAppId":"app"}}` {
 		t.Fatalf("redirected request %+v %s", ex, ex.body)
+	}
+
+	got, err = pcf.client.Modify(ctx, pcf.URL+"/permanent/npcf-policyauthorization/v1/app-sessions/1", patch)
+	if err != nil || got.URI != pcf.URL+"/moved/npcf-policyauthorization/v1/app-sessions/1" {
+		t.Fatalf("Modify through 308 = %+v, %v; want the moved URI", got, err)
+	}
+
+	for _, path := range []string{"/loop/x", "/tls/x"} {
+		_, err := pcf.client.Delete(ctx, pcf.URL+path, nil)
+
+		var e *Error
+		if !errors.As(err, &e) || e.Status < 300 || e.Status >= 400 {
+			t.Fatalf("%s: %v, want the redirection as the answer", path, err)
+		}
+	}
+
+	pcf.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == AppSessionsPath {
+			w.Header().Set("Location", "/elsewhere"+AppSessionsPath)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+
+			return
+		}
+
+		w.Header().Set("Location", "app-sessions/9")
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	created, err := pcf.client.Create(ctx, callContext())
+	if err != nil || created.URI != pcf.URL+"/elsewhere/npcf-policyauthorization/v1/app-sessions/9" {
+		t.Fatalf("Create through 307 = %+v, %v; want Location resolved against the redirected URI", created, err)
+	}
+}
+
+func TestDeleteWithoutEvents(t *testing.T) {
+	pcf := newPCF(t, reply(http.StatusNoContent, "", ""))
+
+	if _, err := pcf.client.Delete(context.Background(), pcf.URL+AppSessionsPath+"/1", &EventsSubscReqData{}); err == nil {
+		t.Fatal("an events subscription without events accepted")
+	}
+}
+
+func TestWriteProblem(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteProblem(w, ProblemDetails{Status: http.StatusBadRequest, Cause: CauseResourceContextNotFound})
+
+	if w.Code != http.StatusBadRequest || w.Header().Get("Content-Type") != ContentProblem ||
+		w.Body.String() != `{"status":400,"cause":"RESOURCE_CONTEXT_NOT_FOUND"}` {
+		t.Fatalf("%d %v %s", w.Code, w.Header(), w.Body)
 	}
 }
 
@@ -529,12 +643,12 @@ func TestConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if u, _ := c.resource("/npcf-policyauthorization/v1/app-sessions/1", deleteOperation); u !=
+	if u, _ := c.resource("/npcf-policyauthorization/v1/app-sessions/1", DeleteSegment); u !=
 		"http://pcf:7777/npcf-policyauthorization/v1/app-sessions/1/delete" {
 		t.Fatalf("relative URI resolved to %q", u)
 	}
 
-	for _, uri := range []string{"https://pcf/x", "::"} {
+	for _, uri := range []string{"https://pcf/x", "::", "npcf-policyauthorization/v1/app-sessions/1", "app-sessions/1"} {
 		if _, err := c.resource(uri, ""); err == nil {
 			t.Errorf("context URI %q accepted", uri)
 		}
@@ -564,8 +678,9 @@ func TestOpen5GS(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// No ascRespData: the features are not negotiated as TS 29.514 §5.8 defines.
-		if got.URI != "http://127.0.0.13:7777/npcf-policyauthorization/v1/app-sessions/1" || got.Context.AscRespData != nil {
+		// No ascRespData, so no negotiated features (TS 29.514 §5.8).
+		if got.URI != "http://127.0.0.13:7777/npcf-policyauthorization/v1/app-sessions/1" || got.Features != "" ||
+			got.BodyErr != nil {
 			t.Fatalf("created %+v", got)
 		}
 	})
@@ -573,11 +688,30 @@ func TestOpen5GS(t *testing.T) {
 	t.Run("update", func(t *testing.T) {
 		pcf := newPCF(t, reply(http.StatusOK, ContentJSON, string(fixture(t, "open5gs/update_response.json"))))
 
-		patch, _ := NewPatch(nil, &AppSessionContextUpdateData{AFAppID: "IMS Services"})
+		// Open5GS rebuilds a patched component from the patch: it must come whole, with its medType.
+		prev := callContext().AscReqData
+		next := &AppSessionContextUpdateData{AFAppID: prev.AFAppID, MedComponents: maps.Clone(prev.MedComponents)}
+		c := next.MedComponents["1"]
+		c.MarBwDl = ptr(BitRate(128000))
+		next.MedComponents["1"] = c
+
+		patch, err := NewPatch(&AppSessionContextUpdateData{AFAppID: prev.AFAppID, MedComponents: prev.MedComponents}, next)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		got, err := pcf.client.Modify(context.Background(), pcf.URL+"/npcf-policyauthorization/v1/app-sessions/1", patch)
-		if err != nil || got == nil {
+		if err != nil || got.BodyErr != nil {
 			t.Fatalf("Modify = %+v, %v", got, err)
+		}
+
+		var sent AppSessionContextUpdateDataPatch
+		if err := json.Unmarshal(pcf.last(t).body, &sent); err != nil {
+			t.Fatal(err)
+		}
+
+		if sent.AscReqData == nil || !reflect.DeepEqual(sent.AscReqData.MedComponents["1"], c) {
+			t.Fatalf("patched component %+v, want %+v", sent.AscReqData, c)
 		}
 	})
 }

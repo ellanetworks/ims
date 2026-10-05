@@ -47,13 +47,14 @@ func TestClassify(t *testing.T) {
 			&n5.Error{Op: n5.OpDelete, Status: 404, Problem: problem("RESOURCE_URI_STRUCTURE_NOT_FOUND")},
 			policy.ErrRefused, false, "404 RESOURCE_URI_STRUCTURE_NOT_FOUND",
 		},
-		"congestion":   {&n5.Error{Op: n5.OpCreate, Status: 503, Problem: problem("NF_CONGESTION")}, policy.ErrRefused, true, "503 NF_CONGESTION"},
-		"rate limited": {&n5.Error{Op: n5.OpModify, Status: 429}, policy.ErrRefused, true, "429"},
-		"gateway":      {&n5.Error{Op: n5.OpDelete, Status: 504}, policy.ErrRefused, true, "504"},
-		"server error": {&n5.Error{Op: n5.OpDelete, Status: 500}, policy.ErrRefused, false, "500"},
-		"malformed":    {&n5.Error{Op: n5.OpCreate, Status: 201, Err: malformed}, policy.ErrMalformed, false, "201"},
-		"connect":      {&n5.Error{Op: n5.OpCreate, Err: connect}, policy.ErrUnreachable, true, ""},
-		"no answer":    {&n5.Error{Op: n5.OpModify, Err: context.DeadlineExceeded}, nil, true, ""},
+		"congestion":      {&n5.Error{Op: n5.OpCreate, Status: 503, Problem: problem("NF_CONGESTION")}, policy.ErrRefused, true, "503 NF_CONGESTION"},
+		"request timeout": {&n5.Error{Op: n5.OpModify, Status: 408}, policy.ErrRefused, true, "408"},
+		"rate limited":    {&n5.Error{Op: n5.OpModify, Status: 429}, policy.ErrRefused, true, "429"},
+		"gateway":         {&n5.Error{Op: n5.OpDelete, Status: 504}, policy.ErrRefused, true, "504"},
+		"server error":    {&n5.Error{Op: n5.OpDelete, Status: 500}, policy.ErrRefused, false, "500"},
+		"malformed":       {&n5.Error{Op: n5.OpCreate, Status: 201, Err: malformed}, policy.ErrMalformed, false, "201"},
+		"connect":         {&n5.Error{Op: n5.OpCreate, Err: connect}, policy.ErrUnreachable, true, ""},
+		"no answer":       {&n5.Error{Op: n5.OpModify, Err: context.DeadlineExceeded}, nil, true, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := classify(tc.err)
@@ -90,9 +91,18 @@ func TestClassifyRetryAfter(t *testing.T) {
 		t.Fatalf("RetryAfter = %s, want 30s", got)
 	}
 
+	if got := policy.Backoff(classify(temporary)); got != 0 {
+		t.Fatalf("Backoff = %s for a temporary refusal, want none", got)
+	}
+
+	// TS 29.500 §6.4.2: an overloaded PCF takes no request until Retry-After elapses.
 	overload := &n5.Error{Op: n5.OpCreate, Status: 503, RetryAfter: 30 * time.Second}
 	if got := policy.RetryAfter(classify(overload)); got != 0 {
 		t.Fatalf("RetryAfter = %s for an overload, want none", got)
+	}
+
+	if got := policy.Backoff(classify(overload)); got != 30*time.Second {
+		t.Fatalf("Backoff = %s for an overload, want 30s", got)
 	}
 }
 

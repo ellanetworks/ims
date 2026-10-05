@@ -348,6 +348,117 @@ func TestCallChargingInfoFromAReAuth(t *testing.T) {
 	}
 }
 
+// TS 29.214 §5.6.3: IP-CAN-Type is optional in a RAR, so a later one without it keeps the 5GS access.
+func TestCallChargingInfoKeepsTheAccess(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	fiveGS := rx.IPCAN3GPP5GS
+
+	for _, n := range []rx.AccessNetwork{{IPCANType: &fiveGS}, {}} {
+		if !s.p.rxReAuth(e.session, rx.ReAuthRequest{
+			SpecificActions:                  []rx.SpecificAction{rx.ActionChargingCorrelationExchange},
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{Value: []byte{0x0f}}},
+			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.50"),
+			AccessNetwork:                    n,
+		}) {
+			t.Fatal("ReAuth reported an unknown session")
+		}
+	}
+
+	update, err := e.ue.NewRequest("UPDATE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update.Header.Add("Contact", ueContact(u))
+	s.ueSend(u, update)
+
+	fwd, _ := s.scscf.RecvRequest()
+	if cv := fwd.Header.Get("P-Charging-Vector"); !strings.Contains(cv, `smf=192.0.2.50;5gs-info="5gs-item=1;5gscid=0F"`) {
+		t.Errorf("UPDATE P-Charging-Vector = %q, want the 5GS access kept", cv)
+	}
+}
+
+// TS 29.214 §4.4.1: a 5002 that comes after the call timeout still gets the next exchange a new session.
+func TestCallLateUnknownSessionOpensANewOne(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
+	e := s.establishConfirmed(t, u, pcrf)
+
+	var once sync.Once
+
+	open := gateAA(pcrf, func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		unknown := false
+
+		once.Do(func() { unknown = true })
+
+		if unknown {
+			return rx.NewAnswer(req, pcrfIdentity, tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0), nil
+		}
+
+		return succeed(req)
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	wantStatus(t, res, 200)
+
+	if id, _ := pcrf.aar(); id != e.session {
+		t.Fatalf("AAR for %s, want the update of %s", id, e.session)
+	}
+
+	open()
+
+	for deadline := time.Now().Add(time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, ok := s.p.policy.lookup(e.session); !ok {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the late 5002 did not end the session")
+		}
+	}
+
+	res = s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
+	wantStatus(t, res, 200)
+
+	if id, aar := pcrf.aar(); id == e.session || *aar.RequestType != rx.RequestInitial {
+		t.Fatalf("AAR %s %s, want an initial one for a new session", id, aar.RequestType)
+	}
+}
+
+// TS 29.214 §4.4.1: the new session for a lost one has nothing to remove.
+func TestCallRecoveryLeavesRemovedMediaOut(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	var once sync.Once
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		unknown := false
+
+		once.Do(func() { unknown = true })
+
+		if unknown {
+			return rx.NewAnswer(req, pcrfIdentity, tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0), nil
+		}
+
+		return succeed(req)
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "0"), sdpBody("192.0.2.9", "0"))
+	wantStatus(t, res, 200)
+
+	_, update := pcrf.aar()
+	if len(update.MediaComponents) != 1 || *update.MediaComponents[0].FlowStatus != rx.FlowStatusRemoved {
+		t.Fatalf("update media %+v, want the component removed", update.MediaComponents)
+	}
+
+	if _, initial := pcrf.aar(); *initial.RequestType != rx.RequestInitial || len(initial.MediaComponents) != 0 {
+		t.Fatalf("recovery AAR %s with media %+v, want an initial one without the removed component",
+			initial.RequestType, initial.MediaComponents)
+	}
+}
+
 // TS 29.214 §5.3.13 NOTE 2a, TS 24.229 §5.2.8.1.1: failed resources allocation is a media loss.
 func TestCallFailedResourcesAllocation(t *testing.T) {
 	clk, opt := mediaLossClock()

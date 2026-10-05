@@ -1,6 +1,9 @@
 package n5
 
-import "net/netip"
+import (
+	"encoding/json"
+	"net/netip"
+)
 
 // AppSessionContext is the Individual Application Session Context resource (TS 29.514 §5.6.2.2).
 type AppSessionContext struct {
@@ -12,10 +15,13 @@ type AppSessionContext struct {
 // TS 29.514 §5.6.2.3. NotifURI and SuppFeat are required, and so is one of UEIPv4 and UEIPv6.
 type AppSessionContextReqData struct {
 	AFAppID       string                    `json:"afAppId,omitempty"`
+	AFChargID     string                    `json:"afChargId,omitempty"`
 	DNN           string                    `json:"dnn,omitempty"`
 	EvSubsc       *EventsSubscReqData       `json:"evSubsc,omitempty"`
 	MedComponents map[string]MediaComponent `json:"medComponents,omitempty"`
 	NotifURI      string                    `json:"notifUri"`
+	ServURN       string                    `json:"servUrn,omitempty"`
+	SliceInfo     *Snssai                   `json:"sliceInfo,omitempty"`
 	SUPI          string                    `json:"supi,omitempty"`
 	GPSI          string                    `json:"gpsi,omitempty"`
 	SuppFeat      SupportedFeatures         `json:"suppFeat"`
@@ -94,13 +100,20 @@ type EventsNotification struct {
 	EvNotifs                  []AfEventNotification         `json:"evNotifs"`
 	FailedResourcAllocReports []ResourcesAllocationInfo     `json:"failedResourcAllocReports,omitempty"`
 	SuccResourcAllocReports   []ResourcesAllocationInfo     `json:"succResourcAllocReports,omitempty"`
+	PLMNID                    *PlmnIDNid                    `json:"plmnId,omitempty"`
+	QncReports                []QosNotificationControlInfo  `json:"qncReports,omitempty"`
+	RanNasRelCauses           []json.RawMessage             `json:"ranNasRelCauses,omitempty"`
 	RatType                   string                        `json:"ratType,omitempty"`
+	UELoc                     json.RawMessage               `json:"ueLoc,omitempty"`
+	UELocTime                 string                        `json:"ueLocTime,omitempty"`
+	UETimeZone                string                        `json:"ueTimeZone,omitempty"`
 }
 
 // TS 29.514 §5.6.2.11
 type AfEventNotification struct {
-	Event AfEvent `json:"event"`
-	Flows []Flows `json:"flows,omitempty"`
+	Event      AfEvent `json:"event"`
+	Flows      []Flows `json:"flows,omitempty"`
+	RetryAfter *uint32 `json:"retryAfter,omitempty"`
 }
 
 // Flows names the flows of one media component, all of them when FNums is empty (TS 29.514 §5.6.2.21).
@@ -113,6 +126,27 @@ type Flows struct {
 type ResourcesAllocationInfo struct {
 	McResourcStatus MediaComponentResourcesStatus `json:"mcResourcStatus,omitempty"`
 	Flows           []Flows                       `json:"flows,omitempty"`
+	AltSerReq       string                        `json:"altSerReq,omitempty"`
+}
+
+// TS 29.514 §5.6.2.15
+type QosNotificationControlInfo struct {
+	NotifType QosNotifType `json:"notifType"`
+	Flows     []Flows      `json:"flows,omitempty"`
+	AltSerReq string       `json:"altSerReq,omitempty"`
+}
+
+// TS 29.571 §5.4.4.2
+type Snssai struct {
+	SST uint8  `json:"sst"`
+	SD  string `json:"sd,omitempty"`
+}
+
+// TS 29.571 §5.4.4.33
+type PlmnIDNid struct {
+	MCC string `json:"mcc"`
+	MNC string `json:"mnc"`
+	NID string `json:"nid,omitempty"`
 }
 
 // AccessNetChargingIdentifier has one of AccNetChargIDString and the deprecated AccNetChaIDValue
@@ -141,8 +175,8 @@ type TerminationInfo struct {
 	ResURI    string           `json:"resUri"`
 }
 
-// ProblemDetails is an error body (TS 29.571 §5.2.4.1), including the ExtendedProblemDetails of TS 29.514
-// §5.6.2.29, whose acceptableServInfo is not read.
+// ProblemDetails is an error body (TS 29.571 §5.2.4.1), including the acceptableServInfo of the
+// ExtendedProblemDetails of TS 29.514 §5.6.2.29.
 type ProblemDetails struct {
 	Type              string            `json:"type,omitempty"`
 	Title             string            `json:"title,omitempty"`
@@ -152,6 +186,15 @@ type ProblemDetails struct {
 	Cause             string            `json:"cause,omitempty"`
 	InvalidParams     []InvalidParam    `json:"invalidParams,omitempty"`
 	SupportedFeatures SupportedFeatures `json:"supportedFeatures,omitempty"`
+
+	AcceptableServInfo *AcceptableServiceInfo `json:"acceptableServInfo,omitempty"`
+}
+
+// AcceptableServiceInfo is the service information the PCF would accept, in a 403 (TS 29.514 §5.6.2.30).
+type AcceptableServiceInfo struct {
+	AccBwMedComps map[string]MediaComponent `json:"accBwMedComps,omitempty"`
+	MarBwUl       *BitRate                  `json:"marBwUl,omitempty"`
+	MarBwDl       *BitRate                  `json:"marBwDl,omitempty"`
 }
 
 // TS 29.571 §5.2.4.6
@@ -172,6 +215,7 @@ const (
 	EventFailedResourcesAllocation     AfEvent = "FAILED_RESOURCES_ALLOCATION"
 	EventPLMNChange                    AfEvent = "PLMN_CHG"
 	EventQoSNotif                      AfEvent = "QOS_NOTIF"
+	EventRANNASCause                   AfEvent = "RAN_NAS_CAUSE"
 	EventSuccessfulResourcesAllocation AfEvent = "SUCCESSFUL_RESOURCES_ALLOCATION"
 )
 
@@ -222,9 +266,26 @@ const (
 type TerminationCause string
 
 const (
-	TerminationAllSDFDeactivation    TerminationCause = "ALL_SDF_DEACTIVATION"
-	TerminationPDUSessionTermination TerminationCause = "PDU_SESSION_TERMINATION"
-	TerminationPSToCSHO              TerminationCause = "PS_TO_CS_HO"
+	TerminationAllSDFDeactivation            TerminationCause = "ALL_SDF_DEACTIVATION"
+	TerminationPDUSessionTermination         TerminationCause = "PDU_SESSION_TERMINATION"
+	TerminationPSToCSHO                      TerminationCause = "PS_TO_CS_HO"
+	TerminationInsufficientServerResources   TerminationCause = "INSUFFICIENT_SERVER_RESOURCES"
+	TerminationInsufficientQoSFlowResources  TerminationCause = "INSUFFICIENT_QOS_FLOW_RESOURCES"
+	TerminationSponsoredDataDisallowed       TerminationCause = "SPONSORED_DATA_CONNECTIVITY_DISALLOWED"
+	TerminationRequestQoSNotSupportedInPLMN  TerminationCause = "REQUEST_QOS_NOT_SUPPORTED_IN_PLMN"
+	TerminationUEAddrRelease                 TerminationCause = "UE_ADDR_RELEASE"
+	TerminationSMFFailure                    TerminationCause = "SMF_FAILURE"
+	TerminationReflectiveQoSNotSupportedInUE TerminationCause = "REFLECTIVE_QOS_NOT_SUPPORTED_IN_UE"
+)
+
+// TS 29.514 §5.6.3.9
+type QosNotifType string
+
+const (
+	QoSGuaranteed      QosNotifType = "GUARANTEED"
+	QoSNotGuaranteed   QosNotifType = "NOT_GUARANTEED"
+	QoSNotGuaranteedDL QosNotifType = "NOT_GUARANTEED_DL"
+	QoSNotGuaranteedUL QosNotifType = "NOT_GUARANTEED_UL"
 )
 
 // TS 29.514 §5.6.3.17

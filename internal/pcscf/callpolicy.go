@@ -53,6 +53,7 @@ type callPolicy struct {
 	flows    map[int]flowNumbers
 	active   map[uint32]bool
 	charging string
+	access   policy.Access
 	loss     transaction.Timer
 	lost     []uint32
 	ended    bool
@@ -367,6 +368,13 @@ type grantResult struct {
 
 // TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
 func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
+	return p.callAARBy(c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
+}
+
+// callAARBy authorizes the media of job, waiting for the policy function until deadline. A recovery opens a new
+// session for a call whose session the policy function lost: media the exchange removes has nothing to remove
+// there, so it is left out.
+func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time.Time, recovery bool) error {
 	cr := c.policy
 
 	cr.mu.Lock()
@@ -404,6 +412,10 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	components, err := mediaComponents(*job.x, flows)
 	if err != nil {
 		return err
+	}
+
+	if recovery {
+		components = slices.DeleteFunc(components, func(m policy.MediaComponent) bool { return m.Status == policy.FlowRemoved })
 	}
 
 	if !s.pending.CompareAndSwap(false, true) {
@@ -447,6 +459,13 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 		case initial, errors.Is(err, policy.ErrUnknownSession):
 			s.ended = true
 			p.policy.forget(s)
+
+			// The next exchange opens a new session, even when this answer came after the caller gave up.
+			cr.mu.Lock()
+			if cr.session == s {
+				cr.session = nil
+			}
+			cr.mu.Unlock()
 		}
 
 		result <- grantResult{g, err}
@@ -457,7 +476,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 		return errCallEnded
 	}
 
-	timer := time.NewTimer(p.policy.cfg.CallTimeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 
 	var res grantResult
@@ -469,21 +488,11 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	}
 
 	if res.err != nil {
-		lost := errors.Is(res.err, policy.ErrUnknownSession)
-
-		if initial || lost {
-			cr.mu.Lock()
-			if cr.session == s {
-				cr.session = nil
-			}
-			cr.mu.Unlock()
-		}
-
-		if lost && !initial {
+		if errors.Is(res.err, policy.ErrUnknownSession) && !initial {
 			p.log.Warn("policy session of a call unknown to the policy function: opening a new one",
 				slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("session", s.id))
 
-			return p.callAAR(c, d, job)
+			return p.callAARBy(c, d, job, deadline, true)
 		}
 
 		return res.err
@@ -502,10 +511,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	cr.flows = flows
 	cr.active = activeComponents(components)
-
-	if info := chargingInfo(res.grant.Charging, flows); info != "" {
-		cr.charging = info
-	}
+	cr.chargingLocked(res.grant.Charging)
 
 	cr.mu.Unlock()
 
@@ -616,8 +622,12 @@ func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
 		return ""
 	}
 
-	ids := c.Identifiers
-	if len(ids) > maxItems {
+	ids := chargingIDs(c.Identifiers)
+
+	switch {
+	case len(ids) == 0:
+		return ""
+	case len(ids) > maxItems:
 		ids = ids[:maxItems]
 	}
 
@@ -636,8 +646,35 @@ func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
 	return gateway + "=" + sip.FormatHost(c.Address.Unmap()) + ";" + list + `="` + strings.Join(items, ",") + `"`
 }
 
+// chargingIDs merges the identifiers that share a value: TS 24.229 §7.2A.5.2.7 and §7.2A.5.2.10 have one item
+// per EPS bearer or PDU session, while identifiers can come per QoS flow (TS 29.514 §5.6.2.32). An empty
+// identifier has no 1*HEXDIG encoding and is dropped.
+func chargingIDs(ids []policy.ChargingID) []policy.ChargingID {
+	var out []policy.ChargingID
+
+	index := make(map[string]int)
+
+	for _, id := range ids {
+		if len(id.Value) == 0 {
+			continue
+		}
+
+		if i, ok := index[string(id.Value)]; ok {
+			out[i].Flows = append(out[i].Flows, id.Flows...)
+			continue
+		}
+
+		index[string(id.Value)] = len(out)
+		out = append(out, policy.ChargingID{Value: id.Value, Flows: slices.Clone(id.Flows)})
+	}
+
+	return out
+}
+
 func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {
 	var tuples []string
+
+	seen := make(map[string]bool)
 
 	for _, f := range fs {
 		ns := f.FlowNumbers
@@ -655,7 +692,11 @@ func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {
 		}
 
 		for _, n := range ns {
-			tuples = append(tuples, "{"+strconv.FormatUint(uint64(f.Component), 10)+","+strconv.FormatUint(uint64(n), 10)+"}")
+			t := "{" + strconv.FormatUint(uint64(f.Component), 10) + "," + strconv.FormatUint(uint64(n), 10) + "}"
+			if !seen[t] {
+				seen[t] = true
+				tuples = append(tuples, t)
+			}
 		}
 	}
 
@@ -664,6 +705,21 @@ func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {
 	}
 
 	return "(" + strings.Join(tuples, ",") + ")"
+}
+
+// chargingLocked keeps the access network charging information of an answer or a notification. One that does
+// not say which IP-CAN it comes from keeps the one reported before: IP-CAN-Type is optional in the RAR and in an
+// update AAA (TS 29.214 §5.6.3, §4.4.2).
+func (cr *callPolicy) chargingLocked(c policy.Charging) {
+	if c.Access == policy.AccessUnknown {
+		c.Access = cr.access
+	} else {
+		cr.access = c.Access
+	}
+
+	if info := chargingInfo(c, cr.flows); info != "" {
+		cr.charging = info
+	}
 }
 
 // TS 24.229 §5.2.7.2, §5.2.7.3
@@ -702,11 +758,7 @@ func (p *PCSCF) callNotify(s *policySession, e policy.Event) {
 
 	if e.Charging != nil {
 		cr.mu.Lock()
-
-		if info := chargingInfo(*e.Charging, cr.flows); info != "" {
-			cr.charging = info
-		}
-
+		cr.chargingLocked(*e.Charging)
 		cr.mu.Unlock()
 	}
 

@@ -8,11 +8,13 @@ import (
 	"strings"
 )
 
-// TS 29.514 §5.3.1
+// TS 29.514 §5.3.1, §5.5.2.2, §5.5.3.2. The PCF notifies at {notifUri}/notify and {notifUri}/terminate.
 const (
-	appSessionsPath    = "/npcf-policyauthorization/v1/app-sessions"
-	eventsSubscription = "events-subscription"
-	deleteOperation    = "delete"
+	AppSessionsPath           = "/npcf-policyauthorization/v1/app-sessions"
+	EventsSubscriptionSegment = "events-subscription"
+	DeleteSegment             = "delete"
+	NotifySegment             = "notify"
+	TerminateSegment          = "terminate"
 )
 
 // TS 29.514 §5.2.2.2

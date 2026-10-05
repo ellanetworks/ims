@@ -5,74 +5,115 @@ import (
 	"testing"
 )
 
-func audio(port string, rtcp bool, bw BitRate) MediaComponent {
+func audio(rtcp bool, bw BitRate) MediaComponent {
 	c := MediaComponent{
 		MedCompN: 1, MedType: MediaAudio, FStatus: FlowEnabled, MarBwUl: &bw, MarBwDl: &bw,
-		Codecs: []CodecData{"uplink\noffer\nm=audio " + port + " RTP/AVP 116\r\n"},
+		Codecs: []CodecData{"uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"},
 		MedSubComps: map[string]MediaSubComponent{
-			"1": {FNum: 1, FDescs: []FlowDescription{"permit in 17 from 10.45.0.2 " + port + " to any"}},
+			"1": {FNum: 1, FDescs: []FlowDescription{"permit in 17 from 10.45.0.2 49000 to any"}},
 		},
 	}
 
 	if rtcp {
-		c.MedSubComps["2"] = MediaSubComponent{FNum: 2, FlowUsage: FlowUsageRTCP}
+		c.MedSubComps["2"] = MediaSubComponent{FNum: 2, FlowUsage: FlowUsageRTCP, FDescs: []FlowDescription{"permit in 17 from any to any"}}
 	}
 
 	return c
 }
 
+const audio49000 = `{"codecs":["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"],"fStatus":"ENABLED","marBwDl":"64000 bps",` +
+	`"marBwUl":"64000 bps","medCompN":1,"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 49000 to any"],"fNum":1},` +
+	`"2":{"fDescs":["permit in 17 from any to any"],"fNum":2,"flowUsage":"RTCP"}},"medType":"AUDIO"}`
+
 func TestNewPatch(t *testing.T) {
 	events := &EventsSubscReqData{Events: []AfEventSubscription{{Event: EventChargingCorrelation}}, NotifURI: "http://ims/n"}
 	base := &AppSessionContextUpdateData{
-		AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio("49000", true, 64000)},
+		AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio(true, 64000)},
+	}
+
+	with := func(edit func(*AppSessionContextUpdateData)) *AppSessionContextUpdateData {
+		next := *base
+		next.MedComponents = map[string]MediaComponent{"1": audio(true, 64000)}
+		edit(&next)
+
+		return &next
 	}
 
 	for name, tc := range map[string]struct {
 		prev, next *AppSessionContextUpdateData
 		want       string
+		// The PCF ends with less than next: what cannot be removed stays (TS 29.501 §5.3.8.2).
+		kept string
 	}{
 		"no previous": {
-			nil, &AppSessionContextUpdateData{MedComponents: map[string]MediaComponent{"1": {MedCompN: 1, MedType: MediaAudio}}},
-			`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medType":"AUDIO"}}}}`,
+			prev: nil, next: &AppSessionContextUpdateData{MedComponents: map[string]MediaComponent{"1": {MedCompN: 1, MedType: MediaAudio}}},
+			want: `{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medType":"AUDIO"}}}}`,
 		},
-		"unchanged": {base, base, `{}`},
-		"bandwidth keeps medCompN": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio("49000", true, 128000)},
-			},
-			`{"ascReqData":{"medComponents":{"1":{"marBwDl":"128000 bps","marBwUl":"128000 bps","medCompN":1}}}}`,
+		"unchanged": {prev: base, next: base, want: `{}`},
+		"bandwidth resends the component": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				n.MedComponents["1"] = audio(true, 128000)
+			}),
+			want: `{"ascReqData":{"medComponents":{"1":` +
+				`{"codecs":["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"],"fStatus":"ENABLED","marBwDl":"128000 bps",` +
+				`"marBwUl":"128000 bps","medCompN":1,"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 49000 to any"],"fNum":1},` +
+				`"2":{"fDescs":["permit in 17 from any to any"],"fNum":2,"flowUsage":"RTCP"}},"medType":"AUDIO"}}}}`,
 		},
-		"port replaces the flows, keeps fNum": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio("50000", true, 64000)},
-			},
-			`{"ascReqData":{"medComponents":{"1":{"codecs":["uplink\noffer\nm=audio 50000 RTP/AVP 116\r\n"],"medCompN":1,` +
-				`"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 50000 to any"],"fNum":1}}}}}}`,
+		"sub-component and bandwidth removed": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				c := audio(false, 64000)
+				c.MarBwDl = nil
+				n.MedComponents["1"] = c
+			}),
+			want: `{"ascReqData":{"medComponents":{"1":` +
+				`{"codecs":["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"],"fStatus":"ENABLED","marBwDl":null,` +
+				`"marBwUl":"64000 bps","medCompN":1,"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 49000 to any"],"fNum":1},` +
+				`"2":null},"medType":"AUDIO"}}}}`,
 		},
-		"sub-component removed": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio("49000", false, 64000)},
-			},
-			`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medSubComps":{"2":null}}}}}`,
+		"flow usage and flows dropped": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				c := audio(true, 64000)
+				c.MedSubComps["2"] = MediaSubComponent{FNum: 2}
+				n.MedComponents["1"] = c
+			}),
+			want: `{"ascReqData":{"medComponents":{"1":` +
+				`{"codecs":["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"],"fStatus":"ENABLED","marBwDl":"64000 bps",` +
+				`"marBwUl":"64000 bps","medCompN":1,"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 49000 to any"],"fNum":1},` +
+				`"2":{"fDescs":null,"fNum":2,"flowUsage":"NO_INFO"}},"medType":"AUDIO"}}}}`,
+			kept: "flowUsage",
+		},
+		"media line disabled keeps codecs and flows": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				n.MedComponents["1"] = MediaComponent{MedCompN: 1, MedType: MediaAudio, FStatus: FlowRemoved}
+			}),
+			want: `{"ascReqData":{"medComponents":{"1":{"fStatus":"REMOVED","marBwDl":null,"marBwUl":null,"medCompN":1,` +
+				`"medSubComps":{"1":null,"2":null},"medType":"AUDIO"}}}}`,
+			kept: "codecs",
 		},
 		"component removed, another added, subscription ended": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", MedComponents: map[string]MediaComponent{"2": {MedCompN: 2, MedType: MediaVideo}},
-			},
-			`{"ascReqData":{"evSubsc":null,"medComponents":{"1":null,"2":{"medCompN":2,"medType":"VIDEO"}}}}`,
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				n.EvSubsc = nil
+				n.MedComponents = map[string]MediaComponent{"2": {MedCompN: 2, MedType: MediaVideo}}
+			}),
+			want: `{"ascReqData":{"evSubsc":null,"medComponents":{"1":null,"2":{"medCompN":2,"medType":"VIDEO"}}}}`,
 		},
-		"notification URI keeps events": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", EvSubsc: &EventsSubscReqData{Events: events.Events, NotifURI: "http://ims/m"},
-				MedComponents: base.MedComponents,
-			},
-			`{"ascReqData":{"evSubsc":{"events":[{"event":"CHARGING_CORRELATION"}],"notifUri":"http://ims/m"}}}`,
+		"notification URI resends the subscription": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) {
+				n.EvSubsc = &EventsSubscReqData{Events: events.Events, NotifURI: "http://ims/m"}
+			}),
+			want: `{"ascReqData":{"evSubsc":{"events":[{"event":"CHARGING_CORRELATION"}],"notifUri":"http://ims/m"}}}`,
 		},
-		"forking": {
-			base, &AppSessionContextUpdateData{
-				AFAppID: "app", EvSubsc: events, MedComponents: base.MedComponents, SipForkInd: ForkingSeveralDialogues,
-			},
-			`{"ascReqData":{"sipForkInd":"SEVERAL_DIALOGUES"}}`,
+		"forking resends every component": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
+			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":"SEVERAL_DIALOGUES"}}`,
+		},
+		"forking ends": {
+			prev: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }), next: base,
+			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":null}}`,
+		},
+		"application identifier cannot be removed": {
+			prev: base, next: with(func(n *AppSessionContextUpdateData) { n.AFAppID = "" }),
+			want: `{}`, kept: "afAppId",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -89,70 +130,69 @@ func TestNewPatch(t *testing.T) {
 				t.Fatalf("Empty() = %t for %s", p.Empty(), p)
 			}
 
+			if err := CheckPatch(p.body); err != nil {
+				t.Fatalf("%s: %v", p, err)
+			}
+
+			if tc.prev == nil || tc.kept != "" {
+				return
+			}
+
 			// RFC 7396 §2: applying the patch to prev gives next.
-			if tc.prev != nil {
-				var prev, patch, next any
+			prev, _ := json.Marshal(tc.prev)
 
-				mustRoundTrip(t, tc.prev, &prev)
-				mustRoundTrip(t, p, &patch)
-				mustRoundTrip(t, tc.next, &next)
+			var patch struct {
+				AscReqData json.RawMessage `json:"ascReqData"`
+			}
 
-				got := prev
-				if d, ok := patch.(map[string]any)["ascReqData"]; ok {
-					got = mergePatch(prev, d)
-				}
+			_ = json.Unmarshal(p.body, &patch)
 
-				if g, w := mustJSON(t, got), mustJSON(t, next); g != w {
-					t.Fatalf("applied patch gives\n%s\nwant\n%s", g, w)
+			got := prev
+			if patch.AscReqData != nil {
+				if got, err = ApplyPatch(prev, patch.AscReqData); err != nil {
+					t.Fatal(err)
 				}
 			}
+
+			want, _ := json.Marshal(tc.next)
+			sameJSON(t, got, want)
 		})
 	}
 }
 
-func mustRoundTrip(t *testing.T, v, out any) {
-	t.Helper()
-
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := json.Unmarshal(b, out); err != nil {
-		t.Fatal(err)
+func TestNewPatchWithoutEvents(t *testing.T) {
+	if _, err := NewPatch(nil, &AppSessionContextUpdateData{EvSubsc: &EventsSubscReqData{}}); err == nil {
+		t.Fatal("an events subscription without events accepted")
 	}
 }
 
-func mustJSON(t *testing.T, v any) string {
-	t.Helper()
-
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return string(b)
-}
-
-// mergePatch is RFC 7396 §2 MergePatch, as the PCF applies it.
-func mergePatch(target, patch any) any {
-	p, ok := patch.(map[string]any)
-	if !ok {
-		return patch
-	}
-
-	t, ok := target.(map[string]any)
-	if !ok {
-		t = map[string]any{}
-	}
-
-	for k, v := range p {
-		if v == nil {
-			delete(t, k)
-		} else {
-			t[k] = mergePatch(t[k], v)
+// TS 29.501 §5.3.8.2, TS 29.514 §5.6.2.25-27
+func TestCheckPatch(t *testing.T) {
+	for body, ok := range map[string]bool{
+		`{}`: true,
+		`{"ascReqData":{"evSubsc":null,"sipForkInd":null,"medComponents":{"1":null}}}`:                       true,
+		`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"rrBw":null,"medSubComps":{"2":null}}}}}`:         true,
+		`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medSubComps":{"2":{"fNum":2,"fDescs":null}}}}}}`: true,
+		`{"ascReqData":{"afAppId":null}}`:                                                                false,
+		`{"ascReqData":{"medComponents":null}}`:                                                          false,
+		`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"codecs":null}}}}`:                            false,
+		`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medSubComps":null}}}}`:                       false,
+		`{"ascReqData":{"medComponents":{"1":{"marBwUl":"1 bps"}}}}`:                                     false,
+		`{"ascReqData":{"medComponents":{"1":{"medCompN":1,"medSubComps":{"2":{"flowUsage":"RTCP"}}}}}}`: false,
+		`{"ascReqData":{"evSubsc":{"notifUri":"http://ims/n"}}}`:                                         false,
+		`{"ascReqData":{"evSubsc":{"events":null}}}`:                                                     false,
+	} {
+		if err := CheckPatch([]byte(body)); (err == nil) != ok {
+			t.Errorf("%s: %v, want ok %t", body, err, ok)
 		}
 	}
+}
 
-	return t
+func TestApplyPatch(t *testing.T) {
+	got, err := ApplyPatch([]byte(`{"a":{"b":1,"c":[1]},"d":2}`), []byte(`{"a":{"b":null,"c":[2],"e":{"f":null}},"d":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sameJSON(t, got, []byte(`{"a":{"c":[2],"e":{}}}`))
 }

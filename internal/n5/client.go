@@ -87,10 +87,14 @@ func New(cfg Config) (*Client, error) {
 }
 
 // RFC 9110 §15.4: follow 307 and 308, which repeat the request, and nothing that turns it into a GET. A 303 to
-// a create is an answer, not a redirection (TS 29.514 §5.3.2.3.1).
+// a create is an answer, not a redirection (TS 29.514 §5.3.2.3.1). Redirections stay on cleartext HTTP/2.
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if s := req.Response.StatusCode; s != http.StatusTemporaryRedirect && s != http.StatusPermanentRedirect {
 		return http.ErrUseLastResponse
+	}
+
+	if req.URL.Scheme != "http" {
+		return fmt.Errorf("redirection to %q: not http", req.URL)
 	}
 
 	if len(via) >= maxRedirects {
@@ -105,17 +109,27 @@ func (c *Client) Close() {
 	c.transport.CloseIdleConnections()
 }
 
-// Created is the result of a create. URI is the Individual Application Session Context, the target of later
-// modifications and of the deletion. Context is the PCF's representation of it, absent when Existing.
+// Result is what the PCF answered to an operation that succeeded. A body that cannot be read leaves BodyErr set
+// rather than failing the operation, which the PCF has carried out (TS 29.500 §5.2.7.3).
+type Result struct {
+	// URI is the Individual Application Session Context: its Location after a create, and after a modification
+	// the URI a permanent redirection moved it to (TS 29.500 §6.10.9).
+	URI string
+	// Features are the features negotiated at creation (TS 29.514 §5.8).
+	Features SupportedFeatures
+	// Notification is the evsNotif of the response, if any.
+	Notification *EventsNotification
+	BodyErr      error
+}
+
+// Created is the result of a create. Existing means the PCF already held an equal context (303), and URI is
+// that context.
 type Created struct {
-	URI      string
-	Context  *AppSessionContext
+	Result
 	Existing bool
 }
 
-// Create provisions service information in a new application session context (TS 29.514 §4.2.2.2). When the
-// PCF created the context but answered with a body that cannot be read, the error wraps ErrMalformedResponse
-// and Created.URI is set, so that the context can be deleted.
+// Create provisions service information in a new application session context (TS 29.514 §4.2.2.2).
 func (c *Client) Create(ctx context.Context, asc *AppSessionContext) (Created, error) {
 	if err := validateCreate(asc); err != nil {
 		return Created{}, err
@@ -126,14 +140,12 @@ func (c *Client) Create(ctx context.Context, asc *AppSessionContext) (Created, e
 		return Created{}, err
 	}
 
-	resp, err := c.do(ctx, OpCreate, http.MethodPost, c.root.String()+appSessionsPath, ContentJSON, body)
+	resp, err := c.do(ctx, OpCreate, http.MethodPost, c.root.String()+AppSessionsPath, ContentJSON, body)
 	if err != nil {
 		return Created{}, err
 	}
 
-	switch resp.status {
-	case http.StatusCreated, http.StatusSeeOther:
-	default:
+	if !resp.success() && resp.status != http.StatusSeeOther {
 		return Created{}, resp.err()
 	}
 
@@ -142,44 +154,46 @@ func (c *Client) Create(ctx context.Context, asc *AppSessionContext) (Created, e
 		return Created{}, resp.malformed(err)
 	}
 
-	out := Created{URI: uri, Existing: resp.status == http.StatusSeeOther}
-	if out.Existing {
-		return out, nil
+	if resp.status == http.StatusSeeOther {
+		return Created{Result: Result{URI: uri}, Existing: true}, nil
 	}
 
-	out.Context = new(AppSessionContext)
-	if err := resp.decode(out.Context); err != nil {
-		out.Context = nil
-		return out, err
-	}
+	out := Created{Result: resp.result(true)}
+	out.URI = uri
 
 	return out, nil
 }
 
-// Modify patches the service information of an application session context (TS 29.514 §4.2.3.2). The PCF may
-// answer with the updated context, or with nothing.
-func (c *Client) Modify(ctx context.Context, uri string, p Patch) (*AppSessionContext, error) {
+// Modify patches the service information of an application session context (TS 29.514 §4.2.3.2).
+func (c *Client) Modify(ctx context.Context, uri string, p Patch) (Result, error) {
 	target, err := c.resource(uri, "")
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	body, _ := p.MarshalJSON()
 
 	resp, err := c.do(ctx, OpModify, http.MethodPatch, target, ContentMergePatch, body)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
-	return resp.context()
+	if !resp.success() {
+		return Result{}, resp.err()
+	}
+
+	out := resp.result(false)
+	out.URI = resp.moved.String()
+
+	return out, nil
 }
 
 // Delete ends an application session context (TS 29.514 §4.2.4.2). With ev, the PCF reports those events in
 // the response.
-func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData) (*AppSessionContext, error) {
-	target, err := c.resource(uri, deleteOperation)
+func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData) (Result, error) {
+	target, err := c.resource(uri, DeleteSegment)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	var (
@@ -188,8 +202,12 @@ func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData)
 	)
 
 	if ev != nil {
+		if len(ev.Events) == 0 {
+			return Result{}, errors.New("delete: events subscription without events")
+		}
+
 		if body, err = json.Marshal(ev); err != nil {
-			return nil, err
+			return Result{}, err
 		}
 
 		contentType = ContentJSON
@@ -197,13 +215,18 @@ func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData)
 
 	resp, err := c.do(ctx, OpDelete, http.MethodPost, target, contentType, body)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
-	return resp.context()
+	if !resp.success() {
+		return Result{}, resp.err()
+	}
+
+	return resp.result(false), nil
 }
 
-// TS 29.514 §5.6.2.3: notifUri and suppFeat are required, and exactly one UE address.
+// TS 29.514 §5.6.2.3: notifUri and suppFeat are required, and exactly one UE address; §4.2.2.2: an events
+// subscription names its events and its notification URI.
 func validateCreate(asc *AppSessionContext) error {
 	if asc == nil || asc.AscReqData == nil {
 		return errors.New("create: no ascReqData")
@@ -220,20 +243,25 @@ func validateCreate(asc *AppSessionContext) error {
 		return errors.New("create: want one of ueIpv4 and ueIpv6")
 	case r.UEIPv4.IsValid() && !r.UEIPv4.Is4(), r.UEIPv6.IsValid() && (!r.UEIPv6.Is6() || r.UEIPv6.Is4In6() || r.UEIPv6.Zone() != ""):
 		return errors.New("create: UE address of the wrong family")
-	}
-
-	if r.EvSubsc != nil && len(r.EvSubsc.Events) == 0 {
+	case r.EvSubsc != nil && len(r.EvSubsc.Events) == 0:
 		return errors.New("create: events subscription without events")
+	case r.EvSubsc != nil && r.EvSubsc.NotifURI == "":
+		return errors.New("create: events subscription without notifUri")
 	}
 
 	return nil
 }
 
-// resource returns the URI of an application session context, or of one of its custom operations. A relative
-// URI is taken from the API root's authority.
+// resource returns the URI of an application session context, or of one of its custom operations. It takes an
+// absolute URI, or an absolute path on the PCF's authority.
 func (c *Client) resource(uri, operation string) (string, error) {
-	u, err := c.root.Parse(uri)
-	if err != nil || u.Scheme != "http" || u.Host == "" {
+	ref, err := url.Parse(uri)
+	if err != nil || !ref.IsAbs() && !strings.HasPrefix(uri, "/") {
+		return "", fmt.Errorf("invalid application session context URI %q", uri)
+	}
+
+	u := c.root.ResolveReference(ref)
+	if u.Scheme != "http" || u.Host == "" {
 		return "", fmt.Errorf("invalid application session context URI %q", uri)
 	}
 
@@ -250,7 +278,10 @@ type response struct {
 	header http.Header
 	body   []byte
 	url    *url.URL
+	moved  *url.URL
 	now    time.Time
+
+	bodyErr error
 }
 
 func (c *Client) do(ctx context.Context, op Op, method, target, contentType string, body []byte) (*response, error) {
@@ -268,6 +299,11 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// A redirection that was not followed still answered the request.
+		if resp != nil {
+			return nil, &Error{Op: op, Status: resp.StatusCode, Err: err}
+		}
+
 		return nil, transportError(op, err)
 	}
 
@@ -278,11 +314,16 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 		err = fmt.Errorf("response body over %d bytes", maxBody)
 	}
 
-	r := &response{op: op, status: resp.StatusCode, header: resp.Header, body: b, url: resp.Request.URL, now: c.now()}
+	r := &response{
+		op: op, status: resp.StatusCode, header: resp.Header, body: b, url: resp.Request.URL,
+		moved: permanentURL(resp.Request), now: c.now(),
+	}
 
 	if err != nil {
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil, r.malformed(err)
+		if r.success() {
+			// The operation succeeded; only its body is lost.
+			r.body, r.bodyErr = nil, err
+			return r, nil
 		}
 
 		return nil, &Error{Op: op, Status: resp.StatusCode, Err: err}
@@ -291,37 +332,40 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 	return r, nil
 }
 
-// context reads the response to a modification or a deletion: 200 with the context, or 204.
-func (r *response) context() (*AppSessionContext, error) {
-	switch r.status {
-	case http.StatusOK:
-		asc := new(AppSessionContext)
-		if err := r.decode(asc); err != nil {
-			return nil, err
+// permanentURL returns the URI a request ended at, following only permanent redirections (RFC 9110 §15.4.9).
+func permanentURL(final *http.Request) *url.URL {
+	var hops []*http.Request
+
+	for r := final; r != nil; {
+		hops = append(hops, r)
+
+		if r.Response == nil {
+			break
 		}
 
-		return asc, nil
-	case http.StatusNoContent:
-		return nil, nil
+		r = r.Response.Request
 	}
 
-	return nil, r.err()
+	u := hops[len(hops)-1].URL
+
+	for i := len(hops) - 2; i >= 0 && hops[i].Response.StatusCode == http.StatusPermanentRedirect; i-- {
+		u = hops[i].URL
+	}
+
+	return u
 }
 
-// err is the error for a status the operation does not succeed with (TS 29.500 §5.2.7, TS 29.514 §5.7). A
-// success status the operation does not define is a malformed response.
-func (r *response) err() error {
-	if r.status >= 200 && r.status < 300 {
-		return r.malformed(fmt.Errorf("unexpected status %d", r.status))
-	}
+// TS 29.500 Table 5.2.7.1-1 NOTE 2: a 2xx the operation does not define counts as its 200, or its 204 if empty.
+func (r *response) success() bool {
+	return r.status >= 200 && r.status < 300
+}
 
+// err is the error for a status the operation does not succeed with (TS 29.500 §5.2.7, TS 29.514 §5.7).
+func (r *response) err() error {
 	e := &Error{Op: r.op, Status: r.status, RetryAfter: retryAfter(r.header, r.now)}
 
 	if len(r.body) > 0 && mediaType(r.header) != "" {
-		var p ProblemDetails
-		if json.Unmarshal(r.body, &p) == nil {
-			e.Problem = &p
-		}
+		e.Problem = problemDetails(r.body)
 	}
 
 	if r.status >= 300 && r.status < 400 {
@@ -331,12 +375,39 @@ func (r *response) err() error {
 	return e
 }
 
+// problemDetails reads what it can of a ProblemDetails, so that one bad attribute does not hide the cause.
+func problemDetails(b []byte) *ProblemDetails {
+	var p ProblemDetails
+	if json.Unmarshal(b, &p) == nil {
+		return &p
+	}
+
+	var parts map[string]json.RawMessage
+	if json.Unmarshal(b, &parts) != nil {
+		return nil
+	}
+
+	p = ProblemDetails{}
+
+	for k, v := range map[string]any{
+		"type": &p.Type, "title": &p.Title, "status": &p.Status, "detail": &p.Detail, "instance": &p.Instance,
+		"cause": &p.Cause,
+	} {
+		if raw, ok := parts[k]; ok {
+			_ = json.Unmarshal(raw, v)
+		}
+	}
+
+	return &p
+}
+
 func (r *response) malformed(err error) error {
 	return &Error{Op: r.op, Status: r.status, Err: fmt.Errorf("%w: %w", ErrMalformedResponse, err)}
 }
 
-// location returns the Individual Application Session Context the Location header points to. TS 29.514
-// §5.3.2.3.1 also allows the URI of its events subscription, which stands for the same context.
+// location returns the Individual Application Session Context the Location header points to,
+// {apiRoot}/npcf-policyauthorization/v1/app-sessions/{appSessionId} (TS 29.514 §5.3.3.2). The OpenAPI
+// description of the 201 also allows the URI of its events subscription, which stands for the same context.
 func (r *response) location() (string, error) {
 	loc := r.header.Get("Location")
 	if loc == "" {
@@ -348,32 +419,112 @@ func (r *response) location() (string, error) {
 		return "", fmt.Errorf("invalid Location %q", loc)
 	}
 
-	u.Path = strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), "/"+eventsSubscription)
-	u.RawPath = ""
+	u.RawQuery, u.Fragment, u.RawFragment = "", "", ""
 
-	// TS 29.514 §5.3.3.2: {apiRoot}/npcf-policyauthorization/v1/app-sessions/{appSessionId}
-	if dir, id := path.Split(u.Path); id == "" || !strings.HasSuffix(dir, appSessionsPath+"/") {
+	p := strings.TrimSuffix(strings.TrimSuffix(u.EscapedPath(), "/"), "/"+EventsSubscriptionSegment)
+
+	if dir, id := path.Split(p); id == "" || !strings.HasSuffix(dir, AppSessionsPath+"/") {
 		return "", fmt.Errorf("location %q is not an application session context", loc)
 	}
+
+	if u.Path, err = url.PathUnescape(p); err != nil {
+		return "", fmt.Errorf("invalid Location %q", loc)
+	}
+
+	u.RawPath = p
 
 	return u.String(), nil
 }
 
-// decode reads the JSON body into v (TS 29.514 §5.2.2.2).
-func (r *response) decode(v any) error {
+// result reads what the client uses from an AppSessionContext body (TS 29.514 §5.2.2.2): the events reported
+// and, after a create, the negotiated features.
+func (r *response) result(create bool) Result {
+	var out Result
+
+	if r.bodyErr != nil {
+		out.BodyErr = fmt.Errorf("%w: %w", ErrMalformedResponse, r.bodyErr)
+		return out
+	}
+
 	if len(r.body) == 0 {
-		return r.malformed(errors.New("no body"))
+		if r.status == http.StatusOK || r.status == http.StatusCreated {
+			out.BodyErr = fmt.Errorf("%w: no body", ErrMalformedResponse)
+		}
+
+		return out
 	}
 
 	if t := mediaType(r.header); t != ContentJSON {
-		return r.malformed(fmt.Errorf("content type %q", r.header.Get("Content-Type")))
+		out.BodyErr = fmt.Errorf("%w: content type %q", ErrMalformedResponse, r.header.Get("Content-Type"))
+		return out
 	}
 
-	if err := json.Unmarshal(r.body, v); err != nil {
-		return r.malformed(err)
+	var body struct {
+		AscRespData json.RawMessage `json:"ascRespData"`
+		EvsNotif    json.RawMessage `json:"evsNotif"`
 	}
 
-	return nil
+	if err := json.Unmarshal(r.body, &body); err != nil {
+		out.BodyErr = fmt.Errorf("%w: %w", ErrMalformedResponse, err)
+		return out
+	}
+
+	var errs []error
+
+	if body.EvsNotif != nil {
+		var n EventsNotification
+
+		if err := json.Unmarshal(body.EvsNotif, &n); err != nil {
+			errs = append(errs, fmt.Errorf("evsNotif: %w", err))
+		} else {
+			out.Notification = &n
+		}
+	}
+
+	if create {
+		f, err := features(body.AscRespData)
+		if err != nil {
+			errs = append(errs, err)
+		}
+
+		out.Features = f
+	}
+
+	if len(errs) > 0 {
+		out.BodyErr = fmt.Errorf("%w: %w", ErrMalformedResponse, errors.Join(errs...))
+	}
+
+	return out
+}
+
+// features returns the features the PCF negotiated, in ascRespData.suppFeat (TS 29.514 §5.8).
+func features(resp json.RawMessage) (SupportedFeatures, error) {
+	f, err := suppFeat("ascRespData", resp)
+	if err != nil || f == nil {
+		return "", err
+	}
+
+	return *f, nil
+}
+
+func suppFeat(name string, raw json.RawMessage) (*SupportedFeatures, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	var v struct {
+		SuppFeat *SupportedFeatures `json:"suppFeat"`
+	}
+
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+
+	if v.SuppFeat != nil && !v.SuppFeat.Valid() {
+		return nil, fmt.Errorf("%s.suppFeat %q: invalid", name, string(*v.SuppFeat))
+	}
+
+	return v.SuppFeat, nil
 }
 
 // mediaType returns the JSON media type of the body, if it has one.
