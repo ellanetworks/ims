@@ -2,6 +2,7 @@ package n5
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,12 @@ func TestNewPatch(t *testing.T) {
 			prev: base, next: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
 			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":"SEVERAL_DIALOGUES"}}`,
 		},
+		// Annex B.3.1: every update within the forked early dialogues says SEVERAL_DIALOGUES.
+		"forking goes on": {
+			prev: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
+			next: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
+			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":"SEVERAL_DIALOGUES"}}`,
+		},
 		"forking ends": {
 			prev: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }), next: base,
 			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":null}}`,
@@ -157,6 +164,57 @@ func TestNewPatch(t *testing.T) {
 			want, _ := json.Marshal(tc.next)
 			sameJSON(t, got, want)
 		})
+	}
+}
+
+// After an unanswered PATCH, the PCF holds the state before or after it: the patch fits both.
+func TestNewResyncPatch(t *testing.T) {
+	events := &EventsSubscReqData{Events: []AfEventSubscription{{Event: EventChargingCorrelation}}, NotifURI: "http://ims/n"}
+	before := &AppSessionContextUpdateData{AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio(false, 64000)}}
+	tried := &AppSessionContextUpdateData{
+		AFAppID: "app", EvSubsc: events, SipForkInd: ForkingSeveralDialogues,
+		MedComponents: map[string]MediaComponent{"1": audio(true, 64000), "2": {MedCompN: 2, MedType: MediaVideo}},
+	}
+	next := &AppSessionContextUpdateData{AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio(false, 64000)}}
+
+	p, err := NewResyncPatch(next, tried, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"ascReqData":{"afAppId":"app","evSubsc":{"events":[{"event":"CHARGING_CORRELATION"}],"notifUri":"http://ims/n"},` +
+		`"medComponents":{"1":{"codecs":["uplink\noffer\nm=audio 49000 RTP/AVP 116\r\n"],"fStatus":"ENABLED","marBwDl":"64000 bps",` +
+		`"marBwUl":"64000 bps","medCompN":1,"medSubComps":{"1":{"fDescs":["permit in 17 from 10.45.0.2 49000 to any"],"fNum":1},` +
+		`"2":null},"medType":"AUDIO"},"2":null},"sipForkInd":null}}`
+	if p.String() != want {
+		t.Fatalf("patch\n%s\nwant\n%s", p, want)
+	}
+
+	if err := CheckPatch(p.body); err != nil {
+		t.Fatal(err)
+	}
+
+	var body struct {
+		AscReqData json.RawMessage `json:"ascReqData"`
+	}
+
+	_ = json.Unmarshal(p.body, &body)
+
+	for _, held := range []*AppSessionContextUpdateData{before, tried} {
+		doc, _ := json.Marshal(held)
+
+		got, err := ApplyPatch(doc, body.AscReqData)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		w, _ := json.Marshal(next)
+		sameJSON(t, got, w)
+	}
+
+	// Nothing held: next in full.
+	if p, err := NewResyncPatch(next); err != nil || !strings.Contains(p.String(), `"afAppId":"app"`) {
+		t.Fatalf("NewResyncPatch(next) = %s, %v", p, err)
 	}
 }
 

@@ -549,7 +549,8 @@ func (p *PCSCF) callEnded(c *call) {
 }
 
 func (c *policyClient) callSession(cr *callPolicy) *policySession {
-	s := &policySession{id: c.cfg.Backend.NewSessionID(), key: cr.key, call: cr}
+	b := c.resolve(cr.key.ue)
+	s := &policySession{id: b.NewSessionID(), key: cr.key, call: cr, backend: b}
 
 	c.mu.Lock()
 	c.sessions[s.id] = s
@@ -591,7 +592,7 @@ func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Gra
 	ctx, cancel := c.deadline(0)
 	defer cancel()
 
-	g, err := c.cfg.Backend.Authorize(ctx, s.id, s.ref, r)
+	g, err := s.backend.Authorize(ctx, s.id, s.ref, r)
 
 	if retry := policy.RetryAfter(err); retry > 0 {
 		c.mu.Lock()

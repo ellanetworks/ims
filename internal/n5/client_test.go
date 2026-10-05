@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -655,63 +654,93 @@ func TestConfig(t *testing.T) {
 	}
 }
 
-// Bodies as the Open5GS PCF and its test AF build them (testdata/README.md).
+// Bodies captured between the P-CSCF and the Open5GS PCF (testdata/README.md).
 func TestOpen5GS(t *testing.T) {
+	const location = "http://10.80.0.10:7777/npcf-policyauthorization/v1/app-sessions/3"
+
 	var req AppSessionContext
 	if err := json.Unmarshal(fixture(t, "open5gs/create_request.json"), &req); err != nil {
 		t.Fatal(err)
 	}
 
 	r := req.AscReqData
-	if r.UEIPv4 != netip.MustParseAddr("10.45.0.2") || r.SuppFeat != "12" || len(r.EvSubsc.Events) != 2 ||
-		r.EvSubsc.Events[1].NotifMethod != NotifOneTime || *r.MedComponents["1"].MarBwUl != 96000 ||
+	if err := validateCreate(&req); err != nil || r.UEIPv4 != netip.MustParseAddr("10.46.0.250") || r.SuppFeat != "8000010" ||
+		len(r.EvSubsc.Events) != 1 || *r.MedComponents["1"].MarBwUl != 41000 ||
 		r.MedComponents["1"].MedSubComps["2"].FlowUsage != FlowUsageRTCP {
-		t.Fatalf("create request decoded as %+v", r)
+		t.Fatalf("create request decoded as %+v, %v", r, err)
 	}
 
 	t.Run("create", func(t *testing.T) {
 		pcf := newPCF(t, reply(http.StatusCreated, ContentJSON, string(fixture(t, "open5gs/create_response.json")),
-			"Location", "http://127.0.0.13:7777/npcf-policyauthorization/v1/app-sessions/1"))
+			"Location", location))
 
-		got, err := pcf.client.Create(context.Background(), callContext())
+		got, err := pcf.client.Create(context.Background(), &req)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// No ascRespData, so no negotiated features (TS 29.514 §5.8).
-		if got.URI != "http://127.0.0.13:7777/npcf-policyauthorization/v1/app-sessions/1" || got.Features != "" ||
-			got.BodyErr != nil {
+		// No ascRespData, so no negotiated features (TS 29.514 §5.8): Open5GS narrows the echoed
+		// ascReqData.suppFeat instead.
+		if got.URI != location || got.Features != "" || got.BodyErr != nil {
 			t.Fatalf("created %+v", got)
 		}
 	})
 
 	t.Run("update", func(t *testing.T) {
+		patch := fixture(t, "open5gs/update_request.json")
+		if err := CheckPatch(patch); err != nil {
+			t.Fatalf("captured patch: %v", err)
+		}
+
+		var p AppSessionContextUpdateDataPatch
+		if err := json.Unmarshal(patch, &p); err != nil {
+			t.Fatal(err)
+		}
+
+		// Open5GS rebuilds a patched component from the patch: it came whole, with its medType.
+		if c := p.AscReqData.MedComponents["1"]; c.MedType != MediaAudio || len(c.MedSubComps) != 2 || len(c.Codecs) != 2 {
+			t.Fatalf("captured patch component %+v", c)
+		}
+
 		pcf := newPCF(t, reply(http.StatusOK, ContentJSON, string(fixture(t, "open5gs/update_response.json"))))
 
-		// Open5GS rebuilds a patched component from the patch: it must come whole, with its medType.
-		prev := callContext().AscReqData
-		next := &AppSessionContextUpdateData{AFAppID: prev.AFAppID, MedComponents: maps.Clone(prev.MedComponents)}
-		c := next.MedComponents["1"]
-		c.MarBwDl = ptr(BitRate(128000))
-		next.MedComponents["1"] = c
+		next := &AppSessionContextUpdateData{MedComponents: p.AscReqData.MedComponents}
 
-		patch, err := NewPatch(&AppSessionContextUpdateData{AFAppID: prev.AFAppID, MedComponents: prev.MedComponents}, next)
+		sent, err := NewPatch(nil, next)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		got, err := pcf.client.Modify(context.Background(), pcf.URL+"/npcf-policyauthorization/v1/app-sessions/1", patch)
+		got, err := pcf.client.Modify(context.Background(), pcf.URL+"/npcf-policyauthorization/v1/app-sessions/3", sent)
 		if err != nil || got.BodyErr != nil {
 			t.Fatalf("Modify = %+v, %v", got, err)
 		}
 
-		var sent AppSessionContextUpdateDataPatch
-		if err := json.Unmarshal(pcf.last(t).body, &sent); err != nil {
+		// The same service information gives the same patch as the one Open5GS took.
+		sameJSON(t, pcf.last(t).body, patch)
+	})
+
+	// TS 29.514 §4.2.6.7 leaves medType out of the signalling component; Open5GS requires it.
+	t.Run("signalling refused", func(t *testing.T) {
+		pcf := newPCF(t, reply(http.StatusBadRequest, ContentProblem, string(fixture(t, "open5gs/problem_signalling.json"))))
+
+		_, err := pcf.client.Create(context.Background(), signallingContext())
+
+		var e *Error
+		if !errors.As(err, &e) || e.Status != http.StatusBadRequest || e.Cause() != "" || e.Problem == nil ||
+			!strings.Contains(e.Problem.Title, "Media-Type is Required") {
+			t.Fatalf("Create = %v, want Open5GS's 400", err)
+		}
+	})
+
+	t.Run("terminate", func(t *testing.T) {
+		var ti TerminationInfo
+		if err := json.Unmarshal(fixture(t, "open5gs/terminate.json"), &ti); err != nil {
 			t.Fatal(err)
 		}
 
-		if sent.AscReqData == nil || !reflect.DeepEqual(sent.AscReqData.MedComponents["1"], c) {
-			t.Fatalf("patched component %+v, want %+v", sent.AscReqData, c)
+		if ti.TermCause != TerminationPDUSessionTermination || !strings.HasPrefix(ti.ResURI, "http://10.80.0.10:7777"+AppSessionsPath+"/") {
+			t.Fatalf("terminate %+v", ti)
 		}
 	})
 }

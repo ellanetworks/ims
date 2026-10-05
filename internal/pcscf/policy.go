@@ -37,8 +37,9 @@ type Policy struct {
 var _ policy.Sink = (*PCSCF)(nil)
 
 type policySession struct {
-	id  string
-	key regKey
+	id      string
+	key     regKey
+	backend policy.Backend
 
 	call    *callPolicy
 	pending atomic.Bool
@@ -166,7 +167,8 @@ func (c *policyClient) spawn(f func()) bool {
 }
 
 func (c *policyClient) begin(k regKey) *policySession {
-	s := &policySession{id: c.cfg.Backend.NewSessionID(), key: k}
+	b := c.resolve(k.ue)
+	s := &policySession{id: b.NewSessionID(), key: k, backend: b}
 	s.mu.Lock()
 
 	c.mu.Lock()
@@ -184,7 +186,7 @@ func (c *policyClient) track(id string, k regKey, ref string) *policySession {
 		return s
 	}
 
-	s := &policySession{id: id, key: k, ref: ref}
+	s := &policySession{id: id, key: k, ref: ref, backend: c.cfg.Backend}
 	c.sessions[id] = s
 
 	return s
@@ -208,6 +210,12 @@ func (c *policyClient) forget(s *policySession) {
 	}
 }
 
+// resolve returns the policy function that serves the UE's address, whatever its access. A session keeps the one
+// it was opened with. One is configured for now.
+func (c *policyClient) resolve(netip.Addr) policy.Backend {
+	return c.cfg.Backend
+}
+
 // serves reports whether a stored session was opened with this client's policy function. Endpoints are compared
 // without case, as rows stored before rxpolicy lower-cased its DiameterIdentity still are.
 func (c *policyClient) serves(p db.PolicySession) bool {
@@ -227,7 +235,7 @@ func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (str
 	ctx, cancel := c.deadline(wait)
 	defer cancel()
 
-	return c.cfg.Backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
+	return s.backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
 }
 
 // TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: retried until the policy function answers or the P-CSCF stops.
@@ -251,7 +259,7 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 		start := time.Now()
 
 		ctx, cancel := c.deadline(wait)
-		err := c.cfg.Backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
+		err := s.backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
 
 		cancel()
 
@@ -307,7 +315,7 @@ func (p *PCSCF) openSignalling(k regKey, wait time.Duration) {
 			return false
 		}
 
-		r.Policy = db.PolicySession{Endpoint: p.policy.cfg.Backend.Endpoint(), ID: s.id}
+		r.Policy = db.PolicySession{Endpoint: s.backend.Endpoint(), ID: s.id}
 
 		return true
 	})

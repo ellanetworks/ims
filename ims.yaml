@@ -22,6 +22,8 @@ pcscf:
     client_ports: [5064, 5065]
     integrity: [hmac-sha-1-96, hmac-md5-96]
     encryption: off
+  policy:
+    rx: pcrf
 icscf:
   port: 5070
 scscf:

@@ -41,7 +41,18 @@ const (
       applications: [rx]
 `
 
-	validDiameter = diameterIdentity + "  peers:\n" + hssPeer + pcrfPeer
+	validDiameter = diameterIdentity + "  peers:\n" + hssPeer
+
+	rxPolicy = "pcscf:\n  policy:\n    rx: pcrf\n"
+
+	n5Policy = `pcscf:
+  policy:
+    n5:
+      pcf_uri: http://10.0.0.13:7777
+      notify:
+        address: 10.0.0.5
+        port: 7778
+`
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -62,9 +73,10 @@ func TestLoad(t *testing.T) {
 		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n    international_prefix: \"011\"\n"+
 		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
 		"pcscf:\n  port: 5062\n  no_answer_timeout: 2m\n  media_loss_timeout: 7s\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
+		"  policy:\n    rx: pcrf\n"+
 		"icscf:\n  port: 5072\n"+
 		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
-		validDiameter))
+		validDiameter+pcrfPeer))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -93,7 +105,7 @@ func TestLoad(t *testing.T) {
 			ClientPorts: []int{5164, 5165},
 			Integrity:   []ipsec.Integrity{ipsec.HMACMD596},
 			Encryption:  ipsec.EncryptionPreferred,
-		}, NoAnswerTimeout: 2 * time.Minute, MediaLossTimeout: 7 * time.Second},
+		}, NoAnswerTimeout: 2 * time.Minute, MediaLossTimeout: 7 * time.Second, Policy: Policy{Rx: "pcrf"}},
 		ICSCF: ICSCF{Port: 5072},
 		SCSCF: SCSCF{
 			Port:         5082,
@@ -254,7 +266,7 @@ func TestLoadOnePeerServesCxAndRx(t *testing.T) {
       applications: [cx, rx]
 `
 
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+diameterIdentity+"  peers:\n"+core))
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+"pcscf:\n  policy:\n    rx: core\n"+diameterIdentity+"  peers:\n"+core))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -265,22 +277,46 @@ func TestLoadOnePeerServesCxAndRx(t *testing.T) {
 }
 
 func TestLoadRxPeer(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+rxPolicy+validDiameter+pcrfPeer))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if p, ok := cfg.Diameter.RxPeer(); !ok || p.ID != "pcrf" {
+	if p, ok := cfg.RxPeer(); !ok || p.ID != "pcrf" {
 		t.Fatalf("RxPeer = %+v, %v; want pcrf", p, ok)
 	}
 
-	cfg, err = Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+diameterIdentity+"  peers:\n"+hssPeer))
+	cfg, err = Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
 	if err != nil {
-		t.Fatalf("Load without an rx peer: %v", err)
+		t.Fatalf("Load without a policy function: %v", err)
 	}
 
-	if p, ok := cfg.Diameter.RxPeer(); ok {
-		t.Fatalf("RxPeer = %+v, want none", p)
+	if p, ok := cfg.RxPeer(); ok || cfg.PCSCF.Policy.N5 != nil {
+		t.Fatalf("RxPeer = %+v, N5 = %+v, want neither", p, cfg.PCSCF.Policy.N5)
+	}
+}
+
+func TestLoadN5(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+n5Policy+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := &N5{PCFURI: "http://10.0.0.13:7777", Notify: N5Notify{Address: netip.MustParseAddr("10.0.0.5"), Port: 7778}}
+	if !reflect.DeepEqual(cfg.PCSCF.Policy.N5, want) {
+		t.Fatalf("pcscf.policy.n5 = %+v, want %+v", cfg.PCSCF.Policy.N5, want)
+	}
+
+	if _, ok := cfg.RxPeer(); ok {
+		t.Fatal("RxPeer with N5")
+	}
+
+	if got := want.Notify.URI(); got != "http://10.0.0.5:7778" {
+		t.Fatalf("notify URI = %q", got)
+	}
+
+	if got := (N5Notify{Address: netip.MustParseAddr("2001:db8::5"), Port: 80}).URI(); got != "http://[2001:db8::5]:80" {
+		t.Fatalf("IPv6 notify URI = %q", got)
 	}
 }
 
@@ -453,6 +489,24 @@ func TestLoadInvalid(t *testing.T) {
 			"unknown application",
 			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "applications: [rx]", "applications: [rx, gx]", 1),
 			`diameter peer "pcrf": unknown application "gx"`,
+		},
+		{"rx peer not named", valid + validDiameter + pcrfPeer, `diameter peer "pcrf" serves rx, but pcscf.policy.rx does not name it`},
+		{"rx policy without its peer", valid + rxPolicy + validDiameter, `pcscf.policy.rx "pcrf" is not a diameter peer that serves rx`},
+		{"rx policy on a cx peer", valid + "pcscf:\n  policy:\n    rx: hss\n" + validDiameter, `pcscf.policy.rx "hss" is not a diameter peer that serves rx`},
+		{"rx and n5", valid + n5Policy + "    rx: pcrf\n" + validDiameter + pcrfPeer, "pcscf.policy: set rx or n5, not both"},
+		{"n5 with an rx peer", valid + n5Policy + validDiameter + pcrfPeer, `diameter peer "pcrf" serves rx, but pcscf.policy.rx does not name it`},
+		{"n5 without pcf_uri", valid + strings.Replace(n5Policy, "      pcf_uri: http://10.0.0.13:7777\n", "", 1) + validDiameter, "pcscf.policy.n5.pcf_uri is required"},
+		{"n5 over https", valid + strings.Replace(n5Policy, "http://10.0.0.13", "https://10.0.0.13", 1) + validDiameter, "want http://host[:port][/prefix]"},
+		{"n5 pcf_uri with a query", valid + strings.Replace(n5Policy, ":7777", ":7777/?a=b", 1) + validDiameter, "want http://host[:port][/prefix]"},
+		{"n5 without notify address", valid + strings.Replace(n5Policy, "        address: 10.0.0.5\n", "", 1) + validDiameter, "pcscf.policy.n5.notify.address is required"},
+		{"n5 unspecified notify address", valid + strings.Replace(n5Policy, "address: 10.0.0.5", "address: 0.0.0.0", 1) + validDiameter, "must be a specific address"},
+		{"n5 notify port out of range", valid + strings.Replace(n5Policy, "port: 7778", "port: 0", 1) + validDiameter, "pcscf.policy.n5.notify.port 0 is out of range"},
+		{"n5 notify port on SIP", valid + strings.Replace(n5Policy, "port: 7778", "port: 5060", 1) + validDiameter, "pcscf.policy.n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
+		{"n5 notify port on Diameter", valid + strings.Replace(n5Policy, "port: 7778", "port: 3868", 1) + validDiameter, "pcscf.policy.n5.notify.port and diameter.port are both 3868"},
+		{
+			"n5 notify port on the API",
+			validDB + "api:\n  address: 0.0.0.0\n  port: 7778\n" + validIMS + validSIP + n5Policy + validDiameter,
+			"pcscf.policy.n5.notify.port and api.port are both 7778",
 		},
 		{
 			"duplicate application",

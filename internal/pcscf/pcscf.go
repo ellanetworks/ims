@@ -126,6 +126,12 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 }
 
 func (p *PCSCF) Close() {
+	// What the policy function reports from now on is left to the restart: an abort answered here could not end
+	// the session (TS 29.514 §4.2.5.3).
+	if p.policy != nil {
+		p.cfg.Policy.Backend.Bind(nil)
+	}
+
 	p.subs.close()
 	p.regs.close()
 

@@ -12,7 +12,8 @@ global:
 pcf:
   sbi:
     server:
-      - address: 127.0.0.13
+      # On the core network, for the P-CSCF over N5: Location and resUri carry this address.
+      - address: 10.80.0.10
         port: 7777
     client:
 #      nrf:

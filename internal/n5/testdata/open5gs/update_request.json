@@ -12,18 +12,18 @@
         "medCompN": 1,
         "medSubComps": {
           "1": {
-            "fNum": 1,
             "fDescs": [
               "permit in 17 from 10.46.0.250 to 10.46.0.249 40000",
               "permit out 17 from 10.46.0.249 to 10.46.0.250 40000"
-            ]
+            ],
+            "fNum": 1
           },
           "2": {
-            "fNum": 2,
             "fDescs": [
               "permit in 17 from 10.46.0.250 to 10.46.0.249 40001",
               "permit out 17 from 10.46.0.249 to 10.46.0.250 40001"
             ],
+            "fNum": 2,
             "flowUsage": "RTCP"
           }
         },
