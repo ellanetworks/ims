@@ -1,0 +1,13 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 10.46.0.24:49165;branch=z9hG4bKf4d6f44ba0cc145a90939cb6
+From: <tel:+15550000002>;tag=ff17475
+To: <sip:15550000006@ims.mnc001.mcc001.3gppnetwork.org>;tag=lS8LckkC5a
+Call-ID: lfL6PNmhoTLxV8066vuy5N6Z
+CSeq: 1 BYE
+Session-ID: 3409143487ce4c36db1c6754249bde48
+Contact: <sip:10.46.0.25:63507>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio
+Allow: ACK,BYE,CANCEL,INFO,INVITE,MESSAGE,NOTIFY,OPTIONS,PRACK,REFER,UPDATE
+Supported: 100rel,path,replaces
+User-Agent: iOS/27.0 iPhone
+Content-Length: 0
+
