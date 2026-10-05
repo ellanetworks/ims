@@ -2,8 +2,8 @@ github.com/ellanetworks/core/diameter v0.0.0-20261005145428-88e911e1b160 h1:ZIpR
 github.com/ellanetworks/core/diameter v0.0.0-20261005145428-88e911e1b160/go.mod h1:YchLpOwehhNz8s+hXPtmjT69Jw94otkpFUP4lDdM4wM=
 github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f h1:467mMwOqgbeKZQPV/Jztg1RJFofLhJ5NqJGzT96SUrM=
 github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f/go.mod h1:qttv0gHtCuOunPG/VvNgd4p4RTzj3Q5Gh7g4Rd14MYw=
-github.com/mattn/go-sqlite3 v1.14.42 h1:MigqEP4ZmHw3aIdIT7T+9TLa90Z6smwcthx+Azv4Cgo=
-github.com/mattn/go-sqlite3 v1.14.42/go.mod h1:pjEuOr8IwzLJP2MfGeTb0A35jauH+C2kbHKBr7yXKVQ=
+github.com/mattn/go-sqlite3 v1.14.52 h1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=
+github.com/mattn/go-sqlite3 v1.14.52/go.mod h1:6JTjA44L93a0QCyJef5YvlPoKXntQPjzWv5gtm9sB6w=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
 golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
