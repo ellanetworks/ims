@@ -2,18 +2,27 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
+	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/core/sctp"
 	"github.com/ellanetworks/ims/internal/config"
 )
 
 const productName = "ims"
+
+// Above freeDiameter's 10 s CNX_TIMEOUT: while its own dial to us is pending,
+// it holds our CER and answers only when that timer fires (libfdcore p_psm.c).
+const DefaultHandshakeTimeout = 15 * time.Second
 
 var applications = map[config.Application]diameter.Application{
 	config.ApplicationCx: {ID: cx.ApplicationID, VendorID: tgpp.VendorID},
@@ -25,7 +34,13 @@ var transports = map[config.Transport]diameter.Transport{
 	config.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, rxh *rxHandler, logger *slog.Logger) (*diameter.Node, error) {
+func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandler, rxh *rxHandler,
+	logger *slog.Logger,
+) (*diameter.Node, error) {
+	if handshake <= 0 {
+		handshake = DefaultHandshakeTimeout
+	}
+
 	node, err := diameter.New(diameter.Config{
 		Identity: diameter.Identity{
 			OriginHost:      cfg.OriginHost,
@@ -33,9 +48,16 @@ func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, rxh *rxHandler, logge
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:           newDiameterMux(rtr, rxh),
-		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
-		Logger:            logger,
+		Handler:          newDiameterMux(rtr, rxh),
+		HandshakeTimeout: handshake,
+		OnPeerStateChange: func(p diameter.PeerStatus) {
+			logPeerState(logger, p)
+
+			if p.State == diameter.PeerOpen {
+				rxh.peerOpen(p.ID)
+			}
+		},
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
@@ -47,6 +69,67 @@ func newDiameterNode(cfg config.Diameter, rtr *rtrHandler, rxh *rxHandler, logge
 	}
 
 	return node, nil
+}
+
+// RFC 6733 §2.1: a node that dials its peers must still accept their
+// connections; §5.6.4 elects one when both sides connect at once.
+func listenDiameter(ctx context.Context, cfg config.Diameter) ([]diameter.Listener, error) {
+	addr := netip.AddrPortFrom(cfg.Address, uint16(cfg.Port))
+
+	var lns []diameter.Listener
+
+	for _, t := range peerTransports(cfg.Peers) {
+		ln, err := listenDiameterOn(ctx, t, addr)
+		if err != nil {
+			closeListeners(lns)
+			return nil, fmt.Errorf("listen for Diameter over %s on %s: %w", t, addr, err)
+		}
+
+		lns = append(lns, ln)
+	}
+
+	return lns, nil
+}
+
+// An inbound connection only matches a peer configured for its transport.
+func peerTransports(peers []config.DiameterPeer) []config.Transport {
+	var out []config.Transport
+
+	for _, p := range peers {
+		if !slices.Contains(out, p.Transport) {
+			out = append(out, p.Transport)
+		}
+	}
+
+	return out
+}
+
+func listenDiameterOn(ctx context.Context, t config.Transport, addr netip.AddrPort) (diameter.Listener, error) {
+	if t == config.TransportSCTP {
+		var lc sctp.ListenConfig
+
+		ln, err := lc.Listen(ctx, &sctp.SCTPAddr{IPAddrs: []net.IPAddr{{IP: addr.Addr().AsSlice()}}, Port: int(addr.Port())})
+		if err != nil {
+			return nil, err
+		}
+
+		return diameter.NewSCTPListener(ln, nil), nil
+	}
+
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "tcp", addr.String())
+	if err != nil {
+		return nil, err
+	}
+
+	return diameter.NewTCPListener(ln.(*net.TCPListener)), nil
+}
+
+func closeListeners(lns []diameter.Listener) {
+	for _, ln := range lns {
+		_ = ln.Close()
+	}
 }
 
 func diameterPeers(peers []config.DiameterPeer) []diameter.Peer {
@@ -137,6 +220,7 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 }
 
 type rxSessions interface {
+	PCRFOpen(peerID string)
 	ReAuth(sessionID string, r rx.ReAuthRequest) bool
 	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
@@ -157,6 +241,12 @@ func (h *rxHandler) bind(s rxSessions) {
 	}
 
 	h.target.Store(&s)
+}
+
+func (h *rxHandler) peerOpen(id string) {
+	if t := h.target.Load(); t != nil {
+		(*t).PCRFOpen(id)
+	}
 }
 
 // TS 29.214 §4.4.6.3

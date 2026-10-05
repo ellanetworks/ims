@@ -121,6 +121,14 @@ var migrations = []string{
 		version INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL
 	);`,
+	`CREATE TABLE rx_terminations (
+		session_id TEXT PRIMARY KEY,
+		impi TEXT NOT NULL,
+		ue_address TEXT NOT NULL,
+		cause INTEGER NOT NULL,
+		class TEXT,
+		created_at INTEGER NOT NULL
+	);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {

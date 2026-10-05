@@ -86,7 +86,7 @@ func New(cfg Config) *PCSCF {
 
 	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
 	p.subs = newSubscriptions(p)
-	p.rx = newRxClient(cfg.Rx, p.log, p.clock.Now)
+	p.rx = newRxClient(cfg.Rx, cfg.Registrations, p.log, p.clock.Now)
 	p.regs.expired = p.expired
 
 	if cfg.IPsec.Kernel != nil {

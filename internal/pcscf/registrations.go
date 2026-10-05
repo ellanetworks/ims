@@ -23,6 +23,7 @@ type RegistrationStore interface {
 	SavePCSCFSubscription(context.Context, db.PCSCFSubscription) (db.PCSCFSubscription, error)
 	DeletePCSCFSubscription(context.Context, string) error
 	ListPCSCFSubscriptions(context.Context) ([]db.PCSCFSubscription, error)
+	RxTerminationStore
 }
 
 type regKey struct {
@@ -100,6 +101,8 @@ func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, e
 
 	for _, r := range regs {
 		if !r.ExpiresAt.After(now) {
+			rs.oweLocked(&r)
+
 			if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
 				return nil, err
 			}
@@ -331,6 +334,7 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 	}
 
 	rs.retired[r.FlowToken] = retired{f: flowOf(r), expires: rs.clock.Now().Add(rs.grace)}
+	rs.oweLocked(r)
 
 	if rs.store != nil && r.ID != 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
@@ -369,6 +373,10 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 			rs.armLocked(k, c.ExpiresAt)
 		}
 
+		if c.RxSessionID != r.RxSessionID {
+			rs.oweLocked(r)
+		}
+
 		rs.countLost(r.SignallingLost, c.SignallingLost)
 		rs.unindex(r)
 		*r = c
@@ -389,9 +397,14 @@ func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bo
 	}
 
 	was := r.SignallingLost
+	old := clone(r)
 
 	if !f(r) {
 		return false
+	}
+
+	if r.RxSessionID != old.RxSessionID {
+		rs.oweLocked(&old)
 	}
 
 	rs.countLost(was, r.SignallingLost)
@@ -414,6 +427,25 @@ func (rs *registrations) restoreSignalling(k regKey) bool {
 
 		return true
 	})
+}
+
+// RFC 6733 §8.4: an Rx session leaving the record is owed an STR. It is stored
+// before the record changes, so a restart cannot lose it.
+func (rs *registrations) oweLocked(r *db.PCSCFRegistration) {
+	if rs.store == nil || r.RxSessionID == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+
+	t := db.RxTermination{
+		SessionID: r.RxSessionID, IMPI: r.IMPI, UEAddress: r.UEAddress.Addr(), Class: r.RxClass, CreatedAt: rs.clock.Now(),
+	}
+
+	if err := rs.store.SaveRxTermination(ctx, t); err != nil {
+		rs.log.Error("saving the pending Rx termination failed", slog.String("impi", r.IMPI), slog.Any("error", err))
+	}
 }
 
 func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {

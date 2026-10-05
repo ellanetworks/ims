@@ -482,6 +482,11 @@ func (t *notifyTransaction) HandleResponse(res *sip.Response) {
 	case endsSubscription(res.StatusCode):
 		t.r.log.Info("NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
 		t.r.notifyFailed(t.o)
+	// RFC 3261 §12.2.1.2: a 408 within a dialog SHOULD end it, as a timeout does
+	// under RFC 6665 §4.2.2. RFC 4320 forbids it for a NOTIFY, but not every proxy complies.
+	case res.StatusCode == 408:
+		t.r.log.Info("NOTIFY timed out", slog.String("impi", t.o.impi))
+		t.r.notifyFailed(t.o)
 	default:
 		t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
 	}

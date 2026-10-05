@@ -103,6 +103,7 @@ func TestLoad(t *testing.T) {
 			OriginHost:  "ims.ims.mnc001.mcc001.3gppnetwork.org",
 			OriginRealm: "ims.mnc001.mcc001.3gppnetwork.org",
 			Address:     netip.MustParseAddr("10.0.0.5"),
+			Port:        3868,
 			Peers: []DiameterPeer{
 				{
 					ID:           "hss",
@@ -214,6 +215,10 @@ func TestLoadDefaults(t *testing.T) {
 
 	if cfg.SCSCF.MinExpires != defaultMinExpires || cfg.SCSCF.MaxExpires != defaultMaxExpires {
 		t.Fatalf("scscf = %+v, want min %d and max %d", cfg.SCSCF, defaultMinExpires, defaultMaxExpires)
+	}
+
+	if cfg.Diameter.Port != defaultDiameterPort {
+		t.Fatalf("diameter.port = %d, want %d", cfg.Diameter.Port, defaultDiameterPort)
 	}
 
 	hss := cfg.Diameter.Peers[0]
@@ -375,6 +380,11 @@ func TestLoadInvalid(t *testing.T) {
 			"unspecified diameter address",
 			valid + strings.Replace(validDiameter, "address: 10.0.0.5", "address: 0.0.0.0", 1),
 			"diameter.address must be a specific address",
+		},
+		{
+			"diameter port out of range",
+			valid + strings.Replace(validDiameter, "  address: 10.0.0.5\n", "  address: 10.0.0.5\n  port: 70000\n", 1),
+			"diameter.port 70000 is out of range",
 		},
 		{"no peers", valid + diameterIdentity, "exactly one diameter peer must serve cx, found 0"},
 		{"no cx peer", valid + diameterIdentity + "  peers:\n" + pcrfPeer, "exactly one diameter peer must serve cx, found 0"},

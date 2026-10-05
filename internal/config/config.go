@@ -162,6 +162,7 @@ type Diameter struct {
 	OriginHost  string         `yaml:"origin_host"`
 	OriginRealm string         `yaml:"origin_realm"`
 	Address     netip.Addr     `yaml:"address"`
+	Port        int            `yaml:"port"`
 	Peers       []DiameterPeer `yaml:"peers"`
 }
 
@@ -272,6 +273,10 @@ func Load(path string) (Config, error) {
 
 	if cfg.SCSCF.MaxExpires == 0 {
 		cfg.SCSCF.MaxExpires = defaultMaxExpires
+	}
+
+	if cfg.Diameter.Port == 0 {
+		cfg.Diameter.Port = defaultDiameterPort
 	}
 
 	for i := range cfg.Diameter.Peers {
@@ -580,6 +585,8 @@ func (d Diameter) validate() error {
 		return errors.New("diameter.address is required")
 	case d.Address.IsUnspecified():
 		return errors.New("diameter.address must be a specific address, not 0.0.0.0 or ::, since it is advertised to peers")
+	case d.Port < 1 || d.Port > 65535:
+		return fmt.Errorf("diameter.port %d is out of range", d.Port)
 	}
 
 	ids := make(map[string]bool, len(d.Peers))

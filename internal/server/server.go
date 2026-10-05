@@ -27,8 +27,11 @@ type Server struct {
 
 	IPsec pcscf.Kernel
 
+	DiameterHandshakeTimeout time.Duration
+
 	database    *db.DB
 	node        *diameter.Node
+	diameterLns []diameter.Listener
 	sip         *sipServer
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -58,20 +61,41 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
+	diameterLns, err := listenDiameter(ctx, cfg.Diameter)
+	if err != nil {
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return err
+	}
+
 	rtr := newRTRHandler(s.Logger)
 	rxh := newRxHandler(s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, rtr, rxh, s.Logger)
+	node, err := newDiameterNode(cfg.Diameter, s.DiameterHandshakeTimeout, rtr, rxh, s.Logger)
 	if err != nil {
+		closeListeners(diameterLns)
+
 		_ = apiLn.Close()
 		_ = database.Close()
 
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
+	for _, ln := range diameterLns {
+		go func() {
+			if err := node.Serve(ln); !errors.Is(err, diameter.ErrClosed) && !errors.Is(err, net.ErrClosed) {
+				s.Logger.Warn("Diameter listener stopped", slog.String("address", ln.Addr().String()), slog.Any("error", err))
+			}
+		}()
+	}
+
 	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
+
+		closeListeners(diameterLns)
+
 		_ = apiLn.Close()
 		_ = database.Close()
 
@@ -80,6 +104,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.database = database
 	s.node = node
+	s.diameterLns = diameterLns
 	s.sip = sipServer
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
@@ -106,7 +131,13 @@ func (s *Server) Start(ctx context.Context) error {
 		sipAttrs = append(sipAttrs, l.Role+" "+l.Address.String())
 	}
 
-	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs))
+	diameterAttrs := make([]string, 0, len(diameterLns))
+	for _, ln := range diameterLns {
+		diameterAttrs = append(diameterAttrs, ln.Addr().Network()+" "+ln.Addr().String())
+	}
+
+	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs),
+		slog.Any("diameter", diameterAttrs))
 
 	return nil
 }
@@ -137,6 +168,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
 		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
 	}
+
+	// Serve may not have registered a listener with the node yet.
+	closeListeners(s.diameterLns)
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))

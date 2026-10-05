@@ -3,6 +3,7 @@ package pcscf
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -22,7 +23,20 @@ const (
 	DefaultRxTimeout = 10 * time.Second
 
 	restoreWait = time.Minute
+
+	DefaultSTRRetry = 5 * time.Second
+	maxSTRRetry     = 5 * time.Minute
+	maxSTRAge       = 24 * time.Hour
 )
+
+var errUnsendable = errors.New("rx: STR cannot be built")
+
+type RxTerminationStore interface {
+	SaveRxTermination(context.Context, db.RxTermination) error
+	GetRxTermination(context.Context, string) (db.RxTermination, error)
+	DeleteRxTermination(context.Context, string) error
+	ListRxTerminations(context.Context) ([]db.RxTermination, error)
+}
 
 type Diameter interface {
 	Identity() diameter.Identity
@@ -43,6 +57,7 @@ type Rx struct {
 	CallTimeout time.Duration
 
 	MediaLossTimeout time.Duration
+	STRRetry         time.Duration
 }
 
 type rxSession struct {
@@ -59,8 +74,9 @@ type rxSession struct {
 }
 
 type rxClient struct {
-	cfg Rx
-	log *slog.Logger
+	cfg   Rx
+	store RxTerminationStore
+	log   *slog.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -71,9 +87,14 @@ type rxClient struct {
 	closed   bool
 	sessions map[string]*rxSession
 	retry    map[netip.Addr]retryHold
+
+	owed     chan struct{}
+	up       chan struct{}
+	stop     chan struct{}
+	resender sync.Once
 }
 
-func newRxClient(cfg Rx, logger *slog.Logger, now func() time.Time) *rxClient {
+func newRxClient(cfg Rx, store RxTerminationStore, logger *slog.Logger, now func() time.Time) *rxClient {
 	if cfg.Diameter == nil {
 		return nil
 	}
@@ -90,11 +111,16 @@ func newRxClient(cfg Rx, logger *slog.Logger, now func() time.Time) *rxClient {
 		cfg.MediaLossTimeout = DefaultMediaLossTimeout
 	}
 
+	if cfg.STRRetry <= 0 {
+		cfg.STRRetry = DefaultSTRRetry
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &rxClient{
-		cfg: cfg, log: logger, ctx: ctx, cancel: cancel, now: now,
+		cfg: cfg, store: store, log: logger, ctx: ctx, cancel: cancel, now: now,
 		sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold),
+		owed: make(chan struct{}, 1), up: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
 }
 
@@ -118,7 +144,10 @@ func (c *rxClient) close() {
 	}
 
 	c.mu.Lock()
-	c.closed = true
+	if !c.closed {
+		c.closed = true
+		close(c.stop)
+	}
 	c.mu.Unlock()
 
 	done := make(chan struct{})
@@ -218,7 +247,7 @@ func (c *rxClient) envelope(id string) tgpp.Envelope {
 	}
 }
 
-func (c *rxClient) do(req *diameter.Message, wait time.Duration) (*diameter.Message, error) {
+func (c *rxClient) do(ctx context.Context, req *diameter.Message, wait time.Duration) (*diameter.Message, error) {
 	opts := []diameter.DoOption{diameter.FailFast()}
 	if wait > 0 {
 		opts = nil
@@ -226,7 +255,7 @@ func (c *rxClient) do(req *diameter.Message, wait time.Duration) (*diameter.Mess
 		wait = c.cfg.Timeout
 	}
 
-	ctx, cancel := context.WithTimeout(c.ctx, wait)
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
 	return c.cfg.Diameter.Do(ctx, c.cfg.PCRF.ID, req, opts...)
@@ -259,7 +288,7 @@ func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 		return nil, err
 	}
 
-	ans, err := c.do(req, wait)
+	ans, err := c.do(c.ctx, req, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -269,52 +298,240 @@ func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 	return a.Class, err
 }
 
-// TS 29.214 §4.4.4
+// TS 29.214 §4.4.4, RFC 6733 §8.4: the STR is stored before it is sent and
+// deleted once answered, so it is retried until the PCRF answers it.
 func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.Duration) error {
-	if s.ended {
+	if !c.oweLocked(s, cause) {
 		return nil
+	}
+
+	t := db.RxTermination{SessionID: s.id, IMPI: s.key.impi, UEAddress: s.key.ue, Cause: uint32(cause), Class: s.class}
+
+	err := c.str(c.ctx, t, wait)
+	if unanswered(err) {
+		c.log.Warn("Rx session termination failed, will retry", append(strAttrs(t), slog.Any("error", err))...)
+		return err
+	}
+
+	c.settle(s.id)
+
+	return err
+}
+
+func (c *rxClient) oweLocked(s *rxSession, cause rx.TerminationCause) bool {
+	if s.ended {
+		return false
 	}
 
 	s.ended = true
 
 	if s.call != nil && !s.opened {
-		return nil
+		return false
 	}
 
-	req, err := rx.NewSessionTerminationRequest(c.envelope(s.id), rx.SessionTerminationRequest{Cause: cause, Class: s.class})
+	if c.store == nil {
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+
+	t := db.RxTermination{
+		SessionID: s.id, IMPI: s.key.impi, UEAddress: s.key.ue, Cause: uint32(cause), Class: s.class, CreatedAt: c.now(),
+	}
+
+	if err := c.store.SaveRxTermination(ctx, t); err != nil {
+		c.log.Error("saving the pending Rx termination failed", slog.String("session", s.id), slog.Any("error", err))
+	}
+
+	return true
+}
+
+func (c *rxClient) str(ctx context.Context, t db.RxTermination, wait time.Duration) error {
+	cause := rx.TerminationCause(t.Cause)
+	if cause == 0 {
+		cause = rx.TerminationAdministrative
+	}
+
+	req, err := rx.NewSessionTerminationRequest(c.envelope(t.SessionID), rx.SessionTerminationRequest{Cause: cause, Class: t.Class})
 	if err != nil {
-		c.log.Warn("building the Rx STR failed", slog.String("session", s.id), slog.Any("error", err))
-		return err
+		c.log.Warn("building the Rx STR failed", slog.String("session", t.SessionID), slog.Any("error", err))
+		return fmt.Errorf("%w: %w", errUnsendable, err)
 	}
 
-	attrs := []any{
-		slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()), slog.String("session", s.id),
-		slog.String("cause", cause.String()),
-	}
-
-	ans, err := c.do(req, wait)
+	ans, err := c.do(ctx, req, wait)
 	if err == nil {
 		_, err = rx.ParseSessionTerminationAnswer(ans)
 	}
 
-	if err != nil {
-		c.log.Warn("Rx session termination failed", append(attrs, slog.Any("error", err))...)
-		return err
+	attrs := append(strAttrs(t), slog.String("cause", cause.String()))
+
+	switch {
+	case err == nil:
+		c.log.Info("Rx session terminated", attrs...)
+	case !unanswered(err):
+		c.log.Info("Rx session termination answered with an error", append(attrs, slog.Any("error", err))...)
 	}
 
-	c.log.Info("Rx session terminated", attrs...)
+	return err
+}
 
-	return nil
+func strAttrs(t db.RxTermination) []any {
+	return []any{slog.String("impi", t.IMPI), slog.String("ue", t.UEAddress.String()), slog.String("session", t.SessionID)}
+}
+
+func (c *rxClient) settle(id string) {
+	if c.store == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+
+	if err := c.store.DeleteRxTermination(ctx, id); err != nil {
+		c.log.Error("deleting the pending Rx termination failed", slog.String("session", id), slog.Any("error", err))
+	}
 }
 
 func (c *rxClient) end(s *rxSession, cause rx.TerminationCause, wait time.Duration) {
-	c.spawn(func() {
+	if c.spawn(func() {
 		s.mu.Lock()
-		defer s.mu.Unlock()
+		err := c.endLocked(s, cause, wait)
+		s.mu.Unlock()
 
-		_ = c.endLocked(s, cause, wait)
 		c.forget(s)
-	})
+
+		if unanswered(err) {
+			signal(c.owed)
+		}
+	}) {
+		return
+	}
+
+	s.mu.Lock()
+	c.oweLocked(s, cause)
+	s.mu.Unlock()
+
+	c.forget(s)
+}
+
+// RFC 6733 §7.1.3, §7.1.4, §8.4.2: any STA ends the session at the PCRF,
+// except one that asks for a retry.
+func unanswered(err error) bool {
+	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, errUnsendable) {
+		return false
+	}
+
+	r, ok := tgpp.ResultOf(err)
+	if !ok {
+		return true
+	}
+
+	return r.Transient() || !r.Experimental && (r.Code == diameter.ResultUnableToDeliver || r.Code == diameter.ResultTooBusy)
+}
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (c *rxClient) resendOwed() {
+	if c.store == nil {
+		return
+	}
+
+	c.resender.Do(func() { c.spawn(c.resendLoop) })
+}
+
+// RFC 6733 §8.5: an ASR for a session still owed an STR is answered, then the STR follows.
+func (c *rxClient) abortOwed(id string) (terminate func(), known bool) {
+	if c.store == nil {
+		return nil, false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+
+	if _, err := c.store.GetRxTermination(ctx, id); err != nil {
+		return nil, false
+	}
+
+	return func() { signal(c.up) }, true
+}
+
+// RFC 6733 §8.4
+func (c *rxClient) resendLoop() {
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+
+	go func() {
+		select {
+		case <-c.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	delay := c.cfg.STRRetry
+
+	for {
+		if !c.resendPass(ctx) {
+			delay = c.cfg.STRRetry
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.owed:
+			case <-c.up:
+			}
+
+			continue
+		}
+
+		timer := time.NewTimer(delay)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-c.up:
+			timer.Stop()
+		case <-timer.C:
+			delay = min(2*delay, maxSTRRetry)
+		}
+	}
+}
+
+func (c *rxClient) resendPass(ctx context.Context) (left bool) {
+	owed, err := c.store.ListRxTerminations(ctx)
+	if err != nil {
+		c.log.Warn("listing the pending Rx terminations failed", slog.Any("error", err))
+		return ctx.Err() == nil
+	}
+
+	for _, t := range owed {
+		if _, live := c.lookup(t.SessionID); live {
+			continue
+		}
+
+		if c.now().Sub(t.CreatedAt) > maxSTRAge {
+			c.log.Warn("Rx session termination abandoned", append(strAttrs(t), slog.Duration("age", maxSTRAge))...)
+			c.settle(t.SessionID)
+
+			continue
+		}
+
+		if err := c.str(ctx, t, c.cfg.Timeout); unanswered(err) {
+			c.log.Debug("Rx session termination still pending", append(strAttrs(t), slog.Any("error", err))...)
+			return true
+		}
+
+		c.settle(t.SessionID)
+	}
+
+	return false
 }
 
 // TS 29.213 Annex B.1
@@ -337,6 +554,7 @@ func (p *PCSCF) openRx(k regKey, wait time.Duration) {
 
 	if attached {
 		p.detachRx(s)
+		p.rx.settle(s.id)
 	}
 
 	s.ended = true
@@ -381,6 +599,7 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 		errors.Is(err, diameter.ErrApplicationUnsupported) {
 		p.log.Warn("Rx session for IMS signalling refused", attrs...)
 		p.detachRx(s)
+		p.rx.settle(s.id)
 
 		s.ended = true
 		p.rx.forget(s)
@@ -404,8 +623,12 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 		wait = p.rx.cfg.Timeout
 	}
 
-	_ = p.rx.endLocked(s, cause, wait)
+	err = p.rx.endLocked(s, cause, wait)
 	p.rx.forget(s)
+
+	if unanswered(err) {
+		signal(p.rx.owed)
+	}
 }
 
 func (p *PCSCF) detachRx(s *rxSession) {
@@ -468,6 +691,8 @@ func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 		return
 	}
 
+	p.rx.resendOwed()
+
 	for _, r := range expired {
 		p.endRx(r, rx.TerminationAuthExpired, restoreWait)
 	}
@@ -484,7 +709,9 @@ func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 
 			err := p.rx.endLocked(s, rx.TerminationAdministrative, restoreWait)
 
+			// The record keeps the session, so the next restore ends it.
 			if err != nil && (errors.Is(err, context.Canceled) || p.rx.closing()) {
+				p.rx.settle(s.id)
 				p.rx.forget(s)
 				s.mu.Unlock()
 
@@ -492,8 +719,17 @@ func (p *PCSCF) restoreRx(expired []db.PCSCFRegistration) {
 			}
 
 			p.detachRx(s)
+
+			if !unanswered(err) {
+				p.rx.settle(s.id)
+			}
+
 			p.rx.forget(s)
 			s.mu.Unlock()
+
+			if unanswered(err) {
+				signal(p.rx.owed)
+			}
 
 			p.openRx(s.key, restoreWait)
 		})
@@ -518,6 +754,13 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 	if p.regs.restoreSignalling(k) {
 		p.log.Info("IMS signalling path restored", slog.String("impi", k.impi), slog.String("ue", k.ue.String()),
 			slog.String("method", req.Method))
+	}
+}
+
+// RFC 6733 §8.4
+func (p *PCSCF) PCRFOpen(peerID string) {
+	if p.rx != nil && peerID == p.rx.cfg.PCRF.ID {
+		signal(p.rx.up)
 	}
 }
 
@@ -569,7 +812,7 @@ func (p *PCSCF) AbortSession(sessionID string, r rx.AbortSessionRequest) (termin
 
 	s, ok := p.rx.lookup(sessionID)
 	if !ok {
-		return nil, false
+		return p.rx.abortOwed(sessionID)
 	}
 
 	if s.call != nil {

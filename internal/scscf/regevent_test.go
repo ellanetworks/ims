@@ -1065,6 +1065,21 @@ func TestNotifyFailure(t *testing.T) {
 		wantStatus(t, s.subscribe("600"), 481)
 	})
 
+	t.Run("408", func(t *testing.T) {
+		h := newHarness(t)
+		u := h.newUE()
+
+		u.register(registerOptions{})
+		h.hss.nextSAR(t)
+
+		s := h.ueSubscriber(u)
+		wantStatus(t, s.subscribe("600"), 200)
+		s.answerNotify(408)
+
+		h.waitSubscriptions(0)
+		wantStatus(t, s.subscribe("600"), 481)
+	})
+
 	t.Run("500", func(t *testing.T) {
 		h := newHarness(t)
 		u := h.newUE()
