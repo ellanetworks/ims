@@ -19,6 +19,7 @@ import (
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
+	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -175,14 +176,15 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		rtr.bind(s.registrar)
 	}
 
-	var pcrf pcscf.Rx
+	pol := pcscf.Policy{MediaLossTimeout: cfg.PCSCF.MediaLossTimeout}
+
+	var rxBackend *rxpolicy.Backend
 
 	if p, ok := cfg.Diameter.RxPeer(); ok {
-		pcrf = pcscf.Rx{
-			Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout,
-		}
+		rxBackend = rxpolicy.New(rxpolicy.Config{Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}})
+		pol.Backend = rxBackend
 	} else {
-		logger.Info("no diameter peer serves rx: the P-CSCF runs without Rx sessions")
+		logger.Info("no diameter peer serves rx: the P-CSCF runs without policy sessions")
 	}
 
 	pc := pcscf.New(pcscf.Config{
@@ -203,7 +205,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
-		Rx:       pcrf,
+		Policy:   pol,
 		NoAnswer: cfg.PCSCF.NoAnswerTimeout,
 		Trust:    domain,
 		Fallback: ph,
@@ -217,7 +219,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 
 	s.pcscf.Store(pc)
 
-	rxh.bind(pc)
+	if rxBackend != nil {
+		rxh.bind(rxBackend)
+	}
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
 		roles.set(port, pc)

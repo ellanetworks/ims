@@ -141,7 +141,7 @@ func TestRxReAuthOverIPsec(t *testing.T) {
 
 	eventually(t, "the signalling to be marked lost", func() bool {
 		reg, ok := s.pcscfRegistration()
-		return ok && reg.SignallingLost && reg.RxSessionID == session
+		return ok && reg.SignallingLost && reg.Policy.ID == session
 	})
 
 	s.noRx(200 * time.Millisecond)
@@ -163,7 +163,7 @@ func TestRxAbortSessionOverIPsec(t *testing.T) {
 
 	eventually(t, "the session to be cleared and the registration kept", func() bool {
 		reg, ok := s.pcscfRegistration()
-		return ok && reg.SignallingLost && reg.RxSessionID == ""
+		return ok && reg.SignallingLost && reg.Policy.ID == ""
 	})
 
 	if _, err := s.pcrf.ASR(s.ctx(), session, rx.AbortBearerReleased); err == nil {
@@ -181,6 +181,6 @@ func TestRxAbortSessionOverIPsec(t *testing.T) {
 
 	eventually(t, "the new session and the signalling restored", func() bool {
 		reg, ok := s.pcscfRegistration()
-		return ok && !reg.SignallingLost && reg.RxSessionID == again
+		return ok && !reg.SignallingLost && reg.Policy.ID == again
 	})
 }

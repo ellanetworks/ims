@@ -282,7 +282,7 @@ func TestCallChargingInfoFromAReAuth(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
 
-	if !s.p.ReAuth(e.session, rx.ReAuthRequest{
+	if !s.p.rxReAuth(e.session, rx.ReAuthRequest{
 		SpecificActions:                  []rx.SpecificAction{rx.ActionChargingCorrelationExchange},
 		AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{Value: []byte{0x0f}}},
 		AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.50"),
@@ -312,7 +312,7 @@ func TestCallFailedResourcesAllocation(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
 	e := s.establishEarly(t, u, pcrf)
 
-	s.p.ReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfFailedResourcesAllocation}})
+	s.p.rxReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfFailedResourcesAllocation}})
 
 	s.scscf.RecvNone(quiet)
 	clk.Advance(lossTimeout)

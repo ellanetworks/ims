@@ -39,14 +39,12 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 	update := testPCSCFRegistration()
 	update.ExpiresAt = testNow.Add(2 * time.Hour)
 	update.AssociatedURIs = update.AssociatedURIs[:1]
-	update.RxSessionID = "pcscf.ims;1;2"
-	update.RxClass = [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}
+	update.Policy = PolicySession{Endpoint: "pcrf", ID: "pcscf.ims;1;2", Ref: `["cGNyZi1zdGF0ZQ==","/wA="]`}
 	update.SignallingLost = true
 
 	got, err := d.SavePCSCFRegistration(ctx, update)
-	if err != nil || got.ID != want.ID || got.RxSessionID != update.RxSessionID || !reflect.DeepEqual(got.RxClass, update.RxClass) ||
-		!got.SignallingLost {
-		t.Fatalf("SavePCSCFRegistration again = %+v, %v; want the same row with the Rx session", got, err)
+	if err != nil || got.ID != want.ID || got.Policy != update.Policy || !got.SignallingLost {
+		t.Fatalf("SavePCSCFRegistration again = %+v, %v; want the same row with the policy session", got, err)
 	}
 
 	regs, err := d.ListPCSCFRegistrations(ctx)
@@ -54,11 +52,10 @@ func TestPCSCFRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("ListPCSCFRegistrations = %+v, %v; want %+v", regs, err, got)
 	}
 
-	update.RxSessionID, update.RxClass, update.SignallingLost = "", nil, false
+	update.Policy, update.SignallingLost = PolicySession{}, false
 
-	if got, err = d.SavePCSCFRegistration(ctx, update); err != nil || got.RxSessionID != "" || got.RxClass != nil ||
-		got.SignallingLost {
-		t.Fatalf("SavePCSCFRegistration cleared = %+v, %v; want no Rx session", got, err)
+	if got, err = d.SavePCSCFRegistration(ctx, update); err != nil || got.Policy != (PolicySession{}) || got.SignallingLost {
+		t.Fatalf("SavePCSCFRegistration cleared = %+v, %v; want no policy session", got, err)
 	}
 
 	if err := d.DeletePCSCFRegistration(ctx, got.ID); err != nil {
