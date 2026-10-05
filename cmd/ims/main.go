@@ -35,16 +35,18 @@ func main() {
 	}
 }
 
-// JSON with Ella Core's ts and lowercase level.
+// JSON with Ella Core's ts and lowercase level, and durations as "1.5s".
 func newLogger(level slog.Level) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			switch a.Key {
-			case slog.TimeKey:
+			switch {
+			case a.Key == slog.TimeKey:
 				a.Key = "ts"
-			case slog.LevelKey:
+			case a.Key == slog.LevelKey:
 				a.Value = slog.StringValue(strings.ToLower(a.Value.String()))
+			case a.Value.Kind() == slog.KindDuration:
+				a.Value = slog.StringValue(a.Value.Duration().String())
 			}
 
 			return a
