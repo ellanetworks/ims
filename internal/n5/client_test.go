@@ -715,6 +715,9 @@ func TestOpen5GS(t *testing.T) {
 		if err != nil || got.BodyErr != nil {
 			t.Fatalf("Modify = %+v, %v", got, err)
 		}
+
+		// The same service information gives the same patch as the one Open5GS took.
+		sameJSON(t, pcf.last(t).body, patch)
 	})
 
 	// TS 29.514 §4.2.6.7 leaves medType out of the signalling component; Open5GS requires it.

@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -91,8 +92,9 @@ func unknownContext(w http.ResponseWriter) {
 	n5.WriteProblem(w, n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseResourceContextNotFound})
 }
 
-// TS 29.514 §4.2.5.3: answer 204, then delete the context. The session is routed on its local ID, then on
-// resUri; a context the P-CSCF lost track of is deleted all the same, if it is one of the PCF's.
+// TS 29.514 §4.2.5.3: answer 204, then delete the context. The session is routed on its local ID, which only the
+// PCF that holds its notifUri knows. A context the P-CSCF lost track of is deleted all the same: one it still holds
+// the URI of, or the one an unanswered create made, at the resUri of the configured PCF.
 func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var t n5.TerminationInfo
 
@@ -109,14 +111,7 @@ func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string,
 	attrs := []any{slog.String("session", id), slog.String("uri", t.ResURI), slog.String("cause", string(t.TermCause))}
 	abort := policy.Abort{Cause: string(t.TermCause), InsufficientResources: t.TermCause == n5.TerminationInsufficientQoSFlowResources}
 
-	terminate, known := sink.Abort(id, abort)
-	if !known {
-		if other, ok := b.lookup(t.ResURI); ok && other != id {
-			terminate, known = sink.Abort(other, abort)
-		}
-	}
-
-	if known {
+	if terminate, known := sink.Abort(id, abort); known {
 		b.log.Debug("PCF terminates an application session context", attrs...)
 		noContent(w)
 
@@ -127,10 +122,12 @@ func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string,
 		return
 	}
 
-	uri := t.ResURI
-	if s, ok := b.state(id); ok {
-		uri = s
-	} else if !b.ours(uri) {
+	uri, ok := b.state(id)
+	if !ok && b.ours(t.ResURI) && b.found(id) {
+		uri, ok = t.ResURI, true
+	}
+
+	if !ok {
 		b.log.Warn("PCF terminates an unknown application session context", attrs...)
 		unknownContext(w)
 
@@ -172,6 +169,11 @@ func (b *Backend) ours(uri string) bool {
 		return false
 	}
 
+	// The delete URI is built by joining paths, which resolves dot segments: the path must have none.
+	if path.Clean(u.Path) != u.Path {
+		return false
+	}
+
 	id, ok := strings.CutPrefix(u.Path, b.root.Path+n5.AppSessionsPath+"/")
 
 	return ok && id != "" && !strings.Contains(id, "/")
@@ -208,7 +210,7 @@ func (b *Backend) deleteOrphan(id, uri string) {
 	}()
 }
 
-// TS 29.514 §4.2.5.2: the session is routed on its local ID, then on evSubsUri.
+// TS 29.514 §4.2.5.2: the session is routed on its local ID.
 func (b *Backend) notified(w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var n struct {
 		n5.EventsNotification
@@ -228,15 +230,7 @@ func (b *Backend) notified(w http.ResponseWriter, sink policy.Sink, id string, b
 	n.EventsNotification.EvNotifs = *n.EvNotifs
 	e := event(n.EventsNotification)
 
-	known := sink.Notify(id, e)
-	if !known {
-		uri := strings.TrimSuffix(strings.TrimSuffix(n.EvSubsURI, "/"), "/"+n5.EventsSubscriptionSegment)
-		if other, ok := b.lookup(uri); ok && other != id {
-			known = sink.Notify(other, e)
-		}
-	}
-
-	if !known {
+	if !sink.Notify(id, e) {
 		b.log.Debug("PCF notification for an unknown session", slog.String("session", id), slog.String("uri", n.EvSubsURI))
 		unknownContext(w)
 

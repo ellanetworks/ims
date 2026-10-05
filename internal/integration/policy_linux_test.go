@@ -85,7 +85,7 @@ type fakePolicy interface {
 	calls(want int) map[string]*mediaSession
 	// noCallEnd fails on the end of any call session within d.
 	noCallEnd(d time.Duration)
-	// firstCall waits for the first call session of the UE.
+	// firstCall waits for the first request of a call session of the UE, of any UE if ue is the zero Addr.
 	firstCall(ue netip.Addr) policyRef
 	// wantCallEnd waits for the end of the call session, skipping other requests.
 	wantCallEnd(ref policyRef, cause rx.TerminationCause)
@@ -275,7 +275,7 @@ func (p *rxPolicy) firstCall(ue netip.Addr) policyRef {
 	for {
 		select {
 		case r := <-p.s.pcrf.Requests():
-			if r.AAR != nil && !pcrftest.Signalling(*r.AAR) && cmp.Or(r.AAR.FramedIPAddress, r.AAR.FramedIPv6Address) == ue {
+			if r.AAR != nil && !pcrftest.Signalling(*r.AAR) && (!ue.IsValid() || cmp.Or(r.AAR.FramedIPAddress, r.AAR.FramedIPv6Address) == ue) {
 				return policyRef{id: r.SessionID}
 			}
 		case <-deadline:
@@ -486,7 +486,7 @@ func (p *n5Policy) firstCall(ue netip.Addr) policyRef {
 	for {
 		select {
 		case r := <-p.s.pcf.Requests():
-			if r.Op == n5.OpCreate && r.Problem == nil && !pcftest.Signalling(r.Context) && ueOf(r.Context) == ue {
+			if r.Op == n5.OpCreate && r.Problem == nil && !pcftest.Signalling(r.Context) && (!ue.IsValid() || ueOf(r.Context) == ue) {
 				return policyRef{id: localID(r.Context), uri: r.URI}
 			}
 		case <-deadline:

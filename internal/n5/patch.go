@@ -20,32 +20,100 @@ type Patch struct {
 //   - A media component that changes is sent in full, with its sub-components: the P-CSCF derives each media
 //     component from the whole SDP exchange (TS 29.513 §7.2.3), and TS 29.514 Annex B.3 asks for the full
 //     service information.
-//   - When sipForkInd changes, every media component is sent (Annex B.3.1, B.3.2).
+//   - While next has sipForkInd SEVERAL_DIALOGUES, every patch carries it and every media component (Annex
+//     B.3.1); when sipForkInd changes, every media component is sent too (Annex B.3.2).
 //   - What prev has and next lacks is set to null where the schema lets it be removed (TS 29.501 §5.3.8.2): a
 //     media component, a sub-component, a bit rate, flow descriptions, the events subscription, and sipForkInd
 //     (Annex B.3.2). A flow usage falls back to NO_INFO. Anything else keeps its previous value at the PCF.
 //
 // A nil prev patches only what next sets.
 func NewPatch(prev, next *AppSessionContextUpdateData) (Patch, error) {
+	from, to, err := trees(next, prev)
+	if err != nil {
+		return Patch{}, err
+	}
+
+	changed := !reflect.DeepEqual(from["sipForkInd"], to["sipForkInd"])
+
+	// While forking, sipForkInd goes in every patch, as if the PCF did not hold it.
+	forking := to["sipForkInd"] == string(ForkingSeveralDialogues)
+	if forking {
+		delete(from, "sipForkInd")
+	}
+
+	return patch(from, to, forking || changed, false)
+}
+
+// NewResyncPatch returns the merge patch that turns any of the states the PCF may hold into next, as when a
+// PATCH went unanswered (TS 29.500 §5.2.7.2) and the PCF may or may not have applied it: next is sent in full, and
+// what any of held has and next lacks is set to null as in NewPatch. With no state held, it patches only what next
+// sets, in full.
+func NewResyncPatch(next *AppSessionContextUpdateData, held ...*AppSessionContextUpdateData) (Patch, error) {
+	from, to, err := trees(next, held...)
+	if err != nil {
+		return Patch{}, err
+	}
+
+	return patch(from, to, true, true)
+}
+
+// trees returns the JSON trees of next and of the union of held, whose attributes are those of any of them.
+func trees(next *AppSessionContextUpdateData, held ...*AppSessionContextUpdateData) (from, to map[string]any, err error) {
 	if next != nil && next.EvSubsc != nil && len(next.EvSubsc.Events) == 0 {
-		return Patch{}, errors.New("patch: events subscription without events")
+		return nil, nil, errors.New("patch: events subscription without events")
 	}
 
-	from, err := tree(prev)
-	if err != nil {
-		return Patch{}, err
+	if to, err = tree(next); err != nil {
+		return nil, nil, err
 	}
 
-	to, err := tree(next)
-	if err != nil {
-		return Patch{}, err
+	from = map[string]any{}
+
+	for _, h := range held {
+		t, err := tree(h)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		from = object(union(from, t))
 	}
 
-	forking := !reflect.DeepEqual(from["sipForkInd"], to["sipForkInd"])
+	return from, to, nil
+}
+
+// union returns a with what b adds: the values of b, and the keys of both objects at every level.
+func union(a, b any) any {
+	x, okA := a.(map[string]any)
+	y, okB := b.(map[string]any)
+
+	if !okA || !okB {
+		return b
+	}
+
+	out := make(map[string]any, len(x)+len(y))
+
+	for k, v := range x {
+		out[k] = v
+	}
+
+	for k, v := range y {
+		if old, ok := out[k]; ok {
+			out[k] = union(old, v)
+		} else {
+			out[k] = v
+		}
+	}
+
+	return out
+}
+
+// patch returns the merge patch from one tree to the other. all sends every media component; every sends every
+// attribute of to, changed or not.
+func patch(from, to map[string]any, all, every bool) (Patch, error) {
 	diff := map[string]any{}
 
 	for k, v := range to {
-		if old, ok := from[k]; k != "medComponents" && (!ok || !reflect.DeepEqual(old, v)) {
+		if old, ok := from[k]; k != "medComponents" && (every || !ok || !reflect.DeepEqual(old, v)) {
 			diff[k] = v
 		}
 	}
@@ -56,7 +124,7 @@ func NewPatch(prev, next *AppSessionContextUpdateData) (Patch, error) {
 		}
 	}
 
-	if c := components(object(from["medComponents"]), object(to["medComponents"]), forking); len(c) > 0 {
+	if c := components(object(from["medComponents"]), object(to["medComponents"]), all); len(c) > 0 {
 		diff["medComponents"] = c
 	}
 

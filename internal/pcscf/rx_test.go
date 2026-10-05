@@ -766,6 +766,26 @@ func TestRxAbortSession(t *testing.T) {
 	s.wantSession(again)
 }
 
+// An abort during shutdown could not be followed by its termination: it is refused, and the session stays stored
+// for the restart to end.
+func TestAbortSessionAfterClose(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	s.p.Close()
+
+	if _, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
+		t.Fatal("AbortSession accepted after Close")
+	}
+
+	s.wantSession(id)
+	pcrf.none()
+}
+
 func TestRxAbortSessionWhileTheAAAIsOutstanding(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 	release := pcrf.holdAA()

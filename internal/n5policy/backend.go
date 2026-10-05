@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,16 +57,21 @@ type Backend struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
-	byURI    map[string]string
+	lost     map[string]time.Time
 	status   Status
 }
 
 // session is what the backend keeps of a context it created: its URI, and the service information the PCF
-// holds, which the next PATCH is computed from.
+// holds, which the next PATCH is computed from. tried is what unanswered PATCHes since then sent: the PCF may hold
+// any of them instead.
 type session struct {
-	uri  string
-	last *n5.AppSessionContextUpdateData
+	uri   string
+	last  *n5.AppSessionContextUpdateData
+	tried []*n5.AppSessionContextUpdateData
 }
+
+// maxLost bounds the creates the backend remembers as unanswered.
+const maxLost = 1024
 
 // Status is the outcome of the last request to the PCF.
 type Status struct {
@@ -111,7 +117,7 @@ func New(cfg Config) (*Backend, error) {
 	return &Backend{
 		cfg: cfg, client: client, root: root, endpoint: "n5:" + root.String(), log: cfg.Logger,
 		ctx: ctx, cancel: cancel,
-		sessions: make(map[string]*session), byURI: make(map[string]string),
+		sessions: make(map[string]*session), lost: make(map[string]time.Time),
 		status: Status{PCF: root.String()},
 	}, nil
 }
@@ -182,11 +188,14 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 
 	b.mu.Lock()
 
-	var prev *n5.AppSessionContextUpdateData
+	var (
+		prev  *n5.AppSessionContextUpdateData
+		tried []*n5.AppSessionContextUpdateData
+	)
 
 	uri := ref
 	if s, ok := b.sessions[id]; ok {
-		uri, prev = s.uri, s.last
+		uri, prev, tried = s.uri, s.last, slices.Clone(s.tried)
 	}
 
 	b.mu.Unlock()
@@ -223,7 +232,19 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		next.SipForkInd = n5.ForkingSeveralDialogues
 	}
 
-	patch, err := n5.NewPatch(prev, next)
+	// Without the service information the PCF holds, or when it may hold what an unanswered PATCH sent, the
+	// patch sets it whole.
+	var (
+		patch n5.Patch
+		err   error
+	)
+
+	if prev == nil || len(tried) > 0 {
+		patch, err = n5.NewResyncPatch(next, append(tried, prev)...)
+	} else {
+		patch, err = n5.NewPatch(prev, next)
+	}
+
 	if err != nil {
 		return policy.Grant{}, err
 	}
@@ -237,8 +258,12 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 
 	if err != nil {
 		err = classify(err)
-		if errors.Is(err, policy.ErrUnknownSession) {
+
+		switch {
+		case errors.Is(err, policy.ErrUnknownSession):
 			b.forget(id)
+		case policy.Transient(err):
+			b.tried(id, uri, prev, next)
 		}
 
 		return policy.Grant{}, err
@@ -260,7 +285,14 @@ func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionConte
 	b.record(err, "201")
 
 	if err != nil {
-		return "", classify(err)
+		err = classify(err)
+
+		// The PCF may have created a context it could not report; its terminate names it (TS 29.514 §4.2.5.3).
+		if policy.Transient(err) && !errors.Is(err, n5.ErrConnect) {
+			b.lose(id)
+		}
+
+		return "", err
 	}
 
 	if res.Existing {
@@ -311,32 +343,59 @@ func (b *Backend) keep(id, uri string, last *n5.AppSessionContextUpdateData) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if s, ok := b.sessions[id]; ok && s.uri != uri {
-		delete(b.byURI, s.uri)
+	b.sessions[id] = &session{uri: uri, last: last}
+}
+
+// tried notes a PATCH the PCF may or may not have applied.
+func (b *Backend) tried(id, uri string, last, next *n5.AppSessionContextUpdateData) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	s, ok := b.sessions[id]
+	if !ok {
+		s = &session{uri: uri, last: last}
+		b.sessions[id] = s
 	}
 
-	b.sessions[id] = &session{uri: uri, last: last}
-	b.byURI[uri] = id
+	s.tried = append(s.tried, next)
 }
 
 func (b *Backend) forget(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if s, ok := b.sessions[id]; ok {
-		delete(b.byURI, s.uri)
-		delete(b.sessions, id)
-	}
+	delete(b.sessions, id)
 }
 
-// lookup returns the local ID of the context at uri.
-func (b *Backend) lookup(uri string) (string, bool) {
+// lose remembers a create that got no answer, the oldest forgotten first.
+func (b *Backend) lose(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	id, ok := b.byURI[uri]
+	if len(b.lost) >= maxLost {
+		oldest := ""
 
-	return id, ok
+		for k, at := range b.lost {
+			if oldest == "" || at.Before(b.lost[oldest]) {
+				oldest = k
+			}
+		}
+
+		delete(b.lost, oldest)
+	}
+
+	b.lost[id] = time.Now()
+}
+
+// found reports, once, whether the create of id got no answer.
+func (b *Backend) found(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, ok := b.lost[id]
+	delete(b.lost, id)
+
+	return ok
 }
 
 func (b *Backend) record(err error, success string) {

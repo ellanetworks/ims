@@ -456,8 +456,8 @@ func TestTerminateOrphan(t *testing.T) {
 		t.Fatalf("got %s, want the delete of %s", r, uri)
 	}
 
-	// Nothing kept: a context of the PCF is still deleted, one elsewhere is not.
-	post := func(path, body string) int {
+	post := func(path, resURI string) int {
+		body := `{"termCause":"PDU_SESSION_TERMINATION","resUri":"` + resURI + `"}`
 		req, _ := http.NewRequestWithContext(f.ctx(), http.MethodPost, f.notify+path, strings.NewReader(body))
 		req.Header.Set("Content-Type", n5.ContentJSON)
 
@@ -471,9 +471,38 @@ func TestTerminateOrphan(t *testing.T) {
 		return resp.StatusCode
 	}
 
+	// A local ID the P-CSCF never issued does not get a context deleted, even one of the PCF.
 	other := f.pcf.URL() + n5.AppSessionsPath + "/elsewhere"
-	if s := post(SessionsPath+"/gone/terminate", `{"termCause":"PDU_SESSION_TERMINATION","resUri":"`+other+`"}`); s != http.StatusNoContent {
-		t.Fatalf("terminate of an unknown context of the PCF = %d, want 204", s)
+	if s := post(SessionsPath+"/gone/terminate", other); s != http.StatusBadRequest {
+		t.Fatalf("terminate of an unknown session = %d, want 400", s)
+	}
+
+	f.noRequest()
+
+	// A create that got no answer: its context is deleted at the resUri, if that is one of the PCF's.
+	lost := f.b.NewSessionID()
+
+	f.pcf.RefuseWhen(func(pcftest.Request) *pcftest.Failure { return &pcftest.Failure{Drop: true} })
+
+	if _, err := f.b.OpenSignalling(f.ctx(), lost, policy.Signalling{UE: ue4}, false); !policy.Transient(err) {
+		t.Fatalf("OpenSignalling = %v, want no answer", err)
+	}
+
+	f.pcf.Next(t)
+	f.pcf.RefuseWhen(nil)
+
+	for _, uri := range []string{
+		"http://192.0.2.1" + n5.AppSessionsPath + "/x",
+		f.pcf.URL() + n5.AppSessionsPath + "/..",
+		f.pcf.URL() + n5.AppSessionsPath + "/x/..",
+	} {
+		if s := post(SessionsPath+"/"+lost+"/terminate", uri); s != http.StatusBadRequest {
+			t.Fatalf("terminate of %s = %d, want 400", uri, s)
+		}
+	}
+
+	if s := post(SessionsPath+"/"+lost+"/terminate", other); s != http.StatusNoContent {
+		t.Fatalf("terminate after an unanswered create = %d, want 204", s)
 	}
 
 	// pcftest answers 404 to a context it never had, before recording a request.
@@ -485,11 +514,10 @@ func TestTerminateOrphan(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if s := post(SessionsPath+"/gone/terminate", `{"termCause":"PDU_SESSION_TERMINATION","resUri":"http://192.0.2.1/npcf-policyauthorization/v1/app-sessions/x"}`); s != http.StatusBadRequest {
-		t.Fatalf("terminate of a context elsewhere = %d, want 400", s)
+	// Once.
+	if s := post(SessionsPath+"/"+lost+"/terminate", other); s != http.StatusBadRequest {
+		t.Fatalf("second terminate after an unanswered create = %d, want 400", s)
 	}
-
-	f.noRequest()
 }
 
 func h2c() *http.Client {
@@ -559,21 +587,17 @@ func TestNotify(t *testing.T) {
 		})
 	}
 
-	// Routed on evSubsUri when the local ID is unknown.
+	// Routed on the local ID only: evSubsUri does not stand for it.
 	body, _ := json.Marshal(n5.EventsNotification{EvSubsURI: g.Ref + "/events-subscription", EvNotifs: failed})
 	req, _ := http.NewRequestWithContext(f.ctx(), http.MethodPost, f.notify+SessionsPath+"/other/notify", bytes.NewReader(body))
 	req.Header.Set("Content-Type", n5.ContentJSON)
 
 	resp, err := h2c().Do(req)
-	if err != nil || resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("notify on evSubsUri = %+v, %v, want 204", resp, err)
+	if err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("notify for another local ID = %+v, %v, want 400", resp, err)
 	}
 
 	_ = resp.Body.Close()
-
-	if n := <-f.sink.notifies; n.id != id {
-		t.Fatalf("notified %s, want %s", n.id, id)
-	}
 
 	f.sink.mu.Lock()
 	delete(f.sink.known, id)
@@ -624,4 +648,75 @@ func TestNotificationRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TS 29.514 Annex B.3.1: every update while the early dialogues fork says SEVERAL_DIALOGUES.
+func TestForkingGoesOn(t *testing.T) {
+	f := newFixture(t)
+	id := f.b.NewSessionID()
+
+	g, err := f.b.Authorize(f.ctx(), id, "", callRequest(true, audio()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.pcf.Next(t)
+
+	fork := callRequest(false, audio())
+	fork.Forking = policy.ForkingSeveralDialogues
+
+	for range 2 {
+		if _, err := f.b.Authorize(f.ctx(), id, g.Ref, fork); err != nil {
+			t.Fatal(err)
+		}
+
+		if r := f.pcf.Next(t); r.Op != n5.OpModify || !strings.Contains(string(r.Patch), `"sipForkInd":"SEVERAL_DIALOGUES"`) ||
+			!strings.Contains(string(r.Patch), `"medComponents"`) {
+			t.Fatalf("got %s, want SEVERAL_DIALOGUES with the service information", r)
+		}
+	}
+}
+
+// After a PATCH that got no answer, the next one fits whatever the PCF holds (TS 29.500 §5.2.7.2).
+func TestResyncAfterAnUnansweredPatch(t *testing.T) {
+	f := newFixture(t)
+	id := f.b.NewSessionID()
+
+	g, err := f.b.Authorize(f.ctx(), id, "", callRequest(true, audio()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.pcf.Next(t)
+
+	fork := callRequest(false, audio(), video())
+	fork.Forking = policy.ForkingSeveralDialogues
+
+	f.pcf.RefuseWhen(func(pcftest.Request) *pcftest.Failure { return &pcftest.Failure{Status: http.StatusGatewayTimeout} })
+
+	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, fork); !policy.Transient(err) {
+		t.Fatalf("Authorize = %v, want transient", err)
+	}
+
+	f.pcf.Next(t)
+	f.pcf.RefuseWhen(nil)
+
+	// The same service information as before the fork: an incremental patch would be empty.
+	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio())); err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.pcf.Next(t)
+	for _, want := range []string{`"sipForkInd":null`, `"2":null`, `"afAppId"`} {
+		if !strings.Contains(string(r.Patch), want) {
+			t.Fatalf("patch %s, want %s", r.Patch, want)
+		}
+	}
+
+	// Answered: back to incremental patches.
+	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio())); err != nil {
+		t.Fatal(err)
+	}
+
+	f.noRequest()
 }

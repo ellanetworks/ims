@@ -118,6 +118,8 @@ func TestCallMediaRefused(t *testing.T) {
 		failed(t, ctx, ac, 500)
 		ended(t, bc, testue.Cancelled)
 
+		// The call failed on the refused authorization, not before it.
+		s.pol.firstCall(netip.Addr{})
 		s.pol.noCallEnd(200 * time.Millisecond)
 	})
 }
