@@ -1,0 +1,6 @@
+{
+  "type": "/npcf-policyauthorization/v1",
+  "title": "[imsi-001010000000001:1] Media-Type is Required",
+  "status": 400,
+  "instance": "/app-sessions"
+}

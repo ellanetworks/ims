@@ -20,6 +20,12 @@ pcscf:
     client_ports: [5064, 5065]
     integrity: [hmac-sha-1-96, hmac-md5-96]
     encryption: off
+  policy:
+    n5:
+      pcf_uri: http://10.80.0.10:7777
+      notify:
+        address: 10.80.0.5
+        port: 7778
 icscf:
   port: 5070
 scscf:
