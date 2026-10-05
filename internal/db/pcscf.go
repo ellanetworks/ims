@@ -23,13 +23,21 @@ type PCSCFRegistration struct {
 	Sets           map[string][]string
 	ServiceRoute   []string
 	ExpiresAt      time.Time
-	RxSessionID    string
-	RxClass        [][]byte
+	Policy         PolicySession
 	SignallingLost bool
 }
 
+// PolicySession is the P-CSCF's session for IMS signalling with a policy function (TS 29.214 §4.4.5,
+// TS 29.514 §4.2.6.7): the endpoint it was opened with, its session ID and the backend's reference to it.
+type PolicySession struct {
+	Endpoint string
+	ID       string
+	Ref      string
+}
+
 const pcscfRegistrationColumns = `id, impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
-	contacts, associated_uris, sets, service_route, expires_at, rx_session_id, rx_class, signalling_lost`
+	contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id, policy_ref,
+	signalling_lost`
 
 func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PCSCFRegistration, error) {
 	if !r.UEAddress.IsValid() || !r.PCSCFAddress.IsValid() {
@@ -55,17 +63,6 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 		r.Sets = map[string][]string{}
 	}
 
-	var class sql.NullString
-
-	if len(r.RxClass) > 0 {
-		b, err := json.Marshal(r.RxClass)
-		if err != nil {
-			return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
-		}
-
-		class = sql.NullString{String: string(b), Valid: true}
-	}
-
 	sets, err := json.Marshal(r.Sets)
 	if err != nil {
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
@@ -73,17 +70,20 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 
 	saved, err := scanPCSCFRegistration(d.conn.QueryRowContext(ctx,
 		`INSERT INTO pcscf_registrations (impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
-			contacts, associated_uris, sets, service_route, expires_at, rx_session_id, rx_class, signalling_lost)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id, policy_ref,
+			signalling_lost)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (impi, ue_address) DO UPDATE SET flow_token = excluded.flow_token, transport = excluded.transport,
 			protected = excluded.protected,
 			ue_port = excluded.ue_port, pcscf_address = excluded.pcscf_address, contacts = excluded.contacts,
 			associated_uris = excluded.associated_uris, sets = excluded.sets, service_route = excluded.service_route,
-			expires_at = excluded.expires_at, rx_session_id = excluded.rx_session_id, rx_class = excluded.rx_class,
+			expires_at = excluded.expires_at, policy_endpoint = excluded.policy_endpoint,
+			policy_session_id = excluded.policy_session_id, policy_ref = excluded.policy_ref,
 			signalling_lost = excluded.signalling_lost
 		RETURNING `+pcscfRegistrationColumns,
 		r.IMPI, r.FlowToken, r.Transport, r.Protected, r.UEAddress.Addr().String(), r.UEAddress.Port(), r.PCSCFAddress.String(),
-		contacts, associated, sets, route, r.ExpiresAt.UTC().UnixNano(), nullableString(r.RxSessionID), class,
+		contacts, associated, sets, route, r.ExpiresAt.UTC().UnixNano(), nullableString(r.Policy.Endpoint),
+		nullableString(r.Policy.ID), nullableString(r.Policy.Ref),
 		r.SignallingLost))
 	if err != nil {
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
@@ -162,14 +162,14 @@ type rawPCSCFRegistration struct {
 	contacts, associated, route []byte
 	sets                        []byte
 	expiresAt                   int64
-	rxSessionID, rxClass        sql.NullString
+	policy                      [3]sql.NullString
 }
 
 func scanRawPCSCFRegistration(row scanner) (rawPCSCFRegistration, error) {
 	var raw rawPCSCFRegistration
 
 	err := row.Scan(&raw.ID, &raw.IMPI, &raw.FlowToken, &raw.Transport, &raw.Protected, &raw.ue, &raw.port, &raw.pcscf,
-		&raw.contacts, &raw.associated, &raw.sets, &raw.route, &raw.expiresAt, &raw.rxSessionID, &raw.rxClass,
+		&raw.contacts, &raw.associated, &raw.sets, &raw.route, &raw.expiresAt, &raw.policy[0], &raw.policy[1], &raw.policy[2],
 		&raw.SignallingLost)
 
 	return raw, err
@@ -189,13 +189,7 @@ func (raw rawPCSCFRegistration) parse() (PCSCFRegistration, error) {
 
 	r.UEAddress = netip.AddrPortFrom(ueAddr, raw.port)
 	r.ExpiresAt = time.Unix(0, raw.expiresAt).UTC()
-	r.RxSessionID = raw.rxSessionID.String
-
-	if raw.rxClass.Valid {
-		if err := json.Unmarshal([]byte(raw.rxClass.String), &r.RxClass); err != nil {
-			return PCSCFRegistration{}, err
-		}
-	}
+	r.Policy = PolicySession{Endpoint: raw.policy[0].String, ID: raw.policy[1].String, Ref: raw.policy[2].String}
 
 	for _, f := range []struct {
 		b []byte

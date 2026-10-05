@@ -106,8 +106,9 @@ var migrations = []string{
 		sets TEXT NOT NULL,
 		service_route TEXT NOT NULL,
 		expires_at INTEGER NOT NULL,
-		rx_session_id TEXT,
-		rx_class TEXT,
+		policy_endpoint TEXT,
+		policy_session_id TEXT,
+		policy_ref TEXT,
 		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1)),
 		UNIQUE (impi, ue_address)
 	);

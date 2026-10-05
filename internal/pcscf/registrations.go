@@ -120,7 +120,6 @@ func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
 	c.Contacts = slices.Clone(r.Contacts)
 	c.AssociatedURIs = slices.Clone(r.AssociatedURIs)
 	c.ServiceRoute = slices.Clone(r.ServiceRoute)
-	c.RxClass = slices.Clone(r.RxClass)
 
 	if r.Sets != nil {
 		c.Sets = make(map[string][]string, len(r.Sets))
@@ -282,13 +281,13 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 
 	if old, ok := rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}]; ok {
 		r.ID = old.ID
-		r.RxSessionID, r.RxClass, r.SignallingLost = old.RxSessionID, old.RxClass, old.SignallingLost
+		r.Policy, r.SignallingLost = old.Policy, old.SignallingLost
 
 		if old.FlowToken != r.FlowToken {
 			delete(rs.byToken, old.FlowToken)
 		}
 	} else {
-		r.RxSessionID, r.RxClass, r.SignallingLost = "", nil, false
+		r.Policy, r.SignallingLost = db.PolicySession{}, false
 	}
 
 	if rs.store != nil {
@@ -450,13 +449,13 @@ func (rs *registrations) signallingLost(token string) bool {
 	return ok && r.SignallingLost
 }
 
-func (rs *registrations) withoutRx(impi string, ue netip.Addr) bool {
+func (rs *registrations) withoutPolicy(impi string, ue netip.Addr) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
 	r, ok := rs.byKey[regKey{impi, ue.Unmap()}]
 
-	return ok && r.RxSessionID == ""
+	return ok && r.Policy.ID == ""
 }
 
 func (rs *registrations) fromSource(src netip.AddrPort) (db.PCSCFRegistration, bool) {

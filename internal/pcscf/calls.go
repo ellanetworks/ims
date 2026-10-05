@@ -19,7 +19,7 @@ type call struct {
 
 	icid string
 
-	rx *callRx
+	policy *callPolicy
 }
 
 func callOf(d *proxy.Dialog) *call {
@@ -156,13 +156,13 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	switch out.Method {
 	case "INVITE":
-		c := &call{ue: proxy.Caller, icid: cv.icid, rx: p.newCallRx(regKey{reg.IMPI, reg.UEAddress.Addr().Unmap()}, asserted, "")}
+		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKey{reg.IMPI, reg.UEAddress.Addr().Unmap()}, asserted, "")}
 
 		opts.NoAnswer = p.cfg.NoAnswer
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
 			Value: c, Target: p.dialogTarget(proxy.Caller, reg.FlowToken, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
-		c.rx.attach(c, dialog)
+		c.policy.attach(c, dialog)
 		opts.Dialog = dialog
 
 		fallthrough
@@ -242,13 +242,13 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		c := &call{ue: proxy.Callee, icid: cv.icid}
 
 		if f, ok := p.regs.flow(top.User); ok {
-			c.rx = p.newCallRx(regKey{f.impi, f.ue.Addr().Unmap()}, p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
+			c.policy = p.newCallPolicy(regKey{f.impi, f.ue.Addr().Unmap()}, p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
 		}
 
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
 			Value: c, Target: p.dialogTarget(proxy.Callee, top.User, req.Flow.Local.Addr()), OnEvent: p.callEvent(c),
 		})
-		c.rx.attach(c, dialog)
+		c.policy.attach(c, dialog)
 		opts.Dialog = dialog
 
 		fallthrough
@@ -538,7 +538,7 @@ func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 // TS 24.229 §5.2.6.3.5 step 7, §5.2.6.3.9 step 3
 func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVector {
 	if c := callOf(d); c != nil && c.icid != "" {
-		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain, access: c.rx.takeCharging()}
+		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain, access: c.policy.takeCharging()}
 	}
 
 	return p.newChargingVector(req.Flow.Local.Addr())

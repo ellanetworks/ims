@@ -156,7 +156,7 @@ func TestForkedCallEarlyUpdate(t *testing.T) {
 
 // TS 29.214 §4.4.4: the SIP side gives up at the call timeout; a late successful AA-Answer is followed by an STR.
 func TestCallMediaLateAnswerEndsTheSession(t *testing.T) {
-	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Rx.CallTimeout = 100 * time.Millisecond })
+	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
 	got, f := s.originate(t, u)
 
 	open := gateAA(pcrf, func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return succeed(req) })
@@ -190,8 +190,8 @@ func TestCallSessionEndsAtShutdown(t *testing.T) {
 func TestCallEndedBeforeItsFirstAAR(t *testing.T) {
 	s, _, pcrf, _ := newRxIPsecScene(t)
 
-	c := &call{ue: proxy.Caller, rx: s.p.newCallRx(regKey{testIMPI, ueAddr}, nil, "")}
-	c.rx.session = s.p.rx.callSession(c.rx)
+	c := &call{ue: proxy.Caller, policy: s.p.newCallPolicy(regKey{testIMPI, ueAddr}, nil, "")}
+	c.policy.session = s.p.policy.callSession(c.policy)
 
 	s.p.callEnded(c)
 	pcrf.none()
@@ -289,7 +289,7 @@ func TestCallAbortedForBearerResourcesDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishEarly(t, u, pcrf)
 
-	terminate, _ := s.p.AbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortInsufficientBearerResources})
+	terminate, _ := s.p.rxAbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortInsufficientBearerResources})
 
 	cancel, _ := s.scscf.RecvRequest()
 	if cancel.Method != "CANCEL" {

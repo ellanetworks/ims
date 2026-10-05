@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
+	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -45,7 +45,7 @@ type Config struct {
 	HomeDomain string
 	SCSCF      SCSCF
 	IPsec      IPsec
-	Rx         Rx
+	Policy     Policy
 
 	NoAnswer time.Duration
 
@@ -59,13 +59,13 @@ type Config struct {
 }
 
 type PCSCF struct {
-	cfg   Config
-	log   *slog.Logger
-	clock Clock
-	sas   *associations
-	regs  *registrations
-	subs  *subscriptions
-	rx    *rxClient
+	cfg    Config
+	log    *slog.Logger
+	clock  Clock
+	sas    *associations
+	regs   *registrations
+	subs   *subscriptions
+	policy *policyClient
 }
 
 func New(cfg Config) *PCSCF {
@@ -86,8 +86,12 @@ func New(cfg Config) *PCSCF {
 
 	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
 	p.subs = newSubscriptions(p)
-	p.rx = newRxClient(cfg.Rx, p.log, p.clock.Now)
+	p.policy = newPolicyClient(cfg.Policy, p.log, p.clock.Now)
 	p.regs.expired = p.expired
+
+	if p.policy != nil {
+		cfg.Policy.Backend.Bind(p)
+	}
 
 	if cfg.IPsec.Kernel != nil {
 		p.sas = newAssociations(cfg.IPsec, p.log)
@@ -112,7 +116,7 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 		return fmt.Errorf("restore registrations: %w", err)
 	}
 
-	p.restoreRx(expired)
+	p.restorePolicy(expired)
 
 	if err := p.subs.restore(ctx); err != nil {
 		return fmt.Errorf("restore reg event subscriptions: %w", err)
@@ -125,8 +129,8 @@ func (p *PCSCF) Close() {
 	p.subs.close()
 	p.regs.close()
 
-	if p.rx != nil {
-		p.rx.close()
+	if p.policy != nil {
+		p.policy.close()
 	}
 
 	if p.sas != nil {
@@ -139,7 +143,7 @@ func (p *PCSCF) expired(r db.PCSCFRegistration) {
 		p.sas.deregistered(r.IMPI, r.UEAddress.Addr())
 	}
 
-	p.endRx(r, rx.TerminationAuthExpired, 0)
+	p.endPolicy(r, policy.TerminationExpired, 0)
 }
 
 func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
@@ -430,7 +434,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	ended, open := false, false
 	if res.IsSuccess() {
 		ended = p.registered(req, res, r)
-		open = !ended && p.rx != nil && !emergency(req, res) && p.regs.withoutRx(r.impi, r.ue)
+		open = !ended && p.policy != nil && !emergency(req, res) && p.regs.withoutPolicy(r.impi, r.ue)
 	}
 
 	relay := func() proxy.Verdict {
@@ -443,11 +447,11 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		}
 
 		if r.removed != nil {
-			p.endRx(*r.removed, rx.TerminationLogout, 0)
+			p.endPolicy(*r.removed, policy.TerminationLogout, 0)
 		}
 
 		if open {
-			p.openRx(regKey{r.impi, r.ue}, 0)
+			p.openSignalling(regKey{r.impi, r.ue}, 0)
 		}
 
 		return proxy.Hold
@@ -521,7 +525,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 		if old, ok := p.regs.remove(r.impi, r.ue); ok {
 			p.log.Debug("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
 
-			if old.RxSessionID != "" {
+			if old.Policy.ID != "" {
 				r.removed = &old
 			}
 		}

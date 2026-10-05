@@ -2,6 +2,7 @@ package pcscf
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -17,7 +18,9 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
@@ -40,14 +43,45 @@ func newFakePCRF(t *testing.T) *fakePCRF {
 	return &fakePCRF{t: t, reqs: make(chan *diameter.Message, 64)}
 }
 
+func (f *fakePCRF) backend() *rxpolicy.Backend {
+	return rxpolicy.New(rxpolicy.Config{
+		Diameter: f, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+	})
+}
+
 func (f *fakePCRF) config(timeout time.Duration) func(*Config) {
 	return func(c *Config) {
-		c.Rx = Rx{
-			Diameter: f,
-			PCRF:     PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
-			Timeout:  timeout,
-		}
+		c.Policy = Policy{Backend: f.backend(), Timeout: timeout}
 	}
+}
+
+// rxReAuth delivers an RAR as the Diameter server would, through the Rx backend.
+func (p *PCSCF) rxReAuth(session string, r rx.ReAuthRequest) bool {
+	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
+	if !ok {
+		return p.Notify(session, policy.Event{})
+	}
+
+	return b.ReAuth(session, r)
+}
+
+// rxAbortSession delivers an ASR as the Diameter server would, through the Rx backend.
+func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func(), bool) {
+	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
+	if !ok {
+		return p.Abort(session, policy.Abort{})
+	}
+
+	return b.AbortSession(session, r)
+}
+
+func refClass(r db.PCSCFRegistration) [][]byte {
+	var class [][]byte
+	if r.Policy.Ref != "" {
+		_ = json.Unmarshal([]byte(r.Policy.Ref), &class)
+	}
+
+	return class
 }
 
 func (f *fakePCRF) Identity() diameter.Identity { return imsIdentity }
@@ -57,7 +91,7 @@ func (f *fakePCRF) NewSessionID() string {
 }
 
 func (f *fakePCRF) Do(ctx context.Context, peerID string, req *diameter.Message, _ ...diameter.DoOption) (*diameter.Message, error) {
-	if peerID != "pcrf" {
+	if peerID != "pcrf" && peerID != "pcrf-1" {
 		return nil, diameter.ErrUnknownPeer
 	}
 
@@ -192,7 +226,7 @@ func (s *regScene) wantSession(id string) {
 
 	eventually(s.t, "the Rx session "+id+" on the stored record", func() bool {
 		regs, err := s.store.ListPCSCFRegistrations(context.Background())
-		return err == nil && len(regs) == 1 && regs[0].RxSessionID == id
+		return err == nil && len(regs) == 1 && regs[0].Policy.ID == id
 	})
 }
 
@@ -253,7 +287,7 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 		t.Fatalf("AAR = %+v, want %+v", got, want)
 	}
 
-	if r, ok := s.record(); !ok || r.RxSessionID != env.SessionID {
+	if r, ok := s.record(); !ok || r.Policy.ID != env.SessionID {
 		t.Fatalf("record = %+v, want the pending session %s", r, env.SessionID)
 	}
 
@@ -267,15 +301,12 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 
 func TestRxAARForIPv6(t *testing.T) {
 	pcrf := newFakePCRF(t)
-	c := newRxClient(Rx{Diameter: pcrf, PCRF: PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm}},
-		slog.New(slog.DiscardHandler), time.Now)
-	t.Cleanup(c.close)
+	b := pcrf.backend()
 
 	ue := netip.MustParseAddr("2001:db8::1")
-	s := c.begin(regKey{testIMPI, ue})
 
-	if _, err := c.aar(s, 0); err != nil {
-		t.Fatalf("aar: %v", err)
+	if _, err := b.OpenSignalling(t.Context(), b.NewSessionID(), policy.Signalling{UE: ue}, false); err != nil {
+		t.Fatalf("OpenSignalling: %v", err)
 	}
 
 	m := pcrf.next()
@@ -335,7 +366,7 @@ func TestRxReAuthenticationKeepsTheSession(t *testing.T) {
 
 	pcrf.none()
 
-	if reg, ok := s.p.regs.get(testIMPI, ueAddr); !ok || reg.RxSessionID != id {
+	if reg, ok := s.p.regs.get(testIMPI, ueAddr); !ok || reg.Policy.ID != id {
 		t.Fatalf("record = %+v, want the session %s kept", reg, id)
 	}
 }
@@ -479,7 +510,7 @@ func TestRxSTROnUEDeregistration(t *testing.T) {
 	pcrf.wantSTR(id, rx.TerminationLogout)
 
 	eventually(t, "the session to be forgotten after its STA", func() bool {
-		_, ok := s.p.rx.lookup(id)
+		_, ok := s.p.policy.lookup(id)
 		return !ok
 	})
 }
@@ -574,7 +605,7 @@ func TestRxUnknownSessionAtTheSTA(t *testing.T) {
 	pcrf.wantSTR(id, rx.TerminationLogout)
 
 	eventually(t, "the session to be forgotten", func() bool {
-		_, ok := s.p.rx.lookup(id)
+		_, ok := s.p.policy.lookup(id)
 		return !ok
 	})
 }
@@ -604,14 +635,17 @@ func (s *regScene) wantSignallingLost(lost bool) {
 }
 
 func TestRxReAuthMarksTheSignallingLost(t *testing.T) {
-	for _, action := range []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer} {
+	// TS 29.514 §4.2.5.10 reports signalling path loss as FAILED_RESOURCES_ALLOCATION.
+	for _, action := range []rx.SpecificAction{
+		rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer, rx.ActionIndicationOfFailedResourcesAllocation,
+	} {
 		t.Run(action.String(), func(t *testing.T) {
 			s, pcrf := newRxScene(t, 0)
 
 			path, _, _ := s.registered(600)
 			id, _ := pcrf.aar()
 
-			if !s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{action}}) {
+			if !s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{action}}) {
 				t.Fatal("ReAuth reported an unknown session")
 			}
 
@@ -620,8 +654,8 @@ func TestRxReAuthMarksTheSignallingLost(t *testing.T) {
 			s.terminating(path)
 			wantStatus(t, first(s.scscf.RecvResponse()), 500)
 
-			if r, _ := s.record(); r.RxSessionID != id {
-				t.Fatalf("session = %q, want %s kept", r.RxSessionID, id)
+			if r, _ := s.record(); r.Policy.ID != id {
+				t.Fatalf("session = %q, want %s kept", r.Policy.ID, id)
 			}
 
 			pcrf.none()
@@ -645,7 +679,7 @@ func TestRxReAuthWithOtherActions(t *testing.T) {
 
 	id, _ := pcrf.aar()
 
-	if !s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfRecoveryOfBearer}}) {
+	if !s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfRecoveryOfBearer}}) {
 		t.Fatal("ReAuth reported an unknown session")
 	}
 
@@ -653,7 +687,7 @@ func TestRxReAuthWithOtherActions(t *testing.T) {
 		t.Fatal("signalling lost set by another action")
 	}
 
-	if s.p.ReAuth("ims.test;9;9", rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+	if s.p.rxReAuth("ims.test;9;9", rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
 		t.Fatal("ReAuth accepted an unknown session")
 	}
 }
@@ -664,7 +698,7 @@ func TestRxRequestFromTheUERestoresTheSignalling(t *testing.T) {
 	s.registered(600)
 
 	id, _ := pcrf.aar()
-	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
+	s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
 
 	s.wantSignallingLost(true)
 
@@ -680,7 +714,7 @@ func TestRxRequestOnTheSAsRestoresTheSignalling(t *testing.T) {
 	s.registerOverIPsec(u)
 
 	id, _ := pcrf.aar()
-	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
+	s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
 
 	if r, _ := s.p.regs.get(testIMPI, ueAddr); !r.SignallingLost {
 		t.Fatal("signalling lost not set")
@@ -702,7 +736,7 @@ func TestRxAbortSession(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	terminate, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	terminate, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 	if !ok {
 		t.Fatal("AbortSession reported an unknown session")
 	}
@@ -716,11 +750,11 @@ func TestRxAbortSession(t *testing.T) {
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 
 	eventually(t, "the session to be forgotten after its STA", func() bool {
-		_, ok := s.p.rx.lookup(id)
+		_, ok := s.p.policy.lookup(id)
 		return !ok
 	})
 
-	if _, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
+	if _, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
 		t.Fatal("AbortSession accepted the ended session")
 	}
 
@@ -740,7 +774,7 @@ func TestRxAbortSessionWhileTheAAAIsOutstanding(t *testing.T) {
 
 	id, _ := pcrf.aar()
 
-	terminate, ok := s.p.AbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	terminate, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 	if !ok {
 		t.Fatal("AbortSession did not find the pending session")
 	}
@@ -775,11 +809,11 @@ func TestRxSessionsReestablishedAfterRestart(t *testing.T) {
 
 	s.wantSession(again)
 
-	if s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+	if s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
 		t.Fatal("the old session still known")
 	}
 
-	if !s.p.ReAuth(again, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+	if !s.p.rxReAuth(again, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
 		t.Fatal("the new session unknown")
 	}
 
@@ -814,7 +848,7 @@ func TestRxNoSessionForEmergencyRegistrations(t *testing.T) {
 
 	pcrf.none()
 
-	if r, ok := s.record(); !ok || r.RxSessionID != "" {
+	if r, ok := s.record(); !ok || r.Policy.ID != "" {
 		t.Fatalf("record = %+v, %v; want an emergency registration without an Rx session", r, ok)
 	}
 }
@@ -844,13 +878,13 @@ func TestRxSignallingLostDuringARegistration(t *testing.T) {
 
 	id, _ := pcrf.aar()
 
-	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
+	s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
 	s.wantSignallingLost(true)
 
 	req, f := s.register(nil)
 	s.wantSignallingLost(false)
 
-	s.p.ReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
+	s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
 	s.wantSignallingLost(true)
 
 	answerRegister(s.icscf, s.scscf.Addr(), req, f, 600)
@@ -874,8 +908,8 @@ func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
 
 	s.p.regs.save(snapshot)
 
-	if r, _ := s.record(); r.RxSessionID != "" {
-		t.Fatalf("session = %q, want the ended session not brought back", r.RxSessionID)
+	if r, _ := s.record(); r.Policy.ID != "" {
+		t.Fatalf("session = %q, want the ended session not brought back", r.Policy.ID)
 	}
 
 	s.reregister(600)
@@ -918,7 +952,7 @@ func TestRxClassEchoedInTheSTR(t *testing.T) {
 
 	eventually(t, "the Class on the stored record", func() bool {
 		regs, err := s.store.ListPCSCFRegistrations(context.Background())
-		return err == nil && len(regs) == 1 && regs[0].RxSessionID == id && reflect.DeepEqual(regs[0].RxClass, class)
+		return err == nil && len(regs) == 1 && regs[0].Policy.ID == id && reflect.DeepEqual(refClass(regs[0]), class)
 	})
 
 	s.reregister(0)
@@ -941,7 +975,7 @@ func TestRxClassSurvivesRestart(t *testing.T) {
 
 	eventually(t, "the Class on the record", func() bool {
 		r, ok := s.record()
-		return ok && reflect.DeepEqual(r.RxClass, class)
+		return ok && reflect.DeepEqual(refClass(r), class)
 	})
 
 	s.restart()
@@ -950,6 +984,59 @@ func TestRxClassSurvivesRestart(t *testing.T) {
 	if got := <-strs; !reflect.DeepEqual(got, class) {
 		t.Fatalf("STR Class after the restart = %q, want %q", got, class)
 	}
+}
+
+// A session stored for another policy function is not terminated here: it is dropped and opened again.
+func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	r, _ := s.record()
+	r.Policy.Endpoint = "pcf"
+
+	if _, err := s.store.SavePCSCFRegistration(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	s.restart()
+
+	again, _ := pcrf.aar()
+	if again == id {
+		t.Fatalf("AAR for %s, want a new session", again)
+	}
+
+	s.wantSession(again)
+
+	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginHost {
+		t.Fatalf("endpoint = %q, want the PCRF", r.Policy.Endpoint)
+	}
+
+	pcrf.none()
+}
+
+// The endpoint is the PCRF, not the local name of its peer: renaming the peer keeps the stored sessions.
+func TestRestartWithARenamedPeerTerminatesTheSession(t *testing.T) {
+	s, pcrf := newRxScene(t, 0)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	s.p.cfg.Policy.Backend = rxpolicy.New(rxpolicy.Config{
+		Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf-1", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+	})
+
+	s.restart()
+
+	pcrf.wantSTR(id, rx.TerminationAdministrative)
+
+	again, _ := pcrf.aar()
+	s.wantSession(again)
 }
 
 func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
@@ -1079,13 +1166,13 @@ func TestTerminationCauseOfMixedEvents(t *testing.T) {
 			e = graver(e, ev)
 		}
 
-		if c := terminationCause(e); c != rx.TerminationAdministrative {
-			t.Errorf("%v: cause %s, want DIAMETER_ADMINISTRATIVE", events, c)
+		if c := terminationCause(e); c != policy.TerminationAdministrative {
+			t.Errorf("%v: cause %s, want administrative", events, c)
 		}
 	}
 
-	if c := terminationCause(graver(graver("", regevent.Expired), regevent.Unregistered)); c != rx.TerminationLogout {
-		t.Errorf("expired and unregistered: cause %s, want DIAMETER_LOGOUT", c)
+	if c := terminationCause(graver(graver("", regevent.Expired), regevent.Unregistered)); c != policy.TerminationLogout {
+		t.Errorf("expired and unregistered: cause %s, want logout", c)
 	}
 }
 
@@ -1094,18 +1181,18 @@ func TestNoRxWithoutAPCRF(t *testing.T) {
 
 	s.registered(600)
 
-	if r, _ := s.record(); r.RxSessionID != "" {
-		t.Fatalf("session = %q without a PCRF", r.RxSessionID)
+	if r, _ := s.record(); r.Policy.ID != "" {
+		t.Fatalf("session = %q without a PCRF", r.Policy.ID)
 	}
 
-	if _, known := s.p.AbortSession("ims.test;1;1", rx.AbortSessionRequest{}); known || s.p.ReAuth("ims.test;1;1", rx.ReAuthRequest{}) {
+	if _, known := s.p.rxAbortSession("ims.test;1;1", rx.AbortSessionRequest{}); known || s.p.rxReAuth("ims.test;1;1", rx.ReAuthRequest{}) {
 		t.Fatal("a session found without a PCRF")
 	}
 }
 
-func slowRetry(c *Config) { c.Rx.STRRetry = time.Hour }
+func slowRetry(c *Config) { c.Policy.TerminationRetry = time.Hour }
 
-func fastRetry(c *Config) { c.Rx.STRRetry = 20 * time.Millisecond }
+func fastRetry(c *Config) { c.Policy.TerminationRetry = 20 * time.Millisecond }
 
 func failSTRs(n int64) func(context.Context, *diameter.Message) (*diameter.Message, error) {
 	var failed atomic.Int64
@@ -1226,7 +1313,12 @@ func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
 
 func TestRxOriginStateID(t *testing.T) {
 	pcrf := newFakePCRF(t)
-	s := newRegScene(t, pcrf.config(0), func(c *Config) { c.Rx.OriginStateID = 42 })
+	s := newRegScene(t, pcrf.config(0), func(c *Config) {
+		c.Policy.Backend = rxpolicy.New(rxpolicy.Config{
+			Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+			OriginStateID: 42,
+		})
+	})
 
 	wantState := func(m *diameter.Message) {
 		t.Helper()
@@ -1249,30 +1341,4 @@ func TestRxOriginStateID(t *testing.T) {
 
 	s.reregister(0)
 	wantState(pcrf.next())
-}
-
-func TestRxUnanswered(t *testing.T) {
-	result := func(code uint32) error { return &rx.ResultError{Result: tgpp.Result{Code: code}} }
-
-	for _, c := range []struct {
-		err  error
-		want bool
-	}{
-		{nil, false},
-		{diameter.ErrNotConnected, true},
-		{context.DeadlineExceeded, true},
-		{diameter.ErrUnknownPeer, false},
-		{diameter.ErrApplicationUnsupported, false},
-		{diameter.ErrClosed, false},
-		{result(diameter.ResultUnknownSessionID), false},
-		{result(diameter.ResultUnableToComply), false},
-		{result(diameter.ResultTooBusy), true},
-		{result(diameter.ResultUnableToDeliver), true},
-		{result(4001), true},
-		{fmt.Errorf("%w: no Result-Code", rx.ErrMalformedAnswer), false},
-	} {
-		if got := unanswered(c.err); got != c.want {
-			t.Errorf("unanswered(%v) = %v, want %v", c.err, got, c.want)
-		}
-	}
 }
