@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"slices"
@@ -44,6 +45,7 @@ const (
 )
 
 type Config struct {
+	Logging  Logging  `yaml:"logging"`
 	DB       DB       `yaml:"db"`
 	API      API      `yaml:"api"`
 	IMS      IMS      `yaml:"ims"`
@@ -52,6 +54,10 @@ type Config struct {
 	ICSCF    ICSCF    `yaml:"icscf"`
 	SCSCF    SCSCF    `yaml:"scscf"`
 	Diameter Diameter `yaml:"diameter"`
+}
+
+type Logging struct {
+	Level slog.Level `yaml:"level"`
 }
 
 type DB struct {
@@ -162,6 +168,7 @@ type Diameter struct {
 	OriginHost  string         `yaml:"origin_host"`
 	OriginRealm string         `yaml:"origin_realm"`
 	Address     netip.Addr     `yaml:"address"`
+	Port        int            `yaml:"port"`
 	Peers       []DiameterPeer `yaml:"peers"`
 }
 
@@ -272,6 +279,10 @@ func Load(path string) (Config, error) {
 
 	if cfg.SCSCF.MaxExpires == 0 {
 		cfg.SCSCF.MaxExpires = defaultMaxExpires
+	}
+
+	if cfg.Diameter.Port == 0 {
+		cfg.Diameter.Port = defaultDiameterPort
 	}
 
 	for i := range cfg.Diameter.Peers {
@@ -580,6 +591,8 @@ func (d Diameter) validate() error {
 		return errors.New("diameter.address is required")
 	case d.Address.IsUnspecified():
 		return errors.New("diameter.address must be a specific address, not 0.0.0.0 or ::, since it is advertised to peers")
+	case d.Port < 1 || d.Port > 65535:
+		return fmt.Errorf("diameter.port %d is out of range", d.Port)
 	}
 
 	ids := make(map[string]bool, len(d.Peers))

@@ -463,7 +463,7 @@ func elementID(prefix, key string) string {
 func (r *Registrar) send(out []*outgoing) {
 	for _, o := range out {
 		if _, err := r.cfg.Layer.Request(o.req, &notifyTransaction{r: r, o: o}); err != nil {
-			r.log.Info("sending a NOTIFY failed", slog.String("impi", o.impi), slog.Any("error", err))
+			r.log.Debug("sending a NOTIFY failed", slog.String("impi", o.impi), slog.Any("error", err))
 			r.notifyFailed(o)
 		}
 	}
@@ -480,7 +480,12 @@ func (t *notifyTransaction) HandleResponse(res *sip.Response) {
 	case res.IsSuccess():
 		t.r.notified(t.o, res)
 	case endsSubscription(res.StatusCode):
-		t.r.log.Info("NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
+		t.r.log.Debug("NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
+		t.r.notifyFailed(t.o)
+	// RFC 3261 §12.2.1.2: a 408 within a dialog SHOULD end it, as a timeout does
+	// under RFC 6665 §4.2.2. RFC 4320 forbids it for a NOTIFY, but not every proxy complies.
+	case res.StatusCode == 408:
+		t.r.log.Debug("NOTIFY timed out", slog.String("impi", t.o.impi))
 		t.r.notifyFailed(t.o)
 	default:
 		t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
@@ -488,7 +493,7 @@ func (t *notifyTransaction) HandleResponse(res *sip.Response) {
 }
 
 func (t *notifyTransaction) HandleError(err error) {
-	t.r.log.Info("NOTIFY failed", slog.String("impi", t.o.impi), slog.Any("error", err))
+	t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Any("error", err))
 	t.r.notifyFailed(t.o)
 }
 
@@ -514,7 +519,7 @@ func (r *Registrar) notifyFailed(o *outgoing) {
 		}
 
 		r.dropSubscription(ctx, s)
-		r.log.Info("reg event subscription ended by a failed NOTIFY", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.Debug("reg event subscription ended by a failed NOTIFY", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 	})
 }
 

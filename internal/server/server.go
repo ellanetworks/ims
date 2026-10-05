@@ -27,6 +27,8 @@ type Server struct {
 
 	IPsec pcscf.Kernel
 
+	DiameterHandshakeTimeout time.Duration
+
 	database    *db.DB
 	node        *diameter.Node
 	sip         *sipServer
@@ -58,18 +60,40 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
+	diameterLns, err := listenDiameter(ctx, cfg.Diameter)
+	if err != nil {
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return err
+	}
+
 	rtr := newRTRHandler(s.Logger)
 	rxh := newRxHandler(s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, rtr, rxh, s.Logger)
+	// RFC 6733 §8.16: a new value at each start, since the P-CSCF keeps no Rx
+	// session across a restart.
+	originState := uint32(time.Now().Unix())
+
+	node, err := newDiameterNode(cfg.Diameter, s.DiameterHandshakeTimeout, originState, rtr, rxh, s.Logger)
 	if err != nil {
+		closeListeners(diameterLns)
+
 		_ = apiLn.Close()
 		_ = database.Close()
 
 		return fmt.Errorf("start Diameter: %w", err)
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, database, s.IPsec, s.Logger)
+	for _, ln := range diameterLns {
+		go func() {
+			if err := node.Serve(ln); !errors.Is(err, diameter.ErrClosed) && !errors.Is(err, net.ErrClosed) {
+				s.Logger.Warn("Diameter listener stopped", slog.String("address", ln.Addr().String()), slog.Any("error", err))
+			}
+		}()
+	}
+
+	sipServer, err := startSIP(ctx, cfg, node, originState, rtr, rxh, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		_ = apiLn.Close()
@@ -106,7 +130,13 @@ func (s *Server) Start(ctx context.Context) error {
 		sipAttrs = append(sipAttrs, l.Role+" "+l.Address.String())
 	}
 
-	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs))
+	diameterAttrs := make([]string, 0, len(diameterLns))
+	for _, ln := range diameterLns {
+		diameterAttrs = append(diameterAttrs, ln.Addr().Network()+" "+ln.Addr().String())
+	}
+
+	s.Logger.Info("ims started", slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs),
+		slog.Any("diameter", diameterAttrs))
 
 	return nil
 }

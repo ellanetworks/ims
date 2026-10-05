@@ -285,7 +285,7 @@ func (r *Registrar) challengeExpired(impi string, ch *challenge) {
 			return
 		}
 
-		r.log.Info("reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
+		r.log.Debug("reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
 
 		if _, err := r.serverAssignment(r.ctx, impi, []string{ch.impu}, assignAuthenticationTimeout, false); err != nil {
 			r.log.Warn("failed to tell the HSS of an authentication timeout", slog.String("impi", impi), slog.Any("error", err))
@@ -441,7 +441,7 @@ func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi str
 			continue
 		}
 
-		r.log.Info("reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
+		r.log.Debug("reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
 
 		if o := r.buildNotify(ctx, st, s, nil, "terminated;reason="+reasonTimeout); o != nil {
 			out = append(out, o)

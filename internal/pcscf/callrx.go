@@ -521,7 +521,7 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	cr.mu.Unlock()
 
-	p.log.Info("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
+	p.log.Debug("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
 		slog.String("ue", cr.key.ue.String()), slog.String("session", s.id), slog.String("request", kind.String()),
 		slog.String("forking", fork.String()))
 
@@ -593,6 +593,8 @@ func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
 	if err != nil {
 		return rx.AAAnswer{}, err
 	}
+
+	c.withOriginState(req)
 
 	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.Timeout)
 	defer cancel()

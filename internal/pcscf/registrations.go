@@ -214,7 +214,7 @@ func (rs *registrations) expire(k regKey) {
 	old, _ := rs.removeLocked(k)
 	rs.mu.Unlock()
 
-	rs.log.Info("registration expired", slog.String("impi", k.impi), slog.String("ue", k.ue.String()))
+	rs.log.Debug("registration expired", slog.String("impi", k.impi), slog.String("ue", k.ue.String()))
 
 	if rs.expired != nil {
 		rs.expired(old)
