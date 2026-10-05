@@ -46,8 +46,6 @@ type stubSessions struct {
 	terminated chan struct{}
 }
 
-func (s *stubSessions) PCRFOpen(string) {}
-
 func (s *stubSessions) ReAuth(session string, _ rx.ReAuthRequest) bool {
 	return session == s.session
 }

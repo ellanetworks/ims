@@ -72,7 +72,11 @@ func (s *Server) Start(ctx context.Context) error {
 	rtr := newRTRHandler(s.Logger)
 	rxh := newRxHandler(s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, s.DiameterHandshakeTimeout, rtr, rxh, s.Logger)
+	// RFC 6733 §8.16: a new value at each start, since the P-CSCF keeps no Rx
+	// session across a restart.
+	originState := uint32(time.Now().Unix())
+
+	node, err := newDiameterNode(cfg.Diameter, s.DiameterHandshakeTimeout, originState, rtr, rxh, s.Logger)
 	if err != nil {
 		closeListeners(diameterLns)
 
@@ -90,7 +94,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
-	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, database, s.IPsec, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, node, originState, rtr, rxh, database, s.IPsec, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 

@@ -68,8 +68,8 @@ type sipServer struct {
 	served      []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler, rxh *rxHandler,
-	database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, originState uint32, rtr *rtrHandler,
+	rxh *rxHandler, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
@@ -179,7 +179,8 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 
 	if p, ok := cfg.Diameter.RxPeer(); ok {
 		pcrf = pcscf.Rx{
-			Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout,
+			Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, OriginStateID: originState,
+			MediaLossTimeout: cfg.PCSCF.MediaLossTimeout,
 		}
 	} else {
 		logger.Info("no diameter peer serves rx: the P-CSCF runs without Rx sessions")

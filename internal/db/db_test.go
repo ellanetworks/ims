@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -28,35 +27,8 @@ func TestOpenReachesLatestVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if version != len(migrations) {
-		t.Fatalf("user_version = %d, want %d", version, len(migrations))
-	}
-}
-
-func TestOpenUpgradesTheFirstSchema(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "ims.db")
-
-	conn, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := conn.ExecContext(ctx, migrations[0]+"; PRAGMA user_version = 1"); err != nil {
-		t.Fatal(err)
-	}
-
-	_ = conn.Close()
-
-	d, err := Open(ctx, path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	t.Cleanup(func() { _ = d.Close() })
-
-	if _, err := d.ListRxTerminations(ctx); err != nil {
-		t.Fatalf("ListRxTerminations after the upgrade: %v", err)
+	if version != 1 {
+		t.Fatalf("user_version = %d, want 1", version)
 	}
 }
 

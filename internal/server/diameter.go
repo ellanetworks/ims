@@ -34,8 +34,8 @@ var transports = map[config.Transport]diameter.Transport{
 	config.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandler, rxh *rxHandler,
-	logger *slog.Logger,
+func newDiameterNode(cfg config.Diameter, handshake time.Duration, originState uint32, rtr *rtrHandler,
+	rxh *rxHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
 	if handshake <= 0 {
 		handshake = DefaultHandshakeTimeout
@@ -48,16 +48,11 @@ func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandl
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:          newDiameterMux(rtr, rxh),
-		HandshakeTimeout: handshake,
-		OnPeerStateChange: func(p diameter.PeerStatus) {
-			logPeerState(logger, p)
-
-			if p.State == diameter.PeerOpen {
-				rxh.peerOpen(p.ID)
-			}
-		},
-		Logger: logger,
+		Handler:           newDiameterMux(rtr, rxh),
+		OriginStateID:     originState,
+		HandshakeTimeout:  handshake,
+		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
+		Logger:            logger,
 	})
 	if err != nil {
 		return nil, err
@@ -220,7 +215,6 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 }
 
 type rxSessions interface {
-	PCRFOpen(peerID string)
 	ReAuth(sessionID string, r rx.ReAuthRequest) bool
 	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
@@ -241,12 +235,6 @@ func (h *rxHandler) bind(s rxSessions) {
 	}
 
 	h.target.Store(&s)
-}
-
-func (h *rxHandler) peerOpen(id string) {
-	if t := h.target.Load(); t != nil {
-		(*t).PCRFOpen(id)
-	}
 }
 
 // TS 29.214 §4.4.6.3
