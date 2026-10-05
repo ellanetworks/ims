@@ -341,7 +341,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 	}
 
 	if !st.any() {
-		r.log.Info("protected REGISTER from an unregistered user", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.Debug("protected REGISTER from an unregistered user", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 		return sip.NewResponse(rr.req, 500, "")
 	}
 
@@ -357,7 +357,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 
 	for _, c := range rr.contacts {
 		if _, ok := st.contact(c.addr.URI); c.expires != 0 && !ok {
-			r.log.Info("protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
+			r.log.Debug("protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
 				slog.String("contact", c.addr.URI.String()))
 
 			return sip.NewResponse(rr.req, 403, "")
@@ -431,7 +431,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	}
 
 	if !holds(reg.Identities, rr.impuKey) || !hasUnbarred(reg.Identities) {
-		r.log.Info("REGISTER of an IMPU outside its set, or of a set that is all barred",
+		r.log.Debug("REGISTER of an IMPU outside its set, or of a set that is all barred",
 			slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
 		return sip.NewResponse(rr.req, 403, "")
@@ -484,7 +484,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		i := bindingIndex(bindings, c.addr.URI)
 
 		if i >= 0 && bindings[i].CallID == rr.callID && bindings[i].CSeq >= int64(rr.cseq) {
-			r.log.Info("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
+			r.log.Debug("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
 			return sip.NewResponse(rr.req, 500, "Out Of Order"), nil
 		}
 

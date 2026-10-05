@@ -241,7 +241,7 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 
 func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
 	if !p.fromCore(req) {
-		p.log.Info("request toward a UE from outside the core", slog.String("method", req.Method),
+		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
 
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
@@ -312,7 +312,7 @@ func (p *PCSCF) forwardInDialog(tx *transaction.ServerTransaction, req, out *sip
 // TS 24.229 §5.2.6.3.5, §5.2.6.3.9
 func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
-		p.log.Info("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
+		p.log.Debug("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 

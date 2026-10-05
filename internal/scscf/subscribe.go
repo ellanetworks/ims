@@ -153,7 +153,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 
 	o.subID = s.ID
 
-	r.log.Info("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
+	r.log.Debug("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
 		slog.String("subscriber", string(sr.subscriber)))
 
 	return res, []*outgoing{o}
@@ -213,7 +213,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		}
 	}
 
-	r.log.Info("reg event SUBSCRIBE from an unauthorised identity", slog.String("impu", req.URI.String()),
+	r.log.Debug("reg event SUBSCRIBE from an unauthorised identity", slog.String("impu", req.URI.String()),
 		slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")))
 
 	return nil, sip.NewResponse(req, 403, "")
@@ -322,7 +322,7 @@ func (r *Registrar) replaceDuplicates(ctx context.Context, s db.RegSubscription)
 			continue
 		}
 
-		r.log.Info("reg event subscription replaced", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.Debug("reg event subscription replaced", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 		r.dropSubscription(ctx, old)
 	}
 }
@@ -389,7 +389,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 	if expires == 0 {
 		subState = "terminated;reason=" + reasonTimeout
 
-		r.log.Info("unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.Debug("unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 	}
 
 	var out []*outgoing

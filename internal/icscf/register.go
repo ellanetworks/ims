@@ -24,7 +24,7 @@ type registration struct {
 
 func (i *ICSCF) register(tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
-		i.log.Info("REGISTER from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+		i.log.Warn("REGISTER from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return

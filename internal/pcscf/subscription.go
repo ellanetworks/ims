@@ -155,7 +155,7 @@ func (ss *subscriptions) start(impi string) {
 
 	target, err := sip.ParseURI(impu)
 	if err != nil {
-		ss.p.log.Info("no identity to subscribe to", slog.String("impi", impi), slog.Any("error", err))
+		ss.p.log.Debug("no identity to subscribe to", slog.String("impi", impi), slog.Any("error", err))
 		return
 	}
 
@@ -183,10 +183,10 @@ func (ss *subscriptions) start(impi string) {
 	s.subscribe = req
 	ss.byIMPI[impi] = s
 
-	ss.p.log.Info("subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
+	ss.p.log.Debug("subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
 
 	if _, err := ss.p.cfg.Layer.Request(req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
-		ss.p.log.Info("SUBSCRIBE failed", slog.String("impi", impi), slog.Any("error", err))
+		ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", impi), slog.Any("error", err))
 		ss.removeLocked(s)
 	}
 }
@@ -217,13 +217,13 @@ func (t *subscribeTransaction) HandleResponse(res *sip.Response) {
 }
 
 func (t *subscribeTransaction) HandleError(err error) {
-	t.ss.p.log.Info("SUBSCRIBE failed", slog.String("impi", t.s.impi), slog.Any("error", err))
+	t.ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", t.s.impi), slog.Any("error", err))
 	t.ss.failed(t.s, t.req, 408)
 }
 
 func (ss *subscriptions) answered(s *subscription, req *sip.Request, res *sip.Response) {
 	if !res.IsSuccess() {
-		ss.p.log.Info("SUBSCRIBE refused", slog.String("impi", s.impi), slog.Int("code", res.StatusCode))
+		ss.p.log.Warn("SUBSCRIBE refused", slog.String("impi", s.impi), slog.Int("code", res.StatusCode))
 		ss.failed(s, req, res.StatusCode)
 
 		return
@@ -239,7 +239,7 @@ func (ss *subscriptions) answered(s *subscription, req *sip.Request, res *sip.Re
 	if s.dialog == nil {
 		d, err := dialog.NewUAC(req, res)
 		if err != nil {
-			ss.p.log.Info("SUBSCRIBE answered without a dialog", slog.String("impi", s.impi), slog.Any("error", err))
+			ss.p.log.Warn("SUBSCRIBE answered without a dialog", slog.String("impi", s.impi), slog.Any("error", err))
 			ss.removeLocked(s)
 
 			return
@@ -357,7 +357,7 @@ func (ss *subscriptions) refresh(s *subscription) {
 
 	tr, dest, err := sip.NextHop(req)
 	if err != nil {
-		ss.p.log.Info("no destination for the re-SUBSCRIBE", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.p.log.Warn("no destination for the re-SUBSCRIBE", slog.String("impi", s.impi), slog.Any("error", err))
 		ss.removeLocked(s)
 
 		return
@@ -372,7 +372,7 @@ func (ss *subscriptions) refresh(s *subscription) {
 	ss.saveLocked(s)
 
 	if _, err := ss.p.cfg.Layer.Request(req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
-		ss.p.log.Info("re-SUBSCRIBE failed", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.p.log.Warn("re-SUBSCRIBE failed", slog.String("impi", s.impi), slog.Any("error", err))
 		ss.schedule(s)
 	}
 }
@@ -595,7 +595,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 	})
 
 	for _, r := range removed {
-		p.log.Info("registration ended by the network", slog.String("impi", impi), slog.String("ue", r.UEAddress.Addr().String()))
+		p.log.Debug("registration ended by the network", slog.String("impi", impi), slog.String("ue", r.UEAddress.Addr().String()))
 
 		if p.sas != nil {
 			p.sas.deregistered(impi, r.UEAddress.Addr())

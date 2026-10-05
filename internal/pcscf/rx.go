@@ -22,6 +22,9 @@ const (
 	DefaultRxTimeout = 10 * time.Second
 
 	restoreWait = time.Minute
+
+	DefaultSTRRetry = 5 * time.Second
+	maxSTRRetry     = 5 * time.Minute
 )
 
 type Diameter interface {
@@ -42,7 +45,9 @@ type Rx struct {
 	Timeout     time.Duration
 	CallTimeout time.Duration
 
+	OriginStateID    uint32
 	MediaLossTimeout time.Duration
+	STRRetry         time.Duration
 }
 
 type rxSession struct {
@@ -71,6 +76,7 @@ type rxClient struct {
 	closed   bool
 	sessions map[string]*rxSession
 	retry    map[netip.Addr]retryHold
+	stop     chan struct{}
 }
 
 func newRxClient(cfg Rx, logger *slog.Logger, now func() time.Time) *rxClient {
@@ -90,11 +96,15 @@ func newRxClient(cfg Rx, logger *slog.Logger, now func() time.Time) *rxClient {
 		cfg.MediaLossTimeout = DefaultMediaLossTimeout
 	}
 
+	if cfg.STRRetry <= 0 {
+		cfg.STRRetry = DefaultSTRRetry
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &rxClient{
 		cfg: cfg, log: logger, ctx: ctx, cancel: cancel, now: now,
-		sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold),
+		sessions: make(map[string]*rxSession), retry: make(map[netip.Addr]retryHold), stop: make(chan struct{}),
 	}
 }
 
@@ -118,7 +128,10 @@ func (c *rxClient) close() {
 	}
 
 	c.mu.Lock()
-	c.closed = true
+	if !c.closed {
+		c.closed = true
+		close(c.stop)
+	}
 	c.mu.Unlock()
 
 	done := make(chan struct{})
@@ -218,6 +231,14 @@ func (c *rxClient) envelope(id string) tgpp.Envelope {
 	}
 }
 
+// RFC 6733 §8.16; TS 29.214 §5.6.1, §5.6.4
+func (c *rxClient) withOriginState(req *diameter.Message) {
+	if c.cfg.OriginStateID != 0 {
+		req.AVPs = append(req.AVPs, diameter.Unsigned32(diameter.AVPOriginStateID, diameter.AVPFlagMandatory, 0,
+			c.cfg.OriginStateID))
+	}
+}
+
 func (c *rxClient) do(req *diameter.Message, wait time.Duration) (*diameter.Message, error) {
 	opts := []diameter.DoOption{diameter.FailFast()}
 	if wait > 0 {
@@ -259,6 +280,8 @@ func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 		return nil, err
 	}
 
+	c.withOriginState(req)
+
 	ans, err := c.do(req, wait)
 	if err != nil {
 		return nil, err
@@ -269,7 +292,7 @@ func (c *rxClient) aar(s *rxSession, wait time.Duration) ([][]byte, error) {
 	return a.Class, err
 }
 
-// TS 29.214 §4.4.4
+// TS 29.214 §4.4.4, RFC 6733 §8.4: retried until the PCRF answers or the P-CSCF stops.
 func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.Duration) error {
 	if s.ended {
 		return nil
@@ -287,24 +310,63 @@ func (c *rxClient) endLocked(s *rxSession, cause rx.TerminationCause, wait time.
 		return err
 	}
 
+	c.withOriginState(req)
+
 	attrs := []any{
 		slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()), slog.String("session", s.id),
 		slog.String("cause", cause.String()),
 	}
 
-	ans, err := c.do(req, wait)
-	if err == nil {
-		_, err = rx.ParseSessionTerminationAnswer(ans)
+	for delay := c.cfg.STRRetry; ; delay = min(2*delay, maxSTRRetry) {
+		start := time.Now()
+
+		ans, err := c.do(req, wait)
+		if err == nil {
+			_, err = rx.ParseSessionTerminationAnswer(ans)
+		}
+
+		switch {
+		case err == nil:
+			c.log.Debug("Rx session terminated", attrs...)
+			return nil
+		case !unanswered(err) || c.closing():
+			c.log.Warn("Rx session termination failed", append(attrs, slog.Any("error", err))...)
+			return err
+		}
+
+		c.log.Warn("Rx session termination failed, will retry", append(attrs, slog.Any("error", err),
+			slog.Duration("retry_in", delay))...)
+
+		// Without a link, the next attempt waits for it, so it goes out as soon as the PCRF is back.
+		if errors.Is(err, diameter.ErrNotConnected) {
+			wait = delay
+		}
+
+		timer := time.NewTimer(delay - time.Since(start))
+
+		select {
+		case <-c.stop:
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+}
+
+// RFC 6733 §7.1.3, §7.1.4, §8.4.2: any STA ends the session at the PCRF,
+// except one that asks for a retry.
+func unanswered(err error) bool {
+	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, diameter.ErrUnknownPeer) ||
+		errors.Is(err, diameter.ErrApplicationUnsupported) || errors.Is(err, diameter.ErrClosed) {
+		return false
 	}
 
-	if err != nil {
-		c.log.Warn("Rx session termination failed", append(attrs, slog.Any("error", err))...)
-		return err
+	r, ok := tgpp.ResultOf(err)
+	if !ok {
+		return true
 	}
 
-	c.log.Info("Rx session terminated", attrs...)
-
-	return nil
+	return r.Transient() || !r.Experimental && (r.Code == diameter.ResultUnableToDeliver || r.Code == diameter.ResultTooBusy)
 }
 
 func (c *rxClient) end(s *rxSession, cause rx.TerminationCause, wait time.Duration) {
@@ -365,7 +427,7 @@ func (p *PCSCF) initialAAR(s *rxSession, wait time.Duration) {
 			})
 		}
 
-		p.log.Info("Rx session for IMS signalling opened", attrs...)
+		p.log.Debug("Rx session for IMS signalling opened", attrs...)
 
 		return
 	}
@@ -533,7 +595,7 @@ func (p *PCSCF) ReAuth(sessionID string, r rx.ReAuthRequest) bool {
 	}
 
 	if s.call != nil {
-		p.log.Info("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.Debug("Rx re-authorization of a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("actions", r.SpecificActions))
 
 		p.callReAuth(s, r)

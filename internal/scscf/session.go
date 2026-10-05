@@ -71,7 +71,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 
 	contactID, orig, err := originatingContact(removed)
 	if err != nil {
-		s.log.Info("originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
+		s.log.Debug("originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
 		s.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return
@@ -147,7 +147,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	if out.Method == "MESSAGE" {
-		s.log.Info("MESSAGE refused: no IP-SM-GW", slog.String("impu", served.URI.String()))
+		s.log.Debug("MESSAGE refused: no IP-SM-GW", slog.String("impu", served.URI.String()))
 		s.answer(tx, sip.NewResponse(req, messageRejectCode, messageRejectReason))
 
 		return
@@ -177,7 +177,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	if localNumber(out.URI, s.r.cfg.HomeDomain) {
-		s.log.Info("local number not translated to a global number", slog.String("impu", served.URI.String()), slog.String("dialled", out.URI.String()))
+		s.log.Debug("local number not translated to a global number", slog.String("impu", served.URI.String()), slog.String("dialled", out.URI.String()))
 		s.answer(tx, sip.NewResponse(req, 404, ""))
 
 		return
@@ -192,7 +192,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	if out.Header.Has("Route") {
-		s.log.Info("routes after the Service-Route dropped", slog.Any("route", out.Header.Values("Route")))
+		s.log.Debug("routes after the Service-Route dropped", slog.Any("route", out.Header.Values("Route")))
 		out.Header.Del("Route")
 	}
 
@@ -218,7 +218,7 @@ func (s *Sessions) assertedService(out *sip.Request, served sip.Address) (string
 	}
 
 	if len(preferred) > 0 {
-		s.log.Info("unsupported preferred service dropped", slog.String("impu", served.URI.String()), slog.Any("service", preferred))
+		s.log.Debug("unsupported preferred service dropped", slog.String("impu", served.URI.String()), slog.Any("service", preferred))
 		return "", false
 	}
 
@@ -249,7 +249,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 				}
 
 				if reg.Identities[i].Barred {
-					s.log.Info("originating request from a barred identity", slog.String("impu", a.URI.String()))
+					s.log.Debug("originating request from a barred identity", slog.String("impu", a.URI.String()))
 					return sip.Address{}, db.Registration{}, sip.NewResponse(req, 403, "Barred")
 				}
 
@@ -260,7 +260,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 		}
 	}
 
-	s.log.Info("originating request from an unregistered identity", slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")),
+	s.log.Debug("originating request from an unregistered identity", slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")),
 		slog.Int64("contact", contactID))
 
 	return sip.Address{}, db.Registration{}, sip.NewResponse(req, 403, "Not Registered")
@@ -292,7 +292,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 	for _, reg := range regs {
 		if slices.ContainsFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Barred && slices.Contains(keys, id.Key) }) {
-			s.log.Info("request to a barred identity", slog.String("impu", called.String()))
+			s.log.Debug("request to a barred identity", slog.String("impu", called.String()))
 			s.answer(tx, sip.NewResponse(req, 404, ""))
 
 			return
@@ -327,7 +327,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 	b, ok := selectBinding(bindings, preferences(out.Header))
 	if !ok {
-		s.log.Info("request to an unreachable user", slog.String("impu", called.String()), slog.Int("bindings", len(bindings)))
+		s.log.Debug("request to an unreachable user", slog.String("impu", called.String()), slog.Int("bindings", len(bindings)))
 		s.answer(tx, sip.NewResponse(req, 480, ""))
 
 		return
@@ -409,7 +409,7 @@ func (s *Sessions) inDialog(tx *transaction.ServerTransaction, out *sip.Request,
 	req := tx.Request()
 
 	if len(removed) == 0 {
-		s.log.Info("in-dialog request not routed through the S-CSCF", slog.String("request", req.StartLine()),
+		s.log.Debug("in-dialog request not routed through the S-CSCF", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		s.respond(tx, sip.NewResponse(req, 403, ""))
 
