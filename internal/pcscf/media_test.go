@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/rx"
+	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
@@ -21,6 +22,13 @@ func mustSDP(t *testing.T, lines ...string) *sdp.Session {
 	}
 
 	return s
+}
+
+// rxMediaComponents returns the components as the Rx backend sends them.
+func rxMediaComponents(x sdpExchange, flows map[int]flowNumbers) ([]rx.MediaComponent, error) {
+	c, err := mediaComponents(x, flows)
+
+	return rxpolicy.MediaComponents(c), err
 }
 
 func audioSDP(t *testing.T, addr string, port string, extra ...string) *sdp.Session {
@@ -43,7 +51,7 @@ func TestMediaComponentFromTheCallerSide(t *testing.T) {
 	offer := audioSDP(t, "10.0.0.1", "4000")
 	answer := audioSDP(t, "10.0.0.2", "5000", "b=AS:38")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatalf("mediaComponents: %v", err)
 	}
@@ -93,7 +101,7 @@ func TestBandwidthDirections(t *testing.T) {
 		{"terminating", sdpExchange{offer: network, answer: ue, offerFromUE: false}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := mediaComponents(tc.x, map[int]flowNumbers{})
+			got, err := rxMediaComponents(tc.x, map[int]flowNumbers{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +118,7 @@ func TestRTCPMux(t *testing.T) {
 	offer := audioSDP(t, "10.0.0.1", "4000", "a=rtcp-mux", "a=inactive")
 	answer := audioSDP(t, "10.0.0.2", "5000", "a=rtcp-mux", "a=inactive")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +142,7 @@ func TestRTCPMux(t *testing.T) {
 	offer.Media[0].SetBandwidth(sdp.BandwidthAS, 40)
 	answer.Media[0].SetBandwidth(sdp.BandwidthAS, 40)
 
-	got, _ = mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, _ = rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if *got[0].MaxRequestedBandwidthDL != 42000 {
 		t.Errorf("DL %d, want AS×1050 without RR and RS", *got[0].MaxRequestedBandwidthDL)
 	}
@@ -165,7 +173,7 @@ func TestFlowStatusAndDirections(t *testing.T) {
 				flows[0] = flowNumbers{rtp: 1, rtcp: 2, sendrecv: true}
 			}
 
-			got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: tc.offerFromUE}, flows)
+			got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: tc.offerFromUE}, flows)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +204,7 @@ func TestRemovedMedia(t *testing.T) {
 	offer := audioSDP(t, "10.0.0.1", "4000", "m=video 4002 RTP/AVP 99")
 	answer := audioSDP(t, "10.0.0.2", "5000", "m=video 0 RTP/AVP 99")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +226,7 @@ func TestFlowNumbers(t *testing.T) {
 
 	flows := map[int]flowNumbers{}
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, flows)
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, flows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +238,7 @@ func TestFlowNumbers(t *testing.T) {
 
 	moved := audioSDP(t, "10.0.0.1", "3000")
 
-	got, _ = mediaComponents(sdpExchange{offer: moved, answer: answer, offerFromUE: true}, flows)
+	got, _ = rxMediaComponents(sdpExchange{offer: moved, answer: answer, offerFromUE: true}, flows)
 	if subs := got[0].SubComponents; subs[0].FlowNumber != 1 || subs[0].FlowUsage == nil || subs[1].FlowNumber != 2 {
 		t.Fatalf("sub-components %+v, want the numbers kept", subs)
 	}
@@ -241,7 +249,7 @@ func TestIPv6FlowDescriptions(t *testing.T) {
 	offer := audioSDP(t, "2001:db8:1::5", "4000", "a=rtcp-mux")
 	answer := audioSDP(t, "2001:db8:2::7", "5000", "a=rtcp-mux")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: false}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: false}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +272,7 @@ func TestMixedFamiliesRefused(t *testing.T) {
 	offer := audioSDP(t, "10.0.0.1", "4000")
 	answer := audioSDP(t, "2001:db8::7", "5000")
 
-	if _, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{}); err == nil {
+	if _, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{}); err == nil {
 		t.Fatal("mediaComponents accepted IPv4 and IPv6 media")
 	}
 }
@@ -277,7 +285,7 @@ func TestICSIRef(t *testing.T) {
 }
 
 func TestSubscriptionIDs(t *testing.T) {
-	got := subscriptionIDs([]string{"sip:+15551234567@ims.test;user=phone", "tel:+15551234567", "sip:alice@ims.test"})
+	got := rxpolicy.SubscriptionIDs(subscribers([]string{"sip:+15551234567@ims.test;user=phone", "tel:+15551234567", "sip:alice@ims.test"}))
 	want := []rx.SubscriptionID{
 		{Type: rx.SubscriptionIDE164, Data: "15551234567"},
 		{Type: rx.SubscriptionIDSIPURI, Data: "sip:alice@ims.test"},
@@ -313,7 +321,7 @@ func corpusSDP(t *testing.T, name string) *sdp.Session {
 
 // The offer and answer of two Crosscall Core-Z5 phones, as the originating P-CSCF sees them.
 func TestMediaComponentFromLivePhones(t *testing.T) {
-	got, err := mediaComponents(sdpExchange{
+	got, err := rxMediaComponents(sdpExchange{
 		offer: corpusSDP(t, "001-INVITE.sip"), answer: corpusSDP(t, "006-183-INVITE.sip"), offerFromUE: true,
 	}, map[int]flowNumbers{})
 	if err != nil {
@@ -346,7 +354,7 @@ func TestTCPMedia(t *testing.T) {
 	answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
 		"m=message 5000 TCP/MSRP *", "b=AS:64", "a=recvonly")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +374,7 @@ func TestSessionLevelBandwidthIgnored(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "b=AS:100", "t=0 0", "m=audio 4000 RTP/AVP 0")
 	answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "b=AS:100", "t=0 0", "m=audio 5000 RTP/AVP 0")
 
-	got, err := mediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,6 +387,9 @@ func TestSessionLevelBandwidthIgnored(t *testing.T) {
 // TS 24.229 §7.2A.5.2.7
 func TestChargingInfo(t *testing.T) {
 	gprs := rx.IPCAN3GPPGPRS
+	fiveGS := rx.IPCAN3GPP5GS
+	non3GPP5GS := rx.IPCANNon3GPP5GS
+	non3GPPEPS := rx.IPCANNon3GPPEPS
 	ids := func(n int) []rx.AccessNetworkChargingIdentifier {
 		out := make([]rx.AccessNetworkChargingIdentifier, n)
 		for i := range out {
@@ -398,19 +409,57 @@ func TestChargingInfo(t *testing.T) {
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.1"),
 			AccessNetwork: rx.AccessNetwork{IPCANType: &gprs},
 		}, ""},
+		"5GS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{
+				{Value: []byte{0xab, 0x01}, Flows: []rx.Flows{{MediaComponentNumber: 1, FlowNumbers: []uint32{1}}}},
+			},
+			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB01;flow-id=({1,1})"`},
+		// TS 29.214 Table E.2-1, TS 24.229 §7.2A.5.2.10
+		"non-3GPP 5GS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPP5GS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=00"`},
+		// TS 24.229 §7.2A.5.2.3: EPC via WLAN has no ecid.
+		"non-3GPP EPS": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPPEPS},
+		}, ""},
+		// TS 24.229 §7.2A.5.2.10: one item per PDU session, whose identifier comes once per QoS flow.
+		"one item per identifier": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{
+				{Value: []byte{0xab}, Flows: []rx.Flows{{MediaComponentNumber: 1, FlowNumbers: []uint32{1}}}},
+				{Value: []byte{0xcd}, Flows: []rx.Flows{{MediaComponentNumber: 3, FlowNumbers: []uint32{1}}}},
+				{Value: []byte{0xab}, Flows: []rx.Flows{
+					{MediaComponentNumber: 2, FlowNumbers: []uint32{1}}, {MediaComponentNumber: 1, FlowNumbers: []uint32{1}},
+				}},
+			},
+			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
+			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
+		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB;flow-id=({1,1},{2,1}),5gs-item=2;5gscid=CD;flow-id=({3,1})"`},
+		// TS 24.229 Table 7.2A.5: ecid and 5gscid are 1*HEXDIG.
+		"empty identifier": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{}, {Value: []byte{1}}},
+			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.1"),
+		}, `pdngw=192.0.2.1;eps-info="eps-item=1;eps-sig=no;ecid=01"`},
+		"only empty identifiers": {rx.AAAnswer{
+			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{}},
+			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.1"),
+		}, ""},
 		"IPv6 gateway": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("2001:db8::1"),
 		}, `pdngw=[2001:db8::1];eps-info="eps-item=1;eps-sig=no;ecid=00"`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := chargingInfo(tc.a, nil); got != tc.want {
+			if got := chargingInfo(rxpolicy.AnswerCharging(tc.a), nil); got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
 
-	many := chargingInfo(rx.AAAnswer{AccessNetworkChargingIdentifiers: ids(12), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.1")}, nil)
-	if strings.Count(many, "eps-item=") != maxEPSItems {
-		t.Fatalf("%q, want at most %d eps-item", many, maxEPSItems)
+	many := chargingInfo(rxpolicy.AnswerCharging(rx.AAAnswer{AccessNetworkChargingIdentifiers: ids(12), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.1")}), nil)
+	if strings.Count(many, "eps-item=") != maxItems {
+		t.Fatalf("%q, want at most %d eps-item", many, maxItems)
 	}
 }

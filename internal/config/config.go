@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -98,6 +99,33 @@ type PCSCF struct {
 	NoAnswerTimeout time.Duration `yaml:"no_answer_timeout"`
 
 	MediaLossTimeout time.Duration `yaml:"media_loss_timeout"`
+
+	Policy Policy `yaml:"policy"`
+}
+
+// Policy names the policy function of the P-CSCF: a PCRF over Rx, or a PCF over N5. Without one, the P-CSCF opens
+// no policy sessions.
+type Policy struct {
+	// Rx is the ID of the diameter peer that serves rx.
+	Rx string `yaml:"rx"`
+	N5 *N5    `yaml:"n5"`
+}
+
+type N5 struct {
+	// PCFURI is the API root of the PCF, http://host[:port][/prefix].
+	PCFURI string   `yaml:"pcf_uri"`
+	Notify N5Notify `yaml:"notify"`
+}
+
+// N5Notify is where the PCF sends notifications. The address is also the host of the notification URIs.
+type N5Notify struct {
+	Address netip.Addr `yaml:"address"`
+	Port    int        `yaml:"port"`
+}
+
+// URI is the root of the notification URIs.
+func (n N5Notify) URI() string {
+	return "http://" + netip.AddrPortFrom(n.Address, uint16(n.Port)).String()
 }
 
 type IPsec struct {
@@ -196,9 +224,14 @@ func (d Diameter) CxPeer() DiameterPeer {
 	return DiameterPeer{}
 }
 
-func (d Diameter) RxPeer() (DiameterPeer, bool) {
-	for _, p := range d.Peers {
-		if p.Serves(ApplicationRx) {
+// RxPeer returns the diameter peer of the Rx policy function, if there is one.
+func (c Config) RxPeer() (DiameterPeer, bool) {
+	if c.PCSCF.Policy.Rx == "" {
+		return DiameterPeer{}, false
+	}
+
+	for _, p := range c.Diameter.Peers {
+		if p.ID == c.PCSCF.Policy.Rx {
 			return p, true
 		}
 	}
@@ -342,7 +375,103 @@ func (c Config) validate() error {
 		return fmt.Errorf("pcscf.ipsec: %w", err)
 	}
 
-	return c.Diameter.validate()
+	if err := c.Diameter.validate(); err != nil {
+		return err
+	}
+
+	return c.validatePolicy()
+}
+
+func (c Config) validatePolicy() error {
+	pol := c.PCSCF.Policy
+
+	if pol.Rx != "" && pol.N5 != nil {
+		return errors.New("pcscf.policy: set rx or n5, not both")
+	}
+
+	for _, p := range c.Diameter.Peers {
+		if p.Serves(ApplicationRx) && p.ID != pol.Rx {
+			return fmt.Errorf("diameter peer %q serves rx, but pcscf.policy.rx does not name it", p.ID)
+		}
+	}
+
+	if pol.Rx != "" {
+		if p, ok := c.RxPeer(); !ok || !p.Serves(ApplicationRx) {
+			return fmt.Errorf("pcscf.policy.rx %q is not a diameter peer that serves rx", pol.Rx)
+		}
+	}
+
+	if pol.N5 == nil {
+		return nil
+	}
+
+	return c.validateN5(*pol.N5)
+}
+
+func (c Config) validateN5(n N5) error {
+	u, err := url.Parse(n.PCFURI)
+
+	switch {
+	case n.PCFURI == "":
+		return errors.New("pcscf.policy.n5.pcf_uri is required")
+	case err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("pcscf.policy.n5.pcf_uri %q: want http://host[:port][/prefix]", n.PCFURI)
+	}
+
+	a := n.Notify.Address
+
+	switch {
+	case !a.IsValid():
+		return errors.New("pcscf.policy.n5.notify.address is required")
+	case a.IsUnspecified():
+		return fmt.Errorf("pcscf.policy.n5.notify.address must be a specific address, not %s, since the PCF sends to it", a)
+	case a.Zone() != "" || a.Is4In6():
+		return fmt.Errorf("pcscf.policy.n5.notify.address %s must be a plain IPv4 or IPv6 address", a)
+	case n.Notify.Port < 1 || n.Notify.Port > 65535:
+		return fmt.Errorf("pcscf.policy.n5.notify.port %d is out of range", n.Notify.Port)
+	}
+
+	// TCP ports on the same address: the API, SIP over TCP, and Diameter.
+	taken := []struct {
+		name string
+		addr []netip.Addr
+		port int
+	}{
+		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
+		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
+		{"pcscf.port", c.SIP.Addresses, c.PCSCF.Port},
+		{"pcscf.ipsec.server_port", c.SIP.Addresses, c.PCSCF.IPsec.ServerPort},
+		{"icscf.port", c.SIP.Addresses, c.ICSCF.Port},
+		{"scscf.port", c.SIP.Addresses, c.SCSCF.Port},
+	}
+
+	for i, p := range c.PCSCF.IPsec.ClientPorts {
+		taken = append(taken, struct {
+			name string
+			addr []netip.Addr
+			port int
+		}{fmt.Sprintf("pcscf.ipsec.client_ports[%d]", i), c.SIP.Addresses, p})
+	}
+
+	for _, t := range taken {
+		if t.port == n.Notify.Port && slices.ContainsFunc(t.addr, func(b netip.Addr) bool { return overlaps(a, b) }) {
+			return fmt.Errorf("pcscf.policy.n5.notify.port and %s are both %d on %s", t.name, t.port, a)
+		}
+	}
+
+	return nil
+}
+
+// overlaps reports whether a listener on b takes a's port, b being a specific or an unspecified address.
+func overlaps(a, b netip.Addr) bool {
+	switch {
+	case b == netip.IPv6Unspecified():
+		return true
+	case b == netip.IPv4Unspecified():
+		return a.Is4()
+	}
+
+	return a == b
 }
 
 func (c Config) validatePorts() error {

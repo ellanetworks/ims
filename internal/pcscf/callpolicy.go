@@ -1,7 +1,6 @@
 package pcscf
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,9 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ellanetworks/core/diameter"
-	"github.com/ellanetworks/core/diameter/rx"
-	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/sdp"
@@ -23,7 +20,7 @@ import (
 )
 
 const (
-	DefaultRxCallTimeout = 3 * time.Second
+	DefaultPolicyCallTimeout = 3 * time.Second
 
 	DefaultMediaLossTimeout = 5 * time.Second
 )
@@ -33,12 +30,12 @@ var (
 
 	errRetryInterval = errors.New("the same service information was refused and its retry interval has not elapsed")
 
-	errAARPending = errors.New("the previous AA-Request is not acknowledged")
+	errAARPending = errors.New("the previous media authorization is not answered")
 
-	errAARTimeout = errors.New("no AA-Answer in time")
+	errAARTimeout = errors.New("no media authorization answer in time")
 )
 
-type callRx struct {
+type callPolicy struct {
 	key        regKey
 	identities []string
 	service    string
@@ -47,7 +44,7 @@ type callRx struct {
 	dialog *proxy.Dialog
 
 	mu       sync.Mutex
-	session  *rxSession
+	session  *policySession
 	busy     bool
 	queue    []func()
 	done     map[int]bool
@@ -56,29 +53,30 @@ type callRx struct {
 	flows    map[int]flowNumbers
 	active   map[uint32]bool
 	charging string
+	access   policy.Access
 	loss     transaction.Timer
 	lost     []uint32
 	ended    bool
 }
 
-func (p *PCSCF) newCallRx(k regKey, identities []string, service string) *callRx {
-	if p.rx == nil {
+func (p *PCSCF) newCallPolicy(k regKey, identities []string, service string) *callPolicy {
+	if p.policy == nil {
 		return nil
 	}
 
-	return &callRx{
+	return &callPolicy{
 		key: k, identities: identities, service: service,
 		done: make(map[int]bool), early: make(map[string]bool), flows: make(map[int]flowNumbers), active: make(map[uint32]bool),
 	}
 }
 
-func (cr *callRx) attach(c *call, d *proxy.Dialog) {
+func (cr *callPolicy) attach(c *call, d *proxy.Dialog) {
 	if cr != nil {
 		cr.call, cr.dialog = c, d
 	}
 }
 
-func (cr *callRx) end() *rxSession {
+func (cr *callPolicy) end() *policySession {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 
@@ -101,10 +99,10 @@ type answerJob struct {
 	headers sip.Header
 }
 
-// TS 29.214 Annex A.1, A.3, TS 29.213 Annex B.2
+// TS 29.214 Annex A.1, A.3, TS 29.213 Annex B.2, TS 29.513 §7.2.3
 func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial bool) proxy.Verdict {
 	c := callOf(d)
-	if c == nil || c.rx == nil || rep.Response == nil {
+	if c == nil || c.policy == nil || rep.Response == nil {
 		return proxy.Relay
 	}
 
@@ -131,7 +129,7 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 		}
 	}
 
-	if p.enqueue(c.rx, job != nil, run) {
+	if p.enqueue(c.policy, job != nil, run) {
 		return proxy.Hold
 	}
 
@@ -150,13 +148,13 @@ func (p *PCSCF) chargeUEResponse(c *call, res *sip.Response) {
 // RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1
 func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject func()) bool {
 	c := callOf(d)
-	if c == nil || c.rx == nil {
+	if c == nil || c.policy == nil {
 		return false
 	}
 
 	_, answers := d.PendingOffer(out)
 
-	return p.enqueue(c.rx, answers, func() {
+	return p.enqueue(c.policy, answers, func() {
 		offer, ok := d.PendingOffer(out)
 		if !ok {
 			forward()
@@ -186,9 +184,9 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 		}
 
 		if ex, ok := d.Exchange(out); ok {
-			c.rx.mu.Lock()
-			c.rx.done[ex.Seq] = true
-			c.rx.mu.Unlock()
+			c.policy.mu.Lock()
+			c.policy.done[ex.Seq] = true
+			c.policy.mu.Unlock()
 		}
 	})
 }
@@ -212,7 +210,7 @@ func calleeTag(d *proxy.Dialog, m sip.Message) string {
 	return from.Tag()
 }
 
-func (p *PCSCF) enqueue(cr *callRx, needed bool, run func()) bool {
+func (p *PCSCF) enqueue(cr *callPolicy, needed bool, run func()) bool {
 	cr.mu.Lock()
 
 	if cr.busy {
@@ -230,7 +228,7 @@ func (p *PCSCF) enqueue(cr *callRx, needed bool, run func()) bool {
 	cr.busy = true
 	cr.mu.Unlock()
 
-	if !p.rx.spawn(func() { p.drain(cr, run) }) {
+	if !p.policy.spawn(func() { p.drain(cr, run) }) {
 		cr.mu.Lock()
 		cr.busy = false
 		cr.mu.Unlock()
@@ -241,7 +239,7 @@ func (p *PCSCF) enqueue(cr *callRx, needed bool, run func()) bool {
 	return true
 }
 
-func (p *PCSCF) drain(cr *callRx, run func()) {
+func (p *PCSCF) drain(cr *callPolicy, run func()) {
 	for {
 		run()
 
@@ -275,7 +273,7 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 	final := initial && res.IsSuccess()
 	early := !final && d.State() == proxy.Early
 
-	cr := c.rx
+	cr := c.policy
 
 	cr.mu.Lock()
 
@@ -316,7 +314,7 @@ func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpE
 	return &sdpExchange{offer: o, answer: a, offerFromUE: ex.Offer.From == c.ue}
 }
 
-// TS 24.229 §5.2.7.2, TS 29.214 §4.4.1
+// TS 24.229 §5.2.7.2, TS 29.214 §4.4.1, TS 29.514 §4.2.2.2
 func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
 	err := p.callAAR(c, d, job)
 	if err == nil {
@@ -332,12 +330,12 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 	}
 
 	attrs := []any{
-		slog.String("dialog", d.ID()), slog.String("impi", c.rx.key.impi), slog.String("ue", c.rx.key.ue.String()),
+		slog.String("dialog", d.ID()), slog.String("impi", c.policy.key.impi), slog.String("ue", c.policy.key.ue.String()),
 		slog.Any("error", err),
 	}
 
-	if result, ok := tgpp.ResultOf(err); ok {
-		attrs = append(attrs, slog.String("result", result.String()))
+	if result, ok := policy.ResultOf(err); ok {
+		attrs = append(attrs, slog.String("result", result))
 	}
 
 	if removed := job.x.removed(); len(removed) > 0 {
@@ -363,20 +361,21 @@ func reliable(res *sip.Response) bool {
 	return res.IsSuccess() || res.Header.Has("RSeq")
 }
 
-// TS 29.214 §5.3.13, §5.4.1: FAILED_RESOURCES_ALLOCATION is a Rel8 feature, advertised in the same AA-Request.
-var callActions = []rx.SpecificAction{
-	rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
-	rx.ActionIndicationOfFailedResourcesAllocation,
+type grantResult struct {
+	grant policy.Grant
+	err   error
 }
 
-type aaResult struct {
-	answer rx.AAAnswer
-	err    error
-}
-
-// TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3
+// TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
 func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
-	cr := c.rx
+	return p.callAARBy(c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
+}
+
+// callAARBy authorizes the media of job, waiting for the policy function until deadline. A recovery opens a new
+// session for a call whose session the policy function lost: media the exchange removes has nothing to remove
+// there, so it is left out.
+func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time.Time, recovery bool) error {
+	cr := c.policy
 
 	cr.mu.Lock()
 
@@ -392,14 +391,14 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	s := cr.session
 	if s == nil {
-		s = p.rx.callSession(cr)
+		s = p.policy.callSession(cr)
 		cr.session = s
 	}
 
-	fork := rx.ForkingSingleDialogue
+	fork := policy.ForkingSingleDialogue
 
 	if job.early && job.tag != "" && (cr.forked || len(cr.early) > 0 && !cr.early[job.tag]) {
-		fork = rx.ForkingSeveralDialogues
+		fork = policy.ForkingSeveralDialogues
 	}
 
 	if cr.service == "" && c.ue == proxy.Caller {
@@ -413,6 +412,10 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	components, err := mediaComponents(*job.x, flows)
 	if err != nil {
 		return err
+	}
+
+	if recovery {
+		components = slices.DeleteFunc(components, func(m policy.MediaComponent) bool { return m.Status == policy.FlowRemoved })
 	}
 
 	if !s.pending.CompareAndSwap(false, true) {
@@ -429,48 +432,43 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	}
 
 	initial := !s.opened
-	kind := rx.RequestUpdate
 
-	r := rx.AARequest{
-		AFApplicationIdentifier: service,
-		MediaComponents:         components,
-		SubscriptionIDs:         subscriptionIDs(cr.identities),
-		SIPForkingIndication:    fork,
-		RequestType:             &kind,
+	r := policy.Request{
+		UE:          cr.key.ue,
+		Initial:     initial,
+		Service:     service,
+		Components:  components,
+		Subscribers: subscribers(cr.identities),
+		Forking:     fork,
 	}
 
-	if initial {
-		kind = rx.RequestInitial
-		r.SpecificActions = callActions
-		r.Features = rx.FeatureRel8
-	}
+	result := make(chan grantResult, 1)
 
-	if cr.key.ue.Is4() {
-		r.FramedIPAddress = cr.key.ue
-	} else {
-		r.FramedIPv6Address = cr.key.ue
-	}
-
-	result := make(chan aaResult, 1)
-
-	if !p.rx.spawn(func() {
+	if !p.policy.spawn(func() {
 		defer s.pending.Store(false)
 		defer s.mu.Unlock()
 
-		a, err := p.rx.callAAR(s, r)
+		g, err := p.policy.authorize(s, r)
 
 		switch {
 		case err == nil:
 			s.opened = true
-			if len(a.Class) > 0 {
-				s.class = a.Class
+			if g.Ref != "" {
+				s.ref = g.Ref
 			}
-		case initial:
+		case initial, errors.Is(err, policy.ErrUnknownSession):
 			s.ended = true
-			p.rx.forget(s)
+			p.policy.forget(s)
+
+			// The next exchange opens a new session, even when this answer came after the caller gave up.
+			cr.mu.Lock()
+			if cr.session == s {
+				cr.session = nil
+			}
+			cr.mu.Unlock()
 		}
 
-		result <- aaResult{a, err}
+		result <- grantResult{g, err}
 	}) {
 		s.mu.Unlock()
 		s.pending.Store(false)
@@ -478,10 +476,10 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 		return errCallEnded
 	}
 
-	timer := time.NewTimer(p.rx.cfg.CallTimeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 
-	var res aaResult
+	var res grantResult
 
 	select {
 	case res = <-result:
@@ -490,12 +488,11 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 	}
 
 	if res.err != nil {
-		if initial {
-			cr.mu.Lock()
-			if cr.session == s {
-				cr.session = nil
-			}
-			cr.mu.Unlock()
+		if errors.Is(res.err, policy.ErrUnknownSession) && !initial {
+			p.log.Warn("policy session of a call unknown to the policy function: opening a new one",
+				slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("session", s.id))
+
+			return p.callAARBy(c, d, job, deadline, true)
 		}
 
 		return res.err
@@ -514,25 +511,27 @@ func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
 
 	cr.flows = flows
 	cr.active = activeComponents(components)
-
-	if info := chargingInfo(res.answer, flows); info != "" {
-		cr.charging = info
-	}
+	cr.chargingLocked(res.grant.Charging)
 
 	cr.mu.Unlock()
 
+	request := "update"
+	if initial {
+		request = "initial"
+	}
+
 	p.log.Debug("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
-		slog.String("ue", cr.key.ue.String()), slog.String("session", s.id), slog.String("request", kind.String()),
+		slog.String("ue", cr.key.ue.String()), slog.String("session", s.id), slog.String("request", request),
 		slog.String("forking", fork.String()))
 
 	return nil
 }
 
-func activeComponents(components []rx.MediaComponent) map[uint32]bool {
+func activeComponents(components []policy.MediaComponent) map[uint32]bool {
 	out := make(map[uint32]bool, len(components))
 
 	for _, c := range components {
-		out[c.Number] = c.FlowStatus == nil || *c.FlowStatus != rx.FlowStatusRemoved
+		out[c.Number] = c.Status != policy.FlowRemoved
 	}
 
 	return out
@@ -540,17 +539,18 @@ func activeComponents(components []rx.MediaComponent) map[uint32]bool {
 
 // TS 29.213 Annex B.4.1
 func (p *PCSCF) callEnded(c *call) {
-	if c.rx == nil {
+	if c.policy == nil {
 		return
 	}
 
-	if s := c.rx.end(); s != nil {
-		p.rx.end(s, rx.TerminationLogout, 0)
+	if s := c.policy.end(); s != nil {
+		p.policy.end(s, policy.TerminationLogout, 0)
 	}
 }
 
-func (c *rxClient) callSession(cr *callRx) *rxSession {
-	s := &rxSession{id: c.cfg.Diameter.NewSessionID(), key: cr.key, call: cr}
+func (c *policyClient) callSession(cr *callPolicy) *policySession {
+	b := c.resolve(cr.key.ue)
+	s := &policySession{id: b.NewSessionID(), key: cr.key, call: cr, backend: b}
 
 	c.mu.Lock()
 	c.sessions[s.id] = s
@@ -565,10 +565,10 @@ type retryHold struct {
 }
 
 // TS 29.214 §4.4.1
-func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
-	b, err := json.Marshal(r.MediaComponents)
+func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Grant, error) {
+	b, err := json.Marshal(r.Components)
 	if err != nil {
-		return rx.AAAnswer{}, err
+		return policy.Grant{}, err
 	}
 
 	digest := string(b)
@@ -586,78 +586,102 @@ func (c *rxClient) callAAR(s *rxSession, r rx.AARequest) (rx.AAAnswer, error) {
 	c.mu.Unlock()
 
 	if held && hold.digest == digest {
-		return rx.AAAnswer{}, errRetryInterval
+		return policy.Grant{}, errRetryInterval
 	}
 
-	req, err := rx.NewAARequest(c.envelope(s.id), r)
-	if err != nil {
-		return rx.AAAnswer{}, err
-	}
-
-	c.withOriginState(req)
-
-	ctx, cancel := context.WithTimeout(c.ctx, c.cfg.Timeout)
+	ctx, cancel := c.deadline(0)
 	defer cancel()
 
-	ans, err := c.cfg.Diameter.Do(ctx, c.cfg.PCRF.ID, req, diameter.FailFast())
-	if err != nil {
-		return rx.AAAnswer{}, err
-	}
+	g, err := s.backend.Authorize(ctx, s.id, s.ref, r)
 
-	a, err := rx.ParseAAAnswer(ans)
-
-	var refused *rx.AAError
-	if errors.As(err, &refused) && refused.Code == tgpp.ResultRequestedServiceTemporarilyNotAuthorized &&
-		refused.RetryInterval > 0 {
+	if retry := policy.RetryAfter(err); retry > 0 {
 		c.mu.Lock()
-		c.retry[s.key.ue] = retryHold{until: now.Add(refused.RetryInterval), digest: digest}
+		c.retry[s.key.ue] = retryHold{until: now.Add(retry), digest: digest}
 		c.mu.Unlock()
 	}
 
-	return a, err
+	return g, err
 }
 
-// TS 24.229 Table 7.2A.5: eps-item is a single DIGIT.
-const maxEPSItems = 9
+// TS 24.229 Table 7.2A.5: eps-item and 5gs-item are a single DIGIT.
+const maxItems = 9
 
-// TS 24.229 §7.2A.5.2.7, TS 29.214 §5.3.3, Annex B
-func chargingInfo(a rx.AAAnswer, flows map[int]flowNumbers) string {
-	if len(a.AccessNetworkChargingIdentifiers) == 0 || !a.AccessNetworkChargingAddress.IsValid() {
+// TS 24.229 §7.2A.5.2.7, §7.2A.5.2.10, TS 29.214 §5.3.3, Annex B
+func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
+	if len(c.Identifiers) == 0 || !c.Address.IsValid() {
 		return ""
 	}
 
-	if t := a.AccessNetwork.IPCANType; t != nil && *t != rx.IPCAN3GPPEPS {
+	var gateway, list, item, cid string
+
+	switch c.Access {
+	case policy.AccessUnknown, policy.AccessEPS:
+		gateway, list, item, cid = "pdngw", "eps-info", "eps-item", ";eps-sig=no;ecid="
+	case policy.Access5GS:
+		gateway, list, item, cid = "smf", "5gs-info", "5gs-item", ";5gscid="
+	default:
 		return ""
 	}
 
-	ids := a.AccessNetworkChargingIdentifiers
-	if len(ids) > maxEPSItems {
-		ids = ids[:maxEPSItems]
+	ids := chargingIDs(c.Identifiers)
+
+	switch {
+	case len(ids) == 0:
+		return ""
+	case len(ids) > maxItems:
+		ids = ids[:maxItems]
 	}
 
 	items := make([]string, 0, len(ids))
 
 	for i, id := range ids {
-		item := "eps-item=" + strconv.Itoa(i+1) + ";eps-sig=no;ecid=" + strings.ToUpper(hex.EncodeToString(id.Value))
+		v := item + "=" + strconv.Itoa(i+1) + cid + strings.ToUpper(hex.EncodeToString(id.Value))
 
 		if ids := flowIDs(id.Flows, flows); ids != "" {
-			item += ";flow-id=" + ids
+			v += ";flow-id=" + ids
 		}
 
-		items = append(items, item)
+		items = append(items, v)
 	}
 
-	return "pdngw=" + sip.FormatHost(a.AccessNetworkChargingAddress.Unmap()) + `;eps-info="` + strings.Join(items, ",") + `"`
+	return gateway + "=" + sip.FormatHost(c.Address.Unmap()) + ";" + list + `="` + strings.Join(items, ",") + `"`
 }
 
-func flowIDs(fs []rx.Flows, numbers map[int]flowNumbers) string {
+// chargingIDs merges the identifiers that share a value: TS 24.229 §7.2A.5.2.7 and §7.2A.5.2.10 have one item
+// per EPS bearer or PDU session, while identifiers can come per QoS flow (TS 29.514 §5.6.2.32). An empty
+// identifier has no 1*HEXDIG encoding and is dropped.
+func chargingIDs(ids []policy.ChargingID) []policy.ChargingID {
+	var out []policy.ChargingID
+
+	index := make(map[string]int)
+
+	for _, id := range ids {
+		if len(id.Value) == 0 {
+			continue
+		}
+
+		if i, ok := index[string(id.Value)]; ok {
+			out[i].Flows = append(out[i].Flows, id.Flows...)
+			continue
+		}
+
+		index[string(id.Value)] = len(out)
+		out = append(out, policy.ChargingID{Value: id.Value, Flows: slices.Clone(id.Flows)})
+	}
+
+	return out
+}
+
+func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {
 	var tuples []string
+
+	seen := make(map[string]bool)
 
 	for _, f := range fs {
 		ns := f.FlowNumbers
 
 		if len(ns) == 0 {
-			n := numbers[int(f.MediaComponentNumber)-1]
+			n := numbers[int(f.Component)-1]
 
 			for _, v := range []uint32{n.rtp, n.rtcp} {
 				if v != 0 {
@@ -669,7 +693,11 @@ func flowIDs(fs []rx.Flows, numbers map[int]flowNumbers) string {
 		}
 
 		for _, n := range ns {
-			tuples = append(tuples, "{"+strconv.FormatUint(uint64(f.MediaComponentNumber), 10)+","+strconv.FormatUint(uint64(n), 10)+"}")
+			t := "{" + strconv.FormatUint(uint64(f.Component), 10) + "," + strconv.FormatUint(uint64(n), 10) + "}"
+			if !seen[t] {
+				seen[t] = true
+				tuples = append(tuples, t)
+			}
 		}
 	}
 
@@ -680,8 +708,23 @@ func flowIDs(fs []rx.Flows, numbers map[int]flowNumbers) string {
 	return "(" + strings.Join(tuples, ",") + ")"
 }
 
+// chargingLocked keeps the access network charging information of an answer or a notification. One that does
+// not say which IP-CAN it comes from keeps the one reported before: IP-CAN-Type is optional in the RAR and in an
+// update AAA (TS 29.214 §5.6.3, §4.4.2).
+func (cr *callPolicy) chargingLocked(c policy.Charging) {
+	if c.Access == policy.AccessUnknown {
+		c.Access = cr.access
+	} else {
+		cr.access = c.Access
+	}
+
+	if info := chargingInfo(c, cr.flows); info != "" {
+		cr.charging = info
+	}
+}
+
 // TS 24.229 §5.2.7.2, §5.2.7.3
-func (cr *callRx) takeCharging() string {
+func (cr *callPolicy) takeCharging() string {
 	if cr == nil {
 		return ""
 	}
@@ -701,7 +744,7 @@ func chargeResponse(c *call, res *sip.Response) {
 		return
 	}
 
-	info := c.rx.takeCharging()
+	info := c.policy.takeCharging()
 	if info == "" {
 		return
 	}
@@ -710,37 +753,21 @@ func chargeResponse(c *call, res *sip.Response) {
 	cv.setResponse(res)
 }
 
-// TS 29.214 §4.4.6.2, §4.4.6.5, TS 24.229 §5.2.7.4, §5.2.8.1
-func (p *PCSCF) callReAuth(s *rxSession, r rx.ReAuthRequest) {
+// TS 29.214 §4.4.6.2, §4.4.6.5, TS 29.514 §4.2.5.2, TS 24.229 §5.2.7.4, §5.2.8.1
+func (p *PCSCF) callNotify(s *policySession, e policy.Event) {
 	cr := s.call
 
-	if slices.Contains(r.SpecificActions, rx.ActionChargingCorrelationExchange) {
+	if e.Charging != nil {
 		cr.mu.Lock()
-
-		info := chargingInfo(rx.AAAnswer{
-			AccessNetworkChargingIdentifiers: r.AccessNetworkChargingIdentifiers,
-			AccessNetworkChargingAddress:     r.AccessNetworkChargingAddress,
-			AccessNetwork:                    r.AccessNetwork,
-		}, cr.flows)
-		if info != "" {
-			cr.charging = info
-		}
-
+		cr.chargingLocked(*e.Charging)
 		cr.mu.Unlock()
 	}
 
-	lost := slices.ContainsFunc(r.SpecificActions, func(a rx.SpecificAction) bool {
-		return a == rx.ActionIndicationOfLossOfBearer || a == rx.ActionIndicationOfReleaseOfBearer ||
-			a == rx.ActionIndicationOfFailedResourcesAllocation
-	})
-	if !lost {
+	if !e.Has(policy.EventBearerLost, policy.EventBearerReleased, policy.EventResourcesFailed) {
 		return
 	}
 
-	var components []uint32
-	for _, f := range r.Flows {
-		components = append(components, f.MediaComponentNumber)
-	}
+	components := slices.Clone(e.Components)
 
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
@@ -760,10 +787,10 @@ func (p *PCSCF) callReAuth(s *rxSession, r rx.ReAuthRequest) {
 	}
 
 	cr.lost = components
-	cr.loss = p.clock.AfterFunc(p.rx.cfg.MediaLossTimeout, func() { p.mediaLossExpired(cr) })
+	cr.loss = p.clock.AfterFunc(p.policy.cfg.MediaLossTimeout, func() { p.mediaLossExpired(cr) })
 }
 
-func (p *PCSCF) mediaLossExpired(cr *callRx) {
+func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
 	cr.mu.Lock()
 
 	cr.loss = nil
@@ -821,8 +848,8 @@ func (p *PCSCF) releaseCall(c *call, d *proxy.Dialog, signalling bool) {
 }
 
 // TS 29.214 §5.4, RFC 4006 §8.46
-func subscriptionIDs(identities []string) []rx.SubscriptionID {
-	var out []rx.SubscriptionID
+func subscribers(identities []string) []policy.Subscriber {
+	var out []policy.Subscriber
 
 	for _, id := range identities {
 		u, err := sip.ParseURI(id)
@@ -830,9 +857,9 @@ func subscriptionIDs(identities []string) []rx.SubscriptionID {
 			continue
 		}
 
-		s := rx.SubscriptionID{Type: rx.SubscriptionIDSIPURI, Data: id}
+		s := policy.Subscriber{Kind: policy.SubscriberSIPURI, ID: id}
 		if t := telForm(u); t.IsTel() {
-			s = rx.SubscriptionID{Type: rx.SubscriptionIDE164, Data: strings.TrimPrefix(t.User, "+")}
+			s = policy.Subscriber{Kind: policy.SubscriberE164, ID: strings.TrimPrefix(t.User, "+")}
 		}
 
 		if !slices.Contains(out, s) {

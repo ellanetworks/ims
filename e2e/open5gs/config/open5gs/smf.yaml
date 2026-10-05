@@ -34,3 +34,8 @@ smf:
     - 10.80.0.5
   mtu: 1400
   freeDiameter: /etc/freeDiameter/smf.conf
+  # Read by the e2e tests in the container's network namespace.
+  metrics:
+    server:
+      - address: 127.0.0.4
+        port: 9090

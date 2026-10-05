@@ -601,7 +601,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			p.sas.deregistered(impi, r.UEAddress.Addr())
 		}
 
-		p.endRx(r, terminationCause(ended[r.UEAddress.Addr()]), 0)
+		p.endPolicy(r, terminationCause(ended[r.UEAddress.Addr()]), 0)
 	}
 
 	if len(removed) > 0 {

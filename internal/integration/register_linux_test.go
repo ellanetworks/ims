@@ -24,6 +24,7 @@ import (
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/netnstest"
+	"github.com/ellanetworks/ims/internal/pcftest"
 	"github.com/ellanetworks/ims/internal/pcrftest"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/server"
@@ -90,6 +91,8 @@ type scene struct {
 	hosts map[int]*host
 	hss   *hsstest.HSS
 	pcrf  *pcrftest.PCRF
+	pcf   *pcftest.PCF
+	pol   fakePolicy
 	srv   *server.Server
 	db    string
 	wire  *wireLog
@@ -115,6 +118,13 @@ func newScene(t *testing.T) *scene {
 }
 
 func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
+	t.Helper()
+
+	return newPolicyScene(t, policyRx, configure)
+}
+
+// newPolicyScene starts the IMS with a fake PCRF over Rx, or a fake PCF over N5.
+func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) *scene {
 	t.Helper()
 
 	s := &scene{
@@ -148,29 +158,52 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 		}
 	}
 
-	s.pcrf = pcrftest.New(t, pcrftest.Config{
-		Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain, UEs: ues,
-	})
+	peers := []config.DiameterPeer{{
+		ID: "hss", Host: s.hss.Host(), Realm: domain, Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
+		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+	}}
+
+	var pol config.Policy
+
+	switch iface {
+	case policyRx:
+		s.pcrf = pcrftest.New(t, pcrftest.Config{
+			Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: imsHost, IMSRealm: domain, UEs: ues,
+		})
+		s.pol = &rxPolicy{s: s}
+
+		peers = append(peers, config.DiameterPeer{
+			ID: "pcrf", Host: s.pcrf.Host(), Realm: s.pcrf.Realm(), Address: s.pcrf.Addr().Addr(),
+			Port: int(s.pcrf.Addr().Port()), Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationRx},
+		})
+		pol.Rx = "pcrf"
+	case policyN5:
+		s.pcf = pcftest.New(t, pcftest.Config{UEs: ues, Logger: testLogger(t)})
+		s.pol = &n5Policy{s: s}
+
+		pol.N5 = &config.N5{
+			PCFURI: s.pcf.URL(),
+			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
+		}
+	default:
+		t.Fatalf("unknown policy interface %q", iface)
+	}
 
 	s.srv = &server.Server{Config: config.Config{
-		DB:    config.DB{Path: s.db},
-		API:   config.API{Address: netip.MustParseAddr("127.0.0.1")},
-		IMS:   config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
-		SIP:   config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
-		PCSCF: config.PCSCF{Port: pcscfPort, IPsec: config.IPsec{ServerPort: pcscfIPsecServerPort, ClientPorts: []int{5064, 5065}}},
+		DB:  config.DB{Path: s.db},
+		API: config.API{Address: netip.MustParseAddr("127.0.0.1")},
+		IMS: config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
+		SIP: config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
+		PCSCF: config.PCSCF{
+			Port: pcscfPort, IPsec: config.IPsec{ServerPort: pcscfIPsecServerPort, ClientPorts: []int{5064, 5065}}, Policy: pol,
+		},
 		ICSCF: config.ICSCF{Port: 5070},
 		SCSCF: config.SCSCF{Port: 5080, MinExpires: 60, MaxExpires: 3600},
 		Diameter: config.Diameter{
 			OriginHost:  imsHost,
 			OriginRealm: domain,
 			Address:     s.hss.Addr().Addr(),
-			Peers: []config.DiameterPeer{{
-				ID: "hss", Host: s.hss.Host(), Realm: domain, Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
-				Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
-			}, {
-				ID: "pcrf", Host: s.pcrf.Host(), Realm: s.pcrf.Realm(), Address: s.pcrf.Addr().Addr(),
-				Port: int(s.pcrf.Addr().Port()), Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationRx},
-			}},
+			Peers:       peers,
 		},
 	}, Logger: testLogger(t)}
 
@@ -184,7 +217,11 @@ func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
 
 	t.Cleanup(func() { s.srv.Shutdown(context.Background()) })
 
-	s.diameterOpen("hss", "pcrf")
+	if s.pcrf != nil {
+		s.diameterOpen("hss", "pcrf")
+	} else {
+		s.diameterOpen("hss")
+	}
 
 	t.Cleanup(func() { s.record("") })
 

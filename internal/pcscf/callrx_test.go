@@ -10,6 +10,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
@@ -105,7 +106,10 @@ func TestCallMediaAuthorizedOnTheAnswer(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 180)
 
 	if aar.RequestType == nil || *aar.RequestType != rx.RequestInitial || aar.FramedIPAddress != ueAddr ||
-		!slices.Equal(aar.SpecificActions, callActions) || aar.Features != rx.FeatureRel8 || aar.FeaturesRequired {
+		!slices.Equal(aar.SpecificActions, []rx.SpecificAction{
+			rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
+			rx.ActionIndicationOfFailedResourcesAllocation,
+		}) || aar.Features != rx.FeatureRel8 || aar.FeaturesRequired {
 		t.Errorf("AAR %+v, want an initial one for the UE with the bearer and charging events and Rel8 offered", aar)
 	}
 
@@ -209,7 +213,7 @@ func TestCallMediaAuthorizedOnTheTerminatingAnswer(t *testing.T) {
 		t.Errorf("AAR %+v, want the P-Asserted-Service and the UE address", aar)
 	}
 
-	if want := subscriptionIDs([]string{testIMPU}); !slices.Equal(aar.SubscriptionIDs, want) {
+	if want := rxpolicy.SubscriptionIDs(subscribers([]string{testIMPU})); !slices.Equal(aar.SubscriptionIDs, want) {
 		t.Errorf("Subscription-Id %+v, want the called party %+v", aar.SubscriptionIDs, want)
 	}
 

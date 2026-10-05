@@ -1,0 +1,36 @@
+{
+  "ascReqData": {
+    "medComponents": {
+      "1": {
+        "codecs": [
+          "downlink\noffer\nm=audio 40000 RTP/AVP 116 118 111 110\na=rtpmap:116 AMR-WB/16000/1\na=fmtp:116 mode-change-capability=2;max-red=220\na=rtpmap:118 AMR/8000/1\na=fmtp:118 mode-change-capability=2;max-red=220\na=rtpmap:111 telephone-event/16000\na=fmtp:111 0-15\na=rtpmap:110 telephone-event/8000\na=fmtp:110 0-15\na=curr:qos local sendrecv\na=curr:qos remote none\na=des:qos mandatory local sendrecv\na=des:qos mandatory remote sendrecv\na=ptime:20\na=maxptime:240",
+          "uplink\nanswer\nm=audio 40000 RTP/AVP 116 111\na=rtpmap:116 AMR-WB/16000/1\na=fmtp:116 mode-change-capability=2;max-red=220\na=rtpmap:111 telephone-event/16000\na=fmtp:111 0-15\na=curr:qos local sendrecv\na=curr:qos remote sendrecv\na=des:qos mandatory local sendrecv\na=des:qos mandatory remote sendrecv\na=ptime:20\na=maxptime:240"
+        ],
+        "fStatus": "ENABLED",
+        "marBwDl": "41000 bps",
+        "marBwUl": "41000 bps",
+        "medCompN": 1,
+        "medSubComps": {
+          "1": {
+            "fNum": 1,
+            "fDescs": [
+              "permit in 17 from 10.46.0.250 to 10.46.0.249 40000",
+              "permit out 17 from 10.46.0.249 to 10.46.0.250 40000"
+            ]
+          },
+          "2": {
+            "fNum": 2,
+            "fDescs": [
+              "permit in 17 from 10.46.0.250 to 10.46.0.249 40001",
+              "permit out 17 from 10.46.0.249 to 10.46.0.250 40001"
+            ],
+            "flowUsage": "RTCP"
+          }
+        },
+        "medType": "AUDIO",
+        "rrBw": "1537 bps",
+        "rsBw": "512 bps"
+      }
+    }
+  }
+}

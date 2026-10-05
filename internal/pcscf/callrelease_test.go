@@ -98,7 +98,7 @@ func TestCallAbortedWhileEstablished(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
 
-	terminate, ok := s.p.AbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	terminate, ok := s.p.rxAbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 	if !ok {
 		t.Fatal("AbortSession reported an unknown session")
 	}
@@ -122,7 +122,7 @@ func TestCallAbortedDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishEarly(t, u, pcrf)
 
-	terminate, _ := s.p.AbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	terminate, _ := s.p.rxAbortSession(e.session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 
 	cancel, _ := s.scscf.RecvRequest()
 	if cancel.Method != "CANCEL" {
@@ -165,7 +165,7 @@ func TestTerminatingCallAbortedDuringSetup(t *testing.T) {
 
 	wantStatus(t, first(s.scscf.RecvResponse()), 183)
 
-	terminate, _ := s.p.AbortSession(session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
+	terminate, _ := s.p.rxAbortSession(session, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased})
 
 	wantStatus(t, first(s.scscf.RecvResponse()), 500)
 
@@ -181,7 +181,7 @@ func mediaLossClock() (*siptest.Clock, func(*Config)) {
 
 	return clk, func(c *Config) {
 		c.Clock = fakeClock{clk}
-		c.Rx.MediaLossTimeout = lossTimeout
+		c.Policy.MediaLossTimeout = lossTimeout
 	}
 }
 
@@ -193,7 +193,7 @@ func lossRAR(t *testing.T, s *ipsecScene, session string, components ...uint32) 
 		r.Flows = append(r.Flows, rx.Flows{MediaComponentNumber: n})
 	}
 
-	if !s.p.ReAuth(session, r) {
+	if !s.p.rxReAuth(session, r) {
 		t.Fatal("ReAuth reported an unknown session")
 	}
 }
@@ -224,7 +224,7 @@ func TestCallMediaLostDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
 	e := s.establishEarly(t, u, pcrf)
 
-	s.p.ReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
+	s.p.rxReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfReleaseOfBearer}})
 
 	s.scscf.RecvNone(quiet)
 	clk.Advance(lossTimeout)
@@ -326,9 +326,9 @@ func TestCallMediaLossTimerStopsWithTheCall(t *testing.T) {
 	clk.Advance(lossTimeout)
 	s.scscf.RecvNone(quiet)
 
-	if s.p.ReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
+	if s.p.rxReAuth(e.session, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}}) {
 		eventually(t, "the ended session to be forgotten", func() bool {
-			return !s.p.ReAuth(e.session, rx.ReAuthRequest{})
+			return !s.p.rxReAuth(e.session, rx.ReAuthRequest{})
 		})
 	}
 }

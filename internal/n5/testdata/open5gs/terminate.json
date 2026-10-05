@@ -1,0 +1,4 @@
+{
+  "termCause": "PDU_SESSION_TERMINATION",
+  "resUri": "http://10.80.0.10:7777/npcf-policyauthorization/v1/app-sessions/7"
+}

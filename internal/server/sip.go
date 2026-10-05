@@ -68,8 +68,8 @@ type sipServer struct {
 	served      []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, originState uint32, rtr *rtrHandler,
-	rxh *rxHandler, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
+func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler,
+	rxh *rxHandler, pf *policyFunction, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
 	roles := newDispatcher(logger)
@@ -176,16 +176,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 		rtr.bind(s.registrar)
 	}
 
-	var pcrf pcscf.Rx
-
-	if p, ok := cfg.Diameter.RxPeer(); ok {
-		pcrf = pcscf.Rx{
-			Diameter: node, PCRF: pcscf.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm}, OriginStateID: originState,
-			MediaLossTimeout: cfg.PCSCF.MediaLossTimeout,
-		}
-	} else {
-		logger.Info("no diameter peer serves rx: the P-CSCF runs without Rx sessions")
-	}
+	pol := pcscf.Policy{Backend: pf.backend, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout}
 
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
@@ -205,7 +196,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
-		Rx:       pcrf,
+		Policy:   pol,
 		NoAnswer: cfg.PCSCF.NoAnswerTimeout,
 		Trust:    domain,
 		Fallback: ph,
@@ -219,7 +210,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, origi
 
 	s.pcscf.Store(pc)
 
-	rxh.bind(pc)
+	if pf.rx != nil {
+		rxh.bind(pf.rx)
+	}
 
 	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
 		roles.set(port, rolePCSCF, pc)
