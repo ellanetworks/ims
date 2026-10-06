@@ -11,9 +11,9 @@ scp:
   default:
     tls:
       client:
-        cacert: /etc/open5gs/tls/ca.crt
-        client_private_key: /etc/open5gs/tls/scp.key
-        client_cert: /etc/open5gs/tls/scp.crt
+        cacert: /etc/open5gs/n5-tls/ca.crt
+        client_private_key: /etc/open5gs/n5-tls/scp.key
+        client_cert: /etc/open5gs/n5-tls/scp.crt
   sbi:
     server:
       - address: 127.0.0.200

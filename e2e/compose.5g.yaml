@@ -19,7 +19,7 @@ services:
       - ./open5gs/config/open5gs/udr.yaml:/etc/open5gs/udr.yaml:ro
       - ./open5gs/config/open5gs/pcf.yaml:/etc/open5gs/pcf.yaml:ro
       - ./open5gs/config/open5gs/scp.yaml:/etc/open5gs/scp.yaml:ro
-      - ./tls:/etc/open5gs/tls:ro
+      - ./tls:/etc/open5gs/n5-tls:ro
     networks:
       core:
         aliases: [pcf.5gc.mnc001.mcc001.3gppnetwork.org]
