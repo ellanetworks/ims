@@ -17,6 +17,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/policy"
+	"github.com/ellanetworks/ims/internal/sbitls"
 )
 
 // SessionsPath is where the P-CSCF receives notifications: each session has the notifUri
@@ -35,10 +36,14 @@ var events = []n5.AfEventSubscription{{Event: n5.EventFailedResourcesAllocation}
 const deleteTimeout = 10 * time.Second
 
 type Config struct {
-	// PCF is the API root of the PCF, http://host[:port][/prefix].
+	// PCF is the API root of the PCF, http[s]://host[:port][/prefix].
 	PCF string
-	// Notify is the root of the notification URIs, http://host:port, at which Handler is served.
+	// Notify is the root of the notification URIs, scheme://host[:port] with the scheme of PCF, at which the
+	// backend is served.
 	Notify string
+	// TLS are the credentials of the P-CSCF over https: as the client of the PCF, and as the server of its
+	// notifications.
+	TLS    *sbitls.Credentials
 	Logger *slog.Logger
 }
 
@@ -86,7 +91,7 @@ type Status struct {
 var _ policy.Backend = (*Backend)(nil)
 
 func New(cfg Config) (*Backend, error) {
-	client, err := n5.New(n5.Config{PCF: cfg.PCF})
+	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS})
 	if err != nil {
 		return nil, err
 	}
@@ -97,9 +102,9 @@ func New(cfg Config) (*Backend, error) {
 	}
 
 	notify, err := url.Parse(cfg.Notify)
-	if err != nil || notify.Scheme != "http" || notify.Host == "" || strings.Trim(notify.Path, "/") != "" ||
+	if err != nil || notify.Scheme != root.Scheme || notify.Host == "" || strings.Trim(notify.Path, "/") != "" ||
 		notify.RawQuery != "" || notify.Fragment != "" || notify.User != nil {
-		return nil, fmt.Errorf("notification root %q: want http://host:port", cfg.Notify)
+		return nil, fmt.Errorf("notification root %q: want %s://host[:port]", cfg.Notify, root.Scheme)
 	}
 
 	if cfg.Logger == nil {
@@ -388,6 +393,16 @@ func (b *Backend) lose(id string) {
 }
 
 // found reports, once, whether the create of id got no answer.
+// lostOne reports whether id is a create that got no answer, without forgetting it as found does.
+func (b *Backend) lostOne(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, ok := b.lost[id]
+
+	return ok
+}
+
 func (b *Backend) found(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -27,6 +27,7 @@ import (
 	"github.com/ellanetworks/ims/internal/pcftest"
 	"github.com/ellanetworks/ims/internal/pcrftest"
 	"github.com/ellanetworks/ims/internal/pcscf"
+	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
@@ -184,6 +185,20 @@ func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) 
 		pol.N5 = &config.N5{
 			PCFURI: s.pcf.URL(),
 			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
+		}
+	case policyN5TLS:
+		// Both ends by IP address, and the notification URIs by default.
+		ca := sbitlstest.NewCA(t, "ca")
+		pcfCert := ca.Issue(t, "pcf", sbitlstest.Leaf{Hosts: []string{"127.0.0.1"}})
+		ims := ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"127.0.0.1"}})
+
+		s.pcf = pcftest.New(t, pcftest.Config{UEs: ues, TLS: sbitlstest.Peer(pcfCert.Cert, ca), Logger: testLogger(t)})
+		s.pol = &n5Policy{s: s}
+
+		pol.N5 = &config.N5{
+			PCFURI: s.pcf.URL(),
+			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
+			TLS:    &config.TLS{CA: ims.Files.CA, Cert: ims.Files.Cert, Key: ims.Files.Key},
 		}
 	default:
 		t.Fatalf("unknown policy interface %q", iface)

@@ -53,6 +53,20 @@ const (
         address: 10.0.0.5
         port: 7778
 `
+
+	n5TLSPolicy = `pcscf:
+  policy:
+    n5:
+      pcf_uri: https://pcf.example.org:7777
+      notify:
+        uri: https://pcscf.example.org:7778/
+        address: 10.0.0.5
+        port: 7778
+      tls:
+        ca: /etc/ims/tls/ca.crt
+        cert: /etc/ims/tls/ims.crt
+        key: /etc/ims/tls/ims.key
+`
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -311,12 +325,38 @@ func TestLoadN5(t *testing.T) {
 		t.Fatal("RxPeer with N5")
 	}
 
-	if got := want.Notify.URI(); got != "http://10.0.0.5:7778" {
+	if got := want.NotifyURI(); got != "http://10.0.0.5:7778" {
 		t.Fatalf("notify URI = %q", got)
 	}
 
-	if got := (N5Notify{Address: netip.MustParseAddr("2001:db8::5"), Port: 80}).URI(); got != "http://[2001:db8::5]:80" {
+	if got := (N5{Notify: N5Notify{Address: netip.MustParseAddr("2001:db8::5"), Port: 80}}).NotifyURI(); got != "http://[2001:db8::5]:80" {
 		t.Fatalf("IPv6 notify URI = %q", got)
+	}
+}
+
+func TestLoadN5TLS(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+n5TLSPolicy+validDiameter))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := &N5{
+		PCFURI: "https://pcf.example.org:7777",
+		Notify: N5Notify{URI: "https://pcscf.example.org:7778/", Address: netip.MustParseAddr("10.0.0.5"), Port: 7778},
+		TLS:    &TLS{CA: "/etc/ims/tls/ca.crt", Cert: "/etc/ims/tls/ims.crt", Key: "/etc/ims/tls/ims.key"},
+	}
+	if !reflect.DeepEqual(cfg.PCSCF.Policy.N5, want) {
+		t.Fatalf("pcscf.policy.n5 = %+v, want %+v", cfg.PCSCF.Policy.N5, want)
+	}
+
+	if got := want.NotifyURI(); got != "https://pcscf.example.org:7778" {
+		t.Fatalf("notify URI = %q", got)
+	}
+
+	// Without a URI, the PCF connects to the address, which the certificate must then cover.
+	want.Notify.URI = ""
+	if got := want.NotifyURI(); got != "https://10.0.0.5:7778" {
+		t.Fatalf("default notify URI = %q", got)
 	}
 }
 
@@ -496,8 +536,16 @@ func TestLoadInvalid(t *testing.T) {
 		{"rx and n5", valid + n5Policy + "    rx: pcrf\n" + validDiameter + pcrfPeer, "pcscf.policy: set rx or n5, not both"},
 		{"n5 with an rx peer", valid + n5Policy + validDiameter + pcrfPeer, `diameter peer "pcrf" serves rx, but pcscf.policy.rx does not name it`},
 		{"n5 without pcf_uri", valid + strings.Replace(n5Policy, "      pcf_uri: http://10.0.0.13:7777\n", "", 1) + validDiameter, "pcscf.policy.n5.pcf_uri is required"},
-		{"n5 over https", valid + strings.Replace(n5Policy, "http://10.0.0.13", "https://10.0.0.13", 1) + validDiameter, "want http://host[:port][/prefix]"},
-		{"n5 pcf_uri with a query", valid + strings.Replace(n5Policy, ":7777", ":7777/?a=b", 1) + validDiameter, "want http://host[:port][/prefix]"},
+		{"n5 over https without tls", valid + strings.Replace(n5Policy, "http://10.0.0.13", "https://10.0.0.13", 1) + validDiameter, "pcscf.policy.n5.tls is required with an https pcf_uri"},
+		{"n5 over http with tls", valid + strings.Replace(n5TLSPolicy, "https://pcf", "http://pcf", 1) + validDiameter, "pcscf.policy.n5.tls needs an https pcf_uri"},
+		{"n5 pcf_uri with a query", valid + strings.Replace(n5Policy, ":7777", ":7777/?a=b", 1) + validDiameter, "want http[s]://host[:port][/prefix]"},
+		{"n5 pcf_uri of another scheme", valid + strings.Replace(n5Policy, "http://10.0.0.13", "ftp://10.0.0.13", 1) + validDiameter, "want http[s]://host[:port][/prefix]"},
+		{"n5 tls without ca", valid + strings.Replace(n5TLSPolicy, "        ca: /etc/ims/tls/ca.crt\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.ca is required"},
+		{"n5 tls without cert", valid + strings.Replace(n5TLSPolicy, "        cert: /etc/ims/tls/ims.crt\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.cert is required"},
+		{"n5 tls without key", valid + strings.Replace(n5TLSPolicy, "        key: /etc/ims/tls/ims.key\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.key is required"},
+		{"n5 notify uri over http", valid + strings.Replace(n5TLSPolicy, "https://pcscf", "http://pcscf", 1) + validDiameter, `pcscf.policy.n5.notify.uri "http://pcscf.example.org:7778/": want https://host[:port]`},
+		{"n5 notify uri with a path", valid + strings.Replace(n5TLSPolicy, ":7778/", ":7778/n5", 1) + validDiameter, "pcscf.policy.n5.notify.uri"},
+		{"n5 notify uri without a host", valid + strings.Replace(n5TLSPolicy, "https://pcscf.example.org:7778/", "https://:7778", 1) + validDiameter, "pcscf.policy.n5.notify.uri"},
 		{"n5 without notify address", valid + strings.Replace(n5Policy, "        address: 10.0.0.5\n", "", 1) + validDiameter, "pcscf.policy.n5.notify.address is required"},
 		{"n5 unspecified notify address", valid + strings.Replace(n5Policy, "address: 10.0.0.5", "address: 0.0.0.0", 1) + validDiameter, "must be a specific address"},
 		{"n5 notify port out of range", valid + strings.Replace(n5Policy, "port: 7778", "port: 0", 1) + validDiameter, "pcscf.policy.n5.notify.port 0 is out of range"},

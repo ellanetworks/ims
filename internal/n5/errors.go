@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,12 +94,47 @@ func (e *Error) Cause() string {
 
 // transportError wraps a request that got no response, telling apart one that never reached the PCF.
 func transportError(op Op, err error) *Error {
-	var dial *net.OpError
-	if errors.As(err, &dial) && dial.Op == "dial" {
+	var oe *net.OpError
+
+	switch {
+	case errors.Is(err, ErrConnect):
+	case errors.As(err, &oe) && (oe.Op == "dial" || rejectedCertificate(oe)):
 		err = fmt.Errorf("%w: %w", ErrConnect, err)
+	case notEstablished(err):
+		err = fmt.Errorf("%w: %w (did the PCF refuse the TLS certificate?)", ErrConnect, err)
 	}
 
 	return &Error{Op: op, Err: err}
+}
+
+// notEstablished reports the error with which net/http's HTTP/2 client fails the first request of a connection
+// that closed before the request was written, as when a TLS 1.3 server refuses the client certificate once the
+// client finished its handshake. The error is not exported, and it hides the cause.
+func notEstablished(err error) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if err.Error() == "http2: client conn could not be established" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// RFC 8446 §6.2: the alerts with which a server refuses a client certificate.
+var certificateAlerts = []uint64{42, 43, 44, 45, 46, 48, 49, 116}
+
+// rejectedCertificate reports whether the PCF refused the client certificate. In TLS 1.3 the client completes its
+// handshake before the server checks its certificate (RFC 8446 §4.4.2.4), so the refusal arrives as an alert after
+// the request was written, but the PCF never received the request. crypto/tls reports a received alert as a
+// net.OpError "remote error" around its unexported alert code.
+func rejectedCertificate(oe *net.OpError) bool {
+	if oe.Op != "remote error" || oe.Err == nil {
+		return false
+	}
+
+	v := reflect.ValueOf(oe.Err)
+
+	return v.Kind() == reflect.Uint8 && slices.Contains(certificateAlerts, v.Uint())
 }
 
 // maxRetryAfter caps a Retry-After, in seconds; a larger one is read as this.

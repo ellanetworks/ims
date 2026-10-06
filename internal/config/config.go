@@ -112,20 +112,45 @@ type Policy struct {
 }
 
 type N5 struct {
-	// PCFURI is the API root of the PCF, http://host[:port][/prefix].
+	// PCFURI is the API root of the PCF, http://host[:port][/prefix], or https://host[:port][/prefix] for N5 over
+	// TLS. The host is a domain name or an IP address. The PCF must name its contexts with the same scheme, host
+	// and port, so that the P-CSCF can delete those the PCF terminates after it lost track of them.
 	PCFURI string   `yaml:"pcf_uri"`
 	Notify N5Notify `yaml:"notify"`
+	// TLS is required over https, and not allowed over http.
+	TLS *TLS `yaml:"tls"`
 }
 
-// N5Notify is where the PCF sends notifications. The address is also the host of the notification URIs.
+// N5Notify is where the PCF sends notifications: the P-CSCF listens on the address and port, and the PCF
+// connects to the URI.
 type N5Notify struct {
+	// URI is the root of the notification URIs, scheme://host[:port] with the scheme of the PCF URI. Over https,
+	// the certificate must be valid for its host. It defaults to the address and port.
+	URI     string     `yaml:"uri"`
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
 }
 
-// URI is the root of the notification URIs.
-func (n N5Notify) URI() string {
-	return "http://" + netip.AddrPortFrom(n.Address, uint16(n.Port)).String()
+// NotifyURI is the root of the notification URIs.
+func (n N5) NotifyURI() string {
+	if n.Notify.URI != "" {
+		return strings.TrimSuffix(n.Notify.URI, "/")
+	}
+
+	scheme := "http"
+	if n.TLS != nil {
+		scheme = "https"
+	}
+
+	return scheme + "://" + netip.AddrPortFrom(n.Notify.Address, uint16(n.Notify.Port)).String()
+}
+
+// TLS are PEM files: the CA certificates that the peers' certificates must chain to, and the certificate and
+// private key of the IMS, which it presents both as a client and as a server.
+type TLS struct {
+	CA   string `yaml:"ca"`
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
 }
 
 type IPsec struct {
@@ -414,8 +439,32 @@ func (c Config) validateN5(n N5) error {
 	switch {
 	case n.PCFURI == "":
 		return errors.New("pcscf.policy.n5.pcf_uri is required")
-	case err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "":
-		return fmt.Errorf("pcscf.policy.n5.pcf_uri %q: want http://host[:port][/prefix]", n.PCFURI)
+	case err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "":
+		return fmt.Errorf("pcscf.policy.n5.pcf_uri %q: want http[s]://host[:port][/prefix]", n.PCFURI)
+	case u.Scheme == "https" && n.TLS == nil:
+		return errors.New("pcscf.policy.n5.tls is required with an https pcf_uri")
+	case u.Scheme == "http" && n.TLS != nil:
+		return errors.New("pcscf.policy.n5.tls needs an https pcf_uri")
+	}
+
+	if n.TLS != nil {
+		switch {
+		case n.TLS.CA == "":
+			return errors.New("pcscf.policy.n5.tls.ca is required")
+		case n.TLS.Cert == "":
+			return errors.New("pcscf.policy.n5.tls.cert is required")
+		case n.TLS.Key == "":
+			return errors.New("pcscf.policy.n5.tls.key is required")
+		}
+	}
+
+	if n.Notify.URI != "" {
+		nu, err := url.Parse(n.Notify.URI)
+		if err != nil || nu.Scheme != u.Scheme || nu.Host == "" || nu.Hostname() == "" || nu.User != nil ||
+			strings.Trim(nu.Path, "/") != "" || nu.RawQuery != "" || nu.Fragment != "" {
+			return fmt.Errorf("pcscf.policy.n5.notify.uri %q: want %s://host[:port], with the scheme of pcf_uri", n.Notify.URI, u.Scheme)
+		}
 	}
 
 	a := n.Notify.Address

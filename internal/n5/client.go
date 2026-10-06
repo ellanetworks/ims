@@ -3,6 +3,7 @@ package n5
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/ellanetworks/ims/internal/sbitls"
 )
 
 const (
@@ -29,8 +32,11 @@ const (
 )
 
 type Config struct {
-	// PCF is the API root of the PCF, http://host[:port][/prefix] (TS 29.501 §4.4.1).
+	// PCF is the API root of the PCF, http://host[:port][/prefix] or https://host[:port][/prefix] (TS 29.501
+	// §4.4.1).
 	PCF string
+	// TLS are the credentials of the client over https, and must be nil over http.
+	TLS *sbitls.Credentials
 	// UserAgent defaults to DefaultUserAgent.
 	UserAgent string
 	// PingInterval is how long a connection may stay silent before a PING checks it (TS 29.500 §5.2.6).
@@ -38,11 +44,13 @@ type Config struct {
 	PingInterval time.Duration
 }
 
-// Client invokes Npcf_PolicyAuthorization on one PCF, over HTTP/2 without TLS (prior knowledge, RFC 9113 §3.3).
-// Requests share one connection, and more open when the PCF's stream limit is reached (TS 29.500 §5.2.6).
+// Client invokes Npcf_PolicyAuthorization on one PCF, over HTTP/2: with prior knowledge for http (RFC 9113 §3.3),
+// and over mutually authenticated TLS for https (TS 33.501 §13.1.0). Requests share one connection, and more open
+// when the PCF's stream limit is reached (TS 29.500 §5.2.6).
 type Client struct {
 	root      *url.URL
 	userAgent string
+	tls       *sbitls.Credentials
 	http      *http.Client
 	transport *http.Transport
 	now       func() time.Time
@@ -54,8 +62,13 @@ func New(cfg Config) (*Client, error) {
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("PCF URI: %w", err)
-	case root.Scheme != "http" || root.Host == "" || root.User != nil || root.RawQuery != "" || root.Fragment != "":
-		return nil, fmt.Errorf("PCF URI %q: want http://host[:port][/prefix]", cfg.PCF)
+	case root.Scheme != "http" && root.Scheme != "https" || root.Host == "" || root.User != nil || root.RawQuery != "" ||
+		root.Fragment != "":
+		return nil, fmt.Errorf("PCF URI %q: want http[s]://host[:port][/prefix]", cfg.PCF)
+	case root.Scheme == "https" && cfg.TLS == nil:
+		return nil, fmt.Errorf("PCF URI %q: https without TLS credentials", cfg.PCF)
+	case root.Scheme == "http" && cfg.TLS != nil:
+		return nil, fmt.Errorf("PCF URI %q: TLS credentials for http", cfg.PCF)
 	}
 
 	root.Path = strings.TrimSuffix(root.Path, "/")
@@ -67,34 +80,65 @@ func New(cfg Config) (*Client, error) {
 
 	cfg.PingInterval = max(cfg.PingInterval, MinPingInterval)
 
+	c := &Client{root: root, userAgent: cfg.UserAgent, tls: cfg.TLS, now: time.Now}
+
 	var protocols http.Protocols
 
-	protocols.SetUnencryptedHTTP2(true)
-
-	t := &http.Transport{
-		Protocols:   &protocols,
-		HTTP2:       &http.HTTP2Config{SendPingTimeout: cfg.PingInterval},
-		DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+	c.transport = &http.Transport{
+		Protocols: &protocols,
+		HTTP2:     &http.HTTP2Config{SendPingTimeout: cfg.PingInterval},
 	}
 
-	return &Client{
-		root:      root,
-		userAgent: cfg.UserAgent,
-		transport: t,
-		http:      &http.Client{Transport: t, CheckRedirect: checkRedirect},
-		now:       time.Now,
-	}, nil
+	if c.tls == nil {
+		protocols.SetUnencryptedHTTP2(true)
+
+		c.transport.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
+	} else {
+		// HTTP/2 only, which ALPN negotiates (RFC 9113 §3.2).
+		protocols.SetHTTP2(true)
+
+		c.transport.DialTLSContext = c.dialTLS
+	}
+
+	c.http = &http.Client{Transport: c.transport, CheckRedirect: c.checkRedirect}
+
+	return c, nil
+}
+
+// dialTLS connects to addr over TLS. A handshake that fails, like a dial, leaves the request unsent. The
+// connection must carry HTTP/2: net/http would otherwise fall back to HTTP/1.1 on it.
+func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	d := tls.Dialer{NetDialer: &net.Dialer{Timeout: dialTimeout}, Config: c.tls.Client(host)}
+
+	conn, err := d.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnect, err)
+	}
+
+	// TS 29.500 §5.2.1, RFC 9113 §3.2
+	if p := conn.(*tls.Conn).ConnectionState().NegotiatedProtocol; p != "h2" {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: %s did not negotiate HTTP/2 (ALPN %q)", ErrConnect, addr, p)
+	}
+
+	return conn, nil
 }
 
 // RFC 9110 §15.4: follow 307 and 308, which repeat the request, and nothing that turns it into a GET. A 303 to
-// a create is an answer, not a redirection (TS 29.514 §5.3.2.3.1). Redirections stay on cleartext HTTP/2.
-func checkRedirect(req *http.Request, via []*http.Request) error {
+// a create is an answer, not a redirection (TS 29.514 §5.3.2.3.1). Redirections keep the scheme of the PCF URI,
+// so that they cannot take a request off TLS.
+func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if s := req.Response.StatusCode; s != http.StatusTemporaryRedirect && s != http.StatusPermanentRedirect {
 		return http.ErrUseLastResponse
 	}
 
-	if req.URL.Scheme != "http" {
-		return fmt.Errorf("redirection to %q: not http", req.URL)
+	if req.URL.Scheme != c.root.Scheme {
+		return fmt.Errorf("redirection to %q: not %s", req.URL, c.root.Scheme)
 	}
 
 	if len(via) >= maxRedirects {
@@ -261,7 +305,7 @@ func (c *Client) resource(uri, operation string) (string, error) {
 	}
 
 	u := c.root.ResolveReference(ref)
-	if u.Scheme != "http" || u.Host == "" {
+	if u.Scheme != c.root.Scheme || u.Host == "" {
 		return "", fmt.Errorf("invalid application session context URI %q", uri)
 	}
 
@@ -415,7 +459,7 @@ func (r *response) location() (string, error) {
 	}
 
 	u, err := r.url.Parse(loc)
-	if err != nil || u.Scheme != "http" || u.Host == "" {
+	if err != nil || u.Scheme != r.url.Scheme || u.Host == "" {
 		return "", fmt.Errorf("invalid Location %q", loc)
 	}
 

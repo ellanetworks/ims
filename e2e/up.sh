@@ -38,6 +38,7 @@ if ! docker compose pull --quiet open5gs; then
 	docker compose build open5gs
 fi
 
+./tls.sh
 docker compose build ims
 docker compose up -d mongo
 wait_for mongo 60 docker compose exec -T mongo mongosh --quiet --eval 'db.runCommand({ping: 1})'

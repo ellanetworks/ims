@@ -21,13 +21,14 @@ import (
 )
 
 const (
-	policyRx = "rx"
-	policyN5 = "n5"
+	policyRx    = "rx"
+	policyN5    = "n5"
+	policyN5TLS = "n5-tls"
 )
 
-// forEachPolicy runs a test against a fake PCRF over Rx and a fake PCF over N5.
+// forEachPolicy runs a test against a fake PCRF over Rx, and a fake PCF over N5 without and with TLS.
 func forEachPolicy(t *testing.T, f func(t *testing.T, iface string)) {
-	for _, iface := range []string{policyRx, policyN5} {
+	for _, iface := range []string{policyRx, policyN5, policyN5TLS} {
 		t.Run(iface, func(t *testing.T) { f(t, iface) })
 	}
 }

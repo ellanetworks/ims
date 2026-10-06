@@ -19,6 +19,7 @@ services:
       - ./open5gs/config/open5gs/smf.yaml:/etc/open5gs/smf.yaml:ro
       - ./open5gs/config/open5gs/hss.yaml:/etc/open5gs/hss.yaml:ro
       - ./open5gs/config/freeDiameter/hss.conf:/etc/freeDiameter/hss.conf:ro
+      - ./tls:/etc/open5gs/n5-tls:ro
     networks:
       core:
         ipv4_address: 10.80.0.10

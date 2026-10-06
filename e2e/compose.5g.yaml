@@ -18,10 +18,18 @@ services:
       - ./open5gs/config/open5gs/upf-5g.yaml:/etc/open5gs/upf-5g.yaml:ro
       - ./open5gs/config/open5gs/udr.yaml:/etc/open5gs/udr.yaml:ro
       - ./open5gs/config/open5gs/pcf.yaml:/etc/open5gs/pcf.yaml:ro
+      - ./open5gs/config/open5gs/scp.yaml:/etc/open5gs/scp.yaml:ro
+    networks:
+      core:
+        aliases: [pcf.5gc.mnc001.mcc001.3gppnetwork.org]
 
   ims:
     volumes:
       - ./ims/ims-5g.yaml:/ims.yaml:ro
+      - ./tls:/etc/ims/tls:ro
+    networks:
+      core:
+        aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
 
   gnb:
     image: ghcr.io/ellanetworks/ueransim:3.2.7

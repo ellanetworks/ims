@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
@@ -15,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/internal/n5policy"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/rxpolicy"
+	"github.com/ellanetworks/ims/internal/sbitls"
 )
 
 // policyFunction is the PCRF or PCF of the P-CSCF, if any, with the server of the PCF's notifications.
@@ -22,7 +24,7 @@ type policyFunction struct {
 	backend policy.Backend
 	rx      *rxpolicy.Backend
 	n5      *n5policy.Backend
-	notify  *http.Server
+	notify  *n5policy.Server
 	ln      net.Listener
 }
 
@@ -44,7 +46,12 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, node *diameter.No
 		return pf, nil
 	}
 
-	b, err := n5policy.New(n5policy.Config{PCF: n.PCFURI, Notify: n.Notify.URI(), Logger: logger})
+	creds, err := n5Credentials(*n, logger)
+	if err != nil {
+		return nil, fmt.Errorf("N5: %w", err)
+	}
+
+	b, err := n5policy.New(n5policy.Config{PCF: n.PCFURI, Notify: n.NotifyURI(), TLS: creds, Logger: logger})
 	if err != nil {
 		return nil, fmt.Errorf("N5: %w", err)
 	}
@@ -58,9 +65,35 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, node *diameter.No
 	}
 
 	pf.n5, pf.backend, pf.ln = b, b, ln
-	pf.notify = n5policy.NewServer(b, logger)
+	pf.notify = n5policy.NewServer(b, creds, logger)
 
 	return pf, nil
+}
+
+// n5Credentials loads the TLS credentials of N5, if any. The PCF checks the certificate against the host of the
+// notification URIs, so the certificate must be valid for it.
+func n5Credentials(n config.N5, logger *slog.Logger) (*sbitls.Credentials, error) {
+	if n.TLS == nil {
+		return nil, nil
+	}
+
+	creds, err := sbitls.Load(sbitls.Files{CA: n.TLS.CA, Cert: n.TLS.Cert, Key: n.TLS.Key})
+	if err != nil {
+		return nil, fmt.Errorf("TLS: %w", err)
+	}
+
+	u, err := url.Parse(n.NotifyURI())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := creds.Certificate().VerifyHostname(u.Hostname()); err != nil {
+		return nil, fmt.Errorf("TLS: notification URI %s: %w", n.NotifyURI(), err)
+	}
+
+	logger.Info("N5 over TLS", slog.String("cert", n.TLS.Cert), slog.Time("not_after", creds.Certificate().NotAfter))
+
+	return creds, nil
 }
 
 func (pf *policyFunction) serve(logger *slog.Logger) {

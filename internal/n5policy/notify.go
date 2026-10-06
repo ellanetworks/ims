@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"slices"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/policy"
+	"github.com/ellanetworks/ims/internal/sbitls"
 )
 
 const maxNotification = 1 << 20
@@ -127,6 +130,16 @@ func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string,
 		uri, ok = t.ResURI, true
 	}
 
+	if !ok && b.lostOne(id) {
+		// The PCF names its contexts other than pcf_uri does: Open5GS takes resUri from its first SBI server.
+		attrs = append(attrs, slog.String("pcf_uri", b.root.String()))
+		b.log.Warn("PCF terminates an application session context the P-CSCF lost, at a resUri outside pcf_uri: "+
+			"not deleting it", attrs...)
+		unknownContext(w)
+
+		return
+	}
+
 	if !ok {
 		b.log.Warn("PCF terminates an unknown application session context", attrs...)
 		unknownContext(w)
@@ -164,7 +177,7 @@ func (b *Backend) state(id string) (string, bool) {
 // notification cannot make the P-CSCF send requests elsewhere.
 func (b *Backend) ours(uri string) bool {
 	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+	if err != nil || u.Scheme != b.root.Scheme || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		!sameHost(u, b.root) {
 		return false
 	}
@@ -185,10 +198,26 @@ func sameHost(a, b *url.URL) bool {
 			return p
 		}
 
+		if u.Scheme == "https" {
+			return "443"
+		}
+
 		return "80"
 	}
 
-	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+	if port(a) != port(b) {
+		return false
+	}
+
+	// Addresses compare as addresses: [::1] is [0::1].
+	ah, aErr := netip.ParseAddr(a.Hostname())
+	bh, bErr := netip.ParseAddr(b.Hostname())
+
+	if aErr == nil && bErr == nil {
+		return ah.Unmap() == bh.Unmap()
+	}
+
+	return strings.EqualFold(a.Hostname(), b.Hostname())
 }
 
 func (b *Backend) deleteOrphan(id, uri string) {
@@ -308,17 +337,40 @@ func components(flows []n5.Flows) []uint32 {
 	return out
 }
 
-// NewServer returns the notification server: cleartext HTTP/2 with prior knowledge only (RFC 9113 §3.3).
-func NewServer(h http.Handler, logger *slog.Logger) *http.Server {
+// Server is the notification server.
+type Server struct {
+	*http.Server
+}
+
+// NewServer returns the notification server: HTTP/2 only, with prior knowledge without credentials (RFC 9113
+// §3.3), and over TLS with them, where the PCF must present a certificate (TS 33.501 §13.1.0).
+func NewServer(h http.Handler, creds *sbitls.Credentials, logger *slog.Logger) *Server {
 	var protocols http.Protocols
 
-	protocols.SetUnencryptedHTTP2(true)
-
-	return &http.Server{
+	srv := &http.Server{
 		Handler:           h,
 		Protocols:         &protocols,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       5 * time.Minute,
 	}
+
+	if creds == nil {
+		protocols.SetUnencryptedHTTP2(true)
+	} else {
+		protocols.SetHTTP2(true)
+
+		srv.TLSConfig = creds.Server()
+	}
+
+	return &Server{Server: srv}
+}
+
+// Serve accepts connections on ln, and serves them over TLS if the server has credentials.
+func (s *Server) Serve(ln net.Listener) error {
+	if s.TLSConfig != nil {
+		return s.ServeTLS(ln, "", "")
+	}
+
+	return s.Server.Serve(ln)
 }
