@@ -1,6 +1,6 @@
 # Ella IMS (beta)
 
-**Ella IMS** lets subscribers of a private 4G or 5G network make voice calls to each other. It is an IP Multimedia Subsystem (IMS) that runs as a single application. It is designed to be easy to operate, reliable, and secure.
+**Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application. It is designed to be easy to operate, reliable, and secure.
 
 <p align="center">
   <img src="docs/images/ims_integration.svg" alt="Ella IMS with Ella Core"/>
@@ -11,7 +11,7 @@
 
 ## Key Features
 
-- Voice calls
+- Voice & Video calls
 - SIM-based phone authentication with your existing HSS (IMS-AKA over Cx)
 - IPsec between phones and the IMS
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
