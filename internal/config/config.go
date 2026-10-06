@@ -113,7 +113,8 @@ type Policy struct {
 
 type N5 struct {
 	// PCFURI is the API root of the PCF, http://host[:port][/prefix], or https://host[:port][/prefix] for N5 over
-	// TLS. The host is a domain name or an IP address.
+	// TLS. The host is a domain name or an IP address. The PCF must name its contexts with the same scheme, host
+	// and port, so that the P-CSCF can delete those the PCF terminates after it lost track of them.
 	PCFURI string   `yaml:"pcf_uri"`
 	Notify N5Notify `yaml:"notify"`
 	// TLS is required over https, and not allowed over http.

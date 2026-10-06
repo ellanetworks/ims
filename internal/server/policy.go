@@ -77,7 +77,7 @@ func n5Credentials(n config.N5, logger *slog.Logger) (*sbitls.Credentials, error
 		return nil, nil
 	}
 
-	creds, err := sbitls.Load(sbitls.Files{CA: n.TLS.CA, Cert: n.TLS.Cert, Key: n.TLS.Key}, logger)
+	creds, err := sbitls.Load(sbitls.Files{CA: n.TLS.CA, Cert: n.TLS.Cert, Key: n.TLS.Key})
 	if err != nil {
 		return nil, fmt.Errorf("TLS: %w", err)
 	}
@@ -87,7 +87,7 @@ func n5Credentials(n config.N5, logger *slog.Logger) (*sbitls.Credentials, error
 		return nil, err
 	}
 
-	if err := creds.Covers(u.Hostname()); err != nil {
+	if err := creds.Certificate().VerifyHostname(u.Hostname()); err != nil {
 		return nil, fmt.Errorf("TLS: notification URI %s: %w", n.NotifyURI(), err)
 	}
 

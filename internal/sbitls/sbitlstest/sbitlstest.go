@@ -65,7 +65,8 @@ func NewCA(t testing.TB, name string) *CA {
 type Leaf struct {
 	// Hosts are the domain names and IP addresses in subjectAltName.
 	Hosts []string
-	// ExtKeyUsage defaults to serverAuth and clientAuth (TS 33.310 §6.1.3c.3).
+	// KeyUsage defaults to digitalSignature, and ExtKeyUsage to serverAuth and clientAuth (TS 33.310 §6.1.3c.3).
+	KeyUsage    x509.KeyUsage
 	ExtKeyUsage []x509.ExtKeyUsage
 	// NotBefore and NotAfter default to an hour ago and a day from now.
 	NotBefore, NotAfter time.Time
@@ -85,6 +86,10 @@ func (ca *CA) Issue(t testing.TB, name string, l Leaf) Issued {
 		l.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	}
 
+	if l.KeyUsage == 0 {
+		l.KeyUsage = x509.KeyUsageDigitalSignature
+	}
+
 	if l.NotBefore.IsZero() {
 		l.NotBefore = time.Now().Add(-time.Hour)
 	}
@@ -99,7 +104,7 @@ func (ca *CA) Issue(t testing.TB, name string, l Leaf) Issued {
 		Subject:      pkix.Name{CommonName: name},
 		NotBefore:    l.NotBefore,
 		NotAfter:     l.NotAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		KeyUsage:     l.KeyUsage,
 		ExtKeyUsage:  l.ExtKeyUsage,
 	}
 

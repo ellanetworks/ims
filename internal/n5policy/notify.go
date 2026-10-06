@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"slices"
@@ -129,6 +130,16 @@ func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string,
 		uri, ok = t.ResURI, true
 	}
 
+	if !ok && b.lostOne(id) {
+		// The PCF names its contexts other than pcf_uri does: Open5GS takes resUri from its first SBI server.
+		attrs = append(attrs, slog.String("pcf_uri", b.root.String()))
+		b.log.Warn("PCF terminates an application session context the P-CSCF lost, at a resUri outside pcf_uri: "+
+			"not deleting it", attrs...)
+		unknownContext(w)
+
+		return
+	}
+
 	if !ok {
 		b.log.Warn("PCF terminates an unknown application session context", attrs...)
 		unknownContext(w)
@@ -194,7 +205,19 @@ func sameHost(a, b *url.URL) bool {
 		return "80"
 	}
 
-	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+	if port(a) != port(b) {
+		return false
+	}
+
+	// Addresses compare as addresses: [::1] is [0::1].
+	ah, aErr := netip.ParseAddr(a.Hostname())
+	bh, bErr := netip.ParseAddr(b.Hostname())
+
+	if aErr == nil && bErr == nil {
+		return ah.Unmap() == bh.Unmap()
+	}
+
+	return strings.EqualFold(a.Hostname(), b.Hostname())
 }
 
 func (b *Backend) deleteOrphan(id, uri string) {

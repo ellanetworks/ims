@@ -23,7 +23,7 @@ func newTLSFixture(t *testing.T, ca *sbitlstest.CA) *fixture {
 	pcfCert := ca.Issue(t, "pcf", sbitlstest.Leaf{Hosts: []string{"localhost"}})
 	pcf := pcftest.New(t, pcftest.Config{Host: "localhost", TLS: sbitlstest.Peer(pcfCert.Cert, ca)})
 
-	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"localhost"}}).Files, slog.New(slog.DiscardHandler))
+	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"localhost"}}).Files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func post(f *fixture, tr *http.Transport, target string) (int, error) {
 func TestTLSConfig(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 
-	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{}).Files, nil)
+	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{}).Files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +194,28 @@ func TestTLSConfig(t *testing.T) {
 		"https://pcf:443" + n5.AppSessionsPath + "/1":  true,
 		"http://pcf" + n5.AppSessionsPath + "/1":       false,
 		"https://pcf:7777" + n5.AppSessionsPath + "/1": false,
+	} {
+		if got := b.ours(uri); got != want {
+			t.Errorf("ours(%q) = %v, want %v", uri, got, want)
+		}
+	}
+}
+
+// Hosts that are addresses compare as addresses.
+func TestOursAddress(t *testing.T) {
+	b, err := New(Config{PCF: "http://[::1]:7777", Notify: "http://127.0.0.1:7778"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer b.Close()
+
+	for uri, want := range map[string]bool{
+		"http://[::1]:7777" + n5.AppSessionsPath + "/1":     true,
+		"http://[0::1]:7777" + n5.AppSessionsPath + "/1":    true,
+		"http://[0:0::1]:7777" + n5.AppSessionsPath + "/1":  true,
+		"http://[::2]:7777" + n5.AppSessionsPath + "/1":     false,
+		"http://localhost:7777" + n5.AppSessionsPath + "/1": false,
 	} {
 		if got := b.ours(uri); got != want {
 			t.Errorf("ours(%q) = %v, want %v", uri, got, want)

@@ -85,13 +85,14 @@ func New(cfg Config) (*Client, error) {
 	var protocols http.Protocols
 
 	c.transport = &http.Transport{
-		Protocols:   &protocols,
-		HTTP2:       &http.HTTP2Config{SendPingTimeout: cfg.PingInterval},
-		DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		Protocols: &protocols,
+		HTTP2:     &http.HTTP2Config{SendPingTimeout: cfg.PingInterval},
 	}
 
 	if c.tls == nil {
 		protocols.SetUnencryptedHTTP2(true)
+
+		c.transport.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
 	} else {
 		// HTTP/2 only, which ALPN negotiates (RFC 9113 §3.2).
 		protocols.SetHTTP2(true)
@@ -104,8 +105,8 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// dialTLS connects to addr with the credentials current at the time, so that renewed ones apply to new
-// connections. A handshake that fails, like a dial, leaves the request unsent.
+// dialTLS connects to addr over TLS. A handshake that fails, like a dial, leaves the request unsent. The
+// connection must carry HTTP/2: net/http would otherwise fall back to HTTP/1.1 on it.
 func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -117,6 +118,12 @@ func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, e
 	conn, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnect, err)
+	}
+
+	// TS 29.500 §5.2.1, RFC 9113 §3.2
+	if p := conn.(*tls.Conn).ConnectionState().NegotiatedProtocol; p != "h2" {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: %s did not negotiate HTTP/2 (ALPN %q)", ErrConnect, addr, p)
 	}
 
 	return conn, nil

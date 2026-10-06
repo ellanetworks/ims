@@ -393,6 +393,16 @@ func (b *Backend) lose(id string) {
 }
 
 // found reports, once, whether the create of id got no answer.
+// lostOne reports whether id is a create that got no answer, without forgetting it as found does.
+func (b *Backend) lostOne(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, ok := b.lost[id]
+
+	return ok
+}
+
 func (b *Backend) found(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -20,7 +19,7 @@ import (
 func load(t *testing.T, f sbitls.Files) *sbitls.Credentials {
 	t.Helper()
 
-	c, err := sbitls.Load(f, slog.New(slog.DiscardHandler))
+	c, err := sbitls.Load(f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +35,7 @@ func TestLoadRejects(t *testing.T) {
 	serverOnly := ca.Issue(t, "server", sbitlstest.Leaf{ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 	expired := ca.Issue(t, "expired", sbitlstest.Leaf{NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour)})
 	future := ca.Issue(t, "future", sbitlstest.Leaf{NotBefore: time.Now().Add(time.Hour)})
+	noSignature := ca.Issue(t, "no-signature", sbitlstest.Leaf{KeyUsage: x509.KeyUsageKeyEncipherment})
 
 	tests := []struct {
 		name  string
@@ -48,11 +48,12 @@ func TestLoadRejects(t *testing.T) {
 		{"server only", serverOnly.Files, "serverAuth and clientAuth"},
 		{"expired", expired.Files, "certificate expired"},
 		{"not yet valid", future.Files, "not valid before"},
+		{"key usage without digitalSignature", noSignature.Files, "digitalSignature"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := sbitls.Load(tt.files, nil)
+			_, err := sbitls.Load(tt.files)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Load = %v, want an error with %q", err, tt.want)
 			}
@@ -65,23 +66,6 @@ func TestLoadAcceptsNoExtKeyUsage(t *testing.T) {
 	unrestricted := ca.Issue(t, "unrestricted", sbitlstest.Leaf{ExtKeyUsage: []x509.ExtKeyUsage{}})
 
 	load(t, unrestricted.Files)
-}
-
-func TestCovers(t *testing.T) {
-	ca := sbitlstest.NewCA(t, "ca")
-	c := load(t, ca.Issue(t, "pcscf", sbitlstest.Leaf{Hosts: []string{"pcscf.example.org", "10.0.0.5"}}).Files)
-
-	for _, h := range []string{"pcscf.example.org", "PCSCF.example.org", "10.0.0.5"} {
-		if err := c.Covers(h); err != nil {
-			t.Errorf("Covers(%q) = %v", h, err)
-		}
-	}
-
-	for _, h := range []string{"pcf.example.org", "10.0.0.6"} {
-		if err := c.Covers(h); err == nil {
-			t.Errorf("Covers(%q) = nil", h)
-		}
-	}
 }
 
 // handshake connects a client to a server over loopback, and returns the error each side ends with.
@@ -251,52 +235,4 @@ func TestProfile(t *testing.T) {
 			t.Fatalf("client: %v, server: %v", cerr, serr)
 		}
 	})
-}
-
-func TestReload(t *testing.T) {
-	ca := sbitlstest.NewCA(t, "ca")
-	first := ca.Issue(t, "first", sbitlstest.Leaf{Hosts: []string{"ims.example.org"}})
-	second := ca.Issue(t, "second", sbitlstest.Leaf{Hosts: []string{"ims.example.org"}})
-
-	c := load(t, first.Files)
-
-	serial := func() string { return c.Certificate().SerialNumber.String() }
-
-	want := serial()
-
-	copyFile(t, second.Files.Cert, first.Files.Cert)
-	copyFile(t, second.Files.Key, first.Files.Key)
-
-	if got := serial(); got != want {
-		t.Fatal("reloaded within the reload interval")
-	}
-
-	sbitls.Advance(c, 2*time.Second)
-
-	if got := serial(); got != second.Cert.Leaf.SerialNumber.String() {
-		t.Fatalf("serial %s after the files changed, want the new one", got)
-	}
-
-	// A certificate without its key does not load: the previous one stays.
-	want = serial()
-
-	copyFile(t, first.Files.Key, second.Files.Cert)
-	sbitls.Advance(c, 2*time.Second)
-
-	if got := serial(); got != want {
-		t.Fatalf("serial %s after a broken update, want the previous one", got)
-	}
-}
-
-func copyFile(t *testing.T, from, to string) {
-	t.Helper()
-
-	b, err := os.ReadFile(from)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(to, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
 }

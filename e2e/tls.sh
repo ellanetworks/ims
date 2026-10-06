@@ -1,7 +1,7 @@
 #!/bin/bash
-# Issues the certificates of N5 over TLS into tls/: a CA, and for the PCF, its SCP and the IMS an ECDSA P-256
-# certificate for both TLS client and server, valid for the domain name and the address of each (TS 33.310
-# §6.1.3c.3).
+# Issues the certificates of N5 over TLS into tls/: a CA, and for the PCF, the SCP and NRF that reach it, and the IMS
+# an ECDSA P-256 certificate for both TLS client and server, valid for the domain name and the address of each
+# (TS 33.310 §6.1.3c.3).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -28,6 +28,7 @@ issue() {
 
 issue pcf DNS:pcf.5gc.mnc001.mcc001.3gppnetwork.org,IP:10.80.0.10
 issue scp DNS:scp.5gc.mnc001.mcc001.3gppnetwork.org,IP:127.0.0.200
+issue nrf DNS:nrf.5gc.mnc001.mcc001.3gppnetwork.org,IP:127.0.0.10
 issue ims DNS:pcscf.ims.mnc001.mcc001.3gppnetwork.org,IP:10.80.0.5
 
 # The containers read them as root.

@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"log/slog"
+	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/sbitls"
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
@@ -20,8 +24,9 @@ type tlsPCF struct {
 	peer chan string
 }
 
-// newTLSPCF serves handler over HTTP/2 and TLS only, and requires a client certificate issued by ca.
-func newTLSPCF(t *testing.T, ca *sbitlstest.CA, cert tls.Certificate, handler http.HandlerFunc) *tlsPCF {
+// newTLSPCF serves handler over HTTP/2 and TLS only, and requires a client certificate issued by ca. Each of
+// adjust changes the TLS configuration before the server starts.
+func newTLSPCF(t *testing.T, ca *sbitlstest.CA, cert tls.Certificate, handler http.HandlerFunc, adjust ...func(*tls.Config)) *tlsPCF {
 	t.Helper()
 
 	p := &tlsPCF{peer: make(chan string, 16)}
@@ -39,6 +44,12 @@ func newTLSPCF(t *testing.T, ca *sbitlstest.CA, cert tls.Certificate, handler ht
 
 	p.TLS = sbitlstest.Peer(cert, ca)
 	p.TLS.NextProtos = []string{"h2"}
+
+	for _, f := range adjust {
+		f(p.TLS)
+	}
+
+	p.Config.ErrorLog = log.New(io.Discard, "", 0)
 	p.Config.Protocols = new(http.Protocols)
 	p.Config.Protocols.SetHTTP2(true)
 	p.StartTLS()
@@ -55,7 +66,7 @@ func (p *tlsPCF) named() string {
 func newTLSClient(t *testing.T, pcf string, files sbitls.Files) *Client {
 	t.Helper()
 
-	creds, err := sbitls.Load(files, slog.New(slog.DiscardHandler))
+	creds, err := sbitls.Load(files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +183,7 @@ func TestTLSDowngrade(t *testing.T) {
 func TestTLSConfig(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 
-	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{}).Files, nil)
+	creds, err := sbitls.Load(ca.Issue(t, "ims", sbitlstest.Leaf{}).Files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +194,80 @@ func TestTLSConfig(t *testing.T) {
 
 	if _, err := New(Config{PCF: "http://pcf:7777", TLS: creds}); err == nil || !strings.Contains(err.Error(), "TLS credentials for http") {
 		t.Errorf("http with credentials: %v", err)
+	}
+}
+
+// TS 29.500 §5.2.1: a PCF that does not negotiate h2 is not reached over HTTP/1.1 instead.
+func TestTLSRequiresHTTP2(t *testing.T) {
+	ca := sbitlstest.NewCA(t, "ca")
+	ims := ca.Issue(t, "ims", sbitlstest.Leaf{})
+
+	var reached atomic.Bool
+
+	// A TLS server without ALPN, serving HTTP/1.1.
+	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		created(w, r)
+	}), ReadHeaderTimeout: time.Second}
+
+	go func() {
+		_ = srv.Serve(tls.NewListener(ln, sbitlstest.Peer(ca.Issue(t, "pcf", sbitlstest.Leaf{Hosts: []string{"127.0.0.1"}}).Cert, ca)))
+	}()
+
+	t.Cleanup(func() { _ = srv.Close() })
+
+	c := newTLSClient(t, "https://"+ln.Addr().String(), ims.Files)
+
+	_, err = c.Create(context.Background(), callContext())
+	if !errors.Is(err, ErrConnect) || !strings.Contains(err.Error(), "did not negotiate HTTP/2") {
+		t.Fatalf("error %v, want a connection failure for the missing HTTP/2", err)
+	}
+
+	if reached.Load() {
+		t.Fatal("the request reached the PCF over HTTP/1.1")
+	}
+}
+
+// A PCF that refuses the client certificate never got the request. With TLS 1.3 the refusal comes after the client
+// finished its handshake and wrote the request, and net/http may then report a reset write instead of the alert:
+// such an error stays one that may have reached the PCF. The test waits for the alert to come through.
+func TestTLSRejectedByPCF(t *testing.T) {
+	ca := sbitlstest.NewCA(t, "ca")
+	other := sbitlstest.NewCA(t, "other")
+	ims := ca.Issue(t, "ims", sbitlstest.Leaf{})
+	cert := ca.Issue(t, "pcf", sbitlstest.Leaf{Hosts: []string{"localhost"}}).Cert
+
+	for name, version := range map[string]uint16{"TLS 1.2": tls.VersionTLS12, "TLS 1.3": tls.VersionTLS13} {
+		t.Run(name, func(t *testing.T) {
+			for range 20 {
+				// The PCF trusts another CA than the IMS's.
+				pcf := newTLSPCF(t, other, cert, created, func(c *tls.Config) { c.MaxVersion = version })
+				c := newTLSClient(t, pcf.named(), ims.Files)
+
+				_, err := c.Create(context.Background(), callContext())
+
+				var e *Error
+				if !errors.As(err, &e) || e.Status != 0 {
+					t.Fatalf("error %v, want no response", err)
+				}
+
+				if !strings.Contains(err.Error(), "unknown certificate authority") {
+					continue
+				}
+
+				if !errors.Is(err, ErrConnect) {
+					t.Fatalf("error %v, want a connection failure", err)
+				}
+
+				return
+			}
+
+			t.Fatal("the PCF's refusal of the certificate never came through")
+		})
 	}
 }

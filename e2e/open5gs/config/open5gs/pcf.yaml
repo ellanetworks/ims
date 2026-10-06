@@ -20,7 +20,8 @@ pcf:
         client_cert: /etc/open5gs/n5-tls/pcf.crt
   sbi:
     server:
-      # On the core network, for the P-CSCF over N5: Location and resUri carry the advertised name.
+      # On the core network, for the P-CSCF over N5: Location and resUri carry the advertised name, which must be the
+      # host of the P-CSCF's pcf_uri. The PCF takes resUri from its first server, so N5 must be served by this one.
       - address: 10.80.0.10
         port: 7777
         advertise: pcf.5gc.mnc001.mcc001.3gppnetwork.org
