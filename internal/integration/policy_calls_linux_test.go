@@ -50,7 +50,7 @@ func TestCallPolicySessions(t *testing.T) {
 
 				// Over N5, a PATCH that would change nothing is not sent: the UPDATE answer may add no request.
 				requests := 2
-				if iface == policyN5 {
+				if iface != policyRx {
 					requests = 1
 				}
 

@@ -1,11 +1,12 @@
 // Package pcftest is a fake PCF for tests: the NF service producer side of Npcf_PolicyAuthorization (TS 29.514)
-// over cleartext HTTP/2. It follows TS 29.514 where Open5GS deviates, and it checks every request strictly: one
+// over cleartext HTTP/2, or over mutually authenticated TLS. It follows TS 29.514 where Open5GS deviates, and it checks every request strictly: one
 // that breaks TS 29.514 or TS 29.500 fails the test, unless Config.AllowViolations is set.
 package pcftest
 
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +43,12 @@ const (
 
 type Config struct {
 	Address netip.Addr
+	// Host is the host of the API root, a domain name that resolves to Address. It defaults to Address.
+	Host string
+
+	// TLS, if set, makes the PCF serve https and send notifications over TLS: it presents the certificate of
+	// TLS, checks the consumer's against the CAs of TLS, and requires one from a client.
+	TLS *tls.Config
 
 	// UEs are the addresses with a PDU session. An IPv6 address binds to the /64 of one of them (TS 29.513
 	// §6.2). Empty, every UE has one.
@@ -158,9 +165,18 @@ func New(t testing.TB, cfg Config) *PCF {
 
 	var protocols http.Protocols
 
-	protocols.SetUnencryptedHTTP2(true)
-
 	transport := &http.Transport{Protocols: &protocols}
+	scheme := "http"
+
+	if cfg.TLS == nil {
+		protocols.SetUnencryptedHTTP2(true)
+	} else {
+		protocols.SetHTTP2(true)
+
+		scheme = "https"
+		transport.TLSClientConfig = cfg.TLS.Clone()
+		transport.TLSClientConfig.NextProtos = []string{"h2"}
+	}
 
 	p := &PCF{
 		cfg:      cfg,
@@ -170,10 +186,22 @@ func New(t testing.TB, cfg Config) *PCF {
 		sessions: make(map[string]*appSession),
 		moved:    make(map[string]string),
 	}
-	p.root = "http://" + p.addr.String()
+	p.root = scheme + "://" + p.addr.String()
+	if cfg.Host != "" {
+		p.root = scheme + "://" + net.JoinHostPort(cfg.Host, strconv.Itoa(int(p.addr.Port())))
+	}
+
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), Protocols: &protocols, ErrorLog: slog.NewLogLogger(cfg.Logger.Handler(), slog.LevelWarn)}
 
-	go func() { _ = p.server.Serve(ln) }()
+	go func() {
+		if cfg.TLS == nil {
+			_ = p.server.Serve(ln)
+			return
+		}
+
+		p.server.TLSConfig = cfg.TLS.Clone()
+		_ = p.server.ServeTLS(ln, "", "")
+	}()
 
 	t.Cleanup(func() {
 		_ = p.server.Close()
@@ -631,7 +659,7 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 	c.URI = req.URI
 	req.Context = c
 
-	if pd := checkCreate(c.AppSessionContextReqData); pd != nil {
+	if pd := p.checkCreate(c.AppSessionContextReqData); pd != nil {
 		req.Problem = pd
 		p.record(req)
 		p.violation(w, r, *pd)
@@ -744,7 +772,7 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	doc, _, pd := mergeDoc(s.doc, patch)
+	doc, _, pd := p.mergeDoc(s.doc, patch)
 	if pd != nil {
 		n5.WriteProblem(w, *pd)
 		return
@@ -770,14 +798,14 @@ func (p *PCF) merge(id string, patch []byte) (Context, *n5.ProblemDetails) {
 		return Context{}, &n5.ProblemDetails{Status: http.StatusNotFound, Cause: n5.CauseAppSessionContextNotFound}
 	}
 
-	_, c, pd := mergeDoc(doc, patch)
+	_, c, pd := p.mergeDoc(doc, patch)
 	c.URI = p.uri(id)
 
 	return c, pd
 }
 
 // mergeDoc applies a patch to the ascReqData of a context, and checks the result.
-func mergeDoc(doc json.RawMessage, patch []byte) (json.RawMessage, Context, *n5.ProblemDetails) {
+func (p *PCF) mergeDoc(doc json.RawMessage, patch []byte) (json.RawMessage, Context, *n5.ProblemDetails) {
 	merged, err := n5.ApplyPatch(doc, patchedReqData(patch))
 	if err != nil {
 		return nil, Context{}, ptr(invalid(CauseInvalidMsgFormat, "", err.Error()))
@@ -788,7 +816,7 @@ func mergeDoc(doc json.RawMessage, patch []byte) (json.RawMessage, Context, *n5.
 		return nil, Context{}, ptr(invalid(CauseInvalidMsgFormat, "/ascReqData", err.Error()))
 	}
 
-	if pd := checkContext(c.AppSessionContextReqData); pd != nil {
+	if pd := p.checkContext(c.AppSessionContextReqData); pd != nil {
 		return nil, Context{}, pd
 	}
 
@@ -967,7 +995,7 @@ func invalid(cause, param, reason string) n5.ProblemDetails {
 }
 
 // checkCreate checks the AppSessionContextReqData of a create (TS 29.514 §4.2.2.2, §5.6.2.3).
-func checkCreate(r n5.AppSessionContextReqData) *n5.ProblemDetails {
+func (p *PCF) checkCreate(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	switch {
 	case r.SuppFeat == "":
 		return ptr(invalid(CauseMandatoryIEMissing, "/ascReqData/suppFeat", "no suppFeat"))
@@ -983,18 +1011,18 @@ func checkCreate(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 		return ptr(invalid(CauseMandatoryIEIncorrect, "/ascReqData/ueIpv6", "not an IPv6 address"))
 	}
 
-	return checkContext(r)
+	return p.checkContext(r)
 }
 
 // checkContext checks what a create and a patch can both break: the notification URIs (TS 29.514 §4.2.2.2,
-// §4.2.3.2) and the map keys (§5.6.2.3, §5.6.2.7).
-func checkContext(r n5.AppSessionContextReqData) *n5.ProblemDetails {
+// §4.2.3.2), which have the scheme of the PCF, and the map keys (§5.6.2.3, §5.6.2.7).
+func (p *PCF) checkContext(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	if r.NotifURI == "" {
 		return ptr(invalid(CauseMandatoryIEMissing, "/ascReqData/notifUri", "no notifUri"))
 	}
 
-	if !httpURI(r.NotifURI) {
-		return ptr(invalid(CauseMandatoryIEIncorrect, "/ascReqData/notifUri", "not an absolute http URI"))
+	if !p.notifURI(r.NotifURI) {
+		return ptr(invalid(CauseMandatoryIEIncorrect, "/ascReqData/notifUri", "not an absolute URI of the PCF's scheme"))
 	}
 
 	if e := r.EvSubsc; e != nil {
@@ -1003,8 +1031,8 @@ func checkContext(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 			return ptr(invalid(CauseMandatoryIEMissing, "/ascReqData/evSubsc/events", "no events"))
 		case e.NotifURI == "":
 			return ptr(invalid(CauseMandatoryIEMissing, "/ascReqData/evSubsc/notifUri", "no notifUri"))
-		case !httpURI(e.NotifURI):
-			return ptr(invalid(CauseMandatoryIEIncorrect, "/ascReqData/evSubsc/notifUri", "not an absolute http URI"))
+		case !p.notifURI(e.NotifURI):
+			return ptr(invalid(CauseMandatoryIEIncorrect, "/ascReqData/evSubsc/notifUri", "not an absolute URI of the PCF's scheme"))
 		}
 	}
 
@@ -1023,9 +1051,9 @@ func checkContext(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	return nil
 }
 
-func httpURI(s string) bool {
+func (p *PCF) notifURI(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "http" && u.Host != "" && u.RawQuery == "" && u.Fragment == ""
+	return err == nil && strings.HasPrefix(p.root, u.Scheme+"://") && u.Host != "" && u.RawQuery == "" && u.Fragment == ""
 }
 
 // bound applies session binding by UE address (TS 29.513 §6.2): an IPv6 address binds to the prefix of the PDU

@@ -109,7 +109,7 @@ func newFixture(t *testing.T) *fixture {
 	sink := newSink()
 	b.Bind(sink)
 
-	srv := NewServer(b, slog.New(slog.DiscardHandler))
+	srv := NewServer(b, nil, slog.New(slog.DiscardHandler))
 
 	go func() { _ = srv.Serve(ln) }()
 

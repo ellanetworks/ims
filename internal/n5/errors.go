@@ -93,7 +93,7 @@ func (e *Error) Cause() string {
 // transportError wraps a request that got no response, telling apart one that never reached the PCF.
 func transportError(op Op, err error) *Error {
 	var dial *net.OpError
-	if errors.As(err, &dial) && dial.Op == "dial" {
+	if !errors.Is(err, ErrConnect) && errors.As(err, &dial) && dial.Op == "dial" {
 		err = fmt.Errorf("%w: %w", ErrConnect, err)
 	}
 
