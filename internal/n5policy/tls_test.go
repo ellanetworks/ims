@@ -118,18 +118,18 @@ func TestTLSNotifier(t *testing.T) {
 			tr := &http.Transport{Protocols: &protocols, TLSClientConfig: cfg}
 			defer tr.CloseIdleConnections()
 
-			resp, err := post(f, tr, target)
+			status, err := post(f, tr, target)
 			if tc.ok {
 				// An unknown session: the server answered.
-				if err != nil || resp.StatusCode != http.StatusBadRequest {
-					t.Fatalf("POST = %v, %v, want 400", resp, err)
+				if err != nil || status != http.StatusBadRequest {
+					t.Fatalf("POST = %d, %v, want 400", status, err)
 				}
 
 				return
 			}
 
 			if err == nil {
-				t.Fatalf("POST answered %d without a valid client certificate", resp.StatusCode)
+				t.Fatalf("POST answered %d without a valid client certificate", status)
 			}
 		})
 	}
@@ -142,30 +142,31 @@ func TestTLSNotifier(t *testing.T) {
 		tr := &http.Transport{Protocols: &protocols}
 		defer tr.CloseIdleConnections()
 
-		if resp, err := post(f, tr, strings.Replace(target, "https://", "http://", 1)); err == nil {
-			t.Fatalf("cleartext POST answered %d", resp.StatusCode)
+		if status, err := post(f, tr, strings.Replace(target, "https://", "http://", 1)); err == nil {
+			t.Fatalf("cleartext POST answered %d", status)
 		}
 	})
 }
 
-func post(f *fixture, tr *http.Transport, target string) (*http.Response, error) {
+// post sends a termination to target, and returns the status of the answer.
+func post(f *fixture, tr *http.Transport, target string) (int, error) {
 	body := `{"termCause":"PDU_SESSION_TERMINATION","resUri":"https://localhost/x"}`
 
 	req, err := http.NewRequestWithContext(f.ctx(), http.MethodPost, target, bytes.NewReader([]byte(body)))
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	req.Header.Set("Content-Type", n5.ContentJSON)
 
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	_ = resp.Body.Close()
 
-	return resp, nil
+	return resp.StatusCode, nil
 }
 
 func TestTLSConfig(t *testing.T) {

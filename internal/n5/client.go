@@ -95,6 +95,7 @@ func New(cfg Config) (*Client, error) {
 	} else {
 		// HTTP/2 only, which ALPN negotiates (RFC 9113 §3.2).
 		protocols.SetHTTP2(true)
+
 		c.transport.DialTLSContext = c.dialTLS
 	}
 

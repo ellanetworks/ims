@@ -1,0 +1,23 @@
+logger:
+  file:
+    path: /var/log/open5gs/scp.log
+
+global:
+  max:
+    ue: 1024
+
+scp:
+  # The PCF serves https and requires a client certificate (pcf.yaml).
+  default:
+    tls:
+      client:
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/scp.key
+        client_cert: /etc/open5gs/tls/scp.crt
+  sbi:
+    server:
+      - address: 127.0.0.200
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777

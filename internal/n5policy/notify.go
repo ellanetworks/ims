@@ -336,6 +336,7 @@ func NewServer(h http.Handler, creds *sbitls.Credentials, logger *slog.Logger) *
 		protocols.SetUnencryptedHTTP2(true)
 	} else {
 		protocols.SetHTTP2(true)
+
 		srv.TLSConfig = creds.Server()
 	}
 

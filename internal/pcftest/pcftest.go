@@ -186,6 +186,7 @@ func New(t testing.TB, cfg Config) *PCF {
 		sessions: make(map[string]*appSession),
 		moved:    make(map[string]string),
 	}
+
 	p.root = scheme + "://" + p.addr.String()
 	if cfg.Host != "" {
 		p.root = scheme + "://" + net.JoinHostPort(cfg.Host, strconv.Itoa(int(p.addr.Port())))

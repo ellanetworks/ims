@@ -73,8 +73,8 @@ type Leaf struct {
 
 // Issued is a certificate, as files and as what crypto/tls takes.
 type Issued struct {
-	sbitls.Files
-	Cert tls.Certificate
+	Files sbitls.Files
+	Cert  tls.Certificate
 }
 
 // Issue writes a certificate and its key to files named after name. Files.CA is the CA's file.

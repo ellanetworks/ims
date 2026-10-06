@@ -62,9 +62,9 @@ func TestLoadRejects(t *testing.T) {
 
 func TestLoadAcceptsNoExtKeyUsage(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
-	any := ca.Issue(t, "any", sbitlstest.Leaf{ExtKeyUsage: []x509.ExtKeyUsage{}})
+	unrestricted := ca.Issue(t, "unrestricted", sbitlstest.Leaf{ExtKeyUsage: []x509.ExtKeyUsage{}})
 
-	load(t, any.Files)
+	load(t, unrestricted.Files)
 }
 
 func TestCovers(t *testing.T) {
@@ -107,9 +107,8 @@ func handshake(t *testing.T, client, server *tls.Config) (clientErr, serverErr e
 		defer func() { _ = conn.Close() }()
 
 		tc := tls.Server(conn, server)
-		err = tc.HandshakeContext(t.Context())
 
-		if err == nil {
+		if err = tc.HandshakeContext(t.Context()); err == nil {
 			// TLS 1.3 clients finish before the server has checked their certificate: a read surfaces its verdict.
 			if _, err = tc.Read(make([]byte, 1)); errors.Is(err, io.EOF) {
 				err = nil

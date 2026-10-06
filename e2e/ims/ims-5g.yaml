@@ -22,10 +22,15 @@ pcscf:
     encryption: off
   policy:
     n5:
-      pcf_uri: http://10.80.0.10:7777
+      pcf_uri: https://pcf.5gc.mnc001.mcc001.3gppnetwork.org:7777
       notify:
+        uri: https://pcscf.ims.mnc001.mcc001.3gppnetwork.org:7778
         address: 10.80.0.5
         port: 7778
+      tls:
+        ca: /etc/ims/tls/ca.crt
+        cert: /etc/ims/tls/ims.crt
+        key: /etc/ims/tls/ims.key
 icscf:
   port: 5070
 scscf:

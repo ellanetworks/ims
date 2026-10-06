@@ -10,11 +10,25 @@ global:
 #    peer: 64
 
 pcf:
+  # N5 over mutually authenticated TLS: the PCF presents its certificate to the P-CSCF, and to the SCP, which
+  # reaches it over https since its NF profile takes the scheme of this server.
+  default:
+    tls:
+      client:
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/pcf.key
+        client_cert: /etc/open5gs/tls/pcf.crt
   sbi:
     server:
-      # On the core network, for the P-CSCF over N5: Location and resUri carry this address.
+      # On the core network, for the P-CSCF over N5: Location and resUri carry the advertised name.
       - address: 10.80.0.10
         port: 7777
+        advertise: pcf.5gc.mnc001.mcc001.3gppnetwork.org
+        scheme: https
+        private_key: /etc/open5gs/tls/pcf.key
+        cert: /etc/open5gs/tls/pcf.crt
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
     client:
 #      nrf:
 #        - uri: http://127.0.0.10:7777

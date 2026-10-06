@@ -14,7 +14,7 @@
 - Voice calls
 - SIM-based phone authentication with your existing HSS (IMS-AKA over Cx)
 - IPsec between phones and the IMS
-- Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5)
+- Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
 - HTTP API
