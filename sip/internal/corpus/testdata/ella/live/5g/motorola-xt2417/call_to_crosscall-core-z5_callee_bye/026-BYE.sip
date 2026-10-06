@@ -1,0 +1,15 @@
+BYE sip:a87a2e9a-4c32-439f-afc0-825ea2f8b236@10.46.0.9:43885 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKESFKEXFPITT6VKKKKONR5CU75M
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKVS6RKTMTIJTOJBKPMD6MU3V6DT
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKQA7FTBEJ5LQM4J3ISBXASNODYT
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKR2XWRCNQLQRWQ4CLOW2MECFRJX
+To: <sip:15550000008@ims.mnc001.mcc001.3gppnetwork.org>;tag=110786727
+From: <sip:15550000005;phone-context=ims.mnc001.mcc001.3gppnetwork.org@ims.mnc001.mcc001.3gppnetwork.org;user=phone>;tag=110786615
+Call-ID: 110786722_4109885936@10.46.0.9
+CSeq: 110786723 BYE
+Via: SIP/2.0/TCP 10.46.0.8:42225;branch=z9hG4bK2735172068
+Max-Forwards: 66
+Reason: RELEASE_CAUSE ;cause=1 ;text="User ends call"
+User-Agent: Core-Z5 N1982U.6.02.09.FR00
+Content-Length: 0
+

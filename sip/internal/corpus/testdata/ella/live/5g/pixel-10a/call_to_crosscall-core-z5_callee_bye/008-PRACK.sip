@@ -1,0 +1,17 @@
+PRACK sip:b394eba0-c3ed-4e54-adf4-83d317ca2979@10.46.0.2:43300 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bK5MV32GEL5NDV32ESGOAIC2ZY34
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKECYFYTQ2NYGGWWH44NP2UO2ARB
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKA6MDMG46A4PBITKLTAJXB6NT4Z
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKU23J76AOGJMV4MH3FSGT5MJIOI
+From: <sip:15550000002@ims.mnc001.mcc001.3gppnetwork.org>;tag=8b4182f4
+To: <tel:15550000005;phone-context=ims.mnc001.mcc001.3gppnetwork.org>;tag=102907630
+Call-ID: f234da03b74dd2e5@10.46.0.3
+CSeq: 2 PRACK
+Max-Forwards: 66
+Via: SIP/2.0/TCP 10.46.0.3:49165;branch=z9hG4bKf1374f15a7bb234447af2155
+Content-Length: 0
+User-Agent: Google_Pixel10a_Android 16_BD6A.251031.001.A4
+Supported: sec-agree
+RAck: 1 1 INVITE
+Session-ID: 2f535e1210995f73ba5ff1bb6bda34d5
+

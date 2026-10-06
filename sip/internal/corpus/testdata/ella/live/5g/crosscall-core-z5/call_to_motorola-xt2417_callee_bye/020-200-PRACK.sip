@@ -1,0 +1,11 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 10.46.0.8:42225;branch=z9hG4bK2774560259
+From: <sip:15550000005@ims.mnc001.mcc001.3gppnetwork.org>;tag=111129102
+To: <tel:15550000008;phone-context=ims.mnc001.mcc001.3gppnetwork.org>;tag=111129380
+CSeq: 111129098 PRACK
+Call-ID: 111129095_1760121744@10.46.0.8
+Content-Length: 0
+Server: PRD-IR92/12 term-Motorola/XT2417-1-V1UFN35H.193-20 device-type/smart-phone
+Supported: 100rel,from-change,tdialog
+Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,MESSAGE,REFER,NOTIFY,INFO,OPTIONS
+

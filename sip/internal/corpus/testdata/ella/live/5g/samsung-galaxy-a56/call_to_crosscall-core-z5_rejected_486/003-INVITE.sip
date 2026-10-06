@@ -1,0 +1,62 @@
+INVITE sip:cbcd92dc-db6f-4aea-a207-e26b95efb9f2@10.46.0.8:41989 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKMC4VNTEGFF3WH72PSOYQCYDQLG
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKOJTHPRWSYTBKHTVLK4JBA2YQC7
+Via: SIP/2.0/UDP 10.80.0.5:5070;branch=z9hG4bKDXDXID7DZSI4GSZFZYFFAHYTIJ
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKFILYCZNH6CIEIMP6C2I7U3PJX6
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bK2HR6ITURCMKQUHGPY4IIMMRF57
+Via: SIP/2.0/TCP 10.46.0.7:6600;branch=z9hG4bK-524287-1---dd4018ba1020543f;rport=6601;transport=TCP;received=10.46.0.7
+Record-Route: <sip:75xi5p5r4lmyujqtijnkhr24d7@10.80.0.5:5063;transport=tcp;lr;r2=on;did=2AXOPYHCFZJCPDGI;ue>
+Record-Route: <sip:75xi5p5r4lmyujqtijnkhr24d7@10.80.0.5:5060;lr;r2=on;did=2AXOPYHCFZJCPDGI>
+Record-Route: <sip:mt@10.80.0.5:5080;lr;did=LMFV3M434C4WGM5L>
+Record-Route: <sip:mo@10.80.0.5:5080;lr;did=PRWHK5F2LTQVRP77>
+Record-Route: <sip:3iqp554vb5dijnjmjo2u3xbt2t@10.80.0.5:5060;lr;r2=on;did=W4LQBCOD7YORI5O7>
+Record-Route: <sip:3iqp554vb5dijnjmjo2u3xbt2t@10.80.0.5:5063;transport=tcp;lr;r2=on;did=W4LQBCOD7YORI5O7;ue>
+Max-Forwards: 65
+Contact: <sip:15550000007@10.46.0.7:6600>;+sip.instance="<urn:gsma:imei:00000000-000007-0>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.mid-call;+g.3gpp.srvcc-alerting;+g.3gpp.ps2cs-srvcc-orig-pre-alerting
+To: <sip:15550000008;phone-context=ims.mnc001.mcc999.3gppnetwork.org@ims.mnc001.mcc999.3gppnetwork.org;user=phone>
+From: <sip:15550000007@ims.mnc001.mcc999.3gppnetwork.org>;tag=14031060
+Call-ID: o9voWSJ5T_Wr2ef6EsB2vg..@10.46.0.7
+CSeq: 1 INVITE
+Session-Expires: 1800
+Accept: application/sdp, application/3gpp-ims+xml
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Content-Type: application/sdp
+Supported: timer, 100rel, precondition, gruu, sec-agree
+User-Agent: SM-A566W-A566WVLS6BZB7 Samsung IMS 6.0
+Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+Content-Length: 870
+P-Called-Party-ID: <tel:+15550000008>
+P-Early-Media: supported
+P-Asserted-Identity: <sip:15550000007@ims.mnc001.mcc999.3gppnetwork.org>
+P-Asserted-Identity: <tel:+15550000007>
+
+v=0
+o=SAMSUNG-IMS-UE 186072712835 0 IN IP4 10.46.0.7
+s=SS VOIP
+c=IN IP4 10.46.0.7
+t=0 0
+m=audio 1246 RTP/AVP 112 116 107 118 96 111 110
+b=AS:42
+b=RS:0
+b=RR:2500
+a=rtpmap:112 EVS/16000
+a=fmtp:112 br=5.9-24.4;bw=nb-swb;ch-aw-recv=-1
+a=rtpmap:116 AMR-WB/16000/1
+a=fmtp:116 mode-change-capability=2;max-red=220
+a=rtpmap:107 AMR-WB/16000/1
+a=fmtp:107 octet-align=1;mode-change-capability=2;max-red=220
+a=rtpmap:118 AMR/8000/1
+a=fmtp:118 mode-set=0,2,4,7;mode-change-capability=2;max-red=220
+a=rtpmap:96 AMR/8000/1
+a=fmtp:96 mode-set=0,2,4,7;octet-align=1;mode-change-capability=2;max-red=220
+a=rtpmap:111 telephone-event/16000
+a=fmtp:111 0-15
+a=rtpmap:110 telephone-event/8000
+a=fmtp:110 0-15
+a=curr:qos local none
+a=curr:qos remote none
+a=des:qos mandatory local sendrecv
+a=des:qos optional remote sendrecv
+a=sendrecv
+a=ptime:20
+a=maxptime:240

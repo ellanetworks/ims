@@ -1,0 +1,41 @@
+SIP/2.0 183 Session Progress
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bK4Z5VL5QSDBBCEDOFWXZP4JIIA2,SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKRKE5ENLQBBBRASUQD7JCR5KWF3,SIP/2.0/UDP 10.80.0.5:5070;branch=z9hG4bKZAJQGLS6SPDMQVLGOWVMOS2APF,SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKG4MUZEEO5SKXZ2UCM6JI3WAIAA,SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKMV2QIOHYJXYZIJBTWO3WG7TYZD,SIP/2.0/TCP 10.46.0.3:49165;branch=z9hG4bK28e0a92c52375804a2dd347c
+From: <sip:15550000002@ims.mnc001.mcc001.3gppnetwork.org>;tag=f3fba2c9
+To: <tel:15550000005;phone-context=ims.mnc001.mcc001.3gppnetwork.org>;tag=103140307
+Call-ID: 328a0d67c51df36c@10.46.0.3
+CSeq: 1 INVITE
+Record-Route: <sip:tmmgbfsyubr4jlhnlazmeepxie@10.80.0.5:5063;transport=tcp;lr;r2=on;did=LANHD46HRCZAIJHW;ue>,<sip:tmmgbfsyubr4jlhnlazmeepxie@10.80.0.5:5060;lr;r2=on;did=LANHD46HRCZAIJHW>,<sip:mt@10.80.0.5:5080;lr;did=CKZF4B4Q4KNTJFU3>,<sip:mo@10.80.0.5:5080;lr;did=MDAACB6W7KGDQU5I>,<sip:tkgtix7rbcrrsrqosvtxrd7mao@10.80.0.5:5060;lr;r2=on;did=QQPRLPCU4YQ4EQ6B>,<sip:tkgtix7rbcrrsrqosvtxrd7mao@10.80.0.5:5063;transport=tcp;lr;r2=on;did=QQPRLPCU4YQ4EQ6B;ue>
+Content-Length: 478
+Content-Type: application/sdp
+Session-ID: 9bc41936e65d546181bf36c36d83457b
+Server: Core-Z5 N1982U.6.02.09.FR00
+RSeq: 1
+P-Access-Network-Info: 3GPP-NR-TDD;utran-cell-id-3gpp=0010100000100066C000
+Contact: <sip:b394eba0-c3ed-4e54-adf4-83d317ca2979@10.46.0.2:43300>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio;video;+g.3gpp.nw-init-ussi
+Require: 100rel,precondition
+Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,MESSAGE,REFER,NOTIFY,INFO,OPTIONS
+
+v=0
+o=- 11 1000 IN IP4 10.46.0.2
+s=QC VOIP
+c=IN IP4 10.46.0.2
+b=AS:41
+b=RS:600
+b=RR:2000
+t=0 0
+m=audio 50018 RTP/AVP 100 96
+b=AS:41
+b=RS:600
+b=RR:2000
+a=rtpmap:100 AMR-WB/16000/1
+a=fmtp:100 mode-change-capability=2;max-red=0
+a=rtpmap:96 telephone-event/16000
+a=fmtp:96 0-15
+a=curr:qos local none
+a=curr:qos remote none
+a=des:qos mandatory local sendrecv
+a=des:qos mandatory remote sendrecv
+a=conf:qos remote sendrecv
+a=sendrecv
+a=maxptime:240
+a=ptime:20
