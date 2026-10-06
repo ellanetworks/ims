@@ -1,0 +1,16 @@
+PRACK sip:2da86196-c8f7-4939-af8b-fbdac4e983f2@10.46.0.8:42225 SIP/2.0
+Via: SIP/2.0/TCP 10.80.0.5:5063;branch=z9hG4bKPLGWVZ5QMP5ZFSNLTZEJXMC42B
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKHEAG4UZKYP6GZNTKQFOL7KTWWN
+Via: SIP/2.0/UDP 10.80.0.5:5080;branch=z9hG4bKJSUSHFRWSU6GOGNG2ZWXEC5GBV
+Via: SIP/2.0/UDP 10.80.0.5:5060;branch=z9hG4bKB4AOYALTZ2DDRKY3HETGLCYUO6
+From: <sip:15550000008@ims.mnc001.mcc001.3gppnetwork.org>;tag=110881617
+To: <sip:15550000005;phone-context=ims.mnc001.mcc001.3gppnetwork.org@ims.mnc001.mcc001.3gppnetwork.org;user=phone>;tag=110881490
+CSeq: 110881613 PRACK
+Call-ID: 110881612_4111788112@10.46.0.9
+Content-Length: 0
+Via: SIP/2.0/TCP 10.46.0.9:43885;branch=z9hG4bK2546050085
+Max-Forwards: 66
+RAck: 1 110881612 INVITE
+User-Agent: PRD-IR92/12 term-Motorola/XT2417-1-V1UFN35H.193-20 device-type/smart-phone
+Supported: timer
+

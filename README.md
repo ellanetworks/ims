@@ -78,21 +78,35 @@ See [`ims.yaml`](ims.yaml).
 
 #### Core Networks
 
-| Core      | 4G      | 5G      |
-|-----------|---------|---------|
-| Ella Core | ✓       | ✓       |
-| Open5GS   | ✓       | ✓       |
+Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G compliant core. It has been explicitely validated against:
+- Ella Core
+- Open5GS
+
 
 #### Phones
 
-| Phone              | 4G      | 5G           |
-|--------------------|---------|--------------|
-| Apple iPhone 11    | ✓       |              |
-| Apple iPhone 16    | ✓       |              |
-| Crosscall Core-Z5  | ✓       | Registration |
-| Google Pixel 10a   | ✓       |              |
-| Motorola Moto G 5G | ✓       |              |
-| Samsung Galaxy A56 | ✓       | Registration |
+Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G phone. It has been explicitely validated against:
+- Apple iPhone 11
+- Apply iPhone 16
+- Crosscall Core-Z5
+- Google Pixel 10a
+- Motorola Moto G 5G
+- Samsung Galaxy A56
+
+#### Phone Quirks
+
+| Phone              | RAT | Observed                                                                           |
+|--------------------|-----|------------------------------------------------------------------------------------|
+| Apple iPhone 11    | 4G  | Live Voicemail answers declined and unanswered calls (`200 OK`)                    |
+| Apple iPhone 16    | 4G  | Live Voicemail answers declined and unanswered calls (`200 OK`)                    |
+|                    | 4G  | 3 IMS addresses in 6 minutes                                                       |
+|                    | 5G  | 5G SA unavailable without SUCI on the SIM (USIM service 124, `EF.SUCI_Calc_Info`) |
+|                    | 5G  | Rejects NEA0 (Security Mode Reject, cause 24)                                      |
+|                    | 5G  | SIM PLMN 001/01: never attempts the 5G SA cell                                     |
+|                    | 5G  | SIM PLMN 999/01: data only, no voice settings, no IMS PDU session                  |
+| Motorola Moto G 5G | 5G  | SIM PLMN 999/01: 5G SA only with network type "NR only"                            |
+|                    | 4G  | SIM PLMN 999/01: IMS doesn't start                                                 |
+| Samsung Galaxy A56 | 4G  | SIM PLMN 001/01: VoLTE off (`LABSIM` profile, TS.43 entitlement 403)               |
 
 ## Explanation
 
