@@ -1,0 +1,23 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 10.46.0.8:41989;branch=z9hG4bK731078867
+Max-Forwards: 70
+Record-Route: <sip:3iqp554vb5dijnjmjo2u3xbt2t@10.80.0.5:5063;transport=tcp;lr;r2=on;did=4NKCGDJOCMC2HPOJ;ue>
+Record-Route: <sip:3iqp554vb5dijnjmjo2u3xbt2t@10.80.0.5:5060;lr;r2=on;did=4NKCGDJOCMC2HPOJ>
+Record-Route: <sip:mt@10.80.0.5:5080;lr;did=OCQD6PWAEM3MXY4W>
+Record-Route: <sip:mo@10.80.0.5:5080;lr;did=E6U2IYYL6IBKRX6G>
+Record-Route: <sip:75xi5p5r4lmyujqtijnkhr24d7@10.80.0.5:5060;lr;r2=on;did=O4LDYHSICKSZYIHD>
+Record-Route: <sip:75xi5p5r4lmyujqtijnkhr24d7@10.80.0.5:5063;transport=tcp;lr;r2=on;did=O4LDYHSICKSZYIHD;ue>
+Require: timer
+Contact: <sip:15550000007@10.46.0.7:6600>;+sip.instance="<urn:gsma:imei:00000000-000007-0>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.mid-call;+g.3gpp.srvcc-alerting;+g.3gpp.ps2cs-srvcc-orig-pre-alerting
+To: <tel:15550000007;phone-context=ims.mnc001.mcc999.3gppnetwork.org>;tag=c9048402
+From: <sip:15550000008@ims.mnc001.mcc999.3gppnetwork.org>;tag=100513383
+Call-ID: 100513376_3069421008@10.46.0.8
+CSeq: 100513376 INVITE
+Session-Expires: 1800;refresher=uac
+Allow: INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, INFO, REFER, NOTIFY, MESSAGE, PRACK
+Supported: timer, 100rel, precondition
+User-Agent: SM-A566W-A566WVLS6BZB7 Samsung IMS 6.0
+Content-Length: 0
+P-Asserted-Identity: <tel:+15550000007>
+P-Asserted-Identity: <sip:+15550000007@ims.mnc001.mcc999.3gppnetwork.org;user=phone>
+
