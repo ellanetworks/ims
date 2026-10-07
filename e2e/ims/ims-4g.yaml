@@ -3,46 +3,16 @@ db:
 api:
   address: 0.0.0.0
   port: 5020
-ims:
-  mcc: "001"
-  mnc: "01"
-  numbering:
-    country_code: "1"
-    national_prefix: "1"
-    international_prefix: "011"
 sip:
   addresses: [10.80.0.5]
-  aliases: [pcscf.ims.mnc001.mcc001.3gppnetwork.org]
 pcscf:
   port: 5060
   ipsec:
     server_port: 5063
     client_ports: [5064, 5065]
-    integrity: [hmac-sha-1-96, hmac-md5-96]
-    encryption: off
-  policy:
-    rx: pcrf
 icscf:
   port: 5070
 scscf:
   port: 5080
-  name: sip:scscf.ims.mnc001.mcc001.3gppnetwork.org:5080
 diameter:
-  origin_host: ims.localdomain
-  origin_realm: localdomain
   address: 10.80.0.5
-  peers:
-    - id: hss
-      host: hss.localdomain
-      realm: localdomain
-      address: 10.80.0.10
-      port: 3868
-      transport: tcp
-      applications: [cx]
-    - id: pcrf
-      host: pcrf.localdomain
-      realm: localdomain
-      address: 10.80.0.11
-      port: 3868
-      transport: tcp
-      applications: [rx]

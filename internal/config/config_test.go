@@ -8,64 +8,24 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/ellanetworks/ims/internal/ipsec"
 )
 
 const (
-	validDB  = "db:\n  path: ims.db\n"
-	validAPI = "api:\n  address: 127.0.0.1\n"
-	validIMS = "ims:\n  mcc: \"001\"\n  mnc: \"01\"\n"
-	validSIP = "sip:\n  addresses: [10.0.0.5]\n"
+	validDB       = "db:\n  path: ims.db\n"
+	validAPI      = "api:\n  address: 127.0.0.1\n"
+	validSIP      = "sip:\n  addresses: [10.0.0.5]\n"
+	validDiameter = "diameter:\n  address: 10.0.0.5\n"
 
-	diameterIdentity = `diameter:
-  origin_host: ims.ims.mnc001.mcc001.3gppnetwork.org
-  origin_realm: ims.mnc001.mcc001.3gppnetwork.org
-  address: 10.0.0.5
+	n5 = `n5:
+  notify:
+    address: 10.0.0.5
+    port: 7778
 `
 
-	hssPeer = `    - id: hss
-      host: hss.ims.mnc001.mcc001.3gppnetwork.org
-      realm: ims.mnc001.mcc001.3gppnetwork.org
-      address: 10.0.0.10
-      applications: [cx]
-`
-
-	pcrfPeer = `    - id: pcrf
-      host: pcrf.epc.mnc001.mcc001.3gppnetwork.org
-      realm: epc.mnc001.mcc001.3gppnetwork.org
-      address: 10.0.0.11
-      port: 3869
-      transport: sctp
-      applications: [rx]
-`
-
-	validDiameter = diameterIdentity + "  peers:\n" + hssPeer
-
-	rxPolicy = "pcscf:\n  policy:\n    rx: pcrf\n"
-
-	n5Policy = `pcscf:
-  policy:
-    n5:
-      pcf_uri: http://10.0.0.13:7777
-      notify:
-        address: 10.0.0.5
-        port: 7778
-`
-
-	n5TLSPolicy = `pcscf:
-  policy:
-    n5:
-      pcf_uri: https://pcf.example.org:7777
-      notify:
-        uri: https://pcscf.example.org:7778/
-        address: 10.0.0.5
-        port: 7778
-      tls:
-        ca: /etc/ims/tls/ca.crt
-        cert: /etc/ims/tls/ims.crt
-        key: /etc/ims/tls/ims.key
+	n5TLS = n5 + `  tls:
+    ca: /etc/ims/tls/ca.crt
+    cert: /etc/ims/tls/ims.crt
+    key: /etc/ims/tls/ims.key
 `
 )
 
@@ -83,153 +43,45 @@ func writeConfig(t *testing.T, content string) string {
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, "logging:\n  level: DEBUG\n"+
 		validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
-		"ims:\n  mcc: \"310\"\n  mnc: \"410\"\n  trusted_networks: [192.0.2.0/24, \"::ffff:198.51.100.0/120\"]\n"+
-		"  numbering:\n    country_code: \"1\"\n    national_prefix: \"1\"\n    international_prefix: \"011\"\n"+
-		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  aliases: [PCSCF.ims.mnc410.mcc310.3gppnetwork.org, scscf.example.org]\n  max_connections: 100\n"+
-		"pcscf:\n  port: 5062\n  no_answer_timeout: 2m\n  media_loss_timeout: 7s\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n    integrity: [hmac-md5-96]\n    encryption: preferred\n"+
-		"  policy:\n    rx: pcrf\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n"+
+		"pcscf:\n  port: 5062\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n"+
 		"icscf:\n  port: 5072\n"+
-		"scscf:\n  port: 5082\n  name: sip:SCSCF.example.org:5082\n  capabilities: [1, 2]\n  min_expires: 120\n  max_expires: 7200\n"+
-		validDiameter+pcrfPeer))
+		"scscf:\n  port: 5082\n"+
+		"diameter:\n  address: 10.0.0.5\n  port: 3869\n"+n5TLS))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
 	want := Config{
-		Logging: Logging{Level: slog.LevelDebug},
-		DB:      DB{Path: "ims.db"},
-		API:     API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
-		IMS: IMS{
-			MCC:        "310",
-			MNC:        "410",
-			HomeDomain: "ims.mnc410.mcc310.3gppnetwork.org",
-			TrustedNetworks: []netip.Prefix{
-				netip.MustParsePrefix("192.0.2.0/24"),
-				netip.MustParsePrefix("198.51.100.0/24"),
-			},
-			Numbering: Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"},
-		},
-		SIP: SIP{
-			Addresses:      []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
-			Aliases:        []string{"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"},
-			MaxConnections: 100,
-		},
-		PCSCF: PCSCF{Port: 5062, IPsec: IPsec{
-			ServerPort:  5163,
-			ClientPorts: []int{5164, 5165},
-			Integrity:   []ipsec.Integrity{ipsec.HMACMD596},
-			Encryption:  ipsec.EncryptionPreferred,
-		}, NoAnswerTimeout: 2 * time.Minute, MediaLossTimeout: 7 * time.Second, Policy: Policy{Rx: "pcrf"}},
-		ICSCF: ICSCF{Port: 5072},
-		SCSCF: SCSCF{
-			Port:         5082,
-			Name:         "sip:scscf.example.org:5082",
-			Capabilities: []uint32{1, 2},
-			MinExpires:   120,
-			MaxExpires:   7200,
-		},
-		Diameter: Diameter{
-			OriginHost:  "ims.ims.mnc001.mcc001.3gppnetwork.org",
-			OriginRealm: "ims.mnc001.mcc001.3gppnetwork.org",
-			Address:     netip.MustParseAddr("10.0.0.5"),
-			Port:        3868,
-			Peers: []DiameterPeer{
-				{
-					ID:           "hss",
-					Host:         "hss.ims.mnc001.mcc001.3gppnetwork.org",
-					Realm:        "ims.mnc001.mcc001.3gppnetwork.org",
-					Address:      netip.MustParseAddr("10.0.0.10"),
-					Port:         3868,
-					Transport:    TransportTCP,
-					Applications: []Application{ApplicationCx},
-				},
-				{
-					ID:           "pcrf",
-					Host:         "pcrf.epc.mnc001.mcc001.3gppnetwork.org",
-					Realm:        "epc.mnc001.mcc001.3gppnetwork.org",
-					Address:      netip.MustParseAddr("10.0.0.11"),
-					Port:         3869,
-					Transport:    TransportSCTP,
-					Applications: []Application{ApplicationRx},
-				},
-			},
+		Logging:  Logging{Level: slog.LevelDebug},
+		DB:       DB{Path: "ims.db"},
+		API:      API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
+		SIP:      SIP{Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")}},
+		PCSCF:    PCSCF{Port: 5062, IPsec: IPsec{ServerPort: 5163, ClientPorts: []int{5164, 5165}}},
+		ICSCF:    ICSCF{Port: 5072},
+		SCSCF:    SCSCF{Port: 5082},
+		Diameter: Diameter{Address: netip.MustParseAddr("10.0.0.5"), Port: 3869},
+		N5: &N5{
+			Notify: N5Notify{Address: netip.MustParseAddr("10.0.0.5"), Port: 7778},
+			TLS:    &TLS{CA: "/etc/ims/tls/ca.crt", Cert: "/etc/ims/tls/ims.crt", Key: "/etc/ims/tls/ims.key"},
 		},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load = %+v, want %+v", cfg, want)
 	}
-
-	wantAliases := []string{"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.example.org"}
-	if got := cfg.SIPAliases(); !reflect.DeepEqual(got, wantAliases) {
-		t.Fatalf("SIPAliases = %v, want %v", got, wantAliases)
-	}
-}
-
-func TestHomeDomain(t *testing.T) {
-	tests := []struct {
-		mcc, mnc, want string
-	}{
-		{"001", "01", "ims.mnc001.mcc001.3gppnetwork.org"},
-		{"234", "15", "ims.mnc015.mcc234.3gppnetwork.org"},
-		{"310", "410", "ims.mnc410.mcc310.3gppnetwork.org"},
-	}
-
-	for _, tt := range tests {
-		cfg, err := Load(writeConfig(t, validDB+validAPI+"ims:\n  mcc: \""+tt.mcc+"\"\n  mnc: \""+tt.mnc+"\"\n"+validSIP+validDiameter))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-
-		if cfg.IMS.HomeDomain != tt.want {
-			t.Fatalf("home domain for %s/%s = %q, want %q", tt.mcc, tt.mnc, cfg.IMS.HomeDomain, tt.want)
-		}
-	}
-}
-
-func TestHomeDomainOverride(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+"  home_domain: IMS.Example.org\n"+validSIP+validDiameter))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if cfg.IMS.HomeDomain != "ims.example.org" {
-		t.Fatalf("home domain = %q, want ims.example.org", cfg.IMS.HomeDomain)
-	}
-
-	if got, want := cfg.SIPAliases(), []string{"ims.example.org", "scscf.ims.example.org"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("SIPAliases = %v, want %v", got, want)
-	}
-}
-
-func TestLoadIPAliases(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+"sip:\n  addresses: [10.0.0.5]\n  aliases: [192.0.2.1, \"[2001:DB8::1]\", 2001:db8::2]\n"+validDiameter))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	want := []string{"192.0.2.1", "[2001:db8::1]", "2001:db8::2"}
-	if !reflect.DeepEqual(cfg.SIP.Aliases, want) {
-		t.Fatalf("aliases = %v, want %v", cfg.SIP.Aliases, want)
-	}
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.PCSCF.Port != 5060 || cfg.ICSCF.Port != 5070 || cfg.SCSCF.Port != 5080 || cfg.SIP.MaxConnections != 0 {
-		t.Fatalf("ports and max_connections = %d %d %d %d, want 5060 5070 5080 0",
-			cfg.PCSCF.Port, cfg.ICSCF.Port, cfg.SCSCF.Port, cfg.SIP.MaxConnections)
+	if cfg.PCSCF.Port != 5060 || cfg.ICSCF.Port != 5070 || cfg.SCSCF.Port != 5080 {
+		t.Fatalf("ports = %d %d %d, want 5060 5070 5080", cfg.PCSCF.Port, cfg.ICSCF.Port, cfg.SCSCF.Port)
 	}
 
-	wantIPsec := IPsec{
-		ServerPort:  5063,
-		ClientPorts: []int{5064, 5065},
-		Integrity:   []ipsec.Integrity{ipsec.HMACSHA196, ipsec.HMACMD596},
-		Encryption:  ipsec.EncryptionOff,
-	}
+	wantIPsec := IPsec{ServerPort: 5063, ClientPorts: []int{5064, 5065}}
 	if !reflect.DeepEqual(cfg.PCSCF.IPsec, wantIPsec) {
 		t.Fatalf("pcscf.ipsec = %+v, want %+v", cfg.PCSCF.IPsec, wantIPsec)
 	}
@@ -238,130 +90,38 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("api.port = %d, want %d", cfg.API.Port, defaultAPIPort)
 	}
 
-	if cfg.SCSCF.Name != "sip:scscf.ims.mnc001.mcc001.3gppnetwork.org:5080" {
-		t.Fatalf("scscf.name = %q, want sip:scscf.<home domain>:<scscf port>", cfg.SCSCF.Name)
-	}
-
-	if cfg.SCSCF.MinExpires != defaultMinExpires || cfg.SCSCF.MaxExpires != defaultMaxExpires {
-		t.Fatalf("scscf = %+v, want min %d and max %d", cfg.SCSCF, defaultMinExpires, defaultMaxExpires)
-	}
-
 	if cfg.Diameter.Port != defaultDiameterPort {
 		t.Fatalf("diameter.port = %d, want %d", cfg.Diameter.Port, defaultDiameterPort)
 	}
 
-	hss := cfg.Diameter.Peers[0]
-	if cx := cfg.Diameter.CxPeer(); cx.ID != "hss" {
-		t.Fatalf("CxPeer = %q, want hss", cx.ID)
-	}
-
-	if hss.Port != defaultDiameterPort || hss.Transport != TransportTCP {
-		t.Fatalf("hss port and transport = %d %s, want %d %s", hss.Port, hss.Transport, defaultDiameterPort, TransportTCP)
+	if cfg.N5 != nil || cfg.N5NotifyURI() != "" {
+		t.Fatalf("n5 = %+v, want none", cfg.N5)
 	}
 }
 
-func TestLoadSCSCFNameOnTheHomeDomain(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+
-		"scscf:\n  name: sip:IMS.mnc001.mcc001.3gppnetwork.org:5080\n"+validDiameter))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+func TestN5NotifyURI(t *testing.T) {
+	for _, tt := range []struct {
+		name, content, want string
+	}{
+		{"http", n5, "http://10.0.0.5:7778"},
+		{"https", n5TLS, "https://10.0.0.5:7778"},
+		{"IPv6", strings.Replace(n5, "address: 10.0.0.5", `address: "2001:db8::5"`, 1), "http://[2001:db8::5]:7778"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+tt.content))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
 
-	if got, want := cfg.SIPAliases(), []string{"ims.mnc001.mcc001.3gppnetwork.org"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("SIPAliases = %v, want %v", got, want)
-	}
-}
-
-func TestLoadOnePeerServesCxAndRx(t *testing.T) {
-	core := `    - id: core
-      host: core.mnc001.mcc001.3gppnetwork.org
-      realm: mnc001.mcc001.3gppnetwork.org
-      address: 10.0.0.10
-      applications: [cx, rx]
-`
-
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+"pcscf:\n  policy:\n    rx: core\n"+diameterIdentity+"  peers:\n"+core))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if p := cfg.Diameter.Peers[0]; !p.Serves(ApplicationCx) || !p.Serves(ApplicationRx) {
-		t.Fatalf("peer applications = %v, want cx and rx", p.Applications)
-	}
-}
-
-func TestLoadRxPeer(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+rxPolicy+validDiameter+pcrfPeer))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if p, ok := cfg.RxPeer(); !ok || p.ID != "pcrf" {
-		t.Fatalf("RxPeer = %+v, %v; want pcrf", p, ok)
-	}
-
-	cfg, err = Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+validDiameter))
-	if err != nil {
-		t.Fatalf("Load without a policy function: %v", err)
-	}
-
-	if p, ok := cfg.RxPeer(); ok || cfg.PCSCF.Policy.N5 != nil {
-		t.Fatalf("RxPeer = %+v, N5 = %+v, want neither", p, cfg.PCSCF.Policy.N5)
-	}
-}
-
-func TestLoadN5(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+n5Policy+validDiameter))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	want := &N5{PCFURI: "http://10.0.0.13:7777", Notify: N5Notify{Address: netip.MustParseAddr("10.0.0.5"), Port: 7778}}
-	if !reflect.DeepEqual(cfg.PCSCF.Policy.N5, want) {
-		t.Fatalf("pcscf.policy.n5 = %+v, want %+v", cfg.PCSCF.Policy.N5, want)
-	}
-
-	if _, ok := cfg.RxPeer(); ok {
-		t.Fatal("RxPeer with N5")
-	}
-
-	if got := want.NotifyURI(); got != "http://10.0.0.5:7778" {
-		t.Fatalf("notify URI = %q", got)
-	}
-
-	if got := (N5{Notify: N5Notify{Address: netip.MustParseAddr("2001:db8::5"), Port: 80}}).NotifyURI(); got != "http://[2001:db8::5]:80" {
-		t.Fatalf("IPv6 notify URI = %q", got)
-	}
-}
-
-func TestLoadN5TLS(t *testing.T) {
-	cfg, err := Load(writeConfig(t, validDB+validAPI+validIMS+validSIP+n5TLSPolicy+validDiameter))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	want := &N5{
-		PCFURI: "https://pcf.example.org:7777",
-		Notify: N5Notify{URI: "https://pcscf.example.org:7778/", Address: netip.MustParseAddr("10.0.0.5"), Port: 7778},
-		TLS:    &TLS{CA: "/etc/ims/tls/ca.crt", Cert: "/etc/ims/tls/ims.crt", Key: "/etc/ims/tls/ims.key"},
-	}
-	if !reflect.DeepEqual(cfg.PCSCF.Policy.N5, want) {
-		t.Fatalf("pcscf.policy.n5 = %+v, want %+v", cfg.PCSCF.Policy.N5, want)
-	}
-
-	if got := want.NotifyURI(); got != "https://pcscf.example.org:7778" {
-		t.Fatalf("notify URI = %q", got)
-	}
-
-	// Without a URI, the PCF connects to the address, which the certificate must then cover.
-	want.Notify.URI = ""
-	if got := want.NotifyURI(); got != "https://10.0.0.5:7778" {
-		t.Fatalf("default notify URI = %q", got)
+			if got := cfg.N5NotifyURI(); got != tt.want {
+				t.Fatalf("notify URI = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
 func TestLoadInvalid(t *testing.T) {
-	valid := validDB + validAPI + validIMS + validSIP
+	valid := validDB + validAPI + validSIP
 
 	tests := []struct {
 		name    string
@@ -370,23 +130,11 @@ func TestLoadInvalid(t *testing.T) {
 	}{
 		{"missing db path", validAPI + validDiameter, "db.path is required"},
 		{"unknown log level", "logging:\n  level: trace\n" + valid + validDiameter, `level string "trace": unknown name`},
-		{"missing mcc", validDB + validAPI + "ims:\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "" must be 3 digits`},
-		{"short mcc", validDB + validAPI + "ims:\n  mcc: \"01\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "01" must be 3 digits`},
-		{"mcc not digits", validDB + validAPI + "ims:\n  mcc: \"0a1\"\n  mnc: \"01\"\n" + validSIP + validDiameter, `ims.mcc "0a1" must be 3 digits`},
-		{"short mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"1\"\n" + validSIP + validDiameter, `ims.mnc "1" must be 2 or 3 digits`},
-		{"long mnc", validDB + validAPI + "ims:\n  mcc: \"001\"\n  mnc: \"0001\"\n" + validSIP + validDiameter, `ims.mnc "0001" must be 2 or 3 digits`},
-		{"country code not digits", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"+1\"\n" + validSIP + validDiameter, `ims.numbering.country_code "+1" must be 1 to 3 digits, not starting with 0`},
-		{"long country code", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"1234\"\n" + validSIP + validDiameter, `ims.numbering.country_code "1234" must be 1 to 3 digits, not starting with 0`},
-		{"country code starting with 0", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"01\"\n" + validSIP + validDiameter, `ims.numbering.country_code "01" must be 1 to 3 digits, not starting with 0`},
-		{"international prefix not digits", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"44\"\n    international_prefix: \"+\"\n" + validSIP + validDiameter, `ims.numbering.international_prefix "+" must be 1 to 4 digits`},
-		{"same prefixes", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"44\"\n    national_prefix: \"0\"\n    international_prefix: \"0\"\n" + validSIP + validDiameter, "must differ"},
-		{"national prefix without country code", validDB + validAPI + validIMS + "  numbering:\n    national_prefix: \"0\"\n" + validSIP + validDiameter, "ims.numbering prefixes need ims.numbering.country_code"},
-		{"national prefix not digits", validDB + validAPI + validIMS + "  numbering:\n    country_code: \"44\"\n    national_prefix: \"0x\"\n" + validSIP + validDiameter, `ims.numbering.national_prefix "0x" must be 1 to 4 digits`},
-		{"no sip addresses", validDB + validAPI + validIMS + validDiameter, "sip.addresses needs at least one address"},
-		{"unspecified sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
-		{"unspecified sip ipv6 address", validDB + validAPI + validIMS + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
-		{"sip address with zone", validDB + validAPI + validIMS + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
-		{"duplicate sip address", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
+		{"no sip addresses", validDB + validAPI + validDiameter, "sip.addresses needs at least one address"},
+		{"unspecified sip address", validDB + validAPI + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
+		{"unspecified sip ipv6 address", validDB + validAPI + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
+		{"sip address with zone", validDB + validAPI + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
+		{"duplicate sip address", validDB + validAPI + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
 		{"pcscf port out of range", valid + "pcscf:\n  port: 70000\n" + validDiameter, "pcscf.port 70000 is out of range"},
 		{"icscf port out of range", valid + "icscf:\n  port: -1\n" + validDiameter, "icscf.port -1 is out of range"},
 		{"same ports", valid + "pcscf:\n  port: 5080\n" + validDiameter, "pcscf.port and scscf.port are both 5080"},
@@ -396,170 +144,38 @@ func TestLoadInvalid(t *testing.T) {
 		{"one IPsec client port", valid + "pcscf:\n  ipsec:\n    client_ports: [5064]\n" + validDiameter, "pcscf.ipsec.client_ports must list 2 ports"},
 		{"IPsec on 5061", valid + "pcscf:\n  ipsec:\n    server_port: 5061\n" + validDiameter, "pcscf.ipsec.server_port 5061 is a standard SIP port"},
 		{"IPsec port out of range", valid + "pcscf:\n  ipsec:\n    client_ports: [5064, 70000]\n" + validDiameter, "pcscf.ipsec.client_ports[1] 70000 is out of range"},
-		{"unknown integrity", valid + "pcscf:\n  ipsec:\n    integrity: [hmac-sha2-256-128]\n" + validDiameter, `pcscf.ipsec: unsupported integrity algorithm "hmac-sha2-256-128"`},
-		{"unknown encryption policy", valid + "pcscf:\n  ipsec:\n    encryption: always\n" + validDiameter, `pcscf.ipsec: unknown encryption policy "always"`},
-		{"bad trusted network", validDB + validAPI + validIMS + "  trusted_networks: [10.0.0.0]\n" + validSIP + validDiameter, "no '/'"},
-		{"negative max connections", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  max_connections: -1\n" + validDiameter, "sip.max_connections -1 must not be negative"},
-		{"negative no answer timeout", valid + "pcscf:\n  no_answer_timeout: -1s\n" + validDiameter, "pcscf.no_answer_timeout -1s is negative"},
-		{"negative media loss timeout", valid + "pcscf:\n  media_loss_timeout: -1s\n" + validDiameter, "pcscf.media_loss_timeout -1s is negative"},
-		{"negative min expires", valid + "scscf:\n  min_expires: -1\n" + validDiameter, "scscf.min_expires -1 must be positive"},
-		{"max expires below min", valid + "scscf:\n  min_expires: 600\n  max_expires: 300\n" + validDiameter, "scscf.max_expires 300 is below scscf.min_expires 600"},
-		{"negative reauth interval", valid + "scscf:\n  reauth_interval: -1m\n" + validDiameter, "scscf.reauth_interval -1m0s is negative"},
-		{"negative reauth expires", valid + "scscf:\n  reauth_expires: -1m\n" + validDiameter, "scscf.reauth_expires -1m0s is negative"},
-		{"S-CSCF name not a URI", valid + "scscf:\n  name: scscf.example.org\n" + validDiameter, `scscf.name "scscf.example.org" is not a SIP URI`},
-		{"S-CSCF name with a user", valid + "scscf:\n  name: sip:s@scscf.example.org:5080\n" + validDiameter, "must have no user part"},
-		{"S-CSCF name with parameters", valid + "scscf:\n  name: sip:scscf.example.org:5080;transport=tcp\n" + validDiameter, "must have no user part, parameters"},
-		{"S-CSCF name on another port", valid + "scscf:\n  name: sip:scscf.example.org\n" + validDiameter, "must have the port of scscf.port 5080"},
-		{"S-CSCF name not a domain name", valid + "scscf:\n  name: sip:scscf_1.example.org:5080\n" + validDiameter, `"scscf_1.example.org" is not a domain name`},
-		{"S-CSCF name on another address", valid + "scscf:\n  name: sip:10.0.0.6:5080\n" + validDiameter, "10.0.0.6 is not one of sip.addresses"},
-		{
-			"S-CSCF name on another domain",
-			valid + "scscf:\n  name: sip:scscf.example.org:5080\n" + validDiameter,
-			"scscf.example.org must be the home domain, scscf.ims.mnc001.mcc001.3gppnetwork.org or one of sip.aliases",
-		},
 		{
 			"role port on the API's address",
-			validDB + "api:\n  address: 10.0.0.5\n  port: 5060\n" + validIMS + validSIP + validDiameter,
+			validDB + "api:\n  address: 10.0.0.5\n  port: 5060\n" + validSIP + validDiameter,
 			"pcscf.port and api.port are both 5060 on 10.0.0.5",
 		},
 		{
 			"role port on the API's wildcard address",
-			validDB + "api:\n  address: 0.0.0.0\n  port: 5070\n" + validIMS + validSIP + validDiameter,
+			validDB + "api:\n  address: 0.0.0.0\n  port: 5070\n" + validSIP + validDiameter,
 			"icscf.port and api.port are both 5070 on 0.0.0.0",
 		},
-		{"trusting every IPv4 address", validDB + validAPI + validIMS + "  trusted_networks: [0.0.0.0/0]\n" + validSIP + validDiameter, "0.0.0.0/0 would trust every address"},
-		{"trusting every address", validDB + validAPI + validIMS + "  trusted_networks: [\"::/0\"]\n" + validSIP + validDiameter, "::/0 would trust every address"},
-		{
-			"short IPv4-mapped network",
-			validDB + validAPI + validIMS + "  trusted_networks: [\"::ffff:10.0.0.0/64\"]\n" + validSIP + validDiameter,
-			"::ffff:10.0.0.0/64 is IPv4-mapped and must be /96 or longer",
-		},
-		{"home domain with a space", validDB + validAPI + validIMS + "  home_domain: ims example.org\n" + validSIP + validDiameter, `ims.home_domain "ims example.org" is not a domain name`},
-		{"home domain with an empty label", validDB + validAPI + validIMS + "  home_domain: ims..example.org\n" + validSIP + validDiameter, `ims.home_domain "ims..example.org" is not a domain name`},
-		{"home domain label starts with a hyphen", validDB + validAPI + validIMS + "  home_domain: -ims.example.org\n" + validSIP + validDiameter, `ims.home_domain "-ims.example.org" is not a domain name`},
-		{"home domain label too long", validDB + validAPI + validIMS + "  home_domain: " + strings.Repeat("a", 64) + ".org\n" + validSIP + validDiameter, "is not a domain name"},
-		{"alias not a domain name", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf_1.example.org]\n" + validDiameter, `sip.aliases: "pcscf_1.example.org" is neither a domain name nor an IP address`},
-		{"empty alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [\"\"]\n" + validDiameter, "sip.aliases: an alias is empty"},
-		{"duplicate alias", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [pcscf.example.org, PCSCF.example.org]\n" + validDiameter, "sip.aliases: pcscf.example.org is listed twice"},
-		{"alias is the home domain", validDB + validAPI + validIMS + "sip:\n  addresses: [10.0.0.5]\n  aliases: [ims.mnc001.mcc001.3gppnetwork.org]\n" + validDiameter, "is listed twice or is the home domain"},
 		{"missing api address", validDB + "api:\n  port: 8080\n" + validDiameter, "api.address is required"},
 		{"port out of range", validDB + "api:\n  address: 127.0.0.1\n  port: 70000\n" + validDiameter, "api.port 70000 is out of range"},
 		{"unknown field", valid + validDiameter + "foo: bar\n", "field foo not found"},
-		{"missing diameter", valid, "diameter.origin_host is required"},
-		{
-			"missing origin realm",
-			valid + strings.Replace(validDiameter, "  origin_realm: ims.mnc001.mcc001.3gppnetwork.org\n", "", 1),
-			"diameter.origin_realm is required",
-		},
-		{
-			"missing diameter address",
-			valid + strings.Replace(validDiameter, "  address: 10.0.0.5\n", "", 1),
-			"diameter.address is required",
-		},
-		{
-			"unspecified diameter address",
-			valid + strings.Replace(validDiameter, "address: 10.0.0.5", "address: 0.0.0.0", 1),
-			"diameter.address must be a specific address",
-		},
-		{
-			"diameter port out of range",
-			valid + strings.Replace(validDiameter, "  address: 10.0.0.5\n", "  address: 10.0.0.5\n  port: 70000\n", 1),
-			"diameter.port 70000 is out of range",
-		},
-		{"no peers", valid + diameterIdentity, "exactly one diameter peer must serve cx, found 0"},
-		{"no cx peer", valid + diameterIdentity + "  peers:\n" + pcrfPeer, "exactly one diameter peer must serve cx, found 0"},
-		{
-			"two cx peers",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + pcrfPeer +
-				strings.NewReplacer("id: hss", "id: hss2", "hss.ims", "hss2.ims").Replace(hssPeer),
-			"exactly one diameter peer must serve cx, found 2",
-		},
-		{
-			"two rx peers",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + pcrfPeer +
-				strings.NewReplacer("id: pcrf", "id: pcrf2", "pcrf.epc", "pcrf2.epc").Replace(pcrfPeer),
-			"at most one diameter peer may serve rx, found 2",
-		},
-		{
-			"duplicate peer id",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "id: pcrf", "id: hss", 1),
-			`diameter peer "hss" is defined twice`,
-		},
-		{
-			"missing peer id",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "- id: pcrf\n      ", "- ", 1),
-			"every diameter peer needs an id",
-		},
-		{
-			"missing peer host",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "      host: pcrf.epc.mnc001.mcc001.3gppnetwork.org\n", "", 1),
-			`diameter peer "pcrf": host is required`,
-		},
-		{
-			"missing peer realm",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "      realm: epc.mnc001.mcc001.3gppnetwork.org\n", "", 1),
-			`diameter peer "pcrf": realm is required`,
-		},
-		{
-			"missing peer address",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "      address: 10.0.0.11\n", "", 1),
-			`diameter peer "pcrf": address is required`,
-		},
-		{
-			"unspecified peer address",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "address: 10.0.0.11", "address: '::'", 1),
-			`diameter peer "pcrf": address must be a specific address`,
-		},
-		{
-			"peer port out of range",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "port: 3869", "port: 70000", 1),
-			`diameter peer "pcrf": port 70000 is out of range`,
-		},
-		{
-			"unknown transport",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "transport: sctp", "transport: udp", 1),
-			`diameter peer "pcrf": unknown transport "udp"`,
-		},
-		{
-			"no applications",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "applications: [rx]", "applications: []", 1),
-			`diameter peer "pcrf": at least one application is required`,
-		},
-		{
-			"unknown application",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "applications: [rx]", "applications: [rx, gx]", 1),
-			`diameter peer "pcrf": unknown application "gx"`,
-		},
-		{"rx peer not named", valid + validDiameter + pcrfPeer, `diameter peer "pcrf" serves rx, but pcscf.policy.rx does not name it`},
-		{"rx policy without its peer", valid + rxPolicy + validDiameter, `pcscf.policy.rx "pcrf" is not a diameter peer that serves rx`},
-		{"rx policy on a cx peer", valid + "pcscf:\n  policy:\n    rx: hss\n" + validDiameter, `pcscf.policy.rx "hss" is not a diameter peer that serves rx`},
-		{"rx and n5", valid + n5Policy + "    rx: pcrf\n" + validDiameter + pcrfPeer, "pcscf.policy: set rx or n5, not both"},
-		{"n5 with an rx peer", valid + n5Policy + validDiameter + pcrfPeer, `diameter peer "pcrf" serves rx, but pcscf.policy.rx does not name it`},
-		{"n5 without pcf_uri", valid + strings.Replace(n5Policy, "      pcf_uri: http://10.0.0.13:7777\n", "", 1) + validDiameter, "pcscf.policy.n5.pcf_uri is required"},
-		{"n5 over https without tls", valid + strings.Replace(n5Policy, "http://10.0.0.13", "https://10.0.0.13", 1) + validDiameter, "pcscf.policy.n5.tls is required with an https pcf_uri"},
-		{"n5 over http with tls", valid + strings.Replace(n5TLSPolicy, "https://pcf", "http://pcf", 1) + validDiameter, "pcscf.policy.n5.tls needs an https pcf_uri"},
-		{"n5 pcf_uri with a query", valid + strings.Replace(n5Policy, ":7777", ":7777/?a=b", 1) + validDiameter, "want http[s]://host[:port][/prefix]"},
-		{"n5 pcf_uri of another scheme", valid + strings.Replace(n5Policy, "http://10.0.0.13", "ftp://10.0.0.13", 1) + validDiameter, "want http[s]://host[:port][/prefix]"},
-		{"n5 tls without ca", valid + strings.Replace(n5TLSPolicy, "        ca: /etc/ims/tls/ca.crt\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.ca is required"},
-		{"n5 tls without cert", valid + strings.Replace(n5TLSPolicy, "        cert: /etc/ims/tls/ims.crt\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.cert is required"},
-		{"n5 tls without key", valid + strings.Replace(n5TLSPolicy, "        key: /etc/ims/tls/ims.key\n", "", 1) + validDiameter, "pcscf.policy.n5.tls.key is required"},
-		{"n5 notify uri over http", valid + strings.Replace(n5TLSPolicy, "https://pcscf", "http://pcscf", 1) + validDiameter, `pcscf.policy.n5.notify.uri "http://pcscf.example.org:7778/": want https://host[:port]`},
-		{"n5 notify uri with a path", valid + strings.Replace(n5TLSPolicy, ":7778/", ":7778/n5", 1) + validDiameter, "pcscf.policy.n5.notify.uri"},
-		{"n5 notify uri without a host", valid + strings.Replace(n5TLSPolicy, "https://pcscf.example.org:7778/", "https://:7778", 1) + validDiameter, "pcscf.policy.n5.notify.uri"},
-		{"n5 without notify address", valid + strings.Replace(n5Policy, "        address: 10.0.0.5\n", "", 1) + validDiameter, "pcscf.policy.n5.notify.address is required"},
-		{"n5 unspecified notify address", valid + strings.Replace(n5Policy, "address: 10.0.0.5", "address: 0.0.0.0", 1) + validDiameter, "must be a specific address"},
-		{"n5 notify port out of range", valid + strings.Replace(n5Policy, "port: 7778", "port: 0", 1) + validDiameter, "pcscf.policy.n5.notify.port 0 is out of range"},
-		{"n5 notify port on SIP", valid + strings.Replace(n5Policy, "port: 7778", "port: 5060", 1) + validDiameter, "pcscf.policy.n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
-		{"n5 notify port on Diameter", valid + strings.Replace(n5Policy, "port: 7778", "port: 3868", 1) + validDiameter, "pcscf.policy.n5.notify.port and diameter.port are both 3868"},
+		{"a setting of the database", valid + "scscf:\n  name: sip:scscf.example.org:5080\n" + validDiameter, "field name not found"},
+		{"the operator", valid + validDiameter + "ims:\n  mcc: \"001\"\n", "field ims not found"},
+		{"the peers", valid + validDiameter + "  peers: []\n", "field peers not found"},
+		{"the policy", valid + "pcscf:\n  policy:\n    rx: pcrf\n" + validDiameter, "field policy not found"},
+		{"missing diameter", valid, "diameter.address is required"},
+		{"unspecified diameter address", valid + "diameter:\n  address: 0.0.0.0\n", "diameter.address must be a specific address"},
+		{"diameter port out of range", valid + "diameter:\n  address: 10.0.0.5\n  port: 70000\n", "diameter.port 70000 is out of range"},
+		{"n5 tls without ca", valid + validDiameter + strings.Replace(n5TLS, "    ca: /etc/ims/tls/ca.crt\n", "", 1), "n5.tls.ca is required"},
+		{"n5 tls without cert", valid + validDiameter + strings.Replace(n5TLS, "    cert: /etc/ims/tls/ims.crt\n", "", 1), "n5.tls.cert is required"},
+		{"n5 tls without key", valid + validDiameter + strings.Replace(n5TLS, "    key: /etc/ims/tls/ims.key\n", "", 1), "n5.tls.key is required"},
+		{"n5 without notify address", valid + validDiameter + strings.Replace(n5, "    address: 10.0.0.5\n", "", 1), "n5.notify.address is required"},
+		{"n5 unspecified notify address", valid + validDiameter + strings.Replace(n5, "address: 10.0.0.5", "address: 0.0.0.0", 1), "must be a specific address"},
+		{"n5 notify port out of range", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 0", 1), "n5.notify.port 0 is out of range"},
+		{"n5 notify port on SIP", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 5060", 1), "n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
+		{"n5 notify port on Diameter", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 3868", 1), "n5.notify.port and diameter.port are both 3868"},
 		{
 			"n5 notify port on the API",
-			validDB + "api:\n  address: 0.0.0.0\n  port: 7778\n" + validIMS + validSIP + n5Policy + validDiameter,
-			"pcscf.policy.n5.notify.port and api.port are both 7778",
-		},
-		{
-			"duplicate application",
-			valid + diameterIdentity + "  peers:\n" + hssPeer + strings.Replace(pcrfPeer, "applications: [rx]", "applications: [rx, rx]", 1),
-			`diameter peer "pcrf": application rx is listed twice`,
+			validDB + "api:\n  address: 0.0.0.0\n  port: 7778\n" + validSIP + validDiameter + n5,
+			"n5.notify.port and api.port are both 7778",
 		},
 	}
 

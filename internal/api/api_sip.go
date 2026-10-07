@@ -28,9 +28,11 @@ type SIPStatus struct {
 
 func GetSIPStatus(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		op := cfg.Settings.Get().Operator
+
 		resp := SIPStatus{
-			HomeDomain: cfg.HomeDomain,
-			Aliases:    append([]string{}, cfg.SIPAliases...),
+			HomeDomain: op.HomeDomain(),
+			Aliases:    op.SIPAliases(),
 			Listeners:  []SIPListener{},
 		}
 

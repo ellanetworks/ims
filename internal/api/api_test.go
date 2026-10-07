@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/ellanetworks/ims/version"
 )
 
 func TestGetStatus(t *testing.T) {
-	h := NewHandler(Config{Version: "0.0.1", Logger: slog.New(slog.DiscardHandler)})
+	h := NewHandler(Config{Logger: slog.New(slog.DiscardHandler)})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/status", nil))
@@ -25,7 +27,7 @@ func TestGetStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if resp.Result.Version != "0.0.1" {
-		t.Fatalf("version = %q, want %q", resp.Result.Version, "0.0.1")
+	if want := (Status{Version: version.Get().Version, Revision: version.Get().Revision}); resp.Result != want || want.Version != "v0.0.1" {
+		t.Fatalf("status = %+v, want %+v at v0.0.1", resp.Result, want)
 	}
 }

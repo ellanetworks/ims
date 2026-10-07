@@ -42,13 +42,14 @@ func TestGetSIPStatus(t *testing.T) {
 			{Role: "pcscf", Address: netip.MustParseAddrPort("10.0.0.5:5060")},
 			{Role: "icscf", Address: netip.MustParseAddrPort("[2001:db8::5]:5070")},
 		},
-		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
-		SIPAliases: []string{"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org"},
+		Settings: newFakeSettings(),
 	})
 
 	want := SIPStatus{
 		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
-		Aliases:    []string{"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org"},
+		Aliases: []string{
+			"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org", "scscf.ims.mnc001.mcc001.3gppnetwork.org",
+		},
 		Listeners: []SIPListener{
 			{Role: "pcscf", Address: "10.0.0.5:5060", Transports: []string{"udp", "tcp"}},
 			{Role: "icscf", Address: "[2001:db8::5]:5070", Transports: []string{"udp", "tcp"}},
@@ -60,9 +61,9 @@ func TestGetSIPStatus(t *testing.T) {
 }
 
 func TestGetSIPStatusNoListeners(t *testing.T) {
-	got := getSIPStatus(t, Config{SIP: fakeSIP{}})
+	got := getSIPStatus(t, Config{SIP: fakeSIP{}, Settings: newFakeSettings()})
 
-	if got.Listeners == nil || len(got.Listeners) != 0 || got.Aliases == nil {
+	if got.Listeners == nil || len(got.Listeners) != 0 {
 		t.Fatalf("status = %#v, want empty lists", got)
 	}
 }

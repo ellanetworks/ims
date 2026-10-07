@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/milenage"
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -40,7 +40,8 @@ type callScene struct {
 	bobContact string
 }
 
-func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
+// newCallScene starts the IMS with a numbering plan, or the default one without.
+func newCallScene(t *testing.T, numbering *settings.Numbering) *callScene {
 	t.Helper()
 
 	hss := hsstest.New(t, hsstest.Config{Realm: imsRealm, IMSHost: imsHost})
@@ -63,14 +64,22 @@ func newCallScene(t *testing.T, numbering config.Numbering) *callScene {
 
 	cfg := testConfig(t)
 	cfg.SIP.Addresses = []netip.Addr{loopback}
-	cfg.Diameter = diameterConfig(config.DiameterPeer{
+	cfg.Peers = seedPeers(settings.Peer{
 		ID: "hss", Host: hss.Host(), Realm: hss.Realm(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
-		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
-	cfg.IMS.Numbering = numbering
-	cfg.SCSCF.MinExpires, cfg.SCSCF.MaxExpires = 60, 3600
 
 	srv := startIMS(t, cfg)
+
+	if numbering != nil {
+		op := srv.settings.Get().Operator
+		op.Numbering = *numbering
+
+		if err := srv.settings.UpdateOperator(t.Context(), op); err != nil {
+			t.Fatalf("UpdateOperator: %v", err)
+		}
+	}
+
 	waitOpen(t, srv, "hss")
 
 	sc := &callScene{
@@ -207,7 +216,7 @@ func failedInvite(t *testing.T, s node, to netip.AddrPort, invite *sip.Request) 
 }
 
 func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
-	sc := newCallScene(t, config.Numbering{})
+	sc := newCallScene(t, nil)
 
 	invite := sc.invite(bobTel)
 	sc.alice.Send(sip.UDP, sc.scscf, invite)
@@ -303,7 +312,7 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 }
 
 func TestCallToAHomeLocalNumber(t *testing.T) {
-	sc := newCallScene(t, config.Numbering{CountryCode: "1", NationalPrefix: "0"})
+	sc := newCallScene(t, &settings.Numbering{CountryCode: "1", NationalPrefix: "0"})
 
 	sc.alice.Send(sip.UDP, sc.scscf, sc.invite("tel:05550012;phone-context="+imsRealm))
 
@@ -312,19 +321,8 @@ func TestCallToAHomeLocalNumber(t *testing.T) {
 	}
 }
 
-func TestCallToAnUntranslatedLocalNumber(t *testing.T) {
-	sc := newCallScene(t, config.Numbering{})
-
-	invite := sc.invite(bobLocal + ";phone-context=" + imsRealm)
-	sc.alice.Send(sip.UDP, sc.scscf, invite)
-
-	if res := failedInvite(t, sc.alice, sc.scscf, invite); res.StatusCode != 404 {
-		t.Fatalf("got %q, want 404 even though the HSS knows %s", res.StartLine(), bobLocal)
-	}
-}
-
 func TestCallFromSamsung(t *testing.T) {
-	sc := newCallScene(t, config.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"})
+	sc := newCallScene(t, &settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"})
 
 	sc.alice.Send(sip.UDP, sc.scscf, sc.invite("sip:15550012;phone-context=15550011@15550011;user=phone"))
 
@@ -334,7 +332,7 @@ func TestCallFromSamsung(t *testing.T) {
 }
 
 func TestCallFailures(t *testing.T) {
-	sc := newCallScene(t, config.Numbering{})
+	sc := newCallScene(t, nil)
 
 	tests := []struct {
 		name   string

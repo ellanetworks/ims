@@ -19,7 +19,7 @@ import (
 func startServer(t *testing.T) *Server {
 	t.Helper()
 
-	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -32,13 +32,13 @@ func startServer(t *testing.T) *Server {
 func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.AddrPort {
 	t.Helper()
 
-	for _, l := range append(srv.sip.Listeners(), srv.sip.served...) {
+	for _, l := range append(srv.core.Load().sip.Listeners(), srv.core.Load().sip.served...) {
 		if l.Role == role && l.Address.Addr() == a {
 			return l.Address
 		}
 	}
 
-	t.Fatalf("no SIP listener on %s in %v", a, srv.sip.Listeners())
+	t.Fatalf("no SIP listener on %s in %v", a, srv.core.Load().sip.Listeners())
 
 	return netip.AddrPort{}
 }
@@ -46,7 +46,7 @@ func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.Add
 func newPeer(t *testing.T, srv *Server, addr netip.AddrPort) *siptest.Peer {
 	t.Helper()
 
-	return siptest.NewPeer(t, srv.sip.layer, addr)
+	return siptest.NewPeer(t, srv.core.Load().sip.layer, addr)
 }
 
 type node interface {
@@ -175,7 +175,7 @@ func TestSIPPlaceholder(t *testing.T) {
 }
 
 func TestSIPShutdownClosesListeners(t *testing.T) {
-	srv := &Server{Config: testConfig(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 	if err := srv.Start(ctx); err != nil {
@@ -184,7 +184,7 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 
 	var listeners []netip.AddrPort
 
-	for _, l := range srv.sip.Listeners() {
+	for _, l := range srv.core.Load().sip.Listeners() {
 		if l.Role != rolePCSCF && l.Role != rolePCSCFProtected {
 			t.Errorf("%s listens on %s: only the P-CSCF has sockets", l.Role, l.Address)
 		}
@@ -225,7 +225,9 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 	cfg.PCSCF.Port = int(taken.Addr().Port())
 	cfg.SIP.Addresses = []netip.Addr{loopback6, loopback}
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	cfg.seed(t)
+
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 

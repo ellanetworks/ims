@@ -29,6 +29,7 @@ func TestPostReauthentication(t *testing.T) {
 	}{
 		{"accepted", nil, http.StatusAccepted},
 		{"not registered", ErrNotRegistered, http.StatusNotFound},
+		{"restarting", ErrUnavailable, http.StatusServiceUnavailable},
 		{"failure", errors.New("database closed"), http.StatusInternalServerError},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

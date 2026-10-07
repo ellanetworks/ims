@@ -6,9 +6,6 @@
   <img src="docs/images/ims_integration.svg" alt="Ella IMS with Ella Core"/>
 </p>
 
-> [!WARNING]
-> - The API and configuration may change without notice.
-
 ## Key Features
 
 - Voice & Video calls
@@ -26,7 +23,7 @@
 #### From source
 
 ```sh
-go build -o ims ./cmd/ims
+go build -o ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=$(git rev-parse HEAD)" ./cmd/ims
 ```
 
 #### Container Image
@@ -40,6 +37,16 @@ rockcraft pack
 ```sh
 sudo ./ims --config ims.yaml
 ```
+
+The configuration file only says where the IMS listens. The rest is set over the API. Set the PLMN, then add the HSS, and the PCRF or PCF if any:
+
+```sh
+curl -X PUT localhost:5020/api/v1/operator -d '{"mcc": "001", "mnc": "01", "numbering": {"country_code": "1", "national_prefix": "1", "international_prefix": "011"}}'
+curl -X POST localhost:5020/api/v1/diameter/peers -d '{"host": "hss.example.org", "realm": "example.org", "address": "10.0.0.10", "applications": ["cx"]}'
+curl -X PUT localhost:5020/api/v1/policy -d '{"interface": "n5", "n5": {"pcf_uri": "http://10.0.0.13:7777"}}'
+```
+
+The IMS names itself after the PLMN: `GET /api/v1/diameter` gives the Diameter identity to provision in the HSS.
 
 ### Test
 
@@ -74,6 +81,10 @@ go test -run='^$' -fuzz='^FuzzParse$' ./sip
 
 See [`ims.yaml`](ims.yaml).
 
+### API
+
+[`openapi.yaml`](internal/api/openapi.yaml), served at `GET /api/v1/openapi.yaml`.
+
 ### Compatibility
 
 #### Core Networks
@@ -81,7 +92,6 @@ See [`ims.yaml`](ims.yaml).
 Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G compliant core. It has been explicitely validated against:
 - Ella Core
 - Open5GS
-
 
 #### Phones
 

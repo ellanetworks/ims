@@ -30,6 +30,9 @@ const (
 	maxResyncs = 2
 
 	DefaultReauthExpires = 60 * time.Second
+
+	DefaultMinExpires = 60 * time.Second
+	DefaultMaxExpires = 3600 * time.Second
 )
 
 type Diameter interface {
@@ -116,6 +119,14 @@ func New(cfg Config) *Registrar {
 
 	if cfg.ReauthExpires <= 0 {
 		cfg.ReauthExpires = DefaultReauthExpires
+	}
+
+	if cfg.MinExpires <= 0 {
+		cfg.MinExpires = DefaultMinExpires
+	}
+
+	if cfg.MaxExpires <= 0 {
+		cfg.MaxExpires = max(DefaultMaxExpires, cfg.MinExpires)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

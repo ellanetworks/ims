@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/rx"
-	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/testue"
 )
 
@@ -152,7 +152,7 @@ func TestCallAbortedByThePolicyFunction(t *testing.T) {
 // TS 24.229 §5.2.8.1.2, TS 29.214 §4.4.6.2, TS 29.514 §4.2.5.8
 func TestCallMediaLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
-		s := newPolicyScene(t, iface, func(c *config.Config) { c.PCSCF.MediaLossTimeout = 100 * time.Millisecond })
+		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
 		a := s.caller(0, false, testue.Config{})
 		b := s.caller(1, false, testue.Config{})
 

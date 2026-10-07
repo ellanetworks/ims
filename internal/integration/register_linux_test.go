@@ -29,6 +29,7 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 	"github.com/ellanetworks/ims/internal/server"
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -118,14 +119,14 @@ func newScene(t *testing.T) *scene {
 	return newSceneWith(t, nil)
 }
 
-func newSceneWith(t *testing.T, configure func(*config.Config)) *scene {
+func newSceneWith(t *testing.T, configure func(*server.Server)) *scene {
 	t.Helper()
 
 	return newPolicyScene(t, policyRx, configure)
 }
 
 // newPolicyScene starts the IMS with a fake PCRF over Rx, or a fake PCF over N5.
-func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) *scene {
+func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) *scene {
 	t.Helper()
 
 	s := &scene{
@@ -159,12 +160,15 @@ func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) 
 		}
 	}
 
-	peers := []config.DiameterPeer{{
+	peers := []settings.Peer{{
 		ID: "hss", Host: s.hss.Host(), Realm: domain, Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
-		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	}}
 
-	var pol config.Policy
+	var (
+		pol settings.Policy
+		n5  *config.N5
+	)
 
 	switch iface {
 	case policyRx:
@@ -173,19 +177,17 @@ func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) 
 		})
 		s.pol = &rxPolicy{s: s}
 
-		peers = append(peers, config.DiameterPeer{
+		peers = append(peers, settings.Peer{
 			ID: "pcrf", Host: s.pcrf.Host(), Realm: s.pcrf.Realm(), Address: s.pcrf.Addr().Addr(),
-			Port: int(s.pcrf.Addr().Port()), Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationRx},
+			Port: int(s.pcrf.Addr().Port()), Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationRx},
 		})
-		pol.Rx = "pcrf"
+		pol = settings.Policy{Interface: settings.PolicyRx}
 	case policyN5:
 		s.pcf = pcftest.New(t, pcftest.Config{UEs: ues, Logger: testLogger(t)})
 		s.pol = &n5Policy{s: s}
 
-		pol.N5 = &config.N5{
-			PCFURI: s.pcf.URL(),
-			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
-		}
+		pol = settings.Policy{Interface: settings.PolicyN5, PCFURI: s.pcf.URL()}
+		n5 = &config.N5{Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)}}
 	case policyN5TLS:
 		// Both ends by IP address, and the notification URIs by default.
 		ca := sbitlstest.NewCA(t, "ca")
@@ -195,8 +197,8 @@ func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) 
 		s.pcf = pcftest.New(t, pcftest.Config{UEs: ues, TLS: sbitlstest.Peer(pcfCert.Cert, ca), Logger: testLogger(t)})
 		s.pol = &n5Policy{s: s}
 
-		pol.N5 = &config.N5{
-			PCFURI: s.pcf.URL(),
+		pol = settings.Policy{Interface: settings.PolicyN5, PCFURI: s.pcf.URL()}
+		n5 = &config.N5{
 			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
 			TLS:    &config.TLS{CA: ims.Files.CA, Cert: ims.Files.Cert, Key: ims.Files.Key},
 		}
@@ -204,26 +206,23 @@ func newPolicyScene(t *testing.T, iface string, configure func(*config.Config)) 
 		t.Fatalf("unknown policy interface %q", iface)
 	}
 
+	seed(t, s.db, peers, pol)
+
 	s.srv = &server.Server{Config: config.Config{
 		DB:  config.DB{Path: s.db},
 		API: config.API{Address: netip.MustParseAddr("127.0.0.1")},
-		IMS: config.IMS{MCC: "001", MNC: "01", HomeDomain: domain},
 		SIP: config.SIP{Addresses: []netip.Addr{imsAddrs[0].Addr(), imsAddrs[1].Addr()}},
 		PCSCF: config.PCSCF{
-			Port: pcscfPort, IPsec: config.IPsec{ServerPort: pcscfIPsecServerPort, ClientPorts: []int{5064, 5065}}, Policy: pol,
+			Port: pcscfPort, IPsec: config.IPsec{ServerPort: pcscfIPsecServerPort, ClientPorts: []int{5064, 5065}},
 		},
-		ICSCF: config.ICSCF{Port: 5070},
-		SCSCF: config.SCSCF{Port: 5080, MinExpires: 60, MaxExpires: 3600},
-		Diameter: config.Diameter{
-			OriginHost:  imsHost,
-			OriginRealm: domain,
-			Address:     s.hss.Addr().Addr(),
-			Peers:       peers,
-		},
+		ICSCF:    config.ICSCF{Port: 5070},
+		SCSCF:    config.SCSCF{Port: 5080},
+		Diameter: config.Diameter{Address: s.hss.Addr().Addr()},
+		N5:       n5,
 	}, Logger: testLogger(t)}
 
 	if configure != nil {
-		configure(&s.srv.Config)
+		configure(s.srv)
 	}
 
 	if err := s.srv.Start(t.Context()); err != nil {
@@ -323,12 +322,36 @@ func (s *scene) ctx() context.Context {
 	return ctx
 }
 
+// seed writes the Diameter peers and the policy into the database, before the IMS starts on it.
+func seed(t *testing.T, path string, peers []settings.Peer, pol settings.Policy) {
+	t.Helper()
+
+	d, err := db.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = d.Close() }()
+
+	for _, p := range peers {
+		if err := d.CreatePeer(t.Context(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if pol.Interface != "" {
+		if err := d.UpdatePolicy(t.Context(), pol); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // RFC 6733 §5.6.1
 func (s *scene) diameterOpen(ids ...string) {
 	s.t.Helper()
 
 	eventually(s.t, "the IMS's Diameter peers to open", func() bool {
-		req, err := http.NewRequestWithContext(s.ctx(), http.MethodGet, "http://"+s.srv.APIAddr().String()+"/api/v1/diameter", nil)
+		req, err := http.NewRequestWithContext(s.ctx(), http.MethodGet, "http://"+s.srv.APIAddr().String()+"/api/v1/diameter/peers", nil)
 		if err != nil {
 			s.t.Fatal(err)
 		}
@@ -341,15 +364,15 @@ func (s *scene) diameterOpen(ids ...string) {
 		defer func() { _ = res.Body.Close() }()
 
 		var body struct {
-			Result api.DiameterStatus `json:"result"`
+			Result api.DiameterPeers `json:"result"`
 		}
 		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 			s.t.Fatal(err)
 		}
 
 		open := map[string]bool{}
-		for _, p := range body.Result.Peers {
-			open[p.ID] = p.State == "open"
+		for _, p := range body.Result.Items {
+			open[p.ID] = p.Status.State == "open"
 		}
 
 		for _, id := range ids {
@@ -611,7 +634,7 @@ func drain(u *testue.UE) {
 }
 
 func TestReAuthentication(t *testing.T) {
-	s := newSceneWith(t, func(c *config.Config) { c.SCSCF.ReauthInterval = time.Nanosecond })
+	s := newSceneWith(t, func(srv *server.Server) { srv.ReauthInterval = time.Nanosecond })
 	u := s.newUE(false, testue.Config{NoRegEvent: true})
 
 	s.register(u)

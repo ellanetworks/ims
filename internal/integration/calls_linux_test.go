@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/hsstest"
+	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -638,7 +638,7 @@ func TestCallFailures(t *testing.T) {
 func TestCallNotAnswered(t *testing.T) {
 	const timeout = 2 * time.Second
 
-	sc := newSceneWith(t, func(c *config.Config) { c.PCSCF.NoAnswerTimeout = timeout })
+	sc := newSceneWith(t, func(srv *server.Server) { srv.NoAnswerTimeout = timeout })
 	a := sc.caller(0, false, testue.Config{Transport: sip.UDP})
 	b := sc.caller(1, false, testue.Config{Transport: sip.UDP})
 
@@ -679,9 +679,9 @@ func TestCallNotAnswered(t *testing.T) {
 }
 
 func TestCallDialling(t *testing.T) {
-	sc := newSceneWith(t, func(c *config.Config) {
-		c.IMS.Numbering = config.Numbering{CountryCode: "1", NationalPrefix: "0"}
-	})
+	sc := newScene(t)
+	sc.putOperator(`{"mcc": "001", "mnc": "01", "numbering": {"country_code": "1", "national_prefix": "0", "international_prefix": ""}}`)
+
 	a := sc.caller(0, false, testue.Config{Transport: sip.UDP})
 	b := sc.caller(1, false, testue.Config{Transport: sip.UDP})
 

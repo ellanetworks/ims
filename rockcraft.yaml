@@ -1,7 +1,7 @@
 name: ella-ims
 base: bare
 build-base: ubuntu@26.04
-version: 0.0.1
+adopt-info: ims-release-data
 summary: Ella IMS is a secure, reliable, and easy to operate IP Multimedia Subsystem.
 description: |
  Ella IMS is a secure, reliable, and easy to operate IP Multimedia Subsystem.
@@ -28,3 +28,13 @@ parts:
       - go/1.26/stable
     stage-packages:
       - libc6_libs
+    override-build: |
+      REVISION=`git rev-parse HEAD`
+      go build -v -o ${CRAFT_PART_INSTALL}/bin/ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=${REVISION}" ./cmd/ims
+
+  ims-release-data:
+    plugin: nil
+    source: .
+    override-build: |
+      version="$(cat version/VERSION)"
+      craftctl set version="$version"
