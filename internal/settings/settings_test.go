@@ -404,3 +404,39 @@ func TestSameCore(t *testing.T) {
 		t.Fatal("another policy function keeps the core")
 	}
 }
+
+func TestMovedPeers(t *testing.T) {
+	s := validSettings()
+	s.Peers = []Peer{hss()}
+
+	moved := s
+	moved.Peers = []Peer{hss()}
+	moved.Peers[0].Address = netip.MustParseAddr("10.0.0.20")
+	moved.Peers[0].Port = 3869
+
+	if !s.MovedPeers(moved) || s.SameCore(moved) {
+		t.Fatal("a peer at another address is not a moved peer")
+	}
+
+	for name, edit := range map[string]func(*Peer){
+		"another host":      func(p *Peer) { p.Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org" },
+		"another realm":     func(p *Peer) { p.Realm = "example.org" },
+		"another transport": func(p *Peer) { p.Transport = TransportSCTP },
+		"more applications": func(p *Peer) { p.Applications = []Application{ApplicationCx, ApplicationRx} },
+	} {
+		changed := s
+		changed.Peers = []Peer{hss()}
+		edit(&changed.Peers[0])
+
+		if s.MovedPeers(changed) {
+			t.Errorf("%s: a moved peer, want another core", name)
+		}
+	}
+
+	added := s
+	added.Peers = []Peer{hss(), pcrf()}
+
+	if s.MovedPeers(added) {
+		t.Error("an added peer is a moved peer")
+	}
+}

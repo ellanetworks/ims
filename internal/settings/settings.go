@@ -86,6 +86,12 @@ func (s Settings) SameCore(t Settings) bool {
 	return s.Operator.SameIdentity(t.Operator) && slices.EqualFunc(s.Peers, t.Peers, Peer.equal) && s.Policy == t.Policy
 }
 
+// MovedPeers reports whether t is s with peers at other addresses or ports, which the running Diameter node can
+// follow without a restart: the S-CSCF, I-CSCF and P-CSCF only know peers by their ID, host and realm.
+func (s Settings) MovedPeers(t Settings) bool {
+	return s.Operator.SameIdentity(t.Operator) && s.Policy == t.Policy && slices.EqualFunc(s.Peers, t.Peers, Peer.sameNode)
+}
+
 func (s Settings) Validate() error {
 	if err := s.Operator.Validate(); err != nil {
 		return err

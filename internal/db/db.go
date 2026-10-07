@@ -133,7 +133,7 @@ var migrations = []string{
 	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');`,
 	`CREATE TABLE diameter_peers (
 		id TEXT PRIMARY KEY,
-		host TEXT NOT NULL UNIQUE,
+		host TEXT NOT NULL UNIQUE COLLATE NOCASE,
 		realm TEXT NOT NULL,
 		address TEXT NOT NULL,
 		port INTEGER NOT NULL,

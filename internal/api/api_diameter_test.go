@@ -135,6 +135,9 @@ func TestDiameterPeersRejected(t *testing.T) {
 	}{
 		{"unknown field", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"id": "x", "host"`, 1), 400, "Invalid request data"},
 		{"status on input", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"status": {}, "host"`, 1), 400, "Invalid request data"},
+		{"host not a domain name", http.MethodPost, "", strings.Replace(hssPeer, "hss.ims.", "hss ims.", 1), 400, "host must be a domain name"},
+		{"realm not a domain name", http.MethodPost, "", strings.Replace(hssPeer, `"realm": "ims.`, `"realm": "ims..`, 1), 400, "realm must be a domain name"},
+		{"same host in another case", http.MethodPost, "", strings.NewReplacer(`["cx"]`, `["rx"]`, "hss.ims", "HSS.ims").Replace(hssPeer), 409, "A Diameter peer already has host HSS.ims.mnc001.mcc001.3gppnetwork.org"},
 		{"no host", http.MethodPost, "", strings.Replace(hssPeer, `"hss.ims.mnc001.mcc001.3gppnetwork.org"`, `""`, 1), 400, "host is required"},
 		{"bad address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "hss.example.org", 1), 400, "address must be an IPv4 or IPv6 address"},
 		{"no address", http.MethodPost, "", strings.Replace(hssPeer, `"10.0.0.10"`, `""`, 1), 400, "address is required"},

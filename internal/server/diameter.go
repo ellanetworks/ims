@@ -101,6 +101,16 @@ func peerTransports(peers []settings.Peer) []settings.Transport {
 	return out
 }
 
+// probeSCTP checks that the host can listen for Diameter over SCTP on an address.
+func probeSCTP(ctx context.Context, a netip.Addr) error {
+	ln, err := listenDiameterOn(ctx, settings.TransportSCTP, netip.AddrPortFrom(a, 0))
+	if err != nil {
+		return err
+	}
+
+	return ln.Close()
+}
+
 func listenDiameterOn(ctx context.Context, t settings.Transport, addr netip.AddrPort) (diameter.Listener, error) {
 	if t == settings.TransportSCTP {
 		var lc sctp.ListenConfig

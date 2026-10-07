@@ -155,7 +155,9 @@ paths:
       tags: [Diameter]
       operationId: updateDiameterPeer
       summary: Update a Diameter peer
-      description: The IMS then reconnects to it.
+      description: |
+        The IMS then reconnects to it. A peer moved to another address or port reconnects with no other effect;
+        any other change restarts Diameter and SIP, which ends the QoS of calls in progress.
       requestBody:
         required: true
         content:
@@ -275,6 +277,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          description: The IMS is restarting to apply its settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/status:
     get:

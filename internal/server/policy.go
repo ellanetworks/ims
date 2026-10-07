@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
@@ -80,6 +81,28 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 	pf.notify = n5policy.NewServer(b, creds, logger)
 
 	return pf, nil
+}
+
+// checkSettings checks, before they are saved, what settings need of the configuration file and the host, so that
+// the IMS can apply them.
+func checkSettings(ctx context.Context, cfg config.Config, s settings.Settings) error {
+	if err := checkPolicy(cfg, s); err != nil {
+		return err
+	}
+
+	if s.Policy.Interface == settings.PolicyN5 && cfg.N5.TLS != nil {
+		if _, err := n5Credentials(*cfg.N5, cfg.N5NotifyURI(), slog.New(slog.DiscardHandler)); err != nil {
+			return settings.Invalidf("n5 over https: %v", err)
+		}
+	}
+
+	if slices.Contains(peerTransports(s.Peers), settings.TransportSCTP) {
+		if err := probeSCTP(ctx, cfg.Diameter.Address); err != nil {
+			return settings.Invalidf("sctp is not available on this host: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // checkPolicy checks the policy settings against the configuration file, which says where to hear from a PCF and

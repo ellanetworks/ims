@@ -2,9 +2,14 @@ package server
 
 import (
 	"errors"
+	"net"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
@@ -139,4 +144,108 @@ func TestN5PolicyOutOfTheConfigurationFile(t *testing.T) {
 	if err := srv.settings.UpdatePolicy(t.Context(), settings.Policy{Interface: settings.PolicyNone}); err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
+}
+
+func TestPeerMovedWithoutRestart(t *testing.T) {
+	const host = "hss.ims.mnc001.mcc001.3gppnetwork.org"
+
+	old := newFakePeer(t, host, imsRealm, settings.ApplicationCx)
+	moved := newFakePeer(t, host, imsRealm, settings.ApplicationCx)
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(old.config("hss"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss")
+
+	before := srv.core.Load()
+
+	if err := srv.settings.UpdatePeer(t.Context(), moved.config("hss")); err != nil {
+		t.Fatalf("UpdatePeer: %v", err)
+	}
+
+	eventually(t, "the HSS at its new address", func() bool { return moved.sawState(diameter.PeerOpen) })
+
+	if c := srv.core.Load(); c.node != before.node || c.sip != before.sip {
+		t.Fatal("moving a peer restarted the core")
+	}
+}
+
+func TestCoreRetriedAfterAFailedRestart(t *testing.T) {
+	notify, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig(t)
+	cfg.N5 = &config.N5{Notify: config.N5Notify{Address: loopback, Port: notify.Addr().(*net.TCPAddr).Port}}
+
+	srv := startIMS(t, cfg)
+
+	// The notification port is taken, which no check of the settings foresees: the core fails to start.
+	if err := srv.settings.UpdatePolicy(t.Context(), settings.Policy{Interface: settings.PolicyN5, PCFURI: "http://127.0.0.1:7777"}); err != nil {
+		t.Fatalf("UpdatePolicy: %v", err)
+	}
+
+	eventually(t, "the core to fail", func() bool { return srv.core.Load() == nil })
+
+	if err := (coreView{srv}).Reauthenticate(t.Context(), "001010000000001@ims.mnc001.mcc001.3gppnetwork.org"); !errors.Is(err, api.ErrUnavailable) {
+		t.Fatalf("Reauthenticate without a core = %v, want %v", err, api.ErrUnavailable)
+	}
+
+	_ = notify.Close()
+
+	eventually(t, "the core to be retried", func() bool {
+		c := srv.core.Load()
+		return c != nil && c.policy.PolicyStatus().Interface == "n5"
+	})
+}
+
+func TestAPIDuringRestarts(t *testing.T) {
+	srv := startIMS(t, testConfig(t))
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for range 20 {
+			for _, path := range []string{"/api/v1/diameter/peers", "/api/v1/diameter", "/api/v1/policy", "/api/v1/sip"} {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+srv.APIAddr().String()+path, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+
+				res, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Errorf("GET %s: %v", path, err)
+					return
+				}
+
+				_ = res.Body.Close()
+
+				if res.StatusCode != http.StatusOK {
+					t.Errorf("GET %s = %d during a restart", path, res.StatusCode)
+				}
+			}
+		}
+	}()
+
+	op := srv.settings.Get().Operator
+
+	for _, mnc := range []string{"02", "03", "01"} {
+		op.MNC = mnc
+
+		if err := srv.settings.UpdateOperator(t.Context(), op); err != nil {
+			t.Fatalf("UpdateOperator: %v", err)
+		}
+	}
+
+	<-done
+
+	eventually(t, "the core under the last identity", func() bool {
+		c := srv.core.Load()
+		return c != nil && c.settings.Operator.MNC == "01"
+	})
 }

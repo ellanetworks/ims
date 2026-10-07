@@ -82,7 +82,9 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	live := settings.NewLive(database, initial, func(st settings.Settings) error { return checkPolicy(cfg, st) })
+	live := settings.NewLive(database, initial, func(st settings.Settings) error {
+		return checkSettings(context.Background(), cfg, st)
+	})
 
 	var apiLC net.ListenConfig
 
@@ -198,19 +200,62 @@ func (s *Server) numbering() scscf.Numbering {
 func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
+	backoff := minRetry
+
 	for {
 		changed := s.settings.Changed()
 
-		if st := s.settings.Get(); ctx.Err() == nil && !s.coreSettings().SameCore(st) {
-			s.restartCore(ctx, st)
+		var retry <-chan time.Time
+
+		if st := s.settings.Get(); ctx.Err() == nil {
+			current := s.coreSettings()
+
+			switch {
+			case current.SameCore(st):
+			case s.core.Load() != nil && current.MovedPeers(st):
+				s.movePeers(st)
+			default:
+				s.restartCore(ctx, st)
+			}
+
+			// A core that failed to build is retried, since what it failed on may come back, like a peer's
+			// certificate files or the SCTP module.
+			if s.core.Load() == nil {
+				retry = time.After(backoff)
+				backoff = min(2*backoff, maxRetry)
+			} else {
+				backoff = minRetry
+			}
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-changed:
+		case <-retry:
 		}
 	}
+}
+
+const (
+	minRetry = time.Second
+	maxRetry = 30 * time.Second
+)
+
+// movePeers points the running Diameter node at peers' new addresses, without a restart.
+func (s *Server) movePeers(st settings.Settings) {
+	c := s.core.Load()
+
+	if err := c.node.SetPeers(diameterPeers(st.Peers)); err != nil {
+		s.Logger.Error("failed to move the Diameter peers", slog.Any("error", err))
+		return
+	}
+
+	next := *c
+	next.settings = st
+	s.core.Store(&next)
+
+	s.Logger.Info("moved the Diameter peers", slog.Int("diameter_peers", len(st.Peers)))
 }
 
 // coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,
@@ -356,7 +401,7 @@ func (v coreView) Reauthenticate(ctx context.Context, impi string) error {
 		return c.sip.Reauthenticate(ctx, impi)
 	}
 
-	return api.ErrNotRegistered
+	return api.ErrUnavailable
 }
 
 func (v coreView) PolicyStatus() api.PolicyStatus {

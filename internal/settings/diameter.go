@@ -3,6 +3,7 @@ package settings
 import (
 	"net/netip"
 	"slices"
+	"strings"
 )
 
 type Application string
@@ -40,8 +41,12 @@ func (p Peer) Validate() error {
 	switch {
 	case p.Host == "":
 		return invalidf("host is required")
+	case !isFQDN(p.Host):
+		return invalidf("host must be a domain name")
 	case p.Realm == "":
 		return invalidf("realm is required")
+	case !isFQDN(p.Realm):
+		return invalidf("realm must be a domain name")
 	case !p.Address.IsValid():
 		return invalidf("address is required")
 	case p.Address.IsUnspecified() || p.Address.Zone() != "":
@@ -67,8 +72,34 @@ func (p Peer) Validate() error {
 }
 
 func (p Peer) equal(q Peer) bool {
-	return p.ID == q.ID && p.Host == q.Host && p.Realm == q.Realm && p.Address == q.Address && p.Port == q.Port &&
-		p.Transport == q.Transport && slices.Equal(p.Applications, q.Applications)
+	return p.sameNode(q) && p.Address == q.Address && p.Port == q.Port
+}
+
+// sameNode reports whether two peers are the same Diameter node, served over the same transport, wherever it is.
+func (p Peer) sameNode(q Peer) bool {
+	return p.ID == q.ID && p.Host == q.Host && p.Realm == q.Realm && p.Transport == q.Transport &&
+		slices.Equal(p.Applications, q.Applications)
+}
+
+// isFQDN reports whether s is a DiameterIdentity or a realm: a domain name (RFC 6733 §4.3.1).
+func isFQDN(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+
+	for label := range strings.SplitSeq(s, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // PeerServing returns the peer that serves an application, if there is one.
@@ -94,7 +125,8 @@ func (s Settings) validatePeers() error {
 		}
 
 		for _, q := range s.Peers[:i] {
-			if q.Host == p.Host {
+			// Diameter identities are case-insensitive.
+			if strings.EqualFold(q.Host, p.Host) {
 				return conflictf("A Diameter peer already has host %s", p.Host)
 			}
 
