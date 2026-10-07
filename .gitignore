@@ -2,3 +2,4 @@
 /main
 *.rock
 /ims.db*
+*.snap

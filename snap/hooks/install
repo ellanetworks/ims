@@ -1,0 +1,3 @@
+#!/bin/sh -e
+
+cp "$SNAP/ims.yaml" "$SNAP_COMMON/ims.yaml"
