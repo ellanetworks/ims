@@ -10,7 +10,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/server"
-	"github.com/ellanetworks/ims/internal/testue"
+	"github.com/ellanetworks/ims/testue"
 )
 
 func ueAddr(i int, v6 bool) netip.Addr {

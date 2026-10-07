@@ -30,8 +30,8 @@ import (
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/settings"
-	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/testue"
 )
 
 const (

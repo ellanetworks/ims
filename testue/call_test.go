@@ -17,7 +17,7 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-const captureDir = "../../sip/internal/corpus/testdata/ella/live/4g"
+const captureDir = "../sip/internal/corpus/testdata/ella/live/4g"
 
 func newCallUE(t *testing.T, imsi string, pcscf netip.AddrPort, cfg Config) *UE {
 	t.Helper()

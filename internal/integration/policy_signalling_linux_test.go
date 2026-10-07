@@ -11,7 +11,7 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/server"
-	"github.com/ellanetworks/ims/internal/testue"
+	"github.com/ellanetworks/ims/testue"
 )
 
 // TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
