@@ -18,9 +18,8 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/version"
 )
-
-const version = "0.0.1"
 
 var ErrAlreadyStarted = errors.New("server: already started")
 
@@ -111,7 +110,6 @@ func (s *Server) Start(ctx context.Context) error {
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
-			Version:       version,
 			Settings:      live,
 			Diameter:      view,
 			SIP:           view,
@@ -133,7 +131,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go s.follow(followCtx)
 
-	s.Logger.Info("ims started", append([]any{slog.String("api", apiLn.Addr().String())}, c.attrs()...)...)
+	v := version.Get()
+	attrs := []any{slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String())}
+	s.Logger.Info("ims started", append(attrs, c.attrs()...)...)
 
 	return nil
 }

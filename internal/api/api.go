@@ -9,7 +9,6 @@ import (
 )
 
 type Config struct {
-	Version       string
 	Settings      Settings
 	Diameter      Diameter
 	SIP           SIP
@@ -63,14 +62,4 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
 	}
-}
-
-type Status struct {
-	Version string `json:"version"`
-}
-
-func GetStatus(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, Status{Version: cfg.Version}, http.StatusOK, cfg.Logger)
-	})
 }

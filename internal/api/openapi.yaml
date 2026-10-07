@@ -291,10 +291,14 @@ paths:
                 properties:
                   result:
                     type: object
-                    required: [version]
+                    required: [version, revision]
                     properties:
                       version:
                         type: string
+                        examples: [v0.0.1]
+                      revision:
+                        type: string
+                        description: The git commit the IMS was built from, empty in development builds.
 
   /api/v1/openapi.yaml:
     get:
