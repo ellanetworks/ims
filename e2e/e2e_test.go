@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
-	"github.com/ellanetworks/ims/internal/testue"
+	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/sip"
 	"golang.org/x/sys/unix"
 )

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/testue"
+	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/sip"
 )
 

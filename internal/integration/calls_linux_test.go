@@ -13,8 +13,8 @@ import (
 
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/server"
-	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/testue"
 )
 
 func (s *scene) caller(i int, v6 bool, cfg testue.Config) *testue.UE {
