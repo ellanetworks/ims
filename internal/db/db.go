@@ -122,6 +122,30 @@ var migrations = []string{
 		version INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL
 	);`,
+	`CREATE TABLE operator (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		mcc TEXT NOT NULL,
+		mnc TEXT NOT NULL,
+		country_code TEXT NOT NULL,
+		national_prefix TEXT NOT NULL,
+		international_prefix TEXT NOT NULL
+	);
+	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');`,
+	`CREATE TABLE diameter_peers (
+		id TEXT PRIMARY KEY,
+		host TEXT NOT NULL UNIQUE,
+		realm TEXT NOT NULL,
+		address TEXT NOT NULL,
+		port INTEGER NOT NULL,
+		transport TEXT NOT NULL,
+		applications TEXT NOT NULL
+	);
+	CREATE TABLE policy (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		interface TEXT NOT NULL,
+		pcf_uri TEXT NOT NULL
+	);
+	INSERT INTO policy VALUES (1, 'none', '');`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {

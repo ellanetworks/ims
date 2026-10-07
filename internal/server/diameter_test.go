@@ -20,9 +20,9 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
+	"github.com/ellanetworks/ims/internal/settings"
 )
 
 const (
@@ -38,7 +38,7 @@ var (
 type fakePeer struct {
 	host  string
 	realm string
-	apps  []config.Application
+	apps  []settings.Application
 	node  *diameter.Node
 	port  int
 
@@ -46,13 +46,13 @@ type fakePeer struct {
 	states []diameter.PeerState
 }
 
-func newFakePeer(t *testing.T, host, realm string, apps ...config.Application) *fakePeer {
+func newFakePeer(t *testing.T, host, realm string, apps ...settings.Application) *fakePeer {
 	t.Helper()
 
 	return newFakePeerWithHandler(t, host, realm, diameter.NewMux(), apps...)
 }
 
-func newFakePeerWithHandler(t *testing.T, host, realm string, handler diameter.Handler, apps ...config.Application) *fakePeer {
+func newFakePeerWithHandler(t *testing.T, host, realm string, handler diameter.Handler, apps ...settings.Application) *fakePeer {
 	t.Helper()
 
 	f := &fakePeer{host: host, realm: realm, apps: apps}
@@ -98,14 +98,14 @@ func (f *fakePeer) sawState(s diameter.PeerState) bool {
 	return slices.Contains(f.states, s)
 }
 
-func (f *fakePeer) config(id string) config.DiameterPeer {
-	return config.DiameterPeer{
+func (f *fakePeer) config(id string) settings.Peer {
+	return settings.Peer{
 		ID:           id,
 		Host:         f.host,
 		Realm:        f.realm,
 		Address:      loopback,
 		Port:         f.port,
-		Transport:    config.TransportTCP,
+		Transport:    settings.TransportTCP,
 		Applications: f.apps,
 	}
 }
@@ -142,25 +142,22 @@ func (f *fakePeer) send(t *testing.T, req *diameter.Message, err error) tgpp.Res
 	return r
 }
 
-func diameterConfig(peers ...config.DiameterPeer) config.Diameter {
-	return config.Diameter{
-		OriginHost:  imsHost,
-		OriginRealm: imsRealm,
-		Address:     loopback,
-		Peers:       peers,
-	}
+func seedPeers(peers ...settings.Peer) []settings.Peer {
+	return peers
 }
 
-func startIMS(t *testing.T, cfg config.Config) *Server {
+func startIMS(t *testing.T, cfg testIMS) *Server {
 	t.Helper()
 
 	return startIMSWith(t, cfg, ipsectest.NewKernel())
 }
 
-func startIMSWith(t *testing.T, cfg config.Config, kernel *ipsectest.Kernel) *Server {
+func startIMSWith(t *testing.T, cfg testIMS, kernel *ipsectest.Kernel) *Server {
 	t.Helper()
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: kernel}
+	cfg.seed(t)
+
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: kernel}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -209,21 +206,46 @@ func getDiameter(t *testing.T, srv *Server) api.DiameterStatus {
 	return body.Result
 }
 
+func getPeers(t *testing.T, srv *Server) []api.DiameterPeer {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+srv.APIAddr().String()+"/api/v1/diameter/peers", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET Diameter peers: %v", err)
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	var body struct {
+		Result api.DiameterPeers `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+
+	return body.Result.Items
+}
+
 func waitOpen(t *testing.T, srv *Server, ids ...string) map[string]api.DiameterPeer {
 	t.Helper()
 
 	var peers map[string]api.DiameterPeer
 
 	eventually(t, "Diameter peers to open", func() bool {
-		status := getDiameter(t, srv)
+		items := getPeers(t, srv)
 
-		peers = make(map[string]api.DiameterPeer, len(status.Peers))
-		for _, p := range status.Peers {
+		peers = make(map[string]api.DiameterPeer, len(items))
+		for _, p := range items {
 			peers[p.ID] = p
 		}
 
 		for _, id := range ids {
-			if peers[id].State != "open" {
+			if peers[id].Status.State != "open" {
 				return false
 			}
 		}
@@ -235,11 +257,11 @@ func waitOpen(t *testing.T, srv *Server, ids ...string) map[string]api.DiameterP
 }
 
 func TestDiameterPeersOpen(t *testing.T) {
-	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
-	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", settings.ApplicationRx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.Peers = seedPeers(hss.config("hss"), pcrf.config("pcrf"))
 
 	srv := startIMS(t, cfg)
 
@@ -253,7 +275,7 @@ func TestDiameterPeersOpen(t *testing.T) {
 		"pcrf": {pcrf.host, pcrf.realm, []string{"rx"}},
 	} {
 		p := peers[id]
-		if p.Host != want.host || p.Realm != want.realm || p.Transport != "tcp" || p.Address != "127.0.0.1" ||
+		if p.Host != want.host || p.Realm != want.realm || p.Transport != "tcp" || p.Status.RemoteAddress != "127.0.0.1" ||
 			!slices.Equal(p.Applications, want.apps) {
 			t.Errorf("peer %s = %+v, want host %s, realm %s, tcp from 127.0.0.1 with %v", id, p, want.host, want.realm, want.apps)
 		}
@@ -266,10 +288,10 @@ func TestDiameterPeersOpen(t *testing.T) {
 
 func TestDiameterOnePeerServesCxAndRx(t *testing.T) {
 	core := newFakePeer(t, "core.mnc001.mcc001.3gppnetwork.org", "mnc001.mcc001.3gppnetwork.org",
-		config.ApplicationCx, config.ApplicationRx)
+		settings.ApplicationCx, settings.ApplicationRx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(core.config("core"))
+	cfg.Peers = seedPeers(core.config("core"))
 
 	srv := startIMS(t, cfg)
 
@@ -279,12 +301,12 @@ func TestDiameterOnePeerServesCxAndRx(t *testing.T) {
 }
 
 func TestDiameterRequestsAreAnswered(t *testing.T) {
-	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
-	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", settings.ApplicationRx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
-	cfg.PCSCF.Policy.Rx = "pcrf"
+	cfg.Peers = seedPeers(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.Policy = settings.Policy{Interface: settings.PolicyRx}
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "hss", "pcrf")
@@ -311,13 +333,15 @@ func TestDiameterRequestsAreAnswered(t *testing.T) {
 }
 
 func TestDiameterShutdownSendsDPR(t *testing.T) {
-	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
-	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", settings.ApplicationRx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.Peers = seedPeers(hss.config("hss"), pcrf.config("pcrf"))
 
-	srv := &Server{Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	cfg.seed(t)
+
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -341,10 +365,10 @@ func TestDiameterShutdownSendsDPR(t *testing.T) {
 }
 
 func TestRTRMalformed(t *testing.T) {
-	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx)
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(hss.config("hss"))
+	cfg.Peers = seedPeers(hss.config("hss"))
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "hss")
@@ -377,7 +401,7 @@ func slicesDeleteAVP(avps []diameter.AVP, code uint32) []diameter.AVP {
 	return out
 }
 
-func dialIMS(t *testing.T, host string, port int, apps ...config.Application) *diameter.Node {
+func dialIMS(t *testing.T, host string, port int, apps ...settings.Application) *diameter.Node {
 	t.Helper()
 
 	appIDs := make([]diameter.Application, 0, len(apps))
@@ -416,15 +440,15 @@ func TestDiameterPeerDialsIMS(t *testing.T) {
 	const hssHost = "hss.ims.mnc001.mcc001.3gppnetwork.org"
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(config.DiameterPeer{
+	cfg.Peers = seedPeers(settings.Peer{
 		ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: unusedPort(t),
-		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
 
 	srv := startIMS(t, cfg)
 
-	hss := dialIMS(t, hssHost, cfg.Diameter.Port, config.ApplicationCx)
+	hss := dialIMS(t, hssHost, cfg.Diameter.Port, settings.ApplicationCx)
 	diametertest.WaitOpen(t, hss, "ims")
 	waitOpen(t, srv, "hss")
 }
@@ -451,9 +475,9 @@ func TestDiameterElection(t *testing.T) {
 	hss := listenRaw(t)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(config.DiameterPeer{
+	cfg.Peers = seedPeers(settings.Peer{
 		ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: hss.port(),
-		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
 
@@ -489,14 +513,15 @@ func TestDiameterHandshakeTimeout(t *testing.T) {
 			hss := listenRaw(t)
 
 			cfg := testConfig(t)
-			cfg.Diameter = diameterConfig(config.DiameterPeer{
+			cfg.Peers = seedPeers(settings.Peer{
 				ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: hss.port(),
-				Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+				Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 			})
 			cfg.Diameter.Port = unusedPort(t)
+			cfg.seed(t)
 
 			srv := &Server{
-				Config: cfg, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel(),
+				Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel(),
 				DiameterHandshakeTimeout: timeout,
 			}
 			if err := srv.Start(t.Context()); err != nil {

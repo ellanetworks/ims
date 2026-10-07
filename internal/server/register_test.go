@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/milenage"
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
@@ -28,7 +28,7 @@ var (
 	testOPc = []byte("fedcba9876543210")
 )
 
-func newHSS(t *testing.T) (*hsstest.HSS, config.DiameterPeer) {
+func newHSS(t *testing.T) (*hsstest.HSS, settings.Peer) {
 	t.Helper()
 
 	hss := hsstest.New(t, hsstest.Config{Realm: imsRealm, IMSHost: imsHost})
@@ -37,9 +37,9 @@ func newHSS(t *testing.T) (*hsstest.HSS, config.DiameterPeer) {
 		IMPUs: []cx.ProfileIdentity{{Identity: testIMPU}},
 	})
 
-	return hss, config.DiameterPeer{
+	return hss, settings.Peer{
 		ID: "hss", Host: hss.Host(), Realm: hss.Realm(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
-		Transport: config.TransportTCP, Applications: []config.Application{config.ApplicationCx},
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	}
 }
 
@@ -58,7 +58,7 @@ func TestRegisterWithIPsecThroughTheRoles(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.SIP.Addresses = []netip.Addr{loopback}
-	cfg.Diameter = diameterConfig(peer)
+	cfg.Peers = seedPeers(peer)
 
 	kernel := ipsectest.NewKernel()
 	srv := startIMSWith(t, cfg, kernel)
@@ -132,7 +132,7 @@ func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.SIP.Addresses = []netip.Addr{loopback}
-	cfg.Diameter = diameterConfig(peer)
+	cfg.Peers = seedPeers(peer)
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, peer.ID)

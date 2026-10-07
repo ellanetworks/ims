@@ -17,16 +17,15 @@ func TestN5Credentials(t *testing.T) {
 	notify := config.N5Notify{Address: netip.MustParseAddr("10.0.0.5"), Port: 7778}
 	logger := slog.New(slog.DiscardHandler)
 
-	n := config.N5{PCFURI: "http://10.0.0.13:7777", Notify: notify}
-	if creds, err := n5Credentials(n, logger); creds != nil || err != nil {
+	n := config.N5{Notify: notify}
+	if creds, err := n5Credentials(n, "http://10.0.0.5:7778", logger); creds != nil || err != nil {
 		t.Fatalf("over http: %v, %v", creds, err)
 	}
 
-	for _, uri := range []string{"", "https://pcscf.example.org:7778"} {
-		n := config.N5{PCFURI: "https://pcf.example.org:7777", Notify: notify, TLS: tlsFiles}
-		n.Notify.URI = uri
+	for _, uri := range []string{"https://10.0.0.5:7778", "https://pcscf.example.org:7778"} {
+		n := config.N5{Notify: notify, TLS: tlsFiles}
 
-		if creds, err := n5Credentials(n, logger); creds == nil || err != nil {
+		if creds, err := n5Credentials(n, uri, logger); creds == nil || err != nil {
 			t.Fatalf("notify URI %q: %v, %v", uri, creds, err)
 		}
 	}
@@ -37,13 +36,12 @@ func TestN5Credentials(t *testing.T) {
 		want string
 	}{
 		"another notify host": {"https://ims.example.org:7778", tlsFiles, "notification URI https://ims.example.org:7778"},
-		"missing key":         {"", &config.TLS{CA: ims.Files.CA, Cert: ims.Files.Cert, Key: ims.Files.Key + ".missing"}, "no such file"},
+		"missing key":         {"https://pcscf.example.org:7778", &config.TLS{CA: ims.Files.CA, Cert: ims.Files.Cert, Key: ims.Files.Key + ".missing"}, "no such file"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			n := config.N5{PCFURI: "https://pcf.example.org:7777", Notify: notify, TLS: tc.tls}
-			n.Notify.URI = tc.uri
+			n := config.N5{Notify: notify, TLS: tc.tls}
 
-			if _, err := n5Credentials(n, logger); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := n5Credentials(n, tc.uri, logger); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("n5Credentials = %v, want an error with %q", err, tc.want)
 			}
 		})

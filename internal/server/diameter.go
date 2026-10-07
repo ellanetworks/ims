@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/core/sctp"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/settings"
 )
 
 const productName = "ims"
@@ -24,27 +25,29 @@ const productName = "ims"
 // it holds our CER and answers only when that timer fires (libfdcore p_psm.c).
 const DefaultHandshakeTimeout = 15 * time.Second
 
-var applications = map[config.Application]diameter.Application{
-	config.ApplicationCx: {ID: cx.ApplicationID, VendorID: tgpp.VendorID},
-	config.ApplicationRx: {ID: rx.ApplicationID, VendorID: tgpp.VendorID},
+var applications = map[settings.Application]diameter.Application{
+	settings.ApplicationCx: {ID: cx.ApplicationID, VendorID: tgpp.VendorID},
+	settings.ApplicationRx: {ID: rx.ApplicationID, VendorID: tgpp.VendorID},
 }
 
-var transports = map[config.Transport]diameter.Transport{
-	config.TransportTCP:  diameter.TransportTCP,
-	config.TransportSCTP: diameter.TransportSCTP,
+var transports = map[settings.Transport]diameter.Transport{
+	settings.TransportTCP:  diameter.TransportTCP,
+	settings.TransportSCTP: diameter.TransportSCTP,
 }
 
-func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandler,
+func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, rtr *rtrHandler,
 	rxh *rxHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
+	op := s.Operator
+
 	if handshake <= 0 {
 		handshake = DefaultHandshakeTimeout
 	}
 
 	node, err := diameter.New(diameter.Config{
 		Identity: diameter.Identity{
-			OriginHost:      cfg.OriginHost,
-			OriginRealm:     cfg.OriginRealm,
+			OriginHost:      op.DiameterHost(),
+			OriginRealm:     op.DiameterRealm(),
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
@@ -57,7 +60,7 @@ func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandl
 		return nil, err
 	}
 
-	if err := node.SetPeers(diameterPeers(cfg.Peers)); err != nil {
+	if err := node.SetPeers(diameterPeers(s.Peers)); err != nil {
 		_ = node.Shutdown(context.Background())
 		return nil, err
 	}
@@ -67,12 +70,12 @@ func newDiameterNode(cfg config.Diameter, handshake time.Duration, rtr *rtrHandl
 
 // RFC 6733 §2.1: a node that dials its peers must still accept their
 // connections; §5.6.4 elects one when both sides connect at once.
-func listenDiameter(ctx context.Context, cfg config.Diameter) ([]diameter.Listener, error) {
+func listenDiameter(ctx context.Context, cfg config.Diameter, peers []settings.Peer) ([]diameter.Listener, error) {
 	addr := netip.AddrPortFrom(cfg.Address, uint16(cfg.Port))
 
 	var lns []diameter.Listener
 
-	for _, t := range peerTransports(cfg.Peers) {
+	for _, t := range peerTransports(peers) {
 		ln, err := listenDiameterOn(ctx, t, addr)
 		if err != nil {
 			closeListeners(lns)
@@ -86,8 +89,8 @@ func listenDiameter(ctx context.Context, cfg config.Diameter) ([]diameter.Listen
 }
 
 // An inbound connection only matches a peer configured for its transport.
-func peerTransports(peers []config.DiameterPeer) []config.Transport {
-	var out []config.Transport
+func peerTransports(peers []settings.Peer) []settings.Transport {
+	var out []settings.Transport
 
 	for _, p := range peers {
 		if !slices.Contains(out, p.Transport) {
@@ -98,8 +101,8 @@ func peerTransports(peers []config.DiameterPeer) []config.Transport {
 	return out
 }
 
-func listenDiameterOn(ctx context.Context, t config.Transport, addr netip.AddrPort) (diameter.Listener, error) {
-	if t == config.TransportSCTP {
+func listenDiameterOn(ctx context.Context, t settings.Transport, addr netip.AddrPort) (diameter.Listener, error) {
+	if t == settings.TransportSCTP {
 		var lc sctp.ListenConfig
 
 		ln, err := lc.Listen(ctx, &sctp.SCTPAddr{IPAddrs: []net.IPAddr{{IP: addr.Addr().AsSlice()}}, Port: int(addr.Port())})
@@ -126,7 +129,7 @@ func closeListeners(lns []diameter.Listener) {
 	}
 }
 
-func diameterPeers(peers []config.DiameterPeer) []diameter.Peer {
+func diameterPeers(peers []settings.Peer) []diameter.Peer {
 	out := make([]diameter.Peer, 0, len(peers))
 
 	for _, p := range peers {

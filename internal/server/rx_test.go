@@ -12,17 +12,17 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/diametertest"
+	"github.com/ellanetworks/ims/internal/settings"
 )
 
 func TestRxNotNegotiatedWithAPeerConfiguredForCx(t *testing.T) {
-	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, config.ApplicationCx, config.ApplicationRx)
-	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", config.ApplicationRx)
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx, settings.ApplicationRx)
+	pcrf := newFakePeer(t, "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org", settings.ApplicationRx)
 
 	cfg := testConfig(t)
-	cfg.Diameter = diameterConfig(hss.config("hss"), pcrf.config("pcrf"))
-	cfg.Diameter.Peers[0].Applications = []config.Application{config.ApplicationCx}
+	cfg.Peers = seedPeers(hss.config("hss"), pcrf.config("pcrf"))
+	cfg.Peers[0].Applications = []settings.Application{settings.ApplicationCx}
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "hss", "pcrf")
@@ -64,13 +64,13 @@ func rxClient(t *testing.T, h *rxHandler) (*fakePeer, *diameter.Node) {
 	t.Helper()
 
 	server := newFakePeerWithHandler(t, "pcscf.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, newDiameterMux(newRTRHandler(h.log), h),
-		config.ApplicationRx)
+		settings.ApplicationRx)
 
 	node := diametertest.Dial(t, diametertest.Config{
 		Identity: diameter.Identity{
 			OriginHost: imsHost, OriginRealm: imsRealm, HostIPAddresses: []netip.Addr{loopback}, ProductName: "pcrf",
 		},
-		Peer: diameter.Peer{ID: "server", Host: server.host, Applications: []diameter.Application{applications[config.ApplicationRx]}},
+		Peer: diameter.Peer{ID: "server", Host: server.host, Applications: []diameter.Application{applications[settings.ApplicationRx]}},
 	}, netip.AddrPortFrom(loopback, uint16(server.port)))
 
 	return server, node

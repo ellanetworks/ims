@@ -421,7 +421,7 @@ func (h *harness) start() {
 	h.pcscf.reg.Store(h.reg)
 
 	h.sipProxy = proxy.New(proxy.Config{Layer: h.scscfLayer, Logger: h.cfg.Logger, Port: h.scscf.Port(), Clock: h.sipClock})
-	h.sessions = h.reg.Sessions(SessionConfig{Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: h.numbering})
+	h.sessions = h.reg.Sessions(SessionConfig{Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: func() Numbering { return h.numbering }})
 	h.pcscf.sessions.Store(h.sessions)
 
 	h.reg.Start()

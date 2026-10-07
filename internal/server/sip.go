@@ -20,11 +20,11 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
-	"github.com/ellanetworks/ims/sip/transport"
 )
 
 const (
@@ -68,10 +68,21 @@ type sipServer struct {
 	served      []api.SIPEndpoint
 }
 
-func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *rtrHandler,
+// timers override the defaults of the SIP components' timers.
+type timers struct {
+	minExpires       time.Duration
+	reauthInterval   time.Duration
+	reauthExpires    time.Duration
+	noAnswer         time.Duration
+	mediaLossTimeout time.Duration
+}
+
+func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
+	tm timers, node *diameter.Node, rtr *rtrHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
-	ph := newPlaceholderHandler(logger, cfg.SIPAliases())
+	op := st.Operator
+	ph := newPlaceholderHandler(logger, op.SIPAliases())
 	roles := newDispatcher(logger)
 	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
 
@@ -85,10 +96,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	}
 
 	s.layer = transaction.New(transaction.Config{
-		Handler:   roles,
-		Logger:    logger,
-		Transport: transport.Config{MaxConnections: cfg.SIP.MaxConnections},
-		Aliases:   cfg.SIPAliases(),
+		Handler: roles,
+		Logger:  logger,
+		Aliases: op.SIPAliases(),
 		Filter: func(m sip.Message) error {
 			if p := s.pcscf.Load(); p != nil {
 				return p.Filter(m)
@@ -142,27 +152,22 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		return nil, errors.Join(err, s.Close())
 	}
 
-	name := cfg.SCSCF.Name
-	if name == "" {
-		name = config.DefaultSCSCFName(cfg.IMS.HomeDomain, int(scscfPort))
-	}
-
-	scscfName, err := sip.ParseURI(name)
+	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close())
 	}
 
-	hss := cfg.Diameter.CxPeer()
-	domain := trust.New(cfg.SIP.Addresses, cfg.IMS.TrustedNetworks)
+	hss, _ := st.PeerServing(settings.ApplicationCx)
+	domain := trust.New(cfg.SIP.Addresses, nil)
+	homeDomain := op.HomeDomain()
 
 	s.registrar = scscf.New(scscf.Config{
-		HomeDomain: cfg.IMS.HomeDomain,
+		HomeDomain: homeDomain,
 		Name:       scscfName,
-		MinExpires: time.Duration(cfg.SCSCF.MinExpires) * time.Second,
-		MaxExpires: time.Duration(cfg.SCSCF.MaxExpires) * time.Second,
+		MinExpires: tm.minExpires,
 
-		ReauthInterval: cfg.SCSCF.ReauthInterval,
-		ReauthExpires:  cfg.SCSCF.ReauthExpires,
+		ReauthInterval: tm.reauthInterval,
+		ReauthExpires:  tm.reauthExpires,
 
 		HSS:       scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
 		Diameter:  node,
@@ -176,7 +181,7 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		rtr.bind(s.registrar)
 	}
 
-	pol := pcscf.Policy{Backend: pf.backend, MediaLossTimeout: cfg.PCSCF.MediaLossTimeout}
+	pol := pcscf.Policy{Backend: pf.backend, MediaLossTimeout: tm.mediaLossTimeout}
 
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
@@ -186,18 +191,18 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		}),
 		Port:          pcscfPort,
 		ICSCFPort:     icscfPort,
-		HomeDomain:    cfg.IMS.HomeDomain,
+		HomeDomain:    homeDomain,
 		SCSCF:         pcscf.SCSCF{Name: scscfName, Listeners: s.bound(roleSCSCF)},
 		Registrations: database,
 		IPsec: pcscf.IPsec{
 			Kernel:      kernel,
 			Store:       database,
-			Policy:      cfg.PCSCF.IPsec.Policy(),
+			Policy:      ipsec.DefaultPolicy(),
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
 		Policy:   pol,
-		NoAnswer: cfg.PCSCF.NoAnswerTimeout,
+		NoAnswer: tm.noAnswer,
 		Trust:    domain,
 		Fallback: ph,
 		Logger:   logger,
@@ -219,15 +224,14 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 	}
 
 	roles.set(icscfPort, roleICSCF, icscf.New(icscf.Config{
-		HomeDomain: cfg.IMS.HomeDomain,
+		HomeDomain: homeDomain,
 		Layer:      layer,
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
 		Port:       icscfPort,
 		Trust:      domain,
 		SCSCF: icscf.SCSCF{
-			Name:         scscfName,
-			Capabilities: cfg.SCSCF.Capabilities,
-			Listeners:    s.bound(roleSCSCF),
+			Name:      scscfName,
+			Listeners: s.bound(roleSCSCF),
 		},
 		HSS:      icscf.HSS{ID: hss.ID, Realm: hss.Realm},
 		Diameter: node,
@@ -243,13 +247,9 @@ func startSIP(ctx context.Context, cfg config.Config, node *diameter.Node, rtr *
 		trust:     domain,
 		registrar: s.registrar,
 		sessions: s.registrar.Sessions(scscf.SessionConfig{
-			Proxy: scscfProxy,
-			ICSCF: s.bound(roleICSCF),
-			Numbering: scscf.Numbering{
-				CountryCode:         cfg.IMS.Numbering.CountryCode,
-				NationalPrefix:      cfg.IMS.Numbering.NationalPrefix,
-				InternationalPrefix: cfg.IMS.Numbering.InternationalPrefix,
-			},
+			Proxy:     scscfProxy,
+			ICSCF:     s.bound(roleICSCF),
+			Numbering: numbering,
 		}),
 		fallback: ph,
 	})

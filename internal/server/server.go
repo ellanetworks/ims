@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
@@ -15,6 +16,8 @@ import (
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/pcscf"
+	"github.com/ellanetworks/ims/internal/scscf"
+	"github.com/ellanetworks/ims/internal/settings"
 )
 
 const version = "0.0.1"
@@ -29,12 +32,33 @@ type Server struct {
 
 	DiameterHandshakeTimeout time.Duration
 
+	// These change the S-CSCF's and P-CSCF's timers in tests. Zero keeps their defaults; ReauthInterval and
+	// NoAnswerTimeout are off by default.
+	MinExpires       time.Duration
+	ReauthInterval   time.Duration
+	ReauthExpires    time.Duration
+	NoAnswerTimeout  time.Duration
+	MediaLossTimeout time.Duration
+
 	database    *db.DB
-	node        *diameter.Node
-	policy      *policyFunction
-	sip         *sipServer
+	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
+
+	// The core is replaced when the operator's identity changes.
+	core       atomic.Pointer[core]
+	stopFollow context.CancelFunc
+	followDone chan struct{}
+}
+
+// core is the part of the IMS that its settings build, apart from what it reads when it uses it: Diameter, the
+// policy function and SIP.
+type core struct {
+	settings    settings.Settings
+	node        *diameter.Node
+	diameterLns []diameter.Listener
+	policy      *policyFunction
+	sip         *sipServer
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -53,6 +77,14 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
+	initial, err := database.GetSettings(ctx)
+	if err != nil {
+		_ = database.Close()
+		return err
+	}
+
+	live := settings.NewLive(database, initial, func(st settings.Settings) error { return checkPolicy(cfg, st) })
+
 	var apiLC net.ListenConfig
 
 	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
@@ -61,70 +93,30 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
-	diameterLns, err := listenDiameter(ctx, cfg.Diameter)
-	if err != nil {
-		_ = apiLn.Close()
-		_ = database.Close()
-
-		return err
-	}
-
-	rtr := newRTRHandler(s.Logger)
-	rxh := newRxHandler(s.Logger)
-
-	node, err := newDiameterNode(cfg.Diameter, s.DiameterHandshakeTimeout, rtr, rxh, s.Logger)
-	if err != nil {
-		closeListeners(diameterLns)
-
-		_ = apiLn.Close()
-		_ = database.Close()
-
-		return fmt.Errorf("start Diameter: %w", err)
-	}
-
-	for _, ln := range diameterLns {
-		go func() {
-			if err := node.Serve(ln); !errors.Is(err, diameter.ErrClosed) && !errors.Is(err, net.ErrClosed) {
-				s.Logger.Warn("Diameter listener stopped", slog.String("address", ln.Addr().String()), slog.Any("error", err))
-			}
-		}()
-	}
-
-	pf, err := newPolicyFunction(ctx, cfg, node, s.Logger)
-	if err != nil {
-		_ = node.Shutdown(ctx)
-		_ = apiLn.Close()
-		_ = database.Close()
-
-		return err
-	}
-
-	sipServer, err := startSIP(ctx, cfg, node, rtr, rxh, pf, database, s.IPsec, s.Logger)
-	if err != nil {
-		_ = pf.close(ctx)
-		_ = node.Shutdown(ctx)
-		_ = apiLn.Close()
-		_ = database.Close()
-
-		return fmt.Errorf("start SIP: %w", err)
-	}
-
-	pf.serve(s.Logger)
-
 	s.database = database
-	s.node = node
-	s.policy = pf
-	s.sip = sipServer
+	s.settings = live
+
+	c, err := s.startCore(ctx, initial)
+	if err != nil {
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return err
+	}
+
+	s.core.Store(c)
+
+	view := coreView{s}
+
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
 		Handler: api.NewHandler(api.Config{
 			Version:       version,
-			Diameter:      s.node,
-			SIP:           s.sip,
-			Registrations: s.sip,
-			Policy:        pf,
-			HomeDomain:    cfg.IMS.HomeDomain,
-			SIPAliases:    cfg.SIPAliases(),
+			Settings:      live,
+			Diameter:      view,
+			SIP:           view,
+			Registrations: view,
+			Policy:        view,
 			Logger:        s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
@@ -136,24 +128,156 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() { _ = s.apiServer.Serve(apiLn) }()
 
-	sipAttrs := make([]string, 0, len(sipServer.Listeners()))
-	for _, l := range sipServer.Listeners() {
+	followCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	s.stopFollow, s.followDone = stop, make(chan struct{})
+
+	go s.follow(followCtx)
+
+	s.Logger.Info("ims started", append([]any{slog.String("api", apiLn.Addr().String())}, c.attrs()...)...)
+
+	return nil
+}
+
+// startCore starts Diameter, the policy function and SIP from their settings.
+func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, error) {
+	cfg := s.Config
+
+	diameterLns, err := listenDiameter(ctx, cfg.Diameter, st.Peers)
+	if err != nil {
+		return nil, err
+	}
+
+	rtr := newRTRHandler(s.Logger)
+	rxh := newRxHandler(s.Logger)
+
+	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, rtr, rxh, s.Logger)
+	if err != nil {
+		closeListeners(diameterLns)
+		return nil, fmt.Errorf("start Diameter: %w", err)
+	}
+
+	for _, ln := range diameterLns {
+		go func() {
+			if err := node.Serve(ln); !errors.Is(err, diameter.ErrClosed) && !errors.Is(err, net.ErrClosed) {
+				s.Logger.Warn("Diameter listener stopped", slog.String("address", ln.Addr().String()), slog.Any("error", err))
+			}
+		}()
+	}
+
+	pf, err := newPolicyFunction(ctx, cfg, st, node, s.Logger)
+	if err != nil {
+		_ = node.Shutdown(ctx)
+		return nil, err
+	}
+
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.IPsec, s.Logger)
+	if err != nil {
+		_ = pf.close(ctx)
+		_ = node.Shutdown(ctx)
+
+		return nil, fmt.Errorf("start SIP: %w", err)
+	}
+
+	pf.serve(s.Logger)
+
+	return &core{settings: st, node: node, diameterLns: diameterLns, policy: pf, sip: sipServer}, nil
+}
+
+func (s *Server) numbering() scscf.Numbering {
+	n := s.settings.Get().Operator.Numbering
+
+	return scscf.Numbering{
+		CountryCode:         n.CountryCode,
+		NationalPrefix:      n.NationalPrefix,
+		InternationalPrefix: n.InternationalPrefix,
+	}
+}
+
+// follow replaces the core whenever the settings change what it is built from: the IMS's identity, its Diameter
+// peers or its policy function. Other settings are read when used, and need no restart.
+func (s *Server) follow(ctx context.Context) {
+	defer close(s.followDone)
+
+	for {
+		changed := s.settings.Changed()
+
+		if st := s.settings.Get(); ctx.Err() == nil && !s.coreSettings().SameCore(st) {
+			s.restartCore(ctx, st)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+// coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,
+// they are none, so that the next change tries again.
+func (s *Server) coreSettings() settings.Settings {
+	if c := s.core.Load(); c != nil {
+		return c.settings
+	}
+
+	return settings.Settings{}
+}
+
+// restartCore replaces the core with one built from st. Peers and UEs reconnect to it; registrations and security
+// associations are restored from the database.
+func (s *Server) restartCore(ctx context.Context, st settings.Settings) {
+	s.Logger.Info("restarting for the new settings",
+		slog.String("home_domain", st.Operator.HomeDomain()), slog.Int("diameter_peers", len(st.Peers)),
+		slog.String("policy", string(st.Policy.Interface)))
+
+	if c := s.core.Swap(nil); c != nil {
+		c.shutdown(ctx, s.Logger)
+	}
+
+	c, err := s.startCore(ctx, st)
+	if err != nil {
+		s.Logger.Error("failed to restart for the new settings", slog.Any("error", err))
+		return
+	}
+
+	s.core.Store(c)
+	s.Logger.Info("restarted for the new settings", c.attrs()...)
+}
+
+func (c *core) attrs() []any {
+	sipAttrs := make([]string, 0, len(c.sip.Listeners()))
+	for _, l := range c.sip.Listeners() {
 		sipAttrs = append(sipAttrs, l.Role+" "+l.Address.String())
 	}
 
-	diameterAttrs := make([]string, 0, len(diameterLns))
-	for _, ln := range diameterLns {
+	diameterAttrs := make([]string, 0, len(c.diameterLns))
+	for _, ln := range c.diameterLns {
 		diameterAttrs = append(diameterAttrs, ln.Addr().Network()+" "+ln.Addr().String())
 	}
 
-	attrs := []any{slog.String("api", apiLn.Addr().String()), slog.Any("sip", sipAttrs), slog.Any("diameter", diameterAttrs)}
-	if a := pf.address(); a != "" {
+	attrs := []any{
+		slog.String("home_domain", c.settings.Operator.HomeDomain()), slog.Any("sip", sipAttrs),
+		slog.Any("diameter", diameterAttrs),
+	}
+	if a := c.policy.address(); a != "" {
 		attrs = append(attrs, slog.String("n5_notify", a))
 	}
 
-	s.Logger.Info("ims started", attrs...)
+	return attrs
+}
 
-	return nil
+func (c *core) shutdown(ctx context.Context, logger *slog.Logger) {
+	if err := c.sip.Close(); err != nil {
+		logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
+	}
+
+	if err := c.policy.close(ctx); err != nil {
+		logger.Warn("failed to stop the N5 notification server cleanly", slog.Any("error", err))
+	}
+
+	if err := c.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
+		logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
+	}
 }
 
 func (s *Server) APIAddr() net.Addr {
@@ -175,19 +299,70 @@ func (s *Server) Shutdown(ctx context.Context) {
 		s.Logger.Warn("failed to stop the API cleanly", slog.Any("error", err))
 	}
 
-	if err := s.sip.Close(); err != nil {
-		s.Logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
-	}
+	s.stopFollow()
+	<-s.followDone
 
-	if err := s.policy.close(ctx); err != nil {
-		s.Logger.Warn("failed to stop the N5 notification server cleanly", slog.Any("error", err))
-	}
-
-	if err := s.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
-		s.Logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
+	if c := s.core.Swap(nil); c != nil {
+		c.shutdown(ctx, s.Logger)
 	}
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
 	}
+}
+
+func (s *Server) timers() timers {
+	return timers{
+		minExpires:       s.MinExpires,
+		reauthInterval:   s.ReauthInterval,
+		reauthExpires:    s.ReauthExpires,
+		noAnswer:         s.NoAnswerTimeout,
+		mediaLossTimeout: s.MediaLossTimeout,
+	}
+}
+
+// coreView serves the API from the current core. While the core restarts, there is none: the IMS reports no peers,
+// listeners or policy function, and has no registrations.
+type coreView struct {
+	s *Server
+}
+
+func (v coreView) Identity() diameter.Identity {
+	if c := v.s.core.Load(); c != nil {
+		return c.node.Identity()
+	}
+
+	return diameter.Identity{}
+}
+
+func (v coreView) Peers() []diameter.PeerStatus {
+	if c := v.s.core.Load(); c != nil {
+		return c.node.Peers()
+	}
+
+	return nil
+}
+
+func (v coreView) Listeners() []api.SIPEndpoint {
+	if c := v.s.core.Load(); c != nil {
+		return c.sip.Listeners()
+	}
+
+	return nil
+}
+
+func (v coreView) Reauthenticate(ctx context.Context, impi string) error {
+	if c := v.s.core.Load(); c != nil {
+		return c.sip.Reauthenticate(ctx, impi)
+	}
+
+	return api.ErrNotRegistered
+}
+
+func (v coreView) PolicyStatus() api.PolicyStatus {
+	if c := v.s.core.Load(); c != nil {
+		return c.policy.PolicyStatus()
+	}
+
+	return api.PolicyStatus{}
 }

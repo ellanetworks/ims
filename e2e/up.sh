@@ -30,7 +30,7 @@ ran_listener() {
 }
 
 peers_open() {
-	[ "$(curl -fsS localhost:5020/api/v1/diameter | grep -o '"state":"open"' | wc -l)" -ge "$E2E_PEERS" ]
+	[ "$(curl -fsS localhost:5020/api/v1/diameter/peers | grep -o '"state":"open"' | wc -l)" -ge "$E2E_PEERS" ]
 }
 
 if ! docker compose pull --quiet open5gs; then
@@ -45,6 +45,8 @@ wait_for mongo 60 docker compose exec -T mongo mongosh --quiet --eval 'db.runCom
 docker compose exec -T mongo mongosh --quiet mongodb://localhost/open5gs < provision.js
 
 docker compose up -d open5gs ims
+wait_for "IMS API" 60 curl -fsS localhost:5020/api/v1/status
+./ims/provision.sh
 wait_for "Diameter peers" 120 peers_open
 wait_for "S1/NG listener" 60 ran_listener
 

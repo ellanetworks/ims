@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/internal/testue"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -255,7 +255,7 @@ func TestRegEventRefreshed(t *testing.T) {
 }
 
 func TestRegEventExpired(t *testing.T) {
-	s := newSceneWith(t, func(c *config.Config) { c.SCSCF.MinExpires = 1 })
+	s := newSceneWith(t, func(srv *server.Server) { srv.MinExpires = time.Second })
 	u := s.newUE(false, testue.Config{Expires: 2 * time.Second, T1: fastT1})
 	u.SetAutoReregister(false)
 
@@ -370,7 +370,7 @@ func TestRegEventUEDeregistration(t *testing.T) {
 }
 
 func TestRegEventShortened(t *testing.T) {
-	s := newSceneWith(t, func(c *config.Config) { c.SCSCF.ReauthExpires = 2 * time.Second })
+	s := newSceneWith(t, func(srv *server.Server) { srv.ReauthExpires = 2 * time.Second })
 	u := s.newUE(false, testue.Config{})
 
 	s.subscribed(u)
@@ -432,6 +432,27 @@ func (s *scene) reauthenticate() int {
 	_ = res.Body.Close()
 
 	return res.StatusCode
+}
+
+func (s *scene) putOperator(body string) {
+	s.t.Helper()
+
+	req, err := http.NewRequestWithContext(s.ctx(), http.MethodPut, "http://"+s.srv.APIAddr().String()+"/api/v1/operator",
+		strings.NewReader(body))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	_ = res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		s.t.Fatalf("PUT operator: %d", res.StatusCode)
+	}
 }
 
 func TestReauthenticateUnregistered(t *testing.T) {

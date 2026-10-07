@@ -32,7 +32,9 @@ type SessionConfig struct {
 
 	ICSCF []netip.AddrPort
 
-	Numbering Numbering
+	// Numbering returns the numbering plan when a request is routed, so that it can change at runtime. Without
+	// it, no dial string is normalised.
+	Numbering func() Numbering
 }
 
 type Sessions struct {
@@ -40,6 +42,14 @@ type Sessions struct {
 	cfg   SessionConfig
 	proxy *proxy.Proxy
 	log   *slog.Logger
+}
+
+func (s *Sessions) numbering() Numbering {
+	if s.cfg.Numbering == nil {
+		return Numbering{}
+	}
+
+	return s.cfg.Numbering()
 }
 
 func (r *Registrar) Sessions(cfg SessionConfig) *Sessions {
@@ -171,7 +181,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 		out.Header.Add("P-Asserted-Identity", alias.String())
 	}
 
-	if u, ok := s.cfg.Numbering.normalise(out.URI, s.r.cfg.HomeDomain); ok {
+	if u, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain); ok {
 		s.log.Debug("home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()))
 		out.URI = u
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/internal/sbitls"
+	"github.com/ellanetworks/ims/internal/settings"
 )
 
 // policyFunction is the PCRF or PCF of the P-CSCF, if any, with the server of the PCF's notifications.
@@ -28,30 +29,41 @@ type policyFunction struct {
 	ln      net.Listener
 }
 
-func newPolicyFunction(ctx context.Context, cfg config.Config, node *diameter.Node, logger *slog.Logger) (*policyFunction, error) {
+func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node,
+	logger *slog.Logger,
+) (*policyFunction, error) {
 	pf := &policyFunction{}
 
-	if p, ok := cfg.RxPeer(); ok {
+	switch s.Policy.Interface {
+	case settings.PolicyRx:
+		p, _ := s.PeerServing(settings.ApplicationRx)
 		pf.rx = rxpolicy.New(rxpolicy.Config{
 			Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
 		})
 		pf.backend = pf.rx
 
 		return pf, nil
-	}
-
-	n := cfg.PCSCF.Policy.N5
-	if n == nil {
+	case settings.PolicyN5:
+	default:
 		logger.Info("no policy function: the P-CSCF runs without policy sessions")
 		return pf, nil
 	}
 
-	creds, err := n5Credentials(*n, logger)
+	// The API checks policies against the configuration file, which may since have changed. Policy sessions then
+	// wait for the file or the policy to be fixed, rather than the IMS and its API.
+	if err := checkPolicy(cfg, s); err != nil {
+		logger.Error("no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
+		return pf, nil
+	}
+
+	n := cfg.N5
+
+	creds, err := n5Credentials(*n, cfg.N5NotifyURI(), logger)
 	if err != nil {
 		return nil, fmt.Errorf("N5: %w", err)
 	}
 
-	b, err := n5policy.New(n5policy.Config{PCF: n.PCFURI, Notify: n.NotifyURI(), TLS: creds, Logger: logger})
+	b, err := n5policy.New(n5policy.Config{PCF: s.Policy.PCFURI, Notify: cfg.N5NotifyURI(), TLS: creds, Logger: logger})
 	if err != nil {
 		return nil, fmt.Errorf("N5: %w", err)
 	}
@@ -70,9 +82,28 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, node *diameter.No
 	return pf, nil
 }
 
+// checkPolicy checks the policy settings against the configuration file, which says where to hear from a PCF and
+// with which certificates.
+func checkPolicy(cfg config.Config, s settings.Settings) error {
+	if s.Policy.Interface != settings.PolicyN5 {
+		return nil
+	}
+
+	switch https := s.Policy.HTTPS(); {
+	case cfg.N5 == nil:
+		return settings.Invalidf("n5 requires n5 in the configuration file")
+	case https && cfg.N5.TLS == nil:
+		return settings.Invalidf("n5 over https requires n5.tls in the configuration file")
+	case !https && cfg.N5.TLS != nil:
+		return settings.Invalidf("n5 over http requires no n5.tls in the configuration file")
+	}
+
+	return nil
+}
+
 // n5Credentials loads the TLS credentials of N5, if any. The PCF checks the certificate against the host of the
 // notification URIs, so the certificate must be valid for it.
-func n5Credentials(n config.N5, logger *slog.Logger) (*sbitls.Credentials, error) {
+func n5Credentials(n config.N5, notifyURI string, logger *slog.Logger) (*sbitls.Credentials, error) {
 	if n.TLS == nil {
 		return nil, nil
 	}
@@ -82,13 +113,13 @@ func n5Credentials(n config.N5, logger *slog.Logger) (*sbitls.Credentials, error
 		return nil, fmt.Errorf("TLS: %w", err)
 	}
 
-	u, err := url.Parse(n.NotifyURI())
+	u, err := url.Parse(notifyURI)
 	if err != nil {
 		return nil, err
 	}
 
 	if err := creds.Certificate().VerifyHostname(u.Hostname()); err != nil {
-		return nil, fmt.Errorf("TLS: notification URI %s: %w", n.NotifyURI(), err)
+		return nil, fmt.Errorf("TLS: notification URI %s: %w", notifyURI, err)
 	}
 
 	logger.Info("N5 over TLS", slog.String("cert", n.TLS.Cert), slog.Time("not_after", creds.Certificate().NotAfter))
