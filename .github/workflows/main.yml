@@ -29,6 +29,11 @@ jobs:
     uses: ./.github/workflows/e2e.yaml
   image-build:
     uses: ./.github/workflows/image-build.yaml
+  snap-build:
+    uses: ./.github/workflows/snap-build.yaml
+  snap-strict-test:
+    needs: [snap-build]
+    uses: ./.github/workflows/snap-strict-test.yaml
   image-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [go-unit-test, go-lint, go-fuzz, e2e, image-build]
@@ -36,3 +41,9 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/image-publish.yaml
+  snap-publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [go-unit-test, go-lint, go-fuzz, e2e, snap-build, snap-strict-test]
+    uses: ./.github/workflows/snap-publish.yaml
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}

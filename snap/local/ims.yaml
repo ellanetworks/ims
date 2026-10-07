@@ -1,0 +1,25 @@
+# Ella IMS configuration file.
+# Set sip.addresses and diameter.address to the addresses phones and the core network reach the IMS on.
+# After modifying it, restart Ella IMS with
+# `sudo snap restart ella-ims.imsd` for the changes to take effect.
+logging:
+  level: info
+db:
+  path: /var/snap/ella-ims/common/ims.db
+api:
+  address: 127.0.0.1
+  port: 5020
+sip:
+  addresses: [127.0.0.1]
+pcscf:
+  port: 5060
+  ipsec:
+    server_port: 5063
+    client_ports: [5064, 5065]
+icscf:
+  port: 5070
+scscf:
+  port: 5080
+diameter:
+  address: 127.0.0.1
+  port: 3868

@@ -1,0 +1,102 @@
+name: Snap Strict Confinement Test
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  snap-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-26.04-arm') || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+    steps:
+      - name: Download the snap
+        uses: actions/download-artifact@v8
+        with:
+          name: snap-${{ matrix.arch }}
+
+      - name: Install the snap under strict confinement
+        run: |
+          sudo snap install --dangerous ./*.snap
+          snap list ella-ims
+
+      - name: Require strict confinement to be enforced
+        # Without this, a runner running the snap unconfined would let the test
+        # pass even if a plug/permission were missing.
+        run: |
+          mode="$(sudo snap debug confinement)"
+          echo "system confinement: ${mode}"
+          if [ "${mode}" != "strict" ]; then
+            echo "::error::runner does not enforce strict confinement (${mode}); cannot validate the snap"
+            exit 1
+          fi
+
+      # network-control is not auto-connected for a locally installed snap.
+      - name: Connect the interfaces
+        run: sudo snap connect ella-ims:network-control
+
+      # The sctp and xfrm modules are deliberately not loaded here: the kernel
+      # autoloads them on first use, which is what users rely on.
+      - name: Start the daemon
+        run: sudo snap start ella-ims.imsd
+
+      - name: Assert the service runs properly
+        run: |
+          deadline=$((SECONDS + 30))
+          while [ "${SECONDS}" -lt "${deadline}" ]; do
+            restarts="$(systemctl show -p NRestarts --value snap.ella-ims.imsd)"
+            if [ "${restarts}" != "0" ]; then
+              echo "::error::ella-ims.imsd crashed/restarted under strict confinement (${restarts} restarts)"
+              exit 1
+            fi
+
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:5020/api/v1/openapi.yaml || true)"
+            echo "t=${SECONDS}s restarts=${restarts} api: ${code}"
+
+            if [ "${code}" = "200" ]; then
+              # SIP only listens once the IPsec (XFRM) probe passed.
+              if ! sudo ss -lnp --udp | grep -q '127.0.0.1:5060'; then
+                echo "::error::P-CSCF SIP listener is not up"
+                exit 1
+              fi
+              echo "ready after ${SECONDS}s"
+              exit 0
+            fi
+
+            sleep 2
+          done
+          echo "::error::ella-ims.imsd never became ready"
+          exit 1
+
+      # Diameter only listens for the transports of its peers.
+      - name: Assert Diameter listens over SCTP
+        run: |
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"host": "hss.example.org", "realm": "example.org", "address": "127.0.0.1", "port": 3869, "transport": "sctp", "applications": ["cx"]}' \
+            http://127.0.0.1:5020/api/v1/diameter/peers
+          deadline=$((SECONDS + 15))
+          until sudo ss -lnp --sctp | grep -q '127.0.0.1:3868'; do
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::Diameter SCTP listener is not up"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Assert no confinement denials
+        run: |
+          denials="$(sudo journalctl -k --no-pager | grep -E 'apparmor="DENIED".*snap\.ella-ims|type=1326.*ella-ims' || true)"
+          if [ -n "${denials}" ]; then
+            echo "${denials}"
+            echo "::error::ella-ims hit confinement denials"
+            exit 1
+          fi
+
+      - name: Dump daemon logs
+        if: always()
+        run: sudo snap logs ella-ims.imsd -n all || true

@@ -1,0 +1,54 @@
+name: ella-ims
+title: Ella IMS
+base: core26
+adopt-info: ims-release-data
+summary: Ella IMS is a secure, reliable, and easy to operate IP Multimedia Subsystem.
+description: |
+  Ella IMS lets private cellular network subscribers make voice and video calls. It is an IP Multimedia Subsystem (IMS) that integrates with 4G and 5G core networks.
+
+source-code: https://github.com/ellanetworks/ims
+issues:
+  - https://github.com/ellanetworks/ims/issues
+website:
+  - https://docs.ellanetworks.com
+grade: stable
+confinement: strict
+license: BUSL-1.1
+icon: snap/gui/icon.svg
+
+apps:
+  imsd:
+    daemon: simple
+    install-mode: disable
+    command: bin/ims --config $SNAP_COMMON/ims.yaml
+    restart-condition: on-failure
+    plugs:
+      - network
+      - network-bind
+      # IPsec security associations and policies are installed over XFRM netlink.
+      - network-control
+
+parts:
+  ims:
+    plugin: go
+    source: .
+    source-type: local
+    build-packages:
+      - gcc
+      - git
+    build-snaps:
+      - go/1.26/stable
+    override-build: |
+      REVISION=`git rev-parse HEAD`
+      go build -v -o ${CRAFT_PART_INSTALL}/bin/ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=${REVISION}" ./cmd/ims
+
+  config:
+    plugin: dump
+    source: snap/local
+
+  ims-release-data:
+    plugin: nil
+    source: .
+    override-build: |
+      version="$(cat version/VERSION)"
+      craftctl set version="$version"
