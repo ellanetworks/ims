@@ -18,6 +18,15 @@
 
 ## How-to Guides
 
+### Install
+
+```sh
+sudo snap install ella-ims --edge
+sudo snap connect ella-ims:network-control
+sudo vi /var/snap/ella-ims/common/ims.yaml
+sudo snap start --enable ella-ims.imsd
+```
+
 ### Build
 
 #### From source
@@ -32,21 +41,17 @@ go build -o ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit
 rockcraft pack
 ```
 
+#### Snap
+
+```sh
+snapcraft pack
+```
+
 ### Run
 
 ```sh
 sudo ./ims --config ims.yaml
 ```
-
-The configuration file only says where the IMS listens. The rest is set over the API. Set the PLMN, then add the HSS, and the PCRF or PCF if any:
-
-```sh
-curl -X PUT localhost:5020/api/v1/operator -d '{"mcc": "001", "mnc": "01", "numbering": {"country_code": "1", "national_prefix": "1", "international_prefix": "011"}}'
-curl -X POST localhost:5020/api/v1/diameter/peers -d '{"host": "hss.example.org", "realm": "example.org", "address": "10.0.0.10", "applications": ["cx"]}'
-curl -X PUT localhost:5020/api/v1/policy -d '{"interface": "n5", "n5": {"pcf_uri": "http://10.0.0.13:7777"}}'
-```
-
-The IMS names itself after the PLMN: `GET /api/v1/diameter` gives the Diameter identity to provision in the HSS.
 
 ### Test
 

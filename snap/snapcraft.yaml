@@ -23,9 +23,7 @@ apps:
     command: bin/ims --config $SNAP_COMMON/ims.yaml
     restart-condition: on-failure
     plugs:
-      - network
       - network-bind
-      # IPsec security associations and policies are installed over XFRM netlink.
       - network-control
 
 parts:
