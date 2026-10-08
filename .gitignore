@@ -3,3 +3,9 @@
 *.rock
 /ims.db*
 *.snap
+ui/node_modules/*
+ui/dist/*
+!ui/dist/.gitkeep
+ui/npm-debug.log*
+ui/*.tsbuildinfo
+ui/.env*.local

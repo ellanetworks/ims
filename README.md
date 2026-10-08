@@ -14,7 +14,7 @@
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
-- HTTP API
+- Web UI and HTTP API
 
 ## How-to Guides
 
@@ -32,6 +32,8 @@ sudo snap start --enable ella-ims.imsd
 #### From source
 
 ```sh
+npm install --prefix ui
+npm run build --prefix ui
 go build -o ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=$(git rev-parse HEAD)" ./cmd/ims
 ```
 
@@ -59,6 +61,7 @@ sudo ./ims --config ims.yaml
 
 ```sh
 go test ./...
+npm test --prefix ui
 ```
 
 The IPsec tests use network namespaces. They are skipped where those are unavailable, and fail instead when `CI` is set.
