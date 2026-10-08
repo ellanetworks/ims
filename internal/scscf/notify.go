@@ -371,7 +371,13 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		return regevent.Registration{}, err
 	}
 
-	var active []int64
+	// active holds the contact bindings listed active, by contact and registration time: a flow
+	// replaced in place is the same contact registered anew (TS 24.229 §5.4.1.2.2 step 6d).
+	type bindingAt struct {
+		contact, registeredAt int64
+	}
+
+	var active []bindingAt
 
 	for _, set := range bound {
 		for _, b := range liveAt(set.Bindings, st.now) {
@@ -396,7 +402,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, regevent.Active, event, st.now))
 			reg.State = regevent.Active
 
-			active = append(active, b.Contact.ID)
+			active = append(active, bindingAt{b.Contact.ID, b.RegisteredAt.UnixNano()})
 		}
 	}
 
@@ -406,7 +412,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		}
 
 		for _, b := range rm.bindings {
-			if slices.Contains(active, b.Contact.ID) {
+			if slices.Contains(active, bindingAt{b.Contact.ID, b.RegisteredAt.UnixNano()}) {
 				continue
 			}
 

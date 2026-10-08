@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,10 @@ type registerRequest struct {
 	cseq      uint32
 	path      string
 	out       []*outgoing
+
+	// regID is set when a Contact has a reg-id, used or not, and outbound when the UE supports
+	// outbound (RFC 5626 §4.2.1).
+	regID, outbound bool
 }
 
 type contactRequest struct {
@@ -56,6 +61,18 @@ func (c contactRequest) binds(stored db.Contact) bool {
 	u, err := sip.ParseURI(stored.URI)
 
 	return err == nil && u.Equivalent(c.addr.URI)
+}
+
+// flows reports whether the REGISTER registers or deregisters a flow: whether the multiple
+// registration mechanism applies to it (RFC 5626 §6).
+func (rr *registerRequest) flows() bool {
+	return slices.ContainsFunc(rr.contacts, func(c contactRequest) bool { return c.regID != 0 })
+}
+
+// firstHopLacksOutbound reports whether the UE asks for outbound through a first hop that does not
+// support it (RFC 5626 §6, TS 24.229 §5.4.1.2.2 steps 3 and 4B).
+func (rr *registerRequest) firstHopLacksOutbound() bool {
+	return rr.regID && rr.outbound && !outbound(rr.path)
 }
 
 func (rr *registerRequest) deregister() bool {
@@ -98,6 +115,10 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 	}
 
 	defer r.unlock(rr.impi)
+
+	if res := r.flowLimit(ctx, rr); res != nil {
+		return res
+	}
 
 	if ch := r.pendingChallenge(rr.impi); rr.creds.answers(ch) {
 		return r.answer(ctx, rr, ch)
@@ -155,12 +176,13 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	}
 
 	rr := &registerRequest{
-		req:     req,
-		impu:    receivedIdentity(to.URI),
-		impuKey: identityKey(to.URI),
-		callID:  req.Header.CallID(),
-		cseq:    cseq.Seq,
-		path:    strings.Join(req.Header.Values("Path"), ", "),
+		req:      req,
+		impu:     receivedIdentity(to.URI),
+		impuKey:  identityKey(to.URI),
+		callID:   req.Header.CallID(),
+		cseq:     cseq.Seq,
+		path:     strings.Join(req.Header.Values("Path"), ", "),
+		outbound: hasOptionTag(req.Header, "Supported", "outbound"),
 	}
 
 	star := false
@@ -176,22 +198,29 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	case star:
 		rr.star = true
 	default:
+		registering := 0
+
 		for _, c := range contacts {
 			if v, ok := c.Params.Get("q"); ok {
 				if _, err := sip.ParseQValue(v); err != nil {
 					return nil, sip.NewResponse(req, 400, "Bad Contact q-value")
 				}
 			}
+
+			rr.regID = rr.regID || c.Params.Has("reg-id")
+
+			if contactExpires(c, expires) != 0 {
+				registering++
+			}
+		}
+
+		// RFC 5626 §6: a REGISTER with a reg-id registers a single flow.
+		if rr.regID && registering > 1 {
+			return nil, sip.NewResponse(req, 400, "Several Contacts With reg-id")
 		}
 
 		for _, c := range selectContacts(contacts) {
-			granted := expires
-
-			if v, ok := c.Params.Get("expires"); ok {
-				if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-					granted = uint32(n)
-				}
-			}
+			granted := contactExpires(c, expires)
 
 			cr := contactRequest{addr: c, expires: min(time.Duration(granted)*time.Second, r.cfg.MaxExpires)}
 			if res := cr.flow(req, rr.path); res != nil {
@@ -247,6 +276,18 @@ func outbound(path string) bool {
 	hops, err := sip.ParseAddressList(path)
 
 	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
+}
+
+// contactExpires is the expiry a Contact asks for: its "expires" parameter, or else that of the
+// request (RFC 3261 §10.2.1.1).
+func contactExpires(c sip.Address, expires uint32) uint32 {
+	if v, ok := c.Params.Get("expires"); ok {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+			return uint32(n)
+		}
+	}
+
+	return expires
 }
 
 func selectContacts(contacts []sip.Address) []sip.Address {
@@ -315,6 +356,11 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 	res := sip.NewResponse(rr.req, 401, "")
 	res.Header.Add("WWW-Authenticate", wwwAuthenticate(r.cfg.HomeDomain, nonce, v))
 
+	// TS 24.229 §5.4.1.2.1 step 6
+	if outbound(rr.path) {
+		res.Header.Add("Require", "outbound")
+	}
+
 	return res
 }
 
@@ -380,7 +426,13 @@ func (r *Registrar) authenticated(ctx context.Context, rr *registerRequest) *sip
 		return r.unbind(ctx, rr, st, set)
 	}
 
-	return r.assign(ctx, rr, st, set, true)
+	if rr.firstHopLacksOutbound() {
+		return firstHopLacksOutbound(rr)
+	}
+
+	// TS 24.229 §5.4.1.2.2 step 4A: without the multiple registration mechanism, a new contact
+	// replaces the others of the private identity.
+	return r.assign(ctx, rr, st, set, !rr.flows())
 }
 
 func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Response {
@@ -405,8 +457,14 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 		return r.unbind(ctx, rr, st, set)
 	}
 
+	if rr.firstHopLacksOutbound() {
+		return firstHopLacksOutbound(rr)
+	}
+
+	// TS 24.229 §5.4.1.2.2 step 2: a new contact address registers through an initial registration;
+	// a new flow does not need one.
 	for _, c := range rr.contacts {
-		if _, ok := st.contact(c); c.expires != 0 && !ok {
+		if _, ok := st.contact(c); c.expires != 0 && c.regID == 0 && !ok {
 			r.log.Debug("protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
 				slog.String("contact", c.addr.URI.String()))
 
@@ -530,7 +588,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	reg.IMPU = rr.impu
 	bindings := st.live(reg.Bindings)
 
-	var deregistered []db.Binding
+	var deregistered, replaced []db.Binding
 
 	for _, c := range rr.contacts {
 		i := bindingIndex(bindings, c)
@@ -545,8 +603,14 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		if i >= 0 {
 			event, registeredAt = db.BindingRefreshed, bindings[i].RegisteredAt
 
-			if c.expires == 0 {
+			switch {
+			case c.expires == 0:
 				deregistered = append(deregistered, bindings[i])
+			case c.regID != 0 && !sameFirstHop(bindings[i].Contact.Path, rr.path):
+				// TS 24.229 §5.4.1.2.2 step 6d, NOTE 6: the flow registers over a new Path from the
+				// P-CSCF, a new flow in place of the old one.
+				replaced = append(replaced, bindings[i])
+				event, registeredAt = db.BindingRegistered, now
 			}
 
 			bindings = append(bindings[:i], bindings[i+1:]...)
@@ -596,6 +660,12 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 
 	if len(deregistered) > 0 {
 		removed = append(removed, removal{reg: set, bindings: deregistered, event: regevent.Unregistered})
+	}
+
+	if len(replaced) > 0 {
+		r.log.Info("registration flow replaced", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+
+		removed = append(removed, removal{reg: set, bindings: replaced, event: regevent.Unregistered})
 	}
 
 	if expired := without(set.Bindings, st.live(set.Bindings)); len(expired) > 0 {
@@ -675,6 +745,75 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 	return r.ok(ctx, rr, *set, removed)
 }
 
+// maxFlowsPerInstance is how many registration flows a UE, a private identity and instance ID, may
+// have for a public user identity (TS 24.229 §5.4.1.2.1, §5.4.1.2.2).
+const maxFlowsPerInstance = 4
+
+// flowLimit refuses a REGISTER that adds a flow to a UE that has the most it may have already
+// (TS 24.229 §5.4.1.2.1, §5.4.1.2.2).
+func (r *Registrar) flowLimit(ctx context.Context, rr *registerRequest) *sip.Response {
+	if !rr.flows() || rr.deregister() {
+		return nil
+	}
+
+	st, err := r.load(ctx, rr.impi)
+	if err != nil {
+		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		return retryLater(rr.req)
+	}
+
+	set := st.set(rr.impuKey)
+	if set == nil {
+		return nil
+	}
+
+	live := st.live(set.Bindings)
+
+	for _, c := range rr.contacts {
+		if c.regID == 0 || c.expires == 0 || bindingIndex(live, c) >= 0 {
+			continue
+		}
+
+		n := 0
+
+		for _, b := range live {
+			if b.Contact.Flow() && b.Contact.Instance == c.instance {
+				n++
+			}
+		}
+
+		if n >= maxFlowsPerInstance {
+			r.log.Info("REGISTER refused: too many registration flows", slog.String("impi", rr.impi),
+				slog.String("instance", c.instance), slog.Int("flows", n))
+
+			return sip.NewResponse(rr.req, 403, "Too Many Flows")
+		}
+	}
+
+	return nil
+}
+
+func firstHopLacksOutbound(rr *registerRequest) *sip.Response {
+	return sip.NewResponse(rr.req, 439, "")
+}
+
+// sameFirstHop reports whether two Paths start with the same URI: that of the P-CSCF, with its flow
+// token (TS 24.229 §5.4.1.2.2 NOTE 6).
+func sameFirstHop(a, b string) bool {
+	x, err := sip.ParseAddressList(a)
+	if err != nil || len(x) == 0 {
+		return false
+	}
+
+	y, err := sip.ParseAddressList(b)
+
+	return err == nil && len(y) > 0 && x[0].URI.Equivalent(y[0].URI)
+}
+
+func hasOptionTag(h sip.Header, name, tag string) bool {
+	return slices.ContainsFunc(h.Elements(name), func(e string) bool { return strings.EqualFold(strings.TrimSpace(e), tag) })
+}
+
 func noBinding(rr *registerRequest) *sip.Response {
 	return sip.NewResponse(rr.req, 481, "")
 }
@@ -696,6 +835,11 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 
 		if uris := associatedURIs(reg.Identities); uris != "" {
 			res.Header.Add("P-Associated-URI", uris)
+		}
+
+		// TS 24.229 §5.4.1.2.2F h, RFC 5626 §6
+		if rr.flows() && rr.outbound {
+			res.Header.Add("Require", "outbound")
 		}
 	}
 

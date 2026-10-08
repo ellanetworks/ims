@@ -182,3 +182,24 @@ func TestExpiryReleasesCalls(t *testing.T) {
 	bye(t, sh.term)
 	bye(t, sh.icscf)
 }
+
+// TS 24.229 §5.4.1.2.2 step 6d ii: a flow replaced by a new one has its calls released.
+func TestFlowReplaceReleasesCalls(t *testing.T) {
+	sh := newSessionHarness(t)
+	contact := sh.ue.flowContact(sh.ue.contact, "1")
+
+	sh.ue.path = "<sip:flow1@" + sh.term.Addr().String() + ";lr;ob>"
+	sh.ue.register(registerOptions{contact: contact})
+	sh.ue.register(registerOptions{contact: "<" + sh.ue.contact + ">", expires: "0"})
+
+	sh.answered(t)
+
+	sh.ue.register(registerOptions{contact: contact})
+	sh.term.RecvNone(50 * time.Millisecond)
+
+	sh.ue.path = "<sip:flow2@" + sh.term.Addr().String() + ";lr;ob>"
+	sh.ue.register(registerOptions{contact: contact})
+
+	bye(t, sh.term)
+	bye(t, sh.icscf)
+}

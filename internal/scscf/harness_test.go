@@ -465,6 +465,7 @@ type registerOptions struct {
 	expires   string
 	contact   string
 	noContact bool
+	supported string
 }
 
 func (u *ue) request(o registerOptions) *sip.Request {
@@ -487,6 +488,10 @@ func (u *ue) request(o registerOptions) *sip.Request {
 
 	if o.expires != "" {
 		req.Header.Add("Expires", o.expires)
+	}
+
+	if o.supported != "" {
+		req.Header.Add("Supported", o.supported)
 	}
 
 	if o.auth != "" {
