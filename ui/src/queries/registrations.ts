@@ -18,6 +18,8 @@ export interface RegisteredIdentity {
 export interface RegisteredContact {
   contact: string;
   instance?: string;
+  // The reg-id of a registration flow of the device (RFC 5626), absent for a contact that is not one.
+  reg_id?: number;
   // The q-value the S-CSCF rings the contact by, 1 when it registered none (RFC 3841 §7.2.3).
   q: number;
   media: ("audio" | "video")[];

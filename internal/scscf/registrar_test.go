@@ -143,11 +143,12 @@ func TestInitialRegistration(t *testing.T) {
 		UserData:   sub,
 		Bindings: []db.Binding{{
 			Contact: db.Contact{
-				ID:     contact.ID,
-				IMPI:   testIMPI,
-				URI:    u.contact,
-				Params: ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
-				Path:   testPath,
+				ID:       contact.ID,
+				IMPI:     testIMPI,
+				URI:      u.contact,
+				Instance: "urn:gsma:imei:35622410-483840-0",
+				Params:   ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
+				Path:     testPath,
 			},
 			CallID:       u.callID,
 			CSeq:         2,

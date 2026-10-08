@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { contact, registration } from "@/test/fixtures";
 import {
+  deviceSummary,
+  devicesOf,
   imeiOf,
   lastExpiry,
   numberOf,
@@ -119,5 +121,45 @@ describe("signallingPathOf", () => {
     expect(of("monitored", "lost")).toBe("lost");
     expect(of("unmonitored", "monitored")).toBe("monitored");
     expect(of("unmonitored")).toBe("unmonitored");
+  });
+});
+
+describe("devicesOf", () => {
+  it("groups the contacts by instance ID, a contact without one apart", () => {
+    const phone = contact();
+    const flow = contact({ contact: "sip:other@192.0.2.30:5064", reg_id: 2 });
+    const bare = contact({
+      contact: "sip:soft@192.0.2.50:5060",
+      instance: undefined,
+    });
+    const uuid = "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+    const tablet = contact({ instance: uuid });
+
+    const devices = devicesOf(
+      registration({ contacts: [phone, bare, flow, tablet] }),
+    );
+
+    expect(devices.map((d) => [d.label, d.contacts])).toEqual([
+      ["35693803-564380-0", [phone, flow]],
+      ["sip:soft@192.0.2.50:5060", [bare]],
+      [uuid, [tablet]],
+    ]);
+  });
+});
+
+describe("deviceSummary", () => {
+  it("counts the flows of a device that has several", () => {
+    const of = (...regIDs: (number | undefined)[]) =>
+      deviceSummary(
+        devicesOf(
+          registration({
+            contacts: regIDs.map((id) => contact({ reg_id: id })),
+          }),
+        )[0],
+      );
+
+    expect(of(1, 2)).toBe("35693803-564380-0 · 2 flows");
+    expect(of(1)).toBe("35693803-564380-0");
+    expect(of(undefined, undefined)).toBe("35693803-564380-0");
   });
 });

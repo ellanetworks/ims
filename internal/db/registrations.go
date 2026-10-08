@@ -29,12 +29,22 @@ type Registration struct {
 	Bindings   []Binding
 }
 
+// Contact is a binding of a private identity (RFC 5626 §6): a registration flow, identified by its
+// Instance and RegID, when the multiple registration mechanism applies, or else a contact address,
+// identified by its URI.
 type Contact struct {
-	ID     int64
-	IMPI   string
-	URI    string
-	Params string
-	Path   string
+	ID       int64
+	IMPI     string
+	URI      string
+	Instance string
+	RegID    int64
+	Params   string
+	Path     string
+}
+
+// Flow reports whether the contact is a registration flow (RFC 5626).
+func (c Contact) Flow() bool {
+	return c.RegID != 0
 }
 
 type BindingEvent string
@@ -57,9 +67,9 @@ type Binding struct {
 const (
 	registrationColumns = `id, impi, impu, user_data`
 
-	contactColumns = `c.id, c.impi, c.uri, c.params, c.path`
+	contactColumns = `c.id, c.impi, c.uri, c.instance_id, c.reg_id, c.params, c.path`
 
-	returnedContactColumns = `id, impi, uri, params, path`
+	returnedContactColumns = `id, impi, uri, instance_id, reg_id, params, path`
 )
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
@@ -153,13 +163,22 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 	return nil
 }
 
+// saveContact stores c over the contact with the same binding: the same flow, or the same URI.
 func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
+	conflict := `ON CONFLICT (impi, uri) WHERE reg_id IS NULL DO UPDATE SET
+		instance_id = excluded.instance_id, params = excluded.params, path = excluded.path`
+
+	if c.Flow() {
+		conflict = `ON CONFLICT (impi, instance_id, reg_id) WHERE reg_id IS NOT NULL DO UPDATE SET
+			uri = excluded.uri, params = excluded.params, path = excluded.path`
+	}
+
 	return scanContact(tx.QueryRowContext(ctx,
-		`INSERT INTO contacts (impi, uri, params, path)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path
+		`INSERT INTO contacts (impi, uri, instance_id, reg_id, params, path)
+		VALUES (?, ?, ?, ?, ?, ?)
+		`+conflict+`
 		RETURNING `+returnedContactColumns,
-		c.IMPI, c.URI, c.Params, nullableString(c.Path)))
+		c.IMPI, c.URI, nullableString(c.Instance), nullableInt(c.RegID), c.Params, nullableString(c.Path)))
 }
 
 func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
@@ -408,16 +427,19 @@ func scanRegistration(row scanner) (Registration, error) {
 
 func scanContact(row scanner, leading ...any) (Contact, error) {
 	var (
-		c    Contact
-		path sql.NullString
+		c              Contact
+		instance, path sql.NullString
+		regID          sql.NullInt64
 	)
 
-	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path)
+	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &instance, &regID, &c.Params, &path)
 
 	if err := row.Scan(dest...); err != nil {
 		return Contact{}, err
 	}
 
+	c.Instance = instance.String
+	c.RegID = regID.Int64
 	c.Path = path.String
 
 	return c, nil

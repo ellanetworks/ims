@@ -294,8 +294,9 @@ type target struct {
 	q, qa   float64
 
 	// instance is the UA instance of the contact (RFC 5626 §4.1), and flow its reg-id when the
-	// registration used outbound (RFC 5626 §6).
-	instance, flow string
+	// registration used outbound (RFC 5626 §6), or else 0.
+	instance string
+	flow     int64
 
 	// others are the instance's other flows, tried in turn on a 430 (RFC 5626 §7).
 	others []target
@@ -360,13 +361,7 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]
 
 			t := target{binding: b, reg: reg, q: QValue(params), qa: qa}
 
-			if v, ok := params.Get("+sip.instance"); ok {
-				t.instance = sip.Unquote(v)
-
-				if id, ok := params.Get("reg-id"); ok && outbound(b.Contact.Path) {
-					t.flow = id
-				}
-			}
+			t.instance, t.flow = b.Contact.Instance, b.Contact.RegID
 
 			all = append(all, t)
 		}
@@ -385,7 +380,7 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]
 		switch {
 		case i < 0:
 			set = append(set, t)
-		case set[i].flow != "" && t.flow != "" && t.flow != set[i].flow &&
+		case set[i].flow != 0 && t.flow != 0 && t.flow != set[i].flow &&
 			!slices.ContainsFunc(set[i].others, func(o target) bool { return o.flow == t.flow }):
 			set[i].others = append(set[i].others, t)
 		}
@@ -417,14 +412,6 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]
 	}
 
 	return groups, true
-}
-
-// outbound reports whether a registration over path used outbound: its first hop added "ob" to
-// its Path (RFC 5626 §6).
-func outbound(path string) bool {
-	hops, err := sip.ParseAddressList(path)
-
-	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
 }
 
 // QValue is the callee preference of a registered contact: its q-value, or 1.0 when it has none

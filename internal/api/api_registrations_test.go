@@ -75,6 +75,7 @@ func TestListRegistrations(t *testing.T) {
 			Contacts: []RegisteredContact{{
 				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
 				Instance:       "urn:gsma:imei:35000000-000001-0",
+				RegID:          1,
 				Q:              0.5,
 				Media:          []string{"audio", "video"},
 				RegisteredAt:   at,
@@ -126,6 +127,7 @@ func TestListRegistrations(t *testing.T) {
 			Contacts: []RegisteredContactResponse{{
 				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
 				Instance:       "urn:gsma:imei:35000000-000001-0",
+				RegID:          1,
 				Q:              0.5,
 				Media:          []string{"audio", "video"},
 				RegisteredAt:   "2026-10-08T12:00:00.000Z",

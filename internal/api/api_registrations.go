@@ -55,11 +55,13 @@ const (
 )
 
 // RegisteredContact is a contact bound to the private identity's public identities: the instance ID of the device
-// that registered it (TS 23.003 §13.8), its q-value (RFC 3841 §7.2.3), the media it registered for (RFC 3840),
-// and its flow to the P-CSCF, if the P-CSCF knows it.
+// that registered it (TS 23.003 §13.8), its reg-id when it is one of the device's registration flows (RFC 5626),
+// its q-value (RFC 3841 §7.2.3), the media it registered for (RFC 3840), and its flow to the P-CSCF, if the P-CSCF
+// knows it.
 type RegisteredContact struct {
 	Contact        string
 	Instance       string
+	RegID          int64
 	Q              float64
 	Media          []string
 	RegisteredAt   time.Time
@@ -80,6 +82,7 @@ type RegistrationIdentityResponse struct {
 type RegisteredContactResponse struct {
 	Contact        string   `json:"contact"`
 	Instance       string   `json:"instance,omitempty"`
+	RegID          int64    `json:"reg_id,omitempty"`
 	Q              float64  `json:"q"`
 	Media          []string `json:"media"`
 	RegisteredAt   string   `json:"registered_at"`
@@ -158,6 +161,7 @@ func registrationResponse(reg RegistrationStatus) RegistrationResponse {
 		out.Contacts = append(out.Contacts, RegisteredContactResponse{
 			Contact:        d.Contact,
 			Instance:       d.Instance,
+			RegID:          d.RegID,
 			Q:              d.Q,
 			Media:          media,
 			RegisteredAt:   formatTime(d.RegisteredAt),

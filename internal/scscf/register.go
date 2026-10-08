@@ -35,6 +35,27 @@ type registerRequest struct {
 type contactRequest struct {
 	addr    sip.Address
 	expires time.Duration
+
+	// instance is the contact's instance ID (RFC 5626 §4.1), and regID its reg-id when the multiple
+	// registration mechanism applies to it (RFC 5626 §6), or else 0.
+	instance string
+	regID    int64
+}
+
+// binds reports whether stored is the binding the contact names: the same flow, or the same contact
+// address (RFC 5626 §6, RFC 3261 §10.3).
+func (c contactRequest) binds(stored db.Contact) bool {
+	if c.regID != 0 {
+		return stored.RegID == c.regID && stored.Instance == c.instance
+	}
+
+	if stored.Flow() {
+		return false
+	}
+
+	u, err := sip.ParseURI(stored.URI)
+
+	return err == nil && u.Equivalent(c.addr.URI)
 }
 
 func (rr *registerRequest) deregister() bool {
@@ -172,10 +193,12 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 				}
 			}
 
-			rr.contacts = append(rr.contacts, contactRequest{
-				addr:    c,
-				expires: min(time.Duration(granted)*time.Second, r.cfg.MaxExpires),
-			})
+			cr := contactRequest{addr: c, expires: min(time.Duration(granted)*time.Second, r.cfg.MaxExpires)}
+			if res := cr.flow(req, rr.path); res != nil {
+				return nil, res
+			}
+
+			rr.contacts = append(rr.contacts, cr)
 		}
 	}
 
@@ -191,6 +214,39 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	}
 
 	return rr, nil
+}
+
+// flow sets the contact's instance ID and, when the multiple registration mechanism applies, its
+// reg-id: it does when the contact has both and the first hop added "ob" to its Path; a reg-id is
+// ignored otherwise (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6d).
+func (c *contactRequest) flow(req *sip.Request, path string) *sip.Response {
+	if v, ok := c.addr.Params.Get("+sip.instance"); ok {
+		c.instance = strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
+	}
+
+	v, ok := c.addr.Params.Get("reg-id")
+	if !ok {
+		return nil
+	}
+
+	// RFC 5626 §11.1: 1 to 2^31 - 1
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n < 1 {
+		return sip.NewResponse(req, 400, "Bad reg-id")
+	}
+
+	if c.instance != "" && outbound(path) {
+		c.regID = n
+	}
+
+	return nil
+}
+
+// outbound reports whether the first hop of a Path added "ob" to its URI (RFC 5626 §5.1).
+func outbound(path string) bool {
+	hops, err := sip.ParseAddressList(path)
+
+	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
 }
 
 func selectContacts(contacts []sip.Address) []sip.Address {
@@ -350,7 +406,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 	}
 
 	for _, c := range rr.contacts {
-		if _, ok := st.contact(c.addr.URI); c.expires != 0 && !ok {
+		if _, ok := st.contact(c); c.expires != 0 && !ok {
 			r.log.Debug("protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
 				slog.String("contact", c.addr.URI.String()))
 
@@ -477,7 +533,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	var deregistered []db.Binding
 
 	for _, c := range rr.contacts {
-		i := bindingIndex(bindings, c.addr.URI)
+		i := bindingIndex(bindings, c)
 
 		if i >= 0 && bindings[i].CallID == rr.callID && bindings[i].CSeq >= int64(rr.cseq) {
 			r.log.Debug("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
@@ -500,14 +556,14 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			continue
 		}
 
-		contact, ok := st.contact(c.addr.URI)
-		if !ok {
-			contact = db.Contact{URI: c.addr.URI.String()}
-		}
+		contact, _ := st.contact(c)
 
 		params := c.addr.Params.Clone()
 		params.Del("expires")
 
+		contact.URI = c.addr.URI.String()
+		contact.Instance = c.instance
+		contact.RegID = c.regID
 		contact.Params = params.String()
 		contact.Path = rr.path
 
@@ -588,7 +644,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 		removed = nil
 
 		for _, c := range rr.contacts {
-			i := bindingIndex(live, c.addr.URI)
+			i := bindingIndex(live, c)
 			if i < 0 {
 				return noBinding(rr)
 			}
@@ -632,7 +688,7 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 
 	if !rr.deregister() {
 		for _, c := range rr.contacts {
-			if i := bindingIndex(reg.Bindings, c.addr.URI); i >= 0 {
+			if i := bindingIndex(reg.Bindings, c); i >= 0 {
 				res.Header.Add("Service-Route", serviceRoute(r.cfg.Name, reg.Bindings[i].Contact.ID))
 				break
 			}

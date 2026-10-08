@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/sip"
 )
 
 type state struct {
@@ -48,10 +47,10 @@ func (s *state) registeredAny(ids []db.PublicIdentity) bool {
 	})
 }
 
-func (s *state) contact(u sip.URI) (db.Contact, bool) {
+func (s *state) contact(c contactRequest) (db.Contact, bool) {
 	for _, reg := range s.regs {
 		bindings := s.live(reg.Bindings)
-		if i := bindingIndex(bindings, u); i >= 0 {
+		if i := bindingIndex(bindings, c); i >= 0 {
 			return bindings[i].Contact, true
 		}
 	}
@@ -105,7 +104,7 @@ func only(bindings []db.Binding, contacts []contactRequest) []db.Binding {
 	var out []db.Binding
 
 	for _, b := range bindings {
-		if slices.ContainsFunc(contacts, func(c contactRequest) bool { return bindingIndex([]db.Binding{b}, c.addr.URI) == 0 }) {
+		if slices.ContainsFunc(contacts, func(c contactRequest) bool { return c.binds(b.Contact) }) {
 			out = append(out, b)
 		}
 	}
@@ -113,9 +112,6 @@ func only(bindings []db.Binding, contacts []contactRequest) []db.Binding {
 	return out
 }
 
-func bindingIndex(bindings []db.Binding, u sip.URI) int {
-	return slices.IndexFunc(bindings, func(b db.Binding) bool {
-		stored, err := sip.ParseURI(b.Contact.URI)
-		return err == nil && stored.Equivalent(u)
-	})
+func bindingIndex(bindings []db.Binding, c contactRequest) int {
+	return slices.IndexFunc(bindings, func(b db.Binding) bool { return c.binds(b.Contact) })
 }

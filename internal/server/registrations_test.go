@@ -18,12 +18,8 @@ const (
 
 var listNow = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
-func binding(contact, params string, registeredAt, expiresAt time.Time) db.Binding {
-	return db.Binding{
-		Contact:      db.Contact{URI: contact, Params: params},
-		RegisteredAt: registeredAt,
-		ExpiresAt:    expiresAt,
-	}
+func binding(c db.Contact, registeredAt, expiresAt time.Time) db.Binding {
+	return db.Binding{Contact: c, RegisteredAt: registeredAt, ExpiresAt: expiresAt}
 }
 
 func TestRegistrationStatus(t *testing.T) {
@@ -31,7 +27,14 @@ func TestRegistrationStatus(t *testing.T) {
 		phone  = "sip:001010000000001@[2001:db8::1]:5064"
 		tablet = "sip:001010000000001@192.0.2.7:5060"
 		gone   = "sip:001010000000001@192.0.2.8:5060"
+
+		tabletInstance = "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
 	)
+
+	phoneContact := db.Contact{
+		ID: 1, URI: phone, Instance: "urn:gsma:imei:35000000-000001-0",
+		Params: `;+sip.instance="<urn:gsma:imei:35000000-000001-0>";audio;video;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`,
+	}
 
 	regs := []db.Registration{{
 		IMPI: listIMPI,
@@ -40,9 +43,8 @@ func TestRegistrationStatus(t *testing.T) {
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
 		},
 		Bindings: []db.Binding{
-			binding(phone, `;+sip.instance="<urn:gsma:imei:35000000-000001-0>";audio;video;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`,
-				listNow.Add(-time.Hour), listNow.Add(time.Hour)),
-			binding(gone, ``, listNow.Add(-2*time.Hour), listNow),
+			binding(phoneContact, listNow.Add(-time.Hour), listNow.Add(time.Hour)),
+			binding(db.Contact{ID: 3, URI: gone}, listNow.Add(-2*time.Hour), listNow),
 		},
 	}, {
 		// A second registration set: its identities add to the first, and its bindings of the same contact are
@@ -53,9 +55,11 @@ func TestRegistrationStatus(t *testing.T) {
 			{URI: "sip:alice@" + listDomain},
 		},
 		Bindings: []db.Binding{
-			binding(phone, `;audio`, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
-			binding(tablet, `;+sip.instance="<urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6>";q=0.5;audio`,
-				listNow, listNow.Add(time.Hour)),
+			binding(phoneContact, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
+			binding(db.Contact{
+				ID: 2, URI: tablet, Instance: tabletInstance, RegID: 1,
+				Params: `;+sip.instance="<` + tabletInstance + `>";reg-id=1;q=0.5;audio`,
+			}, listNow, listNow.Add(time.Hour)),
 		},
 	}}
 
@@ -97,7 +101,8 @@ func TestRegistrationStatus(t *testing.T) {
 			SignallingPath: api.SignallingPathMonitored,
 		}, {
 			Contact:        tablet,
-			Instance:       "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+			Instance:       tabletInstance,
+			RegID:          1,
 			Q:              0.5,
 			Media:          []string{"audio"},
 			RegisteredAt:   listNow,
@@ -116,7 +121,7 @@ func TestRegistrationStatus(t *testing.T) {
 func TestRegistrationStatusWithoutFlow(t *testing.T) {
 	regs := []db.Registration{{
 		IMPI:     listIMPI,
-		Bindings: []db.Binding{binding("sip:ue@192.0.2.9:5060", `;not a param`, listNow, listNow.Add(time.Hour))},
+		Bindings: []db.Binding{binding(db.Contact{URI: "sip:ue@192.0.2.9:5060", Params: `;not a param`}, listNow, listNow.Add(time.Hour))},
 	}}
 
 	got := registrationStatus(listIMPI, regs, nil, listNow)
@@ -142,7 +147,7 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 // cannot carry.
 func TestContactQ(t *testing.T) {
 	for params, want := range map[string]float64{``: 1, `;q=0.5`: 0.5, `;q=0`: 0, `;q=NaN`: 1, `;q=5`: 1, `;q=1e-1`: 1} {
-		b := binding("sip:ue@192.0.2.9:5060", params, listNow, listNow.Add(time.Hour))
+		b := binding(db.Contact{URI: "sip:ue@192.0.2.9:5060", Params: params}, listNow, listNow.Add(time.Hour))
 
 		if got := contact(b, nil).Q; got != want {
 			t.Errorf("q of %q = %v, want %v", params, got, want)

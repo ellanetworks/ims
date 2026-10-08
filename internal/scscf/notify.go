@@ -371,7 +371,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		return regevent.Registration{}, err
 	}
 
-	var active []string
+	var active []int64
 
 	for _, set := range bound {
 		for _, b := range liveAt(set.Bindings, st.now) {
@@ -396,7 +396,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, regevent.Active, event, st.now))
 			reg.State = regevent.Active
 
-			active = append(active, b.Contact.URI)
+			active = append(active, b.Contact.ID)
 		}
 	}
 
@@ -406,7 +406,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		}
 
 		for _, b := range rm.bindings {
-			if slices.Contains(active, b.Contact.URI) {
+			if slices.Contains(active, b.Contact.ID) {
 				continue
 			}
 

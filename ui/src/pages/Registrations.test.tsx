@@ -124,6 +124,37 @@ describe("Registrations", () => {
     expect(cells(carol.impi)[2]).toBe("35693803-564380-0");
   });
 
+  // RFC 5626: a device with several registration flows.
+  it("shows the flows of a device", async () => {
+    const flows = registration({
+      contacts: [
+        contact({ reg_id: 1 }),
+        contact({ reg_id: 2, address: "192.0.2.40:5064" }),
+      ],
+    });
+    serve([flows]);
+
+    renderWithClient(<Registrations />);
+
+    await screen.findByText(flows.impi);
+    expect(cells(flows.impi)[2]).toBe("35693803-564380-0 · 2 flows");
+
+    fireEvent.click(screen.getByText(flows.impi));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      within(drawer).getByRole("heading", { name: "Devices (1)" }),
+    ).toBeInTheDocument();
+
+    const cards = within(
+      within(drawer).getByRole("list", { name: "35693803-564380-0" }),
+    ).getAllByRole("listitem");
+    expect(cards.map((c) => c.textContent?.slice(0, 26))).toEqual([
+      "Flow1Address192.0.2.30:506",
+      "Flow2Address192.0.2.40:506",
+    ]);
+  });
+
   it("shows when nothing is registered", async () => {
     serve([]);
 
@@ -164,15 +195,14 @@ describe("Registrations", () => {
     ).toBeInTheDocument();
     expect(within(drawer).getByText("barred")).toBeInTheDocument();
     expect(
-      within(drawer).getByRole("heading", { name: "Contacts (2)" }),
+      within(drawer).getByRole("heading", { name: "Devices (2)" }),
     ).toBeInTheDocument();
 
-    const [first] = within(drawer)
-      .getAllByRole("listitem")
-      .filter((li) => li.textContent?.startsWith("IMEI"));
+    const [first] = within(
+      within(drawer).getByRole("list", { name: "35693803-564380-0" }),
+    ).getAllByRole("listitem");
     expect(first).toHaveTextContent(
       [
-        "IMEI35693803-564380-0",
         "Address192.0.2.30:5064",
         "TransportUDP",
         "IPsecyes",
@@ -245,9 +275,9 @@ describe("Registrations", () => {
     renderWithClient(<Registrations />);
     fireEvent.click(await screen.findByText(alice.impi));
 
-    const card = (await screen.findAllByRole("listitem")).find((li) =>
-      li.textContent?.startsWith("IMEI"),
-    );
+    const [card] = within(
+      await screen.findByRole("list", { name: "35693803-564380-0" }),
+    ).getAllByRole("listitem");
     expect(card).toHaveTextContent("Address—Transport—IPsec—");
   });
 

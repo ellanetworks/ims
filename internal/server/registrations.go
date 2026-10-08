@@ -98,6 +98,7 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 // sets give its public identities and its unexpired contacts, and the P-CSCF gives each contact's flow.
 func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFRegistration, now time.Time) api.RegistrationStatus {
 	status := api.RegistrationStatus{IMPI: impi, Identities: []api.RegisteredIdentity{}, Contacts: []api.RegisteredContact{}}
+	listed := map[int64]int{}
 
 	for _, reg := range regs {
 		for _, id := range reg.Identities {
@@ -112,8 +113,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 			}
 
 			// A contact registered for several registration sets is listed once.
-			i := slices.IndexFunc(status.Contacts, func(c api.RegisteredContact) bool { return c.Contact == b.Contact.URI })
-			if i >= 0 {
+			if i, ok := listed[b.Contact.ID]; ok {
 				d := &status.Contacts[i]
 				d.RegisteredAt = minTime(d.RegisteredAt, b.RegisteredAt)
 				d.ExpiresAt = maxTime(d.ExpiresAt, b.ExpiresAt)
@@ -121,6 +121,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 				continue
 			}
 
+			listed[b.Contact.ID] = len(status.Contacts)
 			status.Contacts = append(status.Contacts, contact(b, flows))
 		}
 	}
@@ -131,6 +132,8 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	d := api.RegisteredContact{
 		Contact:        b.Contact.URI,
+		Instance:       b.Contact.Instance,
+		RegID:          b.Contact.RegID,
 		Q:              1,
 		RegisteredAt:   b.RegisteredAt,
 		ExpiresAt:      b.ExpiresAt,
@@ -139,10 +142,6 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 
 	if params, err := sip.ParseParams(b.Contact.Params); err == nil {
 		d.Q = scscf.QValue(params)
-
-		if v, ok := params.Get("+sip.instance"); ok {
-			d.Instance = strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
-		}
 
 		// RFC 3840 §9: the media feature tags the contact registered for.
 		for _, tag := range []string{"audio", "video"} {

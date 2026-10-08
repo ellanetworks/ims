@@ -40,10 +40,13 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
 		uri TEXT NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		params TEXT NOT NULL,
-		path TEXT,
-		UNIQUE (impi, uri)
+		path TEXT
 	);
+	CREATE UNIQUE INDEX contacts_flow ON contacts (impi, instance_id, reg_id) WHERE reg_id IS NOT NULL;
+	CREATE UNIQUE INDEX contacts_uri ON contacts (impi, uri) WHERE reg_id IS NULL;
 	CREATE TABLE bindings (
 		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
 		contact_id INTEGER NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
@@ -237,4 +240,8 @@ func placeholders(n int) string {
 
 func nullableString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+func nullableInt(n int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: n, Valid: n != 0}
 }

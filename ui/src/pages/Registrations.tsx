@@ -15,7 +15,8 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { listRegistrations, type Registration } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
 import {
-  imeiOf,
+  deviceSummary,
+  devicesOf,
   lastExpiry,
   numbersOf,
   signallingPathOf,
@@ -56,14 +57,11 @@ const columns: GridColDef<Registration>[] = [
     renderCell: ({ row }) => lines(numbersOf(row)),
   },
   {
-    field: "imei",
-    headerName: "IMEI",
-    flex: 0.8,
-    minWidth: 170,
-    renderCell: ({ row }) =>
-      lines([
-        ...new Set(row.contacts.map((c) => imeiOf(c) ?? c.instance ?? "—")),
-      ]),
+    field: "devices",
+    headerName: "Devices",
+    flex: 1,
+    minWidth: 200,
+    renderCell: ({ row }) => lines(devicesOf(row).map(deviceSummary)),
   },
   {
     field: "video",

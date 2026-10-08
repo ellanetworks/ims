@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -19,12 +20,23 @@ func identity(uri string, barred bool) PublicIdentity {
 	return PublicIdentity{URI: uri, Key: uri, Barred: barred}
 }
 
+const testInstance = "urn:gsma:imei:35000000-000000-0"
+
 func testContact(host string) Contact {
 	return Contact{
-		URI:    "sip:ue@[" + host + "]:5100",
-		Params: `;+sip.instance="<urn:gsma:imei:35000000-000000-0>";+g.3gpp.smsip`,
-		Path:   "<sip:term@pcscf." + testDomain + ";lr>",
+		URI:      "sip:ue@[" + host + "]:5100",
+		Instance: testInstance,
+		Params:   `;+sip.instance="<` + testInstance + `>";+g.3gpp.smsip`,
+		Path:     "<sip:term@pcscf." + testDomain + ";lr>",
 	}
+}
+
+func testFlow(host string, regID int64) Contact {
+	c := testContact(host)
+	c.RegID = regID
+	c.Path = "<sip:flow" + strconv.FormatInt(regID, 10) + "@pcscf." + testDomain + ";lr;ob>"
+
+	return c
 }
 
 func testRegistration(impi, msisdn string) Registration {
@@ -284,5 +296,59 @@ func TestListExpiredIMPIs(t *testing.T) {
 
 	if !reflect.DeepEqual(impis, []string{testIMPI}) {
 		t.Fatalf("ListExpiredIMPIs = %v, want [%s]", impis, testIMPI)
+	}
+}
+
+// RFC 5626 §6: a flow is bound by its instance ID and reg-id. Several flows share a URI, a flow keeps
+// its binding over a new URI, and a contact address without reg-id is another binding.
+func TestFlowBindings(t *testing.T) {
+	d := openTestDB(t)
+
+	r := testRegistration(testIMPI, "15551230001")
+	plain := r.Bindings[0]
+
+	flow := func(regID int64, host string) Binding {
+		b := plain
+		b.Contact = testFlow(host, regID)
+
+		return b
+	}
+
+	r.Bindings = []Binding{plain, flow(1, "2001:db8::1"), flow(2, "2001:db8::1")}
+	saved := mustSaveRegistration(t, d, r)
+
+	ids := map[int64]bool{}
+	for _, b := range saved.Bindings {
+		ids[b.Contact.ID] = true
+	}
+
+	if len(ids) != 3 {
+		t.Fatalf("contacts %+v, want three bindings over one URI", saved.Bindings)
+	}
+
+	id := saved.Bindings[2].Contact.ID
+	moved := flow(2, "2001:db8::2")
+	saved.Bindings[2] = moved
+
+	again := mustSaveRegistration(t, d, saved)
+	if c := again.Bindings[2].Contact; c.ID != id || c.URI != moved.Contact.URI || !c.Flow() ||
+		c.Instance != testInstance || c.RegID != 2 {
+		t.Fatalf("flow 2 = %+v, want its binding with the new URI", c)
+	}
+
+	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], again) {
+		t.Fatalf("registrations = %+v, want %+v", got, again)
+	}
+}
+
+func TestRegIDWithoutInstance(t *testing.T) {
+	d := openTestDB(t)
+
+	r := testRegistration(testIMPI, "15551230001")
+	r.Bindings[0].Contact.Instance = ""
+	r.Bindings[0].Contact.RegID = 1
+
+	if _, err := d.SaveRegistration(context.Background(), r); err == nil {
+		t.Fatal("saved a reg-id without an instance ID")
 	}
 }
