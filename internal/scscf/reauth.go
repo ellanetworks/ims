@@ -61,7 +61,7 @@ func (r *Registrar) reauthenticate(ctx context.Context, impi string) ([]*outgoin
 	}
 
 	r.mu.Lock()
-	r.reauth[impi] = true
+	r.reauth[impi]++
 	r.mu.Unlock()
 
 	r.log.Info("network-initiated re-authentication", slog.String("impi", impi),

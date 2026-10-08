@@ -444,7 +444,7 @@ func (p *PCSCF) endPolicy(r db.PCSCFRegistration, cause policy.Termination, wait
 		return
 	}
 
-	s := p.policy.track(r.Policy.ID, regKey{r.IMPI, r.UEAddress.Addr()}, r.Policy.Ref)
+	s := p.policy.track(r.Policy.ID, regKeyOf(&r), r.Policy.Ref)
 	p.policy.end(s, cause, wait)
 }
 
@@ -463,7 +463,7 @@ func (p *PCSCF) restorePolicy(expired []db.PCSCFRegistration) {
 			continue
 		}
 
-		s := p.policy.track(r.Policy.ID, regKey{r.IMPI, r.UEAddress.Addr()}, r.Policy.Ref)
+		s := p.policy.track(r.Policy.ID, regKeyOf(&r), r.Policy.Ref)
 		foreign := !p.policy.serves(r.Policy)
 
 		p.policy.spawn(func() {
@@ -502,7 +502,7 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 		return
 	}
 
-	k := regKey{privateIdentity(req), req.Flow.Remote.Addr().Unmap()}
+	k := regKey{privateIdentity(req), req.Flow.Remote.Addr().Unmap(), registrationFlow(req)}
 
 	if req.Method != "REGISTER" {
 		var ok bool

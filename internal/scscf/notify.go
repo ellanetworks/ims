@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/proxy"
 )
 
 const (
@@ -32,6 +33,10 @@ type removal struct {
 	bindings []db.Binding
 	event    regevent.Event
 	byUE     bool
+
+	// calls, when set, are the calls of the bindings as they were before the change: a flow replaced in
+	// place keeps its binding, and the calls on its successor are not the removed flow's.
+	calls map[bindingKey]map[*proxy.Dialog]proxy.Side
 }
 
 type change struct {
@@ -371,7 +376,13 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		return regevent.Registration{}, err
 	}
 
-	var active []string
+	// active holds the bindings listed active, by binding and registration time: a flow replaced in
+	// place is the same binding registered anew (TS 24.229 §5.4.1.2.2 step 6d).
+	type bindingAt struct {
+		binding, registeredAt int64
+	}
+
+	var active []bindingAt
 
 	for _, set := range bound {
 		for _, b := range liveAt(set.Bindings, st.now) {
@@ -396,7 +407,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, regevent.Active, event, st.now))
 			reg.State = regevent.Active
 
-			active = append(active, b.Contact.URI)
+			active = append(active, bindingAt{b.ID, b.RegisteredAt.UnixNano()})
 		}
 	}
 
@@ -406,7 +417,7 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		}
 
 		for _, b := range rm.bindings {
-			if slices.Contains(active, b.Contact.URI) {
+			if slices.Contains(active, bindingAt{b.ID, b.RegisteredAt.UnixNano()}) {
 				continue
 			}
 
@@ -426,7 +437,7 @@ func contactElement(b db.Binding, key, state string, event regevent.Event, now t
 	cseq := uint32(b.CSeq)
 
 	c := regevent.Contact{
-		ID: elementID("c", strconv.FormatInt(b.Contact.ID, 10)+"|"+key+"|"+
+		ID: elementID("c", strconv.FormatInt(b.ID, 10)+"|"+key+"|"+
 			strconv.FormatInt(b.RegisteredAt.UnixNano(), 10)),
 		State:   state,
 		Event:   event,

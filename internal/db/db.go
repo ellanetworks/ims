@@ -36,26 +36,23 @@ var migrations = []string{
 		UNIQUE (impi, key)
 	);
 	CREATE INDEX registration_identities_key ON registration_identities (key);
-	CREATE TABLE contacts (
+	CREATE TABLE bindings (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		impi TEXT NOT NULL,
+		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
 		uri TEXT NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		params TEXT NOT NULL,
 		path TEXT,
-		UNIQUE (impi, uri)
-	);
-	CREATE TABLE bindings (
-		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
-		contact_id INTEGER NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
 		call_id TEXT NOT NULL,
 		cseq INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		event TEXT NOT NULL CHECK (event IN ('registered', 'refreshed')),
 		impu TEXT NOT NULL,
-		registered_at INTEGER NOT NULL,
-		PRIMARY KEY (registration_id, contact_id)
+		registered_at INTEGER NOT NULL
 	);
-	CREATE INDEX bindings_contact_id ON bindings (contact_id);
+	CREATE UNIQUE INDEX bindings_flow ON bindings (registration_id, instance_id, reg_id) WHERE reg_id IS NOT NULL;
+	CREATE UNIQUE INDEX bindings_uri ON bindings (registration_id, uri) WHERE reg_id IS NULL;
 	CREATE INDEX bindings_expires_at ON bindings (expires_at);
 	CREATE TABLE reg_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +76,8 @@ var migrations = []string{
 		state TEXT NOT NULL CHECK (state IN ('established', 'old')),
 		pcscf_address TEXT NOT NULL,
 		ue_address TEXT NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		pcscf_port_c INTEGER NOT NULL,
 		pcscf_port_s INTEGER NOT NULL,
 		ue_port_c INTEGER NOT NULL,
@@ -100,6 +99,8 @@ var migrations = []string{
 		protected INTEGER NOT NULL CHECK (protected IN (0, 1)),
 		ue_address TEXT NOT NULL,
 		ue_port INTEGER NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		pcscf_address TEXT NOT NULL,
 		contacts TEXT NOT NULL,
 		associated_uris TEXT NOT NULL,
@@ -109,9 +110,11 @@ var migrations = []string{
 		policy_endpoint TEXT,
 		policy_session_id TEXT,
 		policy_ref TEXT,
-		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1)),
-		UNIQUE (impi, ue_address)
+		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1))
 	);
+	CREATE UNIQUE INDEX pcscf_registrations_flow ON pcscf_registrations (impi, ue_address, instance_id, reg_id)
+		WHERE reg_id IS NOT NULL;
+	CREATE UNIQUE INDEX pcscf_registrations_ue ON pcscf_registrations (impi, ue_address) WHERE reg_id IS NULL;
 	CREATE TABLE pcscf_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL UNIQUE,
@@ -237,4 +240,8 @@ func placeholders(n int) string {
 
 func nullableString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+func nullableInt(n int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: n, Valid: n != 0}
 }

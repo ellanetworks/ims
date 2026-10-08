@@ -25,13 +25,28 @@ type RegistrationStore interface {
 	ListPCSCFSubscriptions(context.Context) ([]db.PCSCFSubscription, error)
 }
 
+// flowID identifies a registration flow of a UE (RFC 5626 §4.2): its instance ID and reg-id. The zero
+// value is a registration without the multiple registration mechanism.
+type flowID struct {
+	instance string
+	regID    int64
+}
+
+// regKey identifies a registration through the P-CSCF: a UE, by its private identity and address, and
+// one of its registration flows (TS 24.229 §5.2.2.1, TS 33.203 §6.1 NOTE 2).
 type regKey struct {
 	impi string
 	ue   netip.Addr
+	flow flowID
+}
+
+func regKeyOf(r *db.PCSCFRegistration) regKey {
+	return regKey{r.IMPI, r.UEAddress.Addr().Unmap(), flowID{r.Instance, r.RegID}}
 }
 
 type flow struct {
 	impi      string
+	id        flowID
 	transport sip.Transport
 	protected bool
 	ue        netip.AddrPort
@@ -132,7 +147,7 @@ func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
 }
 
 func (rs *registrations) add(r *db.PCSCFRegistration) {
-	k := regKey{r.IMPI, r.UEAddress.Addr()}
+	k := regKeyOf(r)
 
 	var was bool
 	if old, ok := rs.byKey[k]; ok {
@@ -244,11 +259,11 @@ func (rs *registrations) close() {
 	}
 }
 
-func (rs *registrations) token(impi string, ue netip.Addr) string {
+// token is the IMS flow token of the registration k: its own, so that each registration flow has
+// one (TS 24.229 §5.2.2.1 step 1).
+func (rs *registrations) token(k regKey) string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-
-	k := regKey{impi, ue.Unmap()}
 
 	if r, ok := rs.byKey[k]; ok {
 		return r.FlowToken
@@ -279,7 +294,7 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	if old, ok := rs.byKey[regKey{r.IMPI, r.UEAddress.Addr()}]; ok {
+	if old, ok := rs.byKey[regKeyOf(&r)]; ok {
 		r.ID = old.ID
 		r.Policy, r.SignallingLost = old.Policy, old.SignallingLost
 
@@ -306,11 +321,11 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	rs.add(&r)
 }
 
-func (rs *registrations) remove(impi string, ue netip.Addr) (db.PCSCFRegistration, bool) {
+func (rs *registrations) remove(k regKey) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	return rs.removeLocked(regKey{impi, ue.Unmap()})
+	return rs.removeLocked(k)
 }
 
 func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
@@ -428,11 +443,11 @@ func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {
 	}
 }
 
-func (rs *registrations) get(impi string, ue netip.Addr) (db.PCSCFRegistration, bool) {
+func (rs *registrations) get(k regKey) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	r, ok := rs.byKey[regKey{impi, ue.Unmap()}]
+	r, ok := rs.byKey[k]
 	if !ok || !r.ExpiresAt.After(rs.clock.Now()) {
 		return db.PCSCFRegistration{}, false
 	}
@@ -449,11 +464,11 @@ func (rs *registrations) signallingLost(token string) bool {
 	return ok && r.SignallingLost
 }
 
-func (rs *registrations) withoutPolicy(impi string, ue netip.Addr) bool {
+func (rs *registrations) withoutPolicy(k regKey) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	r, ok := rs.byKey[regKey{impi, ue.Unmap()}]
+	r, ok := rs.byKey[k]
 
 	return ok && r.Policy.ID == ""
 }
@@ -474,7 +489,7 @@ func (rs *registrations) sourceKey(src netip.AddrPort) (regKey, bool) {
 	defer rs.mu.Unlock()
 
 	if r := rs.fromSourceLocked(src); r != nil {
-		return regKey{r.IMPI, r.UEAddress.Addr()}, true
+		return regKeyOf(r), true
 	}
 
 	return regKey{}, false
@@ -533,9 +548,14 @@ func (rs *registrations) flow(token string) (flow, bool) {
 	return ret.f, true
 }
 
+func (f flow) key() regKey {
+	return regKey{f.impi, f.ue.Addr().Unmap(), f.id}
+}
+
 func flowOf(r *db.PCSCFRegistration) flow {
 	return flow{
-		impi: r.IMPI, transport: sip.Transport(r.Transport), protected: r.Protected, ue: r.UEAddress, local: r.PCSCFAddress,
+		impi: r.IMPI, id: flowID{r.Instance, r.RegID}, transport: sip.Transport(r.Transport), protected: r.Protected,
+		ue: r.UEAddress, local: r.PCSCFAddress,
 	}
 }
 

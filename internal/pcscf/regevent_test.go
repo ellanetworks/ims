@@ -292,8 +292,8 @@ func TestRegisterPath(t *testing.T) {
 	path := onlyPath(t, req)
 
 	if path.User == "" || path.Host != "127.0.0.1" || path.Port != s.pcscf.Port() || !hasParam(path, "lr") ||
-		hasParam(path, "ob") {
-		t.Fatalf("Path = %s, want <sip:TOKEN@127.0.0.1:%d;lr>", path, s.pcscf.Port())
+		!hasParam(path, "ob") {
+		t.Fatalf("Path = %s, want <sip:TOKEN@127.0.0.1:%d;lr;ob>", path, s.pcscf.Port())
 	}
 
 	if !slices.Contains(req.Header.Elements("Require"), "path") {
@@ -328,7 +328,7 @@ func TestRegisterPath(t *testing.T) {
 	wantStatus(t, first(s.ue.RecvResponse()), 200)
 
 	eventually(t, "the registration to be removed", func() bool {
-		_, ok := s.p.regs.get(testIMPI, ueAddr)
+		_, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 		return !ok
 	})
 }
@@ -488,7 +488,7 @@ func TestOwnNotifyRemovesContactsAndIdentities(t *testing.T) {
 	get := func() db.PCSCFRegistration {
 		t.Helper()
 
-		r, ok := s.p.regs.get(testIMPI, ueAddr)
+		r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 		if !ok {
 			t.Fatal("registration removed")
 		}
@@ -528,7 +528,7 @@ func TestOwnNotifyRemovesContactsAndIdentities(t *testing.T) {
 	wantStatus(t, o.notify(t, "active;expires=600000",
 		reginfo(3, regevent.Terminated, regevent.Terminated, map[string]string{mine: regevent.Terminated})), 200)
 
-	if _, ok := s.p.regs.get(testIMPI, ueAddr); ok {
+	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); ok {
 		t.Fatal("registration kept without identities")
 	}
 
@@ -550,7 +550,7 @@ func TestOwnNotifyLowerVersionIgnored(t *testing.T) {
 	wantStatus(t, o.notify(t, "active;expires=600000",
 		reginfo(4, regevent.Terminated, regevent.Terminated, map[string]string{mine: regevent.Terminated})), 200)
 
-	if r, ok := s.p.regs.get(testIMPI, ueAddr); !ok || len(r.AssociatedURIs) != 2 {
+	if r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok || len(r.AssociatedURIs) != 2 {
 		t.Fatalf("registration = %+v, %v; want it untouched by the older version", r, ok)
 	}
 }
@@ -821,8 +821,9 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		unknown[i] = strings.Replace(e, token+"@", "nosuchflow@", 1)
 	}
 
+	// RFC 5626 §5.3.1: a flow token the P-CSCF does not know names a flow that no longer exists.
 	d.notify(t, s, 2, unknown)
-	wantStatus(t, first(s.scscf.RecvResponse()), 480)
+	wantStatus(t, first(s.scscf.RecvResponse()), 430)
 	u.us.RecvNone(quiet)
 }
 
@@ -839,7 +840,7 @@ func TestOwnNotifyTerminatesEverything(t *testing.T) {
 
 	wantStatus(t, o.notify(t, "terminated;reason=deactivated", info), 200)
 
-	if _, ok := s.p.regs.get(testIMPI, ueAddr); ok {
+	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); ok {
 		t.Fatal("registration kept")
 	}
 
@@ -865,7 +866,7 @@ func TestOwnSubscriptionTerminatedKeepsRegistrations(t *testing.T) {
 
 	time.Sleep(3 * testGrace)
 
-	if _, ok := s.p.regs.get(testIMPI, ueAddr); !ok {
+	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok {
 		t.Fatal("registration removed")
 	}
 
@@ -890,7 +891,7 @@ func TestRegistrationsAndSubscriptionSurviveRestart(t *testing.T) {
 
 	restart(t, s)
 
-	r, ok := s.p.regs.get(testIMPI, ueAddr)
+	r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 	if !ok || r.FlowToken != token || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel}) {
 		t.Fatalf("registration after restart = %+v, %v", r, ok)
 	}
@@ -945,7 +946,7 @@ func TestNewRegistrationSubscribesAgain(t *testing.T) {
 	_, sub, f := s.registered(600)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	s.p.regs.remove(testIMPI, s.ue.Addr().Addr())
+	s.p.regs.remove(regKey{impi: testIMPI, ue: s.ue.Addr().Addr()})
 
 	_, again, _ := s.registered(600)
 	if again.Header.CallID() == sub.Header.CallID() {
@@ -1035,7 +1036,7 @@ func TestDeregisteringOneSetKeepsTheOthers(t *testing.T) {
 	req, f = s.register(setTo)
 	answerRegisterWith(s, req, f, other)
 
-	if r, ok := s.p.regs.get(testIMPI, ueAddr); !ok || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel, other}) {
+	if r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel, other}) {
 		t.Fatalf("registration = %+v, want both sets", r)
 	}
 
@@ -1045,7 +1046,7 @@ func TestDeregisteringOneSetKeepsTheOthers(t *testing.T) {
 	})
 	answerRegisterWith(s, req, f)
 
-	r, ok := s.p.regs.get(testIMPI, ueAddr)
+	r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 	if !ok || !slices.Equal(r.AssociatedURIs, []string{testIMPU, testTel}) {
 		t.Fatalf("registration = %+v, %v; want the first set kept", r, ok)
 	}
@@ -1072,7 +1073,7 @@ func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
 
 	wantStatus(t, o.notify(t, "active;expires=600000", info), 200)
 
-	r, ok := s.p.regs.get(testIMPI, ueAddr)
+	r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 	if !ok {
 		t.Fatal("registration removed by a NOTIFY that overtook the 200")
 	}
@@ -1125,7 +1126,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 	a.add(set(5102, established, false))
 	a.mu.Unlock()
 
-	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5101 {
+	if f, ok := a.requestFlow(testIMPI, ueAddr, flowID{}, sip.UDP); !ok || f.Local.Port() != 5101 {
 		t.Fatalf("requestFlow = %v, %v; want the old set until the new one is used", f, ok)
 	}
 
@@ -1135,7 +1136,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 		}
 	}
 
-	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5102 {
+	if f, ok := a.requestFlow(testIMPI, ueAddr, flowID{}, sip.UDP); !ok || f.Local.Port() != 5102 {
 		t.Fatalf("requestFlow = %v, %v; want the new set once used", f, ok)
 	}
 }
@@ -1160,7 +1161,7 @@ func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
 	a.add(set(5102, established, time.Hour))
 	a.mu.Unlock()
 
-	if f, ok := a.requestFlow(testIMPI, ueAddr, sip.UDP); !ok || f.Local.Port() != 5102 {
+	if f, ok := a.requestFlow(testIMPI, ueAddr, flowID{}, sip.UDP); !ok || f.Local.Port() != 5102 {
 		t.Fatalf("requestFlow = %v, %v; want the new set once the old one is about to expire", f, ok)
 	}
 }

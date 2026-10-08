@@ -470,8 +470,16 @@ func (u *UE) ownContact(c regevent.Contact) bool {
 	}
 
 	a, ok := uri.Addr()
+	if !ok || a.Unmap() != u.cfg.Local.Unmap() || uri.Port != u.port(!u.cfg.Plain) {
+		return false
+	}
 
-	return ok && a.Unmap() == u.cfg.Local.Unmap() && uri.Port == u.port(!u.cfg.Plain)
+	var params sip.Params
+	for _, p := range c.UnknownParams {
+		params = append(params, sip.Param{Name: p.Name, Value: p.Value})
+	}
+
+	return u.ownFlow(params)
 }
 
 func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {

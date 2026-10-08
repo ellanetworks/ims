@@ -115,11 +115,11 @@ func TestInitialRegistration(t *testing.T) {
 		t.Fatalf("bindings = %+v, want one", reg.Bindings)
 	}
 
-	contact := reg.Bindings[0].Contact
+	bindingID := reg.Bindings[0].ID
 
 	wantHeaders := map[string]string{
 		"Path":             testPath,
-		"Service-Route":    "<sip:orig-" + strconv.FormatInt(contact.ID, 10) + "@scscf." + homeDomain + ":5060;lr>",
+		"Service-Route":    "<sip:orig-" + strconv.FormatInt(bindingID, 10) + "@scscf." + homeDomain + ":5060;lr>",
 		"P-Associated-URI": wantAssociated,
 		"Contact":          "<" + u.contact + ">;+sip.instance=" + testInstance + ";+g.3gpp.smsip;expires=600",
 	}
@@ -142,12 +142,12 @@ func TestInitialRegistration(t *testing.T) {
 		Identities: wantIdentities,
 		UserData:   sub,
 		Bindings: []db.Binding{{
+			ID: bindingID,
 			Contact: db.Contact{
-				ID:     contact.ID,
-				IMPI:   testIMPI,
-				URI:    u.contact,
-				Params: ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
-				Path:   testPath,
+				URI:      u.contact,
+				Instance: "urn:gsma:imei:35622410-483840-0",
+				Params:   ";+sip.instance=" + testInstance + ";+g.3gpp.smsip",
+				Path:     testPath,
 			},
 			CallID:       u.callID,
 			CSeq:         2,
@@ -376,7 +376,7 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	wantStatus(t, res, 200)
 	h.hss.noCx(t)
 
-	if got := res.Header.Get("Service-Route"); got != serviceRoute(h.reg.cfg.Name, before.Bindings[0].Contact.ID) {
+	if got := res.Header.Get("Service-Route"); got != serviceRoute(h.reg.cfg.Name, before.Bindings[0].ID) {
 		t.Errorf("Service-Route = %q", got)
 	}
 
@@ -385,7 +385,7 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	}
 
 	after := h.registration(testIMPU)
-	if b := after.Bindings[0]; after.ID != before.ID || b.Contact.ID != before.Bindings[0].Contact.ID || b.CSeq != 3 ||
+	if b := after.Bindings[0]; after.ID != before.ID || b.ID != before.Bindings[0].ID || b.CSeq != 3 ||
 		!b.ExpiresAt.Equal(h.clock.Now().Add(1200*time.Second)) {
 		t.Fatalf("registration = %+v", after)
 	}
@@ -561,8 +561,11 @@ func TestRegisterAnotherIMPU(t *testing.T) {
 	}
 
 	first, second := h.registration(testIMPU), h.registration(secondIMPU)
-	if first.ID == second.ID || first.Bindings[0].Contact.ID != second.Bindings[0].Contact.ID {
-		t.Fatalf("registrations %+v and %+v, want two sets bound to one contact", first, second)
+	// TS 24.229 §5.4.1.2.2 step 6, §5.4.1.2.2F c: each set has its own binding to the contact, with its own
+	// Service-Route.
+	if first.ID == second.ID || first.Bindings[0].ID == second.Bindings[0].ID ||
+		first.Bindings[0].Contact.URI != second.Bindings[0].Contact.URI {
+		t.Fatalf("registrations %+v and %+v, want two sets each with a binding to one contact", first, second)
 	}
 
 	u.impu = unknownIMPU
@@ -581,7 +584,7 @@ func TestNewContactReplacesOldOne(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
 	h.hss.nextSAR(t)
 
-	old := h.registration(testIMPU).Bindings[0].Contact
+	old := h.registration(testIMPU).Bindings[0]
 
 	u.impu = testIMPU
 	u.contact = "sip:001010000000001@127.0.0.2:5060"
@@ -604,12 +607,12 @@ func TestNewContactReplacesOldOne(t *testing.T) {
 		t.Errorf("Contact = %v", got)
 	}
 
-	if got, want := res.Header.Get("Service-Route"), serviceRoute(h.reg.cfg.Name, regs[0].Bindings[0].Contact.ID); got != want ||
-		regs[0].Bindings[0].Contact.ID == old.ID {
+	if got, want := res.Header.Get("Service-Route"), serviceRoute(h.reg.cfg.Name, regs[0].Bindings[0].ID); got != want ||
+		regs[0].Bindings[0].ID == old.ID {
 		t.Errorf("Service-Route = %q, want %q for the new contact", got, want)
 	}
 
-	u.contact = old.URI
+	u.contact = old.Contact.URI
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 403)
 	h.hss.noCx(t)
 }

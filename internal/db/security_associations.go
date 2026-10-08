@@ -22,6 +22,8 @@ type SecurityAssociation struct {
 	State        SecurityAssociationState
 	PCSCFAddress netip.Addr
 	UEAddress    netip.Addr
+	Instance     string
+	RegID        int64
 	PCSCFPortC   uint16
 	PCSCFPortS   uint16
 	UEPortC      uint16
@@ -35,12 +37,12 @@ type SecurityAssociation struct {
 	ExpiresAt    time.Time
 }
 
-const securityAssociationColumns = `id, impi, state, pcscf_address, ue_address,
+const securityAssociationColumns = `id, impi, state, pcscf_address, ue_address, instance_id, reg_id,
 	pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at`
 
 func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation) (SecurityAssociation, error) {
 	args := []any{
-		sa.IMPI, sa.State, sa.PCSCFAddress.String(), sa.UEAddress.String(),
+		sa.IMPI, sa.State, sa.PCSCFAddress.String(), sa.UEAddress.String(), nullableString(sa.Instance), nullableInt(sa.RegID),
 		sa.PCSCFPortC, sa.PCSCFPortS, sa.UEPortC, sa.UEPortS, sa.SPIPC, sa.SPIPS, sa.SPIUC, sa.SPIUS,
 		sa.Integrity, sa.Encryption, sa.ExpiresAt.UTC().UnixNano(),
 	}
@@ -52,13 +54,13 @@ func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation
 
 	if sa.ID == 0 {
 		saved, err = scanSecurityAssociation(d.conn.QueryRowContext(ctx,
-			`INSERT INTO security_associations (impi, state, pcscf_address, ue_address,
+			`INSERT INTO security_associations (impi, state, pcscf_address, ue_address, instance_id, reg_id,
 				pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING `+securityAssociationColumns, args...))
 	} else {
 		saved, err = scanSecurityAssociation(d.conn.QueryRowContext(ctx,
-			`UPDATE security_associations SET impi = ?, state = ?, pcscf_address = ?, ue_address = ?,
+			`UPDATE security_associations SET impi = ?, state = ?, pcscf_address = ?, ue_address = ?, instance_id = ?, reg_id = ?,
 				pcscf_port_c = ?, pcscf_port_s = ?, ue_port_c = ?, ue_port_s = ?, spi_pc = ?, spi_ps = ?, spi_uc = ?, spi_us = ?,
 				alg = ?, ealg = ?, expires_at = ?
 			WHERE id = ?
@@ -119,14 +121,18 @@ func scanSecurityAssociation(row scanner) (SecurityAssociation, error) {
 	var (
 		sa                SecurityAssociation
 		pcscfAddr, ueAddr string
+		instance          sql.NullString
+		regID             sql.NullInt64
 		expiresAt         int64
 	)
 
-	if err := row.Scan(&sa.ID, &sa.IMPI, &sa.State, &pcscfAddr, &ueAddr,
+	if err := row.Scan(&sa.ID, &sa.IMPI, &sa.State, &pcscfAddr, &ueAddr, &instance, &regID,
 		&sa.PCSCFPortC, &sa.PCSCFPortS, &sa.UEPortC, &sa.UEPortS, &sa.SPIPC, &sa.SPIPS, &sa.SPIUC, &sa.SPIUS,
 		&sa.Integrity, &sa.Encryption, &expiresAt); err != nil {
 		return SecurityAssociation{}, err
 	}
+
+	sa.Instance, sa.RegID = instance.String, regID.Int64
 
 	var err error
 

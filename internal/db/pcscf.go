@@ -10,9 +10,13 @@ import (
 	"time"
 )
 
+// PCSCFRegistration is a registration through the P-CSCF of a UE, identified by its private identity and
+// address, and by its Instance and RegID when it is one of the UE's registration flows (RFC 5626).
 type PCSCFRegistration struct {
 	ID             int64
 	IMPI           string
+	Instance       string
+	RegID          int64
 	FlowToken      string
 	Transport      string
 	Protected      bool
@@ -35,7 +39,7 @@ type PolicySession struct {
 	Ref      string
 }
 
-const pcscfRegistrationColumns = `id, impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
+const pcscfRegistrationColumns = `id, impi, instance_id, reg_id, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
 	contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id, policy_ref,
 	signalling_lost`
 
@@ -68,12 +72,17 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 		return PCSCFRegistration{}, fmt.Errorf("save P-CSCF registration: %w", err)
 	}
 
+	conflict := `ON CONFLICT (impi, ue_address) WHERE reg_id IS NULL`
+	if r.RegID != 0 {
+		conflict = `ON CONFLICT (impi, ue_address, instance_id, reg_id) WHERE reg_id IS NOT NULL`
+	}
+
 	saved, err := scanPCSCFRegistration(d.conn.QueryRowContext(ctx,
-		`INSERT INTO pcscf_registrations (impi, flow_token, transport, protected, ue_address, ue_port, pcscf_address,
-			contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id, policy_ref,
-			signalling_lost)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (impi, ue_address) DO UPDATE SET flow_token = excluded.flow_token, transport = excluded.transport,
+		`INSERT INTO pcscf_registrations (impi, instance_id, reg_id, flow_token, transport, protected, ue_address, ue_port,
+			pcscf_address, contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id,
+			policy_ref, signalling_lost)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`+conflict+` DO UPDATE SET flow_token = excluded.flow_token, transport = excluded.transport,
 			protected = excluded.protected,
 			ue_port = excluded.ue_port, pcscf_address = excluded.pcscf_address, contacts = excluded.contacts,
 			associated_uris = excluded.associated_uris, sets = excluded.sets, service_route = excluded.service_route,
@@ -81,7 +90,7 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 			policy_session_id = excluded.policy_session_id, policy_ref = excluded.policy_ref,
 			signalling_lost = excluded.signalling_lost
 		RETURNING `+pcscfRegistrationColumns,
-		r.IMPI, r.FlowToken, r.Transport, r.Protected, r.UEAddress.Addr().String(), r.UEAddress.Port(), r.PCSCFAddress.String(),
+		r.IMPI, nullableString(r.Instance), nullableInt(r.RegID), r.FlowToken, r.Transport, r.Protected, r.UEAddress.Addr().String(), r.UEAddress.Port(), r.PCSCFAddress.String(),
 		contacts, associated, sets, route, r.ExpiresAt.UTC().UnixNano(), nullableString(r.Policy.Endpoint),
 		nullableString(r.Policy.ID), nullableString(r.Policy.Ref),
 		r.SignallingLost))
@@ -163,12 +172,14 @@ type rawPCSCFRegistration struct {
 	sets                        []byte
 	expiresAt                   int64
 	policy                      [3]sql.NullString
+	instance                    sql.NullString
+	regID                       sql.NullInt64
 }
 
 func scanRawPCSCFRegistration(row scanner) (rawPCSCFRegistration, error) {
 	var raw rawPCSCFRegistration
 
-	err := row.Scan(&raw.ID, &raw.IMPI, &raw.FlowToken, &raw.Transport, &raw.Protected, &raw.ue, &raw.port, &raw.pcscf,
+	err := row.Scan(&raw.ID, &raw.IMPI, &raw.instance, &raw.regID, &raw.FlowToken, &raw.Transport, &raw.Protected, &raw.ue, &raw.port, &raw.pcscf,
 		&raw.contacts, &raw.associated, &raw.sets, &raw.route, &raw.expiresAt, &raw.policy[0], &raw.policy[1], &raw.policy[2],
 		&raw.SignallingLost)
 
@@ -187,6 +198,7 @@ func (raw rawPCSCFRegistration) parse() (PCSCFRegistration, error) {
 		return PCSCFRegistration{}, err
 	}
 
+	r.Instance, r.RegID = raw.instance.String, raw.regID.Int64
 	r.UEAddress = netip.AddrPortFrom(ueAddr, raw.port)
 	r.ExpiresAt = time.Unix(0, raw.expiresAt).UTC()
 	r.Policy = PolicySession{Endpoint: raw.policy[0].String, ID: raw.policy[1].String, Ref: raw.policy[2].String}

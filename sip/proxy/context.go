@@ -104,6 +104,12 @@ type branch struct {
 	// expired is set once the branch rang past its Timer C or no-answer time: it was cancelled, and the final
 	// response it ends with is delivered as a 408.
 	expired bool
+
+	// withdrawn holds the Reason of a branch withdrawn from the search (withdraw): it was cancelled,
+	// and the final response it ends with is delivered as a 480 with that Reason (TS 24.229 §5.4.5.1.1).
+	withdrawn []sip.Field
+
+	key any
 }
 
 // retries reports whether res sends the request to b's next flow instead of ending b's search
@@ -114,6 +120,19 @@ func (b *branch) retries(res *sip.Response) bool {
 
 // errRangOut is the error of a branch that rang past its Timer C or no-answer time (RFC 3261 §16.8).
 var errRangOut = fmt.Errorf("%w: rang out", transaction.ErrTimeout)
+
+// errWithdrawn is the error of a branch withdrawn from the search.
+var errWithdrawn = errors.New("sip/proxy: branch withdrawn")
+
+// withdrawnResponse is the final response a withdrawn branch stands for: a 480, with its Reason.
+func (c *responseContext) withdrawnResponse(b *branch) *sip.Response {
+	res := c.generate(480)
+	for _, f := range b.withdrawn {
+		res.Header.Add(f.Name, f.Value)
+	}
+
+	return res
+}
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
 	return &responseContext{
@@ -603,6 +622,19 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 		b.finish()
 
+		// The branch was withdrawn: whatever final response it ends with stands for its release.
+		if b.withdrawn != nil {
+			c.mu.Unlock()
+
+			c.dispatch(b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true})
+
+			if freed {
+				c.advance()
+			}
+
+			return
+		}
+
 		// The branch rang out and was cancelled: whatever final response it ends with stands for the timeout.
 		if b.expired {
 			c.mu.Unlock()
@@ -661,6 +693,12 @@ func (b *branch) HandleError(err error) {
 	case !c.invite && errors.Is(err, transaction.ErrTimeout):
 	case b.expired:
 		res, err = c.generateLocked(408), fmt.Errorf("%w: %w", errRangOut, err)
+	case b.withdrawn != nil:
+		res, err = c.generateLocked(480), fmt.Errorf("%w: %w", errWithdrawn, err)
+
+		for _, f := range b.withdrawn {
+			res.Header.Add(f.Name, f.Value)
+		}
 	case b.cancelled || c.cancelled:
 		res = c.generateLocked(487)
 	case errors.Is(err, transaction.ErrTimeout):
@@ -1080,6 +1118,88 @@ func (c *responseContext) cancel(reason []sip.Field) {
 	c.mu.Unlock()
 
 	sendAll(cancels)
+}
+
+// withdraw ends the search toward the branches with key: those not yet sent never are, and those
+// ringing are cancelled with reason (RFC 3261 §16.10). It changes nothing when no branch with key is
+// pending or ringing (found is false), or when no other branch would be left to answer (others is
+// false).
+func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others bool) {
+	c.mu.Lock()
+
+	if !c.invite || c.final || c.stopped || c.cancelled {
+		c.mu.Unlock()
+		return false, false
+	}
+
+	mine := func(b *branch) bool { return b.key == key }
+
+	for _, b := range c.branches {
+		if b.done || b.cancelled {
+			continue
+		}
+
+		if mine(b) {
+			found = true
+		} else {
+			others = true
+		}
+
+		found = found || slices.ContainsFunc(b.retry, mine)
+	}
+
+	for _, b := range slices.Concat(append([][]*branch{c.waiting}, c.groups...)...) {
+		if mine(b) {
+			found = true
+		} else {
+			others = true
+		}
+
+		found = found || slices.ContainsFunc(b.retry, mine)
+	}
+
+	if !found || !others {
+		c.mu.Unlock()
+		return found, others
+	}
+
+	c.waiting = slices.DeleteFunc(c.waiting, mine)
+
+	groups := c.groups[:0]
+
+	for _, g := range c.groups {
+		if g = slices.DeleteFunc(g, mine); len(g) > 0 {
+			groups = append(groups, g)
+		}
+	}
+
+	c.groups = groups
+
+	var cancels []cancellation
+
+	for _, b := range slices.Concat(append([][]*branch{c.branches, c.waiting}, c.groups...)...) {
+		b.retry = slices.DeleteFunc(slices.Clone(b.retry), mine)
+
+		if b.done || !mine(b) {
+			continue
+		}
+
+		if b.cancelled || b.settled {
+			continue
+		}
+
+		b.withdrawn = append([]sip.Field{}, reason...)
+
+		if client := b.cancelLocked(reason); client != nil {
+			cancels = append(cancels, cancellation{client: client, reason: reason})
+		}
+	}
+
+	c.mu.Unlock()
+
+	sendAll(cancels)
+
+	return true, true
 }
 
 func (c *responseContext) dialog() *Dialog {

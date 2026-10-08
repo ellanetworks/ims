@@ -29,12 +29,20 @@ type Registration struct {
 	Bindings   []Binding
 }
 
+// Contact is what a binding binds a registration set to (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6): a
+// registration flow, identified by its Instance and RegID, when the multiple registration mechanism
+// applies, or else a contact address, identified by its URI; with its parameters and the Path to it.
 type Contact struct {
-	ID     int64
-	IMPI   string
-	URI    string
-	Params string
-	Path   string
+	URI      string
+	Instance string
+	RegID    int64
+	Params   string
+	Path     string
+}
+
+// Flow reports whether the contact is a registration flow (RFC 5626).
+func (c Contact) Flow() bool {
+	return c.RegID != 0
 }
 
 type BindingEvent string
@@ -44,7 +52,10 @@ const (
 	BindingRefreshed  BindingEvent = "refreshed"
 )
 
+// Binding is the binding of a registration set to a contact (TS 24.229 §5.4.1.2.2 steps 6 to 8): its ID
+// is stable over refreshes, and over a flow replaced in place.
 type Binding struct {
+	ID           int64
 	Contact      Contact
 	CallID       string
 	CSeq         int64
@@ -57,9 +68,8 @@ type Binding struct {
 const (
 	registrationColumns = `id, impi, impu, user_data`
 
-	contactColumns = `c.id, c.impi, c.uri, c.params, c.path`
-
-	returnedContactColumns = `id, impi, uri, params, path`
+	bindingColumns = `id, registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event,
+		impu, registered_at`
 )
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
@@ -96,31 +106,23 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration
 		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM bindings WHERE registration_id = ?`, r.ID); err != nil {
-		return Registration{}, fmt.Errorf("save registration: %w", err)
-	}
-
 	r.Bindings = append([]Binding(nil), r.Bindings...)
+	kept := make([]any, 0, len(r.Bindings)+1)
+	kept = append(kept, r.ID)
 
 	for i := range r.Bindings {
 		b := &r.Bindings[i]
-		b.Contact.IMPI = r.IMPI
 		b.Event = cmp.Or(b.Event, BindingRegistered)
 
-		if b.Contact, err = saveContact(ctx, tx, b.Contact); err != nil {
+		if b.ID, err = saveBinding(ctx, tx, r.ID, *b); err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO bindings (registration_id, contact_id, call_id, cseq, expires_at, event, impu, registered_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, b.Contact.ID, b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano(), b.Event, b.IMPU,
-			b.RegisteredAt.UTC().UnixNano()); err != nil {
-			return Registration{}, fmt.Errorf("save registration: %w", err)
-		}
+		kept = append(kept, b.ID)
 	}
 
-	if err := deleteUnboundContacts(ctx, tx, r.IMPI); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM bindings WHERE registration_id = ? AND id NOT IN (`+placeholders(len(kept)-1)+`)`, kept...); err != nil {
 		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
@@ -153,44 +155,37 @@ func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
 	return nil
 }
 
-func saveContact(ctx context.Context, tx *sql.Tx, c Contact) (Contact, error) {
-	return scanContact(tx.QueryRowContext(ctx,
-		`INSERT INTO contacts (impi, uri, params, path)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT (impi, uri) DO UPDATE SET params = excluded.params, path = excluded.path
-		RETURNING `+returnedContactColumns,
-		c.IMPI, c.URI, c.Params, nullableString(c.Path)))
-}
+// saveBinding stores b over the registration's binding to the same contact: the same flow, or the same
+// URI, and returns its ID.
+func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Binding) (int64, error) {
+	conflict := `ON CONFLICT (registration_id, uri) WHERE reg_id IS NULL DO UPDATE SET instance_id = excluded.instance_id`
+	if b.Contact.Flow() {
+		conflict = `ON CONFLICT (registration_id, instance_id, reg_id) WHERE reg_id IS NOT NULL DO UPDATE SET uri = excluded.uri`
+	}
 
-func deleteUnboundContacts(ctx context.Context, tx *sql.Tx, impi string) error {
-	_, err := tx.ExecContext(ctx,
-		`DELETE FROM contacts WHERE impi = ? AND id NOT IN (SELECT contact_id FROM bindings)`, impi)
+	var id int64
 
-	return err
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO bindings (registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event, impu,
+			registered_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`+conflict+`, params = excluded.params, path = excluded.path, call_id = excluded.call_id, cseq = excluded.cseq,
+			expires_at = excluded.expires_at, event = excluded.event, impu = excluded.impu, registered_at = excluded.registered_at
+		RETURNING id`,
+		registrationID, b.Contact.URI, nullableString(b.Contact.Instance), nullableInt(b.Contact.RegID), b.Contact.Params,
+		nullableString(b.Contact.Path), b.CallID, b.CSeq, b.ExpiresAt.UTC().UnixNano(), b.Event, b.IMPU,
+		b.RegisteredAt.UTC().UnixNano()).Scan(&id)
+
+	return id, err
 }
 
 func (d *DB) DeleteRegistration(ctx context.Context, id int64) error {
-	tx, err := d.conn.BeginTx(ctx, nil)
+	res, err := d.conn.ExecContext(ctx, `DELETE FROM registrations WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("delete registration: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	var impi string
-	if err := tx.QueryRowContext(ctx, `DELETE FROM registrations WHERE id = ? RETURNING impi`, id).Scan(&impi); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			err = ErrNotFound
-		}
-
 		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
 
-	if err := deleteUnboundContacts(ctx, tx, impi); err != nil {
-		return fmt.Errorf("delete registration %d: %w", id, err)
-	}
-
-	if err := tx.Commit(); err != nil {
+	if err := checkAffected(res); err != nil {
 		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
 
@@ -366,9 +361,8 @@ func loadIdentities(ctx context.Context, q *sql.DB, regs []Registration, index m
 
 func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map[int64]int, ids []any) error {
 	rows, err := q.QueryContext(ctx,
-		`SELECT b.registration_id, b.call_id, b.cseq, b.expires_at, b.event, b.impu, b.registered_at, `+contactColumns+`
-		FROM bindings b JOIN contacts c ON c.id = b.contact_id
-		WHERE b.registration_id IN (`+placeholders(len(ids))+`) ORDER BY b.registration_id, c.id`, ids...)
+		`SELECT `+bindingColumns+` FROM bindings
+		WHERE registration_id IN (`+placeholders(len(ids))+`) ORDER BY registration_id, id`, ids...)
 	if err != nil {
 		return err
 	}
@@ -379,13 +373,16 @@ func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map
 		var (
 			registrationID, expiresAt, registeredAt int64
 			b                                       Binding
+			instance, path                          sql.NullString
+			regID                                   sql.NullInt64
 		)
 
-		if b.Contact, err = scanContact(rows, &registrationID, &b.CallID, &b.CSeq, &expiresAt, &b.Event, &b.IMPU,
-			&registeredAt); err != nil {
+		if err := rows.Scan(&b.ID, &registrationID, &b.Contact.URI, &instance, &regID, &b.Contact.Params, &path, &b.CallID,
+			&b.CSeq, &expiresAt, &b.Event, &b.IMPU, &registeredAt); err != nil {
 			return err
 		}
 
+		b.Contact.Instance, b.Contact.RegID, b.Contact.Path = instance.String, regID.Int64, path.String
 		b.ExpiresAt = time.Unix(0, expiresAt).UTC()
 		b.RegisteredAt = time.Unix(0, registeredAt).UTC()
 
@@ -406,19 +403,34 @@ func scanRegistration(row scanner) (Registration, error) {
 	return r, nil
 }
 
-func scanContact(row scanner, leading ...any) (Contact, error) {
+// GetBinding returns the binding with the ID, and the private identity of its registration set.
+func (d *DB) GetBinding(ctx context.Context, id int64) (Binding, string, error) {
 	var (
-		c    Contact
-		path sql.NullString
+		b                       Binding
+		impi                    string
+		registrationID          int64
+		expiresAt, registeredAt int64
+		instance, path          sql.NullString
+		regID                   sql.NullInt64
 	)
 
-	dest := append(leading, &c.ID, &c.IMPI, &c.URI, &c.Params, &path)
-
-	if err := row.Scan(dest...); err != nil {
-		return Contact{}, err
+	err := d.conn.QueryRowContext(ctx,
+		`SELECT b.id, b.registration_id, b.uri, b.instance_id, b.reg_id, b.params, b.path, b.call_id, b.cseq, b.expires_at,
+			b.event, b.impu, b.registered_at, r.impi
+		FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.id = ?`, id).Scan(
+		&b.ID, &registrationID, &b.Contact.URI, &instance, &regID, &b.Contact.Params, &path, &b.CallID, &b.CSeq, &expiresAt,
+		&b.Event, &b.IMPU, &registeredAt, &impi)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
 	}
 
-	c.Path = path.String
+	if err != nil {
+		return Binding{}, "", fmt.Errorf("get binding %d: %w", id, err)
+	}
 
-	return c, nil
+	b.Contact.Instance, b.Contact.RegID, b.Contact.Path = instance.String, regID.Int64, path.String
+	b.ExpiresAt = time.Unix(0, expiresAt).UTC()
+	b.RegisteredAt = time.Unix(0, registeredAt).UTC()
+
+	return b, impi, nil
 }

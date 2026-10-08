@@ -963,7 +963,7 @@ func (c *Call) successReceived(res *sip.Response) {
 		}
 	}
 
-	cancelled := c.cancelled
+	cancelled, sent := c.cancelled, c.ackSent
 	if c.state != CallTerminated {
 		c.state = CallConfirmed
 
@@ -974,8 +974,18 @@ func (c *Call) successReceived(res *sip.Response) {
 	c.notifyLocked()
 	c.mu.Unlock()
 
+	// A 2xx crossing the CANCEL is acknowledged, then the call it confirms is ended (RFC 3261 §13.2.2.4,
+	// §9.1): the BYE waits for the ACK.
 	if cancelled {
-		c.background(func(ctx context.Context) error { return c.bye(ctx, Cancelled) })
+		c.background(func(ctx context.Context) error {
+			select {
+			case <-sent:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			return c.bye(ctx, Cancelled)
+		})
 	}
 }
 

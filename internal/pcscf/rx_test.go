@@ -219,7 +219,7 @@ func newRxScene(t *testing.T, timeout time.Duration) (*regScene, *fakePCRF) {
 }
 
 func (s *regScene) record() (db.PCSCFRegistration, bool) {
-	return s.p.regs.get(testIMPI, ueAddr)
+	return s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr})
 }
 
 func (s *regScene) wantSession(id string) {
@@ -367,7 +367,7 @@ func TestRxReAuthenticationKeepsTheSession(t *testing.T) {
 
 	pcrf.none()
 
-	if reg, ok := s.p.regs.get(testIMPI, ueAddr); !ok || reg.Policy.ID != id {
+	if reg, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok || reg.Policy.ID != id {
 		t.Fatalf("record = %+v, want the session %s kept", reg, id)
 	}
 }
@@ -717,14 +717,14 @@ func TestRxRequestOnTheSAsRestoresTheSignalling(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.p.rxReAuth(id, rx.ReAuthRequest{SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer}})
 
-	if r, _ := s.p.regs.get(testIMPI, ueAddr); !r.SignallingLost {
+	if r, _ := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !r.SignallingLost {
 		t.Fatal("signalling lost not set")
 	}
 
 	u.uc.Send(sip.UDP, s.ps, siptest.NewRequest("OPTIONS", "sip:"+homeDomain, sip.UDP, u.us.Addr()))
 	s.scscf.RecvRequest()
 
-	if r, _ := s.p.regs.get(testIMPI, ueAddr); r.SignallingLost {
+	if r, _ := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); r.SignallingLost {
 		t.Fatal("signalling lost kept after a request on the UE's security associations")
 	}
 }
@@ -1115,7 +1115,7 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 
 	rs.save(r)
 
-	if k, ok := rs.sourceKey(a); !ok || k != (regKey{testIMPI, ueAddr}) {
+	if k, ok := rs.sourceKey(a); !ok || k != (regKey{impi: testIMPI, ue: ueAddr}) {
 		t.Fatalf("sourceKey(%s) = %v, %v", a, k, ok)
 	}
 
@@ -1139,7 +1139,7 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 
 	r.Protected = false
 	rs.save(r)
-	rs.remove(testIMPI, ueAddr)
+	rs.remove(regKey{impi: testIMPI, ue: ueAddr})
 
 	if _, ok := rs.sourceKey(b); ok || len(rs.bySource) != 0 {
 		t.Fatalf("index = %v after the removal", rs.bySource)

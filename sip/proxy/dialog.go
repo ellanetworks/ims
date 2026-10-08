@@ -30,6 +30,8 @@ var (
 	ErrDialogStarted = errors.New("sip/proxy: dialog already started")
 
 	ErrDialogEnded = errors.New("sip/proxy: dialog ended")
+
+	ErrNotReached = errors.New("sip/proxy: dialog does not reach the callee")
 )
 
 type Side int
@@ -227,6 +229,7 @@ type Dialog struct {
 	callee    party
 	early     map[string]*party
 	answerTag string
+	answerKey any
 	code      int
 	cancelled bool
 
@@ -893,6 +896,7 @@ func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
 		d.sdp = pt.sdp
 		d.callee.sdp = negotiation{}
 		d.answerTag = tag
+		d.answerKey = b.key
 		d.early = nil
 		d.state = Answered
 		d.code = res.StatusCode
@@ -1159,6 +1163,51 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 		}
 
 		d.send(bye, toward, &callee)
+	}
+
+	return nil
+}
+
+// ReleaseCallee releases what of the dialog reaches the branches with key (Branch.Key): the whole
+// dialog once one of them answered; while early, only those branches, cancelled with the Reason of r
+// (RFC 3261 §16.10), unless no other branch is left to answer, when the whole dialog is released. It
+// returns ErrNotReached when the dialog does not reach key, or no longer can.
+func (d *Dialog) ReleaseCallee(key any, r Release) error {
+	d.mu.Lock()
+
+	if !d.begun || d.ended || d.released {
+		d.mu.Unlock()
+		return ErrDialogEnded
+	}
+
+	if d.state != Early {
+		answered := d.answerKey == key
+		d.mu.Unlock()
+
+		if !answered {
+			return ErrNotReached
+		}
+
+		return d.Release(r)
+	}
+
+	c := d.ctx
+	d.mu.Unlock()
+
+	switch found, others := c.withdraw(key, reasonFields(r.Reason)); {
+	case !found:
+		// The branch may have answered since the state was read.
+		d.mu.Lock()
+		answered := d.state != Early && d.answerKey == key
+		d.mu.Unlock()
+
+		if answered {
+			return d.Release(r)
+		}
+
+		return ErrNotReached
+	case !others:
+		return d.Release(r)
 	}
 
 	return nil

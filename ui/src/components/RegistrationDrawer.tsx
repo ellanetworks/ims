@@ -24,13 +24,20 @@ import {
   type Registration,
 } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
-import { imeiOf, numberOf, priorityOf } from "@/utils/registrations";
+import {
+  devicesOf,
+  numberOf,
+  priorityOf,
+  type Device,
+} from "@/utils/registrations";
 
 const yesNo = (value: boolean) => (value ? "yes" : "no");
 
 function ContactCard({ contact }: { contact: RegisteredContact }) {
   const rows: [string, ReactNode][] = [
-    ["IMEI", imeiOf(contact) ?? contact.instance ?? "—"],
+    ...(contact.reg_id !== undefined
+      ? [["Flow", String(contact.reg_id)] as [string, ReactNode]]
+      : []),
     ["Address", contact.address ?? "—"],
     ["Transport", contact.transport?.toUpperCase() ?? "—"],
     // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
@@ -55,6 +62,33 @@ function ContactCard({ contact }: { contact: RegisteredContact }) {
 
 // SharedChip marks a public identity other private identities are registered with: a request to it reaches their
 // contacts too. It searches the identity, which lists them all.
+// DeviceSection lists the contacts of one device: its registration flows, or its contact.
+function DeviceSection({ device }: { device: Device }) {
+  return (
+    <Box component="li">
+      <Typography
+        variant="body2"
+        sx={{ fontWeight: "medium", mb: 0.5, overflowWrap: "anywhere" }}
+      >
+        {device.label}
+      </Typography>
+      <Stack
+        component="ul"
+        aria-label={device.label}
+        spacing={1}
+        sx={{ m: 0, p: 0, listStyle: "none" }}
+      >
+        {device.contacts.map((contact) => (
+          <ContactCard
+            key={`${contact.contact}|${contact.reg_id ?? ""}`}
+            contact={contact}
+          />
+        ))}
+      </Stack>
+    </Box>
+  );
+}
+
 function SharedChip({
   identity,
   onSearch,
@@ -92,6 +126,7 @@ function RegistrationDetail({
   const reauth = useMutation({
     mutationFn: () => reauthenticate(registration.impi),
   });
+  const devices = devicesOf(registration);
 
   return (
     <Stack spacing={2} sx={{ p: 2 }}>
@@ -160,22 +195,22 @@ function RegistrationDetail({
         </Stack>
       </Box>
       <Divider />
-      <Box component="section" aria-labelledby="contacts-title">
+      <Box component="section" aria-labelledby="devices-title">
         <Typography
-          id="contacts-title"
+          id="devices-title"
           variant="subtitle1"
           component="h3"
           sx={{ mb: 1 }}
         >
-          Contacts ({registration.contacts.length})
+          Devices ({devices.length})
         </Typography>
         <Stack
           component="ul"
-          spacing={1}
+          spacing={2}
           sx={{ m: 0, p: 0, listStyle: "none" }}
         >
-          {registration.contacts.map((contact) => (
-            <ContactCard key={contact.contact} contact={contact} />
+          {devices.map((device) => (
+            <DeviceSection key={device.id} device={device} />
           ))}
         </Stack>
       </Box>

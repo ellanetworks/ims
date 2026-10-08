@@ -27,8 +27,9 @@ type forker struct {
 	opts   proxy.Options
 	errs   chan error
 
-	// retry are other flows to the UA of the first branch, for a 430.
-	retry []*siptest.Socket
+	// retry are other flows to the UA of the first branch of group retryGroup, for a 430.
+	retry      []*siptest.Socket
+	retryGroup int
 
 	// unsendable adds a first group with one branch that cannot be sent, and unsendableRetry a flow that cannot
 	// be sent to the first branch's retries.
@@ -137,6 +138,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 			Request: r,
 			Target:  proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: s.Addr()}},
 			Options: opts,
+			Key:     s.Addr(),
 		}
 	}
 
@@ -153,7 +155,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 	}
 
 	for _, s := range f.retry {
-		groups[0][0].Retry = append(groups[0][0].Retry, branch(s))
+		groups[f.retryGroup][0].Retry = append(groups[f.retryGroup][0].Retry, branch(s))
 	}
 
 	unsendable := func() proxy.Branch {

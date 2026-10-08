@@ -1078,17 +1078,22 @@ func contactURIs(set [][]target) [][]string {
 // TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841, RFC 5626 §7
 func TestTargetSetGroups(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
-	binding := func(uri, params string, registered int) db.Binding {
-		return db.Binding{Contact: db.Contact{URI: uri, Params: params}, RegisteredAt: at(registered), ExpiresAt: at(3600)}
-	}
-	instance := func(imei string) string { return `;+sip.instance="<urn:gsma:imei:` + imei + `>"` }
+	binding := func(uri, imei, params string, registered int) db.Binding {
+		c := db.Contact{URI: uri, Params: params}
+		if imei != "" {
+			c.Instance = "urn:gsma:imei:" + imei
+			c.Params = `;+sip.instance="<` + c.Instance + `>"` + params
+		}
 
-	phone := binding("sip:phone@ue", instance("1")+";audio", 1)
-	tablet := binding("sip:tablet@ue", instance("2")+";audio;video", 2)
-	desk := binding("sip:desk@ue", ";q=0.5;audio", 3)
-	soft := binding("sip:soft@ue", ";q=0.5;audio", 4)
-	moved := binding("sip:moved@ue", instance("1")+";audio", 5)
-	expired := binding("sip:expired@ue", ";audio", 0)
+		return db.Binding{Contact: c, RegisteredAt: at(registered), ExpiresAt: at(3600)}
+	}
+
+	phone := binding("sip:phone@ue", "1", ";audio", 1)
+	tablet := binding("sip:tablet@ue", "2", ";audio;video", 2)
+	desk := binding("sip:desk@ue", "", ";q=0.5;audio", 3)
+	soft := binding("sip:soft@ue", "", ";q=0.5;audio", 4)
+	moved := binding("sip:moved@ue", "1", ";audio", 5)
+	expired := binding("sip:expired@ue", "", ";audio", 0)
 	expired.ExpiresAt = at(-1)
 
 	header := func(fields ...string) sip.Header {
@@ -1115,11 +1120,11 @@ func TestTargetSetGroups(t *testing.T) {
 		{"parallel", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "parallel"), "[[sip:tablet@ue sip:phone@ue sip:desk@ue]]"},
 		// RFC 3841 §7.2.4: the caller's preferences order the contacts of a q-value, without splitting them.
 		{"partial matches ring together", []db.Binding{phone, tablet}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:phone@ue]]"},
-		{"best match first", []db.Binding{tablet, binding("sip:newer@ue", instance("3")+";audio", 9)}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:newer@ue]]"},
+		{"best match first", []db.Binding{tablet, binding("sip:newer@ue", "3", ";audio", 9)}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:newer@ue]]"},
 		{"predicate with a term it cannot evaluate", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"compact form", []db.Binding{phone, tablet}, header("d", "no-fork"), "[[sip:tablet@ue]]"},
 		{"Reject-Contact", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video"), "[[sip:phone@ue]]"},
-		{"tags without Accept-Contact", []db.Binding{phone, binding("sip:bare@ue", "", 0)}, nil, "[[sip:phone@ue sip:bare@ue]]"},
+		{"tags without Accept-Contact", []db.Binding{phone, binding("sip:bare@ue", "", "", 0)}, nil, "[[sip:phone@ue sip:bare@ue]]"},
 		{"Reject-Contact on a missing tag", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video;+sip.foo"), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"required capability", []db.Binding{phone, tablet}, header("Accept-Contact", "*;video;require;explicit"), "[[sip:tablet@ue]]"},
 		{"none", []db.Binding{expired}, nil, "[]"},
@@ -1141,28 +1146,25 @@ func TestTargetSetGroups(t *testing.T) {
 // RFC 5626 §7: the flows of an outbound UA instance are tried in turn on a 430.
 func TestTargetSetFlows(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
-	flow := func(uri, regID, path string, registered int) db.Binding {
+	// flow is a binding of instance 1: a flow with its reg-id, or a contact address without.
+	flow := func(uri string, regID int64, registered int) db.Binding {
 		return db.Binding{
-			Contact:      db.Contact{URI: uri, Params: `;+sip.instance="<urn:gsma:imei:1>";reg-id=` + regID, Path: path},
+			Contact:      db.Contact{URI: uri, Instance: "urn:gsma:imei:1", RegID: regID},
 			RegisteredAt: at(registered), ExpiresAt: at(3600),
 		}
 	}
-
-	ob, plain := "<sip:token@pcscf;lr;ob>", "<sip:token@pcscf;lr>"
 
 	for _, tc := range []struct {
 		name     string
 		bindings []db.Binding
 		want     string
 	}{
-		// a is the most recent flow; b is another flow, c a second contact on b's flow, and d no flow at all.
-		{
-			"outbound",
-			[]db.Binding{flow("sip:a@ue", "1", ob, 3), flow("sip:b@ue", "2", ob, 2), flow("sip:c@ue", "2", ob, 1), flow("sip:d@ue", "3", plain, 0)},
-			"sip:a@ue [sip:b@ue]",
-		},
+		// a is the most recent flow, b another flow, and d no flow at all.
+		{"outbound", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:b@ue", 2, 2), flow("sip:d@ue", 0, 0)}, "sip:a@ue [sip:b@ue]"},
 		// Only an outbound flow has other flows to replace it on a 430.
-		{"most recent without outbound", []db.Binding{flow("sip:a@ue", "1", ob, 3), flow("sip:d@ue", "3", plain, 4)}, "sip:d@ue []"},
+		{"most recent without outbound", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:d@ue", 0, 4)}, "sip:d@ue []"},
+		// Flows may share a URI (RFC 5626 §6).
+		{"flows on one URI", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:a@ue", 2, 2)}, "sip:a@ue [sip:a@ue]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			set, _ := targetSet([]db.Registration{{Bindings: tc.bindings}}, testEpoch, nil)
@@ -1427,4 +1429,19 @@ func TestTerminatingLastUsableGroup(t *testing.T) {
 
 	sh.sipClock.Advance(DefaultGroupNoAnswer)
 	sh.term.RecvNone(50 * time.Millisecond)
+}
+
+// TS 24.229 §5.4.3.2 step 1: a UE may assert an identity of another of its registration sets than the one
+// whose Service-Route it uses; the served user's own binding counts.
+func TestOriginatingFromAnotherSet(t *testing.T) {
+	sh := newSessionHarness(t)
+
+	sh.ue.impu = secondIMPU
+	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", remoteTel, "<"+secondIMPU+">"))
+
+	if got, _ := sh.icscf.RecvRequest(); got.Method != "INVITE" {
+		t.Fatalf("I-CSCF got %s", got.StartLine())
+	}
 }

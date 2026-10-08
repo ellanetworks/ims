@@ -198,7 +198,7 @@ func (p *PCSCF) contactURI(local netip.AddrPort) string {
 }
 
 func (p *PCSCF) subscribeHeaders(req *sip.Request, reg db.PCSCFRegistration) {
-	req.Header.Add("P-Asserted-Identity", "<"+pathURI(reg.FlowToken, reg.PCSCFAddress, p.cfg.Port, false).String()+">")
+	req.Header.Add("P-Asserted-Identity", "<"+pathURI(reg.FlowToken, reg.PCSCFAddress, p.cfg.Port).String()+">")
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Accept", regevent.ContentType)
 	req.Header.Add("Expires", strconv.Itoa(int(subscriptionExpires/time.Second)))
@@ -529,7 +529,7 @@ func mediaType(ct string) string {
 
 func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 	now := p.clock.Now()
-	ended := map[netip.Addr]regevent.Event{}
+	ended := map[regKey]regevent.Event{}
 
 	removed := p.regs.update(impi, func(r *db.PCSCFRegistration) bool {
 		active := map[string]bool{}
@@ -544,6 +544,10 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 			here := false
 
 			for _, c := range reg.Contacts {
+				if !sameFlow(r, c) {
+					continue
+				}
+
 				uri, ok := matchURI(r.Contacts, c.URI)
 				if !ok {
 					if c.State == regevent.Active && reg.State != regevent.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
@@ -556,7 +560,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				mentioned[uri] = true
 
 				if c.State != regevent.Active || reg.State == regevent.Terminated {
-					ended[r.UEAddress.Addr()] = graver(ended[r.UEAddress.Addr()], c.Event)
+					ended[regKeyOf(r)] = graver(ended[regKeyOf(r)], c.Event)
 					continue
 				}
 
@@ -598,15 +602,28 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 		p.log.Debug("registration ended by the network", slog.String("impi", impi), slog.String("ue", r.UEAddress.Addr().String()))
 
 		if p.sas != nil {
-			p.sas.deregistered(impi, r.UEAddress.Addr())
+			p.sas.deregistered(regKeyOf(&r))
 		}
 
-		p.endPolicy(r, terminationCause(ended[r.UEAddress.Addr()]), 0)
+		p.endPolicy(r, terminationCause(ended[regKeyOf(&r)]), 0)
 	}
 
 	if len(removed) > 0 {
 		p.unsubscribeIfIdle(impi)
 	}
+}
+
+// sameFlow reports whether a contact of a reg event is bound through registration r's flow: the same
+// instance ID and reg-id, or none for a registration without the multiple registration mechanism. Flows
+// may share a contact URI (RFC 5626 §6).
+func sameFlow(r *db.PCSCFRegistration, c regevent.Contact) bool {
+	var params sip.Params
+
+	for _, p := range c.UnknownParams {
+		params = append(params, sip.Param{Name: strings.ToLower(p.Name), Value: p.Value})
+	}
+
+	return contactFlow(params) == flowID{r.Instance, r.RegID}
 }
 
 func contactAt(contact string, ue netip.Addr) bool {

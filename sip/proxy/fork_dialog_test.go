@@ -1,6 +1,8 @@
 package proxy_test
 
 import (
+	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -436,4 +438,244 @@ func (s *forkScene) inDialog(method string, invite *sip.Request, res *sip.Respon
 	req.Header.Add("Content-Length", "0")
 
 	return req
+}
+
+func released480() proxy.Release {
+	r, _ := sip.NewReason("SIP", 480, "Temporarily Unavailable")
+	return proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{r}, Code: 480, ResponseReason: []sip.Reason{r}}
+}
+
+const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
+
+// Releasing one callee of an early forked dialog cancels its branch only; the others ring on.
+func TestReleaseCalleeEarly(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	if reason := a.cancelled(); reason != reason480 {
+		t.Errorf("CANCEL Reason %q", reason)
+	}
+
+	if r := s.next199(); toTagOf(r) != "a" {
+		t.Errorf("199 to %q", toTagOf(r))
+	}
+
+	s.noEvent()
+
+	if d.State() != proxy.Early || d.Released() {
+		t.Fatalf("dialog %s, released %v", d.State(), d.Released())
+	}
+
+	b.respond(200)
+
+	if res := s.final(); res.StatusCode != 200 || toTagOf(res) != "b" {
+		t.Fatalf("got %s from %q", res.StartLine(), toTagOf(res))
+	}
+
+	s.nextEvent(proxy.EventAnswered)
+}
+
+// Releasing the last callee left to answer releases the whole dialog.
+func TestReleaseCalleeLast(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+	b.respond(486)
+	s.next199()
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := s.final(); res.StatusCode != 480 || res.Header.Get("Reason") != reason480 {
+		t.Fatalf("got %s with Reason %q", res.StartLine(), res.Header.Get("Reason"))
+	}
+
+	if reason := a.cancelled(); reason != reason480 {
+		t.Errorf("CANCEL Reason %q", reason)
+	}
+
+	if e := s.nextEvent(proxy.EventEnded); e.End != proxy.EndReleased {
+		t.Errorf("ended %+v", e)
+	}
+}
+
+// A callee of a group not yet reached never gets the request.
+func TestReleaseCalleePending(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{1, 1}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	a.respond(180)
+	s.relayed(180)
+
+	if err := d.ReleaseCallee(g[1][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	a.respond(486)
+
+	if res := s.final(); res.StatusCode != 486 {
+		t.Fatalf("got %s", res.StartLine())
+	}
+
+	g[1][0].RecvNone(quiet)
+}
+
+// Once answered, the dialog reaches only the callee that answered; releasing it sends the BYE.
+func TestReleaseCalleeAnswered(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	invite := s.invite199()
+	s.send(invite)
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(200)
+
+	res := s.final()
+	s.nextEvent(proxy.EventAnswered)
+	a.cancelled()
+	s.caller.Send(sip.UDP, s.f.local, s.inDialog("ACK", invite, res, 1))
+
+	if got, _ := g[0][1].RecvRequest(); got.Method != "ACK" {
+		t.Fatalf("callee b got %s", got.StartLine())
+	}
+
+	for _, key := range []any{g[0][0].Addr(), "unknown"} {
+		if err := d.ReleaseCallee(key, released480()); !errors.Is(err, proxy.ErrNotReached) {
+			t.Errorf("release of %v: %v", key, err)
+		}
+	}
+
+	if err := d.ReleaseCallee(g[0][1].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	bye, _ := g[0][1].RecvRequest()
+	if bye.Method != "BYE" || bye.Header.Get("Reason") != reason480 {
+		t.Fatalf("callee b got %s with Reason %q", bye.StartLine(), bye.Header.Get("Reason"))
+	}
+
+	if req, _ := s.caller.RecvRequest(); req.Method != "BYE" {
+		t.Fatalf("caller got %s", req.StartLine())
+	}
+
+	if e := s.nextEvent(proxy.EventEnded); e.End != proxy.EndReleased {
+		t.Errorf("ended %+v", e)
+	}
+
+	if err := d.ReleaseCallee(g[0][1].Addr(), released480()); !errors.Is(err, proxy.ErrDialogEnded) {
+		t.Errorf("second release: %v", err)
+	}
+}
+
+// TS 24.229 §5.4.5.1.1: a withdrawn branch stands for its release, a 480, not for a CANCEL of the
+// caller's: its early dialog ends with a 199 for 480, and the caller gets the other branches' answer.
+func TestReleaseCalleeThenOthersFail(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	a.cancelled()
+
+	if r := s.next199(); toTagOf(r) != "a" || r.Header.Get("Reason") != reason480 {
+		t.Errorf("199 to %q with Reason %q, want a with %q", toTagOf(r), r.Header.Get("Reason"), reason480)
+	}
+
+	b.respond(486)
+
+	if res := s.final(); res.StatusCode != 486 {
+		t.Fatalf("got %s, want the 486 of the branch left", res.StartLine())
+	}
+}
+
+// When the withdrawn branch is the best answer left, the caller gets its 480 and Reason.
+func TestReleaseCalleeOnlyAnswer(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	a.cancelled()
+	s.next199()
+
+	b.respond(503)
+
+	if res := s.final(); res.StatusCode != 480 || res.Header.Get("Reason") != reason480 {
+		t.Fatalf("got %s with Reason %q, want 480 with %q", res.StartLine(), res.Header.Get("Reason"), reason480)
+	}
+}
+
+// A callee that is only the 430 retry of a branch not yet sent is withdrawn too: the branch fails
+// without trying it.
+func TestReleaseCalleeRetryOfPendingBranch(t *testing.T) {
+	flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	s, g := newForkSceneWith(t, []int{1, 1}, proxy.Options{}, true, func(f *forker) {
+		f.retry, f.retryGroup = []*siptest.Socket{flow}, 1
+	})
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	a.respond(180)
+
+	if err := d.ReleaseCallee(flow.Addr(), released480()); err != nil {
+		t.Fatalf("ReleaseCallee: %v", err)
+	}
+
+	a.respond(486)
+
+	b := received(t, g[1][0], "b")
+	b.respond(430)
+
+	s.final()
+	flow.RecvNone(quiet)
 }

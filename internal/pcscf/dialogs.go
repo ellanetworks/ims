@@ -21,13 +21,12 @@ type SCSCF struct {
 	Listeners []netip.AddrPort
 }
 
-func pathURI(token string, addr netip.Addr, port uint16, ob bool) sip.URI {
+// pathURI is the P-CSCF's URI in the Path of a registration: its IMS flow token, and "ob" (TS 24.229
+// §5.2.2.1 step 1, RFC 5626 §5.1).
+func pathURI(token string, addr netip.Addr, port uint16) sip.URI {
 	u := sip.URI{Scheme: "sip", User: token, Host: sip.FormatHost(addr.Unmap()), Port: port}
 	u.Params.Set("lr", "")
-
-	if ob {
-		u.Params.Set("ob", "")
-	}
+	u.Params.Set("ob", "")
 
 	return u
 }
@@ -47,7 +46,7 @@ func (p *PCSCF) ueRegistration(req *sip.Request) (db.PCSCFRegistration, bool) {
 		return db.PCSCFRegistration{}, false
 	}
 
-	return p.regs.get(k.impi, k.ue)
+	return p.regs.get(k)
 }
 
 func (p *PCSCF) ueKey(req *sip.Request) (regKey, bool) {
@@ -57,7 +56,7 @@ func (p *PCSCF) ueKey(req *sip.Request) (regKey, bool) {
 			return regKey{}, false
 		}
 
-		return regKey{v.impi, req.Flow.Remote.Addr().Unmap()}, true
+		return regKey{v.impi, req.Flow.Remote.Addr().Unmap(), v.flow}, true
 	}
 
 	return p.regs.sourceKey(req.Flow.Remote)
@@ -247,14 +246,16 @@ func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
+	// RFC 5626 §5.3.1: a flow that no longer exists gets a 430, so that the S-CSCF can try the UE's
+	// other flows (RFC 5626 §7). The S-CSCF answers 480 upstream when no other flow is left.
 	f, ok := p.regs.flow(flowToken(removed))
 	if !ok {
-		return proxy.Target{}, sip.NewResponse(req, 480, "No Flow")
+		return proxy.Target{}, sip.NewResponse(req, 430, "")
 	}
 
 	to, ok := p.ueFlow(f)
 	if !ok {
-		return proxy.Target{}, sip.NewResponse(req, 480, "No Flow")
+		return proxy.Target{}, sip.NewResponse(req, 430, "")
 	}
 
 	toUERequest(out)
@@ -269,7 +270,7 @@ func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
 	}
 
 	if p.sas != nil {
-		if out, ok := p.sas.requestFlow(f.impi, f.ue.Addr(), tr); ok {
+		if out, ok := p.sas.requestFlow(f.impi, f.ue.Addr(), f.id, tr); ok {
 			return proxy.Target{Flow: out, SentBy: netip.AddrPortFrom(out.Local.Addr(), p.sas.cfg.ServerPort)}, true
 		}
 	}

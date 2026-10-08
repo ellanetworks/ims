@@ -48,10 +48,10 @@ func (s *state) registeredAny(ids []db.PublicIdentity) bool {
 	})
 }
 
-func (s *state) contact(u sip.URI) (db.Contact, bool) {
+func (s *state) contact(c contactRequest) (db.Contact, bool) {
 	for _, reg := range s.regs {
 		bindings := s.live(reg.Bindings)
-		if i := bindingIndex(bindings, u); i >= 0 {
+		if i := bindingIndex(bindings, c); i >= 0 {
 			return bindings[i].Contact, true
 		}
 	}
@@ -78,6 +78,26 @@ func (s *state) overlapping(reg db.Registration) []db.Registration {
 	return out
 }
 
+// bound reports whether the contact has a live binding, in any registration set.
+func (s *state) bound(c db.Contact) bool {
+	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool {
+		return slices.ContainsFunc(s.live(reg.Bindings), func(b db.Binding) bool { return SameContact(b.Contact, c) })
+	})
+}
+
+// SameContact reports whether two bindings bind the same contact: the same flow, or the same contact
+// address (RFC 5626 §6, RFC 3261 §10.3).
+func SameContact(a, b db.Contact) bool {
+	if a.Flow() || b.Flow() {
+		return a.Instance == b.Instance && a.RegID == b.RegID
+	}
+
+	ua, errA := sip.ParseURI(a.URI)
+	ub, errB := sip.ParseURI(b.URI)
+
+	return errA == nil && errB == nil && ua.Equivalent(ub)
+}
+
 func (s *state) live(bindings []db.Binding) []db.Binding {
 	return liveAt(bindings, s.now)
 }
@@ -98,7 +118,7 @@ func only(bindings []db.Binding, contacts []contactRequest) []db.Binding {
 	var out []db.Binding
 
 	for _, b := range bindings {
-		if slices.ContainsFunc(contacts, func(c contactRequest) bool { return bindingIndex([]db.Binding{b}, c.addr.URI) == 0 }) {
+		if slices.ContainsFunc(contacts, func(c contactRequest) bool { return c.binds(b.Contact) }) {
 			out = append(out, b)
 		}
 	}
@@ -106,9 +126,6 @@ func only(bindings []db.Binding, contacts []contactRequest) []db.Binding {
 	return out
 }
 
-func bindingIndex(bindings []db.Binding, u sip.URI) int {
-	return slices.IndexFunc(bindings, func(b db.Binding) bool {
-		stored, err := sip.ParseURI(b.Contact.URI)
-		return err == nil && stored.Equivalent(u)
-	})
+func bindingIndex(bindings []db.Binding, c contactRequest) int {
+	return slices.IndexFunc(bindings, func(b db.Binding) bool { return c.binds(b.Contact) })
 }

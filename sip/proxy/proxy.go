@@ -113,6 +113,10 @@ type Branch struct {
 	// Retry holds branches to the same UA instance over its other flows, tried in turn in place
 	// of this one while it fails with 430 (Flow Failed) (RFC 5626 §7).
 	Retry []Branch
+
+	// Key identifies what the branch reaches, such as a registered contact, so that the callee
+	// legs of its dialog can be released by key (Dialog.ReleaseCallee). It must be comparable.
+	Key any
 }
 
 type Reply struct {
@@ -454,7 +458,7 @@ func (p *Proxy) prepareBranch(c *responseContext, in *sip.Request, spec Branch, 
 	b := &branch{
 		c: c, onReply: opts.OnReply, timeout: opts.Timeout, noAnswer: opts.NoAnswer,
 		out: out, to: spec.Target, rr: opts.RecordRoute,
-		dialog: d, req: out, initial: initial,
+		dialog: d, req: out, initial: initial, key: spec.Key,
 	}
 
 	for _, r := range spec.Retry {

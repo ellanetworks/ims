@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -99,6 +98,8 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFRegistration, now time.Time) api.RegistrationStatus {
 	status := api.RegistrationStatus{IMPI: impi, Identities: []api.RegisteredIdentity{}, Contacts: []api.RegisteredContact{}}
 
+	var listed []db.Contact
+
 	for _, reg := range regs {
 		for _, id := range reg.Identities {
 			if !slices.ContainsFunc(status.Identities, func(i api.RegisteredIdentity) bool { return i.URI == id.URI }) {
@@ -112,8 +113,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 			}
 
 			// A contact registered for several registration sets is listed once.
-			i := slices.IndexFunc(status.Contacts, func(c api.RegisteredContact) bool { return c.Contact == b.Contact.URI })
-			if i >= 0 {
+			if i := slices.IndexFunc(listed, func(c db.Contact) bool { return scscf.SameContact(c, b.Contact) }); i >= 0 {
 				d := &status.Contacts[i]
 				d.RegisteredAt = minTime(d.RegisteredAt, b.RegisteredAt)
 				d.ExpiresAt = maxTime(d.ExpiresAt, b.ExpiresAt)
@@ -121,6 +121,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 				continue
 			}
 
+			listed = append(listed, b.Contact)
 			status.Contacts = append(status.Contacts, contact(b, flows))
 		}
 	}
@@ -131,6 +132,8 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	d := api.RegisteredContact{
 		Contact:        b.Contact.URI,
+		Instance:       b.Contact.Instance,
+		RegID:          b.Contact.RegID,
 		Q:              1,
 		RegisteredAt:   b.RegisteredAt,
 		ExpiresAt:      b.ExpiresAt,
@@ -140,10 +143,6 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	if params, err := sip.ParseParams(b.Contact.Params); err == nil {
 		d.Q = scscf.QValue(params)
 
-		if v, ok := params.Get("+sip.instance"); ok {
-			d.Instance = strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
-		}
-
 		// RFC 3840 §9: the media feature tags the contact registered for.
 		for _, tag := range []string{"audio", "video"} {
 			if params.Has(tag) {
@@ -152,7 +151,7 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 		}
 	}
 
-	if f, ok := flowOf(b.Contact.URI, flows); ok {
+	if f, ok := flowOf(b.Contact, flows); ok {
 		d.Address = f.UEAddress.String()
 		d.Transport = strings.ToLower(f.Transport)
 		d.Protected = f.Protected
@@ -168,32 +167,20 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	return d
 }
 
-// flowOf returns the P-CSCF's registration of a contact: the one that lists it, or else the one from the UE address
-// in the contact's host.
-func flowOf(contact string, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
-	for _, f := range flows {
-		if slices.Contains(f.Contacts, contact) {
-			return f, true
-		}
-	}
-
-	u, err := sip.ParseURI(contact)
-	if err != nil {
+// flowOf returns the P-CSCF's registration of a contact: the one whose IMS flow token is in the first URI of the
+// contact's Path (TS 24.229 §5.2.2.1 step 1), or none when another P-CSCF registered it.
+func flowOf(c db.Contact, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
+	hops, err := sip.ParseAddressList(c.Path)
+	if err != nil || len(hops) == 0 || hops[0].URI.User == "" {
 		return db.PCSCFRegistration{}, false
 	}
 
-	host, err := netip.ParseAddr(strings.Trim(u.Host, "[]"))
-	if err != nil {
+	i := slices.IndexFunc(flows, func(f db.PCSCFRegistration) bool { return f.FlowToken == hops[0].URI.User })
+	if i < 0 {
 		return db.PCSCFRegistration{}, false
 	}
 
-	for _, f := range flows {
-		if f.UEAddress.Addr() == host.Unmap() {
-			return f, true
-		}
-	}
-
-	return db.PCSCFRegistration{}, false
+	return flows[i], true
 }
 
 func minTime(a, b time.Time) time.Time {
