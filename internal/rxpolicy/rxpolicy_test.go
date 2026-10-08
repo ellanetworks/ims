@@ -115,6 +115,54 @@ func TestEvent(t *testing.T) {
 	}
 }
 
+// TS 29.214 §4.4.2, §5.3.13, §5.3.48: a failed modification loses only the components reported INACTIVE.
+func TestEventFailedResourcesAllocation(t *testing.T) {
+	active, inactive := rx.MediaComponentActive, rx.MediaComponentInactive
+	failed := []rx.SpecificAction{rx.ActionIndicationOfFailedResourcesAllocation}
+
+	for _, tc := range []struct {
+		name    string
+		actions []rx.SpecificAction
+		flows   []rx.Flows
+		want    policy.Event
+	}{
+		{
+			name:    "mixed status",
+			actions: failed,
+			flows: []rx.Flows{
+				{MediaComponentNumber: 1, MediaComponentStatus: &active},
+				{MediaComponentNumber: 2, MediaComponentStatus: &inactive},
+				{MediaComponentNumber: 3},
+			},
+			want: policy.Event{Kinds: []policy.EventKind{policy.EventResourcesFailed}, Components: []uint32{2, 3}},
+		},
+		{
+			name:    "all active",
+			actions: failed,
+			flows:   []rx.Flows{{MediaComponentNumber: 1, MediaComponentStatus: &active}},
+			want:    policy.Event{Kinds: []policy.EventKind{}},
+		},
+		{
+			name:    "no flows",
+			actions: failed,
+			want:    policy.Event{Kinds: []policy.EventKind{policy.EventResourcesFailed}},
+		},
+		{
+			name:    "with loss of bearer",
+			actions: []rx.SpecificAction{rx.ActionIndicationOfFailedResourcesAllocation, rx.ActionIndicationOfLossOfBearer},
+			flows:   []rx.Flows{{MediaComponentNumber: 1, MediaComponentStatus: &active}},
+			want: policy.Event{
+				Kinds:      []policy.EventKind{policy.EventResourcesFailed, policy.EventBearerLost},
+				Components: []uint32{1},
+			},
+		},
+	} {
+		if e := event(rx.ReAuthRequest{SpecificActions: tc.actions, Flows: tc.flows}); !reflect.DeepEqual(e, tc.want) {
+			t.Errorf("%s: event = %+v, want %+v", tc.name, e, tc.want)
+		}
+	}
+}
+
 func TestChargingAccess(t *testing.T) {
 	for in, want := range map[rx.IPCANType]policy.Access{
 		rx.IPCAN3GPPEPS:    policy.AccessEPS,
