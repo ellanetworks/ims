@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
@@ -32,10 +33,10 @@ type preference struct {
 	explicit bool
 }
 
-func preferences(h sip.Header) []preference {
+func preferences(h sip.Header, name string) []preference {
 	var out []preference
 
-	for _, v := range h.Elements("Accept-Contact") {
+	for _, v := range h.Elements(name) {
 		_, params, err := sip.ParseTokenParams(v)
 		if err != nil {
 			continue
@@ -178,33 +179,162 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 	return total / float64(m), true
 }
 
-// RFC 3841 §7.2.4
-func selectBinding(bindings []db.Binding, prefs []preference) (db.Binding, bool) {
-	type candidate struct {
-		b  db.Binding
-		q  float64
-		qa float64
+// rejectedBy reports whether a Reject-Contact predicate discards a contact: one whose feature tags
+// all appear in the contact's feature set, and all match (RFC 3841 §7.2.4).
+func rejectedBy(features map[string][]string, rejects []preference) bool {
+	if len(features) == 0 {
+		return false
 	}
 
-	var cs []candidate
+	for _, r := range rejects {
+		matched := true
 
-	for _, b := range bindings {
-		params, _ := sip.ParseParams(b.Contact.Params)
+		for _, t := range r.terms {
+			have, ok := features[t.tag]
+			if !ok || !t.matches(have) {
+				matched = false
+				break
+			}
+		}
 
-		if qa, ok := callerPreference(contactFeatures(params), prefs); ok {
-			cs = append(cs, candidate{b: b, q: qValue(params), qa: qa})
+		if matched {
+			return true
 		}
 	}
 
-	if len(cs) == 0 {
-		return db.Binding{}, false
+	return false
+}
+
+// target is a registered contact a request can go to.
+type target struct {
+	binding db.Binding
+	reg     db.Registration
+	q, qa   float64
+
+	// instance is the UA instance of the contact (RFC 5626 §4.1), and flow its reg-id when the
+	// registration used outbound (RFC 5626 §6).
+	instance, flow string
+
+	// others are the instance's other flows, tried in turn on a 430 (RFC 5626 §7).
+	others []target
+}
+
+type disposition int
+
+const (
+	forkParallel disposition = iota
+	forkSequential
+	noFork
+)
+
+// RFC 3841 §9.1
+func requestDisposition(h sip.Header) disposition {
+	d := forkParallel
+
+	for _, v := range h.Elements("Request-Disposition") {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "no-fork":
+			return noFork
+		case "sequential":
+			d = forkSequential
+		}
 	}
 
-	best := slices.MaxFunc(cs, func(a, b candidate) int {
-		return cmp.Or(cmp.Compare(a.q, b.q), cmp.Compare(a.qa, b.qa), a.b.RegisteredAt.Compare(b.b.RegisteredAt))
+	return d
+}
+
+// targetSet orders the live contacts of the called user into groups tried one after another, the
+// contacts of a group in parallel (TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841 §7.2, RFC 3261 §16.6).
+// Contacts with the highest q-value come first; within a q-value, those that match the caller's
+// preferences best (RFC 3841 §7.2.4), so that the request forks across the contacts with matching
+// callee capabilities (TS 23.228 §4.2.7.2) and reaches the others only if those fail. A group
+// lists its most recently registered contacts first, and a UA instance gets one contact at a time
+// (RFC 5626 §7).
+func targetSet(regs []db.Registration, now time.Time, h sip.Header) [][]target {
+	prefs, rejects := preferences(h, "Accept-Contact"), preferences(h, "Reject-Contact")
+
+	var all []target
+
+	for _, reg := range regs {
+		for _, b := range liveAt(reg.Bindings, now) {
+			params, _ := sip.ParseParams(b.Contact.Params)
+			features := contactFeatures(params)
+
+			if rejectedBy(features, rejects) {
+				continue
+			}
+
+			qa, ok := callerPreference(features, prefs)
+			if !ok {
+				continue
+			}
+
+			t := target{binding: b, reg: reg, q: qValue(params), qa: qa}
+
+			if v, ok := params.Get("+sip.instance"); ok {
+				t.instance = sip.Unquote(v)
+
+				if id, ok := params.Get("reg-id"); ok && outbound(b.Contact.Path) {
+					t.flow = id
+				}
+			}
+
+			all = append(all, t)
+		}
+	}
+
+	slices.SortStableFunc(all, func(a, b target) int {
+		return cmp.Or(cmp.Compare(b.q, a.q), cmp.Compare(b.qa, a.qa), b.binding.RegisteredAt.Compare(a.binding.RegisteredAt))
 	})
 
-	return best.b, true
+	var set []target
+
+	for _, t := range all {
+		i := slices.IndexFunc(set, func(o target) bool { return t.instance != "" && o.instance == t.instance })
+
+		switch {
+		case i < 0:
+			set = append(set, t)
+		case t.flow != "" && t.flow != set[i].flow && !slices.ContainsFunc(set[i].others, func(o target) bool { return o.flow == t.flow }):
+			set[i].others = append(set[i].others, t)
+		}
+	}
+
+	if len(set) == 0 {
+		return nil
+	}
+
+	switch requestDisposition(h) {
+	case noFork:
+		return [][]target{set[:1]}
+	case forkSequential:
+		groups := make([][]target, len(set))
+		for i, t := range set {
+			groups[i] = []target{t}
+		}
+
+		return groups
+	}
+
+	var groups [][]target
+
+	for i, t := range set {
+		if i == 0 || t.q != set[i-1].q || t.qa != set[i-1].qa {
+			groups = append(groups, nil)
+		}
+
+		groups[len(groups)-1] = append(groups[len(groups)-1], t)
+	}
+
+	return groups
+}
+
+// outbound reports whether a registration over path used outbound: its first hop added "ob" to
+// its Path (RFC 5626 §6).
+func outbound(path string) bool {
+	hops, err := sip.ParseAddressList(path)
+
+	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
 }
 
 func qValue(params sip.Params) float64 {

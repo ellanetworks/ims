@@ -109,6 +109,10 @@ type Branch struct {
 	Request *sip.Request
 	Target  Target
 	Options Options
+
+	// Retry holds branches to the same UA instance over its other flows, tried in turn in place
+	// of this one while it fails with 430 (Flow Failed) (RFC 5626 §7).
+	Retry []Branch
 }
 
 type Reply struct {
@@ -279,8 +283,10 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 				d = b.Options.Dialog
 			}
 
-			if b.Options.Dialog != d {
-				return internal(errors.New("sip/proxy: branches of a fork with different dialogs"))
+			for _, r := range append([]Branch{b}, b.Retry...) {
+				if r.Options.Dialog != d {
+					return internal(errors.New("sip/proxy: branches of a fork with different dialogs"))
+				}
 			}
 
 			total++
@@ -439,11 +445,22 @@ func (p *Proxy) prepareBranch(c *responseContext, in *sip.Request, spec Branch, 
 		recordRoute(out, in.Flow, spec.Target, opts.RecordRoute)
 	}
 
-	return &branch{
+	b := &branch{
 		c: c, onReply: opts.OnReply, timeout: opts.Timeout, noAnswer: opts.NoAnswer,
 		out: out, to: spec.Target, rr: opts.RecordRoute,
 		dialog: d, req: out, initial: initial,
-	}, nil
+	}
+
+	for _, r := range spec.Retry {
+		rb, err := p.prepareBranch(c, in, r, loop)
+		if err != nil {
+			return nil, err
+		}
+
+		b.retry = append(b.retry, rb)
+	}
+
+	return b, nil
 }
 
 // RFC 5393 §5.3.3

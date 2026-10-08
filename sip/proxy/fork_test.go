@@ -25,6 +25,9 @@ type forker struct {
 	opts   proxy.Options
 	errs   chan error
 
+	// retry are other flows to the UA of the first branch, for a 430.
+	retry []*siptest.Socket
+
 	// track has every INVITE carry a Dialog, and in-dialog requests follow it.
 	track   bool
 	dialogs chan *proxy.Dialog
@@ -104,23 +107,31 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		f.dialogs <- opts.Dialog
 	}
 
+	branch := func(s *siptest.Socket) proxy.Branch {
+		r := out.Clone()
+		r.URI, _ = sip.ParseURI(target(s, sip.UDP))
+
+		return proxy.Branch{
+			Request: r,
+			Target:  proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: s.Addr()}},
+			Options: opts,
+		}
+	}
+
 	var groups [][]proxy.Branch
 
 	for _, g := range f.groups {
 		var bs []proxy.Branch
 
 		for _, s := range g {
-			r := out.Clone()
-			r.URI, _ = sip.ParseURI(target(s, sip.UDP))
-
-			bs = append(bs, proxy.Branch{
-				Request: r,
-				Target:  proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: s.Addr()}},
-				Options: opts,
-			})
+			bs = append(bs, branch(s))
 		}
 
 		groups = append(groups, bs)
+	}
+
+	for _, s := range f.retry {
+		groups[0][0].Retry = append(groups[0][0].Retry, branch(s))
 	}
 
 	if err := f.p.Fork(tx, groups); err != nil {
@@ -667,5 +678,51 @@ func TestLoopDetection(t *testing.T) {
 		}
 
 		break
+	}
+}
+
+// RFC 5626 §7
+func TestForkRetriesAnotherFlow(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	flows := []*siptest.Socket{siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
+	s.f.retry = flows
+
+	s.send(s.invite199())
+	s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	b.respond(486)
+	a.respond(430)
+
+	a2 := received(t, flows[0], "a2")
+	a2.respond(430)
+
+	a3 := received(t, flows[1], "a3")
+
+	s.noEvent()
+	a3.respond(200)
+
+	if res := s.final(); res.StatusCode != 200 || toTagOf(res) != "a3" {
+		t.Fatalf("got %s from %q", res.StartLine(), toTagOf(res))
+	}
+
+	s.nextEvent(proxy.EventAnswered)
+}
+
+// With no other flow left, the 430 counts as any final response, and reaches the caller as a 480.
+func TestForkFlowsExhausted(t *testing.T) {
+	s, g := newForkScene(t, []int{1}, proxy.Options{})
+	s.f.retry = []*siptest.Socket{siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
+
+	s.send(s.request("INVITE"))
+
+	received(t, g[0][0], "a").respond(430)
+	received(t, s.f.retry[0], "a2").respond(430)
+
+	if res := s.final(); res.StatusCode != 480 {
+		t.Fatalf("got %d, want 480", res.StatusCode)
 	}
 }

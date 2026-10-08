@@ -97,6 +97,15 @@ type branch struct {
 	// early holds the To tags of the early dialogs that came on the branch, and ended those a
 	// 199 already ended (RFC 6228 §6).
 	early, ended []string
+
+	// retry holds the branches to try in turn in its place while it fails with 430.
+	retry []*branch
+}
+
+// retries reports whether res sends the request to b's next flow instead of ending b's search
+// (RFC 5626 §7).
+func (b *branch) retries(res *sip.Response) bool {
+	return res != nil && res.StatusCode == 430 && len(b.retry) > 0
 }
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
@@ -709,7 +718,7 @@ func (c *responseContext) toDialog(d *Dialog, b *branch, r Reply) {
 		best, downstream = c.best, !c.generated[c.best]
 	}
 
-	over := res.StatusCode >= 600 || c.stopped || c.cancelled || len(c.waiting) == 0 && len(c.groups) == 0
+	over := res.StatusCode >= 600 || c.stopped || c.cancelled || len(c.waiting) == 0 && len(c.groups) == 0 && !b.retries(res)
 	over = over && !slices.ContainsFunc(c.branches, func(o *branch) bool { return !o.delivered })
 
 	c.mu.Unlock()
@@ -778,6 +787,18 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 		sendAll(cancels)
 
 		return c.finalize(res)
+	}
+
+	if b.retries(res) && !c.stopped && !c.cancelled {
+		next := b.retry[0]
+		next.retry = b.retry[1:]
+		c.waiting = append([]*branch{next}, c.waiting...)
+
+		c.mu.Unlock()
+
+		c.advance()
+
+		return c.conclude()
 	}
 
 	var cancels []cancellation
@@ -947,10 +968,14 @@ func withChallenges(best *sip.Response, all []*sip.Response) *sip.Response {
 	return best
 }
 
-// finalize relays the final response; a 503 goes upstream as a 500 (RFC 3261 §16.7 step 6).
+// finalize relays the final response. A 503 goes upstream as a 500 (RFC 3261 §16.7 step 6), and a
+// 430, meant for the proxy holding the registration, as a 480 (RFC 5626 §11.5).
 func (c *responseContext) finalize(res *sip.Response) error {
-	if res.StatusCode == 503 {
+	switch res.StatusCode {
+	case 503:
 		res = c.generate(500)
+	case 430:
+		res = c.generate(480)
 	}
 
 	err := c.tx.Relay(res)

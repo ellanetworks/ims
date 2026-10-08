@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
@@ -327,54 +328,102 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	now := s.r.clock.Now()
+	var opts proxy.Options
 
-	var bindings []db.Binding
-
-	for _, reg := range regs {
-		bindings = append(bindings, liveAt(reg.Bindings, now)...)
+	switch out.Method {
+	case "INVITE":
+		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{})
+		fallthrough
+	case "SUBSCRIBE", "REFER":
+		opts.RecordRoute = &proxy.RecordRoute{User: rrTerminating}
 	}
 
-	b, ok := selectBinding(bindings, preferences(out.Header))
-	if !ok {
-		s.log.Debug("request to an unreachable user", slog.String("impu", called.String()), slog.Int("bindings", len(bindings)))
+	set := targetSet(regs, s.r.clock.Now(), out.Header)
+
+	var groups [][]proxy.Branch
+
+	for i, g := range set {
+		var bs []proxy.Branch
+
+		for _, t := range g {
+			o := opts
+			if i < len(set)-1 {
+				o.NoAnswer = groupNoAnswer
+			}
+
+			b, ok := s.branch(out, called, t, o, req.Flow)
+			if !ok {
+				continue
+			}
+
+			for _, other := range t.others {
+				if r, ok := s.branch(out, called, other, o, req.Flow); ok {
+					b.Retry = append(b.Retry, r)
+				}
+			}
+
+			bs = append(bs, b)
+		}
+
+		if len(bs) > 0 {
+			groups = append(groups, bs)
+		}
+	}
+
+	if len(groups) == 0 {
+		s.log.Debug("request to an unreachable user", slog.String("impu", called.String()))
 		s.answer(tx, sip.NewResponse(req, 480, ""))
 
 		return
 	}
 
-	contact, err := sip.ParseURI(b.Contact.URI)
+	err := s.proxy.Fork(tx, groups)
+	if err == nil || errors.Is(err, proxy.ErrAnswered) {
+		return
+	}
+
+	code := 500
+	if serr, ok := errors.AsType[*sip.StatusError](err); ok {
+		code = serr.StatusCode
+	}
+
+	s.log.Debug("forking failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+	s.answer(tx, sip.NewResponse(req, code, ""))
+}
+
+// groupNoAnswer is how long the contacts of a group ring before the next group gets the request.
+const groupNoAnswer = 20 * time.Second
+
+// branch is the request to one registered contact (TS 24.229 §5.4.3.3 step 10).
+func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy.Options, in sip.Flow) (proxy.Branch, bool) {
+	contact, err := sip.ParseURI(t.binding.Contact.URI)
 	if err != nil {
-		s.log.Warn("unusable registered contact", slog.String("contact", b.Contact.URI), slog.Any("error", err))
-		s.answer(tx, sip.NewResponse(req, 480, ""))
-
-		return
+		s.log.Warn("unusable registered contact", slog.String("contact", t.binding.Contact.URI), slog.Any("error", err))
+		return proxy.Branch{}, false
 	}
 
-	reg := regs[slices.IndexFunc(regs, func(r db.Registration) bool {
-		return slices.ContainsFunc(r.Bindings, func(rb db.Binding) bool { return rb.Contact.ID == b.Contact.ID })
-	})]
+	r := out.Clone()
+	r.URI = contact
+	r.Header.Del("P-Called-Party-ID")
+	r.Header.Add("P-Called-Party-ID", "<"+calledPartyID(called).String()+">")
+	r.Header.Del("P-User-Database")
+	r.Header.Del("P-Served-User")
 
-	out.URI = contact
-	out.Header.Del("P-Called-Party-ID")
-	out.Header.Add("P-Called-Party-ID", "<"+calledPartyID(called).String()+">")
-	out.Header.Del("P-User-Database")
-	out.Header.Del("P-Served-User")
-
-	if b.Contact.Path != "" {
-		out.Header.Prepend("Route", b.Contact.Path)
+	if t.binding.Contact.Path != "" {
+		r.Header.Prepend("Route", t.binding.Contact.Path)
 	}
 
-	to, err := s.nextHop(out, req.Flow)
+	to, err := s.nextHop(r, in)
 	if err != nil {
-		s.log.Warn("no route to the registered contact", slog.String("contact", b.Contact.URI),
-			slog.String("path", b.Contact.Path), slog.Any("error", err))
-		s.answer(tx, sip.NewResponse(req, 480, ""))
+		s.log.Warn("no route to the registered contact", slog.String("contact", t.binding.Contact.URI),
+			slog.String("path", t.binding.Contact.Path), slog.Any("error", err))
 
-		return
+		return proxy.Branch{}, false
 	}
 
-	s.forward(tx, out, to, s.initialOptions(out, rrTerminating, s.aliasReply(reg)))
+	opts.OnReply = s.aliasReply(t.reg)
+
+	return proxy.Branch{Request: r, Target: to, Options: opts}, true
 }
 
 func (s *Sessions) aliasReply(reg db.Registration) func(proxy.Reply) proxy.Verdict {

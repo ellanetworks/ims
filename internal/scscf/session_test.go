@@ -1,6 +1,8 @@
 package scscf
 
 import (
+	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -563,8 +565,22 @@ func TestTerminatingAcceptContact(t *testing.T) {
 
 	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", testTel))
 
-	if got, _ := sh.term.RecvRequest(); got.URI.String() != "sip:sms@127.0.0.1:5999" {
-		t.Fatalf("Request-URI = %s, want the newest contact without preferences", got.URI)
+	var uris []string
+
+	for range 2 {
+		got, _ := sh.term.RecvRequest()
+		if got.Method == "MESSAGE" {
+			uris = append(uris, got.URI.String())
+		}
+	}
+
+	want := []string{sh.ue.contact, "sip:sms@127.0.0.1:5999"}
+
+	slices.Sort(uris)
+	slices.Sort(want)
+
+	if !slices.Equal(uris, want) {
+		t.Fatalf("MESSAGE to %v, want both contacts without preferences", uris)
 	}
 
 	other := sh.terminating("INVITE", testTel)
@@ -943,10 +959,11 @@ func TestIdentityKeys(t *testing.T) {
 	}
 }
 
-func TestSelectBinding(t *testing.T) {
+// The first contact of the target set is the one a request that does not fork goes to.
+func TestTargetSetOrder(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
 	binding := func(uri, params string, registered int) db.Binding {
-		return db.Binding{Contact: db.Contact{URI: uri, Params: params}, RegisteredAt: at(registered)}
+		return db.Binding{Contact: db.Contact{URI: uri, Params: params}, RegisteredAt: at(registered), ExpiresAt: at(3600)}
 	}
 
 	voice := binding("sip:voice@ue", ";+g.3gpp.icsi-ref="+mmtelParam, 1)
@@ -960,20 +977,20 @@ func TestSelectBinding(t *testing.T) {
 	videoCapable := binding("sip:videocapable@ue", ";video;+g.3gpp.icsi-ref="+mmtelParam, 0)
 	audioOnly := binding("sip:audioonly@ue", `;video="FALSE";+g.3gpp.icsi-ref=`+mmtelParam, 3)
 
-	predicates := func(values ...string) []preference {
+	predicates := func(values ...string) sip.Header {
 		var h sip.Header
 		for _, v := range values {
 			h.Add("Accept-Contact", v)
 		}
 
-		return preferences(h)
+		return h
 	}
-	accept := func(params string) []preference { return predicates("*;+g.3gpp.icsi-ref=" + mmtelParam + params) }
+	accept := func(params string) sip.Header { return predicates("*;+g.3gpp.icsi-ref=" + mmtelParam + params) }
 
 	tests := []struct {
 		name     string
 		bindings []db.Binding
-		prefs    []preference
+		prefs    sip.Header
 		want     string
 	}{
 		{"newest without preferences", []db.Binding{voice, plain}, nil, "sip:plain@ue"},
@@ -996,11 +1013,119 @@ func TestSelectBinding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b, ok := selectBinding(tt.bindings, tt.prefs)
-			if got := b.Contact.URI; ok != (tt.want != "") || got != tt.want {
-				t.Fatalf("selectBinding = %q, %v, want %q", got, ok, tt.want)
+			set := targetSet([]db.Registration{{Bindings: tt.bindings}}, testEpoch, tt.prefs)
+
+			got := ""
+			if len(set) > 0 {
+				got = set[0][0].binding.Contact.URI
+			}
+
+			if got != tt.want {
+				t.Fatalf("first contact %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func contactURIs(set [][]target) [][]string {
+	var out [][]string
+
+	for _, g := range set {
+		var uris []string
+		for _, t := range g {
+			uris = append(uris, t.binding.Contact.URI)
+		}
+
+		out = append(out, uris)
+	}
+
+	return out
+}
+
+// TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841, RFC 5626 §7
+func TestTargetSetGroups(t *testing.T) {
+	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
+	binding := func(uri, params string, registered int) db.Binding {
+		return db.Binding{Contact: db.Contact{URI: uri, Params: params}, RegisteredAt: at(registered), ExpiresAt: at(3600)}
+	}
+	instance := func(imei string) string { return `;+sip.instance="<urn:gsma:imei:` + imei + `>"` }
+
+	phone := binding("sip:phone@ue", instance("1")+";audio", 1)
+	tablet := binding("sip:tablet@ue", instance("2")+";audio;video", 2)
+	desk := binding("sip:desk@ue", ";q=0.5;audio", 3)
+	soft := binding("sip:soft@ue", ";q=0.5;audio", 4)
+	moved := binding("sip:moved@ue", instance("1")+";audio", 5)
+	expired := binding("sip:expired@ue", ";audio", 0)
+	expired.ExpiresAt = at(-1)
+
+	header := func(fields ...string) sip.Header {
+		var h sip.Header
+		for i := 0; i+1 < len(fields); i += 2 {
+			h.Add(fields[i], fields[i+1])
+		}
+
+		return h
+	}
+
+	tests := []struct {
+		name     string
+		bindings []db.Binding
+		h        sip.Header
+		want     string
+	}{
+		{"equal q-values ring together", []db.Binding{phone, tablet}, nil, "[[sip:tablet@ue sip:phone@ue]]"},
+		{"lower q-values after", []db.Binding{desk, phone, soft}, nil, "[[sip:phone@ue] [sip:soft@ue sip:desk@ue]]"},
+		{"expired contacts left out", []db.Binding{phone, expired}, nil, "[[sip:phone@ue]]"},
+		{"one contact per instance", []db.Binding{phone, moved, tablet}, nil, "[[sip:moved@ue sip:tablet@ue]]"},
+		{"no-fork", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "no-fork"), "[[sip:tablet@ue]]"},
+		{"sequential", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "proxy, sequential"), "[[sip:tablet@ue] [sip:phone@ue] [sip:desk@ue]]"},
+		{"compact form", []db.Binding{phone, tablet}, header("d", "no-fork"), "[[sip:tablet@ue]]"},
+		{"Reject-Contact", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video"), "[[sip:phone@ue]]"},
+		{"Reject-Contact on a missing tag", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video;+sip.foo"), "[[sip:tablet@ue sip:phone@ue]]"},
+		{"required capability", []db.Binding{phone, tablet}, header("Accept-Contact", "*;video;require;explicit"), "[[sip:tablet@ue]]"},
+		{"none", []db.Binding{expired}, nil, "[]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fmt.Sprint(contactURIs(targetSet([]db.Registration{{Bindings: tt.bindings}}, testEpoch, tt.h)))
+			if got != tt.want {
+				t.Fatalf("target set %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// RFC 5626 §7: the flows of an outbound UA instance are tried in turn on a 430.
+func TestTargetSetFlows(t *testing.T) {
+	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
+	flow := func(uri, regID, path string, registered int) db.Binding {
+		return db.Binding{
+			Contact:      db.Contact{URI: uri, Params: `;+sip.instance="<urn:gsma:imei:1>";reg-id=` + regID, Path: path},
+			RegisteredAt: at(registered), ExpiresAt: at(3600),
+		}
+	}
+
+	ob := "<sip:token@pcscf;lr;ob>"
+	set := targetSet([]db.Registration{{Bindings: []db.Binding{
+		flow("sip:a@ue", "1", ob, 3), flow("sip:b@ue", "2", ob, 2), flow("sip:c@ue", "2", ob, 1), flow("sip:d@ue", "3", "<sip:token@pcscf;lr>", 4),
+	}}}, testEpoch, nil)
+
+	if len(set) != 1 || len(set[0]) != 1 {
+		t.Fatalf("target set %v", contactURIs(set))
+	}
+
+	first := set[0][0]
+
+	var others []string
+	for _, o := range first.others {
+		others = append(others, o.binding.Contact.URI)
+	}
+
+	// d, without outbound, is the instance's most recent contact; a and b are other flows, and c a
+	// second contact on b's flow.
+	if first.binding.Contact.URI != "sip:d@ue" || fmt.Sprint(others) != "[sip:a@ue sip:b@ue]" {
+		t.Errorf("contact %s, other flows %v", first.binding.Contact.URI, others)
 	}
 }
 
@@ -1077,4 +1202,121 @@ func TestInDialogDoubleRecordRoute(t *testing.T) {
 	if v := fwd.Header.Values("Record-Route"); !slices.Equal(v, want) {
 		t.Fatalf("UPDATE Record-Route = %v, want %v", v, want)
 	}
+}
+
+// receive takes the next n requests the S-CSCF sends toward the UEs, by Request-URI.
+func (sh *sessionHarness) receive(t *testing.T, n int) map[string]received {
+	t.Helper()
+
+	out := make(map[string]received)
+
+	for len(out) < n {
+		req, f := sh.term.RecvRequest()
+		out[req.URI.String()] = received{req: req, f: f}
+	}
+
+	return out
+}
+
+type received struct {
+	req *sip.Request
+	f   sip.Flow
+}
+
+// TS 23.228 §4.2.7.2, TS 24.229 §5.4.3.3 step 10
+func TestTerminatingForks(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.ue.register(registerOptions{contact: "<" + sh.ue.contact + ">;+g.3gpp.icsi-ref=" + mmtelParam})
+	sh.addBinding(t, "sip:tablet@127.0.0.1:5999", ";+g.3gpp.icsi-ref="+mmtelParam)
+
+	invite := sh.terminating("INVITE", testTel)
+	invite.Header.Add("Accept-Contact", "*;+g.3gpp.icsi-ref="+mmtelParam)
+	sh.icscf.Send(sip.UDP, sh.scscf, invite)
+
+	got := sh.receive(t, 2)
+	phone, tablet := got[sh.ue.contact], got["sip:tablet@127.0.0.1:5999"]
+
+	if phone.req == nil || tablet.req == nil {
+		t.Fatalf("INVITEs to %v", slices.Collect(maps.Keys(got)))
+	}
+
+	for _, r := range []received{phone, tablet} {
+		if v := r.req.Header.Values("P-Called-Party-ID"); !slices.Equal(v, []string{"<" + testTel + ">"}) {
+			t.Errorf("P-Called-Party-ID = %v", v)
+		}
+
+		if v := r.req.Header.Values("Route"); !slices.Equal(v, []string{sh.ue.path}) {
+			t.Errorf("Route = %v", v)
+		}
+
+		if n, _ := r.req.Header.MaxBreadth(); n != 30 {
+			t.Errorf("Max-Breadth %d", n)
+		}
+	}
+
+	reply(t, sh.term, phone.req, phone.f, 180, "phone")
+	reply(t, sh.term, tablet.req, tablet.f, 180, "tablet")
+	reply(t, sh.term, tablet.req, tablet.f, 200, "tablet")
+
+	for {
+		if res := final(t, sh.icscf); res.StatusCode == 200 {
+			break
+		}
+	}
+
+	cancel, _ := sh.term.RecvRequest()
+	if cancel.Method != "CANCEL" || cancel.URI.String() != sh.ue.contact ||
+		cancel.Header.Get("Reason") != `SIP;cause=200;text="Call completed elsewhere"` {
+		t.Fatalf("got %s with Reason %q, want a CANCEL to the phone", cancel.StartLine(), cancel.Header.Get("Reason"))
+	}
+}
+
+// Contacts with a lower q-value get the request once the others rang for a while.
+func TestTerminatingGroups(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.addBinding(t, "sip:desk@127.0.0.1:5999", ";q=0.5")
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("INVITE", testTel))
+
+	phone := sh.receive(t, 1)[sh.ue.contact]
+	if phone.req == nil {
+		t.Fatal("the contact with the highest q-value did not get the INVITE first")
+	}
+
+	reply(t, sh.term, phone.req, phone.f, 180, "phone")
+
+	if res := final(t, sh.icscf); res.StatusCode != 180 {
+		t.Fatalf("got %s", res.StartLine())
+	}
+
+	sh.sipClock.Advance(groupNoAnswer)
+
+	var got []string
+
+	for range 2 {
+		req, _ := sh.term.RecvRequest()
+		got = append(got, req.Method+" "+req.URI.String())
+	}
+
+	slices.Sort(got)
+
+	if want := []string{"CANCEL " + sh.ue.contact, "INVITE sip:desk@127.0.0.1:5999"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// RFC 3841 §9.1
+func TestTerminatingNoFork(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.addBinding(t, "sip:tablet@127.0.0.1:5999", "")
+
+	invite := sh.terminating("INVITE", testTel)
+	invite.Header.Add("Request-Disposition", "no-fork")
+	sh.icscf.Send(sip.UDP, sh.scscf, invite)
+
+	if got, _ := sh.term.RecvRequest(); got.URI.String() != "sip:tablet@127.0.0.1:5999" {
+		t.Fatalf("INVITE to %s, want the newest contact", got.URI)
+	}
+
+	sh.term.RecvNone(50 * time.Millisecond)
 }
