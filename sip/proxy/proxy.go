@@ -275,16 +275,17 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		}
 
 		for _, b := range g {
-			if b.Request.Method == "ACK" || b.Request.Method == "CANCEL" {
-				return internal(fmt.Errorf("sip/proxy: Forward of a %s request", b.Request.Method))
-			}
-
 			if total == 0 {
 				d = b.Options.Dialog
 			}
 
 			for _, r := range append([]Branch{b}, b.Retry...) {
-				if r.Options.Dialog != d {
+				switch {
+				case r.Request.Method == "ACK" || r.Request.Method == "CANCEL":
+					return internal(fmt.Errorf("sip/proxy: Forward of a %s request", r.Request.Method))
+				case r.Request.Method != b.Request.Method:
+					return internal(errors.New("sip/proxy: a retry of another method"))
+				case r.Options.Dialog != d:
 					return internal(errors.New("sip/proxy: branches of a fork with different dialogs"))
 				}
 			}
@@ -364,7 +365,10 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		}
 	}
 
-	var firstErr error
+	// Branches that cannot be sent answer with an error, like any other, once one branch is out: the owner and
+	// the dialog then learn of every branch. Until then, a fork none of whose branches could be sent fails as a
+	// whole.
+	var failures []failure
 
 	for {
 		c.mu.Lock()
@@ -376,22 +380,24 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		}
 
 		started, failed := c.start(picked)
+		failures = append(failures, failed...)
 
 		if started > 0 {
 			if begun {
 				d.started()
 			}
 
-			for _, f := range failed {
+			for _, f := range failures {
 				c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
 			}
 
 			return nil
 		}
+	}
 
-		if firstErr == nil {
-			firstErr = failed[0].err
-		}
+	var firstErr error
+	if len(failures) > 0 {
+		firstErr = failures[0].err
 	}
 
 	c.mu.Lock()
@@ -643,9 +649,11 @@ func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
 		return nil, err
 	}
 
+	// Fork checked the Max-Breadth of the request that formed the response context. One that is invalid here, on
+	// an ACK or a request a dialog generates, is replaced rather than refused.
 	breadth, err := incomingBreadth(out)
 	if err != nil {
-		return nil, err
+		breadth = MaxBreadth
 	}
 
 	out.Header.Set("Max-Breadth", strconv.Itoa(breadth))

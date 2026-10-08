@@ -243,6 +243,11 @@ func TestEarlyDialogTerminated(t *testing.T) {
 
 	// An unreliable 199 for a dialog never established is discarded.
 	p.callee(invite, "callee-c", 41004).response(199, false, false)
+	b.response(180, false, false)
+
+	if got := earlyTags(c); len(got) != 1 || got[0] != b.tag || c.hasLeg("callee-c") {
+		t.Fatalf("early dialogs %v, a dialog for callee-c %v; want only %s", got, c.hasLeg("callee-c"), b.tag)
+	}
 
 	b.response(200, false, true)
 
@@ -283,6 +288,11 @@ func TestByeOnEarlyDialog(t *testing.T) {
 	p.response(200, "BYE")
 
 	eventually(t, "one early dialog", func() bool { return len(c.EarlyDialogs()) == 1 })
+
+	// The dialog of a, the call's until then, gave way to b's.
+	if got := earlyTags(c); got[0] != b.tag || c.ID().RemoteTag != b.tag {
+		t.Fatalf("early dialogs %v, call dialog with %s; want %s", got, c.ID().RemoteTag, b.tag)
+	}
 
 	b.response(200, false, true)
 
@@ -330,5 +340,101 @@ func TestContactParams(t *testing.T) {
 
 	if q, _ := contact.Params.Get("q"); q != "0.5" || !contact.Params.Has("video") || !contact.Params.Has("audio") {
 		t.Errorf("Contact %s", contact)
+	}
+}
+
+func (c *Call) hasLeg(tag string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.legLocked(tag) != nil
+}
+
+// RFC 6228 §4: a reliable 199 for a dialog never established is acknowledged, and ends that dialog at once.
+func TestReliable199ForUnknownDialog(t *testing.T) {
+	p, c, invite := forkedInvite(t)
+
+	a := p.callee(invite, "callee-a", 41000)
+	a.response(199, true, false)
+
+	prack := p.request("PRACK")
+	if toTag(t, prack) != a.tag || prack.Header.Get("RAck") != "1 1 INVITE" {
+		t.Fatalf("PRACK to %s with RAck %q", toTag(t, prack), prack.Header.Get("RAck"))
+	}
+
+	p.send(sip.NewResponse(prack, 200, ""))
+
+	if got := earlyTags(c); len(got) != 0 || c.State() == CallTerminated {
+		t.Fatalf("early dialogs %v, call %s; want none, and the call still waiting", got, c.State())
+	}
+}
+
+// RFC 6228 §4: losing an early dialog leaves the INVITE pending; another callee can still answer.
+func TestLostEarlyDialog(t *testing.T) {
+	ctx := testContext(t)
+	p, c, invite := forkedInvite(t)
+
+	a := p.callee(invite, "callee-a", 41000)
+	b := p.callee(invite, "callee-b", 41002)
+
+	a.response(183, true, true)
+	p.send(sip.NewResponse(p.request("PRACK"), 481, ""))
+
+	eventually(t, "the early dialog released", func() bool { return len(c.EarlyDialogs()) == 0 })
+
+	if c.State() != CallEarly {
+		t.Fatalf("call %s after losing its only early dialog, want early", c.State())
+	}
+
+	b.response(200, false, true)
+
+	if res, err := c.Wait(ctx); err != nil || dialog.ResponseID(res).RemoteTag != b.tag {
+		t.Fatalf("Wait = %v, %v; want the 200 from %s", res, err, b.tag)
+	}
+
+	if ack := p.request("ACK"); toTag(t, ack) != b.tag {
+		t.Errorf("ACK to %s", toTag(t, ack))
+	}
+}
+
+// RFC 3261 §9.1, §13.2.2.4: a 2xx that crosses the caller's CANCEL confirms a dialog the caller then ends.
+func TestAnswerCrossingCancel(t *testing.T) {
+	ctx := testContext(t)
+	p, c, invite := forkedInvite(t)
+
+	a := p.callee(invite, "callee-a", 41000)
+	b := p.callee(invite, "callee-b", 41002)
+
+	a.response(180, false, false)
+	b.response(180, false, false)
+
+	eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
+
+	cancelled := make(chan error, 1)
+
+	go func() { cancelled <- c.Cancel(ctx) }()
+
+	cancel := p.request("CANCEL")
+	p.send(sip.NewResponse(cancel, 200, ""))
+
+	b.response(200, false, true)
+
+	if ack := p.request("ACK"); toTag(t, ack) != b.tag {
+		t.Fatalf("ACK to %s, want %s", toTag(t, ack), b.tag)
+	}
+
+	bye := p.request("BYE")
+	if toTag(t, bye) != b.tag {
+		t.Fatalf("BYE to %s, want %s", toTag(t, bye), b.tag)
+	}
+
+	p.send(sip.NewResponse(bye, 200, ""))
+
+	if err := <-cancelled; err != nil {
+		t.Fatal(err)
+	}
+
+	if c.End() != Cancelled {
+		t.Errorf("call ended by %s, want cancelled", c.End())
 	}
 }

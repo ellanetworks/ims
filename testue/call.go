@@ -936,7 +936,9 @@ func (c *Call) successReceived(res *sip.Response) {
 
 	l.ack = ack
 
-	if c.final != nil {
+	// A 2xx the call can no longer take, because another 2xx answered it or it ended, is acknowledged and ended
+	// (RFC 3261 §13.2.2.4).
+	if c.final != nil || c.state == CallTerminated && !c.cancelled {
 		c.releaseLocked(l)
 		c.mu.Unlock()
 
@@ -1175,8 +1177,9 @@ func (c *Call) prack(ctx context.Context, l *leg, res *sip.Response) error {
 	return c.update(ctx, l, true)
 }
 
-// dialogLostLocked handles a dialog the remote end no longer knows (RFC 3261 §12.2.1.2). Losing
-// one early dialog of a forked INVITE leaves the others.
+// dialogLostLocked handles a dialog the remote end no longer knows (RFC 3261 §12.2.1.2). Losing an early dialog
+// of an outgoing call releases only that dialog: the INVITE is still pending, and the call waits for other early
+// dialogs or its final response (RFC 6228 §4).
 func (c *Call) dialogLostLocked(l *leg) {
 	if c.incoming || l == c.leg && c.state == CallConfirmed {
 		c.terminateLocked(TimedOut)
@@ -1184,10 +1187,6 @@ func (c *Call) dialogLostLocked(l *leg) {
 	}
 
 	c.releaseLocked(l)
-
-	if !slices.ContainsFunc(c.legs, func(o *leg) bool { return !o.released }) {
-		c.terminateLocked(TimedOut)
-	}
 }
 
 func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
@@ -1232,7 +1231,8 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
 
 		req.Header.Add("Supported", c.supportedLocked())
 
-		if interval := c.interval; interval > 0 || !withOffer {
+		// The session timer is the call's: only an UPDATE on its dialog refreshes it (RFC 4028).
+		if interval := c.interval; l == c.leg && (interval > 0 || !withOffer) {
 			if interval <= 0 {
 				interval = DefaultSessionExpires
 			}
@@ -1266,8 +1266,12 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
 			}
 		}
 
-		interval, refresher, _ := parseSessionExpires(res.Header)
-		c.sessionTimerLocked(interval, refresher != "uas")
+		// An UPDATE on another early dialog of a forked INVITE, which may complete after the call was answered
+		// on its own dialog, leaves the call's session timer alone.
+		if l == c.leg && !l.released {
+			interval, refresher, _ := parseSessionExpires(res.Header)
+			c.sessionTimerLocked(interval, refresher != "uas")
+		}
 
 		return nil
 	})
@@ -2284,7 +2288,8 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 	switch {
 	case l == nil || l.d == nil:
 		res = c.u.response(req, 481)
-	case l != c.leg && req.Method != "BYE" && (l.released || req.Method != "UPDATE"):
+	// A released early dialog takes only a BYE; another live early dialog than the call's, only an UPDATE too.
+	case req.Method != "BYE" && (l.released || l != c.leg && req.Method != "UPDATE"):
 		res = c.u.response(req, 481)
 	case req.Method == "INVITE" && c.localOfferLocked(l):
 		res = c.u.response(req, 491)

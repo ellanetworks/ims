@@ -47,8 +47,9 @@ const (
 
 const subscribers = 4
 
-// hosts are the UE hosts on the bridge: one per subscriber, and more for the other devices of one.
-const hosts = subscribers + 2
+// hosts are the UE hosts on the bridge: one per subscriber, and one more for a second device on a subscriber's
+// number.
+const hosts = subscribers + 1
 
 type subscriber struct {
 	imsi, impi, imei string

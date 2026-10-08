@@ -9,6 +9,7 @@ import {
   IconButton,
   Paper,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
@@ -64,14 +65,18 @@ function SharedChip({
   const n = identity.registered_with.length;
   if (n === 0) return null;
 
+  const search = numberOf(identity) ?? identity.uri;
+
   return (
-    <Chip
-      label={`shared with ${n} other${n === 1 ? "" : "s"}`}
-      size="small"
-      color="info"
-      title={identity.registered_with.join("\n")}
-      onClick={() => onSearch(numberOf(identity) ?? identity.uri)}
-    />
+    <Tooltip title={identity.registered_with.join(", ")}>
+      <Chip
+        label={`shared with ${n} other${n === 1 ? "" : "s"}`}
+        size="small"
+        color="info"
+        aria-label={`Search ${search}: also registered with ${identity.registered_with.join(", ")}`}
+        onClick={() => onSearch(search)}
+      />
+    </Tooltip>
   );
 }
 

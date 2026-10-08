@@ -36,49 +36,62 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 			return nil, 0, err
 		}
 
-		status := registrationStatus(impi, regs, flows, now)
+		out = append(out, registrationStatus(impi, regs, flows, now))
+	}
 
-		for i := range status.Identities {
-			id := &status.Identities[i]
-			if id.Barred {
-				continue
-			}
-
-			if id.RegisteredWith, err = v.registeredWith(ctx, impi, id.URI, homeDomain, now); err != nil {
-				return nil, 0, err
-			}
-		}
-
-		out = append(out, status)
+	if err := v.registeredWith(ctx, out, homeDomain, now); err != nil {
+		return nil, 0, err
 	}
 
 	return out, total, nil
 }
 
-// registeredWith returns the other private identities a request to the public identity reaches: those whose
-// registrations hold it, with a live contact, as the S-CSCF routes it (TS 24.229 §5.4.3.3 step 8).
-func (v coreView) registeredWith(ctx context.Context, impi, uri, homeDomain string, now time.Time) ([]string, error) {
-	u, err := sip.ParseURI(uri)
-	if err != nil {
-		return nil, nil
-	}
+// registeredWith fills in, for each unbarred public identity of the page, the other private identities a request to
+// it reaches: those whose registrations hold it, with a live contact, as the S-CSCF routes it (TS 24.229 §5.4.3.3
+// step 8). The whole page takes one read of the database.
+func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationStatus, homeDomain string, now time.Time) error {
+	type ref struct{ reg, id int }
 
-	regs, barred, err := scscf.Recipients(ctx, v.s.database, u, homeDomain)
-	if err != nil || barred {
-		return nil, err
-	}
+	var (
+		refs []ref
+		uris []sip.URI
+	)
 
-	var out []string
-
-	for _, reg := range regs {
-		if reg.IMPI != impi && !slices.Contains(out, reg.IMPI) && slices.ContainsFunc(reg.Bindings, func(b db.Binding) bool { return b.ExpiresAt.After(now) }) {
-			out = append(out, reg.IMPI)
+	for i, status := range page {
+		for j, id := range status.Identities {
+			if u, err := sip.ParseURI(id.URI); err == nil && !id.Barred {
+				refs = append(refs, ref{i, j})
+				uris = append(uris, u)
+			}
 		}
 	}
 
-	slices.Sort(out)
+	if len(uris) == 0 {
+		return nil
+	}
 
-	return out, nil
+	reach, err := scscf.RecipientsOf(ctx, v.s.database, uris, homeDomain)
+	if err != nil {
+		return err
+	}
+
+	for k, r := range refs {
+		impi := page[r.reg].IMPI
+
+		var with []string
+
+		for _, reg := range reach[k].Registrations {
+			if reg.IMPI != impi && !slices.Contains(with, reg.IMPI) &&
+				slices.ContainsFunc(reg.Bindings, func(b db.Binding) bool { return b.ExpiresAt.After(now) }) {
+				with = append(with, reg.IMPI)
+			}
+		}
+
+		slices.Sort(with)
+		page[r.reg].Identities[r.id].RegisteredWith = with
+	}
+
+	return nil
 }
 
 // registrationStatus joins what the S-CSCF and the P-CSCF know of a private identity: the S-CSCF's registration

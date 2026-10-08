@@ -319,36 +319,22 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	var opts proxy.Options
-
-	switch out.Method {
-	case "INVITE":
-		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{})
-		fallthrough
-	case "SUBSCRIBE", "REFER":
-		opts.RecordRoute = &proxy.RecordRoute{User: rrTerminating}
-	}
-
-	set := targetSet(regs, s.r.clock.Now(), out.Header)
+	opts := s.initialOptions(out, rrTerminating, nil)
+	set, step := targetSet(regs, s.r.clock.Now(), out.Header)
 
 	var groups [][]proxy.Branch
 
-	for i, g := range set {
+	for _, g := range set {
 		var bs []proxy.Branch
 
 		for _, t := range g {
-			o := opts
-			if i < len(set)-1 {
-				o.NoAnswer = cmp.Or(s.cfg.GroupNoAnswer, DefaultGroupNoAnswer)
-			}
-
-			b, ok := s.branch(out, called, t, o, req.Flow)
+			b, ok := s.branch(out, called, t, opts, req.Flow)
 			if !ok {
 				continue
 			}
 
 			for _, other := range t.others {
-				if r, ok := s.branch(out, called, other, o, req.Flow); ok {
+				if r, ok := s.branch(out, called, other, opts, req.Flow); ok {
 					b.Retry = append(b.Retry, r)
 				}
 			}
@@ -358,6 +344,19 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 		if len(bs) > 0 {
 			groups = append(groups, bs)
+		}
+	}
+
+	// Every group but the last that is left rings for a while before the next one gets the request.
+	if step {
+		for _, g := range groups[:max(len(groups)-1, 0)] {
+			for i := range g {
+				g[i].Options.NoAnswer = cmp.Or(s.cfg.GroupNoAnswer, DefaultGroupNoAnswer)
+
+				for j := range g[i].Retry {
+					g[i].Retry[j].Options.NoAnswer = g[i].Options.NoAnswer
+				}
+			}
 		}
 	}
 

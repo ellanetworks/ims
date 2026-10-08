@@ -5,7 +5,6 @@ import (
 	"context"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +33,9 @@ type preference struct {
 	explicit bool
 }
 
+// preferences parses the Accept-Contact or Reject-Contact predicates of a request (RFC 3841 §10). A predicate with
+// a term it cannot evaluate, such as a numeric comparison, is discarded whole: dropping only that term would make
+// the predicate match contacts the caller did not mean.
 func preferences(h sip.Header, name string) []preference {
 	var out []preference
 
@@ -45,6 +47,8 @@ func preferences(h sip.Header, name string) []preference {
 
 		var p preference
 
+		valid := true
+
 		for _, param := range params {
 			name := strings.ToLower(param.Name)
 
@@ -54,13 +58,14 @@ func preferences(h sip.Header, name string) []preference {
 			case name == "explicit":
 				p.explicit = true
 			case isFeatureTag(name):
-				if t, ok := parseTerm(name, param.Value); ok {
-					p.terms = append(p.terms, t)
-				}
+				t, ok := parseTerm(name, param.Value)
+				valid = valid && ok
+
+				p.terms = append(p.terms, t)
 			}
 		}
 
-		if len(p.terms) > 0 {
+		if valid && len(p.terms) > 0 {
 			out = append(out, p)
 		}
 	}
@@ -128,9 +133,10 @@ func (t term) matches(have []string) bool {
 	return slices.ContainsFunc(t.values, func(v string) bool { return slices.Contains(have, v) }) != t.negated
 }
 
-// RFC 3841 §7.2.4
+// RFC 3841 §7.2.4. Without Accept-Contact predicates, every contact gets the same caller preference, whether it
+// registered feature tags or not: the caller expressed none.
 func callerPreference(features map[string][]string, prefs []preference) (float64, bool) {
-	if len(features) == 0 {
+	if len(features) == 0 || len(prefs) == 0 {
 		return 1, true
 	}
 
@@ -141,7 +147,7 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 
 	for _, p := range prefs {
 		matched := true
-		score := 0.0
+		present := 0
 
 		for _, t := range p.terms {
 			have, ok := features[t.tag]
@@ -149,7 +155,7 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 				continue
 			}
 
-			score += 1 / float64(len(p.terms))
+			present++
 			matched = matched && t.matches(have)
 		}
 
@@ -161,7 +167,11 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 			continue
 		}
 
-		if score < 1 && p.explicit {
+		// The share of the predicate's terms the contact has: 1/N for each (RFC 3841 §7.2.4), counted rather
+		// than summed so that a full match is exactly 1.
+		score := float64(present) / float64(len(p.terms))
+
+		if present < len(p.terms) && p.explicit {
 			if p.require {
 				return 0, false
 			}
@@ -184,28 +194,71 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 // under any of its aliases, whichever private identity registered it (TS 24.229 §5.4.3.3 step 8, TS 23.228
 // §4.3.3.4). barred reports that one of them bars it, and the request then reaches none.
 func Recipients(ctx context.Context, store *db.DB, u sip.URI, homeDomain string) (regs []db.Registration, barred bool, err error) {
-	keys := identityKeys(u, homeDomain)
+	reach, err := RecipientsOf(ctx, store, []sip.URI{u}, homeDomain)
+	if err != nil {
+		return nil, false, err
+	}
 
-	for _, key := range keys {
-		found, err := store.ListRegistrationsByIdentity(ctx, key)
-		if err != nil {
-			return nil, false, err
-		}
+	return reach[0].Registrations, reach[0].Barred, nil
+}
 
-		for _, reg := range found {
-			if !slices.ContainsFunc(regs, func(r db.Registration) bool { return r.ID == reg.ID }) {
-				regs = append(regs, reg)
+// Reach is what Recipients returns for one public identity.
+type Reach struct {
+	Registrations []db.Registration
+	Barred        bool
+}
+
+// RecipientsOf is Recipients for each of several public identities, with one read of the database.
+func RecipientsOf(ctx context.Context, store *db.DB, uris []sip.URI, homeDomain string) ([]Reach, error) {
+	keys := make([][]string, len(uris))
+
+	var all []string
+
+	for i, u := range uris {
+		keys[i] = identityKeys(u, homeDomain)
+
+		for _, k := range keys[i] {
+			if !slices.Contains(all, k) {
+				all = append(all, k)
 			}
 		}
 	}
 
+	regs, err := store.ListRegistrationsByIdentities(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Reach, len(uris))
+
+	for i := range uris {
+		out[i] = reach(regs, keys[i])
+	}
+
+	return out, nil
+}
+
+// reach picks, out of regs, those that hold one of the keys of a public identity.
+func reach(regs []db.Registration, keys []string) Reach {
+	var r Reach
+
 	for _, reg := range regs {
-		if slices.ContainsFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Barred && slices.Contains(keys, id.Key) }) {
-			return nil, true, nil
+		for _, id := range reg.Identities {
+			if !slices.Contains(keys, id.Key) {
+				continue
+			}
+
+			if id.Barred {
+				return Reach{Barred: true}
+			}
+
+			if !slices.ContainsFunc(r.Registrations, func(o db.Registration) bool { return o.ID == reg.ID }) {
+				r.Registrations = append(r.Registrations, reg)
+			}
 		}
 	}
 
-	return regs, false, nil
+	return r
 }
 
 // rejectedBy reports whether a Reject-Contact predicate discards a contact: one whose feature tags
@@ -251,14 +304,17 @@ type target struct {
 type disposition int
 
 const (
-	forkParallel disposition = iota
+	// byPriority is the S-CSCF's own choice without directives (TS 24.229 §5.4.3.3 step 10a): the contacts of a
+	// q-value in parallel, and q-values one after another.
+	byPriority disposition = iota
+	forkParallel
 	forkSequential
 	noFork
 )
 
 // RFC 3841 §9.1
 func requestDisposition(h sip.Header) disposition {
-	d := forkParallel
+	d := byPriority
 
 	for _, v := range h.Elements("Request-Disposition") {
 		switch strings.ToLower(strings.TrimSpace(v)) {
@@ -266,20 +322,24 @@ func requestDisposition(h sip.Header) disposition {
 			return noFork
 		case "sequential":
 			d = forkSequential
+		case "parallel":
+			d = forkParallel
 		}
 	}
 
 	return d
 }
 
-// targetSet orders the live contacts of the called user into groups tried one after another, the
-// contacts of a group in parallel (TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841 §7.2, RFC 3261 §16.6).
-// Contacts with the highest q-value come first; within a q-value, those that match the caller's
-// preferences best (RFC 3841 §7.2.4), so that the request forks across the contacts with matching
-// callee capabilities (TS 23.228 §4.2.7.2) and reaches the others only if those fail. A group
-// lists its most recently registered contacts first, and a UA instance gets one contact at a time
-// (RFC 5626 §7).
-func targetSet(regs []db.Registration, now time.Time, h sip.Header) [][]target {
+// targetSet orders the live contacts of the called user into groups tried one after another, the contacts of a
+// group in parallel (TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841 §7.2, RFC 3261 §16.6). Without directives, a group
+// holds the contacts of one q-value, the highest first; within it, the contacts that match the caller's
+// preferences best come first (RFC 3841 §7.2.4: Qa orders an equivalence class, it does not split it), then the
+// most recently registered. A UA instance gets one contact at a time (RFC 5626 §7).
+//
+// step reports whether the groups are the S-CSCF's own, which a group may leave unanswered for a while before the
+// next; with the "sequential" directive, the next contact gets the request only on a final response
+// (RFC 3841 §9.1).
+func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]target, step bool) {
 	prefs, rejects := preferences(h, "Accept-Contact"), preferences(h, "Reject-Contact")
 
 	var all []target
@@ -321,41 +381,42 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) [][]target {
 	for _, t := range all {
 		i := slices.IndexFunc(set, func(o target) bool { return t.instance != "" && o.instance == t.instance })
 
+		// Only an outbound flow has other flows to replace it on a 430 (RFC 5626 §5.3.1, §7).
 		switch {
 		case i < 0:
 			set = append(set, t)
-		case t.flow != "" && t.flow != set[i].flow && !slices.ContainsFunc(set[i].others, func(o target) bool { return o.flow == t.flow }):
+		case set[i].flow != "" && t.flow != "" && t.flow != set[i].flow &&
+			!slices.ContainsFunc(set[i].others, func(o target) bool { return o.flow == t.flow }):
 			set[i].others = append(set[i].others, t)
 		}
 	}
 
 	if len(set) == 0 {
-		return nil
+		return nil, false
 	}
 
 	switch requestDisposition(h) {
 	case noFork:
-		return [][]target{set[:1]}
+		return [][]target{set[:1]}, false
+	case forkParallel:
+		return [][]target{set}, false
 	case forkSequential:
-		groups := make([][]target, len(set))
-		for i, t := range set {
-			groups[i] = []target{t}
+		for _, t := range set {
+			groups = append(groups, []target{t})
 		}
 
-		return groups
+		return groups, false
 	}
 
-	var groups [][]target
-
 	for i, t := range set {
-		if i == 0 || t.q != set[i-1].q || t.qa != set[i-1].qa {
+		if i == 0 || t.q != set[i-1].q {
 			groups = append(groups, nil)
 		}
 
 		groups[len(groups)-1] = append(groups[len(groups)-1], t)
 	}
 
-	return groups
+	return groups, true
 }
 
 // outbound reports whether a registration over path used outbound: its first hop added "ob" to
@@ -367,17 +428,18 @@ func outbound(path string) bool {
 }
 
 // QValue is the callee preference of a registered contact: its q-value, or 1.0 when it has none
-// (RFC 3841 §7.2.3), and 0 when it is not a number.
+// (RFC 3841 §7.2.3). The registrar refuses a q-value outside the RFC 3261 §25.1 grammar; one stored before it
+// did counts as none.
 func QValue(params sip.Params) float64 {
 	v, ok := params.Get("q")
 	if !ok {
 		return 1
 	}
 
-	f, err := strconv.ParseFloat(v, 64)
+	q, err := sip.ParseQValue(v)
 	if err != nil {
-		return 0
+		return 1
 	}
 
-	return f
+	return q
 }

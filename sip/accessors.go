@@ -74,14 +74,26 @@ func (fs Header) MaxForwards() (int, error) {
 	return fs.uint("Max-Forwards", 255)
 }
 
-// RFC 5393 §5.3.1
+// MaxBreadth is the Max-Breadth header field value, a positive integer (RFC 5393 §5.3.1). A value too large for an
+// int32 reads as math.MaxInt32: a proxy overwrites a value above its maximum anyway (RFC 5393 §5.3.3).
 func (fs Header) MaxBreadth() (int, error) {
-	n, err := fs.uint("Max-Breadth", math.MaxInt32)
-	if err == nil && n == 0 {
-		err = errors.New("Max-Breadth 0: not a positive integer")
+	v, err := fs.first("Max-Breadth")
+	if err != nil {
+		return 0, err
 	}
 
-	return n, err
+	n, err := parseUint(v, math.MaxInt32)
+
+	switch {
+	case errors.Is(err, errRange):
+		return math.MaxInt32, nil
+	case err != nil:
+		return 0, fmt.Errorf("Max-Breadth %q: %w", v, err)
+	case n == 0:
+		return 0, errors.New("Max-Breadth 0: not a positive integer")
+	}
+
+	return int(n), nil
 }
 
 func (fs Header) ContentLength() (int, error) {

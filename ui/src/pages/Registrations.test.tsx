@@ -211,7 +211,12 @@ describe("Registrations", () => {
     expect(within(drawer).getByText("Priority")).toBeInTheDocument();
     expect(within(drawer).getByText("0.5")).toBeInTheDocument();
 
-    fireEvent.click(within(drawer).getByText("shared with 1 other"));
+    expect(within(drawer).getByText("shared with 1 other")).toBeInTheDocument();
+    fireEvent.click(
+      within(drawer).getByRole("button", {
+        name: `Search +15551230001: also registered with ${bob.impi}`,
+      }),
+    );
 
     await waitFor(() =>
       expect(urls.at(-1)).toBe("?page=1&per_page=25&search=%2B15551230001"),

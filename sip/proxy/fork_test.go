@@ -3,7 +3,9 @@ package proxy_test
 import (
 	"errors"
 	"net/netip"
+	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +30,13 @@ type forker struct {
 	// retry are other flows to the UA of the first branch, for a 430.
 	retry []*siptest.Socket
 
+	// unsendable adds a first group with one branch that cannot be sent, and unsendableRetry a flow that cannot
+	// be sent to the first branch's retries.
+	unsendable, unsendableRetry bool
+
+	// onReply, when set, sees the replies of every branch, with the server transaction.
+	onReply func(tx *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict
+
 	// track has every INVITE carry a Dialog, and in-dialog requests follow it.
 	track   bool
 	dialogs chan *proxy.Dialog
@@ -46,6 +55,11 @@ func newForkScene(t *testing.T, shape []int, opts proxy.Options) (*forkScene, []
 }
 
 func newForkSceneTracking(t *testing.T, shape []int, opts proxy.Options, track bool) (*forkScene, [][]*siptest.Socket) {
+	return newForkSceneWith(t, shape, opts, track, nil)
+}
+
+// newForkSceneWith has configure set up the forker before it receives anything.
+func newForkSceneWith(t *testing.T, shape []int, opts proxy.Options, track bool, configure func(*forker)) (*forkScene, [][]*siptest.Socket) {
 	t.Helper()
 
 	clock := siptest.NewClock()
@@ -62,6 +76,10 @@ func newForkSceneTracking(t *testing.T, shape []int, opts proxy.Options, track b
 		}
 
 		f.groups = append(f.groups, g)
+	}
+
+	if configure != nil {
+		configure(f)
 	}
 
 	f.l, _ = siptest.NewLayer(t, transaction.Config{Handler: f, Clock: clock})
@@ -100,6 +118,10 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
+	if f.onReply != nil {
+		opts.OnReply = func(r proxy.Reply) proxy.Verdict { return f.onReply(tx, r) }
+	}
+
 	if f.track && req.Method == "INVITE" {
 		opts.Dialog = f.p.NewDialog(proxy.DialogConfig{})
 		opts.RecordRoute = &proxy.RecordRoute{}
@@ -132,6 +154,21 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 
 	for _, s := range f.retry {
 		groups[0][0].Retry = append(groups[0][0].Retry, branch(s))
+	}
+
+	unsendable := func() proxy.Branch {
+		bad := branch(f.groups[0][0])
+		bad.Target.Flow.Remote = netip.AddrPort{}
+
+		return bad
+	}
+
+	if f.unsendableRetry {
+		groups[0][0].Retry = append(groups[0][0].Retry, unsendable())
+	}
+
+	if f.unsendable {
+		groups = append([][]proxy.Branch{{unsendable()}}, groups...)
 	}
 
 	if err := f.p.Fork(tx, groups); err != nil {
@@ -611,6 +648,18 @@ func TestForkMaxBreadth(t *testing.T) {
 		}
 	})
 
+	t.Run("beyond an int32", func(t *testing.T) {
+		s, g := newForkScene(t, []int{1}, proxy.Options{})
+
+		req := s.request("INVITE")
+		req.Header.Set("Max-Breadth", "99999999999999999999")
+		s.send(req)
+
+		if n := breadth(received(t, g[0][0], "a")); n != proxy.MaxBreadth {
+			t.Errorf("Max-Breadth %d", n)
+		}
+	})
+
 	t.Run("invalid", func(t *testing.T) {
 		s, _ := newForkScene(t, []int{1}, proxy.Options{})
 
@@ -683,10 +732,8 @@ func TestLoopDetection(t *testing.T) {
 
 // RFC 5626 §7
 func TestForkRetriesAnotherFlow(t *testing.T) {
-	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
-
 	flows := []*siptest.Socket{siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
-	s.f.retry = flows
+	s, g := newForkSceneWith(t, []int{2}, proxy.Options{}, true, func(f *forker) { f.retry = flows })
 
 	s.send(s.invite199())
 	s.nextDialog()
@@ -714,13 +761,128 @@ func TestForkRetriesAnotherFlow(t *testing.T) {
 
 // With no other flow left, the 430 counts as any final response, and reaches the caller as a 480.
 func TestForkFlowsExhausted(t *testing.T) {
-	s, g := newForkScene(t, []int{1}, proxy.Options{})
-	s.f.retry = []*siptest.Socket{siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
+	flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, false, func(f *forker) { f.retry = []*siptest.Socket{flow} })
 
 	s.send(s.request("INVITE"))
 
 	received(t, g[0][0], "a").respond(430)
-	received(t, s.f.retry[0], "a2").respond(430)
+	received(t, flow, "a2").respond(430)
+
+	if res := s.final(); res.StatusCode != 480 {
+		t.Fatalf("got %d, want 480", res.StatusCode)
+	}
+}
+
+// A branch cancelled because another answered ends with its 487: no timer of it fires later (RFC 3261 §16.8).
+func TestForkCancelledBranchEnds(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		codes []int
+	)
+
+	s, g := newForkScene(t, []int{2}, proxy.Options{NoAnswer: time.Minute, OnReply: func(r proxy.Reply) proxy.Verdict {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if r.Response != nil {
+			codes = append(codes, r.Response.StatusCode)
+		}
+
+		return proxy.Relay
+	}})
+
+	s.send(s.request("INVITE"))
+	wantResponse(t, s.caller, 100)
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	s.relayed(180)
+	b.respond(200)
+	wantResponse(t, s.caller, 200)
+	a.cancelled()
+	g[0][0].RecvNone(quiet)
+
+	s.clock.Advance(proxy.DefaultTimerC + time.Minute)
+	s.caller.RecvNone(quiet)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !slices.Equal(codes, []int{180, 200}) {
+		t.Fatalf("OnReply saw %v, want 180 and 200 only", codes)
+	}
+}
+
+// A group none of whose branches can be sent counts as failed: the dialog ends with the INVITE.
+func TestForkUnsendableGroup(t *testing.T) {
+	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, true, func(f *forker) { f.unsendable = true })
+
+	s.send(s.request("INVITE"))
+	d := s.nextDialog()
+
+	received(t, g[0][0], "a").respond(486)
+
+	if res := s.final(); res.StatusCode != 486 {
+		t.Fatalf("got %d, want 486", res.StatusCode)
+	}
+
+	if e := s.nextEvent(proxy.EventEnded); e.Code != 486 || e.End != proxy.EndFailed {
+		t.Errorf("ended %+v", e)
+	}
+
+	if d.State() != proxy.Ended {
+		t.Errorf("dialog %s", d.State())
+	}
+}
+
+// A context stopped by a 6xx takes no new fork (RFC 3261 §16.7 step 5).
+func TestForkAfterAStop(t *testing.T) {
+	refork := make(chan error, 1)
+
+	s, g := newForkSceneWith(t, []int{2}, proxy.Options{}, false, func(f *forker) {
+		f.onReply = func(tx *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict {
+			if r.Response == nil || r.Response.StatusCode != 487 {
+				return proxy.Relay
+			}
+
+			refork <- f.p.Forward(tx, tx.Request(), proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: tx.Request().Flow.Local, Remote: f.groups[0][0].Addr()}}, proxy.Options{})
+
+			if err := f.p.Relay(tx, sip.NewResponse(tx.Request(), 603, "")); err != nil {
+				t.Error(err)
+			}
+
+			return proxy.Hold
+		}
+	})
+
+	s.send(s.request("INVITE"))
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(603)
+	a.cancelled()
+
+	if err := <-refork; !errors.Is(err, proxy.ErrAnswered) {
+		t.Fatalf("Forward after a 6xx: %v, want ErrAnswered", err)
+	}
+
+	if res := s.final(); res.StatusCode != 603 {
+		t.Fatalf("got %d, want 603", res.StatusCode)
+	}
+}
+
+// A 430 whose retry flow cannot be sent still answers the caller, as a 480 (RFC 5626 §11.5).
+func TestForkRetryUnsendable(t *testing.T) {
+	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, false, func(f *forker) { f.unsendableRetry = true })
+
+	s.send(s.request("INVITE"))
+
+	received(t, g[0][0], "a").respond(430)
 
 	if res := s.final(); res.StatusCode != 480 {
 		t.Fatalf("got %d, want 480", res.StatusCode)

@@ -135,11 +135,18 @@ func TestRingAllDevices(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// RFC 6228: the caller learns that the phone's early dialog ended, while the other rings on.
+		// RFC 6228 §6: the caller learns, with a 199 for the phone's early dialog, that it ended, while the other
+		// device rings on. The S-CSCF's Reason does not reach the UE: the P-CSCF removes it from responses leaving
+		// the trust domain (TS 24.229 §4.4.7).
+		r := next199(t, ac)
+		if to, _ := r.Header.To(); to.Tag() != pc.ID().LocalTag || r.Header.Has("Reason") {
+			t.Errorf("199 to %q with Reason %q, want the phone's %q without", to.Tag(), r.Header.Get("Reason"), pc.ID().LocalTag)
+		}
+
 		eventually(t, "one early dialog at the caller", func() bool { return len(ac.EarlyDialogs()) == 1 })
 
-		if ac.State() != testue.CallEarly {
-			t.Fatalf("caller %s after one device was busy", ac.State())
+		if got := ac.EarlyDialogs()[0].RemoteTag; got != sc.ID().LocalTag || ac.State() != testue.CallEarly {
+			t.Fatalf("caller %s with the early dialog of %q, want early with the second device's %q", ac.State(), got, sc.ID().LocalTag)
 		}
 
 		if err := sc.Answer(ctx); err != nil {
@@ -299,13 +306,27 @@ func TestRingDevicesInTurn(t *testing.T) {
 		turn(t, s, d, testue.CallOptions{}, d.phone, d.second)
 	})
 
+	// RFC 3841 §7.2.4: a preference without "require" orders the devices of a q-value, without splitting them:
+	// a video call rings the voice-only device together with the video one.
 	t.Run("caller preferences", func(t *testing.T) {
 		s := newSceneWith(t, configure)
 		d := twoDevices(t, s, testue.Config{ContactParams: sip.Params{{Name: "video"}}})
 
 		video := testue.CallOptions{Headers: []sip.Field{{Name: "Accept-Contact", Value: "*;+g.3gpp.icsi-ref=" + icsiMMTelParam + ";video"}}}
 
-		turn(t, s, d, video, d.second, d.phone)
+		ctx := s.ctx()
+		ac := invite(t, d.caller, phone(1), video)
+		pc, vc := d.ringing(t, ctx, ac)
+
+		if err := vc.Answer(ctx); err != nil {
+			t.Fatalf("Answer: %v", err)
+		}
+
+		if res, err := ac.Wait(ctx); err != nil || res.StatusCode != 200 {
+			t.Fatalf("Wait = %v, %v, want 200", res, err)
+		}
+
+		ended(t, pc, testue.Cancelled)
 	})
 }
 
@@ -324,6 +345,8 @@ func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, the
 	if err := fc.Ring(ctx); err != nil {
 		t.Fatal(err)
 	}
+
+	eventually(t, "the first device's early dialog at the caller", func() bool { return len(ac.EarlyDialogs()) == 1 })
 
 	tc := incoming(t, then, ac)
 
@@ -381,6 +404,25 @@ func TestListSharedNumber(t *testing.T) {
 
 		if len(reg.Contacts) != 1 || reg.Contacts[0].Q != q {
 			t.Errorf("%s: contacts %+v, want one with q %v", reg.IMPI, reg.Contacts, q)
+		}
+	}
+}
+
+// next199 waits for the next 199 (Early Dialog Terminated) the caller receives.
+func next199(t *testing.T, c *testue.Call) *sip.Response {
+	t.Helper()
+
+	deadline := time.After(15 * time.Second)
+
+	for {
+		select {
+		case e := <-c.Events():
+			if e.Response != nil && e.Response.StatusCode == 199 {
+				return e.Response
+			}
+		case <-deadline:
+			t.Fatal("no 199 at the caller")
+			return nil
 		}
 	}
 }

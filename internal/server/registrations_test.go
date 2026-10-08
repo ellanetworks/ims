@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -134,5 +135,74 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+}
+
+// A q-value the registrar would now refuse, stored before it did, lists as none rather than as a number JSON
+// cannot carry.
+func TestContactQ(t *testing.T) {
+	for params, want := range map[string]float64{``: 1, `;q=0.5`: 0.5, `;q=0`: 0, `;q=NaN`: 1, `;q=5`: 1, `;q=1e-1`: 1} {
+		b := binding("sip:ue@192.0.2.9:5060", params, listNow, listNow.Add(time.Hour))
+
+		if got := contact(b, nil).Q; got != want {
+			t.Errorf("q of %q = %v, want %v", params, got, want)
+		}
+	}
+}
+
+// registered_with lists the other private identities a request to a public identity reaches, as the S-CSCF routes
+// it: those with a live contact, and none at all when one of them bars the identity.
+func TestRegisteredWith(t *testing.T) {
+	d, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = d.Close() })
+
+	save := func(impi, tel string, barred bool, expires time.Time) {
+		t.Helper()
+
+		_, err := d.SaveRegistration(t.Context(), db.Registration{
+			IMPI: impi, IMPU: tel,
+			Identities: []db.PublicIdentity{{URI: tel, Key: tel, Barred: barred}},
+			Bindings: []db.Binding{{
+				Contact: db.Contact{IMPI: impi, URI: "sip:" + impi + "@192.0.2.1"}, CallID: impi, CSeq: 1,
+				ExpiresAt: expires, Event: db.BindingRegistered, IMPU: tel, RegisteredAt: listNow,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	live, gone := listNow.Add(time.Hour), listNow.Add(-time.Minute)
+
+	save("phone", "tel:+15551230001", false, live)
+	save("watch", "tel:+15551230001", false, live)
+	save("stale", "tel:+15551230001", false, gone)
+	save("desk", "tel:+15551230002", false, live)
+	save("barring", "tel:+15551230002", true, live)
+
+	page := []api.RegistrationStatus{
+		{IMPI: "phone", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230001"}, {URI: "sip:phone@" + listDomain, Barred: true}}},
+		{IMPI: "desk", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230002"}}},
+	}
+
+	if err := (coreView{&Server{database: d}}).registeredWith(t.Context(), page, listDomain, listNow); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		got  []string
+		want []string
+	}{
+		{page[0].Identities[0].RegisteredWith, []string{"watch"}},
+		{page[0].Identities[1].RegisteredWith, nil},
+		{page[1].Identities[0].RegisteredWith, nil},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("registered with %v, want %v", tc.got, tc.want)
+		}
 	}
 }

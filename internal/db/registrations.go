@@ -218,6 +218,28 @@ func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) ([]Reg
 	return regs, nil
 }
 
+// ListRegistrationsByIdentities returns the registrations holding any of the identity keys, each once.
+func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) ([]Registration, error) {
+	if len(keys) == 0 {
+		return []Registration{}, nil
+	}
+
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+
+	regs, err := queryRegistrations(ctx, d.conn,
+		`SELECT `+registrationColumns+` FROM registrations
+		WHERE id IN (SELECT registration_id FROM registration_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY id`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("list registrations of %d identities: %w", len(keys), err)
+	}
+
+	return regs, nil
+}
+
 func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Registration, int, error) {
 	var total int
 	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM registrations`).Scan(&total); err != nil {

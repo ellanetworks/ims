@@ -960,6 +960,10 @@ func TestBadRequests(t *testing.T) {
 		"star without expires":   {contact: "*"},
 		"star and a contact":     {contact: "*, <sip:a@127.0.0.1>", expires: "0"},
 		"bad Expires":            {expires: "soon"},
+		// RFC 3261 §25.1
+		"q-value not a number": {contact: "<sip:a@127.0.0.1>;q=NaN"},
+		"q-value above 1":      {contact: "<sip:a@127.0.0.1>;q=5"},
+		"q-value exponent":     {contact: "<sip:a@127.0.0.1>;q=1e-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o.auth = u.unprotected()

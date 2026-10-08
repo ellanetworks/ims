@@ -100,6 +100,10 @@ type branch struct {
 
 	// retry holds the branches to try in turn in its place while it fails with 430.
 	retry []*branch
+
+	// expired is set once the branch rang past its Timer C or no-answer time: it was cancelled, and the final
+	// response it ends with is delivered as a 408.
+	expired bool
 }
 
 // retries reports whether res sends the request to b's next flow instead of ending b's search
@@ -107,6 +111,9 @@ type branch struct {
 func (b *branch) retries(res *sip.Response) bool {
 	return res != nil && res.StatusCode == 430 && len(b.retry) > 0
 }
+
+// errRangOut is the error of a branch that rang past its Timer C or no-answer time (RFC 3261 §16.8).
+var errRangOut = fmt.Errorf("%w: rang out", transaction.ErrTimeout)
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
 	return &responseContext{
@@ -122,7 +129,7 @@ func (c *responseContext) open(groups [][]*branch, breadth int) error {
 	defer c.mu.Unlock()
 
 	switch {
-	case c.final || c.success || c.cancelled:
+	case c.final || c.success || c.cancelled || c.stopped:
 		return ErrAnswered
 	case c.liveLocked() || len(c.waiting) > 0 || len(c.groups) > 0:
 		return ErrForwarded
@@ -242,8 +249,13 @@ func (c *responseContext) send(b *branch) error {
 	if err != nil {
 		c.drop(b)
 
+		// The dialog learns of the failure here, whether or not the failure is dispatched later.
 		if d := b.dialog; d != nil && !b.initial {
 			d.response(b.out, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
+
+			c.mu.Lock()
+			b.dialog = nil
+			c.mu.Unlock()
 		}
 
 		return internal(err)
@@ -394,7 +406,10 @@ func (b *branch) startTimerC() {
 
 func (b *branch) finish() {
 	b.done = true
+	b.stopTimers()
+}
 
+func (b *branch) stopTimers() {
 	for _, t := range []transaction.Timer{b.timerC, b.timer, b.noAnswerTimer} {
 		if t != nil {
 			t.Stop()
@@ -416,25 +431,41 @@ func (b *branch) expire(current func() bool, cause string) {
 
 	c.mu.Lock()
 
-	if b.done || !current() {
+	if b.done || b.expired || !current() {
 		c.mu.Unlock()
+		return
+	}
+
+	c.p.log.Debug("INVITE branch expired", slog.String("cause", cause), slog.String("request", c.tx.Request().StartLine()))
+
+	// RFC 3261 §16.8: a branch with a provisional response is cancelled, and ends with the final response that
+	// brings; until then it is live, and counts toward the Outgoing Max-Breadth (RFC 5393 §5.3.2). One without
+	// is taken as answering with a 408.
+	if b.responded {
+		b.expired = true
+		b.stopTimers()
+		client := b.cancelLocked(nil)
+
+		c.mu.Unlock()
+
+		if client != nil {
+			_ = client.Cancel()
+		}
+
 		return
 	}
 
 	b.finish()
 	client := b.cancelLocked(nil)
-	responded := b.responded
 	b.settled = true
 
 	c.mu.Unlock()
-
-	c.p.log.Debug("INVITE branch expired", slog.String("cause", cause), slog.String("request", c.tx.Request().StartLine()))
 
 	if client != nil {
 		_ = client.Cancel()
 	}
 
-	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause), Responded: responded})
+	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause)})
 }
 
 func (b *branch) timeoutFired() {
@@ -514,7 +545,9 @@ func (b *branch) HandleResponse(res *sip.Response) {
 			return
 		}
 
-		b.startTimerC()
+		if !b.expired {
+			b.startTimerC()
+		}
 
 		if tag := toTag(res); tag != "" {
 			switch {
@@ -544,7 +577,9 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		}
 
 		if c.final && !c.invite {
+			b.finish()
 			c.mu.Unlock()
+
 			return
 		}
 
@@ -553,7 +588,10 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 		b.finish()
 	default:
+		// A branch the context cancelled once it had its answer ends here, unseen: its timers stop, so it cannot
+		// expire into a 408 later.
 		if b.done || c.final {
+			b.finish()
 			c.mu.Unlock()
 
 			if freed {
@@ -564,6 +602,19 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		}
 
 		b.finish()
+
+		// The branch rang out and was cancelled: whatever final response it ends with stands for the timeout.
+		if b.expired {
+			c.mu.Unlock()
+
+			c.dispatch(b, Reply{Response: c.generate(408), Err: errRangOut, Responded: true})
+
+			if freed {
+				c.advance()
+			}
+
+			return
+		}
 	}
 
 	c.mu.Unlock()
@@ -582,7 +633,8 @@ func (b *branch) HandleError(err error) {
 
 	freed := b.settleLocked()
 
-	if b.done {
+	if b.done || c.final {
+		b.finish()
 		c.mu.Unlock()
 
 		if freed {
@@ -607,6 +659,8 @@ func (b *branch) HandleError(err error) {
 
 	switch {
 	case !c.invite && errors.Is(err, transaction.ErrTimeout):
+	case b.expired:
+		res, err = c.generateLocked(408), fmt.Errorf("%w: %w", errRangOut, err)
 	case b.cancelled || c.cancelled:
 		res = c.generateLocked(487)
 	case errors.Is(err, transaction.ErrTimeout):
@@ -705,18 +759,12 @@ func (c *responseContext) toDialog(d *Dialog, b *branch, r Reply) {
 		return
 	}
 
-	if res == nil {
-		res = c.generate(408)
-	}
-
 	c.mu.Lock()
 
 	b.delivered = true
 
-	best, downstream := res, r.Err == nil
-	if c.best != nil && !better(res.StatusCode, c.best.StatusCode) {
-		best, downstream = c.best, !c.generated[c.best]
-	}
+	best := c.bestWithLocked(res)
+	downstream := !c.generated[best]
 
 	over := res.StatusCode >= 600 || c.stopped || c.cancelled || len(c.waiting) == 0 && len(c.groups) == 0 && !b.retries(res)
 	over = over && !slices.ContainsFunc(c.branches, func(o *branch) bool { return !o.delivered })
@@ -790,6 +838,9 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 	}
 
 	if b.retries(res) && !c.stopped && !c.cancelled {
+		// The 430 stays a candidate: should every flow fail, it is the answer (RFC 5626 §11.5).
+		c.considerLocked(res)
+
 		next := b.retry[0]
 		next.retry = b.retry[1:]
 		c.waiting = append([]*branch{next}, c.waiting...)
@@ -880,16 +931,25 @@ func (c *responseContext) considerLocked(res *sip.Response) {
 		c.challenges = append(c.challenges, res)
 	}
 
-	if c.best == nil || better(res.StatusCode, c.best.StatusCode) ||
-		res.StatusCode/100 == c.best.StatusCode/100 && !better(c.best.StatusCode, res.StatusCode) && c.generated[c.best] && !c.generated[res] {
-		c.best = res
+	c.best = c.bestWithLocked(res)
+}
+
+// bestWithLocked is the best final response once res is weighed too. Within what better leaves equal, it prefers
+// a response a branch returned to one the context generated, such as the 408 of a branch that rang out.
+func (c *responseContext) bestWithLocked(res *sip.Response) *sip.Response {
+	switch {
+	case c.best == nil, better(res.StatusCode, c.best.StatusCode):
+		return res
+	case !better(c.best.StatusCode, res.StatusCode) && res.StatusCode/100 == c.best.StatusCode/100 &&
+		c.generated[c.best] && !c.generated[res]:
+		return res
 	}
+
+	return c.best
 }
 
 // better reports whether a final response with code is better than one with than: 6xx first,
-// then the lowest class, and in the 4xx class those that tell how to resubmit the request. Within
-// that, the context prefers a response a branch returned to one it generated, such as the 408 of
-// a branch that rang out.
+// then the lowest class, and in the 4xx class those that tell how to resubmit the request.
 func better(code, than int) bool {
 	class, thanClass := code/100, than/100
 
@@ -952,10 +1012,6 @@ func withChallenges(best *sip.Response, all []*sip.Response) *sip.Response {
 	best = best.Clone()
 
 	for _, res := range all {
-		if res == best {
-			continue
-		}
-
 		for _, name := range []string{"WWW-Authenticate", "Proxy-Authenticate"} {
 			for _, v := range res.Header.Values(name) {
 				if !slices.Contains(best.Header.Values(name), v) {

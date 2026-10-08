@@ -155,6 +155,14 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	case star:
 		rr.star = true
 	default:
+		for _, c := range contacts {
+			if v, ok := c.Params.Get("q"); ok {
+				if _, err := sip.ParseQValue(v); err != nil {
+					return nil, sip.NewResponse(req, 400, "Bad Contact q-value")
+				}
+			}
+		}
+
 		for _, c := range selectContacts(contacts) {
 			granted := expires
 
@@ -210,7 +218,7 @@ func selectContacts(contacts []sip.Address) []sip.Address {
 	best := 0
 
 	for i, c := range unique {
-		if q(c) > q(unique[best]) {
+		if QValue(c.Params) > QValue(unique[best].Params) {
 			best = i
 		}
 	}
@@ -226,20 +234,6 @@ func slicesContainsURI(addrs []sip.Address, u sip.URI) bool {
 	}
 
 	return false
-}
-
-func q(c sip.Address) float64 {
-	v, ok := c.Params.Get("q")
-	if !ok {
-		return 1
-	}
-
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return 0
-	}
-
-	return f
 }
 
 func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *cx.Resync, resyncs int) *sip.Response {

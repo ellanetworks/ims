@@ -643,7 +643,8 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 	}
 }
 
-func TestDialogLate2xxAfterTimerC(t *testing.T) {
+// RFC 3261 §16.8: a branch that rang past Timer C is cancelled; if the callee answers anyway, the call is answered.
+func TestDialogAnsweredAfterTimerC(t *testing.T) {
 	clock := siptest.NewClock()
 	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
 
@@ -652,41 +653,33 @@ func TestDialogLate2xxAfterTimerC(t *testing.T) {
 	wantResponse(t, s.caller, 180)
 
 	clock.Advance(proxy.DefaultTimerC)
-	wantResponse(t, s.caller, 408)
 	wantRequest(t, s.callee, "CANCEL")
-
-	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
-		t.Errorf("ended event %+v", e)
-	}
 
 	answer(t, s.callee, c.fwd, c.f, 200)
 	wantResponse(t, s.caller, 200)
 
-	ack, _ := wantRequest(t, s.callee, "ACK")
-	if len(ack.Body) != 0 {
-		t.Errorf("ACK with a body for a 2xx without an offer:\n%s", ack)
+	if e := s.r.nextEvent(proxy.EventAnswered); e.Code != 200 {
+		t.Errorf("answered event %+v", e)
 	}
-
-	wantRequest(t, s.callee, "BYE")
-	s.caller.RecvNone(quiet)
-	s.r.noEvent()
 }
 
 func TestDialogLate2xxWithAnOffer(t *testing.T) {
-	clock := siptest.NewClock()
-	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
+	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
 
 	invite := s.request("INVITE")
 	s.send(invite)
 	wantResponse(t, s.caller, 100)
-	s.r.nextDialog()
+	d := s.r.nextDialog()
 
 	fwd, f := s.forwarded()
 	answer(t, s.callee, fwd, f, 180)
 	wantResponse(t, s.caller, 180)
 
-	clock.Advance(proxy.DefaultTimerC)
-	wantResponse(t, s.caller, 408)
+	if err := d.Release(proxy.Release{Toward: proxy.Caller}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantResponse(t, s.caller, 500)
 	wantRequest(t, s.callee, "CANCEL")
 
 	ok := sip.NewResponse(fwd, 200, "")
@@ -718,7 +711,12 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	answer(t, s.callee, c.fwd, c.f, 180)
 	wantResponse(t, s.caller, 180)
 
+	// RFC 3261 §16.8: the branch is cancelled; its 487 reaches the caller as a 408 the proxy generated.
 	clock.Advance(proxy.DefaultTimerC)
+	wantRequest(t, s.callee, "CANCEL")
+	s.r.noEvent()
+
+	answer(t, s.callee, c.fwd, c.f, 487)
 	wantResponse(t, s.caller, 408)
 
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
@@ -726,8 +724,6 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	}
 
 	wantState(t, c.d, proxy.Ended)
-
-	answer(t, s.callee, c.fwd, c.f, 487)
 	s.caller.RecvNone(quiet)
 	s.r.noEvent()
 }
