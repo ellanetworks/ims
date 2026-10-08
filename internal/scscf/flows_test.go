@@ -223,7 +223,17 @@ func TestRequireOutbound(t *testing.T) {
 
 	o := registerOptions{contact: u.flowContact(flowA, "1"), auth: u.unprotected()}
 
+	// RFC 3261 §8.2.4: not to a UE whose Supported does not list outbound, such as a Pixel 10a.
 	res := u.send(o)
+	wantStatus(t, res, 401)
+	h.hss.nextMAR(t)
+
+	if res.Header.Has("Require") {
+		t.Errorf("401 Require = %q, want none without outbound in Supported", res.Header.Get("Require"))
+	}
+
+	o.supported = "outbound"
+	res = u.send(o)
 	wantStatus(t, res, 401)
 	h.hss.nextMAR(t)
 
@@ -231,6 +241,7 @@ func TestRequireOutbound(t *testing.T) {
 		t.Errorf("401 Require = %q, want outbound", got)
 	}
 
+	o.supported = ""
 	nonce := sip.Unquote(challengeParams(t, res)["nonce"])
 	o.auth = u.protected(nonce, testVector.XRES)
 

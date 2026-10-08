@@ -371,8 +371,9 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 	res := sip.NewResponse(rr.req, 401, "")
 	res.Header.Add("WWW-Authenticate", wwwAuthenticate(r.cfg.HomeDomain, nonce, v))
 
-	// TS 24.229 §5.4.1.2.1 step 6, "as described in RFC 5626": not when no reg-id is used (RFC 5626 §6).
-	if rr.flows() {
+	// TS 24.229 §5.4.1.2.1 step 6, "as described in RFC 5626": only for a flow, of a UE that supports outbound
+	// (RFC 5626 §6; RFC 3261 §8.2.4: no extension the request's Supported does not list).
+	if rr.flows() && rr.outbound {
 		res.Header.Add("Require", "outbound")
 	}
 
