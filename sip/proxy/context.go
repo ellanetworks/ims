@@ -104,6 +104,8 @@ type branch struct {
 	// expired is set once the branch rang past its Timer C or no-answer time: it was cancelled, and the final
 	// response it ends with is delivered as a 408.
 	expired bool
+
+	key any
 }
 
 // retries reports whether res sends the request to b's next flow instead of ending b's search
@@ -1080,6 +1082,80 @@ func (c *responseContext) cancel(reason []sip.Field) {
 	c.mu.Unlock()
 
 	sendAll(cancels)
+}
+
+// withdraw ends the search toward the branches with key: those not yet sent never are, and those
+// ringing are cancelled with reason (RFC 3261 §16.10). It changes nothing when no branch with key is
+// pending or ringing (found is false), or when no other branch would be left to answer (others is
+// false).
+func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others bool) {
+	c.mu.Lock()
+
+	if !c.invite || c.final || c.stopped || c.cancelled {
+		c.mu.Unlock()
+		return false, false
+	}
+
+	mine := func(b *branch) bool { return b.key == key }
+
+	for _, b := range c.branches {
+		if b.done || b.cancelled {
+			continue
+		}
+
+		if mine(b) {
+			found = true
+		} else {
+			others = true
+		}
+
+		found = found || slices.ContainsFunc(b.retry, mine)
+	}
+
+	for _, b := range slices.Concat(append([][]*branch{c.waiting}, c.groups...)...) {
+		if mine(b) {
+			found = true
+		} else {
+			others = true
+		}
+	}
+
+	if !found || !others {
+		c.mu.Unlock()
+		return found, others
+	}
+
+	c.waiting = slices.DeleteFunc(c.waiting, mine)
+
+	groups := c.groups[:0]
+
+	for _, g := range c.groups {
+		if g = slices.DeleteFunc(g, mine); len(g) > 0 {
+			groups = append(groups, g)
+		}
+	}
+
+	c.groups = groups
+
+	var cancels []cancellation
+
+	for _, b := range slices.Concat(append([][]*branch{c.branches, c.waiting}, c.groups...)...) {
+		b.retry = slices.DeleteFunc(slices.Clone(b.retry), mine)
+
+		if b.done || !mine(b) {
+			continue
+		}
+
+		if client := b.cancelLocked(reason); client != nil {
+			cancels = append(cancels, cancellation{client: client, reason: reason})
+		}
+	}
+
+	c.mu.Unlock()
+
+	sendAll(cancels)
+
+	return true, true
 }
 
 func (c *responseContext) dialog() *Dialog {

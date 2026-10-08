@@ -94,6 +94,8 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 			slog.String("reason", reason.String()))
 	}
 
+	r.releaseCalls(ch.removed)
+
 	if reason != cx.ReasonNewServerAssigned {
 		if len(ch.removed) == 0 {
 			return nil, nil

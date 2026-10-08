@@ -137,6 +137,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 			Request: r,
 			Target:  proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: s.Addr()}},
 			Options: opts,
+			Key:     s.Addr(),
 		}
 	}
 

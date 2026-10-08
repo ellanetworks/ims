@@ -96,6 +96,8 @@ type Registrar struct {
 	authAt     map[string]time.Time
 	reauth     map[string]bool
 	sweep      transaction.Timer
+
+	calls *calls
 }
 
 type challenge struct {
@@ -142,6 +144,7 @@ func New(cfg Config) *Registrar {
 		challenges: make(map[string]*challenge),
 		authAt:     make(map[string]time.Time),
 		reauth:     make(map[string]bool),
+		calls:      newCalls(),
 	}
 
 	return r

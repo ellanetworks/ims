@@ -725,3 +725,26 @@ func TestCallDialling(t *testing.T) {
 		ended(t, bc, testue.LocalBye)
 	})
 }
+
+// TS 24.229 §5.4.1.4 step 5: a UE that deregisters during a call has the S-CSCF release it.
+func TestCallReleasedOnDeregistration(t *testing.T) {
+	s := newScene(t)
+	a := s.caller(0, false, testue.Config{})
+	b := s.caller(1, false, testue.Config{})
+
+	ctx := s.ctx()
+	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
+
+	if err := b.Deregister(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ended(t, ac, testue.RemoteBye)
+	ended(t, bc, testue.RemoteBye)
+
+	for _, c := range []*testue.Call{ac, bc} {
+		if r := c.Reasons(); len(r) != 1 || r[0].String() != `SIP;cause=480;text="Temporarily Unavailable"` {
+			t.Errorf("Reason %v", r)
+		}
+	}
+}

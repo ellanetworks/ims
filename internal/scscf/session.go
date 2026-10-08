@@ -220,7 +220,12 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	route.Params.Set("lr", "")
 	out.Header.Prepend("Route", "<"+route.String()+">")
 
-	s.forward(tx, out, to, s.initialOptions(out, rrOriginating, nil))
+	opts := s.initialOptions(out, rrOriginating, nil)
+	if opts.Dialog != nil {
+		s.r.calls.add(opts.Dialog, bindingKey{reg: reg.ID, contact: contactID}, proxy.Caller)
+	}
+
+	s.forward(tx, out, to, opts)
 }
 
 // TS 24.229 §5.4.3.2 steps 4C and 4D, TS 24.173 §5.2
@@ -339,6 +344,12 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 				}
 			}
 
+			if opts.Dialog != nil {
+				for _, r := range append([]proxy.Branch{b}, b.Retry...) {
+					s.r.calls.add(opts.Dialog, r.Key.(bindingKey), proxy.Callee)
+				}
+			}
+
 			bs = append(bs, b)
 		}
 
@@ -375,6 +386,10 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	code := 500
 	if serr, ok := errors.AsType[*sip.StatusError](err); ok {
 		code = serr.StatusCode
+	}
+
+	if opts.Dialog != nil {
+		s.r.calls.forget(opts.Dialog)
 	}
 
 	s.log.Debug("forking failed", slog.String("request", out.StartLine()), slog.Any("error", err))
@@ -414,7 +429,7 @@ func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy
 
 	opts.OnReply = s.aliasReply(t.reg)
 
-	return proxy.Branch{Request: r, Target: to, Options: opts}, true
+	return proxy.Branch{Request: r, Target: to, Options: opts, Key: bindingKey{reg: t.reg.ID, contact: t.binding.Contact.ID}}, true
 }
 
 func (s *Sessions) aliasReply(reg db.Registration) func(proxy.Reply) proxy.Verdict {
@@ -445,7 +460,7 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, onReply func(pr
 
 	switch out.Method {
 	case "INVITE":
-		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{})
+		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{OnEvent: s.r.calls.event})
 		fallthrough
 	case "SUBSCRIBE", "REFER":
 		opts.RecordRoute = &proxy.RecordRoute{User: user}
@@ -567,6 +582,10 @@ func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, 
 
 	if serr, ok := errors.AsType[*sip.StatusError](err); ok {
 		code = serr.StatusCode
+	}
+
+	if opts.Dialog != nil {
+		s.r.calls.forget(opts.Dialog)
 	}
 
 	s.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
