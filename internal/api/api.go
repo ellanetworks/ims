@@ -15,6 +15,7 @@ type Config struct {
 	SIP           SIP
 	Registrations Registrations
 	Policy        Policy
+	CallRecords   CallRecords
 	Frontend      fs.FS
 	Logger        *slog.Logger
 }
@@ -29,6 +30,7 @@ type Settings interface {
 	UpdatePeer(ctx context.Context, p settings.Peer) error
 	DeletePeer(ctx context.Context, id string) error
 	UpdatePolicy(ctx context.Context, p settings.Policy) error
+	UpdateCallRecords(ctx context.Context, c settings.CallRecords) error
 }
 
 func NewHandler(cfg Config) http.Handler {
@@ -68,5 +70,9 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
 		{"GET /api/v1/registrations", ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
+		{"GET /api/v1/call-records", ListCallRecords(cfg)},
+		{"GET /api/v1/call-records/retention", GetCallRecordRetention(cfg)},
+		{"PUT /api/v1/call-records/retention", UpdateCallRecordRetention(cfg)},
+		{"GET /api/v1/call-records/{id}", GetCallRecord(cfg)},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
@@ -186,6 +187,20 @@ func (r *Recorder) Rejected(icid string, code int) {
 		c.network = true
 		r.endLocked(c, code, db.PartyNetwork, now)
 	})
+}
+
+// RejectedRequest reports that a node of the IMS answered a request itself with a status, when the request is the
+// INVITE that starts a call and the status ends it.
+func (r *Recorder) RejectedRequest(req *sip.Request, code int) {
+	if r == nil || req.Method != "INVITE" || code < 300 {
+		return
+	}
+
+	if to, err := req.Header.To(); err != nil || to.Tag() != "" {
+		return
+	}
+
+	r.Rejected(req.Header.ICID(), code)
 }
 
 // Routed reports the INVITE as the originating S-CSCF sends it on.

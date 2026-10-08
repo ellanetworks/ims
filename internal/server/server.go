@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/pcscf"
@@ -40,8 +41,14 @@ type Server struct {
 	NoAnswerTimeout  time.Duration
 	MediaLossTimeout time.Duration
 	GroupNoAnswer    time.Duration
+	// PruneInterval changes how often call records are pruned in tests. Zero keeps the default.
+	PruneInterval time.Duration
 
-	database    *db.DB
+	database *db.DB
+	// records outlives the cores, so that it closes the records of the calls a restart loses.
+	records     *callrecords.Recorder
+	stopPrune   context.CancelFunc
+	pruneDone   chan struct{}
 	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -88,6 +95,17 @@ func (s *Server) Start(ctx context.Context) error {
 		return checkSettings(context.Background(), cfg, st)
 	})
 
+	// The calls in progress when the IMS last stopped were lost with it.
+	closed, err := database.CloseOpenCallRecords(ctx)
+	if err != nil {
+		_ = database.Close()
+		return err
+	}
+
+	if closed > 0 {
+		s.Logger.Info("closed the call records of calls lost when the IMS stopped", slog.Int64("records", closed))
+	}
+
 	var apiLC net.ListenConfig
 
 	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
@@ -98,9 +116,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.database = database
 	s.settings = live
+	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
 
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
+		s.records.Close()
 		_ = apiLn.Close()
 		_ = database.Close()
 
@@ -119,6 +139,7 @@ func (s *Server) Start(ctx context.Context) error {
 			SIP:           view,
 			Registrations: view,
 			Policy:        view,
+			CallRecords:   database,
 			Frontend:      ui.FS(),
 			Logger:        s.Logger,
 		}),
@@ -135,6 +156,18 @@ func (s *Server) Start(ctx context.Context) error {
 	s.stopFollow, s.followDone = stop, make(chan struct{})
 
 	go s.follow(followCtx)
+
+	pruneCtx, stopPrune := context.WithCancel(context.WithoutCancel(ctx))
+	s.stopPrune, s.pruneDone = stopPrune, make(chan struct{})
+
+	go func() {
+		defer close(s.pruneDone)
+
+		callrecords.Prune(pruneCtx, callrecords.PruneConfig{
+			Store: database, Retention: func() time.Duration { return live.Get().CallRecords.Retention() },
+			Interval: s.PruneInterval, Logger: s.Logger,
+		})
+	}()
 
 	v := version.Get()
 	attrs := []any{slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String())}
@@ -175,7 +208,8 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		return nil, err
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.IPsec, s.Logger)
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.records, s.IPsec,
+		s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -282,6 +316,9 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings) {
 		c.shutdown(ctx, s.Logger)
 	}
 
+	// The calls in progress were lost with the core.
+	s.records.CloseOpen()
+
 	c, err := s.startCore(ctx, st)
 	if err != nil {
 		s.Logger.Error("failed to restart for the new settings", slog.Any("error", err))
@@ -353,6 +390,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if c := s.core.Swap(nil); c != nil {
 		c.shutdown(ctx, s.Logger)
 	}
+
+	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
+	s.records.Close()
+
+	s.stopPrune()
+	<-s.pruneDone
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))

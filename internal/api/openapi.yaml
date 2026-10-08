@@ -26,6 +26,7 @@ tags:
   - name: Policy
   - name: SIP
   - name: Registrations
+  - name: Call records
   - name: Status
   - name: Specification
 
@@ -338,6 +339,142 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/call-records:
+    get:
+      tags: [Call records]
+      operationId: listCallRecords
+      summary: List the call records
+      description: |
+        A record of each call a registered UE made, the most recently requested first. Its fields follow the IMS
+        CDR parameters of TS 32.298 §5.1.3.1. Records are kept for the retention, and at most 1,000,000.
+      parameters:
+        - name: search
+          in: query
+          description: Part of the ICID, or of an identity of the caller or the callee, such as an IMSI or a phone number.
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: The earliest time a call was requested, included.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: The latest time a call was requested, excluded.
+          schema:
+            type: string
+            format: date-time
+        - name: outcome
+          in: query
+          description: The outcomes to list. A call in progress has none until its final response.
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/CallOutcome"
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: A page of call records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/CallRecord"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/call-records/{id}:
+    get:
+      tags: [Call records]
+      operationId: getCallRecord
+      summary: Get a call record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The call record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/CallRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/call-records/retention:
+    get:
+      tags: [Call records]
+      operationId: getCallRecordRetention
+      summary: Get how long call records are kept
+      responses:
+        "200":
+          description: The retention
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallRecordRetentionResult"
+    put:
+      tags: [Call records]
+      operationId: updateCallRecordRetention
+      summary: Change how long call records are kept
+      description: The records older than the new retention are deleted at the next pruning, within an hour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CallRecordRetention"
+      responses:
+        "200":
+          description: The retention, as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallRecordRetentionResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/status:
     get:
       tags: [Status]
@@ -620,6 +757,98 @@ components:
                 enum: [unmonitored, monitored, lost]
                 description: |
                   The IMS signalling path of the device, which the P-CSCF monitors through the policy function.
+
+    CallOutcome:
+      type: string
+      enum: [answered, cancelled, busy, rejected, no_answer, failed]
+      description: |
+        How a call ended: answered with a 2xx; cancelled by the caller (487); busy (486, 600); rejected by the callee
+        (603); no_answer, a 408 or 480 after a device rang; failed, any other final response, including those of the
+        IMS itself.
+
+    CallRecord:
+      type: object
+      required: [id, icid, session_id, calling_party, requested_party, requested_at, alerted, media, in_progress,
+        incomplete]
+      properties:
+        id:
+          type: integer
+        icid:
+          type: string
+          description: The IMS charging identifier, the icid-value of the P-Charging-Vector (TS 32.298 §5.1.3.1.19).
+        session_id:
+          type: string
+          description: The Call-ID of the caller's INVITE (§5.1.3.1.59).
+        calling_party:
+          type: array
+          items:
+            type: string
+          description: The identities asserted for the caller (§5.1.3.1.24).
+        caller_impi:
+          type: string
+          description: The private identity of the caller's registration (§5.1.3.1.36).
+        requested_party:
+          type: string
+          description: The Request-URI the caller sent (§5.1.3.1.43).
+        called_party:
+          type: string
+          description: The Request-URI the IMS routed the call to, normalised (§5.1.3.1.9).
+        callee_impi:
+          type: string
+          description: The private identity of the registration that answered (§5.1.3.1.36).
+        requested_at:
+          type: string
+          format: date-time
+          description: When the IMS received the INVITE (§5.1.3.1.58).
+        delivery_start_at:
+          type: string
+          format: date-time
+          description: When the caller got the final response, a 2xx or an error (§5.1.3.1.55).
+        delivery_end_at:
+          type: string
+          format: date-time
+          description: When an answered call ended (§5.1.3.1.54).
+        sip_status:
+          type: integer
+          description: The final status of the INVITE, as the caller got it.
+        outcome:
+          $ref: "#/components/schemas/CallOutcome"
+        ended_by:
+          type: string
+          enum: [caller, callee, network]
+        alerted:
+          type: boolean
+          description: A device rang, a 180 reached the caller.
+        media:
+          type: array
+          items:
+            type: string
+          description: The media types the call used, such as audio and video.
+        in_progress:
+          type: boolean
+          description: The call has not ended.
+        incomplete:
+          type: boolean
+          description: The IMS lost the call, in a restart, before it ended.
+        duration_ms:
+          type: integer
+          description: How long an answered call that ended lasted, in milliseconds.
+
+    CallRecordRetention:
+      type: object
+      additionalProperties: false
+      required: [days]
+      properties:
+        days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+
+    CallRecordRetentionResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/CallRecordRetention"
 
     Error:
       type: object

@@ -195,7 +195,7 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 }
 
 func (d *DB) GetCallRecord(ctx context.Context, id int64) (CallRecord, error) {
-	r, err := scanCallRecord(d.conn.QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
+	r, err := scanCallRecord(d.read.QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
 		id))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
@@ -214,7 +214,7 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 	where, args := f.where()
 
 	var total int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records WHERE `+where, args...).Scan(
+	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records WHERE `+where, args...).Scan(
 		&total); err != nil {
 		return nil, 0, fmt.Errorf("list call records: %w", err)
 	}
@@ -263,7 +263,7 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	}
 
 	var count int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records`).Scan(&count); err != nil {
+	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records`).Scan(&count); err != nil {
 		return deleted, fmt.Errorf("prune call records: %w", err)
 	}
 
@@ -336,7 +336,7 @@ func (f CallRecordFilter) where() (string, []any) {
 }
 
 func (d *DB) queryCallRecords(ctx context.Context, query string, args ...any) ([]CallRecord, error) {
-	rows, err := d.conn.QueryContext(ctx, query, args...)
+	rows, err := d.read.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -331,3 +331,21 @@ func TestInsertTop(t *testing.T) {
 		t.Errorf("InsertTop without Via: %s", got)
 	}
 }
+
+func TestICID(t *testing.T) {
+	for v, want := range map[string]string{
+		"icid-value=1234bc9876e;icid-generated-at=192.0.6.8;orig-ioi=home1.net": "1234bc9876e",
+		"ICID-Value = AB12 ; orig-ioi=home1.net":                                "AB12",
+		"orig-ioi=home1.net":                                                    "",
+		"":                                                                      "",
+	} {
+		var h Header
+		if v != "" {
+			h.Add("P-Charging-Vector", v)
+		}
+
+		if got := h.ICID(); got != want {
+			t.Errorf("ICID of %q = %q, want %q", v, got, want)
+		}
+	}
+}

@@ -88,10 +88,11 @@ func (p *PCSCF) target(u sip.URI, local netip.Addr) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(local, p.cfg.Port), Remote: dest}}, true
 }
 
-func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, opts proxy.Options) {
+// forward forwards a request, and returns the status it answered it with when it could not, or else 0.
+func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, opts proxy.Options) int {
 	err := p.cfg.Proxy.Forward(tx, out, to, opts)
 	if err == nil || errors.Is(err, proxy.ErrAnswered) {
-		return
+		return 0
 	}
 
 	code := 500
@@ -101,6 +102,8 @@ func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request
 	}
 
 	p.respond(tx, sip.NewResponse(req, code, ""))
+
+	return code
 }
 
 func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {

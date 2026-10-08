@@ -13,8 +13,14 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type DB struct {
+	// conn is the only connection that writes, so that writes never wait on each other's locks.
 	conn *sql.DB
+	// read serves the reads that may take long, such as searches of the call records, so that they never hold up
+	// conn: in WAL mode, readers and the writer do not wait on each other.
+	read *sql.DB
 }
+
+const maxReaders = 4
 
 var migrations = []string{
 	`CREATE TABLE registrations (
@@ -203,11 +209,28 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 
+	read, err := sql.Open("sqlite3", "file:"+path+"?_query_only=true&_busy_timeout=5000")
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	read.SetMaxOpenConns(maxReaders)
+
+	if err := read.PingContext(ctx); err != nil {
+		_ = read.Close()
+		_ = conn.Close()
+
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	d.read = read
+
 	return d, nil
 }
 
 func (d *DB) Close() error {
-	return d.conn.Close()
+	return errors.Join(d.read.Close(), d.conn.Close())
 }
 
 func (d *DB) migrate(ctx context.Context) error {

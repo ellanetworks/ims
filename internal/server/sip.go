@@ -14,6 +14,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/icscf"
@@ -80,7 +81,8 @@ type timers struct {
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rtr *rtrHandler,
-	rxh *rxHandler, pf *policyFunction, database *db.DB, kernel pcscf.Kernel, logger *slog.Logger,
+	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, kernel pcscf.Kernel,
+	logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -173,6 +175,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		HSS:       scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
 		Diameter:  node,
 		DB:        database,
+		Records:   records,
 		Layer:     layer,
 		Listeners: s.bound(roleSCSCF),
 		Logger:    logger,
@@ -204,6 +207,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		},
 		Policy:   pol,
 		NoAnswer: tm.noAnswer,
+		Records:  records,
 		Trust:    domain,
 		Fallback: ph,
 		Logger:   logger,
@@ -236,6 +240,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		},
 		HSS:      icscf.HSS{ID: hss.ID, Realm: hss.Realm},
 		Diameter: node,
+		Records:  records,
 		Logger:   logger,
 	}))
 

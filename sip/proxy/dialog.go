@@ -93,6 +93,9 @@ const (
 	EventStarted EventKind = iota
 	EventAnswered
 	EventEnded
+	// EventNegotiated is an offer/answer exchange of the session, once the dialog is answered: the one it was
+	// answered with, then each that completes (RFC 3264).
+	EventNegotiated
 )
 
 type EndCause int
@@ -131,9 +134,12 @@ func (c EndCause) String() string {
 type DialogEvent struct {
 	Kind   EventKind
 	Dialog *Dialog
-	Code   int
-	By     Side
-	End    EndCause
+	// Code is the final status of the initial INVITE that the proxy sent toward the caller, or 0 if it sent none.
+	Code int
+	By   Side
+	End  EndCause
+	// Exchange is the exchange of an EventNegotiated.
+	Exchange Exchange
 }
 
 type DialogConfig struct {
@@ -632,6 +638,8 @@ func (d *Dialog) calleeLeg(tag string) *party {
 }
 
 func (d *Dialog) request(out *sip.Request) (bool, error) {
+	defer d.flush()
+
 	cseq, err := out.Header.CSeq()
 	if err != nil {
 		return false, &sip.StatusError{StatusCode: 400, Err: err}
@@ -686,6 +694,8 @@ func (d *Dialog) request(out *sip.Request) (bool, error) {
 }
 
 func (d *Dialog) ack(ack *sip.Request) error {
+	defer d.flush()
+
 	cseq, err := ack.Header.CSeq()
 	if err != nil {
 		return err
@@ -900,11 +910,16 @@ func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
 		d.early = nil
 		d.state = Answered
 		d.code = res.StatusCode
-		d.responseBody(&d.sdp, Callee, d.inviteTx, res)
+		d.publish(DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
+
+		// The session is the exchange the 2xx completes, or else the one its early dialog had.
+		seq := d.sdp.seq
+		if d.responseBody(&d.sdp, Callee, d.inviteTx, res); d.sdp.seq == seq {
+			d.negotiated(&d.sdp)
+		}
+
 		d.arm(sessionExpires(res, d.p.dialogLifetime))
 		d.noAck = d.p.clock.AfterFunc(2*64*d.p.layer.T1(), d.noAckFired)
-
-		d.publish(DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
 	}
 
 	d.mu.Unlock()
@@ -945,7 +960,7 @@ func (d *Dialog) failed(res *sip.Response, downstream bool) {
 	d.mu.Lock()
 
 	if d.state == Early {
-		d.code = res.StatusCode
+		d.code = upstreamStatus(res.StatusCode)
 		d.rollback(&d.sdp, d.inviteTx)
 		d.early = map[string]*party{}
 
@@ -1117,6 +1132,10 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 		}
 	}
 
+	if state == Early && c != nil && r.Toward&Caller != 0 {
+		d.code = releaseCode(r)
+	}
+
 	d.end(cause, 0, d.p.timerC)
 
 	d.mu.Unlock()
@@ -1213,13 +1232,17 @@ func (d *Dialog) ReleaseCallee(key any, r Release) error {
 	return nil
 }
 
-func releaseResponse(c *responseContext, r Release) *sip.Response {
-	code := r.Code
-	if code == 0 {
-		code = 500
+// releaseCode is the status of the final response a release sends the caller of an early dialog.
+func releaseCode(r Release) int {
+	if r.Code == 0 {
+		return 500
 	}
 
-	res := c.generate(code)
+	return r.Code
+}
+
+func releaseResponse(c *responseContext, r Release) *sip.Response {
+	res := c.generate(releaseCode(r))
 	if len(r.ResponseReason) > 0 {
 		res.Header.Add("Reason", reasons(r.ResponseReason))
 	}
@@ -1466,13 +1489,27 @@ func (d *Dialog) offer(n *negotiation, from Side, key txKey, e sip.Envelope) {
 
 // RFC 3264, RFC 6337 §3.1
 func (d *Dialog) answered(n *negotiation, body Body) {
-	if n.pending || !bytes.Equal(n.answer.Data, body.Data) {
+	fresh := n.pending || !bytes.Equal(n.answer.Data, body.Data)
+	if fresh {
 		d.exchanges++
 		n.seq = d.exchanges
 	}
 
 	n.answer = body
 	n.pending = false
+
+	if fresh && n == &d.sdp && d.answerTag != "" {
+		d.negotiated(n)
+	}
+}
+
+// negotiated publishes the exchange of n, if complete.
+func (d *Dialog) negotiated(n *negotiation) {
+	if n.pending || n.offer.Data == nil || n.answer.Data == nil {
+		return
+	}
+
+	d.publish(DialogEvent{Kind: EventNegotiated, Exchange: Exchange{Offer: n.offer, Answer: n.answer, Seq: n.seq}})
 }
 
 func (d *Dialog) responseBody(n *negotiation, from Side, key txKey, res *sip.Response) {

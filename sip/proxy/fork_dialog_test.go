@@ -30,7 +30,7 @@ func (s *forkScene) nextEvent(kind proxy.EventKind) proxy.DialogEvent {
 	for {
 		select {
 		case e := <-s.f.events:
-			if e.Kind == proxy.EventStarted && kind != proxy.EventStarted {
+			if (e.Kind == proxy.EventStarted || e.Kind == proxy.EventNegotiated) && e.Kind != kind {
 				continue
 			}
 

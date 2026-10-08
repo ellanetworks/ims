@@ -12,6 +12,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
@@ -72,6 +73,9 @@ type Config struct {
 	HSS      HSS
 	Diameter Diameter
 	DB       *db.DB
+
+	// Records, if any, keeps a record of each call.
+	Records *callrecords.Recorder
 
 	Layer     *transaction.Layer
 	Listeners []netip.AddrPort

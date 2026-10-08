@@ -1,3 +1,4 @@
+import type { CallRecord } from "@/queries/callRecords";
 import type { DiameterPeer } from "@/queries/diameter";
 import type { Operator } from "@/queries/operator";
 import type { PolicyWithStatus } from "@/queries/policy";
@@ -84,5 +85,34 @@ export const registration = (
     { uri: "tel:+15551230001", barred: false, registered_with: [] },
   ],
   contacts: [contact()],
+  ...overrides,
+});
+
+export const callRecord = (
+  overrides: Partial<CallRecord> = {},
+): CallRecord => ({
+  id: 1,
+  icid: "4F2A9C0E1B7D4E3A8C6F0D2B5A1E9C7F",
+  session_id: "a84b4c76e66710@192.0.2.30",
+  calling_party: [
+    "sip:+15551230001@ims.mnc001.mcc001.3gppnetwork.org;user=phone",
+    "tel:+15551230001",
+  ],
+  caller_impi: "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+  requested_party:
+    "tel:5551230002;phone-context=ims.mnc001.mcc001.3gppnetwork.org",
+  called_party: "tel:+15551230002",
+  callee_impi: "001010000000002@ims.mnc001.mcc001.3gppnetwork.org",
+  requested_at: "2026-10-08T12:00:00.000Z",
+  delivery_start_at: "2026-10-08T12:00:04.000Z",
+  delivery_end_at: "2026-10-08T12:01:09.000Z",
+  sip_status: 200,
+  outcome: "answered",
+  ended_by: "caller",
+  alerted: true,
+  media: ["audio", "video"],
+  in_progress: false,
+  incomplete: false,
+  duration_ms: 65000,
   ...overrides,
 });

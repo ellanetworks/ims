@@ -70,6 +70,19 @@ func (fs Header) CallID() string {
 	return fs.Get("Call-ID")
 }
 
+// ICID is the icid-value of the P-Charging-Vector header field, the IMS charging identifier, or "" if it has
+// none (RFC 7315 §5.6).
+func (fs Header) ICID() string {
+	for part := range strings.SplitSeq(fs.Get("P-Charging-Vector"), ";") {
+		name, value, _ := strings.Cut(part, "=")
+		if strings.EqualFold(strings.TrimSpace(name), "icid-value") {
+			return strings.TrimSpace(value)
+		}
+	}
+
+	return ""
+}
+
 func (fs Header) MaxForwards() (int, error) {
 	return fs.uint("Max-Forwards", 255)
 }

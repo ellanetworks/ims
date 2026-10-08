@@ -2,8 +2,10 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -66,5 +68,34 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 		_ = d.Close()
 
 		t.Fatal("Open succeeded on a newer schema")
+	}
+}
+
+// TestReadsDoNotHoldUpWrites checks that a read in progress on the readers lets the writer write, and that the
+// readers cannot write.
+func TestReadsDoNotHoldUpWrites(t *testing.T) {
+	d := openTestDB(t)
+
+	tx, err := d.read.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM call_records`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	if errs, err := d.SaveCallRecords(ctx, []*CallRecord{attempt("ICID1", callT0)}); err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords during a read = %v, %v", errs, err)
+	}
+
+	if _, err := d.read.ExecContext(t.Context(), `DELETE FROM call_records`); err == nil {
+		t.Fatal("the readers wrote")
 	}
 }

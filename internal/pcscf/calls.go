@@ -20,6 +20,11 @@ type call struct {
 	icid string
 
 	policy *callPolicy
+
+	// rec is the record of an originating call.
+	rec *callRecord
+	// impi is the private identity of the UE a terminating call goes to.
+	impi string
 }
 
 func callOf(d *proxy.Dialog) *call {
@@ -79,14 +84,25 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	if res := p.cfg.Proxy.Check(req); res != nil {
+	preferred, _ := req.Header.Addresses("P-Preferred-Identity")
+	asserted := assertedIdentities(preferred, reg.AssociatedURIs)
+
+	cv := p.newChargingVector(req.Flow.Local.Addr())
+	rec := p.attempt(req, reg.IMPI, asserted, cv.icid)
+
+	reject := func(res *sip.Response) {
+		rec.rejected(res.StatusCode)
 		p.respond(tx, res)
+	}
+
+	if res := p.cfg.Proxy.Check(req); res != nil {
+		reject(res)
 		return
 	}
 
 	out, _, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		reject(sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
@@ -95,15 +111,17 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
+	rec.open()
+
 	if len(reg.ServiceRoute) == 0 {
-		p.respond(tx, sip.NewResponse(req, 403, "No Service-Route"))
+		reject(sip.NewResponse(req, 403, "No Service-Route"))
 		return
 	}
 
 	serviceRoute, err := sip.ParseAddressList(strings.Join(reg.ServiceRoute, ", "))
 	if err != nil {
 		p.log.Warn("unusable Service-Route", slog.String("impi", reg.IMPI), slog.Any("error", err))
-		p.respond(tx, sip.NewResponse(req, 500, ""))
+		reject(sip.NewResponse(req, 500, ""))
 
 		return
 	}
@@ -117,12 +135,9 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		setRoutes(out, serviceRoute)
 	}
 
-	preferred, _ := req.Header.Addresses("P-Preferred-Identity")
-
-	asserted := assertedIdentities(preferred, reg.AssociatedURIs)
 	if len(asserted) == 0 {
 		p.log.Warn("registration without public identities", slog.String("impi", reg.IMPI))
-		p.respond(tx, sip.NewResponse(req, 403, ""))
+		reject(sip.NewResponse(req, 403, ""))
 
 		return
 	}
@@ -133,13 +148,12 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		out.Header.Add("P-Asserted-Identity", "<"+a+">")
 	}
 
-	cv := p.newChargingVector(req.Flow.Local.Addr())
 	cv.set(out)
 
 	to, ok := p.target(serviceRoute[0].URI, req.Flow.Local.Addr())
 	if !ok {
 		p.log.Warn("no route to the Service-Route", slog.String("route", reg.ServiceRoute[0]))
-		p.respond(tx, sip.NewResponse(req, 503, ""))
+		reject(sip.NewResponse(req, 503, ""))
 
 		return
 	}
@@ -147,8 +161,12 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	var dialog *proxy.Dialog
 
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
-		if rep.Response != nil {
-			toUEResponse(rep.Response)
+		if res := rep.Response; res != nil {
+			toUEResponse(res)
+
+			if res.StatusCode == 180 {
+				rec.alerted()
+			}
 		}
 
 		return p.mediaReply(tx, dialog, rep, true)
@@ -156,7 +174,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	switch out.Method {
 	case "INVITE":
-		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, "")}
+		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, ""), rec: rec}
 
 		opts.NoAnswer = p.cfg.NoAnswer
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -173,7 +191,9 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		}
 	}
 
-	p.forward(tx, req, out, to, opts)
+	if code := p.forward(tx, req, out, to, opts); code != 0 {
+		rec.rejected(code)
+	}
 }
 
 // TS 24.229 §5.2.6.4.3, §5.2.6.4.7
@@ -242,6 +262,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		c := &call{ue: proxy.Callee, icid: cv.icid}
 
 		if f, ok := p.regs.flow(top.User); ok {
+			c.impi = f.impi
 			c.policy = p.newCallPolicy(f.key(), p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
 		}
 
@@ -266,6 +287,12 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
 	return func(e proxy.DialogEvent) {
+		c.rec.event(e)
+
+		if c.ue == proxy.Callee {
+			p.terminatingRecord(c, e)
+		}
+
 		if e.Kind == proxy.EventEnded {
 			p.callEnded(c)
 		}
