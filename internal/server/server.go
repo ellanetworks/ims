@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/ui"
 	"github.com/ellanetworks/ims/version"
 )
 
@@ -117,6 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 			SIP:           view,
 			Registrations: view,
 			Policy:        view,
+			Frontend:      ui.FS(),
 			Logger:        s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),

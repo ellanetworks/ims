@@ -73,6 +73,10 @@ jobs:
           echo "::error::ella-ims.imsd never became ready"
           exit 1
 
+      - name: Assert the UI is served
+        run: |
+          curl -fsS http://127.0.0.1:5020/ | grep -q '<div id="root"></div>'
+
       # Diameter only listens for the transports of its peers.
       - name: Assert Diameter listens over SCTP
         run: |

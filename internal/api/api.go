@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
@@ -14,6 +15,7 @@ type Config struct {
 	SIP           SIP
 	Registrations Registrations
 	Policy        Policy
+	Frontend      fs.FS
 	Logger        *slog.Logger
 }
 
@@ -34,6 +36,10 @@ func NewHandler(cfg Config) http.Handler {
 
 	for _, r := range routes(cfg) {
 		mux.Handle(r.pattern, r.handler)
+	}
+
+	if cfg.Frontend != nil {
+		mux.Handle("GET /", Frontend(cfg.Frontend))
 	}
 
 	return mux
@@ -60,6 +66,7 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/policy", GetPolicy(cfg)},
 		{"PUT /api/v1/policy", UpdatePolicy(cfg)},
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
+		{"GET /api/v1/registrations", ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
 	}
 }

@@ -5,3 +5,4 @@ main
 ims
 *.db
 *.rock
+ui/node_modules

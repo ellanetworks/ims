@@ -1,0 +1,32 @@
+name: UI Lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: use npm
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix ui
+
+      - name: Run format check
+        run: |
+          npm run format:check --prefix ui
+
+      - name: Run lint check
+        run: |
+          npm run lint --prefix ui
