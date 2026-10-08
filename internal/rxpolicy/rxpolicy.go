@@ -309,7 +309,9 @@ func forking(f policy.Forking) rx.SIPForkingIndication {
 	return rx.ForkingSingleDialogue
 }
 
-// TS 29.214 §4.4.6.2, §4.4.6.5
+// event returns what the RAR reports (TS 29.214 §4.4.6.2, §4.4.6.5). A FAILED_RESOURCES_ALLOCATION is about the
+// media components whose PCC/QoS rules are INACTIVE, the default without Media-Component-Status (§4.4.2, §5.3.48):
+// a failed modification keeps the previous rules active (TS 29.212 §4.5.12). No flows means every media component.
 func event(r rx.ReAuthRequest) policy.Event {
 	var e policy.Event
 
@@ -317,8 +319,20 @@ func event(r rx.ReAuthRequest) policy.Event {
 		e.Kinds = append(e.Kinds, eventKind(a))
 	}
 
+	failedOnly := slices.Contains(r.SpecificActions, rx.ActionIndicationOfFailedResourcesAllocation) &&
+		!slices.Contains(r.SpecificActions, rx.ActionIndicationOfLossOfBearer) &&
+		!slices.Contains(r.SpecificActions, rx.ActionIndicationOfReleaseOfBearer)
+
 	for _, f := range r.Flows {
+		if failedOnly && f.MediaComponentStatus != nil && *f.MediaComponentStatus == rx.MediaComponentActive {
+			continue
+		}
+
 		e.Components = append(e.Components, f.MediaComponentNumber)
+	}
+
+	if failedOnly && len(r.Flows) > 0 && len(e.Components) == 0 {
+		e.Kinds = slices.DeleteFunc(e.Kinds, func(k policy.EventKind) bool { return k == policy.EventResourcesFailed })
 	}
 
 	if slices.Contains(r.SpecificActions, rx.ActionChargingCorrelationExchange) {
