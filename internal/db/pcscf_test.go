@@ -135,3 +135,65 @@ func TestPCSCFSubscriptionLifecycle(t *testing.T) {
 		t.Fatalf("DeletePCSCFSubscription again err = %v, want ErrNotFound", err)
 	}
 }
+
+// A UE has a registration per flow (RFC 5626), besides one without; saving a flow again updates it.
+func TestPCSCFRegistrationFlows(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	save := func(regID int64, token string) PCSCFRegistration {
+		r := testPCSCFRegistration()
+		r.FlowToken = token
+
+		if regID != 0 {
+			r.Instance, r.RegID = testInstance, regID
+		}
+
+		saved, err := d.SavePCSCFRegistration(ctx, r)
+		if err != nil {
+			t.Fatalf("SavePCSCFRegistration: %v", err)
+		}
+
+		return saved
+	}
+
+	plain, one, two := save(0, "f0"), save(1, "f1"), save(2, "f2")
+	again := save(1, "f1b")
+
+	if again.ID != one.ID || again.FlowToken != "f1b" {
+		t.Fatalf("flow 1 saved again as %+v, want registration %d updated", again, one.ID)
+	}
+
+	regs, err := d.ListPCSCFRegistrations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[int64]int64{}
+	for _, r := range regs {
+		got[r.ID] = r.RegID
+	}
+
+	if want := map[int64]int64{plain.ID: 0, one.ID: 1, two.ID: 2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("registrations %v, want %v", got, want)
+	}
+}
+
+func TestSecurityAssociationFlow(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	sa := SecurityAssociation{
+		IMPI: testIMPI, State: SecurityAssociationEstablished, PCSCFAddress: netip.MustParseAddr("2001:db8::10"),
+		UEAddress: netip.MustParseAddr("2001:db8::1"), Instance: testInstance, RegID: 3, ExpiresAt: testNow,
+	}
+
+	if _, err := d.SaveSecurityAssociation(ctx, sa); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.ListSecurityAssociations(ctx)
+	if err != nil || len(got) != 1 || got[0].Instance != testInstance || got[0].RegID != 3 {
+		t.Fatalf("security associations %+v, %v", got, err)
+	}
+}

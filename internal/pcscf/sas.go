@@ -74,6 +74,7 @@ type saSet struct {
 	dbID    int64
 	set     ipsec.Set
 	impi    string
+	flow    flowID
 	state   saState
 	expires time.Time
 	timer   *time.Timer
@@ -90,12 +91,15 @@ type view struct {
 	s      *saSet
 	state  saState
 	impi   string
+	flow   flowID
 	client []sip.SecurityMechanism
 	server sip.SecurityMechanism
 }
 
+// sameUE reports whether two sets protect the same registered contact: the same UE and registration
+// flow (TS 33.203 §6.1 NOTE 2).
 func (s *saSet) sameUE(o *saSet) bool {
-	return s.impi == o.impi && s.set.Remote.Addr == o.set.Remote.Addr
+	return s.impi == o.impi && s.set.Remote.Addr == o.set.Remote.Addr && s.flow == o.flow
 }
 
 type flowKey struct {
@@ -230,7 +234,7 @@ func (a *associations) lookup(f sip.Flow) (view, bool) {
 		return view{}, false
 	}
 
-	return view{s: s, state: s.state, impi: s.impi, client: s.client, server: s.server}, true
+	return view{s: s, state: s.state, impi: s.impi, flow: s.flow, client: s.client, server: s.server}, true
 }
 
 func (a *associations) responseFlow(in sip.Flow, res *sip.Response) (sip.Flow, error) {
@@ -289,6 +293,7 @@ func (a *associations) hasEstablished(ue netip.Addr) bool {
 
 type challenge struct {
 	impi   string
+	flow   flowID
 	local  netip.Addr
 	ue     netip.Addr
 	offer  ipsec.Offer
@@ -298,7 +303,8 @@ type challenge struct {
 
 func (a *associations) clientPort(c challenge) uint16 {
 	for s := range a.sets {
-		if s.state != temporary && s.impi == c.impi && s.set.Remote.Addr == c.ue && s.set.Local.PortC == a.cfg.ClientPorts[0] &&
+		if s.state != temporary && s.impi == c.impi && s.flow == c.flow && s.set.Remote.Addr == c.ue &&
+			s.set.Local.PortC == a.cfg.ClientPorts[0] &&
 			(c.origin == nil || s == c.origin) {
 			return a.cfg.ClientPorts[1]
 		}
@@ -330,12 +336,13 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 		return sip.SecurityMechanism{}, errors.New("P-CSCF closed")
 	}
 
-	if c.origin != nil && (c.origin.removed || c.origin.state == temporary) {
+	// A REGISTER for another flow over these associations is not their re-authentication.
+	if c.origin != nil && (c.origin.removed || c.origin.state == temporary || c.origin.flow != c.flow) {
 		c.origin = nil
 	}
 
 	for s := range a.sets {
-		if s.state == temporary && s.impi == c.impi {
+		if s.state == temporary && s.impi == c.impi && s.flow == c.flow {
 			a.remove(s)
 		}
 	}
@@ -365,7 +372,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	n := 0
 
 	for s := range a.sets {
-		if s.impi == c.impi && s.set.Remote.Addr == c.ue {
+		if s.impi == c.impi && s.flow == c.flow && s.set.Remote.Addr == c.ue {
 			n++
 		}
 	}
@@ -389,6 +396,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	s := &saSet{
 		set:     set,
 		impi:    c.impi,
+		flow:    c.flow,
 		state:   temporary,
 		expires: time.Now().Add(a.cfg.AwaitAuth),
 		client:  c.client,
@@ -445,7 +453,9 @@ func (a *associations) registered(s *saSet, o outcome) {
 			a.save(x)
 		case x.sameUE(s):
 			a.remove(x)
-		case s.initial && x.impi == s.impi && x.state != temporary:
+		case s.initial && s.flow == flowID{} && x.impi == s.impi && x.state != temporary:
+			// TS 24.229 §5.4.1.2.2 step 4A: without the multiple registration mechanism, the new
+			// contact replaces the others of the private identity.
 			a.shorten(x, a.cfg.Grace)
 		}
 	}
@@ -455,7 +465,7 @@ func (a *associations) registered(s *saSet, o outcome) {
 }
 
 // TS 33.203 §7.4.2a, TS 24.229 Table 5.2.2-1
-func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport) (sip.Flow, bool) {
+func (a *associations) requestFlow(impi string, ue netip.Addr, id flowID, tr sip.Transport) (sip.Flow, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -477,7 +487,7 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport)
 	var best *saSet
 
 	for s := range a.sets {
-		if s.impi != impi || s.set.Remote.Addr != ue.Unmap() || s.state == temporary {
+		if s.impi != impi || s.flow != id || s.set.Remote.Addr != ue.Unmap() || s.state == temporary {
 			continue
 		}
 
@@ -497,12 +507,12 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, tr sip.Transport)
 	}, true
 }
 
-func (a *associations) deregistered(impi string, ue netip.Addr) {
+func (a *associations) deregistered(k regKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	for s := range a.sets {
-		if s.impi == impi && s.set.Remote.Addr == ue.Unmap() {
+		if s.impi == k.impi && s.flow == k.flow && s.set.Remote.Addr == k.ue {
 			a.shorten(s, a.cfg.Grace)
 		}
 	}
@@ -610,6 +620,8 @@ func record(s *saSet) db.SecurityAssociation {
 		State:        state,
 		PCSCFAddress: s.set.Local.Addr,
 		UEAddress:    s.set.Remote.Addr,
+		Instance:     s.flow.instance,
+		RegID:        s.flow.regID,
 		PCSCFPortC:   s.set.Local.PortC,
 		PCSCFPortS:   s.set.Local.PortS,
 		UEPortC:      s.set.Remote.PortC,
@@ -633,6 +645,7 @@ func fromRecord(r db.SecurityAssociation) *saSet {
 	return &saSet{
 		dbID:  r.ID,
 		impi:  r.IMPI,
+		flow:  flowID{r.Instance, r.RegID},
 		state: state,
 		inUse: true,
 		set: ipsec.Set{

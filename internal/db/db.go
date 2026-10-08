@@ -82,6 +82,8 @@ var migrations = []string{
 		state TEXT NOT NULL CHECK (state IN ('established', 'old')),
 		pcscf_address TEXT NOT NULL,
 		ue_address TEXT NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		pcscf_port_c INTEGER NOT NULL,
 		pcscf_port_s INTEGER NOT NULL,
 		ue_port_c INTEGER NOT NULL,
@@ -103,6 +105,8 @@ var migrations = []string{
 		protected INTEGER NOT NULL CHECK (protected IN (0, 1)),
 		ue_address TEXT NOT NULL,
 		ue_port INTEGER NOT NULL,
+		instance_id TEXT,
+		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		pcscf_address TEXT NOT NULL,
 		contacts TEXT NOT NULL,
 		associated_uris TEXT NOT NULL,
@@ -112,9 +116,11 @@ var migrations = []string{
 		policy_endpoint TEXT,
 		policy_session_id TEXT,
 		policy_ref TEXT,
-		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1)),
-		UNIQUE (impi, ue_address)
+		signalling_lost INTEGER NOT NULL CHECK (signalling_lost IN (0, 1))
 	);
+	CREATE UNIQUE INDEX pcscf_registrations_flow ON pcscf_registrations (impi, ue_address, instance_id, reg_id)
+		WHERE reg_id IS NOT NULL;
+	CREATE UNIQUE INDEX pcscf_registrations_ue ON pcscf_registrations (impi, ue_address) WHERE reg_id IS NULL;
 	CREATE TABLE pcscf_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL UNIQUE,

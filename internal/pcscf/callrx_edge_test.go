@@ -190,7 +190,7 @@ func TestCallSessionEndsAtShutdown(t *testing.T) {
 func TestCallEndedBeforeItsFirstAAR(t *testing.T) {
 	s, _, pcrf, _ := newRxIPsecScene(t)
 
-	c := &call{ue: proxy.Caller, policy: s.p.newCallPolicy(regKey{testIMPI, ueAddr}, nil, "")}
+	c := &call{ue: proxy.Caller, policy: s.p.newCallPolicy(regKey{impi: testIMPI, ue: ueAddr}, nil, "")}
 	c.policy.session = s.p.policy.callSession(c.policy)
 
 	s.p.callEnded(c)

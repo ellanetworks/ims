@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -71,8 +73,10 @@ func TestRegistrationStatus(t *testing.T) {
 		Contacts:  []string{phone},
 		Policy:    db.PolicySession{ID: "pcscf;1;2"},
 	}, {
-		// Matched by the address in the contact, not by its list of contacts.
+		// Matched by its registration flow, not by its list of contacts.
 		IMPI:           listIMPI,
+		Instance:       tabletInstance,
+		RegID:          1,
 		Transport:      "TCP",
 		UEAddress:      netip.MustParseAddrPort("192.0.2.7:40000"),
 		Policy:         db.PolicySession{ID: "pcscf;1;3"},
@@ -209,5 +213,36 @@ func TestRegisteredWith(t *testing.T) {
 		if !reflect.DeepEqual(tc.got, tc.want) {
 			t.Errorf("registered with %v, want %v", tc.got, tc.want)
 		}
+	}
+}
+
+// Flows sharing a contact URI each show the P-CSCF's registration of their own flow (RFC 5626).
+func TestRegistrationStatusFlows(t *testing.T) {
+	const (
+		uri      = "sip:001010000000001@192.0.2.7:5060"
+		instance = "urn:gsma:imei:35000000-000001-0"
+	)
+
+	flow := func(id, regID int64) db.Binding {
+		return binding(db.Contact{ID: id, URI: uri, Instance: instance, RegID: regID}, listNow, listNow.Add(time.Hour))
+	}
+
+	regs := []db.Registration{{IMPI: listIMPI, Bindings: []db.Binding{flow(1, 1), flow(2, 2)}}}
+
+	flows := []db.PCSCFRegistration{{
+		IMPI: listIMPI, Instance: instance, RegID: 2, Transport: "TCP", UEAddress: netip.MustParseAddrPort("192.0.2.7:40002"),
+	}, {
+		IMPI: listIMPI, Instance: instance, RegID: 1, Transport: "UDP", UEAddress: netip.MustParseAddrPort("192.0.2.7:40001"),
+	}}
+
+	got := registrationStatus(listIMPI, regs, flows, listNow)
+
+	var addresses []string
+	for _, c := range got.Contacts {
+		addresses = append(addresses, strconv.FormatInt(c.RegID, 10)+" "+c.Address)
+	}
+
+	if want := []string{"1 192.0.2.7:40001", "2 192.0.2.7:40002"}; !slices.Equal(addresses, want) {
+		t.Fatalf("contacts %v, want %v", addresses, want)
 	}
 }

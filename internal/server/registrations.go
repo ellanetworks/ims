@@ -151,7 +151,7 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 		}
 	}
 
-	if f, ok := flowOf(b.Contact.URI, flows); ok {
+	if f, ok := flowOf(b.Contact, flows); ok {
 		d.Address = f.UEAddress.String()
 		d.Transport = strings.ToLower(f.Transport)
 		d.Protected = f.Protected
@@ -167,16 +167,27 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	return d
 }
 
-// flowOf returns the P-CSCF's registration of a contact: the one that lists it, or else the one from the UE address
-// in the contact's host.
-func flowOf(contact string, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
+// flowOf returns the P-CSCF's registration of a contact: that of its registration flow (RFC 5626), or else the one
+// that lists it, or else the one from the UE address in the contact's host.
+func flowOf(c db.Contact, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
+	if c.Flow() {
+		i := slices.IndexFunc(flows, func(f db.PCSCFRegistration) bool { return f.Instance == c.Instance && f.RegID == c.RegID })
+		if i < 0 {
+			return db.PCSCFRegistration{}, false
+		}
+
+		return flows[i], true
+	}
+
+	flows = slices.DeleteFunc(slices.Clone(flows), func(f db.PCSCFRegistration) bool { return f.RegID != 0 })
+
 	for _, f := range flows {
-		if slices.Contains(f.Contacts, contact) {
+		if slices.Contains(f.Contacts, c.URI) {
 			return f, true
 		}
 	}
 
-	u, err := sip.ParseURI(contact)
+	u, err := sip.ParseURI(c.URI)
 	if err != nil {
 		return db.PCSCFRegistration{}, false
 	}

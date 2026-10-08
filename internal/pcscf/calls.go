@@ -156,7 +156,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	switch out.Method {
 	case "INVITE":
-		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKey{reg.IMPI, reg.UEAddress.Addr().Unmap()}, asserted, "")}
+		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, "")}
 
 		opts.NoAnswer = p.cfg.NoAnswer
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -242,7 +242,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		c := &call{ue: proxy.Callee, icid: cv.icid}
 
 		if f, ok := p.regs.flow(top.User); ok {
-			c.policy = p.newCallPolicy(regKey{f.impi, f.ue.Addr().Unmap()}, p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
+			c.policy = p.newCallPolicy(f.key(), p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
 		}
 
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -278,7 +278,7 @@ func (p *PCSCF) servedIdentities(f flow, called string) []string {
 		return []string{strings.Trim(called, "<>")}
 	}
 
-	if r, ok := p.regs.get(f.impi, f.ue.Addr().Unmap()); ok {
+	if r, ok := p.regs.get(f.key()); ok {
 		if d := defaultIdentity(r.AssociatedURIs); d != "" {
 			return []string{d}
 		}

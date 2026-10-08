@@ -146,7 +146,7 @@ func (p *PCSCF) Close() {
 
 func (p *PCSCF) expired(r db.PCSCFRegistration) {
 	if p.sas != nil {
-		p.sas.deregistered(r.IMPI, r.UEAddress.Addr())
+		p.sas.deregistered(regKeyOf(&r))
 	}
 
 	p.endPolicy(r, policy.TerminationExpired, 0)
@@ -259,6 +259,7 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		ue:    req.Flow.Remote.Addr().Unmap(),
 		local: req.Flow.Local.Addr().Unmap(),
 		impi:  privateIdentity(req),
+		flow:  registrationFlow(req),
 	}
 
 	if p.sas != nil {
@@ -279,8 +280,9 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 
 	fromUE(out)
 
-	r.token = p.regs.token(r.impi, r.ue)
-	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port, contactParam(req, "reg-id")).String()+">")
+	// TS 24.229 §5.2.2.1 step 1: an IMS flow token per registration flow, and "ob" (RFC 5626 §5.1).
+	r.token = p.regs.token(r.key())
+	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port).String()+">")
 	addRequestOptionTag(out, "Require", "path")
 
 	if p.cfg.HomeDomain != "" {
@@ -312,12 +314,45 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 type registration struct {
 	ue, local netip.Addr
 	impi      string
+	flow      flowID
 	token     string
 	in        *view
 	offer     *ipsec.Offer
 	client    []sip.SecurityMechanism
 
 	removed *db.PCSCFRegistration
+}
+
+func (r *registration) key() regKey {
+	return regKey{r.impi, r.ue, r.flow}
+}
+
+// registrationFlow is the registration flow a REGISTER is for: the instance ID and reg-id of its
+// Contact (RFC 5626 §4.2), or none.
+func registrationFlow(req *sip.Request) flowID {
+	contacts, err := req.Header.Contacts()
+	if err != nil {
+		return flowID{}
+	}
+
+	for _, c := range contacts {
+		instance, ok := c.Params.Get("+sip.instance")
+		if !ok {
+			continue
+		}
+
+		v, ok := c.Params.Get("reg-id")
+		if !ok {
+			continue
+		}
+
+		// RFC 5626 §11.1: 1 to 2^31 - 1
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
+			return flowID{instance: strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(instance), "<"), ">"), regID: n}
+		}
+	}
+
+	return flowID{}
 }
 
 func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
@@ -440,7 +475,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	ended, open := false, false
 	if res.IsSuccess() {
 		ended = p.registered(req, res, r)
-		open = !ended && p.policy != nil && !emergency(req, res) && p.regs.withoutPolicy(r.impi, r.ue)
+		open = !ended && p.policy != nil && !emergency(req, res) && p.regs.withoutPolicy(r.key())
 	}
 
 	relay := func() proxy.Verdict {
@@ -457,7 +492,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		}
 
 		if open {
-			p.openSignalling(regKey{r.impi, r.ue}, 0)
+			p.openSignalling(r.key(), 0)
 		}
 
 		return proxy.Hold
@@ -483,7 +518,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 		}
 
 		s, err := p.sas.challenged(challenge{
-			impi: r.impi, local: r.local, ue: r.ue, offer: *r.offer, client: r.client, origin: origin,
+			impi: r.impi, flow: r.flow, local: r.local, ue: r.ue, offer: *r.offer, client: r.client, origin: origin,
 		}, keys)
 		if err != nil {
 			p.log.Error("setting up security associations failed", slog.String("impi", r.impi), slog.Any("error", err))
@@ -512,7 +547,8 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	o := registrationOutcome(req, res)
 	impu := registeredIdentity(req)
 
-	existing, known := p.regs.get(r.impi, r.ue)
+	existing, known := p.regs.get(r.key())
+	_, others := p.regs.forIMPI(r.impi)
 
 	if o.dereg {
 		if known {
@@ -528,7 +564,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 			}
 		}
 
-		if old, ok := p.regs.remove(r.impi, r.ue); ok {
+		if old, ok := p.regs.remove(r.key()); ok {
 			p.log.Debug("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
 
 			if old.Policy.ID != "" {
@@ -554,6 +590,8 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 
 	reg := db.PCSCFRegistration{
 		IMPI:         r.impi,
+		Instance:     r.flow.instance,
+		RegID:        r.flow.regID,
 		FlowToken:    r.token,
 		Transport:    string(req.Flow.Transport),
 		Protected:    r.in != nil,
@@ -590,7 +628,9 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 		return false
 	}
 
-	if !known {
+	// A new registration renews the subscription to the reg event package, unless it is a flow that
+	// adds to the UE's others.
+	if !known && (r.flow == flowID{} || !others) {
 		p.subs.stop(r.impi)
 	}
 
