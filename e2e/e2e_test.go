@@ -281,6 +281,8 @@ func TestCall(t *testing.T) {
 		"sip-msisdn": "sip:" + subscribers[1].msisdn + "@" + homeDomain,
 	}
 
+	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
+
 	for _, tr := range []sip.Transport{sip.UDP, sip.TCP} {
 		t.Run(string(tr), func(t *testing.T) {
 			a, b := pair(t, tr)
@@ -295,6 +297,7 @@ func TestCall(t *testing.T) {
 
 					ended(t, ac, testue.LocalBye)
 					ended(t, bc, testue.RemoteBye)
+					wantCallRecord(t, core, ac, "caller")
 				})
 			}
 
@@ -307,6 +310,7 @@ func TestCall(t *testing.T) {
 
 				ended(t, bc, testue.LocalBye)
 				ended(t, ac, testue.RemoteBye)
+				wantCallRecord(t, core, ac, "callee")
 			})
 		})
 	}
