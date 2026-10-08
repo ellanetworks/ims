@@ -62,7 +62,7 @@ const columns: GridColDef<Registration>[] = [
     minWidth: 170,
     renderCell: ({ row }) =>
       lines([
-        ...new Set(row.devices.map((d) => imeiOf(d) ?? d.instance ?? "—")),
+        ...new Set(row.contacts.map((c) => imeiOf(c) ?? c.instance ?? "—")),
       ]),
   },
   {
@@ -70,7 +70,7 @@ const columns: GridColDef<Registration>[] = [
     headerName: "Video",
     width: 80,
     valueGetter: (_value, row) =>
-      yesNo(row.devices.some((d) => d.media.includes("video"))),
+      yesNo(row.contacts.some((c) => c.media.includes("video"))),
   },
   {
     field: "signalling",
@@ -183,6 +183,11 @@ export default function Registrations() {
       <RegistrationDrawer
         registration={shown}
         onClose={() => setSelected(null)}
+        onSearch={(value) => {
+          setSearch(value);
+          setPagination((p) => ({ ...p, page: 0 }));
+          setSelected(null);
+        }}
       />
     </Box>
   );

@@ -45,7 +45,7 @@ func TestRegistrationStatus(t *testing.T) {
 		},
 	}, {
 		// A second registration set: its identities add to the first, and its bindings of the same contact are
-		// the same device.
+		// listed once.
 		IMPI: listIMPI,
 		Identities: []db.PublicIdentity{
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
@@ -53,7 +53,7 @@ func TestRegistrationStatus(t *testing.T) {
 		},
 		Bindings: []db.Binding{
 			binding(phone, `;audio`, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
-			binding(tablet, `;+sip.instance="<urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6>";audio`,
+			binding(tablet, `;+sip.instance="<urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6>";q=0.5;audio`,
 				listNow, listNow.Add(time.Hour)),
 		},
 	}}
@@ -83,9 +83,10 @@ func TestRegistrationStatus(t *testing.T) {
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
 			{URI: "sip:alice@" + listDomain},
 		},
-		Devices: []api.RegisteredDevice{{
+		Contacts: []api.RegisteredContact{{
 			Contact:        phone,
 			Instance:       "urn:gsma:imei:35000000-000001-0",
+			Q:              1,
 			Media:          []string{"audio", "video"},
 			RegisteredAt:   listNow.Add(-2 * time.Hour),
 			ExpiresAt:      listNow.Add(time.Hour),
@@ -96,6 +97,7 @@ func TestRegistrationStatus(t *testing.T) {
 		}, {
 			Contact:        tablet,
 			Instance:       "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+			Q:              0.5,
 			Media:          []string{"audio"},
 			RegisteredAt:   listNow,
 			ExpiresAt:      listNow.Add(time.Hour),
@@ -121,8 +123,9 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 	want := api.RegistrationStatus{
 		IMPI:       listIMPI,
 		Identities: []api.RegisteredIdentity{},
-		Devices: []api.RegisteredDevice{{
+		Contacts: []api.RegisteredContact{{
 			Contact:        "sip:ue@192.0.2.9:5060",
+			Q:              1,
 			RegisteredAt:   listNow,
 			ExpiresAt:      listNow.Add(time.Hour),
 			SignallingPath: api.SignallingPathUnmonitored,

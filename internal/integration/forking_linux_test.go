@@ -4,6 +4,8 @@ package integration
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,4 +347,40 @@ func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, the
 	}
 
 	ended(t, tc, testue.RemoteBye)
+}
+
+// The API lists each identity of a shared number with the other identities it reaches, and each contact with the
+// q-value it rings by.
+func TestListSharedNumber(t *testing.T) {
+	s := newScene(t)
+	twoDevices(t, s, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
+
+	callee, second := subscriberAt(1), subscriberAt(4)
+
+	got := s.registrations(strings.TrimPrefix(callee.tel, "tel:"))
+	if len(got.Items) != 2 {
+		t.Fatalf("registrations = %+v, want the callee's and the second device's", got)
+	}
+
+	for _, reg := range got.Items {
+		other, q := second.impi, 1.0
+		if reg.IMPI == second.impi {
+			other, q = callee.impi, 0.5
+		}
+
+		for _, id := range reg.Identities {
+			want := []string{other}
+			if id.Barred {
+				want = []string{}
+			}
+
+			if !slices.Equal(id.RegisteredWith, want) {
+				t.Errorf("%s: %s registered with %v, want %v", reg.IMPI, id.URI, id.RegisteredWith, want)
+			}
+		}
+
+		if len(reg.Contacts) != 1 || reg.Contacts[0].Q != q {
+			t.Errorf("%s: contacts %+v, want one with q %v", reg.IMPI, reg.Contacts, q)
+		}
+	}
 }

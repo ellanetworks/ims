@@ -2,6 +2,7 @@ package scscf
 
 import (
 	"cmp"
+	"context"
 	"net/url"
 	"slices"
 	"strconv"
@@ -179,6 +180,34 @@ func callerPreference(features map[string][]string, prefs []preference) (float64
 	return total / float64(m), true
 }
 
+// Recipients returns the registrations a request to the public identity u reaches: every registration holding it,
+// under any of its aliases, whichever private identity registered it (TS 24.229 §5.4.3.3 step 8, TS 23.228
+// §4.3.3.4). barred reports that one of them bars it, and the request then reaches none.
+func Recipients(ctx context.Context, store *db.DB, u sip.URI, homeDomain string) (regs []db.Registration, barred bool, err error) {
+	keys := identityKeys(u, homeDomain)
+
+	for _, key := range keys {
+		found, err := store.ListRegistrationsByIdentity(ctx, key)
+		if err != nil {
+			return nil, false, err
+		}
+
+		for _, reg := range found {
+			if !slices.ContainsFunc(regs, func(r db.Registration) bool { return r.ID == reg.ID }) {
+				regs = append(regs, reg)
+			}
+		}
+	}
+
+	for _, reg := range regs {
+		if slices.ContainsFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Barred && slices.Contains(keys, id.Key) }) {
+			return nil, true, nil
+		}
+	}
+
+	return regs, false, nil
+}
+
 // rejectedBy reports whether a Reject-Contact predicate discards a contact: one whose feature tags
 // all appear in the contact's feature set, and all match (RFC 3841 §7.2.4).
 func rejectedBy(features map[string][]string, rejects []preference) bool {
@@ -269,7 +298,7 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) [][]target {
 				continue
 			}
 
-			t := target{binding: b, reg: reg, q: qValue(params), qa: qa}
+			t := target{binding: b, reg: reg, q: QValue(params), qa: qa}
 
 			if v, ok := params.Get("+sip.instance"); ok {
 				t.instance = sip.Unquote(v)
@@ -337,7 +366,9 @@ func outbound(path string) bool {
 	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
 }
 
-func qValue(params sip.Params) float64 {
+// QValue is the callee preference of a registered contact: its q-value, or 1.0 when it has none
+// (RFC 3841 §7.2.3), and 0 when it is not a number.
+func QValue(params sip.Params) float64 {
 	v, ok := params.Get("q")
 	if !ok {
 		return 1

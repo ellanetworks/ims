@@ -286,33 +286,19 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	req := tx.Request()
 	called := out.URI
 
-	keys := identityKeys(called, s.r.cfg.HomeDomain)
+	regs, barred, err := Recipients(ctx, s.r.cfg.DB, called, s.r.cfg.HomeDomain)
 
-	var regs []db.Registration
+	switch {
+	case err != nil:
+		s.log.Warn("failed to read the registrations", slog.String("impu", called.String()), slog.Any("error", err))
+		s.answer(tx, retryLater(req))
 
-	for _, key := range keys {
-		found, err := s.r.cfg.DB.ListRegistrationsByIdentity(ctx, key)
-		if err != nil {
-			s.log.Warn("failed to read the registrations", slog.String("impu", called.String()), slog.Any("error", err))
-			s.answer(tx, retryLater(req))
+		return
+	case barred:
+		s.log.Debug("request to a barred identity", slog.String("impu", called.String()))
+		s.answer(tx, sip.NewResponse(req, 404, ""))
 
-			return
-		}
-
-		for _, reg := range found {
-			if !slices.ContainsFunc(regs, func(r db.Registration) bool { return r.ID == reg.ID }) {
-				regs = append(regs, reg)
-			}
-		}
-	}
-
-	for _, reg := range regs {
-		if slices.ContainsFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Barred && slices.Contains(keys, id.Key) }) {
-			s.log.Debug("request to a barred identity", slog.String("impu", called.String()))
-			s.answer(tx, sip.NewResponse(req, 404, ""))
-
-			return
-		}
+		return
 	}
 
 	if out.Header.Has("Route") {
@@ -382,7 +368,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	err := s.proxy.Fork(tx, groups)
+	err = s.proxy.Fork(tx, groups)
 	if err == nil || errors.Is(err, proxy.ErrAnswered) {
 		return
 	}
