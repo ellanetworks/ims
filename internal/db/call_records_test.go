@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -14,7 +15,7 @@ var callT0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
 func attempt(icid string, at time.Time) *CallRecord {
 	return &CallRecord{
-		ICID: icid, SessionID: "call-" + icid, FromAddress: "<sip:alice@example.org>;tag=1",
+		ICID: icid, SessionID: "call-" + icid,
 		CallingParty: []string{"sip:alice@example.org", "tel:+15551230001"}, CallerIMPI: "alice@example.org",
 		RequestedParty: "tel:5551230002", RequestedAt: at,
 	}
@@ -36,8 +37,9 @@ func ended(r *CallRecord, status int, outcome CallOutcome, by CallParty) *CallRe
 func saveCalls(t *testing.T, d *DB, records ...*CallRecord) {
 	t.Helper()
 
-	if err := d.SaveCallRecords(t.Context(), records...); err != nil {
-		t.Fatalf("SaveCallRecords: %v", err)
+	errs, err := d.SaveCallRecords(t.Context(), records)
+	if err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
 	}
 }
 
@@ -58,14 +60,12 @@ func TestCallRecordLifecycle(t *testing.T) {
 
 	r.SIPStatus, r.Outcome = 200, OutcomeAnswered
 	r.DeliveryStartAt = callT0.Add(3 * time.Second)
-	r.CalledAsserted = []string{"unknown"}
 	r.CalleeIMPI = "bob@example.org"
 	r.Media = []string{"audio", "video"}
 	saveCalls(t, d, r)
 
 	r.DeliveryEndAt = callT0.Add(time.Minute)
 	r.EndedBy = PartyCallee
-	r.ReasonHeaders = []string{`SIP;cause=200;text="Call completed elsewhere"`}
 
 	saved := *r
 	saved.SessionID, saved.RequestedParty = "changed", "changed" // never updated
@@ -95,9 +95,10 @@ func TestSaveCallRecordsKeepsTheOthers(t *testing.T) {
 	pruned := attempt("ICID3", callT0)
 	pruned.ID = 1000
 
-	err := d.SaveCallRecords(t.Context(), dup, ok, pruned)
-	if !errors.Is(err, ErrDuplicateICID) || !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SaveCallRecords = %v, want %v and %v", err, ErrDuplicateICID, ErrNotFound)
+	errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{dup, ok, pruned})
+	if err != nil || len(errs) != 3 || !errors.Is(errs[0], ErrDuplicateICID) || errs[1] != nil ||
+		!errors.Is(errs[2], ErrNotFound) {
+		t.Fatalf("SaveCallRecords = %v, %v; want %v, nil and %v", errs, err, ErrDuplicateICID, ErrNotFound)
 	}
 
 	if dup.ID != 0 || ok.ID == 0 {
@@ -106,6 +107,20 @@ func TestSaveCallRecordsKeepsTheOthers(t *testing.T) {
 
 	if _, err := d.GetCallRecord(t.Context(), ok.ID); err != nil {
 		t.Fatalf("the record saved with failing ones was lost: %v", err)
+	}
+}
+
+func TestSaveCallRecordsFailing(t *testing.T) {
+	d := openTestDB(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	r := attempt("ICID1", callT0)
+
+	errs, err := d.SaveCallRecords(ctx, []*CallRecord{r})
+	if !errors.Is(err, context.Canceled) || errs != nil || r.ID != 0 {
+		t.Fatalf("SaveCallRecords = %v, %v, ID %d; want the transaction failed", errs, err, r.ID)
 	}
 }
 
@@ -157,8 +172,9 @@ func TestCallRecordConstraints(t *testing.T) {
 			r := attempt("ICID1", callT0)
 			corrupt(r)
 
-			if err := d.SaveCallRecords(t.Context(), r); !isConstraint(err, sqlite3.ErrConstraintCheck) {
-				t.Fatalf("SaveCallRecords = %v, want a CHECK constraint failure", err)
+			errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{r})
+			if err != nil || len(errs) != 1 || !isConstraint(errs[0], sqlite3.ErrConstraintCheck) {
+				t.Fatalf("SaveCallRecords = %v, %v; want a CHECK constraint failure", errs, err)
 			}
 		})
 	}
@@ -168,40 +184,39 @@ func TestListCallRecords(t *testing.T) {
 	d := openTestDB(t)
 
 	answered := ended(attempt("AAAA", callT0), 200, OutcomeAnswered, PartyCaller)
-	answered.CalledAsserted = []string{"sip:bob@example.org", "tel:+15551230002"}
+	answered.CalledParty = "tel:+15551230002"
 	answered.CalleeIMPI = "bob@example.org"
 
 	busy := ended(attempt("BBBB", callT0.Add(time.Hour)), 486, OutcomeBusy, PartyCallee)
 	busy.CallerIMPI, busy.CallingParty, busy.RequestedParty = "carol@example.org", nil, "sip:dave%40x@example.org"
 
-	unregistered := ended(attempt("CCCC", callT0.Add(2*time.Hour)), 403, OutcomeFailed, PartyNetwork)
-	unregistered.CallerIMPI, unregistered.CallingParty = "", nil
+	barred := ended(attempt("CCCC", callT0.Add(2*time.Hour)), 403, OutcomeFailed, PartyNetwork)
 
 	ringing := attempt("DDDD", callT0.Add(3*time.Hour))
 
-	saveCalls(t, d, answered, busy, unregistered, ringing)
+	saveCalls(t, d, answered, busy, barred, ringing)
 
 	cases := []struct {
 		name   string
 		filter CallRecordFilter
 		want   []*CallRecord
 	}{
-		{"all, newest first", CallRecordFilter{}, []*CallRecord{ringing, unregistered, busy, answered}},
+		{"all, newest first", CallRecordFilter{}, []*CallRecord{ringing, barred, busy, answered}},
 		{"caller IMPI", CallRecordFilter{Search: "carol"}, []*CallRecord{busy}},
 		{"callee IMPI", CallRecordFilter{Search: "bob@"}, []*CallRecord{answered}},
-		{"calling party", CallRecordFilter{Search: "+1555123000"}, []*CallRecord{ringing, answered}},
-		{"called asserted identity", CallRecordFilter{Search: "tel:+15551230002"}, []*CallRecord{answered}},
-		{"requested party", CallRecordFilter{Search: "tel:5551230002"}, []*CallRecord{ringing, unregistered, answered}},
-		{"ICID", CallRecordFilter{Search: "cccc"}, []*CallRecord{unregistered}},
+		{"calling party", CallRecordFilter{Search: "+1555123000"}, []*CallRecord{ringing, barred, answered}},
+		{"called party", CallRecordFilter{Search: "tel:+15551230002"}, []*CallRecord{answered}},
+		{"requested party", CallRecordFilter{Search: "tel:5551230002"}, []*CallRecord{ringing, barred, answered}},
+		{"ICID", CallRecordFilter{Search: "cccc"}, []*CallRecord{barred}},
 		{"literal %", CallRecordFilter{Search: "dave%40"}, []*CallRecord{busy}},
 		{"literal _", CallRecordFilter{Search: "alice_"}, nil},
-		{"from", CallRecordFilter{From: callT0.Add(time.Hour)}, []*CallRecord{ringing, unregistered, busy}},
+		{"from", CallRecordFilter{From: callT0.Add(time.Hour)}, []*CallRecord{ringing, barred, busy}},
 		{"to, excluded", CallRecordFilter{To: callT0.Add(time.Hour)}, []*CallRecord{answered}},
-		{"outcomes", CallRecordFilter{Outcomes: []CallOutcome{OutcomeBusy, OutcomeFailed}}, []*CallRecord{unregistered, busy}},
+		{"outcomes", CallRecordFilter{Outcomes: []CallOutcome{OutcomeBusy, OutcomeFailed}}, []*CallRecord{barred, busy}},
 		{
 			"all filters",
 			CallRecordFilter{Search: "alice", From: callT0, To: callT0.Add(3 * time.Hour), Outcomes: []CallOutcome{OutcomeFailed}},
-			[]*CallRecord{unregistered},
+			[]*CallRecord{barred},
 		},
 	}
 
@@ -225,57 +240,6 @@ func TestListCallRecords(t *testing.T) {
 
 	if ids(page) != idsOf([]*CallRecord{answered}) || total != 4 {
 		t.Fatalf("page 2 = %s of %d, want %s of 4", ids(page), total, idsOf([]*CallRecord{answered}))
-	}
-}
-
-func TestStreamCallRecords(t *testing.T) {
-	d := openTestDB(t)
-
-	// More than a batch, with ties on the time, which the ID orders.
-	n := 2*callRecordBatch + 1
-
-	records := make([]*CallRecord, n)
-	for i := range records {
-		records[i] = attempt(fmt.Sprintf("ICID%d", i), callT0.Add(time.Duration(i/2)*time.Second))
-		if i%3 == 0 {
-			ended(records[i], 404, OutcomeFailed, PartyNetwork)
-		}
-	}
-
-	saveCalls(t, d, records...)
-
-	for _, f := range []CallRecordFilter{{}, {Outcomes: []CallOutcome{OutcomeFailed}}} {
-		var want []*CallRecord
-
-		for i := n - 1; i >= 0; i-- {
-			if len(f.Outcomes) == 0 || records[i].Outcome == OutcomeFailed {
-				want = append(want, records[i])
-			}
-		}
-
-		var got []CallRecord
-
-		if err := d.StreamCallRecords(t.Context(), f, func(r CallRecord) error {
-			got = append(got, r)
-			return nil
-		}); err != nil {
-			t.Fatalf("StreamCallRecords: %v", err)
-		}
-
-		if ids(got) != idsOf(want) {
-			t.Fatalf("streamed %d records, want %d, newest first", len(got), len(want))
-		}
-	}
-
-	stop := errors.New("stop")
-	calls := 0
-
-	err := d.StreamCallRecords(t.Context(), CallRecordFilter{}, func(CallRecord) error {
-		calls++
-		return stop
-	})
-	if !errors.Is(err, stop) || calls != 1 {
-		t.Fatalf("StreamCallRecords = %v after %d calls, want %v after 1", err, calls, stop)
 	}
 }
 

@@ -44,8 +44,6 @@ type CallRecord struct {
 	ICID string
 	// SessionID is the Call-ID of the INVITE (§5.1.3.1.59).
 	SessionID string
-	// FromAddress is the From header field of the INVITE from the UE (§5.1.3.1.16A).
-	FromAddress string
 	// CallingParty is the P-Asserted-Identity of the INVITE (§5.1.3.1.24), empty when nothing was asserted.
 	CallingParty []string
 	// CallerIMPI is the private identity of the caller's registration (§5.1.3.1.36).
@@ -54,8 +52,6 @@ type CallRecord struct {
 	RequestedParty string
 	// CalledParty is the Request-URI the originating S-CSCF sent on (§5.1.3.1.9).
 	CalledParty string
-	// CalledAsserted is the P-Asserted-Identity of the 2xx (§5.1.3.1.23).
-	CalledAsserted []string
 	// CalleeIMPI is the private identity of the registration that answered (§5.1.3.1.36).
 	CalleeIMPI string
 	// RequestedAt is when the INVITE was received from the UE (§5.1.3.1.58).
@@ -70,8 +66,6 @@ type CallRecord struct {
 	EndedBy   CallParty
 	// Alerted reports whether a 180 reached the caller.
 	Alerted bool
-	// ReasonHeaders are those of the BYE or CANCEL that ended the call (§5.1.3.1.28A).
-	ReasonHeaders []string
 	// Media are the media types of the m= lines that an SDP answer accepted, derived from §5.1.3.1.49.
 	Media []string
 	// Incomplete reports that the record was closed without the end of its call, which the IMS lost.
@@ -89,64 +83,76 @@ type CallRecordFilter struct {
 }
 
 const (
-	callRecordColumns = `id, icid, session_id, from_address, calling_party, caller_impi, requested_party, called_party,
-		called_asserted, callee_impi, requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by,
-		alerted, reason_headers, media, incomplete`
+	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
+		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete`
 
-	// callRecordBatch is how many records a statement deletes or an export reads at a time, so that the SIP
-	// handling waiting on the database connection is not held up for long.
+	// callRecordBatch is how many records a statement deletes at a time, so that the SIP handling waiting on the
+	// database connection is not held up for long.
 	callRecordBatch = 1000
 )
 
 // SaveCallRecords inserts the records without an ID, giving them one, and updates the others, in one transaction.
-// A record that cannot be saved does not keep the others from being saved: its error is returned with theirs. An
-// update leaves the fields that never change after the record is inserted, such as its ICID, as they were.
-func (d *DB) SaveCallRecords(ctx context.Context, records ...*CallRecord) error {
+// An update leaves the fields that never change after the record is inserted, such as its ICID, as they were.
+//
+// A record that cannot be saved, because another record has its ICID, it breaks a constraint or it was deleted,
+// does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
+// When the transaction itself fails, it saves none and returns err, and saving them again may succeed.
+func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord) (errs []error, err error) {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("save call records: %w", err)
+		return nil, fmt.Errorf("save call records: %w", err)
 	}
 
-	var (
-		errs     []error
-		inserted []*CallRecord
-	)
+	var inserted []*CallRecord
 
-	for _, r := range records {
-		insert := r.ID == 0
-
-		if err := saveCallRecord(ctx, tx, r); err != nil {
-			errs = append(errs, fmt.Errorf("save call record %s: %w", r.ICID, err))
-		} else if insert {
-			inserted = append(inserted, r)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
+	// The records inserted keep no ID when nothing was saved.
+	fail := func(err error) ([]error, error) {
 		_ = tx.Rollback()
 
 		for _, r := range inserted {
 			r.ID = 0
 		}
 
-		return fmt.Errorf("save call records: %w", err)
+		return nil, fmt.Errorf("save call records: %w", err)
 	}
 
-	return errors.Join(errs...)
+	for i, r := range records {
+		insert := r.ID == 0
+
+		switch err := saveCallRecord(ctx, tx, r); {
+		case err == nil:
+			if insert {
+				inserted = append(inserted, r)
+			}
+		case isRecordError(err):
+			if errs == nil {
+				errs = make([]error, len(records))
+			}
+
+			errs[i] = fmt.Errorf("save call record %s: %w", r.ICID, err)
+		default:
+			return fail(err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fail(err)
+	}
+
+	return errs, nil
+}
+
+// isRecordError reports whether saving a call record failed for what the record holds, which trying again does
+// not change.
+func isRecordError(err error) bool {
+	var e sqlite3.Error
+
+	return errors.Is(err, ErrDuplicateICID) || errors.Is(err, ErrNotFound) ||
+		errors.As(err, &e) && e.Code == sqlite3.ErrConstraint
 }
 
 func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 	calling, err := jsonList(r.CallingParty)
-	if err != nil {
-		return err
-	}
-
-	asserted, err := jsonList(r.CalledAsserted)
-	if err != nil {
-		return err
-	}
-
-	reasons, err := jsonList(r.ReasonHeaders)
 	if err != nil {
 		return err
 	}
@@ -157,15 +163,15 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 	}
 
 	mutable := []any{
-		calling, nullableString(r.CalledParty), asserted, nullableString(r.CalleeIMPI), nullableTime(r.DeliveryStartAt),
+		calling, nullableString(r.CalledParty), nullableString(r.CalleeIMPI), nullableTime(r.DeliveryStartAt),
 		nullableTime(r.DeliveryEndAt), nullableInt(int64(r.SIPStatus)), nullableString(string(r.Outcome)),
-		nullableString(string(r.EndedBy)), r.Alerted, reasons, media, r.Incomplete,
+		nullableString(string(r.EndedBy)), r.Alerted, media, r.Incomplete,
 	}
 
 	if r.ID != 0 {
-		res, err := tx.ExecContext(ctx, `UPDATE call_records SET calling_party = ?, called_party = ?,
-			called_asserted = ?, callee_impi = ?, delivery_start_at = ?, delivery_end_at = ?, sip_status = ?,
-			outcome = ?, ended_by = ?, alerted = ?, reason_headers = ?, media = ?, incomplete = ? WHERE id = ?`,
+		res, err := tx.ExecContext(ctx, `UPDATE call_records SET calling_party = ?, called_party = ?, callee_impi = ?,
+			delivery_start_at = ?, delivery_end_at = ?, sip_status = ?, outcome = ?, ended_by = ?, alerted = ?,
+			media = ?, incomplete = ? WHERE id = ?`,
 			append(mutable, r.ID)...)
 		if err != nil {
 			return err
@@ -174,12 +180,11 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 		return checkAffected(res)
 	}
 
-	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, from_address, caller_impi,
-		requested_party, requested_at, calling_party, called_party, called_asserted, callee_impi, delivery_start_at,
-		delivery_end_at, sip_status, outcome, ended_by, alerted, reason_headers, media, incomplete)
-		VALUES (`+placeholders(19)+`) RETURNING id`,
+	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
+		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
+		ended_by, alerted, media, incomplete) VALUES (`+placeholders(16)+`) RETURNING id`,
 		append([]any{
-			r.ICID, r.SessionID, r.FromAddress, nullableString(r.CallerIMPI), r.RequestedParty,
+			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
 			r.RequestedAt.UTC().UnixNano(),
 		}, mutable...)...).Scan(&r.ID)
 	if isConstraint(err, sqlite3.ErrConstraintUnique) {
@@ -221,44 +226,6 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 	}
 
 	return records, total, nil
-}
-
-// StreamCallRecords calls fn with each record the filter selects, the most recently requested first, until fn
-// fails. It reads them in batches, so that the database is free for others while fn runs: a record requested
-// after the stream started is not included, and one deleted meanwhile may not be.
-func (d *DB) StreamCallRecords(ctx context.Context, f CallRecordFilter, fn func(CallRecord) error) error {
-	where, args := f.where()
-
-	var last *CallRecord
-
-	for {
-		query, qargs := `SELECT `+callRecordColumns+` FROM call_records WHERE `+where, args
-
-		if last != nil {
-			at := last.RequestedAt.UnixNano()
-			query += ` AND (requested_at < ? OR requested_at = ? AND id < ?)`
-
-			qargs = append(qargs[:len(qargs):len(qargs)], at, at, last.ID)
-		}
-
-		records, err := d.queryCallRecords(ctx, query+` ORDER BY requested_at DESC, id DESC LIMIT ?`,
-			append(qargs[:len(qargs):len(qargs)], callRecordBatch)...)
-		if err != nil {
-			return fmt.Errorf("stream call records: %w", err)
-		}
-
-		for _, r := range records {
-			if err := fn(r); err != nil {
-				return err
-			}
-		}
-
-		if len(records) < callRecordBatch {
-			return nil
-		}
-
-		last = &records[len(records)-1]
-	}
 }
 
 // PruneCallRecords deletes the records requested before a time, then the oldest beyond maxRows, and returns how
@@ -341,14 +308,11 @@ func (f CallRecordFilter) where() (string, []any) {
 
 	if f.Search != "" {
 		like := "%" + escapeLike(f.Search) + "%"
-		inList := func(column string) string {
-			return `EXISTS (SELECT 1 FROM json_each(` + column + `) WHERE value LIKE ? ESCAPE '\')`
-		}
 
-		conds = append(conds, `(icid LIKE ? ESCAPE '\' OR from_address LIKE ? ESCAPE '\' OR caller_impi LIKE ? ESCAPE '\'
-			OR requested_party LIKE ? ESCAPE '\' OR called_party LIKE ? ESCAPE '\' OR callee_impi LIKE ? ESCAPE '\'
-			OR `+inList("calling_party")+` OR `+inList("called_asserted")+`)`)
-		args = append(args, like, like, like, like, like, like, like, like)
+		conds = append(conds, `(icid LIKE ? ESCAPE '\' OR caller_impi LIKE ? ESCAPE '\' OR requested_party LIKE ? ESCAPE '\'
+			OR called_party LIKE ? ESCAPE '\' OR callee_impi LIKE ? ESCAPE '\' OR EXISTS (
+				SELECT 1 FROM json_each(calling_party) WHERE value LIKE ? ESCAPE '\'))`)
+		args = append(args, like, like, like, like, like, like)
 	}
 
 	if !f.From.IsZero() {
@@ -397,15 +361,15 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	var (
 		r                                         CallRecord
 		callerIMPI, calledParty, calleeIMPI       sql.NullString
-		calling, asserted, reasons, media         sql.NullString
+		calling, media                            sql.NullString
 		outcome, endedBy                          sql.NullString
 		requestedAt                               int64
 		deliveryStartAt, deliveryEndAt, sipStatus sql.NullInt64
 	)
 
-	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &r.FromAddress, &calling, &callerIMPI, &r.RequestedParty,
-		&calledParty, &asserted, &calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome,
-		&endedBy, &r.Alerted, &reasons, &media, &r.Incomplete); err != nil {
+	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
+		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
+		&r.Incomplete); err != nil {
 		return CallRecord{}, err
 	}
 
@@ -418,7 +382,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	for _, l := range []struct {
 		dst *[]string
 		src sql.NullString
-	}{{&r.CallingParty, calling}, {&r.CalledAsserted, asserted}, {&r.ReasonHeaders, reasons}, {&r.Media, media}} {
+	}{{&r.CallingParty, calling}, {&r.Media, media}} {
 		if !l.src.Valid {
 			continue
 		}
