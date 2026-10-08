@@ -249,6 +249,60 @@ paths:
                   result:
                     $ref: "#/components/schemas/SIPStatus"
 
+  /api/v1/registrations:
+    get:
+      tags: [Registrations]
+      operationId: listRegistrations
+      summary: List the registrations
+      description: |
+        The private identities registered with the IMS, in order, each with its public identities and the devices
+        registered with it. A private identity registered with several registration sets is listed once.
+      parameters:
+        - name: search
+          in: query
+          description: Part of a private or public identity, such as an IMSI or a phone number.
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: A page of registrations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Registration"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/registrations/{impi}/reauthenticate:
     post:
       tags: [Registrations]
@@ -504,6 +558,68 @@ components:
                 type: array
                 items:
                   type: string
+
+    Registration:
+      type: object
+      required: [impi, identities, devices]
+      properties:
+        impi:
+          type: string
+          description: The private user identity, which identifies the subscription.
+          examples: [001010000000001@ims.mnc001.mcc001.3gppnetwork.org]
+        identities:
+          type: array
+          description: The public user identities, from the HSS.
+          items:
+            type: object
+            required: [uri, barred]
+            properties:
+              uri:
+                type: string
+                examples: [tel:+15551230001]
+              display_name:
+                type: string
+              barred:
+                type: boolean
+        devices:
+          type: array
+          description: The contacts registered, one per device.
+          items:
+            type: object
+            required: [contact, media, registered_at, expires_at, protected, signalling_path]
+            properties:
+              contact:
+                type: string
+              instance:
+                type: string
+                description: The instance ID of the device, its IMEI URN when it has one (TS 23.003 §13.8).
+                examples: [urn:gsma:imei:35000000-000001-0]
+              media:
+                type: array
+                description: The media the device registered for.
+                items:
+                  type: string
+                  enum: [audio, video]
+              registered_at:
+                type: string
+                format: date-time
+              expires_at:
+                type: string
+                format: date-time
+              address:
+                type: string
+                description: The address and port of the device, as the P-CSCF sees it.
+              transport:
+                type: string
+                enum: [udp, tcp]
+              protected:
+                type: boolean
+                description: Whether IPsec protects the signalling of the device.
+              signalling_path:
+                type: string
+                enum: [unmonitored, monitored, lost]
+                description: |
+                  The IMS signalling path of the device, which the P-CSCF monitors through the policy function.
 
     Error:
       type: object

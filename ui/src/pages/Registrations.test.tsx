@@ -1,0 +1,222 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import Registrations from "@/pages/Registrations";
+import type { Registration } from "@/queries/registrations";
+import { device, registration } from "@/test/fixtures";
+import { json, renderWithClient, stubApi } from "@/test/render";
+
+const alice = registration({
+  devices: [
+    device(),
+    device({
+      contact: "sip:001010000000001@192.0.2.31:5060",
+      instance: "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+      media: ["audio"],
+      protected: false,
+      signalling_path: "lost",
+      expires_at: "2026-10-08T14:00:00.000Z",
+    }),
+  ],
+});
+
+const carol = registration({
+  impi: "001010000000003@ims.mnc001.mcc001.3gppnetwork.org",
+  identities: [{ uri: "tel:+15551230003", barred: false }],
+  devices: [
+    device({ contact: "sip:001010000000003@192.0.2.33:5064" }),
+    device({ contact: "sip:001010000000003@192.0.2.34:5064" }),
+  ],
+});
+
+const bob = registration({
+  impi: "001010000000002@ims.mnc001.mcc001.3gppnetwork.org",
+  identities: [{ uri: "tel:+15551230002", barred: false }],
+  devices: [
+    device({
+      contact: "sip:001010000000002@192.0.2.32:5064",
+      instance: "urn:gsma:imei:35693803-564381-0",
+      media: ["audio"],
+      signalling_path: "unmonitored",
+    }),
+  ],
+});
+
+const serve = (
+  items: Registration[],
+  reauth: () => Response = () => json(202, { result: {} }),
+) => {
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      stubApi({
+        "/api/v1/registrations": (url) => {
+          urls.push(url.search);
+          const search = url.searchParams.get("search") ?? "";
+          const found = items.filter(
+            (r) =>
+              r.impi.includes(search) ||
+              r.identities.some((i) => i.uri.includes(search)),
+          );
+          return json(200, {
+            result: {
+              items: found,
+              page: Number(url.searchParams.get("page") ?? 1),
+              per_page: Number(url.searchParams.get("per_page") ?? 25),
+              total_count: found.length,
+            },
+          });
+        },
+        [`/api/v1/registrations/${encodeURIComponent(alice.impi)}/reauthenticate`]:
+          reauth,
+      }),
+    ),
+  );
+  return urls;
+};
+
+const cells = (impi: string) =>
+  within(screen.getByText(impi).closest('[role="row"]') as HTMLElement)
+    .getAllByRole("gridcell")
+    .map((cell) => cell.textContent);
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("Registrations", () => {
+  it("lists the registrations", async () => {
+    serve([alice, bob]);
+
+    renderWithClient(<Registrations />);
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Registrations (2)",
+      }),
+    ).toBeInTheDocument();
+    await screen.findByText(alice.impi);
+    expect(cells(alice.impi)).toEqual([
+      alice.impi,
+      "+15551230001",
+      "35693803-564380-0urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+      "no",
+      "yes",
+      "lost",
+      "2026-10-08 14:00:00",
+    ]);
+    expect(cells(bob.impi)).toEqual([
+      bob.impi,
+      "+15551230002",
+      "35693803-564381-0",
+      "yes",
+      "no",
+      "—",
+      "2026-10-08 13:00:00",
+    ]);
+  });
+
+  it("lists a device with several contacts once", async () => {
+    serve([carol]);
+
+    renderWithClient(<Registrations />);
+
+    await screen.findByText(carol.impi);
+    expect(cells(carol.impi)[2]).toBe("35693803-564380-0");
+  });
+
+  it("shows when nothing is registered", async () => {
+    serve([]);
+
+    renderWithClient(<Registrations />);
+
+    expect(await screen.findByText("No registrations.")).toBeInTheDocument();
+  });
+
+  it("searches", async () => {
+    const urls = serve([alice, bob]);
+
+    renderWithClient(<Registrations />);
+    await screen.findByText(alice.impi);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search" }), {
+      target: { value: " +15551230002 " },
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText(alice.impi)).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(bob.impi)).toBeInTheDocument();
+    expect(urls.at(-1)).toBe("?page=1&per_page=25&search=%2B15551230002");
+  });
+
+  it("shows the details of a registration", async () => {
+    serve([alice]);
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(alice.impi));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      within(drawer).getByRole("heading", { name: alice.impi }),
+    ).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("heading", { name: "Identities (3)" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText("barred")).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("heading", { name: "Contacts (2)" }),
+    ).toBeInTheDocument();
+
+    const [first] = within(drawer)
+      .getAllByRole("listitem")
+      .filter((li) => li.textContent?.startsWith("IMEI"));
+    expect(first).toHaveTextContent(
+      [
+        "IMEI35693803-564380-0",
+        "Address192.0.2.30:5064",
+        "TransportUDP",
+        "IPsecyes",
+        "Mediaaudio, video",
+        "Signalling Pathmonitored",
+        "Registered2026-10-08 12:00:00",
+        "Expires2026-10-08 13:00:00",
+        "Contactsip:001010000000001@192.0.2.30:5064",
+      ].join(""),
+    );
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("requests a re-authentication", async () => {
+    serve([alice]);
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(alice.impi));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Re-authenticate" }),
+    );
+
+    expect(await screen.findByText("requested")).toBeInTheDocument();
+  });
+
+  it("shows why a re-authentication failed", async () => {
+    serve([alice], () =>
+      json(404, { error: `no registration for ${alice.impi}` }),
+    );
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(alice.impi));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Re-authenticate" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `Could not re-authenticate: no registration for ${alice.impi}`,
+    );
+  });
+});

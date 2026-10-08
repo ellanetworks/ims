@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -742,5 +744,88 @@ func TestPlainSIPRegistrationRejected(t *testing.T) {
 
 	if u.State().Registered || len(espPackets(t, s.ue)) != 0 {
 		t.Fatalf("state %+v and SAs %v after the rejection", u.State(), espPackets(t, s.ue))
+	}
+}
+
+func (s *scene) registrations(search string) api.ListRegistrationsResponse {
+	s.t.Helper()
+
+	u := "http://" + s.srv.APIAddr().String() + "/api/v1/registrations?search=" + url.QueryEscape(search)
+
+	req, err := http.NewRequestWithContext(s.ctx(), http.MethodGet, u, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	defer func() { _ = res.Body.Close() }()
+
+	var body struct {
+		Result api.ListRegistrationsResponse `json:"result"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		s.t.Fatal(err)
+	}
+
+	return body.Result
+}
+
+func TestListRegistrations(t *testing.T) {
+	s := newScene(t)
+	u := s.newUE(false, testue.Config{})
+
+	if got := s.registrations(""); len(got.Items) != 0 || got.TotalCount != 0 {
+		t.Fatalf("registrations before registering = %+v, want none", got)
+	}
+
+	s.register(u)
+
+	got := s.registrations("")
+	if len(got.Items) != 1 || got.TotalCount != 1 {
+		t.Fatalf("registrations = %+v, want one", got)
+	}
+
+	reg := got.Items[0]
+	if reg.IMPI != impi || !slices.ContainsFunc(reg.Identities, func(i api.RegistrationIdentityResponse) bool {
+		return i.URI == subscriberAt(0).tel
+	}) {
+		t.Fatalf("registration = %+v, want %s with %s", reg, impi, subscriberAt(0).tel)
+	}
+
+	if len(reg.Devices) != 1 {
+		t.Fatalf("devices = %+v, want one", reg.Devices)
+	}
+
+	d, sub := reg.Devices[0], subscriberAt(0)
+	address, err := netip.ParseAddrPort(d.Address)
+
+	switch {
+	case d.Instance != "urn:gsma:imei:"+sub.imei[:8]+"-"+sub.imei[8:14]+"-0":
+		t.Fatalf("instance %q, want the IMEI of the UE", d.Instance)
+	case !slices.Equal(d.Media, []string{"audio"}):
+		t.Fatalf("media %v, want audio", d.Media)
+	case err != nil || address.Addr() != ueAddrsAt(0)[0].Addr():
+		t.Fatalf("address %q, want the UE's %s", d.Address, ueAddrsAt(0)[0].Addr())
+	// A REGISTER over 1300 bytes goes over TCP (RFC 3261 §18.1.1), and the scene's PCRF monitors the signalling.
+	case !d.Protected || d.Transport != "udp" && d.Transport != "tcp" || d.SignallingPath != "monitored":
+		t.Fatalf("device = %+v, want protected, with its signalling path monitored", d)
+	}
+
+	for search, want := range map[string]int{"+15550001": 1, sub.imsi: 1, "+15559999": 0} {
+		if n := len(s.registrations(search).Items); n != want {
+			t.Fatalf("search %q found %d registrations, want %d", search, n, want)
+		}
+	}
+
+	if err := u.Deregister(s.ctx()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := s.registrations(""); len(got.Items) != 0 {
+		t.Fatalf("registrations after deregistering = %+v, want none", got)
 	}
 }

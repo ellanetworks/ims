@@ -66,6 +66,7 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/policy", GetPolicy(cfg)},
 		{"PUT /api/v1/policy", UpdatePolicy(cfg)},
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
+		{"GET /api/v1/registrations", ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
 	}
 }

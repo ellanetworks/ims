@@ -1,6 +1,7 @@
 import type { DiameterPeer } from "@/queries/diameter";
 import type { Operator } from "@/queries/operator";
 import type { PolicyWithStatus } from "@/queries/policy";
+import type { RegisteredDevice, Registration } from "@/queries/registrations";
 import type { SIPStatus } from "@/queries/sip";
 
 export const operator: Operator = {
@@ -46,5 +47,39 @@ export const policy = (
 ): PolicyWithStatus => ({
   interface: "none",
   status: { interface: "none" },
+  ...overrides,
+});
+
+export const device = (
+  overrides: Partial<RegisteredDevice> = {},
+): RegisteredDevice => ({
+  contact: "sip:001010000000001@192.0.2.30:5064",
+  instance: "urn:gsma:imei:35693803-564380-0",
+  media: ["audio", "video"],
+  registered_at: "2026-10-08T12:00:00.000Z",
+  expires_at: "2026-10-08T13:00:00.000Z",
+  address: "192.0.2.30:5064",
+  transport: "udp",
+  protected: true,
+  signalling_path: "monitored",
+  ...overrides,
+});
+
+export const registration = (
+  overrides: Partial<Registration> = {},
+): Registration => ({
+  impi: "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+  identities: [
+    {
+      uri: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+      barred: true,
+    },
+    {
+      uri: "sip:+15551230001@ims.mnc001.mcc001.3gppnetwork.org;user=phone",
+      barred: false,
+    },
+    { uri: "tel:+15551230001", barred: false },
+  ],
+  devices: [device()],
   ...overrides,
 });

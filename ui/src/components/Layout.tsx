@@ -22,6 +22,7 @@ import {
   Hub as HubIcon,
   Info as InfoIcon,
   Menu as MenuIcon,
+  PhoneAndroid as PhoneAndroidIcon,
   OpenInNew as OpenInNewIcon,
 } from "@mui/icons-material";
 import { Link, useLocation } from "react-router-dom";
@@ -65,6 +66,11 @@ const navItems = [
     to: "/operator",
     label: "Operator",
     icon: <FeedIcon color="primary" />,
+  },
+  {
+    to: "/registrations",
+    label: "Registrations",
+    icon: <PhoneAndroidIcon color="primary" />,
   },
 ];
 

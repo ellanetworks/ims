@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch } from "@/queries/utils";
+import { ApiError, apiFetch, withQuery } from "@/queries/utils";
 
 const stubFetch = (status: number, body: string, statusText = "") => {
   const fetchMock = vi.fn(
@@ -79,5 +79,29 @@ describe("apiFetch", () => {
       kind: "network",
       status: undefined,
     });
+  });
+});
+
+describe("withQuery", () => {
+  it("drops empty values", () => {
+    expect(
+      withQuery("/api/v1/registrations", {
+        page: 2,
+        search: "",
+        per_page: undefined,
+      }),
+    ).toBe("/api/v1/registrations?page=2");
+  });
+
+  it("returns the bare path without parameters", () => {
+    expect(withQuery("/api/v1/registrations", {})).toBe(
+      "/api/v1/registrations",
+    );
+  });
+
+  it("encodes the plus sign of E.164 numbers", () => {
+    expect(withQuery("/api/v1/registrations", { search: "+1555" })).toBe(
+      "/api/v1/registrations?search=%2B1555",
+    );
   });
 });

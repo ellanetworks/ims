@@ -17,6 +17,10 @@ const serve = () =>
         "/api/v1/diameter": () => json(200, { result: identity }),
         "/api/v1/diameter/peers": () => json(200, { result: { items: [] } }),
         "/api/v1/policy": () => json(200, { result: policy() }),
+        "/api/v1/registrations": () =>
+          json(200, {
+            result: { items: [], page: 1, per_page: 25, total_count: 0 },
+          }),
       }),
     ),
   );
@@ -51,6 +55,7 @@ describe("App", () => {
     ).toEqual([
       ["Cores", "/cores"],
       ["Operator", "/operator"],
+      ["Registrations", "/registrations"],
     ]);
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
@@ -90,5 +95,13 @@ describe("App", () => {
       await screen.findByRole("heading", { level: 1, name: "Operator" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("001 / 01")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "Registrations" }));
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Registrations (0)",
+      }),
+    ).toBeInTheDocument();
   });
 });

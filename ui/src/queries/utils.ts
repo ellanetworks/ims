@@ -12,6 +12,18 @@ export class ApiError extends Error {
   }
 }
 
+export interface Page<T> {
+  items: T[];
+  page: number;
+  per_page: number;
+  total_count: number;
+}
+
+export interface PageParams {
+  page?: number;
+  perPage?: number;
+}
+
 interface ApiFetchOptions {
   method?: string;
   body?: unknown;
@@ -60,4 +72,19 @@ export async function apiFetch<T>(
   }
 
   return data.result as T;
+}
+
+export function withQuery(
+  path: string,
+  params: Record<string, string | number | undefined>,
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") {
+      query.set(key, String(value));
+    }
+  }
+
+  const qs = query.toString();
+  return qs ? `${path}?${qs}` : path;
 }
