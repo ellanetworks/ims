@@ -466,7 +466,7 @@ func TestReinviteGlare(t *testing.T) {
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
 	ac.mu.Lock()
-	ac.offering = true
+	ac.leg.offering = true
 	ac.mu.Unlock()
 
 	err := bc.Hold(ctx)
@@ -479,7 +479,7 @@ func TestReinviteGlare(t *testing.T) {
 	}
 
 	ac.mu.Lock()
-	ac.offering = false
+	ac.leg.offering = false
 	ac.mu.Unlock()
 
 	if err := bc.Hold(ctx); err != nil {
@@ -1168,10 +1168,10 @@ func TestUpdateGlare(t *testing.T) {
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
 	ac.mu.Lock()
-	ac.offering = true
+	ac.leg.offering = true
 	ac.mu.Unlock()
 
-	err := bc.update(ctx, true)
+	err := bc.update(ctx, bc.leg, true)
 	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)
 	}
@@ -1181,7 +1181,7 @@ func TestUpdateGlare(t *testing.T) {
 	}
 
 	ac.mu.Lock()
-	ac.offering = false
+	ac.leg.offering = false
 	ac.mu.Unlock()
 }
 
