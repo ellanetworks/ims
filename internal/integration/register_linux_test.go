@@ -47,6 +47,9 @@ const (
 
 const subscribers = 4
 
+// hosts are the UE hosts on the bridge: one per subscriber, and more for the other devices of one.
+const hosts = subscribers + 2
+
 type subscriber struct {
 	imsi, impi, imei string
 	msisdn, tel      string
@@ -156,7 +159,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 
 	var ues []netip.Addr
 
-	for i := range subscribers {
+	for i := range hosts {
 		for _, p := range ueAddrsAt(i) {
 			ues = append(ues, p.Addr())
 		}
@@ -285,14 +288,25 @@ func (s *scene) newUE(v6 bool, cfg testue.Config) *testue.UE {
 func (s *scene) newUEAt(i int, v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
+	return s.newDevice(i, subscriberAt(i), v6, cfg)
+}
+
+// newDevice is a UE on host i with the USIM of sub, and its own IMEI unless cfg has one.
+func (s *scene) newDevice(i int, sub subscriber, v6 bool, cfg testue.Config) *testue.UE {
+	s.t.Helper()
+
 	family := 0
 	if v6 {
 		family = 1
 	}
 
-	h, sub := s.host(i), subscriberAt(i)
+	h := s.host(i)
 
-	cfg.IMSI, cfg.IMEI = sub.imsi, sub.imei
+	cfg.IMSI = sub.imsi
+	if cfg.IMEI == "" {
+		cfg.IMEI = sub.imei
+	}
+
 	cfg.PCSCF = netip.AddrPortFrom(imsAddrs[family].Addr(), pcscfPort)
 	cfg.Local = ueAddrsAt(i)[family].Addr()
 	cfg.Do = h.ns.Do

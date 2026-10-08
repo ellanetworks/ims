@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -36,6 +37,10 @@ type SessionConfig struct {
 	// Numbering returns the numbering plan when a request is routed, so that it can change at runtime. Without
 	// it, no dial string is normalised.
 	Numbering func() Numbering
+
+	// GroupNoAnswer is how long the contacts of a group ring before the next group gets the request;
+	// zero is DefaultGroupNoAnswer.
+	GroupNoAnswer time.Duration
 }
 
 type Sessions struct {
@@ -348,7 +353,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		for _, t := range g {
 			o := opts
 			if i < len(set)-1 {
-				o.NoAnswer = groupNoAnswer
+				o.NoAnswer = cmp.Or(s.cfg.GroupNoAnswer, DefaultGroupNoAnswer)
 			}
 
 			b, ok := s.branch(out, called, t, o, req.Flow)
@@ -391,8 +396,9 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	s.answer(tx, sip.NewResponse(req, code, ""))
 }
 
-// groupNoAnswer is how long the contacts of a group ring before the next group gets the request.
-const groupNoAnswer = 20 * time.Second
+// DefaultGroupNoAnswer is how long the contacts of a group ring before the next group gets the
+// request.
+const DefaultGroupNoAnswer = 20 * time.Second
 
 // branch is the request to one registered contact (TS 24.229 §5.4.3.3 step 10).
 func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy.Options, in sip.Flow) (proxy.Branch, bool) {

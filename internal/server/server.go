@@ -39,6 +39,7 @@ type Server struct {
 	ReauthExpires    time.Duration
 	NoAnswerTimeout  time.Duration
 	MediaLossTimeout time.Duration
+	GroupNoAnswer    time.Duration
 
 	database    *db.DB
 	settings    *settings.Live
@@ -365,6 +366,7 @@ func (s *Server) timers() timers {
 		reauthExpires:    s.ReauthExpires,
 		noAnswer:         s.NoAnswerTimeout,
 		mediaLossTimeout: s.MediaLossTimeout,
+		groupNoAnswer:    s.GroupNoAnswer,
 	}
 }
 

@@ -1289,7 +1289,7 @@ func TestTerminatingGroups(t *testing.T) {
 		t.Fatalf("got %s", res.StartLine())
 	}
 
-	sh.sipClock.Advance(groupNoAnswer)
+	sh.sipClock.Advance(DefaultGroupNoAnswer)
 
 	var got []string
 
