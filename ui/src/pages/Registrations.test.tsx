@@ -101,7 +101,6 @@ describe("Registrations", () => {
       alice.impi,
       "+15551230001",
       "35693803-564380-0urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
-      "no",
       "yes",
       "lost",
       "2026-10-08 14:00:00",
@@ -110,7 +109,6 @@ describe("Registrations", () => {
       bob.impi,
       "+15551230002",
       "35693803-564381-0",
-      "yes",
       "no",
       "—",
       "2026-10-08 13:00:00",
@@ -162,7 +160,7 @@ describe("Registrations", () => {
       within(drawer).getByRole("heading", { name: alice.impi }),
     ).toBeInTheDocument();
     expect(
-      within(drawer).getByRole("heading", { name: "Identities (3)" }),
+      within(drawer).getByRole("heading", { name: "Public Identities (3)" }),
     ).toBeInTheDocument();
     expect(within(drawer).getByText("barred")).toBeInTheDocument();
     expect(
@@ -190,6 +188,28 @@ describe("Registrations", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+  });
+
+  it("shows IPsec as unknown without the P-CSCF's flow", async () => {
+    serve([
+      registration({
+        devices: [
+          device({
+            address: undefined,
+            transport: undefined,
+            protected: false,
+          }),
+        ],
+      }),
+    ]);
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(alice.impi));
+
+    const card = (await screen.findAllByRole("listitem")).find((li) =>
+      li.textContent?.startsWith("IMEI"),
+    );
+    expect(card).toHaveTextContent("Address—Transport—IPsec—");
   });
 
   it("requests a re-authentication", async () => {

@@ -7,6 +7,7 @@ import {
   IconButton,
   Skeleton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -33,7 +34,7 @@ import {
 } from "@/queries/diameter";
 import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
-import { formatEndpoint, hostOf } from "@/utils/addresses";
+import { formatEndpoint, hostOf, portOf } from "@/utils/addresses";
 import { formatTimestamp } from "@/utils/dates";
 import {
   applicationLabels,
@@ -74,11 +75,17 @@ function Copyable({ value, label }: { value: string; label: string }) {
   );
 }
 
-const pcscfAddresses = (listeners: { role: string; address: string }[]) => [
-  ...new Set(
-    listeners.filter((l) => l.role === "pcscf").map((l) => hostOf(l.address)),
-  ),
-];
+// SIP_PORT is where phones send their first REGISTER, since the core gives them only the P-CSCF's address
+// (TS 24.229 §9.2.1, RFC 3261 §19.1.2).
+const SIP_PORT = 5060;
+
+const pcscfAddresses = (listeners: { role: string; address: string }[]) => {
+  const seen = new Set<string>();
+  return listeners
+    .filter((l) => l.role === "pcscf")
+    .map((l) => ({ ip: hostOf(l.address), port: portOf(l.address) }))
+    .filter(({ ip }) => !seen.has(ip) && seen.add(ip));
+};
 
 function policyStatus(
   policy: PolicyWithStatus,
@@ -282,10 +289,27 @@ export default function Cores() {
               sip.data &&
               (pcscfAddresses(sip.data.listeners).length > 0 ? (
                 <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
-                  {pcscfAddresses(sip.data.listeners).map((address) => (
-                    <li key={address}>
-                      <Copyable value={address} label={address} />
-                    </li>
+                  {pcscfAddresses(sip.data.listeners).map(({ ip, port }) => (
+                    <Stack
+                      component="li"
+                      key={ip}
+                      direction="row"
+                      sx={{ alignItems: "center", gap: 1 }}
+                    >
+                      <Copyable value={ip} label={ip} />
+                      {port !== SIP_PORT && (
+                        <Tooltip
+                          title={`Phones expect port ${SIP_PORT}.`}
+                          arrow
+                        >
+                          <Chip
+                            label={`port ${port}`}
+                            color="warning"
+                            size="small"
+                          />
+                        </Tooltip>
+                      )}
+                    </Stack>
                   ))}
                 </Box>
               ) : (

@@ -13,10 +13,12 @@ interface Request {
 }
 
 const serve = ({
+  listeners = sip.listeners,
   peers = [peer()],
   current = policy(),
   answer,
 }: {
+  listeners?: typeof sip.listeners;
   peers?: DiameterPeer[];
   current?: PolicyWithStatus;
   answer?: (req: Request) => Response | undefined;
@@ -42,7 +44,7 @@ const serve = ({
     "fetch",
     vi.fn(
       stubApi({
-        "/api/v1/sip": () => json(200, { result: sip }),
+        "/api/v1/sip": () => json(200, { result: { ...sip, listeners } }),
         "/api/v1/diameter": () => json(200, { result: identity }),
         "/api/v1/diameter/peers": route((req) =>
           req.method === "POST"
@@ -99,6 +101,27 @@ describe("Cores", () => {
       ["Diameter Host", identity.host],
       ["Diameter Realm", identity.realm],
     ]);
+  });
+
+  it("flags a P-CSCF port phones do not expect", async () => {
+    serve({
+      listeners: [
+        { role: "pcscf", address: "192.0.2.20:5070", transports: ["udp"] },
+      ],
+    });
+
+    renderWithClient(<Cores />);
+
+    expect(await screen.findByText("port 5070")).toBeInTheDocument();
+  });
+
+  it("does not flag the default SIP port", async () => {
+    serve();
+
+    renderWithClient(<Cores />);
+
+    await screen.findByText(identity.host);
+    expect(screen.queryByText(/^port /)).not.toBeInTheDocument();
   });
 
   it("copies a P-CSCF address", async () => {

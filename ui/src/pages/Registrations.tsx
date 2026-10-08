@@ -43,7 +43,7 @@ const lines = (values: string[]) =>
 const columns: GridColDef<Registration>[] = [
   {
     field: "impi",
-    headerName: "IMPI",
+    headerName: "Identity",
     flex: 1.2,
     minWidth: 200,
     renderCell: ({ row }) => <DomainName name={row.impi} />,
@@ -64,13 +64,6 @@ const columns: GridColDef<Registration>[] = [
       lines([
         ...new Set(row.devices.map((d) => imeiOf(d) ?? d.instance ?? "—")),
       ]),
-  },
-  {
-    field: "ipsec",
-    headerName: "IPsec",
-    width: 80,
-    valueGetter: (_value, row) =>
-      yesNo(row.devices.length > 0 && row.devices.every((d) => d.protected)),
   },
   {
     field: "video",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatEndpoint, hostOf } from "@/utils/addresses";
+import { formatEndpoint, hostOf, portOf } from "@/utils/addresses";
 
 describe("hostOf", () => {
   it("strips the port of an IPv4 address", () => {
@@ -18,5 +18,12 @@ describe("formatEndpoint", () => {
 
   it("brackets an IPv6 address", () => {
     expect(formatEndpoint("2001:db8::1", 3868)).toBe("[2001:db8::1]:3868");
+  });
+});
+
+describe("portOf", () => {
+  it("reads the port of an IPv4 or IPv6 address", () => {
+    expect(portOf("192.0.2.1:5060")).toBe(5060);
+    expect(portOf("[2001:db8::1]:5070")).toBe(5070);
   });
 });

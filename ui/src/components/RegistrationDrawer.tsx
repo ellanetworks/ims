@@ -31,7 +31,8 @@ function DeviceCard({ device }: { device: RegisteredDevice }) {
     ["IMEI", imeiOf(device) ?? device.instance ?? "—"],
     ["Address", device.address ?? "—"],
     ["Transport", device.transport?.toUpperCase() ?? "—"],
-    ["IPsec", yesNo(device.protected)],
+    // Without the P-CSCF's flow, whether IPsec protects the device is unknown.
+    ["IPsec", device.address ? yesNo(device.protected) : "—"],
     ["Media", device.media.join(", ") || "—"],
     [
       "Signalling Path",
@@ -100,7 +101,7 @@ function RegistrationDetail({
           component="h3"
           sx={{ mb: 1 }}
         >
-          Identities ({registration.identities.length})
+          Public Identities ({registration.identities.length})
         </Typography>
         <Stack
           component="ul"
