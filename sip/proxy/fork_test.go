@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -23,6 +24,11 @@ type forker struct {
 	groups [][]*siptest.Socket
 	opts   proxy.Options
 	errs   chan error
+
+	// track has every INVITE carry a Dialog, and in-dialog requests follow it.
+	track   bool
+	dialogs chan *proxy.Dialog
+	events  chan proxy.DialogEvent
 }
 
 type forkScene struct {
@@ -33,10 +39,17 @@ type forkScene struct {
 }
 
 func newForkScene(t *testing.T, shape []int, opts proxy.Options) (*forkScene, [][]*siptest.Socket) {
+	return newForkSceneTracking(t, shape, opts, false)
+}
+
+func newForkSceneTracking(t *testing.T, shape []int, opts proxy.Options, track bool) (*forkScene, [][]*siptest.Socket) {
 	t.Helper()
 
 	clock := siptest.NewClock()
-	f := &forker{t: t, opts: opts, errs: make(chan error, 4)}
+	f := &forker{
+		t: t, opts: opts, errs: make(chan error, 4), track: track,
+		dialogs: make(chan *proxy.Dialog, 4), events: make(chan proxy.DialogEvent, 64),
+	}
 
 	for _, n := range shape {
 		var g []*siptest.Socket
@@ -49,7 +62,13 @@ func newForkScene(t *testing.T, shape []int, opts proxy.Options) (*forkScene, []
 	}
 
 	f.l, _ = siptest.NewLayer(t, transaction.Config{Handler: f, Clock: clock})
-	f.p = proxy.New(proxy.Config{Layer: f.l, Clock: clock})
+
+	pc := proxy.Config{Layer: f.l, Clock: clock}
+	if track {
+		pc.OnDialog = func(e proxy.DialogEvent) { f.events <- e }
+	}
+
+	f.p = proxy.New(pc)
 	f.local = siptest.ListenLayer(t, f.l, loopback)
 
 	return &forkScene{t: t, f: f, caller: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), clock: clock}, f.groups
@@ -61,10 +80,28 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	out, _, err := f.p.Preprocess(req)
+	out, removed, err := f.p.Preprocess(req)
 	if err != nil {
 		f.t.Error(err)
 		return
+	}
+
+	opts := f.opts
+
+	if to, _ := out.Header.To(); to.Tag() != "" {
+		err := f.p.Forward(tx, out, nextHop(f.t, out, req.Flow.Local), proxy.Options{Dialog: f.p.Dialog(removed)})
+		if err != nil {
+			f.t.Error(err)
+		}
+
+		return
+	}
+
+	if f.track && req.Method == "INVITE" {
+		opts.Dialog = f.p.NewDialog(proxy.DialogConfig{})
+		opts.RecordRoute = &proxy.RecordRoute{}
+
+		f.dialogs <- opts.Dialog
 	}
 
 	var groups [][]proxy.Branch
@@ -79,7 +116,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 			bs = append(bs, proxy.Branch{
 				Request: r,
 				Target:  proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: req.Flow.Local, Remote: s.Addr()}},
-				Options: f.opts,
+				Options: opts,
 			})
 		}
 
@@ -102,7 +139,27 @@ func (f *forker) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Req
 	f.p.Cancel(tx, cancel)
 }
 
-func (f *forker) HandleAck(*sip.Request) {}
+func (f *forker) HandleAck(ack *sip.Request) {
+	out, removed, err := f.p.Preprocess(ack)
+	if err != nil {
+		f.t.Error(err)
+		return
+	}
+
+	err = f.p.ForwardAck(out, nextHop(f.t, out, ack.Flow.Local), f.p.Dialog(removed))
+	if err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
+		f.t.Error(err)
+	}
+}
+
+func nextHop(t *testing.T, out *sip.Request, local netip.AddrPort) proxy.Target {
+	tr, to, err := sip.NextHop(out)
+	if err != nil {
+		t.Error(err)
+	}
+
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}}
+}
 
 func (f *forker) HandleTransactionError(*transaction.ServerTransaction, error) {}
 
@@ -118,14 +175,25 @@ func (s *forkScene) send(req *sip.Request) {
 	s.caller.Send(sip.UDP, s.f.local, req)
 }
 
-// final receives the next response to the caller other than a provisional one.
+// final receives the next final response to the caller, other than one to a CANCEL.
 func (s *forkScene) final() *sip.Response {
 	s.t.Helper()
 
 	for {
 		res, _ := s.caller.RecvResponse()
-		if !res.IsProvisional() {
+		if cseq, _ := res.Header.CSeq(); !res.IsProvisional() && cseq.Method != "CANCEL" {
 			return res
+		}
+	}
+}
+
+// relayed waits until the caller has a provisional response with code.
+func (s *forkScene) relayed(code int) {
+	s.t.Helper()
+
+	for {
+		if res, _ := s.caller.RecvResponse(); res.StatusCode == code {
+			return
 		}
 	}
 }
@@ -152,6 +220,11 @@ func (l *leg) respond(code int, extra ...string) {
 	res := sip.NewResponse(l.req, code, "")
 	if code > 100 {
 		_ = res.Header.SetToTag(l.tag)
+		res.Header.Add("Contact", "<sip:"+l.tag+"@"+l.s.Addr().String()+">")
+	}
+
+	if code > 100 && code < 300 {
+		dialog.CopyRecordRoute(res, l.req)
 	}
 
 	for i := 0; i+1 < len(extra); i += 2 {

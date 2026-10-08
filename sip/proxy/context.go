@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +90,13 @@ type branch struct {
 	dialog  *Dialog
 	req     *sip.Request
 	initial bool
+
+	// delivered is set once the dialog learnt the branch failed.
+	delivered bool
+
+	// early holds the To tags of the early dialogs that came on the branch, and ended those a
+	// 199 already ended (RFC 6228 §6).
+	early, ended []string
 }
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
@@ -205,24 +213,10 @@ func (c *responseContext) start(bs []*branch) (int, []failure) {
 }
 
 func (c *responseContext) send(b *branch) error {
-	p, tx, d := c.p, c.tx, b.dialog
-	initial := false
+	d := b.dialog
 
-	if d != nil {
-		var (
-			tracked bool
-			err     error
-		)
-
-		initial = b.initial
-
-		if initial {
-			err = d.begin(tx, c, b.out, b.to, b.rr)
-			tracked = true
-		} else {
-			tracked, err = d.request(b.out)
-		}
-
+	if d != nil && !b.initial {
+		tracked, err := d.request(b.out)
 		if err != nil {
 			c.drop(b)
 			return err
@@ -235,22 +229,15 @@ func (c *responseContext) send(b *branch) error {
 		}
 	}
 
-	client, err := p.layer.Request(b.out, b)
+	client, err := c.p.layer.Request(b.out, b)
 	if err != nil {
 		c.drop(b)
 
-		switch {
-		case initial:
-			d.abandon()
-		case b.dialog != nil:
-			d.response(b.out, false, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
+		if d := b.dialog; d != nil && !b.initial {
+			d.response(b.out, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
 		}
 
 		return internal(err)
-	}
-
-	if initial {
-		d.started()
 	}
 
 	c.started(b, client)
@@ -519,6 +506,15 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		}
 
 		b.startTimerC()
+
+		if tag := toTag(res); tag != "" {
+			switch {
+			case res.StatusCode == 199:
+				b.ended = append(b.ended, tag)
+			case !slices.Contains(b.early, tag):
+				b.early = append(b.early, tag)
+			}
+		}
 	case res.IsSuccess():
 		tag := toTag(res)
 
@@ -661,8 +657,8 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 }
 
 func (c *responseContext) deliver(b *branch, r Reply) {
-	if b.dialog != nil {
-		b.dialog.response(b.req, b.initial, r)
+	if d := b.dialog; d != nil {
+		c.toDialog(d, b, r)
 	}
 
 	if b.onReply == nil {
@@ -683,6 +679,45 @@ func (c *responseContext) deliver(b *branch, r Reply) {
 		c.mu.Lock()
 		c.held = !c.final && c.forks == forks
 		c.mu.Unlock()
+	}
+}
+
+// toDialog passes a response to the dialog the branch carries. A failed branch of the initial
+// INVITE ends only its early dialogs; the dialog fails with the INVITE, once no branch is left.
+func (c *responseContext) toDialog(d *Dialog, b *branch, r Reply) {
+	res := r.Response
+
+	switch {
+	case !b.initial:
+		d.response(b.req, r)
+		return
+	case res != nil && (res.IsProvisional() || res.IsSuccess()):
+		d.inviteResponse(b, res)
+		return
+	}
+
+	if res == nil {
+		res = c.generate(408)
+	}
+
+	c.mu.Lock()
+
+	b.delivered = true
+
+	best, downstream := res, r.Err == nil
+	if c.best != nil && !better(res.StatusCode, c.best.StatusCode) {
+		best, downstream = c.best, !c.generated[c.best]
+	}
+
+	over := res.StatusCode >= 600 || c.stopped || c.cancelled || len(c.waiting) == 0 && len(c.groups) == 0
+	over = over && !slices.ContainsFunc(c.branches, func(o *branch) bool { return !o.delivered })
+
+	c.mu.Unlock()
+
+	d.branchFailed(b)
+
+	if over {
+		d.failed(best, downstream)
 	}
 }
 
@@ -761,7 +796,61 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 	sendAll(cancels)
 	c.advance()
 
-	return c.conclude()
+	err := c.conclude()
+
+	if res != nil {
+		c.earlyTerminated(b, res)
+	}
+
+	return err
+}
+
+// earlyTerminated tells the caller, with a 199, of each early dialog of branch b that the final
+// response res ended, when that response does not go upstream at once (RFC 6228 §6, TS 24.229
+// §5.4.3.3).
+func (c *responseContext) earlyTerminated(b *branch, res *sip.Response) {
+	in := c.tx.Request()
+
+	if !c.invite || !has(in.Header, "Supported", "199") || has(in.Header, "Require", "100rel") ||
+		has(in.Header, "Proxy-Require", "100rel") {
+		return
+	}
+
+	c.mu.Lock()
+
+	if c.final {
+		c.mu.Unlock()
+		return
+	}
+
+	var tags []string
+
+	for _, tag := range b.early {
+		if !slices.Contains(b.ended, tag) {
+			tags = append(tags, tag)
+		}
+	}
+
+	b.ended = append(b.ended, tags...)
+
+	c.mu.Unlock()
+
+	for _, tag := range tags {
+		r := sip.NewResponse(in, 199, "")
+		_ = r.Header.SetToTag(tag)
+
+		for _, f := range reasonFor(res.StatusCode) {
+			r.Header.Add(f.Name, f.Value)
+		}
+
+		if err := c.tx.Relay(r); err != nil {
+			c.p.log.Debug("sending a 199 failed", slog.Any("error", err))
+		}
+	}
+}
+
+func has(h sip.Header, name, tag string) bool {
+	return slices.ContainsFunc(h.Elements(name), func(e string) bool { return strings.EqualFold(strings.TrimSpace(e), tag) })
 }
 
 // considerLocked weighs a final response against the best one so far (RFC 3261 §16.7 step 6).

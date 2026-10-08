@@ -258,9 +258,12 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 // group run in parallel. Responses come back as in RFC 3261 §16.7: provisional responses and 2xx
 // responses to an INVITE are relayed at once, and the best final response once nothing is left to try.
 //
-// A tracked Dialog is supported on a fork of a single branch.
+// Every branch of a fork carries the same tracked Dialog, or none; on an initial INVITE, the
+// Dialog follows each early dialog the branches create, and the one answered.
 func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error {
 	total := 0
+
+	var d *Dialog
 
 	for _, g := range groups {
 		if len(g) == 0 {
@@ -272,12 +275,20 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 				return internal(fmt.Errorf("sip/proxy: Forward of a %s request", b.Request.Method))
 			}
 
-			if b.Options.Dialog != nil && (len(groups) > 1 || len(g) > 1) {
-				return internal(errors.New("sip/proxy: a tracked dialog on a fork of several branches"))
+			if total == 0 {
+				d = b.Options.Dialog
+			}
+
+			if b.Options.Dialog != d {
+				return internal(errors.New("sip/proxy: branches of a fork with different dialogs"))
 			}
 
 			total++
 		}
+	}
+
+	if d != nil && total > 1 && groups[0][0].Request.Method != "INVITE" {
+		return internal(errors.New("sip/proxy: a tracked dialog on a fork of a request other than an INVITE"))
 	}
 
 	if total == 0 {
@@ -330,6 +341,23 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		tx.OnTerminated(func() { p.forget(c) })
 	}
 
+	first := prepared[0][0]
+	begun := first.dialog != nil && first.initial
+
+	if begun {
+		if err := d.begin(tx, c, first.out, first.rr); err != nil {
+			c.mu.Lock()
+			c.groups = nil
+			c.mu.Unlock()
+
+			if fresh {
+				p.forget(c)
+			}
+
+			return err
+		}
+	}
+
 	var firstErr error
 
 	for {
@@ -344,6 +372,10 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		started, failed := c.start(picked)
 
 		if started > 0 {
+			if begun {
+				d.started()
+			}
+
 			for _, f := range failed {
 				c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
 			}
@@ -359,6 +391,10 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 	c.mu.Lock()
 	c.groups, c.waiting = nil, nil
 	c.mu.Unlock()
+
+	if begun {
+		d.abandon()
+	}
 
 	if fresh {
 		p.forget(c)
