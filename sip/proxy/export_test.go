@@ -1,5 +1,7 @@
 package proxy
 
+import "slices"
+
 func (p *Proxy) Pending() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -13,7 +15,7 @@ func (p *Proxy) Responded() bool {
 
 	for _, c := range p.contexts {
 		c.mu.Lock()
-		ok := c.branch != nil && c.branch.responded
+		ok := slices.ContainsFunc(c.branches, func(b *branch) bool { return b.responded })
 		c.mu.Unlock()
 
 		if !ok {

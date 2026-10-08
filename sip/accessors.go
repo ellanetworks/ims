@@ -3,6 +3,7 @@ package sip
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,6 +72,16 @@ func (fs Header) CallID() string {
 
 func (fs Header) MaxForwards() (int, error) {
 	return fs.uint("Max-Forwards", 255)
+}
+
+// RFC 5393 §5.3.1
+func (fs Header) MaxBreadth() (int, error) {
+	n, err := fs.uint("Max-Breadth", math.MaxInt32)
+	if err == nil && n == 0 {
+		err = errors.New("Max-Breadth 0: not a positive integer")
+	}
+
+	return n, err
 }
 
 func (fs Header) ContentLength() (int, error) {

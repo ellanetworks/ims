@@ -168,6 +168,7 @@ var reasonPhrases = map[int]string{
 	430: "Flow Failed",
 	433: "Anonymity Disallowed",
 	439: "First Hop Lacks Outbound Support",
+	440: "Max-Breadth Exceeded",
 	469: "Bad Info Package",
 	480: "Temporarily Unavailable",
 	481: "Call/Transaction Does Not Exist",

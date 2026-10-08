@@ -23,6 +23,10 @@ const (
 	DefaultTimerC = 3*time.Minute + 30*time.Second
 
 	minTimerC = 3*time.Minute + time.Second
+
+	// MaxBreadth is the Max-Breadth given to requests without one, and the most a request may
+	// carry (RFC 5393 §5.3.3).
+	MaxBreadth = 60
 )
 
 var (
@@ -97,6 +101,14 @@ type Options struct {
 	OnReply func(r Reply) Verdict
 
 	Dialog *Dialog
+}
+
+// Branch is one target of a request (RFC 3261 §16.5): the request to send it, already retargeted,
+// and where to send it.
+type Branch struct {
+	Request *sip.Request
+	Target  Target
+	Options Options
 }
 
 type Reply struct {
@@ -238,29 +250,147 @@ func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
 }
 
 func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to Target, opts Options) error {
-	if req.Method == "ACK" || req.Method == "CANCEL" {
-		return internal(fmt.Errorf("sip/proxy: Forward of a %s request", req.Method))
+	return p.Fork(tx, [][]Branch{{{Request: req, Target: to, Options: opts}}})
+}
+
+// Fork forwards a request to several targets (RFC 3261 §16.6). The groups are tried one after
+// another, each once every branch of the one before ended without a 2xx or 6xx; the branches of a
+// group run in parallel. Responses come back as in RFC 3261 §16.7: provisional responses and 2xx
+// responses to an INVITE are relayed at once, and the best final response once nothing is left to try.
+//
+// A tracked Dialog is supported on a fork of a single branch.
+func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error {
+	total := 0
+
+	for _, g := range groups {
+		if len(g) == 0 {
+			return internal(errors.New("sip/proxy: an empty group of branches"))
+		}
+
+		for _, b := range g {
+			if b.Request.Method == "ACK" || b.Request.Method == "CANCEL" {
+				return internal(fmt.Errorf("sip/proxy: Forward of a %s request", b.Request.Method))
+			}
+
+			if b.Options.Dialog != nil && (len(groups) > 1 || len(g) > 1) {
+				return internal(errors.New("sip/proxy: a tracked dialog on a fork of several branches"))
+			}
+
+			total++
+		}
 	}
 
-	out, err := p.prepare(req, to)
+	if total == 0 {
+		return internal(errors.New("sip/proxy: no branch to fork to"))
+	}
+
+	in := tx.Request()
+
+	loop := p.loopKey(in)
+	if looped(in, loop) {
+		return &sip.StatusError{StatusCode: 482, Err: errors.New("sip/proxy: loop detected")}
+	}
+
+	breadth, err := incomingBreadth(in)
 	if err != nil {
 		return err
 	}
+
+	prepared := make([][]*branch, 0, len(groups))
+
+	c, fresh, err := p.context(tx)
+	if err != nil {
+		return err
+	}
+
+	for _, g := range groups {
+		pg := make([]*branch, 0, len(g))
+
+		for _, spec := range g {
+			b, err := p.prepareBranch(c, in, spec, loop)
+			if err != nil {
+				if fresh {
+					p.forget(c)
+				}
+
+				return err
+			}
+
+			pg = append(pg, b)
+		}
+
+		prepared = append(prepared, pg)
+	}
+
+	if err := c.open(prepared, breadth); err != nil {
+		return err
+	}
+
+	if fresh {
+		tx.OnTerminated(func() { p.forget(c) })
+	}
+
+	var firstErr error
+
+	for {
+		c.mu.Lock()
+		picked := c.pickLocked()
+		c.mu.Unlock()
+
+		if len(picked) == 0 {
+			break
+		}
+
+		started, failed := c.start(picked)
+
+		if started > 0 {
+			for _, f := range failed {
+				c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
+			}
+
+			return nil
+		}
+
+		if firstErr == nil {
+			firstErr = failed[0].err
+		}
+	}
+
+	c.mu.Lock()
+	c.groups, c.waiting = nil, nil
+	c.mu.Unlock()
+
+	if fresh {
+		p.forget(c)
+	}
+
+	return firstErr
+}
+
+func (p *Proxy) prepareBranch(c *responseContext, in *sip.Request, spec Branch, loop string) (*branch, error) {
+	opts := spec.Options
+
+	out, err := p.prepare(spec.Request, spec.Target)
+	if err != nil {
+		return nil, err
+	}
+
+	setBranch(out, loop)
 
 	d := opts.Dialog
 	initial := false
 
 	if d != nil {
-		toTag, err := out.Header.To()
+		to, err := out.Header.To()
 		if err != nil {
-			return &sip.StatusError{StatusCode: 400, Err: err}
+			return nil, &sip.StatusError{StatusCode: 400, Err: err}
 		}
 
-		initial = toTag.Tag() == "" && out.Method == "INVITE"
+		initial = to.Tag() == "" && out.Method == "INVITE"
 
 		switch {
 		case initial && opts.RecordRoute == nil:
-			return internal(errors.New("sip/proxy: a tracked dialog without Record-Route"))
+			return nil, internal(errors.New("sip/proxy: a tracked dialog without Record-Route"))
 		case opts.RecordRoute != nil:
 			rr := *opts.RecordRoute
 			rr.Params = rr.Params.Clone()
@@ -270,65 +400,75 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 	}
 
 	if opts.RecordRoute != nil {
-		recordRoute(out, tx.Request().Flow, to, opts.RecordRoute)
+		recordRoute(out, in.Flow, spec.Target, opts.RecordRoute)
 	}
 
-	c, fresh, err := p.context(tx)
+	return &branch{
+		c: c, onReply: opts.OnReply, timeout: opts.Timeout, noAnswer: opts.NoAnswer,
+		out: out, to: spec.Target, rr: opts.RecordRoute,
+		dialog: d, req: out, initial: initial,
+	}, nil
+}
+
+// RFC 5393 §5.3.3
+func incomingBreadth(req *sip.Request) (int, error) {
+	if !req.Header.Has("Max-Breadth") {
+		return MaxBreadth, nil
+	}
+
+	n, err := req.Header.MaxBreadth()
 	if err != nil {
-		return err
+		return 0, &sip.StatusError{StatusCode: 400, Err: err}
 	}
 
-	if fresh {
-		tx.OnTerminated(func() { p.forget(c) })
+	return min(n, MaxBreadth), nil
+}
+
+// loopKey is the second part of the Via branch of the requests forwarded for req: it varies with
+// what decides where the request goes, but not with the method (RFC 5393 §4.2.1). The secret keeps
+// it to this proxy.
+func (p *Proxy) loopKey(req *sip.Request) string {
+	h := sha256.New()
+
+	h.Write([]byte(p.secret))
+	h.Write([]byte{0})
+	h.Write([]byte(req.URI.String()))
+
+	for _, r := range req.Header.Values("Route") {
+		h.Write([]byte{0})
+		h.Write([]byte(r))
 	}
 
-	b, err := c.open(opts)
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+const loopSeparator = "."
+
+func setBranch(out *sip.Request, loop string) {
+	top, err := out.Header.TopVia()
 	if err != nil {
-		return err
+		return
 	}
 
-	if d != nil {
-		tracked := initial
+	top.Params.Set("branch", sip.NewBranch()+loopSeparator+loop)
+	_ = out.Header.SetTopVia(top)
+}
 
-		if initial {
-			err = d.begin(tx, c, out, to, opts.RecordRoute)
-		} else {
-			tracked, err = d.request(out)
-		}
-
-		if err != nil {
-			c.abandon(b, fresh)
-			return err
-		}
-
-		if tracked {
-			c.mu.Lock()
-			b.dialog, b.req, b.initial = d, out, initial
-			c.mu.Unlock()
-		}
-	}
-
-	client, err := p.layer.Request(out, b)
+// looped reports a request that already went through this proxy with nothing changed that
+// decides where it goes: a loop, not a spiral (RFC 5393 §4.2.2).
+func looped(req *sip.Request, loop string) bool {
+	vias, err := req.Header.Vias()
 	if err != nil {
-		c.abandon(b, fresh)
+		return false
+	}
 
-		switch {
-		case initial:
-			d.abandon()
-		case b.dialog != nil:
-			d.response(out, false, Reply{Response: sip.NewResponse(out, 500, ""), Err: err})
+	for _, v := range vias {
+		if _, key, ok := strings.Cut(v.Branch(), loopSeparator); ok && key == loop {
+			return true
 		}
-
-		return internal(err)
 	}
 
-	if initial {
-		d.started()
-	}
-
-	c.started(b, client)
-
-	return nil
+	return false
 }
 
 func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) error {
@@ -449,6 +589,13 @@ func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
 	if err := decrementMaxForwards(out); err != nil {
 		return nil, err
 	}
+
+	breadth, err := incomingBreadth(out)
+	if err != nil {
+		return nil, err
+	}
+
+	out.Header.Set("Max-Breadth", strconv.Itoa(breadth))
 
 	if err := sip.ApplyStrictRoute(out); err != nil {
 		return nil, &sip.StatusError{StatusCode: 400, Err: err}
