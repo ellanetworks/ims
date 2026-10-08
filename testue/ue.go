@@ -97,6 +97,12 @@ type Config struct {
 	// or feature tags such as video (RFC 3840 §9).
 	ContactParams sip.Params
 
+	// RegID, when not zero, makes the UE's registration flow RegID of its instance (RFC 5626 §4.2):
+	// its Contact has the reg-id, and its REGISTER outbound in Supported (TS 24.229 §5.1.1.2.1). UEs
+	// with the same IMPI and IMEI and other RegIDs are the device's other flows, each with its own
+	// security associations (TS 33.203 §6.1).
+	RegID int64
+
 	Plain bool
 
 	AccessNetworkInfo string
@@ -153,7 +159,12 @@ type SA struct {
 }
 
 type State struct {
-	Registered     bool
+	Registered bool
+
+	// Outbound is set when the registrar registered the UE's flow: its 200 required outbound
+	// (RFC 5626 §6).
+	Outbound bool
+
 	Expires        time.Time
 	DefaultIMPU    string
 	AssociatedURIs []string

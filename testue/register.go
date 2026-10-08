@@ -153,6 +153,10 @@ func (u *UE) contact(port uint16) string {
 		{Name: "audio"},
 	}
 
+	if u.cfg.RegID != 0 {
+		params = append(params, sip.Param{Name: "reg-id", Value: strconv.FormatInt(u.cfg.RegID, 10)})
+	}
+
 	return sip.Address{URI: uri, Params: append(params, u.cfg.ContactParams...)}.String()
 }
 
@@ -208,6 +212,11 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 	req.Header.Add("Contact", u.contact(port))
 	req.Header.Add("Expires", strconv.FormatInt(int64(expires/time.Second), 10))
 	req.Header.Add("Supported", "path")
+
+	if u.cfg.RegID != 0 {
+		req.Header.Add("Supported", "outbound")
+	}
+
 	req.Header.Add("Authorization", p.auth)
 
 	if !u.cfg.Plain {
@@ -375,7 +384,7 @@ func (u *UE) adoptMinExpires(res *sip.Response) error {
 func (u *UE) granted(res *sip.Response) time.Duration {
 	contacts, _ := res.Header.Contacts()
 	for _, c := range contacts {
-		if c.URI.User != u.user || !strings.EqualFold(c.URI.Host, sip.FormatHost(u.cfg.Local)) {
+		if c.URI.User != u.user || !strings.EqualFold(c.URI.Host, sip.FormatHost(u.cfg.Local)) || !u.ownFlow(c.Params) {
 			continue
 		}
 
@@ -467,6 +476,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	u.auth = p.auth
 	u.state = State{
 		Registered:     true,
+		Outbound:       slices.ContainsFunc(res.Header.Elements("Require"), func(e string) bool { return strings.EqualFold(strings.TrimSpace(e), "outbound") }),
 		Expires:        now.Add(granted),
 		AssociatedURIs: associated,
 		ServiceRoute:   res.Header.Values("Service-Route"),
@@ -479,6 +489,17 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	}
 
 	u.scheduleLocked(granted)
+}
+
+// ownFlow reports whether a contact's parameters name the UE's flow, when it registers one.
+func (u *UE) ownFlow(params sip.Params) bool {
+	if u.cfg.RegID == 0 {
+		return true
+	}
+
+	v, ok := params.Get("reg-id")
+
+	return ok && v == strconv.FormatInt(u.cfg.RegID, 10)
 }
 
 func sameURI(a, b string) bool {
