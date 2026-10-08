@@ -73,6 +73,15 @@ func newMedia(addr netip.Addr, port uint16, precondition bool) *media {
 	}
 }
 
+// fork copies the media state for a separate dialog created by the same offer.
+func (m *media) fork() *media {
+	f := *m
+	f.streams = slices.Clone(m.streams)
+	f.audioFormats = slices.Clone(m.audioFormats)
+
+	return &f
+}
+
 func (m *media) met() bool {
 	return !m.precondition || (m.reported == sdp.QoSSendRecv && m.remoteQoS == sdp.QoSSendRecv)
 }

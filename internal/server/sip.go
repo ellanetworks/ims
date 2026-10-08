@@ -75,6 +75,7 @@ type timers struct {
 	reauthExpires    time.Duration
 	noAnswer         time.Duration
 	mediaLossTimeout time.Duration
+	groupNoAnswer    time.Duration
 }
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
@@ -250,6 +251,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Proxy:     scscfProxy,
 			ICSCF:     s.bound(roleICSCF),
 			Numbering: numbering,
+
+			GroupNoAnswer: tm.groupNoAnswer,
 		}),
 		fallback: ph,
 	})

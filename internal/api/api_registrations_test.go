@@ -67,11 +67,15 @@ func TestListRegistrations(t *testing.T) {
 	regs := &fakeRegistrations{
 		total: 30,
 		regs: []RegistrationStatus{{
-			IMPI:       impi,
-			Identities: []RegisteredIdentity{{URI: "tel:+15551230001", DisplayName: "Alice"}},
-			Devices: []RegisteredDevice{{
+			IMPI: impi,
+			Identities: []RegisteredIdentity{
+				{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
+				{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true},
+			},
+			Contacts: []RegisteredContact{{
 				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
 				Instance:       "urn:gsma:imei:35000000-000001-0",
+				Q:              0.5,
 				Media:          []string{"audio", "video"},
 				RegisteredAt:   at,
 				ExpiresAt:      at.Add(time.Hour),
@@ -81,6 +85,7 @@ func TestListRegistrations(t *testing.T) {
 				SignallingPath: SignallingPathMonitored,
 			}, {
 				Contact:        "sip:001010000000001@192.0.2.1:5060",
+				Q:              1,
 				RegisteredAt:   at,
 				ExpiresAt:      at.Add(time.Hour),
 				SignallingPath: SignallingPathUnmonitored,
@@ -113,11 +118,15 @@ func TestListRegistrations(t *testing.T) {
 		PerPage:    10,
 		TotalCount: 30,
 		Items: []RegistrationResponse{{
-			IMPI:       impi,
-			Identities: []RegistrationIdentityResponse{{URI: "tel:+15551230001", DisplayName: "Alice"}},
-			Devices: []RegisteredDeviceResponse{{
+			IMPI: impi,
+			Identities: []RegistrationIdentityResponse{
+				{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
+				{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true, RegisteredWith: []string{}},
+			},
+			Contacts: []RegisteredContactResponse{{
 				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
 				Instance:       "urn:gsma:imei:35000000-000001-0",
+				Q:              0.5,
 				Media:          []string{"audio", "video"},
 				RegisteredAt:   "2026-10-08T12:00:00.000Z",
 				ExpiresAt:      "2026-10-08T13:00:00.000Z",
@@ -127,6 +136,7 @@ func TestListRegistrations(t *testing.T) {
 				SignallingPath: "monitored",
 			}, {
 				Contact:        "sip:001010000000001@192.0.2.1:5060",
+				Q:              1,
 				Media:          []string{},
 				RegisteredAt:   "2026-10-08T12:00:00.000Z",
 				ExpiresAt:      "2026-10-08T13:00:00.000Z",

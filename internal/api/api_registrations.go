@@ -26,18 +26,22 @@ type Registrations interface {
 	Reauthenticate(ctx context.Context, impi string) error
 }
 
-// RegistrationStatus is a private identity registered with the IMS: its public identities, and the devices
-// registered with it (TS 24.229 §5.4.1).
+// RegistrationStatus is a private identity registered with the IMS: its public identities, and the contacts
+// bound to them (TS 24.229 §5.4.1.2.2 step 6).
 type RegistrationStatus struct {
 	IMPI       string
 	Identities []RegisteredIdentity
-	Devices    []RegisteredDevice
+	Contacts   []RegisteredContact
 }
 
+// RegisteredIdentity is a public identity of the private identity. RegisteredWith lists the other private
+// identities registered with it, a public identity shared within the IMS subscription (TS 23.228 §4.3.3.4):
+// a request to it reaches their contacts too (TS 24.229 §5.4.3.3 step 8).
 type RegisteredIdentity struct {
-	URI         string
-	DisplayName string
-	Barred      bool
+	URI            string
+	DisplayName    string
+	Barred         bool
+	RegisteredWith []string
 }
 
 // SignallingPath is the state of a device's IMS signalling path, which the P-CSCF learns from the policy function
@@ -50,11 +54,13 @@ const (
 	SignallingPathLost        SignallingPath = "lost"
 )
 
-// RegisteredDevice is a contact bound to the private identity: the device's instance ID (TS 23.003 §13.8), the
-// media it registered for (RFC 3840), and its flow to the P-CSCF, if the P-CSCF knows it.
-type RegisteredDevice struct {
+// RegisteredContact is a contact bound to the private identity's public identities: the instance ID of the device
+// that registered it (TS 23.003 §13.8), its q-value (RFC 3841 §7.2.3), the media it registered for (RFC 3840),
+// and its flow to the P-CSCF, if the P-CSCF knows it.
+type RegisteredContact struct {
 	Contact        string
 	Instance       string
+	Q              float64
 	Media          []string
 	RegisteredAt   time.Time
 	ExpiresAt      time.Time
@@ -65,14 +71,16 @@ type RegisteredDevice struct {
 }
 
 type RegistrationIdentityResponse struct {
-	URI         string `json:"uri"`
-	DisplayName string `json:"display_name,omitempty"`
-	Barred      bool   `json:"barred"`
+	URI            string   `json:"uri"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	Barred         bool     `json:"barred"`
+	RegisteredWith []string `json:"registered_with"`
 }
 
-type RegisteredDeviceResponse struct {
+type RegisteredContactResponse struct {
 	Contact        string   `json:"contact"`
 	Instance       string   `json:"instance,omitempty"`
+	Q              float64  `json:"q"`
 	Media          []string `json:"media"`
 	RegisteredAt   string   `json:"registered_at"`
 	ExpiresAt      string   `json:"expires_at"`
@@ -85,7 +93,7 @@ type RegisteredDeviceResponse struct {
 type RegistrationResponse struct {
 	IMPI       string                         `json:"impi"`
 	Identities []RegistrationIdentityResponse `json:"identities"`
-	Devices    []RegisteredDeviceResponse     `json:"devices"`
+	Contacts   []RegisteredContactResponse    `json:"contacts"`
 }
 
 type ListRegistrationsResponse struct {
@@ -127,22 +135,30 @@ func registrationResponse(reg RegistrationStatus) RegistrationResponse {
 	out := RegistrationResponse{
 		IMPI:       reg.IMPI,
 		Identities: make([]RegistrationIdentityResponse, 0, len(reg.Identities)),
-		Devices:    make([]RegisteredDeviceResponse, 0, len(reg.Devices)),
+		Contacts:   make([]RegisteredContactResponse, 0, len(reg.Contacts)),
 	}
 
 	for _, id := range reg.Identities {
-		out.Identities = append(out.Identities, RegistrationIdentityResponse(id))
+		with := id.RegisteredWith
+		if with == nil {
+			with = []string{}
+		}
+
+		out.Identities = append(out.Identities, RegistrationIdentityResponse{
+			URI: id.URI, DisplayName: id.DisplayName, Barred: id.Barred, RegisteredWith: with,
+		})
 	}
 
-	for _, d := range reg.Devices {
+	for _, d := range reg.Contacts {
 		media := d.Media
 		if media == nil {
 			media = []string{}
 		}
 
-		out.Devices = append(out.Devices, RegisteredDeviceResponse{
+		out.Contacts = append(out.Contacts, RegisteredContactResponse{
 			Contact:        d.Contact,
 			Instance:       d.Instance,
+			Q:              d.Q,
 			Media:          media,
 			RegisteredAt:   formatTime(d.RegisteredAt),
 			ExpiresAt:      formatTime(d.ExpiresAt),

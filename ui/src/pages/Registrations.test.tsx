@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import Registrations from "@/pages/Registrations";
 import type { Registration } from "@/queries/registrations";
-import { device, registration } from "@/test/fixtures";
+import { contact, registration } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
 const alice = registration({
-  devices: [
-    device(),
-    device({
+  contacts: [
+    contact(),
+    contact({
       contact: "sip:001010000000001@192.0.2.31:5060",
       instance: "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
       media: ["audio"],
@@ -21,18 +21,18 @@ const alice = registration({
 
 const carol = registration({
   impi: "001010000000003@ims.mnc001.mcc001.3gppnetwork.org",
-  identities: [{ uri: "tel:+15551230003", barred: false }],
-  devices: [
-    device({ contact: "sip:001010000000003@192.0.2.33:5064" }),
-    device({ contact: "sip:001010000000003@192.0.2.34:5064" }),
+  identities: [{ uri: "tel:+15551230003", barred: false, registered_with: [] }],
+  contacts: [
+    contact({ contact: "sip:001010000000003@192.0.2.33:5064" }),
+    contact({ contact: "sip:001010000000003@192.0.2.34:5064" }),
   ],
 });
 
 const bob = registration({
   impi: "001010000000002@ims.mnc001.mcc001.3gppnetwork.org",
-  identities: [{ uri: "tel:+15551230002", barred: false }],
-  devices: [
-    device({
+  identities: [{ uri: "tel:+15551230002", barred: false, registered_with: [] }],
+  contacts: [
+    contact({
       contact: "sip:001010000000002@192.0.2.32:5064",
       instance: "urn:gsma:imei:35693803-564381-0",
       media: ["audio"],
@@ -177,6 +177,7 @@ describe("Registrations", () => {
         "TransportUDP",
         "IPsecyes",
         "Mediaaudio, video",
+        "Priority1.0",
         "Signalling Pathmonitored",
         "Registered2026-10-08 12:00:00",
         "Expires2026-10-08 13:00:00",
@@ -190,11 +191,49 @@ describe("Registrations", () => {
     );
   });
 
+  it("searches a number shared with other identities", async () => {
+    const shared = registration({
+      identities: [
+        {
+          uri: "tel:+15551230001",
+          barred: false,
+          registered_with: [bob.impi],
+        },
+      ],
+      contacts: [contact({ q: 0.5 })],
+    });
+    const urls = serve([shared, bob]);
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(shared.impi));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByText("Priority")).toBeInTheDocument();
+    expect(within(drawer).getByText("0.5")).toBeInTheDocument();
+
+    expect(within(drawer).getByText("shared with 1 other")).toBeInTheDocument();
+    fireEvent.click(
+      within(drawer).getByRole("button", {
+        name: `Search +15551230001: also registered with ${bob.impi}`,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(urls.at(-1)).toBe("?page=1&per_page=25&search=%2B15551230001"),
+    );
+    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue(
+      "+15551230001",
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
   it("shows IPsec as unknown without the P-CSCF's flow", async () => {
     serve([
       registration({
-        devices: [
-          device({
+        contacts: [
+          contact({
             address: undefined,
             transport: undefined,
             protected: false,

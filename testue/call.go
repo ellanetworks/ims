@@ -128,21 +128,27 @@ type Call struct {
 	changed chan struct{}
 	state   CallState
 	end     EndReason
+	reasons []sip.Reason
 	invite  *sip.Request
-	d       *dialog.Dialog
-	m       *media
 
-	offering bool
+	// leg is the call's dialog: the only one of an incoming call; for an outgoing call, the
+	// answered one, or before the answer the earliest early dialog still alive.
+	leg *leg
+
+	// legs holds every dialog the call created. An outgoing INVITE forked downstream creates
+	// one per callee that responds (RFC 3261 §12.1.2, §13.2.2.4).
+	legs []*leg
+
+	// initial is the media state just after the initial offer, from which each forked
+	// dialog's own offer/answer exchange starts (RFC 3264 §4).
+	initial *media
 
 	saHeld bool
 
 	itx       *transaction.ClientTransaction
 	final     *sip.Response
 	finalErr  error
-	ack       *sip.Request
 	ackSent   <-chan struct{}
-	rseq      uint32
-	haveRSeq  bool
 	cancelled bool
 	retried   bool
 
@@ -158,6 +164,31 @@ type Call struct {
 	refresher bool
 	auto      bool
 	timer     *time.Timer
+}
+
+// leg is one dialog of a call, with its own offer/answer and reliable-provisional state.
+type leg struct {
+	d *dialog.Dialog
+	m *media
+
+	offering bool
+
+	rseq     uint32
+	haveRSeq bool
+
+	ack *sip.Request
+
+	// released is set once the early dialog ended without the call: by a 199 (RFC 6228 §4),
+	// or because another dialog was answered (RFC 3261 §13.2.2.4).
+	released bool
+}
+
+func (l *leg) tag() string {
+	if l.d == nil {
+		return ""
+	}
+
+	return l.d.ID().RemoteTag
 }
 
 type reliable struct {
@@ -197,7 +228,7 @@ func (u *UE) newCall(incoming bool, invite *sip.Request, key callKey, preconditi
 		done:     make(chan struct{}),
 		changed:  make(chan struct{}),
 		invite:   invite,
-		m:        newMedia(u.cfg.Local, uint16(port), precondition),
+		leg:      &leg{m: newMedia(u.cfg.Local, uint16(port), precondition)},
 		auto:     true,
 	}
 }
@@ -231,44 +262,70 @@ func (c *Call) End() EndReason {
 	return c.end
 }
 
+// Reasons returns the Reason header field values (RFC 3326) of the CANCEL, BYE or final
+// response that ended the call.
+func (c *Call) Reasons() []sip.Reason {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return slices.Clone(c.reasons)
+}
+
 func (c *Call) ID() dialog.ID {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.d == nil {
+	if c.leg.d == nil {
 		return dialog.ID{}
 	}
 
-	return c.d.ID()
+	return c.leg.d.ID()
+}
+
+// EarlyDialogs returns the early dialogs of an outgoing call that are still alive: one per
+// callee ringing when the INVITE was forked (RFC 3261 §13.2.2.4).
+func (c *Call) EarlyDialogs() []dialog.ID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var out []dialog.ID
+
+	for _, l := range c.legs {
+		if !l.released && l.d.State() == dialog.Early {
+			out = append(out, l.d.ID())
+		}
+	}
+
+	return out
 }
 
 func (c *Call) LocalSDP() *sdp.Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.m.local == nil {
+	if c.leg.m.local == nil {
 		return nil
 	}
 
-	return c.m.local.Clone()
+	return c.leg.m.local.Clone()
 }
 
 func (c *Call) RemoteSDP() *sdp.Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.m.remote == nil {
+	if c.leg.m.remote == nil {
 		return nil
 	}
 
-	return c.m.remote.Clone()
+	return c.leg.m.remote.Clone()
 }
 
 func (c *Call) PreconditionsMet() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.m.met()
+	return c.leg.m.met()
 }
 
 func (c *Call) SessionTimer() (time.Duration, bool) {
@@ -351,8 +408,10 @@ func (c *Call) terminateLocked(reason EndReason) {
 
 	c.state, c.end = CallTerminated, reason
 
-	if c.d != nil {
-		c.d.Terminate()
+	for _, l := range c.legs {
+		if !l.released {
+			l.d.Terminate()
+		}
 	}
 
 	if c.timer != nil {
@@ -390,8 +449,8 @@ func (c *Call) terminate(reason EndReason) {
 }
 
 // RFC 3311 §5.1, §5.2
-func (c *Call) localOfferLocked() bool {
-	return c.offering || (c.unacked != nil && c.unacked.offer) || (c.accepted != nil && c.accepted.answerInAck)
+func (c *Call) localOfferLocked(l *leg) bool {
+	return l.offering || (c.unacked != nil && c.unacked.offer) || (c.accepted != nil && c.accepted.answerInAck)
 }
 
 func (c *Call) remoteOfferLocked() bool {
@@ -400,7 +459,7 @@ func (c *Call) remoteOfferLocked() bool {
 
 // RFC 4028 §7.4
 func (c *Call) supportedLocked() string {
-	if c.m.precondition {
+	if c.leg.m.precondition {
 		return "100rel, timer, precondition"
 	}
 
@@ -540,10 +599,12 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 		req.Header.Add("Session-Expires", seconds(se))
 	}
 
-	offer, err := c.m.offer(sdp.SendRecv)
+	offer, err := c.leg.m.offer(sdp.SendRecv)
 	if err != nil {
 		return nil, err
 	}
+
+	c.initial = c.leg.m.fork()
 
 	req.SetBody(sdp.ContentType, offer.Bytes())
 
@@ -586,6 +647,8 @@ func (h *inviteClient) HandleResponse(res *sip.Response) {
 
 	switch {
 	case res.StatusCode == 100:
+	case res.StatusCode == 199:
+		c.earlyTerminated(res)
 	case res.IsProvisional():
 		c.provisionalReceived(res)
 	case res.IsSuccess():
@@ -596,6 +659,7 @@ func (h *inviteClient) HandleResponse(res *sip.Response) {
 		defer c.mu.Unlock()
 
 		c.final = res
+		c.reasons, _ = res.Header.Reasons()
 
 		reason := Rejected
 		if c.cancelled && res.StatusCode == 487 {
@@ -672,24 +736,65 @@ func (c *Call) retryInterval(res *sip.Response) bool {
 	return true
 }
 
-func (c *Call) earlyLocked(res *sip.Response) bool {
-	if c.d == nil {
-		d, err := dialog.NewUAC(c.invite, res)
-		if err != nil {
-			return false
+func (c *Call) legLocked(tag string) *leg {
+	for _, l := range c.legs {
+		if l.tag() == tag {
+			return l
 		}
+	}
 
-		c.d, c.state = d, CallEarly
+	return nil
+}
 
+// RFC 3261 §12.1.2, §13.2.2.4: each To tag in a response to the INVITE is a separate dialog.
+func (c *Call) dialogLocked(res *sip.Response) (*leg, error) {
+	if l := c.legLocked(dialog.ResponseID(res).RemoteTag); l != nil {
+		return l, l.d.ReceiveResponse(res)
+	}
+
+	d, err := dialog.NewUAC(c.invite, res)
+	if err != nil {
+		return nil, err
+	}
+
+	l := c.leg
+	if l.d != nil {
+		l = &leg{m: c.initial.fork()}
+	}
+
+	l.d = d
+	c.legs = append(c.legs, l)
+
+	if c.leg.released {
+		c.leg = l
+	}
+
+	if c.state == CallInit {
+		c.state = CallEarly
+	}
+
+	return l, nil
+}
+
+// RFC 3262 §4
+func (l *leg) inOrder(res *sip.Response) bool {
+	if !has(res.Header, "Require", "100rel") {
 		return true
 	}
 
-	return dialog.ResponseID(res) == c.d.ID() && c.d.ReceiveResponse(res) == nil
+	rseq, err := res.Header.RSeq()
+	if err != nil || (l.haveRSeq && rseq != l.rseq+1) {
+		return false
+	}
+
+	l.rseq, l.haveRSeq = rseq, true
+
+	return true
 }
 
 func (c *Call) provisionalReceived(res *sip.Response) {
 	to, _ := res.Header.To()
-	if to.Tag() == "" || res.StatusCode == 199 {
+	if to.Tag() == "" {
 		return
 	}
 
@@ -700,37 +805,86 @@ func (c *Call) provisionalReceived(res *sip.Response) {
 		return
 	}
 
-	if !c.earlyLocked(res) {
+	l, err := c.dialogLocked(res)
+	if err != nil || l.released || !l.inOrder(res) {
 		c.mu.Unlock()
 		return
 	}
 
-	reliable := has(res.Header, "Require", "100rel")
-
-	if reliable {
-		rseq, err := res.Header.RSeq()
-		if err != nil || (c.haveRSeq && rseq != c.rseq+1) {
-			c.mu.Unlock()
-			return
-		}
-
-		c.rseq, c.haveRSeq = rseq, true
-	}
-
-	if err := c.answerReceivedLocked(res.Header.ContentType(), res.Body); err != nil {
+	if err := answerReceived(l.m, res.Header.ContentType(), res.Body); err != nil {
 		c.event(Event{Err: err})
 	}
 
 	c.notifyLocked()
 	c.mu.Unlock()
 
-	if reliable {
-		c.background(func(ctx context.Context) error { return c.prack(ctx, res) })
+	if has(res.Header, "Require", "100rel") {
+		c.background(func(ctx context.Context) error { return c.prack(ctx, l, res) })
 	}
 }
 
-func (c *Call) answerReceivedLocked(contentType string, body []byte) error {
-	if c.m.remote != nil || mediaType(contentType) != sdp.ContentType || len(body) == 0 {
+// RFC 6228 §4
+func (c *Call) earlyTerminated(res *sip.Response) {
+	to, _ := res.Header.To()
+	if to.Tag() == "" {
+		return
+	}
+
+	reliable := has(res.Header, "Require", "100rel")
+
+	c.mu.Lock()
+
+	l := c.legLocked(to.Tag())
+
+	switch {
+	case c.state != CallInit && c.state != CallEarly:
+		c.mu.Unlock()
+		return
+	case l == nil && reliable:
+		var err error
+
+		if l, err = c.dialogLocked(res); err != nil {
+			c.mu.Unlock()
+			return
+		}
+	case l == nil:
+		c.mu.Unlock()
+		return
+	}
+
+	if l.released || !l.inOrder(res) {
+		c.mu.Unlock()
+		return
+	}
+
+	c.releaseLocked(l)
+	c.notifyLocked()
+	c.mu.Unlock()
+
+	if reliable {
+		c.background(func(ctx context.Context) error { return c.prack(ctx, l, res) })
+	}
+}
+
+// releaseLocked ends an early dialog that will not carry the call. Requests already under way
+// on it, such as a PRACK, still complete.
+func (c *Call) releaseLocked(l *leg) {
+	l.released = true
+
+	if c.leg != l {
+		return
+	}
+
+	for _, other := range c.legs {
+		if !other.released {
+			c.leg = other
+			return
+		}
+	}
+}
+
+func answerReceived(m *media, contentType string, body []byte) error {
+	if m.remote != nil || mediaType(contentType) != sdp.ContentType || len(body) == 0 {
 		return nil
 	}
 
@@ -739,14 +893,16 @@ func (c *Call) answerReceivedLocked(contentType string, body []byte) error {
 		return fmt.Errorf("testue: answer: %w", err)
 	}
 
-	return c.m.answered(s)
+	return m.answered(s)
 }
 
+// RFC 3261 §13.2.2.4: every 2xx is acknowledged; the first one confirms the call, and a later one
+// from another callee of a forked INVITE gets a BYE.
 func (c *Call) successReceived(res *sip.Response) {
 	c.mu.Lock()
 
-	if c.ack != nil {
-		ack := c.ack.Clone()
+	if l := c.legLocked(dialog.ResponseID(res).RemoteTag); l != nil && l.ack != nil {
+		ack := l.ack.Clone()
 		c.mu.Unlock()
 
 		c.sendAck(ack)
@@ -754,16 +910,19 @@ func (c *Call) successReceived(res *sip.Response) {
 		return
 	}
 
-	if !c.earlyLocked(res) {
+	l, err := c.dialogLocked(res)
+	if err != nil {
+		c.event(Event{Err: err})
 		c.mu.Unlock()
+
 		return
 	}
 
-	if err := c.answerReceivedLocked(res.Header.ContentType(), res.Body); err != nil {
+	if err := answerReceived(l.m, res.Header.ContentType(), res.Body); err != nil {
 		c.event(Event{Err: err})
 	}
 
-	ack, err := c.d.NewAck(c.invite)
+	ack, err := l.d.NewAck(c.invite)
 	if err == nil {
 		err = c.u.prepare(ack)
 	}
@@ -775,9 +934,34 @@ func (c *Call) successReceived(res *sip.Response) {
 		return
 	}
 
-	c.ack, c.final = ack, res
+	l.ack = ack
+
+	// A 2xx the call can no longer take, because another 2xx answered it or it ended, is acknowledged and ended
+	// (RFC 3261 §13.2.2.4).
+	if c.final != nil || c.state == CallTerminated && !c.cancelled {
+		c.releaseLocked(l)
+		c.mu.Unlock()
+
+		c.background(func(ctx context.Context) error {
+			if err := c.u.layer.SendAck(ctx, ack.Clone()); err != nil {
+				return err
+			}
+
+			return c.byeLeg(ctx, l)
+		})
+
+		return
+	}
+
+	c.leg, c.final = l, res
 	c.ackSent = c.sendAck(ack.Clone())
 	c.releaseSALocked()
+
+	for _, other := range c.legs {
+		if other != l {
+			other.released = true
+		}
+	}
 
 	cancelled := c.cancelled
 	if c.state != CallTerminated {
@@ -824,15 +1008,15 @@ func (c *Call) background(f func(ctx context.Context) error) {
 	}
 }
 
-func (c *Call) newRequest(method string) (*sip.Request, error) {
+func (c *Call) newRequest(l *leg, method string) (*sip.Request, error) {
 	c.mu.Lock()
 
-	if c.d == nil || c.state == CallTerminated {
+	if l.d == nil || c.state == CallTerminated && !l.released {
 		c.mu.Unlock()
 		return nil, ErrCallEnded
 	}
 
-	d := c.d
+	d := l.d
 	c.mu.Unlock()
 
 	req, err := d.NewRequest(method)
@@ -869,10 +1053,10 @@ func (c *Call) submit(build func() (*sip.Request, error), h transaction.ClientHa
 }
 
 // RFC 3261 §17.1, §12.2.1.2
-func (c *Call) send(ctx context.Context, build func() (*sip.Request, error),
+func (c *Call) send(ctx context.Context, l *leg, build func() (*sip.Request, error),
 	settle func(res *sip.Response, err error) error,
 ) (*sip.Response, error) {
-	h := &dialogClient{c: c, settle: settle, done: make(chan outcome, 1)}
+	h := &dialogClient{c: c, l: l, settle: settle, done: make(chan outcome, 1)}
 
 	err := c.submit(func() (*sip.Request, error) {
 		req, err := build()
@@ -905,6 +1089,7 @@ type outcome struct {
 
 type dialogClient struct {
 	c      *Call
+	l      *leg
 	method string
 	settle func(res *sip.Response, err error) error
 	once   sync.Once
@@ -935,7 +1120,7 @@ func (h *dialogClient) finish(res *sip.Response, err error) {
 		default:
 			c.event(Event{Response: res})
 
-			if rerr := c.d.ReceiveResponse(res); rerr != nil {
+			if rerr := h.l.d.ReceiveResponse(res); rerr != nil {
 				err = fmt.Errorf("testue: %s response: %w", h.method, rerr)
 			} else if !res.IsSuccess() {
 				err = &ResponseError{Response: res}
@@ -962,13 +1147,9 @@ func dialogLost(res *sip.Response, err error) bool {
 }
 
 // RFC 3312, IR.92 §2.4.1
-func (c *Call) prack(ctx context.Context, res *sip.Response) error {
-	c.mu.Lock()
-	d := c.d
-	c.mu.Unlock()
-
-	_, err := c.send(ctx, func() (*sip.Request, error) {
-		prack, err := d.NewPrack(res)
+func (c *Call) prack(ctx context.Context, l *leg, res *sip.Response) error {
+	_, err := c.send(ctx, l, func() (*sip.Request, error) {
+		prack, err := l.d.NewPrack(res)
 		if err != nil {
 			return nil, fmt.Errorf("testue: %w", err)
 		}
@@ -976,7 +1157,7 @@ func (c *Call) prack(ctx context.Context, res *sip.Response) error {
 		return prack, c.u.prepare(prack)
 	}, func(r *sip.Response, err error) error {
 		if err != nil && dialogLost(r, err) {
-			c.terminateLocked(TimedOut)
+			c.dialogLostLocked(l)
 		}
 
 		return err
@@ -986,17 +1167,29 @@ func (c *Call) prack(ctx context.Context, res *sip.Response) error {
 	}
 
 	c.mu.Lock()
-	update := c.state == CallEarly && c.m.precondition && !c.m.met() && c.m.remote != nil && !c.localOfferLocked()
+	update := c.state == CallEarly && !l.released && l.m.precondition && !l.m.met() && l.m.remote != nil && !c.localOfferLocked(l)
 	c.mu.Unlock()
 
 	if !update {
 		return nil
 	}
 
-	return c.update(ctx, true)
+	return c.update(ctx, l, true)
 }
 
-func (c *Call) update(ctx context.Context, withOffer bool) error {
+// dialogLostLocked handles a dialog the remote end no longer knows (RFC 3261 §12.2.1.2). Losing an early dialog
+// of an outgoing call releases only that dialog: the INVITE is still pending, and the call waits for other early
+// dialogs or its final response (RFC 6228 §4).
+func (c *Call) dialogLostLocked(l *leg) {
+	if c.incoming || l == c.leg && c.state == CallConfirmed {
+		c.terminateLocked(TimedOut)
+		return
+	}
+
+	c.releaseLocked(l)
+}
+
+func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
 	var (
 		previous *sdp.Session
 		offered  bool
@@ -1006,8 +1199,8 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 		ctx = context.WithoutCancel(ctx)
 	}
 
-	_, err := c.send(ctx, func() (*sip.Request, error) {
-		req, err := c.newRequest("UPDATE")
+	_, err := c.send(ctx, l, func() (*sip.Request, error) {
+		req, err := c.newRequest(l, "UPDATE")
 		if err != nil {
 			return nil, err
 		}
@@ -1016,29 +1209,30 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 		defer c.mu.Unlock()
 
 		if withOffer {
-			if c.localOfferLocked() || c.remoteOfferLocked() {
+			if c.localOfferLocked(l) || c.remoteOfferLocked() {
 				return nil, fmt.Errorf("%w: an offer is pending", ErrCallState)
 			}
 
-			previous = c.m.local
+			previous = l.m.local
 
-			offer, err := c.m.offer(c.m.direction)
+			offer, err := l.m.offer(l.m.direction)
 			if err != nil {
 				return nil, err
 			}
 
-			c.offering, offered = true, true
+			l.offering, offered = true, true
 
 			req.SetBody(sdp.ContentType, offer.Bytes())
 
-			if c.m.precondition {
+			if l.m.precondition {
 				req.Header.Add("Require", "precondition")
 			}
 		}
 
 		req.Header.Add("Supported", c.supportedLocked())
 
-		if interval := c.interval; interval > 0 || !withOffer {
+		// The session timer is the call's: only an UPDATE on its dialog refreshes it (RFC 4028).
+		if interval := c.interval; l == c.leg && (interval > 0 || !withOffer) {
 			if interval <= 0 {
 				interval = DefaultSessionExpires
 			}
@@ -1051,29 +1245,33 @@ func (c *Call) update(ctx context.Context, withOffer bool) error {
 		defer c.notifyLocked()
 
 		if offered {
-			c.offering = false
+			l.offering = false
 		}
 
 		if err != nil {
 			if offered {
-				c.m.local = previous
+				l.m.local = previous
 			}
 
 			if withOffer && dialogLost(res, err) {
-				c.terminateLocked(TimedOut)
+				c.dialogLostLocked(l)
 			}
 
 			return err
 		}
 
 		if withOffer {
-			if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
+			if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
 				return err
 			}
 		}
 
-		interval, refresher, _ := parseSessionExpires(res.Header)
-		c.sessionTimerLocked(interval, refresher != "uas")
+		// An UPDATE on another early dialog of a forked INVITE, which may complete after the call was answered
+		// on its own dialog, leaves the call's session timer alone.
+		if l == c.leg && !l.released {
+			interval, refresher, _ := parseSessionExpires(res.Header)
+			c.sessionTimerLocked(interval, refresher != "uas")
+		}
 
 		return nil
 	})
@@ -1090,7 +1288,7 @@ func (c *Call) refresherLocked() string {
 	return "uas"
 }
 
-func (c *Call) answerOfOfferLocked(contentType string, body []byte) error {
+func answerOfOffer(m *media, contentType string, body []byte) error {
 	if mediaType(contentType) != sdp.ContentType || len(body) == 0 {
 		return errors.New("testue: no answer to the offer")
 	}
@@ -1100,7 +1298,7 @@ func (c *Call) answerOfOfferLocked(contentType string, body []byte) error {
 		return fmt.Errorf("testue: answer: %w", err)
 	}
 
-	return c.m.answered(s)
+	return m.answered(s)
 }
 
 func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
@@ -1170,8 +1368,12 @@ func (c *Call) Bye(ctx context.Context) error {
 
 // RFC 3261 §15.1.1
 func (c *Call) bye(ctx context.Context, reason EndReason) error {
-	res, err := c.send(ctx, func() (*sip.Request, error) {
-		req, err := c.newRequest("BYE")
+	c.mu.Lock()
+	l := c.leg
+	c.mu.Unlock()
+
+	res, err := c.send(ctx, l, func() (*sip.Request, error) {
+		req, err := c.newRequest(l, "BYE")
 		if err != nil {
 			return nil, err
 		}
@@ -1179,7 +1381,7 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		if c.state != CallConfirmed {
+		if c.state != CallConfirmed || c.leg != l {
 			return nil, fmt.Errorf("%w: BYE in a %s call", ErrCallState, c.state)
 		}
 
@@ -1195,6 +1397,16 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 	return err
 }
 
+// byeLeg ends a dialog confirmed by a 2xx from a callee the call did not keep
+// (RFC 3261 §13.2.2.4).
+func (c *Call) byeLeg(ctx context.Context, l *leg) error {
+	_, err := c.send(ctx, l, func() (*sip.Request, error) {
+		return c.newRequest(l, "BYE")
+	}, nil)
+
+	return err
+}
+
 // RFC 3264 §8.4
 func (c *Call) Hold(ctx context.Context) error {
 	return c.reinvite(ctx, sdp.SendOnly)
@@ -1206,7 +1418,11 @@ func (c *Call) Resume(ctx context.Context) error {
 
 // RFC 4028 §7.4, §10, IR.92 §2.2.8
 func (c *Call) Refresh(ctx context.Context) error {
-	err := c.update(ctx, false)
+	c.mu.Lock()
+	l := c.leg
+	c.mu.Unlock()
+
+	err := c.update(ctx, l, false)
 
 	var rerr *ResponseError
 
@@ -1233,15 +1449,20 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		previousLocal *sdp.Session
 	)
 
-	h := &reinviteClient{c: c, done: make(chan error, 1)}
+	c.mu.Lock()
+	l := c.leg
+	c.mu.Unlock()
+
+	h := &reinviteClient{c: c, l: l, done: make(chan error, 1)}
 
 	h.settle = func(res *sip.Response, err error) error {
-		c.offering = false
+		l.offering = false
+
 		c.notifyLocked()
 
 		switch {
 		case err != nil || !res.IsSuccess():
-			c.m.direction, c.m.local = previous, previousLocal
+			l.m.direction, l.m.local = previous, previousLocal
 
 			if dialogLost(res, err) {
 				c.terminateLocked(TimedOut)
@@ -1254,7 +1475,7 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 			return &ResponseError{Response: res}
 		}
 
-		if err := c.answerOfOfferLocked(res.Header.ContentType(), res.Body); err != nil {
+		if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
 			return err
 		}
 
@@ -1265,7 +1486,7 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 	}
 
 	err := c.submit(func() (*sip.Request, error) {
-		req, err := c.newRequest("INVITE")
+		req, err := c.newRequest(l, "INVITE")
 		if err != nil {
 			return nil, err
 		}
@@ -1273,29 +1494,29 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		if c.state != CallConfirmed || c.localOfferLocked() || c.accepted != nil {
+		if c.state != CallConfirmed || c.leg != l || c.localOfferLocked(l) || c.accepted != nil {
 			return nil, fmt.Errorf("%w: re-INVITE in a %s call, or during another offer", ErrCallState, c.state)
 		}
 
 		offered := direction
-		if direction == sdp.SendOnly && c.m.held() {
+		if direction == sdp.SendOnly && l.m.held() {
 			offered = sdp.Inactive
 		}
 
-		previous, previousLocal = c.m.direction, c.m.local
-		c.m.direction = direction
+		previous, previousLocal = l.m.direction, l.m.local
+		l.m.direction = direction
 
-		offer, err := c.m.offer(offered)
+		offer, err := l.m.offer(offered)
 		if err != nil {
-			c.m.direction = previous
+			l.m.direction = previous
 			return nil, err
 		}
 
-		c.offering = true
+		l.offering = true
 
 		req.Header.Add("Supported", c.supportedLocked())
 
-		if c.m.precondition {
+		if l.m.precondition {
 			req.Header.Add("Require", "precondition")
 		}
 
@@ -1332,6 +1553,7 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 
 type reinviteClient struct {
 	c      *Call
+	l      *leg
 	req    *sip.Request
 	settle func(res *sip.Response, err error) error
 	once   sync.Once
@@ -1358,9 +1580,7 @@ func (h *reinviteClient) HandleResponse(res *sip.Response) {
 		h.mu.Lock()
 
 		if h.ack == nil {
-			c.mu.Lock()
-			d := c.d
-			c.mu.Unlock()
+			d := h.l.d
 
 			if err := d.ReceiveResponse(res); err != nil {
 				c.event(Event{Err: err})
@@ -1439,11 +1659,9 @@ func (h *reinviteClient) provisional(res *sip.Response) {
 	c := h.c
 
 	c.background(func(ctx context.Context) error {
-		c.mu.Lock()
-		d := c.d
-		c.mu.Unlock()
+		d := h.l.d
 
-		_, err := c.send(ctx, func() (*sip.Request, error) {
+		_, err := c.send(ctx, h.l, func() (*sip.Request, error) {
 			prack, err := d.NewPrack(res)
 			if err != nil {
 				return nil, fmt.Errorf("testue: %w", err)
@@ -1670,15 +1888,16 @@ func (c *Call) responseLocked(code int) (*sip.Response, error) {
 		res.Header.Add("P-Early-Media", c.u.cfg.EarlyMedia)
 	}
 
-	if c.d == nil {
+	if c.leg.d == nil {
 		d, err := dialog.NewUAS(c.invite, res)
 		if err != nil {
 			return nil, fmt.Errorf("testue: %w", err)
 		}
 
-		c.d = d
+		c.leg.d = d
+		c.legs = append(c.legs, c.leg)
 	} else {
-		c.d.PrepareResponse(c.invite, res)
+		c.leg.d.PrepareResponse(c.invite, res)
 	}
 
 	if res.IsSuccess() {
@@ -1701,9 +1920,9 @@ func (c *Call) sdpLocked(res *sip.Response) (bool, error) {
 	)
 
 	if c.offer != nil {
-		s, err = c.m.answer(c.offer)
+		s, err = c.leg.m.answer(c.offer)
 	} else {
-		s, err = c.m.offer(sdp.SendRecv)
+		s, err = c.leg.m.offer(sdp.SendRecv)
 	}
 
 	if err != nil {
@@ -1748,16 +1967,17 @@ func (c *Call) Ring(ctx context.Context) error {
 		}
 
 		c.mu.Lock()
-		update := c.state == CallEarly && !c.m.met() && c.m.remoteQoS == sdp.QoSSendRecv && !c.localOfferLocked()
+		l := c.leg
+		update := c.state == CallEarly && !l.m.met() && l.m.remoteQoS == sdp.QoSSendRecv && !c.localOfferLocked(l)
 		c.mu.Unlock()
 
 		if update {
-			if err := c.update(ctx, true); err != nil {
+			if err := c.update(ctx, l, true); err != nil {
 				return err
 			}
 		}
 
-		if err := c.waitFor(ctx, func() bool { return c.m.met() || c.state == CallTerminated }); err != nil {
+		if err := c.waitFor(ctx, func() bool { return l.m.met() || c.state == CallTerminated }); err != nil {
 			return err
 		}
 	}
@@ -1794,7 +2014,7 @@ func (c *Call) provisional(ctx context.Context, code int, reliably bool) error {
 		}
 
 		require := "100rel"
-		if c.m.precondition {
+		if c.leg.m.precondition {
 			require = "precondition, 100rel"
 		}
 
@@ -1977,8 +2197,8 @@ func (c *Call) Reject(code int) error {
 		return err
 	}
 
-	if c.d != nil {
-		c.d.PrepareResponse(c.invite, res)
+	if c.leg.d != nil {
+		c.leg.d.PrepareResponse(c.invite, res)
 	}
 
 	c.terminateLocked(Rejected)
@@ -2003,10 +2223,11 @@ func (c *Call) cancelReceived(cancel *sip.Request) {
 	res := c.u.response(c.invite, 487)
 	_ = res.Header.SetToTag(c.stx.ToTag())
 
-	if c.d != nil {
-		c.d.PrepareResponse(c.invite, res)
+	if c.leg.d != nil {
+		c.leg.d.PrepareResponse(c.invite, res)
 	}
 
+	c.reasons, _ = cancel.Header.Reasons()
 	c.terminateLocked(Cancelled)
 
 	stx := c.stx
@@ -2041,7 +2262,7 @@ func (c *Call) ackReceived(ack *sip.Request) {
 	}
 
 	if a.answerInAck {
-		if err := c.answerOfOfferLocked(ack.Header.ContentType(), ack.Body); err != nil {
+		if err := answerOfOffer(c.leg.m, ack.Header.ContentType(), ack.Body); err != nil {
 			c.event(Event{Err: err})
 		}
 	}
@@ -2059,15 +2280,23 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 		extra func()
 	)
 
+	l := c.leg
+	if !c.incoming {
+		l = c.legLocked(dialog.RequestID(req).RemoteTag)
+	}
+
 	switch {
-	case c.d == nil:
+	case l == nil || l.d == nil:
 		res = c.u.response(req, 481)
-	case req.Method == "INVITE" && c.localOfferLocked():
+	// A released early dialog takes only a BYE; another live early dialog than the call's, only an UPDATE too.
+	case req.Method != "BYE" && (l.released || l != c.leg && req.Method != "UPDATE"):
+		res = c.u.response(req, 481)
+	case req.Method == "INVITE" && c.localOfferLocked(l):
 		res = c.u.response(req, 491)
 	case req.Method == "INVITE" && c.accepted != nil:
 		res = retryAfter(c.u.response(req, 500))
 	default:
-		if err := c.d.ReceiveRequest(req); err != nil {
+		if err := l.d.ReceiveRequest(req); err != nil {
 			code := 400
 			if serr, ok := errors.AsType[*sip.StatusError](err); ok {
 				code = serr.StatusCode
@@ -2082,9 +2311,16 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 		case "PRACK":
 			res = c.prackReceivedLocked(req)
 		case "UPDATE", "INVITE":
-			res = c.offerReceivedLocked(tx, req)
+			res = c.offerReceivedLocked(tx, l, req)
 		case "BYE":
 			res = c.u.response(req, 200)
+
+			if !c.incoming && (l != c.leg || c.state == CallEarly) {
+				c.releaseLocked(l)
+				break
+			}
+
+			c.reasons, _ = req.Header.Reasons()
 
 			if c.incoming && c.state == CallEarly {
 				end := c.u.response(c.invite, 487)
@@ -2129,7 +2365,7 @@ func (c *Call) prackReceivedLocked(req *sip.Request) *sip.Response {
 	c.unacked = nil
 
 	if r.offer {
-		if err := c.answerOfOfferLocked(req.Header.ContentType(), req.Body); err != nil {
+		if err := answerOfOffer(c.leg.m, req.Header.ContentType(), req.Body); err != nil {
 			c.event(Event{Err: err})
 		}
 	}
@@ -2138,12 +2374,12 @@ func (c *Call) prackReceivedLocked(req *sip.Request) *sip.Response {
 }
 
 // RFC 4028
-func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.Request) *sip.Response {
+func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, l *leg, req *sip.Request) *sip.Response {
 	hasSDP := mediaType(req.Header.ContentType()) == sdp.ContentType && len(req.Body) > 0
 
 	if req.Method == "UPDATE" && hasSDP {
 		switch {
-		case c.localOfferLocked():
+		case c.localOfferLocked(l):
 			return c.u.response(req, 491)
 		case c.remoteOfferLocked():
 			return retryAfter(c.u.response(req, 500))
@@ -2164,7 +2400,7 @@ func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.R
 			return c.u.response(req, 400)
 		}
 
-		answer, err := c.m.answer(offer)
+		answer, err := l.m.answer(offer)
 		if errors.Is(err, ErrNoCodec) {
 			return c.u.response(req, 488)
 		}
@@ -2175,11 +2411,11 @@ func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.R
 
 		res.SetBody(sdp.ContentType, answer.Bytes())
 
-		if c.m.precondition && (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) {
+		if l.m.precondition && (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) {
 			res.Header.Add("Require", "precondition")
 		}
 	case req.Method == "INVITE":
-		offer, err := c.m.offer(c.m.direction)
+		offer, err := l.m.offer(l.m.direction)
 		if err != nil {
 			return c.u.response(req, 500)
 		}
@@ -2187,6 +2423,10 @@ func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, req *sip.R
 		res.SetBody(sdp.ContentType, offer.Bytes())
 
 		inAck = true
+	}
+
+	if l != c.leg {
+		return res
 	}
 
 	c.addSessionTimerLocked(req, res, false)

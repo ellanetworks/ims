@@ -93,6 +93,10 @@ type Config struct {
 
 	Offers []Offer
 
+	// ContactParams are added to the Contact the UE registers: a q-value (RFC 3261 §10.2.1.2)
+	// or feature tags such as video (RFC 3840 §9).
+	ContactParams sip.Params
+
 	Plain bool
 
 	AccessNetworkInfo string
@@ -251,6 +255,8 @@ func New(cfg Config) (*UE, error) {
 	if cfg.Transport == "" {
 		cfg.Transport = sip.UDP
 	}
+
+	cfg.ContactParams = cfg.ContactParams.Clone()
 
 	if cfg.Expires <= 0 {
 		cfg.Expires = DefaultExpires

@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestRegistrationStatus(t *testing.T) {
 		},
 	}, {
 		// A second registration set: its identities add to the first, and its bindings of the same contact are
-		// the same device.
+		// listed once.
 		IMPI: listIMPI,
 		Identities: []db.PublicIdentity{
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
@@ -53,7 +54,7 @@ func TestRegistrationStatus(t *testing.T) {
 		},
 		Bindings: []db.Binding{
 			binding(phone, `;audio`, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
-			binding(tablet, `;+sip.instance="<urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6>";audio`,
+			binding(tablet, `;+sip.instance="<urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6>";q=0.5;audio`,
 				listNow, listNow.Add(time.Hour)),
 		},
 	}}
@@ -83,9 +84,10 @@ func TestRegistrationStatus(t *testing.T) {
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
 			{URI: "sip:alice@" + listDomain},
 		},
-		Devices: []api.RegisteredDevice{{
+		Contacts: []api.RegisteredContact{{
 			Contact:        phone,
 			Instance:       "urn:gsma:imei:35000000-000001-0",
+			Q:              1,
 			Media:          []string{"audio", "video"},
 			RegisteredAt:   listNow.Add(-2 * time.Hour),
 			ExpiresAt:      listNow.Add(time.Hour),
@@ -96,6 +98,7 @@ func TestRegistrationStatus(t *testing.T) {
 		}, {
 			Contact:        tablet,
 			Instance:       "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+			Q:              0.5,
 			Media:          []string{"audio"},
 			RegisteredAt:   listNow,
 			ExpiresAt:      listNow.Add(time.Hour),
@@ -121,8 +124,9 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 	want := api.RegistrationStatus{
 		IMPI:       listIMPI,
 		Identities: []api.RegisteredIdentity{},
-		Devices: []api.RegisteredDevice{{
+		Contacts: []api.RegisteredContact{{
 			Contact:        "sip:ue@192.0.2.9:5060",
+			Q:              1,
 			RegisteredAt:   listNow,
 			ExpiresAt:      listNow.Add(time.Hour),
 			SignallingPath: api.SignallingPathUnmonitored,
@@ -131,5 +135,74 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+}
+
+// A q-value the registrar would now refuse, stored before it did, lists as none rather than as a number JSON
+// cannot carry.
+func TestContactQ(t *testing.T) {
+	for params, want := range map[string]float64{``: 1, `;q=0.5`: 0.5, `;q=0`: 0, `;q=NaN`: 1, `;q=5`: 1, `;q=1e-1`: 1} {
+		b := binding("sip:ue@192.0.2.9:5060", params, listNow, listNow.Add(time.Hour))
+
+		if got := contact(b, nil).Q; got != want {
+			t.Errorf("q of %q = %v, want %v", params, got, want)
+		}
+	}
+}
+
+// registered_with lists the other private identities a request to a public identity reaches, as the S-CSCF routes
+// it: those with a live contact, and none at all when one of them bars the identity.
+func TestRegisteredWith(t *testing.T) {
+	d, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = d.Close() })
+
+	save := func(impi, tel string, barred bool, expires time.Time) {
+		t.Helper()
+
+		_, err := d.SaveRegistration(t.Context(), db.Registration{
+			IMPI: impi, IMPU: tel,
+			Identities: []db.PublicIdentity{{URI: tel, Key: tel, Barred: barred}},
+			Bindings: []db.Binding{{
+				Contact: db.Contact{IMPI: impi, URI: "sip:" + impi + "@192.0.2.1"}, CallID: impi, CSeq: 1,
+				ExpiresAt: expires, Event: db.BindingRegistered, IMPU: tel, RegisteredAt: listNow,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	live, gone := listNow.Add(time.Hour), listNow.Add(-time.Minute)
+
+	save("phone", "tel:+15551230001", false, live)
+	save("watch", "tel:+15551230001", false, live)
+	save("stale", "tel:+15551230001", false, gone)
+	save("desk", "tel:+15551230002", false, live)
+	save("barring", "tel:+15551230002", true, live)
+
+	page := []api.RegistrationStatus{
+		{IMPI: "phone", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230001"}, {URI: "sip:phone@" + listDomain, Barred: true}}},
+		{IMPI: "desk", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230002"}}},
+	}
+
+	if err := (coreView{&Server{database: d}}).registeredWith(t.Context(), page, listDomain, listNow); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		got  []string
+		want []string
+	}{
+		{page[0].Identities[0].RegisteredWith, []string{"watch"}},
+		{page[0].Identities[1].RegisteredWith, nil},
+		{page[1].Identities[0].RegisteredWith, nil},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("registered with %v, want %v", tc.got, tc.want)
+		}
 	}
 }

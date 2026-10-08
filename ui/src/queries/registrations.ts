@@ -11,11 +11,15 @@ export interface RegisteredIdentity {
   uri: string;
   display_name?: string;
   barred: boolean;
+  // The other private identities registered with this public identity, which a request to it also reaches.
+  registered_with: string[];
 }
 
-export interface RegisteredDevice {
+export interface RegisteredContact {
   contact: string;
   instance?: string;
+  // The q-value the S-CSCF rings the contact by, 1 when it registered none (RFC 3841 §7.2.3).
+  q: number;
   media: ("audio" | "video")[];
   registered_at: string;
   expires_at: string;
@@ -28,7 +32,7 @@ export interface RegisteredDevice {
 export interface Registration {
   impi: string;
   identities: RegisteredIdentity[];
-  devices: RegisteredDevice[];
+  contacts: RegisteredContact[];
 }
 
 export interface ListRegistrationsParams extends PageParams {

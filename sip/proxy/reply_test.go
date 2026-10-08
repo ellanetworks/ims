@@ -338,49 +338,6 @@ func TestNonInviteTimeoutAfterTrying(t *testing.T) {
 	}
 }
 
-func TestLate2xxAfterTimerCOverTCP(t *testing.T) {
-	clock := siptest.NewClock()
-	txs := make(chan *transaction.ServerTransaction, 4)
-	s := newScene(t, sip.TCP, routerConfig{clock: clock, onReply: func(tx *transaction.ServerTransaction, _ *sip.Request, _ proxy.Reply) proxy.Verdict {
-		txs <- tx
-		return proxy.Relay
-	}})
-
-	invite := s.request("INVITE")
-	s.send(invite)
-	wantResponse(t, s.caller, 100)
-
-	fwd, f := s.forwarded()
-	reply(t, s.callee, fwd, f, 180)
-	wantResponse(t, s.caller, 180)
-
-	clock.Advance(proxy.DefaultTimerC)
-
-	timeout := wantResponse(t, s.caller, 408)
-
-	if fc, _ := s.forwarded(); fc.Method != "CANCEL" {
-		t.Fatalf("got %s, want CANCEL", fc.Method)
-	}
-
-	ack, err := sip.NewAck(invite, timeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	s.send(ack)
-
-	tx := <-txs
-
-	select {
-	case <-tx.Done():
-	case <-time.After(siptest.Timeout):
-		t.Fatal("server transaction not terminated by the ACK")
-	}
-
-	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, sip.TCP)+">")
-	wantResponse(t, s.caller, 200)
-}
-
 func TestTimerCReplyResponded(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 2)
@@ -398,8 +355,16 @@ func TestTimerCReplyResponded(t *testing.T) {
 
 	clock.Advance(proxy.DefaultTimerC)
 
+	fc, cf := s.forwarded()
+	if fc.Method != "CANCEL" {
+		t.Fatalf("got %s, want CANCEL", fc.Method)
+	}
+
+	reply(t, s.callee, fc, cf, 200)
+	reply(t, s.callee, fwd, f, 487)
+
 	h := nextHeld(t, replies)
-	if !errors.Is(h.r.Err, transaction.ErrTimeout) || !h.r.Responded {
+	if h.r.Response.StatusCode != 408 || !errors.Is(h.r.Err, transaction.ErrTimeout) || !h.r.Responded {
 		t.Fatalf("Timer C reply: %v, responded %v; want ErrTimeout after a response", h.r.Err, h.r.Responded)
 	}
 }
@@ -514,6 +479,14 @@ func TestTimerCMinimum(t *testing.T) {
 	s.caller.RecvNone(quiet)
 
 	clock.Advance(time.Second)
+
+	fc, cf := s.forwarded()
+	if fc.Method != "CANCEL" {
+		t.Fatalf("got %s, want CANCEL", fc.Method)
+	}
+
+	reply(t, s.callee, fc, cf, 200)
+	reply(t, s.callee, fwd, f, 487)
 	wantResponse(t, s.caller, 408)
 }
 

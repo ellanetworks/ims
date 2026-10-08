@@ -525,15 +525,20 @@ func TestTimerC(t *testing.T) {
 		t.Fatalf("OnReply saw %v before Timer C, want [180 183]", got)
 	}
 
+	// RFC 3261 §16.8: the branch had a provisional response, so it is cancelled, and its final response,
+	// whatever it is, reaches the caller as a 408.
 	clock.Advance(transaction.DefaultT1)
-	wantResponse(t, s.caller, 408)
 
 	fc, cf := s.forwarded()
 	if fc.Method != "CANCEL" {
 		t.Fatalf("got %s, want CANCEL", fc.Method)
 	}
 
+	s.caller.RecvNone(quiet)
+
+	// The cancelled branch is live until its final response: a provisional response still reaches the caller.
 	reply(t, s.callee, fwd, f, 180)
+	wantResponse(t, s.caller, 180)
 	reply(t, s.callee, fc, cf, 200)
 	reply(t, s.callee, fwd, f, 487)
 
@@ -541,10 +546,11 @@ func TestTimerC(t *testing.T) {
 		t.Errorf("got %s, want the ACK to the 487", ack.Method)
 	}
 
+	wantResponse(t, s.caller, 408)
 	s.caller.RecvNone(quiet)
 
-	if got := drain(codes); len(got) != 1 || got[0] != 408 {
-		t.Errorf("OnReply saw %v after Timer C, want [408]", got)
+	if got := drain(codes); len(got) != 2 || got[0] != 180 || got[1] != 408 {
+		t.Errorf("OnReply saw %v after Timer C, want [180 408]", got)
 	}
 }
 
@@ -565,11 +571,15 @@ func TestNoAnswer(t *testing.T) {
 	s.caller.RecvNone(quiet)
 
 	clock.Advance(transaction.DefaultT1)
-	wantResponse(t, s.caller, 408)
 
-	if fc, _ := s.forwarded(); fc.Method != "CANCEL" {
+	fc, cf := s.forwarded()
+	if fc.Method != "CANCEL" {
 		t.Fatalf("got %s, want CANCEL", fc.Method)
 	}
+
+	reply(t, s.callee, fc, cf, 200)
+	reply(t, s.callee, fwd, f, 487)
+	wantResponse(t, s.caller, 408)
 }
 
 func TestNoAnswerStopsOnTheAnswer(t *testing.T) {
@@ -668,8 +678,12 @@ func TestForwardErrors(t *testing.T) {
 }
 
 func TestTimerCThen2xx(t *testing.T) {
+	forEachTransport(t, testTimerCThen2xx)
+}
+
+func testTimerCThen2xx(t *testing.T, tr sip.Transport) {
 	clock := siptest.NewClock()
-	s := newScene(t, sip.UDP, routerConfig{clock: clock})
+	s := newScene(t, tr, routerConfig{clock: clock})
 
 	s.send(s.request("INVITE"))
 	wantResponse(t, s.caller, 100)
@@ -679,13 +693,13 @@ func TestTimerCThen2xx(t *testing.T) {
 	wantResponse(t, s.caller, 180)
 
 	clock.Advance(proxy.DefaultTimerC)
-	wantResponse(t, s.caller, 408)
 
 	if fc, _ := s.forwarded(); fc.Method != "CANCEL" {
 		t.Fatalf("got %s, want CANCEL", fc.Method)
 	}
 
-	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, sip.UDP)+">")
+	// The callee answers before the CANCEL reaches it: the call is answered (RFC 3261 §16.7 step 5).
+	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, tr)+">")
 	wantResponse(t, s.caller, 200)
 }
 

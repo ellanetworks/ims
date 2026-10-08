@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -195,4 +196,21 @@ func parseURIParams(s string) (Params, error) {
 	}
 
 	return ps, nil
+}
+
+// ParseQValue parses a q-value: qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] ) (RFC 3261 §25.1).
+func ParseQValue(s string) (float64, error) {
+	whole, frac, _ := strings.Cut(s, ".")
+
+	valid := len(frac) <= 3 && (frac == "" || isDigits(frac))
+
+	switch {
+	case !valid:
+	case whole == "0":
+		return strconv.ParseFloat(s, 64)
+	case whole == "1" && strings.Trim(frac, "0") == "":
+		return 1, nil
+	}
+
+	return 0, fmt.Errorf("q-value %q: want 0 to 1 with at most three decimals", s)
 }

@@ -1,5 +1,5 @@
 import type {
-  RegisteredDevice,
+  RegisteredContact,
   RegisteredIdentity,
   Registration,
   SignallingPath,
@@ -7,11 +7,15 @@ import type {
 
 const IMEI_URN = "urn:gsma:imei:";
 
-// imeiOf is the IMEI in a device's instance ID (TS 23.003 §13.8), if it has one.
-export const imeiOf = (device: RegisteredDevice): string | undefined =>
-  device.instance?.toLowerCase().startsWith(IMEI_URN)
-    ? device.instance.slice(IMEI_URN.length)
+// imeiOf is the IMEI in the instance ID of the device that registered a contact (TS 23.003 §13.8), if it has one.
+export const imeiOf = (contact: RegisteredContact): string | undefined =>
+  contact.instance?.toLowerCase().startsWith(IMEI_URN)
+    ? contact.instance.slice(IMEI_URN.length)
     : undefined;
+
+// priorityOf is a contact's q-value, with one decimal at least: "1.0", "0.5", "0.25".
+export const priorityOf = (contact: RegisteredContact): string =>
+  Number.isInteger(contact.q * 10) ? contact.q.toFixed(1) : String(contact.q);
 
 // numberOf is the E.164 number of a tel URI or of a SIP URI with user=phone (TS 23.003 §13.4).
 export const numberOf = (identity: RegisteredIdentity): string | undefined => {
@@ -32,16 +36,16 @@ export const numbersOf = (registration: Registration): string[] => [
 ];
 
 export const lastExpiry = (registration: Registration): string | undefined =>
-  registration.devices
-    .map((d) => d.expires_at)
+  registration.contacts
+    .map((c) => c.expires_at)
     .sort()
     .at(-1);
 
-// signallingPathOf is the worst signalling path of the devices of a registration.
+// signallingPathOf is the worst signalling path of the contacts of a registration.
 export const signallingPathOf = (
   registration: Registration,
 ): SignallingPath => {
-  const paths = registration.devices.map((d) => d.signalling_path);
+  const paths = registration.contacts.map((c) => c.signalling_path);
   if (paths.includes("lost")) return "lost";
   if (paths.includes("monitored")) return "monitored";
   return "unmonitored";

@@ -146,12 +146,14 @@ func (u *UE) port(protected bool) uint16 {
 func (u *UE) contact(port uint16) string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
-	return sip.Address{URI: uri, Params: sip.Params{
+	params := sip.Params{
 		{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")},
 		{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel},
 		{Name: "+g.3gpp.smsip"},
 		{Name: "audio"},
-	}}.String()
+	}
+
+	return sip.Address{URI: uri, Params: append(params, u.cfg.ContactParams...)}.String()
 }
 
 func (u *UE) newClientFor(p *procedure) error {

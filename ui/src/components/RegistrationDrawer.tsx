@@ -9,6 +9,7 @@ import {
   IconButton,
   Paper,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
@@ -18,29 +19,31 @@ import Fields from "@/components/Fields";
 import SignallingPathChip from "@/components/SignallingPathChip";
 import {
   reauthenticate,
-  type RegisteredDevice,
+  type RegisteredContact,
+  type RegisteredIdentity,
   type Registration,
 } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
-import { imeiOf } from "@/utils/registrations";
+import { imeiOf, numberOf, priorityOf } from "@/utils/registrations";
 
 const yesNo = (value: boolean) => (value ? "yes" : "no");
 
-function DeviceCard({ device }: { device: RegisteredDevice }) {
+function ContactCard({ contact }: { contact: RegisteredContact }) {
   const rows: [string, ReactNode][] = [
-    ["IMEI", imeiOf(device) ?? device.instance ?? "—"],
-    ["Address", device.address ?? "—"],
-    ["Transport", device.transport?.toUpperCase() ?? "—"],
-    // Without the P-CSCF's flow, whether IPsec protects the device is unknown.
-    ["IPsec", device.address ? yesNo(device.protected) : "—"],
-    ["Media", device.media.join(", ") || "—"],
+    ["IMEI", imeiOf(contact) ?? contact.instance ?? "—"],
+    ["Address", contact.address ?? "—"],
+    ["Transport", contact.transport?.toUpperCase() ?? "—"],
+    // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
+    ["IPsec", contact.address ? yesNo(contact.protected) : "—"],
+    ["Media", contact.media.join(", ") || "—"],
+    ["Priority", priorityOf(contact)],
     [
       "Signalling Path",
-      <SignallingPathChip key="path" path={device.signalling_path} />,
+      <SignallingPathChip key="path" path={contact.signalling_path} />,
     ],
-    ["Registered", formatTimestamp(device.registered_at)],
-    ["Expires", formatTimestamp(device.expires_at)],
-    ["Contact", device.contact],
+    ["Registered", formatTimestamp(contact.registered_at)],
+    ["Expires", formatTimestamp(contact.expires_at)],
+    ["Contact", contact.contact],
   ];
 
   return (
@@ -50,12 +53,41 @@ function DeviceCard({ device }: { device: RegisteredDevice }) {
   );
 }
 
+// SharedChip marks a public identity other private identities are registered with: a request to it reaches their
+// contacts too. It searches the identity, which lists them all.
+function SharedChip({
+  identity,
+  onSearch,
+}: {
+  identity: RegisteredIdentity;
+  onSearch: (search: string) => void;
+}) {
+  const n = identity.registered_with.length;
+  if (n === 0) return null;
+
+  const search = numberOf(identity) ?? identity.uri;
+
+  return (
+    <Tooltip title={identity.registered_with.join(", ")}>
+      <Chip
+        label={`shared with ${n} other${n === 1 ? "" : "s"}`}
+        size="small"
+        color="info"
+        aria-label={`Search ${search}: also registered with ${identity.registered_with.join(", ")}`}
+        onClick={() => onSearch(search)}
+      />
+    </Tooltip>
+  );
+}
+
 function RegistrationDetail({
   registration,
   onClose,
+  onSearch,
 }: {
   registration: Registration;
   onClose: () => void;
+  onSearch: (search: string) => void;
 }) {
   const reauth = useMutation({
     mutationFn: () => reauthenticate(registration.impi),
@@ -122,6 +154,7 @@ function RegistrationDetail({
                 </Typography>
               )}
               {identity.barred && <Chip label="barred" size="small" />}
+              <SharedChip identity={identity} onSearch={onSearch} />
             </Stack>
           ))}
         </Stack>
@@ -134,15 +167,15 @@ function RegistrationDetail({
           component="h3"
           sx={{ mb: 1 }}
         >
-          Contacts ({registration.devices.length})
+          Contacts ({registration.contacts.length})
         </Typography>
         <Stack
           component="ul"
           spacing={1}
           sx={{ m: 0, p: 0, listStyle: "none" }}
         >
-          {registration.devices.map((device) => (
-            <DeviceCard key={device.contact} device={device} />
+          {registration.contacts.map((contact) => (
+            <ContactCard key={contact.contact} contact={contact} />
           ))}
         </Stack>
       </Box>
@@ -153,9 +186,11 @@ function RegistrationDetail({
 export default function RegistrationDrawer({
   registration,
   onClose,
+  onSearch,
 }: {
   registration: Registration | null;
   onClose: () => void;
+  onSearch: (search: string) => void;
 }) {
   return (
     <Drawer
@@ -175,6 +210,7 @@ export default function RegistrationDrawer({
           key={registration.impi}
           registration={registration}
           onClose={onClose}
+          onSearch={onSearch}
         />
       )}
     </Drawer>
