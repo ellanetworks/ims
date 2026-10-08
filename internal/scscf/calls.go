@@ -80,11 +80,12 @@ func (c *calls) of(k bindingKey) map[*proxy.Dialog]proxy.Side {
 	return out
 }
 
-// releaseCalls releases the INVITE dialogs of the bindings removed, other than by expiry, with
-// a 480 in their Reason (TS 24.229 §5.4.5.1.2): a dialog the contact initiated toward both
-// parties, one terminated toward it on its own branches only, so that the other contacts of a
-// forked call ring on.
-func (r *Registrar) releaseCalls(removed []removal) {
+// releaseCalls releases the INVITE dialogs of the bindings removed, with a 480 in their Reason
+// (TS 24.229 §5.4.5.1.2): a dialog the contact initiated toward both parties, one terminated
+// toward it on its own branches only, so that the other contacts of a forked call ring on. An
+// expired binding releases them only when its contact has no other registration left in st
+// (§5.4.5.1.2A).
+func (r *Registrar) releaseCalls(st *state, removed []removal) {
 	cause, err := sip.NewReason(sip.ReasonSIP, 480, sip.ReasonText(sip.ReasonSIP, 480))
 	if err != nil {
 		return
@@ -93,11 +94,11 @@ func (r *Registrar) releaseCalls(removed []removal) {
 	rel := proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}, Code: 480, ResponseReason: []sip.Reason{cause}}
 
 	for _, rm := range removed {
-		if rm.event == regevent.Expired {
-			continue
-		}
-
 		for _, b := range rm.bindings {
+			if rm.event == regevent.Expired && st.bound(b.Contact.ID) {
+				continue
+			}
+
 			k := bindingKey{reg: rm.reg.ID, contact: b.Contact.ID}
 
 			for d, side := range r.calls.of(k) {

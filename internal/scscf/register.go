@@ -364,7 +364,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 
 	res, removed := r.bind(ctx, rr, st, *set, false)
 	if res.StatusCode == 200 {
-		r.releaseCalls(removed)
+		r.releaseCalls(st, removed)
 		rr.out = r.notifyChange(ctx, rr.impi, change{removed: removed})
 	}
 
@@ -460,7 +460,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		ch.removed = append(ch.removed, r.replaceContacts(ctx, rr, st, reg.ID)...)
 	}
 
-	r.releaseCalls(ch.removed)
+	r.releaseCalls(st, ch.removed)
 	rr.out = r.notifyChange(ctx, rr.impi, ch)
 
 	return res
@@ -613,7 +613,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 			slog.Int("contacts", len(removed)))
 	}
 
-	r.releaseCalls([]removal{rm})
+	r.releaseCalls(st, []removal{rm})
 	rr.out = r.notifyChange(ctx, rr.impi, change{removed: []removal{rm}})
 
 	return r.ok(ctx, rr, *set, removed)

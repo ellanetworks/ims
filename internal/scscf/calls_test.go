@@ -171,3 +171,14 @@ func TestNetworkDeregistrationReleasesCalls(t *testing.T) {
 		})
 	}
 }
+
+// TS 24.229 §5.4.5.1.2A
+func TestExpiryReleasesCalls(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.answered(t)
+
+	sh.clock.Advance(2 * time.Hour)
+
+	bye(t, sh.term)
+	bye(t, sh.icscf)
+}

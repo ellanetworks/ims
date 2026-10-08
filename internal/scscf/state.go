@@ -78,6 +78,13 @@ func (s *state) overlapping(reg db.Registration) []db.Registration {
 	return out
 }
 
+// bound reports whether the contact has a live binding.
+func (s *state) bound(contactID int64) bool {
+	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool {
+		return slices.ContainsFunc(s.live(reg.Bindings), func(b db.Binding) bool { return b.Contact.ID == contactID })
+	})
+}
+
 func (s *state) live(bindings []db.Binding) []db.Binding {
 	return liveAt(bindings, s.now)
 }

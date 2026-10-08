@@ -413,6 +413,8 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 		return out, deregistered
 	}
 
+	r.releaseCalls(st, ch.removed)
+
 	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered
 }
 
