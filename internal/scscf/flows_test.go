@@ -17,7 +17,7 @@ func (u *ue) flowContact(uri, regID string) string {
 	return "<" + uri + ">;+sip.instance=" + testInstance + ";reg-id=" + regID
 }
 
-func (h *harness) onlyContact() db.Contact {
+func (h *harness) onlyBinding() db.Binding {
 	h.t.Helper()
 
 	reg := h.registration(testIMPU)
@@ -25,7 +25,7 @@ func (h *harness) onlyContact() db.Contact {
 		h.t.Fatalf("bindings %+v, want one", reg.Bindings)
 	}
 
-	return reg.Bindings[0].Contact
+	return reg.Bindings[0]
 }
 
 // RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6d: a contact is a flow when it has an instance ID and a
@@ -49,7 +49,7 @@ func TestRegisteredBinding(t *testing.T) {
 
 			u.register(registerOptions{contact: tc.contact(u)})
 
-			if c := h.onlyContact(); c.RegID != tc.regID || c.URI != u.contact {
+			if c := h.onlyBinding().Contact; c.RegID != tc.regID || c.URI != u.contact {
 				t.Fatalf("contact %+v, want reg-id %d", c, tc.regID)
 			}
 		})
@@ -65,13 +65,13 @@ func TestFlowNewURI(t *testing.T) {
 
 	u.register(registerOptions{contact: u.flowContact(u.contact, "1")})
 
-	before := h.onlyContact()
+	before := h.onlyBinding()
 
 	moved := "sip:001010000000001@127.0.0.1:5999"
 	u.register(registerOptions{contact: u.flowContact(moved, "1")})
 
-	if c := h.onlyContact(); c.ID != before.ID || c.URI != moved || c.RegID != 1 {
-		t.Fatalf("contact %+v, want binding %d with the new URI", c, before.ID)
+	if b := h.onlyBinding(); b.ID != before.ID || b.Contact.URI != moved || b.Contact.RegID != 1 {
+		t.Fatalf("binding %+v, want binding %d with the new URI", b, before.ID)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestFlowRefreshAndReplace(t *testing.T) {
 
 	u.register(registerOptions{contact: u.flowContact(flowA, "1")})
 
-	first := h.onlyContact()
+	first := h.onlyBinding()
 	at := h.registration(testIMPU).Bindings[0].RegisteredAt
 
 	h.clock.Advance(time.Minute)
@@ -173,7 +173,7 @@ func TestFlowRefreshAndReplace(t *testing.T) {
 	u.register(registerOptions{contact: u.flowContact(flowA, "1")})
 
 	b := h.registration(testIMPU).Bindings[0]
-	if b.Contact.ID != first.ID || b.Contact.Path != u.path || !b.RegisteredAt.Equal(h.clock.Now()) || b.Event != db.BindingRegistered {
+	if b.ID != first.ID || b.Contact.Path != u.path || !b.RegisteredAt.Equal(h.clock.Now()) || b.Event != db.BindingRegistered {
 		t.Fatalf("binding %+v, want flow %d registered anew over %s", b, first.ID, u.path)
 	}
 }
@@ -212,7 +212,7 @@ func TestFirstHopLacksOutbound(t *testing.T) {
 	o.supported = ""
 	u.register(o)
 
-	if c := h.onlyContact(); c.Flow() {
+	if c := h.onlyBinding().Contact; c.Flow() {
 		t.Fatalf("contact %+v, want no flow", c)
 	}
 }
@@ -312,5 +312,140 @@ func TestFlowReplaceNotify(t *testing.T) {
 
 	if want := []string{"active/created", "terminated/unregistered"}; !slices.Equal(events, want) {
 		t.Fatalf("contacts %v, want %v", events, want)
+	}
+}
+
+// RFC 5626 §6: the registrar MUST NOT require outbound when no reg-id is used, even when the first
+// hop added "ob" (TS 24.229 §5.4.1.2.1 step 6 defers to it).
+func TestNoRequireOutboundWithoutFlow(t *testing.T) {
+	h, u := flowsHarness(t)
+
+	res := u.send(registerOptions{auth: u.unprotected(), contact: "<" + u.contact + ">;+sip.instance=" + testInstance})
+	wantStatus(t, res, 401)
+	h.hss.nextMAR(t)
+
+	if res.Header.Has("Require") {
+		t.Fatalf("401 Require = %q, want none", res.Header.Get("Require"))
+	}
+}
+
+// RFC 5626 §6: the response to a flow's deregistration requires outbound too.
+func TestFlowDeregistrationRequiresOutbound(t *testing.T) {
+	_, u := flowsHarness(t)
+
+	u.register(registerOptions{contact: u.flowContact(flowA, "1")})
+
+	res := u.register(registerOptions{contact: u.flowContact(flowA, "1"), expires: "0", supported: "outbound"})
+	if res.Header.Get("Require") != "outbound" {
+		t.Fatalf("Require = %q, want outbound", res.Header.Get("Require"))
+	}
+}
+
+// RFC 5626 §6: a REGISTER with a reg-id may deregister other Contacts besides; only several Contacts
+// registering, one with a reg-id, are refused.
+func TestRegIDOnAZeroExpiryContact(t *testing.T) {
+	_, u := flowsHarness(t)
+
+	contact := "<" + flowA + ">, <" + flowB + ">, " + u.flowContact(u.contact, "1") + ";expires=0"
+	if res := u.send(registerOptions{contact: contact, auth: u.unprotected()}); res.StatusCode == 400 {
+		t.Fatalf("got %q", res.StartLine())
+	}
+}
+
+// RFC 3261 §10.3 step 7: a deregistration older than the REGISTER that made the binding fails.
+func TestStaleDeregistration(t *testing.T) {
+	h, u := flowsHarness(t)
+
+	u.register(registerOptions{contact: u.flowContact(flowA, "1")})
+	u.register(registerOptions{contact: u.flowContact(flowB, "2")})
+
+	stale := u.cseq - 2
+	u.cseq = stale - 1
+
+	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: u.flowContact(flowA, "1"), expires: "0"})
+	wantStatus(t, res, 500)
+
+	if got := h.contacts(); len(got) != 2 {
+		t.Fatalf("contacts %v, want both flows kept", got)
+	}
+}
+
+// TS 33.203 §6.1 NOTE 2: each flow is a registered contact of its own, authenticated on its own; two
+// flows of a private identity can be challenged at the same time.
+func TestFlowsAuthenticateTogether(t *testing.T) {
+	h, one := flowsHarness(t)
+	two := h.newUE()
+	two.path = "<sip:token2@pcscf." + homeDomain + ";lr;ob>"
+
+	o1 := registerOptions{contact: one.flowContact(flowA, "1")}
+	o2 := registerOptions{contact: two.flowContact(flowB, "2")}
+
+	n1, n2 := one.challenged(o1), two.challenged(o2)
+
+	o1.auth, o2.auth = one.protected(n1, testVector.XRES), two.protected(n2, testVector.XRES)
+	wantStatus(t, one.send(o1), 200)
+	wantStatus(t, two.send(o2), 200)
+
+	if got, want := h.contacts(), []string{flowA + "#1", flowB + "#2"}; !slices.Equal(got, want) {
+		t.Fatalf("contacts %v, want %v", got, want)
+	}
+}
+
+// A re-authentication the network asks for applies to each flow, until it authenticates again.
+func TestReauthenticateEachFlow(t *testing.T) {
+	h, one := flowsHarness(t)
+	two := h.newUE()
+	two.path = "<sip:token2@pcscf." + homeDomain + ";lr;ob>"
+
+	one.register(registerOptions{contact: one.flowContact(flowA, "1")})
+	two.register(registerOptions{contact: two.flowContact(flowB, "2")})
+
+	if err := h.reg.Reauthenticate(t.Context(), testIMPI); err != nil {
+		t.Fatal(err)
+	}
+
+	one.register(registerOptions{contact: one.flowContact(flowA, "1")})
+
+	res := two.send(registerOptions{auth: two.protected(testNonce(), testVector.XRES), contact: two.flowContact(flowB, "2")})
+	wantStatus(t, res, 401)
+}
+
+// TS 24.229 §5.4.1.2.2 step 6d, RFC 5626 §6: a flow is bound per registration set. Replacing it for one
+// public user identity leaves the other set's binding, which is replaced in turn when that identity
+// registers over the new flow; each set has its own Service-Route (§5.4.1.2.2F c).
+func TestFlowPerRegistrationSet(t *testing.T) {
+	h, u := flowsHarness(t)
+	contact := u.flowContact(flowA, "1")
+
+	res := u.register(registerOptions{contact: contact})
+	firstRoute := res.Header.Get("Service-Route")
+
+	u.impu = secondIMPU
+	res = u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: contact})
+	wantStatus(t, res, 200)
+
+	if res.Header.Get("Service-Route") == firstRoute {
+		t.Fatalf("Service-Route %q shared by both sets", firstRoute)
+	}
+
+	second := h.registration(secondIMPU).Bindings[0]
+
+	h.clock.Advance(time.Minute)
+
+	u.impu, u.path = testIMPU, "<sip:token2@pcscf."+homeDomain+";lr;ob>"
+	u.register(registerOptions{contact: contact})
+
+	if b := h.registration(secondIMPU).Bindings[0]; b.Contact.Path != testOutboundPath || !b.RegisteredAt.Equal(second.RegisteredAt) {
+		t.Fatalf("second set's binding %+v changed by the first set's replace", b)
+	}
+
+	h.clock.Advance(time.Minute)
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: contact}), 200)
+
+	if b := h.registration(secondIMPU).Bindings[0]; b.Contact.Path != u.path || b.Event != db.BindingRegistered ||
+		!b.RegisteredAt.Equal(h.clock.Now()) {
+		t.Fatalf("second set's binding %+v, want it replaced", b)
 	}
 }

@@ -20,8 +20,12 @@ const (
 	DefaultGrace     = 128 * time.Second
 
 	registrationMargin = 30 * time.Second
-	maxSetsPerIMPI     = 3
-	storeTimeout       = 5 * time.Second
+	maxSetsPerFlow     = 3
+
+	// maxSetsPerUE bounds the sets of a private identity and address over its flows: those of four
+	// flows, the most the S-CSCF registers for a UE instance.
+	maxSetsPerUE = 4 * maxSetsPerFlow
+	storeTimeout = 5 * time.Second
 )
 
 var (
@@ -301,16 +305,31 @@ type challenge struct {
 	origin *saSet
 }
 
-func (a *associations) clientPort(c challenge) uint16 {
-	for s := range a.sets {
-		if s.state != temporary && s.impi == c.impi && s.flow == c.flow && s.set.Remote.Addr == c.ue &&
-			s.set.Local.PortC == a.cfg.ClientPorts[0] &&
-			(c.origin == nil || s == c.origin) {
-			return a.cfg.ClientPorts[1]
+// clientPort is the P-CSCF's protected client port for a new set: one its flow's set being
+// re-authenticated does not use (TS 33.203 §7.4), nor another flow's set toward the same protected
+// server port of the UE, which stays fixed for the UE (TS 33.203 §7.1 NOTE 10).
+func (a *associations) clientPort(c challenge) (uint16, bool) {
+	used := func(port uint16) bool {
+		for s := range a.sets {
+			if s.state == temporary || s.impi != c.impi || s.set.Remote.Addr != c.ue || s.set.Local.PortC != port {
+				continue
+			}
+
+			if s.flow == c.flow && (c.origin == nil || s == c.origin) || s.flow != c.flow && s.set.Remote.PortS == c.offer.Endpoint.PortS {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	for _, port := range a.cfg.ClientPorts {
+		if !used(port) {
+			return port, true
 		}
 	}
 
-	return a.cfg.ClientPorts[0]
+	return 0, false
 }
 
 func conflicts(a, b ipsec.Set) bool {
@@ -341,14 +360,20 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 		c.origin = nil
 	}
 
+	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow.
 	for s := range a.sets {
-		if s.state == temporary && s.impi == c.impi && s.flow == c.flow {
+		if s.state == temporary && s.impi == c.impi {
 			a.remove(s)
 		}
 	}
 
+	portC, ok := a.clientPort(c)
+	if !ok {
+		return sip.SecurityMechanism{}, errSAConflict
+	}
+
 	set := ipsec.Set{
-		Local:      ipsec.Endpoint{Addr: c.local, PortC: a.clientPort(c), PortS: a.cfg.ServerPort},
+		Local:      ipsec.Endpoint{Addr: c.local, PortC: portC, PortS: a.cfg.ServerPort},
 		Remote:     c.offer.Endpoint,
 		Integrity:  c.offer.Integrity,
 		Encryption: c.offer.Encryption,
@@ -360,7 +385,8 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 			continue
 		}
 
-		if s == c.origin {
+		// Another flow's associations are in use, not left over (TS 33.203 §6.1 NOTE 2).
+		if s == c.origin || s.impi == c.impi && s.flow != c.flow && s.state != temporary {
 			return sip.SecurityMechanism{}, errSAConflict
 		}
 
@@ -369,15 +395,19 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 		a.remove(s)
 	}
 
-	n := 0
+	n, all := 0, 0
 
 	for s := range a.sets {
-		if s.impi == c.impi && s.flow == c.flow && s.set.Remote.Addr == c.ue {
-			n++
+		if s.impi == c.impi && s.set.Remote.Addr == c.ue {
+			all++
+
+			if s.flow == c.flow {
+				n++
+			}
 		}
 	}
 
-	if n >= maxSetsPerIMPI {
+	if n >= maxSetsPerFlow || all >= maxSetsPerUE {
 		return sip.SecurityMechanism{}, errTooManySAs
 	}
 

@@ -36,29 +36,23 @@ var migrations = []string{
 		UNIQUE (impi, key)
 	);
 	CREATE INDEX registration_identities_key ON registration_identities (key);
-	CREATE TABLE contacts (
+	CREATE TABLE bindings (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		impi TEXT NOT NULL,
+		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
 		uri TEXT NOT NULL,
 		instance_id TEXT,
 		reg_id INTEGER CHECK (reg_id IS NULL OR (reg_id > 0 AND instance_id IS NOT NULL)),
 		params TEXT NOT NULL,
-		path TEXT
-	);
-	CREATE UNIQUE INDEX contacts_flow ON contacts (impi, instance_id, reg_id) WHERE reg_id IS NOT NULL;
-	CREATE UNIQUE INDEX contacts_uri ON contacts (impi, uri) WHERE reg_id IS NULL;
-	CREATE TABLE bindings (
-		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
-		contact_id INTEGER NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
+		path TEXT,
 		call_id TEXT NOT NULL,
 		cseq INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		event TEXT NOT NULL CHECK (event IN ('registered', 'refreshed')),
 		impu TEXT NOT NULL,
-		registered_at INTEGER NOT NULL,
-		PRIMARY KEY (registration_id, contact_id)
+		registered_at INTEGER NOT NULL
 	);
-	CREATE INDEX bindings_contact_id ON bindings (contact_id);
+	CREATE UNIQUE INDEX bindings_flow ON bindings (registration_id, instance_id, reg_id) WHERE reg_id IS NOT NULL;
+	CREATE UNIQUE INDEX bindings_uri ON bindings (registration_id, uri) WHERE reg_id IS NULL;
 	CREATE INDEX bindings_expires_at ON bindings (expires_at);
 	CREATE TABLE reg_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

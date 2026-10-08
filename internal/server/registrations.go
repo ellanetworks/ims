@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -98,7 +97,8 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 // sets give its public identities and its unexpired contacts, and the P-CSCF gives each contact's flow.
 func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFRegistration, now time.Time) api.RegistrationStatus {
 	status := api.RegistrationStatus{IMPI: impi, Identities: []api.RegisteredIdentity{}, Contacts: []api.RegisteredContact{}}
-	listed := map[int64]int{}
+
+	var listed []db.Contact
 
 	for _, reg := range regs {
 		for _, id := range reg.Identities {
@@ -113,7 +113,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 			}
 
 			// A contact registered for several registration sets is listed once.
-			if i, ok := listed[b.Contact.ID]; ok {
+			if i := slices.IndexFunc(listed, func(c db.Contact) bool { return scscf.SameContact(c, b.Contact) }); i >= 0 {
 				d := &status.Contacts[i]
 				d.RegisteredAt = minTime(d.RegisteredAt, b.RegisteredAt)
 				d.ExpiresAt = maxTime(d.ExpiresAt, b.ExpiresAt)
@@ -121,7 +121,7 @@ func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFReg
 				continue
 			}
 
-			listed[b.Contact.ID] = len(status.Contacts)
+			listed = append(listed, b.Contact)
 			status.Contacts = append(status.Contacts, contact(b, flows))
 		}
 	}
@@ -167,43 +167,20 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	return d
 }
 
-// flowOf returns the P-CSCF's registration of a contact: that of its registration flow (RFC 5626), or else the one
-// that lists it, or else the one from the UE address in the contact's host.
+// flowOf returns the P-CSCF's registration of a contact: the one whose IMS flow token is in the first URI of the
+// contact's Path (TS 24.229 §5.2.2.1 step 1), or none when another P-CSCF registered it.
 func flowOf(c db.Contact, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
-	if c.Flow() {
-		i := slices.IndexFunc(flows, func(f db.PCSCFRegistration) bool { return f.Instance == c.Instance && f.RegID == c.RegID })
-		if i < 0 {
-			return db.PCSCFRegistration{}, false
-		}
-
-		return flows[i], true
-	}
-
-	flows = slices.DeleteFunc(slices.Clone(flows), func(f db.PCSCFRegistration) bool { return f.RegID != 0 })
-
-	for _, f := range flows {
-		if slices.Contains(f.Contacts, c.URI) {
-			return f, true
-		}
-	}
-
-	u, err := sip.ParseURI(c.URI)
-	if err != nil {
+	hops, err := sip.ParseAddressList(c.Path)
+	if err != nil || len(hops) == 0 || hops[0].URI.User == "" {
 		return db.PCSCFRegistration{}, false
 	}
 
-	host, err := netip.ParseAddr(strings.Trim(u.Host, "[]"))
-	if err != nil {
+	i := slices.IndexFunc(flows, func(f db.PCSCFRegistration) bool { return f.FlowToken == hops[0].URI.User })
+	if i < 0 {
 		return db.PCSCFRegistration{}, false
 	}
 
-	for _, f := range flows {
-		if f.UEAddress.Addr() == host.Unmap() {
-			return f, true
-		}
-	}
-
-	return db.PCSCFRegistration{}, false
+	return flows[i], true
 }
 
 func minTime(a, b time.Time) time.Time {

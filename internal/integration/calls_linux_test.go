@@ -733,18 +733,17 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 	b := s.caller(1, false, testue.Config{})
 
 	ctx := s.ctx()
-	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
+	ac, _ := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
 
 	if err := b.Deregister(ctx); err != nil {
 		t.Fatal(err)
 	}
 
+	// The BYE toward the deregistered UE races the 200 that removes its security associations
+	// (TS 24.229 §5.2.5.1 NOTE 3): only the caller's is certain to arrive.
 	ended(t, ac, testue.RemoteBye)
-	ended(t, bc, testue.RemoteBye)
 
-	for _, c := range []*testue.Call{ac, bc} {
-		if r := c.Reasons(); len(r) != 1 || r[0].String() != `SIP;cause=480;text="Temporarily Unavailable"` {
-			t.Errorf("Reason %v", r)
-		}
+	if r := ac.Reasons(); len(r) != 1 || r[0].String() != `SIP;cause=480;text="Temporarily Unavailable"` {
+		t.Errorf("Reason %v", r)
 	}
 }

@@ -203,3 +203,54 @@ func TestFlowReplaceReleasesCalls(t *testing.T) {
 	bye(t, sh.term)
 	bye(t, sh.icscf)
 }
+
+// A call cancelled before it was forked leaves no dialog in the calls index: one that never began
+// would never end.
+func TestCancelledCallsLeaveNoIndex(t *testing.T) {
+	sh := newSessionHarness(t)
+
+	for range 20 {
+		invite := sh.terminating("INVITE", testTel)
+
+		cancel, err := sip.NewCancel(invite)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sh.icscf.Send(sip.UDP, sh.scscf, invite)
+		sh.icscf.Send(sip.UDP, sh.scscf, cancel)
+	}
+
+	unbegun := func() int {
+		sh.reg.calls.mu.Lock()
+		defer sh.reg.calls.mu.Unlock()
+
+		n := 0
+
+		for d := range sh.reg.calls.byDialog {
+			if d.CallID() == "" {
+				n++
+			}
+		}
+
+		return n
+	}
+
+	for cancelled := 0; cancelled < 20; {
+		if res, _ := sh.icscf.RecvResponse(); res.StatusCode == 200 {
+			if cseq, _ := res.Header.CSeq(); cseq.Method == "CANCEL" {
+				cancelled++
+			}
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for unbegun() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d dialogs that never began left in the calls index", unbegun())
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+}

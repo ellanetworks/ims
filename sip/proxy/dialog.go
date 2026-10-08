@@ -1196,6 +1196,15 @@ func (d *Dialog) ReleaseCallee(key any, r Release) error {
 
 	switch found, others := c.withdraw(key, reasonFields(r.Reason)); {
 	case !found:
+		// The branch may have answered since the state was read.
+		d.mu.Lock()
+		answered := d.state != Early && d.answerKey == key
+		d.mu.Unlock()
+
+		if answered {
+			return d.Release(r)
+		}
+
 		return ErrNotReached
 	case !others:
 		return d.Release(r)

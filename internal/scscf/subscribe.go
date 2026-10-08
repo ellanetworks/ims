@@ -226,14 +226,14 @@ func serviceRouteUser(regs []db.Registration, routes []sip.URI) (string, bool) {
 			continue
 		}
 
-		contactID, err := strconv.ParseInt(id, 10, 64)
+		bindingID, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
 			continue
 		}
 
 		for _, reg := range regs {
 			for _, b := range reg.Bindings {
-				if b.Contact.ID == contactID {
+				if b.ID == bindingID {
 					return reg.IMPI, true
 				}
 			}

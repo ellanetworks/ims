@@ -92,10 +92,12 @@ type Registrar struct {
 	mu         sync.Mutex
 	closed     bool
 	busy       map[string]chan struct{}
-	challenges map[string]*challenge
-	authAt     map[string]time.Time
-	reauth     map[string]bool
-	sweep      transaction.Timer
+	challenges map[authKey]*challenge
+	authAt     map[authKey]authenticated
+
+	// reauth counts the re-authentications the network asked for, per private identity.
+	reauth map[string]uint64
+	sweep  transaction.Timer
 
 	calls *calls
 }
@@ -141,9 +143,9 @@ func New(cfg Config) *Registrar {
 		ctx:        ctx,
 		cancel:     cancel,
 		busy:       make(map[string]chan struct{}),
-		challenges: make(map[string]*challenge),
-		authAt:     make(map[string]time.Time),
-		reauth:     make(map[string]bool),
+		challenges: make(map[authKey]*challenge),
+		authAt:     make(map[authKey]authenticated),
+		reauth:     make(map[string]uint64),
 		calls:      newCalls(),
 	}
 
@@ -178,9 +180,9 @@ func (r *Registrar) Close() {
 		r.sweep.Stop()
 	}
 
-	for impi, ch := range r.challenges {
+	for k, ch := range r.challenges {
 		ch.timer.Stop()
-		delete(r.challenges, impi)
+		delete(r.challenges, k)
 	}
 
 	r.mu.Unlock()
@@ -260,19 +262,36 @@ func (r *Registrar) unlock(impi string) {
 	delete(r.busy, impi)
 }
 
-func (r *Registrar) putChallenge(impi string, ch *challenge) {
+// authKey identifies what the S-CSCF authenticates: a private identity's registration, or each of its
+// registration flows, a registered contact of its own (TS 33.203 §6.1 NOTE 2).
+type authKey struct {
+	impi     string
+	instance string
+	regID    int64
+}
+
+// authenticated is when a registration or flow last authenticated, and how many re-authentications of
+// its private identity the network had asked for by then.
+type authenticated struct {
+	at     time.Time
+	reauth uint64
+}
+
+func (r *Registrar) putChallenge(k authKey, ch *challenge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if old := r.challenges[impi]; old != nil {
+	if old := r.challenges[k]; old != nil {
 		old.timer.Stop()
 	}
 
-	ch.timer = r.clock.AfterFunc(regAwaitAuth, func() { r.challengeExpired(impi, ch) })
-	r.challenges[impi] = ch
+	ch.timer = r.clock.AfterFunc(regAwaitAuth, func() { r.challengeExpired(k, ch) })
+	r.challenges[k] = ch
 }
 
-func (r *Registrar) challengeExpired(impi string, ch *challenge) {
+func (r *Registrar) challengeExpired(k authKey, ch *challenge) {
+	impi := k.impi
+
 	if !r.start() {
 		return
 	}
@@ -288,9 +307,9 @@ func (r *Registrar) challengeExpired(impi string, ch *challenge) {
 
 		r.mu.Lock()
 
-		current := r.challenges[impi] == ch
+		current := r.challenges[k] == ch
 		if current {
-			delete(r.challenges, impi)
+			delete(r.challenges, k)
 		}
 
 		r.mu.Unlock()
@@ -307,20 +326,20 @@ func (r *Registrar) challengeExpired(impi string, ch *challenge) {
 	}()
 }
 
-func (r *Registrar) pendingChallenge(impi string) *challenge {
+func (r *Registrar) pendingChallenge(k authKey) *challenge {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.challenges[impi]
+	return r.challenges[k]
 }
 
-func (r *Registrar) dropChallenge(impi string, ch *challenge) {
+func (r *Registrar) dropChallenge(k authKey, ch *challenge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.challenges[impi] == ch {
+	if r.challenges[k] == ch {
 		ch.timer.Stop()
-		delete(r.challenges, impi)
+		delete(r.challenges, k)
 	}
 }
 
@@ -471,7 +490,7 @@ func without(all, kept []db.Binding) []db.Binding {
 	var out []db.Binding
 
 	for _, b := range all {
-		if !slices.ContainsFunc(kept, func(k db.Binding) bool { return k.Contact.ID == b.Contact.ID }) {
+		if !slices.ContainsFunc(kept, func(k db.Binding) bool { return k.ID == b.ID }) {
 			out = append(out, b)
 		}
 	}
@@ -479,9 +498,11 @@ func without(all, kept []db.Binding) []db.Binding {
 	return out
 }
 
-func serviceRoute(name sip.URI, contactID int64) string {
+// serviceRoute is the S-CSCF's Service-Route for a binding: a URI of its own, so that the originating
+// requests sent with it name the binding (TS 24.229 §5.4.1.2.2F c).
+func serviceRoute(name sip.URI, bindingID int64) string {
 	u := name.Clone()
-	u.User = "orig-" + strconv.FormatInt(contactID, 10)
+	u.User = "orig-" + strconv.FormatInt(bindingID, 10)
 	u.Params.Set("lr", "")
 
 	return "<" + u.String() + ">"

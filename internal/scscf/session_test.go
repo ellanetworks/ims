@@ -1430,3 +1430,18 @@ func TestTerminatingLastUsableGroup(t *testing.T) {
 	sh.sipClock.Advance(DefaultGroupNoAnswer)
 	sh.term.RecvNone(50 * time.Millisecond)
 }
+
+// TS 24.229 §5.4.3.2 step 1: a UE may assert an identity of another of its registration sets than the one
+// whose Service-Route it uses; the served user's own binding counts.
+func TestOriginatingFromAnotherSet(t *testing.T) {
+	sh := newSessionHarness(t)
+
+	sh.ue.impu = secondIMPU
+	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", remoteTel, "<"+secondIMPU+">"))
+
+	if got, _ := sh.icscf.RecvRequest(); got.Method != "INVITE" {
+		t.Fatalf("I-CSCF got %s", got.StartLine())
+	}
+}

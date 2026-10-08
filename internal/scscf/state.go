@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/sip"
 )
 
 type state struct {
@@ -77,11 +78,24 @@ func (s *state) overlapping(reg db.Registration) []db.Registration {
 	return out
 }
 
-// bound reports whether the contact has a live binding.
-func (s *state) bound(contactID int64) bool {
+// bound reports whether the contact has a live binding, in any registration set.
+func (s *state) bound(c db.Contact) bool {
 	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool {
-		return slices.ContainsFunc(s.live(reg.Bindings), func(b db.Binding) bool { return b.Contact.ID == contactID })
+		return slices.ContainsFunc(s.live(reg.Bindings), func(b db.Binding) bool { return SameContact(b.Contact, c) })
 	})
+}
+
+// SameContact reports whether two bindings bind the same contact: the same flow, or the same contact
+// address (RFC 5626 §6, RFC 3261 §10.3).
+func SameContact(a, b db.Contact) bool {
+	if a.Flow() || b.Flow() {
+		return a.Instance == b.Instance && a.RegID == b.RegID
+	}
+
+	ua, errA := sip.ParseURI(a.URI)
+	ub, errB := sip.ParseURI(b.URI)
+
+	return errA == nil && errB == nil && ua.Equivalent(ub)
 }
 
 func (s *state) live(bindings []db.Binding) []db.Binding {

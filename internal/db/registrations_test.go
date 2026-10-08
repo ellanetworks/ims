@@ -89,8 +89,8 @@ func TestRegistrationRoundTrip(t *testing.T) {
 	d := openTestDB(t)
 
 	want := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-	if want.ID == 0 || want.Bindings[0].Contact.ID == 0 || want.Bindings[0].Contact.IMPI != testIMPI {
-		t.Fatalf("saved = %+v, want IDs and the contact's IMPI set", want)
+	if want.ID == 0 || want.Bindings[0].ID == 0 {
+		t.Fatalf("saved = %+v, want IDs set", want)
 	}
 
 	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
@@ -119,7 +119,7 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 	d := openTestDB(t)
 
 	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
-	contactID := r.Bindings[0].Contact.ID
+	bindingID := r.Bindings[0].ID
 
 	r.IMPU = "tel:+15551230001"
 	r.Identities = r.Identities[1:]
@@ -127,11 +127,11 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 	r.Bindings[0].CSeq = 2
 	r.Bindings[0].ExpiresAt = testNow.Add(2 * time.Hour)
 	r.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"
-	r.Bindings[0].Contact.ID = 0
+	r.Bindings[0].ID = 0
 
 	saved := mustSaveRegistration(t, d, r)
-	if saved.Bindings[0].Contact.ID != contactID {
-		t.Fatalf("contact ID = %d, want %d: the same URI is the same contact", saved.Bindings[0].Contact.ID, contactID)
+	if saved.Bindings[0].ID != bindingID {
+		t.Fatalf("binding ID = %d, want %d: the same URI is the same binding", saved.Bindings[0].ID, bindingID)
 	}
 
 	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
@@ -139,7 +139,9 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 	}
 }
 
-func TestSeveralSetsShareAContact(t *testing.T) {
+// TS 24.229 §5.4.1.2.2 step 6d, RFC 5626 §6: each registration set has its own binding to a contact, with
+// its own Path, so that one set's change leaves the other's.
+func TestSetsBindAContactApart(t *testing.T) {
 	d := openTestDB(t)
 
 	a := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
@@ -149,29 +151,23 @@ func TestSeveralSetsShareAContact(t *testing.T) {
 	b.Identities = []PublicIdentity{identity(b.IMPU, false)}
 	b = mustSaveRegistration(t, d, b)
 
-	if a.Bindings[0].Contact.ID != b.Bindings[0].Contact.ID {
-		t.Fatalf("contacts %d and %d, want one contact bound to both sets", a.Bindings[0].Contact.ID, b.Bindings[0].Contact.ID)
+	if a.Bindings[0].ID == b.Bindings[0].ID {
+		t.Fatalf("binding %d shared by both sets", a.Bindings[0].ID)
+	}
+
+	a.Bindings[0].Contact.Path = "<sip:other@pcscf." + testDomain + ";lr>"
+	mustSaveRegistration(t, d, a)
+
+	regs := listByIMPI(t, d)
+	if len(regs) != 2 || regs[1].Bindings[0].Contact.Path != b.Bindings[0].Contact.Path {
+		t.Fatalf("registrations = %+v, want the second set's Path kept", regs)
 	}
 
 	a.Bindings = nil
 	mustSaveRegistration(t, d, a)
 
-	regs := listByIMPI(t, d)
-	if len(regs) != 2 || len(regs[0].Bindings) != 0 || len(regs[1].Bindings) != 1 {
+	if regs := listByIMPI(t, d); len(regs[0].Bindings) != 0 || len(regs[1].Bindings) != 1 {
 		t.Fatalf("registrations = %+v", regs)
-	}
-
-	if err := d.DeleteRegistration(context.Background(), b.ID); err != nil {
-		t.Fatalf("DeleteRegistration: %v", err)
-	}
-
-	var contacts int
-	if err := d.conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM contacts`).Scan(&contacts); err != nil {
-		t.Fatal(err)
-	}
-
-	if contacts != 0 {
-		t.Fatalf("%d contacts left, want none once unbound", contacts)
 	}
 }
 
@@ -261,7 +257,7 @@ func TestDeleteRegistrationCascades(t *testing.T) {
 		t.Fatalf("ListRegSubscriptions = %v, %v; want the subscription kept", subs, err)
 	}
 
-	for _, table := range []string{"registration_identities", "bindings", "contacts"} {
+	for _, table := range []string{"registration_identities", "bindings"} {
 		var n int
 		if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
 			t.Fatal(err)
@@ -319,19 +315,19 @@ func TestFlowBindings(t *testing.T) {
 
 	ids := map[int64]bool{}
 	for _, b := range saved.Bindings {
-		ids[b.Contact.ID] = true
+		ids[b.ID] = true
 	}
 
 	if len(ids) != 3 {
 		t.Fatalf("contacts %+v, want three bindings over one URI", saved.Bindings)
 	}
 
-	id := saved.Bindings[2].Contact.ID
+	id := saved.Bindings[2].ID
 	moved := flow(2, "2001:db8::2")
 	saved.Bindings[2] = moved
 
 	again := mustSaveRegistration(t, d, saved)
-	if c := again.Bindings[2].Contact; c.ID != id || c.URI != moved.Contact.URI || !c.Flow() ||
+	if c := again.Bindings[2].Contact; again.Bindings[2].ID != id || c.URI != moved.Contact.URI || !c.Flow() ||
 		c.Instance != testInstance || c.RegID != 2 {
 		t.Fatalf("flow 2 = %+v, want its binding with the new URI", c)
 	}

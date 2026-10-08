@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/testue"
 )
 
@@ -46,6 +47,13 @@ func TestFlowsOfOneDevice(t *testing.T) {
 	caller := s.caller(0, false, testue.Config{})
 	one := s.flow(1, false, testue.Config{})
 	two := s.flow(2, false, testue.Config{})
+
+	// The registrations API shows each flow with the P-CSCF's registration of its own (TS 24.229 §5.2.2.1).
+	contacts := s.registrations(subscriberAt(1).imsi).Items[0].Contacts
+	if len(contacts) != 2 || contacts[0].RegID == contacts[1].RegID || contacts[0].Address == contacts[1].Address ||
+		contacts[0].Address == "" || contacts[1].Address == "" {
+		t.Fatalf("contacts %+v, want flows 1 and 2, each at its own address", contacts)
+	}
 
 	ctx := s.ctx()
 
@@ -112,15 +120,47 @@ func TestFlowReplacedReleasesItsCall(t *testing.T) {
 	old := s.flow(1, false, testue.Config{})
 
 	ctx := s.ctx()
-	ac, bc := connect(t, ctx, caller, old, phone(1), testue.CallOptions{})
+	ac, _ := connect(t, ctx, caller, old, phone(1), testue.CallOptions{})
 
 	s.flow(1, true, testue.Config{})
 
+	// The old flow's UE drops its security associations once told its contact ended, which can be before
+	// the BYE toward it arrives: only the caller's is certain.
 	ended(t, ac, testue.RemoteBye)
 
 	if got := reason(t, ac); got != reason480 {
 		t.Errorf("caller's BYE Reason %q, want %q", got, reason480)
 	}
 
-	ended(t, bc, testue.RemoteBye)
+	// The P-CSCF learns of the replacement from the reg-event NOTIFY, and drops the old flow (TS 24.229 §5.2.5.2).
+	eventually(t, "the P-CSCF dropping the replaced flow", func() bool {
+		regs := s.pcscfRegistrations()
+		return len(regs) == 1 && regs[0].RegID == 1 && regs[0].UEAddress.Addr().Is6()
+	})
+}
+
+func (s *scene) pcscfRegistrations() []db.PCSCFRegistration {
+	s.t.Helper()
+
+	d, err := db.Open(s.t.Context(), s.db)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	defer func() { _ = d.Close() }()
+
+	var out []db.PCSCFRegistration
+
+	regs, err := d.ListPCSCFRegistrations(s.t.Context())
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	for _, r := range regs {
+		if r.IMPI == subscriberAt(1).impi {
+			out = append(out, r)
+		}
+	}
+
+	return out
 }

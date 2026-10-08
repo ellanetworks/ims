@@ -34,7 +34,7 @@ func TestRegistrationStatus(t *testing.T) {
 	)
 
 	phoneContact := db.Contact{
-		ID: 1, URI: phone, Instance: "urn:gsma:imei:35000000-000001-0",
+		URI: phone, Instance: "urn:gsma:imei:35000000-000001-0", Path: "<sip:token1@pcscf." + listDomain + ";lr;ob>",
 		Params: `;+sip.instance="<urn:gsma:imei:35000000-000001-0>";audio;video;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`,
 	}
 
@@ -46,7 +46,7 @@ func TestRegistrationStatus(t *testing.T) {
 		},
 		Bindings: []db.Binding{
 			binding(phoneContact, listNow.Add(-time.Hour), listNow.Add(time.Hour)),
-			binding(db.Contact{ID: 3, URI: gone}, listNow.Add(-2*time.Hour), listNow),
+			binding(db.Contact{URI: gone}, listNow.Add(-2*time.Hour), listNow),
 		},
 	}, {
 		// A second registration set: its identities add to the first, and its bindings of the same contact are
@@ -59,7 +59,7 @@ func TestRegistrationStatus(t *testing.T) {
 		Bindings: []db.Binding{
 			binding(phoneContact, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
 			binding(db.Contact{
-				ID: 2, URI: tablet, Instance: tabletInstance, RegID: 1,
+				URI: tablet, Instance: tabletInstance, RegID: 1, Path: "<sip:token2@pcscf." + listDomain + ";lr;ob>",
 				Params: `;+sip.instance="<` + tabletInstance + `>";reg-id=1;q=0.5;audio`,
 			}, listNow, listNow.Add(time.Hour)),
 		},
@@ -67,14 +67,16 @@ func TestRegistrationStatus(t *testing.T) {
 
 	flows := []db.PCSCFRegistration{{
 		IMPI:      listIMPI,
+		FlowToken: "token1",
 		Transport: "UDP",
 		Protected: true,
 		UEAddress: netip.MustParseAddrPort("[2001:db8::1]:5064"),
 		Contacts:  []string{phone},
 		Policy:    db.PolicySession{ID: "pcscf;1;2"},
 	}, {
-		// Matched by its registration flow, not by its list of contacts.
+		// Matched by the flow token in the contact's Path, not by its list of contacts.
 		IMPI:           listIMPI,
+		FlowToken:      "token2",
 		Instance:       tabletInstance,
 		RegID:          1,
 		Transport:      "TCP",
@@ -176,7 +178,7 @@ func TestRegisteredWith(t *testing.T) {
 			IMPI: impi, IMPU: tel,
 			Identities: []db.PublicIdentity{{URI: tel, Key: tel, Barred: barred}},
 			Bindings: []db.Binding{{
-				Contact: db.Contact{IMPI: impi, URI: "sip:" + impi + "@192.0.2.1"}, CallID: impi, CSeq: 1,
+				Contact: db.Contact{URI: "sip:" + impi + "@192.0.2.1"}, CallID: impi, CSeq: 1,
 				ExpiresAt: expires, Event: db.BindingRegistered, IMPU: tel, RegisteredAt: listNow,
 			}},
 		})
@@ -216,24 +218,29 @@ func TestRegisteredWith(t *testing.T) {
 	}
 }
 
-// Flows sharing a contact URI each show the P-CSCF's registration of their own flow (RFC 5626).
+// Flows sharing a contact URI each show the P-CSCF's registration of their own flow (RFC 5626), found by the flow
+// token in their Path: after a flow is replaced from another address, the P-CSCF still has the old flow's
+// registration until it learns of the replacement.
 func TestRegistrationStatusFlows(t *testing.T) {
 	const (
 		uri      = "sip:001010000000001@192.0.2.7:5060"
 		instance = "urn:gsma:imei:35000000-000001-0"
 	)
 
-	flow := func(id, regID int64) db.Binding {
-		return binding(db.Contact{ID: id, URI: uri, Instance: instance, RegID: regID}, listNow, listNow.Add(time.Hour))
+	flow := func(regID int64, token string) db.Binding {
+		c := db.Contact{URI: uri, Instance: instance, RegID: regID, Path: "<sip:" + token + "@pcscf." + listDomain + ";lr;ob>"}
+		return binding(c, listNow, listNow.Add(time.Hour))
 	}
 
-	regs := []db.Registration{{IMPI: listIMPI, Bindings: []db.Binding{flow(1, 1), flow(2, 2)}}}
+	regs := []db.Registration{{IMPI: listIMPI, Bindings: []db.Binding{flow(1, "new1"), flow(2, "t2")}}}
 
-	flows := []db.PCSCFRegistration{{
-		IMPI: listIMPI, Instance: instance, RegID: 2, Transport: "TCP", UEAddress: netip.MustParseAddrPort("192.0.2.7:40002"),
-	}, {
-		IMPI: listIMPI, Instance: instance, RegID: 1, Transport: "UDP", UEAddress: netip.MustParseAddrPort("192.0.2.7:40001"),
-	}}
+	pcscf := func(regID int64, token, addr string) db.PCSCFRegistration {
+		return db.PCSCFRegistration{
+			IMPI: listIMPI, Instance: instance, RegID: regID, FlowToken: token, Transport: "UDP", UEAddress: netip.MustParseAddrPort(addr),
+		}
+	}
+
+	flows := []db.PCSCFRegistration{pcscf(1, "old1", "192.0.2.7:40000"), pcscf(2, "t2", "192.0.2.7:40002"), pcscf(1, "new1", "192.0.2.9:40001")}
 
 	got := registrationStatus(listIMPI, regs, flows, listNow)
 
@@ -242,7 +249,7 @@ func TestRegistrationStatusFlows(t *testing.T) {
 		addresses = append(addresses, strconv.FormatInt(c.RegID, 10)+" "+c.Address)
 	}
 
-	if want := []string{"1 192.0.2.7:40001", "2 192.0.2.7:40002"}; !slices.Equal(addresses, want) {
+	if want := []string{"1 192.0.2.9:40001", "2 192.0.2.7:40002"}; !slices.Equal(addresses, want) {
 		t.Fatalf("contacts %v, want %v", addresses, want)
 	}
 }

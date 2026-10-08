@@ -105,6 +105,10 @@ type branch struct {
 	// response it ends with is delivered as a 408.
 	expired bool
 
+	// withdrawn holds the Reason of a branch withdrawn from the search (withdraw): it was cancelled,
+	// and the final response it ends with is delivered as a 480 with that Reason (TS 24.229 §5.4.5.1.1).
+	withdrawn []sip.Field
+
 	key any
 }
 
@@ -116,6 +120,19 @@ func (b *branch) retries(res *sip.Response) bool {
 
 // errRangOut is the error of a branch that rang past its Timer C or no-answer time (RFC 3261 §16.8).
 var errRangOut = fmt.Errorf("%w: rang out", transaction.ErrTimeout)
+
+// errWithdrawn is the error of a branch withdrawn from the search.
+var errWithdrawn = errors.New("sip/proxy: branch withdrawn")
+
+// withdrawnResponse is the final response a withdrawn branch stands for: a 480, with its Reason.
+func (c *responseContext) withdrawnResponse(b *branch) *sip.Response {
+	res := c.generate(480)
+	for _, f := range b.withdrawn {
+		res.Header.Add(f.Name, f.Value)
+	}
+
+	return res
+}
 
 func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
 	return &responseContext{
@@ -605,6 +622,19 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 		b.finish()
 
+		// The branch was withdrawn: whatever final response it ends with stands for its release.
+		if b.withdrawn != nil {
+			c.mu.Unlock()
+
+			c.dispatch(b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true})
+
+			if freed {
+				c.advance()
+			}
+
+			return
+		}
+
 		// The branch rang out and was cancelled: whatever final response it ends with stands for the timeout.
 		if b.expired {
 			c.mu.Unlock()
@@ -663,6 +693,12 @@ func (b *branch) HandleError(err error) {
 	case !c.invite && errors.Is(err, transaction.ErrTimeout):
 	case b.expired:
 		res, err = c.generateLocked(408), fmt.Errorf("%w: %w", errRangOut, err)
+	case b.withdrawn != nil:
+		res, err = c.generateLocked(480), fmt.Errorf("%w: %w", errWithdrawn, err)
+
+		for _, f := range b.withdrawn {
+			res.Header.Add(f.Name, f.Value)
+		}
 	case b.cancelled || c.cancelled:
 		res = c.generateLocked(487)
 	case errors.Is(err, transaction.ErrTimeout):
@@ -1118,6 +1154,8 @@ func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others b
 		} else {
 			others = true
 		}
+
+		found = found || slices.ContainsFunc(b.retry, mine)
 	}
 
 	if !found || !others {
@@ -1145,6 +1183,12 @@ func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others b
 		if b.done || !mine(b) {
 			continue
 		}
+
+		if b.cancelled || b.settled {
+			continue
+		}
+
+		b.withdrawn = append([]sip.Field{}, reason...)
 
 		if client := b.cancelLocked(reason); client != nil {
 			cancels = append(cancels, cancellation{client: client, reason: reason})

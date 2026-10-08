@@ -263,8 +263,25 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if p.sas != nil {
-		if v, ok := p.sas.lookup(req.Flow); ok {
+		// TS 24.229 §5.2.2.2 step 1, TS 33.203 §6.1 NOTE 2: a REGISTER is protected by its own flow's
+		// security associations only; one for another flow over them needs a challenge, and gets its own.
+		if v, ok := p.sas.lookup(req.Flow); ok && v.flow == r.flow {
 			r.in = &v
+		} else if ok {
+			p.log.Debug("REGISTER over another registration flow's security associations", slog.String("impi", r.impi))
+		}
+	}
+
+	// RFC 5626 §3.1, §4.2: each registration flow is a network flow of its own. A REGISTER for another flow
+	// of the private identity over one that a registration uses is refused: the requests from it could not
+	// be told apart (TS 24.229 §5.2.2.1 NOTE 16).
+	if r.in == nil {
+		if other, ok := p.regs.fromSource(req.Flow.Remote); ok && other.IMPI == r.impi && regKeyOf(&other) != r.key() {
+			p.log.Debug("REGISTER for another flow over a registered one", slog.String("impi", r.impi),
+				slog.String("source", req.Flow.Remote.String()))
+			p.respond(tx, sip.NewResponse(req, 403, "Flow In Use"))
+
+			return
 		}
 	}
 
@@ -327,8 +344,7 @@ func (r *registration) key() regKey {
 	return regKey{r.impi, r.ue, r.flow}
 }
 
-// registrationFlow is the registration flow a REGISTER is for: the instance ID and reg-id of its
-// Contact (RFC 5626 §4.2), or none.
+// registrationFlow is the registration flow a REGISTER is for: that of its Contact, or none.
 func registrationFlow(req *sip.Request) flowID {
 	contacts, err := req.Header.Contacts()
 	if err != nil {
@@ -336,23 +352,35 @@ func registrationFlow(req *sip.Request) flowID {
 	}
 
 	for _, c := range contacts {
-		instance, ok := c.Params.Get("+sip.instance")
-		if !ok {
-			continue
-		}
-
-		v, ok := c.Params.Get("reg-id")
-		if !ok {
-			continue
-		}
-
-		// RFC 5626 §11.1: 1 to 2^31 - 1
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
-			return flowID{instance: strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(instance), "<"), ">"), regID: n}
+		if f := contactFlow(c.Params); f != (flowID{}) {
+			return f
 		}
 	}
 
 	return flowID{}
+}
+
+// contactFlow is the registration flow a Contact names: its instance ID and reg-id, both present and
+// valid (RFC 5626 §4.2, §11.1: a reg-id is 1 to 2^31 - 1), or none, like the S-CSCF's.
+func contactFlow(params sip.Params) flowID {
+	v, ok := params.Get("+sip.instance")
+	if !ok {
+		return flowID{}
+	}
+
+	instance := strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
+
+	v, ok = params.Get("reg-id")
+	if !ok || instance == "" {
+		return flowID{}
+	}
+
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n < 1 {
+		return flowID{}
+	}
+
+	return flowID{instance: instance, regID: n}
 }
 
 func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
@@ -894,8 +922,11 @@ func registrationOutcome(req *sip.Request, res *sip.Response) outcome {
 		matched bool
 	)
 
+	// TS 24.229 §5.2.5.1 step 1A: the 200 lists the other flows too, maybe at the same URI (RFC 5626 §6).
 	for _, g := range granted {
-		if !slices.ContainsFunc(requested, func(c sip.Address) bool { return c.URI.String() == g.URI.String() }) {
+		if !slices.ContainsFunc(requested, func(c sip.Address) bool {
+			return c.URI.String() == g.URI.String() && contactFlow(c.Params) == contactFlow(g.Params)
+		}) {
 			continue
 		}
 

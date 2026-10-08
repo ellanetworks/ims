@@ -617,22 +617,13 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 // instance ID and reg-id, or none for a registration without the multiple registration mechanism. Flows
 // may share a contact URI (RFC 5626 §6).
 func sameFlow(r *db.PCSCFRegistration, c regevent.Contact) bool {
-	var instance, regID string
+	var params sip.Params
 
 	for _, p := range c.UnknownParams {
-		switch strings.ToLower(p.Name) {
-		case "+sip.instance":
-			instance = strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(p.Value), "<"), ">")
-		case "reg-id":
-			regID = p.Value
-		}
+		params = append(params, sip.Param{Name: strings.ToLower(p.Name), Value: p.Value})
 	}
 
-	if r.RegID == 0 {
-		return instance == "" || regID == ""
-	}
-
-	return regID == strconv.FormatInt(r.RegID, 10) && instance == r.Instance
+	return contactFlow(params) == flowID{r.Instance, r.RegID}
 }
 
 func contactAt(contact string, ue netip.Addr) bool {

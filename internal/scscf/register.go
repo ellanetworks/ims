@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/proxy"
 )
 
 const autsLen = 14
@@ -61,6 +62,17 @@ func (c contactRequest) binds(stored db.Contact) bool {
 	u, err := sip.ParseURI(stored.URI)
 
 	return err == nil && u.Equivalent(c.addr.URI)
+}
+
+// authKey is what the REGISTER authenticates: its flow, or the private identity's registration.
+func (rr *registerRequest) authKey() authKey {
+	for _, c := range rr.contacts {
+		if c.regID != 0 {
+			return authKey{impi: rr.impi, instance: c.instance, regID: c.regID}
+		}
+	}
+
+	return authKey{impi: rr.impi}
 }
 
 // flows reports whether the REGISTER registers or deregisters a flow: whether the multiple
@@ -120,7 +132,7 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 		return res
 	}
 
-	if ch := r.pendingChallenge(rr.impi); rr.creds.answers(ch) {
+	if ch := r.pendingChallenge(rr.authKey()); rr.creds.answers(ch) {
 		return r.answer(ctx, rr, ch)
 	}
 
@@ -137,15 +149,16 @@ func (r *Registrar) reauthDue(rr *registerRequest) bool {
 	}
 
 	r.mu.Lock()
-	at, ok := r.authAt[rr.impi]
+	last, ok := r.authAt[rr.authKey()]
 	requested := r.reauth[rr.impi]
 	r.mu.Unlock()
 
-	if requested {
+	// A re-authentication the network asked for applies to each flow until it authenticates again.
+	if last.reauth < requested {
 		return true
 	}
 
-	return r.cfg.ReauthInterval > 0 && (!ok || r.clock.Now().Sub(at) >= r.cfg.ReauthInterval)
+	return r.cfg.ReauthInterval > 0 && (!ok || r.clock.Now().Sub(last.at) >= r.cfg.ReauthInterval)
 }
 
 func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
@@ -198,7 +211,7 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	case star:
 		rr.star = true
 	default:
-		registering := 0
+		registering, flowing := 0, false
 
 		for _, c := range contacts {
 			if v, ok := c.Params.Get("q"); ok {
@@ -211,11 +224,13 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 
 			if contactExpires(c, expires) != 0 {
 				registering++
+				flowing = flowing || c.Params.Has("reg-id")
 			}
 		}
 
-		// RFC 5626 §6: a REGISTER with a reg-id registers a single flow.
-		if rr.regID && registering > 1 {
+		// RFC 5626 §6: a REGISTER with a reg-id registers a single flow, and may deregister Contacts with
+		// a zero expiry besides.
+		if flowing && registering > 1 {
 			return nil, sip.NewResponse(req, 400, "Several Contacts With reg-id")
 		}
 
@@ -341,7 +356,7 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 
 	nonce := akaNonce(v)
 
-	r.putChallenge(rr.impi, &challenge{
+	r.putChallenge(rr.authKey(), &challenge{
 		callID:  rr.callID,
 		impu:    rr.impu,
 		impuKey: rr.impuKey,
@@ -356,8 +371,8 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 	res := sip.NewResponse(rr.req, 401, "")
 	res.Header.Add("WWW-Authenticate", wwwAuthenticate(r.cfg.HomeDomain, nonce, v))
 
-	// TS 24.229 §5.4.1.2.1 step 6
-	if outbound(rr.path) {
+	// TS 24.229 §5.4.1.2.1 step 6, "as described in RFC 5626": not when no reg-id is used (RFC 5626 §6).
+	if rr.flows() {
 		res.Header.Add("Require", "outbound")
 	}
 
@@ -378,7 +393,7 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 			return r.authFailed(ctx, rr, ch)
 		}
 
-		r.dropChallenge(rr.impi, ch)
+		r.dropChallenge(rr.authKey(), ch)
 
 		return r.challenge(ctx, rr, &cx.Resync{RAND: ch.vector.rand, AUTS: auts}, ch.resyncs+1)
 	case c.response == "":
@@ -387,18 +402,17 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 		return r.authFailed(ctx, rr, ch)
 	}
 
-	r.dropChallenge(rr.impi, ch)
+	r.dropChallenge(rr.authKey(), ch)
 
 	r.mu.Lock()
-	r.authAt[rr.impi] = r.clock.Now()
-	delete(r.reauth, rr.impi)
+	r.authAt[rr.authKey()] = authenticated{at: r.clock.Now(), reauth: r.reauth[rr.impi]}
 	r.mu.Unlock()
 
 	return r.authenticated(ctx, rr)
 }
 
 func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, ch *challenge) *sip.Response {
-	r.dropChallenge(rr.impi, ch)
+	r.dropChallenge(rr.authKey(), ch)
 
 	r.log.Info("REGISTER failed authentication", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
@@ -620,16 +634,12 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			continue
 		}
 
-		contact, _ := st.contact(c)
-
 		params := c.addr.Params.Clone()
 		params.Del("expires")
 
-		contact.URI = c.addr.URI.String()
-		contact.Instance = c.instance
-		contact.RegID = c.regID
-		contact.Params = params.String()
-		contact.Path = rr.path
+		contact := db.Contact{
+			URI: c.addr.URI.String(), Instance: c.instance, RegID: c.regID, Params: params.String(), Path: rr.path,
+		}
 
 		bindings = append(bindings, db.Binding{
 			Contact:      contact,
@@ -643,6 +653,18 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	}
 
 	reg.Bindings = bindings
+
+	// The calls of the flows replaced are those set up before the new flows are stored.
+	var replacedCalls map[bindingKey]map[*proxy.Dialog]proxy.Side
+
+	if len(replaced) > 0 {
+		replacedCalls = make(map[bindingKey]map[*proxy.Dialog]proxy.Side, len(replaced))
+
+		for _, b := range replaced {
+			k := bindingKey(b.ID)
+			replacedCalls[k] = r.calls.of(k)
+		}
+	}
 
 	saved, err := r.cfg.DB.SaveRegistration(ctx, reg)
 	if err != nil {
@@ -665,7 +687,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	if len(replaced) > 0 {
 		r.log.Info("registration flow replaced", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
-		removed = append(removed, removal{reg: set, bindings: replaced, event: regevent.Unregistered})
+		removed = append(removed, removal{reg: set, bindings: replaced, event: regevent.Unregistered, calls: replacedCalls})
 	}
 
 	if expired := without(set.Bindings, st.live(set.Bindings)); len(expired) > 0 {
@@ -720,6 +742,14 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 			}
 
 			removed = append(removed, live[i])
+		}
+	}
+
+	// RFC 3261 §10.3 step 7: a binding is removed only by a REGISTER newer than the one that made it.
+	for _, b := range removed {
+		if b.CallID == rr.callID && b.CSeq >= int64(rr.cseq) {
+			r.log.Debug("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
+			return sip.NewResponse(rr.req, 500, "Out Of Order")
 		}
 	}
 
@@ -828,7 +858,7 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 	if !rr.deregister() {
 		for _, c := range rr.contacts {
 			if i := bindingIndex(reg.Bindings, c); i >= 0 {
-				res.Header.Add("Service-Route", serviceRoute(r.cfg.Name, reg.Bindings[i].Contact.ID))
+				res.Header.Add("Service-Route", serviceRoute(r.cfg.Name, reg.Bindings[i].ID))
 				break
 			}
 		}
@@ -836,11 +866,11 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 		if uris := associatedURIs(reg.Identities); uris != "" {
 			res.Header.Add("P-Associated-URI", uris)
 		}
+	}
 
-		// TS 24.229 §5.4.1.2.2F h, RFC 5626 §6
-		if rr.flows() && rr.outbound {
-			res.Header.Add("Require", "outbound")
-		}
+	// TS 24.229 §5.4.1.2.2F h; RFC 5626 §6, in the response to a deregistration too.
+	if rr.flows() && rr.outbound {
+		res.Header.Add("Require", "outbound")
 	}
 
 	now := r.clock.Now()

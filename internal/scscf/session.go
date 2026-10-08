@@ -85,7 +85,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		return
 	}
 
-	contactID, orig, err := originatingContact(removed)
+	bindingID, orig, err := originatingBinding(removed)
 	if err != nil {
 		s.log.Debug("originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
 		s.respond(tx, sip.NewResponse(req, 403, ""))
@@ -103,7 +103,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		defer done()
 
 		if orig {
-			s.originating(ctx, tx, out, contactID)
+			s.originating(ctx, tx, out, bindingID)
 		} else {
 			s.terminating(ctx, tx, out)
 		}
@@ -136,18 +136,19 @@ func (s *Sessions) HandleAck(ack *sip.Request) {
 	}
 }
 
-func originatingContact(removed []sip.URI) (int64, bool, error) {
+// originatingBinding is the binding the Service-Route the request came with names (TS 24.229 §5.4.1.2.2F c).
+func originatingBinding(removed []sip.URI) (int64, bool, error) {
 	for _, u := range removed {
 		if id, ok := strings.CutPrefix(u.User, "orig-"); ok {
-			contactID, err := strconv.ParseInt(id, 10, 64)
-			return contactID, true, err
+			bindingID, err := strconv.ParseInt(id, 10, 64)
+			return bindingID, true, err
 		}
 	}
 
 	return 0, false, nil
 }
 
-func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, contactID int64) {
+func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, routeBinding int64) {
 	req := tx.Request()
 
 	asserted, err := out.Header.Addresses("P-Asserted-Identity")
@@ -156,7 +157,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	served, reg, res := s.servedUser(ctx, req, asserted, contactID)
+	served, reg, binding, res := s.servedUser(ctx, req, asserted, routeBinding)
 	if res != nil {
 		s.answer(tx, res)
 		return
@@ -222,7 +223,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 
 	opts := s.initialOptions(out, rrOriginating, nil)
 	if opts.Dialog != nil {
-		s.r.calls.add(opts.Dialog, bindingKey{reg: reg.ID, contact: contactID}, proxy.Caller)
+		s.r.calls.add(opts.Dialog, bindingKey(binding), proxy.Caller)
 	}
 
 	s.forward(tx, out, to, opts)
@@ -246,9 +247,22 @@ func (s *Sessions) assertedService(out *sip.Request, served sip.Address) (string
 	return icsiMMTel, out.Method == "INVITE"
 }
 
-// TS 24.229 §5.4.3.2 step 1
-func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []sip.Address, contactID int64,
-) (sip.Address, db.Registration, *sip.Response) {
+// TS 24.229 §5.4.3.2 step 1: the served user is an asserted identity registered with the contact that the
+// Service-Route's binding binds. The UE may assert an identity of another of its registration sets than the one
+// whose Service-Route it uses. The binding of the served user's set is returned.
+func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []sip.Address, bindingID int64,
+) (sip.Address, db.Registration, int64, *sip.Response) {
+	route, impi, err := s.r.cfg.DB.GetBinding(ctx, bindingID)
+
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		s.log.Debug("originating request on an unknown Service-Route", slog.Int64("binding", bindingID))
+		return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Not Registered")
+	case err != nil:
+		s.log.Warn("failed to read the binding", slog.Int64("binding", bindingID), slog.Any("error", err))
+		return sip.Address{}, db.Registration{}, 0, retryLater(req)
+	}
+
 	now := s.r.clock.Now()
 
 	for _, a := range asserted {
@@ -256,11 +270,18 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 			regs, err := s.r.cfg.DB.ListRegistrationsByIdentity(ctx, key)
 			if err != nil {
 				s.log.Warn("failed to read the registrations", slog.String("impu", a.URI.String()), slog.Any("error", err))
-				return sip.Address{}, db.Registration{}, retryLater(req)
+				return sip.Address{}, db.Registration{}, 0, retryLater(req)
 			}
 
 			for _, reg := range regs {
-				if !slices.ContainsFunc(liveAt(reg.Bindings, now), func(b db.Binding) bool { return b.Contact.ID == contactID }) {
+				if reg.IMPI != impi {
+					continue
+				}
+
+				live := liveAt(reg.Bindings, now)
+
+				b := slices.IndexFunc(live, func(b db.Binding) bool { return SameContact(b.Contact, route.Contact) })
+				if b < 0 {
 					continue
 				}
 
@@ -271,20 +292,20 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 
 				if reg.Identities[i].Barred {
 					s.log.Debug("originating request from a barred identity", slog.String("impu", a.URI.String()))
-					return sip.Address{}, db.Registration{}, sip.NewResponse(req, 403, "Barred")
+					return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Barred")
 				}
 
 				served := sip.Address{Display: a.Display, URI: a.URI}
 
-				return served, reg, nil
+				return served, reg, live[b].ID, nil
 			}
 		}
 	}
 
 	s.log.Debug("originating request from an unregistered identity", slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")),
-		slog.Int64("contact", contactID))
+		slog.Int64("binding", bindingID))
 
-	return sip.Address{}, db.Registration{}, sip.NewResponse(req, 403, "Not Registered")
+	return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Not Registered")
 }
 
 func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
@@ -379,6 +400,13 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	err = s.proxy.Fork(tx, groups)
+
+	// A fork that failed, or found the request answered already (a CANCEL came first), never began
+	// the dialog: it would never end.
+	if err != nil && opts.Dialog != nil {
+		s.r.calls.forget(opts.Dialog)
+	}
+
 	if err == nil || errors.Is(err, proxy.ErrAnswered) {
 		return
 	}
@@ -386,10 +414,6 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	code := 500
 	if serr, ok := errors.AsType[*sip.StatusError](err); ok {
 		code = serr.StatusCode
-	}
-
-	if opts.Dialog != nil {
-		s.r.calls.forget(opts.Dialog)
 	}
 
 	s.log.Debug("forking failed", slog.String("request", out.StartLine()), slog.Any("error", err))
@@ -429,7 +453,7 @@ func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy
 
 	opts.OnReply = s.aliasReply(t.reg)
 
-	return proxy.Branch{Request: r, Target: to, Options: opts, Key: bindingKey{reg: t.reg.ID, contact: t.binding.Contact.ID}}, true
+	return proxy.Branch{Request: r, Target: to, Options: opts, Key: bindingKey(t.binding.ID)}, true
 }
 
 func (s *Sessions) aliasReply(reg db.Registration) func(proxy.Reply) proxy.Verdict {
@@ -574,6 +598,11 @@ func (s *Sessions) icscf(in sip.Flow) (proxy.Target, bool) {
 
 func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
 	err := s.proxy.Forward(tx, out, to, opts)
+
+	if err != nil && opts.Dialog != nil {
+		s.r.calls.forget(opts.Dialog)
+	}
+
 	if err == nil || errors.Is(err, proxy.ErrAnswered) {
 		return
 	}
@@ -582,10 +611,6 @@ func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, 
 
 	if serr, ok := errors.AsType[*sip.StatusError](err); ok {
 		code = serr.StatusCode
-	}
-
-	if opts.Dialog != nil {
-		s.r.calls.forget(opts.Dialog)
 	}
 
 	s.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))

@@ -10,10 +10,8 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
-// bindingKey identifies a binding: a contact registered for an implicit registration set.
-type bindingKey struct {
-	reg, contact int64
-}
+// bindingKey identifies a binding of an implicit registration set to a contact: its ID.
+type bindingKey int64
 
 // calls indexes the INVITE dialogs of the S-CSCF by the bindings they were initiated by (the
 // caller's) or terminated toward (the callee's), so that removing a binding releases them
@@ -95,13 +93,18 @@ func (r *Registrar) releaseCalls(st *state, removed []removal) {
 
 	for _, rm := range removed {
 		for _, b := range rm.bindings {
-			if rm.event == regevent.Expired && st.bound(b.Contact.ID) {
+			if rm.event == regevent.Expired && st.bound(b.Contact) {
 				continue
 			}
 
-			k := bindingKey{reg: rm.reg.ID, contact: b.Contact.ID}
+			k := bindingKey(b.ID)
 
-			for d, side := range r.calls.of(k) {
+			calls := rm.calls[k]
+			if rm.calls == nil {
+				calls = r.calls.of(k)
+			}
+
+			for d, side := range calls {
 				var err error
 
 				if side == proxy.Caller {

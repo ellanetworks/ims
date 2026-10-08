@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -591,4 +592,90 @@ func TestReleaseCalleeAnswered(t *testing.T) {
 	if err := d.ReleaseCallee(g[0][1].Addr(), released480()); !errors.Is(err, proxy.ErrDialogEnded) {
 		t.Errorf("second release: %v", err)
 	}
+}
+
+// TS 24.229 §5.4.5.1.1: a withdrawn branch stands for its release, a 480, not for a CANCEL of the
+// caller's: its early dialog ends with a 199 for 480, and the caller gets the other branches' answer.
+func TestReleaseCalleeThenOthersFail(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	a.cancelled()
+
+	if r := s.next199(); toTagOf(r) != "a" || r.Header.Get("Reason") != reason480 {
+		t.Errorf("199 to %q with Reason %q, want a with %q", toTagOf(r), r.Header.Get("Reason"), reason480)
+	}
+
+	b.respond(486)
+
+	if res := s.final(); res.StatusCode != 486 {
+		t.Fatalf("got %s, want the 486 of the branch left", res.StartLine())
+	}
+}
+
+// When the withdrawn branch is the best answer left, the caller gets its 480 and Reason.
+func TestReleaseCalleeOnlyAnswer(t *testing.T) {
+	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	b := received(t, g[0][1], "b")
+
+	a.respond(180)
+	b.respond(180)
+
+	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+		t.Fatal(err)
+	}
+
+	a.cancelled()
+	s.next199()
+
+	b.respond(503)
+
+	if res := s.final(); res.StatusCode != 480 || res.Header.Get("Reason") != reason480 {
+		t.Fatalf("got %s with Reason %q, want 480 with %q", res.StartLine(), res.Header.Get("Reason"), reason480)
+	}
+}
+
+// A callee that is only the 430 retry of a branch not yet sent is withdrawn too: the branch fails
+// without trying it.
+func TestReleaseCalleeRetryOfPendingBranch(t *testing.T) {
+	flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	s, g := newForkSceneWith(t, []int{1, 1}, proxy.Options{}, true, func(f *forker) {
+		f.retry, f.retryGroup = []*siptest.Socket{flow}, 1
+	})
+
+	s.send(s.invite199())
+	d := s.nextDialog()
+
+	a := received(t, g[0][0], "a")
+	a.respond(180)
+
+	if err := d.ReleaseCallee(flow.Addr(), released480()); err != nil {
+		t.Fatalf("ReleaseCallee: %v", err)
+	}
+
+	a.respond(486)
+
+	b := received(t, g[1][0], "b")
+	b.respond(430)
+
+	s.final()
+	flow.RecvNone(quiet)
 }
