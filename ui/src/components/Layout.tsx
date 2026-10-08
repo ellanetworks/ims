@@ -19,6 +19,7 @@ import { useTheme } from "@mui/material/styles";
 import {
   BugReport as BugReportIcon,
   Feed as FeedIcon,
+  Hub as HubIcon,
   Info as InfoIcon,
   Menu as MenuIcon,
   OpenInNew as OpenInNewIcon,
@@ -59,6 +60,7 @@ const drawerSelectedSx = {
 };
 
 const navItems = [
+  { to: "/cores", label: "Cores", icon: <HubIcon color="primary" /> },
   {
     to: "/operator",
     label: "Operator",

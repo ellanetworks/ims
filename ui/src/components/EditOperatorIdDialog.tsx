@@ -5,6 +5,7 @@ import DomainName from "@/components/DomainName";
 import EditDialog from "@/components/EditDialog";
 import { type Operator, updateOperator } from "@/queries/operator";
 import { homeDomain } from "@/utils/operator";
+import { RESTART_WARNING } from "@/utils/restart";
 
 export default function EditOperatorIdDialog({
   operator,
@@ -63,8 +64,7 @@ export default function EditOperatorIdDialog({
       {renamed && (
         <Alert severity="warning">
           The home network domain becomes{" "}
-          <DomainName name={homeDomain(mcc, mnc)} />. Diameter and SIP restart:
-          phones re-register, and calls in progress lose their QoS.
+          <DomainName name={homeDomain(mcc, mnc)} />. {RESTART_WARNING}
         </Alert>
       )}
     </EditDialog>

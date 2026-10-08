@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import App from "@/App";
+import { identity, operator, policy, sip } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
 const serve = () =>
@@ -11,18 +12,11 @@ const serve = () =>
       stubApi({
         "/api/v1/status": () =>
           json(200, { result: { version: "v0.0.1", revision: "" } }),
-        "/api/v1/operator": () =>
-          json(200, {
-            result: {
-              mcc: "001",
-              mnc: "01",
-              numbering: {
-                country_code: "1",
-                national_prefix: "",
-                international_prefix: "",
-              },
-            },
-          }),
+        "/api/v1/operator": () => json(200, { result: operator }),
+        "/api/v1/sip": () => json(200, { result: sip }),
+        "/api/v1/diameter": () => json(200, { result: identity }),
+        "/api/v1/diameter/peers": () => json(200, { result: { items: [] } }),
+        "/api/v1/policy": () => json(200, { result: policy() }),
       }),
     ),
   );
@@ -41,7 +35,7 @@ afterEach(() => {
 describe("App", () => {
   it("renders the top bar, the navigation and the footer", async () => {
     serve();
-    renderAt("/");
+    renderAt("/cores");
 
     expect(
       screen.getByRole("img", { name: "Ella IMS Logo" }),
@@ -54,7 +48,10 @@ describe("App", () => {
       within(screen.getByRole("navigation", { name: "Main" }))
         .getAllByRole("link")
         .map((link) => [link.textContent, link.getAttribute("href")]),
-    ).toEqual([["Operator", "/operator"]]);
+    ).toEqual([
+      ["Cores", "/cores"],
+      ["Operator", "/operator"],
+    ]);
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
 
@@ -70,17 +67,28 @@ describe("App", () => {
     expect(bug).toHaveAttribute("target", "_blank");
   });
 
-  it("opens the Operator page by default", async () => {
+  it("opens the Cores page by default", async () => {
     serve();
     renderAt("/");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Operator" }),
+      await screen.findByRole("heading", { level: 1, name: "Cores" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Operator" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Cores" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(document.title).toBe("Operator · Ella IMS");
+    expect(document.title).toBe("Cores · Ella IMS");
+  });
+
+  it("navigates between pages", async () => {
+    serve();
+    renderAt("/cores");
+
+    fireEvent.click(screen.getByRole("link", { name: "Operator" }));
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Operator" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("001 / 01")).toBeInTheDocument();
   });
 });

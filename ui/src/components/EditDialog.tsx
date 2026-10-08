@@ -11,6 +11,8 @@ import {
 
 interface EditDialogProps {
   title: string;
+  submitLabel?: string;
+  pendingLabel?: string;
   valid: boolean;
   pending: boolean;
   error: Error | null;
@@ -21,6 +23,8 @@ interface EditDialogProps {
 
 export default function EditDialog({
   title,
+  submitLabel = "Update",
+  pendingLabel = "Updating…",
   valid,
   pending,
   error,
@@ -46,7 +50,9 @@ export default function EditDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           {error && (
-            <Alert severity="error">Could not update: {error.message}</Alert>
+            <Alert severity="error">
+              Could not {submitLabel.toLowerCase()}: {error.message}
+            </Alert>
           )}
           {children}
         </Stack>
@@ -54,7 +60,7 @@ export default function EditDialog({
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button type="submit" variant="contained" disabled={!valid || pending}>
-          {pending ? "Updating…" : "Update"}
+          {pending ? pendingLabel : submitLabel}
         </Button>
       </DialogActions>
     </Dialog>
