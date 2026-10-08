@@ -124,7 +124,38 @@ var migrations = []string{
 		dialog BLOB,
 		version INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL
-	);`,
+	);
+	CREATE TABLE call_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		icid TEXT NOT NULL UNIQUE,
+		session_id TEXT NOT NULL,
+		from_address TEXT NOT NULL,
+		calling_party TEXT,
+		caller_impi TEXT,
+		requested_party TEXT NOT NULL,
+		called_party TEXT,
+		called_asserted TEXT,
+		callee_impi TEXT,
+		requested_at INTEGER NOT NULL,
+		delivery_start_at INTEGER,
+		delivery_end_at INTEGER,
+		sip_status INTEGER CHECK (sip_status BETWEEN 200 AND 699),
+		outcome TEXT CHECK (outcome IN ('answered', 'cancelled', 'busy', 'rejected', 'no_answer', 'failed')),
+		ended_by TEXT CHECK (ended_by IN ('caller', 'callee', 'network')),
+		alerted INTEGER NOT NULL CHECK (alerted IN (0, 1)),
+		reason_headers TEXT,
+		media TEXT,
+		incomplete INTEGER NOT NULL CHECK (incomplete IN (0, 1)),
+		CHECK ((sip_status IS NULL) = (outcome IS NULL)),
+		CHECK ((sip_status IS NULL) = (delivery_start_at IS NULL)),
+		CHECK ((outcome = 'answered') = (sip_status BETWEEN 200 AND 299)),
+		CHECK (ended_by IS NULL OR sip_status IS NOT NULL),
+		CHECK (incomplete = 0 OR ended_by IS NULL),
+		CHECK ((delivery_end_at IS NOT NULL) = (outcome = 'answered' AND ended_by IS NOT NULL))
+	);
+	CREATE INDEX call_records_requested_at ON call_records (requested_at, id);
+	CREATE INDEX call_records_outcome ON call_records (outcome);
+	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;`,
 	`CREATE TABLE operator (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		mcc TEXT NOT NULL,
@@ -148,7 +179,12 @@ var migrations = []string{
 		interface TEXT NOT NULL,
 		pcf_uri TEXT NOT NULL
 	);
-	INSERT INTO policy VALUES (1, 'none', '');`,
+	INSERT INTO policy VALUES (1, 'none', '');
+	CREATE TABLE call_record_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		retention_days INTEGER NOT NULL
+	);
+	INSERT INTO call_record_settings VALUES (1, 90);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {

@@ -29,6 +29,10 @@ func TestDefaultSettings(t *testing.T) {
 		t.Fatalf("peers and policy = %+v, %+v; want none", got.Peers, got.Policy)
 	}
 
+	if got.CallRecords != (settings.CallRecords{RetentionDays: 90}) {
+		t.Fatalf("call records = %+v, want a retention of 90 days", got.CallRecords)
+	}
+
 	if err := got.Validate(); err != nil {
 		t.Fatalf("the default settings are invalid: %v", err)
 	}
@@ -118,5 +122,23 @@ func TestUpdatePolicy(t *testing.T) {
 
 	if got.Policy != p {
 		t.Fatalf("policy = %+v, want %+v", got.Policy, p)
+	}
+}
+
+func TestUpdateCallRecords(t *testing.T) {
+	d := openTestDB(t)
+
+	c := settings.CallRecords{RetentionDays: 30}
+	if err := d.UpdateCallRecords(t.Context(), c); err != nil {
+		t.Fatalf("UpdateCallRecords: %v", err)
+	}
+
+	got, err := d.GetSettings(t.Context())
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+
+	if got.CallRecords != c {
+		t.Fatalf("call records = %+v, want %+v", got.CallRecords, c)
 	}
 }

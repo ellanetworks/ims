@@ -35,6 +35,11 @@ func (d *DB) GetSettings(ctx context.Context) (settings.Settings, error) {
 
 	s.Policy.Interface = settings.PolicyInterface(iface)
 
+	if err := d.conn.QueryRowContext(ctx, `SELECT retention_days FROM call_record_settings WHERE id = 1`).Scan(
+		&s.CallRecords.RetentionDays); err != nil {
+		return settings.Settings{}, fmt.Errorf("get call record settings: %w", err)
+	}
+
 	return s, nil
 }
 
@@ -133,6 +138,15 @@ func (d *DB) UpdatePolicy(ctx context.Context, p settings.Policy) error {
 	if _, err := d.conn.ExecContext(ctx, `UPDATE policy SET interface = ?, pcf_uri = ? WHERE id = 1`, string(p.Interface),
 		p.PCFURI); err != nil {
 		return fmt.Errorf("update policy: %w", err)
+	}
+
+	return nil
+}
+
+func (d *DB) UpdateCallRecords(ctx context.Context, c settings.CallRecords) error {
+	if _, err := d.conn.ExecContext(ctx, `UPDATE call_record_settings SET retention_days = ? WHERE id = 1`,
+		c.RetentionDays); err != nil {
+		return fmt.Errorf("update call record settings: %w", err)
 	}
 
 	return nil
