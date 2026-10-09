@@ -329,10 +329,11 @@ func TestRegistrationWithoutAnyHSS(t *testing.T) {
 	}
 }
 
-// RFC 6733 §5.5.4: an HSS that keeps its connection but answers nothing has half the time; the realm has the rest.
-func TestHungHSSFallsBackInTime(t *testing.T) {
+// RFC 3539 §3.10: an HSS that keeps its connection but answers nothing is not failed over on a timer; its watchdog
+// decides.
+func TestHungHSSIsNotFailedOver(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.CxTimeout = time.Second
+	h.cfg.CxTimeout = 100 * time.Millisecond
 	c := newHSSCluster(h, hss1, hss2)
 	u := h.newUE()
 
@@ -345,18 +346,14 @@ func TestHungHSSFallsBackInTime(t *testing.T) {
 		c.nodes = []string{hss2, hss1}
 	})
 
-	start := time.Now()
+	res := u.send(registerOptions{auth: u.unprotected()})
+	wantStatus(t, res, 500)
 
-	u.register(registerOptions{})
-	h.hss.nextSAR(t)
-
-	if d := time.Since(start); d >= h.cfg.CxTimeout {
-		t.Fatalf("re-registration took %s, want the fallback within the %s Cx timeout", d, h.cfg.CxTimeout)
+	if res.Header.Get("Retry-After") == "" {
+		t.Fatal("no Retry-After on an HSS that does not answer")
 	}
 
-	if got := h.registeredHSS(); got.Host != hss2 {
-		t.Fatalf("HSS = %+v, want %s", got, hss2)
-	}
+	wantSent(t, c.take(), cxSent{cx.CommandMultimediaAuth, hss1, hss1})
 }
 
 // TS 29.229 §5.5: an HSS behind an agent, in a realm the S-CSCF has no route for, is still reached through the

@@ -337,8 +337,9 @@ func TestLostPCRFTriesAgain(t *testing.T) {
 	}
 }
 
-// RFC 6733 §8.18 TRY_AGAIN: a PCRF that stops answering has half the time, and the realm the rest.
-func TestHungPCRFTriesAgainInTime(t *testing.T) {
+// RFC 3539 §3.10: a PCRF that keeps its connection but answers nothing is not failed over on a timer, even with
+// TRY_AGAIN: the request is sent again later, its watchdog deciding whether the PCRF is lost.
+func TestHungPCRFIsNotFailedOver(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.TryAgain)
 
 	ref := openCall(t, b)
@@ -346,17 +347,15 @@ func TestHungPCRFTriesAgainInTime(t *testing.T) {
 	c.take()
 	c.set(func(c *pcrfCluster) { c.hung[pcrf1] = true })
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := b.Terminate(ctx, "call", ref, policy.TerminationLogout, true); err != nil {
-		t.Fatalf("Terminate: %v", err)
+	err := b.Terminate(ctx, "call", ref, policy.TerminationLogout, true)
+	if err == nil || errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
+		t.Fatalf("Terminate = %v, want a transient error", err)
 	}
 
-	wantRx(t, c.take(),
-		rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
-		rxSent{rx.CommandSessionTermination, "", pcrf2},
-	)
+	wantRx(t, c.take(), rxSent{rx.CommandSessionTermination, pcrf1, pcrf1})
 }
 
 // RFC 6733 §8.18 ALLOW_SERVICE: the session goes on, unbound: the next request goes by realm.
