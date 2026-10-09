@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,8 +95,14 @@ type Config struct {
 	Offers []Offer
 
 	// ContactParams are added to the Contact the UE registers: a q-value (RFC 3261 §10.2.1.2)
-	// or feature tags such as video (RFC 3840 §9).
+	// or feature tags (RFC 3840 §9), other than those the UE sets itself: its instance, ICSI, SMS and media
+	// feature tags, and its reg-id.
 	ContactParams sip.Params
+
+	// Video makes the UE video capable (IR.94): it registers with the video feature tag, takes the video streams it
+	// is offered, and can make video calls (CallOptions.Video) and add video to a call (Call.AddVideo). Without it,
+	// the UE is voice only and declines video with port 0 (RFC 3264 §6).
+	Video bool
 
 	// RegID, when not zero, makes the UE's registration flow RegID of its instance (RFC 5626 §4.2):
 	// its Contact has the reg-id, and its REGISTER outbound in Supported (TS 24.229 §5.1.1.2.1). UEs
@@ -265,6 +272,13 @@ func New(cfg Config) (*UE, error) {
 
 	if cfg.Transport == "" {
 		cfg.Transport = sip.UDP
+	}
+
+	// The UE sets these itself: its media feature tags follow Video (RFC 3840 §9).
+	for _, p := range cfg.ContactParams {
+		if slices.Contains(ownContactParams, strings.ToLower(p.Name)) {
+			return nil, fmt.Errorf("testue: ContactParams has %s, which the UE sets itself", p.Name)
+		}
 	}
 
 	cfg.ContactParams = cfg.ContactParams.Clone()

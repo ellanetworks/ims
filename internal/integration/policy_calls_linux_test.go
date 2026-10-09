@@ -10,6 +10,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/server"
+	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/testue"
 )
 
@@ -167,5 +168,59 @@ func TestCallMediaLost(t *testing.T) {
 		if bc.State() != testue.CallConfirmed {
 			t.Errorf("callee's call %s, want it left to the UE that lost its bearer", bc.State())
 		}
+	})
+}
+
+// GSMA IR.94 §2.4.1, NG.114 §4.6.2, TS 24.229 §6.1.1: a video call that loses its video bearer goes on as voice, and
+// the UE that lost it removes the video.
+func TestCallVideoBearerLost(t *testing.T) {
+	forEachPolicy(t, func(t *testing.T, iface string) {
+		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
+		a := s.caller(0, false, testue.Config{Video: true})
+		b := s.caller(1, false, testue.Config{Video: true})
+
+		ctx := s.ctx()
+		ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{Video: true})
+		session := s.pol.firstCall(ueAddr(1, false))
+
+		s.pol.mediaLost(session, 2)
+		s.pol.noCallEnd(500 * time.Millisecond)
+
+		if ac.State() != testue.CallConfirmed || bc.State() != testue.CallConfirmed {
+			t.Fatalf("calls %s and %s, want both kept", ac.State(), bc.State())
+		}
+
+		if err := bc.BearerLost(ctx, sdp.Video); err != nil {
+			t.Fatalf("BearerLost: %v", err)
+		}
+
+		s.pol.mediaRemoved(session, 2)
+
+		for _, c := range []*testue.Call{ac, bc} {
+			if _, ok := c.Stream(sdp.Video); ok {
+				t.Errorf("streams %+v, want the video removed", c.Streams())
+			}
+
+			if _, ok := c.Stream(sdp.Audio); !ok || c.State() != testue.CallConfirmed {
+				t.Errorf("call %s with streams %+v, want it going on as voice", c.State(), c.Streams())
+			}
+		}
+	})
+}
+
+// NG.114 §4.6.2: a video call that loses its voice bearer ends.
+func TestCallVideoCallVoiceLost(t *testing.T) {
+	forEachPolicy(t, func(t *testing.T, iface string) {
+		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
+		a := s.caller(0, false, testue.Config{Video: true})
+		b := s.caller(1, false, testue.Config{Video: true})
+
+		ctx := s.ctx()
+		ac, _ := connect(t, ctx, a, b, phone(1), testue.CallOptions{Video: true})
+		session := s.pol.firstCall(ueAddr(1, false))
+
+		s.pol.mediaLost(session, 1)
+
+		ended(t, ac, testue.RemoteBye)
 	})
 }

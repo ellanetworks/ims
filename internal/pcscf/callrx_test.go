@@ -64,11 +64,23 @@ func (s *ipsecScene) originate(t *testing.T, u *ue) (*sip.Request, sip.Flow) {
 func (s *ipsecScene) originateWith(t *testing.T, u *ue, offer bool) (*sip.Request, *sip.Request, sip.Flow) {
 	t.Helper()
 
+	var body []byte
+	if offer {
+		body = sdpBody(ueAddr.String(), "4000")
+	}
+
+	return s.originateBody(t, u, body)
+}
+
+// originateBody sends an INVITE from the UE with the given SDP offer, none when nil.
+func (s *ipsecScene) originateBody(t *testing.T, u *ue, offer []byte) (*sip.Request, *sip.Request, sip.Flow) {
+	t.Helper()
+
 	invite := s.ueInvite(u, func(r *sip.Request) {
 		r.Header.Add("P-Preferred-Identity", "<"+testTel+">")
 
-		if offer {
-			r.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000"))
+		if offer != nil {
+			r.SetBody("application/sdp", offer)
 		}
 	})
 	u.uc.Send(sip.UDP, s.ps, invite)

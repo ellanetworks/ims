@@ -24,7 +24,7 @@ type ClientTransaction struct {
 	ack    *sip.Request
 
 	cancelled bool
-	extra     []sip.Field
+	prepare   func(*sip.Request)
 }
 
 func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, error) {
@@ -82,7 +82,20 @@ func (tx *ClientTransaction) Request() *sip.Request {
 	return tx.req.Clone()
 }
 
+// Cancel cancels the INVITE (RFC 3261 §9.1), the CANCEL carrying the extra header fields.
 func (tx *ClientTransaction) Cancel(extra ...sip.Field) error {
+	extra = slices.Clone(extra)
+
+	return tx.CancelWith(func(cancel *sip.Request) {
+		for _, f := range extra {
+			cancel.Header.Insert(f.Name, f.Value)
+		}
+	})
+}
+
+// CancelWith cancels the INVITE (RFC 3261 §9.1), prepare, when not nil, completing the CANCEL built for it: a Reason
+// (RFC 3326), or the SDP of a precondition failure (RFC 3312 §8).
+func (tx *ClientTransaction) CancelWith(prepare func(cancel *sip.Request)) error {
 	if !tx.invite {
 		return ErrNotInvite
 	}
@@ -95,7 +108,7 @@ func (tx *ClientTransaction) Cancel(extra ...sip.Field) error {
 	}
 
 	tx.cancelled = true
-	tx.extra = slices.Clone(extra)
+	tx.prepare = prepare
 
 	if tx.state == Proceeding {
 		tx.sendCancel()
@@ -127,8 +140,8 @@ func (tx *ClientTransaction) sendCancel() {
 
 	cancel, err := sip.NewCancel(tx.req)
 	if err == nil {
-		for _, f := range tx.extra {
-			cancel.Header.Insert(f.Name, f.Value)
+		if tx.prepare != nil {
+			tx.prepare(cancel)
 		}
 
 		_, err = tx.layer.Request(cancel, nil)

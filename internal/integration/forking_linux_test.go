@@ -32,7 +32,7 @@ type devices struct {
 //
 // Two devices sharing one private identity need the multiple registration mechanism (RFC 5626);
 // without it, a new contact replaces the previous one (TS 24.229 §5.4.1.2.2 step 4A).
-func twoDevices(t *testing.T, s *scene, secondCfg testue.Config) devices {
+func twoDevices(t *testing.T, s *scene, callerCfg, secondCfg testue.Config) devices {
 	t.Helper()
 
 	callee, second := subscriberAt(1), subscriberAt(4)
@@ -42,7 +42,7 @@ func twoDevices(t *testing.T, s *scene, secondCfg testue.Config) devices {
 		IMPUs: []cx.ProfileIdentity{{Identity: "sip:" + second.impi, Barred: true}, {Identity: callee.msisdn}, {Identity: callee.tel}},
 	})
 
-	d := devices{s: s, caller: s.caller(0, false, testue.Config{})}
+	d := devices{s: s, caller: s.caller(0, false, callerCfg)}
 
 	secondCfg.AcceptCalls = true
 
@@ -88,7 +88,7 @@ const completedElsewhere = `SIP;cause=200;text="Call completed elsewhere"`
 // TS 23.228 §4.2.7.2, TS 24.229 §5.4.3.3, RFC 3261 §16.7
 func TestRingAllDevices(t *testing.T) {
 	sc := newScene(t)
-	d := twoDevices(t, sc, testue.Config{})
+	d := twoDevices(t, sc, testue.Config{}, testue.Config{})
 
 	t.Run("first answer wins", func(t *testing.T) {
 		s := sc.in(t)
@@ -239,7 +239,7 @@ func TestRingAllDevices(t *testing.T) {
 func TestRingAllDevicesAnsweredTwice(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
-		d := twoDevices(t, s, testue.Config{})
+		d := twoDevices(t, s, testue.Config{}, testue.Config{})
 
 		ctx := s.ctx()
 		ac := invite(t, d.caller, phone(1), testue.CallOptions{Preconditions: true})
@@ -301,7 +301,7 @@ func TestRingDevicesInTurn(t *testing.T) {
 
 	t.Run("q-value", func(t *testing.T) {
 		s := newSceneWith(t, configure)
-		d := twoDevices(t, s, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
+		d := twoDevices(t, s, testue.Config{}, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
 
 		turn(t, s, d, testue.CallOptions{}, d.phone, d.second)
 	})
@@ -310,12 +310,10 @@ func TestRingDevicesInTurn(t *testing.T) {
 	// a video call rings the voice-only device together with the video one.
 	t.Run("caller preferences", func(t *testing.T) {
 		s := newSceneWith(t, configure)
-		d := twoDevices(t, s, testue.Config{ContactParams: sip.Params{{Name: "video"}}})
-
-		video := testue.CallOptions{Headers: []sip.Field{{Name: "Accept-Contact", Value: "*;+g.3gpp.icsi-ref=" + icsiMMTelParam + ";video"}}}
+		d := twoDevices(t, s, testue.Config{Video: true}, testue.Config{Video: true})
 
 		ctx := s.ctx()
-		ac := invite(t, d.caller, phone(1), video)
+		ac := invite(t, d.caller, phone(1), testue.CallOptions{Video: true})
 		pc, vc := d.ringing(t, ctx, ac)
 
 		if err := vc.Answer(ctx); err != nil {
@@ -329,8 +327,6 @@ func TestRingDevicesInTurn(t *testing.T) {
 		ended(t, pc, testue.Cancelled)
 	})
 }
-
-const icsiMMTelParam = `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
 
 // turn calls the devices' number: first rings alone, then gives way to then, which answers.
 func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, then *testue.UE) {
@@ -376,7 +372,7 @@ func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, the
 // q-value it rings by.
 func TestListSharedNumber(t *testing.T) {
 	s := newScene(t)
-	twoDevices(t, s, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
+	twoDevices(t, s, testue.Config{}, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
 
 	callee, second := subscriberAt(1), subscriberAt(4)
 

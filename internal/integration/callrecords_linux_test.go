@@ -132,7 +132,7 @@ func TestCallRecordOfACallToAnUnknownNumber(t *testing.T) {
 // TestCallRecordOfACallAnsweredByASecondDevice checks that the record names the device that answered.
 func TestCallRecordOfACallAnsweredByASecondDevice(t *testing.T) {
 	s := newScene(t)
-	d := twoDevices(t, s, testue.Config{})
+	d := twoDevices(t, s, testue.Config{}, testue.Config{})
 
 	ctx := s.ctx()
 	ac := invite(t, d.caller, phone(1), testue.CallOptions{})
