@@ -38,7 +38,7 @@ func newHSS(t *testing.T) (*hsstest.HSS, settings.Peer) {
 	})
 
 	return hss, settings.Peer{
-		ID: "hss", Host: hss.Host(), Realm: hss.Realm(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
+		ID: "hss", Host: hss.Host(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	}
 }

@@ -198,7 +198,7 @@ type observedDiameter struct {
 	m *metrics
 }
 
-func (d observedDiameter) Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption,
+func (d observedDiameter) Send(ctx context.Context, req *diameter.Message, opts ...diameter.RequestOption,
 ) (*diameter.Message, error) {
 	var iface string
 
@@ -208,11 +208,11 @@ func (d observedDiameter) Do(ctx context.Context, peerID string, req *diameter.M
 	case rx.ApplicationID:
 		iface = interfaceRx
 	default:
-		return d.Node.Do(ctx, peerID, req, opts...)
+		return d.Node.Send(ctx, req, opts...)
 	}
 
 	start := time.Now()
-	ans, err := d.Node.Do(ctx, peerID, req, opts...)
+	ans, err := d.Node.Send(ctx, req, opts...)
 	d.m.peerRequest(iface, diameterResult(ans, err), time.Since(start))
 
 	return ans, err

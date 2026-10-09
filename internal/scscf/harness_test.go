@@ -401,7 +401,7 @@ func newHarness(t *testing.T) *harness {
 		Name:                 sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
 		MinExpires:           60 * time.Second,
 		MaxExpires:           3600 * time.Second,
-		HSS:                  HSS{ID: "hss", Host: hssHost, Realm: homeDomain},
+		HSSRealm:             func() string { return homeDomain },
 		Diameter:             h.loop,
 		DB:                   database,
 		RegistrationAttempts: regmetrics.New(),

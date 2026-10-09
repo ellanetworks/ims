@@ -64,14 +64,14 @@ func TestPeers(t *testing.T) {
 	d := openTestDB(t)
 
 	hss := settings.Peer{
-		ID: "0192a000-0000-7000-8000-000000000001", Host: "hss.example.org", Realm: "example.org",
+		ID: "0192a000-0000-7000-8000-000000000001", Host: "hss.example.org",
 		Address: netip.MustParseAddr("2001:db8::10"), Port: 3868, Transport: settings.TransportTCP,
-		Applications: []settings.Application{settings.ApplicationCx},
+		Applications: []settings.Application{settings.ApplicationCx}, Priority: 10,
 	}
 	pcrf := settings.Peer{
-		ID: "0192a000-0000-7000-8000-000000000002", Host: "pcrf.example.org", Realm: "example.org",
+		ID: "0192a000-0000-7000-8000-000000000002", Host: "pcrf.example.org",
 		Address: netip.MustParseAddr("10.0.0.11"), Port: 3869, Transport: settings.TransportSCTP,
-		Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx},
+		Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx}, Priority: 0,
 	}
 
 	for _, p := range []settings.Peer{pcrf, hss} {
@@ -81,6 +81,8 @@ func TestPeers(t *testing.T) {
 	}
 
 	pcrf.Applications = []settings.Application{settings.ApplicationRx}
+	pcrf.Priority = 65535
+
 	if err := d.UpdatePeer(t.Context(), pcrf); err != nil {
 		t.Fatalf("UpdatePeer: %v", err)
 	}
@@ -104,6 +106,33 @@ func TestPeers(t *testing.T) {
 
 	if err := d.UpdatePeer(t.Context(), hss); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdatePeer of a deleted peer = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestRoutes(t *testing.T) {
+	d := openTestDB(t)
+
+	got, err := d.GetSettings(t.Context())
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+
+	want := []settings.Route{{Application: settings.ApplicationCx}, {Application: settings.ApplicationRx}}
+	if !reflect.DeepEqual(got.Routes, want) {
+		t.Fatalf("routes = %+v, want %+v: the home domain for both", got.Routes, want)
+	}
+
+	rx := settings.Route{Application: settings.ApplicationRx, Realm: "epc.example.org"}
+	if err := d.UpdateRoute(t.Context(), rx); err != nil {
+		t.Fatalf("UpdateRoute: %v", err)
+	}
+
+	if got, _ = d.GetSettings(t.Context()); !reflect.DeepEqual(got.Routes, []settings.Route{want[0], rx}) {
+		t.Fatalf("routes = %+v after the update", got.Routes)
+	}
+
+	if err := d.UpdateRoute(t.Context(), settings.Route{Application: "gx"}); err == nil {
+		t.Fatal("UpdateRoute of an unknown application succeeded")
 	}
 }
 

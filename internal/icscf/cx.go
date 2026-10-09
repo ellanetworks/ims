@@ -14,7 +14,7 @@ func (i *ICSCF) envelope() tgpp.Envelope {
 	return tgpp.Envelope{
 		SessionID:        i.cfg.Diameter.NewSessionID(),
 		Origin:           i.cfg.Diameter.Identity(),
-		DestinationRealm: i.cfg.HSS.Realm,
+		DestinationRealm: i.cfg.HSSRealm(),
 	}
 }
 
@@ -60,7 +60,7 @@ func (i *ICSCF) do(ctx context.Context, req *diameter.Message) (*diameter.Messag
 	ctx, cancel := context.WithTimeout(ctx, i.cfg.CxTimeout)
 	defer cancel()
 
-	return i.cfg.Diameter.Do(ctx, i.cfg.HSS.ID, req, diameter.FailFast())
+	return i.cfg.Diameter.Send(ctx, req, diameter.FailFast())
 }
 
 func negative(err error) bool {

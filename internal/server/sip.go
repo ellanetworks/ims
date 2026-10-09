@@ -80,7 +80,7 @@ type timers struct {
 }
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
-	tm timers, node *diameter.Node, rtr *rtrHandler,
+	tm timers, node *diameter.Node, rlm *realms, rtr *rtrHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
 	kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
@@ -169,7 +169,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close())
 	}
 
-	hss, _ := st.PeerServing(settings.ApplicationCx)
 	homeDomain := op.HomeDomain()
 
 	s.registrar = scscf.New(scscf.Config{
@@ -180,7 +179,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		ReauthInterval: tm.reauthInterval,
 		ReauthExpires:  tm.reauthExpires,
 
-		HSS:                  scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
+		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		DB:                   database,
 		Records:              records,
@@ -248,7 +247,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
-		HSS:                  icscf.HSS{ID: hss.ID, Realm: hss.Realm},
+		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		Records:              records,
 		RegistrationAttempts: m.registrations,

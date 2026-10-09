@@ -23,6 +23,7 @@ type testIMS struct {
 	config.Config
 
 	Peers  []settings.Peer
+	Routes []settings.Route
 	Policy settings.Policy
 }
 
@@ -39,7 +40,7 @@ func testConfig(t *testing.T) testIMS {
 			Diameter: config.Diameter{Address: loopback},
 		},
 		Peers: []settings.Peer{{
-			ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: imsRealm,
+			ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org",
 			Address: loopback, Port: unusedPort(t), Transport: settings.TransportTCP,
 			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx},
 		}},
@@ -68,6 +69,12 @@ func (c testIMS) seed(t *testing.T) {
 
 	for _, p := range c.Peers {
 		if err := d.CreatePeer(t.Context(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, r := range c.Routes {
+		if err := d.UpdateRoute(t.Context(), r); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -30,17 +30,14 @@ type policyFunction struct {
 	ln      net.Listener
 }
 
-func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node, m *metrics,
-	logger *slog.Logger,
+func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node, rlm *realms,
+	m *metrics, logger *slog.Logger,
 ) (*policyFunction, error) {
 	pf := &policyFunction{}
 
 	switch s.Policy.Interface {
 	case settings.PolicyRx:
-		p, _ := s.PeerServing(settings.ApplicationRx)
-		pf.rx = rxpolicy.New(rxpolicy.Config{
-			Diameter: observedDiameter{node, m}, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
-		})
+		pf.rx = rxpolicy.New(rxpolicy.Config{Diameter: observedDiameter{node, m}, Realm: rlm.of(settings.ApplicationRx)})
 		pf.backend = pf.rx
 
 		return pf, nil
@@ -98,7 +95,7 @@ func checkSettings(ctx context.Context, cfg config.Config, s settings.Settings) 
 		}
 	}
 
-	if slices.Contains(peerTransports(s.Peers), settings.TransportSCTP) {
+	if slices.Contains(s.Transports(), settings.TransportSCTP) {
 		if err := probeSCTP(ctx, cfg.Diameter.Address); err != nil {
 			return settings.Invalidf("sctp is not available on this host: %v", err)
 		}

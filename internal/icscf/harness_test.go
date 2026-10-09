@@ -362,7 +362,7 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		Port:       h.icscf.Port(),
 		Trust:      trust.New([]netip.Addr{loopback}, nil),
 		SCSCF:      SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
-		HSS:        HSS{ID: "hss", Realm: homeDomain},
+		HSSRealm:   func() string { return homeDomain },
 		Diameter:   loop,
 		CxTimeout:  cxTimeout,
 		Logger:     testLogger(),

@@ -31,8 +31,7 @@ func (r *Registrar) envelope() tgpp.Envelope {
 	return tgpp.Envelope{
 		SessionID:        r.cfg.Diameter.NewSessionID(),
 		Origin:           r.cfg.Diameter.Identity(),
-		DestinationHost:  r.cfg.HSS.Host,
-		DestinationRealm: r.cfg.HSS.Realm,
+		DestinationRealm: r.cfg.HSSRealm(),
 	}
 }
 
@@ -98,7 +97,7 @@ func (r *Registrar) do(ctx context.Context, req *diameter.Message) (*diameter.Me
 	ctx, cancel := context.WithTimeout(ctx, cxTimeout)
 	defer cancel()
 
-	return r.cfg.Diameter.Do(ctx, r.cfg.HSS.ID, req, diameter.FailFast())
+	return r.cfg.Diameter.Send(ctx, req, diameter.FailFast())
 }
 
 func refused(err error) bool {

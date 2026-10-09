@@ -3,7 +3,9 @@ import {
   createDiameterPeer,
   deleteDiameterPeer,
   listDiameterPeers,
+  listDiameterRoutes,
   updateDiameterPeer,
+  updateDiameterRoute,
   type DiameterPeerParams,
 } from "@/queries/diameter";
 
@@ -18,9 +20,9 @@ const stubFetch = (result: unknown) => {
 
 const params: DiameterPeerParams = {
   host: "hss.example.org",
-  realm: "example.org",
   address: "10.0.0.1",
   applications: ["cx"],
+  priority: 1,
 };
 
 afterEach(() => {
@@ -72,5 +74,29 @@ describe("deleteDiameterPeer", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/diameter/peers/a");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
+  });
+});
+
+describe("listDiameterRoutes", () => {
+  it("returns the routes", async () => {
+    const routes = [{ application: "cx" }, { application: "rx" }];
+    const fetchMock = stubFetch({ items: routes });
+
+    await expect(listDiameterRoutes()).resolves.toEqual(routes);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/diameter/routes");
+  });
+});
+
+describe("updateDiameterRoute", () => {
+  it("puts the realm at the application", async () => {
+    const fetchMock = stubFetch({ application: "rx", realm: "example.org" });
+
+    await updateDiameterRoute("rx", "example.org");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/diameter/routes/rx");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ realm: "example.org" }),
+    });
   });
 });

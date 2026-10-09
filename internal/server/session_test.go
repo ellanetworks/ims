@@ -66,7 +66,7 @@ func newCallScene(t *testing.T, numbering *settings.Numbering) *callScene {
 	cfg := testConfig(t)
 	cfg.SIP.Addresses = []netip.Addr{loopback}
 	cfg.Peers = seedPeers(settings.Peer{
-		ID: "hss", Host: hss.Host(), Realm: hss.Realm(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
+		ID: "hss", Host: hss.Host(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 

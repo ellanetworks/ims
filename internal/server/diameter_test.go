@@ -102,11 +102,11 @@ func (f *fakePeer) config(id string) settings.Peer {
 	return settings.Peer{
 		ID:           id,
 		Host:         f.host,
-		Realm:        f.realm,
 		Address:      loopback,
 		Port:         f.port,
 		Transport:    settings.TransportTCP,
 		Applications: f.apps,
+		Priority:     settings.DefaultPriority,
 	}
 }
 
@@ -275,7 +275,7 @@ func TestDiameterPeersOpen(t *testing.T) {
 		"pcrf": {pcrf.host, pcrf.realm, []string{"rx"}},
 	} {
 		p := peers[id]
-		if p.Host != want.host || p.Realm != want.realm || p.Transport != "tcp" || p.Status.RemoteAddress != "127.0.0.1" ||
+		if p.Host != want.host || p.Status.Realm != want.realm || p.Transport != "tcp" || p.Status.RemoteAddress != "127.0.0.1" ||
 			!slices.Equal(p.Applications, want.apps) {
 			t.Errorf("peer %s = %+v, want host %s, realm %s, tcp from 127.0.0.1 with %v", id, p, want.host, want.realm, want.apps)
 		}
@@ -426,8 +426,8 @@ func dialIMS(t *testing.T, host string, port int, apps ...settings.Application) 
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 
 	err = node.SetPeers([]diameter.Peer{{
-		ID: "ims", Host: imsHost, Addresses: []netip.Addr{loopback}, Port: uint16(port),
-		Transport: diameter.TransportTCP, Applications: appIDs,
+		ID: "ims", Host: imsHost, Addresses: []netip.Addr{loopback}, Dial: &diameter.Dial{Port: uint16(port)},
+		Transports: []diameter.Transport{diameter.TransportTCP}, Applications: appIDs,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -441,7 +441,7 @@ func TestDiameterPeerDialsIMS(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.Peers = seedPeers(settings.Peer{
-		ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: unusedPort(t),
+		ID: "hss", Host: hssHost, Address: loopback, Port: unusedPort(t),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
@@ -476,7 +476,7 @@ func TestDiameterElection(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.Peers = seedPeers(settings.Peer{
-		ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: hss.port(),
+		ID: "hss", Host: hssHost, Address: loopback, Port: hss.port(),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
@@ -514,7 +514,7 @@ func TestDiameterHandshakeTimeout(t *testing.T) {
 
 			cfg := testConfig(t)
 			cfg.Peers = seedPeers(settings.Peer{
-				ID: "hss", Host: hssHost, Realm: imsRealm, Address: loopback, Port: hss.port(),
+				ID: "hss", Host: hssHost, Address: loopback, Port: hss.port(),
 				Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 			})
 			cfg.Diameter.Port = unusedPort(t)

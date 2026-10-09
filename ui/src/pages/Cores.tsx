@@ -22,6 +22,7 @@ import CopyButton from "@/components/CopyButton";
 import DiameterPeerDialog from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
+import EditRouteDialog from "@/components/EditRouteDialog";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import QueryAlert from "@/components/QueryAlert";
@@ -29,8 +30,10 @@ import SettingsTable, { type SettingRow } from "@/components/SettingsTable";
 import {
   deleteDiameterPeer,
   type DiameterPeer,
+  type DiameterRoute,
   getDiameterIdentity,
   listDiameterPeers,
+  listDiameterRoutes,
 } from "@/queries/diameter";
 import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
@@ -41,7 +44,7 @@ import {
   policyLabels,
   transportLabels,
 } from "@/utils/labels";
-import { RESTART_WARNING } from "@/utils/restart";
+import { changesTransports, RESTART_WARNING } from "@/utils/restart";
 
 export const REFRESH_MS = 5000;
 
@@ -87,9 +90,19 @@ const pcscfAddresses = (listeners: { role: string; address: string }[]) => {
     .filter(({ ip }) => !seen.has(ip) && seen.add(ip));
 };
 
+const routeHelp: Record<DiameterRoute["application"], string> = {
+  cx: "The realm of your HSS, where Cx requests go.",
+  rx: "The realm of your PCRF, where Rx requests go.",
+};
+
+// routeState is the state of the best connection on a route: open if any of its peers is.
+const routeState = (route: DiameterRoute | undefined) =>
+  route?.peers.find((p) => p.status.state === "open")?.status.state ??
+  route?.peers[0]?.status.state;
+
 function policyStatus(
   policy: PolicyWithStatus,
-  peers: DiameterPeer[] | undefined,
+  routes: DiameterRoute[] | undefined,
 ): ReactNode {
   if (policy.status.interface !== policy.interface) {
     return <Chip label="applying" color="info" size="small" />;
@@ -97,8 +110,8 @@ function policyStatus(
 
   switch (policy.interface) {
     case "rx": {
-      const pcrf = peers?.find((p) => p.applications.includes("rx"));
-      return pcrf ? <PeerStateChip state={pcrf.status.state} /> : "—";
+      const state = routeState(routes?.find((r) => r.application === "rx"));
+      return state ? <PeerStateChip state={state} /> : "—";
     }
     case "n5": {
       const last = policy.status.last;
@@ -126,6 +139,7 @@ export default function Cores() {
     null,
   );
   const [deleting, setDeleting] = useState<DiameterPeer | null>(null);
+  const [editingRoute, setEditingRoute] = useState<DiameterRoute | null>(null);
   const [editingPolicy, setEditingPolicy] = useState(false);
 
   const sip = useQuery({ queryKey: ["sip"], queryFn: getSIPStatus });
@@ -138,6 +152,11 @@ export default function Cores() {
     queryFn: listDiameterPeers,
     refetchInterval: REFRESH_MS,
   });
+  const routes = useQuery({
+    queryKey: ["diameter-routes"],
+    queryFn: listDiameterRoutes,
+    refetchInterval: REFRESH_MS,
+  });
   const policy = useQuery({
     queryKey: ["policy"],
     queryFn: getPolicy,
@@ -148,6 +167,7 @@ export default function Cores() {
     mutationFn: (peer: DiameterPeer) => deleteDiameterPeer(peer.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["diameter-peers"] });
+      void queryClient.invalidateQueries({ queryKey: ["diameter-routes"] });
       void queryClient.invalidateQueries({ queryKey: ["policy"] });
       setDeleting(null);
     },
@@ -166,7 +186,8 @@ export default function Cores() {
       headerName: "Realm",
       flex: 1,
       minWidth: 180,
-      renderCell: ({ row }) => <DomainName name={row.realm} />,
+      renderCell: ({ row }) =>
+        row.status.realm ? <DomainName name={row.status.realm} /> : "—",
     },
     {
       field: "address",
@@ -190,6 +211,13 @@ export default function Cores() {
       minWidth: 110,
       valueGetter: (_value, row) =>
         row.applications.map((app) => applicationLabels[app]).join(", "),
+    },
+    {
+      field: "priority",
+      headerName: "Priority",
+      flex: 0.3,
+      minWidth: 90,
+      valueGetter: (_value, row) => row.priority ?? 10,
     },
     {
       field: "state",
@@ -262,9 +290,23 @@ export default function Cores() {
     policyRows.push({
       label: "Status",
       help: "The policy function the IMS runs.",
-      value: policyStatus(policy.data, peers.data),
+      value: policyStatus(policy.data, routes.data),
     });
   }
+
+  const routeRows: SettingRow[] = (routes.data ?? []).map((route) => ({
+    label: `${applicationLabels[route.application]} Realm`,
+    help: routeHelp[route.application],
+    value: (
+      <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+        <DomainName name={route.destination_realm} />
+        {route.realm === "" && (
+          <Chip label="home domain" size="small" variant="outlined" />
+        )}
+      </Stack>
+    ),
+    onEdit: () => setEditingRoute(route),
+  }));
 
   return (
     <Box component="section" aria-labelledby="cores-title">
@@ -380,6 +422,25 @@ export default function Cores() {
       )}
 
       <Typography
+        id="routes-title"
+        variant="h6"
+        component="h2"
+        sx={{ mt: 4, mb: 2 }}
+      >
+        Routes
+      </Typography>
+      <QueryAlert
+        error={routes.error}
+        hasData={routes.data !== undefined}
+        subject="Diameter routes"
+      />
+      <SettingsTable
+        label="Routes"
+        loading={routes.isPending}
+        rows={routeRows}
+      />
+
+      <Typography
         id="voice-qos-title"
         variant="h6"
         component="h2"
@@ -401,6 +462,7 @@ export default function Cores() {
       {peerDialog && (
         <DiameterPeerDialog
           peer={peerDialog.peer}
+          peers={peers.data ?? []}
           onClose={() => setPeerDialog(null)}
         />
       )}
@@ -417,8 +479,17 @@ export default function Cores() {
           onConfirm={() => deletion.mutate(deleting)}
           onClose={() => setDeleting(null)}
         >
-          <Alert severity="warning">{RESTART_WARNING}</Alert>
+          {changesTransports(peers.data ?? [], deleting, undefined) && (
+            <Alert severity="warning">{RESTART_WARNING}</Alert>
+          )}
         </ConfirmDialog>
+      )}
+      {editingRoute && identity.data && (
+        <EditRouteDialog
+          route={editingRoute}
+          homeDomain={identity.data.realm}
+          onClose={() => setEditingRoute(null)}
+        />
       )}
       {editingPolicy && policy.data && (
         <EditPolicyDialog

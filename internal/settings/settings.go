@@ -17,7 +17,9 @@ import (
 type Settings struct {
 	Operator Operator
 	// Peers are in the order they were created in.
-	Peers       []Peer
+	Peers []Peer
+	// Routes has one route per application, in the order of Applications.
+	Routes      []Route
 	Policy      Policy
 	CallRecords CallRecords
 }
@@ -84,13 +86,13 @@ func (o Operator) SameIdentity(p Operator) bool {
 // SameCore reports whether two settings run the same Diameter, policy function and SIP, and only differ in what
 // those read when they use it, such as the numbering plan or the call record retention.
 func (s Settings) SameCore(t Settings) bool {
-	return s.Operator.SameIdentity(t.Operator) && slices.EqualFunc(s.Peers, t.Peers, Peer.equal) && s.Policy == t.Policy
+	return s.SameNode(t) && slices.EqualFunc(s.Peers, t.Peers, Peer.equal) && slices.Equal(s.Routes, t.Routes)
 }
 
-// MovedPeers reports whether t is s with peers at other addresses or ports, which the running Diameter node can
-// follow without a restart: the S-CSCF, I-CSCF and P-CSCF only know peers by their ID, host and realm.
-func (s Settings) MovedPeers(t Settings) bool {
-	return s.Operator.SameIdentity(t.Operator) && s.Policy == t.Policy && slices.EqualFunc(s.Peers, t.Peers, Peer.sameNode)
+// SameNode reports whether t only changes the peers and routes of the running Diameter node, which it takes without
+// a restart: the S-CSCF, I-CSCF and P-CSCF send by realm, and the node listens on the same transports.
+func (s Settings) SameNode(t Settings) bool {
+	return s.Operator.SameIdentity(t.Operator) && s.Policy == t.Policy && slices.Equal(s.Transports(), t.Transports())
 }
 
 func (s Settings) Validate() error {
@@ -110,7 +112,7 @@ func (s Settings) Validate() error {
 		return err
 	}
 
-	if _, ok := s.PeerServing(ApplicationRx); s.Policy.Interface == PolicyRx && !ok {
+	if s.Policy.Interface == PolicyRx && len(s.Serving(ApplicationRx)) == 0 {
 		return conflictf("rx requires a Diameter peer serving rx")
 	}
 
@@ -148,6 +150,7 @@ type Store interface {
 	CreatePeer(ctx context.Context, p Peer) error
 	UpdatePeer(ctx context.Context, p Peer) error
 	DeletePeer(ctx context.Context, id string) error
+	UpdateRoute(ctx context.Context, r Route) error
 	UpdatePolicy(ctx context.Context, p Policy) error
 	UpdateCallRecords(ctx context.Context, c CallRecords) error
 }
@@ -223,14 +226,29 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 			return kindError{ErrNotFound, "Diameter peer not found"}
 		}
 
-		if next.Peers[i].Serves(ApplicationRx) && next.Policy.Interface == PolicyRx {
-			return conflictf("Policy uses this peer")
-		}
-
 		next.Peers = slices.Delete(slices.Clone(next.Peers), i, i+1)
+
+		if next.Policy.Interface == PolicyRx && len(next.Serving(ApplicationRx)) == 0 {
+			return conflictf("Policy uses the last peer serving rx")
+		}
 
 		return nil
 	}, func() error { return l.store.DeletePeer(ctx, id) })
+}
+
+// UpdateRoute sets the realm of an application's requests.
+func (l *Live) UpdateRoute(ctx context.Context, r Route) error {
+	return l.change(func(next *Settings) error {
+		i := slices.IndexFunc(next.Routes, func(q Route) bool { return q.Application == r.Application })
+		if i < 0 {
+			return kindError{ErrNotFound, "Diameter route not found"}
+		}
+
+		next.Routes = slices.Clone(next.Routes)
+		next.Routes[i] = r
+
+		return nil
+	}, func() error { return l.store.UpdateRoute(ctx, r) })
 }
 
 func (l *Live) UpdatePolicy(ctx context.Context, p Policy) error {

@@ -14,22 +14,37 @@ export type DiameterPeerState =
 
 export interface DiameterPeerParams {
   host: string;
-  realm: string;
   address: string;
   port?: number;
   transport?: DiameterTransport;
   applications: DiameterApplication[];
+  priority?: number;
 }
 
 export interface DiameterPeerStatus {
   state: DiameterPeerState;
   since?: string;
   remote_address?: string;
+  realm?: string;
 }
 
 export interface DiameterPeer extends DiameterPeerParams {
   id: string;
   status: DiameterPeerStatus;
+}
+
+// DiameterRoute is where an application's requests go: to destination_realm, through its peers in the order they
+// are tried. An empty realm is the home domain.
+export interface DiameterRoute {
+  application: DiameterApplication;
+  realm: string;
+  destination_realm: string;
+  peers: {
+    id: string;
+    host: string;
+    priority: number;
+    status: DiameterPeerStatus;
+  }[];
 }
 
 const peerUrl = (id: string) =>
@@ -65,3 +80,19 @@ export const updateDiameterPeer = (
 export const deleteDiameterPeer = async (id: string): Promise<void> => {
   await apiFetch(peerUrl(id), { method: "DELETE" });
 };
+
+export const listDiameterRoutes = async (): Promise<DiameterRoute[]> => {
+  const { items } = await apiFetch<{ items: DiameterRoute[] }>(
+    "/api/v1/diameter/routes",
+  );
+  return items;
+};
+
+export const updateDiameterRoute = (
+  application: DiameterApplication,
+  realm: string,
+): Promise<DiameterRoute> =>
+  apiFetch<DiameterRoute>(
+    `/api/v1/diameter/routes/${encodeURIComponent(application)}`,
+    { method: "PUT", body: { realm } },
+  );

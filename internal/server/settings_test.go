@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -168,6 +169,51 @@ func TestPeerMovedWithoutRestart(t *testing.T) {
 
 	if c := srv.core.Load(); c.node != before.node || c.sip != before.sip {
 		t.Fatal("moving a peer restarted the core")
+	}
+}
+
+func TestPeersAndRoutesChangedWithoutRestart(t *testing.T) {
+	const realm = "hss.example.org"
+
+	secondary := newFakePeer(t, "hss1.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+	primary := newFakePeer(t, "hss2.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(secondary.config("hss1"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss1")
+
+	before := srv.core.Load()
+
+	p := primary.config("")
+	p.Priority = 1
+
+	created, err := srv.settings.CreatePeer(t.Context(), p)
+	if err != nil {
+		t.Fatalf("CreatePeer: %v", err)
+	}
+
+	if err := srv.settings.UpdateRoute(t.Context(), settings.Route{Application: settings.ApplicationCx, Realm: realm}); err != nil {
+		t.Fatalf("UpdateRoute: %v", err)
+	}
+
+	waitOpen(t, srv, created.ID)
+
+	eventually(t, "the node to route Cx to the new realm, the new peer first", func() bool {
+		c := srv.core.Load()
+
+		for _, r := range c.node.Routes() {
+			if r.Application == cx.ApplicationID && r.Realm == realm {
+				return len(r.Peers) == 2 && r.Peers[0].ID == created.ID && c.realms.of(settings.ApplicationCx)() == realm
+			}
+		}
+
+		return false
+	})
+
+	if c := srv.core.Load(); c.node != before.node || c.sip != before.sip {
+		t.Fatal("adding a peer or changing a realm restarted the core")
 	}
 }
 

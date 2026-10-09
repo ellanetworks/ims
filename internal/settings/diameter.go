@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"cmp"
 	"net/netip"
 	"slices"
 	"strings"
@@ -13,6 +14,9 @@ const (
 	ApplicationRx Application = "rx"
 )
 
+// Applications are the Diameter applications of the IMS, in the order the API lists their routes.
+var Applications = []Application{ApplicationCx, ApplicationRx}
+
 type Transport string
 
 const (
@@ -20,17 +24,31 @@ const (
 	TransportSCTP Transport = "sctp"
 )
 
-const DefaultDiameterPort = 3868
+const (
+	DefaultDiameterPort = 3868
+	DefaultPriority     = 10
+	maxPriority         = 65535
+)
 
-// Peer is a Diameter peer of the IMS: the HSS serves cx, and the PCRF serves rx.
+// Peer is a Diameter peer of the IMS: an HSS or an SLF serves cx, a PCRF or a DRA serves rx. Requests go to the
+// peers serving their application by priority, lowest first, and are shared between peers of the same priority
+// (RFC 6733 §2.7, §5.1). The peer's realm is the one it gives in the capabilities exchange.
 type Peer struct {
 	ID           string
 	Host         string
-	Realm        string
 	Address      netip.Addr
 	Port         int
 	Transport    Transport
 	Applications []Application
+	Priority     int
+}
+
+// Route is where the requests of an application go: the realm of the HSS for cx, of the PCRF for rx (RFC 6733
+// §6.1.6). Its peers are those serving the application.
+type Route struct {
+	Application Application
+	// Realm is the Destination-Realm of the requests. Empty is the home domain.
+	Realm string
 }
 
 func (p Peer) Serves(app Application) bool {
@@ -43,10 +61,6 @@ func (p Peer) Validate() error {
 		return invalidf("host is required")
 	case !isFQDN(p.Host):
 		return invalidf("host must be a domain name")
-	case p.Realm == "":
-		return invalidf("realm is required")
-	case !isFQDN(p.Realm):
-		return invalidf("realm must be a domain name")
 	case !p.Address.IsValid():
 		return invalidf("address is required")
 	case p.Address.IsUnspecified() || p.Address.Zone() != "":
@@ -55,13 +69,15 @@ func (p Peer) Validate() error {
 		return invalidf("port must be between 1 and 65535")
 	case p.Transport != TransportTCP && p.Transport != TransportSCTP:
 		return invalidf("transport must be tcp or sctp")
+	case p.Priority < 0 || p.Priority > maxPriority:
+		return invalidf("priority must be between 0 and %d", maxPriority)
 	case len(p.Applications) == 0:
 		return invalidf("applications must list cx, rx or both")
 	}
 
 	for i, a := range p.Applications {
 		switch {
-		case a != ApplicationCx && a != ApplicationRx:
+		case !slices.Contains(Applications, a):
 			return invalidf("applications must list cx, rx or both, not %q", a)
 		case slices.Contains(p.Applications[:i], a):
 			return invalidf("applications lists %s twice", a)
@@ -71,19 +87,25 @@ func (p Peer) Validate() error {
 	return nil
 }
 
-func (p Peer) equal(q Peer) bool {
-	return p.sameNode(q) && p.Address == q.Address && p.Port == q.Port
+func (r Route) Validate() error {
+	switch {
+	case !slices.Contains(Applications, r.Application):
+		return invalidf("application must be cx or rx, not %q", r.Application)
+	case r.Realm != "" && !isFQDN(r.Realm):
+		return invalidf("realm must be a domain name")
+	}
+
+	return nil
 }
 
-// sameNode reports whether two peers are the same Diameter node, served over the same transport, wherever it is.
-func (p Peer) sameNode(q Peer) bool {
-	return p.ID == q.ID && p.Host == q.Host && p.Realm == q.Realm && p.Transport == q.Transport &&
-		slices.Equal(p.Applications, q.Applications)
+func (p Peer) equal(q Peer) bool {
+	return p.ID == q.ID && strings.EqualFold(p.Host, q.Host) && p.Address == q.Address && p.Port == q.Port &&
+		p.Transport == q.Transport && slices.Equal(p.Applications, q.Applications) && p.Priority == q.Priority
 }
 
 // isFQDN reports whether s is a DiameterIdentity or a realm: a domain name (RFC 6733 §4.3.1).
 func isFQDN(s string) bool {
-	if len(s) > 253 {
+	if s == "" || len(s) > 253 {
 		return false
 	}
 
@@ -102,15 +124,46 @@ func isFQDN(s string) bool {
 	return true
 }
 
-// PeerServing returns the peer that serves an application, if there is one.
-func (s Settings) PeerServing(app Application) (Peer, bool) {
-	for _, p := range s.Peers {
-		if p.Serves(app) {
-			return p, true
+// Realm is the Destination-Realm of an application's requests.
+func (s Settings) Realm(app Application) string {
+	for _, r := range s.Routes {
+		if r.Application == app && r.Realm != "" {
+			return r.Realm
 		}
 	}
 
-	return Peer{}, false
+	return s.Operator.HomeDomain()
+}
+
+// Serving returns the peers serving an application, in the order requests try them: by priority, then in the order
+// they were created in.
+func (s Settings) Serving(app Application) []Peer {
+	var out []Peer
+
+	for _, p := range s.Peers {
+		if p.Serves(app) {
+			out = append(out, p)
+		}
+	}
+
+	slices.SortStableFunc(out, func(a, b Peer) int { return cmp.Compare(a.Priority, b.Priority) })
+
+	return out
+}
+
+// Transports are the transports the peers use, which the IMS listens on.
+func (s Settings) Transports() []Transport {
+	var out []Transport
+
+	for _, p := range s.Peers {
+		if !slices.Contains(out, p.Transport) {
+			out = append(out, p.Transport)
+		}
+	}
+
+	slices.Sort(out)
+
+	return out
 }
 
 func (s Settings) peer(id string) (int, bool) {
@@ -129,12 +182,12 @@ func (s Settings) validatePeers() error {
 			if strings.EqualFold(q.Host, p.Host) {
 				return conflictf("A Diameter peer already has host %s", p.Host)
 			}
+		}
+	}
 
-			for _, a := range p.Applications {
-				if q.Serves(a) {
-					return conflictf("A Diameter peer already serves %s", a)
-				}
-			}
+	for _, r := range s.Routes {
+		if err := r.Validate(); err != nil {
+			return err
 		}
 	}
 

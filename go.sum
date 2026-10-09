@@ -6,6 +6,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/ellanetworks/core/diameter v0.0.0-20261005145428-88e911e1b160 h1:ZIpR1PEG4ebz4W9XB4cke0Y9UCQHbdzdDYsTk/N6Buk=
 github.com/ellanetworks/core/diameter v0.0.0-20261005145428-88e911e1b160/go.mod h1:YchLpOwehhNz8s+hXPtmjT69Jw94otkpFUP4lDdM4wM=
+github.com/ellanetworks/core/diameter v0.0.0-20261009155647-5bfe3c9f788b h1:Lu0x0mIRnx4WGCcXQWuSMcPeq7n9bahFHqrdzk+dSkA=
+github.com/ellanetworks/core/diameter v0.0.0-20261009155647-5bfe3c9f788b/go.mod h1:YchLpOwehhNz8s+hXPtmjT69Jw94otkpFUP4lDdM4wM=
 github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f h1:467mMwOqgbeKZQPV/Jztg1RJFofLhJ5NqJGzT96SUrM=
 github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f/go.mod h1:qttv0gHtCuOunPG/VvNgd4p4RTzj3Q5Gh7g4Rd14MYw=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

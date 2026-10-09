@@ -19,18 +19,13 @@ import (
 type Diameter interface {
 	Identity() diameter.Identity
 	NewSessionID() string
-	Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error)
-}
-
-type PCRF struct {
-	ID    string
-	Host  string
-	Realm string
+	Send(ctx context.Context, req *diameter.Message, opts ...diameter.RequestOption) (*diameter.Message, error)
 }
 
 type Config struct {
 	Diameter Diameter
-	PCRF     PCRF
+	// Realm is the realm of the PCRF, which the Diameter node routes Rx to.
+	Realm func() string
 }
 
 type Backend struct {
@@ -44,10 +39,9 @@ func New(cfg Config) *Backend {
 	return &Backend{cfg: cfg}
 }
 
-// Endpoint names the PCRF by its DiameterIdentity, an FQDN (RFC 6733 §4.3.1), which DNS compares without case
-// (RFC 4343).
+// Endpoint names the PCRFs by their realm, an FQDN (RFC 6733 §4.3.1), which DNS compares without case (RFC 4343).
 func (b *Backend) Endpoint() string {
-	return "rx:" + strings.ToLower(b.cfg.PCRF.Host)
+	return "rx:" + strings.ToLower(b.cfg.Realm())
 }
 
 func (b *Backend) NewSessionID() string {
@@ -67,18 +61,17 @@ func (b *Backend) envelope(id string) tgpp.Envelope {
 	return tgpp.Envelope{
 		SessionID:        id,
 		Origin:           b.cfg.Diameter.Identity(),
-		DestinationHost:  b.cfg.PCRF.Host,
-		DestinationRealm: b.cfg.PCRF.Realm,
+		DestinationRealm: b.cfg.Realm(),
 	}
 }
 
 func (b *Backend) do(ctx context.Context, req *diameter.Message, wait bool) (*diameter.Message, error) {
-	var opts []diameter.DoOption
+	var opts []diameter.RequestOption
 	if !wait {
 		opts = append(opts, diameter.FailFast())
 	}
 
-	return b.cfg.Diameter.Do(ctx, b.cfg.PCRF.ID, req, opts...)
+	return b.cfg.Diameter.Send(ctx, req, opts...)
 }
 
 // TS 29.214 §4.4.5, §5.3.13
@@ -234,11 +227,11 @@ func classify(err error) error {
 	switch {
 	case answered && !result.Experimental && result.Code == diameter.ResultUnknownSessionID:
 		e.Kind = policy.ErrUnknownSession
-	case errors.As(err, &refused), errors.Is(err, diameter.ErrUnknownPeer), errors.Is(err, diameter.ErrApplicationUnsupported):
+	case errors.As(err, &refused), errors.Is(err, diameter.ErrApplicationUnsupported):
 		e.Kind = policy.ErrRefused
 	case errors.Is(err, rx.ErrMalformedAnswer):
 		e.Kind = policy.ErrMalformed
-	case errors.Is(err, diameter.ErrNotConnected):
+	case errors.Is(err, diameter.ErrNotConnected), errors.Is(err, diameter.ErrUnableToDeliver):
 		e.Kind = policy.ErrUnreachable
 	}
 
@@ -254,8 +247,8 @@ func classify(err error) error {
 
 // RFC 6733 §7.1.3, §7.1.4, §8.4.2: any answer ends the request at the PCRF, except one that asks for a retry.
 func unanswered(err error) bool {
-	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, diameter.ErrUnknownPeer) ||
-		errors.Is(err, diameter.ErrApplicationUnsupported) || errors.Is(err, diameter.ErrClosed) {
+	if err == nil || errors.Is(err, rx.ErrMalformedAnswer) || errors.Is(err, diameter.ErrApplicationUnsupported) ||
+		errors.Is(err, diameter.ErrClosed) {
 		return false
 	}
 

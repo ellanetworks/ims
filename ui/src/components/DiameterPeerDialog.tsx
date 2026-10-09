@@ -21,9 +21,11 @@ import {
   updateDiameterPeer,
 } from "@/queries/diameter";
 import { applicationLabels, transportLabels } from "@/utils/labels";
-import { RESTART_WARNING } from "@/utils/restart";
+import { changesTransports, RESTART_WARNING } from "@/utils/restart";
 
 export const DEFAULT_DIAMETER_PORT = 3868;
+
+export const DEFAULT_PRIORITY = 10;
 
 const APPLICATIONS: DiameterApplication[] = ["cx", "rx"];
 
@@ -32,27 +34,17 @@ const TRANSPORTS: DiameterTransport[] = ["tcp", "sctp"];
 const sameApplications = (a: DiameterApplication[], b: DiameterApplication[]) =>
   a.length === b.length && a.every((app) => b.includes(app));
 
-// restarts reports whether saving a peer restarts Diameter and SIP: any change but its address or port does.
-const restarts = (
-  before: DiameterPeer | undefined,
-  after: DiameterPeerParams,
-) =>
-  before === undefined ||
-  before.host !== after.host ||
-  before.realm !== after.realm ||
-  before.transport !== after.transport ||
-  before.applications.join() !== after.applications.join();
-
 export default function DiameterPeerDialog({
   peer,
+  peers,
   onClose,
 }: {
   peer?: DiameterPeer;
+  peers: DiameterPeer[];
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const [host, setHost] = useState(peer?.host ?? "");
-  const [realm, setRealm] = useState(peer?.realm ?? "");
   const [address, setAddress] = useState(peer?.address ?? "");
   const [port, setPort] = useState(String(peer?.port ?? DEFAULT_DIAMETER_PORT));
   const [transport, setTransport] = useState<DiameterTransport>(
@@ -61,12 +53,16 @@ export default function DiameterPeerDialog({
   const [applications, setApplications] = useState<DiameterApplication[]>(
     peer?.applications ?? APPLICATIONS,
   );
+  const [priority, setPriority] = useState(
+    String(peer?.priority ?? DEFAULT_PRIORITY),
+  );
 
   const mutation = useMutation({
     mutationFn: (params: DiameterPeerParams) =>
       peer ? updateDiameterPeer(peer.id, params) : createDiameterPeer(params),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["diameter-peers"] });
+      void queryClient.invalidateQueries({ queryKey: ["diameter-routes"] });
       void queryClient.invalidateQueries({ queryKey: ["policy"] });
       onClose();
     },
@@ -84,24 +80,26 @@ export default function DiameterPeerDialog({
       : APPLICATIONS.filter((app) => applications.includes(app));
 
   const portNumber = Number(port);
+  const priorityNumber = Number(priority);
   const params: DiameterPeerParams = {
     host: host.trim(),
-    realm: realm.trim(),
     address: address.trim(),
     port: portNumber,
     transport,
     applications: ordered,
+    priority: priorityNumber,
   };
 
   const portValid =
     /^\d+$/.test(port) && portNumber >= 1 && portNumber <= 65535;
+  const priorityValid = /^\d+$/.test(priority) && priorityNumber <= 65535;
   const errors = {
     port: portValid ? undefined : "1 to 65535",
+    priority: priorityValid ? undefined : "0 to 65535",
     applications: applications.length > 0 ? undefined : "At least one",
   };
   const valid =
     params.host !== "" &&
-    params.realm !== "" &&
     params.address !== "" &&
     Object.values(errors).every((e) => e === undefined);
 
@@ -121,13 +119,6 @@ export default function DiameterPeerDialog({
         value={host}
         onChange={(e) => setHost(e.target.value)}
         placeholder="hss.epc.mnc001.mcc001.3gppnetwork.org"
-        required
-      />
-      <TextField
-        label="Realm"
-        value={realm}
-        onChange={(e) => setRealm(e.target.value)}
-        placeholder="epc.mnc001.mcc001.3gppnetwork.org"
         required
       />
       <TextField
@@ -177,7 +168,18 @@ export default function DiameterPeerDialog({
           <FormHelperText>{errors.applications}</FormHelperText>
         )}
       </FormControl>
-      {valid && restarts(peer, params) && (
+      <TextField
+        label="Priority"
+        value={priority}
+        onChange={(e) => setPriority(e.target.value.trim())}
+        error={errors.priority !== undefined}
+        helperText={
+          errors.priority ??
+          "Lowest first; peers of the same priority share requests."
+        }
+        required
+      />
+      {valid && changesTransports(peers, peer, params) && (
         <Alert severity="warning">{RESTART_WARNING}</Alert>
       )}
     </EditDialog>

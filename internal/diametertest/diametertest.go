@@ -35,7 +35,7 @@ func newNode(t testing.TB, cfg Config) *diameter.Node {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	cfg.Peer.Transport = diameter.TransportTCP
+	cfg.Peer.Transports = []diameter.Transport{diameter.TransportTCP}
 
 	node, err := diameter.New(diameter.Config{
 		Identity:          cfg.Identity,
@@ -73,7 +73,7 @@ func Listen(t testing.TB, cfg Config) (*diameter.Node, netip.AddrPort) {
 		t.Fatalf("diametertest: listen: %v", err)
 	}
 
-	cfg.Peer.Passive = true
+	cfg.Peer.Dial = nil
 	if len(cfg.Peer.Addresses) == 0 {
 		cfg.Peer.Addresses = []netip.Addr{addr}
 	}
@@ -89,7 +89,7 @@ func Dial(t testing.TB, cfg Config, addr netip.AddrPort) *diameter.Node {
 	t.Helper()
 
 	cfg.Peer.Addresses = []netip.Addr{addr.Addr()}
-	cfg.Peer.Port = addr.Port()
+	cfg.Peer.Dial = &diameter.Dial{Port: addr.Port()}
 
 	node := newNode(t, cfg)
 	WaitOpen(t, node, cfg.Peer.ID)
@@ -131,7 +131,7 @@ func (l *Loop) SetDown(down bool) {
 	l.down.Store(down)
 }
 
-func (l *Loop) Do(ctx context.Context, _ string, req *diameter.Message, _ ...diameter.DoOption) (*diameter.Message, error) {
+func (l *Loop) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
 	if l.down.Load() {
 		return nil, diameter.ErrNotConnected
 	}

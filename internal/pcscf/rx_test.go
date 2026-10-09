@@ -46,7 +46,7 @@ func newFakePCRF(t *testing.T) *fakePCRF {
 
 func (f *fakePCRF) backend() *rxpolicy.Backend {
 	return rxpolicy.New(rxpolicy.Config{
-		Diameter: f, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+		Diameter: f, Realm: func() string { return pcrfIdentity.OriginRealm },
 	})
 }
 
@@ -91,11 +91,7 @@ func (f *fakePCRF) NewSessionID() string {
 	return fmt.Sprintf("%s;1;%d", imsIdentity.OriginHost, f.seq.Add(1))
 }
 
-func (f *fakePCRF) Do(ctx context.Context, peerID string, req *diameter.Message, _ ...diameter.DoOption) (*diameter.Message, error) {
-	if peerID != "pcrf" && peerID != "pcrf-1" {
-		return nil, diameter.ErrUnknownPeer
-	}
-
+func (f *fakePCRF) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
 	f.reqs <- req
 
 	f.mu.Lock()
@@ -258,7 +254,7 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 	}
 
 	env := tgpp.ParseEnvelope(m)
-	if env.DestinationHost != pcrfIdentity.OriginHost || env.DestinationRealm != pcrfIdentity.OriginRealm ||
+	if env.DestinationHost != "" || env.DestinationRealm != pcrfIdentity.OriginRealm ||
 		env.Origin.OriginHost != imsIdentity.OriginHost {
 		t.Errorf("envelope = %+v, want from the IMS to the PCRF", env)
 	}
@@ -1032,32 +1028,11 @@ func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
 
 	s.wantSession(again)
 
-	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginHost {
+	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginRealm {
 		t.Fatalf("endpoint = %q, want the PCRF", r.Policy.Endpoint)
 	}
 
 	pcrf.none()
-}
-
-// The endpoint is the PCRF, not the local name of its peer: renaming the peer keeps the stored sessions.
-func TestRestartWithARenamedPeerTerminatesTheSession(t *testing.T) {
-	s, pcrf := newRxScene(t, 0)
-
-	s.registered(600)
-
-	id, _ := pcrf.aar()
-	s.wantSession(id)
-
-	s.p.cfg.Policy.Backend = rxpolicy.New(rxpolicy.Config{
-		Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf-1", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
-	})
-
-	s.restart()
-
-	pcrf.wantSTR(id, rx.TerminationAdministrative)
-
-	again, _ := pcrf.aar()
-	s.wantSession(again)
 }
 
 func TestRxShutdownLetsTheSTRFinish(t *testing.T) {

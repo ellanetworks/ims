@@ -40,13 +40,7 @@ const (
 type Diameter interface {
 	Identity() diameter.Identity
 	NewSessionID() string
-	Do(ctx context.Context, peerID string, req *diameter.Message, opts ...diameter.DoOption) (*diameter.Message, error)
-}
-
-type HSS struct {
-	ID    string
-	Host  string
-	Realm string
+	Send(ctx context.Context, req *diameter.Message, opts ...diameter.RequestOption) (*diameter.Message, error)
 }
 
 type Clock interface {
@@ -71,7 +65,8 @@ type Config struct {
 	ReauthInterval time.Duration
 	ReauthExpires  time.Duration
 
-	HSS      HSS
+	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
+	HSSRealm func() string
 	Diameter Diameter
 	DB       *db.DB
 

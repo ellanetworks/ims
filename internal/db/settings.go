@@ -26,6 +26,10 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 		return settings.Settings{}, err
 	}
 
+	if s.Routes, err = d.routes(ctx); err != nil {
+		return settings.Settings{}, err
+	}
+
 	var iface string
 
 	if err := d.conn.QueryRowContext(ctx, `SELECT interface, pcf_uri FROM policy WHERE id = 1`).Scan(&iface,
@@ -45,7 +49,7 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 
 // peers are in the order they were created in, which their UUIDv7 IDs sort in.
 func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT id, host, realm, address, port, transport, applications
+	rows, err := d.conn.QueryContext(ctx, `SELECT id, host, address, port, transport, applications, priority
 		FROM diameter_peers ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("get Diameter peers: %w", err)
@@ -62,7 +66,7 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 			applications       string
 		)
 
-		if err := rows.Scan(&p.ID, &p.Host, &p.Realm, &address, &p.Port, &transport, &applications); err != nil {
+		if err := rows.Scan(&p.ID, &p.Host, &address, &p.Port, &transport, &applications, &p.Priority); err != nil {
 			return nil, fmt.Errorf("get Diameter peers: %w", err)
 		}
 
@@ -86,6 +90,45 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 	return peers, nil
 }
 
+// routes are in the order of settings.Applications.
+func (d *DB) routes(ctx context.Context) ([]settings.Route, error) {
+	rows, err := d.conn.QueryContext(ctx, `SELECT application, realm FROM diameter_routes`)
+	if err != nil {
+		return nil, fmt.Errorf("get Diameter routes: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	realms := make(map[settings.Application]string)
+
+	for rows.Next() {
+		var app, realm string
+
+		if err := rows.Scan(&app, &realm); err != nil {
+			return nil, fmt.Errorf("get Diameter routes: %w", err)
+		}
+
+		realms[settings.Application(app)] = realm
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get Diameter routes: %w", err)
+	}
+
+	routes := make([]settings.Route, 0, len(settings.Applications))
+
+	for _, app := range settings.Applications {
+		realm, ok := realms[app]
+		if !ok {
+			return nil, fmt.Errorf("get Diameter routes: no route for %s", app)
+		}
+
+		routes = append(routes, settings.Route{Application: app, Realm: realm})
+	}
+
+	return routes, nil
+}
+
 func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -101,8 +144,8 @@ func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error
 func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `INSERT INTO diameter_peers (id, host, realm, address, port, transport,
-		applications) VALUES (?, ?, ?, ?, ?, ?, ?)`, peerRow(p)...); err != nil {
+	if _, err := d.conn.ExecContext(ctx, `INSERT INTO diameter_peers (id, host, address, port, transport,
+		applications, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`, peerRow(p)...); err != nil {
 		return fmt.Errorf("create Diameter peer: %w", err)
 	}
 
@@ -114,8 +157,8 @@ func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) (err error) {
 
 	row := peerRow(p)
 
-	res, err := d.conn.ExecContext(ctx, `UPDATE diameter_peers SET host = ?, realm = ?, address = ?, port = ?,
-		transport = ?, applications = ? WHERE id = ?`, append(row[1:], row[0])...)
+	res, err := d.conn.ExecContext(ctx, `UPDATE diameter_peers SET host = ?, address = ?, port = ?, transport = ?,
+		applications = ?, priority = ? WHERE id = ?`, append(row[1:], row[0])...)
 	if err != nil {
 		return fmt.Errorf("update Diameter peer: %w", err)
 	}
@@ -137,6 +180,22 @@ func (d *DB) DeletePeer(ctx context.Context, id string) (err error) {
 
 	if err := checkAffected(res); err != nil {
 		return fmt.Errorf("delete Diameter peer: %w", err)
+	}
+
+	return nil
+}
+
+func (d *DB) UpdateRoute(ctx context.Context, r settings.Route) (err error) {
+	defer d.observe(poolWrite, &err)()
+
+	res, err := d.conn.ExecContext(ctx, `UPDATE diameter_routes SET realm = ? WHERE application = ?`, r.Realm,
+		string(r.Application))
+	if err != nil {
+		return fmt.Errorf("update Diameter route: %w", err)
+	}
+
+	if err := checkAffected(res); err != nil {
+		return fmt.Errorf("update Diameter route: %w", err)
 	}
 
 	return nil
@@ -170,5 +229,5 @@ func peerRow(p settings.Peer) []any {
 		apps[i] = string(a)
 	}
 
-	return []any{p.ID, p.Host, p.Realm, p.Address.String(), p.Port, string(p.Transport), strings.Join(apps, ",")}
+	return []any{p.ID, p.Host, p.Address.String(), p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority}
 }

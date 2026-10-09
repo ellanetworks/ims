@@ -66,6 +66,7 @@ type core struct {
 	settings    settings.Settings
 	node        *diameter.Node
 	diameterLns []diameter.Listener
+	realms      *realms
 	policy      *policyFunction
 	sip         *sipServer
 }
@@ -185,7 +186,7 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, error) {
 	cfg := s.Config
 
-	diameterLns, err := listenDiameter(ctx, cfg.Diameter, st.Peers)
+	diameterLns, err := listenDiameter(ctx, cfg.Diameter, st)
 	if err != nil {
 		return nil, err
 	}
@@ -207,13 +208,15 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}()
 	}
 
-	pf, err := newPolicyFunction(ctx, cfg, st, node, s.metrics, s.Logger)
+	rlm := newRealms(st)
+
+	pf, err := newPolicyFunction(ctx, cfg, st, node, rlm, s.metrics, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		return nil, err
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.records,
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
 		s.metrics, s.IPsec, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
@@ -224,7 +227,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 
 	pf.serve(s.Logger)
 
-	return &core{settings: st, node: node, diameterLns: diameterLns, policy: pf, sip: sipServer}, nil
+	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer}, nil
 }
 
 func (s *Server) numbering() scscf.Numbering {
@@ -254,8 +257,8 @@ func (s *Server) follow(ctx context.Context) {
 
 			switch {
 			case current.SameCore(st):
-			case s.core.Load() != nil && current.MovedPeers(st):
-				s.movePeers(st)
+			case s.core.Load() != nil && current.SameNode(st):
+				s.reconfigureNode(st)
 			default:
 				s.restartCore(ctx, st)
 			}
@@ -284,20 +287,23 @@ const (
 	maxRetry = 30 * time.Second
 )
 
-// movePeers points the running Diameter node at peers' new addresses, without a restart.
-func (s *Server) movePeers(st settings.Settings) {
+// reconfigureNode gives the running Diameter node its new peers and routes, without a restart.
+func (s *Server) reconfigureNode(st settings.Settings) {
 	c := s.core.Load()
 
-	if err := c.node.SetPeers(diameterPeers(st.Peers)); err != nil {
-		s.Logger.Error("failed to move the Diameter peers", slog.Any("error", err))
+	if err := c.node.SetPeers(diameterPeers(st)); err != nil {
+		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
 		return
 	}
+
+	c.realms.set(st)
 
 	next := *c
 	next.settings = st
 	s.core.Store(&next)
 
-	s.Logger.Info("moved the Diameter peers", slog.Int("diameter_peers", len(st.Peers)))
+	s.Logger.Info("reconfigured the Diameter peers", slog.Int("diameter_peers", len(st.Peers)),
+		slog.String("cx_realm", st.Realm(settings.ApplicationCx)), slog.String("rx_realm", st.Realm(settings.ApplicationRx)))
 }
 
 // coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,

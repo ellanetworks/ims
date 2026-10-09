@@ -21,10 +21,10 @@ func TestClassify(t *testing.T) {
 		kind error
 	}{
 		"result":          {&rx.ResultError{Result: tgpp.Result{Code: tgpp.ResultInvalidServiceInformation, Experimental: true}}, policy.ErrRefused},
-		"unknown peer":    {diameter.ErrUnknownPeer, policy.ErrRefused},
 		"no application":  {diameter.ErrApplicationUnsupported, policy.ErrRefused},
 		"malformed":       {fmt.Errorf("%w: no Result-Code", rx.ErrMalformedAnswer), policy.ErrMalformed},
 		"not connected":   {diameter.ErrNotConnected, policy.ErrUnreachable},
+		"no route":        {diameter.ErrUnableToDeliver, policy.ErrUnreachable},
 		"context expired": {context.DeadlineExceeded, nil},
 		"unknown session": {&rx.ResultError{Result: tgpp.Result{Code: diameter.ResultUnknownSessionID}}, policy.ErrUnknownSession},
 	} {
@@ -181,11 +181,11 @@ func TestChargingAccess(t *testing.T) {
 	}
 }
 
-// RFC 6733 §4.3.1, RFC 4343: the PCRF's DiameterIdentity is an FQDN, compared without case.
+// RFC 6733 §4.3.1, RFC 4343: the PCRF's realm is an FQDN, compared without case.
 func TestEndpoint(t *testing.T) {
-	b := New(Config{PCRF: PCRF{Host: "PCRF.Example.org"}})
+	b := New(Config{Realm: func() string { return "EPC.Example.org" }})
 
-	if got := b.Endpoint(); got != "rx:pcrf.example.org" {
+	if got := b.Endpoint(); got != "rx:epc.example.org" {
 		t.Fatalf("Endpoint() = %q, want it lower-cased", got)
 	}
 }
@@ -258,7 +258,7 @@ func TestClassifyTransient(t *testing.T) {
 	}{
 		{diameter.ErrNotConnected, true},
 		{context.DeadlineExceeded, true},
-		{diameter.ErrUnknownPeer, false},
+		{diameter.ErrUnableToDeliver, true},
 		{diameter.ErrApplicationUnsupported, false},
 		{diameter.ErrClosed, false},
 		{result(diameter.ResultUnknownSessionID), false},

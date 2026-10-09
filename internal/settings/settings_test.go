@@ -34,12 +34,17 @@ func (f *fakeStore) UpdatePeer(_ context.Context, p Peer) error { return f.save(
 
 func (f *fakeStore) DeletePeer(_ context.Context, id string) error { return f.save(id) }
 
+func (f *fakeStore) UpdateRoute(_ context.Context, r Route) error { return f.save(r) }
+
 func (f *fakeStore) UpdatePolicy(_ context.Context, p Policy) error { return f.save(p) }
 
 func (f *fakeStore) UpdateCallRecords(_ context.Context, c CallRecords) error { return f.save(c) }
 
 func validSettings() Settings {
-	return Settings{Operator: validOperator(), Policy: Policy{Interface: PolicyNone}, CallRecords: CallRecords{RetentionDays: 90}}
+	return Settings{
+		Operator: validOperator(), Routes: []Route{{Application: ApplicationCx}, {Application: ApplicationRx}},
+		Policy: Policy{Interface: PolicyNone}, CallRecords: CallRecords{RetentionDays: 90},
+	}
 }
 
 func validOperator() Operator {
@@ -205,17 +210,15 @@ func TestLiveKeepsSettingsWhenTheStoreFails(t *testing.T) {
 
 func hss() Peer {
 	return Peer{
-		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: "ims.mnc001.mcc001.3gppnetwork.org",
-		Address: netip.MustParseAddr("10.0.0.10"), Port: 3868, Transport: TransportTCP,
-		Applications: []Application{ApplicationCx},
+		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.10"), Port: 3868,
+		Transport: TransportTCP, Applications: []Application{ApplicationCx}, Priority: DefaultPriority,
 	}
 }
 
 func pcrf() Peer {
 	return Peer{
-		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Realm: "epc.mnc001.mcc001.3gppnetwork.org",
-		Address: netip.MustParseAddr("10.0.0.11"), Port: 3868, Transport: TransportSCTP,
-		Applications: []Application{ApplicationRx},
+		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.11"), Port: 3868,
+		Transport: TransportSCTP, Applications: []Application{ApplicationRx}, Priority: DefaultPriority,
 	}
 }
 
@@ -225,7 +228,8 @@ func TestPeerValidate(t *testing.T) {
 		want string
 	}{
 		"no host":             {func(p *Peer) { p.Host = "" }, "host is required"},
-		"no realm":            {func(p *Peer) { p.Realm = "" }, "realm is required"},
+		"negative priority":   {func(p *Peer) { p.Priority = -1 }, "priority must be between 0 and 65535"},
+		"high priority":       {func(p *Peer) { p.Priority = 65536 }, "priority must be between 0 and 65535"},
 		"no address":          {func(p *Peer) { p.Address = netip.Addr{} }, "address is required"},
 		"unspecified address": {func(p *Peer) { p.Address = netip.IPv6Unspecified() }, "address must be a specific IPv4 or IPv6 address"},
 		"port out of range":   {func(p *Peer) { p.Port = 70000 }, "port must be between 1 and 65535"},
@@ -288,19 +292,29 @@ func TestLivePeers(t *testing.T) {
 		t.Fatalf("ID = %q, want a UUIDv7", created.ID)
 	}
 
-	if p, ok := live.Get().PeerServing(ApplicationCx); !ok || !p.equal(created) {
-		t.Fatalf("cx peer = %+v, %v; want %+v", p, ok, created)
+	if got := live.Get().Serving(ApplicationCx); len(got) != 1 || !got[0].equal(created) {
+		t.Fatalf("cx peers = %+v, want %+v", got, created)
 	}
 
 	if _, err := live.CreatePeer(t.Context(), hss()); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second peer with the same host = %v, want a conflict", err)
 	}
 
-	another := hss()
-	another.Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org"
+	primary := hss()
+	primary.Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org"
+	primary.Priority = 1
 
-	if _, err := live.CreatePeer(t.Context(), another); !errors.Is(err, ErrConflict) || err.Error() != "A Diameter peer already serves cx" {
-		t.Fatalf("second cx peer = %v, want a conflict", err)
+	primary, err = live.CreatePeer(t.Context(), primary)
+	if err != nil {
+		t.Fatalf("second cx peer: %v", err)
+	}
+
+	if got := live.Get().Serving(ApplicationCx); len(got) != 2 || got[0].ID != primary.ID || got[1].ID != created.ID {
+		t.Fatalf("cx peers = %+v, want the lower priority first", got)
+	}
+
+	if err := live.DeletePeer(t.Context(), primary.ID); err != nil {
+		t.Fatalf("DeletePeer: %v", err)
 	}
 
 	moved := created
@@ -310,8 +324,8 @@ func TestLivePeers(t *testing.T) {
 		t.Fatalf("UpdatePeer: %v", err)
 	}
 
-	if p, _ := live.Get().PeerServing(ApplicationCx); p.Address != moved.Address {
-		t.Fatalf("address = %s, want %s", p.Address, moved.Address)
+	if p := live.Get().Serving(ApplicationCx); p[0].Address != moved.Address {
+		t.Fatalf("address = %s, want %s", p[0].Address, moved.Address)
 	}
 
 	unknown := moved
@@ -350,9 +364,22 @@ func TestLivePolicy(t *testing.T) {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
 
-	if err := live.DeletePeer(t.Context(), p.ID); !errors.Is(err, ErrConflict) || err.Error() != "Policy uses this peer" {
+	if err := live.DeletePeer(t.Context(), p.ID); !errors.Is(err, ErrConflict) || err.Error() != "Policy uses the last peer serving rx" {
 		t.Fatalf("DeletePeer of the rx peer = %v, want a conflict", err)
 	}
+
+	second := pcrf()
+	second.Host = "pcrf2.epc.mnc001.mcc001.3gppnetwork.org"
+
+	if _, err := live.CreatePeer(t.Context(), second); err != nil {
+		t.Fatalf("CreatePeer: %v", err)
+	}
+
+	if err := live.DeletePeer(t.Context(), p.ID); err != nil {
+		t.Fatalf("DeletePeer of an rx peer with another left: %v", err)
+	}
+
+	p = live.Get().Serving(ApplicationRx)[0]
 
 	cx := p
 	cx.Applications = []Application{ApplicationCx}
@@ -381,6 +408,40 @@ func TestLiveCheck(t *testing.T) {
 	}
 }
 
+func TestLiveRoutes(t *testing.T) {
+	store := &fakeStore{}
+	live := NewLive(store, validSettings(), nil)
+
+	if got := live.Get().Realm(ApplicationCx); got != "ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("default cx realm = %q, want the home domain", got)
+	}
+
+	r := Route{Application: ApplicationRx, Realm: "epc.mnc001.mcc001.3gppnetwork.org"}
+	if err := live.UpdateRoute(t.Context(), r); err != nil {
+		t.Fatalf("UpdateRoute: %v", err)
+	}
+
+	if got := live.Get().Realm(ApplicationRx); got != r.Realm || !reflect.DeepEqual(store.saved, []any{r}) {
+		t.Fatalf("rx realm = %q, saved %v", got, store.saved)
+	}
+
+	if got := live.Get().Realm(ApplicationCx); got != "ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("cx realm = %q after an rx change", got)
+	}
+
+	if err := live.UpdateRoute(t.Context(), Route{Application: ApplicationRx, Realm: "bad realm"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid realm = %v, want invalid", err)
+	}
+
+	if err := live.UpdateRoute(t.Context(), Route{Application: "gx"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown application = %v, want not found", err)
+	}
+
+	if err := live.UpdateRoute(t.Context(), Route{Application: ApplicationRx}); err != nil || live.Get().Realm(ApplicationRx) != "ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("reset to the home domain = %v", err)
+	}
+}
+
 func TestSameCore(t *testing.T) {
 	s := validSettings()
 	s.Peers = []Peer{hss()}
@@ -398,6 +459,13 @@ func TestSameCore(t *testing.T) {
 
 	if s.SameCore(moved) {
 		t.Fatal("a moved peer keeps the core")
+	}
+
+	rerouted := s
+	rerouted.Routes = []Route{{Application: ApplicationCx, Realm: "example.org"}, {Application: ApplicationRx}}
+
+	if s.SameCore(rerouted) {
+		t.Fatal("another realm keeps the core")
 	}
 
 	n5 := s
@@ -458,38 +526,43 @@ func TestLiveCallRecords(t *testing.T) {
 	}
 }
 
-func TestMovedPeers(t *testing.T) {
+func TestSameNode(t *testing.T) {
 	s := validSettings()
 	s.Peers = []Peer{hss()}
 
-	moved := s
-	moved.Peers = []Peer{hss()}
-	moved.Peers[0].Address = netip.MustParseAddr("10.0.0.20")
-	moved.Peers[0].Port = 3869
-
-	if !s.MovedPeers(moved) || s.SameCore(moved) {
-		t.Fatal("a peer at another address is not a moved peer")
-	}
-
-	for name, edit := range map[string]func(*Peer){
-		"another host":      func(p *Peer) { p.Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org" },
-		"another realm":     func(p *Peer) { p.Realm = "example.org" },
-		"another transport": func(p *Peer) { p.Transport = TransportSCTP },
-		"more applications": func(p *Peer) { p.Applications = []Application{ApplicationCx, ApplicationRx} },
+	for name, edit := range map[string]func(*Settings){
+		"another address":   func(t *Settings) { t.Peers[0].Address = netip.MustParseAddr("10.0.0.20") },
+		"another host":      func(t *Settings) { t.Peers[0].Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org" },
+		"another priority":  func(t *Settings) { t.Peers[0].Priority = 1 },
+		"more applications": func(t *Settings) { t.Peers[0].Applications = []Application{ApplicationCx, ApplicationRx} },
+		"another peer": func(t *Settings) {
+			t.Peers = append(t.Peers, func() Peer { p := hss(); p.Host = "hss2.example.org"; return p }())
+		},
+		"another realm": func(t *Settings) {
+			t.Routes = []Route{{Application: ApplicationCx, Realm: "example.org"}, {Application: ApplicationRx}}
+		},
 	} {
 		changed := s
 		changed.Peers = []Peer{hss()}
-		edit(&changed.Peers[0])
+		edit(&changed)
 
-		if s.MovedPeers(changed) {
-			t.Errorf("%s: a moved peer, want another core", name)
+		if !s.SameNode(changed) || s.SameCore(changed) {
+			t.Errorf("%s: needs another core, want the node reconfigured", name)
 		}
 	}
 
-	added := s
-	added.Peers = []Peer{hss(), pcrf()}
+	for name, edit := range map[string]func(*Settings){
+		"another transport": func(t *Settings) { t.Peers[0].Transport = TransportSCTP },
+		"added transport":   func(t *Settings) { t.Peers = append(t.Peers, pcrf()) },
+		"another identity":  func(t *Settings) { t.Operator.MNC = "02" },
+		"another policy":    func(t *Settings) { t.Policy = Policy{Interface: PolicyN5, PCFURI: "http://10.0.0.13:7777"} },
+	} {
+		changed := s
+		changed.Peers = []Peer{hss()}
+		edit(&changed)
 
-	if s.MovedPeers(added) {
-		t.Error("an added peer is a moved peer")
+		if s.SameNode(changed) {
+			t.Errorf("%s: reconfigures the node, want another core", name)
+		}
 	}
 }

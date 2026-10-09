@@ -163,8 +163,8 @@ var migrations = []string{
 	CREATE INDEX call_records_requested_at ON call_records (requested_at, id);
 	CREATE INDEX call_records_outcome ON call_records (outcome);
 	CREATE INDEX call_records_session ON call_records (session_id, caller_impi);
-	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;`,
-	`CREATE TABLE operator (
+	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;
+	CREATE TABLE operator (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		mcc TEXT NOT NULL,
 		mnc TEXT NOT NULL,
@@ -172,16 +172,21 @@ var migrations = []string{
 		national_prefix TEXT NOT NULL,
 		international_prefix TEXT NOT NULL
 	);
-	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');`,
-	`CREATE TABLE diameter_peers (
+	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');
+	CREATE TABLE diameter_peers (
 		id TEXT PRIMARY KEY,
 		host TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		realm TEXT NOT NULL,
 		address TEXT NOT NULL,
 		port INTEGER NOT NULL,
 		transport TEXT NOT NULL,
-		applications TEXT NOT NULL
+		applications TEXT NOT NULL,
+		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535)
 	);
+	CREATE TABLE diameter_routes (
+		application TEXT PRIMARY KEY CHECK (application IN ('cx', 'rx')),
+		realm TEXT NOT NULL
+	);
+	INSERT INTO diameter_routes VALUES ('cx', ''), ('rx', '');
 	CREATE TABLE policy (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		interface TEXT NOT NULL,
