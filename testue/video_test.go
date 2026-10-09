@@ -373,6 +373,8 @@ func TestVoiceBearerLost(t *testing.T) {
 			t.Fatalf("Ring: %v", err)
 		}
 
+		methods(bc)
+
 		if err := ac.BearerLost(ctx, sdp.Audio); err != nil {
 			t.Fatalf("BearerLost: %v", err)
 		}
@@ -380,10 +382,18 @@ func TestVoiceBearerLost(t *testing.T) {
 		ended(t, ac, MediaLost)
 		ended(t, bc, Cancelled)
 		wantMediaLossReason(t, bc)
+
+		// RFC 3312 §8, as the Crosscall Core-Z5 does (call_precondition_failure_580/014-CANCEL).
+		for e := range bc.Events() {
+			if e.Request != nil && e.Request.Method == "CANCEL" {
+				wantPreconditionFailure(t, e.Request.Body)
+				break
+			}
+		}
 	})
 
-	// RFC 3312 §8: the callee rejects the INVITE with 580 (Precondition Failure), or 488 without preconditions, and
-	// no Reason: RELEASE_CAUSE is for BYE and CANCEL (TS 24.229 §7.2A.18.11).
+	// RFC 3312 §8: the callee rejects the INVITE with 580 (Precondition Failure), describing the failure, or 488
+	// without preconditions, with the Reason, as the Crosscall Core-Z5 does (call_precondition_failure_580/011-580).
 	for _, c := range []struct {
 		preconditions bool
 		code          int
@@ -408,13 +418,36 @@ func TestVoiceBearerLost(t *testing.T) {
 				t.Fatalf("Wait = %v, %v, want %d", res, err, c.code)
 			}
 
-			if r := res.Header.Get("Reason"); r != "" {
-				t.Errorf("Reason %q, want none", r)
+			if r := res.Header.Get("Reason"); !strings.Contains(r, "RELEASE_CAUSE") || !strings.Contains(r, "cause=3") {
+				t.Errorf("Reason %q, want RELEASE_CAUSE;cause=3", r)
+			}
+
+			if c.preconditions {
+				wantPreconditionFailure(t, res.Body)
+			} else if len(res.Body) != 0 {
+				t.Errorf("488 with a body:\n%s", res.Body)
 			}
 
 			ended(t, bc, MediaLost)
 			ended(t, ac, Rejected)
 		})
+	}
+}
+
+// wantPreconditionFailure checks the SDP of a precondition failure (RFC 3312 §8): every m-line at port 0, the local QoS
+// desired failing.
+func wantPreconditionFailure(t *testing.T, body []byte) {
+	t.Helper()
+
+	s := sdpOf(t, body)
+	if len(s.Media) == 0 {
+		t.Fatalf("failure SDP without m-lines:\n%s", body)
+	}
+
+	for _, m := range s.Media {
+		if m.Port() != 0 || !slices.Contains(m.Attrs("des"), "qos failure local sendrecv") {
+			t.Errorf("failure SDP:\n%s\nwant every m-line at port 0 with des:qos failure local", body)
+		}
 	}
 }
 
@@ -830,4 +863,56 @@ func TestChooseVideo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TS 24.229 §5.1.3.1, §5.1.5: the user ending a call says so, as phones do.
+func TestUserEndsCallReason(t *testing.T) {
+	wantUserEnds := func(t *testing.T, c *Call) {
+		t.Helper()
+
+		for _, r := range c.Reasons() {
+			if cause, _ := r.Cause(); r.Is(sip.ReasonReleaseCause) && cause == sip.ReleaseUserEndsCall {
+				return
+			}
+		}
+
+		t.Errorf("reasons %v, want RELEASE_CAUSE %d", c.Reasons(), sip.ReleaseUserEndsCall)
+	}
+
+	t.Run("BYE", func(t *testing.T) {
+		ctx := testContext(t)
+		a, b := pair(t)
+
+		ac, bc := connect(t, ctx, a, b, CallOptions{})
+
+		if err := ac.Bye(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		ended(t, bc, RemoteBye)
+		wantUserEnds(t, bc)
+	})
+
+	t.Run("CANCEL", func(t *testing.T) {
+		ctx := testContext(t)
+		a, b := pair(t)
+
+		ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		bc := incoming(t, b)
+
+		if err := bc.Ring(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := ac.Cancel(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		ended(t, bc, Cancelled)
+		wantUserEnds(t, bc)
+	})
 }

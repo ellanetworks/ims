@@ -466,19 +466,32 @@ func TestSessionExpiry(t *testing.T) {
 	ended(t, ac, RemoteBye)
 }
 
+// RFC 3261 §14.1: a re-INVITE refused with 491 is made once more, after up to 2 s for the callee, which does not own
+// the Call-ID; a second 491 is the caller's.
 func TestReinviteGlare(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
+	methods(ac)
 
 	ac.mu.Lock()
 	ac.leg.offering = true
 	ac.mu.Unlock()
 
+	start := time.Now()
+
 	err := bc.Hold(ctx)
 	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("Hold during an offer = %v, want 491", err)
+	}
+
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("retried after %s, want at most 2 s", elapsed)
+	}
+
+	if got := strings.Count(strings.Join(methods(ac), ","), "INVITE"); got != 2 {
+		t.Errorf("caller got %d re-INVITEs, want the one retried", got)
 	}
 
 	if d := bc.LocalSDP().MediaDirection(0); d != sdp.SendRecv {
@@ -491,6 +504,40 @@ func TestReinviteGlare(t *testing.T) {
 
 	if err := bc.Hold(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// RFC 3261 §14.1: once the other offer is done, the re-INVITE made once more succeeds.
+func TestReinviteGlareRetried(t *testing.T) {
+	ctx := testContext(t)
+	a, b := pair(t)
+
+	ac, bc := connect(t, ctx, a, b, CallOptions{})
+
+	ac.mu.Lock()
+	ac.leg.offering = true
+	ac.mu.Unlock()
+
+	held := make(chan error, 1)
+
+	go func() { held <- bc.Hold(ctx) }()
+
+	for e := range ac.Events() {
+		if e.Request != nil && e.Request.Method == "INVITE" {
+			break
+		}
+	}
+
+	ac.mu.Lock()
+	ac.leg.offering = false
+	ac.mu.Unlock()
+
+	if err := <-held; err != nil {
+		t.Fatalf("Hold = %v, want it done when made once more", err)
+	}
+
+	if d := bc.LocalSDP().MediaDirection(0); d != sdp.SendOnly {
+		t.Errorf("callee's description %s, want it holding", d)
 	}
 }
 
@@ -1243,9 +1290,14 @@ func TestUpdateGlare(t *testing.T) {
 	ac.leg.offering = true
 	ac.mu.Unlock()
 
+	// RFC 3311 §5.1: made once more, then the 491 is the caller's.
 	err := bc.update(ctx, bc.leg, true, nil)
 	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)
+	}
+
+	if got := strings.Count(strings.Join(methods(ac), ","), "UPDATE"); got != 2 {
+		t.Errorf("caller got %d UPDATEs, want the one retried", got)
 	}
 
 	if err := bc.Refresh(ctx); err != nil {

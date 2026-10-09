@@ -291,6 +291,53 @@ func (m *media) offeredDirection(i int) sdp.Direction {
 	return d
 }
 
+// failure is the SDP of a precondition failure (RFC 3312 §8), nil without preconditions: an m-line per m-line of
+// last, the last SDP received, at port 0, with the local QoS desired failing on those it has preconditions for. It is
+// neither an offer nor an answer: the session is left as it is.
+func (m *media) failure(last *sdp.Session) (*sdp.Session, error) {
+	if !m.precondition || last == nil {
+		return nil, nil
+	}
+
+	lines := m.header()
+
+	for _, lm := range last.Media {
+		desc, err := lm.Desc()
+		if err != nil {
+			return nil, fmt.Errorf("testue: failure: %w", err)
+		}
+
+		desc.Port = 0
+		lines = append(lines, "m="+desc.String())
+
+		pres, _ := lm.Preconditions()
+
+		remote := sdp.QoSNone
+
+		for _, p := range pres {
+			if p.Type == sdp.QoS && p.Kind == sdp.Current && p.Status == sdp.StatusLocal {
+				remote = p.Direction
+			}
+		}
+
+		if len(pres) > 0 {
+			lines = append(lines,
+				"a=curr:qos local none",
+				"a=curr:qos remote "+remote,
+				"a=des:qos failure local sendrecv",
+				"a=des:qos mandatory remote sendrecv",
+				"a=inactive")
+		}
+	}
+
+	s, err := sdp.Parse([]byte(strings.Join(lines, "\r\n") + "\r\n"))
+	if err != nil {
+		return nil, fmt.Errorf("testue: failure: %w", err)
+	}
+
+	return s, nil
+}
+
 func (m *media) header() []string {
 	ip := sdp.IP4
 	if m.addr.Is6() {
@@ -429,7 +476,11 @@ func (m *media) offer() (*sdp.Session, error) {
 
 // RFC 3264
 func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
-	lines := m.header()
+	// RFC 5939 §3.6.2: the answer is to the offer as the potential configurations selected leave it.
+	neg := negotiate(offer, func(om *sdp.Media) []uint8 { return payloadTypes(m.formats(om)) })
+	offer = neg.offer
+
+	lines := append(m.header(), neg.session...)
 	streams := make([]*stream, 0, len(offer.Media))
 	accepted := map[string]bool{}
 
@@ -440,13 +491,8 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 		}
 
 		var formats []format
-
-		switch {
-		case accepted[desc.Type] || om.Port() == 0:
-		case desc.Type == sdp.Audio:
-			formats = choose(om)
-		case desc.Type == sdp.Video && m.video:
-			formats = chooseVideo(om)
+		if !accepted[desc.Type] {
+			formats = m.formats(om)
 		}
 
 		if formats == nil {
@@ -467,14 +513,15 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 			s = cloneStreams(m.streams[i : i+1])[0]
 		}
 
-		var extra []string
+		s.formats, s.proto, s.feedback = formats, desc.Proto, nil
 
-		s.formats = formats
-		s.proto, extra = answerProto(om, desc.Proto)
+		// RFC 4585 §4.2: feedback goes with AVPF.
+		if strings.EqualFold(s.proto, avpf) {
+			s.feedback = answerFeedback(om, formats[0].Payload)
+		}
 
 		if s.kind == sdp.Video {
 			s.cvo = cvo(om)
-			s.feedback = answerFeedback(om, formats[0].Payload)
 		}
 
 		if _, err := m.receive(s, offer, i); err != nil {
@@ -483,7 +530,7 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 
 		qos := m.qos(s, sdp.StrengthMandatory, s.remoteQoS != sdp.QoSSendRecv)
 
-		lines = append(lines, m.mline(s, sdp.Effective(offer.MediaDirection(i), s.direction), qos, extra)...)
+		lines = append(lines, m.mline(s, sdp.Effective(offer.MediaDirection(i), s.direction), qos, neg.media[i])...)
 		streams = append(streams, s)
 	}
 
@@ -494,6 +541,32 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 	m.remote, m.streams = offer, streams
 
 	return m.build(lines)
+}
+
+// formats are the formats the UE takes of an offered m-line, none when it declines it.
+func (m *media) formats(om *sdp.Media) []format {
+	desc, err := om.Desc()
+	if err != nil || om.Port() == 0 || !slices.ContainsFunc(supportedProtos, func(p string) bool { return strings.EqualFold(p, desc.Proto) }) {
+		return nil
+	}
+
+	switch {
+	case desc.Type == sdp.Audio:
+		return choose(om)
+	case desc.Type == sdp.Video && m.video:
+		return chooseVideo(om)
+	}
+
+	return nil
+}
+
+func payloadTypes(formats []format) []uint8 {
+	out := make([]uint8, 0, len(formats))
+	for _, f := range formats {
+		out = append(out, f.Payload)
+	}
+
+	return out
 }
 
 // TS 26.114 §6.2.2.2
@@ -628,54 +701,6 @@ func answerFeedback(offer *sdp.Media, pt uint8) []string {
 	}
 
 	return out
-}
-
-// answerProto answers the transport of an offered m-line: an AVP m-line offering AVPF through SDP capability
-// negotiation is answered with AVPF and the configuration taken (RFC 5939 §3.6.2, IR.94 §3.3.2).
-func answerProto(offer *sdp.Media, proto string) (string, []string) {
-	if !strings.EqualFold(proto, avp) {
-		return proto, nil
-	}
-
-	caps := map[string]string{}
-
-	for _, v := range offer.Attrs("tcap") {
-		fields := strings.Fields(v)
-		if len(fields) < 2 {
-			continue
-		}
-
-		first, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-
-		for j, p := range fields[1:] {
-			caps[strconv.Itoa(first+j)] = p
-		}
-	}
-
-	for _, v := range offer.Attrs("pcfg") {
-		fields := strings.Fields(v)
-		if len(fields) < 2 {
-			continue
-		}
-
-		for _, f := range fields[1:] {
-			alts, ok := strings.CutPrefix(f, "t=")
-			if !ok {
-				continue
-			}
-
-			for t := range strings.SplitSeq(alts, "|") {
-				if strings.EqualFold(caps[t], avpf) {
-					return avpf, []string{"a=acfg:" + fields[0] + " t=" + t}
-				}
-			}
-		}
-	}
-
-	return proto, nil
 }
 
 // cvo returns the extmap the answer has for the video orientation the offer has, empty when it offers none: the

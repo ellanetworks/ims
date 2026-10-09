@@ -892,7 +892,7 @@ func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
 	}
 
 	if video {
-		p.log.Info("video bearer lost: continuing as voice", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
+		p.log.Info("video bearer lost: the call goes on without video", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
 			slog.String("ue", cr.key.ue.String()))
 	}
 

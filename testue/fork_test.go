@@ -1,7 +1,9 @@
 package testue
 
 import (
+	"net/netip"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -331,15 +333,31 @@ func TestCancelReason(t *testing.T) {
 }
 
 func TestContactParams(t *testing.T) {
-	u, _ := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "video"}}})
+	u, _ := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "+g.example"}}, Video: true})
 
 	contact, err := sip.ParseAddress(u.contact(5060))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if q, _ := contact.Params.Get("q"); q != "0.5" || !contact.Params.Has("video") || !contact.Params.Has("audio") {
+	if q, _ := contact.Params.Get("q"); q != "0.5" || !contact.Params.Has("+g.example") || !contact.Params.Has("audio") ||
+		!contact.Params.Has("video") || strings.Count(contact.String(), ";video") != 1 {
 		t.Errorf("Contact %s", contact)
+	}
+}
+
+// The media feature tags follow Config.Video: ContactParams cannot claim a medium the UE does not take.
+func TestContactParamsOwnedByTheUE(t *testing.T) {
+	for _, name := range ownContactParams {
+		cfg := Config{
+			IMSI: imsi, IMEI: imei, K: testK, OPc: testOPc, Plain: true,
+			PCSCF: netip.AddrPortFrom(loopback, 5060), Local: loopback,
+			ContactParams: sip.Params{{Name: strings.ToUpper(name)}},
+		}
+
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New with %s in ContactParams succeeded", name)
+		}
 	}
 }
 

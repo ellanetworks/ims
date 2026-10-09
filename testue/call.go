@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	mrand "math/rand/v2"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -1295,8 +1296,17 @@ func (c *Call) dialogLostLocked(l *leg) {
 	c.releaseLocked(l)
 }
 
-// update sends an UPDATE (RFC 3311), with an offer of the session as change, when not nil, leaves it.
+// update sends an UPDATE (RFC 3311), with an offer of the session as change, when not nil, leaves it. An offer is made
+// once more after a 491 (RFC 3311 §5.1).
 func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*media) error) error {
+	if !withOffer {
+		return c.updateOnce(ctx, l, false, nil)
+	}
+
+	return c.retryPending(ctx, func() error { return c.updateOnce(ctx, l, true, change) })
+}
+
+func (c *Call) updateOnce(ctx context.Context, l *leg, withOffer bool, change func(*media) error) error {
 	var (
 		previous mediaState
 		offered  bool
@@ -1454,12 +1464,15 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 }
 
 // RFC 3329, RFC 3261 §9.1
+// Cancel cancels the call the user ends before it is answered, with RELEASE_CAUSE 1 (TS 24.229 §5.1.3.1), as phones
+// do.
 func (c *Call) Cancel(ctx context.Context) error {
-	return c.cancel(ctx, Cancelled)
+	return c.cancel(ctx, Cancelled, nil, userEnds())
 }
 
-// cancel cancels the INVITE (RFC 3261 §9.1), the call ending with end and the CANCEL carrying extra.
-func (c *Call) cancel(ctx context.Context, end EndReason, extra ...sip.Field) error {
+// cancel cancels the INVITE (RFC 3261 §9.1), the call ending with end and the CANCEL carrying body, when not nil,
+// and extra.
+func (c *Call) cancel(ctx context.Context, end EndReason, body *sdp.Session, extra ...sip.Field) error {
 	c.mu.Lock()
 
 	if c.incoming || c.itx == nil {
@@ -1476,15 +1489,31 @@ func (c *Call) cancel(ctx context.Context, end EndReason, extra ...sip.Field) er
 	itx := c.itx
 	c.mu.Unlock()
 
-	if err := itx.Cancel(extra...); err != nil {
+	if err := itx.CancelWith(func(cancel *sip.Request) {
+		for _, f := range extra {
+			cancel.Header.Add(f.Name, f.Value)
+		}
+
+		if body != nil {
+			cancel.SetBody(sdp.ContentType, body.Bytes())
+		}
+	}); err != nil {
 		return fmt.Errorf("testue: CANCEL: %w", err)
 	}
 
 	return c.waitFor(ctx, func() bool { return c.state == CallTerminated })
 }
 
+// Bye ends the call the user hangs up, with RELEASE_CAUSE 1 (TS 24.229 §5.1.5), as phones do.
 func (c *Call) Bye(ctx context.Context) error {
-	return c.bye(ctx, LocalBye)
+	return c.bye(ctx, LocalBye, userEnds())
+}
+
+// userEnds is the Reason of a call the user ends (TS 24.229 §7.2A.18.11).
+func userEnds() sip.Field {
+	r, _ := sip.NewReason(sip.ReasonReleaseCause, sip.ReleaseUserEndsCall, sip.ReasonText(sip.ReasonReleaseCause, sip.ReleaseUserEndsCall))
+
+	return sip.Field{Name: "Reason", Value: r.String()}
 }
 
 // RFC 3261 §15.1.1
@@ -1569,8 +1598,58 @@ func (c *Call) Refresh(ctx context.Context) error {
 	return err
 }
 
-// reinvite offers the session as change leaves it (RFC 3261 §14.1), and restores it when the offer fails.
+// reinvite offers the session as change leaves it (RFC 3261 §14.1), and restores it when the offer fails. A stream it
+// added has its resources reported in an UPDATE once it completes (RFC 3312 §5).
 func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
+	c.mu.Lock()
+	l := c.leg
+	c.mu.Unlock()
+
+	if err := c.retryPending(ctx, func() error { return c.reinviteOnce(ctx, change) }); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	update := c.state == CallConfirmed && c.leg == l && l.m.precondition && !l.m.met() && !c.localOfferLocked(l)
+	c.mu.Unlock()
+
+	if update {
+		return c.update(ctx, l, true, nil)
+	}
+
+	return nil
+}
+
+// retryPending makes a request once more when it gets a 491 (Request Pending), after a random time: 2.1 to 4 s for
+// the owner of the Call-ID, the caller, and up to 2 s otherwise, in units of 10 ms (RFC 3261 §14.1, RFC 3311 §5.1).
+func (c *Call) retryPending(ctx context.Context, send func() error) error {
+	err := send()
+
+	var rerr *ResponseError
+	if !errors.As(err, &rerr) || rerr.Response.StatusCode != 491 {
+		return err
+	}
+
+	low, high := 0, 200
+	if !c.incoming {
+		low, high = 210, 400
+	}
+
+	timer := time.NewTimer(time.Duration(low+mrand.IntN(high-low+1)) * 10 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-c.done:
+		return ErrCallEnded
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return send()
+}
+
+func (c *Call) reinviteOnce(ctx context.Context, change func(*media) error) error {
 	// RFC 3264 §4: the offer waits for the one in progress, such as an UPDATE of the call's setup still unanswered.
 	if err := c.waitFor(ctx, func() bool {
 		return c.state == CallTerminated || c.accepted == nil && !c.localOfferLocked(c.leg)
@@ -1683,20 +1762,7 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 		<-sent
 	}
 
-	if err != nil {
-		return err
-	}
-
-	// RFC 3312 §5: a stream the re-INVITE added has its resources reported in an UPDATE.
-	c.mu.Lock()
-	update := c.state == CallConfirmed && c.leg == l && l.m.precondition && !l.m.met() && !c.localOfferLocked(l)
-	c.mu.Unlock()
-
-	if update {
-		return c.update(ctx, l, true, nil)
-	}
-
-	return nil
+	return err
 }
 
 // AddVideo adds video to the call (IR.94 §2.2.2), in a re-INVITE.
@@ -1758,10 +1824,10 @@ func (c *Call) BearerLost(ctx context.Context, kind string) error {
 	return c.update(ctx, l, true, remove)
 }
 
-// release ends the call in whatever state it is in: a BYE once confirmed and a CANCEL while the INVITE is pending,
-// with the Reason (RFC 3326, TS 24.229 §5.1.3.1, §5.1.5, §7.2A.18.11); a 580 (Precondition Failure, RFC 3312 §8) or
-// 488 (Not Acceptable Here) to an INVITE not answered yet. RELEASE_CAUSE is for requests only, and a 503 would have
-// the caller try elsewhere (RFC 3261 §21.5.4).
+// release ends the call in whatever state it is in, with the Reason (RFC 3326, TS 24.229 §5.1.3.1, §5.1.5,
+// §7.2A.18.11): a BYE once confirmed, a CANCEL while the INVITE is pending, and a 580 (Precondition Failure) or, without
+// preconditions, a 488 (Not Acceptable Here) to an INVITE not answered yet; a 503 would have the caller try elsewhere
+// (RFC 3261 §21.5.4). The CANCEL and the 580 have the SDP of the precondition failure (RFC 3312 §8), as phones do.
 func (c *Call) release(ctx context.Context, end EndReason, protocol string, cause int) error {
 	reason, err := sip.NewReason(protocol, cause, sip.ReasonText(protocol, cause))
 	if err != nil {
@@ -1772,18 +1838,30 @@ func (c *Call) release(ctx context.Context, end EndReason, protocol string, caus
 
 	c.mu.Lock()
 	state, incoming, precondition := c.state, c.incoming, c.leg.m.precondition
+
+	// RFC 3312 §8: the failure is described on the last SDP received.
+	last := c.leg.m.remote
+	if c.remoteOfferLocked() {
+		last = c.offer
+	}
+
+	failure, err := c.leg.m.failure(last)
 	c.mu.Unlock()
+
+	if err != nil {
+		return err
+	}
 
 	switch {
 	case state == CallConfirmed:
 		return c.bye(ctx, end, field)
 	case incoming && precondition:
-		return c.reject(580, end)
+		return c.reject(580, end, failure, field)
 	case incoming:
-		return c.reject(488, end)
+		return c.reject(488, end, nil, field)
 	}
 
-	return c.cancel(ctx, end, field)
+	return c.cancel(ctx, end, failure, field)
 }
 
 type reinviteClient struct {
@@ -2449,11 +2527,12 @@ func (c *Call) retransmitAccepted(a *accepted) {
 }
 
 func (c *Call) Reject(code int) error {
-	return c.reject(code, Rejected)
+	return c.reject(code, Rejected, nil)
 }
 
-// reject answers the INVITE with code, the call ending with end and the response carrying extra.
-func (c *Call) reject(code int, end EndReason, extra ...sip.Field) error {
+// reject answers the INVITE with code, the call ending with end and the response carrying body, when not nil, and
+// extra.
+func (c *Call) reject(code int, end EndReason, body *sdp.Session, extra ...sip.Field) error {
 	if code < 300 || code > 699 {
 		return fmt.Errorf("testue: Reject with %d", code)
 	}
@@ -2473,6 +2552,10 @@ func (c *Call) reject(code int, end EndReason, extra ...sip.Field) error {
 
 	for _, f := range extra {
 		res.Header.Add(f.Name, f.Value)
+	}
+
+	if body != nil {
+		res.SetBody(sdp.ContentType, body.Bytes())
 	}
 
 	if c.leg.d != nil {
