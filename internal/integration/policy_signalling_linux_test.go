@@ -39,6 +39,11 @@ func TestPolicySignallingSession(t *testing.T) {
 				}
 
 				s.pol.wantEnd(session, rx.TerminationLogout)
+
+				// The session was opened and closed, each with a request answered with success.
+				if n := s.peerRequests(t, iface, "success"); n < 2 {
+					t.Errorf("%s requests answered with success = %v, want at least 2", iface, n)
+				}
 			})
 		}
 	})

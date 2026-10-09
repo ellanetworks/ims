@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // The pools a method runs its statements on, which label its metrics: conn, the writer that also serves the reads
-// on the call path, and read, the readers of the long searches.
+// on the call path, and read, the readers of the searches and counts that need not wait on it.
 const (
 	poolWrite = "write"
 	poolRead  = "read"
@@ -67,15 +66,10 @@ func failed(err error) bool {
 		!errors.Is(err, ErrSubscriptionExists) && !errors.Is(err, ErrDuplicateICID)
 }
 
-// Collectors are the metrics of the database: its calls, its connection pools and its size on disk.
+// Collectors are the metrics of the database: its calls and its size on disk. A call's duration includes the wait
+// for a connection of its pool.
 func (d *DB) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{
-		d.metrics.duration,
-		d.metrics.errors,
-		collectors.NewDBStatsCollector(d.conn, poolWrite),
-		collectors.NewDBStatsCollector(d.read, poolRead),
-		storageCollector{path: d.path},
-	}
+	return []prometheus.Collector{d.metrics.duration, d.metrics.errors, storageCollector{path: d.path}}
 }
 
 var storageDesc = prometheus.NewDesc(

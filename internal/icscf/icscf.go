@@ -9,6 +9,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -54,6 +55,8 @@ type Config struct {
 
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
+	// RegistrationAttempts, if any, counts the registration attempts the I-CSCF answers.
+	RegistrationAttempts *regmetrics.Registrations
 
 	Logger *slog.Logger
 }
@@ -174,6 +177,7 @@ func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
 	res := sip.NewResponse(tx.Request(), code, "")
 
 	i.cfg.Records.RejectingRequest(tx.Request(), code, tx.ToTag())
+	i.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
 
 	if err := i.cfg.Proxy.Relay(tx, res); err == nil {
 		return
@@ -185,6 +189,7 @@ func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
 // respond answers a request with a response of the I-CSCF's.
 func (i *ICSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	i.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
+	i.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
 	i.send(tx, res)
 }
 

@@ -2,6 +2,11 @@ package db
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -61,4 +66,70 @@ func TestMetricsLint(t *testing.T) {
 			t.Errorf("lint: %s: %s", p.Metric, p.Text)
 		}
 	}
+}
+
+// TestEveryCallIsObserved checks that each exported method of DB that calls the database starts with
+// defer d.observe(...)(), so that a new one cannot be left out of the metrics.
+func TestEveryCallIsObserved(t *testing.T) {
+	unobserved := map[string]bool{"Close": true, "Collectors": true}
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || !fn.Name.IsExported() || unobserved[fn.Name.Name] || !onDB(fn) {
+				continue
+			}
+
+			if !startsObserved(fn) {
+				t.Errorf("%s: DB.%s does not start with defer d.observe(...)()", fset.Position(fn.Pos()), fn.Name.Name)
+			}
+		}
+	}
+}
+
+func onDB(fn *ast.FuncDecl) bool {
+	star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+
+	id, ok := star.X.(*ast.Ident)
+
+	return ok && id.Name == "DB"
+}
+
+func startsObserved(fn *ast.FuncDecl) bool {
+	if fn.Body == nil || len(fn.Body.List) == 0 {
+		return false
+	}
+
+	d, ok := fn.Body.List[0].(*ast.DeferStmt)
+	if !ok {
+		return false
+	}
+
+	call, ok := d.Call.Fun.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+
+	return ok && sel.Sel.Name == "observe"
 }

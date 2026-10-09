@@ -107,16 +107,12 @@ func (rr *registerRequest) deregister() bool {
 func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing) {
 	rr, res := r.parse(req)
 	if res != nil {
-		r.cfg.Metrics.registration(res, false)
+		r.cfg.RegistrationAttempts.Answered(req, res, false)
 		return res, nil
 	}
 
 	res = r.handleRegister(ctx, rr)
-
-	// A de-registration is not an attempt to register.
-	if !rr.deregister() {
-		r.cfg.Metrics.registration(res, rr.authFailed)
-	}
+	r.cfg.RegistrationAttempts.Answered(req, res, rr.authFailed)
 
 	return res, rr.out
 }

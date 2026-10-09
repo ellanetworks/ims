@@ -16,6 +16,7 @@
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
 - Web UI and HTTP API
+- Prometheus metrics
 
 ## How-to Guides
 

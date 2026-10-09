@@ -52,12 +52,13 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 	return impis, total, nil
 }
 
-// CountRegisteredIMPIs returns how many private identities are registered at now.
+// CountRegisteredIMPIs returns how many private identities are registered at now. It reads on a reader, so that
+// counting for the metrics never holds up the writer that the call path uses.
 func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolRead, &err)()
 
 	var n int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
+	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
 		now.UTC().UnixNano(), "", "", "").Scan(&n); err != nil {
 		return 0, fmt.Errorf("count registered private identities: %w", err)
 	}

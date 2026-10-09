@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/policy"
+	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -54,6 +55,8 @@ type Config struct {
 
 	// Records, if any, keeps a record of each call from a UE.
 	Records *callrecords.Recorder
+	// RegistrationAttempts, if any, counts the registration attempts the P-CSCF answers.
+	RegistrationAttempts *regmetrics.Registrations
 
 	Trust *trust.Domain
 
@@ -728,7 +731,10 @@ func (p *PCSCF) unsubscribeIfIdle(impi string) {
 }
 
 func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
-	if err := p.cfg.Proxy.Relay(tx, sip.NewResponse(req, code, "")); err != nil {
+	res := sip.NewResponse(req, code, "")
+	p.cfg.RegistrationAttempts.Answered(req, res, false)
+
+	if err := p.cfg.Proxy.Relay(tx, res); err != nil {
 		p.log.Debug("P-CSCF response failed", slog.Int("code", code), slog.Any("error", err))
 	}
 
@@ -748,7 +754,10 @@ func (p *PCSCF) HandleTransactionError(tx *transaction.ServerTransaction, err er
 	p.cfg.Fallback.HandleTransactionError(tx, err)
 }
 
+// respond answers a request with a response of the P-CSCF's.
 func (p *PCSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
+	p.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
+
 	if err := tx.Respond(res); err != nil {
 		p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}

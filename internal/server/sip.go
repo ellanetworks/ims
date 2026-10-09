@@ -86,6 +86,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
+	domain := trust.New(cfg.SIP.Addresses, nil)
+	observed := observedDiameter{node, m}
 	roles := newDispatcher(logger)
 	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
 
@@ -116,7 +118,14 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 
 			return sip.Flow{}, false, nil
 		},
-		OnServerDone: roles.logTransaction,
+		OnServerDone: func(req *sip.Request, res *sip.Response, elapsed time.Duration) {
+			roles.logTransaction(req, res, elapsed)
+
+			// The P-CSCF's responses to UEs, rather than to the nodes of the IMS.
+			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !domain.Trusted(req.Flow.Remote.Addr()) {
+				m.sipResponse(req, res)
+			}
+		},
 	})
 
 	layer := s.layer
@@ -161,7 +170,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	}
 
 	hss, _ := st.PeerServing(settings.ApplicationCx)
-	domain := trust.New(cfg.SIP.Addresses, nil)
 	homeDomain := op.HomeDomain()
 
 	s.registrar = scscf.New(scscf.Config{
@@ -172,14 +180,14 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		ReauthInterval: tm.reauthInterval,
 		ReauthExpires:  tm.reauthExpires,
 
-		HSS:       scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
-		Diameter:  node,
-		DB:        database,
-		Records:   records,
-		Metrics:   m.scscf,
-		Layer:     layer,
-		Listeners: s.bound(roleSCSCF),
-		Logger:    logger,
+		HSS:                  scscf.HSS{ID: hss.ID, Host: hss.Host, Realm: hss.Realm},
+		Diameter:             observed,
+		DB:                   database,
+		Records:              records,
+		RegistrationAttempts: m.registrations,
+		Layer:                layer,
+		Listeners:            s.bound(roleSCSCF),
+		Logger:               logger,
 	})
 
 	if rtr != nil {
@@ -206,12 +214,13 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
-		Policy:   pol,
-		NoAnswer: tm.noAnswer,
-		Records:  records,
-		Trust:    domain,
-		Fallback: ph,
-		Logger:   logger,
+		Policy:               pol,
+		NoAnswer:             tm.noAnswer,
+		Records:              records,
+		RegistrationAttempts: m.registrations,
+		Trust:                domain,
+		Fallback:             ph,
+		Logger:               logger,
 	})
 
 	if err := pc.Restore(ctx); err != nil {
@@ -239,10 +248,11 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
-		HSS:      icscf.HSS{ID: hss.ID, Realm: hss.Realm},
-		Diameter: node,
-		Records:  records,
-		Logger:   logger,
+		HSS:                  icscf.HSS{ID: hss.ID, Realm: hss.Realm},
+		Diameter:             observed,
+		Records:              records,
+		RegistrationAttempts: m.registrations,
+		Logger:               logger,
 	}))
 
 	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
@@ -433,6 +443,14 @@ func (d *dispatcher) logTransaction(req *sip.Request, res *sip.Response, elapsed
 
 	attrs = append(attrs, slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
 	d.log.LogAttrs(context.Background(), level, "SIP transaction", attrs...)
+}
+
+// is reports whether the role served on the port is role.
+func (d *dispatcher) is(port uint16, role string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.names[port] == role
 }
 
 func (d *dispatcher) role(f sip.Flow) transaction.Handler {

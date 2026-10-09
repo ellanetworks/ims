@@ -23,6 +23,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
+	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -396,18 +397,18 @@ func newHarness(t *testing.T) *harness {
 	h.icscf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	h.cfg = Config{
-		HomeDomain: homeDomain,
-		Name:       sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
-		MinExpires: 60 * time.Second,
-		MaxExpires: 3600 * time.Second,
-		HSS:        HSS{ID: "hss", Host: hssHost, Realm: homeDomain},
-		Diameter:   h.loop,
-		DB:         database,
-		Metrics:    NewMetrics(),
-		Clock:      h.clock,
-		Logger:     slog.New(slog.DiscardHandler),
-		Layer:      layer,
-		Listeners:  []netip.AddrPort{h.scscf},
+		HomeDomain:           homeDomain,
+		Name:                 sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
+		MinExpires:           60 * time.Second,
+		MaxExpires:           3600 * time.Second,
+		HSS:                  HSS{ID: "hss", Host: hssHost, Realm: homeDomain},
+		Diameter:             h.loop,
+		DB:                   database,
+		RegistrationAttempts: regmetrics.New(),
+		Clock:                h.clock,
+		Logger:               slog.New(slog.DiscardHandler),
+		Layer:                layer,
+		Listeners:            []netip.AddrPort{h.scscf},
 	}
 
 	h.start()

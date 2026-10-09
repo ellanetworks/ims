@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -76,8 +77,8 @@ type Config struct {
 
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
-	// Metrics, if any, counts the registrations.
-	Metrics *Metrics
+	// RegistrationAttempts, if any, counts the registration attempts the S-CSCF answers.
+	RegistrationAttempts *regmetrics.Registrations
 
 	Layer     *transaction.Layer
 	Listeners []netip.AddrPort
@@ -166,7 +167,7 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func
 	ctx, done, ok := r.begin(ctx)
 	if !ok {
 		res := retryLater(req)
-		r.cfg.Metrics.registration(res, false)
+		r.cfg.RegistrationAttempts.Answered(req, res, false)
 		respond(res)
 
 		return

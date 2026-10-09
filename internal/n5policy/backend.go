@@ -43,8 +43,10 @@ type Config struct {
 	Notify string
 	// TLS are the credentials of the P-CSCF over https: as the client of the PCF, and as the server of its
 	// notifications.
-	TLS    *sbitls.Credentials
-	Logger *slog.Logger
+	TLS *sbitls.Credentials
+	// Observe, if set, is called after each request to the PCF, as n5.Config's.
+	Observe func(status int, err error, elapsed time.Duration)
+	Logger  *slog.Logger
 }
 
 // Backend is the policy backend over N5. It is also the HTTP handler of the PCF's notifications.
@@ -91,7 +93,7 @@ type Status struct {
 var _ policy.Backend = (*Backend)(nil)
 
 func New(cfg Config) (*Backend, error) {
-	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS})
+	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS, Observe: cfg.Observe})
 	if err != nil {
 		return nil, err
 	}

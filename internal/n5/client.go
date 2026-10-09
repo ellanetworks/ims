@@ -42,6 +42,9 @@ type Config struct {
 	// PingInterval is how long a connection may stay silent before a PING checks it (TS 29.500 §5.2.6).
 	// It defaults to, and is at least, MinPingInterval.
 	PingInterval time.Duration
+	// Observe, if set, is called after each request with how long it took, and with the status of the response
+	// or, when none came, the error.
+	Observe func(status int, err error, elapsed time.Duration)
 }
 
 // Client invokes Npcf_PolicyAuthorization on one PCF, over HTTP/2: with prior knowledge for http (RFC 9113 §3.3),
@@ -51,6 +54,7 @@ type Client struct {
 	root      *url.URL
 	userAgent string
 	tls       *sbitls.Credentials
+	observe   func(status int, err error, elapsed time.Duration)
 	http      *http.Client
 	transport *http.Transport
 	now       func() time.Time
@@ -80,7 +84,7 @@ func New(cfg Config) (*Client, error) {
 
 	cfg.PingInterval = max(cfg.PingInterval, MinPingInterval)
 
-	c := &Client{root: root, userAgent: cfg.UserAgent, tls: cfg.TLS, now: time.Now}
+	c := &Client{root: root, userAgent: cfg.UserAgent, tls: cfg.TLS, observe: cfg.Observe, now: time.Now}
 
 	var protocols http.Protocols
 
@@ -341,7 +345,10 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 	req.Header.Set("Accept", ContentJSON+", "+ContentProblem)
 	req.Header.Set("User-Agent", c.userAgent)
 
+	start := time.Now()
 	resp, err := c.http.Do(req)
+	c.report(resp, err, time.Since(start))
+
 	if err != nil {
 		// A redirection that was not followed still answered the request.
 		if resp != nil {
@@ -374,6 +381,20 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 	}
 
 	return r, nil
+}
+
+// report tells Observe of a request, answered with resp or not with err.
+func (c *Client) report(resp *http.Response, err error, elapsed time.Duration) {
+	if c.observe == nil {
+		return
+	}
+
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+
+	c.observe(status, err, elapsed)
 }
 
 // permanentURL returns the URI a request ended at, following only permanent redirections (RFC 9110 §15.4.9).

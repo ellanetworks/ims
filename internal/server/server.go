@@ -118,7 +118,9 @@ func (s *Server) Start(ctx context.Context) error {
 	s.database = database
 	s.settings = live
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
-	s.metrics = newMetrics(database, s.records)
+	s.metrics = newMetrics(database, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
+		return live.Get().Peers, coreView{s}.Peers()
+	})
 
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
@@ -205,7 +207,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}()
 	}
 
-	pf, err := newPolicyFunction(ctx, cfg, st, node, s.Logger)
+	pf, err := newPolicyFunction(ctx, cfg, st, node, s.metrics, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		return nil, err

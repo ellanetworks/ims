@@ -30,7 +30,7 @@ type policyFunction struct {
 	ln      net.Listener
 }
 
-func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node,
+func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node, m *metrics,
 	logger *slog.Logger,
 ) (*policyFunction, error) {
 	pf := &policyFunction{}
@@ -39,7 +39,7 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 	case settings.PolicyRx:
 		p, _ := s.PeerServing(settings.ApplicationRx)
 		pf.rx = rxpolicy.New(rxpolicy.Config{
-			Diameter: node, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
+			Diameter: observedDiameter{node, m}, PCRF: rxpolicy.PCRF{ID: p.ID, Host: p.Host, Realm: p.Realm},
 		})
 		pf.backend = pf.rx
 
@@ -64,7 +64,9 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 		return nil, fmt.Errorf("N5: %w", err)
 	}
 
-	b, err := n5policy.New(n5policy.Config{PCF: s.Policy.PCFURI, Notify: cfg.N5NotifyURI(), TLS: creds, Logger: logger})
+	b, err := n5policy.New(n5policy.Config{
+		PCF: s.Policy.PCFURI, Notify: cfg.N5NotifyURI(), TLS: creds, Observe: m.observeN5, Logger: logger,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("N5: %w", err)
 	}
