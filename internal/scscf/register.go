@@ -36,6 +36,9 @@ type registerRequest struct {
 	// regID is set when a Contact has a reg-id, used or not, and outbound when the UE supports
 	// outbound (RFC 5626 §4.2.1).
 	regID, outbound bool
+
+	// authFailed reports that the UE failed IMS-AKA.
+	authFailed bool
 }
 
 type contactRequest struct {
@@ -104,10 +107,14 @@ func (rr *registerRequest) deregister() bool {
 func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing) {
 	rr, res := r.parse(req)
 	if res != nil {
+		r.cfg.RegistrationAttempts.Answered(req, res, false)
 		return res, nil
 	}
 
-	return r.handleRegister(ctx, rr), rr.out
+	res = r.handleRegister(ctx, rr)
+	r.cfg.RegistrationAttempts.Answered(req, res, rr.authFailed)
+
+	return res, rr.out
 }
 
 func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *sip.Response {
@@ -414,6 +421,8 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 
 func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, ch *challenge) *sip.Response {
 	r.dropChallenge(rr.authKey(), ch)
+
+	rr.authFailed = true
 
 	r.log.Info("REGISTER failed authentication", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 

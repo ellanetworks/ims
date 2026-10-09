@@ -31,6 +31,7 @@ const (
 )
 
 type callScene struct {
+	srv   *Server
 	scscf netip.AddrPort
 
 	alice      *siptest.Peer
@@ -83,6 +84,7 @@ func newCallScene(t *testing.T, numbering *settings.Numbering) *callScene {
 	waitOpen(t, srv, "hss")
 
 	sc := &callScene{
+		srv:   srv,
 		scscf: sipListener(t, srv, roleSCSCF, loopback),
 		alice: newPeer(t, srv, netip.AddrPortFrom(loopback, 6100)),
 		bob:   newPeer(t, srv, netip.AddrPortFrom(loopback, 6101)),

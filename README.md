@@ -16,6 +16,7 @@
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
 - Web UI and HTTP API
+- Prometheus metrics
 
 ## How-to Guides
 
@@ -93,6 +94,27 @@ See [`ims.yaml`](ims.yaml).
 ### API
 
 [`openapi.yaml`](internal/api/openapi.yaml), served at `GET /api/v1/openapi.yaml`.
+
+### Metrics
+
+Prometheus metrics, served at `GET /api/v1/metrics`.
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `ellaims_build_info` | Gauge | Always 1; the version and revision of the running build are in its labels |
+| `ellaims_registered_subscribers` | Gauge | Subscribers registered now |
+| `ellaims_registration_attempts_total` | Counter | Registrations and re-registrations, by result (`accept`, `auth_failure`, `reject`) |
+| `ellaims_active_calls` | Gauge | Calls in progress |
+| `ellaims_calls_total` | Counter | Calls that ended, by outcome (`answered`, `cancelled`, `busy`, `rejected`, `no_answer`, `unavailable`, `failed`) |
+| `ellaims_sip_responses_total` | Counter | Final responses the P-CSCF sent to phones, by method and status class |
+| `ellaims_diameter_peer_up` | Gauge | 1 if the connection to a Diameter peer (HSS, PCRF) is open, by peer and application |
+| `ellaims_peer_requests_total` | Counter | Requests to the HSS and the policy function, by interface (`cx`, `rx`, `n5`) and result (`success`, `failure`, `error`, `timeout`) |
+| `ellaims_peer_request_duration_seconds` | Histogram | How long requests to the HSS and the policy function take, by interface |
+| `ellaims_database_query_duration_seconds` | Histogram | How long database calls take, by connection pool (`write`, `read`) |
+| `ellaims_database_query_errors_total` | Counter | Database calls that failed, by connection pool |
+| `ellaims_database_storage_bytes` | Gauge | Size of the database on disk, by file (`main`, `wal`) |
+| `go_*` | Gauge, Counter, Summary | Go runtime health: goroutines, heap, garbage-collection pauses |
+| `process_*` | Gauge, Counter | Process health: memory, CPU, open file descriptors, start time |
 
 ### Compatibility
 

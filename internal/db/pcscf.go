@@ -43,7 +43,9 @@ const pcscfRegistrationColumns = `id, impi, instance_id, reg_id, flow_token, tra
 	contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id, policy_ref,
 	signalling_lost`
 
-func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PCSCFRegistration, error) {
+func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (_ PCSCFRegistration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if !r.UEAddress.IsValid() || !r.PCSCFAddress.IsValid() {
 		return PCSCFRegistration{}, errors.New("save P-CSCF registration: invalid address")
 	}
@@ -101,7 +103,9 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (PC
 	return saved, nil
 }
 
-func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) error {
+func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	res, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete P-CSCF registration: %w", err)
@@ -114,7 +118,9 @@ func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (d *DB) ListPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, error) {
+func (d *DB) ListPCSCFRegistrations(ctx context.Context) (_ []PCSCFRegistration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	regs, bad, err := d.listPCSCFRegistrations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF registrations: %w", err)
@@ -241,7 +247,9 @@ type PCSCFSubscription struct {
 
 const pcscfSubscriptionColumns = `id, impi, impu, call_id, local_tag, dialog, version, expires_at`
 
-func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (PCSCFSubscription, error) {
+func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (_ PCSCFSubscription, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	saved, err := scanPCSCFSubscription(d.conn.QueryRowContext(ctx,
 		`INSERT INTO pcscf_subscriptions (impi, impu, call_id, local_tag, dialog, version, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -257,7 +265,9 @@ func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (PC
 	return saved, nil
 }
 
-func (d *DB) DeletePCSCFSubscription(ctx context.Context, impi string) error {
+func (d *DB) DeletePCSCFSubscription(ctx context.Context, impi string) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	res, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_subscriptions WHERE impi = ?`, impi)
 	if err != nil {
 		return fmt.Errorf("delete P-CSCF subscription: %w", err)
@@ -270,7 +280,9 @@ func (d *DB) DeletePCSCFSubscription(ctx context.Context, impi string) error {
 	return nil
 }
 
-func (d *DB) ListPCSCFSubscriptions(ctx context.Context) ([]PCSCFSubscription, error) {
+func (d *DB) ListPCSCFSubscriptions(ctx context.Context) (_ []PCSCFSubscription, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	rows, err := d.conn.QueryContext(ctx, `SELECT `+pcscfSubscriptionColumns+` FROM pcscf_subscriptions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF subscriptions: %w", err)

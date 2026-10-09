@@ -9,7 +9,9 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
-func (d *DB) GetSettings(ctx context.Context) (settings.Settings, error) {
+func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	var s settings.Settings
 
 	o := &s.Operator
@@ -19,8 +21,6 @@ func (d *DB) GetSettings(ctx context.Context) (settings.Settings, error) {
 		&o.Numbering.InternationalPrefix); err != nil {
 		return settings.Settings{}, fmt.Errorf("get operator: %w", err)
 	}
-
-	var err error
 
 	if s.Peers, err = d.peers(ctx); err != nil {
 		return settings.Settings{}, err
@@ -86,7 +86,9 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 	return peers, nil
 }
 
-func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) error {
+func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if _, err := d.conn.ExecContext(ctx, `UPDATE operator SET mcc = ?, mnc = ?, country_code = ?, national_prefix = ?,
 		international_prefix = ? WHERE id = 1`, o.MCC, o.MNC, o.Numbering.CountryCode, o.Numbering.NationalPrefix,
 		o.Numbering.InternationalPrefix); err != nil {
@@ -96,7 +98,9 @@ func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) error {
 	return nil
 }
 
-func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) error {
+func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if _, err := d.conn.ExecContext(ctx, `INSERT INTO diameter_peers (id, host, realm, address, port, transport,
 		applications) VALUES (?, ?, ?, ?, ?, ?, ?)`, peerRow(p)...); err != nil {
 		return fmt.Errorf("create Diameter peer: %w", err)
@@ -105,7 +109,9 @@ func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) error {
 	return nil
 }
 
-func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) error {
+func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	row := peerRow(p)
 
 	res, err := d.conn.ExecContext(ctx, `UPDATE diameter_peers SET host = ?, realm = ?, address = ?, port = ?,
@@ -121,7 +127,9 @@ func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) error {
 	return nil
 }
 
-func (d *DB) DeletePeer(ctx context.Context, id string) error {
+func (d *DB) DeletePeer(ctx context.Context, id string) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	res, err := d.conn.ExecContext(ctx, `DELETE FROM diameter_peers WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete Diameter peer: %w", err)
@@ -134,7 +142,9 @@ func (d *DB) DeletePeer(ctx context.Context, id string) error {
 	return nil
 }
 
-func (d *DB) UpdatePolicy(ctx context.Context, p settings.Policy) error {
+func (d *DB) UpdatePolicy(ctx context.Context, p settings.Policy) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if _, err := d.conn.ExecContext(ctx, `UPDATE policy SET interface = ?, pcf_uri = ? WHERE id = 1`, string(p.Interface),
 		p.PCFURI); err != nil {
 		return fmt.Errorf("update policy: %w", err)
@@ -143,7 +153,9 @@ func (d *DB) UpdatePolicy(ctx context.Context, p settings.Policy) error {
 	return nil
 }
 
-func (d *DB) UpdateCallRecords(ctx context.Context, c settings.CallRecords) error {
+func (d *DB) UpdateCallRecords(ctx context.Context, c settings.CallRecords) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if _, err := d.conn.ExecContext(ctx, `UPDATE call_record_settings SET retention_days = ? WHERE id = 1`,
 		c.RetentionDays); err != nil {
 		return fmt.Errorf("update call record settings: %w", err)

@@ -72,7 +72,9 @@ const (
 		impu, registered_at`
 )
 
-func (d *DB) SaveRegistration(ctx context.Context, r Registration) (Registration, error) {
+func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return Registration{}, fmt.Errorf("save registration: %w", err)
@@ -179,7 +181,9 @@ func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Bindin
 	return id, err
 }
 
-func (d *DB) DeleteRegistration(ctx context.Context, id int64) error {
+func (d *DB) DeleteRegistration(ctx context.Context, id int64) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	res, err := d.conn.ExecContext(ctx, `DELETE FROM registrations WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete registration %d: %w", id, err)
@@ -192,7 +196,9 @@ func (d *DB) DeleteRegistration(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) ([]Registration, error) {
+func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) (_ []Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	regs, err := queryRegistrations(ctx, d.conn,
 		`SELECT `+registrationColumns+` FROM registrations WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
@@ -202,7 +208,9 @@ func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) ([]Regist
 	return regs, nil
 }
 
-func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) ([]Registration, error) {
+func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) (_ []Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	regs, err := queryRegistrations(ctx, d.conn,
 		`SELECT `+registrationColumns+` FROM registrations
 		WHERE id IN (SELECT registration_id FROM registration_identities WHERE key = ?) ORDER BY id`, key)
@@ -214,7 +222,9 @@ func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) ([]Reg
 }
 
 // ListRegistrationsByIdentities returns the registrations holding any of the identity keys, each once.
-func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) ([]Registration, error) {
+func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (_ []Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	if len(keys) == 0 {
 		return []Registration{}, nil
 	}
@@ -235,7 +245,9 @@ func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (
 	return regs, nil
 }
 
-func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Registration, int, error) {
+func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) (_ []Registration, _ int, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	var total int
 	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM registrations`).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("list registrations: %w", err)
@@ -250,7 +262,9 @@ func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) ([]Regist
 	return regs, total, nil
 }
 
-func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) ([]string, error) {
+func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) (_ []string, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	rows, err := d.conn.QueryContext(ctx,
 		`SELECT r.impi FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.expires_at <= ?
 		UNION SELECT impi FROM reg_subscriptions WHERE expires_at <= ?
@@ -404,7 +418,9 @@ func scanRegistration(row scanner) (Registration, error) {
 }
 
 // GetBinding returns the binding with the ID, and the private identity of its registration set.
-func (d *DB) GetBinding(ctx context.Context, id int64) (Binding, string, error) {
+func (d *DB) GetBinding(ctx context.Context, id int64) (_ Binding, _ string, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	var (
 		b                       Binding
 		impi                    string
@@ -414,7 +430,7 @@ func (d *DB) GetBinding(ctx context.Context, id int64) (Binding, string, error) 
 		regID                   sql.NullInt64
 	)
 
-	err := d.conn.QueryRowContext(ctx,
+	err = d.conn.QueryRowContext(ctx,
 		`SELECT b.id, b.registration_id, b.uri, b.instance_id, b.reg_id, b.params, b.path, b.call_id, b.cseq, b.expires_at,
 			b.event, b.impu, b.registered_at, r.impi
 		FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.id = ?`, id).Scan(

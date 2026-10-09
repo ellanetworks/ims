@@ -89,6 +89,7 @@ type Recorder struct {
 	clock      Clock
 	log        *slog.Logger
 	maxUnsaved int
+	metrics    metrics
 
 	// wake tells the writer that records changed.
 	wake chan struct{}
@@ -146,7 +147,7 @@ func New(cfg Config) *Recorder {
 	r := &Recorder{
 		store: cfg.Store, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
-		calls: map[string]*call{}, sessions: map[string]*call{},
+		calls: map[string]*call{}, sessions: map[string]*call{}, metrics: newMetrics(),
 	}
 
 	if r.clock == nil {
@@ -208,6 +209,7 @@ func (r *Recorder) Attempt(a Attempt) {
 		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(),
 	}}
 	r.calls[a.ICID] = c
+	r.metrics.active.Inc()
 
 	// RFC 3261 §8.1.3.5: a UE tries a failed INVITE again with its Call-ID.
 	key := sessionKey(a.IMPI, a.CallID)
@@ -340,6 +342,7 @@ func (r *Recorder) CloseOpen() {
 		if !c.ended {
 			c.ended, c.rec.Incomplete = true, true
 			r.unsaved++
+			r.metrics.active.Dec()
 			r.changeLocked(c)
 		}
 	}
@@ -381,6 +384,7 @@ func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) 
 
 	c.ended = true
 	r.unsaved++
+	r.metrics.active.Dec()
 
 	switch {
 	case c.rec.SIPStatus != 0:
@@ -401,6 +405,7 @@ func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) 
 
 	c.rec.EndedBy = by
 	c.rec.Outcome = Outcome(c.rec.SIPStatus, by, c.rec.Alerted)
+	r.metrics.calls.WithLabelValues(string(c.rec.Outcome)).Inc()
 }
 
 func (r *Recorder) changeLocked(c *call) {
@@ -430,6 +435,8 @@ func (r *Recorder) wakeLocked() {
 func (r *Recorder) dropLocked(c *call) {
 	if c.ended {
 		r.unsaved--
+	} else {
+		r.metrics.active.Dec()
 	}
 
 	c.changed = false
