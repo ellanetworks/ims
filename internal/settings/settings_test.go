@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -35,8 +36,10 @@ func (f *fakeStore) DeletePeer(_ context.Context, id string) error { return f.sa
 
 func (f *fakeStore) UpdatePolicy(_ context.Context, p Policy) error { return f.save(p) }
 
+func (f *fakeStore) UpdateCallRecords(_ context.Context, c CallRecords) error { return f.save(c) }
+
 func validSettings() Settings {
-	return Settings{Operator: validOperator(), Policy: Policy{Interface: PolicyNone}}
+	return Settings{Operator: validOperator(), Policy: Policy{Interface: PolicyNone}, CallRecords: CallRecords{RetentionDays: 90}}
 }
 
 func validOperator() Operator {
@@ -402,6 +405,56 @@ func TestSameCore(t *testing.T) {
 
 	if s.SameCore(n5) {
 		t.Fatal("another policy function keeps the core")
+	}
+
+	retained := s
+	retained.CallRecords.RetentionDays = 7
+
+	if !s.SameCore(retained) {
+		t.Fatal("a retention change needs another core")
+	}
+}
+
+func TestCallRecordsValidate(t *testing.T) {
+	for _, days := range []int{1, 90, 3650} {
+		if err := (CallRecords{RetentionDays: days}).Validate(); err != nil {
+			t.Fatalf("Validate(%d days): %v", days, err)
+		}
+	}
+
+	for _, days := range []int{-1, 0, 3651} {
+		if err := (CallRecords{RetentionDays: days}).Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Validate(%d days) = %v, want invalid", days, err)
+		}
+	}
+
+	if got := (CallRecords{RetentionDays: 2}).Retention(); got != 48*time.Hour {
+		t.Fatalf("Retention = %v, want 48h", got)
+	}
+}
+
+func TestLiveCallRecords(t *testing.T) {
+	store := &fakeStore{}
+	live := NewLive(store, validSettings(), nil)
+	changed := live.Changed()
+
+	if err := live.UpdateCallRecords(t.Context(), CallRecords{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("no retention = %v, want invalid", err)
+	}
+
+	c := CallRecords{RetentionDays: 30}
+	if err := live.UpdateCallRecords(t.Context(), c); err != nil {
+		t.Fatalf("UpdateCallRecords: %v", err)
+	}
+
+	if live.Get().CallRecords != c || !reflect.DeepEqual(store.saved, []any{c}) {
+		t.Fatalf("call records = %+v, saved %v; want %+v saved once", live.Get().CallRecords, store.saved, c)
+	}
+
+	select {
+	case <-changed:
+	default:
+		t.Fatal("a retention change is not announced")
 	}
 }
 

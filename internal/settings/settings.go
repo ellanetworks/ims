@@ -17,8 +17,9 @@ import (
 type Settings struct {
 	Operator Operator
 	// Peers are in the order they were created in.
-	Peers  []Peer
-	Policy Policy
+	Peers       []Peer
+	Policy      Policy
+	CallRecords CallRecords
 }
 
 type Operator struct {
@@ -81,7 +82,7 @@ func (o Operator) SameIdentity(p Operator) bool {
 }
 
 // SameCore reports whether two settings run the same Diameter, policy function and SIP, and only differ in what
-// those read when they use it, such as the numbering plan.
+// those read when they use it, such as the numbering plan or the call record retention.
 func (s Settings) SameCore(t Settings) bool {
 	return s.Operator.SameIdentity(t.Operator) && slices.EqualFunc(s.Peers, t.Peers, Peer.equal) && s.Policy == t.Policy
 }
@@ -102,6 +103,10 @@ func (s Settings) Validate() error {
 	}
 
 	if err := s.Policy.Validate(); err != nil {
+		return err
+	}
+
+	if err := s.CallRecords.Validate(); err != nil {
 		return err
 	}
 
@@ -144,6 +149,7 @@ type Store interface {
 	UpdatePeer(ctx context.Context, p Peer) error
 	DeletePeer(ctx context.Context, id string) error
 	UpdatePolicy(ctx context.Context, p Policy) error
+	UpdateCallRecords(ctx context.Context, c CallRecords) error
 }
 
 // Live serves the current settings to the running IMS and persists changes before they take effect.
@@ -232,6 +238,13 @@ func (l *Live) UpdatePolicy(ctx context.Context, p Policy) error {
 		next.Policy = p
 		return nil
 	}, func() error { return l.store.UpdatePolicy(ctx, p) })
+}
+
+func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {
+	return l.change(func(next *Settings) error {
+		next.CallRecords = c
+		return nil
+	}, func() error { return l.store.UpdateCallRecords(ctx, c) })
 }
 
 // change makes the next settings with edit, checks them, then saves and applies them.

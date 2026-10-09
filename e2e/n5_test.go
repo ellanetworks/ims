@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/testue"
 )
 
 // The SMF's metrics, in the network namespace of the Open5GS container (open5gs/config/open5gs/smf.yaml).

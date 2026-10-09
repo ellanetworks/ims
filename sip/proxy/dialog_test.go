@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -574,8 +575,14 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndReleased || e.By != 0 {
-				t.Errorf("ended event %+v", e)
+			// The caller gets the release's 500 only when it is released too.
+			code := 0
+			if tc.toward&proxy.Caller != 0 {
+				code = 500
+			}
+
+			if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndReleased || e.By != 0 || e.Code != code {
+				t.Errorf("ended event %+v, want code %d", e, code)
 			}
 
 			if tc.toward&proxy.Caller != 0 {
@@ -703,6 +710,25 @@ func TestDialogLate2xxWithAnOffer(t *testing.T) {
 	wantRequest(t, s.callee, "BYE")
 }
 
+// TestDialogEndedWithTheStatusSentUpstream checks that a failed INVITE ends its dialog with the status the caller
+// got, which is not always the callee's.
+func TestDialogEndedWithTheStatusSentUpstream(t *testing.T) {
+	for _, tc := range []struct{ callee, caller int }{{486, 486}, {503, 500}, {430, 480}} {
+		t.Run(strconv.Itoa(tc.callee), func(t *testing.T) {
+			s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+			c := ring(s)
+			answer(t, s.callee, c.fwd, c.f, tc.callee)
+			wantResponse(t, s.caller, tc.caller)
+
+			e := s.r.nextEvent(proxy.EventEnded)
+			if e.End != proxy.EndFailed || e.Code != tc.caller || e.Tag != "callee" || e.By != proxy.Callee {
+				t.Errorf("ended event %+v, want code %d from the callee, with its tag", e, tc.caller)
+			}
+		})
+	}
+}
+
 func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	clock := siptest.NewClock()
 	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
@@ -719,7 +745,7 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	answer(t, s.callee, c.fwd, c.f, 487)
 	wantResponse(t, s.caller, 408)
 
-	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.Tag != "" || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
 
@@ -1158,5 +1184,92 @@ func TestDialogExchangePerEarlyDialog(t *testing.T) {
 
 	if _, found := c.d.Exchange(second); found {
 		t.Error("the other early dialog still has an exchange after the 2xx")
+	}
+}
+
+// TestDialogNegotiated checks that the session's exchanges are published once the dialog is answered: the one it
+// was answered with, then those that complete after.
+func TestDialogNegotiated(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(fmt.Sprintf("early answer %t", early), func(t *testing.T) {
+			s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
+
+			c := ring(s)
+
+			// respond sends the callee's response, with an SDP answer on port if any.
+			respond := func(code, port int) (sent, got *sip.Response) {
+				sent = sip.NewResponse(c.fwd, code, "")
+				_ = sent.Header.SetToTag("callee")
+				dialog.CopyRecordRoute(sent, c.fwd)
+				sent.Header.Add("Contact", "<"+target(s.callee, c.f.Transport)+">")
+
+				if port > 0 {
+					withSDP(sent, port)
+				}
+
+				s.callee.Send(c.f.Transport, c.f.Remote, sent)
+
+				return sent, wantResponse(t, s.caller, code)
+			}
+
+			answerPort := 5000
+
+			var ok, res *sip.Response
+
+			if early {
+				respond(183, 5002)
+
+				answerPort = 5002
+
+				select {
+				case e := <-s.r.events:
+					t.Fatalf("event %+v before the answer", e)
+				case <-time.After(quiet):
+				}
+
+				ok, res = respond(200, 0)
+			} else {
+				ok, res = respond(200, 5000)
+			}
+
+			s.r.nextEvent(proxy.EventAnswered)
+			wantExchange(t, s.r.nextEvent(proxy.EventNegotiated), proxy.Caller, 4000, answerPort)
+
+			var err error
+
+			if c.caller, err = dialog.NewUAC(c.invite, res); err != nil {
+				t.Fatal(err)
+			}
+
+			if c.callee, err = dialog.NewUAS(c.fwd, ok); err != nil {
+				t.Fatal(err)
+			}
+
+			ack, err := c.caller.NewAck(c.invite)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sendFrom(t, s.caller, s.tr, ack)
+			wantRequest(t, s.callee, "ACK")
+
+			// A re-INVITE from the callee, which the caller answers.
+			_, got, f := c.request(proxy.Callee, "INVITE", 6000)
+			answer(t, s.caller, got, f, 200)
+			wantResponse(t, s.callee, 200)
+
+			wantExchange(t, s.r.nextEvent(proxy.EventNegotiated), proxy.Callee, 6000, 5000)
+		})
+	}
+}
+
+func wantExchange(t *testing.T, e proxy.DialogEvent, offerer proxy.Side, offerPort, answerPort int) {
+	t.Helper()
+
+	x := e.Exchange
+	if x.Offer.From != offerer || x.Answer.From == offerer ||
+		!strings.Contains(string(x.Offer.Data), fmt.Sprintf("m=audio %d ", offerPort)) ||
+		!strings.Contains(string(x.Answer.Data), fmt.Sprintf("m=audio %d ", answerPort)) {
+		t.Fatalf("exchange %+v, want an offer from the %s on port %d answered on port %d", x, offerer, offerPort, answerPort)
 	}
 }

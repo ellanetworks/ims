@@ -204,26 +204,37 @@ func (r *router) nextDialog() *proxy.Dialog {
 func (r *router) nextEvent(kind proxy.EventKind) proxy.DialogEvent {
 	r.t.Helper()
 
-	select {
-	case e := <-r.events:
-		if e.Kind != kind {
-			r.t.Fatalf("got dialog event %+v, want kind %d", e, kind)
-		}
+	for {
+		select {
+		case e := <-r.events:
+			if e.Kind == proxy.EventNegotiated && kind != proxy.EventNegotiated {
+				continue
+			}
 
-		return e
-	case <-time.After(siptest.Timeout):
-		r.t.Fatalf("no dialog event of kind %d", kind)
-		return proxy.DialogEvent{}
+			if e.Kind != kind {
+				r.t.Fatalf("got dialog event %+v, want kind %d", e, kind)
+			}
+
+			return e
+		case <-time.After(siptest.Timeout):
+			r.t.Fatalf("no dialog event of kind %d", kind)
+			return proxy.DialogEvent{}
+		}
 	}
 }
 
 func (r *router) noEvent() {
 	r.t.Helper()
 
-	select {
-	case e := <-r.events:
-		r.t.Fatalf("unexpected dialog event %+v", e)
-	case <-time.After(quiet):
+	for {
+		select {
+		case e := <-r.events:
+			if e.Kind != proxy.EventNegotiated {
+				r.t.Fatalf("unexpected dialog event %+v", e)
+			}
+		case <-time.After(quiet):
+			return
+		}
 	}
 }
 

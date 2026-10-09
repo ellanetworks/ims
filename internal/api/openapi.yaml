@@ -5,10 +5,6 @@ info:
   description: |
     Success: `{"result": <payload>}`. Error: `{"error": "message"}`.
 
-    Settings are replaced in full by `PUT`, which answers with the resource as stored. Unknown fields are
-    rejected. A change applies without a restart of the process: a change of MCC or MNC, of the Diameter peers or
-    of the policy function restarts Diameter and SIP, which peers and UEs reconnect to.
-
 servers:
   - url: "{scheme}://{host}"
     variables:
@@ -26,6 +22,7 @@ tags:
   - name: Policy
   - name: SIP
   - name: Registrations
+  - name: Call records
   - name: Status
   - name: Specification
 
@@ -46,9 +43,6 @@ paths:
       tags: [Operator]
       operationId: updateOperator
       summary: Update the operator
-      description: |
-        The names of the IMS (home domain, Diameter identity, S-CSCF name, SIP aliases) are derived from MCC and
-        MNC, so changing them renames the IMS.
       requestBody:
         required: true
         content:
@@ -72,7 +66,6 @@ paths:
       tags: [Diameter]
       operationId: getDiameter
       summary: Get the Diameter identity of the IMS
-      description: Derived from the operator. Peers must know the IMS by this host and realm.
       responses:
         "200":
           description: The Diameter identity
@@ -109,7 +102,6 @@ paths:
       tags: [Diameter]
       operationId: createDiameterPeer
       summary: Create a Diameter peer
-      description: At most one peer serves each application. The IMS then connects to it.
       requestBody:
         required: true
         content:
@@ -155,9 +147,6 @@ paths:
       tags: [Diameter]
       operationId: updateDiameterPeer
       summary: Update a Diameter peer
-      description: |
-        The IMS then reconnects to it. A peer moved to another address or port reconnects with no other effect;
-        any other change restarts Diameter and SIP, which ends the QoS of calls in progress.
       requestBody:
         required: true
         content:
@@ -183,7 +172,6 @@ paths:
       tags: [Diameter]
       operationId: deleteDiameterPeer
       summary: Delete a Diameter peer
-      description: The peer serving rx cannot be deleted while the policy interface is rx.
       responses:
         "200":
           $ref: "#/components/responses/Deleted"
@@ -210,9 +198,6 @@ paths:
       tags: [Policy]
       operationId: updatePolicy
       summary: Update the policy function of the P-CSCF
-      description: |
-        rx uses the Diameter peer serving rx. n5 requires the n5 section of the configuration file, with n5.tls for
-        an https PCF URI. Calls and registrations after the change use the new policy function.
       requestBody:
         required: true
         content:
@@ -254,13 +239,10 @@ paths:
       tags: [Registrations]
       operationId: listRegistrations
       summary: List the registrations
-      description: |
-        The private identities registered with the IMS, in order, each with its public identities and the devices
-        registered with it. A private identity registered with several registration sets is listed once.
       parameters:
         - name: search
           in: query
-          description: Part of a private or public identity, such as an IMSI or a phone number.
+          description: Substring of a private or public identity.
           schema:
             type: string
         - name: page
@@ -338,6 +320,139 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/call-records:
+    get:
+      tags: [Call records]
+      operationId: listCallRecords
+      summary: List the call records
+      description: Most recently requested first.
+      parameters:
+        - name: search
+          in: query
+          description: Substring of the ICID or of an identity of the caller or the callee.
+          schema:
+            type: string
+        - name: start
+          in: query
+          description: Earliest request time, inclusive.
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          description: Latest request time, exclusive.
+          schema:
+            type: string
+            format: date-time
+        - name: outcome
+          in: query
+          description: Outcomes to include.
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/CallOutcome"
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: A page of call records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/CallRecord"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/call-records/{id}:
+    get:
+      tags: [Call records]
+      operationId: getCallRecord
+      summary: Get a call record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: The call record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/CallRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/call-records/retention:
+    get:
+      tags: [Call records]
+      operationId: getCallRecordRetention
+      summary: Get how long call records are kept
+      responses:
+        "200":
+          description: The retention
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallRecordRetentionResult"
+    put:
+      tags: [Call records]
+      operationId: updateCallRecordRetention
+      summary: Change how long call records are kept
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CallRecordRetention"
+      responses:
+        "200":
+          description: The retention, as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CallRecordRetentionResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/status:
     get:
       tags: [Status]
@@ -360,7 +475,7 @@ paths:
                         examples: [v0.0.1]
                       revision:
                         type: string
-                        description: The git commit the IMS was built from, empty in development builds.
+                        description: Git commit of the build, empty in development builds.
 
   /api/v1/openapi.yaml:
     get:
@@ -393,7 +508,7 @@ components:
       type: object
       additionalProperties: false
       required: [country_code, national_prefix, international_prefix]
-      description: How dial strings become E.164 numbers. The prefixes may be empty, and must differ.
+      description: Conversion of dial strings to E.164 numbers.
       properties:
         country_code:
           type: string
@@ -514,7 +629,7 @@ components:
                 status:
                   type: object
                   required: [interface]
-                  description: The policy function running, which differs from the settings while they are applied.
+                  description: Policy function running.
                   properties:
                     interface:
                       type: string
@@ -565,11 +680,11 @@ components:
       properties:
         impi:
           type: string
-          description: The private user identity, which identifies the subscription.
+          description: Private user identity.
           examples: [001010000000001@ims.mnc001.mcc001.3gppnetwork.org]
         identities:
           type: array
-          description: The public user identities, from the HSS.
+          description: Public user identities.
           items:
             type: object
             required: [uri, barred]
@@ -583,7 +698,7 @@ components:
                 type: boolean
         devices:
           type: array
-          description: The contacts registered, one per device.
+          description: Registered contacts, one per device.
           items:
             type: object
             required: [contact, media, registered_at, expires_at, protected, signalling_path]
@@ -592,7 +707,7 @@ components:
                 type: string
               instance:
                 type: string
-                description: The instance ID of the device, its IMEI URN when it has one (TS 23.003 §13.8).
+                description: Instance ID, an IMEI URN when available (TS 23.003 §13.8).
                 examples: [urn:gsma:imei:35000000-000001-0]
               media:
                 type: array
@@ -608,7 +723,7 @@ components:
                 format: date-time
               address:
                 type: string
-                description: The address and port of the device, as the P-CSCF sees it.
+                description: Address and port of the device, as seen by the P-CSCF.
               transport:
                 type: string
                 enum: [udp, tcp]
@@ -618,8 +733,98 @@ components:
               signalling_path:
                 type: string
                 enum: [unmonitored, monitored, lost]
-                description: |
-                  The IMS signalling path of the device, which the P-CSCF monitors through the policy function.
+                description: State of the IMS signalling path of the device.
+
+    CallOutcome:
+      type: string
+      enum: [answered, cancelled, busy, rejected, no_answer, unavailable, failed]
+      description: |
+        answered: 2xx. cancelled: 487 to a caller CANCEL. busy: 486, 600. rejected: 603. no_answer: 408 after a 180.
+        unavailable: 480. failed: any other final status.
+
+    CallRecord:
+      type: object
+      required: [id, icid, session_id, calling_party, requested_party, requested_at, alerted, media, in_progress,
+        incomplete]
+      properties:
+        id:
+          type: integer
+        icid:
+          type: string
+          description: icid-value of the P-Charging-Vector (TS 32.298 §5.1.3.1.19).
+        session_id:
+          type: string
+          description: Call-ID of the INVITE (§5.1.3.1.59).
+        calling_party:
+          type: array
+          items:
+            type: string
+          description: P-Asserted-Identity values (§5.1.3.1.24).
+        caller_impi:
+          type: string
+          description: Private user identity of the caller (§5.1.3.1.36).
+        requested_party:
+          type: string
+          description: Request-URI from the caller (§5.1.3.1.43).
+        called_party:
+          type: string
+          description: Request-URI after normalisation by the S-CSCF (§5.1.3.1.9).
+        callee_impi:
+          type: string
+          description: Private user identity of the answering registration (§5.1.3.1.36).
+        requested_at:
+          type: string
+          format: date-time
+          description: Reception time of the INVITE (§5.1.3.1.58).
+        delivery_start_at:
+          type: string
+          format: date-time
+          description: Time of the final response to the caller (§5.1.3.1.55).
+        delivery_end_at:
+          type: string
+          format: date-time
+          description: End time of an answered call (§5.1.3.1.54).
+        sip_status:
+          type: integer
+          description: Final status of the INVITE sent to the caller (§5.1.3.1.57).
+        outcome:
+          $ref: "#/components/schemas/CallOutcome"
+        ended_by:
+          type: string
+          enum: [caller, callee, network]
+        alerted:
+          type: boolean
+          description: A 180 reached the caller.
+        media:
+          type: array
+          items:
+            type: string
+          description: Media types of the accepted m-lines.
+        in_progress:
+          type: boolean
+          description: The call has not ended.
+        incomplete:
+          type: boolean
+          description: Closed without the end of the call.
+        duration_ms:
+          type: integer
+          description: Duration of an answered call that ended, in milliseconds.
+
+    CallRecordRetention:
+      type: object
+      additionalProperties: false
+      required: [days]
+      properties:
+        days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+
+    CallRecordRetentionResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/CallRecordRetention"
 
     Error:
       type: object

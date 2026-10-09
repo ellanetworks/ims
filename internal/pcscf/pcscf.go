@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/policy"
@@ -50,6 +51,9 @@ type Config struct {
 	NoAnswer time.Duration
 
 	Registrations RegistrationStore
+
+	// Records, if any, keeps a record of each call from a UE.
+	Records *callrecords.Recorder
 
 	Trust *trust.Domain
 

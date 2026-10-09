@@ -54,14 +54,17 @@ export const deviceSummary = (device: Device): string => {
 export const priorityOf = (contact: RegisteredContact): string =>
   Number.isInteger(contact.q * 10) ? contact.q.toFixed(1) : String(contact.q);
 
-// numberOf is the E.164 number of a tel URI or of a SIP URI with user=phone (TS 23.003 §13.4).
-export const numberOf = (identity: RegisteredIdentity): string | undefined => {
-  const tel = /^tel:(\+\d+)/i.exec(identity.uri);
+// numberOfURI is the E.164 number of a tel URI or of a SIP URI with user=phone (TS 23.003 §13.4).
+export const numberOfURI = (uri: string): string | undefined => {
+  const tel = /^tel:(\+\d+)/i.exec(uri);
   if (tel) return tel[1];
 
-  const sip = /^sips?:(\+\d+)[@;].*;user=phone/i.exec(identity.uri);
+  const sip = /^sips?:(\+\d+)[@;].*;user=phone/i.exec(uri);
   return sip?.[1];
 };
+
+export const numberOf = (identity: RegisteredIdentity): string | undefined =>
+  numberOfURI(identity.uri);
 
 export const numbersOf = (registration: Registration): string[] => [
   ...new Set(

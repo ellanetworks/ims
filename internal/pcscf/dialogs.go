@@ -88,10 +88,18 @@ func (p *PCSCF) target(u sip.URI, local netip.Addr) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(local, p.cfg.Port), Remote: dest}}, true
 }
 
-func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, opts proxy.Options) {
+// forward forwards a request, or answers it when it cannot, with reject if any, and reports whether it forwarded
+// it. One answered already, such as with the 487 to a CANCEL that came first, is neither.
+func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, opts proxy.Options,
+	reject func(*sip.Response),
+) bool {
 	err := p.cfg.Proxy.Forward(tx, out, to, opts)
-	if err == nil || errors.Is(err, proxy.ErrAnswered) {
-		return
+	if err == nil {
+		return true
+	}
+
+	if errors.Is(err, proxy.ErrAnswered) {
+		return false
 	}
 
 	code := 500
@@ -100,7 +108,15 @@ func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request
 		code = serr.StatusCode
 	}
 
-	p.respond(tx, sip.NewResponse(req, code, ""))
+	res := sip.NewResponse(req, code, "")
+
+	if reject == nil {
+		p.respond(tx, res)
+	} else {
+		reject(res)
+	}
+
+	return false
 }
 
 func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
@@ -302,7 +318,7 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 func (p *PCSCF) forwardInDialog(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, d *proxy.Dialog,
 	onReply func(proxy.Reply) proxy.Verdict,
 ) {
-	forward := func() { p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: onReply}) }
+	forward := func() { p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: onReply}, nil) }
 	reject := func() { p.respond(tx, sip.NewResponse(req, 500, "")) }
 
 	if !p.mediaRequest(d, out, forward, reject) {

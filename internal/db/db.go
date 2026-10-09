@@ -13,8 +13,14 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type DB struct {
+	// conn is the only connection that writes, so that writes never wait on each other's locks.
 	conn *sql.DB
+	// read serves the reads that may take long, such as searches of the call records, so that they never hold up
+	// conn: in WAL mode, readers and the writer do not wait on each other.
+	read *sql.DB
 }
+
+const maxReaders = 4
 
 var migrations = []string{
 	`CREATE TABLE registrations (
@@ -124,7 +130,37 @@ var migrations = []string{
 		dialog BLOB,
 		version INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL
-	);`,
+	);
+	CREATE TABLE call_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		icid TEXT NOT NULL UNIQUE,
+		session_id TEXT NOT NULL,
+		calling_party TEXT,
+		caller_impi TEXT,
+		requested_party TEXT NOT NULL,
+		called_party TEXT,
+		callee_impi TEXT,
+		requested_at INTEGER NOT NULL,
+		delivery_start_at INTEGER,
+		delivery_end_at INTEGER,
+		sip_status INTEGER CHECK (sip_status BETWEEN 200 AND 699),
+		outcome TEXT CHECK (outcome IN ('answered', 'cancelled', 'busy', 'rejected', 'no_answer', 'unavailable',
+			'failed')),
+		ended_by TEXT CHECK (ended_by IN ('caller', 'callee', 'network')),
+		alerted INTEGER NOT NULL CHECK (alerted IN (0, 1)),
+		media TEXT,
+		incomplete INTEGER NOT NULL CHECK (incomplete IN (0, 1)),
+		CHECK ((sip_status IS NULL) = (outcome IS NULL)),
+		CHECK ((sip_status IS NULL) = (delivery_start_at IS NULL)),
+		CHECK ((outcome = 'answered') = (sip_status BETWEEN 200 AND 299)),
+		CHECK (ended_by IS NULL OR sip_status IS NOT NULL),
+		CHECK (incomplete = 0 OR ended_by IS NULL),
+		CHECK ((delivery_end_at IS NOT NULL) = (outcome = 'answered' AND ended_by IS NOT NULL))
+	);
+	CREATE INDEX call_records_requested_at ON call_records (requested_at, id);
+	CREATE INDEX call_records_outcome ON call_records (outcome);
+	CREATE INDEX call_records_session ON call_records (session_id, caller_impi);
+	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;`,
 	`CREATE TABLE operator (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		mcc TEXT NOT NULL,
@@ -148,7 +184,12 @@ var migrations = []string{
 		interface TEXT NOT NULL,
 		pcf_uri TEXT NOT NULL
 	);
-	INSERT INTO policy VALUES (1, 'none', '');`,
+	INSERT INTO policy VALUES (1, 'none', '');
+	CREATE TABLE call_record_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		retention_days INTEGER NOT NULL
+	);
+	INSERT INTO call_record_settings VALUES (1, 90);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
@@ -170,11 +211,28 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 
+	read, err := sql.Open("sqlite3", "file:"+path+"?_query_only=true&_busy_timeout=5000")
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	read.SetMaxOpenConns(maxReaders)
+
+	if err := read.PingContext(ctx); err != nil {
+		_ = read.Close()
+		_ = conn.Close()
+
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	d.read = read
+
 	return d, nil
 }
 
 func (d *DB) Close() error {
-	return d.conn.Close()
+	return errors.Join(d.read.Close(), d.conn.Close())
 }
 
 func (d *DB) migrate(ctx context.Context) error {

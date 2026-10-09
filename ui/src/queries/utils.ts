@@ -74,14 +74,17 @@ export async function apiFetch<T>(
   return data.result as T;
 }
 
+// withQuery adds query parameters to a path: a list is repeated, and an empty value dropped.
 export function withQuery(
   path: string,
-  params: Record<string, string | number | undefined>,
+  params: Record<string, string | number | string[] | undefined>,
 ): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== "") {
-      query.set(key, String(value));
+    for (const v of Array.isArray(value) ? value : [value]) {
+      if (v !== undefined && v !== "") {
+        query.append(key, String(v));
+      }
     }
   }
 

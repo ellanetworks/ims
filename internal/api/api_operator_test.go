@@ -28,13 +28,16 @@ func (m *memStore) DeletePeer(context.Context, string) error { return m.err }
 
 func (m *memStore) UpdatePolicy(context.Context, settings.Policy) error { return m.err }
 
+func (m *memStore) UpdateCallRecords(context.Context, settings.CallRecords) error { return m.err }
+
 func defaultSettings() settings.Settings {
 	return settings.Settings{
 		Operator: settings.Operator{
 			MCC: "001", MNC: "01",
 			Numbering: settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"},
 		},
-		Policy: settings.Policy{Interface: settings.PolicyNone},
+		Policy:      settings.Policy{Interface: settings.PolicyNone},
+		CallRecords: settings.CallRecords{RetentionDays: 90},
 	}
 }
 

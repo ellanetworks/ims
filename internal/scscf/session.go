@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -184,8 +185,11 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	out.Header.Del("P-Asserted-Identity")
 	out.Header.Add("P-Asserted-Identity", served.String())
 
+	ids := []string{served.URI.String()}
+
 	if alias, ok := assertedAlias(served, reg, s.r.cfg.HomeDomain); ok {
 		out.Header.Add("P-Asserted-Identity", alias.String())
+		ids = append(ids, alias.URI.String())
 	}
 
 	if u, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain); ok {
@@ -224,6 +228,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	opts := s.initialOptions(out, rrOriginating, nil)
 	if opts.Dialog != nil {
 		s.r.calls.add(opts.Dialog, bindingKey(binding), proxy.Caller)
+		s.r.cfg.Records.Routed(out.Header.ICID(), callrecords.Routing{Asserted: ids, RequestURI: out.URI.String()})
 	}
 
 	s.forward(tx, out, to, opts)
@@ -484,7 +489,7 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, onReply func(pr
 
 	switch out.Method {
 	case "INVITE":
-		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{OnEvent: s.r.calls.event})
+		opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{Value: &call{icid: out.Header.ICID()}, OnEvent: s.r.dialogEvent})
 		fallthrough
 	case "SUBSCRIBE", "REFER":
 		opts.RecordRoute = &proxy.RecordRoute{User: user}
@@ -617,15 +622,24 @@ func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, 
 	s.answer(tx, sip.NewResponse(tx.Request(), code, ""))
 }
 
+// answer answers a request with a response of the S-CSCF's, through the proxy if it has begun forwarding it.
 func (s *Sessions) answer(tx *transaction.ServerTransaction, res *sip.Response) {
+	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
+
 	if err := s.proxy.Relay(tx, res); err == nil {
 		return
 	}
 
-	s.respond(tx, res)
+	s.send(tx, res)
 }
 
+// respond answers a request with a response of the S-CSCF's.
 func (s *Sessions) respond(tx *transaction.ServerTransaction, res *sip.Response) {
+	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
+	s.send(tx, res)
+}
+
+func (s *Sessions) send(tx *transaction.ServerTransaction, res *sip.Response) {
 	if err := tx.Respond(res); err != nil {
 		s.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}

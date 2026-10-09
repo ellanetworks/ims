@@ -20,6 +20,11 @@ type call struct {
 	icid string
 
 	policy *callPolicy
+
+	// rec is the record of an originating call.
+	rec *callRecord
+	// impi is the private identity of the UE a terminating call goes to.
+	impi string
 }
 
 func callOf(d *proxy.Dialog) *call {
@@ -79,14 +84,30 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
-	if res := p.cfg.Proxy.Check(req); res != nil {
+	preferred, _ := req.Header.Addresses("P-Preferred-Identity")
+	asserted := assertedIdentities(preferred, reg.AssociatedURIs)
+
+	cv := p.newChargingVector(req.Flow.Local.Addr())
+	rec := p.attempt(req, reg.IMPI, asserted, cv.icid)
+
+	refuse := func(res *sip.Response) {
+		rec.rejecting(tx, res.StatusCode)
 		p.respond(tx, res)
+	}
+
+	reject := func(res *sip.Response) {
+		refuse(res)
+		rec.closed(tx)
+	}
+
+	if res := p.cfg.Proxy.Check(req); res != nil {
+		reject(res)
 		return
 	}
 
 	out, _, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		reject(sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
@@ -95,15 +116,17 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
+	rec.open()
+
 	if len(reg.ServiceRoute) == 0 {
-		p.respond(tx, sip.NewResponse(req, 403, "No Service-Route"))
+		reject(sip.NewResponse(req, 403, "No Service-Route"))
 		return
 	}
 
 	serviceRoute, err := sip.ParseAddressList(strings.Join(reg.ServiceRoute, ", "))
 	if err != nil {
 		p.log.Warn("unusable Service-Route", slog.String("impi", reg.IMPI), slog.Any("error", err))
-		p.respond(tx, sip.NewResponse(req, 500, ""))
+		reject(sip.NewResponse(req, 500, ""))
 
 		return
 	}
@@ -117,12 +140,9 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		setRoutes(out, serviceRoute)
 	}
 
-	preferred, _ := req.Header.Addresses("P-Preferred-Identity")
-
-	asserted := assertedIdentities(preferred, reg.AssociatedURIs)
 	if len(asserted) == 0 {
 		p.log.Warn("registration without public identities", slog.String("impi", reg.IMPI))
-		p.respond(tx, sip.NewResponse(req, 403, ""))
+		reject(sip.NewResponse(req, 403, ""))
 
 		return
 	}
@@ -133,13 +153,12 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		out.Header.Add("P-Asserted-Identity", "<"+a+">")
 	}
 
-	cv := p.newChargingVector(req.Flow.Local.Addr())
 	cv.set(out)
 
 	to, ok := p.target(serviceRoute[0].URI, req.Flow.Local.Addr())
 	if !ok {
 		p.log.Warn("no route to the Service-Route", slog.String("route", reg.ServiceRoute[0]))
-		p.respond(tx, sip.NewResponse(req, 503, ""))
+		reject(sip.NewResponse(req, 503, ""))
 
 		return
 	}
@@ -147,8 +166,12 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	var dialog *proxy.Dialog
 
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
-		if rep.Response != nil {
-			toUEResponse(rep.Response)
+		if res := rep.Response; res != nil {
+			toUEResponse(res)
+
+			if res.StatusCode == 180 {
+				rec.alerted()
+			}
 		}
 
 		return p.mediaReply(tx, dialog, rep, true)
@@ -156,7 +179,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	switch out.Method {
 	case "INVITE":
-		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, "")}
+		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, ""), rec: rec}
 
 		opts.NoAnswer = p.cfg.NoAnswer
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -173,38 +196,47 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		}
 	}
 
-	p.forward(tx, req, out, to, opts)
+	if !p.forward(tx, req, out, to, opts, refuse) {
+		rec.closed(tx)
+	}
 }
 
 // TS 24.229 §5.2.6.4.3, §5.2.6.4.7
 func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
+	// A call the P-CSCF does not put through to the UE ends by the network.
+	refuse := func(res *sip.Response) {
+		p.cfg.Records.RejectingRequest(req, res.StatusCode, tx.ToTag())
+		p.respond(tx, res)
+	}
+
 	if !p.fromCore(req) {
 		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
+		// Not reported to the call records: its ICID is not to be trusted.
 		p.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return
 	}
 
 	if p.regs.signallingLost(top.User) {
-		p.respond(tx, sip.NewResponse(req, 500, ""))
+		refuse(sip.NewResponse(req, 500, ""))
 		return
 	}
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
-		p.respond(tx, res)
+		refuse(res)
 		return
 	}
 
 	out, removed, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		refuse(sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
 	to, reject := p.ueTarget(req, out, removed)
 	if reject != nil {
-		p.respond(tx, reject)
+		refuse(reject)
 		return
 	}
 
@@ -242,6 +274,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		c := &call{ue: proxy.Callee, icid: cv.icid}
 
 		if f, ok := p.regs.flow(top.User); ok {
+			c.impi = f.impi
 			c.policy = p.newCallPolicy(f.key(), p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
 		}
 
@@ -261,11 +294,17 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		}
 	}
 
-	p.forward(tx, req, out, to, opts)
+	p.forward(tx, req, out, to, opts, refuse)
 }
 
 func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
 	return func(e proxy.DialogEvent) {
+		c.rec.event(e)
+
+		if c.ue == proxy.Callee {
+			p.terminatingRecord(c, e)
+		}
+
 		if e.Kind == proxy.EventEnded {
 			p.callEnded(c)
 		}
@@ -470,22 +509,26 @@ func (p *PCSCF) newChargingVector(local netip.Addr) chargingVector {
 	}
 }
 
+// parseChargingVector parses a P-Charging-Vector, keeping its values as they are on the wire, quoted or not
+// (RFC 7315 §5.6).
 func parseChargingVector(s string) (chargingVector, bool) {
+	ps, err := sip.ParseParams(s)
+	if err != nil {
+		return chargingVector{}, false
+	}
+
 	var cv chargingVector
 
-	for part := range strings.SplitSeq(s, ";") {
-		name, value, _ := strings.Cut(strings.TrimSpace(part), "=")
-		value = strings.TrimSpace(value)
-
-		switch strings.ToLower(strings.TrimSpace(name)) {
+	for _, p := range ps {
+		switch strings.ToLower(p.Name) {
 		case "icid-value":
-			cv.icid = value
+			cv.icid = p.Value
 		case "icid-generated-at":
-			cv.generated = value
+			cv.generated = p.Value
 		case "orig-ioi":
-			cv.origIOI = value
+			cv.origIOI = p.Value
 		case "term-ioi":
-			cv.termIOI = value
+			cv.termIOI = p.Value
 		}
 	}
 

@@ -1,0 +1,466 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/mattn/go-sqlite3"
+)
+
+var ErrDuplicateICID = errors.New("a call record has this ICID")
+
+// CallOutcome is how a call ended, from its final status, who ended it and whether a device rang.
+type CallOutcome string
+
+const (
+	OutcomeAnswered    CallOutcome = "answered"
+	OutcomeCancelled   CallOutcome = "cancelled"
+	OutcomeBusy        CallOutcome = "busy"
+	OutcomeRejected    CallOutcome = "rejected"
+	OutcomeNoAnswer    CallOutcome = "no_answer"
+	OutcomeUnavailable CallOutcome = "unavailable"
+	OutcomeFailed      CallOutcome = "failed"
+)
+
+// CallParty is the side that ended a call.
+type CallParty string
+
+const (
+	PartyCaller  CallParty = "caller"
+	PartyCallee  CallParty = "callee"
+	PartyNetwork CallParty = "network"
+)
+
+// CallRecord is what the IMS observed of one call attempt, identified by its ICID. The fields follow the IMS CDR
+// parameters of TS 32.298 §5.1.3.1. Zero values are absent: a call in progress has no SIPStatus until its final
+// response, and no EndedBy until it ends.
+type CallRecord struct {
+	ID int64
+	// ICID is the icid-value of the P-Charging-Vector (§5.1.3.1.19).
+	ICID string
+	// SessionID is the Call-ID of the INVITE (§5.1.3.1.59).
+	SessionID string
+	// CallingParty is the P-Asserted-Identity of the INVITE (§5.1.3.1.24), empty when nothing was asserted.
+	CallingParty []string
+	// CallerIMPI is the private identity of the caller's registration (§5.1.3.1.36).
+	CallerIMPI string
+	// RequestedParty is the Request-URI as received from the UE (§5.1.3.1.43).
+	RequestedParty string
+	// CalledParty is the Request-URI the originating S-CSCF sent on (§5.1.3.1.9).
+	CalledParty string
+	// CalleeIMPI is the private identity of the registration that answered (§5.1.3.1.36).
+	CalleeIMPI string
+	// RequestedAt is when the INVITE was received from the UE (§5.1.3.1.58).
+	RequestedAt time.Time
+	// DeliveryStartAt is when the final response was sent toward the caller (§5.1.3.1.55).
+	DeliveryStartAt time.Time
+	// DeliveryEndAt is when an answered call ended (§5.1.3.1.54).
+	DeliveryEndAt time.Time
+	// SIPStatus is the final status of the INVITE.
+	SIPStatus int
+	Outcome   CallOutcome
+	EndedBy   CallParty
+	// Alerted reports whether a 180 reached the caller.
+	Alerted bool
+	// Media are the media types of the m= lines that an SDP answer accepted, derived from §5.1.3.1.49.
+	Media []string
+	// Incomplete reports that the record was closed without the end of its call, which the IMS lost.
+	Incomplete bool
+}
+
+// CallRecordFilter selects call records. Its zero value selects all.
+type CallRecordFilter struct {
+	// Search matches a part of an identity of the caller or the callee, or of the ICID.
+	Search string
+	// Start and End bound when the calls were requested, in [Start, End). A zero bound is open.
+	Start, End time.Time
+	// Outcomes, if any, are the outcomes to select.
+	Outcomes []CallOutcome
+}
+
+const (
+	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
+		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete`
+
+	// callRecordBatch is how many records a statement deletes at a time, so that the SIP handling waiting on the
+	// database connection is not held up for long.
+	callRecordBatch = 1000
+)
+
+// SaveCallRecords inserts the records without an ID, giving them one, updates the others and deletes those of the
+// IDs in deleted, in one transaction. An update leaves the fields that never change after the record is inserted,
+// such as its ICID, as they were. Deleting a record that is not there is not an error. Inserting a record deletes
+// those of the earlier attempts of its Call-ID by its caller that failed, which it retries (RFC 3261 §8.1.3.5).
+//
+// A record that cannot be saved, because another record has its ICID, it breaks a constraint or it was deleted,
+// does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
+// When the transaction itself fails, it saves none and returns err, and saving them again may succeed.
+func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("save call records: %w", err)
+	}
+
+	var inserted []*CallRecord
+
+	// The records inserted keep no ID when nothing was saved.
+	fail := func(err error) ([]error, error) {
+		_ = tx.Rollback()
+
+		for _, r := range inserted {
+			r.ID = 0
+		}
+
+		return nil, fmt.Errorf("save call records: %w", err)
+	}
+
+	for i, r := range records {
+		insert := r.ID == 0
+
+		switch err := saveCallRecord(ctx, tx, r); {
+		case err == nil:
+			if insert {
+				inserted = append(inserted, r)
+			}
+		case isRecordError(err):
+			if errs == nil {
+				errs = make([]error, len(records))
+			}
+
+			errs[i] = fmt.Errorf("save call record %s: %w", r.ICID, err)
+		default:
+			return fail(err)
+		}
+	}
+
+	if len(deleted) > 0 {
+		ids, err := json.Marshal(deleted)
+		if err != nil {
+			return fail(err)
+		}
+
+		if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT value FROM json_each(?))`,
+			string(ids)); err != nil {
+			return fail(err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fail(err)
+	}
+
+	return errs, nil
+}
+
+// isRecordError reports whether saving a call record failed for what the record holds, which trying again does
+// not change.
+func isRecordError(err error) bool {
+	var e sqlite3.Error
+
+	return errors.Is(err, ErrDuplicateICID) || errors.Is(err, ErrNotFound) ||
+		errors.As(err, &e) && e.Code == sqlite3.ErrConstraint
+}
+
+func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
+	calling, err := jsonList(r.CallingParty)
+	if err != nil {
+		return err
+	}
+
+	media, err := jsonList(r.Media)
+	if err != nil {
+		return err
+	}
+
+	mutable := []any{
+		calling, nullableString(r.CalledParty), nullableString(r.CalleeIMPI), nullableTime(r.DeliveryStartAt),
+		nullableTime(r.DeliveryEndAt), nullableInt(int64(r.SIPStatus)), nullableString(string(r.Outcome)),
+		nullableString(string(r.EndedBy)), r.Alerted, media, r.Incomplete,
+	}
+
+	if r.ID != 0 {
+		res, err := tx.ExecContext(ctx, `UPDATE call_records SET calling_party = ?, called_party = ?, callee_impi = ?,
+			delivery_start_at = ?, delivery_end_at = ?, sip_status = ?, outcome = ?, ended_by = ?, alerted = ?,
+			media = ?, incomplete = ? WHERE id = ?`,
+			append(mutable, r.ID)...)
+		if err != nil {
+			return err
+		}
+
+		return checkAffected(res)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE session_id = ? AND caller_impi IS ? AND
+		sip_status >= 300`, r.SessionID, nullableString(r.CallerIMPI)); err != nil {
+		return err
+	}
+
+	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
+		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
+		ended_by, alerted, media, incomplete) VALUES (`+placeholders(16)+`) RETURNING id`,
+		append([]any{
+			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
+			r.RequestedAt.UTC().UnixNano(),
+		}, mutable...)...).Scan(&r.ID)
+	if isConstraint(err, sqlite3.ErrConstraintUnique) {
+		return ErrDuplicateICID
+	}
+
+	return err
+}
+
+func (d *DB) GetCallRecord(ctx context.Context, id int64) (CallRecord, error) {
+	r, err := scanCallRecord(d.read.QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
+		id))
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+
+	if err != nil {
+		return CallRecord{}, fmt.Errorf("get call record %d: %w", id, err)
+	}
+
+	return r, nil
+}
+
+// ListCallRecords returns a page of the records the filter selects, the most recently requested first, and their
+// count, both of the same snapshot of the database.
+func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) ([]CallRecord, int, error) {
+	where, args := f.where()
+
+	tx, err := d.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list call records: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records WHERE `+where, args...).Scan(
+		&total); err != nil {
+		return nil, 0, fmt.Errorf("list call records: %w", err)
+	}
+
+	records, err := queryCallRecords(ctx, tx, `SELECT `+callRecordColumns+` FROM call_records WHERE `+where+`
+		ORDER BY requested_at DESC, id DESC LIMIT ? OFFSET ?`, append(args, perPage, (page-1)*perPage)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list call records: %w", err)
+	}
+
+	return records, total, nil
+}
+
+// PruneCallRecords deletes the records requested before a time, then the oldest beyond maxRows, and returns how
+// many it deleted. It deletes them in batches, so that the SIP handling waiting on the database connection is not
+// held up for long.
+func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (int64, error) {
+	var deleted int64
+
+	deleteOldest := func(where string, limit int, args ...any) (int64, error) {
+		res, err := d.conn.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT id FROM call_records WHERE `+
+			where+` ORDER BY requested_at, id LIMIT ?)`, append(args, limit)...)
+		if err != nil {
+			return 0, fmt.Errorf("prune call records: %w", err)
+		}
+
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("prune call records: %w", err)
+		}
+
+		deleted += n
+
+		return n, nil
+	}
+
+	for {
+		n, err := deleteOldest(`requested_at < ?`, callRecordBatch, before.UTC().UnixNano())
+		if err != nil {
+			return deleted, err
+		}
+
+		if n < callRecordBatch {
+			break
+		}
+	}
+
+	var count int
+	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records`).Scan(&count); err != nil {
+		return deleted, fmt.Errorf("prune call records: %w", err)
+	}
+
+	for excess := count - maxRows; excess > 0; {
+		n, err := deleteOldest(`1`, min(excess, callRecordBatch))
+		if err != nil {
+			return deleted, err
+		}
+
+		if n == 0 {
+			break
+		}
+
+		excess -= int(n)
+	}
+
+	return deleted, nil
+}
+
+// CloseOpenCallRecords marks the records of the calls that have not ended as incomplete, but for those of the
+// ICIDs in live, since the IMS lost them, and returns how many it marked.
+func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (int64, error) {
+	icids, err := json.Marshal(nonNilList(live))
+	if err != nil {
+		return 0, fmt.Errorf("close open call records: %w", err)
+	}
+
+	res, err := d.conn.ExecContext(ctx, `UPDATE call_records SET incomplete = 1 WHERE ended_by IS NULL AND
+		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, string(icids))
+	if err != nil {
+		return 0, fmt.Errorf("close open call records: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("close open call records: %w", err)
+	}
+
+	return n, nil
+}
+
+// where is the condition of the filter, and its arguments.
+func (f CallRecordFilter) where() (string, []any) {
+	conds := []string{"1"}
+
+	var args []any
+
+	if f.Search != "" {
+		like := "%" + escapeLike(f.Search) + "%"
+
+		conds = append(conds, `(icid LIKE ? ESCAPE '\' OR caller_impi LIKE ? ESCAPE '\' OR requested_party LIKE ? ESCAPE '\'
+			OR called_party LIKE ? ESCAPE '\' OR callee_impi LIKE ? ESCAPE '\' OR EXISTS (
+				SELECT 1 FROM json_each(calling_party) WHERE value LIKE ? ESCAPE '\'))`)
+		args = append(args, like, like, like, like, like, like)
+	}
+
+	if !f.Start.IsZero() {
+		conds = append(conds, `requested_at >= ?`)
+		args = append(args, f.Start.UTC().UnixNano())
+	}
+
+	if !f.End.IsZero() {
+		conds = append(conds, `requested_at < ?`)
+		args = append(args, f.End.UTC().UnixNano())
+	}
+
+	if len(f.Outcomes) > 0 {
+		conds = append(conds, `outcome IN (`+placeholders(len(f.Outcomes))+`)`)
+		for _, o := range f.Outcomes {
+			args = append(args, string(o))
+		}
+	}
+
+	return strings.Join(conds, " AND "), args
+}
+
+func queryCallRecords(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]CallRecord, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	records := []CallRecord{}
+
+	for rows.Next() {
+		r, err := scanCallRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		records = append(records, r)
+	}
+
+	return records, rows.Err()
+}
+
+func scanCallRecord(row scanner) (CallRecord, error) {
+	var (
+		r                                         CallRecord
+		callerIMPI, calledParty, calleeIMPI       sql.NullString
+		calling, media                            sql.NullString
+		outcome, endedBy                          sql.NullString
+		requestedAt                               int64
+		deliveryStartAt, deliveryEndAt, sipStatus sql.NullInt64
+	)
+
+	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
+		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
+		&r.Incomplete); err != nil {
+		return CallRecord{}, err
+	}
+
+	r.CallerIMPI, r.CalledParty, r.CalleeIMPI = callerIMPI.String, calledParty.String, calleeIMPI.String
+	r.RequestedAt = time.Unix(0, requestedAt).UTC()
+	r.DeliveryStartAt, r.DeliveryEndAt = timeOf(deliveryStartAt), timeOf(deliveryEndAt)
+	r.SIPStatus = int(sipStatus.Int64)
+	r.Outcome, r.EndedBy = CallOutcome(outcome.String), CallParty(endedBy.String)
+
+	for _, l := range []struct {
+		dst *[]string
+		src sql.NullString
+	}{{&r.CallingParty, calling}, {&r.Media, media}} {
+		if !l.src.Valid {
+			continue
+		}
+
+		if err := json.Unmarshal([]byte(l.src.String), l.dst); err != nil {
+			return CallRecord{}, fmt.Errorf("call record %d: %w", r.ID, err)
+		}
+	}
+
+	return r, nil
+}
+
+func nonNilList(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+
+	return l
+}
+
+// jsonList is a list as a JSON array, or NULL if empty.
+func jsonList(l []string) (sql.NullString, error) {
+	if len(l) == 0 {
+		return sql.NullString{}, nil
+	}
+
+	b, err := json.Marshal(l)
+	if err != nil {
+		return sql.NullString{}, err
+	}
+
+	return sql.NullString{String: string(b), Valid: true}, nil
+}
+
+func nullableTime(t time.Time) sql.NullInt64 {
+	if t.IsZero() {
+		return sql.NullInt64{}
+	}
+
+	return sql.NullInt64{Int64: t.UTC().UnixNano(), Valid: true}
+}
+
+func timeOf(n sql.NullInt64) time.Time {
+	if !n.Valid {
+		return time.Time{}
+	}
+
+	return time.Unix(0, n.Int64).UTC()
+}

@@ -10,6 +10,11 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
+// call is what the S-CSCF keeps of an INVITE dialog.
+type call struct {
+	icid string
+}
+
 // bindingKey identifies a binding of an implicit registration set to a contact: its ID.
 type bindingKey int64
 
@@ -60,10 +65,18 @@ func (c *calls) forget(d *proxy.Dialog) {
 	delete(c.byDialog, d)
 }
 
-func (c *calls) event(e proxy.DialogEvent) {
-	if e.Kind == proxy.EventEnded {
-		c.forget(e.Dialog)
+// dialogEvent forgets the calls that end. One the S-CSCF releases is reported to the call records before the
+// release reaches the parties: the proxy publishes the end of a dialog it releases before releasing it.
+func (r *Registrar) dialogEvent(e proxy.DialogEvent) {
+	if e.Kind != proxy.EventEnded {
+		return
 	}
+
+	if c, ok := e.Dialog.Value().(*call); ok && e.End == proxy.EndReleased {
+		r.cfg.Records.Released(c.icid)
+	}
+
+	r.calls.forget(e.Dialog)
 }
 
 func (c *calls) of(k bindingKey) map[*proxy.Dialog]proxy.Side {

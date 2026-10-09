@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -50,6 +51,9 @@ type Config struct {
 	HSS       HSS
 	Diameter  Diameter
 	CxTimeout time.Duration
+
+	// Records, if any, keeps a record of each call.
+	Records *callrecords.Recorder
 
 	Logger *slog.Logger
 }
@@ -165,17 +169,26 @@ func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to 
 	i.answer(tx, code)
 }
 
+// answer answers a request with a response of the I-CSCF's, through the proxy if it has begun forwarding it.
 func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
 	res := sip.NewResponse(tx.Request(), code, "")
+
+	i.cfg.Records.RejectingRequest(tx.Request(), code, tx.ToTag())
 
 	if err := i.cfg.Proxy.Relay(tx, res); err == nil {
 		return
 	}
 
-	i.respond(tx, res)
+	i.send(tx, res)
 }
 
+// respond answers a request with a response of the I-CSCF's.
 func (i *ICSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
+	i.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
+	i.send(tx, res)
+}
+
+func (i *ICSCF) send(tx *transaction.ServerTransaction, res *sip.Response) {
 	if err := tx.Respond(res); err != nil {
 		i.log.Debug("I-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}

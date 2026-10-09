@@ -18,6 +18,7 @@ import {
 import { useTheme } from "@mui/material/styles";
 import {
   BugReport as BugReportIcon,
+  Call as CallIcon,
   Feed as FeedIcon,
   Hub as HubIcon,
   Info as InfoIcon,
@@ -72,6 +73,7 @@ const navItems = [
     label: "Registrations",
     icon: <PhoneAndroidIcon color="primary" />,
   },
+  { to: "/calls", label: "Calls", icon: <CallIcon color="primary" /> },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

@@ -99,6 +99,15 @@ describe("withQuery", () => {
     );
   });
 
+  it("repeats the values of a list", () => {
+    expect(
+      withQuery("/api/v1/call-records", {
+        outcome: ["busy", "failed"],
+        page: 1,
+      }),
+    ).toBe("/api/v1/call-records?outcome=busy&outcome=failed&page=1");
+  });
+
   it("encodes the plus sign of E.164 numbers", () => {
     expect(withQuery("/api/v1/registrations", { search: "+1555" })).toBe(
       "/api/v1/registrations?search=%2B1555",

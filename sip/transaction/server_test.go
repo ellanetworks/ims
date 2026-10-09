@@ -28,6 +28,10 @@ func TestServerInviteProceeding(t *testing.T) {
 	h.advance(time.Minute)
 	h.peer.RecvNone(quiet)
 	wantState(t, tx, transaction.Proceeding)
+
+	if got := tx.Status(); got != 0 {
+		t.Errorf("Status after provisional responses = %d, want 0", got)
+	}
 }
 
 func TestServerInviteCompleted(t *testing.T) {
@@ -52,6 +56,10 @@ func TestServerInviteCompleted(t *testing.T) {
 
 	if err := tx.Respond(sip.NewResponse(req, 500, "")); !errors.Is(err, transaction.ErrFinalResponseSent) {
 		t.Errorf("second final response: %v", err)
+	}
+
+	if got := tx.Status(); got != 486 {
+		t.Errorf("Status = %d, want the 486 sent", got)
 	}
 
 	ack, err := sip.NewAck(req, busy)
