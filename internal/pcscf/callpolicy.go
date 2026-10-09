@@ -44,15 +44,16 @@ type callPolicy struct {
 	call   *call
 	dialog *proxy.Dialog
 
-	mu       sync.Mutex
-	session  *policySession
-	busy     bool
-	queue    []func()
-	done     map[int]bool
-	early    map[string]bool
-	forked   bool
-	flows    map[int]flowNumbers
-	active   map[uint32]bool
+	mu      sync.Mutex
+	session *policySession
+	busy    bool
+	queue   []func()
+	done    map[int]bool
+	early   map[string]bool
+	forked  bool
+	flows   map[int]flowNumbers
+	// active holds the media type of each component the last authorization did not remove.
+	active   map[uint32]policy.MediaType
 	charging string
 	access   policy.Access
 	loss     transaction.Timer
@@ -70,7 +71,7 @@ func (p *PCSCF) newCallPolicy(k regKey, identities []string, service string) *ca
 
 	return &callPolicy{
 		key: k, identities: identities, service: service,
-		done: make(map[int]bool), early: make(map[string]bool), flows: make(map[int]flowNumbers), active: make(map[uint32]bool),
+		done: make(map[int]bool), early: make(map[string]bool), flows: make(map[int]flowNumbers), active: make(map[uint32]policy.MediaType),
 	}
 }
 
@@ -612,11 +613,13 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 	return nil
 }
 
-func activeComponents(components []policy.MediaComponent) map[uint32]bool {
-	out := make(map[uint32]bool, len(components))
+func activeComponents(components []policy.MediaComponent) map[uint32]policy.MediaType {
+	out := make(map[uint32]policy.MediaType, len(components))
 
 	for _, c := range components {
-		out[c.Number] = c.Status != policy.FlowRemoved
+		if c.Status != policy.FlowRemoved {
+			out[c.Number] = c.Type
+		}
 	}
 
 	return out
@@ -879,21 +882,19 @@ func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
 	cr.mu.Lock()
 
 	cr.loss = nil
-	still := false
-
-	if len(cr.lost) == 0 {
-		for _, on := range cr.active {
-			still = still || on
-		}
-	}
-
-	for _, n := range cr.lost {
-		still = still || cr.active[n]
-	}
-
-	release := still && !cr.ended && cr.dialog != nil
+	release, video := lossReleases(cr.active, cr.lost)
+	live := !cr.ended && cr.dialog != nil
 
 	cr.mu.Unlock()
+
+	if !live {
+		return
+	}
+
+	if video {
+		p.log.Info("video bearer lost: continuing as voice", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
+			slog.String("ue", cr.key.ue.String()))
+	}
 
 	if !release {
 		return
@@ -903,6 +904,43 @@ func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
 		slog.String("ue", cr.key.ue.String()))
 
 	p.releaseCall(cr.call, cr.dialog, false)
+}
+
+// lossReleases tells whether losing the bearers of the lost components (all of them when none is named) ends the
+// call, or only its video. The call goes on as voice when the lost components still in the session are all video and
+// some other media remains (GSMA IR.94 §2.4.1, NG.114 §4.6.2); otherwise the P-CSCF releases it (TS 24.229
+// §5.2.8.1.2).
+func lossReleases(active map[uint32]policy.MediaType, lost []uint32) (release, video bool) {
+	if len(lost) == 0 {
+		return len(active) > 0, false
+	}
+
+	gone := make(map[uint32]bool, len(lost))
+
+	for _, n := range lost {
+		t, on := active[n]
+		if !on {
+			continue
+		}
+
+		if t != policy.MediaVideo {
+			return true, false
+		}
+
+		gone[n] = true
+	}
+
+	if len(gone) == 0 {
+		return false, false
+	}
+
+	for n, t := range active {
+		if !gone[n] && t != policy.MediaVideo {
+			return false, true
+		}
+	}
+
+	return true, false
 }
 
 // TS 24.229 §5.2.8.1.1, §5.2.8.1.2

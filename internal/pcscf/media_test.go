@@ -2,6 +2,7 @@ package pcscf
 
 import (
 	"bytes"
+	"fmt"
 	"net/netip"
 	"os"
 	"reflect"
@@ -296,10 +297,15 @@ func TestSubscriptionIDs(t *testing.T) {
 	}
 }
 
-func corpusSDP(t *testing.T, name string) *sdp.Session {
+const (
+	crosscallCall  = "4g/crosscall-core-z5/call_precondition_failure_580/"
+	pixelVideoCall = "5g/pixel-10a/call_to_crosscall-core-z5_video_callee_bye/"
+)
+
+func corpusSDP(t *testing.T, call, name string) *sdp.Session {
 	t.Helper()
 
-	b, err := os.ReadFile("../../sip/internal/corpus/testdata/ella/live/4g/crosscall-core-z5/call_precondition_failure_580/" + name)
+	b, err := os.ReadFile("../../sip/internal/corpus/testdata/ella/live/" + call + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +328,7 @@ func corpusSDP(t *testing.T, name string) *sdp.Session {
 // The offer and answer of two Crosscall Core-Z5 phones, as the originating P-CSCF sees them.
 func TestMediaComponentFromLivePhones(t *testing.T) {
 	got, err := rxMediaComponents(sdpExchange{
-		offer: corpusSDP(t, "001-INVITE.sip"), answer: corpusSDP(t, "006-183-INVITE.sip"), offerFromUE: true,
+		offer: corpusSDP(t, crosscallCall, "001-INVITE.sip"), answer: corpusSDP(t, crosscallCall, "006-183-INVITE.sip"), offerFromUE: true,
 	}, map[int]flowNumbers{})
 	if err != nil {
 		t.Fatal(err)
@@ -343,6 +349,51 @@ func TestMediaComponentFromLivePhones(t *testing.T) {
 	for i, s := range c.SubComponents {
 		if !reflect.DeepEqual(s.FlowDescriptions, want[i]) {
 			t.Errorf("flow %d: %q, want %q", s.FlowNumber, s.FlowDescriptions, want[i])
+		}
+	}
+}
+
+// TS 29.213 Table 6.2.1: a Pixel 10a video call to a Crosscall Core-Z5, as the originating P-CSCF sees it. Each m-line
+// is its own component, its bandwidth from its own b= lines, the session-level ones ignored.
+func TestMediaComponentsFromLiveVideoCall(t *testing.T) {
+	got, err := rxMediaComponents(sdpExchange{
+		offer: corpusSDP(t, pixelVideoCall, "001-INVITE.sip"), answer: corpusSDP(t, pixelVideoCall, "006-183-INVITE.sip"),
+		offerFromUE: true,
+	}, map[int]flowNumbers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("%d components, want audio and video", len(got))
+	}
+
+	for _, w := range []struct {
+		number         uint32
+		kind           rx.MediaType
+		ul, dl, rr, rs uint32
+		in, out        uint16
+	}{
+		{1, rx.MediaAudio, 41000, 42000, 2000, 600, 50032, 7010},
+		{2, rx.MediaVideo, 401000, 560000, 6000, 5200, 60010, 26300},
+	} {
+		c := got[w.number-1]
+
+		if c.Number != w.number || *c.Type != w.kind || *c.FlowStatus != rx.FlowStatusEnabled ||
+			*c.MaxRequestedBandwidthUL != rx.Bandwidth(w.ul) || *c.MaxRequestedBandwidthDL != rx.Bandwidth(w.dl) ||
+			*c.RRBandwidth != w.rr || *c.RSBandwidth != w.rs {
+			t.Errorf("component %d: %+v, want enabled %v at %d/%d bit/s with RR %d and RS %d", w.number, c, w.kind, w.ul, w.dl, w.rr, w.rs)
+		}
+
+		want := [][]string{
+			{fmt.Sprintf("permit in 17 from 10.46.0.7 to 10.46.0.8 %d", w.in), fmt.Sprintf("permit out 17 from 10.46.0.8 to 10.46.0.7 %d", w.out)},
+			{fmt.Sprintf("permit in 17 from 10.46.0.7 to 10.46.0.8 %d", w.in+1), fmt.Sprintf("permit out 17 from 10.46.0.8 to 10.46.0.7 %d", w.out+1)},
+		}
+
+		for i, s := range c.SubComponents {
+			if !reflect.DeepEqual(s.FlowDescriptions, want[i]) {
+				t.Errorf("component %d flow %d: %q, want %q", w.number, s.FlowNumber, s.FlowDescriptions, want[i])
+			}
 		}
 	}
 }

@@ -32,24 +32,31 @@ type callUp struct {
 func (s *ipsecScene) establishEarly(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
 	t.Helper()
 
-	return s.establish(t, u, pcrf, false)
+	return s.establish(t, u, pcrf, false, sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
 }
 
 // An originating call answered by the core with SDP in a 183, then a 200, and ACKed.
 func (s *ipsecScene) establishConfirmed(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
 	t.Helper()
 
-	return s.establish(t, u, pcrf, true)
+	return s.establish(t, u, pcrf, true, sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
 }
 
-func (s *ipsecScene) establish(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool) *callUp {
+// An originating audio and video call (components 1 and 2), answered in a 183, then a 200, and ACKed.
+func (s *ipsecScene) establishVideo(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool) *callUp {
 	t.Helper()
 
-	invite, got, f := s.originateWith(t, u, true)
+	return s.establish(t, u, pcrf, confirm, audioVideoSDP(ueAddr.String(), "4000"), audioVideoSDP("192.0.2.9", "5000"))
+}
+
+func (s *ipsecScene) establish(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool, offer, answer []byte) *callUp {
+	t.Helper()
+
+	invite, got, f := s.originateBody(t, u, offer)
 	e := &callUp{invite: invite, got: got, f: f, tag: sip.NewTag()}
 
 	progress := s.coreResponse(got, 183, e.tag)
-	progress.SetBody("application/sdp", sdpBody("192.0.2.9", "5000"))
+	progress.SetBody("application/sdp", answer)
 	s.scscf.Send(f.Transport, f.Remote, progress)
 
 	e.session, _ = pcrf.aar()
