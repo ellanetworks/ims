@@ -1,6 +1,8 @@
 package testue
 
 import (
+	"cmp"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -51,11 +53,16 @@ const (
 )
 
 // mirroredVideo are the fmtp parameters of the chosen video format the answer keeps (RFC 6184 §8.2.2, RFC 7798
-// §7.2.2); the offerer's sprop parameter sets describe its own stream.
+// §7.2.2: the profile, tier and level parameters are symmetric); the offerer's sprop parameter sets describe its own
+// stream.
 var mirroredVideo = map[string][]string{
 	h264: {"profile-level-id", "packetization-mode"},
-	h265: {"profile-id", "level-id"},
+	h265: {"profile-space", "tier-flag", "profile-id", "level-id", "profile-compatibility-indicator", "interop-constraints"},
 }
+
+// TS 26.114 §6.2.3.2, §7.3.3, Annex A.4: the AVPF and CCM feedback a video offer has. An answer has those of them the
+// offer has (RFC 4585 §4.2).
+var offeredFeedback = []string{"trr-int 5000", "nack", "nack pli", "ccm fir", "ccm tmmbr"}
 
 var mirroredAMR = []string{"octet-align", "mode-set", "crc", "robust-sorting", "interleaving", "channels"}
 
@@ -74,7 +81,10 @@ func init() {
 type stream struct {
 	kind  string
 	proto string
-	// cvo is the extmap ID of the video orientation extension (IR.94 §2.4.2), empty when the stream has none.
+	// feedback are the rtcp-fb values of the stream, with AVPF (RFC 4585 §4.2).
+	feedback []string
+	// cvo is the extmap ID, with its direction if any, of the video orientation extension (IR.94 §2.4.2), empty
+	// when the stream has none.
 	cvo string
 	// disabled is the m-line replayed at port 0 once the stream is rejected or removed; empty while it is active.
 	disabled string
@@ -93,7 +103,7 @@ func newStream(kind string, formats []format) *stream {
 
 	// IR.94 §3.3.2: video is offered with the AVPF profile.
 	if kind == sdp.Video {
-		s.proto, s.cvo = avpf, cvoID
+		s.proto, s.cvo, s.feedback = avpf, cvoID, offeredFeedback
 	}
 
 	return s
@@ -191,6 +201,7 @@ func cloneStreams(streams []*stream) []*stream {
 	for i, s := range streams {
 		c := *s
 		c.formats = slices.Clone(s.formats)
+		c.feedback = slices.Clone(s.feedback)
 		out[i] = &c
 	}
 
@@ -205,18 +216,19 @@ func (m *media) fork() *media {
 	return &f
 }
 
-// mediaState is what an offer changes, restored when the offer fails.
+// mediaState is what an offer and its answer change, restored when the offer fails (RFC 3261 §14.1).
 type mediaState struct {
-	streams []*stream
-	local   *sdp.Session
+	streams       []*stream
+	local, remote *sdp.Session
+	precondition  bool
 }
 
 func (m *media) save() mediaState {
-	return mediaState{streams: cloneStreams(m.streams), local: m.local}
+	return mediaState{streams: cloneStreams(m.streams), local: m.local, remote: m.remote, precondition: m.precondition}
 }
 
 func (m *media) restore(st mediaState) {
-	m.streams, m.local = st.streams, st.local
+	m.streams, m.local, m.remote, m.precondition = st.streams, st.local, st.remote, st.precondition
 }
 
 func (m *media) active() []*stream {
@@ -327,7 +339,9 @@ func (m *media) mline(s *stream, direction sdp.Direction, preconditions, extra [
 
 	// IR.94 §3.3.3: NACK, PLI, FIR and TMMBR feedback with the AVPF profile.
 	if s.proto == avpf {
-		out = append(out, "a=rtcp-fb:* nack", "a=rtcp-fb:* nack pli", "a=rtcp-fb:* ccm fir", "a=rtcp-fb:* ccm tmmbr")
+		for _, fb := range s.feedback {
+			out = append(out, "a=rtcp-fb:* "+fb)
+		}
 	}
 
 	if s.cvo != "" {
@@ -446,10 +460,11 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 
 		accepted[desc.Type] = true
 
-		// An m-line keeps its stream, and the stream its state, from one offer to the next (RFC 3264 §8).
+		// An m-line keeps its stream, and the stream its state, from one offer to the next (RFC 3264 §8). The
+		// stream is changed on a copy: an offer that fails leaves the session as it was (RFC 3261 §14.2).
 		s := newStream(desc.Type, nil)
 		if i < len(m.streams) && m.streams[i].active() && m.streams[i].kind == desc.Type {
-			s = m.streams[i]
+			s = cloneStreams(m.streams[i : i+1])[0]
 		}
 
 		var extra []string
@@ -459,6 +474,7 @@ func (m *media) answer(offer *sdp.Session) (*sdp.Session, error) {
 
 		if s.kind == sdp.Video {
 			s.cvo = cvo(om)
+			s.feedback = answerFeedback(om, formats[0].Payload)
 		}
 
 		if _, err := m.receive(s, offer, i); err != nil {
@@ -527,33 +543,21 @@ func choose(offer *sdp.Media) []format {
 	return out
 }
 
-// IR.94 §3.3.1, NG.114 §3.3.2.1: the first offered H.265 or H.264 format, H.264 with packetization mode 1
-// (RFC 6184 §6.3).
+// IR.94 §3.3.1, NG.114 §3.3.2.1: the first offered format of the profiles the UE takes: H.265 Main, H.264
+// Constrained High or Constrained Baseline, H.264 with packetization mode 1 (RFC 6184 §6.3).
 func chooseVideo(offer *sdp.Media) []format {
 	codecs, _ := offer.Codecs()
 
 	for _, c := range codecs {
-		if c.ClockRate != 90000 {
-			continue
-		}
-
-		var names []string
-
-		for enc, ps := range mirroredVideo {
-			if strings.EqualFold(c.Encoding, enc) {
-				names = ps
-			}
-		}
-
 		params := fmtpParams(offer, c.Payload)
 
-		if names == nil || strings.EqualFold(c.Encoding, h264) && params["packetization-mode"] != "1" {
+		if c.ClockRate != 90000 || !videoProfile(c.Encoding, params) {
 			continue
 		}
 
 		var fmtp []string
 
-		for _, name := range names {
+		for _, name := range mirroredVideo[strings.ToUpper(c.Encoding)] {
 			if v, ok := params[name]; ok {
 				fmtp = append(fmtp, name+"="+v)
 			}
@@ -563,6 +567,67 @@ func chooseVideo(offer *sdp.Media) []format {
 	}
 
 	return nil
+}
+
+// videoProfile tells whether the format is of a profile the UE takes.
+func videoProfile(encoding string, params map[string]string) bool {
+	switch strings.ToUpper(encoding) {
+	case h265:
+		// RFC 7798 §7.1: profile-space 0 and profile-id 1 (Main) when absent.
+		return cmp.Or(params["profile-space"], "0") == "0" && cmp.Or(params["profile-id"], "1") == "1"
+	case h264:
+		return params["packetization-mode"] == "1" && h264Constrained(params["profile-level-id"])
+	}
+
+	return false
+}
+
+// h264Constrained tells whether profile-level-id is Constrained Baseline, profile_idc 66 with constraint_set1_flag,
+// or Constrained High, profile_idc 100 with constraint_set4_flag and constraint_set5_flag (RFC 6184 §8.1, ITU-T
+// H.264 Annex A.2.1.1, A.2.4.2). Without it, the profile is Baseline.
+func h264Constrained(profileLevelID string) bool {
+	b, err := hex.DecodeString(profileLevelID)
+	if err != nil || len(b) != 3 {
+		return false
+	}
+
+	switch b[0] {
+	case 0x42:
+		return b[1]&0x40 != 0
+	case 0x64:
+		return b[1]&0x0c == 0x0c
+	}
+
+	return false
+}
+
+// answerFeedback returns the rtcp-fb values the offer has for the payload type, or all of them, that the UE takes
+// (RFC 4585 §4.2, TS 26.114 §6.2.3.2).
+func answerFeedback(offer *sdp.Media, pt uint8) []string {
+	var offered []string
+
+	for _, v := range offer.Attrs("rtcp-fb") {
+		target, value, ok := strings.Cut(strings.TrimSpace(v), " ")
+		if ok && (target == "*" || target == strconv.Itoa(int(pt))) {
+			offered = append(offered, strings.Join(strings.Fields(value), " "))
+		}
+	}
+
+	var out []string
+
+	for _, ours := range offeredFeedback {
+		kind, _, _ := strings.Cut(ours, " ")
+
+		for _, o := range offered {
+			// trr-int is taken with the offerer's interval, the others as offered.
+			if strings.EqualFold(o, ours) || kind == "trr-int" && strings.HasPrefix(strings.ToLower(o), "trr-int ") {
+				out = append(out, o)
+				break
+			}
+		}
+	}
+
+	return out
 }
 
 // answerProto answers the transport of an offered m-line: an AVP m-line offering AVPF through SDP capability
@@ -613,14 +678,28 @@ func answerProto(offer *sdp.Media, proto string) (string, []string) {
 	return proto, nil
 }
 
-// cvo returns the extmap ID the offer gives video orientation, empty when it offers none (RFC 8285 §6).
+// cvo returns the extmap the answer has for the video orientation the offer has, empty when it offers none: the
+// offered ID, in the mirrored direction (RFC 8285 §6, TS 26.114 §6.2.3.3).
 func cvo(offer *sdp.Media) string {
 	for _, v := range offer.Attrs("extmap") {
 		fields := strings.Fields(v)
-		if len(fields) >= 2 && strings.EqualFold(fields[1], cvoURN) {
-			id, _, _ := strings.Cut(fields[0], "/")
+		if len(fields) < 2 || !strings.EqualFold(fields[1], cvoURN) {
+			continue
+		}
+
+		id, dir, ok := strings.Cut(fields[0], "/")
+		if !ok {
 			return id
 		}
+
+		switch sdp.Direction(dir) {
+		case sdp.SendOnly:
+			dir = string(sdp.RecvOnly)
+		case sdp.RecvOnly:
+			dir = string(sdp.SendOnly)
+		}
+
+		return id + "/" + dir
 	}
 
 	return ""
@@ -670,6 +749,10 @@ func (m *media) receive(st *stream, s *sdp.Session, i int) (bool, error) {
 // RFC 3264 §6, RFC 3312 §11: a stream the answer rejects stays at port 0; preconditions are dropped when the first
 // answer has none on the streams it accepts.
 func (m *media) answered(answer *sdp.Session) error {
+	if len(answer.Media) != len(m.streams) {
+		return fmt.Errorf("testue: answer with %d m-lines to an offer with %d (RFC 3264 §6)", len(answer.Media), len(m.streams))
+	}
+
 	first := m.remote == nil
 	m.remote = answer
 

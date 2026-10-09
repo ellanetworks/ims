@@ -162,7 +162,11 @@ type Call struct {
 	finalErr  error
 	ackSent   <-chan struct{}
 	cancelled bool
-	retried   bool
+	// cancelEnd and cancelReason are the end reason of a cancelled call, and the Reason of its CANCEL, given again
+	// in the BYE of a 2xx that crosses the CANCEL.
+	cancelEnd    EndReason
+	cancelReason []sip.Field
+	retried      bool
 
 	stx      *transaction.ServerTransaction
 	offer    *sdp.Session
@@ -755,7 +759,7 @@ func (h *inviteClient) HandleResponse(res *sip.Response) {
 
 		reason := Rejected
 		if c.cancelled && res.StatusCode == 487 {
-			reason = Cancelled
+			reason = c.cancelEnd
 		}
 
 		c.terminateLocked(reason)
@@ -777,7 +781,7 @@ func (h *inviteClient) HandleError(err error) {
 
 	reason := TimedOut
 	if c.cancelled {
-		reason = Cancelled
+		reason = c.cancelEnd
 	}
 
 	c.terminateLocked(reason)
@@ -1055,7 +1059,7 @@ func (c *Call) successReceived(res *sip.Response) {
 		}
 	}
 
-	cancelled, sent := c.cancelled, c.ackSent
+	cancelled, sent, end, reason := c.cancelled, c.ackSent, c.cancelEnd, c.cancelReason
 	if c.state != CallTerminated {
 		c.state = CallConfirmed
 
@@ -1076,7 +1080,7 @@ func (c *Call) successReceived(res *sip.Response) {
 				return ctx.Err()
 			}
 
-			return c.bye(ctx, Cancelled)
+			return c.bye(ctx, end, reason...)
 		})
 	}
 }
@@ -1327,6 +1331,7 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*
 
 			offer, err := l.m.offer()
 			if err != nil {
+				l.m.restore(previous)
 				return nil, err
 			}
 
@@ -1372,6 +1377,7 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*
 
 		if withOffer {
 			if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
+				l.m.restore(previous)
 				return err
 			}
 		}
@@ -1449,10 +1455,11 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 
 // RFC 3329, RFC 3261 §9.1
 func (c *Call) Cancel(ctx context.Context) error {
-	return c.cancel(ctx)
+	return c.cancel(ctx, Cancelled)
 }
 
-func (c *Call) cancel(ctx context.Context, extra ...sip.Field) error {
+// cancel cancels the INVITE (RFC 3261 §9.1), the call ending with end and the CANCEL carrying extra.
+func (c *Call) cancel(ctx context.Context, end EndReason, extra ...sip.Field) error {
 	c.mu.Lock()
 
 	if c.incoming || c.itx == nil {
@@ -1465,7 +1472,7 @@ func (c *Call) cancel(ctx context.Context, extra ...sip.Field) error {
 		return fmt.Errorf("%w: Cancel of a %s call", ErrCallState, c.state)
 	}
 
-	c.cancelled = true
+	c.cancelled, c.cancelEnd, c.cancelReason = true, end, extra
 	itx := c.itx
 	c.mu.Unlock()
 
@@ -1564,7 +1571,10 @@ func (c *Call) Refresh(ctx context.Context) error {
 
 // reinvite offers the session as change leaves it (RFC 3261 §14.1), and restores it when the offer fails.
 func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
-	if err := c.waitFor(ctx, func() bool { return c.accepted == nil || c.state == CallTerminated }); err != nil {
+	// RFC 3264 §4: the offer waits for the one in progress, such as an UPDATE of the call's setup still unanswered.
+	if err := c.waitFor(ctx, func() bool {
+		return c.state == CallTerminated || c.accepted == nil && !c.localOfferLocked(c.leg)
+	}); err != nil {
 		return err
 	}
 
@@ -1596,8 +1606,13 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 			return &ResponseError{Response: res}
 		}
 
-		if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
-			return err
+		// RFC 3261 §13.2.1, RFC 3262 §5: the answer is in the first reliable response, and the 2xx after it has
+		// none.
+		if !h.answered {
+			if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
+				l.m.restore(previous)
+				return err
+			}
 		}
 
 		interval, refresher, _ := parseSessionExpires(res.Header)
@@ -1727,6 +1742,8 @@ func (c *Call) BearerLost(ctx context.Context, kind string) error {
 
 	c.mu.Lock()
 	pending := c.remoteOfferLocked()
+	// The kept leg may have changed while waiting, as when another dialog of a forked INVITE was answered.
+	l = c.leg
 	c.mu.Unlock()
 
 	switch {
@@ -1741,8 +1758,10 @@ func (c *Call) BearerLost(ctx context.Context, kind string) error {
 	return c.update(ctx, l, true, remove)
 }
 
-// release ends the call in whatever state it is in, with a Reason (RFC 3326, TS 24.229 §5.1.3.1, §5.1.5): a BYE once
-// confirmed, a CANCEL while the INVITE is pending, a 580 (Precondition Failure) or 503 to an INVITE not answered yet.
+// release ends the call in whatever state it is in: a BYE once confirmed and a CANCEL while the INVITE is pending,
+// with the Reason (RFC 3326, TS 24.229 §5.1.3.1, §5.1.5, §7.2A.18.11); a 580 (Precondition Failure, RFC 3312 §8) or
+// 488 (Not Acceptable Here) to an INVITE not answered yet. RELEASE_CAUSE is for requests only, and a 503 would have
+// the caller try elsewhere (RFC 3261 §21.5.4).
 func (c *Call) release(ctx context.Context, end EndReason, protocol string, cause int) error {
 	reason, err := sip.NewReason(protocol, cause, sip.ReasonText(protocol, cause))
 	if err != nil {
@@ -1759,12 +1778,12 @@ func (c *Call) release(ctx context.Context, end EndReason, protocol string, caus
 	case state == CallConfirmed:
 		return c.bye(ctx, end, field)
 	case incoming && precondition:
-		return c.reject(580, field)
+		return c.reject(580, end)
 	case incoming:
-		return c.reject(503, field)
+		return c.reject(488, end)
 	}
 
-	return c.cancel(ctx, field)
+	return c.cancel(ctx, end, field)
 }
 
 type reinviteClient struct {
@@ -1774,6 +1793,9 @@ type reinviteClient struct {
 	settle func(res *sip.Response, err error) error
 	once   sync.Once
 	done   chan error
+
+	// answered is set, under the call's lock, once a reliable provisional response brought the answer.
+	answered bool
 
 	mu       sync.Mutex
 	ack      *sip.Request
@@ -1873,11 +1895,33 @@ func (h *reinviteClient) provisional(res *sip.Response) {
 	h.mu.Unlock()
 
 	c := h.c
+	l := h.l
+
+	// RFC 3262 §5: the first reliable response with SDP answers the offer. A remote end that waits for our
+	// resources before its 2xx (RFC 3312 §5, TS 24.229 §6.1.4.2) gets them reported in an UPDATE (RFC 3311).
+	update := false
+
+	if mediaType(res.Header.ContentType()) == sdp.ContentType && len(res.Body) > 0 {
+		c.mu.Lock()
+
+		if !h.answered {
+			if err := answerOfOffer(l.m, res.Header.ContentType(), res.Body); err != nil {
+				c.event(Event{Err: err})
+			} else {
+				h.answered, l.offering = true, false
+				update = l.m.precondition && !l.m.met()
+
+				c.notifyLocked()
+			}
+		}
+
+		c.mu.Unlock()
+	}
 
 	c.background(func(ctx context.Context) error {
-		d := h.l.d
+		d := l.d
 
-		_, err := c.send(ctx, h.l, func() (*sip.Request, error) {
+		_, err := c.send(ctx, l, func() (*sip.Request, error) {
 			prack, err := d.NewPrack(res)
 			if err != nil {
 				return nil, fmt.Errorf("testue: %w", err)
@@ -1885,8 +1929,11 @@ func (h *reinviteClient) provisional(res *sip.Response) {
 
 			return prack, c.u.prepare(prack)
 		}, nil)
+		if err != nil || !update {
+			return err
+		}
 
-		return err
+		return c.update(ctx, l, true, nil)
 	})
 }
 
@@ -2402,10 +2449,11 @@ func (c *Call) retransmitAccepted(a *accepted) {
 }
 
 func (c *Call) Reject(code int) error {
-	return c.reject(code)
+	return c.reject(code, Rejected)
 }
 
-func (c *Call) reject(code int, extra ...sip.Field) error {
+// reject answers the INVITE with code, the call ending with end and the response carrying extra.
+func (c *Call) reject(code int, end EndReason, extra ...sip.Field) error {
 	if code < 300 || code > 699 {
 		return fmt.Errorf("testue: Reject with %d", code)
 	}
@@ -2431,7 +2479,7 @@ func (c *Call) reject(code int, extra ...sip.Field) error {
 		c.leg.d.PrepareResponse(c.invite, res)
 	}
 
-	c.terminateLocked(Rejected)
+	c.terminateLocked(end)
 
 	stx := c.stx
 	c.mu.Unlock()
@@ -2482,14 +2530,7 @@ func (c *Call) ackReceived(ack *sip.Request) {
 		return
 	}
 
-	a.acked = true
-	a.timer.Stop()
-
-	c.accepted = nil
-
-	if a.initial {
-		c.releaseSALocked()
-	}
+	c.acknowledgedLocked(a)
 
 	if a.answerInAck {
 		if err := answerOfOffer(c.leg.m, ack.Header.ContentType(), ack.Body); err != nil {
@@ -2498,6 +2539,18 @@ func (c *Call) ackReceived(ack *sip.Request) {
 	}
 
 	c.notifyLocked()
+}
+
+// acknowledgedLocked ends the retransmission of an accepted INVITE's 2xx (RFC 3261 §13.3.1.4).
+func (c *Call) acknowledgedLocked(a *accepted) {
+	a.acked = true
+	a.timer.Stop()
+
+	c.accepted = nil
+
+	if a.initial {
+		c.releaseSALocked()
+	}
 }
 
 func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Request) {
@@ -2524,7 +2577,11 @@ func (c *Call) requestReceived(tx *transaction.ServerTransaction, req *sip.Reque
 	case req.Method == "INVITE" && c.localOfferLocked(l):
 		res = c.u.response(req, 491)
 	case req.Method == "INVITE" && c.accepted != nil:
-		res = retryAfter(c.u.response(req, 500))
+		// RFC 3261 §14.2 asks for a 500 only while the final response to the previous INVITE is not sent. It was,
+		// and a new INVITE in the dialog shows the remote end has it (§13.3.1.4): its ACK is still on the way.
+		c.acknowledgedLocked(c.accepted)
+
+		fallthrough
 	default:
 		if err := l.d.ReceiveRequest(req); err != nil {
 			code := 400
