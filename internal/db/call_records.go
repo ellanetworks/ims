@@ -111,14 +111,14 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted
 	var inserted []*CallRecord
 
 	// The records inserted keep no ID when nothing was saved.
-	fail := func(err error) ([]error, error) {
+	fail := func(err error) error {
 		_ = tx.Rollback()
 
 		for _, r := range inserted {
 			r.ID = 0
 		}
 
-		return nil, fmt.Errorf("save call records: %w", err)
+		return fmt.Errorf("save call records: %w", err)
 	}
 
 	for i, r := range records {
@@ -136,24 +136,24 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted
 
 			errs[i] = fmt.Errorf("save call record %s: %w", r.ICID, err)
 		default:
-			return fail(err)
+			return nil, fail(err)
 		}
 	}
 
 	if len(deleted) > 0 {
 		ids, err := json.Marshal(deleted)
 		if err != nil {
-			return fail(err)
+			return nil, fail(err)
 		}
 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT value FROM json_each(?))`,
 			string(ids)); err != nil {
-			return fail(err)
+			return nil, fail(err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fail(err)
+		return nil, fail(err)
 	}
 
 	return errs, nil
