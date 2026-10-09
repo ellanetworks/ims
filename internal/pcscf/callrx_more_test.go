@@ -551,22 +551,26 @@ func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 // RFC 6733 §5.5.4, §7.1.3: a PCRF momentarily disconnected or too busy has not lost the call's session: the
 // modification is refused and the call goes on.
 func TestCallModificationWithItsPCRFPendingKeepsTheCall(t *testing.T) {
-	for name, answer := range map[string]func(*diameter.Message) (*diameter.Message, error){
-		"down": func(*diameter.Message) (*diameter.Message, error) { return nil, diameter.ErrNotConnected },
-		"too busy": func(req *diameter.Message) (*diameter.Message, error) {
-			return diameter.NewAnswer(req, pcrfIdentity, diameter.ResultTooBusy), nil
-		},
+	for name, pending := range map[string]struct {
+		err    error
+		result uint32
+	}{
+		"down":     {err: diameter.ErrNotConnected},
+		"too busy": {result: diameter.ResultTooBusy},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, u, pcrf, _ := newRxIPsecScene(t)
 			e := s.establishConfirmed(t, u, pcrf)
 
 			pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-				if req.CommandCode == rx.CommandAA {
-					return answer(req)
+				switch {
+				case req.CommandCode != rx.CommandAA:
+					return succeed(req)
+				case pending.err != nil:
+					return nil, pending.err
 				}
 
-				return succeed(req)
+				return diameter.NewAnswer(req, pcrfIdentity, pending.result), nil
 			})
 
 			res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))

@@ -19,7 +19,9 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import CopyButton from "@/components/CopyButton";
-import DiameterPeerDialog, { DEFAULT_PRIORITY } from "@/components/DiameterPeerDialog";
+import DiameterPeerDialog, {
+  DEFAULT_PRIORITY,
+} from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
