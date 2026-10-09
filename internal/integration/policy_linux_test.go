@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"path"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -92,6 +93,8 @@ type fakePolicy interface {
 	wantCallEnd(ref policyRef, cause rx.TerminationCause)
 	// mediaLost reports the loss of the resources of a media component.
 	mediaLost(ref policyRef, component uint32)
+	// mediaRemoved waits for a request of the session removing the media component, skipping other requests.
+	mediaRemoved(ref policyRef, component uint32)
 }
 
 const policyWait = 15 * time.Second
@@ -317,6 +320,30 @@ func (p *rxPolicy) mediaLost(ref policyRef, component uint32) {
 	}
 }
 
+// TS 29.213 Table 6.2.1: a port 0 m-line is a REMOVED component.
+func (p *rxPolicy) mediaRemoved(ref policyRef, component uint32) {
+	p.s.t.Helper()
+
+	deadline := time.After(policyWait)
+
+	for {
+		select {
+		case r := <-p.s.pcrf.Requests():
+			if r.AAR == nil || r.SessionID != ref.id {
+				continue
+			}
+
+			for _, c := range r.AAR.MediaComponents {
+				if c.Number == component && c.FlowStatus != nil && *c.FlowStatus == rx.FlowStatusRemoved {
+					return
+				}
+			}
+		case <-deadline:
+			p.s.t.Fatalf("no AAR removing component %d of %s", component, ref.id)
+		}
+	}
+}
+
 type n5Policy struct {
 	s *scene
 }
@@ -525,5 +552,27 @@ func (p *n5Policy) mediaLost(ref policyRef, component uint32) {
 	})
 	if err != nil || res.Status != http.StatusNoContent {
 		p.s.t.Fatalf("notify = %+v, %v, want 204", res, err)
+	}
+}
+
+// TS 29.513 Table 7.2.3-1: a port 0 m-line is a REMOVED component.
+func (p *n5Policy) mediaRemoved(ref policyRef, component uint32) {
+	p.s.t.Helper()
+
+	deadline := time.After(policyWait)
+
+	for {
+		select {
+		case r := <-p.s.pcf.Requests():
+			if r.Op != n5.OpModify || r.URI != ref.uri {
+				continue
+			}
+
+			if mc, ok := r.Context.MedComponents[strconv.FormatUint(uint64(component), 10)]; ok && mc.FStatus == n5.FlowRemoved {
+				return
+			}
+		case <-deadline:
+			p.s.t.Fatalf("no modify removing component %d of %s", component, ref.uri)
+		}
 	}
 }

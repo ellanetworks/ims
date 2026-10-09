@@ -20,7 +20,7 @@ type callee struct {
 }
 
 func (p *peer) callee(invite *sip.Request, tag string, port uint16) *callee {
-	return &callee{t: p.t, p: p, invite: invite, tag: tag, m: newMedia(loopback, port, false), rseq: 1}
+	return &callee{t: p.t, p: p, invite: invite, tag: tag, m: newMedia(loopback, port, false, false), rseq: 1}
 }
 
 func (c *callee) response(code int, reliable, withSDP bool) {

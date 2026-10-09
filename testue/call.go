@@ -27,6 +27,10 @@ const (
 	allow = "INVITE, ACK, OPTIONS, CANCEL, BYE, UPDATE, PRACK, NOTIFY, MESSAGE"
 
 	firstMediaPort = 40000
+
+	// Each call takes four ports: audio RTP and RTCP, then video RTP and RTCP.
+	portsPerCall = 4
+	maxCalls     = 5000
 )
 
 var supportedTags = []string{"100rel", "timer", "precondition", "sec-agree"}
@@ -76,6 +80,8 @@ const (
 	TimedOut
 	Expired
 	Closed
+	// MediaLost ends a call whose voice bearer was lost or refused (TS 24.229 §6.1.1).
+	MediaLost
 )
 
 func (r EndReason) String() string {
@@ -96,6 +102,8 @@ func (r EndReason) String() string {
 		return "session expired"
 	case Closed:
 		return "closed"
+	case MediaLost:
+		return "media bearer lost"
 	}
 
 	return fmt.Sprintf("EndReason(%d)", int(r))
@@ -103,6 +111,10 @@ func (r EndReason) String() string {
 
 type CallOptions struct {
 	Preconditions bool
+
+	// Video makes the call a video call: the INVITE offers audio and video, and asks for a video capable callee
+	// (IR.94 §2.2.2). It needs Config.Video.
+	Video bool
 
 	SessionExpires time.Duration
 
@@ -214,11 +226,20 @@ type accepted struct {
 	answerInAck bool
 }
 
-func (u *UE) newCall(incoming bool, invite *sip.Request, key callKey, precondition bool) *Call {
+// newCall starts a call whose first offer, if the UE makes it, has video when video is set.
+func (u *UE) newCall(incoming bool, invite *sip.Request, key callKey, precondition, video bool) (*Call, error) {
 	u.mu.Lock()
-	port := firstMediaPort + 2*u.calls.next
-	u.calls.next = (u.calls.next + 1) % 10000
+	port := firstMediaPort + portsPerCall*u.calls.next
+	u.calls.next = (u.calls.next + 1) % maxCalls
 	u.mu.Unlock()
+
+	m := newMedia(u.cfg.Local, uint16(port), precondition, u.cfg.Video)
+
+	if video {
+		if err := m.addVideo(); err != nil {
+			return nil, err
+		}
+	}
 
 	return &Call{
 		u:        u,
@@ -228,9 +249,9 @@ func (u *UE) newCall(incoming bool, invite *sip.Request, key callKey, preconditi
 		done:     make(chan struct{}),
 		changed:  make(chan struct{}),
 		invite:   invite,
-		leg:      &leg{m: newMedia(u.cfg.Local, uint16(port), precondition)},
+		leg:      &leg{m: m},
 		auto:     true,
-	}
+	}, nil
 }
 
 func (u *UE) Calls() <-chan *Call { return u.calls.incoming }
@@ -319,6 +340,57 @@ func (c *Call) RemoteSDP() *sdp.Session {
 	}
 
 	return c.leg.m.remote.Clone()
+}
+
+// Stream is an m-line of the call's session (RFC 3264 §5).
+type Stream struct {
+	Index int
+	// Kind is the media of the stream: sdp.Audio or sdp.Video.
+	Kind string
+	// Active is false once the stream is rejected or removed, with port 0 (RFC 3264 §8.2).
+	Active bool
+	// Direction is the direction the UE last gave the stream in its SDP.
+	Direction sdp.Direction
+	// Local and Remote are the RTP endpoints of the stream in the UE's last SDP and the remote end's; RTCP is on the
+	// next port (RFC 3550 §11). Remote is zero until the remote end has sent its SDP.
+	Local, Remote sdp.Endpoint
+}
+
+// Streams returns the streams of the call, one per m-line, in order.
+func (c *Call) Streams() []Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	m := c.leg.m
+	out := make([]Stream, len(m.streams))
+
+	for i, s := range m.streams {
+		st := Stream{Index: i, Kind: s.kind, Active: s.active()}
+
+		if m.local != nil && i < len(m.local.Media) {
+			st.Direction = m.local.MediaDirection(i)
+			st.Local, _ = m.local.RTPEndpoint(i)
+		}
+
+		if m.remote != nil && i < len(m.remote.Media) {
+			st.Remote, _ = m.remote.RTPEndpoint(i)
+		}
+
+		out[i] = st
+	}
+
+	return out
+}
+
+// Stream returns the active stream of the kind.
+func (c *Call) Stream(kind string) (Stream, bool) {
+	for _, s := range c.Streams() {
+		if s.Active && s.Kind == kind {
+			return s, true
+		}
+	}
+
+	return Stream{}, false
 }
 
 func (c *Call) PreconditionsMet() bool {
@@ -470,10 +542,27 @@ func (c *Call) supportedLocked() string {
 func (u *UE) callContact() string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
 
-	return sip.Address{URI: uri, Params: sip.Params{
-		{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel},
-		{Name: "audio"},
-	}}.String()
+	return sip.Address{URI: uri, Params: append(sip.Params{{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel}}, u.mediaTags()...)}.String()
+}
+
+// mediaTags are the media feature tags of the Contact the UE registers and uses in its dialogs (RFC 3840 §9,
+// TS 24.229 §5.1.3.1): video when the UE takes video, whether or not the call has video (IR.94 §2.2.1, §2.2.2).
+func (u *UE) mediaTags() sip.Params {
+	if u.cfg.Video {
+		return sip.Params{{Name: "audio"}, {Name: "video"}}
+	}
+
+	return sip.Params{{Name: "audio"}}
+}
+
+// IR.92 §2.2.4, IR.94 §2.2.2: a video call asks for a video capable callee, to guide forking (RFC 3841 §9.2).
+func acceptContact(video bool) string {
+	ac := "*;+g.3gpp.icsi-ref=" + icsiMMTel
+	if video {
+		ac += ";video"
+	}
+
+	return ac
 }
 
 // RFC 3261 §8.1.2, RFC 3263 §4.1
@@ -574,7 +663,10 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 	tag := sip.NewTag()
 	callID := timeUUID() + "@" + sip.FormatHost(u.cfg.Local)
 
-	c := u.newCall(false, req, callKey{callID: callID, tag: tag}, opts.Preconditions)
+	c, err := u.newCall(false, req, callKey{callID: callID, tag: tag}, opts.Preconditions, opts.Video)
+	if err != nil {
+		return nil, err
+	}
 
 	req.Header.Add("Max-Forwards", "70")
 	req.Header.Add("From", "<"+impu+">;tag="+tag)
@@ -582,7 +674,7 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 	req.Header.Add("Call-ID", callID)
 	req.Header.Add("CSeq", "1 INVITE")
 	req.Header.Add("Contact", u.callContact())
-	req.Header.Add("Accept-Contact", "*;+g.3gpp.icsi-ref="+icsiMMTel)
+	req.Header.Add("Accept-Contact", acceptContact(opts.Video))
 	req.Header.Add("P-Preferred-Identity", "<"+impu+">")
 	req.Header.Add("P-Preferred-Service", mmtelService)
 	req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
@@ -599,7 +691,7 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 		req.Header.Add("Session-Expires", seconds(se))
 	}
 
-	offer, err := c.leg.m.offer(sdp.SendRecv)
+	offer, err := c.leg.m.offer()
 	if err != nil {
 		return nil, err
 	}
@@ -1184,7 +1276,7 @@ func (c *Call) prack(ctx context.Context, l *leg, res *sip.Response) error {
 		return nil
 	}
 
-	return c.update(ctx, l, true)
+	return c.update(ctx, l, true, nil)
 }
 
 // dialogLostLocked handles a dialog the remote end no longer knows (RFC 3261 §12.2.1.2). Losing an early dialog
@@ -1199,9 +1291,10 @@ func (c *Call) dialogLostLocked(l *leg) {
 	c.releaseLocked(l)
 }
 
-func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
+// update sends an UPDATE (RFC 3311), with an offer of the session as change, when not nil, leaves it.
+func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*media) error) error {
 	var (
-		previous *sdp.Session
+		previous mediaState
 		offered  bool
 	)
 
@@ -1223,9 +1316,16 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
 				return nil, fmt.Errorf("%w: an offer is pending", ErrCallState)
 			}
 
-			previous = l.m.local
+			previous = l.m.save()
 
-			offer, err := l.m.offer(l.m.direction)
+			if change != nil {
+				if err := change(l.m); err != nil {
+					l.m.restore(previous)
+					return nil, err
+				}
+			}
+
+			offer, err := l.m.offer()
 			if err != nil {
 				return nil, err
 			}
@@ -1260,7 +1360,7 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool) error {
 
 		if err != nil {
 			if offered {
-				l.m.local = previous
+				l.m.restore(previous)
 			}
 
 			if withOffer && dialogLost(res, err) {
@@ -1349,6 +1449,10 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 
 // RFC 3329, RFC 3261 §9.1
 func (c *Call) Cancel(ctx context.Context) error {
+	return c.cancel(ctx)
+}
+
+func (c *Call) cancel(ctx context.Context, extra ...sip.Field) error {
 	c.mu.Lock()
 
 	if c.incoming || c.itx == nil {
@@ -1365,7 +1469,7 @@ func (c *Call) Cancel(ctx context.Context) error {
 	itx := c.itx
 	c.mu.Unlock()
 
-	if err := itx.Cancel(); err != nil {
+	if err := itx.Cancel(extra...); err != nil {
 		return fmt.Errorf("testue: CANCEL: %w", err)
 	}
 
@@ -1377,7 +1481,7 @@ func (c *Call) Bye(ctx context.Context) error {
 }
 
 // RFC 3261 §15.1.1
-func (c *Call) bye(ctx context.Context, reason EndReason) error {
+func (c *Call) bye(ctx context.Context, reason EndReason, extra ...sip.Field) error {
 	c.mu.Lock()
 	l := c.leg
 	c.mu.Unlock()
@@ -1393,6 +1497,10 @@ func (c *Call) bye(ctx context.Context, reason EndReason) error {
 
 		if c.state != CallConfirmed || c.leg != l {
 			return nil, fmt.Errorf("%w: BYE in a %s call", ErrCallState, c.state)
+		}
+
+		for _, f := range extra {
+			req.Header.Add(f.Name, f.Value)
 		}
 
 		c.terminateLocked(reason)
@@ -1417,13 +1525,19 @@ func (c *Call) byeLeg(ctx context.Context, l *leg) error {
 	return err
 }
 
-// RFC 3264 §8.4
+// RFC 3264 §8.4, IR.94 §2.3.2: every stream of the call is held, and resumed, in one offer.
 func (c *Call) Hold(ctx context.Context) error {
-	return c.reinvite(ctx, sdp.SendOnly)
+	return c.reinvite(ctx, func(m *media) error {
+		m.setDirection(sdp.SendOnly)
+		return nil
+	})
 }
 
 func (c *Call) Resume(ctx context.Context) error {
-	return c.reinvite(ctx, sdp.SendRecv)
+	return c.reinvite(ctx, func(m *media) error {
+		m.setDirection(sdp.SendRecv)
+		return nil
+	})
 }
 
 // RFC 4028 §7.4, §10, IR.92 §2.2.8
@@ -1432,7 +1546,7 @@ func (c *Call) Refresh(ctx context.Context) error {
 	l := c.leg
 	c.mu.Unlock()
 
-	err := c.update(ctx, l, false)
+	err := c.update(ctx, l, false, nil)
 
 	var rerr *ResponseError
 
@@ -1448,16 +1562,13 @@ func (c *Call) Refresh(ctx context.Context) error {
 	return err
 }
 
-// RFC 3261 §14.1
-func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
+// reinvite offers the session as change leaves it (RFC 3261 §14.1), and restores it when the offer fails.
+func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 	if err := c.waitFor(ctx, func() bool { return c.accepted == nil || c.state == CallTerminated }); err != nil {
 		return err
 	}
 
-	var (
-		previous      sdp.Direction
-		previousLocal *sdp.Session
-	)
+	var previous mediaState
 
 	c.mu.Lock()
 	l := c.leg
@@ -1472,7 +1583,7 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 
 		switch {
 		case err != nil || !res.IsSuccess():
-			l.m.direction, l.m.local = previous, previousLocal
+			l.m.restore(previous)
 
 			if dialogLost(res, err) {
 				c.terminateLocked(TimedOut)
@@ -1508,17 +1619,16 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 			return nil, fmt.Errorf("%w: re-INVITE in a %s call, or during another offer", ErrCallState, c.state)
 		}
 
-		offered := direction
-		if direction == sdp.SendOnly && l.m.held() {
-			offered = sdp.Inactive
+		previous = l.m.save()
+
+		if err := change(l.m); err != nil {
+			l.m.restore(previous)
+			return nil, err
 		}
 
-		previous, previousLocal = l.m.direction, l.m.local
-		l.m.direction = direction
-
-		offer, err := l.m.offer(offered)
+		offer, err := l.m.offer()
 		if err != nil {
-			l.m.direction = previous
+			l.m.restore(previous)
 			return nil, err
 		}
 
@@ -1558,7 +1668,103 @@ func (c *Call) reinvite(ctx context.Context, direction sdp.Direction) error {
 		<-sent
 	}
 
-	return err
+	if err != nil {
+		return err
+	}
+
+	// RFC 3312 §5: a stream the re-INVITE added has its resources reported in an UPDATE.
+	c.mu.Lock()
+	update := c.state == CallConfirmed && c.leg == l && l.m.precondition && !l.m.met() && !c.localOfferLocked(l)
+	c.mu.Unlock()
+
+	if update {
+		return c.update(ctx, l, true, nil)
+	}
+
+	return nil
+}
+
+// AddVideo adds video to the call (IR.94 §2.2.2), in a re-INVITE.
+func (c *Call) AddVideo(ctx context.Context) error {
+	return c.reinvite(ctx, (*media).addVideo)
+}
+
+// RemoveVideo removes the video of the call, setting its port to zero in a re-INVITE (IR.94 §2.2.2).
+func (c *Call) RemoveVideo(ctx context.Context) error {
+	return c.reinvite(ctx, func(m *media) error { return m.remove(sdp.Video) })
+}
+
+// BearerLost is what the UE does when the bearer, or QoS flow, of the call's stream of the kind (sdp.Audio or
+// sdp.Video) is released or refused (TS 24.229 §6.1.1, IR.94 §2.4.1, NG.114 §4.6.2): a lost video stream is removed
+// and the call goes on, in an UPDATE before the call is answered and a re-INVITE after; the call ends when it has
+// no voice left. A stream the call does not have has nothing to lose.
+func (c *Call) BearerLost(ctx context.Context, kind string) error {
+	c.mu.Lock()
+	l := c.leg
+	i := l.m.find(kind)
+	voice := slices.ContainsFunc(l.m.streams, func(s *stream) bool { return s.active() && s.kind == sdp.Audio && s.kind != kind })
+	terminated := c.state == CallTerminated
+	c.mu.Unlock()
+
+	switch {
+	case i < 0 || terminated:
+		return nil
+	case !voice:
+		return c.release(ctx, MediaLost, sip.ReasonReleaseCause, sip.ReleaseMediaBearerLoss)
+	}
+
+	// RFC 3264 §4, RFC 3311 §5.1: the offer removing the stream waits for the one in progress.
+	var state CallState
+
+	if err := c.waitFor(ctx, func() bool {
+		state = c.state
+		return state == CallTerminated || c.remoteOfferLocked() || !c.localOfferLocked(c.leg)
+	}); err != nil {
+		return err
+	}
+
+	remove := func(m *media) error { return m.remove(kind) }
+
+	c.mu.Lock()
+	pending := c.remoteOfferLocked()
+	c.mu.Unlock()
+
+	switch {
+	case state == CallTerminated:
+		return nil
+	case pending:
+		return fmt.Errorf("%w: BearerLost before the offer of the call is answered", ErrCallState)
+	case state == CallConfirmed:
+		return c.reinvite(ctx, remove)
+	}
+
+	return c.update(ctx, l, true, remove)
+}
+
+// release ends the call in whatever state it is in, with a Reason (RFC 3326, TS 24.229 §5.1.3.1, §5.1.5): a BYE once
+// confirmed, a CANCEL while the INVITE is pending, a 580 (Precondition Failure) or 503 to an INVITE not answered yet.
+func (c *Call) release(ctx context.Context, end EndReason, protocol string, cause int) error {
+	reason, err := sip.NewReason(protocol, cause, sip.ReasonText(protocol, cause))
+	if err != nil {
+		return err
+	}
+
+	field := sip.Field{Name: "Reason", Value: reason.String()}
+
+	c.mu.Lock()
+	state, incoming, precondition := c.state, c.incoming, c.leg.m.precondition
+	c.mu.Unlock()
+
+	switch {
+	case state == CallConfirmed:
+		return c.bye(ctx, end, field)
+	case incoming && precondition:
+		return c.reject(580, field)
+	case incoming:
+		return c.reject(503, field)
+	}
+
+	return c.cancel(ctx, field)
 }
 
 type reinviteClient struct {
@@ -1829,7 +2035,13 @@ func (u *UE) incomingCall(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	precondition := (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) && offerQoS(offer)
 
-	c := u.newCall(true, req, callKey{callID: req.Header.CallID(), tag: tx.ToTag()}, precondition)
+	// IR.94 §2.2.2: the offer the UE makes to an INVITE without one has every media it is able and willing to use.
+	c, err := u.newCall(true, req, callKey{callID: req.Header.CallID(), tag: tx.ToTag()}, precondition, u.cfg.Video)
+	if err != nil {
+		reject(u.response(req, 500))
+		return
+	}
+
 	c.stx = tx
 	c.offer = offer
 	c.rel100 = has(req.Header, "Supported", "100rel") || has(req.Header, "Require", "100rel")
@@ -1932,7 +2144,7 @@ func (c *Call) sdpLocked(res *sip.Response) (bool, error) {
 	if c.offer != nil {
 		s, err = c.leg.m.answer(c.offer)
 	} else {
-		s, err = c.leg.m.offer(sdp.SendRecv)
+		s, err = c.leg.m.offer()
 	}
 
 	if err != nil {
@@ -1978,11 +2190,11 @@ func (c *Call) Ring(ctx context.Context) error {
 
 		c.mu.Lock()
 		l := c.leg
-		update := c.state == CallEarly && !l.m.met() && l.m.remoteQoS == sdp.QoSSendRecv && !c.localOfferLocked(l)
+		update := c.state == CallEarly && !l.m.met() && l.m.remoteMet() && !c.localOfferLocked(l)
 		c.mu.Unlock()
 
 		if update {
-			if err := c.update(ctx, l, true); err != nil {
+			if err := c.update(ctx, l, true, nil); err != nil {
 				return err
 			}
 		}
@@ -2190,6 +2402,10 @@ func (c *Call) retransmitAccepted(a *accepted) {
 }
 
 func (c *Call) Reject(code int) error {
+	return c.reject(code)
+}
+
+func (c *Call) reject(code int, extra ...sip.Field) error {
 	if code < 300 || code > 699 {
 		return fmt.Errorf("testue: Reject with %d", code)
 	}
@@ -2205,6 +2421,10 @@ func (c *Call) Reject(code int) error {
 	if err := res.Header.SetToTag(c.stx.ToTag()); err != nil {
 		c.mu.Unlock()
 		return err
+	}
+
+	for _, f := range extra {
+		res.Header.Add(f.Name, f.Value)
 	}
 
 	if c.leg.d != nil {
@@ -2425,7 +2645,7 @@ func (c *Call) offerReceivedLocked(tx *transaction.ServerTransaction, l *leg, re
 			res.Header.Add("Require", "precondition")
 		}
 	case req.Method == "INVITE":
-		offer, err := l.m.offer(l.m.direction)
+		offer, err := l.m.offer()
 		if err != nil {
 			return c.u.response(req, 500)
 		}

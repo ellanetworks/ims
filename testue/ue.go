@@ -94,8 +94,13 @@ type Config struct {
 	Offers []Offer
 
 	// ContactParams are added to the Contact the UE registers: a q-value (RFC 3261 §10.2.1.2)
-	// or feature tags such as video (RFC 3840 §9).
+	// or feature tags (RFC 3840 §9).
 	ContactParams sip.Params
+
+	// Video makes the UE video capable (IR.94): it registers with the video feature tag, takes the video streams it
+	// is offered, and can make video calls (CallOptions.Video) and add video to a call (Call.AddVideo). Without it,
+	// the UE is voice only and declines video with port 0 (RFC 3264 §6).
+	Video bool
 
 	// RegID, when not zero, makes the UE's registration flow RegID of its instance (RFC 5626 §4.2):
 	// its Contact has the reg-id, and its REGISTER outbound in Supported (TS 24.229 §5.1.1.2.1). UEs

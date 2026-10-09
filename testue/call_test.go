@@ -39,11 +39,18 @@ func newCallUE(t *testing.T, imsi string, pcscf netip.AddrPort, cfg Config) *UE 
 func pair(t *testing.T) (*UE, *UE) {
 	t.Helper()
 
-	cfg := Config{AcceptCalls: true}
+	return pairWith(t, Config{}, Config{})
+}
+
+// pairWith makes two UEs calling each other directly, configured with ca and cb.
+func pairWith(t *testing.T, ca, cb Config) (*UE, *UE) {
+	t.Helper()
+
+	ca.AcceptCalls, cb.AcceptCalls = true, true
 
 	placeholder := netip.AddrPortFrom(loopback, 9)
-	a := newCallUE(t, "001010000000001", placeholder, cfg)
-	b := newCallUE(t, "001010000000002", placeholder, cfg)
+	a := newCallUE(t, "001010000000001", placeholder, ca)
+	b := newCallUE(t, "001010000000002", placeholder, cb)
 
 	a.cfg.PCSCF, b.cfg.PCSCF = b.Unprotected(), a.Unprotected()
 
@@ -912,7 +919,7 @@ func TestResponsesCarryAccessNetworkInfo(t *testing.T) {
 }
 
 func TestAnswerMirrorsAMRParameters(t *testing.T) {
-	m := newMedia(loopback, 40000, false)
+	m := newMedia(loopback, 40000, false, false)
 
 	offer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
 		"m=audio 5000 RTP/AVP 97 98 100\r\n"+
@@ -937,7 +944,7 @@ func TestAnswerMirrorsAMRParameters(t *testing.T) {
 	offer = sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
 		"m=audio 5000 RTP/AVP 97\r\na=rtpmap:97 AMR/8000/1\r\na=fmtp:97 octet-align=1\r\n"))
 
-	if answer, err = newMedia(loopback, 40000, false).answer(offer); err != nil {
+	if answer, err = newMedia(loopback, 40000, false, false).answer(offer); err != nil {
 		t.Fatal(err)
 	}
 
@@ -947,7 +954,7 @@ func TestAnswerMirrorsAMRParameters(t *testing.T) {
 }
 
 func TestLaterOffersKeepTheStreams(t *testing.T) {
-	m := newMedia(loopback, 40000, false)
+	m := newMedia(loopback, 40000, false, false)
 
 	offer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
 		"m=video 6000 RTP/AVP 99\r\na=rtpmap:99 H264/90000\r\n"+
@@ -957,7 +964,9 @@ func TestLaterOffersKeepTheStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	next, err := m.offer(sdp.SendOnly)
+	m.setDirection(sdp.SendOnly)
+
+	next, err := m.offer()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,9 +981,9 @@ func TestLaterOffersKeepTheStreams(t *testing.T) {
 }
 
 func TestAnswerWithoutPreconditions(t *testing.T) {
-	m := newMedia(loopback, 40000, true)
+	m := newMedia(loopback, 40000, true, false)
 
-	if _, err := m.offer(sdp.SendRecv); err != nil {
+	if _, err := m.offer(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -987,6 +996,69 @@ func TestAnswerWithoutPreconditions(t *testing.T) {
 
 	if m.precondition || !m.met() {
 		t.Fatal("preconditions kept after an answer without them")
+	}
+}
+
+// RFC 3264 §8.2: a stream the answer rejects stays at its position with port 0 in later offers.
+func TestRejectedStreamStaysRejected(t *testing.T) {
+	m := newMedia(loopback, 40000, false, false)
+
+	if _, err := m.offer(); err != nil {
+		t.Fatal(err)
+	}
+
+	answer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=audio 0 RTP/AVP 116\r\n"))
+
+	if err := m.answered(answer); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := m.offer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(next.Media) != 1 || next.Media[0].Type() != sdp.Audio || next.Media[0].Port() != 0 {
+		t.Fatalf("later offer:\n%s", next)
+	}
+}
+
+// RFC 3312 §5: preconditions are met once every active stream has its resources at both ends.
+func TestPreconditionsPerStream(t *testing.T) {
+	m := newMedia(loopback, 40000, true, false)
+	m.streams = append(m.streams, newStream(sdp.Audio, offered))
+
+	if _, err := m.offer(); err != nil {
+		t.Fatal(err)
+	}
+
+	answer := sdpOf(t, []byte("v=0\r\no=- 1 1 IN IP4 127.0.0.2\r\ns=-\r\nc=IN IP4 127.0.0.2\r\nt=0 0\r\n"+
+		"m=audio 5000 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"+
+		"a=curr:qos local sendrecv\r\na=curr:qos remote none\r\na=des:qos mandatory local sendrecv\r\na=des:qos mandatory remote sendrecv\r\n"+
+		"m=audio 5002 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"+
+		"a=curr:qos local none\r\na=curr:qos remote none\r\na=des:qos mandatory local sendrecv\r\na=des:qos mandatory remote sendrecv\r\n"))
+
+	if err := m.answered(answer); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.offer(); err != nil {
+		t.Fatal(err)
+	}
+
+	if m.met() || m.remoteMet() {
+		t.Fatal("preconditions met while the second stream has no remote resources")
+	}
+
+	if !m.streams[0].met() {
+		t.Error("first stream not met")
+	}
+
+	m.streams[1].disable(sdp.MediaDesc{Type: sdp.Audio, Proto: "RTP/AVP", Formats: []string{"116"}})
+
+	if !m.met() {
+		t.Error("preconditions not met once the stream without resources is removed")
 	}
 }
 
@@ -1171,7 +1243,7 @@ func TestUpdateGlare(t *testing.T) {
 	ac.leg.offering = true
 	ac.mu.Unlock()
 
-	err := bc.update(ctx, bc.leg, true)
+	err := bc.update(ctx, bc.leg, true, nil)
 	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)
 	}

@@ -150,8 +150,9 @@ func (u *UE) contact(port uint16) string {
 		{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")},
 		{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel},
 		{Name: "+g.3gpp.smsip"},
-		{Name: "audio"},
 	}
+
+	params = append(params, u.mediaTags()...)
 
 	if u.cfg.RegID != 0 {
 		params = append(params, sip.Param{Name: "reg-id", Value: strconv.FormatInt(u.cfg.RegID, 10)})
