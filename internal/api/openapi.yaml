@@ -657,7 +657,8 @@ components:
           default: 10
           description: >-
             Requests try the peers serving their application by priority, lowest first, and share them between
-            peers of the same priority.
+            peers of the same priority. HSSs of the same priority must share their state, as the nodes of a
+            replicated HSS do.
 
     DiameterPeer:
       allOf:
