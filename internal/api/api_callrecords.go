@@ -165,8 +165,8 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 		*b.t = t
 	}
 
-	if !f.Start.IsZero() && !f.End.IsZero() && f.End.Before(f.Start) {
-		writeError(w, http.StatusBadRequest, "end must not be before start", nil, cfg.Logger)
+	if !f.Start.IsZero() && !f.End.IsZero() && !f.End.After(f.Start) {
+		writeError(w, http.StatusBadRequest, "end must be after start", nil, cfg.Logger)
 		return db.CallRecordFilter{}, false
 	}
 

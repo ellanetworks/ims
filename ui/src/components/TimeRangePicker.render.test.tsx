@@ -216,7 +216,7 @@ describe("TimeRangePicker", () => {
     expect(onChange).toHaveBeenLastCalledWith({
       preset: CUSTOM_RANGE,
       from: new Date(2026, 8, 14).toISOString(),
-      to: new Date(new Date(2026, 8, 17).getTime() - 1).toISOString(),
+      to: new Date(2026, 8, 17).toISOString(),
     });
     expect(screen.getByLabelText("To")).toHaveValue("2026-09-16");
   });

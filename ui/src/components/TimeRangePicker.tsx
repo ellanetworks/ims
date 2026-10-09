@@ -98,10 +98,20 @@ export const toInstant = (value: string): string => {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
 };
 
-// toEndOfMinute is the last instant of the minute of a datetime-local value.
-export const toEndOfMinute = (value: string): string => {
+// toNextMinute is the start of the minute after that of a datetime-local value, the exclusive end of a range
+// that includes the value's minute.
+export const toNextMinute = (value: string): string => {
   const at = toInstant(value);
-  return at ? new Date(new Date(at).getTime() + 59_999).toISOString() : "";
+  return at ? new Date(new Date(at).getTime() + 60_000).toISOString() : "";
+};
+
+// lastInstant is the last millisecond before an exclusive end.
+const lastInstant = (end: string | undefined): string | undefined => {
+  if (!end) return end;
+  const parsed = new Date(end);
+  return Number.isNaN(parsed.getTime())
+    ? undefined
+    : new Date(parsed.getTime() - 1).toISOString();
 };
 
 const MESSAGES = {
@@ -130,7 +140,7 @@ export const timeRangeFieldErrors = (
   if (errors.from || errors.to) return errors;
   const fromIso = toInstant(value.from);
   const toIso = toInstant(value.to);
-  if (fromIso && toIso && fromIso > toIso) {
+  if (fromIso && toIso && fromIso >= toIso) {
     errors.from = MESSAGES.order;
     errors.to = MESSAGES.order;
   }
@@ -174,14 +184,19 @@ const localDay = (value: string, days = 0): Date | undefined => {
 export const fromFirstDateInputValue = (value: string): string =>
   localDay(value)?.toISOString() ?? "";
 
-// toLastDateInputValue is the local date of the last instant of a range, as a date input value.
-export const toLastDateInputValue = toDateInputValue;
+// toLastDateInputValue is the local date of the last day of a range of an exclusive end, as a date input value.
+export const toLastDateInputValue = (end: string | undefined): string =>
+  toDateInputValue(lastInstant(end));
 
-// fromLastDateInputValue is the last instant of the local day of a date input value.
-export const fromLastDateInputValue = (value: string): string => {
-  const next = localDay(value, 1);
-  return next ? new Date(next.getTime() - 1).toISOString() : "";
-};
+// fromLastDateInputValue is the exclusive end of a range whose last day is that of a date input value: the next
+// local midnight.
+export const fromLastDateInputValue = (value: string): string =>
+  localDay(value, 1)?.toISOString() ?? "";
+
+// toLastInputValue is the local minute of the last instant of a range of an exclusive end, as a datetime-local
+// value.
+export const toLastInputValue = (end: string | undefined): string =>
+  toInputValue(lastInstant(end));
 
 export const toInputValue = (stampValue: string | undefined): string => {
   if (!stampValue) return "";
@@ -210,8 +225,7 @@ export const resolveTimeRangeFilter = (
       from: from.toISOString(),
     };
     if (range.endMs !== undefined) {
-      const next = startOfLocalDay(range.endMs / DAY_MS - 1);
-      resolved.to = new Date(next.getTime() - 1).toISOString();
+      resolved.to = startOfLocalDay(range.endMs / DAY_MS - 1).toISOString();
     }
     return resolved;
   }
@@ -287,7 +301,7 @@ const TimeRangePicker: React.FC<TimeRangePickerProps> = ({
   const dayGranularity =
     ranges.length > 0 && ranges.every((range) => range.anchor === "day");
   const formatBound = dayGranularity ? toDateInputValue : toInputValue;
-  const formatTo = dayGranularity ? toLastDateInputValue : toInputValue;
+  const formatTo = dayGranularity ? toLastDateInputValue : toLastInputValue;
   const bounds = {
     from: formatBound(isCustom ? edited.from : presetBounds.from),
     to: formatTo(isCustom ? edited.to : presetBounds.to),
@@ -302,7 +316,7 @@ const TimeRangePicker: React.FC<TimeRangePickerProps> = ({
       ),
       to: dayGranularity
         ? fromLastDateInputValue(toValue)
-        : toEndOfMinute(toValue),
+        : toNextMinute(toValue),
     };
     const candidateErrors = timeRangeFieldErrors(candidate, !allowAnyTime);
     if (candidateErrors.from || candidateErrors.to) {

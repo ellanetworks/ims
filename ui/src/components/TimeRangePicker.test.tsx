@@ -11,7 +11,8 @@ import {
   timeRangeFilter,
   timeRangeLabel,
   timeRangeParams,
-  toEndOfMinute,
+  toLastInputValue,
+  toNextMinute,
   toInputValue,
   toLastDateInputValue,
 } from "./TimeRangePicker";
@@ -27,10 +28,6 @@ afterAll(() => {
 });
 
 const local = (value: string) => new Date(value).toISOString();
-
-// lastInstantBefore is the last instant before a local midnight.
-const lastInstantBefore = (midnight: Date) =>
-  new Date(midnight.getTime() - 1).toISOString();
 
 describe("timeRangeLabel", () => {
   it("names a custom range by its bounds", () => {
@@ -114,7 +111,7 @@ describe("resolveTimeRangeFilter", () => {
         resolveTimeRangeFilter({ relative: "7d" }, { ranges: DAILY_RANGES }),
       ).toEqual({
         from: new Date(2026, 8, 9).toISOString(),
-        to: lastInstantBefore(new Date(2026, 8, 16)),
+        to: new Date(2026, 8, 16).toISOString(),
       });
     } finally {
       vi.useRealTimers();
@@ -132,7 +129,7 @@ describe("resolveTimeRangeFilter", () => {
         ),
       ).toEqual({
         from: new Date(2026, 8, 14).toISOString(),
-        to: lastInstantBefore(new Date(2026, 8, 15)),
+        to: new Date(2026, 8, 15).toISOString(),
       });
     } finally {
       vi.useRealTimers();
@@ -150,7 +147,7 @@ describe("resolveTimeRangeFilter", () => {
         ),
       ).toEqual({
         from: new Date(2026, 2, 8).toISOString(),
-        to: lastInstantBefore(new Date(2026, 2, 9)),
+        to: new Date(2026, 2, 9).toISOString(),
       });
     } finally {
       vi.useRealTimers();
@@ -175,7 +172,7 @@ describe("timeRangeParams", () => {
         timeRangeParams({ relative: "yesterday" }, { ranges: DAILY_RANGES }),
       ).toEqual({
         start: new Date(2026, 8, 14).toISOString(),
-        end: lastInstantBefore(new Date(2026, 8, 15)),
+        end: new Date(2026, 8, 15).toISOString(),
       });
     } finally {
       vi.useRealTimers();
@@ -243,15 +240,15 @@ describe("timeRangeFieldErrors", () => {
 });
 
 describe("day bounds", () => {
-  it("shows the local day of the inclusive end", () => {
-    expect(toLastDateInputValue(lastInstantBefore(new Date(2026, 8, 17)))).toBe(
+  it("shows the last day of a range, not its exclusive end", () => {
+    expect(toLastDateInputValue(new Date(2026, 8, 17).toISOString())).toBe(
       "2026-09-16",
     );
   });
 
-  it("ends a day at its last local instant", () => {
+  it("ends a range at the local midnight after its last day", () => {
     expect(fromLastDateInputValue("2026-09-16")).toBe(
-      lastInstantBefore(new Date(2026, 8, 17)),
+      new Date(2026, 8, 17).toISOString(),
     );
   });
 
@@ -267,15 +264,29 @@ describe("day bounds", () => {
   });
 });
 
-describe("toEndOfMinute", () => {
-  it("is the last instant of the minute", () => {
-    expect(toEndOfMinute("2026-10-08T12:30")).toBe(
-      local("2026-10-08T12:30:59.999"),
+describe("minute bounds", () => {
+  it("ends a range at the start of the minute after its last", () => {
+    expect(toNextMinute("2026-10-08T12:30")).toBe(local("2026-10-08T12:31"));
+  });
+
+  it("shows the last minute of a range, not its exclusive end", () => {
+    expect(toLastInputValue(local("2026-10-08T12:31"))).toBe(
+      "2026-10-08T12:30",
     );
   });
 
   it("is empty for no time", () => {
-    expect(toEndOfMinute("")).toBe("");
-    expect(toEndOfMinute("not a time")).toBe("");
+    expect(toNextMinute("")).toBe("");
+    expect(toNextMinute("not a time")).toBe("");
+    expect(toLastInputValue("")).toBe("");
+  });
+});
+
+describe("timeRangeFieldErrors order", () => {
+  it("rejects an empty range", () => {
+    const at = local("2026-10-08T12:30");
+    expect(
+      timeRangeFieldErrors({ preset: CUSTOM_RANGE, from: at, to: at }).to,
+    ).toMatch(/on or after/i);
   });
 });

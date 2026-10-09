@@ -10,15 +10,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/testue"
 )
 
 // imsAPI is the API of the IMS, on the core network (compose.yaml, ims/ims-*.yaml).
 const imsAPI = "10.80.0.5:5020"
 
+// callRecord is a call record of the API (openapi.yaml), the fields the tests read.
+type callRecord struct {
+	SessionID  string `json:"session_id"`
+	Outcome    string `json:"outcome"`
+	EndedBy    string `json:"ended_by"`
+	InProgress bool   `json:"in_progress"`
+	DurationMS *int64 `json:"duration_ms"`
+}
+
 // callRecords lists the call records, from the namespace of the Open5GS container, on the core network.
-func callRecords(t *testing.T, core *netns) []api.CallRecordResponse {
+func callRecords(t *testing.T, core *netns) []callRecord {
 	t.Helper()
 
 	var (
@@ -55,7 +63,9 @@ func callRecords(t *testing.T, core *netns) []api.CallRecordResponse {
 	}
 
 	var resp struct {
-		Result api.ListCallRecordsResponse `json:"result"`
+		Result struct {
+			Items []callRecord `json:"items"`
+		} `json:"result"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -74,7 +84,7 @@ func wantCallRecord(t *testing.T, core *netns, c *testue.Call, endedBy string) {
 	deadline := time.Now().Add(15 * time.Second)
 
 	for {
-		var found []api.CallRecordResponse
+		var found []callRecord
 
 		for _, r := range callRecords(t, core) {
 			if r.SessionID == callID {

@@ -211,7 +211,7 @@ func TestListCallRecords(t *testing.T) {
 		{"literal %", CallRecordFilter{Search: "dave%40"}, []*CallRecord{busy}},
 		{"literal _", CallRecordFilter{Search: "alice_"}, nil},
 		{"start, included", CallRecordFilter{Start: callT0.Add(time.Hour)}, []*CallRecord{ringing, barred, busy}},
-		{"end, included", CallRecordFilter{End: callT0.Add(time.Hour)}, []*CallRecord{busy, answered}},
+		{"end, excluded", CallRecordFilter{End: callT0.Add(time.Hour)}, []*CallRecord{answered}},
 		{"outcomes", CallRecordFilter{Outcomes: []CallOutcome{OutcomeBusy, OutcomeFailed}}, []*CallRecord{barred, busy}},
 		{
 			"all filters",

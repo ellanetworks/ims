@@ -64,7 +64,7 @@ func TestListCallRecords(t *testing.T) {
 		{"?outcome=busy&outcome=answered", []int64{busy, answered}, 2},
 		{"?search=alice", []int64{ringing, answered}, 2},
 		{"?search=bbbb", []int64{busy}, 1},
-		{"?start=" + callT0.Add(time.Hour).Format(time.RFC3339) + "&end=" + callT0.Add(2*time.Hour-time.Nanosecond).Format(time.RFC3339Nano), []int64{busy}, 1},
+		{"?start=" + callT0.Add(time.Hour).Format(time.RFC3339) + "&end=" + callT0.Add(2*time.Hour).Format(time.RFC3339), []int64{busy}, 1},
 		{"?per_page=1&page=2", []int64{busy}, 3},
 	}
 
@@ -96,7 +96,7 @@ func TestListCallRecordsRejected(t *testing.T) {
 		"?start=yesterday":          "start must be an RFC 3339 time",
 		"?end=2026-10-08":           "end must be an RFC 3339 time",
 		"?end=9999-01-01T00:00:00Z": "end must be from 1678 to 2262",
-		"?start=2026-10-08T12:00:01Z&end=2026-10-08T12:00:00Z": "end must not be before start",
+		"?start=2026-10-08T12:00:00Z&end=2026-10-08T12:00:00Z": "end must be after start",
 		"?outcome=engaged": "outcome must be answered, cancelled, busy, rejected, no_answer, unavailable or failed",
 		"?per_page=0":      "per_page must be an integer between 1 and 100",
 		"?page=0":          "page must be an integer >= 1",

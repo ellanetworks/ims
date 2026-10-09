@@ -77,7 +77,7 @@ type CallRecord struct {
 type CallRecordFilter struct {
 	// Search matches a part of an identity of the caller or the callee, or of the ICID.
 	Search string
-	// Start and End bound when the calls were requested, both included. A zero bound is open.
+	// Start and End bound when the calls were requested, in [Start, End). A zero bound is open.
 	Start, End time.Time
 	// Outcomes, if any, are the outcomes to select.
 	Outcomes []CallOutcome
@@ -353,7 +353,7 @@ func (f CallRecordFilter) where() (string, []any) {
 	}
 
 	if !f.End.IsZero() {
-		conds = append(conds, `requested_at <= ?`)
+		conds = append(conds, `requested_at < ?`)
 		args = append(args, f.End.UTC().UnixNano())
 	}
 

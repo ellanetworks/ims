@@ -340,7 +340,7 @@ paths:
             format: date-time
         - name: end
           in: query
-          description: Latest request time, inclusive.
+          description: Latest request time, exclusive.
           schema:
             type: string
             format: date-time

@@ -163,18 +163,18 @@ describe("Calls", () => {
     const { urls } = serve([busy, answered]);
 
     renderCalls(
-      "/calls?range=custom&start=2026-10-08T12:00:00.000Z&end=2026-10-08T12:30:59.999Z&search=alice&outcome=busy",
+      "/calls?range=custom&start=2026-10-08T12:00:00.000Z&end=2026-10-08T12:31:00.000Z&search=alice&outcome=busy",
     );
     await screen.findByText("2026-10-08 12:05:00");
 
     const q = lastQuery(urls);
     expect(q.get("start")).toBe("2026-10-08T12:00:00.000Z");
-    expect(q.get("end")).toBe("2026-10-08T12:30:59.999Z");
+    expect(q.get("end")).toBe("2026-10-08T12:31:00.000Z");
     expect(q.get("search")).toBe("alice");
     expect(q.getAll("outcome")).toEqual(["busy"]);
   });
 
-  it("ends yesterday at its last local instant", async () => {
+  it("ends yesterday at the local midnight that follows it", async () => {
     const { urls } = serve([answered]);
 
     renderCalls("/calls?range=yesterday");
@@ -186,12 +186,10 @@ describe("Calls", () => {
     start.setDate(start.getDate() - 1);
 
     expect(lastQuery(urls).get("start")).toBe(start.toISOString());
-    expect(lastQuery(urls).get("end")).toBe(
-      new Date(midnight.getTime() - 1).toISOString(),
-    );
+    expect(lastQuery(urls).get("end")).toBe(midnight.toISOString());
   });
 
-  it("ends a custom range with the last instant of its minute", async () => {
+  it("ends a custom range at the start of the minute after its last", async () => {
     const { urls } = serve([answered]);
 
     renderCalls();
@@ -207,10 +205,9 @@ describe("Calls", () => {
       target: { value: "2026-10-08T12:30" },
     });
 
-    const end = new Date(
-      new Date("2026-10-08T12:30").getTime() + 59_999,
-    ).toISOString();
+    const end = new Date("2026-10-08T12:31").toISOString();
     await waitFor(() => expect(lastQuery(urls).get("end")).toBe(end));
+    expect(screen.getByLabelText("To")).toHaveValue("2026-10-08T12:30");
   });
 
   it("polls the first page, unless searching", async () => {
