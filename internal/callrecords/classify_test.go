@@ -44,17 +44,6 @@ func TestOutcome(t *testing.T) {
 	}
 }
 
-func TestRetried(t *testing.T) {
-	for status, want := range map[int]bool{
-		401: true, 407: true, 420: true, 421: true, 422: true, 423: true, 494: true,
-		400: false, 403: false, 408: false, 480: false, 486: false, 488: false, 500: false,
-	} {
-		if got := Retried(status); got != want {
-			t.Errorf("Retried(%d) = %t, want %t", status, got, want)
-		}
-	}
-}
-
 func TestEndedBy(t *testing.T) {
 	tests := []struct {
 		cause proxy.EndCause

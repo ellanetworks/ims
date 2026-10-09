@@ -721,8 +721,9 @@ func TestDialogEndedWithTheStatusSentUpstream(t *testing.T) {
 			answer(t, s.callee, c.fwd, c.f, tc.callee)
 			wantResponse(t, s.caller, tc.caller)
 
-			if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != tc.caller || e.By != proxy.Callee {
-				t.Errorf("ended event %+v, want code %d from the callee", e, tc.caller)
+			e := s.r.nextEvent(proxy.EventEnded)
+			if e.End != proxy.EndFailed || e.Code != tc.caller || e.Tag != "callee" || e.By != proxy.Callee {
+				t.Errorf("ended event %+v, want code %d from the callee, with its tag", e, tc.caller)
 			}
 		})
 	}
@@ -744,7 +745,7 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	answer(t, s.callee, c.fwd, c.f, 487)
 	wantResponse(t, s.caller, 408)
 
-	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.By != 0 {
+	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndFailed || e.Code != 408 || e.Tag != "" || e.By != 0 {
 		t.Errorf("ended event %+v", e)
 	}
 

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Box,
-  Button,
   Checkbox,
   FormControl,
+  IconButton,
   InputLabel,
   ListItemText,
   MenuItem,
@@ -11,20 +11,26 @@ import {
   Select,
   Stack,
   TextField,
+  Typography,
 } from "@mui/material";
 import { Edit as EditIcon } from "@mui/icons-material";
-import {
-  DataGrid,
-  type GridColDef,
-  type GridPaginationModel,
-} from "@mui/x-data-grid";
+import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useQuery } from "@tanstack/react-query";
 import CallOutcomeChip from "@/components/CallOutcomeChip";
 import CallRecordDrawer from "@/components/CallRecordDrawer";
 import EditRetentionDialog from "@/components/EditRetentionDialog";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
+import TimeRangePicker, {
+  RELATIVE_RANGES,
+  timeRangeFilter,
+  timeRangeParams,
+  type RelativeRange,
+} from "@/components/TimeRangePicker";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useFilteredPagination } from "@/hooks/useFilteredPagination";
+import { useSearchParamState } from "@/hooks/useSearchParamState";
+import { useTimeRangeSearchParams } from "@/hooks/useTimeRangeSearchParams";
 import {
   CALL_OUTCOMES,
   getCallRecord,
@@ -46,6 +52,21 @@ export const CALLS_REFRESH_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
+
+const DAY_MS = 24 * 60 * 60_000;
+
+export const CALL_RANGES: RelativeRange[] = [
+  ...RELATIVE_RANGES.filter((r) => r.value !== "5m"),
+  { value: "30d", label: "Last 30 days", ms: 30 * DAY_MS },
+  { value: "90d", label: "Last 90 days", ms: 90 * DAY_MS },
+];
+
+const DEFAULT_RANGE = "24h";
+
+const outcomesOf = (param: string): CallOutcome[] =>
+  param
+    .split(",")
+    .filter((o): o is CallOutcome => CALL_OUTCOMES.includes(o as CallOutcome));
 
 const columns: GridColDef<CallRecord>[] = [
   {
@@ -100,52 +121,40 @@ const gridSx = {
   },
 };
 
-const MINUTE_MS = 60_000;
-
-// toRFC3339 is a local datetime-local value, plus offsetMs, as an RFC 3339 time, or nothing for an empty one.
-const toRFC3339 = (local: string, offsetMs = 0): string | undefined => {
-  if (local === "") return undefined;
-
-  const d = new Date(local);
-  return Number.isNaN(d.getTime())
-    ? undefined
-    : new Date(d.getTime() + offsetMs).toISOString();
-};
-
 export default function Calls() {
-  const [search, setSearch] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [outcomes, setOutcomes] = useState<CallOutcome[]>([]);
-  const [pagination, setPagination] = useState<GridPaginationModel>({
-    page: 0,
-    pageSize: PAGE_SIZE_OPTIONS[0],
+  const [search, setSearch] = useSearchParamState("search");
+  const [outcomeParam, setOutcomeParam] = useSearchParamState("outcome");
+  const [timeRange, setTimeRange] = useTimeRangeSearchParams({
+    defaultPreset: DEFAULT_RANGE,
   });
   const [selected, setSelected] = useState<CallRecord | null>(null);
   const [editing, setEditing] = useState(false);
 
   const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
-  const firstPage = () => setPagination((p) => ({ ...p, page: 0 }));
+  const outcomes = useMemo(() => outcomesOf(outcomeParam), [outcomeParam]);
+  const timeFilter = useMemo(() => timeRangeFilter(timeRange), [timeRange]);
 
-  const filter = {
-    search: debouncedSearch,
-    from: toRFC3339(from),
-    to: toRFC3339(to, MINUTE_MS),
-    outcomes,
-  };
+  const filter = { search: debouncedSearch, outcomes, ...timeFilter };
+  const [pagination, setPagination] = useFilteredPagination(
+    filter,
+    PAGE_SIZE_OPTIONS[0],
+  );
 
   const { data, error, isFetching } = useQuery({
     queryKey: ["call-records", filter, pagination],
     queryFn: () =>
       listCallRecords({
-        ...filter,
+        search: debouncedSearch,
+        outcomes,
+        ...timeRangeParams(timeFilter, { ranges: CALL_RANGES }),
         page: pagination.page + 1,
         perPage: pagination.pageSize,
       }),
     placeholderData: (prev) => prev,
     refetchInterval: (query) =>
-      pagination.page === 0 ||
-      query.state.data?.items.some((r) => r.in_progress)
+      debouncedSearch === "" &&
+      (pagination.page === 0 ||
+        query.state.data?.items.some((r) => r.in_progress))
         ? CALLS_REFRESH_MS
         : false,
   });
@@ -173,27 +182,26 @@ export default function Calls() {
         title="Calls"
         count={data?.total_count}
         description="Calls made by the UEs registered with this IMS."
-        action={
-          retention.data && (
-            <Button
-              variant="outlined"
-              startIcon={<EditIcon />}
-              onClick={() => setEditing(true)}
-            >
-              Kept {retention.data.days} days
-            </Button>
-          )
-        }
       />
-      <Stack direction="row" sx={{ mb: 2, gap: 2, flexWrap: "wrap" }}>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        sx={{
+          mb: 2,
+          gap: 2,
+          flexWrap: "wrap",
+          alignItems: { xs: "flex-start", sm: "center" },
+        }}
+      >
+        <TimeRangePicker
+          value={timeRange}
+          onChange={setTimeRange}
+          ranges={CALL_RANGES}
+        />
         <TextField
           label="Search"
           size="small"
           value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            firstPage();
-          }}
+          onChange={(e) => setSearch(e.target.value)}
           placeholder="Number, IMSI or ICID"
           sx={{ minWidth: 260 }}
         />
@@ -205,10 +213,7 @@ export default function Calls() {
             value={outcomes}
             onChange={(e) => {
               const v = e.target.value;
-              setOutcomes(
-                (typeof v === "string" ? v.split(",") : v) as CallOutcome[],
-              );
-              firstPage();
+              setOutcomeParam(typeof v === "string" ? v : v.join(","));
             }}
             input={<OutlinedInput label="Outcome" />}
             renderValue={(chosen) =>
@@ -223,28 +228,28 @@ export default function Calls() {
             ))}
           </Select>
         </FormControl>
-        <TextField
-          label="From"
-          type="datetime-local"
-          size="small"
-          value={from}
-          onChange={(e) => {
-            setFrom(e.target.value);
-            firstPage();
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            ml: { sm: "auto" },
           }}
-          slotProps={{ inputLabel: { shrink: true } }}
-        />
-        <TextField
-          label="To"
-          type="datetime-local"
-          size="small"
-          value={to}
-          onChange={(e) => {
-            setTo(e.target.value);
-            firstPage();
-          }}
-          slotProps={{ inputLabel: { shrink: true } }}
-        />
+        >
+          <Typography variant="body2" color="textSecondary">
+            Retention: <strong>{retention.data?.days ?? "…"}</strong> days
+          </Typography>
+          {retention.data && (
+            <IconButton
+              aria-label="edit call record retention"
+              size="small"
+              color="primary"
+              onClick={() => setEditing(true)}
+            >
+              <EditIcon fontSize="small" />
+            </IconButton>
+          )}
+        </Box>
       </Stack>
       <QueryAlert error={error} hasData={data !== undefined} subject="calls" />
       <QueryAlert

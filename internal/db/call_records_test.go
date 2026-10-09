@@ -210,12 +210,12 @@ func TestListCallRecords(t *testing.T) {
 		{"ICID", CallRecordFilter{Search: "cccc"}, []*CallRecord{barred}},
 		{"literal %", CallRecordFilter{Search: "dave%40"}, []*CallRecord{busy}},
 		{"literal _", CallRecordFilter{Search: "alice_"}, nil},
-		{"from", CallRecordFilter{From: callT0.Add(time.Hour)}, []*CallRecord{ringing, barred, busy}},
-		{"to, excluded", CallRecordFilter{To: callT0.Add(time.Hour)}, []*CallRecord{answered}},
+		{"start, included", CallRecordFilter{Start: callT0.Add(time.Hour)}, []*CallRecord{ringing, barred, busy}},
+		{"end, included", CallRecordFilter{End: callT0.Add(time.Hour)}, []*CallRecord{busy, answered}},
 		{"outcomes", CallRecordFilter{Outcomes: []CallOutcome{OutcomeBusy, OutcomeFailed}}, []*CallRecord{barred, busy}},
 		{
 			"all filters",
-			CallRecordFilter{Search: "alice", From: callT0, To: callT0.Add(3 * time.Hour), Outcomes: []CallOutcome{OutcomeFailed}},
+			CallRecordFilter{Search: "alice", Start: callT0, End: callT0.Add(3 * time.Hour), Outcomes: []CallOutcome{OutcomeFailed}},
 			[]*CallRecord{barred},
 		},
 	}
@@ -331,6 +331,30 @@ func TestCloseOpenCallRecordsSparesTheLive(t *testing.T) {
 		if want := r == lost; got.Incomplete != want {
 			t.Fatalf("%s incomplete = %t, want %t", r.ICID, got.Incomplete, want)
 		}
+	}
+}
+
+func TestSaveCallRecordsSupersedesFailedAttempts(t *testing.T) {
+	d := openTestDB(t)
+
+	failed := ended(attempt("ICID1", callT0), 422, OutcomeFailed, PartyCallee)
+	answered := ended(attempt("ICID2", callT0), 200, OutcomeAnswered, PartyCaller)
+	answered.SessionID = failed.SessionID
+	other := ended(attempt("ICID3", callT0), 486, OutcomeBusy, PartyCallee)
+	other.SessionID, other.CallerIMPI = failed.SessionID, "bob@example.org"
+	saveCalls(t, d, failed, answered, other)
+
+	retry := attempt("ICID4", callT0.Add(time.Second))
+	retry.SessionID = failed.SessionID
+	saveCalls(t, d, retry)
+
+	got, _, err := d.ListCallRecords(t.Context(), CallRecordFilter{}, 1, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := idsOf([]*CallRecord{retry, other, answered}); ids(got) != want {
+		t.Fatalf("left %s, want %s: all but the failed attempt the retry supersedes", ids(got), want)
 	}
 }
 

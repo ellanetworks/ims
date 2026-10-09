@@ -30,19 +30,6 @@ func Outcome(status int, by db.CallParty, alerted bool) db.CallOutcome {
 	return db.OutcomeFailed
 }
 
-// Retried reports whether the final status of an INVITE is one a UE answers with a new INVITE, a new attempt of
-// the same call: a challenge (RFC 3261 §21.4.2, §21.4.8), an extension the request lacks or must not use
-// (§21.4.15, §21.4.16), an interval too brief (§21.4.17), a session interval too small (RFC 4028 §6) or a security
-// agreement required (RFC 3329 §2.3.1).
-func Retried(status int) bool {
-	switch status {
-	case 401, 407, 420, 421, 422, 423, 494:
-		return true
-	}
-
-	return false
-}
-
 // EndedBy is the party that ended a dialog, from how the originating P-CSCF's dialog ended. A release by the IMS
 // that reaches the dialog as a BYE or a final response from downstream is not seen here: the releasing node
 // reports it with Released.

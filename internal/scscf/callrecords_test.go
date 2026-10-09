@@ -106,12 +106,14 @@ func TestCallRecordRejected(t *testing.T) {
 
 			from.Send(sip.UDP, sh.scscf, req)
 
-			if res := final(t, from); res.StatusCode != tt.code {
+			res := final(t, from)
+			if res.StatusCode != tt.code {
 				t.Fatalf("got %s, want %d", res.StartLine(), tt.code)
 			}
 
 			// The originating P-CSCF relays it to the caller.
-			rec.Ended(testICID, callrecords.End{Code: tt.code, By: proxy.Callee, Cause: proxy.EndFailed})
+			to, _ := res.Header.To()
+			rec.Ended(testICID, callrecords.End{Code: tt.code, Tag: to.Tag(), By: proxy.Callee, Cause: proxy.EndFailed})
 
 			r := sh.callRecord(t, rec)
 			if r.SIPStatus != tt.code || r.EndedBy != db.PartyNetwork || r.Outcome != tt.outcome {

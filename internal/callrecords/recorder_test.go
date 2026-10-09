@@ -149,8 +149,8 @@ func TestRecorder(t *testing.T) {
 			name: "no Service-Route, rejected by the P-CSCF",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejecting(icid, 403)
-				r.Ended(icid, End{Code: 403, By: proxy.Caller, Cause: proxy.EndFailed})
+				r.Rejecting(icid, 403, "pcscf")
+				r.Ended(icid, End{Code: 403, Tag: "pcscf", By: proxy.Caller, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 403, db.OutcomeFailed, db.PartyNetwork, at(3)
@@ -160,8 +160,8 @@ func TestRecorder(t *testing.T) {
 			name: "local number rejected by the S-CSCF, then relayed by the P-CSCF",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejecting(icid, 404)
-				r.Ended(icid, End{Code: 404, By: proxy.Callee, Cause: proxy.EndFailed})
+				r.Rejecting(icid, 404, "scscf")
+				r.Ended(icid, End{Code: 404, Tag: "scscf", By: proxy.Callee, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 404, db.OutcomeFailed, db.PartyNetwork, at(3)
@@ -171,8 +171,8 @@ func TestRecorder(t *testing.T) {
 			name: "cancelled while the S-CSCF was rejecting it",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejecting(icid, 404)
-				r.Ended(icid, End{Code: 487, By: proxy.Caller, Cause: proxy.EndFailed})
+				r.Rejecting(icid, 404, "scscf")
+				r.Ended(icid, End{Code: 487, Tag: "scscf", By: proxy.Caller, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 487, db.OutcomeCancelled, db.PartyCaller, at(3)
@@ -182,18 +182,32 @@ func TestRecorder(t *testing.T) {
 			name: "rejected by the S-CSCF, and by the callee's UE on another branch",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejecting(icid, 500)
-				r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
+				r.Rejecting(icid, 500, "scscf")
+				r.Ended(icid, End{Code: 486, Tag: "ue", By: proxy.Callee, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 486, db.OutcomeBusy, db.PartyCallee, at(3)
 			},
 		},
 		{
-			name: "retried by the caller after a 422",
+			name: "refused by a P-CSCF, and with the same status by the callee's UE on another branch",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Rejecting(icid, 480, "pcscf")
+				r.Ended(icid, End{Code: 480, Tag: "ue", By: proxy.Callee, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeUnavailable, db.PartyCallee, at(3)
+			},
+		},
+		{
+			name: "a 422 the caller does not retry",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
 				r.Ended(icid, End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 422, db.OutcomeFailed, db.PartyCallee, at(2)
 			},
 		},
 		{
@@ -512,24 +526,64 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	}
 }
 
-// TestRecorderDeletesARetriedAttempt checks that the record of an attempt the caller makes again is deleted once
-// saved.
-func TestRecorderDeletesARetriedAttempt(t *testing.T) {
+// TestRecorderSupersedesARetriedAttempt checks that the record of a failed attempt is deleted when the caller
+// tries it again with its Call-ID, whether the recorder still keeps the record or only the database has it.
+func TestRecorderSupersedesARetriedAttempt(t *testing.T) {
+	for _, kept := range []bool{true, false} {
+		t.Run(fmt.Sprintf("kept %t", kept), func(t *testing.T) {
+			d := openDB(t)
+			r := newTestRecorder(t, d)
+
+			retry := func(icid string) Attempt {
+				a := attempt(icid)
+				a.CallID = "call-1"
+
+				return a
+			}
+
+			r.Attempt(retry("ICID1"))
+			r.Ended("ICID1", End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
+
+			if !kept {
+				eventually(t, func() bool { return records(t, d)["ICID1"].SIPStatus == 422 })
+			}
+
+			r.Attempt(retry("ICID2"))
+			r.Answered("ICID2", 200)
+
+			// Another caller's Call-ID, and an answered call of the session, are left as they are.
+			other := retry("ICID3")
+			other.IMPI = "bob@example.org"
+			r.Attempt(other)
+			r.Ended("ICID3", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
+			r.Attempt(retry("ICID4"))
+			r.Close()
+
+			got := records(t, d)
+			if len(got) != 3 || got["ICID2"].Outcome != db.OutcomeAnswered || got["ICID3"].Outcome != db.OutcomeBusy {
+				t.Fatalf("records = %+v, want the retry answered, the other caller's busy and the last attempt", got)
+			}
+		})
+	}
+}
+
+// TestRecorderSupersedesAnAttemptInProgress checks that an attempt the caller tries again before its end is
+// discarded once it fails.
+func TestRecorderSupersedesAnAttemptInProgress(t *testing.T) {
 	d := openDB(t)
 	r := newTestRecorder(t, d)
 
-	r.Attempt(attempt("ICID1"))
-	eventually(t, func() bool { return len(records(t, d)) == 1 })
+	for _, icid := range []string{"ICID1", "ICID2"} {
+		a := attempt(icid)
+		a.CallID = "call-1"
+		r.Attempt(a)
+	}
 
-	r.Ended("ICID1", End{Code: 401, By: proxy.Callee, Cause: proxy.EndFailed})
-	eventually(t, func() bool { return len(records(t, d)) == 0 })
-
-	r.Attempt(attempt("ICID2"))
-	r.Answered("ICID2", 200)
+	r.Ended("ICID1", End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
 	r.Close()
 
-	if got := records(t, d); len(got) != 1 || got["ICID2"].Outcome != db.OutcomeAnswered {
-		t.Fatalf("records = %+v, want the retry answered", got)
+	if got := records(t, d); len(got) != 1 || got["ICID2"].ICID == "" {
+		t.Fatalf("records = %+v, want the retry alone", got)
 	}
 }
 
@@ -550,15 +604,16 @@ func TestRecorderRejectingRequest(t *testing.T) {
 	}
 
 	// A 503 reaches the caller as a 500 (RFC 3261 §16.7 step 6).
-	r.RejectingRequest(invite("MAPPED", "<tel:+15551230002>"), 503)
-	r.RejectingRequest(invite("REINVITE", "<tel:+15551230002>;tag=b"), 500)
+	// A 503 reaches the caller as a 500 of the proxy's, of another tag (RFC 3261 §16.7 step 6).
+	r.RejectingRequest(invite("MAPPED", "<tel:+15551230002>"), 503, "icscf")
+	r.RejectingRequest(invite("REINVITE", "<tel:+15551230002>;tag=b"), 500, "scscf")
 
 	other := invite("OTHER", "<tel:+15551230002>")
 	other.Method = "MESSAGE"
-	r.RejectingRequest(other, 500)
+	r.RejectingRequest(other, 500, "scscf")
 
 	for _, icid := range []string{"MAPPED", "REINVITE", "OTHER"} {
-		r.Ended(icid, End{Code: 500, By: proxy.Callee, Cause: proxy.EndFailed})
+		r.Ended(icid, End{Code: 500, Tag: "scscf", By: proxy.Callee, Cause: proxy.EndFailed})
 	}
 
 	r.Close()
@@ -699,8 +754,8 @@ func TestNilRecorder(t *testing.T) {
 	var r *Recorder
 
 	r.Attempt(attempt("ICID1"))
-	r.Rejecting("ICID1", 403)
-	r.RejectingRequest(nil, 403)
+	r.Rejecting("ICID1", 403, "")
+	r.RejectingRequest(nil, 403, "")
 	r.Routed("ICID1", Routing{})
 	r.Reached("ICID1", "")
 	r.Alerted("ICID1")

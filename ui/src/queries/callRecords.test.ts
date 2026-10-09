@@ -30,12 +30,12 @@ describe("listCallRecords", () => {
       page: 1,
       perPage: 25,
       search: "+1555",
-      from: "2026-10-08T00:00:00.000Z",
+      start: "2026-10-08T00:00:00.000Z",
       outcomes: ["busy", "no_answer"],
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/v1/call-records?page=1&per_page=25&search=%2B1555&from=2026-10-08T00%3A00%3A00.000Z&outcome=busy&outcome=no_answer",
+      "/api/v1/call-records?page=1&per_page=25&search=%2B1555&start=2026-10-08T00%3A00%3A00.000Z&outcome=busy&outcome=no_answer",
     );
   });
 });

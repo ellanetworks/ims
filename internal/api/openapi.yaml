@@ -332,15 +332,15 @@ paths:
           description: Substring of the ICID or of an identity of the caller or the callee.
           schema:
             type: string
-        - name: from
+        - name: start
           in: query
           description: Earliest request time, inclusive.
           schema:
             type: string
             format: date-time
-        - name: to
+        - name: end
           in: query
-          description: Latest request time, exclusive.
+          description: Latest request time, inclusive.
           schema:
             type: string
             format: date-time

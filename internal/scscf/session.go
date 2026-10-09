@@ -624,7 +624,7 @@ func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, 
 
 // answer answers a request with a response of the S-CSCF's, through the proxy if it has begun forwarding it.
 func (s *Sessions) answer(tx *transaction.ServerTransaction, res *sip.Response) {
-	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode)
+	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 
 	if err := s.proxy.Relay(tx, res); err == nil {
 		return
@@ -635,7 +635,7 @@ func (s *Sessions) answer(tx *transaction.ServerTransaction, res *sip.Response) 
 
 // respond answers a request with a response of the S-CSCF's.
 func (s *Sessions) respond(tx *transaction.ServerTransaction, res *sip.Response) {
-	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode)
+	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 	s.send(tx, res)
 }
 

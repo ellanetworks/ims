@@ -54,9 +54,9 @@ export interface CallRecord {
 
 export interface ListCallRecordsParams extends PageParams {
   search?: string;
-  // from and to bound when the calls were requested, as RFC 3339 times: from included, to excluded.
-  from?: string;
-  to?: string;
+  // Bounds of the request time, as RFC 3339 times, both included.
+  start?: string;
+  end?: string;
   outcomes?: CallOutcome[];
 }
 
@@ -72,8 +72,8 @@ export const listCallRecords = (
       page: params.page,
       per_page: params.perPage,
       search: params.search,
-      from: params.from,
-      to: params.to,
+      start: params.start,
+      end: params.end,
       outcome: params.outcomes,
     }),
   );

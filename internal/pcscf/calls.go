@@ -90,9 +90,13 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	cv := p.newChargingVector(req.Flow.Local.Addr())
 	rec := p.attempt(req, reg.IMPI, asserted, cv.icid)
 
-	reject := func(res *sip.Response) {
-		rec.rejecting(res.StatusCode)
+	refuse := func(res *sip.Response) {
+		rec.rejecting(tx, res.StatusCode)
 		p.respond(tx, res)
+	}
+
+	reject := func(res *sip.Response) {
+		refuse(res)
 		rec.closed(tx)
 	}
 
@@ -192,8 +196,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		}
 	}
 
-	if !p.forward(tx, req, out, to, opts, reject) {
-		// A dialog that never began never ends.
+	if !p.forward(tx, req, out, to, opts, refuse) {
 		rec.closed(tx)
 	}
 }
@@ -202,7 +205,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
 	// A call the P-CSCF does not put through to the UE ends by the network.
 	refuse := func(res *sip.Response) {
-		p.cfg.Records.RejectingRequest(req, res.StatusCode)
+		p.cfg.Records.RejectingRequest(req, res.StatusCode, tx.ToTag())
 		p.respond(tx, res)
 	}
 

@@ -77,8 +77,8 @@ type CallRecord struct {
 type CallRecordFilter struct {
 	// Search matches a part of an identity of the caller or the callee, or of the ICID.
 	Search string
-	// From and To bound when the calls were requested, in [From, To). A zero bound is open.
-	From, To time.Time
+	// Start and End bound when the calls were requested, both included. A zero bound is open.
+	Start, End time.Time
 	// Outcomes, if any, are the outcomes to select.
 	Outcomes []CallOutcome
 }
@@ -94,7 +94,8 @@ const (
 
 // SaveCallRecords inserts the records without an ID, giving them one, updates the others and deletes those of the
 // IDs in deleted, in one transaction. An update leaves the fields that never change after the record is inserted,
-// such as its ICID, as they were. Deleting a record that is not there is not an error.
+// such as its ICID, as they were. Deleting a record that is not there is not an error. Inserting a record deletes
+// those of the earlier attempts of its Call-ID by its caller that failed, which it retries (RFC 3261 §8.1.3.5).
 //
 // A record that cannot be saved, because another record has its ICID, it breaks a constraint or it was deleted,
 // does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
@@ -192,6 +193,11 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 		}
 
 		return checkAffected(res)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE session_id = ? AND caller_impi IS ? AND
+		sip_status >= 300`, r.SessionID, nullableString(r.CallerIMPI)); err != nil {
+		return err
 	}
 
 	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
@@ -341,14 +347,14 @@ func (f CallRecordFilter) where() (string, []any) {
 		args = append(args, like, like, like, like, like, like)
 	}
 
-	if !f.From.IsZero() {
+	if !f.Start.IsZero() {
 		conds = append(conds, `requested_at >= ?`)
-		args = append(args, f.From.UTC().UnixNano())
+		args = append(args, f.Start.UTC().UnixNano())
 	}
 
-	if !f.To.IsZero() {
-		conds = append(conds, `requested_at < ?`)
-		args = append(args, f.To.UTC().UnixNano())
+	if !f.End.IsZero() {
+		conds = append(conds, `requested_at <= ?`)
+		args = append(args, f.End.UTC().UnixNano())
 	}
 
 	if len(f.Outcomes) > 0 {

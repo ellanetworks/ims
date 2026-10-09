@@ -173,7 +173,7 @@ func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to 
 func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
 	res := sip.NewResponse(tx.Request(), code, "")
 
-	i.cfg.Records.RejectingRequest(tx.Request(), code)
+	i.cfg.Records.RejectingRequest(tx.Request(), code, tx.ToTag())
 
 	if err := i.cfg.Proxy.Relay(tx, res); err == nil {
 		return
@@ -184,7 +184,7 @@ func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
 
 // respond answers a request with a response of the I-CSCF's.
 func (i *ICSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
-	i.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode)
+	i.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 	i.send(tx, res)
 }
 

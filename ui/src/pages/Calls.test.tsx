@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import Calls from "@/pages/Calls";
+import { MemoryRouter } from "react-router-dom";
+import Calls, { CALLS_REFRESH_MS } from "@/pages/Calls";
 import type { CallRecord } from "@/queries/callRecords";
 import { callRecord } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
@@ -89,6 +90,15 @@ const cells = (text: string) =>
     .getAllByRole("gridcell")
     .map((cell) => cell.textContent);
 
+const renderCalls = (path = "/calls") =>
+  renderWithClient(
+    <MemoryRouter initialEntries={[path]}>
+      <Calls />
+    </MemoryRouter>,
+  );
+
+const lastQuery = (urls: string[]) => new URLSearchParams(urls.at(-1));
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -97,7 +107,7 @@ describe("Calls", () => {
   it("lists the calls", async () => {
     serve([ringing, busy, answered]);
 
-    renderWithClient(<Calls />);
+    renderCalls();
 
     expect(
       await screen.findByRole("heading", { level: 1, name: "Calls (3)" }),
@@ -126,66 +136,105 @@ describe("Calls", () => {
   it("shows a call not yet alerted as calling", async () => {
     serve([{ ...ringing, alerted: false }]);
 
-    renderWithClient(<Calls />);
+    renderCalls();
 
     await screen.findByText("2026-10-08 12:10:00");
     expect(cells("2026-10-08 12:10:00")[3]).toBe("calling");
   });
 
-  it("includes the minute of To", async () => {
+  it("lists the calls of the last 24 hours by default", async () => {
     const { urls } = serve([answered]);
+    const before = Date.now();
 
-    renderWithClient(<Calls />);
+    renderCalls();
     await screen.findByText("2026-10-08 12:00:00");
 
+    expect(
+      screen.getByRole("button", { name: "Time range: Last 24 hours" }),
+    ).toBeInTheDocument();
+
+    const start = new Date(lastQuery(urls).get("start") ?? "").getTime();
+    expect(start).toBeGreaterThanOrEqual(before - 24 * 60 * 60_000 - 1000);
+    expect(start).toBeLessThanOrEqual(Date.now() - 24 * 60 * 60_000);
+    expect(lastQuery(urls).has("end")).toBe(false);
+  });
+
+  it("filters from the URL, including the minute of the end", async () => {
+    const { urls } = serve([busy, answered]);
+
+    renderCalls(
+      "/calls?range=custom&start=2026-10-08T12:00:00.000Z&end=2026-10-08T12:30:59.999Z&search=alice&outcome=busy",
+    );
+    await screen.findByText("2026-10-08 12:05:00");
+
+    const q = lastQuery(urls);
+    expect(q.get("start")).toBe("2026-10-08T12:00:00.000Z");
+    expect(q.get("end")).toBe("2026-10-08T12:30:59.999Z");
+    expect(q.get("search")).toBe("alice");
+    expect(q.getAll("outcome")).toEqual(["busy"]);
+  });
+
+  it("ends yesterday at its last local instant", async () => {
+    const { urls } = serve([answered]);
+
+    renderCalls("/calls?range=yesterday");
+    await screen.findByText("2026-10-08 12:00:00");
+
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const start = new Date(midnight);
+    start.setDate(start.getDate() - 1);
+
+    expect(lastQuery(urls).get("start")).toBe(start.toISOString());
+    expect(lastQuery(urls).get("end")).toBe(
+      new Date(midnight.getTime() - 1).toISOString(),
+    );
+  });
+
+  it("ends a custom range with the last instant of its minute", async () => {
+    const { urls } = serve([answered]);
+
+    renderCalls();
+    await screen.findByText("2026-10-08 12:00:00");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Time range: Last 24 hours" }),
+    );
+    fireEvent.change(screen.getByLabelText("From"), {
+      target: { value: "2026-10-08T12:00" },
+    });
     fireEvent.change(screen.getByLabelText("To"), {
       target: { value: "2026-10-08T12:30" },
     });
 
-    const to = new Date("2026-10-08T12:31").toISOString();
-    await waitFor(() =>
-      expect(new URLSearchParams(urls.at(-1)).get("to")).toBe(to),
-    );
+    const end = new Date(
+      new Date("2026-10-08T12:30").getTime() + 59_999,
+    ).toISOString();
+    await waitFor(() => expect(lastQuery(urls).get("end")).toBe(end));
   });
 
-  it("filters by outcome", async () => {
-    const { urls } = serve([busy, answered]);
+  it("polls the first page, unless searching", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
 
-    renderWithClient(<Calls />);
-    await screen.findByText("2026-10-08 12:00:00");
+    try {
+      for (const [path, polls] of [
+        ["/calls", true],
+        ["/calls?search=alice", false],
+      ] as const) {
+        const { urls } = serve([answered]);
+        const { unmount } = renderCalls(path);
 
-    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Outcome" }));
-    fireEvent.click(await screen.findByRole("option", { name: "busy" }));
-    fireEvent.click(await screen.findByRole("option", { name: "no answer" }));
+        await screen.findByText("2026-10-08 12:00:00");
+        const fetched = urls.length;
 
-    await waitFor(() =>
-      expect(urls.at(-1)).toBe(
-        "?page=1&per_page=25&outcome=busy&outcome=no_answer",
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.queryByText("2026-10-08 12:00:00")).not.toBeInTheDocument(),
-    );
-  });
+        await vi.advanceTimersByTimeAsync(CALLS_REFRESH_MS * 2);
+        expect(urls.length > fetched).toBe(polls);
 
-  it("shows the details of a call", async () => {
-    serve([answered]);
-
-    renderWithClient(<Calls />);
-    fireEvent.click(await screen.findByText("2026-10-08 12:00:00"));
-
-    const drawer = await screen.findByRole("dialog");
-    expect(
-      within(drawer).getByRole("heading", {
-        name: "+15551230001 → +15551230002",
-      }),
-    ).toBeInTheDocument();
-    expect(drawer).toHaveTextContent("SIP Status200");
-    expect(drawer).toHaveTextContent("Ended ByCaller");
-    expect(drawer).toHaveTextContent(`ICID${answered.icid}`);
-    expect(
-      within(drawer).getByRole("button", { name: "Copy ICID" }),
-    ).toBeInTheDocument();
+        unmount();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a call as the IMS last recorded it", async () => {
@@ -202,7 +251,7 @@ describe("Calls", () => {
       ],
     );
 
-    renderWithClient(<Calls />);
+    renderCalls();
     fireEvent.click(await screen.findByText("2026-10-08 12:10:00"));
 
     const drawer = await screen.findByRole("dialog");
@@ -213,10 +262,15 @@ describe("Calls", () => {
   it("edits the retention", async () => {
     const { puts } = serve([]);
 
-    renderWithClient(<Calls />);
+    renderCalls();
 
+    await waitFor(() =>
+      expect(screen.getByText(/^Retention:/)).toHaveTextContent(
+        "Retention: 90 days",
+      ),
+    );
     fireEvent.click(
-      await screen.findByRole("button", { name: "Kept 90 days" }),
+      screen.getByRole("button", { name: "edit call record retention" }),
     );
 
     const days = await screen.findByRole("textbox", { name: "Days" });
@@ -224,11 +278,16 @@ describe("Calls", () => {
     expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
 
     fireEvent.change(days, { target: { value: "30" } });
+    expect(
+      screen.getByText(/Reducing retention from 90 to 30 days/),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Update" }));
 
-    expect(
-      await screen.findByRole("button", { name: "Kept 30 days" }),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/^Retention:/)).toHaveTextContent(
+        "Retention: 30 days",
+      ),
+    );
     expect(puts).toEqual([{ days: 30 }]);
   });
 });

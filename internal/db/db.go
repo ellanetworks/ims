@@ -159,6 +159,7 @@ var migrations = []string{
 	);
 	CREATE INDEX call_records_requested_at ON call_records (requested_at, id);
 	CREATE INDEX call_records_outcome ON call_records (outcome);
+	CREATE INDEX call_records_session ON call_records (session_id, caller_impi);
 	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;`,
 	`CREATE TABLE operator (
 		id INTEGER PRIMARY KEY CHECK (id = 1),

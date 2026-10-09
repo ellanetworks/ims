@@ -144,13 +144,13 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 	for _, b := range []struct {
 		name string
 		t    *time.Time
-	}{{"from", &f.From}, {"to", &f.To}} {
+	}{{"start", &f.Start}, {"end", &f.End}} {
 		v := q.Get(b.name)
 		if v == "" {
 			continue
 		}
 
-		t, err := time.Parse(time.RFC3339, v)
+		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, b.name+" must be an RFC 3339 time", nil, cfg.Logger)
 			return db.CallRecordFilter{}, false
@@ -165,8 +165,8 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 		*b.t = t
 	}
 
-	if !f.From.IsZero() && !f.To.IsZero() && !f.From.Before(f.To) {
-		writeError(w, http.StatusBadRequest, "from must be before to", nil, cfg.Logger)
+	if !f.Start.IsZero() && !f.End.IsZero() && f.End.Before(f.Start) {
+		writeError(w, http.StatusBadRequest, "end must not be before start", nil, cfg.Logger)
 		return db.CallRecordFilter{}, false
 	}
 

@@ -40,13 +40,13 @@ func (c *callRecord) open() {
 }
 
 // rejecting reports that the P-CSCF answers the INVITE itself with an error status, before it does.
-func (c *callRecord) rejecting(code int) {
+func (c *callRecord) rejecting(tx *transaction.ServerTransaction, code int) {
 	if c == nil {
 		return
 	}
 
 	c.open()
-	c.r.Rejecting(c.attempt.ICID, code)
+	c.r.Rejecting(c.attempt.ICID, code, tx.ToTag())
 }
 
 // closed ends the record of an INVITE that the P-CSCF answered without forwarding it, with the final response the
@@ -57,7 +57,9 @@ func (c *callRecord) closed(tx *transaction.ServerTransaction) {
 	}
 
 	c.open()
-	c.r.Ended(c.attempt.ICID, callrecords.End{Code: tx.Status(), By: proxy.Caller, Cause: proxy.EndFailed})
+	c.r.Ended(c.attempt.ICID, callrecords.End{
+		Code: tx.Status(), Tag: tx.ToTag(), By: proxy.Caller, Cause: proxy.EndFailed,
+	})
 }
 
 // alerted reports a 180 toward the UE.
@@ -78,7 +80,7 @@ func (c *callRecord) event(e proxy.DialogEvent) {
 	case proxy.EventNegotiated:
 		c.r.Media(c.attempt.ICID, acceptedMedia(e.Exchange.Answer.Data))
 	case proxy.EventEnded:
-		c.r.Ended(c.attempt.ICID, callrecords.End{Code: e.Code, By: e.By, Cause: e.End})
+		c.r.Ended(c.attempt.ICID, callrecords.End{Code: e.Code, Tag: e.Tag, By: e.By, Cause: e.End})
 	}
 }
 

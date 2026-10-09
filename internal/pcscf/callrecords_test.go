@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -236,17 +237,50 @@ func TestCallRecordOfARejectedCall(t *testing.T) {
 	}
 }
 
-// TestNoCallRecordOfARetriedAttempt checks that an attempt the UE makes again, here with a longer session
-// interval, leaves no record: the next attempt is the call's.
-func TestNoCallRecordOfARetriedAttempt(t *testing.T) {
-	s, u, rec := newRecordScene(t)
-	c := s.originatingCall(t, u)
+// TestCallRecordOfARetriedAttempt checks that an attempt the UE tries again with its Call-ID, here with a longer
+// session interval, leaves only the record of the retry, and that one it does not try again is kept.
+func TestCallRecordOfARetriedAttempt(t *testing.T) {
+	for _, retried := range []bool{true, false} {
+		t.Run(fmt.Sprintf("retried %t", retried), func(t *testing.T) {
+			s, u, rec := newRecordScene(t)
+			c := s.originatingCall(t, u)
 
-	s.scscf.Send(c.flow.Transport, c.flow.Remote, c.s.coreResponse(c.core, 422, "callee"))
-	wantStatus(t, lastResponse(t, u), 422)
+			s.scscf.Send(c.flow.Transport, c.flow.Remote, c.s.coreResponse(c.core, 422, "callee"))
 
-	if l := s.callRecords(t, rec); len(l) != 0 {
-		t.Fatalf("records = %+v, want none", l)
+			tooSmall := lastResponse(t, u)
+			wantStatus(t, tooSmall, 422)
+			wantMethod(t, s.scscf, "ACK")
+
+			ack, err := sip.NewAck(c.invite, tooSmall)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			u.uc.Send(sip.UDP, s.ps, ack)
+
+			want := 422
+
+			if retried {
+				retry := s.ueInvite(u, func(r *sip.Request) {
+					r.Header.Set("Call-ID", c.invite.Header.CallID())
+					r.Header.Set("From", c.invite.Header.Get("From"))
+					r.Header.Set("CSeq", "2 INVITE")
+				})
+				u.uc.Send(sip.UDP, s.ps, retry)
+				wantStatus(t, first(u.us.RecvResponse()), 100)
+
+				got, f := s.scscf.RecvRequest()
+				s.scscf.Send(f.Transport, f.Remote, s.coreResponse(got, 486, "callee"))
+				wantStatus(t, lastResponse(t, u), 486)
+
+				want = 486
+			}
+
+			r := s.callRecord(t, rec)
+			if r.SessionID != c.invite.Header.CallID() || r.SIPStatus != want {
+				t.Fatalf("record %+v, want the %d of the last attempt", r, want)
+			}
+		})
 	}
 }
 
@@ -402,10 +436,12 @@ func TestCallRecordRefusedTowardTheUE(t *testing.T) {
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", func(r *sip.Request) {
 		r.Header.Set("Max-Forwards", "0")
 	}))
-	wantStatus(t, lastCoreResponse(t, s), 483)
+	res := lastCoreResponse(t, s)
+	wantStatus(t, res, 483)
 
-	// The originating P-CSCF sees a 483 from downstream.
-	rec.Ended("AB12", callrecords.End{Code: 483, By: proxy.Callee, Cause: proxy.EndFailed})
+	// The originating P-CSCF sees the 483 from downstream.
+	to, _ := res.Header.To()
+	rec.Ended("AB12", callrecords.End{Code: 483, Tag: to.Tag(), By: proxy.Callee, Cause: proxy.EndFailed})
 
 	if r := s.callRecord(t, rec); r.SIPStatus != 483 || r.EndedBy != db.PartyNetwork {
 		t.Fatalf("record %+v, want a 483 from the network", r)

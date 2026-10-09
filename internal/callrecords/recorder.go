@@ -72,7 +72,9 @@ type Routing struct {
 type End struct {
 	// Code is the final status of the INVITE that the caller got. It is only read for a call that was not
 	// answered, and a 0 there leaves the record incomplete.
-	Code  int
+	Code int
+	// Tag is the To tag of the response of an error Code, if known.
+	Tag   string
 	By    proxy.Side
 	Cause proxy.EndCause
 }
@@ -96,6 +98,8 @@ type Recorder struct {
 	mu sync.Mutex
 	// calls are the records of the calls in progress, and of those that ended until they are saved.
 	calls map[string]*call
+	// sessions are the latest calls of each session of a caller, by sessionKey.
+	sessions map[string]*call
 	// changed are the records changed since the writer last took them, in the order they first changed.
 	changed []*call
 	// unsaved is how many records of ended calls are in calls.
@@ -108,15 +112,31 @@ type Recorder struct {
 	closed   bool
 }
 
+// rejection is a response a node of the IMS answered an INVITE with itself, as the caller gets it.
+type rejection struct {
+	code int
+	// tag is the To tag of the response.
+	tag string
+	// rewritten reports a response that a proxy on the way to the caller replaces with one of its own, of another
+	// tag.
+	rewritten bool
+}
+
+func (j rejection) matches(code int, tag string) bool {
+	return j.code == code && (j.tag == tag || j.rewritten)
+}
+
 type call struct {
 	rec db.CallRecord
 	// network reports that the IMS released the call.
 	network bool
-	// rejecting are the statuses the nodes of the IMS answered the INVITE with themselves, as the caller gets them:
-	// the call ended on one of them ended by the network.
-	rejecting []int
+	// rejecting are the responses the nodes of the IMS answered the INVITE with themselves: the call ended on one
+	// of them ended by the network.
+	rejecting []rejection
 	ended     bool
-	// discard reports an attempt that the caller makes again, whose record is deleted rather than saved.
+	// superseded reports an attempt that the caller made again, whose record is deleted once it fails.
+	superseded bool
+	// discard reports a superseded attempt that failed, whose record is deleted rather than saved.
 	discard bool
 	changed bool
 }
@@ -126,7 +146,7 @@ func New(cfg Config) *Recorder {
 	r := &Recorder{
 		store: cfg.Store, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
-		calls: map[string]*call{},
+		calls: map[string]*call{}, sessions: map[string]*call{},
 	}
 
 	if r.clock == nil {
@@ -188,23 +208,45 @@ func (r *Recorder) Attempt(a Attempt) {
 		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(),
 	}}
 	r.calls[a.ICID] = c
+
+	// RFC 3261 §8.1.3.5: a UE tries a failed INVITE again with its Call-ID.
+	key := sessionKey(a.IMPI, a.CallID)
+	if prev, ok := r.sessions[key]; ok && prev.rec.SIPStatus/100 != 2 {
+		prev.superseded = true
+
+		if prev.ended {
+			prev.discard = true
+			r.changeLocked(prev)
+		}
+	}
+
+	r.sessions[key] = c
 	r.changeLocked(c)
 }
 
-// Rejecting reports that a node of the IMS answers the INVITE itself with an error status, before it does. The
-// call is then ended by the network if the caller gets that status: a CANCEL that came first makes it end on
-// the 487 instead.
-func (r *Recorder) Rejecting(icid string, code int) {
+func sessionKey(impi, callID string) string {
+	return impi + "\x00" + callID
+}
+
+// Rejecting reports that the originating P-CSCF answers the INVITE itself with an error response of a status and
+// a To tag, before it does. The call is then ended by the network if the caller gets that response: a CANCEL
+// that came first makes it end on the 487 instead.
+func (r *Recorder) Rejecting(icid string, code int, tag string) {
+	r.reject(icid, rejection{code: code, tag: tag})
+}
+
+func (r *Recorder) reject(icid string, j rejection) {
 	r.update(icid, func(c *call, _ time.Time) {
-		if !slices.Contains(c.rejecting, code) {
-			c.rejecting = append(c.rejecting, code)
+		if !slices.Contains(c.rejecting, j) {
+			c.rejecting = append(c.rejecting, j)
 		}
 	})
 }
 
 // RejectingRequest reports that a node of the IMS behind the originating P-CSCF answers a request itself with a
-// status, before it does, when the request is the INVITE that starts a call and the status ends it.
-func (r *Recorder) RejectingRequest(req *sip.Request, code int) {
+// response of a status and a To tag, before it does, when the request is the INVITE that starts a call and the
+// status ends it.
+func (r *Recorder) RejectingRequest(req *sip.Request, code int, tag string) {
 	if r == nil || req.Method != "INVITE" || code < 300 {
 		return
 	}
@@ -213,8 +255,9 @@ func (r *Recorder) RejectingRequest(req *sip.Request, code int) {
 		return
 	}
 
-	// The proxies on the way back to the caller change some statuses.
-	r.Rejecting(req.Header.ICID(), proxy.UpstreamStatus(code))
+	// The proxies on the way back to the caller replace some statuses with responses of their own.
+	up := proxy.UpstreamStatus(code)
+	r.reject(req.Header.ICID(), rejection{code: up, tag: tag, rewritten: up != code})
 }
 
 // Routed reports the INVITE as the originating S-CSCF sends it on.
@@ -274,7 +317,9 @@ func (r *Recorder) Released(icid string) {
 func (r *Recorder) Ended(icid string, e End) {
 	r.update(icid, func(c *call, now time.Time) {
 		by := EndedBy(e.Cause, e.By)
-		if c.network || c.rec.SIPStatus == 0 && slices.Contains(c.rejecting, e.Code) {
+		if c.network || c.rec.SIPStatus == 0 && slices.ContainsFunc(c.rejecting, func(j rejection) bool {
+			return j.matches(e.Code, e.Tag)
+		}) {
 			by = db.PartyNetwork
 		}
 
@@ -323,8 +368,8 @@ func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
 }
 
 // endLocked ends the record of a call with the final status of its INVITE, which only counts if it was not
-// answered. A status the caller retries on discards the record. It drops the record instead when too many ended
-// ones are not saved yet: the record is then left as last saved, open, until the writer closes it as incomplete.
+// answered. A superseded attempt that fails is discarded. It drops the record instead when too many ended ones
+// are not saved yet: the record is then left as last saved, open, until the writer closes it as incomplete.
 func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) {
 	if r.unsaved >= r.maxUnsaved {
 		r.dropLocked(c)
@@ -340,7 +385,7 @@ func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) 
 	switch {
 	case c.rec.SIPStatus != 0:
 		c.rec.DeliveryEndAt = now
-	case Retried(code):
+	case c.superseded:
 		c.discard = true
 		return
 	case code < 200 || code > 699:
@@ -389,6 +434,10 @@ func (r *Recorder) dropLocked(c *call) {
 
 	c.changed = false
 	delete(r.calls, c.rec.ICID)
+
+	if key := sessionKey(c.rec.CallerIMPI, c.rec.SessionID); r.sessions[key] == c {
+		delete(r.sessions, key)
+	}
 }
 
 func (r *Recorder) write() {

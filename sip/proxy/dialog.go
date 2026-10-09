@@ -136,8 +136,10 @@ type DialogEvent struct {
 	Dialog *Dialog
 	// Code is the final status of the initial INVITE that the proxy sent toward the caller, or 0 if it sent none.
 	Code int
-	By   Side
-	End  EndCause
+	// Tag is the To tag of the response of an error Code, as the proxy received it, or "" for one the proxy made.
+	Tag string
+	By  Side
+	End EndCause
 	// Exchange is the exchange of an EventNegotiated.
 	Exchange Exchange
 }
@@ -237,6 +239,7 @@ type Dialog struct {
 	answerTag string
 	answerKey any
 	code      int
+	codeTag   string
 	cancelled bool
 
 	offered   bool
@@ -961,6 +964,11 @@ func (d *Dialog) failed(res *sip.Response, downstream bool) {
 
 	if d.state == Early {
 		d.code = UpstreamStatus(res.StatusCode)
+
+		if to, err := res.Header.To(); err == nil && downstream {
+			d.codeTag = to.Tag()
+		}
+
 		d.rollback(&d.sdp, d.inviteTx)
 		d.early = map[string]*party{}
 
@@ -1285,7 +1293,7 @@ func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) {
 	}
 
 	d.arm(linger)
-	d.publish(DialogEvent{Kind: EventEnded, Code: d.code, By: by, End: cause})
+	d.publish(DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, By: by, End: cause})
 }
 
 func (d *Dialog) arm(after time.Duration) {
@@ -1321,7 +1329,7 @@ func (d *Dialog) expire(gen int) {
 
 		d.ended = true
 		d.state = Ended
-		d.publish(DialogEvent{Kind: EventEnded, Code: d.code, End: EndExpired})
+		d.publish(DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, End: EndExpired})
 	}
 
 	d.stopTimers()
