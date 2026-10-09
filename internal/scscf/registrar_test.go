@@ -141,6 +141,7 @@ func TestInitialRegistration(t *testing.T) {
 		IMPU:       testIMPU,
 		Identities: wantIdentities,
 		UserData:   sub,
+		HSS:        db.HSS{Host: hssHost, Realm: homeDomain},
 		Bindings: []db.Binding{{
 			ID: bindingID,
 			Contact: db.Contact{

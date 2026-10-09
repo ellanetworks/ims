@@ -114,6 +114,18 @@ func New(t testing.TB, cfg Config) *PCRF {
 	return p
 }
 
+// Stop disconnects the PCRF from its peers and stops it, as a lost PCRF.
+func (p *PCRF) Stop(t testing.TB) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := p.node.Shutdown(ctx); err != nil {
+		t.Fatalf("pcrftest: stop: %v", err)
+	}
+}
+
 func (p *PCRF) Host() string {
 	return p.cfg.Host
 }

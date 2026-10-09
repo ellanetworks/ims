@@ -30,7 +30,9 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
 		impu TEXT NOT NULL,
-		user_data BLOB
+		user_data BLOB,
+		hss_host TEXT NOT NULL,
+		hss_realm TEXT NOT NULL
 	);
 	CREATE INDEX registrations_impi ON registrations (impi);
 	CREATE TABLE registration_identities (

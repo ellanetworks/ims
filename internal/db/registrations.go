@@ -26,7 +26,15 @@ type Registration struct {
 	IMPU       string
 	Identities []PublicIdentity
 	UserData   []byte
-	Bindings   []Binding
+	// HSS is the HSS that serves the registration, where the S-CSCF sends its Cx requests (TS 29.229 §5.5).
+	HSS      HSS
+	Bindings []Binding
+}
+
+// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its answers. Empty is unknown.
+type HSS struct {
+	Host  string
+	Realm string
 }
 
 // Contact is what a binding binds a registration set to (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6): a
@@ -66,7 +74,7 @@ type Binding struct {
 }
 
 const (
-	registrationColumns = `id, impi, impu, user_data`
+	registrationColumns = `id, impi, impu, user_data, hss_host, hss_realm`
 
 	bindingColumns = `id, registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event,
 		impu, registered_at`
@@ -84,7 +92,8 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 
 	if r.ID == 0 {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO registrations (impi, impu, user_data) VALUES (?, ?, ?)`, r.IMPI, r.IMPU, r.UserData)
+			`INSERT INTO registrations (impi, impu, user_data, hss_host, hss_realm) VALUES (?, ?, ?, ?, ?)`, r.IMPI, r.IMPU,
+			r.UserData, r.HSS.Host, r.HSS.Realm)
 		if err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
@@ -94,7 +103,8 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 		}
 	} else {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE registrations SET impu = ?, user_data = ? WHERE id = ? AND impi = ?`, r.IMPU, r.UserData, r.ID, r.IMPI)
+			`UPDATE registrations SET impu = ?, user_data = ?, hss_host = ?, hss_realm = ? WHERE id = ? AND impi = ?`, r.IMPU,
+			r.UserData, r.HSS.Host, r.HSS.Realm, r.ID, r.IMPI)
 		if err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
@@ -410,7 +420,7 @@ func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map
 func scanRegistration(row scanner) (Registration, error) {
 	var r Registration
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.UserData); err != nil {
+	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.UserData, &r.HSS.Host, &r.HSS.Realm); err != nil {
 		return Registration{}, err
 	}
 

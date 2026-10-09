@@ -24,6 +24,17 @@ func (r *Registrar) load(ctx context.Context, impi string) (*state, error) {
 	return &state{impi: impi, regs: regs, now: r.clock.Now()}, nil
 }
 
+// hss is the HSS that serves the private identity, as the last one that answered for any of its registrations.
+func (s *state) hss() db.HSS {
+	for _, reg := range s.regs {
+		if reg.HSS.Host != "" {
+			return reg.HSS
+		}
+	}
+
+	return db.HSS{}
+}
+
 func (s *state) set(key string) *db.Registration {
 	for i := range s.regs {
 		if holds(s.regs[i].Identities, key) {

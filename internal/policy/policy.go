@@ -15,9 +15,13 @@ var (
 	// ErrUnknownSession: the policy function no longer knows the session (TS 29.214 §4.4.1 DIAMETER_UNKNOWN_SESSION_ID,
 	// TS 29.514 §5.7.3 APPLICATION_SESSION_CONTEXT_NOT_FOUND).
 	ErrUnknownSession = errors.New("session unknown to the policy function")
+	// ErrSessionLost: the policy function holding the session cannot be reached and lets no other take it over, so
+	// the service of the session ends and its termination is not sent again (RFC 6733 §8.18 REFUSE_SERVICE).
+	ErrSessionLost = errors.New("session lost with its policy function")
 )
 
-// Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed, ErrUnknownSession or none.
+// Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed, ErrUnknownSession,
+// ErrSessionLost or none.
 // Transient means the policy function may not have handled the request, so sending it again may succeed.
 // RetryAfter holds back the same service information; Backoff holds back any request to an overloaded policy
 // function.

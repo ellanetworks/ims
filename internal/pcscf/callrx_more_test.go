@@ -498,3 +498,52 @@ func TestCallMixedAddressFamilies(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 500)
 	pcrf.none()
 }
+
+// RFC 6733 §8.18 REFUSE_SERVICE: with the PCRF of the call lost, the call ends, both ways.
+func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandAA {
+			return nil, diameter.ErrNotConnected
+		}
+
+		return succeed(req)
+	})
+
+	req, err := e.ue.NewRequest("UPDATE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req.Header.Add("Contact", ueContact(u))
+	req.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000", "a=sendonly"))
+	s.ueSend(u, req)
+
+	fwd, ff := s.scscf.RecvRequest()
+	ok := sip.NewResponse(fwd, 200, "")
+	ok.Header.Add("Contact", "<sip:callee@"+s.scscf.Addr().String()+">")
+	ok.SetBody("application/sdp", sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	s.scscf.Send(ff.Transport, ff.Remote, ok)
+
+	if id, aar := pcrf.aar(); id != e.session || *aar.RequestType != rx.RequestUpdate {
+		t.Fatalf("AAR %s %s, want the update of %s", id, aar.RequestType, e.session)
+	}
+
+	if bye, _ := s.scscf.RecvRequest(); bye.Method != "BYE" || !strings.Contains(bye.Header.Get("Reason"), "cause=503") {
+		t.Fatalf("S-CSCF got %s with Reason %q, want a BYE for cause 503", bye.Method, bye.Header.Get("Reason"))
+	}
+
+	for {
+		if r, ok := u.us.Recv().Msg.(*sip.Request); ok {
+			if r.Method != "BYE" {
+				t.Fatalf("UE got %s, want the BYE", r.Method)
+			}
+
+			break
+		}
+	}
+
+	pcrf.none()
+}

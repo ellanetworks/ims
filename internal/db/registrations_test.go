@@ -51,6 +51,7 @@ func testRegistration(impi, msisdn string) Registration {
 			identity("tel:+"+msisdn, false),
 		},
 		UserData: []byte("<IMSSubscription/>"),
+		HSS:      HSS{Host: "hss1." + testDomain, Realm: testDomain},
 		Bindings: []Binding{{
 			Contact:      testContact("2001:db8::1"),
 			CallID:       "reg-" + msisdn,
@@ -124,6 +125,7 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 	r.IMPU = "tel:+15551230001"
 	r.Identities = r.Identities[1:]
 	r.UserData = []byte("<IMSSubscription>2</IMSSubscription>")
+	r.HSS = HSS{Host: "hss2." + testDomain, Realm: testDomain}
 	r.Bindings[0].CSeq = 2
 	r.Bindings[0].ExpiresAt = testNow.Add(2 * time.Hour)
 	r.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"

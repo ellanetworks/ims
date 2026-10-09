@@ -77,12 +77,27 @@ func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func()
 }
 
 func refClass(r db.PCSCFRegistration) [][]byte {
-	var class [][]byte
-	if r.Policy.Ref != "" {
-		_ = json.Unmarshal([]byte(r.Policy.Ref), &class)
+	var ref struct {
+		Class [][]byte `json:"class"`
 	}
 
-	return class
+	if r.Policy.Ref != "" {
+		_ = json.Unmarshal([]byte(r.Policy.Ref), &ref)
+	}
+
+	return ref.Class
+}
+
+// strsByRealm answers AA-Requests with the Session-Binding STR bit: STRs then go to the PCRF realm, and are sent
+// again until answered, instead of ending with a PCRF the P-CSCF cannot reach (RFC 6733 §8.17, §8.18).
+func strsByRealm(next func(context.Context, *diameter.Message) (*diameter.Message, error)) func(context.Context, *diameter.Message) (*diameter.Message, error) {
+	return func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandAA {
+			return rx.NewAAAnswer(req, pcrfIdentity, rx.AAAnswer{SessionBinding: diameter.SessionBindingSTR})
+		}
+
+		return next(ctx, req)
+	}
 }
 
 func (f *fakePCRF) Identity() diameter.Identity { return imsIdentity }
@@ -1028,7 +1043,7 @@ func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
 
 	s.wantSession(again)
 
-	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginRealm {
+	if r, _ := s.record(); r.Policy.Endpoint != "rx" {
 		t.Fatalf("endpoint = %q, want the PCRF", r.Policy.Endpoint)
 	}
 
@@ -1206,18 +1221,36 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
 
+	pcrf.answerWith(strsByRealm(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return succeed(req) }))
 	s.registered(600)
 
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	pcrf.answerWith(failSTRs(2))
+	pcrf.answerWith(strsByRealm(failSTRs(2)))
 	s.reregister(0)
 
 	for range 3 {
 		pcrf.wantSTR(id, rx.TerminationLogout)
 	}
 
+	pcrf.none()
+}
+
+// RFC 6733 §8.18 REFUSE_SERVICE, the default: an STR its PCRF does not get ends the session, and is not sent again.
+func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	pcrf.answerWith(failSTRs(1))
+	s.reregister(0)
+
+	pcrf.wantSTR(id, rx.TerminationLogout)
 	pcrf.none()
 }
 
@@ -1265,6 +1298,7 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
 
+	pcrf.answerWith(strsByRealm(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return succeed(req) }))
 	s.registered(600)
 
 	id, _ := pcrf.aar()
@@ -1280,7 +1314,7 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 	})
 
-	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+	pcrf.answerWith(strsByRealm(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandSessionTermination {
 			select {
 			case <-release:
@@ -1290,7 +1324,7 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 
 		return succeed(req)
-	})
+	}))
 
 	s.restart()
 

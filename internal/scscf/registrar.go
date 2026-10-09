@@ -112,6 +112,8 @@ type challenge struct {
 	vector  authVector
 	resyncs int
 	timer   transaction.Timer
+	// hss is the HSS that gave the vector.
+	hss db.HSS
 }
 
 func New(cfg Config) *Registrar {
@@ -325,7 +327,7 @@ func (r *Registrar) challengeExpired(k authKey, ch *challenge) {
 
 		r.log.Debug("reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
 
-		if _, err := r.serverAssignment(r.ctx, impi, []string{ch.impu}, assignAuthenticationTimeout, false); err != nil {
+		if _, _, err := r.serverAssignment(r.ctx, ch.hss, impi, []string{ch.impu}, assignAuthenticationTimeout, false); err != nil {
 			r.log.Warn("failed to tell the HSS of an authentication timeout", slog.String("impi", impi), slog.Any("error", err))
 		}
 	}()
@@ -393,14 +395,14 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 			defer r.wg.Done()
 			defer r.unlock(impi)
 
-			for _, impu := range expired {
-				r.deregisterAtHSS(r.ctx, impi, impu, assignTimeoutDeregistration)
+			for _, reg := range expired {
+				r.deregisterAtHSS(r.ctx, reg.HSS, impi, reg.IMPU, assignTimeoutDeregistration)
 			}
 		}()
 	}
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []string) {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
@@ -411,7 +413,7 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 
 	var (
 		ch           change
-		deregistered []string
+		deregistered []db.Registration
 	)
 
 	for _, reg := range st.regs {
@@ -429,7 +431,7 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 
 		if deleted {
 			r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
-			deregistered = append(deregistered, reg.IMPU)
+			deregistered = append(deregistered, reg)
 		}
 	}
 
@@ -460,8 +462,8 @@ func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Regist
 	return rm, true, nil
 }
 
-func (r *Registrar) deregisterAtHSS(ctx context.Context, impi, impu string, t cx.AssignmentType) {
-	if _, err := r.serverAssignment(ctx, impi, []string{impu}, t, false); err != nil {
+func (r *Registrar) deregisterAtHSS(ctx context.Context, to db.HSS, impi, impu string, t cx.AssignmentType) {
+	if _, _, err := r.serverAssignment(ctx, to, impi, []string{impu}, t, false); err != nil {
 		r.log.Warn("failed to tell the HSS of a deregistration", slog.String("impi", impi), slog.String("impu", impu),
 			slog.String("type", t.String()), slog.Any("error", err))
 	}

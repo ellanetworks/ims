@@ -270,6 +270,9 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 		case errors.Is(err, policy.ErrUnknownSession):
 			c.log.Debug("policy session already ended at the policy function", attrs...)
 			return nil
+		case errors.Is(err, policy.ErrSessionLost):
+			c.log.Info("policy session lost with its policy function", append(attrs, slog.Any("error", err))...)
+			return nil
 		case !policy.Transient(err) || c.closing():
 			c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
 			return err

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/policy"
@@ -57,6 +58,9 @@ type callPolicy struct {
 	loss     transaction.Timer
 	lost     []uint32
 	ended    bool
+	// orphaned is set when the policy function of the call is lost (RFC 6733 §8.18 REFUSE_SERVICE): the call ends
+	// once the exchange in progress completes.
+	orphaned atomic.Bool
 }
 
 func (p *PCSCF) newCallPolicy(k regKey, identities []string, service string) *callPolicy {
@@ -127,6 +131,8 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
 			p.log.Debug("relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
+
+		p.releaseOrphaned(c, d)
 	}
 
 	if p.enqueue(c.policy, job != nil, run) {
@@ -182,6 +188,8 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 		case reject != nil:
 			reject()
 		}
+
+		p.releaseOrphaned(c, d)
 
 		if ex, ok := d.Exchange(out); ok {
 			c.policy.mu.Lock()
@@ -342,6 +350,15 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 		attrs = append(attrs, slog.Any("removed_media", removed))
 	}
 
+	// RFC 6733 §8.18 REFUSE_SERVICE: the PCRF of the call is lost, and the service ends with it, once the exchange
+	// in progress completes.
+	if errors.Is(err, policy.ErrSessionLost) && !job.initial {
+		p.log.Warn("policy session of the call lost with its policy function: releasing the call", attrs...)
+		c.policy.orphaned.Store(true)
+
+		return true
+	}
+
 	if !job.initial {
 		p.log.Warn("media authorization refused for a session modification", attrs...)
 		return true
@@ -354,6 +371,20 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 	}
 
 	return false
+}
+
+// releaseOrphaned ends, both ways, a call whose policy function is lost.
+func (p *PCSCF) releaseOrphaned(c *call, d *proxy.Dialog) {
+	if !c.policy.orphaned.Load() {
+		return
+	}
+
+	cause, _ := sip.NewReason("SIP", 503, "")
+
+	if err := d.Release(proxy.Release{Toward: proxy.Both, Code: 500, Reason: []sip.Reason{cause}}); err != nil &&
+		!errors.Is(err, proxy.ErrDialogEnded) {
+		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+	}
 }
 
 // RFC 3262 §3
@@ -450,13 +481,14 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 
 		g, err := p.policy.authorize(s, r)
 
+		if g.Ref != "" {
+			s.ref = g.Ref
+		}
+
 		switch {
 		case err == nil:
 			s.opened = true
-			if g.Ref != "" {
-				s.ref = g.Ref
-			}
-		case initial, errors.Is(err, policy.ErrUnknownSession):
+		case initial, errors.Is(err, policy.ErrUnknownSession), errors.Is(err, policy.ErrSessionLost):
 			s.ended = true
 			p.policy.forget(s)
 
