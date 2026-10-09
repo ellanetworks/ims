@@ -125,7 +125,8 @@ func tunAddr() (netip.Addr, error) {
 	return netip.Addr{}, errors.New("no IPv4 address on " + tunDevice)
 }
 
-func newUE(t *testing.T, i int, tr sip.Transport) *testue.UE {
+// newUE makes the test UE of subscriber i in its UE container, from cfg with the subscriber, network and transport set.
+func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE {
 	t.Helper()
 
 	sub := subscribers[i]
@@ -154,19 +155,12 @@ func newUE(t *testing.T, i int, tr sip.Transport) *testue.UE {
 
 	t.Cleanup(func() { _ = xfrm.Close() })
 
-	u, err := testue.New(testue.Config{
-		IMSI:        sub.imsi,
-		IMEI:        sub.imei,
-		K:           k,
-		OPc:         opc,
-		PCSCF:       pcscf,
-		Local:       local,
-		Transport:   tr,
-		AcceptCalls: true,
-		Kernel:      xfrm,
-		Do:          ns.Do,
-		Logger:      slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})).With("ue", i+1),
-	})
+	cfg.IMSI, cfg.IMEI, cfg.K, cfg.OPc = sub.imsi, sub.imei, k, opc
+	cfg.PCSCF, cfg.Local, cfg.Transport = pcscf, local, tr
+	cfg.AcceptCalls, cfg.Kernel, cfg.Do = true, xfrm, ns.Do
+	cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})).With("ue", i+1)
+
+	u, err := testue.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +253,12 @@ func connect(t *testing.T, a, b *testue.UE, target string, opts testue.CallOptio
 }
 
 func pair(t *testing.T, tr sip.Transport) (*testue.UE, *testue.UE) {
-	a, b := newUE(t, 0, tr), newUE(t, 1, tr)
+	return pairWith(t, tr, testue.Config{})
+}
+
+// pairWith registers the two subscribers' UEs, both configured from cfg.
+func pairWith(t *testing.T, tr sip.Transport, cfg testue.Config) (*testue.UE, *testue.UE) {
+	a, b := newUE(t, 0, tr, cfg), newUE(t, 1, tr, cfg)
 	register(t, a)
 	register(t, b)
 

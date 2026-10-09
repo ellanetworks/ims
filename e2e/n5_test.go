@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/testue"
 )
 
@@ -163,6 +164,59 @@ func TestCallQoSFlow(t *testing.T) {
 	ended(t, bc, testue.RemoteBye)
 
 	waitQoSFlows(t, core, before)
+}
+
+// IR.94 §2.2.2, NG.114 §4.5.3, TS 29.513 §7.2.3: the video of a call gets a QoS flow of its own on each side, besides
+// the audio's, whether the call starts with video or has it added by re-INVITE. The Open5GS PCF gives VIDEO the 5QI 2
+// (src/pcf/npcf-handler.c), the PCC rule e2e/provision.js provisions.
+//
+// The removal of video is not checked: the Open5GS PCF keeps the PCC rule of a media component a PATCH sets to
+// REMOVED (pcf_npcf_policyauthorization_handle_update, open5gs 4107085), so the QoS flow stays until the call ends.
+// internal/integration checks the P-CSCF's REMOVED (TestCallVideoBearerLost).
+func TestVideoCallQoSFlows(t *testing.T) {
+	needs5G(t)
+
+	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
+	a, b := pairWith(t, sip.UDP, testue.Config{Video: true})
+	target := "sip:" + subscribers[1].msisdn + "@" + homeDomain
+	before := qosFlows(t, core)
+
+	t.Run("video call", func(t *testing.T) {
+		ac, bc := connect(t, a, b, target, testue.CallOptions{Video: true})
+
+		if _, ok := bc.Stream(sdp.Video); !ok {
+			t.Fatalf("callee streams %+v, want the video", bc.Streams())
+		}
+
+		waitQoSFlows(t, core, before+4)
+		hangUp(t, ac, bc)
+		waitQoSFlows(t, core, before)
+	})
+
+	t.Run("video added", func(t *testing.T) {
+		ac, bc := connect(t, a, b, target, testue.CallOptions{})
+
+		waitQoSFlows(t, core, before+2)
+
+		if err := bc.AddVideo(ctx(t)); err != nil {
+			t.Fatalf("AddVideo: %v", err)
+		}
+
+		waitQoSFlows(t, core, before+4)
+		hangUp(t, ac, bc)
+		waitQoSFlows(t, core, before)
+	})
+}
+
+func hangUp(t *testing.T, ac, bc *testue.Call) {
+	t.Helper()
+
+	if err := ac.Bye(ctx(t)); err != nil {
+		t.Fatalf("Bye: %v", err)
+	}
+
+	ended(t, ac, testue.LocalBye)
+	ended(t, bc, testue.RemoteBye)
 }
 
 // TS 29.514 §4.2.5.3, TS 24.229 §5.2.8.1.2: the release of the callee's PDU session terminates its application
