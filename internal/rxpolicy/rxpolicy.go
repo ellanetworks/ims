@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/rx"
@@ -87,18 +89,19 @@ func (s session) ref() (string, error) {
 func (s session) answered(ans *diameter.Message, a rx.AAAnswer) session {
 	origin := tgpp.ParseEnvelope(ans).Origin
 
-	s.PCRF, s.Realm = origin.OriginHost, origin.OriginRealm
-	s.Binding, s.Failover = a.SessionBinding, a.SessionServerFailover
-
-	if len(a.Class) > 0 {
+	// RFC 6733 §8.20: the Class of a PCRF is its own; another PCRF that takes the session over replaces it.
+	if len(a.Class) > 0 || !strings.EqualFold(origin.OriginHost, s.PCRF) {
 		s.Class = a.Class
 	}
+
+	s.PCRF, s.Realm = origin.OriginHost, origin.OriginRealm
+	s.Binding, s.Failover = a.SessionBinding, a.SessionServerFailover
 
 	return s
 }
 
-// undelivered is a request of a session that its PCRF could not be sent and that no other PCRF took: the session
-// is lost, or, with ALLOW_SERVICE, goes on unbound (RFC 6733 §8.18).
+// undelivered is a request of a session that no path reaches its PCRF with, and that no other PCRF took: the session
+// is lost, or, with ALLOW_SERVICE, goes on unbound as if the request succeeded (RFC 6733 §8.18).
 type undelivered struct {
 	allow bool
 	err   error
@@ -112,37 +115,76 @@ func (e *undelivered) Unwrap() error {
 	return e.err
 }
 
-// send sends a request of a session: to the PCRF that holds it, unless bound is false, else to the PCRF realm. A
-// request its PCRF does not get goes once to the realm if the PCRF allows it, and the session then belongs to the
-// PCRF that answers (RFC 6733 §8.17, §8.18).
+// send sends a request of a session: to the PCRF that holds it, unless bound is false, else to the PCRF realm
+// (RFC 6733 §8.17).
+//
+// A request its PCRF does not get yet, because its connection is down, it is busy or it does not answer in time,
+// stays pending: the error is transient and the caller sends it again later (RFC 6733 §5.5.4). A request no path
+// reaches its PCRF with is undelivered (§8.18): it goes once to the realm if the PCRF allows it, and the session then
+// belongs to the PCRF that answers; otherwise the session is lost or, with ALLOW_SERVICE, goes on unbound. With
+// TRY_AGAIN, a pending request goes to the realm too, and the PCRF of the session has half the time, so that the
+// realm has the rest.
 func (b *Backend) send(ctx context.Context, id string, s session, bound bool,
 	build func(tgpp.Envelope) (*diameter.Message, error), wait bool,
 ) (*diameter.Message, error) {
-	env := tgpp.Envelope{SessionID: id, Origin: b.cfg.Diameter.Identity(), DestinationRealm: b.cfg.Realm()}
+	realm := b.cfg.Realm()
+	env := tgpp.Envelope{SessionID: id, Origin: b.cfg.Diameter.Identity(), DestinationRealm: realm}
 
-	if bound && s.PCRF != "" {
-		env.DestinationHost = s.PCRF
-
-		if s.Realm != "" {
-			env.DestinationRealm = s.Realm
-		}
+	if !bound || s.PCRF == "" {
+		return b.do(ctx, env, build, wait)
 	}
 
-	ans, err := b.do(ctx, env, build, wait)
-	if env.DestinationHost == "" || !undeliverable(ans, err) {
+	ans, err := b.sendBound(ctx, env, s, build, wait)
+
+	failure := deliveryFailure(ctx, ans, err)
+	if failure == settled || failure == pending && !s.Failover.TriesAgain() {
 		return ans, err
 	}
 
 	if s.Failover.TriesAgain() {
-		env.DestinationHost, env.DestinationRealm = "", b.cfg.Realm()
+		retried, retryErr := b.do(ctx, env, build, wait)
+		if deliveryFailure(ctx, retried, retryErr) == settled {
+			return retried, retryErr
+		}
 
-		ans, err = b.do(ctx, env, build, wait)
-		if !undeliverable(ans, err) {
+		if failure == pending {
 			return ans, err
 		}
 	}
 
 	return nil, &undelivered{allow: s.Failover.AllowsService(), err: deliveryError(ans, err)}
+}
+
+// sendBound sends a request to the PCRF of the session. A PCRF behind an agent may be in another realm than the
+// configured one, which then has no route of its own: the request goes through the configured realm, still to the
+// PCRF (TS 29.213 §7.3.5).
+func (b *Backend) sendBound(ctx context.Context, env tgpp.Envelope, s session,
+	build func(tgpp.Envelope) (*diameter.Message, error), wait bool,
+) (*diameter.Message, error) {
+	if s.Failover.TriesAgain() {
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+
+			ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)/2)
+			defer cancel()
+		}
+	}
+
+	configured := env.DestinationRealm
+	env.DestinationHost = s.PCRF
+
+	if s.Realm != "" {
+		env.DestinationRealm = s.Realm
+	}
+
+	ans, err := b.do(ctx, env, build, wait)
+
+	if errors.Is(err, diameter.ErrUnableToDeliver) && !strings.EqualFold(env.DestinationRealm, configured) {
+		env.DestinationRealm = configured
+		ans, err = b.do(ctx, env, build, wait)
+	}
+
+	return ans, err
 }
 
 func (b *Backend) do(ctx context.Context, env tgpp.Envelope, build func(tgpp.Envelope) (*diameter.Message, error),
@@ -161,16 +203,36 @@ func (b *Backend) do(ctx context.Context, env tgpp.Envelope, build func(tgpp.Env
 	return b.cfg.Diameter.Send(ctx, req, opts...)
 }
 
-// undeliverable reports whether a request did not reach its PCRF: no connection to it, no route, or an agent or the
-// PCRF itself answering that it cannot serve it (RFC 6733 §7.1.3).
-func undeliverable(ans *diameter.Message, err error) bool {
-	if err != nil {
-		return errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver)
+type failure int
+
+const (
+	// settled: the PCRF answered, or the request failed for another reason than its delivery.
+	settled failure = iota
+	pending
+	unreachable
+)
+
+// deliveryFailure classifies how a request did not reach its PCRF. Pending: no connection to it now, no answer in its
+// share of the time while ctx has some left, or the PCRF answering it is too busy (RFC 6733 §7.1.3: it got the
+// request). Unreachable: no path to it, or an agent answering that it cannot deliver the request.
+func deliveryFailure(ctx context.Context, ans *diameter.Message, err error) failure {
+	switch {
+	case errors.Is(err, diameter.ErrUnableToDeliver), errors.Is(err, diameter.ErrApplicationUnsupported):
+		return unreachable
+	case errors.Is(err, diameter.ErrNotConnected), errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return pending
+	case err != nil:
+		return settled
 	}
 
-	code, ok := protocolError(ans)
+	switch protocolError(ans) {
+	case diameter.ResultUnableToDeliver:
+		return unreachable
+	case diameter.ResultTooBusy:
+		return pending
+	}
 
-	return ok && (code == diameter.ResultUnableToDeliver || code == diameter.ResultTooBusy)
+	return settled
 }
 
 func deliveryError(ans *diameter.Message, err error) error {
@@ -178,24 +240,25 @@ func deliveryError(ans *diameter.Message, err error) error {
 		return err
 	}
 
-	code, _ := protocolError(ans)
-
-	return errors.New(diameter.ResultName(code))
+	return errors.New(diameter.ResultName(protocolError(ans)))
 }
 
-func protocolError(ans *diameter.Message) (uint32, bool) {
+func protocolError(ans *diameter.Message) uint32 {
 	if ans == nil || ans.Flags&diameter.FlagError == 0 {
-		return 0, false
+		return 0
 	}
 
 	a, ok := ans.Find(diameter.AVPResultCode, 0)
 	if !ok {
-		return 0, false
+		return 0
 	}
 
 	code, err := a.Unsigned32()
+	if err != nil {
+		return 0
+	}
 
-	return code, err == nil
+	return code
 }
 
 // TS 29.214 §4.4.5, §5.3.13
@@ -237,8 +300,9 @@ var callActions = []rx.SpecificAction{
 	rx.ActionIndicationOfFailedResourcesAllocation,
 }
 
-// TS 29.214 §4.4.1, §4.4.2, Annex A.3. An update goes to the PCRF of the session; when its PCRF lets the session
-// go on unbound, the grant carries the unbound ref with the error.
+// TS 29.214 §4.4.1, §4.4.2, Annex A.3. An update goes to the PCRF of the session. One that cannot reach the PCRF of
+// a session that allows the service succeeds, unbound (RFC 6733 §8.18 ALLOW_SERVICE: "assume that
+// re-authorization succeeded").
 func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Request) (policy.Grant, error) {
 	s, err := decodeRef(ref)
 	if err != nil {
@@ -270,8 +334,14 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	ans, err := b.send(ctx, id, s, !s.Binding.Has(diameter.SessionBindingReAuth), func(env tgpp.Envelope) (*diameter.Message, error) {
 		return rx.NewAARequest(env, aar)
 	}, false)
+
+	var lost *undelivered
+	if errors.As(err, &lost) && lost.allow {
+		return unbound(s)
+	}
+
 	if err != nil {
-		return unboundGrant(s, err), classify(err)
+		return policy.Grant{}, classify(err)
 	}
 
 	a, err := rx.ParseAAAnswer(ans)
@@ -287,25 +357,21 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	return policy.Grant{Ref: next, Charging: AnswerCharging(a)}, nil
 }
 
-// unboundGrant is the grant of a session whose PCRF could not be reached but allows the service: the next
-// requests go to the PCRF realm.
-func unboundGrant(s session, err error) policy.Grant {
-	var u *undelivered
-	if !errors.As(err, &u) || !u.allow {
-		return policy.Grant{}
-	}
-
+// unbound is the grant of a session whose PCRF could not be reached but allows the service: the next requests go to
+// the PCRF realm.
+func unbound(s session) (policy.Grant, error) {
 	s.PCRF, s.Realm = "", ""
 
-	ref, refErr := s.ref()
-	if refErr != nil {
-		return policy.Grant{}
+	ref, err := s.ref()
+	if err != nil {
+		return policy.Grant{}, err
 	}
 
-	return policy.Grant{Ref: ref}
+	return policy.Grant{Ref: ref}, nil
 }
 
-// TS 29.214 §4.4.4. An STR its PCRF does not get ends the session there too (RFC 6733 §8.18): it is not sent again.
+// TS 29.214 §4.4.4. An STR its PCRF does not get ends the session there too (RFC 6733 §8.18): it is not sent again,
+// and, with ALLOW_SERVICE, succeeds.
 func (b *Backend) Terminate(ctx context.Context, id, ref string, cause policy.Termination, wait bool) error {
 	s, err := decodeRef(ref)
 	if err != nil {
@@ -317,7 +383,10 @@ func (b *Backend) Terminate(ctx context.Context, id, ref string, cause policy.Te
 	}, wait)
 
 	var lost *undelivered
-	if errors.As(err, &lost) {
+	switch {
+	case errors.As(err, &lost) && lost.allow:
+		return nil
+	case errors.As(err, &lost):
 		return &policy.Error{Kind: policy.ErrSessionLost, Err: err}
 	}
 
@@ -375,8 +444,6 @@ func classify(err error) error {
 	)
 
 	switch {
-	case errors.As(err, &lost) && lost.allow:
-		e.Kind = policy.ErrUnreachable
 	case errors.As(err, &lost):
 		e.Kind = policy.ErrSessionLost
 	case answered && !result.Experimental && result.Code == diameter.ResultUnknownSessionID:

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -147,8 +148,8 @@ func closeListeners(lns []diameter.Listener) {
 }
 
 // diameterPeers are the peers of the Diameter node, each on the route of the applications it serves, to the realm
-// of the application.
-func diameterPeers(st settings.Settings) []diameter.Peer {
+// of the application, and to its realm in the previous settings, if any.
+func diameterPeers(st settings.Settings, previous ...settings.Settings) []diameter.Peer {
 	out := make([]diameter.Peer, 0, len(st.Peers))
 
 	for _, p := range st.Peers {
@@ -158,6 +159,12 @@ func diameterPeers(st settings.Settings) []diameter.Peer {
 		for _, a := range p.Applications {
 			apps = append(apps, applications[a])
 			routes = append(routes, diameter.Route{Realm: st.Realm(a), Application: applications[a].ID, Priority: p.Priority})
+
+			for _, prev := range previous {
+				if realm := prev.Realm(a); realm != "" && !strings.EqualFold(realm, st.Realm(a)) {
+					routes = append(routes, diameter.Route{Realm: realm, Application: applications[a].ID, Priority: p.Priority})
+				}
+			}
 		}
 
 		out = append(out, diameter.Peer{

@@ -147,7 +147,7 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 	}
 
 	if !rr.protected || r.reauthDue(rr) {
-		return r.challenge(ctx, rr, nil, 0, r.knownHSS(ctx, rr.impi))
+		return r.challenge(ctx, rr, nil, 0, r.knownHSS(ctx, rr))
 	}
 
 	return r.refresh(ctx, rr)
@@ -358,15 +358,20 @@ func slicesContainsURI(addrs []sip.Address, u sip.URI) bool {
 	return false
 }
 
-// knownHSS is the HSS that serves a private identity, if it has a registration.
-func (r *Registrar) knownHSS(ctx context.Context, impi string) db.HSS {
-	st, err := r.load(ctx, impi)
+// knownHSS is the HSS stored for the Public Identity of a REGISTER, the last that answered for its registration set,
+// if it has one (TS 29.229 §5.5).
+func (r *Registrar) knownHSS(ctx context.Context, rr *registerRequest) db.HSS {
+	st, err := r.load(ctx, rr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
 		return db.HSS{}
 	}
 
-	return st.hss()
+	if set := st.set(rr.impuKey); set != nil {
+		return set.HSS
+	}
+
+	return db.HSS{}
 }
 
 func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *cx.Resync, resyncs int, to db.HSS) *sip.Response {
@@ -539,11 +544,10 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		to = set.HSS
 	}
 
-	if to.Host == "" {
-		to = st.hss()
-	}
+	// The user data the set holds came from its HSS: another HSS sends its own.
+	available := registered && len(set.UserData) > 0 && to.Host != "" && strings.EqualFold(to.Host, set.HSS.Host)
 
-	saa, from, err := r.serverAssignment(ctx, to, rr.impi, []string{rr.impu}, t, registered && len(set.UserData) > 0)
+	saa, from, err := r.serverAssignment(ctx, to, rr.impi, []string{rr.impu}, t, available)
 	if err != nil {
 		return r.cxFailure(rr, err)
 	}

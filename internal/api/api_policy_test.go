@@ -91,7 +91,7 @@ func TestUpdatePolicy(t *testing.T) {
 	id := s.Get().Peers[0].ID
 
 	code, body = serve(t, cfg, http.MethodDelete, "/api/v1/diameter/peers/"+id, "")
-	if code != http.StatusConflict || decodeError(t, body) != "Policy uses the last peer serving rx" {
+	if code != http.StatusConflict || decodeError(t, body) != "rx requires a Diameter peer serving rx" {
 		t.Fatalf("DELETE the rx peer = %d %s, want 409", code, body)
 	}
 }

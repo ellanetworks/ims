@@ -25,7 +25,7 @@ const (
 
 	sweepInterval = time.Second
 
-	cxTimeout = 10 * time.Second
+	DefaultCxTimeout = 10 * time.Second
 
 	retryAfter = 30
 
@@ -67,8 +67,10 @@ type Config struct {
 
 	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
 	HSSRealm func() string
-	Diameter Diameter
-	DB       *db.DB
+	// CxTimeout bounds a Cx request, its fallback to the realm included. Zero is DefaultCxTimeout.
+	CxTimeout time.Duration
+	Diameter  Diameter
+	DB        *db.DB
 
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
@@ -127,6 +129,10 @@ func New(cfg Config) *Registrar {
 
 	if cfg.ReauthExpires <= 0 {
 		cfg.ReauthExpires = DefaultReauthExpires
+	}
+
+	if cfg.CxTimeout <= 0 {
+		cfg.CxTimeout = DefaultCxTimeout
 	}
 
 	if cfg.MinExpires <= 0 {

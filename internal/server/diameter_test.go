@@ -711,3 +711,41 @@ func resultCode(t *testing.T, m *diameter.Message) uint32 {
 
 	return r.Code
 }
+
+// While a realm changes, a peer is on the routes to both the old realm and the new one.
+func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
+	previous := settings.Settings{
+		Operator: settings.Operator{MCC: "001", MNC: "01"},
+		Peers: []settings.Peer{{
+			ID: "core", Host: "core.epc.example.org", Address: netip.MustParseAddr("192.0.2.1"), Port: 3868,
+			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx}, Priority: 10,
+		}},
+		Routes: []settings.Route{
+			{Application: settings.ApplicationCx, Realm: "old.example.org"},
+			{Application: settings.ApplicationRx, Realm: "epc.example.org"},
+		},
+	}
+
+	next := previous
+	next.Routes = []settings.Route{
+		{Application: settings.ApplicationCx, Realm: "new.example.org"},
+		{Application: settings.ApplicationRx, Realm: "epc.example.org"},
+	}
+
+	route := func(realm string, app uint32) diameter.Route {
+		return diameter.Route{Realm: realm, Application: app, Priority: 10}
+	}
+
+	if got, want := diameterPeers(next, previous)[0].Routes, []diameter.Route{
+		route("new.example.org", cx.ApplicationID), route("old.example.org", cx.ApplicationID),
+		route("epc.example.org", rx.ApplicationID),
+	}; !slices.Equal(got, want) {
+		t.Fatalf("routes while the realm changes = %+v, want %+v", got, want)
+	}
+
+	if got, want := diameterPeers(next)[0].Routes, []diameter.Route{
+		route("new.example.org", cx.ApplicationID), route("epc.example.org", rx.ApplicationID),
+	}; !slices.Equal(got, want) {
+		t.Fatalf("routes = %+v, want %+v", got, want)
+	}
+}

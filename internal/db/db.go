@@ -252,7 +252,8 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 
 	if version > len(migrations) {
-		return fmt.Errorf("schema version %d is newer than this binary supports (%d)", version, len(migrations))
+		return fmt.Errorf("schema version %d is newer than this binary supports (%d): use a newer binary, or a new database",
+			version, len(migrations))
 	}
 
 	for i := version; i < len(migrations); i++ {

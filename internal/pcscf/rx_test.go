@@ -88,16 +88,10 @@ func refClass(r db.PCSCFRegistration) [][]byte {
 	return ref.Class
 }
 
-// strsByRealm answers AA-Requests with the Session-Binding STR bit: STRs then go to the PCRF realm, and are sent
-// again until answered, instead of ending with a PCRF the P-CSCF cannot reach (RFC 6733 §8.17, §8.18).
-func strsByRealm(next func(context.Context, *diameter.Message) (*diameter.Message, error)) func(context.Context, *diameter.Message) (*diameter.Message, error) {
-	return func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
-		if req.CommandCode == rx.CommandAA {
-			return rx.NewAAAnswer(req, pcrfIdentity, rx.AAAnswer{SessionBinding: diameter.SessionBindingSTR})
-		}
-
-		return next(ctx, req)
-	}
+// undeliverable is an agent's answer that it has no path to the PCRF (RFC 6733 §7.1.3).
+func undeliverable(req *diameter.Message) *diameter.Message {
+	return diameter.NewAnswer(req, diameter.Identity{OriginHost: "dra.epc.test", OriginRealm: "epc.test"},
+		diameter.ResultUnableToDeliver)
 }
 
 func (f *fakePCRF) Identity() diameter.Identity { return imsIdentity }
@@ -1221,13 +1215,12 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
 
-	pcrf.answerWith(strsByRealm(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return succeed(req) }))
 	s.registered(600)
 
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	pcrf.answerWith(strsByRealm(failSTRs(2)))
+	pcrf.answerWith(failSTRs(2))
 	s.reregister(0)
 
 	for range 3 {
@@ -1237,7 +1230,8 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE, the default: an STR its PCRF does not get ends the session, and is not sent again.
+// RFC 6733 §8.18 REFUSE_SERVICE, the default: an STR that no path reaches its PCRF with ends the session, and is not
+// sent again.
 func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
@@ -1247,7 +1241,13 @@ func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	pcrf.answerWith(failSTRs(1))
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandSessionTermination {
+			return undeliverable(req), nil
+		}
+
+		return succeed(req)
+	})
 	s.reregister(0)
 
 	pcrf.wantSTR(id, rx.TerminationLogout)
@@ -1298,7 +1298,6 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
 
-	pcrf.answerWith(strsByRealm(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return succeed(req) }))
 	s.registered(600)
 
 	id, _ := pcrf.aar()
@@ -1314,7 +1313,7 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 	})
 
-	pcrf.answerWith(strsByRealm(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandSessionTermination {
 			select {
 			case <-release:
@@ -1324,7 +1323,7 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 
 		return succeed(req)
-	}))
+	})
 
 	s.restart()
 

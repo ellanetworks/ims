@@ -109,6 +109,7 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/DiameterPeerParams"
+              unevaluatedProperties: false
       responses:
         "201":
           description: The peer created
@@ -154,6 +155,7 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/DiameterPeerParams"
+              unevaluatedProperties: false
       responses:
         "200":
           description: The peer as stored
@@ -237,6 +239,7 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/DiameterRouteParams"
+              unevaluatedProperties: false
       responses:
         "200":
           description: The route as stored
@@ -273,6 +276,7 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/Policy"
+              unevaluatedProperties: false
       responses:
         "200":
           description: The policy function as stored
@@ -621,7 +625,6 @@ components:
 
     DiameterPeerParams:
       type: object
-      additionalProperties: false
       required: [host, address, applications]
       properties:
         host:
@@ -693,19 +696,17 @@ components:
 
     DiameterRouteParams:
       type: object
-      additionalProperties: false
-      required: [realm]
       properties:
         realm:
           type: string
-          description: The realm of the HSS for cx, of the PCRF for rx. Empty is the home domain.
+          description: The realm of the HSS for cx, of the PCRF for rx. Absent or empty is the home domain.
           examples: [epc.mnc001.mcc001.3gppnetwork.org]
 
     DiameterRoute:
       allOf:
         - $ref: "#/components/schemas/DiameterRouteParams"
         - type: object
-          required: [application, destination_realm, peers]
+          required: [application, realm, destination_realm, peers]
           properties:
             application:
               type: string
@@ -738,7 +739,6 @@ components:
 
     Policy:
       type: object
-      additionalProperties: false
       required: [interface]
       properties:
         interface:

@@ -499,14 +499,14 @@ func TestCallMixedAddressFamilies(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE: with the PCRF of the call lost, the call ends, both ways.
+// RFC 6733 §8.18 REFUSE_SERVICE: with no path to the PCRF of the call, the call ends, both ways.
 func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
 
 	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandAA {
-			return nil, diameter.ErrNotConnected
+			return undeliverable(req), nil
 		}
 
 		return succeed(req)
@@ -545,5 +545,174 @@ func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 		}
 	}
 
+	pcrf.none()
+}
+
+// RFC 6733 §5.5.4, §7.1.3: a PCRF momentarily disconnected or too busy has not lost the call's session: the
+// modification is refused and the call goes on.
+func TestCallModificationWithItsPCRFPendingKeepsTheCall(t *testing.T) {
+	for name, answer := range map[string]func(*diameter.Message) (*diameter.Message, error){
+		"down": func(*diameter.Message) (*diameter.Message, error) { return nil, diameter.ErrNotConnected },
+		"too busy": func(req *diameter.Message) (*diameter.Message, error) {
+			return diameter.NewAnswer(req, pcrfIdentity, diameter.ResultTooBusy), nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, u, pcrf, _ := newRxIPsecScene(t)
+			e := s.establishConfirmed(t, u, pcrf)
+
+			pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+				if req.CommandCode == rx.CommandAA {
+					return answer(req)
+				}
+
+				return succeed(req)
+			})
+
+			res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+			wantStatus(t, res, 200)
+
+			pcrf.aar()
+			s.scscf.RecvNone(quiet)
+			pcrf.none()
+		})
+	}
+}
+
+// RFC 6733 §8.18 REFUSE_SERVICE: a session lost in an early dialog ends the call at once, with the media of the
+// exchange left unauthorized.
+func TestEarlyCallWithItsPCRFLostIsReleased(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	invite, got, f := s.originateWith(t, u, true)
+
+	early := s.coreResponse(got, 183, sip.NewTag())
+	early.Header.Add("Require", "100rel")
+	early.Header.Add("RSeq", "1")
+	early.SetBody("application/sdp", sdpBody("192.0.2.9", "5000"))
+	s.scscf.Send(f.Transport, f.Remote, early)
+	pcrf.aar()
+
+	res, _ := u.us.RecvResponse()
+	wantStatus(t, res, 183)
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandAA {
+			return undeliverable(req), nil
+		}
+
+		return succeed(req)
+	})
+
+	ud, err := dialog.NewUAC(invite, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update, err := ud.NewRequest("UPDATE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update.Header.Add("Contact", ueContact(u))
+	update.SetBody("application/sdp", sdpBody(ueAddr.String(), "4002"))
+	s.ueSend(u, update)
+
+	fwd, ff := s.scscf.RecvRequest()
+	ok := sip.NewResponse(fwd, 200, "")
+	ok.SetBody("application/sdp", sdpBody("192.0.2.9", "5002"))
+	s.scscf.Send(ff.Transport, ff.Remote, ok)
+
+	pcrf.aar()
+
+	cancel, _ := s.scscf.RecvRequest()
+	if cancel.Method != "CANCEL" {
+		t.Fatalf("S-CSCF got %s, want the CANCEL", cancel.Method)
+	}
+
+	wantReason503(t, cancel)
+
+	for {
+		r, _ := u.us.RecvResponse()
+		if r.StatusCode >= 300 {
+			break
+		}
+
+		if r.StatusCode == 200 && r.Header.Get("CSeq") == update.Header.Get("CSeq") {
+			t.Fatal("the UE got the 200 to its UPDATE, whose media nothing authorizes")
+		}
+	}
+
+	pcrf.none()
+}
+
+// RFC 6733 §8.18 REFUSE_SERVICE: a session lost after the exchange gave up on its answer still ends the call.
+func TestCallWithItsPCRFLostAfterTheCallTimeoutIsReleased(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
+	e := s.establishConfirmed(t, u, pcrf)
+
+	open := gateAA(pcrf, func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		return undeliverable(req), nil
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	wantStatus(t, res, 200)
+
+	pcrf.aar()
+	open()
+
+	bye, _ := s.scscf.RecvRequest()
+	if bye.Method != "BYE" {
+		t.Fatalf("S-CSCF got %s, want the BYE", bye.Method)
+	}
+
+	wantReason503(t, bye)
+
+	if r, _ := u.us.RecvRequest(); r.Method != "BYE" {
+		t.Fatalf("UE got %s, want the BYE", r.Method)
+	}
+
+	pcrf.none()
+}
+
+// RFC 6733 §8.18 ALLOW_SERVICE: a modification no path takes to the PCRF of the call succeeds, and the session goes
+// on unbound: the next request goes by realm, and the call is not released.
+func TestCallModificationWithItsPCRFLostAllowsService(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+
+	allow := func(req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandAA {
+			return rx.NewAAAnswer(req, pcrfIdentity, rx.AAAnswer{SessionServerFailover: diameter.AllowService})
+		}
+
+		return succeed(req)
+	}
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) { return allow(req) })
+
+	e := s.establishConfirmed(t, u, pcrf)
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if tgpp.ParseEnvelope(req).DestinationHost != "" {
+			return undeliverable(req), nil
+		}
+
+		return allow(req)
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	wantStatus(t, res, 200)
+
+	if m := pcrf.next(); tgpp.ParseEnvelope(m).DestinationHost != pcrfIdentity.OriginHost {
+		t.Fatalf("first update to %q, want the PCRF of the session", tgpp.ParseEnvelope(m).DestinationHost)
+	}
+
+	res = s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
+	wantStatus(t, res, 200)
+
+	if m := pcrf.next(); tgpp.ParseEnvelope(m).SessionID != e.session || tgpp.ParseEnvelope(m).DestinationHost != "" {
+		t.Fatalf("next update %s to %q, want the session's, by realm", tgpp.ParseEnvelope(m).SessionID, tgpp.ParseEnvelope(m).DestinationHost)
+	}
+
+	s.scscf.RecvNone(quiet)
 	pcrf.none()
 }

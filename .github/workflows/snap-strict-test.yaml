@@ -81,7 +81,7 @@ jobs:
       - name: Assert Diameter listens over SCTP
         run: |
           curl -fsS -X POST -H 'Content-Type: application/json' \
-            -d '{"host": "hss.example.org", "realm": "example.org", "address": "127.0.0.1", "port": 3869, "transport": "sctp", "applications": ["cx"]}' \
+            -d '{"host": "hss.example.org", "address": "127.0.0.1", "port": 3869, "transport": "sctp", "applications": ["cx"]}' \
             http://127.0.0.1:5020/api/v1/diameter/peers
           deadline=$((SECONDS + 15))
           until sudo ss -lnp --sctp | grep -q '127.0.0.1:3868'; do

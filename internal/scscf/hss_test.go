@@ -28,7 +28,12 @@ type hssCluster struct {
 	nodes []string
 	down  map[string]bool
 	busy  map[string]bool
-	sent  []cxSent
+	hung  map[string]bool
+	noCx  map[string]bool
+	// behind are the nodes reached through an agent, in their own realm: a request to one of them needs a route,
+	// which only the configured realm has.
+	behind map[string]string
+	sent   []cxSent
 }
 
 // cxSent is a Cx request: where the S-CSCF addressed it, and the HSS that answered.
@@ -39,7 +44,10 @@ type cxSent struct {
 }
 
 func newHSSCluster(h *harness, nodes ...string) *hssCluster {
-	c := &hssCluster{loop: h.loop, nodes: nodes, down: map[string]bool{}, busy: map[string]bool{}}
+	c := &hssCluster{
+		loop: h.loop, nodes: nodes, down: map[string]bool{}, busy: map[string]bool{}, hung: map[string]bool{},
+		noCx: map[string]bool{}, behind: map[string]string{},
+	}
 
 	h.cfg.Diameter = c
 	h.restart()
@@ -52,9 +60,17 @@ func (c *hssCluster) Identity() diameter.Identity { return c.loop.Identity() }
 func (c *hssCluster) NewSessionID() string { return c.loop.NewSessionID() }
 
 func (c *hssCluster) Send(ctx context.Context, req *diameter.Message, opts ...diameter.RequestOption) (*diameter.Message, error) {
-	to := tgpp.ParseEnvelope(req).DestinationHost
+	env := tgpp.ParseEnvelope(req)
+	to := env.DestinationHost
 
 	c.mu.Lock()
+
+	if realm, ok := c.behind[to]; ok && env.DestinationRealm != homeDomain && env.DestinationRealm == realm {
+		c.sent = append(c.sent, cxSent{command: req.CommandCode, to: to})
+		c.mu.Unlock()
+
+		return nil, diameter.ErrUnableToDeliver
+	}
 
 	by := to
 	if to == "" {
@@ -66,13 +82,24 @@ func (c *hssCluster) Send(ctx context.Context, req *diameter.Message, opts ...di
 		}
 	}
 
-	down, busy := by == "" || c.down[by], c.busy[by]
+	down, busy, hung, noCx := by == "" || c.down[by], c.busy[by], c.hung[by], c.noCx[by]
+	originRealm := homeDomain
+
+	if realm, ok := c.behind[by]; ok {
+		originRealm = realm
+	}
+
 	c.sent = append(c.sent, cxSent{command: req.CommandCode, to: to, by: by})
 	c.mu.Unlock()
 
 	switch {
 	case down:
 		return nil, diameter.ErrNotConnected
+	case noCx:
+		return nil, diameter.ErrApplicationUnsupported
+	case hung:
+		<-ctx.Done()
+		return nil, ctx.Err()
 	case busy:
 		return diameter.NewAnswer(req, diameter.Identity{OriginHost: by, OriginRealm: homeDomain}, diameter.ResultTooBusy), nil
 	}
@@ -83,8 +110,11 @@ func (c *hssCluster) Send(ctx context.Context, req *diameter.Message, opts ...di
 	}
 
 	for i, a := range ans.AVPs {
-		if a.Code == diameter.AVPOriginHost {
+		switch a.Code {
+		case diameter.AVPOriginHost:
 			ans.AVPs[i] = diameter.UTF8String(diameter.AVPOriginHost, diameter.AVPFlagMandatory, 0, by)
+		case diameter.AVPOriginRealm:
+			ans.AVPs[i] = diameter.UTF8String(diameter.AVPOriginRealm, diameter.AVPFlagMandatory, 0, originRealm)
 		}
 	}
 
@@ -149,6 +179,42 @@ func TestRegistrationGoesToTheHSSThatAnswered(t *testing.T) {
 	c.set(func(c *hssCluster) { c.nodes = []string{hss2, hss1} })
 
 	u.register(registerOptions{})
+
+	if sar := h.hss.nextSAR(t); !sar.UserDataAlreadyAvailable {
+		t.Fatal("SAR to the HSS of the registration does not say the user data is already available")
+	}
+
+	wantSent(t, c.take(),
+		cxSent{cx.CommandMultimediaAuth, hss1, hss1},
+		cxSent{cx.CommandServerAssignment, hss1, hss1},
+	)
+}
+
+// TS 29.229 §5.5: the HSS is stored per Public Identity: another one of the private identity goes to the realm, and
+// each then goes to its own HSS.
+func TestHSSPerPublicIdentity(t *testing.T) {
+	h := newHarness(t)
+	c := newHSSCluster(h, hss1, hss2)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+	c.take()
+
+	c.set(func(c *hssCluster) { c.nodes = []string{hss2, hss1} })
+
+	u.impu = secondIMPU
+	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.nextSAR(t)
+
+	wantSent(t, c.take(), cxSent{cx.CommandServerAssignment, "", hss2})
+
+	if got := h.registration(secondIMPU).HSS.Host; got != hss2 {
+		t.Fatalf("HSS of %s = %s, want %s", secondIMPU, got, hss2)
+	}
+
+	u.impu = testIMPU
+	u.register(registerOptions{})
 	h.hss.nextSAR(t)
 
 	wantSent(t, c.take(),
@@ -161,6 +227,7 @@ func TestLostHSSFallsBackToTheRealm(t *testing.T) {
 	for name, lose := range map[string]func(c *hssCluster){
 		"down":     func(c *hssCluster) { c.down[hss1] = true },
 		"too busy": func(c *hssCluster) { c.busy[hss1] = true },
+		"no Cx":    func(c *hssCluster) { c.noCx[hss1] = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -177,7 +244,10 @@ func TestLostHSSFallsBackToTheRealm(t *testing.T) {
 			})
 
 			u.register(registerOptions{})
-			h.hss.nextSAR(t)
+
+			if sar := h.hss.nextSAR(t); sar.UserDataAlreadyAvailable {
+				t.Fatal("SAR to another HSS says the user data is already available")
+			}
 
 			wantSent(t, c.take(),
 				cxSent{cx.CommandMultimediaAuth, hss1, hss1},
@@ -257,4 +327,66 @@ func TestRegistrationWithoutAnyHSS(t *testing.T) {
 	if res.Header.Get("Retry-After") == "" {
 		t.Fatal("no Retry-After on an unreachable HSS")
 	}
+}
+
+// RFC 6733 §5.5.4: an HSS that keeps its connection but answers nothing has half the time; the realm has the rest.
+func TestHungHSSFallsBackInTime(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.CxTimeout = time.Second
+	c := newHSSCluster(h, hss1, hss2)
+	u := h.newUE()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+	c.take()
+
+	c.set(func(c *hssCluster) {
+		c.hung[hss1] = true
+		c.nodes = []string{hss2, hss1}
+	})
+
+	start := time.Now()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	if d := time.Since(start); d >= h.cfg.CxTimeout {
+		t.Fatalf("re-registration took %s, want the fallback within the %s Cx timeout", d, h.cfg.CxTimeout)
+	}
+
+	if got := h.registeredHSS(); got.Host != hss2 {
+		t.Fatalf("HSS = %+v, want %s", got, hss2)
+	}
+}
+
+// TS 29.229 §5.5: an HSS behind an agent, in a realm the S-CSCF has no route for, is still reached through the
+// configured realm, and stays the HSS of the registration.
+func TestHSSBehindAnAgentInAnotherRealm(t *testing.T) {
+	const realm = "hss.example.net"
+
+	h := newHarness(t)
+	c := newHSSCluster(h, hss1, hss2)
+	u := h.newUE()
+
+	c.set(func(c *hssCluster) { c.behind[hss1] = realm })
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	if got := h.registeredHSS(); got != (db.HSS{Host: hss1, Realm: realm}) {
+		t.Fatalf("HSS = %+v, want %s in %s", got, hss1, realm)
+	}
+
+	c.take()
+	c.set(func(c *hssCluster) { c.nodes = []string{hss2, hss1} })
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	wantSent(t, c.take(),
+		cxSent{cx.CommandMultimediaAuth, hss1, ""},
+		cxSent{cx.CommandMultimediaAuth, hss1, hss1},
+		cxSent{cx.CommandServerAssignment, hss1, ""},
+		cxSent{cx.CommandServerAssignment, hss1, hss1},
+	)
 }

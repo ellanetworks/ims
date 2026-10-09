@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
@@ -64,11 +65,12 @@ func (r *Registrar) serverAssignment(ctx context.Context, to db.HSS, impi string
 ) (cx.ServerAssignment, db.HSS, error) {
 	ans, from, err := r.cx(ctx, to, func(env tgpp.Envelope) (*diameter.Message, error) {
 		return cx.NewServerAssignmentRequest(env, cx.ServerAssignmentRequest{
-			PrivateIdentity:          impi,
-			PublicIdentities:         impus,
-			ServerName:               r.serverName,
-			Type:                     t,
-			UserDataAlreadyAvailable: userDataAvailable,
+			PrivateIdentity:  impi,
+			PublicIdentities: impus,
+			ServerName:       r.serverName,
+			Type:             t,
+			// A request that falls back to the realm may reach another HSS, which sends its own user data.
+			UserDataAlreadyAvailable: userDataAvailable && env.DestinationHost != "",
 		})
 	})
 	if err != nil {
@@ -85,18 +87,28 @@ func (r *Registrar) serverAssignment(ctx context.Context, to db.HSS, impi string
 
 // cx sends a Cx request to the HSS that serves the registration, or, unknown, to the realm of the HSS, and returns
 // the HSS that answered (TS 29.229 §5.5). When the HSS of the registration cannot be reached, a new request goes to
-// the realm: Cx keeps no session state, and an HSS the S-CSCF cannot reach is no longer one it knows.
+// the realm: Cx keeps no session state, and an HSS the S-CSCF cannot reach is no longer one it knows. The HSS of the
+// registration has half the time, so that the realm always has the rest.
 func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope) (*diameter.Message, error),
 ) (*diameter.Message, db.HSS, error) {
-	ctx, cancel := context.WithTimeout(ctx, cxTimeout)
+	ctx, cancel := context.WithTimeout(ctx, r.cfg.CxTimeout)
 	defer cancel()
 
-	ans, err := r.cxTo(ctx, to, build)
-	if to.Host != "" && undeliverable(ans, err) {
-		r.log.Info("the HSS of the registration is unreachable, trying the realm of the HSS", slog.String("hss", to.Host),
-			slog.Any("error", undeliverableReason(ans, err)))
+	var (
+		ans *diameter.Message
+		err error
+	)
 
-		ans, err = r.cxTo(ctx, db.HSS{}, build)
+	if to.Host == "" {
+		ans, err = r.cxTo(ctx, to, build)
+	} else {
+		ans, err = r.cxBound(ctx, to, build)
+		if undeliverable(ctx, ans, err) {
+			r.log.Info("the HSS of the registration is unreachable, trying the realm of the HSS", slog.String("hss", to.Host),
+				slog.Any("error", undeliverableReason(ans, err)))
+
+			ans, err = r.cxTo(ctx, db.HSS{}, build)
+		}
 	}
 
 	if err != nil {
@@ -106,6 +118,23 @@ func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope)
 	origin := tgpp.ParseEnvelope(ans).Origin
 
 	return ans, db.HSS{Host: origin.OriginHost, Realm: origin.OriginRealm}, nil
+}
+
+// cxBound sends a request to the HSS of a registration. An HSS behind an agent may be in another realm than the
+// configured one, which then has no route of its own: the request goes through the configured realm, still to the
+// HSS (TS 29.229 §5.5).
+func (r *Registrar) cxBound(ctx context.Context, to db.HSS, build func(tgpp.Envelope) (*diameter.Message, error),
+) (*diameter.Message, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.cfg.CxTimeout/2)
+	defer cancel()
+
+	ans, err := r.cxTo(ctx, to, build)
+
+	if realm := r.cfg.HSSRealm(); errors.Is(err, diameter.ErrUnableToDeliver) && !strings.EqualFold(to.Realm, realm) {
+		ans, err = r.cxTo(ctx, db.HSS{Host: to.Host, Realm: realm}, build)
+	}
+
+	return ans, err
 }
 
 func (r *Registrar) cxTo(ctx context.Context, to db.HSS, build func(tgpp.Envelope) (*diameter.Message, error),
@@ -129,11 +158,13 @@ func (r *Registrar) cxTo(ctx context.Context, to db.HSS, build func(tgpp.Envelop
 	return r.cfg.Diameter.Send(ctx, req, diameter.FailFast())
 }
 
-// undeliverable reports whether a request did not reach its HSS: no connection to it, no route, or an agent or the
-// HSS itself answering that it cannot serve it (RFC 6733 §7.1.3).
-func undeliverable(ans *diameter.Message, err error) bool {
+// undeliverable reports whether a request did not reach its HSS: no connection to it, no route, no Cx on it, no
+// answer in its share of the time while ctx has some left, or an agent or the HSS itself answering that it cannot
+// serve it (RFC 6733 §7.1.3).
+func undeliverable(ctx context.Context, ans *diameter.Message, err error) bool {
 	if err != nil {
-		return errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver)
+		return errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver) ||
+			errors.Is(err, diameter.ErrApplicationUnsupported) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
 	}
 
 	code, ok := protocolError(ans)

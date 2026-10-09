@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"net/http"
 	"net/netip"
 	"slices"
 	"testing"
@@ -59,7 +60,28 @@ func aars(p *pcrftest.PCRF) []rx.RequestType {
 	}
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE, the default: a call whose PCRF is lost ends, though another PCRF is up.
+func (s *scene) deletePeer(id string) {
+	s.t.Helper()
+
+	req, err := http.NewRequestWithContext(s.ctx(), http.MethodDelete, "http://"+s.srv.APIAddr().String()+"/api/v1/diameter/peers/"+id, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+
+	_ = res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		s.t.Fatalf("DELETE peer %s = %d", id, res.StatusCode)
+	}
+}
+
+// RFC 6733 §8.18 REFUSE_SERVICE, the default: a call that no path reaches its PCRF with ends, though another PCRF is
+// up: that PCRF answers that it cannot deliver the session's requests.
 func TestCallEndsWithItsPCRF(t *testing.T) {
 	s := newScene(t)
 	other := s.addPCRF()
@@ -71,14 +93,37 @@ func TestCallEndsWithItsPCRF(t *testing.T) {
 	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
 
 	s.pcrf.Stop(t)
+	s.deletePeer("pcrf")
 
 	_ = ac.Hold(ctx)
 
 	ended(t, ac, testue.RemoteBye)
 	ended(t, bc, testue.RemoteBye)
 
-	if got := aars(other); len(got) != 0 {
-		t.Fatalf("the other PCRF got %v for the call, want nothing: the session was refused another PCRF", got)
+	if got := aars(other); slices.Contains(got, rx.RequestInitial) {
+		t.Fatalf("the other PCRF got %v for the call, want no new session: REFUSE_SERVICE", got)
+	}
+}
+
+// RFC 6733 §5.5.4: a call whose PCRF is down but still configured goes on; its requests wait for the PCRF.
+func TestCallGoesOnWhileItsPCRFIsDown(t *testing.T) {
+	s := newScene(t)
+	s.addPCRF()
+
+	a := s.caller(0, false, testue.Config{})
+	b := s.caller(1, false, testue.Config{})
+
+	ctx := s.ctx()
+	ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{})
+
+	s.pcrf.Stop(t)
+
+	if err := ac.Hold(ctx); err != nil {
+		t.Fatalf("Hold with the PCRF of the call down: %v", err)
+	}
+
+	if ac.State() != testue.CallConfirmed || bc.State() != testue.CallConfirmed {
+		t.Fatalf("calls %s and %s, want them kept", ac.State(), bc.State())
 	}
 }
 

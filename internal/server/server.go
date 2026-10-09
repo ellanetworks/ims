@@ -240,8 +240,8 @@ func (s *Server) numbering() scscf.Numbering {
 	}
 }
 
-// follow replaces the core whenever the settings change what it is built from: the IMS's identity, its Diameter
-// peers or its policy function. Other settings are read when used, and need no restart.
+// follow applies the settings as they change: new Diameter peers and routes reconfigure the running node; a new
+// identity, Diameter transport or policy function replaces the core. Other settings are read when used.
 func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
@@ -258,7 +258,7 @@ func (s *Server) follow(ctx context.Context) {
 			switch {
 			case current.SameCore(st):
 			case s.core.Load() != nil && current.SameNode(st):
-				s.reconfigureNode(st)
+				s.reconfigureNode(ctx, st)
 			default:
 				s.restartCore(ctx, st)
 			}
@@ -287,16 +287,24 @@ const (
 	maxRetry = 30 * time.Second
 )
 
-// reconfigureNode gives the running Diameter node its new peers and routes, without a restart.
-func (s *Server) reconfigureNode(st settings.Settings) {
+// reconfigureNode gives the running Diameter node its new peers and routes, without a restart. While the realms
+// change, the node routes both the old and the new ones, so that a request built with either finds its route. A node
+// that refuses its new peers is replaced, so that it does not keep serving the old ones.
+func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) {
 	c := s.core.Load()
 
-	if err := c.node.SetPeers(diameterPeers(st)); err != nil {
-		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
-		return
+	err := c.node.SetPeers(diameterPeers(st, c.settings))
+	if err == nil {
+		c.realms.set(st)
+		err = c.node.SetPeers(diameterPeers(st))
 	}
 
-	c.realms.set(st)
+	if err != nil {
+		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
+		s.restartCore(ctx, st)
+
+		return
+	}
 
 	next := *c
 	next.settings = st

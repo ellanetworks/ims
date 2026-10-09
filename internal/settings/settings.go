@@ -229,7 +229,7 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 		next.Peers = slices.Delete(slices.Clone(next.Peers), i, i+1)
 
 		if next.Policy.Interface == PolicyRx && len(next.Serving(ApplicationRx)) == 0 {
-			return conflictf("Policy uses the last peer serving rx")
+			return conflictf("rx requires a Diameter peer serving rx")
 		}
 
 		return nil

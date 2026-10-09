@@ -364,7 +364,7 @@ func TestLivePolicy(t *testing.T) {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
 
-	if err := live.DeletePeer(t.Context(), p.ID); !errors.Is(err, ErrConflict) || err.Error() != "Policy uses the last peer serving rx" {
+	if err := live.DeletePeer(t.Context(), p.ID); !errors.Is(err, ErrConflict) || err.Error() != "rx requires a Diameter peer serving rx" {
 		t.Fatalf("DeletePeer of the rx peer = %v, want a conflict", err)
 	}
 

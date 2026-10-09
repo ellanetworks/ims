@@ -19,7 +19,7 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import CopyButton from "@/components/CopyButton";
-import DiameterPeerDialog from "@/components/DiameterPeerDialog";
+import DiameterPeerDialog, { DEFAULT_PRIORITY } from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
@@ -217,7 +217,7 @@ export default function Cores() {
       headerName: "Priority",
       flex: 0.3,
       minWidth: 90,
-      valueGetter: (_value, row) => row.priority ?? 10,
+      valueGetter: (_value, row) => row.priority ?? DEFAULT_PRIORITY,
     },
     {
       field: "state",
@@ -484,10 +484,10 @@ export default function Cores() {
           )}
         </ConfirmDialog>
       )}
-      {editingRoute && identity.data && (
+      {editingRoute && (
         <EditRouteDialog
           route={editingRoute}
-          homeDomain={identity.data.realm}
+          homeDomain={identity.data?.realm ?? ""}
           onClose={() => setEditingRoute(null)}
         />
       )}
