@@ -101,6 +101,8 @@ const (
 // does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
 // When the transaction itself fails, it saves none and returns err, and saving them again may succeed.
 func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("save call records: %w", err)
@@ -214,7 +216,9 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 	return err
 }
 
-func (d *DB) GetCallRecord(ctx context.Context, id int64) (CallRecord, error) {
+func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err error) {
+	defer d.observe(poolRead, &err)()
+
 	r, err := scanCallRecord(d.read.QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
 		id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -230,7 +234,9 @@ func (d *DB) GetCallRecord(ctx context.Context, id int64) (CallRecord, error) {
 
 // ListCallRecords returns a page of the records the filter selects, the most recently requested first, and their
 // count, both of the same snapshot of the database.
-func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) ([]CallRecord, int, error) {
+func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) (_ []CallRecord, _ int, err error) {
+	defer d.observe(poolRead, &err)()
+
 	where, args := f.where()
 
 	tx, err := d.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -258,7 +264,9 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 // PruneCallRecords deletes the records requested before a time, then the oldest beyond maxRows, and returns how
 // many it deleted. It deletes them in batches, so that the SIP handling waiting on the database connection is not
 // held up for long.
-func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (int64, error) {
+func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (_ int64, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	var deleted int64
 
 	deleteOldest := func(where string, limit int, args ...any) (int64, error) {
@@ -312,7 +320,9 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 
 // CloseOpenCallRecords marks the records of the calls that have not ended as incomplete, but for those of the
 // ICIDs in live, since the IMS lost them, and returns how many it marked.
-func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (int64, error) {
+func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (_ int64, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	icids, err := json.Marshal(nonNilList(live))
 	if err != nil {
 		return 0, fmt.Errorf("close open call records: %w", err)

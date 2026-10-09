@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Config struct {
@@ -17,7 +18,9 @@ type Config struct {
 	Policy        Policy
 	CallRecords   CallRecords
 	Frontend      fs.FS
-	Logger        *slog.Logger
+	// Metrics are the metrics GET /api/v1/metrics serves.
+	Metrics prometheus.Gatherer
+	Logger  *slog.Logger
 }
 
 // Settings are the settings of the running IMS, which persists and applies a change before it returns. A change
@@ -57,6 +60,7 @@ func routes(cfg Config) []route {
 	return []route{
 		{"GET /api/v1/status", GetStatus(cfg)},
 		{"GET /api/v1/openapi.yaml", OpenAPISpec()},
+		{"GET /api/v1/metrics", GetMetrics(cfg)},
 		{"GET /api/v1/operator", GetOperator(cfg)},
 		{"PUT /api/v1/operator", UpdateOperator(cfg)},
 		{"GET /api/v1/diameter", GetDiameterStatus(cfg)},

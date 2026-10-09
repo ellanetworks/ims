@@ -141,6 +141,7 @@ func (s *Server) Start(ctx context.Context) error {
 			Policy:        view,
 			CallRecords:   database,
 			Frontend:      ui.FS(),
+			Metrics:       newMetrics(database),
 			Logger:        s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),

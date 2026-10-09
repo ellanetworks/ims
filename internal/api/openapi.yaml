@@ -24,6 +24,7 @@ tags:
   - name: Registrations
   - name: Call records
   - name: Status
+  - name: Metrics
   - name: Specification
 
 paths:
@@ -476,6 +477,19 @@ paths:
                       revision:
                         type: string
                         description: Git commit of the build, empty in development builds.
+
+  /api/v1/metrics:
+    get:
+      tags: [Metrics]
+      operationId: getMetrics
+      summary: Get the metrics of the IMS in the Prometheus formats
+      responses:
+        "200":
+          description: The metrics, in the format the request's Accept header negotiates
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /api/v1/openapi.yaml:
     get:

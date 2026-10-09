@@ -18,6 +18,9 @@ type DB struct {
 	// read serves the reads that may take long, such as searches of the call records, so that they never hold up
 	// conn: in WAL mode, readers and the writer do not wait on each other.
 	read *sql.DB
+	// path is the database file, whose size the metrics report.
+	path    string
+	metrics metrics
 }
 
 const maxReaders = 4
@@ -205,7 +208,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	d := &DB{conn: conn}
+	d := &DB{conn: conn, path: path, metrics: newMetrics()}
 	if err := d.migrate(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err

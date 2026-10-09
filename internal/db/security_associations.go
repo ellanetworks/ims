@@ -40,17 +40,16 @@ type SecurityAssociation struct {
 const securityAssociationColumns = `id, impi, state, pcscf_address, ue_address, instance_id, reg_id,
 	pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at`
 
-func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation) (SecurityAssociation, error) {
+func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation) (_ SecurityAssociation, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	args := []any{
 		sa.IMPI, sa.State, sa.PCSCFAddress.String(), sa.UEAddress.String(), nullableString(sa.Instance), nullableInt(sa.RegID),
 		sa.PCSCFPortC, sa.PCSCFPortS, sa.UEPortC, sa.UEPortS, sa.SPIPC, sa.SPIPS, sa.SPIUC, sa.SPIUS,
 		sa.Integrity, sa.Encryption, sa.ExpiresAt.UTC().UnixNano(),
 	}
 
-	var (
-		saved SecurityAssociation
-		err   error
-	)
+	var saved SecurityAssociation
 
 	if sa.ID == 0 {
 		saved, err = scanSecurityAssociation(d.conn.QueryRowContext(ctx,
@@ -78,7 +77,9 @@ func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation
 	return saved, nil
 }
 
-func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) error {
+func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) (err error) {
+	defer d.observe(poolWrite, &err)()
+
 	res, err := d.conn.ExecContext(ctx, `DELETE FROM security_associations WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete security association %d: %w", id, err)
@@ -91,7 +92,9 @@ func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (d *DB) ListSecurityAssociations(ctx context.Context) ([]SecurityAssociation, error) {
+func (d *DB) ListSecurityAssociations(ctx context.Context) (_ []SecurityAssociation, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	rows, err := d.conn.QueryContext(ctx, `SELECT `+securityAssociationColumns+` FROM security_associations ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list security associations: %w", err)

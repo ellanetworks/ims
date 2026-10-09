@@ -15,7 +15,9 @@ const registeredWhere = `FROM registrations r JOIN bindings b ON b.registration_
 
 // ListRegisteredIMPIs returns a page of the private identities registered at now, in order, and their count. A
 // search matches a part of the private identity or of one of its public identities, and an empty one matches all.
-func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Time, page, perPage int) ([]string, int, error) {
+func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Time, page, perPage int) (_ []string, _ int, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	like := "%" + escapeLike(search) + "%"
 	args := []any{now.UTC().UnixNano(), search, like, like}
 
@@ -52,7 +54,9 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 
 // ListPCSCFRegistrationsByIMPI returns the P-CSCF's registrations of a private identity, one per UE address. It
 // skips those it cannot parse, which ListPCSCFRegistrations deletes.
-func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) ([]PCSCFRegistration, error) {
+func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) (_ []PCSCFRegistration, err error) {
+	defer d.observe(poolWrite, &err)()
+
 	rows, err := d.conn.QueryContext(ctx,
 		`SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
