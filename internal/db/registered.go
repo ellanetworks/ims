@@ -52,6 +52,19 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 	return impis, total, nil
 }
 
+// CountRegisteredIMPIs returns how many private identities are registered at now.
+func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	var n int
+	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
+		now.UTC().UnixNano(), "", "", "").Scan(&n); err != nil {
+		return 0, fmt.Errorf("count registered private identities: %w", err)
+	}
+
+	return n, nil
+}
+
 // ListPCSCFRegistrationsByIMPI returns the P-CSCF's registrations of a private identity, one per UE address. It
 // skips those it cannot parse, which ListPCSCFRegistrations deletes.
 func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) (_ []PCSCFRegistration, err error) {

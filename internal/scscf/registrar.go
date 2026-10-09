@@ -76,6 +76,8 @@ type Config struct {
 
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
+	// Metrics, if any, counts the registrations.
+	Metrics *Metrics
 
 	Layer     *transaction.Layer
 	Listeners []netip.AddrPort
@@ -163,7 +165,10 @@ func (r *Registrar) Start() {
 func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func(*sip.Response)) {
 	ctx, done, ok := r.begin(ctx)
 	if !ok {
-		respond(retryLater(req))
+		res := retryLater(req)
+		r.cfg.Metrics.registration(res, false)
+		respond(res)
+
 		return
 	}
 

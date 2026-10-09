@@ -47,6 +47,7 @@ type Server struct {
 	database *db.DB
 	// records outlives the cores, so that it closes the records of the calls a restart loses.
 	records     *callrecords.Recorder
+	metrics     *metrics
 	stopPrune   context.CancelFunc
 	pruneDone   chan struct{}
 	settings    *settings.Live
@@ -117,6 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.database = database
 	s.settings = live
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
+	s.metrics = newMetrics(database, s.records)
 
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
@@ -141,7 +143,7 @@ func (s *Server) Start(ctx context.Context) error {
 			Policy:        view,
 			CallRecords:   database,
 			Frontend:      ui.FS(),
-			Metrics:       newMetrics(database),
+			Metrics:       s.metrics.registry,
 			Logger:        s.Logger,
 		}),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
@@ -209,8 +211,8 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		return nil, err
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.records, s.IPsec,
-		s.Logger)
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.records,
+		s.metrics, s.IPsec, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)

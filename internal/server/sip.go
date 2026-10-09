@@ -81,8 +81,8 @@ type timers struct {
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rtr *rtrHandler,
-	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, kernel pcscf.Kernel,
-	logger *slog.Logger,
+	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
+	kernel pcscf.Kernel, logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -176,6 +176,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		Diameter:  node,
 		DB:        database,
 		Records:   records,
+		Metrics:   m.scscf,
 		Layer:     layer,
 		Listeners: s.bound(roleSCSCF),
 		Logger:    logger,

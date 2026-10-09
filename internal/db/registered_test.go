@@ -64,6 +64,11 @@ func TestListRegisteredIMPIs(t *testing.T) {
 			}
 		})
 	}
+
+	// The private identity of two registration sets counts once, and the expired one not at all.
+	if n, err := d.CountRegisteredIMPIs(context.Background(), testNow); err != nil || n != 2 {
+		t.Fatalf("CountRegisteredIMPIs = %d, %v, want 2", n, err)
+	}
 }
 
 func TestListPCSCFRegistrationsByIMPI(t *testing.T) {

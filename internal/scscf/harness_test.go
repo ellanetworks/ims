@@ -403,6 +403,7 @@ func newHarness(t *testing.T) *harness {
 		HSS:        HSS{ID: "hss", Host: hssHost, Realm: homeDomain},
 		Diameter:   h.loop,
 		DB:         database,
+		Metrics:    NewMetrics(),
 		Clock:      h.clock,
 		Logger:     slog.New(slog.DiscardHandler),
 		Layer:      layer,

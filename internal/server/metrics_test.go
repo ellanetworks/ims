@@ -10,6 +10,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/prometheus/client_golang/prometheus/testutil/promlint"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 )
@@ -50,6 +51,10 @@ func TestMetrics(t *testing.T) {
 		"ellaims_database_query_errors_total",
 		"ellaims_database_storage_bytes",
 		"go_sql_wait_duration_seconds_total",
+		"ellaims_registered_subscribers",
+		"ellaims_registration_attempts_total",
+		"ellaims_active_calls",
+		"ellaims_calls_total",
 	} {
 		if _, ok := families[name]; !ok {
 			t.Errorf("%s is missing", name)
@@ -66,6 +71,40 @@ func TestMetrics(t *testing.T) {
 	if n := len(families["ellaims_database_storage_bytes"].GetMetric()); n != 2 {
 		t.Errorf("ellaims_database_storage_bytes has %d series, want 2", n)
 	}
+}
+
+func TestMetricsOfRegistrations(t *testing.T) {
+	sc := newCallScene(t, nil)
+
+	families := scrapeFamilies(t, sc.srv)
+
+	if got := families["ellaims_registered_subscribers"].GetMetric()[0].GetGauge().GetValue(); got != 2 {
+		t.Errorf("registered subscribers = %v, want 2", got)
+	}
+
+	for _, m := range families["ellaims_registration_attempts_total"].GetMetric() {
+		want := 0.0
+		if m.GetLabel()[0].GetValue() == "accept" {
+			want = 2
+		}
+
+		if got := m.GetCounter().GetValue(); got != want {
+			t.Errorf("registration attempts %s = %v, want %v", m.GetLabel()[0].GetValue(), got, want)
+		}
+	}
+}
+
+func scrapeFamilies(t *testing.T, srv *Server) map[string]*dto.MetricFamily {
+	t.Helper()
+
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+
+	families, err := parser.TextToMetricFamilies(bytes.NewReader(scrape(t, "http://"+srv.APIAddr().String()+"/api/v1/metrics")))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	return families
 }
 
 func scrape(t *testing.T, url string) []byte {
