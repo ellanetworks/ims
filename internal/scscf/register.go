@@ -39,6 +39,9 @@ type registerRequest struct {
 
 	// authFailed reports that the UE failed IMS-AKA.
 	authFailed bool
+
+	// hss is the HSS that authenticated the UE in this request, if it did.
+	hss db.HSS
 }
 
 type contactRequest struct {
@@ -144,7 +147,7 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 	}
 
 	if !rr.protected || r.reauthDue(rr) {
-		return r.challenge(ctx, rr, nil, 0)
+		return r.challenge(ctx, rr, nil, 0, r.knownHSS(ctx, rr))
 	}
 
 	return r.refresh(ctx, rr)
@@ -355,8 +358,24 @@ func slicesContainsURI(addrs []sip.Address, u sip.URI) bool {
 	return false
 }
 
-func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *cx.Resync, resyncs int) *sip.Response {
-	v, err := r.multimediaAuth(ctx, rr.impi, rr.impu, resync)
+// knownHSS is the HSS stored for the Public Identity of a REGISTER, the last that answered for its registration set,
+// if it has one (TS 29.229 §5.5).
+func (r *Registrar) knownHSS(ctx context.Context, rr *registerRequest) db.HSS {
+	st, err := r.load(ctx, rr.impi)
+	if err != nil {
+		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		return db.HSS{}
+	}
+
+	if set := st.set(rr.impuKey); set != nil {
+		return set.HSS
+	}
+
+	return db.HSS{}
+}
+
+func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *cx.Resync, resyncs int, to db.HSS) *sip.Response {
+	v, from, err := r.multimediaAuth(ctx, to, rr.impi, rr.impu, resync)
 	if err != nil {
 		return r.cxFailure(rr, err)
 	}
@@ -370,6 +389,7 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 		nonce:   nonce,
 		vector:  v,
 		resyncs: resyncs,
+		hss:     from,
 	})
 
 	r.log.Debug("challenged REGISTER", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
@@ -392,7 +412,7 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 
 	switch {
 	case c.auts == "" && c.response != "" && !rr.protected:
-		return r.challenge(ctx, rr, nil, 0)
+		return r.challenge(ctx, rr, nil, 0, ch.hss)
 	case rr.callID != ch.callID || rr.impuKey != ch.impuKey || !strings.EqualFold(c.algorithm, algorithmAKAv1):
 		return r.authFailed(ctx, rr, ch)
 	case c.auts != "":
@@ -403,7 +423,7 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 
 		r.dropChallenge(rr.authKey(), ch)
 
-		return r.challenge(ctx, rr, &cx.Resync{RAND: ch.vector.rand, AUTS: auts}, ch.resyncs+1)
+		return r.challenge(ctx, rr, &cx.Resync{RAND: ch.vector.rand, AUTS: auts}, ch.resyncs+1, ch.hss)
 	case c.response == "":
 		return r.authFailed(ctx, rr, ch)
 	case !verify(c, rr.req.Method, ch.nonce, ch.vector.xres):
@@ -416,6 +436,8 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 	r.authAt[rr.authKey()] = authenticated{at: r.clock.Now(), reauth: r.reauth[rr.impi]}
 	r.mu.Unlock()
 
+	rr.hss = ch.hss
+
 	return r.authenticated(ctx, rr)
 }
 
@@ -426,7 +448,7 @@ func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, ch *cha
 
 	r.log.Info("REGISTER failed authentication", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
-	if _, err := r.serverAssignment(ctx, rr.impi, []string{ch.impu}, assignAuthenticationFailure, false); err != nil {
+	if _, _, err := r.serverAssignment(ctx, ch.hss, rr.impi, []string{ch.impu}, assignAuthenticationFailure, false); err != nil {
 		r.log.Warn("failed to tell the HSS of an authentication failure", slog.String("impi", rr.impi), slog.Any("error", err))
 	}
 
@@ -517,7 +539,15 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		t = assignReRegistration
 	}
 
-	saa, err := r.serverAssignment(ctx, rr.impi, []string{rr.impu}, t, registered && len(set.UserData) > 0)
+	to := rr.hss
+	if to.Host == "" && set != nil {
+		to = set.HSS
+	}
+
+	// The user data the set holds came from its HSS: another HSS sends its own.
+	available := registered && len(set.UserData) > 0 && to.Host != "" && strings.EqualFold(to.Host, set.HSS.Host)
+
+	saa, from, err := r.serverAssignment(ctx, to, rr.impi, []string{rr.impu}, t, available)
 	if err != nil {
 		return r.cxFailure(rr, err)
 	}
@@ -527,12 +557,14 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		reg = *set
 	}
 
+	reg.HSS = from
+
 	undo := assignAdministrative
 
 	if !registered {
 		defer func() {
 			if res.StatusCode != 200 && !st.registeredAny(reg.Identities) {
-				r.deregisterAtHSS(ctx, rr.impi, rr.impu, undo)
+				r.deregisterAtHSS(ctx, from, rr.impi, rr.impu, undo)
 			}
 		}()
 	}
@@ -731,7 +763,7 @@ func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st
 
 		if deleted {
 			r.log.Info("registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
-			r.deregisterAtHSS(ctx, rr.impi, reg.IMPU, assignAdministrative)
+			r.deregisterAtHSS(ctx, reg.HSS, rr.impi, reg.IMPU, assignAdministrative)
 		}
 	}
 
@@ -773,7 +805,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 
 	if deleted {
 		r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
-		r.deregisterAtHSS(ctx, rr.impi, rr.impu, assignUserDeregistration)
+		r.deregisterAtHSS(ctx, set.HSS, rr.impi, rr.impu, assignUserDeregistration)
 	} else {
 		r.log.Info("contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
 			slog.Int("contacts", len(removed)))

@@ -153,13 +153,35 @@ type HSS struct {
 
 	requests chan Request
 
+	// db is the subscriber data, which the replicas of the HSS share.
+	db      *store
+	dropped int
+}
+
+type store struct {
 	mu          sync.Mutex
 	subscribers map[string]*Subscriber
 	order       []string
-	dropped     int
 }
 
 func New(t testing.TB, cfg Config) *HSS {
+	t.Helper()
+
+	return newHSS(t, cfg, &store{subscribers: make(map[string]*Subscriber)})
+}
+
+// Replica starts another HSS with the same subscriber data, as a node of a replicated HSS: its own host and address
+// in the same realm.
+func (h *HSS) Replica(t testing.TB, host string, addr netip.Addr) *HSS {
+	t.Helper()
+
+	cfg := h.cfg
+	cfg.Host, cfg.Address = host, addr
+
+	return newHSS(t, cfg, h.db)
+}
+
+func newHSS(t testing.TB, cfg Config, db *store) *HSS {
 	t.Helper()
 
 	if !cfg.Address.IsValid() {
@@ -179,9 +201,9 @@ func New(t testing.TB, cfg Config) *HSS {
 	}
 
 	h := &HSS{
-		cfg:         cfg,
-		requests:    make(chan Request, 1024),
-		subscribers: make(map[string]*Subscriber),
+		cfg:      cfg,
+		requests: make(chan Request, 1024),
+		db:       db,
 	}
 
 	mux := diameter.NewMux()
@@ -215,6 +237,18 @@ func New(t testing.TB, cfg Config) *HSS {
 	return h
 }
 
+// Stop disconnects the HSS from its peers and stops it, as a lost HSS node.
+func (h *HSS) Stop(t testing.TB) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := h.node.Shutdown(ctx); err != nil {
+		t.Fatalf("hsstest: stop: %v", err)
+	}
+}
+
 func (h *HSS) Host() string {
 	return h.cfg.Host
 }
@@ -228,23 +262,23 @@ func (h *HSS) Addr() netip.AddrPort {
 }
 
 func (h *HSS) Add(s Subscriber) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	c := s.clone()
 
-	if _, ok := h.subscribers[s.IMPI]; !ok {
-		h.order = append(h.order, s.IMPI)
+	if _, ok := h.db.subscribers[s.IMPI]; !ok {
+		h.db.order = append(h.db.order, s.IMPI)
 	}
 
-	h.subscribers[s.IMPI] = &c
+	h.db.subscribers[s.IMPI] = &c
 }
 
 func (h *HSS) Subscriber(impi string) (Subscriber, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
-	s, ok := h.subscribers[impi]
+	s, ok := h.db.subscribers[impi]
 	if !ok {
 		return Subscriber{}, false
 	}
@@ -253,10 +287,10 @@ func (h *HSS) Subscriber(impi string) (Subscriber, bool) {
 }
 
 func (h *HSS) Update(impi string, f func(*Subscriber)) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
-	if s, ok := h.subscribers[impi]; ok {
+	if s, ok := h.db.subscribers[impi]; ok {
 		f(s)
 	}
 }
@@ -266,8 +300,8 @@ func (h *HSS) Requests() <-chan Request {
 }
 
 func (h *HSS) Dropped() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	return h.dropped
 }
@@ -320,11 +354,11 @@ func must(ans *diameter.Message, err error) *diameter.Message {
 }
 
 func (h *HSS) knownIMPU(impu string) bool {
-	return slices.ContainsFunc(h.order, func(impi string) bool { return h.subscribers[impi].has(impu) })
+	return slices.ContainsFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(impu) })
 }
 
 func (h *HSS) lookup(req *diameter.Message, id diameter.Identity, impi, impu string) (*Subscriber, *diameter.Message) {
-	s, ok := h.subscribers[impi]
+	s, ok := h.db.subscribers[impi]
 	if !ok || impu != "" && !h.knownIMPU(impu) {
 		return nil, experimental(req, id, tgpp.ResultErrorUserUnknown)
 	}
@@ -342,8 +376,8 @@ func (h *HSS) userAuthorization(_ context.Context, c *diameter.Conn, req *diamet
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	h.recordLocked(Request{UAR: &uar})
 
@@ -382,8 +416,8 @@ func (h *HSS) multimediaAuth(_ context.Context, c *diameter.Conn, req *diameter.
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	h.recordLocked(Request{MAR: &mar})
 
@@ -436,8 +470,8 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	h.recordLocked(Request{SAR: &sar})
 
@@ -522,19 +556,19 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
 	h.recordLocked(Request{LIR: &lir})
 
 	id := c.LocalIdentity()
 
-	i := slices.IndexFunc(h.order, func(impi string) bool { return h.subscribers[impi].has(lir.PublicIdentity) })
+	i := slices.IndexFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(lir.PublicIdentity) })
 	if i < 0 {
 		return experimental(req, id, tgpp.ResultErrorUserUnknown)
 	}
 
-	s := h.subscribers[h.order[i]]
+	s := h.db.subscribers[h.db.order[i]]
 
 	switch {
 	case lir.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:

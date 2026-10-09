@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import Cores from "@/pages/Cores";
-import type { DiameterPeer } from "@/queries/diameter";
+import type { DiameterPeer, DiameterRoute } from "@/queries/diameter";
 import type { PolicyWithStatus } from "@/queries/policy";
-import { identity, peer, policy, sip } from "@/test/fixtures";
+import { identity, peer, policy, route as routeOf, sip } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
 interface Request {
@@ -15,11 +15,13 @@ interface Request {
 const serve = ({
   listeners = sip.listeners,
   peers = [peer()],
+  routes = [routeOf(), routeOf({ application: "rx" })],
   current = policy(),
   answer,
 }: {
   listeners?: typeof sip.listeners;
   peers?: DiameterPeer[];
+  routes?: DiameterRoute[];
   current?: PolicyWithStatus;
   answer?: (req: Request) => Response | undefined;
 } = {}) => {
@@ -55,6 +57,16 @@ const serve = ({
           req.method === "DELETE"
             ? json(200, { result: { message: "Diameter peer deleted" } })
             : json(200, { result: { ...peer(), ...(req.body as object) } }),
+        ),
+        "/api/v1/diameter/routes": () =>
+          json(200, { result: { items: routes } }),
+        ...Object.fromEntries(
+          routes.map((r) => [
+            `/api/v1/diameter/routes/${r.application}`,
+            route((req) =>
+              json(200, { result: { ...r, ...(req.body as object) } }),
+            ),
+          ]),
         ),
         "/api/v1/policy": route((req) =>
           req.method === "PUT"
@@ -156,6 +168,7 @@ describe("Cores", () => {
       "192.0.2.1:3868",
       "SCTP",
       "HSS, PCRF",
+      "10",
       "open",
       "2026-10-08 12:00:00",
       "",
@@ -180,8 +193,8 @@ describe("Cores", () => {
     ).toBeChecked();
 
     fill(/^Host/, "hss.example.org");
-    fill(/^Realm/, "example.org");
     fill(/^Address/, "192.0.2.9");
+    fill(/^Priority/, "1");
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "PCRF" }));
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
       "Diameter and SIP restart",
@@ -197,35 +210,38 @@ describe("Cores", () => {
         path: "/api/v1/diameter/peers",
         body: {
           host: "hss.example.org",
-          realm: "example.org",
           address: "192.0.2.9",
           port: 3868,
           transport: "tcp",
           applications: ["cx"],
+          priority: 1,
         },
       },
     ]);
   });
 
-  it("requires a role and a valid port", async () => {
+  it("requires a role, a valid port and a valid priority", async () => {
     serve({ peers: [] });
 
     renderWithClient(<Cores />);
     fireEvent.click(await screen.findByRole("button", { name: "Add Peer" }));
     fill(/^Host/, "hss.example.org");
-    fill(/^Realm/, "example.org");
     fill(/^Address/, "192.0.2.9");
 
     fill(/^Port/, "70000");
     expect(screen.getByText("1 to 65535")).toBeInTheDocument();
     fill(/^Port/, "3868");
+    fill(/^Priority/, "65536");
+    expect(screen.getByText("0 to 65535")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
+    fill(/^Priority/, "10");
     fireEvent.click(screen.getByRole("checkbox", { name: "HSS" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "PCRF" }));
     expect(screen.getByText("At least one")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
   });
 
-  it("moves a peer without warning, keeping its roles", async () => {
+  it("moves or renames a peer without warning, keeping its roles", async () => {
     const stored = peer({ applications: ["rx", "cx"] });
     const requests = serve({ peers: [stored] });
 
@@ -234,6 +250,8 @@ describe("Cores", () => {
       await screen.findByRole("button", { name: `Edit ${stored.host}` }),
     );
     fill(/^Address/, "192.0.2.2");
+    fill(/^Host/, "hss.example.org");
+    fill(/^Priority/, "1");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Update" }));
 
@@ -242,28 +260,96 @@ describe("Cores", () => {
       method: "PUT",
       path: `/api/v1/diameter/peers/${stored.id}`,
       body: {
-        host: stored.host,
-        realm: stored.realm,
+        host: "hss.example.org",
         address: "192.0.2.2",
         port: 3868,
         transport: "sctp",
         applications: ["rx", "cx"],
+        priority: 1,
       },
     });
   });
 
-  it("warns when an edit restarts Diameter and SIP", async () => {
+  it("warns when an edit changes the transports and restarts Diameter and SIP", async () => {
     serve();
 
     renderWithClient(<Cores />);
     fireEvent.click(
       await screen.findByRole("button", { name: `Edit ${peer().host}` }),
     );
-    fill(/^Host/, "hss.example.org");
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Transport" }));
+    fireEvent.click(screen.getByRole("option", { name: "TCP" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Diameter and SIP restart",
     );
+  });
+
+  it("deletes a peer without warning when another uses its transport", async () => {
+    const other = peer({
+      id: "0199a1b2-0000-7000-8000-000000000002",
+      host: "hss2.example.org",
+    });
+    serve({ peers: [peer(), other] });
+
+    renderWithClient(<Cores />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: `Delete ${peer().host}` }),
+    );
+
+    expect(
+      within(screen.getByRole("dialog")).queryByRole("alert"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows where Cx and Rx requests go", async () => {
+    serve({
+      routes: [
+        routeOf(),
+        routeOf({
+          application: "rx",
+          realm: "epc.mnc001.mcc001.3gppnetwork.org",
+          destination_realm: "epc.mnc001.mcc001.3gppnetwork.org",
+        }),
+      ],
+    });
+
+    renderWithClient(<Cores />);
+
+    await waitFor(() =>
+      expect(settingRows("Routes")).toEqual([
+        ["HSS Realm", "ims.mnc001.mcc001.3gppnetwork.orghome domain"],
+        ["PCRF Realm", "epc.mnc001.mcc001.3gppnetwork.org"],
+      ]),
+    );
+  });
+
+  it("sets the realm of the PCRF", async () => {
+    const requests = serve();
+
+    renderWithClient(<Cores />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Edit PCRF Realm" }),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fill(/^Realm/, "bad realm");
+    expect(screen.getByText("A domain name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
+
+    fill(/^Realm/, "epc.mnc001.mcc001.3gppnetwork.org");
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(requests).toEqual([
+      {
+        method: "PUT",
+        path: "/api/v1/diameter/routes/rx",
+        body: { realm: "epc.mnc001.mcc001.3gppnetwork.org" },
+      },
+    ]);
   });
 
   it("deletes a peer", async () => {
@@ -323,7 +409,13 @@ describe("Cores", () => {
 
   it("shows the state of the PCRF", async () => {
     serve({
-      peers: [peer({ status: { state: "down" } })],
+      routes: [
+        routeOf(),
+        routeOf({
+          application: "rx",
+          peers: [{ ...routeOf().peers[0], status: { state: "down" } }],
+        }),
+      ],
       current: policy({
         interface: "rx",
         status: { interface: "rx", endpoint: peer().host },

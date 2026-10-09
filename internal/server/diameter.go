@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +35,27 @@ var transports = map[settings.Transport]diameter.Transport{
 	settings.TransportSCTP: diameter.TransportSCTP,
 }
 
+// realms are the realms the running Diameter node routes Cx and Rx to, which the S-CSCF, I-CSCF and P-CSCF
+// address their requests to. They change with the node's routes.
+type realms struct {
+	st atomic.Pointer[settings.Settings]
+}
+
+func newRealms(st settings.Settings) *realms {
+	r := &realms{}
+	r.set(st)
+
+	return r
+}
+
+func (r *realms) set(st settings.Settings) {
+	r.st.Store(&st)
+}
+
+func (r *realms) of(app settings.Application) func() string {
+	return func() string { return r.st.Load().Realm(app) }
+}
+
 func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, rtr *rtrHandler,
 	rxh *rxHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
@@ -60,7 +81,7 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 		return nil, err
 	}
 
-	if err := node.SetPeers(diameterPeers(s.Peers)); err != nil {
+	if err := node.SetPeers(diameterPeers(s)); err != nil {
 		_ = node.Shutdown(context.Background())
 		return nil, err
 	}
@@ -70,12 +91,12 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 
 // RFC 6733 §2.1: a node that dials its peers must still accept their
 // connections; §5.6.4 elects one when both sides connect at once.
-func listenDiameter(ctx context.Context, cfg config.Diameter, peers []settings.Peer) ([]diameter.Listener, error) {
+func listenDiameter(ctx context.Context, cfg config.Diameter, st settings.Settings) ([]diameter.Listener, error) {
 	addr := netip.AddrPortFrom(cfg.Address, uint16(cfg.Port))
 
 	var lns []diameter.Listener
 
-	for _, t := range peerTransports(peers) {
+	for _, t := range st.Transports() {
 		ln, err := listenDiameterOn(ctx, t, addr)
 		if err != nil {
 			closeListeners(lns)
@@ -86,19 +107,6 @@ func listenDiameter(ctx context.Context, cfg config.Diameter, peers []settings.P
 	}
 
 	return lns, nil
-}
-
-// An inbound connection only matches a peer configured for its transport.
-func peerTransports(peers []settings.Peer) []settings.Transport {
-	var out []settings.Transport
-
-	for _, p := range peers {
-		if !slices.Contains(out, p.Transport) {
-			out = append(out, p.Transport)
-		}
-	}
-
-	return out
 }
 
 // probeSCTP checks that the host can listen for Diameter over SCTP on an address.
@@ -139,22 +147,34 @@ func closeListeners(lns []diameter.Listener) {
 	}
 }
 
-func diameterPeers(peers []settings.Peer) []diameter.Peer {
-	out := make([]diameter.Peer, 0, len(peers))
+// diameterPeers are the peers of the Diameter node, each on the route of the applications it serves, to the realm
+// of the application, and to its realm in the previous settings, if any.
+func diameterPeers(st settings.Settings, previous ...settings.Settings) []diameter.Peer {
+	out := make([]diameter.Peer, 0, len(st.Peers))
 
-	for _, p := range peers {
+	for _, p := range st.Peers {
 		apps := make([]diameter.Application, 0, len(p.Applications))
+		routes := make([]diameter.Route, 0, len(p.Applications))
+
 		for _, a := range p.Applications {
 			apps = append(apps, applications[a])
+			routes = append(routes, diameter.Route{Realm: st.Realm(a), Application: applications[a].ID, Priority: p.Priority})
+
+			for _, prev := range previous {
+				if realm := prev.Realm(a); realm != "" && !strings.EqualFold(realm, st.Realm(a)) {
+					routes = append(routes, diameter.Route{Realm: realm, Application: applications[a].ID, Priority: p.Priority})
+				}
+			}
 		}
 
 		out = append(out, diameter.Peer{
 			ID:           p.ID,
 			Host:         p.Host,
 			Addresses:    []netip.Addr{p.Address},
-			Port:         uint16(p.Port),
-			Transport:    transports[p.Transport],
+			Transports:   []diameter.Transport{transports[p.Transport]},
 			Applications: apps,
+			Routes:       routes,
+			Dial:         &diameter.Dial{Port: uint16(p.Port)},
 		})
 	}
 

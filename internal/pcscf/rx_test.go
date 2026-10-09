@@ -46,7 +46,7 @@ func newFakePCRF(t *testing.T) *fakePCRF {
 
 func (f *fakePCRF) backend() *rxpolicy.Backend {
 	return rxpolicy.New(rxpolicy.Config{
-		Diameter: f, PCRF: rxpolicy.PCRF{ID: "pcrf", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
+		Diameter: f, Realm: func() string { return pcrfIdentity.OriginRealm },
 	})
 }
 
@@ -77,12 +77,21 @@ func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func()
 }
 
 func refClass(r db.PCSCFRegistration) [][]byte {
-	var class [][]byte
-	if r.Policy.Ref != "" {
-		_ = json.Unmarshal([]byte(r.Policy.Ref), &class)
+	var ref struct {
+		Class [][]byte `json:"class"`
 	}
 
-	return class
+	if r.Policy.Ref != "" {
+		_ = json.Unmarshal([]byte(r.Policy.Ref), &ref)
+	}
+
+	return ref.Class
+}
+
+// undeliverable is an agent's answer that it has no path to the PCRF (RFC 6733 §7.1.3).
+func undeliverable(req *diameter.Message) *diameter.Message {
+	return diameter.NewAnswer(req, diameter.Identity{OriginHost: "dra.epc.test", OriginRealm: "epc.test"},
+		diameter.ResultUnableToDeliver)
 }
 
 func (f *fakePCRF) Identity() diameter.Identity { return imsIdentity }
@@ -91,11 +100,7 @@ func (f *fakePCRF) NewSessionID() string {
 	return fmt.Sprintf("%s;1;%d", imsIdentity.OriginHost, f.seq.Add(1))
 }
 
-func (f *fakePCRF) Do(ctx context.Context, peerID string, req *diameter.Message, _ ...diameter.DoOption) (*diameter.Message, error) {
-	if peerID != "pcrf" && peerID != "pcrf-1" {
-		return nil, diameter.ErrUnknownPeer
-	}
-
+func (f *fakePCRF) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
 	f.reqs <- req
 
 	f.mu.Lock()
@@ -258,7 +263,7 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 	}
 
 	env := tgpp.ParseEnvelope(m)
-	if env.DestinationHost != pcrfIdentity.OriginHost || env.DestinationRealm != pcrfIdentity.OriginRealm ||
+	if env.DestinationHost != "" || env.DestinationRealm != pcrfIdentity.OriginRealm ||
 		env.Origin.OriginHost != imsIdentity.OriginHost {
 		t.Errorf("envelope = %+v, want from the IMS to the PCRF", env)
 	}
@@ -1032,32 +1037,11 @@ func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
 
 	s.wantSession(again)
 
-	if r, _ := s.record(); r.Policy.Endpoint != "rx:"+pcrfIdentity.OriginHost {
+	if r, _ := s.record(); r.Policy.Endpoint != "rx" {
 		t.Fatalf("endpoint = %q, want the PCRF", r.Policy.Endpoint)
 	}
 
 	pcrf.none()
-}
-
-// The endpoint is the PCRF, not the local name of its peer: renaming the peer keeps the stored sessions.
-func TestRestartWithARenamedPeerTerminatesTheSession(t *testing.T) {
-	s, pcrf := newRxScene(t, 0)
-
-	s.registered(600)
-
-	id, _ := pcrf.aar()
-	s.wantSession(id)
-
-	s.p.cfg.Policy.Backend = rxpolicy.New(rxpolicy.Config{
-		Diameter: pcrf, PCRF: rxpolicy.PCRF{ID: "pcrf-1", Host: pcrfIdentity.OriginHost, Realm: pcrfIdentity.OriginRealm},
-	})
-
-	s.restart()
-
-	pcrf.wantSTR(id, rx.TerminationAdministrative)
-
-	again, _ := pcrf.aar()
-	s.wantSession(again)
 }
 
 func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
@@ -1243,6 +1227,30 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 		pcrf.wantSTR(id, rx.TerminationLogout)
 	}
 
+	pcrf.none()
+}
+
+// RFC 6733 §8.18 REFUSE_SERVICE, the default: an STR that no path reaches its PCRF with ends the session, and is not
+// sent again.
+func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
+	pcrf := newFakePCRF(t)
+	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode == rx.CommandSessionTermination {
+			return undeliverable(req), nil
+		}
+
+		return succeed(req)
+	})
+	s.reregister(0)
+
+	pcrf.wantSTR(id, rx.TerminationLogout)
 	pcrf.none()
 }
 

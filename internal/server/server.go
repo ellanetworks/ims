@@ -66,6 +66,7 @@ type core struct {
 	settings    settings.Settings
 	node        *diameter.Node
 	diameterLns []diameter.Listener
+	realms      *realms
 	policy      *policyFunction
 	sip         *sipServer
 }
@@ -185,7 +186,7 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, error) {
 	cfg := s.Config
 
-	diameterLns, err := listenDiameter(ctx, cfg.Diameter, st.Peers)
+	diameterLns, err := listenDiameter(ctx, cfg.Diameter, st)
 	if err != nil {
 		return nil, err
 	}
@@ -207,13 +208,15 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}()
 	}
 
-	pf, err := newPolicyFunction(ctx, cfg, st, node, s.metrics, s.Logger)
+	rlm := newRealms(st)
+
+	pf, err := newPolicyFunction(ctx, cfg, st, node, rlm, s.metrics, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		return nil, err
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rtr, rxh, pf, s.database, s.records,
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
 		s.metrics, s.IPsec, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
@@ -224,7 +227,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 
 	pf.serve(s.Logger)
 
-	return &core{settings: st, node: node, diameterLns: diameterLns, policy: pf, sip: sipServer}, nil
+	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer}, nil
 }
 
 func (s *Server) numbering() scscf.Numbering {
@@ -237,8 +240,8 @@ func (s *Server) numbering() scscf.Numbering {
 	}
 }
 
-// follow replaces the core whenever the settings change what it is built from: the IMS's identity, its Diameter
-// peers or its policy function. Other settings are read when used, and need no restart.
+// follow applies the settings as they change: new Diameter peers and routes reconfigure the running node; a new
+// identity, Diameter transport or policy function replaces the core. Other settings are read when used.
 func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
@@ -254,8 +257,8 @@ func (s *Server) follow(ctx context.Context) {
 
 			switch {
 			case current.SameCore(st):
-			case s.core.Load() != nil && current.MovedPeers(st):
-				s.movePeers(st)
+			case s.core.Load() != nil && current.SameNode(st):
+				s.reconfigureNode(ctx, st)
 			default:
 				s.restartCore(ctx, st)
 			}
@@ -284,12 +287,22 @@ const (
 	maxRetry = 30 * time.Second
 )
 
-// movePeers points the running Diameter node at peers' new addresses, without a restart.
-func (s *Server) movePeers(st settings.Settings) {
+// reconfigureNode gives the running Diameter node its new peers and routes, without a restart. While the realms
+// change, the node routes both the old and the new ones, so that a request built with either finds its route. A node
+// that refuses its new peers is replaced, so that it does not keep serving the old ones.
+func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) {
 	c := s.core.Load()
 
-	if err := c.node.SetPeers(diameterPeers(st.Peers)); err != nil {
-		s.Logger.Error("failed to move the Diameter peers", slog.Any("error", err))
+	err := c.node.SetPeers(diameterPeers(st, c.settings))
+	if err == nil {
+		c.realms.set(st)
+		err = c.node.SetPeers(diameterPeers(st))
+	}
+
+	if err != nil {
+		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
+		s.restartCore(ctx, st)
+
 		return
 	}
 
@@ -297,7 +310,8 @@ func (s *Server) movePeers(st settings.Settings) {
 	next.settings = st
 	s.core.Store(&next)
 
-	s.Logger.Info("moved the Diameter peers", slog.Int("diameter_peers", len(st.Peers)))
+	s.Logger.Info("reconfigured the Diameter peers", slog.Int("diameter_peers", len(st.Peers)),
+		slog.String("cx_realm", st.Realm(settings.ApplicationCx)), slog.String("rx_realm", st.Realm(settings.ApplicationRx)))
 }
 
 // coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,

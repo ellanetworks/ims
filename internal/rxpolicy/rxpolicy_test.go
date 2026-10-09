@@ -21,10 +21,10 @@ func TestClassify(t *testing.T) {
 		kind error
 	}{
 		"result":          {&rx.ResultError{Result: tgpp.Result{Code: tgpp.ResultInvalidServiceInformation, Experimental: true}}, policy.ErrRefused},
-		"unknown peer":    {diameter.ErrUnknownPeer, policy.ErrRefused},
 		"no application":  {diameter.ErrApplicationUnsupported, policy.ErrRefused},
 		"malformed":       {fmt.Errorf("%w: no Result-Code", rx.ErrMalformedAnswer), policy.ErrMalformed},
 		"not connected":   {diameter.ErrNotConnected, policy.ErrUnreachable},
+		"no route":        {diameter.ErrUnableToDeliver, policy.ErrUnreachable},
 		"context expired": {context.DeadlineExceeded, nil},
 		"unknown session": {&rx.ResultError{Result: tgpp.Result{Code: diameter.ResultUnknownSessionID}}, policy.ErrUnknownSession},
 	} {
@@ -70,17 +70,27 @@ func TestClassifyRetryInterval(t *testing.T) {
 	}
 }
 
-func TestClassRoundTrip(t *testing.T) {
-	for _, class := range [][][]byte{nil, {[]byte("pcrf-state"), {0xff, 0x00}}} {
-		ref, err := encodeClass(class)
-		if err != nil {
-			t.Fatal(err)
+func TestRefRoundTrip(t *testing.T) {
+	for _, in := range []session{
+		{},
+		{
+			Class: [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}, PCRF: "pcrf1.epc.example.org", Realm: "epc.example.org",
+			Binding: diameter.SessionBindingSTR, Failover: diameter.TryAgainAllowService,
+		},
+	} {
+		ref, err := in.ref()
+		if err != nil || ref == "" {
+			t.Fatalf("ref = %q, %v", ref, err)
 		}
 
-		got, err := decodeClass(ref)
-		if err != nil || !reflect.DeepEqual(got, class) {
-			t.Fatalf("decodeClass(%q) = %q, %v; want %q", ref, got, err, class)
+		got, err := decodeRef(ref)
+		if err != nil || !reflect.DeepEqual(got, in) {
+			t.Fatalf("decodeRef(%q) = %+v, %v; want %+v", ref, got, err, in)
 		}
+	}
+
+	if got, err := decodeRef(""); err != nil || !reflect.DeepEqual(got, session{}) {
+		t.Fatalf("decodeRef of no ref = %+v, %v", got, err)
 	}
 }
 
@@ -181,12 +191,12 @@ func TestChargingAccess(t *testing.T) {
 	}
 }
 
-// RFC 6733 §4.3.1, RFC 4343: the PCRF's DiameterIdentity is an FQDN, compared without case.
+// Stored sessions survive a change of the PCRF realm: each keeps its PCRF.
 func TestEndpoint(t *testing.T) {
-	b := New(Config{PCRF: PCRF{Host: "PCRF.Example.org"}})
+	b := New(Config{Realm: func() string { return "EPC.Example.org" }})
 
-	if got := b.Endpoint(); got != "rx:pcrf.example.org" {
-		t.Fatalf("Endpoint() = %q, want it lower-cased", got)
+	if got := b.Endpoint(); got != "rx" {
+		t.Fatalf("Endpoint() = %q, want rx", got)
 	}
 }
 
@@ -258,7 +268,7 @@ func TestClassifyTransient(t *testing.T) {
 	}{
 		{diameter.ErrNotConnected, true},
 		{context.DeadlineExceeded, true},
-		{diameter.ErrUnknownPeer, false},
+		{diameter.ErrUnableToDeliver, true},
 		{diameter.ErrApplicationUnsupported, false},
 		{diameter.ErrClosed, false},
 		{result(diameter.ResultUnknownSessionID), false},

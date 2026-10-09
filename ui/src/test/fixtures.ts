@@ -1,5 +1,5 @@
 import type { CallRecord } from "@/queries/callRecords";
-import type { DiameterPeer } from "@/queries/diameter";
+import type { DiameterPeer, DiameterRoute } from "@/queries/diameter";
 import type { Operator } from "@/queries/operator";
 import type { PolicyWithStatus } from "@/queries/policy";
 import type { RegisteredContact, Registration } from "@/queries/registrations";
@@ -34,12 +34,33 @@ export const sip: SIPStatus = {
 export const peer = (overrides: Partial<DiameterPeer> = {}): DiameterPeer => ({
   id: "0199a1b2-0000-7000-8000-000000000001",
   host: "core.epc.mnc001.mcc001.3gppnetwork.org",
-  realm: "epc.mnc001.mcc001.3gppnetwork.org",
   address: "192.0.2.1",
   port: 3868,
   transport: "sctp",
   applications: ["cx", "rx"],
-  status: { state: "open", since: "2026-10-08T12:00:00.000Z" },
+  priority: 10,
+  status: {
+    state: "open",
+    since: "2026-10-08T12:00:00.000Z",
+    realm: "epc.mnc001.mcc001.3gppnetwork.org",
+  },
+  ...overrides,
+});
+
+export const route = (
+  overrides: Partial<DiameterRoute> = {},
+): DiameterRoute => ({
+  application: "cx",
+  realm: "",
+  destination_realm: "ims.mnc001.mcc001.3gppnetwork.org",
+  peers: [
+    {
+      id: "0199a1b2-0000-7000-8000-000000000001",
+      host: "core.epc.mnc001.mcc001.3gppnetwork.org",
+      priority: 10,
+      status: { state: "open" },
+    },
+  ],
   ...overrides,
 });
 

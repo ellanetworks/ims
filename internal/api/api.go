@@ -32,6 +32,7 @@ type Settings interface {
 	CreatePeer(ctx context.Context, p settings.Peer) (settings.Peer, error)
 	UpdatePeer(ctx context.Context, p settings.Peer) error
 	DeletePeer(ctx context.Context, id string) error
+	UpdateRoute(ctx context.Context, r settings.Route) error
 	UpdatePolicy(ctx context.Context, p settings.Policy) error
 	UpdateCallRecords(ctx context.Context, c settings.CallRecords) error
 }
@@ -69,6 +70,9 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/diameter/peers/{id}", GetDiameterPeer(cfg)},
 		{"PUT /api/v1/diameter/peers/{id}", UpdateDiameterPeer(cfg)},
 		{"DELETE /api/v1/diameter/peers/{id}", DeleteDiameterPeer(cfg)},
+		{"GET /api/v1/diameter/routes", ListDiameterRoutes(cfg)},
+		{"GET /api/v1/diameter/routes/{application}", GetDiameterRoute(cfg)},
+		{"PUT /api/v1/diameter/routes/{application}", UpdateDiameterRoute(cfg)},
 		{"GET /api/v1/policy", GetPolicy(cfg)},
 		{"PUT /api/v1/policy", UpdatePolicy(cfg)},
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},

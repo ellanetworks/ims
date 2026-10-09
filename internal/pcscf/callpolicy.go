@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/policy"
@@ -57,6 +58,9 @@ type callPolicy struct {
 	loss     transaction.Timer
 	lost     []uint32
 	ended    bool
+	// orphaned is set when the policy function of the call is lost (RFC 6733 §8.18 REFUSE_SERVICE): the call ends
+	// once the exchange in progress completes.
+	orphaned atomic.Bool
 }
 
 func (p *PCSCF) newCallPolicy(k regKey, identities []string, service string) *callPolicy {
@@ -127,6 +131,8 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
 			p.log.Debug("relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
+
+		p.releaseOrphaned(c, d)
 	}
 
 	if p.enqueue(c.policy, job != nil, run) {
@@ -182,6 +188,8 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 		case reject != nil:
 			reject()
 		}
+
+		p.releaseOrphaned(c, d)
 
 		if ex, ok := d.Exchange(out); ok {
 			c.policy.mu.Lock()
@@ -342,6 +350,20 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 		attrs = append(attrs, slog.Any("removed_media", removed))
 	}
 
+	// RFC 6733 §8.18 REFUSE_SERVICE: the PCRF of the call is lost, and the service ends with it: once the exchange
+	// in progress completes, or at once for media of an early dialog, which nothing authorizes.
+	if errors.Is(err, policy.ErrSessionLost) {
+		p.log.Warn("policy session of the call lost with its policy function: releasing the call", attrs...)
+		c.policy.orphaned.Store(true)
+
+		if job.initial {
+			p.releaseOrphaned(c, d)
+			return false
+		}
+
+		return true
+	}
+
 	if !job.initial {
 		p.log.Warn("media authorization refused for a session modification", attrs...)
 		return true
@@ -356,6 +378,20 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 	return false
 }
 
+// releaseOrphaned ends, both ways, a call whose policy function is lost.
+func (p *PCSCF) releaseOrphaned(c *call, d *proxy.Dialog) {
+	if !c.policy.orphaned.Load() {
+		return
+	}
+
+	cause, _ := sip.NewReason("SIP", 503, "")
+
+	if err := d.Release(proxy.Release{Toward: proxy.Both, Code: 500, Reason: []sip.Reason{cause}}); err != nil &&
+		!errors.Is(err, proxy.ErrDialogEnded) {
+		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+	}
+}
+
 // RFC 3262 §3
 func reliable(res *sip.Response) bool {
 	return res.IsSuccess() || res.Header.Has("RSeq")
@@ -364,6 +400,41 @@ func reliable(res *sip.Response) bool {
 type grantResult struct {
 	grant policy.Grant
 	err   error
+}
+
+// handoff passes the answer of a media authorization to the exchange waiting for it, unless the exchange gave up.
+type handoff struct {
+	mu        sync.Mutex
+	c         chan grantResult
+	abandoned bool
+}
+
+// give reports whether the exchange takes the answer.
+func (h *handoff) give(r grantResult) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.abandoned {
+		return false
+	}
+
+	h.c <- r
+
+	return true
+}
+
+// abandon gives up on the answer, unless it just came.
+func (h *handoff) abandon() (grantResult, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	select {
+	case r := <-h.c:
+		return r, true
+	default:
+		h.abandoned = true
+		return grantResult{}, false
+	}
 }
 
 // TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
@@ -379,7 +450,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 
 	cr.mu.Lock()
 
-	if cr.ended {
+	if cr.ended || cr.orphaned.Load() {
 		cr.mu.Unlock()
 		return errCallEnded
 	}
@@ -442,21 +513,32 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 		Forking:     fork,
 	}
 
-	result := make(chan grantResult, 1)
+	result := &handoff{c: make(chan grantResult, 1)}
 
 	if !p.policy.spawn(func() {
+		var late bool
+
+		// A session lost after the exchange gave up on its answer still ends the call (RFC 6733 §8.18), once the
+		// session is released.
+		defer func() {
+			if late {
+				cr.orphaned.Store(true)
+				p.releaseOrphaned(c, d)
+			}
+		}()
 		defer s.pending.Store(false)
 		defer s.mu.Unlock()
 
 		g, err := p.policy.authorize(s, r)
 
+		if g.Ref != "" {
+			s.ref = g.Ref
+		}
+
 		switch {
 		case err == nil:
 			s.opened = true
-			if g.Ref != "" {
-				s.ref = g.Ref
-			}
-		case initial, errors.Is(err, policy.ErrUnknownSession):
+		case initial, errors.Is(err, policy.ErrUnknownSession), errors.Is(err, policy.ErrSessionLost):
 			s.ended = true
 			p.policy.forget(s)
 
@@ -468,7 +550,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 			cr.mu.Unlock()
 		}
 
-		result <- grantResult{g, err}
+		late = !result.give(grantResult{g, err}) && errors.Is(err, policy.ErrSessionLost)
 	}) {
 		s.mu.Unlock()
 		s.pending.Store(false)
@@ -482,9 +564,12 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 	var res grantResult
 
 	select {
-	case res = <-result:
+	case res = <-result.c:
 	case <-timer.C:
-		return errAARTimeout
+		var ok bool
+		if res, ok = result.abandon(); !ok {
+			return errAARTimeout
+		}
 	}
 
 	if res.err != nil {

@@ -19,11 +19,10 @@ func (f fakeDiameter) Identity() diameter.Identity { return diameter.Identity{} 
 
 func (f fakeDiameter) Peers() []diameter.PeerStatus { return f.peers }
 
-const hssPeer = `{"host": "hss.ims.mnc001.mcc001.3gppnetwork.org", "realm": "ims.mnc001.mcc001.3gppnetwork.org",
-	"address": "10.0.0.10", "applications": ["cx"]}`
+const hssPeer = `{"host": "hss.ims.mnc001.mcc001.3gppnetwork.org", "address": "10.0.0.10", "applications": ["cx"]}`
 
-const pcrfPeer = `{"host": "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "realm": "epc.mnc001.mcc001.3gppnetwork.org",
-	"address": "10.0.0.11", "port": 3869, "transport": "sctp", "applications": ["rx"]}`
+const pcrfPeer = `{"host": "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "address": "10.0.0.11", "port": 3869,
+	"transport": "sctp", "applications": ["rx"], "priority": 0}`
 
 func TestGetDiameterStatus(t *testing.T) {
 	code, body := serve(t, Config{Settings: newFakeSettings()}, http.MethodGet, "/api/v1/diameter", "")
@@ -56,8 +55,8 @@ func TestDiameterPeers(t *testing.T) {
 	want := DiameterPeer{
 		ID: hss.ID,
 		DiameterPeerParams: DiameterPeerParams{
-			Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: "ims.mnc001.mcc001.3gppnetwork.org",
-			Address: "10.0.0.10", Port: 3868, Transport: "tcp", Applications: []string{"cx"},
+			Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: "10.0.0.10", Port: 3868, Transport: "tcp",
+			Applications: []string{"cx"}, Priority: new(10),
 		},
 		Status: DiameterPeerStatus{State: "down"},
 	}
@@ -136,14 +135,14 @@ func TestDiameterPeersRejected(t *testing.T) {
 		{"unknown field", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"id": "x", "host"`, 1), 400, "Invalid request data"},
 		{"status on input", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"status": {}, "host"`, 1), 400, "Invalid request data"},
 		{"host not a domain name", http.MethodPost, "", strings.Replace(hssPeer, "hss.ims.", "hss ims.", 1), 400, "host must be a domain name"},
-		{"realm not a domain name", http.MethodPost, "", strings.Replace(hssPeer, `"realm": "ims.`, `"realm": "ims..`, 1), 400, "realm must be a domain name"},
+		{"realm", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"realm": "example.org", "host"`, 1), 400, "Invalid request data"},
+		{"bad priority", http.MethodPost, "", strings.Replace(pcrfPeer, `"priority": 0`, `"priority": 65536`, 1), 400, "priority must be between 0 and 65535"},
 		{"same host in another case", http.MethodPost, "", strings.NewReplacer(`["cx"]`, `["rx"]`, "hss.ims", "HSS.ims").Replace(hssPeer), 409, "A Diameter peer already has host HSS.ims.mnc001.mcc001.3gppnetwork.org"},
 		{"no host", http.MethodPost, "", strings.Replace(hssPeer, `"hss.ims.mnc001.mcc001.3gppnetwork.org"`, `""`, 1), 400, "host is required"},
 		{"bad address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "hss.example.org", 1), 400, "address must be an IPv4 or IPv6 address"},
 		{"no address", http.MethodPost, "", strings.Replace(hssPeer, `"10.0.0.10"`, `""`, 1), 400, "address is required"},
 		{"bad transport", http.MethodPost, "", strings.Replace(pcrfPeer, `"sctp"`, `"udp"`, 1), 400, "transport must be tcp or sctp"},
 		{"bad application", http.MethodPost, "", strings.Replace(hssPeer, `["cx"]`, `["gx"]`, 1), 400, `applications must list cx, rx or both, not "gx"`},
-		{"second cx peer", http.MethodPost, "", strings.Replace(hssPeer, "hss.ims", "hss2.ims", 1), 409, "A Diameter peer already serves cx"},
 		{"same host", http.MethodPost, "", strings.Replace(hssPeer, `["cx"]`, `["rx"]`, 1), 409, "A Diameter peer already has host hss.ims.mnc001.mcc001.3gppnetwork.org"},
 		{"update unknown", http.MethodPut, "/0192", pcrfPeer, 404, "Diameter peer not found"},
 		{"delete unknown", http.MethodDelete, "/0192", "", 404, "Diameter peer not found"},
@@ -163,5 +162,77 @@ func TestDiameterPeersRejected(t *testing.T) {
 				t.Fatalf("%d peers, want the HSS alone", n)
 			}
 		})
+	}
+}
+
+func TestDiameterRoutes(t *testing.T) {
+	s := newFakeSettings()
+	cfg := Config{Settings: s}
+
+	secondary := createPeer(t, cfg, hssPeer)
+	primary := createPeer(t, cfg, strings.NewReplacer("hss.ims", "hss2.ims", `"cx"]`, `"cx", "rx"], "priority": 1`).Replace(hssPeer))
+	pcrf := createPeer(t, cfg, pcrfPeer)
+
+	cfg.Diameter = fakeDiameter{peers: []diameter.PeerStatus{{ID: primary.ID, State: diameter.PeerOpen}}}
+
+	code, body := serve(t, cfg, http.MethodGet, "/api/v1/diameter/routes", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET routes = %d", code)
+	}
+
+	open := DiameterPeerStatus{State: "open"}
+	down := DiameterPeerStatus{State: "down"}
+
+	want := DiameterRoutes{Items: []DiameterRoute{
+		{
+			Application: "cx", DestinationRealm: "ims.mnc001.mcc001.3gppnetwork.org",
+			DiameterRoutePeers: DiameterRoutePeers{Peers: []DiameterRoutePeer{
+				{ID: primary.ID, Host: "hss2.ims.mnc001.mcc001.3gppnetwork.org", Priority: 1, Status: open},
+				{ID: secondary.ID, Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Priority: 10, Status: down},
+			}},
+		},
+		{
+			Application: "rx", DestinationRealm: "ims.mnc001.mcc001.3gppnetwork.org",
+			DiameterRoutePeers: DiameterRoutePeers{Peers: []DiameterRoutePeer{
+				{ID: pcrf.ID, Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Priority: 0, Status: down},
+				{ID: primary.ID, Host: "hss2.ims.mnc001.mcc001.3gppnetwork.org", Priority: 1, Status: open},
+			}},
+		},
+	}}
+	if got := decodeResult[DiameterRoutes](t, body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes = %+v, want %+v", got, want)
+	}
+
+	code, body = serve(t, cfg, http.MethodPut, "/api/v1/diameter/routes/rx", `{"realm": "epc.mnc001.mcc001.3gppnetwork.org"}`)
+	if got := decodeResult[DiameterRoute](t, body); code != http.StatusOK || got.Realm != "epc.mnc001.mcc001.3gppnetwork.org" ||
+		got.DestinationRealm != got.Realm || len(got.Peers) != 2 {
+		t.Fatalf("PUT route = %d %+v", code, got)
+	}
+
+	code, body = serve(t, cfg, http.MethodGet, "/api/v1/diameter/routes/rx", "")
+	if got := decodeResult[DiameterRoute](t, body); code != http.StatusOK || got.Realm != "epc.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("GET route = %d %+v", code, got)
+	}
+
+	code, body = serve(t, cfg, http.MethodPut, "/api/v1/diameter/routes/rx", `{"realm": ""}`)
+	if got := decodeResult[DiameterRoute](t, body); code != http.StatusOK || got.Realm != "" ||
+		got.DestinationRealm != "ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("PUT route back to the home domain = %d %+v", code, got)
+	}
+
+	for _, tt := range []struct {
+		method, path, body string
+		code               int
+		want               string
+	}{
+		{http.MethodGet, "/gx", "", 404, "Diameter route not found"},
+		{http.MethodPut, "/gx", `{"realm": "example.org"}`, 404, "Diameter route not found"},
+		{http.MethodPut, "/cx", `{"realm": "bad realm"}`, 400, "realm must be a domain name"},
+		{http.MethodPut, "/cx", `{"realm": "example.org", "peers": []}`, 400, "Invalid request data"},
+	} {
+		code, body := serve(t, cfg, tt.method, "/api/v1/diameter/routes"+tt.path, tt.body)
+		if code != tt.code || decodeError(t, body) != tt.want {
+			t.Errorf("%s %s = %d %s, want %d %q", tt.method, tt.path, code, body, tt.code, tt.want)
+		}
 	}
 }

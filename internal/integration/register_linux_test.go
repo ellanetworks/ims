@@ -167,13 +167,14 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 	}
 
 	peers := []settings.Peer{{
-		ID: "hss", Host: s.hss.Host(), Realm: domain, Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
+		ID: "hss", Host: s.hss.Host(), Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	}}
 
 	var (
-		pol settings.Policy
-		n5  *config.N5
+		routes []settings.Route
+		pol    settings.Policy
+		n5     *config.N5
 	)
 
 	switch iface {
@@ -184,9 +185,10 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		s.pol = &rxPolicy{s: s}
 
 		peers = append(peers, settings.Peer{
-			ID: "pcrf", Host: s.pcrf.Host(), Realm: s.pcrf.Realm(), Address: s.pcrf.Addr().Addr(),
-			Port: int(s.pcrf.Addr().Port()), Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationRx},
+			ID: "pcrf", Host: s.pcrf.Host(), Address: s.pcrf.Addr().Addr(), Port: int(s.pcrf.Addr().Port()),
+			Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationRx},
 		})
+		routes = []settings.Route{{Application: settings.ApplicationRx, Realm: s.pcrf.Realm()}}
 		pol = settings.Policy{Interface: settings.PolicyRx}
 	case policyN5:
 		s.pcf = pcftest.New(t, pcftest.Config{UEs: ues, Logger: testLogger(t)})
@@ -212,7 +214,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		t.Fatalf("unknown policy interface %q", iface)
 	}
 
-	seed(t, s.db, peers, pol)
+	seed(t, s.db, peers, routes, pol)
 
 	s.srv = &server.Server{Config: config.Config{
 		DB:  config.DB{Path: s.db},
@@ -339,8 +341,8 @@ func (s *scene) ctx() context.Context {
 	return ctx
 }
 
-// seed writes the Diameter peers and the policy into the database, before the IMS starts on it.
-func seed(t *testing.T, path string, peers []settings.Peer, pol settings.Policy) {
+// seed writes the Diameter peers, their routes and the policy into the database, before the IMS starts on it.
+func seed(t *testing.T, path string, peers []settings.Peer, routes []settings.Route, pol settings.Policy) {
 	t.Helper()
 
 	d, err := db.Open(t.Context(), path)
@@ -352,6 +354,12 @@ func seed(t *testing.T, path string, peers []settings.Peer, pol settings.Policy)
 
 	for _, p := range peers {
 		if err := d.CreatePeer(t.Context(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, r := range routes {
+		if err := d.UpdateRoute(t.Context(), r); err != nil {
 			t.Fatal(err)
 		}
 	}

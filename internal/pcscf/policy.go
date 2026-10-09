@@ -216,8 +216,7 @@ func (c *policyClient) resolve(netip.Addr) policy.Backend {
 	return c.cfg.Backend
 }
 
-// serves reports whether a stored session was opened with this client's policy function. Endpoints are compared
-// without case, as rows stored before rxpolicy lower-cased its DiameterIdentity still are.
+// serves reports whether a stored session was opened with this client's policy function.
 func (c *policyClient) serves(p db.PolicySession) bool {
 	return strings.EqualFold(p.Endpoint, c.cfg.Backend.Endpoint())
 }
@@ -269,6 +268,9 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 			return nil
 		case errors.Is(err, policy.ErrUnknownSession):
 			c.log.Debug("policy session already ended at the policy function", attrs...)
+			return nil
+		case errors.Is(err, policy.ErrSessionLost):
+			c.log.Info("policy session lost with its policy function", append(attrs, slog.Any("error", err))...)
 			return nil
 		case !policy.Transient(err) || c.closing():
 			c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)

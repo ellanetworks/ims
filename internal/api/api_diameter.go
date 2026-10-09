@@ -27,14 +27,15 @@ func GetDiameterStatus(cfg Config) http.Handler {
 	})
 }
 
-// DiameterPeerParams are what an operator sets of a peer. Port defaults to 3868, and transport to tcp.
+// DiameterPeerParams are what an operator sets of a peer. Port defaults to 3868, transport to tcp, and priority
+// to 10.
 type DiameterPeerParams struct {
 	Host         string   `json:"host"`
-	Realm        string   `json:"realm"`
 	Address      string   `json:"address"`
 	Port         int      `json:"port,omitempty"`
 	Transport    string   `json:"transport,omitempty"`
 	Applications []string `json:"applications"`
+	Priority     *int     `json:"priority,omitempty"`
 }
 
 type DiameterPeer struct {
@@ -43,11 +44,13 @@ type DiameterPeer struct {
 	Status DiameterPeerStatus `json:"status"`
 }
 
-// DiameterPeerStatus is the connection to a peer. State is down until the IMS has tried it.
+// DiameterPeerStatus is the connection to a peer. State is down until the IMS has tried it. Realm is the one the
+// peer gave in its last capabilities exchange.
 type DiameterPeerStatus struct {
 	State         string `json:"state"`
 	Since         string `json:"since,omitempty"`
 	RemoteAddress string `json:"remote_address,omitempty"`
+	Realm         string `json:"realm,omitempty"`
 }
 
 type DiameterPeers struct {
@@ -138,9 +141,13 @@ func DeleteDiameterPeer(cfg Config) http.Handler {
 func peerSettings(params DiameterPeerParams) (settings.Peer, error) {
 	p := settings.Peer{
 		Host:      params.Host,
-		Realm:     params.Realm,
 		Port:      params.Port,
 		Transport: settings.Transport(params.Transport),
+		Priority:  settings.DefaultPriority,
+	}
+
+	if params.Priority != nil {
+		p.Priority = *params.Priority
 	}
 
 	if params.Address != "" {
@@ -196,29 +203,143 @@ func peerResponse(p settings.Peer, statuses map[string]diameter.PeerStatus) Diam
 		ID: p.ID,
 		DiameterPeerParams: DiameterPeerParams{
 			Host:         p.Host,
-			Realm:        p.Realm,
 			Address:      p.Address.String(),
 			Port:         p.Port,
 			Transport:    string(p.Transport),
 			Applications: []string{},
+			Priority:     &p.Priority,
 		},
-		Status: DiameterPeerStatus{State: "down"},
+		Status: peerStatus(p, statuses),
 	}
 
 	for _, a := range p.Applications {
 		resp.Applications = append(resp.Applications, string(a))
 	}
 
-	if st, ok := statuses[p.ID]; ok {
-		resp.Status.State = st.State.String()
+	return resp
+}
 
-		if !st.Since.IsZero() {
-			resp.Status.Since = formatTime(st.Since)
+func peerStatus(p settings.Peer, statuses map[string]diameter.PeerStatus) DiameterPeerStatus {
+	status := DiameterPeerStatus{State: "down"}
+
+	st, ok := statuses[p.ID]
+	if !ok {
+		return status
+	}
+
+	status.State = st.State.String()
+
+	if !st.Since.IsZero() {
+		status.Since = formatTime(st.Since)
+	}
+
+	if st.RemoteAddr.IsValid() {
+		status.RemoteAddress = st.RemoteAddr.Unmap().String()
+	}
+
+	status.Realm = st.Realm
+
+	return status
+}
+
+// DiameterRouteParams are what an operator sets of a route: the realm of the HSS or the PCRF. Empty is the home
+// domain.
+type DiameterRouteParams struct {
+	Realm string `json:"realm"`
+}
+
+// DiameterRoute is where the requests of an application go: to the destination realm, through its peers in the
+// order they are tried.
+type DiameterRoute struct {
+	Application      string `json:"application"`
+	Realm            string `json:"realm"`
+	DestinationRealm string `json:"destination_realm"`
+	DiameterRoutePeers
+}
+
+type DiameterRoutePeers struct {
+	Peers []DiameterRoutePeer `json:"peers"`
+}
+
+type DiameterRoutePeer struct {
+	ID       string             `json:"id"`
+	Host     string             `json:"host"`
+	Priority int                `json:"priority"`
+	Status   DiameterPeerStatus `json:"status"`
+}
+
+type DiameterRoutes struct {
+	Items []DiameterRoute `json:"items"`
+}
+
+func ListDiameterRoutes(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s, statuses := cfg.Settings.Get(), peerStatuses(cfg.Diameter)
+
+		resp := DiameterRoutes{Items: []DiameterRoute{}}
+		for _, r := range s.Routes {
+			resp.Items = append(resp.Items, routeResponse(s, r, statuses))
 		}
 
-		if st.RemoteAddr.IsValid() {
-			resp.Status.RemoteAddress = st.RemoteAddr.Unmap().String()
+		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+	})
+}
+
+func GetDiameterRoute(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := cfg.Settings.Get()
+
+		route, ok := findRoute(s, r.PathValue("application"))
+		if !ok {
+			writeError(w, http.StatusNotFound, "Diameter route not found", nil, cfg.Logger)
+			return
 		}
+
+		writeResponse(w, routeResponse(s, route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+	})
+}
+
+// UpdateDiameterRoute sets the realm of an application's requests, which the IMS applies to the next request.
+func UpdateDiameterRoute(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var params DiameterRouteParams
+		if !decodeStrictly(w, r, &params, cfg.Logger) {
+			return
+		}
+
+		route := settings.Route{Application: settings.Application(r.PathValue("application")), Realm: params.Realm}
+
+		if err := cfg.Settings.UpdateRoute(r.Context(), route); err != nil {
+			writeSettingsError(w, err, "Failed to update Diameter route", cfg.Logger)
+			return
+		}
+
+		writeResponse(w, routeResponse(cfg.Settings.Get(), route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+	})
+}
+
+func findRoute(s settings.Settings, app string) (settings.Route, bool) {
+	for _, r := range s.Routes {
+		if string(r.Application) == app {
+			return r, true
+		}
+	}
+
+	return settings.Route{}, false
+}
+
+func routeResponse(s settings.Settings, r settings.Route, statuses map[string]diameter.PeerStatus) DiameterRoute {
+	resp := DiameterRoute{
+		Application:        string(r.Application),
+		Realm:              r.Realm,
+		DestinationRealm:   s.Realm(r.Application),
+		DiameterRoutePeers: DiameterRoutePeers{Peers: []DiameterRoutePeer{}},
+	}
+
+	for _, p := range s.Serving(r.Application) {
+		resp.Peers = append(resp.Peers, DiameterRoutePeer{
+			ID: p.ID, Host: p.Host, Priority: p.Priority, Status: peerStatus(p, statuses),
+		})
 	}
 
 	return resp
