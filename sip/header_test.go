@@ -337,6 +337,7 @@ func TestICID(t *testing.T) {
 		"icid-value=1234bc9876e;icid-generated-at=192.0.6.8;orig-ioi=home1.net": "1234bc9876e",
 		"ICID-Value = AB12 ; orig-ioi=home1.net":                                "AB12",
 		"orig-ioi=home1.net":                                                    "",
+		`icid-value="a;b\"c";orig-ioi=home1.net`:                                `a;b"c`,
 		"":                                                                      "",
 	} {
 		var h Header

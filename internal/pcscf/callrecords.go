@@ -7,6 +7,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/sdp"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 // callRecord reports a call from a UE to the call records. A nil callRecord, for a request that is not an INVITE
@@ -17,7 +18,7 @@ type callRecord struct {
 	opened  bool
 }
 
-// attempt is the record of an INVITE from a registered UE, which open or rejected opens.
+// attempt is the record of an INVITE from a registered UE, which open, rejecting or closed opens.
 func (p *PCSCF) attempt(req *sip.Request, impi string, asserted []string, icid string) *callRecord {
 	if req.Method != "INVITE" || p.cfg.Records == nil {
 		return nil
@@ -38,14 +39,25 @@ func (c *callRecord) open() {
 	c.r.Attempt(c.attempt)
 }
 
-// rejected reports that the P-CSCF answered the INVITE itself.
-func (c *callRecord) rejected(code int) {
+// rejecting reports that the P-CSCF answers the INVITE itself with an error status, before it does.
+func (c *callRecord) rejecting(code int) {
 	if c == nil {
 		return
 	}
 
 	c.open()
-	c.r.Rejected(c.attempt.ICID, code)
+	c.r.Rejecting(c.attempt.ICID, code)
+}
+
+// closed ends the record of an INVITE that the P-CSCF answered without forwarding it, with the final response the
+// caller got: the P-CSCF's own, or the 487 to a CANCEL that came first.
+func (c *callRecord) closed(tx *transaction.ServerTransaction) {
+	if c == nil {
+		return
+	}
+
+	c.open()
+	c.r.Ended(c.attempt.ICID, callrecords.End{Code: tx.Status(), By: proxy.Caller, Cause: proxy.EndFailed})
 }
 
 // alerted reports a 180 toward the UE.
@@ -73,11 +85,14 @@ func (c *callRecord) event(e proxy.DialogEvent) {
 // terminatingRecord reports to the call records the UE that answers a call, and the release of a call toward a
 // UE, which the proxy publishes before releasing it, so that the caller's end of it follows.
 func (p *PCSCF) terminatingRecord(c *call, e proxy.DialogEvent) {
+	// The call records know a call by its ICID unquoted, and the P-CSCF keeps it as on the wire.
+	icid := sip.Unquote(c.icid)
+
 	switch {
 	case e.Kind == proxy.EventAnswered:
-		p.cfg.Records.Reached(c.icid, c.impi)
+		p.cfg.Records.Reached(icid, c.impi)
 	case e.Kind == proxy.EventEnded && e.End == proxy.EndReleased:
-		p.cfg.Records.Released(c.icid)
+		p.cfg.Records.Released(icid)
 	}
 }
 

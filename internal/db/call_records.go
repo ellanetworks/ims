@@ -18,12 +18,13 @@ var ErrDuplicateICID = errors.New("a call record has this ICID")
 type CallOutcome string
 
 const (
-	OutcomeAnswered  CallOutcome = "answered"
-	OutcomeCancelled CallOutcome = "cancelled"
-	OutcomeBusy      CallOutcome = "busy"
-	OutcomeRejected  CallOutcome = "rejected"
-	OutcomeNoAnswer  CallOutcome = "no_answer"
-	OutcomeFailed    CallOutcome = "failed"
+	OutcomeAnswered    CallOutcome = "answered"
+	OutcomeCancelled   CallOutcome = "cancelled"
+	OutcomeBusy        CallOutcome = "busy"
+	OutcomeRejected    CallOutcome = "rejected"
+	OutcomeNoAnswer    CallOutcome = "no_answer"
+	OutcomeUnavailable CallOutcome = "unavailable"
+	OutcomeFailed      CallOutcome = "failed"
 )
 
 // CallParty is the side that ended a call.
@@ -91,13 +92,14 @@ const (
 	callRecordBatch = 1000
 )
 
-// SaveCallRecords inserts the records without an ID, giving them one, and updates the others, in one transaction.
-// An update leaves the fields that never change after the record is inserted, such as its ICID, as they were.
+// SaveCallRecords inserts the records without an ID, giving them one, updates the others and deletes those of the
+// IDs in deleted, in one transaction. An update leaves the fields that never change after the record is inserted,
+// such as its ICID, as they were. Deleting a record that is not there is not an error.
 //
 // A record that cannot be saved, because another record has its ICID, it breaks a constraint or it was deleted,
 // does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
 // When the transaction itself fails, it saves none and returns err, and saving them again may succeed.
-func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord) (errs []error, err error) {
+func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("save call records: %w", err)
@@ -131,6 +133,18 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord) (errs [
 
 			errs[i] = fmt.Errorf("save call record %s: %w", r.ICID, err)
 		default:
+			return fail(err)
+		}
+	}
+
+	if len(deleted) > 0 {
+		ids, err := json.Marshal(deleted)
+		if err != nil {
+			return fail(err)
+		}
+
+		if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT value FROM json_each(?))`,
+			string(ids)); err != nil {
 			return fail(err)
 		}
 	}
@@ -209,17 +223,24 @@ func (d *DB) GetCallRecord(ctx context.Context, id int64) (CallRecord, error) {
 }
 
 // ListCallRecords returns a page of the records the filter selects, the most recently requested first, and their
-// count.
+// count, both of the same snapshot of the database.
 func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) ([]CallRecord, int, error) {
 	where, args := f.where()
 
+	tx, err := d.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list call records: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
 	var total int
-	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records WHERE `+where, args...).Scan(
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records WHERE `+where, args...).Scan(
 		&total); err != nil {
 		return nil, 0, fmt.Errorf("list call records: %w", err)
 	}
 
-	records, err := d.queryCallRecords(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE `+where+`
+	records, err := queryCallRecords(ctx, tx, `SELECT `+callRecordColumns+` FROM call_records WHERE `+where+`
 		ORDER BY requested_at DESC, id DESC LIMIT ? OFFSET ?`, append(args, perPage, (page-1)*perPage)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list call records: %w", err)
@@ -283,11 +304,16 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	return deleted, nil
 }
 
-// CloseOpenCallRecords marks the records of the calls that have not ended as incomplete, since the IMS lost them,
-// and returns how many it marked.
-func (d *DB) CloseOpenCallRecords(ctx context.Context) (int64, error) {
-	res, err := d.conn.ExecContext(ctx,
-		`UPDATE call_records SET incomplete = 1 WHERE ended_by IS NULL AND incomplete = 0`)
+// CloseOpenCallRecords marks the records of the calls that have not ended as incomplete, but for those of the
+// ICIDs in live, since the IMS lost them, and returns how many it marked.
+func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (int64, error) {
+	icids, err := json.Marshal(nonNilList(live))
+	if err != nil {
+		return 0, fmt.Errorf("close open call records: %w", err)
+	}
+
+	res, err := d.conn.ExecContext(ctx, `UPDATE call_records SET incomplete = 1 WHERE ended_by IS NULL AND
+		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, string(icids))
 	if err != nil {
 		return 0, fmt.Errorf("close open call records: %w", err)
 	}
@@ -335,8 +361,8 @@ func (f CallRecordFilter) where() (string, []any) {
 	return strings.Join(conds, " AND "), args
 }
 
-func (d *DB) queryCallRecords(ctx context.Context, query string, args ...any) ([]CallRecord, error) {
-	rows, err := d.read.QueryContext(ctx, query, args...)
+func queryCallRecords(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]CallRecord, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -393,6 +419,14 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	}
 
 	return r, nil
+}
+
+func nonNilList(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+
+	return l
 }
 
 // jsonList is a list as a JSON array, or NULL if empty.

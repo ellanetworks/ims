@@ -43,7 +43,7 @@ func callRecordsDB(t *testing.T) (*db.DB, []*db.CallRecord) {
 
 	records := []*db.CallRecord{answered, busy, ringing}
 
-	if errs, err := d.SaveCallRecords(t.Context(), records); err != nil || errs != nil {
+	if errs, err := d.SaveCallRecords(t.Context(), records, nil); err != nil || errs != nil {
 		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
 	}
 
@@ -93,9 +93,11 @@ func TestListCallRecordsRejected(t *testing.T) {
 	d, _ := callRecordsDB(t)
 
 	for query, want := range map[string]string{
-		"?from=yesterday":  "from must be an RFC 3339 time",
-		"?to=2026-10-08":   "to must be an RFC 3339 time",
-		"?outcome=engaged": "outcome must be answered, cancelled, busy, rejected, no_answer or failed",
+		"?from=yesterday":          "from must be an RFC 3339 time",
+		"?to=2026-10-08":           "to must be an RFC 3339 time",
+		"?to=9999-01-01T00:00:00Z": "to must be from 1678 to 2262",
+		"?from=2026-10-08T12:00:00Z&to=2026-10-08T12:00:00Z": "from must be before to",
+		"?outcome=engaged": "outcome must be answered, cancelled, busy, rejected, no_answer, unavailable or failed",
 		"?per_page=0":      "per_page must be an integer between 1 and 100",
 		"?page=0":          "page must be an integer >= 1",
 	} {

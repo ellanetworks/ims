@@ -76,19 +76,20 @@ func TestCallRecordRouted(t *testing.T) {
 // TestCallRecordRejected checks that a call the S-CSCF refuses is recorded as ended by the network.
 func TestCallRecordRejected(t *testing.T) {
 	tests := []struct {
-		name string
-		req  func(sh *sessionHarness) *sip.Request
-		code int
+		name    string
+		req     func(sh *sessionHarness) *sip.Request
+		code    int
+		outcome db.CallOutcome
 	}{
 		{"local number", func(sh *sessionHarness) *sip.Request {
 			return sh.originating("INVITE", "tel:999;phone-context="+homeDomain, "<"+testMSISDN+">")
-		}, 404},
+		}, 404, db.OutcomeFailed},
 		{"barred identity", func(sh *sessionHarness) *sip.Request {
 			return sh.originating("INVITE", remoteTel, "<"+testIMPU+">")
-		}, 403},
+		}, 403, db.OutcomeFailed},
 		{"callee not registered", func(sh *sessionHarness) *sip.Request {
 			return sh.terminating("INVITE", "tel:+15551239876")
-		}, 480},
+		}, 480, db.OutcomeUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -109,9 +110,12 @@ func TestCallRecordRejected(t *testing.T) {
 				t.Fatalf("got %s, want %d", res.StartLine(), tt.code)
 			}
 
+			// The originating P-CSCF relays it to the caller.
+			rec.Ended(testICID, callrecords.End{Code: tt.code, By: proxy.Callee, Cause: proxy.EndFailed})
+
 			r := sh.callRecord(t, rec)
-			if r.SIPStatus != tt.code || r.EndedBy != db.PartyNetwork || r.Outcome != db.OutcomeFailed {
-				t.Errorf("record %+v, want a %d from the network", r, tt.code)
+			if r.SIPStatus != tt.code || r.EndedBy != db.PartyNetwork || r.Outcome != tt.outcome {
+				t.Errorf("record %+v, want a %d from the network, %s", r, tt.code, tt.outcome)
 			}
 		})
 	}

@@ -91,8 +91,9 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	rec := p.attempt(req, reg.IMPI, asserted, cv.icid)
 
 	reject := func(res *sip.Response) {
-		rec.rejected(res.StatusCode)
+		rec.rejecting(res.StatusCode)
 		p.respond(tx, res)
+		rec.closed(tx)
 	}
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
@@ -191,40 +192,48 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		}
 	}
 
-	if code := p.forward(tx, req, out, to, opts); code != 0 {
-		rec.rejected(code)
+	if !p.forward(tx, req, out, to, opts, reject) {
+		// A dialog that never began never ends.
+		rec.closed(tx)
 	}
 }
 
 // TS 24.229 §5.2.6.4.3, §5.2.6.4.7
 func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
+	// A call the P-CSCF does not put through to the UE ends by the network.
+	refuse := func(res *sip.Response) {
+		p.cfg.Records.RejectingRequest(req, res.StatusCode)
+		p.respond(tx, res)
+	}
+
 	if !p.fromCore(req) {
 		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
+		// Not reported to the call records: its ICID is not to be trusted.
 		p.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return
 	}
 
 	if p.regs.signallingLost(top.User) {
-		p.respond(tx, sip.NewResponse(req, 500, ""))
+		refuse(sip.NewResponse(req, 500, ""))
 		return
 	}
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
-		p.respond(tx, res)
+		refuse(res)
 		return
 	}
 
 	out, removed, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		refuse(sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
 	to, reject := p.ueTarget(req, out, removed)
 	if reject != nil {
-		p.respond(tx, reject)
+		refuse(reject)
 		return
 	}
 
@@ -282,7 +291,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		}
 	}
 
-	p.forward(tx, req, out, to, opts)
+	p.forward(tx, req, out, to, opts, refuse)
 }
 
 func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
@@ -497,22 +506,26 @@ func (p *PCSCF) newChargingVector(local netip.Addr) chargingVector {
 	}
 }
 
+// parseChargingVector parses a P-Charging-Vector, keeping its values as they are on the wire, quoted or not
+// (RFC 7315 §5.6).
 func parseChargingVector(s string) (chargingVector, bool) {
+	ps, err := sip.ParseParams(s)
+	if err != nil {
+		return chargingVector{}, false
+	}
+
 	var cv chargingVector
 
-	for part := range strings.SplitSeq(s, ";") {
-		name, value, _ := strings.Cut(strings.TrimSpace(part), "=")
-		value = strings.TrimSpace(value)
-
-		switch strings.ToLower(strings.TrimSpace(name)) {
+	for _, p := range ps {
+		switch strings.ToLower(p.Name) {
 		case "icid-value":
-			cv.icid = value
+			cv.icid = p.Value
 		case "icid-generated-at":
-			cv.generated = value
+			cv.generated = p.Value
 		case "orig-ioi":
-			cv.origIOI = value
+			cv.origIOI = p.Value
 		case "term-ioi":
-			cv.termIOI = value
+			cv.termIOI = p.Value
 		}
 	}
 

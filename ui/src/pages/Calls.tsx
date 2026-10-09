@@ -27,6 +27,7 @@ import QueryAlert from "@/components/QueryAlert";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   CALL_OUTCOMES,
+  getCallRecord,
   getCallRecordRetention,
   listCallRecords,
   type CallOutcome,
@@ -99,12 +100,16 @@ const gridSx = {
   },
 };
 
-// toRFC3339 is a local datetime-local value as an RFC 3339 time, or nothing for an empty one.
-const toRFC3339 = (local: string): string | undefined => {
+const MINUTE_MS = 60_000;
+
+// toRFC3339 is a local datetime-local value, plus offsetMs, as an RFC 3339 time, or nothing for an empty one.
+const toRFC3339 = (local: string, offsetMs = 0): string | undefined => {
   if (local === "") return undefined;
 
   const d = new Date(local);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  return Number.isNaN(d.getTime())
+    ? undefined
+    : new Date(d.getTime() + offsetMs).toISOString();
 };
 
 export default function Calls() {
@@ -125,7 +130,7 @@ export default function Calls() {
   const filter = {
     search: debouncedSearch,
     from: toRFC3339(from),
-    to: toRFC3339(to),
+    to: toRFC3339(to, MINUTE_MS),
     outcomes,
   };
 
@@ -138,7 +143,11 @@ export default function Calls() {
         perPage: pagination.pageSize,
       }),
     placeholderData: (prev) => prev,
-    refetchInterval: CALLS_REFRESH_MS,
+    refetchInterval: (query) =>
+      pagination.page === 0 ||
+      query.state.data?.items.some((r) => r.in_progress)
+        ? CALLS_REFRESH_MS
+        : false,
   });
 
   const retention = useQuery({
@@ -146,10 +155,16 @@ export default function Calls() {
     queryFn: getCallRecordRetention,
   });
 
-  // The drawer follows the refreshed list, and keeps the record it shows once it leaves the list.
-  const shown = selected
-    ? (data?.items.find((r) => r.id === selected.id) ?? selected)
-    : null;
+  const record = useQuery({
+    queryKey: ["call-record", selected?.id],
+    queryFn: () => getCallRecord(selected?.id ?? 0),
+    enabled: selected !== null,
+    initialData: selected ?? undefined,
+    refetchInterval: (query) =>
+      query.state.data?.in_progress ? CALLS_REFRESH_MS : false,
+  });
+
+  const shown = selected ? (record.data ?? selected) : null;
 
   return (
     <Box component="section" aria-labelledby="calls-title">
@@ -232,6 +247,11 @@ export default function Calls() {
         />
       </Stack>
       <QueryAlert error={error} hasData={data !== undefined} subject="calls" />
+      <QueryAlert
+        error={retention.error}
+        hasData={retention.data !== undefined}
+        subject="the call record retention"
+      />
       <DataGrid<CallRecord>
         aria-labelledby="calls-title"
         rows={data?.items ?? []}

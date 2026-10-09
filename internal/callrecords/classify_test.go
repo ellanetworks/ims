@@ -24,10 +24,11 @@ func TestOutcome(t *testing.T) {
 		{600, db.PartyCallee, true, db.OutcomeBusy},
 		{603, db.PartyCallee, true, db.OutcomeRejected},
 		{408, db.PartyCallee, true, db.OutcomeNoAnswer},
-		{480, db.PartyCallee, true, db.OutcomeNoAnswer},
-		{480, db.PartyNetwork, true, db.OutcomeNoAnswer},
+		{408, db.PartyNetwork, true, db.OutcomeNoAnswer},
+		{480, db.PartyCallee, true, db.OutcomeUnavailable},
+		{480, db.PartyNetwork, true, db.OutcomeUnavailable},
 		{408, db.PartyCallee, false, db.OutcomeFailed},
-		{480, db.PartyNetwork, false, db.OutcomeFailed},
+		{480, db.PartyNetwork, false, db.OutcomeUnavailable},
 		{403, db.PartyNetwork, false, db.OutcomeFailed},
 		{404, db.PartyNetwork, false, db.OutcomeFailed},
 		{380, db.PartyNetwork, false, db.OutcomeFailed},
@@ -39,6 +40,17 @@ func TestOutcome(t *testing.T) {
 	for _, tt := range tests {
 		if got := Outcome(tt.status, tt.by, tt.alerted); got != tt.want {
 			t.Errorf("Outcome(%d, %s, alerted %t) = %s, want %s", tt.status, tt.by, tt.alerted, got, tt.want)
+		}
+	}
+}
+
+func TestRetried(t *testing.T) {
+	for status, want := range map[int]bool{
+		401: true, 407: true, 420: true, 421: true, 422: true, 423: true, 494: true,
+		400: false, 403: false, 408: false, 480: false, 486: false, 488: false, 500: false,
+	} {
+		if got := Retried(status); got != want {
+			t.Errorf("Retried(%d) = %t, want %t", status, got, want)
 		}
 	}
 }

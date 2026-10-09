@@ -960,7 +960,7 @@ func (d *Dialog) failed(res *sip.Response, downstream bool) {
 	d.mu.Lock()
 
 	if d.state == Early {
-		d.code = upstreamStatus(res.StatusCode)
+		d.code = UpstreamStatus(res.StatusCode)
 		d.rollback(&d.sdp, d.inviteTx)
 		d.early = map[string]*party{}
 

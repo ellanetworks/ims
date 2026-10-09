@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
@@ -148,21 +149,51 @@ func TestRecorder(t *testing.T) {
 			name: "no Service-Route, rejected by the P-CSCF",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejected(icid, 403)
+				r.Rejecting(icid, 403)
+				r.Ended(icid, End{Code: 403, By: proxy.Caller, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
-				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 403, db.OutcomeFailed, db.PartyNetwork, at(2)
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 403, db.OutcomeFailed, db.PartyNetwork, at(3)
 			},
 		},
 		{
 			name: "local number rejected by the S-CSCF, then relayed by the P-CSCF",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Rejected(icid, 404)
+				r.Rejecting(icid, 404)
 				r.Ended(icid, End{Code: 404, By: proxy.Callee, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
-				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 404, db.OutcomeFailed, db.PartyNetwork, at(2)
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 404, db.OutcomeFailed, db.PartyNetwork, at(3)
+			},
+		},
+		{
+			name: "cancelled while the S-CSCF was rejecting it",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Rejecting(icid, 404)
+				r.Ended(icid, End{Code: 487, By: proxy.Caller, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 487, db.OutcomeCancelled, db.PartyCaller, at(3)
+			},
+		},
+		{
+			name: "rejected by the S-CSCF, and by the callee's UE on another branch",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Rejecting(icid, 500)
+				r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 486, db.OutcomeBusy, db.PartyCallee, at(3)
+			},
+		},
+		{
+			name: "retried by the caller after a 422",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Ended(icid, End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
 			},
 		},
 		{
@@ -188,6 +219,28 @@ func TestRecorder(t *testing.T) {
 			},
 		},
 		{
+			name: "rang out",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Alerted(icid)
+				r.Ended(icid, End{Code: 408, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.Alerted = true
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 408, db.OutcomeNoAnswer, db.PartyNetwork, at(3)
+			},
+		},
+		{
+			name: "408 without ringing",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Ended(icid, End{Code: 408, By: proxy.Callee, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 408, db.OutcomeFailed, db.PartyCallee, at(2)
+			},
+		},
+		{
 			name: "480 after a device rang",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
@@ -196,17 +249,7 @@ func TestRecorder(t *testing.T) {
 			},
 			want: func(w *db.CallRecord) {
 				w.Alerted = true
-				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeNoAnswer, db.PartyCallee, at(3)
-			},
-		},
-		{
-			name: "480 without ringing",
-			report: func(r *Recorder, icid string) {
-				r.Attempt(attempt(icid))
-				r.Ended(icid, End{Code: 480, By: proxy.Callee, Cause: proxy.EndFailed})
-			},
-			want: func(w *db.CallRecord) {
-				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeFailed, db.PartyCallee, at(2)
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeUnavailable, db.PartyCallee, at(3)
 			},
 		},
 		{
@@ -232,7 +275,7 @@ func TestRecorder(t *testing.T) {
 			},
 			want: func(w *db.CallRecord) {
 				w.Alerted = true
-				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeNoAnswer, db.PartyNetwork, at(4)
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 480, db.OutcomeUnavailable, db.PartyNetwork, at(4)
 			},
 		},
 		{
@@ -267,10 +310,19 @@ func TestRecorder(t *testing.T) {
 			tt.report(r, "ICID1")
 			r.Close()
 
+			got := records(t, d)
+
+			if tt.want == nil {
+				if len(got) != 0 {
+					t.Fatalf("records = %+v, want none", got)
+				}
+
+				return
+			}
+
 			want := attempted("ICID1")
 			tt.want(&want)
 
-			got := records(t, d)
 			if len(got) != 1 || !reflect.DeepEqual(got["ICID1"], want) {
 				t.Fatalf("records = %+v\nwant %+v", got, want)
 			}
@@ -416,15 +468,22 @@ func TestRecorderNeverWaitsOnTheStore(t *testing.T) {
 }
 
 // TestRecorderDropsWhatItCannotKeep checks that the records of ended calls the store has not saved are bounded:
-// past the bound, the records of the calls that end are dropped, and those of calls in progress are kept.
+// past the bound, the records of the calls that end are dropped, and those of calls in progress are kept. Once
+// the store catches up, the records the dropped calls left open are closed as incomplete.
 func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	d := openDB(t)
-	store := &testStore{next: d, gate: make(chan struct{})}
+	store := &testStore{next: d}
 	r := New(Config{Store: store, MaxUnsaved: 2, Clock: &tickClock{now: t0}})
+	t.Cleanup(r.Close)
 
-	for _, icid := range []string{"ENDED1", "ENDED2", "DROPPED", "OPEN"} {
+	icids := []string{"ENDED1", "ENDED2", "DROPPED", "OPEN"}
+
+	for _, icid := range icids {
 		r.Attempt(attempt(icid))
 	}
+
+	eventually(t, func() bool { return len(records(t, d)) == len(icids) })
+	store.pause()
 
 	for _, icid := range []string{"ENDED1", "ENDED2", "DROPPED"} {
 		r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
@@ -432,9 +491,9 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 
 	r.Alerted("DROPPED")
 	r.Alerted("OPEN")
+	store.resume()
 
-	close(store.gate)
-	r.Close()
+	eventually(t, func() bool { return records(t, d)["DROPPED"].Incomplete })
 
 	got := records(t, d)
 
@@ -444,12 +503,88 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 		}
 	}
 
-	if rec, ok := got["DROPPED"]; ok && (rec.EndedBy != "" || rec.Alerted) {
-		t.Fatalf("DROPPED = %+v, want it absent or as first saved", rec)
+	if rec := got["DROPPED"]; rec.EndedBy != "" || rec.Alerted {
+		t.Fatalf("DROPPED = %+v, want it as first saved, closed as incomplete", rec)
 	}
 
-	if !got["OPEN"].Alerted {
-		t.Fatalf("OPEN = %+v, want the call in progress kept", got["OPEN"])
+	if rec := got["OPEN"]; !rec.Alerted || rec.Incomplete {
+		t.Fatalf("OPEN = %+v, want the call in progress kept, open", rec)
+	}
+}
+
+// TestRecorderDeletesARetriedAttempt checks that the record of an attempt the caller makes again is deleted once
+// saved.
+func TestRecorderDeletesARetriedAttempt(t *testing.T) {
+	d := openDB(t)
+	r := newTestRecorder(t, d)
+
+	r.Attempt(attempt("ICID1"))
+	eventually(t, func() bool { return len(records(t, d)) == 1 })
+
+	r.Ended("ICID1", End{Code: 401, By: proxy.Callee, Cause: proxy.EndFailed})
+	eventually(t, func() bool { return len(records(t, d)) == 0 })
+
+	r.Attempt(attempt("ICID2"))
+	r.Answered("ICID2", 200)
+	r.Close()
+
+	if got := records(t, d); len(got) != 1 || got["ICID2"].Outcome != db.OutcomeAnswered {
+		t.Fatalf("records = %+v, want the retry answered", got)
+	}
+}
+
+func TestRecorderRejectingRequest(t *testing.T) {
+	d := openDB(t)
+	r := newTestRecorder(t, d)
+
+	invite := func(icid, to string) *sip.Request {
+		req := sip.NewRequest("INVITE", sip.URI{Scheme: "tel", User: "+15551230002"})
+		req.Header.Add("To", to)
+		req.Header.Add("P-Charging-Vector", "icid-value="+icid)
+
+		return req
+	}
+
+	for _, icid := range []string{"MAPPED", "REINVITE", "OTHER"} {
+		r.Attempt(attempt(icid))
+	}
+
+	// A 503 reaches the caller as a 500 (RFC 3261 §16.7 step 6).
+	r.RejectingRequest(invite("MAPPED", "<tel:+15551230002>"), 503)
+	r.RejectingRequest(invite("REINVITE", "<tel:+15551230002>;tag=b"), 500)
+
+	other := invite("OTHER", "<tel:+15551230002>")
+	other.Method = "MESSAGE"
+	r.RejectingRequest(other, 500)
+
+	for _, icid := range []string{"MAPPED", "REINVITE", "OTHER"} {
+		r.Ended(icid, End{Code: 500, By: proxy.Callee, Cause: proxy.EndFailed})
+	}
+
+	r.Close()
+
+	got := records(t, d)
+
+	for icid, want := range map[string]db.CallParty{
+		"MAPPED": db.PartyNetwork, "REINVITE": db.PartyCallee, "OTHER": db.PartyCallee,
+	} {
+		if got[icid].EndedBy != want {
+			t.Fatalf("%s ended by %q, want %q", icid, got[icid].EndedBy, want)
+		}
+	}
+}
+
+func eventually(t *testing.T, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met in time")
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -477,7 +612,7 @@ func TestRecorderRetriesAFailedTransaction(t *testing.T) {
 func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 	d := openDB(t)
 
-	if errs, err := d.SaveCallRecords(t.Context(), []*db.CallRecord{new(attempted("TAKEN"))}); err != nil || errs != nil {
+	if errs, err := d.SaveCallRecords(t.Context(), []*db.CallRecord{new(attempted("TAKEN"))}, nil); err != nil || errs != nil {
 		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
 	}
 
@@ -564,7 +699,8 @@ func TestNilRecorder(t *testing.T) {
 	var r *Recorder
 
 	r.Attempt(attempt("ICID1"))
-	r.Rejected("ICID1", 403)
+	r.Rejecting("ICID1", 403)
+	r.RejectingRequest(nil, 403)
 	r.Routed("ICID1", Routing{})
 	r.Reached("ICID1", "")
 	r.Alerted("ICID1")
@@ -587,9 +723,36 @@ type testStore struct {
 	fail int
 }
 
-func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecord) ([]error, error) {
-	if s.gate != nil {
-		<-s.gate
+// pause makes the store wait to save until resume.
+func (s *testStore) pause() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.gate = make(chan struct{})
+}
+
+func (s *testStore) resume() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	close(s.gate)
+}
+
+func (s *testStore) CloseOpenCallRecords(ctx context.Context, live []string) (int64, error) {
+	if s.next == nil {
+		return 0, nil
+	}
+
+	return s.next.CloseOpenCallRecords(ctx, live)
+}
+
+func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecord, deleted []int64) ([]error, error) {
+	s.mu.Lock()
+	gate := s.gate
+	s.mu.Unlock()
+
+	if gate != nil {
+		<-gate
 	}
 
 	s.mu.Lock()
@@ -607,7 +770,7 @@ func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecor
 	)
 
 	if s.next != nil {
-		errs, err = s.next.SaveCallRecords(ctx, records)
+		errs, err = s.next.SaveCallRecords(ctx, records, deleted)
 	}
 
 	if s.saved != nil && err == nil {

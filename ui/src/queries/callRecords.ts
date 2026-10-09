@@ -6,7 +6,13 @@ import {
 } from "@/queries/utils";
 
 export type CallOutcome =
-  "answered" | "cancelled" | "busy" | "rejected" | "no_answer" | "failed";
+  | "answered"
+  | "cancelled"
+  | "busy"
+  | "rejected"
+  | "no_answer"
+  | "unavailable"
+  | "failed";
 
 export const CALL_OUTCOMES: CallOutcome[] = [
   "answered",
@@ -14,6 +20,7 @@ export const CALL_OUTCOMES: CallOutcome[] = [
   "busy",
   "rejected",
   "no_answer",
+  "unavailable",
   "failed",
 ];
 
@@ -40,7 +47,7 @@ export interface CallRecord {
   alerted: boolean;
   media: string[];
   in_progress: boolean;
-  // The IMS lost the call, in a restart, before it ended.
+  // Closed without the end of the call.
   incomplete: boolean;
   duration_ms?: number;
 }
@@ -70,6 +77,9 @@ export const listCallRecords = (
       outcome: params.outcomes,
     }),
   );
+
+export const getCallRecord = (id: number): Promise<CallRecord> =>
+  apiFetch<CallRecord>(`/api/v1/call-records/${id}`);
 
 export const getCallRecordRetention = (): Promise<CallRecordRetention> =>
   apiFetch<CallRecordRetention>("/api/v1/call-records/retention");

@@ -26,7 +26,7 @@ func TestCallRecordsAtStart(t *testing.T) {
 		SIPStatus: 486, Outcome: db.OutcomeBusy, EndedBy: db.PartyCallee, DeliveryStartAt: now.Add(-91 * 24 * time.Hour),
 	}
 
-	if errs, err := d.SaveCallRecords(t.Context(), []*db.CallRecord{open, old}); err != nil || errs != nil {
+	if errs, err := d.SaveCallRecords(t.Context(), []*db.CallRecord{open, old}, nil); err != nil || errs != nil {
 		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
 	}
 

@@ -91,7 +91,7 @@ func TestReadsDoNotHoldUpWrites(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
-	if errs, err := d.SaveCallRecords(ctx, []*CallRecord{attempt("ICID1", callT0)}); err != nil || errs != nil {
+	if errs, err := d.SaveCallRecords(ctx, []*CallRecord{attempt("ICID1", callT0)}, nil); err != nil || errs != nil {
 		t.Fatalf("SaveCallRecords during a read = %v, %v", errs, err)
 	}
 

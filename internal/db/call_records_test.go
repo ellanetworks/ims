@@ -37,7 +37,7 @@ func ended(r *CallRecord, status int, outcome CallOutcome, by CallParty) *CallRe
 func saveCalls(t *testing.T, d *DB, records ...*CallRecord) {
 	t.Helper()
 
-	errs, err := d.SaveCallRecords(t.Context(), records)
+	errs, err := d.SaveCallRecords(t.Context(), records, nil)
 	if err != nil || errs != nil {
 		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
 	}
@@ -95,7 +95,7 @@ func TestSaveCallRecordsKeepsTheOthers(t *testing.T) {
 	pruned := attempt("ICID3", callT0)
 	pruned.ID = 1000
 
-	errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{dup, ok, pruned})
+	errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{dup, ok, pruned}, nil)
 	if err != nil || len(errs) != 3 || !errors.Is(errs[0], ErrDuplicateICID) || errs[1] != nil ||
 		!errors.Is(errs[2], ErrNotFound) {
 		t.Fatalf("SaveCallRecords = %v, %v; want %v, nil and %v", errs, err, ErrDuplicateICID, ErrNotFound)
@@ -118,7 +118,7 @@ func TestSaveCallRecordsFailing(t *testing.T) {
 
 	r := attempt("ICID1", callT0)
 
-	errs, err := d.SaveCallRecords(ctx, []*CallRecord{r})
+	errs, err := d.SaveCallRecords(ctx, []*CallRecord{r}, nil)
 	if !errors.Is(err, context.Canceled) || errs != nil || r.ID != 0 {
 		t.Fatalf("SaveCallRecords = %v, %v, ID %d; want the transaction failed", errs, err, r.ID)
 	}
@@ -172,7 +172,7 @@ func TestCallRecordConstraints(t *testing.T) {
 			r := attempt("ICID1", callT0)
 			corrupt(r)
 
-			errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{r})
+			errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{r}, nil)
 			if err != nil || len(errs) != 1 || !isConstraint(errs[0], sqlite3.ErrConstraintCheck) {
 				t.Fatalf("SaveCallRecords = %v, %v; want a CHECK constraint failure", errs, err)
 			}
@@ -291,7 +291,7 @@ func TestCloseOpenCallRecords(t *testing.T) {
 	done := ended(attempt("ICID3", callT0), 487, OutcomeCancelled, PartyCaller)
 	saveCalls(t, d, ringing, inCall, done)
 
-	n, err := d.CloseOpenCallRecords(t.Context())
+	n, err := d.CloseOpenCallRecords(t.Context(), nil)
 	if err != nil || n != 2 {
 		t.Fatalf("CloseOpenCallRecords = %d, %v; want 2", n, err)
 	}
@@ -307,8 +307,52 @@ func TestCloseOpenCallRecords(t *testing.T) {
 		}
 	}
 
-	if n, err := d.CloseOpenCallRecords(t.Context()); err != nil || n != 0 {
+	if n, err := d.CloseOpenCallRecords(t.Context(), nil); err != nil || n != 0 {
 		t.Fatalf("second CloseOpenCallRecords = %d, %v; want 0", n, err)
+	}
+}
+
+func TestCloseOpenCallRecordsSparesTheLive(t *testing.T) {
+	d := openTestDB(t)
+
+	live, lost := attempt("ICID1", callT0), attempt("ICID2", callT0)
+	saveCalls(t, d, live, lost)
+
+	if n, err := d.CloseOpenCallRecords(t.Context(), []string{"ICID1", "ICID9"}); err != nil || n != 1 {
+		t.Fatalf("CloseOpenCallRecords = %d, %v; want 1", n, err)
+	}
+
+	for _, r := range []*CallRecord{live, lost} {
+		got, err := d.GetCallRecord(t.Context(), r.ID)
+		if err != nil {
+			t.Fatalf("GetCallRecord: %v", err)
+		}
+
+		if want := r == lost; got.Incomplete != want {
+			t.Fatalf("%s incomplete = %t, want %t", r.ICID, got.Incomplete, want)
+		}
+	}
+}
+
+func TestSaveCallRecordsDeletes(t *testing.T) {
+	d := openTestDB(t)
+
+	kept, gone := attempt("ICID1", callT0), attempt("ICID2", callT0)
+	saveCalls(t, d, kept, gone)
+
+	kept.Alerted = true
+
+	errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{kept}, []int64{gone.ID, 999})
+	if err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
+	}
+
+	if _, err := d.GetCallRecord(t.Context(), gone.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetCallRecord of the deleted = %v, want %v", err, ErrNotFound)
+	}
+
+	if got, err := d.GetCallRecord(t.Context(), kept.ID); err != nil || !got.Alerted {
+		t.Fatalf("GetCallRecord of the kept = %+v, %v; want it alerted", got, err)
 	}
 }
 

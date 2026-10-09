@@ -7,6 +7,7 @@ export const outcomeLabels: Record<CallOutcome, string> = {
   busy: "busy",
   rejected: "rejected",
   no_answer: "no answer",
+  unavailable: "unavailable",
   failed: "failed",
 };
 

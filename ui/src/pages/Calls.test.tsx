@@ -35,15 +35,23 @@ const ringing = callRecord({
   duration_ms: undefined,
 });
 
-const serve = (items: CallRecord[]) => {
+const serve = (items: CallRecord[], details: CallRecord[] = items) => {
   const urls: string[] = [];
   const puts: unknown[] = [];
   let days = 90;
+
+  const detailRoutes = Object.fromEntries(
+    details.map((r) => [
+      `/api/v1/call-records/${r.id}`,
+      () => json(200, { result: r }),
+    ]),
+  );
 
   vi.stubGlobal(
     "fetch",
     vi.fn(
       stubApi({
+        ...detailRoutes,
         "/api/v1/call-records": (url) => {
           urls.push(url.search);
           const outcomes = url.searchParams.getAll("outcome");
@@ -115,6 +123,31 @@ describe("Calls", () => {
     expect(cells("2026-10-08 12:10:00")[3]).toBe("ringing");
   });
 
+  it("shows a call not yet alerted as calling", async () => {
+    serve([{ ...ringing, alerted: false }]);
+
+    renderWithClient(<Calls />);
+
+    await screen.findByText("2026-10-08 12:10:00");
+    expect(cells("2026-10-08 12:10:00")[3]).toBe("calling");
+  });
+
+  it("includes the minute of To", async () => {
+    const { urls } = serve([answered]);
+
+    renderWithClient(<Calls />);
+    await screen.findByText("2026-10-08 12:00:00");
+
+    fireEvent.change(screen.getByLabelText("To"), {
+      target: { value: "2026-10-08T12:30" },
+    });
+
+    const to = new Date("2026-10-08T12:31").toISOString();
+    await waitFor(() =>
+      expect(new URLSearchParams(urls.at(-1)).get("to")).toBe(to),
+    );
+  });
+
   it("filters by outcome", async () => {
     const { urls } = serve([busy, answered]);
 
@@ -153,6 +186,28 @@ describe("Calls", () => {
     expect(
       within(drawer).getByRole("button", { name: "Copy ICID" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows a call as the IMS last recorded it", async () => {
+    serve(
+      [ringing],
+      [
+        {
+          ...ringing,
+          sip_status: 200,
+          outcome: "answered",
+          ended_by: "caller",
+          in_progress: false,
+        },
+      ],
+    );
+
+    renderWithClient(<Calls />);
+    fireEvent.click(await screen.findByText("2026-10-08 12:10:00"));
+
+    const drawer = await screen.findByRole("dialog");
+    await waitFor(() => expect(drawer).toHaveTextContent("SIP Status200"));
+    expect(drawer).toHaveTextContent("Ended ByCaller");
   });
 
   it("edits the retention", async () => {

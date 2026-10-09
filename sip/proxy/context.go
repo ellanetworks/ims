@@ -1065,7 +1065,7 @@ func withChallenges(best *sip.Response, all []*sip.Response) *sip.Response {
 // finalize relays the final response. A 503 goes upstream as a 500 (RFC 3261 §16.7 step 6), and a
 // 430, meant for the proxy holding the registration, as a 480 (RFC 5626 §11.5).
 func (c *responseContext) finalize(res *sip.Response) error {
-	if code := upstreamStatus(res.StatusCode); code != res.StatusCode {
+	if code := UpstreamStatus(res.StatusCode); code != res.StatusCode {
 		res = c.generate(code)
 	}
 
@@ -1075,10 +1075,10 @@ func (c *responseContext) finalize(res *sip.Response) error {
 	return err
 }
 
-// upstreamStatus is the status a proxy sends upstream for a best response of a status code: not a 503, which would
+// UpstreamStatus is the status a proxy sends upstream for a best response of a status code: not a 503, which would
 // make the client try another server (RFC 3261 §16.7 step 6), nor a 430, which only concerns this hop's flow
 // (RFC 5626 §11.5).
-func upstreamStatus(code int) int {
+func UpstreamStatus(code int) int {
 	switch code {
 	case 503:
 		return 500

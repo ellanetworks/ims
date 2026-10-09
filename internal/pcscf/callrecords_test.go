@@ -152,8 +152,9 @@ func TestCallRecordOfAFailedCall(t *testing.T) {
 	}{
 		{"busy", false, 486, db.OutcomeBusy},
 		{"declined", true, 603, db.OutcomeRejected},
-		{"no answer", true, 480, db.OutcomeNoAnswer},
-		{"unavailable", false, 480, db.OutcomeFailed},
+		{"rang out", true, 408, db.OutcomeNoAnswer},
+		{"unavailable after ringing", true, 480, db.OutcomeUnavailable},
+		{"unavailable", false, 480, db.OutcomeUnavailable},
 		// The caller gets a 500 for a 503 (RFC 3261 §16.7).
 		{"server error", false, 503, db.OutcomeFailed},
 	}
@@ -232,6 +233,20 @@ func TestCallRecordOfARejectedCall(t *testing.T) {
 	r := s.callRecord(t, rec)
 	if r.SIPStatus != 483 || r.Outcome != db.OutcomeFailed || r.EndedBy != db.PartyNetwork || r.CallerIMPI != testIMPI {
 		t.Errorf("record %+v, want a 483 from the network to the registered UE", r)
+	}
+}
+
+// TestNoCallRecordOfARetriedAttempt checks that an attempt the UE makes again, here with a longer session
+// interval, leaves no record: the next attempt is the call's.
+func TestNoCallRecordOfARetriedAttempt(t *testing.T) {
+	s, u, rec := newRecordScene(t)
+	c := s.originatingCall(t, u)
+
+	s.scscf.Send(c.flow.Transport, c.flow.Remote, c.s.coreResponse(c.core, 422, "callee"))
+	wantStatus(t, lastResponse(t, u), 422)
+
+	if l := s.callRecords(t, rec); len(l) != 0 {
+		t.Fatalf("records = %+v, want none", l)
 	}
 }
 
@@ -371,5 +386,72 @@ func TestCallRecordReleasedTowardTheUE(t *testing.T) {
 
 	if r := s.callRecord(t, rec); r.SIPStatus != 500 || r.EndedBy != db.PartyNetwork {
 		t.Fatalf("record %+v, want a 500 from the network", r)
+	}
+}
+
+// TestCallRecordRefusedTowardTheUE checks that a call the terminating P-CSCF refuses itself is recorded as ended
+// by the network, though its response reaches the caller from downstream.
+func TestCallRecordRefusedTowardTheUE(t *testing.T) {
+	var rec *callrecords.Recorder
+
+	s, u := newIPsecRegScene(t, recordTo(&rec))
+	t.Cleanup(rec.Close)
+
+	token, _ := s.registerOverIPsec(u)
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", func(r *sip.Request) {
+		r.Header.Set("Max-Forwards", "0")
+	}))
+	wantStatus(t, lastCoreResponse(t, s), 483)
+
+	// The originating P-CSCF sees a 483 from downstream.
+	rec.Ended("AB12", callrecords.End{Code: 483, By: proxy.Callee, Cause: proxy.EndFailed})
+
+	if r := s.callRecord(t, rec); r.SIPStatus != 483 || r.EndedBy != db.PartyNetwork {
+		t.Fatalf("record %+v, want a 483 from the network", r)
+	}
+}
+
+// TestCallRecordReachedWithAQuotedICID checks that the terminating P-CSCF reports a call whose ICID is a quoted
+// string by its value (RFC 7315 §5.6).
+func TestCallRecordReachedWithAQuotedICID(t *testing.T) {
+	var rec *callrecords.Recorder
+
+	s, u := newIPsecRegScene(t, recordTo(&rec))
+	t.Cleanup(rec.Close)
+
+	token, _ := s.registerOverIPsec(u)
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", func(r *sip.Request) {
+		r.Header.Set("P-Charging-Vector", `icid-value="AB12";orig-ioi=other.example`)
+	}))
+	wantStatus(t, first(s.scscf.RecvResponse()), 100)
+
+	got, f := u.us.RecvRequest()
+
+	ok := sip.NewResponse(got, 200, "")
+	_ = ok.Header.SetToTag(sip.NewTag())
+	ok.Header.Add("Contact", ueContact(u))
+
+	for _, v := range got.Header.Values("Record-Route") {
+		ok.Header.Add("Record-Route", v)
+	}
+
+	u.us.Send(sip.UDP, f.Remote, ok)
+	wantStatus(t, first(s.scscf.RecvResponse()), 200)
+
+	if r := s.callRecord(t, rec); r.CalleeIMPI != testIMPI {
+		t.Fatalf("callee IMPI = %q, want %s", r.CalleeIMPI, testIMPI)
+	}
+}
+
+// lastCoreResponse is the next final response to the S-CSCF.
+func lastCoreResponse(t *testing.T, s *ipsecScene) *sip.Response {
+	t.Helper()
+
+	for {
+		if res := first(s.scscf.RecvResponse()); res.StatusCode >= 200 {
+			return res
+		}
 	}
 }

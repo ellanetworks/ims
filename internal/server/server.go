@@ -96,7 +96,7 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 
 	// The calls in progress when the IMS last stopped were lost with it.
-	closed, err := database.CloseOpenCallRecords(ctx)
+	closed, err := database.CloseOpenCallRecords(ctx, nil)
 	if err != nil {
 		_ = database.Close()
 		return err

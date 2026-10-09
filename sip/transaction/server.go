@@ -76,6 +76,18 @@ func (tx *ServerTransaction) cancelTag() string {
 	return tx.tag
 }
 
+// Status is the status code of the final response the transaction sent, or 0 if it has sent none.
+func (tx *ServerTransaction) Status() int {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if !tx.final {
+		return 0
+	}
+
+	return tx.last.StatusCode
+}
+
 func (tx *ServerTransaction) Respond(res *sip.Response) error {
 	res = res.Clone()
 

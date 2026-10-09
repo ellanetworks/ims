@@ -9,13 +9,14 @@ export default function CallOutcomeChip({ record }: { record: CallRecord }) {
   }
 
   if (record.in_progress) {
-    return (
-      <Chip
-        label={record.outcome === "answered" ? "in call" : "ringing"}
-        color="info"
-        size="small"
-      />
-    );
+    const label =
+      record.outcome === "answered"
+        ? "in call"
+        : record.alerted
+          ? "ringing"
+          : "calling";
+
+    return <Chip label={label} color="info" size="small" />;
   }
 
   switch (record.outcome) {

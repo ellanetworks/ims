@@ -59,7 +59,8 @@ type CallRecordRetention struct {
 
 var outcomes = map[string]db.CallOutcome{
 	"answered": db.OutcomeAnswered, "cancelled": db.OutcomeCancelled, "busy": db.OutcomeBusy,
-	"rejected": db.OutcomeRejected, "no_answer": db.OutcomeNoAnswer, "failed": db.OutcomeFailed,
+	"rejected": db.OutcomeRejected, "no_answer": db.OutcomeNoAnswer, "unavailable": db.OutcomeUnavailable,
+	"failed": db.OutcomeFailed,
 }
 
 func ListCallRecords(cfg Config) http.Handler {
@@ -155,14 +156,25 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 			return db.CallRecordFilter{}, false
 		}
 
+		// Times are stored in nanoseconds since the epoch.
+		if !time.Unix(0, t.UnixNano()).Equal(t) {
+			writeError(w, http.StatusBadRequest, b.name+" must be from 1678 to 2262", nil, cfg.Logger)
+			return db.CallRecordFilter{}, false
+		}
+
 		*b.t = t
+	}
+
+	if !f.From.IsZero() && !f.To.IsZero() && !f.From.Before(f.To) {
+		writeError(w, http.StatusBadRequest, "from must be before to", nil, cfg.Logger)
+		return db.CallRecordFilter{}, false
 	}
 
 	for _, v := range q["outcome"] {
 		o, ok := outcomes[v]
 		if !ok {
 			writeError(w, http.StatusBadRequest,
-				"outcome must be answered, cancelled, busy, rejected, no_answer or failed", nil, cfg.Logger)
+				"outcome must be answered, cancelled, busy, rejected, no_answer, unavailable or failed", nil, cfg.Logger)
 
 			return db.CallRecordFilter{}, false
 		}

@@ -4,6 +4,7 @@ package callrecords
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -26,7 +27,8 @@ const (
 )
 
 type Store interface {
-	SaveCallRecords(ctx context.Context, records []*db.CallRecord) ([]error, error)
+	SaveCallRecords(ctx context.Context, records []*db.CallRecord, deleted []int64) ([]error, error)
+	CloseOpenCallRecords(ctx context.Context, live []string) (int64, error)
 }
 
 type Clock interface {
@@ -78,7 +80,8 @@ type End struct {
 // Recorder keeps the records of calls. The nodes report what they see of a call by its ICID, from SIP handlers,
 // which must not wait on the database: a report only changes the record in memory, and a writer saves the
 // records that changed. When the database cannot keep up, the records of ended calls wait in memory, up to a
-// limit past which the recorder drops them. A nil Recorder records nothing.
+// limit past which the recorder drops them: the writer then closes them as incomplete once it catches up. A nil
+// Recorder records nothing.
 type Recorder struct {
 	store      Store
 	clock      Clock
@@ -99,14 +102,22 @@ type Recorder struct {
 	unsaved int
 	// dropped is how many records of ended calls were dropped since the writer last logged it.
 	dropped int
-	closed  bool
+	// orphaned reports that records may have been left open in the database for calls the recorder no longer
+	// keeps, which the writer closes once it has saved the others.
+	orphaned bool
+	closed   bool
 }
 
 type call struct {
 	rec db.CallRecord
-	// network reports that the IMS answered or released the call.
+	// network reports that the IMS released the call.
 	network bool
-	ended   bool
+	// rejecting are the statuses the nodes of the IMS answered the INVITE with themselves, as the caller gets them:
+	// the call ended on one of them ended by the network.
+	rejecting []int
+	ended     bool
+	// discard reports an attempt that the caller makes again, whose record is deleted rather than saved.
+	discard bool
 	changed bool
 }
 
@@ -180,18 +191,20 @@ func (r *Recorder) Attempt(a Attempt) {
 	r.changeLocked(c)
 }
 
-// Rejected reports that a node of the IMS answered the INVITE itself, with an error status, which ends the call.
-// Then the node's response reaching the originating P-CSCF changes nothing.
-func (r *Recorder) Rejected(icid string, code int) {
-	r.update(icid, func(c *call, now time.Time) {
-		c.network = true
-		r.endLocked(c, code, db.PartyNetwork, now)
+// Rejecting reports that a node of the IMS answers the INVITE itself with an error status, before it does. The
+// call is then ended by the network if the caller gets that status: a CANCEL that came first makes it end on
+// the 487 instead.
+func (r *Recorder) Rejecting(icid string, code int) {
+	r.update(icid, func(c *call, _ time.Time) {
+		if !slices.Contains(c.rejecting, code) {
+			c.rejecting = append(c.rejecting, code)
+		}
 	})
 }
 
-// RejectedRequest reports that a node of the IMS answered a request itself with a status, when the request is the
-// INVITE that starts a call and the status ends it.
-func (r *Recorder) RejectedRequest(req *sip.Request, code int) {
+// RejectingRequest reports that a node of the IMS behind the originating P-CSCF answers a request itself with a
+// status, before it does, when the request is the INVITE that starts a call and the status ends it.
+func (r *Recorder) RejectingRequest(req *sip.Request, code int) {
 	if r == nil || req.Method != "INVITE" || code < 300 {
 		return
 	}
@@ -200,7 +213,8 @@ func (r *Recorder) RejectedRequest(req *sip.Request, code int) {
 		return
 	}
 
-	r.Rejected(req.Header.ICID(), code)
+	// The proxies on the way back to the caller change some statuses.
+	r.Rejecting(req.Header.ICID(), proxy.UpstreamStatus(code))
 }
 
 // Routed reports the INVITE as the originating S-CSCF sends it on.
@@ -255,11 +269,12 @@ func (r *Recorder) Released(icid string) {
 	})
 }
 
-// Ended reports the end of the originating P-CSCF's dialog of the call.
+// Ended reports the end of the originating P-CSCF's dialog of the call, or the final response the P-CSCF sent
+// the caller itself, without a dialog.
 func (r *Recorder) Ended(icid string, e End) {
 	r.update(icid, func(c *call, now time.Time) {
 		by := EndedBy(e.Cause, e.By)
-		if c.network {
+		if c.network || c.rec.SIPStatus == 0 && slices.Contains(c.rejecting, e.Code) {
 			by = db.PartyNetwork
 		}
 
@@ -308,12 +323,13 @@ func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
 }
 
 // endLocked ends the record of a call with the final status of its INVITE, which only counts if it was not
-// answered. It drops the record instead when too many ended ones are not saved yet: the record is then left as
-// last saved, open, which the next start of the IMS closes as incomplete.
+// answered. A status the caller retries on discards the record. It drops the record instead when too many ended
+// ones are not saved yet: the record is then left as last saved, open, until the writer closes it as incomplete.
 func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) {
 	if r.unsaved >= r.maxUnsaved {
 		r.dropLocked(c)
 		r.dropped++
+		r.orphanedLocked()
 
 		return
 	}
@@ -324,6 +340,9 @@ func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) 
 	switch {
 	case c.rec.SIPStatus != 0:
 		c.rec.DeliveryEndAt = now
+	case Retried(code):
+		c.discard = true
+		return
 	case code < 200 || code > 699:
 		// The caller's final response is unknown.
 		c.rec.Incomplete = true
@@ -346,7 +365,16 @@ func (r *Recorder) changeLocked(c *call) {
 
 	c.changed = true
 	r.changed = append(r.changed, c)
+	r.wakeLocked()
+}
 
+// orphanedLocked notes that a record may be left open in the database without a call the recorder keeps.
+func (r *Recorder) orphanedLocked() {
+	r.orphaned = true
+	r.wakeLocked()
+}
+
+func (r *Recorder) wakeLocked() {
 	select {
 	case r.wake <- struct{}{}:
 	default:
@@ -377,7 +405,7 @@ func (r *Recorder) write() {
 		}
 
 		for {
-			more, err := r.save()
+			more, err := r.sync()
 			if err == nil {
 				retry = minRetry
 
@@ -401,11 +429,11 @@ func (r *Recorder) write() {
 	}
 }
 
-// flush saves the records that changed, and gives up at the first failure, so that stopping does not wait on a
-// failing database.
+// flush saves the records that changed, and closes those dropped calls left open, and gives up at the first
+// failure, so that stopping does not wait on a failing database.
 func (r *Recorder) flush() {
 	for {
-		more, err := r.save()
+		more, err := r.sync()
 		if err != nil {
 			r.log.Error("saving call records failed", slog.Any("error", err))
 			return
@@ -417,8 +445,50 @@ func (r *Recorder) flush() {
 	}
 }
 
-// save saves a batch of the records that changed, and reports whether others are left to save. When the
-// transaction fails, the records stay changed, to be saved again.
+// sync saves a batch of the records that changed, or once all are saved closes those left open by calls the
+// recorder dropped, and reports whether work is left.
+func (r *Recorder) sync() (more bool, err error) {
+	if more, err = r.save(); err != nil || more {
+		return more, err
+	}
+
+	return false, r.closeOrphans()
+}
+
+// closeOrphans closes as incomplete the records left open in the database by calls the recorder dropped: those
+// open but of the calls it keeps. The writer alone inserts records, so none of a call that starts meanwhile is
+// in the database yet.
+func (r *Recorder) closeOrphans() error {
+	r.mu.Lock()
+
+	if !r.orphaned {
+		r.mu.Unlock()
+		return nil
+	}
+
+	r.orphaned = false
+	live := slices.Collect(maps.Keys(r.calls))
+
+	r.mu.Unlock()
+
+	n, err := r.store.CloseOpenCallRecords(context.Background(), live)
+	if err != nil {
+		r.mu.Lock()
+		r.orphaned = true
+		r.mu.Unlock()
+
+		return err
+	}
+
+	if n > 0 {
+		r.log.Warn("closed the call records of dropped calls as incomplete", slog.Int64("records", n))
+	}
+
+	return nil
+}
+
+// save saves a batch of the records that changed, and deletes those discarded, and reports whether others are
+// left. When the transaction fails, the records stay changed, to be saved again.
 func (r *Recorder) save() (more bool, err error) {
 	r.mu.Lock()
 
@@ -428,11 +498,13 @@ func (r *Recorder) save() (more bool, err error) {
 	}
 
 	var (
-		batch   []*call
-		records []*db.CallRecord
+		batch     []*call
+		records   []*db.CallRecord
+		discarded []*call
+		deleted   []int64
 	)
 
-	for len(r.changed) > 0 && len(batch) < maxBatch {
+	for len(r.changed) > 0 && len(batch)+len(discarded) < maxBatch {
 		c := r.changed[0]
 		r.changed[0] = nil
 		r.changed = r.changed[1:]
@@ -442,6 +514,19 @@ func (r *Recorder) save() (more bool, err error) {
 		}
 
 		c.changed = false
+
+		if c.discard {
+			// No batch is being saved, so one never saved is not in the database.
+			if c.rec.ID == 0 {
+				r.dropLocked(c)
+			} else {
+				discarded = append(discarded, c)
+				deleted = append(deleted, c.rec.ID)
+			}
+
+			continue
+		}
+
 		rec := c.rec
 		rec.CallingParty, rec.Media = slices.Clone(rec.CallingParty), slices.Clone(rec.Media)
 
@@ -451,23 +536,29 @@ func (r *Recorder) save() (more bool, err error) {
 
 	r.mu.Unlock()
 
-	if len(batch) == 0 {
+	if len(batch) == 0 && len(deleted) == 0 {
 		return false, nil
 	}
 
-	errs, err := r.store.SaveCallRecords(context.Background(), records)
+	errs, err := r.store.SaveCallRecords(context.Background(), records, deleted)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if err != nil {
-		for _, c := range batch {
+		for _, c := range slices.Concat(batch, discarded) {
 			if r.calls[c.rec.ICID] == c {
 				r.changeLocked(c)
 			}
 		}
 
 		return false, err
+	}
+
+	for _, c := range discarded {
+		if r.calls[c.rec.ICID] == c {
+			r.dropLocked(c)
+		}
 	}
 
 	for i, c := range batch {
@@ -479,6 +570,11 @@ func (r *Recorder) save() (more bool, err error) {
 			// Saving it again would fail again.
 			r.log.Error("dropped a call record that cannot be saved", slog.Any("error", errs[i]))
 			r.dropLocked(c)
+
+			// One saved before is left as it was then, maybe open.
+			if c.rec.ID != 0 {
+				r.orphaned = true
+			}
 
 			continue
 		}

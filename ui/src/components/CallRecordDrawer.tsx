@@ -23,8 +23,8 @@ import { formatTimestamp } from "@/utils/dates";
 const lines = (values: string[]) =>
   values.length > 0 ? (
     <Box component="span" sx={{ display: "flex", flexDirection: "column" }}>
-      {values.map((v) => (
-        <span key={v}>{v}</span>
+      {values.map((v, i) => (
+        <span key={i}>{v}</span>
       ))}
     </Box>
   ) : (
