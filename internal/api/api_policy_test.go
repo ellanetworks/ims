@@ -116,7 +116,6 @@ func TestUpdatePolicyRejected(t *testing.T) {
 		{"n5 without pcf_uri", `{"interface": "n5"}`, 400, "n5.pcf_uri is required"},
 		{"n5 with a bad pcf_uri", `{"interface": "n5", "n5": {"pcf_uri": "ftp://pcf"}}`, 400, "n5.pcf_uri must be http[s]://host[:port][/prefix]"},
 		{"n5 on rx", `{"interface": "rx", "n5": {"pcf_uri": "http://pcf"}}`, 400, "n5 is only for the n5 interface"},
-		{"rx without a peer", `{"interface": "rx"}`, 409, "rx requires a Diameter peer serving rx"},
 		{"against the configuration file", `{"interface": "n5", "n5": {"pcf_uri": "https://pcf"}}`, 400, "n5 over https requires n5.tls in the configuration file"},
 	}
 

@@ -76,16 +76,27 @@ const serve = (
   return urls;
 };
 
-const cells = (impi: string) =>
-  within(screen.getByText(impi).closest('[role="row"]') as HTMLElement)
+// imsiOf is how the table shows a registration: the IMSI of its IMPI.
+const imsiOf = (r: Registration) => r.impi.split("@")[0];
+
+const rowOf = (r: Registration) =>
+  screen.getByText(imsiOf(r)).closest('[role="row"]') as HTMLElement;
+
+const cells = (r: Registration) =>
+  within(rowOf(r))
     .getAllByRole("gridcell")
     .map((cell) => cell.textContent);
 
-// hssOf is the HSS of each implicit registration set the drawer shows.
-const hssOf = (drawer: HTMLElement) =>
-  within(drawer)
-    .getAllByText("HSS", { selector: "dt" })
-    .map((dt) => dt.nextElementSibling?.textContent);
+const open = async (r: Registration) => {
+  fireEvent.click(await screen.findByText(imsiOf(r)));
+  return screen.findByRole("dialog");
+};
+
+// fields is the keys and values of a section of the drawer.
+const fields = (drawer: HTMLElement, section: string) =>
+  within(within(drawer).getByRole("region", { name: section }))
+    .getAllByRole("term")
+    .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent]);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -103,63 +114,39 @@ describe("Registrations", () => {
         name: "Registrations (2)",
       }),
     ).toBeInTheDocument();
-    await screen.findByText(alice.impi);
-    expect(cells(alice.impi)).toEqual([
-      alice.impi,
+    await screen.findByText(imsiOf(alice));
+    expect(cells(alice)).toEqual([
       "+15551230001",
-      "35693803-564380-0urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
-      "yes",
-      "lost",
-      "2026-10-08 14:00:00",
+      "001010000000001",
+      "2lost",
+      "",
     ]);
-    expect(cells(bob.impi)).toEqual([
-      bob.impi,
-      "+15551230002",
-      "35693803-564381-0",
-      "no",
-      "—",
-      "2026-10-08 13:00:00",
-    ]);
+    expect(within(rowOf(alice)).getByLabelText("voice")).toBeInTheDocument();
+    expect(within(rowOf(alice)).getByLabelText("video")).toBeInTheDocument();
+    expect(cells(bob)).toEqual(["+15551230002", "001010000000002", "1", ""]);
+    expect(within(rowOf(bob)).getByLabelText("voice")).toBeInTheDocument();
+    expect(
+      within(rowOf(bob)).queryByLabelText("video"),
+    ).not.toBeInTheDocument();
   });
 
-  it("lists a device with several contacts once", async () => {
+  it("counts a device with several contacts once", async () => {
     serve([carol]);
 
     renderWithClient(<Registrations />);
 
-    await screen.findByText(carol.impi);
-    expect(cells(carol.impi)[2]).toBe("35693803-564380-0");
+    await screen.findByText(imsiOf(carol));
+    expect(cells(carol)[2]).toBe("1");
   });
 
-  // RFC 5626: a device with several registration flows.
-  it("shows the flows of a device", async () => {
-    const flows = registration({
-      contacts: [
-        contact({ reg_id: 1 }),
-        contact({ reg_id: 2, address: "192.0.2.40:5064" }),
-      ],
-    });
-    serve([flows]);
+  it("shows an IMPI not derived from an IMSI whole", async () => {
+    serve([registration({ impi: "alice@ims.example.org" })]);
 
     renderWithClient(<Registrations />);
 
-    await screen.findByText(flows.impi);
-    expect(cells(flows.impi)[2]).toBe("35693803-564380-0 · 2 flows");
-
-    fireEvent.click(screen.getByText(flows.impi));
-
-    const drawer = await screen.findByRole("dialog");
     expect(
-      within(drawer).getByRole("heading", { name: "Devices (1)" }),
+      await screen.findByText("alice@ims.example.org"),
     ).toBeInTheDocument();
-
-    const cards = within(
-      within(drawer).getByRole("list", { name: "35693803-564380-0" }),
-    ).getAllByRole("listitem");
-    expect(cards.map((c) => c.textContent?.slice(0, 26))).toEqual([
-      "Flow1Address192.0.2.30:506",
-      "Flow2Address192.0.2.40:506",
-    ]);
   });
 
   it("shows when nothing is registered", async () => {
@@ -174,16 +161,16 @@ describe("Registrations", () => {
     const urls = serve([alice, bob]);
 
     renderWithClient(<Registrations />);
-    await screen.findByText(alice.impi);
+    await screen.findByText(imsiOf(alice));
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search" }), {
       target: { value: " +15551230002 " },
     });
 
     await waitFor(() =>
-      expect(screen.queryByText(alice.impi)).not.toBeInTheDocument(),
+      expect(screen.queryByText(imsiOf(alice))).not.toBeInTheDocument(),
     );
-    expect(screen.getByText(bob.impi)).toBeInTheDocument();
+    expect(screen.getByText(imsiOf(bob))).toBeInTheDocument();
     expect(urls.at(-1)).toBe("?page=1&per_page=25&search=%2B15551230002");
   });
 
@@ -191,42 +178,38 @@ describe("Registrations", () => {
     serve([alice]);
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(alice.impi));
+    const drawer = await open(alice);
 
-    const drawer = await screen.findByRole("dialog");
     expect(
-      within(drawer).getByRole("heading", { name: alice.impi }),
+      within(drawer).getByRole("heading", { name: "+15551230001" }),
     ).toBeInTheDocument();
-    expect(
-      within(drawer).getByRole("heading", { name: "Public Identities (3)" }),
-    ).toBeInTheDocument();
-    expect(within(drawer).getByText("barred")).toBeInTheDocument();
-    expect(
-      within(drawer).getByRole("heading", { name: "Devices (2)" }),
-    ).toBeInTheDocument();
-    expect(hssOf(drawer)).toEqual([
-      "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.orgepc.mnc001.mcc001.3gppnetwork.org",
+    expect(fields(drawer, "Subscriber")).toEqual([
+      ["Number", "+15551230001"],
+      ["IMSI", "001010000000001"],
+      ["HSS", "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org"],
     ]);
-    expect(
-      within(drawer).queryByText(/Implicit Registration Set/),
-    ).not.toBeInTheDocument();
-
-    const [first] = within(
-      within(drawer).getByRole("list", { name: "35693803-564380-0" }),
-    ).getAllByRole("listitem");
-    expect(first).toHaveTextContent(
-      [
-        "Address192.0.2.30:5064",
-        "TransportUDP",
-        "IPsecyes",
-        "Mediaaudio, video",
-        "Priority1.0",
-        "Signalling Pathmonitored",
-        "Registered2026-10-08 12:00:00",
-        "Expires2026-10-08 13:00:00",
-        "Contactsip:001010000000001@192.0.2.30:5064",
-      ].join(""),
-    );
+    expect(fields(drawer, "Device 1")).toEqual([
+      ["IMEI", "35693803-564380-0"],
+      ["Address", "192.0.2.30:5064"],
+      ["Transport", "UDP"],
+      ["IPsec", "Yes"],
+      ["Media", "Voice, Video"],
+      ["Signalling", "Monitored"],
+      ["Registered", "2026-10-08 12:00:00"],
+      ["Expires", "2026-10-08 13:00:00"],
+    ]);
+    expect(fields(drawer, "Device 2")).toEqual([
+      ["Instance", "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6"],
+      ["Address", "192.0.2.30:5064"],
+      ["Transport", "UDP"],
+      ["IPsec", "No"],
+      ["Media", "Voice"],
+      ["Signalling", "Lost"],
+      ["Registered", "2026-10-08 12:00:00"],
+      ["Expires", "2026-10-08 14:00:00"],
+    ]);
+    // The barred IMPU is the device's own, for registering: it is not shown.
+    expect(within(drawer).queryByText(/^sip:/)).not.toBeInTheDocument();
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
     await waitFor(() =>
@@ -234,58 +217,65 @@ describe("Registrations", () => {
     );
   });
 
-  it("shows each implicit registration set with its HSS", async () => {
-    serve([
-      registration({
-        implicit_registration_sets: [
-          {
-            hss: { host: "hss1.example.org", realm: "example.org" },
-            identities: [
-              { uri: "tel:+15551230001", barred: false, registered_with: [] },
-            ],
-            contacts: [contact()],
-          },
-          {
-            identities: [
-              {
-                uri: "sip:alice@ims.mnc001.mcc001.3gppnetwork.org",
-                barred: false,
-                registered_with: [],
-              },
-            ],
-            contacts: [contact()],
-          },
-        ],
-      }),
-    ]);
+  // RFC 5626: a device with several registration flows.
+  it("shows the flows of a device", async () => {
+    const flows = registration({
+      contacts: [
+        contact({ reg_id: 1 }),
+        contact({ reg_id: 2, address: "192.0.2.40:5064" }),
+      ],
+    });
+    serve([flows]);
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(alice.impi));
+    await screen.findByText(imsiOf(flows));
+    expect(cells(flows)[2]).toBe("1");
 
-    const drawer = await screen.findByRole("dialog");
-    expect(
-      within(drawer).getByRole("heading", {
-        name: "Implicit Registration Set 1",
-      }),
-    ).toBeInTheDocument();
-    expect(
-      within(drawer).getByRole("heading", {
-        name: "Implicit Registration Set 2",
-      }),
-    ).toBeInTheDocument();
-    expect(hssOf(drawer)).toEqual(["hss1.example.orgexample.org", "—"]);
-    const second = within(drawer).getByRole("region", {
-      name: "Implicit Registration Set 2",
-    });
-    expect(
-      within(second).getByRole("heading", {
-        level: 4,
-        name: "Public Identities (1)",
-      }),
-    ).toBeInTheDocument();
+    const drawer = await open(flows);
+    expect(fields(drawer, "Device 1 Flow 1")).toContainEqual([
+      "Address",
+      "192.0.2.30:5064",
+    ]);
+    expect(fields(drawer, "Device 1 Flow 2")).toContainEqual([
+      "Address",
+      "192.0.2.40:5064",
+    ]);
+    expect(within(drawer).queryByText("Device 2")).not.toBeInTheDocument();
   });
 
-  it("searches a number shared with other identities", async () => {
+  it("merges the implicit registration sets", async () => {
+    const twoSets = registration({
+      implicit_registration_sets: [
+        {
+          hss: { host: "hss1.example.org", realm: "example.org" },
+          identities: [
+            { uri: "tel:+15551230001", barred: false, registered_with: [] },
+          ],
+          contacts: [contact()],
+        },
+        {
+          hss: { host: "hss1.example.org", realm: "example.org" },
+          identities: [
+            { uri: "tel:+15551230009", barred: false, registered_with: [] },
+          ],
+          contacts: [contact()],
+        },
+      ],
+    });
+    serve([twoSets]);
+
+    renderWithClient(<Registrations />);
+    const drawer = await open(twoSets);
+
+    expect(fields(drawer, "Subscriber")).toEqual([
+      ["Number", "+15551230001, +15551230009"],
+      ["IMSI", "001010000000001"],
+      ["HSS", "hss1.example.org"],
+    ]);
+    expect(within(drawer).queryByText("Device 2")).not.toBeInTheDocument();
+  });
+
+  it("links to the other private identities on a number", async () => {
     const shared = registration({
       identities: [
         {
@@ -294,67 +284,92 @@ describe("Registrations", () => {
           registered_with: [bob.impi],
         },
       ],
-      contacts: [contact({ q: 0.5 })],
     });
     const urls = serve([shared, bob]);
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(shared.impi));
+    await screen.findByText(imsiOf(shared));
+    expect(cells(shared)[0]).toBe("+15551230001");
+    expect(cells(bob)[0]).toBe("+15551230002");
 
-    const drawer = await screen.findByRole("dialog");
-    expect(within(drawer).getByText("Priority")).toBeInTheDocument();
-    expect(within(drawer).getByText("0.5")).toBeInTheDocument();
-
-    expect(within(drawer).getByText("shared with 1 other")).toBeInTheDocument();
+    const drawer = await open(shared);
+    expect(fields(drawer, "Subscriber")).toContainEqual([
+      "Also on",
+      "IMSI 001010000000002",
+    ]);
     fireEvent.click(
-      within(drawer).getByRole("button", {
-        name: `Search +15551230001: also registered with ${bob.impi}`,
-      }),
+      within(drawer).getByRole("button", { name: "IMSI 001010000000002" }),
     );
 
     await waitFor(() =>
-      expect(urls.at(-1)).toBe("?page=1&per_page=25&search=%2B15551230001"),
+      expect(urls.at(-1)).toBe("?page=1&per_page=25&search=001010000000002"),
     );
     expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue(
-      "+15551230001",
+      "001010000000002",
     );
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
 
-  it("shows IPsec as unknown without the P-CSCF's flow", async () => {
-    serve([
-      registration({
-        contacts: [
-          contact({
-            address: undefined,
-            transport: undefined,
-            protected: false,
-          }),
-        ],
-      }),
-    ]);
+  it("does not claim IPsec without the P-CSCF's flow", async () => {
+    const unknown = registration({
+      contacts: [
+        contact({
+          address: undefined,
+          transport: undefined,
+          protected: false,
+        }),
+      ],
+    });
+    serve([unknown]);
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(alice.impi));
+    const drawer = await open(unknown);
 
-    const [card] = within(
-      await screen.findByRole("list", { name: "35693803-564380-0" }),
-    ).getAllByRole("listitem");
-    expect(card).toHaveTextContent("Address—Transport—IPsec—");
+    expect(fields(drawer, "Device 1").slice(1, 4)).toEqual([
+      ["Address", "—"],
+      ["Transport", "—"],
+      ["IPsec", "—"],
+    ]);
   });
 
-  it("requests a re-authentication", async () => {
-    serve([alice]);
+  it("shows only the media a device declared", async () => {
+    const silent = registration({ contacts: [contact({ media: [] })] });
+    serve([silent]);
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(alice.impi));
+    await screen.findByText(imsiOf(silent));
+    expect(
+      within(rowOf(silent)).queryByLabelText("voice"),
+    ).not.toBeInTheDocument();
+
+    const drawer = await open(silent);
+    expect(fields(drawer, "Device 1")).toContainEqual(["Media", "—"]);
+  });
+
+  it("re-authenticates from the list", async () => {
+    const reauth = vi.fn(() => json(202, { result: {} }));
+    serve([alice], reauth);
+
+    renderWithClient(<Registrations />);
     fireEvent.click(
-      await screen.findByRole("button", { name: "Re-authenticate" }),
+      await screen.findByRole("button", {
+        name: "Re-authenticate 001010000000001",
+      }),
     );
 
-    expect(await screen.findByText("requested")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", {
+      name: "Re-authenticate +15551230001?",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Re-authenticate" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(reauth).toHaveBeenCalledTimes(1);
   });
 
   it("shows why a re-authentication failed", async () => {
@@ -363,13 +378,16 @@ describe("Registrations", () => {
     );
 
     renderWithClient(<Registrations />);
-    fireEvent.click(await screen.findByText(alice.impi));
     fireEvent.click(
-      await screen.findByRole("button", { name: "Re-authenticate" }),
+      await screen.findByRole("button", {
+        name: "Re-authenticate 001010000000001",
+      }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       `Could not re-authenticate: no registration for ${alice.impi}`,
     );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });

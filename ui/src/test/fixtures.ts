@@ -71,8 +71,11 @@ export const route = (
 export const policy = (
   overrides: Partial<PolicyWithStatus> = {},
 ): PolicyWithStatus => ({
-  interface: "none",
-  status: { interface: "none" },
+  interface: "rx",
+  status: {
+    interface: "rx",
+    endpoint: "core.epc.mnc001.mcc001.3gppnetwork.org",
+  },
   ...overrides,
 });
 

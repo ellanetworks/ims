@@ -10,6 +10,52 @@ export const formatTimestamp = (iso: string): string => {
   );
 };
 
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+// formatDate is the local date of a timestamp, as YYYY-MM-DD.
+export const formatDate = (iso: string): string =>
+  formatTimestamp(iso).split(" ")[0];
+
+// formatClock is the local time of day of a timestamp, as HH:MM:SS.
+export const formatClock = (iso: string): string =>
+  formatTimestamp(iso).split(" ")[1] ?? iso;
+
+// formatRecentTimestamp is a timestamp as short as it can be: its time of day today, its date without the year
+// this year, else in full.
+export const formatRecentTimestamp = (
+  iso: string,
+  now: Date = new Date(),
+): string => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+
+  const sameYear = d.getFullYear() === now.getFullYear();
+  if (
+    sameYear &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  ) {
+    return formatClock(iso);
+  }
+
+  return sameYear
+    ? `${MONTHS[d.getMonth()]} ${d.getDate()} ${formatClock(iso)}`
+    : formatTimestamp(iso);
+};
+
 export const startOfLocalDay = (daysBack = 0, now: Date = new Date()): Date => {
   const at = new Date(now);
   at.setDate(at.getDate() - Math.round(daysBack));

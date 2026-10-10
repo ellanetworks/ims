@@ -195,7 +195,7 @@ var migrations = []string{
 		interface TEXT NOT NULL,
 		pcf_uri TEXT NOT NULL
 	);
-	INSERT INTO policy VALUES (1, 'none', '');
+	INSERT INTO policy VALUES (1, 'rx', '');
 	CREATE TABLE call_record_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		retention_days INTEGER NOT NULL

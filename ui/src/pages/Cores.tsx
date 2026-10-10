@@ -19,9 +19,7 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import CopyButton from "@/components/CopyButton";
-import DiameterPeerDialog, {
-  DEFAULT_PRIORITY,
-} from "@/components/DiameterPeerDialog";
+import DiameterPeerDialog from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
@@ -42,11 +40,7 @@ import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
 import { formatEndpoint, hostOf, portOf } from "@/utils/addresses";
 import { formatTimestamp } from "@/utils/dates";
-import {
-  applicationLabels,
-  policyLabels,
-  transportLabels,
-} from "@/utils/labels";
+import { applicationLabels, policyLabels } from "@/utils/labels";
 import { changesTransports, RESTART_WARNING } from "@/utils/restart";
 
 export const REFRESH_MS = 5000;
@@ -103,6 +97,21 @@ const routeState = (route: DiameterRoute | undefined) =>
   route?.peers.find((p) => p.status.state === "open")?.status.state ??
   route?.peers[0]?.status.state;
 
+// routeStatus is the state of a route's best connection, or that no peer serves it.
+function routeStatus(route: DiameterRoute | undefined): ReactNode {
+  if (!route) return null;
+  const state = routeState(route);
+  return state ? (
+    <PeerStateChip state={state} />
+  ) : (
+    <Chip
+      label={`no ${applicationLabels[route.application]} peer`}
+      color="error"
+      size="small"
+    />
+  );
+}
+
 function policyStatus(
   policy: PolicyWithStatus,
   routes: DiameterRoute[] | undefined,
@@ -112,28 +121,55 @@ function policyStatus(
   }
 
   switch (policy.interface) {
-    case "rx": {
-      const state = routeState(routes?.find((r) => r.application === "rx"));
-      return state ? <PeerStateChip state={state} /> : "—";
-    }
+    case "rx":
+      return routeStatus(routes?.find((r) => r.application === "rx"));
     case "n5": {
       const last = policy.status.last;
-      if (!last) return "—";
+      if (!last) return null;
       return (
-        <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+        <Tooltip title={`${last.result} · ${formatTimestamp(last.at)}`} arrow>
           <Chip
             label={last.reachable ? "reachable" : "unreachable"}
             color={last.reachable ? "success" : "error"}
             size="small"
           />
-          <span>{last.result}</span>
-          <span>{formatTimestamp(last.at)}</span>
-        </Stack>
+        </Tooltip>
       );
     }
     default:
-      return "—";
+      return null;
   }
+}
+
+function SectionHeader({
+  id,
+  title,
+  description,
+  first,
+  children,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  first?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <Box sx={{ mt: first ? 0 : 4, mb: 2 }}>
+      <Stack
+        direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between", gap: 2 }}
+      >
+        <Typography id={id} variant="h6" component="h2">
+          {title}
+        </Typography>
+        {children}
+      </Stack>
+      <Typography variant="body2" color="text.secondary">
+        {description}
+      </Typography>
+    </Box>
+  );
 }
 
 export default function Cores() {
@@ -196,27 +232,12 @@ export default function Cores() {
         ),
     },
     {
-      field: "realm",
-      headerName: "Realm",
-      flex: 1,
-      minWidth: 180,
-      renderCell: ({ row }) =>
-        row.status.realm ? <DomainName name={row.status.realm} /> : "—",
-    },
-    {
       field: "address",
       headerName: "Address",
-      flex: 0.7,
+      flex: 0.6,
       minWidth: 150,
       valueGetter: (_value, row) =>
         formatEndpoint(row.address, row.port ?? 3868),
-    },
-    {
-      field: "transport",
-      headerName: "Transport",
-      flex: 0.4,
-      minWidth: 100,
-      valueGetter: (_value, row) => transportLabels[row.transport ?? "tcp"],
     },
     {
       field: "applications",
@@ -227,13 +248,6 @@ export default function Cores() {
         row.applications.map((app) => applicationLabels[app]).join(", "),
     },
     {
-      field: "priority",
-      headerName: "Priority",
-      flex: 0.3,
-      minWidth: 90,
-      valueGetter: (_value, row) => row.priority ?? DEFAULT_PRIORITY,
-    },
-    {
       field: "state",
       headerName: "State",
       flex: 0.4,
@@ -241,14 +255,6 @@ export default function Cores() {
       renderCell: ({ row }) => (
         <PeerStateChip state={row.status.state} error={row.status.error} />
       ),
-    },
-    {
-      field: "since",
-      headerName: "Since",
-      flex: 0.6,
-      minWidth: 170,
-      valueGetter: (_value, row) =>
-        row.status.since ? formatTimestamp(row.status.since) : "—",
     },
     {
       field: "actions",
@@ -280,6 +286,79 @@ export default function Cores() {
     },
   ];
 
+  const route = (application: DiameterRoute["application"]) =>
+    routes.data?.find((r) => r.application === application);
+
+  const realmRow = (application: DiameterRoute["application"]): SettingRow => {
+    const r = route(application);
+    return {
+      label: `${applicationLabels[application]} Realm`,
+      help: routeHelp[application],
+      value: r && (
+        <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+          <DomainName name={r.destination_realm} />
+          {r.realm === "" && (
+            <Chip label="home domain" size="small" variant="outlined" />
+          )}
+        </Stack>
+      ),
+      onEdit: r && (() => setEditingRoute(r)),
+    };
+  };
+
+  const imsRows: SettingRow[] = [
+    {
+      label: "P-CSCF Addresses",
+      help: "Phones send their SIP traffic here.",
+      value:
+        sip.data &&
+        (pcscfAddresses(sip.data.listeners).length > 0 ? (
+          <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
+            {pcscfAddresses(sip.data.listeners).map(({ ip, port }) => (
+              <Stack
+                component="li"
+                key={ip}
+                direction="row"
+                sx={{ alignItems: "center", gap: 1 }}
+              >
+                <Copyable value={ip} label={ip} />
+                {port !== SIP_PORT && (
+                  <Tooltip title={`Phones expect port ${SIP_PORT}.`} arrow>
+                    <Chip label={`port ${port}`} color="warning" size="small" />
+                  </Tooltip>
+                )}
+              </Stack>
+            ))}
+          </Box>
+        ) : (
+          "—"
+        )),
+    },
+    {
+      label: "Diameter Host",
+      help: "This IMS's Diameter name. Set by the Operator ID.",
+      value: identity.data && (
+        <Copyable value={identity.data.host} label="Diameter Host" />
+      ),
+    },
+    {
+      label: "Diameter Realm",
+      help: "This IMS's Diameter realm. Set by the Operator ID.",
+      value: identity.data && (
+        <Copyable value={identity.data.realm} label="Diameter Realm" />
+      ),
+    },
+  ];
+  if (policy.data?.status.notify) {
+    imsRows.push({
+      label: "Notification URI",
+      help: "Where the PCF sends its notifications.",
+      value: (
+        <Copyable value={policy.data.status.notify} label="Notification URI" />
+      ),
+    });
+  }
+
   const policyRows: SettingRow[] = [
     {
       label: "Policy Function",
@@ -288,6 +367,9 @@ export default function Cores() {
       onEdit: () => setEditingPolicy(true),
     },
   ];
+  if (policy.data?.interface === "rx") {
+    policyRows.push(realmRow("rx"));
+  }
   if (policy.data?.interface === "n5") {
     policyRows.push({
       label: "PCF URI",
@@ -295,41 +377,20 @@ export default function Cores() {
       value: policy.data.n5?.pcf_uri,
     });
   }
-  if (policy.data?.status.notify) {
-    policyRows.push({
-      label: "Notification URI",
-      help: "Where the PCF sends its notifications.",
-      value: policy.data.status.notify,
-    });
-  }
-  if (policy.data && policy.data.interface !== "none") {
-    policyRows.push({
-      label: "Status",
-      help: "The policy function the IMS runs.",
-      value: policyStatus(policy.data, routes.data),
-    });
-  }
-
-  const routeRows: SettingRow[] = (routes.data ?? []).map((route) => ({
-    label: `${applicationLabels[route.application]} Realm`,
-    help: routeHelp[route.application],
-    value: (
-      <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-        <DomainName name={route.destination_realm} />
-        {route.realm === "" && (
-          <Chip label="home domain" size="small" variant="outlined" />
-        )}
-      </Stack>
-    ),
-    onEdit: () => setEditingRoute(route),
-  }));
 
   return (
     <Box component="section" aria-labelledby="cores-title">
       <PageHeader
         id="cores-title"
         title="Cores"
-        description="Diameter connections between this IMS and your core."
+        description="How this IMS connects to your 4G or 5G core."
+      />
+
+      <SectionHeader
+        id="ims-title"
+        title="This IMS"
+        description="Enter these values in your core."
+        first
       />
       <QueryAlert
         error={sip.error ?? identity.error}
@@ -337,72 +398,57 @@ export default function Cores() {
         subject="IMS identity"
       />
       <SettingsTable
-        label="IMS identity"
+        label="This IMS"
         loading={sip.isPending || identity.isPending}
-        rows={[
-          {
-            label: "P-CSCF Addresses",
-            help: "Set them in your core's voice settings.",
-            value:
-              sip.data &&
-              (pcscfAddresses(sip.data.listeners).length > 0 ? (
-                <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
-                  {pcscfAddresses(sip.data.listeners).map(({ ip, port }) => (
-                    <Stack
-                      component="li"
-                      key={ip}
-                      direction="row"
-                      sx={{ alignItems: "center", gap: 1 }}
-                    >
-                      <Copyable value={ip} label={ip} />
-                      {port !== SIP_PORT && (
-                        <Tooltip
-                          title={`Phones expect port ${SIP_PORT}.`}
-                          arrow
-                        >
-                          <Chip
-                            label={`port ${port}`}
-                            color="warning"
-                            size="small"
-                          />
-                        </Tooltip>
-                      )}
-                    </Stack>
-                  ))}
-                </Box>
-              ) : (
-                "—"
-              )),
-          },
-          {
-            label: "Diameter Host",
-            help: "This IMS's Diameter name. Set by the Operator ID.",
-            value: identity.data && (
-              <Copyable value={identity.data.host} label="Diameter Host" />
-            ),
-          },
-          {
-            label: "Diameter Realm",
-            help: "This IMS's Diameter realm. Set by the Operator ID.",
-            value: identity.data && (
-              <Copyable value={identity.data.realm} label="Diameter Realm" />
-            ),
-          },
-        ]}
+        rows={imsRows}
       />
 
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "center",
-          justifyContent: "space-between",
-          mt: 4,
-          mb: 2,
-        }}
+      <SectionHeader
+        id="hss-title"
+        title="HSS"
+        description="Where the IMS authenticates phones and gets their subscriber profiles."
       >
-        <Typography id="peers-title" variant="h6" component="h2">
-          {peers.data ? `Peers (${peers.data.length})` : "Peers"}
-        </Typography>
+        {routeStatus(route("cx"))}
+      </SectionHeader>
+      <QueryAlert
+        error={routes.error}
+        hasData={routes.data !== undefined}
+        subject="Diameter routes"
+      />
+      <SettingsTable
+        label="HSS"
+        loading={routes.isPending}
+        rows={[realmRow("cx")]}
+      />
+
+      <SectionHeader
+        id="voice-qos-title"
+        title="Voice QoS"
+        description="Where the IMS requests a dedicated voice bearer for each call."
+      >
+        {policy.data && policyStatus(policy.data, routes.data)}
+      </SectionHeader>
+      <QueryAlert
+        error={policy.error}
+        hasData={policy.data !== undefined}
+        subject="voice QoS"
+      />
+      {policy.data?.interface === "none" && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Calls get no dedicated voice bearer.
+        </Alert>
+      )}
+      <SettingsTable
+        label="Voice QoS"
+        loading={policy.isPending || routes.isPending}
+        rows={policyRows}
+      />
+
+      <SectionHeader
+        id="peers-title"
+        title={peers.data ? `Peers (${peers.data.length})` : "Peers"}
+        description="The Diameter connections to your HSS and PCRF."
+      >
         <Button
           variant="contained"
           color="success"
@@ -412,7 +458,7 @@ export default function Cores() {
         >
           Add Peer
         </Button>
-      </Stack>
+      </SectionHeader>
       <QueryAlert
         error={peers.error}
         hasData={peers.data !== undefined}
@@ -436,44 +482,6 @@ export default function Cores() {
           sx={gridSx}
         />
       )}
-
-      <Typography
-        id="routes-title"
-        variant="h6"
-        component="h2"
-        sx={{ mt: 4, mb: 2 }}
-      >
-        Routes
-      </Typography>
-      <QueryAlert
-        error={routes.error}
-        hasData={routes.data !== undefined}
-        subject="Diameter routes"
-      />
-      <SettingsTable
-        label="Routes"
-        loading={routes.isPending}
-        rows={routeRows}
-      />
-
-      <Typography
-        id="voice-qos-title"
-        variant="h6"
-        component="h2"
-        sx={{ mt: 4, mb: 2 }}
-      >
-        Voice QoS
-      </Typography>
-      <QueryAlert
-        error={policy.error}
-        hasData={policy.data !== undefined}
-        subject="voice QoS"
-      />
-      <SettingsTable
-        label="Voice QoS"
-        loading={policy.isPending}
-        rows={policyRows}
-      />
 
       {peerDialog && (
         <DiameterPeerDialog

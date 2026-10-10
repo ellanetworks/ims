@@ -2,15 +2,14 @@ import { describe, expect, it } from "vitest";
 import { contact, registration } from "@/test/fixtures";
 import {
   contactsOf,
-  deviceSummary,
   devicesOf,
   identitiesOf,
   imeiOf,
-  lastExpiry,
   numberOf,
   numbersOf,
-  priorityOf,
+  othersOf,
   signallingPathOf,
+  subscriberOf,
 } from "@/utils/registrations";
 
 describe("imeiOf", () => {
@@ -27,15 +26,6 @@ describe("imeiOf", () => {
       ),
     ).toBeUndefined();
     expect(imeiOf(contact({ instance: undefined }))).toBeUndefined();
-  });
-});
-
-describe("priorityOf", () => {
-  it("shows the q-value with one decimal at least", () => {
-    expect(priorityOf(contact({ q: 1 }))).toBe("1.0");
-    expect(priorityOf(contact({ q: 0.5 }))).toBe("0.5");
-    expect(priorityOf(contact({ q: 0.25 }))).toBe("0.25");
-    expect(priorityOf(contact({ q: 0 }))).toBe("0.0");
   });
 });
 
@@ -96,21 +86,6 @@ describe("numbersOf", () => {
   });
 });
 
-describe("lastExpiry", () => {
-  it("is the latest expiry of the devices", () => {
-    expect(
-      lastExpiry(
-        registration({
-          contacts: [
-            contact({ expires_at: "2026-10-08T13:00:00.000Z" }),
-            contact({ expires_at: "2026-10-08T14:00:00.000Z" }),
-          ],
-        }),
-      ),
-    ).toBe("2026-10-08T14:00:00.000Z");
-  });
-});
-
 describe("signallingPathOf", () => {
   it("is the worst of the devices", () => {
     const of = (...paths: ("unmonitored" | "monitored" | "lost")[]) =>
@@ -147,14 +122,43 @@ describe("devicesOf", () => {
   });
 });
 
-describe("deviceSummary", () => {
-  it("counts the flows of a device that has several", () => {
-    const of = (...regIDs: (number | undefined)[]) =>
-      deviceSummary(devicesOf(regIDs.map((id) => contact({ reg_id: id })))[0]);
+describe("subscriberOf", () => {
+  it("is the IMSI of an IMPI derived from one", () => {
+    expect(
+      subscriberOf("001010000000001@ims.mnc001.mcc001.3gppnetwork.org"),
+    ).toBe("001010000000001");
+  });
 
-    expect(of(1, 2)).toBe("35693803-564380-0 · 2 flows");
-    expect(of(1)).toBe("35693803-564380-0");
-    expect(of(undefined, undefined)).toBe("35693803-564380-0");
+  it("is the IMPI of an ISIM", () => {
+    expect(subscriberOf("alice@ims.example.org")).toBe("alice@ims.example.org");
+  });
+});
+
+describe("othersOf", () => {
+  it("is the other IMPIs on the registration's numbers, not on its barred IMPU", () => {
+    expect(
+      othersOf(
+        registration({
+          identities: [
+            {
+              uri: "sip:001010000000001@ims",
+              barred: true,
+              registered_with: ["x"],
+            },
+            {
+              uri: "tel:+15551230001",
+              barred: false,
+              registered_with: ["bob"],
+            },
+            {
+              uri: "sip:+15551230001@ims;user=phone",
+              barred: false,
+              registered_with: ["bob", "carol"],
+            },
+          ],
+        }),
+      ),
+    ).toEqual(["bob", "carol"]);
   });
 });
 

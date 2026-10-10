@@ -108,7 +108,7 @@ describe("Cores", () => {
     renderWithClient(<Cores />);
 
     await screen.findByText(identity.host);
-    expect(settingRows("IMS identity")).toEqual([
+    expect(settingRows("This IMS")).toEqual([
       ["P-CSCF Addresses", "192.0.2.202001:db8::20"],
       ["Diameter Host", identity.host],
       ["Diameter Realm", identity.realm],
@@ -164,13 +164,9 @@ describe("Cores", () => {
         .map((cell) => cell.textContent),
     ).toEqual([
       "core.epc.mnc001.mcc001.3gppnetwork.org",
-      "epc.mnc001.mcc001.3gppnetwork.org",
       "192.0.2.1:3868",
-      "SCTP",
       "HSS, PCRF",
-      "10",
       "open",
-      "2026-10-08 12:00:00",
       "",
     ]);
   });
@@ -356,11 +352,14 @@ describe("Cores", () => {
     renderWithClient(<Cores />);
 
     await waitFor(() =>
-      expect(settingRows("Routes")).toEqual([
+      expect(settingRows("HSS")).toEqual([
         ["HSS Realm", "ims.mnc001.mcc001.3gppnetwork.orghome domain"],
-        ["PCRF Realm", "epc.mnc001.mcc001.3gppnetwork.org"],
       ]),
     );
+    expect(settingRows("Voice QoS")).toEqual([
+      ["Policy Function", "PCRF"],
+      ["PCRF Realm", "epc.mnc001.mcc001.3gppnetwork.org"],
+    ]);
   });
 
   it("sets the realm of the PCRF", async () => {
@@ -436,17 +435,22 @@ describe("Cores", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("shows no voice QoS", async () => {
-    serve();
+  it("warns that calls get no voice bearer without a policy function", async () => {
+    serve({
+      current: policy({ interface: "none", status: { interface: "none" } }),
+    });
 
     renderWithClient(<Cores />);
 
     await waitFor(() =>
       expect(settingRows("Voice QoS")).toEqual([["Policy Function", "None"]]),
     );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Calls get no dedicated voice bearer.",
+    );
   });
 
-  it("shows the state of the PCRF", async () => {
+  it("shows the state of the HSS and the PCRF", async () => {
     serve({
       routes: [
         routeOf(),
@@ -455,20 +459,28 @@ describe("Cores", () => {
           peers: [{ ...routeOf().peers[0], status: { state: "down" } }],
         }),
       ],
-      current: policy({
-        interface: "rx",
-        status: { interface: "rx", endpoint: peer().host },
-      }),
     });
 
     renderWithClient(<Cores />);
 
-    await waitFor(() =>
-      expect(settingRows("Voice QoS")).toEqual([
-        ["Policy Function", "PCRF"],
-        ["Status", "down"],
-      ]),
-    );
+    const hss = await screen.findByRole("heading", { level: 2, name: "HSS" });
+    await waitFor(() => expect(hss.parentElement).toHaveTextContent("open"));
+    const qos = screen.getByRole("heading", { level: 2, name: "Voice QoS" });
+    await waitFor(() => expect(qos.parentElement).toHaveTextContent("down"));
+  });
+
+  it("shows that no peer serves the HSS or the PCRF", async () => {
+    serve({
+      routes: [
+        routeOf({ peers: [] }),
+        routeOf({ application: "rx", peers: [] }),
+      ],
+    });
+
+    renderWithClient(<Cores />);
+
+    expect(await screen.findByText("no HSS peer")).toBeInTheDocument();
+    expect(await screen.findByText("no PCRF peer")).toBeInTheDocument();
   });
 
   it("shows the last request to the PCF", async () => {
@@ -495,9 +507,15 @@ describe("Cores", () => {
       expect(settingRows("Voice QoS")).toEqual([
         ["Policy Function", "PCF"],
         ["PCF URI", "https://pcf.example.org"],
-        ["Notification URI", "http://192.0.2.20:8080"],
-        ["Status", "reachable201 Created2026-10-08 12:00:00"],
       ]),
+    );
+    expect(settingRows("This IMS")).toContainEqual([
+      "Notification URI",
+      "http://192.0.2.20:8080",
+    ]);
+    fireEvent.mouseOver(screen.getByText("reachable"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "201 Created · 2026-10-08 12:00:00",
     );
   });
 
@@ -508,9 +526,7 @@ describe("Cores", () => {
 
     renderWithClient(<Cores />);
 
-    await waitFor(() =>
-      expect(settingRows("Voice QoS")).toContainEqual(["Status", "applying"]),
-    );
+    expect(await screen.findByText("applying")).toBeInTheDocument();
   });
 
   it("switches voice QoS to a PCF", async () => {
@@ -518,7 +534,7 @@ describe("Cores", () => {
 
     renderWithClient(<Cores />);
     await waitFor(() =>
-      expect(settingRows("Voice QoS")).toEqual([["Policy Function", "None"]]),
+      expect(settingRows("Voice QoS")[0]).toEqual(["Policy Function", "PCRF"]),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Edit Policy Function" }),

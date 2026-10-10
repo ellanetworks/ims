@@ -25,8 +25,8 @@ func TestDefaultSettings(t *testing.T) {
 		t.Fatalf("operator = %+v, want %+v", got.Operator, want)
 	}
 
-	if len(got.Peers) != 0 || got.Policy != (settings.Policy{Interface: settings.PolicyNone}) {
-		t.Fatalf("peers and policy = %+v, %+v; want none", got.Peers, got.Policy)
+	if len(got.Peers) != 0 || got.Policy != (settings.Policy{Interface: settings.PolicyRx}) {
+		t.Fatalf("peers and policy = %+v, %+v; want no peers and rx", got.Peers, got.Policy)
 	}
 
 	if got.CallRecords != (settings.CallRecords{RetentionDays: 90}) {
