@@ -274,6 +274,15 @@ describe("Registrations", () => {
       }),
     ).toBeInTheDocument();
     expect(hssOf(drawer)).toEqual(["hss1.example.orgexample.org", "—"]);
+    const second = within(drawer).getByRole("region", {
+      name: "Implicit Registration Set 2",
+    });
+    expect(
+      within(second).getByRole("heading", {
+        level: 4,
+        name: "Public Identities (1)",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("searches a number shared with other identities", async () => {

@@ -130,12 +130,18 @@ function SetSection({
 }) {
   const devices = devicesOf(set.contacts);
   const id = (name: string) => `${name}-title-${index}`;
+  const numbered = count > 1;
+  const heading = numbered ? "h4" : "h3";
 
   return (
-    <>
+    <Stack
+      component="section"
+      spacing={2}
+      aria-labelledby={numbered ? id("set") : undefined}
+    >
       <Divider />
-      {count > 1 && (
-        <Typography variant="h6" component="h3">
+      {numbered && (
+        <Typography id={id("set")} variant="h6" component="h3">
           Implicit Registration Set {index + 1}
         </Typography>
       )}
@@ -160,7 +166,7 @@ function SetSection({
         <Typography
           id={id("identities")}
           variant="subtitle1"
-          component="h3"
+          component={heading}
           sx={{ mb: 1 }}
         >
           Public Identities ({set.identities.length})
@@ -193,7 +199,7 @@ function SetSection({
         <Typography
           id={id("devices")}
           variant="subtitle1"
-          component="h3"
+          component={heading}
           sx={{ mb: 1 }}
         >
           Devices ({devices.length})
@@ -208,7 +214,7 @@ function SetSection({
           ))}
         </Stack>
       </Box>
-    </>
+    </Stack>
   );
 }
 
