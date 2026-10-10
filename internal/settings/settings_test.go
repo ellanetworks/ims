@@ -227,7 +227,7 @@ func TestPeerValidate(t *testing.T) {
 		edit func(*Peer)
 		want string
 	}{
-		"no host":             {func(p *Peer) { p.Host = "" }, "host is required"},
+		"host not a domain":   {func(p *Peer) { p.Host = "hss ims" }, "host must be a domain name"},
 		"negative priority":   {func(p *Peer) { p.Priority = -1 }, "priority must be between 0 and 65535"},
 		"high priority":       {func(p *Peer) { p.Priority = 65536 }, "priority must be between 0 and 65535"},
 		"no address":          {func(p *Peer) { p.Address = netip.Addr{} }, "address is required"},
@@ -345,6 +345,32 @@ func TestLivePeers(t *testing.T) {
 
 	if len(live.Get().Peers) != 0 {
 		t.Fatalf("peers = %+v, want none", live.Get().Peers)
+	}
+}
+
+func TestLivePeersWithoutHost(t *testing.T) {
+	live := NewLive(&fakeStore{}, validSettings(), nil)
+
+	noHost := hss()
+	noHost.Host = ""
+
+	if _, err := live.CreatePeer(t.Context(), noHost); err != nil {
+		t.Fatalf("CreatePeer without a host: %v", err)
+	}
+
+	if _, err := live.CreatePeer(t.Context(), hss()); err != nil {
+		t.Fatalf("a peer with a host on the same address: %v", err)
+	}
+
+	sctp := noHost
+	sctp.Transport = TransportSCTP
+
+	if _, err := live.CreatePeer(t.Context(), sctp); err != nil {
+		t.Fatalf("a peer without a host on the same address over another transport: %v", err)
+	}
+
+	if _, err := live.CreatePeer(t.Context(), noHost); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a second peer without a host on the same address = %v, want a conflict", err)
 	}
 }
 

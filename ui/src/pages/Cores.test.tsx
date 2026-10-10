@@ -220,6 +220,45 @@ describe("Cores", () => {
     ]);
   });
 
+  it("adds a peer without a host", async () => {
+    const requests = serve({ peers: [] });
+
+    renderWithClient(<Cores />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add Peer" }));
+    fill(/^Address/, "192.0.2.9");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0].body).toMatchObject({ host: "", address: "192.0.2.9" });
+  });
+
+  it("shows the host a peer without one gave", async () => {
+    const learned = "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org";
+    serve({
+      peers: [peer({ host: "", status: { ...peer().status, host: learned } })],
+    });
+
+    renderWithClient(<Cores />);
+
+    const row = await peerRow(learned);
+    expect(
+      within(row).getByRole("button", { name: `Edit ${learned}` }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows why a peer is down", async () => {
+    const error =
+      "peer answered as mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org, expected hss.example.org";
+    serve({
+      peers: [peer({ status: { ...peer().status, state: "down", error } })],
+    });
+
+    renderWithClient(<Cores />);
+    fireEvent.mouseOver(await screen.findByText("down"));
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(error);
+  });
+
   it("requires a role, a valid port and a valid priority", async () => {
     serve({ peers: [] });
 

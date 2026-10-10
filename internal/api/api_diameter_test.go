@@ -107,14 +107,59 @@ func TestDiameterPeerStatus(t *testing.T) {
 
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	cfg := Config{Settings: s, Diameter: fakeDiameter{peers: []diameter.PeerStatus{{
-		ID: hss.ID, State: diameter.PeerOpen, Since: since, RemoteAddr: netip.MustParseAddr("::ffff:10.0.0.10"),
+		ID: hss.ID, Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: "ims.mnc001.mcc001.3gppnetwork.org",
+		State: diameter.PeerOpen, Since: since, RemoteAddr: netip.MustParseAddr("::ffff:10.0.0.10"),
 	}}}}
 
 	_, body := serve(t, cfg, http.MethodGet, "/api/v1/diameter/peers/"+hss.ID, "")
 
-	want := DiameterPeerStatus{State: "open", Since: "2026-10-01T12:00:00.000Z", RemoteAddress: "10.0.0.10"}
+	want := DiameterPeerStatus{
+		State: "open", Since: "2026-10-01T12:00:00.000Z", RemoteAddress: "10.0.0.10",
+		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Realm: "ims.mnc001.mcc001.3gppnetwork.org",
+	}
 	if got := decodeResult[DiameterPeer](t, body).Status; got != want {
 		t.Fatalf("status = %+v, want %+v", got, want)
+	}
+}
+
+func TestDiameterPeerWithoutHost(t *testing.T) {
+	s := newFakeSettings()
+	noHost := strings.Replace(hssPeer, `"host": "hss.ims.mnc001.mcc001.3gppnetwork.org", `, "", 1)
+
+	hss := createPeer(t, Config{Settings: s}, noHost)
+	if hss.Host != "" {
+		t.Fatalf("host = %q, want none", hss.Host)
+	}
+
+	if code, body := serve(t, Config{Settings: s}, http.MethodPost, "/api/v1/diameter/peers",
+		strings.Replace(noHost, `["cx"]`, `["rx"]`, 1)); code != http.StatusConflict ||
+		decodeError(t, body) != "A Diameter peer without a host already has address 10.0.0.10 over tcp" {
+		t.Fatalf("second peer without a host on the same address = %d %s, want a conflict", code, body)
+	}
+
+	learned := "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org"
+	cfg := Config{Settings: s, Diameter: fakeDiameter{peers: []diameter.PeerStatus{{
+		ID: hss.ID, Host: learned, State: diameter.PeerOpen,
+	}}}}
+
+	_, body := serve(t, cfg, http.MethodGet, "/api/v1/diameter/peers/"+hss.ID, "")
+	if got := decodeResult[DiameterPeer](t, body); got.Host != "" || got.Status.Host != learned {
+		t.Fatalf("peer = %+v, want no host and %s learned", got, learned)
+	}
+}
+
+func TestDiameterPeerError(t *testing.T) {
+	s := newFakeSettings()
+	hss := createPeer(t, Config{Settings: s}, hssPeer)
+
+	reason := "peer answered as mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org, expected hss.ims.mnc001.mcc001.3gppnetwork.org"
+	cfg := Config{Settings: s, Diameter: fakeDiameter{peers: []diameter.PeerStatus{{
+		ID: hss.ID, Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", State: diameter.PeerDown, LastError: reason,
+	}}}}
+
+	_, body := serve(t, cfg, http.MethodGet, "/api/v1/diameter/peers/"+hss.ID, "")
+	if got := decodeResult[DiameterPeer](t, body).Status; got.State != "down" || got.Error != reason {
+		t.Fatalf("status = %+v, want down with %q", got, reason)
 	}
 }
 
@@ -138,7 +183,6 @@ func TestDiameterPeersRejected(t *testing.T) {
 		{"realm", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"realm": "example.org", "host"`, 1), 400, "Invalid request data"},
 		{"bad priority", http.MethodPost, "", strings.Replace(pcrfPeer, `"priority": 0`, `"priority": 65536`, 1), 400, "priority must be between 0 and 65535"},
 		{"same host in another case", http.MethodPost, "", strings.NewReplacer(`["cx"]`, `["rx"]`, "hss.ims", "HSS.ims").Replace(hssPeer), 409, "A Diameter peer already has host HSS.ims.mnc001.mcc001.3gppnetwork.org"},
-		{"no host", http.MethodPost, "", strings.Replace(hssPeer, `"hss.ims.mnc001.mcc001.3gppnetwork.org"`, `""`, 1), 400, "host is required"},
 		{"bad address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "hss.example.org", 1), 400, "address must be an IPv4 or IPv6 address"},
 		{"no address", http.MethodPost, "", strings.Replace(hssPeer, `"10.0.0.10"`, `""`, 1), 400, "address is required"},
 		{"bad transport", http.MethodPost, "", strings.Replace(pcrfPeer, `"sctp"`, `"udp"`, 1), 400, "transport must be tcp or sctp"},

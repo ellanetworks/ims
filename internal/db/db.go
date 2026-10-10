@@ -177,13 +177,14 @@ var migrations = []string{
 	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');
 	CREATE TABLE diameter_peers (
 		id TEXT PRIMARY KEY,
-		host TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		host TEXT NOT NULL COLLATE NOCASE,
 		address TEXT NOT NULL,
 		port INTEGER NOT NULL,
 		transport TEXT NOT NULL,
 		applications TEXT NOT NULL,
 		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535)
 	);
+	CREATE UNIQUE INDEX diameter_peers_host ON diameter_peers (host) WHERE host != '';
 	CREATE TABLE diameter_routes (
 		application TEXT PRIMARY KEY CHECK (application IN ('cx', 'rx')),
 		realm TEXT NOT NULL

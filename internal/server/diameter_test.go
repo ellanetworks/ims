@@ -286,6 +286,52 @@ func TestDiameterPeersOpen(t *testing.T) {
 	}
 }
 
+// RFC 6733 §2.6: a peer configured without a host is known by the Origin-Host of its capabilities exchange.
+func TestDiameterPeerWithoutHost(t *testing.T) {
+	core := newFakePeer(t, "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org",
+		settings.ApplicationCx)
+
+	hss := core.config("hss")
+	hss.Host = ""
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(hss)
+
+	srv := startIMS(t, cfg)
+
+	if p := waitOpen(t, srv, "hss")["hss"]; p.Host != "" || p.Status.Host != core.host || p.Status.Realm != core.realm {
+		t.Fatalf("peer = %+v, want no host and %s learned in %s", p, core.host, core.realm)
+	}
+
+	rtr, err := cx.NewRegistrationTerminationRequest(core.envelope(), cx.RegistrationTerminationRequest{
+		PrivateIdentity: "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+		Reason:          cx.DeregistrationReason{Code: cx.ReasonPermanentTermination},
+	})
+	if r := core.send(t, rtr, err); r.Code != diameter.ResultSuccess || r.Experimental {
+		t.Errorf("RTA result = %s, want DIAMETER_SUCCESS", r)
+	}
+}
+
+func TestDiameterPeerHostMismatch(t *testing.T) {
+	core := newFakePeer(t, "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org",
+		settings.ApplicationCx)
+
+	hss := core.config("hss")
+	hss.Host = "hss.epc.mnc001.mcc001.3gppnetwork.org"
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(hss)
+
+	srv := startIMS(t, cfg)
+
+	want := "peer answered as " + core.host + ", expected " + hss.Host
+
+	eventually(t, "the mismatch reported", func() bool {
+		st := getPeers(t, srv)[0].Status
+		return st.State != "open" && st.Error == want
+	})
+}
+
 func TestDiameterOnePeerServesCxAndRx(t *testing.T) {
 	core := newFakePeer(t, "core.mnc001.mcc001.3gppnetwork.org", "mnc001.mcc001.3gppnetwork.org",
 		settings.ApplicationCx, settings.ApplicationRx)

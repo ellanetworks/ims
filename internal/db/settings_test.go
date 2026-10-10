@@ -109,6 +109,31 @@ func TestPeers(t *testing.T) {
 	}
 }
 
+func TestPeersWithoutHost(t *testing.T) {
+	d := openTestDB(t)
+
+	peer := func(id, host string) settings.Peer {
+		return settings.Peer{
+			ID: id, Host: host, Address: netip.MustParseAddr("10.0.0.10"), Port: 3868, Transport: settings.TransportTCP,
+			Applications: []settings.Application{settings.ApplicationCx}, Priority: 10,
+		}
+	}
+
+	for _, p := range []settings.Peer{
+		peer("0192a000-0000-7000-8000-000000000001", ""),
+		peer("0192a000-0000-7000-8000-000000000002", ""),
+		peer("0192a000-0000-7000-8000-000000000003", "hss.example.org"),
+	} {
+		if err := d.CreatePeer(t.Context(), p); err != nil {
+			t.Fatalf("CreatePeer(%q): %v", p.Host, err)
+		}
+	}
+
+	if err := d.CreatePeer(t.Context(), peer("0192a000-0000-7000-8000-000000000004", "HSS.example.org")); err == nil {
+		t.Fatal("a second peer with the same host was stored")
+	}
+}
+
 func TestRoutes(t *testing.T) {
 	d := openTestDB(t)
 

@@ -625,11 +625,13 @@ components:
 
     DiameterPeerParams:
       type: object
-      required: [host, address, applications]
+      required: [address, applications]
       properties:
         host:
           type: string
-          description: The DiameterIdentity of the peer, which must match the Origin-Host of its capabilities exchange.
+          description: >-
+            The DiameterIdentity of the peer, which must then match the Origin-Host of its capabilities exchange.
+            Absent or empty takes the Origin-Host the peer gives.
         address:
           type: string
           description: An IPv4 or IPv6 address.
@@ -685,9 +687,15 @@ components:
           format: date-time
         remote_address:
           type: string
+        host:
+          type: string
+          description: The Origin-Host the peer gave in its last capabilities exchange, else the configured host.
         realm:
           type: string
           description: The realm the peer gave in its last capabilities exchange.
+        error:
+          type: string
+          description: Why the last connection to the peer failed.
 
     DiameterPeerResult:
       type: object

@@ -27,8 +27,8 @@ func GetDiameterStatus(cfg Config) http.Handler {
 	})
 }
 
-// DiameterPeerParams are what an operator sets of a peer. Port defaults to 3868, transport to tcp, and priority
-// to 10.
+// DiameterPeerParams are what an operator sets of a peer. Host is optional: empty takes the one the peer gives in
+// its capabilities exchange. Port defaults to 3868, transport to tcp, and priority to 10.
 type DiameterPeerParams struct {
 	Host         string   `json:"host"`
 	Address      string   `json:"address"`
@@ -44,13 +44,16 @@ type DiameterPeer struct {
 	Status DiameterPeerStatus `json:"status"`
 }
 
-// DiameterPeerStatus is the connection to a peer. State is down until the IMS has tried it. Realm is the one the
-// peer gave in its last capabilities exchange.
+// DiameterPeerStatus is the connection to a peer. State is down until the IMS has tried it. Host and realm are
+// the ones the peer gave in its last capabilities exchange, the host else the configured one. Error is why the
+// last connection failed.
 type DiameterPeerStatus struct {
 	State         string `json:"state"`
 	Since         string `json:"since,omitempty"`
 	RemoteAddress string `json:"remote_address,omitempty"`
+	Host          string `json:"host,omitempty"`
 	Realm         string `json:"realm,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type DiameterPeers struct {
@@ -237,7 +240,7 @@ func peerStatus(p settings.Peer, statuses map[string]diameter.PeerStatus) Diamet
 		status.RemoteAddress = st.RemoteAddr.Unmap().String()
 	}
 
-	status.Realm = st.Realm
+	status.Host, status.Realm, status.Error = st.Host, st.Realm, st.LastError
 
 	return status
 }
