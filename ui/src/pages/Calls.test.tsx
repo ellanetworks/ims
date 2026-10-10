@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import Calls, { CALLS_REFRESH_MS } from "@/pages/Calls";
 import type { CallRecord } from "@/queries/callRecords";
 import { callRecord } from "@/test/fixtures";
+import { formatRecentTimestamp } from "@/utils/dates";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
 const answered = callRecord();
@@ -35,6 +36,9 @@ const ringing = callRecord({
   in_progress: true,
   duration_ms: undefined,
 });
+
+// shown is how the table shows a call's time, today or not.
+const shown = (r: CallRecord) => formatRecentTimestamp(r.requested_at);
 
 const serve = (items: CallRecord[], details: CallRecord[] = items) => {
   const urls: string[] = [];
@@ -90,6 +94,12 @@ const cells = (text: string) =>
     .getAllByRole("gridcell")
     .map((cell) => cell.textContent);
 
+// fields is the keys and values of a section of the drawer.
+const fields = (drawer: HTMLElement, section: string) =>
+  within(within(drawer).getByRole("region", { name: section }))
+    .getAllByRole("term")
+    .map((dt) => [dt.textContent, dt.nextElementSibling?.textContent]);
+
 const renderCalls = (path = "/calls") =>
   renderWithClient(
     <MemoryRouter initialEntries={[path]}>
@@ -112,25 +122,25 @@ describe("Calls", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Calls (3)" }),
     ).toBeInTheDocument();
-    await screen.findByText("2026-10-08 12:00:00");
+    await screen.findByText(shown(answered));
 
-    expect(cells("2026-10-08 12:00:00")).toEqual([
-      "2026-10-08 12:00:00",
+    expect(cells(shown(answered))).toEqual([
+      shown(answered),
       "+15551230001",
       "+15551230002",
       "answered",
       "1:05",
-      "audio, video",
+      "",
     ]);
-    expect(cells("2026-10-08 12:05:00")).toEqual([
-      "2026-10-08 12:05:00",
+    expect(cells(shown(busy))).toEqual([
+      shown(busy),
       "+15551230003",
       "+15551230001",
       "busy",
       "—",
       "—",
     ]);
-    expect(cells("2026-10-08 12:10:00")[3]).toBe("ringing");
+    expect(cells(shown(ringing))[3]).toBe("ringing");
   });
 
   it("shows a call not yet alerted as calling", async () => {
@@ -138,8 +148,8 @@ describe("Calls", () => {
 
     renderCalls();
 
-    await screen.findByText("2026-10-08 12:10:00");
-    expect(cells("2026-10-08 12:10:00")[3]).toBe("calling");
+    await screen.findByText(shown(ringing));
+    expect(cells(shown(ringing))[3]).toBe("calling");
   });
 
   it("lists the calls of the last 24 hours by default", async () => {
@@ -147,7 +157,7 @@ describe("Calls", () => {
     const before = Date.now();
 
     renderCalls();
-    await screen.findByText("2026-10-08 12:00:00");
+    await screen.findByText(shown(answered));
 
     expect(
       screen.getByRole("button", { name: "Time range: Last 24 hours" }),
@@ -165,7 +175,7 @@ describe("Calls", () => {
     renderCalls(
       "/calls?range=custom&start=2026-10-08T12:00:00.000Z&end=2026-10-08T12:31:00.000Z&search=alice&outcome=busy",
     );
-    await screen.findByText("2026-10-08 12:05:00");
+    await screen.findByText(shown(busy));
 
     const q = lastQuery(urls);
     expect(q.get("start")).toBe("2026-10-08T12:00:00.000Z");
@@ -178,7 +188,7 @@ describe("Calls", () => {
     const { urls } = serve([answered]);
 
     renderCalls("/calls?range=yesterday");
-    await screen.findByText("2026-10-08 12:00:00");
+    await screen.findByText(shown(answered));
 
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
@@ -193,7 +203,7 @@ describe("Calls", () => {
     const { urls } = serve([answered]);
 
     renderCalls();
-    await screen.findByText("2026-10-08 12:00:00");
+    await screen.findByText(shown(answered));
 
     fireEvent.click(
       screen.getByRole("button", { name: "Time range: Last 24 hours" }),
@@ -221,7 +231,7 @@ describe("Calls", () => {
         const { urls } = serve([answered]);
         const { unmount } = renderCalls(path);
 
-        await screen.findByText("2026-10-08 12:00:00");
+        await screen.findByText(shown(answered));
         const fetched = urls.length;
 
         await vi.advanceTimersByTimeAsync(CALLS_REFRESH_MS * 2);
@@ -249,11 +259,67 @@ describe("Calls", () => {
     );
 
     renderCalls();
-    fireEvent.click(await screen.findByText("2026-10-08 12:10:00"));
+    fireEvent.click(await screen.findByText(shown(ringing)));
 
     const drawer = await screen.findByRole("dialog");
-    await waitFor(() => expect(drawer).toHaveTextContent("SIP Status200"));
-    expect(drawer).toHaveTextContent("Ended ByCaller");
+    await waitFor(() => expect(drawer).toHaveTextContent("Ended ByCaller"));
+    expect(drawer).toHaveTextContent("Outcomeanswered");
+    // An answered call's 200 says nothing the outcome does not.
+    expect(drawer).not.toHaveTextContent("SIP Status");
+  });
+
+  it("shows the details of a call", async () => {
+    serve([answered]);
+
+    renderCalls();
+    fireEvent.click(await screen.findByText(shown(answered)));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      within(drawer).getByRole("heading", {
+        name: "+15551230001 → +15551230002",
+      }),
+    ).toBeInTheDocument();
+    expect(fields(drawer, "Call")).toEqual([
+      ["Outcome", "answered"],
+      ["Ended By", "Caller"],
+      ["Rang", "Yes"],
+      ["Media", "Voice, Video"],
+      ["Duration", "1:05"],
+    ]);
+    expect(fields(drawer, "Parties")).toEqual([
+      ["Caller", "+15551230001"],
+      ["Caller IMSI", "001010000000001"],
+      ["Callee", "+15551230002"],
+      ["Dialled", "5551230002"],
+      ["Callee IMSI", "001010000000002"],
+    ]);
+    expect(fields(drawer, "Timeline")).toEqual([
+      ["Date", "2026-10-08"],
+      ["Requested", "12:00:00"],
+      ["Answered", "12:00:04"],
+      ["Ended", "12:01:09"],
+    ]);
+    expect(
+      within(drawer).getByRole("button", { name: /Call-ID/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows why a call was not answered", async () => {
+    serve([busy]);
+
+    renderCalls();
+    fireEvent.click(await screen.findByText(shown(busy)));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(fields(drawer, "Call").slice(0, 2)).toEqual([
+      ["Outcome", "busy"],
+      ["SIP Status", "486"],
+    ]);
+    expect(fields(drawer, "Timeline")).toContainEqual([
+      "Final Response",
+      "12:00:04",
+    ]);
   });
 
   it("edits the retention", async () => {

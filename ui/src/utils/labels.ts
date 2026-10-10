@@ -19,3 +19,12 @@ export const policyLabels: Record<PolicyInterface, string> = {
   rx: "PCRF",
   n5: "PCF",
 };
+
+export const mediaLabels: Record<string, string> = {
+  audio: "Voice",
+  video: "Video",
+};
+
+// mediaText is media as the parties declared them, "Voice, Video", or "—" for none.
+export const mediaText = (media: string[]): string =>
+  media.map((m) => mediaLabels[m] ?? m).join(", ") || "—";

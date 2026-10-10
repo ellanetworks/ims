@@ -28,13 +28,8 @@ export default function CallOutcomeChip({ record }: { record: CallRecord }) {
       return <Chip label={outcomeLabels.failed} color="error" size="small" />;
     case undefined:
       return <>—</>;
+    // Not answered, as calls go: cancelled, busy, rejected, no answer or unavailable.
     default:
-      return (
-        <Chip
-          label={outcomeLabels[record.outcome]}
-          color="warning"
-          size="small"
-        />
-      );
+      return <Chip label={outcomeLabels[record.outcome]} size="small" />;
   }
 }

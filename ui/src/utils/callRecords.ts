@@ -21,7 +21,11 @@ export const endedByLabels: Record<
 };
 
 // partyOf shows a party by its number, else by its URI.
-const partyOf = (uri: string): string => numberOfURI(uri) ?? uri;
+export const partyOf = (uri: string): string => numberOfURI(uri) ?? uri;
+
+// dialledOf is what the caller dialled: its number, the digits of a local number, else the URI.
+export const dialledOf = (uri: string): string =>
+  numberOfURI(uri) ?? /^tel:([^;]+)/i.exec(uri)?.[1] ?? uri;
 
 // callerOf is the caller's number, else its first asserted identity, else its private identity.
 export const callerOf = (record: CallRecord): string => {

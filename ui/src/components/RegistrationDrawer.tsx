@@ -10,6 +10,7 @@ import {
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import DomainName from "@/components/DomainName";
+import DrawerSection from "@/components/DrawerSection";
 import Fields from "@/components/Fields";
 import type {
   RegisteredContact,
@@ -17,6 +18,7 @@ import type {
   SignallingPath,
 } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
+import { mediaText } from "@/utils/labels";
 import {
   contactsOf,
   devicesOf,
@@ -26,11 +28,6 @@ import {
   subscriberOf,
   type Device,
 } from "@/utils/registrations";
-
-const mediaLabels: Record<RegisteredContact["media"][number], string> = {
-  audio: "Voice",
-  video: "Video",
-};
 
 const signallingLabels: Record<SignallingPath, string> = {
   monitored: "Monitored",
@@ -45,7 +42,7 @@ const contactRows = (contact: RegisteredContact): [string, ReactNode][] => [
   // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
   ["IPsec", contact.address ? (contact.protected ? "Yes" : "No") : "—"],
   // RFC 3840 §9: the media the contact registered for, as it declared them.
-  ["Media", contact.media.map((m) => mediaLabels[m]).join(", ") || "—"],
+  ["Media", mediaText(contact.media)],
   [
     "Signalling",
     <Typography
@@ -61,25 +58,6 @@ const contactRows = (contact: RegisteredContact): [string, ReactNode][] => [
   ["Expires", formatTimestamp(contact.expires_at)],
 ];
 
-function Section({
-  id,
-  title,
-  children,
-}: {
-  id: string;
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <Box component="section" aria-labelledby={id}>
-      <Typography id={id} variant="subtitle1" component="h3" sx={{ mb: 1 }}>
-        {title}
-      </Typography>
-      {children}
-    </Box>
-  );
-}
-
 // DeviceSection lists a device's fields, and those of each of its registration flows (RFC 5626) when it has
 // several.
 function DeviceSection({ device, index }: { device: Device; index: number }) {
@@ -94,14 +72,14 @@ function DeviceSection({ device, index }: { device: Device; index: number }) {
 
   if (device.contacts.length === 1) {
     return (
-      <Section id={`device-title-${index}`} title={title}>
+      <DrawerSection id={`device-title-${index}`} title={title}>
         <Fields rows={[...identity, ...contactRows(first)]} />
-      </Section>
+      </DrawerSection>
     );
   }
 
   return (
-    <Section id={`device-title-${index}`} title={title}>
+    <DrawerSection id={`device-title-${index}`} title={title}>
       <Stack spacing={1.5}>
         {identity.length > 0 && <Fields rows={identity} />}
         {device.contacts.map((contact, i) => {
@@ -124,7 +102,7 @@ function DeviceSection({ device, index }: { device: Device; index: number }) {
           );
         })}
       </Stack>
-    </Section>
+    </DrawerSection>
   );
 }
 
@@ -207,9 +185,9 @@ function RegistrationDetail({
         </IconButton>
       </Stack>
       <Divider />
-      <Section id="subscriber-title" title="Subscriber">
+      <DrawerSection id="subscriber-title" title="Subscriber">
         <Fields rows={rows} />
-      </Section>
+      </DrawerSection>
       {devices.map((device, i) => (
         <DeviceSection key={device.id} device={device} index={i} />
       ))}

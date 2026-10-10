@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { callRecord } from "@/test/fixtures";
-import { calleeOf, callerOf, formatDuration } from "@/utils/callRecords";
+import {
+  calleeOf,
+  callerOf,
+  dialledOf,
+  formatDuration,
+} from "@/utils/callRecords";
 
 describe("formatDuration", () => {
   it("shows minutes and seconds, then hours", () => {
@@ -33,5 +38,17 @@ describe("calleeOf", () => {
         callRecord({ called_party: undefined, requested_party: "tel:999" }),
       ),
     ).toBe("tel:999");
+  });
+});
+
+describe("dialledOf", () => {
+  it("is the number, the digits of a local number, else the URI", () => {
+    expect(dialledOf("tel:+15551230002")).toBe("+15551230002");
+    expect(
+      dialledOf(
+        "tel:5551230002;phone-context=ims.mnc001.mcc001.3gppnetwork.org",
+      ),
+    ).toBe("5551230002");
+    expect(dialledOf("sip:alice@example.org")).toBe("sip:alice@example.org");
   });
 });

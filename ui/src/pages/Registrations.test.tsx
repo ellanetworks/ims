@@ -121,18 +121,12 @@ describe("Registrations", () => {
       "2lost",
       "",
     ]);
-    expect(
-      within(rowOf(alice)).getByLabelText("voice capable"),
-    ).toBeInTheDocument();
-    expect(
-      within(rowOf(alice)).getByLabelText("video capable"),
-    ).toBeInTheDocument();
+    expect(within(rowOf(alice)).getByLabelText("voice")).toBeInTheDocument();
+    expect(within(rowOf(alice)).getByLabelText("video")).toBeInTheDocument();
     expect(cells(bob)).toEqual(["+15551230002", "001010000000002", "1", ""]);
+    expect(within(rowOf(bob)).getByLabelText("voice")).toBeInTheDocument();
     expect(
-      within(rowOf(bob)).getByLabelText("voice capable"),
-    ).toBeInTheDocument();
-    expect(
-      within(rowOf(bob)).queryByLabelText("video capable"),
+      within(rowOf(bob)).queryByLabelText("video"),
     ).not.toBeInTheDocument();
   });
 
@@ -347,7 +341,7 @@ describe("Registrations", () => {
     renderWithClient(<Registrations />);
     await screen.findByText(imsiOf(silent));
     expect(
-      within(rowOf(silent)).queryByLabelText("voice capable"),
+      within(rowOf(silent)).queryByLabelText("voice"),
     ).not.toBeInTheDocument();
 
     const drawer = await open(silent);

@@ -7,11 +7,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import {
-  LockReset as LockResetIcon,
-  Call as CallIcon,
-  Videocam as VideocamIcon,
-} from "@mui/icons-material";
+import { LockReset as LockResetIcon } from "@mui/icons-material";
 import {
   DataGrid,
   type GridColDef,
@@ -19,6 +15,7 @@ import {
 } from "@mui/x-data-grid";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import MediaIcons from "@/components/MediaIcons";
 import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
@@ -63,30 +60,12 @@ function DevicesCell({ registration }: { registration: Registration }) {
   const contacts = contactsOf(registration);
   const devices = devicesOf(contacts).length;
   // RFC 3840 §9: the media its devices registered for.
-  const audio = contacts.some((c) => c.media.includes("audio"));
-  const video = contacts.some((c) => c.media.includes("video"));
+  const media = [...new Set(contacts.flatMap((c) => c.media))];
 
   return (
     <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
       <span>{devices}</span>
-      {audio && (
-        <Tooltip title="Voice capable" arrow>
-          <CallIcon
-            fontSize="small"
-            color="action"
-            aria-label="voice capable"
-          />
-        </Tooltip>
-      )}
-      {video && (
-        <Tooltip title="Video capable" arrow>
-          <VideocamIcon
-            fontSize="small"
-            color="action"
-            aria-label="video capable"
-          />
-        </Tooltip>
-      )}
+      <MediaIcons media={media} />
       {signallingPathOf(registration) === "lost" && (
         <SignallingPathChip path="lost" />
       )}

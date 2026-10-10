@@ -11,6 +11,7 @@ import {
   Select,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { Edit as EditIcon } from "@mui/icons-material";
@@ -19,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import CallOutcomeChip from "@/components/CallOutcomeChip";
 import CallRecordDrawer from "@/components/CallRecordDrawer";
 import EditRetentionDialog from "@/components/EditRetentionDialog";
+import MediaIcons from "@/components/MediaIcons";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import TimeRangePicker, {
@@ -45,7 +47,7 @@ import {
   formatDuration,
   outcomeLabels,
 } from "@/utils/callRecords";
-import { formatTimestamp } from "@/utils/dates";
+import { formatRecentTimestamp, formatTimestamp } from "@/utils/dates";
 
 export const CALLS_REFRESH_MS = 5000;
 
@@ -72,21 +74,26 @@ const columns: GridColDef<CallRecord>[] = [
   {
     field: "requested_at",
     headerName: "Time",
-    width: 170,
-    valueGetter: (_value, row) => formatTimestamp(row.requested_at),
+    flex: 1,
+    minWidth: 170,
+    renderCell: ({ row }) => (
+      <Tooltip title={formatTimestamp(row.requested_at)} arrow>
+        <span>{formatRecentTimestamp(row.requested_at)}</span>
+      </Tooltip>
+    ),
   },
   {
     field: "caller",
     headerName: "Caller",
     flex: 1,
-    minWidth: 160,
+    minWidth: 150,
     valueGetter: (_value, row) => callerOf(row),
   },
   {
     field: "callee",
     headerName: "Callee",
     flex: 1,
-    minWidth: 160,
+    minWidth: 150,
     valueGetter: (_value, row) => calleeOf(row),
   },
   {
@@ -106,7 +113,8 @@ const columns: GridColDef<CallRecord>[] = [
     field: "media",
     headerName: "Media",
     width: 120,
-    valueGetter: (_value, row) => row.media.join(", ") || "—",
+    renderCell: ({ row }) =>
+      row.media.length > 0 ? <MediaIcons media={row.media} /> : "—",
   },
 ];
 
@@ -181,7 +189,7 @@ export default function Calls() {
         id="calls-title"
         title="Calls"
         count={data?.total_count}
-        description="Calls made by the UEs registered with this IMS."
+        description="Calls to and from phones registered with this IMS."
       />
       <Stack
         direction={{ xs: "column", sm: "row" }}
