@@ -366,5 +366,11 @@ func logPeerState(logger *slog.Logger, p diameter.PeerStatus) {
 		attrs = append(attrs, slog.String("error", p.LastError))
 	}
 
-	logger.Debug("Diameter peer state changed", attrs...)
+	// RFC 3539 §3.4.1 [5]: a reconnected peer carries no request until three watchdog exchanges succeed.
+	if p.State == diameter.PeerReopen {
+		logger.Info("Diameter peer reconnected, unused until three watchdog exchanges succeed", attrs...)
+		return
+	}
+
+	logger.Info("Diameter peer state changed", attrs...)
 }
