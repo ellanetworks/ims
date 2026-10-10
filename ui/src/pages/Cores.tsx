@@ -36,6 +36,7 @@ import {
   getDiameterIdentity,
   listDiameterPeers,
   listDiameterRoutes,
+  peerName,
 } from "@/queries/diameter";
 import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
@@ -181,7 +182,18 @@ export default function Cores() {
       headerName: "Host",
       flex: 1,
       minWidth: 180,
-      renderCell: ({ row }) => <DomainName name={row.host} />,
+      renderCell: ({ row }) =>
+        row.host ? (
+          <DomainName name={row.host} />
+        ) : row.status.host ? (
+          <Tooltip title="Given by the peer" arrow>
+            <Typography variant="inherit" color="text.secondary">
+              <DomainName name={row.status.host} />
+            </Typography>
+          </Tooltip>
+        ) : (
+          "—"
+        ),
     },
     {
       field: "realm",
@@ -226,7 +238,9 @@ export default function Cores() {
       headerName: "State",
       flex: 0.4,
       minWidth: 110,
-      renderCell: ({ row }) => <PeerStateChip state={row.status.state} />,
+      renderCell: ({ row }) => (
+        <PeerStateChip state={row.status.state} error={row.status.error} />
+      ),
     },
     {
       field: "since",
@@ -246,14 +260,14 @@ export default function Cores() {
         <>
           <IconButton
             size="small"
-            aria-label={`Edit ${row.host}`}
+            aria-label={`Edit ${peerName(row)}`}
             onClick={() => setPeerDialog({ peer: row })}
           >
             <EditIcon fontSize="small" color="primary" />
           </IconButton>
           <IconButton
             size="small"
-            aria-label={`Delete ${row.host}`}
+            aria-label={`Delete ${peerName(row)}`}
             onClick={() => {
               deletion.reset();
               setDeleting(row);
@@ -472,7 +486,7 @@ export default function Cores() {
         <ConfirmDialog
           title={
             <>
-              Delete <DomainName name={deleting.host} />?
+              Delete <DomainName name={peerName(deleting)} />?
             </>
           }
           action="Delete"

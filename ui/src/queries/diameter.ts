@@ -12,6 +12,7 @@ export type DiameterTransport = "tcp" | "sctp";
 export type DiameterPeerState =
   "down" | "connecting" | "open" | "suspect" | "reopen" | "closing";
 
+// An empty host takes the Origin-Host the peer gives in its capabilities exchange.
 export interface DiameterPeerParams {
   host: string;
   address: string;
@@ -25,7 +26,9 @@ export interface DiameterPeerStatus {
   state: DiameterPeerState;
   since?: string;
   remote_address?: string;
+  host?: string;
   realm?: string;
+  error?: string;
 }
 
 export interface DiameterPeer extends DiameterPeerParams {
@@ -46,6 +49,10 @@ export interface DiameterRoute {
     status: DiameterPeerStatus;
   }[];
 }
+
+// peerName is how a peer is known: its configured host, else the one it gave, else its address.
+export const peerName = (peer: DiameterPeer): string =>
+  peer.host || peer.status.host || peer.address;
 
 const peerUrl = (id: string) =>
   `/api/v1/diameter/peers/${encodeURIComponent(id)}`;

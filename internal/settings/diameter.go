@@ -34,7 +34,9 @@ const (
 // peers serving their application by priority, lowest first, and are shared between peers of the same priority
 // (RFC 6733 §2.7, §5.1). The peer's realm is the one it gives in the capabilities exchange.
 type Peer struct {
-	ID           string
+	ID string
+	// Host is the Origin-Host the peer must give in the capabilities exchange. Empty takes the one it gives
+	// (RFC 6733 §2.6, §12).
 	Host         string
 	Address      netip.Addr
 	Port         int
@@ -57,9 +59,7 @@ func (p Peer) Serves(app Application) bool {
 
 func (p Peer) Validate() error {
 	switch {
-	case p.Host == "":
-		return invalidf("host is required")
-	case !isFQDN(p.Host):
+	case p.Host != "" && !isFQDN(p.Host):
 		return invalidf("host must be a domain name")
 	case !p.Address.IsValid():
 		return invalidf("address is required")
@@ -178,9 +178,13 @@ func (s Settings) validatePeers() error {
 		}
 
 		for _, q := range s.Peers[:i] {
+			switch {
 			// Diameter identities are case-insensitive.
-			if strings.EqualFold(q.Host, p.Host) {
+			case p.Host != "" && strings.EqualFold(q.Host, p.Host):
 				return conflictf("A Diameter peer already has host %s", p.Host)
+			// Without a host, a peer is known by its address and transport.
+			case p.Host == "" && q.Host == "" && p.Address == q.Address && p.Transport == q.Transport:
+				return conflictf("A Diameter peer without a host already has address %s over %s", p.Address, p.Transport)
 			}
 		}
 	}

@@ -99,7 +99,6 @@ export default function DiameterPeerDialog({
     applications: applications.length > 0 ? undefined : "At least one",
   };
   const valid =
-    params.host !== "" &&
     params.address !== "" &&
     Object.values(errors).every((e) => e === undefined);
 
@@ -118,8 +117,7 @@ export default function DiameterPeerDialog({
         label="Host"
         value={host}
         onChange={(e) => setHost(e.target.value)}
-        placeholder="hss.epc.mnc001.mcc001.3gppnetwork.org"
-        required
+        helperText="Optional. Empty accepts the host the peer gives."
       />
       <TextField
         label="Address"

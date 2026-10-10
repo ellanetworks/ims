@@ -1,4 +1,4 @@
-import { Chip, type ChipProps } from "@mui/material";
+import { Chip, Tooltip, type ChipProps } from "@mui/material";
 import type { DiameterPeerState } from "@/queries/diameter";
 
 const stateColor = (state: DiameterPeerState): ChipProps["color"] => {
@@ -12,6 +12,20 @@ const stateColor = (state: DiameterPeerState): ChipProps["color"] => {
   }
 };
 
-export default function PeerStateChip({ state }: { state: DiameterPeerState }) {
-  return <Chip label={state} color={stateColor(state)} size="small" />;
+export default function PeerStateChip({
+  state,
+  error,
+}: {
+  state: DiameterPeerState;
+  error?: string;
+}) {
+  const chip = <Chip label={state} color={stateColor(state)} size="small" />;
+
+  return error && state !== "open" ? (
+    <Tooltip title={error} arrow>
+      {chip}
+    </Tooltip>
+  ) : (
+    chip
+  );
 }
