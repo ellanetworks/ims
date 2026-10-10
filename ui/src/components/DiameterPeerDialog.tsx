@@ -114,38 +114,12 @@ export default function DiameterPeerDialog({
       onClose={onClose}
     >
       <TextField
-        label="Host"
-        value={host}
-        onChange={(e) => setHost(e.target.value)}
-        helperText="Optional. Empty accepts the host the peer gives."
-      />
-      <TextField
         label="Address"
         value={address}
         onChange={(e) => setAddress(e.target.value)}
         placeholder="192.0.2.1"
         required
       />
-      <TextField
-        label="Port"
-        value={port}
-        onChange={(e) => setPort(e.target.value.trim())}
-        error={errors.port !== undefined}
-        helperText={errors.port}
-        required
-      />
-      <TextField
-        select
-        label="Transport"
-        value={transport}
-        onChange={(e) => setTransport(e.target.value as DiameterTransport)}
-      >
-        {TRANSPORTS.map((t) => (
-          <MenuItem key={t} value={t}>
-            {transportLabels[t]}
-          </MenuItem>
-        ))}
-      </TextField>
       <FormControl error={errors.applications !== undefined}>
         <FormLabel>Roles</FormLabel>
         <FormGroup row>
@@ -167,6 +141,26 @@ export default function DiameterPeerDialog({
         )}
       </FormControl>
       <TextField
+        label="Port"
+        value={port}
+        onChange={(e) => setPort(e.target.value.trim())}
+        error={errors.port !== undefined}
+        helperText={errors.port}
+        required
+      />
+      <TextField
+        select
+        label="Transport"
+        value={transport}
+        onChange={(e) => setTransport(e.target.value as DiameterTransport)}
+      >
+        {TRANSPORTS.map((t) => (
+          <MenuItem key={t} value={t}>
+            {transportLabels[t]}
+          </MenuItem>
+        ))}
+      </TextField>
+      <TextField
         label="Priority"
         value={priority}
         onChange={(e) => setPriority(e.target.value.trim())}
@@ -176,6 +170,12 @@ export default function DiameterPeerDialog({
           "Lowest first; peers of the same priority share requests."
         }
         required
+      />
+      <TextField
+        label="Host"
+        value={host}
+        onChange={(e) => setHost(e.target.value)}
+        helperText="Optional. Empty accepts the host the peer gives."
       />
       {valid && changesTransports(peers, peer, params) && (
         <Alert severity="warning">{RESTART_WARNING}</Alert>

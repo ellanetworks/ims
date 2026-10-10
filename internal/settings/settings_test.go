@@ -377,17 +377,22 @@ func TestLivePeersWithoutHost(t *testing.T) {
 func TestLivePolicy(t *testing.T) {
 	live := NewLive(&fakeStore{}, validSettings(), nil)
 
-	if err := live.UpdatePolicy(t.Context(), Policy{Interface: PolicyRx}); !errors.Is(err, ErrConflict) {
-		t.Fatalf("rx without a peer = %v, want a conflict", err)
+	if err := live.UpdatePolicy(t.Context(), Policy{Interface: PolicyRx}); err != nil {
+		t.Fatalf("rx without a peer: %v", err)
+	}
+
+	h, err := live.CreatePeer(t.Context(), hss())
+	if err != nil {
+		t.Fatalf("CreatePeer of an HSS before any rx peer: %v", err)
+	}
+
+	if err := live.DeletePeer(t.Context(), h.ID); err != nil {
+		t.Fatalf("DeletePeer of an HSS without any rx peer: %v", err)
 	}
 
 	p, err := live.CreatePeer(t.Context(), pcrf())
 	if err != nil {
 		t.Fatalf("CreatePeer: %v", err)
-	}
-
-	if err := live.UpdatePolicy(t.Context(), Policy{Interface: PolicyRx}); err != nil {
-		t.Fatalf("UpdatePolicy: %v", err)
 	}
 
 	if err := live.DeletePeer(t.Context(), p.ID); !errors.Is(err, ErrConflict) || err.Error() != "rx requires a Diameter peer serving rx" {

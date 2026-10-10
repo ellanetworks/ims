@@ -110,15 +110,15 @@ func TestPolicyChangedAtRuntime(t *testing.T) {
 
 	srv := startIMS(t, cfg)
 
-	if got := (coreView{srv}).PolicyStatus().Interface; got != "" {
-		t.Fatalf("policy function = %q, want none", got)
+	if got := (coreView{srv}).PolicyStatus().Interface; got != "rx" {
+		t.Fatalf("policy function = %q, want rx", got)
 	}
 
-	if err := srv.settings.UpdatePolicy(t.Context(), settings.Policy{Interface: settings.PolicyRx}); err != nil {
+	if err := srv.settings.UpdatePolicy(t.Context(), settings.Policy{Interface: settings.PolicyNone}); err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
 
-	eventually(t, "the Rx policy function", func() bool { return coreView{srv}.PolicyStatus().Interface == "rx" })
+	eventually(t, "no policy function", func() bool { return coreView{srv}.PolicyStatus().Interface == "" })
 }
 
 func TestN5PolicyAgainstTheConfigurationFile(t *testing.T) {

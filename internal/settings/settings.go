@@ -112,7 +112,13 @@ func (s Settings) Validate() error {
 		return err
 	}
 
-	if s.Policy.Interface == PolicyRx && len(s.Serving(ApplicationRx)) == 0 {
+	return nil
+}
+
+// keepsPCRF refuses to take away the last peer serving rx while rx is the policy function, as every call would
+// then fail. Rx without any such peer yet is allowed: it is where a new install starts.
+func (s Settings) keepsPCRF(had bool) error {
+	if had && s.Policy.Interface == PolicyRx && len(s.Serving(ApplicationRx)) == 0 {
 		return conflictf("rx requires a Diameter peer serving rx")
 	}
 
@@ -212,10 +218,11 @@ func (l *Live) UpdatePeer(ctx context.Context, p Peer) error {
 			return kindError{ErrNotFound, "Diameter peer not found"}
 		}
 
+		had := len(next.Serving(ApplicationRx)) > 0
 		next.Peers = slices.Clone(next.Peers)
 		next.Peers[i] = p
 
-		return nil
+		return next.keepsPCRF(had)
 	}, func() error { return l.store.UpdatePeer(ctx, p) })
 }
 
@@ -226,13 +233,10 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 			return kindError{ErrNotFound, "Diameter peer not found"}
 		}
 
+		had := len(next.Serving(ApplicationRx)) > 0
 		next.Peers = slices.Delete(slices.Clone(next.Peers), i, i+1)
 
-		if next.Policy.Interface == PolicyRx && len(next.Serving(ApplicationRx)) == 0 {
-			return conflictf("rx requires a Diameter peer serving rx")
-		}
-
-		return nil
+		return next.keepsPCRF(had)
 	}, func() error { return l.store.DeletePeer(ctx, id) })
 }
 
