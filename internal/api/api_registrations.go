@@ -26,12 +26,25 @@ type Registrations interface {
 	Reauthenticate(ctx context.Context, impi string) error
 }
 
-// RegistrationStatus is a private identity registered with the IMS: its public identities, and the contacts
-// bound to them (TS 24.229 §5.4.1.2.2 step 6).
+// RegistrationStatus is a private identity registered with the IMS: its registered implicit registration sets.
 type RegistrationStatus struct {
-	IMPI       string
+	IMPI                     string
+	ImplicitRegistrationSets []ImplicitRegistrationSet
+}
+
+// ImplicitRegistrationSet is an implicit registration set of the private identity, which registers and deregisters as
+// one (TS 23.228 §5.2.1a.0): its public identities, the contacts bound to them (TS 24.229 §5.4.1.2.2 step 6), and the
+// HSS the S-CSCF sends its Cx requests for them to (TS 29.229 §5.5).
+type ImplicitRegistrationSet struct {
+	HSS        HSS
 	Identities []RegisteredIdentity
 	Contacts   []RegisteredContact
+}
+
+// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its last answer. Empty is unknown.
+type HSS struct {
+	Host  string
+	Realm string
 }
 
 // RegisteredIdentity is a public identity of the private identity. RegisteredWith lists the other private
@@ -93,10 +106,20 @@ type RegisteredContactResponse struct {
 	SignallingPath string   `json:"signalling_path"`
 }
 
-type RegistrationResponse struct {
-	IMPI       string                         `json:"impi"`
+type HSSResponse struct {
+	Host  string `json:"host"`
+	Realm string `json:"realm"`
+}
+
+type ImplicitRegistrationSetResponse struct {
+	HSS        *HSSResponse                   `json:"hss,omitempty"`
 	Identities []RegistrationIdentityResponse `json:"identities"`
 	Contacts   []RegisteredContactResponse    `json:"contacts"`
+}
+
+type RegistrationResponse struct {
+	IMPI                     string                            `json:"impi"`
+	ImplicitRegistrationSets []ImplicitRegistrationSetResponse `json:"implicit_registration_sets"`
 }
 
 type ListRegistrationsResponse struct {
@@ -136,12 +159,28 @@ func ListRegistrations(cfg Config) http.Handler {
 
 func registrationResponse(reg RegistrationStatus) RegistrationResponse {
 	out := RegistrationResponse{
-		IMPI:       reg.IMPI,
-		Identities: make([]RegistrationIdentityResponse, 0, len(reg.Identities)),
-		Contacts:   make([]RegisteredContactResponse, 0, len(reg.Contacts)),
+		IMPI:                     reg.IMPI,
+		ImplicitRegistrationSets: make([]ImplicitRegistrationSetResponse, 0, len(reg.ImplicitRegistrationSets)),
 	}
 
-	for _, id := range reg.Identities {
+	for _, set := range reg.ImplicitRegistrationSets {
+		out.ImplicitRegistrationSets = append(out.ImplicitRegistrationSets, implicitRegistrationSetResponse(set))
+	}
+
+	return out
+}
+
+func implicitRegistrationSetResponse(set ImplicitRegistrationSet) ImplicitRegistrationSetResponse {
+	out := ImplicitRegistrationSetResponse{
+		Identities: make([]RegistrationIdentityResponse, 0, len(set.Identities)),
+		Contacts:   make([]RegisteredContactResponse, 0, len(set.Contacts)),
+	}
+
+	if set.HSS.Host != "" {
+		out.HSS = &HSSResponse{Host: set.HSS.Host, Realm: set.HSS.Realm}
+	}
+
+	for _, id := range set.Identities {
 		with := id.RegisteredWith
 		if with == nil {
 			with = []string{}
@@ -152,7 +191,7 @@ func registrationResponse(reg RegistrationStatus) RegistrationResponse {
 		})
 	}
 
-	for _, d := range reg.Contacts {
+	for _, d := range set.Contacts {
 		media := d.Media
 		if media == nil {
 			media = []string{}

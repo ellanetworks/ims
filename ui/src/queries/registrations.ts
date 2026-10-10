@@ -31,10 +31,23 @@ export interface RegisteredContact {
   signalling_path: SignallingPath;
 }
 
-export interface Registration {
-  impi: string;
+// HSS is the HSS the S-CSCF sends a set's Cx requests to: the Origin-Host and Origin-Realm of its last answer.
+export interface HSS {
+  host: string;
+  realm: string;
+}
+
+// ImplicitRegistrationSet is an implicit registration set: public identities that register and deregister as one,
+// the contacts bound to them, and their HSS, absent while unknown.
+export interface ImplicitRegistrationSet {
+  hss?: HSS;
   identities: RegisteredIdentity[];
   contacts: RegisteredContact[];
+}
+
+export interface Registration {
+  impi: string;
+  implicit_registration_sets: ImplicitRegistrationSet[];
 }
 
 export interface ListRegistrationsParams extends PageParams {

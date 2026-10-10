@@ -822,18 +822,43 @@ components:
 
     Registration:
       type: object
-      required: [impi, identities, devices]
+      required: [impi, implicit_registration_sets]
       properties:
         impi:
           type: string
           description: Private user identity.
           examples: [001010000000001@ims.mnc001.mcc001.3gppnetwork.org]
+        implicit_registration_sets:
+          type: array
+          description: >-
+            The registered implicit registration sets of the private identity. A set registers and deregisters as one
+            (TS 23.228 §5.2.1a.0).
+          items:
+            $ref: "#/components/schemas/ImplicitRegistrationSet"
+
+    ImplicitRegistrationSet:
+      type: object
+      required: [identities, contacts]
+      properties:
+        hss:
+          type: object
+          description: >-
+            The HSS the S-CSCF sends the set's Cx requests to (TS 29.229 §5.5): the Origin-Host and Origin-Realm of its
+            last answer. Absent while unknown.
+          required: [host, realm]
+          properties:
+            host:
+              type: string
+              examples: [mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org]
+            realm:
+              type: string
+              examples: [epc.mnc001.mcc001.3gppnetwork.org]
         identities:
           type: array
-          description: Public user identities.
+          description: The public user identities of the set.
           items:
             type: object
-            required: [uri, barred]
+            required: [uri, barred, registered_with]
             properties:
               uri:
                 type: string
@@ -842,12 +867,20 @@ components:
                 type: string
               barred:
                 type: boolean
-        devices:
+              registered_with:
+                type: array
+                description: >-
+                  The other private identities a request to this public identity reaches (TS 24.229 §5.4.3.3 step 8).
+                items:
+                  type: string
+        contacts:
           type: array
-          description: Registered contacts, one per device.
+          description: >-
+            The unexpired contacts bound to the set. A contact bound to several sets is listed in each, with that
+            binding's times.
           items:
             type: object
-            required: [contact, media, registered_at, expires_at, protected, signalling_path]
+            required: [contact, q, media, registered_at, expires_at, protected, signalling_path]
             properties:
               contact:
                 type: string
@@ -855,6 +888,12 @@ components:
                 type: string
                 description: Instance ID, an IMEI URN when available (TS 23.003 §13.8).
                 examples: [urn:gsma:imei:35000000-000001-0]
+              reg_id:
+                type: integer
+                description: The reg-id of the flow, when the contact is one of the device's flows (RFC 5626).
+              q:
+                type: number
+                description: The q-value of the contact (RFC 3841 §7.2.3).
               media:
                 type: array
                 description: The media the device registered for.

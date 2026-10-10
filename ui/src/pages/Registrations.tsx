@@ -15,6 +15,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { listRegistrations, type Registration } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
 import {
+  contactsOf,
   deviceSummary,
   devicesOf,
   lastExpiry,
@@ -61,14 +62,15 @@ const columns: GridColDef<Registration>[] = [
     headerName: "Devices",
     flex: 1,
     minWidth: 200,
-    renderCell: ({ row }) => lines(devicesOf(row).map(deviceSummary)),
+    renderCell: ({ row }) =>
+      lines(devicesOf(contactsOf(row)).map(deviceSummary)),
   },
   {
     field: "video",
     headerName: "Video",
     width: 80,
     valueGetter: (_value, row) =>
-      yesNo(row.contacts.some((c) => c.media.includes("video"))),
+      yesNo(contactsOf(row).some((c) => c.media.includes("video"))),
   },
   {
     field: "signalling",

@@ -2,7 +2,11 @@ import type { CallRecord } from "@/queries/callRecords";
 import type { DiameterPeer, DiameterRoute } from "@/queries/diameter";
 import type { Operator } from "@/queries/operator";
 import type { PolicyWithStatus } from "@/queries/policy";
-import type { RegisteredContact, Registration } from "@/queries/registrations";
+import type {
+  ImplicitRegistrationSet,
+  RegisteredContact,
+  Registration,
+} from "@/queries/registrations";
 import type { SIPStatus } from "@/queries/sip";
 
 export const operator: Operator = {
@@ -88,11 +92,11 @@ export const contact = (
   ...overrides,
 });
 
-export const registration = (
-  overrides: Partial<Registration> = {},
-): Registration => ({
-  impi: "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
-  identities: [
+// registration is a registration with one implicit registration set, built from identities, contacts and hss,
+// unless implicit_registration_sets gives them all.
+export const registration = ({
+  impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+  identities = [
     {
       uri: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
       barred: true,
@@ -105,8 +109,18 @@ export const registration = (
     },
     { uri: "tel:+15551230001", barred: false, registered_with: [] },
   ],
-  contacts: [contact()],
-  ...overrides,
+  contacts = [contact()],
+  hss = {
+    host: "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org",
+    realm: "epc.mnc001.mcc001.3gppnetwork.org",
+  },
+  implicit_registration_sets,
+}: Partial<Registration> &
+  Partial<ImplicitRegistrationSet> = {}): Registration => ({
+  impi,
+  implicit_registration_sets: implicit_registration_sets ?? [
+    { hss, identities, contacts },
+  ],
 });
 
 export const callRecord = (

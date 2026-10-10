@@ -19,6 +19,7 @@ import Fields from "@/components/Fields";
 import SignallingPathChip from "@/components/SignallingPathChip";
 import {
   reauthenticate,
+  type ImplicitRegistrationSet,
   type RegisteredContact,
   type RegisteredIdentity,
   type Registration,
@@ -114,6 +115,103 @@ function SharedChip({
   );
 }
 
+// SetSection shows an implicit registration set: its HSS, its public identities and the devices bound to it. A
+// registration with several sets numbers them.
+function SetSection({
+  set,
+  index,
+  count,
+  onSearch,
+}: {
+  set: ImplicitRegistrationSet;
+  index: number;
+  count: number;
+  onSearch: (search: string) => void;
+}) {
+  const devices = devicesOf(set.contacts);
+  const id = (name: string) => `${name}-title-${index}`;
+
+  return (
+    <>
+      <Divider />
+      {count > 1 && (
+        <Typography variant="h6" component="h3">
+          Implicit Registration Set {index + 1}
+        </Typography>
+      )}
+      <Fields
+        rows={[
+          [
+            "HSS",
+            set.hss ? (
+              <>
+                <DomainName name={set.hss.host} />
+                <Typography variant="body2" color="textSecondary">
+                  <DomainName name={set.hss.realm} />
+                </Typography>
+              </>
+            ) : (
+              "—"
+            ),
+          ],
+        ]}
+      />
+      <Box component="section" aria-labelledby={id("identities")}>
+        <Typography
+          id={id("identities")}
+          variant="subtitle1"
+          component="h3"
+          sx={{ mb: 1 }}
+        >
+          Public Identities ({set.identities.length})
+        </Typography>
+        <Stack
+          component="ul"
+          spacing={0.5}
+          sx={{ m: 0, p: 0, listStyle: "none" }}
+        >
+          {set.identities.map((identity) => (
+            <Stack
+              component="li"
+              key={identity.uri}
+              direction="row"
+              sx={{ alignItems: "center", gap: 1, overflowWrap: "anywhere" }}
+            >
+              <span>{identity.uri}</span>
+              {identity.display_name && (
+                <Typography variant="body2" color="textSecondary">
+                  {identity.display_name}
+                </Typography>
+              )}
+              {identity.barred && <Chip label="barred" size="small" />}
+              <SharedChip identity={identity} onSearch={onSearch} />
+            </Stack>
+          ))}
+        </Stack>
+      </Box>
+      <Box component="section" aria-labelledby={id("devices")}>
+        <Typography
+          id={id("devices")}
+          variant="subtitle1"
+          component="h3"
+          sx={{ mb: 1 }}
+        >
+          Devices ({devices.length})
+        </Typography>
+        <Stack
+          component="ul"
+          spacing={2}
+          sx={{ m: 0, p: 0, listStyle: "none" }}
+        >
+          {devices.map((device) => (
+            <DeviceSection key={device.id} device={device} />
+          ))}
+        </Stack>
+      </Box>
+    </>
+  );
+}
+
 function RegistrationDetail({
   registration,
   onClose,
@@ -126,7 +224,6 @@ function RegistrationDetail({
   const reauth = useMutation({
     mutationFn: () => reauthenticate(registration.impi),
   });
-  const devices = devicesOf(registration);
 
   return (
     <Stack spacing={2} sx={{ p: 2 }}>
@@ -160,60 +257,15 @@ function RegistrationDetail({
           Could not re-authenticate: {reauth.error.message}
         </Alert>
       )}
-      <Divider />
-      <Box component="section" aria-labelledby="identities-title">
-        <Typography
-          id="identities-title"
-          variant="subtitle1"
-          component="h3"
-          sx={{ mb: 1 }}
-        >
-          Public Identities ({registration.identities.length})
-        </Typography>
-        <Stack
-          component="ul"
-          spacing={0.5}
-          sx={{ m: 0, p: 0, listStyle: "none" }}
-        >
-          {registration.identities.map((identity) => (
-            <Stack
-              component="li"
-              key={identity.uri}
-              direction="row"
-              sx={{ alignItems: "center", gap: 1, overflowWrap: "anywhere" }}
-            >
-              <span>{identity.uri}</span>
-              {identity.display_name && (
-                <Typography variant="body2" color="textSecondary">
-                  {identity.display_name}
-                </Typography>
-              )}
-              {identity.barred && <Chip label="barred" size="small" />}
-              <SharedChip identity={identity} onSearch={onSearch} />
-            </Stack>
-          ))}
-        </Stack>
-      </Box>
-      <Divider />
-      <Box component="section" aria-labelledby="devices-title">
-        <Typography
-          id="devices-title"
-          variant="subtitle1"
-          component="h3"
-          sx={{ mb: 1 }}
-        >
-          Devices ({devices.length})
-        </Typography>
-        <Stack
-          component="ul"
-          spacing={2}
-          sx={{ m: 0, p: 0, listStyle: "none" }}
-        >
-          {devices.map((device) => (
-            <DeviceSection key={device.id} device={device} />
-          ))}
-        </Stack>
-      </Box>
+      {registration.implicit_registration_sets.map((set, i) => (
+        <SetSection
+          key={i}
+          set={set}
+          index={i}
+          count={registration.implicit_registration_sets.length}
+          onSearch={onSearch}
+        />
+      ))}
     </Stack>
   );
 }

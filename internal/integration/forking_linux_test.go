@@ -387,7 +387,13 @@ func TestListSharedNumber(t *testing.T) {
 			other, q = callee.impi, 0.5
 		}
 
-		for _, id := range reg.Identities {
+		if len(reg.ImplicitRegistrationSets) != 1 {
+			t.Fatalf("%s: implicit sets %+v, want one", reg.IMPI, reg.ImplicitRegistrationSets)
+		}
+
+		set := reg.ImplicitRegistrationSets[0]
+
+		for _, id := range set.Identities {
 			want := []string{other}
 			if id.Barred {
 				want = []string{}
@@ -398,8 +404,8 @@ func TestListSharedNumber(t *testing.T) {
 			}
 		}
 
-		if len(reg.Contacts) != 1 || reg.Contacts[0].Q != q {
-			t.Errorf("%s: contacts %+v, want one with q %v", reg.IMPI, reg.Contacts, q)
+		if len(set.Contacts) != 1 || set.Contacts[0].Q != q {
+			t.Errorf("%s: contacts %+v, want one with q %v", reg.IMPI, set.Contacts, q)
 		}
 	}
 }

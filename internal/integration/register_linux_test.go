@@ -813,17 +813,24 @@ func TestListRegistrations(t *testing.T) {
 	}
 
 	reg := got.Items[0]
-	if reg.IMPI != impi || !slices.ContainsFunc(reg.Identities, func(i api.RegistrationIdentityResponse) bool {
-		return i.URI == subscriberAt(0).tel
-	}) {
-		t.Fatalf("registration = %+v, want %s with %s", reg, impi, subscriberAt(0).tel)
+	if reg.IMPI != impi || len(reg.ImplicitRegistrationSets) != 1 {
+		t.Fatalf("registration = %+v, want %s with one implicit registration set", reg, impi)
 	}
 
-	if len(reg.Contacts) != 1 {
-		t.Fatalf("contacts = %+v, want one", reg.Contacts)
+	set := reg.ImplicitRegistrationSets[0]
+	if !slices.ContainsFunc(set.Identities, func(i api.RegistrationIdentityResponse) bool { return i.URI == subscriberAt(0).tel }) {
+		t.Fatalf("identities = %+v, want %s", set.Identities, subscriberAt(0).tel)
 	}
 
-	d, sub := reg.Contacts[0], subscriberAt(0)
+	if set.HSS == nil || set.HSS.Host != s.hss.Host() || set.HSS.Realm != s.hss.Realm() {
+		t.Fatalf("hss = %+v, want %s in %s", set.HSS, s.hss.Host(), s.hss.Realm())
+	}
+
+	if len(set.Contacts) != 1 {
+		t.Fatalf("contacts = %+v, want one", set.Contacts)
+	}
+
+	d, sub := set.Contacts[0], subscriberAt(0)
 	address, err := netip.ParseAddrPort(d.Address)
 
 	switch {
