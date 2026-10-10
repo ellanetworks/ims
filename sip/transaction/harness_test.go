@@ -82,7 +82,9 @@ func (h *harness) send(req *sip.Request) (*transaction.ClientTransaction, *sipte
 
 	got, f := h.peer.RecvRequest()
 
-	for deadline := time.Now().Add(siptest.Timeout); tx.Request().Flow.Transport != f.Transport; time.Sleep(time.Millisecond) {
+	// The peer can get the request before the transaction records sending it, and Timer E retransmits only a request
+	// sent: the clock must not move until then.
+	for deadline := time.Now().Add(siptest.Timeout); !tx.Sent() || tx.Request().Flow.Transport != f.Transport; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			h.t.Fatalf("%s received over %s, sent over %s", got.Method, f.Transport, tx.Request().Flow.Transport)
 		}
@@ -146,6 +148,13 @@ func (h *harness) wantRequest(method string) *sip.Request {
 	req, _ := h.peer.RecvRequest()
 	if req.Method != method {
 		h.t.Fatalf("peer got %q, want %s", req.StartLine(), method)
+	}
+
+	// As for the requests the harness sends: the clock must not move before the transaction records the send.
+	for deadline := time.Now().Add(siptest.Timeout); h.l.Sending(req); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s received, never recorded as sent", req.Method)
+		}
 	}
 
 	return req
