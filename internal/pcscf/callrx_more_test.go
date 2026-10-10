@@ -499,88 +499,83 @@ func TestCallMixedAddressFamilies(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE: with no path to the PCRF of the call, the call ends, both ways.
+// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: with no connection or no path to the PCRF of the call, the modification is
+// undelivered and the call ends, both ways.
 func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
-	s, u, pcrf, _ := newRxIPsecScene(t)
-	e := s.establishConfirmed(t, u, pcrf)
-
-	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
-		if req.CommandCode == rx.CommandAA {
-			return undeliverable(req), nil
-		}
-
-		return succeed(req)
-	})
-
-	req, err := e.ue.NewRequest("UPDATE")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req.Header.Add("Contact", ueContact(u))
-	req.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000", "a=sendonly"))
-	s.ueSend(u, req)
-
-	fwd, ff := s.scscf.RecvRequest()
-	ok := sip.NewResponse(fwd, 200, "")
-	ok.Header.Add("Contact", "<sip:callee@"+s.scscf.Addr().String()+">")
-	ok.SetBody("application/sdp", sdpBody("192.0.2.9", "5000", "a=recvonly"))
-	s.scscf.Send(ff.Transport, ff.Remote, ok)
-
-	if id, aar := pcrf.aar(); id != e.session || *aar.RequestType != rx.RequestUpdate {
-		t.Fatalf("AAR %s %s, want the update of %s", id, aar.RequestType, e.session)
-	}
-
-	if bye, _ := s.scscf.RecvRequest(); bye.Method != "BYE" || !strings.Contains(bye.Header.Get("Reason"), "cause=503") {
-		t.Fatalf("S-CSCF got %s with Reason %q, want a BYE for cause 503", bye.Method, bye.Header.Get("Reason"))
-	}
-
-	for {
-		if r, ok := u.us.Recv().Msg.(*sip.Request); ok {
-			if r.Method != "BYE" {
-				t.Fatalf("UE got %s, want the BYE", r.Method)
-			}
-
-			break
-		}
-	}
-
-	pcrf.none()
-}
-
-// RFC 6733 §5.5.4, §7.1.3: a PCRF momentarily disconnected or too busy has not lost the call's session: the
-// modification is refused and the call goes on.
-func TestCallModificationWithItsPCRFPendingKeepsTheCall(t *testing.T) {
-	for name, pending := range map[string]struct {
-		err    error
-		result uint32
-	}{
-		"down":     {err: diameter.ErrNotConnected},
-		"too busy": {result: diameter.ResultTooBusy},
+	for name, lose := range map[string]func(*diameter.Message) (*diameter.Message, error){
+		"no connection": func(*diameter.Message) (*diameter.Message, error) { return nil, diameter.ErrNotConnected },
+		"no path":       func(req *diameter.Message) (*diameter.Message, error) { return undeliverable(req), nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, u, pcrf, _ := newRxIPsecScene(t)
 			e := s.establishConfirmed(t, u, pcrf)
 
-			pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-				switch {
-				case req.CommandCode != rx.CommandAA:
-					return succeed(req)
-				case pending.err != nil:
-					return nil, pending.err
+			pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
+				if req.CommandCode == rx.CommandAA {
+					return lose(req)
 				}
 
-				return diameter.NewAnswer(req, pcrfIdentity, pending.result), nil
+				return succeed(req)
 			})
 
-			res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
-			wantStatus(t, res, 200)
+			req, err := e.ue.NewRequest("UPDATE")
+			if err != nil {
+				t.Fatal(err)
+			}
 
-			pcrf.aar()
-			s.scscf.RecvNone(quiet)
+			req.Header.Add("Contact", ueContact(u))
+			req.SetBody("application/sdp", sdpBody(ueAddr.String(), "4000", "a=sendonly"))
+			s.ueSend(u, req)
+
+			fwd, ff := s.scscf.RecvRequest()
+			ok := sip.NewResponse(fwd, 200, "")
+			ok.Header.Add("Contact", "<sip:callee@"+s.scscf.Addr().String()+">")
+			ok.SetBody("application/sdp", sdpBody("192.0.2.9", "5000", "a=recvonly"))
+			s.scscf.Send(ff.Transport, ff.Remote, ok)
+
+			if id, aar := pcrf.aar(); id != e.session || *aar.RequestType != rx.RequestUpdate {
+				t.Fatalf("AAR %s %s, want the update of %s", id, aar.RequestType, e.session)
+			}
+
+			if bye, _ := s.scscf.RecvRequest(); bye.Method != "BYE" || !strings.Contains(bye.Header.Get("Reason"), "cause=503") {
+				t.Fatalf("S-CSCF got %s with Reason %q, want a BYE for cause 503", bye.Method, bye.Header.Get("Reason"))
+			}
+
+			for {
+				if r, ok := u.us.Recv().Msg.(*sip.Request); ok {
+					if r.Method != "BYE" {
+						t.Fatalf("UE got %s, want the BYE", r.Method)
+					}
+
+					break
+				}
+			}
+
 			pcrf.none()
 		})
 	}
+}
+
+// RFC 6733 §7.1.3: a PCRF too busy for the modification has not lost the call's session: the modification is refused
+// and the call goes on.
+func TestCallModificationWithItsPCRFTooBusyKeepsTheCall(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+	e := s.establishConfirmed(t, u, pcrf)
+
+	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+		if req.CommandCode != rx.CommandAA {
+			return succeed(req)
+		}
+
+		return diameter.NewAnswer(req, pcrfIdentity, diameter.ResultTooBusy), nil
+	})
+
+	res := s.ueOffer(t, u, e, "UPDATE", sdpBody(ueAddr.String(), "4000", "a=sendonly"), sdpBody("192.0.2.9", "5000", "a=recvonly"))
+	wantStatus(t, res, 200)
+
+	pcrf.aar()
+	s.scscf.RecvNone(quiet)
+	pcrf.none()
 }
 
 // RFC 6733 §8.18 REFUSE_SERVICE: a session lost in an early dialog ends the call at once, with the media of the

@@ -1199,12 +1199,13 @@ func slowRetry(c *Config) { c.Policy.TerminationRetry = time.Hour }
 
 func fastRetry(c *Config) { c.Policy.TerminationRetry = 20 * time.Millisecond }
 
+// failSTRs answers the first n STRs as a PCRF too busy for them, which keeps them pending (RFC 6733 §7.1.3).
 func failSTRs(n int64) func(context.Context, *diameter.Message) (*diameter.Message, error) {
 	var failed atomic.Int64
 
 	return func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandSessionTermination && failed.Add(1) <= n {
-			return nil, diameter.ErrNotConnected
+			return diameter.NewAnswer(req, pcrfIdentity, diameter.ResultTooBusy), nil
 		}
 
 		return succeed(req)
@@ -1230,28 +1231,35 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE, the default: an STR that no path reaches its PCRF with ends the session, and is not
-// sent again.
+// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE, the default: an STR with no connection or no path to its PCRF ends the
+// session, and is not sent again.
 func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
-	pcrf := newFakePCRF(t)
-	s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
+	for name, lose := range map[string]func(*diameter.Message) (*diameter.Message, error){
+		"no connection": func(*diameter.Message) (*diameter.Message, error) { return nil, diameter.ErrNotConnected },
+		"no path":       func(req *diameter.Message) (*diameter.Message, error) { return undeliverable(req), nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pcrf := newFakePCRF(t)
+			s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
 
-	s.registered(600)
+			s.registered(600)
 
-	id, _ := pcrf.aar()
-	s.wantSession(id)
+			id, _ := pcrf.aar()
+			s.wantSession(id)
 
-	pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-		if req.CommandCode == rx.CommandSessionTermination {
-			return undeliverable(req), nil
-		}
+			pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
+				if req.CommandCode == rx.CommandSessionTermination {
+					return lose(req)
+				}
 
-		return succeed(req)
-	})
-	s.reregister(0)
+				return succeed(req)
+			})
+			s.reregister(0)
 
-	pcrf.wantSTR(id, rx.TerminationLogout)
-	pcrf.none()
+			pcrf.wantSTR(id, rx.TerminationLogout)
+			pcrf.none()
+		})
+	}
 }
 
 // overloadOnce fails the first termination as an overloaded policy function does (TS 29.500 §6.4.2).
@@ -1313,11 +1321,13 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 	})
 
+	// After a restart the PCRF is not connected yet: the STR waits for it, as the Diameter node holds a request that
+	// may wait for its peer.
 	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandSessionTermination {
 			select {
 			case <-release:
-			default:
+			case <-ctx.Done():
 				return nil, diameter.ErrNotConnected
 			}
 		}
@@ -1327,7 +1337,6 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 
 	s.restart()
 
-	pcrf.wantSTR(id, rx.TerminationAdministrative)
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 	s.wantSession(id)
 

@@ -105,8 +105,9 @@ func TestCallEndsWithItsPCRF(t *testing.T) {
 	}
 }
 
-// RFC 6733 §5.5.4: a call whose PCRF is down but still configured goes on; its requests wait for the PCRF.
-func TestCallGoesOnWhileItsPCRFIsDown(t *testing.T) {
+// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: a call whose PCRF is down, though still configured, ends: with no connection
+// to its PCRF, the call's request is undelivered.
+func TestCallEndsWhileItsPCRFIsDown(t *testing.T) {
 	s := newScene(t)
 	s.addPCRF()
 
@@ -118,13 +119,10 @@ func TestCallGoesOnWhileItsPCRFIsDown(t *testing.T) {
 
 	s.pcrf.Stop(t)
 
-	if err := ac.Hold(ctx); err != nil {
-		t.Fatalf("Hold with the PCRF of the call down: %v", err)
-	}
+	_ = ac.Hold(ctx)
 
-	if ac.State() != testue.CallConfirmed || bc.State() != testue.CallConfirmed {
-		t.Fatalf("calls %s and %s, want them kept", ac.State(), bc.State())
-	}
+	ended(t, ac, testue.RemoteBye)
+	ended(t, bc, testue.RemoteBye)
 }
 
 // RFC 6733 §8.18 TRY_AGAIN: a call whose PCRF is lost goes on with another PCRF of the realm, which opens a new

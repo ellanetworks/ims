@@ -238,35 +238,12 @@ func TestSessionBindingBits(t *testing.T) {
 
 // RFC 6733 §8.18 REFUSE_SERVICE, the default: a session that no path reaches its PCRF with is lost, without
 // another attempt.
+// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: a request to the PCRF of the session with no connection or no path to it is
+// undelivered, and with the default Session-Server-Failover it is not sent again.
 func TestUnreachablePCRFRefusesService(t *testing.T) {
-	c, b := newPCRFCluster(0, diameter.RefuseService)
-
-	ref := openCall(t, b)
-
-	c.take()
-	c.set(func(c *pcrfCluster) { c.gone[pcrf1] = true })
-
-	if _, err := update(t, b, ref); !errors.Is(err, policy.ErrSessionLost) || policy.Transient(err) {
-		t.Fatalf("update = %v, want the session lost", err)
-	}
-
-	err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false)
-	if !errors.Is(err, policy.ErrSessionLost) || policy.Transient(err) {
-		t.Fatalf("Terminate = %v, want the session lost", err)
-	}
-
-	wantRx(t, c.take(),
-		rxSent{rx.CommandAA, pcrf1, pcrf1},
-		rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
-	)
-}
-
-// RFC 6733 §5.5.4, §7.1.3: a PCRF whose connection is down, or that is too busy, has not lost the session: the
-// requests stay pending, to be sent again.
-func TestPendingPCRFKeepsTheSession(t *testing.T) {
 	for name, lose := range map[string]func(c *pcrfCluster){
-		"down":     func(c *pcrfCluster) { c.down[pcrf1] = true },
-		"too busy": func(c *pcrfCluster) { c.busy[pcrf1] = true },
+		"no connection": func(c *pcrfCluster) { c.down[pcrf1] = true },
+		"no path":       func(c *pcrfCluster) { c.gone[pcrf1] = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, b := newPCRFCluster(0, diameter.RefuseService)
@@ -276,28 +253,53 @@ func TestPendingPCRFKeepsTheSession(t *testing.T) {
 			c.take()
 			c.set(lose)
 
-			if _, err := update(t, b, ref); errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
-				t.Fatalf("update = %v, want it pending", err)
+			if _, err := update(t, b, ref); !errors.Is(err, policy.ErrSessionLost) || policy.Transient(err) {
+				t.Fatalf("update = %v, want the session lost", err)
 			}
 
 			err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false)
-			if errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
-				t.Fatalf("Terminate = %v, want it pending, to be sent again", err)
-			}
-
-			c.set(func(c *pcrfCluster) { c.down, c.busy = map[string]bool{}, map[string]bool{} })
-
-			if err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false); err != nil {
-				t.Fatalf("Terminate once the PCRF is back: %v", err)
+			if !errors.Is(err, policy.ErrSessionLost) || policy.Transient(err) {
+				t.Fatalf("Terminate = %v, want the session lost", err)
 			}
 
 			wantRx(t, c.take(),
 				rxSent{rx.CommandAA, pcrf1, pcrf1},
 				rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
-				rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
 			)
 		})
 	}
+}
+
+// RFC 6733 §7.1.3: a PCRF that is too busy has the request, and has not lost the session: the requests stay pending,
+// to be sent again.
+func TestPendingPCRFKeepsTheSession(t *testing.T) {
+	c, b := newPCRFCluster(0, diameter.RefuseService)
+
+	ref := openCall(t, b)
+
+	c.take()
+	c.set(func(c *pcrfCluster) { c.busy[pcrf1] = true })
+
+	if _, err := update(t, b, ref); errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
+		t.Fatalf("update = %v, want it pending", err)
+	}
+
+	err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false)
+	if errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
+		t.Fatalf("Terminate = %v, want it pending, to be sent again", err)
+	}
+
+	c.set(func(c *pcrfCluster) { c.busy = map[string]bool{} })
+
+	if err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false); err != nil {
+		t.Fatalf("Terminate once the PCRF is back: %v", err)
+	}
+
+	wantRx(t, c.take(),
+		rxSent{rx.CommandAA, pcrf1, pcrf1},
+		rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
+		rxSent{rx.CommandSessionTermination, pcrf1, pcrf1},
+	)
 }
 
 // RFC 6733 §8.18 TRY_AGAIN: once more by realm, and the session goes on with the PCRF that answers.
@@ -326,14 +328,8 @@ func TestLostPCRFTriesAgain(t *testing.T) {
 
 	c.set(func(c *pcrfCluster) { c.down[pcrf2] = true })
 
-	if _, err := update(t, b, g.Ref); errors.Is(err, policy.ErrSessionLost) || !policy.Transient(err) {
-		t.Fatalf("update with every PCRF down = %v, want it pending", err)
-	}
-
-	c.set(func(c *pcrfCluster) { c.gone[pcrf2] = true })
-
-	if _, err := update(t, b, g.Ref); !errors.Is(err, policy.ErrSessionLost) {
-		t.Fatalf("update with no path to any PCRF = %v, want the session lost", err)
+	if _, err := update(t, b, g.Ref); !errors.Is(err, policy.ErrSessionLost) || policy.Transient(err) {
+		t.Fatalf("update with every PCRF down = %v, want the session lost after the second delivery fails", err)
 	}
 }
 
@@ -385,8 +381,9 @@ func TestLostPCRFAllowsService(t *testing.T) {
 
 	ref = openCall(t, b)
 
-	c.set(func(c *pcrfCluster) { c.gone[pcrf1] = true })
+	c.set(func(c *pcrfCluster) { c.down[pcrf1] = true })
 
+	// RFC 6733 §8.18 ALLOW_SERVICE: "If STR message delivery fails, terminate the session."
 	if err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false); err != nil {
 		t.Fatalf("Terminate = %v, want it to succeed", err)
 	}
