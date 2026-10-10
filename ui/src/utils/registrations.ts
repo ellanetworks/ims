@@ -20,12 +20,55 @@ export interface Device {
   contacts: RegisteredContact[];
 }
 
-// devicesOf groups the contacts of a registration by the device that registered them, its instance ID (RFC 5626
-// §4.1); a contact without one is a device of its own.
-export const devicesOf = (registration: Registration): Device[] => {
+// identitiesOf is the public identities of all the implicit registration sets of a registration, each once.
+export const identitiesOf = (
+  registration: Registration,
+): RegisteredIdentity[] => {
+  const identities: RegisteredIdentity[] = [];
+
+  for (const set of registration.implicit_registration_sets) {
+    for (const identity of set.identities) {
+      if (!identities.some((i) => i.uri === identity.uri)) {
+        identities.push(identity);
+      }
+    }
+  }
+
+  return identities;
+};
+
+// contactsOf is the contacts of all the implicit registration sets of a registration. A contact bound to several sets
+// is listed once, with its latest expiry.
+export const contactsOf = (registration: Registration): RegisteredContact[] => {
+  const contacts: RegisteredContact[] = [];
+
+  for (const set of registration.implicit_registration_sets) {
+    const earlier = contacts.length;
+
+    for (const contact of set.contacts) {
+      const i = contacts
+        .slice(0, earlier)
+        .findIndex(
+          (c) => c.contact === contact.contact && c.reg_id === contact.reg_id,
+        );
+
+      if (i < 0) {
+        contacts.push(contact);
+      } else if (contact.expires_at > contacts[i].expires_at) {
+        contacts[i] = contact;
+      }
+    }
+  }
+
+  return contacts;
+};
+
+// devicesOf groups contacts by the device that registered them, its instance ID (RFC 5626 §4.1); a contact without
+// one is a device of its own.
+export const devicesOf = (contacts: RegisteredContact[]): Device[] => {
   const devices: Device[] = [];
 
-  for (const c of registration.contacts) {
+  for (const c of contacts) {
     const id = c.instance ?? c.contact;
     let device = devices.find((d) => d.id === id);
 
@@ -68,7 +111,7 @@ export const numberOf = (identity: RegisteredIdentity): string | undefined =>
 
 export const numbersOf = (registration: Registration): string[] => [
   ...new Set(
-    registration.identities
+    identitiesOf(registration)
       .filter((identity) => !identity.barred)
       .map(numberOf)
       .filter((n): n is string => n !== undefined),
@@ -76,7 +119,7 @@ export const numbersOf = (registration: Registration): string[] => [
 ];
 
 export const lastExpiry = (registration: Registration): string | undefined =>
-  registration.contacts
+  contactsOf(registration)
     .map((c) => c.expires_at)
     .sort()
     .at(-1);
@@ -85,7 +128,7 @@ export const lastExpiry = (registration: Registration): string | undefined =>
 export const signallingPathOf = (
   registration: Registration,
 ): SignallingPath => {
-  const paths = registration.contacts.map((c) => c.signalling_path);
+  const paths = contactsOf(registration).map((c) => c.signalling_path);
   if (paths.includes("lost")) return "lost";
   if (paths.includes("monitored")) return "monitored";
   return "unmonitored";

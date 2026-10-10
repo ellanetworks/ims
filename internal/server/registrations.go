@@ -49,7 +49,7 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 // it reaches: those whose registrations hold it, with a live contact, as the S-CSCF routes it (TS 24.229 §5.4.3.3
 // step 8). The whole page takes one read of the database.
 func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationStatus, homeDomain string, now time.Time) error {
-	type ref struct{ reg, id int }
+	type ref struct{ reg, set, id int }
 
 	var (
 		refs []ref
@@ -57,10 +57,12 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 	)
 
 	for i, status := range page {
-		for j, id := range status.Identities {
-			if u, err := sip.ParseURI(id.URI); err == nil && !id.Barred {
-				refs = append(refs, ref{i, j})
-				uris = append(uris, u)
+		for j, set := range status.ImplicitRegistrationSets {
+			for k, id := range set.Identities {
+				if u, err := sip.ParseURI(id.URI); err == nil && !id.Barred {
+					refs = append(refs, ref{i, j, k})
+					uris = append(uris, u)
+				}
 			}
 		}
 	}
@@ -87,43 +89,41 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 		}
 
 		slices.Sort(with)
-		page[r.reg].Identities[r.id].RegisteredWith = with
+		page[r.reg].ImplicitRegistrationSets[r.set].Identities[r.id].RegisteredWith = with
 	}
 
 	return nil
 }
 
-// registrationStatus joins what the S-CSCF and the P-CSCF know of a private identity: the S-CSCF's registration
-// sets give its public identities and its unexpired contacts, and the P-CSCF gives each contact's flow.
+// registrationStatus joins what the S-CSCF and the P-CSCF know of a private identity: each registration set the
+// S-CSCF holds with an unexpired contact gives an implicit registration set, with its HSS, its public identities and
+// those contacts, and the P-CSCF gives each contact's flow. A contact bound to several sets is listed in each, with
+// that binding's times (TS 23.228 §5.2.1a.0).
 func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFRegistration, now time.Time) api.RegistrationStatus {
-	status := api.RegistrationStatus{IMPI: impi, Identities: []api.RegisteredIdentity{}, Contacts: []api.RegisteredContact{}}
-
-	var listed []db.Contact
+	status := api.RegistrationStatus{IMPI: impi, ImplicitRegistrationSets: []api.ImplicitRegistrationSet{}}
 
 	for _, reg := range regs {
-		for _, id := range reg.Identities {
-			if !slices.ContainsFunc(status.Identities, func(i api.RegisteredIdentity) bool { return i.URI == id.URI }) {
-				status.Identities = append(status.Identities, api.RegisteredIdentity{URI: id.URI, DisplayName: id.DisplayName, Barred: id.Barred})
-			}
+		set := api.ImplicitRegistrationSet{
+			HSS:        api.HSS{Host: reg.HSS.Host, Realm: reg.HSS.Realm},
+			Identities: []api.RegisteredIdentity{},
+			Contacts:   []api.RegisteredContact{},
 		}
 
 		for _, b := range reg.Bindings {
-			if !b.ExpiresAt.After(now) {
-				continue
+			if b.ExpiresAt.After(now) {
+				set.Contacts = append(set.Contacts, contact(b, flows))
 			}
-
-			// A contact registered for several registration sets is listed once.
-			if i := slices.IndexFunc(listed, func(c db.Contact) bool { return scscf.SameContact(c, b.Contact) }); i >= 0 {
-				d := &status.Contacts[i]
-				d.RegisteredAt = minTime(d.RegisteredAt, b.RegisteredAt)
-				d.ExpiresAt = maxTime(d.ExpiresAt, b.ExpiresAt)
-
-				continue
-			}
-
-			listed = append(listed, b.Contact)
-			status.Contacts = append(status.Contacts, contact(b, flows))
 		}
+
+		if len(set.Contacts) == 0 {
+			continue
+		}
+
+		for _, id := range reg.Identities {
+			set.Identities = append(set.Identities, api.RegisteredIdentity{URI: id.URI, DisplayName: id.DisplayName, Barred: id.Barred})
+		}
+
+		status.ImplicitRegistrationSets = append(status.ImplicitRegistrationSets, set)
 	}
 
 	return status
@@ -181,20 +181,4 @@ func flowOf(c db.Contact, flows []db.PCSCFRegistration) (db.PCSCFRegistration, b
 	}
 
 	return flows[i], true
-}
-
-func minTime(a, b time.Time) time.Time {
-	if b.Before(a) {
-		return b
-	}
-
-	return a
-}
-
-func maxTime(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-
-	return a
 }

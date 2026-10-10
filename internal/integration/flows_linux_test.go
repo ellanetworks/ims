@@ -49,7 +49,7 @@ func TestFlowsOfOneDevice(t *testing.T) {
 	two := s.flow(2, false, testue.Config{})
 
 	// The registrations API shows each flow with the P-CSCF's registration of its own (TS 24.229 §5.2.2.1).
-	contacts := s.registrations(subscriberAt(1).imsi).Items[0].Contacts
+	contacts := s.registrations(subscriberAt(1).imsi).Items[0].ImplicitRegistrationSets[0].Contacts
 	if len(contacts) != 2 || contacts[0].RegID == contacts[1].RegID || contacts[0].Address == contacts[1].Address ||
 		contacts[0].Address == "" || contacts[1].Address == "" {
 		t.Fatalf("contacts %+v, want flows 1 and 2, each at its own address", contacts)

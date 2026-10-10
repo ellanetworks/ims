@@ -44,18 +44,18 @@ func TestRegistrationStatus(t *testing.T) {
 			{URI: "sip:" + listIMPI, Barred: true},
 			{URI: "tel:+15551230001", DisplayName: "Alice"},
 		},
+		HSS: db.HSS{Host: "hss1." + listDomain, Realm: listDomain},
 		Bindings: []db.Binding{
 			binding(phoneContact, listNow.Add(-time.Hour), listNow.Add(time.Hour)),
 			binding(db.Contact{URI: gone}, listNow.Add(-2*time.Hour), listNow),
 		},
 	}, {
-		// A second registration set: its identities add to the first, and its bindings of the same contact are
-		// listed once.
+		// A second implicit registration set, bound to another HSS node: the phone's binding to it is its own.
 		IMPI: listIMPI,
 		Identities: []db.PublicIdentity{
-			{URI: "tel:+15551230001", DisplayName: "Alice"},
 			{URI: "sip:alice@" + listDomain},
 		},
+		HSS: db.HSS{Host: "hss2." + listDomain, Realm: listDomain},
 		Bindings: []db.Binding{
 			binding(phoneContact, listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)),
 			binding(db.Contact{
@@ -87,40 +87,69 @@ func TestRegistrationStatus(t *testing.T) {
 
 	got := registrationStatus(listIMPI, regs, flows, listNow)
 
-	want := api.RegistrationStatus{
-		IMPI: listIMPI,
-		Identities: []api.RegisteredIdentity{
-			{URI: "sip:" + listIMPI, Barred: true},
-			{URI: "tel:+15551230001", DisplayName: "Alice"},
-			{URI: "sip:alice@" + listDomain},
-		},
-		Contacts: []api.RegisteredContact{{
+	phoneStatus := func(registeredAt, expiresAt time.Time) api.RegisteredContact {
+		return api.RegisteredContact{
 			Contact:        phone,
 			Instance:       "urn:gsma:imei:35000000-000001-0",
 			Q:              1,
 			Media:          []string{"audio", "video"},
-			RegisteredAt:   listNow.Add(-2 * time.Hour),
-			ExpiresAt:      listNow.Add(time.Hour),
+			RegisteredAt:   registeredAt,
+			ExpiresAt:      expiresAt,
 			Address:        "[2001:db8::1]:5064",
 			Transport:      "udp",
 			Protected:      true,
 			SignallingPath: api.SignallingPathMonitored,
+		}
+	}
+
+	want := api.RegistrationStatus{
+		IMPI: listIMPI,
+		ImplicitRegistrationSets: []api.ImplicitRegistrationSet{{
+			HSS: api.HSS{Host: "hss1." + listDomain, Realm: listDomain},
+			Identities: []api.RegisteredIdentity{
+				{URI: "sip:" + listIMPI, Barred: true},
+				{URI: "tel:+15551230001", DisplayName: "Alice"},
+			},
+			Contacts: []api.RegisteredContact{phoneStatus(listNow.Add(-time.Hour), listNow.Add(time.Hour))},
 		}, {
-			Contact:        tablet,
-			Instance:       tabletInstance,
-			RegID:          1,
-			Q:              0.5,
-			Media:          []string{"audio"},
-			RegisteredAt:   listNow,
-			ExpiresAt:      listNow.Add(time.Hour),
-			Address:        "192.0.2.7:40000",
-			Transport:      "tcp",
-			SignallingPath: api.SignallingPathLost,
+			HSS:        api.HSS{Host: "hss2." + listDomain, Realm: listDomain},
+			Identities: []api.RegisteredIdentity{{URI: "sip:alice@" + listDomain}},
+			Contacts: []api.RegisteredContact{phoneStatus(listNow.Add(-2*time.Hour), listNow.Add(30*time.Minute)), {
+				Contact:        tablet,
+				Instance:       tabletInstance,
+				RegID:          1,
+				Q:              0.5,
+				Media:          []string{"audio"},
+				RegisteredAt:   listNow,
+				ExpiresAt:      listNow.Add(time.Hour),
+				Address:        "192.0.2.7:40000",
+				Transport:      "tcp",
+				SignallingPath: api.SignallingPathLost,
+			}},
 		}},
 	}
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+}
+
+// A set whose contacts have all expired is no longer registered (TS 23.228 §5.2.1a.0).
+func TestRegistrationStatusSkipsExpiredSets(t *testing.T) {
+	regs := []db.Registration{{
+		IMPI:       listIMPI,
+		Identities: []db.PublicIdentity{{URI: "tel:+15551230001"}},
+		Bindings:   []db.Binding{binding(db.Contact{URI: "sip:ue@192.0.2.9:5060"}, listNow.Add(-time.Hour), listNow)},
+	}, {
+		IMPI:       listIMPI,
+		Identities: []db.PublicIdentity{{URI: "tel:+15551230002"}},
+		Bindings:   []db.Binding{binding(db.Contact{URI: "sip:ue@192.0.2.9:5060"}, listNow, listNow.Add(time.Hour))},
+	}}
+
+	got := registrationStatus(listIMPI, regs, nil, listNow)
+
+	if len(got.ImplicitRegistrationSets) != 1 || got.ImplicitRegistrationSets[0].Identities[0].URI != "tel:+15551230002" {
+		t.Fatalf("sets = %+v, want only the live one", got.ImplicitRegistrationSets)
 	}
 }
 
@@ -133,14 +162,16 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 	got := registrationStatus(listIMPI, regs, nil, listNow)
 
 	want := api.RegistrationStatus{
-		IMPI:       listIMPI,
-		Identities: []api.RegisteredIdentity{},
-		Contacts: []api.RegisteredContact{{
-			Contact:        "sip:ue@192.0.2.9:5060",
-			Q:              1,
-			RegisteredAt:   listNow,
-			ExpiresAt:      listNow.Add(time.Hour),
-			SignallingPath: api.SignallingPathUnmonitored,
+		IMPI: listIMPI,
+		ImplicitRegistrationSets: []api.ImplicitRegistrationSet{{
+			Identities: []api.RegisteredIdentity{},
+			Contacts: []api.RegisteredContact{{
+				Contact:        "sip:ue@192.0.2.9:5060",
+				Q:              1,
+				RegisteredAt:   listNow,
+				ExpiresAt:      listNow.Add(time.Hour),
+				SignallingPath: api.SignallingPathUnmonitored,
+			}},
 		}},
 	}
 
@@ -195,9 +226,13 @@ func TestRegisteredWith(t *testing.T) {
 	save("desk", "tel:+15551230002", false, live)
 	save("barring", "tel:+15551230002", true, live)
 
+	set := func(ids ...api.RegisteredIdentity) []api.ImplicitRegistrationSet {
+		return []api.ImplicitRegistrationSet{{Identities: ids}}
+	}
+
 	page := []api.RegistrationStatus{
-		{IMPI: "phone", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230001"}, {URI: "sip:phone@" + listDomain, Barred: true}}},
-		{IMPI: "desk", Identities: []api.RegisteredIdentity{{URI: "tel:+15551230002"}}},
+		{IMPI: "phone", ImplicitRegistrationSets: set(api.RegisteredIdentity{URI: "tel:+15551230001"}, api.RegisteredIdentity{URI: "sip:phone@" + listDomain, Barred: true})},
+		{IMPI: "desk", ImplicitRegistrationSets: set(api.RegisteredIdentity{URI: "tel:+15551230002"})},
 	}
 
 	if err := (coreView{&Server{database: d}}).registeredWith(t.Context(), page, listDomain, listNow); err != nil {
@@ -208,9 +243,9 @@ func TestRegisteredWith(t *testing.T) {
 		got  []string
 		want []string
 	}{
-		{page[0].Identities[0].RegisteredWith, []string{"watch"}},
-		{page[0].Identities[1].RegisteredWith, nil},
-		{page[1].Identities[0].RegisteredWith, nil},
+		{page[0].ImplicitRegistrationSets[0].Identities[0].RegisteredWith, []string{"watch"}},
+		{page[0].ImplicitRegistrationSets[0].Identities[1].RegisteredWith, nil},
+		{page[1].ImplicitRegistrationSets[0].Identities[0].RegisteredWith, nil},
 	} {
 		if !reflect.DeepEqual(tc.got, tc.want) {
 			t.Errorf("registered with %v, want %v", tc.got, tc.want)
@@ -245,7 +280,7 @@ func TestRegistrationStatusFlows(t *testing.T) {
 	got := registrationStatus(listIMPI, regs, flows, listNow)
 
 	var addresses []string
-	for _, c := range got.Contacts {
+	for _, c := range got.ImplicitRegistrationSets[0].Contacts {
 		addresses = append(addresses, strconv.FormatInt(c.RegID, 10)+" "+c.Address)
 	}
 

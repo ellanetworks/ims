@@ -4,6 +4,7 @@ import Registrations from "@/pages/Registrations";
 import type { Registration } from "@/queries/registrations";
 import { contact, registration } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
+import { identitiesOf } from "@/utils/registrations";
 
 const alice = registration({
   contacts: [
@@ -56,7 +57,7 @@ const serve = (
           const found = items.filter(
             (r) =>
               r.impi.includes(search) ||
-              r.identities.some((i) => i.uri.includes(search)),
+              identitiesOf(r).some((i) => i.uri.includes(search)),
           );
           return json(200, {
             result: {
@@ -79,6 +80,12 @@ const cells = (impi: string) =>
   within(screen.getByText(impi).closest('[role="row"]') as HTMLElement)
     .getAllByRole("gridcell")
     .map((cell) => cell.textContent);
+
+// hssOf is the HSS of each implicit registration set the drawer shows.
+const hssOf = (drawer: HTMLElement) =>
+  within(drawer)
+    .getAllByText("HSS", { selector: "dt" })
+    .map((dt) => dt.nextElementSibling?.textContent);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -197,6 +204,12 @@ describe("Registrations", () => {
     expect(
       within(drawer).getByRole("heading", { name: "Devices (2)" }),
     ).toBeInTheDocument();
+    expect(hssOf(drawer)).toEqual([
+      "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.orgepc.mnc001.mcc001.3gppnetwork.org",
+    ]);
+    expect(
+      within(drawer).queryByText(/Implicit Registration Set/),
+    ).not.toBeInTheDocument();
 
     const [first] = within(
       within(drawer).getByRole("list", { name: "35693803-564380-0" }),
@@ -219,6 +232,57 @@ describe("Registrations", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+  });
+
+  it("shows each implicit registration set with its HSS", async () => {
+    serve([
+      registration({
+        implicit_registration_sets: [
+          {
+            hss: { host: "hss1.example.org", realm: "example.org" },
+            identities: [
+              { uri: "tel:+15551230001", barred: false, registered_with: [] },
+            ],
+            contacts: [contact()],
+          },
+          {
+            identities: [
+              {
+                uri: "sip:alice@ims.mnc001.mcc001.3gppnetwork.org",
+                barred: false,
+                registered_with: [],
+              },
+            ],
+            contacts: [contact()],
+          },
+        ],
+      }),
+    ]);
+
+    renderWithClient(<Registrations />);
+    fireEvent.click(await screen.findByText(alice.impi));
+
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      within(drawer).getByRole("heading", {
+        name: "Implicit Registration Set 1",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole("heading", {
+        name: "Implicit Registration Set 2",
+      }),
+    ).toBeInTheDocument();
+    expect(hssOf(drawer)).toEqual(["hss1.example.orgexample.org", "—"]);
+    const second = within(drawer).getByRole("region", {
+      name: "Implicit Registration Set 2",
+    });
+    expect(
+      within(second).getByRole("heading", {
+        level: 4,
+        name: "Public Identities (1)",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("searches a number shared with other identities", async () => {

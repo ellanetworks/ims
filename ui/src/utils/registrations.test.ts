@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { contact, registration } from "@/test/fixtures";
 import {
+  contactsOf,
   deviceSummary,
   devicesOf,
+  identitiesOf,
   imeiOf,
   lastExpiry,
   numberOf,
@@ -135,9 +137,7 @@ describe("devicesOf", () => {
     const uuid = "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
     const tablet = contact({ instance: uuid });
 
-    const devices = devicesOf(
-      registration({ contacts: [phone, bare, flow, tablet] }),
-    );
+    const devices = devicesOf([phone, bare, flow, tablet]);
 
     expect(devices.map((d) => [d.label, d.contacts])).toEqual([
       ["35693803-564380-0", [phone, flow]],
@@ -150,16 +150,41 @@ describe("devicesOf", () => {
 describe("deviceSummary", () => {
   it("counts the flows of a device that has several", () => {
     const of = (...regIDs: (number | undefined)[]) =>
-      deviceSummary(
-        devicesOf(
-          registration({
-            contacts: regIDs.map((id) => contact({ reg_id: id })),
-          }),
-        )[0],
-      );
+      deviceSummary(devicesOf(regIDs.map((id) => contact({ reg_id: id })))[0]);
 
     expect(of(1, 2)).toBe("35693803-564380-0 · 2 flows");
     expect(of(1)).toBe("35693803-564380-0");
     expect(of(undefined, undefined)).toBe("35693803-564380-0");
+  });
+});
+
+describe("identitiesOf and contactsOf", () => {
+  const tel = { uri: "tel:+15551230001", barred: false, registered_with: [] };
+  const sip = {
+    uri: "sip:alice@ims.mnc001.mcc001.3gppnetwork.org",
+    barred: false,
+    registered_with: [],
+  };
+  const phone = contact();
+  const tablet = contact({ contact: "sip:tablet@192.0.2.31:5060" });
+  const twoSets = registration({
+    implicit_registration_sets: [
+      { identities: [tel], contacts: [phone] },
+      {
+        identities: [tel, sip],
+        contacts: [contact({ expires_at: "2026-10-08T14:00:00.000Z" }), tablet],
+      },
+    ],
+  });
+
+  it("lists the identities of all sets once", () => {
+    expect(identitiesOf(twoSets)).toEqual([tel, sip]);
+  });
+
+  it("lists a contact bound to several sets once, with its latest expiry", () => {
+    expect(contactsOf(twoSets)).toEqual([
+      contact({ expires_at: "2026-10-08T14:00:00.000Z" }),
+      tablet,
+    ]);
   });
 });

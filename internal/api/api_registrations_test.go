@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,28 +69,33 @@ func TestListRegistrations(t *testing.T) {
 		total: 30,
 		regs: []RegistrationStatus{{
 			IMPI: impi,
-			Identities: []RegisteredIdentity{
-				{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
-				{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true},
-			},
-			Contacts: []RegisteredContact{{
-				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
-				Instance:       "urn:gsma:imei:35000000-000001-0",
-				RegID:          1,
-				Q:              0.5,
-				Media:          []string{"audio", "video"},
-				RegisteredAt:   at,
-				ExpiresAt:      at.Add(time.Hour),
-				Address:        "[2001:db8::1]:5064",
-				Transport:      "udp",
-				Protected:      true,
-				SignallingPath: SignallingPathMonitored,
+			ImplicitRegistrationSets: []ImplicitRegistrationSet{{
+				HSS: HSS{Host: "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org", Realm: "epc.mnc001.mcc001.3gppnetwork.org"},
+				Identities: []RegisteredIdentity{
+					{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
+					{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true},
+				},
+				Contacts: []RegisteredContact{{
+					Contact:        "sip:001010000000001@[2001:db8::1]:5064",
+					Instance:       "urn:gsma:imei:35000000-000001-0",
+					RegID:          1,
+					Q:              0.5,
+					Media:          []string{"audio", "video"},
+					RegisteredAt:   at,
+					ExpiresAt:      at.Add(time.Hour),
+					Address:        "[2001:db8::1]:5064",
+					Transport:      "udp",
+					Protected:      true,
+					SignallingPath: SignallingPathMonitored,
+				}, {
+					Contact:        "sip:001010000000001@192.0.2.1:5060",
+					Q:              1,
+					RegisteredAt:   at,
+					ExpiresAt:      at.Add(time.Hour),
+					SignallingPath: SignallingPathUnmonitored,
+				}},
 			}, {
-				Contact:        "sip:001010000000001@192.0.2.1:5060",
-				Q:              1,
-				RegisteredAt:   at,
-				ExpiresAt:      at.Add(time.Hour),
-				SignallingPath: SignallingPathUnmonitored,
+				Identities: []RegisteredIdentity{{URI: "sip:alice@ims.mnc001.mcc001.3gppnetwork.org"}},
 			}},
 		}},
 	}
@@ -107,6 +113,10 @@ func TestListRegistrations(t *testing.T) {
 		t.Fatalf("listed %q page %d of %d, want \"+1555\" page 2 of 10", regs.search, regs.page, regs.perPage)
 	}
 
+	if body := rec.Body.String(); !strings.Contains(body, `},{"identities":[{"uri":"sip:alice@`) {
+		t.Fatalf("a set whose HSS is unknown has an hss: %s", body)
+	}
+
 	var got struct {
 		Result ListRegistrationsResponse `json:"result"`
 	}
@@ -120,29 +130,35 @@ func TestListRegistrations(t *testing.T) {
 		TotalCount: 30,
 		Items: []RegistrationResponse{{
 			IMPI: impi,
-			Identities: []RegistrationIdentityResponse{
-				{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
-				{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true, RegisteredWith: []string{}},
-			},
-			Contacts: []RegisteredContactResponse{{
-				Contact:        "sip:001010000000001@[2001:db8::1]:5064",
-				Instance:       "urn:gsma:imei:35000000-000001-0",
-				RegID:          1,
-				Q:              0.5,
-				Media:          []string{"audio", "video"},
-				RegisteredAt:   "2026-10-08T12:00:00.000Z",
-				ExpiresAt:      "2026-10-08T13:00:00.000Z",
-				Address:        "[2001:db8::1]:5064",
-				Transport:      "udp",
-				Protected:      true,
-				SignallingPath: "monitored",
+			ImplicitRegistrationSets: []ImplicitRegistrationSetResponse{{
+				HSS: &HSSResponse{Host: "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org", Realm: "epc.mnc001.mcc001.3gppnetwork.org"},
+				Identities: []RegistrationIdentityResponse{
+					{URI: "tel:+15551230001", DisplayName: "Alice", RegisteredWith: []string{"001010000000005@ims.mnc001.mcc001.3gppnetwork.org"}},
+					{URI: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org", Barred: true, RegisteredWith: []string{}},
+				},
+				Contacts: []RegisteredContactResponse{{
+					Contact:        "sip:001010000000001@[2001:db8::1]:5064",
+					Instance:       "urn:gsma:imei:35000000-000001-0",
+					RegID:          1,
+					Q:              0.5,
+					Media:          []string{"audio", "video"},
+					RegisteredAt:   "2026-10-08T12:00:00.000Z",
+					ExpiresAt:      "2026-10-08T13:00:00.000Z",
+					Address:        "[2001:db8::1]:5064",
+					Transport:      "udp",
+					Protected:      true,
+					SignallingPath: "monitored",
+				}, {
+					Contact:        "sip:001010000000001@192.0.2.1:5060",
+					Q:              1,
+					Media:          []string{},
+					RegisteredAt:   "2026-10-08T12:00:00.000Z",
+					ExpiresAt:      "2026-10-08T13:00:00.000Z",
+					SignallingPath: "unmonitored",
+				}},
 			}, {
-				Contact:        "sip:001010000000001@192.0.2.1:5060",
-				Q:              1,
-				Media:          []string{},
-				RegisteredAt:   "2026-10-08T12:00:00.000Z",
-				ExpiresAt:      "2026-10-08T13:00:00.000Z",
-				SignallingPath: "unmonitored",
+				Identities: []RegistrationIdentityResponse{{URI: "sip:alice@ims.mnc001.mcc001.3gppnetwork.org", RegisteredWith: []string{}}},
+				Contacts:   []RegisteredContactResponse{},
 			}},
 		}},
 	}
