@@ -502,9 +502,9 @@ func TestCallMixedAddressFamilies(t *testing.T) {
 // RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: with no connection or no path to the PCRF of the call, the modification is
 // undelivered and the call ends, both ways.
 func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
-	for name, lose := range map[string]func(*diameter.Message) (*diameter.Message, error){
-		"no connection": func(*diameter.Message) (*diameter.Message, error) { return nil, diameter.ErrNotConnected },
-		"no path":       func(req *diameter.Message) (*diameter.Message, error) { return undeliverable(req), nil },
+	for name, lose := range map[string]func(*diameter.Message) *diameter.Message{
+		"no connection": func(*diameter.Message) *diameter.Message { return nil },
+		"no path":       func(req *diameter.Message) *diameter.Message { return undeliverable(req) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, u, pcrf, _ := newRxIPsecScene(t)
@@ -512,7 +512,7 @@ func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 
 			pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 				if req.CommandCode == rx.CommandAA {
-					return lose(req)
+					return lose(req), nil
 				}
 
 				return succeed(req)
