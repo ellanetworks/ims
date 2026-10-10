@@ -237,7 +237,8 @@ func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (str
 	return s.backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
 }
 
-// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: retried until the policy function answers or the P-CSCF stops.
+// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: a transient failure is retried until the policy function
+// answers or the P-CSCF stops. A session lost with its policy function is not (RFC 6733 §8.18).
 func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wait time.Duration) error {
 	if s.ended {
 		return nil

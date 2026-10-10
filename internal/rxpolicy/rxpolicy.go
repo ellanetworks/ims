@@ -117,12 +117,12 @@ func (e *undelivered) Unwrap() error {
 // send sends a request of a session: to the PCRF that holds it, unless bound is false, else to the PCRF realm
 // (RFC 6733 §8.17).
 //
-// A request its PCRF does not get yet, because its connection is down or it is busy, stays pending: the error is
-// transient and the caller sends it again later (RFC 6733 §5.5.4). A request no path reaches its PCRF with is
-// undelivered (§8.18): it goes once to the realm if the PCRF allows it, and the session then belongs to the PCRF that
-// answers; otherwise the session is lost or, with ALLOW_SERVICE, goes on unbound. With TRY_AGAIN, a pending request
-// goes to the realm too. A PCRF that does not answer in time is neither: its connection's watchdog decides
-// (RFC 3539 §3.10).
+// A request its PCRF is too busy for stays pending: the error is transient and the caller sends it again later
+// (RFC 6733 §7.1.3). A request with no connection or no path to its PCRF is undelivered: its Destination-Host fixes
+// its destination (§5.5.4). It goes once to the realm if the PCRF allows it (§8.18), and the session then belongs to
+// the PCRF that answers; otherwise the session is lost or, with ALLOW_SERVICE, goes on unbound. With TRY_AGAIN, a
+// pending request goes to the realm too. A PCRF that does not answer in time is neither: its connection's watchdog
+// decides (RFC 3539 §3.10).
 func (b *Backend) send(ctx context.Context, id string, s session, bound bool,
 	build func(tgpp.Envelope) (*diameter.Message, error), wait bool,
 ) (*diameter.Message, error) {
@@ -136,6 +136,10 @@ func (b *Backend) send(ctx context.Context, id string, s session, bound bool,
 	ans, err := b.sendBound(ctx, env, s, build, wait)
 
 	failure := deliveryFailure(ans, err)
+	if errors.Is(err, diameter.ErrNotConnected) {
+		failure = unreachable
+	}
+
 	if failure == settled || failure == pending && !s.Failover.TriesAgain() {
 		return ans, err
 	}
