@@ -85,6 +85,9 @@ type saSet struct {
 	inUse   bool
 	removed bool
 
+	// answered reports that a protected REGISTER, the UE's answer to the challenge, came over the temporary set.
+	answered bool
+
 	client  []sip.SecurityMechanism
 	server  sip.SecurityMechanism
 	origin  *saSet
@@ -363,6 +366,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow.
 	for s := range a.sets {
 		if s.state == temporary && s.impi == c.impi {
+			a.unanswered(s)
 			a.remove(s)
 		}
 	}
@@ -557,6 +561,23 @@ func (a *associations) failed(s *saSet) {
 	}
 }
 
+// challengeAnswered records that a protected REGISTER came over the set.
+func (a *associations) challengeAnswered(s *saSet) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	s.answered = true
+}
+
+// unanswered logs a temporary set no protected REGISTER came over before it went: the UE did not answer its
+// challenge, or its answer did not reach the P-CSCF, as when ESP is dropped or NATed on the way.
+func (a *associations) unanswered(s *saSet) {
+	if s.state == temporary && !s.answered {
+		a.log.Warn("no protected REGISTER came over the security associations of a challenge", slog.String("impi", s.impi),
+			slog.String("ue", s.set.Remote.Addr.String()), slog.String("set", s.set.String()))
+	}
+}
+
 func (a *associations) extend(s *saSet, expires time.Time) {
 	if expires.After(s.expires) {
 		s.expires = expires
@@ -598,6 +619,7 @@ func (a *associations) expire(s *saSet) {
 		return
 	}
 
+	a.unanswered(s)
 	a.remove(s)
 }
 

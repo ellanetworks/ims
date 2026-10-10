@@ -1,10 +1,12 @@
 package pcscf
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"net/netip"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,4 +419,57 @@ func TestFlowOverAnotherFlow(t *testing.T) {
 
 	wantStatus(t, first(s.ue.RecvResponse()), 403)
 	s.icscf.RecvNone(quiet)
+}
+
+// A challenge whose temporary set no protected REGISTER came over is logged when a new challenge replaces it: the
+// UE's answer did not reach the P-CSCF, as when ESP is dropped on the way. One that came over it is not.
+func TestUnansweredChallengeIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+
+	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(a.close)
+
+	challengeUE := func() *saSet {
+		t.Helper()
+
+		if _, err := a.challenged(challenge{
+			impi: testIMPI, local: loopback, ue: ueAddr,
+			offer: ipsec.Offer{
+				Endpoint:  ipsec.Endpoint{PortC: 6100, PortS: 6101, SPIC: 100, SPIS: 101},
+				Integrity: "hmac-sha-1-96", Encryption: "null",
+			},
+		}, ipsec.Keys{CK: make([]byte, 16), IK: make([]byte, 16)}); err != nil {
+			t.Fatalf("challenge: %v", err)
+		}
+
+		for s := range a.sets {
+			if s.state == temporary {
+				return s
+			}
+		}
+
+		t.Fatal("no temporary set")
+
+		return nil
+	}
+
+	const unanswered = "no protected REGISTER came over"
+
+	challengeUE()
+	challengeUE()
+
+	if !strings.Contains(logs.String(), unanswered) {
+		t.Fatalf("replacing an unanswered challenge logged %q", logs.String())
+	}
+
+	answered := challengeUE()
+
+	logs.Reset()
+	a.challengeAnswered(answered)
+	challengeUE()
+
+	if strings.Contains(logs.String(), unanswered) {
+		t.Fatalf("replacing an answered challenge logged %q", logs.String())
+	}
 }

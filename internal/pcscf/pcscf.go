@@ -274,6 +274,10 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		// security associations only; one for another flow over them needs a challenge, and gets its own.
 		if v, ok := p.sas.lookup(req.Flow); ok && v.flow == r.flow {
 			r.in = &v
+
+			if v.state == temporary {
+				p.sas.challengeAnswered(v.s)
+			}
 		} else if ok {
 			p.log.Debug("REGISTER over another registration flow's security associations", slog.String("impi", r.impi))
 		}
@@ -514,6 +518,8 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	}
 
 	relay := func() proxy.Verdict {
+		p.logRejectedRegister(req, res)
+
 		if !open && r.removed == nil {
 			return proxy.Relay
 		}
@@ -733,6 +739,7 @@ func (p *PCSCF) unsubscribeIfIdle(impi string) {
 func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
 	res := sip.NewResponse(req, code, "")
 	p.cfg.RegistrationAttempts.Answered(req, res, false)
+	p.logRejectedRegister(req, res)
 
 	if err := p.cfg.Proxy.Relay(tx, res); err != nil {
 		p.log.Debug("P-CSCF response failed", slog.Int("code", code), slog.Any("error", err))
@@ -757,10 +764,22 @@ func (p *PCSCF) HandleTransactionError(tx *transaction.ServerTransaction, err er
 // respond answers a request with a response of the P-CSCF's.
 func (p *PCSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	p.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
+	p.logRejectedRegister(tx.Request(), res)
 
 	if err := tx.Respond(res); err != nil {
 		p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}
+}
+
+// logRejectedRegister logs a final answer to a REGISTER other than a success or a challenge, whoever made it, so
+// that the operator sees why a UE does not register. The node that refused it logs the details.
+func (p *PCSCF) logRejectedRegister(req *sip.Request, res *sip.Response) {
+	if req.Method != "REGISTER" || res.StatusCode < 300 || res.StatusCode == 401 {
+		return
+	}
+
+	p.log.Info("REGISTER rejected", slog.String("impi", privateIdentity(req)), slog.String("source", req.Flow.Remote.String()),
+		slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
 }
 
 func setIntegrityProtected(req *sip.Request, value string) error {
