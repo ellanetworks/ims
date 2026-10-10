@@ -61,8 +61,6 @@ function ContactCard({ contact }: { contact: RegisteredContact }) {
   );
 }
 
-// SharedChip marks a public identity other private identities are registered with: a request to it reaches their
-// contacts too. It searches the identity, which lists them all.
 // DeviceSection lists the contacts of one device: its registration flows, or its contact.
 function DeviceSection({ device }: { device: Device }) {
   return (
@@ -90,6 +88,8 @@ function DeviceSection({ device }: { device: Device }) {
   );
 }
 
+// SharedChip marks a public identity other private identities are registered with: a request to it reaches their
+// contacts too. It searches the identity, which lists them all.
 function SharedChip({
   identity,
   onSearch,
@@ -181,7 +181,13 @@ function SetSection({
               component="li"
               key={identity.uri}
               direction="row"
-              sx={{ alignItems: "center", gap: 1, overflowWrap: "anywhere" }}
+              sx={{
+                alignItems: "center",
+                flexWrap: "wrap",
+                columnGap: 1,
+                rowGap: 0.5,
+                overflowWrap: "anywhere",
+              }}
             >
               <span>{identity.uri}</span>
               {identity.display_name && (
