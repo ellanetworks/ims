@@ -87,16 +87,6 @@ export const devicesOf = (contacts: RegisteredContact[]): Device[] => {
   return devices;
 };
 
-// deviceSummary is a device's label, with its number of registration flows when it has more than one.
-export const deviceSummary = (device: Device): string => {
-  const flows = device.contacts.filter((c) => c.reg_id !== undefined).length;
-  return flows > 1 ? `${device.label} · ${flows} flows` : device.label;
-};
-
-// priorityOf is a contact's q-value, with one decimal at least: "1.0", "0.5", "0.25".
-export const priorityOf = (contact: RegisteredContact): string =>
-  Number.isInteger(contact.q * 10) ? contact.q.toFixed(1) : String(contact.q);
-
 // numberOfURI is the E.164 number of a tel URI or of a SIP URI with user=phone (TS 23.003 §13.4).
 export const numberOfURI = (uri: string): string | undefined => {
   const tel = /^tel:(\+\d+)/i.exec(uri);
@@ -109,6 +99,23 @@ export const numberOfURI = (uri: string): string | undefined => {
 export const numberOf = (identity: RegisteredIdentity): string | undefined =>
   numberOfURI(identity.uri);
 
+// An IMPI derived from the IMSI (TS 23.003 §13.3).
+const IMSI_IMPI = /^(\d{6,15})@ims\.mnc\d{3}\.mcc\d{3}\.3gppnetwork\.org$/i;
+
+// subscriberOf is how a registration shows: the IMSI of an IMPI derived from one, else the IMPI.
+export const subscriberOf = (impi: string): string =>
+  IMSI_IMPI.exec(impi)?.[1] ?? impi;
+
+// othersOf is the other private identities registered with a registration's numbers: other SIMs on the same
+// number, such as a watch's (TS 24.229 §5.4.3.3), which calls to it reach too.
+export const othersOf = (registration: Registration): string[] => [
+  ...new Set(
+    identitiesOf(registration)
+      .filter((identity) => !identity.barred)
+      .flatMap((identity) => identity.registered_with),
+  ),
+];
+
 export const numbersOf = (registration: Registration): string[] => [
   ...new Set(
     identitiesOf(registration)
@@ -117,12 +124,6 @@ export const numbersOf = (registration: Registration): string[] => [
       .filter((n): n is string => n !== undefined),
   ),
 ];
-
-export const lastExpiry = (registration: Registration): string | undefined =>
-  contactsOf(registration)
-    .map((c) => c.expires_at)
-    .sort()
-    .at(-1);
 
 // signallingPathOf is the worst signalling path of the contacts of a registration.
 export const signallingPathOf = (

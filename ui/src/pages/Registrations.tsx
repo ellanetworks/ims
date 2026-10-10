@@ -1,26 +1,41 @@
-import { useState } from "react";
-import { Box, Stack, TextField } from "@mui/material";
+import { useMemo, useState } from "react";
+import {
+  Box,
+  IconButton,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import {
+  LockReset as LockResetIcon,
+  Call as CallIcon,
+  Videocam as VideocamIcon,
+} from "@mui/icons-material";
 import {
   DataGrid,
   type GridColDef,
   type GridPaginationModel,
 } from "@mui/x-data-grid";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import RegistrationDrawer from "@/components/RegistrationDrawer";
 import SignallingPathChip from "@/components/SignallingPathChip";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { listRegistrations, type Registration } from "@/queries/registrations";
-import { formatTimestamp } from "@/utils/dates";
+import {
+  listRegistrations,
+  reauthenticate,
+  type Registration,
+} from "@/queries/registrations";
 import {
   contactsOf,
-  deviceSummary,
   devicesOf,
-  lastExpiry,
   numbersOf,
   signallingPathOf,
+  subscriberOf,
 } from "@/utils/registrations";
 
 export const REGISTRATIONS_REFRESH_MS = 5000;
@@ -29,65 +44,101 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
-const yesNo = (value: boolean) => (value ? "yes" : "no");
+function NumberCell({ registration }: { registration: Registration }) {
+  const [first, ...more] = numbersOf(registration);
 
-const lines = (values: string[]) =>
-  values.length > 0 ? (
-    <Box component="span" sx={{ display: "flex", flexDirection: "column" }}>
-      {values.map((v) => (
-        <span key={v}>{v}</span>
-      ))}
-    </Box>
-  ) : (
-    "—"
+  return (
+    <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+      <span>{first ?? "—"}</span>
+      {more.length > 0 && (
+        <Typography variant="body2" color="text.secondary">
+          +{more.length}
+        </Typography>
+      )}
+    </Stack>
   );
+}
 
-const columns: GridColDef<Registration>[] = [
+function DevicesCell({ registration }: { registration: Registration }) {
+  const contacts = contactsOf(registration);
+  const devices = devicesOf(contacts).length;
+  // RFC 3840 §9: the media its devices registered for.
+  const audio = contacts.some((c) => c.media.includes("audio"));
+  const video = contacts.some((c) => c.media.includes("video"));
+
+  return (
+    <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+      <span>{devices}</span>
+      {audio && (
+        <Tooltip title="Voice capable" arrow>
+          <CallIcon
+            fontSize="small"
+            color="action"
+            aria-label="voice capable"
+          />
+        </Tooltip>
+      )}
+      {video && (
+        <Tooltip title="Video capable" arrow>
+          <VideocamIcon
+            fontSize="small"
+            color="action"
+            aria-label="video capable"
+          />
+        </Tooltip>
+      )}
+      {signallingPathOf(registration) === "lost" && (
+        <SignallingPathChip path="lost" />
+      )}
+    </Stack>
+  );
+}
+
+const columnsFor = (
+  onReauthenticate: (registration: Registration) => void,
+): GridColDef<Registration>[] => [
   {
-    field: "impi",
-    headerName: "Identity",
-    flex: 1.2,
+    field: "number",
+    headerName: "Number",
+    flex: 1,
     minWidth: 200,
-    renderCell: ({ row }) => <DomainName name={row.impi} />,
+    renderCell: ({ row }) => <NumberCell registration={row} />,
   },
   {
-    field: "numbers",
-    headerName: "Numbers",
-    flex: 0.7,
-    minWidth: 140,
-    renderCell: ({ row }) => lines(numbersOf(row)),
+    field: "impi",
+    headerName: "IMSI",
+    flex: 1,
+    minWidth: 180,
+    renderCell: ({ row }) => <DomainName name={subscriberOf(row.impi)} />,
   },
   {
     field: "devices",
     headerName: "Devices",
     flex: 1,
-    minWidth: 200,
-    renderCell: ({ row }) =>
-      lines(devicesOf(contactsOf(row)).map(deviceSummary)),
+    minWidth: 140,
+    renderCell: ({ row }) => <DevicesCell registration={row} />,
   },
   {
-    field: "video",
-    headerName: "Video",
-    width: 80,
-    valueGetter: (_value, row) =>
-      yesNo(contactsOf(row).some((c) => c.media.includes("video"))),
-  },
-  {
-    field: "signalling",
-    headerName: "Signalling Path",
-    width: 160,
+    field: "actions",
+    headerName: "Actions",
+    width: 100,
+    align: "right",
+    headerAlign: "right",
+    sortable: false,
     renderCell: ({ row }) => (
-      <SignallingPathChip path={signallingPathOf(row)} />
+      <Tooltip title="Re-authenticate" arrow>
+        <IconButton
+          size="small"
+          aria-label={`Re-authenticate ${subscriberOf(row.impi)}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReauthenticate(row);
+          }}
+        >
+          <LockResetIcon fontSize="small" color="primary" />
+        </IconButton>
+      </Tooltip>
     ),
-  },
-  {
-    field: "expires",
-    headerName: "Expires",
-    width: 170,
-    valueGetter: (_value, row) => {
-      const expiry = lastExpiry(row);
-      return expiry ? formatTimestamp(expiry) : "—";
-    },
   },
 ];
 
@@ -109,6 +160,13 @@ export default function Registrations() {
     pageSize: PAGE_SIZE_OPTIONS[0],
   });
   const [selected, setSelected] = useState<Registration | null>(null);
+  const [reauthing, setReauthing] = useState<Registration | null>(null);
+
+  const reauth = useMutation({
+    mutationFn: (r: Registration) => reauthenticate(r.impi),
+    onSuccess: () => setReauthing(null),
+  });
+  const columns = useMemo(() => columnsFor(setReauthing), []);
 
   const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
 
@@ -180,6 +238,24 @@ export default function Registrations() {
         localeText={{ noRowsLabel: "No registrations." }}
         sx={gridSx}
       />
+      {reauthing && (
+        <ConfirmDialog
+          title={`Re-authenticate ${numbersOf(reauthing)[0] ?? subscriberOf(reauthing.impi)}?`}
+          action="Re-authenticate"
+          pending={reauth.isPending}
+          error={reauth.error}
+          onConfirm={() => reauth.mutate(reauthing)}
+          onClose={() => {
+            setReauthing(null);
+            reauth.reset();
+          }}
+        >
+          <Typography>
+            Its phones are asked to register again soon, authenticating anew
+            with the HSS.
+          </Typography>
+        </ConfirmDialog>
+      )}
       <RegistrationDrawer
         registration={shown}
         onClose={() => setSelected(null)}

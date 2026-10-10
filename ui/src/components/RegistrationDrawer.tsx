@@ -1,226 +1,130 @@
 import type { ReactNode } from "react";
 import {
-  Alert,
   Box,
-  Button,
-  Chip,
   Divider,
   Drawer,
   IconButton,
-  Paper,
+  Link,
   Stack,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
-import { useMutation } from "@tanstack/react-query";
 import DomainName from "@/components/DomainName";
 import Fields from "@/components/Fields";
-import SignallingPathChip from "@/components/SignallingPathChip";
-import {
-  reauthenticate,
-  type ImplicitRegistrationSet,
-  type RegisteredContact,
-  type RegisteredIdentity,
-  type Registration,
+import type {
+  RegisteredContact,
+  Registration,
+  SignallingPath,
 } from "@/queries/registrations";
 import { formatTimestamp } from "@/utils/dates";
 import {
+  contactsOf,
   devicesOf,
-  numberOf,
-  priorityOf,
+  imeiOf,
+  numbersOf,
+  othersOf,
+  subscriberOf,
   type Device,
 } from "@/utils/registrations";
 
-const yesNo = (value: boolean) => (value ? "yes" : "no");
+const mediaLabels: Record<RegisteredContact["media"][number], string> = {
+  audio: "Voice",
+  video: "Video",
+};
 
-function ContactCard({ contact }: { contact: RegisteredContact }) {
-  const rows: [string, ReactNode][] = [
-    ...(contact.reg_id !== undefined
-      ? [["Flow", String(contact.reg_id)] as [string, ReactNode]]
-      : []),
-    ["Address", contact.address ?? "—"],
-    ["Transport", contact.transport?.toUpperCase() ?? "—"],
-    // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
-    ["IPsec", contact.address ? yesNo(contact.protected) : "—"],
-    ["Media", contact.media.join(", ") || "—"],
-    ["Priority", priorityOf(contact)],
-    [
-      "Signalling Path",
-      <SignallingPathChip key="path" path={contact.signalling_path} />,
-    ],
-    ["Registered", formatTimestamp(contact.registered_at)],
-    ["Expires", formatTimestamp(contact.expires_at)],
-    ["Contact", contact.contact],
-  ];
+const signallingLabels: Record<SignallingPath, string> = {
+  monitored: "Monitored",
+  unmonitored: "Not monitored",
+  lost: "Lost",
+};
 
+// contactRows are the fields of a contact of a device, or of one of its registration flows.
+const contactRows = (contact: RegisteredContact): [string, ReactNode][] => [
+  ["Address", contact.address ?? "—"],
+  ["Transport", contact.transport?.toUpperCase() ?? "—"],
+  // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
+  ["IPsec", contact.address ? (contact.protected ? "Yes" : "No") : "—"],
+  // RFC 3840 §9: the media the contact registered for, as it declared them.
+  ["Media", contact.media.map((m) => mediaLabels[m]).join(", ") || "—"],
+  [
+    "Signalling",
+    <Typography
+      key="signalling"
+      variant="inherit"
+      component="span"
+      color={contact.signalling_path === "lost" ? "error" : "inherit"}
+    >
+      {signallingLabels[contact.signalling_path]}
+    </Typography>,
+  ],
+  ["Registered", formatTimestamp(contact.registered_at)],
+  ["Expires", formatTimestamp(contact.expires_at)],
+];
+
+function Section({
+  id,
+  title,
+  children,
+}: {
+  id: string;
+  title: string;
+  children: ReactNode;
+}) {
   return (
-    <Paper component="li" variant="outlined" sx={{ p: 1.5 }}>
-      <Fields rows={rows} />
-    </Paper>
-  );
-}
-
-// DeviceSection lists the contacts of one device: its registration flows, or its contact.
-function DeviceSection({ device }: { device: Device }) {
-  return (
-    <Box component="li">
-      <Typography
-        variant="body2"
-        sx={{ fontWeight: "medium", mb: 0.5, overflowWrap: "anywhere" }}
-      >
-        {device.label}
+    <Box component="section" aria-labelledby={id}>
+      <Typography id={id} variant="subtitle1" component="h3" sx={{ mb: 1 }}>
+        {title}
       </Typography>
-      <Stack
-        component="ul"
-        aria-label={device.label}
-        spacing={1}
-        sx={{ m: 0, p: 0, listStyle: "none" }}
-      >
-        {device.contacts.map((contact) => (
-          <ContactCard
-            key={`${contact.contact}|${contact.reg_id ?? ""}`}
-            contact={contact}
-          />
-        ))}
-      </Stack>
+      {children}
     </Box>
   );
 }
 
-// SharedChip marks a public identity other private identities are registered with: a request to it reaches their
-// contacts too. It searches the identity, which lists them all.
-function SharedChip({
-  identity,
-  onSearch,
-}: {
-  identity: RegisteredIdentity;
-  onSearch: (search: string) => void;
-}) {
-  const n = identity.registered_with.length;
-  if (n === 0) return null;
+// DeviceSection lists a device's fields, and those of each of its registration flows (RFC 5626) when it has
+// several.
+function DeviceSection({ device, index }: { device: Device; index: number }) {
+  const [first] = device.contacts;
+  const imei = imeiOf(first);
+  const identity: [string, ReactNode][] = imei
+    ? [["IMEI", imei]]
+    : first.instance
+      ? [["Instance", first.instance]]
+      : [];
+  const title = `Device ${index + 1}`;
 
-  const search = numberOf(identity) ?? identity.uri;
-
-  return (
-    <Tooltip title={identity.registered_with.join(", ")}>
-      <Chip
-        label={`shared with ${n} other${n === 1 ? "" : "s"}`}
-        size="small"
-        color="info"
-        aria-label={`Search ${search}: also registered with ${identity.registered_with.join(", ")}`}
-        onClick={() => onSearch(search)}
-      />
-    </Tooltip>
-  );
-}
-
-// SetSection shows an implicit registration set: its HSS, its public identities and the devices bound to it. A
-// registration with several sets numbers them.
-function SetSection({
-  set,
-  index,
-  count,
-  onSearch,
-}: {
-  set: ImplicitRegistrationSet;
-  index: number;
-  count: number;
-  onSearch: (search: string) => void;
-}) {
-  const devices = devicesOf(set.contacts);
-  const id = (name: string) => `${name}-title-${index}`;
-  const numbered = count > 1;
-  const heading = numbered ? "h4" : "h3";
+  if (device.contacts.length === 1) {
+    return (
+      <Section id={`device-title-${index}`} title={title}>
+        <Fields rows={[...identity, ...contactRows(first)]} />
+      </Section>
+    );
+  }
 
   return (
-    <Stack
-      component="section"
-      spacing={2}
-      aria-labelledby={numbered ? id("set") : undefined}
-    >
-      <Divider />
-      {numbered && (
-        <Typography id={id("set")} variant="h6" component="h3">
-          Implicit Registration Set {index + 1}
-        </Typography>
-      )}
-      <Fields
-        rows={[
-          [
-            "HSS",
-            set.hss ? (
-              <>
-                <DomainName name={set.hss.host} />
-                <Typography variant="body2" color="textSecondary">
-                  <DomainName name={set.hss.realm} />
-                </Typography>
-              </>
-            ) : (
-              "—"
-            ),
-          ],
-        ]}
-      />
-      <Box component="section" aria-labelledby={id("identities")}>
-        <Typography
-          id={id("identities")}
-          variant="subtitle1"
-          component={heading}
-          sx={{ mb: 1 }}
-        >
-          Public Identities ({set.identities.length})
-        </Typography>
-        <Stack
-          component="ul"
-          spacing={0.5}
-          sx={{ m: 0, p: 0, listStyle: "none" }}
-        >
-          {set.identities.map((identity) => (
-            <Stack
-              component="li"
-              key={identity.uri}
-              direction="row"
-              sx={{
-                alignItems: "center",
-                flexWrap: "wrap",
-                columnGap: 1,
-                rowGap: 0.5,
-                overflowWrap: "anywhere",
-              }}
+    <Section id={`device-title-${index}`} title={title}>
+      <Stack spacing={1.5}>
+        {identity.length > 0 && <Fields rows={identity} />}
+        {device.contacts.map((contact, i) => {
+          const flow = `Flow ${contact.reg_id ?? i + 1}`;
+          return (
+            <Box
+              key={`${contact.contact}|${contact.reg_id ?? ""}`}
+              component="section"
+              aria-label={`${title} ${flow}`}
             >
-              <span>{identity.uri}</span>
-              {identity.display_name && (
-                <Typography variant="body2" color="textSecondary">
-                  {identity.display_name}
-                </Typography>
-              )}
-              {identity.barred && <Chip label="barred" size="small" />}
-              <SharedChip identity={identity} onSearch={onSearch} />
-            </Stack>
-          ))}
-        </Stack>
-      </Box>
-      <Box component="section" aria-labelledby={id("devices")}>
-        <Typography
-          id={id("devices")}
-          variant="subtitle1"
-          component={heading}
-          sx={{ mb: 1 }}
-        >
-          Devices ({devices.length})
-        </Typography>
-        <Stack
-          component="ul"
-          spacing={2}
-          sx={{ m: 0, p: 0, listStyle: "none" }}
-        >
-          {devices.map((device) => (
-            <DeviceSection key={device.id} device={device} />
-          ))}
-        </Stack>
-      </Box>
-    </Stack>
+              <Typography
+                variant="body2"
+                component="h4"
+                sx={{ fontWeight: "medium", mb: 0.5 }}
+              >
+                {flow}
+              </Typography>
+              <Fields rows={contactRows(contact)} />
+            </Box>
+          );
+        })}
+      </Stack>
+    </Section>
   );
 }
 
@@ -233,50 +137,81 @@ function RegistrationDetail({
   onClose: () => void;
   onSearch: (search: string) => void;
 }) {
-  const reauth = useMutation({
-    mutationFn: () => reauthenticate(registration.impi),
-  });
+  const numbers = numbersOf(registration);
+  const others = othersOf(registration);
+  const subscriber = subscriberOf(registration.impi);
+  const hss = [
+    ...new Set(
+      registration.implicit_registration_sets.flatMap((s) =>
+        s.hss ? [s.hss.host] : [],
+      ),
+    ),
+  ];
+  const devices = devicesOf(contactsOf(registration));
+
+  const rows: [string, ReactNode][] = [
+    ["Number", numbers.length > 0 ? numbers.join(", ") : "—"],
+  ];
+  if (others.length > 0) {
+    rows.push([
+      "Also on",
+      <Stack key="others" component="span" spacing={0.5}>
+        {others.map((impi) => {
+          const other = subscriberOf(impi);
+          return (
+            <Link
+              key={impi}
+              component="button"
+              variant="inherit"
+              onClick={() => onSearch(other)}
+              sx={{ textAlign: "left", overflowWrap: "anywhere" }}
+            >
+              {other === impi ? <DomainName name={impi} /> : `IMSI ${other}`}
+            </Link>
+          );
+        })}
+      </Stack>,
+    ]);
+  }
+  rows.push(
+    [subscriber === registration.impi ? "IMPI" : "IMSI", subscriber],
+    [
+      "HSS",
+      hss.length > 0
+        ? hss.map((host) => (
+            <div key={host}>
+              <DomainName name={host} />
+            </div>
+          ))
+        : "—",
+    ],
+  );
 
   return (
-    <Stack spacing={2} sx={{ p: 2 }}>
+    // One key column width for all sections, so that their values line up.
+    <Stack
+      spacing={3}
+      sx={{ p: 3, "& dl": { gridTemplateColumns: "7.5rem 1fr" } }}
+    >
       <Stack direction="row" sx={{ alignItems: "flex-start", gap: 1 }}>
         <Typography
           id="registration-drawer-title"
-          variant="h6"
+          variant="h5"
           component="h2"
           sx={{ flexGrow: 1, overflowWrap: "anywhere" }}
         >
-          <DomainName name={registration.impi} />
+          {numbers[0] ?? <DomainName name={subscriber} />}
         </Typography>
         <IconButton aria-label="Close" onClick={onClose}>
           <CloseIcon />
         </IconButton>
       </Stack>
-      <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-        <Button
-          variant="outlined"
-          onClick={() => reauth.mutate()}
-          disabled={reauth.isPending}
-        >
-          Re-authenticate
-        </Button>
-        {reauth.isSuccess && (
-          <Chip label="requested" color="info" size="small" />
-        )}
-      </Stack>
-      {reauth.error && (
-        <Alert severity="error">
-          Could not re-authenticate: {reauth.error.message}
-        </Alert>
-      )}
-      {registration.implicit_registration_sets.map((set, i) => (
-        <SetSection
-          key={i}
-          set={set}
-          index={i}
-          count={registration.implicit_registration_sets.length}
-          onSearch={onSearch}
-        />
+      <Divider />
+      <Section id="subscriber-title" title="Subscriber">
+        <Fields rows={rows} />
+      </Section>
+      {devices.map((device, i) => (
+        <DeviceSection key={device.id} device={device} index={i} />
       ))}
     </Stack>
   );
