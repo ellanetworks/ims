@@ -1234,10 +1234,7 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 // RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE, the default: an STR with no connection or no path to its PCRF ends the
 // session, and is not sent again.
 func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
-	for name, lose := range map[string]func(*diameter.Message) *diameter.Message{
-		"no connection": func(*diameter.Message) *diameter.Message { return nil },
-		"no path":       func(req *diameter.Message) *diameter.Message { return undeliverable(req) },
-	} {
+	for name, connected := range map[string]bool{"no connection": false, "no path": true} {
 		t.Run(name, func(t *testing.T) {
 			pcrf := newFakePCRF(t)
 			s := newRegScene(t, pcrf.config(100*time.Millisecond), fastRetry)
@@ -1248,11 +1245,14 @@ func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
 			s.wantSession(id)
 
 			pcrf.answerWith(func(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
-				if req.CommandCode == rx.CommandSessionTermination {
-					return lose(req), nil
+				switch {
+				case req.CommandCode != rx.CommandSessionTermination:
+					return succeed(req)
+				case !connected:
+					return nil, diameter.ErrNotConnected
 				}
 
-				return succeed(req)
+				return undeliverable(req), nil
 			})
 			s.reregister(0)
 
