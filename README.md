@@ -23,7 +23,7 @@
 ### Install
 
 ```sh
-sudo snap install ella-ims --edge
+sudo snap install ella-ims
 sudo snap connect ella-ims:network-control
 sudo vi /var/snap/ella-ims/common/ims.yaml
 sudo snap start --enable ella-ims.imsd
