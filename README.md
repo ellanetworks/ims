@@ -6,6 +6,8 @@
   <img src="docs/images/ims_integration.svg" alt="Ella IMS with Ella Core"/>
 </p>
 
+[![ella-ims](https://snapcraft.io/ella-ims/badge.svg)](https://snapcraft.io/ella-ims)
+
 ## Key Features
 
 - Voice & Video calls
