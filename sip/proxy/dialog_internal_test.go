@@ -12,13 +12,22 @@ type sdpStep struct {
 	method string
 	code   int
 	sdp    string
+	// multipart sends the SDP next to an mcptt-info body, or the mcptt-info body alone without SDP (TS 24.379 §6.5).
+	multipart bool
 }
 
 func (s sdpStep) apply(d *Dialog) {
-	var e sip.Envelope
+	var parts []sip.BodyPart
 	if s.sdp != "" {
-		e.SetBody("application/sdp", []byte(s.sdp))
+		parts = append(parts, sip.NewBodyPart("application/sdp", []byte(s.sdp)))
 	}
+
+	if s.multipart {
+		parts = append(parts, sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>")))
+	}
+
+	var e sip.Envelope
+	e.SetBodies(parts...)
 
 	if s.code == 0 {
 		d.requestBody(&d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
@@ -109,6 +118,22 @@ func TestNegotiation(t *testing.T) {
 				sdpStep{from: Callee, seq: 9, method: "INVITE", code: 200, sdp: "h"},
 				sdpStep{from: Callee, seq: 9, method: "ACK"}),
 			offer: "H", answer: "h", answered: true,
+		},
+		{
+			name: "offer and answer in multipart bodies",
+			steps: []sdpStep{
+				{from: Caller, seq: 1, method: "INVITE", sdp: "X", multipart: true},
+				{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "x", multipart: true},
+			},
+			offer: "X", answer: "x", answered: true,
+		},
+		{
+			name: "a body without SDP is no offer",
+			steps: append(negotiated[:2:2],
+				sdpStep{from: Callee, seq: 9, method: "INVITE", multipart: true},
+				sdpStep{from: Callee, seq: 9, method: "INVITE", code: 200, sdp: "O"},
+				sdpStep{from: Callee, seq: 9, method: "ACK", sdp: "a", multipart: true}),
+			offer: "O", answer: "a", answered: true,
 		},
 		{
 			name: "offer in a PRACK",

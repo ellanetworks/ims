@@ -168,7 +168,9 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 			return
 		}
 
-		x := p.parseExchange(c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: out.Body}})
+		answer, _, _ := out.FindBody("application/sdp")
+
+		x := p.parseExchange(c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: answer.Body}})
 		if x == nil {
 			forward()
 			return

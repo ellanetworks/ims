@@ -294,3 +294,34 @@ func TestCallMediaUnansweredReleasesTheCall(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 500)
 	pcrf.none()
 }
+
+// TS 24.379 §6.5: an MCPTT INVITE carries its SDP next to other bodies. The media is authorised all the same.
+func TestCallMediaAuthorizedFromMultipartBodies(t *testing.T) {
+	s, u, pcrf, _ := newRxIPsecScene(t)
+
+	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>"))
+
+	invite := s.ueInvite(u, func(r *sip.Request) {
+		r.Header.Add("P-Preferred-Identity", "<"+testTel+">")
+		r.SetBodies(info, sip.NewBodyPart("application/sdp", sdpBody(ueAddr.String(), "4000")))
+	})
+	u.uc.Send(sip.UDP, s.ps, invite)
+	wantStatus(t, first(u.us.RecvResponse()), 100)
+
+	got, f := s.scscf.RecvRequest()
+	if bodies, err := got.Bodies(); err != nil || len(bodies) != 2 {
+		t.Fatalf("S-CSCF got the bodies %v, %v; want the SDP and the mcptt-info", bodies, err)
+	}
+
+	progress := s.coreResponse(got, 183, sip.NewTag())
+	progress.SetBodies(sip.NewBodyPart("application/sdp", sdpBody("192.0.2.9", "5000")), info)
+	s.scscf.Send(f.Transport, f.Remote, progress)
+
+	_, aar := pcrf.aar()
+	if len(aar.MediaComponents) != 1 || len(aar.MediaComponents[0].SubComponents) != 2 ||
+		!slices.Contains(aar.MediaComponents[0].SubComponents[0].FlowDescriptions, "permit in 17 from 127.0.0.2 to 192.0.2.9 5000") {
+		t.Errorf("Media-Component-Description %+v, want the audio flows", aar.MediaComponents)
+	}
+
+	wantStatus(t, first(u.us.RecvResponse()), 183)
+}

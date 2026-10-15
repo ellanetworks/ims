@@ -1572,17 +1572,14 @@ func rejectOffer(offer []byte) ([]byte, error) {
 	return s.Bytes(), nil
 }
 
+// RFC 5621: the SDP may be one part of a multipart body (TS 24.379 §6.5).
 func sessionBody(from Side, e sip.Envelope) (Body, bool) {
-	if len(e.Body) == 0 {
+	p, ok, err := e.FindBody("application/sdp")
+	if err != nil || !ok || len(p.Body) == 0 {
 		return Body{}, false
 	}
 
-	mt, _, _ := strings.Cut(e.Header.ContentType(), ";")
-	if !strings.EqualFold(strings.TrimSpace(mt), "application/sdp") {
-		return Body{}, false
-	}
-
-	return Body{From: from, Type: "application/sdp", Data: slices.Clone(e.Body)}, true
+	return Body{From: from, Type: "application/sdp", Data: slices.Clone(p.Body)}, true
 }
 
 // RFC 4028

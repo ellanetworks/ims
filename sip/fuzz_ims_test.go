@@ -118,3 +118,47 @@ func checkText(t *testing.T, s string) {
 		t.Fatalf("%q contains a control character", s)
 	}
 }
+
+func FuzzMultipart(f *testing.F) {
+	for _, s := range []struct{ contentType, body string }{
+		{`multipart/mixed;boundary="boundary1"`, "--boundary1\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\r\n" +
+			"--boundary1\r\nContent-Type: application/vnd.3gpp.mcptt-info+xml\r\nContent-ID: <a@b>\r\n\r\n<mcpttinfo/>\r\n" +
+			"--boundary1--\r\n"},
+		{"multipart/mixed;boundary=b", "preamble\r\n--b \r\n\r\nx\r\n--b\r\nContent-Type: multipart/mixed;boundary=c\r\n\r\n" +
+			"--c\r\nContent-Type: text/plain\r\n\r\ny\r\n--c--\r\n--b--\r\nepilogue"},
+	} {
+		f.Add(s.contentType, []byte(s.body))
+	}
+
+	f.Fuzz(func(t *testing.T, contentType string, body []byte) {
+		m, err := sip.ParseMultipart(contentType, body)
+		if err != nil {
+			return
+		}
+
+		for _, p := range m.Parts {
+			_, _, _ = p.Disposition()
+			_ = p.Optional()
+		}
+
+		_, _ = m.Find("application/sdp")
+		_, _ = m.ByContentID("cid:a@b")
+
+		out := m.Bytes()
+
+		again, err := sip.ParseMultipart(m.ContentType(), out)
+		if err != nil {
+			t.Fatalf("serialization %q does not parse: %v", out, err)
+		}
+
+		if !slices.EqualFunc(again.Parts, m.Parts, func(a, b sip.BodyPart) bool {
+			return string(a.Body) == string(b.Body) && a.MediaType() == b.MediaType() && a.ContentID() == b.ContentID()
+		}) {
+			t.Fatalf("parts changed in a round trip through %q", out)
+		}
+
+		if got := again.Bytes(); string(got) != string(out) {
+			t.Fatalf("unstable serialization:\n%q\n%q", out, got)
+		}
+	})
+}
