@@ -2,6 +2,7 @@ FROM golang:1.26 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY sip/go.mod sip/go.sum ./sip/
 RUN go mod download
 COPY . .
 RUN go build -o /ims ./cmd/ims
