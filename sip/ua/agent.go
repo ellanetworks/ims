@@ -161,8 +161,8 @@ type mergeKey struct {
 // Agent is a SIP user agent. It creates the transaction layer it sends and receives on.
 //
 // One goroutine, the loop of the agent, owns its dialogs, sessions and outgoing INVITEs, and runs the handlers of the
-// application (see docs/sip-ua-design.md). The methods of the agent, of its sessions and of their requests may be
-// called from any goroutine: from a handler, they run at once; from elsewhere, on the loop, waiting for it.
+// application. The methods of the agent, of its sessions and of their requests may be called from any goroutine: from
+// a handler, they run at once; from elsewhere, on the loop, waiting for it.
 type Agent struct {
 	cfg       Config
 	layer     *transaction.Layer
@@ -255,7 +255,9 @@ func (a *Agent) Close(ctx context.Context) error {
 		a.closed = true
 
 		for o := range a.outgoing {
-			o.cancel(nil)
+			if err := o.cancel(nil); err != nil {
+				a.log.Debug("CANCEL failed", slog.Any("error", err))
+			}
 		}
 
 		var sessions []*Session
@@ -329,6 +331,7 @@ func (a *Agent) removeSession(s *Session) {
 	}
 
 	e.invite = nil
+
 	delete(a.dialogs, s.id)
 }
 

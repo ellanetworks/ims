@@ -418,6 +418,7 @@ func (s *Session) byeEnd(e End, reasons ...sip.Reason) {
 			done := func() {
 				if !finished {
 					finished = true
+
 					s.a.closing.Done()
 				}
 			}
@@ -674,6 +675,7 @@ func (s *Session) receiveAck(ack *sip.Request) {
 	}
 
 	s.ack = nil
+
 	r.acked()
 
 	key := offeranswer.Key{From: remote, Seq: cseq.Seq, Method: "ACK"}
@@ -708,6 +710,7 @@ func (s *Session) NewRequest(method string) (*sip.Request, error) {
 		}
 
 		var err error
+
 		req, err = s.d.NewRequest(method)
 
 		return err

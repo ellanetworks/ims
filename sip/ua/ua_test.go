@@ -48,7 +48,7 @@ type peer struct {
 func freePort(t *testing.T) netip.AddrPort {
 	t.Helper()
 
-	c, err := net.ListenPacket("udp", "127.0.0.1:0")
+	c, err := new(net.ListenConfig).ListenPacket(t.Context(), "udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,17 +240,13 @@ func (p *peer) uri() string {
 	return fmt.Sprintf("sip:%s@%s", p.name, p.addr)
 }
 
-func (p *peer) invite(to *peer, sdp string, header ...sip.Field) *ua.Outgoing {
+func (p *peer) invite(to *peer, sdp string) *ua.Outgoing {
 	p.t.Helper()
 
 	uri, _ := sip.ParseURI(to.uri())
 	req := sip.NewRequest("INVITE", uri)
 	req.Header.Add("From", "<"+p.uri()+">")
 	req.Header.Add("To", "<"+to.uri()+">")
-
-	for _, f := range header {
-		req.Header.Add(f.Name, f.Value)
-	}
 
 	if sdp != "" {
 		req.SetBodies(ua.SDP([]byte(sdp)))
@@ -429,6 +425,7 @@ func TestCancel(t *testing.T) {
 
 	r := bob.next("invite").req
 	_ = r.Progress(ua.Reply{Code: 180})
+
 	alice.next("progress")
 
 	if err := o.Cancel(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}}); err != nil {
@@ -458,6 +455,7 @@ func TestReject(t *testing.T) {
 
 	r := bob.next("invite").req
 	_ = r.Progress(ua.Reply{Code: 180})
+
 	alice.next("progress")
 
 	if err := r.Reject(486); err != nil {
@@ -555,6 +553,7 @@ func TestOtherRequests(t *testing.T) {
 	}
 
 	done := make(chan *sip.Response, 1)
+
 	if err := as.Send(info, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
@@ -858,6 +857,7 @@ func TestSessionTimer(t *testing.T) {
 	}
 
 	_ = r.Accept(sdpOf("answer-1")...)
+
 	alice.next("established")
 	alice.next("answer")
 	bob.next("established")
@@ -899,6 +899,7 @@ func TestSessionIntervalTooSmall(t *testing.T) {
 	}
 
 	_ = r.Accept(sdpOf("answer-1")...)
+
 	alice.next("established")
 	alice.next("answer")
 }

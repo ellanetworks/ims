@@ -36,14 +36,18 @@ func TestNoLeaks(t *testing.T) {
 
 	_, bs := established(t, alice, bob)
 	_ = bs.Bye()
+
 	alice.next("ended")
 	bob.next("ended")
 
 	o := alice.invite(bob, "offer-1")
 	r := bob.next("invite").req
 	_ = r.Progress(ua.Reply{Code: 180})
+
 	alice.next("progress")
+
 	_ = o.Cancel()
+
 	bob.next("ended")
 	alice.nextAll("ended", "failed")
 
@@ -134,7 +138,7 @@ func TestRejectOfferInThePrack(t *testing.T) {
 	alice.invite(bob, "")
 
 	in := bob.next("invite").req
-	if err := in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP("127.0.0.1", 5000, 1))}); err != nil {
+	if err := in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP(5000, 1))}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,14 +161,14 @@ func TestConflicts(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	invite := r.invite(bob, realSDP("127.0.0.1", 4000, 1))
-	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	invite := r.invite(bob, realSDP(4000, 1))
+	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	ok := r.response()
 	r.ack(invite, ok, "")
 	bob.next("established")
 
-	send := func(method string, seq uint32, body string, header ...sip.Field) *sip.Response {
+	send := func(method string, seq uint32, body string, header ...sip.Field) {
 		t.Helper()
 
 		req := r.inDialog(method, invite, ok, seq)
@@ -177,14 +181,12 @@ func TestConflicts(t *testing.T) {
 		}
 
 		r.sock.Send(sip.UDP, bob.addr, req)
-
-		return nil
 	}
 
-	send("UPDATE", 2, realSDP("127.0.0.1", 4002, 2))
+	send("UPDATE", 2, realSDP(4002, 2))
 	bob.next("request")
 
-	send("UPDATE", 3, realSDP("127.0.0.1", 4004, 3))
+	send("UPDATE", 3, realSDP(4004, 3))
 
 	if res := r.response(); res.StatusCode != 500 || !res.Header.Has("Retry-After") {
 		t.Errorf("second UPDATE %d, Retry-After %q", res.StatusCode, res.Header.Get("Retry-After"))
@@ -206,7 +208,7 @@ func TestReliableOutOfOrder(t *testing.T) {
 	req := sip.NewRequest("INVITE", uri)
 	req.Header.Add("From", "<"+alice.uri()+">")
 	req.Header.Add("To", "<"+uri.String()+">")
-	req.SetBodies(ua.SDP([]byte(realSDP("127.0.0.1", 4000, 1))))
+	req.SetBodies(ua.SDP([]byte(realSDP(4000, 1))))
 
 	if _, err := alice.a.Invite(req, alice.handler()); err != nil {
 		t.Fatal(err)

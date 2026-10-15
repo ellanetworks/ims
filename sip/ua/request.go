@@ -374,7 +374,7 @@ func (r *Request) check(rp Reply) error {
 	switch {
 	case r.role == offeranswer.Offer && pending && key == r.key && sdp == nil:
 		return errors.New("sip/ua: the 2xx carries the answer to the offer of the request")
-	case r.req.Method == "INVITE" && r.role == offeranswer.None && r.rseq == 0 && sdp == nil && !(pending && key == r.key):
+	case r.req.Method == "INVITE" && r.role == offeranswer.None && r.rseq == 0 && sdp == nil && (!pending || key != r.key):
 		return errors.New("sip/ua: the 2xx to an INVITE without an offer carries one")
 	case sdp != nil && r.role != offeranswer.Offer && (r.req.Method != "INVITE" || pending && offer.From == local && key != r.key):
 		return errors.New("sip/ua: the 2xx can carry no session description")
@@ -488,6 +488,7 @@ func (r *Request) noAck() {
 
 	if s.ack == r {
 		s.ack = nil
+
 		r.acked()
 		s.byeEnd(End{Cause: EndTimeout, Err: errors.New("sip/ua: no ACK to the 2xx")}, s.bye...)
 	}

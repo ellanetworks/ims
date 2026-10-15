@@ -192,6 +192,7 @@ func FormRequest(u URI, method string) (*Request, error) {
 		}
 
 		method = m
+
 		target.Params.Del("method")
 	}
 

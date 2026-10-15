@@ -15,9 +15,9 @@ import (
 // checkLoop enables the assertions that the state of an agent is used on its loop only. Tests enable it.
 var checkLoop = false
 
-// loop is the event loop of an agent (see docs/sip-ua-design.md): one goroutine owns the dialogs, sessions, outgoing
-// INVITEs and timers of the agent, and runs the handlers of the application. Everything else posts functions to it:
-// the transaction layer, timers, calls of the application from other goroutines. Posting never blocks.
+// loop is the event loop of an agent: one goroutine owns the dialogs, sessions, outgoing INVITEs and timers of the
+// agent, and runs the handlers of the application. Everything else posts functions to it: the transaction layer,
+// timers, calls of the application from other goroutines. Posting never blocks.
 type loop struct {
 	mu   sync.Mutex
 	q    []func()
@@ -87,6 +87,7 @@ func (l *loop) job(f func()) {
 		e := l.events[0]
 		l.events[0] = nil
 		l.events = l.events[1:]
+
 		e()
 	}
 }
@@ -179,6 +180,7 @@ func (a *Agent) after(d time.Duration, f func()) *timer {
 		a.loop.post(func() {
 			if !tm.stopped {
 				tm.stopped = true
+
 				f()
 			}
 		})

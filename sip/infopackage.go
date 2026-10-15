@@ -14,7 +14,7 @@ type InfoPackage struct {
 func ParseInfoPackage(s string) (InfoPackage, error) {
 	name, ps, err := ParseTokenParams(s)
 	if err != nil {
-		return InfoPackage{}, fmt.Errorf("Info-package-type %w", err)
+		return InfoPackage{}, fmt.Errorf("info-package-type: %w", err)
 	}
 
 	return InfoPackage{Name: name, Params: ps}, nil

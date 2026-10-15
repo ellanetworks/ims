@@ -164,7 +164,7 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 
 // fromResponse sets the session timer of the dialog from the 2xx to a session refresh request of the agent
 // (RFC 4028 §7.2).
-func (t *sessionTimer) fromResponse(a *Agent, req *sip.Request, res *sip.Response) {
+func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 	if se, ok, err := res.Header.SessionExpires(); ok && err == nil {
 		t.interval, t.refresher = se.Seconds, se.Refresher != sip.RefresherUAS
 		return

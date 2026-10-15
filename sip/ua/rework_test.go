@@ -14,9 +14,9 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// realSDP is an SDP description, of the origin version given.
-func realSDP(addr string, port, version int) string {
-	return fmt.Sprintf("v=0\r\no=- 7 %d IN IP4 %s\r\ns=-\r\nc=IN IP4 %s\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\n", version, addr, addr, port)
+// realSDP is an SDP description on loopback, of the origin version given.
+func realSDP(port, version int) string {
+	return fmt.Sprintf("v=0\r\no=- 7 %d IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\n", version, port)
 }
 
 // raw is a peer that sends and receives messages itself.
@@ -85,11 +85,11 @@ func TestRecordRouteInEachResponse(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	r.invite(bob, realSDP("127.0.0.1", 4000, 1), sip.Field{Name: "Record-Route", Value: "<sip:proxy.example;lr>"})
+	r.invite(bob, realSDP(4000, 1), sip.Field{Name: "Record-Route", Value: "<sip:proxy.example;lr>"})
 
 	in := bob.next("invite").req
 	_ = in.Progress(ua.Reply{Code: 180})
-	_ = in.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	_ = in.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	for _, code := range []int{180, 200} {
 		res := r.response()
@@ -105,10 +105,10 @@ func TestByeWhile2xxHeld(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	invite := r.invite(bob, realSDP("127.0.0.1", 4000, 1), sip.Field{Name: "Supported", Value: "100rel"})
+	invite := r.invite(bob, realSDP(4000, 1), sip.Field{Name: "Supported", Value: "100rel"})
 
 	in := bob.next("invite").req
-	_ = in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP("127.0.0.1", 5000, 1))})
+	_ = in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP(5000, 1))})
 	_ = in.Accept()
 
 	early := r.response()
@@ -162,7 +162,7 @@ func TestRejectOfferInTheAck(t *testing.T) {
 
 	alice.invite(bob, "")
 
-	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 	alice.next("established")
 
 	alice.next("offer").offer.Reject()
@@ -187,7 +187,7 @@ func TestAckWithoutAnswer(t *testing.T) {
 	r := newRaw(t)
 
 	invite := r.invite(bob, "")
-	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	ok := r.response()
 	r.ack(invite, ok, "")
@@ -208,9 +208,9 @@ func TestUasByeBeforeAck(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	invite := r.invite(bob, realSDP("127.0.0.1", 4000, 1))
+	invite := r.invite(bob, realSDP(4000, 1))
 	in := bob.next("invite").req
-	_ = in.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	_ = in.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	ok := r.response()
 
@@ -237,7 +237,7 @@ func TestMergedRequest(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	invite := r.invite(bob, realSDP("127.0.0.1", 4000, 1))
+	invite := r.invite(bob, realSDP(4000, 1))
 	bob.next("invite")
 
 	again := invite.Clone()
@@ -256,16 +256,17 @@ func TestSessionContact(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	focus := fmt.Sprintf("<sip:focus@%s>;isfocus", bob.addr)
 
-	alice.invite(bob, realSDP("127.0.0.1", 4000, 1))
+	alice.invite(bob, realSDP(4000, 1))
 
 	in := bob.next("invite").req
-	_ = in.Respond(ua.Reply{Code: 200, Header: sip.Header{{Name: "Contact", Value: focus}}, Bodies: sdpOf(realSDP("127.0.0.1", 5000, 1))})
+	_ = in.Respond(ua.Reply{Code: 200, Header: sip.Header{{Name: "Contact", Value: focus}}, Bodies: sdpOf(realSDP(5000, 1))})
 
 	as := alice.next("established").s
 	alice.next("answer")
 	bs := bob.next("established").s
 
 	done := make(chan *sip.Response, 1)
+
 	if err := bs.Update(ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +284,7 @@ func TestSessionContact(t *testing.T) {
 func TestRefreshAnsweredByTheAgent(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
-	offer, answer := realSDP("127.0.0.1", 4000, 1), realSDP("127.0.0.1", 5000, 1)
+	offer, answer := realSDP(4000, 1), realSDP(5000, 1)
 
 	alice.invite(bob, offer)
 	_ = bob.next("invite").req.Accept(ua.SDP([]byte(answer)))
@@ -314,6 +315,7 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 	}
 
 	_ = o.offer.Answer(ua.SDP([]byte(offer)))
+
 	<-done
 
 	// Bob gets alice's answer in the ACK; the application saw no request.
@@ -333,7 +335,7 @@ func sessionBody(res *sip.Response) []byte {
 func TestAuthentication(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
-	alice.a.Close(context.Background())
+	_ = alice.a.Close(context.Background())
 	alice = newPeerWith(t, "alice", func(c *ua.Config) {
 		c.Authenticate = func(req *sip.Request, challenge *sip.Response) error {
 			req.Header.Set("Authorization", `Digest username="alice", response="ok"`)
@@ -341,10 +343,11 @@ func TestAuthentication(t *testing.T) {
 		}
 	})
 
-	alice.invite(bob, realSDP("127.0.0.1", 4000, 1))
+	alice.invite(bob, realSDP(4000, 1))
 
 	first := bob.next("invite").req
 	_ = first.Reject(401, sip.Field{Name: "WWW-Authenticate", Value: `Digest realm="x", nonce="n"`})
+
 	bob.next("ended")
 
 	second := bob.next("invite").req
@@ -352,7 +355,8 @@ func TestAuthentication(t *testing.T) {
 		t.Fatalf("second INVITE CSeq %d, Authorization %q", cseq.Seq, second.Message().Header.Get("Authorization"))
 	}
 
-	_ = second.Accept(ua.SDP([]byte(realSDP("127.0.0.1", 5000, 1))))
+	_ = second.Accept(ua.SDP([]byte(realSDP(5000, 1))))
+
 	alice.next("established")
 }
 
@@ -374,6 +378,7 @@ func TestRequestOutsideDialogs(t *testing.T) {
 	}
 
 	done := make(chan result, 1)
+
 	if err := alice.a.Request(req, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
 		t.Fatal(err)
 	}

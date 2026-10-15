@@ -99,6 +99,7 @@ func (n *Negotiation) Response(key Key, code int, sdp []byte) Role {
 		}
 	case !n.pending && key.Method == "INVITE":
 		n.offered(key, Body{From: from, Data: sdp})
+
 		role = Offer
 	}
 

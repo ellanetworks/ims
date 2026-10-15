@@ -411,7 +411,7 @@ func (c *clientInvite) error(err error) {
 // clientResponse handles a response to an INVITE or an UPDATE of the agent, in the dialog of s.
 func (s *Session) clientResponse(c *clientInvite, res *sip.Response) {
 	if res.StatusCode >= 200 && c.out == nil {
-		if c.final && !(res.IsSuccess() && c.key.Method == "INVITE") {
+		if c.final && (!res.IsSuccess() || c.key.Method != "INVITE") {
 			return
 		}
 
@@ -496,6 +496,7 @@ func (s *Session) prack(res *sip.Response, bodies []sip.BodyPart, then func()) {
 		once := func() {
 			if !done {
 				done = true
+
 				then()
 			}
 		}
@@ -545,7 +546,7 @@ func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
 
 	role := s.sdp.Response(c.key, res.StatusCode, offer)
 
-	s.timer.fromResponse(s.a, c.req, res)
+	s.timer.fromResponse(c.req, res)
 	s.timer.start(s)
 
 	if c.key.Method == "INVITE" && s.state == Early {
@@ -632,8 +633,10 @@ func (s *Session) clientFailure(c *clientInvite, res *sip.Response) {
 	case s.state == Terminated:
 	case res.StatusCode == 401 || res.StatusCode == 407:
 		if next, ok := s.challenged(c.req, res, c.tries); ok {
-			ci := &clientInvite{s: s, req: next, key: keyOf(local, next), change: c.change, done: c.done,
-				refresh: c.refresh, retried: c.retried, tries: c.tries + 1}
+			ci := &clientInvite{
+				s: s, req: next, key: keyOf(local, next), change: c.change, done: c.done,
+				refresh: c.refresh, retried: c.retried, tries: c.tries + 1,
+			}
 			s.sdp.Request(ci.key, sessionSDP(next.Envelope))
 
 			if next.Method == "INVITE" {
@@ -651,6 +654,7 @@ func (s *Session) clientFailure(c *clientInvite, res *sip.Response) {
 		return
 	case res.StatusCode == 422 && hasMinSE && !c.retried:
 		s.timer.noteMinSE(minSE)
+
 		c.retried = true
 		s.retryLater(c, 0)
 
