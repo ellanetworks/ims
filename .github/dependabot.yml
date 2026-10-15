@@ -13,7 +13,9 @@ updates:
           - "*"
 
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/sip"
     schedule:
       interval: "weekly"
     commit-message:

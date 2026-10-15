@@ -10,6 +10,12 @@ jobs:
   lint:
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # golangci-lint does not descend into nested modules, so each is linted
+        # in its own job.
+        module: [".", "sip"]
     steps:
       - uses: actions/checkout@v7
 
@@ -22,5 +28,6 @@ jobs:
         with:
           version: v2.11.3
           args: --timeout=10m
+          working-directory: ${{ matrix.module }}
           skip-cache: true
           skip-save-cache: true
