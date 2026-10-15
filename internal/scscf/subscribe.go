@@ -22,9 +22,9 @@ const (
 )
 
 func IsRegEvent(req *sip.Request) bool {
-	event, _, err := sip.ParseTokenParams(req.Header.Get("Event"))
+	e, ok, err := req.Header.Event()
 
-	return err == nil && strings.EqualFold(event, "reg")
+	return ok && err == nil && e.Type() == "reg"
 }
 
 func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {

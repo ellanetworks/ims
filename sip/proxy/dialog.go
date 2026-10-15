@@ -1584,17 +1584,12 @@ func sessionBody(from Side, e sip.Envelope) (Body, bool) {
 
 // RFC 4028
 func sessionExpires(res *sip.Response, lifetime time.Duration) time.Duration {
-	v, _, err := sip.ParseTokenParams(res.Header.Get("Session-Expires"))
-	if err != nil || v == "" {
+	se, ok, err := res.Header.SessionExpires()
+	if !ok || err != nil || se.Seconds == 0 {
 		return lifetime
 	}
 
-	n, err := strconv.ParseUint(v, 10, 32)
-	if err != nil || n == 0 {
-		return lifetime
-	}
-
-	return time.Duration(n) * time.Second
+	return time.Duration(se.Seconds) * time.Second
 }
 
 func firstContact(h sip.Header) (sip.URI, bool) {

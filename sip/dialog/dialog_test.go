@@ -907,3 +907,64 @@ func TestRestoreErrors(t *testing.T) {
 		t.Errorf("missing tag: err = %v, want ErrNoDialog", err)
 	}
 }
+
+// RFC 4538 §3, RFC 3891 §3: the tags are those the peer sees, so that the peer finds its own dialog.
+func TestTargetDialogAndReplacesDesignateThePeerDialog(t *testing.T) {
+	uac := newUAC(t)
+
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag("bt")
+
+	uas, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	td, err := sip.ParseTargetDialog(uac.TargetDialog().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := dialog.TargetID(td); got != uas.ID() {
+		t.Errorf("Target-Dialog %s designates %+v, want the UAS dialog %+v", td, got, uas.ID())
+	}
+
+	r, err := sip.ParseReplaces(uas.Replaces(true).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := dialog.ReplacesID(r); got != uac.ID() || !r.EarlyOnly {
+		t.Errorf("Replaces %s designates %+v, want the UAC dialog %+v", r, got, uac.ID())
+	}
+}
+
+func TestNotifyTerminatingTheSubscriptionCreatesNoDialog(t *testing.T) {
+	subscribe := parse[*sip.Request](t, strings.Replace(strings.Replace(invite, "INVITE sip", "SUBSCRIBE sip", 1), "10 INVITE", "10 SUBSCRIBE", 1))
+
+	notify := func(state string) *sip.Request {
+		return parse[*sip.Request](t, "NOTIFY sip:alice@10.0.0.1:5060 SIP/2.0\r\n"+
+			"Via: SIP/2.0/UDP b.example;branch=z9hG4bKb\r\n"+
+			"From: <sip:bob@b.example>;tag=bt\r\n"+
+			"To: \"Alice\" <sip:alice@a.example>;tag=at\r\n"+
+			"Call-ID: call-1\r\n"+
+			"CSeq: 1 NOTIFY\r\n"+
+			"Contact: <sip:bob@10.0.0.2>\r\n"+
+			"Event: conference\r\n"+
+			"Subscription-State: "+state+"\r\n"+
+			"Content-Length: 0\r\n\r\n")
+	}
+
+	if _, err := dialog.NewFromNotify(subscribe, notify("terminated;reason=noresource")); !errors.Is(err, dialog.ErrNoDialog) {
+		t.Errorf("terminated: %v", err)
+	}
+
+	if _, err := dialog.NewFromNotify(subscribe, notify("active;expires=60")); err != nil {
+		t.Errorf("active: %v", err)
+	}
+
+	if _, err := dialog.NewFromNotify(subscribe, notify("active;expires=x")); err == nil {
+		t.Error("malformed Subscription-State accepted")
+	}
+}

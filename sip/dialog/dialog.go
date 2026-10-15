@@ -148,7 +148,12 @@ func NewFromNotify(subscribe, notify *sip.Request) (*Dialog, error) {
 		return nil, fmt.Errorf("%w: %s request", ErrNoDialog, notify.Method)
 	}
 
-	if state, _, _ := strings.Cut(notify.Header.Get("Subscription-State"), ";"); strings.EqualFold(strings.TrimSpace(state), "terminated") {
+	ss, ok, err := notify.Header.SubscriptionState()
+	if err != nil {
+		return nil, err
+	}
+
+	if ok && ss.State == sip.SubscriptionTerminated {
 		return nil, fmt.Errorf("%w: subscription terminated", ErrNoDialog)
 	}
 
@@ -272,6 +277,29 @@ func optionalContact(h sip.Header) (sip.URI, bool, error) {
 
 func (d *Dialog) ID() ID {
 	return d.id
+}
+
+// TargetDialog identifies the dialog to its peer in a request outside it, with the tags as the peer sees them
+// (RFC 4538 §3).
+func (d *Dialog) TargetDialog() sip.TargetDialog {
+	id := d.ID()
+	return sip.TargetDialog{CallID: id.CallID, LocalTag: id.RemoteTag, RemoteTag: id.LocalTag}
+}
+
+// Replaces asks the peer to replace the dialog: its to-tag is the peer's local tag (RFC 3891 §3).
+func (d *Dialog) Replaces(earlyOnly bool) sip.Replaces {
+	id := d.ID()
+	return sip.Replaces{CallID: id.CallID, ToTag: id.RemoteTag, FromTag: id.LocalTag, EarlyOnly: earlyOnly}
+}
+
+// TargetID is the ID, for the recipient of a request, of the dialog its Target-Dialog designates (RFC 4538 §4).
+func TargetID(td sip.TargetDialog) ID {
+	return ID{CallID: td.CallID, LocalTag: td.LocalTag, RemoteTag: td.RemoteTag}
+}
+
+// ReplacesID is the ID, for the recipient of an INVITE, of the dialog its Replaces designates (RFC 3891 §3).
+func ReplacesID(r sip.Replaces) ID {
+	return ID{CallID: r.CallID, LocalTag: r.ToTag, RemoteTag: r.FromTag}
 }
 
 func (d *Dialog) State() State {

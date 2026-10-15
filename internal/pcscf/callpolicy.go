@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -478,7 +477,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 	}
 
 	if cr.service == "" && c.ue == proxy.Caller {
-		cr.service = icsiRef(job.headers.Values("Feature-Caps"))
+		cr.service = icsiRef(job.headers)
 	}
 
 	service := cr.service
@@ -998,24 +997,15 @@ func subscribers(identities []string) []policy.Subscriber {
 }
 
 // TS 29.214 Annex A.1 NOTE 3, RFC 6809
-func icsiRef(values []string) string {
-	for _, v := range values {
-		for _, e := range sip.SplitList(v) {
-			for part := range strings.SplitSeq(e, ";") {
-				name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-				if !ok || !strings.EqualFold(strings.TrimSpace(name), "+g.3gpp.icsi-ref") {
-					continue
-				}
+func icsiRef(h sip.Header) string {
+	caps, err := h.FeatureCaps()
+	if err != nil {
+		return ""
+	}
 
-				value = strings.Trim(strings.TrimSpace(value), `"`)
-				if s, err := url.PathUnescape(value); err == nil {
-					value = s
-				}
-
-				if first, _, _ := strings.Cut(value, ","); first != "" {
-					return first
-				}
-			}
+	for _, c := range caps {
+		if icsis := c.Tokens("g.3gpp.icsi-ref"); len(icsis) > 0 {
+			return icsis[0]
 		}
 	}
 

@@ -173,3 +173,106 @@ func FuzzMultipart(f *testing.F) {
 func sameFields(a, b sip.Header) bool {
 	return slices.EqualFunc(a, b, func(f, g sip.Field) bool { return f.Name == g.Name && f.Value == g.Value })
 }
+
+func FuzzFeatureSet(f *testing.F) {
+	for _, s := range []string{
+		`;audio;video;methods="INVITE,BYE";q=0.2`,
+		`;mobility="fixed";events="!presence,message-summary";description="<PC>";+rangeparam="#-4:+5.125"`,
+		`;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt";+g.3gpp.mcptt;require;explicit`,
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		ps, err := sip.ParseParams(s)
+		if err != nil {
+			return
+		}
+
+		fs, err := sip.ParseFeatureSet(ps)
+		if err != nil {
+			return
+		}
+
+		_, _ = fs.Preference([]sip.CallerPreference{{Features: fs, Require: true, Explicit: true}})
+		_ = fs.RejectedBy([]sip.CallerPreference{{Features: fs}})
+
+		out := fs.Params()
+
+		again, err := sip.ParseFeatureSet(out)
+		if err != nil {
+			t.Fatalf("%q encodes to %q, which does not parse: %v", s, out, err)
+		}
+
+		if again.Params().String() != out.String() {
+			t.Fatalf("unstable encoding: %q, %q", out, again.Params())
+		}
+
+		if qa, ok := again.Preference([]sip.CallerPreference{{Features: fs, Require: true, Explicit: true}}); len(fs) > 0 && (!ok || qa != 1) {
+			t.Fatalf("%q does not match itself after a round trip: %v, %v", s, qa, ok)
+		}
+	})
+}
+
+func FuzzTypedHeaders(f *testing.F) {
+	for _, s := range []string{
+		"auto;require", "mcpttp.13, dsn.flash", "a@b;local-tag=1;remote-tag=2", "a@b;to-tag=1;from-tag=2;early-only",
+		"3600;refresher=uac", "presence.winfo;id=7", "terminated;reason=timeout;retry-after=30", "g.3gpp.mcptt-info;x",
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		stable := func(name, out string, again func(string) (string, error)) {
+			back, err := again(out)
+			if err != nil || back != out {
+				t.Fatalf("%s %q serializes to %q, which does not round-trip: %q, %v", name, s, out, back, err)
+			}
+		}
+
+		if v, err := sip.ParseAnswerMode(s); err == nil {
+			stable("Answer-Mode", v.String(), func(x string) (string, error) { v, err := sip.ParseAnswerMode(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseResourcePriority(s); err == nil {
+			stable("r-value", v.String(), func(x string) (string, error) { v, err := sip.ParseResourcePriority(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseTargetDialog(s); err == nil {
+			stable("Target-Dialog", v.String(), func(x string) (string, error) { v, err := sip.ParseTargetDialog(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseReplaces(s); err == nil {
+			stable("Replaces", v.String(), func(x string) (string, error) { v, err := sip.ParseReplaces(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseSessionExpires(s); err == nil {
+			stable("Session-Expires", v.String(), func(x string) (string, error) { v, err := sip.ParseSessionExpires(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseEvent(s); err == nil {
+			stable("Event", v.String(), func(x string) (string, error) { v, err := sip.ParseEvent(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseSubscriptionState(s); err == nil {
+			stable("Subscription-State", v.String(), func(x string) (string, error) { v, err := sip.ParseSubscriptionState(x); return v.String(), err })
+		}
+
+		if v, err := sip.ParseInfoPackage(s); err == nil {
+			stable("Info-Package", v.String(), func(x string) (string, error) { v, err := sip.ParseInfoPackage(x); return v.String(), err })
+		}
+
+		var h sip.Header
+
+		for _, name := range []string{"Accept-Contact", "Feature-Caps", "Recv-Info", "Allow-Events", "P-Asserted-Service", "Supported"} {
+			h.Add(name, s)
+		}
+
+		_, _ = h.AcceptContact()
+		_, _ = h.FeatureCaps()
+		_, _, _ = h.RecvInfo()
+		_, _ = h.AllowEvents()
+		_, _ = h.AssertedServices()
+		_, _ = h.OptionTags("Supported")
+	})
+}

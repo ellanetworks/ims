@@ -26,6 +26,8 @@ jobs:
           - { package: ./, target: FuzzPrivacy }
           - { package: ./, target: FuzzEarlyMedia }
           - { package: ./, target: FuzzMultipart }
+          - { package: ./, target: FuzzFeatureSet }
+          - { package: ./, target: FuzzTypedHeaders }
           - { package: ./sdp/, target: FuzzSDP }
           - { package: ./imsxml/, target: FuzzDecode }
     steps:

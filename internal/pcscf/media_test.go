@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/rxpolicy"
+	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
@@ -279,7 +280,9 @@ func TestMixedFamiliesRefused(t *testing.T) {
 }
 
 func TestICSIRef(t *testing.T) {
-	got := icsiRef([]string{`*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`})
+	h := sip.Header{{Name: "Feature-Caps", Value: `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`}}
+
+	got := icsiRef(h)
 	if got != "urn:urn-7:3gpp-service.ims.icsi.mmtel" {
 		t.Fatalf("icsiRef = %q", got)
 	}

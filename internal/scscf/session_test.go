@@ -1121,7 +1121,7 @@ func TestTargetSetGroups(t *testing.T) {
 		// RFC 3841 §7.2.4: the caller's preferences order the contacts of a q-value, without splitting them.
 		{"partial matches ring together", []db.Binding{phone, tablet}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"best match first", []db.Binding{tablet, binding("sip:newer@ue", "3", ";audio", 9)}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:newer@ue]]"},
-		{"predicate with a term it cannot evaluate", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
+		{"numeric term on a missing tag", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"compact form", []db.Binding{phone, tablet}, header("d", "no-fork"), "[[sip:tablet@ue]]"},
 		{"Reject-Contact", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video"), "[[sip:phone@ue]]"},
 		{"tags without Accept-Contact", []db.Binding{phone, binding("sip:bare@ue", "", "", 0)}, nil, "[[sip:phone@ue sip:bare@ue]]"},
@@ -1403,7 +1403,10 @@ func TestCallerPreferenceFullMatch(t *testing.T) {
 
 		ps, _ := sip.ParseParams(";" + strings.Join(params, ";"))
 
-		if qa, ok := callerPreference(contactFeatures(ps), preferences(h, "Accept-Contact")); !ok || qa != 1 {
+		features, _ := sip.ParseFeatureSet(ps)
+		prefs, _ := h.AcceptContact()
+
+		if qa, ok := features.Preference(prefs); !ok || qa != 1 {
 			t.Errorf("%d terms: Qa %v, kept %v; want 1", n, qa, ok)
 		}
 	}

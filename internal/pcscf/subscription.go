@@ -440,12 +440,12 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 }
 
 func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Response {
-	state, params, err := sip.ParseTokenParams(req.Header.Get("Subscription-State"))
-	if err != nil {
+	state, ok, err := req.Header.SubscriptionState()
+	if !ok || err != nil {
 		return sip.NewResponse(req, 400, "Bad Subscription-State")
 	}
 
-	terminated := strings.EqualFold(state, "terminated")
+	terminated := state.State == sip.SubscriptionTerminated
 
 	var info *regevent.Reginfo
 
@@ -502,10 +502,8 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 	if terminated {
 		ss.removeLocked(s)
 	} else {
-		if v, ok := params.Get("expires"); ok {
-			if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-				s.expires = ss.p.clock.Now().Add(time.Duration(n) * time.Second)
-			}
+		if state.Expires != nil {
+			s.expires = ss.p.clock.Now().Add(time.Duration(*state.Expires) * time.Second)
 		}
 
 		ss.saveLocked(s)
