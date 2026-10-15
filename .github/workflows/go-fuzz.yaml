@@ -33,6 +33,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            sip/go.sum
 
       - name: Fuzz ${{ matrix.package }} ${{ matrix.target }}
         working-directory: sip

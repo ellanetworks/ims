@@ -1572,9 +1572,9 @@ func rejectOffer(offer []byte) ([]byte, error) {
 	return s.Bytes(), nil
 }
 
-// RFC 5621: the SDP may be one part of a multipart body (TS 24.379 §6.5).
+// RFC 5621: the SDP may be one part of a multipart body (TS 24.379 §6.5), next to SDP of other dispositions.
 func sessionBody(from Side, e sip.Envelope) (Body, bool) {
-	p, ok, err := e.FindBody("application/sdp")
+	p, ok, err := e.Content().FindFunc(sip.BodyPart.IsSession)
 	if err != nil || !ok || len(p.Body) == 0 {
 		return Body{}, false
 	}

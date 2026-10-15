@@ -111,6 +111,7 @@ func FuzzURI(f *testing.F) {
 		"sip:alice@example.com", "sips:[2001:db8::1]:5061;transport=tcp;lr",
 		"sip:0198765432100;phone-context=ims.example.org@ims.example.org;user=phone",
 		"tel:+1-555-123-0001;phone-context=x", "urn:service:sos", "sip:a:b@h:1?x=y",
+		"sip:b@h?Accept-Contact=*%3B%2Bg.3gpp.mcptt%3Brequire&Content-Type=application/sdp&body=v%3D0%0D%0A",
 	} {
 		f.Add(s)
 	}
@@ -130,6 +131,29 @@ func FuzzURI(f *testing.F) {
 
 		if again.String() != out {
 			t.Fatalf("unstable URI: %q, %q", out, again.String())
+		}
+
+		e, err := u.Embedded()
+		if err != nil {
+			return
+		}
+
+		u.SetEmbedded(e)
+
+		back, err := sip.ParseURI(u.String())
+		if err != nil {
+			t.Fatalf("%q: embedded fields serialize to %q, which does not parse: %v", s, u.String(), err)
+		}
+
+		e2, err := back.Embedded()
+		if err != nil || string(e2.Body) != string(e.Body) {
+			t.Fatalf("%q: embedded fields changed through %q: %v", s, u.String(), err)
+		}
+
+		e.Header.Del("Content-Length")
+
+		if !sameFields(e2.Header, e.Header) {
+			t.Fatalf("%q: embedded header fields %v, want %v", s, e2.Header, e.Header)
 		}
 	})
 }

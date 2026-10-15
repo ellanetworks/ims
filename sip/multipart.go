@@ -11,11 +11,13 @@ import (
 )
 
 const (
-	DispositionSession     = "session"
-	DispositionRender      = "render"
-	DispositionIcon        = "icon"
-	DispositionAlert       = "alert"
-	DispositionInfoPackage = "info-package"
+	DispositionSession      = "session"
+	DispositionEarlySession = "early-session"
+	DispositionRender       = "render"
+	DispositionIcon         = "icon"
+	DispositionAlert        = "alert"
+	DispositionInfoPackage  = "info-package"
+	DispositionByReference  = "by-reference"
 )
 
 const (
@@ -26,9 +28,8 @@ const (
 // ParseMediaType parses a Content-Type value (RFC 3261 §20.15, RFC 2045 §5.1). The media type is returned lower-cased,
 // parameter values as they appear, quotes included.
 func ParseMediaType(s string) (string, Params, error) {
-	t := trimWSP(s)
-
-	typ, rest, _ := strings.Cut(t, "/")
+	typ, rest, _ := strings.Cut(trimWSP(s), "/")
+	typ, rest = strings.TrimRight(typ, " \t"), trimLeftWSP(rest)
 
 	n := tokenLen(rest)
 	if typ == "" || !isToken(typ) || n == 0 {
@@ -76,11 +77,15 @@ func (p BodyPart) MediaType() string {
 	return mt
 }
 
-// ContentID is the Content-ID of the part without angle brackets (RFC 2045 §7).
+// ContentID is the Content-ID of the part, the msg-id without angle brackets nor comments (RFC 2045 §7, RFC 5322
+// §3.6.4).
 func (p BodyPart) ContentID() string {
 	v := trimWSP(p.Header.Get("Content-ID"))
-	if len(v) >= 2 && v[0] == '<' && v[len(v)-1] == '>' {
-		v = v[1 : len(v)-1]
+
+	if i := strings.IndexByte(v, '<'); i >= 0 {
+		if j := strings.IndexByte(v[i:], '>'); j >= 0 {
+			return v[i+1 : i+j]
+		}
 	}
 
 	return v
@@ -96,7 +101,7 @@ func NewContentID(host string) string {
 }
 
 // Disposition is the Content-Disposition of the part, or its default: session for SDP, render otherwise
-// (RFC 3261 §20.11, RFC 5621 §3.2).
+// (RFC 3261 §20.11, RFC 5621 §8.2).
 func (p BodyPart) Disposition() (string, Params, error) {
 	v := p.Header.Get("Content-Disposition")
 	if v == "" {
@@ -116,7 +121,7 @@ func (p BodyPart) Disposition() (string, Params, error) {
 }
 
 // Optional reports whether the part has handling=optional: a recipient that does not understand it can ignore it
-// rather than reject the message (RFC 3261 §20.11, RFC 5621 §3.2).
+// rather than reject the message (RFC 3261 §20.11, RFC 5621 §8.1–8.2).
 func (p BodyPart) Optional() bool {
 	_, ps, err := p.Disposition()
 	if err != nil {
@@ -128,20 +133,51 @@ func (p BodyPart) Optional() bool {
 	return strings.EqualFold(v, "optional")
 }
 
+// IsSession reports whether the part is a session description of the message: SDP with the session disposition, not
+// an early-session one (RFC 3959) or one meant for another request.
+func (p BodyPart) IsSession() bool {
+	d, _, err := p.Disposition()
+	return err == nil && d == DispositionSession && p.MediaType() == "application/sdp"
+}
+
 // Multipart parses the part as a multipart body.
 func (p BodyPart) Multipart() (*Multipart, error) {
-	return ParseMultipart(p.Header.ContentType(), p.Body)
+	return parseMultipart(p.Header.ContentType(), p.Body)
+}
+
+// checkEncoding reports a part whose Body is not its content: SIP bodies are binary (RFC 3261 §7.4), and a content
+// coding or a transfer encoding would have to be undone first.
+func (p BodyPart) checkEncoding() error {
+	if p.Header.Has("Content-Type") && p.MediaType() == "" {
+		return fmt.Errorf("malformed Content-Type %q", p.Header.ContentType())
+	}
+
+	for _, v := range p.Header.Values("Content-Encoding") {
+		for _, c := range strings.Split(v, ",") {
+			if c = trimWSP(c); c != "" && !strings.EqualFold(c, "identity") {
+				return fmt.Errorf("unsupported Content-Encoding %q", c)
+			}
+		}
+	}
+
+	switch cte := strings.ToLower(trimWSP(p.Header.Get("Content-Transfer-Encoding"))); cte {
+	case "", "binary", "8bit", "7bit":
+		return nil
+	default:
+		return fmt.Errorf("unsupported Content-Transfer-Encoding %q", cte)
+	}
 }
 
 // Multipart is a multipart body (RFC 2046 §5.1, RFC 5621).
 type Multipart struct {
-	Subtype  string
-	Boundary string
-	Parts    []BodyPart
+	Subtype string
+	Parts   []BodyPart
+
+	boundary string
 }
 
-// NewMultipart builds a multipart/mixed body with a fresh boundary. SDP bodies come first, because SIP entities that do
-// not understand multipart look at the first body only (TS 24.379 §6.5).
+// NewMultipart builds a multipart/mixed body. SDP bodies come first, because SIP entities that do not understand
+// multipart look at the first body only (TS 24.379 §6.5).
 func NewMultipart(parts ...BodyPart) *Multipart {
 	ordered := make([]BodyPart, 0, len(parts))
 	for _, p := range parts {
@@ -156,21 +192,29 @@ func NewMultipart(parts ...BodyPart) *Multipart {
 		}
 	}
 
-	return &Multipart{Subtype: "mixed", Boundary: newBoundary(ordered), Parts: ordered}
+	return &Multipart{Subtype: "mixed", Parts: ordered}
+}
+
+// collides reports whether a delimiter with boundary b could appear in body (RFC 2046 §5.1.1): the body starts right
+// after a CRLF in a multipart body.
+func collides(b string, body []byte) bool {
+	dash := "--" + b
+	return bytes.HasPrefix(body, []byte(dash)) || bytes.Contains(body, []byte("\r\n"+dash))
 }
 
 func newBoundary(parts []BodyPart) string {
 	for {
 		b := "ella-" + rand.Text()
-		if !slices.ContainsFunc(parts, func(p BodyPart) bool { return bytes.Contains(p.Body, []byte(b)) }) {
+		if !slices.ContainsFunc(parts, func(p BodyPart) bool { return collides(b, p.Body) }) {
 			return b
 		}
 	}
 }
 
-// ParseMultipart parses a multipart body (RFC 2046 §5.1.1). The parts alias body, so that each part keeps its exact
-// octets, as signatures over them need (TS 24.379 §6.6.3). The preamble and the epilogue are dropped.
-func ParseMultipart(contentType string, body []byte) (*Multipart, error) {
+// parseMultipart parses a multipart body (RFC 2046 §5.1.1). The parts alias body, so that each part keeps its exact
+// octets, as signatures over them need (TS 24.379 §6.6.3), without room to grow into the octets that follow. The
+// preamble and the epilogue are dropped.
+func parseMultipart(contentType string, body []byte) (*Multipart, error) {
 	mt, ps, err := ParseMediaType(contentType)
 	if err != nil {
 		return nil, err
@@ -190,17 +234,22 @@ func ParseMultipart(contentType string, body []byte) (*Multipart, error) {
 		return nil, fmt.Errorf("multipart: invalid boundary %q", boundary)
 	}
 
-	m := &Multipart{Subtype: strings.TrimPrefix(mt, "multipart/"), Boundary: boundary}
+	m := &Multipart{Subtype: strings.TrimPrefix(mt, "multipart/"), boundary: boundary}
+	dash := []byte("--" + boundary)
 	delim := []byte("\r\n--" + boundary)
 
-	// pos is the start of a dash-boundary. The first delimiter may start the body, with no CRLF before it.
-	pos := bytes.Index(append([]byte("\r\n"), body...), delim)
-	if pos < 0 {
-		return nil, errors.New("multipart: no delimiter")
+	// pos is the start of a dash-boundary. The first one may start the body, with no CRLF before it.
+	pos := 0
+	if !bytes.HasPrefix(body, dash) {
+		if pos = bytes.Index(body, delim); pos < 0 {
+			return nil, errors.New("multipart: no delimiter")
+		}
+
+		pos += 2
 	}
 
 	for {
-		pos += len(delim) - 2
+		pos += len(dash)
 
 		rest := body[pos:]
 		if bytes.HasPrefix(rest, []byte("--")) {
@@ -225,7 +274,7 @@ func ParseMultipart(contentType string, body []byte) (*Multipart, error) {
 			return nil, fmt.Errorf("multipart: more than %d parts", maxBodyParts)
 		}
 
-		p, err := parsePart(body[start:end])
+		p, err := parsePart(body[start:end:end])
 		if err != nil {
 			return nil, err
 		}
@@ -297,96 +346,162 @@ func isAlnum(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-func (m *Multipart) ContentType() string {
+// Encode returns the Content-Type and the octets of the body. The boundary is the one the body was parsed with, unless
+// a part now contains it.
+func (m *Multipart) Encode() (contentType string, body []byte) {
+	if !validBoundary(m.boundary) || slices.ContainsFunc(m.Parts, func(p BodyPart) bool { return collides(m.boundary, p.Body) }) {
+		m.boundary = newBoundary(m.Parts)
+	}
+
+	for _, p := range m.Parts {
+		body = append(body, "--"...)
+		body = append(body, m.boundary...)
+		body = append(body, "\r\n"...)
+
+		for _, f := range p.Header {
+			body = f.appendTo(body)
+			body = append(body, "\r\n"...)
+		}
+
+		body = append(body, "\r\n"...)
+		body = append(body, p.Body...)
+		body = append(body, "\r\n"...)
+	}
+
+	body = append(body, "--"...)
+	body = append(body, m.boundary...)
+	body = append(body, "--\r\n"...)
+
 	sub := m.Subtype
 	if sub == "" {
 		sub = "mixed"
 	}
 
-	boundary := m.Boundary
+	boundary := m.boundary
 	if !isToken(boundary) {
 		boundary = Quote(boundary)
 	}
 
-	return "multipart/" + sub + ";boundary=" + boundary
+	return "multipart/" + sub + ";boundary=" + boundary, body
 }
 
-func (m *Multipart) AppendTo(b []byte) []byte {
-	for _, p := range m.Parts {
-		b = append(b, "--"...)
-		b = append(b, m.Boundary...)
-		b = append(b, "\r\n"...)
-
-		for _, f := range p.Header {
-			b = f.appendTo(b)
-			b = append(b, "\r\n"...)
-		}
-
-		b = append(b, "\r\n"...)
-		b = append(b, p.Body...)
-		b = append(b, "\r\n"...)
+// Parts returns the parts of a multipart body, the body itself otherwise, none if empty. Nested multipart parts are
+// returned as they are.
+func (p BodyPart) Parts() ([]BodyPart, error) {
+	if len(p.Body) == 0 {
+		return nil, nil
 	}
 
-	b = append(b, "--"...)
-	b = append(b, m.Boundary...)
+	if err := p.checkEncoding(); err != nil {
+		return nil, err
+	}
 
-	return append(b, "--\r\n"...)
+	if !isMultipart(p.MediaType()) {
+		return []BodyPart{p}, nil
+	}
+
+	m, err := p.Multipart()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, part := range m.Parts {
+		if err := part.checkEncoding(); err != nil {
+			return nil, err
+		}
+	}
+
+	return m.Parts, nil
 }
 
-func (m *Multipart) Bytes() []byte {
-	return m.AppendTo(nil)
-}
-
-// Find returns the first part of the media type, looking into nested multipart bodies.
-func (m *Multipart) Find(mediaType string) (BodyPart, bool) {
+// Find returns the first body of the media type that a recipient processes by its disposition: the body itself or
+// a part of it (RFC 5621 §9.3).
+func (p BodyPart) Find(mediaType string) (BodyPart, bool, error) {
 	mediaType = strings.ToLower(mediaType)
 
-	return m.find(func(p BodyPart) bool { return p.MediaType() == mediaType }, 0)
+	return p.FindFunc(func(q BodyPart) bool { return q.MediaType() == mediaType })
 }
 
-// ByContentID returns the part a cid URL (RFC 2392) or a Content-ID refers to, looking into nested multipart bodies.
-// A part whose own content is multipart can be the target, as with REFER to a list of bodies (TS 24.379 §17.2.2.2.1).
-func (m *Multipart) ByContentID(id string) (BodyPart, bool) {
+// FindFunc returns the first body for which match is true among those a recipient processes by their disposition:
+// the body itself or a part of it. In a multipart/alternative body, the last alternatives are the preferred ones
+// (RFC 2046 §5.1.4, RFC 5621 §6). By-reference parts are only processed through their reference (RFC 5621 §9.4).
+func (p BodyPart) FindFunc(match func(BodyPart) bool) (BodyPart, bool, error) {
+	if len(p.Body) == 0 {
+		return BodyPart{}, false, nil
+	}
+
+	return p.find(match, false, 0)
+}
+
+// ByContentID returns the body a cid URL (RFC 2392) or a Content-ID refers to: the body itself or a part of it. The
+// target may be by-reference, or itself multipart, as with REFER to a list of bodies (TS 24.379 §17.2.2.2.1).
+func (p BodyPart) ByContentID(id string) (BodyPart, bool, error) {
 	id, ok := normalizeContentID(id)
-	if !ok {
-		return BodyPart{}, false
+	if !ok || len(p.Body) == 0 {
+		return BodyPart{}, false, nil
 	}
 
-	return m.find(func(p BodyPart) bool { return p.ContentID() == id }, 0)
+	return p.find(func(q BodyPart) bool { return q.ContentID() == id }, true, 0)
 }
 
-func (m *Multipart) find(match func(BodyPart) bool, depth int) (BodyPart, bool) {
-	for _, p := range m.Parts {
-		if match(p) {
-			return p, true
-		}
+func (m *Multipart) find(match func(BodyPart) bool, byReference bool, depth int) (BodyPart, bool, error) {
+	parts := m.Parts
+	if !byReference && strings.EqualFold(m.Subtype, "alternative") {
+		parts = slices.Clone(parts)
+		slices.Reverse(parts)
+	}
 
-		if depth+1 < maxBodyDepth && isMultipart(p.MediaType()) {
-			if nested, err := p.Multipart(); err == nil {
-				if found, ok := nested.find(match, depth+1); ok {
-					return found, true
-				}
-			}
+	for _, p := range parts {
+		if found, ok, err := p.find(match, byReference, depth); err != nil || ok {
+			return found, ok, err
 		}
 	}
 
-	return BodyPart{}, false
+	return BodyPart{}, false, nil
 }
 
+func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (BodyPart, bool, error) {
+	if !byReference {
+		if d, _, err := p.Disposition(); err == nil && d == DispositionByReference {
+			return BodyPart{}, false, nil
+		}
+	}
+
+	if err := p.checkEncoding(); err != nil {
+		return BodyPart{}, false, err
+	}
+
+	if match(p) {
+		return p, true, nil
+	}
+
+	if !isMultipart(p.MediaType()) || depth >= maxBodyDepth {
+		return BodyPart{}, false, nil
+	}
+
+	m, err := p.Multipart()
+	if err != nil {
+		return BodyPart{}, false, err
+	}
+
+	return m.find(match, byReference, depth+1)
+}
+
+// normalizeContentID accepts a cid URL, with or without angle brackets, or a Content-ID.
 func normalizeContentID(id string) (string, bool) {
 	id = trimWSP(id)
 
-	if len(id) > 4 && strings.EqualFold(id[:4], "cid:") {
+	if len(id) >= 2 && id[0] == '<' && id[len(id)-1] == '>' {
+		id = id[1 : len(id)-1]
+	}
+
+	if len(id) >= 4 && strings.EqualFold(id[:4], "cid:") {
 		u, err := url.PathUnescape(id[4:])
 		if err != nil {
 			return "", false
 		}
 
-		return u, true
-	}
-
-	if len(id) >= 2 && id[0] == '<' && id[len(id)-1] == '>' {
-		id = id[1 : len(id)-1]
+		id = u
 	}
 
 	return id, id != ""
@@ -397,8 +512,8 @@ func isContentField(name string) bool {
 	return strings.HasPrefix(long, "content-") && long != "content-length"
 }
 
-// part is the whole body of the message as one part, with the Content-* header fields of the message.
-func (e Envelope) part() BodyPart {
+// Content is the body of the message as one MIME body, with the Content-* header fields of the message.
+func (e Envelope) Content() BodyPart {
 	var h Header
 
 	for _, f := range e.Header {
@@ -407,60 +522,24 @@ func (e Envelope) part() BodyPart {
 		}
 	}
 
-	return BodyPart{Header: h, Body: e.Body}
-}
-
-// Bodies returns the bodies of the message: the parts of a multipart body, or the body itself. Nested multipart
-// parts are returned as they are.
-func (e Envelope) Bodies() ([]BodyPart, error) {
-	if len(e.Body) == 0 {
-		return nil, nil
-	}
-
-	p := e.part()
-	if !isMultipart(p.MediaType()) {
-		return []BodyPart{p}, nil
-	}
-
-	m, err := p.Multipart()
-	if err != nil {
-		return nil, err
-	}
-
-	return m.Parts, nil
-}
-
-// FindBody returns the first body of the media type, looking into multipart bodies.
-func (e Envelope) FindBody(mediaType string) (BodyPart, bool, error) {
-	if len(e.Body) == 0 {
-		return BodyPart{}, false, nil
-	}
-
-	p := e.part()
-
-	mt := p.MediaType()
-	if !isMultipart(mt) {
-		return p, mt == strings.ToLower(mediaType), nil
-	}
-
-	m, err := p.Multipart()
-	if err != nil {
-		return BodyPart{}, false, err
-	}
-
-	found, ok := m.Find(mediaType)
-
-	return found, ok, nil
+	return BodyPart{Header: h, Body: e.Body[:len(e.Body):len(e.Body)]}
 }
 
 // SetBodies replaces the body of the message and its Content-* header fields. One part is sent as is, several as a
-// multipart/mixed body (TS 24.379 §6.5).
+// multipart/mixed body (TS 24.379 §6.5). A Content-Disposition for the multipart body as a whole (RFC 5621 §8.2) can
+// be added after.
 func (e *Envelope) SetBodies(parts ...BodyPart) {
 	switch len(parts) {
 	case 0:
 		e.SetBody("", nil)
 	case 1:
-		e.SetBody(parts[0].Header.ContentType(), parts[0].Body)
+		// RFC 3261 §20.15: a body has a Content-Type, text/plain by default (RFC 2045 §5.2).
+		ct := parts[0].Header.ContentType()
+		if ct == "" {
+			ct = "text/plain"
+		}
+
+		e.SetBody(ct, parts[0].Body)
 
 		for _, f := range parts[0].Header {
 			if isContentField(f.Name) && !strings.EqualFold(LongName(f.Name), "Content-Type") {
@@ -468,7 +547,6 @@ func (e *Envelope) SetBodies(parts ...BodyPart) {
 			}
 		}
 	default:
-		m := NewMultipart(parts...)
-		e.SetBody(m.ContentType(), m.Bytes())
+		e.SetBody(NewMultipart(parts...).Encode())
 	}
 }

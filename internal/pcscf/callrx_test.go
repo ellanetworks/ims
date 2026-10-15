@@ -309,7 +309,7 @@ func TestCallMediaAuthorizedFromMultipartBodies(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 100)
 
 	got, f := s.scscf.RecvRequest()
-	if bodies, err := got.Bodies(); err != nil || len(bodies) != 2 {
+	if bodies, err := got.Content().Parts(); err != nil || len(bodies) != 2 {
 		t.Fatalf("S-CSCF got the bodies %v, %v; want the SDP and the mcptt-info", bodies, err)
 	}
 

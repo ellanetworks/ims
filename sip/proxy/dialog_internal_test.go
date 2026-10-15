@@ -257,3 +257,23 @@ func mustAddress(t *testing.T, s string) sip.Address {
 
 	return as[0]
 }
+
+// RFC 3959, RFC 5621 §6: only the SDP with the session disposition is the offer or the answer.
+func TestSessionBodyDisposition(t *testing.T) {
+	early := sip.NewBodyPart("application/sdp", []byte("early"))
+	early.Header.Add("Content-Disposition", "early-session")
+
+	var e sip.Envelope
+
+	e.SetBodies(early)
+
+	if b, ok := sessionBody(Caller, e); ok {
+		t.Errorf("early-session SDP taken as the session: %q", b.Data)
+	}
+
+	e.SetBodies(early, sip.NewBodyPart("application/sdp", []byte("session")))
+
+	if b, ok := sessionBody(Caller, e); !ok || string(b.Data) != "session" {
+		t.Errorf("session SDP %q, %v", b.Data, ok)
+	}
+}

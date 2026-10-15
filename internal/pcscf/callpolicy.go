@@ -168,7 +168,7 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 			return
 		}
 
-		answer, _, _ := out.FindBody("application/sdp")
+		answer, _, _ := out.Content().FindFunc(sip.BodyPart.IsSession)
 
 		x := p.parseExchange(c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: answer.Body}})
 		if x == nil {
@@ -284,11 +284,13 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 	final := initial && res.IsSuccess()
 	early := !final && d.State() == proxy.Early
 
+	_, answered, _ := res.Content().FindFunc(sip.BodyPart.IsSession)
+
 	cr := c.policy
 
 	cr.mu.Lock()
 
-	fresh := len(res.Body) > 0 && !cr.done[ex.Seq]
+	fresh := answered && !cr.done[ex.Seq]
 	needed := fresh || final && cr.forked
 
 	if needed {

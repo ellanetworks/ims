@@ -23,13 +23,13 @@ var mcpttInvite = "--boundary1\r\n" +
 	"--boundary1--\r\n"
 
 func TestParseMultipart(t *testing.T) {
-	m, err := ParseMultipart(`multipart/mixed;boundary="boundary1"`, []byte(mcpttInvite))
+	m, err := parseMultipart(`multipart/mixed;boundary="boundary1"`, []byte(mcpttInvite))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if m.Subtype != "mixed" || m.Boundary != "boundary1" || len(m.Parts) != 2 {
-		t.Fatalf("got %s %q with %d parts", m.Subtype, m.Boundary, len(m.Parts))
+	if m.Subtype != "mixed" || m.boundary != "boundary1" || len(m.Parts) != 2 {
+		t.Fatalf("got %s %q with %d parts", m.Subtype, m.boundary, len(m.Parts))
 	}
 
 	for i, want := range []struct{ mediaType, body string }{
@@ -42,7 +42,7 @@ func TestParseMultipart(t *testing.T) {
 		}
 	}
 
-	if got := m.Bytes(); string(got) != mcpttInvite {
+	if _, got := m.Encode(); string(got) != mcpttInvite {
 		t.Errorf("serialization changed:\n%q\nwant\n%q", got, mcpttInvite)
 	}
 }
@@ -90,7 +90,7 @@ func TestParseMultipartWireForms(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := ParseMultipart(tc.contentType, []byte(tc.body))
+			m, err := parseMultipart(tc.contentType, []byte(tc.body))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,9 +104,11 @@ func TestParseMultipartWireForms(t *testing.T) {
 				t.Errorf("parts %q, want %q", got, tc.want)
 			}
 
-			again, err := ParseMultipart(m.ContentType(), m.Bytes())
+			ct, out := m.Encode()
+
+			again, err := parseMultipart(ct, out)
 			if err != nil {
-				t.Fatalf("serialization does not parse: %v\n%q", err, m.Bytes())
+				t.Fatalf("serialization does not parse: %v\n%q", err, out)
 			}
 
 			if len(again.Parts) != len(m.Parts) {
@@ -143,7 +145,7 @@ func TestParseMultipartErrors(t *testing.T) {
 		{"bare LF in a part header", "multipart/mixed;boundary=b", "--b\r\nA: 1\nB: 2\r\n\r\nx\r\n--b--"},
 		{"too many parts", "multipart/mixed;boundary=b", many},
 	} {
-		if m, err := ParseMultipart(tc.contentType, []byte(tc.body)); err == nil {
+		if m, err := parseMultipart(tc.contentType, []byte(tc.body)); err == nil {
 			t.Errorf("%s: got %d parts, want error", tc.name, len(m.Parts))
 		}
 	}
@@ -157,6 +159,7 @@ func TestParseMediaType(t *testing.T) {
 		{" Application/SDP ", "application/sdp", ""},
 		{`multipart/mixed;boundary="b 1"`, "multipart/mixed", `"b 1"`},
 		{"multipart/mixed ; boundary = b1 ; x", "multipart/mixed", "b1"},
+		{"multipart / mixed;boundary=b1", "multipart/mixed", "b1"},
 		{"application/vnd.3gpp.mcptt-info+xml", "application/vnd.3gpp.mcptt-info+xml", ""},
 	} {
 		mt, ps, err := ParseMediaType(tc.in)
@@ -195,11 +198,12 @@ func TestNewMultipart(t *testing.T) {
 		t.Errorf("order %q, want %s (SDP first, TS 24.379 §6.5)", got, want)
 	}
 
-	if !validBoundary(m.Boundary) || !strings.HasPrefix(m.ContentType(), "multipart/mixed;boundary=") {
-		t.Errorf("Content-Type %q", m.ContentType())
+	ct, out := m.Encode()
+	if !validBoundary(m.boundary) || !strings.HasPrefix(ct, "multipart/mixed;boundary=") {
+		t.Errorf("Content-Type %q", ct)
 	}
 
-	again, err := ParseMultipart(m.ContentType(), m.Bytes())
+	again, err := parseMultipart(ct, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,9 +217,10 @@ func TestNewMultipart(t *testing.T) {
 
 func TestNewMultipartAvoidsBoundaryInBodies(t *testing.T) {
 	m := NewMultipart(NewBodyPart("text/plain", []byte("a")), NewBodyPart("text/plain", []byte("b")))
+	m.Encode()
 
-	clash := NewBodyPart("text/plain", []byte("\r\n--"+m.Boundary+"\r\n"))
-	if b := newBoundary([]BodyPart{clash}); b == m.Boundary {
+	clash := NewBodyPart("text/plain", []byte("\r\n--"+m.boundary+"\r\n"))
+	if b := newBoundary([]BodyPart{clash}); b == m.boundary {
 		t.Errorf("boundary %q appears in a body", b)
 	}
 }
@@ -224,24 +229,24 @@ func TestByContentID(t *testing.T) {
 	inner := NewMultipart(NewBodyPart("application/sdp", []byte(mcpttSDP)),
 		NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte(mcpttInfo)))
 
-	section := NewBodyPart(inner.ContentType(), inner.Bytes())
+	section := NewBodyPart(inner.Encode())
 	section.SetContentID("bodies@ims-op.net")
 
 	lists := NewBodyPart("application/resource-lists+xml", []byte("<resource-lists/>"))
 	lists.SetContentID("cn35t8jf02@ims-op.net")
 
-	m := NewMultipart(lists, section)
+	m := NewBodyPart(NewMultipart(lists, section).Encode())
 
 	for _, id := range []string{"cid:cn35t8jf02@ims-op.net", "CID:cn35t8jf02%40ims-op.net", "<cn35t8jf02@ims-op.net>", "cn35t8jf02@ims-op.net"} {
-		p, ok := m.ByContentID(id)
-		if !ok || p.MediaType() != "application/resource-lists+xml" {
+		p, ok, err := m.ByContentID(id)
+		if err != nil || !ok || p.MediaType() != "application/resource-lists+xml" {
 			t.Errorf("ByContentID(%q) = %s, %v", id, p.MediaType(), ok)
 		}
 	}
 
 	// TS 24.379 §17.2.2.2.1: a cid URL may refer to a MIME body section holding several bodies.
-	p, ok := m.ByContentID("cid:bodies@ims-op.net")
-	if !ok || p.MediaType() != "multipart/mixed" {
+	p, ok, err := m.ByContentID("cid:bodies@ims-op.net")
+	if err != nil || !ok || p.MediaType() != "multipart/mixed" {
 		t.Fatalf("body section: %s, %v", p.MediaType(), ok)
 	}
 
@@ -250,12 +255,12 @@ func TestByContentID(t *testing.T) {
 		t.Fatalf("body section: %v", err)
 	}
 
-	if sdp, ok := m.Find("Application/SDP"); !ok || string(sdp.Body) != mcpttSDP {
+	if sdp, ok, err := m.Find("Application/SDP"); err != nil || !ok || string(sdp.Body) != mcpttSDP {
 		t.Errorf("Find in a nested body: %q, %v", sdp.Body, ok)
 	}
 
 	for _, id := range []string{"", "cid:", "cid:%zz", "cid:unknown@ims-op.net", "<>"} {
-		if p, ok := m.ByContentID(id); ok {
+		if p, ok, _ := m.ByContentID(id); ok {
 			t.Errorf("ByContentID(%q) = %s", id, p.MediaType())
 		}
 	}
@@ -309,7 +314,7 @@ func TestEnvelopeBodies(t *testing.T) {
 		t.Errorf("SetBody kept the Content-* fields of the old body: %v", e.Header)
 	}
 
-	bodies, err := e.Bodies()
+	bodies, err := e.Content().Parts()
 	if err != nil || len(bodies) != 1 || bodies[0].MediaType() != "application/sdp" {
 		t.Fatalf("single body: %v, %v", bodies, err)
 	}
@@ -329,18 +334,18 @@ func TestEnvelopeBodies(t *testing.T) {
 		t.Errorf("part fields leaked into the message: %v", e.Header)
 	}
 
-	bodies, err = e.Bodies()
+	bodies, err = e.Content().Parts()
 	if err != nil || len(bodies) != 2 || bodies[0].MediaType() != "application/sdp" || bodies[1].ContentID() != "info@host" {
 		t.Fatalf("multipart bodies: %v, %v", bodies, err)
 	}
 
-	sdp, ok, err := e.FindBody("application/sdp")
+	sdp, ok, err := e.Content().Find("application/sdp")
 	if err != nil || !ok || string(sdp.Body) != mcpttSDP {
-		t.Errorf("FindBody(sdp) = %q, %v, %v", sdp.Body, ok, err)
+		t.Errorf("Find(sdp) = %q, %v, %v", sdp.Body, ok, err)
 	}
 
-	if _, ok, err := e.FindBody("application/pidf+xml"); ok || err != nil {
-		t.Errorf("FindBody(pidf) = %v, %v", ok, err)
+	if _, ok, err := e.Content().Find("application/pidf+xml"); ok || err != nil {
+		t.Errorf("Find(pidf) = %v, %v", ok, err)
 	}
 
 	e.SetBodies(info)
@@ -350,8 +355,8 @@ func TestEnvelopeBodies(t *testing.T) {
 		t.Errorf("single part: %v %q", e.Header, e.Body)
 	}
 
-	if _, ok, _ := e.FindBody("application/sdp"); ok {
-		t.Error("FindBody(sdp) found the mcptt-info body")
+	if _, ok, _ := e.Content().Find("application/sdp"); ok {
+		t.Error("Find(sdp) found the mcptt-info body")
 	}
 
 	e.SetBodies()
@@ -360,18 +365,18 @@ func TestEnvelopeBodies(t *testing.T) {
 		t.Errorf("no body: %v %q", e.Header, e.Body)
 	}
 
-	if bodies, err := e.Bodies(); bodies != nil || err != nil {
-		t.Errorf("Bodies() of no body = %v, %v", bodies, err)
+	if bodies, err := e.Content().Parts(); bodies != nil || err != nil {
+		t.Errorf("Parts() of no body = %v, %v", bodies, err)
 	}
 
 	e.SetBody("multipart/mixed;boundary=b", []byte("garbage"))
 
-	if _, err := e.Bodies(); err == nil {
-		t.Error("Bodies() accepted a malformed multipart body")
+	if _, err := e.Content().Parts(); err == nil {
+		t.Error("Parts() accepted a malformed multipart body")
 	}
 
-	if _, _, err := e.FindBody("application/sdp"); err == nil {
-		t.Error("FindBody() accepted a malformed multipart body")
+	if _, _, err := e.Content().Find("application/sdp"); err == nil {
+		t.Error("Find() accepted a malformed multipart body")
 	}
 }
 
@@ -386,8 +391,169 @@ func TestMultipartMessageRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sdp, ok, err := m.Env().FindBody("application/sdp")
+	sdp, ok, err := m.Env().Content().Find("application/sdp")
 	if err != nil || !ok || string(sdp.Body) != mcpttSDP {
 		t.Errorf("SDP after a round trip: %q, %v, %v", sdp.Body, ok, err)
+	}
+}
+
+func TestParsedPartsDoNotGrowIntoTheBody(t *testing.T) {
+	body := []byte(mcpttInvite)
+
+	m, err := parseMultipart("multipart/mixed;boundary=boundary1", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = append(m.Parts[0].Body, "XXXXXXXXXXXXXXXXXXXXXXXX"...)
+
+	var e Envelope
+
+	e.SetBody("application/sdp", body)
+
+	p, _, _ := e.Content().Find("application/sdp")
+	_ = append(p.Body, "XXXX"...)
+
+	if string(body) != mcpttInvite {
+		t.Errorf("appending to a part overwrote the body:\n%q", body)
+	}
+}
+
+// RFC 5621 §6, RFC 2046 §5.1.4: the last alternative is the preferred one. RFC 3959: an early-session SDP is not the
+// session description. RFC 5621 §9.4: a by-reference part is only processed through its reference.
+func TestFindSessionDescription(t *testing.T) {
+	early := NewBodyPart("application/sdp", []byte("early"))
+	early.Header.Add("Content-Disposition", "early-session")
+
+	session := NewBodyPart("application/sdp", []byte("session"))
+
+	byRef := NewBodyPart("application/sdp", []byte("referenced"))
+	byRef.Header.Add("Content-Disposition", "by-reference")
+	byRef.SetContentID("ref@host")
+
+	alt := &Multipart{Subtype: "alternative", Parts: []BodyPart{NewBodyPart("application/sdp", []byte("plain")), NewBodyPart("application/sdp", []byte("rich"))}}
+
+	for _, tc := range []struct {
+		name  string
+		parts []BodyPart
+		want  string
+	}{
+		{"early-session first", []BodyPart{early, session}, "session"},
+		{"by-reference first", []BodyPart{byRef, session}, "session"},
+		{"alternatives", []BodyPart{NewBodyPart(alt.Encode())}, "rich"},
+		{"only early-session", []BodyPart{early, NewBodyPart("text/plain", nil)}, ""},
+	} {
+		var e Envelope
+
+		m := &Multipart{Subtype: "mixed", Parts: tc.parts}
+		e.SetBody(m.Encode())
+
+		p, ok, err := e.Content().FindFunc(BodyPart.IsSession)
+		if err != nil || string(p.Body) != tc.want || ok != (tc.want != "") {
+			t.Errorf("%s: %q, %v, %v; want %q", tc.name, p.Body, ok, err, tc.want)
+		}
+	}
+
+	var e Envelope
+
+	e.SetBodies(byRef, session)
+
+	if p, ok, err := e.Content().ByContentID("<cid:ref@host>"); err != nil || !ok || string(p.Body) != "referenced" {
+		t.Errorf("by-reference part through its reference: %q, %v, %v", p.Body, ok, err)
+	}
+}
+
+func TestBodyEncodings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields []Field
+		ok     bool
+	}{
+		{"identity", []Field{{Name: "Content-Encoding", Value: "identity"}}, true},
+		{"binary", []Field{{Name: "Content-Transfer-Encoding", Value: "Binary"}}, true},
+		{"gzip", []Field{{Name: "e", Value: "gzip"}}, false},
+		{"base64", []Field{{Name: "Content-Transfer-Encoding", Value: "base64"}}, false},
+	} {
+		var e Envelope
+
+		e.SetBody("application/sdp", []byte(mcpttSDP))
+		e.Header = append(e.Header, tc.fields...)
+
+		_, err := e.Content().Parts()
+		_, _, ferr := e.Content().Find("application/sdp")
+
+		if (err == nil) != tc.ok || (ferr == nil) != tc.ok {
+			t.Errorf("%s: Parts() %v, Find() %v, want ok %v", tc.name, err, ferr, tc.ok)
+		}
+
+		part := NewBodyPart("application/sdp", []byte(mcpttSDP))
+		part.Header = append(part.Header, tc.fields...)
+
+		var mp Envelope
+
+		mp.SetBodies(part, NewBodyPart("text/plain", []byte("x")))
+
+		if _, _, err := mp.Content().Find("application/sdp"); (err == nil) != tc.ok {
+			t.Errorf("%s in a part: Find() %v, want ok %v", tc.name, err, tc.ok)
+		}
+	}
+
+	var e Envelope
+
+	e.SetBody("multipart/mixed boundary=a", []byte("--a\r\n\r\nx\r\n--a--"))
+
+	if _, err := e.Content().Parts(); err == nil {
+		t.Error("Parts() accepted a malformed Content-Type")
+	}
+}
+
+func TestSetBodiesWithoutContentType(t *testing.T) {
+	req := NewRequest("MESSAGE", URI{Scheme: "sip", Host: "h"})
+	req.Header.Add("c", "application/sdp")
+	req.SetBodies(BodyPart{Body: []byte("hello")})
+
+	if req.Header.Count("Content-Type") != 1 || req.Header.ContentType() != "text/plain" {
+		t.Errorf("Content-Type %q, want text/plain only (RFC 3261 §20.15)", req.Header.Values("Content-Type"))
+	}
+}
+
+func TestBoundaryRewrittenWhenAPartContainsIt(t *testing.T) {
+	m, err := parseMultipart("multipart/mixed;boundary=b", []byte("--b\r\n\r\nx\r\n--b--"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.Parts[0].Body = []byte("a\r\n--b\r\nc")
+
+	ct, out := m.Encode()
+	if m.boundary == "b" {
+		t.Fatal("kept a boundary that a part contains")
+	}
+
+	again, err := parseMultipart(ct, out)
+	if err != nil || string(again.Parts[0].Body) != "a\r\n--b\r\nc" {
+		t.Fatalf("%v, %q", err, out)
+	}
+
+	if ct, _ := (&Multipart{Parts: m.Parts}).Encode(); !strings.HasPrefix(ct, "multipart/mixed;boundary=ella-") {
+		t.Errorf("new multipart body: %q", ct)
+	}
+}
+
+func TestContentIDForms(t *testing.T) {
+	p := NewBodyPart("text/plain", nil)
+
+	for _, v := range []string{"<x@y>", " <x@y> (comment)", "(c) <x@y>", "x@y"} {
+		p.Header.Set("Content-ID", v)
+
+		if got := p.ContentID(); got != "x@y" {
+			t.Errorf("Content-ID %q: %q", v, got)
+		}
+	}
+
+	for _, id := range []string{"cid:x@y", "<cid:x@y>", "CID:x%40y", "<x@y>", "x@y"} {
+		if got, ok := normalizeContentID(id); !ok || got != "x@y" {
+			t.Errorf("normalizeContentID(%q) = %q, %v", id, got, ok)
+		}
 	}
 }

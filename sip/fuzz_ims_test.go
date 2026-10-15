@@ -131,7 +131,13 @@ func FuzzMultipart(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, contentType string, body []byte) {
-		m, err := sip.ParseMultipart(contentType, body)
+		whole := sip.NewBodyPart(contentType, body)
+
+		_, _, _ = whole.Find("application/sdp")
+		_, _, _ = whole.ByContentID("cid:a@b")
+		_, _ = whole.Parts()
+
+		m, err := whole.Multipart()
 		if err != nil {
 			return
 		}
@@ -141,24 +147,29 @@ func FuzzMultipart(f *testing.F) {
 			_ = p.Optional()
 		}
 
-		_, _ = m.Find("application/sdp")
-		_, _ = m.ByContentID("cid:a@b")
+		ct, out := m.Encode()
 
-		out := m.Bytes()
-
-		again, err := sip.ParseMultipart(m.ContentType(), out)
+		again, err := sip.NewBodyPart(ct, out).Multipart()
 		if err != nil {
 			t.Fatalf("serialization %q does not parse: %v", out, err)
 		}
 
 		if !slices.EqualFunc(again.Parts, m.Parts, func(a, b sip.BodyPart) bool {
-			return string(a.Body) == string(b.Body) && a.MediaType() == b.MediaType() && a.ContentID() == b.ContentID()
+			da, pa, ea := a.Disposition()
+			db, pb, eb := b.Disposition()
+
+			return string(a.Body) == string(b.Body) && sameFields(a.Header, b.Header) &&
+				da == db && slices.Equal(pa, pb) && (ea == nil) == (eb == nil)
 		}) {
 			t.Fatalf("parts changed in a round trip through %q", out)
 		}
 
-		if got := again.Bytes(); string(got) != string(out) {
+		if ct2, got := again.Encode(); ct2 != ct || string(got) != string(out) {
 			t.Fatalf("unstable serialization:\n%q\n%q", out, got)
 		}
 	})
+}
+
+func sameFields(a, b sip.Header) bool {
+	return slices.EqualFunc(a, b, func(f, g sip.Field) bool { return f.Name == g.Name && f.Value == g.Value })
 }
