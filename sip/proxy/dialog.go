@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1048,7 +1047,7 @@ func (d *Dialog) close(res *sip.Response, tag string, out Target) (*closingLeg, 
 	leg.ack = d.build("ACK", Callee, &leg.callee, d.inviteTx.seq)
 
 	if offer, ok := sessionBody(Callee, res.Envelope); ok && !d.offered {
-		if answer, err := rejectOffer(offer.Data); err == nil {
+		if answer, err := sdp.Refusal(offer.Data); err == nil {
 			leg.ack.SetBody("application/sdp", answer)
 		}
 	}
@@ -1537,25 +1536,6 @@ func (d *Dialog) responseBody(n *negotiation, from Side, key txKey, res *sip.Res
 	if n.Response(key.oa(), res.StatusCode, data) == offeranswer.Answer {
 		d.answered(n)
 	}
-}
-
-// RFC 3264
-func rejectOffer(offer []byte) ([]byte, error) {
-	s, err := sdp.Parse(offer)
-	if err != nil {
-		return nil, err
-	}
-
-	if o, err := s.Origin(); err == nil {
-		o.Username, o.SessionID, o.SessionVersion = "-", strconv.FormatUint(uint64(randomSeq()), 10), "1"
-		s.SetOrigin(o)
-	}
-
-	for _, m := range s.Media {
-		m.Disable()
-	}
-
-	return s.Bytes(), nil
 }
 
 // RFC 5621: the SDP may be one part of a multipart body (TS 24.379 §6.5), next to SDP of other dispositions.

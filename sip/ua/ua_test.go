@@ -1,11 +1,14 @@
 package ua_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,13 +62,35 @@ func freePort(t *testing.T) netip.AddrPort {
 func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.SessionTimer) *peer {
 	t.Helper()
 
+	return newPeerWith(t, name, func(c *ua.Config) {
+		c.Transaction.Clock = clock
+		c.SessionTimer = timer
+	})
+}
+
+func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
+	t.Helper()
+
+	// The free port may be taken again before the agent listens on it: another one is tried.
+	for range 5 {
+		if p := tryPeer(t, name, configure); p != nil {
+			return p
+		}
+	}
+
+	t.Fatalf("%s: no free port", name)
+
+	return nil
+}
+
+func tryPeer(t *testing.T, name string, configure func(*ua.Config)) *peer {
+	t.Helper()
+
 	p := &peer{t: t, name: name, events: make(chan event, 64), addr: freePort(t)}
 
-	a, err := ua.New(ua.Config{
-		Transaction:  transaction.Config{Clock: clock},
-		Prepare:      p.prepare,
-		Contact:      sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: p.addr.Addr().String(), Port: p.addr.Port()}},
-		SessionTimer: timer,
+	cfg := ua.Config{
+		Prepare: p.prepare,
+		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: p.addr.Addr().String(), Port: p.addr.Port()}},
 		OnInvite: func(r *ua.Request) ua.Handler {
 			p.record(event{kind: "invite", req: r})
 
@@ -79,16 +104,31 @@ func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.Sessio
 
 			return p.handler()
 		},
-	})
+	}
+
+	configure(&cfg)
+
+	a, err := ua.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := a.Layer().Listen(t.Context(), p.addr); err != nil {
+		_ = a.Close(context.Background())
+
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return nil
+		}
+
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { _ = a.Close() })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		_ = a.Close(ctx)
+	})
 
 	p.a = a
 
@@ -129,7 +169,19 @@ func (p *peer) handler() ua.Handler {
 		Offer:       func(s *ua.Session, o *ua.Offer) { p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()}) },
 		Request:     func(s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
 		Ended:       func(s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
-		Failed:      func(res *sip.Response, err error) { p.record(event{kind: "failed", res: res, err: err}) },
+		Failed: func(o *ua.Outgoing, res *sip.Response, err error) {
+			p.record(event{kind: "failed", res: res, err: err})
+		},
+	}
+}
+
+// advance advances the clock, and waits for the agents of peers to handle the timers that fired: a timer posts to the
+// loop of its agent, which may arm the next one.
+func advance(clock *siptest.Clock, d time.Duration, peers ...*peer) {
+	clock.Advance(d)
+
+	for _, p := range peers {
+		ua.Sync(p.a)
 	}
 }
 
@@ -147,6 +199,31 @@ func (p *peer) next(kind string) event {
 		p.t.Fatalf("%s: no %s event", p.name, kind)
 		return event{}
 	}
+}
+
+// nextAll takes events of the given kinds in any order, as the events of different sessions or of an outgoing INVITE
+// are.
+func (p *peer) nextAll(kinds ...string) map[string]event {
+	p.t.Helper()
+
+	got := map[string]event{}
+
+	for range kinds {
+		select {
+		case e := <-p.events:
+			got[e.kind] = e
+		case <-time.After(wait):
+			p.t.Fatalf("%s: events %v, want %v", p.name, got, kinds)
+		}
+	}
+
+	for _, k := range kinds {
+		if _, ok := got[k]; !ok {
+			p.t.Fatalf("%s: no %s event among %v", p.name, k, got)
+		}
+	}
+
+	return got
 }
 
 func (p *peer) none() {
@@ -363,11 +440,13 @@ func TestCancel(t *testing.T) {
 		t.Errorf("bob ended %+v", e.end)
 	}
 
-	if e := alice.next("ended"); e.end.Cause != ua.EndCancelled || e.end.Remote {
+	got := alice.nextAll("ended", "failed")
+
+	if e := got["ended"]; e.end.Cause != ua.EndCancelled || e.end.Remote {
 		t.Errorf("alice ended %+v", e.end)
 	}
 
-	if f := alice.next("failed"); f.res == nil || f.res.StatusCode != 487 {
+	if f := got["failed"]; f.res == nil || f.res.StatusCode != 487 {
 		t.Errorf("failed %+v", f)
 	}
 }
@@ -389,11 +468,13 @@ func TestReject(t *testing.T) {
 		t.Errorf("bob ended %+v", e.end)
 	}
 
-	if e := alice.next("ended"); e.end.Cause != ua.EndRejected || !e.end.Remote {
+	got := alice.nextAll("ended", "failed")
+
+	if e := got["ended"]; e.end.Cause != ua.EndRejected || !e.end.Remote {
 		t.Errorf("alice ended %+v", e.end)
 	}
 
-	if f := alice.next("failed"); f.res.StatusCode != 486 {
+	if f := got["failed"]; f.res.StatusCode != 486 {
 		t.Errorf("failed %d", f.res.StatusCode)
 	}
 }
@@ -497,18 +578,19 @@ func TestOtherRequests(t *testing.T) {
 // RFC 3261 §8.2.2.3, RFC 4028 §9.
 func TestInviteRefused(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{MinSE: 1800 * time.Second})
-	sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	for _, tc := range []struct {
 		header sip.Field
 		code   int
 		want   sip.Field
 	}{
-		{sip.Field{Name: "Require", Value: "foo"}, 420, sip.Field{Name: "Unsupported", Value: "foo"}},
+		{sip.Field{Name: "Require", Value: "foo, bar"}, 420, sip.Field{Name: "Unsupported", Value: "foo, bar"}},
 		{sip.Field{Name: "Session-Expires", Value: "100"}, 422, sip.Field{Name: "Min-SE", Value: "1800"}},
 	} {
+		sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 		req := siptest.NewRequest("INVITE", bob.uri(), sip.UDP, sock.Addr())
 		req.Header.Add(tc.header.Name, tc.header.Value)
+		req.Header.Add("Supported", "timer")
 		sock.Send(sip.UDP, bob.addr, req)
 
 		res, _ := sock.RecvResponse()
@@ -556,11 +638,18 @@ func TestForking(t *testing.T) {
 	respond(180, "one", "")
 	respond(180, "two", "")
 
-	one := alice.next("progress").s
-	two := alice.next("progress").s
+	// The events of two sessions come in any order: each is told apart by its tag.
+	byTag := map[string]*ua.Session{}
 
-	if one == two {
-		t.Fatal("one session for two early dialogs")
+	for range 2 {
+		p := alice.next("progress")
+		to, _ := p.res.Header.To()
+		byTag[to.Tag()] = p.s
+	}
+
+	one, two := byTag["one"], byTag["two"]
+	if one == nil || two == nil || one == two {
+		t.Fatalf("sessions %v, want one for each early dialog", byTag)
 	}
 
 	respond(200, "one", "answer-1")
@@ -617,14 +706,14 @@ func TestNoAck(t *testing.T) {
 		t.Fatalf("got %d", res.StatusCode)
 	}
 
-	clock.Advance(500 * time.Millisecond)
+	advance(clock, 500*time.Millisecond, bob)
 
 	if res := recvFinal(); res.StatusCode != 200 {
 		t.Fatalf("retransmission %d", res.StatusCode)
 	}
 
 	for range 40 {
-		clock.Advance(4 * time.Second)
+		advance(clock, 4*time.Second, bob)
 	}
 
 	for {
@@ -672,7 +761,7 @@ func TestNoPrack(t *testing.T) {
 		}
 
 		if len(codes) == 1 {
-			clock.Advance(500 * time.Millisecond)
+			advance(clock, 500*time.Millisecond, bob)
 		}
 	}
 
@@ -681,7 +770,7 @@ func TestNoPrack(t *testing.T) {
 	}
 
 	for range 70 {
-		clock.Advance(time.Second)
+		advance(clock, time.Second, bob)
 	}
 
 	for {
@@ -708,7 +797,14 @@ func TestGlare(t *testing.T) {
 
 	results := make(chan string, 2)
 	result := func(who string) func(*sip.Response, error) {
-		return func(res *sip.Response, err error) { results <- fmt.Sprint(who, " ", res.StatusCode) }
+		return func(res *sip.Response, err error) {
+			if err != nil {
+				results <- fmt.Sprint(who, " ", err)
+				return
+			}
+
+			results <- fmt.Sprint(who, " ", res.StatusCode)
+		}
 	}
 
 	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, result("alice")); err != nil {
@@ -725,11 +821,19 @@ func TestGlare(t *testing.T) {
 	}
 
 	// Each re-INVITE meets the other in progress, gets a 491, and is retried; the callee's retry comes first.
-	time.Sleep(200 * time.Millisecond)
-	clock.Advance(2 * time.Second)
+	deadline := time.Now().Add(wait)
+	for ua.Reinviting(as) || ua.Reinviting(bs) {
+		if time.Now().After(deadline) {
+			t.Fatal("no 491")
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	advance(clock, 2*time.Second, alice, bob)
 	answer(alice, "answer-b")
 	bob.next("answer")
-	clock.Advance(2 * time.Second)
+	advance(clock, 2*time.Second, alice, bob)
 	answer(bob, "answer-a")
 	alice.next("answer")
 
@@ -761,7 +865,7 @@ func TestSessionTimer(t *testing.T) {
 	// Bob, the UAS, refreshes by default, with an UPDATE since alice allows it. Without the refresh, alice would end
 	// the session 88 s in (RFC 4028 §10).
 	for range 10 {
-		clock.Advance(10 * time.Second)
+		advance(clock, 10*time.Second, alice, bob)
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -769,9 +873,9 @@ func TestSessionTimer(t *testing.T) {
 	bob.none()
 
 	// Without refreshes, the session expires.
-	_ = bob.a.Close()
+	_ = bob.a.Layer().Close()
 
-	clock.Advance(120 * time.Second)
+	advance(clock, 120*time.Second, alice, bob)
 
 	if e := alice.next("ended"); e.end.Cause != ua.EndExpired {
 		t.Errorf("alice ended %+v", e.end)
