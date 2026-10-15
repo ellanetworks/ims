@@ -94,7 +94,12 @@ func TestParseFeatureSet(t *testing.T) {
 		t.Fatalf("features %+v\nwant %+v", fs, want)
 	}
 
-	out := Address{URI: a.URI, Params: fs.Params()}.String()
+	ps, err := fs.Params()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := Address{URI: a.URI, Params: ps}.String()
 	if out != `<sip:user@pc.example.com>;mobility="fixed";events="!presence,message-summary";language="en,de";description="<PC>";+sip.newparam;+rangeparam="#-4:5.125"` {
 		t.Errorf("encoded as %s", out)
 	}
@@ -118,11 +123,11 @@ func TestFeatureICSI(t *testing.T) {
 	}
 
 	icsi := NewFeature("g.3gpp.icsi-ref", "urn:urn-7:3gpp-service.ims.icsi.mcptt")
-	if p := icsi.Param(); p.Name != "+g.3gpp.icsi-ref" || p.Value != `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"` {
+	if p, err := icsi.Param(); err != nil || p.Name != "+g.3gpp.icsi-ref" || p.Value != `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"` {
 		t.Errorf("encoded as %s=%s", p.Name, p.Value)
 	}
 
-	if p := NewFeature("g.3gpp.mcptt").Param(); p.Name != "+g.3gpp.mcptt" || p.Value != "" {
+	if p, err := NewFeature("+g.3gpp.mcptt").Param(); err != nil || p.Name != "+g.3gpp.mcptt" || p.Value != "" {
 		t.Errorf("TRUE encoded as %s=%s", p.Name, p.Value)
 	}
 
@@ -199,12 +204,12 @@ func TestFeatureMatching(t *testing.T) {
 		{``, `"FALSE"`, false},
 		{``, ``, true},
 	} {
-		pref, err := parseFeatureValues(tc.pref)
+		pref, err := parseFeatureValues("x", tc.pref)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.pref, err)
 		}
 
-		contact, err := parseFeatureValues(tc.contact)
+		contact, err := parseFeatureValues("x", tc.contact)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.contact, err)
 		}
@@ -217,8 +222,8 @@ func TestFeatureMatching(t *testing.T) {
 }
 
 func TestParseFeatureValuesErrors(t *testing.T) {
-	for _, v := range []string{`"<PC"`, `"a b"`, `"#>=x"`, `"#4"`, `"#5:4"`, `"#1e9"`, `""`, `"a,,b"`, `"%zz"`, `"#inf"`} {
-		if fv, err := parseFeatureValues(v); err == nil {
+	for _, v := range []string{`"<PC"`, `"a b"`, `"#>=x"`, `"#4"`, `"#5:4"`, `"#1e9"`, `""`, `"a,,b"`, `"#inf"`, `"#=.5"`, `"#=+-1"`, `"<a\>"`, `"<a>b>"`} {
+		if fv, err := parseFeatureValues("x", v); err == nil {
 			t.Errorf("parseFeatureValues(%s) = %+v, want error", v, fv)
 		}
 	}
@@ -266,4 +271,121 @@ func equalFeatureSets(a, b FeatureSet) bool {
 	}
 
 	return true
+}
+
+// TS 24.229 §7.2A.8.2: only the URN of g.3gpp.icsi-ref and g.3gpp.iari-ref is percent-encoded; unescaped URNs, as some
+// clients send them, are accepted.
+func TestFeatureURNLeniency(t *testing.T) {
+	var h Header
+
+	h.Add("Accept-Contact", `*;+g.3gpp.mcptt;require;explicit, *;+g.3gpp.icsi-ref="urn:urn-7:3gpp-service.ims.icsi.mcptt";require;explicit`)
+
+	accepts, err := h.AcceptContact()
+	if err != nil || len(accepts) != 2 || accepts[1].Features.Tokens("g.3gpp.icsi-ref")[0] != "urn:urn-7:3gpp-service.ims.icsi.mcptt" {
+		t.Fatalf("Accept-Contact %+v, %v", accepts, err)
+	}
+
+	fs, err := ParseFeatureSet(Params{{Name: "+foo", Value: `"50%"`}, {Name: "+bar", Value: `"a%3Ab"`}})
+	if err != nil || fs.Tokens("foo")[0] != "50%" || fs.Tokens("bar")[0] != "a%3Ab" {
+		t.Errorf("percent signs outside URN tags: %+v, %v", fs, err)
+	}
+
+	if _, err := fs.Params(); err != nil {
+		t.Errorf("percent signs do not encode: %v", err)
+	}
+
+	if _, err := (FeatureTerm{Tag: "foo", Values: []FeatureValue{{Text: "a:b"}}}).Param(); err == nil {
+		t.Error("a colon encoded in a token of a non-URN tag")
+	}
+}
+
+// A malformed predicate is left out whole; the others stay. A contact keeps its valid features.
+func TestFeaturePartialParsing(t *testing.T) {
+	var h Header
+
+	h.Add("Accept-Contact", `*;+g.3gpp.mcptt;require;explicit`)
+	h.Add("Accept-Contact", `*;video;+sip.foo="#>=x";require`)
+	h.Add("Accept-Contact", `sip:nostar`)
+
+	accepts, err := h.AcceptContact()
+	if err == nil || len(accepts) != 1 || !accepts[0].Features.Has("g.3gpp.mcptt") {
+		t.Errorf("Accept-Contact %+v, %v", accepts, err)
+	}
+
+	a, _ := ParseAddress(`<sip:ue@h>;+g.3gpp.mcptt;+sip.foo="#>=x";video`)
+
+	fs, err := a.Features()
+	if err == nil || len(fs) != 2 || !fs.Has("g.3gpp.mcptt") || !fs.Has("sip.video") {
+		t.Errorf("Contact features %+v, %v", fs, err)
+	}
+
+	h = Header{}
+	h.Add("Feature-Caps", `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+0bad`)
+
+	caps, err := h.FeatureCaps()
+	if err == nil || len(caps) != 1 || caps[0].Tokens("g.3gpp.icsi-ref")[0] != "urn:urn-7:3gpp-service.ims.icsi.mmtel" {
+		t.Errorf("Feature-Caps %+v, %v", caps, err)
+	}
+}
+
+func TestFeatureStrings(t *testing.T) {
+	// RFC 3840 §9: a string-value holds quoted-pairs.
+	fs, err := ParseFeatureSet(Params{{Name: "+sip.foo", Value: `"<a\"b\>c>"`}})
+	if err != nil || fs.Tokens("sip.foo")[0] != `a"b>c` {
+		t.Fatalf("features %+v, %v", fs, err)
+	}
+
+	p, err := fs[0].Param()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := ParseFeatureSet(Params{p})
+	if err != nil || again.Tokens("sip.foo")[0] != `a"b>c` {
+		t.Errorf("%s=%s: %+v, %v", p.Name, p.Value, again, err)
+	}
+
+	// RFC 3840 §5: a string value is alone and not negated.
+	for _, term := range []FeatureTerm{
+		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureString, Text: "a", Negated: true}}},
+		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureString, Text: "a"}, {Text: "b"}}},
+		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureString, Text: "a\r\nb"}}},
+		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureNumeric, Min: 2, Max: 1}}},
+		{Tag: "sip.foo"},
+		{Tag: "0bad", Values: []FeatureValue{{Text: "TRUE"}}},
+	} {
+		if p, err := term.Param(); err == nil {
+			t.Errorf("%+v encoded as %s=%s", term, p.Name, p.Value)
+		}
+	}
+
+	// RFC 3841 §7.2.3 step 3.
+	fs, err = ParseFeatureSet(Params{{Name: "+video", Value: `"FALSE"`}, {Name: "video"}})
+	if err != nil || len(fs) != 1 || fs.Tokens("sip.video")[0] != "TRUE" {
+		t.Errorf("+video next to video: %+v, %v", fs, err)
+	}
+}
+
+func TestCallerPreferenceValue(t *testing.T) {
+	icsi := NewFeature("g.3gpp.icsi-ref", "urn:urn-7:3gpp-service.ims.icsi.mcptt")
+	p := CallerPreference{Features: FeatureSet{NewFeature("g.3gpp.mcptt"), icsi}, Require: true, Explicit: true, Params: Params{{Name: "q", Value: "0.5"}}}
+
+	v, err := p.Value()
+	if err != nil || v != `*;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt";require;explicit;q=0.5` {
+		t.Fatalf("Accept-Contact %s, %v", v, err)
+	}
+
+	got, err := (Header{{Name: "Accept-Contact", Value: v}}).AcceptContact()
+	if err != nil || len(got) != 1 || !got[0].Require || !got[0].Explicit || len(got[0].Features) != 2 || got[0].Params.String() != ";q=0.5" {
+		t.Errorf("parsed back %+v, %v", got, err)
+	}
+
+	caps, err := FeatureCapsValue(FeatureSet{NewFeature("g.3gpp.mcptt.ambient-listening-call-release")})
+	if err != nil || caps != "*;+g.3gpp.mcptt.ambient-listening-call-release" {
+		t.Errorf("Feature-Caps %s, %v", caps, err)
+	}
+
+	if _, err := FeatureCapsValue(FeatureSet{NewFeature("sip.video")}); err == nil {
+		t.Error("base tag as a feature-capability indicator")
+	}
 }

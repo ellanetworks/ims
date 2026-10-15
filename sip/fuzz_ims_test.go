@@ -189,23 +189,24 @@ func FuzzFeatureSet(f *testing.F) {
 			return
 		}
 
-		fs, err := sip.ParseFeatureSet(ps)
-		if err != nil {
-			return
-		}
+		fs, _ := sip.ParseFeatureSet(ps)
 
 		_, _ = fs.Preference([]sip.CallerPreference{{Features: fs, Require: true, Explicit: true}})
 		_ = fs.RejectedBy([]sip.CallerPreference{{Features: fs}})
 
-		out := fs.Params()
+		// Parsing is lenient where encoding is not: values only the parser accepts do not encode.
+		out, err := fs.Params()
+		if err != nil {
+			return
+		}
 
 		again, err := sip.ParseFeatureSet(out)
 		if err != nil {
 			t.Fatalf("%q encodes to %q, which does not parse: %v", s, out, err)
 		}
 
-		if again.Params().String() != out.String() {
-			t.Fatalf("unstable encoding: %q, %q", out, again.Params())
+		if back, _ := again.Params(); back.String() != out.String() {
+			t.Fatalf("unstable encoding: %q, %q", out, back)
 		}
 
 		if qa, ok := again.Preference([]sip.CallerPreference{{Features: fs, Require: true, Explicit: true}}); len(fs) > 0 && (!ok || qa != 1) {

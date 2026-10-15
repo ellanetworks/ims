@@ -998,10 +998,8 @@ func subscribers(identities []string) []policy.Subscriber {
 
 // TS 29.214 Annex A.1 NOTE 3, RFC 6809
 func icsiRef(h sip.Header) string {
-	caps, err := h.FeatureCaps()
-	if err != nil {
-		return ""
-	}
+	// Malformed indicators are left out; the others count.
+	caps, _ := h.FeatureCaps()
 
 	for _, c := range caps {
 		if icsis := c.Tokens("g.3gpp.icsi-ref"); len(icsis) > 0 {

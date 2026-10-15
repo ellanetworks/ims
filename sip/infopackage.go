@@ -3,7 +3,6 @@ package sip
 import (
 	"fmt"
 	"slices"
-	"strings"
 )
 
 // InfoPackage is an Info-Package value, or an element of Recv-Info (RFC 6086 §7.2).
@@ -58,7 +57,7 @@ func (fs Header) RecvInfo() ([]InfoPackage, bool, error) {
 	return out, true, nil
 }
 
-// AcceptsInfo reports whether a Recv-Info list names a package, compared case-insensitively (RFC 6086 §7.2).
+// AcceptsInfo reports whether a Recv-Info list names a package, compared octet by octet (RFC 6086 §7.2).
 func AcceptsInfo(recv []InfoPackage, name string) bool {
-	return slices.ContainsFunc(recv, func(p InfoPackage) bool { return strings.EqualFold(p.Name, name) })
+	return slices.ContainsFunc(recv, func(p InfoPackage) bool { return p.Name == name })
 }

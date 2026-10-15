@@ -23,19 +23,23 @@ func ParseTargetDialog(s string) (TargetDialog, error) {
 
 	td := TargetDialog{CallID: callID}
 
+	var local, remote int
+
 	for _, p := range ps {
 		switch strings.ToLower(p.Name) {
 		case "local-tag":
 			td.LocalTag = p.Value
+			local++
 		case "remote-tag":
 			td.RemoteTag = p.Value
+			remote++
 		default:
 			td.Params = append(td.Params, p)
 		}
 	}
 
 	// RFC 4538 §4: without both tags, the header field is ignored.
-	if !isToken(td.LocalTag) || !isToken(td.RemoteTag) {
+	if local != 1 || remote != 1 || !isToken(td.LocalTag) || !isToken(td.RemoteTag) {
 		return TargetDialog{}, fmt.Errorf("Target-Dialog %q: local-tag and remote-tag are required", s)
 	}
 
@@ -86,6 +90,10 @@ func ParseReplaces(s string) (Replaces, error) {
 			r.FromTag = p.Value
 			from++
 		case "early-only":
+			if p.Value != "" {
+				return Replaces{}, fmt.Errorf("Replaces %q: early-only takes no value", s)
+			}
+
 			r.EarlyOnly = true
 		default:
 			r.Params = append(r.Params, p)

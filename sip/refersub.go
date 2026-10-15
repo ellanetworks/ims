@@ -2,29 +2,46 @@ package sip
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
-// ReferSub is the Refer-Sub of a REFER or of its 2xx (RFC 4488 §4): false asks for no implicit subscription.
-func (fs Header) ReferSub() (sub bool, present bool, err error) {
-	v, ok, err := fs.single("Refer-Sub")
-	if !ok || err != nil {
-		return false, ok, err
-	}
+// ReferSub is a Refer-Sub value (RFC 4488 §4): Subscribe false asks for no implicit subscription.
+type ReferSub struct {
+	Subscribe bool
+	Params    Params
+}
 
-	value, _, err := ParseTokenParams(v)
+func ParseReferSub(s string) (ReferSub, error) {
+	value, ps, err := ParseTokenParams(s)
 	if err != nil {
-		return false, true, fmt.Errorf("Refer-Sub %w", err)
+		return ReferSub{}, fmt.Errorf("Refer-Sub %w", err)
 	}
 
 	switch strings.ToLower(value) {
 	case "true":
-		return true, true, nil
+		return ReferSub{Subscribe: true, Params: ps}, nil
 	case "false":
-		return false, true, nil
+		return ReferSub{Params: ps}, nil
 	}
 
-	return false, true, fmt.Errorf("Refer-Sub %q: want true or false", v)
+	return ReferSub{}, fmt.Errorf("Refer-Sub %q: want true or false", s)
+}
+
+func (r ReferSub) String() string {
+	return strconv.FormatBool(r.Subscribe) + r.Params.String()
+}
+
+// ReferSub is the Refer-Sub of a REFER or of its 2xx.
+func (fs Header) ReferSub() (ReferSub, bool, error) {
+	v, ok, err := fs.single("Refer-Sub")
+	if !ok || err != nil {
+		return ReferSub{}, ok, err
+	}
+
+	r, err := ParseReferSub(v)
+
+	return r, true, err
 }
 
 // RefusedURIs are the P-Refused-URI-List entries (RFC 5318 §5), each with its members cid parameter, if any.

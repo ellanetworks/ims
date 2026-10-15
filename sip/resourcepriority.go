@@ -41,7 +41,7 @@ func (r ResourcePriority) String() string {
 }
 
 // ResourcePriorities are the r-values of the Resource-Priority header fields. A namespace appears at most once
-// (RFC 4412 §3.1).
+// (RFC 4412 §3.1): the values come with the error when it does not, for the server to answer or apply its policy.
 func (fs Header) ResourcePriorities() ([]ResourcePriority, error) {
 	rs, err := fs.rValues("Resource-Priority")
 	if err != nil {
@@ -51,7 +51,7 @@ func (fs Header) ResourcePriorities() ([]ResourcePriority, error) {
 	for i, r := range rs {
 		for _, o := range rs[:i] {
 			if strings.EqualFold(r.Namespace, o.Namespace) {
-				return nil, fmt.Errorf("Resource-Priority: namespace %s more than once", r.Namespace)
+				return rs, fmt.Errorf("Resource-Priority: namespace %s more than once", r.Namespace)
 			}
 		}
 	}

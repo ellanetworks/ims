@@ -1009,6 +1009,7 @@ func TestTargetSetOrder(t *testing.T) {
 	instance := binding("sip:instance@ue", `;+sip.instance="<urn:gsma:imei:35622410-483840-0>";+g.3gpp.icsi-ref=`+mmtelParam, 0)
 	videoCapable := binding("sip:videocapable@ue", ";video;+g.3gpp.icsi-ref="+mmtelParam, 0)
 	audioOnly := binding("sip:audioonly@ue", `;video="FALSE";+g.3gpp.icsi-ref=`+mmtelParam, 3)
+	mcptt := binding("sip:mcptt@ue", `;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`, 0)
 
 	predicates := func(values ...string) sip.Header {
 		var h sip.Header
@@ -1019,6 +1020,7 @@ func TestTargetSetOrder(t *testing.T) {
 		return h
 	}
 	accept := func(params string) sip.Header { return predicates("*;+g.3gpp.icsi-ref=" + mmtelParam + params) }
+	mcpttOnly := predicates(`*;+g.3gpp.mcptt;require;explicit, *;+g.3gpp.icsi-ref="urn:urn-7:3gpp-service.ims.icsi.mcptt";require;explicit`)
 
 	tests := []struct {
 		name     string
@@ -1042,6 +1044,10 @@ func TestTargetSetOrder(t *testing.T) {
 		{"instance compared with case", []db.Binding{instance}, predicates(`*;+sip.instance="<URN:GSMA:IMEI:35622410-483840-0>";require;explicit`), ""},
 		{"every term of a predicate", []db.Binding{videoCapable, audioOnly}, accept(";video;require"), "sip:videocapable@ue"},
 		{"negated value", []db.Binding{videoCapable, audioOnly}, accept(`;video="!TRUE"`), "sip:audioonly@ue"},
+		// TS 24.379 §6.2.1: an MCPTT request reaches MCPTT clients only, whatever the ICSI's escaping.
+		{"MCPTT client required", []db.Binding{voice, mcptt}, mcpttOnly, "sip:mcptt@ue"},
+		{"no MCPTT client", []db.Binding{voice}, mcpttOnly, ""},
+		{"malformed predicate left out", []db.Binding{voice, mcptt}, predicates(`*;+g.3gpp.mcptt;require;explicit`, `*;audio;+sip.x="#>=y";require`), "sip:mcptt@ue"},
 	}
 
 	for _, tt := range tests {

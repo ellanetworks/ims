@@ -5,18 +5,6 @@ import (
 	"strings"
 )
 
-// single returns the value of a header field that a message carries at most once.
-func (fs Header) single(name string) (string, bool, error) {
-	switch fs.Count(name) {
-	case 0:
-		return "", false, nil
-	case 1:
-		return fs.Get(name), true, nil
-	}
-
-	return "", true, fmt.Errorf("more than one %s", LongName(name))
-}
-
 const (
 	AnswerModeAuto   = "Auto"
 	AnswerModeManual = "Manual"

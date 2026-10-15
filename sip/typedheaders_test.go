@@ -2,6 +2,7 @@ package sip
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -72,8 +73,8 @@ func TestResourcePriority(t *testing.T) {
 		}
 	}
 
-	if _, err := header("Resource-Priority", "mcpttp.1", "Resource-Priority", "MCPTTP.2").ResourcePriorities(); err == nil {
-		t.Error("namespace twice accepted")
+	if rs, err := header("Resource-Priority", "mcpttp.1", "Resource-Priority", "MCPTTP.2").ResourcePriorities(); err == nil || len(rs) != 2 {
+		t.Errorf("namespace twice: %+v, %v", rs, err)
 	}
 
 	if rs, err := header("Accept-Resource-Priority", "").AcceptResourcePriorities(); err != nil || rs != nil {
@@ -101,13 +102,13 @@ func TestTargetDialogAndReplaces(t *testing.T) {
 		t.Errorf("Replaces round trip %q: %v", r, err)
 	}
 
-	for _, v := range []string{"a@b;local-tag=1", "a@b;remote-tag=1", ";local-tag=1;remote-tag=2", "a b;local-tag=1;remote-tag=2"} {
+	for _, v := range []string{"a@b;local-tag=1", "a@b;remote-tag=1", ";local-tag=1;remote-tag=2", "a b;local-tag=1;remote-tag=2", "a@b;local-tag=1;local-tag=3;remote-tag=2"} {
 		if _, err := ParseTargetDialog(v); err == nil {
 			t.Errorf("ParseTargetDialog(%q) accepted", v)
 		}
 	}
 
-	for _, v := range []string{"a@b;to-tag=1", "a@b;from-tag=1", "a@b;to-tag=1;to-tag=2;from-tag=3"} {
+	for _, v := range []string{"a@b;to-tag=1", "a@b;from-tag=1", "a@b;to-tag=1;to-tag=2;from-tag=3", "a@b;to-tag=1;from-tag=2;early-only=yes"} {
 		if _, err := ParseReplaces(v); err == nil {
 			t.Errorf("ParseReplaces(%q) accepted", v)
 		}
@@ -117,9 +118,13 @@ func TestTargetDialogAndReplaces(t *testing.T) {
 // RFC 4488 §4, RFC 5318 §5.
 func TestReferSubAndRefusedURIs(t *testing.T) {
 	for v, want := range map[string]bool{"false": false, "TRUE": true, "false;x=1": false} {
-		if sub, ok, err := header("Refer-Sub", v).ReferSub(); !ok || err != nil || sub != want {
+		if sub, ok, err := header("Refer-Sub", v).ReferSub(); !ok || err != nil || sub.Subscribe != want {
 			t.Errorf("Refer-Sub %q: %v, %v, %v", v, sub, ok, err)
 		}
+	}
+
+	if s := (ReferSub{}).String(); s != "false" {
+		t.Errorf("Refer-Sub %s", s)
 	}
 
 	if _, _, err := header("Refer-Sub", "maybe").ReferSub(); err == nil {
@@ -143,7 +148,11 @@ func TestSessionExpires(t *testing.T) {
 		t.Errorf("Session-Expires %+v, %v, %v", se, ok, err)
 	}
 
-	for _, v := range []string{"", "-1", "4294967296", "90;refresher=both", "a"} {
+	if se, err := ParseSessionExpires("99999999999"); err != nil || se.Seconds != 1<<32-1 {
+		t.Errorf("Session-Expires above 2**32-1: %+v, %v (RFC 3261 §10.2.1.1)", se, err)
+	}
+
+	for _, v := range []string{"", "-1", "90;refresher=both", "a"} {
 		if _, err := ParseSessionExpires(v); err == nil {
 			t.Errorf("ParseSessionExpires(%q) accepted", v)
 		}
@@ -215,7 +224,7 @@ func TestInfoPackages(t *testing.T) {
 	}
 
 	recv, ok, err := header("Recv-Info", "g.3gpp.mcptt-floor-request, g.3gpp.mcptt-info").RecvInfo()
-	if !ok || err != nil || !AcceptsInfo(recv, "G.3GPP.MCPTT-INFO") || AcceptsInfo(recv, "nosuch") {
+	if !ok || err != nil || !AcceptsInfo(recv, "g.3gpp.mcptt-info") || AcceptsInfo(recv, "G.3GPP.MCPTT-INFO") || AcceptsInfo(recv, "nosuch") {
 		t.Errorf("Recv-Info %+v, %v, %v", recv, ok, err)
 	}
 
@@ -235,7 +244,12 @@ func TestServices(t *testing.T) {
 		t.Errorf("P-Asserted-Service %q, %v", ids, err)
 	}
 
-	for _, v := range []string{"urn:urn-7:", "urn:urn-7:a..b", "urn:urn-6:a", "urn:urn-7:a_b"} {
+	if !ServiceIs("urn:urn-7:3gpp-service.ims.icsi.mmtel.hd-video", "urn:urn-7:3gpp-service.ims.icsi.mmtel") ||
+		ServiceIs("urn:urn-7:3gpp-service.ims.icsi.mmtelx", "urn:urn-7:3gpp-service.ims.icsi.mmtel") {
+		t.Error("ServiceIs (TS 24.229 §7.2A.8.1)")
+	}
+
+	for _, v := range []string{"urn:urn-7:", "urn:urn-7:a..b", "urn:urn-6:a", "urn:urn-7:a_b", "urn:urn-7:" + strings.Repeat("a", 28)} {
 		if IsServiceID(v) {
 			t.Errorf("IsServiceID(%q)", v)
 		}

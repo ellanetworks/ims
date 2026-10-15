@@ -136,16 +136,9 @@ func requestDisposition(h sip.Header) disposition {
 // next; with the "sequential" directive, the next contact gets the request only on a final response
 // (RFC 3841 §9.1).
 func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]target, step bool) {
-	// Malformed caller preferences are no preferences: the request still reaches the callee.
-	prefs, err := h.AcceptContact()
-	if err != nil {
-		prefs = nil
-	}
-
-	rejects, err := h.RejectContact()
-	if err != nil {
-		rejects = nil
-	}
+	// Malformed predicates are left out; the others apply.
+	prefs, _ := h.AcceptContact()
+	rejects, _ := h.RejectContact()
 
 	var all []target
 
@@ -153,11 +146,8 @@ func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]
 		for _, b := range liveAt(reg.Bindings, now) {
 			params, _ := sip.ParseParams(b.Contact.Params)
 
-			// A contact with malformed feature parameters has none, and is immune (RFC 3841 §7.2.3).
-			features, err := sip.ParseFeatureSet(params)
-			if err != nil {
-				features = nil
-			}
+			// Malformed feature parameters are left out (RFC 3841 §7.2.3).
+			features, _ := sip.ParseFeatureSet(params)
 
 			if features.RejectedBy(rejects) {
 				continue

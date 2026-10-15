@@ -150,7 +150,7 @@ func NewFromNotify(subscribe, notify *sip.Request) (*Dialog, error) {
 
 	ss, ok, err := notify.Header.SubscriptionState()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sip/dialog: %w", err)
 	}
 
 	if ok && ss.State == sip.SubscriptionTerminated {

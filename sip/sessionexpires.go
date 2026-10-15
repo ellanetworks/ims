@@ -80,13 +80,14 @@ func (fs Header) MinSE() (uint32, bool, error) {
 	return n, true, nil
 }
 
-// delta-seconds *(SEMI param), with delta-seconds of RFC 3261 §25.1.
+// delta-seconds *(SEMI param), with delta-seconds of RFC 3261 §25.1. Values above 2**32-1 count as 2**32-1, as RFC
+// 3261 §10.2.1.1 allows for expires.
 func parseDeltaParams(s string) (uint32, Params, error) {
 	v, rest, _ := strings.Cut(trimWSP(s), ";")
 
-	n, err := parseUint(trimWSP(v), 1<<32-1)
+	n, err := parseDeltaSeconds(trimWSP(v))
 	if err != nil {
-		return 0, nil, errors.New("invalid delta-seconds")
+		return 0, nil, err
 	}
 
 	ps, err := ParseParams(rest)
@@ -94,5 +95,18 @@ func parseDeltaParams(s string) (uint32, Params, error) {
 		return 0, nil, err
 	}
 
-	return uint32(n), ps, nil
+	return n, ps, nil
+}
+
+func parseDeltaSeconds(s string) (uint32, error) {
+	n, err := parseUint(s, 1<<32-1)
+
+	switch {
+	case errors.Is(err, errRange):
+		return 1<<32 - 1, nil
+	case err != nil:
+		return 0, errors.New("invalid delta-seconds")
+	}
+
+	return uint32(n), nil
 }

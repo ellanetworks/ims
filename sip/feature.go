@@ -17,6 +17,10 @@ var baseFeatureTags = []string{
 	"methods", "schemes", "application", "video", "language", "type", "isfocus", "actor", "text", "extensions",
 }
 
+// urnFeatureTags carry URNs, percent-encoded where RFC 3840 does not allow their characters (TS 24.229 §7.2A.8.2,
+// §7.2A.9.2).
+var urnFeatureTags = []string{"g.3gpp.icsi-ref", "g.3gpp.iari-ref"}
+
 type FeatureKind int
 
 const (
@@ -31,7 +35,7 @@ type FeatureValue struct {
 	Negated bool
 	Kind    FeatureKind
 
-	// Text is the token, unescaped, or the string without its angle brackets.
+	// Text is the token, or the string without its angle brackets and quoting. The URN of a URN tag is decoded.
 	Text string
 
 	// Min and Max bound a numeric value, inclusive: equal for =, infinite for >= and <=.
@@ -50,18 +54,31 @@ type FeatureTerm struct {
 // §10, RFC 6809 §6).
 type FeatureSet []FeatureTerm
 
-// NewFeature is a term with token values: TRUE when there is none.
+// NewFeature is a term with token values, TRUE when there is none. tag is a feature tag, or a feature parameter name.
 func NewFeature(tag string, tokens ...string) FeatureTerm {
 	if len(tokens) == 0 {
 		tokens = []string{"TRUE"}
 	}
 
-	t := FeatureTerm{Tag: strings.ToLower(tag)}
+	t := FeatureTerm{Tag: normalizeFeatureTag(tag)}
 	for _, v := range tokens {
 		t.Values = append(t.Values, FeatureValue{Kind: FeatureToken, Text: v})
 	}
 
 	return t
+}
+
+// NewStringFeature is a term with a string value, compared case-sensitively.
+func NewStringFeature(tag, s string) FeatureTerm {
+	return FeatureTerm{Tag: normalizeFeatureTag(tag), Values: []FeatureValue{{Kind: FeatureString, Text: s}}}
+}
+
+func normalizeFeatureTag(tag string) string {
+	if strings.HasPrefix(tag, "+") {
+		return featureTag(tag)
+	}
+
+	return strings.ToLower(tag)
 }
 
 func isBaseFeatureTag(name string) bool {
@@ -74,7 +91,8 @@ func IsFeatureParam(name string) bool {
 	return strings.HasPrefix(name, "+") || isBaseFeatureTag(name)
 }
 
-// featureTag is the feature tag of a feature parameter (RFC 3840 §5).
+// featureTag is the feature tag of a feature parameter (RFC 3840 §5). Feature-capability indicators (RFC 6809 §6.3)
+// are mapped the same way: their names are media feature tag names with a mandatory "+".
 func featureTag(param string) string {
 	name := strings.ToLower(param)
 
@@ -103,9 +121,13 @@ func featureParam(tag string) string {
 }
 
 // ParseFeatureSet extracts the feature parameters of header field parameters (RFC 3841 §7.2.3): the base tags, and
-// the "+" parameters whose tag is not already there.
+// the "+" parameters whose tag is not already there. A malformed feature parameter is left out and reported in the
+// error, next to the others.
 func ParseFeatureSet(ps Params) (FeatureSet, error) {
-	var fs FeatureSet
+	var (
+		fs   FeatureSet
+		errs []error
+	)
 
 	for _, base := range []bool{true, false} {
 		for _, p := range ps {
@@ -113,8 +135,17 @@ func ParseFeatureSet(ps Params) (FeatureSet, error) {
 				continue
 			}
 
-			if !base && !isFtagName(p.Name[1:]) {
-				return nil, fmt.Errorf("invalid feature parameter %q", p.Name)
+			if !base {
+				rest := p.Name[1:]
+				if !isFtagName(rest) {
+					errs = append(errs, fmt.Errorf("invalid feature parameter %q", p.Name))
+					continue
+				}
+
+				// RFC 3841 §7.2.3 step 3: "+video" next to "video" is dropped.
+				if isBaseFeatureTag(rest) && fs.Has(featureTag(rest)) {
+					continue
+				}
 			}
 
 			tag := featureTag(p.Name)
@@ -122,33 +153,35 @@ func ParseFeatureSet(ps Params) (FeatureSet, error) {
 				continue
 			}
 
-			values, err := parseFeatureValues(p.Value)
+			values, err := parseFeatureValues(tag, p.Value)
 			if err != nil {
-				return nil, fmt.Errorf("feature parameter %s: %w", p.Name, err)
+				errs = append(errs, fmt.Errorf("feature parameter %s: %w", p.Name, err))
+				continue
 			}
 
 			fs = append(fs, FeatureTerm{Tag: tag, Values: values})
 		}
 	}
 
-	return fs, nil
+	return fs, errors.Join(errs...)
 }
 
-// RFC 3840 §9: no value is TRUE; a quoted string-value is one string, any other value a list of tag-values.
-// Tokens are percent-decoded, as TS 24.229 §7.9.2 encodes URNs in them.
-func parseFeatureValues(v string) ([]FeatureValue, error) {
+// RFC 3840 §9: no value is TRUE; a string-value is one string; otherwise a list of tag-values. Unquoted values are
+// accepted too.
+func parseFeatureValues(tag, v string) ([]FeatureValue, error) {
 	if v == "" {
 		return []FeatureValue{{Kind: FeatureToken, Text: "TRUE"}}, nil
 	}
 
-	inner := Unquote(v)
+	inner := v
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		inner = v[1 : len(v)-1]
+	}
 
 	if strings.HasPrefix(inner, "<") {
-		text := strings.TrimSuffix(inner[1:], ">")
-
-		// RFC 3840 §9: qdtext-no-abkt.
-		if len(text) == len(inner)-1 || strings.ContainsFunc(text, func(r rune) bool { return r == '<' || r == '>' || r == '"' || r < 0x20 && r != '\t' || r == 0x7f }) {
-			return nil, fmt.Errorf("invalid string-value %q", v)
+		text, err := parseFeatureString(inner)
+		if err != nil {
+			return nil, err
 		}
 
 		return []FeatureValue{{Kind: FeatureString, Text: text}}, nil
@@ -157,7 +190,7 @@ func parseFeatureValues(v string) ([]FeatureValue, error) {
 	var out []FeatureValue
 
 	for s := range strings.SplitSeq(inner, ",") {
-		fv, err := parseFeatureValue(trimWSP(s))
+		fv, err := parseFeatureValue(tag, trimWSP(s))
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +201,38 @@ func parseFeatureValues(v string) ([]FeatureValue, error) {
 	return out, nil
 }
 
-func parseFeatureValue(s string) (FeatureValue, error) {
+// RFC 3840 §9: string-value = "<" *(qdtext-no-abkt / quoted-pair ) ">".
+func parseFeatureString(raw string) (string, error) {
+	if len(raw) < 2 || raw[len(raw)-1] != '>' {
+		return "", fmt.Errorf("unterminated string-value %q", raw)
+	}
+
+	body := raw[1 : len(raw)-1]
+
+	var b strings.Builder
+
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+
+		switch {
+		case c == '\\':
+			if i+1 == len(body) || body[i+1] == '\r' || body[i+1] == '\n' {
+				return "", fmt.Errorf("string-value %q: invalid quoted-pair", raw)
+			}
+
+			i++
+			b.WriteByte(body[i])
+		case c == '<' || c == '>' || c == '"' || isTextCTL(c):
+			return "", fmt.Errorf("invalid string-value %q", raw)
+		default:
+			b.WriteByte(c)
+		}
+	}
+
+	return b.String(), nil
+}
+
+func parseFeatureValue(tag, s string) (FeatureValue, error) {
 	var fv FeatureValue
 
 	s, fv.Negated = strings.CutPrefix(s, "!")
@@ -184,16 +248,18 @@ func parseFeatureValue(s string) (FeatureValue, error) {
 		return fv, nil
 	}
 
-	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return r > 0x7e || !isTokenNoBang(byte(r)) }) {
+	// Lenient: any visible character but the quoting and list ones, so that URNs sent unescaped still match.
+	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r > 0x7e || strings.ContainsRune(`"<>\`, r) }) {
 		return FeatureValue{}, fmt.Errorf("invalid token value %q", s)
 	}
 
-	text, err := url.PathUnescape(s)
-	if err != nil {
-		return FeatureValue{}, fmt.Errorf("token value %q: %w", s, err)
-	}
+	fv.Text = s
 
-	fv.Text = text
+	if slices.Contains(urnFeatureTags, tag) {
+		if u, err := url.PathUnescape(s); err == nil {
+			fv.Text = u
+		}
+	}
 
 	return fv, nil
 }
@@ -218,26 +284,17 @@ func isTokenNoBang(c byte) bool {
 	return isAlnum(c) || strings.IndexByte("-.%*_+`'~", c) >= 0
 }
 
-// RFC 3840 §9: numeric = "#" (">=" / "<=" / "=" / number ":") number.
+// RFC 3840 §9: numeric = "#" (">=" / "<=" / "=" / number ":") number, number = [ "+" / "-" ] 1*DIGIT ["." 0*DIGIT].
 func parseFeatureNumeric(s string) (float64, float64, error) {
-	num := func(s string) (float64, error) {
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || strings.ContainsAny(s, "eExXpPnN_") {
-			return 0, errors.New("invalid number")
-		}
-
-		return f, nil
-	}
-
 	switch {
 	case strings.HasPrefix(s, ">="):
-		f, err := num(s[2:])
+		f, err := parseFeatureNumber(s[2:])
 		return f, math.Inf(1), err
 	case strings.HasPrefix(s, "<="):
-		f, err := num(s[2:])
+		f, err := parseFeatureNumber(s[2:])
 		return math.Inf(-1), f, err
 	case strings.HasPrefix(s, "="):
-		f, err := num(s[1:])
+		f, err := parseFeatureNumber(s[1:])
 		return f, f, err
 	}
 
@@ -246,12 +303,12 @@ func parseFeatureNumeric(s string) (float64, float64, error) {
 		return 0, 0, errors.New("no relation")
 	}
 
-	a, err := num(lo)
+	a, err := parseFeatureNumber(lo)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	b, err := num(hi)
+	b, err := parseFeatureNumber(hi)
 	if err != nil || b < a {
 		return 0, 0, errors.New("invalid range")
 	}
@@ -259,7 +316,23 @@ func parseFeatureNumeric(s string) (float64, float64, error) {
 	return a, b, nil
 }
 
-func (fv FeatureValue) appendTo(b []byte) []byte {
+func parseFeatureNumber(s string) (float64, error) {
+	digits := strings.TrimLeft(s, "+-")
+	whole, frac, _ := strings.Cut(digits, ".")
+
+	if len(s)-len(digits) > 1 || !isDigits(whole) || frac != "" && !isDigits(frac) {
+		return 0, errors.New("invalid number")
+	}
+
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsInf(f, 0) {
+		return 0, errors.New("invalid number")
+	}
+
+	return f, nil
+}
+
+func (fv FeatureValue) appendTo(b []byte, tag string) ([]byte, error) {
 	if fv.Negated {
 		b = append(b, '!')
 	}
@@ -267,10 +340,27 @@ func (fv FeatureValue) appendTo(b []byte) []byte {
 	switch fv.Kind {
 	case FeatureString:
 		b = append(b, '<')
-		b = append(b, fv.Text...)
 
-		return append(b, '>')
+		for i := range len(fv.Text) {
+			c := fv.Text[i]
+
+			switch {
+			case c == '\r' || c == '\n':
+				return nil, fmt.Errorf("string value %q: CR or LF", fv.Text)
+			case c == '<' || c == '>' || c == '"' || c == '\\' || isTextCTL(c):
+				b = append(b, '\\', c)
+			default:
+				b = append(b, c)
+			}
+		}
+
+		return append(b, '>'), nil
 	case FeatureNumeric:
+		if math.IsNaN(fv.Min) || math.IsNaN(fv.Max) || fv.Min > fv.Max || math.IsInf(fv.Min, 1) || math.IsInf(fv.Max, -1) ||
+			math.IsInf(fv.Min, -1) && math.IsInf(fv.Max, 1) {
+			return nil, fmt.Errorf("invalid numeric range [%v, %v]", fv.Min, fv.Max)
+		}
+
 		f := func(v float64) []byte { return strconv.AppendFloat(nil, v, 'f', -1, 64) }
 
 		b = append(b, '#')
@@ -291,55 +381,82 @@ func (fv FeatureValue) appendTo(b []byte) []byte {
 			b = append(b, f(fv.Max)...)
 		}
 
-		return b
+		return b, nil
+	}
+
+	if fv.Text == "" {
+		return nil, errors.New("empty token value")
 	}
 
 	const hex = "0123456789ABCDEF"
 
+	urn := slices.Contains(urnFeatureTags, tag)
+
 	for i := range len(fv.Text) {
 		c := fv.Text[i]
-		if isTokenNoBang(c) && c != '%' {
-			b = append(b, c)
-			continue
-		}
 
-		b = append(b, '%', hex[c>>4], hex[c&0xf])
+		switch {
+		case isTokenNoBang(c) && (c != '%' || !urn):
+			b = append(b, c)
+		case urn:
+			b = append(b, '%', hex[c>>4], hex[c&0xf])
+		default:
+			return nil, fmt.Errorf("token value %q: invalid character %q", fv.Text, c)
+		}
 	}
 
-	return b
+	return b, nil
 }
 
-// Param is the feature parameter of the term (RFC 3840 §9): bare for TRUE, a quoted list otherwise.
-func (t FeatureTerm) Param() Param {
+// Param is the feature parameter of the term (RFC 3840 §9): bare for TRUE, a quoted list otherwise. A string value
+// is alone and not negated (RFC 3840 §5).
+func (t FeatureTerm) Param() (Param, error) {
+	if !isFtagName(strings.TrimPrefix(featureParam(t.Tag), "+")) || len(t.Values) == 0 {
+		return Param{}, fmt.Errorf("feature tag %q without a valid name or value", t.Tag)
+	}
+
 	p := Param{Name: featureParam(t.Tag)}
 
 	if len(t.Values) == 1 && !t.Values[0].Negated && t.Values[0].Kind == FeatureToken && strings.EqualFold(t.Values[0].Text, "TRUE") {
-		return p
+		return p, nil
 	}
 
 	var b []byte
 
 	for i, v := range t.Values {
+		if v.Kind == FeatureString && (v.Negated || len(t.Values) > 1) {
+			return Param{}, fmt.Errorf("feature tag %s: a string value is alone and not negated", t.Tag)
+		}
+
 		if i > 0 {
 			b = append(b, ',')
 		}
 
-		b = v.appendTo(b)
+		var err error
+		if b, err = v.appendTo(b, t.Tag); err != nil {
+			return Param{}, fmt.Errorf("feature tag %s: %w", t.Tag, err)
+		}
 	}
 
-	p.Value = Quote(string(b))
+	p.Value = `"` + string(b) + `"`
 
-	return p
+	return p, nil
 }
 
 // Params are the feature parameters of the set.
-func (fs FeatureSet) Params() Params {
+func (fs FeatureSet) Params() (Params, error) {
 	var ps Params
+
 	for _, t := range fs {
-		ps = append(ps, t.Param())
+		p, err := t.Param()
+		if err != nil {
+			return nil, err
+		}
+
+		ps = append(ps, p)
 	}
 
-	return ps
+	return ps, nil
 }
 
 func (fs FeatureSet) Term(tag string) (FeatureTerm, bool) {
@@ -420,6 +537,27 @@ type CallerPreference struct {
 
 	// Require and Explicit only apply to Accept-Contact.
 	Require, Explicit bool
+
+	// Params are the other parameters.
+	Params Params
+}
+
+// Value is the header field value: "*" and the parameters.
+func (p CallerPreference) Value() (string, error) {
+	ps, err := p.Features.Params()
+	if err != nil {
+		return "", err
+	}
+
+	if p.Require {
+		ps = append(ps, Param{Name: "require"})
+	}
+
+	if p.Explicit {
+		ps = append(ps, Param{Name: "explicit"})
+	}
+
+	return "*" + append(ps, p.Params...).String(), nil
 }
 
 func (fs Header) AcceptContact() ([]CallerPreference, error) {
@@ -430,46 +568,84 @@ func (fs Header) RejectContact() ([]CallerPreference, error) {
 	return fs.callerPreferences("Reject-Contact")
 }
 
+// callerPreferences parses the predicates of a header field. A predicate with a malformed term is left out whole,
+// and reported in the error: without the term, it would match contacts the caller did not mean.
 func (fs Header) callerPreferences(name string) ([]CallerPreference, error) {
-	var out []CallerPreference
+	var (
+		out  []CallerPreference
+		errs []error
+	)
 
 	for _, v := range fs.Elements(name) {
 		ps, err := starParams(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
 		}
 
-		p := CallerPreference{Require: ps.Has("require"), Explicit: ps.Has("explicit")}
-		if p.Features, err = ParseFeatureSet(ps); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+		features, err := ParseFeatureSet(ps)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+
+		p := CallerPreference{Features: features}
+
+		for _, param := range ps {
+			switch {
+			case strings.EqualFold(param.Name, "require"):
+				p.Require = true
+			case strings.EqualFold(param.Name, "explicit"):
+				p.Explicit = true
+			case !IsFeatureParam(param.Name):
+				p.Params = append(p.Params, param)
+			}
 		}
 
 		out = append(out, p)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // FeatureCaps are the feature-capability indicators of the Feature-Caps values (RFC 6809 §6): one set for each
-// entity that inserted one.
+// entity that inserted one. Malformed indicators are left out and reported in the error.
 func (fs Header) FeatureCaps() ([]FeatureSet, error) {
-	var out []FeatureSet
+	var (
+		out  []FeatureSet
+		errs []error
+	)
 
 	for _, v := range fs.Elements("Feature-Caps") {
 		ps, err := starParams(v)
 		if err != nil {
-			return nil, fmt.Errorf("Feature-Caps: %w", err)
+			errs = append(errs, fmt.Errorf("Feature-Caps: %w", err))
+			continue
 		}
 
 		set, err := ParseFeatureSet(slices.DeleteFunc(ps, func(p Param) bool { return !strings.HasPrefix(p.Name, "+") }))
 		if err != nil {
-			return nil, fmt.Errorf("Feature-Caps: %w", err)
+			errs = append(errs, fmt.Errorf("Feature-Caps: %w", err))
 		}
 
 		out = append(out, set)
 	}
 
-	return out, nil
+	return out, errors.Join(errs...)
+}
+
+// FeatureCapsValue is a Feature-Caps value of feature-capability indicators (RFC 6809 §6.2).
+func FeatureCapsValue(fs FeatureSet) (string, error) {
+	ps, err := fs.Params()
+	if err != nil {
+		return "", err
+	}
+
+	if slices.ContainsFunc(ps, func(p Param) bool { return !strings.HasPrefix(p.Name, "+") }) {
+		return "", errors.New("Feature-Caps: a base tag is not a feature-capability indicator")
+	}
+
+	return "*" + ps.String(), nil
 }
 
 // "*" *(SEMI param), as in Accept-Contact, Reject-Contact and Feature-Caps.
@@ -486,13 +662,15 @@ func starParams(v string) (Params, error) {
 	return ps, nil
 }
 
-// Features is the feature set of a Contact (RFC 3840 §9).
+// Features is the feature set of a Contact (RFC 3840 §9), without its malformed feature parameters, which the error
+// reports.
 func (a Address) Features() (FeatureSet, error) {
 	return ParseFeatureSet(a.Params)
 }
 
 // RejectedBy reports whether a Reject-Contact predicate discards a contact with these features: one whose tags all
-// appear in the contact's features, and match them (RFC 3841 §7.2.4). A contact without features is immune.
+// appear in the contact's features, and match them (RFC 3841 §7.2.4). A contact without features is immune. A
+// predicate without feature parameters constrains nothing and is ignored.
 func (fs FeatureSet) RejectedBy(rejects []CallerPreference) bool {
 	if len(fs) == 0 {
 		return false
@@ -508,7 +686,7 @@ func (fs FeatureSet) RejectedBy(rejects []CallerPreference) bool {
 
 // Preference is the caller preference Qa of a contact with these features against Accept-Contact predicates
 // (RFC 3841 §7.2.4). ok is false when a predicate with the require flag drops the contact. A contact without features
-// is immune, with a Qa of 1.
+// is immune, with a Qa of 1. A predicate without feature parameters is ignored.
 func (fs FeatureSet) Preference(accepts []CallerPreference) (qa float64, ok bool) {
 	if len(fs) == 0 || !slices.ContainsFunc(accepts, func(p CallerPreference) bool { return len(p.Features) > 0 }) {
 		return 1, true

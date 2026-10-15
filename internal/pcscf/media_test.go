@@ -517,3 +517,37 @@ func TestChargingInfo(t *testing.T) {
 		t.Fatalf("%q, want at most %d eps-item", many, maxItems)
 	}
 }
+
+// TS 24.380 §4.3.3.1, TS 29.213 Table 6.2.2: the MCPTT media plane control channel is one RTCP flow, both ways, on the
+// port of its m-line; the speech next to it keeps its RTP and RTCP flows.
+func TestMCPTTControlChannel(t *testing.T) {
+	session := func(addr, audio, control string, dir string) *sdp.Session {
+		return mustSDP(t, "v=0", "o=- 1 1 IN IP4 "+addr, "s=-", "c=IN IP4 "+addr, "t=0 0",
+			"m=audio "+audio+" RTP/AVP 97", "b=AS:30", "a=rtpmap:97 AMR/8000", "i=speech", dir,
+			"m=application "+control+" udp MCPTT", "a=fmtp:MCPTT mc_queueing;mc_floor_ssrc=12345678")
+	}
+
+	offer := session("10.0.0.1", "3456", "3457", "a=sendrecv")
+	answer := session("10.0.0.2", "5000", "5003", "a=recvonly")
+
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 2 || len(got[0].SubComponents) != 2 {
+		t.Fatalf("components %+v, want speech with RTP and RTCP", got)
+	}
+
+	c := got[1]
+	if *c.Type != rx.MediaApplication || *c.FlowStatus != rx.FlowStatusEnabled || len(c.SubComponents) != 1 {
+		t.Fatalf("control channel %+v, want one enabled sub-component", c)
+	}
+
+	sub := c.SubComponents[0]
+	if sub.FlowUsage == nil || *sub.FlowUsage != rx.FlowUsageRTCP || !reflect.DeepEqual(sub.FlowDescriptions, []string{
+		"permit in 17 from 10.0.0.1 to 10.0.0.2 5003", "permit out 17 from 10.0.0.2 to 10.0.0.1 3457",
+	}) {
+		t.Errorf("control channel flows %+v, want RTCP both ways on the m-line ports", sub)
+	}
+}

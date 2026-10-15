@@ -136,12 +136,10 @@ func ParseSubscriptionState(s string) (SubscriptionState, error) {
 
 			ss.Reason = strings.ToLower(p.Value)
 		case "expires", "retry-after":
-			n, err := parseUint(p.Value, 1<<32-1)
+			v, err := parseDeltaSeconds(p.Value)
 			if err != nil {
 				return SubscriptionState{}, fmt.Errorf("Subscription-State %q: invalid %s", s, p.Name)
 			}
-
-			v := uint32(n)
 
 			if strings.EqualFold(p.Name, "expires") {
 				ss.Expires = &v
