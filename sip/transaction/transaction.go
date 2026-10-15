@@ -180,6 +180,15 @@ func New(cfg Config) *Layer {
 	return l
 }
 
+// Clock is the clock of the timers of the layer, for the timers of its users to run on the same one.
+func (l *Layer) Clock() Clock {
+	return l.clock
+}
+
+func (l *Layer) T2() time.Duration {
+	return l.t2
+}
+
 func (l *Layer) T1() time.Duration {
 	return l.t1
 }

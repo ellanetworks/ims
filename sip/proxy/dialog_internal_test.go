@@ -182,8 +182,8 @@ func TestExchangeSequence(t *testing.T) {
 
 	sdpStep{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "y"}.apply(d)
 
-	if d.sdp.seq == first || string(d.sdp.answer.Data) != "y" {
-		t.Fatalf("seq %d answer %q after a changed answer, want a new exchange", d.sdp.seq, d.sdp.answer.Data)
+	if _, answer := d.sdp.Last(); d.sdp.seq == first || string(answer.Data) != "y" {
+		t.Fatalf("seq %d answer %q after a changed answer, want a new exchange", d.sdp.seq, answer.Data)
 	}
 
 	sdpStep{from: Callee, seq: 2, method: "UPDATE", sdp: "U"}.apply(d)
