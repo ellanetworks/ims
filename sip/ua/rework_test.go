@@ -69,12 +69,8 @@ func (r *raw) inDialog(method string, invite *sip.Request, res *sip.Response, se
 	return req
 }
 
-func (r *raw) ack(invite *sip.Request, res *sip.Response, body string) {
+func (r *raw) ack(invite *sip.Request, res *sip.Response) {
 	ack := r.inDialog("ACK", invite, res, 1)
-
-	if body != "" {
-		ack.SetBodies(ua.SDP([]byte(body)))
-	}
 
 	contact, _ := res.Header.Contacts()
 	r.sock.Send(sip.UDP, netip.AddrPortFrom(loopback, contact[0].URI.Port), ack)
@@ -190,7 +186,7 @@ func TestAckWithoutAnswer(t *testing.T) {
 	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	ok := r.response()
-	r.ack(invite, ok, "")
+	r.ack(invite, ok)
 
 	bob.next("established")
 
@@ -219,7 +215,7 @@ func TestUasByeBeforeAck(t *testing.T) {
 	}
 
 	r.sock.RecvNone(100 * time.Millisecond)
-	r.ack(invite, ok, "")
+	r.ack(invite, ok)
 
 	if req, _ := r.sock.RecvRequest(); req.Method != "BYE" {
 		t.Errorf("got %s, want the BYE", req.Method)
@@ -398,11 +394,10 @@ func TestRequireInDialog(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
 
-	info, _ := as.NewRequest("INFO")
-	info.Header.Add("Require", "foo")
-
 	done := make(chan *sip.Response, 1)
-	_ = as.Send(info, func(res *sip.Response, err error) { done <- res })
+	_ = as.Send("INFO", ua.Change{Header: sip.Header{{Name: "Require", Value: "foo"}}}, func(res *sip.Response, err error) {
+		done <- res
+	})
 
 	if res := <-done; res.StatusCode != 420 || res.Header.Get("Unsupported") != "foo" {
 		t.Errorf("INFO %d, Unsupported %q", res.StatusCode, res.Header.Get("Unsupported"))

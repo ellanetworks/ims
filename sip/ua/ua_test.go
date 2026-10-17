@@ -41,6 +41,9 @@ type peer struct {
 	addr   netip.AddrPort
 	events chan event
 
+	// tr is the transport of the requests of the peer, UDP unless set before any.
+	tr sip.Transport
+
 	mu       sync.Mutex
 	onInvite func(r *ua.Request)
 }
@@ -86,7 +89,7 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 func tryPeer(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	t.Helper()
 
-	p := &peer{t: t, name: name, events: make(chan event, 64), addr: freePort(t)}
+	p := &peer{t: t, name: name, events: make(chan event, 64), addr: freePort(t), tr: sip.UDP}
 
 	cfg := ua.Config{
 		Prepare: p.prepare,
@@ -147,8 +150,8 @@ func (p *peer) prepare(req *sip.Request) error {
 		return err
 	}
 
-	req.Flow = sip.Flow{Transport: sip.UDP, Local: p.addr, Remote: netip.AddrPortFrom(addr, target.Port)}
-	req.Header.Prepend("Via", sip.NewVia(sip.UDP, p.addr).String())
+	req.Flow = sip.Flow{Transport: p.tr, Local: p.addr, Remote: netip.AddrPortFrom(addr, target.Port)}
+	req.Header.Prepend("Via", sip.NewVia(p.tr, p.addr).String())
 
 	return nil
 }
@@ -164,11 +167,14 @@ func (p *peer) record(e event) {
 func (p *peer) handler() ua.Handler {
 	return ua.Handler{
 		Progress:    func(s *ua.Session, res *sip.Response) { p.record(event{kind: "progress", s: s, res: res}) },
-		Established: func(s *ua.Session) { p.record(event{kind: "established", s: s}) },
+		Established: func(s *ua.Session, _ sip.Message) { p.record(event{kind: "established", s: s}) },
 		Answer:      func(s *ua.Session, sdp []byte) { p.record(event{kind: "answer", s: s, sdp: sdp}) },
 		Offer:       func(s *ua.Session, o *ua.Offer) { p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()}) },
 		Request:     func(s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
-		Ended:       func(s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
+		Cancelled: func(s *ua.Session, r *ua.Request, _ *sip.Request) {
+			p.record(event{kind: "cancelled", s: s, req: r})
+		},
+		Ended: func(s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
 		Failed: func(o *ua.Outgoing, res *sip.Response, err error) {
 			p.record(event{kind: "failed", res: res, err: err})
 		},
@@ -547,14 +553,9 @@ func TestOtherRequests(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
 
-	info, err := as.NewRequest("INFO")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	done := make(chan *sip.Response, 1)
 
-	if err := as.Send(info, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Send("INFO", ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -569,7 +570,7 @@ func TestOtherRequests(t *testing.T) {
 		t.Fatalf("INFO %d", res.StatusCode)
 	}
 
-	if err := as.Send(&sip.Request{Method: "BYE"}, nil); err == nil {
+	if err := as.Send("BYE", ua.Change{}, nil); err == nil {
 		t.Error("BYE through Send")
 	}
 }

@@ -82,6 +82,9 @@ type Dialog struct {
 	remoteSeq     uint32
 	haveRemoteSeq bool
 
+	// refreshSeq is the CSeq of the last target refresh request of the peer applied to the target.
+	refreshSeq uint32
+
 	origin sip.CSeq
 }
 
@@ -372,14 +375,33 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 	res.Header.InsertTop(rr...)
 }
 
+// PrepareResponse records a response the UA sends to a request of the peer within the dialog: the response to the
+// creating request copies its Record-Route and moves the state; a reliable 1xx or a 2xx to a target refresh request
+// copies its Record-Route too, whose entries the P-CSCF rewrites (TS 24.229 §5.2.6.3.6, §5.2.6.4.6), and replaces the
+// remote target with its Contact, unless a later one did (RFC 6141 §4.6).
 func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	cseq, err := req.Header.CSeq()
-	if err != nil || cseq != d.origin || res.StatusCode <= 100 {
+	if err != nil || res.StatusCode <= 100 {
 		return
 	}
 
+	refresh := isTargetRefresh(req.Method) && refreshes(res)
+	target, hasTarget, err := optionalContact(req.Header)
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if refresh && d.state != Terminated {
+		CopyRecordRoute(res, req)
+
+		if err == nil && hasTarget && cseq.Seq >= d.refreshSeq {
+			d.target, d.refreshSeq = target, cseq.Seq
+		}
+	}
+
+	if cseq != d.origin {
+		return
+	}
 
 	switch {
 	case res.StatusCode >= 300:
@@ -394,6 +416,11 @@ func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 			d.state = Confirmed
 		}
 	}
+}
+
+// refreshes reports a response that refreshes the target of a dialog: a reliable 1xx or a 2xx (RFC 6141 §4.6, §4.7).
+func refreshes(res *sip.Response) bool {
+	return res.IsSuccess() || res.IsProvisional() && res.Header.HasOptionTag("Require", sip.OptionTag100rel) && res.Header.Has("RSeq")
 }
 
 func isTargetRefresh(method string) bool {
@@ -419,13 +446,9 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 		return err
 	}
 
-	var (
-		target  sip.URI
-		refresh bool
-	)
-
+	// The Contact of a target refresh request applies once a reliable 1xx or a 2xx to it is sent (PrepareResponse).
 	if isTargetRefresh(req.Method) {
-		if target, refresh, err = optionalContact(req.Header); err != nil {
+		if _, _, err := optionalContact(req.Header); err != nil {
 			return &sip.StatusError{StatusCode: 400, Err: err}
 		}
 	}
@@ -442,10 +465,6 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 	}
 
 	d.remoteSeq, d.haveRemoteSeq = cseq.Seq, true
-
-	if refresh {
-		d.target = target
-	}
 
 	if req.Method == "BYE" {
 		d.state = Terminated
@@ -495,7 +514,8 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 	case cseq.Method == "BYE" && res.StatusCode >= 200:
 		d.state = Terminated
 	case creating && d.state == Early:
-		if hasTarget {
+		// RFC 6141 §4.9: an unreliable 1xx does not refresh the target of the early dialog it created.
+		if hasTarget && refreshes(res) {
 			d.target = target
 		}
 
@@ -503,7 +523,7 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 			d.state = Confirmed
 			d.route = route
 		}
-	case res.IsSuccess() && isTargetRefresh(cseq.Method) && hasTarget:
+	case refreshes(res) && isTargetRefresh(cseq.Method) && hasTarget:
 		d.target = target
 	}
 
@@ -615,6 +635,7 @@ type Snapshot struct {
 	HaveLocalSeq  bool
 	RemoteSeq     uint32
 	HaveRemoteSeq bool
+	RefreshSeq    uint32
 	Origin        sip.CSeq
 }
 
@@ -633,6 +654,7 @@ func (d *Dialog) Snapshot() Snapshot {
 		HaveLocalSeq:  d.haveLocalSeq,
 		RemoteSeq:     d.remoteSeq,
 		HaveRemoteSeq: d.haveRemoteSeq,
+		RefreshSeq:    d.refreshSeq,
 		Origin:        d.origin,
 	}
 }
@@ -669,6 +691,7 @@ func Restore(s Snapshot) (*Dialog, error) {
 	d.state = s.State
 	d.localSeq, d.haveLocalSeq = s.LocalSeq, s.HaveLocalSeq
 	d.remoteSeq, d.haveRemoteSeq = s.RemoteSeq, s.HaveRemoteSeq
+	d.refreshSeq = s.RefreshSeq
 
 	return d, nil
 }

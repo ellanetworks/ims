@@ -165,7 +165,7 @@ func TestConflicts(t *testing.T) {
 	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 
 	ok := r.response()
-	r.ack(invite, ok, "")
+	r.ack(invite, ok)
 	bob.next("established")
 
 	send := func(method string, seq uint32, body string, header ...sip.Field) {

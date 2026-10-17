@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -58,10 +60,17 @@ func (a *Agent) Invite(req *sip.Request, h Handler) (*Outgoing, error) {
 		tmpl.Header.Set("Contact", a.cfg.Contact.String())
 	}
 
-	for _, tag := range a.supported {
+	// RFC 6228 §8: the agent takes the 199 of the early dialogs a forking proxy or the UAS ends.
+	var missing []string
+
+	for _, tag := range append(slices.Clone(a.supported), sip.OptionTag199) {
 		if !tmpl.Header.HasOptionTag("Supported", tag) {
-			tmpl.Header.Add("Supported", tag)
+			missing = append(missing, tag)
 		}
+	}
+
+	if len(missing) > 0 {
+		tmpl.Header.Add("Supported", strings.Join(missing, ", "))
 	}
 
 	if !tmpl.Header.Has("Allow") {
@@ -181,6 +190,11 @@ func (o *Outgoing) response(res *sip.Response) {
 		return
 	}
 
+	if res.StatusCode == 199 {
+		o.earlyTerminated(res, tag)
+		return
+	}
+
 	if tag == "" {
 		if res.IsProvisional() {
 			o.a.loop.emit(func() {
@@ -208,11 +222,88 @@ func (o *Outgoing) response(res *sip.Response) {
 	}
 
 	if res.IsSuccess() && o.chosen != s {
-		s.notChosen(o.ci, res)
+		o.forked(s, res)
+		return
+	}
+
+	// RFC 3261 §9.1, §15: a 2xx crossing the CANCEL confirms the session, which ends with a BYE carrying the Reason
+	// of the CANCEL.
+	if res.IsSuccess() && o.cancelled != nil && s.state == Early {
+		s.clientResponse(o.ci, res)
+		s.byeEnd(End{Cause: EndCancelled, Response: res}, o.cancelReasons()...)
+
 		return
 	}
 
 	s.clientResponse(o.ci, res)
+}
+
+// cancelReasons are the Reason header fields of the CANCEL of the INVITE.
+func (o *Outgoing) cancelReasons() []sip.Reason {
+	cancel := sip.NewRequest("CANCEL", o.ci.req.URI)
+	o.cancelled(cancel)
+
+	reasons, _ := cancel.Header.Reasons()
+
+	return reasons
+}
+
+// earlyTerminated handles a 199 (RFC 6228 §7): the early dialog it names ends, once its PRACK, if reliable, is sent;
+// a reliable 199 of a dialog the agent did not know yet creates it for the PRACK.
+func (o *Outgoing) earlyTerminated(res *sip.Response, tag string) {
+	if tag == "" {
+		return
+	}
+
+	reliable := res.Header.HasOptionTag("Require", sip.OptionTag100rel)
+
+	s := o.sessions[tag]
+	if s == nil && reliable && o.chosen == nil {
+		s = o.session(res, tag)
+	}
+
+	if s == nil || s.state != Early {
+		return
+	}
+
+	_ = s.d.ReceiveResponse(res)
+
+	if reliable {
+		rseq, err := res.Header.RSeq()
+		if last, seen := s.rseq[o.ci.key.Seq]; err != nil || seen && rseq != last+1 {
+			return
+		}
+
+		s.rseq[o.ci.key.Seq] = rseq
+		s.prack(res, nil, nil)
+	}
+
+	delete(o.sessions, tag)
+	s.emitProgress(res)
+	s.end(End{Cause: EndNotChosen, Remote: true, Response: res})
+}
+
+// forked handles a 2xx of another dialog than the one answered first: Handler.Forked keeps its session, confirmed;
+// otherwise it is acknowledged and ended with a BYE (RFC 3261 §13.2.2.4).
+func (o *Outgoing) forked(s *Session, res *sip.Response) {
+	if s.state != Early || o.h.Forked == nil {
+		if s.state == Confirmed {
+			s.clientResponse(o.ci, res)
+		} else {
+			s.notChosen(o.ci, res)
+		}
+
+		return
+	}
+
+	o.a.loop.emit(func() {
+		switch {
+		case s.state == Early && o.h.Forked(s, res), s.state == Terminated:
+			s.clientResponse(o.ci, res)
+		default:
+			s.notChosen(o.ci, res)
+		}
+	})
 }
 
 // session is the session of the dialog of a response, created by its first response (RFC 3261 §12.1.2).
@@ -294,6 +385,18 @@ func (o *Outgoing) failed(res *sip.Response) {
 	o.emitFailed(res, nil)
 }
 
+// closed ends an outgoing INVITE the agent closed before its final response.
+func (o *Outgoing) closed() {
+	if o.final {
+		return
+	}
+
+	o.final = true
+	o.endSessions(End{Cause: EndClosed})
+	o.done()
+	o.emitFailed(nil, ErrClosed)
+}
+
 // error ends an outgoing INVITE that failed without a final response.
 func (o *Outgoing) error(err error) {
 	if o.final {
@@ -306,10 +409,10 @@ func (o *Outgoing) error(err error) {
 	o.emitFailed(nil, err)
 }
 
-// endSessions ends the sessions of the INVITE but the one chosen.
+// endSessions ends the early sessions of the INVITE: all but the one chosen, and those Handler.Forked kept.
 func (o *Outgoing) endSessions(e End) {
 	for tag, s := range o.sessions {
-		if s != o.chosen {
+		if s != o.chosen && s.state == Early {
 			delete(o.sessions, tag)
 			s.end(e)
 		}
@@ -360,23 +463,48 @@ type clientInvite struct {
 	// answered; final a final response received: an error of the transaction after it, as on closing, is no failure.
 	refresh bool
 	retried bool
+	glared  bool
 	tries   int
 	final   bool
+
+	// cancelled completes the CANCEL of a re-INVITE the application cancelled, sent once the transaction exists.
+	cancelled func(*sip.Request)
 }
 
 func (c *clientInvite) send() error {
 	s := c.s
 
-	err := s.transmit(c.req, s.a.client(c.response, c.error), func(tx *transaction.ClientTransaction) { c.tx = tx })
+	err := s.transmit(c.req, s.a.client(c.response, c.error), func(tx *transaction.ClientTransaction) {
+		c.tx = tx
+
+		if c.cancelled != nil {
+			_ = tx.CancelWith(c.cancelled)
+		}
+	})
 	if err != nil {
 		s.sdp.Fail(c.key)
-
-		if s.invite == c {
-			s.invite = nil
-		}
+		s.finished(c)
 	}
 
 	return err
+}
+
+// cancel cancels a re-INVITE of the agent; the transaction layer sends the CANCEL once a provisional response came
+// (RFC 3261 §9.1).
+func (c *clientInvite) cancel(prepare func(*sip.Request)) {
+	if prepare == nil {
+		prepare = func(*sip.Request) {}
+	}
+
+	if c.cancelled != nil {
+		return
+	}
+
+	c.cancelled = prepare
+
+	if c.tx != nil {
+		_ = c.tx.CancelWith(prepare)
+	}
 }
 
 // response handles a response to a re-INVITE or an UPDATE.
@@ -397,14 +525,11 @@ func (c *clientInvite) error(err error) {
 	c.final = true
 	s.sdp.Fail(c.key)
 
-	if s.invite == c {
-		s.invite = nil
-	}
-
 	if errors.Is(err, transaction.ErrTimeout) {
 		s.lost(nil, err)
 	}
 
+	s.finished(c)
 	s.emitDone(c.done, nil, err)
 }
 
@@ -442,10 +567,7 @@ func (s *Session) clientProvisional(c *clientInvite, res *sip.Response) {
 	}
 
 	if !res.Header.HasOptionTag("Require", sip.OptionTag100rel) {
-		if c.out != nil {
-			s.emitProgress(res)
-		}
-
+		s.emitProgress(res)
 		return
 	}
 
@@ -463,22 +585,43 @@ func (s *Session) clientProvisional(c *clientInvite, res *sip.Response) {
 
 	offer := sessionSDP(res.Envelope)
 
+	// The reliable 1xx is reported once its PRACK completed: a request of the application, such as an UPDATE of
+	// preconditions (RFC 3312 §5), follows it. A 2xx that comes first reports it before itself.
+	s.unreported = append(s.unreported, res)
+	progress := func() { s.reportProgress(res) }
+
 	switch s.sdp.Response(c.key, res.StatusCode, offer) {
 	case offeranswer.Answer:
 		s.emitAnswer(offer)
-		s.prack(res, nil, nil)
+		s.prack(res, nil, progress)
 	case offeranswer.Offer:
-		s.emitOffer(&Offer{s: s, sdp: offer, res: res, c: c, prack: true})
+		s.emitOffer(&Offer{s: s, sdp: offer, res: res, c: c, prack: true, progress: progress})
 	default:
-		s.prack(res, nil, nil)
-	}
-
-	if c.out != nil {
-		s.emitProgress(res)
+		s.prack(res, nil, progress)
 	}
 }
 
-// prack sends the PRACK of a reliable 1xx, with bodies; then, if any, runs once it completes.
+// reportProgress reports the reliable 1xx not reported yet, up to res, or all of them when res is nil.
+func (s *Session) reportProgress(res *sip.Response) {
+	if s.state == Terminated {
+		s.unreported = nil
+		return
+	}
+
+	i := len(s.unreported) - 1
+	if res != nil {
+		i = slices.Index(s.unreported, res)
+	}
+
+	for _, r := range s.unreported[:i+1] {
+		s.emitProgress(r)
+	}
+
+	s.unreported = s.unreported[i+1:]
+}
+
+// prack sends the PRACK of a reliable 1xx, with bodies; then, if any, runs once it completes. A 481 or a 408 to it,
+// or its timeout, loses the dialog (RFC 3261 §12.2.1.2).
 func (s *Session) prack(res *sip.Response, bodies []sip.BodyPart, then func()) {
 	prack, err := s.d.NewPrack(res)
 	if err != nil {
@@ -488,27 +631,30 @@ func (s *Session) prack(res *sip.Response, bodies []sip.BodyPart, then func()) {
 	prack.SetBodies(bodies...)
 	s.sdp.Request(keyOf(local, prack), sessionSDPOf(bodies))
 
-	var h transaction.ClientHandler
+	done := false
 
-	if then != nil {
-		done := false
-
-		once := func() {
-			if !done {
-				done = true
-
-				then()
-			}
+	finish := func(res *sip.Response, err error) {
+		if done {
+			return
 		}
 
-		h = s.a.client(func(res *sip.Response) {
-			if !res.IsProvisional() {
-				once()
-			}
-		}, func(error) { once() })
+		done = true
+
+		if s.state != Terminated && (res != nil && (res.StatusCode == 481 || res.StatusCode == 408) ||
+			errors.Is(err, transaction.ErrTimeout)) {
+			s.lost(res, err)
+		}
+
+		if then != nil {
+			then()
+		}
 	}
 
-	s.sendRequest(prack, h)
+	s.sendRequest(prack, s.a.client(func(res *sip.Response) {
+		if !res.IsProvisional() {
+			finish(res, nil)
+		}
+	}, func(err error) { finish(nil, err) }))
 }
 
 // clientSuccess handles a 2xx to an INVITE or an UPDATE of the agent.
@@ -549,20 +695,22 @@ func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
 	s.timer.fromResponse(c.req, res)
 	s.timer.start(s)
 
+	if c.key.Method == "INVITE" {
+		s.reportProgress(nil)
+	}
+
 	if c.key.Method == "INVITE" && s.state == Early {
 		s.state = Confirmed
-		s.emitEstablished()
+		s.emitEstablished(res)
 	}
 
 	if role == offeranswer.Answer {
 		s.emitAnswer(offer)
 	}
 
-	if c.key.Method == "INVITE" {
-		if s.invite == c {
-			s.invite = nil
-		}
+	s.finished(c)
 
+	if c.key.Method == "INVITE" {
 		if role == offeranswer.Offer {
 			o := &Offer{s: s, sdp: offer, res: res, c: c}
 			s.acks[c.key.Seq] = nil
@@ -623,25 +771,25 @@ func (s *Session) clientFailure(c *clientInvite, res *sip.Response) {
 		return
 	}
 
-	if s.invite == c {
-		s.invite = nil
-	}
-
 	minSE, hasMinSE, _ := res.Header.MinSE()
+
+	retry := func(delay time.Duration) {
+		s.forget(c)
+		s.retryLater(c, delay)
+	}
 
 	switch {
 	case s.state == Terminated:
+	case c.cancelled != nil:
 	case res.StatusCode == 401 || res.StatusCode == 407:
 		if next, ok := s.challenged(c.req, res, c.tries); ok {
 			ci := &clientInvite{
 				s: s, req: next, key: keyOf(local, next), change: c.change, done: c.done,
-				refresh: c.refresh, retried: c.retried, tries: c.tries + 1,
+				refresh: c.refresh, retried: c.retried, glared: c.glared, tries: c.tries + 1,
 			}
 			s.sdp.Request(ci.key, sessionSDP(next.Envelope))
-
-			if next.Method == "INVITE" {
-				s.invite = ci
-			}
+			s.forget(c)
+			s.started(ci)
 
 			if err := ci.send(); err != nil {
 				s.emitDone(ci.done, nil, err)
@@ -649,14 +797,19 @@ func (s *Session) clientFailure(c *clientInvite, res *sip.Response) {
 
 			return
 		}
-	case res.StatusCode == 491:
-		s.retryLater(c, glareDelay(s.uac))
+	case res.StatusCode == 491 && !c.glared:
+		// RFC 3261 §14.1: once, not to go on forever against a peer whose offer stays pending.
+		c.glared = true
+
+		retry(glareDelay(s.uac))
+
 		return
 	case res.StatusCode == 422 && hasMinSE && !c.retried:
 		s.timer.noteMinSE(minSE)
 
 		c.retried = true
-		s.retryLater(c, 0)
+
+		retry(0)
 
 		return
 	case res.StatusCode == 408 || res.StatusCode == 481:
@@ -665,39 +818,85 @@ func (s *Session) clientFailure(c *clientInvite, res *sip.Response) {
 		s.timer.retry(s)
 	}
 
+	s.finished(c)
 	s.emitDone(c.done, res, nil)
+}
+
+// deferred is a re-INVITE or an UPDATE of the agent waiting to be sent: for the ACK of a 2xx of the agent, when t is
+// nil, or for t, after a 491 or a 422.
+type deferred struct {
+	method  string
+	change  Change
+	done    func(*sip.Response, error)
+	refresh bool
+	retried bool
+	glared  bool
+	t       *timer
 }
 
 // retryLater sends a re-INVITE or an UPDATE again after delay, with the same change.
 func (s *Session) retryLater(c *clientInvite, delay time.Duration) {
-	s.a.after(delay, func() {
-		if s.state == Terminated {
-			s.emitDone(c.done, nil, ErrState)
-			return
+	d := &deferred{
+		method: c.key.Method, change: c.change, done: c.done, refresh: c.refresh, retried: c.retried, glared: c.glared,
+	}
+	d.t = s.a.after(delay, func() { s.sendDeferred(d) })
+	s.deferred = append(s.deferred, d)
+
+	// The session expired while it was being modified: the retry comes too late.
+	s.modified()
+}
+
+// sendDeferred sends a deferred request once its delay passed, or those waiting for the ACK when only is nil.
+func (s *Session) sendDeferred(only *deferred) {
+	var due []*deferred
+
+	kept := s.deferred[:0]
+
+	for _, d := range s.deferred {
+		if d == only || only == nil && d.t == nil {
+			due = append(due, d)
+		} else {
+			kept = append(kept, d)
+		}
+	}
+
+	s.deferred = kept
+
+	for _, d := range due {
+		switch {
+		case s.state == Terminated:
+			s.emitDone(d.done, nil, ErrState)
+			continue
+		case s.ack != nil:
+			// A 2xx of the agent awaits its ACK: the request waits for it too.
+			d.t = nil
+			s.deferred = append(s.deferred, d)
+
+			continue
 		}
 
-		if code, _ := s.conflict(c.key.Method, sessionSDPOf(c.change.Bodies) != nil, true); code != 0 {
-			if c.refresh {
+		if code, _ := s.conflict(d.method, sessionSDPOf(d.change.Bodies) != nil, true); code != 0 {
+			if d.refresh {
 				s.timer.retry(s)
 			}
 
-			s.emitDone(c.done, nil, ErrPending)
+			s.emitDone(d.done, nil, ErrPending)
 
-			return
+			continue
 		}
 
-		next, err := s.newClientInvite(c.key.Method, c.change, c.done)
+		next, err := s.newClientInvite(d.method, d.change, d.done)
 		if err != nil {
-			s.emitDone(c.done, nil, err)
-			return
+			s.emitDone(d.done, nil, err)
+			continue
 		}
 
-		next.retried, next.refresh = c.retried, c.refresh
+		next.retried, next.refresh, next.glared = d.retried, d.refresh, d.glared
 
 		if err := next.send(); err != nil {
-			s.emitDone(c.done, nil, err)
+			s.emitDone(d.done, nil, err)
 		}
-	})
+	}
 }
 
 // Offer is an offer of the peer in a response, to answer in the PRACK of a reliable 1xx or in the ACK of a 2xx.
@@ -708,6 +907,9 @@ type Offer struct {
 	c     *clientInvite
 	prack bool
 	used  bool
+
+	// progress reports the reliable 1xx of the offer once its PRACK completed.
+	progress func()
 }
 
 func (o *Offer) SDP() []byte {
@@ -734,7 +936,7 @@ func (o *Offer) Answer(bodies ...sip.BodyPart) error {
 		s := o.s
 
 		if o.prack {
-			s.prack(o.res, bodies, nil)
+			s.prack(o.res, bodies, o.progress)
 		} else if _, waiting := s.answering[o.c.key.Seq]; waiting {
 			s.sendAck(o.c, bodies)
 		}
@@ -791,7 +993,5 @@ func (o *Offer) cancelInvite() {
 		return
 	}
 
-	if o.c.tx != nil {
-		_ = o.c.tx.Cancel()
-	}
+	o.c.cancel(nil)
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -66,6 +67,11 @@ func newRequest(s *Session, tx *transaction.ServerTransaction, req *sip.Request)
 // Message is the request.
 func (r *Request) Message() *sip.Request {
 	return r.req
+}
+
+// Done is closed once the transaction of the request ends, its final response sent.
+func (r *Request) Done() <-chan struct{} {
+	return r.tx.Done()
 }
 
 // Session is the session of the request, nil outside a dialog.
@@ -199,8 +205,9 @@ func (r *Request) provisional(rp Reply) (*sip.Response, error) {
 			r.rseq++
 		}
 
-		rp.Header = append(rp.Header.Clone(), sip.Field{Name: "Require", Value: sip.OptionTag100rel},
-			sip.Field{Name: "RSeq", Value: strconv.FormatUint(uint64(r.rseq), 10)})
+		rp.Header = rp.Header.Clone()
+		addOptionTag(&rp.Header, "Require", sip.OptionTag100rel)
+		rp.Header.Add("RSeq", strconv.FormatUint(uint64(r.rseq), 10))
 	}
 
 	res, err := r.build(rp)
@@ -225,15 +232,16 @@ func (r *Request) provisional(rp Reply) (*sip.Response, error) {
 	return res, nil
 }
 
-// dialogFor creates the dialog of an initial INVITE at its first response with a To tag, and copies its Record-Route
-// into each response that creates or confirms it (RFC 3261 §12.1.1).
+// dialogFor creates the dialog of an initial INVITE at its first response with a To tag, and records in it each
+// response of the session: the Record-Route of the INVITE copied into those that create or confirm it (RFC 3261
+// §12.1.1), the remote target of a target refresh request replaced by its reliable 1xx or 2xx (RFC 6141 §4.6).
 func (s *Session) dialogFor(r *Request, res *sip.Response) error {
-	if r != s.in || s.uac || res.StatusCode >= 300 || s.state != Early {
+	if s.d != nil {
+		s.d.PrepareResponse(r.req, res)
 		return nil
 	}
 
-	if s.d != nil {
-		s.d.PrepareResponse(r.req, res)
+	if r != s.in || s.uac || res.StatusCode >= 300 || s.state != Early {
 		return nil
 	}
 
@@ -272,7 +280,7 @@ func (r *Request) retransmitReliable(rel *reliable) {
 
 	r.unacked = nil
 	r.queued = nil
-	r.ending = &End{Cause: EndTimeout, Err: errors.New("sip/ua: no PRACK to the reliable 1xx")}
+	r.ending = &End{Cause: EndTimeout, Err: ErrNoPrack}
 
 	r.abandon(500)
 }
@@ -427,7 +435,11 @@ func (r *Request) finish(res *sip.Response) error {
 		r.deadline = s.a.after(64*s.a.layer.T1(), r.noAck)
 	}
 
-	return r.tx.Respond(res)
+	err := r.tx.Respond(res)
+
+	s.modified()
+
+	return err
 }
 
 // sendFinal records and sends a final response, logging a failure.
@@ -490,7 +502,7 @@ func (r *Request) noAck() {
 		s.ack = nil
 
 		r.acked()
-		s.byeEnd(End{Cause: EndTimeout, Err: errors.New("sip/ua: no ACK to the 2xx")}, s.bye...)
+		s.byeEnd(End{Cause: EndTimeout, Err: ErrNoAck}, s.bye...)
 	}
 }
 
@@ -499,17 +511,29 @@ func (r *Request) acked() {
 	r.deadline.stop()
 }
 
-// cancelled ends an INVITE its CANCEL reached before the final response (RFC 3261 §9.2).
+// cancelled ends an INVITE its CANCEL reached before the final response (RFC 3261 §9.2): the initial INVITE ends the
+// session; a re-INVITE leaves it as it was, and Handler.Cancelled reports it.
 func (r *Request) cancelled(cancel *sip.Request) {
 	s := r.s
 
-	if !r.final || r.held != nil {
-		if r == s.initial() {
-			s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
-		}
-
-		r.abandon(487)
+	if r.final && r.held == nil {
+		return
 	}
+
+	if r == s.initial() {
+		s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
+		r.abandon(487)
+
+		return
+	}
+
+	r.abandon(487)
+
+	s.emit(func(h Handler) {
+		if h.Cancelled != nil {
+			h.Cancelled(s, r, cancel)
+		}
+	})
 }
 
 // failed handles the error of the server transaction of an INVITE.
@@ -529,6 +553,7 @@ func (r *Request) failed(err error) {
 	}
 
 	s.a.untrack(r)
+	s.modified()
 }
 
 // invite receives an initial INVITE (RFC 3261 §13.3). The session starts at once; OnInvite is its first event.
@@ -567,4 +592,16 @@ func (a *Agent) invite(tx *transaction.ServerTransaction, req *sip.Request) {
 	a.addSession(s)
 
 	a.loop.emit(func() { s.h = a.cfg.OnInvite(r) })
+}
+
+// addOptionTag adds an option tag to the first header field name, or in one of its own without one.
+func addOptionTag(h *sip.Header, name, tag string) {
+	for i, f := range *h {
+		if strings.EqualFold(sip.LongName(f.Name), name) {
+			(*h)[i].Value = f.Value + ", " + tag
+			return
+		}
+	}
+
+	h.Add(name, tag)
 }

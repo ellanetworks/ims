@@ -21,6 +21,10 @@ type sessionTimer struct {
 	// minSE is the largest Min-SE of a 422 or of a session refresh request on the dialog (RFC 4028 §7.4).
 	minSE uint32
 
+	// expired marks a session whose timer expired while a re-INVITE or an UPDATE was in progress: the session ends
+	// once it completes, unless it refreshed the session.
+	expired bool
+
 	refresh, abort *timer
 }
 
@@ -80,7 +84,17 @@ func (t *sessionTimer) requestHeaders(a *Agent, req *sip.Request) {
 		interval = seconds(a.cfg.SessionTimer.Interval)
 	}
 
-	if interval == 0 || req.Header.Has("Session-Expires") {
+	// RFC 4028 §7.3: a Session-Expires of the application below the Min-SE of the dialog is raised to it.
+	if se, ok, err := req.Header.SessionExpires(); ok && err == nil {
+		if se.Seconds < t.least() {
+			se.Seconds = t.least()
+			req.Header.Set("Session-Expires", se.String())
+		}
+
+		return
+	}
+
+	if interval == 0 {
 		return
 	}
 
@@ -152,7 +166,7 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 	rp.Header.Set("Session-Expires", se.String())
 
 	if supported && !rp.Header.HasOptionTag("Require", sip.OptionTagTimer) {
-		rp.Header.Add("Require", sip.OptionTagTimer)
+		addOptionTag(&rp.Header, "Require", sip.OptionTagTimer)
 	}
 
 	if !rp.Header.HasOptionTag("Supported", sip.OptionTagTimer) && rp.Header.Has("Supported") {
@@ -184,6 +198,7 @@ func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 // (RFC 4028 §7.2, §10).
 func (t *sessionTimer) start(s *Session) {
 	t.stop()
+	t.expired = false
 
 	if t.interval == 0 {
 		return
@@ -253,9 +268,14 @@ func (s *Session) refreshSession() {
 	}
 }
 
-// expire ends a session whose timer expired without a refresh (RFC 4028 §10).
+// expire ends a session whose timer expired without a refresh (RFC 4028 §10). A re-INVITE or an UPDATE in progress
+// defers it: its 2xx refreshes the session.
 func (s *Session) expire() {
-	if s.state != Terminated {
+	switch {
+	case s.state == Terminated:
+	case s.modifying():
+		s.timer.expired = true
+	default:
 		s.byeEnd(End{Cause: EndExpired})
 	}
 }

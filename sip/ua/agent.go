@@ -27,6 +27,14 @@ var (
 	ErrPending = errors.New("sip/ua: an offer or an INVITE transaction is pending")
 
 	ErrState = errors.New("sip/ua: not allowed in the state of the session")
+
+	// ErrCancelled ends a re-INVITE cancelled before it was sent.
+	ErrCancelled = errors.New("sip/ua: re-INVITE cancelled")
+
+	// ErrNoPrack and ErrNoAck are the End.Err of a session that timed out without the PRACK of a reliable 1xx of the
+	// agent (RFC 3262 §3), or the ACK of its 2xx (RFC 3261 §13.3.1.4).
+	ErrNoPrack = errors.New("sip/ua: no PRACK to the reliable 1xx")
+	ErrNoAck   = errors.New("sip/ua: no ACK to the 2xx")
 )
 
 // Methods are the methods an agent allows by default (RFC 3261 §20.5).
@@ -91,15 +99,20 @@ type Config struct {
 // order, after the state change they report: they may call the agent, its sessions and requests, and must not block.
 // Long work goes to a goroutine of the application, which calls the agent once done.
 type Handler struct {
-	// Progress reports a provisional response to the initial INVITE (UAC), after the PRACK of a reliable one. s is
-	// nil for a response without a To tag, which creates no dialog.
+	// Progress reports a provisional response to an INVITE of the agent, initial or re-INVITE; a reliable one once
+	// its PRACK completed, so that the requests the application sends then follow it. s is nil for a response to
+	// the initial INVITE without a To tag, which creates no dialog.
 	Progress func(s *Session, res *sip.Response)
 
-	// Established reports that the session is confirmed: by the 2xx (UAC), by the ACK (UAS).
-	Established func(s *Session)
+	// Established reports that the session is confirmed by m: the 2xx (UAC), the ACK (UAS).
+	Established func(s *Session, m sip.Message)
 
 	// Answer reports the peer's answer to an offer of the agent.
 	Answer func(s *Session, sdp []byte)
+
+	// Pracked reports the PRACK of a reliable 1xx res of the agent (RFC 3262 §3), once the queued reliable 1xx and the
+	// 2xx that waited for it are sent.
+	Pracked func(s *Session, res *sip.Response)
 
 	// Offer asks for the answer to an offer of the peer in a response: a reliable 1xx, answered in the PRACK, or a
 	// 2xx, answered in the ACK (RFC 3261 §13.2.1, RFC 3262 §5). Without it, the offer is refused.
@@ -110,6 +123,15 @@ type Handler struct {
 	// an UPDATE gets a 488, other requests a 405. The agent answers itself the refreshes: UPDATE without an offer,
 	// re-INVITE without one or with the previous offer unchanged (RFC 3264 §8, RFC 4028 §7.4).
 	Request func(s *Session, r *Request)
+
+	// Cancelled reports a re-INVITE of the peer its CANCEL ended before the final response of the application: the
+	// agent answered it with a 487, and the session goes on as before (RFC 3261 §9.2).
+	Cancelled func(s *Session, r *Request, cancel *sip.Request)
+
+	// Forked decides on a 2xx to the initial INVITE from another dialog than the first one answered, s its session
+	// (RFC 3261 §13.2.2.4): true keeps s, confirmed, with its own events; false, or no Forked, acknowledges the 2xx,
+	// refusing its offer, and ends s with a BYE.
+	Forked func(s *Session, res *sip.Response) bool
 
 	// Ended reports the end of the session.
 	Ended func(s *Session, e End)
@@ -147,10 +169,11 @@ func SDP(b []byte) sip.BodyPart {
 	return sip.NewBodyPart("application/sdp", b)
 }
 
-// dialogEntry is a dialog of the agent and its usages (RFC 5057): the INVITE session for now. The usages share the
-// dialog, its route set and its CSeq space; the dialog ends with its last usage.
+// dialogEntry is a dialog of the agent and its usages (RFC 5057): the INVITE session, or the subscription its NOTIFY
+// created. The usages share the dialog, its route set and its CSeq space; the dialog ends with its last usage.
 type dialogEntry struct {
 	invite *Session
+	sub    *Subscription
 }
 
 type mergeKey struct {
@@ -176,11 +199,13 @@ type Agent struct {
 	closing sync.WaitGroup
 
 	// The fields below belong to the loop.
-	closed   bool
-	dialogs  map[dialog.ID]*dialogEntry
-	invites  map[*transaction.ServerTransaction]*Request
-	initials map[mergeKey]*transaction.ServerTransaction
-	outgoing map[*Outgoing]struct{}
+	closed      bool
+	dialogs     map[dialog.ID]*dialogEntry
+	invites     map[*transaction.ServerTransaction]*Request
+	initials    map[mergeKey]*transaction.ServerTransaction
+	outgoing    map[*Outgoing]struct{}
+	subscribing map[subscribeKey]*subscribing
+	requests    map[*outOfDialog]struct{}
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -209,6 +234,9 @@ func New(cfg Config) (*Agent, error) {
 		invites:   map[*transaction.ServerTransaction]*Request{},
 		initials:  map[mergeKey]*transaction.ServerTransaction{},
 		outgoing:  map[*Outgoing]struct{}{},
+
+		subscribing: map[subscribeKey]*subscribing{},
+		requests:    map[*outOfDialog]struct{}{},
 	}
 
 	for _, tag := range cfg.Supported {
@@ -260,15 +288,32 @@ func (a *Agent) Close(ctx context.Context) error {
 			}
 		}
 
-		var sessions []*Session
+		var (
+			sessions []*Session
+			subs     []*Subscription
+		)
 
 		for _, e := range a.dialogs {
 			if e.invite != nil {
 				sessions = append(sessions, e.invite)
 			}
+
+			if e.sub != nil {
+				subs = append(subs, e.sub)
+			}
+		}
+
+		for _, att := range a.subscribing {
+			if att.first.d == nil {
+				subs = append(subs, att.first)
+			}
 		}
 
 		for _, s := range sessions {
+			s.close()
+		}
+
+		for _, s := range subs {
 			s.close()
 		}
 
@@ -291,6 +336,20 @@ func (a *Agent) Close(ctx context.Context) error {
 	}
 
 	err = a.layer.Close()
+
+	// What the closed transaction layer did not complete fails now, before the loop stops.
+	_ = a.loop.call(func() error {
+		for o := range a.outgoing {
+			o.closed()
+		}
+
+		for c := range a.requests {
+			c.finish(nil, ErrClosed)
+		}
+
+		return nil
+	})
+
 	a.loop.stop()
 
 	return err
@@ -313,14 +372,18 @@ func (a *Agent) session(id dialog.ID) *Session {
 	return nil
 }
 
-func (a *Agent) addSession(s *Session) {
-	e := a.dialogs[s.id]
+func (a *Agent) entry(id dialog.ID) *dialogEntry {
+	e := a.dialogs[id]
 	if e == nil {
 		e = &dialogEntry{}
-		a.dialogs[s.id] = e
+		a.dialogs[id] = e
 	}
 
-	e.invite = s
+	return e
+}
+
+func (a *Agent) addSession(s *Session) {
+	a.entry(s.id).invite = s
 }
 
 // removeSession ends the INVITE usage of a dialog, and the dialog with its last usage (RFC 5057 §5.4).
@@ -331,8 +394,29 @@ func (a *Agent) removeSession(s *Session) {
 	}
 
 	e.invite = nil
+	a.prune(s.id, e)
+}
 
-	delete(a.dialogs, s.id)
+func (a *Agent) addSubscription(s *Subscription) {
+	a.entry(s.d.ID()).sub = s
+}
+
+func (a *Agent) removeSubscription(s *Subscription) {
+	id := s.d.ID()
+
+	e := a.dialogs[id]
+	if e == nil || e.sub != s {
+		return
+	}
+
+	e.sub = nil
+	a.prune(id, e)
+}
+
+func (a *Agent) prune(id dialog.ID, e *dialogEntry) {
+	if e.invite == nil && e.sub == nil {
+		delete(a.dialogs, id)
+	}
 }
 
 func (a *Agent) track(r *Request) {
@@ -456,12 +540,18 @@ func (a *Agent) receive(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	if to.Tag() != "" {
-		if s := a.session(dialog.RequestID(req)); s != nil {
-			s.receive(tx, req)
-			return
-		}
+		id := dialog.RequestID(req)
 
-		a.reply(tx, 481)
+		switch e := a.dialogs[id]; {
+		case e != nil && e.invite != nil:
+			e.invite.receive(tx, req)
+		case e != nil && e.sub != nil:
+			e.sub.receive(tx, req)
+		case req.Method == "NOTIFY" && a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}] != nil:
+			a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}].notifyFor(tx, req)
+		default:
+			a.reply(tx, 481)
+		}
 
 		return
 	}

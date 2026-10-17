@@ -305,12 +305,19 @@ func TestUASReceiveRequest(t *testing.T) {
 		t.Errorf("INFO refreshed the target to %s", d.RemoteTarget())
 	}
 
-	if err := d.ReceiveRequest(inDialog(t, "UPDATE", 13, "Contact: <sip:alice@10.0.0.5>\r\n")); err != nil {
+	update := inDialog(t, "UPDATE", 13, "Contact: <sip:alice@10.0.0.5>\r\n")
+	if err := d.ReceiveRequest(update); err != nil {
 		t.Fatal(err)
 	}
 
+	if d.RemoteTarget().String() != "sip:alice@10.0.0.1:5060" {
+		t.Errorf("UPDATE refreshed the target before its 2xx: %s", d.RemoteTarget())
+	}
+
+	d.PrepareResponse(update, sip.NewResponse(update, 200, ""))
+
 	if d.RemoteTarget().String() != "sip:alice@10.0.0.5" {
-		t.Errorf("UPDATE did not refresh the target: %s", d.RemoteTarget())
+		t.Errorf("the 2xx to the UPDATE did not refresh the target: %s", d.RemoteTarget())
 	}
 
 	err = d.ReceiveRequest(inDialog(t, "UPDATE", 11, "Contact: <sip:alice@10.0.0.6>\r\n"))
@@ -464,29 +471,108 @@ func TestReceivedTargetRefreshRules(t *testing.T) {
 	}
 
 	for i, c := range []struct {
-		method, contact, want string
+		method, contact string
+		code            int
+		want            string
 	}{
-		{"INVITE", "", "sip:alice@10.0.0.1:5060"},
-		{"NOTIFY", "<sip:alice@10.0.0.3>", "sip:alice@10.0.0.3"},
-		{"SUBSCRIBE", "<sip:alice@10.0.0.4>", "sip:alice@10.0.0.4"},
-		{"MESSAGE", "<sip:alice@10.0.0.5>", "sip:alice@10.0.0.4"},
+		{"INVITE", "", 200, "sip:alice@10.0.0.1:5060"},
+		{"NOTIFY", "<sip:alice@10.0.0.3>", 200, "sip:alice@10.0.0.3"},
+		{"SUBSCRIBE", "<sip:alice@10.0.0.4>", 202, "sip:alice@10.0.0.4"},
+		{"MESSAGE", "<sip:alice@10.0.0.5>", 200, "sip:alice@10.0.0.4"},
+		// RFC 6141 §4.6: an error response leaves the target.
+		{"UPDATE", "<sip:alice@10.0.0.6>", 491, "sip:alice@10.0.0.4"},
+		{"INVITE", "<sip:alice@10.0.0.7>", 180, "sip:alice@10.0.0.4"},
 	} {
 		extra := ""
 		if c.contact != "" {
 			extra = "Contact: " + c.contact + "\r\n"
 		}
 
-		if err := d.ReceiveRequest(inDialog(t, c.method, 11+i, extra)); err != nil {
+		r := inDialog(t, c.method, 11+i, extra)
+		if err := d.ReceiveRequest(r); err != nil {
 			t.Fatalf("%s: %v", c.method, err)
 		}
 
+		d.PrepareResponse(r, sip.NewResponse(r, c.code, ""))
+
 		if got := d.RemoteTarget().String(); got != c.want {
-			t.Errorf("after %s: target %s, want %s", c.method, got, c.want)
+			t.Errorf("after %s and its %d: target %s, want %s", c.method, c.code, got, c.want)
 		}
 	}
 
-	if err := d.ReceiveRequest(inDialog(t, "INFO", 14, "")); err != nil {
+	if err := d.ReceiveRequest(inDialog(t, "INFO", 16, "")); err != nil {
 		t.Errorf("equal CSeq rejected: %v", err)
+	}
+}
+
+// RFC 6141 §4.6: a reliable 1xx to a re-INVITE refreshes the target; the 2xx to an UPDATE sent within it, then the
+// 2xx to the re-INVITE, leave the later target.
+func TestTargetRefreshByReliableProvisionalAndOrder(t *testing.T) {
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag("bt")
+
+	d, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reinvite := inDialog(t, "INVITE", 11, "Contact: <sip:alice@10.0.0.3>\r\n")
+	_ = d.ReceiveRequest(reinvite)
+
+	reliable := sip.NewResponse(reinvite, 183, "")
+	reliable.Header.Add("Require", "100rel")
+	reliable.Header.Add("RSeq", "1")
+	d.PrepareResponse(reinvite, reliable)
+
+	if got := d.RemoteTarget().String(); got != "sip:alice@10.0.0.3" {
+		t.Errorf("after the reliable 183: target %s", got)
+	}
+
+	update := inDialog(t, "UPDATE", 12, "Contact: <sip:alice@10.0.0.4>\r\n")
+	_ = d.ReceiveRequest(update)
+	d.PrepareResponse(update, sip.NewResponse(update, 200, ""))
+	d.PrepareResponse(reinvite, sip.NewResponse(reinvite, 200, ""))
+
+	if got := d.RemoteTarget().String(); got != "sip:alice@10.0.0.4" {
+		t.Errorf("after the 2xx to the earlier re-INVITE: target %s, want the UPDATE's", got)
+	}
+
+	restored, err := dialog.Restore(d.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored.PrepareResponse(reinvite, sip.NewResponse(reinvite, 200, ""))
+
+	if got := restored.RemoteTarget().String(); got != "sip:alice@10.0.0.4" {
+		t.Errorf("restored dialog: target %s", got)
+	}
+}
+
+// RFC 6141 §4.7, §4.9: an unreliable 1xx refreshes no target, a reliable one does.
+func TestUACTargetRefreshByProvisional(t *testing.T) {
+	req := parse[*sip.Request](t, invite)
+
+	d, err := dialog.NewUAC(req, response(t, 180, "10 INVITE", "bt", "Contact: <sip:bob@10.0.0.2>\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.ReceiveResponse(response(t, 180, "10 INVITE", "bt", "Contact: <sip:bob@10.0.0.3>\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := d.RemoteTarget().String(); got != "sip:bob@10.0.0.2" {
+		t.Errorf("an unreliable 180 refreshed the early dialog to %s", got)
+	}
+
+	if err := d.ReceiveResponse(response(t, 183, "10 INVITE", "bt", "Require: 100rel\r\nRSeq: 1\r\nContact: <sip:bob@10.0.0.4>\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := d.RemoteTarget().String(); got != "sip:bob@10.0.0.4" {
+		t.Errorf("a reliable 183: target %s", got)
 	}
 }
 
@@ -506,6 +592,35 @@ func TestPrepareResponseOtherRequests(t *testing.T) {
 
 	if ok.Header.Has("Record-Route") || d.State() != dialog.Early {
 		t.Errorf("200 to PRACK: Record-Route %q, state %v", ok.Header.Values("Record-Route"), d.State())
+	}
+}
+
+// TS 24.229 §5.2.6.3.6, §5.2.6.4.6: a 2xx or a reliable 1xx to a target refresh request carries its Record-Route; an error
+// response does not.
+func TestPrepareResponseTargetRefresh(t *testing.T) {
+	req := parse[*sip.Request](t, invite)
+	res := sip.NewResponse(req, 200, "")
+	_ = res.Header.SetToTag("bt")
+
+	d, err := dialog.NewUAS(req, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := inDialog(t, "UPDATE", 11, "Record-Route: <sip:p2.example;lr>, <sip:p1.example;lr>\r\n")
+
+	ok := sip.NewResponse(update, 200, "")
+	d.PrepareResponse(update, ok)
+
+	if got := ok.Header.Elements("Record-Route"); len(got) != 2 {
+		t.Errorf("200 to UPDATE: Record-Route %q", got)
+	}
+
+	refused := sip.NewResponse(update, 491, "")
+	d.PrepareResponse(update, refused)
+
+	if refused.Header.Has("Record-Route") {
+		t.Errorf("491 to UPDATE: Record-Route %q", refused.Header.Values("Record-Route"))
 	}
 }
 

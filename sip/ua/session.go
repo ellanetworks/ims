@@ -53,7 +53,8 @@ const (
 	EndBye EndCause = iota
 	// EndCancelled: the initial INVITE was cancelled.
 	EndCancelled
-	// EndRejected: a final response other than 2xx to the initial INVITE ended the session.
+	// EndRejected: a final response other than 2xx to the initial INVITE ended the session, or one to a SUBSCRIBE
+	// the subscription.
 	EndRejected
 	// EndNotChosen: another early dialog of the forked INVITE was answered (RFC 3261 §13.2.2.4).
 	EndNotChosen
@@ -62,10 +63,17 @@ const (
 	// EndLost: the peer no longer knows the dialog: 481 or 408 to a request within it (RFC 3261 §12.2.1.2), or broke
 	// the offer/answer exchange.
 	EndLost
-	// EndExpired: the session timer expired without a refresh (RFC 4028 §10).
+	// EndExpired: the session timer expired without a refresh (RFC 4028 §10), or the subscription (RFC 6665 §4.1.2.2).
 	EndExpired
 	// EndClosed: the agent closed.
 	EndClosed
+	// EndTerminated: a NOTIFY terminated the subscription (RFC 6665 §4.1.3).
+	EndTerminated
+	// EndNoNotify: no NOTIFY came within Timer N of a SUBSCRIBE (RFC 6665 §4.1.2.4).
+	EndNoNotify
+	// EndUnsubscribed: the application ended the subscription before its first NOTIFY, or could not send the
+	// SUBSCRIBE that ends it.
+	EndUnsubscribed
 )
 
 func (c EndCause) String() string {
@@ -86,20 +94,29 @@ func (c EndCause) String() string {
 		return "expired"
 	case EndClosed:
 		return "closed"
+	case EndTerminated:
+		return "terminated"
+	case EndNoNotify:
+		return "no NOTIFY"
+	case EndUnsubscribed:
+		return "unsubscribed"
 	}
 
 	return "EndCause(?)"
 }
 
-// End is how a session ended.
+// End is how a session or a subscription ended.
 type End struct {
 	Cause EndCause
 
-	// Remote is true when the peer ended it: its BYE, its CANCEL, its final response.
+	// Remote is true when the peer ended it: its BYE, its CANCEL, its final response, its NOTIFY.
 	Remote bool
 
-	// Request is the BYE or the CANCEL of the peer, with its Reason.
+	// Request is the BYE or the CANCEL of the peer, with its Reason, or the NOTIFY that terminated the subscription.
 	Request *sip.Request
+
+	// State is the Subscription-State of that NOTIFY.
+	State sip.SubscriptionState
 
 	// Response is the final response that ended the session.
 	Response *sip.Response
@@ -132,8 +149,18 @@ type Session struct {
 	inUpdate *Request
 	ack      *Request
 
-	// invite is the re-INVITE of the agent in progress.
-	invite *clientInvite
+	// invite is the re-INVITE of the agent in progress, updates its UPDATEs.
+	invite  *clientInvite
+	updates []*clientInvite
+
+	// deferred are the re-INVITEs and UPDATEs of the agent waiting to be sent: for the ACK of its 2xx, or after a
+	// 491 or a 422.
+	deferred []*deferred
+
+	// sending is the request of Send in progress, waiting those queued behind it: one at a time, so that they reach
+	// the peer in the order of their CSeq (RFC 3261 §12.2.2).
+	sending *clientRequest
+	waiting []*clientRequest
 
 	// rseq is the RSeq of the last reliable 1xx received in order for each INVITE of the agent (RFC 3262 §4); acks
 	// the ACK of each 2xx, sent again on its retransmissions; answering the offers of 2xx awaiting their answer.
@@ -153,6 +180,9 @@ type Session struct {
 
 	peerAllow []string
 	timer     sessionTimer
+
+	// unreported are the reliable 1xx whose PRACK has not completed yet, reported in order once it has.
+	unreported []*sip.Response
 }
 
 func newSession(a *Agent, h Handler, uac bool, id dialog.ID) *Session {
@@ -229,6 +259,17 @@ func (s *Session) negotiated() (localSDP, remoteSDP []byte, ok bool) {
 	return answer.Data, offer.Data, true
 }
 
+// SessionTimer is the session timer of the session (RFC 4028): its interval, zero without one, and whether the agent
+// refreshes.
+func (s *Session) SessionTimer() (interval time.Duration, refresher bool) {
+	_ = s.a.loop.call(func() error {
+		interval, refresher = time.Duration(s.timer.interval)*time.Second, s.timer.refresher
+		return nil
+	})
+
+	return interval, refresher
+}
+
 // emit makes a handler event due. The handler is read when the event runs: the one of an initial INVITE is set by
 // OnInvite, its first event.
 func (s *Session) emit(f func(h Handler)) {
@@ -251,10 +292,10 @@ func (s *Session) emitAnswer(sdp []byte) {
 	})
 }
 
-func (s *Session) emitEstablished() {
+func (s *Session) emitEstablished(m sip.Message) {
 	s.emit(func(h Handler) {
 		if h.Established != nil {
-			h.Established(s)
+			h.Established(s, m)
 		}
 	})
 }
@@ -296,6 +337,31 @@ func (s *Session) end(e End) {
 
 	s.state = Terminated
 	s.timer.stop()
+
+	// The requests of the application in progress or waiting complete now: their transactions may never end, as a
+	// re-INVITE the peer leaves unanswered once it sent its BYE. A late 2xx to a re-INVITE is still acknowledged.
+	for _, c := range append([]*clientInvite{s.invite}, s.updates...) {
+		if c != nil && !c.final {
+			c.final = true
+			s.emitDone(c.done, nil, ErrState)
+		}
+	}
+
+	if c := s.sending; c != nil && !c.final {
+		c.final = true
+		s.emitDone(c.done, nil, ErrState)
+	}
+
+	for _, d := range s.deferred {
+		d.t.stop()
+		s.emitDone(d.done, nil, ErrState)
+	}
+
+	for _, c := range s.waiting {
+		s.emitDone(c.done, nil, ErrState)
+	}
+
+	s.deferred, s.waiting = nil, nil
 
 	for _, r := range []*Request{s.in, s.inUpdate} {
 		if r != nil {
@@ -603,6 +669,8 @@ func (s *Session) refreshAnswer(r *Request, offer []byte) ([]byte, bool) {
 // in an UPDATE comes after the initial exchange (RFC 3311 §5.1). mine checks a request of the agent itself.
 func (s *Session) conflict(method string, offer, mine bool) (code int, retry bool) {
 	switch {
+	case mine && s.ack != nil:
+		return 491, false
 	case method == "INVITE" && (s.invite != nil || s.state == Early && (s.uac || mine)):
 		return 491, false
 	case method == "INVITE" && s.in != nil:
@@ -655,7 +723,14 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 		s.emitAnswer(offer)
 	}
 
+	acked := in.unacked.res
 	in.pracked()
+
+	s.emit(func(h Handler) {
+		if h.Pracked != nil {
+			h.Pracked(s, acked)
+		}
+	})
 
 	if r.role == offeranswer.Offer {
 		s.deliver(r)
@@ -687,7 +762,7 @@ func (s *Session) receiveAck(ack *sip.Request) {
 
 	if s.state == Early && s.d != nil {
 		s.state = Confirmed
-		s.emitEstablished()
+		s.emitEstablished(ack)
 	}
 
 	switch offer, okey, pending := s.sdp.Pending(); {
@@ -697,56 +772,96 @@ func (s *Session) receiveAck(ack *sip.Request) {
 		s.byeEnd(End{Cause: EndLost, Err: errors.New("sip/ua: no answer in the ACK")})
 	case s.byeQueued:
 		s.byeEnd(End{Cause: EndBye}, s.bye...)
+	default:
+		s.sendDeferred(nil)
 	}
 }
 
-// NewRequest builds a request within the dialog, for Send (RFC 3261 §12.2.1.1).
-func (s *Session) NewRequest(method string) (*sip.Request, error) {
-	var req *sip.Request
+// Send sends a request within the dialog other than INVITE, UPDATE, PRACK, ACK, CANCEL and BYE, which the session
+// sends itself, with c added (RFC 3261 §12.2.1.1); done receives its final response or its error, as a handler.
+//
+// The requests of Send go one at a time: each waits for the final response to the previous one, and takes its CSeq
+// when sent, so that they reach the peer in order (RFC 3261 §12.2.2). Those still waiting when the session ends fail
+// with ErrState.
+func (s *Session) Send(method string, c Change, done func(res *sip.Response, err error)) error {
+	switch method {
+	case "INVITE", "UPDATE", "PRACK", "ACK", "CANCEL", "BYE":
+		return fmt.Errorf("sip/ua: %s is sent by the session", method)
+	}
 
-	err := s.a.loop.call(func() error {
+	return s.a.loop.call(func() error {
 		if s.d == nil || s.state == Terminated {
 			return ErrState
 		}
 
-		var err error
+		cr := &clientRequest{s: s, method: method, change: c, done: done}
 
-		req, err = s.d.NewRequest(method)
+		if s.sending != nil {
+			s.waiting = append(s.waiting, cr)
+			return nil
+		}
 
-		return err
+		s.sending = cr
+
+		if err := cr.send(); err != nil {
+			s.sending = nil
+			return err
+		}
+
+		return nil
 	})
-
-	return req, err
 }
 
-// Send sends a request of NewRequest other than INVITE, UPDATE, PRACK, ACK, CANCEL and BYE, which the session
-// sends itself; done receives its final response or its error, as a handler.
-func (s *Session) Send(req *sip.Request, done func(res *sip.Response, err error)) error {
-	switch req.Method {
-	case "INVITE", "UPDATE", "PRACK", "ACK", "CANCEL", "BYE":
-		return fmt.Errorf("sip/ua: %s is sent by the session", req.Method)
+// sendNext sends the next request of Send once the one in progress completed.
+func (s *Session) sendNext(prev *clientRequest) {
+	if s.sending != prev {
+		return
 	}
 
-	return s.a.loop.call(func() error {
-		c := &clientRequest{s: s, req: req, done: done}
-		return c.send()
-	})
+	s.sending = nil
+
+	for len(s.waiting) > 0 && s.state != Terminated {
+		cr := s.waiting[0]
+		s.waiting = s.waiting[1:]
+
+		if err := cr.send(); err != nil {
+			cr.final = true
+			s.emitDone(cr.done, nil, err)
+
+			continue
+		}
+
+		s.sending = cr
+
+		return
+	}
 }
 
 // Update sends an UPDATE, with an offer when c has a session description (RFC 3311). One without refreshes the
-// session timer and the target.
+// session timer and the target. While a 2xx of the agent awaits its ACK, the UPDATE waits for it.
 func (s *Session) Update(c Change, done func(res *sip.Response, err error)) error {
 	return s.a.loop.call(func() error { return s.request("UPDATE", c, done) })
 }
 
 // Reinvite sends a re-INVITE, with an offer when c has a session description, or asking the peer for one
-// (RFC 3261 §14.1). A 491 is retried after the delay of RFC 3261 §14.1.
+// (RFC 3261 §14.1). A 491 is retried after the delay of RFC 3261 §14.1. While a 2xx of the agent awaits its ACK, the
+// re-INVITE waits for it. CancelReinvite cancels it.
 func (s *Session) Reinvite(c Change, done func(res *sip.Response, err error)) error {
 	return s.a.loop.call(func() error { return s.request("INVITE", c, done) })
 }
 
 func (s *Session) request(method string, c Change, done func(*sip.Response, error)) error {
-	if s.d == nil || s.state == Terminated || method == "INVITE" && s.state != Confirmed {
+	if s.d == nil || s.state == Terminated {
+		return ErrState
+	}
+
+	// The 2xx of the agent awaits its ACK: the request follows it.
+	if s.ack != nil {
+		s.deferred = append(s.deferred, &deferred{method: method, change: c, done: done})
+		return nil
+	}
+
+	if method == "INVITE" && s.state != Confirmed {
 		return ErrState
 	}
 
@@ -790,12 +905,93 @@ func (s *Session) newClientInvite(method string, c Change, done func(*sip.Respon
 
 	ci := &clientInvite{s: s, req: req, key: keyOf(local, req), change: c, done: done}
 	s.sdp.Request(ci.key, sessionSDPOf(c.Bodies))
-
-	if method == "INVITE" {
-		s.invite = ci
-	}
+	s.started(ci)
 
 	return ci, nil
+}
+
+// started records a re-INVITE or an UPDATE of the agent as in progress, finished once it completes.
+func (s *Session) started(c *clientInvite) {
+	if c.key.Method == "INVITE" {
+		s.invite = c
+	} else {
+		s.updates = append(s.updates, c)
+	}
+}
+
+func (s *Session) finished(c *clientInvite) {
+	if s.forget(c) {
+		s.modified()
+	}
+}
+
+// forget drops a re-INVITE or an UPDATE of the agent from those in progress, as it completes or before it is sent
+// again.
+func (s *Session) forget(c *clientInvite) bool {
+	if c == s.invite {
+		s.invite = nil
+		return true
+	}
+
+	if i := slices.Index(s.updates, c); i >= 0 {
+		s.updates = slices.Delete(s.updates, i, i+1)
+		return true
+	}
+
+	return false
+}
+
+// modifying reports an INVITE or an UPDATE in progress on the session, of either side: it may refresh the session.
+func (s *Session) modifying() bool {
+	return s.invite != nil || len(s.updates) > 0 || s.in != nil || s.inUpdate != nil
+}
+
+// modified ends the session whose timer expired while it was being modified, once no modification refreshed it.
+func (s *Session) modified() {
+	if s.timer.expired && !s.modifying() && s.state != Terminated {
+		s.byeEnd(End{Cause: EndExpired})
+	}
+}
+
+// CancelReinvite cancels the re-INVITE of Reinvite (RFC 3261 §9.1): one in progress with a CANCEL carrying reasons,
+// its done receiving the 487, or the 2xx that came first; one waiting to be sent, done receiving ErrCancelled. It
+// returns ErrState without one. The session refreshes of the agent are not cancelled.
+func (s *Session) CancelReinvite(reasons ...sip.Reason) error {
+	return s.a.loop.call(func() error {
+		found := false
+
+		if c := s.invite; c != nil && !c.refresh {
+			found = true
+
+			c.cancel(func(cancel *sip.Request) {
+				for _, r := range reasons {
+					cancel.Header.Add("Reason", r.String())
+				}
+			})
+		}
+
+		kept := s.deferred[:0]
+
+		for _, d := range s.deferred {
+			if d.method != "INVITE" || d.refresh {
+				kept = append(kept, d)
+				continue
+			}
+
+			found = true
+
+			d.t.stop()
+			s.emitDone(d.done, nil, ErrCancelled)
+		}
+
+		s.deferred = kept
+
+		if !found {
+			return ErrState
+		}
+
+		return nil
+	})
 }
 
 // Bye ends the session with a BYE carrying reasons (RFC 3261 §15.1.1, RFC 3326). The session ends at once; the BYE
@@ -849,17 +1045,36 @@ func randomInt(n int) int {
 	return int(binary.BigEndian.Uint64(b[:]) % uint64(n))
 }
 
-// clientRequest is a request of the session sent with Send, sent again after a challenge.
+// clientRequest is a request of Send, sent again after a challenge.
 type clientRequest struct {
-	s     *Session
-	req   *sip.Request
-	done  func(*sip.Response, error)
-	tries int
-	final bool
+	s      *Session
+	method string
+	change Change
+	req    *sip.Request
+	done   func(*sip.Response, error)
+	tries  int
+	final  bool
 }
 
+// send builds the request with the next CSeq of the dialog, and sends it.
 func (c *clientRequest) send() error {
-	return c.s.transmit(c.req, c.s.a.client(c.response, c.error), nil)
+	s := c.s
+
+	if c.req == nil {
+		req, err := s.d.NewRequest(c.method)
+		if err != nil {
+			return err
+		}
+
+		for _, f := range c.change.Header {
+			req.Header.Add(f.Name, f.Value)
+		}
+
+		req.SetBodies(c.change.Bodies...)
+		c.req = req
+	}
+
+	return s.transmit(c.req, s.a.client(c.response, c.error), nil)
 }
 
 func (c *clientRequest) response(res *sip.Response) {
@@ -878,36 +1093,36 @@ func (c *clientRequest) response(res *sip.Response) {
 		c.req = next
 
 		if err := c.send(); err != nil {
-			c.final = true
-			s.emitDone(c.done, nil, err)
+			c.finish(nil, err, false)
 		}
 
 		return
 	}
 
-	c.final = true
-
-	if res.StatusCode == 481 || res.StatusCode == 408 {
-		s.lost(res, nil)
-	}
-
-	s.emitDone(c.done, res, nil)
+	c.finish(res, nil, res.StatusCode == 481 || res.StatusCode == 408)
 }
 
 func (c *clientRequest) error(err error) {
-	s := c.s
-
 	if c.final {
 		return
 	}
 
-	c.final = true
+	c.finish(nil, err, errors.Is(err, transaction.ErrTimeout))
+}
 
-	if errors.Is(err, transaction.ErrTimeout) {
-		s.lost(nil, err)
+// finish completes the request, then loses the dialog when its outcome says so (RFC 3261 §12.2.1.2), then sends
+// the next one.
+func (c *clientRequest) finish(res *sip.Response, err error, lost bool) {
+	s := c.s
+
+	c.final = true
+	s.emitDone(c.done, res, err)
+
+	if lost && s.state != Terminated {
+		s.lost(res, err)
 	}
 
-	s.emitDone(c.done, nil, err)
+	s.sendNext(c)
 }
 
 // challenged is the request of the dialog to send again after a 401 or 407 to req: the next CSeq, with the credentials

@@ -377,6 +377,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 	res = sip.NewResponse(req, 200, "")
 	res.Header.Add("Expires", strconv.FormatInt(int64(expires/time.Second), 10))
 	res.Header.Add("Contact", contactURI(req.Flow.Local, req.Flow.Transport))
+	d.PrepareResponse(req, res)
 
 	if s.Dialog, err = json.Marshal(d.Snapshot()); err != nil {
 		return retryLater(req), nil

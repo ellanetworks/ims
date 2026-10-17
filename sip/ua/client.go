@@ -7,13 +7,15 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Request sends a request outside a dialog other than INVITE: REGISTER, MESSAGE, SUBSCRIBE, OPTIONS, PUBLISH. The
+// Request sends a request outside a dialog other than INVITE and SUBSCRIBE: REGISTER, MESSAGE, OPTIONS, PUBLISH. The
 // agent adds what req leaves out: the From tag, a Call-ID, CSeq and Max-Forwards; it answers 401 and 407 challenges
 // through Config.Authenticate. done receives the final response, or the error of the transaction, as a handler.
 func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error)) error {
 	switch req.Method {
 	case "INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE":
 		return fmt.Errorf("sip/ua: %s outside a session", req.Method)
+	case "SUBSCRIBE":
+		return errors.New("sip/ua: SUBSCRIBE through Subscribe")
 	}
 
 	tmpl := req.Clone()
@@ -28,7 +30,13 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 
 		c := &outOfDialog{a: a, tmpl: tmpl, done: done}
 
-		return c.send()
+		if err := c.send(); err != nil {
+			return err
+		}
+
+		a.requests[c] = struct{}{}
+
+		return nil
 	})
 }
 
@@ -111,6 +119,7 @@ func (c *outOfDialog) finish(res *sip.Response, err error) {
 	}
 
 	c.final = true
+	delete(c.a.requests, c)
 
 	if c.done != nil {
 		c.a.loop.emit(func() { c.done(res, err) })

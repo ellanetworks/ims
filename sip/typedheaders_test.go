@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func header(fields ...string) Header {
@@ -217,6 +218,34 @@ func TestEventHeaders(t *testing.T) {
 }
 
 // RFC 6086 §7.2, TS 24.379 Annex J.
+// RFC 6665 §4.1.3
+func TestResubscribe(t *testing.T) {
+	for _, c := range []struct {
+		state string
+		ok    bool
+		after time.Duration
+	}{
+		{"terminated;reason=rejected", false, 0},
+		{"terminated;reason=noresource", false, 0},
+		{"terminated;reason=invariant;retry-after=31536000", false, 0},
+		{"terminated;reason=deactivated;retry-after=60", true, 0},
+		{"terminated;reason=timeout", true, 0},
+		{"terminated;reason=probation;retry-after=60", true, time.Minute},
+		{"terminated;reason=giveup", true, 0},
+		{"terminated;reason=other;retry-after=5", true, 5 * time.Second},
+		{"terminated", true, 0},
+	} {
+		ss, err := ParseSubscriptionState(c.state)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if ok, after := ss.Resubscribe(); ok != c.ok || after != c.after {
+			t.Errorf("%s: %v %v, want %v %v", c.state, ok, after, c.ok, c.after)
+		}
+	}
+}
+
 func TestInfoPackages(t *testing.T) {
 	p, ok, err := header("Info-Package", "g.3gpp.mcptt-floor-request").InfoPackage()
 	if !ok || err != nil || p.Name != "g.3gpp.mcptt-floor-request" {

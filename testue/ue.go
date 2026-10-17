@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
+	"github.com/ellanetworks/ims/sip/ua"
 )
 
 const (
@@ -29,6 +30,9 @@ const (
 	maxInvalidChallenges = 2
 
 	maxChallenges = 4
+
+	// closeWait is how long Close waits for the BYEs of the calls.
+	closeWait = 500 * time.Millisecond
 )
 
 var regAwaitAuth = RegAwaitAuth
@@ -130,6 +134,10 @@ type Config struct {
 
 	Kernel Kernel
 
+	// Clock runs the timers of the calls and of the reg event subscription, the system clock when nil: tests
+	// advance a fake one.
+	Clock transaction.Clock
+
 	Do func(f func())
 
 	Trace func(m sip.Message, f sip.Flow, sent bool)
@@ -216,6 +224,7 @@ type UE struct {
 	offers   []Offer
 	log      *slog.Logger
 
+	agent       *ua.Agent
 	layer       *transaction.Layer
 	unprotected netip.AddrPort
 	portS       uint16
@@ -245,7 +254,8 @@ type UE struct {
 	sub         *subscription
 
 	calls struct {
-		active   map[callKey]*Call
+		// active are the calls by Call-ID, which their events follow.
+		active   map[string]*Call
 		incoming chan *Call
 		next     int
 	}
@@ -321,39 +331,90 @@ func New(cfg Config) (*UE, error) {
 		u.offers = DefaultOffers()
 	}
 
-	u.calls.active = make(map[callKey]*Call)
+	u.calls.active = make(map[string]*Call)
 	u.calls.incoming = make(chan *Call, 16)
 
 	do := cfg.Do
 
-	u.layer = transaction.New(transaction.Config{
-		Handler:      u,
-		Logger:       cfg.Logger,
-		Filter:       u.filter,
-		ResponseFlow: u.responseFlow,
-		T1:           cfg.T1,
-		Transport: transport.Config{
-			Trace:    cfg.Trace,
-			LargeUDP: cfg.LargeUDP,
-			Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
-				var (
-					c   net.Conn
-					err error
-				)
+	u.agent, err = ua.New(ua.Config{
+		Transaction: transaction.Config{
+			Logger:       cfg.Logger,
+			Filter:       u.filter,
+			ResponseFlow: u.responseFlow,
+			T1:           cfg.T1,
+			Clock:        cfg.Clock,
+			Transport: transport.Config{
+				Trace:    u.trace,
+				LargeUDP: cfg.LargeUDP,
+				Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+					var (
+						c   net.Conn
+						err error
+					)
 
-				do(func() { c, err = d.DialContext(ctx, network, address) })
+					do(func() { c, err = d.DialContext(ctx, network, address) })
 
-				return c, err
+					return c, err
+				},
 			},
 		},
+		Prepare:   u.prepare,
+		Respond:   u.respondHeaders,
+		Allow:     allowed,
+		Supported: []string{sip.OptionTagPrecondition},
+		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
+		SessionTimer: ua.SessionTimer{Refresher: sip.RefresherUAC},
+		OnInvite:     u.incomingCall,
+		OnRequest:    u.requestReceived,
+		Logger:       cfg.Logger,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("testue: %w", err)
+	}
+
+	u.layer = u.agent.Layer()
 
 	if u.unprotected, err = u.listen(0); err != nil {
-		_ = u.layer.Close()
+		_ = u.agent.Close(context.Background())
 		return nil, err
 	}
 
 	return u, nil
+}
+
+// trace follows the messages of the UE: the received ones of a call are its events.
+func (u *UE) trace(m sip.Message, f sip.Flow, sent bool) {
+	if u.cfg.Trace != nil {
+		u.cfg.Trace(m, f, sent)
+	}
+
+	if sent {
+		return
+	}
+
+	u.mu.Lock()
+	c := u.calls.active[m.Env().Header.CallID()]
+	u.mu.Unlock()
+
+	if c == nil {
+		return
+	}
+
+	switch m := m.(type) {
+	case *sip.Request:
+		c.event(Event{Request: m})
+	case *sip.Response:
+		c.event(Event{Response: m})
+	}
+}
+
+// requestReceived answers a request outside a dialog other than INVITE: MESSAGE, OPTIONS.
+func (u *UE) requestReceived(r *ua.Request) {
+	u.event(Event{Request: r.Message()})
+
+	if err := r.Respond(ua.Reply{Code: 200}); err != nil {
+		u.log.Debug("response failed", slog.Any("error", err))
+	}
 }
 
 func (u *UE) listen(port uint16) (netip.AddrPort, error) {
@@ -459,23 +520,15 @@ func (u *UE) Close() error {
 
 	u.closed = true
 	u.stopTimersLocked()
-
-	if u.sub != nil {
-		u.stopSubscriptionLocked(u.sub)
-	}
-
-	calls := make([]*Call, 0, len(u.calls.active))
-	for _, c := range u.calls.active {
-		calls = append(calls, c)
-	}
+	u.sub = nil
 
 	u.mu.Unlock()
 
-	for _, c := range calls {
-		c.terminate(Closed)
-	}
+	// The agent ends the calls and the subscription, with a BYE, a CANCEL or an unsubscribe.
+	ctx, cancel := context.WithTimeout(context.Background(), closeWait)
+	err := u.agent.Close(ctx)
 
-	err := u.layer.Close()
+	cancel()
 
 	u.op.Lock()
 	defer u.op.Unlock()
@@ -498,80 +551,6 @@ func (u *UE) stopTimersLocked() {
 		}
 	}
 }
-
-func (u *UE) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	if req.Method == "NOTIFY" {
-		u.notify(tx, req)
-		return
-	}
-
-	u.event(Event{Request: req})
-
-	switch req.Method {
-	case "INVITE", "PRACK", "UPDATE", "BYE":
-		if u.callRequest(tx, req) {
-			return
-		}
-	}
-
-	code := 200
-	if req.Method == "INVITE" {
-		code = 486
-	}
-
-	_ = tx.Respond(sip.NewResponse(req, code, ""))
-}
-
-func (u *UE) callRequest(tx *transaction.ServerTransaction, req *sip.Request) bool {
-	to, err := req.Header.To()
-	if err != nil {
-		return false
-	}
-
-	if to.Tag() == "" {
-		if req.Method != "INVITE" || !u.cfg.AcceptCalls {
-			return false
-		}
-
-		u.incomingCall(tx, req)
-
-		return true
-	}
-
-	if c := u.call(req.Header.CallID(), to.Tag()); c != nil {
-		c.requestReceived(tx, req)
-	} else {
-		_ = tx.Respond(sip.NewResponse(req, 481, ""))
-	}
-
-	return true
-}
-
-func (u *UE) call(callID, tag string) *Call {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	return u.calls.active[callKey{callID: callID, tag: tag}]
-}
-
-func (u *UE) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	if c := u.call(tx.Request().Header.CallID(), tx.ToTag()); c != nil {
-		c.cancelReceived(cancel)
-	}
-}
-
-func (u *UE) HandleAck(ack *sip.Request) {
-	to, err := ack.Header.To()
-	if err != nil {
-		return
-	}
-
-	if c := u.call(ack.Header.CallID(), to.Tag()); c != nil {
-		c.ackReceived(ack)
-	}
-}
-
-func (u *UE) HandleTransactionError(*transaction.ServerTransaction, error) {}
 
 var (
 	errUnprotected = errors.New("testue: request on the unprotected port")

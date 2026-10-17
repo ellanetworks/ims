@@ -519,6 +519,9 @@ func TestCallBetweenPhonesBendingTheTransportRules(t *testing.T) {
 		t.Errorf("caller received the BYE %+v, want it over UDP on its port_us %d", byes, sa.Local.PortS)
 	}
 
+	// The call ends with the BYE; its 200 is on its way.
+	eventually(t, "the 200 to the BYE", func() bool { return len(s.sent(0, "BYE", 200)) > 0 })
+
 	if oks := s.sent(0, "BYE", 200); len(oks) == 0 || oks[0].transport != sip.UDP ||
 		oks[0].src.Port() != sa.Local.PortC || oks[0].dst.Port() != pcscfIPsecServerPort {
 		t.Errorf("caller's 200 to the BYE sent %+v, want UDP from its port_uc %d to port_ps %d", oks, sa.Local.PortC, pcscfIPsecServerPort)

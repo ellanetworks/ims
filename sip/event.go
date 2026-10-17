@@ -3,6 +3,7 @@ package sip
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Event is an Event value (RFC 6665 §8.2.1): an event package with its templates, and the id of the subscription.
@@ -169,6 +170,24 @@ func (ss SubscriptionState) String() string {
 	}
 
 	return s + ss.Params.String()
+}
+
+// Resubscribe is what a subscriber should do once a subscription terminated with this state (RFC 6665 §4.1.3):
+// whether to subscribe again, not before after. A rejected, noresource or invariant subscription is not retried; a
+// deactivated or timeout one at once; the others, and unknown reasons, after their retry-after, if any.
+func (ss SubscriptionState) Resubscribe() (ok bool, after time.Duration) {
+	switch ss.Reason {
+	case SubscriptionRejected, SubscriptionNoResource, SubscriptionInvariant:
+		return false, 0
+	case SubscriptionDeactivated, SubscriptionTimeout:
+		return true, 0
+	}
+
+	if ss.RetryAfter != nil {
+		return true, time.Duration(*ss.RetryAfter) * time.Second
+	}
+
+	return true, 0
 }
 
 func (fs Header) SubscriptionState() (SubscriptionState, bool, error) {

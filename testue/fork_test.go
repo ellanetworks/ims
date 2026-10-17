@@ -2,6 +2,7 @@ package testue
 
 import (
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -365,7 +366,7 @@ func (c *Call) hasLeg(tag string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.legLocked(tag) != nil
+	return slices.ContainsFunc(c.legs, func(l *leg) bool { return l.s.ID().RemoteTag == tag })
 }
 
 // RFC 6228 §4: a reliable 199 for a dialog never established is acknowledged, and ends that dialog at once.

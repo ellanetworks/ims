@@ -462,6 +462,8 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		info = &i
 	}
 
+	accepted := sip.NewResponse(req, 200, "")
+
 	ss.mu.Lock()
 
 	if s.removed {
@@ -481,6 +483,9 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 			return sip.NewResponse(req, code, "")
 		}
+
+		// The 200 below applies the Contact of the NOTIFY (RFC 6141 §4.6).
+		s.dialog.PrepareResponse(req, accepted)
 	case s.subscribe != nil:
 		d, err := dialog.NewFromNotify(s.subscribe, req)
 		if err != nil && !terminated {
@@ -516,7 +521,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		ss.p.apply(s.impi, *info)
 	}
 
-	return sip.NewResponse(req, 200, "")
+	return accepted
 }
 
 func mediaType(ct string) string {

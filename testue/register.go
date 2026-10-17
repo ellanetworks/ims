@@ -426,7 +426,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 			u.dropLocked(s)
 		}
 
-		u.forgetLocked()
+		go u.forgetLocked()()
 
 		return
 	}

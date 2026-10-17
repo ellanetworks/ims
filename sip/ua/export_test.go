@@ -23,3 +23,19 @@ func Sync(a *Agent) {
 func Reinviting(s *Session) bool {
 	return get(s.a.loop, func() bool { return s.invite != nil })
 }
+
+// Kept is the size of the tables of s kept for the retransmissions of responses to its INVITEs: the RSeq of their
+// reliable 1xx, the ACKs of their 2xx.
+func Kept(s *Session) (rseq, acks int) {
+	_ = s.a.loop.call(func() error {
+		rseq, acks = len(s.rseq), len(s.acks)
+		return nil
+	})
+
+	return rseq, acks
+}
+
+// Subscribing is the number of initial SUBSCRIBEs of the agent whose NOTIFYs may still create subscriptions.
+func Subscribing(a *Agent) int {
+	return get(a.loop, func() int { return len(a.subscribing) })
+}
