@@ -460,7 +460,6 @@ func (c *Call) terminateLocked(reason EndReason) {
 
 	close(c.done)
 	c.notifyLocked()
-
 }
 
 // legLocked is the leg of a session of the call, made for the first response of its dialog: the call's own for the
@@ -948,6 +947,7 @@ func (c *Call) request(s *ua.Session, r *ua.Request) {
 	// A request is always answered: one the UE could not answer as it meant to gets a 500.
 	if err != nil {
 		c.event(Event{Err: err})
+
 		_ = r.Reject(500)
 	}
 }

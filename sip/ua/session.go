@@ -228,7 +228,7 @@ func newSession(a *Agent, st *Strand, h Handler, uac bool, id dialog.ID, p Polic
 		a: a, st: st, h: h, uac: uac, id: id, policy: p, sdp: offeranswer.Negotiation{KeepFirstAnswer: true},
 		rseq: map[uint32]uint32{}, acks: map[uint32]*sip.Request{}, answering: map[uint32]*Offer{},
 		acking: map[uint32]*Request{},
-		sends: map[*clientRequest]struct{}{}, open: map[*Request]struct{}{},
+		sends:  map[*clientRequest]struct{}{}, open: map[*Request]struct{}{},
 	}
 }
 
@@ -512,6 +512,7 @@ func (s *Session) end(e End) {
 
 	if r := s.inBye; r != nil {
 		s.inBye = nil
+
 		r.deadline.stop()
 
 		if res, err := r.build(Reply{Code: 200}); err == nil {

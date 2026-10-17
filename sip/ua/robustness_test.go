@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +95,7 @@ func TestHeldByeAnsweredOnClose(t *testing.T) {
 	done, f := results()
 
 	_ = as.Bye(ua.Change{}, f)
+
 	<-held
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -278,25 +280,26 @@ func TestReinviteOvertakingTheAck(t *testing.T) {
 func TestStrandFor(t *testing.T) {
 	strands := make(chan *ua.Strand, 2)
 
-	var group *ua.Strand
+	var group atomic.Pointer[ua.Strand]
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.StrandFor = func(req *sip.Request) *ua.Strand {
 			if req.URI.User == "group" {
-				return group
+				return group.Load()
 			}
 
 			return nil
 		}
 		c.OnInvite = func(r *ua.Request) ua.Handler {
 			strands <- r.Strand()
+
 			_ = r.Accept(sdpOf("answer")...)
 
 			return ua.Handler{}
 		}
 	})
 
-	group = bob.a.NewStrand()
+	group.Store(bob.a.NewStrand())
 
 	for range 2 {
 		alice := newRaw(t)
@@ -305,7 +308,7 @@ func TestStrandFor(t *testing.T) {
 		req.SetBodies(sdpOf("offer")...)
 		alice.sock.Send(sip.UDP, bob.addr, req)
 
-		if st := <-strands; st != group {
+		if st := <-strands; st != group.Load() {
 			t.Fatal("an INVITE to the group on another strand")
 		}
 	}

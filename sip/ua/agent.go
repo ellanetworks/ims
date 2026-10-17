@@ -92,8 +92,10 @@ func (e Extensions) tags() []string {
 		on  bool
 		tag string
 	}{
-		{e.Replaces, sip.OptionTagReplaces}, {e.TargetDialog, sip.OptionTagTargetDialog},
-		{e.NoReferSub, sip.OptionTagNoReferSub}, {e.ExplicitSub, sip.OptionTagExplicitSub},
+		{e.Replaces, sip.OptionTagReplaces},
+		{e.TargetDialog, sip.OptionTagTargetDialog},
+		{e.NoReferSub, sip.OptionTagNoReferSub},
+		{e.ExplicitSub, sip.OptionTagExplicitSub},
 	} {
 		if t.on {
 			tags = append(tags, t.tag)

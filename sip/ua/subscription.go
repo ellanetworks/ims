@@ -108,9 +108,6 @@ type Subscription struct {
 
 	// inflight are its SUBSCRIBEs in progress, completed with ErrState should the subscription end first.
 	inflight map[*subscribeRequest]struct{}
-
-	// created is the NOTIFY that created the dialog.
-	created *sip.Request
 }
 
 type subscribeKey struct {
@@ -458,7 +455,6 @@ func (s *Subscription) matches(ev sip.Event) bool {
 // bind gives the subscription the dialog its first NOTIFY creates. A subscription of a REFER takes the Event of that
 // NOTIFY, with its id or without, for its refreshes (RFC 3515 §2.4.6).
 func (s *Subscription) bind(d *dialog.Dialog, notify *sip.Request) {
-	s.created = notify
 	if s.att.refer {
 		if ev, ok, err := notify.Header.Event(); ok && err == nil {
 			s.event = ev
@@ -582,14 +578,14 @@ func (s *Subscription) answerNotify(r *Request, rp Reply) error {
 		return err
 	}
 
-	// The 2xx to the NOTIFY that made the dialog carries its Record-Route and the Contact of the agent
-	// (RFC 3261 §12.1.1).
+	// The 2xx to the NOTIFY that made the dialog carries its Record-Route (RFC 3261 §12.1.1); a NOTIFY refreshes the
+	// target of the dialog (RFC 6665 §4.4.1): every 2xx carries the Contact of the agent.
 	if s.d != nil {
 		s.d.PrepareResponse(r.req, res)
+	}
 
-		if r.req == s.created && res.IsSuccess() && !res.Header.Has("Contact") {
-			res.Header.Set("Contact", s.att.sub.Header.Get("Contact"))
-		}
+	if res.IsSuccess() && !res.Header.Has("Contact") {
+		res.Header.Set("Contact", s.att.sub.Header.Get("Contact"))
 	}
 
 	r.complete(res)

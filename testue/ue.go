@@ -359,10 +359,10 @@ func New(cfg Config) (*UE, error) {
 				},
 			},
 		},
-		Prepare:   u.prepare,
-		Respond:   u.respondHeaders,
-		Policy:    ua.ClientPolicy,
-		Allow:     allowed,
+		Prepare: u.prepare,
+		Respond: u.respondHeaders,
+		Policy:  ua.ClientPolicy,
+		Allow:   allowed,
 		// TS 24.229 §5.1.3.1 b: precondition is advertised for the calls that run them.
 		Understood: understood(cfg),
 		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
@@ -390,7 +390,6 @@ func (u *UE) trace(m sip.Message, f sip.Flow, sent bool) {
 	if u.cfg.Trace != nil {
 		u.cfg.Trace(m, f, sent)
 	}
-
 }
 
 // requestReceived answers a request outside a dialog other than INVITE: MESSAGE, OPTIONS.

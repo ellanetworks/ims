@@ -15,7 +15,12 @@ func TestRequestsLeaveInOrder(t *testing.T) {
 		t.Run(string(tr), func(t *testing.T) {
 			h := newHarness(t)
 
-			const n = 300
+			// Over UDP, a burst the kernel may drop under load, which the fake clock never retransmits: fewer
+			// requests prove the same order.
+			n := 300
+			if tr == sip.UDP {
+				n = 50
+			}
 
 			for i := range n {
 				req := h.newRequest("INFO", tr)

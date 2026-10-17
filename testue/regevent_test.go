@@ -535,6 +535,10 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	if u.Subscription().Active {
 		t.Fatal("subscription active after deregistration")
 	}
+
+	// TS 24.229 §5.1.1.6.1, §5.1.1.7: the subscription is considered ended, as if unsubscribed, without a SUBSCRIBE.
+	n.ps.RecvNone(300 * time.Millisecond)
+	n.pc.RecvNone(0)
 }
 
 func TestSubscriptionTerminatedByTimeout(t *testing.T) {

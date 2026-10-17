@@ -495,15 +495,16 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 		s.dialog = d
 
-		// The 200 to the NOTIFY that creates the dialog carries its Record-Route and the Contact of the P-CSCF in it
-		// (RFC 3261 §12.1.1).
+		// The 200 to the NOTIFY that creates the dialog carries its Record-Route (RFC 3261 §12.1.1).
 		if d != nil {
 			d.PrepareResponse(req, accepted)
-
-			if !accepted.Header.Has("Contact") {
-				accepted.Header.Set("Contact", s.subscribe.Header.Get("Contact"))
-			}
 		}
+	}
+
+	// A NOTIFY refreshes the target of the dialog (RFC 6665 §4.4.1): its 200 carries the Contact of the P-CSCF in
+	// it, the one that created the dialog included (RFC 3261 §12.1.1).
+	if accepted.IsSuccess() && s.subscribe != nil && !accepted.Header.Has("Contact") {
+		accepted.Header.Set("Contact", s.subscribe.Header.Get("Contact"))
 	}
 
 	if info != nil && int64(info.Version) < s.version {
