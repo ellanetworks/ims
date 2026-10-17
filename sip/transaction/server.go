@@ -198,16 +198,15 @@ func (tx *ServerTransaction) checkNonInvite(res *sip.Response) error {
 func (tx *ServerTransaction) transmit() {
 	res := tx.last.Clone()
 
-	tx.push(func() error {
-		f, exact, err := tx.layer.responseFlow(tx.req, res)
-		if err != nil {
-			return err
-		}
+	f, exact, err := tx.layer.responseFlow(tx.req, res)
+	if err != nil {
+		tx.report(err)
+		return
+	}
 
-		res.Flow = f
+	res.Flow = f
 
-		return tx.layer.send(tx.layer.ctx, res, exact)
-	}, func(err error) {
+	tx.push(f, func() error { return tx.layer.send(tx.layer.ctx, res, exact) }, func(err error) {
 		if err != nil {
 			tx.report(err)
 		}
@@ -217,7 +216,7 @@ func (tx *ServerTransaction) transmit() {
 func (tx *ServerTransaction) receive() {
 	tx.mu.Lock()
 
-	if tx.last != nil && len(tx.out) == 0 && (tx.state == Proceeding || tx.state == Completed) {
+	if tx.last != nil && tx.sending == 0 && (tx.state == Proceeding || tx.state == Completed) {
 		tx.transmit()
 	}
 
@@ -268,7 +267,7 @@ func (tx *ServerTransaction) timerG() {
 		return
 	}
 
-	if len(tx.out) == 0 {
+	if tx.sending == 0 {
 		tx.transmit()
 	}
 

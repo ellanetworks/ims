@@ -66,6 +66,9 @@ func tag(a sip.Address, err error) string {
 	return a.Tag()
 }
 
+// Dialog is the state of a dialog (RFC 3261 §12): its identifiers, route set, targets and CSeq spaces. It serves the
+// usages that share it (RFC 5057 §4): a BYE ends the INVITE usage only, and the usage manager ends the dialog with
+// Terminate once its last usage ended; an early dialog ends with the failure of the request that created it.
 type Dialog struct {
 	mu sync.Mutex
 
@@ -81,6 +84,9 @@ type Dialog struct {
 
 	remoteSeq     uint32
 	haveRemoteSeq bool
+
+	// refreshSeq is the CSeq of the last target refresh request of the peer applied to the target.
+	refreshSeq uint32
 
 	origin sip.CSeq
 }
@@ -148,7 +154,12 @@ func NewFromNotify(subscribe, notify *sip.Request) (*Dialog, error) {
 		return nil, fmt.Errorf("%w: %s request", ErrNoDialog, notify.Method)
 	}
 
-	if state, _, _ := strings.Cut(notify.Header.Get("Subscription-State"), ";"); strings.EqualFold(strings.TrimSpace(state), "terminated") {
+	ss, ok, err := notify.Header.SubscriptionState()
+	if err != nil {
+		return nil, fmt.Errorf("sip/dialog: %w", err)
+	}
+
+	if ok && ss.State == sip.SubscriptionTerminated {
 		return nil, fmt.Errorf("%w: subscription terminated", ErrNoDialog)
 	}
 
@@ -274,6 +285,29 @@ func (d *Dialog) ID() ID {
 	return d.id
 }
 
+// TargetDialog identifies the dialog to its peer in a request outside it, with the tags as the peer sees them
+// (RFC 4538 §3).
+func (d *Dialog) TargetDialog() sip.TargetDialog {
+	id := d.ID()
+	return sip.TargetDialog{CallID: id.CallID, LocalTag: id.RemoteTag, RemoteTag: id.LocalTag}
+}
+
+// Replaces asks the peer to replace the dialog: its to-tag is the peer's local tag (RFC 3891 §3).
+func (d *Dialog) Replaces(earlyOnly bool) sip.Replaces {
+	id := d.ID()
+	return sip.Replaces{CallID: id.CallID, ToTag: id.RemoteTag, FromTag: id.LocalTag, EarlyOnly: earlyOnly}
+}
+
+// TargetID is the ID, for the recipient of a request, of the dialog its Target-Dialog designates (RFC 4538 §4).
+func TargetID(td sip.TargetDialog) ID {
+	return ID{CallID: td.CallID, LocalTag: td.LocalTag, RemoteTag: td.RemoteTag}
+}
+
+// ReplacesID is the ID, for the recipient of an INVITE, of the dialog its Replaces designates (RFC 3891 §3).
+func ReplacesID(r sip.Replaces) ID {
+	return ID{CallID: r.CallID, LocalTag: r.ToTag, RemoteTag: r.FromTag}
+}
+
 func (d *Dialog) State() State {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -344,14 +378,33 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 	res.Header.InsertTop(rr...)
 }
 
+// PrepareResponse records a response the UA sends to a request of the peer within the dialog: the response to the
+// creating request copies its Record-Route and moves the state; a 1xx or a 2xx to a target refresh request copies
+// its Record-Route too, whose entries the P-CSCF rewrites (TS 24.229 §5.2.6.3.6, §5.2.6.4.6); a reliable 1xx or a 2xx
+// to it replaces the remote target with its Contact, unless a later one did (RFC 6141 §4.6).
 func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	cseq, err := req.Header.CSeq()
-	if err != nil || cseq != d.origin || res.StatusCode <= 100 {
+	if err != nil || res.StatusCode <= 100 {
 		return
 	}
 
+	refresh := isTargetRefresh(req.Method)
+	target, hasTarget, err := optionalContact(req.Header)
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if refresh && res.StatusCode < 300 && d.state != Terminated {
+		CopyRecordRoute(res, req)
+
+		if refreshes(res) && err == nil && hasTarget && cseq.Seq >= d.refreshSeq {
+			d.target, d.refreshSeq = target, cseq.Seq
+		}
+	}
+
+	if cseq != d.origin {
+		return
+	}
 
 	switch {
 	case res.StatusCode >= 300:
@@ -368,9 +421,14 @@ func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	}
 }
 
+// refreshes reports a response that refreshes the target of a dialog: a reliable 1xx or a 2xx (RFC 6141 §4.6, §4.7).
+func refreshes(res *sip.Response) bool {
+	return res.IsSuccess() || res.IsProvisional() && res.Header.HasOptionTag("Require", sip.OptionTag100rel) && res.Header.Has("RSeq")
+}
+
 func isTargetRefresh(method string) bool {
 	switch method {
-	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY":
+	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY", "REFER":
 		return true
 	}
 
@@ -391,13 +449,9 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 		return err
 	}
 
-	var (
-		target  sip.URI
-		refresh bool
-	)
-
+	// The Contact of a target refresh request applies once a reliable 1xx or a 2xx to it is sent (PrepareResponse).
 	if isTargetRefresh(req.Method) {
-		if target, refresh, err = optionalContact(req.Header); err != nil {
+		if _, _, err := optionalContact(req.Header); err != nil {
 			return &sip.StatusError{StatusCode: 400, Err: err}
 		}
 	}
@@ -414,14 +468,6 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 	}
 
 	d.remoteSeq, d.haveRemoteSeq = cseq.Seq, true
-
-	if refresh {
-		d.target = target
-	}
-
-	if req.Method == "BYE" {
-		d.state = Terminated
-	}
 
 	return nil
 }
@@ -464,10 +510,9 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 		if d.state == Early {
 			d.state = Terminated
 		}
-	case cseq.Method == "BYE" && res.StatusCode >= 200:
-		d.state = Terminated
 	case creating && d.state == Early:
-		if hasTarget {
+		// RFC 6141 §4.9: an unreliable 1xx does not refresh the target of the early dialog it created.
+		if hasTarget && refreshes(res) {
 			d.target = target
 		}
 
@@ -475,7 +520,7 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 			d.state = Confirmed
 			d.route = route
 		}
-	case res.IsSuccess() && isTargetRefresh(cseq.Method) && hasTarget:
+	case refreshes(res) && isTargetRefresh(cseq.Method) && hasTarget:
 		d.target = target
 	}
 
@@ -587,6 +632,7 @@ type Snapshot struct {
 	HaveLocalSeq  bool
 	RemoteSeq     uint32
 	HaveRemoteSeq bool
+	RefreshSeq    uint32
 	Origin        sip.CSeq
 }
 
@@ -605,6 +651,7 @@ func (d *Dialog) Snapshot() Snapshot {
 		HaveLocalSeq:  d.haveLocalSeq,
 		RemoteSeq:     d.remoteSeq,
 		HaveRemoteSeq: d.haveRemoteSeq,
+		RefreshSeq:    d.refreshSeq,
 		Origin:        d.origin,
 	}
 }
@@ -641,6 +688,7 @@ func Restore(s Snapshot) (*Dialog, error) {
 	d.state = s.State
 	d.localSeq, d.haveLocalSeq = s.LocalSeq, s.HaveLocalSeq
 	d.remoteSeq, d.haveRemoteSeq = s.RemoteSeq, s.HaveRemoteSeq
+	d.refreshSeq = s.RefreshSeq
 
 	return d, nil
 }

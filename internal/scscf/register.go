@@ -205,7 +205,7 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 		callID:   req.Header.CallID(),
 		cseq:     cseq.Seq,
 		path:     strings.Join(req.Header.Values("Path"), ", "),
-		outbound: hasOptionTag(req.Header, "Supported", "outbound"),
+		outbound: req.Header.HasOptionTag("Supported", sip.OptionTagOutbound),
 	}
 
 	star := false
@@ -880,10 +880,6 @@ func sameFirstHop(a, b string) bool {
 	y, err := sip.ParseAddressList(b)
 
 	return err == nil && len(y) > 0 && x[0].URI.Equivalent(y[0].URI)
-}
-
-func hasOptionTag(h sip.Header, name, tag string) bool {
-	return slices.ContainsFunc(h.Elements(name), func(e string) bool { return strings.EqualFold(strings.TrimSpace(e), tag) })
 }
 
 func noBinding(rr *registerRequest) *sip.Response {

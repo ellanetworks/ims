@@ -89,7 +89,7 @@ func TestServerInviteTimerGH(t *testing.T) {
 
 	n := 0
 
-	for interval := t1; h.clock.Now()+interval < 64*t1; interval = min(2*interval, t2) {
+	for interval := t1; h.clock.Elapsed()+interval < 64*t1; interval = min(2*interval, t2) {
 		h.advance(interval - time.Millisecond)
 		h.peer.RecvNone(quiet)
 		h.advance(time.Millisecond)
@@ -102,7 +102,7 @@ func TestServerInviteTimerGH(t *testing.T) {
 		t.Fatalf("%d retransmissions, want 10", n)
 	}
 
-	h.advance(64*t1 - h.clock.Now())
+	h.advance(64*t1 - h.clock.Elapsed())
 	wantTerminated(t, tx, transaction.ErrTimeout)
 
 	if e := h.tu.NextError(); e.Tx != tx || !errors.Is(e.Err, transaction.ErrTimeout) {
@@ -215,7 +215,7 @@ func TestServerNonInvite(t *testing.T) {
 	h.wantResponse(200)
 	wantState(t, tx, transaction.Completed)
 
-	end := h.clock.Now() + 64*t1
+	end := h.clock.Elapsed() + 64*t1
 
 	h.advance(time.Minute / 2)
 	h.peer.RecvNone(quiet)
@@ -228,7 +228,7 @@ func TestServerNonInvite(t *testing.T) {
 		t.Errorf("second final response: %v", err)
 	}
 
-	h.advance(end - h.clock.Now() - time.Millisecond)
+	h.advance(end - h.clock.Elapsed() - time.Millisecond)
 	wantState(t, tx, transaction.Completed)
 	h.advance(time.Millisecond)
 	wantTerminated(t, tx, nil)

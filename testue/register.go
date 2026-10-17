@@ -426,12 +426,12 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 			u.dropLocked(s)
 		}
 
-		u.forgetLocked()
+		go u.forgetLocked()()
 
 		return
 	}
 
-	now := time.Now()
+	now := u.now()
 	life := now.Add(granted + saMargin)
 
 	switch {
@@ -526,7 +526,7 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 
 	expires := u.state.Expires
 
-	u.expiryTimer = time.AfterFunc(remaining, func() {
+	u.expiryTimer = u.layer.Clock().AfterFunc(remaining, func() {
 		u.mu.Lock()
 		defer u.mu.Unlock()
 
@@ -539,7 +539,7 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 		return
 	}
 
-	u.reregTimer = time.AfterFunc(reregisterIn(remaining), func() {
+	u.reregTimer = u.layer.Clock().AfterFunc(reregisterIn(remaining), func() {
 		err := u.Reregister(context.Background())
 		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {
 			u.event(Event{Err: err})

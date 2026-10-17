@@ -177,6 +177,11 @@ func (m *Media) PayloadTypes(encoding string) []uint8 {
 	return out
 }
 
+// IsRTP reports whether the media is carried over RTP, and so has RTCP next to it (RFC 3550, RFC 8866 §5.14).
+func (d MediaDesc) IsRTP() bool {
+	return isRTP(d.Proto)
+}
+
 func isRTP(proto string) bool {
 	for _, p := range []string{"RTP/", "UDP/TLS/RTP/", "TCP/RTP/", "TCP/TLS/RTP/"} {
 		if len(proto) > len(p) && strings.EqualFold(proto[:len(p)], p) {

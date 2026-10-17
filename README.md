@@ -65,6 +65,7 @@ sudo ./ims --config ims.yaml
 
 ```sh
 go test ./...
+(cd sip && go test ./...)
 npm test --prefix ui
 ```
 
@@ -84,7 +85,8 @@ E2E_RAT=4g ./run.sh
 #### Fuzz tests
 
 ```sh
-go test -run='^$' -fuzz='^FuzzParse$' ./sip
+cd sip
+go test -run='^$' -fuzz='^FuzzParse$' .
 ```
 
 ## Reference

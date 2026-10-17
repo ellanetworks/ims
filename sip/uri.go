@@ -66,7 +66,7 @@ func (u URI) Equivalent(v URI) bool {
 	}
 
 	if u.User != v.User || u.Password != v.Password || !strings.EqualFold(u.Host, v.Host) ||
-		u.Port != v.Port || !strings.EqualFold(u.Headers, v.Headers) {
+		u.Port != v.Port || !uriHeadersEquivalent(u.Headers, v.Headers) {
 		return false
 	}
 
@@ -212,6 +212,10 @@ func (u *URI) parseSIP(s string) error {
 	if hasHeaders {
 		if headers == "" {
 			return errors.New("empty headers")
+		}
+
+		if err := checkURIHeaders(headers); err != nil {
+			return fmt.Errorf("headers: %w", err)
 		}
 
 		u.Headers = headers

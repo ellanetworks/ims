@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -87,11 +88,16 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 		return policy.MediaComponent{}, err
 	}
 
-	muxed := sdp.RTCPMuxed(x.offer, x.answer, i)
+	t := mediaTransport{
+		muxed:    sdp.RTCPMuxed(x.offer, x.answer, i),
+		tcp:      tcpTransport(desc.Proto),
+		rtp:      desc.IsRTP(),
+		rtcpOnly: mcpttControl(desc),
+	}
+	muxed := t.muxed
 	dir := negotiatedDirection(x, i)
-	tcp := tcpTransport(desc.Proto)
 
-	c.Status = flowStatus(dir, !x.offerFromUE, muxed || tcp)
+	c.Status = flowStatus(dir, !x.offerFromUE, muxed || t.tcp || t.rtcpOnly)
 
 	rr, haveRR := bandwidth(x.answer, i, sdp.BandwidthRR)
 	rs, haveRS := bandwidth(x.answer, i, sdp.BandwidthRS)
@@ -111,7 +117,7 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 		}
 
 		switch {
-		case !muxed || tcp:
+		case !muxed || t.tcp:
 			return new(as * 1000)
 		case haveRR || haveRS:
 			return new(as*1000 + rr + rs)
@@ -128,7 +134,7 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 		{Uplink: !x.offerFromUE, Answer: true, SDP: answer.CodecLines()},
 	}
 
-	subs, err := subComponents(x, i, dir, muxed, tcp, flows)
+	subs, err := subComponents(x, i, dir, t, flows)
 	if err != nil {
 		return policy.MediaComponent{}, err
 	}
@@ -184,6 +190,23 @@ func policyMediaType(t string) policy.MediaType {
 	return policy.MediaOther
 }
 
+// mediaTransport is how the IP flows of a media component are laid out (TS 29.213 Table 6.2.2).
+type mediaTransport struct {
+	muxed, tcp bool
+
+	// rtp media has RTCP next to it, on the next port unless muxed (RFC 3550, RFC 3605).
+	rtp bool
+
+	// rtcpOnly media is one RTCP flow, both ways: the MCPTT media plane control channel.
+	rtcpOnly bool
+}
+
+// TS 24.380 §4.3.3.1: m=application <RTCP port> udp MCPTT, a port carrying RTCP APP packets only.
+func mcpttControl(d sdp.MediaDesc) bool {
+	return strings.EqualFold(d.Type, "application") && strings.EqualFold(d.Proto, "udp") &&
+		slices.ContainsFunc(d.Formats, func(f string) bool { return strings.EqualFold(f, "MCPTT") })
+}
+
 func tcpTransport(proto string) bool {
 	return strings.EqualFold(proto, "TCP") || strings.EqualFold(proto, "TCP/MSRP")
 }
@@ -193,7 +216,9 @@ func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {
 }
 
 // TS 29.213 Table 6.2.2, TS 29.214 Annex A.1
-func subComponents(x sdpExchange, i int, dir sdp.Direction, muxed, tcp bool, flows map[int]flowNumbers) ([]policy.SubComponent, error) {
+func subComponents(x sdpExchange, i int, dir sdp.Direction, t mediaTransport, flows map[int]flowNumbers) ([]policy.SubComponent, error) {
+	muxed, tcp := t.muxed, t.tcp
+
 	up, down := x.uplink(), x.downlink()
 
 	ueRTP, err := up.RTPEndpoint(i)
@@ -219,7 +244,7 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, muxed, tcp bool, flo
 
 	uplink, downlink := true, true
 
-	if !tcp && !muxed && (!seen || !prev.sendrecv) {
+	if !tcp && !muxed && !t.rtcpOnly && (!seen || !prev.sendrecv) {
 		fromUE := !x.offerFromUE
 
 		switch dir {
@@ -234,7 +259,8 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, muxed, tcp bool, flo
 
 	numbers := flowNumbers{sendrecv: dir == sdp.SendRecv}
 
-	if muxed || tcp {
+	// One flow: RTP and RTCP muxed, TCP, media without RTCP, or RTCP alone.
+	if muxed || tcp || !t.rtp {
 		numbers.rtp = 1
 		if seen {
 			numbers.rtp = prev.rtp
@@ -242,6 +268,10 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, muxed, tcp bool, flo
 
 		rtp.FlowNumber = numbers.rtp
 		flows[i] = numbers
+
+		if t.rtcpOnly {
+			rtp.Usage = policy.FlowUsageRTCP
+		}
 
 		return []policy.SubComponent{rtp}, nil
 	}

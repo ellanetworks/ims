@@ -3,7 +3,6 @@ package scscf
 import (
 	"cmp"
 	"context"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -11,184 +10,6 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 )
-
-var baseTags = []string{
-	"audio", "automata", "class", "duplex", "data", "control", "mobility", "description", "events", "priority",
-	"methods", "schemes", "application", "video", "actor", "language", "isfocus", "type", "extensions", "text",
-}
-
-func isFeatureTag(name string) bool {
-	return strings.HasPrefix(name, "+") || slices.Contains(baseTags, name)
-}
-
-type term struct {
-	tag     string
-	values  []string
-	negated bool
-}
-
-type preference struct {
-	terms    []term
-	require  bool
-	explicit bool
-}
-
-// preferences parses the Accept-Contact or Reject-Contact predicates of a request (RFC 3841 §10). A predicate with
-// a term it cannot evaluate, such as a numeric comparison, is discarded whole: dropping only that term would make
-// the predicate match contacts the caller did not mean.
-func preferences(h sip.Header, name string) []preference {
-	var out []preference
-
-	for _, v := range h.Elements(name) {
-		_, params, err := sip.ParseTokenParams(v)
-		if err != nil {
-			continue
-		}
-
-		var p preference
-
-		valid := true
-
-		for _, param := range params {
-			name := strings.ToLower(param.Name)
-
-			switch {
-			case name == "require":
-				p.require = true
-			case name == "explicit":
-				p.explicit = true
-			case isFeatureTag(name):
-				t, ok := parseTerm(name, param.Value)
-				valid = valid && ok
-
-				p.terms = append(p.terms, t)
-			}
-		}
-
-		if valid && len(p.terms) > 0 {
-			out = append(out, p)
-		}
-	}
-
-	return out
-}
-
-func parseTerm(tag, value string) (term, bool) {
-	t := term{tag: tag}
-
-	for _, v := range featureValues(value) {
-		negated := strings.HasPrefix(v, "!")
-		v = strings.TrimPrefix(v, "!")
-
-		if strings.HasPrefix(v, "#") || len(t.values) > 0 && negated != t.negated {
-			return term{}, false
-		}
-
-		t.negated = negated
-		t.values = append(t.values, v)
-	}
-
-	return t, true
-}
-
-// RFC 3840
-func featureValues(v string) []string {
-	if v == "" {
-		return []string{"true"}
-	}
-
-	var out []string
-
-	for s := range strings.SplitSeq(sip.Unquote(v), ",") {
-		s = strings.TrimSpace(s)
-		if u, err := url.PathUnescape(s); err == nil {
-			s = u
-		}
-
-		if !strings.HasPrefix(strings.TrimPrefix(s, "!"), "<") {
-			s = strings.ToLower(s)
-		}
-
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-
-	return out
-}
-
-func contactFeatures(params sip.Params) map[string][]string {
-	features := make(map[string][]string)
-
-	for _, p := range params {
-		if name := strings.ToLower(p.Name); isFeatureTag(name) {
-			features[name] = featureValues(p.Value)
-		}
-	}
-
-	return features
-}
-
-func (t term) matches(have []string) bool {
-	return slices.ContainsFunc(t.values, func(v string) bool { return slices.Contains(have, v) }) != t.negated
-}
-
-// RFC 3841 §7.2.4. Without Accept-Contact predicates, every contact gets the same caller preference, whether it
-// registered feature tags or not: the caller expressed none.
-func callerPreference(features map[string][]string, prefs []preference) (float64, bool) {
-	if len(features) == 0 || len(prefs) == 0 {
-		return 1, true
-	}
-
-	var (
-		total float64
-		m     int
-	)
-
-	for _, p := range prefs {
-		matched := true
-		present := 0
-
-		for _, t := range p.terms {
-			have, ok := features[t.tag]
-			if !ok {
-				continue
-			}
-
-			present++
-			matched = matched && t.matches(have)
-		}
-
-		if !matched {
-			if p.require {
-				return 0, false
-			}
-
-			continue
-		}
-
-		// The share of the predicate's terms the contact has: 1/N for each (RFC 3841 §7.2.4), counted rather
-		// than summed so that a full match is exactly 1.
-		score := float64(present) / float64(len(p.terms))
-
-		if present < len(p.terms) && p.explicit {
-			if p.require {
-				return 0, false
-			}
-
-			score = 0
-		}
-
-		total += score
-		m++
-	}
-
-	if m == 0 {
-		return 0, true
-	}
-
-	return total / float64(m), true
-}
 
 // Recipients returns the registrations a request to the public identity u reaches: every registration holding it,
 // under any of its aliases, whichever private identity registered it (TS 24.229 §5.4.3.3 step 8, TS 23.228
@@ -261,32 +82,6 @@ func reach(regs []db.Registration, keys []string) Reach {
 	return r
 }
 
-// rejectedBy reports whether a Reject-Contact predicate discards a contact: one whose feature tags
-// all appear in the contact's feature set, and all match (RFC 3841 §7.2.4).
-func rejectedBy(features map[string][]string, rejects []preference) bool {
-	if len(features) == 0 {
-		return false
-	}
-
-	for _, r := range rejects {
-		matched := true
-
-		for _, t := range r.terms {
-			have, ok := features[t.tag]
-			if !ok || !t.matches(have) {
-				matched = false
-				break
-			}
-		}
-
-		if matched {
-			return true
-		}
-	}
-
-	return false
-}
-
 // target is a registered contact a request can go to.
 type target struct {
 	binding db.Binding
@@ -341,20 +136,24 @@ func requestDisposition(h sip.Header) disposition {
 // next; with the "sequential" directive, the next contact gets the request only on a final response
 // (RFC 3841 §9.1).
 func targetSet(regs []db.Registration, now time.Time, h sip.Header) (groups [][]target, step bool) {
-	prefs, rejects := preferences(h, "Accept-Contact"), preferences(h, "Reject-Contact")
+	// Malformed predicates are left out; the others apply.
+	prefs, _ := h.AcceptContact()
+	rejects, _ := h.RejectContact()
 
 	var all []target
 
 	for _, reg := range regs {
 		for _, b := range liveAt(reg.Bindings, now) {
 			params, _ := sip.ParseParams(b.Contact.Params)
-			features := contactFeatures(params)
 
-			if rejectedBy(features, rejects) {
+			// Malformed feature parameters are left out (RFC 3841 §7.2.3).
+			features, _ := sip.ParseFeatureSet(params)
+
+			if features.RejectedBy(rejects) {
 				continue
 			}
 
-			qa, ok := callerPreference(features, prefs)
+			qa, ok := features.Preference(prefs)
 			if !ok {
 				continue
 			}

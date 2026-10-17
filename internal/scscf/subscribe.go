@@ -22,9 +22,9 @@ const (
 )
 
 func IsRegEvent(req *sip.Request) bool {
-	event, _, err := sip.ParseTokenParams(req.Header.Get("Event"))
+	e, ok, err := req.Header.Event()
 
-	return err == nil && strings.EqualFold(event, "reg")
+	return ok && err == nil && e.Type() == "reg"
 }
 
 func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []sip.URI, respond func(*sip.Response)) {
@@ -377,6 +377,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 	res = sip.NewResponse(req, 200, "")
 	res.Header.Add("Expires", strconv.FormatInt(int64(expires/time.Second), 10))
 	res.Header.Add("Contact", contactURI(req.Flow.Local, req.Flow.Transport))
+	d.PrepareResponse(req, res)
 
 	if s.Dialog, err = json.Marshal(d.Snapshot()); err != nil {
 		return retryLater(req), nil

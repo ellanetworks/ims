@@ -25,6 +25,9 @@ jobs:
           - { package: ./, target: FuzzWarning }
           - { package: ./, target: FuzzPrivacy }
           - { package: ./, target: FuzzEarlyMedia }
+          - { package: ./, target: FuzzMultipart }
+          - { package: ./, target: FuzzFeatureSet }
+          - { package: ./, target: FuzzTypedHeaders }
           - { package: ./sdp/, target: FuzzSDP }
           - { package: ./imsxml/, target: FuzzDecode }
     steps:
@@ -32,6 +35,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            sip/go.sum
 
       - name: Fuzz ${{ matrix.package }} ${{ matrix.target }}
         working-directory: sip

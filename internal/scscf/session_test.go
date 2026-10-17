@@ -1009,6 +1009,7 @@ func TestTargetSetOrder(t *testing.T) {
 	instance := binding("sip:instance@ue", `;+sip.instance="<urn:gsma:imei:35622410-483840-0>";+g.3gpp.icsi-ref=`+mmtelParam, 0)
 	videoCapable := binding("sip:videocapable@ue", ";video;+g.3gpp.icsi-ref="+mmtelParam, 0)
 	audioOnly := binding("sip:audioonly@ue", `;video="FALSE";+g.3gpp.icsi-ref=`+mmtelParam, 3)
+	mcptt := binding("sip:mcptt@ue", `;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`, 0)
 
 	predicates := func(values ...string) sip.Header {
 		var h sip.Header
@@ -1019,6 +1020,7 @@ func TestTargetSetOrder(t *testing.T) {
 		return h
 	}
 	accept := func(params string) sip.Header { return predicates("*;+g.3gpp.icsi-ref=" + mmtelParam + params) }
+	mcpttOnly := predicates(`*;+g.3gpp.mcptt;require;explicit, *;+g.3gpp.icsi-ref="urn:urn-7:3gpp-service.ims.icsi.mcptt";require;explicit`)
 
 	tests := []struct {
 		name     string
@@ -1042,6 +1044,10 @@ func TestTargetSetOrder(t *testing.T) {
 		{"instance compared with case", []db.Binding{instance}, predicates(`*;+sip.instance="<URN:GSMA:IMEI:35622410-483840-0>";require;explicit`), ""},
 		{"every term of a predicate", []db.Binding{videoCapable, audioOnly}, accept(";video;require"), "sip:videocapable@ue"},
 		{"negated value", []db.Binding{videoCapable, audioOnly}, accept(`;video="!TRUE"`), "sip:audioonly@ue"},
+		// TS 24.379 §6.2.1: an MCPTT request reaches MCPTT clients only, whatever the ICSI's escaping.
+		{"MCPTT client required", []db.Binding{voice, mcptt}, mcpttOnly, "sip:mcptt@ue"},
+		{"no MCPTT client", []db.Binding{voice}, mcpttOnly, ""},
+		{"malformed predicate left out", []db.Binding{voice, mcptt}, predicates(`*;+g.3gpp.mcptt;require;explicit`, `*;audio;+sip.x="#>=y";require`), "sip:mcptt@ue"},
 	}
 
 	for _, tt := range tests {
@@ -1121,7 +1127,7 @@ func TestTargetSetGroups(t *testing.T) {
 		// RFC 3841 §7.2.4: the caller's preferences order the contacts of a q-value, without splitting them.
 		{"partial matches ring together", []db.Binding{phone, tablet}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"best match first", []db.Binding{tablet, binding("sip:newer@ue", "3", ";audio", 9)}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:newer@ue]]"},
-		{"predicate with a term it cannot evaluate", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
+		{"numeric term on a missing tag", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"compact form", []db.Binding{phone, tablet}, header("d", "no-fork"), "[[sip:tablet@ue]]"},
 		{"Reject-Contact", []db.Binding{phone, tablet}, header("Reject-Contact", "*;video"), "[[sip:phone@ue]]"},
 		{"tags without Accept-Contact", []db.Binding{phone, binding("sip:bare@ue", "", "", 0)}, nil, "[[sip:phone@ue sip:bare@ue]]"},
@@ -1403,7 +1409,10 @@ func TestCallerPreferenceFullMatch(t *testing.T) {
 
 		ps, _ := sip.ParseParams(";" + strings.Join(params, ";"))
 
-		if qa, ok := callerPreference(contactFeatures(ps), preferences(h, "Accept-Contact")); !ok || qa != 1 {
+		features, _ := sip.ParseFeatureSet(ps)
+		prefs, _ := h.AcceptContact()
+
+		if qa, ok := features.Preference(prefs); !ok || qa != 1 {
 			t.Errorf("%d terms: Qa %v, kept %v; want 1", n, qa, ok)
 		}
 	}

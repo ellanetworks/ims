@@ -159,6 +159,16 @@ func (s *Socket) Recv() Received {
 	}
 }
 
+// RecvWithin is the next message received within d, ok false without one.
+func (s *Socket) RecvWithin(d time.Duration) (Received, bool) {
+	select {
+	case r := <-s.recv:
+		return r, true
+	case <-time.After(d):
+		return Received{}, false
+	}
+}
+
 func (s *Socket) RecvRequest() (*sip.Request, sip.Flow) {
 	s.t.Helper()
 

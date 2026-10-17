@@ -440,12 +440,12 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 }
 
 func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Response {
-	state, params, err := sip.ParseTokenParams(req.Header.Get("Subscription-State"))
-	if err != nil {
+	state, ok, err := req.Header.SubscriptionState()
+	if !ok || err != nil {
 		return sip.NewResponse(req, 400, "Bad Subscription-State")
 	}
 
-	terminated := strings.EqualFold(state, "terminated")
+	terminated := state.State == sip.SubscriptionTerminated
 
 	var info *regevent.Reginfo
 
@@ -461,6 +461,8 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 		info = &i
 	}
+
+	accepted := sip.NewResponse(req, 200, "")
 
 	ss.mu.Lock()
 
@@ -481,6 +483,9 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 			return sip.NewResponse(req, code, "")
 		}
+
+		// The 200 below applies the Contact of the NOTIFY (RFC 6141 §4.6).
+		s.dialog.PrepareResponse(req, accepted)
 	case s.subscribe != nil:
 		d, err := dialog.NewFromNotify(s.subscribe, req)
 		if err != nil && !terminated {
@@ -489,6 +494,17 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		}
 
 		s.dialog = d
+
+		// The 200 to the NOTIFY that creates the dialog carries its Record-Route (RFC 3261 §12.1.1).
+		if d != nil {
+			d.PrepareResponse(req, accepted)
+		}
+	}
+
+	// A NOTIFY refreshes the target of the dialog (RFC 6665 §4.4.1): its 200 carries the Contact of the P-CSCF in
+	// it, the one that created the dialog included (RFC 3261 §12.1.1).
+	if accepted.IsSuccess() && s.subscribe != nil && !accepted.Header.Has("Contact") {
+		accepted.Header.Set("Contact", s.subscribe.Header.Get("Contact"))
 	}
 
 	if info != nil && int64(info.Version) < s.version {
@@ -502,10 +518,8 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 	if terminated {
 		ss.removeLocked(s)
 	} else {
-		if v, ok := params.Get("expires"); ok {
-			if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-				s.expires = ss.p.clock.Now().Add(time.Duration(n) * time.Second)
-			}
+		if state.Expires != nil {
+			s.expires = ss.p.clock.Now().Add(time.Duration(*state.Expires) * time.Second)
 		}
 
 		ss.saveLocked(s)
@@ -518,7 +532,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		ss.p.apply(s.impi, *info)
 	}
 
-	return sip.NewResponse(req, 200, "")
+	return accepted
 }
 
 func mediaType(ct string) string {

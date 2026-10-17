@@ -39,7 +39,16 @@ func (c *Clock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 	return t
 }
 
-func (c *Clock) Now() time.Duration {
+// epoch is the time of a fake clock before it advances.
+var epoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// Now is the fake time: epoch plus the time the clock advanced.
+func (c *Clock) Now() time.Time {
+	return epoch.Add(c.Elapsed())
+}
+
+// Elapsed is the time the clock advanced.
+func (c *Clock) Elapsed() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

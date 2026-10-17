@@ -70,7 +70,7 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 
 	out := req.Clone()
 
-	tx.push(func() error { return l.send(l.ctx, out, false) }, func(err error) { tx.sentResult(out, err) })
+	tx.push(out.Flow, func() error { return l.send(l.ctx, out, false) }, func(err error) { tx.sentResult(out, err) })
 
 	return tx, nil
 }
@@ -245,7 +245,7 @@ func (tx *ClientTransaction) handleNonInvite(res *sip.Response) {
 
 func (tx *ClientTransaction) sendAck() {
 	ack := tx.ack.Clone()
-	tx.push(func() error { return tx.layer.send(tx.layer.ctx, ack, true) }, tx.sendResult)
+	tx.push(ack.Flow, func() error { return tx.layer.send(tx.layer.ctx, ack, true) }, tx.sendResult)
 }
 
 func (tx *ClientTransaction) sendResult(err error) {
@@ -269,7 +269,7 @@ func (tx *ClientTransaction) retransmitTimer() {
 
 	if tx.sent {
 		req := tx.req.Clone()
-		tx.push(func() error { return tx.layer.send(tx.layer.ctx, req, true) }, tx.sendResult)
+		tx.push(req.Flow, func() error { return tx.layer.send(tx.layer.ctx, req, true) }, tx.sendResult)
 	}
 
 	switch {

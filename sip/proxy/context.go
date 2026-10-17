@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -921,8 +920,8 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 func (c *responseContext) earlyTerminated(b *branch, res *sip.Response) {
 	in := c.tx.Request()
 
-	if !c.invite || !has(in.Header, "Supported", "199") || has(in.Header, "Require", "100rel") ||
-		has(in.Header, "Proxy-Require", "100rel") {
+	if !c.invite || !in.Header.HasOptionTag("Supported", sip.OptionTag199) || in.Header.HasOptionTag("Require", sip.OptionTag100rel) ||
+		in.Header.HasOptionTag("Proxy-Require", sip.OptionTag100rel) {
 		return
 	}
 
@@ -957,10 +956,6 @@ func (c *responseContext) earlyTerminated(b *branch, res *sip.Response) {
 			c.p.log.Debug("sending a 199 failed", slog.Any("error", err))
 		}
 	}
-}
-
-func has(h sip.Header, name, tag string) bool {
-	return slices.ContainsFunc(h.Elements(name), func(e string) bool { return strings.EqualFold(strings.TrimSpace(e), tag) })
 }
 
 // considerLocked weighs a final response against the best one so far (RFC 3261 §16.7 step 6).

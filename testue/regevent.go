@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"github.com/ellanetworks/ims/sip/ua"
 )
 
 const DefaultSubscriptionExpires = 600000 * time.Second
@@ -25,41 +26,55 @@ type Subscription struct {
 	ID      dialog.ID
 }
 
+// subscription is the reg event subscription of the UE (TS 24.229 §5.1.1.3), on a ua.Subscription.
+//
+// u.sub is set before the SUBSCRIBE goes, s once Subscribe returned: both under u.mu, which the agent is never
+// called with.
 type subscription struct {
-	req      *sip.Request
-	d        *dialog.Dialog
-	expires  time.Time
-	duration time.Duration
-	timer    *time.Timer
+	s *ua.Subscription
 
-	timerN    *time.Timer
-	confirmed bool
+	// accepted receives the final response to the initial SUBSCRIBE, or the error that ended it first; dropped marks
+	// a subscription the UE forgot before Subscribe returned.
+	accepted chan error
+	dropped  bool
 
 	version     uint64
 	haveVersion bool
 }
 
-func (s *subscription) matches(req *sip.Request) bool {
-	id := dialog.RequestID(req)
-	if s.d != nil {
-		return id == s.d.ID()
-	}
-
-	from, err := s.req.Header.From()
-
-	return err == nil && id.CallID == s.req.Header.CallID() && id.LocalTag == from.Tag()
-}
-
 func (u *UE) Subscription() Subscription {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 
-	s := u.sub
-	if s == nil || s.d == nil {
+	var s *ua.Subscription
+	if u.sub != nil {
+		s = u.sub.s
+	}
+
+	u.mu.Unlock()
+
+	if s == nil || s.State() == ua.SubscriptionTerminated {
 		return Subscription{}
 	}
 
-	return Subscription{Active: true, Expires: s.expires, ID: s.d.ID()}
+	out := Subscription{Active: true, Expires: s.Expires()}
+
+	if d, ok := s.Dialog(); ok {
+		out.ID = d.ID
+	}
+
+	return out
+}
+
+// current is the subscription of the UE, once Subscribe returned it.
+func (u *UE) current() (*subscription, *ua.Subscription) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.sub == nil {
+		return nil, nil
+	}
+
+	return u.sub, u.sub.s
 }
 
 func (u *UE) Resubscribe(ctx context.Context) error {
@@ -69,51 +84,44 @@ func (u *UE) Resubscribe(ctx context.Context) error {
 	return u.resubscribe(ctx)
 }
 
+// resubscribe refreshes the subscription, or makes a new one without it, or when the refresh ends it (RFC 6665
+// §4.1.2.2).
 func (u *UE) resubscribe(ctx context.Context) error {
-	u.mu.Lock()
-	s := u.sub
-	u.mu.Unlock()
-
-	if s == nil || s.d == nil {
+	_, s := u.current()
+	if s == nil {
 		return u.subscribe(ctx)
 	}
 
-	req, err := s.d.NewRequest("SUBSCRIBE")
-	if err != nil {
+	if _, ok := s.Dialog(); !ok || s.State() == ua.SubscriptionTerminated {
 		return u.subscribe(ctx)
 	}
 
-	if _, err := u.subscribeHeaders(req); err != nil {
-		return err
+	done := make(chan result, 1)
+
+	if err := s.Refresh(ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
+		return u.subscribe(ctx)
 	}
 
-	u.mu.Lock()
-	u.awaitNotifyLocked(s)
-	u.mu.Unlock()
-
-	res, err := u.request(ctx, req)
-	if err != nil {
-		return err
-	}
-
-	switch {
-	case res.IsSuccess():
-		_ = s.d.ReceiveResponse(res)
-
-		u.mu.Lock()
-		defer u.mu.Unlock()
-
-		if u.sub == s {
-			u.subscribedLocked(s, res)
+	select {
+	case r := <-done:
+		switch {
+		case r.err != nil:
+			return fmt.Errorf("testue: SUBSCRIBE: %w", r.err)
+		case r.res.IsSuccess():
+			return nil
+		case s.State() == ua.SubscriptionTerminated:
+			return u.subscribe(ctx)
 		}
 
-		return nil
-	case res.StatusCode == 481:
-		u.endSubscription(s)
-		return u.subscribe(ctx)
-	default:
-		return &ResponseError{Response: res}
+		return &ResponseError{Response: r.res}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+}
+
+type result struct {
+	res *sip.Response
+	err error
 }
 
 func (u *UE) subscribe(ctx context.Context) error {
@@ -132,67 +140,79 @@ func (u *UE) subscribe(ctx context.Context) error {
 
 	req := sip.NewRequest("SUBSCRIBE", target)
 
-	flow, err := u.subscribeHeaders(req)
+	preloaded, err := u.outboundRoute()
 	if err != nil {
 		return err
 	}
 
-	req.Header.Add("Route", "<"+preloadedRoute(flow).String()+">")
+	req.Header.Add("Route", "<"+preloaded.String()+">")
 
 	for _, r := range route {
 		req.Header.Add("Route", r)
 	}
 
-	req.Header.Add("Max-Forwards", "70")
-	req.Header.Add("From", "<"+impu+">;tag="+sip.NewTag())
+	contact := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
+
+	req.Header.Add("From", "<"+impu+">")
 	req.Header.Add("To", "<"+impu+">")
 	req.Header.Add("Call-ID", timeUUID()+"@"+sip.FormatHost(u.cfg.Local))
-	req.Header.Add("CSeq", "1 SUBSCRIBE")
+	req.Header.Add("Contact", "<"+contact.String()+">")
+	req.Header.Add("Event", "reg")
+	req.Header.Add("Accept", regevent.ContentType)
+	req.Header.Add("Expires", strconv.FormatInt(int64(DefaultSubscriptionExpires/time.Second), 10))
 
-	s := &subscription{req: req}
+	sub := &subscription{accepted: make(chan error, 1)}
 
 	u.mu.Lock()
-	if old := u.sub; old != nil {
-		u.stopSubscriptionLocked(old)
+
+	var old *ua.Subscription
+	if u.sub != nil {
+		old = u.sub.s
 	}
 
-	u.sub = s
-	u.awaitNotifyLocked(s)
+	u.sub = sub
 	u.mu.Unlock()
 
-	res, err := u.request(ctx, req)
-	if err != nil {
-		u.endSubscription(s)
-		return err
+	if old != nil {
+		_ = old.Unsubscribe(ua.Change{})
 	}
 
-	if !res.IsSuccess() {
-		u.endSubscription(s)
-		return &ResponseError{Response: res}
+	s, err := u.agent.Subscribe(req, u.regEventHandler(sub))
+	if err != nil {
+		u.endSubscription(sub)
+		return fmt.Errorf("testue: SUBSCRIBE: %w", err)
 	}
 
 	u.mu.Lock()
-	defer u.mu.Unlock()
+	sub.s = s
+	dropped := sub.dropped
+	u.mu.Unlock()
 
-	if u.sub != s {
-		return nil
+	if dropped {
+		s.Drop()
 	}
 
-	if s.d == nil {
-		d, err := dialog.NewUAC(req, res)
+	select {
+	case err := <-sub.accepted:
 		if err != nil {
-			u.stopSubscriptionLocked(s)
-			return fmt.Errorf("testue: SUBSCRIBE: %w", err)
+			u.endSubscription(sub)
 		}
 
-		s.d = d
-	} else {
-		_ = s.d.ReceiveResponse(res)
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// outboundRoute is the Route to the P-CSCF the UE preloads in its initial requests (TS 24.229 §5.1.2A.1.1), on the
+// flow of its transport.
+func (u *UE) outboundRoute() (sip.URI, error) {
+	flow, _, err := u.requestFlow(u.cfg.Transport)
+	if err != nil {
+		return sip.URI{}, err
 	}
 
-	u.subscribedLocked(s, res)
-
-	return nil
+	return preloadedRoute(flow), nil
 }
 
 func preloadedRoute(f sip.Flow) sip.URI {
@@ -204,21 +224,6 @@ func preloadedRoute(f sip.Flow) sip.URI {
 	u.Params.Set("lr", "")
 
 	return u
-}
-
-func (u *UE) subscribeHeaders(req *sip.Request) (sip.Flow, error) {
-	if err := u.prepare(req); err != nil {
-		return sip.Flow{}, err
-	}
-
-	contact := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
-
-	req.Header.Add("Contact", "<"+contact.String()+">")
-	req.Header.Add("Event", "reg")
-	req.Header.Add("Accept", regevent.ContentType)
-	req.Header.Add("Expires", strconv.FormatInt(int64(DefaultSubscriptionExpires/time.Second), 10))
-
-	return req.Flow, nil
 }
 
 func (u *UE) requestFlow(tr sip.Transport) (sip.Flow, []string, error) {
@@ -237,171 +242,86 @@ func (u *UE) requestFlow(tr sip.Transport) (sip.Flow, []string, error) {
 	return protectedFlow(est, tr), est.server, nil
 }
 
-func (u *UE) subscribedLocked(s *subscription, res *sip.Response) {
-	if v, err := res.Header.Expires(); err == nil {
-		s.duration = time.Duration(v) * time.Second
-		s.expires = time.Now().Add(s.duration)
-	} else if s.expires.IsZero() {
-		s.duration = DefaultSubscriptionExpires
-		s.expires = time.Now().Add(s.duration)
-	}
-
-	u.scheduleRefreshLocked(s)
-}
-
-func (u *UE) awaitNotifyLocked(s *subscription) {
-	s.confirmed = false
-
-	if s.timerN != nil {
-		s.timerN.Stop()
-	}
-
-	s.timerN = time.AfterFunc(64*u.layer.T1(), func() {
-		u.mu.Lock()
-
-		expired := u.sub == s && !s.confirmed
-		if expired {
-			u.stopSubscriptionLocked(s)
-		}
-
-		u.mu.Unlock()
-
-		if expired {
-			u.event(Event{Err: ErrNoNotify})
-		}
-	})
-}
-
-func refreshIn(expires time.Time, duration time.Duration) time.Duration {
-	if duration > 1200*time.Second {
-		return max(time.Until(expires)-600*time.Second, 0)
-	}
-
-	return max(time.Until(expires)-duration/2, 0)
-}
-
-func (u *UE) scheduleRefreshLocked(s *subscription) {
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
-	}
-
-	if u.closed || s.d == nil {
-		return
-	}
-
-	s.timer = time.AfterFunc(refreshIn(s.expires, s.duration), func() {
-		err := u.Resubscribe(context.Background())
-		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {
-			u.event(Event{Err: err})
-		}
-	})
-}
-
-func (u *UE) endSubscription(s *subscription) {
+func (u *UE) endSubscription(sub *subscription) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if u.sub == s {
-		u.stopSubscriptionLocked(s)
-	}
-}
-
-func (u *UE) stopSubscriptionLocked(s *subscription) {
-	for _, t := range []**time.Timer{&s.timer, &s.timerN} {
-		if *t != nil {
-			(*t).Stop()
-			*t = nil
-		}
-	}
-
-	if s.d != nil {
-		s.d.Terminate()
-	}
-
-	if u.sub == s {
+	if u.sub == sub {
 		u.sub = nil
 	}
 }
 
-func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
-	event, _, err := sip.ParseTokenParams(req.Header.Get("Event"))
-	if err != nil || !strings.EqualFold(event, "reg") {
-		u.event(Event{Request: req})
-		_ = tx.Respond(sip.NewResponse(req, 489, ""))
+// stopSubscriptionLocked forgets the subscription of the UE, with its registration: no SIP procedure, the network
+// ended it too (TS 24.229 §5.1.1.7 NOTE 3, NOTE 4); the agent drops it once the lock is released.
+func (u *UE) stopSubscriptionLocked() func() {
+	sub := u.sub
+	u.sub = nil
 
-		return
+	switch {
+	case sub == nil:
+		return func() {}
+	case sub.s == nil:
+		sub.dropped = true
+		return func() {}
 	}
 
-	subState, params, err := sip.ParseTokenParams(req.Header.Get("Subscription-State"))
-	if err != nil {
-		u.event(Event{Request: req})
-		_ = tx.Respond(sip.NewResponse(req, 400, "Bad Subscription-State"))
+	s := sub.s
 
-		return
-	}
+	return s.Drop
+}
 
-	terminated := strings.EqualFold(subState, "terminated")
-
-	u.mu.Lock()
-
-	s := u.sub
-	if s == nil || !s.matches(req) {
-		u.mu.Unlock()
-		u.event(Event{Request: req})
-		_ = tx.Respond(sip.NewResponse(req, 481, ""))
-
-		return
-	}
-
-	if s.d == nil && !terminated {
-		d, err := dialog.NewFromNotify(s.req, req)
-		if err != nil {
-			u.mu.Unlock()
-			u.event(Event{Request: req})
-			_ = tx.Respond(sip.NewResponse(req, 400, ""))
-
-			return
-		}
-
-		s.d = d
-	} else if s.d != nil {
-		if err := s.d.ReceiveRequest(req); err != nil {
-			u.mu.Unlock()
-			u.event(Event{Request: req})
-
-			code := 400
-			if serr, ok := errors.AsType[*sip.StatusError](err); ok {
-				code = serr.StatusCode
+// regEventHandler handles the events of the reg event subscription sub (RFC 6665, RFC 3680).
+func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
+	return ua.SubscriptionHandler{
+		Accepted: func(*ua.Subscription, *sip.Response) {
+			select {
+			case sub.accepted <- nil:
+			default:
+			}
+		},
+		Notify: func(_ *ua.Subscription, r *ua.Request) { u.notify(sub, r) },
+		Ended: func(s *ua.Subscription, e ua.End) {
+			if e.Cause == ua.EndRejected && e.Response != nil {
+				select {
+				case sub.accepted <- &ResponseError{Response: e.Response}:
+				default:
+				}
+			} else {
+				select {
+				case sub.accepted <- fmt.Errorf("testue: SUBSCRIBE: subscription %s", e.Cause):
+				default:
+				}
 			}
 
-			_ = tx.Respond(sip.NewResponse(req, code, ""))
+			u.mu.Lock()
 
-			return
-		}
-	}
-
-	s.confirmed = true
-
-	if s.timerN != nil {
-		s.timerN.Stop()
-		s.timerN = nil
-	}
-
-	if v, ok := params.Get("expires"); ok && !terminated {
-		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
-			s.expires = time.Now().Add(time.Duration(n) * time.Second)
-			if s.duration == 0 {
-				s.duration = time.Duration(n) * time.Second
+			current := u.sub == sub
+			if current {
+				u.sub = nil
 			}
 
-			u.scheduleRefreshLocked(s)
-		}
-	}
+			// RFC 6665 §4.1.3: a subscription deactivated, or timed out, is made again at once.
+			reason := e.State.Reason
+			resubscribe := e.Cause == ua.EndTerminated && current && u.state.Registered &&
+				(reason == sip.SubscriptionDeactivated || reason == sip.SubscriptionTimeout)
 
-	if terminated {
-		u.stopSubscriptionLocked(s)
+			u.mu.Unlock()
+
+			switch {
+			case e.Cause == ua.EndNoNotify && current:
+				u.event(Event{Err: ErrNoNotify})
+			case resubscribe:
+				go u.act(action{resubscribe: true}, nil)
+			}
+		},
 	}
+}
+
+// notify handles a NOTIFY of the reg event subscription, which the agent answered (RFC 3680 §5).
+func (u *UE) notify(sub *subscription, r *ua.Request) {
+	req := r.Message()
+	ss, _, _ := req.Header.SubscriptionState()
+	terminated := ss.State == sip.SubscriptionTerminated
 
 	var (
 		info    regevent.Reginfo
@@ -417,25 +337,27 @@ func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
 	var (
 		a     action
 		stale bool
+		after []func()
 	)
 
+	u.mu.Lock()
+
 	if infoErr == nil {
-		stale = s.haveVersion && info.Version <= s.version
-		gap := s.haveVersion && info.Version > s.version+1
+		stale = sub.haveVersion && info.Version <= sub.version
+		gap := sub.haveVersion && info.Version > sub.version+1
 
 		if !stale {
-			s.version, s.haveVersion = info.Version, true
-			a = u.applyLocked(info, terminated)
+			sub.version, sub.haveVersion = info.Version, true
+			a, after = u.applyLocked(info, terminated)
 			a.resubscribe = gap && !terminated && !a.teardown
 		}
 	}
 
-	if terminated && !a.teardown {
-		reason, _ := params.Get("reason")
-		a.resubscribe = u.state.Registered && (reason == "deactivated" || reason == "timeout")
-	}
-
 	u.mu.Unlock()
+
+	for _, f := range after {
+		f()
+	}
 
 	e := Event{Request: req, Err: infoErr}
 	if infoErr == nil && !stale {
@@ -444,10 +366,8 @@ func (u *UE) notify(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	u.event(e)
 
-	_ = tx.Respond(sip.NewResponse(req, 200, ""))
-
 	if a.teardown || a.resubscribe {
-		go u.act(tx, a)
+		go u.act(a, r.Done())
 	}
 }
 
@@ -482,7 +402,7 @@ func (u *UE) ownContact(c regevent.Contact) bool {
 	return u.ownFlow(params)
 }
 
-func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {
+func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []func()) {
 	var (
 		shortened             *uint32
 		mine, gone            int
@@ -534,13 +454,13 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {
 	}
 
 	if (mine > 0 && gone == mine) || (allClosed && subTerminated) {
-		u.forgetLocked()
+		after := u.forgetLocked()
 
-		return action{teardown: true, reregister: deactivated && !rejected}
+		return action{teardown: true, reregister: deactivated && !rejected}, []func(){after}
 	}
 
 	if !u.state.Registered {
-		return action{}
+		return action{}, nil
 	}
 
 	if info.State == regevent.Full {
@@ -569,28 +489,32 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) action {
 
 	if shortened != nil {
 		remaining := time.Duration(*shortened) * time.Second
-		if expires := time.Now().Add(remaining); expires.Before(u.state.Expires) {
+		if expires := u.now().Add(remaining); expires.Before(u.state.Expires) {
 			u.state.Expires = expires
 			u.scheduleLocked(remaining)
 		}
 	}
 
-	return action{}
+	return action{}, nil
 }
 
-func (u *UE) forgetLocked() {
+// forgetLocked forgets the registration; the subscription it returns to unsubscribe from goes once the lock is
+// released.
+func (u *UE) forgetLocked() func() {
 	u.stopTimersLocked()
 	u.state = State{}
 	u.auth = ""
 
-	if u.sub != nil {
-		u.stopSubscriptionLocked(u.sub)
-	}
+	return u.stopSubscriptionLocked()
 }
 
-func (u *UE) act(tx *transaction.ServerTransaction, a action) {
+// act tears the registration down, once the NOTIFY that told it is answered, over the SAs it deletes; then registers
+// or subscribes again.
+func (u *UE) act(a action, answered <-chan struct{}) {
 	if a.teardown {
-		<-tx.Done()
+		if answered != nil {
+			<-answered
+		}
 
 		u.op.Lock()
 		u.mu.Lock()

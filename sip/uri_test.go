@@ -153,6 +153,14 @@ func TestURIEquivalent(t *testing.T) {
 		{"sip:bob@biloxi.com", "sips:bob@biloxi.com", false},
 		{"tel:+15551230001", "TEL:+15551230001", true},
 		{"tel:+15551230001", "tel:+15551230002", false},
+		// RFC 3261 §19.1.4: header components are never ignored, and match whatever their order or escaping.
+		{"sip:biloxi.com;transport=tcp;method=REGISTER?to=sip:bob%40biloxi.com", "sip:biloxi.com;method=REGISTER;transport=tcp?to=sip:bob%40biloxi.com", true},
+		{"sip:carol@chicago.com", "sip:carol@chicago.com?Subject=next%20meeting", false},
+		{"sip:a@b?Subject=x&Priority=urgent", "sip:a@b?priority=URGENT&subject=x", true},
+		{"sip:a@b?Subject=%41", "sip:a@b?Subject=A", true},
+		{"sip:a@b?s=x", "sip:a@b?Subject=x", true},
+		{"sip:a@b?Subject=x&Subject=y", "sip:a@b?Subject=x&Subject=x", false},
+		{"sip:a@b?body=x", "sip:a@b?body=X", false},
 	}
 
 	for _, tt := range tests {

@@ -36,7 +36,7 @@ type fakeClock struct {
 }
 
 func (c fakeClock) Now() time.Time {
-	return testEpoch.Add(c.Clock.Now())
+	return testEpoch.Add(c.Elapsed())
 }
 
 type regScene struct {
@@ -199,6 +199,9 @@ type ownSub struct {
 	cseq  int
 	from  *siptest.Socket
 	pcscf netip.AddrPort
+
+	// rr is the Record-Route of the NOTIFYs, as proxies on the way would add it.
+	rr []string
 }
 
 func answerSubscribe(icscf, scscf *siptest.Socket, sub *sip.Request, f sip.Flow, expires int) *ownSub {
@@ -232,6 +235,10 @@ func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip
 	n.Header.Set("Contact", "<sip:"+o.from.Addr().String()+">")
 	n.Header.Add("Event", "reg")
 	n.Header.Add("Subscription-State", state)
+
+	for _, rr := range o.rr {
+		n.Header.Add("Record-Route", rr)
+	}
 
 	if info != nil {
 		body, err := regevent.Encode(*info)
@@ -387,6 +394,38 @@ func TestOwnSubscribe(t *testing.T) {
 		subs, _ := s.store.ListPCSCFSubscriptions(context.Background())
 		return len(subs) == 1 && subs[0].IMPI == testIMPI
 	})
+}
+
+// RFC 3261 §12.1.1, RFC 6665 §4.4.1: the 200 to the NOTIFY that creates the dialog of the P-CSCF's subscription
+// carries the Record-Route of the NOTIFY and the Contact of the P-CSCF.
+func TestFirstNotifyResponseCreatesTheDialog(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(600)
+	o := answerSubscribe(s.icscf, s.scscf, sub, f, 600000)
+	o.rr = []string{"<sip:icscf.example.com;lr>", "<sip:scscf.example.com;lr>"}
+
+	res := o.notify(t, "active;expires=600000", nil)
+	wantStatus(t, res, 200)
+
+	if got := res.Header.Elements("Record-Route"); !slices.Equal(got, o.rr) {
+		t.Errorf("Record-Route of the 200 = %q, want %q", got, o.rr)
+	}
+
+	if contacts, err := res.Header.Contacts(); err != nil || len(contacts) != 1 || contacts[0].URI.String() != mustContact(t, sub) {
+		t.Errorf("Contact of the 200 = %q, want the P-CSCF's", res.Header.Get("Contact"))
+	}
+}
+
+func mustContact(t *testing.T, req *sip.Request) string {
+	t.Helper()
+
+	contacts, err := req.Header.Contacts()
+	if err != nil || len(contacts) != 1 {
+		t.Fatalf("Contact %q", req.Header.Get("Contact"))
+	}
+
+	return contacts[0].URI.String()
 }
 
 func TestOwnSubscriptionRefresh(t *testing.T) {

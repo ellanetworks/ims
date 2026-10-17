@@ -159,6 +159,9 @@ func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
 	req.Header.Set("Call-ID", no.sub.Header.CallID())
 	req.Header.Set("CSeq", strconv.Itoa(no.cseq)+" NOTIFY")
 	req.Header.Set("Contact", scscfContact)
+	// The P-CSCF record-routes the NOTIFY, which makes the route set of the subscriber (RFC 6665 §4.4.1,
+	// TS 24.229 §5.2.6.3.5).
+	req.Header.Add("Record-Route", pcscfRR)
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Subscription-State", state)
 	req.SetBody(regevent.ContentType, body)
@@ -242,11 +245,16 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 		t.Fatalf("From = %q", req.Header.Get("From"))
 	}
 
-	if s := u.Subscription(); !s.Active || time.Until(s.Expires) < 599000*time.Second || s.ID.RemoteTag != no.toTag {
+	if s := u.Subscription(); !s.Active || time.Until(s.Expires) < 599000*time.Second {
 		t.Fatalf("subscription = %+v", s)
 	}
 
 	no.active()
+
+	// RFC 6665 §4.4.1: the NOTIFY makes the dialog.
+	if s := u.Subscription(); s.ID.RemoteTag != no.toTag {
+		t.Fatalf("subscription = %+v", s)
+	}
 
 	info := nextReginfo(t, u)
 	if len(info.Registrations) != 2 {
@@ -356,6 +364,9 @@ func TestResubscribe(t *testing.T) {
 	if err := wait(t, done); err != nil {
 		t.Fatal(err)
 	}
+
+	// RFC 6665 §4.4.1: its NOTIFY makes the dialog.
+	no.active()
 
 	if s := u.Subscription(); !s.Active || s.ID.CallID != req.Header.CallID() {
 		t.Fatalf("subscription = %+v, want the new one", s)
@@ -524,6 +535,10 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	if u.Subscription().Active {
 		t.Fatal("subscription active after deregistration")
 	}
+
+	// TS 24.229 §5.1.1.6.1, §5.1.1.7: the subscription is considered ended, as if unsubscribed, without a SUBSCRIBE.
+	n.ps.RecvNone(300 * time.Millisecond)
+	n.pc.RecvNone(0)
 }
 
 func TestSubscriptionTerminatedByTimeout(t *testing.T) {
@@ -635,21 +650,5 @@ func TestFullStateReplacesIMPUs(t *testing.T) {
 
 	if st := u.State(); !slices.Equal(st.IMPUs, []string{msisdn, telIMPU}) {
 		t.Fatalf("IMPUs = %v after a partial document adding %s", st.IMPUs, telIMPU)
-	}
-}
-
-func TestRefreshIn(t *testing.T) {
-	for _, tc := range []struct {
-		remaining, duration, want time.Duration
-	}{
-		{600000 * time.Second, 600000 * time.Second, 599400 * time.Second},
-		{1000 * time.Second, 600000 * time.Second, 400 * time.Second},
-		{1200 * time.Second, 1200 * time.Second, 600 * time.Second},
-		{100 * time.Second, 1200 * time.Second, 0},
-	} {
-		got := refreshIn(time.Now().Add(tc.remaining), tc.duration)
-		if d := got - tc.want; d > time.Second || d < -time.Second {
-			t.Errorf("refreshIn(%s, %s) = %s, want %s", tc.remaining, tc.duration, got, tc.want)
-		}
 	}
 }

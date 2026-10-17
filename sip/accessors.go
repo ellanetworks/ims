@@ -207,6 +207,11 @@ func (fs Header) To() (Address, error) {
 	return fs.address("To")
 }
 
+// RFC 3515 §2.1. In MCPTT the target may be a cid URL to a body of the REFER (TS 24.379 §10.1.2.2.2.1).
+func (fs Header) ReferTo() (Address, error) {
+	return fs.address("Refer-To")
+}
+
 func (fs Header) address(name string) (Address, error) {
 	v, err := fs.first(name)
 	if err != nil {

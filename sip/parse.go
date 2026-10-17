@@ -104,7 +104,14 @@ func setMessageBody(m Message, body []byte) {
 
 func splitHead(head string) (string, Header, *ParseError) {
 	start, rest, _ := strings.Cut(head, "\r\n")
+	fields, err := parseFields(rest)
 
+	return start, fields, err
+}
+
+// parseFields parses CRLF-separated header lines, with folding, and returns the first error after parsing
+// every other line.
+func parseFields(rest string) (Header, *ParseError) {
 	var (
 		fields Header
 		first  *ParseError
@@ -138,7 +145,7 @@ func splitHead(head string) (string, Header, *ParseError) {
 		rest = strings.TrimPrefix(rest[end:], "\r\n")
 	}
 
-	return start, fields, first
+	return fields, first
 }
 
 func parseField(raw string) (Field, *ParseError) {

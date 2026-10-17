@@ -599,8 +599,9 @@ func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
 		return err
 	}
 
-	return p.layer.Go(func(ctx context.Context) {
-		if err := p.layer.SendAck(ctx, out); err != nil {
+	// In the order of its flow: before the requests forwarded after it.
+	return p.layer.QueueAck(out, func(err error) {
+		if err != nil {
 			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
 		}
 	})

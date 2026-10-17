@@ -12,13 +12,22 @@ type sdpStep struct {
 	method string
 	code   int
 	sdp    string
+	// multipart sends the SDP next to an mcptt-info body, or the mcptt-info body alone without SDP (TS 24.379 §6.5).
+	multipart bool
 }
 
 func (s sdpStep) apply(d *Dialog) {
-	var e sip.Envelope
+	var parts []sip.BodyPart
 	if s.sdp != "" {
-		e.SetBody("application/sdp", []byte(s.sdp))
+		parts = append(parts, sip.NewBodyPart("application/sdp", []byte(s.sdp)))
 	}
+
+	if s.multipart {
+		parts = append(parts, sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>")))
+	}
+
+	var e sip.Envelope
+	e.SetBodies(parts...)
 
 	if s.code == 0 {
 		d.requestBody(&d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
@@ -111,6 +120,22 @@ func TestNegotiation(t *testing.T) {
 			offer: "H", answer: "h", answered: true,
 		},
 		{
+			name: "offer and answer in multipart bodies",
+			steps: []sdpStep{
+				{from: Caller, seq: 1, method: "INVITE", sdp: "X", multipart: true},
+				{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "x", multipart: true},
+			},
+			offer: "X", answer: "x", answered: true,
+		},
+		{
+			name: "a body without SDP is no offer",
+			steps: append(negotiated[:2:2],
+				sdpStep{from: Callee, seq: 9, method: "INVITE", multipart: true},
+				sdpStep{from: Callee, seq: 9, method: "INVITE", code: 200, sdp: "O"},
+				sdpStep{from: Callee, seq: 9, method: "ACK", sdp: "a", multipart: true}),
+			offer: "O", answer: "a", answered: true,
+		},
+		{
 			name: "offer in a PRACK",
 			steps: append(negotiated[:1:1],
 				sdpStep{from: Caller, seq: 1, method: "INVITE", code: 183, sdp: "x"},
@@ -157,8 +182,8 @@ func TestExchangeSequence(t *testing.T) {
 
 	sdpStep{from: Caller, seq: 1, method: "INVITE", code: 200, sdp: "y"}.apply(d)
 
-	if d.sdp.seq == first || string(d.sdp.answer.Data) != "y" {
-		t.Fatalf("seq %d answer %q after a changed answer, want a new exchange", d.sdp.seq, d.sdp.answer.Data)
+	if _, answer := d.sdp.Last(); d.sdp.seq == first || string(answer.Data) != "y" {
+		t.Fatalf("seq %d answer %q after a changed answer, want a new exchange", d.sdp.seq, answer.Data)
 	}
 
 	sdpStep{from: Callee, seq: 2, method: "UPDATE", sdp: "U"}.apply(d)
@@ -231,4 +256,24 @@ func mustAddress(t *testing.T, s string) sip.Address {
 	}
 
 	return as[0]
+}
+
+// RFC 3959, RFC 5621 §6: only the SDP with the session disposition is the offer or the answer.
+func TestSessionBodyDisposition(t *testing.T) {
+	early := sip.NewBodyPart("application/sdp", []byte("early"))
+	early.Header.Add("Content-Disposition", "early-session")
+
+	var e sip.Envelope
+
+	e.SetBodies(early)
+
+	if b, ok := sessionBody(Caller, e); ok {
+		t.Errorf("early-session SDP taken as the session: %q", b.Data)
+	}
+
+	e.SetBodies(early, sip.NewBodyPart("application/sdp", []byte("session")))
+
+	if b, ok := sessionBody(Caller, e); !ok || string(b.Data) != "session" {
+		t.Errorf("session SDP %q, %v", b.Data, ok)
+	}
 }

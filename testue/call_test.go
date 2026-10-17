@@ -441,13 +441,24 @@ func waitEvents(t *testing.T, c *Call, want string, format func([]string) string
 	t.Fatalf("saw %s, want %s", format(got), want)
 }
 
+// advance advances the clock of the calls by d, in steps the agents follow.
+func advance(clock *siptest.Clock, d time.Duration) {
+	for step := 5 * time.Second; d > 0; d -= step {
+		clock.Advance(min(step, d))
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// RFC 4028 §10: the caller, refresher, refreshes at half the interval.
 func TestSessionRefresh(t *testing.T) {
 	ctx := testContext(t)
-	a, b := pair(t)
+	clock := siptest.NewClock()
+	a, b := pairWith(t, Config{Clock: clock}, Config{Clock: clock})
 
-	_, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 2 * time.Second})
+	_, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
 	methods(bc)
 
+	advance(clock, 61*time.Second)
 	waitMethods(t, bc, "UPDATE")
 
 	if bc.State() != CallConfirmed {
@@ -455,15 +466,36 @@ func TestSessionRefresh(t *testing.T) {
 	}
 }
 
+// RFC 4028 §10: without the refreshes of the caller, the refresher, the callee ends the session with a BYE before it
+// expires.
 func TestSessionExpiry(t *testing.T) {
 	ctx := testContext(t)
-	a, b := pair(t)
+	clock := siptest.NewClock()
+	a, b := pairWith(t, Config{Clock: clock}, Config{Clock: clock})
 
-	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 2 * time.Second})
+	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
 	ac.SetAutoRefresh(false)
+
+	advance(clock, 90*time.Second)
 
 	ended(t, bc, Expired)
 	ended(t, ac, RemoteBye)
+}
+
+// RFC 4028 §10: without the network of the caller, both ends see the session expire.
+func TestSessionExpiryWithoutNetwork(t *testing.T) {
+	ctx := testContext(t)
+	clock := siptest.NewClock()
+	a, b := pairWith(t, Config{Clock: clock}, Config{Clock: clock})
+
+	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
+
+	_ = a.layer.Close()
+
+	advance(clock, 125*time.Second)
+
+	ended(t, bc, Expired)
+	ended(t, ac, Expired)
 }
 
 // RFC 3261 §14.1: a re-INVITE refused with 491 is made once more, after up to 2 s for the callee, which does not own
@@ -475,9 +507,7 @@ func TestReinviteGlare(t *testing.T) {
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 	methods(ac)
 
-	ac.mu.Lock()
-	ac.leg.offering = true
-	ac.mu.Unlock()
+	ac.RefuseOffers(true)
 
 	start := time.Now()
 
@@ -498,9 +528,7 @@ func TestReinviteGlare(t *testing.T) {
 		t.Errorf("callee's description %s after the refused hold", d)
 	}
 
-	ac.mu.Lock()
-	ac.leg.offering = false
-	ac.mu.Unlock()
+	ac.RefuseOffers(false)
 
 	if err := bc.Hold(ctx); err != nil {
 		t.Fatal(err)
@@ -514,9 +542,7 @@ func TestReinviteGlareRetried(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
-	ac.mu.Lock()
-	ac.leg.offering = true
-	ac.mu.Unlock()
+	ac.RefuseOffers(true)
 
 	held := make(chan error, 1)
 
@@ -528,9 +554,7 @@ func TestReinviteGlareRetried(t *testing.T) {
 		}
 	}
 
-	ac.mu.Lock()
-	ac.leg.offering = false
-	ac.mu.Unlock()
+	ac.RefuseOffers(false)
 
 	if err := <-held; err != nil {
 		t.Fatalf("Hold = %v, want it done when made once more", err)
@@ -862,8 +886,9 @@ func TestNoPrack(t *testing.T) {
 			continue
 		}
 
-		if res.StatusCode != 504 {
-			t.Fatalf("got %s, want 504", res.StartLine())
+		// RFC 3262 §3: a 5xx.
+		if res.StatusCode != 500 {
+			t.Fatalf("got %s, want 500", res.StartLine())
 		}
 
 		break
@@ -1286,9 +1311,7 @@ func TestUpdateGlare(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
-	ac.mu.Lock()
-	ac.leg.offering = true
-	ac.mu.Unlock()
+	ac.RefuseOffers(true)
 
 	// RFC 3311 §5.1: made once more, then the 491 is the caller's.
 	err := bc.update(ctx, bc.leg, true, nil)
@@ -1304,9 +1327,7 @@ func TestUpdateGlare(t *testing.T) {
 		t.Fatalf("Refresh = %v", err)
 	}
 
-	ac.mu.Lock()
-	ac.leg.offering = false
-	ac.mu.Unlock()
+	ac.RefuseOffers(false)
 }
 
 func TestUpdateBeforeTheAnswer(t *testing.T) {
