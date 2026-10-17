@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,12 +22,23 @@ type Request struct {
 	a   *Agent
 	st  *Strand
 	s   *Session
+	sub *Subscription
 	tx  *transaction.ServerTransaction
-	req *sip.Request
-	key offeranswer.Key
+
+	// server is the subscription of the agent as notifier a SUBSCRIBE refreshes, or that a SUBSCRIBE or a REFER
+	// accepted created.
+	server *ServerSubscription
+	req    *sip.Request
+	key    offeranswer.Key
 
 	// role is what the session description of the request is to the session.
 	role offeranswer.Role
+
+	// refresh: a re-INVITE or an UPDATE that only refreshes the session, answered with unchanged (Refresh); applied:
+	// an offer/answer exchange within this re-INVITE changed the session (RFC 6141 §3.3).
+	refresh   bool
+	unchanged []byte
+	applied   bool
 
 	final bool
 
@@ -94,6 +106,34 @@ func (r *Request) Offer() ([]byte, bool) {
 	return sessionSDP(r.req.Envelope), true
 }
 
+// Refresh reports whether the request, a re-INVITE or an UPDATE, only refreshes the session: an UPDATE without an
+// offer, a re-INVITE without one, or offering the session unchanged, its version the same (RFC 3264 §8, RFC 4028
+// §7.4). Its header fields and other bodies may still ask for more, as the mcptt-info of an emergency upgrade of
+// TS 24.379 §6.3.3.1.6: the application decides.
+func (r *Request) Refresh() bool {
+	return r.refresh
+}
+
+// AnswerUnchanged accepts a refresh (Refresh) with a 2xx carrying c and the session unchanged: the last session
+// description of the agent, as the answer to an unchanged offer or as the offer a re-INVITE without one asks for, or
+// none for an UPDATE without an offer.
+func (r *Request) AnswerUnchanged(c Change) error {
+	return r.st.do(func() error { return r.answerUnchanged(c) })
+}
+
+func (r *Request) answerUnchanged(c Change) error {
+	if !r.refresh {
+		return &Error{Op: "AnswerUnchanged", State: r.s.state, Err: errorString("the request changes the session")}
+	}
+
+	bodies := slices.Clone(c.Bodies)
+	if r.unchanged != nil {
+		bodies = append(bodies, SDP(r.unchanged))
+	}
+
+	return r.respond(Reply{Code: 200, Header: c.Header, Bodies: bodies})
+}
+
 // Accept sends a 200 with bodies.
 func (r *Request) Accept(bodies ...sip.BodyPart) error {
 	return r.Respond(Reply{Code: 200, Bodies: bodies})
@@ -104,7 +144,7 @@ func (r *Request) Reject(code int, header ...sip.Field) error {
 	return r.Respond(Reply{Code: code, Header: header})
 }
 
-// build makes the response to the request, completed with Config.Respond.
+// build makes the response to the request; complete completes it with Config.Respond, once the dialog recorded it.
 func (r *Request) build(rp Reply) (*sip.Response, error) {
 	res := sip.NewResponse(r.req, rp.Code, rp.Reason)
 
@@ -124,11 +164,17 @@ func (r *Request) build(rp Reply) (*sip.Response, error) {
 
 	res.SetBodies(rp.Bodies...)
 
-	if r.a.cfg.Respond != nil {
-		r.a.cfg.Respond(r.req, res)
+	if r.s != nil {
+		r.s.decorate(res)
 	}
 
 	return res, nil
+}
+
+func (r *Request) complete(res *sip.Response) {
+	if r.a.cfg.Respond != nil {
+		r.a.cfg.Respond(r.req, res)
+	}
 }
 
 // responseHeaders adds to a response of the session the Contact of a response that creates the dialog or refreshes
@@ -153,9 +199,7 @@ func (s *Session) responseHeaders(r *Request, rp Reply, res *sip.Response) {
 			res.Header.Add("Allow", s.a.allowValue())
 		}
 
-		if !res.Header.Has("Supported") {
-			res.Header.Add("Supported", s.a.supportedValue())
-		}
+		mergeSupported(&res.Header, s.a.supported)
 	}
 }
 
@@ -175,7 +219,7 @@ func (r *Request) Progress(rp Reply) error {
 
 	return r.st.do(func() error {
 		if r.final || r.s.state == Terminated {
-			return ErrState
+			return &Error{Op: "Progress", State: r.s.state, Err: ErrState}
 		}
 
 		if rp.Reliable && r.unacked != nil {
@@ -240,8 +284,19 @@ func (r *Request) provisional(rp Reply) (*sip.Response, error) {
 
 // dialogFor creates the dialog of an initial INVITE at its first response with a To tag, and records in it each
 // response of the session: the Record-Route of the INVITE copied into those that create or confirm it (RFC 3261
-// §12.1.1), the remote target of a target refresh request replaced by its reliable 1xx or 2xx (RFC 6141 §4.6).
+// §12.1.1), the remote target of a target refresh request replaced by its reliable 1xx or 2xx (RFC 6141 §4.6). Then
+// Config.Respond completes the response.
 func (s *Session) dialogFor(r *Request, res *sip.Response) error {
+	if err := s.record(r, res); err != nil {
+		return err
+	}
+
+	r.complete(res)
+
+	return nil
+}
+
+func (s *Session) record(r *Request, res *sip.Response) error {
 	if s.d != nil {
 		s.d.PrepareResponse(r.req, res)
 		return nil
@@ -288,7 +343,34 @@ func (r *Request) retransmitReliable(rel *reliable) {
 	r.queued = nil
 	r.ending = &End{Cause: EndTimeout, Err: ErrNoPrack}
 
+	if r.applied {
+		r.acceptApplied()
+		return
+	}
+
 	r.abandon(500)
+}
+
+// acceptApplied ends with a 2xx a re-INVITE of the peer that can no longer complete as the application wished, as
+// one cancelled, once an exchange within it changed the session (RFC 6141 §3.3, §3.8): with the offer of the session
+// as it is, when the re-INVITE asks for one.
+func (r *Request) acceptApplied() {
+	s := r.s
+
+	rp := Reply{Code: 200}
+
+	if err := r.check(rp); err != nil {
+		if mine, ok := s.sdp.Described(local); ok {
+			rp.Bodies = []sip.BodyPart{SDP(mine)}
+		}
+	}
+
+	r.final, r.held, r.queued = false, nil, nil
+
+	if err := r.respond(rp); err != nil {
+		s.a.log.Debug("2xx of a re-INVITE failed", slog.Any("error", err))
+		r.abandon(500)
+	}
 }
 
 func (r *Request) awaitsPrack(rack sip.RAck) bool {
@@ -323,8 +405,9 @@ func (r *Request) pracked() {
 }
 
 // Respond sends the final response. A 2xx to an INVITE waits for the PRACK of a reliable 1xx with a session
-// description (RFC 3262 §3): Respond returns at once; should the PRACK not come, or the session end, a 500 or a 487
-// replaces it. The 2xx is retransmitted until its ACK (RFC 3261 §13.3.1.4).
+// description (RFC 3262 §3), or of any reliable 1xx with Reply.AfterPrack: Respond returns at once; should the PRACK
+// not come, or the session end, a 500 or a 487 replaces it. The 2xx is retransmitted until its ACK (RFC 3261
+// §13.3.1.4). The response to a BYE of Handler.Bye ends the session.
 func (r *Request) Respond(rp Reply) error {
 	if rp.Code < 200 {
 		return fmt.Errorf("sip/ua: %d is no final response", rp.Code)
@@ -338,12 +421,17 @@ func (r *Request) respond(rp Reply) error {
 		return transaction.ErrFinalResponseSent
 	}
 
+	if r.sub != nil {
+		return r.sub.answerNotify(r, rp)
+	}
+
 	if r.s == nil {
 		res, err := r.build(rp)
 		if err != nil {
 			return err
 		}
 
+		r.complete(res)
 		r.final = true
 		r.a.untrack(r)
 
@@ -368,7 +456,7 @@ func (r *Request) respond(rp Reply) error {
 	r.final = true
 	r.queued = nil
 
-	if rp.Code < 300 && r.req.Method == "INVITE" && r.unacked != nil && r.unacked.sdp {
+	if rp.Code < 300 && r.req.Method == "INVITE" && r.unacked != nil && (r.unacked.sdp || rp.AfterPrack) {
 		r.held = res
 		return nil
 	}
@@ -411,7 +499,7 @@ func (r *Request) finish(res *sip.Response) error {
 		return err
 	}
 
-	s.sdp.Response(r.key, res.StatusCode, sessionSDP(res.Envelope))
+	s.offerResponse(r.key, res.StatusCode, sessionSDP(res.Envelope))
 
 	switch {
 	case s.in == r:
@@ -419,6 +507,16 @@ func (r *Request) finish(res *sip.Response) error {
 		s.a.untrack(r)
 	case s.inUpdate == r:
 		s.inUpdate = nil
+	case s.inBye == r:
+		// RFC 3261 §15.1.2: the session ends with the response to the BYE.
+		r.deadline.stop()
+
+		s.inBye = nil
+
+		err := r.tx.Respond(res)
+		s.end(End{Cause: EndBye, Remote: true, Request: r.req})
+
+		return err
 	}
 
 	switch {
@@ -444,6 +542,7 @@ func (r *Request) finish(res *sip.Response) error {
 	err := r.tx.Respond(res)
 
 	s.modified()
+	s.pump()
 
 	return err
 }
@@ -508,7 +607,13 @@ func (r *Request) noAck() {
 		s.ack = nil
 
 		r.acked()
-		s.byeEnd(End{Cause: EndTimeout, Err: ErrNoAck}, s.bye...)
+
+		if s.byeAfterAck != nil {
+			s.sendQueuedBye(EndTimeout)
+			return
+		}
+
+		s.byeEnd(End{Cause: EndTimeout, Err: ErrNoAck}, Change{}, nil)
 	}
 }
 
@@ -533,7 +638,11 @@ func (r *Request) cancelled(cancel *sip.Request) {
 		return
 	}
 
-	r.abandon(487)
+	if r.applied {
+		r.acceptApplied()
+	} else {
+		r.abandon(487)
+	}
 
 	s.emit(func(h Handler) {
 		if h.Cancelled != nil {
@@ -560,6 +669,7 @@ func (r *Request) failed(err error) {
 
 	s.a.untrack(r)
 	s.modified()
+	s.pump()
 }
 
 // invite receives an initial INVITE (RFC 3261 §13.3). The session starts at once; OnInvite is its first event.
@@ -580,7 +690,7 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 	}
 
 	id := dialog.ID{CallID: req.Header.CallID(), LocalTag: tx.ToTag(), RemoteTag: from.Tag()}
-	s := newSession(a, st, Handler{}, false, id)
+	s := newSession(a, st, Handler{}, false, id, a.cfg.Policy)
 
 	if res := s.timer.check(a, req); res != nil {
 		_ = tx.Respond(res)
@@ -590,14 +700,63 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 	}
 
 	r := newRequest(s, tx, req)
-	r.role = s.sdp.Request(r.key, sessionSDP(req.Envelope))
+	r.role = s.offerRequest(r.key, sessionSDP(req.Envelope))
 	s.in = r
 	s.notePeer(req.Header)
 
 	a.track(r)
 	a.addSession(s)
 
-	st.emit(func() { s.h = a.cfg.OnInvite(r) })
+	// The handler is set with the strand held, for the methods of the application that read it.
+	st.emit(func() {
+		h := a.cfg.OnInvite(r)
+
+		_ = st.do(func() error {
+			s.h = h
+			return nil
+		})
+	})
+}
+
+// Replaces is the session an initial INVITE with a Replaces header field asks to replace, on the strand of the
+// request (RFC 3891 §3); or, when it cannot, the code to reject the INVITE with: 400 for more than one Replaces, 481
+// without such a dialog, for one not created by an INVITE, or for an early dialog the agent did not initiate, 603 for
+// one that has ended, 486 for a confirmed one and early-only. ok is false without a Replaces. Authorising the
+// replacement is up to the application, which ends the replaced session once it accepts the INVITE: with Bye when
+// confirmed, by cancelling its Outgoing when early.
+func (r *Request) Replaces() (s *Session, code int, ok bool) {
+	rep, ok, err := r.req.Header.Replaces()
+
+	switch {
+	case !ok:
+		return nil, 0, false
+	case err != nil || r.req.Method != "INVITE":
+		return nil, 400, true
+	}
+
+	e, found := r.a.replaced(dialog.ReplacesID(rep))
+
+	switch {
+	case !found || !e.invited:
+		return nil, 481, true
+	case e.ended || e.invite == nil:
+		return nil, 603, true
+	}
+
+	s = e.invite
+
+	state, uac := get(s.st, func() State { return s.state }), s.uac
+
+	switch {
+	case state == Terminated:
+		return nil, 603, true
+	case state == Confirmed && rep.EarlyOnly:
+		return nil, 486, true
+	case state == Early && !uac:
+		return nil, 481, true
+	}
+
+	return s, 0, true
 }
 
 // addOptionTag adds an option tag to the first header field name, or in one of its own without one.

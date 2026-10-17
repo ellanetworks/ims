@@ -2,7 +2,9 @@ package netnstest
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -184,7 +186,9 @@ func Link(t testing.TB, a, b *Netns, aAddrs, bAddrs []netip.Prefix) {
 func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
 	t.Helper()
 
-	n.IP(t, "link", "add", name, "type", "bridge")
+	// A bridge without an address of its own takes the lowest of its ports', and changes it as ports are attached:
+	// the hosts that resolved it before would send to a port's address, dropped, until their ARP entry goes stale.
+	n.IP(t, "link", "add", name, "address", localMAC(t), "type", "bridge")
 	t.Cleanup(func() { n.del(t, name) })
 
 	n.up(t, name, addrs)
@@ -220,4 +224,18 @@ func (n *Netns) up(t testing.TB, dev string, addrs []netip.Prefix) {
 	}
 
 	n.IP(t, "link", "set", dev, "up")
+}
+
+// localMAC is a random unicast, locally administered MAC address.
+func localMAC(t testing.TB) string {
+	t.Helper()
+
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	b[0] = b[0]&^0x01 | 0x02
+
+	return net.HardwareAddr(b[:]).String()
 }

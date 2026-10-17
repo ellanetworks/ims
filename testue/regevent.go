@@ -27,37 +27,54 @@ type Subscription struct {
 }
 
 // subscription is the reg event subscription of the UE (TS 24.229 §5.1.1.3), on a ua.Subscription.
+//
+// u.sub is set before the SUBSCRIBE goes, s once Subscribe returned: both under u.mu, which the agent is never
+// called with.
 type subscription struct {
 	s *ua.Subscription
 
-	// accepted receives the final response to the initial SUBSCRIBE, or the error that ended it first.
+	// accepted receives the final response to the initial SUBSCRIBE, or the error that ended it first; dropped marks
+	// a subscription the UE forgot before Subscribe returned.
 	accepted chan error
+	dropped  bool
 
-	expires     time.Time
 	version     uint64
 	haveVersion bool
 }
 
 func (u *UE) Subscription() Subscription {
 	u.mu.Lock()
-	sub := u.sub
+
+	var s *ua.Subscription
+	if u.sub != nil {
+		s = u.sub.s
+	}
+
 	u.mu.Unlock()
 
-	if sub == nil || sub.s.State() == ua.SubscriptionTerminated {
+	if s == nil || s.State() == ua.SubscriptionTerminated {
 		return Subscription{}
 	}
 
-	out := Subscription{Active: true}
+	out := Subscription{Active: true, Expires: s.Expires()}
 
-	u.mu.Lock()
-	out.Expires = sub.expires
-	u.mu.Unlock()
-
-	if d, ok := sub.s.Dialog(); ok {
+	if d, ok := s.Dialog(); ok {
 		out.ID = d.ID
 	}
 
 	return out
+}
+
+// current is the subscription of the UE, once Subscribe returned it.
+func (u *UE) current() (*subscription, *ua.Subscription) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.sub == nil {
+		return nil, nil
+	}
+
+	return u.sub, u.sub.s
 }
 
 func (u *UE) Resubscribe(ctx context.Context) error {
@@ -70,21 +87,18 @@ func (u *UE) Resubscribe(ctx context.Context) error {
 // resubscribe refreshes the subscription, or makes a new one without it, or when the refresh ends it (RFC 6665
 // §4.1.2.2).
 func (u *UE) resubscribe(ctx context.Context) error {
-	u.mu.Lock()
-	sub := u.sub
-	u.mu.Unlock()
-
-	if sub == nil {
+	_, s := u.current()
+	if s == nil {
 		return u.subscribe(ctx)
 	}
 
-	if _, ok := sub.s.Dialog(); !ok || sub.s.State() == ua.SubscriptionTerminated {
+	if _, ok := s.Dialog(); !ok || s.State() == ua.SubscriptionTerminated {
 		return u.subscribe(ctx)
 	}
 
 	done := make(chan result, 1)
 
-	if err := sub.s.Refresh(func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
+	if err := s.Refresh(ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
 		return u.subscribe(ctx)
 	}
 
@@ -94,12 +108,8 @@ func (u *UE) resubscribe(ctx context.Context) error {
 		case r.err != nil:
 			return fmt.Errorf("testue: SUBSCRIBE: %w", r.err)
 		case r.res.IsSuccess():
-			u.mu.Lock()
-			sub.expires = time.Now().Add(sub.s.Duration())
-			u.mu.Unlock()
-
 			return nil
-		case sub.s.State() == ua.SubscriptionTerminated:
+		case s.State() == ua.SubscriptionTerminated:
 			return u.subscribe(ctx)
 		}
 
@@ -154,12 +164,17 @@ func (u *UE) subscribe(ctx context.Context) error {
 	sub := &subscription{accepted: make(chan error, 1)}
 
 	u.mu.Lock()
-	old := u.sub
+
+	var old *ua.Subscription
+	if u.sub != nil {
+		old = u.sub.s
+	}
+
 	u.sub = sub
 	u.mu.Unlock()
 
 	if old != nil {
-		_ = old.s.Unsubscribe()
+		_ = old.Unsubscribe(ua.Change{})
 	}
 
 	s, err := u.agent.Subscribe(req, u.regEventHandler(sub))
@@ -170,7 +185,12 @@ func (u *UE) subscribe(ctx context.Context) error {
 
 	u.mu.Lock()
 	sub.s = s
+	dropped := sub.dropped
 	u.mu.Unlock()
+
+	if dropped {
+		s.Drop()
+	}
 
 	select {
 	case err := <-sub.accepted:
@@ -231,32 +251,35 @@ func (u *UE) endSubscription(sub *subscription) {
 	}
 }
 
-// stopSubscriptionLocked drops the subscription of the UE, unsubscribing from it once the lock is released.
+// stopSubscriptionLocked forgets the subscription of the UE, with its registration: no SIP procedure, the network
+// ended it too (TS 24.229 §5.1.1.7 NOTE 3, NOTE 4); the agent drops it once the lock is released.
 func (u *UE) stopSubscriptionLocked() func() {
 	sub := u.sub
 	u.sub = nil
 
-	if sub == nil || sub.s == nil {
+	switch {
+	case sub == nil:
+		return func() {}
+	case sub.s == nil:
+		sub.dropped = true
 		return func() {}
 	}
 
-	return func() { _ = sub.s.Unsubscribe() }
+	s := sub.s
+
+	return s.Drop
 }
 
 // regEventHandler handles the events of the reg event subscription sub (RFC 6665, RFC 3680).
 func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	return ua.SubscriptionHandler{
-		Accepted: func(s *ua.Subscription, _ *sip.Response) {
-			u.mu.Lock()
-			sub.expires = time.Now().Add(s.Duration())
-			u.mu.Unlock()
-
+		Accepted: func(*ua.Subscription, *sip.Response) {
 			select {
 			case sub.accepted <- nil:
 			default:
 			}
 		},
-		Notify: func(s *ua.Subscription, r *ua.Request) { u.notify(sub, s, r) },
+		Notify: func(_ *ua.Subscription, r *ua.Request) { u.notify(sub, r) },
 		Ended: func(s *ua.Subscription, e ua.End) {
 			if e.Cause == ua.EndRejected && e.Response != nil {
 				select {
@@ -295,7 +318,7 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 }
 
 // notify handles a NOTIFY of the reg event subscription, which the agent answered (RFC 3680 §5).
-func (u *UE) notify(sub *subscription, s *ua.Subscription, r *ua.Request) {
+func (u *UE) notify(sub *subscription, r *ua.Request) {
 	req := r.Message()
 	ss, _, _ := req.Header.SubscriptionState()
 	terminated := ss.State == sip.SubscriptionTerminated
@@ -318,10 +341,6 @@ func (u *UE) notify(sub *subscription, s *ua.Subscription, r *ua.Request) {
 	)
 
 	u.mu.Lock()
-
-	if ss.Expires != nil && !terminated {
-		sub.expires = time.Now().Add(s.Duration())
-	}
 
 	if infoErr == nil {
 		stale = sub.haveVersion && info.Version <= sub.version

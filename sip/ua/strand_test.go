@@ -3,6 +3,7 @@ package ua_test
 import (
 	"context"
 	"net/netip"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestHandlerPanicRecovered(t *testing.T) {
 	as := alice.next("established").s
 	alice.next("answer")
 
-	_ = as.Bye()
+	_ = as.Bye(ua.Change{}, nil)
 
 	alice.next("ended")
 }
@@ -175,6 +176,7 @@ func TestSharedLayer(t *testing.T) {
 
 	a, err := ua.New(ua.Config{
 		Layer:   layer,
+		Allow:   append(slices.Clone(ua.Methods), "INFO"),
 		Prepare: bob.prepare,
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: "bob", Host: addr.Addr().String(), Port: addr.Port()}},
 		OnInvite: func(r *ua.Request) ua.Handler {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,14 +40,16 @@ func (s SubscriptionState) String() string {
 }
 
 // SubscriptionHandler receives the events of a subscription. Each function is optional; they run as the functions of
-// a Handler do.
+// a Handler do. No event follows Ended.
 type SubscriptionHandler struct {
 	// Accepted reports the 2xx to the initial SUBSCRIBE.
 	Accepted func(s *Subscription, res *sip.Response)
 
-	// Notify reports a NOTIFY r of the subscription, once the agent applied its Subscription-State; the agent
-	// answers it with a 200 once Notify returns: a subscriber does not wait for the user (RFC 6665 §4.1.3). r.Done
-	// tells when its transaction ends.
+	// Notify reports a NOTIFY r of the subscription, once the agent applied its Subscription-State. Notify may answer
+	// r itself (r.Respond), as with a 400 for a body it cannot use; a response that ends the subscription for its
+	// notifier (RFC 6665 §4.2.2, RFC 5057 Table 2), such as a 481, ends it with EndDropped. Otherwise the agent
+	// answers 200 once Notify returns: a subscriber does not wait for the user (RFC 6665 §4.1.3). r.Done tells when
+	// the transaction ends.
 	Notify func(s *Subscription, r *Request)
 
 	// Forked decides on a NOTIFY from another notifier than the first one, s the subscription it creates
@@ -54,11 +57,18 @@ type SubscriptionHandler struct {
 	// NOTIFY with a 481.
 	Forked func(s *Subscription, notify *sip.Request) bool
 
-	// Ended reports the end of the subscription: EndTerminated by a NOTIFY, End.State telling whether to subscribe
-	// again (sip.SubscriptionState.Resubscribe); EndRejected by a final response other than 2xx to the initial
-	// SUBSCRIBE, or by one to a refresh that ends the subscription (RFC 6665 §4.1.2.2); EndNoNotify without a NOTIFY
-	// within Timer N; EndExpired without a refresh; EndTimeout by the error of a SUBSCRIBE transaction;
-	// EndUnsubscribed by Unsubscribe, without the terminated NOTIFY; EndClosed.
+	// Ended reports the end of the subscription:
+	//   - EndTerminated by a NOTIFY, End.State telling whether to subscribe again (sip.SubscriptionState.Resubscribe);
+	//   - EndRejected by a final response other than 2xx to the initial SUBSCRIBE, or by one to a refresh that ends
+	//     the subscription (RFC 6665 §4.1.2.2);
+	//   - EndLost by a failure that destroys its dialog (RFC 5057 §5.1);
+	//   - EndNoNotify without a NOTIFY within Timer N;
+	//   - EndExpired without a refresh, or by a NOTIFY with expires 0 not followed by the terminated one;
+	//   - EndTimeout by the error of the initial SUBSCRIBE;
+	//   - EndUnsubscribed by Unsubscribe without the terminated NOTIFY: before the first NOTIFY, or when the
+	//     unsubscribe fails;
+	//   - EndDropped by Drop, or by a NOTIFY the application refused;
+	//   - EndClosed as the agent closes.
 	Ended func(s *Subscription, e End)
 }
 
@@ -75,14 +85,25 @@ type Subscription struct {
 	state SubscriptionState
 	value any
 
-	// duration is the last known duration of the subscription, from the 2xx to a SUBSCRIBE or the expires of a
-	// NOTIFY; left what remains of it once the refresh is due; refresh and expiry their timers; timer the wait for the
-	// NOTIFY of a SUBSCRIBE, Timer N (RFC 6665 §4.1.2.2).
-	duration, left         time.Duration
-	refresh, expiry, timer *timer
+	// duration is the duration the notifier last granted: the Expires of the 2xx to a SUBSCRIBE, or the expires of
+	// a NOTIFY. expiresAt is when the subscription expires without a refresh, which a NOTIFY moves (RFC 6665
+	// §4.1.3); lead how long before it the agent refreshes, from the duration of the last 2xx; refreshAt when it
+	// does.
+	duration  time.Duration
+	expiresAt time.Time
+	lead      time.Duration
+	refreshAt time.Time
 
-	// unsubscribing marks a SUBSCRIBE with Expires 0 sent: the subscription waits for its terminated NOTIFY.
+	refresh, expiry *timer
+
+	// timerN waits for the NOTIFY of the SUBSCRIBE nOwner, a refresh (RFC 6665 §4.1.2.2); guard for the terminated
+	// NOTIFY of an unsubscribe, or of a NOTIFY with expires 0. unsubscribing marks a SUBSCRIBE with Expires 0
+	// sent, closing one sent as the agent closes.
+	timerN        *timer
+	nOwner        *subscribeRequest
+	guard         *timer
 	unsubscribing bool
+	closing       bool
 	ended         bool
 
 	// inflight are its SUBSCRIBEs in progress, completed with ErrState should the subscription end first.
@@ -101,15 +122,18 @@ type subscribing struct {
 	key   subscribeKey
 	first *Subscription
 
-	// tmpl is the SUBSCRIBE before Prepare, sent again after a challenge; sent the last one sent, which the dialogs
-	// of its NOTIFYs follow (RFC 6665 §4.4.1).
-	tmpl  *sip.Request
-	sent  *sip.Request
-	tries int
-	final bool
+	// tmpl is the SUBSCRIBE or the REFER as built, before Prepare; sub the SUBSCRIBE whose header fields and bodies
+	// the refreshes repeat: tmpl itself, or for a REFER one asking for the refer event (RFC 3515 §2.4.4). tries
+	// counts the challenges answered, retried a 423 retried.
+	tmpl    *sip.Request
+	sub     *sip.Request
+	refer   bool
+	tries   int
+	retried bool
+	final   bool
 
-	// subs are the subscriptions of the NOTIFYs, by the tag of their notifier; okTag and okExpires the notifier and
-	// the Expires of the 2xx, for its subscription.
+	// subs are the subscriptions of the NOTIFYs, by the tag of their notifier, ended ones and refused forks
+	// included; okTag and okExpires the notifier and the Expires of the 2xx, for its subscription.
 	subs      map[string]*Subscription
 	okTag     string
 	okExpires *uint32
@@ -119,8 +143,9 @@ type subscribing struct {
 
 // Subscribe sends an initial SUBSCRIBE (RFC 6665 §4.1.2.1), and returns its subscription, in the neutral state until
 // its first NOTIFY. req carries the Request-URI, To, Event, Accept, Expires, the Route of an outbound proxy or a
-// service route, and the header fields of the application; the agent adds what it leaves out: the From tag, a
-// Call-ID, CSeq, Max-Forwards and Contact. It answers 401 and 407 challenges through Config.Authenticate.
+// service route, the header fields of the application and its bodies, such as a filter; the refreshes repeat them.
+// The agent adds what req leaves out: the From tag, a Call-ID, CSeq, Max-Forwards and Contact. It answers 401 and
+// 407 challenges through Config.Authenticate, and a 423 with its Min-Expires.
 func (a *Agent) Subscribe(req *sip.Request, h SubscriptionHandler, opts ...Option) (*Subscription, error) {
 	if req.Method != "SUBSCRIBE" {
 		return nil, fmt.Errorf("sip/ua: Subscribe of a %s request", req.Method)
@@ -149,7 +174,7 @@ func (a *Agent) Subscribe(req *sip.Request, h SubscriptionHandler, opts ...Optio
 	st := a.options(opts).strand(a)
 	att := &subscribing{
 		a: a, st: st, key: subscribeKey{callID: tmpl.Header.CallID(), fromTag: from.Tag()},
-		tmpl: tmpl, subs: map[string]*Subscription{},
+		tmpl: tmpl, sub: tmpl, subs: map[string]*Subscription{},
 	}
 	s := &Subscription{a: a, st: st, sh: h, att: att, event: event}
 	att.first = s
@@ -176,13 +201,11 @@ func (s *Subscription) Strand() *Strand {
 
 func (att *subscribing) send() error {
 	a := att.a
-	req := att.tmpl.Clone()
 
-	if _, err := a.prepareAndSend(req, att.st.client(att.response, att.error)); err != nil {
+	if _, err := a.prepareAndSend(att.tmpl, att.st.client(att.response, att.error)); err != nil {
 		return err
 	}
 
-	att.sent = req
 	att.timerN.stop()
 	att.timerN = att.st.after(64*a.layer.T1(), att.noNotify)
 
@@ -192,18 +215,33 @@ func (att *subscribing) send() error {
 // response handles a response to the initial SUBSCRIBE.
 func (att *subscribing) response(res *sip.Response) {
 	a := att.a
+	first := att.first
 
 	if res.IsProvisional() || att.final {
 		return
 	}
 
-	if !res.IsSuccess() {
+	// A challenge or a 423 is answered with the next CSeq, unless the subscription ended meanwhile.
+	if !res.IsSuccess() && !first.ended {
 		next := att.tmpl.Clone()
 		nextCSeq(next)
 
-		if a.authenticate(next, res, att.tries) {
+		retry := false
+
+		switch {
+		case res.StatusCode == 423 && !att.retried && raiseExpires(next, res):
+			// RFC 6665 §4.2.1.1: the duration the notifier asks for at least.
+			att.retried, retry = true, true
+		case a.authenticate(next, res, att.tries):
 			att.tries++
+			retry = true
+		}
+
+		if retry {
 			att.tmpl = next
+			if !att.refer {
+				att.sub = next
+			}
 
 			if err := att.send(); err != nil {
 				att.error(err)
@@ -219,8 +257,24 @@ func (att *subscribing) response(res *sip.Response) {
 		att.done()
 
 		// A NOTIFY that came first made the subscription; the 2xx is the notifier's word for it.
-		if s := att.first; s.d == nil {
-			s.end(End{Cause: EndRejected, Remote: true, Response: res})
+		if first.d == nil {
+			first.end(End{Cause: EndRejected, Remote: true, Response: res})
+		}
+
+		return
+	}
+
+	// A REFER accepted without a subscription (RFC 4488, RFC 7614): its NOTIFYs get a 481 from now on.
+	if att.refer && noSubscription(att.tmpl, res) {
+		att.done()
+
+		if first.d == nil && !first.ended {
+			first.emit(func(h SubscriptionHandler) {
+				if h.Accepted != nil {
+					h.Accepted(first, res)
+				}
+			})
+			first.end(End{Cause: EndNoSubscription, Remote: true, Response: res})
 		}
 
 		return
@@ -229,25 +283,44 @@ func (att *subscribing) response(res *sip.Response) {
 	to, _ := res.Header.To()
 	att.okTag = to.Tag()
 
+	// RFC 6665 §4.2.1.1: the 2xx carries the duration; without it, the one asked for.
 	if v, err := res.Header.Expires(); err == nil {
+		att.okExpires = &v
+	} else if v, err := att.tmpl.Header.Expires(); err == nil {
 		att.okExpires = &v
 	}
 
 	switch s := att.subs[att.okTag]; {
 	case att.okExpires == nil:
 	case s != nil:
-		s.setDuration(*att.okExpires)
-	case att.first.d == nil:
+		s.granted(*att.okExpires)
+	case first.d == nil:
 		// Its timers start with its dialog.
-		att.first.duration = time.Duration(*att.okExpires) * time.Second
+		first.duration = time.Duration(*att.okExpires) * time.Second
+		first.expiresAt = a.clock.Now().Add(first.duration)
 	}
 
-	first := att.first
+	if first.ended {
+		return
+	}
+
 	first.emit(func(h SubscriptionHandler) {
 		if h.Accepted != nil {
 			h.Accepted(first, res)
 		}
 	})
+}
+
+// raiseExpires sets the Expires of the next SUBSCRIBE to the Min-Expires of a 423, reporting whether it has one.
+func raiseExpires(next *sip.Request, res *sip.Response) bool {
+	v, err := strconv.ParseUint(strings.TrimSpace(res.Header.Get("Min-Expires")), 10, 32)
+	if err != nil {
+		return false
+	}
+
+	next.Header.Set("Expires", strconv.FormatUint(v, 10))
+
+	return true
 }
 
 func (att *subscribing) error(err error) {
@@ -275,7 +348,6 @@ func (att *subscribing) noNotify() {
 
 func (att *subscribing) done() {
 	att.timerN.stop()
-
 	att.a.removeSubscribing(att)
 }
 
@@ -285,9 +357,18 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 	a := att.a
 	first := att.first
 
-	ss, code := checkNotify(req, first.event)
+	ss, code := checkNotify(req, first)
 	if code != 0 {
 		a.reply(tx, code)
+		return
+	}
+
+	from, _ := req.Header.From()
+	tag := from.Tag()
+
+	// A notifier whose subscription ended, or whose fork was refused, has no subscription any more.
+	if s := att.subs[tag]; s != nil || first.ended {
+		a.reply(tx, 481)
 		return
 	}
 
@@ -301,33 +382,33 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 		att.done()
 
 		first.state = SubscriptionTerminated
-		first.notified(tx, req, sip.NewResponse(req, 200, ""))
-		first.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss})
+		first.notified(tx, req, func() { first.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
 
 		return
 	}
 
-	d, err := dialog.NewFromNotify(att.sent, req)
+	d, err := dialog.NewFromNotify(att.tmpl, req)
 	if err != nil {
 		a.reply(tx, 400)
 		return
 	}
 
 	if first.d == nil {
-		first.bind(d)
+		first.bind(d, req)
 		first.receiveNotify(tx, req, ss)
 
 		return
 	}
 
 	fork := &Subscription{a: a, st: att.st, sh: first.sh, att: att, event: first.event}
-	fork.bind(d)
+	fork.bind(d, req)
 
 	att.st.emit(func() {
 		keep := fork.sh.Forked != nil && fork.sh.Forked(fork, req)
 
 		_ = att.st.do(func() error {
-			if !keep {
+			if !keep || fork.ended {
+				fork.ended = true
 				fork.unbind()
 				a.reply(tx, 481)
 
@@ -341,12 +422,18 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 	})
 }
 
-// checkNotify checks a NOTIFY for a subscription to event: the Event matching it (RFC 6665 §8.2.1), with 489
-// otherwise, and a Subscription-State, with 400 otherwise.
-func checkNotify(req *sip.Request, event sip.Event) (sip.SubscriptionState, int) {
+// checkNotify checks a NOTIFY for the subscription s: its Event, with 489 for another event package and 481 for
+// another subscription of the package (RFC 6665 §4.1.3, §8.2.1), and a Subscription-State, with 400 otherwise.
+func checkNotify(req *sip.Request, s *Subscription) (sip.SubscriptionState, int) {
 	ev, ok, err := req.Header.Event()
-	if !ok || err != nil || !ev.Matches(event) {
+
+	switch {
+	case !ok || err != nil:
+		return sip.SubscriptionState{}, 400
+	case ev.Type() != s.event.Type():
 		return sip.SubscriptionState{}, 489
+	case !s.matches(ev):
+		return sip.SubscriptionState{}, 481
 	}
 
 	ss, ok, err := req.Header.SubscriptionState()
@@ -357,8 +444,25 @@ func checkNotify(req *sip.Request, event sip.Event) (sip.SubscriptionState, int)
 	return ss, 0
 }
 
-// bind gives the subscription the dialog its first NOTIFY creates.
-func (s *Subscription) bind(d *dialog.Dialog) {
+// matches reports whether an Event names the subscription (RFC 6665 §8.2.1). The NOTIFYs of a REFER carry the id of
+// its CSeq, or none for the first REFER of a dialog (RFC 3515 §2.4.6).
+func (s *Subscription) matches(ev sip.Event) bool {
+	if s.att.refer {
+		return ev.Type() == "refer" && (ev.ID == "" || ev.ID == s.event.ID)
+	}
+
+	return s.event.Matches(ev)
+}
+
+// bind gives the subscription the dialog its first NOTIFY creates. A subscription of a REFER takes the Event of that
+// NOTIFY, with its id or without, for its refreshes (RFC 3515 §2.4.6).
+func (s *Subscription) bind(d *dialog.Dialog, notify *sip.Request) {
+	if s.att.refer {
+		if ev, ok, err := notify.Header.Event(); ok && err == nil {
+			s.event = ev
+		}
+	}
+
 	s.d = d
 
 	tag := d.ID().RemoteTag
@@ -366,24 +470,31 @@ func (s *Subscription) bind(d *dialog.Dialog) {
 	s.a.addSubscription(s)
 
 	if tag == s.att.okTag && s.att.okExpires != nil {
-		s.setDuration(*s.att.okExpires)
+		s.granted(*s.att.okExpires)
 	}
 }
 
+// unbind removes a refused fork: its tag stays in the subscriptions of the SUBSCRIBE, for a 481 to its NOTIFYs.
 func (s *Subscription) unbind() {
-	delete(s.att.subs, s.d.ID().RemoteTag)
-	s.a.removeSubscription(s)
-	s.d.Terminate()
+	if s.a.removeSubscription(s) {
+		s.d.Terminate()
+	}
 }
 
-// receive handles a request of the notifier within the dialog of the subscription.
+// receive handles a SUBSCRIBE, NOTIFY or REFER of the notifier within the dialog, for the Event of the subscription
+// (RFC 5057 §5.3).
 func (s *Subscription) receive(tx *transaction.ServerTransaction, req *sip.Request) {
-	if req.Method != "NOTIFY" {
-		s.a.reply(tx, 405, sip.Field{Name: "Allow", Value: "NOTIFY"})
+	switch {
+	case s.ended || s.state == SubscriptionTerminated:
+		s.a.reply(tx, 481)
+		return
+	case req.Method != "NOTIFY":
+		// RFC 5057 §5.6: a new usage refused, the dialog unharmed.
+		s.a.reply(tx, 603)
 		return
 	}
 
-	ss, code := checkNotify(req, s.event)
+	ss, code := checkNotify(req, s)
 	if code != 0 {
 		s.a.reply(tx, code)
 		return
@@ -405,86 +516,211 @@ func (s *Subscription) receive(tx *transaction.ServerTransaction, req *sip.Reque
 	s.receiveNotify(tx, req, ss)
 }
 
-// receiveNotify applies the Subscription-State of a NOTIFY (RFC 6665 §4.1.3), reports it, and answers it.
+// receiveNotify applies the Subscription-State of a NOTIFY (RFC 6665 §4.1.3), then reports it, and answers it.
 func (s *Subscription) receiveNotify(tx *transaction.ServerTransaction, req *sip.Request, ss sip.SubscriptionState) {
-	res := sip.NewResponse(req, 200, "")
-	s.d.PrepareResponse(req, res)
+	// A NOTIFY ends the wait of a refresh; that of an unsubscribe waits for the terminated one (RFC 6665 §4.1.2.3).
+	s.timerN.stop()
+	s.timerN, s.nOwner = nil, nil
 
-	s.timer.stop()
-
-	switch ss.State {
-	case sip.SubscriptionTerminated:
+	if ss.State == sip.SubscriptionTerminated {
+		// RFC 6665 §4.4.1: the subscription ends with the transaction of its terminated NOTIFY, once answered.
 		s.state = SubscriptionTerminated
-		s.notified(tx, req, res)
-		s.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss})
+		s.notified(tx, req, func() { s.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
 
 		return
-	case sip.SubscriptionPending:
+	}
+
+	if ss.State == sip.SubscriptionPending {
 		s.state = SubscriptionPending
-	default:
+	} else {
 		s.state = SubscriptionActive
 	}
 
 	if ss.Expires != nil && !s.unsubscribing {
-		s.setDuration(*ss.Expires)
+		s.notifiedExpires(*ss.Expires)
 	}
 
-	s.notified(tx, req, res)
+	s.notified(tx, req, nil)
 }
 
-// notified reports a NOTIFY to the application, then answers it with res.
-func (s *Subscription) notified(tx *transaction.ServerTransaction, req *sip.Request, res *sip.Response) {
+// notified reports a NOTIFY to the application, then answers it with a 200 unless Notify did; then, when not nil,
+// runs with the strand held.
+func (s *Subscription) notified(tx *transaction.ServerTransaction, req *sip.Request, then func()) {
 	r := newRequest(nil, tx, req)
-	r.a, r.st, r.final = s.a, s.st, true
+	r.a, r.st, r.sub = s.a, s.st, s
 
-	s.emit(func(h SubscriptionHandler) {
-		if h.Notify != nil {
-			h.Notify(s, r)
+	s.st.emit(func() {
+		if h := s.sh.Notify; h != nil {
+			h(s, r)
 		}
 
-		if err := s.a.respond(tx, res); err != nil {
-			s.a.log.Debug("NOTIFY response failed", slog.Any("error", err))
-		}
+		_ = s.st.do(func() error {
+			if !r.final {
+				_ = s.answerNotify(r, Reply{Code: 200})
+			}
+
+			if then != nil {
+				then()
+			}
+
+			return nil
+		})
 	})
+}
+
+// answerNotify sends the response to a NOTIFY of the subscription, and applies its effect: one that ends the
+// subscription for the notifier ends it here too (RFC 6665 §4.2.2, RFC 5057 §5.1).
+func (s *Subscription) answerNotify(r *Request, rp Reply) error {
+	if r.final {
+		return transaction.ErrFinalResponseSent
+	}
+
+	res, err := r.build(rp)
+	if err != nil {
+		return err
+	}
+
+	// The 2xx to the NOTIFY that made the dialog carries its Record-Route (RFC 3261 §12.1.1).
+	if s.d != nil {
+		s.d.PrepareResponse(r.req, res)
+	}
+
+	r.complete(res)
+	r.final = true
+
+	if err := r.tx.Respond(res); err != nil {
+		return err
+	}
+
+	if res.IsSuccess() || s.ended {
+		return nil
+	}
+
+	switch failureOf("NOTIFY", res, nil) {
+	case destroysDialog:
+		s.a.destroyDialog(s.d.ID(), nil, nil)
+	case destroysUsage:
+		s.end(End{Cause: EndDropped, Response: res})
+	}
+
+	return nil
 }
 
 func (s *Subscription) emit(f func(h SubscriptionHandler)) {
 	s.st.emit(func() { f(s.sh) })
 }
 
-// setDuration sets the duration of the subscription, from now: the agent refreshes it at half, or 600 s before its
-// end when it lasts more than 1200 s, and it ends at its end without a refresh.
-func (s *Subscription) setDuration(seconds uint32) {
-	if s.state == SubscriptionTerminated {
+// refreshLead is how long before the expiry of a subscription of duration d the agent refreshes it: halfway, or
+// 600 s before when it lasts more than 1200 s (TS 24.229 §5.1.1.3).
+func refreshLead(d time.Duration) time.Duration {
+	if d > 1200*time.Second {
+		return 600 * time.Second
+	}
+
+	return d / 2
+}
+
+// granted sets the duration the 2xx to a SUBSCRIBE granted, from now (RFC 6665 §4.1.2.1): the expiry, and the refresh
+// at its lead before it.
+func (s *Subscription) granted(seconds uint32) {
+	if s.ended {
 		return
 	}
 
 	s.duration = time.Duration(seconds) * time.Second
+
+	if seconds == 0 {
+		s.expireNow()
+		return
+	}
+
+	s.lead = refreshLead(s.duration)
+	s.setExpiry(s.a.clock.Now().Add(s.duration))
+	s.schedule(s.expiresAt.Add(-s.lead), true)
+}
+
+// notifiedExpires applies the expires of a NOTIFY (RFC 6665 §4.1.3): it moves the expiry; the refresh comes its lead
+// before it, or halfway to it when that is past, and stays where it was when earlier.
+func (s *Subscription) notifiedExpires(seconds uint32) {
+	if seconds == 0 {
+		s.expireNow()
+		return
+	}
+
+	now := s.a.clock.Now()
+	d := time.Duration(seconds) * time.Second
+	s.duration = d
+
+	if s.lead == 0 {
+		s.lead = refreshLead(d)
+	}
+
+	s.setExpiry(now.Add(d))
+
+	at := s.expiresAt.Add(-s.lead)
+	if !at.After(now) {
+		at = now.Add(d / 2)
+	}
+
+	s.schedule(at, false)
+}
+
+func (s *Subscription) setExpiry(at time.Time) {
+	s.expiresAt = at
+	s.expiry.stop()
+	s.expiry = s.st.after(at.Sub(s.a.clock.Now()), func() { s.end(End{Cause: EndExpired}) })
+}
+
+// schedule sets the refresh at at, or keeps an earlier one unless force.
+func (s *Subscription) schedule(at time.Time, force bool) {
+	if s.d == nil || s.unsubscribing || s.ended {
+		return
+	}
+
+	if !force && !s.refreshAt.IsZero() && s.refresh != nil && !s.refresh.stopped && s.refreshAt.Before(at) {
+		return
+	}
+
+	s.refreshAt = at
+	s.refresh.stop()
+	s.refresh = s.st.after(max(at.Sub(s.a.clock.Now()), 0), s.autoRefresh)
+}
+
+// expireNow ends a subscription its notifier gave no time left: once the terminated NOTIFY comes, or without it
+// after 64*T1 (RFC 6665 §4.1.3).
+func (s *Subscription) expireNow() {
 	s.refresh.stop()
 	s.expiry.stop()
 	s.refresh, s.expiry = nil, nil
 
-	if s.duration == 0 {
-		return
-	}
-
-	s.expiry = s.st.after(s.duration, func() { s.end(End{Cause: EndExpired}) })
-
-	if s.d != nil && !s.unsubscribing {
-		at := max(s.duration/2, s.duration-600*time.Second)
-		s.left = s.duration - at
-		s.refresh = s.st.after(at, s.autoRefresh)
+	if s.guard == nil {
+		s.guard = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndExpired}) })
 	}
 }
 
 func (s *Subscription) autoRefresh() {
-	if err := s.subscribe(false, nil); err != nil {
+	if err := s.subscribe(false, Change{}, nil); err != nil {
 		s.a.log.Debug("subscription refresh failed", slog.Any("error", err))
 		s.retryRefresh()
 	}
 }
 
-// end terminates the subscription, once: its timers stop, and its dialog usage ends (RFC 5057 §5.4).
+// retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one.
+func (s *Subscription) retryRefresh() {
+	if s.unsubscribing || s.ended || s.expiresAt.IsZero() {
+		return
+	}
+
+	left := s.expiresAt.Sub(s.a.clock.Now())
+	if left < 2*64*s.a.layer.T1() {
+		return
+	}
+
+	s.schedule(s.a.clock.Now().Add(left/2), true)
+}
+
+// end terminates the subscription, once: its timers stop, its requests in progress complete, and its dialog usage
+// ends, with the dialog if it was the last one (RFC 5057 §4).
 func (s *Subscription) end(e End) {
 	s.st.check()
 
@@ -494,9 +730,10 @@ func (s *Subscription) end(e End) {
 
 	s.ended = true
 	s.state = SubscriptionTerminated
-	s.refresh.stop()
-	s.expiry.stop()
-	s.timer.stop()
+
+	for _, t := range []*timer{s.refresh, s.expiry, s.timerN, s.guard} {
+		t.stop()
+	}
 
 	for c := range s.inflight {
 		c.final = true
@@ -505,13 +742,20 @@ func (s *Subscription) end(e End) {
 
 	s.inflight = nil
 
-	if s.d != nil {
-		s.a.removeSubscription(s)
+	if s.d != nil && s.a.removeSubscription(s) {
 		s.d.Terminate()
 	}
 
-	if s.att.first == s && s.d == nil || e.Cause == EndUnsubscribed {
+	if s.att.first == s && s.d == nil || e.Cause == EndUnsubscribed || e.Cause == EndDropped {
 		s.att.done()
+	}
+
+	// An unsubscribe of Close ends as the agent closes, however it ends.
+	if s.closing {
+		s.closing = false
+		e.Cause = EndClosed
+
+		s.a.await(-1)
 	}
 
 	s.emit(func(h SubscriptionHandler) {
@@ -530,9 +774,15 @@ func (s *Subscription) State() SubscriptionState {
 	return get(s.st, func() SubscriptionState { return s.state })
 }
 
-// Duration is the last known duration of the subscription: of the 2xx to its last SUBSCRIBE, or of its last NOTIFY.
+// Duration is the duration the notifier last granted: in the 2xx to a SUBSCRIBE, or in a NOTIFY.
 func (s *Subscription) Duration() time.Duration {
 	return get(s.st, func() time.Duration { return s.duration })
+}
+
+// Expires is when the subscription expires without a refresh, on the clock of the agent; zero before the 2xx or the
+// first NOTIFY tells.
+func (s *Subscription) Expires() time.Time {
+	return get(s.st, func() time.Time { return s.expiresAt })
 }
 
 // Dialog is the state of the dialog of the subscription, once its first NOTIFY created it.
@@ -565,16 +815,18 @@ func (s *Subscription) SetValue(v any) {
 	})
 }
 
-// Refresh refreshes the subscription now, with a SUBSCRIBE within its dialog (RFC 6665 §4.1.2.2); done receives its
-// final response or its error, as a handler. The agent refreshes on its own before the subscription expires.
-func (s *Subscription) Refresh(done func(res *sip.Response, err error)) error {
-	return s.st.do(func() error { return s.subscribe(false, done) })
+// Refresh refreshes the subscription now, with a SUBSCRIBE within its dialog (RFC 6665 §4.1.2.2): the header fields
+// and bodies of the initial SUBSCRIBE, those of c in their place, such as another filter. done receives its final
+// response or its error, as a handler. The agent refreshes on its own before the subscription expires.
+func (s *Subscription) Refresh(c Change, done func(res *sip.Response, err error)) error {
+	return s.st.do(func() error { return s.subscribe(false, c, done) })
 }
 
-// Unsubscribe ends the subscription with a SUBSCRIBE with Expires 0 (RFC 6665 §4.1.2.3): it ends with the terminated
-// NOTIFY that follows, or without it once Timer N fires. Before its first NOTIFY, or when that SUBSCRIBE cannot be
-// sent, the subscription ends at once, with EndUnsubscribed; a NOTIFY for it then gets a 481.
-func (s *Subscription) Unsubscribe() error {
+// Unsubscribe ends the subscription with a SUBSCRIBE with Expires 0 (RFC 6665 §4.1.2.3), with the header fields of
+// the initial SUBSCRIBE and of c, and the bodies of c: it ends with the terminated NOTIFY that follows, or without it
+// after 64*T1. Before its first NOTIFY, or when that SUBSCRIBE fails, it ends at once, with EndUnsubscribed; its
+// NOTIFYs then get a 481, which ends it for the notifier too (RFC 6665 §4.2.2).
+func (s *Subscription) Unsubscribe(c Change) error {
 	return s.st.do(func() error {
 		switch {
 		case s.ended:
@@ -586,7 +838,7 @@ func (s *Subscription) Unsubscribe() error {
 			return nil
 		}
 
-		if err := s.subscribe(true, nil); err != nil {
+		if err := s.subscribe(true, c, nil); err != nil {
 			s.end(End{Cause: EndUnsubscribed, Err: err})
 		}
 
@@ -594,25 +846,30 @@ func (s *Subscription) Unsubscribe() error {
 	})
 }
 
+// Drop ends the subscription at once, without a SUBSCRIBE: the application knows its notifier no longer has it,
+// as a UE once deregistered (TS 24.229 §5.1.1.7). Its NOTIFYs then get a 481 (RFC 6665 §4.2.2).
+func (s *Subscription) Drop() {
+	_ = s.st.do(func() error {
+		s.end(End{Cause: EndDropped})
+		return nil
+	})
+}
+
 // subscribe sends a SUBSCRIBE within the dialog: a refresh, with the Expires of the initial SUBSCRIBE, or an
-// unsubscribe. Timer N waits for the NOTIFY it brings.
-func (s *Subscription) subscribe(unsubscribe bool, done func(*sip.Response, error)) error {
+// unsubscribe. Timer N waits for the NOTIFY of a refresh; a guard, for the terminated NOTIFY of the unsubscribe.
+func (s *Subscription) subscribe(unsubscribe bool, ch Change, done func(*sip.Response, error)) error {
 	if s.d == nil || s.ended || s.unsubscribing {
 		return ErrState
 	}
 
-	req, err := s.d.NewRequest("SUBSCRIBE")
+	c := &subscribeRequest{s: s, change: ch, done: done, unsubscribe: unsubscribe}
+
+	req, err := c.build()
 	if err != nil {
 		return err
 	}
 
-	copyHeader(req, s.att.tmpl)
-
-	if unsubscribe {
-		req.Header.Set("Expires", "0")
-	}
-
-	c := &subscribeRequest{s: s, req: req, done: done, unsubscribe: unsubscribe}
+	c.req = req
 
 	if err := c.send(); err != nil {
 		return err
@@ -622,32 +879,84 @@ func (s *Subscription) subscribe(unsubscribe bool, done func(*sip.Response, erro
 		s.unsubscribing = true
 		s.refresh.stop()
 		s.refresh = nil
+		s.guard.stop()
+		s.guard = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndUnsubscribed}) })
 	}
 
 	return nil
 }
 
 // copyHeader copies into a request within a dialog the header fields of the application of the initial request tmpl:
-// all but those of the dialog and of the transaction.
+// all but those of the dialog, of the transaction, and of its bodies.
 func copyHeader(req, tmpl *sip.Request) {
 	for _, f := range tmpl.Header {
-		switch strings.ToLower(sip.LongName(f.Name)) {
-		case "via", "cseq", "call-id", "from", "to", "route", "max-forwards", "content-length",
-			"authorization", "proxy-authorization":
+		switch name := strings.ToLower(sip.LongName(f.Name)); {
+		case strings.HasPrefix(name, "content-"), name == "mime-version":
+		case name == "via", name == "cseq", name == "call-id", name == "from", name == "to", name == "route",
+			name == "max-forwards", name == "authorization", name == "proxy-authorization":
 		default:
 			req.Header.Add(f.Name, f.Value)
 		}
 	}
 }
 
-// subscribeRequest is a SUBSCRIBE within the dialog of a subscription, sent again after a challenge.
+// applyChange puts the header fields of c in place of those of the same names, and sets the bodies of c, if any, or
+// else those of tmpl when bodies is set.
+func applyChange(req, tmpl *sip.Request, c Change, bodies bool) {
+	for _, f := range c.Header {
+		req.Header.Del(f.Name)
+	}
+
+	for _, f := range c.Header {
+		req.Header.Add(f.Name, f.Value)
+	}
+
+	switch {
+	case c.Bodies != nil:
+		req.SetBodies(c.Bodies...)
+	case bodies && len(tmpl.Body) > 0:
+		for _, f := range tmpl.Header {
+			if name := strings.ToLower(sip.LongName(f.Name)); strings.HasPrefix(name, "content-") && name != "content-length" ||
+				name == "mime-version" {
+				req.Header.Add(f.Name, f.Value)
+			}
+		}
+
+		req.Body = tmpl.Body
+		req.Header.Set("Content-Length", strconv.Itoa(len(tmpl.Body)))
+	}
+}
+
+// subscribeRequest is a SUBSCRIBE within the dialog of a subscription, built again after a challenge or a 423.
 type subscribeRequest struct {
 	s           *Subscription
+	change      Change
 	req         *sip.Request
 	done        func(*sip.Response, error)
 	unsubscribe bool
 	tries       int
+	retried     bool
 	final       bool
+}
+
+// build makes the SUBSCRIBE, with the next CSeq of the dialog.
+func (c *subscribeRequest) build() (*sip.Request, error) {
+	s := c.s
+
+	req, err := s.d.NewRequest("SUBSCRIBE")
+	if err != nil {
+		return nil, err
+	}
+
+	copyHeader(req, s.att.sub)
+	req.Header.Set("Event", s.event.String())
+	applyChange(req, s.att.sub, c.change, !c.unsubscribe)
+
+	if c.unsubscribe {
+		req.Header.Set("Expires", "0")
+	}
+
+	return req, nil
 }
 
 func (c *subscribeRequest) send() error {
@@ -663,20 +972,22 @@ func (c *subscribeRequest) send() error {
 
 	s.inflight[c] = struct{}{}
 
-	s.timer.stop()
-	s.timer = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndNoNotify}) })
+	if !c.unsubscribe {
+		s.timerN.stop()
+		s.timerN, s.nOwner = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndNoNotify}) }), c
+	}
 
 	return nil
 }
 
-// refreshEnds are the responses to a refresh that end the subscription (RFC 6665 §4.1.2.2).
-func refreshEnds(code int) bool {
-	switch code {
-	case 404, 405, 410, 416, 489, 501, 604:
-		return true
+// refreshEnds reports a failure of a refresh that ends the subscription: one of RFC 6665 §4.1.2.2, which are those
+// that destroy the usage or the dialog (RFC 5057 Table 2); a timeout or a 408 leaves it until it expires.
+func refreshEnds(res *sip.Response) effect {
+	if res == nil || res.StatusCode == 408 {
+		return affectsTransaction
 	}
 
-	return code >= 480 && code <= 485
+	return failureOf("SUBSCRIBE", res, nil)
 }
 
 func (c *subscribeRequest) response(res *sip.Response) {
@@ -688,8 +999,7 @@ func (c *subscribeRequest) response(res *sip.Response) {
 
 	_ = s.d.ReceiveResponse(res)
 
-	if next, ok := s.challenged(c.req, res, c.tries); ok {
-		c.tries++
+	if next, ok := c.retry(res); ok {
 		c.req = next
 
 		if err := c.send(); err != nil {
@@ -704,18 +1014,78 @@ func (c *subscribeRequest) response(res *sip.Response) {
 
 	switch {
 	case res.IsSuccess():
-		if v, err := res.Header.Expires(); err == nil && !c.unsubscribe {
-			s.setDuration(v)
+		// RFC 6665 §4.1.2.2: a 204 (RFC 5839) brings no NOTIFY.
+		if res.StatusCode == 204 && s.nOwner == c {
+			s.timerN.stop()
+			s.timerN, s.nOwner = nil, nil
 		}
-	case refreshEnds(res.StatusCode):
-		s.end(End{Cause: EndRejected, Remote: true, Response: res})
+
+		if !c.unsubscribe {
+			if v, err := res.Header.Expires(); err == nil {
+				s.granted(v)
+			} else if v, err := s.att.sub.Header.Expires(); err == nil {
+				s.granted(v)
+			}
+		}
+	case c.unsubscribe:
+		s.end(End{Cause: EndUnsubscribed, Remote: true, Response: res})
 	default:
-		// The subscription lasts until its expiry; the refresh is tried again halfway to it.
-		s.timer.stop()
-		s.retryRefresh()
+		switch refreshEnds(res) {
+		case destroysDialog:
+			s.a.destroyDialog(s.d.ID(), res, nil)
+		case destroysUsage:
+			s.end(End{Cause: EndRejected, Remote: true, Response: res})
+		default:
+			// The subscription lasts until its expiry; the refresh is tried again halfway to it.
+			if s.nOwner == c {
+				s.timerN.stop()
+				s.timerN, s.nOwner = nil, nil
+			}
+
+			s.retryRefresh()
+		}
 	}
 
 	s.emitDone(c.done, res, nil)
+}
+
+// retry is the SUBSCRIBE to send again after a 401 or 407 (RFC 3261 §22.2) or a 423 (RFC 6665 §4.2.1.1): built anew,
+// with the next CSeq.
+func (c *subscribeRequest) retry(res *sip.Response) (*sip.Request, bool) {
+	s := c.s
+
+	switch {
+	case res.StatusCode == 423 && !c.retried && !c.unsubscribe:
+		next := s.att.sub.Clone()
+		if !raiseExpires(next, res) {
+			return nil, false
+		}
+
+		c.retried = true
+		s.att.sub = next
+
+		if !s.att.refer {
+			s.att.tmpl = next
+		}
+	case res.StatusCode == 401 || res.StatusCode == 407:
+	default:
+		return nil, false
+	}
+
+	next, err := c.build()
+	if err != nil {
+		return nil, false
+	}
+
+	if res.StatusCode == 401 || res.StatusCode == 407 {
+		if !s.a.authenticate(next, res, c.tries) {
+			return nil, false
+		}
+
+		c.tries++
+	}
+
+	return next, true
 }
 
 func (c *subscribeRequest) error(err error) {
@@ -728,24 +1098,20 @@ func (c *subscribeRequest) error(err error) {
 	c.final = true
 	delete(s.inflight, c)
 
-	s.timer.stop()
+	switch {
+	case s.ended:
+	case c.unsubscribe:
+		s.end(End{Cause: EndUnsubscribed, Err: err})
+	default:
+		if s.nOwner == c {
+			s.timerN.stop()
+			s.timerN, s.nOwner = nil, nil
+		}
 
-	if !s.ended {
 		s.retryRefresh()
 	}
 
 	s.emitDone(c.done, nil, err)
-}
-
-// retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one.
-func (s *Subscription) retryRefresh() {
-	if s.unsubscribing || s.expiry == nil || s.left < 2*64*s.a.layer.T1() {
-		return
-	}
-
-	s.left /= 2
-	s.refresh.stop()
-	s.refresh = s.st.after(s.left, s.autoRefresh)
 }
 
 func (s *Subscription) emitDone(done func(*sip.Response, error), res *sip.Response, err error) {
@@ -754,55 +1120,23 @@ func (s *Subscription) emitDone(done func(*sip.Response, error), res *sip.Respon
 	}
 }
 
-// challenged is the SUBSCRIBE to send again after a 401 or 407 to req: the next CSeq, with the credentials of
-// Config.Authenticate (RFC 3261 §22.2).
-func (s *Subscription) challenged(req *sip.Request, res *sip.Response, tries int) (*sip.Request, bool) {
-	if res.StatusCode != 401 && res.StatusCode != 407 {
-		return nil, false
-	}
-
-	next, err := s.d.NewRequest("SUBSCRIBE")
-	if err != nil {
-		return nil, false
-	}
-
-	copyHeader(next, req)
-
-	if !s.a.authenticate(next, res, tries) {
-		return nil, false
-	}
-
-	return next, true
-}
-
-// close ends the subscription as the agent closes, unsubscribing from a confirmed one.
+// close ends the subscription as the agent closes: one with a dialog unsubscribes, and waits for its terminated
+// NOTIFY, which Close waits for; one without ends at once.
 func (s *Subscription) close() {
-	if s.d != nil && !s.unsubscribing {
-		if req, err := s.d.NewRequest("SUBSCRIBE"); err == nil {
-			copyHeader(req, s.att.tmpl)
-			req.Header.Set("Expires", "0")
-
-			s.a.await(1)
-
-			finished := false
-
-			done := func() {
-				if !finished {
-					finished = true
-
-					s.a.await(-1)
-				}
-			}
-
-			if _, err := s.a.prepareAndSend(req, s.st.client(func(res *sip.Response) {
-				if !res.IsProvisional() {
-					done()
-				}
-			}, func(error) { done() })); err != nil {
-				done()
-			}
-		}
+	if s.ended || s.closing {
+		return
 	}
 
-	s.end(End{Cause: EndClosed})
+	if s.d == nil || s.unsubscribing {
+		s.end(End{Cause: EndClosed})
+		return
+	}
+
+	if err := s.subscribe(true, Change{}, nil); err != nil {
+		s.end(End{Cause: EndClosed, Err: err})
+		return
+	}
+
+	s.closing = true
+	s.a.await(1)
 }

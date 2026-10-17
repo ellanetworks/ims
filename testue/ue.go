@@ -360,6 +360,7 @@ func New(cfg Config) (*UE, error) {
 		},
 		Prepare:   u.prepare,
 		Respond:   u.respondHeaders,
+		Policy:    ua.ClientPolicy,
 		Allow:     allowed,
 		Supported: []string{sip.OptionTagPrecondition},
 		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.

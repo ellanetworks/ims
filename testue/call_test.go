@@ -466,16 +466,30 @@ func TestSessionRefresh(t *testing.T) {
 	}
 }
 
-// RFC 4028 §10: without the refreshes of the caller, the callee ends the session before it expires, and so does the
-// caller.
+// RFC 4028 §10: without the refreshes of the caller, the refresher, the callee ends the session with a BYE before it
+// expires.
 func TestSessionExpiry(t *testing.T) {
 	ctx := testContext(t)
 	clock := siptest.NewClock()
 	a, b := pairWith(t, Config{Clock: clock}, Config{Clock: clock})
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
+	ac.SetAutoRefresh(false)
 
-	// The caller loses its network: no refresh reaches the callee.
+	advance(clock, 90*time.Second)
+
+	ended(t, bc, Expired)
+	ended(t, ac, RemoteBye)
+}
+
+// RFC 4028 §10: without the network of the caller, both ends see the session expire.
+func TestSessionExpiryWithoutNetwork(t *testing.T) {
+	ctx := testContext(t)
+	clock := siptest.NewClock()
+	a, b := pairWith(t, Config{Clock: clock}, Config{Clock: clock})
+
+	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
+
 	_ = a.layer.Close()
 
 	advance(clock, 125*time.Second)

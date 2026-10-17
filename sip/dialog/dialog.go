@@ -66,6 +66,9 @@ func tag(a sip.Address, err error) string {
 	return a.Tag()
 }
 
+// Dialog is the state of a dialog (RFC 3261 §12): its identifiers, route set, targets and CSeq spaces. It serves the
+// usages that share it (RFC 5057 §4): a BYE ends the INVITE usage only, and the usage manager ends the dialog with
+// Terminate once its last usage ended; an early dialog ends with the failure of the request that created it.
 type Dialog struct {
 	mu sync.Mutex
 
@@ -376,25 +379,25 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 }
 
 // PrepareResponse records a response the UA sends to a request of the peer within the dialog: the response to the
-// creating request copies its Record-Route and moves the state; a reliable 1xx or a 2xx to a target refresh request
-// copies its Record-Route too, whose entries the P-CSCF rewrites (TS 24.229 §5.2.6.3.6, §5.2.6.4.6), and replaces the
-// remote target with its Contact, unless a later one did (RFC 6141 §4.6).
+// creating request copies its Record-Route and moves the state; a 1xx or a 2xx to a target refresh request copies
+// its Record-Route too, whose entries the P-CSCF rewrites (TS 24.229 §5.2.6.3.6, §5.2.6.4.6); a reliable 1xx or a 2xx
+// to it replaces the remote target with its Contact, unless a later one did (RFC 6141 §4.6).
 func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	cseq, err := req.Header.CSeq()
 	if err != nil || res.StatusCode <= 100 {
 		return
 	}
 
-	refresh := isTargetRefresh(req.Method) && refreshes(res)
+	refresh := isTargetRefresh(req.Method)
 	target, hasTarget, err := optionalContact(req.Header)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if refresh && d.state != Terminated {
+	if refresh && res.StatusCode < 300 && d.state != Terminated {
 		CopyRecordRoute(res, req)
 
-		if err == nil && hasTarget && cseq.Seq >= d.refreshSeq {
+		if refreshes(res) && err == nil && hasTarget && cseq.Seq >= d.refreshSeq {
 			d.target, d.refreshSeq = target, cseq.Seq
 		}
 	}
@@ -425,7 +428,7 @@ func refreshes(res *sip.Response) bool {
 
 func isTargetRefresh(method string) bool {
 	switch method {
-	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY":
+	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY", "REFER":
 		return true
 	}
 
@@ -465,10 +468,6 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 	}
 
 	d.remoteSeq, d.haveRemoteSeq = cseq.Seq, true
-
-	if req.Method == "BYE" {
-		d.state = Terminated
-	}
 
 	return nil
 }
@@ -511,8 +510,6 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 		if d.state == Early {
 			d.state = Terminated
 		}
-	case cseq.Method == "BYE" && res.StatusCode >= 200:
-		d.state = Terminated
 	case creating && d.state == Early:
 		// RFC 6141 §4.9: an unreliable 1xx does not refresh the target of the early dialog it created.
 		if hasTarget && refreshes(res) {

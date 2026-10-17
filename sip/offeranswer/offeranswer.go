@@ -53,6 +53,11 @@ func (r Role) String() string {
 // value is a session without an exchange yet. Copying it copies the state, as an early dialog of a forked INVITE
 // starts from the state of the INVITE.
 type Negotiation struct {
+	// KeepFirstAnswer ignores the answer a later response of a transaction repeats changed, once a reliable one
+	// answered (RFC 6337 §3.1): the endpoints of the session keep the first. A proxy following the media the
+	// endpoints may use takes the changed one as an exchange of its own.
+	KeepFirstAnswer bool
+
 	offer, answer Body
 	tx            Key
 	pending       bool
@@ -89,6 +94,9 @@ func (n *Negotiation) Response(key Key, code int, sdp []byte) Role {
 
 	switch {
 	case sdp == nil || code >= 300:
+	case n.tx == key && n.offer.From != from && !n.pending && n.KeepFirstAnswer:
+		// RFC 6337 §3.1: the answer of a reliable 1xx repeated in a later response, which is to be identical; a
+		// different one counts as the first.
 	case n.tx == key && n.offer.From != from:
 		// The answer, or the answer of a reliable 1xx repeated in the 2xx.
 		role = n.answered(Body{From: from, Data: sdp})
@@ -117,11 +125,15 @@ func (n *Negotiation) Fail(key Key) {
 		return
 	}
 
+	keep := n.KeepFirstAnswer
+
 	if n.prev != nil {
 		*n = *n.prev
 	} else {
 		*n = Negotiation{}
 	}
+
+	n.KeepFirstAnswer = keep
 }
 
 func (n *Negotiation) offered(key Key, body Body) {
@@ -132,7 +144,7 @@ func (n *Negotiation) offered(key Key, body Body) {
 		prev = &done
 	}
 
-	*n = Negotiation{offer: body, tx: key, pending: true, prev: prev}
+	*n = Negotiation{KeepFirstAnswer: n.KeepFirstAnswer, offer: body, tx: key, pending: true, prev: prev}
 }
 
 // RFC 6337 §3.1: an answer repeated unchanged, as the one of a reliable 1xx in the 2xx, is no new exchange.

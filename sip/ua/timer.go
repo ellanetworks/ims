@@ -169,18 +169,24 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 		addOptionTag(&rp.Header, "Require", sip.OptionTagTimer)
 	}
 
-	if !rp.Header.HasOptionTag("Supported", sip.OptionTagTimer) && rp.Header.Has("Supported") {
-		rp.Header.Add("Supported", sip.OptionTagTimer)
-	}
+	mergeSupported(&rp.Header, []string{sip.OptionTagTimer})
 
 	t.interval, t.refresher = se.Seconds, se.Refresher == sip.RefresherUAS
 }
 
 // fromResponse sets the session timer of the dialog from the 2xx to a session refresh request of the agent
 // (RFC 4028 §7.2).
+//
+// A UAS may not reduce the interval below the Min-SE of the request (RFC 4028 §9): one that does gets the Min-SE.
 func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 	if se, ok, err := res.Header.SessionExpires(); ok && err == nil {
-		t.interval, t.refresher = se.Seconds, se.Refresher != sip.RefresherUAS
+		least := minSessionExpires
+		if v, ok, err := req.Header.MinSE(); ok && err == nil {
+			least = max(least, int(v))
+		}
+
+		t.interval, t.refresher = max(se.Seconds, uint32(least)), se.Refresher != sip.RefresherUAS
+
 		return
 	}
 
@@ -196,11 +202,14 @@ func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 // start arms the timers of the session after a 2xx to a session refresh request: the refresh at half the interval
 // when the agent refreshes, and the BYE before the end of the interval otherwise, or when refreshes fail
 // (RFC 4028 §7.2, §10).
+//
+// An early dialog has no session timer (RFC 4028 §7.2, §9: the interval applies once a 2xx confirms the session): the
+// timers start as the session is confirmed.
 func (t *sessionTimer) start(s *Session) {
 	t.stop()
 	t.expired = false
 
-	if t.interval == 0 {
+	if t.interval == 0 || s.state != Confirmed {
 		return
 	}
 
@@ -233,41 +242,6 @@ func (t *sessionTimer) stop() {
 	t.refresh, t.abort = nil, nil
 }
 
-// refreshSession refreshes the session: with an UPDATE without an offer when the peer allows UPDATE, with a re-INVITE
-// offering the session unchanged otherwise (RFC 4028 §7.4). A transaction in progress delays it.
-func (s *Session) refreshSession() {
-	if s.state != Confirmed {
-		return
-	}
-
-	method := "INVITE"
-
-	var c Change
-
-	if s.peerAllows("UPDATE") {
-		method = "UPDATE"
-	} else if mine, ok := s.sdp.Described(local); ok {
-		c.Bodies = []sip.BodyPart{SDP(mine)}
-	}
-
-	if code, _ := s.conflict(method, len(c.Bodies) > 0, true); code != 0 {
-		s.timer.retry(s)
-		return
-	}
-
-	ci, err := s.newClientInvite(method, c, nil)
-	if err != nil {
-		s.timer.retry(s)
-		return
-	}
-
-	ci.refresh = true
-
-	if err := ci.send(); err != nil {
-		s.timer.retry(s)
-	}
-}
-
 // expire ends a session whose timer expired without a refresh (RFC 4028 §10). A re-INVITE or an UPDATE in progress
 // defers it: its 2xx refreshes the session.
 func (s *Session) expire() {
@@ -276,6 +250,6 @@ func (s *Session) expire() {
 	case s.modifying():
 		s.timer.expired = true
 	default:
-		s.byeEnd(End{Cause: EndExpired})
+		s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
 	}
 }

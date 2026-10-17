@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -94,6 +95,8 @@ func tryPeer(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	cfg := ua.Config{
 		Prepare: p.prepare,
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: p.addr.Addr().String(), Port: p.addr.Port()}},
+		Policy:  ua.ClientPolicy,
+		Allow:   append(slices.Clone(ua.Methods), "INFO", "MESSAGE", "REFER", "NOTIFY", "SUBSCRIBE"),
 		OnInvite: func(r *ua.Request) ua.Handler {
 			p.record(event{kind: "invite", req: r})
 
@@ -341,7 +344,7 @@ func TestCall(t *testing.T) {
 		t.Errorf("dialog IDs %+v %+v", as.ID(), bs.ID())
 	}
 
-	if err := bs.Bye(); err != nil {
+	if err := bs.Bye(ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -409,7 +412,7 @@ func TestLateOffer(t *testing.T) {
 		t.Fatalf("offer %q", o.sdp)
 	}
 
-	if err := o.offer.Answer(sdpOf("answer-a")...); err != nil {
+	if err := o.offer.Answer(ua.Change{Bodies: sdpOf("answer-a")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -434,7 +437,7 @@ func TestCancel(t *testing.T) {
 
 	alice.next("progress")
 
-	if err := o.Cancel(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}}); err != nil {
+	if err := o.Cancel(ua.Reasons(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -521,13 +524,16 @@ func TestReinviteAndUpdate(t *testing.T) {
 
 	bob.none()
 
-	// An UPDATE with an offer goes to the application.
+	// An UPDATE with an offer goes to the application. A second one waits for it; once the first exchange
+	// completed, its offer no longer builds on the session (RFC 3264 §8): it goes stale, unsent.
 	if err := as.Update(ua.Change{Bodies: sdpOf("offer-3")}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := as.Update(ua.Change{Bodies: sdpOf("offer-4")}, nil); err != ua.ErrPending {
-		t.Errorf("second offer: %v, want ErrPending", err)
+	stale := make(chan error, 1)
+
+	if err := as.Update(ua.Change{Bodies: sdpOf("offer-4")}, func(_ *sip.Response, err error) { stale <- err }); err != nil {
+		t.Fatalf("second offer: %v", err)
 	}
 
 	u := bob.next("request").req
@@ -542,6 +548,12 @@ func TestReinviteAndUpdate(t *testing.T) {
 	if res := <-done; res.StatusCode != 200 {
 		t.Fatalf("UPDATE %d", res.StatusCode)
 	}
+
+	if err := <-stale; !errors.Is(err, ua.ErrStale) {
+		t.Errorf("second offer: %v, want ErrStale", err)
+	}
+
+	bob.none()
 
 	if l, rm, _ := as.Negotiated(); string(l) != "offer-3" || string(rm) != "answer-3" {
 		t.Errorf("alice negotiated %q %q", l, rm)
@@ -789,62 +801,101 @@ func TestNoPrack(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: re-INVITEs crossing each other both get a 491, and are retried after random delays.
+// RFC 3261 §14.1: re-INVITEs crossing each other both get a 491, and are retried after random delays, the callee's
+// first. Once the callee's retry completed its exchange, the caller's fixed offer is stale (RFC 3264 §8): it is not
+// sent, unless Modify builds it anew.
 func TestGlare(t *testing.T) {
-	clock := siptest.NewClock()
-	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
-	as, bs := established(t, alice, bob)
+	for _, build := range []bool{false, true} {
+		t.Run(fmt.Sprintf("build=%v", build), func(t *testing.T) {
+			clock := siptest.NewClock()
+			alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
+			as, bs := established(t, alice, bob)
 
-	results := make(chan string, 2)
-	result := func(who string) func(*sip.Response, error) {
-		return func(res *sip.Response, err error) {
+			results := make(chan string, 2)
+			result := func(who string) func(*sip.Response, error) {
+				return func(res *sip.Response, err error) {
+					if err != nil {
+						results <- fmt.Sprint(who, " ", errors.Is(err, ua.ErrStale))
+						return
+					}
+
+					results <- fmt.Sprint(who, " ", res.StatusCode)
+				}
+			}
+
+			var err error
+
+			if build {
+				builds := 0
+				err = as.Modify(ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
+					builds++
+					return ua.Change{Bodies: sdpOf(fmt.Sprint("offer-a", builds))}, nil
+				}}, result("alice"))
+			} else {
+				err = as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, result("alice"))
+			}
+
 			if err != nil {
-				results <- fmt.Sprint(who, " ", err)
+				t.Fatal(err)
+			}
+
+			if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-b")}, result("bob")); err != nil {
+				t.Fatal(err)
+			}
+
+			// Each re-INVITE meets the other in progress, and gets a 491.
+			deadline := time.Now().Add(wait)
+			for ua.Reinviting(as) || ua.Reinviting(bs) {
+				if time.Now().After(deadline) {
+					t.Fatal("no 491")
+				}
+
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			advance(clock, 2*time.Second, alice, bob)
+
+			r := alice.next("request").req
+			if offer, _ := r.Offer(); string(offer) != "offer-b" {
+				t.Fatalf("bob's retry offers %q", offer)
+			}
+
+			_ = r.Accept(sdpOf("answer-b")...)
+
+			bob.next("answer")
+
+			if got := <-results; got != "bob 200" {
+				t.Fatalf("bob: %s", got)
+			}
+
+			advance(clock, 2*time.Second, alice, bob)
+
+			if !build {
+				if got := <-results; got != "alice true" {
+					t.Fatalf("alice: %s, want her offer stale", got)
+				}
+
+				bob.none()
+
 				return
 			}
 
-			results <- fmt.Sprint(who, " ", res.StatusCode)
-		}
-	}
+			r = bob.next("request").req
+			if offer, _ := r.Offer(); string(offer) != "offer-a2" {
+				t.Fatalf("alice's retry offers %q, want the offer built anew", offer)
+			}
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, result("alice")); err != nil {
-		t.Fatal(err)
-	}
+			_ = r.Accept(sdpOf("answer-a")...)
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-b")}, result("bob")); err != nil {
-		t.Fatal(err)
-	}
+			alice.next("answer")
 
-	answer := func(p *peer, sdp string) {
-		r := p.next("request").req
-		_ = r.Accept(sdpOf(sdp)...)
-	}
-
-	// Each re-INVITE meets the other in progress, gets a 491, and is retried; the callee's retry comes first.
-	deadline := time.Now().Add(wait)
-	for ua.Reinviting(as) || ua.Reinviting(bs) {
-		if time.Now().After(deadline) {
-			t.Fatal("no 491")
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	advance(clock, 2*time.Second, alice, bob)
-	answer(alice, "answer-b")
-	bob.next("answer")
-	advance(clock, 2*time.Second, alice, bob)
-	answer(bob, "answer-a")
-	alice.next("answer")
-
-	got := []string{<-results, <-results}
-	if got[0] != "bob 200" || got[1] != "alice 200" {
-		t.Errorf("results %v", got)
+			if got := <-results; got != "alice 200" {
+				t.Fatalf("alice: %s", got)
+			}
+		})
 	}
 }
 
-// RFC 4028: the session interval negotiated, refreshed by the refresher at half; without refreshes the session
-// expires.
 func TestSessionTimer(t *testing.T) {
 	clock := siptest.NewClock()
 	timer := ua.SessionTimer{Interval: 120 * time.Second}

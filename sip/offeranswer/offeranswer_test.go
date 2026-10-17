@@ -168,6 +168,29 @@ func TestNegotiation(t *testing.T) {
 	}
 }
 
+// RFC 6337 §3.1: with KeepFirstAnswer, an endpoint keeps the answer of the reliable 1xx when a later response of
+// the transaction repeats it changed, across later exchanges too.
+func TestKeepFirstAnswer(t *testing.T) {
+	n := offeranswer.Negotiation{KeepFirstAnswer: true}
+
+	for _, s := range []step{
+		{a, 1, "INVITE", 0, "X", offer},
+		{a, 1, "INVITE", 183, "x", answer},
+		{a, 1, "INVITE", 200, "y", none},
+		{b, 7, "UPDATE", 0, "U", offer},
+		{b, 7, "UPDATE", 500, "", none},
+		{a, 2, "UPDATE", 0, "V", offer},
+		{a, 2, "UPDATE", 200, "v", answer},
+		{a, 2, "UPDATE", 200, "w", none},
+	} {
+		s.apply(t, &n)
+	}
+
+	if o, an, ok := n.Session(); !ok || string(o.Data) != "V" || string(an.Data) != "v" {
+		t.Errorf("session %q %q %v", o.Data, an.Data, ok)
+	}
+}
+
 func TestSessionAndDescribed(t *testing.T) {
 	var n offeranswer.Negotiation
 

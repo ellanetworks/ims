@@ -841,7 +841,29 @@ func (c *Call) offerReceived(s *ua.Session, o *ua.Offer) {
 		return
 	}
 
-	_ = o.Answer(ua.SDP(answer.Bytes()))
+	_ = o.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer.Bytes())}})
+}
+
+// SetAutoRefresh turns the session refreshes of the call on or off, those of the UE as refresher (RFC 4028 §7.4):
+// off, a fault, the remote end ends the call before the session expires (§10).
+func (c *Call) SetAutoRefresh(on bool) {
+	c.mu.Lock()
+
+	var sessions []*ua.Session
+
+	for _, l := range c.legs {
+		if l.s != nil {
+			sessions = append(sessions, l.s)
+		}
+	}
+
+	c.mu.Unlock()
+
+	for _, s := range sessions {
+		p := s.Policy()
+		p.SkipRefreshes = !on
+		s.SetPolicy(p)
+	}
 }
 
 func (c *Call) pracked(*ua.Session, *sip.Response) {
@@ -1185,15 +1207,12 @@ func (c *Call) cancel(ctx context.Context, end EndReason, body *sdp.Session, ext
 	o := c.out
 	c.mu.Unlock()
 
-	if err := o.CancelWith(func(cancel *sip.Request) {
-		for _, f := range extra {
-			cancel.Header.Add(f.Name, f.Value)
-		}
+	ch := ua.Change{Header: sip.Header(extra)}
+	if body != nil {
+		ch.Bodies = []sip.BodyPart{sip.NewBodyPart(sdp.ContentType, body.Bytes())}
+	}
 
-		if body != nil {
-			cancel.SetBody(sdp.ContentType, body.Bytes())
-		}
-	}); err != nil {
+	if err := o.Cancel(ch); err != nil {
 		return fmt.Errorf("testue: CANCEL: %w", err)
 	}
 
@@ -1212,8 +1231,9 @@ func userEnds() sip.Field {
 	return sip.Field{Name: "Reason", Value: r.String()}
 }
 
-// bye ends the confirmed call with a BYE carrying extra Reasons (RFC 3261 §15.1.1, RFC 3326).
-func (c *Call) bye(_ context.Context, reason EndReason, extra ...sip.Field) error {
+// bye ends the confirmed call with a BYE carrying extra Reasons (RFC 3261 §15.1.1, RFC 3326), and waits for its
+// response: any, which ends the BYE, or the error of its transaction.
+func (c *Call) bye(ctx context.Context, reason EndReason, extra ...sip.Field) error {
 	c.mu.Lock()
 
 	s := c.leg.s
@@ -1233,19 +1253,22 @@ func (c *Call) bye(_ context.Context, reason EndReason, extra ...sip.Field) erro
 	c.terminateLocked(reason)
 	c.mu.Unlock()
 
-	var reasons []sip.Reason
+	done := make(chan error, 1)
 
-	for _, f := range extra {
-		if r, err := sip.ParseReason(f.Value); err == nil {
-			reasons = append(reasons, r)
+	if err := s.Bye(ua.Change{Header: sip.Header(extra)}, func(_ *sip.Response, err error) { done <- err }); err != nil {
+		if errors.Is(err, ua.ErrState) {
+			return nil
 		}
-	}
 
-	if err := s.Bye(reasons...); err != nil && !errors.Is(err, ua.ErrState) {
 		return err
 	}
 
-	return nil
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // RFC 3264 §8.4, IR.94 §2.3.2: every stream of the call is held, and resumed, in one offer.

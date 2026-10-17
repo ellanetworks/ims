@@ -210,7 +210,7 @@ func TestUasByeBeforeAck(t *testing.T) {
 
 	ok := r.response()
 
-	if err := in.Session().Bye(); err != nil {
+	if err := in.Session().Bye(ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,7 +310,7 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 		t.Fatalf("offer %q, want bob's last description", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.SDP([]byte(offer)))
+	_ = o.offer.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte(offer))}})
 
 	<-done
 

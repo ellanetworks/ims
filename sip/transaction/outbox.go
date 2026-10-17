@@ -48,6 +48,12 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 
 		if len(ob.jobs) == 0 {
 			delete(l.outboxes, f)
+
+			if len(l.outboxes) == 0 && l.drained != nil {
+				close(l.drained)
+				l.drained = nil
+			}
+
 			l.mu.Unlock()
 
 			return
@@ -62,6 +68,33 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 
 		job(ok)
 	}
+}
+
+// Shutdown closes the layer once the messages it took are sent, or ctx is done: the responses and requests of the
+// transactions under way leave before the transport closes.
+func (l *Layer) Shutdown(ctx context.Context) error {
+	l.mu.Lock()
+
+	var drained chan struct{}
+
+	if len(l.outboxes) > 0 && !l.closed {
+		if l.drained == nil {
+			l.drained = make(chan struct{})
+		}
+
+		drained = l.drained
+	}
+
+	l.mu.Unlock()
+
+	if drained != nil {
+		select {
+		case <-drained:
+		case <-ctx.Done():
+		}
+	}
+
+	return l.Close()
 }
 
 // sendInOrder sends m in its flow's order, and waits for the send.

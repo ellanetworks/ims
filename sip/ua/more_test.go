@@ -20,12 +20,14 @@ func checkTables(t *testing.T, p *peer) {
 
 	for {
 		d, i, n, o := ua.Tables(p.a)
-		if d == 0 && i == 0 && n == 0 && o == 0 {
+		l := ua.Lingering(p.a)
+
+		if d == 0 && i == 0 && n == 0 && o == 0 && l == 0 {
 			return
 		}
 
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d dialogs, %d INVITEs, %d initial requests, %d outgoing INVITEs left", p.name, d, i, n, o)
+			t.Fatalf("%s: %d dialogs, %d ended, %d INVITEs, %d initial requests, %d outgoing INVITEs left", p.name, d, l, i, n, o)
 		}
 
 		time.Sleep(20 * time.Millisecond)
@@ -39,7 +41,7 @@ func TestNoLeaks(t *testing.T) {
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 
 	_, bs := established(t, alice, bob)
-	_ = bs.Bye()
+	_ = bs.Bye(ua.Change{}, nil)
 
 	alice.next("ended")
 	bob.next("ended")
@@ -50,7 +52,7 @@ func TestNoLeaks(t *testing.T) {
 
 	alice.next("progress")
 
-	_ = o.Cancel()
+	_ = o.Cancel(ua.Change{})
 
 	bob.next("ended")
 	alice.nextAll("ended", "failed")

@@ -94,10 +94,13 @@ type Layer struct {
 	lanes  map[sip.Flow]*lane
 
 	outboxes map[sip.Flow]*outbox
-	clients  map[clientKey]*ClientTransaction
-	servers  map[serverKey]*ServerTransaction
-	pending  map[branchKey]*ServerTransaction
-	wg       sync.WaitGroup
+
+	// drained, while not nil, closes once the outboxes are empty, for Shutdown.
+	drained chan struct{}
+	clients map[clientKey]*ClientTransaction
+	servers map[serverKey]*ServerTransaction
+	pending map[branchKey]*ServerTransaction
+	wg      sync.WaitGroup
 }
 
 type clientKey struct {

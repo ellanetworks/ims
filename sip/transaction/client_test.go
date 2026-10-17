@@ -27,7 +27,7 @@ func TestClientInviteTimerAB(t *testing.T) {
 		}
 	}
 
-	if now := h.clock.Now(); now != 31500*time.Millisecond {
+	if now := h.clock.Elapsed(); now != 31500*time.Millisecond {
 		t.Fatalf("last retransmission at %s", now)
 	}
 
@@ -176,7 +176,7 @@ func TestClientNonInviteTimerEF(t *testing.T) {
 
 	n := 0
 
-	for interval := t1; h.clock.Now()+interval < 64*t1; interval = min(2*interval, t2) {
+	for interval := t1; h.clock.Elapsed()+interval < 64*t1; interval = min(2*interval, t2) {
 		h.advance(interval - time.Millisecond)
 		h.peer.RecvNone(quiet)
 		h.advance(time.Millisecond)
@@ -192,7 +192,7 @@ func TestClientNonInviteTimerEF(t *testing.T) {
 		t.Fatalf("%d retransmissions, want 10", n)
 	}
 
-	h.advance(64*t1 - h.clock.Now())
+	h.advance(64*t1 - h.clock.Elapsed())
 
 	if err := rs.NextError(); !errors.Is(err, transaction.ErrTimeout) {
 		t.Fatalf("error %v, want timeout", err)

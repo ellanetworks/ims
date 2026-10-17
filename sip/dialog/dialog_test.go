@@ -689,7 +689,9 @@ func TestEarlyDialogTermination(t *testing.T) {
 	}
 }
 
-func TestByeTerminates(t *testing.T) {
+// RFC 5057 §4: a BYE ends the INVITE usage, not the dialog its other usages share; the usage manager terminates the
+// dialog once the last one ended, then the dialog refuses requests with a 481.
+func TestByeLeavesTheDialog(t *testing.T) {
 	d := newUAC(t)
 
 	bye, err := d.NewRequest("BYE")
@@ -703,8 +705,12 @@ func TestByeTerminates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if d.State() != dialog.Terminated {
-		t.Errorf("UAC state %v after 200 to BYE", d.State())
+	if d.State() == dialog.Terminated {
+		t.Fatal("UAC dialog terminated by the 200 to its BYE")
+	}
+
+	if _, err := d.NewRequest("NOTIFY"); err != nil {
+		t.Fatalf("NOTIFY of another usage after the BYE: %v", err)
 	}
 
 	req := parse[*sip.Request](t, invite)
@@ -720,15 +726,17 @@ func TestByeTerminates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if uas.State() != dialog.Terminated {
-		t.Errorf("UAS state %v after BYE", uas.State())
+	if uas.State() == dialog.Terminated {
+		t.Fatal("UAS dialog terminated by a BYE")
 	}
+
+	uas.Terminate()
 
 	err = uas.ReceiveRequest(inDialog(t, "INFO", 12, ""))
 
 	var serr *sip.StatusError
 	if !errors.As(err, &serr) || serr.StatusCode != 481 {
-		t.Errorf("request after BYE: %v, want 481", err)
+		t.Errorf("request after Terminate: %v, want 481", err)
 	}
 }
 

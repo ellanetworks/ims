@@ -66,7 +66,7 @@ type fakeClock struct {
 }
 
 func (c fakeClock) Now() time.Time {
-	return testEpoch.Add(c.Clock.Now())
+	return testEpoch.Add(c.Elapsed())
 }
 
 type fakeHSS struct {

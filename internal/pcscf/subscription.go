@@ -494,6 +494,11 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		}
 
 		s.dialog = d
+
+		// The 200 to the NOTIFY that creates the dialog carries its Record-Route (RFC 3261 §12.1.1).
+		if d != nil {
+			d.PrepareResponse(req, accepted)
+		}
 	}
 
 	if info != nil && int64(info.Version) < s.version {

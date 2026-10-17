@@ -55,3 +55,27 @@ func TestRequestsLeaveInOrder(t *testing.T) {
 		})
 	}
 }
+
+// Shutdown sends the messages the layer took before closing the transport.
+func TestShutdownSendsWhatItTook(t *testing.T) {
+	h := newHarness(t)
+
+	const n = 50
+
+	for i := range n {
+		req := h.newRequest("MESSAGE", sip.TCP)
+		req.Header.Set("CSeq", sip.CSeq{Seq: uint32(i + 1), Method: "MESSAGE"}.String())
+
+		if _, err := h.l.Request(req, siptest.NewResponses(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := h.l.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	for range n {
+		h.peer.RecvRequest()
+	}
+}

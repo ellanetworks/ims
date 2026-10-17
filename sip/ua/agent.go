@@ -31,14 +31,64 @@ var (
 	// ErrCancelled ends a re-INVITE cancelled before it was sent.
 	ErrCancelled = errors.New("sip/ua: re-INVITE cancelled")
 
+	// ErrStale ends a re-INVITE or an UPDATE of a fixed Change with an offer that waited, for a transaction in progress
+	// or after a 491, while another offer/answer exchange completed: its offer no longer builds on the session
+	// (RFC 3264 §8), so it is not sent. Modify, whose Build makes the change anew, does not go stale.
+	ErrStale = errors.New("sip/ua: the session changed while the offer waited")
+
 	// ErrNoPrack and ErrNoAck are the End.Err of a session that timed out without the PRACK of a reliable 1xx of the
 	// agent (RFC 3262 §3), or the ACK of its 2xx (RFC 3261 §13.3.1.4).
 	ErrNoPrack = errors.New("sip/ua: no PRACK to the reliable 1xx")
 	ErrNoAck   = errors.New("sip/ua: no ACK to the 2xx")
+
+	// ErrNoAnswer is the End.Err of a session whose application did not answer the offer of a 2xx in time.
+	ErrNoAnswer = errors.New("sip/ua: no answer to the offer of the 2xx")
 )
 
-// Methods are the methods an agent allows by default (RFC 3261 §20.5).
-var Methods = []string{"INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE", "INFO", "REFER", "NOTIFY", "MESSAGE", "OPTIONS"}
+// Error is the failure of an operation of a session, an INVITE or a request of the peer, in the state it was in. Err
+// is one of the errors of the package, such as ErrState, or the error of the transaction layer.
+type Error struct {
+	// Op is the method called: "Bye", "Reinvite", "Respond"...
+	Op    string
+	State State
+	Err   error
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("sip/ua: %s in the %s state: %v", e.Op, e.State, e.Err)
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
+// Methods are the methods an agent allows by default (RFC 3261 §20.5): those of its INVITE sessions, which it handles
+// itself, and OPTIONS, which it answers. An application that handles others in Handler.Request or OnRequest, such as
+// INFO, MESSAGE, REFER or NOTIFY, lists them in Config.Allow; requests of methods not allowed get a 405.
+var Methods = []string{"INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE", "OPTIONS"}
+
+// Policy is what the agent does on its own in a session beyond what the RFCs require of every user agent, which it
+// always does: the ACK of a 2xx and the PRACK of a reliable 1xx, the responses to conflicting requests (RFC 3261 §14,
+// RFC 3311 §5.2), the session timer (RFC 4028: refreshes as refresher, 422, the retry with its Min-SE), the challenges
+// with Config.Authenticate, and the answers to the requests the application has no handler for. The zero Policy, for
+// servers such as a B2BUA, does nothing more: every request of the peer and every failure of the application's
+// requests reach the application. ClientPolicy suits the user agent of a user.
+type Policy struct {
+	// AnswerRefreshes answers the session refreshes of the peer (Request.Refresh) that carry no body but an SDP one,
+	// as Request.AnswerUnchanged does. Otherwise they reach Handler.Request with the other modifications.
+	AnswerRefreshes bool
+
+	// RetryGlare sends a re-INVITE or an UPDATE of the application that got a 491 again, once, after the delay of
+	// RFC 3261 §14.1. Otherwise its done receives the 491.
+	RetryGlare bool
+
+	// SkipRefreshes leaves the session refreshes of the agent unsent: a fault, for tests of the peer's session timer
+	// (RFC 4028 §10). The session still ends when it expires.
+	SkipRefreshes bool
+}
+
+// ClientPolicy answers the session refreshes of the peer and retries glare.
+var ClientPolicy = Policy{AnswerRefreshes: true, RetryGlare: true}
 
 // SessionTimer is the session timer policy of an agent (RFC 4028).
 type SessionTimer struct {
@@ -91,11 +141,15 @@ type Config struct {
 
 	SessionTimer SessionTimer
 
+	// Policy is the policy of the sessions of the agent, unless WithPolicy or Session.SetPolicy sets another.
+	Policy Policy
+
 	// OnInvite receives an initial INVITE, and returns the handler of its session. Without it, initial INVITEs get a
 	// 480.
 	OnInvite func(r *Request) Handler
 
-	// OnRequest receives the initial requests other than INVITE. Without it, they get a 405.
+	// OnRequest receives the initial requests other than INVITE. Without it, OPTIONS gets a 200 (RFC 3261 §11.2), the
+	// other methods a 405.
 	OnRequest func(r *Request)
 
 	Logger *slog.Logger
@@ -125,15 +179,28 @@ type Handler struct {
 	// 2xx, answered in the ACK (RFC 3261 §13.2.1, RFC 3262 §5). Without it, the offer is refused.
 	Offer func(s *Session, o *Offer)
 
-	// Request receives a request of the peer within the session that the agent does not handle itself: re-INVITE,
-	// UPDATE and PRACK with a new offer, and the other methods. It must be responded to. Without it, a re-INVITE or
-	// an UPDATE gets a 488, other requests a 405. The agent answers itself the refreshes: UPDATE without an offer,
-	// re-INVITE without one or with the previous offer unchanged (RFC 3264 §8, RFC 4028 §7.4).
+	// Request receives a request of the peer within the session other than BYE, ACK, CANCEL and the PRACKs without an
+	// offer, which the agent handles: re-INVITE and UPDATE, session refreshes included unless Policy.AnswerRefreshes
+	// answers them (Request.Refresh), a PRACK with a new offer, and the other methods Config.Allow lists. It must be
+	// responded to. Without it, the agent answers the refreshes, a re-INVITE or an UPDATE that changes the session
+	// gets a 488, an OPTIONS a 200, other requests a 500.
 	Request func(s *Session, r *Request)
 
+	// Bye receives the BYE of the peer, for the application to respond to, once the other leg of a call has ended for
+	// one: the session ends as the response is sent, or 32*T1 after the BYE, when the agent sends a 200 itself, half
+	// the time the peer waits for one (RFC 3261 §17.1.2.2, Timer F).
+	// Without it, the agent answers the BYE with a 200 and the session ends at once (RFC 3261 §15.1.2).
+	Bye func(s *Session, r *Request)
+
 	// Cancelled reports a re-INVITE of the peer its CANCEL ended before the final response of the application: the
-	// agent answered it with a 487, and the session goes on as before (RFC 3261 §9.2).
+	// agent answered it with a 487, and the session goes on as before (RFC 3261 §9.2); or, when an offer/answer
+	// exchange within the re-INVITE had already changed the session, with a 2xx (RFC 6141 §3.3, §3.8).
 	Cancelled func(s *Session, r *Request, cancel *sip.Request)
+
+	// Decorate completes each message the agent sends in the session, requests and responses, those it makes on its
+	// own included (ACK, PRACK, refreshes, BYE, automatic responses), before Config.Prepare or Config.Respond. Unlike
+	// the other functions, it runs as the message is built, with the strand held: it must not call the agent.
+	Decorate func(s *Session, m sip.Message)
 
 	// Forked decides on a 2xx to the initial INVITE from another dialog than the first one answered, s its session
 	// (RFC 3261 §13.2.2.4): true keeps s, confirmed, with its own events; false, or no Forked, acknowledges the 2xx,
@@ -162,6 +229,10 @@ type Reply struct {
 	// Reliable asks for a reliable provisional response (RFC 3262). A 1xx to an INVITE that requires 100rel is
 	// always reliable.
 	Reliable bool
+
+	// AfterPrack holds a 2xx to an INVITE until the PRACK of the last reliable 1xx, even one without a session
+	// description, which RFC 3262 §3 alone does not require (TS 24.379 §6.3.2.2.5.2).
+	AfterPrack bool
 }
 
 // Change is what the application adds to a request the agent builds: header fields, and bodies, of which an SDP one
@@ -171,16 +242,54 @@ type Change struct {
 	Bodies []sip.BodyPart
 }
 
+// Reasons is a Change carrying Reason header fields (RFC 3326), for a BYE or a CANCEL.
+func Reasons(rs ...sip.Reason) Change {
+	var c Change
+
+	for _, r := range rs {
+		c.Header.Add("Reason", r.String())
+	}
+
+	return c
+}
+
+// apply adds the change to a request the agent built.
+func (c Change) apply(req *sip.Request) {
+	for _, f := range c.Header {
+		req.Header.Add(f.Name, f.Value)
+	}
+
+	if len(c.Bodies) > 0 {
+		req.SetBodies(c.Bodies...)
+	}
+}
+
 // SDP is an SDP body.
 func SDP(b []byte) sip.BodyPart {
 	return sip.NewBodyPart("application/sdp", b)
 }
 
-// dialogEntry is a dialog of the agent and its usages (RFC 5057): the INVITE session, or the subscription its NOTIFY
-// created. The usages share the dialog, its route set and its CSeq space; the dialog ends with its last usage.
+// dialogEntry is a dialog of the agent and its usages (RFC 5057 §4): at most one INVITE session, and subscriptions,
+// told apart by their Event (RFC 6665 §4.5.2). The usages share the dialog, its route set and its CSeq space, and its
+// strand; the dialog ends with its last usage. A failure that destroys the dialog ends them all (RFC 5057 §5.1).
+//
+// Once its last usage ended, the entry stays for 64*T1 with none (RFC 3261 §17.1.1.2): the usages that ended still
+// acknowledge and end a 2xx that comes late, and an INVITE replacing the dialog gets a 603 (RFC 3891 §3).
 type dialogEntry struct {
+	st     *Strand
 	invite *Session
-	sub    *Subscription
+	subs   []*Subscription
+
+	// notifs are the subscriptions of the agent as notifier: of a SUBSCRIBE, or implicit ones of REFERs.
+	notifs []*ServerSubscription
+
+	// invited: an INVITE session used the dialog; ended: no usage is left.
+	invited bool
+	ended   bool
+}
+
+func (e *dialogEntry) empty() bool {
+	return e.invite == nil && len(e.subs) == 0 && len(e.notifs) == 0
 }
 
 type mergeKey struct {
@@ -217,6 +326,8 @@ type Agent struct {
 	outgoing    map[*Outgoing]struct{}
 	subscribing map[subscribeKey]*subscribing
 	requests    map[*outOfDialog]struct{}
+	pubs        map[*Publication]struct{}
+	keyed       [64]*Strand
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -248,6 +359,7 @@ func New(cfg Config) (*Agent, error) {
 
 		subscribing: map[subscribeKey]*subscribing{},
 		requests:    map[*outOfDialog]struct{}{},
+		pubs:        map[*Publication]struct{}{},
 	}
 
 	for _, tag := range cfg.Supported {
@@ -354,6 +466,7 @@ func (a *Agent) Close(ctx context.Context) error {
 		outgoing []*Outgoing
 		sessions []*Session
 		subs     []*Subscription
+		notifs   []*ServerSubscription
 	)
 
 	for o := range a.outgoing {
@@ -365,23 +478,42 @@ func (a *Agent) Close(ctx context.Context) error {
 			sessions = append(sessions, e.invite)
 		}
 
-		if e.sub != nil {
-			subs = append(subs, e.sub)
-		}
+		subs = append(subs, e.subs...)
+		notifs = append(notifs, e.notifs...)
 	}
 
 	for _, att := range a.subscribing {
 		subs = append(subs, att.first)
 	}
 
+	pubs := make([]*Publication, 0, len(a.pubs))
+	for p := range a.pubs {
+		pubs = append(pubs, p)
+	}
+
 	a.mu.Unlock()
+
+	for _, p := range pubs {
+		_ = p.st.do(func() error {
+			p.close()
+			return nil
+		})
+	}
 
 	for _, o := range outgoing {
 		_ = o.st.do(func() error {
-			if err := o.cancel(nil); err != nil {
+			if err := o.cancelWith(Change{}); err != nil {
 				a.log.Debug("CANCEL failed", slog.Any("error", err))
 			}
 
+			return nil
+		})
+	}
+
+	// The notifications first, in their dialogs still: a REFER subscription in the dialog of a session.
+	for _, n := range notifs {
+		_ = n.st.do(func() error {
+			n.close()
 			return nil
 		})
 	}
@@ -408,7 +540,7 @@ func (a *Agent) Close(ctx context.Context) error {
 	var err error
 
 	if a.ownLayer {
-		err = a.layer.Close()
+		err = a.layer.Shutdown(ctx)
 	}
 
 	// What the transaction layer did not complete fails now.
@@ -425,7 +557,42 @@ func (a *Agent) Close(ctx context.Context) error {
 		requests = append(requests, c)
 	}
 
+	subs, notifs = nil, nil
+
+	for _, e := range a.dialogs {
+		subs = append(subs, e.subs...)
+		notifs = append(notifs, e.notifs...)
+	}
+
+	pubs = pubs[:0]
+	for p := range a.pubs {
+		pubs = append(pubs, p)
+	}
+
 	a.mu.Unlock()
+
+	// The subscriptions whose terminated NOTIFY did not come in time, or not answered; the publications whose removal
+	// did not complete.
+	for _, s := range subs {
+		_ = s.st.do(func() error {
+			s.end(End{Cause: EndClosed})
+			return nil
+		})
+	}
+
+	for _, n := range notifs {
+		_ = n.st.do(func() error {
+			n.end(End{Cause: EndClosed})
+			return nil
+		})
+	}
+
+	for _, p := range pubs {
+		_ = p.st.do(func() error {
+			p.end(End{Cause: EndClosed})
+			return nil
+		})
+	}
 
 	for _, o := range outgoing {
 		_ = o.st.do(func() error {
@@ -456,8 +623,8 @@ func (a *Agent) supportedValue() string {
 
 // The functions below use the tables of the agent under a.mu; they may be called with a strand held.
 
-// session is the INVITE usage of a dialog, if any.
-func (a *Agent) session(id dialog.ID) *Session {
+// Session is the INVITE session of the dialog id, as the agent sees it (local and remote tags), nil without one.
+func (a *Agent) Session(id dialog.ID) *Session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -468,12 +635,65 @@ func (a *Agent) session(id dialog.ID) *Session {
 	return nil
 }
 
-func (a *Agent) entry(id dialog.ID) *dialogEntry {
+// TargetDialog is the INVITE session of the dialog a request outside it designates with its Target-Dialog (RFC 4538
+// §4), nil without one, with both tags, matching. The agent gives a request with a matching Target-Dialog the strand
+// of the session. Authorising the request on that ground is up to the application.
+func (a *Agent) TargetDialog(req *sip.Request) *Session {
+	td, ok, err := req.Header.TargetDialog()
+	if !ok || err != nil {
+		return nil
+	}
+
+	return a.Session(dialog.TargetID(td))
+}
+
+// strandOf is the strand of the dialog a request outside it designates, by its Replaces (RFC 3891) or its
+// Target-Dialog (RFC 4538): the replacement, or the request on a dialog, is then serialised with the dialog.
+func (a *Agent) strandOf(req *sip.Request) *Strand {
+	var id dialog.ID
+
+	if r, ok, err := req.Header.Replaces(); ok && err == nil && req.Method == "INVITE" {
+		id = dialog.ReplacesID(r)
+	} else if td, ok, err := req.Header.TargetDialog(); ok && err == nil {
+		id = dialog.TargetID(td)
+	} else {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if e := a.dialogs[id]; e != nil {
+		return e.st
+	}
+
+	return nil
+}
+
+// replaced is the dialog entry an INVITE replaces, and its INVITE session.
+func (a *Agent) replaced(id dialog.ID) (e dialogEntry, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if p := a.dialogs[id]; p != nil {
+		return *p, true
+	}
+
+	return dialogEntry{}, false
+}
+
+func (a *Agent) entry(id dialog.ID, st *Strand) *dialogEntry {
 	e := a.dialogs[id]
 	if e == nil {
-		e = &dialogEntry{}
+		e = &dialogEntry{st: st}
 		a.dialogs[id] = e
 	}
+
+	if e.st != st {
+		panic("sip/ua: usages of one dialog on two strands")
+	}
+
+	e.ended = false
 
 	return e
 }
@@ -482,49 +702,148 @@ func (a *Agent) addSession(s *Session) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.entry(s.id).invite = s
+	e := a.entry(s.id, s.st)
+	e.invite, e.invited = s, true
 }
 
-// removeSession ends the INVITE usage of a dialog, and the dialog with its last usage (RFC 5057 §5.4).
-func (a *Agent) removeSession(s *Session) {
+// removeSession ends the INVITE usage of a dialog. It reports whether that was the last usage, which ends the dialog
+// (RFC 5057 §4).
+func (a *Agent) removeSession(s *Session) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	e := a.dialogs[s.id]
-	if e == nil || e.invite != s {
-		return
+	if e == nil {
+		return true
+	}
+
+	if e.invite != s {
+		return false
 	}
 
 	e.invite = nil
-	a.prune(s.id, e)
+
+	return a.prune(s.id, e)
 }
 
 func (a *Agent) addSubscription(s *Subscription) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.entry(s.d.ID()).sub = s
+	e := a.entry(s.d.ID(), s.st)
+	e.subs = append(e.subs, s)
 }
 
-func (a *Agent) removeSubscription(s *Subscription) {
+// removeSubscription ends a subscription usage of a dialog, reporting whether it was its last usage.
+func (a *Agent) removeSubscription(s *Subscription) bool {
 	id := s.d.ID()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	e := a.dialogs[id]
-	if e == nil || e.sub != s {
-		return
+	if e == nil {
+		return true
 	}
 
-	e.sub = nil
-	a.prune(id, e)
+	i := slices.Index(e.subs, s)
+	if i < 0 {
+		return false
+	}
+
+	e.subs = slices.Delete(e.subs, i, i+1)
+
+	return a.prune(id, e)
 }
 
-func (a *Agent) prune(id dialog.ID, e *dialogEntry) {
-	if e.invite == nil && e.sub == nil {
-		delete(a.dialogs, id)
+// prune notes a dialog whose last usage ended, kept for 64*T1, and reports it.
+func (a *Agent) addServerSubscription(s *ServerSubscription) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	e := a.entry(s.d.ID(), s.st)
+	e.notifs = append(e.notifs, s)
+}
+
+// removeServerSubscription ends a subscription usage of the agent as notifier, reporting whether it was the last
+// usage of its dialog.
+func (a *Agent) removeServerSubscription(s *ServerSubscription) bool {
+	id := s.d.ID()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	e := a.dialogs[id]
+	if e == nil {
+		return true
 	}
+
+	i := slices.Index(e.notifs, s)
+	if i < 0 {
+		return false
+	}
+
+	e.notifs = slices.Delete(e.notifs, i, i+1)
+
+	return a.prune(id, e)
+}
+
+func (a *Agent) prune(id dialog.ID, e *dialogEntry) bool {
+	if e == nil {
+		return true
+	}
+
+	if !e.empty() {
+		return false
+	}
+
+	if !e.ended {
+		e.ended = true
+
+		a.clock.AfterFunc(64*a.layer.T1(), func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+
+			if a.dialogs[id] == e && e.ended {
+				delete(a.dialogs, id)
+			}
+		})
+	}
+
+	return true
+}
+
+// destroyDialog ends the usages of a dialog a failure destroyed (RFC 5057 §5.1), with its strand held: the peer
+// no longer has the dialog, so no BYE or unsubscribe goes.
+func (a *Agent) destroyDialog(id dialog.ID, res *sip.Response, err error) {
+	s, subs, notifs := a.usages(id)
+	e := End{Cause: EndLost, Response: res, Err: err}
+
+	for _, sub := range subs {
+		sub.end(e)
+	}
+
+	for _, n := range notifs {
+		n.end(e)
+	}
+
+	if s != nil {
+		s.end(e)
+	}
+}
+
+// usages are the usages of a dialog (RFC 5057 §4): its INVITE session, its subscriptions as subscriber and as
+// notifier.
+func (a *Agent) usages(id dialog.ID) (*Session, []*Subscription, []*ServerSubscription) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	e := a.dialogs[id]
+	if e == nil {
+		return nil, nil, nil
+	}
+
+	return e.invite, slices.Clone(e.subs), slices.Clone(e.notifs)
 }
 
 func (a *Agent) addOutgoing(o *Outgoing) {
@@ -569,6 +888,20 @@ func (a *Agent) removeRequest(c *outOfDialog) {
 	defer a.mu.Unlock()
 
 	delete(a.requests, c)
+}
+
+func (a *Agent) addPublication(p *Publication) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.pubs[p] = struct{}{}
+}
+
+func (a *Agent) removePublication(p *Publication) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	delete(a.pubs, p)
 }
 
 func (a *Agent) isClosed() bool {
@@ -664,14 +997,17 @@ func (a *Agent) reply(tx *transaction.ServerTransaction, code int, extra ...sip.
 	}
 }
 
-// prepareAndSend prepares and sends a request in a client transaction. The transaction layer sends the requests of a
-// flow in the order it takes them.
+// prepareAndSend sends a copy of req, completed by Config.Prepare, in a client transaction: req stays as built, for
+// the request sent again after a challenge, which Prepare completes anew. The transaction layer sends the requests of
+// a flow in the order it takes them.
 func (a *Agent) prepareAndSend(req *sip.Request, h transaction.ClientHandler) (*transaction.ClientTransaction, error) {
-	if err := a.cfg.Prepare(req); err != nil {
+	out := req.Clone()
+
+	if err := a.cfg.Prepare(out); err != nil {
 		return nil, fmt.Errorf("sip/ua: prepare %s: %w", req.Method, err)
 	}
 
-	return a.layer.Request(req, h)
+	return a.layer.Request(out, h)
 }
 
 // authenticate completes the next request after a 401 or 407 with credentials (RFC 3261 §22.2). It reports whether to
@@ -730,7 +1066,16 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		return
 	}
 
-	st := a.NewStrand()
+	st := a.strandOf(req)
+
+	switch {
+	case st != nil:
+	case req.Method == "PUBLISH":
+		// RFC 3903 §6: the PUBLISHes of a Request-URI in order.
+		st = a.keyedStrand(resourceOf(req.URI))
+	default:
+		st = a.NewStrand()
+	}
 
 	if req.Method == "INVITE" {
 		st.post(func() { a.invite(st, tx, req) })
@@ -740,48 +1085,127 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	r := newRequest(nil, tx, req)
 	r.a, r.st = a, st
 
-	if a.cfg.OnRequest == nil {
+	switch {
+	case a.cfg.OnRequest != nil && a.allows(req.Method):
+		st.Post(func() { a.cfg.OnRequest(r) })
+	case req.Method == "OPTIONS":
+		_ = r.respond(Reply{Code: 200, Header: a.capabilities()})
+	default:
 		_ = r.respond(Reply{Code: 405, Header: sip.Header{{Name: "Allow", Value: a.allowValue()}}})
-		return
 	}
-
-	st.Post(func() { a.cfg.OnRequest(r) })
 }
 
-// inDialog gives a request within a dialog to its usage, on its strand: the INVITE session, the subscription, or the
-// SUBSCRIBE whose NOTIFY creates the dialog (RFC 6665 §4.4.1).
+func (a *Agent) allows(method string) bool {
+	return slices.Contains(a.allow, method)
+}
+
+// capabilities are the header fields of a 200 to an OPTIONS (RFC 3261 §11.2).
+func (a *Agent) capabilities() sip.Header {
+	return sip.Header{
+		{Name: "Allow", Value: a.allowValue()},
+		{Name: "Supported", Value: a.supportedValue()},
+		{Name: "Accept", Value: "application/sdp"},
+	}
+}
+
+// inDialog gives a request within a dialog to the usage it belongs to, on the strand of the dialog (RFC 5057 §5.3),
+// or to the SUBSCRIBE whose NOTIFY creates the dialog (RFC 6665 §4.4.1).
 func (a *Agent) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 	id := dialog.RequestID(req)
 
 	a.mu.Lock()
 
-	var (
-		s   *Session
-		sub *Subscription
-		att *subscribing
-	)
+	e := a.dialogs[id]
+	ended := e != nil && e.ended
 
-	switch e := a.dialogs[id]; {
-	case e != nil && e.invite != nil:
-		s = e.invite
-	case e != nil && e.sub != nil:
-		sub = e.sub
-	case req.Method == "NOTIFY":
+	var att *subscribing
+	if e == nil && req.Method == "NOTIFY" {
 		att = a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}]
 	}
 
 	a.mu.Unlock()
 
 	switch {
-	case s != nil:
-		s.st.post(func() { s.receive(tx, req) })
-	case sub != nil:
-		sub.st.post(func() { sub.receive(tx, req) })
+	case ended:
+		a.reply(tx, 481)
+	case e != nil:
+		e.st.post(func() { a.route(id, tx, req) })
 	case att != nil:
 		att.st.post(func() { att.notifyFor(tx, req) })
 	default:
 		a.reply(tx, 481)
 	}
+}
+
+// route gives a request within a dialog to its usage, with the dialog's strand held: INVITE, UPDATE, PRACK, BYE and
+// INFO to the INVITE session; SUBSCRIBE, NOTIFY and REFER to the subscription of their Event; the requests of no
+// usage, such as OPTIONS and MESSAGE, to the INVITE session if any (RFC 5057 §5.3).
+func (a *Agent) route(id dialog.ID, tx *transaction.ServerTransaction, req *sip.Request) {
+	s, subs, notifs := a.usages(id)
+	ev, _, _ := req.Header.Event()
+
+	switch req.Method {
+	case "NOTIFY":
+		for _, sub := range subs {
+			if sub.matches(ev) {
+				sub.receive(tx, req)
+				return
+			}
+		}
+	case "SUBSCRIBE":
+		// A refresh or an unsubscribe of a subscription of the agent as notifier; a SUBSCRIBE for none of them is a
+		// new usage, refused (RFC 5057 §5.6), and one for the refer event of no REFER gets a 403 (RFC 3515 §2.4.4).
+		for _, n := range notifs {
+			if n.event.Matches(ev) {
+				n.receive(tx, req)
+				return
+			}
+		}
+
+		code := 603
+		if ev.Type() == "refer" {
+			code = 403
+		}
+
+		a.reply(tx, code)
+
+		return
+	}
+
+	switch {
+	case s != nil:
+		s.receive(tx, req)
+	case len(subs) == 0 && len(notifs) == 0:
+		a.reply(tx, 481)
+	case req.Method == "NOTIFY":
+		// RFC 6665 §4.1.3: 489 for an event package of none of the subscriptions, 481 for another subscription.
+		a.reply(tx, unmatchedNotify(req, subs))
+	case req.Method == "REFER":
+		// RFC 5057 §5.6: a new usage refused, the dialog unharmed.
+		a.reply(tx, 603)
+	case req.Method == "OPTIONS":
+		a.reply(tx, 200, a.capabilities()...)
+	case usageOf(req.Method) == "invite":
+		a.reply(tx, 481)
+	default:
+		a.reply(tx, 405, sip.Field{Name: "Allow", Value: a.allowValue()})
+	}
+}
+
+// unmatchedNotify is the response to a NOTIFY of none of the subscriptions of its dialog.
+func unmatchedNotify(req *sip.Request, subs []*Subscription) int {
+	ev, ok, err := req.Header.Event()
+	if !ok || err != nil {
+		return 400
+	}
+
+	for _, sub := range subs {
+		if sub.event.Type() == ev.Type() {
+			return 481
+		}
+	}
+
+	return 489
 }
 
 // HandleCancel implements transaction.Handler: the transaction layer answered the CANCEL; the INVITE gets a 487
@@ -794,7 +1218,7 @@ func (a *Agent) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Requ
 
 // HandleAck implements transaction.Handler: the ACK of a 2xx (RFC 3261 §13.3.1.4).
 func (a *Agent) HandleAck(ack *sip.Request) {
-	if s := a.session(dialog.RequestID(ack)); s != nil {
+	if s := a.Session(dialog.RequestID(ack)); s != nil {
 		s.st.post(func() { s.receiveAck(ack) })
 	}
 }

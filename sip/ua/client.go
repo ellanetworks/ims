@@ -43,13 +43,27 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 type Option func(*options)
 
 type options struct {
-	st *Strand
+	st     *Strand
+	policy *Policy
 }
 
 // On puts the dialogs of the request on st, with those of other requests: the legs of a call bridged by a B2BUA,
 // for one. Without it, they get a strand of their own.
 func On(st *Strand) Option {
 	return func(o *options) { o.st = st }
+}
+
+// WithPolicy sets the policy of the sessions of an INVITE, in place of Config.Policy.
+func WithPolicy(p Policy) Option {
+	return func(o *options) { o.policy = &p }
+}
+
+func (o options) policyOr(p Policy) Policy {
+	if o.policy != nil {
+		return *o.policy
+	}
+
+	return p
 }
 
 func (a *Agent) options(opts []Option) options {
