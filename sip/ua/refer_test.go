@@ -20,7 +20,7 @@ func newReferee(t *testing.T, accept func(r *ua.Request) ua.ReferAcceptance) *re
 	rf := &referee{subs: make(chan *ua.ServerSubscription, 4), ended: make(chan ua.End, 4)}
 
 	rf.p = newPeerWith(t, "bob", func(c *ua.Config) {
-		c.Supported = []string{sip.OptionTagNoReferSub, sip.OptionTagExplicitSub}
+		c.Extensions = ua.Extensions{NoReferSub: true, ExplicitSub: true}
 		c.OnRequest = func(r *ua.Request) {
 			o := accept(r)
 			o.Handler.Ended = func(_ *ua.ServerSubscription, e ua.End) { rf.ended <- e }

@@ -67,6 +67,42 @@ func (e *Error) Unwrap() error {
 // INFO, MESSAGE, REFER or NOTIFY, lists them in Config.Allow; requests of methods not allowed get a 405.
 var Methods = []string{"INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE", "OPTIONS"}
 
+// Extensions are the SIP extensions the application implements with the help of the agent. The agent ignores the
+// header fields of one off, as a user agent without it does, and refuses its option tag in Require with a 420.
+type Extensions struct {
+	// Replaces: an INVITE with Replaces goes to the strand of the dialog it names, and Request.Replaces finds it
+	// (RFC 3891 §3). Off, an INVITE with Replaces is a new call.
+	Replaces bool
+
+	// TargetDialog: a request with a Target-Dialog goes to the strand of the dialog it names, and Agent.TargetDialog
+	// finds it (RFC 4538 §4), as for a REFER outside a dialog (TS 24.379 §6.2.4.2).
+	TargetDialog bool
+
+	// NoReferSub: a REFER asking for no subscription may be accepted without one (RFC 4488, ReferAcceptance).
+	NoReferSub bool
+
+	// ExplicitSub: a REFER requiring explicitsub is accepted with a Refer-Events-At (RFC 7614 §4.3).
+	ExplicitSub bool
+}
+
+func (e Extensions) tags() []string {
+	var tags []string
+
+	for _, t := range []struct {
+		on  bool
+		tag string
+	}{
+		{e.Replaces, sip.OptionTagReplaces}, {e.TargetDialog, sip.OptionTagTargetDialog},
+		{e.NoReferSub, sip.OptionTagNoReferSub}, {e.ExplicitSub, sip.OptionTagExplicitSub},
+	} {
+		if t.on {
+			tags = append(tags, t.tag)
+		}
+	}
+
+	return tags
+}
+
 // Policy is what the agent does on its own in a session beyond what the RFCs require of every user agent, which it
 // always does: the ACK of a 2xx and the PRACK of a reliable 1xx, the responses to conflicting requests (RFC 3261 §14,
 // RFC 3311 §5.2), the session timer (RFC 4028: refreshes as refresher, 422, the retry with its Min-SE), the challenges
@@ -85,6 +121,23 @@ type Policy struct {
 	// SkipRefreshes leaves the session refreshes of the agent unsent: a fault, for tests of the peer's session timer
 	// (RFC 4028 §10). The session still ends when it expires.
 	SkipRefreshes bool
+
+	// AnswerTimeout is how long the application has to answer an INVITE of the peer, initial or re-INVITE: past it,
+	// the agent answers 480 to an initial INVITE, and to a re-INVITE a 500 with Retry-After, the unchanged answer of
+	// a refresh, or a 2xx once an exchange within it changed the session (RFC 6141 §3.3). Three minutes when zero, as
+	// Timer C (RFC 3261 §16.6). The other requests have 32*T1, half the time the peer waits (Timer F).
+	AnswerTimeout time.Duration
+}
+
+// defaultAnswerTimeout is the AnswerTimeout of a Policy without one.
+const defaultAnswerTimeout = 3 * time.Minute
+
+func (p Policy) answerTimeout() time.Duration {
+	if p.AnswerTimeout > 0 {
+		return p.AnswerTimeout
+	}
+
+	return defaultAnswerTimeout
 }
 
 // ClientPolicy answers the session refreshes of the peer and retries glare.
@@ -136,13 +189,29 @@ type Config struct {
 	Allow []string
 
 	// Supported are the option tags the agent supports, beyond 100rel and timer, which it implements (RFC 3261
-	// §8.2.2.3): precondition, for one, when the application handles preconditions.
+	// §8.2.2.3), and those of Extensions: advertised in every request and response of the agent that carries
+	// Supported, and accepted in Require.
 	Supported []string
+
+	// Understood are option tags accepted in Require, but advertised only where the application puts them, in a
+	// request, a Change or a Reply: precondition, which a UE advertises for the calls it runs them on (TS 24.229
+	// §5.1.3.1 b).
+	Understood []string
 
 	SessionTimer SessionTimer
 
+	// Extensions are the extensions the application implements with the agent: their option tags are in Supported
+	// and accepted in Require (RFC 3261 §8.2.2.3, §20.37).
+	Extensions Extensions
+
 	// Policy is the policy of the sessions of the agent, unless WithPolicy or Session.SetPolicy sets another.
 	Policy Policy
+
+	// StrandFor chooses the strand of an initial request of the peer, such as the INVITEs of the participants of a
+	// group call to the group's (TS 24.379 §10.1.1.4.5.1): nil gives it a strand of its own. A Replaces or a
+	// Target-Dialog of an extension of the agent naming one of its dialogs takes precedence. It runs as requests come,
+	// before any strand: it must be fast, and must not call the agent.
+	StrandFor func(req *sip.Request) *Strand
 
 	// OnInvite receives an initial INVITE, and returns the handler of its session. Without it, initial INVITEs get a
 	// 480.
@@ -206,6 +275,12 @@ type Handler struct {
 	// (RFC 3261 §13.2.2.4): true keeps s, confirmed, with its own events; false, or no Forked, acknowledges the 2xx,
 	// refusing its offer, and ends s with a BYE.
 	Forked func(s *Session, res *sip.Response) bool
+
+	// Received reports each message of the peer the session took, once handled, in order with the other events:
+	// requests within the dialog, its ACKs, the responses to the requests of the agent; the retransmissions the
+	// transaction layer or the session absorbed excluded. A response to the initial INVITE that created no session,
+	// as one without a To tag or a final failure, comes with s nil. The message is the agent's: read it, or clone it.
+	Received func(s *Session, m sip.Message)
 
 	// Ended reports the end of the session.
 	Ended func(s *Session, e End)
@@ -362,7 +437,7 @@ func New(cfg Config) (*Agent, error) {
 		pubs:        map[*Publication]struct{}{},
 	}
 
-	for _, tag := range cfg.Supported {
+	for _, tag := range append(cfg.Extensions.tags(), cfg.Supported...) {
 		if !containsFold(a.supported, tag) {
 			a.supported = append(a.supported, tag)
 		}
@@ -500,8 +575,12 @@ func (a *Agent) Close(ctx context.Context) error {
 		})
 	}
 
+	// The INVITEs cancelled: Close waits for their final response, a 2xx crossing the CANCEL acknowledged and ended
+	// with a BYE (RFC 3261 §15), or for 64*T1.
 	for _, o := range outgoing {
 		_ = o.st.do(func() error {
+			o.awaitFinal()
+
 			if err := o.cancelWith(Change{}); err != nil {
 				a.log.Debug("CANCEL failed", slog.Any("error", err))
 			}
@@ -639,6 +718,10 @@ func (a *Agent) Session(id dialog.ID) *Session {
 // §4), nil without one, with both tags, matching. The agent gives a request with a matching Target-Dialog the strand
 // of the session. Authorising the request on that ground is up to the application.
 func (a *Agent) TargetDialog(req *sip.Request) *Session {
+	if !a.cfg.Extensions.TargetDialog {
+		return nil
+	}
+
 	td, ok, err := req.Header.TargetDialog()
 	if !ok || err != nil {
 		return nil
@@ -652,9 +735,11 @@ func (a *Agent) TargetDialog(req *sip.Request) *Session {
 func (a *Agent) strandOf(req *sip.Request) *Strand {
 	var id dialog.ID
 
-	if r, ok, err := req.Header.Replaces(); ok && err == nil && req.Method == "INVITE" {
+	ext := a.cfg.Extensions
+
+	if r, ok, err := req.Header.Replaces(); ext.Replaces && ok && err == nil && req.Method == "INVITE" {
 		id = dialog.ReplacesID(r)
-	} else if td, ok, err := req.Header.TargetDialog(); ok && err == nil {
+	} else if td, ok, err := req.Header.TargetDialog(); ext.TargetDialog && ok && err == nil {
 		id = dialog.TargetID(td)
 	} else {
 		return nil
@@ -704,6 +789,23 @@ func (a *Agent) addSession(s *Session) {
 
 	e := a.entry(s.id, s.st)
 	e.invite, e.invited = s, true
+}
+
+// addIncoming registers the session of an initial INVITE of the peer, unless the agent is closed.
+func (a *Agent) addIncoming(s *Session, r *Request) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed {
+		return false
+	}
+
+	a.invites[r.tx] = r
+
+	e := a.entry(s.id, s.st)
+	e.invite, e.invited = s, true
+
+	return true
 }
 
 // removeSession ends the INVITE usage of a dialog. It reports whether that was the last usage, which ends the dialog
@@ -846,11 +948,20 @@ func (a *Agent) usages(id dialog.ID) (*Session, []*Subscription, []*ServerSubscr
 	return e.invite, slices.Clone(e.subs), slices.Clone(e.notifs)
 }
 
-func (a *Agent) addOutgoing(o *Outgoing) {
+// The registrations of usages the application starts refuse them once the agent is closed, under the lock Close
+// takes its snapshot with.
+
+func (a *Agent) addOutgoing(o *Outgoing) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return ErrClosed
+	}
+
 	a.outgoing[o] = struct{}{}
+
+	return nil
 }
 
 func (a *Agent) removeOutgoing(o *Outgoing) {
@@ -860,11 +971,17 @@ func (a *Agent) removeOutgoing(o *Outgoing) {
 	delete(a.outgoing, o)
 }
 
-func (a *Agent) addSubscribing(att *subscribing) {
+func (a *Agent) addSubscribing(att *subscribing) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return ErrClosed
+	}
+
 	a.subscribing[att.key] = att
+
+	return nil
 }
 
 func (a *Agent) removeSubscribing(att *subscribing) {
@@ -876,11 +993,17 @@ func (a *Agent) removeSubscribing(att *subscribing) {
 	}
 }
 
-func (a *Agent) addRequest(c *outOfDialog) {
+func (a *Agent) addRequest(c *outOfDialog) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return ErrClosed
+	}
+
 	a.requests[c] = struct{}{}
+
+	return nil
 }
 
 func (a *Agent) removeRequest(c *outOfDialog) {
@@ -890,11 +1013,17 @@ func (a *Agent) removeRequest(c *outOfDialog) {
 	delete(a.requests, c)
 }
 
-func (a *Agent) addPublication(p *Publication) {
+func (a *Agent) addPublication(p *Publication) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return ErrClosed
+	}
+
 	a.pubs[p] = struct{}{}
+
+	return nil
 }
 
 func (a *Agent) removePublication(p *Publication) {
@@ -1030,7 +1159,7 @@ func (a *Agent) unsupported(req *sip.Request) []string {
 	var out []string
 
 	for _, tag := range req.Header.Elements("Require") {
-		if !containsFold(a.supported, tag) && !containsFold(out, tag) {
+		if !containsFold(a.supported, tag) && !containsFold(a.cfg.Understood, tag) && !containsFold(out, tag) {
 			out = append(out, tag)
 		}
 	}
@@ -1067,6 +1196,9 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	st := a.strandOf(req)
+	if st == nil && a.cfg.StrandFor != nil {
+		st = a.cfg.StrandFor(req)
+	}
 
 	switch {
 	case st != nil:
@@ -1099,7 +1231,12 @@ func (a *Agent) allows(method string) bool {
 	return slices.Contains(a.allow, method)
 }
 
-// capabilities are the header fields of a 200 to an OPTIONS (RFC 3261 §11.2).
+// Capabilities are the header fields of a 200 to an OPTIONS (RFC 3261 §11.2): Allow, Supported and Accept, for an
+// application answering OPTIONS itself.
+func (a *Agent) Capabilities() sip.Header {
+	return a.capabilities()
+}
+
 func (a *Agent) capabilities() sip.Header {
 	return sip.Header{
 		{Name: "Allow", Value: a.allowValue()},

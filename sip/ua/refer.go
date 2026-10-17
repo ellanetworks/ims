@@ -63,11 +63,9 @@ func (a *Agent) Refer(req *sip.Request, h SubscriptionHandler, opts ...Option) (
 	s := &Subscription{a: a, st: st, sh: h, att: att, event: event}
 	att.first = s
 
-	if a.isClosed() {
-		return nil, ErrClosed
+	if err := a.addSubscribing(att); err != nil {
+		return nil, err
 	}
-
-	a.addSubscribing(att)
 
 	if err := st.do(att.send); err != nil {
 		a.removeSubscribing(att)
@@ -135,6 +133,10 @@ func (r *Request) AcceptRefer(o ReferAcceptance) (s *ServerSubscription, err err
 
 			return r.respond(Reply{Code: 200, Header: sip.Header{{Name: "Refer-Events-At", Value: "<" + o.EventsAt + ">"}}})
 		case o.NoSubscription:
+			if !r.a.cfg.Extensions.NoReferSub {
+				return errors.New("sip/ua: no subscription needs Extensions.NoReferSub")
+			}
+
 			if !strings.EqualFold(strings.TrimSpace(r.req.Header.Get("Refer-Sub")), "false") {
 				return errors.New("sip/ua: the REFER asked for its subscription")
 			}

@@ -489,7 +489,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 
 	if shortened != nil {
 		remaining := time.Duration(*shortened) * time.Second
-		if expires := time.Now().Add(remaining); expires.Before(u.state.Expires) {
+		if expires := u.now().Add(remaining); expires.Before(u.state.Expires) {
 			u.state.Expires = expires
 			u.scheduleLocked(remaining)
 		}

@@ -53,7 +53,12 @@ type Request struct {
 	queued  []Reply
 	held    *sip.Response
 
-	// The 2xx of an INVITE, retransmitted until its ACK (RFC 3261 §13.3.1.4).
+	// answerBy answers the request the application left unanswered (Policy.AnswerTimeout).
+	answerBy *timer
+
+	// The 2xx of an INVITE, retransmitted until its ACK (RFC 3261 §13.3.1.4); initial marks the initial INVITE, whose
+	// ACK confirms the session.
+	initial         bool
 	ok              *sip.Response
 	interval        time.Duration
 	timer, deadline *timer
@@ -351,6 +356,34 @@ func (r *Request) retransmitReliable(rel *reliable) {
 	r.abandon(500)
 }
 
+// unanswered answers a request the application left without a final response past its deadline: a refresh as
+// unchanged, a re-INVITE whose exchange changed the session with a 2xx (RFC 6141 §3.3), an initial INVITE with a 480,
+// an OPTIONS with the capabilities, others with a 500 and Retry-After (RFC 3261 §21.5.1).
+func (r *Request) unanswered() {
+	s := r.s
+
+	if r.final || s.state == Terminated {
+		return
+	}
+
+	s.a.log.Warn("request left unanswered by the application", slog.String("method", r.req.Method))
+
+	switch {
+	case r == s.initial():
+		r.abandon(480)
+	case r.refresh:
+		if err := r.answerUnchanged(Change{}); err != nil {
+			r.abandon(500)
+		}
+	case r.req.Method == "INVITE" && r.applied:
+		r.acceptApplied()
+	case r.req.Method == "OPTIONS":
+		_ = r.respond(Reply{Code: 200, Header: s.a.capabilities()})
+	default:
+		_ = r.respond(Reply{Code: 500, Header: sip.Header{{Name: "Retry-After", Value: strconv.Itoa(randomInt(11))}}})
+	}
+}
+
 // acceptApplied ends with a 2xx a re-INVITE of the peer that can no longer complete as the application wished, as
 // one cancelled, once an exchange within it changed the session (RFC 6141 §3.3, §3.8): with the offer of the session
 // as it is, when the re-INVITE asks for one.
@@ -499,6 +532,9 @@ func (r *Request) finish(res *sip.Response) error {
 		return err
 	}
 
+	r.answerBy.stop()
+	delete(s.open, r)
+
 	s.offerResponse(r.key, res.StatusCode, sessionSDP(res.Envelope))
 
 	switch {
@@ -533,8 +569,9 @@ func (r *Request) finish(res *sip.Response) error {
 
 	if res.IsSuccess() && r.req.Method == "INVITE" && s.state != Terminated {
 		r.ok = res
+		r.initial = initial
 		r.interval = s.a.layer.T1()
-		s.ack = r
+		s.acking[r.key.Seq] = r
 		r.timer = s.st.after(r.interval, r.retransmitOK)
 		r.deadline = s.st.after(64*s.a.layer.T1(), r.noAck)
 	}
@@ -590,7 +627,7 @@ func (s *Session) initial() *Request {
 func (r *Request) retransmitOK() {
 	s := r.s
 
-	if s.ack != r || s.state == Terminated {
+	if s.acking[r.key.Seq] != r || s.state == Terminated {
 		return
 	}
 
@@ -603,8 +640,8 @@ func (r *Request) retransmitOK() {
 func (r *Request) noAck() {
 	s := r.s
 
-	if s.ack == r {
-		s.ack = nil
+	if s.acking[r.key.Seq] == r {
+		delete(s.acking, r.key.Seq)
 
 		r.acked()
 
@@ -630,6 +667,8 @@ func (r *Request) cancelled(cancel *sip.Request) {
 	if r.final && r.held == nil {
 		return
 	}
+
+	s.emitReceived(cancel)
 
 	if r == s.initial() {
 		s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
@@ -704,8 +743,13 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 	s.in = r
 	s.notePeer(req.Header)
 
-	a.track(r)
-	a.addSession(s)
+	// An INVITE that reached its strand as the agent closed: Close no longer sees it.
+	if !a.addIncoming(s, r) {
+		a.reply(tx, 503)
+		return
+	}
+
+	r.answerBy = st.after(s.policy.answerTimeout(), r.unanswered)
 
 	// The handler is set with the strand held, for the methods of the application that read it.
 	st.emit(func() {
@@ -721,10 +765,15 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 // Replaces is the session an initial INVITE with a Replaces header field asks to replace, on the strand of the
 // request (RFC 3891 §3); or, when it cannot, the code to reject the INVITE with: 400 for more than one Replaces, 481
 // without such a dialog, for one not created by an INVITE, or for an early dialog the agent did not initiate, 603 for
-// one that has ended, 486 for a confirmed one and early-only. ok is false without a Replaces. Authorising the
+// one that has ended, 486 for a confirmed one and early-only. ok is false without a Replaces, or without
+// Extensions.Replaces. Authorising the
 // replacement is up to the application, which ends the replaced session once it accepts the INVITE: with Bye when
 // confirmed, by cancelling its Outgoing when early.
 func (r *Request) Replaces() (s *Session, code int, ok bool) {
+	if !r.a.cfg.Extensions.Replaces {
+		return nil, 0, false
+	}
+
 	rep, ok, err := r.req.Header.Replaces()
 
 	switch {

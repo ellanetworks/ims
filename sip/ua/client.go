@@ -23,13 +23,11 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 		return err
 	}
 
-	if a.isClosed() {
-		return ErrClosed
-	}
-
 	c := &outOfDialog{a: a, st: a.options(opts).strand(a), tmpl: tmpl, done: done}
 
-	a.addRequest(c)
+	if err := a.addRequest(c); err != nil {
+		return err
+	}
 
 	if err := c.st.do(c.send); err != nil {
 		a.removeRequest(c)

@@ -244,11 +244,19 @@ func (t *sessionTimer) stop() {
 
 // expire ends a session whose timer expired without a refresh (RFC 4028 §10). A re-INVITE or an UPDATE in progress
 // defers it: its 2xx refreshes the session.
+//
+// The deferral is bounded: the requests of the peer have their deadlines, and Policy.AnswerTimeout after the expiry,
+// the time the agent gives the peer to answer one of its own, the session ends whatever is in progress.
 func (s *Session) expire() {
 	switch {
 	case s.state == Terminated:
 	case s.modifying():
 		s.timer.expired = true
+		s.timer.abort = s.st.after(s.policy.answerTimeout(), func() {
+			if s.state != Terminated {
+				s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
+			}
+		})
 	default:
 		s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
 	}

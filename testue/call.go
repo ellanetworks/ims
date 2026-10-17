@@ -170,7 +170,7 @@ type Call struct {
 	// byeEnd and rejectEnd are how the call ends with a BYE or a final response of the UE.
 	byeEnd, rejectEnd EndReason
 
-	// refuse answers the offers of the remote end with a 491, as when one of the UE is pending: tests use it.
+	// refuse answers the offers of the remote end with a 491 (RefuseOffers).
 	refuse bool
 }
 
@@ -179,8 +179,10 @@ type leg struct {
 	s *ua.Session
 	m *media
 
-	// offering is set while an offer of the UE in a re-INVITE or an UPDATE waits for its answer.
-	offering bool
+	// offering is set while an offer of the UE in a re-INVITE or an UPDATE waits for its answer; reporting while the
+	// UPDATE reporting its resources (RFC 3312 §5) is on its way, which one trigger sends at a time.
+	offering  bool
+	reporting bool
 
 	// released is set once the early dialog ended without the call: by a 199 (RFC 6228 §4), a BYE, or because
 	// another dialog was answered (RFC 3261 §13.2.2.4).
@@ -459,11 +461,6 @@ func (c *Call) terminateLocked(reason EndReason) {
 	close(c.done)
 	c.notifyLocked()
 
-	c.u.mu.Lock()
-	if c.u.calls.active[c.callID] == c {
-		delete(c.u.calls.active, c.callID)
-	}
-	c.u.mu.Unlock()
 }
 
 // legLocked is the leg of a session of the call, made for the first response of its dialog: the call's own for the
@@ -618,13 +615,29 @@ func (c *Call) handler() ua.Handler {
 		Pracked:     c.pracked,
 		Request:     c.request,
 		Cancelled:   func(*ua.Session, *ua.Request, *sip.Request) {},
+		Received:    c.received,
 		Ended:       c.ended,
 		Failed:      c.failed,
 	}
 }
 
+// received makes an Event of a message of the remote end the call took, a copy: the requests and responses of its
+// dialogs, as the agent handled them, without retransmissions or messages it refused before the call saw them.
+func (c *Call) received(_ *ua.Session, m sip.Message) {
+	switch m := m.(type) {
+	case *sip.Request:
+		c.event(Event{Request: m.Clone()})
+	case *sip.Response:
+		c.event(Event{Response: m.Clone()})
+	}
+}
+
 // TS 24.229 §5.1.3.1, IR.92 §2.4
 func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
+	if opts.Preconditions && u.cfg.NoPreconditions {
+		return nil, fmt.Errorf("%w: preconditions on a UE without them", ErrCallState)
+	}
+
 	uri, err := sip.ParseURI(target)
 	if err != nil {
 		return nil, fmt.Errorf("testue: target: %w", err)
@@ -689,13 +702,13 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 
 	req.SetBody(sdp.ContentType, offer.Bytes())
 
+	if opts.Preconditions {
+		req.Header.Add("Supported", sip.OptionTagPrecondition)
+	}
+
 	for _, f := range opts.Headers {
 		req.Header.Set(f.Name, f.Value)
 	}
-
-	u.mu.Lock()
-	u.calls.active[callID] = c
-	u.mu.Unlock()
 
 	c.mu.Lock()
 	c.holdSALocked()
@@ -746,14 +759,27 @@ func (c *Call) progress(s *ua.Session, res *sip.Response) {
 		}
 	}
 
-	update := reliable(res) && l.m.precondition && !l.m.met() && l.m.remote != nil && !l.offering
+	update := reliable(res) && l.m.precondition && !l.m.met() && l.m.remote != nil && !l.offering && !l.reporting
+	l.reporting = l.reporting || update
 
 	c.notifyLocked()
 	c.mu.Unlock()
 
 	if update {
-		go c.background(func(ctx context.Context) error { return c.update(ctx, l, true, nil) })
+		go c.background(func(ctx context.Context) error { return c.reportResources(ctx, l) })
 	}
+}
+
+// reportResources sends the UPDATE reporting the resources of the leg (RFC 3312 §5), the one trigger that set
+// reporting.
+func (c *Call) reportResources(ctx context.Context, l *leg) error {
+	defer func() {
+		c.mu.Lock()
+		l.reporting = false
+		c.mu.Unlock()
+	}()
+
+	return c.update(ctx, l, true, nil)
 }
 
 // established handles the 2xx of an outgoing call, or the ACK of an incoming one.
@@ -857,11 +883,19 @@ func (c *Call) SetAutoRefresh(on bool) {
 		}
 	}
 
+	o := c.out
+
 	c.mu.Unlock()
 
+	p := ua.ClientPolicy
+	p.SkipRefreshes = !on
+
+	// The sessions of dialogs the INVITE creates later, its forks, too.
+	if o != nil {
+		o.SetPolicy(p)
+	}
+
 	for _, s := range sessions {
-		p := s.Policy()
-		p.SkipRefreshes = !on
 		s.SetPolicy(p)
 	}
 }
@@ -885,14 +919,18 @@ func (c *Call) request(s *ua.Session, r *ua.Request) {
 	l := c.legLocked(s)
 	rp := ua.Reply{Code: 200}
 	offerBytes, hasOffer := r.Offer()
+	unchanged := false
 
 	switch {
 	case l == nil || l.released || c.state == CallTerminated:
 		rp.Code = 481
 	case !c.incoming && l != c.leg && req.Method != "UPDATE":
 		rp.Code = 481
-	case hasOffer && c.refuse:
+	case (hasOffer || req.Method == "INVITE") && c.refuse:
 		rp.Code = 491
+	case r.Refresh():
+		// RFC 3264 §8: the session unchanged, as the offer a re-INVITE without one asks for.
+		unchanged = true
 	case hasOffer:
 		rp = c.answerLocked(l, req, offerBytes)
 	}
@@ -900,8 +938,17 @@ func (c *Call) request(s *ua.Session, r *ua.Request) {
 	c.notifyLocked()
 	c.mu.Unlock()
 
-	if err := r.Respond(rp); err != nil {
+	var err error
+	if unchanged {
+		err = r.AnswerUnchanged(ua.Change{})
+	} else {
+		err = r.Respond(rp)
+	}
+
+	// A request is always answered: one the UE could not answer as it meant to gets a 500.
+	if err != nil {
 		c.event(Event{Err: err})
+		_ = r.Reject(500)
 	}
 }
 
@@ -967,9 +1014,10 @@ func (c *Call) ended(s *ua.Session, e ua.End) {
 			reason = RemoteBye
 		}
 	case ua.EndCancelled:
-		reason = c.cancelEnd
-		if c.incoming {
-			reason = Cancelled
+		// The user's cancel, with its reason; one of the agent, as it closes, is a cancel too.
+		reason = Cancelled
+		if !c.incoming && c.cancelled {
+			reason = c.cancelEnd
 		}
 	case ua.EndRejected:
 		reason = c.rejectEnd
@@ -997,11 +1045,14 @@ func (c *Call) failed(_ *ua.Outgoing, res *sip.Response, err error) {
 
 	reason := Rejected
 
+	// A CANCEL that crossed a final response other than 487 cancelled nothing: the call was rejected.
 	switch {
-	case c.cancelled:
-		reason = c.cancelEnd
+	case errors.Is(err, ua.ErrClosed):
+		reason = Closed
 	case err != nil:
 		reason = TimedOut
+	case c.cancelled && res.StatusCode == 487:
+		reason = c.cancelEnd
 	}
 
 	if res != nil {
@@ -1352,7 +1403,9 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 		l.m.restore(previous)
 	}
 
-	update := err == nil && c.state == CallConfirmed && c.leg == l && l.m.precondition && !l.m.met() && !l.offering
+	update := err == nil && c.state == CallConfirmed && c.leg == l && l.m.precondition && !l.m.met() && !l.offering &&
+		!l.reporting
+	l.reporting = l.reporting || update
 
 	c.notifyLocked()
 	c.mu.Unlock()
@@ -1362,7 +1415,7 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 	}
 
 	if update {
-		return c.update(ctx, l, true, nil)
+		return c.reportResources(ctx, l)
 	}
 
 	return nil
@@ -1504,7 +1557,8 @@ func (u *UE) incomingCall(r *ua.Request) ua.Handler {
 		}
 	}
 
-	precondition := (has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) && offerQoS(offer)
+	precondition := !u.cfg.NoPreconditions &&
+		(has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) && offerQoS(offer)
 
 	// IR.94 §2.2.2: the offer the UE makes to an INVITE without one has every media it is able and willing to use.
 	c, err := u.newCall(true, req, req.Header.CallID(), precondition, u.cfg.Video)
@@ -1522,10 +1576,6 @@ func (u *UE) incomingCall(r *ua.Request) ua.Handler {
 	c.mu.Lock()
 	c.holdSALocked()
 	c.mu.Unlock()
-
-	u.mu.Lock()
-	u.calls.active[c.callID] = c
-	u.mu.Unlock()
 
 	select {
 	case u.calls.incoming <- c:
@@ -1802,8 +1852,9 @@ func (c *Call) reject(code int, end EndReason, body *sdp.Session, extra ...sip.F
 	return agentError(in.Respond(rp))
 }
 
-// refuseOffers has the call answer the offers of the remote end with a 491, as when one of its own is pending.
-func (c *Call) refuseOffers(on bool) {
+// RefuseOffers has the call answer the re-INVITEs and offers of the remote end with a 491, as when one of its own were
+// pending (RFC 3261 §14.2): a fault, for tests of the remote end's glare handling.
+func (c *Call) RefuseOffers(on bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

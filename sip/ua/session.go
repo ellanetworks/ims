@@ -179,11 +179,12 @@ type Session struct {
 	// out is the initial INVITE of a UAC session.
 	out *Outgoing
 
-	// in is the INVITE of the peer awaiting its final response, initial or re-INVITE; inUpdate its UPDATE; ack the
-	// INVITE whose 2xx awaits its ACK; inBye the BYE of the peer Handler.Bye has.
+	// in is the INVITE of the peer awaiting its final response, initial or re-INVITE; inUpdate its UPDATE; acking the
+	// INVITEs whose 2xx awaits its ACK, by CSeq (RFC 3261 §13.3.1.4: a re-INVITE may overtake the ACK of the 2xx
+	// before); inBye the BYE of the peer Handler.Bye has.
 	in       *Request
 	inUpdate *Request
-	ack      *Request
+	acking   map[uint32]*Request
 	inBye    *Request
 
 	// The modifications of the agent (modify.go): its re-INVITE and its UPDATE in progress, and those waiting.
@@ -193,8 +194,10 @@ type Session struct {
 	pumping  bool
 	repump   bool
 
-	// sends are the requests of Send in progress.
+	// sends are the requests of Send in progress; open the requests of the peer the application has to answer, each
+	// with its deadline, all answered when the session ends.
 	sends map[*clientRequest]struct{}
+	open  map[*Request]struct{}
 
 	// rseq is the RSeq of the last reliable 1xx received in order for each INVITE of the agent (RFC 3262 §4); acks
 	// the ACK of each 2xx, sent again on its retransmissions; answering the offers of 2xx awaiting their answer.
@@ -224,7 +227,8 @@ func newSession(a *Agent, st *Strand, h Handler, uac bool, id dialog.ID, p Polic
 	return &Session{
 		a: a, st: st, h: h, uac: uac, id: id, policy: p, sdp: offeranswer.Negotiation{KeepFirstAnswer: true},
 		rseq: map[uint32]uint32{}, acks: map[uint32]*sip.Request{}, answering: map[uint32]*Offer{},
-		sends: map[*clientRequest]struct{}{},
+		acking: map[uint32]*Request{},
+		sends: map[*clientRequest]struct{}{}, open: map[*Request]struct{}{},
 	}
 }
 
@@ -397,6 +401,15 @@ func (s *Session) emit(f func(h Handler)) {
 	s.st.emit(func() { f(s.h) })
 }
 
+// emitReceived reports a message of the peer the session took.
+func (s *Session) emitReceived(m sip.Message) {
+	s.emit(func(h Handler) {
+		if h.Received != nil {
+			h.Received(s, m)
+		}
+	})
+}
+
 func (s *Session) emitEnded(e End) {
 	s.emit(func(h Handler) {
 		if h.Ended != nil {
@@ -491,9 +504,30 @@ func (s *Session) end(e End) {
 		r.abandon(code)
 	}
 
-	if s.ack != nil {
-		s.ack.acked()
-		s.ack = nil
+	// RFC 3261 §15.1.2: the requests still open get a 487; a BYE of the peer the application held gets its 2xx, and
+	// ends the session, whatever else ended it locally at the same time.
+	for r := range s.open {
+		r.abandon(487)
+	}
+
+	if r := s.inBye; r != nil {
+		s.inBye = nil
+		r.deadline.stop()
+
+		if res, err := r.build(Reply{Code: 200}); err == nil {
+			r.complete(res)
+			r.final = true
+			_ = r.tx.Respond(res)
+		}
+
+		if e.Cause != EndBye {
+			e = End{Cause: EndBye, Remote: true, Request: r.req, Err: fmt.Errorf("sip/ua: %s as the BYE of the peer was held", e.Cause)}
+		}
+	}
+
+	for seq, r := range s.acking {
+		r.acked()
+		delete(s.acking, seq)
 	}
 
 	if pb := s.byeAfterAck; pb != nil {
@@ -512,6 +546,11 @@ func (s *Session) end(e End) {
 	s.emitEnded(e)
 }
 
+// awaitingAck reports a 2xx of the agent awaiting its ACK.
+func (s *Session) awaitingAck() bool {
+	return len(s.acking) > 0
+}
+
 func (s *Session) notePeer(h sip.Header) {
 	if h.Has("Allow") {
 		s.peerAllow = h.Elements("Allow")
@@ -527,9 +566,14 @@ func (s *Session) peerAllows(method string) bool {
 func (s *Session) transmit(req *sip.Request, h transaction.ClientHandler, sent func(*transaction.ClientTransaction)) error {
 	s.st.check()
 
-	s.decorate(req)
+	// The request stays as built, for one sent again after a challenge, which Decorate completes anew.
+	out := req
+	if s.h.Decorate != nil {
+		out = req.Clone()
+		s.decorate(out)
+	}
 
-	tx, err := s.a.prepareAndSend(req, h)
+	tx, err := s.a.prepareAndSend(out, h)
 	if err == nil && sent != nil {
 		sent(tx)
 	}
@@ -569,7 +613,7 @@ func (s *Session) byeEnd(e End, c Change, done func(*sip.Response, error)) {
 		delete(s.answering, seq)
 	}
 
-	if s.d != nil && s.state != Terminated {
+	if s.d != nil && s.state != Terminated && s.inBye == nil {
 		bye := &clientRequest{s: s, method: "BYE", change: c, done: done, bye: true}
 		s.byeSent = true
 
@@ -590,11 +634,16 @@ func (s *Session) byeEnd(e End, c Change, done func(*sip.Response, error)) {
 func (s *Session) close() {
 	switch {
 	case s.state == Terminated:
-	case s.state == Early && s.ack != nil && s.byeAfterAck == nil:
+	case s.state == Early && s.awaitingAck() && s.byeAfterAck == nil:
 		// RFC 3261 §15: not before the ACK, or its timeout.
 		s.a.await(1)
 		s.byeAfterAck = &pendingBye{cause: EndClosed}
-	case s.state == Early && s.ack != nil:
+	case s.state == Early && s.awaitingAck():
+		// The BYE of the application waits for the ACK: Close waits for it too.
+		if s.byeAfterAck.cause != EndClosed {
+			s.byeAfterAck.cause = EndClosed
+			s.a.await(1)
+		}
 	case s.state == Confirmed:
 		s.byeEnd(End{Cause: EndClosed}, Change{}, nil)
 	default:
@@ -692,6 +741,7 @@ func (s *Session) receive(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	s.notePeer(req.Header)
+	s.emitReceived(req)
 
 	switch req.Method {
 	case "BYE":
@@ -735,6 +785,14 @@ func (s *Session) deliver(r *Request) {
 		_ = r.respond(Reply{Code: 405, Header: sip.Header{{Name: "Allow", Value: s.a.allowValue()}}})
 		return
 	}
+
+	timeout := 32 * s.a.layer.T1()
+	if method == "INVITE" {
+		timeout = s.policy.answerTimeout()
+	}
+
+	s.open[r] = struct{}{}
+	r.answerBy = s.st.after(timeout, r.unanswered)
 
 	s.emit(func(h Handler) {
 		if h.Request != nil {
@@ -865,8 +923,12 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 	var in *Request
 
 	if err == nil {
-		for _, r := range []*Request{s.in, s.ack} {
-			if r != nil && r.awaitsPrack(rack) {
+		if s.in != nil && s.in.awaitsPrack(rack) {
+			in = s.in
+		}
+
+		for _, r := range s.acking {
+			if r.awaitsPrack(rack) {
 				in = r
 			}
 		}
@@ -914,14 +976,18 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 
 // receiveAck handles the ACK of a 2xx to an INVITE of the peer (RFC 3261 §13.3.1.4).
 func (s *Session) receiveAck(ack *sip.Request) {
-	r := s.ack
 	cseq, err := ack.Header.CSeq()
-
-	if r == nil || err != nil || cseq.Seq != r.key.Seq {
+	if err != nil {
 		return
 	}
 
-	s.ack = nil
+	r := s.acking[cseq.Seq]
+	if r == nil {
+		return
+	}
+
+	delete(s.acking, cseq.Seq)
+	s.emitReceived(ack)
 
 	r.acked()
 
@@ -932,7 +998,8 @@ func (s *Session) receiveAck(ack *sip.Request) {
 		s.emitAnswer(answer)
 	}
 
-	if s.state == Early && s.d != nil {
+	// The ACK of the 2xx to the initial INVITE confirms the session, whatever came after it.
+	if s.state == Early && s.d != nil && r.initial {
 		s.confirm(ack)
 	}
 
@@ -985,7 +1052,7 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 		switch {
 		case s.d == nil || s.state == Terminated || s.inBye != nil:
 			return s.errorf("Bye", ErrState)
-		case !s.uac && s.state == Early && s.ack != nil && s.byeAfterAck == nil:
+		case !s.uac && s.state == Early && s.awaitingAck() && s.byeAfterAck == nil:
 			s.byeAfterAck = &pendingBye{change: c, done: done, cause: EndBye}
 			return nil
 		case !s.uac && s.state == Early:
@@ -1082,6 +1149,8 @@ func (c *clientRequest) response(res *sip.Response) {
 	if res.IsProvisional() || c.final {
 		return
 	}
+
+	s.emitReceived(res)
 
 	if s.d != nil {
 		_ = s.d.ReceiveResponse(res)

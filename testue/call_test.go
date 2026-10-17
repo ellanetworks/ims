@@ -173,7 +173,7 @@ func TestBasicCall(t *testing.T) {
 	for name, want := range map[string]string{
 		"P-Preferred-Service": mmtelService,
 		"Session-Expires":     "1800",
-		"Supported":           "100rel, timer, precondition, 199",
+		"Supported":           "100rel, timer, 199",
 	} {
 		if got := invite.Header.Get(name); got != want {
 			t.Errorf("INVITE %s = %q, want %q", name, got, want)
@@ -507,7 +507,7 @@ func TestReinviteGlare(t *testing.T) {
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 	methods(ac)
 
-	ac.refuseOffers(true)
+	ac.RefuseOffers(true)
 
 	start := time.Now()
 
@@ -528,7 +528,7 @@ func TestReinviteGlare(t *testing.T) {
 		t.Errorf("callee's description %s after the refused hold", d)
 	}
 
-	ac.refuseOffers(false)
+	ac.RefuseOffers(false)
 
 	if err := bc.Hold(ctx); err != nil {
 		t.Fatal(err)
@@ -542,7 +542,7 @@ func TestReinviteGlareRetried(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
-	ac.refuseOffers(true)
+	ac.RefuseOffers(true)
 
 	held := make(chan error, 1)
 
@@ -554,7 +554,7 @@ func TestReinviteGlareRetried(t *testing.T) {
 		}
 	}
 
-	ac.refuseOffers(false)
+	ac.RefuseOffers(false)
 
 	if err := <-held; err != nil {
 		t.Fatalf("Hold = %v, want it done when made once more", err)
@@ -1311,7 +1311,7 @@ func TestUpdateGlare(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{})
 
-	ac.refuseOffers(true)
+	ac.RefuseOffers(true)
 
 	// RFC 3311 §5.1: made once more, then the 491 is the caller's.
 	err := bc.update(ctx, bc.leg, true, nil)
@@ -1327,7 +1327,7 @@ func TestUpdateGlare(t *testing.T) {
 		t.Fatalf("Refresh = %v", err)
 	}
 
-	ac.refuseOffers(false)
+	ac.RefuseOffers(false)
 }
 
 func TestUpdateBeforeTheAnswer(t *testing.T) {

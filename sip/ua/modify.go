@@ -84,7 +84,7 @@ type modification struct {
 func (s *Session) modify(op string, m *modification) error {
 	return s.st.do(func() error {
 		// A re-INVITE goes on a confirmed session, or waits for the ACK that confirms it.
-		if !s.usable() || m.method == "INVITE" && s.state == Early && s.ack == nil {
+		if !s.usable() || m.method == "INVITE" && s.state == Early && !s.awaitingAck() {
 			return s.errorf(op, ErrState)
 		}
 
@@ -162,7 +162,7 @@ func (s *Session) pumpOnce() {
 // ready reports whether nothing in progress holds a modification back but its offer.
 func (s *Session) ready(m *modification) bool {
 	switch {
-	case m.wait != nil, s.ack != nil, len(s.answering) > 0, !s.usable():
+	case m.wait != nil, s.awaitingAck(), len(s.answering) > 0, !s.usable():
 		// The ACK of a 2xx of either side goes first.
 		return false
 	case m.method == "INVITE":
@@ -396,11 +396,17 @@ func (s *Session) finishedQuietly(c *clientInvite) {
 // with a re-INVITE offering the session unchanged otherwise. A modification in progress or waiting refreshes the
 // session too: the refresh is tried again a little later.
 func (s *Session) refreshSession() {
-	if s.state != Confirmed || s.policy.SkipRefreshes {
+	if s.state != Confirmed {
 		return
 	}
 
-	if s.modifying() || s.ack != nil {
+	// A refresh skipped is tried again later: turning SkipRefreshes off resumes them.
+	if s.policy.SkipRefreshes {
+		s.timer.retry(s)
+		return
+	}
+
+	if s.modifying() || s.awaitingAck() {
 		s.timer.retry(s)
 		return
 	}

@@ -124,6 +124,10 @@ type Config struct {
 
 	AcceptCalls bool
 
+	// NoPreconditions is a UE with preconditions disabled (TS 24.229 §5.1.5A): an INVITE requiring them gets a 420,
+	// and its calls run without them.
+	NoPreconditions bool
+
 	EarlyMedia string
 
 	LargeUDP bool
@@ -202,7 +206,7 @@ type saSet struct {
 	keys    ipsec.Keys
 	state   SAState
 	expires time.Time
-	timer   *time.Timer
+	timer   transaction.Timer
 	server  []string
 	removed bool
 
@@ -249,13 +253,11 @@ type UE struct {
 	state       State
 	sets        []*saSet
 	auto        bool
-	reregTimer  *time.Timer
-	expiryTimer *time.Timer
+	reregTimer  transaction.Timer
+	expiryTimer transaction.Timer
 	sub         *subscription
 
 	calls struct {
-		// active are the calls by Call-ID, which their events follow.
-		active   map[string]*Call
 		incoming chan *Call
 		next     int
 	}
@@ -331,7 +333,6 @@ func New(cfg Config) (*UE, error) {
 		u.offers = DefaultOffers()
 	}
 
-	u.calls.active = make(map[string]*Call)
 	u.calls.incoming = make(chan *Call, 16)
 
 	do := cfg.Do
@@ -362,7 +363,8 @@ func New(cfg Config) (*UE, error) {
 		Respond:   u.respondHeaders,
 		Policy:    ua.ClientPolicy,
 		Allow:     allowed,
-		Supported: []string{sip.OptionTagPrecondition},
+		// TS 24.229 §5.1.3.1 b: precondition is advertised for the calls that run them.
+		Understood: understood(cfg),
 		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
 		SessionTimer: ua.SessionTimer{Refresher: sip.RefresherUAC},
 		OnInvite:     u.incomingCall,
@@ -389,31 +391,19 @@ func (u *UE) trace(m sip.Message, f sip.Flow, sent bool) {
 		u.cfg.Trace(m, f, sent)
 	}
 
-	if sent {
-		return
-	}
-
-	u.mu.Lock()
-	c := u.calls.active[m.Env().Header.CallID()]
-	u.mu.Unlock()
-
-	if c == nil {
-		return
-	}
-
-	switch m := m.(type) {
-	case *sip.Request:
-		c.event(Event{Request: m})
-	case *sip.Response:
-		c.event(Event{Response: m})
-	}
 }
 
 // requestReceived answers a request outside a dialog other than INVITE: MESSAGE, OPTIONS.
 func (u *UE) requestReceived(r *ua.Request) {
-	u.event(Event{Request: r.Message()})
+	u.event(Event{Request: r.Message().Clone()})
 
-	if err := r.Respond(ua.Reply{Code: 200}); err != nil {
+	rp := ua.Reply{Code: 200}
+	if r.Message().Method == "OPTIONS" {
+		// RFC 3261 §11.2: the capabilities of the UE.
+		rp.Header = u.agent.Capabilities()
+	}
+
+	if err := r.Respond(rp); err != nil {
 		u.log.Debug("response failed", slog.Any("error", err))
 	}
 }
@@ -507,30 +497,53 @@ func (u *UE) SetAutoReregister(on bool) {
 	}
 
 	if on && u.state.Registered {
-		u.scheduleLocked(time.Until(u.state.Expires))
+		u.scheduleLocked(u.state.Expires.Sub(u.now()))
 	}
 }
 
+// Close makes the UE vanish, as a phone losing its radio: its calls and subscription end locally, nothing reaches the
+// network. Shutdown ends them first.
 func (u *UE) Close() error {
+	if !u.close() {
+		return nil
+	}
+
+	// The transport goes first: the agent ends the usages without signalling.
+	_ = u.agent.Layer().Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), closeWait)
+	defer cancel()
+
+	return u.release(u.agent.Close(ctx))
+}
+
+// Shutdown ends the calls and the subscription of the UE with the network, a BYE, a CANCEL or an unsubscribe, waits
+// for them until ctx is done, then closes it.
+func (u *UE) Shutdown(ctx context.Context) error {
+	if !u.close() {
+		return nil
+	}
+
+	return u.release(u.agent.Close(ctx))
+}
+
+func (u *UE) close() bool {
 	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	if u.closed {
-		u.mu.Unlock()
-		return nil
+		return false
 	}
 
 	u.closed = true
 	u.stopTimersLocked()
 	u.sub = nil
 
-	u.mu.Unlock()
+	return true
+}
 
-	// The agent ends the calls and the subscription, with a BYE, a CANCEL or an unsubscribe.
-	ctx, cancel := context.WithTimeout(context.Background(), closeWait)
-	err := u.agent.Close(ctx)
-
-	cancel()
-
+// release removes the SAs of the UE once its agent closed.
+func (u *UE) release(err error) error {
 	u.op.Lock()
 	defer u.op.Unlock()
 
@@ -545,7 +558,7 @@ func (u *UE) Close() error {
 }
 
 func (u *UE) stopTimersLocked() {
-	for _, t := range []**time.Timer{&u.reregTimer, &u.expiryTimer} {
+	for _, t := range []*transaction.Timer{&u.reregTimer, &u.expiryTimer} {
 		if *t != nil {
 			(*t).Stop()
 			*t = nil
@@ -802,7 +815,7 @@ func (u *UE) install(c client, o ipsec.Offer, keys ipsec.Keys, server []string) 
 	s := &saSet{set: set, keys: keys, state: Temporary, server: server}
 
 	u.sets = append(u.sets, s)
-	u.lifetimeLocked(s, time.Now().Add(regAwaitAuth))
+	u.lifetimeLocked(s, u.now().Add(regAwaitAuth))
 
 	return s, nil
 }
@@ -814,7 +827,7 @@ func (u *UE) lifetimeLocked(s *saSet, at time.Time) {
 		s.timer.Stop()
 	}
 
-	s.timer = time.AfterFunc(time.Until(at), func() {
+	s.timer = u.layer.Clock().AfterFunc(at.Sub(u.now()), func() {
 		u.mu.Lock()
 		defer u.mu.Unlock()
 
@@ -893,4 +906,18 @@ func (u *UE) established() *saSet {
 	}
 
 	return nil
+}
+
+// understood are the option tags the UE accepts in Require without advertising them in every message.
+func understood(cfg Config) []string {
+	if cfg.NoPreconditions {
+		return nil
+	}
+
+	return []string{sip.OptionTagPrecondition}
+}
+
+// now is the time on the clock of the UE, the one of its agent and of all its timers.
+func (u *UE) now() time.Time {
+	return u.layer.Clock().Now()
 }

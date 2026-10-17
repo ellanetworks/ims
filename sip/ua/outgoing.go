@@ -44,6 +44,30 @@ type Outgoing struct {
 
 	// cancel is the change of the CANCEL of the application, sent once the transaction exists.
 	cancel *Change
+
+	// closing: Close waits for the final response, until closeBy.
+	closing bool
+	closeBy *timer
+}
+
+// awaitFinal makes Close wait for the final response of the INVITE, or 64*T1.
+func (o *Outgoing) awaitFinal() {
+	if o.final || o.closing {
+		return
+	}
+
+	o.closing = true
+	o.a.await(1)
+	o.closeBy = o.st.after(64*o.a.layer.T1(), o.release)
+}
+
+// release ends the wait of Close for the INVITE.
+func (o *Outgoing) release() {
+	if o.closing {
+		o.closing = false
+		o.closeBy.stop()
+		o.a.await(-1)
+	}
 }
 
 // Invite sends an initial INVITE, and creates a session for each dialog its responses create, with handler h.
@@ -90,11 +114,9 @@ func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, 
 
 	o := &Outgoing{a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{}}
 
-	if a.isClosed() {
-		return nil, ErrClosed
+	if err := a.addOutgoing(o); err != nil {
+		return nil, err
 	}
-
-	a.addOutgoing(o)
 
 	if err := o.st.do(o.send); err != nil {
 		a.removeOutgoing(o)
@@ -107,6 +129,15 @@ func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, 
 // Strand is the strand of the INVITE and of its sessions.
 func (o *Outgoing) Strand() *Strand {
 	return o.st
+}
+
+// SetPolicy sets the policy of the sessions the INVITE creates from now on; Session.SetPolicy sets the one of a
+// session it created.
+func (o *Outgoing) SetPolicy(p Policy) {
+	_ = o.st.do(func() error {
+		o.policy = p
+		return nil
+	})
 }
 
 func (o *Outgoing) done() {
@@ -183,9 +214,18 @@ func (o *Outgoing) emitFailed(res *sip.Response, err error) {
 
 // response handles a response to the INVITE.
 func (o *Outgoing) response(res *sip.Response) {
+	// A 100 is hop by hop (RFC 3261 §8.2.6.1): reported, without a session.
 	if res.StatusCode == 100 {
+		o.report(nil, res)
 		return
 	}
+
+	// Once final, the INVITE no longer holds Close, its BYE, if any, counted by then.
+	defer func() {
+		if o.final {
+			o.release()
+		}
+	}()
 
 	to, err := res.Header.To()
 	if err != nil {
@@ -193,6 +233,10 @@ func (o *Outgoing) response(res *sip.Response) {
 	}
 
 	tag := to.Tag()
+
+	if res.StatusCode >= 300 || res.StatusCode == 199 {
+		o.report(o.sessions[tag], res)
+	}
 
 	if res.StatusCode >= 300 {
 		o.failed(res)
@@ -205,6 +249,8 @@ func (o *Outgoing) response(res *sip.Response) {
 	}
 
 	if tag == "" {
+		o.report(nil, res)
+
 		if res.IsProvisional() {
 			o.st.emit(func() {
 				if f := o.h.Progress; f != nil {
@@ -218,7 +264,13 @@ func (o *Outgoing) response(res *sip.Response) {
 
 	s := o.session(res, tag)
 	if s == nil {
+		o.report(nil, res)
 		return
+	}
+
+	// A 2xx acknowledged already is a retransmission.
+	if _, seen := s.acks[o.ci.key.Seq]; !seen || !res.IsSuccess() {
+		s.emitReceived(res)
 	}
 
 	if res.IsSuccess() && o.chosen == nil {
@@ -245,6 +297,20 @@ func (o *Outgoing) response(res *sip.Response) {
 	}
 
 	s.clientResponse(o.ci, res)
+}
+
+// report reports a response to the INVITE to the session of its dialog, or without one (Handler.Received).
+func (o *Outgoing) report(s *Session, res *sip.Response) {
+	if s != nil {
+		s.emitReceived(res)
+		return
+	}
+
+	o.st.emit(func() {
+		if f := o.h.Received; f != nil {
+			f(nil, res)
+		}
+	})
 }
 
 // reasonFields are the Reason header fields of h.
@@ -430,6 +496,7 @@ func (o *Outgoing) closed() {
 	o.done()
 	o.emitFailed(nil, ErrClosed)
 	o.endSessions(End{Cause: EndClosed})
+	o.release()
 }
 
 // error ends an outgoing INVITE that failed without a final response.
@@ -442,6 +509,7 @@ func (o *Outgoing) error(err error) {
 	o.done()
 	o.emitFailed(nil, err)
 	o.endSessions(End{Cause: EndTimeout, Err: err})
+	o.release()
 }
 
 // endSessions ends the early sessions of the INVITE: all but the one chosen, and those Handler.Forked kept.
@@ -540,9 +608,12 @@ func (c *clientInvite) cancel(ch Change) {
 
 // response handles a response to a re-INVITE or an UPDATE.
 func (c *clientInvite) response(res *sip.Response) {
-	if res.StatusCode != 100 {
-		c.s.clientResponse(c, res)
+	if res.StatusCode == 100 {
+		c.s.emitReceived(res)
+		return
 	}
+
+	c.s.clientResponse(c, res)
 }
 
 // error handles the error of the transaction of a re-INVITE or an UPDATE.
@@ -569,6 +640,12 @@ func (s *Session) clientResponse(c *clientInvite, res *sip.Response) {
 		}
 
 		c.final = true
+	}
+
+	// The responses to a re-INVITE or an UPDATE, those of the initial INVITE reported by its Outgoing, and a
+	// retransmitted 2xx not.
+	if _, seen := s.acks[c.key.Seq]; c.out == nil && (!seen || !res.IsSuccess() || c.key.Method != "INVITE") {
+		s.emitReceived(res)
 	}
 
 	if s.d != nil {
@@ -689,6 +766,8 @@ func (s *Session) prack(res *sip.Response, c Change, then func()) {
 		if res.IsProvisional() || done {
 			return
 		}
+
+		s.emitReceived(res)
 
 		if next, ok := s.challenged(prack, res, tries, false); ok {
 			tries++

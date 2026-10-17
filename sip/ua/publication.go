@@ -78,11 +78,9 @@ func (a *Agent) Publish(req *sip.Request, h PublicationHandler, opts ...Option) 
 
 	p := &Publication{a: a, st: a.options(opts).strand(a), h: h, tmpl: tmpl, state: parts}
 
-	if a.isClosed() {
-		return nil, ErrClosed
+	if err := a.addPublication(p); err != nil {
+		return nil, err
 	}
-
-	a.addPublication(p)
 
 	if err := p.st.do(func() error { return p.send(&publishRequest{p: p, bodies: parts}) }); err != nil {
 		a.removePublication(p)

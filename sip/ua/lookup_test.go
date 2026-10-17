@@ -33,6 +33,7 @@ func TestReplaces(t *testing.T) {
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Transaction.Clock = clock
+		c.Extensions.Replaces = true
 		c.OnInvite = func(r *ua.Request) ua.Handler {
 			s, code, ok := r.Replaces()
 			if !ok {
@@ -140,6 +141,7 @@ func TestTargetDialog(t *testing.T) {
 	refers := make(chan *ua.Request, 1)
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
+		c.Extensions.TargetDialog = true
 		c.OnRequest = func(r *ua.Request) { refers <- r }
 	})
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
