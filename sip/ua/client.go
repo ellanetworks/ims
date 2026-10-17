@@ -10,7 +10,7 @@ import (
 // Request sends a request outside a dialog other than INVITE and SUBSCRIBE: REGISTER, MESSAGE, OPTIONS, PUBLISH. The
 // agent adds what req leaves out: the From tag, a Call-ID, CSeq and Max-Forwards; it answers 401 and 407 challenges
 // through Config.Authenticate. done receives the final response, or the error of the transaction, as a handler.
-func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error)) error {
+func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error), opts ...Option) error {
 	switch req.Method {
 	case "INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE":
 		return fmt.Errorf("sip/ua: %s outside a session", req.Method)
@@ -23,21 +23,51 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 		return err
 	}
 
-	return a.loop.call(func() error {
-		if a.closed {
-			return ErrClosed
-		}
+	if a.isClosed() {
+		return ErrClosed
+	}
 
-		c := &outOfDialog{a: a, tmpl: tmpl, done: done}
+	c := &outOfDialog{a: a, st: a.options(opts).strand(a), tmpl: tmpl, done: done}
 
-		if err := c.send(); err != nil {
-			return err
-		}
+	a.addRequest(c)
 
-		a.requests[c] = struct{}{}
+	if err := c.st.do(c.send); err != nil {
+		a.removeRequest(c)
+		return err
+	}
 
-		return nil
-	})
+	return nil
+}
+
+// Option is an option of a request the agent sends outside a dialog: Invite, Subscribe, Request.
+type Option func(*options)
+
+type options struct {
+	st *Strand
+}
+
+// On puts the dialogs of the request on st, with those of other requests: the legs of a call bridged by a B2BUA,
+// for one. Without it, they get a strand of their own.
+func On(st *Strand) Option {
+	return func(o *options) { o.st = st }
+}
+
+func (a *Agent) options(opts []Option) options {
+	var o options
+
+	for _, f := range opts {
+		f(&o)
+	}
+
+	return o
+}
+
+func (o options) strand(a *Agent) *Strand {
+	if o.st != nil {
+		return o.st
+	}
+
+	return a.NewStrand()
 }
 
 // completeInitial adds to an initial request the header fields the application left out.
@@ -80,6 +110,7 @@ func nextCSeq(req *sip.Request) {
 // outOfDialog is a request of Agent.Request, sent again after a challenge.
 type outOfDialog struct {
 	a     *Agent
+	st    *Strand
 	tmpl  *sip.Request
 	done  func(*sip.Response, error)
 	tries int
@@ -87,7 +118,7 @@ type outOfDialog struct {
 }
 
 func (c *outOfDialog) send() error {
-	_, err := c.a.prepareAndSend(c.tmpl.Clone(), c.a.client(c.response, func(err error) { c.finish(nil, err) }))
+	_, err := c.a.prepareAndSend(c.tmpl.Clone(), c.st.client(c.response, func(err error) { c.finish(nil, err) }))
 	return err
 }
 
@@ -119,9 +150,9 @@ func (c *outOfDialog) finish(res *sip.Response, err error) {
 	}
 
 	c.final = true
-	delete(c.a.requests, c)
+	c.a.removeRequest(c)
 
 	if c.done != nil {
-		c.a.loop.emit(func() { c.done(res, err) })
+		c.st.emit(func() { c.done(res, err) })
 	}
 }

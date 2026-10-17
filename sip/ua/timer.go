@@ -207,13 +207,13 @@ func (t *sessionTimer) start(s *Session) {
 	interval := time.Duration(t.interval) * time.Second
 
 	if t.refresher {
-		t.refresh = s.a.after(interval/2, s.refreshSession)
-		t.abort = s.a.after(interval, s.expire)
+		t.refresh = s.st.after(interval/2, s.refreshSession)
+		t.abort = s.st.after(interval, s.expire)
 
 		return
 	}
 
-	t.abort = s.a.after(interval-min(32*time.Second, interval/3), s.expire)
+	t.abort = s.st.after(interval-min(32*time.Second, interval/3), s.expire)
 }
 
 // retry tries again, a little later, a session refresh that could not be sent or failed; the abort timer still ends
@@ -224,7 +224,7 @@ func (t *sessionTimer) retry(s *Session) {
 	}
 
 	t.refresh.stop()
-	t.refresh = s.a.after(refreshRetry, s.refreshSession)
+	t.refresh = s.st.after(refreshRetry, s.refreshSession)
 }
 
 func (t *sessionTimer) stop() {

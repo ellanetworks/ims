@@ -16,9 +16,10 @@ import (
 )
 
 // Request is a request of the peer the application responds to: the initial INVITE of a session, a request within
-// it, or a request outside a dialog. Its methods may be called from any goroutine; its state belongs to the loop.
+// it, or a request outside a dialog. Its methods may be called from any goroutine; its state belongs to its strand.
 type Request struct {
 	a   *Agent
+	st  *Strand
 	s   *Session
 	tx  *transaction.ServerTransaction
 	req *sip.Request
@@ -58,7 +59,7 @@ type reliable struct {
 func newRequest(s *Session, tx *transaction.ServerTransaction, req *sip.Request) *Request {
 	r := &Request{s: s, tx: tx, req: req, key: keyOf(remote, req)}
 	if s != nil {
-		r.a = s.a
+		r.a, r.st = s.a, s.st
 	}
 
 	return r
@@ -74,6 +75,11 @@ func (r *Request) Done() <-chan struct{} {
 	return r.tx.Done()
 }
 
+// Strand is the strand of the request: the one of its session, or one of its own outside a dialog.
+func (r *Request) Strand() *Strand {
+	return r.st
+}
+
 // Session is the session of the request, nil outside a dialog.
 func (r *Request) Session() *Session {
 	return r.s
@@ -81,7 +87,7 @@ func (r *Request) Session() *Session {
 
 // Offer is the offer the request carries: the answer goes in its 2xx, or in a reliable 1xx to an initial INVITE.
 func (r *Request) Offer() ([]byte, bool) {
-	if get(r.a.loop, func() offeranswer.Role { return r.role }) != offeranswer.Offer {
+	if get(r.st, func() offeranswer.Role { return r.role }) != offeranswer.Offer {
 		return nil, false
 	}
 
@@ -167,7 +173,7 @@ func (r *Request) Progress(rp Reply) error {
 		return errors.New("sip/ua: the INVITE does not support 100rel")
 	}
 
-	return r.a.loop.call(func() error {
+	return r.st.do(func() error {
 		if r.final || r.s.state == Terminated {
 			return ErrState
 		}
@@ -226,7 +232,7 @@ func (r *Request) provisional(rp Reply) (*sip.Response, error) {
 
 		rel := &reliable{res: res, rseq: r.rseq, sdp: sdp != nil, interval: s.a.layer.T1()}
 		r.unacked = rel
-		rel.timer = s.a.after(rel.interval, func() { r.retransmitReliable(rel) })
+		rel.timer = s.st.after(rel.interval, func() { r.retransmitReliable(rel) })
 	}
 
 	return res, nil
@@ -273,7 +279,7 @@ func (r *Request) retransmitReliable(rel *reliable) {
 		}
 
 		rel.interval *= 2
-		rel.timer = s.a.after(rel.interval, func() { r.retransmitReliable(rel) })
+		rel.timer = s.st.after(rel.interval, func() { r.retransmitReliable(rel) })
 
 		return
 	}
@@ -324,7 +330,7 @@ func (r *Request) Respond(rp Reply) error {
 		return fmt.Errorf("sip/ua: %d is no final response", rp.Code)
 	}
 
-	return r.a.loop.call(func() error { return r.respond(rp) })
+	return r.st.do(func() error { return r.respond(rp) })
 }
 
 func (r *Request) respond(rp Reply) error {
@@ -431,8 +437,8 @@ func (r *Request) finish(res *sip.Response) error {
 		r.ok = res
 		r.interval = s.a.layer.T1()
 		s.ack = r
-		r.timer = s.a.after(r.interval, r.retransmitOK)
-		r.deadline = s.a.after(64*s.a.layer.T1(), r.noAck)
+		r.timer = s.st.after(r.interval, r.retransmitOK)
+		r.deadline = s.st.after(64*s.a.layer.T1(), r.noAck)
 	}
 
 	err := r.tx.Respond(res)
@@ -490,7 +496,7 @@ func (r *Request) retransmitOK() {
 	}
 
 	r.interval = min(2*r.interval, s.a.layer.T2())
-	r.timer = s.a.after(r.interval, r.retransmitOK)
+	r.timer = s.st.after(r.interval, r.retransmitOK)
 	_ = r.tx.Respond(r.ok)
 }
 
@@ -557,7 +563,7 @@ func (r *Request) failed(err error) {
 }
 
 // invite receives an initial INVITE (RFC 3261 §13.3). The session starts at once; OnInvite is its first event.
-func (a *Agent) invite(tx *transaction.ServerTransaction, req *sip.Request) {
+func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.Request) {
 	if a.cfg.OnInvite == nil {
 		a.reply(tx, 480)
 		a.untrack(&Request{a: a, tx: tx, req: req})
@@ -574,7 +580,7 @@ func (a *Agent) invite(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	id := dialog.ID{CallID: req.Header.CallID(), LocalTag: tx.ToTag(), RemoteTag: from.Tag()}
-	s := newSession(a, Handler{}, false, id)
+	s := newSession(a, st, Handler{}, false, id)
 
 	if res := s.timer.check(a, req); res != nil {
 		_ = tx.Respond(res)
@@ -591,7 +597,7 @@ func (a *Agent) invite(tx *transaction.ServerTransaction, req *sip.Request) {
 	a.track(r)
 	a.addSession(s)
 
-	a.loop.emit(func() { s.h = a.cfg.OnInvite(r) })
+	st.emit(func() { s.h = a.cfg.OnInvite(r) })
 }
 
 // addOptionTag adds an option tag to the first header field name, or in one of its own without one.

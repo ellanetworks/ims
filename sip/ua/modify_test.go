@@ -2,6 +2,7 @@ package ua_test
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -174,56 +175,50 @@ func recvAny(s *siptest.Socket) <-chan siptest.Received {
 	return c
 }
 
-// The requests of Send go one at a time, each with its CSeq when sent; those queued when the session ends fail.
-func TestSendOneAtATime(t *testing.T) {
+// RFC 3261 §12.2.2: the requests of a dialog reach the peer in the order of their CSeq, without waiting for each
+// other; those in progress when the session ends complete with ErrState.
+func TestSendInOrder(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
 
 	done, f := results()
 
-	for _, body := range []string{"one", "two"} {
-		if err := as.Send("INFO", ua.Change{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(body))}}, f); err != nil {
+	const n = 20
+
+	for i := range n {
+		if err := as.Send("INFO", ua.Change{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(fmt.Sprint(i)))}}, f); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	first := bob.next("request").req
-	bob.none()
+	var last uint32
 
-	// An UPDATE goes meanwhile, with the next CSeq.
-	if err := as.Update(ua.Change{}, f); err != nil {
-		t.Fatal(err)
+	for i := range n {
+		r := bob.next("request").req
+		cseq, _ := r.Message().Header.CSeq()
+
+		if string(r.Message().Body) != fmt.Sprint(i) || i > 0 && cseq.Seq != last+1 {
+			t.Fatalf("INFO %d: body %q, CSeq %d after %d", i, r.Message().Body, cseq.Seq, last)
+		}
+
+		last = cseq.Seq
+
+		if i < n-1 {
+			_ = r.Respond(ua.Reply{Code: 200})
+		}
 	}
 
-	if res := recv(t, done); res.code() != 200 {
-		t.Fatalf("UPDATE %d", res.code())
-	}
-
-	_ = first.Respond(ua.Reply{Code: 200})
-
-	if res := recv(t, done); res.code() != 200 {
-		t.Fatalf("first INFO %d", res.code())
-	}
-
-	second := bob.next("request").req
-	c1, _ := first.Message().Header.CSeq()
-	c2, _ := second.Message().Header.CSeq()
-
-	if string(second.Message().Body) != "two" || c2.Seq != c1.Seq+2 {
-		t.Errorf("second INFO %q, CSeq %d after %d", second.Message().Body, c2.Seq, c1.Seq)
-	}
-
-	if err := as.Send("MESSAGE", ua.Change{}, f); err != nil {
-		t.Fatal(err)
+	for range n - 1 {
+		if res := recv(t, done); res.code() != 200 {
+			t.Fatalf("INFO %d", res.code())
+		}
 	}
 
 	_ = as.Bye()
 
 	if res := recv(t, done); !errors.Is(res.err, ua.ErrState) {
-		t.Errorf("MESSAGE queued at the BYE: %+v", res)
+		t.Errorf("INFO in progress at the BYE: %+v", res)
 	}
-
-	_ = second.Respond(ua.Reply{Code: 200})
 }
 
 // RFC 6141 §4.6: the Contact of a target refresh request becomes the remote target once a 2xx to it is sent, not

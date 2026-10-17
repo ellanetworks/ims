@@ -8,6 +8,8 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
+	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -30,9 +32,11 @@ func checkTables(t *testing.T, p *peer) {
 	}
 }
 
-// Nothing is left in the tables of the agents once calls end, however they end.
+// Nothing is left in the tables of the agents once calls end, however they end, and their transactions too: an
+// initial request is noted until its transaction ends (RFC 3261 §8.2.2.2).
 func TestNoLeaks(t *testing.T) {
-	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
+	clock := siptest.NewClock()
+	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 
 	_, bs := established(t, alice, bob)
 	_ = bs.Bye()
@@ -55,6 +59,12 @@ func TestNoLeaks(t *testing.T) {
 	_ = bob.next("invite").req.Reject(486)
 	bob.next("ended")
 	alice.next("failed")
+
+	// The transactions end on their timers: Timer I runs from the ACK, which may come after the first step.
+	for range 4 {
+		advance(clock, 64*transaction.DefaultT1+time.Second, alice, bob)
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	for _, p := range []*peer{alice, bob} {
 		checkTables(t, p)
@@ -98,7 +108,7 @@ func TestHandlersAfterTheCall(t *testing.T) {
 	alice.next("failed")
 }
 
-// Handlers run on the loop of the agent and call it directly: a handler ending the session reads its state at once.
+// Handlers call the agent directly: a handler ending the session reads its state at once.
 func TestHandlersCallTheAgent(t *testing.T) {
 	states := make(chan ua.State, 2)
 

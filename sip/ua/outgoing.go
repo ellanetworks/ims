@@ -17,10 +17,11 @@ import (
 )
 
 // Outgoing is an initial INVITE of the agent, and the sessions its responses create: one for each dialog, early ones
-// when it forks (RFC 3261 §13.2.2). Its state belongs to the loop of the agent.
+// when it forks (RFC 3261 §13.2.2). Its state belongs to its strand.
 type Outgoing struct {
-	a *Agent
-	h Handler
+	a  *Agent
+	st *Strand
+	h  Handler
 
 	// tmpl is the INVITE before Prepare, sent again after a 422 (RFC 4028 §7.3) or a challenge (RFC 3261 §22.2).
 	tmpl  *sip.Request
@@ -42,7 +43,7 @@ type Outgoing struct {
 // application and its bodies: an SDP one is the offer; without one, the offer comes in a reliable 1xx or the 2xx.
 // The agent adds what req leaves out: the From tag, a Call-ID, CSeq, Max-Forwards, Contact, Allow, and the option
 // tags and Session-Expires of 100rel and the session timer.
-func (a *Agent) Invite(req *sip.Request, h Handler) (*Outgoing, error) {
+func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, error) {
 	if req.Method != "INVITE" {
 		return nil, fmt.Errorf("sip/ua: Invite of a %s request", req.Method)
 	}
@@ -82,30 +83,29 @@ func (a *Agent) Invite(req *sip.Request, h Handler) (*Outgoing, error) {
 		tmpl.Header.Set("Session-Expires", strconv.Itoa(int(iv/time.Second)))
 	}
 
-	o := &Outgoing{a: a, h: h, tmpl: tmpl, sessions: map[string]*Session{}}
+	o := &Outgoing{a: a, st: a.options(opts).strand(a), h: h, tmpl: tmpl, sessions: map[string]*Session{}}
 
-	err := a.loop.call(func() error {
-		if a.closed {
-			return ErrClosed
-		}
+	if a.isClosed() {
+		return nil, ErrClosed
+	}
 
-		if err := o.send(); err != nil {
-			return err
-		}
+	a.addOutgoing(o)
 
-		a.outgoing[o] = struct{}{}
-
-		return nil
-	})
-	if err != nil {
+	if err := o.st.do(o.send); err != nil {
+		a.removeOutgoing(o)
 		return nil, err
 	}
 
 	return o, nil
 }
 
+// Strand is the strand of the INVITE and of its sessions.
+func (o *Outgoing) Strand() *Strand {
+	return o.st
+}
+
 func (o *Outgoing) done() {
-	delete(o.a.outgoing, o)
+	o.a.removeOutgoing(o)
 }
 
 // send sends the INVITE of the template.
@@ -116,7 +116,7 @@ func (o *Outgoing) send() error {
 	o.sdp = offeranswer.Negotiation{}
 	o.sdp.Request(o.ci.key, sessionSDP(req.Envelope))
 
-	tx, err := o.a.prepareAndSend(req, o.a.client(o.response, o.error))
+	tx, err := o.a.prepareAndSend(req, o.st.client(o.response, o.error))
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func (o *Outgoing) send() error {
 
 // Request is the INVITE as last sent.
 func (o *Outgoing) Request() *sip.Request {
-	return get(o.a.loop, func() *sip.Request { return o.ci.req })
+	return get(o.st, func() *sip.Request { return o.ci.req })
 }
 
 // Cancel cancels the INVITE, the CANCEL carrying reasons (RFC 3261 §9.1, RFC 3326). Its sessions end on the 487.
@@ -147,7 +147,7 @@ func (o *Outgoing) Cancel(reasons ...sip.Reason) error {
 // CancelWith cancels the INVITE, prepare completing the CANCEL: its Reason, or the session description of a
 // precondition failure (RFC 3312 §8).
 func (o *Outgoing) CancelWith(prepare func(cancel *sip.Request)) error {
-	return o.a.loop.call(func() error { return o.cancel(prepare) })
+	return o.st.do(func() error { return o.cancel(prepare) })
 }
 
 func (o *Outgoing) cancel(prepare func(cancel *sip.Request)) error {
@@ -165,7 +165,7 @@ func (o *Outgoing) cancel(prepare func(cancel *sip.Request)) error {
 }
 
 func (o *Outgoing) emitFailed(res *sip.Response, err error) {
-	o.a.loop.emit(func() {
+	o.st.emit(func() {
 		if f := o.h.Failed; f != nil {
 			f(o, res, err)
 		}
@@ -197,7 +197,7 @@ func (o *Outgoing) response(res *sip.Response) {
 
 	if tag == "" {
 		if res.IsProvisional() {
-			o.a.loop.emit(func() {
+			o.st.emit(func() {
 				if f := o.h.Progress; f != nil {
 					f(nil, res)
 				}
@@ -215,7 +215,7 @@ func (o *Outgoing) response(res *sip.Response) {
 	if res.IsSuccess() && o.chosen == nil {
 		o.chosen = s
 		o.final = true
-		o.a.after(64*o.a.layer.T1(), o.endEarly)
+		o.st.after(64*o.a.layer.T1(), o.endEarly)
 
 		// Answered, the INVITE has nothing left for Close to cancel.
 		o.done()
@@ -296,13 +296,19 @@ func (o *Outgoing) forked(s *Session, res *sip.Response) {
 		return
 	}
 
-	o.a.loop.emit(func() {
-		switch {
-		case s.state == Early && o.h.Forked(s, res), s.state == Terminated:
-			s.clientResponse(o.ci, res)
-		default:
-			s.notChosen(o.ci, res)
-		}
+	o.st.emit(func() {
+		keep := o.h.Forked(s, res)
+
+		_ = o.st.do(func() error {
+			switch {
+			case s.state == Early && keep, s.state == Terminated:
+				s.clientResponse(o.ci, res)
+			default:
+				s.notChosen(o.ci, res)
+			}
+
+			return nil
+		})
 	})
 }
 
@@ -322,7 +328,7 @@ func (o *Outgoing) session(res *sip.Response, tag string) *Session {
 		return nil
 	}
 
-	s := newSession(o.a, o.h, true, d.ID())
+	s := newSession(o.a, o.st, o.h, true, d.ID())
 	s.d = d
 	s.out = o
 	s.sdp = o.sdp
@@ -474,7 +480,7 @@ type clientInvite struct {
 func (c *clientInvite) send() error {
 	s := c.s
 
-	err := s.transmit(c.req, s.a.client(c.response, c.error), func(tx *transaction.ClientTransaction) {
+	err := s.transmit(c.req, s.st.client(c.response, c.error), func(tx *transaction.ClientTransaction) {
 		c.tx = tx
 
 		if c.cancelled != nil {
@@ -650,7 +656,7 @@ func (s *Session) prack(res *sip.Response, bodies []sip.BodyPart, then func()) {
 		}
 	}
 
-	s.sendRequest(prack, s.a.client(func(res *sip.Response) {
+	s.sendRequest(prack, s.st.client(func(res *sip.Response) {
 		if !res.IsProvisional() {
 			finish(res, nil)
 		}
@@ -748,7 +754,7 @@ func (s *Session) sendAck(c *clientInvite, bodies []sip.BodyPart) {
 	delete(s.answering, seq)
 	s.resendAck(seq)
 
-	s.a.after(64*s.a.layer.T1(), func() {
+	s.st.after(64*s.a.layer.T1(), func() {
 		delete(s.acks, seq)
 		delete(s.rseq, seq)
 	})
@@ -756,7 +762,7 @@ func (s *Session) sendAck(c *clientInvite, bodies []sip.BodyPart) {
 
 func (s *Session) resendAck(seq uint32) {
 	if ack := s.acks[seq]; ack != nil {
-		s.writeAck(ack.Clone())
+		s.queueAck(ack.Clone())
 	}
 }
 
@@ -839,7 +845,7 @@ func (s *Session) retryLater(c *clientInvite, delay time.Duration) {
 	d := &deferred{
 		method: c.key.Method, change: c.change, done: c.done, refresh: c.refresh, retried: c.retried, glared: c.glared,
 	}
-	d.t = s.a.after(delay, func() { s.sendDeferred(d) })
+	d.t = s.st.after(delay, func() { s.sendDeferred(d) })
 	s.deferred = append(s.deferred, d)
 
 	// The session expired while it was being modified: the retry comes too late.
@@ -927,7 +933,7 @@ func (o *Offer) Answer(bodies ...sip.BodyPart) error {
 		return errors.New("sip/ua: no session description in the answer")
 	}
 
-	return o.s.a.loop.call(func() error {
+	return o.s.st.do(func() error {
 		if o.used {
 			return nil
 		}
@@ -948,7 +954,7 @@ func (o *Offer) Answer(bodies ...sip.BodyPart) error {
 // Reject refuses the offer with an answer refusing its streams (RFC 3264 §6), which the PRACK or the ACK must carry
 // (RFC 3262 §5, RFC 3261 §13.2.2.4); the INVITE is then cancelled, or the session ended with a BYE.
 func (o *Offer) Reject() {
-	_ = o.s.a.loop.call(func() error {
+	_ = o.s.st.do(func() error {
 		o.reject()
 		return nil
 	})

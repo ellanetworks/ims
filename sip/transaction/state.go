@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/ellanetworks/ims/sip"
 )
 
 type State int
@@ -37,11 +39,6 @@ func (s State) String() string {
 	return stateNames[s]
 }
 
-type sendJob struct {
-	send   func() error
-	result func(error)
-}
-
 type core struct {
 	layer   *Layer
 	forget  func()
@@ -61,8 +58,8 @@ type core struct {
 	ran      uint64
 	draining bool
 
-	out     []sendJob
-	sending bool
+	// sending counts the sends of the transaction in the outboxes of the layer.
+	sending int
 
 	done     chan struct{}
 	doneSent bool
@@ -143,47 +140,31 @@ func (tx *core) drain() {
 	tx.mu.Unlock()
 }
 
-func (tx *core) push(send func() error, result func(error)) {
-	tx.out = append(tx.out, sendJob{send: send, result: result})
+// push sends a message of the transaction on the flow f, in the order of the flow (outbox); result, when not nil,
+// receives the outcome under the lock of the transaction.
+func (tx *core) push(f sip.Flow, send func() error, result func(error)) {
+	tx.sending++
 
-	if tx.sending {
-		return
-	}
-
-	if !tx.layer.enter() {
-		tx.out = nil
-		return
-	}
-
-	tx.sending = true
-
-	go tx.flush()
-}
-
-func (tx *core) flush() {
-	defer tx.layer.wg.Done()
-
-	tx.mu.Lock()
-
-	for len(tx.out) > 0 {
-		j := tx.out[0]
-		tx.out[0] = sendJob{}
-		tx.out = tx.out[1:]
-
-		tx.mu.Unlock()
-
-		err := j.send()
+	ok := tx.layer.enqueue(f, func(ok bool) {
+		err := ErrClosed
+		if ok {
+			err = send()
+		}
 
 		tx.mu.Lock()
 
-		if j.result != nil && !errors.Is(tx.err, ErrClosed) {
-			j.result(err)
-		}
-	}
+		tx.sending--
 
-	tx.sending = false
-	tx.closeDone()
-	tx.unlock()
+		if result != nil && !errors.Is(tx.err, ErrClosed) {
+			result(err)
+		}
+
+		tx.closeDone()
+		tx.unlock()
+	})
+	if !ok {
+		tx.sending--
+	}
 }
 
 func (tx *core) after(d time.Duration, f func()) {
@@ -278,7 +259,7 @@ func (tx *core) OnTerminated(f func()) {
 }
 
 func (tx *core) closeDone() {
-	if tx.state != Terminated || tx.sending || tx.doneSent {
+	if tx.state != Terminated || tx.sending > 0 || tx.doneSent {
 		return
 	}
 

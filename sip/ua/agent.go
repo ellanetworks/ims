@@ -56,13 +56,19 @@ type SessionTimer struct {
 }
 
 type Config struct {
-	// Transaction configures the transaction layer the agent creates; its Handler is the agent.
+	// Layer is a transaction layer the agent shares with other users, such as a proxy on the same ports: their
+	// dispatcher gives the agent the requests it owns (Agent.Owns), and its CANCELs, ACKs and transaction errors.
+	// Without one, the agent creates a layer of its own from Transaction, and is its Handler.
+	Layer *transaction.Layer
+
+	// Transaction configures the transaction layer the agent creates without Layer.
 	Transaction transaction.Config
 
 	// Prepare completes each request the agent sends, the ACK included, for the transport: it sets the Flow and adds
 	// the top Via, with a branch from sip.NewBranch, and any header field of the access network (TS 24.229 §5.1.2A).
 	//
-	// Prepare, Respond and Authenticate complete messages: they must not call the agent, its sessions or requests.
+	// Prepare, Respond and Authenticate complete messages, with the strand of the message held: they must not call the
+	// agent, its sessions or requests, nor wait for a lock the application holds while calling them.
 	Prepare func(req *sip.Request) error
 
 	// Respond completes each response the agent sends.
@@ -95,9 +101,10 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Handler receives the events of a session. Each function is optional. Handlers run on the loop of the agent, in
-// order, after the state change they report: they may call the agent, its sessions and requests, and must not block.
-// Long work goes to a goroutine of the application, which calls the agent once done.
+// Handler receives the events of a session. Each function is optional. Handlers run on the strand of the session, in
+// order, after the state change they report: they may call the agent, its sessions and requests, and should not
+// block, the strand waiting for them. Long work goes to a goroutine of the application, which calls the agent once
+// done, or posts to the strand.
 type Handler struct {
 	// Progress reports a provisional response to an INVITE of the agent, initial or re-INVITE; a reliable one once
 	// its PRACK completed, so that the requests the application sends then follow it. s is nil for a response to
@@ -181,24 +188,28 @@ type mergeKey struct {
 	cseq            sip.CSeq
 }
 
-// Agent is a SIP user agent. It creates the transaction layer it sends and receives on.
+// Agent is a SIP user agent, on a transaction layer of its own or shared.
 //
-// One goroutine, the loop of the agent, owns its dialogs, sessions and outgoing INVITEs, and runs the handlers of the
-// application. The methods of the agent, of its sessions and of their requests may be called from any goroutine: from
-// a handler, they run at once; from elsewhere, on the loop, waiting for it.
+// Each dialog set of the agent (an initial INVITE or SUBSCRIBE and the dialogs of its responses and requests) is on
+// a Strand, which serialises its state changes and runs its handlers. The methods of the agent, of its sessions,
+// subscriptions and requests may be called from any goroutine, handlers included.
 type Agent struct {
 	cfg       Config
 	layer     *transaction.Layer
+	ownLayer  bool
 	log       *slog.Logger
 	clock     transaction.Clock
 	allow     []string
 	supported []string
-	loop      *loop
 
-	// closing counts the BYEs Close waits for.
-	closing sync.WaitGroup
+	// wmu guards the counts of the strands at work and of the requests Close waits for.
+	wmu     sync.Mutex
+	wcond   sync.Cond
+	workers int
+	closing int
 
-	// The fields below belong to the loop.
+	// mu guards the tables of the agent. A strand's lock may be held when taking it, not the other way.
+	mu          sync.Mutex
 	closed      bool
 	dialogs     map[dialog.ID]*dialogEntry
 	invites     map[*transaction.ServerTransaction]*Request
@@ -253,11 +264,18 @@ func New(cfg Config) (*Agent, error) {
 		a.allow = Methods
 	}
 
-	tcfg := cfg.Transaction
-	tcfg.Handler = a
-	a.layer = transaction.New(tcfg)
+	a.wcond.L = &a.wmu
+
+	if cfg.Layer != nil {
+		a.layer = cfg.Layer
+	} else {
+		tcfg := cfg.Transaction
+		tcfg.Handler = a
+		a.layer = transaction.New(tcfg)
+		a.ownLayer = true
+	}
+
 	a.clock = a.layer.Clock()
-	a.loop = newLoop()
 
 	return a, nil
 }
@@ -267,90 +285,163 @@ func (a *Agent) Layer() *transaction.Layer {
 	return a.layer
 }
 
-// Close ends the sessions of the agent: confirmed ones with a BYE, early ones by cancelling or rejecting their INVITE.
-// It waits for those transactions until ctx is done, then closes the transaction layer and stops the loop. The
-// sessions end with EndClosed. Close cannot be called from a handler, which the loop waits for.
-func (a *Agent) Close(ctx context.Context) error {
-	if a.loop.onLoop() {
-		return errors.New("sip/ua: Close from a handler")
+// working counts the strands at work.
+func (a *Agent) working(delta int) {
+	a.wmu.Lock()
+	a.workers += delta
+	a.wcond.Broadcast()
+	a.wmu.Unlock()
+}
+
+// await counts the requests Close waits for: their transactions, once sent.
+func (a *Agent) await(delta int) {
+	a.wmu.Lock()
+	a.closing += delta
+	a.wcond.Broadcast()
+	a.wmu.Unlock()
+}
+
+// waitUntil waits for cond, under wmu, until ctx is done.
+func (a *Agent) waitUntil(ctx context.Context, cond func() bool) {
+	stop := context.AfterFunc(ctx, func() {
+		a.wmu.Lock()
+		a.wcond.Broadcast()
+		a.wmu.Unlock()
+	})
+	defer stop()
+
+	a.wmu.Lock()
+	defer a.wmu.Unlock()
+
+	for !cond() && ctx.Err() == nil {
+		a.wcond.Wait()
+	}
+}
+
+// Owns reports whether a request belongs to the agent, for the dispatcher of a shared layer: a request within one of
+// its dialogs, or a NOTIFY of one of its SUBSCRIBEs. The dispatcher decides on the initial requests itself.
+func (a *Agent) Owns(req *sip.Request) bool {
+	id := dialog.RequestID(req)
+	if id.LocalTag == "" {
+		return false
 	}
 
-	err := a.loop.call(func() error {
-		if a.closed {
-			return ErrClosed
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.dialogs[id] != nil {
+		return true
+	}
+
+	return req.Method == "NOTIFY" && a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}] != nil
+}
+
+// Close ends the sessions of the agent, confirmed ones with a BYE, early ones by cancelling or rejecting their INVITE,
+// and its subscriptions, unsubscribing. It waits for those transactions until ctx is done, then closes the
+// transaction layer the agent created, and waits, until ctx is done too, for the strands to deliver the last events.
+// The sessions and subscriptions end with EndClosed. Close must not be called from a handler, whose strand it waits for.
+func (a *Agent) Close(ctx context.Context) error {
+	a.mu.Lock()
+
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+
+	a.closed = true
+
+	var (
+		outgoing []*Outgoing
+		sessions []*Session
+		subs     []*Subscription
+	)
+
+	for o := range a.outgoing {
+		outgoing = append(outgoing, o)
+	}
+
+	for _, e := range a.dialogs {
+		if e.invite != nil {
+			sessions = append(sessions, e.invite)
 		}
 
-		a.closed = true
+		if e.sub != nil {
+			subs = append(subs, e.sub)
+		}
+	}
 
-		for o := range a.outgoing {
+	for _, att := range a.subscribing {
+		subs = append(subs, att.first)
+	}
+
+	a.mu.Unlock()
+
+	for _, o := range outgoing {
+		_ = o.st.do(func() error {
 			if err := o.cancel(nil); err != nil {
 				a.log.Debug("CANCEL failed", slog.Any("error", err))
 			}
-		}
 
-		var (
-			sessions []*Session
-			subs     []*Subscription
-		)
-
-		for _, e := range a.dialogs {
-			if e.invite != nil {
-				sessions = append(sessions, e.invite)
-			}
-
-			if e.sub != nil {
-				subs = append(subs, e.sub)
-			}
-		}
-
-		for _, att := range a.subscribing {
-			if att.first.d == nil {
-				subs = append(subs, att.first)
-			}
-		}
-
-		for _, s := range sessions {
-			s.close()
-		}
-
-		for _, s := range subs {
-			s.close()
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil
+			return nil
+		})
 	}
 
-	done := make(chan struct{})
-
-	go func() {
-		a.closing.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
+	for _, s := range sessions {
+		_ = s.st.do(func() error {
+			s.close()
+			return nil
+		})
 	}
 
-	err = a.layer.Close()
+	for _, s := range subs {
+		_ = s.st.do(func() error {
+			if s.d != nil || s.att.first == s {
+				s.close()
+			}
 
-	// What the closed transaction layer did not complete fails now, before the loop stops.
-	_ = a.loop.call(func() error {
-		for o := range a.outgoing {
+			return nil
+		})
+	}
+
+	a.waitUntil(ctx, func() bool { return a.closing == 0 })
+
+	var err error
+
+	if a.ownLayer {
+		err = a.layer.Close()
+	}
+
+	// What the transaction layer did not complete fails now.
+	a.mu.Lock()
+
+	outgoing = nil
+
+	for o := range a.outgoing {
+		outgoing = append(outgoing, o)
+	}
+
+	requests := make([]*outOfDialog, 0, len(a.requests))
+	for c := range a.requests {
+		requests = append(requests, c)
+	}
+
+	a.mu.Unlock()
+
+	for _, o := range outgoing {
+		_ = o.st.do(func() error {
 			o.closed()
-		}
+			return nil
+		})
+	}
 
-		for c := range a.requests {
+	for _, c := range requests {
+		_ = c.st.do(func() error {
 			c.finish(nil, ErrClosed)
-		}
+			return nil
+		})
+	}
 
-		return nil
-	})
-
-	a.loop.stop()
+	a.waitUntil(ctx, func() bool { return a.workers == 0 })
 
 	return err
 }
@@ -363,8 +454,13 @@ func (a *Agent) supportedValue() string {
 	return strings.Join(a.supported, ", ")
 }
 
+// The functions below use the tables of the agent under a.mu; they may be called with a strand held.
+
 // session is the INVITE usage of a dialog, if any.
 func (a *Agent) session(id dialog.ID) *Session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if e := a.dialogs[id]; e != nil {
 		return e.invite
 	}
@@ -383,11 +479,17 @@ func (a *Agent) entry(id dialog.ID) *dialogEntry {
 }
 
 func (a *Agent) addSession(s *Session) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.entry(s.id).invite = s
 }
 
 // removeSession ends the INVITE usage of a dialog, and the dialog with its last usage (RFC 5057 §5.4).
 func (a *Agent) removeSession(s *Session) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	e := a.dialogs[s.id]
 	if e == nil || e.invite != s {
 		return
@@ -398,11 +500,17 @@ func (a *Agent) removeSession(s *Session) {
 }
 
 func (a *Agent) addSubscription(s *Subscription) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.entry(s.d.ID()).sub = s
 }
 
 func (a *Agent) removeSubscription(s *Subscription) {
 	id := s.d.ID()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	e := a.dialogs[id]
 	if e == nil || e.sub != s {
@@ -419,16 +527,77 @@ func (a *Agent) prune(id dialog.ID, e *dialogEntry) {
 	}
 }
 
+func (a *Agent) addOutgoing(o *Outgoing) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.outgoing[o] = struct{}{}
+}
+
+func (a *Agent) removeOutgoing(o *Outgoing) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	delete(a.outgoing, o)
+}
+
+func (a *Agent) addSubscribing(att *subscribing) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.subscribing[att.key] = att
+}
+
+func (a *Agent) removeSubscribing(att *subscribing) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.subscribing[att.key] == att {
+		delete(a.subscribing, att.key)
+	}
+}
+
+func (a *Agent) addRequest(c *outOfDialog) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.requests[c] = struct{}{}
+}
+
+func (a *Agent) removeRequest(c *outOfDialog) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	delete(a.requests, c)
+}
+
+func (a *Agent) isClosed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.closed
+}
+
+// track notes an INVITE of the peer awaiting its final response, for its CANCEL and the errors of its transaction.
 func (a *Agent) track(r *Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.invites[r.tx] = r
 }
 
 func (a *Agent) untrack(r *Request) {
-	delete(a.invites, r.tx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-	if k, ok := initialKey(r.req); ok && a.initials[k] == r.tx {
-		delete(a.initials, k)
-	}
+	delete(a.invites, r.tx)
+}
+
+func (a *Agent) tracked(tx *transaction.ServerTransaction) *Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.invites[tx]
 }
 
 func initialKey(req *sip.Request) (mergeKey, bool) {
@@ -446,18 +615,31 @@ func initialKey(req *sip.Request) (mergeKey, bool) {
 }
 
 // merged reports a request that reached the agent again on another path (RFC 3261 §8.2.2.2), and otherwise notes it
-// as ongoing until its final response.
+// as ongoing until its transaction ends.
 func (a *Agent) merged(tx *transaction.ServerTransaction, req *sip.Request) bool {
 	k, ok := initialKey(req)
 	if !ok {
 		return false
 	}
 
+	a.mu.Lock()
+
 	if other, ok := a.initials[k]; ok && other != tx {
+		a.mu.Unlock()
 		return true
 	}
 
 	a.initials[k] = tx
+	a.mu.Unlock()
+
+	tx.OnTerminated(func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		if a.initials[k] == tx {
+			delete(a.initials, k)
+		}
+	})
 
 	return false
 }
@@ -482,8 +664,8 @@ func (a *Agent) reply(tx *transaction.ServerTransaction, code int, extra ...sip.
 	}
 }
 
-// prepareAndSend prepares and sends a request in a client transaction. The transaction layer sends it on a goroutine
-// of its own.
+// prepareAndSend prepares and sends a request in a client transaction. The transaction layer sends the requests of a
+// flow in the order it takes them.
 func (a *Agent) prepareAndSend(req *sip.Request, h transaction.ClientHandler) (*transaction.ClientTransaction, error) {
 	if err := a.cfg.Prepare(req); err != nil {
 		return nil, fmt.Errorf("sip/ua: prepare %s: %w", req.Method, err)
@@ -522,12 +704,6 @@ func (a *Agent) unsupported(req *sip.Request) []string {
 
 // HandleRequest implements transaction.Handler.
 func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	a.loop.post(func() { a.receive(tx, req) })
-}
-
-func (a *Agent) receive(tx *transaction.ServerTransaction, req *sip.Request) {
-	a.loop.check()
-
 	to, err := req.Header.To()
 	if err != nil {
 		a.reply(tx, 400)
@@ -540,23 +716,11 @@ func (a *Agent) receive(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	if to.Tag() != "" {
-		id := dialog.RequestID(req)
-
-		switch e := a.dialogs[id]; {
-		case e != nil && e.invite != nil:
-			e.invite.receive(tx, req)
-		case e != nil && e.sub != nil:
-			e.sub.receive(tx, req)
-		case req.Method == "NOTIFY" && a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}] != nil:
-			a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}].notifyFor(tx, req)
-		default:
-			a.reply(tx, 481)
-		}
-
+		a.inDialog(tx, req)
 		return
 	}
 
-	if a.closed {
+	if a.isClosed() {
 		a.reply(tx, 503)
 		return
 	}
@@ -566,48 +730,80 @@ func (a *Agent) receive(tx *transaction.ServerTransaction, req *sip.Request) {
 		return
 	}
 
+	st := a.NewStrand()
+
 	if req.Method == "INVITE" {
-		a.invite(tx, req)
+		st.post(func() { a.invite(st, tx, req) })
 		return
 	}
 
 	r := newRequest(nil, tx, req)
-	r.a = a
+	r.a, r.st = a, st
 
 	if a.cfg.OnRequest == nil {
 		_ = r.respond(Reply{Code: 405, Header: sip.Header{{Name: "Allow", Value: a.allowValue()}}})
 		return
 	}
 
-	a.loop.emit(func() { a.cfg.OnRequest(r) })
+	st.Post(func() { a.cfg.OnRequest(r) })
+}
+
+// inDialog gives a request within a dialog to its usage, on its strand: the INVITE session, the subscription, or the
+// SUBSCRIBE whose NOTIFY creates the dialog (RFC 6665 §4.4.1).
+func (a *Agent) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
+	id := dialog.RequestID(req)
+
+	a.mu.Lock()
+
+	var (
+		s   *Session
+		sub *Subscription
+		att *subscribing
+	)
+
+	switch e := a.dialogs[id]; {
+	case e != nil && e.invite != nil:
+		s = e.invite
+	case e != nil && e.sub != nil:
+		sub = e.sub
+	case req.Method == "NOTIFY":
+		att = a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}]
+	}
+
+	a.mu.Unlock()
+
+	switch {
+	case s != nil:
+		s.st.post(func() { s.receive(tx, req) })
+	case sub != nil:
+		sub.st.post(func() { sub.receive(tx, req) })
+	case att != nil:
+		att.st.post(func() { att.notifyFor(tx, req) })
+	default:
+		a.reply(tx, 481)
+	}
 }
 
 // HandleCancel implements transaction.Handler: the transaction layer answered the CANCEL; the INVITE gets a 487
 // (RFC 3261 §9.2).
 func (a *Agent) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	a.loop.post(func() {
-		if r := a.invites[tx]; r != nil {
-			r.cancelled(cancel)
-		}
-	})
+	if r := a.tracked(tx); r != nil {
+		r.st.post(func() { r.cancelled(cancel) })
+	}
 }
 
 // HandleAck implements transaction.Handler: the ACK of a 2xx (RFC 3261 §13.3.1.4).
 func (a *Agent) HandleAck(ack *sip.Request) {
-	a.loop.post(func() {
-		if s := a.session(dialog.RequestID(ack)); s != nil {
-			s.receiveAck(ack)
-		}
-	})
+	if s := a.session(dialog.RequestID(ack)); s != nil {
+		s.st.post(func() { s.receiveAck(ack) })
+	}
 }
 
 // HandleTransactionError implements transaction.Handler.
 func (a *Agent) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	a.loop.post(func() {
-		if r := a.invites[tx]; r != nil {
-			r.failed(err)
-		}
-	})
+	if r := a.tracked(tx); r != nil {
+		r.st.post(func() { r.failed(err) })
+	}
 }
 
 func containsFold(list []string, v string) bool {
