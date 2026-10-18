@@ -2,7 +2,9 @@ package ua_test
 
 import (
 	"testing"
+	"time"
 
+	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -170,4 +172,135 @@ func TestForkDropped(t *testing.T) {
 
 	alice.next("established")
 	bob.next("established")
+}
+
+// A member whose 2xx is held for a PRACK is still a dialog of the INVITE: a CANCEL ends it, the 2xx replaced by the
+// 487 (RFC 3261 §9.2, RFC 3262 §3).
+func TestForkHeldCancelled(t *testing.T) {
+	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
+	r := newRaw(t)
+
+	// The raw caller sends no PRACK: the 2xx of the fork stays held.
+	invite := r.invite(bob, realSDP(4000, 1), sip.Field{Name: "Supported", Value: "100rel"})
+
+	first := bob.next("invite").req
+	fork, _ := first.Fork(bob.handler())
+	_ = first.Progress(ua.Reply{Code: 180})
+	_ = fork.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP(5000, 1))})
+	_ = fork.Respond(ua.Reply{Code: 200, AfterPrack: true})
+
+	if fork.Chosen() != fork.Session() {
+		t.Fatal("the dialog of the held 2xx not chosen")
+	}
+
+	cancel, _ := sip.NewCancel(invite)
+	r.sock.Send(sip.UDP, bob.addr, cancel)
+
+	got := map[ua.EndCause]int{}
+
+	for range 2 {
+		got[bob.next("ended").end.Cause]++
+	}
+
+	if got[ua.EndCancelled] != 2 {
+		t.Fatalf("bob's dialogs ended %v, want both cancelled", got)
+	}
+
+	for {
+		if res := r.response(); res.StatusCode >= 200 && res.Header.Get("CSeq") == invite.Header.Get("CSeq") {
+			if res.StatusCode != 487 {
+				t.Fatalf("the INVITE got %d", res.StatusCode)
+			}
+
+			break
+		}
+	}
+}
+
+// The deadline of a forked INVITE outlives the member that armed it (Policy.AnswerTimeout).
+func TestForkAnswerTimeout(t *testing.T) {
+	clock := netOf(t).Clock()
+	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
+	bob := newPeerWith(t, "bob", func(c *ua.Config) { c.Policy = ua.Policy{AnswerTimeout: 30 * time.Second} })
+
+	alice.invite(bob, "offer-1")
+
+	first := bob.next("invite").req
+	fork, _ := first.Fork(bob.handler())
+	_ = first.Progress(ua.Reply{Code: 180})
+	_ = fork.Progress(ua.Reply{Code: 180})
+
+	_ = first.Session().Bye(ua.Change{}, nil)
+
+	advance(clock, 31*time.Second)
+
+	for {
+		select {
+		case e := <-alice.events:
+			if e.kind != "failed" {
+				continue
+			}
+
+			if e.res == nil || e.res.StatusCode != 480 {
+				t.Fatalf("alice's INVITE %+v", e.res)
+			}
+
+			return
+		default:
+			t.Fatal("the forked INVITE not answered past its deadline")
+		}
+	}
+}
+
+// RFC 3261 §15: a UAS ends a session whose 2xx waits for a PRACK with Bye: the 2xx is replaced by a 487.
+func TestByeWith2xxHeld(t *testing.T) {
+	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
+	r := newRaw(t)
+
+	invite := r.invite(bob, realSDP(4000, 1), sip.Field{Name: "Supported", Value: "100rel"})
+
+	in := bob.next("invite").req
+	_ = in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP(5000, 1))})
+	_ = in.Respond(ua.Reply{Code: 200, AfterPrack: true})
+
+	if err := in.Session().Bye(ua.Change{}, nil); err != nil {
+		t.Fatalf("Bye with the 2xx held: %v", err)
+	}
+
+	for {
+		res := r.response()
+		if res.StatusCode >= 200 {
+			if res.StatusCode != 487 {
+				t.Fatalf("the INVITE got %d", res.StatusCode)
+			}
+
+			break
+		}
+	}
+
+	_ = invite
+}
+
+// WithoutOptionTags leaves option tags out of an INVITE.
+func TestWithoutOptionTags(t *testing.T) {
+	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
+
+	uri, _ := sip.ParseURI(bob.uri())
+	req := sip.NewRequest("INVITE", uri)
+	req.Header.Add("From", "<"+alice.uri()+">")
+	req.Header.Add("To", "<"+bob.uri()+">")
+	req.SetBodies(sdpOf("offer-1")...)
+
+	if _, err := alice.a.Invite(req, alice.handler(), ua.WithoutOptionTags(sip.OptionTag100rel, sip.OptionTag199)); err != nil {
+		t.Fatal(err)
+	}
+
+	in := bob.next("invite").req.Message()
+	if in.Header.HasOptionTag("Supported", sip.OptionTag100rel) || in.Header.HasOptionTag("Supported", sip.OptionTag199) {
+		t.Errorf("Supported %v", in.Header.Values("Supported"))
+	}
+
+	if !in.Header.HasOptionTag("Supported", "timer") {
+		t.Errorf("timer left out too: %v", in.Header.Values("Supported"))
+	}
 }

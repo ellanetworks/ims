@@ -367,7 +367,7 @@ func (r *Request) unanswered() {
 	s := r.s
 
 	// The deadline of a forked INVITE is that of its first member, for them all.
-	if r.forks != nil && r.req.Method == "INVITE" && !s.uac {
+	if r.forked() && !s.uac {
 		if live := r.group(); len(live) > 0 {
 			s.a.log.Warn("INVITE left unanswered by the application")
 			live[0].abandon(480)
@@ -505,6 +505,11 @@ func (r *Request) respond(rp Reply) error {
 
 	if rp.Code < 300 && r.req.Method == "INVITE" && r.unacked != nil && (r.unacked.sdp || rp.AfterPrack) {
 		r.held = res
+
+		if r.forks != nil && r == s.initial() {
+			r.forks.chosen = r
+		}
+
 		return nil
 	}
 
@@ -683,7 +688,7 @@ func (r *Request) cancelled(cancel *sip.Request) {
 	s := r.s
 
 	// A forked INVITE ends in all its dialogs; the last one answers it with the 487.
-	if r.forks != nil && !s.uac && r.req.Method == "INVITE" {
+	if r.forked() && !s.uac {
 		for _, m := range r.group() {
 			m.s.emitReceived(cancel)
 			m.s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
@@ -720,7 +725,7 @@ func (r *Request) cancelled(cancel *sip.Request) {
 
 // failed handles the error of the server transaction of an INVITE.
 func (r *Request) failed(err error) {
-	if r.forks != nil && r.req.Method == "INVITE" && !r.s.uac {
+	if r.forked() && !r.s.uac {
 		for _, m := range r.group() {
 			m.failedOne(err)
 		}
@@ -780,6 +785,7 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 
 	r := newRequest(s, tx, req)
 	r.role = s.offerRequest(r.key, sessionSDP(req.Envelope))
+	r.forks = &forkSet{members: []*Request{r}}
 	s.in = r
 	s.notePeer(req.Header)
 
@@ -796,7 +802,10 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 		h := a.cfg.OnInvite(r)
 
 		_ = st.do(func() error {
-			s.h = h
+			if !s.handlerSet {
+				s.h = h
+			}
+
 			return nil
 		})
 	})

@@ -1,9 +1,12 @@
 package ua
 
 import (
+	"bytes"
 	"log/slog"
+	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -25,6 +28,9 @@ var checkLoop = false
 type Strand struct {
 	a  *Agent
 	mu sync.Mutex
+
+	// worker is the goroutine of the worker while it runs, when strands are checked (CheckStrands).
+	worker atomic.Uint64
 
 	qmu     sync.Mutex
 	items   []item
@@ -127,6 +133,11 @@ func (st *Strand) enqueue(it item) {
 // run is the worker of the strand, a task of the scheduler of the layer, while it has work.
 func (st *Strand) run() {
 	defer st.a.working(-1)
+
+	if checkStrands.Load() {
+		st.worker.Store(goroutine())
+		defer st.worker.Store(0)
+	}
 
 	for {
 		st.qmu.Lock()
@@ -236,4 +247,39 @@ func (c client) HandleResponse(res *sip.Response) {
 
 func (c client) HandleError(err error) {
 	c.st.post(func() { c.err(err) })
+}
+
+// checkStrands enables Strand.Confined, for tests.
+var checkStrands atomic.Bool
+
+// CheckStrands makes Strand.Confined tell whether its caller runs on the strand, at a cost: for the tests of the code
+// that confines state to strands, as sip/b2bua does. Off, Confined is always true.
+func CheckStrands(on bool) {
+	checkStrands.Store(on)
+}
+
+// Confined reports whether the caller runs on the strand's worker: in a handler, or a job posted to it. It is true
+// unless CheckStrands is on.
+func (st *Strand) Confined() bool {
+	return !checkStrands.Load() || st.worker.Load() == goroutine()
+}
+
+// goroutine is the id of the calling goroutine, from its stack header ("goroutine 7 [running]:").
+func goroutine() uint64 {
+	var buf [32]byte
+
+	b := buf[:runtime.Stack(buf[:], false)]
+	b = bytes.TrimPrefix(b, []byte("goroutine "))
+
+	var id uint64
+
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			break
+		}
+
+		id = id*10 + uint64(c-'0')
+	}
+
+	return id
 }

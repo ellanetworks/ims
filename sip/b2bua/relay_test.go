@@ -226,13 +226,15 @@ func TestBridgeBodiesAndMedia(t *testing.T) {
 // anchor is the Media of a B2BUA anchoring the media: it marks the descriptions it makes.
 type anchor struct{}
 
-func (anchor) Offer(_, _ *b2bua.Leg, sdp []byte) ([]byte, error) {
+func (anchor) Offer(x *b2bua.Exchange) ([]byte, error) {
+	return append([]byte("anchored "), x.Offer...), nil
+}
+
+func (anchor) Answer(_ *b2bua.Exchange, _ *ua.Session, sdp []byte) ([]byte, error) {
 	return append([]byte("anchored "), sdp...), nil
 }
 
-func (anchor) Answer(_, _ *b2bua.Leg, sdp []byte) ([]byte, error) {
-	return append([]byte("anchored "), sdp...), nil
-}
+func (anchor) End(*b2bua.Exchange, *ua.Session) {}
 
 // RFC 3261 §15: a 2xx of bob crossing the CANCEL of alice is acknowledged, and his session ended with a BYE.
 func TestBridge2xxCrossingCancel(t *testing.T) {
@@ -289,4 +291,5 @@ func TestBridge2xxCrossingCancel(t *testing.T) {
 
 	alice.next("failed")
 	b.callEnded(t)
+	settled(t, n, alice, b.party)
 }

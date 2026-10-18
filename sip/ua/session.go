@@ -162,12 +162,15 @@ type Session struct {
 	uac bool
 	id  dialog.ID
 
-	h      Handler
-	policy Policy
-	d      *dialog.Dialog
-	state  State
-	sdp    offeranswer.Negotiation
-	value  any
+	h Handler
+
+	// handlerSet marks a handler set with SetHandler, which the one OnInvite returns does not replace.
+	handlerSet bool
+	policy     Policy
+	d          *dialog.Dialog
+	state      State
+	sdp        offeranswer.Negotiation
+	value      any
 
 	// exchanges counts the offer/answer exchanges completed in the session, for the offers of fixed changes that
 	// waited (ErrStale).
@@ -262,12 +265,14 @@ func (s *Session) SetValue(v any) {
 	})
 }
 
-// SetHandler replaces the handler of the session, for the events that come next. A UAS whose OnInvite responds at
-// once and whose Handler.Decorate completes those responses sets it there first; the handler OnInvite returns then
-// replaces it.
+// SetHandler replaces the handler of the session, for the events that come next. Set within OnInvite, it is the
+// handler of the session, in place of the one OnInvite returns: for a UAS whose Handler.Decorate completes the
+// responses it sends from OnInvite, or a B2BUA leg (b2bua.Call.Incoming).
 func (s *Session) SetHandler(h Handler) {
 	_ = s.st.do(func() error {
 		s.h = h
+		s.handlerSet = true
+
 		return nil
 	})
 }
@@ -812,22 +817,30 @@ func (s *Session) deliver(r *Request) {
 			return
 		}
 
-		switch method {
-		case "OPTIONS":
-			_ = r.Respond(Reply{Code: 200, Header: s.a.capabilities()})
-		case "INVITE", "UPDATE", "PRACK":
-			if r.Refresh() {
-				_ = r.AnswerUnchanged(Change{})
-				return
-			}
-
-			_ = r.Respond(Reply{Code: 488})
-		default:
+		if method != "OPTIONS" && method != "INVITE" && method != "UPDATE" && method != "PRACK" {
 			s.a.log.Warn("no Handler.Request for a method the agent allows", slog.String("method", method))
-
-			_ = r.Respond(Reply{Code: 500})
 		}
+
+		_ = r.RespondDefault()
 	})
+}
+
+// RespondDefault answers a request within a session as the agent does without Handler.Request: a session refresh
+// unchanged (RFC 4028), a re-INVITE, an UPDATE or a PRACK that changes the session with a 488, an OPTIONS with the
+// capabilities of the agent (RFC 3261 §11.2), others with a 500.
+func (r *Request) RespondDefault() error {
+	switch r.req.Method {
+	case "OPTIONS":
+		return r.Respond(Reply{Code: 200, Header: r.a.capabilities()})
+	case "INVITE", "UPDATE", "PRACK":
+		if r.Refresh() {
+			return r.AnswerUnchanged(Change{})
+		}
+
+		return r.Respond(Reply{Code: 488})
+	}
+
+	return r.Respond(Reply{Code: 500})
 }
 
 // receiveOffer handles a re-INVITE or an UPDATE: its conflicts with transactions in progress (RFC 3261 §14.2,
@@ -1057,7 +1070,8 @@ func (s *Session) Send(method string, c Change, done func(res *sip.Response, err
 // Bye ends the session with a BYE carrying c (RFC 3261 §15.1.1): its Reason header fields (RFC 3326, Reasons), and
 // others. The session ends at once; done receives the final response of the BYE, its transaction completing on its
 // own. A UAS whose 2xx awaits its ACK sends the BYE once the ACK comes (RFC 3261 §15); before its 2xx, a UAS rejects
-// the INVITE instead, unless it was forked (Request.Fork): Bye on one of its early dialogs ends that one alone, with
+// the INVITE instead, unless its 2xx is held for a PRACK, which a 487 replaces, or the INVITE was forked
+// (Request.Fork): Bye on one of its early dialogs ends that one alone, with
 // a 199 carrying c when the INVITE supports it (RFC 6228), done getting no response. Bye on an early dialog of a UAC
 // ends that dialog alone: Outgoing.Cancel cancels the INVITE, which ends them all.
 func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
@@ -1067,6 +1081,13 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 			return s.errorf("Bye", ErrState)
 		case !s.uac && s.state == Early && s.awaitingAck() && s.byeAfterAck == nil:
 			s.byeAfterAck = &pendingBye{change: c, done: done, cause: EndBye}
+			return nil
+		case !s.uac && s.state == Early && s.in != nil && s.in.held != nil && len(s.in.others()) == 0:
+			// The 2xx held for a PRACK is not sent: the INVITE gets a 487 in its place, and the session ends
+			// (RFC 3261 §15).
+			s.end(End{Cause: EndBye})
+			s.emitDone(done, nil, nil)
+
 			return nil
 		case !s.uac && s.state == Early && s.in != nil && s.in == s.initial() && len(s.in.others()) > 0:
 			// One early dialog of a forked INVITE, its others left to answer it.

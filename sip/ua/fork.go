@@ -5,11 +5,12 @@ import (
 	"github.com/ellanetworks/ims/sip/dialog"
 )
 
-// forkSet are the requests of one initial INVITE of the peer answered in several early dialogs: the first, and the
-// forks of Request.Fork, each the initial INVITE of a session of its own. One final response answers the INVITE, for
-// them all.
+// forkSet are the requests of one initial INVITE of the peer, answered in one early dialog or several: the first,
+// and the forks of Request.Fork, each the initial INVITE of a session of its own. One final response answers the
+// INVITE, for them all; chosen is the member whose 2xx answered it.
 type forkSet struct {
 	members []*Request
+	chosen  *Request
 }
 
 // Fork answers the initial INVITE r in another early dialog: a session of its own, with handler h, on the strand
@@ -24,7 +25,7 @@ func (r *Request) Fork(h Handler) (*Request, error) {
 	err := r.st.do(func() error {
 		s := r.s
 
-		if s == nil || r.req.Method != "INVITE" || r != s.initial() || r.final {
+		if s == nil || r.req.Method != "INVITE" || r != s.initial() || r.final || r.forks == nil {
 			return &Error{Op: "Fork", Err: ErrState}
 		}
 
@@ -41,10 +42,6 @@ func (r *Request) Fork(h Handler) (*Request, error) {
 		f.role = fs.offerRequest(f.key, sessionSDP(r.req.Envelope))
 		fs.in = f
 		fs.notePeer(r.req.Header)
-
-		if r.forks == nil {
-			r.forks = &forkSet{members: []*Request{r}}
-		}
 
 		f.forks = r.forks
 		r.forks.members = append(r.forks.members, f)
@@ -68,14 +65,32 @@ func (r *Request) toTag() string {
 	return r.tx.ToTag()
 }
 
-// live reports whether the request is a member of its INVITE still able to answer it.
+// forked reports whether the initial INVITE of r has several members.
+func (r *Request) forked() bool {
+	return r.forks != nil && len(r.forks.members) > 1
+}
+
+// Chosen is the session in which a 2xx answered the initial INVITE r, held for a PRACK or sent: of r or of one of its
+// forks; nil before.
+func (r *Request) Chosen() *Session {
+	return get(r.st, func() *Session {
+		if r.forks == nil || r.forks.chosen == nil {
+			return nil
+		}
+
+		return r.forks.chosen.s
+	})
+}
+
+// live reports whether the request is a member of its INVITE whose early dialog goes on: no final response sent,
+// or a 2xx held for a PRACK.
 func (r *Request) live() bool {
-	return !r.final && r.s.state == Early
+	return (!r.final || r.held != nil) && r.s.state == Early
 }
 
 // others are the members of the INVITE of r, r aside, still live.
 func (r *Request) others() []*Request {
-	if r.forks == nil {
+	if !r.forked() {
 		return nil
 	}
 
@@ -100,7 +115,9 @@ func (r *Request) leave() {
 		r.unacked.timer.stop()
 	}
 
-	r.answerBy.stop()
+	if r.forks != nil && r.forks.chosen == r {
+		r.forks.chosen = nil
+	}
 }
 
 // settle ends the other members of the INVITE of r as r sends res, its final response: before a 2xx, each with a 199
@@ -110,8 +127,14 @@ func (r *Request) settle(res *sip.Response) {
 		return
 	}
 
+	// The deadline of the INVITE, armed on its first member, ends with its answer.
 	for _, m := range r.forks.members {
 		m.answerBy.stop()
+	}
+
+	r.forks.chosen = nil
+	if res.IsSuccess() {
+		r.forks.chosen = r
 	}
 
 	for _, m := range r.others() {
@@ -154,7 +177,7 @@ func supports199(req *sip.Request) bool {
 
 // group are the members of the INVITE of r, live, for a CANCEL or an error of its transaction.
 func (r *Request) group() []*Request {
-	if r.forks == nil {
+	if !r.forked() {
 		return []*Request{r}
 	}
 

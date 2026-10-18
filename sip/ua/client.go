@@ -41,14 +41,21 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 type Option func(*options)
 
 type options struct {
-	st     *Strand
-	policy *Policy
+	st      *Strand
+	policy  *Policy
+	without []string
 }
 
 // On puts the dialogs of the request on st, with those of other requests: the legs of a call bridged by a B2BUA,
 // for one. Without it, they get a strand of their own.
 func On(st *Strand) Option {
 	return func(o *options) { o.st = st }
+}
+
+// WithoutOptionTags leaves the option tags out of the Supported of an INVITE: the extensions its caller cannot
+// honour end to end, as 100rel and 199 for a B2BUA whose other leg lacks them (RFC 3262 §4, RFC 6228 §8).
+func WithoutOptionTags(tags ...string) Option {
+	return func(o *options) { o.without = append(o.without, tags...) }
 }
 
 // WithPolicy sets the policy of the sessions of an INVITE, in place of Config.Policy.

@@ -7,6 +7,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/b2bua"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -34,12 +35,12 @@ func (c *controller) invite(r *ua.Request) ua.Handler {
 	call := b2bua.NewCall(c.a, r.Strand(), b2bua.CallHandler{Ended: func(call *b2bua.Call) { c.ended <- call }})
 
 	var (
-		failures []*sip.Response
+		failures []b2bua.Failure
 		pending  = len(c.members)
 		answered bool
 	)
 
-	origin, _ := call.Incoming(r, b2bua.LegHandler{
+	_, _ = call.Incoming(r, b2bua.LegHandler{
 		Ended: func(*b2bua.Leg, ua.End) { call.End(ua.Reply{}) },
 	})
 
@@ -50,8 +51,8 @@ func (c *controller) invite(r *ua.Request) ua.Handler {
 				_ = r.Accept(sdpOf("group-answer")...)
 			}
 		},
-		Failed: func(_ *b2bua.Leg, res *sip.Response, _ error) {
-			failures = append(failures, res)
+		Failed: func(_ *b2bua.Leg, res *sip.Response, err error) {
+			failures = append(failures, b2bua.Failure{Response: res, Err: err})
 			pending--
 
 			if pending == 0 && !answered {
@@ -72,7 +73,7 @@ func (c *controller) invite(r *ua.Request) ua.Handler {
 		}
 	}
 
-	return origin.Handler()
+	return ua.Handler{}
 }
 
 // One leg to many: the first member to answer answers the caller; the others go on in the call, and its end ends
@@ -113,6 +114,8 @@ func TestOneToMany(t *testing.T) {
 	default:
 		t.Fatal("the call did not end")
 	}
+
+	settled(t, n, alice, bob, carol, g.party)
 }
 
 func e(ev event) *ua.Session { return ev.s }
@@ -143,6 +146,7 @@ func TestLegAcrossCalls(t *testing.T) {
 
 	var (
 		pre   *b2bua.Leg
+		st    *ua.Strand
 		ended = make(chan *b2bua.Call, 4)
 	)
 
@@ -155,9 +159,10 @@ func TestLegAcrossCalls(t *testing.T) {
 	server.onInvite = func(r *ua.Request) ua.Handler {
 		call := b2bua.NewCall(server.a, r.Strand(), b2bua.CallHandler{Ended: func(c *b2bua.Call) { ended <- c }})
 		pre, _ = call.Incoming(r, b2bua.LegHandler{})
+		st = r.Strand()
 		_ = r.Accept(sdpOf("server-answer")...)
 
-		return pre.Handler()
+		return ua.Handler{}
 	}
 	server.mu.Unlock()
 
@@ -172,10 +177,10 @@ func TestLegAcrossCalls(t *testing.T) {
 	for _, to := range []*party{bob, carol} {
 		done := make(chan struct{})
 
-		pre.Call().Strand().Post(func() {
+		st.Post(func() {
 			defer close(done)
 
-			call := b2bua.NewCall(server.a, pre.Call().Strand(), b2bua.CallHandler{Ended: func(c *b2bua.Call) { ended <- c }})
+			call := b2bua.NewCall(server.a, st, b2bua.CallHandler{Ended: func(c *b2bua.Call) { ended <- c }})
 			if err := call.Attach(pre, b2bua.LegHandler{}); err != nil {
 				t.Errorf("Attach: %v", err)
 				return
@@ -218,9 +223,9 @@ func TestLegAcrossCalls(t *testing.T) {
 	alice.none()
 }
 
-// RFC 3262 §5: an offer in a reliable 1xx cannot reach a caller without 100rel, who cannot answer in a PRACK: the
-// offer is refused, and the caller gets a 488.
-func TestBridgeOfferWithout100rel(t *testing.T) {
+// RFC 3262 §4: the extensions the caller lacks are not advertised to the callee: without 100rel, bob cannot answer
+// in a reliable 1xx, and offers in his 2xx, which the caller answers in her ACK.
+func TestBridgeCallerWithout100rel(t *testing.T) {
 	n := newNet(t)
 
 	bob := newParty(t, n, "bob", nil)
@@ -231,18 +236,43 @@ func TestBridgeOfferWithout100rel(t *testing.T) {
 	alice.Send(sip.UDP, b.addr, req)
 
 	in := bob.next("invite").req
-	_ = in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf("offer-b")})
+	if in.Message().Header.HasOptionTag("Supported", sip.OptionTag100rel) {
+		t.Fatalf("100rel advertised to bob: %v", in.Message().Header.Values("Supported"))
+	}
 
-	for {
+	if err := in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf("offer-b")}); err == nil {
+		t.Fatal("a reliable 183 to an INVITE without 100rel")
+	}
+
+	_ = in.Accept(sdpOf("offer-b")...)
+
+	var ok *sip.Response
+
+	for ok == nil {
 		res, _ := alice.RecvResponse()
 		if res.StatusCode >= 200 {
-			if res.StatusCode != 488 {
-				t.Fatalf("alice got %d", res.StatusCode)
-			}
-
-			break
+			ok = res
 		}
 	}
+
+	if ok.StatusCode != 200 || !hasSDP(ok, "offer-b") {
+		t.Fatalf("alice got %d %q", ok.StatusCode, ok.Body)
+	}
+
+	ack := siptest.NewRequest("ACK", b.uri(), sip.UDP, alice.Addr())
+	ack.Header.Set("Via", req.Header.Get("Via"))
+	ack.Header.Set("From", req.Header.Get("From"))
+	ack.Header.Set("To", ok.Header.Get("To"))
+	ack.Header.Set("Call-ID", req.Header.CallID())
+	ack.Header.Set("CSeq", "1 ACK")
+	ack.SetBodies(sdpOf("answer-a")...)
+	alice.Send(sip.UDP, b.addr, ack)
+
+	if e := bob.next("answer"); string(e.sdp) != "answer-a" {
+		t.Fatalf("bob got answer %q", e.sdp)
+	}
+
+	bob.next("established")
 }
 
 // The BYE of the callee ends the caller's session too, and each leg refreshes its own session timer.
@@ -282,24 +312,35 @@ func TestBest(t *testing.T) {
 		return r
 	}
 
+	of := func(rs ...*sip.Response) []b2bua.Failure {
+		var out []b2bua.Failure
+		for _, r := range rs {
+			out = append(out, b2bua.Failure{Response: r})
+		}
+
+		return out
+	}
+
 	for _, c := range []struct {
-		in   []*sip.Response
+		in   []b2bua.Failure
 		want int
 	}{
 		{nil, 408},
-		{[]*sip.Response{res(486, ""), res(500, "")}, 486},
-		{[]*sip.Response{res(500, ""), res(404, ""), res(603, "")}, 603},
-		{[]*sip.Response{res(404, ""), res(415, "")}, 415},
-		{[]*sip.Response{res(503, "")}, 500},
-		{[]*sip.Response{res(302, ""), res(500, "")}, 480},
-		{[]*sip.Response{res(407, "")}, 500},
+		{of(res(486, ""), res(500, "")), 486},
+		{of(res(500, ""), res(404, ""), res(603, "")), 603},
+		{of(res(404, ""), res(415, "")), 415},
+		{of(res(503, "")), 500},
+		{of(res(302, ""), res(500, "")), 480},
+		{of(res(407, "")), 500},
+		{[]b2bua.Failure{{Err: transaction.ErrTimeout}}, 408},
+		{[]b2bua.Failure{{Err: ua.ErrClosed}}, 503},
 	} {
 		if got := b2bua.Best(c.in); got.Code != c.want {
-			t.Errorf("Best of %d responses: %d, want %d", len(c.in), got.Code, c.want)
+			t.Errorf("Best of %d failures: %d, want %d", len(c.in), got.Code, c.want)
 		}
 	}
 
-	got := b2bua.Best([]*sip.Response{res(486, `399 a "x"`), res(486, `399 a "x"`), res(480, `399 b "y"`)})
+	got := b2bua.Best(of(res(486, `399 a "x"`), res(486, `399 a "x"`), res(480, `399 b "y"`)))
 	if w := got.Header.Values("Warning"); len(w) != 2 {
 		t.Errorf("Warnings %v", w)
 	}

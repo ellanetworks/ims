@@ -7,21 +7,33 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
+// Failure is the failure of the INVITE of a leg: its final response, or the error of its transaction.
+type Failure struct {
+	Response *sip.Response
+	Err      error
+}
+
 // Best is the final response to give for the failures of several legs, as a controlling function whose invited
 // members all failed: the best of their responses as a forking proxy chooses it (RFC 3261 §16.7 step 6), with the
 // Warning header fields of them all (RFC 3261 §20.43). A 6xx wins; otherwise the lowest class, a response that tells
 // the caller how to retry (415, 420, 484) first. The B2BUA follows no redirection and answers no challenge for its
-// caller: a 3xx counts as a 480, a 401 or 407 as a 500; a 503 is turned into a 500. Without responses, as when every
-// leg timed out, Best is a 408.
-func Best(responses []*sip.Response) ua.Reply {
+// caller: a 3xx counts as a 480, a 401 or 407 as a 500; a 503 is turned into a 500. Without responses, Best is that of
+// the first error (FinalFor): a 408 when the legs timed out.
+func Best(failures []Failure) ua.Reply {
 	var (
 		best     *sip.Response
 		code     int
 		warnings []string
+		err      error
 	)
 
-	for _, res := range responses {
+	for _, f := range failures {
+		res := f.Response
 		if res == nil || res.StatusCode < 300 {
+			if err == nil {
+				err = f.Err
+			}
+
 			continue
 		}
 
@@ -38,7 +50,11 @@ func Best(responses []*sip.Response) ua.Reply {
 	}
 
 	if best == nil {
-		return ua.Reply{Code: 408}
+		if err == nil {
+			return ua.Reply{Code: 408}
+		}
+
+		return FinalFor(nil, err)
 	}
 
 	rp := ua.Reply{Code: code}
@@ -81,7 +97,7 @@ func better(code, best int) bool {
 
 func retryInformation(code int) bool {
 	switch code {
-	case 401, 407, 415, 420, 484:
+	case 415, 420, 484:
 		return true
 	}
 

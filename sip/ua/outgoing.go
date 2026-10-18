@@ -94,8 +94,13 @@ func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, 
 		tmpl.Header.Set("Contact", a.cfg.Contact.String())
 	}
 
+	op := a.options(opts)
+
 	// RFC 6228 §8: the agent takes the 199 of the early dialogs a forking proxy or the UAS ends.
-	mergeSupported(&tmpl.Header, append(slices.Clone(a.supported), sip.OptionTag199))
+	tags := slices.DeleteFunc(append(slices.Clone(a.supported), sip.OptionTag199), func(tag string) bool {
+		return containsFold(op.without, tag)
+	})
+	mergeSupported(&tmpl.Header, tags)
 
 	if !tmpl.Header.Has("Allow") {
 		tmpl.Header.Set("Allow", a.allowValue())
@@ -109,8 +114,6 @@ func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, 
 	if minSE := seconds(a.cfg.SessionTimer.MinSE); minSE > minSessionExpires && !tmpl.Header.Has("Min-SE") {
 		tmpl.Header.Set("Min-SE", strconv.FormatUint(uint64(minSE), 10))
 	}
-
-	op := a.options(opts)
 
 	o := &Outgoing{a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{}}
 

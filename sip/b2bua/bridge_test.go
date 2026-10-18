@@ -16,18 +16,19 @@ func TestBridgeCall(t *testing.T) {
 	var held chan *ua.Request
 
 	bob := newParty(t, n, "bob", nil)
-	b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{Copy: b2bua.DefaultCopy})
+	b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{Headers: b2bua.Headers{Drop: []string{"X-Private"}}})
 	alice := newParty(t, n, "alice", nil)
 
 	alice.invite(b.uri(), "offer-1", alice.handler(), sip.Field{Name: "Resource-Priority", Value: "mcpttp.4"},
-		sip.Field{Name: "X-Private", Value: "stays"})
+		sip.Field{Name: "X-Private", Value: "stays"}, sip.Field{Name: "Session-ID", Value: "ab30317f1a784dc48ff824d0d3715d86"})
 
 	in := bob.next("invite").req
 	if !hasSDP(in.Message(), "offer-1") {
 		t.Fatalf("bob's INVITE without the offer: %q", in.Message().Body)
 	}
 
-	if in.Message().Header.Get("Resource-Priority") != "mcpttp.4" || in.Message().Header.Has("X-Private") {
+	if in.Message().Header.Get("Resource-Priority") != "mcpttp.4" || in.Message().Header.Has("X-Private") ||
+		in.Message().Header.Get("Session-ID") == "" {
 		t.Errorf("bob's INVITE header %v", in.Message().Header)
 	}
 
@@ -76,6 +77,7 @@ func TestBridgeCall(t *testing.T) {
 	}
 
 	b.callEnded(t)
+	settled(t, n, alice, bob, b.party)
 }
 
 // RFC 3262: the answer of bob in a reliable 183 reaches alice in a reliable 183, PRACKed on each leg; his 200 then
@@ -183,7 +185,7 @@ func TestBridgeCancel(t *testing.T) {
 	n := newNet(t)
 
 	bob := newParty(t, n, "bob", nil)
-	b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{Copy: b2bua.DefaultCopy})
+	b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{})
 	alice := newParty(t, n, "alice", nil)
 
 	o := alice.invite(b.uri(), "offer-1", alice.handler())
@@ -212,6 +214,7 @@ func TestBridgeCancel(t *testing.T) {
 	}
 
 	b.callEnded(t)
+	settled(t, n, alice, bob, b.party)
 }
 
 // A failure of bob reaches alice with its Warning; a 503 as a 500 (RFC 3261 §16.7 step 6).
@@ -220,7 +223,7 @@ func TestBridgeFailure(t *testing.T) {
 		n := newNet(t)
 
 		bob := newParty(t, n, "bob", nil)
-		b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{Copy: b2bua.DefaultCopy})
+		b := newB2B(t, n, func() *party { return bob }, b2bua.RelayConfig{})
 		alice := newParty(t, n, "alice", nil)
 
 		alice.invite(b.uri(), "offer-1", alice.handler())
@@ -237,5 +240,6 @@ func TestBridgeFailure(t *testing.T) {
 		}
 
 		b.callEnded(t)
+		settled(t, n, alice, bob, b.party)
 	}
 }

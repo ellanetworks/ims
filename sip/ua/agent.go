@@ -219,8 +219,8 @@ type Config struct {
 	// before any strand: it must be fast, and must not call the agent.
 	StrandFor func(req *sip.Request) *Strand
 
-	// OnInvite receives an initial INVITE, and returns the handler of its session. Without it, initial INVITEs get a
-	// 480.
+	// OnInvite receives an initial INVITE, and returns the handler of its session, unless it set one with
+	// Session.SetHandler. Without it, initial INVITEs get a 480.
 	OnInvite func(r *Request) Handler
 
 	// OnRequest receives the initial requests other than INVITE. Without it, OPTIONS gets a 200 (RFC 3261 §11.2), the

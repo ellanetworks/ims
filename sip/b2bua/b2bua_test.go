@@ -18,6 +18,11 @@ import (
 
 const wait = 5 * time.Second
 
+func init() {
+	// Calls, legs and relays are used on their strands only.
+	ua.CheckStrands(true)
+}
+
 type event struct {
 	kind  string
 	s     *ua.Session
@@ -194,17 +199,29 @@ func (p *party) invite(target string, sdp string, h ua.Handler, header ...sip.Fi
 type b2b struct {
 	*party
 
-	ended chan *b2bua.Call
-	cfg   b2bua.RelayConfig
+	ended   chan *b2bua.Call
+	relays  chan *b2bua.Relay
+	strands []*ua.Strand
+	cfg     b2bua.RelayConfig
 }
 
 func newB2B(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayConfig) *b2b {
-	b := &b2b{ended: make(chan *b2bua.Call, 16), cfg: cfg}
+	return newB2BWith(t, n, to, cfg, nil)
+}
+
+func newB2BWith(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayConfig, configure func(*ua.Config)) *b2b {
+	b := &b2b{ended: make(chan *b2bua.Call, 16), relays: make(chan *b2bua.Relay, 16), cfg: cfg}
 
 	b.party = newParty(t, n, "b2b", func(c *ua.Config) {
 		c.Policy = ua.Policy{}
+
+		if configure != nil {
+			configure(c)
+		}
+
 		c.OnInvite = func(r *ua.Request) ua.Handler {
 			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{Ended: func(c *b2bua.Call) { b.ended <- c }})
+			b.strands = append(b.strands, r.Strand())
 
 			target := to()
 			uri, _ := sip.ParseURI(target.uri())
@@ -214,12 +231,16 @@ func newB2B(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayConfi
 			out.Header.Add("From", "<"+from.URI.String()+">")
 			out.Header.Add("To", "<"+target.uri()+">")
 
-			a, _, err := b2bua.Bridge(call, r, out, b.cfg)
-			if err != nil {
-				t.Errorf("Bridge: %v", err)
+			rel, err := b2bua.Bridge(call, r, out, b.cfg)
+			if rel != nil {
+				b.relays <- rel
 			}
 
-			return a.Handler()
+			if err != nil {
+				t.Logf("Bridge: %v", err)
+			}
+
+			return ua.Handler{}
 		}
 	})
 
@@ -269,4 +290,44 @@ func (p *party) nextAll(kinds ...string) map[string]event {
 	}
 
 	return got
+}
+
+// settled checks that nothing is left in the agents of the parties once their transactions and lingering dialogs
+// timed out: every leg ended, every INVITE answered.
+func settled(t *testing.T, n *siptest.Net, parties ...*party) {
+	t.Helper()
+
+	n.Advance(64*transaction.DefaultT1 + time.Second)
+	n.Advance(64*transaction.DefaultT1 + time.Second)
+
+	for _, p := range parties {
+		if st := p.a.Stats(); st != (ua.Stats{}) {
+			t.Errorf("%s: left %+v", p.name, st)
+		}
+	}
+}
+
+// peekKind is the kind of the next event of the party, once the net is quiet, for loops that skip some.
+func (p *party) peekKind() string {
+	p.t.Helper()
+	p.net.Quiesce()
+
+	select {
+	case e := <-p.events:
+		// Put back in front: the channel is drained by the next call to next.
+		rest := []event{e}
+
+		for len(p.events) > 0 {
+			rest = append(rest, <-p.events)
+		}
+
+		for _, r := range rest {
+			p.events <- r
+		}
+
+		return e.kind
+	default:
+		p.t.Fatalf("%s: no event", p.name)
+		return ""
+	}
 }

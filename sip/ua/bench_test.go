@@ -6,12 +6,15 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -224,4 +227,123 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 
 		b.StartTimer()
 	}
+}
+
+// netAgent is an agent on the in-memory net of a benchmark.
+func netAgent(b *testing.B, n *siptest.Net, name string, configure func(*ua.Config)) (*ua.Agent, netip.AddrPort) {
+	b.Helper()
+
+	addr := n.Addr()
+
+	cfg := ua.Config{
+		Prepare: func(req *sip.Request) error {
+			remote, err := netip.ParseAddr(req.URI.Host)
+			if err != nil {
+				return err
+			}
+
+			req.Flow = sip.Flow{Transport: sip.UDP, Local: addr, Remote: netip.AddrPortFrom(remote, req.URI.Port)}
+			req.Header.Prepend("Via", sip.NewVia(sip.UDP, addr).String())
+
+			return nil
+		},
+		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: addr.Addr().String(), Port: addr.Port()}},
+		Allow:       append(slices.Clone(ua.Methods), "SUBSCRIBE", "NOTIFY"),
+		Transaction: n.Config(transaction.Config{}),
+	}
+
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	a, err := ua.New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	if err := a.Layer().Serve(addr); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		_ = a.Close(ctx)
+	})
+
+	return a, addr
+}
+
+// BenchmarkResourceChange: one change of a resource fanned out to the NOTIFYs of its 1000 subscriptions, each
+// rendered for its subscriber, sent and answered: affiliation and conference notifications to a large group
+// (TS 24.379 §9.2.2.3.5, §10.1.3).
+func BenchmarkResourceChange(b *testing.B) {
+	const subscribers = 1000
+
+	n := siptest.NewNet(b)
+
+	res := ua.NewResource([]string{"a"}, ua.ResourceConfig[[]string, string]{
+		Full: func(value any, seq uint32, state []string) (ua.Notification, error) {
+			return ua.Notification{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", fmt.Appendf(nil, "%v %v %d", value, state, seq))}}, nil
+		},
+		Partial: func(value any, seq uint32, _ []string, delta string) (ua.Notification, error) {
+			return ua.Notification{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", fmt.Appendf(nil, "%v +%s %d", value, delta, seq))}}, nil
+		},
+	})
+
+	_, server := netAgent(b, n, "group", func(c *ua.Config) {
+		c.OnRequest = func(r *ua.Request) {
+			from, _ := r.Message().Header.From()
+			_, _ = r.AcceptSubscription(ua.Acceptance{Expires: time.Hour, Resource: res, Value: from.URI.User})
+		}
+	})
+
+	client, _ := netAgent(b, n, "members", nil)
+
+	var notified atomic.Int64
+
+	uri := sip.URI{Scheme: "sip", User: "group", Host: server.Addr().String(), Port: server.Port()}
+
+	for i := range subscribers {
+		req := sip.NewRequest("SUBSCRIBE", uri)
+		req.Header.Add("From", fmt.Sprintf("<sip:member%d@10.0.0.9>", i))
+		req.Header.Add("To", "<"+uri.String()+">")
+		req.Header.Add("Event", "test")
+		req.Header.Add("Expires", "3600")
+
+		if _, err := client.Subscribe(req, ua.SubscriptionHandler{
+			Notify: func(*ua.Subscription, *ua.Request) { notified.Add(1) },
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	n.Quiesce()
+
+	if got := len(res.Subscriptions()); got != subscribers {
+		b.Fatalf("%d subscriptions", got)
+	}
+
+	state := []string{"a"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; b.Loop(); i++ {
+		notified.Store(0)
+
+		m := fmt.Sprint(i)
+		state = append(state[:len(state):len(state)], m)
+		_ = res.Change(state, m)
+
+		// Every subscriber notified before the next change, each NOTIFY a partial one.
+		n.Quiesce()
+
+		if got := notified.Load(); got != subscribers {
+			b.Fatalf("%d NOTIFYs, want %d", got, subscribers)
+		}
+	}
+
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/subscribers, "ns/notify")
 }
