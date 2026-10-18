@@ -34,12 +34,24 @@ type Acceptance struct {
 	// ServerSubscription.Activate or Terminate settles it.
 	Pending bool
 
+	// MinExpires is the shortest duration the notifier grants: a SUBSCRIBE asking for less, but not zero, gets a 423
+	// with it as Min-Expires (RFC 6665 §4.2.1.1, TS 24.379 §9.2.2.3.4), and so do the refreshes of the subscription.
+	MinExpires time.Duration
+
 	// State is the full state of the resource, for the NOTIFYs the agent sends on its own: the first one, the one
 	// after each refresh (RFC 6665 §4.2.1.2), the one of Activate, and the terminated one of an unsubscribe or an
 	// expiry (§4.2.1.4). seq is the number of NOTIFYs sent before it in the subscription, for the version of the
 	// packages that count them (RFC 3680 §5.2, RFC 4575 §5.1). It runs with the strand held: it must not call the
 	// agent.
 	State func(seq uint32) (Notification, error)
+
+	// Resource, in place of State, binds the subscription to a resource, whose changes it notifies as they come, and
+	// whose state it renders for those NOTIFYs.
+	Resource Source
+
+	// Value is the value of the subscription, given to the renderings of its Resource: its filter (RFC 4661) or its
+	// subscriber.
+	Value any
 
 	Handler ServerSubscriptionHandler
 
@@ -105,6 +117,17 @@ type ServerSubscription struct {
 
 	// referStatus is the last status of the request of a REFER (ReferStatus).
 	referStatus *sip.BodyPart
+
+	// minExpires is Acceptance.MinExpires, for the refreshes.
+	minExpires time.Duration
+
+	// src is the resource of the subscription, and version the version of its state the last NOTIFY rendered;
+	// nextChange is when a change may be notified, their rate limited, and held the timer of the changes waiting for
+	// it.
+	src        Source
+	version    uint64
+	nextChange time.Time
+	held       *timer
 }
 
 type pendingNotify struct {
@@ -215,6 +238,8 @@ func (s *ServerSubscription) terminate(ss sip.SubscriptionState, e End, build fu
 	}
 
 	s.expiry.stop()
+	s.held.stop()
+	s.held = nil
 
 	if build == nil {
 		build = func(uint32) (Notification, error) { return Notification{}, nil }
@@ -408,6 +433,12 @@ func (s *ServerSubscription) end(e End) {
 	s.state = SubscriptionTerminated
 	s.queue = nil
 	s.expiry.stop()
+	s.held.stop()
+	s.held = nil
+
+	if s.src != nil {
+		s.src.detach(s)
+	}
 
 	if s.a.removeServerSubscription(s) && !s.shared {
 		s.d.Terminate()
@@ -471,7 +502,7 @@ func (s *ServerSubscription) receive(tx *transaction.ServerTransaction, req *sip
 	}
 
 	if s.h.Refresh == nil {
-		_ = r.acceptSubscription(Acceptance{Expires: s.limit})
+		_ = r.acceptSubscription(Acceptance{Expires: s.limit, MinExpires: s.minExpires})
 		return
 	}
 
@@ -539,6 +570,10 @@ func (r *Request) acceptSubscription(o Acceptance) error {
 		return &Error{Op: "AcceptSubscription", State: Terminated, Err: ErrState}
 	}
 
+	if err := r.tooBrief(max(o.MinExpires, s.minExpires)); err != nil {
+		return err
+	}
+
 	d, err := granted(r.req, o.Expires)
 	if err != nil {
 		return err
@@ -577,6 +612,23 @@ func (r *Request) respondSubscribe(d time.Duration) error {
 	return r.tx.Respond(res)
 }
 
+// tooBrief answers a SUBSCRIBE asking for less than minimum, but not zero, with a 423 (RFC 6665 §4.2.1.1).
+func (r *Request) tooBrief(minimum time.Duration) error {
+	v, err := r.req.Header.Expires()
+	if minimum <= 0 || err != nil || v == 0 || time.Duration(v)*time.Second >= minimum {
+		return nil
+	}
+
+	h := sip.Header{}
+	h.Set("Min-Expires", strconvSeconds(minimum))
+
+	if err := r.respond(Reply{Code: 423, Header: h}); err != nil {
+		return err
+	}
+
+	return ErrIntervalTooBrief
+}
+
 func strconvSeconds(d time.Duration) string {
 	return strconv.FormatUint(uint64(min(d/time.Second, math.MaxUint32)), 10)
 }
@@ -590,8 +642,14 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 		return nil, transaction.ErrFinalResponseSent
 	}
 
-	if o.State == nil {
-		return nil, errors.New("sip/ua: an Acceptance needs the State of the resource")
+	if (o.State == nil) == (o.Resource == nil) {
+		return nil, errors.New("sip/ua: an Acceptance needs the State of the resource, or the Resource")
+	}
+
+	if !refer {
+		if err := r.tooBrief(o.MinExpires); err != nil {
+			return nil, err
+		}
 	}
 
 	if !refer {
@@ -619,7 +677,11 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 
 	s := &ServerSubscription{
 		a: a, st: r.st, h: o.Handler, event: event, contact: contact, stateOf: o.State, state: SubscriptionActive,
-		limit: o.Expires,
+		limit: o.Expires, minExpires: o.MinExpires, value: o.Value, src: o.Resource,
+	}
+
+	if s.src != nil {
+		s.stateOf = func(seq uint32) (Notification, error) { return s.src.render(s, seq) }
 	}
 
 	if o.Pending {
@@ -655,6 +717,18 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 	}
 
 	a.addServerSubscription(s)
+
+	// Bound once it exists, its first NOTIFY rendering the state after the changes before; a resource terminated
+	// meanwhile ends it at once (RFC 6665 §4.1.3).
+	if s.src != nil {
+		if err := s.src.bind(s); err != nil {
+			s.src = nil
+			s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionNoResource},
+				End{Cause: EndTerminated}, nil)
+
+			return s, nil
+		}
+	}
 
 	// RFC 6665 §4.4.3: a fetch ends with its NOTIFY.
 	if d == 0 && !refer {

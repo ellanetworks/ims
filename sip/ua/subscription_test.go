@@ -3,7 +3,6 @@ package ua_test
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,18 +93,19 @@ func (sb *subscriber) next(kind string) subEvent {
 
 func (sb *subscriber) none() {
 	sb.t.Helper()
+	netOf(sb.t).Quiesce()
 
 	select {
 	case e := <-sb.events:
 		sb.t.Fatalf("unexpected %s event (%+v)", e.kind, e)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 
 // notifier is a raw notifier of the reg event package.
 type notifier struct {
 	t    *testing.T
-	sock *siptest.Socket
+	sock *siptest.Peer
 	tag  string
 	seq  uint32
 
@@ -114,7 +114,7 @@ type notifier struct {
 }
 
 func newNotifier(t *testing.T) *notifier {
-	return &notifier{t: t, sock: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), tag: "n1"}
+	return &notifier{t: t, sock: netOf(t).Peer(), tag: "n1"}
 }
 
 func (sb *subscriber) subscribe(n *notifier) *ua.Subscription {
@@ -218,7 +218,7 @@ func (n *notifier) send(req *sip.Request) *sip.Response {
 // RFC 6665 §4.1: the 2xx accepts the subscription, its first NOTIFY creates the dialog; refreshed at half its
 // duration, ended by a terminated NOTIFY.
 func TestSubscription(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	s := sb.subscribe(n)
 
@@ -273,7 +273,7 @@ func TestSubscription(t *testing.T) {
 		t.Error("deactivated: no resubscribe")
 	}
 
-	if d, _, _, _ := ua.Tables(sb.p.a); d != 0 {
+	if d := sb.p.a.Stats().Dialogs; d != 0 {
 		t.Errorf("%d dialogs left", d)
 	}
 }
@@ -305,7 +305,7 @@ func TestNotifyBeforeTheResponse(t *testing.T) {
 
 // RFC 6665 §4.1.2.4: without a NOTIFY within Timer N, the subscription fails; a NOTIFY afterwards gets a 481.
 func TestNoNotify(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	sb.subscribe(n)
 
@@ -322,7 +322,7 @@ func TestNoNotify(t *testing.T) {
 		t.Errorf("late NOTIFY %d, want 481", res.StatusCode)
 	}
 
-	if ua.Subscribing(sb.p.a) != 0 {
+	if sb.p.a.Stats().Subscribing != 0 {
 		t.Error("the SUBSCRIBE is still waiting")
 	}
 }
@@ -399,7 +399,7 @@ func TestUnsubscribe(t *testing.T) {
 // expiry, the refresh tried again meanwhile.
 func TestRefreshFailures(t *testing.T) {
 	for _, code := range []int{481, 500} {
-		clock := siptest.NewClock()
+		clock := netOf(t).Clock()
 		sb, n := newSubscriber(t, clock), newNotifier(t)
 		s := sb.subscribe(n)
 
@@ -473,7 +473,7 @@ func TestForkedSubscription(t *testing.T) {
 		t.Errorf("fork %p (first %p) %s %v", e.s, first, e.s.State(), e.s.Duration())
 	}
 
-	if d, _, _, _ := ua.Tables(sb.p.a); d != 2 {
+	if d := sb.p.a.Stats().Dialogs; d != 2 {
 		t.Errorf("%d dialogs, want 2", d)
 	}
 }
@@ -491,6 +491,7 @@ func TestCloseUnsubscribes(t *testing.T) {
 	go func() {
 		req := n.recvSubscribe()
 		n.respond(req, 200, "0")
+		n.notify(n.tag, "terminated;reason=timeout")
 	}()
 
 	ctx, cancel := contextWithTimeout(time.Second)
@@ -499,6 +500,8 @@ func TestCloseUnsubscribes(t *testing.T) {
 	if err := sb.p.a.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+
+	sb.next("notify")
 
 	if e := sb.next("ended"); e.end.Cause != ua.EndClosed {
 		t.Errorf("ended %+v", e.end)

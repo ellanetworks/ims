@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -18,8 +16,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
-
-var loopback = netip.MustParseAddr("127.0.0.1")
 
 const wait = 5 * time.Second
 
@@ -34,7 +30,7 @@ type event struct {
 	err   error
 }
 
-// peer is an agent on loopback UDP, recording the events of its sessions.
+// peer is an agent on the net of its test, recording the events of its sessions.
 type peer struct {
 	t      *testing.T
 	name   string
@@ -49,20 +45,23 @@ type peer struct {
 	onInvite func(r *ua.Request)
 }
 
-func freePort(t *testing.T) netip.AddrPort {
-	t.Helper()
+// nets are the nets of the tests running, one per test: its agents and raw peers.
+var nets sync.Map
 
-	c, err := new(net.ListenConfig).ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+// netOf is the net of the test.
+func netOf(t *testing.T) *siptest.Net {
+	if n, ok := nets.Load(t); ok {
+		return n.(*siptest.Net)
 	}
 
-	addr := netip.MustParseAddrPort(c.LocalAddr().String())
-	_ = c.Close()
+	n := siptest.NewNet(t)
+	nets.Store(t, n)
+	t.Cleanup(func() { nets.Delete(t) })
 
-	return addr
+	return n
 }
 
+// newPeer makes a peer with the session timer given. clock is the clock of the test's net or nil, which is the same.
 func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.SessionTimer) *peer {
 	t.Helper()
 
@@ -72,25 +71,12 @@ func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.Sessio
 	})
 }
 
+// newPeerWith makes a peer on the test's net, configured by configure.
 func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	t.Helper()
 
-	// The free port may be taken again before the agent listens on it: another one is tried.
-	for range 5 {
-		if p := tryPeer(t, name, configure); p != nil {
-			return p
-		}
-	}
-
-	t.Fatalf("%s: no free port", name)
-
-	return nil
-}
-
-func tryPeer(t *testing.T, name string, configure func(*ua.Config)) *peer {
-	t.Helper()
-
-	p := &peer{t: t, name: name, events: make(chan event, 64), addr: freePort(t), tr: sip.UDP}
+	n := netOf(t)
+	p := &peer{t: t, name: name, events: make(chan event, 64), addr: n.Addr(), tr: sip.UDP}
 
 	cfg := ua.Config{
 		Prepare: p.prepare,
@@ -114,26 +100,24 @@ func tryPeer(t *testing.T, name string, configure func(*ua.Config)) *peer {
 
 	configure(&cfg)
 
+	if c := cfg.Transaction.Clock; c != nil && c != transaction.Clock(n.Clock()) {
+		t.Fatalf("%s: a clock other than the net's", name)
+	}
+
+	cfg.Transaction = n.Config(cfg.Transaction)
+
 	a, err := ua.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := a.Layer().Listen(t.Context(), p.addr); err != nil {
-		_ = a.Close(context.Background())
-
-		if errors.Is(err, syscall.EADDRINUSE) {
-			return nil
-		}
-
+	if err := a.Layer().Serve(p.addr); err != nil {
 		t.Fatal(err)
 	}
 
+	// Close waits for the transactions it starts, as long as 64*T1 for those of raw peers that never answer.
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
-
-		_ = a.Close(ctx)
+		n.Await(func() { _ = a.Close(context.Background()) }, 2*64*transaction.DefaultT1)
 	})
 
 	p.a = a
@@ -184,18 +168,14 @@ func (p *peer) handler() ua.Handler {
 	}
 }
 
-// advance advances the clock, and waits for the agents of peers to handle the timers that fired: a timer posts to the
-// loop of its agent, which may arm the next one.
-func advance(clock *siptest.Clock, d time.Duration, peers ...*peer) {
+// advance advances the clock of the net, which runs each timer due once what the previous one started is done.
+func advance(clock *siptest.Clock, d time.Duration, _ ...*peer) {
 	clock.Advance(d)
-
-	for _, p := range peers {
-		ua.Sync(p.a)
-	}
 }
 
 func (p *peer) next(kind string) event {
 	p.t.Helper()
+	netOf(p.t).Quiesce()
 
 	select {
 	case e := <-p.events:
@@ -217,6 +197,8 @@ func (p *peer) nextAll(kinds ...string) map[string]event {
 
 	got := map[string]event{}
 
+	netOf(p.t).Quiesce()
+
 	for range kinds {
 		select {
 		case e := <-p.events:
@@ -235,13 +217,15 @@ func (p *peer) nextAll(kinds ...string) map[string]event {
 	return got
 }
 
+// none checks that the peer has no event once the net is quiet.
 func (p *peer) none() {
 	p.t.Helper()
+	netOf(p.t).Quiesce()
 
 	select {
 	case e := <-p.events:
 		p.t.Fatalf("%s: unexpected %s event (%+v)", p.name, e.kind, e)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 
@@ -599,7 +583,7 @@ func TestInviteRefused(t *testing.T) {
 		{sip.Field{Name: "Require", Value: "foo, bar"}, 420, sip.Field{Name: "Unsupported", Value: "foo, bar"}},
 		{sip.Field{Name: "Session-Expires", Value: "100"}, 422, sip.Field{Name: "Min-SE", Value: "1800"}},
 	} {
-		sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+		sock := netOf(t).Peer()
 		req := siptest.NewRequest("INVITE", bob.uri(), sip.UDP, sock.Addr())
 		req.Header.Add(tc.header.Name, tc.header.Value)
 		req.Header.Add("Supported", "timer")
@@ -621,7 +605,7 @@ func TestInviteRefused(t *testing.T) {
 // RFC 3261 §13.2.2.4: the 2xx of a second dialog of a forked INVITE is acknowledged, and the dialog ended with a BYE.
 func TestForking(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
-	fork := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	fork := netOf(t).Peer()
 
 	uri, _ := sip.ParseURI("sip:bob@" + fork.Addr().String())
 	req := sip.NewRequest("INVITE", uri)
@@ -692,9 +676,9 @@ func TestForking(t *testing.T) {
 
 // RFC 3261 §13.3.1.4: the 2xx is retransmitted until the ACK; without one, the session ends with a BYE.
 func TestNoAck(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
-	sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	sock := netOf(t).Peer()
 
 	req := siptest.NewRequest("INVITE", bob.uri(), sip.UDP, sock.Addr())
 	req.SetBodies(ua.SDP([]byte("offer-1")))
@@ -746,9 +730,9 @@ func TestNoAck(t *testing.T) {
 
 // RFC 3262 §3: the reliable 1xx is retransmitted until its PRACK; without one, the INVITE gets a 500.
 func TestNoPrack(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
-	sock := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	sock := netOf(t).Peer()
 
 	req := siptest.NewRequest("INVITE", bob.uri(), sip.UDP, sock.Addr())
 	req.Header.Add("Supported", "100rel")
@@ -807,7 +791,7 @@ func TestNoPrack(t *testing.T) {
 func TestGlare(t *testing.T) {
 	for _, build := range []bool{false, true} {
 		t.Run(fmt.Sprintf("build=%v", build), func(t *testing.T) {
-			clock := siptest.NewClock()
+			clock := netOf(t).Clock()
 			alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 			as, bs := established(t, alice, bob)
 
@@ -844,13 +828,10 @@ func TestGlare(t *testing.T) {
 			}
 
 			// Each re-INVITE meets the other in progress, and gets a 491.
-			deadline := time.Now().Add(wait)
-			for ua.Reinviting(as) || ua.Reinviting(bs) {
-				if time.Now().After(deadline) {
-					t.Fatal("no 491")
-				}
+			netOf(t).Quiesce()
 
-				time.Sleep(10 * time.Millisecond)
+			if ua.Reinviting(as) || ua.Reinviting(bs) {
+				t.Fatal("no 491")
 			}
 
 			advance(clock, 2*time.Second, alice, bob)
@@ -897,7 +878,7 @@ func TestGlare(t *testing.T) {
 }
 
 func TestSessionTimer(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	timer := ua.SessionTimer{Interval: 120 * time.Second}
 	alice, bob := newPeer(t, "alice", clock, timer), newPeer(t, "bob", clock, timer)
 
@@ -918,7 +899,6 @@ func TestSessionTimer(t *testing.T) {
 	// the session 88 s in (RFC 4028 §10).
 	for range 10 {
 		advance(clock, 10*time.Second, alice, bob)
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	alice.none()

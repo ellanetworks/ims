@@ -3,7 +3,6 @@ package ua_test
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ type result struct {
 }
 
 func results() (chan result, func(*sip.Response, error)) {
-	c := make(chan result, 8)
+	c := make(chan result, 64)
 	return c, func(res *sip.Response, err error) { c <- result{res, err} }
 }
 
@@ -138,16 +137,16 @@ func TestModificationWaitsForAck(t *testing.T) {
 	}
 
 	// Only the 2xx, retransmitted, comes before the ACK.
-	deadline := time.After(700 * time.Millisecond)
+	advance(netOf(t).Clock(), 700*time.Millisecond)
 
-	for wait := true; wait; {
-		select {
-		case m := <-recvAny(r.sock):
-			if _, isReq := m.Msg.(*sip.Request); isReq {
-				t.Fatalf("%s before the ACK", m.Msg.StartLine())
-			}
-		case <-deadline:
-			wait = false
+	for {
+		m, got := r.sock.RecvWithin(0)
+		if !got {
+			break
+		}
+
+		if _, isReq := m.Msg.(*sip.Request); isReq {
+			t.Fatalf("%s before the ACK", m.Msg.StartLine())
 		}
 	}
 
@@ -164,15 +163,6 @@ func TestModificationWaitsForAck(t *testing.T) {
 			break
 		}
 	}
-}
-
-// recvAny receives the next message of a socket.
-func recvAny(s *siptest.Socket) <-chan siptest.Received {
-	c := make(chan siptest.Received, 1)
-
-	go func() { c <- s.Recv() }()
-
-	return c
 }
 
 // RFC 3261 §12.2.2: the requests of a dialog reach the peer in the order of their CSeq, without waiting for each
@@ -288,7 +278,7 @@ func TestTargetRefreshedByTheResponse(t *testing.T) {
 // A session whose timer expires while a re-INVITE is in progress ends only if it fails: its 2xx refreshes the session.
 func TestExpiryDeferredByModification(t *testing.T) {
 	for _, accept := range []bool{true, false} {
-		clock := siptest.NewClock()
+		clock := netOf(t).Clock()
 		timer := ua.SessionTimer{Interval: 120 * time.Second}
 
 		// Alice does not allow UPDATE: bob, the refresher, refreshes with re-INVITEs, which conflict with hers.
@@ -316,7 +306,6 @@ func TestExpiryDeferredByModification(t *testing.T) {
 		// Past the expiry of both sides: alice at 88 s, bob at 120 s.
 		for range 8 {
 			advance(clock, 10*time.Second, alice, bob)
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		alice.none()
@@ -355,7 +344,7 @@ func TestExpiryDeferredByModification(t *testing.T) {
 
 // RFC 4028 §10: a refresh that conflicts with a transaction of the peer is retried, and refreshes the session.
 func TestRefreshRetriedAfterConflict(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	timer := ua.SessionTimer{Interval: 120 * time.Second}
 
 	alice := newPeerWith(t, "alice", func(c *ua.Config) {
@@ -400,7 +389,6 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 	// The session lives past its first expiry, refreshed again at half its interval.
 	for range 12 {
 		advance(clock, 10*time.Second, alice, bob)
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	alice.none()
@@ -413,7 +401,7 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 			}
 
 			continue
-		case <-time.After(100 * time.Millisecond):
+		default:
 		}
 
 		break
@@ -426,7 +414,7 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 
 // RFC 3261 §14.1: a re-INVITE without a response times out, and the session ends, lost, with a BYE.
 func TestReinviteTimeout(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
 	r := newRaw(t)
 
@@ -466,7 +454,7 @@ func TestReinviteTimeout(t *testing.T) {
 // RFC 3262 §4, RFC 3261 §13.2.2.4: the RSeq of reliable 1xx and the ACKs of 2xx are kept for 64*T1 after the 2xx,
 // then dropped.
 func TestKeptForRetransmissions(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 
 	alice.invite(bob, "offer-1")
@@ -564,7 +552,7 @@ func TestReinviteIntervalTooSmall(t *testing.T) {
 // RFC 3261 §13.2.2.4: Handler.Forked keeps the session of a second 2xx, confirmed.
 func TestForkedKept(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
-	fork := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	fork := netOf(t).Peer()
 
 	uri, _ := sip.ParseURI("sip:bob@" + fork.Addr().String())
 	req := sip.NewRequest("INVITE", uri)
@@ -617,7 +605,7 @@ func TestForkedKept(t *testing.T) {
 		t.Fatalf("got %s, want the ACK of two", ack.Method)
 	}
 
-	fork.RecvNone(200 * time.Millisecond)
+	fork.RecvNone(0)
 
 	if two.State() != ua.Confirmed || one.State() != ua.Confirmed {
 		t.Errorf("states %s %s", one.State(), two.State())
@@ -660,10 +648,10 @@ func TestCallOverTCP(t *testing.T) {
 }
 
 // forkedInvite sends an INVITE of alice to a raw socket standing for the callees behind a forking proxy.
-func forkedInvite(t *testing.T, alice *peer, h ua.Handler) (*ua.Outgoing, *siptest.Socket, *sip.Request, func(code int, tag string, header ...sip.Field)) {
+func forkedInvite(t *testing.T, alice *peer, h ua.Handler) (*ua.Outgoing, *siptest.Peer, *sip.Request, func(code int, tag string, header ...sip.Field)) {
 	t.Helper()
 
-	fork := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	fork := netOf(t).Peer()
 
 	uri, _ := sip.ParseURI("sip:bob@" + fork.Addr().String())
 	req := sip.NewRequest("INVITE", uri)

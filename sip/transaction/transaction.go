@@ -70,6 +70,13 @@ type Config struct {
 	T1, T2, T4 time.Duration
 
 	Clock Clock
+
+	// Scheduler starts the tasks of the layer and of the agents on it; GoScheduler without one.
+	Scheduler Scheduler
+
+	// Network carries the messages between the addresses the layer serves or attaches and those of the other layers
+	// on it; without one, the layer has a network of its own.
+	Network *Network
 }
 
 type Layer struct {
@@ -77,6 +84,8 @@ type Layer struct {
 	log      *slog.Logger
 	tr       *transport.Transport
 	clock    Clock
+	sched    Scheduler
+	network  *Network
 	aliases  map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
@@ -90,7 +99,6 @@ type Layer struct {
 	mu     sync.Mutex
 	closed bool
 	locals map[netip.AddrPort]struct{}
-	peers  map[netip.AddrPort]func(sip.Message)
 	lanes  map[sip.Flow]*lane
 
 	outboxes map[sip.Flow]*outbox
@@ -130,6 +138,8 @@ func New(cfg Config) *Layer {
 		h:        cfg.Handler,
 		log:      cfg.Logger,
 		clock:    cfg.Clock,
+		sched:    cfg.Scheduler,
+		network:  cfg.Network,
 		aliases:  make(map[string]struct{}),
 		filter:   cfg.Filter,
 		respFlow: cfg.ResponseFlow,
@@ -138,7 +148,6 @@ func New(cfg Config) *Layer {
 		t2:       cfg.T2,
 		t4:       cfg.T4,
 		locals:   make(map[netip.AddrPort]struct{}),
-		peers:    make(map[netip.AddrPort]func(sip.Message)),
 		lanes:    make(map[sip.Flow]*lane),
 		outboxes: make(map[sip.Flow]*outbox),
 		clients:  make(map[clientKey]*ClientTransaction),
@@ -156,6 +165,14 @@ func New(cfg Config) *Layer {
 
 	if l.clock == nil {
 		l.clock = SystemClock{}
+	}
+
+	if l.sched == nil {
+		l.sched = GoScheduler{}
+	}
+
+	if l.network == nil {
+		l.network = NewNetwork()
 	}
 
 	if l.t1 <= 0 {
@@ -189,6 +206,11 @@ func New(cfg Config) *Layer {
 // Clock is the clock of the timers of the layer, for the timers of its users to run on the same one.
 func (l *Layer) Clock() Clock {
 	return l.clock
+}
+
+// Scheduler starts the tasks of the layer, for the agents on it to start theirs on the same one.
+func (l *Layer) Scheduler() Scheduler {
+	return l.sched
 }
 
 func (l *Layer) T2() time.Duration {
@@ -229,7 +251,7 @@ func (l *Layer) SendOnFlow(ctx context.Context, m sip.Message) error {
 }
 
 func (l *Layer) CloseFlow(f sip.Flow) {
-	if _, ok := l.inMemory(f.Remote); ok {
+	if l.inMemory(f.Remote) {
 		return
 	}
 
@@ -261,6 +283,8 @@ func (l *Layer) Close() error {
 	for _, tx := range servers {
 		tx.shutdown()
 	}
+
+	l.network.unbind(l)
 
 	l.cancel()
 	l.wg.Wait()
@@ -517,11 +541,11 @@ func (l *Layer) Go(f func(ctx context.Context)) error {
 		return ErrClosed
 	}
 
-	go func() {
+	l.sched.Go(func() {
 		defer l.wg.Done()
 
 		f(l.ctx)
-	}()
+	})
 
 	return nil
 }

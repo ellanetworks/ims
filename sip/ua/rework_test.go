@@ -22,11 +22,11 @@ func realSDP(port, version int) string {
 // raw is a peer that sends and receives messages itself.
 type raw struct {
 	t    *testing.T
-	sock *siptest.Socket
+	sock *siptest.Peer
 }
 
 func newRaw(t *testing.T) *raw {
-	return &raw{t: t, sock: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
+	return &raw{t: t, sock: netOf(t).Peer()}
 }
 
 func (r *raw) invite(to *peer, body string, header ...sip.Field) *sip.Request {
@@ -73,7 +73,7 @@ func (r *raw) ack(invite *sip.Request, res *sip.Response) {
 	ack := r.inDialog("ACK", invite, res, 1)
 
 	contact, _ := res.Header.Contacts()
-	r.sock.Send(sip.UDP, netip.AddrPortFrom(loopback, contact[0].URI.Port), ack)
+	r.sock.Send(sip.UDP, netip.AddrPortFrom(netip.MustParseAddr(contact[0].URI.Host), contact[0].URI.Port), ack)
 }
 
 // RFC 3261 §12.1.1: every response that creates or confirms the dialog carries the Record-Route of the INVITE.
@@ -214,7 +214,7 @@ func TestUasByeBeforeAck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r.sock.RecvNone(100 * time.Millisecond)
+	r.sock.RecvNone(0)
 	r.ack(invite, ok)
 
 	if req, _ := r.sock.RecvRequest(); req.Method != "BYE" {

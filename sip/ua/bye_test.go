@@ -3,10 +3,8 @@ package ua_test
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -52,7 +50,7 @@ func TestByeWithChange(t *testing.T) {
 // Handler.Bye: the application answers the BYE, once the other leg ended, and the session ends with the response;
 // left unanswered, the agent answers after 32*T1, before the peer gives up (TS 24.379 §6.3.2.1.6).
 func TestByeHandler(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	byes := make(chan *ua.Request, 2)
 
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
@@ -91,10 +89,12 @@ func TestByeHandler(t *testing.T) {
 			t.Error("the session ended before the response to the BYE")
 		}
 
+		netOf(t).Quiesce()
+
 		select {
 		case <-done:
 			t.Fatal("the BYE answered before the application")
-		case <-time.After(100 * time.Millisecond):
+		default:
 		}
 
 		if answer {

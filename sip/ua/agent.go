@@ -43,6 +43,10 @@ var (
 
 	// ErrNoAnswer is the End.Err of a session whose application did not answer the offer of a 2xx in time.
 	ErrNoAnswer = errors.New("sip/ua: no answer to the offer of the 2xx")
+
+	// ErrIntervalTooBrief is the error of accepting a SUBSCRIBE that asked for less than Acceptance.MinExpires: the
+	// agent answered it with a 423.
+	ErrIntervalTooBrief = errors.New("sip/ua: subscription interval too brief")
 )
 
 // Error is the failure of an operation of a session, an INVITE or a request of the peer, in the state it was in. Err
@@ -385,6 +389,7 @@ type Agent struct {
 	ownLayer  bool
 	log       *slog.Logger
 	clock     transaction.Clock
+	sched     transaction.Scheduler
 	allow     []string
 	supported []string
 
@@ -465,6 +470,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	a.clock = a.layer.Clock()
+	a.sched = a.layer.Scheduler()
 
 	return a, nil
 }
@@ -1235,6 +1241,48 @@ func (a *Agent) allows(method string) bool {
 
 // Capabilities are the header fields of a 200 to an OPTIONS (RFC 3261 §11.2): Allow, Supported and Accept, for an
 // application answering OPTIONS itself.
+// Stats are the sizes of the tables of an agent: for tests to check that nothing is left once its usages end, and for
+// metrics.
+type Stats struct {
+	// Dialogs is the number of dialogs with usages; Lingering, of those kept without, for 64*T1 after their last
+	// usage ended.
+	Dialogs, Lingering int
+
+	// Invites is the number of INVITEs of peers awaiting their final response; Initials, of initial requests whose
+	// transaction is in progress (RFC 3261 §8.2.2.2).
+	Invites, Initials int
+
+	// Outgoing is the number of INVITEs of the agent not ended; Subscribing, of its initial SUBSCRIBEs whose NOTIFYs
+	// may still create subscriptions; Requests, of its requests outside dialogs in progress; Publications, of its
+	// publications.
+	Outgoing, Subscribing, Requests, Publications int
+}
+
+// Stats are the sizes of the tables of the agent.
+func (a *Agent) Stats() Stats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	st := Stats{
+		Invites:      len(a.invites),
+		Initials:     len(a.initials),
+		Outgoing:     len(a.outgoing),
+		Subscribing:  len(a.subscribing),
+		Requests:     len(a.requests),
+		Publications: len(a.pubs),
+	}
+
+	for _, e := range a.dialogs {
+		if e.ended {
+			st.Lingering++
+		} else {
+			st.Dialogs++
+		}
+	}
+
+	return st
+}
+
 func (a *Agent) Capabilities() sip.Header {
 	return a.capabilities()
 }

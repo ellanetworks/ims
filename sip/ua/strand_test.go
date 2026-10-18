@@ -2,14 +2,12 @@ package ua_test
 
 import (
 	"context"
-	"net/netip"
 	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -58,22 +56,21 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(wait)
-	for as.Load() == nil || bs.Load() == nil || bs.Load().State() != ua.Confirmed {
-		if time.Now().After(deadline) {
-			t.Fatal("no session")
-		}
+	netOf(t).Quiesce()
 
-		time.Sleep(time.Millisecond)
+	if as.Load() == nil || bs.Load() == nil || bs.Load().State() != ua.Confirmed {
+		t.Fatal("no session")
 	}
 
 	// Both sides send at once, each from its handlers.
 	_ = as.Load().Send("INFO", ua.Change{}, nil)
 	_ = bs.Load().Send("INFO", ua.Change{}, nil)
 
+	netOf(t).Quiesce()
+
 	select {
 	case <-finished:
-	case <-time.After(3 * wait):
+	default:
 		t.Fatalf("deadlock after %d requests", received.Load())
 	}
 }
@@ -100,7 +97,7 @@ func TestHandlerPanicRecovered(t *testing.T) {
 
 // Post and AfterFunc run on the strand, in order with the handlers, on the clock of the agent.
 func TestStrandPostAndAfterFunc(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
 	st := alice.a.NewStrand()
 
@@ -169,8 +166,9 @@ func TestSharedLayer(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 
 	d := &dispatcher{}
-	layer := transaction.New(transaction.Config{Handler: d})
-	addr := freePort(t)
+	n := netOf(t)
+	layer := transaction.New(n.Config(transaction.Config{Handler: d}))
+	addr := n.Addr()
 
 	bob := &peer{t: t, name: "bob", addr: addr, events: make(chan event, 64), tr: sip.UDP}
 
@@ -191,8 +189,8 @@ func TestSharedLayer(t *testing.T) {
 	bob.a = a
 	d.a = a
 
-	// The layer listens once the dispatcher has the agent.
-	if _, err := layer.Listen(t.Context(), addr); err != nil {
+	// The layer serves once the dispatcher has the agent.
+	if err := layer.Serve(addr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,7 +240,7 @@ func TestSharedLayer(t *testing.T) {
 
 	_ = a.Close(ctx)
 
-	if _, err := layer.Listen(t.Context(), netip.AddrPortFrom(loopback, 0)); err != nil {
+	if err := layer.Serve(n.Addr()); err != nil {
 		t.Errorf("layer closed with the agent: %v", err)
 	}
 }

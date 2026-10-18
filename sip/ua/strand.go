@@ -20,7 +20,7 @@ var checkLoop = false
 //
 // The state of the usages on a strand changes under its lock: by the methods of the application, which return once
 // done and never wait for a handler, and by the inputs of the transaction layer and the timers, which the strand
-// runs as jobs. Handlers and the application's jobs run in order on the strand's worker goroutine, outside the lock:
+// runs as jobs. Handlers and the application's jobs run in order on the strand's worker, outside the lock:
 // they may call the agent, and should not block, since the strand waits for them.
 type Strand struct {
 	a  *Agent
@@ -120,11 +120,11 @@ func (st *Strand) enqueue(it item) {
 	if start {
 		st.a.working(1)
 
-		go st.run()
+		st.a.sched.Go(st.run)
 	}
 }
 
-// run is the worker of the strand, while it has work.
+// run is the worker of the strand, a task of the scheduler of the layer, while it has work.
 func (st *Strand) run() {
 	defer st.a.working(-1)
 

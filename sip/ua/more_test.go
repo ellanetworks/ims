@@ -8,7 +8,6 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -16,28 +15,17 @@ import (
 func checkTables(t *testing.T, p *peer) {
 	t.Helper()
 
-	deadline := time.Now().Add(wait)
+	netOf(t).Quiesce()
 
-	for {
-		d, i, n, o := ua.Tables(p.a)
-		l := ua.Lingering(p.a)
-
-		if d == 0 && i == 0 && n == 0 && o == 0 && l == 0 {
-			return
-		}
-
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d dialogs, %d ended, %d INVITEs, %d initial requests, %d outgoing INVITEs left", p.name, d, l, i, n, o)
-		}
-
-		time.Sleep(20 * time.Millisecond)
+	if st := p.a.Stats(); st != (ua.Stats{}) {
+		t.Fatalf("%s: left %+v", p.name, st)
 	}
 }
 
 // Nothing is left in the tables of the agents once calls end, however they end, and their transactions too: an
 // initial request is noted until its transaction ends (RFC 3261 §8.2.2.2).
 func TestNoLeaks(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 
 	_, bs := established(t, alice, bob)
@@ -65,7 +53,6 @@ func TestNoLeaks(t *testing.T) {
 	// The transactions end on their timers: Timer I runs from the ACK, which may come after the first step.
 	for range 4 {
 		advance(clock, 64*transaction.DefaultT1+time.Second, alice, bob)
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	for _, p := range []*peer{alice, bob} {
@@ -249,7 +236,7 @@ func TestReliableOutOfOrder(t *testing.T) {
 	}
 
 	reliable(7)
-	r.sock.RecvNone(100 * time.Millisecond)
+	r.sock.RecvNone(0)
 
 	reliable(6)
 

@@ -16,7 +16,7 @@ import (
 // R1: a re-INVITE the application never answers gets a 500 with Retry-After after Policy.AnswerTimeout; an INFO left
 // open when the session ends gets a 487 (RFC 3261 §13.3.1, §15.1.2).
 func TestUnansweredRequests(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Transaction.Clock = clock
@@ -151,7 +151,7 @@ func TestDecorateOnceAfterAChallenge(t *testing.T) {
 
 // R5: refreshes turned off with SkipRefreshes resume once it is off again (RFC 4028 §10).
 func TestRefreshesResume(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{Interval: 120 * time.Second})
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{Interval: 120 * time.Second, Refresher: sip.RefresherUAC})
 	as, _ := established(t, alice, bob)
@@ -167,7 +167,6 @@ func TestRefreshesResume(t *testing.T) {
 
 	for range 6 {
 		advance(clock, 10*time.Second, alice, bob)
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	alice.none()

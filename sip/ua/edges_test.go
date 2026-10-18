@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -172,7 +171,7 @@ func TestLateReinvite2xx(t *testing.T) {
 		t.Fatal("ACK of another dialog")
 	}
 
-	bob.noRequest(200 * time.Millisecond)
+	bob.noRequest()
 }
 
 // RFC 3261 §15: closing, an agent whose 2xx awaits its ACK sends its BYE once the ACK comes; an INVITE it has not
@@ -200,7 +199,8 @@ func TestCloseWaitsForTheAck(t *testing.T) {
 	answer <- false
 
 	pending := alice.invite(bob, "offer-1")
-	ua.Sync(bob.a)
+
+	netOf(t).Quiesce()
 
 	closed := make(chan error, 1)
 
@@ -211,14 +211,10 @@ func TestCloseWaitsForTheAck(t *testing.T) {
 		closed <- bob.a.Close(ctx)
 	}()
 
-	var refused bool
-
-	deadline := time.Now().Add(time.Second)
-
-	for time.Now().Before(deadline) {
-		m, got := alice.sock.RecvWithin(time.Until(deadline))
+	for refused := false; !refused; {
+		m, got := alice.sock.RecvWithin(wait)
 		if !got {
-			break
+			t.Fatal("the pending INVITE got no final response")
 		}
 
 		switch m := m.Msg.(type) {
@@ -235,9 +231,8 @@ func TestCloseWaitsForTheAck(t *testing.T) {
 		}
 	}
 
-	if !refused {
-		t.Error("the pending INVITE got no final response")
-	}
+	// No BYE before the ACK.
+	alice.noRequest()
 
 	alice.ack(invite, ok)
 
@@ -270,7 +265,7 @@ func TestCancelAfterTheChangeApplied(t *testing.T) {
 
 	alice.next("answer")
 	alice.next("progress")
-	ua.Sync(bob.a)
+	netOf(t).Quiesce()
 
 	if err := as.CancelReinvite(ua.Change{}); err != nil {
 		t.Fatal(err)
@@ -305,11 +300,14 @@ func TestAfterPrack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); {
-		if m, ok := alice.sock.RecvWithin(time.Until(end)); ok {
-			if res, ok := m.Msg.(*sip.Response); ok && res.StatusCode == 200 {
-				t.Fatal("200 before the PRACK")
-			}
+	for {
+		m, ok := alice.sock.RecvWithin(0)
+		if !ok {
+			break
+		}
+
+		if res, ok := m.Msg.(*sip.Response); ok && res.StatusCode == 200 {
+			t.Fatal("200 before the PRACK")
 		}
 	}
 
@@ -410,7 +408,7 @@ func TestReliable199WithoutContact(t *testing.T) {
 // RFC 3261 §13.2.2.4: the offer of a 2xx the application leaves unanswered is refused in the ACK after 32*T1, and the
 // session ends with a BYE; an offer of a 2xx to a re-INVITE the application refuses leaves the session (S18).
 func TestOfferOf2xx(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
 	bob := newUAS(t, alice)
 
@@ -463,7 +461,7 @@ func TestOfferOf2xx(t *testing.T) {
 	}
 
 	recv(t, done)
-	carol.noRequest(100 * time.Millisecond)
+	carol.noRequest()
 
 	if as.State() != ua.Confirmed {
 		t.Errorf("session %s after refusing the offer of a re-INVITE", as.State())

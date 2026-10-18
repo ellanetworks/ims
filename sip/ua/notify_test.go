@@ -200,7 +200,7 @@ func TestNotifier(t *testing.T) {
 // RFC 6665 §4.2.1.3, §4.2.2: a pending subscription is activated or rejected with NOTIFYs; one not refreshed
 // expires with a terminated NOTIFY, reason timeout (§4.2.1.4).
 func TestNotifierPendingAndExpiry(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	n := newNotifierAgent(t, clock)
 	sb := newSubscriberOf(t, clock)
 
@@ -220,7 +220,7 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "v0 seq=1")
 
 	// The subscriber refreshes at 300 s; dropping it once its 200 is sent, the notifier sees no refresh.
-	ua.Sync(sb.p.a)
+	netOf(t).Quiesce()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -228,8 +228,7 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 	_ = sb.p.a.Layer().Shutdown(ctx)
 
 	// The notifier takes the 200 before the clock jumps past its Timer F.
-	time.Sleep(100 * time.Millisecond)
-	ua.Sync(n.p.a)
+	netOf(t).Quiesce()
 
 	// Its terminated NOTIFY goes unanswered: the subscription ends with its transaction (Timer F).
 	advance(clock, 601*time.Second, sb.p, n.p)
@@ -291,7 +290,7 @@ func TestNotifierQueue(t *testing.T) {
 		}
 	}
 
-	alice.noRequest(200 * time.Millisecond)
+	alice.noRequest()
 	alice.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(first, 200, ""))
 
 	for _, want := range []string{"b", "c"} {

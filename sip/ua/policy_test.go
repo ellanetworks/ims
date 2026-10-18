@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -169,7 +168,7 @@ func TestNoRequestHandler(t *testing.T) {
 // RFC 4028 §10: a refresher that does not refresh (Policy.SkipRefreshes, a fault) sees the other side end the session
 // with a BYE before the interval ends.
 func TestSkipRefreshes(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{Interval: 120 * time.Second})
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{Interval: 120 * time.Second, Refresher: sip.RefresherUAC})
 

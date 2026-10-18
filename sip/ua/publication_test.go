@@ -77,7 +77,7 @@ func publishRequest(to *peer, from string, body string, expires string) *sip.Req
 // RFC 3903 §4, §6: an initial publication, its modification, its refresh before it expires and its removal; each
 // 2xx with a new entity-tag; the compositor reports the state of the resource as it changes.
 func TestPublication(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	esc := newCompositor(t, clock)
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
 
@@ -129,10 +129,12 @@ func TestPublication(t *testing.T) {
 		t.Error("no new entity-tag after the refresh")
 	}
 
+	netOf(t).Quiesce()
+
 	select {
 	case ch := <-esc.changes:
 		t.Fatalf("a refresh reported as a change: %+v", ch)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 
 	if err := p.Remove(f); err != nil {
@@ -185,7 +187,7 @@ func TestPublicationRecovery(t *testing.T) {
 		t.Errorf("replaced change: %+v", r)
 	}
 
-	esc.noRequest(100 * time.Millisecond)
+	esc.noRequest()
 	esc.answer(initial, 200, "", sip.Field{Name: "SIP-ETag", Value: "e1"}, sip.Field{Name: "Expires", Value: "3600"})
 
 	modify := esc.nextRequest("PUBLISH")
@@ -240,7 +242,7 @@ func TestPublicationStoreRefusals(t *testing.T) {
 
 // RFC 3903 §6: a publication not refreshed in time expires, and the compositor reports the state without it.
 func TestPublicationStoreExpiry(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	esc := newCompositor(t, clock)
 	alice := newRaw(t)
 

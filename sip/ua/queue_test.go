@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -32,14 +31,12 @@ func (r *raw) nextRequest(method string) *sip.Request {
 	}
 }
 
-// noRequest checks that no request comes for a while, responses aside.
-func (r *raw) noRequest(d time.Duration) {
+// noRequest checks that no request came once the net is quiet, responses aside.
+func (r *raw) noRequest() {
 	r.t.Helper()
 
-	deadline := time.Now().Add(d)
-
 	for {
-		m, ok := r.sock.RecvWithin(time.Until(deadline))
+		m, ok := r.sock.RecvWithin(0)
 		if !ok {
 			return
 		}
@@ -74,7 +71,7 @@ func TestCalleeUpdateWaitsForPrack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	alice.noRequest(300 * time.Millisecond)
+	alice.noRequest()
 
 	prack := alice.inDialog("PRACK", invite, res, 2)
 	rseq, _ := res.Header.RSeq()
@@ -217,7 +214,7 @@ func TestServerPolicyHandsBackGlare(t *testing.T) {
 // RFC 4028 §7.2, §9: an UPDATE of an early dialog sets no session timer; it starts once the session is confirmed
 // (S19).
 func TestNoSessionTimerOnEarlyDialogs(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	timer := ua.SessionTimer{Interval: 90 * time.Second}
 	alice, bob := newPeer(t, "alice", clock, timer), newPeer(t, "bob", clock, timer)
 

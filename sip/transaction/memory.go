@@ -6,13 +6,90 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sync"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
-var ErrInUse = errors.New("sip/transaction: address in use")
+var (
+	ErrInUse = errors.New("sip/transaction: address in use")
 
+	// ErrRefused is the error of a send over TCP to an address a closed network does not have.
+	ErrRefused = errors.New("sip/transaction: connection refused")
+)
+
+// A Network carries messages in memory between layers. Each address on it is served by a layer (Layer.Serve), or
+// attached to one for a peer that takes its messages itself (Layer.Attach); a layer also delivers in memory to the
+// addresses it listens on. A message to an address of the network is
+// delivered in memory, without loss, in the order of its flow, so the transactions on it are reliable. A message to
+// another address goes to the transport of the layer, unless the network is closed: then it is lost over UDP, as to a
+// host that is gone, and refused over TCP.
+type Network struct {
+	closed bool
+
+	mu        sync.Mutex
+	endpoints map[netip.AddrPort]endpoint
+}
+
+// endpoint is an address of a network: served by layer, or attached to it with receive.
+type endpoint struct {
+	layer   *Layer
+	receive func(sip.Message)
+}
+
+// NewNetwork makes a network whose layers send to other addresses through their transport.
+func NewNetwork() *Network {
+	return &Network{endpoints: make(map[netip.AddrPort]endpoint)}
+}
+
+// NewClosedNetwork makes a network that keeps every message: the in-memory network of tests.
+func NewClosedNetwork() *Network {
+	n := NewNetwork()
+	n.closed = true
+
+	return n
+}
+
+func (n *Network) bind(addr netip.AddrPort, ep endpoint) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if _, ok := n.endpoints[addr]; ok {
+		return fmt.Errorf("%w: %s", ErrInUse, addr)
+	}
+
+	n.endpoints[addr] = ep
+
+	return nil
+}
+
+func (n *Network) lookup(addr netip.AddrPort) (endpoint, bool) {
+	if !addr.IsValid() {
+		return endpoint{}, false
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	ep, ok := n.endpoints[unmap(addr)]
+
+	return ep, ok
+}
+
+// unbind removes the addresses of l, once closed.
+func (n *Network) unbind(l *Layer) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	for addr, ep := range n.endpoints {
+		if ep.layer == l {
+			delete(n.endpoints, addr)
+		}
+	}
+}
+
+// Serve serves local in memory: the layers of its network send to it without a transport.
 func (l *Layer) Serve(local netip.AddrPort) error {
 	local = unmap(local)
 
@@ -23,8 +100,8 @@ func (l *Layer) Serve(local netip.AddrPort) error {
 		return ErrClosed
 	}
 
-	if _, ok := l.peers[local]; ok {
-		return fmt.Errorf("%w: %s", ErrInUse, local)
+	if err := l.network.bind(local, endpoint{layer: l}); err != nil {
+		return err
 	}
 
 	l.locals[local] = struct{}{}
@@ -32,6 +109,8 @@ func (l *Layer) Serve(local netip.AddrPort) error {
 	return nil
 }
 
+// Attach attaches addr to the network of the layer for a peer: receive takes the messages to addr, and the peer
+// sends from addr through the layer (SendOnFlow). It returns the function that detaches it.
 func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), error) {
 	addr = unmap(addr)
 
@@ -42,53 +121,76 @@ func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), 
 		return nil, ErrClosed
 	}
 
-	_, local := l.locals[addr]
-	if _, peer := l.peers[addr]; local || peer {
+	if _, local := l.locals[addr]; local {
 		return nil, fmt.Errorf("%w: %s", ErrInUse, addr)
 	}
 
-	l.peers[addr] = receive
+	if err := l.network.bind(addr, endpoint{layer: l, receive: receive}); err != nil {
+		return nil, err
+	}
 
 	return func() {
-		l.mu.Lock()
-		delete(l.peers, addr)
-		l.mu.Unlock()
+		l.network.mu.Lock()
+		delete(l.network.endpoints, addr)
+		l.network.mu.Unlock()
 	}, nil
 }
 
-func (l *Layer) inMemory(addr netip.AddrPort) (func(sip.Message), bool) {
-	if !addr.IsValid() {
-		return nil, false
+// endpoint is the endpoint of addr in memory: on the network of the layer, or an address the layer listens on, which
+// it delivers to itself.
+func (l *Layer) endpoint(addr netip.AddrPort) (endpoint, bool) {
+	if ep, ok := l.network.lookup(addr); ok {
+		return ep, true
 	}
-
-	addr = unmap(addr)
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	_, ok := l.locals[unmap(addr)]
+	l.mu.Unlock()
 
-	if _, ok := l.locals[addr]; ok {
-		return nil, true
-	}
-
-	receive, ok := l.peers[addr]
-
-	return receive, ok
+	return endpoint{layer: l}, ok && addr.IsValid()
 }
 
-func (l *Layer) reliable(f sip.Flow) bool {
-	if f.Transport == sip.TCP {
-		return true
-	}
-
-	_, ok := l.inMemory(f.Remote)
-
+// inMemory reports whether addr is reached in memory.
+func (l *Layer) inMemory(addr netip.AddrPort) bool {
+	_, ok := l.endpoint(addr)
 	return ok
 }
 
+// sendsFrom reports whether the layer sends from local: an address it serves or listens on, or one of a peer attached
+// to it.
+func (l *Layer) sendsFrom(local netip.AddrPort) bool {
+	l.mu.Lock()
+	_, ok := l.locals[local]
+	l.mu.Unlock()
+
+	if ok {
+		return true
+	}
+
+	ep, ok := l.network.lookup(local)
+
+	return ok && ep.layer == l
+}
+
+// reliable reports whether the transactions on f need no retransmissions: over TCP, or in memory.
+func (l *Layer) reliable(f sip.Flow) bool {
+	return f.Transport == sip.TCP || l.inMemory(f.Remote)
+}
+
 func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
-	if receive, ok := l.inMemory(m.Env().Flow.Remote); ok {
-		if err := l.deliver(m, receive); err != nil {
+	f := m.Env().Flow
+
+	if l.inMemory(f.Remote) {
+		if err := l.deliver(m); err != nil {
 			return fmt.Errorf("sip/transaction: send %s: %w", m.StartLine(), err)
+		}
+
+		return nil
+	}
+
+	if l.network.closed {
+		if f.Transport == sip.TCP {
+			return fmt.Errorf("sip/transaction: send %s to %s: %w", m.StartLine(), f.Remote, ErrRefused)
 		}
 
 		return nil
@@ -101,7 +203,8 @@ func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	return l.tr.Send(ctx, m)
 }
 
-func (l *Layer) deliver(m sip.Message, receive func(sip.Message)) error {
+// deliver passes a copy of m to the endpoint of its remote address, on the lane of its flow.
+func (l *Layer) deliver(m sip.Message) error {
 	f := m.Env().Flow
 	f.Local, f.Remote = unmap(f.Local), unmap(f.Remote)
 
@@ -109,7 +212,7 @@ func (l *Layer) deliver(m sip.Message, receive func(sip.Message)) error {
 		return fmt.Errorf("%w %q", transport.ErrUnsupportedTransport, f.Transport)
 	}
 
-	if _, ok := l.inMemory(f.Local); !ok {
+	if !l.sendsFrom(f.Local) {
 		return fmt.Errorf("%w %s", transport.ErrNoListener, f.Local)
 	}
 
@@ -127,19 +230,25 @@ func (l *Layer) deliver(m sip.Message, receive func(sip.Message)) error {
 	c.Env().Flow = sip.Flow{Transport: f.Transport, Local: f.Remote, Remote: f.Local}
 
 	return l.post(f, func() {
-		if receive != nil {
-			receive(c)
+		// The endpoint as the message arrives: one detached or closed meanwhile is gone, the message lost.
+		to, ok := l.endpoint(f.Remote)
+		if !ok {
+			return
+		}
+
+		if to.receive != nil {
+			to.receive(c)
 			return
 		}
 
 		if res, ok := c.(*sip.Response); ok {
 			if err := res.Validate(); err != nil {
-				l.log.Debug("dropped invalid response", slog.String("flow", res.Flow.String()), slog.Any("error", err))
+				to.layer.log.Debug("dropped invalid response", slog.String("flow", res.Flow.String()), slog.Any("error", err))
 				return
 			}
 		}
 
-		transportHandler{l}.HandleMessage(c)
+		transportHandler{to.layer}.HandleMessage(c)
 	})
 }
 
@@ -164,7 +273,7 @@ func (l *Layer) post(f sip.Flow, job func()) error {
 	l.lanes[f] = ln
 	l.wg.Add(1)
 
-	go l.drainLane(f, ln)
+	l.sched.Go(func() { l.drainLane(f, ln) })
 
 	return nil
 }
@@ -177,6 +286,7 @@ func (l *Layer) drainLane(f sip.Flow, ln *lane) {
 
 		if len(ln.queue) == 0 || l.closed {
 			delete(l.lanes, f)
+			l.checkDrained()
 			l.mu.Unlock()
 
 			return

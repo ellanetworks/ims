@@ -477,6 +477,8 @@ func (s *Session) end(e End) {
 		return
 	}
 
+	initial := s.initial()
+
 	s.state = Terminated
 	s.timer.stop()
 
@@ -491,23 +493,26 @@ func (s *Session) end(e End) {
 
 	s.sends = nil
 
-	for _, r := range []*Request{s.in, s.inUpdate} {
-		if r == nil {
-			continue
-		}
-
+	// RFC 3261 §15.1.2: the requests still open get a 487, the initial INVITE a 503 as the agent closes; a BYE of
+	// the peer the application held gets its 2xx, and ends the session, whatever else ended it locally at the same
+	// time.
+	abandon := func(r *Request) {
 		code := 487
-		if e.Cause == EndClosed && r == s.initial() {
+		if e.Cause == EndClosed && r == initial {
 			code = 503
 		}
 
 		r.abandon(code)
 	}
 
-	// RFC 3261 §15.1.2: the requests still open get a 487; a BYE of the peer the application held gets its 2xx, and
-	// ends the session, whatever else ended it locally at the same time.
+	for _, r := range []*Request{s.in, s.inUpdate} {
+		if r != nil {
+			abandon(r)
+		}
+	}
+
 	for r := range s.open {
-		r.abandon(487)
+		abandon(r)
 	}
 
 	if r := s.inBye; r != nil {

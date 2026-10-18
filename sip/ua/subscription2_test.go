@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -30,7 +29,7 @@ func active(t *testing.T, sb *subscriber, n *notifier, expires string, notifySta
 // RFC 6665 §4.1.3: a NOTIFY's expires moves the expiry, without pushing the refresh toward it: the refresh still
 // comes halfway through the duration the 2xx granted.
 func TestRefreshDoesNotDrift(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	active(t, sb, n, "600", "active;expires=600")
 
@@ -51,7 +50,7 @@ func TestRefreshDoesNotDrift(t *testing.T) {
 // TS 24.229 §5.1.1.3: a subscription granted for more than 1200 s is refreshed 600 s before it expires, also once a
 // NOTIFY shortened it.
 func TestRefreshBeforeShortenedExpiry(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	s := active(t, sb, n, "600000", "active;expires=1000")
 
@@ -60,7 +59,7 @@ func TestRefreshBeforeShortenedExpiry(t *testing.T) {
 	}
 
 	advance(clock, 399*time.Second, sb.p)
-	n.sock.RecvNone(50 * time.Millisecond)
+	n.sock.RecvNone(0)
 
 	advance(clock, 2*time.Second, sb.p)
 	n.recvSubscribe()
@@ -163,7 +162,7 @@ func TestChallengedRefresh(t *testing.T) {
 // RFC 6665 §4.1.2.3: an unsubscribe waits for the terminated NOTIFY, not for another one; one that fails ends the
 // subscription.
 func TestUnsubscribeWaitsAndFails(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
 
@@ -229,7 +228,7 @@ func TestNotifyVerdict(t *testing.T) {
 
 // RFC 6665 §4.1.3: expires 0 leaves the subscription to its terminated NOTIFY, or to expire.
 func TestNotifyExpiresZero(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	active(t, sb, n, "600", "active")
 
@@ -287,7 +286,7 @@ func TestIntervalTooBriefSubscription(t *testing.T) {
 
 // RFC 6665 §4.1.2.2, RFC 5839: a 204 to a refresh brings no NOTIFY; Timer N stops.
 func TestRefreshWithoutNotify(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
 
@@ -337,7 +336,7 @@ func TestDrop(t *testing.T) {
 		t.Errorf("ended %+v", e.end)
 	}
 
-	n.sock.RecvNone(100 * time.Millisecond)
+	n.sock.RecvNone(0)
 
 	if res := n.notify(n.tag, "active"); res.StatusCode != 481 {
 		t.Errorf("NOTIFY after Drop %d", res.StatusCode)

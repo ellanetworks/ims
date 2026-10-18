@@ -2,7 +2,6 @@ package ua_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
@@ -25,7 +24,7 @@ type replacing struct {
 
 // RFC 3891 §3: an INVITE with Replaces finds the session it replaces, on its strand, or the code to reject it with.
 func TestReplaces(t *testing.T) {
-	clock := siptest.NewClock()
+	clock := netOf(t).Clock()
 	found := make(chan replacing, 1)
 	first := make(chan *ua.Session, 1)
 
@@ -65,10 +64,8 @@ func TestReplaces(t *testing.T) {
 	id := bs.ID()
 
 	// Bob's session is early until alice's ACK; an early dialog the agent did not initiate is not replaced.
-	for deadline := time.Now().Add(wait); bs.State() != ua.Confirmed; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("bob's session not confirmed")
-		}
+	if netOf(t).Quiesce(); bs.State() != ua.Confirmed {
+		t.Fatal("bob's session not confirmed")
 	}
 
 	if bob.a.Session(id) != bs {

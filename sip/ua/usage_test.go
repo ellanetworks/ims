@@ -3,7 +3,6 @@ package ua_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
@@ -70,7 +69,7 @@ func TestFailureEffects(t *testing.T) {
 					t.Errorf("got %s, want the BYE", req.Method)
 				}
 			} else {
-				r.sock.RecvNone(100 * time.Millisecond)
+				r.sock.RecvNone(0)
 			}
 		})
 	}

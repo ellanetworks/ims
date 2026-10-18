@@ -8,7 +8,7 @@ import (
 
 // An outbox sends the messages of one flow in the order the layer took them: the requests of a dialog in the order
 // of their CSeq, which their recipient enforces (RFC 3261 §12.2.2), an ACK before the request that follows it, a
-// response before the request it precedes. One goroutine drains each outbox while it has messages; the transport
+// response before the request it precedes. One task drains each outbox while it has messages; the transport
 // writes on it.
 type outbox struct {
 	jobs []func(ok bool)
@@ -35,7 +35,7 @@ func (l *Layer) enqueue(f sip.Flow, job func(ok bool)) bool {
 	l.outboxes[f] = ob
 	l.wg.Add(1)
 
-	go l.drainOutbox(f, ob)
+	l.sched.Go(func() { l.drainOutbox(f, ob) })
 
 	return true
 }
@@ -48,11 +48,7 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 
 		if len(ob.jobs) == 0 {
 			delete(l.outboxes, f)
-
-			if len(l.outboxes) == 0 && l.drained != nil {
-				close(l.drained)
-				l.drained = nil
-			}
+			l.checkDrained()
 
 			l.mu.Unlock()
 
@@ -71,13 +67,13 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 }
 
 // Shutdown closes the layer once the messages it took are sent, or ctx is done: the responses and requests of the
-// transactions under way leave before the transport closes.
+// transactions under way leave before the transport closes, and those in memory are delivered.
 func (l *Layer) Shutdown(ctx context.Context) error {
 	l.mu.Lock()
 
 	var drained chan struct{}
 
-	if len(l.outboxes) > 0 && !l.closed {
+	if (len(l.outboxes) > 0 || len(l.lanes) > 0) && !l.closed {
 		if l.drained == nil {
 			l.drained = make(chan struct{})
 		}
@@ -95,6 +91,14 @@ func (l *Layer) Shutdown(ctx context.Context) error {
 	}
 
 	return l.Close()
+}
+
+// checkDrained closes drained once the outboxes and the lanes are empty. Called with l.mu held.
+func (l *Layer) checkDrained() {
+	if len(l.outboxes) == 0 && len(l.lanes) == 0 && l.drained != nil {
+		close(l.drained)
+		l.drained = nil
+	}
 }
 
 // sendInOrder sends m in its flow's order, and waits for the send.
