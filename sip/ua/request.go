@@ -42,6 +42,10 @@ type Request struct {
 
 	final bool
 
+	// tag is the To tag of a fork (Fork); forks are the members of the initial INVITE it shares with its forks.
+	tag   string
+	forks *forkSet
+
 	// ending is how the session ends when a final response other than 2xx of the agent ends its initial INVITE:
 	// EndRejected unless set.
 	ending *End
@@ -158,7 +162,7 @@ func (r *Request) build(rp Reply) (*sip.Response, error) {
 	}
 
 	if rp.Code > 100 {
-		if err := res.Header.SetToTag(r.tx.ToTag()); err != nil {
+		if err := res.Header.SetToTag(r.toTag()); err != nil {
 			return nil, err
 		}
 	}
@@ -361,6 +365,16 @@ func (r *Request) retransmitReliable(rel *reliable) {
 // an OPTIONS with the capabilities, others with a 500 and Retry-After (RFC 3261 §21.5.1).
 func (r *Request) unanswered() {
 	s := r.s
+
+	// The deadline of a forked INVITE is that of its first member, for them all.
+	if r.forks != nil && r.req.Method == "INVITE" && !s.uac {
+		if live := r.group(); len(live) > 0 {
+			s.a.log.Warn("INVITE left unanswered by the application")
+			live[0].abandon(480)
+		}
+
+		return
+	}
 
 	if r.final || s.state == Terminated {
 		return
@@ -567,6 +581,10 @@ func (r *Request) finish(res *sip.Response) error {
 		s.timer.start(s)
 	}
 
+	if initial {
+		r.settle(res)
+	}
+
 	if res.IsSuccess() && r.req.Method == "INVITE" && s.state != Terminated {
 		r.ok = res
 		r.initial = initial
@@ -664,6 +682,16 @@ func (r *Request) acked() {
 func (r *Request) cancelled(cancel *sip.Request) {
 	s := r.s
 
+	// A forked INVITE ends in all its dialogs; the last one answers it with the 487.
+	if r.forks != nil && !s.uac && r.req.Method == "INVITE" {
+		for _, m := range r.group() {
+			m.s.emitReceived(cancel)
+			m.s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
+		}
+
+		return
+	}
+
 	if r.final && r.held == nil {
 		return
 	}
@@ -692,6 +720,18 @@ func (r *Request) cancelled(cancel *sip.Request) {
 
 // failed handles the error of the server transaction of an INVITE.
 func (r *Request) failed(err error) {
+	if r.forks != nil && r.req.Method == "INVITE" && !r.s.uac {
+		for _, m := range r.group() {
+			m.failedOne(err)
+		}
+
+		return
+	}
+
+	r.failedOne(err)
+}
+
+func (r *Request) failedOne(err error) {
 	s := r.s
 
 	r.final = true

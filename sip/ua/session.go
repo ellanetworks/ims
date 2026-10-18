@@ -502,6 +502,12 @@ func (s *Session) end(e End) {
 			code = 503
 		}
 
+		// An early dialog of a forked INVITE ends alone while others are left to answer it.
+		if r == initial && len(r.others()) > 0 {
+			r.leave()
+			return
+		}
+
 		r.abandon(code)
 	}
 
@@ -1051,8 +1057,9 @@ func (s *Session) Send(method string, c Change, done func(res *sip.Response, err
 // Bye ends the session with a BYE carrying c (RFC 3261 §15.1.1): its Reason header fields (RFC 3326, Reasons), and
 // others. The session ends at once; done receives the final response of the BYE, its transaction completing on its
 // own. A UAS whose 2xx awaits its ACK sends the BYE once the ACK comes (RFC 3261 §15); before its 2xx, a UAS rejects
-// the INVITE instead. Bye on an early dialog of a UAC ends that dialog alone: Outgoing.Cancel cancels the INVITE,
-// which ends them all.
+// the INVITE instead, unless it was forked (Request.Fork): Bye on one of its early dialogs ends that one alone, with
+// a 199 carrying c when the INVITE supports it (RFC 6228), done getting no response. Bye on an early dialog of a UAC
+// ends that dialog alone: Outgoing.Cancel cancels the INVITE, which ends them all.
 func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 	return s.st.do(func() error {
 		switch {
@@ -1060,6 +1067,12 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 			return s.errorf("Bye", ErrState)
 		case !s.uac && s.state == Early && s.awaitingAck() && s.byeAfterAck == nil:
 			s.byeAfterAck = &pendingBye{change: c, done: done, cause: EndBye}
+			return nil
+		case !s.uac && s.state == Early && s.in != nil && s.in == s.initial() && len(s.in.others()) > 0:
+			// One early dialog of a forked INVITE, its others left to answer it.
+			s.in.drop(c)
+			s.emitDone(done, nil, nil)
+
 			return nil
 		case !s.uac && s.state == Early:
 			return s.errorf("Bye", ErrState)
