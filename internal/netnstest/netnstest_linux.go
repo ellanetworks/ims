@@ -151,6 +151,21 @@ func (n *Netns) Do(f func()) {
 	<-done
 }
 
+// Sysctl sets a sysctl of the namespace, key as in /proc/sys with dots ("net.ipv4.ip_local_port_range").
+func (n *Netns) Sysctl(t testing.TB, key, value string) {
+	t.Helper()
+
+	var err error
+
+	n.Do(func() {
+		err = os.WriteFile("/proc/sys/"+strings.ReplaceAll(key, ".", "/"), []byte(value), 0o644)
+	})
+
+	if err != nil {
+		t.Fatalf("netnstest: sysctl %s=%s: %v", key, value, err)
+	}
+}
+
 func (n *Netns) IP(t testing.TB, args ...string) {
 	t.Helper()
 

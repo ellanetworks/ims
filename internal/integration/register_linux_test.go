@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,6 +262,12 @@ func (s *scene) host(i int) *host {
 
 	h := &host{ns: netnstest.New(s.t)}
 
+	// The ports of the UEs of a host come from a block of their own in the test process: the IMS, in one namespace
+	// for all the tests, may still hold a connection to the ports of an earlier test's UE (TIME_WAIT, LAST_ACK), and
+	// would fail to dial the same 4-tuple again (EADDRNOTAVAIL).
+	lo := portsFrom + int(portBlocks.Add(1)-1)%portBlockCount*portBlock
+	h.ns.Sysctl(s.t, "net.ipv4.ip_local_port_range", fmt.Sprintf("%d %d", lo, lo+portBlock-1))
+
 	netnstest.Attach(s.t, s.ims, "br0", fmt.Sprintf("ue%d", i), h.ns, ueAddrsAt(i))
 
 	var err error
@@ -277,6 +284,15 @@ func (s *scene) host(i int) *host {
 
 	return h
 }
+
+// The blocks of ports of the UE hosts: portBlockCount blocks of portBlock ports from portsFrom, reused in turn.
+const (
+	portsFrom      = 20000
+	portBlock      = 128
+	portBlockCount = (60000 - portsFrom) / portBlock
+)
+
+var portBlocks atomic.Int64
 
 func testLogger(t *testing.T) *slog.Logger {
 	return slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
