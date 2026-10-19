@@ -3,7 +3,6 @@ package ua_test
 import (
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -34,7 +33,7 @@ func TestAckNotPrepared(t *testing.T) {
 	}
 
 	got := alice.nextAll("established", "answer", "ended")
-	if e := got["ended"].end; e.Cause != ua.EndLost || !errors.Is(e.Err, errNoFlow) {
+	if e := got["ended"].end; e.Cause != ua.EndFailed || !errors.Is(e.Err, errNoFlow) {
 		t.Errorf("alice ended %+v", e)
 	}
 
@@ -43,19 +42,27 @@ func TestAckNotPrepared(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3: a change the application fails to render ends the subscription, with a terminated NOTIFY without
-// state for the subscriber to retry later, rather than leave it with a state the notifier no longer has.
+// RFC 4575 §4.4, RFC 6665 §4.1.3: a partial notification the application fails to render gives way to the full state;
+// a full state it fails to render ends the subscription, with a terminated NOTIFY without state for the subscriber to
+// retry later, rather than leave it with a state the notifier no longer has.
 func TestNotifyNotRendered(t *testing.T) {
 	errRender := errors.New("render")
 
-	cfg := rosterConfig(false, 0)
-	full := cfg.Full
+	cfg := rosterConfig(true, 0)
+	full, partial := cfg.Full, cfg.Partial
 	cfg.Full = func(value any, seq uint32, state roster) (ua.Notification, error) {
-		if slices.Contains(state, "bad") {
+		if slices.Contains(state, "worse") {
 			return ua.Notification{}, errRender
 		}
 
 		return full(value, seq, state)
+	}
+	cfg.Partial = func(value any, seq uint32, state roster, delta string) (ua.Notification, error) {
+		if delta == "bad" {
+			return ua.Notification{}, errRender
+		}
+
+		return partial(value, seq, state, delta)
 	}
 
 	res := ua.NewResource(roster{"a"}, cfg)
@@ -72,16 +79,41 @@ func TestNotifyNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	got := r.nextRequest("NOTIFY")
+	if string(got.Body) != "full carol [a bad] seq=1" {
+		t.Fatalf("NOTIFY after a failed partial %q", got.Body)
+	}
+
+	r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(got, 200, ""))
+	netOf(t).Quiesce()
+
+	if err := res.Change(roster{"a", "bad", "worse"}, "worse"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The partial for "worse" renders; the next partial fails, and so does the full state, which has "worse".
+	if got := r.nextRequest("NOTIFY"); string(got.Body) != "add carol worse seq=2" {
+		t.Fatalf("NOTIFY %q", got.Body)
+	} else {
+		r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(got, 200, ""))
+	}
+
+	if err := res.Change(roster{"a", "bad", "worse", "bad"}, "bad"); err != nil {
+		t.Fatal(err)
+	}
+
 	last := r.nextRequest("NOTIFY")
-	if ss := last.Header.Get("Subscription-State"); !strings.HasPrefix(ss, "terminated") ||
-		!strings.Contains(ss, "reason=probation") || len(last.Body) != 0 {
-		t.Fatalf("NOTIFY %s, %q", ss, last.Body)
+
+	ss, _, err := last.Header.SubscriptionState()
+	if err != nil || ss.State != sip.SubscriptionTerminated || ss.Reason != "probation" || ss.RetryAfter == nil ||
+		*ss.RetryAfter == 0 || len(last.Body) != 0 {
+		t.Fatalf("NOTIFY %s, %q", last.Header.Get("Subscription-State"), last.Body)
 	}
 
 	r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(last, 200, ""))
 	netOf(t).Quiesce()
 
-	if e := <-n.ended; e.Cause != ua.EndLost || !errors.Is(e.Err, errRender) {
+	if e := <-n.ended; e.Cause != ua.EndFailed || !errors.Is(e.Err, errRender) {
 		t.Errorf("ended %+v", e)
 	}
 

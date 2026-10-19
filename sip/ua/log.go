@@ -19,12 +19,22 @@ func callAttr(req *sip.Request) slog.Attr {
 	return slog.String("call_id", req.Header.CallID())
 }
 
+// The loggers of a dialog are made once, on the strand of the dialog.
+
 func (s *Session) logger() *slog.Logger {
-	return s.a.log.With(dialogAttr(s.id))
+	if s.log == nil {
+		s.log = s.a.log.With(dialogAttr(s.id))
+	}
+
+	return s.log
 }
 
 func (s *ServerSubscription) logger() *slog.Logger {
-	return s.a.log.With(dialogAttr(s.d.ID()))
+	if s.log == nil {
+		s.log = s.a.log.With(dialogAttr(s.d.ID()))
+	}
+
+	return s.log
 }
 
 func (s *Subscription) logger() *slog.Logger {
@@ -32,7 +42,11 @@ func (s *Subscription) logger() *slog.Logger {
 		return s.a.log
 	}
 
-	return s.a.log.With(dialogAttr(s.d.ID()))
+	if s.log == nil {
+		s.log = s.a.log.With(dialogAttr(s.d.ID()))
+	}
+
+	return s.log
 }
 
 func (r *Request) logger() *slog.Logger {

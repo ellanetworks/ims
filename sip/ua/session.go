@@ -79,6 +79,9 @@ const (
 	EndNoSubscription
 	// EndRemoved: the application removed the publication (RFC 3903 §4.5).
 	EndRemoved
+	// EndFailed: a local failure, of the agent or the application, ended it, the peer still knowing it; End.Err
+	// tells which: an ACK that could not be sent, a NOTIFY that could not be built.
+	EndFailed
 )
 
 func (c EndCause) String() string {
@@ -111,13 +114,15 @@ func (c EndCause) String() string {
 		return "no subscription"
 	case EndRemoved:
 		return "removed"
+	case EndFailed:
+		return "failed"
 	}
 
 	return "EndCause(?)"
 }
 
 // End is how a session or a subscription ended. The causes of a session are EndBye, EndCancelled, EndRejected,
-// EndNotChosen, EndTimeout, EndLost, EndExpired and EndClosed; a subscription has the others as well.
+// EndNotChosen, EndTimeout, EndLost, EndExpired, EndClosed and EndFailed; a subscription has the others as well.
 type End struct {
 	Cause EndCause
 
@@ -218,6 +223,9 @@ type Session struct {
 
 	// unreported are the reliable 1xx whose PRACK has not completed yet, reported in order once it has.
 	unreported []*sip.Response
+
+	// log is the logger of the dialog, made once.
+	log *slog.Logger
 }
 
 type pendingBye struct {

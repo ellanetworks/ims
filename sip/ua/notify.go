@@ -74,8 +74,9 @@ type ServerSubscriptionHandler struct {
 	//   - EndUnsubscribed by an unsubscribe of the subscriber, EndExpired by its expiry, each after their terminated
 	//     NOTIFY;
 	//   - EndLost by a failure of a NOTIFY that ends the subscription (RFC 6665 §4.2.2, RFC 5057), End.Response or
-	//     End.Err telling which, or by a NOTIFY of a change the application failed to render, after a terminated
-	//     NOTIFY with reason probation;
+	//     End.Err telling which;
+	//   - EndFailed by a NOTIFY the application failed to build, the full state when a partial one failed, after a
+	//     terminated NOTIFY with reason probation and a retry-after;
 	//   - EndClosed as the agent closes, after its NOTIFY terminated with reason deactivated (RFC 6665 §4.4.2).
 	Ended func(s *ServerSubscription, e End)
 }
@@ -130,7 +131,14 @@ type ServerSubscription struct {
 	version    uint64
 	nextChange time.Time
 	held       *timer
+
+	// log is the logger of the dialog, made once.
+	log *slog.Logger
 }
+
+// probationRetryAfter is the retry-after of a subscription a NOTIFY the application failed to build ended: long
+// enough that a subscriber does not loop on a failure that repeats.
+const probationRetryAfter = 5 * time.Minute
 
 type pendingNotify struct {
 	build func(seq uint32) (Notification, error)
@@ -268,18 +276,25 @@ func (s *ServerSubscription) pump() {
 
 		n, err := p.build(s.sent)
 		if err != nil {
-			s.logger().Warn("NOTIFY not built", slog.Any("error", err))
+			s.logger().Warn("NOTIFY not built", slog.Bool("full", p.full), slog.Any("error", err))
 
-			// The subscriber would keep a state the notifier no longer has: the subscription ends, the subscriber to
-			// retry later (RFC 6665 §4.1.3), with a terminated NOTIFY without state.
-			if p.terminate == nil {
-				s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: "probation"},
-					End{Cause: EndLost, Err: fmt.Errorf("sip/ua: NOTIFY not built: %w", err)}, nil)
+			switch {
+			case p.terminate != nil:
+				n = Notification{}
+			case !p.full && s.stateOf != nil:
+				// A partial notification the full state replaces (RFC 4575 §4.4).
+				s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+				continue
+			default:
+				// The subscriber would keep a state the notifier no longer has: the subscription ends, the subscriber
+				// to retry once the failure may be over (RFC 6665 §4.1.3), with a terminated NOTIFY without state.
+				retry := uint32(probationRetryAfter / time.Second)
+				s.terminate(
+					sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: "probation", RetryAfter: &retry},
+					End{Cause: EndFailed, Err: fmt.Errorf("sip/ua: NOTIFY not built: %w", err)}, nil)
 
 				continue
 			}
-
-			n = Notification{}
 		}
 
 		c := &notifyRequest{s: s, p: p, n: n}

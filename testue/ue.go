@@ -122,8 +122,11 @@ type Config struct {
 	MMTel   MMTelConfig
 	NoMMTel bool
 
-	// Services are the services the UE hosts beside MMTel (Service), after it: MMTel takes the requests that
-	// prefer no service of the UE.
+	// NoSMS is a UE without SMS over IP (TS 24.341), which a UE has otherwise (SMS).
+	NoSMS bool
+
+	// Services are the services the UE hosts beside MMTel and SMS (Service), after them: of the services an initial
+	// request prefers alike, the first its Match takes gets it, else the first.
 	Services []Service
 
 	LargeUDP bool
@@ -267,7 +270,14 @@ type UE struct {
 	sub         *subscription
 
 	mmtel    *MMTel
+	sms      *SMS
 	services []Service
+
+	// serviceTags are the option tags of the services, which the agent accepts for any of them.
+	serviceTags []string
+
+	// The lock guards disabled, the services disabled now.
+	disabled map[string]bool
 	allow    []string
 }
 
@@ -339,15 +349,33 @@ func New(cfg Config) (*UE, error) {
 		u.services = append(u.services, u.mmtel.service())
 	}
 
+	if !cfg.NoSMS {
+		u.sms = &SMS{u: u}
+		u.services = append(u.services, u.sms.service())
+	}
+
 	u.services = append(u.services, cfg.Services...)
 
 	if err := checkServices(u.services); err != nil {
 		return nil, err
 	}
 
+	u.disabled = make(map[string]bool)
+	for _, s := range u.services {
+		u.disabled[s.Name] = s.Disabled
+	}
+
+	u.serviceTags = union(union(nil, u.services, func(s *Service) []string { return s.Supported }), u.services,
+		func(s *Service) []string { return s.Understood })
+
 	// The UE sets these itself (RFC 3840 §9, RFC 5626 §4.2): its instance, its reg-id, and the feature tags of its
 	// services, their media types included, so that ContactParams claim no medium no service takes.
-	own, err := featureSet(u.services).Params()
+	all := make([]*Service, len(u.services))
+	for i := range u.services {
+		all[i] = &u.services[i]
+	}
+
+	own, err := featureSet(all).Params()
 	if err != nil {
 		return nil, fmt.Errorf("testue: %w", err)
 	}
@@ -384,12 +412,13 @@ func New(cfg Config) (*UE, error) {
 				},
 			},
 		},
-		Prepare:    u.prepare,
-		Respond:    u.respondHeaders,
-		Policy:     ua.ClientPolicy,
-		Allow:      u.allow,
-		Supported:  union(nil, u.services, func(s *Service) []string { return s.Supported }),
-		Understood: union(nil, u.services, func(s *Service) []string { return s.Understood }),
+		Prepare: u.prepare,
+		Respond: u.respondHeaders,
+		Policy:  ua.ClientPolicy,
+		Allow:   u.allow,
+		// The option tags of the services are accepted for all, then checked for the one a request is for; each
+		// service advertises its own (Originate).
+		Understood: u.serviceTags,
 		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
 		SessionTimer: ua.SessionTimer{Refresher: sip.RefresherUAC},
 		OnInvite:     u.incomingInvite,
@@ -440,6 +469,9 @@ func (u *UE) listen(port uint16) (netip.AddrPort, error) {
 
 // MMTel is the MMTel service of the UE, nil with NoMMTel.
 func (u *UE) MMTel() *MMTel { return u.mmtel }
+
+// SMS is the SMS over IP service of the UE, nil with NoSMS.
+func (u *UE) SMS() *SMS { return u.sms }
 
 func (u *UE) IMPI() string       { return u.id.impi }
 func (u *UE) IMPU() string       { return u.id.impu }

@@ -1384,7 +1384,7 @@ func TestCancelDuringRetransmissions(t *testing.T) {
 func TestMessage(t *testing.T) {
 	a, b := pair(t)
 
-	res, err := a.Message(testContext(t), "tel:+15550002", SMSContentType, []byte{0x00, 0x01})
+	res, err := a.SMS().Send(testContext(t), "tel:+15550002", []byte{0x00, 0x01})
 	if err != nil || res.StatusCode != 200 {
 		t.Fatalf("Message = %v, %v, want 200", res, err)
 	}

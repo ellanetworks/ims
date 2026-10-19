@@ -108,6 +108,9 @@ type Subscription struct {
 
 	// inflight are its SUBSCRIBEs in progress, completed with ErrState should the subscription end first.
 	inflight map[*subscribeRequest]struct{}
+
+	// log is the logger of the dialog, made once.
+	log *slog.Logger
 }
 
 type subscribeKey struct {

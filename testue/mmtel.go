@@ -1,15 +1,16 @@
 package testue
 
 import (
+	"slices"
+
 	"github.com/ellanetworks/ims/sip"
-	"github.com/ellanetworks/ims/sip/ua"
+	"github.com/ellanetworks/ims/sip/sdp"
 )
 
 // ICSIMMTel is the ICSI of MMTel (TS 24.173 §5.1).
 const ICSIMMTel = "urn:urn-7:3gpp-service.ims.icsi.mmtel"
 
-// MMTelConfig configures the MMTel service of a UE (TS 24.173, IR.92, IR.94): voice and video calls, and SMS over IP
-// (TS 24.341).
+// MMTelConfig configures the MMTel service of a UE (TS 24.173, IR.92, IR.94): voice and video calls.
 type MMTelConfig struct {
 	// Video makes the UE video capable (IR.94): it registers with the video feature tag, takes the video streams it
 	// is offered, and can make video calls (CallOptions.Video) and add video to a call (Call.AddVideo). Without it,
@@ -25,7 +26,7 @@ type MMTelConfig struct {
 	EarlyMedia string
 }
 
-// MMTel is the MMTel service of a UE: its calls, and the MESSAGEs other services do not take.
+// MMTel is the MMTel service of a UE: its calls.
 type MMTel struct {
 	u   *UE
 	cfg MMTelConfig
@@ -40,20 +41,25 @@ func newMMTel(u *UE, cfg MMTelConfig) *MMTel {
 }
 
 // mmtelAllow are the methods of MMTel (TS 24.229 §5.1.3.1).
-var mmtelAllow = []string{"INVITE", "UPDATE", "PRACK", "MESSAGE"}
+var mmtelAllow = []string{"INVITE", "UPDATE", "PRACK"}
+
+// Names of the services the UE implements.
+const (
+	MMTelService = "mmtel"
+	SMSService   = "sms"
+)
 
 // service is MMTel as a service of the UE.
 func (m *MMTel) service() Service {
 	s := Service{
-		ICSI:      ICSIMMTel,
-		Features:  m.mediaTags(),
-		Allow:     mmtelAllow,
-		OnInvite:  m.incomingCall,
-		OnRequest: m.requestReceived,
+		Name:          MMTelService,
+		ICSI:          ICSIMMTel,
+		Features:      m.mediaTags(),
+		AcceptContact: []sip.CallerPreference{{Features: sip.FeatureSet{sip.NewFeature("+g.3gpp.icsi-ref", ICSIMMTel)}}},
+		Allow:         mmtelAllow,
+		Match:         isCall,
+		OnInvite:      m.incomingCall,
 	}
-
-	// SMS over IP (TS 24.341 §5.3.1.2).
-	s.Features = append(s.Features, sip.NewFeature("+g.3gpp.smsip"))
 
 	// TS 24.229 §5.1.3.1 b: precondition is advertised for the calls that run them.
 	if !m.cfg.NoPreconditions {
@@ -61,6 +67,26 @@ func (m *MMTel) service() Service {
 	}
 
 	return s
+}
+
+// isCall reports whether an INVITE is a call by its contents (TS 24.229 §5.1.2A.2): without an offer, or one with
+// audio or video.
+func isCall(req *sip.Request) bool {
+	if req.Method != "INVITE" {
+		return false
+	}
+
+	body, ok := offerOf(req)
+	if !ok {
+		return true
+	}
+
+	s, err := sdp.Parse(body)
+	if err != nil {
+		return false
+	}
+
+	return slices.ContainsFunc(s.Media, func(m *sdp.Media) bool { return m.Type() == sdp.Audio || m.Type() == sdp.Video })
 }
 
 // mediaTags are the media feature tags of MMTel, in the Contact the UE registers and in its dialogs (RFC 3840 §9,
@@ -73,19 +99,6 @@ func (m *MMTel) mediaTags() sip.FeatureSet {
 	return sip.FeatureSet{sip.NewFeature("audio")}
 }
 
-// requestReceived answers the initial requests of MMTel other than INVITE: MESSAGE (TS 24.341 §5.3.2); the other
-// methods it allows only within its calls.
-func (m *MMTel) requestReceived(r *ua.Request) {
-	if r.Message().Method != "MESSAGE" {
-		m.u.refuse(r, 405)
-		return
-	}
-
-	m.u.event(Event{Request: r.Message().Clone()})
-
-	_ = r.Respond(ua.Reply{Code: 200})
-}
-
 // UE is the UE of the service.
 func (m *MMTel) UE() *UE { return m.u }
 
@@ -94,7 +107,7 @@ func (m *MMTel) Calls() <-chan *Call { return m.incoming }
 
 // callContact is the Contact of the dialogs of MMTel (TS 24.229 §5.1.2A.1.1).
 func (m *MMTel) callContact() string {
-	c, _ := m.u.Contact(ICSIMMTel)
+	c, _ := m.u.Contact(MMTelService)
 	return c.String()
 }
 
@@ -108,4 +121,14 @@ func acceptContact(video bool) string {
 	v, _ := sip.CallerPreference{Features: fs}.Value()
 
 	return v
+}
+
+// offerOf is the session description of a request, if any (RFC 5621).
+func offerOf(req *sip.Request) ([]byte, bool) {
+	p, ok, err := req.Envelope.Content().FindFunc(sip.BodyPart.IsSession)
+	if err != nil || !ok || len(p.Body) == 0 {
+		return nil, false
+	}
+
+	return p.Body, true
 }

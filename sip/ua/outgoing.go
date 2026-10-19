@@ -911,7 +911,7 @@ func (s *Session) ackFailed(err error) {
 
 	s.st.post(func() {
 		if s.state != Terminated {
-			s.lost(nil, fmt.Errorf("sip/ua: ACK not sent: %w", err))
+			s.byeEnd(End{Cause: EndFailed, Err: fmt.Errorf("sip/ua: ACK not sent: %w", err)}, Change{}, nil)
 		}
 	})
 }

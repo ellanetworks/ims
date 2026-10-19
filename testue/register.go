@@ -141,15 +141,15 @@ func (u *UE) port(protected bool) uint16 {
 	return u.unprotected.Port()
 }
 
-// contact is the Contact the UE registers (TS 24.229 §5.1.1.2.1): its instance, the feature tags of its services, its
-// reg-id (RFC 5626 §4.2), the ContactParams.
+// contact is the Contact the UE registers (TS 24.229 §5.1.1.2.1): its instance, the feature tags of its enabled
+// services, its reg-id (RFC 5626 §4.2), the ContactParams.
 func (u *UE) contact(port uint16) string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
 	params := sip.Params{{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")}}
 
 	// New checked the feature tags encode.
-	tags, _ := featureSet(u.services).Params()
+	tags, _ := featureSet(u.enabled()).Params()
 	params = append(params, tags...)
 
 	if u.cfg.RegID != 0 {
@@ -217,6 +217,21 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 	}
 
 	req.Header.Add("Authorization", p.auth)
+
+	// The bodies the enabled services carry in a REGISTER (TS 24.379 §7.2.1), none in one that deregisters.
+	if !p.dereg {
+		var bodies []sip.BodyPart
+
+		for _, s := range u.enabled() {
+			if s.RegisterBodies != nil {
+				bodies = append(bodies, s.RegisterBodies()...)
+			}
+		}
+
+		if len(bodies) > 0 {
+			req.SetBodies(bodies...)
+		}
+	}
 
 	if !u.cfg.Plain {
 		for _, v := range u.securityClient(p.client) {

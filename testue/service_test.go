@@ -1,10 +1,13 @@
 package testue
 
 import (
+	"context"
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -22,10 +25,28 @@ type mcpttService struct {
 func newMCPTTService() (*mcpttService, Service) {
 	m := &mcpttService{invites: make(chan *sip.Request, 4), requests: make(chan *sip.Request, 4)}
 
+	icsi := sip.NewFeature("+g.3gpp.icsi-ref", icsiMCPTT)
+	tag := sip.NewFeature("+g.3gpp.mcptt")
+
 	return m, Service{
+		Name:     "mcptt",
 		ICSI:     icsiMCPTT,
-		Features: sip.FeatureSet{sip.NewFeature("+g.3gpp.mcptt"), sip.NewFeature("audio")},
-		Allow:    []string{"INVITE", "UPDATE", "MESSAGE", "INFO", "REFER"},
+		Features: sip.FeatureSet{tag, sip.NewFeature("audio")},
+		// TS 24.379 §10.1.1.2.1.1 steps 5, 7.
+		AcceptContact: []sip.CallerPreference{
+			{Features: sip.FeatureSet{tag}, Require: true, Explicit: true},
+			{Features: sip.FeatureSet{icsi}, Require: true, Explicit: true},
+		},
+		Allow:     []string{"INVITE", "UPDATE", "MESSAGE", "INFO", "REFER"},
+		Supported: []string{"tdialog"},
+		// An offer with the control channel (TS 24.380 §4.3.3.1).
+		Match: func(req *sip.Request) bool {
+			body, ok := offerOf(req)
+			return ok && strings.Contains(string(body), "udp MCPTT")
+		},
+		RegisterBodies: func() []sip.BodyPart {
+			return []sip.BodyPart{sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>"))}
+		},
 		OnInvite: func(r *ua.Request) ua.Handler {
 			m.invites <- r.Message().Clone()
 
@@ -82,6 +103,12 @@ func TestServicesRegisteredContact(t *testing.T) {
 		t.Errorf("Contact %s has audio %d times", contact, n)
 	}
 
+	// TS 24.229 §5.1.2A.1.1: the Contact of a dialog has its service's tags only; smsip, of no dialog, none.
+	call, _ := u.Contact(MMTelService)
+	if cs, _ := call.Features(); cs.Has("g.3gpp.smsip") || cs.Has("g.3gpp.mcptt") || !cs.Has("sip.audio") {
+		t.Errorf("MMTel Contact %s", call)
+	}
+
 	for _, m := range []string{"INVITE", "PRACK", "INFO", "REFER", "NOTIFY", "OPTIONS"} {
 		if !slices.Contains(u.allow, m) {
 			t.Errorf("Allow %v without %s", u.allow, m)
@@ -91,7 +118,7 @@ func TestServicesRegisteredContact(t *testing.T) {
 
 // A UE without MMTel registers only the feature tags of its services.
 func TestMCPTTOnlyContact(t *testing.T) {
-	u, _, _ := serviceUE(t, Config{NoMMTel: true})
+	u, _, _ := serviceUE(t, Config{NoMMTel: true, NoSMS: true})
 
 	contact, _ := sip.ParseAddress(u.contact(5060))
 	fs, _ := contact.Features()
@@ -100,8 +127,8 @@ func TestMCPTTOnlyContact(t *testing.T) {
 		t.Errorf("Contact %s", contact)
 	}
 
-	if u.MMTel() != nil {
-		t.Error("MMTel on a UE without it")
+	if u.MMTel() != nil || u.SMS() != nil {
+		t.Error("MMTel or SMS on a UE without them")
 	}
 }
 
@@ -109,11 +136,13 @@ func TestServiceConfig(t *testing.T) {
 	_, s := newMCPTTService()
 
 	for name, services := range map[string][]Service{
-		"no ICSI":      {{}},
-		"twice":        {s, s},
-		"MMTel twice":  {{ICSI: ICSIMMTel}},
-		"own icsi-ref": {{ICSI: icsiMCPTT, Features: sip.FeatureSet{sip.NewFeature("+g.3gpp.icsi-ref", "x")}}},
-		"own instance": {{ICSI: icsiMCPTT, Features: sip.FeatureSet{sip.NewFeature("+sip.instance")}}},
+		"no name":             {{ICSI: icsiMCPTT}},
+		"nothing to register": {{Name: "x"}},
+		"twice":               {s, s},
+		"MMTel ICSI twice":    {{Name: "x", ICSI: ICSIMMTel}},
+		"SMS name twice":      {{Name: SMSService, ICSI: icsiMCPTT}},
+		"own icsi-ref":        {{Name: "x", ICSI: icsiMCPTT, Features: sip.FeatureSet{sip.NewFeature("+g.3gpp.icsi-ref", "x")}}},
+		"own instance":        {{Name: "x", ICSI: icsiMCPTT, RegisterFeatures: sip.FeatureSet{sip.NewFeature("+sip.instance")}}},
 	} {
 		cfg := Config{
 			IMSI: imsi, IMEI: imei, Plain: true, PCSCF: netip.AddrPortFrom(loopback, 5060), Local: loopback,
@@ -212,7 +241,7 @@ func TestServiceRouting(t *testing.T) {
 // RFC 3841 §7.2.4: a request that requires a service the UE does not host goes to none, and gets a 480; one whose
 // method no service takes, a 405.
 func TestServiceRequired(t *testing.T) {
-	u, m, net := serviceUE(t, Config{NoMMTel: true})
+	u, m, net := serviceUE(t, Config{NoMMTel: true, NoSMS: true})
 
 	req := incomingRequest(u, net, "INVITE", `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";require;explicit`)
 	net.Send(sip.UDP, u.Unprotected(), req)
@@ -245,7 +274,7 @@ func TestServiceOriginate(t *testing.T) {
 	u, _, pcscf := serviceUE(t, Config{})
 
 	req := sip.NewRequest("INVITE", sip.URI{Scheme: "sip", User: "group", Host: "mcptt.example.com"})
-	if err := u.Originate(req, icsiMCPTT); err != nil {
+	if err := u.Originate(req, "mcptt"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -259,6 +288,15 @@ func TestServiceOriginate(t *testing.T) {
 
 	if route := got.Header.Get("Route"); route != "<"+preloadedRoute(u.unprotectedFlow()).String()+">" {
 		t.Errorf("Route %s", route)
+	}
+
+	if ac := got.Header.Values("Accept-Contact"); len(ac) != 2 || ac[0] != "*;+g.3gpp.mcptt;require;explicit" ||
+		ac[1] != `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt";require;explicit` {
+		t.Errorf("Accept-Contact %q", ac)
+	}
+
+	if !got.Header.HasOptionTag("Supported", "tdialog") {
+		t.Errorf("Supported %q", got.Header.Values("Supported"))
 	}
 
 	if pps := got.Header.Get("P-Preferred-Service"); pps != icsiMCPTT {
@@ -282,7 +320,110 @@ func TestServiceOriginate(t *testing.T) {
 		t.Errorf("Contact %s", contact)
 	}
 
-	if err := u.Originate(sip.NewRequest("INVITE", req.URI), "urn:urn-7:3gpp-service.ims.icsi.unknown"); err == nil {
+	if err := u.Originate(sip.NewRequest("INVITE", req.URI), "unknown"); err == nil {
 		t.Error("originated for an unknown service")
+	}
+}
+
+// TS 24.379 §7.2.1 NOTE 1, TS 24.229 §5.1.1.4.1: a service enabled or disabled re-registers the UE with or without its
+// feature tags and REGISTER bodies; a disabled one originates nothing and takes no request.
+func TestServiceEnable(t *testing.T) {
+	n := newNetwork(t)
+
+	_, s := newMCPTTService()
+	s.Disabled = true
+
+	u, _ := n.newUE(Config{Services: []Service{s}})
+	n.register(u)
+
+	if err := u.Originate(sip.NewRequest("INVITE", sip.URI{Scheme: "sip", Host: "x"}), "mcptt"); !errors.Is(err, ErrServiceDisabled) {
+		t.Fatalf("Originate while disabled: %v", err)
+	}
+
+	for _, on := range []bool{true, false} {
+		done := start(func(ctx context.Context) error {
+			if on {
+				return u.Enable(ctx, "mcptt")
+			}
+
+			return u.Disable(ctx, "mcptt")
+		})
+
+		req, f := n.recv(n.ps)
+
+		contacts, _ := req.Header.Contacts()
+		fs, _ := contacts[0].Features()
+
+		mcptt := slices.Contains(fs.Tokens("g.3gpp.icsi-ref"), icsiMCPTT) && fs.Has("g.3gpp.mcptt")
+		body := strings.Contains(string(req.Body), "<mcpttinfo/>")
+
+		if mcptt != on || body != on || !slices.Contains(fs.Tokens("g.3gpp.icsi-ref"), ICSIMMTel) {
+			t.Fatalf("enabled %v: Contact %s, body %q", on, contacts[0], req.Body)
+		}
+
+		n.ok(req, f, n.pc, 3600)
+
+		if err := wait(t, done); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Already disabled: nothing to register.
+	if err := u.Disable(t.Context(), "mcptt"); err != nil {
+		t.Fatal(err)
+	}
+
+	n.ps.RecvNone(100 * time.Millisecond)
+
+	if err := u.Enable(t.Context(), "nothing"); !errors.Is(err, ErrUnknownService) {
+		t.Errorf("Enable(nothing) = %v", err)
+	}
+}
+
+// TS 24.229 §5.1.2A.2: an initial request that prefers no service goes to the one its contents match; RFC 3261
+// §8.2.2.3: the option tags of a service are not another's; a predicate that does not parse prefers nothing it meant.
+func TestServiceByContents(t *testing.T) {
+	u, m, net := serviceUE(t, Config{})
+
+	invite := func(body string, header ...sip.Field) *sip.Request {
+		req := incomingRequest(u, net, "INVITE")
+		req.SetBody("application/sdp", []byte(body))
+
+		for _, f := range header {
+			req.Header.Add(f.Name, f.Value)
+		}
+
+		net.Send(sip.UDP, u.Unprotected(), req)
+
+		return req
+	}
+
+	channel := "v=0\r\nm=application 20032 udp MCPTT\r\n"
+
+	if res := finalTo(t, net, invite(channel)); res.StatusCode != 603 || len(m.invites) != 1 {
+		t.Fatalf("control channel offer: %s", res.StartLine())
+	}
+
+	<-m.invites
+
+	if res := finalTo(t, net, invite("v=0\r\nm=audio 4000 RTP/AVP 0\r\n")); res.StatusCode != 486 || len(m.invites) != 0 {
+		t.Fatalf("audio offer: %s", res.StartLine())
+	}
+
+	sms := incomingRequest(u, net, "MESSAGE")
+	sms.SetBody(SMSContentType, []byte{1})
+	net.Send(sip.UDP, u.Unprotected(), sms)
+
+	if res := finalTo(t, net, sms); res.StatusCode != 200 || len(m.requests) != 0 {
+		t.Fatalf("SMS: %s", res.StartLine())
+	}
+
+	res := finalTo(t, net, invite(channel, sip.Field{Name: "Require", Value: "precondition"}))
+	if res.StatusCode != 420 || res.Header.Get("Unsupported") != "precondition" || len(m.invites) != 0 {
+		t.Fatalf("precondition required of MCPTT: %s, Unsupported %q", res.StartLine(), res.Header.Get("Unsupported"))
+	}
+
+	if res := finalTo(t, net, invite(channel, sip.Field{Name: "Accept-Contact", Value: "*;+g.3gpp.mcptt=\"unterminated;require"})); res.StatusCode != 400 {
+		t.Fatalf("malformed Accept-Contact: %s", res.StartLine())
 	}
 }

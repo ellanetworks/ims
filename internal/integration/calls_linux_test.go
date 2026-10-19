@@ -625,7 +625,7 @@ func TestCallFailures(t *testing.T) {
 	t.Run("MESSAGE", func(t *testing.T) {
 		s := sc.in(t)
 
-		res, err := a.Message(s.ctx(), subscriberAt(1).tel, testue.SMSContentType, []byte{0x00, 0x01})
+		res, err := a.SMS().Send(s.ctx(), subscriberAt(1).tel, []byte{0x00, 0x01})
 		if err != nil || res.StatusCode != 403 {
 			t.Fatalf("Message = %v, %v, want 403", res, err)
 		}

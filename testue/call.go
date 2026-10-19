@@ -603,7 +603,9 @@ func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
 	}
 
 	req := sip.NewRequest("INVITE", uri)
-	if err := u.Originate(req, ICSIMMTel); err != nil {
+	req.Header.Add("Accept-Contact", acceptContact(opts.Video))
+
+	if err := u.Originate(req, MMTelService); err != nil {
 		return nil, err
 	}
 
@@ -616,7 +618,6 @@ func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
 
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.Header.Add("Call-ID", callID)
-	req.Header.Add("Accept-Contact", acceptContact(opts.Video))
 	req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
 	req.Header.Add("Accept", sdp.ContentType+", application/3gpp-ims+xml")
 
