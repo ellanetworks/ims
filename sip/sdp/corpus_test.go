@@ -330,6 +330,23 @@ func roundTrip(t *testing.T, s *sdp.Session) {
 			}
 		}
 
+		for _, v := range m.Attrs("fmtp") {
+			_, params, _ := strings.Cut(v, " ")
+			ps := sdp.ParseFormatParams(params)
+
+			if again := sdp.ParseFormatParams(ps.String()); !slices.Equal(again, ps) {
+				t.Fatalf("fmtp %q does not round-trip: %+v, %+v", v, ps, again)
+			}
+		}
+
+		if as, err := m.SourceAttrs(); err == nil {
+			for _, a := range as {
+				if again, err := sdp.ParseSourceAttr(a.String()); err != nil || again != a {
+					t.Fatalf("ssrc %q does not round-trip: %v", a, err)
+				}
+			}
+		}
+
 		if r, ok, _ := m.RTCP(); ok {
 			if again, err := sdp.ParseRTCP(r.String()); err != nil || again.String() != r.String() {
 				t.Fatalf("rtcp %q does not round-trip: %v", r, err)

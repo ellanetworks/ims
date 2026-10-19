@@ -587,9 +587,9 @@ func choose(offer *sdp.Media) []format {
 	c := codecs[i]
 	params := fmtpParams(offer, c.Payload)
 
-	if params["octet-align"] == "1" {
+	if param(params, "octet-align") == "1" {
 		for _, o := range codecs[i+1:] {
-			if strings.EqualFold(o.Encoding, c.Encoding) && o.ClockRate == c.ClockRate && fmtpParams(offer, o.Payload)["octet-align"] != "1" {
+			if strings.EqualFold(o.Encoding, c.Encoding) && o.ClockRate == c.ClockRate && param(fmtpParams(offer, o.Payload), "octet-align") != "1" {
 				c, params = o, fmtpParams(offer, o.Payload)
 				break
 			}
@@ -599,7 +599,7 @@ func choose(offer *sdp.Media) []format {
 	fmtp := amrFmtp
 
 	for _, name := range mirroredAMR {
-		if v, ok := params[name]; ok {
+		if v, ok := params.Get(name); ok {
 			fmtp += ";" + name + "=" + v
 		}
 	}
@@ -631,7 +631,7 @@ func chooseVideo(offer *sdp.Media) []format {
 		var fmtp []string
 
 		for _, name := range mirroredVideo[strings.ToUpper(c.Encoding)] {
-			if v, ok := params[name]; ok {
+			if v, ok := params.Get(name); ok {
 				fmtp = append(fmtp, name+"="+v)
 			}
 		}
@@ -643,13 +643,13 @@ func chooseVideo(offer *sdp.Media) []format {
 }
 
 // videoProfile tells whether the format is of a profile the UE takes.
-func videoProfile(encoding string, params map[string]string) bool {
+func videoProfile(encoding string, params sdp.FormatParams) bool {
 	switch strings.ToUpper(encoding) {
 	case h265:
 		// RFC 7798 §7.1: profile-space 0 and profile-id 1 (Main) when absent.
-		return cmp.Or(params["profile-space"], "0") == "0" && cmp.Or(params["profile-id"], "1") == "1"
+		return cmp.Or(param(params, "profile-space"), "0") == "0" && cmp.Or(param(params, "profile-id"), "1") == "1"
 	case h264:
-		return params["packetization-mode"] == "1" && h264Constrained(params["profile-level-id"])
+		return param(params, "packetization-mode") == "1" && h264Constrained(param(params, "profile-level-id"))
 	}
 
 	return false
@@ -730,22 +730,15 @@ func cvo(offer *sdp.Media) string {
 	return ""
 }
 
-func fmtpParams(m *sdp.Media, pt uint8) map[string]string {
-	out := map[string]string{}
+func fmtpParams(m *sdp.Media, pt uint8) sdp.FormatParams {
+	ps, _ := m.FormatParams(strconv.Itoa(int(pt)))
+	return ps
+}
 
-	v, ok := m.Fmtp(strconv.Itoa(int(pt)))
-	if !ok {
-		return out
-	}
-
-	for p := range strings.SplitSeq(v, ";") {
-		name, value, _ := strings.Cut(strings.TrimSpace(p), "=")
-		if name != "" {
-			out[strings.ToLower(name)] = strings.TrimSpace(value)
-		}
-	}
-
-	return out
+// param is the value of a format parameter, "" without it.
+func param(ps sdp.FormatParams, name string) string {
+	v, _ := ps.Get(name)
+	return v
 }
 
 func (m *media) receive(st *stream, s *sdp.Session, i int) (bool, error) {
