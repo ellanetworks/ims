@@ -421,7 +421,7 @@ func (o *Outgoing) session(res *sip.Response, tag string) *Session {
 
 	d, err := dialog.NewUAC(o.ci.req, res)
 	if err != nil {
-		o.a.log.Debug("response creates no dialog", slog.Any("error", err))
+		o.a.log.Debug("response creates no dialog", callAttr(o.ci.req), slog.Any("error", err))
 		return nil
 	}
 
@@ -873,6 +873,7 @@ const answerDeadline = 32
 func (s *Session) sendAck(c *clientInvite, ch Change) {
 	ack, err := s.d.NewAck(c.req)
 	if err != nil {
+		s.ackFailed(err)
 		return
 	}
 
@@ -885,7 +886,7 @@ func (s *Session) sendAck(c *clientInvite, ch Change) {
 	s.decorate(ack)
 
 	if err := s.a.cfg.Prepare(ack); err != nil {
-		s.a.log.Debug("prepare ACK failed", slog.Any("error", err))
+		s.ackFailed(err)
 		return
 	}
 
@@ -900,6 +901,19 @@ func (s *Session) sendAck(c *clientInvite, ch Change) {
 	})
 
 	s.pump()
+}
+
+// ackFailed ends a session whose 2xx the agent cannot acknowledge: the peer would end it once its 2xx goes
+// unacknowledged (RFC 3261 §13.3.1.4), and the session is lost (RFC 3261 §13.2.2.4). It ends, with a BYE, once the
+// handling of the 2xx is over.
+func (s *Session) ackFailed(err error) {
+	s.logger().Warn("ACK not sent", slog.Any("error", err))
+
+	s.st.post(func() {
+		if s.state != Terminated {
+			s.lost(nil, fmt.Errorf("sip/ua: ACK not sent: %w", err))
+		}
+	})
 }
 
 func (s *Session) resendAck(seq uint32) {

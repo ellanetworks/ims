@@ -590,7 +590,7 @@ func (a *Agent) Close(ctx context.Context) error {
 			o.awaitFinal()
 
 			if err := o.cancelWith(Change{}); err != nil {
-				a.log.Debug("CANCEL failed", slog.Any("error", err))
+				a.log.Debug("CANCEL failed", callAttr(o.ci.req), slog.Any("error", err))
 			}
 
 			return nil
@@ -1130,7 +1130,7 @@ func (a *Agent) reply(tx *transaction.ServerTransaction, code int, extra ...sip.
 	}
 
 	if err := a.respond(tx, res); err != nil {
-		a.log.Debug("response failed", slog.Int("code", code), slog.Any("error", err))
+		a.log.Debug("response failed", callAttr(tx.Request()), slog.Int("code", code), slog.Any("error", err))
 	}
 }
 
@@ -1155,7 +1155,7 @@ func (a *Agent) authenticate(next *sip.Request, res *sip.Response, tries int) bo
 	}
 
 	if err := a.cfg.Authenticate(next, res); err != nil {
-		a.log.Debug("authentication failed", slog.Any("error", err))
+		a.log.Debug("authentication failed", callAttr(next), slog.Any("error", err))
 		return false
 	}
 

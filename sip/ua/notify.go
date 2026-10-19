@@ -2,6 +2,7 @@ package ua
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -73,7 +74,8 @@ type ServerSubscriptionHandler struct {
 	//   - EndUnsubscribed by an unsubscribe of the subscriber, EndExpired by its expiry, each after their terminated
 	//     NOTIFY;
 	//   - EndLost by a failure of a NOTIFY that ends the subscription (RFC 6665 §4.2.2, RFC 5057), End.Response or
-	//     End.Err telling which;
+	//     End.Err telling which, or by a NOTIFY of a change the application failed to render, after a terminated
+	//     NOTIFY with reason probation;
 	//   - EndClosed as the agent closes, after its NOTIFY terminated with reason deactivated (RFC 6665 §4.4.2).
 	Ended func(s *ServerSubscription, e End)
 }
@@ -266,13 +268,18 @@ func (s *ServerSubscription) pump() {
 
 		n, err := p.build(s.sent)
 		if err != nil {
-			s.a.log.Debug("NOTIFY not built", slog.Any("error", err))
+			s.logger().Warn("NOTIFY not built", slog.Any("error", err))
 
-			if p.terminate != nil {
-				n = Notification{}
-			} else {
+			// The subscriber would keep a state the notifier no longer has: the subscription ends, the subscriber to
+			// retry later (RFC 6665 §4.1.3), with a terminated NOTIFY without state.
+			if p.terminate == nil {
+				s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: "probation"},
+					End{Cause: EndLost, Err: fmt.Errorf("sip/ua: NOTIFY not built: %w", err)}, nil)
+
 				continue
 			}
+
+			n = Notification{}
 		}
 
 		c := &notifyRequest{s: s, p: p, n: n}

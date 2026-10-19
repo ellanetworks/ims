@@ -111,7 +111,7 @@ func (ps *PublicationStore) Handle(r *Request) {
 	code, header, changed := ps.process(r)
 
 	if err := r.respondStateless(Reply{Code: code, Header: header}); err != nil {
-		ps.a.log.Debug("PUBLISH response failed", slog.Any("error", err))
+		r.logger().Debug("PUBLISH response failed", slog.Any("error", err))
 	}
 
 	if changed != nil {

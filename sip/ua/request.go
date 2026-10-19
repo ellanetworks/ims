@@ -369,7 +369,7 @@ func (r *Request) unanswered() {
 	// The deadline of a forked INVITE is that of its first member, for them all.
 	if r.forked() && !s.uac {
 		if live := r.group(); len(live) > 0 {
-			s.a.log.Warn("INVITE left unanswered by the application")
+			s.logger().Warn("INVITE left unanswered by the application")
 			live[0].abandon(480)
 		}
 
@@ -380,7 +380,7 @@ func (r *Request) unanswered() {
 		return
 	}
 
-	s.a.log.Warn("request left unanswered by the application", slog.String("method", r.req.Method))
+	s.logger().Warn("request left unanswered by the application", slog.String("method", r.req.Method))
 
 	switch {
 	case r == s.initial():
@@ -415,7 +415,7 @@ func (r *Request) acceptApplied() {
 	r.final, r.held, r.queued = false, nil, nil
 
 	if err := r.respond(rp); err != nil {
-		s.a.log.Debug("2xx of a re-INVITE failed", slog.Any("error", err))
+		s.logger().Debug("2xx of a re-INVITE failed", slog.Any("error", err))
 		r.abandon(500)
 	}
 }
@@ -435,7 +435,7 @@ func (r *Request) pracked() {
 
 		res, err := r.provisional(next)
 		if err != nil {
-			r.a.log.Debug("queued reliable 1xx failed", slog.Any("error", err))
+			r.logger().Debug("queued reliable 1xx failed", slog.Any("error", err))
 			return
 		}
 
@@ -610,7 +610,7 @@ func (r *Request) finish(res *sip.Response) error {
 // sendFinal records and sends a final response, logging a failure.
 func (r *Request) sendFinal(res *sip.Response) {
 	if err := r.finish(res); err != nil {
-		r.a.log.Debug("final response failed", slog.Any("error", err))
+		r.logger().Debug("final response failed", slog.Any("error", err))
 	}
 }
 

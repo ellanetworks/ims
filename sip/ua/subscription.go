@@ -703,7 +703,7 @@ func (s *Subscription) expireNow() {
 
 func (s *Subscription) autoRefresh() {
 	if err := s.subscribe(false, Change{}, nil); err != nil {
-		s.a.log.Debug("subscription refresh failed", slog.Any("error", err))
+		s.logger().Debug("subscription refresh failed", slog.Any("error", err))
 		s.retryRefresh()
 	}
 }
