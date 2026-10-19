@@ -3,6 +3,7 @@ package testue
 import (
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -208,8 +209,8 @@ func TestServiceRouting(t *testing.T) {
 	}
 }
 
-// A request that requires a service the UE does not host goes to none: the UE without MMTel answers an MMTel INVITE
-// with a 480 (RFC 3841 §7.2.4).
+// RFC 3841 §7.2.4: a request that requires a service the UE does not host goes to none, and gets a 480; one whose
+// method no service takes, a 405.
 func TestServiceRequired(t *testing.T) {
 	u, m, net := serviceUE(t, Config{NoMMTel: true})
 
@@ -220,11 +221,21 @@ func TestServiceRequired(t *testing.T) {
 		t.Fatalf("got %s, %d to the service", res.StartLine(), len(m.invites))
 	}
 
+	// MCPTT takes MESSAGE, but the SMS requires a service the UE does not host.
 	msg := incomingRequest(u, net, "MESSAGE", "*;+g.3gpp.smsip;require;explicit")
 	net.Send(sip.UDP, u.Unprotected(), msg)
 
-	if res := finalTo(t, net, msg); res.StatusCode != 405 || len(m.requests) != 0 {
+	if res := finalTo(t, net, msg); res.StatusCode != 480 || len(m.requests) != 0 {
 		t.Fatalf("got %s, %d to the service", res.StartLine(), len(m.requests))
+	}
+
+	// RFC 3261 §21.4.6: a method no service takes gets a 405 whose Allow leaves it out.
+	pub := incomingRequest(u, net, "PUBLISH")
+	net.Send(sip.UDP, u.Unprotected(), pub)
+
+	res := finalTo(t, net, pub)
+	if allow := res.Header.Get("Allow"); res.StatusCode != 405 || strings.Contains(allow, "PUBLISH") || !strings.Contains(allow, "INVITE") {
+		t.Fatalf("got %s, Allow %q", res.StartLine(), allow)
 	}
 }
 

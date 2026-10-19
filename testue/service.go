@@ -34,11 +34,11 @@ type Service struct {
 	Supported, Understood []string
 
 	// OnInvite receives the initial INVITEs for the service, and returns the handler of their session (ua.Config);
-	// nil rejects them with a 480.
+	// without it, or INVITE in Allow, the service takes none.
 	OnInvite func(r *ua.Request) ua.Handler
 
-	// OnRequest receives its initial requests other than INVITE and OPTIONS, which the UE answers; nil rejects them
-	// with a 405.
+	// OnRequest receives its initial requests of the other methods of Allow but OPTIONS, which the UE answers;
+	// without it, the service takes none.
 	OnRequest func(r *ua.Request)
 }
 
@@ -111,23 +111,29 @@ func union(own []string, services []Service, of func(s *Service) []string) []str
 	return out
 }
 
-// serviceFor is the service an initial request of the network is for: of those its Reject-Contact leaves, the one
-// its Accept-Contact prefers, as if each service were a contact of its own (RFC 3841 §7.2.4); the first service on a
-// tie, so the one of a request that names no service. nil when there is none.
-func (u *UE) serviceFor(req *sip.Request) *Service {
+// serviceFor is the service an initial request of the network is for (RFC 3841 §7.2): of the services that take its
+// method, those its Reject-Contact leaves, the one its Accept-Contact prefers, as if each service were a contact of
+// its own; the first on a tie, so the one of a request that names no service. Without one, code is the response:
+// 405 when no service takes the method, 480 when the preferences leave none (RFC 3841 §7.2.4).
+func (u *UE) serviceFor(req *sip.Request) (s *Service, code int) {
 	// Malformed predicates are left out: they prefer nothing.
 	accepts, _ := req.Header.AcceptContact()
 	rejects, _ := req.Header.RejectContact()
 
 	var (
-		best *Service
-		qa   float64
+		qa    float64
+		taken bool
 	)
 
 	for i := range u.services {
-		s := &u.services[i]
+		c := &u.services[i]
+		if !c.takes(req.Method) {
+			continue
+		}
 
-		fs := s.features()
+		taken = true
+
+		fs := c.features()
 		if fs.RejectedBy(rejects) {
 			continue
 		}
@@ -137,12 +143,32 @@ func (u *UE) serviceFor(req *sip.Request) *Service {
 			continue
 		}
 
-		if best == nil || q > qa {
-			best, qa = s, q
+		if s == nil || q > qa {
+			s, qa = c, q
 		}
 	}
 
-	return best
+	switch {
+	case s != nil:
+		return s, 0
+	case taken:
+		return nil, 480
+	}
+
+	return nil, 405
+}
+
+// takes reports whether the service takes initial requests of the method.
+func (s *Service) takes(method string) bool {
+	if !slices.Contains(s.Allow, method) {
+		return false
+	}
+
+	if method == "INVITE" {
+		return s.OnInvite != nil
+	}
+
+	return s.OnRequest != nil
 }
 
 // service is the service of the UE with this ICSI.
@@ -157,11 +183,9 @@ func (u *UE) service(icsi string) (*Service, error) {
 
 // incomingInvite gives an initial INVITE to its service.
 func (u *UE) incomingInvite(r *ua.Request) ua.Handler {
-	s := u.serviceFor(r.Message())
-	if s == nil || s.OnInvite == nil {
-		u.event(Event{Request: r.Message()})
-		_ = r.Reject(480)
-
+	s, code := u.serviceFor(r.Message())
+	if s == nil {
+		u.refuse(r, code)
 		return ua.Handler{}
 	}
 
@@ -173,21 +197,32 @@ func (u *UE) incomingInvite(r *ua.Request) ua.Handler {
 func (u *UE) requestReceived(r *ua.Request) {
 	req := r.Message()
 
-	if req.Method != "OPTIONS" {
-		if s := u.serviceFor(req); s != nil && s.OnRequest != nil {
-			s.OnRequest(r)
-			return
-		}
+	if req.Method == "OPTIONS" {
+		u.event(Event{Request: req.Clone()})
+		_ = r.Respond(ua.Reply{Code: 200, Header: u.agent.Capabilities()})
+
+		return
 	}
 
+	s, code := u.serviceFor(req)
+	if s == nil {
+		u.refuse(r, code)
+		return
+	}
+
+	s.OnRequest(r)
+}
+
+// refuse answers an initial request no service takes: a 405 with the methods the UE allows but that one, which it
+// does not outside a dialog (RFC 3261 §21.4.6); or the 480 of the preferences that leave no service.
+func (u *UE) refuse(r *ua.Request, code int) {
+	req := r.Message()
 	u.event(Event{Request: req.Clone()})
 
-	rp := ua.Reply{Code: 200}
-	if req.Method == "OPTIONS" {
-		rp.Header = u.agent.Capabilities()
-	} else {
-		rp.Code = 405
-		rp.Header = sip.Header{{Name: "Allow", Value: strings.Join(u.allow, ", ")}}
+	rp := ua.Reply{Code: code}
+	if code == 405 {
+		allow := slices.DeleteFunc(slices.Clone(u.allow), func(m string) bool { return m == req.Method })
+		rp.Header = sip.Header{{Name: "Allow", Value: strings.Join(allow, ", ")}}
 	}
 
 	_ = r.Respond(rp)

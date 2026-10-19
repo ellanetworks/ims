@@ -155,10 +155,12 @@ func (m *Media) RTPMaps() ([]RTPMap, error) {
 	return out, errors.Join(errs...)
 }
 
+// Fmtp is the parameters of the fmtp attribute of a format of the media, the format compared case-insensitively
+// (RFC 4855 §3): a client writes the "MCPTT" of its m= line "mcptt" (TS 24.379 Table A.1.3-1).
 func (m *Media) Fmtp(format string) (string, bool) {
 	for _, v := range m.Attrs("fmtp") {
 		f, params := cutWSP(v)
-		if f == format {
+		if strings.EqualFold(f, format) {
 			return params, true
 		}
 	}

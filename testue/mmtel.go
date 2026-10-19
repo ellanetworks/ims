@@ -73,8 +73,14 @@ func (m *MMTel) mediaTags() sip.FeatureSet {
 	return sip.FeatureSet{sip.NewFeature("audio")}
 }
 
-// requestReceived answers the initial requests of MMTel other than INVITE: MESSAGE.
+// requestReceived answers the initial requests of MMTel other than INVITE: MESSAGE (TS 24.341 §5.3.2); the other
+// methods it allows only within its calls.
 func (m *MMTel) requestReceived(r *ua.Request) {
+	if r.Message().Method != "MESSAGE" {
+		m.u.refuse(r, 405)
+		return
+	}
+
 	m.u.event(Event{Request: r.Message().Clone()})
 
 	_ = r.Respond(ua.Reply{Code: 200})

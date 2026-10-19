@@ -87,3 +87,14 @@ func TestSourceAttrs(t *testing.T) {
 		}
 	}
 }
+
+func TestFmtpFormatCase(t *testing.T) {
+	s, err := Parse([]byte("v=0\r\nm=application 1234 udp mcptt\r\na=fmtp:MCPTT mc_queueing\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if v, ok := s.Media[0].Fmtp("mcptt"); !ok || v != "mc_queueing" {
+		t.Errorf("Fmtp(mcptt) = %q, %v", v, ok)
+	}
+}
