@@ -176,8 +176,8 @@ func TestCallMediaLost(t *testing.T) {
 func TestCallVideoBearerLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
-		a := s.caller(0, false, testue.Config{Video: true})
-		b := s.caller(1, false, testue.Config{Video: true})
+		a := s.caller(0, false, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
+		b := s.caller(1, false, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
 
 		ctx := s.ctx()
 		ac, bc := connect(t, ctx, a, b, phone(1), testue.CallOptions{Video: true})
@@ -212,8 +212,8 @@ func TestCallVideoBearerLost(t *testing.T) {
 func TestCallVideoCallVoiceLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
-		a := s.caller(0, false, testue.Config{Video: true})
-		b := s.caller(1, false, testue.Config{Video: true})
+		a := s.caller(0, false, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
+		b := s.caller(1, false, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
 
 		ctx := s.ctx()
 		ac, _ := connect(t, ctx, a, b, phone(1), testue.CallOptions{Video: true})

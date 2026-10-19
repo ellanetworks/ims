@@ -16,7 +16,7 @@ import (
 func videoPair(t *testing.T) (*UE, *UE) {
 	t.Helper()
 
-	return pairWith(t, Config{Video: true}, Config{Video: true})
+	return pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{MMTel: MMTelConfig{Video: true}})
 }
 
 // wantStreams checks the kinds of the call's streams and which are active, and that each active one has endpoints.
@@ -136,7 +136,7 @@ func TestVideoCall(t *testing.T) {
 // IR.94 §2.2.2: a voice only UE declines video with port 0, and the call goes on as voice.
 func TestVideoDeclined(t *testing.T) {
 	ctx := testContext(t)
-	a, b := pairWith(t, Config{Video: true}, Config{})
+	a, b := pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{})
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{Video: true})
 
@@ -162,7 +162,7 @@ func TestVideoNotEnabled(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
 
-	if _, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Video: true}); !errors.Is(err, ErrCallState) {
+	if _, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Video: true}); !errors.Is(err, ErrCallState) {
 		t.Fatalf("video Invite = %v, want ErrCallState", err)
 	}
 
@@ -296,7 +296,7 @@ func TestVideoBearerRefusedDuringSetup(t *testing.T) {
 	ctx := testContext(t)
 	a, b := videoPair(t)
 
-	ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Video: true, Preconditions: true})
+	ac, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Video: true, Preconditions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestVoiceBearerLost(t *testing.T) {
 		ctx := testContext(t)
 		a, b := pair(t)
 
-		ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: true})
+		ac, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -402,7 +402,7 @@ func TestVoiceBearerLost(t *testing.T) {
 			ctx := testContext(t)
 			a, b := pair(t)
 
-			ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: c.preconditions})
+			ac, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: c.preconditions})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -502,7 +502,7 @@ func TestAnswerPixelVideoOffer(t *testing.T) {
 
 // IR.94 §2.2.1: a video capable UE registers with the video feature tag.
 func TestVideoContact(t *testing.T) {
-	a, _ := pairWith(t, Config{Video: true}, Config{})
+	a, _ := pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{})
 
 	if c := a.contact(5060); !strings.Contains(c, ";audio;video") {
 		t.Fatalf("Contact %q, want audio and video", c)
@@ -549,11 +549,11 @@ func peerResponse(t *testing.T, p *peer, req *sip.Request, code int, tag string,
 // reliable 183, and holds its 200, without SDP, until the UPDATE reports the resources.
 func TestAddVideoAnsweredInReliable183(t *testing.T) {
 	ctx := testContext(t)
-	p := newPeer(t, Config{Video: true})
+	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
 	pm := newMedia(loopback, 50000, true, true)
 	tag := sip.NewTag()
 
-	c, err := p.u.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: true})
+	c, err := p.u.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,11 +618,11 @@ func TestAddVideoAnsweredInReliable183(t *testing.T) {
 // RFC 3261 §14.1: a re-INVITE refused after a reliable 183 answered it leaves the session as it was.
 func TestAddVideoRefusedAfterReliable183(t *testing.T) {
 	ctx := testContext(t)
-	p := newPeer(t, Config{Video: true})
+	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
 	pm := newMedia(loopback, 50000, false, true)
 	tag := sip.NewTag()
 
-	c, err := p.u.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
+	c, err := p.u.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +685,7 @@ func TestVoiceBearerLostCrossing2xx(t *testing.T) {
 	pm := newMedia(loopback, 50000, false, false)
 	tag := sip.NewTag()
 
-	c, err := p.u.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
+	c, err := p.u.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +897,7 @@ func TestUserEndsCallReason(t *testing.T) {
 		ctx := testContext(t)
 		a, b := pair(t)
 
-		ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
+		ac, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

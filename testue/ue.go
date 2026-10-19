@@ -99,14 +99,9 @@ type Config struct {
 	Offers []Offer
 
 	// ContactParams are added to the Contact the UE registers: a q-value (RFC 3261 §10.2.1.2)
-	// or feature tags (RFC 3840 §9), other than those the UE sets itself: its instance, ICSI, SMS and media
-	// feature tags, and its reg-id.
+	// or feature tags (RFC 3840 §9), other than those the UE sets itself: its instance, its reg-id, and the feature
+	// tags of its services.
 	ContactParams sip.Params
-
-	// Video makes the UE video capable (IR.94): it registers with the video feature tag, takes the video streams it
-	// is offered, and can make video calls (CallOptions.Video) and add video to a call (Call.AddVideo). Without it,
-	// the UE is voice only and declines video with port 0 (RFC 3264 §6).
-	Video bool
 
 	// RegID, when not zero, makes the UE's registration flow RegID of its instance (RFC 5626 §4.2):
 	// its Contact has the reg-id, and its REGISTER outbound in Supported (TS 24.229 §5.1.1.2.1). UEs
@@ -122,13 +117,14 @@ type Config struct {
 
 	NoRegEvent bool
 
-	AcceptCalls bool
+	// MMTel configures the MMTel service of the UE, unless NoMMTel: a UE without it, such as a dedicated MCPTT UE,
+	// hosts only Services.
+	MMTel   MMTelConfig
+	NoMMTel bool
 
-	// NoPreconditions is a UE with preconditions disabled (TS 24.229 §5.1.5A): an INVITE requiring them gets a 420,
-	// and its calls run without them.
-	NoPreconditions bool
-
-	EarlyMedia string
+	// Services are the services the UE hosts beside MMTel (Service), after it: MMTel takes the requests that
+	// prefer no service of the UE.
+	Services []Service
 
 	LargeUDP bool
 
@@ -147,6 +143,19 @@ type Config struct {
 	Trace func(m sip.Message, f sip.Flow, sent bool)
 
 	Logger *slog.Logger
+}
+
+// reservedContactParams are the Contact parameters the UE sets whatever its services: its instance and reg-id, and
+// the media type feature tags (RFC 3840 §10.1–§10.6).
+var reservedContactParams = sip.Params{
+	{Name: "+sip.instance"},
+	{Name: "reg-id"},
+	{Name: "audio"},
+	{Name: "application"},
+	{Name: "data"},
+	{Name: "control"},
+	{Name: "video"},
+	{Name: "text"},
 }
 
 type SAState int
@@ -257,10 +266,9 @@ type UE struct {
 	expiryTimer transaction.Timer
 	sub         *subscription
 
-	calls struct {
-		incoming chan *Call
-		next     int
-	}
+	mmtel    *MMTel
+	services []Service
+	allow    []string
 }
 
 func New(cfg Config) (*UE, error) {
@@ -284,13 +292,6 @@ func New(cfg Config) (*UE, error) {
 
 	if cfg.Transport == "" {
 		cfg.Transport = sip.UDP
-	}
-
-	// The UE sets these itself: its media feature tags follow Video (RFC 3840 §9).
-	for _, p := range cfg.ContactParams {
-		if slices.Contains(ownContactParams, strings.ToLower(p.Name)) {
-			return nil, fmt.Errorf("testue: ContactParams has %s, which the UE sets itself", p.Name)
-		}
 	}
 
 	cfg.ContactParams = cfg.ContactParams.Clone()
@@ -333,7 +334,31 @@ func New(cfg Config) (*UE, error) {
 		u.offers = DefaultOffers()
 	}
 
-	u.calls.incoming = make(chan *Call, 16)
+	if !cfg.NoMMTel {
+		u.mmtel = newMMTel(u, cfg.MMTel)
+		u.services = append(u.services, u.mmtel.service())
+	}
+
+	u.services = append(u.services, cfg.Services...)
+
+	if err := checkServices(u.services); err != nil {
+		return nil, err
+	}
+
+	// The UE sets these itself (RFC 3840 §9, RFC 5626 §4.2): its instance, its reg-id, and the feature tags of its
+	// services, their media types included, so that ContactParams claim no medium no service takes.
+	own, err := featureSet(u.services).Params()
+	if err != nil {
+		return nil, fmt.Errorf("testue: %w", err)
+	}
+
+	for _, p := range cfg.ContactParams {
+		if slices.ContainsFunc(append(own, reservedContactParams...), func(o sip.Param) bool { return strings.EqualFold(o.Name, p.Name) }) {
+			return nil, fmt.Errorf("testue: ContactParams has %s, which the UE sets itself", p.Name)
+		}
+	}
+
+	u.allow = union(ownAllow, u.services, func(s *Service) []string { return s.Allow })
 
 	do := cfg.Do
 
@@ -359,15 +384,15 @@ func New(cfg Config) (*UE, error) {
 				},
 			},
 		},
-		Prepare: u.prepare,
-		Respond: u.respondHeaders,
-		Policy:  ua.ClientPolicy,
-		Allow:   allowed,
-		// TS 24.229 §5.1.3.1 b: precondition is advertised for the calls that run them.
-		Understood: understood(cfg),
+		Prepare:    u.prepare,
+		Respond:    u.respondHeaders,
+		Policy:     ua.ClientPolicy,
+		Allow:      u.allow,
+		Supported:  union(nil, u.services, func(s *Service) []string { return s.Supported }),
+		Understood: union(nil, u.services, func(s *Service) []string { return s.Understood }),
 		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
 		SessionTimer: ua.SessionTimer{Refresher: sip.RefresherUAC},
-		OnInvite:     u.incomingCall,
+		OnInvite:     u.incomingInvite,
 		OnRequest:    u.requestReceived,
 		Logger:       cfg.Logger,
 	})
@@ -392,21 +417,6 @@ func (u *UE) trace(m sip.Message, f sip.Flow, sent bool) {
 	}
 }
 
-// requestReceived answers a request outside a dialog other than INVITE: MESSAGE, OPTIONS.
-func (u *UE) requestReceived(r *ua.Request) {
-	u.event(Event{Request: r.Message().Clone()})
-
-	rp := ua.Reply{Code: 200}
-	if r.Message().Method == "OPTIONS" {
-		// RFC 3261 §11.2: the capabilities of the UE.
-		rp.Header = u.agent.Capabilities()
-	}
-
-	if err := r.Respond(rp); err != nil {
-		u.log.Debug("response failed", slog.Any("error", err))
-	}
-}
-
 func (u *UE) listen(port uint16) (netip.AddrPort, error) {
 	var (
 		bound netip.AddrPort
@@ -427,6 +437,9 @@ func (u *UE) listen(port uint16) (netip.AddrPort, error) {
 
 	return bound, nil
 }
+
+// MMTel is the MMTel service of the UE, nil with NoMMTel.
+func (u *UE) MMTel() *MMTel { return u.mmtel }
 
 func (u *UE) IMPI() string       { return u.id.impi }
 func (u *UE) IMPU() string       { return u.id.impu }
@@ -905,15 +918,6 @@ func (u *UE) established() *saSet {
 	}
 
 	return nil
-}
-
-// understood are the option tags the UE accepts in Require without advertising them in every message.
-func understood(cfg Config) []string {
-	if cfg.NoPreconditions {
-		return nil
-	}
-
-	return []string{sip.OptionTagPrecondition}
 }
 
 // now is the time on the clock of the UE, the one of its agent and of all its timers.

@@ -20,17 +20,12 @@ import (
 const (
 	DefaultSessionExpires = 1800 * time.Second
 
-	mmtelService = "urn:urn-7:3gpp-service.ims.icsi.mmtel"
-
 	firstMediaPort = 40000
 
 	// Each call takes four ports: audio RTP and RTCP, then video RTP and RTCP.
 	portsPerCall = 4
 	maxCalls     = 5000
 )
-
-// allowed are the methods the UE allows (TS 24.229 §5.1.3.1).
-var allowed = []string{"INVITE", "ACK", "OPTIONS", "CANCEL", "BYE", "UPDATE", "PRACK", "NOTIFY", "MESSAGE"}
 
 var (
 	ErrCallEnded = errors.New("testue: call ended")
@@ -110,7 +105,7 @@ type CallOptions struct {
 	Preconditions bool
 
 	// Video makes the call a video call: the INVITE offers audio and video, and asks for a video capable callee
-	// (IR.94 §2.2.2). It needs Config.Video.
+	// (IR.94 §2.2.2). It needs MMTelConfig.Video.
 	Video bool
 
 	SessionExpires time.Duration
@@ -127,6 +122,7 @@ type CallOptions struct {
 // with it held.
 type Call struct {
 	u        *UE
+	mm       *MMTel
 	incoming bool
 	callID   string
 	events   chan Event
@@ -149,7 +145,8 @@ type Call struct {
 	// exchange starts (RFC 3264 §4).
 	initial *media
 
-	saHeld bool
+	// releaseSAs releases the SAs the call's setup holds, nil when it holds none.
+	releaseSAs func()
 
 	// The outgoing call: its INVITE, its final response or error, and how a cancelled one ends.
 	out       *ua.Outgoing
@@ -190,13 +187,15 @@ type leg struct {
 }
 
 // newCall starts a call whose first offer, if the UE makes it, has video when video is set.
-func (u *UE) newCall(incoming bool, invite *sip.Request, callID string, precondition, video bool) (*Call, error) {
+func (mm *MMTel) newCall(incoming bool, invite *sip.Request, callID string, precondition, video bool) (*Call, error) {
+	u := mm.u
+
 	u.mu.Lock()
-	port := firstMediaPort + portsPerCall*u.calls.next
-	u.calls.next = (u.calls.next + 1) % maxCalls
+	port := firstMediaPort + portsPerCall*mm.next
+	mm.next = (mm.next + 1) % maxCalls
 	u.mu.Unlock()
 
-	m := newMedia(u.cfg.Local, uint16(port), precondition, u.cfg.Video)
+	m := newMedia(u.cfg.Local, uint16(port), precondition, mm.cfg.Video)
 
 	if video {
 		if err := m.addVideo(); err != nil {
@@ -206,6 +205,7 @@ func (u *UE) newCall(incoming bool, invite *sip.Request, callID string, precondi
 
 	return &Call{
 		u:        u,
+		mm:       mm,
 		incoming: incoming,
 		callID:   callID,
 		events:   make(chan Event, 256),
@@ -216,8 +216,6 @@ func (u *UE) newCall(incoming bool, invite *sip.Request, callID string, precondi
 		byeEnd:   LocalBye,
 	}, nil
 }
-
-func (u *UE) Calls() <-chan *Call { return u.calls.incoming }
 
 func (c *Call) Incoming() bool { return c.incoming }
 
@@ -420,29 +418,16 @@ func (c *Call) waitFor(ctx context.Context, cond func() bool) error {
 
 // holdSALocked keeps the SAs of the call's setup until it completes (TS 33.203 §7.4).
 func (c *Call) holdSALocked() {
-	if c.u.cfg.Plain || c.saHeld {
-		return
+	if c.releaseSAs == nil {
+		c.releaseSAs = c.u.HoldSAs()
 	}
-
-	c.saHeld = true
-
-	c.u.mu.Lock()
-	c.u.pending++
-	c.u.mu.Unlock()
 }
 
 func (c *Call) releaseSALocked() {
-	if !c.saHeld {
-		return
+	if c.releaseSAs != nil {
+		c.releaseSAs()
+		c.releaseSAs = nil
 	}
-
-	c.saHeld = false
-
-	c.u.mu.Lock()
-	defer c.u.mu.Unlock()
-
-	c.u.pending--
-	c.u.dropOldLocked()
 }
 
 func (c *Call) terminateLocked(reason EndReason) {
@@ -517,33 +502,6 @@ func (c *Call) releaseLocked(l *leg) {
 // RFC 3311 §5.1, §5.2
 func (c *Call) remoteOfferLocked() bool {
 	return c.incoming && c.offer != nil && !c.answered
-}
-
-// TS 24.229 §5.1.2A.1.1
-func (u *UE) callContact() string {
-	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
-
-	return sip.Address{URI: uri, Params: append(sip.Params{{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel}}, u.mediaTags()...)}.String()
-}
-
-// mediaTags are the media feature tags of the Contact the UE registers and uses in its dialogs (RFC 3840 §9,
-// TS 24.229 §5.1.3.1): video when the UE takes video, whether or not the call has video (IR.94 §2.2.1, §2.2.2).
-func (u *UE) mediaTags() sip.Params {
-	if u.cfg.Video {
-		return sip.Params{{Name: "audio"}, {Name: "video"}}
-	}
-
-	return sip.Params{{Name: "audio"}}
-}
-
-// IR.92 §2.2.4, IR.94 §2.2.2: a video call asks for a video capable callee, to guide forking (RFC 3841 §9.2).
-func acceptContact(video bool) string {
-	ac := "*;+g.3gpp.icsi-ref=" + icsiMMTel
-	if video {
-		ac += ";video"
-	}
-
-	return ac
 }
 
 // RFC 3261 §8.1.2, RFC 3263 §4.1
@@ -632,8 +590,10 @@ func (c *Call) received(_ *ua.Session, m sip.Message) {
 }
 
 // TS 24.229 §5.1.3.1, IR.92 §2.4
-func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
-	if opts.Preconditions && u.cfg.NoPreconditions {
+func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
+	u := mm.u
+
+	if opts.Preconditions && mm.cfg.NoPreconditions {
 		return nil, fmt.Errorf("%w: preconditions on a UE without them", ErrCallState)
 	}
 
@@ -642,44 +602,21 @@ func (u *UE) Invite(target string, opts CallOptions) (*Call, error) {
 		return nil, fmt.Errorf("testue: target: %w", err)
 	}
 
-	u.mu.Lock()
-	closed, impu, route := u.closed, u.state.DefaultIMPU, slices.Clone(u.state.ServiceRoute)
-	u.mu.Unlock()
-
-	if closed {
-		return nil, ErrClosed
-	}
-
-	if impu == "" {
-		impu = u.id.impu
-	}
-
-	preloaded, err := u.outboundRoute()
-	if err != nil {
-		return nil, err
-	}
-
 	req := sip.NewRequest("INVITE", uri)
-	req.Header.Add("Route", "<"+preloaded.String()+">")
-
-	for _, r := range route {
-		req.Header.Add("Route", r)
+	if err := u.Originate(req, ICSIMMTel); err != nil {
+		return nil, err
 	}
 
 	callID := timeUUID() + "@" + sip.FormatHost(u.cfg.Local)
 
-	c, err := u.newCall(false, req, callID, opts.Preconditions, opts.Video)
+	c, err := mm.newCall(false, req, callID, opts.Preconditions, opts.Video)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("From", "<"+impu+">")
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.Header.Add("Call-ID", callID)
-	req.Header.Add("Contact", u.callContact())
 	req.Header.Add("Accept-Contact", acceptContact(opts.Video))
-	req.Header.Add("P-Preferred-Identity", "<"+impu+">")
-	req.Header.Add("P-Preferred-Service", mmtelService)
 	req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
 	req.Header.Add("Accept", sdp.ContentType+", application/3gpp-ims+xml")
 
@@ -1526,11 +1463,13 @@ func has(h sip.Header, name, tag string) bool {
 
 // incomingCall receives an initial INVITE (TS 24.229 §5.1.4.1): its offer has the voice of the UE, or the INVITE gets
 // a 488; the call goes to Calls.
-func (u *UE) incomingCall(r *ua.Request) ua.Handler {
+func (mm *MMTel) incomingCall(r *ua.Request) ua.Handler {
+	u := mm.u
+
 	req := r.Message()
 	u.event(Event{Request: req})
 
-	if !u.cfg.AcceptCalls {
+	if !mm.cfg.AcceptCalls {
 		_ = r.Reject(486)
 		return ua.Handler{}
 	}
@@ -1557,11 +1496,11 @@ func (u *UE) incomingCall(r *ua.Request) ua.Handler {
 		}
 	}
 
-	precondition := !u.cfg.NoPreconditions &&
+	precondition := !mm.cfg.NoPreconditions &&
 		(has(req.Header, "Supported", "precondition") || has(req.Header, "Require", "precondition")) && offerQoS(offer)
 
 	// IR.94 §2.2.2: the offer the UE makes to an INVITE without one has every media it is able and willing to use.
-	c, err := u.newCall(true, req, req.Header.CallID(), precondition, u.cfg.Video)
+	c, err := mm.newCall(true, req, req.Header.CallID(), precondition, mm.cfg.Video)
 	if err != nil {
 		_ = r.Reject(500)
 		return ua.Handler{}
@@ -1578,7 +1517,7 @@ func (u *UE) incomingCall(r *ua.Request) ua.Handler {
 	c.mu.Unlock()
 
 	select {
-	case u.calls.incoming <- c:
+	case mm.incoming <- c:
 	default:
 		c.mu.Lock()
 		c.terminateLocked(Rejected)
@@ -1619,10 +1558,10 @@ func offerQoS(offer *sdp.Session) bool {
 
 // responseHeaders are the header fields of a response of the UE to the INVITE of an incoming call.
 func (c *Call) responseHeaders(code int) sip.Header {
-	h := sip.Header{{Name: "Contact", Value: c.u.callContact()}}
+	h := sip.Header{{Name: "Contact", Value: c.mm.callContact()}}
 
-	if code < 200 && c.u.cfg.EarlyMedia != "" {
-		h.Add("P-Early-Media", c.u.cfg.EarlyMedia)
+	if code < 200 && c.mm.cfg.EarlyMedia != "" {
+		h.Add("P-Early-Media", c.mm.cfg.EarlyMedia)
 	}
 
 	return h

@@ -177,7 +177,7 @@ func TestVideoCallQoSFlows(t *testing.T) {
 	needs5G(t)
 
 	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
-	a, b := pairWith(t, sip.UDP, testue.Config{Video: true})
+	a, b := pairWith(t, sip.UDP, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
 	target := "sip:" + subscribers[1].msisdn + "@" + homeDomain
 	before := qosFlows(t, core)
 

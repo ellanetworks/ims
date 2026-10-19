@@ -20,7 +20,7 @@ import (
 func (s *scene) caller(i int, v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
-	cfg.AcceptCalls = true
+	cfg.MMTel.AcceptCalls = true
 
 	u := s.newUEAt(i, v6, cfg)
 	s.register(u)
@@ -43,7 +43,7 @@ func incoming(t *testing.T, u *testue.UE, of *testue.Call) *testue.Call {
 
 	for {
 		select {
-		case c := <-u.Calls():
+		case c := <-u.MMTel().Calls():
 			if callID(c) == callID(of) {
 				return c
 			}
@@ -73,7 +73,7 @@ func ended(t *testing.T, c *testue.Call, want testue.EndReason) {
 func invite(t *testing.T, a *testue.UE, target string, opts testue.CallOptions) *testue.Call {
 	t.Helper()
 
-	c, err := a.Invite(target, opts)
+	c, err := a.MMTel().Invite(target, opts)
 	if err != nil {
 		t.Fatalf("Invite %s: %v", target, err)
 	}
@@ -383,7 +383,7 @@ func TestCall(t *testing.T) {
 func testCall(t *testing.T, tr sip.Transport, v6, fixtures bool) {
 	sc := newScene(t)
 	a := sc.caller(0, v6, testue.Config{Transport: tr})
-	b := sc.caller(1, v6, testue.Config{Transport: tr, EarlyMedia: "sendrecv"})
+	b := sc.caller(1, v6, testue.Config{Transport: tr, MMTel: testue.MMTelConfig{EarlyMedia: "sendrecv"}})
 
 	record := func(s *scene, flow string) {
 		if fixtures {

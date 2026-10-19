@@ -17,7 +17,7 @@ const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
 func (s *scene) flow(regID int64, v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
-	cfg.AcceptCalls, cfg.RegID = true, regID
+	cfg.MMTel.AcceptCalls, cfg.RegID = true, regID
 
 	u := s.newDevice(1, subscriberAt(1), v6, cfg)
 	s.register(u)
@@ -34,7 +34,7 @@ func noCall(t *testing.T, u *testue.UE) {
 	t.Helper()
 
 	select {
-	case c := <-u.Calls():
+	case c := <-u.MMTel().Calls():
 		t.Fatalf("unexpected call %s", callID(c))
 	case <-time.After(time.Second):
 	}

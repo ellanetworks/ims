@@ -157,7 +157,7 @@ func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE 
 
 	cfg.IMSI, cfg.IMEI, cfg.K, cfg.OPc = sub.imsi, sub.imei, k, opc
 	cfg.PCSCF, cfg.Local, cfg.Transport = pcscf, local, tr
-	cfg.AcceptCalls, cfg.Kernel, cfg.Do = true, xfrm, ns.Do
+	cfg.MMTel.AcceptCalls, cfg.Kernel, cfg.Do = true, xfrm, ns.Do
 	cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})).With("ue", i+1)
 
 	u, err := testue.New(cfg)
@@ -198,7 +198,7 @@ func incoming(t *testing.T, u *testue.UE) *testue.Call {
 	t.Helper()
 
 	select {
-	case c := <-u.Calls():
+	case c := <-u.MMTel().Calls():
 		return c
 	case <-time.After(15 * time.Second):
 		t.Fatal("no incoming call")
@@ -226,7 +226,7 @@ func connect(t *testing.T, a, b *testue.UE, target string, opts testue.CallOptio
 
 	c := ctx(t)
 
-	ac, err := a.Invite(target, opts)
+	ac, err := a.MMTel().Invite(target, opts)
 	if err != nil {
 		t.Fatalf("Invite %s: %v", target, err)
 	}

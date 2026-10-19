@@ -16,35 +16,23 @@ func (u *UE) Message(ctx context.Context, target, contentType string, body []byt
 		return nil, fmt.Errorf("testue: target: %w", err)
 	}
 
-	u.mu.Lock()
-	closed, impu, route := u.closed, u.state.DefaultIMPU, u.state.ServiceRoute
-	u.mu.Unlock()
-
-	if closed {
-		return nil, ErrClosed
-	}
-
-	if impu == "" {
-		impu = u.id.impu
-	}
-
 	req := sip.NewRequest("MESSAGE", uri)
+	if err := u.Originate(req, ""); err != nil {
+		return nil, err
+	}
+
 	if err := u.prepare(req); err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Route", "<"+preloadedRoute(req.Flow).String()+">")
+	from, _ := sip.ParseAddress(req.Header.Get("From"))
+	from.Params.Set("tag", sip.NewTag())
 
-	for _, r := range route {
-		req.Header.Add("Route", r)
-	}
-
+	req.Header.Set("From", from.String())
 	req.Header.Add("Max-Forwards", "70")
-	req.Header.Add("From", "<"+impu+">;tag="+sip.NewTag())
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.Header.Add("Call-ID", timeUUID()+"@"+sip.FormatHost(u.cfg.Local))
 	req.Header.Add("CSeq", "1 MESSAGE")
-	req.Header.Add("P-Preferred-Identity", "<"+impu+">")
 
 	if contentType == SMSContentType {
 		req.Header.Add("Accept-Contact", "*;+g.3gpp.smsip")

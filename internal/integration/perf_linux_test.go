@@ -219,7 +219,7 @@ func perfCall(ctx context.Context, u *testue.UE, target string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	c, err := u.Invite(target, testue.CallOptions{})
+	c, err := u.MMTel().Invite(target, testue.CallOptions{})
 	if err != nil {
 		return err
 	}
@@ -242,7 +242,7 @@ func perfCall(ctx context.Context, u *testue.UE, target string) error {
 
 // answer answers the calls of u, until it closes.
 func answer(t *testing.T, u *testue.UE) {
-	for c := range u.Calls() {
+	for c := range u.MMTel().Calls() {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -270,7 +270,7 @@ func answer(t *testing.T, u *testue.UE) {
 func (s *scene) quietCaller(i int, sub subscriber) *testue.UE {
 	s.t.Helper()
 
-	u := s.quietDevice(i, sub, testue.Config{AcceptCalls: true})
+	u := s.quietDevice(i, sub, testue.Config{MMTel: testue.MMTelConfig{AcceptCalls: true}})
 	s.register(u)
 
 	return u

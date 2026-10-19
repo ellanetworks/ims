@@ -16,8 +16,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-const icsiMMTel = `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
-
 type procedure struct {
 	start       sip.Flow
 	startVerify []string
@@ -143,19 +141,16 @@ func (u *UE) port(protected bool) uint16 {
 	return u.unprotected.Port()
 }
 
-// ownContactParams are the Contact parameters the UE sets itself (TS 24.229 §5.1.1.2.1, RFC 5626 §4.2, IR.94 §2.2.1).
-var ownContactParams = []string{"+sip.instance", "+g.3gpp.icsi-ref", "+g.3gpp.smsip", "audio", "video", "reg-id"}
-
+// contact is the Contact the UE registers (TS 24.229 §5.1.1.2.1): its instance, the feature tags of its services, its
+// reg-id (RFC 5626 §4.2), the ContactParams.
 func (u *UE) contact(port uint16) string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
-	params := sip.Params{
-		{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")},
-		{Name: "+g.3gpp.icsi-ref", Value: icsiMMTel},
-		{Name: "+g.3gpp.smsip"},
-	}
+	params := sip.Params{{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")}}
 
-	params = append(params, u.mediaTags()...)
+	// New checked the feature tags encode.
+	tags, _ := featureSet(u.services).Params()
+	params = append(params, tags...)
 
 	if u.cfg.RegID != 0 {
 		params = append(params, sip.Param{Name: "reg-id", Value: strconv.FormatInt(u.cfg.RegID, 10)})

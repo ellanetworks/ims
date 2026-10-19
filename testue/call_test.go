@@ -46,7 +46,7 @@ func pair(t *testing.T) (*UE, *UE) {
 func pairWith(t *testing.T, ca, cb Config) (*UE, *UE) {
 	t.Helper()
 
-	ca.AcceptCalls, cb.AcceptCalls = true, true
+	ca.MMTel.AcceptCalls, cb.MMTel.AcceptCalls = true, true
 
 	placeholder := netip.AddrPortFrom(loopback, 9)
 	a := newCallUE(t, "001010000000001", placeholder, ca)
@@ -68,7 +68,7 @@ func incoming(t *testing.T, u *UE) *Call {
 	t.Helper()
 
 	select {
-	case c := <-u.Calls():
+	case c := <-u.MMTel().Calls():
 		return c
 	case <-time.After(10 * time.Second):
 		t.Fatal("no incoming call")
@@ -128,7 +128,7 @@ func audio(t *testing.T, s *sdp.Session) *sdp.Media {
 func connect(t *testing.T, ctx context.Context, a, b *UE, opts CallOptions) (*Call, *Call) {
 	t.Helper()
 
-	ac, err := a.Invite("sip:+15550002@"+domain+";user=phone", opts)
+	ac, err := a.MMTel().Invite("sip:+15550002@"+domain+";user=phone", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestBasicCall(t *testing.T) {
 
 	invite := bc.Invite()
 	for name, want := range map[string]string{
-		"P-Preferred-Service": mmtelService,
+		"P-Preferred-Service": ICSIMMTel,
 		"Session-Expires":     "1800",
 		"Supported":           "100rel, timer, 199",
 	} {
@@ -284,7 +284,7 @@ func TestReject(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
 
-	ac, err := a.Invite("tel:+15550002", CallOptions{})
+	ac, err := a.MMTel().Invite("tel:+15550002", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestBusyWithoutAcceptCalls(t *testing.T) {
 	b := newCallUE(t, "001010000000003", a.Unprotected(), Config{})
 	a.cfg.PCSCF = b.Unprotected()
 
-	ac, err := a.Invite("tel:+15550003", CallOptions{})
+	ac, err := a.MMTel().Invite("tel:+15550003", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestCancel(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
 
-	ac, err := a.Invite("tel:+15550002", CallOptions{Preconditions: true})
+	ac, err := a.MMTel().Invite("tel:+15550002", CallOptions{Preconditions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestCancelBeforeRinging(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
 
-	ac, err := a.Invite("tel:+15550002", CallOptions{})
+	ac, err := a.MMTel().Invite("tel:+15550002", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func newPeer(t *testing.T, cfg Config) *peer {
 	t.Helper()
 
 	s := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
-	cfg.AcceptCalls = true
+	cfg.MMTel.AcceptCalls = true
 
 	return &peer{t: t, s: s, u: newCallUE(t, "001010000000002", s.Addr(), cfg)}
 }
@@ -784,7 +784,7 @@ func TestCallerAgainstMotorolaCallee(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	c, err := p.u.Invite("tel:15550000001;phone-context=ims.mnc001.mcc001.3gppnetwork.org", CallOptions{Preconditions: true})
+	c, err := p.u.MMTel().Invite("tel:15550000001;phone-context=ims.mnc001.mcc001.3gppnetwork.org", CallOptions{Preconditions: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1194,7 +1194,7 @@ func TestIntervalTooSmall(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
 
-	c, err := p.u.Invite("tel:+15550002", CallOptions{SessionExpires: 60 * time.Second})
+	c, err := p.u.MMTel().Invite("tel:+15550002", CallOptions{SessionExpires: 60 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

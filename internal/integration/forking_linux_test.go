@@ -44,9 +44,9 @@ func twoDevices(t *testing.T, s *scene, callerCfg, secondCfg testue.Config) devi
 
 	d := devices{s: s, caller: s.caller(0, false, callerCfg)}
 
-	secondCfg.AcceptCalls = true
+	secondCfg.MMTel.AcceptCalls = true
 
-	d.phone = s.newDevice(1, callee, false, testue.Config{AcceptCalls: true})
+	d.phone = s.newDevice(1, callee, false, testue.Config{MMTel: testue.MMTelConfig{AcceptCalls: true}})
 	s.register(d.phone)
 
 	d.second = s.newDevice(4, second, false, secondCfg)
@@ -221,7 +221,7 @@ func TestRingAllDevices(t *testing.T) {
 		sc := incoming(t, d.second, ac)
 
 		select {
-		case c := <-d.phone.Calls():
+		case c := <-d.phone.MMTel().Calls():
 			t.Fatalf("the phone got %s", callID(c))
 		case <-time.After(500 * time.Millisecond):
 		}
@@ -310,7 +310,7 @@ func TestRingDevicesInTurn(t *testing.T) {
 	// a video call rings the voice-only device together with the video one.
 	t.Run("caller preferences", func(t *testing.T) {
 		s := newSceneWith(t, configure)
-		d := twoDevices(t, s, testue.Config{Video: true}, testue.Config{Video: true})
+		d := twoDevices(t, s, testue.Config{MMTel: testue.MMTelConfig{Video: true}}, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
 
 		ctx := s.ctx()
 		ac := invite(t, d.caller, phone(1), testue.CallOptions{Video: true})

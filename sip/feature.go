@@ -74,7 +74,8 @@ func NewStringFeature(tag, s string) FeatureTerm {
 }
 
 func normalizeFeatureTag(tag string) string {
-	if strings.HasPrefix(tag, "+") {
+	// A feature parameter: "+g.3gpp.mcptt", or a base tag ("audio" for sip.audio).
+	if strings.HasPrefix(tag, "+") || isBaseFeatureTag(tag) {
 		return featureTag(tag)
 	}
 

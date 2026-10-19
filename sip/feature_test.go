@@ -2,6 +2,7 @@ package sip
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -387,5 +388,17 @@ func TestCallerPreferenceValue(t *testing.T) {
 
 	if _, err := FeatureCapsValue(FeatureSet{NewFeature("sip.video")}); err == nil {
 		t.Error("base tag as a feature-capability indicator")
+	}
+}
+
+// RFC 3840 §9: a base tag given as its feature parameter is the sip. tag, and encodes back without a "+".
+func TestNewFeatureBaseParam(t *testing.T) {
+	for _, name := range []string{"audio", "Video", "sip.audio"} {
+		f := NewFeature(name)
+
+		p, err := f.Param()
+		if err != nil || !strings.HasPrefix(f.Tag, "sip.") || strings.HasPrefix(p.Name, "+") {
+			t.Errorf("%s: tag %s, param %+v, %v", name, f.Tag, p, err)
+		}
 	}
 }

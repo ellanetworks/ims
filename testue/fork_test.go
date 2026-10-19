@@ -91,7 +91,7 @@ func forkedInvite(t *testing.T) (*peer, *Call, *sip.Request) {
 
 	p := newPeer(t, Config{})
 
-	c, err := p.u.Invite("tel:+15550002", CallOptions{})
+	c, err := p.u.MMTel().Invite("tel:+15550002", CallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestCancelReason(t *testing.T) {
 }
 
 func TestContactParams(t *testing.T) {
-	u, _ := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "+g.example"}}, Video: true})
+	u, _ := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "+g.example"}}, MMTel: MMTelConfig{Video: true}})
 
 	contact, err := sip.ParseAddress(u.contact(5060))
 	if err != nil {
@@ -347,9 +347,10 @@ func TestContactParams(t *testing.T) {
 	}
 }
 
-// The media feature tags follow Config.Video: ContactParams cannot claim a medium the UE does not take.
+// The UE sets its instance, its reg-id and the feature tags of its services: ContactParams cannot claim a medium the
+// UE does not take.
 func TestContactParamsOwnedByTheUE(t *testing.T) {
-	for _, name := range ownContactParams {
+	for _, name := range []string{"+sip.instance", "+g.3gpp.icsi-ref", "+g.3gpp.smsip", "audio", "video", "reg-id"} {
 		cfg := Config{
 			IMSI: imsi, IMEI: imei, K: testK, OPc: testOPc, Plain: true,
 			PCSCF: netip.AddrPortFrom(loopback, 5060), Local: loopback,
