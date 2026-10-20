@@ -56,24 +56,28 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 
 	n := cfg.N5
 
-	creds, err := n5Credentials(*n, cfg.N5NotifyURI(), logger)
-	if err != nil {
-		return nil, fmt.Errorf("N5: %w", err)
-	}
-
-	b, err := n5policy.New(n5policy.Config{
-		PCF: s.Policy.PCFURI, Notify: cfg.N5NotifyURI(), TLS: creds, Observe: m.observeN5, Logger: logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("N5: %w", err)
-	}
-
+	// Listening first: the notification URI has the port bound, the system's choice of a port of 0.
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", netip.AddrPortFrom(n.Notify.Address, uint16(n.Notify.Port)).String())
 	if err != nil {
-		b.Close()
 		return nil, fmt.Errorf("listen for N5 notifications: %w", err)
+	}
+
+	notify := cfg.N5NotifyURIAt(uint16(ln.Addr().(*net.TCPAddr).Port))
+
+	creds, err := n5Credentials(*n, notify, logger)
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("N5: %w", err)
+	}
+
+	b, err := n5policy.New(n5policy.Config{
+		PCF: s.Policy.PCFURI, Notify: notify, TLS: creds, Observe: m.observeN5, Logger: logger,
+	})
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("N5: %w", err)
 	}
 
 	pf.n5, pf.backend, pf.ln = b, b, ln

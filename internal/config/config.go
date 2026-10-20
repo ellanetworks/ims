@@ -75,7 +75,8 @@ type N5 struct {
 	TLS *TLS `yaml:"tls"`
 }
 
-// N5Notify is where the P-CSCF listens for the PCF's notifications.
+// N5Notify is where the P-CSCF listens for the PCF's notifications. A Port of 0 is one the system chooses: the
+// notification URI the PCF is given with each request has it (TS 29.514 §5.6.2.3).
 type N5Notify struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
@@ -84,6 +85,15 @@ type N5Notify struct {
 // N5NotifyURI is the root of the notification URIs: the address the P-CSCF listens on, which needs no DNS at the
 // PCF. Over https, the certificate must be valid for that address.
 func (c Config) N5NotifyURI() string {
+	if c.N5 == nil {
+		return ""
+	}
+
+	return c.N5NotifyURIAt(uint16(c.N5.Notify.Port))
+}
+
+// N5NotifyURIAt is N5NotifyURI of the port the P-CSCF listens on: of a Port of 0, the one the system chose.
+func (c Config) N5NotifyURIAt(port uint16) string {
 	n := c.N5
 	if n == nil {
 		return ""
@@ -94,7 +104,7 @@ func (c Config) N5NotifyURI() string {
 		scheme = "https"
 	}
 
-	return scheme + "://" + netip.AddrPortFrom(n.Notify.Address, uint16(n.Notify.Port)).String()
+	return scheme + "://" + netip.AddrPortFrom(n.Notify.Address, port).String()
 }
 
 // TLS are PEM files: the CA certificates that the peers' certificates must chain to, and the certificate and
@@ -235,8 +245,11 @@ func (c Config) validateN5(n N5) error {
 		return fmt.Errorf("n5.notify.address must be a specific address, not %s, since the PCF sends to it", a)
 	case a.Zone() != "" || a.Is4In6():
 		return fmt.Errorf("n5.notify.address %s must be a plain IPv4 or IPv6 address", a)
-	case n.Notify.Port < 1 || n.Notify.Port > 65535:
+	case n.Notify.Port < 0 || n.Notify.Port > 65535:
 		return fmt.Errorf("n5.notify.port %d is out of range", n.Notify.Port)
+	case n.Notify.Port == 0:
+		// The system's choice takes no port of the others.
+		return nil
 	}
 
 	// TCP ports on the same address: the API, SIP over TCP, and Diameter.

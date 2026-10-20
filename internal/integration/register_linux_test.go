@@ -196,7 +196,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		s.pol = &n5Policy{s: s}
 
 		pol = settings.Policy{Interface: settings.PolicyN5, PCFURI: s.pcf.URL()}
-		n5 = &config.N5{Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)}}
+		n5 = &config.N5{Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: 0}}
 	case policyN5TLS:
 		// Both ends by IP address, and the notification URIs by default.
 		ca := sbitlstest.NewCA(t, "ca")
@@ -208,7 +208,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 
 		pol = settings.Policy{Interface: settings.PolicyN5, PCFURI: s.pcf.URL()}
 		n5 = &config.N5{
-			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: freePort(t)},
+			Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
 			TLS:    &config.TLS{CA: ims.Files.CA, Cert: ims.Files.Cert, Key: ims.Files.Key},
 		}
 	default:

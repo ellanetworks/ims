@@ -124,6 +124,18 @@ func TestN5NotifyURI(t *testing.T) {
 	}
 }
 
+// A notify port of 0 is the system's choice, which the notification URI then has.
+func TestN5NotifyPortChosen(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+strings.Replace(n5, "port: 7778", "port: 0", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := cfg.N5NotifyURIAt(41234); got != "http://10.0.0.5:41234" {
+		t.Fatalf("notify URI = %q", got)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	valid := validDB + validAPI + validSIP
 
@@ -178,7 +190,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"n5 tls without key", valid + validDiameter + strings.Replace(n5TLS, "    key: /etc/ims/tls/ims.key\n", "", 1), "n5.tls.key is required"},
 		{"n5 without notify address", valid + validDiameter + strings.Replace(n5, "    address: 10.0.0.5\n", "", 1), "n5.notify.address is required"},
 		{"n5 unspecified notify address", valid + validDiameter + strings.Replace(n5, "address: 10.0.0.5", "address: 0.0.0.0", 1), "must be a specific address"},
-		{"n5 notify port out of range", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 0", 1), "n5.notify.port 0 is out of range"},
+		{"n5 notify port out of range", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 65536", 1), "n5.notify.port 65536 is out of range"},
 		{"n5 notify port on SIP", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 5060", 1), "n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
 		{"n5 notify port on Diameter", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 3868", 1), "n5.notify.port and diameter.port are both 3868"},
 		{

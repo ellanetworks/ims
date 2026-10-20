@@ -4,7 +4,6 @@ package integration
 
 import (
 	"cmp"
-	"net"
 	"net/http"
 	"net/netip"
 	"path"
@@ -32,19 +31,6 @@ func forEachPolicy(t *testing.T, f func(t *testing.T, iface string)) {
 	for _, iface := range []string{policyRx, policyN5, policyN5TLS} {
 		t.Run(iface, func(t *testing.T) { f(t, iface) })
 	}
-}
-
-func freePort(t *testing.T) int {
-	t.Helper()
-
-	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = ln.Close() }()
-
-	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // policyRef is a policy session: its local ID, and over N5 its context.
