@@ -54,9 +54,9 @@ func TestLoad(t *testing.T) {
 	}
 
 	want := Config{
-		Logging:  Logging{Level: slog.LevelDebug},
-		DB:       DB{Path: "ims.db"},
-		API:      API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
+		Logging: Logging{Level: slog.LevelDebug},
+		DB:      DB{Path: "ims.db"},
+		API:     API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
 		SIP: SIP{
 			Addresses:       []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
 			TrustedNetworks: []netip.Prefix{netip.MustParsePrefix("10.0.1.0/24")},

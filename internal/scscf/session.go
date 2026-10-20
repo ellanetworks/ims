@@ -844,15 +844,6 @@ func (s *Sessions) nextHop(out *sip.Request, in sip.Flow) (proxy.Target, error) 
 	return s.target(tr, dest, in)
 }
 
-func (s *Sessions) targetOf(u sip.URI, in sip.Flow) (proxy.Target, error) {
-	tr, dest, err := sip.Destination(u)
-	if err != nil {
-		return proxy.Target{}, err
-	}
-
-	return s.target(tr, dest, in)
-}
-
 func (s *Sessions) target(tr sip.Transport, dest netip.AddrPort, in sip.Flow) (proxy.Target, error) {
 	local, ok := s.local(in, dest.Addr())
 	if !ok {

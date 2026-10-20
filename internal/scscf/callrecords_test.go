@@ -4,10 +4,12 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/siptest"
 )
 
 const testICID = "AB12CD34"
@@ -156,5 +158,23 @@ func TestCallRecordReleasedOnDeregistration(t *testing.T) {
 
 	if r := sh.callRecord(t, rec); r.Outcome != db.OutcomeAnswered || r.EndedBy != db.PartyNetwork {
 		t.Fatalf("record %+v, want an answered call ended by the network", r)
+	}
+}
+
+// The call as it leaves the S-CSCF through an AS has its routing recorded too.
+func TestCallRecordRoutedThroughAnAS(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("INVITE"))}
+	})
+	rec := sh.recorded(t)
+
+	sh.orig.Send(sip.UDP, sh.scscf, charged(sh.originating("INVITE", remoteTel, "<"+testMSISDN+">")))
+
+	got, _ := as.RecvRequest()
+	as.Send(sip.UDP, sh.scscf, proxied(got, as, true))
+	sh.icscf.RecvRequest()
+
+	if r := sh.callRecord(t, rec); r.CalledParty != remoteTel || len(r.CallingParty) == 0 {
+		t.Fatalf("record %+v, want the routing of the call", r)
 	}
 }

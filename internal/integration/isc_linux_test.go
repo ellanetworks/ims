@@ -746,6 +746,44 @@ func TestPSIRouting(t *testing.T) {
 	if res := mcpttMessage(t, a, "sip:mcptt-none@"+domain); res.StatusCode != 480 {
 		t.Fatalf("MESSAGE to a PSI without iFCs got %s, want 480", res.StartLine())
 	}
+
+	// TS 24.229 §5.3.2.1, §5.4.3.3 step 1: a PSI the HSS does not know, or that it bars, is not found.
+	s.hss.Add(hsstest.Subscriber{
+		IMPI:                 "mcptt-barred@" + domain,
+		IMPUs:                []cx.ProfileIdentity{{Identity: "sip:mcptt-barred@" + domain, Type: cx.IdentityDistinctPSI, Barred: true}},
+		UnregisteredServices: true,
+	})
+
+	for _, target := range []string{"sip:mcptt-unknown@" + domain, "sip:mcptt-barred@" + domain} {
+		if res := mcpttMessage(t, a, target); res.StatusCode != 404 {
+			t.Fatalf("MESSAGE to %s got %s, want 404", target, res.StartLine())
+		}
+	}
+}
+
+// TS 23.228 §5.4.12.2, TS 24.229 §5.4.3.3: an INVITE to a PSI reaches the AS of its iFC, whose answer ends it.
+func TestInviteToAPSI(t *testing.T) {
+	s := newISCScene(t)
+	srv := newAS(t, 5091)
+	srv.handle = func(r *ua.Request) { _ = r.Reject(486) }
+
+	psi := "sip:mcptt-orig-pf@" + domain
+	s.hss.Add(hsstest.Subscriber{
+		IMPI:  "mcptt-psi@" + domain,
+		IMPUs: []cx.ProfileIdentity{{Identity: psi, Type: cx.IdentityDistinctPSI}},
+		IFCs: []cx.InitialFilterCriteria{ifc(0, srv.URI(), cx.DefaultHandlingSessionContinued,
+			methodIs("INVITE"), caseIs(cx.SessionCaseTerminatingUnregistered))},
+		UnregisteredServices: true,
+	})
+
+	a := s.caller(0, false, testue.Config{Transport: sip.UDP})
+
+	failed(t, s.ctx(), invite(t, a, psi, testue.CallOptions{}), 486)
+
+	if r := srv.next(t); r.Method != "INVITE" || r.URI.String() != psi ||
+		r.Header.Get("P-Served-User") != "<"+psi+">;sescase=term;regstate=unreg" {
+		t.Fatalf("AS got:\n%s\nwant the INVITE to the PSI, served unregistered", r)
+	}
 }
 
 // TS 24.229 §5.4.3.1, §5.4.3.2, §5.7.3: requests of an AS on behalf of a user, with "orig", of a PSI, and to a

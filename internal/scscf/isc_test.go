@@ -300,3 +300,290 @@ func TestISCMethods(t *testing.T) {
 
 	sh.icscf.RecvNone(10 * time.Millisecond)
 }
+
+// TS 24.229 §5.4.3.3 steps 2b and 6: the 2xx of the served user carries the registration token to the AS, but not on
+// to the I-CSCF, which another network may be behind.
+func TestISCTerminatingToken(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		term := cx.SessionCaseTerminatingRegistered
+
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued,
+			methodSPT("MESSAGE"), cx.ServicePointTrigger{SessionCase: &term})}
+	})
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", testTel))
+
+	got, _ := as.RecvRequest()
+	as.Send(sip.UDP, sh.scscf, proxied(got, as, false))
+
+	toUE, f := sh.term.RecvRequest()
+	reply(t, sh.term, toUE, f, 200, "ue")
+
+	res := responseOn(t, as)
+	if !strings.Contains(res.Header.Get("Feature-Caps"), registrationToken) {
+		t.Fatalf("AS got:\n%s\nwant the registration token", res)
+	}
+
+	relayed, to := proxiedResponse(t, res)
+	as.Send(sip.UDP, to, relayed)
+
+	if ok := final(t, sh.icscf); ok.StatusCode != 200 || strings.Contains(ok.Header.Get("Feature-Caps"), registrationToken) {
+		t.Fatalf("I-CSCF got:\n%s\nwant the 200 without the registration token", ok)
+	}
+}
+
+// TS 24.229 §5.4.3.2 step 3, §5.4.3.4: an original dialog identifier that names nothing is refused.
+func TestISCUnknownODI(t *testing.T) {
+	sh, _ := newISCHarness(t, func(*siptest.Socket) []cx.InitialFilterCriteria { return nil })
+
+	req := siptest.NewRequest("MESSAGE", remoteTel, sip.UDP, sh.icscf.Addr())
+	req.Header.Prepend("Route", "<sip:"+odiPrefix+"nothing@"+sh.scscf.String()+";lr>")
+	sh.icscf.Send(sip.UDP, sh.scscf, req)
+
+	if res := final(t, sh.icscf); res.StatusCode != 403 {
+		t.Fatalf("got %q, want 403", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.3.2: once the default handling went on without the AS, what the AS sends back late is refused,
+// rather than run the rest of the iFCs a second time.
+func TestISCLateReturn(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"))}
+	})
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">"))
+
+	got, _ := as.RecvRequest()
+
+	sh.sipClock.Advance(DefaultASTimeout)
+	sh.sipClock.Advance(DefaultASTimeout)
+
+	out, f := sh.icscf.RecvRequest()
+	if out.Method != "MESSAGE" {
+		t.Fatalf("I-CSCF got %s, want the MESSAGE past the AS", out.Method)
+	}
+
+	as.Send(sip.UDP, sh.scscf, proxied(got, as, false))
+
+	if res := responseOn(t, as); res.StatusCode != 403 {
+		t.Fatalf("AS got %q, want 403", res.StartLine())
+	}
+
+	reply(t, sh.icscf, out, f, 200, "callee")
+
+	if res := final(t, sh.orig); res.StatusCode != 200 {
+		t.Fatalf("caller got %q, want the 200", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.3.2 NOTE 8, §5.4.3.4 NOTE: an AS that answered the request sends another with its original dialog
+// identifier, as a B2BUA does; it goes on with the iFCs after the AS's.
+func TestISCODIReused(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionTerminated, methodSPT("MESSAGE"))}
+	})
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">"))
+
+	got, f := as.RecvRequest()
+	reply(t, as, got, f, 202, "as")
+
+	if res := final(t, sh.orig); res.StatusCode != 202 {
+		t.Fatalf("caller got %q, want the AS's 202", res.StartLine())
+	}
+
+	later := got.Clone()
+	later.Header.PopFirst("Route")
+	later.Header.Del("Via")
+	later.Header.Add("Via", sip.NewVia(sip.UDP, as.Addr()).String())
+	later.Header.Set("Call-ID", sip.NewTag()+"@as")
+	as.Send(sip.UDP, sh.scscf, later)
+
+	out, fi := sh.icscf.RecvRequest()
+	if out.Method != "MESSAGE" || out.Header.CallID() != later.Header.CallID() {
+		t.Fatalf("I-CSCF got:\n%s\nwant the AS's MESSAGE", out)
+	}
+
+	reply(t, sh.icscf, out, fi, 200, "callee")
+
+	if res := responseOn(t, as); res.StatusCode != 200 {
+		t.Fatalf("AS got %q, want the 200", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.3.2 b: an AS that sent a 1xx, a 100 included, has not failed: its 5xx goes to the served user, as a
+// 500 (RFC 3261 §16.7 step 6). Without one, the default handling applies. That the 100 stops the AS's timeout too is
+// the proxy's (Options.AnyResponse).
+func TestISCResponseAfterTrying(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"))}
+	})
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">"))
+
+	got, f := as.RecvRequest()
+	as.Send(sip.UDP, f.Remote, sip.NewResponse(got, 100, ""))
+	reply(t, as, got, f, 503, "as")
+
+	if res := final(t, sh.orig); res.StatusCode != 500 {
+		t.Fatalf("caller got %q, want the AS's 503 as a 500", res.StartLine())
+	}
+
+	again := sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">")
+	sh.orig.Send(sip.UDP, sh.scscf, again)
+
+	got, f = as.RecvRequest()
+
+	reply(t, as, got, f, 503, "as")
+
+	out, fi := sh.icscf.RecvRequest()
+	reply(t, sh.icscf, out, fi, 200, "callee")
+
+	if res := final(t, sh.orig); res.StatusCode != 200 {
+		t.Fatalf("caller got %q, want the 200 past the AS", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.3.2 step 1 a: the served user of a request from an AS is the identity of P-Served-User, which may
+// differ from the one the AS asserts; its iFCs apply.
+func TestISCServedUserOtherThanAsserted(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		orig := cx.SessionCaseOriginatingRegistered
+
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued,
+			methodSPT("MESSAGE"), cx.ServicePointTrigger{SessionCase: &orig})}
+	})
+
+	psi := "sip:mcptt-tpf@" + homeDomain
+	sender := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	req := siptest.NewRequest("MESSAGE", remoteTel, sip.UDP, sender.Addr())
+	req.Header.Prepend("Route", "<sip:"+sh.scscf.String()+";lr;orig>")
+	req.Header.Add("P-Served-User", "<"+testMSISDN+">;sescase=orig;regstate=reg")
+	req.Header.Add("P-Asserted-Identity", "<"+psi+">")
+	sender.Send(sip.UDP, sh.scscf, req)
+
+	got, f := as.RecvRequest()
+	if v := got.Header.Get("P-Served-User"); v != "<"+testMSISDN+">;sescase=orig;regstate=reg" {
+		t.Fatalf("AS got P-Served-User %q, want the user of P-Served-User", v)
+	}
+
+	if ids := asserted(t, got.Header); len(ids) != 1 || ids[0] != "<"+psi+">" {
+		t.Fatalf("AS got P-Asserted-Identity %v, want the AS's", ids)
+	}
+
+	reply(t, as, got, f, 200, "as")
+
+	if res := final(t, sender); res.StatusCode != 200 {
+		t.Fatalf("sender got %q, want 200", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.1.1 item 1, §3.1: a UE that restarted registers its contact again, unprotected: an initial
+// registration for the ASs, as the first one was, where a refresh is not.
+func TestThirdPartyInitialAfterRestart(t *testing.T) {
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	h := newHarness(t)
+	h.hss.set(func(h *fakeHSS) {
+		register := "REGISTER"
+		handling := cx.DefaultHandlingSessionContinued
+
+		h.subscriptions[0].ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{{
+			Trigger: &cx.TriggerPoint{ServicePointTriggers: []cx.ServicePointTrigger{{
+				Groups: []int32{0}, Method: &register, RegistrationTypes: []cx.RegistrationType{cx.RegistrationTypeInitial},
+			}}},
+			ApplicationServer: cx.ApplicationServer{ServerName: "sip:" + as.Addr().String(), DefaultHandling: &handling},
+		}}
+	})
+
+	u := h.newUE()
+
+	thirdParty := func() {
+		t.Helper()
+
+		got, f := as.RecvRequest()
+		if got.Method != "REGISTER" {
+			t.Fatalf("AS got %s, want a third-party REGISTER", got.Method)
+		}
+
+		as.Send(sip.UDP, f.Remote, sip.NewResponse(got, 200, ""))
+	}
+
+	nonce := u.challenged(registerOptions{})
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 200)
+	thirdParty()
+
+	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES)}), 200)
+	as.RecvNone(50 * time.Millisecond)
+
+	u.callID = sip.NewTag() + "@127.0.0.1"
+	u.register(registerOptions{})
+	thirdParty()
+}
+
+// TS 23.228 §5.12.1 steps 6 and 7, TS 24.229 §5.4.3.3 NOTE 27: the S-CSCF keeps the profile that SAR
+// UNREGISTERED_USER downloads, for the canonical identity (TS 29.229 §6.3.2), for the identity's later requests, and
+// clears its name at the HSS a registration period after (TS 29.228 §6.1.2.1).
+func TestUnregisteredProfileKept(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.wantSAR(t, cx.AssignmentRegistration)
+
+	for range 2 {
+		sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", "sip:second@"+strings.ToUpper(homeDomain)+";transport=udp"))
+
+		if res := final(t, sh.icscf); res.StatusCode != 480 {
+			t.Fatalf("got %q, want 480: no service for the identity unregistered", res.StartLine())
+		}
+	}
+
+	sar := sh.hss.nextSAR(t)
+	if sar.Type != cx.AssignmentUnregisteredUser || sar.PrivateIdentity != "" || !slices.Equal(sar.PublicIdentities, []string{secondIMPU}) {
+		t.Fatalf("SAR = %+v, want UNREGISTERED_USER of the canonical identity", sar)
+	}
+
+	sh.hss.noCx(t)
+
+	sh.clock.Advance(sh.cfg.MaxExpires)
+	sh.clock.Advance(2 * sweepInterval)
+
+	for {
+		sar := sh.hss.nextSAR(t)
+		if sar.PrivateIdentity != "" {
+			continue
+		}
+
+		if sar.Type != cx.AssignmentTimeoutDeregistration || !slices.Equal(sar.PublicIdentities, []string{secondIMPU}) {
+			t.Fatalf("SAR = %+v, want TIMEOUT_DEREGISTRATION of the identity", sar)
+		}
+
+		break
+	}
+}
+
+// TS 24.229 §5.3.1.3: an HSS that cannot be reached for the profile of an identity makes a 480, as at the I-CSCF.
+func TestTerminatingHSSDown(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.loop.SetDown(true)
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", secondIMPU))
+
+	if res := final(t, sh.icscf); res.StatusCode != 480 {
+		t.Fatalf("got %q, want 480", res.StartLine())
+	}
+}
+
+// TS 24.229 §5.4.3.2 step 18: the token goes, the other indicators stay, a ";" in a quoted value included.
+func TestWithoutRegistrationToken(t *testing.T) {
+	var h sip.Header
+
+	h.Add("Feature-Caps", `*;+g.3gpp.registration-token="<7>";+g.3gpp.trf="<sip:trf.example.com;lr>"`)
+	h.Add("Feature-Caps", `*;+g.3gpp.registration-token="<8>"`)
+
+	withoutRegistrationToken(&h)
+
+	if got := h.Values("Feature-Caps"); !slices.Equal(got, []string{`*;+g.3gpp.trf="<sip:trf.example.com;lr>"`}) {
+		t.Fatalf("Feature-Caps = %q, want the other indicator only", got)
+	}
+}

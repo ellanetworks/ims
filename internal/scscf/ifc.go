@@ -229,13 +229,21 @@ func (t trigger) header(m cx.HeaderMatch) bool {
 			return true
 		}
 
-		values := []string{f.Value}
-		if !singleValued(name) {
-			values = sip.SplitList(f.Value)
+		var values []string
+
+		switch {
+		case slices.ContainsFunc(textHeaders, func(n string) bool { return strings.EqualFold(n, name) }):
+			values = []string{collapseLWS(f.Value)}
+		case slices.ContainsFunc(authHeaders, func(n string) bool { return strings.EqualFold(n, name) }):
+			values = []string{headerValue(f.Value)}
+		default:
+			for _, v := range sip.SplitList(f.Value) {
+				values = append(values, headerValue(v))
+			}
 		}
 
 		for _, v := range values {
-			if search(*m.Content, headerValue(v)) {
+			if search(*m.Content, v) {
 				return true
 			}
 		}
@@ -244,20 +252,13 @@ func (t trigger) header(m cx.HeaderMatch) bool {
 	return false
 }
 
-// singleValued reports a header field whose value is not a comma-separated list but may hold commas: the exceptions
-// of RFC 3261 §7.3.1, and the fields of a date, a comment or free text (RFC 3261 §25.1).
-func singleValued(name string) bool {
-	for _, n := range []string{
-		"Authorization", "Proxy-Authorization", "WWW-Authenticate", "Proxy-Authenticate", "Authentication-Info",
-		"Date", "Subject", "Organization", "Server", "User-Agent", "Retry-After",
-	} {
-		if strings.EqualFold(name, n) {
-			return true
-		}
-	}
-
-	return false
-}
+// authHeaders and textHeaders are the header fields whose value is no comma-separated list but may hold commas
+// (RFC 3261 §25.1): the exceptions of RFC 3261 §7.3.1, whose commas separate parameters, and those of a date, a
+// comment or free text, whose white space is part of the value rather than SWS.
+var (
+	authHeaders = []string{"Authorization", "Proxy-Authorization", "WWW-Authenticate", "Proxy-Authenticate", "Authentication-Info"}
+	textHeaders = []string{"Date", "Subject", "Organization", "Server", "User-Agent", "Retry-After"}
+)
 
 // headerValue is a header value as Annex F of TS 29.228 matches it: each run of linear white space reduced to a SP,
 // and the optional white space around separators (SWS, RFC 3261 §25.1) removed, outside quoted strings.
@@ -275,21 +276,18 @@ func headerValue(v string) string {
 		case quoted && c == '\\' && i+1 < len(v):
 			b = append(b, c, v[i+1])
 			i++
+		case c == '"' && !quoted:
+			// LDQUOT (RFC 3261 §25.1).
+			b = append(trimSP(b), c)
+			quoted = true
 		case c == '"':
-			// LDQUOT and RDQUOT (RFC 3261 §25.1).
-			if !quoted {
-				b = trimSP(b)
-			} else if i+1 < len(v) && v[i+1] == ' ' {
-				b = append(b, c)
-				i++
-
-				quoted = false
-
-				continue
-			}
-
-			quoted = !quoted
+			// RDQUOT (RFC 3261 §25.1).
 			b = append(b, c)
+			quoted = false
+
+			if i+1 < len(v) && v[i+1] == ' ' {
+				i++
+			}
 		case !quoted && c == ' ' && (len(b) > 0 && strings.IndexByte(";=,:/*()>", b[len(b)-1]) >= 0 ||
 			i+1 < len(v) && strings.IndexByte(";=,:/*()<", v[i+1]) >= 0):
 		default:

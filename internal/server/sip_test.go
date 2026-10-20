@@ -358,3 +358,32 @@ func TestSCSCFAnswersOptions(t *testing.T) {
 		wantResponse(t, peer, 200, "OPTIONS")
 	}
 }
+
+// TS 24.229 §4.4: the trusted networks are the I-CSCF's and the S-CSCF's. To the P-CSCF, a node there is no more the
+// core than a UE is: it refuses its MESSAGE as an unregistered UE's, where it would hand one from the core to the
+// placeholder. The S-CSCF takes nothing from outside the trust domain, "orig" included.
+func TestTrustByRole(t *testing.T) {
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv.Config.SIP.TrustedNetworks = []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}
+
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	pcscf := sipListener(t, srv, rolePCSCF, loopback)
+	scscf := sipListener(t, srv, roleSCSCF, loopback)
+	as := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
+	outsider := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.3:6000"))
+
+	msg := siptest.NewRequest("MESSAGE", "sip:bob@"+imsRealm, sip.UDP, as.Addr())
+	as.Send(sip.UDP, pcscf, msg)
+	as.RecvNone(200 * time.Millisecond)
+
+	orig := siptest.NewRequest("MESSAGE", "sip:bob@"+imsRealm, sip.UDP, outsider.Addr())
+	orig.Header.Prepend("Route", "<sip:"+scscf.String()+";lr;orig>")
+	orig.Header.Add("P-Asserted-Identity", "<sip:alice@"+imsRealm+">")
+	outsider.Send(sip.UDP, scscf, orig)
+	wantResponse(t, outsider, 403, "MESSAGE")
+}

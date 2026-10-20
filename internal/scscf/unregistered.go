@@ -135,6 +135,7 @@ func (r *Registrar) releaseUnregistered(ctx context.Context) {
 	for id, e := range r.unregistered {
 		if e.done() && e.err == nil && !now.Before(e.expires) {
 			expired = append(expired, e)
+
 			delete(r.unregistered, id)
 		}
 	}

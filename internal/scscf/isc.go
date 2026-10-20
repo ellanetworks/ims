@@ -232,11 +232,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	r.Header.Add("P-Served-User", servedUser(c))
 
 	if c.token != "" {
-		withoutRegistrationToken(&r.Header)
-
-		if v, err := sip.FeatureCapsValue(sip.FeatureSet{sip.NewStringFeature(registrationToken, c.token)}); err == nil {
-			r.Header.Add("Feature-Caps", v)
-		}
+		withRegistrationToken(&r.Header, c.token)
 	}
 
 	rr := rrTerminating

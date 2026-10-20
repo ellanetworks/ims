@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/cx"
@@ -175,6 +176,8 @@ func TestServicePointTriggers(t *testing.T) {
 	invite.Header.Add("Accept-Contact", `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt";require`)
 	invite.Header.Add("P-Asserted-Service", "urn:urn-7:3gpp-service.ims.icsi.mcptt")
 	invite.Header.Add("Supported", "timer,  100rel")
+	invite.Header.Add("Date", "Sat, 13 Nov 2010 23:29:00 GMT")
+	invite.Header.Add("P-Early-Media", `supported ;  "quoted  text" , gated`)
 	invite.SetBody("application/sdp", []byte("v=0\r\nm=audio 4000 RTP/AVP 0\r\nm=application 4002 udp MCPTT\r\n"))
 
 	tel := annexCRequest("INVITE", "<sip:ann@homedomain.com>")
@@ -198,6 +201,13 @@ func TestServicePointTriggers(t *testing.T) {
 		}, true},
 		{"each value of a list", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "Supported", Content: ptr(`^100rel$`)},
+		}, true},
+		// TS 29.228 Annex F: no SWS around the separators, each LWS a SP, but in a quoted string.
+		{"SWS removed", trigger{req: invite}, cx.ServicePointTrigger{
+			SIPHeader: &cx.HeaderMatch{Header: "P-Early-Media", Content: ptr(`^supported;"quoted text"$`)},
+		}, true},
+		{"a header that is no list", trigger{req: invite}, cx.ServicePointTrigger{
+			SIPHeader: &cx.HeaderMatch{Header: "^Date$", Content: ptr(`^Sat, 13 Nov 2010`)},
 		}, true},
 		{"session case", trigger{req: invite, sescase: cx.SessionCaseTerminatingUnregistered}, cx.ServicePointTrigger{
 			SessionCase: ptr(cx.SessionCaseTerminatingUnregistered),
@@ -286,7 +296,24 @@ func TestFilterCriteria(t *testing.T) {
 	}
 }
 
-// TS 23.003 §13.5
+// TS 29.228 Annex F: an SPT that cannot be evaluated leaves out its iFC, rather than match every request when
+// negated.
+func TestInvalidExpression(t *testing.T) {
+	r := New(Config{Logger: slog.New(slog.DiscardHandler)})
+
+	p := cx.ServiceProfile{InitialFilterCriteria: []cx.InitialFilterCriteria{
+		{Priority: 1, Trigger: &cx.TriggerPoint{ServicePointTriggers: []cx.ServicePointTrigger{
+			{Negated: true, SIPHeader: &cx.HeaderMatch{Header: "Accept-Contact", Content: ptr("(")}},
+		}}, ApplicationServer: cx.ApplicationServer{ServerName: "sip:bad@as"}},
+		{Priority: 2, ApplicationServer: cx.ApplicationServer{ServerName: "sip:good@as"}},
+	}}
+
+	if got := r.criteria(p, true); len(got) != 1 || got[0].ApplicationServer.ServerName != "sip:good@as" {
+		t.Fatalf("criteria = %+v, want the valid iFC only", got)
+	}
+}
+
+// TS 23.003 §13.4, §13.5
 func TestWildcardedPSI(t *testing.T) {
 	sub := cx.IMSSubscription{PrivateIdentity: "psi@homedomain.com", ServiceProfiles: []cx.ServiceProfile{
 		{PublicIdentities: []cx.ProfileIdentity{{Identity: "sip:chatlist!.*!@example.com", Type: cx.IdentityWildcardedPSI}}},
@@ -301,6 +328,8 @@ func TestWildcardedPSI(t *testing.T) {
 		{"sip:chatlistAbC@example.com", true},
 		{"sip:chat@example.com", false},
 		{"sip:chatlist1@example.org", false},
+		// The canonical form of the identity: no port or parameters, the domain in lower case.
+		{"sip:chatlist1@Example.COM:5060;transport=tcp", true},
 	} {
 		u, err := sip.ParseURI(tt.uri)
 		if err != nil {
@@ -309,6 +338,35 @@ func TestWildcardedPSI(t *testing.T) {
 
 		if _, got := serviceProfile(sub, u, "homedomain.com"); got != tt.want {
 			t.Errorf("%s matches = %v, want %v", tt.uri, got, tt.want)
+		}
+	}
+
+	// TS 29.228 Table 6.1.2.2: the wildcarded identity the HSS names picks the profile.
+	other := cx.ServiceProfile{PublicIdentities: []cx.ProfileIdentity{{Identity: "sip:group!.*!@example.com", Type: cx.IdentityWildcardedPSI}}}
+	sub.ServiceProfiles = append(sub.ServiceProfiles, other)
+
+	u, _ := sip.ParseURI("sip:chatlist1@example.com")
+	if p, ok := serviceProfileOf(sub, u, "sip:group!.*!@example.com", "homedomain.com"); !ok || p.PublicIdentities[0].Identity != other.PublicIdentities[0].Identity {
+		t.Errorf("profile %+v, %v, want the one of the wildcarded identity of the HSS", p, ok)
+	}
+}
+
+// TS 29.229 §6.3.2, TS 23.003 §13.4
+func TestCanonicalIdentity(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"sip:Alice@Example.COM:5060;transport=tcp?subject=x", "sip:Alice@example.com"},
+		{"sips:alice@example.com", "sip:alice@example.com"},
+		{"sip:+15551230001;npdi@example.com;user=phone", "sip:+15551230001@example.com"},
+		{"tel:+1-555-123-0001;cpc=ordinary", "tel:+15551230001"},
+		{"tel:1230001;phone-context=example.com", "tel:1230001;phone-context=example.com"},
+	} {
+		u, err := sip.ParseURI(tt.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := canonicalIdentity(u); got != tt.want {
+			t.Errorf("canonicalIdentity(%s) = %s, want %s", tt.in, got, tt.want)
 		}
 	}
 }
