@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" xmlns:im=\"000000000000000000000000000000\" xmlns:myex=\"0000000000000000000000000000000\" entity=\"000000000000000000000000\"><tuple id=\"000000\"><status><im:im></im:im><myex:location></myex:location></status><contact A0000000=\"\"></contact><contact A=\"\"></contact></tuple></presence>")

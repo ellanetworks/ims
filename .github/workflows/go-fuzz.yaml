@@ -30,6 +30,8 @@ jobs:
           - { package: ./, target: FuzzTypedHeaders }
           - { package: ./sdp/, target: FuzzSDP }
           - { package: ./imsxml/, target: FuzzDecode }
+          - { package: ./xmltree/, target: FuzzParse }
+          - { package: ./pidf/, target: FuzzDecode }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
