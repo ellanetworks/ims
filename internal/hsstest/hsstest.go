@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -47,7 +48,16 @@ type Subscriber struct {
 
 	IMPUs []cx.ProfileIdentity
 
+	// IFCs are the initial filter criteria of the service profile (TS 29.228 Annex B.2.2).
+	IFCs []cx.InitialFilterCriteria
+
 	UnregisteredServices bool
+
+	// AS is the AS hosting the PSIs of a PSI user, which the LIA names for direct routing (TS 23.228 §5.4.12.2 b),
+	// with the PSI direct routing indication if PSIDirectRouting, which the HSS may leave out (TS 29.228 §6.1.4.1
+	// step 2, TS 29.229 §6.3.59).
+	AS               string
+	PSIDirectRouting bool
 
 	ServerName string
 	State      State
@@ -80,8 +90,41 @@ func (s State) String() string {
 }
 
 func (s Subscriber) has(impu string) bool {
+	_, ok := s.identity(impu)
+	return ok
+}
+
+// identity is the identity of the subscriber impu is: a distinct one, or else a wildcarded one it matches
+// (TS 23.003 §13.5).
+func (s Subscriber) identity(impu string) (cx.ProfileIdentity, bool) {
 	key := identityKey(impu)
-	return slices.ContainsFunc(s.IMPUs, func(p cx.ProfileIdentity) bool { return identityKey(p.Identity) == key })
+
+	for _, p := range s.IMPUs {
+		if p.Type != cx.IdentityWildcardedPSI && p.Type != cx.IdentityWildcardedIMPU && identityKey(p.Identity) == key {
+			return p, true
+		}
+	}
+
+	for _, p := range s.IMPUs {
+		if p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
+			if wildcardMatch(p.Identity, impu) {
+				return p, true
+			}
+		}
+	}
+
+	return cx.ProfileIdentity{}, false
+}
+
+func wildcardMatch(wildcard, impu string) bool {
+	i, j := strings.IndexByte(wildcard, '!'), strings.LastIndexByte(wildcard, '!')
+	if i < 0 || i == j {
+		return false
+	}
+
+	re, err := regexp.Compile("^" + regexp.QuoteMeta(wildcard[:i]) + "(?:" + wildcard[i+1:j] + ")" + regexp.QuoteMeta(wildcard[j+1:]) + "$")
+
+	return err == nil && re.MatchString(impu)
 }
 
 func identityKey(s string) string {
@@ -120,6 +163,7 @@ func (s Subscriber) clone() Subscriber {
 	s.K = append([]byte(nil), s.K...)
 	s.OPc = append([]byte(nil), s.OPc...)
 	s.IMPUs = append([]cx.ProfileIdentity(nil), s.IMPUs...)
+	s.IFCs = append([]cx.InitialFilterCriteria(nil), s.IFCs...)
 
 	return s
 }
@@ -477,13 +521,22 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	id := c.LocalIdentity()
 
+	impi := sar.PrivateIdentity
+
+	// UNREGISTERED_USER may come without a private identity, as for a PSI (TS 29.228 §6.1.2).
+	if impi == "" && len(sar.PublicIdentities) == 1 {
+		if i := slices.IndexFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(sar.PublicIdentities[0]) }); i >= 0 {
+			impi = h.db.order[i]
+		}
+	}
+
 	for _, impu := range sar.PublicIdentities {
-		if _, ans := h.lookup(req, id, sar.PrivateIdentity, impu); ans != nil {
+		if _, ans := h.lookup(req, id, impi, impu); ans != nil {
 			return ans
 		}
 	}
 
-	s, ans := h.lookup(req, id, sar.PrivateIdentity, "")
+	s, ans := h.lookup(req, id, impi, "")
 	if ans != nil {
 		return ans
 	}
@@ -533,6 +586,14 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	a := cx.ServerAssignment{PrivateIdentity: s.IMPI}
 
+	// TS 29.228 Table 6.1.2.2: the wildcarded identity an identity falls in, unless the S-CSCF named it.
+	if (sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentNoAssignment) && sar.WildcardedPublicIdentity == "" &&
+		len(sar.PublicIdentities) == 1 {
+		if p, _ := s.identity(sar.PublicIdentities[0]); p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
+			a.WildcardedPublicIdentity = p.Identity
+		}
+	}
+
 	if userData {
 		if a.UserData, err = cx.MarshalUserData(s.subscription()); err != nil {
 			panic(fmt.Sprintf("hsstest: user data for %s: %v", s.IMPI, err))
@@ -546,7 +607,10 @@ func (s *Subscriber) subscription() cx.IMSSubscription {
 	return cx.IMSSubscription{
 		PrivateIdentity: s.IMPI,
 		IMSI:            s.IMSI,
-		ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: append([]cx.ProfileIdentity(nil), s.IMPUs...)}},
+		ServiceProfiles: []cx.ServiceProfile{{
+			PublicIdentities:      append([]cx.ProfileIdentity(nil), s.IMPUs...),
+			InitialFilterCriteria: append([]cx.InitialFilterCriteria(nil), s.IFCs...),
+		}},
 	}
 }
 
@@ -570,19 +634,31 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 
 	s := h.db.subscribers[h.db.order[i]]
 
+	var wildcard string
+	if p, _ := s.identity(lir.PublicIdentity); p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
+		wildcard = p.Identity
+	}
+
 	switch {
+	case s.AS != "" && !lir.Originating:
+		// TS 29.228 §6.1.4.1 step 2
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
+			ServerName: s.AS, WildcardedPublicIdentity: wildcard, PSIDirectRouting: s.PSIDirectRouting,
+		}))
 	case lir.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:
 		s.ReassignPending = s.ServerName != ""
 		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{}))
 	case s.State != NotRegistered:
-		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName}))
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName, WildcardedPublicIdentity: wildcard}))
 	case !s.UnregisteredServices && !lir.Originating:
 		return experimental(req, id, tgpp.ResultErrorIdentityNotRegistered)
 	case s.ServerName != "":
-		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName}))
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName, WildcardedPublicIdentity: wildcard}))
 	}
 
-	return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{Result: tgpp.Experimental(tgpp.ResultUnregisteredService)}))
+	return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
+		Result: tgpp.Experimental(tgpp.ResultUnregisteredService), WildcardedPublicIdentity: wildcard,
+	}))
 }
 
 var ErrNotConnected = errors.New("hsstest: the IMS is not connected")

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 4575 §6: an element at each extension point, attributes of extensions, elements given once only once, a call of another protocol
+     (<call-info>), a sidebar by value of its own sidebars, conference-state of 1 and 0. -->
+<ci:conference-info xmlns:ci="urn:ietf:params:xml:ns:conference-info" xmlns:x="urn:example:ext"
+    entity="sip:conf@example.com" version="4294967295" x:tag="conference">
+  <ci:conference-description>
+    <ci:display-text>Text</ci:display-text>
+    <ci:keywords> a  b
+      c </ci:keywords>
+    <ci:conf-uris state="full">
+      <ci:entry>
+        <ci:uri>sip:conf@example.com</ci:uri>
+        <ci:purpose>participation</ci:purpose>
+        <ci:modified>
+          <ci:when>2026-10-20T08:00:00.5+02:00</ci:when>
+          <ci:reason>Reason: SIP;cause=200</ci:reason>
+          <ci:by>sip:admin@example.com</ci:by>
+        </ci:modified>
+        <x:note>entry</x:note>
+      </ci:entry>
+    </ci:conf-uris>
+    <ci:maximum-user-count>010</ci:maximum-user-count>
+    <ci:available-media>
+      <ci:entry label="1" x:tag="medium" xml:lang="en">
+        <ci:type>audio</ci:type>
+        <x:note>medium</x:note>
+      </ci:entry>
+    </ci:available-media>
+    <x:note>description</x:note>
+  </ci:conference-description>
+  <ci:host-info>
+    <ci:web-page>https://example.com/</ci:web-page>
+    <ci:uris>
+      <ci:entry><ci:uri>sip:host@example.com</ci:uri></ci:entry>
+    </ci:uris>
+    <x:note>host</x:note>
+  </ci:host-info>
+  <ci:conference-state>
+    <ci:user-count>1</ci:user-count>
+    <ci:active>1</ci:active>
+    <ci:locked>0</ci:locked>
+    <x:note>state</x:note>
+  </ci:conference-state>
+  <ci:users>
+    <ci:user entity="sip:a@example.com" x:tag="user">
+      <ci:display-text>A &amp; co</ci:display-text>
+      <ci:roles x:tag="roles"><ci:entry>participant</ci:entry><ci:entry>scribe</ci:entry></ci:roles>
+      <ci:languages>en fr-CA</ci:languages>
+      <ci:cascaded-focus>sip:focus@other.example.com</ci:cascaded-focus>
+      <ci:endpoint entity="sip:a@pc.example.com">
+        <ci:referred x:tag="referred"><ci:by>sip:b@example.com</ci:by></ci:referred>
+        <ci:status>muted-via-focus</ci:status>
+        <ci:joining-method>focus-owner</ci:joining-method>
+        <ci:joining-info/>
+        <ci:disconnection-method>busy</ci:disconnection-method>
+        <ci:media id="1" x:tag="media">
+          <ci:type>audio</ci:type>
+          <ci:status>recvonly</ci:status>
+          <x:note>media</x:note>
+        </ci:media>
+        <ci:media id="2"/>
+        <ci:call-info>
+          <x:h323><x:call-reference>42</x:call-reference></x:h323>
+        </ci:call-info>
+        <x:note>endpoint</x:note>
+      </ci:endpoint>
+      <ci:endpoint entity="sip:a@phone.example.com">
+        <ci:call-info>
+          <ci:sip>
+            <ci:call-id>c</ci:call-id>
+            <ci:from-tag>f</ci:from-tag>
+            <ci:to-tag>t</ci:to-tag>
+            <x:note>sip</x:note>
+          </ci:sip>
+        </ci:call-info>
+      </ci:endpoint>
+      <x:note>user</x:note>
+    </ci:user>
+    <x:note>users</x:note>
+  </ci:users>
+  <ci:sidebars-by-ref>
+    <ci:entry><ci:uri>sip:conf@example.com;grid=1</ci:uri></ci:entry>
+  </ci:sidebars-by-ref>
+  <ci:sidebars-by-val>
+    <ci:entry entity="sip:conf@example.com;grid=2">
+      <ci:users/>
+      <ci:sidebars-by-val>
+        <ci:entry entity="sip:conf@example.com;grid=3" state="deleted"/>
+      </ci:sidebars-by-val>
+    </ci:entry>
+  </ci:sidebars-by-val>
+  <x:note>conference</x:note>
+  <x:note>again</x:note>
+</ci:conference-info>

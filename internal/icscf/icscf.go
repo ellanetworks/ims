@@ -41,8 +41,12 @@ type Config struct {
 	Proxy *proxy.Proxy
 	Port  uint16
 
+	// Trust is the trust domain, which the servers the HSS names are in (TS 24.229 §5.7.3).
 	Trust *trust.Domain
 	SCSCF SCSCF
+
+	// Resolver locates the servers the HSS names by domain name (RFC 3263). Nil asks the system's resolver.
+	Resolver *sip.Resolver
 
 	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
 	HSSRealm  func() string

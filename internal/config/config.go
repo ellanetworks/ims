@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +24,9 @@ const (
 )
 
 var defaultIPsecClients = []int{5064, 5065}
+
+// maxASTimeout is 64*T1 with the default T1 (RFC 3261 §17.1.1.2).
+const maxASTimeout = 32 * time.Second
 
 type Config struct {
 	Logging  Logging  `yaml:"logging"`
@@ -52,6 +56,12 @@ type API struct {
 
 type SIP struct {
 	Addresses []netip.Addr `yaml:"addresses"`
+
+	// TrustedNetworks hold the other nodes of the trust domain, such as the ASs: the I-CSCF and the S-CSCF take their
+	// requests and the identities they assert (RFC 3325, TS 24.229 §4.4, §5.7.3), and send requests to ASs there
+	// only. They must not cover the UEs, which the P-CSCF alone serves: the P-CSCF trusts the IMS's own addresses
+	// only. The trust goes by source address: the networks are the operator's to protect (TS 33.210 §5.6.2).
+	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
 }
 
 type PCSCF struct {
@@ -106,6 +116,10 @@ type ICSCF struct {
 
 type SCSCF struct {
 	Port int `yaml:"port"`
+
+	// ASTimeout is how long an AS has to respond before the default handling of its iFC applies (TS 24.229
+	// §5.4.1.7, §5.4.3.2, §5.4.3.3). Zero is the S-CSCF's default.
+	ASTimeout time.Duration `yaml:"as_timeout"`
 }
 
 type Diameter struct {
@@ -182,6 +196,11 @@ func (c Config) validate() error {
 
 	if err := c.validatePorts(); err != nil {
 		return err
+	}
+
+	// RFC 3261 §17.1.1.2: past 64*T1, the transaction times out whatever the AS does.
+	if t := c.SCSCF.ASTimeout; t < 0 || t >= maxASTimeout {
+		return fmt.Errorf("scscf.as_timeout %s must be positive and under %s", t, maxASTimeout)
 	}
 
 	if err := c.Diameter.validate(); err != nil {
@@ -345,6 +364,15 @@ func (s SIP) validate() error {
 		}
 
 		seen[a] = true
+	}
+
+	for _, p := range s.TrustedNetworks {
+		switch {
+		case !p.IsValid():
+			return errors.New("sip.trusted_networks: a network is empty")
+		case p.Bits() == 0, p.Masked() == netip.MustParsePrefix("::ffff:0.0.0.0/96"):
+			return fmt.Errorf("sip.trusted_networks: %s covers every address of a family, the UEs' with them", p)
+		}
 	}
 
 	return nil

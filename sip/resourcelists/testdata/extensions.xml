@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 4826 §3.1, §3.2, §6, RFC 5364 §4: nested lists, each kind of member, display names in languages, extension
+     elements and attributes, the copy control attributes on members other than entries, entries of one URI twice. -->
+<rl:resource-lists xmlns:rl="urn:ietf:params:xml:ns:resource-lists" xmlns:cp="urn:ietf:params:xml:ns:copycontrol"
+    xmlns:x="urn:example:ext">
+  <rl:list name="a" x:tag="list">
+    <rl:display-name xml:lang="fr">Liste A</rl:display-name>
+    <rl:entry uri="sip:one@example.com" cp:copyControl="to" cp:anonymize="1" cp:count="0" x:tag="entry">
+      <rl:display-name xml:lang="en">One</rl:display-name>
+      <x:note>one</x:note>
+    </rl:entry>
+    <rl:entry uri="sip:one@example.com" cp:copyControl="cc" cp:anonymize="false"/>
+    <rl:entry-ref ref="resource-lists/users/sip:bill@example.com/index/~~/resource-lists/list%5b@name=%22l%22%5d/entry%5b@uri=%22sip:p@example.com%22%5d" cp:copyControl="cc">
+      <rl:display-name>Ref</rl:display-name>
+      <x:note>ref</x:note>
+    </rl:entry-ref>
+    <rl:list name="b" cp:copyControl="bcc">
+      <rl:external anchor="http://xcap.example.com/resource-lists/users/sip:a@example.com/index/~~/resource-lists/list%5b@name=%22m%22%5d" cp:count="18446744073709551615">
+        <rl:display-name/>
+        <x:note>external</x:note>
+      </rl:external>
+      <x:note>b</x:note>
+    </rl:list>
+    <rl:list/>
+    <x:note>a</x:note>
+    <x:note>again</x:note>
+  </rl:list>
+  <rl:list name="c"/>
+</rl:resource-lists>

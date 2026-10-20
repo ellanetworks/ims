@@ -173,13 +173,32 @@ func TestMalformed(t *testing.T) {
 		stable(t, p)
 	}
 
-	// Given more than once: the first counts, the others kept; not errors.
+	// Given more than once: the first counts, the others kept, malformed.
 	p, err := Decode([]byte(`<presence xmlns="urn:ietf:params:xml:ns:pidf" entity="pres:a@x"><tuple id="t">` +
 		`<status><basic>open</basic><basic>closed</basic></status><status><basic>closed</basic></status>` +
 		`<contact>a</contact><contact>b</contact></tuple></presence>`))
-	if err != nil || p.Tuples[0].Status.Basic != Open || len(p.Tuples[0].Status.Other) != 1 || p.Tuples[0].Contact.URI != "a" ||
+	if !errors.Is(err, ErrValue) || p.Tuples[0].Status.Basic != Open || len(p.Tuples[0].Status.Other) != 1 || p.Tuples[0].Contact.URI != "a" ||
 		len(p.Tuples[0].Other) != 2 {
 		t.Errorf("%+v, %v", p, err)
+	}
+}
+
+// RFC 3863 §4.1.7, RFC 3339 §5.6, §5.7: a timestamp has a timezone; a leap second is one.
+func TestTimestamp(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"2001-10-27T16:49:29Z": true, "2016-12-31T23:59:60Z": true, "2001-10-27T16:49:29.5+09:00": true,
+		"2001-10-27T16:49:29": false, "2001-10-27": false,
+	} {
+		p, err := Decode([]byte(`<presence xmlns="urn:ietf:params:xml:ns:pidf" entity="pres:a@x"><tuple id="t">` +
+			`<status><basic>open</basic></status><timestamp>` + in + `</timestamp></tuple></presence>`))
+		if ok != (err == nil && p.Tuples[0].Timestamp != nil) {
+			t.Errorf("%q: %+v, %v", in, p.Tuples, err)
+		}
+	}
+
+	ts := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if b, err := Encode(Presence{Entity: "pres:a@x", Tuples: []Tuple{{ID: "t", Status: Status{Basic: Open}, Timestamp: &ts}}}); err == nil {
+		t.Errorf("year 10000 encoded: %s", b)
 	}
 }
 
@@ -277,5 +296,13 @@ func FuzzDecode(f *testing.F) {
 		}
 
 		stable(t, p)
+
+		// A document without error encodes into one without error.
+		if err == nil {
+			out, _ := Encode(p)
+			if _, err := Decode(out); err != nil {
+				t.Fatalf("%q decoded without error, encoded to %q: %v", b, out, err)
+			}
+		}
 	})
 }

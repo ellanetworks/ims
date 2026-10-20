@@ -88,7 +88,7 @@ func TestCallRecordRejected(t *testing.T) {
 			return sh.originating("INVITE", remoteTel, "<"+testIMPU+">")
 		}, 403, db.OutcomeFailed},
 		{"callee not registered", func(sh *sessionHarness) *sip.Request {
-			return sh.terminating("INVITE", "tel:+15551239876")
+			return sh.terminating("INVITE", secondIMPU)
 		}, 480, db.OutcomeUnavailable},
 	}
 

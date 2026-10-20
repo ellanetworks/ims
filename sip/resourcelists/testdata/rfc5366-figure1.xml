@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists"
+          xmlns:cp="urn:ietf:params:xml:ns:copycontrol">
+  <list>
+    <entry uri="sip:bill@example.com" cp:copyControl="to"  />
+    <entry uri="sip:joe@example.org" cp:copyControl="cc" />
+    <entry uri="sip:ted@example.net" cp:copyControl="bcc" />
+  </list>
+</resource-lists>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <ns-bindings>
+    <ns-binding prefix="pidf" urn="urn:ietf:params:xml:ns:pidf"/>
+  </ns-bindings>
+  <filter id="123" uri="sip:presentity@example.com">
+    <trigger>
+      <changed from="CLOSED" to="OPEN">
+        /pidf:presence/pidf:tuple/pidf:status/pidf:basic
+      </changed>
+</trigger>
+</filter>
+</filter-set>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -264,6 +265,11 @@ func (p *parser) pi() error {
 		return errors.New("XML declaration not at the start")
 	}
 
+	// Namespaces in XML 1.0 §7: no colon in a processing instruction target.
+	if strings.Contains(target, ":") {
+		return fmt.Errorf("processing instruction target %q", target)
+	}
+
 	if p.eat("?>") {
 		return nil
 	}
@@ -411,6 +417,7 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 
 	var (
 		attrs []rawAttr
+		names = map[string]bool{}
 		empty bool
 	)
 
@@ -448,11 +455,11 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 			return nil, "", sc, false, fmt.Errorf("<%s>: attribute %s: %w", qname, an, err)
 		}
 
-		for _, a := range attrs {
-			if a.qname == an {
-				return nil, "", sc, false, fmt.Errorf("<%s>: attribute %s twice", qname, an)
-			}
+		if names[an] {
+			return nil, "", sc, false, fmt.Errorf("<%s>: attribute %s twice", qname, an)
 		}
+
+		names[an] = true
 
 		attrs = append(attrs, rawAttr{an, v})
 	}
@@ -466,7 +473,10 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 		switch {
 		case a.qname == "xmlns":
 		case strings.HasPrefix(a.qname, "xmlns:"):
-			prefix = a.qname[len("xmlns:"):]
+			// PrefixedAttName (Namespaces in XML 1.0 §3 [2]): 'xmlns:' NCName.
+			if prefix = a.qname[len("xmlns:"):]; !isNCName(prefix) {
+				return nil, "", sc, false, fmt.Errorf("<%s>: namespace declaration %s", qname, a.qname)
+			}
 		default:
 			continue
 		}
@@ -495,6 +505,7 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 	}
 
 	e := &Element{Name: name}
+	expanded := make(map[xml.Name]bool, len(attrs))
 
 	for _, a := range attrs {
 		if a.qname == "xmlns" || strings.HasPrefix(a.qname, "xmlns:") {
@@ -506,11 +517,11 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 			return nil, "", sc, false, fmt.Errorf("<%s>: %w", qname, err)
 		}
 
-		for _, prev := range e.Attr {
-			if prev.Name == an {
-				return nil, "", sc, false, fmt.Errorf("<%s>: attribute %s of an expanded name given before", qname, a.qname)
-			}
+		if expanded[an] {
+			return nil, "", sc, false, fmt.Errorf("<%s>: attribute %s of an expanded name given before", qname, a.qname)
 		}
+
+		expanded[an] = true
 
 		e.Attr = append(e.Attr, xml.Attr{Name: an, Value: a.value})
 	}
@@ -650,10 +661,11 @@ func (p *parser) reference() (rune, error) {
 		return 0, fmt.Errorf("entity %q not declared", ref)
 	}
 
-	if digits == "" || len(digits) > 8 {
+	if digits == "" {
 		return 0, fmt.Errorf("character reference %q", ref)
 	}
 
+	// Any number of digits (§4.1 [66]), leading zeros included; a value above the Char range is not one.
 	var r rune
 
 	for i := range len(digits) {
@@ -662,7 +674,9 @@ func (p *parser) reference() (rune, error) {
 			return 0, fmt.Errorf("character reference %q", ref)
 		}
 
-		r = r*rune(base) + rune(d)
+		if r = r*rune(base) + rune(d); r > unicode.MaxRune {
+			return 0, fmt.Errorf("character reference %q", ref)
+		}
 	}
 
 	if !isChar(r) {

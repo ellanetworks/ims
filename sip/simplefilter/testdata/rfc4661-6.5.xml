@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter" >
+  <ns-bindings>
+    <ns-binding prefix="game-ext"
+                       urn="urn:ietf:params:xml:ns:game-ext"/>
+  </ns-bindings>
+  <filter id="123">
+    <what>
+      <include>
+        /pidf:presence/pidf:tuple/
+        pidf:status[game-ext:label="game-X"]
+      </include>
+    </what>
+  </filter>
+</filter-set>

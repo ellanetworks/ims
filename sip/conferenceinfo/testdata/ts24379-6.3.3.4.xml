@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §6.3.3.4: the controlling MCPTT function's notification of a prearranged group call: the MCPTT group ID
+     as entity, a <user> per participant of its MCPTT ID, with one <endpoint> of a status, a functional alias
+     (§10.1.3.6.1) and roles. -->
+<conference-info xmlns="urn:ietf:params:xml:ns:conference-info"
+    xmlns:mcpttConfInfo="urn:3gpp:ns:mcpttConfInfo:1.0"
+    entity="sip:group1@mcptt.example.com" state="full" version="1">
+  <users>
+    <user entity="sip:alice@mcptt.example.com">
+      <roles>
+        <entry>dispatcher</entry>
+      </roles>
+      <endpoint entity="sip:alice@mcptt.example.com">
+        <status>connected</status>
+        <mcpttConfInfo:functional-alias>sip:dispatch-1@mcptt.example.com</mcpttConfInfo:functional-alias>
+      </endpoint>
+    </user>
+    <user entity="sip:bob@mcptt.example.com">
+      <endpoint entity="sip:bob@mcptt.example.com">
+        <status>pending</status>
+      </endpoint>
+    </user>
+  </users>
+</conference-info>

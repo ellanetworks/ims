@@ -32,7 +32,7 @@ func startServer(t *testing.T) *Server {
 func sipListener(t *testing.T, srv *Server, role string, a netip.Addr) netip.AddrPort {
 	t.Helper()
 
-	for _, l := range append(srv.core.Load().sip.Listeners(), srv.core.Load().sip.served...) {
+	for _, l := range srv.core.Load().sip.Listeners() {
 		if l.Role == role && l.Address.Addr() == a {
 			return l.Address
 		}
@@ -185,15 +185,11 @@ func TestSIPShutdownClosesListeners(t *testing.T) {
 	var listeners []netip.AddrPort
 
 	for _, l := range srv.core.Load().sip.Listeners() {
-		if l.Role != rolePCSCF && l.Role != rolePCSCFProtected {
-			t.Errorf("%s listens on %s: only the P-CSCF has sockets", l.Role, l.Address)
-		}
-
 		listeners = append(listeners, l.Address)
 	}
 
-	if len(listeners) != 8 {
-		t.Fatalf("listeners = %v, want one per P-CSCF port and address", listeners)
+	if len(listeners) != 12 {
+		t.Fatalf("listeners = %v, want one per P-CSCF port, I-CSCF and S-CSCF, and address", listeners)
 	}
 
 	srv.Shutdown(ctx)

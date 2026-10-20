@@ -1,12 +1,12 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,7 +66,6 @@ type sipServer struct {
 	pcscf       atomic.Pointer[pcscf.PCSCF]
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
-	served      []api.SIPEndpoint
 }
 
 // timers override the defaults of the SIP components' timers.
@@ -77,6 +76,7 @@ type timers struct {
 	noAnswer         time.Duration
 	mediaLossTimeout time.Duration
 	groupNoAnswer    time.Duration
+	asTimeout        time.Duration
 }
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
@@ -86,7 +86,13 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
-	domain := trust.New(cfg.SIP.Addresses, nil)
+	// Trust goes by role and source address. To the P-CSCF, the core is the IMS's own addresses, its I-CSCF and
+	// S-CSCF: the UEs it serves are never in it. The I-CSCF and the S-CSCF take the other nodes of the trust domain
+	// too, the ASs and peers of the trusted networks (TS 24.229 §4.4). Within the security domain, protection is at the
+	// IP layer and optional (TS 33.210 §4.1, §5.6.2 Zb): the trusted networks are the operator's to protect.
+	pcscfDomain := trust.New(cfg.SIP.Addresses, nil)
+	domain := trust.New(cfg.SIP.Addresses, cfg.SIP.TrustedNetworks)
+	resolver := &sip.Resolver{}
 	observed := observedDiameter{node, m}
 	roles := newDispatcher(logger)
 	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
@@ -122,7 +128,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			roles.logTransaction(req, res, elapsed)
 
 			// The P-CSCF's responses to UEs, rather than to the nodes of the IMS.
-			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !domain.Trusted(req.Flow.Remote.Addr()) {
+			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
 				m.sipResponse(req, res)
 			}
 		},
@@ -154,12 +160,14 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		}
 	}
 
-	icscfPort, err := s.serve(roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
+	// The I-CSCF and the S-CSCF have sockets of their own for the ASs: the ISC interface, and the AS hosting a PSI
+	// that the I-CSCF routes to directly (TS 23.218 §6.2.2, TS 23.228 §5.4.12.2).
+	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
 
-	scscfPort, err := s.serve(roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
+	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
@@ -178,6 +186,9 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 
 		ReauthInterval: tm.reauthInterval,
 		ReauthExpires:  tm.reauthExpires,
+		ASTimeout:      cmp.Or(tm.asTimeout, cfg.SCSCF.ASTimeout),
+		Trust:          domain,
+		Resolver:       resolver,
 
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
@@ -217,7 +228,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		NoAnswer:             tm.noAnswer,
 		Records:              records,
 		RegistrationAttempts: m.registrations,
-		Trust:                domain,
+		Trust:                pcscfDomain,
 		Fallback:             ph,
 		Logger:               logger,
 	})
@@ -243,6 +254,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
 		Port:       icscfPort,
 		Trust:      domain,
+		Resolver:   resolver,
 		SCSCF: icscf.SCSCF{
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
@@ -294,30 +306,10 @@ func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr,
 	return p, nil
 }
 
-func (s *sipServer) serve(role string, addrs []netip.Addr, port int) (uint16, error) {
-	if port <= 0 || port > 65535 {
-		return 0, fmt.Errorf("%s port %d: a role served in memory needs a fixed port", role, port)
-	}
-
-	p := uint16(port)
-
-	for _, a := range addrs {
-		local := netip.AddrPortFrom(a, p)
-		if err := s.layer.Serve(local); err != nil {
-			return 0, err
-		}
-
-		s.served = append(s.served, api.SIPEndpoint{Role: role, Address: local})
-		s.placeholder.addListener(local)
-	}
-
-	return p, nil
-}
-
 func (s *sipServer) bound(role string) []netip.AddrPort {
 	var out []netip.AddrPort
 
-	for _, l := range append(slices.Clip(s.listeners), s.served...) {
+	for _, l := range s.listeners {
 		if l.Role == role {
 			out = append(out, l.Address)
 		}

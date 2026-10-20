@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -43,10 +44,10 @@ func writeConfig(t *testing.T, content string) string {
 func TestLoad(t *testing.T) {
 	cfg, err := Load(writeConfig(t, "logging:\n  level: DEBUG\n"+
 		validDB+"api:\n  address: 127.0.0.1\n  port: 8080\n"+
-		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n"+
+		"sip:\n  addresses: [10.0.0.5, \"2001:db8::5\"]\n  trusted_networks: [10.0.1.0/24]\n"+
 		"pcscf:\n  port: 5062\n  ipsec:\n    server_port: 5163\n    client_ports: [5164, 5165]\n"+
 		"icscf:\n  port: 5072\n"+
-		"scscf:\n  port: 5082\n"+
+		"scscf:\n  port: 5082\n  as_timeout: 2s\n"+
 		"diameter:\n  address: 10.0.0.5\n  port: 3869\n"+n5TLS))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -56,10 +57,13 @@ func TestLoad(t *testing.T) {
 		Logging:  Logging{Level: slog.LevelDebug},
 		DB:       DB{Path: "ims.db"},
 		API:      API{Address: netip.MustParseAddr("127.0.0.1"), Port: 8080},
-		SIP:      SIP{Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")}},
+		SIP: SIP{
+			Addresses:       []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5")},
+			TrustedNetworks: []netip.Prefix{netip.MustParsePrefix("10.0.1.0/24")},
+		},
 		PCSCF:    PCSCF{Port: 5062, IPsec: IPsec{ServerPort: 5163, ClientPorts: []int{5164, 5165}}},
 		ICSCF:    ICSCF{Port: 5072},
-		SCSCF:    SCSCF{Port: 5082},
+		SCSCF:    SCSCF{Port: 5082, ASTimeout: 2 * time.Second},
 		Diameter: Diameter{Address: netip.MustParseAddr("10.0.0.5"), Port: 3869},
 		N5: &N5{
 			Notify: N5Notify{Address: netip.MustParseAddr("10.0.0.5"), Port: 7778},
@@ -136,6 +140,11 @@ func TestLoadInvalid(t *testing.T) {
 		{"sip address with zone", validDB + validAPI + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
 		{"duplicate sip address", validDB + validAPI + "sip:\n  addresses: [10.0.0.5, \"::ffff:10.0.0.5\"]\n" + validDiameter, "sip.addresses: 10.0.0.5 is listed twice"},
 		{"pcscf port out of range", valid + "pcscf:\n  port: 70000\n" + validDiameter, "pcscf.port 70000 is out of range"},
+		{"every IPv4 address trusted", valid + "  trusted_networks: [0.0.0.0/0]\n" + validDiameter, "0.0.0.0/0 covers every address"},
+		{"every IPv6 address trusted", valid + "  trusted_networks: [\"::/0\"]\n" + validDiameter, "::/0 covers every address"},
+		{"every mapped IPv4 address trusted", valid + "  trusted_networks: [\"::ffff:0:0/96\"]\n" + validDiameter, "covers every address"},
+		{"AS timeout past 64*T1", valid + "scscf:\n  as_timeout: 32s\n" + validDiameter, "scscf.as_timeout 32s must be positive and under 32s"},
+		{"negative AS timeout", valid + "scscf:\n  as_timeout: -1s\n" + validDiameter, "scscf.as_timeout -1s must be positive and under 32s"},
 		{"icscf port out of range", valid + "icscf:\n  port: -1\n" + validDiameter, "icscf.port -1 is out of range"},
 		{"same ports", valid + "pcscf:\n  port: 5080\n" + validDiameter, "pcscf.port and scscf.port are both 5080"},
 		{"IPsec server port on a role port", valid + "pcscf:\n  ipsec:\n    server_port: 5070\n" + validDiameter, "icscf.port and pcscf.ipsec.server_port are both 5070"},

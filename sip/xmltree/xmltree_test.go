@@ -146,6 +146,10 @@ func TestParseErrors(t *testing.T) {
 		`<a xmlns:p="urn:x" xmlns:q="urn:x" p:x="1" q:x="2"/>`, // Attributes Unique (§6.3)
 		`<:a/>`,
 		`<a:/>`,
+		`<a xmlns:="urn:x"/>`,      // PrefixedAttName (Namespaces §3 [2])
+		`<a><?p:q x?></a>`,         // Namespaces §7
+		`<a>&#x110000;</a>`,        // above the Char range
+		`<a>&#99999999999999;</a>`, // overflowing
 	} {
 		if e, err := Parse([]byte(in)); err == nil {
 			t.Errorf("Parse(%q) = %#v", in, e)
@@ -209,7 +213,6 @@ func TestMarshalErrors(t *testing.T) {
 		attr("", "xmlns"),
 		attr(xmlnsURL, "p"),
 		attr("\x00", "x"),
-		New(XMLNamespace, "e"),
 		New(xmlnsURL, "e"),
 		New("\x00", "e"),
 		New("", "a\u00aa"),
@@ -217,6 +220,33 @@ func TestMarshalErrors(t *testing.T) {
 		if b, err := Marshal(e); err == nil {
 			t.Errorf("Marshal(%#v) = %s", e, b)
 		}
+	}
+}
+
+// Namespaces in XML 1.0 §3: an element of the xml namespace, its prefix bound by definition; XML 1.0 §4.1: a character
+// reference of any number of digits.
+func TestXMLPrefix(t *testing.T) {
+	root, err := Parse([]byte(`<a xmlns="urn:a"><xml:e>&#x0000000041;&#00066;</xml:e></a>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := root.Elements()[0]
+	if e.Name != (xml.Name{Space: XMLNamespace, Local: "e"}) || e.Text() != "AB" {
+		t.Fatalf("%#v", e)
+	}
+
+	b, err := Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimPrefix(string(b), xml.Header); got != `<a xmlns="urn:a"><xml:e>AB</xml:e></a>` {
+		t.Errorf("Marshal %s", got)
+	}
+
+	if again, err := Parse(b); err != nil || !reflect.DeepEqual(again, root) {
+		t.Errorf("Parse(Marshal) %#v, %v", again, err)
 	}
 }
 
@@ -235,6 +265,7 @@ func FuzzParse(f *testing.F) {
 		`<a:r xmlns:a="urn:a" xmlns:b="urn:b" b:x="1"><c xml:lang="en">t &amp; u</c></a:r>`,
 		"<e v='&#9;'>\r\n<![CDATA[x]]></e>",
 		`<p:e xmlns:p="urn:p" xmlns="urn:d"><f p:a="1"/><g xmlns=""/></p:e>`,
+		`<a xmlns="urn:a"><xml:e xml:lang="en">x</xml:e></a>`,
 	} {
 		f.Add([]byte(s))
 	}

@@ -1,6 +1,10 @@
 package proxy
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/ellanetworks/ims/sip/transaction"
+)
 
 func (p *Proxy) Pending() int {
 	p.mu.Lock()
@@ -24,4 +28,20 @@ func (p *Proxy) Responded() bool {
 	}
 
 	return len(p.contexts) > 0
+}
+
+// ReachAll reaches the branches without a key of every request the proxy forwards (Reached).
+func (p *Proxy) ReachAll() {
+	p.mu.Lock()
+
+	txs := make([]*transaction.ServerTransaction, 0, len(p.contexts))
+	for tx := range p.contexts {
+		txs = append(txs, tx)
+	}
+
+	p.mu.Unlock()
+
+	for _, tx := range txs {
+		p.Reached(tx, nil)
+	}
 }

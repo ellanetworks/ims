@@ -31,7 +31,12 @@ jobs:
           - { package: ./sdp/, target: FuzzSDP }
           - { package: ./imsxml/, target: FuzzDecode }
           - { package: ./xmltree/, target: FuzzParse }
+          - { package: ./xsd/, target: FuzzDateTime }
           - { package: ./pidf/, target: FuzzDecode }
+          - { package: ./conferenceinfo/, target: FuzzDecode }
+          - { package: ./resourcelists/, target: FuzzDecode }
+          - { package: ./simplefilter/, target: FuzzDecode }
+          - { package: ./pocsettings/, target: FuzzDecode }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

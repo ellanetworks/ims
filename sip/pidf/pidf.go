@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip/xmltree"
+	"github.com/ellanetworks/ims/sip/xsd"
 )
 
 const (
@@ -21,8 +22,9 @@ const (
 	Namespace   = "urn:ietf:params:xml:ns:pidf"
 )
 
-// maxSize bounds a document: the affiliations of a user's clients and groups (TS 24.379 §9.3.1) fit.
-const maxSize = 1 << 16
+// maxSize bounds a document: the per-group dynamic data of TS 24.379 §9.3.1.2, a tuple per affiliated member of a
+// group, fits.
+const maxSize = 1 << 20
 
 // Presence is the <presence> root element (§4.1.1).
 type Presence struct {
@@ -81,8 +83,8 @@ type Note struct {
 var ErrValue = errors.New("malformed element")
 
 // Decode decodes the document b. A malformed element is kept in the Other of its parent, with an error wrapping
-// ErrValue: a <tuple> of an ID not unique or without <status> in that of the presence. An element given more than
-// the schema allows is kept the same way, the first counting.
+// ErrValue: a <tuple> of an ID not unique or without <status> in that of the presence. So is an element given more
+// times than the schema allows, the first counting.
 func Decode(b []byte) (Presence, error) {
 	if len(b) > maxSize {
 		return Presence{}, fmt.Errorf("pidf: document of %d bytes exceeds %d", len(b), maxSize)
@@ -98,7 +100,7 @@ func Decode(b []byte) (Presence, error) {
 	}
 
 	entity, ok := root.AttrValue("", "entity")
-	if entity = collapse(entity); !ok || entity == "" {
+	if entity = xsd.Collapse(entity); !ok || entity == "" {
 		return Presence{}, errors.New("pidf: <presence> without entity")
 	}
 
@@ -150,7 +152,7 @@ func known(e *xmltree.Element) string {
 
 func (d *decoder) tuple(e *xmltree.Element) (Tuple, bool) {
 	id, _ := e.AttrValue("", "id")
-	if id = collapse(id); id == "" {
+	if id = xsd.Collapse(id); id == "" {
 		d.fail("tuple", "without id")
 		return Tuple{}, false
 	}
@@ -161,16 +163,16 @@ func (d *decoder) tuple(e *xmltree.Element) (Tuple, bool) {
 	for _, c := range e.Elements() {
 		switch known(c) {
 		case "status":
-			if !hasStatus {
-				if t.Status, hasStatus = d.status(c); hasStatus {
-					continue
-				}
+			if hasStatus {
+				d.fail("status", "twice")
+			} else if t.Status, hasStatus = d.status(c); hasStatus {
+				continue
 			}
 		case "contact":
-			if t.Contact == nil {
-				if t.Contact = d.contact(c); t.Contact != nil {
-					continue
-				}
+			if t.Contact != nil {
+				d.fail("contact", "twice")
+			} else if t.Contact = d.contact(c); t.Contact != nil {
+				continue
 			}
 		case "note":
 			if n, ok := d.note(c); ok {
@@ -178,10 +180,10 @@ func (d *decoder) tuple(e *xmltree.Element) (Tuple, bool) {
 				continue
 			}
 		case "timestamp":
-			if t.Timestamp == nil {
-				if t.Timestamp = d.timestamp(c); t.Timestamp != nil {
-					continue
-				}
+			if t.Timestamp != nil {
+				d.fail("timestamp", "twice")
+			} else if t.Timestamp = d.timestamp(c); t.Timestamp != nil {
+				continue
 			}
 		}
 
@@ -201,13 +203,18 @@ func (d *decoder) status(e *xmltree.Element) (Status, bool) {
 	var s Status
 
 	for _, c := range e.Elements() {
-		if known(c) == "basic" && s.Basic == "" && !c.HasElements() {
-			if v := Basic(collapse(c.Text())); v == Open || v == Closed {
+		if known(c) == "basic" {
+			v := Basic(xsd.Collapse(c.Text()))
+
+			switch {
+			case s.Basic != "":
+				d.fail("basic", "twice")
+			case c.HasElements() || v != Open && v != Closed:
+				d.fail("basic", "%q", c.Text())
+			default:
 				s.Basic = v
 				continue
 			}
-
-			d.fail("basic", "%q", c.Text())
 		}
 
 		s.Other = append(s.Other, c)
@@ -228,10 +235,10 @@ func (d *decoder) contact(e *xmltree.Element) *Contact {
 		return nil
 	}
 
-	c := &Contact{URI: collapse(e.Text())}
+	c := &Contact{URI: xsd.Collapse(e.Text())}
 
 	if v, ok := e.AttrValue("", "priority"); ok {
-		c.Priority = parseQValue(collapse(v))
+		c.Priority = parseQValue(xsd.Collapse(v))
 	}
 
 	return c
@@ -270,26 +277,23 @@ func (d *decoder) note(e *xmltree.Element) (Note, bool) {
 	return Note{Text: e.Text(), Lang: lang}, true
 }
 
-// timestamp decodes a <timestamp>, an RFC 3339 date and time (§4.1.7).
+// timestamp decodes a <timestamp>, an RFC 3339 date and time (§4.1.7): an xs:dateTime of a timezone, a leap second
+// taken (RFC 3339 §5.7).
 func (d *decoder) timestamp(e *xmltree.Element) *time.Time {
-	t, err := time.Parse(time.RFC3339Nano, collapse(e.Text()))
-	if err != nil || e.HasElements() {
+	t, err := xsd.ParseDateTime(e.Text())
+	if err != nil || !t.Zoned || e.HasElements() {
 		d.fail("timestamp", "%q", e.Text())
 		return nil
 	}
 
-	return &t
+	return &t.Time
 }
-
-// collapse is s without the leading and trailing white space the whiteSpace facet collapse of XML Schema Part 2
-// §4.3.6 removes: #x20, #x9, #xA and #xD.
-func collapse(s string) string { return strings.Trim(s, " \t\n\r") }
 
 // MustUnderstand reports whether e carries mustUnderstand="true" or "1" (§4.2.3): an extension that does not know e
 // treats the element of its own that contains it as unrecognized.
 func MustUnderstand(e *xmltree.Element) bool {
 	v, _ := e.AttrValue(Namespace, "mustUnderstand")
-	v = collapse(v)
+	v = xsd.Collapse(v)
 
 	return v == "true" || v == "1"
 }
@@ -297,7 +301,7 @@ func MustUnderstand(e *xmltree.Element) bool {
 // Encode encodes p, in the order of the schema (§4.4): the extensions of a tuple after its <status>, the elements of
 // Other of the PIDF namespace, not decoded, after those decoded.
 func Encode(p Presence) ([]byte, error) {
-	if collapse(p.Entity) == "" {
+	if xsd.Collapse(p.Entity) == "" {
 		return nil, errors.New("pidf: presence without entity")
 	}
 
@@ -306,7 +310,7 @@ func Encode(p Presence) ([]byte, error) {
 	var ids []string
 
 	for _, t := range p.Tuples {
-		if collapse(t.ID) == "" || slices.Contains(ids, t.ID) {
+		if xsd.Collapse(t.ID) == "" || slices.Contains(ids, t.ID) {
 			return nil, fmt.Errorf("pidf: tuple id %q", t.ID)
 		}
 
@@ -380,7 +384,12 @@ func (t *Tuple) element() (*xmltree.Element, error) {
 	e.Children = appendNotes(e.Children, t.Notes)
 
 	if t.Timestamp != nil {
-		e.Children = append(e.Children, xmltree.New(Namespace, "timestamp", xmltree.Text(t.Timestamp.Format(time.RFC3339Nano))))
+		ts := xsd.DateTime{Time: *t.Timestamp, Zoned: true}.String()
+		if ts == "" {
+			return nil, fmt.Errorf("pidf: tuple %q: timestamp %s", t.ID, t.Timestamp)
+		}
+
+		e.Children = append(e.Children, xmltree.New(Namespace, "timestamp", xmltree.Text(ts)))
 	}
 
 	e.Children = appendElements(e.Children, own)

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <filter id="123" uri="sip:buddylist@example.com">
+    <what>
+      <include type="namespace">
+        urn:ietf:params:xml:ns:pidf
+      </include>
+    </what>
+  </filter>
+</filter-set>

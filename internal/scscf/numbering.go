@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -218,7 +217,7 @@ func phoneURI(number, homeDomain string) sip.URI {
 }
 
 // TS 24.229 §5.4.3.2 step 9, §5.4.3.3
-func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string) (sip.Address, bool) {
+func assertedAlias(asserted sip.Address, userData []byte, homeDomain string) (sip.Address, bool) {
 	number, global := globalNumber(asserted.URI)
 
 	switch {
@@ -230,7 +229,7 @@ func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string)
 		tel := sip.URI{Scheme: "tel", User: number}
 		a := sip.Address{Display: asserted.Display, URI: tel}
 
-		if pi, ok := profileIdentity(reg, identityKey(tel)); ok {
+		if pi, ok := profileIdentity(userData, identityKey(tel)); ok {
 			if pi.Barred {
 				return sip.Address{}, false
 			}
@@ -243,7 +242,7 @@ func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string)
 		return a, true
 	}
 
-	tel, ok := telAlias(reg, identityKey(asserted.URI))
+	tel, ok := telAlias(userData, identityKey(asserted.URI))
 	if !ok {
 		return sip.Address{}, false
 	}
@@ -261,8 +260,8 @@ func assertedAlias(asserted sip.Address, reg db.Registration, homeDomain string)
 	return a, true
 }
 
-func profileIdentity(reg db.Registration, key string) (cx.ProfileIdentity, bool) {
-	sub, err := cx.ParseUserData(reg.UserData)
+func profileIdentity(userData []byte, key string) (cx.ProfileIdentity, bool) {
+	sub, err := cx.ParseUserData(userData)
 	if err != nil {
 		return cx.ProfileIdentity{}, false
 	}
@@ -279,8 +278,8 @@ func profileIdentity(reg db.Registration, key string) (cx.ProfileIdentity, bool)
 }
 
 // TS 29.228 §6.6.4
-func telAlias(reg db.Registration, key string) (cx.ProfileIdentity, bool) {
-	sub, err := cx.ParseUserData(reg.UserData)
+func telAlias(userData []byte, key string) (cx.ProfileIdentity, bool) {
+	sub, err := cx.ParseUserData(userData)
 	if err != nil {
 		return cx.ProfileIdentity{}, false
 	}

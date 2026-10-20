@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <ns-bindings>
+    <ns-binding prefix="pidf" urn="urn:ietf:params:xml:ns:pidf"/>
+    <ns-binding prefix="rpid"
+                       urn="urn:ietf:params:xml:ns:pidf:rpid"/>
+  </ns-bindings>
+  <filter id="8439" uri="sip:buddies@example.com">
+    <what>
+      <include>
+        /pidf:presence/pidf:tuple[rpid:class="service"]/pidf:status/
+        pidf:basic
+      </include>
+    </what>
+    </filter>
+  <filter id="999" uri="sip:bob@example.com">
+    <what>
+      <include type="namespace">
+        urn:ietf:params:xml:ns:pidf
+      </include>
+      <exclude>
+        /pidf:presence/pidf:tuple/pidf:note
+      </exclude>
+    </what>
+  </filter>
+</filter-set>

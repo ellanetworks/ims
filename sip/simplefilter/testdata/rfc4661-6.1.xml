@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <ns-bindings>
+    <ns-binding prefix="pidf" urn="urn:ietf:params:xml:ns:pidf"/>
+    <ns-binding prefix="rpid"
+                       urn="urn:ietf:params:xml:ns:pidf:rpid"/>
+  </ns-bindings>
+  <filter id="123" uri="sip:presentity@example.com">
+    <what>
+      <include type="xpath">
+        /pidf:presence/pidf:tuple[rpid:class="IM" or rpid:class="SMS"
+        or rpid:class="MMS"]/pidf:status/pidf:basic
+      </include>
+    </what>
+  </filter>
+</filter-set>

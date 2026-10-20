@@ -31,38 +31,50 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 		keys = append(keys, identityKeyOf(impu))
 	}
 
-	var out []*outgoing
+	// The unregistered profiles of the identities, or of the subscription, go as well (TS 29.228 §6.1.3).
+	for _, impi := range impis {
+		r.dropUnregistered(impi, rtr.PublicIdentities)
+	}
+
+	var (
+		out []*outgoing
+		tps []*thirdParty
+	)
 
 	for _, impi := range impis {
-		o, err := r.terminate(ctx, impi, keys, rtr.Reason.Code)
+		o, t, err := r.terminate(ctx, impi, keys, rtr.Reason.Code)
+
+		out, tps = append(out, o...), append(tps, t...)
+
 		if err != nil {
 			r.send(out)
+			r.sendThirdParty(tps)
+
 			return nil, err
 		}
-
-		out = append(out, o...)
 	}
 
 	r.send(out)
+	r.sendThirdParty(tps)
 
 	return impis[1:], nil
 }
 
-func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, reason cx.ReasonCode) ([]*outgoing, error) {
+func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, reason cx.ReasonCode) ([]*outgoing, []*thirdParty, error) {
 	if reason == cx.ReasonRemoveSCSCF {
 		r.log.Debug("RTR REMOVE_S-CSCF: no profile kept", slog.String("impi", impi))
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if err := r.lock(ctx, impi); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	defer r.unlock(impi)
 
 	st, err := r.load(ctx, impi)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	event, subReason := regevent.Rejected, reasonRejected
@@ -83,7 +95,7 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 
 		rm, _, err := r.removeBindings(ctx, st, reg, st.live(reg.Bindings), event)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		if len(rm.bindings) > 0 {
@@ -98,16 +110,34 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 
 	if reason != cx.ReasonNewServerAssigned {
 		if len(ch.removed) == 0 {
-			return nil, nil
+			return nil, nil, nil
 		}
 
-		return r.notifyChange(ctx, impi, ch), nil
+		var tps []*thirdParty
+		for _, rm := range ch.removed {
+			tps = append(tps, r.deregistered(rm)...)
+		}
+
+		return r.notifyChange(ctx, impi, ch), tps, nil
+	}
+
+	// TS 29.228 §6.1.3: NEW_SERVER_ASSIGNED only has the S-CSCF remove what it has of the identities. The new S-CSCF
+	// registered them at the ASs: a third-party deregistration would undo it.
+	for _, rm := range ch.removed {
+		if rm.ended {
+			keys := make([]string, 0, len(rm.reg.Identities))
+			for _, id := range rm.reg.Identities {
+				keys = append(keys, id.Key)
+			}
+
+			r.forgetASs(keys)
+		}
 	}
 
 	if after, err := r.load(ctx, impi); err == nil && !after.any() {
 		subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		for _, s := range subs {
@@ -115,5 +145,5 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 		}
 	}
 
-	return nil, nil
+	return nil, nil, nil
 }

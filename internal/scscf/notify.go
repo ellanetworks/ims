@@ -34,6 +34,9 @@ type removal struct {
 	event    regevent.Event
 	byUE     bool
 
+	// ended is set when the registration set has no binding left.
+	ended bool
+
 	// calls, when set, are the calls of the bindings as they were before the change: a flow replaced in
 	// place keeps its binding, and the calls on its successor are not the removed flow's.
 	calls map[bindingKey]map[*proxy.Dialog]proxy.Side

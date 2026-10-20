@@ -37,8 +37,8 @@ func (i *ICSCF) userAuthorization(ctx context.Context, r cx.UserAuthorizationReq
 	return uaa, nil
 }
 
-func (i *ICSCF) locationInfo(ctx context.Context, impu string) (cx.LocationInfo, error) {
-	req, err := cx.NewLocationInfoRequest(i.envelope(), cx.LocationInfoRequest{PublicIdentity: impu})
+func (i *ICSCF) locationInfo(ctx context.Context, impu string, originating bool) (cx.LocationInfo, error) {
+	req, err := cx.NewLocationInfoRequest(i.envelope(), cx.LocationInfoRequest{PublicIdentity: impu, Originating: originating})
 	if err != nil {
 		return cx.LocationInfo{}, fmt.Errorf("LIR: %w", err)
 	}

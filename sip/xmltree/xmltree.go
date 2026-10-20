@@ -125,31 +125,39 @@ func (w *writer) element(e *Element, sc scope) error {
 		return fmt.Errorf("element name %q", e.Name.Local)
 	}
 
-	if e.Name.Space == XMLNamespace || e.Name.Space == xmlnsURL || !validChars(e.Name.Space) {
+	if e.Name.Space == xmlnsURL || !validChars(e.Name.Space) {
 		return fmt.Errorf("element <%s> of namespace %q", e.Name.Local, e.Name.Space)
 	}
 
-	w.buf = append(w.buf, '<')
-	w.buf = append(w.buf, e.Name.Local...)
+	// An element of the xml namespace has its prefix, bound by definition; it cannot be the default namespace
+	// (Namespaces in XML 1.0 §3).
+	name := e.Name.Local
+	if e.Name.Space == XMLNamespace {
+		name = "xml:" + name
+	}
 
-	if e.Name.Space != sc.def {
+	w.buf = append(w.buf, '<')
+	w.buf = append(w.buf, name...)
+
+	if e.Name.Space != sc.def && e.Name.Space != XMLNamespace {
 		sc.def = e.Name.Space
 		w.attr("xmlns", sc.def)
 	}
 
 	declared := false
+	names := make(map[xml.Name]bool, len(e.Attr))
 
-	for i, a := range e.Attr {
+	for _, a := range e.Attr {
 		if !isNCName(a.Name.Local) || a.Name.Space == "" && a.Name.Local == "xmlns" || a.Name.Space == xmlnsURL ||
 			!validChars(a.Name.Space) {
 			return fmt.Errorf("attribute {%s}%s of <%s>", a.Name.Space, a.Name.Local, e.Name.Local)
 		}
 
-		for _, prev := range e.Attr[:i] {
-			if prev.Name == a.Name {
-				return fmt.Errorf("attribute {%s}%s of <%s> twice", a.Name.Space, a.Name.Local, e.Name.Local)
-			}
+		if names[a.Name] {
+			return fmt.Errorf("attribute {%s}%s of <%s> twice", a.Name.Space, a.Name.Local, e.Name.Local)
 		}
+
+		names[a.Name] = true
 
 		name := a.Name.Local
 
@@ -204,7 +212,7 @@ func (w *writer) element(e *Element, sc scope) error {
 	}
 
 	w.buf = append(w.buf, "</"...)
-	w.buf = append(w.buf, e.Name.Local...)
+	w.buf = append(w.buf, name...)
 	w.buf = append(w.buf, '>')
 
 	return nil

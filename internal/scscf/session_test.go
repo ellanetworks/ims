@@ -19,6 +19,7 @@ import (
 const (
 	mmtel      = "urn:urn-7:3gpp-service.ims.icsi.mmtel"
 	mmtelParam = `"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
+	mcptt      = "urn:urn-7:3gpp-service.ims.icsi.mcptt"
 	remoteTel  = "tel:+15559990000"
 )
 
@@ -34,7 +35,18 @@ type sessionHarness struct {
 func newSessionHarness(t *testing.T) *sessionHarness {
 	t.Helper()
 
+	return newSessionHarnessWith(t, nil)
+}
+
+// newSessionHarnessWith changes the harness before the UE registers.
+func newSessionHarnessWith(t *testing.T, setup func(h *harness)) *sessionHarness {
+	t.Helper()
+
 	h := newHarness(t)
+	if setup != nil {
+		setup(h)
+	}
+
 	sh := &sessionHarness{
 		harness: h,
 		orig:    siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)),
@@ -244,9 +256,10 @@ func TestOriginatingAssertedService(t *testing.T) {
 		want      []string
 	}{
 		{"MMTel preferred", "INVITE", []string{mmtel}, []string{mmtel}},
-		{"MMTel in a list", "INVITE", []string{"urn:urn-7:3gpp-service.ims.icsi.other, " + strings.ToUpper(mmtel)}, []string{mmtel}},
+		{"a list", "INVITE", []string{mcptt + ", " + strings.ToUpper(mmtel)}, []string{mcptt, mmtel}},
 		{"INVITE without a preference", "INVITE", nil, []string{mmtel}},
-		{"unsupported service", "INVITE", []string{"urn:urn-7:3gpp-service.ims.icsi.other"}, nil},
+		{"another service", "INVITE", []string{mcptt}, []string{mcptt}},
+		{"an IARI alone", "MESSAGE", []string{"urn:urn-7:3gpp-application.ims.iari.rcs.chat"}, nil},
 		{"OPTIONS without a preference", "OPTIONS", nil, nil},
 	}
 
@@ -327,8 +340,11 @@ func TestOriginatingRefused(t *testing.T) {
 
 			return r
 		}, 403, "Forbidden"},
-		{"MESSAGE", func() *sip.Request {
-			return sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">")
+		{"SMS without an IP-SM-GW", func() *sip.Request {
+			r := sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">")
+			r.SetBody(contentTypeSMS, []byte{0x00, 0x01})
+
+			return r
 		}, messageRejectCode, messageRejectReason},
 	}
 
@@ -501,7 +517,7 @@ func TestTerminatingRefused(t *testing.T) {
 		code   int
 	}{
 		{"barred", testIMPU, 404},
-		{"not registered here", "sip:nobody@" + homeDomain, 480},
+		{"unknown to the HSS", "sip:nobody@" + homeDomain, 404},
 		{"unregistered identity", secondIMPU, 480},
 	}
 
@@ -960,7 +976,7 @@ func TestAssertedAlias(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, ok := assertedAlias(a, tt.reg, homeDomain)
+			got, ok := assertedAlias(a, tt.reg.UserData, homeDomain)
 			if ok != (tt.want != "") || ok && got.String() != tt.want {
 				t.Fatalf("assertedAlias(%s) = %s, %v, want %q", tt.asserted, got, ok, tt.want)
 			}

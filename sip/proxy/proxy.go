@@ -94,7 +94,10 @@ type RecordRoute struct {
 type Options struct {
 	RecordRoute *RecordRoute
 
-	Timeout time.Duration
+	// Timeout is how long the branch waits: for any response to an INVITE, for the final response to another
+	// request, unless AnyResponse stops it on a provisional response too. Zero waits as long as the transaction.
+	Timeout     time.Duration
+	AnyResponse bool
 
 	NoAnswer time.Duration
 
@@ -125,6 +128,10 @@ type Reply struct {
 	Err error
 
 	Responded bool
+
+	// Provisional reports that a provisional response, 100 (Trying) included, came on the branch before the final
+	// response or the failure of the reply.
+	Provisional bool
 }
 
 type Verdict int
@@ -456,7 +463,7 @@ func (p *Proxy) prepareBranch(c *responseContext, in *sip.Request, spec Branch, 
 	}
 
 	b := &branch{
-		c: c, onReply: opts.OnReply, timeout: opts.Timeout, noAnswer: opts.NoAnswer,
+		c: c, onReply: opts.OnReply, timeout: opts.Timeout, anyResponse: opts.AnyResponse, noAnswer: opts.NoAnswer,
 		out: out, to: spec.Target, rr: opts.RecordRoute,
 		dialog: d, req: out, initial: initial, key: spec.Key,
 	}
@@ -548,6 +555,33 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 	}
 
 	return c.relay(res.Clone())
+}
+
+// Reached stops the Timeout of the branch of tx with key (Branch.Key): the request reached its target, which waits
+// for others, as an AS that sent it on does (TS 24.229 §5.4.3.2).
+func (p *Proxy) Reached(tx *transaction.ServerTransaction, key any) {
+	p.mu.Lock()
+	c := p.contexts[tx]
+	p.mu.Unlock()
+
+	if c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, b := range c.branches {
+		if b.key != key {
+			continue
+		}
+
+		b.reached = true
+
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+	}
 }
 
 func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {

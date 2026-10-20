@@ -40,8 +40,13 @@ type registerRequest struct {
 	// authFailed reports that the UE failed IMS-AKA.
 	authFailed bool
 
-	// hss is the HSS that authenticated the UE in this request, if it did.
-	hss db.HSS
+	// hss is the HSS that authenticated the UE in this request, if it did, and initial tells that the challenge it
+	// answered was to an unprotected REGISTER, the initial registration procedure (TS 24.229 §5.4.1.1 item 1).
+	hss     db.HSS
+	initial bool
+
+	// event is the registration the REGISTER made, changed or ended, for the ASs (TS 24.229 §5.4.1.7).
+	event *registration
 }
 
 type contactRequest struct {
@@ -107,17 +112,21 @@ func (rr *registerRequest) deregister() bool {
 	return true
 }
 
-func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing) {
+func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing, *registration) {
 	rr, res := r.parse(req)
 	if res != nil {
 		r.cfg.RegistrationAttempts.Answered(req, res, false)
-		return res, nil
+		return res, nil, nil
 	}
 
 	res = r.handleRegister(ctx, rr)
 	r.cfg.RegistrationAttempts.Answered(req, res, rr.authFailed)
 
-	return res, rr.out
+	if res.StatusCode != 200 {
+		return res, rr.out, nil
+	}
+
+	return res, rr.out, rr.event
 }
 
 func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *sip.Response {
@@ -390,6 +399,7 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 		vector:  v,
 		resyncs: resyncs,
 		hss:     from,
+		initial: !rr.protected,
 	})
 
 	r.log.Debug("challenged REGISTER", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
@@ -436,7 +446,7 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 	r.authAt[rr.authKey()] = authenticated{at: r.clock.Now(), reauth: r.reauth[rr.impi]}
 	r.mu.Unlock()
 
-	rr.hss = ch.hss
+	rr.hss, rr.initial = ch.hss, ch.initial
 
 	return r.authenticated(ctx, rr)
 }
@@ -626,6 +636,17 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 	ch.removed = append(ch.removed, removed...)
 
+	// The registration took over the S-CSCF's assignment at the HSS from any unregistered profile it kept of the set
+	// (TS 29.228 §6.1.2.1).
+	if !registered {
+		ids := make([]string, 0, len(reg.Identities))
+		for _, id := range reg.Identities {
+			ids = append(ids, id.URI)
+		}
+
+		r.dropUnregistered("", ids)
+	}
+
 	if replace {
 		ch.removed = append(ch.removed, r.replaceContacts(ctx, rr, st, reg.ID)...)
 	}
@@ -645,6 +666,8 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	bindings := st.live(reg.Bindings)
 
 	var deregistered, replaced []db.Binding
+
+	regType := cx.RegistrationTypeReRegistration
 
 	for _, c := range rr.contacts {
 		i := bindingIndex(bindings, c)
@@ -674,6 +697,12 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 
 		if c.expires == 0 {
 			continue
+		}
+
+		// TS 24.229 §5.4.1.1 item 1, §3.1: a REGISTER that went through the initial registration procedure, as one
+		// from a UE that restarted, or that adds a contact, is an initial registration for the ASs.
+		if event == db.BindingRegistered || rr.initial {
+			regType = cx.RegistrationTypeInitial
 		}
 
 		params := c.addr.Params.Clone()
@@ -712,6 +741,14 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	if err != nil {
 		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req), nil
+	}
+
+	rr.event = &registration{reg: saved, impu: rr.impu, regType: regType, req: rr.req}
+
+	for _, c := range rr.contacts {
+		if i := bindingIndex(saved.Bindings, c); i >= 0 && c.expires != 0 {
+			rr.event.bindings = append(rr.event.bindings, saved.Bindings[i].ID)
+		}
 	}
 
 	if initial {
@@ -802,6 +839,11 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 	}
 
 	rm.byUE = true
+
+	rr.event = &registration{reg: *set, impu: rr.impu, regType: cx.RegistrationTypeDeregistration, req: rr.req, ended: deleted}
+	for _, b := range removed {
+		rr.event.bindings = append(rr.event.bindings, b.ID)
+	}
 
 	if deleted {
 		r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
@@ -920,7 +962,14 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 
 	for _, other := range bound {
 		for _, b := range liveAt(other.Bindings, now) {
-			res.Header.Add("Contact", contactValue(b.Contact, int(b.ExpiresAt.Sub(now)/time.Second)))
+			expires := int(b.ExpiresAt.Sub(now) / time.Second)
+
+			// TS 24.229 §5.4.1.7 e: the third-party REGISTERs carry the expiry of the 200.
+			if ev := rr.event; ev != nil && len(ev.bindings) > 0 && b.ID == ev.bindings[0] {
+				ev.expires = expires
+			}
+
+			res.Header.Add("Contact", contactValue(b.Contact, expires))
 		}
 	}
 

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §10.1.4.2.1 2) e): the MCPTT ID of the targeted MCPTT user, as RFC 5366 §4 has it, a flat list; the
+     functional alias of the entry (§17.5). -->
+<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists"
+    xmlns:mcpttResLists="urn:3gpp:ns:mcpttResLists:1.0">
+  <list>
+    <entry uri="sip:bob@mcptt.example.com">
+      <mcpttResLists:functional-alias>sip:driver-7@mcptt.example.com</mcpttResLists:functional-alias>
+    </entry>
+  </list>
+</resource-lists>

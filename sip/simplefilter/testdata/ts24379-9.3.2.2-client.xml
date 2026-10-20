@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.3.2.2: per-client restrictions of presence event package notification information, of the MCPTT
+     client ID. -->
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <ns-bindings>
+    <ns-binding prefix="pidf" urn="urn:ietf:params:xml:ns:pidf"/>
+    <ns-binding prefix="mcpttPI10" urn="urn:3gpp:ns:mcpttPresInfo:1.0"/>
+  </ns-bindings>
+  <filter id="f1">
+    <what>
+      <include>//pidf:presence/pidf:tuple[@id="urn:uuid:00000000-0000-1000-8000-0123456789ab"]</include>
+    </what>
+  </filter>
+</filter-set>

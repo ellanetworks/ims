@@ -313,6 +313,28 @@ func TestCallThroughTheSCSCFAndICSCF(t *testing.T) {
 	}
 }
 
+func TestMessage(t *testing.T) {
+	sc := newCallScene(t, nil)
+
+	msg := sc.invite(bobTel)
+	msg.Method = "MESSAGE"
+	msg.Header.Set("CSeq", "1 MESSAGE")
+	msg.Header.Del("P-Preferred-Service")
+	msg.SetBody("text/plain", []byte("hello"))
+	sc.alice.Send(sip.UDP, sc.scscf, msg)
+
+	got, f := sc.bob.RecvRequest()
+	if got.Method != "MESSAGE" || got.URI.String() != sc.bobContact || string(got.Body) != "hello" {
+		t.Fatalf("bob's P-CSCF got:\n%s\nwant the MESSAGE to bob's contact", got)
+	}
+
+	sc.bob.Send(sip.UDP, f.Remote, sip.NewResponse(got, 200, ""))
+
+	if res := responseTo(t, sc.alice, msg); res.StatusCode != 200 {
+		t.Fatalf("alice got %q, want 200", res.StartLine())
+	}
+}
+
 func TestCallToAHomeLocalNumber(t *testing.T) {
 	sc := newCallScene(t, &settings.Numbering{CountryCode: "1", NationalPrefix: "0"})
 
@@ -356,10 +378,11 @@ func TestCallFailures(t *testing.T) {
 		})
 	}
 
-	t.Run("MESSAGE", func(t *testing.T) {
+	t.Run("SMS without an IP-SM-GW", func(t *testing.T) {
 		msg := sc.invite(bobTel)
 		msg.Method = "MESSAGE"
 		msg.Header.Set("CSeq", "1 MESSAGE")
+		msg.SetBody("application/vnd.3gpp.sms", []byte{0x00, 0x01})
 		sc.alice.Send(sip.UDP, sc.scscf, msg)
 
 		if res := responseTo(t, sc.alice, msg); res.StatusCode != 403 {

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 4354 §6, §6.1: entities of some settings, attributes of any namespace and elements of any namespace in the
+     settings, elements of other namespaces in entities and at the root. -->
+<poc-settings xmlns="urn:oma:params:xml:ns:poc:poc-settings" xmlns:x="urn:example:ext" version="2" x:tag="root">
+  <entity id="a" x:tag="entity" since="2026">
+    <isb-settings x:tag="isb">
+      <incoming-session-barring active="0"/>
+      <incoming-session-barring active="1"/>
+      <x:note>isb</x:note>
+    </isb-settings>
+    <sss-settings source="user">
+      <simultaneous-sessions-support active="false"/>
+      <answer-mode>manual</answer-mode>
+    </sss-settings>
+    <x:note>entity</x:note>
+  </entity>
+  <entity id="b">
+    <am-settings>
+      <answer-mode>automatic</answer-mode>
+      <x:note>am</x:note>
+    </am-settings>
+    <ipab-settings>
+      <incoming-personal-alert-barring active="true"/>
+    </ipab-settings>
+  </entity>
+  <entity id="c"/>
+  <x:note>root</x:note>
+</poc-settings>

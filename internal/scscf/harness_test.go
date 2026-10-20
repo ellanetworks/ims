@@ -24,6 +24,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/regmetrics"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -186,7 +187,13 @@ func (h *fakeHSS) serverAssignment(ctx context.Context, req *diameter.Message) *
 
 	var a cx.ServerAssignment
 
-	if (sar.Type == cx.AssignmentRegistration || sar.Type == cx.AssignmentReRegistration) && !sar.UserDataAlreadyAvailable {
+	switch sar.Type {
+	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
+	default:
+		sar.UserDataAlreadyAvailable = true
+	}
+
+	if !sar.UserDataAlreadyAvailable {
 		h.mu.Lock()
 		sub, ok := h.subscription(sar.PublicIdentities[0])
 		raw, none := h.userData, h.noUserData
@@ -409,6 +416,7 @@ func newHarness(t *testing.T) *harness {
 		Logger:               slog.New(slog.DiscardHandler),
 		Layer:                layer,
 		Listeners:            []netip.AddrPort{h.scscf},
+		Trust:                trust.New(nil, []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}),
 	}
 
 	h.start()

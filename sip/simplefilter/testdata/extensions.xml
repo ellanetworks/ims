@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 4661 §3, §4, §7: the attributes of a filter, each kind of trigger, extension elements and attributes where the
+     schema allows them. -->
+<sf:filter-set xmlns:sf="urn:ietf:params:xml:ns:simple-filter" xmlns:x="urn:example:ext" package="presence"
+    x:tag="set">
+  <sf:filter id="1" domain="example.com" remove="0" enabled="false" x:tag="filter">
+    <sf:what>
+      <sf:include type="namespace" x:tag="include">urn:ietf:params:xml:ns:pidf</sf:include>
+      <sf:include type="xpath">//tuple</sf:include>
+      <sf:exclude>//tuple/note</sf:exclude>
+      <sf:exclude type="namespace"/>
+      <x:note>what</x:note>
+    </sf:what>
+    <sf:trigger>
+      <sf:changed by="-2.50" x:tag="changed">//watcher/@duration-subscribed</sf:changed>
+      <sf:changed from="" to="open">//tuple/status/basic</sf:changed>
+      <sf:added>//tuple</sf:added>
+      <sf:removed>//tuple</sf:removed>
+      <sf:removed>//person</sf:removed>
+      <x:note>trigger</x:note>
+    </sf:trigger>
+    <sf:trigger>
+      <sf:added>//device</sf:added>
+    </sf:trigger>
+    <x:note>filter</x:note>
+  </sf:filter>
+  <sf:filter id="2" uri="sip:a@example.com" remove="true" enabled="1"/>
+</sf:filter-set>

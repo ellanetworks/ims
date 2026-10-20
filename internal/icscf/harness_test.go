@@ -3,6 +3,7 @@ package icscf
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -46,6 +47,9 @@ type hssAnswer struct {
 	name   string
 	caps   *cx.ServerCapabilities
 	gate   chan struct{}
+
+	// direct sets the PSI direct routing indication of the LIA (TS 29.229 §6.3.59).
+	direct bool
 }
 
 func success(code uint32) tgpp.Result {
@@ -188,7 +192,7 @@ func (h *fakeHSS) locationInfo(ctx context.Context, req *diameter.Message) *diam
 	}
 
 	ans, err := cx.NewLocationInfoAnswer(req, h.id, cx.LocationInfo{
-		Result: a.result, ServerName: a.name, Capabilities: a.caps,
+		Result: a.result, ServerName: a.name, Capabilities: a.caps, PSIDirectRouting: a.direct,
 	})
 	if err != nil {
 		panic(err)
@@ -296,6 +300,30 @@ type harnessOptions struct {
 	scscfAddr netip.Addr
 
 	down bool
+
+	// hosts are the addresses of the domain names the resolver knows.
+	hosts map[string][]netip.Addr
+}
+
+// fakeDNS knows the addresses of some hosts, and no SRV record.
+type fakeDNS map[string][]netip.Addr
+
+func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
+	return "", nil, &net.DNSError{Err: "no such host", Name: "_" + service + "._" + proto + "." + name, IsNotFound: true}
+}
+
+func (d fakeDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	if addrs, ok := d[host]; ok {
+		return addrs, nil
+	}
+
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+// newAS is a server the HSS can name, such as an AS hosting a PSI.
+func (h *harness) newAS(addr netip.Addr) *fakeSCSCF {
+	sock := siptest.NewSocket(h.t, netip.AddrPortFrom(addr, 0))
+	return &fakeSCSCF{t: h.t, sock: sock, name: "sip:" + sock.Addr().String(), seen: map[string]bool{}}
 }
 
 type lateHandler struct {
@@ -361,6 +389,7 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Port: h.icscf.Port()}),
 		Port:       h.icscf.Port(),
 		Trust:      trust.New([]netip.Addr{loopback}, nil),
+		Resolver:   &sip.Resolver{DNS: fakeDNS(o.hosts)},
 		SCSCF:      SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
 		HSSRealm:   func() string { return homeDomain },
 		Diameter:   loop,

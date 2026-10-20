@@ -338,6 +338,69 @@ func TestNonInviteTimeoutAfterTrying(t *testing.T) {
 	}
 }
 
+// With AnyResponse, a 100 stops the Timeout of a request other than an INVITE, and the final response that follows
+// tells of it (TS 24.229 §5.4.3.2: a 1xx from the AS).
+func TestNonInviteAnyResponse(t *testing.T) {
+	clock := siptest.NewClock()
+	replies := make(chan held, 1)
+	s := newScene(t, sip.TCP, routerConfig{
+		clock: clock, opts: proxy.Options{Timeout: 2 * time.Second, AnyResponse: true}, onReply: holdAll(replies),
+	})
+
+	s.send(s.request("MESSAGE"))
+
+	fwd, f := s.forwarded()
+	reply(t, s.callee, fwd, f, 100)
+
+	for deadline := time.Now().Add(siptest.Timeout); !s.r.p.Responded(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the 100 never reached the branch")
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	clock.Advance(2 * time.Second)
+
+	select {
+	case h := <-replies:
+		t.Fatalf("reply %v, %v; want none after the 100", h.r.Response, h.r.Err)
+	case <-time.After(quiet):
+	}
+
+	reply(t, s.callee, fwd, f, 503)
+
+	if h := nextHeld(t, replies); h.r.Response == nil || h.r.Response.StatusCode != 503 || !h.r.Provisional {
+		t.Fatalf("reply %v, provisional %v; want the 503 after a provisional response", h.r.Response, h.r.Provisional)
+	}
+}
+
+// The Timeout of a branch no longer applies once the request reached its target (TS 24.229 §5.4.3.2).
+func TestReachedStopsTimeout(t *testing.T) {
+	clock := siptest.NewClock()
+	replies := make(chan held, 1)
+	s := newScene(t, sip.TCP, routerConfig{clock: clock, opts: proxy.Options{Timeout: 2 * time.Second}, onReply: holdAll(replies)})
+
+	s.send(s.request("MESSAGE"))
+
+	fwd, f := s.forwarded()
+
+	s.r.p.ReachAll()
+	clock.Advance(2 * time.Second)
+
+	select {
+	case h := <-replies:
+		t.Fatalf("reply %v, %v; want none before the response", h.r.Response, h.r.Err)
+	default:
+	}
+
+	reply(t, s.callee, fwd, f, 200)
+
+	if h := nextHeld(t, replies); h.r.Response == nil || h.r.Response.StatusCode != 200 {
+		t.Fatalf("reply %v, %v; want the 200", h.r.Response, h.r.Err)
+	}
+}
+
 func TestTimerCReplyResponded(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 2)

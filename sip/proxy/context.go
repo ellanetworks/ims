@@ -60,10 +60,11 @@ type responseContext struct {
 }
 
 type branch struct {
-	c        *responseContext
-	onReply  func(r Reply) Verdict
-	timeout  time.Duration
-	noAnswer time.Duration
+	c           *responseContext
+	onReply     func(r Reply) Verdict
+	timeout     time.Duration
+	anyResponse bool
+	noAnswer    time.Duration
 
 	out     *sip.Request
 	to      Target
@@ -103,6 +104,10 @@ type branch struct {
 	// expired is set once the branch rang past its Timer C or no-answer time: it was cancelled, and the final
 	// response it ends with is delivered as a 408.
 	expired bool
+
+	// reached is set once the request is known to have reached the target (Proxy.Reached): its Timeout no longer
+	// applies.
+	reached bool
 
 	// withdrawn holds the Reason of a branch withdrawn from the search (withdraw): it was cancelled,
 	// and the final response it ends with is delivered as a 480 with that Reason (TS 24.229 §5.4.5.1.1).
@@ -518,11 +523,14 @@ func (b *branch) timeoutFired() {
 		res = c.generate(408)
 	}
 
-	c.dispatch(b, Reply{Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout), Responded: responded})
+	c.dispatch(b, Reply{
+		Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout),
+		Responded: responded, Provisional: responded,
+	})
 }
 
 func (b *branch) stopsTimeout() bool {
-	return b.c.invite && b.responded
+	return b.reached || (b.c.invite || b.anyResponse) && b.responded
 }
 
 // settleLocked records that the client transaction has its final outcome, and reports whether
@@ -548,6 +556,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 	c.mu.Lock()
 
+	provisional := b.responded
 	b.responded = true
 
 	if b.timer != nil && b.stopsTimeout() {
@@ -625,7 +634,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		if b.withdrawn != nil {
 			c.mu.Unlock()
 
-			c.dispatch(b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true})
+			c.dispatch(b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true, Provisional: provisional})
 
 			if freed {
 				c.advance()
@@ -638,7 +647,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 		if b.expired {
 			c.mu.Unlock()
 
-			c.dispatch(b, Reply{Response: c.generate(408), Err: errRangOut, Responded: true})
+			c.dispatch(b, Reply{Response: c.generate(408), Err: errRangOut, Responded: true, Provisional: provisional})
 
 			if freed {
 				c.advance()
@@ -650,7 +659,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 
 	c.mu.Unlock()
 
-	c.dispatch(b, Reply{Response: res, Responded: true})
+	c.dispatch(b, Reply{Response: res, Responded: true, Provisional: provisional && !res.IsProvisional()})
 
 	if freed {
 		c.advance()
@@ -709,7 +718,7 @@ func (b *branch) HandleError(err error) {
 	c.mu.Unlock()
 
 	c.p.log.Debug("proxied request failed", slog.String("request", c.tx.Request().StartLine()), slog.Any("error", err))
-	c.dispatch(b, Reply{Response: res, Err: err, Responded: responded})
+	c.dispatch(b, Reply{Response: res, Err: err, Responded: responded, Provisional: responded})
 
 	if freed {
 		c.advance()

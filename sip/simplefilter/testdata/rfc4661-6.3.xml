@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter">
+  <ns-bindings>
+    <ns-binding prefix="wi"
+                       urn="urn:ietf:params:xml:ns:watcherinfo"/>
+  </ns-bindings>
+  <filter id="123" uri="sip:presentity@example.com">
+    <what>
+      <include>
+        /wi:watcherinfo/wi:watcher-list/wi:watcher[@status="pending"
+        or @status="waiting"]
+      </include>
+    </what>
+    <trigger>
+      <changed to="pending">
+        /wi:watcherinfo/wi:watcher-list/wi:watcher/@status
+      </changed>
+    </trigger>
+    <trigger>
+      <changed to="waiting">
+        /wi:watcherinfo/wi:watcher-list/wi:watcher/@status
+      </changed>
+    </trigger>
+  </filter>
+</filter-set>

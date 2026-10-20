@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/regmetrics"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -72,6 +73,15 @@ type Config struct {
 	Diameter  Diameter
 	DB        *db.DB
 
+	// ASTimeout is how long an AS has to respond before the default handling of its iFC applies. Zero is
+	// DefaultASTimeout.
+	ASTimeout time.Duration
+
+	// Trust is the trust domain, which the ASs the S-CSCF sends to are in (TS 24.229 §5.7.3).
+	Trust *trust.Domain
+	// Resolver locates the ASs the iFCs name by domain name (RFC 3263). Nil asks the system's resolver.
+	Resolver *sip.Resolver
+
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
 	// RegistrationAttempts, if any, counts the registration attempts the S-CSCF answers.
@@ -103,6 +113,11 @@ type Registrar struct {
 	reauth map[string]uint64
 	sweep  transaction.Timer
 
+	// peers are the ASs of each public identity, by its key and the AS's SIP URI; unregistered the unregistered
+	// profiles kept, by canonical public identity.
+	peers        map[string]map[string]*asPeer
+	unregistered map[string]*unregistered
+
 	calls *calls
 }
 
@@ -114,8 +129,9 @@ type challenge struct {
 	vector  authVector
 	resyncs int
 	timer   transaction.Timer
-	// hss is the HSS that gave the vector.
-	hss db.HSS
+	// hss is the HSS that gave the vector, and initial tells that the REGISTER challenged was unprotected.
+	hss     db.HSS
+	initial bool
 }
 
 func New(cfg Config) *Registrar {
@@ -133,6 +149,10 @@ func New(cfg Config) *Registrar {
 
 	if cfg.CxTimeout <= 0 {
 		cfg.CxTimeout = DefaultCxTimeout
+	}
+
+	if cfg.ASTimeout <= 0 {
+		cfg.ASTimeout = DefaultASTimeout
 	}
 
 	if cfg.MinExpires <= 0 {
@@ -157,6 +177,9 @@ func New(cfg Config) *Registrar {
 		authAt:     make(map[authKey]authenticated),
 		reauth:     make(map[string]uint64),
 		calls:      newCalls(),
+
+		peers:        make(map[string]map[string]*asPeer),
+		unregistered: make(map[string]*unregistered),
 	}
 
 	return r
@@ -178,10 +201,15 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func
 
 	defer done()
 
-	res, out := r.register(ctx, req)
+	res, out, ev := r.register(ctx, req)
 
 	respond(res)
 	r.send(out)
+
+	if ev != nil {
+		ev.res = res
+		r.sendThirdParty(r.thirdParties(*ev))
+	}
 }
 
 func (r *Registrar) Close() {
@@ -373,6 +401,7 @@ func (r *Registrar) runSweep() {
 	defer r.wg.Done()
 
 	r.sweepExpired(r.ctx)
+	r.releaseUnregistered(r.ctx)
 	r.armSweep()
 }
 
@@ -388,9 +417,10 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 			continue
 		}
 
-		out, expired := r.sweepIMPI(ctx, impi)
+		out, expired, tps := r.sweepIMPI(ctx, impi)
 
 		r.send(out)
+		r.sendThirdParty(tps)
 
 		if len(expired) == 0 || !r.start() {
 			r.unlock(impi)
@@ -408,11 +438,11 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 	}
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration) {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration, []*thirdParty) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	out := r.expireSubscriptions(ctx, st, impi)
@@ -442,12 +472,17 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 	}
 
 	if len(ch.removed) == 0 {
-		return out, deregistered
+		return out, deregistered, nil
 	}
 
 	r.releaseCalls(st, ch.removed)
 
-	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered
+	var tps []*thirdParty
+	for _, rm := range ch.removed {
+		tps = append(tps, r.deregistered(rm)...)
+	}
+
+	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered, tps
 }
 
 func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,
@@ -464,6 +499,8 @@ func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Regist
 	if err := r.cfg.DB.DeleteRegistration(ctx, reg.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
 		return rm, false, err
 	}
+
+	rm.ended = true
 
 	return rm, true, nil
 }

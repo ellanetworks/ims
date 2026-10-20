@@ -737,3 +737,52 @@ func TestDrain(t *testing.T) {
 		t.Fatalf("%d requests dropped", c.hss.Dropped())
 	}
 }
+
+// TS 23.228 §5.4.12.2, TS 29.228 §6.1.2, §6.1.4.1: a PSI user, its wildcarded PSIs, its profile for SAR
+// UNREGISTERED_USER without a private identity, and direct routing to its AS.
+func TestPSI(t *testing.T) {
+	c := newClient(t)
+
+	psi := "sip:group!.*!@" + realm
+	c.hss.Add(Subscriber{
+		IMPI:                 "psi@" + realm,
+		IMPUs:                []cx.ProfileIdentity{{Identity: psi, Type: cx.IdentityWildcardedPSI}},
+		IFCs:                 []cx.InitialFilterCriteria{{ApplicationServer: cx.ApplicationServer{ServerName: "sip:as." + realm}}},
+		UnregisteredServices: true,
+	})
+
+	lia, err := c.lir("sip:group7@" + realm)
+	if err != nil || !sameResult(lia.Result, unregistered) || lia.WildcardedPublicIdentity != psi {
+		t.Fatalf("LIA = %+v, %v, want UNREGISTERED_SERVICE with the wildcarded PSI", lia, err)
+	}
+
+	saa, err := cx.ParseServerAssignmentAnswer(c.do(cx.NewServerAssignmentRequest(c.envelope(), cx.ServerAssignmentRequest{
+		PublicIdentities: []string{"sip:group7@" + realm}, ServerName: scscfName, Type: cx.AssignmentUnregisteredUser,
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub, err := cx.ParseUserData(saa.UserData)
+	if err != nil || len(sub.ServiceProfiles) != 1 || len(sub.ServiceProfiles[0].InitialFilterCriteria) != 1 {
+		t.Fatalf("user data %+v, %v, want the PSI user's profile with its iFC", sub, err)
+	}
+
+	// TS 29.228 Table 6.1.2.2
+	if saa.WildcardedPublicIdentity != psi {
+		t.Errorf("SAA Wildcarded-Public-Identity %q, want %q", saa.WildcardedPublicIdentity, psi)
+	}
+
+	// TS 29.228 §6.1.4.1 step 2: the AS name, the flag only if the HSS sets it.
+	c.hss.Update("psi@"+realm, func(s *Subscriber) { s.AS = "sip:as." + realm })
+
+	if lia, err := c.lir("sip:group7@" + realm); err != nil || lia.ServerName != "sip:as."+realm || lia.PSIDirectRouting {
+		t.Fatalf("LIA = %+v, %v, want the AS without the PSI direct routing indication", lia, err)
+	}
+
+	c.hss.Update("psi@"+realm, func(s *Subscriber) { s.PSIDirectRouting = true })
+
+	if lia, err := c.lir("sip:group7@" + realm); err != nil || lia.ServerName != "sip:as."+realm || !lia.PSIDirectRouting {
+		t.Fatalf("LIA = %+v, %v, want the AS for direct routing", lia, err)
+	}
+}

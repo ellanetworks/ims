@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 4575 §4.4, §4.6: the partial notification following ts24379-6.3.3.4.xml: Bob connected, Carol joining, Alice
+     gone. -->
+<conference-info xmlns="urn:ietf:params:xml:ns:conference-info"
+    entity="sip:group1@mcptt.example.com" state="partial" version="2">
+  <users state="partial">
+    <user entity="sip:bob@mcptt.example.com" state="partial">
+      <endpoint entity="sip:bob@mcptt.example.com" state="partial">
+        <status>connected</status>
+      </endpoint>
+    </user>
+    <user entity="sip:carol@mcptt.example.com">
+      <endpoint entity="sip:carol@mcptt.example.com">
+        <status>dialing-out</status>
+      </endpoint>
+    </user>
+    <user entity="sip:alice@mcptt.example.com" state="deleted"/>
+  </users>
+</conference-info>

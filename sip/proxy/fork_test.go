@@ -38,6 +38,9 @@ type forker struct {
 	// onReply, when set, sees the replies of every branch, with the server transaction.
 	onReply func(tx *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict
 
+	// forked, when set, gets the server transaction of each request forked.
+	forked chan *transaction.ServerTransaction
+
 	// track has every INVITE carry a Dialog, and in-dialog requests follow it.
 	track   bool
 	dialogs chan *proxy.Dialog
@@ -173,7 +176,12 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		groups = append([][]proxy.Branch{{unsendable()}}, groups...)
 	}
 
-	if err := f.p.Fork(tx, groups); err != nil {
+	err = f.p.Fork(tx, groups)
+	if err == nil && f.forked != nil {
+		f.forked <- tx
+	}
+
+	if err != nil {
 		f.errs <- err
 
 		code := 500
@@ -888,5 +896,37 @@ func TestForkRetryUnsendable(t *testing.T) {
 
 	if res := s.final(); res.StatusCode != 480 {
 		t.Fatalf("got %d, want 480", res.StatusCode)
+	}
+}
+
+// Reached stops the Timeout of the one branch it names (TS 24.229 §5.4.3.2).
+func TestReachedOneBranch(t *testing.T) {
+	replies := make(chan proxy.Reply, 4)
+	forked := make(chan *transaction.ServerTransaction, 1)
+
+	s, g := newForkSceneWith(t, []int{2}, proxy.Options{Timeout: 2 * time.Second}, false, func(f *forker) {
+		f.forked = forked
+		f.onReply = func(_ *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict {
+			replies <- r
+			return proxy.Relay
+		}
+	})
+
+	s.send(s.request("MESSAGE"))
+
+	a := received(t, g[0][0], "a")
+	received(t, g[0][1], "b")
+
+	s.f.p.Reached(<-forked, g[0][0].Addr())
+	s.clock.Advance(2 * time.Second)
+
+	if r := <-replies; !errors.Is(r.Err, transaction.ErrTimeout) {
+		t.Fatalf("reply %v, %v; want the timeout of the branch not reached", r.Response, r.Err)
+	}
+
+	a.respond(200)
+
+	if r := <-replies; r.Response == nil || r.Response.StatusCode != 200 {
+		t.Fatalf("reply %v, %v; want the 200 of the branch reached", r.Response, r.Err)
 	}
 }

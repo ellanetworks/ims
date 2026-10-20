@@ -63,23 +63,33 @@ func (r *Registrar) multimediaAuth(ctx context.Context, to db.HSS, impi, impu st
 func (r *Registrar) serverAssignment(ctx context.Context, to db.HSS, impi string, impus []string, t cx.AssignmentType,
 	userDataAvailable bool,
 ) (cx.ServerAssignment, db.HSS, error) {
+	return r.serverAssignmentOf(ctx, to, cx.ServerAssignmentRequest{
+		PrivateIdentity:          impi,
+		PublicIdentities:         impus,
+		Type:                     t,
+		UserDataAlreadyAvailable: userDataAvailable,
+	})
+}
+
+// serverAssignmentOf sends the SAR req with the S-CSCF's name.
+func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.ServerAssignmentRequest,
+) (cx.ServerAssignment, db.HSS, error) {
+	req.ServerName = r.serverName
+	available := req.UserDataAlreadyAvailable
+
 	ans, from, err := r.cx(ctx, to, func(env tgpp.Envelope) (*diameter.Message, error) {
-		return cx.NewServerAssignmentRequest(env, cx.ServerAssignmentRequest{
-			PrivateIdentity:  impi,
-			PublicIdentities: impus,
-			ServerName:       r.serverName,
-			Type:             t,
-			// A request that falls back to the realm may reach another HSS, which sends its own user data.
-			UserDataAlreadyAvailable: userDataAvailable && env.DestinationHost != "",
-		})
+		// A request that falls back to the realm may reach another HSS, which sends its own user data.
+		req.UserDataAlreadyAvailable = available && env.DestinationHost != ""
+
+		return cx.NewServerAssignmentRequest(env, req)
 	})
 	if err != nil {
-		return cx.ServerAssignment{}, db.HSS{}, fmt.Errorf("SAR %s: %w", t, err)
+		return cx.ServerAssignment{}, db.HSS{}, fmt.Errorf("SAR %s: %w", req.Type, err)
 	}
 
 	saa, err := cx.ParseServerAssignmentAnswer(ans)
 	if err != nil {
-		return cx.ServerAssignment{}, db.HSS{}, fmt.Errorf("SAA %s: %w", t, err)
+		return cx.ServerAssignment{}, db.HSS{}, fmt.Errorf("SAA %s: %w", req.Type, err)
 	}
 
 	return saa, from, nil
@@ -196,6 +206,11 @@ func protocolError(ans *diameter.Message) (uint32, bool) {
 func refused(err error) bool {
 	return resultIs(err, tgpp.ResultErrorUserUnknown, tgpp.ResultErrorIdentitiesDontMatch,
 		tgpp.ResultErrorRoamingNotAllowed, tgpp.ResultErrorAuthSchemeNotSupported)
+}
+
+// refusedIdentity reports that the HSS knows no such public identity (TS 29.229 §6.2.2.1).
+func refusedIdentity(err error) bool {
+	return resultIs(err, tgpp.ResultErrorUserUnknown)
 }
 
 func permanent(err error) bool {

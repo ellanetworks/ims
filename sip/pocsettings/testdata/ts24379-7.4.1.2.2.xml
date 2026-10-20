@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §7.3.2 6), §7.4.1.2.2: the answer mode of an MCPTT client, the index of its selected MCPTT user profile
+     and its support of multiplexing. -->
+<PoC1Set:poc-settings xmlns:PoC1Set="urn:oma:params:xml:ns:poc:poc-settings" xmlns:mcs10Set="urn:3gpp:mcsSettings:1.0">
+  <PoC1Set:entity id="urn:uuid:00000000-0000-1000-8000-0123456789ab">
+    <PoC1Set:am-settings>
+      <PoC1Set:answer-mode>manual</PoC1Set:answer-mode>
+    </PoC1Set:am-settings>
+    <mcs10Set:selected-user-profile-index>
+      <mcs10Set:user-profile-index>2</mcs10Set:user-profile-index>
+    </mcs10Set:selected-user-profile-index>
+    <mcs10Set:multiplex-support>true</mcs10Set:multiplex-support>
+  </PoC1Set:entity>
+</PoC1Set:poc-settings>

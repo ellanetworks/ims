@@ -41,6 +41,7 @@ type Server struct {
 	NoAnswerTimeout  time.Duration
 	MediaLossTimeout time.Duration
 	GroupNoAnswer    time.Duration
+	ASTimeout        time.Duration
 	// PruneInterval changes how often call records are pruned in tests. Zero keeps the default.
 	PruneInterval time.Duration
 
@@ -429,6 +430,7 @@ func (s *Server) timers() timers {
 		noAnswer:         s.NoAnswerTimeout,
 		mediaLossTimeout: s.MediaLossTimeout,
 		groupNoAnswer:    s.GroupNoAnswer,
+		asTimeout:        s.ASTimeout,
 	}
 }
 

@@ -3,6 +3,7 @@ package icscf
 import (
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -267,14 +268,82 @@ func TestInviteCancelledBeforeAnAnswer(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.3.2.1: the request goes to the server the HSS names, another S-CSCF than ours here.
 func TestInviteToAnotherAssignedSCSCF(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	other := h.newAS(loopback)
+	u := h.newUE(loopback)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: other.uri()})
+
+	invite := u.invite(callee)
+	u.send(invite)
+	h.hss.nextLIR(t)
+
+	req, f := other.recv()
+	if got, want := routes(t, req), []string{other.uri() + ";lr"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	other.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
+	h.scscf.sock.RecvNone(quiet)
+}
+
+// TS 24.229 §5.3.2.1, TS 29.228 §6.1.4.1 step 2: the AS hosting a PSI that the HSS names, whether or not it sets the
+// PSI direct routing indication, which is optional (TS 29.229 §6.3.59), by address or domain name (RFC 3263).
+func TestPSIDirectRouting(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		direct, byName bool
+	}{
+		{"with the indication", true, false},
+		{"without the indication", false, false},
+		{"by domain name", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{hosts: map[string][]netip.Addr{"as." + homeDomain: {loopback}}})
+			as := h.newAS(loopback)
+			u := h.newUE(untrusted)
+
+			name := as.uri()
+			if tt.byName {
+				name = "sip:as." + homeDomain + ":" + strconv.Itoa(int(as.sock.Addr().Port()))
+			}
+
+			h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: name, direct: tt.direct})
+
+			msg := u.invite("sip:group7@"+homeDomain, func(r *sip.Request) {
+				r.Method = "MESSAGE"
+				r.Header.Set("CSeq", "1 MESSAGE")
+			})
+			u.send(msg)
+
+			if lir := h.hss.nextLIR(t); lir.PublicIdentity != "sip:group7@"+homeDomain || lir.Originating {
+				t.Fatalf("LIR = %+v, want the terminating query of the PSI", lir)
+			}
+
+			req, f := as.recv()
+			if got, want := routes(t, req), []string{name + ";lr"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("Routes = %v, want %v", got, want)
+			}
+
+			as.respond(req, f, 200)
+			u.wantFinal(200)
+			h.scscf.sock.RecvNone(quiet)
+		})
+	}
+}
+
+// TS 24.229 §5.3.2.1: with the PSI direct routing indication, the name of our S-CSCF stays a route to it.
+func TestPSIDirectRoutingToOurSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscf
 	u := h.newUE(loopback)
 
-	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: "sip:old-scscf." + homeDomain + ":6060"})
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: s.uri(), direct: true})
 
-	invite := u.invite(callee)
+	invite := u.invite("sip:group7@" + homeDomain)
 	u.send(invite)
 	h.hss.nextLIR(t)
 
@@ -285,6 +354,39 @@ func TestInviteToAnotherAssignedSCSCF(t *testing.T) {
 
 	s.respond(req, f, 486)
 	u.ack(invite, u.wantFinal(486))
+}
+
+// TS 24.229 §5.3.2.1: a server the HSS names that the I-CSCF cannot reach makes a 480: a domain name without an
+// address, another address family than the request's, an address outside the trust domain, or no response.
+func TestPSIDirectRoutingFailures(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	silent := h.newAS(loopback)
+
+	for _, tt := range []struct {
+		name, server string
+	}{
+		{"unknown domain name", "sip:nowhere." + homeDomain},
+		{"another address family", "sip:[::1]:5060"},
+		{"outside the trust domain", "sip:" + untrusted.String() + ":5060"},
+		{"silent", silent.uri()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			u := h.newUE(loopback)
+
+			h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: tt.server, direct: true})
+
+			msg := u.invite("sip:group7@"+homeDomain, func(r *sip.Request) {
+				r.Method = "MESSAGE"
+				r.Header.Set("CSeq", "1 MESSAGE")
+			})
+			u.send(msg)
+			h.hss.nextLIR(t)
+
+			u.wantFinal(480)
+		})
+	}
+
+	h.scscf.sock.RecvNone(quiet)
 }
 
 func TestInviteFromOutsideTheTrustDomain(t *testing.T) {
@@ -327,19 +429,106 @@ func TestInviteFromOutsideTheTrustDomain(t *testing.T) {
 	u.ack(invite, res)
 }
 
+// TS 24.229 §5.3.2.1A, TS 23.228 §5.4.12.5 c: an AS of the trust domain sends a request on behalf of the user in
+// P-Served-User, or else P-Asserted-Identity, to the I-CSCF: an originating location query, and the S-CSCF the HSS
+// names gets the request with "orig"; the AS hosting a PSI, without.
 func TestOrigOnTheICSCF(t *testing.T) {
+	const psi = "sip:mcptt-tpf@" + homeDomain
+
+	for _, tt := range []struct {
+		name, servedUser, identity string
+		as                         bool
+	}{
+		{"P-Served-User", "<" + psi + ">;sescase=orig;regstate=unreg", psi, false},
+		{"P-Asserted-Identity", "", testIMPU, false},
+		{"to the AS hosting the PSI", "<" + psi + ">", psi, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{})
+			u := h.newUE(loopback)
+
+			to, want := h.scscf, h.scscf.uri()+";lr;orig"
+			if tt.as {
+				to = h.newAS(loopback)
+				want = to.uri() + ";lr"
+			}
+
+			h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: to.uri(), direct: tt.as})
+
+			invite := u.invite(callee, func(r *sip.Request) {
+				r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>")
+				r.Header.Add("P-Asserted-Identity", "<"+testIMPU+">")
+
+				if tt.servedUser != "" {
+					r.Header.Add("P-Served-User", tt.servedUser)
+				}
+			})
+			u.send(invite)
+
+			if lir := h.hss.nextLIR(t); lir.PublicIdentity != tt.identity || !lir.Originating {
+				t.Fatalf("LIR = %+v, want the originating query of %s", lir, tt.identity)
+			}
+
+			req, f := to.recv()
+			if got := routes(t, req); !reflect.DeepEqual(got, []string{want}) {
+				t.Fatalf("Routes = %v, want %v", got, want)
+			}
+
+			if req.URI.String() != callee || req.Header.Get("P-Asserted-Identity") != "<"+testIMPU+">" {
+				t.Fatalf("got:\n%s\nwant the request of the AS", req)
+			}
+
+			to.respond(req, f, 486)
+			u.ack(invite, u.wantFinal(486))
+		})
+	}
+}
+
+// TS 24.229 §5.3.2.1A: an originating request on behalf of no identity, or of one the HSS does not know.
+func TestOrigOnTheICSCFRefused(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	u := h.newUE(loopback)
 
-	invite := u.invite(callee, func(r *sip.Request) {
-		r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>")
-		r.Header.Add("P-Asserted-Identity", "<"+testIMPU+">")
-	})
+	invite := u.invite(callee, func(r *sip.Request) { r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>") })
 	u.send(invite)
 	u.ack(invite, u.wantFinal(403))
+	h.hss.noCx(t)
+
+	h.hss.answerLIR(&hssAnswer{result: success(tgpp.ResultErrorUserUnknown)})
+
+	invite = u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr;orig>")
+		r.Header.Add("P-Asserted-Identity", "<sip:nobody@"+homeDomain+">")
+	})
+	u.send(invite)
+	h.hss.nextLIR(t)
+	u.ack(invite, u.wantFinal(404))
 
 	h.scscf.sock.RecvNone(quiet)
-	h.hss.noCx(t)
+}
+
+// TS 24.229 §5.3.2.1: a request from outside the trust domain is terminating: the Route it names past the I-CSCF
+// goes, and the location query decides.
+func TestInviteFromOutsideTheTrustDomainWithRoute(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
+	u := h.newUE(untrusted)
+
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: s.uri()})
+
+	invite := u.invite(callee, func(r *sip.Request) {
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr>, <sip:odi-xyz@"+s.sock.Addr().String()+";lr>")
+	})
+	u.send(invite)
+	h.hss.nextLIR(t)
+
+	req, f := s.recv()
+	if got, want := routes(t, req), []string{s.uri() + ";lr"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes = %v, want %v", got, want)
+	}
+
+	s.respond(req, f, 486)
+	u.ack(invite, u.wantFinal(486))
 }
 
 func TestOrigBelowTheTopRoute(t *testing.T) {
@@ -427,7 +616,7 @@ func TestRequestToUnknownRoute(t *testing.T) {
 func TestSubsequentRequest(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscf
-	u := h.newUE(untrusted)
+	u := h.newUE(loopback)
 
 	bye := u.invite(callee, func(r *sip.Request) {
 		r.Method = "BYE"
@@ -439,13 +628,32 @@ func TestSubsequentRequest(t *testing.T) {
 	u.send(bye)
 
 	req, f := s.recv()
-	if req.Header.Has("P-Charging-Vector") {
-		t.Fatal("P-Charging-Vector forwarded from outside the trust domain")
+	if req.Header.Get("P-Charging-Vector") != "icid-value=1234" {
+		t.Fatal("P-Charging-Vector of the trust domain dropped")
 	}
 
 	s.respond(req, f, 200)
 	u.wantFinal(200)
 	h.hss.noCx(t)
+}
+
+// The dialogs of the S-CSCF do not go through the I-CSCF: one from outside the trust domain would reach the S-CSCF
+// as if from the trust domain.
+func TestSubsequentRequestFromOutsideTheTrustDomain(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	s := h.scscf
+	u := h.newUE(untrusted)
+
+	bye := u.invite(callee, func(r *sip.Request) {
+		r.Method = "BYE"
+		r.Header.Set("CSeq", "2 BYE")
+		r.Header.Set("To", "<"+callee+">;tag=abc")
+		r.Header.Add("Route", "<"+h.icscfURI()+";lr>, <"+s.uri()+";lr>")
+	})
+	u.send(bye)
+	u.wantFinal(403)
+
+	s.sock.RecvNone(quiet)
 }
 
 func TestSubsequentRequestWithoutRoute(t *testing.T) {

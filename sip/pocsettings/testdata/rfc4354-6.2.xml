@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<poc-settings xmlns="urn:oma:params:xml:ns:poc:poc-settings">
+  <entity id="do39s8zksn2d98x">
+     <isb-settings>
+       <incoming-session-barring active="true"/>
+     </isb-settings>
+     <am-settings>
+       <answer-mode>automatic</answer-mode>
+     </am-settings>
+     <ipab-settings>
+       <incoming-personal-alert-barring active="false"/>
+     </ipab-settings>
+     <sss-settings>
+       <simultaneous-sessions-support active="true"/>
+     </sss-settings>
+  </entity>
+</poc-settings>
