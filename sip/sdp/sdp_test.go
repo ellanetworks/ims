@@ -371,6 +371,17 @@ func TestMediaDesc(t *testing.T) {
 	}
 }
 
+func TestIsTCP(t *testing.T) {
+	for proto, want := range map[string]bool{
+		"TCP": true, "TCP/MSRP": true, "TCP/TLS/MSRP": true, "TCP/RTP/AVP": true, "tcp/bfcp": true,
+		"RTP/AVP": false, "UDP/DTLS/SCTP": false, "UDP/TLS/RTP/SAVPF": false, "udp": false, "TCPX": false,
+	} {
+		if got := (MediaDesc{Proto: proto}).IsTCP(); got != want {
+			t.Errorf("IsTCP(%q) = %t, want %t", proto, got, want)
+		}
+	}
+}
+
 func TestDisable(t *testing.T) {
 	s := mustParse(t, "v=0\r\nm=audio 49170/2 RTP/AVP 0 8\r\nm=video 3227 RTP/AVP 31\r\nb=AS:300\r\n")
 	s.Media[1].Disable()

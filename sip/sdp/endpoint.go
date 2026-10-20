@@ -182,6 +182,13 @@ func (d MediaDesc) IsRTP() bool {
 	return isRTP(d.Proto)
 }
 
+// IsTCP reports whether the media runs over TCP, the lowest layer its proto names (RFC 8866 §5.14, RFC 4145).
+func (d MediaDesc) IsTCP() bool {
+	transport, _, _ := strings.Cut(d.Proto, "/")
+
+	return strings.EqualFold(transport, "TCP")
+}
+
 func isRTP(proto string) bool {
 	for _, p := range []string{"RTP/", "UDP/TLS/RTP/", "TCP/RTP/", "TCP/TLS/RTP/"} {
 		if len(proto) > len(p) && strings.EqualFold(proto[:len(p)], p) {

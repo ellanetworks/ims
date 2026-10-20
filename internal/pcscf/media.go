@@ -90,14 +90,14 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 
 	t := mediaTransport{
 		muxed:    sdp.RTCPMuxed(x.offer, x.answer, i),
-		tcp:      tcpTransport(desc.Proto),
+		tcp:      desc.IsTCP(),
 		rtp:      desc.IsRTP(),
 		rtcpOnly: mcpttControl(desc),
 	}
 	muxed := t.muxed
 	dir := negotiatedDirection(x, i)
 
-	c.Status = flowStatus(dir, !x.offerFromUE, muxed || enabledTransport(desc.Proto) || t.rtcpOnly)
+	c.Status = flowStatus(dir, !x.offerFromUE, muxed || enabledTransport(desc) || t.rtcpOnly)
 
 	rr, haveRR := bandwidth(x.answer, i, sdp.BandwidthRR)
 	rs, haveRS := bandwidth(x.answer, i, sdp.BandwidthRS)
@@ -207,13 +207,9 @@ func mcpttControl(d sdp.MediaDesc) bool {
 		slices.ContainsFunc(d.Formats, func(f string) bool { return strings.EqualFold(f, "MCPTT") })
 }
 
-func tcpTransport(proto string) bool {
-	return strings.EqualFold(proto, "TCP") || strings.EqualFold(proto, "TCP/MSRP")
-}
-
 // TS 29.213 Table 6.2.1: the transports sent with Flow-Status ENABLED whatever the SDP direction.
-func enabledTransport(proto string) bool {
-	return tcpTransport(proto) || strings.EqualFold(proto, "UDP/DTLS/SCTP")
+func enabledTransport(d sdp.MediaDesc) bool {
+	return d.IsTCP() || strings.EqualFold(d.Proto, "UDP/DTLS/SCTP")
 }
 
 func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {
@@ -264,8 +260,8 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, t mediaTransport, fl
 
 	numbers := flowNumbers{sendrecv: dir == sdp.SendRecv}
 
-	// One flow: RTP and RTCP muxed, TCP, media without RTCP, or RTCP alone.
-	if muxed || tcp || !t.rtp {
+	// One flow: RTP and RTCP muxed, media without RTCP, or RTCP alone.
+	if muxed || !t.rtp {
 		numbers.rtp = 1
 		if seen {
 			numbers.rtp = prev.rtp
@@ -308,7 +304,7 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, t mediaTransport, fl
 
 	rtcp := policy.SubComponent{
 		FlowNumber: numbers.rtcp,
-		Flows:      ipFlows(policy.ProtocolUDP, ueRTCP, remoteRTCP, true, true),
+		Flows:      ipFlows(proto, ueRTCP, remoteRTCP, true, true),
 		Usage:      policy.FlowUsageRTCP,
 	}
 

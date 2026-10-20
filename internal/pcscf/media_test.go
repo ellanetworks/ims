@@ -403,10 +403,36 @@ func TestMediaComponentsFromLiveVideoCall(t *testing.T) {
 
 // TS 29.213 Table 6.2.1/6.2.2: TCP media is ENABLED with both directions whatever its direction attribute.
 func TestTCPMedia(t *testing.T) {
+	for _, proto := range []string{"TCP/MSRP", "TCP/TLS/MSRP"} {
+		t.Run(proto, func(t *testing.T) {
+			offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "t=0 0",
+				"m=message 4000 "+proto+" *", "b=AS:64", "a=sendonly")
+			answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
+				"m=message 5000 "+proto+" *", "b=AS:64", "a=recvonly")
+
+			got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			c := got[0]
+
+			if *c.Type != rx.MediaMessage || *c.FlowStatus != rx.FlowStatusEnabled || len(c.SubComponents) != 1 ||
+				!reflect.DeepEqual(c.SubComponents[0].FlowDescriptions, []string{
+					"permit in 6 from 10.0.0.1 to 10.0.0.2 5000", "permit out 6 from 10.0.0.2 to 10.0.0.1 4000",
+				}) {
+				t.Fatalf("component %+v, want enabled TCP flows both ways", c)
+			}
+		})
+	}
+}
+
+// RFC 4571: RTP over TCP has its RTCP over TCP too, on a connection of its own unless muxed.
+func TestRTPOverTCP(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "t=0 0",
-		"m=message 4000 TCP/MSRP *", "b=AS:64", "a=sendonly")
+		"m=video 4000 TCP/RTP/AVP 99", "b=AS:500", "a=sendonly")
 	answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
-		"m=message 5000 TCP/MSRP *", "b=AS:64", "a=recvonly")
+		"m=video 5000 TCP/RTP/AVP 99", "b=AS:500", "a=recvonly")
 
 	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
 	if err != nil {
@@ -415,11 +441,19 @@ func TestTCPMedia(t *testing.T) {
 
 	c := got[0]
 
-	if *c.Type != rx.MediaMessage || *c.FlowStatus != rx.FlowStatusEnabled || len(c.SubComponents) != 1 ||
-		!reflect.DeepEqual(c.SubComponents[0].FlowDescriptions, []string{
-			"permit in 6 from 10.0.0.1 to 10.0.0.2 5000", "permit out 6 from 10.0.0.2 to 10.0.0.1 4000",
-		}) {
-		t.Fatalf("component %+v, want enabled TCP flows both ways", c)
+	if *c.FlowStatus != rx.FlowStatusEnabled || len(c.SubComponents) != 2 {
+		t.Fatalf("component %+v, want enabled RTP and RTCP flows", c)
+	}
+
+	want := [][]string{
+		{"permit in 6 from 10.0.0.1 to 10.0.0.2 5000", "permit out 6 from 10.0.0.2 to 10.0.0.1 4000"},
+		{"permit in 6 from 10.0.0.1 to 10.0.0.2 5001", "permit out 6 from 10.0.0.2 to 10.0.0.1 4001"},
+	}
+
+	for i, s := range c.SubComponents {
+		if !reflect.DeepEqual(s.FlowDescriptions, want[i]) {
+			t.Errorf("flow %d: %q, want %q", s.FlowNumber, s.FlowDescriptions, want[i])
+		}
 	}
 }
 
