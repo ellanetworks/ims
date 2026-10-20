@@ -126,7 +126,7 @@ Prometheus metrics, served at `GET /api/v1/metrics`.
 #### Core Networks
 
 Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G compliant core. It has been explicitely validated against:
-- Ella Core
+- [Ella Core][ella-core]
 - Open5GS
 
 #### Application Servers
@@ -168,3 +168,5 @@ Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G pho
 Phones reach the IMS over IPsec, which the IMS sets up in the kernel. It needs `CAP_NET_ADMIN` (run as root, or add the capability to its container).
 
 Firewalls between phones and the IMS must pass ESP (IP protocol 50).
+
+[ella-core]: https://github.com/ellanetworks/core
