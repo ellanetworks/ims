@@ -511,6 +511,7 @@ type registerOptions struct {
 	contact   string
 	noContact bool
 	supported string
+	charging  string
 }
 
 func (u *ue) request(o registerOptions) *sip.Request {
@@ -537,6 +538,10 @@ func (u *ue) request(o registerOptions) *sip.Request {
 
 	if o.supported != "" {
 		req.Header.Add("Supported", o.supported)
+	}
+
+	if o.charging != "" {
+		req.Header.Add("P-Charging-Vector", o.charging)
 	}
 
 	if o.auth != "" {

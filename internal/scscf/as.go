@@ -12,11 +12,13 @@ import (
 // asPeer is what the S-CSCF keeps of an AS for a public identity, by the identity's key and the AS's SIP URI as the
 // iFC names it, with all its parameters (TS 24.229 §5.4.0): the server it sent the identity's first request or
 // third-party REGISTER to, where the later ones go too (TS 24.229 §5.4.0, §5.4.1.7, §5.4.3.2 step 5i, §5.4.3.3 step
-// 4h), and the Call-ID and CSeq of its third-party REGISTERs (RFC 3261 §10.2).
+// 4h), the Call-ID and CSeq of its third-party REGISTERs (RFC 3261 §10.2), and the type 3 term-ioi of the last
+// response to one (TS 24.229 §5.4.1.7).
 type asPeer struct {
-	server sip.Server
-	callID string
-	cseq   uint32
+	server  sip.Server
+	callID  string
+	cseq    uint32
+	termIOI string
 }
 
 var errUntrustedAS = errors.New("the AS is outside the trust domain")
@@ -95,6 +97,22 @@ func (r *Registrar) registerSequence(u sip.URI, serverName string, local netip.A
 	p.cseq++
 
 	return p.callID, p.cseq
+}
+
+// storeTermIOI keeps the term-ioi of a response of an AS to a third-party REGISTER for the public identity impu
+// (TS 24.229 §5.4.1.7), unless what the S-CSCF kept of the AS for the identity is gone: it was deregistered since.
+func (r *Registrar) storeTermIOI(impu, serverName, ioi string) {
+	u, err := sip.ParseURI(impu)
+	if err != nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if p := r.peers[identityKey(u)][serverName]; p != nil {
+		p.termIOI = ioi
+	}
 }
 
 // forgetASs drops what the S-CSCF keeps of the ASs for public identities once they are deregistered (TS 24.229

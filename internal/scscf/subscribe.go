@@ -127,6 +127,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		Dialog:       snap,
 		Version:      -1,
 		ExpiresAt:    st.now.Add(expires),
+		ICID:         icidOf(req.Header),
 	}
 
 	subState := activeState(s.ExpiresAt, st.now)

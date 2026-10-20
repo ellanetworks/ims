@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,6 +32,9 @@ type subscriber struct {
 	fromTag string
 	toTag   string
 	cseq    int
+
+	// charging is the P-Charging-Vector of the SUBSCRIBEs.
+	charging string
 }
 
 type fakeProxy struct {
@@ -134,6 +138,10 @@ func (s *subscriber) request(expires string) *sip.Request {
 
 	if expires != "" {
 		req.Header.Add("Expires", expires)
+	}
+
+	if s.charging != "" {
+		req.Header.Add("P-Charging-Vector", s.charging)
 	}
 
 	return req
@@ -410,6 +418,70 @@ func TestSubscribeASFullState(t *testing.T) {
 	}
 
 	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Created)
+}
+
+// TS 24.229 §5.4.2.1.2 step 5: the NOTIFYs have the icid-value of the SUBSCRIBE that created the dialog, not of a
+// refresh, and an orig-ioi of the S-CSCF's network, of type 3 towards an AS, of type 1 towards the UE, without
+// term-ioi; the S-CSCF keeps the term-ioi of the responses. A SUBSCRIBE without icid-value makes NOTIFYs without
+// P-Charging-Vector.
+func TestNotifyChargingVector(t *testing.T) {
+	for _, name := range []string{"ue", "as", "without icid"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+			h.withAS(as)
+
+			u := h.newUE()
+			u.register(registerOptions{})
+			h.hss.nextSAR(t)
+
+			s := h.ueSubscriber(u)
+			if name == "as" {
+				s = h.asSubscriber(as)
+			}
+
+			want := ""
+
+			if name != "without icid" {
+				s.charging = "icid-value=AB12;orig-ioi=visited.example.net"
+				want = "icid-value=AB12;orig-ioi=" + homeDomain
+			}
+
+			notified := func(termIOI string) {
+				t.Helper()
+
+				req, flow := s.inbox.RecvRequest()
+				s.checkNotify(req)
+
+				if v := req.Header.Values("P-Charging-Vector"); !slices.Equal(v, []string{want}) && (want != "" || len(v) != 0) {
+					t.Fatalf("NOTIFY P-Charging-Vector %q, want %q", v, want)
+				}
+
+				res := sip.NewResponse(req, 200, "")
+				res.Header.Add("P-Charging-Vector", "icid-value=AB12;orig-ioi="+homeDomain+";term-ioi="+termIOI)
+				s.inbox.Send(flow.Transport, flow.Remote, res)
+
+				for deadline := time.Now().Add(siptest.Timeout); ; time.Sleep(10 * time.Millisecond) {
+					subs := h.subscriptions()
+					if len(subs) == 1 && subs[0].TermIOI == termIOI {
+						return
+					}
+
+					if time.Now().After(deadline) {
+						t.Fatalf("subscriptions = %+v, want the term-ioi %s", subs, termIOI)
+					}
+				}
+			}
+
+			wantStatus(t, s.subscribe("600"), 200)
+			notified("peer.example.net")
+
+			s.charging = "icid-value=CD34"
+
+			wantStatus(t, s.subscribe("600"), 200)
+			notified("peer2.example.net")
+		})
+	}
 }
 
 // TS 24.229 §5.4.2.1.1 step 1: an AS is authorised when listed in the user's iFCs and in the trust domain.

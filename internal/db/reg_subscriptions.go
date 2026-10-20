@@ -33,20 +33,24 @@ type RegSubscription struct {
 	Dialog       []byte
 	Version      int64
 	ExpiresAt    time.Time
+	// ICID is the icid-value of the SUBSCRIBE that created the dialog, for the NOTIFYs; TermIOI the term-ioi of the
+	// last response to one (TS 24.229 §5.4.2.1.2).
+	ICID    string
+	TermIOI string
 }
 
 const regSubscriptionColumns = `id, impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,
-	dialog, version, expires_at`
+	dialog, version, expires_at, icid, term_ioi`
 
 func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
 	res, err := d.conn.ExecContext(ctx,
 		`INSERT INTO reg_subscriptions (impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,
-			dialog, version, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			dialog, version, expires_at, icid, term_ioi)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.IMPI, s.IMPU, s.Subscriber, s.CallID, s.LocalTag, s.RemoteTag, s.RemoteTarget,
-		s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano())
+		s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano(), s.ICID, s.TermIOI)
 
 	switch {
 	case isConstraint(err, sqlite3.ErrConstraintUnique):
@@ -67,8 +71,8 @@ func (d *DB) UpdateRegSubscription(ctx context.Context, s RegSubscription) (err 
 	defer d.observe(poolWrite, &err)()
 
 	res, err := d.conn.ExecContext(ctx,
-		`UPDATE reg_subscriptions SET remote_target = ?, dialog = ?, version = ?, expires_at = ? WHERE id = ?`,
-		s.RemoteTarget, s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano(), s.ID)
+		`UPDATE reg_subscriptions SET remote_target = ?, dialog = ?, version = ?, expires_at = ?, term_ioi = ? WHERE id = ?`,
+		s.RemoteTarget, s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano(), s.TermIOI, s.ID)
 	if err != nil {
 		return fmt.Errorf("update reg subscription: %w", err)
 	}
@@ -164,7 +168,7 @@ func scanRegSubscription(row scanner) (RegSubscription, error) {
 	)
 
 	if err := row.Scan(&s.ID, &s.IMPI, &s.IMPU, &s.Subscriber, &s.CallID, &s.LocalTag, &s.RemoteTag, &s.RemoteTarget,
-		&s.Dialog, &s.Version, &expiresAt); err != nil {
+		&s.Dialog, &s.Version, &expiresAt, &s.ICID, &s.TermIOI); err != nil {
 		return RegSubscription{}, err
 	}
 

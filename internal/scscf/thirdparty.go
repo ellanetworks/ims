@@ -136,14 +136,13 @@ func (r *Registrar) thirdPartyRegister(ev registration, to sip.URI, as cx.Applic
 		}
 	}
 
-	// TS 24.229 §5.4.1.7 h: the icid-value of the REGISTER; the S-CSCF keeps no IOI, nor passes on the UE's network's.
-	if ps, err := sip.ParseParams(ev.req.Header.Get("P-Charging-Vector")); err == nil {
-		if icid, ok := ps.Get("icid-value"); ok && icid != "" {
-			req.Header.Add("P-Charging-Vector", "icid-value="+icid)
-		}
-	}
-
 	if ev.regType != cx.RegistrationTypeDeregistration {
+		// TS 24.229 §5.4.1.7 h: the icid-value of the REGISTER, and a type 3 orig-ioi in place of the one received,
+		// without term-ioi.
+		if icid := icidOf(ev.req.Header); icid != "" {
+			req.Header.Add(pChargingVector, r.chargingVector(icid))
+		}
+
 		var parts []sip.BodyPart
 
 		if as.ServiceInfo != nil {
@@ -238,9 +237,14 @@ func (tp *thirdParty) send(ctx context.Context) {
 	}
 }
 
-// HandleResponse takes any response in time as the AS's; a 408 or a 5xx fails the REGISTER (TS 24.229 §5.4.1.7).
+// HandleResponse takes any response in time as the AS's, and keeps its term-ioi; a 408 or a 5xx fails the REGISTER
+// (TS 24.229 §5.4.1.7).
 func (tp *thirdParty) HandleResponse(res *sip.Response) {
 	tp.timer.Stop()
+
+	if ioi := termIOIOf(res); ioi != "" {
+		tp.r.storeTermIOI(tp.to, tp.as.ServerName, ioi)
+	}
 
 	switch {
 	case res.IsProvisional():

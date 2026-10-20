@@ -284,6 +284,13 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 	req.Header.Add("Contact", contactURI(local, tr))
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Subscription-State", subState)
+
+	// TS 24.229 §5.4.2.1.2 step 5: the icid-value of the SUBSCRIBE, and an orig-ioi of type 3 towards an AS, of type 1
+	// otherwise, without term-ioi.
+	if s.ICID != "" {
+		req.Header.Add(pChargingVector, r.chargingVector(s.ICID))
+	}
+
 	req.SetBody(regevent.ContentType, body)
 	req.Flow = sip.Flow{Transport: tr, Local: local, Remote: dest}
 
@@ -523,6 +530,7 @@ func (t *notifyTransaction) HandleResponse(res *sip.Response) {
 		t.r.notifyFailed(t.o)
 	default:
 		t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
+		t.r.notified(t.o, res)
 	}
 }
 
@@ -557,8 +565,13 @@ func (r *Registrar) notifyFailed(o *outgoing) {
 	})
 }
 
+// notified keeps, of a final response to a NOTIFY of a subscription that goes on, the term-ioi (TS 24.229 §5.4.2.1.2)
+// and, of a 2xx, the remote target (RFC 6665 §4.1.2.2, RFC 3261 §12.2.1.2).
 func (r *Registrar) notified(o *outgoing, res *sip.Response) {
-	if o.final || !res.Header.Has("Contact") {
+	ioi := termIOIOf(res)
+	target := res.IsSuccess() && res.Header.Has("Contact")
+
+	if o.final || (ioi == "" && !target) {
 		return
 	}
 
@@ -568,21 +581,40 @@ func (r *Registrar) notified(o *outgoing, res *sip.Response) {
 			return
 		}
 
-		d, err := restoreDialog(s.Dialog)
-		if err != nil || d.ReceiveResponse(res) != nil {
-			return
+		changed := ioi != "" && ioi != s.TermIOI
+		if ioi != "" {
+			s.TermIOI = ioi
 		}
 
-		if s.Dialog, err = json.Marshal(d.Snapshot()); err != nil {
-			return
+		if target && refreshTarget(&s, res) {
+			changed = true
 		}
 
-		s.RemoteTarget = d.RemoteTarget().String()
+		if !changed {
+			return
+		}
 
 		if err := r.cfg.DB.UpdateRegSubscription(ctx, s); err != nil && !errors.Is(err, db.ErrNotFound) {
 			r.log.Warn("failed to store a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
 		}
 	})
+}
+
+// refreshTarget updates the dialog of a subscription with a 2xx to its NOTIFY.
+func refreshTarget(s *db.RegSubscription, res *sip.Response) bool {
+	d, err := restoreDialog(s.Dialog)
+	if err != nil || d.ReceiveResponse(res) != nil {
+		return false
+	}
+
+	snap, err := json.Marshal(d.Snapshot())
+	if err != nil {
+		return false
+	}
+
+	s.Dialog, s.RemoteTarget = snap, d.RemoteTarget().String()
+
+	return true
 }
 
 func (r *Registrar) background(impi string, f func(ctx context.Context)) {

@@ -317,6 +317,9 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		out.Header.Set("P-Visited-Network-ID", p.cfg.HomeDomain)
 	}
 
+	// TS 24.229 §5.2.2.1 step 3: a new icid-value, and a type 1 orig-ioi without term-ioi.
+	p.newChargingVector(req.Flow.Local.Addr()).set(out)
+
 	to := proxy.Target{Flow: sip.Flow{
 		Transport: req.Flow.Transport,
 		Local:     netip.AddrPortFrom(req.Flow.Local.Addr(), p.cfg.Port),

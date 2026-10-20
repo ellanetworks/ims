@@ -231,6 +231,8 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	r.Header.Del("P-Served-User")
 	r.Header.Add("P-Served-User", servedUser(c))
 
+	s.r.toASCharging(&r.Header)
+
 	if c.token != "" {
 		withRegistrationToken(&r.Header, c.token)
 	}

@@ -536,8 +536,10 @@ func TestThirdPartyRegister(t *testing.T) {
 	}
 
 	register, err := sip.Parse(parts[1].Body)
-	if req, ok := register.(*sip.Request); err != nil || !ok || req.Method != "REGISTER" || parts[1].MediaType() != "message/sip" {
-		t.Errorf("second part:\n%s\nwant the UE's REGISTER (%v)", parts[1].Body, err)
+
+	req, isRequest := register.(*sip.Request)
+	if err != nil || !isRequest || req.Method != "REGISTER" || parts[1].MediaType() != "message/sip" {
+		t.Fatalf("second part:\n%s\nwant the UE's REGISTER (%v)", parts[1].Body, err)
 	}
 
 	ok, err := sip.Parse(parts[2].Body)
@@ -556,9 +558,16 @@ func TestThirdPartyRegister(t *testing.T) {
 		t.Errorf("Expires %s, want %s as in the 200", r.Header.Get("Expires"), want)
 	}
 
-	// TS 24.229 §5.4.1.7 h: the icid-value only, no IOI of the UE's network.
-	if v := r.Header.Get("P-Charging-Vector"); v != "" && (!strings.HasPrefix(v, "icid-value=") || strings.Contains(v, ";")) {
-		t.Errorf("P-Charging-Vector %q, want the icid-value only", v)
+	// TS 24.229 §5.4.1.7 h: the icid-value of the REGISTER, the S-CSCF's network as the type 3 orig-ioi in place of
+	// the P-CSCF's, no term-ioi.
+	icid, err := sip.ParseParams(req.Header.Get("P-Charging-Vector"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if v, _ := icid.Get("icid-value"); r.Header.Get("P-Charging-Vector") != "icid-value="+v+";orig-ioi="+domain || v == "" {
+		t.Errorf("P-Charging-Vector %q, want the icid-value %q of the REGISTER and orig-ioi=%s",
+			r.Header.Get("P-Charging-Vector"), v, domain)
 	}
 
 	if err := u.Deregister(s.ctx()); err != nil {
@@ -566,8 +575,9 @@ func TestThirdPartyRegister(t *testing.T) {
 	}
 
 	dereg := srv.next(t)
-	if dereg.Header.Get("Expires") != "0" || len(dereg.Body) != 0 {
-		t.Fatalf("AS got:\n%s\nwant a deregistration without a body", dereg)
+	// TS 24.229 §5.4.1.7 g and h: for registration and reregistration only.
+	if dereg.Header.Get("Expires") != "0" || len(dereg.Body) != 0 || dereg.Header.Has("P-Charging-Vector") {
+		t.Fatalf("AS got:\n%s\nwant a deregistration without a body nor P-Charging-Vector", dereg)
 	}
 
 	// RFC 3261 §10.2: the same Call-ID for the registrations of the identity at the AS, the CSeq one more.

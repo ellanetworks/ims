@@ -142,9 +142,7 @@ func (s *scene) register(edit func(*sip.Request)) {
 func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 	s := newScene(t)
 
-	stripped := []string{
-		"P-Asserted-Identity", "P-Charging-Vector", "P-Charging-Function-Addresses",
-	}
+	stripped := []string{"P-Asserted-Identity", "P-Charging-Function-Addresses"}
 
 	const pani = "3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=00101000100000001"
 
@@ -176,6 +174,12 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 
 	if v := req.Header.Get("P-Visited-Network-ID"); v != homeDomain {
 		t.Errorf("P-Visited-Network-ID = %q, want %q", v, homeDomain)
+	}
+
+	// TS 24.229 §5.2.2.1 step 3: the P-CSCF's own icid-value, and a type 1 orig-ioi.
+	if cv, ok := parseChargingVector(req.Header.Get("P-Charging-Vector")); !ok || cv.icid == "1234" ||
+		cv.origIOI != homeDomain || cv.termIOI != "" || len(req.Header.Values("P-Charging-Vector")) != 1 {
+		t.Errorf("P-Charging-Vector = %q, want a new icid-value and orig-ioi=%s", req.Header.Values("P-Charging-Vector"), homeDomain)
 	}
 
 	res := sip.NewResponse(req, 200, "")

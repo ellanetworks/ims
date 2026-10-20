@@ -253,6 +253,66 @@ func TestISCRetargeted(t *testing.T) {
 	sh.term.RecvNone(10 * time.Millisecond)
 }
 
+// TS 24.229 §5.4.3.2 step 5 c to e, §5.4.3.3 step 4 d and f: towards an AS, originating and terminating, the
+// P-Charging-Vector keeps its icid-value and access-network-charging-info, the AS being in the trust domain, and has
+// a type 3 orig-ioi of the S-CSCF's network in place of the one received, without term-ioi nor transit-ioi.
+func TestISCChargingVector(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		orig, term := cx.SessionCaseOriginatingRegistered, cx.SessionCaseTerminatingRegistered
+
+		return []cx.InitialFilterCriteria{
+			iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"), cx.ServicePointTrigger{SessionCase: &orig}),
+			iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"), cx.ServicePointTrigger{SessionCase: &term}),
+		}
+	})
+
+	const received = "icid-value=AB12;orig-ioi=visited.example.net;term-ioi=other.example.net;transit-ioi=transit.example.net;" +
+		"access-network-charging-info=x"
+
+	want := "icid-value=AB12;orig-ioi=" + homeDomain + ";access-network-charging-info=x"
+
+	for name, send := range map[string]func() *sip.Request{
+		"originating": func() *sip.Request {
+			req := sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">")
+			req.Header.Add("P-Charging-Vector", received)
+			sh.orig.Send(sip.UDP, sh.scscf, req)
+
+			return req
+		},
+		"terminating": func() *sip.Request {
+			req := sh.terminating("MESSAGE", testTel)
+			req.Header.Add("P-Charging-Vector", received)
+			sh.icscf.Send(sip.UDP, sh.scscf, req)
+
+			return req
+		},
+		"without icid": func() *sip.Request {
+			req := sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">")
+			req.Header.Add("P-Charging-Vector", "orig-ioi=visited.example.net")
+			sh.orig.Send(sip.UDP, sh.scscf, req)
+
+			return req
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			send()
+
+			got, f := as.RecvRequest()
+
+			v := got.Header.Values("P-Charging-Vector")
+			if name == "without icid" {
+				if len(v) != 0 {
+					t.Fatalf("AS got P-Charging-Vector %q, want none without an icid-value", v)
+				}
+			} else if !slices.Equal(v, []string{want}) {
+				t.Fatalf("AS got P-Charging-Vector %q, want %q", v, want)
+			}
+
+			as.Send(sip.UDP, f.Remote, sip.NewResponse(got, 486, ""))
+		})
+	}
+}
+
 // TS 24.229 §5.4.3.2 step 5: the iFCs apply to every initial request and standalone transaction; the S-CSCF
 // record-routes a SUBSCRIBE to the AS.
 func TestISCMethods(t *testing.T) {
@@ -478,6 +538,85 @@ func TestISCServedUserOtherThanAsserted(t *testing.T) {
 	if res := final(t, sender); res.StatusCode != 200 {
 		t.Fatalf("sender got %q, want 200", res.StartLine())
 	}
+}
+
+// TS 24.229 §5.4.1.7 h: the third-party REGISTERs of the registration and the reregistration have the icid-value of
+// the REGISTER, and a type 3 orig-ioi of the S-CSCF's network in place of the P-CSCF's, without term-ioi; the
+// S-CSCF keeps the term-ioi of the AS's response. That of the deregistration has none.
+func TestThirdPartyRegisterCharging(t *testing.T) {
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	serverName := "sip:" + as.Addr().String()
+
+	h := newHarness(t)
+	h.hss.set(func(h *fakeHSS) {
+		register := "REGISTER"
+		handling := cx.DefaultHandlingSessionContinued
+
+		h.subscriptions[0].ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{{
+			Trigger:           &cx.TriggerPoint{ServicePointTriggers: []cx.ServicePointTrigger{{Groups: []int32{0}, Method: &register}}},
+			ApplicationServer: cx.ApplicationServer{ServerName: serverName, DefaultHandling: &handling},
+		}}
+	})
+
+	u := h.newUE()
+
+	thirdParty := func(want, termIOI string) {
+		t.Helper()
+
+		got, f := as.RecvRequest()
+		if got.Method != "REGISTER" {
+			t.Fatalf("AS got %s, want a third-party REGISTER", got.Method)
+		}
+
+		if v := got.Header.Values("P-Charging-Vector"); !slices.Equal(v, []string{want}) && (want != "" || len(v) != 0) {
+			t.Fatalf("AS got P-Charging-Vector %q, want %q", v, want)
+		}
+
+		res := sip.NewResponse(got, 200, "")
+		res.Header.Add("P-Charging-Vector", "icid-value=AB12;orig-ioi="+homeDomain+";term-ioi="+termIOI)
+		as.Send(sip.UDP, f.Remote, res)
+	}
+
+	stored := func(want string) {
+		t.Helper()
+
+		for deadline := time.Now().Add(time.Second); ; time.Sleep(time.Millisecond) {
+			h.reg.mu.Lock()
+
+			var got string
+
+			for _, peers := range h.reg.peers {
+				if p := peers[serverName]; p != nil {
+					got = p.termIOI
+				}
+			}
+
+			h.reg.mu.Unlock()
+
+			if got == want {
+				return
+			}
+
+			if time.Now().After(deadline) {
+				t.Fatalf("stored term-ioi %q, want %q", got, want)
+			}
+		}
+	}
+
+	const received = "icid-value=AB12;icid-generated-at=192.0.2.1;orig-ioi=visited.example.net;term-ioi=other.example.net"
+
+	want := "icid-value=AB12;orig-ioi=" + homeDomain
+
+	u.register(registerOptions{charging: received})
+	thirdParty(want, "as.example.net")
+	stored("as.example.net")
+
+	u.register(registerOptions{charging: received})
+	thirdParty(want, "as2.example.net")
+	stored("as2.example.net")
+
+	u.register(registerOptions{charging: received, expires: "0"})
+	thirdParty("", "as3.example.net")
 }
 
 // TS 24.229 §5.4.1.1 item 1, §3.1: a UE that restarted registers its contact again, unprotected: an initial
