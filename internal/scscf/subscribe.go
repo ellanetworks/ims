@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
@@ -201,6 +202,10 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		}
 	}
 
+	if impi, ok := r.asSubscriber(ctx, req, regs, asserted, now); ok {
+		return &subscribeRequest{req: req, impi: impi, subscriber: db.SubscriberAS}, nil
+	}
+
 	if impi, ok := serviceRouteUser(regs, routes); ok {
 		regs = slices.DeleteFunc(slices.Clone(regs), func(reg db.Registration) bool { return reg.IMPI != impi })
 	}
@@ -217,6 +222,63 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")))
 
 	return nil, sip.NewResponse(req, 403, "")
+}
+
+// asSubscriber is the private identity of the user whose registration state an AS subscribes to, when the SUBSCRIBE
+// comes from the trust domain and asserts the SIP URI of an AS of the user's iFCs (TS 24.229 §5.4.2.1.1 step 1 and
+// NOTE 1, §5.7.1.1 b and e): the first user with bindings of the IMPU that has one. The AS goes by the identity it
+// asserts, as the P-CSCF does, not by its address, which need not be the one its URI resolves to; the trust domain by
+// the source address, as for every request the S-CSCF takes (RFC 3325 §4, TS 24.229 §4.4).
+func (r *Registrar) asSubscriber(ctx context.Context, req *sip.Request, regs []db.Registration, asserted []sip.Address,
+	now time.Time,
+) (string, bool) {
+	if len(asserted) == 0 || !r.trusted(req.Flow.Remote.Addr()) {
+		return "", false
+	}
+
+	for _, reg := range regs {
+		if len(liveAt(reg.Bindings, now)) == 0 {
+			continue
+		}
+
+		for _, a := range asserted {
+			if r.listsAS(ctx, reg.IMPI, a.URI) {
+				return reg.IMPI, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+// listsAS reports whether u is the SIP URI of an AS of the iFCs of the user of impi (RFC 3261 §19.1.4): of any
+// service profile of its IMS subscription, of the registered or the unregistered part (TS 29.228 Annex B.2.2).
+func (r *Registrar) listsAS(ctx context.Context, impi string, u sip.URI) bool {
+	if !u.IsSIP() {
+		return false
+	}
+
+	regs, err := r.cfg.DB.ListRegistrationsByIMPI(ctx, impi)
+	if err != nil {
+		return false
+	}
+
+	for _, reg := range regs {
+		sub, err := cx.ParseUserData(reg.UserData)
+		if err != nil {
+			continue
+		}
+
+		for _, p := range sub.ServiceProfiles {
+			for _, c := range p.InitialFilterCriteria {
+				if as, err := sip.ParseURI(c.ApplicationServer.ServerName); err == nil && as.Equivalent(u) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 func serviceRouteUser(regs []db.Registration, routes []sip.URI) (string, bool) {

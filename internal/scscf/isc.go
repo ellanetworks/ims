@@ -185,7 +185,7 @@ func (s *Sessions) next(ctx context.Context, tx *transaction.ServerTransaction, 
 		s.log.Debug("request to an unregistered user", slog.String("impu", c.served.URI.String()))
 		s.answer(tx, sip.NewResponse(tx.Request(), 480, ""))
 	default:
-		s.deliver(tx, out, c, !first)
+		s.deliver(ctx, tx, out, c, !first)
 	}
 }
 

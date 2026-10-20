@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -87,6 +88,29 @@ func TestDeregistrationReleasesOriginatingCall(t *testing.T) {
 
 	invite, ok := sh.call(t)
 	ack := sh.inDialog("ACK", invite, ok, ok.Header.Values("Record-Route")[0])
+	ack.Header.Set("CSeq", "1 ACK")
+	sh.orig.Send(sip.UDP, sh.scscf, ack)
+
+	if req, _ := sh.icscf.RecvRequest(); req.Method != "ACK" {
+		t.Fatalf("callee got %s, want the ACK", req.StartLine())
+	}
+
+	sh.ue.register(registerOptions{expires: "0"})
+
+	bye(t, sh.icscf)
+	bye(t, sh.orig)
+}
+
+// RFC 3263 §4: the BYE the S-CSCF sends goes to the remote target, which a domain name can name.
+func TestDeregistrationReleasesCallToDomainName(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.dns.add("mcptt.example.com", loopback)
+
+	target := "sip:mcptt-controlling@mcptt.example.com:" + strconv.Itoa(int(sh.icscf.Addr().Port())) + ";gr=urn:uuid:1"
+	invite, ok := sh.callTo(t, target)
+
+	ack := sh.inDialog("ACK", invite, ok, ok.Header.Values("Record-Route")[0])
+	ack.URI = parseURI(t, target)
 	ack.Header.Set("CSeq", "1 ACK")
 	sh.orig.Send(sip.UDP, sh.scscf, ack)
 

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,38 @@ var (
 
 type fakeClock struct {
 	*siptest.Clock
+}
+
+// fakeDNS knows the addresses of the hosts added to it, and no SRV record.
+type fakeDNS struct {
+	mu    sync.Mutex
+	hosts map[string][]netip.Addr
+}
+
+func (d *fakeDNS) add(host string, addrs ...netip.Addr) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.hosts == nil {
+		d.hosts = make(map[string][]netip.Addr)
+	}
+
+	d.hosts[host] = addrs
+}
+
+func (d *fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
+	return "", nil, &net.DNSError{Err: "no such host", Name: "_" + service + "._" + proto + "." + name, IsNotFound: true}
+}
+
+func (d *fakeDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if addrs, ok := d.hosts[host]; ok {
+		return addrs, nil
+	}
+
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
 func (c fakeClock) Now() time.Time {
@@ -325,6 +358,7 @@ type harness struct {
 	pcscf    *fakePCSCF
 
 	icscf      *siptest.Socket
+	dns        *fakeDNS
 	numbering  Numbering
 	sessions   *Sessions
 	sipProxy   *proxy.Proxy
@@ -375,7 +409,7 @@ func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	h := &harness{t: t, hss: newFakeHSS(t), clock: fakeClock{siptest.NewClock()}, sipClock: siptest.NewClock()}
+	h := &harness{t: t, hss: newFakeHSS(t), clock: fakeClock{siptest.NewClock()}, sipClock: siptest.NewClock(), dns: &fakeDNS{}}
 
 	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
 	if err != nil {
@@ -417,6 +451,7 @@ func newHarness(t *testing.T) *harness {
 		Layer:                layer,
 		Listeners:            []netip.AddrPort{h.scscf},
 		Trust:                trust.New(nil, []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}),
+		Resolver:             &sip.Resolver{DNS: h.dns},
 	}
 
 	h.start()

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -115,15 +116,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		return
 	}
 
-	err = s.r.cfg.Layer.Go(func(ctx context.Context) {
-		ctx, done, ok := s.r.begin(ctx)
-		if !ok {
-			s.answer(tx, retryLater(req))
-			return
-		}
-
-		defer done()
-
+	s.spawn(tx, func(ctx context.Context) {
 		switch {
 		case h != nil:
 			s.resume(ctx, tx, out, h)
@@ -134,6 +127,24 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		default:
 			s.terminating(ctx, tx, out)
 		}
+	})
+}
+
+// spawn runs f for a request on a goroutine of its own while the S-CSCF runs, and answers the request with a 500
+// and a Retry-After when it cannot.
+func (s *Sessions) spawn(tx *transaction.ServerTransaction, f func(ctx context.Context)) {
+	req := tx.Request()
+
+	err := s.r.cfg.Layer.Go(func(ctx context.Context) {
+		ctx, done, ok := s.r.begin(ctx)
+		if !ok {
+			s.answer(tx, retryLater(req))
+			return
+		}
+
+		defer done()
+
+		f(ctx)
 	})
 	if err != nil {
 		s.log.Debug("dropped a SIP request", slog.String("request", req.StartLine()), slog.Any("error", err))
@@ -152,14 +163,35 @@ func (s *Sessions) HandleAck(ack *sip.Request) {
 		return
 	}
 
-	to, err := s.nextHop(out, ack.Flow)
-	if err != nil {
-		s.log.Debug("no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+	forward := func(ctx context.Context) {
+		to, err := s.nextHop(ctx, out, ack.Flow)
+		if err != nil {
+			s.log.Debug("no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+			return
+		}
+
+		if err := s.proxy.ForwardAck(out, to, s.proxy.Dialog(removed)); err != nil {
+			s.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+		}
+	}
+
+	if !needsDNS(out) {
+		forward(context.Background())
 		return
 	}
 
-	if err := s.proxy.ForwardAck(out, to, s.proxy.Dialog(removed)); err != nil {
-		s.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+	err = s.r.cfg.Layer.Go(func(ctx context.Context) {
+		ctx, done, ok := s.r.begin(ctx)
+		if !ok {
+			return
+		}
+
+		defer done()
+
+		forward(ctx)
+	})
+	if err != nil {
+		s.log.Debug("dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 	}
 }
 
@@ -534,9 +566,11 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 			return
 		}
 
-		to, err := s.nextHop(out, req.Flow)
+		to, err := s.nextHop(ctx, out, req.Flow)
 		if err != nil {
+			s.log.Debug("no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
 			s.answer(tx, sip.NewResponse(req, 404, "No Route"))
+
 			return
 		}
 
@@ -565,7 +599,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 // deliver forks the request to the registered contacts of the served user (TS 24.229 §5.4.3.3 steps 8 to 14); viaAS
 // tells that it comes back from an AS.
-func (s *Sessions) deliver(tx *transaction.ServerTransaction, out *sip.Request, c *chain, viaAS bool) {
+func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, viaAS bool) {
 	req := tx.Request()
 	called := out.URI
 
@@ -580,13 +614,13 @@ func (s *Sessions) deliver(tx *transaction.ServerTransaction, out *sip.Request, 
 		var bs []proxy.Branch
 
 		for _, t := range g {
-			b, ok := s.branch(out, called, t, opts, req.Flow, viaAS)
+			b, ok := s.branch(ctx, out, called, t, opts, req.Flow, viaAS)
 			if !ok {
 				continue
 			}
 
 			for _, other := range t.others {
-				if r, ok := s.branch(out, called, other, opts, req.Flow, viaAS); ok {
+				if r, ok := s.branch(ctx, out, called, other, opts, req.Flow, viaAS); ok {
 					b.Retry = append(b.Retry, r)
 				}
 			}
@@ -651,7 +685,8 @@ func (s *Sessions) deliver(tx *transaction.ServerTransaction, out *sip.Request, 
 const DefaultGroupNoAnswer = 20 * time.Second
 
 // branch is the request to one registered contact (TS 24.229 §5.4.3.3 step 10).
-func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy.Options, in sip.Flow, viaAS bool,
+func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI, t target, opts proxy.Options, in sip.Flow,
+	viaAS bool,
 ) (proxy.Branch, bool) {
 	contact, err := sip.ParseURI(t.binding.Contact.URI)
 	if err != nil {
@@ -670,7 +705,7 @@ func (s *Sessions) branch(out *sip.Request, called sip.URI, t target, opts proxy
 		r.Header.Prepend("Route", t.binding.Contact.Path)
 	}
 
-	to, err := s.nextHop(r, in)
+	to, err := s.nextHop(ctx, r, in)
 	if err != nil {
 		s.log.Warn("no route to the registered contact", slog.String("contact", t.binding.Contact.URI),
 			slog.String("path", t.binding.Contact.Path), slog.Any("error", err))
@@ -739,7 +774,9 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, track bool) pro
 	switch out.Method {
 	case "INVITE":
 		if track {
-			opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{Value: &call{icid: out.Header.ICID()}, OnEvent: s.r.dialogEvent})
+			opts.Dialog = s.proxy.NewDialog(proxy.DialogConfig{
+				Target: s.dialogTarget(out.Flow), Value: &call{icid: out.Header.ICID()}, OnEvent: s.r.dialogEvent,
+			})
 		}
 
 		fallthrough
@@ -748,6 +785,14 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, track bool) pro
 	}
 
 	return opts
+}
+
+// dialogTarget is where the requests the S-CSCF generates within a dialog go, such as the BYEs that release it, from
+// the S-CSCF's address on in, the flow of the initial request: their next hop, whatever its form (RFC 3261 §8.1.2).
+func (s *Sessions) dialogTarget(in sip.Flow) func(proxy.Side, *sip.Request) (proxy.Target, error) {
+	return func(_ proxy.Side, req *sip.Request) (proxy.Target, error) {
+		return s.nextHop(s.r.ctx, req, in)
+	}
 }
 
 // TS 24.229 §5.4.3.2, §5.4.3.3
@@ -768,9 +813,25 @@ func (s *Sessions) inDialog(tx *transaction.ServerTransaction, out *sip.Request,
 		return
 	}
 
-	to, err := s.nextHop(out, req.Flow)
+	if !needsDNS(out) {
+		s.forwardInDialog(context.Background(), tx, out, removed, d)
+		return
+	}
+
+	s.spawn(tx, func(ctx context.Context) { s.forwardInDialog(ctx, tx, out, removed, d) })
+}
+
+// forwardInDialog forwards a request within a dialog to its next hop (RFC 3261 §16.12).
+func (s *Sessions) forwardInDialog(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, removed []sip.URI,
+	d *proxy.Dialog,
+) {
+	req := tx.Request()
+
+	to, err := s.nextHop(ctx, out, req.Flow)
 	if err != nil {
+		s.log.Debug("no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
 		s.respond(tx, sip.NewResponse(req, 404, "No Route"))
+
 		return
 	}
 
@@ -835,13 +896,63 @@ func recordRouteOf(removed []sip.URI) *proxy.RecordRoute {
 	return rr
 }
 
-func (s *Sessions) nextHop(out *sip.Request, in sip.Flow) (proxy.Target, error) {
-	tr, dest, err := sip.NextHop(out)
+// resolveTimeout bounds the DNS queries that locate the next hop of a request.
+const resolveTimeout = 4 * time.Second
+
+// hopURI is the URI a request goes to next: its first Route, or else its Request-URI (RFC 3261 §8.1.2, §16.12).
+func hopURI(out *sip.Request) (sip.URI, error) {
+	route, err := out.Header.TopRoute()
+
+	switch {
+	case err == nil:
+		return route.URI, nil
+	case errors.Is(err, sip.ErrMissingHeader):
+		return out.URI, nil
+	default:
+		return sip.URI{}, err
+	}
+}
+
+// needsDNS reports whether the next hop of a request is named by a domain name, which only the DNS locates.
+func needsDNS(out *sip.Request) bool {
+	u, err := hopURI(out)
+	if err != nil {
+		return false
+	}
+
+	_, literal := u.Addr()
+
+	return !literal
+}
+
+// nextHop is where the S-CSCF sends a request: the first server its next hop resolves to (RFC 3261 §8.1.2, §16.12,
+// RFC 3263 §4) that a listener of the S-CSCF shares the address family of. A next hop named by its IP address
+// takes no DNS query.
+func (s *Sessions) nextHop(ctx context.Context, out *sip.Request, in sip.Flow) (proxy.Target, error) {
+	u, err := hopURI(out)
 	if err != nil {
 		return proxy.Target{}, err
 	}
 
-	return s.target(tr, dest, in)
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	servers, err := s.r.cfg.Resolver.Resolve(ctx, u)
+	if err != nil {
+		return proxy.Target{}, err
+	}
+
+	err = fmt.Errorf("no server for %s", u)
+
+	for _, srv := range servers {
+		var to proxy.Target
+
+		if to, err = s.target(srv.Transport, srv.Addr, in); err == nil {
+			return to, nil
+		}
+	}
+
+	return proxy.Target{}, err
 }
 
 func (s *Sessions) target(tr sip.Transport, dest netip.AddrPort, in sip.Flow) (proxy.Target, error) {

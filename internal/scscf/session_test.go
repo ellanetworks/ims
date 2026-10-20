@@ -850,6 +850,106 @@ func TestInDialogNotThroughTheSCSCF(t *testing.T) {
 	}
 }
 
+// callTo makes a call from the UE that the callee answers from contact.
+func (sh *sessionHarness) callTo(t *testing.T, contact string) (*sip.Request, *sip.Response) {
+	t.Helper()
+
+	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", remoteTel, "<"+testMSISDN+">"))
+
+	invite, f := sh.icscf.RecvRequest()
+
+	res := sip.NewResponse(invite, 200, "")
+	if err := res.Header.SetToTag("callee"); err != nil {
+		t.Fatal(err)
+	}
+
+	res.Header.Set("Contact", "<"+contact+">")
+
+	for _, rr := range invite.Header.Values("Record-Route") {
+		res.Header.Add("Record-Route", rr)
+	}
+
+	sh.icscf.Send(sip.UDP, f.Remote, res)
+
+	return invite, final(t, sh.orig)
+}
+
+func parseURI(t *testing.T, s string) sip.URI {
+	t.Helper()
+
+	u, err := sip.ParseURI(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return u
+}
+
+// RFC 3261 §16.12, RFC 3263 §4: a request whose route set is exhausted goes to the host of its Request-URI, the
+// remote target, which a domain name can name, such as the Contact of an AS (TS 24.229 §5.7.4).
+func TestInDialogToDomainName(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.dns.add("mcptt.example.com", loopback)
+
+	target := "sip:mcptt-controlling@mcptt.example.com:" + strconv.Itoa(int(sh.icscf.Addr().Port())) + ";gr=urn:uuid:1"
+	invite, ok := sh.callTo(t, target)
+	rr := ok.Header.Values("Record-Route")[0]
+
+	ack := sh.inDialog("ACK", invite, ok, rr)
+	ack.URI = parseURI(t, target)
+	ack.Header.Set("CSeq", "1 ACK")
+	sh.orig.Send(sip.UDP, sh.scscf, ack)
+
+	if got, _ := sh.icscf.RecvRequest(); got.Method != "ACK" || got.URI.String() != target {
+		t.Fatalf("callee got %s, want the ACK to %s", got.StartLine(), target)
+	}
+
+	bye := sh.inDialog("BYE", invite, ok, rr)
+	bye.URI = parseURI(t, target)
+	sh.orig.Send(sip.UDP, sh.scscf, bye)
+
+	got, f := sh.icscf.RecvRequest()
+	if got.Method != "BYE" || got.URI.String() != target || got.Header.Has("Route") {
+		t.Fatalf("callee got:\n%s\nwant the BYE to %s without Route", got, target)
+	}
+
+	sh.icscf.Send(sip.UDP, f.Remote, sip.NewResponse(got, 200, ""))
+
+	if res := final(t, sh.orig); res.StatusCode != 200 {
+		t.Fatalf("got %q, want 200", res.StartLine())
+	}
+}
+
+func TestInDialogToUnknownDomainName(t *testing.T) {
+	sh := newSessionHarness(t)
+
+	invite, ok := sh.call(t)
+
+	bye := sh.inDialog("BYE", invite, ok, ok.Header.Values("Record-Route")[0])
+	bye.URI = parseURI(t, "sip:mcptt-controlling@unknown.example.com;gr=urn:uuid:1")
+	sh.orig.Send(sip.UDP, sh.scscf, bye)
+
+	if res := final(t, sh.orig); res.StatusCode != 404 || res.Reason != "No Route" {
+		t.Fatalf("got %q, want 404 No Route", res.StartLine())
+	}
+
+	sh.icscf.RecvNone(50 * time.Millisecond)
+}
+
+// RFC 3261 §16.12: a request with a Route goes to its first value, which a domain name can name.
+func TestTerminatingWithRouteToDomainName(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.dns.add("as.example.com", loopback)
+
+	req := sh.terminating("OPTIONS", testTel)
+	req.Header.Add("Route", "<sip:as@as.example.com:"+strconv.Itoa(int(sh.term.Addr().Port()))+";lr>")
+	sh.icscf.Send(sip.UDP, sh.scscf, req)
+
+	if got, _ := sh.term.RecvRequest(); got.Method != "OPTIONS" || got.URI.String() != testTel {
+		t.Fatalf("got %s, want the OPTIONS forwarded on its Route", got.StartLine())
+	}
+}
+
 func TestNormalise(t *testing.T) {
 	n := Numbering{CountryCode: "44", NationalPrefix: "0", InternationalPrefix: "00"}
 

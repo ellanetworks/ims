@@ -17,6 +17,8 @@ type Subscriber string
 const (
 	SubscriberUE    Subscriber = "ue"
 	SubscriberPCSCF Subscriber = "pcscf"
+	// SubscriberAS is an AS of the user's iFCs (TS 24.229 §5.4.2.1.1 step 1, §5.7.1.1).
+	SubscriberAS Subscriber = "as"
 )
 
 type RegSubscription struct {

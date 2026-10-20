@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -74,6 +75,32 @@ func (h *harness) pcscfSubscriber(p *fakeProxy) *subscriber {
 		contact: "sip:127.0.0.1:" + strconv.Itoa(int(p.inbox.Addr().Port())),
 		impu:    testMSISDN,
 		pai:     p.path(),
+		callID:  sip.NewTag() + "@127.0.0.1",
+		fromTag: sip.NewTag(),
+	}
+}
+
+// withAS puts an AS, of the socket inbox, in the iFCs of the profile of the alias, not of the MSISDN's, for INVITEs
+// only: no third-party REGISTER goes to it.
+func (h *harness) withAS(inbox *siptest.Socket) {
+	h.hss.set(func(f *fakeHSS) {
+		f.subscriptions[0].ServiceProfiles[1].InitialFilterCriteria = []cx.InitialFilterCriteria{
+			iscTrigger(inbox, cx.DefaultHandlingSessionContinued, methodSPT("INVITE")),
+		}
+	})
+}
+
+// asSubscriber is an AS subscribing to the MSISDN as TS 24.229 §5.7.1.1 has it: From and P-Asserted-Identity its SIP
+// URI, the ServerName of the iFC, as the Request-URI of the third-party REGISTER has it.
+func (h *harness) asSubscriber(inbox *siptest.Socket) *subscriber {
+	return &subscriber{
+		h:       h,
+		sock:    siptest.NewSocket(h.t, netip.AddrPortFrom(loopback, 0)),
+		inbox:   inbox,
+		contact: "sip:" + inbox.Addr().String(),
+		impu:    testMSISDN,
+		pai:     "<sip:" + inbox.Addr().String() + ">",
+		accept:  regevent.ContentType,
 		callID:  sip.NewTag() + "@127.0.0.1",
 		fromTag: sip.NewTag(),
 	}
@@ -314,9 +341,13 @@ func TestSubscribe(t *testing.T) {
 	}{
 		{"ue", db.SubscriberUE},
 		{"pcscf", db.SubscriberPCSCF},
+		{"as", db.SubscriberAS},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
+			as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+			h.withAS(as)
+
 			u := h.newUE()
 			p := h.newPCSCF()
 			u.path = p.path()
@@ -324,9 +355,15 @@ func TestSubscribe(t *testing.T) {
 			u.register(registerOptions{})
 			h.hss.nextSAR(t)
 
-			s := h.ueSubscriber(u)
-			if tt.want == db.SubscriberPCSCF {
+			var s *subscriber
+
+			switch tt.want {
+			case db.SubscriberUE:
+				s = h.ueSubscriber(u)
+			case db.SubscriberPCSCF:
 				s = h.pcscfSubscriber(p)
+			default:
+				s = h.asSubscriber(as)
 			}
 
 			res := s.subscribe("600")
@@ -354,6 +391,89 @@ func TestSubscribe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TS 24.229 §5.4.2.1.2: an AS of the iFCs gets the full state of all the registered IMPUs of the user, as the UE and
+// the P-CSCF do.
+func TestSubscribeASFullState(t *testing.T) {
+	h := newHarness(t)
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	h.withAS(as)
+
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	n := h.asSubscriber(as).subscribed()
+	if got, want := n.aors(), []string{testMSISDN, testTel, testAlias}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("registrations = %v, want %v", got, want)
+	}
+
+	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Created)
+}
+
+// TS 24.229 §5.4.2.1.1 step 1: an AS is authorised when listed in the user's iFCs and in the trust domain.
+func TestSubscribeASRejected(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(h *harness, s *subscriber)
+	}{
+		{"another port of the AS", func(_ *harness, s *subscriber) {
+			s.pai = "<sip:" + netip.AddrPortFrom(loopback, s.inbox.Addr().Port()+1).String() + ">"
+		}},
+		// NOTE 1: the identity is that of P-Asserted-Identity; From has the AS's URI.
+		{"AS not in the iFCs", func(_ *harness, s *subscriber) { s.pai = "<sip:other-as@" + homeDomain + ">" }},
+		{"outside the trust domain", func(h *harness, _ *subscriber) {
+			h.cfg.Trust = trust.New(nil, nil)
+			h.restart()
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+			h.withAS(as)
+
+			u := h.newUE()
+			u.register(registerOptions{})
+			h.hss.nextSAR(t)
+
+			s := h.asSubscriber(as)
+			tt.change(h, s)
+
+			req := s.request("600")
+			req.Header.Set("From", "<sip:"+as.Addr().String()+">;tag="+s.fromTag)
+
+			s.sock.Send(sip.UDP, h.scscf, req)
+
+			res, _ := s.sock.RecvResponse()
+			for res.IsProvisional() {
+				res, _ = s.sock.RecvResponse()
+			}
+
+			wantStatus(t, res, 403)
+			s.noNotify()
+
+			if subs := h.subscriptions(); len(subs) != 0 {
+				t.Fatalf("subscriptions = %+v, want none", subs)
+			}
+		})
+	}
+}
+
+// RFC 3263 §4: the NOTIFY goes to the remote target of the subscription, which a domain name can name.
+func TestNotifyToDomainName(t *testing.T) {
+	h := newHarness(t)
+	h.dns.add("as.example.com", loopback)
+
+	u := h.newUE()
+	p := h.newPCSCF()
+	u.path = p.path()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	s := h.pcscfSubscriber(p)
+	s.contact = "sip:as@as.example.com:" + strconv.Itoa(int(p.inbox.Addr().Port()))
+	s.subscribed()
 }
 
 func TestSubscribeRejected(t *testing.T) {

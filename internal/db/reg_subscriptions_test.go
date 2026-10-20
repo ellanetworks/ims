@@ -95,7 +95,7 @@ func TestPutRegSubscriptionErrors(t *testing.T) {
 
 	bad := testSubscription()
 	bad.CallID = "sub-2"
-	bad.Subscriber = "as"
+	bad.Subscriber = "icscf"
 
 	if _, err := d.PutRegSubscription(ctx, bad); err == nil {
 		t.Fatal("PutRegSubscription accepted an unknown subscriber")

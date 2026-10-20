@@ -275,14 +275,9 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 		return nil, err
 	}
 
-	tr, dest, err := sip.NextHop(req)
+	tr, dest, local, err := r.notifyHop(ctx, req)
 	if err != nil {
 		return nil, err
-	}
-
-	local, ok := r.listener(dest.Addr())
-	if !ok {
-		return nil, fmt.Errorf("no S-CSCF listener for %s", dest.Addr())
 	}
 
 	req.Header.Prepend("Via", sip.NewVia(tr, local).String())
@@ -293,6 +288,31 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 	req.Flow = sip.Flow{Transport: tr, Local: local, Remote: dest}
 
 	return &outgoing{impi: s.IMPI, subID: s.ID, req: req}, nil
+}
+
+// notifyHop is where a NOTIFY goes, and the S-CSCF's address it goes from: the first server its next hop resolves to
+// (RFC 3261 §8.1.2, RFC 3263 §4), such as the Contact of an AS by domain name, that the S-CSCF has a listener for.
+func (r *Registrar) notifyHop(ctx context.Context, req *sip.Request) (sip.Transport, netip.AddrPort, netip.AddrPort, error) {
+	u, err := hopURI(req)
+	if err != nil {
+		return "", netip.AddrPort{}, netip.AddrPort{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	servers, err := r.cfg.Resolver.Resolve(ctx, u)
+	if err != nil {
+		return "", netip.AddrPort{}, netip.AddrPort{}, err
+	}
+
+	for _, srv := range servers {
+		if local, ok := r.listener(srv.Addr.Addr()); ok {
+			return srv.Transport, srv.Addr, local, nil
+		}
+	}
+
+	return "", netip.AddrPort{}, netip.AddrPort{}, fmt.Errorf("no S-CSCF listener for %s", u)
 }
 
 func restoreDialog(b []byte) (*dialog.Dialog, error) {

@@ -69,7 +69,7 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
 		impu TEXT NOT NULL,
-		subscriber TEXT NOT NULL CHECK (subscriber IN ('ue', 'pcscf')),
+		subscriber TEXT NOT NULL CHECK (subscriber IN ('ue', 'pcscf', 'as')),
 		call_id TEXT NOT NULL,
 		local_tag TEXT NOT NULL,
 		remote_tag TEXT NOT NULL,
