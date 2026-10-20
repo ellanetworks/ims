@@ -55,22 +55,58 @@ func (u URI) equal(v URI) bool {
 		slices.Equal(u.Params, v.Params)
 }
 
+// Equivalent reports whether u and v are equivalent: SIP URIs by RFC 3261 §19.1.4, escapes equivalent to the
+// characters they encode but of reserved ones; tel URIs by RFC 3966 §4; others when equal but for the case of the
+// scheme.
 func (u URI) Equivalent(v URI) bool {
 	if !strings.EqualFold(u.Scheme, v.Scheme) {
 		return false
 	}
 
-	if !u.IsSIP() {
+	switch {
+	case u.IsTel():
+		return telEquivalent(u, v)
+	case !u.IsSIP():
 		v.Scheme = u.Scheme
 		return u.equal(v)
 	}
 
-	if u.User != v.User || u.Password != v.Password || !strings.EqualFold(u.Host, v.Host) ||
-		u.Port != v.Port || !uriHeadersEquivalent(u.Headers, v.Headers) {
+	if normalizeEscapes(u.User) != normalizeEscapes(v.User) || normalizeEscapes(u.Password) != normalizeEscapes(v.Password) ||
+		!strings.EqualFold(u.Host, v.Host) || u.Port != v.Port || !uriHeadersEquivalent(u.Headers, v.Headers) {
 		return false
 	}
 
 	return paramsEquivalent(u.Params, v.Params) && paramsEquivalent(v.Params, u.Params)
+}
+
+// telEquivalent is the comparison of tel URIs of RFC 3966 §4: both global or both local numbers, their digits
+// without visual separators, the same parameters whatever their order, the phone-context of digits without visual
+// separators too; case-insensitive.
+func telEquivalent(u, v URI) bool {
+	digits := func(s string) string { return strings.ToLower(withoutVisualSeparators(s)) }
+
+	if strings.HasPrefix(u.User, "+") != strings.HasPrefix(v.User, "+") || digits(u.User) != digits(v.User) ||
+		len(u.Params) != len(v.Params) {
+		return false
+	}
+
+	for _, p := range u.Params {
+		value, ok := v.Params.Get(p.Name)
+		if !ok {
+			return false
+		}
+
+		a, b := p.Value, value
+		if strings.EqualFold(p.Name, "phone-context") {
+			a, b = phoneContext(a), phoneContext(b)
+		}
+
+		if !strings.EqualFold(a, b) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func paramsEquivalent(a, b Params) bool {
@@ -78,7 +114,7 @@ func paramsEquivalent(a, b Params) bool {
 		value, ok := b.Get(p.Name)
 
 		switch {
-		case ok && !strings.EqualFold(p.Value, value):
+		case ok && !strings.EqualFold(normalizeEscapes(p.Value), normalizeEscapes(value)):
 			return false
 		case !ok && slices.Contains([]string{"user", "ttl", "method", "maddr"}, strings.ToLower(p.Name)):
 			return false

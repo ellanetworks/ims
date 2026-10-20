@@ -71,27 +71,7 @@ func identityKeyOf(s string) string {
 // URI of a global number without parameters or visual separators (TS 29.229 §6.3.2, TS 23.003 §13.4). A local number
 // keeps the phone-context that scopes it (RFC 3966 §5.1.5).
 func canonicalIdentity(u sip.URI) string {
-	switch {
-	case u.IsTel():
-		c := sip.URI{Scheme: "tel", User: withoutSeparators(u.User)}
-
-		if pc, ok := u.Params.Get("phone-context"); ok && !strings.HasPrefix(c.User, "+") {
-			c.Params.Set("phone-context", pc)
-		}
-
-		return c.String()
-	case u.IsSIP():
-		user := u.User
-
-		// TS 23.003 §13.4: the user part of a number follows the tel URI, without its parameters.
-		if v, _ := u.Params.Get("user"); strings.EqualFold(v, "phone") {
-			user, _, _ = strings.Cut(user, ";")
-		}
-
-		return sip.URI{Scheme: "sip", User: user, Host: strings.ToLower(u.Host)}.String()
-	}
-
-	return receivedIdentity(u)
+	return u.Identity().String()
 }
 
 func receivedIdentity(u sip.URI) string {

@@ -161,6 +161,18 @@ func TestURIEquivalent(t *testing.T) {
 		{"sip:a@b?s=x", "sip:a@b?Subject=x", true},
 		{"sip:a@b?Subject=x&Subject=y", "sip:a@b?Subject=x&Subject=x", false},
 		{"sip:a@b?body=x", "sip:a@b?body=X", false},
+		// RFC 3261 §19.1.4: escapes of characters other than reserved ones are equivalent to them.
+		{"sip:%61lice@atlanta.com;transport=TCP", "sip:alice@AtLanTa.CoM;Transport=tcp", true},
+		{"sip:alice%2b1@atlanta.com", "sip:alice%2B1@atlanta.com", true},
+		{"sip:alice%2B1@atlanta.com", "sip:alice+1@atlanta.com", false},
+		{"sip:a@b;x=%41", "sip:a@b;x=a", true},
+		// RFC 3966 §4.
+		{"tel:+1-555-123-0001", "tel:+1(555)1230001", true},
+		{"tel:7042;phone-context=example.com", "tel:7042;PHONE-CONTEXT=Example.COM", true},
+		{"tel:7042;phone-context=+1-555", "tel:7042;phone-context=+1555", true},
+		{"tel:7042;phone-context=example.com", "tel:+7042", false},
+		{"tel:7042;phone-context=example.com", "tel:7042;phone-context=example.com;ext=1", false},
+		{"tel:+15551230001;ext=1;isub=2", "tel:+15551230001;isub=2;ext=1", true},
 	}
 
 	for _, tt := range tests {
@@ -180,6 +192,29 @@ func TestURIEquivalent(t *testing.T) {
 
 		if got := b.Equivalent(a); got != tt.want {
 			t.Errorf("%s ≡ %s = %t, want %t", tt.b, tt.a, got, tt.want)
+		}
+	}
+}
+
+// TS 23.003 §13.4, TS 29.229 §6.3.2: the canonical form of an identity, equal for equivalent identities.
+func TestURIIdentity(t *testing.T) {
+	for in, want := range map[string]string{
+		"sip:alice@Example.COM:5060;transport=tcp?x=y":   "sip:alice@example.com",
+		"sip:%61lice@example.com":                        "sip:alice@example.com",
+		"sip:alice%2b1@example.com":                      "sip:alice%2B1@example.com",
+		"sip:+1-555-0100;tsp=a.b@example.com;user=phone": "sip:+1-555-0100@example.com",
+		"tel:+1-555-0100;ext=7":                          "tel:+15550100",
+		"tel:7042;phone-context=Example.com":             "tel:7042;phone-context=example.com",
+		"sips:bob@biloxi.com":                            "sip:bob@biloxi.com",
+		"urn:service:sos":                                "urn:service:sos",
+	} {
+		u, err := ParseURI(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := u.Identity().String(); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
 		}
 	}
 }
