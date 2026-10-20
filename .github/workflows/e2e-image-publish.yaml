@@ -10,6 +10,7 @@ on:
       - main
     paths:
       - e2e/open5gs/Dockerfile
+      - e2e/open5gs/*.patch
   workflow_dispatch:
 
 jobs:

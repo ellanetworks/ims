@@ -369,10 +369,18 @@ func (p *PCRF) HoldAA() (release func()) {
 	}
 }
 
+// Signalling reports whether r is the AA-Request of the AF signalling (TS 29.214 §4.4.5): media component 0, with
+// only AF_SIGNALLING sub-components.
 func Signalling(r rx.AARequest) bool {
 	for _, c := range r.MediaComponents {
-		if c.Type == nil || *c.Type != rx.MediaControl {
+		if c.Number != 0 || len(c.SubComponents) == 0 {
 			return false
+		}
+
+		for _, sc := range c.SubComponents {
+			if sc.FlowUsage == nil || *sc.FlowUsage != rx.FlowUsageAFSignalling {
+				return false
+			}
 		}
 	}
 

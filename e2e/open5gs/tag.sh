@@ -3,4 +3,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-sha256sum Dockerfile | cut -c1-16
+cat Dockerfile ./*.patch | sha256sum | cut -c1-16

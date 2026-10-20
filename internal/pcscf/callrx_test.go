@@ -31,7 +31,9 @@ func newRxIPsecScene(t *testing.T, opts ...func(*Config)) (*ipsecScene, *ue, *fa
 	s, u := newIPsecRegScene(t, append([]func(*Config){f.config(0)}, opts...)...)
 	token, _ := s.registerOverIPsec(u)
 
-	if _, r := f.aar(); r.MediaComponents[0].Type == nil || *r.MediaComponents[0].Type != rx.MediaControl {
+	if _, r := f.aar(); len(r.MediaComponents) != 1 || len(r.MediaComponents[0].SubComponents) != 1 ||
+		r.MediaComponents[0].SubComponents[0].FlowUsage == nil ||
+		*r.MediaComponents[0].SubComponents[0].FlowUsage != rx.FlowUsageAFSignalling {
 		t.Fatalf("AAR %+v, want the signalling one", r)
 	}
 

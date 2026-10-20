@@ -277,11 +277,11 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 		t.Fatalf("ParseAARequest: %v", err)
 	}
 
-	initial, control, signalling := rx.RequestInitial, rx.MediaControl, rx.FlowUsageAFSignalling
+	// TS 29.214 §4.4.5: no Media-Type.
+	initial, signalling := rx.RequestInitial, rx.FlowUsageAFSignalling
 	want := rx.AARequest{
 		MediaComponents: []rx.MediaComponent{{
 			Number:        0,
-			Type:          &control,
 			SubComponents: []rx.MediaSubComponent{{FlowNumber: 0, FlowUsage: &signalling}},
 		}},
 		SpecificActions: []rx.SpecificAction{rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer},

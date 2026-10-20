@@ -17,9 +17,16 @@ RUN apt-get update \
       iproute2 iputils-ping tcpdump procps \
  && rm -rf /var/lib/apt/lists/*
 
+# signalling.patch makes the PCRF and the PCF take the media component of the P-CSCF's subscription to the signalling
+# path status (TS 29.214 §4.4.5, TS 29.514 §4.2.6.7), of Flow-Usage AF_SIGNALLING, Flow-Number 0 and no Media-Type,
+# for session binding only: the PCF refused it (400 "Media-Type is Required"), the PCRF took it for AUDIO. Not
+# upstream yet.
+COPY signalling.patch /signalling.patch
+
 RUN git clone https://github.com/open5gs/open5gs /src \
  && git -C /src checkout "$OPEN5GS_REF" \
+ && git -C /src apply /signalling.patch \
  && cd /src \
  && meson setup build --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
  && ninja -C build install \
- && rm -rf /src
+ && rm -rf /src /signalling.patch
