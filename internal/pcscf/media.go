@@ -97,7 +97,7 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 	muxed := t.muxed
 	dir := negotiatedDirection(x, i)
 
-	c.Status = flowStatus(dir, !x.offerFromUE, muxed || t.tcp || t.rtcpOnly)
+	c.Status = flowStatus(dir, !x.offerFromUE, muxed || enabledTransport(desc.Proto) || t.rtcpOnly)
 
 	rr, haveRR := bandwidth(x.answer, i, sdp.BandwidthRR)
 	rs, haveRS := bandwidth(x.answer, i, sdp.BandwidthRS)
@@ -209,6 +209,11 @@ func mcpttControl(d sdp.MediaDesc) bool {
 
 func tcpTransport(proto string) bool {
 	return strings.EqualFold(proto, "TCP") || strings.EqualFold(proto, "TCP/MSRP")
+}
+
+// TS 29.213 Table 6.2.1: the transports sent with Flow-Status ENABLED whatever the SDP direction.
+func enabledTransport(proto string) bool {
+	return tcpTransport(proto) || strings.EqualFold(proto, "UDP/DTLS/SCTP")
 }
 
 func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {

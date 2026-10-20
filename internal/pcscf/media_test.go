@@ -423,6 +423,26 @@ func TestTCPMedia(t *testing.T) {
 	}
 }
 
+// TS 29.213 Table 6.2.1/6.2.2: a data channel on hold stays ENABLED, its flows over UDP.
+func TestDataChannelMedia(t *testing.T) {
+	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "t=0 0", "a=sendonly",
+		"m=application 4000 UDP/DTLS/SCTP webrtc-datachannel", "b=AS:500", "a=sctp-port:5000")
+	answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0", "a=recvonly",
+		"m=application 5000 UDP/DTLS/SCTP webrtc-datachannel", "b=AS:500", "a=sctp-port:5000")
+
+	got, err := rxMediaComponents(sdpExchange{offer: offer, answer: answer, offerFromUE: true}, map[int]flowNumbers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := got[0]
+
+	if *c.FlowStatus != rx.FlowStatusEnabled || len(c.SubComponents) != 1 ||
+		!reflect.DeepEqual(c.SubComponents[0].FlowDescriptions, []string{"permit in 17 from 10.0.0.1 to 10.0.0.2 5000"}) {
+		t.Fatalf("component %+v, want enabled UDP flows", c)
+	}
+}
+
 // Bandwidth comes from the media description only, never from the session level.
 func TestSessionLevelBandwidthIgnored(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "b=AS:100", "t=0 0", "m=audio 4000 RTP/AVP 0")
