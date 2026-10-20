@@ -255,7 +255,10 @@ func protocolError(ans *diameter.Message) uint32 {
 	return code
 }
 
-// TS 29.214 §4.4.5, §5.3.13
+// TS 29.214 §4.4.5, §5.3.13. With a Flow-Number 0, §4.4.5 leaves out the other AVPs of the Media-Component-Description;
+// Media-Type CONTROL goes in all the same, for PCRFs that derive the QCI of every component from it and take an
+// absent one for AUDIO, as Open5GS does, authorizing a voice bearer at registration. The N5 request has no medType
+// (TS 29.514 §4.2.6.7): a PCF that requires one refuses the subscription, which the P-CSCF does without.
 func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signalling, wait bool) (string, error) {
 	initial := rx.RequestInitial
 	control := rx.MediaControl
