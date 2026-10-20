@@ -2,6 +2,7 @@ package ua_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,5 +269,72 @@ func TestPublicationStoreExpiry(t *testing.T) {
 
 	if got := esc.store.State(req.URI, "presence"); len(got) != 0 {
 		t.Errorf("stored %+v", got)
+	}
+}
+
+// RFC 3903 §4.3, §4.5, TS 24.379 §9.2.1.2 step 2: the bodies of WithBodies go with each PUBLISH beside the state: the
+// initial one with the state, the refresh and the removal without.
+func TestPublicationWithBodies(t *testing.T) {
+	clock := netOf(t).Clock()
+	got := make(chan *sip.Request, 4)
+
+	esc := newPeerWith(t, "esc", func(cfg *ua.Config) {
+		cfg.Transaction.Clock = clock
+		cfg.Allow = append(cfg.Allow, "PUBLISH")
+		cfg.OnRequest = func(r *ua.Request) {
+			got <- r.Message()
+
+			var h sip.Header
+
+			seq, _, _ := strings.Cut(r.Message().Header.Get("CSeq"), " ")
+			h.Set("SIP-ETag", "e"+seq)
+			h.Set("Expires", r.Message().Header.Get("Expires"))
+
+			_ = r.Respond(ua.Reply{Code: 200, Header: h})
+		}
+	})
+	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
+
+	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("info"))
+
+	p, err := alice.a.Publish(publishRequest(esc, alice.uri(), "open", "120"), ua.PublicationHandler{}, ua.WithBodies(info))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bodies := func(req *sip.Request) []string {
+		parts, err := req.Content().Parts()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out []string
+		for _, b := range parts {
+			out = append(out, b.Header.Get("Content-Type")+"="+string(b.Body))
+		}
+
+		return out
+	}
+
+	if b := bodies(<-got); len(b) != 2 || b[0] != "application/pidf+xml=open" || b[1] != "application/vnd.3gpp.mcptt-info+xml=info" {
+		t.Fatalf("initial PUBLISH bodies %v", b)
+	}
+
+	advance(clock, 61*time.Second, alice, esc)
+
+	if b := bodies(<-got); len(b) != 1 || b[0] != "application/vnd.3gpp.mcptt-info+xml=info" {
+		t.Fatalf("refresh bodies %v", b)
+	}
+
+	done, f := results()
+	if err := p.Remove(f); err != nil {
+		t.Fatal(err)
+	}
+
+	recv(t, done)
+
+	req := <-got
+	if b := bodies(req); req.Header.Get("Expires") != "0" || len(b) != 1 || b[0] != "application/vnd.3gpp.mcptt-info+xml=info" {
+		t.Fatalf("removal Expires %q bodies %v", req.Header.Get("Expires"), b)
 	}
 }

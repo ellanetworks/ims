@@ -41,15 +41,23 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 type Option func(*options)
 
 type options struct {
-	st      *Strand
-	policy  *Policy
-	without []string
+	st       *Strand
+	policy   *Policy
+	without  []string
+	attached []sip.BodyPart
 }
 
 // On puts the dialogs of the request on st, with those of other requests: the legs of a call bridged by a B2BUA,
 // for one. Without it, they get a strand of their own.
 func On(st *Strand) Option {
 	return func(o *options) { o.st = st }
+}
+
+// WithBodies has the bodies sent with every PUBLISH of a publication, beside its state: on its refreshes and its
+// removal too, which carry no state (RFC 3903 §4.3, §4.5). TS 24.379 §9.2.1.2 step 2 needs it, of the mcptt-info
+// identifying the client.
+func WithBodies(parts ...sip.BodyPart) Option {
+	return func(o *options) { o.attached = append(o.attached, parts...) }
 }
 
 // WithoutOptionTags leaves the option tags out of the Supported of an INVITE: the extensions its caller cannot

@@ -240,10 +240,12 @@ type Handler struct {
 	// the initial INVITE without a To tag, which creates no dialog.
 	Progress func(s *Session, res *sip.Response)
 
-	// Established reports that the session is confirmed by m: the 2xx (UAC), the ACK (UAS).
+	// Established reports that the session is confirmed by m: the 2xx (UAC), the ACK (UAS). Of a 2xx carrying the
+	// answer to the agent's offer, Established comes before Answer: the negotiated session is then
+	// Session.Negotiated already.
 	Established func(s *Session, m sip.Message)
 
-	// Answer reports the peer's answer to an offer of the agent.
+	// Answer reports the peer's answer to an offer of the agent, after Established of the 2xx that carries it.
 	Answer func(s *Session, sdp []byte)
 
 	// Pracked reports the PRACK of a reliable 1xx res of the agent (RFC 3262 §3), once the queued reliable 1xx and the

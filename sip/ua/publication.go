@@ -3,6 +3,7 @@ package ua
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -33,10 +34,12 @@ type Publication struct {
 	st *Strand
 	h  PublicationHandler
 
-	// tmpl is the PUBLISH as built, before Prepare, without bodies; state the bodies of the state published.
-	tmpl  *sip.Request
-	state []sip.BodyPart
-	etag  string
+	// tmpl is the PUBLISH as built, before Prepare, without bodies; state the bodies of the state published,
+	// attached those sent with each PUBLISH (WithBodies).
+	tmpl     *sip.Request
+	state    []sip.BodyPart
+	attached []sip.BodyPart
+	etag     string
 
 	expiresAt time.Time
 	refresh   *timer
@@ -76,7 +79,8 @@ func (a *Agent) Publish(req *sip.Request, h PublicationHandler, opts ...Option) 
 
 	tmpl.SetBodies()
 
-	p := &Publication{a: a, st: a.options(opts).strand(a), h: h, tmpl: tmpl, state: parts}
+	o := a.options(opts)
+	p := &Publication{a: a, st: o.strand(a), h: h, tmpl: tmpl, state: parts, attached: o.attached}
 
 	if err := a.addPublication(p); err != nil {
 		return nil, err
@@ -192,8 +196,8 @@ func (c *publishRequest) build() {
 		req.Header.Set("Expires", "0")
 	}
 
-	if len(c.bodies) > 0 {
-		req.SetBodies(c.bodies...)
+	if bodies := append(slices.Clone(c.bodies), p.attached...); len(bodies) > 0 {
+		req.SetBodies(bodies...)
 	}
 
 	c.req = req
