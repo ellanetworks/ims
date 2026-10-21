@@ -62,6 +62,8 @@ type retired struct {
 const pendingToken = DefaultAwaitAuth
 
 type registrations struct {
+	// ctx bounds the writes to the store, cancelled when the P-CSCF gives up on them.
+	ctx   context.Context
 	store RegistrationStore
 	log   *slog.Logger
 	clock Clock
@@ -81,8 +83,10 @@ type registrations struct {
 	pending  map[regKey]retired
 }
 
-func newRegistrations(store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger) *registrations {
+func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger,
+) *registrations {
 	return &registrations{
+		ctx:      ctx,
 		store:    store,
 		log:      logger,
 		clock:    clock,
@@ -306,7 +310,7 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	}
 
 	if rs.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
 		saved, err := rs.store.SavePCSCFRegistration(ctx, r)
 
 		cancel()
@@ -347,7 +351,7 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 	rs.retired[r.FlowToken] = retired{f: flowOf(r), expires: rs.clock.Now().Add(rs.grace)}
 
 	if rs.store != nil && r.ID != 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
 		if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
 			rs.log.Error("deleting the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
 		}
@@ -435,7 +439,7 @@ func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
 	defer cancel()
 
 	if _, err := rs.store.SavePCSCFRegistration(ctx, *r); err != nil {

@@ -139,12 +139,12 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 
 	pcscfPort, err := s.listen(ctx, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.Port)
 	if err != nil {
-		return nil, errors.Join(err, s.Close())
+		return nil, errors.Join(err, s.Close(ctx))
 	}
 
 	ipsecServer, err := s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, cfg.PCSCF.IPsec.ServerPort)
 	if err != nil {
-		return nil, errors.Join(err, s.Close())
+		return nil, errors.Join(err, s.Close(ctx))
 	}
 
 	var ipsecClients [2]uint16
@@ -156,7 +156,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		}
 
 		if ipsecClients[i], err = s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, port); err != nil {
-			return nil, errors.Join(err, s.Close())
+			return nil, errors.Join(err, s.Close(ctx))
 		}
 	}
 
@@ -164,17 +164,17 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	// that the I-CSCF routes to directly (TS 23.218 §6.2.2, TS 23.228 §5.4.12.2).
 	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
-		return nil, errors.Join(err, s.Close())
+		return nil, errors.Join(err, s.Close(ctx))
 	}
 
 	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
 	if err != nil {
-		return nil, errors.Join(err, s.Close())
+		return nil, errors.Join(err, s.Close(ctx))
 	}
 
 	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close())
+		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close(ctx))
 	}
 
 	homeDomain := op.HomeDomain()
@@ -234,8 +234,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	})
 
 	if err := pc.Restore(ctx); err != nil {
-		pc.Close()
-		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), s.Close())
+		pc.Close(ctx)
+		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), s.Close(ctx))
 	}
 
 	s.pcscf.Store(pc)
@@ -331,7 +331,8 @@ func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
 	return err
 }
 
-func (s *sipServer) Close() error {
+// Close stops SIP. The P-CSCF ends its policy sessions until ctx is done.
+func (s *sipServer) Close(ctx context.Context) error {
 	if s.rtr != nil {
 		s.rtr.bind(nil)
 	}
@@ -345,7 +346,7 @@ func (s *sipServer) Close() error {
 	}
 
 	if p := s.pcscf.Load(); p != nil {
-		p.Close()
+		p.Close(ctx)
 	}
 
 	var err error

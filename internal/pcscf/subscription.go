@@ -393,7 +393,7 @@ func (ss *subscriptions) removeLocked(s *subscription) {
 	}
 
 	if store := ss.p.cfg.Registrations; store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		ctx, cancel := context.WithTimeout(ss.p.ctx, storeTimeout)
 		if err := store.DeletePCSCFSubscription(ctx, s.impi); err != nil && !errors.Is(err, db.ErrNotFound) {
 			ss.p.log.Error("deleting the subscription failed", slog.String("impi", s.impi), slog.Any("error", err))
 		}
@@ -413,7 +413,7 @@ func (ss *subscriptions) saveLocked(s *subscription) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	ctx, cancel := context.WithTimeout(ss.p.ctx, storeTimeout)
 	defer cancel()
 
 	if _, err := store.SavePCSCFSubscription(ctx, db.PCSCFSubscription{

@@ -8,13 +8,10 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/server"
 )
-
-const shutdownTimeout = 5 * time.Second
 
 func main() {
 	configPath := flag.String("config", "ims.yaml", "path to the configuration file")
@@ -66,7 +63,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	<-ctx.Done()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), server.ShutdownTimeout)
 	defer cancel()
 
 	srv.Shutdown(shutdownCtx)

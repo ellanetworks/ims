@@ -42,7 +42,7 @@ func newTestRecorder(t *testing.T, store Store) *Recorder {
 	t.Helper()
 
 	r := New(Config{Store: store, Clock: &tickClock{now: t0}})
-	t.Cleanup(r.Close)
+	t.Cleanup(func() { r.Close(context.Background()) })
 
 	return r
 }
@@ -322,7 +322,7 @@ func TestRecorder(t *testing.T) {
 			r := newTestRecorder(t, d)
 
 			tt.report(r, "ICID1")
-			r.Close()
+			r.Close(context.Background())
 
 			got := records(t, d)
 
@@ -359,7 +359,7 @@ func TestRecorderIgnoresWhatItHasNoOpenRecordFor(t *testing.T) {
 
 	r.Attempt(attempt("ICID3"))
 	r.Attempt(dup)
-	r.Close()
+	r.Close(context.Background())
 
 	got := records(t, d)
 
@@ -380,7 +380,7 @@ func TestRecorderDuplicateAttemptOfAnOpenCall(t *testing.T) {
 	dup := attempt("ICID1")
 	dup.CallID = "other"
 	r.Attempt(dup)
-	r.Close()
+	r.Close(context.Background())
 
 	if got := records(t, d); got["ICID1"].SessionID != "call-ICID1" {
 		t.Fatalf("records = %+v, want the first attempt kept", got)
@@ -398,7 +398,7 @@ func TestRecorderCloseOpen(t *testing.T) {
 	r.Ended("BUSY", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 	r.CloseOpen()
 	r.Ended("INCALL", End{Code: 200, By: proxy.Caller, Cause: proxy.EndBye})
-	r.Close()
+	r.Close(context.Background())
 
 	got := records(t, d)
 
@@ -467,7 +467,7 @@ func TestRecorderNeverWaitsOnTheStore(t *testing.T) {
 	}
 
 	close(store.gate)
-	r.Close()
+	r.Close(context.Background())
 
 	got := records(t, d)
 	if len(got) != calls {
@@ -488,7 +488,7 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	d := openDB(t)
 	store := &testStore{next: d}
 	r := New(Config{Store: store, MaxUnsaved: 2, Clock: &tickClock{now: t0}})
-	t.Cleanup(r.Close)
+	t.Cleanup(func() { r.Close(context.Background()) })
 
 	icids := []string{"ENDED1", "ENDED2", "DROPPED", "OPEN"}
 
@@ -557,7 +557,7 @@ func TestRecorderSupersedesARetriedAttempt(t *testing.T) {
 			r.Attempt(other)
 			r.Ended("ICID3", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 			r.Attempt(retry("ICID4"))
-			r.Close()
+			r.Close(context.Background())
 
 			got := records(t, d)
 			if len(got) != 3 || got["ICID2"].Outcome != db.OutcomeAnswered || got["ICID3"].Outcome != db.OutcomeBusy {
@@ -580,7 +580,7 @@ func TestRecorderSupersedesAnAttemptInProgress(t *testing.T) {
 	}
 
 	r.Ended("ICID1", End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
-	r.Close()
+	r.Close(context.Background())
 
 	if got := records(t, d); len(got) != 1 || got["ICID2"].ICID == "" {
 		t.Fatalf("records = %+v, want the retry alone", got)
@@ -616,7 +616,7 @@ func TestRecorderRejectingRequest(t *testing.T) {
 		r.Ended(icid, End{Code: 500, Tag: "scscf", By: proxy.Callee, Cause: proxy.EndFailed})
 	}
 
-	r.Close()
+	r.Close(context.Background())
 
 	got := records(t, d)
 
@@ -686,7 +686,7 @@ func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 
 	r.Ended("TAKEN", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 	r.Ended("ICID1", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
-	r.Close()
+	r.Close(context.Background())
 	close(store.saved)
 
 	for batch := range store.saved {
@@ -722,7 +722,7 @@ func TestRecorderConcurrentReports(t *testing.T) {
 	}
 
 	wg.Wait()
-	r.Close()
+	r.Close(context.Background())
 
 	got := records(t, d)
 	if len(got) != 50 {
@@ -739,11 +739,11 @@ func TestRecorderConcurrentReports(t *testing.T) {
 func TestRecorderAfterClose(t *testing.T) {
 	d := openDB(t)
 	r := New(Config{Store: d})
-	r.Close()
+	r.Close(context.Background())
 
 	r.Attempt(attempt("ICID1"))
 	r.CloseOpen()
-	r.Close()
+	r.Close(context.Background())
 
 	if got := records(t, d); len(got) != 0 {
 		t.Fatalf("a closed recorder saved %+v", got)
@@ -764,7 +764,32 @@ func TestNilRecorder(t *testing.T) {
 	r.Released("ICID1")
 	r.Ended("ICID1", End{})
 	r.CloseOpen()
-	r.Close()
+	r.Close(context.Background())
+}
+
+// TestRecorderCloseGivesUp checks that Close does not wait past its context on a store that does not answer.
+func TestRecorderCloseGivesUp(t *testing.T) {
+	store := &testStore{gate: make(chan struct{})}
+	r := newTestRecorder(t, store)
+
+	r.Attempt(attempt("ICID1"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	closed := make(chan struct{})
+
+	go func() {
+		defer close(closed)
+
+		r.Close(ctx)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited on the store past its context")
+	}
 }
 
 // testStore saves to next, if any, once gate, if any, is closed. It fails the first fail transactions, and sends
@@ -807,7 +832,11 @@ func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecor
 	s.mu.Unlock()
 
 	if gate != nil {
-		<-gate
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	s.mu.Lock()

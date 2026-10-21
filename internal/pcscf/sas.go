@@ -128,6 +128,8 @@ func keyOf(f sip.Flow) flowKey {
 }
 
 type associations struct {
+	// ctx bounds the writes to the store, cancelled when the P-CSCF gives up on them.
+	ctx  context.Context
 	cfg  IPsec
 	log  *slog.Logger
 	spis *ipsec.SPIs
@@ -142,7 +144,7 @@ type associations struct {
 	byFlow map[flowKey]*saSet
 }
 
-func newAssociations(cfg IPsec, logger *slog.Logger) *associations {
+func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger) *associations {
 	if cfg.AwaitAuth <= 0 {
 		cfg.AwaitAuth = DefaultAwaitAuth
 	}
@@ -152,6 +154,7 @@ func newAssociations(cfg IPsec, logger *slog.Logger) *associations {
 	}
 
 	a := &associations{
+		ctx:    ctx,
 		cfg:    cfg,
 		log:    logger,
 		spis:   ipsec.NewSPIs(),
@@ -179,13 +182,26 @@ type storeOp struct {
 func (a *associations) write() {
 	defer close(a.written)
 
+	lost := 0
+
+	defer func() {
+		if lost > 0 {
+			a.log.Error("security associations not saved: the P-CSCF stopped first", slog.Int("writes", lost))
+		}
+	}()
+
 	for op := range a.writes {
 		if op.barrier != nil {
 			close(op.barrier)
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		if a.ctx.Err() != nil {
+			lost++
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(a.ctx, storeTimeout)
 
 		switch {
 		case op.delete && op.s.dbID != 0:

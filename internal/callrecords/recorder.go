@@ -24,6 +24,9 @@ const (
 
 	minRetry = 50 * time.Millisecond
 	maxRetry = 5 * time.Second
+
+	// writeTimeout bounds a write to the database, so that one stuck is retried rather than waited on.
+	writeTimeout = 10 * time.Second
 )
 
 type Store interface {
@@ -91,6 +94,9 @@ type Recorder struct {
 	maxUnsaved int
 	metrics    metrics
 
+	// ctx bounds the writes, cancelled when Close gives up on them.
+	ctx    context.Context
+	cancel context.CancelFunc
 	// wake tells the writer that records changed.
 	wake chan struct{}
 	stop chan struct{}
@@ -144,7 +150,10 @@ type call struct {
 
 // New starts a recorder, which Close stops.
 func New(cfg Config) *Recorder {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	r := &Recorder{
+		ctx: ctx, cancel: cancel,
 		store: cfg.Store, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		calls: map[string]*call{}, sessions: map[string]*call{}, metrics: newMetrics(),
@@ -168,8 +177,9 @@ func New(cfg Config) *Recorder {
 }
 
 // Close saves the records that changed, including those of the calls in progress as they are, then stops the
-// recorder. It ignores what is reported after.
-func (r *Recorder) Close() {
+// recorder. It ignores what is reported after. When ctx is done first, it cancels the write in progress, and the
+// records left unsaved are lost; those left open in the database are closed when the IMS starts again.
+func (r *Recorder) Close(ctx context.Context) {
 	if r == nil {
 		return
 	}
@@ -183,7 +193,11 @@ func (r *Recorder) Close() {
 
 	r.mu.Unlock()
 
+	stop := context.AfterFunc(ctx, r.cancel)
+	defer stop()
+
 	<-r.done
+	r.cancel()
 }
 
 // Attempt opens the record of a call, at the originating P-CSCF, for every INVITE from a registered UE.
@@ -486,7 +500,7 @@ func (r *Recorder) write() {
 }
 
 // flush saves the records that changed, and closes those dropped calls left open, and gives up at the first
-// failure, so that stopping does not wait on a failing database.
+// failure, so that stopping does not wait on a failing database, or once Close cancels the writes.
 func (r *Recorder) flush() {
 	for {
 		more, err := r.sync()
@@ -527,7 +541,11 @@ func (r *Recorder) closeOrphans() error {
 
 	r.mu.Unlock()
 
-	n, err := r.store.CloseOpenCallRecords(context.Background(), live)
+	ctx, cancel := context.WithTimeout(r.ctx, writeTimeout)
+	n, err := r.store.CloseOpenCallRecords(ctx, live)
+
+	cancel()
+
 	if err != nil {
 		r.mu.Lock()
 		r.orphaned = true
@@ -596,7 +614,10 @@ func (r *Recorder) save() (more bool, err error) {
 		return false, nil
 	}
 
-	errs, err := r.store.SaveCallRecords(context.Background(), records, deleted)
+	ctx, cancel := context.WithTimeout(r.ctx, writeTimeout)
+	errs, err := r.store.SaveCallRecords(ctx, records, deleted)
+
+	cancel()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()

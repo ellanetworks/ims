@@ -25,6 +25,18 @@ import (
 
 var ErrAlreadyStarted = errors.New("server: already started")
 
+const (
+	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the P-CSCF to end its
+	// policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
+	ShutdownTimeout = pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+
+	// diameterDisconnectTime is what stopping the core leaves Diameter to disconnect from its peers (RFC 6733
+	// §5.4), after SIP, whose policy sessions end over Diameter.
+	diameterDisconnectTime = 2 * time.Second
+	// recordsFlushTime is what stopping the IMS leaves the call records to be saved, after the core.
+	recordsFlushTime = 2 * time.Second
+)
+
 type Server struct {
 	Config config.Config
 	Logger *slog.Logger
@@ -126,7 +138,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
-		s.records.Close()
+		s.records.Close(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
 
@@ -333,7 +345,9 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings) {
 		slog.String("policy", string(st.Policy.Interface)))
 
 	if c := s.core.Swap(nil); c != nil {
-		c.shutdown(ctx, s.Logger)
+		stopCtx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
+		c.shutdown(stopCtx, s.Logger)
+		cancel()
 	}
 
 	// The calls in progress were lost with the core.
@@ -371,12 +385,16 @@ func (c *core) attrs() []any {
 	return attrs
 }
 
+// shutdown stops the core until ctx is done, Diameter last, since SIP ends its policy sessions over Diameter or N5.
 func (c *core) shutdown(ctx context.Context, logger *slog.Logger) {
-	if err := c.sip.Close(); err != nil {
+	sipCtx, cancel := before(ctx, diameterDisconnectTime)
+	defer cancel()
+
+	if err := c.sip.Close(sipCtx); err != nil {
 		logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
 	}
 
-	if err := c.policy.close(ctx); err != nil {
+	if err := c.policy.close(sipCtx); err != nil {
 		logger.Warn("failed to stop the N5 notification server cleanly", slog.Any("error", err))
 	}
 
@@ -408,11 +426,13 @@ func (s *Server) Shutdown(ctx context.Context) {
 	<-s.followDone
 
 	if c := s.core.Swap(nil); c != nil {
-		c.shutdown(ctx, s.Logger)
+		coreCtx, cancel := before(ctx, recordsFlushTime)
+		c.shutdown(coreCtx, s.Logger)
+		cancel()
 	}
 
 	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
-	s.records.Close()
+	s.records.Close(ctx)
 
 	s.stopPrune()
 	<-s.pruneDone
@@ -420,6 +440,16 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
 	}
+}
+
+// before is ctx, done d before ctx is, so that what runs under it leaves d to what comes after.
+func before(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+
+	return context.WithDeadline(ctx, deadline.Add(-d))
 }
 
 func (s *Server) timers() timers {

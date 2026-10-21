@@ -377,7 +377,7 @@ func testMetrics(t *testing.T) *metrics {
 	t.Cleanup(func() { _ = d.Close() })
 
 	records := callrecords.New(callrecords.Config{Store: d})
-	t.Cleanup(records.Close)
+	t.Cleanup(func() { records.Close(context.Background()) })
 
 	return newMetrics(d, records, func() ([]settings.Peer, []diameter.PeerStatus) { return nil, nil })
 }

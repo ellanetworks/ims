@@ -96,7 +96,7 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 	}
 
 	s.p = New(cfg)
-	t.Cleanup(s.p.Close)
+	t.Cleanup(func() { s.p.Close(context.Background()) })
 
 	if err := s.p.Restore(context.Background()); err != nil {
 		t.Fatal(err)
@@ -110,13 +110,13 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 func (s *regScene) restart() {
 	s.t.Helper()
 
-	s.p.Close()
+	s.p.Close(context.Background())
 
 	cfg := s.p.cfg
 	cfg.Proxy = proxy.New(proxy.Config{Layer: cfg.Layer, Port: s.pcscf.Port()})
 
 	p := New(cfg)
-	s.t.Cleanup(p.Close)
+	s.t.Cleanup(func() { p.Close(context.Background()) })
 
 	if err := p.Restore(context.Background()); err != nil {
 		s.t.Fatal(err)
@@ -1123,7 +1123,7 @@ func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
 }
 
 func TestRegistrationsFromOneAddress(t *testing.T) {
-	rs := newRegistrations(nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
 
 	a := netip.AddrPortFrom(ueAddr, 5060)
 	b := netip.AddrPortFrom(ueAddr, 5070)
@@ -1147,7 +1147,7 @@ func TestRegistrationsFromOneAddress(t *testing.T) {
 }
 
 func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel()}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel()}, slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, state saState, inUse bool) *saSet {
@@ -1182,7 +1182,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 
 // TS 33.203 §7.4.2a
 func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, state saState, expires time.Duration) *saSet {

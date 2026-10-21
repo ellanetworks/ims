@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -20,7 +21,7 @@ func (sh *sessionHarness) recorded(t *testing.T) *callrecords.Recorder {
 	t.Helper()
 
 	rec := callrecords.New(callrecords.Config{Store: sh.cfg.DB})
-	t.Cleanup(rec.Close)
+	t.Cleanup(func() { rec.Close(context.Background()) })
 
 	sh.cfg.Records = rec
 	sh.restart()
@@ -39,7 +40,7 @@ func charged(req *sip.Request) *sip.Request {
 func (sh *sessionHarness) callRecord(t *testing.T, rec *callrecords.Recorder) db.CallRecord {
 	t.Helper()
 
-	rec.Close()
+	rec.Close(context.Background())
 
 	r, _, err := sh.cfg.DB.ListCallRecords(t.Context(), db.CallRecordFilter{}, 1, 10)
 	if err != nil || len(r) != 1 {

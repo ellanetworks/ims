@@ -2,6 +2,7 @@ package pcscf
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -157,7 +158,7 @@ func TestNotifyEndsOneFlow(t *testing.T) {
 // TS 33.203 §6.1 NOTE 2: each flow has its own security associations; a new flow leaves the others',
 // while a new registration without the multiple registration mechanism replaces them.
 func TestSecurityAssociationsPerFlow(t *testing.T) {
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, id flowID, state saState) *saSet {
@@ -292,7 +293,7 @@ func TestFlowsSharingAURI(t *testing.T) {
 // another client port of the P-CSCF rather than taking over another flow's associations, and is
 // refused when none is left.
 func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)
 
@@ -344,7 +345,7 @@ func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 
 // TS 24.229 §5.2.2.2: a challenge deletes the temporary sets toward the UE, whatever their flow.
 func TestOneTemporarySetPerUE(t *testing.T) {
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.DiscardHandler))
 	t.Cleanup(a.close)
 
@@ -426,7 +427,7 @@ func TestFlowOverAnotherFlow(t *testing.T) {
 func TestUnansweredChallengeIsLogged(t *testing.T) {
 	var logs bytes.Buffer
 
-	a := newAssociations(IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(a.close)
 

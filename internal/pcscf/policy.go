@@ -95,8 +95,9 @@ func newPolicyClient(cfg Policy, logger *slog.Logger, now func() time.Time) *pol
 	}
 }
 
-// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2
-func (c *policyClient) close() {
+// close ends the sessions of calls, and waits for the requests in progress up to the timeout of a request, or until
+// ctx is done, then cancels those left (TS 29.214 §4.4.4, TS 29.514 §4.2.4.2).
+func (c *policyClient) close(ctx context.Context) {
 	c.mu.Lock()
 
 	var calls []*policySession
@@ -134,6 +135,7 @@ func (c *policyClient) close() {
 	select {
 	case <-done:
 	case <-timer.C:
+	case <-ctx.Done():
 	}
 
 	c.cancel()

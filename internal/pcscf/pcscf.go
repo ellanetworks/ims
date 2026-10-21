@@ -66,9 +66,12 @@ type Config struct {
 }
 
 type PCSCF struct {
-	cfg    Config
-	log    *slog.Logger
-	clock  Clock
+	cfg   Config
+	log   *slog.Logger
+	clock Clock
+	// ctx bounds the writes to the stores, cancelled when Close gives up on them.
+	ctx    context.Context
+	cancel context.CancelFunc
 	sas    *associations
 	regs   *registrations
 	subs   *subscriptions
@@ -77,6 +80,7 @@ type PCSCF struct {
 
 func New(cfg Config) *PCSCF {
 	p := &PCSCF{cfg: cfg, log: cfg.Logger, clock: cfg.Clock}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	if p.log == nil {
 		p.log = slog.Default()
@@ -91,7 +95,7 @@ func New(cfg Config) *PCSCF {
 		grace = DefaultGrace
 	}
 
-	p.regs = newRegistrations(cfg.Registrations, p.clock, grace, p.log)
+	p.regs = newRegistrations(p.ctx, cfg.Registrations, p.clock, grace, p.log)
 	p.subs = newSubscriptions(p)
 	p.policy = newPolicyClient(cfg.Policy, p.log, p.clock.Now)
 	p.regs.expired = p.expired
@@ -101,7 +105,7 @@ func New(cfg Config) *PCSCF {
 	}
 
 	if cfg.IPsec.Kernel != nil {
-		p.sas = newAssociations(cfg.IPsec, p.log)
+		p.sas = newAssociations(p.ctx, cfg.IPsec, p.log)
 
 		if cfg.Layer != nil {
 			p.sas.closeFlow = cfg.Layer.CloseFlow
@@ -132,7 +136,13 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 	return nil
 }
 
-func (p *PCSCF) Close() {
+// Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,
+// it gives up on both, cancelling the requests and writes in progress, and the writes that follow. Otherwise what
+// the P-CSCF still saves after, of a registration that completes while SIP stops, is saved.
+func (p *PCSCF) Close(ctx context.Context) {
+	stop := context.AfterFunc(ctx, p.cancel)
+	defer stop()
+
 	// What the policy function reports from now on is left to the restart: an abort answered here could not end
 	// the session (TS 29.514 §4.2.5.3).
 	if p.policy != nil {
@@ -143,7 +153,7 @@ func (p *PCSCF) Close() {
 	p.regs.close()
 
 	if p.policy != nil {
-		p.policy.close()
+		p.policy.close(ctx)
 	}
 
 	if p.sas != nil {

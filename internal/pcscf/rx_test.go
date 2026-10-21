@@ -571,7 +571,7 @@ func TestRxSTRForRegistrationsExpiredAtRestart(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	s.p.Close()
+	s.p.Close(context.Background())
 	s.clock.Advance(600 * time.Second)
 	pcrf.none()
 
@@ -781,7 +781,7 @@ func TestAbortSessionAfterClose(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	s.p.Close()
+	s.p.Close(context.Background())
 
 	if _, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
 		t.Fatal("AbortSession accepted after Close")
@@ -1069,7 +1069,7 @@ func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
 	closed := make(chan struct{})
 
 	go func() {
-		s.p.Close()
+		s.p.Close(context.Background())
 		close(closed)
 	}()
 
@@ -1089,7 +1089,7 @@ func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
 }
 
 func TestSourceIndexFollowsTheRecords(t *testing.T) {
-	rs := newRegistrations(nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
 
 	a := netip.AddrPortFrom(ueAddr, 5060)
 	b := netip.AddrPortFrom(ueAddr, 5070)
@@ -1378,7 +1378,7 @@ func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
 	closed := make(chan struct{})
 
 	go func() {
-		s.p.Close()
+		s.p.Close(context.Background())
 		close(closed)
 	}()
 
@@ -1410,4 +1410,50 @@ func TestRxWithoutOriginStateID(t *testing.T) {
 
 	s.reregister(0)
 	noState(pcrf.next())
+}
+
+// TestPolicyCloseGivesUp checks that closing does not wait past its context on a policy function that does not
+// answer, and cancels the request in progress.
+func TestPolicyCloseGivesUp(t *testing.T) {
+	c := newPolicyClient(Policy{Backend: unanswered{}, Timeout: time.Hour}, slog.New(slog.DiscardHandler), time.Now)
+
+	cancelled := make(chan error, 1)
+
+	c.spawn(func() {
+		ctx, cancel := c.deadline(0)
+		defer cancel()
+
+		cancelled <- c.cfg.Backend.Terminate(ctx, "id", "", policy.TerminationAdministrative, false)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	closed := make(chan struct{})
+
+	go func() {
+		defer close(closed)
+
+		c.close(ctx)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("close waited on the policy function past its context")
+	}
+
+	if err := <-cancelled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the termination in progress ended with %v, want it cancelled", err)
+	}
+}
+
+// unanswered is a policy function that answers no termination.
+type unanswered struct {
+	policy.Backend
+}
+
+func (unanswered) Terminate(ctx context.Context, _, _ string, _ policy.Termination, _ bool) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
