@@ -630,7 +630,7 @@ func (s *Session) sendRequest(req *sip.Request, h transaction.ClientHandler) {
 
 // byeEnd ends the session with a BYE carrying c, when the dialog allows one; done receives its final response. A 2xx
 // offer still unanswered is acknowledged first, refused (RFC 3261 §13.2.2.4). The BYE transaction completes after
-// the session ended; Close waits for it.
+// the session ended; Shutdown waits for it.
 func (s *Session) byeEnd(e End, c Change, done func(*sip.Response, error)) {
 	for seq, o := range s.answering {
 		o.used = true
@@ -664,7 +664,7 @@ func (s *Session) close() {
 		s.a.await(1)
 		s.byeAfterAck = &pendingBye{cause: EndClosed}
 	case s.state == Early && s.awaitingAck():
-		// The BYE of the application waits for the ACK: Close waits for it too.
+		// The BYE of the application waits for the ACK: Shutdown waits for it too.
 		if s.byeAfterAck.cause != EndClosed {
 			s.byeAfterAck.cause = EndClosed
 			s.a.await(1)
@@ -1170,7 +1170,7 @@ type clientRequest struct {
 	tries  int
 	final  bool
 
-	// bye marks the BYE that ends the session: it completes after the session ended, Close waiting for it.
+	// bye marks the BYE that ends the session: it completes after the session ended, Shutdown waiting for it.
 	bye bool
 }
 

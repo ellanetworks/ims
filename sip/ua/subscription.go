@@ -756,7 +756,7 @@ func (s *Subscription) end(e End) {
 		s.att.done()
 	}
 
-	// An unsubscribe of Close ends as the agent closes, however it ends.
+	// An unsubscribe of Shutdown ends as the agent closes, however it ends.
 	if s.closing {
 		s.closing = false
 		e.Cause = EndClosed
@@ -1127,7 +1127,7 @@ func (s *Subscription) emitDone(done func(*sip.Response, error), res *sip.Respon
 }
 
 // close ends the subscription as the agent closes: one with a dialog unsubscribes, and waits for its terminated
-// NOTIFY, which Close waits for; one without ends at once.
+// NOTIFY, which Shutdown waits for; one without ends at once.
 func (s *Subscription) close() {
 	if s.ended || s.closing {
 		return

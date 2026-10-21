@@ -115,9 +115,9 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 		t.Fatal(err)
 	}
 
-	// Close waits for the transactions it starts, as long as 64*T1 for those of raw peers that never answer.
+	// Shutdown waits for the transactions it starts, as long as 64*T1 for those of raw peers that never answer.
 	t.Cleanup(func() {
-		n.Await(func() { _ = a.Close(context.Background()) }, 2*64*transaction.DefaultT1)
+		n.Await(func() { _ = a.Shutdown(context.Background()) }, 2*64*transaction.DefaultT1)
 	})
 
 	p.a = a

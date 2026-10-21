@@ -29,3 +29,8 @@ func (tx *ServerTransaction) Sending() bool {
 
 	return tx.sending > 0
 }
+
+// HoldFlow holds the outbox of f until the layer closes, as a send that never completes would.
+func (l *Layer) HoldFlow(f sip.Flow) {
+	l.enqueue(f, func(bool) { <-l.ctx.Done() })
+}

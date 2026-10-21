@@ -71,7 +71,7 @@ func TestUnansweredRequests(t *testing.T) {
 }
 
 // R3: a BYE Handler.Bye holds gets its 200 when the agent closes, and the session ends by that BYE.
-func TestHeldByeAnsweredOnClose(t *testing.T) {
+func TestHeldByeAnsweredOnShutdown(t *testing.T) {
 	ended := make(chan ua.End, 1)
 	held := make(chan *ua.Request, 1)
 
@@ -101,7 +101,7 @@ func TestHeldByeAnsweredOnClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := bob.a.Close(ctx); err != nil {
+	if err := bob.a.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,9 +173,9 @@ func TestRefreshesResume(t *testing.T) {
 	bob.none()
 }
 
-// R6: once closed, the agent refuses new usages; Close waits for the final response of an INVITE it cancels, a 2xx
+// R6: once closed, the agent refuses new usages; Shutdown waits for the final response of an INVITE it cancels, a 2xx
 // crossing the CANCEL acknowledged and ended with a BYE (RFC 3261 §15).
-func TestCloseWaitsForTheCancelledInvite(t *testing.T) {
+func TestShutdownWaitsForTheCancelledInvite(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newUAS(t, alice)
 
@@ -189,7 +189,7 @@ func TestCloseWaitsForTheCancelledInvite(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		closed <- alice.a.Close(ctx)
+		closed <- alice.a.Shutdown(ctx)
 	}()
 
 	cancel := bob.nextRequest("CANCEL")
@@ -212,7 +212,7 @@ func TestCloseWaitsForTheCancelledInvite(t *testing.T) {
 	req.Header.Add("To", "<"+bob.uri()+">")
 
 	if _, err := alice.a.Invite(req, ua.Handler{}); !errors.Is(err, ua.ErrClosed) {
-		t.Errorf("Invite after Close: %v", err)
+		t.Errorf("Invite after Shutdown: %v", err)
 	}
 }
 

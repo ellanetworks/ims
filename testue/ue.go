@@ -432,7 +432,7 @@ func New(cfg Config) (*UE, error) {
 	u.layer = u.agent.Layer()
 
 	if u.unprotected, err = u.listen(0); err != nil {
-		_ = u.agent.Close(context.Background())
+		_ = u.agent.Shutdown(context.Background())
 		return nil, err
 	}
 
@@ -558,7 +558,7 @@ func (u *UE) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), closeWait)
 	defer cancel()
 
-	return u.release(u.agent.Close(ctx))
+	return u.release(u.agent.Shutdown(ctx))
 }
 
 // Shutdown ends the calls and the subscription of the UE with the network, a BYE, a CANCEL or an unsubscribe, waits
@@ -568,7 +568,7 @@ func (u *UE) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
-	return u.release(u.agent.Close(ctx))
+	return u.release(u.agent.Shutdown(ctx))
 }
 
 func (u *UE) close() bool {

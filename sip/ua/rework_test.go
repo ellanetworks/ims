@@ -2,6 +2,7 @@ package ua_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -131,15 +132,15 @@ func TestByeWhile2xxHeld(t *testing.T) {
 	}
 }
 
-// Close ends the sessions of the agent: the peer gets a BYE.
-func TestClose(t *testing.T) {
+// Shutdown ends the sessions of the agent: the peer gets a BYE.
+func TestShutdown(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	established(t, alice, bob)
 
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 
-	if err := alice.a.Close(ctx); err != nil {
+	if err := alice.a.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,6 +150,62 @@ func TestClose(t *testing.T) {
 
 	if e := bob.next("ended"); e.end.Cause != ua.EndBye || !e.end.Remote {
 		t.Errorf("bob ended %+v", e.end)
+	}
+}
+
+// Shutdown returns the context's error when the BYE outlives ctx, the session ended all the same; later calls return
+// nil.
+func TestShutdownDeadline(t *testing.T) {
+	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
+	bob := newUAS(t, alice)
+
+	_, invite := inviteRaw(t, alice, bob, "offer-1", alice.handler())
+	bob.answer(invite, 200, "answer-1")
+	bob.nextRequest("ACK")
+	alice.next("established")
+	alice.next("answer")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// bob never answers the BYE.
+	if err := alice.a.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown: %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	bob.nextRequest("BYE")
+
+	if e := alice.next("ended"); e.end.Cause != ua.EndClosed {
+		t.Errorf("alice ended %+v", e.end)
+	}
+
+	if err := alice.a.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown again: %v", err)
+	}
+}
+
+// Shutdown returns the context's error when a strand outlives ctx, its handler still running.
+func TestShutdownDeadlineOfAStrand(t *testing.T) {
+	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
+
+	entered, release := make(chan struct{}), make(chan struct{})
+
+	alice.a.NewStrand().Post(func() {
+		close(entered)
+		<-release
+	})
+
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := alice.a.Shutdown(ctx)
+
+	close(release)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown: %v, want %v", err, context.DeadlineExceeded)
 	}
 }
 
@@ -331,7 +388,7 @@ func sessionBody(res *sip.Response) []byte {
 func TestAuthentication(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
-	_ = alice.a.Close(context.Background())
+	_ = alice.a.Shutdown(context.Background())
 	alice = newPeerWith(t, "alice", func(c *ua.Config) {
 		c.Authenticate = func(req *sip.Request, challenge *sip.Response) error {
 			req.Header.Set("Authorization", `Digest username="alice", response="ok"`)

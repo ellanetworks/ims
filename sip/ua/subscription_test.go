@@ -478,8 +478,8 @@ func TestForkedSubscription(t *testing.T) {
 	}
 }
 
-// Close unsubscribes, and ends the subscriptions.
-func TestCloseUnsubscribes(t *testing.T) {
+// Shutdown unsubscribes, and ends the subscriptions.
+func TestShutdownUnsubscribes(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
 
@@ -497,7 +497,7 @@ func TestCloseUnsubscribes(t *testing.T) {
 	ctx, cancel := contextWithTimeout(time.Second)
 	defer cancel()
 
-	if err := sb.p.a.Close(ctx); err != nil {
+	if err := sb.p.a.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 

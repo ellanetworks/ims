@@ -138,7 +138,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
-		s.records.Close(ctx)
+		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
 
@@ -432,7 +432,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 
 	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
-	s.records.Close(ctx)
+	if err := s.records.Close(ctx); err != nil {
+		s.Logger.Warn("failed to save the call records", slog.Any("error", err))
+	}
 
 	s.stopPrune()
 	<-s.pruneDone

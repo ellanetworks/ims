@@ -198,7 +198,7 @@ func TestSharedLayer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		_ = a.Close(ctx)
+		_ = a.Shutdown(ctx)
 		_ = layer.Close()
 	})
 
@@ -238,7 +238,7 @@ func TestSharedLayer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = a.Close(ctx)
+	_ = a.Shutdown(ctx)
 
 	if err := layer.Serve(n.Addr()); err != nil {
 		t.Errorf("layer closed with the agent: %v", err)

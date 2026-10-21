@@ -176,7 +176,7 @@ func TestLateReinvite2xx(t *testing.T) {
 
 // RFC 3261 §15: closing, an agent whose 2xx awaits its ACK sends its BYE once the ACK comes; an INVITE it has not
 // answered gets a 503 (S12).
-func TestCloseWaitsForTheAck(t *testing.T) {
+func TestShutdownWaitsForTheAck(t *testing.T) {
 	answer := make(chan bool, 2)
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
@@ -208,7 +208,7 @@ func TestCloseWaitsForTheAck(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		closed <- bob.a.Close(ctx)
+		closed <- bob.a.Shutdown(ctx)
 	}()
 
 	for refused := false; !refused; {

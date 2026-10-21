@@ -1,11 +1,15 @@
 package transaction_test
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 // RFC 3261 §12.2.2: the requests of a flow leave in the order the layer took them, so that a dialog's CSeq order
@@ -82,5 +86,25 @@ func TestShutdownSendsWhatItTook(t *testing.T) {
 
 	for range n {
 		h.peer.RecvRequest()
+	}
+}
+
+// Shutdown returns the context's error when what the layer took is not sent in time, and closes the layer all the
+// same.
+func TestShutdownDeadline(t *testing.T) {
+	h := newHarness(t)
+
+	h.l.HoldFlow(sip.Flow{Transport: sip.TCP, Local: h.local, Remote: h.peer.Addr()})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	if err := h.l.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown: %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	req := h.newRequest("MESSAGE", sip.TCP)
+	if _, err := h.l.Request(req, siptest.NewResponses(t)); !errors.Is(err, transaction.ErrClosed) {
+		t.Errorf("Request after Shutdown: %v, want %v", err, transaction.ErrClosed)
 	}
 }

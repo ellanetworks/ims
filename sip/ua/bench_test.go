@@ -69,7 +69,7 @@ func newBenchAgent(b *testing.B, name string, onInvite func(r *ua.Request) ua.Ha
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
-		_ = a.Close(ctx)
+		_ = a.Shutdown(ctx)
 	})
 
 	ba.a = a
@@ -269,7 +269,7 @@ func netAgent(b *testing.B, n *siptest.Net, name string, configure func(*ua.Conf
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
-		_ = a.Close(ctx)
+		_ = a.Shutdown(ctx)
 	})
 
 	return a, addr

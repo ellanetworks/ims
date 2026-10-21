@@ -50,7 +50,7 @@ type Publication struct {
 	ended    bool
 	value    any
 
-	// closing marks the removal of Close, which Close waits for.
+	// closing marks the removal of Shutdown, which Shutdown waits for.
 	closing bool
 }
 
@@ -438,7 +438,7 @@ func (p *Publication) end(e End) {
 	})
 }
 
-// close removes the publication as the agent closes; Close waits for the removal.
+// close removes the publication as the agent closes; Shutdown waits for the removal.
 func (p *Publication) close() {
 	if p.ended || p.closing {
 		return

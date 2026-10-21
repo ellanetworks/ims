@@ -96,7 +96,8 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 	}
 
 	s.p = New(cfg)
-	t.Cleanup(func() { s.p.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = s.p.Close(context.Background()) })
 
 	if err := s.p.Restore(context.Background()); err != nil {
 		t.Fatal(err)
@@ -110,13 +111,14 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 func (s *regScene) restart() {
 	s.t.Helper()
 
-	s.p.Close(context.Background())
+	_ = s.p.Close(context.Background())
 
 	cfg := s.p.cfg
 	cfg.Proxy = proxy.New(proxy.Config{Layer: cfg.Layer, Port: s.pcscf.Port()})
 
 	p := New(cfg)
-	s.t.Cleanup(func() { p.Close(context.Background()) })
+
+	s.t.Cleanup(func() { _ = p.Close(context.Background()) })
 
 	if err := p.Restore(context.Background()); err != nil {
 		s.t.Fatal(err)

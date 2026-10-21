@@ -137,11 +137,11 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 }
 
 // Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,
-// it gives up on both, cancelling the requests and writes in progress, and the writes that follow. Otherwise what
-// the P-CSCF still saves after, of a registration that completes while SIP stops, is saved.
-func (p *PCSCF) Close(ctx context.Context) {
+// it gives up on both, cancelling the requests and writes in progress, and the writes that follow, and returns the
+// context's error. Otherwise what the P-CSCF still saves after, of a registration that completes while SIP stops, is
+// saved.
+func (p *PCSCF) Close(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, p.cancel)
-	defer stop()
 
 	// What the policy function reports from now on is left to the restart: an abort answered here could not end
 	// the session (TS 29.514 §4.2.5.3).
@@ -159,6 +159,12 @@ func (p *PCSCF) Close(ctx context.Context) {
 	if p.sas != nil {
 		p.sas.close()
 	}
+
+	if !stop() {
+		return ctx.Err()
+	}
+
+	return nil
 }
 
 func (p *PCSCF) expired(r db.PCSCFRegistration) {

@@ -178,10 +178,11 @@ func New(cfg Config) *Recorder {
 
 // Close saves the records that changed, including those of the calls in progress as they are, then stops the
 // recorder. It ignores what is reported after. When ctx is done first, it cancels the write in progress, and the
-// records left unsaved are lost; those left open in the database are closed when the IMS starts again.
-func (r *Recorder) Close(ctx context.Context) {
+// records left unsaved are lost; those left open in the database are closed when the IMS starts again. Close then
+// returns the context's error.
+func (r *Recorder) Close(ctx context.Context) error {
 	if r == nil {
-		return
+		return nil
 	}
 
 	r.mu.Lock()
@@ -194,10 +195,18 @@ func (r *Recorder) Close(ctx context.Context) {
 	r.mu.Unlock()
 
 	stop := context.AfterFunc(ctx, r.cancel)
-	defer stop()
 
 	<-r.done
+
+	gaveUp := !stop()
+
 	r.cancel()
+
+	if gaveUp {
+		return ctx.Err()
+	}
+
+	return nil
 }
 
 // Attempt opens the record of a call, at the originating P-CSCF, for every INVITE from a registered UE.

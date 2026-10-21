@@ -234,8 +234,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	})
 
 	if err := pc.Restore(ctx); err != nil {
-		pc.Close(ctx)
-		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), s.Close(ctx))
+		return nil, errors.Join(fmt.Errorf("restore the P-CSCF: %w", err), pc.Close(ctx), s.Close(ctx))
 	}
 
 	s.pcscf.Store(pc)
@@ -331,7 +330,7 @@ func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
 	return err
 }
 
-// Close stops SIP. The P-CSCF ends its policy sessions until ctx is done.
+// Close stops SIP. The P-CSCF ends its policy sessions until ctx is done, or Close returns the context's error.
 func (s *sipServer) Close(ctx context.Context) error {
 	if s.rtr != nil {
 		s.rtr.bind(nil)
@@ -345,14 +344,14 @@ func (s *sipServer) Close(ctx context.Context) error {
 		s.registrar.Close()
 	}
 
-	if p := s.pcscf.Load(); p != nil {
-		p.Close(ctx)
-	}
-
 	var err error
 
+	if p := s.pcscf.Load(); p != nil {
+		err = p.Close(ctx)
+	}
+
 	if s.layer != nil {
-		err = s.layer.Close()
+		err = errors.Join(err, s.layer.Close())
 	}
 
 	s.placeholder.close()

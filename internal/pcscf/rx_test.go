@@ -571,7 +571,7 @@ func TestRxSTRForRegistrationsExpiredAtRestart(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	s.p.Close(context.Background())
+	_ = s.p.Close(context.Background())
 	s.clock.Advance(600 * time.Second)
 	pcrf.none()
 
@@ -781,7 +781,7 @@ func TestAbortSessionAfterClose(t *testing.T) {
 	id, _ := pcrf.aar()
 	s.wantSession(id)
 
-	s.p.Close(context.Background())
+	_ = s.p.Close(context.Background())
 
 	if _, ok := s.p.rxAbortSession(id, rx.AbortSessionRequest{Cause: rx.AbortBearerReleased}); ok {
 		t.Fatal("AbortSession accepted after Close")
@@ -1066,16 +1066,13 @@ func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
 	s.reregister(0)
 	pcrf.wantSTR(id, rx.TerminationLogout)
 
-	closed := make(chan struct{})
+	closed := make(chan error, 1)
 
-	go func() {
-		s.p.Close(context.Background())
-		close(closed)
-	}()
+	go func() { closed <- s.p.Close(context.Background()) }()
 
 	select {
-	case <-closed:
-		t.Fatal("Close returned with the STR in flight")
+	case err := <-closed:
+		t.Fatalf("Close returned with the STR in flight: %v", err)
 	case <-time.After(quiet):
 	}
 
@@ -1085,7 +1082,35 @@ func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
 		t.Fatalf("STR context = %v, want it alive until answered", err)
 	}
 
-	<-closed
+	if err := <-closed; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// Close gives up on an STR still unanswered when its context is done, cancelling it, and returns the context's
+// error.
+func TestRxShutdownGivesUpOnTheSTR(t *testing.T) {
+	s, pcrf := newRxScene(t, time.Hour)
+
+	s.registered(600)
+
+	id, _ := pcrf.aar()
+	s.wantSession(id)
+
+	pcrf.answerWith(func(ctx context.Context, _ *diameter.Message) (*diameter.Message, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	s.reregister(0)
+	pcrf.wantSTR(id, rx.TerminationLogout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := s.p.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close: %v, want %v", err, context.DeadlineExceeded)
+	}
 }
 
 func TestSourceIndexFollowsTheRecords(t *testing.T) {
@@ -1378,7 +1403,8 @@ func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
 	closed := make(chan struct{})
 
 	go func() {
-		s.p.Close(context.Background())
+		_ = s.p.Close(context.Background())
+
 		close(closed)
 	}()
 

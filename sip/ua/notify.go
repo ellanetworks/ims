@@ -115,7 +115,7 @@ type ServerSubscription struct {
 	ending   *End
 	ended    bool
 
-	// closing marks the NOTIFY of Close, which Close waits for.
+	// closing marks the NOTIFY of Shutdown, which Shutdown waits for.
 	closing bool
 
 	// referStatus is the last status of the request of a REFER (ReferStatus).
@@ -532,7 +532,7 @@ func (s *ServerSubscription) receive(tx *transaction.ServerTransaction, req *sip
 }
 
 // close ends the subscription as the agent closes, with a NOTIFY terminated with reason deactivated, for the
-// subscriber to subscribe again elsewhere (RFC 6665 §4.4.2); Close waits for it.
+// subscriber to subscribe again elsewhere (RFC 6665 §4.4.2); Shutdown waits for it.
 func (s *ServerSubscription) close() {
 	if s.ended || s.closing {
 		return

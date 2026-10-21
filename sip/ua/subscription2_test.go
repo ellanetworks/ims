@@ -382,8 +382,8 @@ func TestSubscriptionDialogRequests(t *testing.T) {
 	}
 }
 
-// Close unsubscribes, and answers the terminated NOTIFY that follows with a 200.
-func TestCloseWaitsForTheTerminatedNotify(t *testing.T) {
+// Shutdown unsubscribes, and answers the terminated NOTIFY that follows with a 200.
+func TestShutdownWaitsForTheTerminatedNotify(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	active(t, sb, n, "600", "active")
 
@@ -403,7 +403,7 @@ func TestCloseWaitsForTheTerminatedNotify(t *testing.T) {
 	ctx, cancel := contextWithTimeout(2 * time.Second)
 	defer cancel()
 
-	_ = sb.p.a.Close(ctx)
+	_ = sb.p.a.Shutdown(ctx)
 
 	select {
 	case code := <-answered:

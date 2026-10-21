@@ -45,12 +45,12 @@ type Outgoing struct {
 	// cancel is the change of the CANCEL of the application, sent once the transaction exists.
 	cancel *Change
 
-	// closing: Close waits for the final response, until closeBy.
+	// closing: Shutdown waits for the final response, until closeBy.
 	closing bool
 	closeBy *timer
 }
 
-// awaitFinal makes Close wait for the final response of the INVITE, or 64*T1.
+// awaitFinal makes Shutdown wait for the final response of the INVITE, or 64*T1.
 func (o *Outgoing) awaitFinal() {
 	if o.final || o.closing {
 		return
@@ -61,7 +61,7 @@ func (o *Outgoing) awaitFinal() {
 	o.closeBy = o.st.after(64*o.a.layer.T1(), o.release)
 }
 
-// release ends the wait of Close for the INVITE.
+// release ends the wait of Shutdown for the INVITE.
 func (o *Outgoing) release() {
 	if o.closing {
 		o.closing = false
@@ -223,7 +223,7 @@ func (o *Outgoing) response(res *sip.Response) {
 		return
 	}
 
-	// Once final, the INVITE no longer holds Close, its BYE, if any, counted by then.
+	// Once final, the INVITE no longer holds Shutdown, its BYE, if any, counted by then.
 	defer func() {
 		if o.final {
 			o.release()
@@ -281,7 +281,7 @@ func (o *Outgoing) response(res *sip.Response) {
 		o.final = true
 		o.st.after(64*o.a.layer.T1(), o.endEarly)
 
-		// Answered, the INVITE has nothing left for Close to cancel.
+		// Answered, the INVITE has nothing left for Shutdown to cancel.
 		o.done()
 	}
 

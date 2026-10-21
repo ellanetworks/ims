@@ -26,7 +26,8 @@ func newRecordScene(t *testing.T) (*ipsecScene, *ue, *callrecords.Recorder) {
 		rec = callrecords.New(callrecords.Config{Store: c.Registrations.(*db.DB)})
 		c.Records = rec
 	})
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	s.registerOverIPsec(u)
 
@@ -37,7 +38,7 @@ func newRecordScene(t *testing.T) (*ipsecScene, *ue, *callrecords.Recorder) {
 func (s *ipsecScene) callRecords(t *testing.T, rec *callrecords.Recorder) []db.CallRecord {
 	t.Helper()
 
-	rec.Close(t.Context())
+	_ = rec.Close(t.Context())
 
 	l, _, err := s.store.ListCallRecords(t.Context(), db.CallRecordFilter{}, 1, 100)
 	if err != nil {
@@ -292,7 +293,8 @@ func TestNoCallRecordForAnUnregisteredUE(t *testing.T) {
 		rec = callrecords.New(callrecords.Config{Store: c.Registrations.(*db.DB)})
 		c.Records = rec
 	})
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	invite := siptest.NewRequest("INVITE", callee, sip.UDP, s.ue.Addr())
 	invite.Header.Set("Contact", "<sip:ue@"+s.ue.Addr().String()+">")
@@ -356,7 +358,8 @@ func TestCallRecordReached(t *testing.T) {
 	var rec *callrecords.Recorder
 
 	s, u := newIPsecRegScene(t, recordTo(&rec))
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	token, _ := s.registerOverIPsec(u)
 
@@ -387,7 +390,8 @@ func TestCallRecordReleasedTowardTheUE(t *testing.T) {
 	var rec *callrecords.Recorder
 
 	s, u, pcrf, token := newRxIPsecScene(t, recordTo(&rec))
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", func(r *sip.Request) {
 		r.SetBody("application/sdp", sdpBody("192.0.2.9", "5000"))
@@ -430,7 +434,8 @@ func TestCallRecordRefusedTowardTheUE(t *testing.T) {
 	var rec *callrecords.Recorder
 
 	s, u := newIPsecRegScene(t, recordTo(&rec))
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	token, _ := s.registerOverIPsec(u)
 
@@ -455,7 +460,8 @@ func TestCallRecordReachedWithAQuotedICID(t *testing.T) {
 	var rec *callrecords.Recorder
 
 	s, u := newIPsecRegScene(t, recordTo(&rec))
-	t.Cleanup(func() { rec.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	token, _ := s.registerOverIPsec(u)
 

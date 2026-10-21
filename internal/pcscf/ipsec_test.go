@@ -141,7 +141,8 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	}
 
 	s.p = New(cfg)
-	t.Cleanup(func() { s.p.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = s.p.Close(context.Background()) })
 
 	if err := s.p.Restore(context.Background()); err != nil {
 		t.Fatal(err)
@@ -938,13 +939,14 @@ func TestRestore(t *testing.T) {
 func restart(t *testing.T, s *ipsecScene) {
 	t.Helper()
 
-	s.p.Close(context.Background())
+	_ = s.p.Close(context.Background())
 
 	cfg := s.p.cfg
 	cfg.Proxy = s.newProxy()
 
 	p := New(cfg)
-	t.Cleanup(func() { p.Close(context.Background()) })
+
+	t.Cleanup(func() { _ = p.Close(context.Background()) })
 
 	if err := p.Restore(context.Background()); err != nil {
 		t.Fatal(err)

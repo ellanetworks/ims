@@ -98,7 +98,8 @@ func TestCallModificationOfAnUnknownSessionOpensANewOne(t *testing.T) {
 
 	pcrf.none()
 
-	s.p.Close(context.Background())
+	_ = s.p.Close(context.Background())
+
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 }
 

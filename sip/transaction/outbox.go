@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ellanetworks/ims/sip"
 )
@@ -67,7 +68,9 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 }
 
 // Shutdown closes the layer once the messages it took are sent, or ctx is done: the responses and requests of the
-// transactions under way leave before the transport closes, and those in memory are delivered.
+// transactions under way leave before the transport closes, and those in memory are delivered. When ctx is done
+// first, the layer closes all the same, dropping the messages left, and Shutdown returns the context's error, joined
+// with that of Close.
 func (l *Layer) Shutdown(ctx context.Context) error {
 	l.mu.Lock()
 
@@ -87,6 +90,7 @@ func (l *Layer) Shutdown(ctx context.Context) error {
 		select {
 		case <-drained:
 		case <-ctx.Done():
+			return errors.Join(ctx.Err(), l.Close())
 		}
 	}
 

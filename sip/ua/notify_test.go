@@ -328,7 +328,7 @@ func TestNotifierFetch(t *testing.T) {
 
 // RFC 6665 §4.4.2: closing, the notifier terminates its subscriptions with reason deactivated, for the subscribers
 // to subscribe again elsewhere.
-func TestNotifierClose(t *testing.T) {
+func TestNotifierShutdown(t *testing.T) {
 	n := newNotifierAgent(t, nil)
 	sb := newSubscriberOf(t, nil)
 
@@ -339,7 +339,7 @@ func TestNotifierClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := n.p.a.Close(ctx); err != nil {
+	if err := n.p.a.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 

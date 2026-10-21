@@ -90,7 +90,7 @@ func newParty(t *testing.T, n *siptest.Net, name string, configure func(*ua.Conf
 	}
 
 	t.Cleanup(func() {
-		n.Await(func() { _ = a.Close(context.Background()) }, 2*64*transaction.DefaultT1)
+		n.Await(func() { _ = a.Shutdown(context.Background()) }, 2*64*transaction.DefaultT1)
 	})
 
 	p.a = a

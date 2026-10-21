@@ -789,7 +789,7 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 	s.in = r
 	s.notePeer(req.Header)
 
-	// An INVITE that reached its strand as the agent closed: Close no longer sees it.
+	// An INVITE that reached its strand as the agent closed: Shutdown no longer sees it.
 	if !a.addIncoming(s, r) {
 		a.reply(tx, 503)
 		return

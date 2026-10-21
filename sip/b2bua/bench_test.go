@@ -63,7 +63,7 @@ func benchAgent(b *testing.B, n *siptest.Net, name string, onInvite func(a *ua.A
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
-		_ = a.Close(ctx)
+		_ = a.Shutdown(ctx)
 	})
 
 	return a, addr

@@ -395,7 +395,7 @@ type Agent struct {
 	allow     []string
 	supported []string
 
-	// wmu guards the counts of the strands at work and of the requests Close waits for.
+	// wmu guards the counts of the strands at work and of the requests Shutdown waits for.
 	wmu     sync.Mutex
 	wcond   sync.Cond
 	workers int
@@ -490,7 +490,7 @@ func (a *Agent) working(delta int) {
 	a.wmu.Unlock()
 }
 
-// await counts the requests Close waits for: their transactions, once sent.
+// await counts the requests Shutdown waits for: their transactions, once sent.
 func (a *Agent) await(delta int) {
 	a.wmu.Lock()
 	a.closing += delta
@@ -498,8 +498,8 @@ func (a *Agent) await(delta int) {
 	a.wmu.Unlock()
 }
 
-// waitUntil waits for cond, under wmu, until ctx is done.
-func (a *Agent) waitUntil(ctx context.Context, cond func() bool) {
+// waitUntil waits for cond, under wmu, until ctx is done, and reports whether it holds.
+func (a *Agent) waitUntil(ctx context.Context, cond func() bool) bool {
 	stop := context.AfterFunc(ctx, func() {
 		a.wmu.Lock()
 		a.wcond.Broadcast()
@@ -513,6 +513,8 @@ func (a *Agent) waitUntil(ctx context.Context, cond func() bool) {
 	for !cond() && ctx.Err() == nil {
 		a.wcond.Wait()
 	}
+
+	return cond()
 }
 
 // Owns reports whether a request belongs to the agent, for the dispatcher of a shared layer: a request within one of
@@ -533,11 +535,14 @@ func (a *Agent) Owns(req *sip.Request) bool {
 	return req.Method == "NOTIFY" && a.subscribing[subscribeKey{callID: id.CallID, fromTag: id.LocalTag}] != nil
 }
 
-// Close ends the sessions of the agent, confirmed ones with a BYE, early ones by cancelling or rejecting their INVITE,
-// and its subscriptions, unsubscribing. It waits for those transactions until ctx is done, then closes the
+// Shutdown ends the sessions of the agent, confirmed ones with a BYE, early ones by cancelling or rejecting their
+// INVITE, and its subscriptions, unsubscribing. It waits for those transactions until ctx is done, then closes the
 // transaction layer the agent created, and waits, until ctx is done too, for the strands to deliver the last events.
-// The sessions and subscriptions end with EndClosed. Close must not be called from a handler, whose strand it waits for.
-func (a *Agent) Close(ctx context.Context) error {
+// The sessions and subscriptions end with EndClosed, even those whose transactions are still under way when ctx is
+// done: Shutdown then returns the context's error, joined with that of closing the layer, and the strands still at
+// work finish on their own, once their handlers return. Otherwise it returns the error of closing the layer. Later
+// calls return nil. Shutdown must not be called from a handler, whose strand it waits for.
+func (a *Agent) Shutdown(ctx context.Context) error {
 	a.mu.Lock()
 
 	if a.closed {
@@ -585,7 +590,7 @@ func (a *Agent) Close(ctx context.Context) error {
 		})
 	}
 
-	// The INVITEs cancelled: Close waits for their final response, a 2xx crossing the CANCEL acknowledged and ended
+	// The INVITEs cancelled: Shutdown waits for their final response, a 2xx crossing the CANCEL acknowledged and ended
 	// with a BYE (RFC 3261 §15), or for 64*T1.
 	for _, o := range outgoing {
 		_ = o.st.do(func() error {
@@ -624,7 +629,7 @@ func (a *Agent) Close(ctx context.Context) error {
 		})
 	}
 
-	a.waitUntil(ctx, func() bool { return a.closing == 0 })
+	done := a.waitUntil(ctx, func() bool { return a.closing == 0 })
 
 	var err error
 
@@ -697,7 +702,12 @@ func (a *Agent) Close(ctx context.Context) error {
 		})
 	}
 
-	a.waitUntil(ctx, func() bool { return a.workers == 0 })
+	done = a.waitUntil(ctx, func() bool { return a.workers == 0 }) && done
+
+	// The layer reports ctx too when it could not send what it took in time.
+	if !done && !errors.Is(err, ctx.Err()) {
+		err = errors.Join(ctx.Err(), err)
+	}
 
 	return err
 }
@@ -958,7 +968,7 @@ func (a *Agent) usages(id dialog.ID) (*Session, []*Subscription, []*ServerSubscr
 	return e.invite, slices.Clone(e.subs), slices.Clone(e.notifs)
 }
 
-// The registrations of usages the application starts refuse them once the agent is closed, under the lock Close
+// The registrations of usages the application starts refuse them once the agent is closed, under the lock Shutdown
 // takes its snapshot with.
 
 func (a *Agent) addOutgoing(o *Outgoing) error {

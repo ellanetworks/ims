@@ -98,7 +98,7 @@ func newAS(t *testing.T, port uint16) *as {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		_ = agent.Close(ctx)
+		_ = agent.Shutdown(ctx)
 	})
 
 	a.agent = agent
