@@ -379,9 +379,11 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 		c.origin = nil
 	}
 
-	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow.
+	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow. The UE is
+	// the address the sets are bound to (TS 33.203 §7.1); a client of the same private identity at another
+	// address is another UE, whose challenge in progress is left (TS 33.203 §6.1 NOTE 2).
 	for s := range a.sets {
-		if s.state == temporary && s.impi == c.impi {
+		if s.state == temporary && s.impi == c.impi && s.set.Remote.Addr == c.ue {
 			a.unanswered(s)
 			a.remove(s)
 		}

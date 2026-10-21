@@ -488,6 +488,22 @@ func (t *Transport) CloseFlow(f sip.Flow) {
 	}
 }
 
+// drop closes a listener whose socket failed and forgets it: sends from its address fail with ErrNoListener, for its
+// owner to notice, and the address can be listened on again. Its UDP socket goes with it, a server listening for TCP
+// wherever it listens for UDP (RFC 3261 §18.2.1).
+func (t *Transport) drop(l *listener) {
+	t.mu.Lock()
+
+	if t.listeners[l.local] == l {
+		delete(t.listeners, l.local)
+	}
+
+	t.mu.Unlock()
+
+	_ = l.tcp.Close()
+	_ = l.udp.Close()
+}
+
 func (t *Transport) Close() error {
 	t.mu.Lock()
 

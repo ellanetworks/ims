@@ -7,11 +7,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -802,5 +804,71 @@ func TestPingTCP(t *testing.T) {
 
 	if err := a.Ping(ctx, f); err != nil {
 		t.Fatalf("Ping: %v", err)
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
+}
+
+// A listening socket that stopped listening, as one Android destroyed with its network (accept fails with EINVAL),
+// never recovers: its listener is closed and forgotten, sends from it failing, rather than accept retried.
+func TestBrokenListenerIsDropped(t *testing.T) {
+	var logs syncBuffer
+
+	tr, _ := siptest.NewTransport(t, transport.Config{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	local := siptest.Listen(t, tr, lo)
+
+	rcs, err := tr.Sockets(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
+	var shut error
+	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
+		t.Fatalf("shutdown: %v, %v", err, shut)
+	}
+
+	ctx := context.Background()
+	req := siptest.NewRequest("OPTIONS", "sip:a@127.0.0.1", sip.UDP, local)
+	req.Flow = sip.Flow{Transport: sip.UDP, Local: local, Remote: netip.MustParseAddrPort("127.0.0.1:9")}
+
+	deadline := time.Now().Add(siptest.Timeout)
+	for err := tr.Send(ctx, req); !errors.Is(err, transport.ErrNoListener); err = tr.Send(ctx, req) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Send from the broken listener: err = %v, want %v", err, transport.ErrNoListener)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if n := strings.Count(logs.String(), "SIP accept failed"); n != 0 {
+		t.Errorf("accept retried %d times on the broken listener", n)
+	}
+
+	if n := strings.Count(logs.String(), "SIP listener failed"); n != 1 {
+		t.Errorf("listener failure logged %d times, want once", n)
+	}
+
+	if _, err := tr.Listen(ctx, local); err != nil {
+		t.Fatalf("listen again on %s: %v", local, err)
 	}
 }

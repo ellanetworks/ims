@@ -370,6 +370,58 @@ func TestOneTemporarySetPerUE(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.2.2.2, TS 33.203 §7.1: a challenge deletes the temporary sets toward its UE only; a client of the
+// same private identity at another address, as a phone's VoLTE client on another PDN, keeps its own.
+func TestChallengeKeepsAnotherAddressesTemporarySet(t *testing.T) {
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
+		slog.New(slog.DiscardHandler))
+	t.Cleanup(a.close)
+
+	other := netip.MustParseAddr("127.0.0.3")
+
+	challengeAt := func(ue netip.Addr, regID int64, spi uint32) {
+		t.Helper()
+
+		if _, err := a.challenged(challenge{
+			impi: testIMPI, flow: flowID{testInstance, regID}, local: loopback, ue: ue,
+			offer: ipsec.Offer{
+				Endpoint:  ipsec.Endpoint{PortC: 6100, PortS: 6101, SPIC: spi, SPIS: spi + 1},
+				Integrity: "hmac-sha-1-96", Encryption: "null",
+			},
+		}, ipsec.Keys{CK: make([]byte, 16), IK: make([]byte, 16)}); err != nil {
+			t.Fatalf("challenge toward %s: %v", ue, err)
+		}
+	}
+
+	temporaryAt := func(ue netip.Addr) int {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		n := 0
+
+		for s := range a.sets {
+			if s.state == temporary && s.set.Remote.Addr == ue {
+				n++
+			}
+		}
+
+		return n
+	}
+
+	challengeAt(ueAddr, 1, 100)
+	challengeAt(other, 1, 200)
+
+	if n := temporaryAt(ueAddr); n != 1 {
+		t.Fatalf("%d temporary sets toward %s after a challenge toward %s, want its own kept", n, ueAddr, other)
+	}
+
+	challengeAt(ueAddr, 2, 300)
+
+	if n, m := temporaryAt(ueAddr), temporaryAt(other); n != 1 || m != 1 {
+		t.Fatalf("temporary sets toward %s: %d, toward %s: %d; want one each", ueAddr, n, other, m)
+	}
+}
+
 // RFC 5626 §4.2, §11.1: a flow needs a non-empty instance ID and a reg-id from 1 to 2^31 - 1, read as
 // a number, like the S-CSCF's.
 func TestContactFlow(t *testing.T) {
