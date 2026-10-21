@@ -21,3 +21,11 @@ func (l *Layer) Sending(req *sip.Request) bool {
 
 	return tx != nil && !tx.Sent()
 }
+
+// Sending reports whether the transaction has a send under way, while which Timer G does not retransmit.
+func (tx *ServerTransaction) Sending() bool {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	return tx.sending > 0
+}

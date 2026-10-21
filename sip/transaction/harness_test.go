@@ -139,6 +139,14 @@ func (h *harness) respond(tx *transaction.ServerTransaction, code int) *sip.Resp
 		h.t.Fatal(err)
 	}
 
+	// The peer can get the response before the transaction records sending it, and Timer G retransmits only once no
+	// send is under way: the clock must not move until then.
+	for deadline := time.Now().Add(siptest.Timeout); tx.Sending(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%d never recorded as sent", code)
+		}
+	}
+
 	return res
 }
 
