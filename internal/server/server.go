@@ -71,6 +71,9 @@ type Server struct {
 	core       atomic.Pointer[core]
 	stopFollow context.CancelFunc
 	followDone chan struct{}
+
+	// sipFailed wakes follow when a SIP listener of the core failed, for it to restart the core.
+	sipFailed chan struct{}
 }
 
 // core is the part of the IMS that its settings build, apart from what it reads when it uses it: Diameter, the
@@ -82,6 +85,9 @@ type core struct {
 	realms      *realms
 	policy      *policyFunction
 	sip         *sipServer
+
+	// failed is set once a SIP listener of the core failed for good: the core is restarted.
+	failed *atomic.Bool
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -131,6 +137,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.database = database
 	s.settings = live
+	s.sipFailed = make(chan struct{}, 1)
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
 	s.metrics = newMetrics(database, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
 		return live.Get().Peers, coreView{s}.Peers()
@@ -229,8 +236,21 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		return nil, err
 	}
 
+	failed := new(atomic.Bool)
+
+	// A SIP listener that failed for good, as its address removed, is a P-CSCF, I-CSCF or S-CSCF no longer reachable
+	// on it: the core is restarted, as for new settings, and retried until it listens again.
+	sipFailed := func(netip.AddrPort, error) {
+		failed.Store(true)
+
+		select {
+		case s.sipFailed <- struct{}{}:
+		default:
+		}
+	}
+
 	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, s.Logger)
+		s.metrics, s.IPsec, sipFailed, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -240,7 +260,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 
 	pf.serve(s.Logger)
 
-	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer}, nil
+	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer, failed: failed}, nil
 }
 
 func (s *Server) numbering() scscf.Numbering {
@@ -267,13 +287,16 @@ func (s *Server) follow(ctx context.Context) {
 
 		if st := s.settings.Get(); ctx.Err() == nil {
 			current := s.coreSettings()
+			c := s.core.Load()
 
 			switch {
+			case c != nil && c.failed.Load():
+				s.restartCore(ctx, st, "for a failed SIP listener")
 			case current.SameCore(st):
-			case s.core.Load() != nil && current.SameNode(st):
+			case c != nil && current.SameNode(st):
 				s.reconfigureNode(ctx, st)
 			default:
-				s.restartCore(ctx, st)
+				s.restartCore(ctx, st, "for the new settings")
 			}
 
 			// A core that failed to build is retried, since what it failed on may come back, like a peer's
@@ -291,6 +314,7 @@ func (s *Server) follow(ctx context.Context) {
 			return
 		case <-changed:
 		case <-retry:
+		case <-s.sipFailed:
 		}
 	}
 }
@@ -314,7 +338,7 @@ func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) {
 
 	if err != nil {
 		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
-		s.restartCore(ctx, st)
+		s.restartCore(ctx, st, "for the new settings")
 
 		return
 	}
@@ -337,10 +361,10 @@ func (s *Server) coreSettings() settings.Settings {
 	return settings.Settings{}
 }
 
-// restartCore replaces the core with one built from st. Peers and UEs reconnect to it; registrations and security
-// associations are restored from the database.
-func (s *Server) restartCore(ctx context.Context, st settings.Settings) {
-	s.Logger.Info("restarting for the new settings",
+// restartCore replaces the core with one built from st, why it does. Peers and UEs reconnect to it; registrations and
+// security associations are restored from the database.
+func (s *Server) restartCore(ctx context.Context, st settings.Settings, why string) {
+	s.Logger.Info("restarting "+why,
 		slog.String("home_domain", st.Operator.HomeDomain()), slog.Int("diameter_peers", len(st.Peers)),
 		slog.String("policy", string(st.Policy.Interface)))
 
@@ -355,12 +379,12 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings) {
 
 	c, err := s.startCore(ctx, st)
 	if err != nil {
-		s.Logger.Error("failed to restart for the new settings", slog.Any("error", err))
+		s.Logger.Error("failed to restart "+why, slog.Any("error", err))
 		return
 	}
 
 	s.core.Store(c)
-	s.Logger.Info("restarted for the new settings", c.attrs()...)
+	s.Logger.Info("restarted "+why, c.attrs()...)
 }
 
 func (c *core) attrs() []any {

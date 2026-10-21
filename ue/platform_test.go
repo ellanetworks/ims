@@ -1,6 +1,8 @@
 package ue
 
 import (
+	"errors"
+	"net/netip"
 	"slices"
 	"strconv"
 	"syscall"
@@ -253,6 +255,66 @@ func TestFlowFailed(t *testing.T) {
 		case <-timeout:
 			t.Fatal("no deregistration event")
 		}
+	}
+}
+
+// TS 24.229 §5.1.1.4.1 NOTE 13, RFC 5626 §4.5: a listener of the UE failing for good, its unprotected port or a protected
+// one, as when the platform destroys its sockets with the network, ends the registration, its flow failed; the next
+// registration listens again on the port, the unprotected one as it was, a protected one anew.
+func TestListenerFailed(t *testing.T) {
+	for name, port := range map[string]func(*testUE, SASet) uint16{
+		"unprotected": func(u *testUE, _ SASet) uint16 { return u.Unprotected().Port() },
+		"server":      func(_ *testUE, s SASet) uint16 { return s.Local.PortS },
+		"client":      func(_ *testUE, s SASet) uint16 { return s.Local.PortC },
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := newNetwork(t)
+			u, kernel := n.newUE(Config{})
+			n.Register(u)
+
+			set, unprotected := u.SAs()[0].Set, u.Unprotected()
+			failing := port(u, set)
+
+			rcs, err := u.layer.Sockets(netip.AddrPortFrom(u.Local(), failing))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
+			var shut error
+			if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
+				t.Fatalf("shutdown: %v, %v", err, shut)
+			}
+
+			timeout := time.After(10 * time.Second)
+
+			for e := (Event{}); e.Deregistered == ""; {
+				select {
+				case e = <-u.Events():
+				case <-timeout:
+					t.Fatal("no deregistration event")
+				}
+
+				if e.Deregistered != "" && (e.Deregistered != DeregisteredFlowFailed || !errors.Is(e.Err, syscall.EINVAL)) {
+					t.Fatalf("deregistered %q: %v; want %q, EINVAL", e.Deregistered, e.Err, DeregisteredFlowFailed)
+				}
+			}
+
+			if u.State().Registered || len(u.SAs()) != 0 || len(kernel.Removed()) == 0 {
+				t.Fatalf("state %+v, SAs %v, removed %v after the flow failed", u.State(), u.SAs(), kernel.Removed())
+			}
+
+			n.Register(u)
+
+			again := u.SAs()[0].Set
+			if u.Unprotected() != unprotected || slices.Contains([]uint16{again.Local.PortC, again.Local.PortS}, failing) {
+				t.Fatalf("registered again on %s, %s; the port %d failed", u.Unprotected(), again, failing)
+			}
+
+			if _, err := u.layer.Sockets(unprotected); err != nil {
+				t.Fatalf("not listening on the unprotected port again: %v", err)
+			}
+		})
 	}
 }
 

@@ -29,7 +29,11 @@ const (
 
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
-	readBackoff   = 50 * time.Millisecond
+
+	// The wait after an accept or a read of a listener failed, as net/http's Server's: from 5 ms, doubled to at most a
+	// second.
+	minRetryBackoff = 5 * time.Millisecond
+	maxRetryBackoff = time.Second
 )
 
 var (
@@ -70,6 +74,11 @@ type Config struct {
 	WriteTimeout time.Duration
 
 	Trace func(m sip.Message, f sip.Flow, sent bool)
+
+	// OnListenerFailed is told of a listener whose socket failed for good, its UDP socket or its TCP listener, with the
+	// error: the transport closed both and forgot the listener, sends from local failing with ErrNoListener, and local
+	// can be listened on again. It runs on a goroutine of its own; closing the transport is no failure.
+	OnListenerFailed func(local netip.AddrPort, err error)
 }
 
 type Transport struct {
@@ -86,6 +95,7 @@ type Transport struct {
 	largeUDP     bool
 	writeTimeout time.Duration
 	trace        func(m sip.Message, f sip.Flow, sent bool)
+	onFailed     func(local netip.AddrPort, err error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,6 +134,7 @@ func New(cfg Config) *Transport {
 		largeUDP:     cfg.LargeUDP,
 		writeTimeout: cfg.WriteTimeout,
 		trace:        cfg.Trace,
+		onFailed:     cfg.OnListenerFailed,
 		listeners:    make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
 		pongs:        newPongs(),
@@ -488,20 +499,60 @@ func (t *Transport) CloseFlow(f sip.Flow) {
 	}
 }
 
-// drop closes a listener whose socket failed and forgets it: sends from its address fail with ErrNoListener, for its
-// owner to notice, and the address can be listened on again. Its UDP socket goes with it, a server listening for TCP
-// wherever it listens for UDP (RFC 3261 §18.2.1).
-func (t *Transport) drop(l *listener) {
+// socketFailed reports whether an error of an accept or a read is that of the socket itself, which never recovers: no
+// longer listening (EINVAL), as a TCP listener Android destroyed with the network it was bound to (SOCK_DESTROY), or no
+// longer a socket. Others, as running out of file descriptors or memory, or the network errors Linux passes on from a
+// pending connection (accept(2)), are the moment's.
+func socketFailed(err error) bool {
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.EBADF) || errors.Is(err, syscall.ENOTSOCK)
+}
+
+// udpFailed reports whether a read error of a UDP socket is the socket's own: besides those of socketFailed,
+// ECONNABORTED, which Linux gives an unconnected UDP socket only when it destroys it (SOCK_DESTROY).
+func udpFailed(err error) bool {
+	return socketFailed(err) || errors.Is(err, syscall.ECONNABORTED)
+}
+
+// retryBackoff is the wait after an accept or a read failed, d the wait after the one before it.
+func retryBackoff(d time.Duration) time.Duration {
+	return min(max(2*d, minRetryBackoff), maxRetryBackoff)
+}
+
+// pause waits d, or until the transport closes: false then.
+func (t *Transport) pause(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-t.ctx.Done():
+		return false
+	}
+}
+
+// fail drops a listener whose socket failed for good: it closes both its sockets, a server listening for TCP wherever
+// it listens for UDP (RFC 3261 §18.2.1), forgets it and tells OnListenerFailed. The first of the two to fail reports
+// it; the other then ends with net.ErrClosed, as on Close, which is not a failure.
+func (t *Transport) fail(l *listener, err error) {
 	t.mu.Lock()
 
-	if t.listeners[l.local] == l {
-		delete(t.listeners, l.local)
+	if t.closed || t.listeners[l.local] != l {
+		t.mu.Unlock()
+		return
 	}
 
+	delete(t.listeners, l.local)
 	t.mu.Unlock()
 
 	_ = l.tcp.Close()
 	_ = l.udp.Close()
+
+	t.log.Error("SIP listener failed", slog.String("local", l.local.String()), slog.Any("error", err))
+
+	if t.onFailed != nil {
+		go t.onFailed(l.local, err)
+	}
 }
 
 func (t *Transport) Close() error {
@@ -536,18 +587,32 @@ func (t *Transport) readUDP(l *listener) {
 
 	buf := make([]byte, maxDatagram)
 
+	var backoff time.Duration
+
 	for {
 		n, src, err := l.udp.ReadFromUDPAddrPort(buf)
 		if errors.Is(err, net.ErrClosed) {
 			return
 		}
 
+		if err != nil && udpFailed(err) {
+			t.fail(l, err)
+			return
+		}
+
 		if err != nil {
-			t.log.Warn("UDP read failed", slog.String("local", l.local.String()), slog.Any("error", err))
-			time.Sleep(readBackoff)
+			backoff = retryBackoff(backoff)
+			t.log.Warn("UDP read failed", slog.String("local", l.local.String()), slog.Any("error", err),
+				slog.Duration("retry", backoff))
+
+			if !t.pause(backoff) {
+				return
+			}
 
 			continue
 		}
+
+		backoff = 0
 
 		data := buf[:n]
 		if src.Port() == 0 || sip.IsKeepalive(data) {

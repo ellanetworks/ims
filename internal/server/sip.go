@@ -82,7 +82,7 @@ type timers struct {
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, rtr *rtrHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
-	kernel pcscf.Kernel, logger *slog.Logger,
+	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -123,6 +123,10 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			}
 
 			return sip.Flow{}, false, nil
+		},
+		OnListenerFailed: func(local netip.AddrPort, err error) {
+			logger.Error("SIP listener failed: the core restarts", slog.String("address", local.String()), slog.Any("error", err))
+			failed(local, err)
 		},
 		OnServerDone: func(req *sip.Request, res *sip.Response, elapsed time.Duration) {
 			roles.logTransaction(req, res, elapsed)

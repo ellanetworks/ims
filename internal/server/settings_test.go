@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
+	"syscall"
 	"testing"
 	"time"
 
@@ -294,4 +296,38 @@ func TestAPIDuringRestarts(t *testing.T) {
 		c := srv.core.Load()
 		return c != nil && c.settings.Operator.MNC == "01"
 	})
+}
+
+// A SIP listener that failed for good, its socket no longer listening, restarts the core, which listens again.
+func TestFailedSIPListenerRestartsTheCore(t *testing.T) {
+	srv := startIMS(t, testConfig(t))
+	before := srv.core.Load()
+
+	var scscf netip.AddrPort
+
+	for _, l := range before.sip.Listeners() {
+		if l.Role == roleSCSCF && l.Address.Addr().Is4() {
+			scscf = l.Address
+		}
+	}
+
+	rcs, err := before.sip.layer.Sockets(scscf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
+	var shut error
+	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
+		t.Fatalf("shutdown: %v, %v", err, shut)
+	}
+
+	eventually(t, "the core to restart", func() bool {
+		c := srv.core.Load()
+		return c != nil && c != before
+	})
+
+	if _, err := srv.core.Load().sip.layer.Sockets(scscf); err != nil {
+		t.Fatalf("the S-CSCF not listening on %s again: %v", scscf, err)
+	}
 }

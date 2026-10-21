@@ -79,6 +79,10 @@ func (u *UE) ready() error {
 		return ErrClosed
 	}
 
+	if err := u.reopen(); err != nil {
+		return err
+	}
+
 	if u.cfg.Plain || u.portS != 0 {
 		return nil
 	}
@@ -545,17 +549,26 @@ func (u *UE) keepalive() {
 		cancel()
 	}
 
+	if err != nil {
+		u.flowFailed(err)
+		return
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if !u.closed && u.state.Registered {
+		u.keepaliveLocked()
+	}
+}
+
+// flowFailed ends the registration whose flow failed, a keep-alive not answered or a listener of the UE failed: its
+// SAs go, and the owner registers again (RFC 5626 §4.4, §4.5), Register forming a new flow.
+func (u *UE) flowFailed(err error) {
 	u.mu.Lock()
 
 	if u.closed || !u.state.Registered {
 		u.mu.Unlock()
-		return
-	}
-
-	if err == nil {
-		u.keepaliveLocked()
-		u.mu.Unlock()
-
 		return
 	}
 
@@ -570,6 +583,52 @@ func (u *UE) keepalive() {
 
 	after()
 	u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})
+}
+
+// listenerFailed is a listener of the UE failing for good, of its unprotected port or of a protected one, as when the
+// platform destroyed its sockets with the network they were bound to: the flow of the registration failed, as on a
+// keep-alive not answered (TS 24.229 §5.1.1.4.1 NOTE 13: by other means than timer F). The UE listens on the port
+// again before its next registration.
+func (u *UE) listenerFailed(local netip.AddrPort, err error) {
+	u.mu.Lock()
+
+	if u.closed {
+		u.mu.Unlock()
+		return
+	}
+
+	u.failed = append(u.failed, local.Port())
+	u.mu.Unlock()
+
+	u.flowFailed(fmt.Errorf("ue: listener %s failed: %w", local, err))
+}
+
+// reopen listens again on the ports whose listeners failed, before a registration: the unprotected port as it was,
+// the protected server port and the client ports anew, as for a new UE. Called with u.op held.
+func (u *UE) reopen() error {
+	u.mu.Lock()
+	failed := u.failed
+	u.failed = nil
+	u.clientPorts = slices.DeleteFunc(u.clientPorts, func(p uint16) bool { return slices.Contains(failed, p) })
+	u.mu.Unlock()
+
+	if slices.Contains(failed, u.portS) {
+		u.portS = 0
+	}
+
+	if !slices.Contains(failed, u.unprotected.Port()) {
+		return nil
+	}
+
+	if _, err := u.listen(u.unprotected.Port()); err != nil {
+		u.mu.Lock()
+		u.failed = append(u.failed, u.unprotected.Port())
+		u.mu.Unlock()
+
+		return err
+	}
+
+	return nil
 }
 
 // ownFlow reports whether a contact's parameters name the UE's flow, when it registers one.

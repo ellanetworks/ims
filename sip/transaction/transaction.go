@@ -70,6 +70,10 @@ type Config struct {
 	// response, or with a nil response if it ended without one.
 	OnServerDone func(req *sip.Request, res *sip.Response, elapsed time.Duration)
 
+	// OnListenerFailed is told of a listener of the layer that failed for good, with the error
+	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
+	OnListenerFailed func(local netip.AddrPort, err error)
+
 	T1, T2, T4 time.Duration
 
 	Clock Clock
@@ -93,6 +97,7 @@ type Layer struct {
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+	onFailed func(local netip.AddrPort, err error)
 
 	t1, t2, t4, t100 time.Duration
 
@@ -145,6 +150,10 @@ func New(cfg Config) *Layer {
 		panic("sip/transaction: Transport.Handler is set by the transaction layer")
 	}
 
+	if cfg.Transport.OnListenerFailed != nil {
+		panic("sip/transaction: Transport.OnListenerFailed is set by the transaction layer; set OnListenerFailed")
+	}
+
 	l := &Layer{
 		h:        cfg.Handler,
 		log:      cfg.Logger,
@@ -155,6 +164,7 @@ func New(cfg Config) *Layer {
 		filter:   cfg.Filter,
 		respFlow: cfg.ResponseFlow,
 		onDone:   cfg.OnServerDone,
+		onFailed: cfg.OnListenerFailed,
 		t1:       cfg.T1,
 		t2:       cfg.T2,
 		t4:       cfg.T4,
@@ -205,6 +215,7 @@ func New(cfg Config) *Layer {
 
 	tc := cfg.Transport
 	tc.Handler = transportHandler{l}
+	tc.OnListenerFailed = l.listenerFailed
 
 	if tc.Logger == nil {
 		tc.Logger = l.log
@@ -269,6 +280,30 @@ func (l *Layer) addLocal(a netip.AddrPort) {
 	locals := maps.Clone(*l.locals.Load())
 	locals[a] = struct{}{}
 	l.locals.Store(&locals)
+}
+
+// removeLocal removes a from the local addresses. Called with l.mu held.
+func (l *Layer) removeLocal(a netip.AddrPort) {
+	locals := maps.Clone(*l.locals.Load())
+	delete(locals, a)
+	l.locals.Store(&locals)
+}
+
+// listenerFailed forgets a listener the transport dropped, and tells the layer's user.
+func (l *Layer) listenerFailed(local netip.AddrPort, err error) {
+	l.mu.Lock()
+
+	if l.closed {
+		l.mu.Unlock()
+		return
+	}
+
+	l.removeLocal(local)
+	l.mu.Unlock()
+
+	if l.onFailed != nil {
+		l.onFailed(local, err)
+	}
 }
 
 // isLocalAddr reports whether the layer listens on a, or serves it.

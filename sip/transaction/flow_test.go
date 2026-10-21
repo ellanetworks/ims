@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -296,4 +297,58 @@ func TestListenWhileMatching(t *testing.T) {
 	if l.IsLocal(loopback.String(), 1) {
 		t.Fatal("an address not listened on is local")
 	}
+}
+
+// A listener of the layer that failed for good is told to its user, its address no longer the layer's; the transport's
+// own report is the layer's to take.
+func TestListenerFailure(t *testing.T) {
+	type failure struct {
+		local netip.AddrPort
+		err   error
+	}
+
+	failed := make(chan failure, 1)
+	l, _ := siptest.NewLayer(t, transaction.Config{
+		OnListenerFailed: func(local netip.AddrPort, err error) { failed <- failure{local, err} },
+	})
+	local := siptest.ListenLayer(t, l, loopback)
+
+	rcs, err := l.Sockets(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
+	var shut error
+	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
+		t.Fatalf("shutdown: %v, %v", err, shut)
+	}
+
+	select {
+	case f := <-failed:
+		if f.local != local || !errors.Is(f.err, syscall.EINVAL) {
+			t.Fatalf("failure of %s: %v; want %s, EINVAL", f.local, f.err, local)
+		}
+	case <-time.After(siptest.Timeout):
+		t.Fatal("no listener failure")
+	}
+
+	if l.IsLocal(local.Addr().String(), local.Port()) {
+		t.Fatalf("%s local once its listener failed", local)
+	}
+
+	if _, err := l.Listen(context.Background(), local); err != nil || !l.IsLocal(local.Addr().String(), local.Port()) {
+		t.Fatalf("listen again on %s: %v", local, err)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("New took a Transport.OnListenerFailed")
+		}
+	}()
+
+	transaction.New(transaction.Config{
+		Handler:   siptest.NewTU(t),
+		Transport: transport.Config{OnListenerFailed: func(netip.AddrPort, error) {}},
+	})
 }

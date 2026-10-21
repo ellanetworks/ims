@@ -20,13 +20,7 @@ var errNoConn = errors.New("no connection for the flow")
 
 var crlf = []byte("\r\n")
 
-const (
-	drainTimeout = time.Second
-
-	// The backoff between accepts that failed, as net/http's Server: from 5 ms, doubled to at most a second.
-	minAcceptBackoff = 5 * time.Millisecond
-	maxAcceptBackoff = time.Second
-)
+const drainTimeout = time.Second
 
 type conn struct {
 	flow  sip.Flow
@@ -197,19 +191,6 @@ func (t *Transport) awaitAccept(c *conn) {
 	}
 }
 
-// listenerBroken reports whether an accept error is that of the listening socket itself, which never recovers: no
-// longer listening (EINVAL), as when Android destroys the sockets of a network that went away (SOCK_DESTROY), or no
-// longer a socket. Others, as running out of file descriptors or memory, or the network errors Linux passes on from
-// a pending connection (accept(2)), are the moment's.
-func listenerBroken(err error) bool {
-	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.EBADF) || errors.Is(err, syscall.ENOTSOCK)
-}
-
-// acceptBackoff is the wait after an accept failed that followed a wait of d.
-func acceptBackoff(d time.Duration) time.Duration {
-	return min(max(2*d, minAcceptBackoff), maxAcceptBackoff)
-}
-
 func (t *Transport) accept(l *listener) {
 	defer t.wg.Done()
 
@@ -221,21 +202,17 @@ func (t *Transport) accept(l *listener) {
 			return
 		}
 
-		if err != nil && listenerBroken(err) {
-			t.log.Error("SIP listener failed", slog.String("local", l.local.String()), slog.Any("error", err))
-			t.drop(l)
-
+		if err != nil && socketFailed(err) {
+			t.fail(l, err)
 			return
 		}
 
 		if err != nil {
-			backoff = acceptBackoff(backoff)
+			backoff = retryBackoff(backoff)
 			t.log.Warn("SIP accept failed", slog.String("local", l.local.String()), slog.Any("error", err),
 				slog.Duration("retry", backoff))
 
-			select {
-			case <-time.After(backoff):
-			case <-t.ctx.Done():
+			if !t.pause(backoff) {
 				return
 			}
 
