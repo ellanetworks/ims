@@ -586,6 +586,53 @@ func TestDialHook(t *testing.T) {
 	}
 }
 
+func TestDialCrossesPeerDial(t *testing.T) {
+	l, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	peer := netip.MustParseAddrPort(l.Addr().String())
+	_ = l.Close()
+
+	peerConn := make(chan net.Conn, 1)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		// The peer dials the flow first, and the transport dials it before accepting the peer's connection.
+		Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+			pd := net.Dialer{LocalAddr: net.TCPAddrFromAddrPort(peer)}
+
+			c, err := pd.DialContext(ctx, network, d.LocalAddr.String())
+			if err != nil {
+				return nil, err
+			}
+
+			peerConn <- c
+
+			return d.DialContext(ctx, network, address)
+		},
+	})
+	local := siptest.Listen(t, tr, lo)
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+peer.String(), sip.TCP, local)
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: peer}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	c := <-peerConn
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	_ = c.SetDeadline(time.Now().Add(siptest.Timeout))
+
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "OPTIONS ") {
+		t.Fatalf("peer got %q, %v", line, err)
+	}
+}
+
 func TestTrace(t *testing.T) {
 	type traced struct {
 		line   string

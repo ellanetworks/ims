@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -127,8 +128,19 @@ func (t *Transport) dial(c *conn) {
 
 	nc, err := t.dialFunc(t.ctx, &d, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
 
+	// The kernel refuses the flow's 4-tuple while the peer's connection of the same flow holds it, established but not
+	// yet accepted: accept hands that connection to c.
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		t.awaitAccept(c)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if c.nc != nil {
+		return
+	}
+
 	defer close(c.ready)
 
 	if err == nil && (t.closed || c.closed.Load() || t.conns[c.flow] != c) {
@@ -154,6 +166,17 @@ func (t *Transport) dial(c *conn) {
 	go t.readTCP(c)
 
 	t.log.Debug("SIP connection dialed", slog.String("flow", c.flow.String()))
+}
+
+func (t *Transport) awaitAccept(c *conn) {
+	timer := time.NewTimer(t.dialTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-c.ready:
+	case <-timer.C:
+	case <-t.ctx.Done():
+	}
 }
 
 func (t *Transport) accept(l *listener) {
@@ -188,6 +211,13 @@ func (t *Transport) accept(l *listener) {
 			return
 		}
 
+		if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
+			t.adopt(old, nc)
+			t.mu.Unlock()
+
+			continue
+		}
+
 		if len(t.conns) >= t.maxConns {
 			t.mu.Unlock()
 			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
@@ -209,6 +239,19 @@ func (t *Transport) accept(l *listener) {
 
 		t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
 	}
+}
+
+// adopt gives the dial under way of c the connection the peer dialed of the same flow.
+func (t *Transport) adopt(c *conn, nc *net.TCPConn) {
+	c.nc = nc
+	c.limit.Store(int64(t.idleTimeout))
+	c.touch()
+	close(c.ready)
+	t.wg.Add(1)
+
+	go t.readTCP(c)
+
+	t.log.Debug("SIP connection accepted for a dial", slog.String("flow", c.flow.String()))
 }
 
 func (t *Transport) readTCP(c *conn) {
