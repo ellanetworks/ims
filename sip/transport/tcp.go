@@ -138,6 +138,9 @@ func (t *Transport) dial(c *conn) {
 		},
 	}
 
+	// Plain TCP, as the listeners (listen.Pair), whatever GODEBUG=multipathtcp says.
+	d.SetMultipathTCP(false)
+
 	nc, err := t.dialFunc(t.ctx, &d, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
 
 	// The kernel refuses the flow's 4-tuple while the peer's connection of the same flow holds it, established but not

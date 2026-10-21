@@ -60,6 +60,11 @@ func tcp(ctx context.Context, local netip.AddrPort, control func(network, addres
 		return nil
 	}}
 
+	// Plain TCP, not Multipath TCP, Go's default for listeners on Linux: SIP between fixed nodes gains nothing from it;
+	// the P-CSCF's SAs are bound to the UE's address and ports (TS 33.203 §7.1), which subflows from other addresses
+	// fall outside; and a destroyed MPTCP listener (SOCK_DESTROY) is not seen to fail.
+	lc.SetMultipathTCP(false)
+
 	l, err := lc.Listen(ctx, network("tcp", local.Addr()), local.String())
 	if err != nil {
 		return nil, err

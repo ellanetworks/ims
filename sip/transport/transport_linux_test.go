@@ -38,9 +38,8 @@ func isolated(t *testing.T) bool {
 
 	run := "^" + strings.ReplaceAll(t.Name(), "/", "$/^") + "$"
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run="+run, "-test.count=1")
-	// Go listens with Multipath TCP where the kernel has it, whose listeners SOCK_DESTROY does not destroy; Android's
-	// kernels do not.
-	cmd.Env = append(os.Environ(), isolatedEnv+"=1", "GODEBUG=multipathtcp=0")
+
+	cmd.Env = append(os.Environ(), isolatedEnv+"=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
@@ -181,5 +180,59 @@ func TestAcceptBacksOff(t *testing.T) {
 	case f := <-failed:
 		t.Fatalf("listener failed: %s: %v", f.local, f.err)
 	default:
+	}
+}
+
+// TCP is plain TCP, listened on and dialled, never Multipath TCP, whatever Go's default or GODEBUG: the SAs are bound
+// to the addresses and ports of the flow (TS 33.203 §7.1), and an MPTCP listener destroyed is not seen to fail.
+func TestPlainTCP(t *testing.T) {
+	t.Setenv("GODEBUG", "multipathtcp=1")
+
+	protocol := func(c syscall.RawConn) int {
+		var p int
+
+		if err := c.Control(func(fd uintptr) { p, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PROTOCOL) }); err != nil {
+			t.Fatal(err)
+		}
+
+		return p
+	}
+
+	dialled := make(chan int, 8)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		Control: func(network, _ string, c syscall.RawConn) error {
+			if strings.HasPrefix(network, "tcp") {
+				dialled <- protocol(c)
+			}
+
+			return nil
+		},
+	})
+
+	local := siptest.Listen(t, tr, lo)
+
+	<-dialled
+
+	rcs, err := tr.Sockets(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p := protocol(rcs[1]); p != syscall.IPPROTO_TCP {
+		t.Fatalf("listener of protocol %d, want TCP (%d)", p, syscall.IPPROTO_TCP)
+	}
+
+	peer := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+peer.Addr().String(), sip.TCP, local)
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: peer.Addr()}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if p := <-dialled; p != syscall.IPPROTO_TCP {
+		t.Fatalf("dialled socket of protocol %d, want TCP (%d)", p, syscall.IPPROTO_TCP)
 	}
 }
