@@ -113,9 +113,12 @@ func invalidExpression(tp *cx.TriggerPoint) (string, bool) {
 		case s.RequestURI != nil:
 			exprs = []string{*s.RequestURI}
 		case s.SIPHeader != nil:
-			exprs = []string{"(?i)" + s.SIPHeader.Header}
+			if headerName(s.SIPHeader.Header) == nil {
+				return "(?i)" + s.SIPHeader.Header, true
+			}
+
 			if s.SIPHeader.Content != nil {
-				exprs = append(exprs, *s.SIPHeader.Content)
+				exprs = []string{*s.SIPHeader.Content}
 			}
 		case s.SessionDescription != nil:
 			exprs = []string{s.SessionDescription.Line}
@@ -144,42 +147,73 @@ type trigger struct {
 
 // matches reports whether the trigger point is met: a conjunction of disjunctions of SPTs, each group a
 // disjunction, in CNF, or the other way round in DNF; no trigger point always is (TS 29.228 Annex B.2.2, Annex C).
+//
+// The groups are checked in the order they first appear, and each SPT once, when a group first needs it: a group
+// that decides the trigger point leaves the SPTs of the next ones unchecked.
 func (t trigger) matches(tp *cx.TriggerPoint) bool {
 	if tp == nil {
 		return true
 	}
 
-	groups := make(map[int32][]bool)
+	var (
+		valueBuf [16]int8
+		groupBuf [16]int32
+	)
 
-	var order []int32
+	n := len(tp.ServicePointTriggers)
 
-	for _, s := range tp.ServicePointTriggers {
-		v := t.condition(s) != s.Negated
-
-		for _, g := range s.Groups {
-			if _, ok := groups[g]; !ok {
-				order = append(order, g)
-			}
-
-			groups[g] = append(groups[g], v)
-		}
+	values := valueBuf[:min(n, len(valueBuf))]
+	if n > len(valueBuf) {
+		values = make([]int8, n)
 	}
 
-	for _, g := range order {
-		var met bool
+	seen := groupBuf[:0]
 
-		if tp.ConjunctiveNormalForm {
-			met = slices.Contains(groups[g], true)
-		} else {
-			met = !slices.Contains(groups[g], false)
-		}
+	for _, s := range tp.ServicePointTriggers {
+		for _, g := range s.Groups {
+			if slices.Contains(seen, g) {
+				continue
+			}
 
-		if met != tp.ConjunctiveNormalForm {
-			return met
+			seen = append(seen, g)
+
+			if met := t.group(tp, values, g); met != tp.ConjunctiveNormalForm {
+				return met
+			}
 		}
 	}
 
 	return tp.ConjunctiveNormalForm
+}
+
+// SPT values of a trigger point as matches works them out.
+const (
+	sptUnknown int8 = iota
+	sptFalse
+	sptTrue
+)
+
+// group reports whether group g of the trigger point is met: one of its SPTs in CNF, where a group is a disjunction,
+// all of them in DNF, where it is a conjunction (TS 29.228 Annex B.2.2). values keeps each SPT's value once checked.
+func (t trigger) group(tp *cx.TriggerPoint, values []int8, g int32) bool {
+	for i, s := range tp.ServicePointTriggers {
+		if !slices.Contains(s.Groups, g) {
+			continue
+		}
+
+		if values[i] == sptUnknown {
+			values[i] = sptFalse
+			if t.condition(s) != s.Negated {
+				values[i] = sptTrue
+			}
+		}
+
+		if (values[i] == sptTrue) == tp.ConjunctiveNormalForm {
+			return tp.ConjunctiveNormalForm
+		}
+	}
+
+	return !tp.ConjunctiveNormalForm
 }
 
 // condition reports whether the SPT's condition holds, before its negation (TS 29.228 Annex B.2.3, Annex F).
@@ -219,32 +253,41 @@ func requestURIPart(u sip.URI) string {
 // header matches each header field of the request, and each of the values of a list (TS 29.228 Annex F). The header
 // name matches regardless of case (RFC 3261 §7.3.1).
 func (t trigger) header(m cx.HeaderMatch) bool {
+	header := headerName(m.Header)
+	if header == nil {
+		return false
+	}
+
+	var content *regexp.Regexp
+
+	if m.Content != nil {
+		if content = compiled(*m.Content); content == nil {
+			return false
+		}
+	}
+
 	for _, f := range t.req.Header {
 		name := sip.LongName(f.Name)
-		if !search("(?i)"+m.Header, name) {
+		if !header.MatchString(name) {
 			continue
 		}
 
-		if m.Content == nil {
-			return true
-		}
-
-		var values []string
-
 		switch {
+		case content == nil:
+			return true
 		case slices.ContainsFunc(textHeaders, func(n string) bool { return strings.EqualFold(n, name) }):
-			values = []string{collapseLWS(f.Value)}
+			if content.MatchString(collapseLWS(f.Value)) {
+				return true
+			}
 		case slices.ContainsFunc(authHeaders, func(n string) bool { return strings.EqualFold(n, name) }):
-			values = []string{headerValue(f.Value)}
+			if content.MatchString(headerValue(f.Value)) {
+				return true
+			}
 		default:
 			for _, v := range sip.SplitList(f.Value) {
-				values = append(values, headerValue(v))
-			}
-		}
-
-		for _, v := range values {
-			if search(*m.Content, v) {
-				return true
+				if content.MatchString(headerValue(v)) {
+					return true
+				}
 			}
 		}
 	}
@@ -313,9 +356,22 @@ func (t trigger) sessionDescription(m cx.SessionDescriptionMatch) bool {
 		return false
 	}
 
+	typ := compiled(m.Line)
+	if typ == nil {
+		return false
+	}
+
+	var content *regexp.Regexp
+
+	if m.Content != nil {
+		if content = compiled(*m.Content); content == nil {
+			return false
+		}
+	}
+
 	for line := range bytes.SplitSeq(sdp.Body, []byte("\n")) {
-		typ, value, ok := strings.Cut(strings.TrimRight(string(line), "\r"), "=")
-		if ok && search(m.Line, typ) && (m.Content == nil || search(*m.Content, value)) {
+		field, value, ok := bytes.Cut(bytes.TrimRight(line, "\r"), []byte("="))
+		if ok && typ.Match(field) && (content == nil || content.Match(value)) {
 			return true
 		}
 	}
@@ -374,7 +430,21 @@ func search(expr, s string) bool {
 	return re != nil && re.MatchString(s)
 }
 
-var expressions sync.Map
+// headerName is the expression of the header name of a SIPHeader SPT, which matches regardless of case (RFC 3261
+// §7.3.1): kept by the expression, rather than built for each header field it is checked against.
+func headerName(expr string) *regexp.Regexp {
+	if re, ok := headerExpressions.Load(expr); ok {
+		return re.(*regexp.Regexp)
+	}
+
+	re := compiled("(?i)" + expr)
+
+	headerExpressions.Store(expr, re)
+
+	return re
+}
+
+var expressions, headerExpressions sync.Map
 
 func compiled(expr string) *regexp.Regexp {
 	if re, ok := expressions.Load(expr); ok {
