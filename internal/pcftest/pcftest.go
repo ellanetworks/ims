@@ -141,6 +141,7 @@ type PCF struct {
 	refuse     func(Request) *Failure
 	answer     func(Request) *n5.EventsNotification
 	hold       chan struct{}
+	abandoned  int
 }
 
 func New(t testing.TB, cfg Config) *PCF {
@@ -937,6 +938,10 @@ func (p *PCF) wait(r *http.Request) bool {
 	case <-hold:
 		return true
 	case <-r.Context().Done():
+		p.mu.Lock()
+		p.abandoned++
+		p.mu.Unlock()
+
 		return false
 	}
 }
@@ -1160,3 +1165,11 @@ func mediaType(h http.Header) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// abandonedAnswers is the number of answers Hold delayed until their request was cancelled.
+func (p *PCF) abandonedAnswers() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.abandoned
+}

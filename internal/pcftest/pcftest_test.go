@@ -549,6 +549,13 @@ func TestHold(t *testing.T) {
 		t.Fatal("held create answered")
 	}
 
+	// The client gives up before the PCF learns of it (RST_STREAM): s1 must be dropped before the release.
+	for deadline := time.Now().Add(5 * time.Second); c.pcf.abandonedAnswers() != 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the abandoned create is still held")
+		}
+	}
+
 	done := make(chan error, 1)
 
 	go func() {
