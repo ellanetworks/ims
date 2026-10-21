@@ -157,7 +157,7 @@ func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE 
 
 	cfg.IMSI, cfg.IMEI, cfg.K, cfg.OPc = sub.imsi, sub.imei, k, opc
 	cfg.PCSCF, cfg.Local, cfg.Transport = pcscf, local, tr
-	cfg.MMTel.AcceptCalls, cfg.Kernel, cfg.Do = true, xfrm, ns.Do
+	cfg.MMTel.AcceptCalls, cfg.Kernel, cfg.Do = true, testue.XFRMOf(xfrm), ns.Do
 	cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})).With("ue", i+1)
 
 	u, err := testue.New(cfg)

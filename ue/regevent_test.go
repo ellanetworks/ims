@@ -1,4 +1,4 @@
-package testue
+package ue
 
 import (
 	"errors"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
@@ -21,7 +22,7 @@ const (
 
 type notifier struct {
 	n      *network
-	u      *UE
+	u      *testUE
 	sub    *sip.Request
 	sf     sip.Flow
 	toTag  string
@@ -32,39 +33,39 @@ type notifier struct {
 
 func newRegEventNetwork(t *testing.T) *network {
 	n := newNetwork(t)
-	n.regEvent = true
+	n.RegEvent = true
 
 	return n
 }
 
-func (n *network) registerSubscribing(u *UE) *notifier {
-	n.t.Helper()
+func (n *network) registerSubscribing(u *testUE) *notifier {
+	n.T.Helper()
 
-	done := start(u.Register)
+	done := uetest.Start(u.Register)
 
-	req, f := n.recv(n.pcscf)
-	n.challenge(req, f, n.pcscf, true)
+	req, f := n.Recv(n.PCSCF)
+	n.Challenge(req, f, n.PCSCF, true)
 
-	req, f = n.recv(n.ps)
-	n.ok(req, f, n.pc, 3600)
+	req, f = n.Recv(n.PS)
+	n.OK(req, f, n.PC, 3600)
 
-	sub, sf := n.recv(n.ps)
+	sub, sf := n.Recv(n.PS)
 	if sub.Method != "SUBSCRIBE" {
-		n.t.Fatalf("got %s after the registration, want SUBSCRIBE", sub.Method)
+		n.T.Fatalf("got %s after the registration, want SUBSCRIBE", sub.Method)
 	}
 
 	no := &notifier{n: n, u: u, sub: sub, sf: sf, toTag: sip.NewTag(), portUS: u.SAs()[0].Set.Local.PortS}
 	no.accept(sub, sf)
 
-	if err := wait(n.t, done); err != nil {
-		n.t.Fatal(err)
+	if err := uetest.Wait(n.T, done); err != nil {
+		n.T.Fatal(err)
 	}
 
 	return no
 }
 
 func (no *notifier) accept(req *sip.Request, f sip.Flow) {
-	no.n.t.Helper()
+	no.n.T.Helper()
 
 	res := sip.NewResponse(req, 200, "")
 	if to, _ := req.Header.To(); to.Tag() == "" {
@@ -74,11 +75,11 @@ func (no *notifier) accept(req *sip.Request, f sip.Flow) {
 	res.Header.Add("Record-Route", pcscfRR)
 	res.Header.Add("Contact", scscfContact)
 	res.Header.Add("Expires", "600000")
-	no.n.reply(no.n.pc, f, res)
+	no.n.Reply(no.n.PC, f, res)
 }
 
 func (no *notifier) contact() string {
-	return sip.URI{Scheme: "sip", User: no.u.user, Host: sip.FormatHost(no.n.addr), Port: no.portUS}.String()
+	return sip.URI{Scheme: "sip", User: no.u.user, Host: sip.FormatHost(no.n.Addr), Port: no.portUS}.String()
 }
 
 func (no *notifier) reginfo(regState, contactState string, event regevent.Event, expires uint32) regevent.Reginfo {
@@ -98,17 +99,17 @@ func (no *notifier) reginfo(regState, contactState string, event regevent.Event,
 }
 
 func (no *notifier) notify(state string, info regevent.Reginfo) *sip.Response {
-	no.n.t.Helper()
+	no.n.T.Helper()
 
 	no.send(no.request(state, info))
 
-	res, _ := no.n.ps.RecvResponse()
+	res, _ := no.n.PS.RecvResponse()
 
 	return res
 }
 
 func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {
-	no.n.t.Helper()
+	no.n.T.Helper()
 
 	no.send(no.request(state, info))
 
@@ -119,18 +120,18 @@ func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.
 	)
 
 	for res == nil || req == nil {
-		r := no.n.ps.Recv()
+		r := no.n.PS.Recv()
 
 		switch m := r.Msg.(type) {
 		case *sip.Response:
 			res = m
 		case *sip.Request:
 			via, _ := m.Header.TopVia()
-			if no.n.seen[via.Branch()] {
+			if no.n.Seen[via.Branch()] {
 				continue
 			}
 
-			no.n.seen[via.Branch()] = true
+			no.n.Seen[via.Branch()] = true
 			req, f = m, r.Flow
 		}
 	}
@@ -139,16 +140,16 @@ func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.
 }
 
 func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
-	no.n.t.Helper()
+	no.n.T.Helper()
 
 	no.cseq++
 
 	body, err := regevent.Encode(info)
 	if err != nil {
-		no.n.t.Fatal(err)
+		no.n.T.Fatal(err)
 	}
 
-	req := siptest.NewRequest("NOTIFY", no.contact(), sip.UDP, no.n.pc.Addr())
+	req := siptest.NewRequest("NOTIFY", no.contact(), sip.UDP, no.n.PC.Addr())
 
 	via, _ := req.Header.TopVia()
 	via.Params.Del("rport")
@@ -170,32 +171,18 @@ func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
 }
 
 func (no *notifier) send(req *sip.Request) {
-	no.n.pc.Send(sip.UDP, netip.AddrPortFrom(no.n.addr, no.portUS), req)
+	no.n.PC.Send(sip.UDP, netip.AddrPortFrom(no.n.Addr, no.portUS), req)
 }
 
 func (no *notifier) active() {
-	no.n.t.Helper()
+	no.n.T.Helper()
 
 	if res := no.notify("active;expires=600000", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600)); res.StatusCode != 200 {
-		no.n.t.Fatalf("NOTIFY answered %q", res.StartLine())
+		no.n.T.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 }
 
-func eventually(t *testing.T, what string, f func() bool) {
-	t.Helper()
-
-	deadline := time.Now().Add(10 * time.Second)
-
-	for !f() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func nextReginfo(t *testing.T, u *UE) *regevent.Reginfo {
+func nextReginfo(t *testing.T, u *testUE) *regevent.Reginfo {
 	t.Helper()
 
 	timeout := time.After(10 * time.Second)
@@ -227,7 +214,7 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 	case req.Header.Get("To") != "<"+msisdn+">":
 		t.Fatalf("To = %q", req.Header.Get("To"))
 	case !slices.Equal(req.Header.Elements("Route"), []string{
-		"<sip:" + n.ps.Addr().String() + ";lr>", "<sip:orig@scscf." + domain + ":6060;lr>",
+		"<sip:" + n.PS.Addr().String() + ";lr>", "<sip:orig@scscf." + domain + ":6060;lr>",
 	}):
 		t.Fatalf("Route = %q, want the P-CSCF's protected server port and the Service-Route", req.Header.Values("Route"))
 	case req.Header.Get("Event") != "reg" || req.Header.Get("Accept") != regevent.ContentType ||
@@ -237,7 +224,7 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 		t.Fatalf("Contact = %q, want %s", req.Header.Get("Contact"), no.contact())
 	case no.sf.Remote.Port() != set.Local.PortC:
 		t.Fatalf("SUBSCRIBE from %s, want port_uc %d", no.sf.Remote, set.Local.PortC)
-	case !slices.Equal(req.Header.Values("Security-Verify"), n.pcscfServer(t)) || req.Header.Get("P-Access-Network-Info") == "":
+	case !slices.Equal(req.Header.Values("Security-Verify"), n.PCSCFServer(t)) || req.Header.Get("P-Access-Network-Info") == "":
 		t.Fatalf("SUBSCRIBE without the sec-agree headers:\n%s", req)
 	}
 
@@ -270,15 +257,15 @@ func TestNotifyBeforeTheSubscribeResponse(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{})
 
-	done := start(u.Register)
+	done := uetest.Start(u.Register)
 
-	req, f := n.recv(n.pcscf)
-	n.challenge(req, f, n.pcscf, true)
+	req, f := n.Recv(n.PCSCF)
+	n.Challenge(req, f, n.PCSCF, true)
 
-	req, f = n.recv(n.ps)
-	n.ok(req, f, n.pc, 3600)
+	req, f = n.Recv(n.PS)
+	n.OK(req, f, n.PC, 3600)
 
-	sub, sf := n.recv(n.ps)
+	sub, sf := n.Recv(n.PS)
 	no := &notifier{n: n, u: u, sub: sub, sf: sf, toTag: sip.NewTag(), portUS: u.SAs()[0].Set.Local.PortS}
 
 	if res := no.notify("active;expires=500", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600)); res.StatusCode != 200 {
@@ -291,7 +278,7 @@ func TestNotifyBeforeTheSubscribeResponse(t *testing.T) {
 
 	no.accept(sub, sf)
 
-	if err := wait(t, done); err != nil {
+	if err := uetest.Wait(t, done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,7 +297,7 @@ func TestNotifyOutsideTheSubscription(t *testing.T) {
 	req.Header.Set("Call-ID", "other@127.0.0.1")
 	no.send(req)
 
-	if res, _ := n.ps.RecvResponse(); res.StatusCode != 481 {
+	if res, _ := n.PS.RecvResponse(); res.StatusCode != 481 {
 		t.Fatalf("NOTIFY of another dialog answered %q, want 481", res.StartLine())
 	}
 
@@ -318,7 +305,7 @@ func TestNotifyOutsideTheSubscription(t *testing.T) {
 	req.Header.Set("Event", "presence")
 	no.send(req)
 
-	if res, _ := n.ps.RecvResponse(); res.StatusCode != 489 {
+	if res, _ := n.PS.RecvResponse(); res.StatusCode != 489 {
 		t.Fatalf("NOTIFY for presence answered %q, want 489", res.StartLine())
 	}
 }
@@ -330,9 +317,9 @@ func TestResubscribe(t *testing.T) {
 	no := n.registerSubscribing(u)
 	no.active()
 
-	done := start(u.Resubscribe)
+	done := uetest.Start(u.Resubscribe)
 
-	req, f := n.recv(n.ps)
+	req, f := n.Recv(n.PS)
 	if to, _ := req.Header.To(); to.Tag() != no.toTag || req.URI.String() != "sip:scscf."+domain+":6060" ||
 		req.Header.Get("Route") != pcscfRR || req.Header.CallID() != no.sub.Header.CallID() {
 		t.Fatalf("refresh:\n%s", req)
@@ -344,16 +331,16 @@ func TestResubscribe(t *testing.T) {
 
 	no.accept(req, f)
 
-	if err := wait(t, done); err != nil {
+	if err := uetest.Wait(t, done); err != nil {
 		t.Fatal(err)
 	}
 
-	done = start(u.Resubscribe)
+	done = uetest.Start(u.Resubscribe)
 
-	req, f = n.recv(n.ps)
-	n.reply(n.pc, f, sip.NewResponse(req, 481, ""))
+	req, f = n.Recv(n.PS)
+	n.Reply(n.PC, f, sip.NewResponse(req, 481, ""))
 
-	req, f = n.recv(n.ps)
+	req, f = n.Recv(n.PS)
 	if to, _ := req.Header.To(); to.Tag() != "" || req.Header.CallID() == no.sub.Header.CallID() || req.URI.String() != msisdn {
 		t.Fatalf("SUBSCRIBE after the 481:\n%s", req)
 	}
@@ -361,7 +348,7 @@ func TestResubscribe(t *testing.T) {
 	no.sub, no.toTag = req, sip.NewTag()
 	no.accept(req, f)
 
-	if err := wait(t, done); err != nil {
+	if err := uetest.Wait(t, done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,13 +359,13 @@ func TestResubscribe(t *testing.T) {
 		t.Fatalf("subscription = %+v, want the new one", s)
 	}
 
-	done = start(u.Resubscribe)
+	done = uetest.Start(u.Resubscribe)
 
-	req, f = n.recv(n.ps)
-	n.reply(n.pc, f, sip.NewResponse(req, 500, ""))
+	req, f = n.Recv(n.PS)
+	n.Reply(n.PC, f, sip.NewResponse(req, 500, ""))
 
 	var re *ResponseError
-	if err := wait(t, done); !errors.As(err, &re) || re.Response.StatusCode != 500 {
+	if err := uetest.Wait(t, done); !errors.As(err, &re) || re.Response.StatusCode != 500 {
 		t.Fatalf("Resubscribe = %v, want the 500", err)
 	}
 
@@ -403,17 +390,17 @@ func TestShortened(t *testing.T) {
 		t.Fatalf("expires %s, want the shortened 2 s", st.Expires)
 	}
 
-	req, f := n.recv(n.ps)
+	req, f := n.Recv(n.PS)
 	if req.Method != "REGISTER" || req.Header.Get("Expires") != "600000" {
 		t.Fatalf("got\n%s\nwant a re-REGISTER", req)
 	}
 
-	n.challenge(req, f, n.pc, true)
+	n.Challenge(req, f, n.PC, true)
 
-	req, f = n.recv(n.ps)
-	n.ok(req, f, n.pc, 3600)
+	req, f = n.Recv(n.PS)
+	n.OK(req, f, n.PC, 3600)
 
-	eventually(t, "the re-authentication", func() bool { return time.Until(u.State().Expires) > time.Hour-time.Minute })
+	uetest.Eventually(t, "the re-authentication", func() bool { return time.Until(u.State().Expires) > time.Hour-time.Minute })
 }
 
 func TestDeactivated(t *testing.T) {
@@ -434,9 +421,9 @@ func TestDeactivated(t *testing.T) {
 		t.Fatalf("state %+v and subscription %+v after deactivation", u.State(), u.Subscription())
 	}
 
-	req, f := n.recv(n.pcscf)
+	req, f := n.Recv(n.PCSCF)
 
-	if !slices.Contains(kernel.Removed(), old) {
+	if !slices.Contains(kernel.Removed(), toIPsec(old)) {
 		t.Fatalf("removed %v, want the SAs deleted before the new registration", kernel.Removed())
 	}
 
@@ -444,12 +431,12 @@ func TestDeactivated(t *testing.T) {
 		t.Fatalf("got\n%s\nwant an initial REGISTER", req)
 	}
 
-	n.challenge(req, f, n.pcscf, true)
+	n.Challenge(req, f, n.PCSCF, true)
 
-	req, f = n.recv(n.ps)
-	n.ok(req, f, n.pc, 3600)
+	req, f = n.Recv(n.PS)
+	n.OK(req, f, n.PC, 3600)
 
-	sub, sf := n.recv(n.ps)
+	sub, sf := n.Recv(n.PS)
 	if sub.Method != "SUBSCRIBE" || sub.Header.CallID() == no.sub.Header.CallID() {
 		t.Fatalf("got\n%s\nwant a new SUBSCRIBE", sub)
 	}
@@ -457,7 +444,7 @@ func TestDeactivated(t *testing.T) {
 	no.sub, no.toTag = sub, sip.NewTag()
 	no.accept(sub, sf)
 
-	eventually(t, "the new registration", func() bool { return u.State().Registered && u.Subscription().Active })
+	uetest.Eventually(t, "the new registration", func() bool { return u.State().Registered && u.Subscription().Active })
 }
 
 func TestRejected(t *testing.T) {
@@ -478,13 +465,13 @@ func TestRejected(t *testing.T) {
 		t.Fatal("SAs deleted before the NOTIFY transaction ended")
 	}
 
-	eventually(t, "the SAs to be deleted", func() bool { return slices.Contains(kernel.Removed(), old) && len(u.SAs()) == 0 })
+	uetest.Eventually(t, "the SAs to be deleted", func() bool { return slices.Contains(kernel.Removed(), toIPsec(old)) && len(u.SAs()) == 0 })
 
 	if u.State().Registered || u.Subscription().Active {
 		t.Fatalf("state %+v and subscription %+v after rejection", u.State(), u.Subscription())
 	}
 
-	n.pcscf.RecvNone(200 * time.Millisecond)
+	n.PCSCF.RecvNone(200 * time.Millisecond)
 }
 
 func TestOneIMPUTerminated(t *testing.T) {
@@ -523,12 +510,12 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	no := n.registerSubscribing(u)
 	no.active()
 
-	done := start(u.Deregister)
+	done := uetest.Start(u.Deregister)
 
-	req, f := n.recv(n.ps)
-	n.reply(n.pc, f, sip.NewResponse(req, 200, ""))
+	req, f := n.Recv(n.PS)
+	n.Reply(n.PC, f, sip.NewResponse(req, 200, ""))
 
-	if err := wait(t, done); err != nil {
+	if err := uetest.Wait(t, done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -537,8 +524,8 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	}
 
 	// TS 24.229 §5.1.1.6.1, §5.1.1.7: the subscription is considered ended, as if unsubscribed, without a SUBSCRIBE.
-	n.ps.RecvNone(300 * time.Millisecond)
-	n.pc.RecvNone(0)
+	n.PS.RecvNone(300 * time.Millisecond)
+	n.PC.RecvNone(0)
 }
 
 func TestSubscriptionTerminatedByTimeout(t *testing.T) {
@@ -573,7 +560,7 @@ func TestNoNotifyWithinTimerN(t *testing.T) {
 		t.Fatal("no subscription after the 200")
 	}
 
-	eventually(t, "Timer N", func() bool { return !u.Subscription().Active })
+	uetest.Eventually(t, "Timer N", func() bool { return !u.Subscription().Active })
 
 	for {
 		e := <-u.Events()

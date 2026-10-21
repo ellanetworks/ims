@@ -1,4 +1,4 @@
-package testue
+package ue
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 
 const DefaultSubscriptionExpires = 600000 * time.Second
 
-var ErrNoNotify = errors.New("testue: no NOTIFY within Timer N")
+var ErrNoNotify = errors.New("ue: no NOTIFY within Timer N")
 
 type Subscription struct {
 	Active  bool
@@ -106,7 +106,7 @@ func (u *UE) resubscribe(ctx context.Context) error {
 	case r := <-done:
 		switch {
 		case r.err != nil:
-			return fmt.Errorf("testue: SUBSCRIBE: %w", r.err)
+			return fmt.Errorf("ue: SUBSCRIBE: %w", r.err)
 		case r.res.IsSuccess():
 			return nil
 		case s.State() == ua.SubscriptionTerminated:
@@ -135,7 +135,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 
 	target, err := sip.ParseURI(impu)
 	if err != nil {
-		return fmt.Errorf("testue: default IMPU: %w", err)
+		return fmt.Errorf("ue: default IMPU: %w", err)
 	}
 
 	req := sip.NewRequest("SUBSCRIBE", target)
@@ -180,7 +180,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	s, err := u.agent.Subscribe(req, u.regEventHandler(sub))
 	if err != nil {
 		u.endSubscription(sub)
-		return fmt.Errorf("testue: SUBSCRIBE: %w", err)
+		return fmt.Errorf("ue: SUBSCRIBE: %w", err)
 	}
 
 	u.mu.Lock()
@@ -288,7 +288,7 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 				}
 			} else {
 				select {
-				case sub.accepted <- fmt.Errorf("testue: SUBSCRIBE: subscription %s", e.Cause):
+				case sub.accepted <- fmt.Errorf("ue: SUBSCRIBE: subscription %s", e.Cause):
 				default:
 				}
 			}
@@ -331,7 +331,7 @@ func (u *UE) notify(sub *subscription, r *ua.Request) {
 	if mediaType(req.Header.ContentType()) == regevent.ContentType {
 		info, infoErr = regevent.Decode(req.Body)
 	} else {
-		infoErr = fmt.Errorf("testue: NOTIFY body of type %q", req.Header.ContentType())
+		infoErr = fmt.Errorf("ue: NOTIFY body of type %q", req.Header.ContentType())
 	}
 
 	var (

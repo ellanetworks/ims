@@ -586,6 +586,50 @@ func TestDialHook(t *testing.T) {
 	}
 }
 
+// Control runs on the UDP and TCP sockets the transport listens on, and on those it dials, with their local address.
+func TestControlHook(t *testing.T) {
+	type call struct{ network, address string }
+
+	calls := make(chan call, 8)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		Control: func(network, address string, c syscall.RawConn) error {
+			calls <- call{network, address}
+			return nil
+		},
+	})
+
+	local := siptest.Listen(t, tr, lo)
+
+	got := map[string]string{}
+
+	for range 2 {
+		c := <-calls
+		got[c.network] = c.address
+	}
+
+	if got["tcp4"] != netip.AddrPortFrom(lo, 0).String() || got["udp4"] != local.String() {
+		t.Fatalf("listening sockets %v, want tcp4 on %s and udp4 on %s", got, netip.AddrPortFrom(lo, 0), local)
+	}
+
+	peer := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+peer.Addr().String(), sip.TCP, local)
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: peer.Addr()}
+
+	if err := tr.Send(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if c := <-calls; c.network != "tcp4" || c.address != local.String() {
+		t.Fatalf("dialled socket %v, want tcp4 from %s", c, local)
+	}
+
+	if got, _ := peer.RecvRequest(); got.Method != "OPTIONS" {
+		t.Fatalf("got %s", got.Method)
+	}
+}
+
 func TestDialCrossesPeerDial(t *testing.T) {
 	l, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {

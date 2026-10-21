@@ -1,4 +1,8 @@
-package testue
+// Package ue is an IMS UE (TS 24.229 §5.1): its registration with IMS AKA and the ipsec-3gpp security agreement
+// (TS 33.203), its reg event subscription (TS 24.229 §5.1.1.3), and the IMS communication services it hosts on its
+// agent, such as an MCPTT client (TS 24.379). The platform gives it the AKA of the UICC (Authenticator), its IPsec,
+// and a hook on its sockets.
+package ue
 
 import (
 	"context"
@@ -10,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
@@ -31,24 +36,28 @@ const (
 
 	maxChallenges = 4
 
-	// closeWait is how long Close waits for the BYEs of the calls.
+	// closeWait is how long Close waits for the agent to end the sessions of the services.
 	closeWait = 500 * time.Millisecond
 )
 
 var regAwaitAuth = RegAwaitAuth
 
 var (
-	ErrNotRegistered = errors.New("testue: not registered")
+	ErrNotRegistered = errors.New("ue: not registered")
 
-	ErrNoSecurityServer = errors.New("testue: 401 without Security-Server")
+	ErrNoSecurityServer = errors.New("ue: 401 without Security-Server")
 
-	ErrNoAcceptableOffer = errors.New("testue: no acceptable Security-Server mechanism")
+	ErrNoAcceptableOffer = errors.New("ue: no acceptable Security-Server mechanism")
 
-	ErrNetworkAuthentication = errors.New("testue: network authentication failed (MAC failure)")
+	ErrNetworkAuthentication = errors.New("ue: network authentication failed (MAC failure)")
 
-	ErrTooManyChallenges = errors.New("testue: too many challenges")
+	ErrTooManyChallenges = errors.New("ue: too many challenges")
 
-	ErrClosed = errors.New("testue: closed")
+	// ErrSynchronisation is the error of a registration whose challenges the UICC found out of sequence more often than
+	// it resynchronised (TS 33.102 §6.3.5).
+	ErrSynchronisation = errors.New("ue: AKA synchronisation failure")
+
+	ErrClosed = errors.New("ue: closed")
 )
 
 type ResponseError struct {
@@ -58,40 +67,21 @@ type ResponseError struct {
 func (e *ResponseError) Error() string {
 	cseq, _ := e.Response.Header.CSeq()
 
-	return "testue: " + cseq.Method + " answered " + e.Response.StartLine()
-}
-
-type Offer struct {
-	Integrity  ipsec.Integrity
-	Encryption ipsec.Encryption
-}
-
-func DefaultOffers() []Offer {
-	return []Offer{
-		{ipsec.HMACSHA196, ipsec.EncryptionNull},
-		{ipsec.HMACMD596, ipsec.EncryptionNull},
-	}
-}
-
-type Kernel interface {
-	Install(s ipsec.Set, k ipsec.Keys) error
-	Remove(s ipsec.Set) error
+	return "ue: " + cseq.Method + " answered " + e.Response.StartLine()
 }
 
 type Config struct {
-	IMSI       string
-	MNCLength  int
-	IMPI       string
-	IMPU       string
-	HomeDomain string
+	Identities Identities
 
-	K   []byte
-	OPc []byte
+	// InstanceID identifies the UE in its Contact (TS 24.229 §5.1.1.2.1, RFC 5626 §4.1): IMEIInstanceID for a UE with
+	// an IMEI.
+	InstanceID string
 
-	SQN uint64
+	// AKA runs the challenges of the registrations (TS 33.203 §6.1).
+	AKA Authenticator
 
-	IMEI string
-
+	// PCSCF is the P-CSCF the UE registers through (TS 24.229 §9.2.1), Local its address, Transport the transport of
+	// its requests (UDP by default).
 	PCSCF     netip.AddrPort
 	Local     netip.Addr
 	Transport sip.Transport
@@ -109,24 +99,19 @@ type Config struct {
 	// security associations (TS 33.203 §6.1).
 	RegID int64
 
+	// Plain is a UE without the security agreement: no SAs, all its requests unprotected.
 	Plain bool
 
+	// AccessNetworkInfo is the P-Access-Network-Info of the UE's requests and responses (TS 24.229 §5.1.1.2.1,
+	// §7.2A.4): its access type and cell. Required without Plain.
 	AccessNetworkInfo string
 
 	Expires time.Duration
 
 	NoRegEvent bool
 
-	// MMTel configures the MMTel service of the UE, unless NoMMTel: a UE without it, such as a dedicated MCPTT UE,
-	// hosts only Services.
-	MMTel   MMTelConfig
-	NoMMTel bool
-
-	// NoSMS is a UE without SMS over IP (TS 24.341), which a UE has otherwise (SMS).
-	NoSMS bool
-
-	// Services are the services the UE hosts beside MMTel and SMS (Service), after them: of the services an initial
-	// request prefers alike, the first its Match takes gets it, else the first.
+	// Services are the services the UE hosts (Service): of the services an initial request prefers alike, the first its
+	// Match takes gets it, else the first.
 	Services []Service
 
 	LargeUDP bool
@@ -135,15 +120,26 @@ type Config struct {
 
 	T1 time.Duration
 
-	Kernel Kernel
+	// IPsec is where the UE installs the SAs of its registrations. Required without Plain.
+	IPsec IPsec
 
-	// Clock runs the timers of the calls and of the reg event subscription, the system clock when nil: tests
-	// advance a fake one.
+	// Control runs on each socket of the UE before it is bound or connects, as net.ListenConfig's and net.Dialer's: to
+	// bind it to a network, or protect it with SAs. address is the local address the socket is to be bound to, its
+	// port 0 for any.
+	Control func(network, address string, c syscall.RawConn) error
+
+	// Clock runs the timers of the UE, of its registration and reg event subscription, and of the sessions of its
+	// services: the system clock when nil.
 	Clock transaction.Clock
 
+	// Do runs the creation of the UE's sockets: in a network namespace.
 	Do func(f func())
 
 	Trace func(m sip.Message, f sip.Flow, sent bool)
+
+	// OnEvent receives the events of the UE: the requests it receives and the responses to its own, the reg event
+	// NOTIFYs, the errors of its automatic re-registrations and subscriptions. It must not block.
+	OnEvent func(Event)
 
 	Logger *slog.Logger
 }
@@ -159,34 +155,6 @@ var reservedContactParams = sip.Params{
 	{Name: "control"},
 	{Name: "video"},
 	{Name: "text"},
-}
-
-type SAState int
-
-const (
-	Temporary SAState = iota
-	Established
-	Old
-)
-
-func (s SAState) String() string {
-	switch s {
-	case Temporary:
-		return "temporary"
-	case Established:
-		return "established"
-	case Old:
-		return "old"
-	}
-
-	return fmt.Sprintf("SAState(%d)", int(s))
-}
-
-type SA struct {
-	Set     ipsec.Set
-	Keys    ipsec.Keys
-	State   SAState
-	Expires time.Time
 }
 
 type State struct {
@@ -214,8 +182,8 @@ type Event struct {
 }
 
 type saSet struct {
-	set     ipsec.Set
-	keys    ipsec.Keys
+	set     SASet
+	keys    Keys
 	state   SAState
 	expires time.Time
 	timer   transaction.Timer
@@ -233,30 +201,27 @@ type client struct {
 }
 
 type UE struct {
-	cfg      Config
-	id       identities
-	instance string
-	user     string
-	offers   []Offer
-	log      *slog.Logger
+	cfg    Config
+	id     Identities
+	user   string
+	offers []Offer
+	log    *slog.Logger
 
 	agent       *ua.Agent
 	layer       *transaction.Layer
 	unprotected netip.AddrPort
 	portS       uint16
 	spis        *ipsec.SPIs
-	events      chan Event
 
 	op sync.Mutex
 
 	mu          sync.Mutex
 	closed      bool
-	dropped     int
+	pcscf       netip.AddrPort
 	clientPorts []uint16
 	retired     []uint16
 	pending     int
 	newSAUsed   bool
-	sqn         uint64
 	expires     time.Duration
 	callID      string
 	fromTag     string
@@ -269,8 +234,6 @@ type UE struct {
 	expiryTimer transaction.Timer
 	sub         *subscription
 
-	mmtel    *MMTel
-	sms      *SMS
 	services []Service
 
 	// serviceTags are the option tags of the services, which the agent accepts for any of them.
@@ -282,22 +245,24 @@ type UE struct {
 }
 
 func New(cfg Config) (*UE, error) {
-	id, err := deriveIdentities(cfg)
-	if err != nil {
+	if err := cfg.Identities.check(); err != nil {
 		return nil, err
 	}
 
-	instance, err := instanceID(cfg.IMEI)
-	if err != nil {
-		return nil, err
+	if cfg.InstanceID == "" {
+		return nil, errors.New("ue: no instance ID")
+	}
+
+	if cfg.AKA == nil {
+		return nil, errors.New("ue: no Authenticator")
 	}
 
 	if !cfg.PCSCF.IsValid() || !cfg.Local.IsValid() || cfg.PCSCF.Addr().Is4() != cfg.Local.Is4() {
-		return nil, fmt.Errorf("testue: P-CSCF %s and local address %s", cfg.PCSCF, cfg.Local)
+		return nil, fmt.Errorf("ue: P-CSCF %s and local address %s", cfg.PCSCF, cfg.Local)
 	}
 
-	if !cfg.Plain && cfg.Kernel == nil {
-		return nil, errors.New("testue: no Kernel to install the SAs")
+	if !cfg.Plain && cfg.IPsec == nil {
+		return nil, errors.New("ue: no IPsec to install the SAs")
 	}
 
 	if cfg.Transport == "" {
@@ -311,11 +276,7 @@ func New(cfg Config) (*UE, error) {
 	}
 
 	if cfg.AccessNetworkInfo == "" && !cfg.Plain {
-		if id.mcc == "" {
-			return nil, errors.New("testue: no AccessNetworkInfo, and no IMSI to derive it from")
-		}
-
-		cfg.AccessNetworkInfo = accessNetworkInfo(id.mcc, id.mnc)
+		return nil, errors.New("ue: no AccessNetworkInfo")
 	}
 
 	if cfg.Do == nil {
@@ -327,34 +288,22 @@ func New(cfg Config) (*UE, error) {
 	}
 
 	u := &UE{
-		cfg:      cfg,
-		id:       id,
-		instance: instance,
-		user:     timeUUID(),
-		offers:   cfg.Offers,
-		log:      cfg.Logger,
-		spis:     ipsec.NewSPIs(),
-		events:   make(chan Event, 1024),
-		sqn:      cfg.SQN,
-		expires:  cfg.Expires,
-		auto:     true,
+		cfg:     cfg,
+		id:      cfg.Identities,
+		user:    timeUUID(),
+		offers:  cfg.Offers,
+		log:     cfg.Logger,
+		spis:    ipsec.NewSPIs(),
+		expires: cfg.Expires,
+		auto:    true,
+		pcscf:   cfg.PCSCF,
 	}
 
 	if len(u.offers) == 0 {
 		u.offers = DefaultOffers()
 	}
 
-	if !cfg.NoMMTel {
-		u.mmtel = newMMTel(u, cfg.MMTel)
-		u.services = append(u.services, u.mmtel.service())
-	}
-
-	if !cfg.NoSMS {
-		u.sms = &SMS{u: u}
-		u.services = append(u.services, u.sms.service())
-	}
-
-	u.services = append(u.services, cfg.Services...)
+	u.services = slices.Clone(cfg.Services)
 
 	if err := checkServices(u.services); err != nil {
 		return nil, err
@@ -377,12 +326,12 @@ func New(cfg Config) (*UE, error) {
 
 	own, err := featureSet(all).Params()
 	if err != nil {
-		return nil, fmt.Errorf("testue: %w", err)
+		return nil, fmt.Errorf("ue: %w", err)
 	}
 
 	for _, p := range cfg.ContactParams {
 		if slices.ContainsFunc(append(own, reservedContactParams...), func(o sip.Param) bool { return strings.EqualFold(o.Name, p.Name) }) {
-			return nil, fmt.Errorf("testue: ContactParams has %s, which the UE sets itself", p.Name)
+			return nil, fmt.Errorf("ue: ContactParams has %s, which the UE sets itself", p.Name)
 		}
 	}
 
@@ -400,6 +349,7 @@ func New(cfg Config) (*UE, error) {
 			Transport: transport.Config{
 				Trace:    u.trace,
 				LargeUDP: cfg.LargeUDP,
+				Control:  cfg.Control,
 				Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 					var (
 						c   net.Conn
@@ -426,7 +376,7 @@ func New(cfg Config) (*UE, error) {
 		Logger:       cfg.Logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("testue: %w", err)
+		return nil, fmt.Errorf("ue: %w", err)
 	}
 
 	u.layer = u.agent.Layer()
@@ -461,40 +411,52 @@ func (u *UE) listen(port uint16) (netip.AddrPort, error) {
 	}
 
 	if err != nil {
-		return netip.AddrPort{}, fmt.Errorf("testue: %w", err)
+		return netip.AddrPort{}, fmt.Errorf("ue: %w", err)
 	}
 
 	return bound, nil
 }
 
-// MMTel is the MMTel service of the UE, nil with NoMMTel.
-func (u *UE) MMTel() *MMTel { return u.mmtel }
+func (u *UE) IMPI() string       { return u.id.IMPI }
+func (u *UE) IMPU() string       { return u.id.IMPU }
+func (u *UE) HomeDomain() string { return u.id.HomeDomain }
 
-// SMS is the SMS over IP service of the UE, nil with NoSMS.
-func (u *UE) SMS() *SMS { return u.sms }
-
-func (u *UE) IMPI() string       { return u.id.impi }
-func (u *UE) IMPU() string       { return u.id.impu }
-func (u *UE) HomeDomain() string { return u.id.domain }
+// Local is the address of the UE.
+func (u *UE) Local() netip.Addr { return u.cfg.Local }
 
 func (u *UE) Unprotected() netip.AddrPort { return u.unprotected }
 
-func (u *UE) Events() <-chan Event { return u.events }
+// SetPCSCF changes the P-CSCF of the UE's next initial registration (TS 24.229 §5.1.1.2.1): one of the P-CSCFs it
+// discovered (§9.2.1) when the current one fails. The SAs and the requests of the current registration stay with the
+// P-CSCF they were set up with.
+func (u *UE) SetPCSCF(p netip.AddrPort) error {
+	if !p.IsValid() || p.Addr().Is4() != u.cfg.Local.Is4() {
+		return fmt.Errorf("ue: P-CSCF %s for local address %s", p, u.cfg.Local)
+	}
 
-func (u *UE) Dropped() int {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	return u.dropped
+	u.pcscf = p
+
+	return nil
+}
+
+func (u *UE) pcscfAddr() netip.AddrPort {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	return u.pcscf
+}
+
+// NewCallID is a new Call-ID of the UE (RFC 3261 §8.1.1.4): a time UUID at its address.
+func (u *UE) NewCallID() string {
+	return timeUUID() + "@" + sip.FormatHost(u.cfg.Local)
 }
 
 func (u *UE) event(e Event) {
-	select {
-	case u.events <- e:
-	default:
-		u.mu.Lock()
-		u.dropped++
-		u.mu.Unlock()
+	if u.cfg.OnEvent != nil {
+		u.cfg.OnEvent(e)
 	}
 }
 
@@ -508,13 +470,6 @@ func (u *UE) State() State {
 	s.IMPUs = slices.Clone(s.IMPUs)
 
 	return s
-}
-
-func (u *UE) SQN() uint64 {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	return u.sqn
 }
 
 func (u *UE) SAs() []SA {
@@ -545,8 +500,8 @@ func (u *UE) SetAutoReregister(on bool) {
 	}
 }
 
-// Close makes the UE vanish, as a phone losing its radio: its calls and subscription end locally, nothing reaches the
-// network. Shutdown ends them first.
+// Close makes the UE vanish, as a UE losing its radio: the sessions of its services and its subscription end locally,
+// nothing reaches the network. Shutdown ends them first.
 func (u *UE) Close() error {
 	if !u.close() {
 		return nil
@@ -561,7 +516,7 @@ func (u *UE) Close() error {
 	return u.release(u.agent.Shutdown(ctx))
 }
 
-// Shutdown ends the calls and the subscription of the UE with the network, a BYE, a CANCEL or an unsubscribe, waits
+// Shutdown ends the sessions of the services and the subscription of the UE with the network, a BYE, a CANCEL or an unsubscribe, waits
 // for them until ctx is done, then closes it.
 func (u *UE) Shutdown(ctx context.Context) error {
 	if !u.close() {
@@ -611,8 +566,8 @@ func (u *UE) stopTimersLocked() {
 }
 
 var (
-	errUnprotected = errors.New("testue: request on the unprotected port")
-	errNoSA        = errors.New("testue: message on a protected port outside the SAs")
+	errUnprotected = errors.New("ue: request on the unprotected port")
+	errNoSA        = errors.New("ue: message on a protected port outside the SAs")
 )
 
 func (u *UE) filter(m sip.Message) error {
@@ -681,7 +636,7 @@ func (u *UE) dropOldLocked() {
 	}
 }
 
-func inbound(s ipsec.Set, f sip.Flow) bool {
+func inbound(s SASet, f sip.Flow) bool {
 	local, remote := f.Local.Port(), f.Remote.Port()
 	if f.Remote.Addr().Unmap() != s.Remote.Addr {
 		return false
@@ -730,14 +685,14 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
 	if _, err := u.layer.Request(req, w); err != nil {
-		return nil, fmt.Errorf("testue: send %s: %w", req.Method, err)
+		return nil, fmt.Errorf("ue: send %s: %w", req.Method, err)
 	}
 
 	select {
 	case res := <-w.final:
 		return res, nil
 	case err := <-w.err:
-		return nil, fmt.Errorf("testue: %s: %w", req.Method, err)
+		return nil, fmt.Errorf("ue: %s: %w", req.Method, err)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -772,7 +727,7 @@ func (u *UE) newClient(last uint16) (client, error) {
 
 	spiC, spiS, err := u.spis.Allocate()
 	if err != nil {
-		return client{}, fmt.Errorf("testue: %w", err)
+		return client{}, fmt.Errorf("ue: %w", err)
 	}
 
 	return client{portC: port, spiC: spiC, spiS: spiS}, nil
@@ -822,7 +777,7 @@ func (u *UE) selectServer(res *sip.Response) (ipsec.Offer, []string, error) {
 
 		usable = true
 
-		if slices.Contains(u.offers, Offer{o.Integrity, o.Encryption}) {
+		if slices.Contains(u.offers, Offer{Integrity(o.Integrity), Encryption(o.Encryption)}) {
 			return o, values, nil
 		}
 	}
@@ -834,16 +789,14 @@ func (u *UE) selectServer(res *sip.Response) (ipsec.Offer, []string, error) {
 	return ipsec.Offer{}, nil, ErrNoAcceptableOffer
 }
 
-func (u *UE) install(c client, o ipsec.Offer, keys ipsec.Keys, server []string) (*saSet, error) {
-	set := ipsec.Set{
-		Local: ipsec.Endpoint{
-			Addr: u.cfg.Local, PortC: c.portC, PortS: u.portS, SPIC: c.spiC, SPIS: c.spiS,
-		},
-		Remote:     o.Endpoint,
-		Integrity:  o.Integrity,
-		Encryption: o.Encryption,
+func (u *UE) install(c client, o ipsec.Offer, keys Keys, server []string) (*saSet, error) {
+	set := SASet{
+		Local:      Endpoint{Addr: u.cfg.Local, PortC: c.portC, PortS: u.portS, SPIC: c.spiC, SPIS: c.spiS},
+		Remote:     endpoint(o.Endpoint),
+		Integrity:  Integrity(o.Integrity),
+		Encryption: Encryption(o.Encryption),
 	}
-	set.Remote.Addr = u.cfg.PCSCF.Addr()
+	set.Remote.Addr = u.pcscfAddr().Addr()
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -852,8 +805,8 @@ func (u *UE) install(c client, o ipsec.Offer, keys ipsec.Keys, server []string) 
 		return nil, ErrClosed
 	}
 
-	if err := u.cfg.Kernel.Install(set, keys); err != nil {
-		return nil, fmt.Errorf("testue: %w", err)
+	if err := u.cfg.IPsec.Install(set, keys); err != nil {
+		return nil, fmt.Errorf("ue: %w", err)
 	}
 
 	s := &saSet{set: set, keys: keys, state: Temporary, server: server}
@@ -928,7 +881,7 @@ func (u *UE) removeSet(s *saSet) error {
 		}
 	}
 
-	return u.cfg.Kernel.Remove(s.set)
+	return u.cfg.IPsec.Remove(s.set)
 }
 
 func protectedFlow(s *saSet, tr sip.Transport) sip.Flow {

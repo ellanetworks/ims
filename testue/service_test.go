@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/ua"
+	"github.com/ellanetworks/ims/ue"
 )
 
 // An MCPTT client as a service of the UE (TS 24.379 §7.2.1), with what the tests saw of it.
@@ -22,13 +24,13 @@ type mcpttService struct {
 	requests chan *sip.Request
 }
 
-func newMCPTTService() (*mcpttService, Service) {
+func newMCPTTService() (*mcpttService, ue.Service) {
 	m := &mcpttService{invites: make(chan *sip.Request, 4), requests: make(chan *sip.Request, 4)}
 
 	icsi := sip.NewFeature("+g.3gpp.icsi-ref", icsiMCPTT)
 	tag := sip.NewFeature("+g.3gpp.mcptt")
 
-	return m, Service{
+	return m, ue.Service{
 		Name:     "mcptt",
 		ICSI:     icsiMCPTT,
 		Features: sip.FeatureSet{tag, sip.NewFeature("audio")},
@@ -79,7 +81,7 @@ func serviceUE(t *testing.T, cfg Config) (*UE, *mcpttService, *siptest.Socket) {
 func TestServicesRegisteredContact(t *testing.T) {
 	u, _, _ := serviceUE(t, Config{})
 
-	contact, err := sip.ParseAddress(u.contact(5060))
+	contact, err := u.RegisterContact()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +111,11 @@ func TestServicesRegisteredContact(t *testing.T) {
 		t.Errorf("MMTel Contact %s", call)
 	}
 
+	allow := u.Agent().Capabilities().Elements("Allow")
+
 	for _, m := range []string{"INVITE", "PRACK", "INFO", "REFER", "NOTIFY", "OPTIONS"} {
-		if !slices.Contains(u.allow, m) {
-			t.Errorf("Allow %v without %s", u.allow, m)
+		if !slices.Contains(allow, m) {
+			t.Errorf("Allow %v without %s", allow, m)
 		}
 	}
 }
@@ -120,7 +124,7 @@ func TestServicesRegisteredContact(t *testing.T) {
 func TestMCPTTOnlyContact(t *testing.T) {
 	u, _, _ := serviceUE(t, Config{NoMMTel: true, NoSMS: true})
 
-	contact, _ := sip.ParseAddress(u.contact(5060))
+	contact, _ := u.RegisterContact()
 	fs, _ := contact.Features()
 
 	if icsis := fs.Tokens("g.3gpp.icsi-ref"); !slices.Equal(icsis, []string{icsiMCPTT}) || fs.Has("g.3gpp.smsip") {
@@ -135,7 +139,7 @@ func TestMCPTTOnlyContact(t *testing.T) {
 func TestServiceConfig(t *testing.T) {
 	_, s := newMCPTTService()
 
-	for name, services := range map[string][]Service{
+	for name, services := range map[string][]ue.Service{
 		"no name":             {{ICSI: icsiMCPTT}},
 		"nothing to register": {{Name: "x"}},
 		"twice":               {s, s},
@@ -159,7 +163,9 @@ func TestServiceConfig(t *testing.T) {
 
 // incomingRequest is an initial request of the network to the UE, with Accept-Contact values.
 func incomingRequest(u *UE, from *siptest.Socket, method string, accept ...string) *sip.Request {
-	req := sip.NewRequest(method, sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(loopback), Port: u.Unprotected().Port()})
+	contact, _ := u.RegisterContact()
+
+	req := sip.NewRequest(method, sip.URI{Scheme: "sip", User: contact.URI.User, Host: sip.FormatHost(loopback), Port: u.Unprotected().Port()})
 	req.Header.Add("Via", sip.NewVia(sip.UDP, from.Addr()).String())
 	req.Header.Add("Max-Forwards", "70")
 	req.Header.Add("From", "<sip:mcptt-server@example.com>;tag="+sip.NewTag())
@@ -286,7 +292,7 @@ func TestServiceOriginate(t *testing.T) {
 
 	got, _ := pcscf.RecvRequest()
 
-	if route := got.Header.Get("Route"); route != "<"+preloadedRoute(u.unprotectedFlow()).String()+">" {
+	if route := got.Header.Get("Route"); route != "<sip:"+pcscf.Addr().String()+";lr>" {
 		t.Errorf("Route %s", route)
 	}
 
@@ -333,15 +339,15 @@ func TestServiceEnable(t *testing.T) {
 	_, s := newMCPTTService()
 	s.Disabled = true
 
-	u, _ := n.newUE(Config{Services: []Service{s}})
-	n.register(u)
+	u := n.newUE(Config{Services: []ue.Service{s}})
+	n.Register(u)
 
-	if err := u.Originate(sip.NewRequest("INVITE", sip.URI{Scheme: "sip", Host: "x"}), "mcptt"); !errors.Is(err, ErrServiceDisabled) {
+	if err := u.Originate(sip.NewRequest("INVITE", sip.URI{Scheme: "sip", Host: "x"}), "mcptt"); !errors.Is(err, ue.ErrServiceDisabled) {
 		t.Fatalf("Originate while disabled: %v", err)
 	}
 
 	for _, on := range []bool{true, false} {
-		done := start(func(ctx context.Context) error {
+		done := uetest.Start(func(ctx context.Context) error {
 			if on {
 				return u.Enable(ctx, "mcptt")
 			}
@@ -349,7 +355,7 @@ func TestServiceEnable(t *testing.T) {
 			return u.Disable(ctx, "mcptt")
 		})
 
-		req, f := n.recv(n.ps)
+		req, f := n.Recv(n.PS)
 
 		contacts, _ := req.Header.Contacts()
 		fs, _ := contacts[0].Features()
@@ -361,9 +367,9 @@ func TestServiceEnable(t *testing.T) {
 			t.Fatalf("enabled %v: Contact %s, body %q", on, contacts[0], req.Body)
 		}
 
-		n.ok(req, f, n.pc, 3600)
+		n.OK(req, f, n.PC, 3600)
 
-		if err := wait(t, done); err != nil {
+		if err := uetest.Wait(t, done); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -373,9 +379,9 @@ func TestServiceEnable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n.ps.RecvNone(100 * time.Millisecond)
+	n.PS.RecvNone(100 * time.Millisecond)
 
-	if err := u.Enable(t.Context(), "nothing"); !errors.Is(err, ErrUnknownService) {
+	if err := u.Enable(t.Context(), "nothing"); !errors.Is(err, ue.ErrUnknownService) {
 		t.Errorf("Enable(nothing) = %v", err)
 	}
 }

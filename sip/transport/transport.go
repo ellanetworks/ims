@@ -52,6 +52,11 @@ type Config struct {
 
 	Dial func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
 
+	// Control runs on each socket of the transport before it is bound, as net.ListenConfig's and net.Dialer's: to bind
+	// it to a network, or protect it. address is the socket's local address, its port 0 for any; for a dialled
+	// connection, that of its flow.
+	Control func(network, address string, c syscall.RawConn) error
+
 	MaxMessageSize int
 
 	MaxConnections int
@@ -71,6 +76,7 @@ type Transport struct {
 	handler      Handler
 	log          *slog.Logger
 	dialFunc     func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
+	control      func(network, address string, c syscall.RawConn) error
 	maxSize      int
 	maxConns     int
 	idleTimeout  time.Duration
@@ -106,6 +112,7 @@ func New(cfg Config) *Transport {
 		handler:      cfg.Handler,
 		log:          cfg.Logger,
 		dialFunc:     cfg.Dial,
+		control:      cfg.Control,
 		maxSize:      cfg.MaxMessageSize,
 		maxConns:     cfg.MaxConnections,
 		idleTimeout:  cfg.IdleTimeout,
@@ -179,7 +186,7 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: already listening on %s", local)
 	}
 
-	l, err := bind(ctx, local)
+	l, err := bind(ctx, local, t.control)
 	if err != nil {
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: listen on %s: %w", local, err)
 	}
@@ -195,14 +202,14 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 	return l.local, nil
 }
 
-func bind(ctx context.Context, local netip.AddrPort) (*listener, error) {
+func bind(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*listener, error) {
 	if local.Port() != 0 {
 		if err := sockopt.CheckNoListener(local); err != nil {
 			return nil, fmt.Errorf("port held by another socket: %w", err)
 		}
 	}
 
-	tl, udp, err := listen.Pair(ctx, local)
+	tl, udp, err := listen.Pair(ctx, local, control)
 	if err != nil {
 		return nil, err
 	}

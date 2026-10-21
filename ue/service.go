@@ -1,4 +1,4 @@
-package testue
+package ue
 
 import (
 	"context"
@@ -14,13 +14,13 @@ import (
 // ErrUnknownService is the error of naming a service the UE does not host; ErrServiceDisabled of originating a
 // request for one disabled.
 var (
-	ErrUnknownService  = errors.New("testue: unknown service")
-	ErrServiceDisabled = errors.New("testue: service disabled")
+	ErrUnknownService  = errors.New("ue: unknown service")
+	ErrServiceDisabled = errors.New("ue: service disabled")
 )
 
 // Service is a service the UE hosts on its agent: an IMS communication service with its ICSI (TS 24.229 §7.2A.8,
-// §7.9.2), such as MMTel, which the UE implements (MMTel) or an MCPTT client of the application's (TS 24.379 §7.2.1),
-// or one without, as SMS over IP (TS 24.341, SMS). The UE registers its feature tags while it is enabled, takes its
+// §7.9.2), such as MMTel (TS 24.173) or an MCPTT client (TS 24.379 §7.2.1), or one without, as SMS over IP
+// (TS 24.341). The UE registers its feature tags while it is enabled, takes its
 // methods and option tags, completes the initial requests it originates (Originate) and gives it the initial
 // requests for it.
 type Service struct {
@@ -121,27 +121,27 @@ func featureSet(services []*Service) sip.FeatureSet {
 func checkServices(services []Service) error {
 	for i, s := range services {
 		if s.Name == "" {
-			return fmt.Errorf("testue: service %d without a name", i)
+			return fmt.Errorf("ue: service %d without a name", i)
 		}
 
 		if slices.ContainsFunc(services[:i], func(o Service) bool {
 			return o.Name == s.Name || s.ICSI != "" && strings.EqualFold(o.ICSI, s.ICSI)
 		}) {
-			return fmt.Errorf("testue: service %s twice", s.Name)
+			return fmt.Errorf("ue: service %s twice", s.Name)
 		}
 
 		if len(s.registered()) == 0 {
-			return fmt.Errorf("testue: service %s without a feature tag to register", s.Name)
+			return fmt.Errorf("ue: service %s without a feature tag to register", s.Name)
 		}
 
 		for _, t := range append(slices.Clone(s.Features), s.RegisterFeatures...) {
 			if slices.Contains([]string{"sip.instance", "g.3gpp.icsi-ref"}, t.Tag) {
-				return fmt.Errorf("testue: service %s has %s, which the UE sets itself", s.Name, t.Tag)
+				return fmt.Errorf("ue: service %s has %s, which the UE sets itself", s.Name, t.Tag)
 			}
 		}
 
 		if _, err := s.registered().Params(); err != nil {
-			return fmt.Errorf("testue: service %s: %w", s.Name, err)
+			return fmt.Errorf("ue: service %s: %w", s.Name, err)
 		}
 	}
 
@@ -412,7 +412,7 @@ func (u *UE) Originate(req *sip.Request, name string) error {
 	}
 
 	if impu == "" {
-		impu = u.id.impu
+		impu = u.id.IMPU
 	}
 
 	if !req.Header.Has("Route") {
@@ -444,7 +444,7 @@ func (u *UE) Originate(req *sip.Request, name string) error {
 		for _, p := range s.AcceptContact {
 			v, err := p.Value()
 			if err != nil {
-				return fmt.Errorf("testue: service %s: Accept-Contact: %w", name, err)
+				return fmt.Errorf("ue: service %s: Accept-Contact: %w", name, err)
 			}
 
 			req.Header.Add("Accept-Contact", v)

@@ -1,4 +1,4 @@
-package testue
+package ue
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
-	"github.com/ellanetworks/ims/internal/milenage"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -39,7 +38,7 @@ func (u *UE) Register(ctx context.Context) error {
 	for restart := 0; ; restart++ {
 		u.newDialog()
 
-		p := &procedure{start: u.unprotectedFlow(), auth: emptyAuthorization(u.id.impi, u.id.domain)}
+		p := &procedure{start: u.unprotectedFlow(), auth: emptyAuthorization(u.id.IMPI, u.id.HomeDomain)}
 
 		err := u.run(ctx, p)
 		if errors.Is(err, ErrNoSecurityServer) && restart == 0 {
@@ -130,7 +129,7 @@ func (u *UE) newDialog() {
 }
 
 func (u *UE) unprotectedFlow() sip.Flow {
-	return sip.Flow{Transport: u.cfg.Transport, Local: u.unprotected, Remote: u.cfg.PCSCF}
+	return sip.Flow{Transport: u.cfg.Transport, Local: u.unprotected, Remote: u.pcscfAddr()}
 }
 
 func (u *UE) port(protected bool) uint16 {
@@ -146,7 +145,7 @@ func (u *UE) port(protected bool) uint16 {
 func (u *UE) contact(port uint16) string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
-	params := sip.Params{{Name: "+sip.instance", Value: sip.Quote("<" + u.instance + ">")}}
+	params := sip.Params{{Name: "+sip.instance", Value: sip.Quote("<" + u.cfg.InstanceID + ">")}}
 
 	// New checked the feature tags encode.
 	tags, _ := featureSet(u.enabled()).Params()
@@ -157,6 +156,12 @@ func (u *UE) contact(port uint16) string {
 	}
 
 	return sip.Address{URI: uri, Params: append(params, u.cfg.ContactParams...)}.String()
+}
+
+// RegisterContact is the Contact of the UE's REGISTERs now (TS 24.229 §5.1.1.2.1), at its protected server port, or at
+// its unprotected port before its first registration or with Plain.
+func (u *UE) RegisterContact() (sip.Address, error) {
+	return sip.ParseAddress(u.contact(u.port(!u.cfg.Plain && u.portS != 0)))
 }
 
 func (u *UE) newClientFor(p *procedure) error {
@@ -194,7 +199,7 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 		expires = 0
 	}
 
-	req := sip.NewRequest("REGISTER", sip.URI{Scheme: "sip", Host: u.id.domain})
+	req := sip.NewRequest("REGISTER", sip.URI{Scheme: "sip", Host: u.id.HomeDomain})
 	req.Flow = p.flow
 
 	port := u.port(protected)
@@ -204,8 +209,8 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 
 	req.Header.Add("Via", via.String())
 	req.Header.Add("Max-Forwards", "70")
-	req.Header.Add("From", "<"+u.id.impu+">;tag="+fromTag)
-	req.Header.Add("To", "<"+u.id.impu+">")
+	req.Header.Add("From", "<"+u.id.IMPU+">;tag="+fromTag)
+	req.Header.Add("To", "<"+u.id.IMPU+">")
 	req.Header.Add("Call-ID", callID)
 	req.Header.Add("CSeq", strconv.FormatUint(uint64(cseq), 10)+" REGISTER")
 	req.Header.Add("Contact", u.contact(port))
@@ -301,36 +306,29 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 				return fail(err)
 			}
 
-			r, err := milenage.Respond(u.cfg.K, u.cfg.OPc, ch.rand, ch.autn)
-
-			u.mu.Lock()
-			sqnMS := u.sqn
-			u.mu.Unlock()
+			// The UICC checks the challenge (TS 33.203 §6.1.1); one with an invalid MAC or SQN is answered with new
+			// spi_uc, spi_us and port_uc, without temporary SAs (TS 24.229 §5.1.1.5.3).
+			r, err := u.cfg.AKA.Authenticate(ch.rand, ch.autn)
 
 			switch {
-			case errors.Is(err, milenage.ErrMACFailure):
+			case errors.Is(err, ErrMACFailure):
 				if invalid++; invalid > maxInvalidChallenges {
 					return fail(ErrNetworkAuthentication)
 				}
 
 				macFailure = true
-				p.auth = answer(u.id.impi, u.id.domain, ch, nil, nil, true)
+				p.auth = answer(u.id.IMPI, u.id.HomeDomain, ch, nil, nil, true)
 			case err != nil:
-				return fail(fmt.Errorf("testue: %w", err))
-			case r.SQN <= sqnMS:
+				return fail(fmt.Errorf("ue: AKA: %w", err))
+			case r.AUTS != nil:
 				if invalid++; invalid > maxInvalidChallenges {
-					return fail(fmt.Errorf("testue: SQN %d not above %d", r.SQN, sqnMS))
+					return fail(ErrSynchronisation)
 				}
 
-				auts, err := milenage.AUTS(u.cfg.K, u.cfg.OPc, ch.rand, sqnMS)
-				if err != nil {
-					return fail(fmt.Errorf("testue: %w", err))
-				}
-
-				p.auth = answer(u.id.impi, u.id.domain, ch, nil, auts, false)
+				p.auth = answer(u.id.IMPI, u.id.HomeDomain, ch, nil, r.AUTS, false)
 			}
 
-			if err != nil || r.SQN <= sqnMS {
+			if err != nil || r.AUTS != nil {
 				if err := u.newClientFor(p); err != nil {
 					return fail(err)
 				}
@@ -351,17 +349,13 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 
 			invalid, macFailure = 0, false
 
-			u.mu.Lock()
-			u.sqn = r.SQN
-			u.mu.Unlock()
-
-			p.auth = answer(u.id.impi, u.id.domain, ch, r.RES, nil, false)
+			p.auth = answer(u.id.IMPI, u.id.HomeDomain, ch, r.RES, nil, false)
 
 			if u.cfg.Plain {
 				continue
 			}
 
-			if temp, err = u.install(p.client, offer, ipsec.Keys{CK: r.CK, IK: r.IK}, server); err != nil {
+			if temp, err = u.install(p.client, offer, Keys{CK: r.CK, IK: r.IK}, server); err != nil {
 				return fail(err)
 			}
 
@@ -494,7 +488,7 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		Expires:        now.Add(granted),
 		AssociatedURIs: associated,
 		ServiceRoute:   res.Header.Values("Service-Route"),
-		Barred:         !slices.ContainsFunc(associated, func(a string) bool { return sameURI(a, u.id.impu) }),
+		Barred:         !slices.ContainsFunc(associated, func(a string) bool { return sameURI(a, u.id.IMPU) }),
 		IMPUs:          impus,
 	}
 

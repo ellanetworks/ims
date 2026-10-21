@@ -1,10 +1,11 @@
-package testue
+package ue
 
 import (
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -14,9 +15,9 @@ func TestRegisterFlow(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Plain: true, RegID: 2})
 
-	done := start(u.Register)
+	done := uetest.Start(u.Register)
 
-	req, f := n.recv(n.pcscf)
+	req, f := n.Recv(n.PCSCF)
 
 	contacts, err := req.Header.Contacts()
 	if err != nil || len(contacts) != 1 {
@@ -31,9 +32,9 @@ func TestRegisterFlow(t *testing.T) {
 		t.Fatalf("Supported %q, want outbound", req.Header.Values("Supported"))
 	}
 
-	n.challenge(req, f, n.pcscf, false)
+	n.Challenge(req, f, n.PCSCF, false)
 
-	req, f = n.recv(n.pcscf)
+	req, f = n.Recv(n.PCSCF)
 
 	res := sip.NewResponse(req, 200, "")
 	uri := "<" + contacts[0].URI.String() + ">"
@@ -41,10 +42,10 @@ func TestRegisterFlow(t *testing.T) {
 	res.Header.Add("Contact", uri+";reg-id=2;expires=3600")
 	res.Header.Add("Require", "outbound")
 	res.Header.Add("Service-Route", "<sip:orig@scscf."+domain+":6060;lr>")
-	res.Header.Add("P-Associated-URI", n.associated)
-	n.reply(n.pcscf, f, res)
+	res.Header.Add("P-Associated-URI", n.Associated)
+	n.Reply(n.PCSCF, f, res)
 
-	if err := wait(t, done); err != nil {
+	if err := uetest.Wait(t, done); err != nil {
 		t.Fatal(err)
 	}
 

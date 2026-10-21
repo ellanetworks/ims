@@ -12,7 +12,8 @@ import (
 
 const attempts = 64
 
-func Pair(ctx context.Context, local netip.AddrPort) (*net.TCPListener, *net.UDPConn, error) {
+// Pair listens on TCP and UDP at local, control running on each socket before it is bound, if not nil.
+func Pair(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*net.TCPListener, *net.UDPConn, error) {
 	var held []net.Listener
 
 	defer func() {
@@ -22,7 +23,7 @@ func Pair(ctx context.Context, local netip.AddrPort) (*net.TCPListener, *net.UDP
 	}()
 
 	for {
-		tl, err := tcp(ctx, local)
+		tl, err := tcp(ctx, local, control)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -30,7 +31,7 @@ func Pair(ctx context.Context, local netip.AddrPort) (*net.TCPListener, *net.UDP
 		bound := tl.Addr().(*net.TCPAddr).AddrPort()
 		bound = netip.AddrPortFrom(bound.Addr().Unmap(), bound.Port())
 
-		var lc net.ListenConfig
+		lc := net.ListenConfig{Control: control}
 
 		pc, err := lc.ListenPacket(ctx, network("udp", local.Addr()), bound.String())
 		if err == nil {
@@ -46,8 +47,18 @@ func Pair(ctx context.Context, local netip.AddrPort) (*net.TCPListener, *net.UDP
 	}
 }
 
-func tcp(ctx context.Context, local netip.AddrPort) (*net.TCPListener, error) {
-	lc := net.ListenConfig{Control: sockopt.ReusePort}
+func tcp(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*net.TCPListener, error) {
+	lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
+		if err := sockopt.ReusePort(network, address, c); err != nil {
+			return err
+		}
+
+		if control != nil {
+			return control(network, address, c)
+		}
+
+		return nil
+	}}
 
 	l, err := lc.Listen(ctx, network("tcp", local.Addr()), local.String())
 	if err != nil {

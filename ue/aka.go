@@ -1,4 +1,4 @@
-package testue
+package ue
 
 import (
 	"crypto/md5"
@@ -9,18 +9,39 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ellanetworks/ims/internal/milenage"
 	"github.com/ellanetworks/ims/sip"
 )
+
+// Authenticator runs the AKA challenges of the network (TS 33.203 §6.1): the ISIM, or the USIM without one (§8), of
+// the UICC; the USIM checks the network's AUTN and its SQN itself (TS 33.102 §6.3.3).
+type Authenticator interface {
+	// Authenticate runs the challenge RAND, AUTN: RES, CK and IK; or AUTS alone, on a synchronisation failure
+	// (TS 33.102 §6.3.5); or ErrMACFailure when the AUTN is not the network's.
+	Authenticate(rand, autn []byte) (AKAResult, error)
+}
+
+// AKAResult is the outcome of an AKA run (TS 31.102 §7.1.2.1, TS 31.103 §7.1.2.1).
+type AKAResult struct {
+	RES, CK, IK []byte
+
+	AUTS []byte
+}
+
+// ErrMACFailure is the error of an Authenticator that found the AUTN of a challenge not to be the network's.
+var ErrMACFailure = errors.New("ue: MAC failure")
 
 const (
 	algorithmAKAv1 = "AKAv1-MD5"
 	qopAuth        = "auth"
 	firstNC        = "00000001"
+
+	randLen = 16
+	autnLen = 16
 )
 
-var ErrNoChallenge = errors.New("testue: no AKAv1-MD5 challenge in the 401")
+var ErrNoChallenge = errors.New("ue: no AKAv1-MD5 challenge in the 401")
 
+// challenge is the AKAv1-MD5 challenge of a 401 (RFC 3310 §3.2): its nonce is RAND ‖ AUTN.
 type challenge struct {
 	realm string
 	nonce string
@@ -52,11 +73,11 @@ func parseChallenge(res *sip.Response) (challenge, error) {
 		}
 
 		b, err := base64.StdEncoding.DecodeString(ch.nonce)
-		if err != nil || len(b) < milenage.RANDLen+milenage.AUTNLen {
-			return challenge{}, fmt.Errorf("testue: nonce %q is not base64(RAND ‖ AUTN)", ch.nonce)
+		if err != nil || len(b) < randLen+autnLen {
+			return challenge{}, fmt.Errorf("ue: nonce %q is not base64(RAND ‖ AUTN)", ch.nonce)
 		}
 
-		ch.rand, ch.autn = b[:milenage.RANDLen], b[milenage.RANDLen:milenage.RANDLen+milenage.AUTNLen]
+		ch.rand, ch.autn = b[:randLen], b[randLen:randLen+autnLen]
 
 		return ch, nil
 	}
@@ -80,6 +101,7 @@ func cnonce() string {
 	return hex.EncodeToString(b)
 }
 
+// emptyAuthorization is the Authorization of an initial REGISTER (TS 24.229 §5.1.1.2.2).
 func emptyAuthorization(impi, domain string) string {
 	return sip.Auth{Scheme: "Digest", Params: sip.Params{
 		{Name: "username", Value: sip.Quote(impi)},
@@ -91,8 +113,11 @@ func emptyAuthorization(impi, domain string) string {
 	}}.String()
 }
 
+// answer is the Authorization answering a challenge (RFC 3310 §3.3, §3.4; TS 24.229 §5.1.1.5.1): the digest with RES as
+// the password, or with AUTS on a synchronisation failure, or an empty response on a MAC failure.
 func answer(impi, domain string, ch challenge, password []byte, auts []byte, emptyResponse bool) string {
 	uri := "sip:" + domain
+
 	ps := sip.Params{
 		{Name: "username", Value: sip.Quote(impi)},
 		{Name: "realm", Value: sip.Quote(ch.realm)},

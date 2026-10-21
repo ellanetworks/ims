@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 	"github.com/ellanetworks/ims/testue"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const (
@@ -241,10 +242,10 @@ func (s *scene) setIFCs(i int, ifcs ...cx.InitialFilterCriteria) {
 
 // mcpttService is an MCPTT client service of a UE: it takes MESSAGEs and INVITEs that require it, answering them with
 // code.
-func mcpttService(got chan<- *sip.Request, code int) testue.Service {
+func mcpttService(got chan<- *sip.Request, code int) ue.Service {
 	mcptt := sip.FeatureSet{sip.NewFeature("+g.3gpp.mcptt")}
 
-	return testue.Service{
+	return ue.Service{
 		Name:          "mcptt",
 		ICSI:          icsiMCPTT,
 		Features:      mcptt,
@@ -273,7 +274,7 @@ func (s *scene) mcpttUE(i int, got chan *sip.Request) *testue.UE {
 		got = make(chan *sip.Request, 32)
 	}
 
-	u := s.newUEAt(i, false, testue.Config{Transport: sip.UDP, Services: []testue.Service{mcpttService(got, 200)}})
+	u := s.newUEAt(i, false, testue.Config{Transport: sip.UDP, Services: []ue.Service{mcpttService(got, 200)}})
 	s.register(u)
 
 	return u

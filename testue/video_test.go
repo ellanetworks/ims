@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
+	"github.com/ellanetworks/ims/ue"
 )
 
 func videoPair(t *testing.T) (*UE, *UE) {
@@ -93,7 +95,7 @@ func TestVideoCall(t *testing.T) {
 			wantStreams(t, bc, sdp.Audio, sdp.Video)
 			wantMirrored(t, ac, bc)
 
-			eventually(t, "preconditions met", func() bool { return ac.PreconditionsMet() && bc.PreconditionsMet() })
+			uetest.Eventually(t, "preconditions met", func() bool { return ac.PreconditionsMet() && bc.PreconditionsMet() })
 
 			audio, _ := ac.Stream(sdp.Audio)
 			video, _ := ac.Stream(sdp.Video)
@@ -194,7 +196,7 @@ func TestAddAndRemoveVideo(t *testing.T) {
 			wantMirrored(t, ac, bc)
 
 			// RFC 3312 §5: the stream added has its resources reported in an UPDATE once the re-INVITE completes.
-			eventually(t, "preconditions met", func() bool { return ac.PreconditionsMet() && bc.PreconditionsMet() })
+			uetest.Eventually(t, "preconditions met", func() bool { return ac.PreconditionsMet() && bc.PreconditionsMet() })
 
 			if err := ac.AddVideo(ctx); !errors.Is(err, ErrCallState) {
 				t.Errorf("second AddVideo = %v, want ErrCallState", err)
@@ -504,7 +506,7 @@ func TestAnswerPixelVideoOffer(t *testing.T) {
 func TestVideoContact(t *testing.T) {
 	a, _ := pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{})
 
-	if c := a.contact(5060); !strings.Contains(c, ";audio;video") {
+	if c, _ := a.RegisterContact(); !strings.Contains(c.String(), ";audio;video") {
 		t.Fatalf("Contact %q, want audio and video", c)
 	}
 }
@@ -663,7 +665,7 @@ func TestAddVideoRefusedAfterReliable183(t *testing.T) {
 	p.send(peerResponse(t, p, reinvite, 488, tag, nil))
 	p.request("ACK")
 
-	var rerr *ResponseError
+	var rerr *ue.ResponseError
 	if err := <-added; !errors.As(err, &rerr) || rerr.Response.StatusCode != 488 {
 		t.Fatalf("AddVideo = %v, want the 488", err)
 	}
@@ -692,7 +694,7 @@ func TestVoiceBearerLostCrossing2xx(t *testing.T) {
 
 	invite := p.request("INVITE")
 	p.send(peerResponse(t, p, invite, 180, tag, nil))
-	eventually(t, "the early dialog", func() bool { return c.State() == CallEarly })
+	uetest.Eventually(t, "the early dialog", func() bool { return c.State() == CallEarly })
 
 	lost := make(chan error, 1)
 

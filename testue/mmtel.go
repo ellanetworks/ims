@@ -2,9 +2,12 @@ package testue
 
 import (
 	"slices"
+	"strings"
+	"sync"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
+	"github.com/ellanetworks/ims/ue"
 )
 
 // ICSIMMTel is the ICSI of MMTel (TS 24.173 §5.1).
@@ -31,9 +34,10 @@ type MMTel struct {
 	u   *UE
 	cfg MMTelConfig
 
-	// The UE's lock guards next.
 	incoming chan *Call
-	next     int
+
+	mu   sync.Mutex
+	next int
 }
 
 func newMMTel(u *UE, cfg MMTelConfig) *MMTel {
@@ -50,8 +54,8 @@ const (
 )
 
 // service is MMTel as a service of the UE.
-func (m *MMTel) service() Service {
-	s := Service{
+func (m *MMTel) service() ue.Service {
+	s := ue.Service{
 		Name:          MMTelService,
 		ICSI:          ICSIMMTel,
 		Features:      m.mediaTags(),
@@ -107,7 +111,7 @@ func (m *MMTel) Calls() <-chan *Call { return m.incoming }
 
 // callContact is the Contact of the dialogs of MMTel (TS 24.229 §5.1.2A.1.1).
 func (m *MMTel) callContact() string {
-	c, _ := m.u.Contact(MMTelService)
+	c, _ := m.u.core().Contact(MMTelService)
 	return c.String()
 }
 
@@ -131,4 +135,10 @@ func offerOf(req *sip.Request) ([]byte, bool) {
 	}
 
 	return p.Body, true
+}
+
+func mediaType(ct string) string {
+	mt, _, _ := strings.Cut(ct, ";")
+
+	return strings.ToLower(strings.TrimSpace(mt))
 }

@@ -293,7 +293,7 @@ func (s *scene) quietDevice(i int, id subscriber, cfg testue.Config) *testue.UE 
 	cfg.Do = h.ns.Do
 	cfg.Logger = slog.New(slog.DiscardHandler)
 	cfg.K, cfg.OPc = testK, testOPc
-	cfg.Kernel = h.xfrm
+	cfg.Kernel = testue.XFRMOf(h.xfrm)
 
 	u, err := testue.New(cfg)
 	if err != nil {

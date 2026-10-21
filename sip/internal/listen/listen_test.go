@@ -16,7 +16,7 @@ var (
 
 func TestPairSharesThePort(t *testing.T) {
 	for range 100 {
-		tl, udp, err := Pair(t.Context(), netip.AddrPortFrom(loopback, 0))
+		tl, udp, err := Pair(t.Context(), netip.AddrPortFrom(loopback, 0), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestPairAvoidsHeldUDPPorts(t *testing.T) {
 	before := openFiles(t)
 
 	for range 200 {
-		tl, udp, err := Pair(t.Context(), netip.AddrPortFrom(loopback, 0))
+		tl, udp, err := Pair(t.Context(), netip.AddrPortFrom(loopback, 0), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +89,7 @@ func TestPairOnAPortWhoseUDPIsHeld(t *testing.T) {
 
 	ap := c.LocalAddr().(*net.UDPAddr).AddrPort()
 
-	if _, _, err := Pair(t.Context(), ap); !errors.Is(err, syscall.EADDRINUSE) {
+	if _, _, err := Pair(t.Context(), ap, nil); !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("Pair(%s) = %v, want EADDRINUSE", ap, err)
 	}
 

@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const captureDir = "../sip/internal/corpus/testdata/ella/live/4g"
@@ -52,7 +54,13 @@ func pairWith(t *testing.T, ca, cb Config) (*UE, *UE) {
 	a := newCallUE(t, "001010000000001", placeholder, ca)
 	b := newCallUE(t, "001010000000002", placeholder, cb)
 
-	a.cfg.PCSCF, b.cfg.PCSCF = b.Unprotected(), a.Unprotected()
+	if err := a.SetPCSCF(b.Unprotected()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.SetPCSCF(a.Unprotected()); err != nil {
+		t.Fatal(err)
+	}
 
 	return a, b
 }
@@ -295,7 +303,7 @@ func TestReject(t *testing.T) {
 	}
 
 	res, err := ac.Wait(ctx)
-	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 486 || res.StatusCode != 486 {
+	if rerr, ok := errors.AsType[*ue.ResponseError](err); !ok || rerr.Response.StatusCode != 486 || res.StatusCode != 486 {
 		t.Fatalf("Wait = %v, %v", res, err)
 	}
 
@@ -308,7 +316,9 @@ func TestBusyWithoutAcceptCalls(t *testing.T) {
 	a, _ := pair(t)
 
 	b := newCallUE(t, "001010000000003", a.Unprotected(), Config{})
-	a.cfg.PCSCF = b.Unprotected()
+	if err := a.SetPCSCF(b.Unprotected()); err != nil {
+		t.Fatal(err)
+	}
 
 	ac, err := a.MMTel().Invite("tel:+15550003", CallOptions{})
 	if err != nil {
@@ -490,7 +500,7 @@ func TestSessionExpiryWithoutNetwork(t *testing.T) {
 
 	ac, bc := connect(t, ctx, a, b, CallOptions{SessionExpires: 120 * time.Second})
 
-	_ = a.layer.Close()
+	_ = a.Agent().Layer().Close()
 
 	advance(clock, 125*time.Second)
 
@@ -512,7 +522,7 @@ func TestReinviteGlare(t *testing.T) {
 	start := time.Now()
 
 	err := bc.Hold(ctx)
-	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
+	if rerr, ok := errors.AsType[*ue.ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("Hold during an offer = %v, want 491", err)
 	}
 
@@ -851,7 +861,7 @@ func TestCallerAgainstMotorolaCallee(t *testing.T) {
 		t.Errorf("ACK CSeq %d", cseq.Seq)
 	}
 
-	eventually(t, "preconditions met", c.PreconditionsMet)
+	uetest.Eventually(t, "preconditions met", c.PreconditionsMet)
 
 	if interval, refresher := c.SessionTimer(); interval != DefaultSessionExpires || !refresher {
 		t.Errorf("session timer %s, refresher %v", interval, refresher)
@@ -977,17 +987,6 @@ func TestInDialogRequestForUnknownCall(t *testing.T) {
 	p.send(bye)
 
 	p.response(481, "BYE")
-}
-
-func TestResponsesCarryAccessNetworkInfo(t *testing.T) {
-	n := newNetwork(t)
-	u, _ := n.newUE(Config{})
-
-	req := siptest.NewRequest("BYE", "sip:ue@127.0.0.1", sip.UDP, n.pcscf.Addr())
-
-	if got := u.response(req, 200).Header.Get("P-Access-Network-Info"); got == "" {
-		t.Fatal("response without P-Access-Network-Info")
-	}
 }
 
 func TestAnswerMirrorsAMRParameters(t *testing.T) {
@@ -1315,7 +1314,7 @@ func TestUpdateGlare(t *testing.T) {
 
 	// RFC 3311 §5.1: made once more, then the 491 is the caller's.
 	err := bc.update(ctx, bc.leg, true, nil)
-	if rerr, ok := errors.AsType[*ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
+	if rerr, ok := errors.AsType[*ue.ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)
 	}
 
@@ -1392,7 +1391,7 @@ func TestMessage(t *testing.T) {
 	timeout := time.After(10 * time.Second)
 
 	for {
-		var e Event
+		var e ue.Event
 
 		select {
 		case e = <-b.Events():
@@ -1410,28 +1409,5 @@ func TestMessage(t *testing.T) {
 		}
 
 		return
-	}
-}
-
-// RFC 3261 §8.1.2, RFC 3263 §4.1
-func TestRequestTransportFollowsTheRoute(t *testing.T) {
-	u := newCallUE(t, "001010000000001", netip.AddrPortFrom(loopback, 9), Config{})
-
-	for _, tc := range []struct {
-		route string
-		want  sip.Transport
-	}{
-		{"", sip.UDP},
-		{"<sip:127.0.0.1:5063;lr>", sip.UDP},
-		{"<sip:127.0.0.1:5063;transport=tcp;lr>, <sip:127.0.0.1:5060;lr>", sip.TCP},
-	} {
-		req := sip.NewRequest("BYE", sip.URI{Scheme: "sip", Host: "127.0.0.1"})
-		if tc.route != "" {
-			req.Header.Add("Route", tc.route)
-		}
-
-		if got := u.requestTransport(req); got != tc.want {
-			t.Errorf("Route %q: transport %s, want %s", tc.route, got, tc.want)
-		}
 	}
 }

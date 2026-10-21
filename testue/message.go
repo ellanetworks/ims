@@ -7,6 +7,7 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const SMSContentType = "application/vnd.3gpp.sms"
@@ -18,10 +19,10 @@ type SMS struct {
 }
 
 // service is SMS over IP as a service of the UE.
-func (s *SMS) service() Service {
+func (s *SMS) service() ue.Service {
 	smsip := sip.FeatureSet{sip.NewFeature("+g.3gpp.smsip")}
 
-	return Service{
+	return ue.Service{
 		Name:             SMSService,
 		RegisterFeatures: smsip,
 		AcceptContact:    []sip.CallerPreference{{Features: smsip}},
@@ -35,7 +36,7 @@ func (s *SMS) service() Service {
 
 // received answers a MESSAGE of the network (TS 24.341 §5.3.2.1).
 func (s *SMS) received(r *ua.Request) {
-	s.u.event(Event{Request: r.Message().Clone()})
+	s.u.event(ue.Event{Request: r.Message().Clone()})
 
 	_ = r.Respond(ua.Reply{Code: 200})
 }
@@ -51,11 +52,7 @@ func (s *SMS) Send(ctx context.Context, target string, body []byte, headers ...s
 	}
 
 	req := sip.NewRequest("MESSAGE", uri)
-	if err := u.Originate(req, SMSService); err != nil {
-		return nil, err
-	}
-
-	if err := u.prepare(req); err != nil {
+	if err := u.core().Originate(req, SMSService); err != nil {
 		return nil, err
 	}
 
@@ -65,7 +62,7 @@ func (s *SMS) Send(ctx context.Context, target string, body []byte, headers ...s
 	req.Header.Set("From", from.String())
 	req.Header.Add("Max-Forwards", "70")
 	req.Header.Add("To", "<"+uri.String()+">")
-	req.Header.Add("Call-ID", timeUUID()+"@"+sip.FormatHost(u.cfg.Local))
+	req.Header.Add("Call-ID", u.core().NewCallID())
 	req.Header.Add("CSeq", "1 MESSAGE")
 	req.SetBody(SMSContentType, body)
 
@@ -73,5 +70,5 @@ func (s *SMS) Send(ctx context.Context, target string, body []byte, headers ...s
 		req.Header.Set(f.Name, f.Value)
 	}
 
-	return u.request(ctx, req)
+	return u.core().Send(ctx, req)
 }

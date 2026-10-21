@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/sdp"
@@ -123,7 +124,7 @@ func TestForkedCallAnsweredBySecondCallee(t *testing.T) {
 	a.response(180, false, false)
 	b.response(180, false, false)
 
-	eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
+	uetest.Eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
 
 	b.response(200, false, true)
 
@@ -231,11 +232,11 @@ func TestEarlyDialogTerminated(t *testing.T) {
 	a.response(180, false, false)
 	b.response(180, false, false)
 
-	eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
+	uetest.Eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
 
 	a.response(199, false, false)
 
-	eventually(t, "one early dialog", func() bool {
+	uetest.Eventually(t, "one early dialog", func() bool {
 		tags := earlyTags(c)
 		return len(tags) == 1 && tags[0] == b.tag
 	})
@@ -277,7 +278,7 @@ func TestByeOnEarlyDialog(t *testing.T) {
 	a.response(180, false, false)
 	b.response(180, false, false)
 
-	eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
+	uetest.Eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
 
 	bye := sip.NewRequest("BYE", sip.URI{Scheme: "sip", User: "x", Host: sip.FormatHost(loopback)})
 	bye.Header.Add("Via", sip.NewVia(sip.UDP, p.s.Addr()).String())
@@ -290,7 +291,7 @@ func TestByeOnEarlyDialog(t *testing.T) {
 
 	p.response(200, "BYE")
 
-	eventually(t, "one early dialog", func() bool { return len(c.EarlyDialogs()) == 1 })
+	uetest.Eventually(t, "one early dialog", func() bool { return len(c.EarlyDialogs()) == 1 })
 
 	// The dialog of a, the call's until then, gave way to b's.
 	if got := earlyTags(c); got[0] != b.tag || c.ID().RemoteTag != b.tag {
@@ -334,9 +335,9 @@ func TestCancelReason(t *testing.T) {
 }
 
 func TestContactParams(t *testing.T) {
-	u, _ := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "+g.example"}}, MMTel: MMTelConfig{Video: true}})
+	u := newNetwork(t).newUE(Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}, {Name: "+g.example"}}, MMTel: MMTelConfig{Video: true}})
 
-	contact, err := sip.ParseAddress(u.contact(5060))
+	contact, err := u.RegisterContact()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +401,7 @@ func TestLostEarlyDialog(t *testing.T) {
 	a.response(183, true, true)
 	p.send(sip.NewResponse(p.request("PRACK"), 481, ""))
 
-	eventually(t, "the early dialog released", func() bool { return len(c.EarlyDialogs()) == 0 })
+	uetest.Eventually(t, "the early dialog released", func() bool { return len(c.EarlyDialogs()) == 0 })
 
 	if c.State() != CallEarly {
 		t.Fatalf("call %s after losing its only early dialog, want early", c.State())
@@ -428,7 +429,7 @@ func TestAnswerCrossingCancel(t *testing.T) {
 	a.response(180, false, false)
 	b.response(180, false, false)
 
-	eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
+	uetest.Eventually(t, "two early dialogs", func() bool { return len(c.EarlyDialogs()) == 2 })
 
 	cancelled := make(chan error, 1)
 

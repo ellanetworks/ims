@@ -12,12 +12,12 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/hsstest"
-	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const fastT1 = 50 * time.Millisecond
@@ -159,11 +159,11 @@ func (s *scene) subscribed(u *testue.UE) {
 	})
 }
 
-func (s *scene) gone(set ipsec.Set) func() bool {
+func (s *scene) gone(set ue.SASet) func() bool {
 	return func() bool {
-		ue := espPackets(s.t, s.ue)
-		for _, spi := range spis(set) {
-			if _, ok := ue[spi]; ok {
+		ueSAs := espPackets(s.t, s.ue)
+		for _, spi := range spis(testue.ToIPsec(set)) {
+			if _, ok := ueSAs[spi]; ok {
 				return false
 			}
 		}
@@ -400,7 +400,7 @@ func TestRegEventShortened(t *testing.T) {
 	}
 
 	sas := u.SAs()
-	if len(sas) != 2 || sas[0].Set != old.Set || sas[0].State != testue.Old || sas[1].State != testue.Established {
+	if len(sas) != 2 || sas[0].Set != old.Set || sas[0].State != ue.Old || sas[1].State != ue.Established {
 		t.Fatalf("SAs = %+v after the re-authentication, want the old set and a new one", sas)
 	}
 

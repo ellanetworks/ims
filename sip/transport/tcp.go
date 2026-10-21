@@ -120,10 +120,22 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 func (t *Transport) dial(c *conn) {
 	defer t.wg.Done()
 
+	local := c.flow.Local.String()
+
 	d := net.Dialer{
 		LocalAddr: net.TCPAddrFromAddrPort(c.flow.Local),
 		Timeout:   t.dialTimeout,
-		Control:   sockopt.ReusePort,
+		Control: func(network, address string, rc syscall.RawConn) error {
+			if err := sockopt.ReusePort(network, address, rc); err != nil {
+				return err
+			}
+
+			if t.control != nil {
+				return t.control(network, local, rc)
+			}
+
+			return nil
+		},
 	}
 
 	nc, err := t.dialFunc(t.ctx, &d, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())

@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
+	"github.com/ellanetworks/ims/ue"
 )
 
 func (s *scene) caller(i int, v6 bool, cfg testue.Config) *testue.UE {
@@ -114,7 +115,7 @@ func failed(t *testing.T, ctx context.Context, c *testue.Call, code int) {
 	t.Helper()
 
 	res, err := c.Wait(ctx)
-	if rerr, ok := errors.AsType[*testue.ResponseError](err); !ok || rerr.Response.StatusCode != code || res.StatusCode != code {
+	if rerr, ok := errors.AsType[*ue.ResponseError](err); !ok || rerr.Response.StatusCode != code || res.StatusCode != code {
 		t.Fatalf("Wait = %v, %v, want %d", res, err, code)
 	}
 
@@ -128,7 +129,7 @@ type events struct {
 	raw map[string]bool
 }
 
-func (e *events) add(ev testue.Event) {
+func (e *events) add(ev ue.Event) {
 	var m sip.Message
 
 	switch {

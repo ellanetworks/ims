@@ -35,6 +35,7 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const (
@@ -337,7 +338,7 @@ func (s *scene) newDevice(i int, sub subscriber, v6 bool, cfg testue.Config) *te
 	}
 
 	if !cfg.Plain {
-		cfg.Kernel = h.xfrm
+		cfg.Kernel = testue.XFRMOf(h.xfrm)
 	}
 
 	u, err := testue.New(cfg)
@@ -485,19 +486,19 @@ func spis(s ipsec.Set) []uint32 {
 	return []uint32{s.Local.SPIC, s.Local.SPIS, s.Remote.SPIC, s.Remote.SPIS}
 }
 
-func (s *scene) established(u *testue.UE) testue.SA {
+func (s *scene) established(u *testue.UE) ue.SA {
 	s.t.Helper()
 
 	sas := u.SAs()
-	if len(sas) != 1 || sas[0].State != testue.Established {
+	if len(sas) != 1 || sas[0].State != ue.Established {
 		s.t.Fatalf("SAs = %+v, want one established set", sas)
 	}
 
-	ue, ims := espPackets(s.t, s.ue), espPackets(s.t, s.ims)
+	ueSAs, ims := espPackets(s.t, s.ue), espPackets(s.t, s.ims)
 
-	for _, spi := range spis(sas[0].Set) {
-		if _, ok := ue[spi]; !ok {
-			s.t.Errorf("no SA with SPI %d in the UE's kernel: %v", spi, ue)
+	for _, spi := range spis(testue.ToIPsec(sas[0].Set)) {
+		if _, ok := ueSAs[spi]; !ok {
+			s.t.Errorf("no SA with SPI %d in the UE's kernel: %v", spi, ueSAs)
 		}
 
 		if _, ok := ims[spi]; !ok {
@@ -525,7 +526,7 @@ func TestRegistrationOverIPsec(t *testing.T) {
 
 func testRegistrationOverIPsec(t *testing.T, tr sip.Transport, v6 bool, alg ipsec.Integrity) {
 	s := newScene(t)
-	u := s.newUE(v6, testue.Config{Transport: tr, Offers: []testue.Offer{{Integrity: alg, Encryption: ipsec.EncryptionNull}}})
+	u := s.newUE(v6, testue.Config{Transport: tr, Offers: []ue.Offer{{Integrity: ue.Integrity(alg), Encryption: ue.EncryptionNull}}})
 
 	s.register(u)
 
@@ -535,13 +536,13 @@ func testRegistrationOverIPsec(t *testing.T, tr sip.Transport, v6 bool, alg ipse
 	}
 
 	sa := s.established(u)
-	if sa.Set.Integrity != alg {
+	if sa.Set.Integrity != ue.Integrity(alg) {
 		t.Fatalf("set %s, want %s", sa.Set, alg)
 	}
 
-	ims, ue := espPackets(t, s.ims), espPackets(t, s.ue)
-	if ims[sa.Set.Remote.SPIS] == 0 || ue[sa.Set.Local.SPIC] == 0 {
-		t.Fatalf("set %s: packets in the IMS %v and in the UE %v, want ESP both ways", sa.Set, ims, ue)
+	ims, ueSAs := espPackets(t, s.ims), espPackets(t, s.ue)
+	if ims[sa.Set.Remote.SPIS] == 0 || ueSAs[sa.Set.Local.SPIC] == 0 {
+		t.Fatalf("set %s: packets in the IMS %v and in the UE %v, want ESP both ways", sa.Set, ims, ueSAs)
 	}
 }
 
@@ -600,8 +601,8 @@ func TestMACFailure(t *testing.T) {
 
 	err := u.Register(s.ctx())
 
-	var re *testue.ResponseError
-	if !errors.Is(err, testue.ErrNetworkAuthentication) || !errors.As(err, &re) || re.Response.StatusCode != 403 {
+	var re *ue.ResponseError
+	if !errors.Is(err, ue.ErrNetworkAuthentication) || !errors.As(err, &re) || re.Response.StatusCode != 403 {
 		t.Fatalf("Register = %v, want a network authentication failure answered 403", err)
 	}
 
@@ -687,7 +688,7 @@ func TestReAuthentication(t *testing.T) {
 	}
 
 	sas := u.SAs()
-	if len(sas) != 2 || sas[0].State != testue.Old || sas[0].Set != old.Set || sas[1].State != testue.Established ||
+	if len(sas) != 2 || sas[0].State != ue.Old || sas[0].Set != old.Set || sas[1].State != ue.Established ||
 		sas[1].Set.Local.PortS != old.Set.Local.PortS || sas[1].Set.Local.PortC == old.Set.Local.PortC {
 		t.Fatalf("SAs = %+v after re-authentication, want the old set and a new one on port-s %d", sas, old.Set.Local.PortS)
 	}
@@ -698,7 +699,7 @@ func TestReAuthentication(t *testing.T) {
 		t.Fatalf("no ESP on the new set %s", set)
 	}
 
-	for _, spi := range spis(set) {
+	for _, spi := range spis(testue.ToIPsec(set)) {
 		if _, ok := espPackets(t, s.ims)[spi]; !ok {
 			t.Fatalf("no SA with SPI %d in the IMS's kernel", spi)
 		}
@@ -708,14 +709,14 @@ func TestReAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ue := espPackets(t, s.ue)
-	for _, spi := range spis(old.Set) {
-		if _, ok := ue[spi]; ok {
+	ueSAs := espPackets(t, s.ue)
+	for _, spi := range spis(testue.ToIPsec(old.Set)) {
+		if _, ok := ueSAs[spi]; ok {
 			t.Fatalf("the old SA with SPI %d is still in the UE's kernel", spi)
 		}
 	}
 
-	if sas := u.SAs(); len(sas) != 2 || sas[0].Set != set || sas[0].State != testue.Old {
+	if sas := u.SAs(); len(sas) != 2 || sas[0].Set != set || sas[0].State != ue.Old {
 		t.Fatalf("SAs = %+v after the next re-authentication, want %s old", sas, set)
 	}
 }
@@ -736,10 +737,10 @@ func TestDeregistration(t *testing.T) {
 		t.Fatalf("state %+v and SAs %+v after deregistration", u.State(), u.SAs())
 	}
 
-	ue := espPackets(t, s.ue)
-	for _, spi := range spis(sa.Set) {
-		if _, ok := ue[spi]; ok {
-			t.Fatalf("SA with SPI %d still in the UE's kernel: %v", spi, ue)
+	ueSAs := espPackets(t, s.ue)
+	for _, spi := range spis(testue.ToIPsec(sa.Set)) {
+		if _, ok := ueSAs[spi]; ok {
+			t.Fatalf("SA with SPI %d still in the UE's kernel: %v", spi, ueSAs)
 		}
 	}
 
@@ -775,7 +776,7 @@ func TestPlainSIPRegistrationRejected(t *testing.T) {
 
 	err := u.Register(s.ctx())
 
-	var re *testue.ResponseError
+	var re *ue.ResponseError
 	if !errors.As(err, &re) || re.Response.StatusCode != 421 || re.Response.Header.Get("Require") != "sec-agree" ||
 		!re.Response.Header.Has("Security-Server") {
 		t.Fatalf("Register = %v, want 421 requiring sec-agree, with Security-Server", err)

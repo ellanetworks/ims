@@ -39,7 +39,7 @@ type Socket struct {
 func NewSocket(t testing.TB, addr netip.AddrPort) *Socket {
 	t.Helper()
 
-	tl, udp, err := listen.Pair(context.Background(), addr)
+	tl, udp, err := listen.Pair(context.Background(), addr, nil)
 	if err != nil {
 		t.Fatalf("siptest: listen on %s: %v", addr, err)
 	}

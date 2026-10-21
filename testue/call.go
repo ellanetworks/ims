@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/ua"
+	"github.com/ellanetworks/ims/ue"
 )
 
 const (
@@ -125,7 +124,7 @@ type Call struct {
 	mm       *MMTel
 	incoming bool
 	callID   string
-	events   chan Event
+	events   chan ue.Event
 	done     chan struct{}
 
 	mu      sync.Mutex
@@ -190,12 +189,12 @@ type leg struct {
 func (mm *MMTel) newCall(incoming bool, invite *sip.Request, callID string, precondition, video bool) (*Call, error) {
 	u := mm.u
 
-	u.mu.Lock()
+	mm.mu.Lock()
 	port := firstMediaPort + portsPerCall*mm.next
 	mm.next = (mm.next + 1) % maxCalls
-	u.mu.Unlock()
+	mm.mu.Unlock()
 
-	m := newMedia(u.cfg.Local, uint16(port), precondition, mm.cfg.Video)
+	m := newMedia(u.core().Local(), uint16(port), precondition, mm.cfg.Video)
 
 	if video {
 		if err := m.addVideo(); err != nil {
@@ -208,7 +207,7 @@ func (mm *MMTel) newCall(incoming bool, invite *sip.Request, callID string, prec
 		mm:       mm,
 		incoming: incoming,
 		callID:   callID,
-		events:   make(chan Event, 256),
+		events:   make(chan ue.Event, 256),
 		done:     make(chan struct{}),
 		changed:  make(chan struct{}),
 		invite:   invite,
@@ -227,7 +226,7 @@ func (c *Call) Invite() *sip.Request {
 }
 
 // Events are the requests and responses the UE received for the call, and its errors.
-func (c *Call) Events() <-chan Event { return c.events }
+func (c *Call) Events() <-chan ue.Event { return c.events }
 
 func (c *Call) Done() <-chan struct{} { return c.done }
 
@@ -384,7 +383,7 @@ func (c *Call) SessionTimer() (time.Duration, bool) {
 	return s.SessionTimer()
 }
 
-func (c *Call) event(e Event) {
+func (c *Call) event(e ue.Event) {
 	select {
 	case c.events <- e:
 	default:
@@ -419,7 +418,7 @@ func (c *Call) waitFor(ctx context.Context, cond func() bool) error {
 // holdSALocked keeps the SAs of the call's setup until it completes (TS 33.203 §7.4).
 func (c *Call) holdSALocked() {
 	if c.releaseSAs == nil {
-		c.releaseSAs = c.u.HoldSAs()
+		c.releaseSAs = c.u.core().HoldSAs()
 	}
 }
 
@@ -504,64 +503,6 @@ func (c *Call) remoteOfferLocked() bool {
 	return c.incoming && c.offer != nil && !c.answered
 }
 
-// RFC 3261 §8.1.2, RFC 3263 §4.1
-func (u *UE) requestTransport(req *sip.Request) sip.Transport {
-	if route, err := req.Header.TopRoute(); err == nil {
-		if v, ok := route.URI.Params.Get("transport"); ok && v != "" {
-			return sip.Transport(strings.ToUpper(v))
-		}
-	}
-
-	return u.cfg.Transport
-}
-
-// prepare completes a request of the UE for its flow (TS 24.229 §5.1.2A.1): the agent's requests and the UE's own.
-func (u *UE) prepare(req *sip.Request) error {
-	flow, verify, err := u.requestFlow(u.requestTransport(req))
-	if err != nil {
-		return err
-	}
-
-	req.Flow = flow
-
-	via := sip.NewVia(flow.Transport, netip.AddrPortFrom(u.cfg.Local, u.port(!u.cfg.Plain)))
-	via.Params.Set("rport", "")
-
-	req.Header.Prepend("Via", via.String())
-
-	if u.cfg.Plain {
-		return nil
-	}
-
-	for _, v := range verify {
-		req.Header.Add("Security-Verify", v)
-	}
-
-	req.Header.Add("Require", "sec-agree")
-	req.Header.Add("Proxy-Require", "sec-agree")
-
-	if req.Method != "ACK" {
-		req.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
-	}
-
-	return nil
-}
-
-// respondHeaders completes a response of the agent (TS 24.229 §5.1.2A.2).
-func (u *UE) respondHeaders(_ *sip.Request, res *sip.Response) {
-	if !u.cfg.Plain && !res.Header.Has("P-Access-Network-Info") {
-		res.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
-	}
-}
-
-// response is a response of the UE outside the agent (TS 24.229 §5.1.2A.2).
-func (u *UE) response(req *sip.Request, code int) *sip.Response {
-	res := sip.NewResponse(req, code, "")
-	u.respondHeaders(req, res)
-
-	return res
-}
-
 // handler is the handler of the sessions of the call.
 func (c *Call) handler() ua.Handler {
 	return ua.Handler{
@@ -583,9 +524,9 @@ func (c *Call) handler() ua.Handler {
 func (c *Call) received(_ *ua.Session, m sip.Message) {
 	switch m := m.(type) {
 	case *sip.Request:
-		c.event(Event{Request: m.Clone()})
+		c.event(ue.Event{Request: m.Clone()})
 	case *sip.Response:
-		c.event(Event{Response: m.Clone()})
+		c.event(ue.Event{Response: m.Clone()})
 	}
 }
 
@@ -605,11 +546,11 @@ func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
 	req := sip.NewRequest("INVITE", uri)
 	req.Header.Add("Accept-Contact", acceptContact(opts.Video))
 
-	if err := u.Originate(req, MMTelService); err != nil {
+	if err := u.core().Originate(req, MMTelService); err != nil {
 		return nil, err
 	}
 
-	callID := timeUUID() + "@" + sip.FormatHost(u.cfg.Local)
+	callID := u.core().NewCallID()
 
 	c, err := mm.newCall(false, req, callID, opts.Preconditions, opts.Video)
 	if err != nil {
@@ -651,7 +592,7 @@ func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
 	c.holdSALocked()
 	c.mu.Unlock()
 
-	o, err := u.agent.Invite(req, c.handler())
+	o, err := u.core().Agent().Invite(req, c.handler())
 	if err != nil {
 		c.mu.Lock()
 		c.terminateLocked(TimedOut)
@@ -692,7 +633,7 @@ func (c *Call) progress(s *ua.Session, res *sip.Response) {
 	// An answer in an unreliable 1xx is a preview of the one to come (RFC 3261 §13.2.1); a reliable one came as one.
 	if c.state == CallEarly && !reliable(res) && l.m.remote == nil {
 		if err := answerIn(l.m, res.Header.ContentType(), res.Body); err != nil {
-			c.event(Event{Err: err})
+			c.event(ue.Event{Err: err})
 		}
 	}
 
@@ -766,7 +707,7 @@ func (c *Call) answerReceived(s *ua.Session, body []byte) {
 	}
 
 	if err := answerIn(l.m, sdp.ContentType, body); err != nil {
-		c.event(Event{Err: err})
+		c.event(ue.Event{Err: err})
 	}
 
 	l.offering = false
@@ -798,7 +739,7 @@ func (c *Call) offerReceived(s *ua.Session, o *ua.Offer) {
 	c.mu.Unlock()
 
 	if err != nil {
-		c.event(Event{Err: err})
+		c.event(ue.Event{Err: err})
 		o.Reject()
 
 		return
@@ -884,7 +825,7 @@ func (c *Call) request(s *ua.Session, r *ua.Request) {
 
 	// A request is always answered: one the UE could not answer as it meant to gets a 500.
 	if err != nil {
-		c.event(Event{Err: err})
+		c.event(ue.Event{Err: err})
 
 		_ = r.Reject(500)
 	}
@@ -1015,7 +956,7 @@ func answerIn(m *media, contentType string, body []byte) error {
 
 func (c *Call) background(f func(ctx context.Context) error) {
 	if err := f(context.Background()); err != nil && !errors.Is(err, ErrCallEnded) && !errors.Is(err, ua.ErrClosed) {
-		c.event(Event{Err: err})
+		c.event(ue.Event{Err: err})
 	}
 }
 
@@ -1045,7 +986,7 @@ func asError(res *sip.Response, err error) error {
 	case err != nil:
 		return err
 	case res != nil && !res.IsSuccess():
-		return &ResponseError{Response: res}
+		return &ue.ResponseError{Response: res}
 	}
 
 	return nil
@@ -1163,7 +1104,7 @@ func (c *Call) Wait(ctx context.Context) (*sip.Response, error) {
 	case c.final != nil && c.final.IsSuccess():
 		return c.final, nil
 	case c.final != nil:
-		return c.final, &ResponseError{Response: c.final}
+		return c.final, &ue.ResponseError{Response: c.final}
 	case c.finalErr != nil:
 		return nil, c.finalErr
 	}
@@ -1468,7 +1409,7 @@ func (mm *MMTel) incomingCall(r *ua.Request) ua.Handler {
 	u := mm.u
 
 	req := r.Message()
-	u.event(Event{Request: req})
+	u.event(ue.Event{Request: req})
 
 	if !mm.cfg.AcceptCalls {
 		_ = r.Reject(486)
@@ -1487,7 +1428,7 @@ func (mm *MMTel) incomingCall(r *ua.Request) ua.Handler {
 
 		if !offerAudio(offer) {
 			var warning []sip.Field
-			if w, err := sip.NewWarning(304, sip.FormatHost(u.cfg.Local)); err == nil {
+			if w, err := sip.NewWarning(304, sip.FormatHost(u.core().Local())); err == nil {
 				warning = append(warning, sip.Field{Name: "Warning", Value: w.String()})
 			}
 
