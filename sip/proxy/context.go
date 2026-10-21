@@ -55,8 +55,14 @@ type responseContext struct {
 	// generated holds the responses the proxy made up for branches that got none.
 	generated map[*sip.Response]bool
 
-	queue    []func()
+	// queue holds the replies dispatched and not yet delivered, in order: one goroutine at a time delivers them.
+	queue    []delivery
 	draining bool
+}
+
+type delivery struct {
+	b *branch
+	r Reply
 }
 
 type branch struct {
@@ -93,6 +99,11 @@ type branch struct {
 
 	// delivered is set once the dialog learnt the branch failed.
 	delivered bool
+
+	// taken is set once the context took the final reply of the branch, as it delivers it (RFC 3261 §16.7 step 4).
+	// Until then the branch may still change the answer, with a better response, a 2xx or a 430 that retries it,
+	// even once its client transaction ended: the context cannot conclude (step 6).
+	taken bool
 
 	// early holds the To tags of the early dialogs that came on the branch, and ended those a
 	// 199 already ended (RFC 6228 §6).
@@ -742,7 +753,7 @@ func (c *responseContext) generateLocked(code int) *sip.Response {
 func (c *responseContext) dispatch(b *branch, r Reply) {
 	c.mu.Lock()
 
-	c.queue = append(c.queue, func() { c.deliver(b, r) })
+	c.queue = append(c.queue, delivery{b: b, r: r})
 
 	if c.draining {
 		c.mu.Unlock()
@@ -752,12 +763,16 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 	c.draining = true
 
 	for len(c.queue) > 0 {
-		f := c.queue[0]
-		c.queue[0] = nil
+		d := c.queue[0]
+		c.queue[0] = delivery{}
 		c.queue = c.queue[1:]
 
+		if d.r.Response == nil || !d.r.Response.IsProvisional() {
+			d.b.taken = true
+		}
+
 		c.mu.Unlock()
-		f()
+		c.deliver(d.b, d.r)
 		c.mu.Lock()
 	}
 
@@ -1017,12 +1032,13 @@ func resubmission(code int) bool {
 	return false
 }
 
-// conclude sends the best response once every branch ended and no group is left (RFC 3261 §16.7
-// step 5).
+// conclude sends the best response once the context took the final reply of every branch and no group is left
+// (RFC 3261 §16.7 step 6).
 func (c *responseContext) conclude() error {
 	c.mu.Lock()
 
-	if c.final || c.held || c.liveLocked() || len(c.waiting) > 0 || len(c.groups) > 0 {
+	if c.final || c.held || slices.ContainsFunc(c.branches, func(b *branch) bool { return !b.taken }) ||
+		len(c.waiting) > 0 || len(c.groups) > 0 {
 		c.mu.Unlock()
 		return nil
 	}

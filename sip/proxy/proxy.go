@@ -411,8 +411,14 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 		firstErr = failures[0].err
 	}
 
+	// The failures are not dispatched: the error answers for them.
 	c.mu.Lock()
 	c.groups, c.waiting = nil, nil
+
+	for _, f := range failures {
+		f.b.taken = true
+	}
+
 	c.mu.Unlock()
 
 	if begun {

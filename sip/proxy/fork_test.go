@@ -784,6 +784,54 @@ func TestForkFlowsExhausted(t *testing.T) {
 	}
 }
 
+// A final response that comes on one branch while that of another is being delivered is weighed before the context
+// concludes, whichever goroutine delivers it: a 430 still has the request retried on another flow (RFC 5626 §7), and
+// a 2xx is the answer, with no 486 forwarded first (RFC 3261 §16.7 steps 5 and 6).
+func TestForkResponseDuringDelivery(t *testing.T) {
+	for _, code := range []int{430, 200} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+			pending := make(chan *sip.Response, 1)
+
+			s, g := newForkSceneWith(t, []int{2}, proxy.Options{}, false, func(f *forker) {
+				f.retry = []*siptest.Socket{flow}
+				f.onReply = func(tx *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict {
+					if r.Response != nil && r.Response.StatusCode == 486 {
+						f.p.HandleResponse(tx, f.groups[0][0].Addr(), <-pending)
+					}
+
+					return proxy.Relay
+				}
+			})
+
+			s.send(s.request("INVITE"))
+
+			a := received(t, g[0][0], "a")
+			b := received(t, g[0][1], "b")
+
+			res := sip.NewResponse(a.req, code, "")
+			_ = res.Header.SetToTag("a")
+			res.Header.Add("Contact", "<sip:a@"+a.s.Addr().String()+">")
+
+			pending <- res
+
+			b.respond(486)
+
+			want := "a"
+
+			if code == 430 {
+				received(t, flow, "a2").respond(200)
+
+				want = "a2"
+			}
+
+			if res := s.final(); res.StatusCode != 200 || toTagOf(res) != want {
+				t.Fatalf("got %s from %q, want a 200 from %q", res.StartLine(), toTagOf(res), want)
+			}
+		})
+	}
+}
+
 // A branch cancelled because another answered ends with its 487: no timer of it fires later (RFC 3261 §16.8).
 func TestForkCancelledBranchEnds(t *testing.T) {
 	var (
