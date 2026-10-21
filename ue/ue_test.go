@@ -547,10 +547,8 @@ func TestExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
-
-	if u.State().Registered {
-		t.Fatal("registered after the expiry")
+	if got := deregistration(t, u); got != DeregisteredExpired || u.State().Registered {
+		t.Fatalf("deregistered %q, registered %v, want expired", got, u.State().Registered)
 	}
 
 	n.PS.RecvNone(100 * time.Millisecond)

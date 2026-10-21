@@ -179,7 +179,32 @@ type Event struct {
 	Response *sip.Response
 	Reginfo  *regevent.Reginfo
 	Err      error
+
+	// Deregistered is set when the registration of the UE ended without a REGISTER of its own: by the reg event
+	// NOTIFY of Request, or on its expiry.
+	Deregistered Deregistration
 }
+
+// Deregistration is how the registration of a UE ended without a REGISTER of its own: the event of its contacts in
+// the NOTIFY that ended it (RFC 3680 §5.1, TS 24.229 §5.1.1.7), or its expiry.
+type Deregistration string
+
+const (
+	// DeregisteredUnregistered is the network removing the UE's bindings: a registration of the same private user
+	// identity without the multiple registration mechanism replacing them (TS 24.229 §5.4.1.2.2 step 2).
+	DeregisteredUnregistered Deregistration = "unregistered"
+
+	// DeregisteredDeactivated is the network expecting the UE to register again, which it does (TS 24.229
+	// §5.1.1.7).
+	DeregisteredDeactivated Deregistration = "deactivated"
+
+	// DeregisteredRejected is the network not expecting the UE to register again: the services release their dialogs
+	// (TS 24.229 §5.1.1.7).
+	DeregisteredRejected Deregistration = "rejected"
+
+	// DeregisteredExpired is the registration expiring, not refreshed in time.
+	DeregisteredExpired Deregistration = "expired"
+)
 
 type saSet struct {
 	set     SASet

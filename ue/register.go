@@ -532,10 +532,16 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 
 	u.expiryTimer = u.layer.Clock().AfterFunc(remaining, func() {
 		u.mu.Lock()
-		defer u.mu.Unlock()
 
-		if u.state.Registered && !u.state.Expires.After(expires) {
+		expired := u.state.Registered && !u.state.Expires.After(expires)
+		if expired {
 			u.state.Registered = false
+		}
+
+		u.mu.Unlock()
+
+		if expired {
+			u.event(Event{Deregistered: DeregisteredExpired})
 		}
 	})
 

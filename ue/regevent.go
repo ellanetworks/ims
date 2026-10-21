@@ -359,7 +359,7 @@ func (u *UE) notify(sub *subscription, r *ua.Request) {
 		f()
 	}
 
-	e := Event{Request: req, Err: infoErr}
+	e := Event{Request: req, Err: infoErr, Deregistered: a.deregistered}
 	if infoErr == nil && !stale {
 		e.Reginfo = &info
 	}
@@ -378,9 +378,10 @@ func mediaType(ct string) string {
 }
 
 type action struct {
-	teardown    bool
-	reregister  bool
-	resubscribe bool
+	teardown     bool
+	reregister   bool
+	resubscribe  bool
+	deregistered Deregistration
 }
 
 func (u *UE) ownContact(c regevent.Contact) bool {
@@ -456,7 +457,16 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 	if (mine > 0 && gone == mine) || (allClosed && subTerminated) {
 		after := u.forgetLocked()
 
-		return action{teardown: true, reregister: deactivated && !rejected}, []func(){after}
+		a := action{teardown: true, reregister: deactivated && !rejected, deregistered: DeregisteredUnregistered}
+
+		switch {
+		case rejected:
+			a.deregistered = DeregisteredRejected
+		case deactivated:
+			a.deregistered = DeregisteredDeactivated
+		}
+
+		return a, []func(){after}
 	}
 
 	if !u.state.Registered {

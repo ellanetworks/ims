@@ -445,6 +445,67 @@ func TestDeactivated(t *testing.T) {
 	no.accept(sub, sf)
 
 	uetest.Eventually(t, "the new registration", func() bool { return u.State().Registered && u.Subscription().Active })
+
+	if got := deregistration(t, u); got != DeregisteredDeactivated {
+		t.Fatalf("deregistered %q, want %q", got, DeregisteredDeactivated)
+	}
+}
+
+// deregistration is the reason of the first event of u that tells its registration ended.
+func deregistration(t *testing.T, u *testUE) Deregistration {
+	t.Helper()
+
+	timeout := time.After(10 * time.Second)
+
+	for {
+		select {
+		case e := <-u.Events():
+			if e.Deregistered != "" {
+				return e.Deregistered
+			}
+		case <-timeout:
+			t.Fatal("no deregistration event")
+		}
+	}
+}
+
+// TS 24.229 §5.1.1.7 2), §5.4.1.2.2 step 2: a registration of the private user identity without the multiple
+// registration mechanism, from another contact, replaces the UE's binding, the registration staying active; the UE
+// is deregistered, unregistered, and does not register again by itself.
+func TestBindingReplaced(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, kernel := n.newUE(Config{T1: 10 * time.Millisecond})
+
+	no := n.registerSubscribing(u)
+	no.active()
+
+	old := u.SAs()[0].Set
+
+	expires := uint32(3600)
+	info := no.reginfo(regevent.Active, regevent.Terminated, regevent.Unregistered, 0)
+
+	for i := range info.Registrations {
+		info.Registrations[i].Contacts = append(info.Registrations[i].Contacts, regevent.Contact{
+			ID: "v" + strconv.Itoa(i), State: regevent.Active, Event: regevent.Registered, Expires: &expires,
+			URI: "sip:volte@" + sip.FormatHost(n.Addr) + ":5099",
+		})
+	}
+
+	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {
+		t.Fatalf("NOTIFY answered %q", res.StartLine())
+	}
+
+	if got := deregistration(t, u); got != DeregisteredUnregistered {
+		t.Fatalf("deregistered %q, want %q", got, DeregisteredUnregistered)
+	}
+
+	uetest.Eventually(t, "the SAs to be deleted", func() bool { return slices.Contains(kernel.Removed(), toIPsec(old)) })
+
+	if u.State().Registered {
+		t.Fatalf("state %+v after the binding was replaced", u.State())
+	}
+
+	n.PCSCF.RecvNone(200 * time.Millisecond)
 }
 
 func TestRejected(t *testing.T) {
@@ -469,6 +530,10 @@ func TestRejected(t *testing.T) {
 
 	if u.State().Registered || u.Subscription().Active {
 		t.Fatalf("state %+v and subscription %+v after rejection", u.State(), u.Subscription())
+	}
+
+	if got := deregistration(t, u); got != DeregisteredRejected {
+		t.Fatalf("deregistered %q, want %q", got, DeregisteredRejected)
 	}
 
 	n.PCSCF.RecvNone(200 * time.Millisecond)
