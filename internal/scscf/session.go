@@ -227,10 +227,15 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	out.Header.Del("P-Access-Network-Info")
 	s.assertService(out, served, false)
 
+	sub, err := cx.ParseUserData(reg.UserData)
+	if err != nil {
+		s.log.Warn("invalid user data of a registration: no service", slog.String("impu", served.URI.String()), slog.Any("error", err))
+	}
+
 	out.Header.Del("P-Asserted-Identity")
 	out.Header.Add("P-Asserted-Identity", served.String())
 
-	if alias, ok := assertedAlias(served, reg.UserData, s.r.cfg.HomeDomain); ok {
+	if alias, ok := assertedAlias(served, sub, s.r.cfg.HomeDomain); ok {
 		out.Header.Add("P-Asserted-Identity", alias.String())
 	}
 
@@ -240,14 +245,11 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	c := &chain{
-		served: served, sescase: cx.SessionCaseOriginatingRegistered, userData: reg.UserData,
+		served: served, sescase: cx.SessionCaseOriginatingRegistered, sub: sub,
 		binding: binding, token: bindingToken(binding),
 	}
 
-	switch sub, err := cx.ParseUserData(reg.UserData); {
-	case err != nil:
-		s.log.Warn("invalid user data of a registration: no service", slog.String("impu", served.URI.String()), slog.Any("error", err))
-	default:
+	if err == nil {
 		p, ok := serviceProfile(sub, served.URI, s.r.cfg.HomeDomain)
 		if !ok {
 			s.log.Warn("no service profile holds the identity: no service", slog.String("impu", served.URI.String()))
@@ -291,7 +293,7 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 
 	// TS 24.229 §5.4.3.2 step 9: the alias of the identity the AS asserts, which no S-CSCF added yet.
 	if asserted, err := out.Header.Addresses("P-Asserted-Identity"); err == nil && len(asserted) == 1 {
-		if alias, ok := assertedAlias(asserted[0], c.userData, s.r.cfg.HomeDomain); ok {
+		if alias, ok := assertedAlias(asserted[0], c.sub, s.r.cfg.HomeDomain); ok {
 			out.Header.Add("P-Asserted-Identity", alias.String())
 		}
 	}
@@ -320,7 +322,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 		return nil, sip.NewResponse(req, refused, "")
 	}
 
-	p, userData, isRegistered, err := s.r.profileOf(ctx, u, regs)
+	p, sub, isRegistered, err := s.r.profileOf(ctx, u, regs)
 
 	// An HSS that cannot be reached answers as the I-CSCF does when its query cannot be completed: a 480
 	// (TS 24.229 §5.3.1.3).
@@ -340,7 +342,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 	}
 
 	c := &chain{
-		served: sip.Address{URI: u}, sescase: unregistered, ruri: u, regs: regs, userData: userData,
+		served: sip.Address{URI: u}, sescase: unregistered, ruri: u, regs: regs, sub: sub,
 		ifcs: s.r.criteria(p, isRegistered),
 	}
 	if isRegistered {
@@ -727,13 +729,20 @@ func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI,
 // of the registration that answered, for the ASs they go back through, in the 1xx and 2xx responses that begin a
 // dialog and in the 200 of a standalone transaction (TS 24.229 §5.4.3.3 steps 2b, 3 and 6, steps 1A and 1B).
 func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(proxy.Reply) proxy.Verdict {
+	// The subscription of the registration, parsed for the first response that asserts an identity: an invalid one
+	// holds no alias.
+	sub := sync.OnceValue(func() cx.IMSSubscription {
+		sub, _ := cx.ParseUserData(reg.UserData)
+		return sub
+	})
+
 	return func(r proxy.Reply) proxy.Verdict {
 		res := r.Response
 		if res == nil || res.StatusCode <= 100 || res.StatusCode >= 300 {
 			return proxy.Relay
 		}
 
-		s.assertAlias(res, reg)
+		s.assertAlias(res, sub)
 		withoutRegistrationToken(&res.Header)
 
 		if token != "" && (dialogCreating(method) || res.StatusCode == 200) {
@@ -755,13 +764,13 @@ func dialogCreating(method string) bool {
 }
 
 // TS 24.229 §5.4.3.3
-func (s *Sessions) assertAlias(res *sip.Response, reg db.Registration) {
+func (s *Sessions) assertAlias(res *sip.Response, sub func() cx.IMSSubscription) {
 	asserted, err := res.Header.Addresses("P-Asserted-Identity")
 	if err != nil || len(asserted) != 1 {
 		return
 	}
 
-	if alias, ok := assertedAlias(asserted[0], reg.UserData, s.r.cfg.HomeDomain); ok {
+	if alias, ok := assertedAlias(asserted[0], sub(), s.r.cfg.HomeDomain); ok {
 		res.Header.Add("P-Asserted-Identity", alias.String())
 	}
 }

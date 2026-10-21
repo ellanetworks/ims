@@ -1076,7 +1076,12 @@ func TestAssertedAlias(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, ok := assertedAlias(a, tt.reg.UserData, homeDomain)
+			sub, err := cx.ParseUserData(tt.reg.UserData)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, ok := assertedAlias(a, sub, homeDomain)
 			if ok != (tt.want != "") || ok && got.String() != tt.want {
 				t.Fatalf("assertedAlias(%s) = %s, %v, want %q", tt.asserted, got, ok, tt.want)
 			}

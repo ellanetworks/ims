@@ -40,8 +40,8 @@ type chain struct {
 	sescase cx.SessionCase
 	ifcs    []cx.InitialFilterCriteria
 
-	// userData is the subscription of the served user, for the aliases of its identities.
-	userData []byte
+	// sub is the subscription of the served user, for the aliases of its identities.
+	sub cx.IMSSubscription
 
 	// binding is the binding the UE sent the request with, originating; token identifies it to the ASs
 	// (TS 24.229 §5.4.3.2 step 5h).
@@ -430,7 +430,7 @@ func withRegistrationToken(h *sip.Header, token string) {
 // registration set, or else the one the HSS gives for it unregistered, for a user or a PSI (TS 24.229 §5.4.3.2
 // NOTE 24, §5.4.3.3 NOTE 27).
 func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registration,
-) (cx.ServiceProfile, []byte, bool, error) {
+) (cx.ServiceProfile, cx.IMSSubscription, bool, error) {
 	now := r.clock.Now()
 
 	for _, reg := range regs {
@@ -440,7 +440,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 
 		sub, err := cx.ParseUserData(reg.UserData)
 		if err != nil {
-			return cx.ServiceProfile{}, nil, false, err
+			return cx.ServiceProfile{}, cx.IMSSubscription{}, false, err
 		}
 
 		p, ok := serviceProfile(sub, u, r.cfg.HomeDomain)
@@ -448,12 +448,12 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 			r.log.Warn("no service profile holds the identity: no service", slog.String("impu", u.String()))
 		}
 
-		return p, reg.UserData, true, nil
+		return p, sub, true, nil
 	}
 
 	e, err := r.unregisteredProfile(ctx, u)
 	if err != nil {
-		return cx.ServiceProfile{}, nil, false, err
+		return cx.ServiceProfile{}, cx.IMSSubscription{}, false, err
 	}
 
 	p, ok := serviceProfileOf(e.sub, u, e.wildcard, r.cfg.HomeDomain)
@@ -461,7 +461,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 		r.log.Warn("no service profile of the HSS holds the identity: no service", slog.String("impu", u.String()))
 	}
 
-	return p, e.userData, false, nil
+	return p, e.sub, false, nil
 }
 
 // criteria are the iFCs of a service profile that can be evaluated: one with a regular expression that does not

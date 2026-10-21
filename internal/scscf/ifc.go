@@ -323,9 +323,47 @@ func (t trigger) sessionDescription(m cx.SessionDescriptionMatch) bool {
 	return false
 }
 
-// collapseLWS reduces each run of linear white space to a single space (TS 29.228 Annex F).
+// collapseLWS reduces each run of linear white space to a single space, and trims it (TS 29.228 Annex F). LWS is SP,
+// HTAB and line folding (RFC 3261 §25.1): other white space of a UTF-8 value, such as a no-break space, is kept.
 func collapseLWS(v string) string {
-	return strings.Join(strings.Fields(v), " ")
+	if !hasLWSRun(v) {
+		return v
+	}
+
+	b := make([]byte, 0, len(v))
+	space := false
+
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; c {
+		case ' ', '\t', '\r', '\n':
+			space = len(b) > 0
+		default:
+			if space {
+				b = append(b, ' ')
+				space = false
+			}
+
+			b = append(b, c)
+		}
+	}
+
+	return string(b)
+}
+
+// hasLWSRun reports whether v has LWS that collapseLWS changes: other than a SP between two other characters.
+func hasLWSRun(v string) bool {
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '\t', '\r', '\n':
+			return true
+		case ' ':
+			if i == 0 || i == len(v)-1 || v[i+1] == ' ' {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // search reports whether the regular expression matches part of s, as regexec does with an extended regular

@@ -177,6 +177,8 @@ func TestServicePointTriggers(t *testing.T) {
 	invite.Header.Add("P-Asserted-Service", "urn:urn-7:3gpp-service.ims.icsi.mcptt")
 	invite.Header.Add("Supported", "timer,  100rel")
 	invite.Header.Add("Date", "Sat, 13 Nov 2010 23:29:00 GMT")
+	invite.Header.Add("Subject", "Group\t call,  \tnow")
+	invite.Header.Add("Organization", "Ella Networks")
 	invite.Header.Add("P-Early-Media", `supported ;  "quoted  text" , gated`)
 	invite.SetBody("application/sdp", []byte("v=0\r\nm=audio 4000 RTP/AVP 0\r\nm=application 4002 udp MCPTT\r\n"))
 
@@ -208,6 +210,13 @@ func TestServicePointTriggers(t *testing.T) {
 		}, true},
 		{"a header that is no list", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "^Date$", Content: ptr(`^Sat, 13 Nov 2010`)},
+		}, true},
+		// RFC 3261 §25.1: LWS is SP, HTAB and line folding; the white space of UTF-8 text is part of the value.
+		{"tabs are LWS", trigger{req: invite}, cx.ServicePointTrigger{
+			SIPHeader: &cx.HeaderMatch{Header: "^Subject$", Content: ptr(`^Group call, now$`)},
+		}, true},
+		{"a no-break space is no LWS", trigger{req: invite}, cx.ServicePointTrigger{
+			SIPHeader: &cx.HeaderMatch{Header: "^Organization$", Content: ptr("^Ella Networks$")},
 		}, true},
 		{"session case", trigger{req: invite, sescase: cx.SessionCaseTerminatingUnregistered}, cx.ServicePointTrigger{
 			SessionCase: ptr(cx.SessionCaseTerminatingUnregistered),

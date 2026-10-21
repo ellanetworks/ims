@@ -24,7 +24,6 @@ type unregistered struct {
 	wildcard string
 	hss      db.HSS
 	sub      cx.IMSSubscription
-	userData []byte
 	expires  time.Time
 
 	// ready is closed once the SAA came, err its failure.
@@ -116,7 +115,7 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, e *unregistered) erro
 	}
 
 	e.wildcard = cmp.Or(saa.WildcardedPublicIdentity, e.wildcard)
-	e.hss, e.sub, e.userData = from, sub, saa.UserData
+	e.hss, e.sub = from, sub
 	e.expires = r.clock.Now().Add(r.cfg.MaxExpires)
 
 	return nil
