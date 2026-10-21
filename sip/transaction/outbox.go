@@ -20,8 +20,8 @@ type outbox struct {
 func (l *Layer) enqueue(f sip.Flow, job func(ok bool)) bool {
 	f = normalizedFlow(f)
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.qmu.Lock()
+	defer l.qmu.Unlock()
 
 	if l.closed {
 		return false
@@ -45,13 +45,13 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 	defer l.wg.Done()
 
 	for {
-		l.mu.Lock()
+		l.qmu.Lock()
 
 		if len(ob.jobs) == 0 {
 			delete(l.outboxes, f)
 			l.checkDrained()
 
-			l.mu.Unlock()
+			l.qmu.Unlock()
 
 			return
 		}
@@ -61,7 +61,7 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 		ob.jobs = ob.jobs[1:]
 		ok := !l.closed
 
-		l.mu.Unlock()
+		l.qmu.Unlock()
 
 		job(ok)
 	}
@@ -72,7 +72,7 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 // first, the layer closes all the same, dropping the messages left, and Shutdown returns the context's error, joined
 // with that of Close.
 func (l *Layer) Shutdown(ctx context.Context) error {
-	l.mu.Lock()
+	l.qmu.Lock()
 
 	var drained chan struct{}
 
@@ -84,7 +84,7 @@ func (l *Layer) Shutdown(ctx context.Context) error {
 		drained = l.drained
 	}
 
-	l.mu.Unlock()
+	l.qmu.Unlock()
 
 	if drained != nil {
 		select {
@@ -97,7 +97,7 @@ func (l *Layer) Shutdown(ctx context.Context) error {
 	return l.Close()
 }
 
-// checkDrained closes drained once the outboxes and the lanes are empty. Called with l.mu held.
+// checkDrained closes drained once the outboxes and the lanes are empty. Called with l.qmu held.
 func (l *Layer) checkDrained() {
 	if len(l.outboxes) == 0 && len(l.lanes) == 0 && l.drained != nil {
 		close(l.drained)

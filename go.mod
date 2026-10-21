@@ -1,6 +1,6 @@
 module github.com/ellanetworks/ims
 
-go 1.26.5
+go 1.27.3
 
 require (
 	github.com/ellanetworks/core/diameter v0.0.0-20261017193558-9ed6ed0b4726

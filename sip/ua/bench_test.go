@@ -2,6 +2,7 @@ package ua_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,20 +26,33 @@ type benchAgent struct {
 	addr netip.AddrPort
 }
 
-func newBenchAgent(b *testing.B, name string, onInvite func(r *ua.Request) ua.Handler) *benchAgent {
+func newBenchAgent(b *testing.B, name string, configure func(*ua.Config)) *benchAgent {
 	b.Helper()
 
+	// A free UDP port may have its TCP twin taken: another one, then.
+	for range 64 {
+		if ba, err := tryBenchAgent(b, name, configure); err == nil {
+			return ba
+		} else if !errors.Is(err, syscall.EADDRINUSE) {
+			b.Fatal(err)
+		}
+	}
+
+	b.Fatal("no free port")
+
+	return nil
+}
+
+func tryBenchAgent(b *testing.B, name string, configure func(*ua.Config)) (*benchAgent, error) {
 	c, err := new(net.ListenConfig).ListenPacket(b.Context(), "udp", "127.0.0.1:0")
 	if err != nil {
-		b.Fatal(err)
+		return nil, err
 	}
 
 	addr := netip.MustParseAddrPort(c.LocalAddr().String())
 	_ = c.Close()
 
-	ba := &benchAgent{addr: addr}
-
-	a, err := ua.New(ua.Config{
+	cfg := ua.Config{
 		Prepare: func(req *sip.Request) error {
 			target := req.URI
 			if r, err := req.Header.TopRoute(); err == nil {
@@ -54,36 +69,44 @@ func newBenchAgent(b *testing.B, name string, onInvite func(r *ua.Request) ua.Ha
 
 			return nil
 		},
-		Contact:  sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: addr.Addr().String(), Port: addr.Port()}},
-		OnInvite: onInvite,
-	})
+		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: addr.Addr().String(), Port: addr.Port()}},
+	}
+
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	a, err := ua.New(cfg)
 	if err != nil {
-		b.Fatal(err)
+		return nil, err
 	}
 
-	if _, err := a.Layer().Listen(context.Background(), addr); err != nil {
-		b.Fatal(err)
-	}
-
-	b.Cleanup(func() {
+	shutdown := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 
 		_ = a.Shutdown(ctx)
-	})
+	}
 
-	ba.a = a
+	if _, err := a.Layer().Listen(context.Background(), addr); err != nil {
+		shutdown()
+		return nil, err
+	}
 
-	return ba
+	b.Cleanup(shutdown)
+
+	return &benchAgent{a: a, addr: addr}, nil
 }
 
 const benchSDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0\r\n"
 
 // callee answers every INVITE with a 200.
 func callee(b *testing.B) *benchAgent {
-	return newBenchAgent(b, "bob", func(r *ua.Request) ua.Handler {
-		_ = r.Accept(ua.SDP([]byte(benchSDP)))
-		return ua.Handler{}
+	return newBenchAgent(b, "bob", func(c *ua.Config) {
+		c.OnInvite = func(r *ua.Request) ua.Handler {
+			_ = r.Accept(ua.SDP([]byte(benchSDP)))
+			return ua.Handler{}
+		}
 	})
 }
 
@@ -227,6 +250,122 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 
 		b.StartTimer()
 	}
+}
+
+// BenchmarkFanOut: one agent calling 2000 agents at once, 10 calls each, in 200 groups of 100 on a strand each, then
+// ending the calls of every group in one go: the INVITEs and the BYEs of the controlling function of group calls
+// (TS 24.379 §10.1.1.2.1, §10.1.1.4.2), and the bursts of their responses on its socket. ns/op is a round, its calls
+// set up and ended; rtx counts the retransmissions of a round, the sender's (Timer A, E) and its peers' 2xx to INVITE
+// (Timer G), each a datagram lost or late.
+func BenchmarkFanOut(b *testing.B) {
+	const (
+		agents  = 2000
+		groups  = 200
+		members = 100
+	)
+
+	var sent, received atomic.Int64
+
+	hub := newBenchAgent(b, "group", func(c *ua.Config) {
+		c.Transaction.Transport.Trace = func(m sip.Message, _ sip.Flow, isSent bool) {
+			switch m := m.(type) {
+			case *sip.Request:
+				if isSent && m.Method != "ACK" {
+					sent.Add(1)
+				}
+			case *sip.Response:
+				if cseq, _ := m.Header.CSeq(); !isSent && m.StatusCode >= 200 && cseq.Method == "INVITE" {
+					received.Add(1)
+				}
+			}
+		}
+	})
+
+	peers := make([]*benchAgent, agents)
+	for i := range peers {
+		peers[i] = callee(b)
+	}
+
+	var (
+		setup, release time.Duration
+		rtx            int64
+	)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		sent.Store(0)
+		received.Store(0)
+
+		var (
+			established, ended sync.WaitGroup
+			sessions           = make([][]*ua.Session, groups)
+			strands            = make([]*ua.Strand, groups)
+		)
+
+		start := time.Now()
+
+		for g := range groups {
+			strands[g] = hub.a.NewStrand()
+
+			for m := range members {
+				to := peers[(g*members+m)%agents]
+
+				established.Add(1)
+				ended.Add(1)
+
+				uri := sip.URI{Scheme: "sip", User: "bob", Host: to.addr.Addr().String(), Port: to.addr.Port()}
+				req := sip.NewRequest("INVITE", uri)
+				req.Header.Add("From", "<sip:group@"+hub.addr.String()+">")
+				req.Header.Add("To", "<"+uri.String()+">")
+				req.SetBodies(ua.SDP([]byte(benchSDP)))
+
+				if _, err := hub.a.Invite(req, ua.Handler{
+					// On the strand of the group, as its release.
+					Established: func(s *ua.Session, _ sip.Message) {
+						sessions[g] = append(sessions[g], s)
+
+						established.Done()
+					},
+					Failed: func(*ua.Outgoing, *sip.Response, error) {
+						b.Error("call failed")
+						established.Done()
+						ended.Done()
+					},
+				}, ua.On(strands[g])); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+
+		established.Wait()
+
+		mid := time.Now()
+
+		for g, st := range strands {
+			st.Post(func() {
+				for _, s := range sessions[g] {
+					if err := s.Bye(ua.Change{}, func(*sip.Response, error) { ended.Done() }); err != nil {
+						b.Error(err)
+						ended.Done()
+					}
+				}
+			})
+		}
+
+		ended.Wait()
+
+		setup += mid.Sub(start)
+		release += time.Since(mid)
+
+		// The INVITE and the BYE of each call, the 2xx to each INVITE: the rest are retransmissions.
+		rtx += sent.Load() + received.Load() - 3*groups*members
+	}
+
+	b.ReportMetric(float64(rtx)/float64(b.N), "rtx/op")
+	b.ReportMetric(float64(setup.Milliseconds())/float64(b.N), "setup-ms")
+	b.ReportMetric(float64(release.Milliseconds())/float64(b.N), "release-ms")
 }
 
 // netAgent is an agent on the in-memory net of a benchmark.

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -96,20 +98,28 @@ type Layer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu     sync.Mutex
-	closed bool
-	locals map[netip.AddrPort]struct{}
-	lanes  map[sip.Flow]*lane
+	// locals are the addresses the layer listens on or serves, read without a lock on every send and response; they
+	// change under mu, a copy replacing them.
+	locals atomic.Pointer[addrSet]
 
+	// mu guards the transactions, qmu the queues of the flows, so that the sends of a flow do not wait on the matching
+	// of messages: closed changes with both held, and is read with either; mu is never taken with qmu held.
+	mu      sync.Mutex
+	closed  bool
+	clients map[clientKey]*ClientTransaction
+	servers map[serverKey]*ServerTransaction
+	pending map[branchKey]*ServerTransaction
+
+	qmu      sync.Mutex
+	lanes    map[sip.Flow]*lane
 	outboxes map[sip.Flow]*outbox
 
 	// drained, while not nil, closes once the outboxes are empty, for Shutdown.
 	drained chan struct{}
-	clients map[clientKey]*ClientTransaction
-	servers map[serverKey]*ServerTransaction
-	pending map[branchKey]*ServerTransaction
 	wg      sync.WaitGroup
 }
+
+type addrSet map[netip.AddrPort]struct{}
 
 type clientKey struct {
 	branch, method string
@@ -147,13 +157,14 @@ func New(cfg Config) *Layer {
 		t1:       cfg.T1,
 		t2:       cfg.T2,
 		t4:       cfg.T4,
-		locals:   make(map[netip.AddrPort]struct{}),
 		lanes:    make(map[sip.Flow]*lane),
 		outboxes: make(map[sip.Flow]*outbox),
 		clients:  make(map[clientKey]*ClientTransaction),
 		servers:  make(map[serverKey]*ServerTransaction),
 		pending:  make(map[branchKey]*ServerTransaction),
 	}
+
+	l.locals.Store(&addrSet{})
 
 	for _, a := range cfg.Aliases {
 		l.aliases[normalizeHost(a)] = struct{}{}
@@ -228,10 +239,23 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 	}
 
 	l.mu.Lock()
-	l.locals[bound] = struct{}{}
+	l.addLocal(bound)
 	l.mu.Unlock()
 
 	return bound, nil
+}
+
+// addLocal adds a to the local addresses. Called with l.mu held.
+func (l *Layer) addLocal(a netip.AddrPort) {
+	locals := maps.Clone(*l.locals.Load())
+	locals[a] = struct{}{}
+	l.locals.Store(&locals)
+}
+
+// isLocalAddr reports whether the layer listens on a, or serves it.
+func (l *Layer) isLocalAddr(a netip.AddrPort) bool {
+	_, ok := (*l.locals.Load())[a]
+	return ok
 }
 
 func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
@@ -266,7 +290,9 @@ func (l *Layer) Close() error {
 		return nil
 	}
 
+	l.qmu.Lock()
 	l.closed = true
+	l.qmu.Unlock()
 	l.mu.Unlock()
 
 	err := l.tr.Close()
@@ -564,11 +590,7 @@ func (l *Layer) checkFlow(f sip.Flow) error {
 		return errors.New("sip/transaction: no remote address in the flow")
 	}
 
-	l.mu.Lock()
-	_, ok := l.locals[unmap(f.Local)]
-	l.mu.Unlock()
-
-	if !ok {
+	if !l.isLocalAddr(unmap(f.Local)) {
 		return fmt.Errorf("sip/transaction: %w %s", transport.ErrNoListener, f.Local)
 	}
 
@@ -621,20 +643,15 @@ func (l *Layer) IsLocal(host string, port uint16) bool {
 		port = sip.DefaultPort
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if a, ok := sip.HostAddr(host); ok {
-		if _, ok := l.locals[netip.AddrPortFrom(a.Unmap(), port)]; ok {
-			return true
-		}
+	if a, ok := sip.HostAddr(host); ok && l.isLocalAddr(netip.AddrPortFrom(a.Unmap(), port)) {
+		return true
 	}
 
 	if _, ok := l.aliases[normalizeHost(host)]; !ok {
 		return false
 	}
 
-	for local := range l.locals {
+	for local := range *l.locals.Load() {
 		if local.Port() == port {
 			return true
 		}

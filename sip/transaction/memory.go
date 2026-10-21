@@ -104,7 +104,7 @@ func (l *Layer) Serve(local netip.AddrPort) error {
 		return err
 	}
 
-	l.locals[local] = struct{}{}
+	l.addLocal(local)
 
 	return nil
 }
@@ -121,7 +121,7 @@ func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), 
 		return nil, ErrClosed
 	}
 
-	if _, local := l.locals[addr]; local {
+	if l.isLocalAddr(addr) {
 		return nil, fmt.Errorf("%w: %s", ErrInUse, addr)
 	}
 
@@ -143,11 +143,7 @@ func (l *Layer) endpoint(addr netip.AddrPort) (endpoint, bool) {
 		return ep, true
 	}
 
-	l.mu.Lock()
-	_, ok := l.locals[unmap(addr)]
-	l.mu.Unlock()
-
-	return endpoint{layer: l}, ok && addr.IsValid()
+	return endpoint{layer: l}, addr.IsValid() && l.isLocalAddr(unmap(addr))
 }
 
 // inMemory reports whether addr is reached in memory.
@@ -159,11 +155,7 @@ func (l *Layer) inMemory(addr netip.AddrPort) bool {
 // sendsFrom reports whether the layer sends from local: an address it serves or listens on, or one of a peer attached
 // to it.
 func (l *Layer) sendsFrom(local netip.AddrPort) bool {
-	l.mu.Lock()
-	_, ok := l.locals[local]
-	l.mu.Unlock()
-
-	if ok {
+	if l.isLocalAddr(local) {
 		return true
 	}
 
@@ -257,8 +249,8 @@ type lane struct {
 }
 
 func (l *Layer) post(f sip.Flow, job func()) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.qmu.Lock()
+	defer l.qmu.Unlock()
 
 	if l.closed {
 		return ErrClosed
@@ -282,12 +274,12 @@ func (l *Layer) drainLane(f sip.Flow, ln *lane) {
 	defer l.wg.Done()
 
 	for {
-		l.mu.Lock()
+		l.qmu.Lock()
 
 		if len(ln.queue) == 0 || l.closed {
 			delete(l.lanes, f)
 			l.checkDrained()
-			l.mu.Unlock()
+			l.qmu.Unlock()
 
 			return
 		}
@@ -296,7 +288,7 @@ func (l *Layer) drainLane(f sip.Flow, ln *lane) {
 		ln.queue[0] = nil
 		ln.queue = ln.queue[1:]
 
-		l.mu.Unlock()
+		l.qmu.Unlock()
 
 		job()
 	}

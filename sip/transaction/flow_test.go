@@ -258,3 +258,42 @@ func TestResponseFlowPerResponse(t *testing.T) {
 
 	h.peer.RecvNone(quiet)
 }
+
+// The local addresses, read without a lock as messages come and go, grow as the layer listens on more.
+func TestListenWhileMatching(t *testing.T) {
+	l, _ := siptest.NewLayer(t, transaction.Config{})
+
+	const n = 8
+
+	bound := make(chan netip.AddrPort, n)
+
+	go func() {
+		defer close(bound)
+
+		for range n {
+			a, err := l.Listen(context.Background(), netip.AddrPortFrom(loopback, 0))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+
+			bound <- a
+		}
+	}()
+
+	var seen []netip.AddrPort
+
+	for a := range bound {
+		seen = append(seen, a)
+
+		for _, a := range seen {
+			if !l.IsLocal(a.Addr().String(), a.Port()) {
+				t.Fatalf("%s not local once listened on", a)
+			}
+		}
+	}
+
+	if l.IsLocal(loopback.String(), 1) {
+		t.Fatal("an address not listened on is local")
+	}
+}
