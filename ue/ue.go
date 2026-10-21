@@ -181,8 +181,9 @@ type Event struct {
 	Err      error
 
 	// Deregistered is set when the registration of the UE ended without a REGISTER of its own: by the reg event
-	// NOTIFY of Request, or on its expiry.
+	// NOTIFY of Request, or on its expiry; RetryAfter, of DeregisteredProbation, when to register again.
 	Deregistered Deregistration
+	RetryAfter   time.Duration
 }
 
 // Deregistration is how the registration of a UE ended without a REGISTER of its own: the event of its contacts in
@@ -202,8 +203,16 @@ const (
 	// (TS 24.229 §5.1.1.7).
 	DeregisteredRejected Deregistration = "rejected"
 
+	// DeregisteredProbation is the network expecting the UE to register again after Event.RetryAfter (RFC 3680
+	// §5.1).
+	DeregisteredProbation Deregistration = "probation"
+
 	// DeregisteredExpired is the registration expiring, not refreshed in time.
 	DeregisteredExpired Deregistration = "expired"
+
+	// DeregisteredFlowFailed is the flow of the registration failing: a keep-alive not answered (RFC 5626 §4.4.1),
+	// the UE to register again (§4.5).
+	DeregisteredFlowFailed Deregistration = "flow-failed"
 )
 
 type saSet struct {
@@ -236,13 +245,13 @@ type UE struct {
 	layer       *transaction.Layer
 	unprotected netip.AddrPort
 	portS       uint16
-	spis        *ipsec.SPIs
 
 	op sync.Mutex
 
 	mu          sync.Mutex
 	closed      bool
 	pcscf       netip.AddrPort
+	ani         string
 	clientPorts []uint16
 	retired     []uint16
 	pending     int
@@ -257,7 +266,10 @@ type UE struct {
 	auto        bool
 	reregTimer  transaction.Timer
 	expiryTimer transaction.Timer
-	sub         *subscription
+	// keepTimer is the next keep-alive of the flow, flowTimer the Flow-Timer of its registration (RFC 5626 §4.4).
+	keepTimer transaction.Timer
+	flowTimer time.Duration
+	sub       *subscription
 
 	services []Service
 
@@ -318,10 +330,10 @@ func New(cfg Config) (*UE, error) {
 		user:    timeUUID(),
 		offers:  cfg.Offers,
 		log:     cfg.Logger,
-		spis:    ipsec.NewSPIs(),
 		expires: cfg.Expires,
 		auto:    true,
 		pcscf:   cfg.PCSCF,
+		ani:     cfg.AccessNetworkInfo,
 	}
 
 	if len(u.offers) == 0 {
@@ -374,7 +386,7 @@ func New(cfg Config) (*UE, error) {
 			Transport: transport.Config{
 				Trace:    u.trace,
 				LargeUDP: cfg.LargeUDP,
-				Control:  cfg.Control,
+				Control:  u.control,
 				Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 					var (
 						c   net.Conn
@@ -465,6 +477,22 @@ func (u *UE) SetPCSCF(p netip.AddrPort) error {
 	u.pcscf = p
 
 	return nil
+}
+
+// SetAccessNetworkInfo changes the P-Access-Network-Info of the UE's next requests and responses (TS 24.229
+// §7.2A.4): the cell after a handover. A UE of Plain sends none.
+func (u *UE) SetAccessNetworkInfo(ani string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	u.ani = ani
+}
+
+func (u *UE) accessNetworkInfo() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	return u.ani
 }
 
 func (u *UE) pcscfAddr() netip.AddrPort {
@@ -561,6 +589,7 @@ func (u *UE) close() bool {
 
 	u.closed = true
 	u.stopTimersLocked()
+	u.stopKeepaliveLocked()
 	u.sub = nil
 
 	return true
@@ -750,8 +779,14 @@ func (u *UE) newClient(last uint16) (client, error) {
 		u.mu.Unlock()
 	}
 
-	spiC, spiS, err := u.spis.Allocate()
+	spiC, err := u.cfg.IPsec.AllocateSPI(u.cfg.Local)
 	if err != nil {
+		return client{}, fmt.Errorf("ue: %w", err)
+	}
+
+	spiS, err := u.cfg.IPsec.AllocateSPI(u.cfg.Local)
+	if err != nil {
+		u.cfg.IPsec.ReleaseSPI(spiC)
 		return client{}, fmt.Errorf("ue: %w", err)
 	}
 
@@ -834,6 +869,14 @@ func (u *UE) install(c client, o ipsec.Offer, keys Keys, server []string) (*saSe
 		return nil, fmt.Errorf("ue: %w", err)
 	}
 
+	// The sockets of the protected ports, bound before the SAs: their UDP sockets and TCP listeners.
+	for _, port := range []uint16{set.Local.PortC, set.Local.PortS} {
+		if err := u.protectSockets(set, port); err != nil {
+			_ = u.cfg.IPsec.Remove(set)
+			return nil, fmt.Errorf("ue: %w", err)
+		}
+	}
+
 	s := &saSet{set: set, keys: keys, state: Temporary, server: server}
 
 	u.sets = append(u.sets, s)
@@ -890,10 +933,6 @@ func (u *UE) drop(s *saSet) {
 }
 
 func (u *UE) removeSet(s *saSet) error {
-	if s.ownsSPIs {
-		u.spis.Release(s.set.Local.SPIC, s.set.Local.SPIS)
-	}
-
 	inbound := sip.Flow{
 		Transport: sip.TCP,
 		Local:     netip.AddrPortFrom(s.set.Local.Addr, s.set.Local.PortS),
@@ -906,7 +945,64 @@ func (u *UE) removeSet(s *saSet) error {
 		}
 	}
 
-	return u.cfg.IPsec.Remove(s.set)
+	err := u.cfg.IPsec.Remove(s.set)
+
+	if s.ownsSPIs {
+		u.cfg.IPsec.ReleaseSPI(s.set.Local.SPIC)
+		u.cfg.IPsec.ReleaseSPI(s.set.Local.SPIS)
+	}
+
+	return err
+}
+
+// protectSockets has the SAs of set protect the sockets listening on its port port.
+func (u *UE) protectSockets(set SASet, port uint16) error {
+	rcs, err := u.layer.Sockets(netip.AddrPortFrom(u.cfg.Local, port))
+	if err != nil {
+		return err
+	}
+
+	for _, rc := range rcs {
+		if err := u.cfg.IPsec.Protect(set, port, rc); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// control runs on each socket of the UE before it is bound or connects: the platform's Control, then, of a TCP
+// connection dialled from a protected client port, the protection of its SAs (TS 33.203 §7.1).
+func (u *UE) control(network, address string, c syscall.RawConn) error {
+	if u.cfg.Control != nil {
+		if err := u.cfg.Control(network, address, c); err != nil {
+			return err
+		}
+	}
+
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil || ap.Port() == 0 || u.cfg.Plain {
+		return nil
+	}
+
+	u.mu.Lock()
+
+	var set *SASet
+
+	for i := len(u.sets) - 1; i >= 0; i-- {
+		if u.sets[i].set.Local.PortC == ap.Port() {
+			set = &u.sets[i].set
+			break
+		}
+	}
+
+	u.mu.Unlock()
+
+	if set == nil {
+		return nil
+	}
+
+	return u.cfg.IPsec.Protect(*set, ap.Port(), c)
 }
 
 func protectedFlow(s *saSet, tr sip.Transport) sip.Flow {

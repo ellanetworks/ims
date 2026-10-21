@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"syscall"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
@@ -102,11 +103,26 @@ func (k Keys) EncryptionKey(e Encryption) ([]byte, error) {
 	return nil, fmt.Errorf("ue: unsupported encryption algorithm %q", e)
 }
 
-// IPsec is the IPsec of the platform the UE runs on, in which it installs the SAs of each authenticated registration
-// and removes them (TS 33.203 §7.4): the kernel's SAD and SPD, or the sockets of the protected ports.
+// IPsec is the IPsec of the platform the UE runs on, in which it sets up the SAs of each authenticated registration
+// and removes them (TS 33.203 §7.1, §7.4): the kernel's SAD and SPD of selectors, or transforms on the sockets of the
+// protected ports. Its methods may be called from any goroutine.
 type IPsec interface {
+	// AllocateSPI reserves an SPI of the SAs to the UE's address local, for its Security-Client (TS 33.203 §7.2), the
+	// UE's spi_uc or spi_us: unique among the SPIs of SAs to local. ReleaseSPI releases one, once its SAs are removed or
+	// never set up.
+	AllocateSPI(local netip.Addr) (uint32, error)
+	ReleaseSPI(spi uint32)
+
+	// Install sets up the four SAs of s with the keys of k; Remove removes them.
 	Install(s SASet, k Keys) error
 	Remove(s SASet) error
+
+	// Protect has the SAs of s, Installed, protect socket c, bound to the UE's port port of s, s.Local.PortC or
+	// s.Local.PortS: in on that port, out to the P-CSCF's port of its pair (§7.1). The UE calls it for each socket of a
+	// protected port, its UDP socket and TCP listener once s is installed, a TCP connection it dials from it before it
+	// connects; c is valid during the call only. An IPsec of selectors does nothing. An IPsec of sockets that holds
+	// one transform per direction per socket protects port_us with the latest set only.
+	Protect(s SASet, port uint16, c syscall.RawConn) error
 }
 
 // SAState is the state of an SA set (TS 33.203 §7.4).

@@ -95,6 +95,8 @@ type Transport struct {
 	listeners map[netip.AddrPort]*listener
 	conns     map[sip.Flow]*conn
 	wg        sync.WaitGroup
+
+	pongs *pongs
 }
 
 type listener struct {
@@ -124,6 +126,7 @@ func New(cfg Config) *Transport {
 		trace:        cfg.Trace,
 		listeners:    make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
+		pongs:        newPongs(),
 	}
 
 	t.ctx, t.cancel = context.WithCancel(context.Background())
@@ -217,6 +220,30 @@ func bind(ctx context.Context, local netip.AddrPort, control func(network, addre
 	_ = udp.SetReadBuffer(udpReadBuffer)
 
 	return &listener{local: unmap(tl.Addr().(*net.TCPAddr).AddrPort()), udp: udp, tcp: tl}, nil
+}
+
+// Sockets are the sockets listening on local, its UDP socket and its TCP listener, for options of their own: their
+// protection by IPsec (TS 33.203 §7.1), which the connections the listener accepts inherit.
+func (t *Transport) Sockets(local netip.AddrPort) ([]syscall.RawConn, error) {
+	t.mu.Lock()
+	l, ok := t.listeners[unmap(local)]
+	t.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("sip/transport: not listening on %s", local)
+	}
+
+	u, err := l.udp.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := l.tcp.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+
+	return []syscall.RawConn{u, c}, nil
 }
 
 func (t *Transport) Send(ctx context.Context, m sip.Message) error {
@@ -515,6 +542,8 @@ func (t *Transport) readUDP(l *listener) {
 			if res := stunBindingReply(data, src); res != nil {
 				_, _ = l.udp.WriteToUDPAddrPort(res, src)
 			}
+
+			t.udpPong(data)
 
 			continue
 		}

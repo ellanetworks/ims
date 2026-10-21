@@ -51,6 +51,25 @@ func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 	return out[0], out[1], nil
 }
 
+// AllocateOne allocates one SPI, not among avoid.
+func (a *SPIs) AllocateOne(avoid ...uint32) (uint32, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for range 64 {
+		spi := MinSPI + rand.Uint32N(MaxSPI-MinSPI+1)
+		if a.used[spi] || slices.Contains(avoid, spi) {
+			continue
+		}
+
+		a.used[spi] = true
+
+		return spi, nil
+	}
+
+	return 0, errSPIsExhausted
+}
+
 func (a *SPIs) Reserve(spis ...uint32) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

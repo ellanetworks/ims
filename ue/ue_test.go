@@ -598,7 +598,7 @@ func TestNewChecksTheConfig(t *testing.T) {
 	id := Identities{IMPI: "alice@example.org", IMPU: "sip:alice@example.org", HomeDomain: "example.org"}
 	instance, _ := IMEIInstanceID(imei)
 	full := Config{
-		Identities: id, InstanceID: instance, AKA: simAKA{}, IPsec: kernelIPsec{}, AccessNetworkInfo: accessNetworkInfo,
+		Identities: id, InstanceID: instance, AKA: simAKA{}, IPsec: &kernelIPsec{}, AccessNetworkInfo: accessNetworkInfo,
 		PCSCF: netip.AddrPortFrom(loopback, 5060), Local: loopback,
 	}
 

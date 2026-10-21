@@ -716,3 +716,91 @@ func TestTrace(t *testing.T) {
 		t.Errorf("traced %+v, want the 200 sent to %s", r, u.Addr())
 	}
 }
+
+// Sockets are the UDP socket and the TCP listener of a local address, bound to it.
+func TestSockets(t *testing.T) {
+	tr, _ := siptest.NewTransport(t, transport.Config{})
+	local := siptest.Listen(t, tr, lo)
+
+	rcs, err := tr.Sockets(local)
+	if err != nil || len(rcs) != 2 {
+		t.Fatalf("Sockets = %v, %v", rcs, err)
+	}
+
+	for i, want := range []int{syscall.SOCK_DGRAM, syscall.SOCK_STREAM} {
+		var (
+			typ  int
+			port int
+		)
+
+		if err := rcs[i].Control(func(fd uintptr) {
+			typ, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_TYPE)
+
+			if sa, err := syscall.Getsockname(int(fd)); err == nil {
+				port = sa.(*syscall.SockaddrInet4).Port
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		if typ != want || port != int(local.Port()) {
+			t.Errorf("socket %d: type %d, port %d, want type %d on %d", i, typ, port, want, local.Port())
+		}
+	}
+
+	if _, err := tr.Sockets(netip.AddrPortFrom(lo, 9)); err == nil {
+		t.Error("Sockets of an address not listened on")
+	}
+}
+
+// RFC 5626 §4.4.2: a STUN Binding request on UDP, answered by the other end's response; none from a socket that does
+// not answer.
+func TestPingUDP(t *testing.T) {
+	a, _ := siptest.NewTransport(t, transport.Config{})
+	b, _ := siptest.NewTransport(t, transport.Config{})
+	la, lb := siptest.Listen(t, a, lo), siptest.Listen(t, b, lo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), siptest.Timeout)
+	defer cancel()
+
+	if err := a.Ping(ctx, sip.Flow{Transport: sip.UDP, Local: la, Remote: lb}); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	mute := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+	mute.MuteSTUN(true)
+
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := a.Ping(short, sip.Flow{Transport: sip.UDP, Local: la, Remote: mute.Addr()}); !errors.Is(err, transport.ErrNoPong) {
+		t.Fatalf("Ping of a mute socket: %v", err)
+	}
+}
+
+// RFC 5626 §4.4.1: a double CRLF on the TCP connection of the flow, answered by a CRLF; no connection, no ping.
+func TestPingTCP(t *testing.T) {
+	a, _ := siptest.NewTransport(t, transport.Config{})
+	b, _ := siptest.NewTransport(t, transport.Config{})
+	la, lb := siptest.Listen(t, a, lo), siptest.Listen(t, b, lo)
+
+	f := sip.Flow{Transport: sip.TCP, Local: la, Remote: lb}
+
+	ctx, cancel := context.WithTimeout(context.Background(), siptest.Timeout)
+	defer cancel()
+
+	if err := a.Ping(ctx, f); err == nil {
+		t.Fatal("Ping without a connection succeeded")
+	}
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+lb.String(), sip.TCP, la)
+	req.Flow = f
+
+	if err := a.Send(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Ping(ctx, f); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+}

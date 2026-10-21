@@ -45,7 +45,7 @@ func (u *UE) prepare(req *sip.Request) error {
 	req.Header.Add("Proxy-Require", "sec-agree")
 
 	if req.Method != "ACK" {
-		req.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
+		req.Header.Add("P-Access-Network-Info", u.accessNetworkInfo())
 	}
 
 	return nil
@@ -54,7 +54,7 @@ func (u *UE) prepare(req *sip.Request) error {
 // respondHeaders completes a response of the agent (TS 24.229 §5.1.2A.2).
 func (u *UE) respondHeaders(_ *sip.Request, res *sip.Response) {
 	if !u.cfg.Plain && !res.Header.Has("P-Access-Network-Info") {
-		res.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
+		res.Header.Add("P-Access-Network-Info", u.accessNetworkInfo())
 	}
 }
 

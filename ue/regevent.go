@@ -359,7 +359,7 @@ func (u *UE) notify(sub *subscription, r *ua.Request) {
 		f()
 	}
 
-	e := Event{Request: req, Err: infoErr, Deregistered: a.deregistered}
+	e := Event{Request: req, Err: infoErr, Deregistered: a.deregistered, RetryAfter: a.retryAfter}
 	if infoErr == nil && !stale {
 		e.Reginfo = &info
 	}
@@ -382,6 +382,7 @@ type action struct {
 	reregister   bool
 	resubscribe  bool
 	deregistered Deregistration
+	retryAfter   time.Duration
 }
 
 func (u *UE) ownContact(c regevent.Contact) bool {
@@ -408,6 +409,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 		shortened             *uint32
 		mine, gone            int
 		deactivated, rejected bool
+		probation             *uint32
 		registered, removed   []string
 		allClosed             = info.State == regevent.Full && len(info.Registrations) > 0
 	)
@@ -428,6 +430,17 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 				ended++
 				deactivated = deactivated || c.Event == regevent.Deactivated
 				rejected = rejected || c.Event == regevent.Rejected
+
+				if c.Event == regevent.Probation {
+					retry := uint32(0)
+					if c.RetryAfter != nil {
+						retry = *c.RetryAfter
+					}
+
+					if probation == nil || retry > *probation {
+						probation = &retry
+					}
+				}
 
 				continue
 			}
@@ -464,6 +477,8 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 			a.deregistered = DeregisteredRejected
 		case deactivated:
 			a.deregistered = DeregisteredDeactivated
+		case probation != nil:
+			a.deregistered, a.retryAfter = DeregisteredProbation, time.Duration(*probation)*time.Second
 		}
 
 		return a, []func(){after}
@@ -512,6 +527,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 // released.
 func (u *UE) forgetLocked() func() {
 	u.stopTimersLocked()
+	u.stopKeepaliveLocked()
 	u.state = State{}
 	u.auth = ""
 

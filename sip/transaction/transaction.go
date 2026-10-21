@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -243,6 +244,24 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 	l.mu.Unlock()
 
 	return bound, nil
+}
+
+// Ping sends a keep-alive on flow f and waits for its answer (transport.Transport.Ping).
+func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
+	if l.tr == nil {
+		return errors.New("sip/transaction: no transport")
+	}
+
+	return l.tr.Ping(ctx, f)
+}
+
+// Sockets are the sockets of the transport listening on local (transport.Transport.Sockets).
+func (l *Layer) Sockets(local netip.AddrPort) ([]syscall.RawConn, error) {
+	if l.tr == nil {
+		return nil, errors.New("sip/transaction: no transport")
+	}
+
+	return l.tr.Sockets(local)
 }
 
 // addLocal adds a to the local addresses. Called with l.mu held.

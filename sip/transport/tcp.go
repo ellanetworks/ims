@@ -285,10 +285,13 @@ func (t *Transport) readTCP(c *conn) {
 			c.limit.Store(int64(t.idleTimeout))
 			t.deliver(m, c.flow)
 		case err == nil:
-			if ka == sip.KeepalivePing {
+			switch ka {
+			case sip.KeepalivePing:
 				if err := t.write(c, crlf); err != nil {
 					return
 				}
+			case sip.KeepalivePong:
+				t.tcpPong(c)
 			}
 		case errors.As(err, &terr):
 			t.tooLarge(c, terr)

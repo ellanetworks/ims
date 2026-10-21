@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -184,7 +185,8 @@ func (u *UE) newClientFor(p *procedure) error {
 
 func (u *UE) releaseClient(p *procedure) {
 	if p.client != (client{}) {
-		u.spis.Release(p.client.spiC, p.client.spiS)
+		u.cfg.IPsec.ReleaseSPI(p.client.spiC)
+		u.cfg.IPsec.ReleaseSPI(p.client.spiS)
 		p.client = client{}
 	}
 }
@@ -251,7 +253,7 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 		req.Header.Add("Proxy-Require", "sec-agree")
 
 		if protected {
-			req.Header.Add("P-Access-Network-Info", u.cfg.AccessNetworkInfo)
+			req.Header.Add("P-Access-Network-Info", u.accessNetworkInfo())
 		}
 	}
 
@@ -497,6 +499,77 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	}
 
 	u.scheduleLocked(granted)
+
+	u.flowTimer = 0
+
+	if u.state.Outbound {
+		if n, err := strconv.ParseUint(res.Header.Get("Flow-Timer"), 10, 32); err == nil && n > 0 {
+			u.flowTimer = time.Duration(n) * time.Second
+		}
+	}
+
+	u.keepaliveLocked()
+}
+
+// pongTimeout is how long a keep-alive waits for its answer (RFC 5626 §4.4.1: 10 seconds); tests shorten it.
+var pongTimeout = 10 * time.Second
+
+// keepaliveLocked schedules the next keep-alive of the registration's flow, if its 200 had a Flow-Timer (RFC 5626
+// §4.4.1): between 80% and 100% of it, at random. Without one, none: the UE is behind no NAT (TS 24.229 §5.1.1.2.1
+// d, the P-CSCF sending a Flow-Timer only to a UE behind one).
+func (u *UE) keepaliveLocked() {
+	u.stopKeepaliveLocked()
+
+	if u.flowTimer <= 0 {
+		return
+	}
+
+	d := u.flowTimer*4/5 + time.Duration(rand.Int64N(int64(u.flowTimer/5)+1))
+	u.keepTimer = u.layer.Clock().AfterFunc(d, u.keepalive)
+}
+
+func (u *UE) stopKeepaliveLocked() {
+	if u.keepTimer != nil {
+		u.keepTimer.Stop()
+		u.keepTimer = nil
+	}
+}
+
+// keepalive pings the flow of the registration; its failure ends the registration (RFC 5626 §4.4.1, §4.5).
+func (u *UE) keepalive() {
+	flow, _, err := u.requestFlow(u.cfg.Transport)
+	if err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), pongTimeout)
+		err = u.layer.Ping(ctx, flow)
+
+		cancel()
+	}
+
+	u.mu.Lock()
+
+	if u.closed || !u.state.Registered {
+		u.mu.Unlock()
+		return
+	}
+
+	if err == nil {
+		u.keepaliveLocked()
+		u.mu.Unlock()
+
+		return
+	}
+
+	after := u.forgetLocked()
+	sets := slices.Clone(u.sets)
+
+	for _, s := range sets {
+		u.dropLocked(s)
+	}
+
+	u.mu.Unlock()
+
+	after()
+	u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})
 }
 
 // ownFlow reports whether a contact's parameters name the UE's flow, when it registers one.

@@ -2,6 +2,7 @@ package siptest
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
@@ -34,6 +35,10 @@ type Socket struct {
 	conns  map[netip.AddrPort]net.Conn
 	opened int
 	wg     sync.WaitGroup
+
+	// stun counts the STUN Binding requests received on UDP, which the socket answers unless mute.
+	stun int
+	mute bool
 }
 
 func NewSocket(t testing.TB, addr netip.AddrPort) *Socket {
@@ -237,6 +242,44 @@ func (s *Socket) accept() {
 	}
 }
 
+// STUNRequests is the number of STUN Binding requests received on UDP: keep-alives (RFC 5626 §4.4.2).
+func (s *Socket) STUNRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.stun
+}
+
+// MuteSTUN stops or resumes the answers to the STUN Binding requests.
+func (s *Socket) MuteSTUN(mute bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.mute = mute
+}
+
+// stunRequest answers a STUN Binding request (RFC 5389 §7.3) with a response of its transaction ID, reporting
+// whether b is one.
+func (s *Socket) stunRequest(b []byte, src netip.AddrPort) bool {
+	if len(b) < 20 || binary.BigEndian.Uint16(b[0:2]) != 0x0001 || binary.BigEndian.Uint32(b[4:8]) != 0x2112A442 {
+		return false
+	}
+
+	s.mu.Lock()
+	s.stun++
+	mute := s.mute
+	s.mu.Unlock()
+
+	if !mute {
+		res := make([]byte, 20)
+		binary.BigEndian.PutUint16(res[0:2], 0x0101)
+		copy(res[4:20], b[4:20])
+		_, _ = s.udp.WriteToUDPAddrPort(res, src)
+	}
+
+	return true
+}
+
 func (s *Socket) readUDP() {
 	defer s.wg.Done()
 
@@ -246,6 +289,10 @@ func (s *Socket) readUDP() {
 		n, src, err := s.udp.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
+		}
+
+		if s.stunRequest(buf[:n], src) {
+			continue
 		}
 
 		m, err := sip.Parse(buf[:n])
