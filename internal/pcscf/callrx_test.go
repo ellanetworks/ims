@@ -123,8 +123,8 @@ func TestCallMediaAuthorizedOnTheAnswer(t *testing.T) {
 		!slices.Equal(aar.SpecificActions, []rx.SpecificAction{
 			rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
 			rx.ActionIndicationOfFailedResourcesAllocation,
-		}) || aar.Features != rx.FeatureRel8 || aar.FeaturesRequired {
-		t.Errorf("AAR %+v, want an initial one for the UE with the bearer and charging events and Rel8 offered", aar)
+		}) || aar.Features != rx.FeatureRel8|rx.FeatureMCPTT || aar.FeaturesRequired {
+		t.Errorf("AAR %+v, want an initial one for the UE with the bearer and charging events and Rel8 and MCPTT offered", aar)
 	}
 
 	if aar.AFChargingIdentifier != "" {

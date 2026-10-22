@@ -92,7 +92,13 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	pcf := pcftest.New(t, pcftest.Config{})
+	return newFixtureWith(t, pcftest.Config{})
+}
+
+func newFixtureWith(t *testing.T, cfg pcftest.Config) *fixture {
+	t.Helper()
+
+	pcf := pcftest.New(t, cfg)
 
 	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

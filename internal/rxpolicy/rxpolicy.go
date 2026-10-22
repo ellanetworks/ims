@@ -59,13 +59,15 @@ func (b *Backend) Bind(s policy.Sink) {
 }
 
 // session is what the P-CSCF keeps of an Rx session, its ref: the PCRF that holds it, how the PCRF binds it
-// (RFC 6733 §8.17, §8.18), and the Class AVPs to send back (§8.20).
+// (RFC 6733 §8.17, §8.18), the Class AVPs to send back (§8.20), and the features negotiated at its establishment
+// (TS 29.214 §5.4.1).
 type session struct {
 	Class    [][]byte                       `json:"class,omitempty"`
 	PCRF     string                         `json:"pcrf,omitempty"`
 	Realm    string                         `json:"realm,omitempty"`
 	Binding  diameter.SessionBinding        `json:"binding,omitempty"`
 	Failover diameter.SessionServerFailover `json:"failover,omitempty"`
+	Features rx.Features                    `json:"features,omitempty"`
 }
 
 func decodeRef(ref string) (session, error) {
@@ -288,6 +290,9 @@ func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signal
 	return session{}.answered(ans, a).ref()
 }
 
+// TS 29.214 §5.4.1: the features an AA-Request of a call advertises.
+const callFeatures = rx.FeatureRel8 | rx.FeatureMCPTT
+
 // TS 29.214 §5.3.13, §5.4.1: FAILED_RESOURCES_ALLOCATION is a Rel8 feature, advertised in the same AA-Request.
 var callActions = []rx.SpecificAction{
 	rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
@@ -316,7 +321,7 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	if r.Initial {
 		kind = rx.RequestInitial
 		aar.SpecificActions = callActions
-		aar.Features = rx.FeatureRel8
+		aar.Features = callFeatures
 	}
 
 	framed(&aar, r.UE)
@@ -324,6 +329,8 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	if r.Initial {
 		s = session{}
 	}
+
+	mcptt(&aar, r.MCPTT, r.Initial || s.Features&rx.FeatureMCPTT != 0)
 
 	ans, err := b.send(ctx, id, s, !s.Binding.Has(diameter.SessionBindingReAuth), func(env tgpp.Envelope) (*diameter.Message, error) {
 		return rx.NewAARequest(env, aar)
@@ -343,12 +350,29 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		return policy.Grant{}, classify(err)
 	}
 
-	next, err := s.answered(ans, a).ref()
+	held := s.answered(ans, a)
+	if r.Initial {
+		held.Features = a.Features
+	}
+
+	next, err := held.ref()
 	if err != nil {
 		return policy.Grant{}, err
 	}
 
 	return policy.Grant{Ref: next, Charging: AnswerCharging(a)}, nil
+}
+
+// TS 29.214 Annex A.13.2: the MCPTT namespace in MCPTT-Identifier, and its priority value as is in
+// Reservation-Priority, DEFAULT (0) the lowest. An initial request sends them before the PCRF tells whether it
+// supports MCPTT; a later one only to a PCRF that does (§5.4.1).
+func mcptt(r *rx.AARequest, p *policy.MCPTTPriority, supported bool) {
+	if p == nil || !supported {
+		return
+	}
+
+	r.MCPTTIdentifier = p.Namespace
+	r.ReservationPriority = new(rx.ReservationPriority(p.Level))
 }
 
 // unbound is the grant of a session whose PCRF could not be reached but allows the service: the next requests go to

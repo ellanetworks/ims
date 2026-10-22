@@ -1080,10 +1080,12 @@ func addOptionTag(res *sip.Response, name, tag string) {
 	res.Header.Add(name, tag)
 }
 
-// TS 24.229 §5.2.1, RFC 3325, RFC 3329 §2.3.1, RFC 5009 §5.2.6.4.2, §8.1
+// TS 24.229 §5.2.1, RFC 3325, RFC 3329 §2.3.1, RFC 5009 §5.2.6.4.2, §8.1. Resource-Priority goes on: §4.4.6
+// leaves what the UE sends to the P-CSCF's procedures, and the UE sends it for priority (§5.1).
 func fromUE(req *sip.Request) {
 	pani := ueAccessNetworkInfo(req.Header)
 	early := earlyMediaSupported(req.Header) && slices.Contains([]string{"INVITE", "PRACK", "UPDATE"}, req.Method)
+	priority := req.Header.Values("Resource-Priority")
 
 	trust.StripRequest(req)
 	dropFromAll(req.Header.Del)
@@ -1101,12 +1103,17 @@ func fromUE(req *sip.Request) {
 	if early {
 		req.Header.Add("P-Early-Media", sip.EarlyMediaSupported)
 	}
+
+	for _, v := range priority {
+		req.Header.Add("Resource-Priority", v)
+	}
 }
 
-// TS 24.229 §5.2.1 steps 1-3, §5.2.6.4.4, §5.2.6.4.2, §4.4.7
+// TS 24.229 §5.2.1 steps 1-3, §5.2.6.4.4, §5.2.6.4.2, §4.4.7, §4.4.6
 func fromUEResponse(res *sip.Response) {
 	pani := ueAccessNetworkInfo(res.Header)
 	reasons := res.Header.Values("Reason")
+	priority := res.Header.Values("Resource-Priority")
 
 	trust.StripResponse(res)
 	dropFromAll(res.Header.Del)
@@ -1118,6 +1125,10 @@ func fromUEResponse(res *sip.Response) {
 
 	for _, v := range reasons {
 		res.Header.Add("Reason", v)
+	}
+
+	for _, v := range priority {
+		res.Header.Add("Resource-Priority", v)
 	}
 }
 
