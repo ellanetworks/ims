@@ -922,3 +922,26 @@ func TestCloseIsNoListenerFailure(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+// A port held by another socket is told as such; an address no more local is not (EADDRNOTAVAIL: a network gone).
+func TestListenHeldOrNotLocal(t *testing.T) {
+	tr, _ := siptest.NewTransport(t, transport.Config{})
+
+	held, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = held.Close() }()
+
+	_, err = tr.Listen(context.Background(), netip.MustParseAddrPort(held.Addr().String()))
+	if !errors.Is(err, syscall.EADDRINUSE) || !strings.Contains(err.Error(), "port held by another socket") {
+		t.Errorf("held: %v", err)
+	}
+
+	// TEST-NET-1 (RFC 5737): no address of the host.
+	_, err = tr.Listen(context.Background(), netip.MustParseAddrPort("192.0.2.1:5060"))
+	if !errors.Is(err, syscall.EADDRNOTAVAIL) || strings.Contains(err.Error(), "port held") {
+		t.Errorf("not local: %v", err)
+	}
+}

@@ -218,8 +218,11 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 
 func bind(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*listener, error) {
 	if local.Port() != 0 {
-		if err := sockopt.CheckNoListener(local); err != nil {
+		// EADDRINUSE: a socket holds the port; another error is the address's (EADDRNOTAVAIL: no more local).
+		if err := sockopt.CheckNoListener(local); errors.Is(err, syscall.EADDRINUSE) {
 			return nil, fmt.Errorf("port held by another socket: %w", err)
+		} else if err != nil {
+			return nil, err
 		}
 	}
 
