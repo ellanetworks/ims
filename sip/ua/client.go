@@ -113,8 +113,10 @@ func (a *Agent) completeInitial(req *sip.Request) error {
 		return errors.New("sip/ua: no To")
 	}
 
+	// A random word, globally unique by itself (RFC 3261 §8.1.1.4): the "@host" the grammar allows is the UAC's host,
+	// not the Request-URI's, and a tel URI has none (§25.1: callid = word ["@" word]).
 	if !req.Header.Has("Call-ID") {
-		req.Header.Set("Call-ID", sip.NewTag()+"@"+req.URI.Host)
+		req.Header.Set("Call-ID", sip.NewTag())
 	}
 
 	if !req.Header.Has("CSeq") {
