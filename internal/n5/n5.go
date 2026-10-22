@@ -29,6 +29,7 @@ const (
 	FeatureIMSSBI              = 5
 	FeatureNetLoc              = 6
 	FeatureProvAFSignalFlow    = 7
+	FeatureMCPTT               = 9
 	FeatureRANNASCause         = 14
 	FeaturePCSCFRestorationEnh = 19
 	FeaturePatchCorrection     = 28

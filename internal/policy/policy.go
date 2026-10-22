@@ -128,6 +128,14 @@ type Request struct {
 	Components  []MediaComponent
 	Subscribers []Subscriber
 	Forking     Forking
+	MCPTT       *MCPTTPriority
+}
+
+// MCPTTPriority is the authorised MCPTT Resource-Priority of a call (TS 29.214 Annex A.13.2, TS 29.514 Annex
+// B.10.2): an RFC 8101 namespace, and its priority value, 0 the lowest to 15 the highest.
+type MCPTTPriority struct {
+	Namespace string
+	Level     uint8
 }
 
 type Grant struct {

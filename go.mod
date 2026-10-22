@@ -3,7 +3,7 @@ module github.com/ellanetworks/ims
 go 1.27.3
 
 require (
-	github.com/ellanetworks/core/diameter v0.0.0-20261017193558-9ed6ed0b4726
+	github.com/ellanetworks/core/diameter v0.0.0-20261022122753-8d5c8bdaaf89
 	github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f
 	github.com/ellanetworks/ims/sip v0.0.0-20261015132646-e86e133378fd
 	github.com/google/uuid v1.6.0

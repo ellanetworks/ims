@@ -52,7 +52,14 @@ type callPolicy struct {
 	forked  bool
 	flows   map[int]flowNumbers
 	// active holds the media type of each component the last authorization did not remove.
-	active   map[uint32]policy.MediaType
+	active map[uint32]policy.MediaType
+	// components are the media components the last authorization did not remove, which a priority update sends
+	// again.
+	components []policy.MediaComponent
+	// priority is the most recently received authorised MCPTT Resource-Priority; granted is the one the last
+	// authorization sent.
+	priority *policy.MCPTTPriority
+	granted  *policy.MCPTTPriority
 	charging string
 	access   policy.Access
 	loss     transaction.Timer
@@ -100,11 +107,11 @@ type answerJob struct {
 	early   bool
 	initial bool
 	final   bool
-	headers sip.Header
 }
 
-// TS 29.214 Annex A.1, A.3, TS 29.213 Annex B.2, TS 29.513 §7.2.3
-func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial bool) proxy.Verdict {
+// TS 29.214 Annex A.1, A.3, A.13, TS 29.213 Annex B.2, TS 29.513 §7.2.3. priority tells that the response changed
+// the authorised MCPTT priority.
+func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial, priority bool) proxy.Verdict {
 	c := callOf(d)
 	if c == nil || c.policy == nil || rep.Response == nil {
 		return proxy.Relay
@@ -132,10 +139,14 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 			p.log.Debug("relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
+		if job == nil && priority {
+			p.updatePriority(c, d)
+		}
+
 		p.releaseOrphaned(c, d)
 	}
 
-	if p.enqueue(c.policy, job != nil, run) {
+	if p.enqueue(c.policy, job != nil || priority, run) {
 		return proxy.Hold
 	}
 
@@ -151,8 +162,9 @@ func (p *PCSCF) chargeUEResponse(c *call, res *sip.Response) {
 	}
 }
 
-// RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1
-func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject func()) bool {
+// RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1, A.13. priority tells that the request changed the authorised MCPTT
+// priority.
+func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, priority bool, forward, reject func()) bool {
 	c := callOf(d)
 	if c == nil || c.policy == nil {
 		return false
@@ -160,10 +172,16 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 
 	_, answers := d.PendingOffer(out)
 
-	return p.enqueue(c.policy, answers, func() {
+	return p.enqueue(c.policy, answers || priority, func() {
 		offer, ok := d.PendingOffer(out)
 		if !ok {
 			forward()
+
+			if priority {
+				p.updatePriority(c, d)
+				p.releaseOrphaned(c, d)
+			}
+
 			return
 		}
 
@@ -172,12 +190,18 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, forward, reject 
 		x := p.parseExchange(c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: answer.Body}})
 		if x == nil {
 			forward()
+
+			if priority {
+				p.updatePriority(c, d)
+				p.releaseOrphaned(c, d)
+			}
+
 			return
 		}
 
 		state := d.State()
 		job := answerJob{
-			x: x, tag: calleeTag(d, out), early: state == proxy.Early, headers: out.Header,
+			x: x, tag: calleeTag(d, out), early: state == proxy.Early,
 			initial: state == proxy.Early || out.Method == "ACK" && state == proxy.Answered,
 		}
 
@@ -307,7 +331,7 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 		return nil
 	}
 
-	return &answerJob{x: x, tag: calleeTag(d, res), early: early, initial: initial || early, final: final, headers: res.Header}
+	return &answerJob{x: x, tag: calleeTag(d, res), early: early, initial: initial || early, final: final}
 }
 
 func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpExchange {
@@ -328,7 +352,7 @@ func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpE
 
 // TS 24.229 §5.2.7.2, TS 29.214 §4.4.1, TS 29.514 §4.2.2.2
 func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
-	err := p.callAAR(c, d, job)
+	err := p.callAAR(c, d, &job)
 	if err == nil {
 		if res != nil {
 			p.chargeUEResponse(c, res)
@@ -442,14 +466,43 @@ func (h *handoff) abandon() (grantResult, bool) {
 }
 
 // TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
-func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job answerJob) error {
+func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job *answerJob) error {
 	return p.callAARBy(c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
+}
+
+// TS 24.229 §5.2.9.1, §5.2.9.2, TS 29.214 Annex A.13.1 NOTE 1, TS 29.514 Annex B.10.1 NOTE 1: an authorised MCPTT
+// Resource-Priority that changes without an SDP answer updates the session of the call, with the media the last
+// authorization left. A failure leaves the call as it is.
+func (p *PCSCF) updatePriority(c *call, d *proxy.Dialog) {
+	err := p.callAAR(c, d, nil)
+	if err == nil || errors.Is(err, errCallEnded) {
+		return
+	}
+
+	attrs := []any{
+		slog.String("dialog", d.ID()), slog.String("impi", c.policy.key.impi), slog.String("ue", c.policy.key.ue.String()),
+		slog.Any("error", err),
+	}
+
+	if result, ok := policy.ResultOf(err); ok {
+		attrs = append(attrs, slog.String("result", result))
+	}
+
+	if errors.Is(err, policy.ErrSessionLost) {
+		p.log.Warn("policy session of the call lost with its policy function: releasing the call", attrs...)
+		c.policy.orphaned.Store(true)
+
+		return
+	}
+
+	p.log.Warn("MCPTT priority update failed", attrs...)
 }
 
 // callAARBy authorizes the media of job, waiting for the policy function until deadline. A recovery opens a new
 // session for a call whose session the policy function lost: media the exchange removes has nothing to remove
-// there, so it is left out.
-func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time.Time, recovery bool) error {
+// there, so it is left out. Without a job, it sends the authorised MCPTT priority to an open session that does not
+// have it yet.
+func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline time.Time, recovery bool) error {
 	cr := c.policy
 
 	cr.mu.Lock()
@@ -457,6 +510,11 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 	if cr.ended || cr.orphaned.Load() {
 		cr.mu.Unlock()
 		return errCallEnded
+	}
+
+	if job == nil && (len(cr.components) == 0 || !recovery && (cr.session == nil || samePriority(cr.granted, cr.priority))) {
+		cr.mu.Unlock()
+		return nil
 	}
 
 	flows := make(map[int]flowNumbers, len(cr.flows))
@@ -472,21 +530,25 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 
 	fork := policy.ForkingSingleDialogue
 
-	if job.early && job.tag != "" && (cr.forked || len(cr.early) > 0 && !cr.early[job.tag]) {
+	switch {
+	case job == nil:
+		if cr.forked {
+			fork = policy.ForkingSeveralDialogues
+		}
+	case job.early && job.tag != "" && (cr.forked || len(cr.early) > 0 && !cr.early[job.tag]):
 		fork = policy.ForkingSeveralDialogues
 	}
 
-	if cr.service == "" && c.ue == proxy.Caller {
-		cr.service = icsiRef(job.headers)
-	}
-
-	service := cr.service
+	service, priority, components := cr.service, cr.priority, slices.Clone(cr.components)
 
 	cr.mu.Unlock()
 
-	components, err := mediaComponents(*job.x, flows)
-	if err != nil {
-		return err
+	if job != nil {
+		var err error
+
+		if components, err = mediaComponents(*job.x, flows); err != nil {
+			return err
+		}
 	}
 
 	if recovery {
@@ -508,6 +570,13 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 
 	initial := !s.opened
 
+	if job == nil && initial && !recovery {
+		s.mu.Unlock()
+		s.pending.Store(false)
+
+		return nil
+	}
+
 	r := policy.Request{
 		UE:          cr.key.ue,
 		Initial:     initial,
@@ -515,6 +584,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 		Components:  components,
 		Subscribers: subscribers(cr.identities),
 		Forking:     fork,
+		MCPTT:       priority,
 	}
 
 	result := &handoff{c: make(chan grantResult, 1)}
@@ -589,31 +659,148 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job answerJob, deadline time
 
 	cr.mu.Lock()
 
-	if job.early && job.tag != "" {
+	if job != nil && job.early && job.tag != "" {
 		cr.early[job.tag] = true
 		cr.forked = cr.forked || len(cr.early) > 1
 	}
 
-	if job.final {
+	if job != nil && job.final {
 		cr.forked = false
 	}
 
 	cr.flows = flows
 	cr.active = activeComponents(components)
+	cr.components = slices.DeleteFunc(slices.Clone(components), func(m policy.MediaComponent) bool { return m.Status == policy.FlowRemoved })
+	cr.granted = priority
 	cr.chargingLocked(res.grant.Charging)
 
 	cr.mu.Unlock()
 
 	request := "update"
-	if initial {
+
+	switch {
+	case initial:
 		request = "initial"
+	case job == nil:
+		request = "priority"
 	}
 
-	p.log.Debug("media authorized", slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi),
-		slog.String("ue", cr.key.ue.String()), slog.String("session", s.id), slog.String("request", request),
-		slog.String("forking", fork.String()))
+	attrs := []any{
+		slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("ue", cr.key.ue.String()),
+		slog.String("session", s.id), slog.String("request", request), slog.String("forking", fork.String()),
+	}
+
+	if priority != nil {
+		attrs = append(attrs, slog.String("mcptt_priority", priority.Namespace+"."+strconv.Itoa(int(priority.Level))))
+	}
+
+	p.log.Debug("media authorized", attrs...)
 
 	return nil
+}
+
+func samePriority(a, b *policy.MCPTTPriority) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
+}
+
+// fromNetwork takes what a request or response of the call d that comes from the network side, the trust domain,
+// tells the policy function, before the P-CSCF screens it toward the UE: the ICSI and the MCPTT Resource-Priority.
+// It reports whether the authorised MCPTT priority changed.
+func (p *PCSCF) fromNetwork(d *proxy.Dialog, m sip.Message) bool {
+	c := callOf(d)
+	if c == nil || c.policy == nil {
+		return false
+	}
+
+	if res, ok := m.(*sip.Response); ok {
+		p.icsiFromNetwork(c, res)
+	}
+
+	return c.policy.receivedPriority(m)
+}
+
+// receivedPriority keeps the MCPTT Resource-Priority of a request or of a 1xx or 2xx response from the network
+// side of the call, and reports whether it changes the authorised one. Only the trust domain authorises one: the
+// P-CSCF knows no priority privileges of its users, and the MCPTT server sets the priority of every participant
+// (TS 24.229 §3.1, TS 23.379 §10.6.2.6.1.1). A message without one leaves the most recently received
+// (TS 24.229 §5.2.9.1, §5.2.9.2).
+func (cr *callPolicy) receivedPriority(m sip.Message) bool {
+	if cr == nil {
+		return false
+	}
+
+	h := m.Env().Header
+
+	switch m := m.(type) {
+	case *sip.Request:
+		if m.Method == "BYE" || m.Method == "CANCEL" {
+			return false
+		}
+	case *sip.Response:
+		cseq, err := h.CSeq()
+		if err != nil || m.StatusCode <= 100 || m.StatusCode >= 300 || cseq.Method == "BYE" || cseq.Method == "CANCEL" {
+			return false
+		}
+	}
+
+	p := mcpttPriority(h)
+	if p == nil {
+		return false
+	}
+
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+
+	if samePriority(cr.priority, p) {
+		return false
+	}
+
+	cr.priority = p
+
+	return true
+}
+
+// TS 29.214 Annex A.13.2, RFC 8101 §3.2: the first r-value of an MCPTT namespace, with its priority value from 0
+// to 15. Resource-Priority header fields that are malformed, or repeat a namespace (RFC 4412 §3.1), count for
+// nothing.
+func mcpttPriority(h sip.Header) *policy.MCPTTPriority {
+	rs, err := h.ResourcePriorities()
+	if err != nil {
+		return nil
+	}
+
+	for _, r := range rs {
+		ns := strings.ToLower(r.Namespace)
+		if ns != sip.ResourcePriorityMCPTTP && ns != sip.ResourcePriorityMCPTTQ {
+			continue
+		}
+
+		level, err := strconv.ParseUint(r.Priority, 10, 8)
+		if err != nil || level > 15 {
+			continue
+		}
+
+		return &policy.MCPTTPriority{Namespace: ns, Level: uint8(level)}
+	}
+
+	return nil
+}
+
+// icsiFromNetwork keeps, for an originating call, the ICSI of the first 18x or 2xx response that has one in
+// Feature-Caps (TS 29.214 Annex A.1 NOTE 3).
+func (p *PCSCF) icsiFromNetwork(c *call, res *sip.Response) {
+	if c.ue != proxy.Caller || res.StatusCode/10 != 18 && !res.IsSuccess() {
+		return
+	}
+
+	cr := c.policy
+
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+
+	if cr.service == "" {
+		cr.service = icsiRef(res.Header)
+	}
 }
 
 func activeComponents(components []policy.MediaComponent) map[uint32]policy.MediaType {
@@ -657,7 +844,10 @@ type retryHold struct {
 
 // TS 29.214 §4.4.1
 func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Grant, error) {
-	b, err := json.Marshal(r.Components)
+	b, err := json.Marshal(struct {
+		Components []policy.MediaComponent
+		MCPTT      *policy.MCPTTPriority
+	}{r.Components, r.MCPTT})
 	if err != nil {
 		return policy.Grant{}, err
 	}

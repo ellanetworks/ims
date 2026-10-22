@@ -3,6 +3,7 @@ package n5
 import (
 	"encoding/json"
 	"net/netip"
+	"strconv"
 )
 
 // AppSessionContext is the Individual Application Session Context resource (TS 29.514 §5.6.2.2).
@@ -24,6 +25,8 @@ type AppSessionContextReqData struct {
 	SliceInfo     *Snssai                   `json:"sliceInfo,omitempty"`
 	SUPI          string                    `json:"supi,omitempty"`
 	GPSI          string                    `json:"gpsi,omitempty"`
+	McpttID       string                    `json:"mcpttId,omitempty"`
+	ResPrio       ReservPriority            `json:"resPrio,omitempty"`
 	SuppFeat      SupportedFeatures         `json:"suppFeat"`
 	UEIPv4        netip.Addr                `json:"ueIpv4,omitzero"`
 	UEIPv6        netip.Addr                `json:"ueIpv6,omitzero"`
@@ -41,6 +44,8 @@ type AppSessionContextUpdateData struct {
 	AFAppID       string                    `json:"afAppId,omitempty"`
 	EvSubsc       *EventsSubscReqData       `json:"evSubsc,omitempty"`
 	MedComponents map[string]MediaComponent `json:"medComponents,omitempty"`
+	McpttID       string                    `json:"mcpttId,omitempty"`
+	ResPrio       ReservPriority            `json:"resPrio,omitempty"`
 	SipForkInd    SipForkingIndication      `json:"sipForkInd,omitempty"`
 }
 
@@ -295,6 +300,14 @@ const (
 	ForkingSingleDialogue   SipForkingIndication = "SINGLE_DIALOGUE"
 	ForkingSeveralDialogues SipForkingIndication = "SEVERAL_DIALOGUES"
 )
+
+// ReservPriority is a reservation priority, PRIO_1 the lowest to PRIO_16 the highest (TS 29.514 §5.6.3.4).
+type ReservPriority string
+
+// Prio returns PRIO_n, for n from 1 to 16.
+func Prio(n int) ReservPriority {
+	return ReservPriority("PRIO_" + strconv.Itoa(n))
+}
 
 // TS 29.514 §5.6.3.13
 type MediaComponentResourcesStatus string

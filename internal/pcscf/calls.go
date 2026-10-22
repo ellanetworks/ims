@@ -166,7 +166,11 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	var dialog *proxy.Dialog
 
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
+		priority := false
+
 		if res := rep.Response; res != nil {
+			priority = rep.Err == nil && p.fromNetwork(dialog, res)
+
 			toUEResponse(res)
 
 			if res.StatusCode == 180 {
@@ -174,7 +178,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 			}
 		}
 
-		return p.mediaReply(tx, dialog, rep, true)
+		return p.mediaReply(tx, dialog, rep, true, priority)
 	}}
 
 	switch out.Method {
@@ -255,7 +259,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
 		res := rep.Response
 		if res == nil || rep.Err != nil {
-			return p.mediaReply(tx, dialog, rep, true)
+			return p.mediaReply(tx, dialog, rep, true, false)
 		}
 
 		fromUEResponse(res)
@@ -266,7 +270,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 		p.respondCharging(req, res)
 
-		return p.mediaReply(tx, dialog, rep, true)
+		return p.mediaReply(tx, dialog, rep, true, false)
 	}}
 
 	switch out.Method {
@@ -276,6 +280,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		if f, ok := p.regs.flow(top.User); ok {
 			c.impi = f.impi
 			c.policy = p.newCallPolicy(f.key(), p.servedIdentities(f, called), req.Header.Get("P-Asserted-Service"))
+			c.policy.receivedPriority(req)
 		}
 
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -606,7 +611,8 @@ func toUEResponse(res *sip.Response) {
 }
 
 // RFC 3325, RFC 5009, TS 24.229 §5.2.6.4.2, §4.4.13, TS 24.237 §4.4.4,
-// RFC 7044 §10.1.2
+// RFC 7044 §10.1.2. Resource-Priority goes to the UE, which echoes it in the requests of the dialog (TS 24.229
+// §5.1).
 func keptTowardUE(h sip.Header) []sip.Field {
 	priv, err := h.Privacy()
 	private := err != nil
@@ -619,7 +625,8 @@ func keptTowardUE(h sip.Header) []sip.Field {
 			if !private && !priv.Has(sip.PrivacyID) {
 				kept = append(kept, f)
 			}
-		case strings.EqualFold(name, "P-Early-Media"), strings.EqualFold(name, "Feature-Caps"):
+		case strings.EqualFold(name, "P-Early-Media"), strings.EqualFold(name, "Feature-Caps"),
+			strings.EqualFold(name, "Resource-Priority"):
 			kept = append(kept, f)
 		case strings.EqualFold(name, "History-Info"):
 			if private || priv.Has(sip.PrivacyHistory) {

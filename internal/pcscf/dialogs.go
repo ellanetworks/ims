@@ -204,7 +204,7 @@ func (p *PCSCF) HandleAck(ack *sip.Request) {
 		}
 	}
 
-	if !p.mediaRequest(d, out, send, nil) {
+	if !p.mediaRequest(d, out, p.towardUE(removed) && p.fromNetwork(d, ack), send, nil) {
 		forward()
 	}
 }
@@ -244,13 +244,13 @@ func (p *PCSCF) toUEFlow(tx *transaction.ServerTransaction, req, out *sip.Reques
 
 	recordRouteRefresh(out, removed)
 
-	p.forwardInDialog(tx, req, out, to, d, func(rep proxy.Reply) proxy.Verdict {
+	p.forwardInDialog(tx, req, out, to, d, p.fromNetwork(d, req), func(rep proxy.Reply) proxy.Verdict {
 		if rep.Response != nil && rep.Err == nil {
 			fromUEResponse(rep.Response)
 			p.respondCharging(req, rep.Response)
 		}
 
-		return p.mediaReply(tx, d, rep, false)
+		return p.mediaReply(tx, d, rep, false, false)
 	})
 }
 
@@ -305,23 +305,27 @@ func (p *PCSCF) toCore(tx *transaction.ServerTransaction, req, out *sip.Request,
 		return
 	}
 
-	p.forwardInDialog(tx, req, out, to, d, func(rep proxy.Reply) proxy.Verdict {
+	p.forwardInDialog(tx, req, out, to, d, false, func(rep proxy.Reply) proxy.Verdict {
+		priority := false
+
 		if rep.Response != nil {
+			priority = rep.Err == nil && p.fromNetwork(d, rep.Response)
+
 			toUEResponse(rep.Response)
 		}
 
-		return p.mediaReply(tx, d, rep, false)
+		return p.mediaReply(tx, d, rep, false, priority)
 	})
 }
 
 // TS 29.214 Annex A.1
 func (p *PCSCF) forwardInDialog(tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, d *proxy.Dialog,
-	onReply func(proxy.Reply) proxy.Verdict,
+	priority bool, onReply func(proxy.Reply) proxy.Verdict,
 ) {
 	forward := func() { p.forward(tx, req, out, to, proxy.Options{Dialog: d, OnReply: onReply}, nil) }
 	reject := func() { p.respond(tx, sip.NewResponse(req, 500, "")) }
 
-	if !p.mediaRequest(d, out, forward, reject) {
+	if !p.mediaRequest(d, out, priority, forward, reject) {
 		forward()
 	}
 }

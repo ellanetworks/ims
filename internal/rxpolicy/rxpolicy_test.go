@@ -75,7 +75,7 @@ func TestRefRoundTrip(t *testing.T) {
 		{},
 		{
 			Class: [][]byte{[]byte("pcrf-state"), {0xff, 0x00}}, PCRF: "pcrf1.epc.example.org", Realm: "epc.example.org",
-			Binding: diameter.SessionBindingSTR, Failover: diameter.TryAgainAllowService,
+			Binding: diameter.SessionBindingSTR, Failover: diameter.TryAgainAllowService, Features: rx.FeatureRel8 | rx.FeatureMCPTT,
 		},
 	} {
 		ref, err := in.ref()

@@ -25,8 +25,11 @@ import (
 const SessionsPath = "/n5/v1/sessions"
 
 // IMS_SBI and PatchCorrection (TS 29.514 §5.8): without PatchCorrection, a PCF only interoperates when no
-// context is updated.
-var features = n5.Features(n5.FeatureIMSSBI, n5.FeaturePatchCorrection)
+// context is updated. A call also supports MCPTT.
+var (
+	features     = n5.Features(n5.FeatureIMSSBI, n5.FeaturePatchCorrection)
+	callFeatures = n5.Features(n5.FeatureIMSSBI, n5.FeatureMCPTT, n5.FeaturePatchCorrection)
+)
 
 // The events a session subscribes to. FAILED_RESOURCES_ALLOCATION reports the loss of the signalling path
 // (TS 29.514 §4.2.5.10) and of call media (§4.2.5.8).
@@ -68,13 +71,14 @@ type Backend struct {
 	status   Status
 }
 
-// session is what the backend keeps of a context it created: its URI, and the service information the PCF
-// holds, which the next PATCH is computed from. tried is what unanswered PATCHes since then sent: the PCF may hold
-// any of them instead.
+// session is what the backend keeps of a context it created: its URI, the features negotiated at its creation,
+// and the service information the PCF holds, which the next PATCH is computed from. tried is what unanswered
+// PATCHes since then sent: the PCF may hold any of them instead.
 type session struct {
-	uri   string
-	last  *n5.AppSessionContextUpdateData
-	tried []*n5.AppSessionContextUpdateData
+	uri      string
+	features n5.SupportedFeatures
+	last     *n5.AppSessionContextUpdateData
+	tried    []*n5.AppSessionContextUpdateData
 }
 
 // maxLost bounds the creates the backend remembers as unanswered.
@@ -196,13 +200,14 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	b.mu.Lock()
 
 	var (
-		prev  *n5.AppSessionContextUpdateData
-		tried []*n5.AppSessionContextUpdateData
+		prev       *n5.AppSessionContextUpdateData
+		tried      []*n5.AppSessionContextUpdateData
+		negotiated n5.SupportedFeatures
 	)
 
 	uri := ref
 	if s, ok := b.sessions[id]; ok {
-		uri, prev, tried = s.uri, s.last, slices.Clone(s.tried)
+		uri, negotiated, prev, tried = s.uri, s.features, s.last, slices.Clone(s.tried)
 	}
 
 	b.mu.Unlock()
@@ -213,6 +218,8 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		MedComponents: medComponents(r.Components, prev),
 	}
 
+	mcptt(next, r.MCPTT, r.Initial || negotiated.Has(n5.FeatureMCPTT))
+
 	if r.Initial {
 		req := n5.AppSessionContextReqData{
 			AFAppID:       next.AFAppID,
@@ -220,7 +227,9 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 			MedComponents: next.MedComponents,
 			NotifURI:      notif,
 			GPSI:          gpsi(r.Subscribers),
-			SuppFeat:      features,
+			McpttID:       next.McpttID,
+			ResPrio:       next.ResPrio,
+			SuppFeat:      callFeatures,
 		}
 
 		ue(&req, r.UE)
@@ -270,7 +279,7 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		case errors.Is(err, policy.ErrUnknownSession):
 			b.forget(id)
 		case policy.Transient(err):
-			b.tried(id, uri, prev, next)
+			b.tried(id, uri, negotiated, prev, next)
 		}
 
 		return policy.Grant{}, err
@@ -282,9 +291,20 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		uri = res.URI
 	}
 
-	b.keep(id, uri, next)
+	b.keep(id, uri, negotiated, next)
 
 	return policy.Grant{Ref: uri}, nil
+}
+
+// TS 29.514 Annex B.10.2: the MCPTT namespace in mcpttId, and its priority value n in resPrio as PRIO_(n+1). A
+// create sends them before the PCF tells whether it supports MCPTT; an update only to a PCF that does (§5.8).
+func mcptt(d *n5.AppSessionContextUpdateData, p *policy.MCPTTPriority, supported bool) {
+	if p == nil || !supported {
+		return
+	}
+
+	d.McpttID = p.Namespace
+	d.ResPrio = n5.Prio(int(p.Level) + 1)
 }
 
 func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionContextReqData, next *n5.AppSessionContextUpdateData) (string, error) {
@@ -308,7 +328,7 @@ func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionConte
 	}
 
 	b.bodyErr(id, n5.OpCreate, res.Result)
-	b.keep(id, res.URI, next)
+	b.keep(id, res.URI, res.Features, next)
 
 	return res.URI, nil
 }
@@ -346,21 +366,21 @@ func (b *Backend) Terminate(ctx context.Context, id, ref string, _ policy.Termin
 	return nil
 }
 
-func (b *Backend) keep(id, uri string, last *n5.AppSessionContextUpdateData) {
+func (b *Backend) keep(id, uri string, features n5.SupportedFeatures, last *n5.AppSessionContextUpdateData) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.sessions[id] = &session{uri: uri, last: last}
+	b.sessions[id] = &session{uri: uri, features: features, last: last}
 }
 
 // tried notes a PATCH the PCF may or may not have applied.
-func (b *Backend) tried(id, uri string, last, next *n5.AppSessionContextUpdateData) {
+func (b *Backend) tried(id, uri string, features n5.SupportedFeatures, last, next *n5.AppSessionContextUpdateData) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	s, ok := b.sessions[id]
 	if !ok {
-		s = &session{uri: uri, last: last}
+		s = &session{uri: uri, features: features, last: last}
 		b.sessions[id] = s
 	}
 
