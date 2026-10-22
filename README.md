@@ -14,7 +14,7 @@
 - SIM-based phone authentication with your existing HSS (IMS-AKA over Cx)
 - IPsec between phones and the IMS
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
-- Application servers: iFCs from the HSS, ISC routing, third-party registration, PSI routing and registration event subscriptions
+- Application servers: connect voicemail, conferencing, MCPTT, supplementary services and other value-added services, with per-subscriber routing driven by your HSS (iFCs over ISC)
 - Call records: who called whom, when, for how long and how the call ended
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
