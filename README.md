@@ -14,7 +14,7 @@
 - SIM-based phone authentication with your existing HSS (IMS-AKA over Cx)
 - IPsec between phones and the IMS
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
-- Application servers: connect voicemail, conferencing, MCPTT, supplementary services and other value-added services, with per-subscriber routing driven by your HSS (iFCs over ISC)
+- Application Servers (AS): connect voicemail, conferencing, MCPTT, supplementary services and other value-added services, with per-subscriber routing driven by your HSS (iFCs over ISC)
 - Call records: who called whom, when, for how long and how the call ended
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
@@ -31,6 +31,74 @@ sudo snap connect ella-ims:network-control
 sudo vi /var/snap/ella-ims/common/ims.yaml
 sudo snap start --enable ella-ims.imsd
 ```
+
+### Integrate with Ella Core
+
+1. In Ella Core's configuration file, set the Diameter address and restart Ella Core:
+
+   ```yaml
+   interfaces:
+     diameter:
+       address: "10.3.0.2"
+   ```
+
+2. In `ims.yaml`, set the address phones reach Ella IMS on, and the address it reaches Ella Core from, then restart Ella IMS:
+
+   ```yaml
+   sip:
+     addresses: [10.6.0.5]
+   diameter:
+     address: 10.3.0.5
+   ```
+
+3. In the Ella IMS UI (`http://<ims>:5020`), go to the **Operator** page:
+   - Click the edit icon next to **Operator ID (MCC/MNC)**, enter Ella Core's MCC and MNC, e.g. `001` / `01`, and click **Update**.
+   - Click the edit icon next to **Numbering Plan**, enter your country code and prefixes, and click **Update**.
+
+4. Go to the **Cores** page:
+   - Under **Peers**, click **Add Peer**, enter Ella Core's Diameter address, e.g. `10.3.0.2`, check **HSS** and **PCRF**, and click **Add**.
+   - Under **HSS**, click the edit icon next to **HSS Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
+
+5. Under **Voice QoS**, on the same page:
+   - Click the edit icon next to **Policy Function**, select **PCRF** (for 4G and 5G), and click **Update**.
+   - Click the edit icon next to **PCRF Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
+
+6. Route the phones' `ims` IP pool through Ella Core's N6 address:
+
+   ```sh
+   sudo ip route add 10.46.0.0/16 via 10.6.0.2
+   ```
+
+7. In Ella Core, follow steps 3 to 9 of [Enable Voice][ella-core-voice], with `10.6.0.5` as the P-CSCF address.
+
+### Integrate with an Application Server
+
+Requires an HSS that provisions iFCs.
+
+1. In `ims.yaml`, add the AS's addresses to the trusted networks, then restart Ella IMS:
+
+   ```yaml
+   sip:
+     trusted_networks: [10.80.0.30/32]
+   scscf:
+     as_timeout: 4s # optional, the default
+   ```
+
+2. In the HSS, add iFCs to the subscribers' service profiles, with the AS's SIP URI as the server name, e.g. `sip:10.80.0.30:5060`:
+   - Third-party registration: a trigger point on method `REGISTER`, with Include Register Request and Include Register Response if the AS needs them.
+   - Originating or terminating services: a trigger point on the session case, plus the method, header or Request-URI to match.
+   - Default handling: `SESSION_CONTINUED` if calls go on without the AS, `SESSION_TERMINATED` if they fail.
+
+3. For services reached by their own URI, such as a conference factory or MCPTT, add the PSIs to the HSS, distinct or wildcarded, with their iFCs or the AS as their server name.
+
+4. Make the PSIs' host resolve to the AS (DNS A or SRV record).
+
+5. On the AS:
+   - Trust Ella IMS's SIP address, e.g. `10.6.0.5`.
+   - Send requests to a user to the I-CSCF, port `5070`.
+   - Send requests on behalf of a user or a PSI to the S-CSCF, port `5080`, with `orig` in the Route (`Route: <sip:10.6.0.5:5080;lr;orig>`) and the user in P-Served-User or P-Asserted-Identity.
+
+6. Register a phone, then check the AS received a third-party REGISTER or the first matching request.
 
 ### Build
 
@@ -170,3 +238,4 @@ Phones reach the IMS over IPsec, which the IMS sets up in the kernel. It needs `
 Firewalls between phones and the IMS must pass ESP (IP protocol 50).
 
 [ella-core]: https://github.com/ellanetworks/core
+[ella-core-voice]: https://docs.ellanetworks.com/how_to/enable_voice/
