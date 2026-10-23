@@ -201,15 +201,13 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func
 
 	defer done()
 
-	res, out, ev := r.register(ctx, req)
+	// The third-party REGISTERs of a successful registration (TS 24.229 §5.4.1.7) go once the UE has its response.
+	responded := make(chan struct{})
+	res, out := r.register(ctx, req, responded)
 
 	respond(res)
+	close(responded)
 	r.send(out)
-
-	if ev != nil {
-		ev.res = res
-		r.sendThirdParty(r.thirdParties(*ev))
-	}
 }
 
 func (r *Registrar) Close() {
@@ -417,10 +415,9 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 			continue
 		}
 
-		out, expired, tps := r.sweepIMPI(ctx, impi)
+		out, expired := r.sweepIMPI(ctx, impi)
 
 		r.send(out)
-		r.sendThirdParty(tps)
 
 		if len(expired) == 0 || !r.start() {
 			r.unlock(impi)
@@ -438,11 +435,11 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 	}
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration, []*thirdParty) {
+func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration) {
 	st, err := r.load(ctx, impi)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	out := r.expireSubscriptions(ctx, st, impi)
@@ -472,17 +469,16 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 	}
 
 	if len(ch.removed) == 0 {
-		return out, deregistered, nil
+		return out, deregistered
 	}
 
 	r.releaseCalls(st, ch.removed)
 
-	var tps []*thirdParty
 	for _, rm := range ch.removed {
-		tps = append(tps, r.deregistered(rm)...)
+		r.deregistered(rm)
 	}
 
-	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered, tps
+	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered
 }
 
 func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,

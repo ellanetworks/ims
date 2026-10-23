@@ -619,6 +619,112 @@ func TestThirdPartyRegisterCharging(t *testing.T) {
 	thirdParty("", "as3.example.net")
 }
 
+// RFC 3261 §10.2, TS 24.229 §5.4.1.7: the third-party REGISTERs to an AS for an identity follow the registration
+// events, on one Call-ID with the CSeq one more each time, and none goes before the previous one has its final
+// response. A deregistration is the last of them: the next registration starts anew.
+func TestThirdPartyRegisterOrder(t *testing.T) {
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	h := newHarness(t)
+	h.hss.set(func(h *fakeHSS) {
+		register := "REGISTER"
+		handling := cx.DefaultHandlingSessionContinued
+
+		h.subscriptions[0].ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{{
+			Trigger:           &cx.TriggerPoint{ServicePointTriggers: []cx.ServicePointTrigger{{Groups: []int32{0}, Method: &register}}},
+			ApplicationServer: cx.ApplicationServer{ServerName: "sip:" + as.Addr().String(), DefaultHandling: &handling},
+		}}
+	})
+
+	u := h.newUE()
+
+	var last *sip.Request
+
+	// next is the next third-party REGISTER, over retransmissions of the last one, nil without one within d.
+	next := func(d time.Duration) (*sip.Request, sip.Flow) {
+		t.Helper()
+
+		for {
+			r, ok := as.RecvWithin(d)
+			if !ok {
+				return nil, sip.Flow{}
+			}
+
+			req, isReq := r.Msg.(*sip.Request)
+			if !isReq || req.Method != "REGISTER" {
+				t.Fatalf("AS got %q, want a third-party REGISTER", r.Msg.StartLine())
+			}
+
+			if last != nil && req.Header.Get("CSeq") == last.Header.Get("CSeq") && req.Header.CallID() == last.Header.CallID() {
+				continue
+			}
+
+			return req, r.Flow
+		}
+	}
+
+	want := func(expires string) (*sip.Request, sip.Flow) {
+		t.Helper()
+
+		req, f := next(siptest.Timeout)
+		if req == nil {
+			t.Fatalf("AS got no third-party REGISTER, want one with Expires %s", expires)
+		}
+
+		if got := req.Header.Get("Expires"); got != expires {
+			t.Fatalf("third-party REGISTER with Expires %s, want %s", got, expires)
+		}
+
+		last = req
+
+		return req, f
+	}
+
+	u.register(registerOptions{expires: "600"})
+
+	first, f := want("600")
+
+	u.register(registerOptions{expires: "700"})
+	u.register(registerOptions{expires: "0"})
+
+	if req, _ := next(100 * time.Millisecond); req != nil {
+		t.Fatalf("AS got %q before its response to the previous third-party REGISTER", req.Header.Get("CSeq"))
+	}
+
+	as.Send(sip.UDP, f.Remote, sip.NewResponse(first, 200, ""))
+	second, f := want("700")
+	as.Send(sip.UDP, f.Remote, sip.NewResponse(second, 200, ""))
+	third, f := want("0")
+	as.Send(sip.UDP, f.Remote, sip.NewResponse(third, 200, ""))
+
+	cseq := func(req *sip.Request) uint32 {
+		c, err := req.Header.CSeq()
+		if err != nil {
+			t.Fatalf("CSeq: %v", err)
+		}
+
+		return c.Seq
+	}
+
+	for i, req := range []*sip.Request{second, third} {
+		if req.Header.CallID() != first.Header.CallID() || cseq(req) != cseq(first)+uint32(i)+1 {
+			t.Fatalf("third-party REGISTER %d: Call-ID %s CSeq %d, want %s and %d", i+2, req.Header.CallID(), cseq(req),
+				first.Header.CallID(), cseq(first)+uint32(i)+1)
+		}
+	}
+
+	u.callID = sip.NewTag() + "@127.0.0.1"
+	u.register(registerOptions{expires: "600"})
+
+	again, f := want("600")
+	as.Send(sip.UDP, f.Remote, sip.NewResponse(again, 200, ""))
+
+	if again.Header.CallID() == first.Header.CallID() || cseq(again) != 1 {
+		t.Fatalf("third-party REGISTER after the deregistration: Call-ID %s CSeq %d, want a new Call-ID and 1",
+			again.Header.CallID(), cseq(again))
+	}
+}
+
 // TS 24.229 §5.4.1.1 item 1, §3.1: a UE that restarted registers its contact again, unprotected: an initial
 // registration for the ASs, as the first one was, where a refresh is not.
 func TestThirdPartyInitialAfterRestart(t *testing.T) {

@@ -112,24 +112,22 @@ func (rr *registerRequest) deregister() bool {
 	return true
 }
 
-func (r *Registrar) register(ctx context.Context, req *sip.Request) (*sip.Response, []*outgoing, *registration) {
+// register handles a REGISTER: the third-party REGISTERs of the registration event it makes, if any, are held until
+// responded closes.
+func (r *Registrar) register(ctx context.Context, req *sip.Request, responded <-chan struct{}) (*sip.Response, []*outgoing) {
 	rr, res := r.parse(req)
 	if res != nil {
 		r.cfg.RegistrationAttempts.Answered(req, res, false)
-		return res, nil, nil
+		return res, nil
 	}
 
-	res = r.handleRegister(ctx, rr)
+	res = r.handleRegister(ctx, rr, responded)
 	r.cfg.RegistrationAttempts.Answered(req, res, rr.authFailed)
 
-	if res.StatusCode != 200 {
-		return res, rr.out, nil
-	}
-
-	return res, rr.out, rr.event
+	return res, rr.out
 }
 
-func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *sip.Response {
+func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest, responded <-chan struct{}) *sip.Response {
 	req := rr.req
 
 	for _, c := range rr.contacts {
@@ -147,6 +145,18 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest) *si
 
 	defer r.unlock(rr.impi)
 
+	res := r.handleLocked(ctx, rr)
+
+	// Queued with the private identity locked, the third-party REGISTERs follow the order of the registration events.
+	if res.StatusCode == 200 && rr.event != nil {
+		rr.event.res = res
+		r.notifyASs(*rr.event, responded)
+	}
+
+	return res
+}
+
+func (r *Registrar) handleLocked(ctx context.Context, rr *registerRequest) *sip.Response {
 	if res := r.flowLimit(ctx, rr); res != nil {
 		return res
 	}
