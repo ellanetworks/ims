@@ -12,9 +12,9 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -65,7 +65,7 @@ func (h *harness) ueSubscriber(u *ue) *subscriber {
 		contact: u.contact,
 		impu:    testMSISDN,
 		pai:     "<" + testMSISDN + ">",
-		accept:  regevent.ContentType,
+		accept:  reginfo.ContentType,
 		callID:  sip.NewTag() + "@127.0.0.1",
 		fromTag: sip.NewTag(),
 	}
@@ -104,7 +104,7 @@ func (h *harness) asSubscriber(inbox *siptest.Socket) *subscriber {
 		contact: "sip:" + inbox.Addr().String(),
 		impu:    testMSISDN,
 		pai:     "<sip:" + inbox.Addr().String() + ">",
-		accept:  regevent.ContentType,
+		accept:  reginfo.ContentType,
 		callID:  sip.NewTag() + "@127.0.0.1",
 		fromTag: sip.NewTag(),
 	}
@@ -170,10 +170,10 @@ type notification struct {
 	req   *sip.Request
 	state string
 	cseq  uint32
-	info  regevent.Reginfo
+	info  reginfo.Reginfo
 }
 
-func (n notification) registration(t *testing.T, aor string) regevent.Registration {
+func (n notification) registration(t *testing.T, aor string) reginfo.Registration {
 	t.Helper()
 
 	for _, r := range n.info.Registrations {
@@ -184,7 +184,7 @@ func (n notification) registration(t *testing.T, aor string) regevent.Registrati
 
 	t.Fatalf("no registration of %s in %+v", aor, n.info)
 
-	return regevent.Registration{}
+	return reginfo.Registration{}
 }
 
 func (n notification) aors() []string {
@@ -197,7 +197,7 @@ func (n notification) aors() []string {
 	return out
 }
 
-func (n notification) contact(t *testing.T, aor, uri string) regevent.Contact {
+func (n notification) contact(t *testing.T, aor, uri string) reginfo.Contact {
 	t.Helper()
 
 	for _, c := range n.registration(t, aor).Contacts {
@@ -208,7 +208,7 @@ func (n notification) contact(t *testing.T, aor, uri string) regevent.Contact {
 
 	t.Fatalf("no contact %s under %s in %+v", uri, aor, n.info)
 
-	return regevent.Contact{}
+	return reginfo.Contact{}
 }
 
 func (s *subscriber) recvNotify() notification {
@@ -255,18 +255,18 @@ func (s *subscriber) checkNotify(req *sip.Request) notification {
 		t.Fatalf("CSeq = %+v", cseq)
 	case req.Header.Get("Event") != "reg":
 		t.Fatalf("Event = %q", req.Header.Get("Event"))
-	case req.Header.ContentType() != regevent.ContentType:
+	case req.Header.ContentType() != reginfo.ContentType:
 		t.Fatalf("Content-Type = %q", req.Header.ContentType())
 	case req.Header.Get("Contact") != s.h.contactURI():
 		t.Fatalf("Contact = %q, want %q", req.Header.Get("Contact"), s.h.contactURI())
 	}
 
-	info, err := regevent.Decode(req.Body)
+	info, err := reginfo.Decode(req.Body)
 	if err != nil {
 		t.Fatalf("decode %q: %v", req.Body, err)
 	}
 
-	if info.State != regevent.Full {
+	if info.State != reginfo.Full {
 		t.Fatalf("reginfo state = %q, want full", info.State)
 	}
 
@@ -326,7 +326,7 @@ func (s *subscriber) subscribed() notification {
 	return n
 }
 
-func wantState(t *testing.T, n notification, state string, version uint64) {
+func wantState(t *testing.T, n notification, state string, version uint32) {
 	t.Helper()
 
 	if n.state != state || n.info.Version != version {
@@ -334,7 +334,7 @@ func wantState(t *testing.T, n notification, state string, version uint64) {
 	}
 }
 
-func wantContact(t *testing.T, c regevent.Contact, state string, event regevent.Event) {
+func wantContact(t *testing.T, c reginfo.Contact, state reginfo.RegState, event reginfo.Event) {
 	t.Helper()
 
 	if c.State != state || c.Event != event {
@@ -417,7 +417,7 @@ func TestSubscribeASFullState(t *testing.T) {
 		t.Fatalf("registrations = %v, want %v", got, want)
 	}
 
-	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Created)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Created)
 }
 
 // TS 24.229 §5.4.2.1.2 step 5: the NOTIFYs have the icid-value of the SUBSCRIBE that created the dialog, not of a
@@ -592,7 +592,7 @@ func TestSubscribeRejected(t *testing.T) {
 			t.Errorf("%s: got %q, want %d", tt.name, res.StartLine(), tt.code)
 		}
 
-		if tt.code == 406 && res.Header.Get("Accept") != regevent.ContentType {
+		if tt.code == 406 && res.Header.Get("Accept") != reginfo.ContentType {
 			t.Errorf("%s: Accept = %q", tt.name, res.Header.Get("Accept"))
 		}
 	}
@@ -652,7 +652,7 @@ func TestSubscriptionExpires(t *testing.T) {
 		n := s.recvNotify()
 		wantState(t, n, "terminated;reason=timeout", 0)
 
-		if r := n.registration(t, testMSISDN); r.State != regevent.Active {
+		if r := n.registration(t, testMSISDN); r.State != reginfo.Active {
 			t.Errorf("registration = %+v", r)
 		}
 
@@ -760,11 +760,11 @@ func TestRefreshAfterDeregistration(t *testing.T) {
 	n := s.recvNotify()
 	wantState(t, n, "active;expires=600", 1)
 
-	if r := n.registration(t, secondIMPU); r.State != regevent.Terminated || len(r.Contacts) != 1 {
+	if r := n.registration(t, secondIMPU); r.State != reginfo.Terminated || len(r.Contacts) != 1 {
 		t.Fatalf("registration = %+v", r)
 	}
 
-	wantContact(t, n.contact(t, secondIMPU, u.contact), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, n.contact(t, secondIMPU, u.contact), reginfo.Terminated, reginfo.Unregistered)
 
 	wantStatus(t, s.subscribe("600"), 200)
 
@@ -793,23 +793,23 @@ func TestNotifyBody(t *testing.T) {
 		t.Fatalf("registrations = %v, want %v without the barred %s", got, want, testIMPU)
 	}
 
-	wantParams := []regevent.UnknownParam{{Name: "+sip.instance", Value: testInstance}, {Name: "+g.3gpp.smsip"}}
+	wantParams := []reginfo.Param{{Name: "+sip.instance", Value: testInstance}, {Name: "+g.3gpp.smsip"}}
 
 	checkIDs(t, first)
 
 	for _, aor := range first.aors() {
 		r := first.registration(t, aor)
-		if r.State != regevent.Active || len(r.Contacts) != 1 {
+		if r.State != reginfo.Active || len(r.Contacts) != 1 {
 			t.Fatalf("registration = %+v", r)
 		}
 
-		event := regevent.Created
+		event := reginfo.Created
 		if aor == testMSISDN {
-			event = regevent.Registered
+			event = reginfo.Registered
 		}
 
 		c := r.Contacts[0]
-		wantContact(t, c, regevent.Active, event)
+		wantContact(t, c, reginfo.Active, event)
 
 		if c.URI != u.contact || c.CallID != u.callID || c.CSeq == nil || *c.CSeq != 2 || c.Expires == nil || *c.Expires != 600 ||
 			c.Q != "0.5" || !reflect.DeepEqual(c.UnknownParams, wantParams) {
@@ -836,7 +836,7 @@ func TestNotifyBody(t *testing.T) {
 		}
 
 		c := r.Contacts[0]
-		wantContact(t, c, regevent.Active, regevent.Refreshed)
+		wantContact(t, c, reginfo.Active, reginfo.Refreshed)
 
 		if *c.CSeq != 3 || *c.Expires != 600 {
 			t.Errorf("contact = %+v (cseq %d, expires %d)", c, *c.CSeq, *c.Expires)
@@ -844,7 +844,7 @@ func TestNotifyBody(t *testing.T) {
 	}
 }
 
-func deref(p *uint32) any {
+func deref(p *uint64) any {
 	if p == nil {
 		return nil
 	}
@@ -939,12 +939,12 @@ func TestUEDeregistrationNotify(t *testing.T) {
 		n := s.recvNotify()
 		wantState(t, n, "active;expires=600", 1)
 
-		if r := n.registration(t, testMSISDN); r.State != regevent.Active || len(r.Contacts) != 2 {
+		if r := n.registration(t, testMSISDN); r.State != reginfo.Active || len(r.Contacts) != 2 {
 			t.Fatalf("registration = %+v", r)
 		}
 
-		wantContact(t, n.contact(t, testMSISDN, a), regevent.Terminated, regevent.Unregistered)
-		wantContact(t, n.contact(t, testMSISDN, b), regevent.Active, regevent.Created)
+		wantContact(t, n.contact(t, testMSISDN, a), reginfo.Terminated, reginfo.Unregistered)
+		wantContact(t, n.contact(t, testMSISDN, b), reginfo.Active, reginfo.Created)
 	}
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + b + ">;expires=0"}), 200)
@@ -954,11 +954,11 @@ func TestUEDeregistrationNotify(t *testing.T) {
 	wantState(t, n, "terminated;reason=noresource", 2)
 
 	for _, aor := range []string{testMSISDN, testTel, testAlias} {
-		if r := n.registration(t, aor); r.State != regevent.Terminated || len(r.Contacts) != 1 {
+		if r := n.registration(t, aor); r.State != reginfo.Terminated || len(r.Contacts) != 1 {
 			t.Fatalf("registration = %+v", r)
 		}
 
-		wantContact(t, n.contact(t, aor, b), regevent.Terminated, regevent.Unregistered)
+		wantContact(t, n.contact(t, aor, b), reginfo.Terminated, reginfo.Unregistered)
 	}
 
 	ueSub.noNotify()
@@ -986,11 +986,11 @@ func TestExpiryNotify(t *testing.T) {
 		wantState(t, n, "terminated;reason=noresource", 1)
 
 		r := n.registration(t, testMSISDN)
-		if r.State != regevent.Terminated || len(r.Contacts) != 1 {
+		if r.State != reginfo.Terminated || len(r.Contacts) != 1 {
 			t.Fatalf("registration = %+v", r)
 		}
 
-		wantContact(t, r.Contacts[0], regevent.Terminated, regevent.Expired)
+		wantContact(t, r.Contacts[0], reginfo.Terminated, reginfo.Expired)
 	}
 
 	h.wantUnregistered()
@@ -1028,24 +1028,24 @@ func TestContactReplacementNotify(t *testing.T) {
 
 	n := ueSub.recvNotify()
 	wantState(t, n, "terminated;reason=noresource", 1)
-	wantContact(t, n.contact(t, testMSISDN, old), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, n.contact(t, testMSISDN, old), reginfo.Terminated, reginfo.Unregistered)
 
 	n = pcscfSub.recvNotify()
 	wantState(t, n, "active;expires=600", 1)
 	checkIDs(t, n)
 
-	if r := n.registration(t, testMSISDN); r.State != regevent.Active || len(r.Contacts) != 2 {
+	if r := n.registration(t, testMSISDN); r.State != reginfo.Active || len(r.Contacts) != 2 {
 		t.Fatalf("registration = %+v", r)
 	}
 
-	wantContact(t, n.contact(t, testMSISDN, old), regevent.Terminated, regevent.Unregistered)
-	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Created)
+	wantContact(t, n.contact(t, testMSISDN, old), reginfo.Terminated, reginfo.Unregistered)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Created)
 
-	if r := n.registration(t, secondIMPU); r.State != regevent.Terminated || len(r.Contacts) != 1 {
+	if r := n.registration(t, secondIMPU); r.State != reginfo.Terminated || len(r.Contacts) != 1 {
 		t.Fatalf("registration = %+v", r)
 	}
 
-	wantContact(t, n.contact(t, secondIMPU, old), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, n.contact(t, secondIMPU, old), reginfo.Terminated, reginfo.Unregistered)
 
 	if subs := h.waitSubscriptions(1); subs[0].Subscriber != db.SubscriberPCSCF {
 		t.Fatalf("subscriptions = %+v, want the P-CSCF's", subs)
@@ -1055,11 +1055,11 @@ func TestContactReplacementNotify(t *testing.T) {
 func TestRTRNotify(t *testing.T) {
 	for _, tt := range []struct {
 		reason cx.ReasonCode
-		event  regevent.Event
+		event  reginfo.Event
 		state  string
 	}{
-		{cx.ReasonPermanentTermination, regevent.Rejected, "terminated;reason=rejected"},
-		{cx.ReasonServerChange, regevent.Deactivated, "terminated;reason=deactivated"},
+		{cx.ReasonPermanentTermination, reginfo.Rejected, "terminated;reason=rejected"},
+		{cx.ReasonServerChange, reginfo.Deactivated, "terminated;reason=deactivated"},
 	} {
 		t.Run(tt.reason.String(), func(t *testing.T) {
 			h := newHarness(t)
@@ -1083,11 +1083,11 @@ func TestRTRNotify(t *testing.T) {
 				wantState(t, n, tt.state, 1)
 
 				for _, aor := range []string{testMSISDN, testTel, testAlias} {
-					if r := n.registration(t, aor); r.State != regevent.Terminated || len(r.Contacts) != 1 {
+					if r := n.registration(t, aor); r.State != reginfo.Terminated || len(r.Contacts) != 1 {
 						t.Fatalf("registration = %+v", r)
 					}
 
-					wantContact(t, n.contact(t, aor, u.contact), regevent.Terminated, tt.event)
+					wantContact(t, n.contact(t, aor, u.contact), reginfo.Terminated, tt.event)
 				}
 			}
 
@@ -1153,8 +1153,8 @@ func TestRTRPublicIdentities(t *testing.T) {
 
 	n := s.recvNotify()
 	wantState(t, n, "active;expires=600", 1)
-	wantContact(t, n.contact(t, secondIMPU, u.contact), regevent.Terminated, regevent.Rejected)
-	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Created)
+	wantContact(t, n.contact(t, secondIMPU, u.contact), reginfo.Terminated, reginfo.Rejected)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Created)
 
 	rtr.PublicIdentities = nil
 	if _, err := h.reg.Terminate(t.Context(), rtr); err != nil {
@@ -1328,7 +1328,7 @@ func TestSubscriptionExpiry(t *testing.T) {
 	n := s.recvNotify()
 	wantState(t, n, "terminated;reason=timeout", 1)
 
-	if r := n.registration(t, testMSISDN); r.State != regevent.Active {
+	if r := n.registration(t, testMSISDN); r.State != reginfo.Active {
 		t.Fatalf("registration = %+v", r)
 	}
 
@@ -1358,7 +1358,7 @@ func TestNotifyAfterRestart(t *testing.T) {
 		t.Fatalf("CSeq = %d, want %d", n.cseq, first.cseq+1)
 	}
 
-	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Refreshed)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Refreshed)
 }
 
 func TestMixedRegisterReportsTheRemovedContact(t *testing.T) {
@@ -1381,8 +1381,8 @@ func TestMixedRegisterReportsTheRemovedContact(t *testing.T) {
 
 	n := pcscfSub.recvNotify()
 	wantState(t, n, "active;expires=600", 1)
-	wantContact(t, n.contact(t, testMSISDN, a), regevent.Terminated, regevent.Unregistered)
-	wantContact(t, n.contact(t, testMSISDN, b), regevent.Active, regevent.Refreshed)
+	wantContact(t, n.contact(t, testMSISDN, a), reginfo.Terminated, reginfo.Unregistered)
+	wantContact(t, n.contact(t, testMSISDN, b), reginfo.Active, reginfo.Refreshed)
 }
 
 func TestRegisterReportsExpiredContacts(t *testing.T) {
@@ -1406,8 +1406,8 @@ func TestRegisterReportsExpiredContacts(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + b + ">"}), 200)
 
 	n := pcscfSub.recvNotify()
-	wantContact(t, n.contact(t, testMSISDN, a), regevent.Terminated, regevent.Expired)
-	wantContact(t, n.contact(t, testMSISDN, b), regevent.Active, regevent.Refreshed)
+	wantContact(t, n.contact(t, testMSISDN, a), reginfo.Terminated, reginfo.Expired)
+	wantContact(t, n.contact(t, testMSISDN, b), reginfo.Active, reginfo.Refreshed)
 }
 
 func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
@@ -1431,7 +1431,7 @@ func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
 	h.hss.nextSAR(t)
 
 	n := s.recvNotify()
-	wantContact(t, n.contact(t, testAlias, tablet.contact), regevent.Active, regevent.Registered)
+	wantContact(t, n.contact(t, testAlias, tablet.contact), reginfo.Active, reginfo.Registered)
 
 	wantStatus(t, phone.send(registerOptions{auth: phone.protected(testNonce(), testVector.XRES), contact: "*", expires: "0"}), 200)
 	h.hss.nextSAR(t)
@@ -1441,11 +1441,11 @@ func TestSharedIMPUNotifiesTheOtherUsers(t *testing.T) {
 		t.Fatalf("Subscription-State %q, want active while the shared identity is registered", n.state)
 	}
 
-	if r := n.registration(t, testAlias); r.State != regevent.Active {
+	if r := n.registration(t, testAlias); r.State != reginfo.Active {
 		t.Fatalf("shared registration = %+v, want active", r)
 	}
 
-	wantContact(t, n.contact(t, testAlias, phone.contact), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, n.contact(t, testAlias, phone.contact), reginfo.Terminated, reginfo.Unregistered)
 }
 
 func TestSubscribeUserFromTheServiceRoute(t *testing.T) {
@@ -1494,14 +1494,14 @@ func TestNewBindingGetsANewContactID(t *testing.T) {
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)
 	h.hss.nextSAR(t)
-	wantContact(t, s.recvNotify().contact(t, secondIMPU, u.contact), regevent.Terminated, regevent.Unregistered)
+	wantContact(t, s.recvNotify().contact(t, secondIMPU, u.contact), reginfo.Terminated, reginfo.Unregistered)
 
 	h.clock.Advance(time.Second)
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
 	h.hss.nextSAR(t)
 
 	again := s.recvNotify().contact(t, secondIMPU, u.contact)
-	if again.ID == first.ID || again.Event != regevent.Registered {
+	if again.ID == first.ID || again.Event != reginfo.Registered {
 		t.Fatalf("new binding: id %s event %s, want a new id than %s and registered", again.ID, again.Event, first.ID)
 	}
 }
@@ -1521,9 +1521,9 @@ func TestUnchangedBindingKeepsItsEvent(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: "<" + other + ">"}), 200)
 
 	n := s.recvNotify()
-	wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Registered)
-	wantContact(t, n.contact(t, testAlias, u.contact), regevent.Active, regevent.Created)
-	wantContact(t, n.contact(t, testMSISDN, other), regevent.Active, regevent.Refreshed)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Registered)
+	wantContact(t, n.contact(t, testAlias, u.contact), reginfo.Active, reginfo.Created)
+	wantContact(t, n.contact(t, testMSISDN, other), reginfo.Active, reginfo.Refreshed)
 }
 
 func TestSubscribeAcceptsMediaRanges(t *testing.T) {

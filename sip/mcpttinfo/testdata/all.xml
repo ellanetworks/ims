@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every element of mcptt-Params (F.1.2), in the order of the schema; anyExt of the root. -->
+<mcpttinfo xmlns="urn:3gpp:ns:mcpttInfo:1.0" xmlns:g="urn:3gpp:ns:mcpttGKTP:1.0">
+  <mcptt-Params>
+    <mcptt-access-token type="Normal"><mcpttString>token</mcpttString></mcptt-access-token>
+    <session-type>chat</session-type>
+    <mcptt-request-uri type="Normal"><mcpttURI>sip:group1@mcptt.example.com</mcpttURI></mcptt-request-uri>
+    <mcptt-calling-user-id type="Normal"><mcpttURI>sip:alice@mcptt.example.com</mcpttURI></mcptt-calling-user-id>
+    <mcptt-called-party-id type="Normal"><mcpttURI>sip:bob@mcptt.example.com</mcpttURI></mcptt-called-party-id>
+    <mcptt-calling-group-id type="Normal"><mcpttURI>sip:group1@mcptt.example.com</mcpttURI></mcptt-calling-group-id>
+    <required type="Normal"><mcpttBoolean>true</mcpttBoolean></required>
+    <emergency-ind type="Normal"><mcpttBoolean>true</mcpttBoolean></emergency-ind>
+    <alert-ind type="Normal"><mcpttBoolean>false</mcpttBoolean></alert-ind>
+    <imminentperil-ind type="Normal"><mcpttBoolean>false</mcpttBoolean></imminentperil-ind>
+    <broadcast-ind>false</broadcast-ind>
+    <mc-org>Fire Department</mc-org>
+    <floor-state>floor-taken</floor-state>
+    <associated-group-id type="Normal"><mcpttURI>sip:group2@mcptt.example.com</mcpttURI></associated-group-id>
+    <originated-by type="Normal"><mcpttURI>sip:carol@mcptt.example.com</mcpttURI></originated-by>
+    <MKFC-GKTPs><g:GKTP>opaque</g:GKTP></MKFC-GKTPs>
+    <mcptt-client-id type="Normal"><mcpttString>client-1</mcpttString></mcptt-client-id>
+    <alert-ind-rcvd type="Normal"><mcpttBoolean>true</mcpttBoolean></alert-ind-rcvd>
+    <gw-mcptt-usage>true</gw-mcptt-usage>
+  </mcptt-Params>
+  <anyExt>
+    <user-requested-priority>3</user-requested-priority>
+  </anyExt>
+</mcpttinfo>

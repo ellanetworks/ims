@@ -279,6 +279,8 @@ func (c *responseContext) send(b *branch) error {
 		}
 	}
 
+	c.arm(b)
+
 	client, err := c.p.layer.Request(b.out, b)
 	if err != nil {
 		c.drop(b)
@@ -302,8 +304,33 @@ func (c *responseContext) send(b *branch) error {
 
 func (c *responseContext) drop(b *branch) {
 	c.mu.Lock()
-	b.done, b.settled = true, true
+	b.finish()
+	b.settled = true
 	c.mu.Unlock()
+}
+
+// arm starts the timers of b as its request goes: Timer C and the no-answer timer of an INVITE (RFC 3261 §16.6 step
+// 11), the timeout of the options. Before the send, so that none starts late of a response that comes first; one that
+// fires before the client transaction exists leaves its CANCEL to started.
+func (c *responseContext) arm(b *branch) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if b.done {
+		return
+	}
+
+	if c.invite {
+		b.startTimerC()
+
+		if b.noAnswer > 0 {
+			b.noAnswerTimer = c.p.clock.AfterFunc(b.noAnswer, b.noAnswerFired)
+		}
+	}
+
+	if b.timeout > 0 && !b.stopsTimeout() {
+		b.timer = c.p.clock.AfterFunc(b.timeout, b.timeoutFired)
+	}
 }
 
 // advance starts what can start; a branch that cannot be sent counts as answering with an error.
@@ -341,20 +368,6 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 	c.mu.Lock()
 
 	b.client = client
-
-	if !b.done {
-		if c.invite {
-			b.startTimerC()
-
-			if b.noAnswer > 0 {
-				b.noAnswerTimer = c.p.clock.AfterFunc(b.noAnswer, b.noAnswerFired)
-			}
-		}
-
-		if b.timeout > 0 && !b.stopsTimeout() {
-			b.timer = c.p.clock.AfterFunc(b.timeout, b.timeoutFired)
-		}
-	}
 
 	var (
 		cancel bool

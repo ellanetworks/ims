@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -158,7 +159,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	req.Header.Add("Call-ID", timeUUID()+"@"+sip.FormatHost(u.cfg.Local))
 	req.Header.Add("Contact", "<"+contact.String()+">")
 	req.Header.Add("Event", "reg")
-	req.Header.Add("Accept", regevent.ContentType)
+	req.Header.Add("Accept", reginfo.ContentType)
 	req.Header.Add("Expires", strconv.FormatInt(int64(DefaultSubscriptionExpires/time.Second), 10))
 
 	sub := &subscription{accepted: make(chan error, 1)}
@@ -317,19 +318,22 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	}
 }
 
-// notify handles a NOTIFY of the reg event subscription, which the agent answered (RFC 3680 §5).
+// notify handles a NOTIFY of the reg event subscription (RFC 3680 §5), which the agent answers 200; one of a document
+// the UE cannot read, 400, which keeps the subscription (RFC 6665 §4.2.2): its Subscription-State applies, and the UE
+// asks for the full state again (RFC 3680 §5.2), refreshing the subscription, or making a new one of one it ended
+// for no reason the agent subscribes again of (Ended) or a change of authorisation (RFC 6665 §4.1.3).
 func (u *UE) notify(sub *subscription, r *ua.Request) {
 	req := r.Message()
 	ss, _, _ := req.Header.SubscriptionState()
 	terminated := ss.State == sip.SubscriptionTerminated
 
 	var (
-		info    regevent.Reginfo
+		info    reginfo.Reginfo
 		infoErr error
 	)
 
-	if mediaType(req.Header.ContentType()) == regevent.ContentType {
-		info, infoErr = regevent.Decode(req.Body)
+	if mediaType(req.Header.ContentType()) == reginfo.ContentType {
+		info, infoErr = reginfo.Decode(req.Body)
 	} else {
 		infoErr = fmt.Errorf("ue: NOTIFY body of type %q", req.Header.ContentType())
 	}
@@ -340,14 +344,28 @@ func (u *UE) notify(sub *subscription, r *ua.Request) {
 		after []func()
 	)
 
+	if infoErr != nil && len(req.Body) > 0 {
+		_ = r.Respond(ua.Reply{Code: 400})
+
+		switch ss.Reason {
+		case sip.SubscriptionRejected, sip.SubscriptionDeactivated, sip.SubscriptionTimeout:
+			a.resubscribe = !terminated
+		default:
+			a.resubscribe = true
+		}
+	}
+
 	u.mu.Lock()
 
+	a.resubscribe = a.resubscribe && u.state.Registered
+
 	if infoErr == nil {
-		stale = sub.haveVersion && info.Version <= sub.version
-		gap := sub.haveVersion && info.Version > sub.version+1
+		version := uint64(info.Version)
+		stale = sub.haveVersion && version <= sub.version
+		gap := sub.haveVersion && version > sub.version+1
 
 		if !stale {
-			sub.version, sub.haveVersion = info.Version, true
+			sub.version, sub.haveVersion = version, true
 			a, after = u.applyLocked(info, terminated)
 			a.resubscribe = gap && !terminated && !a.teardown
 		}
@@ -385,7 +403,7 @@ type action struct {
 	retryAfter   time.Duration
 }
 
-func (u *UE) ownContact(c regevent.Contact) bool {
+func (u *UE) ownContact(c reginfo.Contact) bool {
 	uri, err := sip.ParseURI(c.URI)
 	if err != nil || uri.User != u.user {
 		return false
@@ -404,18 +422,18 @@ func (u *UE) ownContact(c regevent.Contact) bool {
 	return u.ownFlow(params)
 }
 
-func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []func()) {
+func (u *UE) applyLocked(info reginfo.Reginfo, subTerminated bool) (action, []func()) {
 	var (
-		shortened             *uint32
+		shortened             *uint64
 		mine, gone            int
 		deactivated, rejected bool
-		probation             *uint32
+		probation             *uint64
 		registered, removed   []string
-		allClosed             = info.State == regevent.Full && len(info.Registrations) > 0
+		allClosed             = info.State == reginfo.Full && len(info.Registrations) > 0
 	)
 
 	for _, reg := range info.Registrations {
-		allClosed = allClosed && reg.State == regevent.Terminated
+		allClosed = allClosed && reg.State == reginfo.Terminated
 
 		own, ended := 0, 0
 
@@ -426,13 +444,13 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 
 			own++
 
-			if c.State == regevent.Terminated {
+			if c.State == reginfo.Terminated {
 				ended++
-				deactivated = deactivated || c.Event == regevent.Deactivated
-				rejected = rejected || c.Event == regevent.Rejected
+				deactivated = deactivated || c.Event == reginfo.Deactivated
+				rejected = rejected || c.Event == reginfo.Rejected
 
-				if c.Event == regevent.Probation {
-					retry := uint32(0)
+				if c.Event == reginfo.Probation {
+					retry := uint64(0)
 					if c.RetryAfter != nil {
 						retry = *c.RetryAfter
 					}
@@ -445,7 +463,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 				continue
 			}
 
-			if c.Event == regevent.Shortened && reg.State == regevent.Active && c.Expires != nil &&
+			if c.Event == reginfo.Shortened && reg.State == reginfo.Active && c.Expires != nil &&
 				(shortened == nil || *c.Expires < *shortened) {
 				shortened = c.Expires
 			}
@@ -462,7 +480,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 			gone++
 
 			removed = append(removed, reg.AOR)
-		case reg.State == regevent.Active:
+		case reg.State == reginfo.Active:
 			registered = append(registered, reg.AOR)
 		}
 	}
@@ -478,7 +496,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 		case deactivated:
 			a.deregistered = DeregisteredDeactivated
 		case probation != nil:
-			a.deregistered, a.retryAfter = DeregisteredProbation, time.Duration(*probation)*time.Second
+			a.deregistered, a.retryAfter = DeregisteredProbation, duration(*probation)
 		}
 
 		return a, []func(){after}
@@ -488,7 +506,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 		return action{}, nil
 	}
 
-	if info.State == regevent.Full {
+	if info.State == reginfo.Full {
 		u.state.IMPUs = nil
 	}
 
@@ -513,7 +531,7 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 	}
 
 	if shortened != nil {
-		remaining := time.Duration(*shortened) * time.Second
+		remaining := duration(*shortened)
 		if expires := u.now().Add(remaining); expires.Before(u.state.Expires) {
 			u.state.Expires = expires
 			u.scheduleLocked(remaining)
@@ -521,6 +539,11 @@ func (u *UE) applyLocked(info regevent.Reginfo, subTerminated bool) (action, []f
 	}
 
 	return action{}, nil
+}
+
+// duration is n seconds of a document, an xs:unsignedLong, bounded to what a time.Duration holds.
+func duration(n uint64) time.Duration {
+	return time.Duration(min(n, uint64(math.MaxInt64/time.Second))) * time.Second
 }
 
 // forgetLocked forgets the registration; the subscription it returns to unsubscribe from goes once the lock is

@@ -13,8 +13,8 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -385,7 +385,7 @@ func (r *Registrar) deregisterBindings(ctx context.Context, impi string, regID i
 		return nil
 	}
 
-	rm, deleted, err := r.removeBindings(ctx, st, reg, removed, regevent.Rejected)
+	rm, deleted, err := r.removeBindings(ctx, st, reg, removed, reginfo.Rejected)
 	if err != nil {
 		r.log.Warn("failed to store the registration", slog.String("impi", impi), slog.Any("error", err))
 		return nil

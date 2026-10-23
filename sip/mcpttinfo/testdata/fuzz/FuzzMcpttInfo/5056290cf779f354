@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<mcpttinfo xmlns=\"urn:3gpp:ns:mcpttInfo:1.0\"><mcptt-Params><mcptt-access-token></mcptt-access-token></mcptt-Params></mcpttinfo>")

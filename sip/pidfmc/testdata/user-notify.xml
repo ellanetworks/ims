@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.2.2.2.5 step 3, §9.3.1.2: per-user affiliation information the participating function NOTIFYs: a
+     tuple per client, the status and expiration of each affiliation, the identifier of the PUBLISH handled. -->
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:mcpttPI10="urn:3gpp:ns:mcpttPresInfo:1.0"
+    entity="sip:alice@mcptt.example.com">
+  <tuple id="urn:uuid:00000000-0000-1000-8000-0123456789ab">
+    <status>
+      <mcpttPI10:affiliation group="sip:group1@mcptt.example.com" status="affiliated"
+          expires="2026-10-21T08:00:00Z"/>
+      <mcpttPI10:affiliation group="sip:group2@mcptt.example.com" status="affiliating"
+          expires="2026-10-21T08:00:00.5+02:00"/>
+    </status>
+  </tuple>
+  <tuple id="urn:uuid:00000000-0000-1000-8000-0123456789cd">
+    <status>
+      <mcpttPI10:affiliation group="sip:group1@mcptt.example.com" status="deaffiliating"
+          expires="2026-10-20T08:01:04Z"/>
+    </status>
+  </tuple>
+  <mcpttPI10:p-id>f81d4fae-7dec-11d0-a765-00a0c91e6bf6</mcpttPI10:p-id>
+</presence>

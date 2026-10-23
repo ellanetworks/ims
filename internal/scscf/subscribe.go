@@ -12,9 +12,9 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 const (
@@ -165,7 +165,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 ) (*subscribeRequest, *sip.Response) {
 	if accept := req.Header.Values("Accept"); len(accept) > 0 && !accepts(req.Header.Elements("Accept")) {
 		res := sip.NewResponse(req, 406, "")
-		res.Header.Add("Accept", regevent.ContentType)
+		res.Header.Add("Accept", reginfo.ContentType)
 
 		return nil, res
 	}
@@ -311,7 +311,7 @@ func accepts(types []string) bool {
 		mt, _, _ := strings.Cut(t, ";")
 
 		switch strings.ToLower(strings.TrimSpace(mt)) {
-		case regevent.ContentType, "application/*", "*/*":
+		case reginfo.ContentType, "application/*", "*/*":
 			return true
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -13,9 +14,9 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -200,7 +201,7 @@ func (p *PCSCF) contactURI(local netip.AddrPort) string {
 func (p *PCSCF) subscribeHeaders(req *sip.Request, reg db.PCSCFRegistration) {
 	req.Header.Add("P-Asserted-Identity", "<"+pathURI(reg.FlowToken, reg.PCSCFAddress, p.cfg.Port).String()+">")
 	req.Header.Add("Event", "reg")
-	req.Header.Add("Accept", regevent.ContentType)
+	req.Header.Add("Accept", reginfo.ContentType)
 	req.Header.Add("Expires", strconv.Itoa(int(subscriptionExpires/time.Second)))
 }
 
@@ -439,27 +440,35 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	return nil
 }
 
-func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Response {
+// notified handles a NOTIFY of the subscription s: its response, and what to do once it is sent, if anything.
+func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Response, func()) {
 	state, ok, err := req.Header.SubscriptionState()
 	if !ok || err != nil {
-		return sip.NewResponse(req, 400, "Bad Subscription-State")
+		return sip.NewResponse(req, 400, "Bad Subscription-State"), nil
 	}
 
 	terminated := state.State == sip.SubscriptionTerminated
 
-	var info *regevent.Reginfo
+	// A document the P-CSCF cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2); the
+	// Subscription-State still applies (§4.1.3), and the P-CSCF asks for the full state again (RFC 3680 §5.2).
+	var (
+		info       *reginfo.Reginfo
+		unreadable bool
+	)
 
 	if len(req.Body) > 0 {
-		if !strings.EqualFold(mediaType(req.Header.ContentType()), regevent.ContentType) {
-			return sip.NewResponse(req, 415, "")
+		if !strings.EqualFold(mediaType(req.Header.ContentType()), reginfo.ContentType) {
+			return sip.NewResponse(req, 415, ""), nil
 		}
 
-		i, err := regevent.Decode(req.Body)
-		if err != nil {
-			return sip.NewResponse(req, 400, "Bad reginfo")
-		}
+		if i, err := reginfo.Decode(req.Body); err != nil {
+			ss.p.log.Warn("unreadable reg event document: subscribing again", slog.String("impi", s.impi),
+				slog.Any("error", err))
 
-		info = &i
+			unreadable = true
+		} else {
+			info = &i
+		}
 	}
 
 	accepted := sip.NewResponse(req, 200, "")
@@ -468,7 +477,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 	if s.removed {
 		ss.mu.Unlock()
-		return sip.NewResponse(req, 481, "")
+		return sip.NewResponse(req, 481, ""), nil
 	}
 
 	switch {
@@ -481,7 +490,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 				code = serr.StatusCode
 			}
 
-			return sip.NewResponse(req, code, "")
+			return sip.NewResponse(req, code, ""), nil
 		}
 
 		// The 200 below applies the Contact of the NOTIFY (RFC 6141 §4.6).
@@ -490,7 +499,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		d, err := dialog.NewFromNotify(s.subscribe, req)
 		if err != nil && !terminated {
 			ss.mu.Unlock()
-			return sip.NewResponse(req, 481, "")
+			return sip.NewResponse(req, 481, ""), nil
 		}
 
 		s.dialog = d
@@ -532,7 +541,23 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		ss.p.apply(s.impi, *info)
 	}
 
-	return accepted
+	if unreadable {
+		return sip.NewResponse(req, 400, "Bad reginfo"), func() { ss.again(s, terminated, state.Reason) }
+	}
+
+	return accepted, nil
+}
+
+// again asks for the full state of the subscription s after a document the P-CSCF could not read: a refresh of the
+// subscription, whose NOTIFY has the full state (RFC 3680 §5.2), or a new subscription if the NOTIFY ended it, unless
+// for a change of authorisation (RFC 6665 §4.1.3).
+func (ss *subscriptions) again(s *subscription, terminated bool, reason string) {
+	switch {
+	case !terminated:
+		ss.refresh(s)
+	case reason != sip.SubscriptionRejected:
+		ss.start(s.impi)
+	}
 }
 
 func mediaType(ct string) string {
@@ -541,9 +566,9 @@ func mediaType(ct string) string {
 	return strings.TrimSpace(mt)
 }
 
-func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
+func (p *PCSCF) apply(impi string, info reginfo.Reginfo) {
 	now := p.clock.Now()
-	ended := map[regKey]regevent.Event{}
+	ended := map[regKey]reginfo.Event{}
 
 	removed := p.regs.update(impi, func(r *db.PCSCFRegistration) bool {
 		active := map[string]bool{}
@@ -564,7 +589,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 
 				uri, ok := matchURI(r.Contacts, c.URI)
 				if !ok {
-					if c.State == regevent.Active && reg.State != regevent.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
+					if c.State == reginfo.Active && reg.State != reginfo.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
 						here, unknown = true, true
 					}
 
@@ -573,7 +598,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 
 				mentioned[uri] = true
 
-				if c.State != regevent.Active || reg.State == regevent.Terminated {
+				if c.State != reginfo.Active || reg.State == reginfo.Terminated {
 					ended[regKeyOf(r)] = graver(ended[regKeyOf(r)], c.Event)
 					continue
 				}
@@ -581,7 +606,8 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				active[uri], here = true, true
 
 				if c.Expires != nil {
-					longest = max(longest, time.Duration(*c.Expires)*time.Second)
+					// An xs:unsignedLong, bounded to what a time.Duration holds.
+					longest = max(longest, time.Duration(min(*c.Expires, uint64(math.MaxInt64/time.Second)))*time.Second)
 				}
 			}
 
@@ -630,7 +656,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 // sameFlow reports whether a contact of a reg event is bound through registration r's flow: the same
 // instance ID and reg-id, or none for a registration without the multiple registration mechanism. Flows
 // may share a contact URI (RFC 5626 §6).
-func sameFlow(r *db.PCSCFRegistration, c regevent.Contact) bool {
+func sameFlow(r *db.PCSCFRegistration, c reginfo.Contact) bool {
 	var params sip.Params
 
 	for _, p := range c.UnknownParams {

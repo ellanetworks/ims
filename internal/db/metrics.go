@@ -63,7 +63,7 @@ func (d *DB) observe(pool string, err *error) func() {
 // failed reports whether err is a failure of the database rather than an answer to the call.
 func failed(err error) bool {
 	return err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrIdentityConflict) &&
-		!errors.Is(err, ErrSubscriptionExists) && !errors.Is(err, ErrDuplicateICID)
+		!errors.Is(err, ErrSubscriptionExists) && !errors.Is(err, ErrDuplicateICID) && !errors.Is(err, ErrDuplicate)
 }
 
 // Collectors are the metrics of the database: its calls and its size on disk. A call's duration includes the wait

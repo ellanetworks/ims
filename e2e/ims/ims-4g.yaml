@@ -16,3 +16,7 @@ scscf:
   port: 5080
 diameter:
   address: 10.80.0.5
+# The MCPTT AS, of the iFCs of provision.js; its settings provisioned by mcptt/provision.sh.
+mcptt:
+  media:
+    address: 10.80.0.5

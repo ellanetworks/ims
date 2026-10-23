@@ -1,0 +1,363 @@
+diff --git a/lib/diameter/rx/message.h b/lib/diameter/rx/message.h
+index ea7c91e..90de0f8 100644
+--- a/lib/diameter/rx/message.h
++++ b/lib/diameter/rx/message.h
+@@ -31,6 +31,7 @@ extern "C" {
+ #define OGS_DIAM_RX_APPLICATION_ID 16777236
+ 
+ #define OGS_DIAM_RX_AVP_CODE_SUBSCRIPTION_ID                (443)
++#define OGS_DIAM_RX_AVP_CODE_AF_APPLICATION_IDENTIFIER      (504)
+ #define OGS_DIAM_RX_AVP_CODE_SPECIFIC_ACTION                (513)
+ 
+ #define OGS_DIAM_RX_AVP_CODE_MEDIA_COMPONENT_DESCRIPTION    (517)
+@@ -139,6 +140,9 @@ typedef struct ogs_diam_rx_message_s {
+     uint32_t          result_code;
+ 
+     ogs_ims_data_t    ims_data;
++
++    /* AF-Application-Identifier is the MCPTT ICSI */
++    bool              mcptt;
+ } ogs_diam_rx_message_t;
+ 
+ int ogs_diam_rx_init(void);
+diff --git a/src/pcf/context.h b/src/pcf/context.h
+index 8655c8f..22eaf70 100644
+--- a/src/pcf/context.h
++++ b/src/pcf/context.h
+@@ -208,6 +208,8 @@ typedef struct pcf_app_s {
+     ogs_pcc_rule_t pcc_rule[OGS_MAX_NUM_OF_PCC_RULE];
+     int num_of_pcc_rule;
+ 
++    bool mcptt;     /* afAppId: MCPTT */
++
+     pcf_sess_t *sess;
+ } pcf_app_t;
+ 
+diff --git a/src/pcf/npcf-handler.c b/src/pcf/npcf-handler.c
+index 84b9115..c00a925 100644
+--- a/src/pcf/npcf-handler.c
++++ b/src/pcf/npcf-handler.c
+@@ -21,9 +21,55 @@
+ 
+ #include "npcf-handler.h"
+ 
++/*
++ * MCPTT: voice on QCI/5QI 65 (GBR), the floor control of MCPTT-4 on 65 or 69
++ * (TS 23.379 clause 5.7.3); 69 is Non-GBR, "Mission Critical delay sensitive
++ * signalling (e.g. MC-PTT signalling)" (TS 23.501 Table 5.7.4-1).
++ */
++#define QOS_INDEX_MCPTT_VOICE       65
++#define QOS_INDEX_MCPTT_SIGNALLING  69
++
++/*
++ * Whether an AF application identifier is the MCPTT ICSI, which the P-CSCF
++ * provides (TS 29.214 Annex A.13.1 NOTE 3, TS 29.514 Annex B.10.1 NOTE 3) as
++ * received in SIP: quoted, percent-encoded or not (TS 29.214 Annex A.1 NOTE 3).
++ */
++static bool af_app_id_is_mcptt(const char *id, size_t len)
++{
++    static const char icsi[] = "urn:urn-7:3gpp-service.ims.icsi.mcptt";
++    size_t i = 0, j = 0;
++
++    if (!id)
++        return false;
++
++    if (len >= 2 && id[0] == '"' && id[len-1] == '"') {
++        id++;
++        len -= 2;
++    }
++
++    while (i < len && icsi[j]) {
++        char c = id[i];
++
++        if (c == '%' && i + 2 < len && id[i+1] == '3' &&
++                (id[i+2] == 'A' || id[i+2] == 'a')) {
++            c = ':';
++            i += 3;
++        } else {
++            i++;
++        }
++
++        if (tolower((unsigned char)c) != icsi[j])
++            return false;
++        j++;
++    }
++
++    return i == len && !icsi[j];
++}
++
+ static uint8_t pcf_qos_index_from_media(
+         const char *qos_reference,
+         OpenAPI_media_type_e media_type,
++        bool mcptt,
+         const char **err_out)
+ {
+     int i;
+@@ -41,11 +87,18 @@ static uint8_t pcf_qos_index_from_media(
+         return 0;
+     }
+ 
++    /*
++     * TS 29.513 Table 7.3.3-1: the 5QI of an application whose afAppId
++     * demands it (MCPTT, TS 29.514 Annex B.10.1 NOTE 3), else that of the
++     * medType; "application": 1 OR 2, 2 as 1 is the audio's PCC rule.
++     */
+     switch (media_type) {
+     case OpenAPI_media_type_AUDIO:
+-        return OGS_QOS_INDEX_1;
++        return mcptt ? QOS_INDEX_MCPTT_VOICE : OGS_QOS_INDEX_1;
+     case OpenAPI_media_type_VIDEO:
+         return OGS_QOS_INDEX_2;
++    case OpenAPI_media_type_APPLICATION:
++        return mcptt ? QOS_INDEX_MCPTT_SIGNALLING : OGS_QOS_INDEX_2;
+     case OpenAPI_media_type_CONTROL:
+         return OGS_QOS_INDEX_5;
+     case OpenAPI_media_type_NULL:
+@@ -945,6 +998,10 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
+     app_session->notif_uri = ogs_strdup(AscReqData->notif_uri);
+     ogs_assert(app_session->notif_uri);
+ 
++    if (AscReqData->af_app_id)
++        app_session->mcptt = af_app_id_is_mcptt(AscReqData->af_app_id,
++                strlen(AscReqData->af_app_id));
++
+     client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
+     if (!client) {
+         ogs_debug("%s: ogs_sbi_client_add()", OGS_FUNC);
+@@ -993,7 +1050,8 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
+         const char *err_str = NULL;
+ 
+         qos_index = pcf_qos_index_from_media(
+-                reference, media_component->media_type, &err_str);
++                reference, media_component->media_type,
++                app_session->mcptt, &err_str);
+         if (qos_index == 0) {
+             strerror = ogs_msprintf("[%s:%d] %s",
+                     pcf_ue_sm->supi, sess->psi, err_str);
+@@ -1010,6 +1068,14 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
+             }
+         }
+ 
++        /*
++         * No PCC rule of the subscriber for the 5QI of an application
++         * media component: its flows stay on the default QoS flow.
++         */
++        if (!db_pcc_rule && !reference &&
++            (media_component->media_type == OpenAPI_media_type_APPLICATION))
++            continue;
++
+         if (!db_pcc_rule && !reference &&
+             (media_component->media_type == OpenAPI_media_type_CONTROL)) {
+             /*
+@@ -1126,6 +1192,12 @@ bool pcf_npcf_policyauthorization_handle_create(pcf_sess_t *sess,
+         if (pcc_rule->qos.gbr.uplink == 0)
+             pcc_rule->qos.gbr.uplink = db_pcc_rule->qos.gbr.uplink;
+ 
++        /* Non-GBR: no flow bitrates (TS 23.501 clause 5.7.2.5) */
++        if (qos_index == QOS_INDEX_MCPTT_SIGNALLING) {
++            memset(&pcc_rule->qos.mbr, 0, sizeof(pcc_rule->qos.mbr));
++            memset(&pcc_rule->qos.gbr, 0, sizeof(pcc_rule->qos.gbr));
++        }
++
+         /* Update ARP */
+         if (ogs_pcc_rule_update_arp_from_media(pcc_rule, media_component))
+             ogs_info("[%s:%d] PCC Rule[%s] ARP[%d:%d:%d] updated by AF",
+@@ -1351,6 +1423,10 @@ bool pcf_npcf_policyauthorization_handle_update(
+         goto cleanup;
+     }
+ 
++    if (AscUpdateData->af_app_id)
++        app_session->mcptt = af_app_id_is_mcptt(AscUpdateData->af_app_id,
++                strlen(AscUpdateData->af_app_id));
++
+     MediaComponentList = AscUpdateData->med_components;
+     OpenAPI_list_for_each(MediaComponentList, node) {
+         MediaComponentMap = node->data;
+@@ -1479,7 +1555,8 @@ bool pcf_npcf_policyauthorization_handle_update(
+         const char *err_str = NULL;
+ 
+         qos_index = pcf_qos_index_from_media(
+-                reference, media_component->media_type, &err_str);
++                reference, media_component->media_type,
++                app_session->mcptt, &err_str);
+         if (qos_index == 0) {
+             strerror = ogs_msprintf("[%s:%d] %s",
+                     pcf_ue_sm->supi, sess->psi, err_str);
+@@ -1496,6 +1573,14 @@ bool pcf_npcf_policyauthorization_handle_update(
+             }
+         }
+ 
++        /*
++         * No PCC rule of the subscriber for the 5QI of an application
++         * media component: its flows stay on the default QoS flow.
++         */
++        if (!db_pcc_rule && !reference &&
++            (media_component->media_type == OpenAPI_media_type_APPLICATION))
++            continue;
++
+         if (!db_pcc_rule && !reference &&
+             (media_component->media_type == OpenAPI_media_type_CONTROL)) {
+             /*
+@@ -1616,6 +1701,12 @@ bool pcf_npcf_policyauthorization_handle_update(
+                 pcc_rule->qos.gbr.downlink = db_pcc_rule->qos.gbr.downlink;
+             if (pcc_rule->qos.gbr.uplink == 0)
+                 pcc_rule->qos.gbr.uplink = db_pcc_rule->qos.gbr.uplink;
++
++            /* Non-GBR: no flow bitrates (TS 23.501 clause 5.7.2.5) */
++            if (qos_index == QOS_INDEX_MCPTT_SIGNALLING) {
++                memset(&pcc_rule->qos.mbr, 0, sizeof(pcc_rule->qos.mbr));
++                memset(&pcc_rule->qos.gbr, 0, sizeof(pcc_rule->qos.gbr));
++            }
+         }
+ 
+         /* Update ARP */
+diff --git a/src/pcrf/pcrf-gx-path.c b/src/pcrf/pcrf-gx-path.c
+index 9f4638d..7cef396 100644
+--- a/src/pcrf/pcrf-gx-path.c
++++ b/src/pcrf/pcrf-gx-path.c
+@@ -20,6 +20,14 @@
+ #include "pcrf-context.h"
+ #include "pcrf-fd-path.h"
+ 
++/*
++ * MCPTT: voice on QCI/5QI 65 (GBR), the floor control of MCPTT-4 on 65 or 69
++ * (TS 23.379 clause 5.7.3); 69 is Non-GBR, "Mission Critical delay sensitive
++ * signalling (e.g. MC-PTT signalling)" (TS 23.501 Table 5.7.4-1).
++ */
++#define QOS_INDEX_MCPTT_VOICE       65
++#define QOS_INDEX_MCPTT_SIGNALLING  69
++
+ struct rx_sess_state {
+     ogs_lnode_t         node;
+ 
+@@ -1230,12 +1238,23 @@ int pcrf_gx_send_rar(
+                 &rx_message->ims_data.media_component[i];
+ 
+             switch(media_component->media_type) {
++            /*
++             * TS 29.213 Table 6.3.1: the QCI of an application whose
++             * AF-Application-Identifier demands it (MCPTT, TS 29.214
++             * Annex A.13.1 NOTE 3), else that of the Media-Type;
++             * "application": 1 OR 2, 2 as 1 is the audio's PCC rule.
++             */
+             case OGS_DIAM_RX_MEDIA_TYPE_AUDIO:
+-                qos_index = OGS_QOS_INDEX_1;
++                qos_index = rx_message->mcptt ?
++                    QOS_INDEX_MCPTT_VOICE : OGS_QOS_INDEX_1;
+                 break;
+             case OGS_DIAM_RX_MEDIA_TYPE_VIDEO:
+                 qos_index = OGS_QOS_INDEX_2;
+                 break;
++            case OGS_DIAM_RX_MEDIA_TYPE_APPLICATION:
++                qos_index = rx_message->mcptt ?
++                    QOS_INDEX_MCPTT_SIGNALLING : OGS_QOS_INDEX_2;
++                break;
+             case OGS_DIAM_RX_MEDIA_TYPE_CONTROL:
+                 qos_index = OGS_QOS_INDEX_5;
+                 break;
+@@ -1254,6 +1273,14 @@ int pcrf_gx_send_rar(
+                 }
+             }
+ 
++            /*
++             * No PCC rule of the subscriber for the QCI of an application
++             * media component: its flows stay on the default bearer.
++             */
++            if (!db_pcc_rule && (media_component->media_type
++                    == OGS_DIAM_RX_MEDIA_TYPE_APPLICATION))
++                continue;
++
+             if (!db_pcc_rule && (media_component->media_type
+                     == OGS_DIAM_RX_MEDIA_TYPE_CONTROL)) {
+                 /*
+@@ -1365,6 +1392,12 @@ int pcrf_gx_send_rar(
+             if (pcc_rule->qos.gbr.uplink == 0)
+                 pcc_rule->qos.gbr.uplink = db_pcc_rule->qos.gbr.uplink;
+ 
++            /* Non-GBR: no bitrates of its own in EPS (TS 29.212 clause 4.5.5.3) */
++            if (qos_index == QOS_INDEX_MCPTT_SIGNALLING) {
++                memset(&pcc_rule->qos.mbr, 0, sizeof(pcc_rule->qos.mbr));
++                memset(&pcc_rule->qos.gbr, 0, sizeof(pcc_rule->qos.gbr));
++            }
++
+             if (charging_rule == 0) {
+                 ret = fd_msg_avp_new(
+                         ogs_diam_gx_charging_rule_install, 0, &avp);
+diff --git a/src/pcrf/pcrf-rx-path.c b/src/pcrf/pcrf-rx-path.c
+index f5fd2f3..f5b98eb 100644
+--- a/src/pcrf/pcrf-rx-path.c
++++ b/src/pcrf/pcrf-rx-path.c
+@@ -32,6 +32,8 @@ struct sess_state {
+     int     abort_cause;
+     int     termination_cause;
+ 
++    bool    mcptt;              /* AF-Application-Identifier: MCPTT */
++
+     struct timespec ts;         /* Time of sending the message */
+ };
+ 
+@@ -45,6 +47,43 @@ static struct disp_hdl *hdl_rx_str = NULL;
+ 
+ static void pcrf_rx_asa_cb(void *data, struct msg **msg);
+ 
++/*
++ * Whether an AF application identifier is the MCPTT ICSI, which the P-CSCF
++ * provides (TS 29.214 Annex A.13.1 NOTE 3, TS 29.514 Annex B.10.1 NOTE 3) as
++ * received in SIP: quoted, percent-encoded or not (TS 29.214 Annex A.1 NOTE 3).
++ */
++static bool af_app_id_is_mcptt(const char *id, size_t len)
++{
++    static const char icsi[] = "urn:urn-7:3gpp-service.ims.icsi.mcptt";
++    size_t i = 0, j = 0;
++
++    if (!id)
++        return false;
++
++    if (len >= 2 && id[0] == '"' && id[len-1] == '"') {
++        id++;
++        len -= 2;
++    }
++
++    while (i < len && icsi[j]) {
++        char c = id[i];
++
++        if (c == '%' && i + 2 < len && id[i+1] == '3' &&
++                (id[i+2] == 'A' || id[i+2] == 'a')) {
++            c = ':';
++            i += 3;
++        } else {
++            i++;
++        }
++
++        if (tolower((unsigned char)c) != icsi[j])
++            return false;
++        j++;
++    }
++
++    return i == len && !icsi[j];
++}
++
+ static __inline__ struct sess_state *new_state(os0_t sid)
+ {
+     struct sess_state *new = NULL;
+@@ -307,6 +346,12 @@ static int pcrf_rx_aar_cb(struct msg **msg, struct avp *avp,
+             }
+             break;
+ 
++        case OGS_DIAM_RX_AVP_CODE_AF_APPLICATION_IDENTIFIER:
++            sess_data->mcptt = af_app_id_is_mcptt(
++                    (const char *)hdr->avp_value->os.data,
++                    hdr->avp_value->os.len);
++            break;
++
+         case OGS_DIAM_RX_AVP_CODE_MEDIA_COMPONENT_DESCRIPTION:
+             if (rx_message.ims_data.num_of_media_component >=
+                     OGS_ARRAY_SIZE(rx_message.ims_data.media_component)) {
+@@ -471,6 +516,7 @@ static int pcrf_rx_aar_cb(struct msg **msg, struct avp *avp,
+ 
+     if (!error_occurred) {
+         /* Send Re-Auth Request */
++        rx_message.mcptt = sess_data->mcptt;
+         rv = pcrf_gx_send_rar(gx_sid, sess_data->rx_sid, &rx_message);
+         if (rv != OGS_OK) {
+             result_code = rx_message.result_code;

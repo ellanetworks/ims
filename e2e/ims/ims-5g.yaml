@@ -24,3 +24,7 @@ n5:
     ca: /etc/ims/tls/ca.crt
     cert: /etc/ims/tls/ims.crt
     key: /etc/ims/tls/ims.key
+# The MCPTT AS, of the iFCs of provision.js; its settings provisioned by mcptt/provision.sh.
+mcptt:
+  media:
+    address: 10.80.0.5

@@ -9,7 +9,7 @@ on:
 jobs:
   go-unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -23,7 +23,15 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Unit tests
-        run: go test -cover ./...
+        run: go test -race -cover ./...
+
+      # The app binds mcptt/mobile (android/), which must not carry the database (SQLite, cgo) into the APK.
+      - name: Check that the mobile library does not link the database
+        run: |
+          if go list -deps ./mcptt/mobile ./mcptt/client | grep -E 'internal/db|go-sqlite3'; then
+            echo "::error::mobile links the database"
+            exit 1
+          fi
 
       - name: Sub-module unit tests
         run: |
@@ -31,6 +39,6 @@ jobs:
           for modfile in $(find . -name go.mod -not -path './go.mod' -not -path './ui/*'); do
             dir=$(dirname "$modfile")
             echo "::group::go test ./... in $dir"
-            (cd "$dir" && go test -cover ./...)
+            (cd "$dir" && go test -race -cover ./...)
             echo "::endgroup::"
           done

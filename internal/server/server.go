@@ -13,12 +13,16 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/mcptt"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/ui"
 	"github.com/ellanetworks/ims/version"
 )
@@ -26,9 +30,12 @@ import (
 var ErrAlreadyStarted = errors.New("server: already started")
 
 const (
-	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the P-CSCF to end its
-	// policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
-	ShutdownTimeout = pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the MCPTT AS to end its
+	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
+	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+
+	// mcpttStopTime is what stopping the IMS leaves the MCPTT AS to end its calls and subscriptions, before the core.
+	mcpttStopTime = 5 * time.Second
 
 	// diameterDisconnectTime is what stopping the core leaves Diameter to disconnect from its peers (RFC 6733
 	// §5.4), after SIP, whose policy sessions end over Diameter.
@@ -66,6 +73,14 @@ type Server struct {
 	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
+
+	// mcptt is the built-in MCPTT AS, if configured. It outlives the cores: a restart of the core leaves its calls
+	// and registrations alone, but one for a new home domain, which renames it, restarts it. ases is where the cores
+	// find it.
+	mcptt atomic.Pointer[mcptt.AS]
+	ases  builtinASs
+	// mcpttHomeDomain is the home domain the MCPTT AS is named under: changed by follow only.
+	mcpttHomeDomain string
 
 	// The core is replaced when the operator's identity changes.
 	core       atomic.Pointer[core]
@@ -143,8 +158,22 @@ func (s *Server) Start(ctx context.Context) error {
 		return live.Get().Peers, coreView{s}.Peers()
 	})
 
+	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
+
+	if cfg.MCPTT != nil {
+		if err := s.startMCPTT(ctx, initial.Operator.HomeDomain()); err != nil {
+			_ = s.records.Close(ctx)
+			_ = apiLn.Close()
+			_ = database.Close()
+
+			return err
+		}
+	}
+
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
+		s.stopMCPTT(ctx)
+
 		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -153,22 +182,30 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.core.Store(c)
+	s.resubscribeMCPTT()
 
 	view := coreView{s}
 
+	apiCfg := api.Config{
+		Settings:      live,
+		Diameter:      view,
+		SIP:           view,
+		Registrations: view,
+		Policy:        view,
+		CallRecords:   database,
+		Frontend:      ui.FS(),
+		Metrics:       s.metrics.registry,
+		Logger:        s.Logger,
+	}
+
+	if cfg.MCPTT != nil {
+		apiCfg.MCPTT = mcpttView{s}
+		apiCfg.MCPTTStatus = mcpttView{s}.Status
+	}
+
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
-		Handler: api.NewHandler(api.Config{
-			Settings:      live,
-			Diameter:      view,
-			SIP:           view,
-			Registrations: view,
-			Policy:        view,
-			CallRecords:   database,
-			Frontend:      ui.FS(),
-			Metrics:       s.metrics.registry,
-			Logger:        s.Logger,
-		}),
+		Handler:           api.NewHandler(apiCfg),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       time.Minute,
@@ -250,7 +287,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, sipFailed, s.Logger)
+		s.metrics, s.IPsec, sipFailed, s.ases, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -368,6 +405,15 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		slog.String("home_domain", st.Operator.HomeDomain()), slog.Int("diameter_peers", len(st.Peers)),
 		slog.String("policy", string(st.Policy.Interface)))
 
+	// A new home domain renames the MCPTT AS, its PSIs, and the session identities of its calls, which it ends first,
+	// through the core: it starts again under the new name, as after a restart of the IMS.
+	renamed := s.mcptt.Load() != nil && s.mcpttHomeDomain != st.Operator.HomeDomain()
+	if renamed {
+		stopCtx, cancel := context.WithTimeout(ctx, mcpttStopTime)
+		s.stopMCPTT(stopCtx)
+		cancel()
+	}
+
 	if c := s.core.Swap(nil); c != nil {
 		stopCtx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
 		c.shutdown(stopCtx, s.Logger)
@@ -377,6 +423,12 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	// The calls in progress were lost with the core.
 	s.records.CloseOpen()
 
+	if renamed {
+		if err := s.startMCPTT(ctx, st.Operator.HomeDomain()); err != nil {
+			s.Logger.Error("failed to restart MCPTT for the new home domain", slog.Any("error", err))
+		}
+	}
+
 	c, err := s.startCore(ctx, st)
 	if err != nil {
 		s.Logger.Error("failed to restart "+why, slog.Any("error", err))
@@ -384,6 +436,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	}
 
 	s.core.Store(c)
+	s.resubscribeMCPTT()
 	s.Logger.Info("restarted "+why, c.attrs()...)
 }
 
@@ -448,6 +501,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopFollow()
 	<-s.followDone
+
+	// MCPTT first: its BYEs and unsubscriptions go through the core.
+	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
+	s.stopMCPTT(mcpttCtx)
+	cancel()
 
 	if c := s.core.Swap(nil); c != nil {
 		coreCtx, cancel := before(ctx, recordsFlushTime)

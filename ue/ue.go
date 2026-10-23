@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/ipsec"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
 	"github.com/ellanetworks/ims/sip/ua"
@@ -177,7 +177,7 @@ type State struct {
 type Event struct {
 	Request  *sip.Request
 	Response *sip.Response
-	Reginfo  *regevent.Reginfo
+	Reginfo  *reginfo.Reginfo
 	Err      error
 
 	// Deregistered is set when the registration of the UE ended without a REGISTER of its own: by the reg event

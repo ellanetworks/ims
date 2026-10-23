@@ -9,3 +9,6 @@ ui/dist/*
 ui/npm-debug.log*
 ui/*.tsbuildinfo
 ui/.env*.local
+/mcpttc
+ella_mcptt_creds.txt
+/mcptt.bin

@@ -122,7 +122,13 @@ func (p *PCSCF) forward(tx *transaction.ServerTransaction, req, out *sip.Request
 func (p *PCSCF) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 	if req.Method == "NOTIFY" {
 		if s := p.subs.match(req); s != nil {
-			p.respond(tx, p.subs.notified(s, req))
+			res, after := p.subs.notified(s, req)
+			p.respond(tx, res)
+
+			if after != nil {
+				after()
+			}
+
 			return
 		}
 	}

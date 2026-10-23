@@ -39,6 +39,8 @@ type Config struct {
 	Diameter Diameter `yaml:"diameter"`
 	// N5 is where the P-CSCF hears from a PCF, and is required for the n5 policy interface.
 	N5 *N5 `yaml:"n5"`
+	// MCPTT runs the built-in MCPTT application server.
+	MCPTT *MCPTT `yaml:"mcptt"`
 }
 
 type Logging struct {
@@ -183,6 +185,10 @@ func Load(path string) (Config, error) {
 		cfg.Diameter.Port = defaultDiameterPort
 	}
 
+	if cfg.MCPTT != nil {
+		cfg.MCPTT.applyDefaults()
+	}
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -215,6 +221,12 @@ func (c Config) validate() error {
 
 	if err := c.Diameter.validate(); err != nil {
 		return err
+	}
+
+	if c.MCPTT != nil {
+		if err := c.validateMCPTT(*c.MCPTT); err != nil {
+			return err
+		}
 	}
 
 	if c.N5 == nil {
@@ -274,6 +286,14 @@ func (c Config) validateN5(n N5) error {
 		}{fmt.Sprintf("pcscf.ipsec.client_ports[%d]", i), c.SIP.Addresses, p})
 	}
 
+	if c.MCPTT != nil {
+		taken = append(taken, struct {
+			name string
+			addr []netip.Addr
+			port int
+		}{"mcptt.port", c.SIP.Addresses, c.MCPTT.Port})
+	}
+
 	for _, t := range taken {
 		if t.port == n.Notify.Port && slices.ContainsFunc(t.addr, func(b netip.Addr) bool { return overlaps(a, b) }) {
 			return fmt.Errorf("n5.notify.port and %s are both %d on %s", t.name, t.port, a)
@@ -295,27 +315,38 @@ func overlaps(a, b netip.Addr) bool {
 	return a == b
 }
 
-func (c Config) validatePorts() error {
-	ports := []struct {
-		name string
-		port int
-	}{
+// namedPort is a port of the configuration, and the key that sets it.
+type namedPort struct {
+	name string
+	port int
+}
+
+// sipPorts are the ports SIP listens on, UDP and TCP, on each of sip.addresses.
+func (c Config) sipPorts() []namedPort {
+	ports := []namedPort{
 		{"pcscf.port", c.PCSCF.Port},
 		{"icscf.port", c.ICSCF.Port},
 		{"scscf.port", c.SCSCF.Port},
 		{"pcscf.ipsec.server_port", c.PCSCF.IPsec.ServerPort},
 	}
 
+	for i, p := range c.PCSCF.IPsec.ClientPorts {
+		ports = append(ports, namedPort{fmt.Sprintf("pcscf.ipsec.client_ports[%d]", i), p})
+	}
+
+	if c.MCPTT != nil {
+		ports = append(ports, namedPort{"mcptt.port", c.MCPTT.Port})
+	}
+
+	return ports
+}
+
+func (c Config) validatePorts() error {
 	if len(c.PCSCF.IPsec.ClientPorts) != 2 {
 		return errors.New("pcscf.ipsec.client_ports must list 2 ports")
 	}
 
-	for i, p := range c.PCSCF.IPsec.ClientPorts {
-		ports = append(ports, struct {
-			name string
-			port int
-		}{fmt.Sprintf("pcscf.ipsec.client_ports[%d]", i), p})
-	}
+	ports := c.sipPorts()
 
 	shared := c.apiSharesSIPAddress()
 

@@ -1,0 +1,26 @@
+{"version":1,"type":"registration","registered":true,"impu":"sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org"}
+{"version":1,"type":"registration","error":"mobile: register: timeout"}
+{"version":1,"type":"deregistered","reason":"probation","retryAfter":30}
+{"version":1,"type":"deregistered","reason":"unregistered"}
+{"version":1,"type":"stopped","reason":"rejected"}
+{"version":1,"type":"stopped","reason":"stop"}
+{"version":1,"type":"affiliation","status":200}
+{"version":1,"type":"affiliation","error":"mobile: affiliation: 403"}
+{"version":1,"type":"call","call":"in-1","kind":"incoming","group":"sip:fire@mcptt.example","caller":"sip:alice@mcptt.example","manual":true}
+{"version":1,"type":"call","call":"c1","kind":"established"}
+{"version":1,"type":"call","call":"c1","kind":"ended","cause":"remote"}
+{"version":1,"type":"call","call":"c2","kind":"ended","cause":"rejected","status":480,"error":"client: INVITE rejected"}
+{"version":1,"type":"call","call":"c3","kind":"ended","cause":"local"}
+{"version":1,"type":"call","call":"in-1","kind":"ended","cause":"missed"}
+{"version":1,"type":"call","call":"c4","kind":"ended","cause":"error","error":"client: INVITE: timeout"}
+{"version":1,"type":"floor","call":"c1","notice":"taken","party":"sip:bob@mcptt.example"}
+{"version":1,"type":"floor","call":"c1","notice":"granted","duration":30}
+{"version":1,"type":"floor","call":"c1","notice":"denied"}
+{"version":1,"type":"floor","call":"c1","notice":"idle"}
+{"version":1,"type":"floor","call":"c1","notice":"revoked"}
+{"version":1,"type":"floor","call":"c1","notice":"timeout"}
+{"version":1,"type":"floor","call":"c1","notice":"media-ended"}
+{"version":1,"type":"transmit","call":"c1","on":true,"mode":8}
+{"version":1,"type":"transmit","call":"c1","on":false}
+{"version":1,"type":"mode","call":"c1","mode":0}
+{"version":1,"type":"heard","call":"c1","party":"sip:bob@mcptt.example"}

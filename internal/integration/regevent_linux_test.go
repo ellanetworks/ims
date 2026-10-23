@@ -13,9 +13,9 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/pcscf"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/ue"
 )
@@ -25,7 +25,7 @@ const fastT1 = 50 * time.Millisecond
 type notification struct {
 	req   *sip.Request
 	state string
-	info  *regevent.Reginfo
+	info  *reginfo.Reginfo
 }
 
 func nextNotify(t *testing.T, u *testue.UE) notification {
@@ -65,7 +65,7 @@ func noNotify(t *testing.T, u *testue.UE, d time.Duration) {
 	}
 }
 
-func (n notification) contact(t *testing.T, aor string, ue netip.Addr) (string, regevent.Contact) {
+func (n notification) contact(t *testing.T, aor string, ue netip.Addr) (reginfo.RegState, reginfo.Contact) {
 	t.Helper()
 
 	for _, r := range n.info.Registrations {
@@ -84,10 +84,10 @@ func (n notification) contact(t *testing.T, aor string, ue netip.Addr) (string, 
 
 	t.Fatalf("no contact of %s for %s in %+v", ue, aor, n.info)
 
-	return "", regevent.Contact{}
+	return "", reginfo.Contact{}
 }
 
-func (n notification) want(t *testing.T, state, regState, contactState string, event regevent.Event) {
+func (n notification) want(t *testing.T, state string, regState, contactState reginfo.RegState, event reginfo.Event) {
 	t.Helper()
 
 	if !strings.HasPrefix(n.state, state) {
@@ -151,7 +151,7 @@ func (s *scene) subscribed(u *testue.UE) {
 	}
 
 	n := nextNotify(s.t, u)
-	n.want(s.t, "active", regevent.Active, regevent.Active, regevent.Created)
+	n.want(s.t, "active", reginfo.Active, reginfo.Active, reginfo.Created)
 
 	eventually(s.t, "the UE's and the P-CSCF's subscriptions", func() bool {
 		subs := s.subscribers()
@@ -210,7 +210,7 @@ func TestRegEventSubscription(t *testing.T) {
 			}
 
 			if rs, c := n.contact(t, msisdn, ueAddrs[family].Addr()); !strings.HasPrefix(n.state, "active") ||
-				rs != regevent.Active || c.State != regevent.Active || c.Event != regevent.Created {
+				rs != reginfo.Active || c.State != reginfo.Active || c.Event != reginfo.Created {
 				t.Fatalf("NOTIFY %q: %s %s/%s, want active created", n.state, rs, c.State, c.Event)
 			}
 
@@ -251,7 +251,7 @@ func TestRegEventRefreshed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nextNotify(t, u).want(t, "active", regevent.Active, regevent.Active, regevent.Refreshed)
+	nextNotify(t, u).want(t, "active", reginfo.Active, reginfo.Active, reginfo.Refreshed)
 }
 
 func TestRegEventExpired(t *testing.T) {
@@ -263,7 +263,7 @@ func TestRegEventExpired(t *testing.T) {
 
 	sa := s.established(u)
 
-	nextNotify(t, u).want(t, "terminated;reason=noresource", regevent.Terminated, regevent.Terminated, regevent.Expired)
+	nextNotify(t, u).want(t, "terminated;reason=noresource", reginfo.Terminated, reginfo.Terminated, reginfo.Expired)
 
 	eventually(t, "the UE's SAs to be deleted", s.gone(sa.Set))
 
@@ -293,7 +293,7 @@ func TestRegEventDeactivated(t *testing.T) {
 	}
 
 	n := nextNotify(t, u)
-	n.want(t, "terminated;reason=deactivated", regevent.Terminated, regevent.Terminated, regevent.Deactivated)
+	n.want(t, "terminated;reason=deactivated", reginfo.Terminated, reginfo.Terminated, reginfo.Deactivated)
 
 	if f := n.req.Flow; f.Local.Port() != old.Set.Local.PortS || f.Remote.Port() != old.Set.Remote.PortC {
 		t.Fatalf("NOTIFY on %s, want it over the SAs, before they go", f)
@@ -309,7 +309,7 @@ func TestRegEventDeactivated(t *testing.T) {
 		t.Fatalf("SAs = %+v, want a new established set", sas)
 	}
 
-	nextNotify(t, u).want(t, "active", regevent.Active, regevent.Active, regevent.Created)
+	nextNotify(t, u).want(t, "active", reginfo.Active, reginfo.Active, reginfo.Created)
 
 	if sub, _ := s.hss.Subscriber(impi); sub.State != hsstest.Registered {
 		t.Fatalf("HSS subscriber = %+v, want registered again", sub)
@@ -328,7 +328,7 @@ func TestRegEventRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nextNotify(t, u).want(t, "terminated;reason=rejected", regevent.Terminated, regevent.Terminated, regevent.Rejected)
+	nextNotify(t, u).want(t, "terminated;reason=rejected", reginfo.Terminated, reginfo.Terminated, reginfo.Rejected)
 
 	eventually(t, "the UE's SAs to be deleted", s.gone(sa.Set))
 
@@ -383,13 +383,13 @@ func TestRegEventShortened(t *testing.T) {
 	}
 
 	n := nextNotify(t, u)
-	n.want(t, "active", regevent.Active, regevent.Active, regevent.Shortened)
+	n.want(t, "active", reginfo.Active, reginfo.Active, reginfo.Shortened)
 
 	if _, c := n.contact(t, msisdn, ueAddrs[0].Addr()); c.Expires == nil || *c.Expires > 2 {
 		t.Fatalf("contact expires %v, want 2 s at most", c.Expires)
 	}
 
-	nextNotify(t, u).want(t, "active", regevent.Active, regevent.Active, regevent.Refreshed)
+	nextNotify(t, u).want(t, "active", reginfo.Active, reginfo.Active, reginfo.Refreshed)
 
 	eventually(t, "the re-authentication", func() bool { return time.Until(u.State().Expires) > time.Hour-time.Minute })
 

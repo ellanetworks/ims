@@ -28,6 +28,13 @@ jobs:
     uses: ./.github/workflows/ui-typecheck.yaml
   ui-test:
     uses: ./.github/workflows/ui-test.yaml
+  android:
+    uses: ./.github/workflows/android.yaml
+    secrets:
+      MCPTT_KEYSTORE_BASE64: ${{ secrets.MCPTT_KEYSTORE_BASE64 }}
+      MCPTT_KEYSTORE_PASSWORD: ${{ secrets.MCPTT_KEYSTORE_PASSWORD }}
+      MCPTT_KEY_ALIAS: ${{ secrets.MCPTT_KEY_ALIAS }}
+      MCPTT_KEY_PASSWORD: ${{ secrets.MCPTT_KEY_PASSWORD }}
   e2e:
     permissions:
       contents: read

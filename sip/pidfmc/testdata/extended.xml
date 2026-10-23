@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.3.1.2 with what the extension does not know, kept: a status extension of another namespace, a child
+     and an attribute of a later release in <affiliation>, an element of the namespace unknown, an affiliation with a
+     child to understand (RFC 3863 §4.2.3), the <basic>, <contact>, <note> and <timestamp> of RFC 3863. -->
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:pidf="urn:ietf:params:xml:ns:pidf"
+    xmlns:mcpttPI10="urn:3gpp:ns:mcpttPresInfo:1.0" xmlns:ex="urn:example:later"
+    entity="sip:alice@mcptt.example.com">
+  <tuple id="urn:uuid:00000000-0000-1000-8000-0123456789ab">
+    <status>
+      <basic>open</basic>
+      <mcpttPI10:affiliation group="sip:group1@mcptt.example.com" status="affiliated"
+          expires="2026-10-21T08:00:00Z" ex:priority="3">
+        <ex:location>cell 12</ex:location>
+      </mcpttPI10:affiliation>
+      <ex:mood>calm</ex:mood>
+      <mcpttPI10:affiliation group="sip:group9@mcptt.example.com" status="affiliated">
+        <ex:condition pidf:mustUnderstand="true">night shift only</ex:condition>
+      </mcpttPI10:affiliation>
+      <mcpttPI10:priority>1</mcpttPI10:priority>
+    </status>
+    <ex:device>handheld</ex:device>
+    <contact priority="0.8">sip:alice@ue1.mcptt.example.com</contact>
+    <note xml:lang="en">on duty</note>
+    <timestamp>2026-10-20T08:00:00Z</timestamp>
+  </tuple>
+  <note>Alice</note>
+  <mcpttPI10:p-id>f81d4fae-7dec-11d0-a765-00a0c91e6bf6</mcpttPI10:p-id>
+  <ex:later>kept</ex:later>
+</presence>

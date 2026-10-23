@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -301,8 +302,10 @@ type harnessOptions struct {
 
 	down bool
 
-	// hosts are the addresses of the domain names the resolver knows.
-	hosts map[string][]netip.Addr
+	// hosts are the addresses of the domain names the resolver knows; psiSubdomains the PSI subdomains of the
+	// I-CSCF.
+	hosts         map[string][]netip.Addr
+	psiSubdomains []string
 }
 
 // fakeDNS knows the addresses of some hosts, and no SRV record.
@@ -390,11 +393,14 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		Port:       h.icscf.Port(),
 		Trust:      trust.New([]netip.Addr{loopback}, nil),
 		Resolver:   &sip.Resolver{DNS: fakeDNS(o.hosts)},
-		SCSCF:      SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
-		HSSRealm:   func() string { return homeDomain },
-		Diameter:   loop,
-		CxTimeout:  cxTimeout,
-		Logger:     testLogger(),
+		PSISubdomain: func(host string) bool {
+			return slices.Contains(o.psiSubdomains, host)
+		},
+		SCSCF:     SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
+		HSSRealm:  func() string { return homeDomain },
+		Diameter:  loop,
+		CxTimeout: cxTimeout,
+		Logger:    testLogger(),
 	})
 	late.h.Store(h.ic)
 

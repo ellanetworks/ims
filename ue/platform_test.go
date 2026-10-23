@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 // TS 33.203 §7.1, §7.2: the UE's SPIs are the platform's, all released once the UE deregistered; the sockets of both
@@ -139,8 +139,8 @@ func TestProbation(t *testing.T) {
 	no := n.registerSubscribing(u)
 	no.active()
 
-	info := no.reginfo(regevent.Active, regevent.Terminated, regevent.Probation, 0)
-	retry := uint32(90)
+	info := no.reginfo(reginfo.Active, reginfo.Terminated, reginfo.Probation, 0)
+	retry := uint64(90)
 
 	for i := range info.Registrations {
 		info.Registrations[i].Contacts[0].RetryAfter = &retry

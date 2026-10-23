@@ -23,6 +23,8 @@ const (
     port: 7778
 `
 
+	mcptt = "mcptt:\n  media:\n    address: 10.0.0.5\n"
+
 	n5TLS = n5 + `  tls:
     ca: /etc/ims/tls/ca.crt
     cert: /etc/ims/tls/ims.crt
@@ -136,6 +138,26 @@ func TestN5NotifyPortChosen(t *testing.T) {
 	}
 }
 
+// The MCPTT AS is off without its section, and of its defaults with one of its media address only.
+func TestLoadMCPTT(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+mcptt))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := &MCPTT{
+		Mode: MCPTTModeIMS, Port: 5090,
+		Media: MCPTTMedia{Address: netip.MustParseAddr("10.0.0.5"), MinPort: 20000, MaxPort: 20999, ControlPort: 21000},
+	}
+	if !reflect.DeepEqual(cfg.MCPTT, want) {
+		t.Fatalf("mcptt = %+v, want %+v", cfg.MCPTT, want)
+	}
+
+	if cfg, err = Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter)); err != nil || cfg.MCPTT != nil {
+		t.Fatalf("mcptt = %+v, %v, want none", cfg.MCPTT, err)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	valid := validDB + validAPI + validSIP
 
@@ -193,6 +215,20 @@ func TestLoadInvalid(t *testing.T) {
 		{"n5 notify port out of range", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 65536", 1), "n5.notify.port 65536 is out of range"},
 		{"n5 notify port on SIP", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 5060", 1), "n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
 		{"n5 notify port on Diameter", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 3868", 1), "n5.notify.port and diameter.port are both 3868"},
+		{"mcptt mode", valid + validDiameter + mcptt + "  mode: proxy\n", `mcptt.mode "proxy" is neither "ims" nor "direct"`},
+		{"mcptt port on a role port", valid + validDiameter + mcptt + "  port: 5080\n", "scscf.port and mcptt.port are both 5080"},
+		{"mcptt without media address", valid + validDiameter + "mcptt:\n  port: 5090\n", "mcptt.media.address is required"},
+		{"mcptt unspecified media address", valid + validDiameter + "mcptt:\n  media:\n    address: 0.0.0.0\n", "mcptt.media.advertise is required"},
+		{"mcptt advertise of another family", valid + validDiameter + mcptt + "    advertise: \"2001:db8::5\"\n", "is not of the family"},
+		{"mcptt odd min port", valid + validDiameter + mcptt + "    min_port: 20001\n", "mcptt.media.min_port 20001 is odd"},
+		{"mcptt control port in the range", valid + validDiameter + mcptt + "    control_port: 20500\n", "mcptt.media.control_port 20500 is in the range"},
+		{"mcptt control port on SIP", valid + validDiameter + mcptt + "    control_port: 5060\n", "mcptt.media.control_port and pcscf.port are both 5060 on 10.0.0.5"},
+		{
+			"mcptt media range over SIP",
+			valid + validDiameter + mcptt + "    min_port: 5000\n    max_port: 5100\n",
+			"pcscf.port 5060 is in the range of the legs' ports of mcptt.media on 10.0.0.5",
+		},
+		{"n5 notify port on mcptt", valid + validDiameter + mcptt + strings.Replace(n5, "port: 7778", "port: 5090", 1), "n5.notify.port and mcptt.port are both 5090"},
 		{
 			"n5 notify port on the API",
 			validDB + "api:\n  address: 0.0.0.0\n  port: 7778\n" + validSIP + validDiameter + n5,
