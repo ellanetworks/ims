@@ -20,8 +20,8 @@ type MCPTT struct {
 	// Mode is how clients reach it: through the IMS, as its application server, the default; or directly, as the
 	// registrar of its clients, for the lab and tests only.
 	Mode MCPTTMode `yaml:"mode"`
-	// Port is its SIP port, UDP and TCP, on each of sip.addresses: the I-CSCF and the S-CSCF send it their requests
-	// there, and in direct mode its clients theirs.
+	// Port is its SIP port on each of sip.addresses: through the IMS, in memory, where its name, mcptt.<home domain>,
+	// takes the I-CSCF's and S-CSCF's requests; in direct mode, UDP and TCP sockets, which its clients send to.
 	Port  int        `yaml:"port"`
 	Media MCPTTMedia `yaml:"media"`
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
@@ -20,6 +21,8 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/ui"
 	"github.com/ellanetworks/ims/version"
 )
@@ -72,8 +75,11 @@ type Server struct {
 	apiListener net.Listener
 
 	// mcptt is the built-in MCPTT AS, if configured. It outlives the cores: a restart of the core leaves its calls
-	// and registrations alone.
+	// and registrations alone. ases is where the cores find it.
 	mcptt *mcptt.AS
+	ases  builtinASs
+	// mcpttHomeDomain is the home domain the MCPTT AS is named under: changed by follow only.
+	mcpttHomeDomain string
 
 	// The core is replaced when the operator's identity changes.
 	core       atomic.Pointer[core]
@@ -151,15 +157,24 @@ func (s *Server) Start(ctx context.Context) error {
 		return live.Get().Peers, coreView{s}.Peers()
 	})
 
+	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
+
 	if cfg.MCPTT != nil {
 		if s.mcptt, err = mcptt.Start(ctx, mcptt.Config{
-			MCPTT: *cfg.MCPTT, Addresses: cfg.SIP.Addresses, DB: database, Logger: s.Logger,
+			MCPTT: *cfg.MCPTT, Addresses: cfg.SIP.Addresses, Network: s.ases.network,
+			HomeDomain: initial.Operator.HomeDomain(), DB: database, Logger: s.Logger,
 		}); err != nil {
 			_ = s.records.Close(ctx)
 			_ = apiLn.Close()
 			_ = database.Close()
 
 			return err
+		}
+
+		s.mcpttHomeDomain = initial.Operator.HomeDomain()
+
+		if cfg.MCPTT.Mode == config.MCPTTModeIMS {
+			s.ases.resolver.Set(mcptt.Host(s.mcpttHomeDomain), s.mcptt.Servers())
 		}
 	}
 
@@ -193,9 +208,15 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if s.mcptt != nil {
-		st := s.mcptt.Status()
 		apiCfg.MCPTT = s.mcptt.Settings()
-		apiCfg.MCPTTStatus = &api.MCPTTStatus{Mode: st.Mode, SIP: st.SIP, MediaControl: st.MediaControl}
+		apiCfg.MCPTTStatus = func() api.MCPTTStatus {
+			st := s.mcptt.Status()
+
+			return api.MCPTTStatus{
+				Mode: st.Mode, Name: st.Name, ParticipatingPSI: st.ParticipatingPSI, ControllingPSI: st.ControllingPSI,
+				SIP: st.SIP, MediaControl: st.MediaControl,
+			}
+		}
 	}
 
 	s.apiListener = apiLn
@@ -282,7 +303,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, sipFailed, s.Logger)
+		s.metrics, s.IPsec, sipFailed, s.ases, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -409,6 +430,8 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	// The calls in progress were lost with the core.
 	s.records.CloseOpen()
 
+	s.renameMCPTT(ctx, st.Operator.HomeDomain())
+
 	c, err := s.startCore(ctx, st)
 	if err != nil {
 		s.Logger.Error("failed to restart "+why, slog.Any("error", err))
@@ -417,6 +440,31 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 
 	s.core.Store(c)
 	s.Logger.Info("restarted "+why, c.attrs()...)
+}
+
+// renameMCPTT names the MCPTT AS, if any, and its PSIs under homeDomain, the home domain of the new settings: the
+// iFCs and PSIs of the HSS name it so.
+func (s *Server) renameMCPTT(ctx context.Context, homeDomain string) {
+	old := s.mcpttHomeDomain
+	if s.mcptt == nil || old == homeDomain {
+		return
+	}
+
+	if err := s.mcptt.SetHomeDomain(ctx, homeDomain); err != nil {
+		s.Logger.Error("failed to rename MCPTT for the new home domain", slog.String("home_domain", homeDomain),
+			slog.Any("error", err))
+
+		return
+	}
+
+	s.mcpttHomeDomain = homeDomain
+
+	if s.Config.MCPTT.Mode == config.MCPTTModeIMS {
+		s.ases.resolver.Set(mcptt.Host(old), nil)
+		s.ases.resolver.Set(mcptt.Host(homeDomain), s.mcptt.Servers())
+	}
+
+	s.Logger.Info("renamed MCPTT for the new home domain", slog.String("name", s.mcptt.Status().Name))
 }
 
 func (c *core) attrs() []any {

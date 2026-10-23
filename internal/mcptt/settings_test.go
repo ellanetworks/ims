@@ -12,9 +12,6 @@ func exampleSettings() settings.Settings {
 	const fire = "sip:fire@mcptt.example.com"
 
 	return settings.Settings{
-		System: settings.System{
-			ParticipatingPSI: "sip:mcptt-participating@mcptt.example.com", ControllingPSI: "sip:mcptt-controlling@mcptt.example.com",
-		},
 		ServiceConfiguration: settings.ServiceConfiguration{
 			Domain:    "mcptt.example.com",
 			OnNetwork: settings.OnNetwork{FCTimersCounters: settings.FCTimersCounters{T7: new(2 * time.Second)}},
@@ -33,13 +30,9 @@ func exampleSettings() settings.Settings {
 	}
 }
 
-// provision changes l to s as the API would: the system and service configuration, the users without their
+// provision changes l to s as the API would, but its PSIs, which are of the home domain: the service configuration, the users without their
 // implicit affiliations, the groups, then the users' implicit affiliations.
 func provision(ctx context.Context, l *settings.Live, s settings.Settings) error {
-	if err := l.UpdateSystem(ctx, s.System); err != nil {
-		return err
-	}
-
 	if err := l.UpdateServiceConfiguration(ctx, s.ServiceConfiguration); err != nil {
 		return err
 	}

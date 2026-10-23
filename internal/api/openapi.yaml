@@ -23,7 +23,6 @@ tags:
   - name: SIP
   - name: Registrations
   - name: Call records
-  - name: MCPTT system
   - name: MCPTT service configuration
   - name: MCPTT users
   - name: MCPTT groups
@@ -527,42 +526,6 @@ paths:
                 $ref: "#/components/schemas/CallRecordRetentionResult"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
-  /api/v1/mcptt/system:
-    get:
-      tags: [MCPTT system]
-      operationId: getMCPTTSystem
-      summary: Get the system
-      responses:
-        "200":
-          description: The system
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MCPTTSystemResult"
-    put:
-      tags: [MCPTT system]
-      operationId: updateMCPTTSystem
-      summary: Update the system
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/MCPTTSystem"
-      responses:
-        "200":
-          description: The system as stored
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MCPTTSystemResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1401,22 +1364,6 @@ components:
         error:
           type: string
 
-    MCPTTSystem:
-      type: object
-      required: [participating_psi, controlling_psi]
-      properties:
-        participating_psi:
-          type: string
-          examples: ["sip:mcptt-participating@mcptt.example.com"]
-        controlling_psi:
-          type: string
-          examples: ["sip:mcptt-controlling@mcptt.example.com"]
-    MCPTTSystemResult:
-      type: object
-      properties:
-        result:
-          $ref: "#/components/schemas/MCPTTSystem"
-
     MCPTTServiceConfiguration:
       type: object
       required: [domain, fc_timers_counters]
@@ -1578,11 +1525,21 @@ components:
 
     MCPTTStatus:
       type: object
-      required: [mode, sip, media_control]
+      required: [mode, name, participating_psi, controlling_psi, sip, media_control]
       properties:
         mode:
           type: string
           enum: [ims, direct]
+        name:
+          type: string
+          description: The server name of the AS in the iFCs of the HSS, of the home domain.
+          examples: ["sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org"]
+        participating_psi:
+          type: string
+          examples: ["sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org"]
+        controlling_psi:
+          type: string
+          examples: ["sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org"]
         sip:
           type: array
           items:

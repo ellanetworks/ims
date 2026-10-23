@@ -12,7 +12,6 @@ import (
 // be saved.
 type MCPTTSettings interface {
 	Get() mcpttsettings.Settings
-	UpdateSystem(ctx context.Context, s mcpttsettings.System) error
 	UpdateServiceConfiguration(ctx context.Context, c mcpttsettings.ServiceConfiguration) error
 	CreateUser(ctx context.Context, u mcpttsettings.User) (mcpttsettings.User, error)
 	UpdateUser(ctx context.Context, u mcpttsettings.User) (mcpttsettings.User, error)
@@ -24,12 +23,16 @@ type MCPTTSettings interface {
 	DeleteMember(ctx context.Context, group, id string) (mcpttsettings.Group, error)
 }
 
-// MCPTTStatus is what the MCPTT AS runs: its mode, the addresses its SIP listens on, UDP and TCP, and that of its
-// floor control channels.
+// MCPTTStatus is what the MCPTT AS runs: its mode; its name and PSIs, of the home domain, which the HSS gives the
+// IMS (the server name of its iFCs, the PSIs it routes to it); the addresses of its SIP, UDP and TCP, in memory
+// through the IMS; and that of its floor control channels.
 type MCPTTStatus struct {
-	Mode         string   `json:"mode"`
-	SIP          []string `json:"sip"`
-	MediaControl string   `json:"media_control"`
+	Mode             string   `json:"mode"`
+	Name             string   `json:"name"`
+	ParticipatingPSI string   `json:"participating_psi"`
+	ControllingPSI   string   `json:"controlling_psi"`
+	SIP              []string `json:"sip"`
+	MediaControl     string   `json:"media_control"`
 }
 
 // mcpttOnly is h when the IMS runs the MCPTT AS, and a 404 otherwise.

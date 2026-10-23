@@ -204,7 +204,7 @@ var migrations = []string{
 		retention_days INTEGER NOT NULL
 	);
 	INSERT INTO call_record_settings VALUES (1, 90);`,
-	// The MCPTT application server (mcptt_*.go). Its settings: an optional element absent from them is NULL, its
+	// The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain: an optional element absent from them is NULL, its
 	// default the one of the MCPTT settings package, so that a later release's defaults apply. A duration is in
 	// nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user that is a
 	// member, or a group that is an implicit affiliation, is not deleted. key is the identity as the MCPTT settings
@@ -212,13 +212,7 @@ var migrations = []string{
 	// restarts: the bindings of service authorisation, a client at one IMPU at a time, and the affiliations of the
 	// clients. They are keyed by identity, not by row of users: the server reconciles them with the settings when it
 	// restores them. Their times are Unix milliseconds.
-	`CREATE TABLE mcptt_system (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		participating_psi TEXT NOT NULL,
-		controlling_psi TEXT NOT NULL
-	);
-	INSERT INTO mcptt_system VALUES (1, 'sip:mcptt-participating@mcptt.example.com', 'sip:mcptt-controlling@mcptt.example.com');
-	CREATE TABLE mcptt_service_configuration (
+	`CREATE TABLE mcptt_service_configuration (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		domain TEXT NOT NULL,
 		num_levels_priority_hierarchy INTEGER,

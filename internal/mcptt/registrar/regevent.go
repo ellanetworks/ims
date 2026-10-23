@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/mcptt/reginfo"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/mcptt/identity"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 

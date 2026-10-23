@@ -22,6 +22,7 @@ import (
 	"github.com/ellanetworks/ims/mcptt/client"
 	"github.com/ellanetworks/ims/mcptt/client/clienttest"
 	"github.com/ellanetworks/ims/mcptt/floor"
+	"github.com/ellanetworks/ims/mcptt/identity"
 	"github.com/ellanetworks/ims/mcptt/media"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -31,6 +32,7 @@ import (
 type options struct {
 	server, local    netip.AddrPort
 	domain, psi      string
+	homeDomain       string
 	impu, mcpttID    string
 	clientID, token  string
 	groups           string
@@ -47,7 +49,8 @@ func main() {
 	local := flag.String("local", "127.0.0.1:0", "address and port of the client's SIP socket, not unspecified: its media, Contact and SDP on the address too")
 
 	flag.StringVar(&o.domain, "domain", "mcptt.example.com", "domain of the server, the Request-URI of the REGISTERs")
-	flag.StringVar(&o.psi, "psi", "", "participating PSI (default sip:mcptt-participating@<domain>)")
+	flag.StringVar(&o.homeDomain, "home-domain", "ims.mnc001.mcc001.3gppnetwork.org", "home domain of Ella IMS, whose MCPTT AS has the PSIs of it")
+	flag.StringVar(&o.psi, "psi", "", "participating PSI (default sip:mcptt-participating@mcptt.<home-domain>, Ella IMS's)")
 	flag.StringVar(&o.impu, "impu", "", "IMS public user identity, a configured IMPU of the user (required)")
 	flag.StringVar(&o.mcpttID, "mcptt-id", "", "MCPTT ID of the user (required)")
 	flag.StringVar(&o.clientID, "client-id", "", "MCPTT client ID, a urn:uuid (default a random one)")
@@ -86,7 +89,7 @@ func run(ctx context.Context, o options) error {
 	}
 
 	if o.psi == "" {
-		o.psi = "sip:mcptt-participating@" + o.domain
+		o.psi = identity.ParticipatingPSI(o.homeDomain)
 	}
 
 	impu, err := sip.ParseURI(o.impu)

@@ -21,6 +21,5 @@ diameter:
   port: 3868
 # The built-in MCPTT AS: off without this section.
 # mcptt:
-#   port: 5090
 #   media:
 #     address: 127.0.0.1

@@ -62,9 +62,10 @@ func directConfig(t *testing.T, d *db.DB) Config {
 			Mode: config.MCPTTModeDirect, Port: freePort(t),
 			Media: config.MCPTTMedia{Address: loopback, MinPort: 20000, MaxPort: 20999, ControlPort: freePort(t)},
 		},
-		Addresses: []netip.Addr{loopback},
-		DB:        d,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Addresses:  []netip.Addr{loopback},
+		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
+		DB:         d,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 

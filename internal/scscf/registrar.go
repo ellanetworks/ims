@@ -14,10 +14,10 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -57,6 +57,11 @@ func (systemClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 	return time.AfterFunc(d, f)
 }
 
+// Resolver locates the servers of a URI (RFC 3263 §4); sip.Resolver is one.
+type Resolver interface {
+	Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error)
+}
+
 type Config struct {
 	HomeDomain string
 	Name       sip.URI
@@ -79,8 +84,9 @@ type Config struct {
 
 	// Trust is the trust domain, which the ASs the S-CSCF sends to are in (TS 24.229 §5.7.3).
 	Trust *trust.Domain
-	// Resolver locates the ASs the iFCs name by domain name (RFC 3263). Nil asks the system's resolver.
-	Resolver *sip.Resolver
+	// Resolver locates the ASs the iFCs name, and the next hops of requests, by domain name (RFC 3263): the IMS's
+	// resolves the hosts of its built-in ASs to them in memory (package as). Nil asks the system's resolver.
+	Resolver Resolver
 
 	// Records, if any, keeps a record of each call.
 	Records *callrecords.Recorder
@@ -153,6 +159,10 @@ func New(cfg Config) *Registrar {
 
 	if cfg.ASTimeout <= 0 {
 		cfg.ASTimeout = DefaultASTimeout
+	}
+
+	if cfg.Resolver == nil {
+		cfg.Resolver = &sip.Resolver{}
 	}
 
 	if cfg.MinExpires <= 0 {
@@ -455,7 +465,7 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 			continue
 		}
 
-		rm, deleted, err := r.removeBindings(ctx, st, reg, expired, regevent.Expired)
+		rm, deleted, err := r.removeBindings(ctx, st, reg, expired, reginfo.Expired)
 		if err != nil {
 			r.log.Warn("failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
 		}
@@ -482,7 +492,7 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 }
 
 func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,
-	event regevent.Event,
+	event reginfo.Event,
 ) (removal, bool, error) {
 	rm := removal{reg: reg, bindings: removed, event: event}
 

@@ -13,10 +13,10 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -217,7 +217,7 @@ func answerSubscribe(icscf, scscf *siptest.Socket, sub *sip.Request, f sip.Flow,
 	return &ownSub{sub: sub, tag: tag, from: scscf, pcscf: f.Remote}
 }
 
-func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip.Response {
+func (o *ownSub) notify(t *testing.T, state string, info *reginfo.Reginfo) *sip.Response {
 	t.Helper()
 
 	o.cseq++
@@ -243,12 +243,12 @@ func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip
 	}
 
 	if info != nil {
-		body, err := regevent.Encode(*info)
+		body, err := reginfo.Encode(*info)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		n.SetBody(regevent.ContentType, body)
+		n.SetBody(reginfo.ContentType, body)
 	}
 
 	o.from.Send(sip.UDP, o.pcscf, n)
@@ -258,11 +258,11 @@ func (o *ownSub) notify(t *testing.T, state string, info *regevent.Reginfo) *sip
 	return res
 }
 
-func u32(v uint32) *uint32 { return &v }
+func u64(v uint64) *uint64 { return &v }
 
-func reginfo(version uint64, impuState, telState string, contacts map[string]string) *regevent.Reginfo {
-	reg := func(aor, id, state string) regevent.Registration {
-		r := regevent.Registration{AOR: aor, ID: id, State: state}
+func regDoc(version uint32, impuState, telState reginfo.RegState, contacts map[string]reginfo.RegState) *reginfo.Reginfo {
+	reg := func(aor, id string, state reginfo.RegState) reginfo.Registration {
+		r := reginfo.Registration{AOR: aor, ID: id, State: state}
 
 		uris := make([]string, 0, len(contacts))
 		for uri := range contacts {
@@ -272,11 +272,11 @@ func reginfo(version uint64, impuState, telState string, contacts map[string]str
 		slices.Sort(uris)
 
 		for i, uri := range uris {
-			c := regevent.Contact{ID: id + strconv.Itoa(i), State: contacts[uri], URI: uri, Event: regevent.Registered}
-			if contacts[uri] == regevent.Active {
-				c.Expires = u32(600)
+			c := reginfo.Contact{ID: id + strconv.Itoa(i), State: contacts[uri], URI: uri, Event: reginfo.Registered}
+			if contacts[uri] == reginfo.Active {
+				c.Expires = u64(600)
 			} else {
-				c.Event = regevent.Unregistered
+				c.Event = reginfo.Unregistered
 			}
 
 			r.Contacts = append(r.Contacts, c)
@@ -285,7 +285,7 @@ func reginfo(version uint64, impuState, telState string, contacts map[string]str
 		return r
 	}
 
-	return &regevent.Reginfo{Version: version, State: regevent.Full, Registrations: []regevent.Registration{
+	return &reginfo.Reginfo{Version: version, State: reginfo.Full, Registrations: []reginfo.Registration{
 		reg(testIMPU, "a", impuState), reg(testTel, "b", telState),
 	}}
 }
@@ -381,7 +381,7 @@ func TestOwnSubscribe(t *testing.T) {
 		t.Errorf("P-Asserted-Identity = %q, want <%s>", sub.Header.Get("P-Asserted-Identity"), path)
 	}
 
-	for name, want := range map[string]string{"Event": "reg", "Accept": regevent.ContentType, "Expires": "600000"} {
+	for name, want := range map[string]string{"Event": "reg", "Accept": reginfo.ContentType, "Expires": "600000"} {
 		if v := sub.Header.Get(name); v != want {
 			t.Errorf("%s = %q, want %q", name, v, want)
 		}
@@ -538,22 +538,22 @@ func TestOwnNotifyRemovesContactsAndIdentities(t *testing.T) {
 	}
 
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(0, regevent.Active, regevent.Active, map[string]string{mine: regevent.Active, other: regevent.Active})), 200)
+		regDoc(0, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active, other: reginfo.Active})), 200)
 
 	if r := get(); len(r.Contacts) != 2 || len(r.AssociatedURIs) != 2 {
 		t.Fatalf("registration = %+v, want both contacts and identities", r)
 	}
 
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(1, regevent.Active, regevent.Active, map[string]string{mine: regevent.Active, other: regevent.Terminated})), 200)
+		regDoc(1, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active, other: reginfo.Terminated})), 200)
 
 	if r := get(); !slices.Equal(r.Contacts, []string{mine}) {
 		t.Fatalf("contacts = %q, want %q", r.Contacts, mine)
 	}
 
-	impuGone := reginfo(2, regevent.Terminated, regevent.Active, map[string]string{mine: regevent.Active})
-	impuGone.Registrations[0].Contacts[0].State = regevent.Terminated
-	impuGone.Registrations[0].Contacts[0].Event = regevent.Unregistered
+	impuGone := regDoc(2, reginfo.Terminated, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active})
+	impuGone.Registrations[0].Contacts[0].State = reginfo.Terminated
+	impuGone.Registrations[0].Contacts[0].Event = reginfo.Unregistered
 	impuGone.Registrations[0].Contacts[0].Expires = nil
 	wantStatus(t, o.notify(t, "active;expires=600000", impuGone), 200)
 
@@ -567,7 +567,7 @@ func TestOwnNotifyRemovesContactsAndIdentities(t *testing.T) {
 	}
 
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(3, regevent.Terminated, regevent.Terminated, map[string]string{mine: regevent.Terminated})), 200)
+		regDoc(3, reginfo.Terminated, reginfo.Terminated, map[string]reginfo.RegState{mine: reginfo.Terminated})), 200)
 
 	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); ok {
 		t.Fatal("registration kept without identities")
@@ -587,9 +587,9 @@ func TestOwnNotifyLowerVersionIgnored(t *testing.T) {
 	mine := "sip:ue@" + s.ue.Addr().String()
 
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(5, regevent.Active, regevent.Active, map[string]string{mine: regevent.Active})), 200)
+		regDoc(5, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active})), 200)
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(4, regevent.Terminated, regevent.Terminated, map[string]string{mine: regevent.Terminated})), 200)
+		regDoc(4, reginfo.Terminated, reginfo.Terminated, map[string]reginfo.RegState{mine: reginfo.Terminated})), 200)
 
 	if r, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok || len(r.AssociatedURIs) != 2 {
 		t.Fatalf("registration = %+v, %v; want it untouched by the older version", r, ok)
@@ -652,7 +652,7 @@ func ueSubscribe(t *testing.T, u *ue, to netip.AddrPort, edit func(*sip.Request)
 	r.Header.Set("Contact", ueContact(u))
 	r.Header.Set("From", "<"+testIMPU+">;tag="+sip.NewTag())
 	r.Header.Add("Event", "reg")
-	r.Header.Add("Accept", regevent.ContentType)
+	r.Header.Add("Accept", reginfo.ContentType)
 	r.Header.Add("Expires", "600000")
 
 	if edit != nil {
@@ -779,13 +779,13 @@ func (d *ueDialog) notify(t *testing.T, s *ipsecScene, cseq int, routes []string
 	n.Header.Add("Event", "reg")
 	n.Header.Add("Subscription-State", "active;expires=600000")
 
-	body, err := regevent.Encode(*reginfo(0, regevent.Active, regevent.Active,
-		map[string]string{"sip:ue@" + contacts[0].URI.HostPort(): regevent.Active}))
+	body, err := reginfo.Encode(*regDoc(0, reginfo.Active, reginfo.Active,
+		map[string]reginfo.RegState{"sip:ue@" + contacts[0].URI.HostPort(): reginfo.Active}))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	n.SetBody(regevent.ContentType, body)
+	n.SetBody(reginfo.ContentType, body)
 	s.scscf.Send(sip.UDP, s.pcscf, n)
 }
 
@@ -874,9 +874,9 @@ func TestOwnNotifyTerminatesEverything(t *testing.T) {
 
 	mine := "sip:ue@" + u.us.Addr().String()
 
-	info := reginfo(0, regevent.Terminated, regevent.Terminated, map[string]string{mine: regevent.Terminated})
+	info := regDoc(0, reginfo.Terminated, reginfo.Terminated, map[string]reginfo.RegState{mine: reginfo.Terminated})
 	for i := range info.Registrations {
-		info.Registrations[i].Contacts[0].Event = regevent.Deactivated
+		info.Registrations[i].Contacts[0].Event = reginfo.Deactivated
 	}
 
 	wantStatus(t, o.notify(t, "terminated;reason=deactivated", info), 200)
@@ -899,7 +899,7 @@ func TestOwnSubscriptionTerminatedKeepsRegistrations(t *testing.T) {
 	mine := "sip:ue@" + u.us.Addr().String()
 
 	wantStatus(t, o.notify(t, "terminated;reason=timeout",
-		reginfo(0, regevent.Active, regevent.Active, map[string]string{mine: regevent.Active})), 200)
+		regDoc(0, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active})), 200)
 
 	if s.p.subs.has(testIMPI) {
 		t.Fatal("subscription kept after Subscription-State terminated")
@@ -944,7 +944,7 @@ func TestRegistrationsAndSubscriptionSurviveRestart(t *testing.T) {
 	mine := "sip:ue@" + u.us.Addr().String()
 
 	wantStatus(t, o.notify(t, "active;expires=600000",
-		reginfo(0, regevent.Active, regevent.Active, map[string]string{mine: regevent.Active})), 200)
+		regDoc(0, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Active})), 200)
 
 	d.notify(t, s, 1, d.rr)
 
@@ -976,7 +976,7 @@ func TestOwnSubscriptionFollowsTheRegistrations(t *testing.T) {
 		t.Fatal("subscription kept without a registration")
 	}
 
-	wantStatus(t, o.notify(t, "active;expires=3000", reginfo(1, regevent.Active, regevent.Active, nil)), 481)
+	wantStatus(t, o.notify(t, "active;expires=3000", regDoc(1, reginfo.Active, reginfo.Active, nil)), 481)
 
 	s.registered(600)
 }
@@ -1106,10 +1106,10 @@ func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
 	mine := "sip:ue@" + s.ue.Addr().String()
 	moved := "sip:ue@" + netip.AddrPortFrom(ueAddr, 6000).String()
 
-	info := reginfo(1, regevent.Active, regevent.Active, map[string]string{mine: regevent.Terminated, moved: regevent.Active})
-	info.Registrations = append(info.Registrations, regevent.Registration{
-		AOR: "sip:alias@" + homeDomain, ID: "r3", State: regevent.Active,
-		Contacts: []regevent.Contact{{ID: "c9", State: regevent.Active, Event: regevent.Created, URI: moved, Expires: u32(600)}},
+	info := regDoc(1, reginfo.Active, reginfo.Active, map[string]reginfo.RegState{mine: reginfo.Terminated, moved: reginfo.Active})
+	info.Registrations = append(info.Registrations, reginfo.Registration{
+		AOR: "sip:alias@" + homeDomain, ID: "r3", State: reginfo.Active,
+		Contacts: []reginfo.Contact{{ID: "c9", State: reginfo.Active, Event: reginfo.Created, URI: moved, Expires: u64(600)}},
 	})
 
 	wantStatus(t, o.notify(t, "active;expires=600000", info), 200)

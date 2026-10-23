@@ -7,7 +7,7 @@ import (
 	"slices"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/regevent"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error) {
@@ -71,9 +71,9 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 		return nil, err
 	}
 
-	event, subReason := regevent.Rejected, reasonRejected
+	event, subReason := reginfo.Rejected, reasonRejected
 	if reason == cx.ReasonServerChange {
-		event, subReason = regevent.Deactivated, reasonDeactivated
+		event, subReason = reginfo.Deactivated, reasonDeactivated
 	}
 
 	ch := change{reason: subReason}

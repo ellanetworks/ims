@@ -1,0 +1,103 @@
+PCRF/PCF: take the media component of a subscription to the signalling path
+status (TS 29.214 4.4.5, TS 29.514 4.2.6.7) for session binding only: a
+Media-Sub-Component of Flow-Usage AF_SIGNALLING and Flow-Number 0, of no other
+AVP/attribute, Media-Type/medType included. The PCF refused it with 400
+"Media-Type is Required"; the PCRF read the missing Media-Type as AUDIO (0).
+
+diff -ruN a/lib/proto/types.c b/lib/proto/types.c
+--- a/lib/proto/types.c
++++ b/lib/proto/types.c
+@@ -1234,6 +1234,34 @@
+     return OGS_OK;
+ }
+ 
++/*
++ * The media component of a subscription to the signalling path status
++ * (TS 29.214 4.4.5, TS 29.514 4.2.6.7): sub-components of flow usage
++ * AF_SIGNALLING and flow number 0, without flows. With flow number 0,
++ * "the rest of AVPs/attributes ... shall not be used": it has no media type,
++ * and calls for session binding only, no QoS of its own.
++ */
++bool ogs_media_component_is_af_signalling(
++        const ogs_media_component_t *media_component)
++{
++    int i;
++
++    ogs_assert(media_component);
++
++    if (media_component->num_of_sub == 0)
++        return false;
++
++    for (i = 0; i < media_component->num_of_sub; i++) {
++        const ogs_media_sub_component_t *sub = &media_component->sub[i];
++
++        if (sub->flow_usage != OGS_FLOW_USAGE_AF_SIGNALLING ||
++            sub->flow_number != 0 || sub->num_of_flow != 0)
++            return false;
++    }
++
++    return true;
++}
++
+ int ogs_pcc_rule_num_of_flow_equal_to_media(
+         ogs_pcc_rule_t *pcc_rule, ogs_media_component_t *media_component)
+ {
+diff -ruN a/lib/proto/types.h b/lib/proto/types.h
+--- a/lib/proto/types.h
++++ b/lib/proto/types.h
+@@ -1230,6 +1230,8 @@
+ } ogs_ims_data_t;
+ 
+ void ogs_ims_data_free(ogs_ims_data_t *ims_data);
++bool ogs_media_component_is_af_signalling(
++        const ogs_media_component_t *media_component);
+ 
+ int ogs_pcc_rule_num_of_flow_equal_to_media(
+         ogs_pcc_rule_t *pcc_rule, ogs_media_component_t *media_component);
+diff -ruN a/src/pcf/npcf-handler.c b/src/pcf/npcf-handler.c
+--- a/src/pcf/npcf-handler.c
++++ b/src/pcf/npcf-handler.c
+@@ -932,6 +932,13 @@
+                         }
+                     }
+                 }
++
++                if (ogs_media_component_is_af_signalling(media_component)) {
++                    /* TS 29.514 4.2.6.7: session binding only */
++                    memset(media_component, 0, sizeof(*media_component));
++                    continue;
++                }
++
+                 ims_data.num_of_media_component++;
+             }
+         }
+@@ -1444,6 +1451,13 @@
+                         }
+                     }
+                 }
++
++                if (ogs_media_component_is_af_signalling(media_component)) {
++                    /* TS 29.514 4.2.6.7: session binding only */
++                    memset(media_component, 0, sizeof(*media_component));
++                    continue;
++                }
++
+                 ims_data.num_of_media_component++;
+             }
+         }
+diff -ruN a/src/pcrf/pcrf-rx-path.c b/src/pcrf/pcrf-rx-path.c
+--- a/src/pcrf/pcrf-rx-path.c
++++ b/src/pcrf/pcrf-rx-path.c
+@@ -449,6 +449,12 @@
+                 fd_msg_browse(avpch2, MSG_BRW_NEXT, &avpch2, NULL);
+             }
+ 
++            if (ogs_media_component_is_af_signalling(media_component)) {
++                /* TS 29.214 4.4.5: session binding only */
++                memset(media_component, 0, sizeof(*media_component));
++                break;
++            }
++
+             rx_message.ims_data.num_of_media_component++;
+             break;
+ 

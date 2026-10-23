@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/mcptt/reginfo"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 // Store keeps the bindings through the IMS across restarts. SaveRegistrations saves the bindings of records, one per

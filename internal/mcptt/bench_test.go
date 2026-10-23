@@ -70,7 +70,8 @@ var (
 const (
 	perfTimeout = 2 * time.Minute
 	benchDomain = "mcptt.example.com"
-	benchPSI    = "sip:mcptt-participating@" + benchDomain
+	// benchHomeDomain is the IMS's, whose PSIs the AS has (System).
+	benchHomeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 	// benchWorkers are the users registering at once.
 	benchWorkers = 64
 )
@@ -144,9 +145,10 @@ func (sc scale) config(sipPort int, d *db.DB, logger *slog.Logger) Config {
 			Mode: config.MCPTTModeDirect, Port: sipPort,
 			Media: config.MCPTTMedia{Address: benchRelay, MinPort: benchMinPort, MaxPort: benchMaxPort, ControlPort: benchControlPort},
 		},
-		Addresses: []netip.Addr{loopback},
-		DB:        d,
-		Logger:    logger,
+		Addresses:  []netip.Addr{loopback},
+		HomeDomain: benchHomeDomain,
+		DB:         d,
+		Logger:     logger,
 	}
 }
 
@@ -154,7 +156,6 @@ func (sc scale) config(sipPort int, d *db.DB, logger *slog.Logger) Config {
 // §9.2.2.2.15), each group's call released when its initiator leaves (§6.3.8.1 3).
 func (sc scale) settings() settings.Settings {
 	s := settings.Settings{
-		System: settings.System{ParticipatingPSI: benchPSI, ControllingPSI: "sip:mcptt-controlling@" + benchDomain},
 		ServiceConfiguration: settings.ServiceConfiguration{
 			Domain: benchDomain,
 			OnNetwork: settings.OnNetwork{
@@ -330,7 +331,7 @@ func (l *load) newUser(tb testing.TB, i int, logger *slog.Logger) *benchUser {
 	u.client, err = client.New(client.Config{
 		Agent: agent, IMPU: mustURI(tb, fmt.Sprintf("sip:u%d@ims.example.com", i)), MCPTTID: mustURI(tb, userID(i)),
 		ClientID: fmt.Sprintf("urn:uuid:00000000-0000-1000-8000-%012d", i), Contact: client.FixedContact(contact),
-		Registrar: mustURI(tb, "sip:"+benchDomain), ParticipatingPSI: mustURI(tb, benchPSI),
+		Registrar: mustURI(tb, "sip:"+benchDomain), ParticipatingPSI: mustURI(tb, System(benchHomeDomain).ParticipatingPSI),
 		Media: l.net, Addr: local.Addr(), MinPort: benchUserMinPort, MaxPort: benchUserMaxPort,
 		Floor:           floor.ParticipantTimers{T100: time.Second, T101: time.Second},
 		ImplicitRequest: true, Granted: true,

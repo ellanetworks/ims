@@ -20,9 +20,9 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/policy"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
@@ -528,11 +528,11 @@ func TestRxSTROnNetworkDeregistration(t *testing.T) {
 
 	id, _ := pcrf.aar()
 
-	info := reginfo(0, regevent.Terminated, regevent.Terminated,
-		map[string]string{"sip:ue@" + u.us.Addr().String(): regevent.Terminated})
+	info := regDoc(0, reginfo.Terminated, reginfo.Terminated,
+		map[string]reginfo.RegState{"sip:ue@" + u.us.Addr().String(): reginfo.Terminated})
 
 	for i := range info.Registrations {
-		info.Registrations[i].Contacts[0].Event = regevent.Deactivated
+		info.Registrations[i].Contacts[0].Event = reginfo.Deactivated
 	}
 
 	wantStatus(t, o.notify(t, "terminated;reason=deactivated", info), 200)
@@ -1186,12 +1186,12 @@ func TestRxShutdownDuringTheRestoreKeepsTheSession(t *testing.T) {
 }
 
 func TestTerminationCauseOfMixedEvents(t *testing.T) {
-	for _, events := range [][]regevent.Event{
-		{regevent.Unregistered, regevent.Deactivated},
-		{regevent.Deactivated, regevent.Unregistered},
-		{regevent.Expired, regevent.Rejected, regevent.Unregistered},
+	for _, events := range [][]reginfo.Event{
+		{reginfo.Unregistered, reginfo.Deactivated},
+		{reginfo.Deactivated, reginfo.Unregistered},
+		{reginfo.Expired, reginfo.Rejected, reginfo.Unregistered},
 	} {
-		var e regevent.Event
+		var e reginfo.Event
 		for _, ev := range events {
 			e = graver(e, ev)
 		}
@@ -1201,7 +1201,7 @@ func TestTerminationCauseOfMixedEvents(t *testing.T) {
 		}
 	}
 
-	if c := terminationCause(graver(graver("", regevent.Expired), regevent.Unregistered)); c != policy.TerminationLogout {
+	if c := terminationCause(graver(graver("", reginfo.Expired), reginfo.Unregistered)); c != policy.TerminationLogout {
 		t.Errorf("expired and unregistered: cause %s, want logout", c)
 	}
 }

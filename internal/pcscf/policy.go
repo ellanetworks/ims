@@ -12,8 +12,8 @@ import (
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/policy"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 const (
@@ -412,19 +412,19 @@ func (p *PCSCF) detachPolicy(s *policySession) {
 }
 
 // RFC 3680 §5.2: why the registration ended.
-func terminationCause(e regevent.Event) policy.Termination {
+func terminationCause(e reginfo.Event) policy.Termination {
 	switch e {
-	case regevent.Unregistered:
+	case reginfo.Unregistered:
 		return policy.TerminationLogout
-	case regevent.Expired:
+	case reginfo.Expired:
 		return policy.TerminationExpired
 	default:
 		return policy.TerminationAdministrative
 	}
 }
 
-func graver(a, b regevent.Event) regevent.Event {
-	rank := func(e regevent.Event) int {
+func graver(a, b reginfo.Event) reginfo.Event {
+	rank := func(e reginfo.Event) int {
 		switch {
 		case e == "":
 			return 0

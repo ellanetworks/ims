@@ -27,6 +27,9 @@ type mcpttEnv struct {
 	path string
 }
 
+// homeDomain is the IMS's, of the database's default operator.
+const homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
+
 // newMCPTTEnv is the API of the MCPTT settings of a new database, its seed.
 func newMCPTTEnv(t *testing.T) *mcpttEnv {
 	t.Helper()
@@ -40,15 +43,17 @@ func newMCPTTEnv(t *testing.T) *mcpttEnv {
 
 	t.Cleanup(func() { _ = d.Close() })
 
-	l, err := mcptt.NewSettings(t.Context(), d)
+	l, err := mcptt.NewSettings(t.Context(), d, homeDomain)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	h := NewHandler(Config{
-		MCPTT:       l,
-		MCPTTStatus: &MCPTTStatus{Mode: "ims", SIP: []string{"127.0.0.1:5090"}, MediaControl: "127.0.0.1:21000"},
-		Logger:      slog.New(slog.DiscardHandler),
+		MCPTT: l,
+		MCPTTStatus: func() MCPTTStatus {
+			return MCPTTStatus{Mode: "ims", Name: "sip:" + mcptt.Host(homeDomain), SIP: []string{"127.0.0.1:5090"}, MediaControl: "127.0.0.1:21000"}
+		},
+		Logger: slog.New(slog.DiscardHandler),
 	})
 
 	return &mcpttEnv{t: t, h: h, db: d, live: l, path: path}
@@ -140,15 +145,6 @@ func (e *mcpttEnv) provision() {
 func TestProvision(t *testing.T) {
 	e := newMCPTTEnv(t)
 
-	var sys MCPTTSystem
-
-	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/system",
-		`{"participating_psi": "sip:p@mcptt.example.com", "controlling_psi": "sip:c@mcptt.example.com"}`, &sys)
-
-	if sys.ParticipatingPSI != "sip:p@mcptt.example.com" {
-		t.Errorf("system %+v", sys)
-	}
-
 	var sc MCPTTServiceConfiguration
 
 	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/service-configuration",
@@ -214,7 +210,7 @@ func TestProvision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(stored, e.live.Get()) {
+	if stored.System = mcptt.System(homeDomain); !reflect.DeepEqual(stored, e.live.Get()) {
 		t.Errorf("stored\n%+v\nserved\n%+v", stored, e.live.Get())
 	}
 }
@@ -288,8 +284,8 @@ func TestRefused(t *testing.T) {
 			"mcptt_id: sip:alice@MCPTT.example.com is also the user sip:alice@mcptt.example.com",
 		},
 		{
-			409, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"impus": ["sip:mcptt-participating@mcptt.example.com"]}`,
-			"impus[0]: sip:mcptt-participating@mcptt.example.com is also the participating PSI",
+			409, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"impus": ["` + mcptt.System(homeDomain).ParticipatingPSI + `"]}`,
+			"impus[0]: " + mcptt.System(homeDomain).ParticipatingPSI + " is also the participating PSI",
 		},
 		{
 			400, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"mcptt_id": "sip:carol@mcptt.example.com", "impus": ["tel:+1"]}`,
@@ -345,8 +341,8 @@ func TestRefused(t *testing.T) {
 				"fc_timers_counters.t1_end_of_rtp_media_ms: 7s is above its maximum of 6s (TS 24.380 Table 11.1.3-1)",
 		},
 		{
-			409, "PUT", "/api/v1/mcptt/system", `{"participating_psi": "sip:fire@mcptt.example.com", "controlling_psi": "sip:c@mcptt.example.com"}`,
-			"the group sip:fire@mcptt.example.com: group_id: sip:fire@mcptt.example.com is also the participating PSI",
+			409, "POST", "/api/v1/mcptt/groups", `{"group_id": "` + mcptt.System(homeDomain).ParticipatingPSI + `", "maximum_duration_ms": 60000}`,
+			"group_id: " + mcptt.System(homeDomain).ParticipatingPSI + " is also the participating PSI",
 		},
 		{400, "GET", "/api/v1/mcptt/groups?per_page=101", "", "per_page must be an integer between 1 and 100"},
 	} {
@@ -393,7 +389,7 @@ func TestMCPTTStatus(t *testing.T) {
 func TestMCPTTDisabled(t *testing.T) {
 	h := NewHandler(Config{Logger: slog.New(slog.DiscardHandler)})
 
-	for _, path := range []string{"/api/v1/mcptt/users", "/api/v1/mcptt/system"} {
+	for _, path := range []string{"/api/v1/mcptt/users", "/api/v1/mcptt/groups"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 
@@ -441,7 +437,7 @@ func (e *mcpttEnv) stored() {
 		e.t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(normal(stored), normal(e.live.Get())) {
+	if stored.System = mcptt.System(homeDomain); !reflect.DeepEqual(normal(stored), normal(e.live.Get())) {
 		e.t.Errorf("stored\n%+v\nserved\n%+v", stored, e.live.Get())
 	}
 }
@@ -488,7 +484,6 @@ func TestStoredAsServed(t *testing.T) {
 	e := newMCPTTEnv(t)
 
 	for _, c := range []struct{ method, path, body string }{
-		{"PUT", "/api/v1/mcptt/system", `{"participating_psi": "sip:p@mcptt.example.com", "controlling_psi": "sip:c@mcptt.example.com"}`},
 		{"PUT", "/api/v1/mcptt/service-configuration", `{"domain": "mcptt.example.com", "fc_timers_counters": {"t7_floor_idle_ms": 2000}}`},
 		{"POST", "/api/v1/mcptt/users", alice},
 		{"POST", "/api/v1/mcptt/users", bob},

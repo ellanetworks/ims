@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 func TestReauthenticate(t *testing.T) {
@@ -29,12 +29,12 @@ func TestReauthenticate(t *testing.T) {
 		wantState(t, n, "active;expires=600", 1)
 
 		for _, aor := range []string{testMSISDN, testTel, testAlias} {
-			if r := n.registration(t, aor); r.State != regevent.Active {
+			if r := n.registration(t, aor); r.State != reginfo.Active {
 				t.Fatalf("registration = %+v", r)
 			}
 
 			c := n.contact(t, aor, u.contact)
-			wantContact(t, c, regevent.Active, regevent.Shortened)
+			wantContact(t, c, reginfo.Active, reginfo.Shortened)
 
 			if c.Expires == nil || *c.Expires != 120 {
 				t.Fatalf("contact expires %v, want 120", deref(c.Expires))
@@ -57,7 +57,7 @@ func TestReauthenticate(t *testing.T) {
 
 	for _, s := range []*subscriber{pcscfSub, ueSub} {
 		n := s.recvNotify()
-		wantContact(t, n.contact(t, testMSISDN, u.contact), regevent.Active, regevent.Refreshed)
+		wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Refreshed)
 
 		if c := n.contact(t, testMSISDN, u.contact); c.Expires == nil || *c.Expires != 3600 {
 			t.Fatalf("contact expires %v after the re-authentication, want 3600", deref(c.Expires))

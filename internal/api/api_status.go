@@ -17,6 +17,13 @@ type Status struct {
 func GetStatus(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		v := version.Get()
-		writeResponse(w, Status{Version: v.Version, Revision: v.Revision, MCPTT: cfg.MCPTTStatus}, http.StatusOK, cfg.Logger)
+		s := Status{Version: v.Version, Revision: v.Revision}
+
+		if cfg.MCPTTStatus != nil {
+			m := cfg.MCPTTStatus()
+			s.MCPTT = &m
+		}
+
+		writeResponse(w, s, http.StatusOK, cfg.Logger)
 	})
 }

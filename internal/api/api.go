@@ -22,7 +22,7 @@ type Config struct {
 	Metrics prometheus.Gatherer
 	// MCPTT and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404 otherwise.
 	MCPTT       MCPTTSettings
-	MCPTTStatus *MCPTTStatus
+	MCPTTStatus func() MCPTTStatus
 	Logger      *slog.Logger
 }
 
@@ -81,8 +81,6 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
 		{"GET /api/v1/registrations", ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
-		{"GET /api/v1/mcptt/system", mcpttOnly(cfg, GetMCPTTSystem)},
-		{"PUT /api/v1/mcptt/system", mcpttOnly(cfg, UpdateMCPTTSystem)},
 		{"GET /api/v1/mcptt/service-configuration", mcpttOnly(cfg, GetMCPTTServiceConfiguration)},
 		{"PUT /api/v1/mcptt/service-configuration", mcpttOnly(cfg, UpdateMCPTTServiceConfiguration)},
 		{"GET /api/v1/mcptt/users", mcpttOnly(cfg, ListMCPTTUsers)},

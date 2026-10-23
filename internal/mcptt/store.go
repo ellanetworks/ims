@@ -18,9 +18,8 @@ var (
 	_ server.State   = store{}
 )
 
-func (s store) UpdateSystem(ctx context.Context, x settings.System) error {
-	return s.d.UpdateMCPTTSystem(ctx, x)
-}
+// UpdateSystem stores nothing: the PSIs are of the home domain (System).
+func (store) UpdateSystem(context.Context, settings.System) error { return nil }
 
 func (s store) UpdateServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) error {
 	return s.d.UpdateMCPTTServiceConfiguration(ctx, c)

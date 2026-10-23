@@ -1,0 +1,45 @@
+supi: 'imsi-001010000000002'
+mcc: '001'
+mnc: '01'
+protectionScheme: 0
+homeNetworkPublicKey: '5a8d38864820197c3394b92613b20b91633cbd897119273bf8e4a6f4eec0a650'
+homeNetworkPublicKeyId: 1
+routingIndicator: '0000'
+key: '465b5ce8b199b49faa5f0a2ee238a6bc'
+op: 'cd63cb71954a9f4e48a5994e37a02baf'
+opType: 'OPC'
+amf: '8000'
+imei: '353490069873317'
+imeiSv: '4353490069873312'
+gnbSearchList:
+  - 10.80.4.2
+uacAic:
+  mps: false
+  mcs: false
+uacAcc:
+  normalClass: 0
+  class11: false
+  class12: false
+  class13: false
+  class14: false
+  class15: false
+sessions:
+  - type: 'IPv4'
+    apn: 'ims'
+    slice:
+      sst: 1
+configured-nssai:
+  - sst: 1
+default-nssai:
+  - sst: 1
+integrity:
+  IA1: true
+  IA2: true
+  IA3: true
+ciphering:
+  EA1: true
+  EA2: true
+  EA3: true
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'

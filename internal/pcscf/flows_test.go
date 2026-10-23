@@ -14,8 +14,8 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
@@ -129,19 +129,19 @@ func TestNotifyEndsOneFlow(t *testing.T) {
 		answerRegisterWith(s, req, f, testIMPU, testTel)
 	})
 
-	contact := func(regID, state string) regevent.Contact {
-		return regevent.Contact{
-			ID: "c" + regID, State: state, Event: regevent.Registered, URI: "sip:ue@" + s.ue.Addr().String(), Expires: u32(600),
-			UnknownParams: []regevent.UnknownParam{{Name: "+sip.instance", Value: `"<` + testInstance + `>"`}, {Name: "reg-id", Value: regID}},
+	contact := func(regID string, state reginfo.RegState) reginfo.Contact {
+		return reginfo.Contact{
+			ID: "c" + regID, State: state, Event: reginfo.Registered, URI: "sip:ue@" + s.ue.Addr().String(), Expires: u64(600),
+			UnknownParams: []reginfo.Param{{Name: "+sip.instance", Value: `"<` + testInstance + `>"`}, {Name: "reg-id", Value: regID}},
 		}
 	}
 
-	info := &regevent.Reginfo{Version: 1, State: "partial", Registrations: []regevent.Registration{{
-		AOR: testIMPU, ID: "r1", State: regevent.Active,
-		Contacts: []regevent.Contact{contact("1", regevent.Terminated), contact("2", regevent.Active)},
+	info := &reginfo.Reginfo{Version: 1, State: "partial", Registrations: []reginfo.Registration{{
+		AOR: testIMPU, ID: "r1", State: reginfo.Active,
+		Contacts: []reginfo.Contact{contact("1", reginfo.Terminated), contact("2", reginfo.Active)},
 	}, {
-		AOR: testTel, ID: "r2", State: regevent.Active,
-		Contacts: []regevent.Contact{contact("1", regevent.Terminated), contact("2", regevent.Active)},
+		AOR: testTel, ID: "r2", State: reginfo.Active,
+		Contacts: []reginfo.Contact{contact("1", reginfo.Terminated), contact("2", reginfo.Active)},
 	}}}
 
 	wantStatus(t, o.notify(t, "active;expires=600000", info), 200)
@@ -442,7 +442,7 @@ func TestContactFlow(t *testing.T) {
 	}
 
 	r := &db.PCSCFRegistration{Instance: "urn:x", RegID: 1}
-	c := regevent.Contact{UnknownParams: []regevent.UnknownParam{{Name: "+sip.instance", Value: `"<urn:x>"`}, {Name: "reg-id", Value: "+1"}}}
+	c := reginfo.Contact{UnknownParams: []reginfo.Param{{Name: "+sip.instance", Value: `"<urn:x>"`}, {Name: "reg-id", Value: "+1"}}}
 
 	if !sameFlow(r, c) {
 		t.Error("reg-id +1 in a NOTIFY not matched to flow 1")

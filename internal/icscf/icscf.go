@@ -34,6 +34,11 @@ type SCSCF struct {
 	Listeners    []netip.AddrPort
 }
 
+// Resolver locates the servers of a URI (RFC 3263 §4); sip.Resolver is one.
+type Resolver interface {
+	Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error)
+}
+
 type Config struct {
 	HomeDomain string
 
@@ -45,8 +50,9 @@ type Config struct {
 	Trust *trust.Domain
 	SCSCF SCSCF
 
-	// Resolver locates the servers the HSS names by domain name (RFC 3263). Nil asks the system's resolver.
-	Resolver *sip.Resolver
+	// Resolver locates the servers the HSS names by domain name (RFC 3263): the IMS's resolves the hosts of its
+	// built-in ASs to them in memory (package as). Nil asks the system's resolver.
+	Resolver Resolver
 
 	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
 	HSSRealm  func() string
@@ -80,6 +86,10 @@ func New(cfg Config) *ICSCF {
 
 	if i.cfg.CxTimeout <= 0 {
 		i.cfg.CxTimeout = defaultCxTimeout
+	}
+
+	if i.cfg.Resolver == nil {
+		i.cfg.Resolver = &sip.Resolver{}
 	}
 
 	return i

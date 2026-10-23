@@ -8,12 +8,6 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTSystem are the public service identities of the functions (TS 24.379 Annex H).
-type MCPTTSystem struct {
-	ParticipatingPSI string `json:"participating_psi"`
-	ControllingPSI   string `json:"controlling_psi"`
-}
-
 // MCPTTServiceConfiguration is the service configuration of the organisation (TS 24.484 §8.4). An absent optional field
 // is of its default.
 type MCPTTServiceConfiguration struct {
@@ -29,33 +23,6 @@ type MCPTTFCTimersCounters struct {
 	T7FloorIdleMS        *int64 `json:"t7_floor_idle_ms,omitempty"`
 	T8FloorRevokeMS      *int64 `json:"t8_floor_revoke_ms,omitempty"`
 	C7FloorIdle          *int   `json:"c7_floor_idle,omitempty"`
-}
-
-func GetMCPTTSystem(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, mcpttSystemResponse(cfg.MCPTT.Get().System), http.StatusOK, cfg.Logger)
-	})
-}
-
-func UpdateMCPTTSystem(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var p MCPTTSystem
-		if !decodeStrictly(w, r, &p, cfg.Logger) {
-			return
-		}
-
-		s := mcpttsettings.System{ParticipatingPSI: p.ParticipatingPSI, ControllingPSI: p.ControllingPSI}
-		if err := cfg.MCPTT.UpdateSystem(r.Context(), s); err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to update the system", mcpttField, cfg.Logger)
-			return
-		}
-
-		writeResponse(w, mcpttSystemResponse(cfg.MCPTT.Get().System), http.StatusOK, cfg.Logger)
-	})
-}
-
-func mcpttSystemResponse(s mcpttsettings.System) MCPTTSystem {
-	return MCPTTSystem{ParticipatingPSI: s.ParticipatingPSI, ControllingPSI: s.ControllingPSI}
 }
 
 func GetMCPTTServiceConfiguration(cfg Config) http.Handler {

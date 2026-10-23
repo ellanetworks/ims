@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -13,9 +14,9 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -200,7 +201,7 @@ func (p *PCSCF) contactURI(local netip.AddrPort) string {
 func (p *PCSCF) subscribeHeaders(req *sip.Request, reg db.PCSCFRegistration) {
 	req.Header.Add("P-Asserted-Identity", "<"+pathURI(reg.FlowToken, reg.PCSCFAddress, p.cfg.Port).String()+">")
 	req.Header.Add("Event", "reg")
-	req.Header.Add("Accept", regevent.ContentType)
+	req.Header.Add("Accept", reginfo.ContentType)
 	req.Header.Add("Expires", strconv.Itoa(int(subscriptionExpires/time.Second)))
 }
 
@@ -447,14 +448,14 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 	terminated := state.State == sip.SubscriptionTerminated
 
-	var info *regevent.Reginfo
+	var info *reginfo.Reginfo
 
 	if len(req.Body) > 0 {
-		if !strings.EqualFold(mediaType(req.Header.ContentType()), regevent.ContentType) {
+		if !strings.EqualFold(mediaType(req.Header.ContentType()), reginfo.ContentType) {
 			return sip.NewResponse(req, 415, "")
 		}
 
-		i, err := regevent.Decode(req.Body)
+		i, err := reginfo.Decode(req.Body)
 		if err != nil {
 			return sip.NewResponse(req, 400, "Bad reginfo")
 		}
@@ -541,9 +542,9 @@ func mediaType(ct string) string {
 	return strings.TrimSpace(mt)
 }
 
-func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
+func (p *PCSCF) apply(impi string, info reginfo.Reginfo) {
 	now := p.clock.Now()
-	ended := map[regKey]regevent.Event{}
+	ended := map[regKey]reginfo.Event{}
 
 	removed := p.regs.update(impi, func(r *db.PCSCFRegistration) bool {
 		active := map[string]bool{}
@@ -564,7 +565,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 
 				uri, ok := matchURI(r.Contacts, c.URI)
 				if !ok {
-					if c.State == regevent.Active && reg.State != regevent.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
+					if c.State == reginfo.Active && reg.State != reginfo.Terminated && contactAt(c.URI, r.UEAddress.Addr()) {
 						here, unknown = true, true
 					}
 
@@ -573,7 +574,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 
 				mentioned[uri] = true
 
-				if c.State != regevent.Active || reg.State == regevent.Terminated {
+				if c.State != reginfo.Active || reg.State == reginfo.Terminated {
 					ended[regKeyOf(r)] = graver(ended[regKeyOf(r)], c.Event)
 					continue
 				}
@@ -581,7 +582,8 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 				active[uri], here = true, true
 
 				if c.Expires != nil {
-					longest = max(longest, time.Duration(*c.Expires)*time.Second)
+					// An xs:unsignedLong, bounded to what a time.Duration holds.
+					longest = max(longest, time.Duration(min(*c.Expires, uint64(math.MaxInt64/time.Second)))*time.Second)
 				}
 			}
 
@@ -630,7 +632,7 @@ func (p *PCSCF) apply(impi string, info regevent.Reginfo) {
 // sameFlow reports whether a contact of a reg event is bound through registration r's flow: the same
 // instance ID and reg-id, or none for a registration without the multiple registration mechanism. Flows
 // may share a contact URI (RFC 5626 §6).
-func sameFlow(r *db.PCSCFRegistration, c regevent.Contact) bool {
+func sameFlow(r *db.PCSCFRegistration, c reginfo.Contact) bool {
 	var params sip.Params
 
 	for _, p := range c.UnknownParams {

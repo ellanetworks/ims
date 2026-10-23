@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -15,10 +16,10 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 const (
@@ -31,7 +32,7 @@ const (
 type removal struct {
 	reg      db.Registration
 	bindings []db.Binding
-	event    regevent.Event
+	event    reginfo.Event
 	byUE     bool
 
 	// ended is set when the registration set has no binding left.
@@ -89,8 +90,8 @@ func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch cha
 		reason = reasonNoResource
 	}
 
-	active := slices.ContainsFunc(info.Registrations, func(reg regevent.Registration) bool {
-		return reg.State == regevent.Active
+	active := slices.ContainsFunc(info.Registrations, func(reg reginfo.Registration) bool {
+		return reg.State == reginfo.Active
 	})
 
 	var out []*outgoing
@@ -214,7 +215,7 @@ func (r *Registrar) dropSubscription(ctx context.Context, s db.RegSubscription) 
 	}
 }
 
-func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscription, info *regevent.Reginfo,
+func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscription, info *reginfo.Reginfo,
 	subState string,
 ) *outgoing {
 	final := strings.HasPrefix(subState, "terminated")
@@ -239,7 +240,7 @@ func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscrip
 	return o
 }
 
-func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscription, info *regevent.Reginfo,
+func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscription, info *reginfo.Reginfo,
 	subState string,
 ) (*outgoing, error) {
 	d, err := restoreDialog(s.Dialog)
@@ -264,9 +265,9 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 	s.Version++
 
 	doc := *info
-	doc.Version = uint64(max(s.Version, 0))
+	doc.Version = uint32(min(max(s.Version, 0), math.MaxUint32))
 
-	body, err := regevent.Encode(doc)
+	body, err := reginfo.Encode(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +292,7 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 		req.Header.Add(pChargingVector, r.chargingVector(s.ICID))
 	}
 
-	req.SetBody(regevent.ContentType, body)
+	req.SetBody(reginfo.ContentType, body)
 	req.Flow = sip.Flow{Transport: tr, Local: local, Remote: dest}
 
 	return &outgoing{impi: s.IMPI, subID: s.ID, req: req}, nil
@@ -359,8 +360,8 @@ func contactURI(local netip.AddrPort, tr sip.Transport) string {
 	return "<" + u.String() + ">"
 }
 
-func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent.Reginfo, error) {
-	info := regevent.Reginfo{State: regevent.Full}
+func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.Reginfo, error) {
+	info := reginfo.Reginfo{State: reginfo.Full}
 
 	var sets []db.Registration
 
@@ -388,7 +389,7 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent
 
 			reg, err := r.registrationElement(ctx, st, ch, id)
 			if err != nil {
-				return regevent.Reginfo{}, err
+				return reginfo.Reginfo{}, err
 			}
 
 			info.Registrations = append(info.Registrations, reg)
@@ -398,12 +399,12 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (regevent
 	return info, nil
 }
 
-func (r *Registrar) registrationElement(ctx context.Context, st *state, ch change, id db.PublicIdentity) (regevent.Registration, error) {
-	reg := regevent.Registration{AOR: id.URI, ID: elementID("r", id.Key), State: regevent.Terminated}
+func (r *Registrar) registrationElement(ctx context.Context, st *state, ch change, id db.PublicIdentity) (reginfo.Registration, error) {
+	reg := reginfo.Registration{AOR: id.URI, ID: elementID("r", id.Key), State: reginfo.Terminated}
 
 	bound, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, id.Key)
 	if err != nil {
-		return regevent.Registration{}, err
+		return reginfo.Registration{}, err
 	}
 
 	// active holds the bindings listed active, by binding and registration time: a flow replaced in
@@ -416,13 +417,13 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 
 	for _, set := range bound {
 		for _, b := range liveAt(set.Bindings, st.now) {
-			event := regevent.Refreshed
+			event := reginfo.Refreshed
 
 			switch {
 			case ch.shortened != "" && set.IMPI == ch.shortened:
-				event = regevent.Shortened
+				event = reginfo.Shortened
 			case b.Event != db.BindingRefreshed:
-				event = regevent.Created
+				event = reginfo.Created
 
 				registering := b.IMPU
 				if registering == "" {
@@ -430,12 +431,12 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 				}
 
 				if registering == id.Key {
-					event = regevent.Registered
+					event = reginfo.Registered
 				}
 			}
 
-			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, regevent.Active, event, st.now))
-			reg.State = regevent.Active
+			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, reginfo.Active, event, st.now))
+			reg.State = reginfo.Active
 
 			active = append(active, bindingAt{b.ID, b.RegisteredAt.UnixNano()})
 		}
@@ -451,22 +452,22 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 				continue
 			}
 
-			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, regevent.Terminated, rm.event, st.now))
+			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, reginfo.Terminated, rm.event, st.now))
 		}
 	}
 
 	return reg, nil
 }
 
-func contactElement(b db.Binding, key, state string, event regevent.Event, now time.Time) regevent.Contact {
-	expires := uint32(0)
-	if state == regevent.Active {
-		expires = uint32(min(seconds(b.ExpiresAt.Sub(now)), 1<<32-1))
+func contactElement(b db.Binding, key string, state reginfo.RegState, event reginfo.Event, now time.Time) reginfo.Contact {
+	expires := uint64(0)
+	if state == reginfo.Active {
+		expires = uint64(seconds(b.ExpiresAt.Sub(now)))
 	}
 
-	cseq := uint32(b.CSeq)
+	cseq := uint64(max(b.CSeq, 0))
 
-	c := regevent.Contact{
+	c := reginfo.Contact{
 		ID: elementID("c", strconv.FormatInt(b.ID, 10)+"|"+key+"|"+
 			strconv.FormatInt(b.RegisteredAt.UnixNano(), 10)),
 		State:   state,
@@ -488,7 +489,7 @@ func contactElement(b db.Binding, key, state string, event regevent.Event, now t
 		case "q":
 			c.Q = p.Value
 		default:
-			c.UnknownParams = append(c.UnknownParams, regevent.UnknownParam{Name: p.Name, Value: p.Value})
+			c.UnknownParams = append(c.UnknownParams, reginfo.Param{Name: p.Name, Value: p.Value})
 		}
 	}
 

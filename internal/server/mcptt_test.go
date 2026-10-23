@@ -10,6 +10,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/sip"
 )
 
 // apiDo sends a request of body, if any, to the API, and returns its status and its body.
@@ -48,8 +49,9 @@ func udpInUse(a netip.AddrPort) bool {
 	return false
 }
 
-// The MCPTT AS of the configuration runs with the IMS: on its SIP port of each SIP address, its settings over the
-// API. A restart of the core leaves it running, its settings with it.
+// The MCPTT AS of the configuration runs with the IMS: in memory, of no socket, on its SIP port of each SIP address,
+// which its name of the home domain resolves to; its settings over the API. A restart of the core leaves it running,
+// its settings with it; one of a new home domain renames it.
 func TestMCPTT(t *testing.T) {
 	cfg := testConfig(t)
 	port := unusedPort(t)
@@ -73,8 +75,23 @@ func TestMCPTT(t *testing.T) {
 	want := []string{
 		netip.AddrPortFrom(loopback, uint16(port)).String(), netip.AddrPortFrom(loopback6, uint16(port)).String(),
 	}
-	if m := status.Result.MCPTT; m == nil || m.Mode != "ims" || strings.Join(m.SIP, " ") != strings.Join(want, " ") {
+	if m := status.Result.MCPTT; m == nil || m.Mode != "ims" || strings.Join(m.SIP, " ") != strings.Join(want, " ") ||
+		m.Name != "sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org" ||
+		m.ParticipatingPSI != "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org" {
 		t.Fatalf("status %s, want MCPTT on %v", b, want)
+	}
+
+	if udpInUse(netip.AddrPortFrom(loopback, uint16(port))) {
+		t.Fatal("MCPTT has a socket through the IMS")
+	}
+
+	resolves := func(host string) bool {
+		servers, err := srv.ases.resolver.Resolve(t.Context(), sip.URI{Scheme: "sip", Host: host})
+		return err == nil && len(servers) == 2 && servers[0].Addr == netip.AddrPortFrom(loopback, uint16(port))
+	}
+
+	if !resolves("mcptt.ims.mnc001.mcc001.3gppnetwork.org") {
+		t.Fatal("the name of MCPTT does not resolve to it")
 	}
 
 	if code, b := apiDo(t, srv, http.MethodPost, "/api/v1/mcptt/users",
@@ -95,8 +112,16 @@ func TestMCPTT(t *testing.T) {
 		return c != nil && c != before
 	})
 
-	if srv.mcptt != as || !udpInUse(netip.AddrPortFrom(loopback, uint16(port))) {
+	if srv.mcptt != as {
 		t.Fatal("the MCPTT AS did not outlive the core")
+	}
+
+	if !resolves("mcptt.ims.mnc002.mcc001.3gppnetwork.org") || resolves("mcptt.ims.mnc001.mcc001.3gppnetwork.org") {
+		t.Fatal("MCPTT not renamed for the new home domain")
+	}
+
+	if psi := as.Settings().Current().ParticipatingPSI().String(); psi != "sip:mcptt-participating@mcptt.ims.mnc002.mcc001.3gppnetwork.org" {
+		t.Fatalf("participating PSI %s after the new home domain", psi)
 	}
 
 	code, b = apiDo(t, srv, http.MethodGet, "/api/v1/mcptt/users", "")

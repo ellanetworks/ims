@@ -27,15 +27,12 @@ func getMCPTT(t *testing.T, d *DB) settings.Settings {
 	return s
 }
 
-// The settings of a new database are valid: the PSIs and service configuration of the seed rows, no users or groups.
+// The settings of a new database are valid, of the PSIs of the home domain: the service configuration of the seed
+// row, no users or groups.
 func TestSeed(t *testing.T) {
 	s := getMCPTT(t, openTestDB(t))
 
 	want := settings.Settings{
-		System: settings.System{
-			ParticipatingPSI: "sip:mcptt-participating@mcptt.example.com",
-			ControllingPSI:   "sip:mcptt-controlling@mcptt.example.com",
-		},
 		ServiceConfiguration: settings.ServiceConfiguration{
 			Domain: "mcptt.example.com",
 			OnNetwork: settings.OnNetwork{
@@ -47,15 +44,24 @@ func TestSeed(t *testing.T) {
 		t.Errorf("settings %+v, want %+v", s, want)
 	}
 
-	if _, err := settings.New(s); err != nil {
+	if _, err := settings.New(withPSIs(s)); err != nil {
 		t.Errorf("seed settings invalid: %v", err)
 	}
+}
+
+// withPSIs is s of PSIs, which the database does not store: they are of the home domain.
+func withPSIs(s settings.Settings) settings.Settings {
+	s.System = settings.System{
+		ParticipatingPSI: "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+		ControllingPSI:   "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+	}
+
+	return s
 }
 
 // example are settings of every column: optional elements present and absent, explicit zeros.
 func mcpttExample() settings.Settings {
 	return settings.Settings{
-		System: settings.System{ParticipatingPSI: "sip:pf@example.com", ControllingPSI: "sip:cf@example.com"},
 		ServiceConfiguration: settings.ServiceConfiguration{
 			Domain: "example.com",
 			OnNetwork: settings.OnNetwork{
@@ -100,10 +106,6 @@ func storeMCPTT(t *testing.T, d *DB, s settings.Settings) {
 
 	ctx := t.Context()
 
-	if err := d.UpdateMCPTTSystem(ctx, s.System); err != nil {
-		t.Fatal(err)
-	}
-
 	if err := d.UpdateMCPTTServiceConfiguration(ctx, s.ServiceConfiguration); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func storeMCPTT(t *testing.T, d *DB, s settings.Settings) {
 // What is written is what is read, the NULLs of the absent elements included, and after a reopen.
 func TestRoundTrip(t *testing.T) {
 	want := mcpttExample()
-	if _, err := settings.New(want); err != nil {
+	if _, err := settings.New(withPSIs(want)); err != nil {
 		t.Fatalf("example invalid: %v", err)
 	}
 
@@ -385,12 +387,12 @@ func TestOrphans(t *testing.T) {
 func TestSingleRowGone(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.conn.ExecContext(t.Context(), `DELETE FROM mcptt_system`); err != nil {
+	if _, err := d.conn.ExecContext(t.Context(), `DELETE FROM mcptt_service_configuration`); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := d.UpdateMCPTTSystem(t.Context(), mcpttExample().System); !errors.Is(err, ErrNotFound) {
-		t.Errorf("UpdateSystem: %v", err)
+	if err := d.UpdateMCPTTServiceConfiguration(t.Context(), mcpttExample().ServiceConfiguration); !errors.Is(err, ErrNotFound) {
+		t.Errorf("UpdateServiceConfiguration: %v", err)
 	}
 }
 

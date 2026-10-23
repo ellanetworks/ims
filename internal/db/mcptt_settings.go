@@ -33,11 +33,6 @@ func (d *DB) GetMCPTTSettings(ctx context.Context) (_ settings.Settings, err err
 func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error) {
 	var s settings.Settings
 
-	if err := tx.QueryRowContext(ctx, `SELECT participating_psi, controlling_psi FROM mcptt_system WHERE id = 1`).
-		Scan(&s.System.ParticipatingPSI, &s.System.ControllingPSI); err != nil {
-		return settings.Settings{}, fmt.Errorf("get MCPTT system: %w", err)
-	}
-
 	var (
 		on                 = &s.ServiceConfiguration.OnNetwork
 		levels, c7         sql.NullInt64
@@ -234,15 +229,6 @@ func queryRows(ctx context.Context, tx *sql.Tx, what, query string, scan func(*s
 	}
 
 	return nil
-}
-
-func (d *DB) UpdateMCPTTSystem(ctx context.Context, s settings.System) (err error) {
-	defer d.observe(poolWrite, &err)()
-
-	res, err := d.conn.ExecContext(ctx, `UPDATE mcptt_system SET participating_psi = ?, controlling_psi = ? WHERE id = 1`,
-		s.ParticipatingPSI, s.ControllingPSI)
-
-	return oneRow(res, err, "update MCPTT system")
 }
 
 func (d *DB) UpdateMCPTTServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) (err error) {
