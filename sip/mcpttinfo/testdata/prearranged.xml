@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §10.1.1.2.1.1 step 14: a client's INVITE of a prearranged group call, with a functional alias; an
+     element and an attribute of another namespace, as a later release or another document adds them. -->
+<mcpttinfo xmlns="urn:3gpp:ns:mcpttInfo:1.0" xmlns:x="urn:example:later">
+  <mcptt-Params x:flag="1">
+    <session-type>prearranged</session-type>
+    <mcptt-request-uri type="Normal">
+      <mcpttURI>sip:group123@mcptt.example.com</mcpttURI>
+    </mcptt-request-uri>
+    <mcptt-client-id type="Normal">
+      <mcpttString>urn:uuid:00000000-0000-1000-8000-0123456789ab</mcpttString>
+    </mcptt-client-id>
+    <x:later-element a="b">
+      <x:part>kept &amp; relayed</x:part>
+    </x:later-element>
+    <anyExt>
+      <functional-alias-URI type="Normal">
+        <mcpttURI>sip:dispatcher@mcptt.example.com</mcpttURI>
+      </functional-alias-URI>
+    </anyExt>
+  </mcptt-Params>
+</mcpttinfo>

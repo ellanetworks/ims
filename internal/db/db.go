@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/mattn/go-sqlite3"
@@ -203,10 +204,127 @@ var migrations = []string{
 		retention_days INTEGER NOT NULL
 	);
 	INSERT INTO call_record_settings VALUES (1, 90);`,
+	// The MCPTT application server (mcptt_*.go). Its settings: an optional element absent from them is NULL, its
+	// default the one of the MCPTT settings package, so that a later release's defaults apply. A duration is in
+	// nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user that is a
+	// member, or a group that is an implicit affiliation, is not deleted. key is the identity as the MCPTT settings
+	// package's Key has it, by which a user or group is found. Its runtime state through the IMS, kept across
+	// restarts: the bindings of service authorisation, a client at one IMPU at a time, and the affiliations of the
+	// clients. They are keyed by identity, not by row of users: the server reconciles them with the settings when it
+	// restores them. Their times are Unix milliseconds.
+	`CREATE TABLE mcptt_system (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		participating_psi TEXT NOT NULL,
+		controlling_psi TEXT NOT NULL
+	);
+	INSERT INTO mcptt_system VALUES (1, 'sip:mcptt-participating@mcptt.example.com', 'sip:mcptt-controlling@mcptt.example.com');
+	CREATE TABLE mcptt_service_configuration (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		domain TEXT NOT NULL,
+		num_levels_priority_hierarchy INTEGER,
+		time_limit_ns INTEGER,
+		t1_ns INTEGER,
+		t3_ns INTEGER,
+		t7_ns INTEGER,
+		t8_ns INTEGER,
+		c7 INTEGER
+	);
+	INSERT INTO mcptt_service_configuration VALUES (1, 'mcptt.example.com', NULL, NULL, NULL, NULL, 2000000000, NULL, NULL);
+	CREATE TABLE mcptt_users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		mcptt_id TEXT NOT NULL,
+		key TEXT NOT NULL UNIQUE,
+		max_affiliations_n2 INTEGER,
+		max_simultaneous_calls_n6 INTEGER
+	);
+	CREATE TABLE mcptt_user_impus (
+		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		impu TEXT NOT NULL,
+		PRIMARY KEY (user_id, position)
+	);
+	CREATE TABLE mcptt_groups (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		uri TEXT NOT NULL,
+		key TEXT NOT NULL UNIQUE,
+		invite_members INTEGER NOT NULL CHECK (invite_members IN (0, 1)),
+		max_participants INTEGER NOT NULL,
+		t4_ns INTEGER,
+		tng3_ns INTEGER NOT NULL,
+		minimum_to_start INTEGER NOT NULL,
+		tng1_ns INTEGER NOT NULL,
+		tng1_action TEXT NOT NULL,
+		minimum_affiliated INTEGER NOT NULL,
+		release_on_initiator_leave INTEGER NOT NULL CHECK (release_on_initiator_leave IN (0, 1))
+	);
+	CREATE TABLE mcptt_group_encodings (
+		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		PRIMARY KEY (group_id, position)
+	);
+	CREATE TABLE mcptt_group_members (
+		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE RESTRICT,
+		position INTEGER NOT NULL,
+		user_priority INTEGER NOT NULL,
+		required INTEGER NOT NULL CHECK (required IN (0, 1)),
+		recvonly INTEGER NOT NULL CHECK (recvonly IN (0, 1)),
+		affiliation_required INTEGER NOT NULL CHECK (affiliation_required IN (0, 1)),
+		PRIMARY KEY (group_id, user_id)
+	);
+	CREATE INDEX mcptt_group_members_user_id ON mcptt_group_members (user_id);
+	CREATE TABLE mcptt_user_implicit_affiliations (
+		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE CASCADE,
+		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE RESTRICT,
+		position INTEGER NOT NULL,
+		PRIMARY KEY (user_id, group_id)
+	);
+	CREATE INDEX mcptt_user_implicit_affiliations_group_id ON mcptt_user_implicit_affiliations (group_id);
+	CREATE TABLE mcptt_registrations (
+		client_id TEXT PRIMARY KEY,
+		mcptt_id TEXT NOT NULL,
+		impu TEXT NOT NULL,
+		impus TEXT NOT NULL,
+		expires_at INTEGER NOT NULL,
+		scscf TEXT NOT NULL,
+		as_uri TEXT NOT NULL,
+		token TEXT NOT NULL,
+		instance TEXT NOT NULL,
+		reg_id TEXT NOT NULL,
+		contact TEXT NOT NULL,
+		call_id TEXT NOT NULL,
+		cseq INTEGER NOT NULL,
+		icid TEXT NOT NULL,
+		orig_ioi TEXT NOT NULL,
+		charging_function_addresses TEXT NOT NULL
+	);
+	CREATE TABLE mcptt_affiliation_clients (
+		user_key TEXT NOT NULL,
+		client_id TEXT NOT NULL,
+		mcptt_id TEXT NOT NULL,
+		etag TEXT NOT NULL,
+		PRIMARY KEY (user_key, client_id)
+	);
+	CREATE TABLE mcptt_affiliations (
+		user_key TEXT NOT NULL,
+		client_id TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		group_uri TEXT NOT NULL,
+		status TEXT NOT NULL CHECK (status IN ('affiliating', 'affiliated')),
+		expires_at INTEGER NOT NULL,
+		pid TEXT NOT NULL,
+		PRIMARY KEY (user_key, client_id, position),
+		FOREIGN KEY (user_key, client_id) REFERENCES mcptt_affiliation_clients (user_key, client_id)
+			ON DELETE CASCADE ON UPDATE CASCADE
+	);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", "file:"+path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
+	// The path of a URI: escaped, of a "?", "#" or "%" that would end or escape it (https://sqlite.org/uri.html).
+	file := (&url.URL{Path: path}).EscapedPath()
+
+	conn, err := sql.Open("sqlite3", "file:"+file+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -224,7 +342,17 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 
-	read, err := sql.Open("sqlite3", "file:"+path+"?_query_only=true&_busy_timeout=5000")
+	if err := d.checkForeignKeys(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	if err := d.rekeyMCPTT(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	read, err := sql.Open("sqlite3", "file:"+file+"?_query_only=true&_busy_timeout=5000")
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("open database: %w", err)

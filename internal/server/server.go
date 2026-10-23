@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/mcptt"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -26,9 +27,12 @@ import (
 var ErrAlreadyStarted = errors.New("server: already started")
 
 const (
-	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the P-CSCF to end its
-	// policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
-	ShutdownTimeout = pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the MCPTT AS to end its
+	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
+	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+
+	// mcpttStopTime is what stopping the IMS leaves the MCPTT AS to end its calls and subscriptions, before the core.
+	mcpttStopTime = 5 * time.Second
 
 	// diameterDisconnectTime is what stopping the core leaves Diameter to disconnect from its peers (RFC 6733
 	// §5.4), after SIP, whose policy sessions end over Diameter.
@@ -66,6 +70,10 @@ type Server struct {
 	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
+
+	// mcptt is the built-in MCPTT AS, if configured. It outlives the cores: a restart of the core leaves its calls
+	// and registrations alone.
+	mcptt *mcptt.AS
 
 	// The core is replaced when the operator's identity changes.
 	core       atomic.Pointer[core]
@@ -143,8 +151,24 @@ func (s *Server) Start(ctx context.Context) error {
 		return live.Get().Peers, coreView{s}.Peers()
 	})
 
+	if cfg.MCPTT != nil {
+		if s.mcptt, err = mcptt.Start(ctx, mcptt.Config{
+			MCPTT: *cfg.MCPTT, Addresses: cfg.SIP.Addresses, DB: database, Logger: s.Logger,
+		}); err != nil {
+			_ = s.records.Close(ctx)
+			_ = apiLn.Close()
+			_ = database.Close()
+
+			return err
+		}
+	}
+
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
+		if s.mcptt != nil {
+			_ = s.mcptt.Shutdown(ctx)
+		}
+
 		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
@@ -156,19 +180,27 @@ func (s *Server) Start(ctx context.Context) error {
 
 	view := coreView{s}
 
+	apiCfg := api.Config{
+		Settings:      live,
+		Diameter:      view,
+		SIP:           view,
+		Registrations: view,
+		Policy:        view,
+		CallRecords:   database,
+		Frontend:      ui.FS(),
+		Metrics:       s.metrics.registry,
+		Logger:        s.Logger,
+	}
+
+	if s.mcptt != nil {
+		st := s.mcptt.Status()
+		apiCfg.MCPTT = s.mcptt.Settings()
+		apiCfg.MCPTTStatus = &api.MCPTTStatus{Mode: st.Mode, SIP: st.SIP, MediaControl: st.MediaControl}
+	}
+
 	s.apiListener = apiLn
 	s.apiServer = &http.Server{
-		Handler: api.NewHandler(api.Config{
-			Settings:      live,
-			Diameter:      view,
-			SIP:           view,
-			Registrations: view,
-			Policy:        view,
-			CallRecords:   database,
-			Frontend:      ui.FS(),
-			Metrics:       s.metrics.registry,
-			Logger:        s.Logger,
-		}),
+		Handler:           api.NewHandler(apiCfg),
 		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       time.Minute,
@@ -448,6 +480,16 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopFollow()
 	<-s.followDone
+
+	// MCPTT first: its BYEs and unsubscriptions go through the core.
+	if s.mcptt != nil {
+		mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
+		if err := s.mcptt.Shutdown(mcpttCtx); err != nil {
+			s.Logger.Warn("failed to stop MCPTT cleanly", slog.Any("error", err))
+		}
+
+		cancel()
+	}
 
 	if c := s.core.Swap(nil); c != nil {
 		coreCtx, cancel := before(ctx, recordsFlushTime)

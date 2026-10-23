@@ -23,6 +23,10 @@ tags:
   - name: SIP
   - name: Registrations
   - name: Call records
+  - name: MCPTT system
+  - name: MCPTT service configuration
+  - name: MCPTT users
+  - name: MCPTT groups
   - name: Status
   - name: Metrics
   - name: Specification
@@ -526,6 +530,351 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/mcptt/system:
+    get:
+      tags: [MCPTT system]
+      operationId: getMCPTTSystem
+      summary: Get the system
+      responses:
+        "200":
+          description: The system
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTSystemResult"
+    put:
+      tags: [MCPTT system]
+      operationId: updateMCPTTSystem
+      summary: Update the system
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTSystem"
+      responses:
+        "200":
+          description: The system as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTSystemResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/service-configuration:
+    get:
+      tags: [MCPTT service configuration]
+      operationId: getMCPTTServiceConfiguration
+      summary: Get the service configuration
+      responses:
+        "200":
+          description: The service configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTServiceConfigurationResult"
+    put:
+      tags: [MCPTT service configuration]
+      operationId: updateMCPTTServiceConfiguration
+      summary: Replace the service configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTServiceConfiguration"
+      responses:
+        "200":
+          description: The service configuration as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTServiceConfigurationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/users:
+    get:
+      tags: [MCPTT users]
+      operationId: listMCPTTUsers
+      summary: List users
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: A page of the users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/MCPTTUser"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [MCPTT users]
+      operationId: createMCPTTUser
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTUserCreate"
+      responses:
+        "201":
+          description: The user as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTUserResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/users/{mcptt_id}:
+    parameters:
+      - $ref: "#/components/parameters/MCPTTID"
+    get:
+      tags: [MCPTT users]
+      operationId: getMCPTTUser
+      summary: Get a user
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTUserResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [MCPTT users]
+      operationId: updateMCPTTUser
+      summary: Replace a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTUserInput"
+      responses:
+        "200":
+          description: The user as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTUserResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [MCPTT users]
+      operationId: deleteMCPTTUser
+      summary: Delete a user
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/groups:
+    get:
+      tags: [MCPTT groups]
+      operationId: listMCPTTGroups
+      summary: List groups
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: A page of the groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/MCPTTGroup"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [MCPTT groups]
+      operationId: createMCPTTGroup
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTGroupCreate"
+      responses:
+        "201":
+          description: The group as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/groups/{group_id}:
+    parameters:
+      - $ref: "#/components/parameters/MCPTTGroupID"
+    get:
+      tags: [MCPTT groups]
+      operationId: getMCPTTGroup
+      summary: Get a group
+      responses:
+        "200":
+          description: The group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [MCPTT groups]
+      operationId: updateMCPTTGroup
+      summary: Replace a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTGroupInput"
+      responses:
+        "200":
+          description: The group as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [MCPTT groups]
+      operationId: deleteMCPTTGroup
+      summary: Delete a group
+      responses:
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/groups/{group_id}/members/{mcptt_id}:
+    parameters:
+      - $ref: "#/components/parameters/MCPTTGroupID"
+      - $ref: "#/components/parameters/MCPTTID"
+    put:
+      tags: [MCPTT groups]
+      operationId: putMCPTTMember
+      summary: Add or replace a member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPTTMemberInput"
+      responses:
+        "200":
+          description: The group as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "201":
+          description: The group as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [MCPTT groups]
+      operationId: deleteMCPTTMember
+      summary: Remove a member
+      responses:
+        "200":
+          description: The group as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPTTGroupResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/status:
     get:
       tags: [Status]
@@ -549,6 +898,9 @@ paths:
                       revision:
                         type: string
                         description: Git commit of the build, empty in development builds.
+                      mcptt:
+                        $ref: "#/components/schemas/MCPTTStatus"
+                        description: What the MCPTT AS runs, absent if the IMS runs none.
 
   /api/v1/metrics:
     get:
@@ -575,6 +927,37 @@ paths:
             application/openapi+yaml: {}
 
 components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    MCPTTID:
+      name: mcptt_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: ["sip:alice@mcptt.example.com"]
+    MCPTTGroupID:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        type: string
+        examples: ["sip:fire@mcptt.example.com"]
+
   schemas:
     Operator:
       type: object
@@ -1016,6 +1399,195 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+
+    MCPTTSystem:
+      type: object
+      required: [participating_psi, controlling_psi]
+      properties:
+        participating_psi:
+          type: string
+          examples: ["sip:mcptt-participating@mcptt.example.com"]
+        controlling_psi:
+          type: string
+          examples: ["sip:mcptt-controlling@mcptt.example.com"]
+    MCPTTSystemResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/MCPTTSystem"
+
+    MCPTTServiceConfiguration:
+      type: object
+      required: [domain, fc_timers_counters]
+      properties:
+        domain:
+          type: string
+          examples: [mcptt.example.com]
+        num_levels_priority_hierarchy:
+          type: integer
+          minimum: 4
+          maximum: 256
+        transmit_time_limit_ms:
+          type: integer
+        fc_timers_counters:
+          type: object
+          required: [t7_floor_idle_ms]
+          properties:
+            t1_end_of_rtp_media_ms:
+              type: integer
+            t3_stop_talking_grace_ms:
+              type: integer
+            t7_floor_idle_ms:
+              type: integer
+            t8_floor_revoke_ms:
+              type: integer
+            c7_floor_idle:
+              type: integer
+    MCPTTServiceConfigurationResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/MCPTTServiceConfiguration"
+
+    MCPTTUserInput:
+      type: object
+      required: [impus]
+      properties:
+        mcptt_id:
+          type: string
+          examples: ["sip:alice@mcptt.example.com"]
+        impus:
+          type: array
+          items:
+            type: string
+          examples: [["sip:alice@ims.example.com"]]
+        implicit_affiliations:
+          type: array
+          items:
+            type: string
+          examples: [["sip:fire@mcptt.example.com"]]
+        max_affiliations_n2:
+          type: integer
+          minimum: 0
+        max_simultaneous_calls_n6:
+          type: integer
+          minimum: 1
+    MCPTTUserCreate:
+      allOf:
+        - $ref: "#/components/schemas/MCPTTUserInput"
+        - required: [mcptt_id]
+    MCPTTUser:
+      allOf:
+        - $ref: "#/components/schemas/MCPTTUserInput"
+        - required: [mcptt_id, impus, implicit_affiliations]
+    MCPTTUserResult:
+      type: object
+      required: [result]
+      properties:
+        result:
+          $ref: "#/components/schemas/MCPTTUser"
+
+    MCPTTMemberInput:
+      type: object
+      properties:
+        mcptt_id:
+          type: string
+        user_priority:
+          type: integer
+          minimum: 0
+          maximum: 255
+        required:
+          type: boolean
+        recvonly:
+          type: boolean
+        affiliation_required:
+          type: boolean
+
+    MCPTTMember:
+      allOf:
+        - $ref: "#/components/schemas/MCPTTMemberInput"
+        - required: [mcptt_id, user_priority, required, recvonly, affiliation_required]
+
+    MCPTTGroupInput:
+      type: object
+      required: [maximum_duration_ms]
+      properties:
+        group_id:
+          type: string
+          examples: ["sip:fire@mcptt.example.com"]
+        invite_members:
+          type: boolean
+        max_participant_count:
+          type: integer
+        preferred_voice_encodings:
+          type: array
+          items:
+            type: string
+        hang_timer_ms:
+          type: integer
+        maximum_duration_ms:
+          type: integer
+        minimum_number_to_start:
+          type: integer
+        timeout_for_acknowledgement_of_required_members_ms:
+          type: integer
+        action_upon_expiration_of_timeout_for_acknowledgement_of_required_members:
+          type: string
+          enum: ["", proceed, abandon]
+        minimum_number_of_affiliated_members:
+          type: integer
+        release_on_initiator_leave:
+          type: boolean
+        members:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/MCPTTMemberInput"
+              - required: [mcptt_id]
+    MCPTTGroupCreate:
+      allOf:
+        - $ref: "#/components/schemas/MCPTTGroupInput"
+        - required: [group_id]
+    MCPTTGroup:
+      allOf:
+        - $ref: "#/components/schemas/MCPTTGroupInput"
+        - required:
+            - group_id
+            - invite_members
+            - max_participant_count
+            - preferred_voice_encodings
+            - maximum_duration_ms
+            - minimum_number_to_start
+            - timeout_for_acknowledgement_of_required_members_ms
+            - action_upon_expiration_of_timeout_for_acknowledgement_of_required_members
+            - minimum_number_of_affiliated_members
+            - release_on_initiator_leave
+            - members
+          properties:
+            members:
+              type: array
+              items:
+                $ref: "#/components/schemas/MCPTTMember"
+    MCPTTGroupResult:
+      type: object
+      required: [result]
+      properties:
+        result:
+          $ref: "#/components/schemas/MCPTTGroup"
+
+    MCPTTStatus:
+      type: object
+      required: [mode, sip, media_control]
+      properties:
+        mode:
+          type: string
+          enum: [ims, direct]
+        sip:
+          type: array
+          items:
+            type: string
+        media_control:
           type: string
 
   responses:

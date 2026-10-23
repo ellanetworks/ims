@@ -20,7 +20,10 @@ type Config struct {
 	Frontend      fs.FS
 	// Metrics are the metrics GET /api/v1/metrics serves.
 	Metrics prometheus.Gatherer
-	Logger  *slog.Logger
+	// MCPTT and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404 otherwise.
+	MCPTT       MCPTTSettings
+	MCPTTStatus *MCPTTStatus
+	Logger      *slog.Logger
 }
 
 // Settings are the settings of the running IMS, which persists and applies a change before it returns. A change
@@ -78,6 +81,22 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/sip", GetSIPStatus(cfg)},
 		{"GET /api/v1/registrations", ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PostReauthentication(cfg)},
+		{"GET /api/v1/mcptt/system", mcpttOnly(cfg, GetMCPTTSystem)},
+		{"PUT /api/v1/mcptt/system", mcpttOnly(cfg, UpdateMCPTTSystem)},
+		{"GET /api/v1/mcptt/service-configuration", mcpttOnly(cfg, GetMCPTTServiceConfiguration)},
+		{"PUT /api/v1/mcptt/service-configuration", mcpttOnly(cfg, UpdateMCPTTServiceConfiguration)},
+		{"GET /api/v1/mcptt/users", mcpttOnly(cfg, ListMCPTTUsers)},
+		{"POST /api/v1/mcptt/users", mcpttOnly(cfg, CreateMCPTTUser)},
+		{"GET /api/v1/mcptt/users/{mcptt_id}", mcpttOnly(cfg, GetMCPTTUser)},
+		{"PUT /api/v1/mcptt/users/{mcptt_id}", mcpttOnly(cfg, UpdateMCPTTUser)},
+		{"DELETE /api/v1/mcptt/users/{mcptt_id}", mcpttOnly(cfg, DeleteMCPTTUser)},
+		{"GET /api/v1/mcptt/groups", mcpttOnly(cfg, ListMCPTTGroups)},
+		{"POST /api/v1/mcptt/groups", mcpttOnly(cfg, CreateMCPTTGroup)},
+		{"GET /api/v1/mcptt/groups/{group_id}", mcpttOnly(cfg, GetMCPTTGroup)},
+		{"PUT /api/v1/mcptt/groups/{group_id}", mcpttOnly(cfg, UpdateMCPTTGroup)},
+		{"DELETE /api/v1/mcptt/groups/{group_id}", mcpttOnly(cfg, DeleteMCPTTGroup)},
+		{"PUT /api/v1/mcptt/groups/{group_id}/members/{mcptt_id}", mcpttOnly(cfg, PutMCPTTMember)},
+		{"DELETE /api/v1/mcptt/groups/{group_id}/members/{mcptt_id}", mcpttOnly(cfg, DeleteMCPTTMember)},
 		{"GET /api/v1/call-records", ListCallRecords(cfg)},
 		{"GET /api/v1/call-records/retention", GetCallRecordRetention(cfg)},
 		{"PUT /api/v1/call-records/retention", UpdateCallRecordRetention(cfg)},

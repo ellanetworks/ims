@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -13,12 +14,21 @@ type Message struct {
 	Message string `json:"message"`
 }
 
-// decodeStrictly decodes a request body that must hold only the fields of v, and answers 400 if it does not.
+// maxBody bounds a request body: an MCPTT group of its 100 members is a few kilobytes.
+const maxBody = 1 << 20
+
+// decodeStrictly decodes a request body that must hold one JSON value of only the fields of v, of at most maxBody
+// bytes, and answers 400 if it does not.
 func decodeStrictly(w http.ResponseWriter, r *http.Request, v any, logger *slog.Logger) bool {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 
-	if err := dec.Decode(v); err != nil {
+	err := dec.Decode(v)
+	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
+		err = errors.New("data after the JSON value")
+	}
+
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request data", err, logger)
 		return false
 	}

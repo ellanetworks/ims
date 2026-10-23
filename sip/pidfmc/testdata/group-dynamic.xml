@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.2.2.3.10 step 2, §9.3.1.2: per-group dynamic data information of a group in emergency, in a broadcast
+     group call, a tuple per affiliated member. -->
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:mcpttPI10="urn:3gpp:ns:mcpttPresInfo:1.0"
+    entity="sip:group1@mcptt.example.com">
+  <tuple id="sip:alice@mcptt.example.com">
+    <status>
+      <mcpttPI10:affiliation client="urn:uuid:00000000-0000-1000-8000-0123456789ab"
+          expires="2026-10-21T08:00:00Z"/>
+      <mcpttPI10:functionalAlias functionalAliasID="sip:dispatcher@mcptt.example.com"/>
+    </status>
+  </tuple>
+  <tuple id="sip:bob@mcptt.example.com">
+    <status>
+      <mcpttPI10:affiliation client="urn:uuid:00000000-0000-1000-8000-0123456789ef"
+          expires="2026-10-21T09:30:00Z"/>
+    </status>
+  </tuple>
+  <mcpttPI10:groupStatus ModifiedBy="sip:alice@mcptt.example.com">emergency</mcpttPI10:groupStatus>
+  <mcpttPI10:additionalData groupBroadcastAlias="sip:broadcast1@mcptt.example.com"
+      groupRegroupAlias="sip:regroup1@mcptt.example.com" groupCallOngoing="1"/>
+</presence>
