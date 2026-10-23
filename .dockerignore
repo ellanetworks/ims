@@ -8,5 +8,3 @@ ims
 ui/node_modules
 ella_mcptt_creds.txt
 android
-mcptt/e2e/.e2e.test
-mcptt/e2e/tls

@@ -5,7 +5,9 @@ package e2e
 import (
 	"fmt"
 	"net/netip"
+	"os"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/ua"
+	"github.com/ellanetworks/ims/testue"
 	imsue "github.com/ellanetworks/ims/ue"
 )
 
@@ -33,6 +36,38 @@ const (
 	quiet  = "sip:quiet@" + domain
 	brief  = "sip:brief@" + domain
 )
+
+// mcUE is the test UE of a subscriber, a dedicated MC UE (no MMTel, no SMS) hosting the MCPTT service: ns its network
+// namespace, local its address there, invites the initial INVITEs it received.
+type mcUE struct {
+	*testue.UE
+
+	ns      *netns
+	local   netip.Addr
+	invites atomic.Int32
+}
+
+// newMCUE makes the MC UE of subscriber i, hosting the services.
+func newMCUE(t *testing.T, i int, services ...imsue.Service) *mcUE {
+	t.Helper()
+
+	out := &mcUE{}
+
+	u, ns, local := newUEIn(t, i, sip.UDP, testue.Config{
+		NoMMTel: true, NoSMS: true, Services: services,
+		Trace: func(m sip.Message, _ sip.Flow, sent bool) {
+			if req, ok := m.(*sip.Request); ok && !sent && req.Method == "INVITE" {
+				if to, err := req.Header.To(); err == nil && to.Tag() == "" {
+					out.invites.Add(1)
+				}
+			}
+		},
+	})
+
+	out.UE, out.ns, out.local = u, ns, local
+
+	return out
+}
 
 // mcpttService is the name of the MCPTT service of the UEs.
 const mcpttService = "mcptt"
@@ -119,7 +154,7 @@ type user struct {
 
 	name   string
 	id     string
-	ue     *ue
+	ue     *mcUE
 	events chan client.Event
 }
 
@@ -134,8 +169,8 @@ func newUser(t *testing.T, name string, i int) *user {
 	var c atomic.Pointer[client.Client]
 
 	u := &user{name: name, id: "sip:" + name + "@" + domain, events: make(chan client.Event, 1024)}
-	u.ue = newUE(t, i, service(&c))
-	register(t, u.ue)
+	u.ue = newMCUE(t, i, service(&c))
+	register(t, u.ue.UE)
 
 	impu, err := sip.ParseURI(u.ue.State().DefaultIMPU)
 	if err != nil {
@@ -370,7 +405,7 @@ func callOf(t *testing.T, group string, a *user, members ...*user) []*client.Cal
 			c.Leave()
 		}
 
-		// The BYEs before the deregistrations of the cleanups of newUE.
+		// The BYEs before the deregistrations of the cleanups of newMCUE.
 		time.Sleep(time.Second)
 	})
 
@@ -598,4 +633,45 @@ func TestNotAffiliated(t *testing.T) {
 	}
 
 	alice.expectNot(t, "incoming")
+}
+
+// TS 23.379 §5.7.3; TS 29.514 §4.2.2.2, TS 29.513 §7.2.3: each participant of a group call gets a QoS flow for the
+// voice and one for the floor control channel, whose application media component the P-CSCF authorises with the
+// PCF (open5gs/qos.patch), released with the call. In 4G the call itself shows that the PCRF authorised them: the
+// P-CSCF releases a call whose media it refuses.
+func TestMCPTTCallQoSFlows(t *testing.T) {
+	if os.Getenv("E2E_RAT") != "5g" {
+		t.Skip("QoS flows: run with E2E_RAT=5g")
+	}
+
+	pid, err := strconv.Atoi(os.Getenv("E2E_OPEN5GS_PID"))
+	if err != nil {
+		t.Skip("E2E_OPEN5GS_PID not set: run through e2e/run.sh")
+	}
+
+	core := enter(t, pid)
+	alice, bob, carol := users(t)
+	before := qosFlows(t, core)
+
+	// police releases its calls when its initiator leaves.
+	ca, _, _ := call(t, police, alice, bob, carol)
+
+	waitQoSFlows(t, core, before+3*2)
+
+	// TS 23.379 §5.7.3: voice on 65, floor control on 69 (open5gs/qos.patch), the caller's as the members': its
+	// P-CSCF has the MCPTT ICSI from the Feature-Caps of the 200 (TS 29.514 Annex B.1 NOTE 3).
+	qis := fiveQIs(t, core)
+	for i, u := range []*user{alice, bob, carol} {
+		if got := qis["imsi-"+subscribers[i].imsi]; !slices.Contains(got, 65) || !slices.Contains(got, 69) {
+			t.Errorf("5QIs of %s's QoS flows %v, want 65 and 69 among them", u.name, got)
+		}
+	}
+
+	ca.Leave()
+
+	for _, u := range []*user{alice, bob, carol} {
+		u.expect(t, "ended")
+	}
+
+	waitQoSFlows(t, core, before)
 }

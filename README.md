@@ -149,7 +149,7 @@ E2E_RAT=4g ./up.sh
 E2E_RAT=4g ./run.sh
 ```
 
-`E2E_RAT` is `4g` or `5g`.
+`E2E_RAT` is `4g` or `5g`. They cover MMTel and the built-in MCPTT AS, over three UEs.
 
 #### Fuzz tests
 

@@ -66,16 +66,7 @@ go test ./...
 
 #### End-to-end tests
 
-Through Ella IMS and Open5GS:
-
-```sh
-sudo modprobe -a sctp esp4 xfrm_user
-cd mcptt/e2e
-E2E_RAT=5g ./up.sh
-E2E_RAT=5g ./run.sh
-```
-
-`E2E_RAT` is `4g` or `5g`. Ella IMS, with its MCPTT AS, is built from this tree; set `ELLA_IMS_SRC` to build it from another checkout.
+The e2e tests of Ella IMS (`../e2e`) cover MCPTT (`e2e/mcptt_test.go`), with the iFCs of the MCPTT AS in `e2e/provision.js` and its users and groups in `e2e/mcptt/provision.sh`.
 
 #### Load tests
 

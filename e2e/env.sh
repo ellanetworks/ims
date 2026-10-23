@@ -7,12 +7,14 @@ export OPEN5GS_TAG
 case "${E2E_RAT:-}" in
 4g)
 	export COMPOSE_FILE=compose.yaml:compose.4g.yaml
+	# The HSS (Cx) and the PCRF (Rx).
 	E2E_PEERS=2
 	E2E_TUN=tun_srsue
 	E2E_RAN_PORT=36412
 	;;
 5g)
 	export COMPOSE_FILE=compose.yaml:compose.5g.yaml
+	# The HSS (Cx); the PCF is reached over N5.
 	E2E_PEERS=1
 	E2E_TUN=uesimtun0
 	E2E_RAN_PORT=38412

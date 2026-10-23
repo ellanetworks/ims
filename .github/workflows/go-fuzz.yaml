@@ -37,6 +37,18 @@ jobs:
           - { package: ./resourcelists/, target: FuzzDecode }
           - { package: ./simplefilter/, target: FuzzDecode }
           - { package: ./pocsettings/, target: FuzzDecode }
+          - { package: ./reginfo/, target: FuzzDecode }
+          - { package: ./mcpttinfo/, target: FuzzMcpttInfo }
+          - { package: ./pidfmc/, target: FuzzPidf }
+          # The root module's: the MCPTT AS and client.
+          - { module: ., package: ./mcptt/controlchannel/, target: FuzzFmtp }
+          - { module: ., package: ./mcptt/rtp/, target: FuzzRTP }
+          - { module: ., package: ./mcptt/rtp/, target: FuzzRTCP }
+          - { module: ., package: ./mcptt/media/, target: FuzzRTCPSSRCs }
+          - { module: ., package: ./mcptt/floorctl/, target: FuzzFloor }
+          - { module: ., package: ./mcptt/floor/, target: FuzzServer }
+          - { module: ., package: ./mcptt/amr/, target: FuzzParsePayload }
+          - { module: ., package: ./internal/mcptt/settings/, target: FuzzSettings }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -47,5 +59,6 @@ jobs:
             sip/go.sum
 
       - name: Fuzz ${{ matrix.package }} ${{ matrix.target }}
-        working-directory: sip
+        # The sip module's, unless module says otherwise.
+        working-directory: ${{ matrix.module || 'sip' }}
         run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=60s ${{ matrix.package }}

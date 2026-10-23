@@ -1,5 +1,8 @@
 //go:build e2e && linux
 
+// Package e2e runs the scenarios of MMTel and MCPTT through Ella IMS and Open5GS (compose.yaml): each subscriber a
+// testue UE in the network namespace of a UE of the RAN simulator; for MCPTT, an MCPTT client on its agent, the IMS
+// the MCPTT AS's by its iFCs (provision.js). Run through run.sh, after up.sh.
 package e2e
 
 import (
@@ -26,6 +29,7 @@ const homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 
 var pcscf = netip.MustParseAddrPort("10.80.0.5:5060")
 
+// subscriber is a subscriber of provision.js, in the UE container whose PID is in pidEnv.
 type subscriber struct {
 	imsi, msisdn, imei string
 	pidEnv             string
@@ -34,6 +38,7 @@ type subscriber struct {
 var subscribers = []subscriber{
 	{"001010000000001", "15550000001", "353490069873319", "E2E_UE1_PID"},
 	{"001010000000002", "15550000002", "353490069873327", "E2E_UE2_PID"},
+	{"001010000000003", "15550000003", "353490069873335", "E2E_UE3_PID"},
 }
 
 var (
@@ -129,6 +134,15 @@ func tunAddr() (netip.Addr, error) {
 func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE {
 	t.Helper()
 
+	u, _, _ := newUEIn(t, i, tr, cfg)
+
+	return u
+}
+
+// newUEIn is newUE, and the UE's network namespace and its address there.
+func newUEIn(t *testing.T, i int, tr sip.Transport, cfg testue.Config) (*testue.UE, *netns, netip.Addr) {
+	t.Helper()
+
 	sub := subscribers[i]
 
 	pid, err := strconv.Atoi(os.Getenv(sub.pidEnv))
@@ -157,7 +171,7 @@ func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE 
 
 	cfg.IMSI, cfg.IMEI, cfg.K, cfg.OPc = sub.imsi, sub.imei, k, opc
 	cfg.PCSCF, cfg.Local, cfg.Transport = pcscf, local, tr
-	cfg.MMTel.AcceptCalls, cfg.Kernel, cfg.Do = true, testue.XFRMOf(xfrm), ns.Do
+	cfg.MMTel.AcceptCalls, cfg.Kernel, cfg.Do = !cfg.NoMMTel, testue.XFRMOf(xfrm), ns.Do
 	cfg.Logger = slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})).With("ue", i+1)
 
 	u, err := testue.New(cfg)
@@ -173,7 +187,7 @@ func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE 
 		_ = u.Close()
 	})
 
-	return u
+	return u, ns, local
 }
 
 func ctx(t *testing.T) context.Context {

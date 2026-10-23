@@ -65,6 +65,16 @@ services:
       radio5g:
         ipv4_address: 10.80.4.4
 
+  ue3:
+    <<: *ue
+    environment: *ue-env
+    volumes:
+      - ./route.sh:/route.sh:ro
+      - ./ueransim/ue3.yaml:/ue.yaml:ro
+    networks:
+      radio5g:
+        ipv4_address: 10.80.4.5
+
 networks:
   radio5g:
     internal: true

@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -41,14 +43,13 @@ func pidOf(t *testing.T, env string) int {
 	return pid
 }
 
-// qosFlows returns the number of QoS flows at the SMF. Open5GS labels the gauge with the 5QI of the PDU session,
-// not of the flow, so only the total says that a flow was added (open5gs src/smf/context.c smf_qos_flow_add).
-func qosFlows(t *testing.T, core *netns) int {
+// smfGet returns the body of the response of the SMF's metrics server to a GET of path.
+func smfGet(t *testing.T, core *netns, path string) []byte {
 	t.Helper()
 
 	var (
-		body []byte
-		err  error
+		res []byte
+		err error
 	)
 
 	// The dial happens on the thread in the namespace: no http.Client, which dials on goroutines of its own.
@@ -65,17 +66,31 @@ func qosFlows(t *testing.T, core *netns) int {
 
 		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 
-		if _, err = io.WriteString(c, "GET /metrics HTTP/1.0\r\n\r\n"); err == nil {
-			body, err = io.ReadAll(c)
+		if _, err = io.WriteString(c, "GET "+path+" HTTP/1.0\r\n\r\n"); err == nil {
+			res, err = io.ReadAll(c)
 		}
 	})
 
 	if err != nil {
-		t.Fatalf("SMF metrics: %v", err)
+		t.Fatalf("SMF %s: %v", path, err)
 	}
 
-	n := 0
-	found := false
+	_, body, ok := bytes.Cut(res, []byte("\r\n\r\n"))
+	if !ok {
+		t.Fatalf("SMF %s: no HTTP response in %q", path, res)
+	}
+
+	return body
+}
+
+// qosFlows returns the number of QoS flows at the SMF. Open5GS labels the gauge with the 5QI of the PDU session,
+// not of the flow, so only the total says that a flow was added (open5gs src/smf/context.c smf_qos_flow_add).
+func qosFlows(t *testing.T, core *netns) int {
+	t.Helper()
+
+	body := smfGet(t, core, "/metrics")
+
+	n, found := 0, false
 
 	for sc := bufio.NewScanner(strings.NewReader(string(body))); sc.Scan(); {
 		line := sc.Text()
@@ -97,6 +112,39 @@ func qosFlows(t *testing.T, core *netns) int {
 	}
 
 	return n
+}
+
+// fiveQIs returns the 5QIs of the QoS flows of the PDU sessions of each SUPI at the SMF (open5gs src/smf/pdu-info.c).
+func fiveQIs(t *testing.T, core *netns) map[string][]int {
+	t.Helper()
+
+	var info struct {
+		Items []struct {
+			SUPI string `json:"supi"`
+			PDU  []struct {
+				QoSFlows []struct {
+					FiveQI int `json:"5qi"`
+				} `json:"qos_flows"`
+			} `json:"pdu"`
+		} `json:"items"`
+	}
+
+	body := smfGet(t, core, "/pdu-info")
+	if err := json.Unmarshal(body, &info); err != nil {
+		t.Fatalf("SMF pdu-info %q: %v", body, err)
+	}
+
+	out := map[string][]int{}
+
+	for _, it := range info.Items {
+		for _, p := range it.PDU {
+			for _, f := range p.QoSFlows {
+				out[it.SUPI] = append(out[it.SUPI], f.FiveQI)
+			}
+		}
+	}
+
+	return out
 }
 
 func waitQoSFlows(t *testing.T, core *netns, want int) {

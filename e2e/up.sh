@@ -1,4 +1,5 @@
 #!/bin/bash
+# Starts Open5GS, Ella IMS and its MCPTT AS, and the RAN simulator with three attached UEs (env.sh selects the RAT).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -22,7 +23,7 @@ wait_for() {
 }
 
 attached() {
-	[ "$(docker compose logs ue1 ue2 | grep -c 'route: ')" -ge 2 ]
+	[ "$(docker compose logs ue1 ue2 ue3 | grep -c 'route: ')" -ge 3 ]
 }
 
 ran_listener() {
@@ -42,14 +43,15 @@ fi
 docker compose build ims
 docker compose up -d mongo
 wait_for mongo 60 docker compose exec -T mongo mongosh --quiet --eval 'db.runCommand({ping: 1})'
-docker compose exec -T mongo mongosh --quiet mongodb://localhost/open5gs < provision.js
+{ echo "const rat = \"$E2E_RAT\";"; cat provision.js; } | docker compose exec -T mongo mongosh --quiet mongodb://localhost/open5gs
 
 docker compose up -d open5gs ims
 wait_for "IMS API" 60 curl -fsS localhost:5020/api/v1/status
 ./ims/provision.sh
+./mcptt/provision.sh
 wait_for "Diameter peers" 120 peers_open
 wait_for "S1/NG listener" 60 ran_listener
 
 docker compose up -d
 wait_for "UE attach" 240 attached
-docker compose logs ue1 ue2 | grep 'route: '
+docker compose logs ue1 ue2 ue3 | grep 'route: '

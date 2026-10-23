@@ -1,7 +1,12 @@
 #!/bin/bash
 # Provisions the IMS of the e2e setup through its API: the Diameter peers of Open5GS, their realm, and its policy
-# function. The operator settings are the database's defaults: MCC 001, MNC 01. Each step is skipped when already
-# done, so that a rerun completes a partial provisioning.
+# function, the PCRF over Rx in 4G, the PCF over N5 in 5G. The operator settings are the database's defaults: MCC 001,
+# MNC 01. Each step is skipped when already done, so that a rerun completes a partial provisioning.
+#
+# An MCPTT call has two media components: the audio, and the application one of the floor control channel
+# (m=application, TS 24.380 §4.3.3.1), of Media-Type APPLICATION as its m-line (TS 29.213 Table 6.2.1, TS 29.513
+# Table 7.2.3-1), its one flow of Flow-Usage RTCP (TS 29.213 Table 6.2.2). The Open5GS PCRF and PCF authorise it, and
+# the MC QoS of TS 23.379 §5.7.3, with open5gs/qos.patch only (provision.js: the PCC rules, fewer in 4G).
 set -euo pipefail
 
 api=http://localhost:5020/api/v1
