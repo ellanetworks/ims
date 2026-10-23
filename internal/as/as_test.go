@@ -34,6 +34,7 @@ func TestResolve(t *testing.T) {
 	for _, s := range []string{
 		"sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org",
 		"sip:mcptt-controlling@MCPTT.ims.mnc001.mcc001.3gppnetwork.org:5060;gr=x",
+		"sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org.",
 	} {
 		u, err := sip.ParseURI(s)
 		if err != nil {
@@ -43,6 +44,10 @@ func TestResolve(t *testing.T) {
 		if got, err := r.Resolve(t.Context(), u); err != nil || len(got) != 1 || got[0] != in[0] {
 			t.Errorf("%s: %v, %v", s, got, err)
 		}
+	}
+
+	if !r.Has("MCPTT.ims.mnc001.mcc001.3gppnetwork.org.") || r.Has("mcptt.example.com") {
+		t.Error("Has")
 	}
 
 	other := sip.URI{Scheme: "sip", Host: "mcptt.example.com"}

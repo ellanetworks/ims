@@ -673,6 +673,53 @@ func TestReginfoVersions(t *testing.T) {
 	no.accept(req, f)
 }
 
+// A document the UE cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a refresh asks
+// for the full state again (RFC 3680 §5.2); the registration stays.
+func TestReginfoUnreadable(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, _ := n.newUE(Config{})
+
+	no := n.registerSubscribing(u)
+	no.active()
+	nextReginfo(t, u)
+
+	req := no.request("active;expires=600000", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600))
+	req.SetBody(reginfo.ContentType, []byte(`<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="9" state="full">`+
+		`<registration aor="`+msisdn+`" id="r0" state="gone"/></reginfo>`))
+	no.send(req)
+
+	var (
+		res     *sip.Response
+		refresh *sip.Request
+		f       sip.Flow
+	)
+
+	for res == nil || refresh == nil {
+		r := no.n.PS.Recv()
+
+		switch m := r.Msg.(type) {
+		case *sip.Response:
+			res = m
+		case *sip.Request:
+			refresh, f = m, r.Flow
+		}
+	}
+
+	if res.StatusCode != 400 {
+		t.Fatalf("NOTIFY of an unreadable document answered %q", res.StartLine())
+	}
+
+	if to, _ := refresh.Header.To(); refresh.Method != "SUBSCRIBE" || to.Tag() != no.toTag {
+		t.Fatalf("got\n%s\nwant a refresh for the full state", refresh)
+	}
+
+	no.accept(refresh, f)
+
+	if !u.State().Registered {
+		t.Error("deregistered of an unreadable document")
+	}
+}
+
 func TestFullStateReplacesIMPUs(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{})

@@ -335,6 +335,30 @@ func TestPSIDirectRouting(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.3.2.1 steps 1c, 3: a request to a PSI subdomain of the I-CSCF, a session identity of a GRUU among
+// them, goes to the AS its Request-URI resolves to, without a location query, the Request-URI kept.
+func TestPSISubdomain(t *testing.T) {
+	sub := "mcptt." + homeDomain
+	h := newHarness(t, harnessOptions{hosts: map[string][]netip.Addr{sub: {loopback}}, psiSubdomains: []string{sub}})
+	as := h.newAS(loopback)
+	u := h.newUE(untrusted)
+
+	uri := "sip:mcptt-controlling@" + sub + ":" + strconv.Itoa(int(as.sock.Addr().Port())) + ";gr=x7"
+	u.send(u.invite(uri, func(r *sip.Request) {
+		r.Method = "MESSAGE"
+		r.Header.Set("CSeq", "1 MESSAGE")
+	}))
+
+	req, f := as.recv()
+	if req.URI.String() != uri || req.Header.Has("Route") {
+		t.Fatalf("got %s, Route %v, want the Request-URI kept and no route", req.URI, req.Header.Values("Route"))
+	}
+
+	as.respond(req, f, 200)
+	u.wantFinal(200)
+	h.hss.noCx(t)
+}
+
 // TS 24.229 §5.3.2.1: with the PSI direct routing indication, the name of our S-CSCF stays a route to it.
 func TestPSIDirectRoutingToOurSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})

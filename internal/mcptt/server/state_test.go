@@ -307,6 +307,76 @@ func TestRestoreRetry(t *testing.T) {
 	}
 }
 
+// A reg event subscription of no response, of an S-CSCF unreachable as while the core of the IMS restarts, is made
+// again once it is reachable (Resubscribe), not only at the next third-party REGISTER, though its bindings were not
+// restored.
+func TestSubscribeUnanswered(t *testing.T) {
+	st := newMemState()
+	h := newHarnessOf(t, registrar.ThroughIMS, st)
+	s := h.scscf
+	s.regEvent, s.silent = true, true
+
+	ue := h.client(aliceIM)
+	ue.instance = "urn:uuid:00000000-0000-1000-8000-000000000001"
+
+	if res := s.send(s.register(aliceIM, "t1", 600, ue.register("sip:ims.example.com", 600, info(token(alice), client1)))); res.StatusCode != 200 {
+		t.Fatalf("alice: %d", res.StatusCode)
+	}
+
+	s.pump()
+
+	// The SUBSCRIBE times out (RFC 3261 §17.1.2.2), unanswered.
+	h.n.Advance(64 * transaction.DefaultT1)
+	s.pump()
+
+	s.silent = false
+	h.s.Resubscribe()
+
+	h.n.Advance(time.Second)
+	s.pump()
+
+	if s.subs[aliceIM] == nil {
+		t.Fatal("no reg event subscription once the S-CSCF answers")
+	}
+
+	if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, aliceIM)}, client1); !ok {
+		t.Error("alice not served")
+	}
+}
+
+// A reg event document the server cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a
+// refresh asks for the full state again (RFC 3680 §5.2); the bindings stay.
+func TestUnreadableDocument(t *testing.T) {
+	h := newHarness(t, registrar.ThroughIMS)
+	s := h.scscf
+	s.regEvent = true
+	ue := h.client(aliceIM)
+
+	if res := s.send(s.register(aliceIM, "t1", 600, ue.register("sip:ims.example.com", 600, info(token(alice), client1)))); res.StatusCode != 200 {
+		t.Fatalf("alice: %d", res.StatusCode)
+	}
+
+	s.pump()
+	refreshes := s.refreshes
+
+	s.notify(aliceIM, 1, "full", `<registration aor="`+aliceIM+`" id="r1" state="gone"/>`)
+
+	if res := s.notified[len(s.notified)-1]; res.StatusCode != 400 {
+		t.Fatalf("NOTIFY of an unreadable document: %d", res.StatusCode)
+	}
+
+	h.n.Advance(time.Second)
+	s.pump()
+
+	if s.refreshes != refreshes+1 {
+		t.Fatalf("%d refreshes, want one more than %d", s.refreshes, refreshes)
+	}
+
+	if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, aliceIM)}, client1); !ok {
+		t.Error("alice not served")
+	}
+}
+
 // A change of the settings takes effect at once (TS 23.280 §5.2.5): the clients of a user deleted are logged off, and
 // a member removed from a group is de-affiliated from it, at both functions; the others stay.
 func TestRevoke(t *testing.T) {

@@ -76,7 +76,8 @@ type Status struct {
 }
 
 // Start starts the AS of cfg: its settings of the database, its media relay, its SIP. Through the IMS, it restores the
-// registrations and affiliations it had when it stopped; in direct mode, its clients register again.
+// registrations and affiliations it had when it stopped, and subscribes to their reg event package at Resubscribe;
+// in direct mode, its clients register again.
 func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -191,8 +192,6 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		as.status.SIP = append(as.status.SIP, l.String())
 	}
 
-	srv.Resubscribe()
-
 	logger.Info("MCPTT started", slog.String("mode", as.status.Mode), slog.Any("sip", as.status.SIP),
 		slog.String("media_control", as.status.MediaControl))
 
@@ -225,16 +224,10 @@ func (a *AS) Servers() []sip.Server {
 	return servers
 }
 
-// SetHomeDomain renames the AS and its PSIs, for the new home domain of the IMS.
-func (a *AS) SetHomeDomain(ctx context.Context, homeDomain string) error {
-	if err := a.settings.UpdateSystem(ctx, System(homeDomain)); err != nil {
-		return fmt.Errorf("rename MCPTT: %w", err)
-	}
-
-	a.named(homeDomain)
-
-	return nil
-}
+// Resubscribe subscribes to the reg event package of the IMPUs of no subscription: those of the bindings restored,
+// and those whose subscription failed (registrar.Registrar.Resubscribe). The IMS calls it once its core runs, which
+// the SUBSCRIBEs go through.
+func (a *AS) Resubscribe() { a.srv.Resubscribe() }
 
 func (a *AS) named(homeDomain string) {
 	sys := System(homeDomain)

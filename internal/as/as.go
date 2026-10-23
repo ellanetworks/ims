@@ -30,7 +30,7 @@ func (r *Resolver) Set(host string, servers []sip.Server) {
 		r.hosts = make(map[string][]sip.Server)
 	}
 
-	host = strings.ToLower(host)
+	host = canonical(host)
 
 	if len(servers) == 0 {
 		delete(r.hosts, host)
@@ -45,7 +45,7 @@ func (r *Resolver) Set(host string, servers []sip.Server) {
 func (r *Resolver) Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error) {
 	if u.IsSIP() && !u.IsSIPS() {
 		r.mu.RLock()
-		servers := r.hosts[strings.ToLower(u.Host)]
+		servers := r.hosts[canonical(u.Host)]
 		r.mu.RUnlock()
 
 		if len(servers) > 0 {
@@ -54,4 +54,18 @@ func (r *Resolver) Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error)
 	}
 
 	return r.DNS.Resolve(ctx, u)
+}
+
+// Has reports whether host is that of a built-in AS: a PSI subdomain the I-CSCF routes to the AS itself (TS 24.229
+// §5.3.2.1 step 3).
+func (r *Resolver) Has(host string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return len(r.hosts[canonical(host)]) > 0
+}
+
+// canonical is host as a key: lower-cased, of no trailing dot of a fully qualified domain name.
+func canonical(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }

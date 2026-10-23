@@ -178,10 +178,11 @@ func (g *Registrar) Restore(records []Record) []Binding {
 // resubscribePace spaces the SUBSCRIBEs of Resubscribe, of 1,000 IMPUs at most (settings.MaxUsers) over 20 s.
 const resubscribePace = 20 * time.Millisecond
 
-// Resubscribe subscribes to the reg event package of the IMPUs Restore put bindings of back, once the agent serves,
-// one each resubscribePace, on the strands of the IMPUs (TS 24.229 §5.7.1.1). The first full document of each removes
-// the bindings of the UEs it does not report registered, which deregistered meanwhile (notify), and a refusal of the
-// subscription all the bindings of its IMPU (ended).
+// Resubscribe subscribes to the reg event package of the IMPUs of no subscription, once their S-CSCF is reachable:
+// those Restore put bindings of back, and those whose subscription failed for want of a response (ended), one each
+// resubscribePace, on the strands of the IMPUs (TS 24.229 §5.7.1.1). The first full document of each removes the
+// bindings of the UEs it does not report registered, which deregistered meanwhile (notify), and a refusal of the
+// subscription of bindings restored all the bindings of its IMPU (ended).
 func (g *Registrar) Resubscribe() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -192,7 +193,7 @@ func (g *Registrar) Resubscribe() {
 
 	ws := make([]*watch, 0, len(g.watches))
 	for _, w := range g.watches {
-		if w.restored && w.sub == nil && !w.stopped {
+		if w.sub == nil && !w.stopped {
 			ws = append(ws, w)
 		}
 	}

@@ -53,6 +53,10 @@ type Config struct {
 	// Resolver locates the servers the HSS names by domain name (RFC 3263): the IMS's resolves the hosts of its
 	// built-in ASs to them in memory (package as). Nil asks the system's resolver.
 	Resolver Resolver
+	// PSISubdomain reports whether a host is a PSI subdomain of the I-CSCF, which it routes to the AS hosting it,
+	// as Resolver resolves it, without a location query (TS 24.229 §5.3.2.1 step 3): those of the built-in ASs. Nil
+	// has none.
+	PSISubdomain func(host string) bool
 
 	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
 	HSSRealm  func() string

@@ -271,6 +271,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
+		PSISubdomain:         resolver.Has,
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		Records:              records,

@@ -440,27 +440,35 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	return nil
 }
 
-func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Response {
+// notified handles a NOTIFY of the subscription s: its response, and what to do once it is sent, if anything.
+func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Response, func()) {
 	state, ok, err := req.Header.SubscriptionState()
 	if !ok || err != nil {
-		return sip.NewResponse(req, 400, "Bad Subscription-State")
+		return sip.NewResponse(req, 400, "Bad Subscription-State"), nil
 	}
 
 	terminated := state.State == sip.SubscriptionTerminated
 
-	var info *reginfo.Reginfo
+	// A document the P-CSCF cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2); the
+	// Subscription-State still applies (§4.1.3), and the P-CSCF asks for the full state again (RFC 3680 §5.2).
+	var (
+		info       *reginfo.Reginfo
+		unreadable bool
+	)
 
 	if len(req.Body) > 0 {
 		if !strings.EqualFold(mediaType(req.Header.ContentType()), reginfo.ContentType) {
-			return sip.NewResponse(req, 415, "")
+			return sip.NewResponse(req, 415, ""), nil
 		}
 
-		i, err := reginfo.Decode(req.Body)
-		if err != nil {
-			return sip.NewResponse(req, 400, "Bad reginfo")
-		}
+		if i, err := reginfo.Decode(req.Body); err != nil {
+			ss.p.log.Warn("unreadable reg event document: subscribing again", slog.String("impi", s.impi),
+				slog.Any("error", err))
 
-		info = &i
+			unreadable = true
+		} else {
+			info = &i
+		}
 	}
 
 	accepted := sip.NewResponse(req, 200, "")
@@ -469,7 +477,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 
 	if s.removed {
 		ss.mu.Unlock()
-		return sip.NewResponse(req, 481, "")
+		return sip.NewResponse(req, 481, ""), nil
 	}
 
 	switch {
@@ -482,7 +490,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 				code = serr.StatusCode
 			}
 
-			return sip.NewResponse(req, code, "")
+			return sip.NewResponse(req, code, ""), nil
 		}
 
 		// The 200 below applies the Contact of the NOTIFY (RFC 6141 §4.6).
@@ -491,7 +499,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		d, err := dialog.NewFromNotify(s.subscribe, req)
 		if err != nil && !terminated {
 			ss.mu.Unlock()
-			return sip.NewResponse(req, 481, "")
+			return sip.NewResponse(req, 481, ""), nil
 		}
 
 		s.dialog = d
@@ -533,7 +541,23 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) *sip.Respon
 		ss.p.apply(s.impi, *info)
 	}
 
-	return accepted
+	if unreadable {
+		return sip.NewResponse(req, 400, "Bad reginfo"), func() { ss.again(s, terminated, state.Reason) }
+	}
+
+	return accepted, nil
+}
+
+// again asks for the full state of the subscription s after a document the P-CSCF could not read: a refresh of the
+// subscription, whose NOTIFY has the full state (RFC 3680 §5.2), or a new subscription if the NOTIFY ended it, unless
+// for a change of authorisation (RFC 6665 §4.1.3).
+func (ss *subscriptions) again(s *subscription, terminated bool, reason string) {
+	switch {
+	case !terminated:
+		ss.refresh(s)
+	case reason != sip.SubscriptionRejected:
+		ss.start(s.impi)
+	}
 }
 
 func mediaType(ct string) string {

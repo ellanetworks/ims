@@ -89,7 +89,35 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 	}
 
 	s := &session{tx: tx, req: out, identity: identity, deadline: i.deadline()}
+
+	if out.URI.IsSIP() && i.cfg.PSISubdomain != nil && i.cfg.PSISubdomain(out.URI.Host) {
+		i.spawn(tx, func(ctx context.Context) { i.toPSISubdomain(ctx, s) })
+		return
+	}
+
 	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
+}
+
+// toPSISubdomain routes a request to a PSI of a subdomain of the I-CSCF to the AS hosting it, which its
+// Request-URI resolves to, without a location query, the Request-URI kept (TS 24.229 §5.3.2.1 steps 1c, 3; TS 23.228
+// §5.4.12.3 b).
+func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
+	to, err := i.serverTarget(ctx, s.req.Flow, s.req.URI)
+	if err != nil {
+		i.log.Warn("no AS for the PSI subdomain", slog.String("psi", s.identity), slog.Any("error", err))
+		i.answer(s.tx, 480)
+
+		return
+	}
+
+	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+
+	if s.req.Method != "INVITE" {
+		opts.Timeout = i.branchTimeout(s.deadline)
+	}
+
+	i.log.Debug("request routed to the AS of its PSI subdomain", slog.String("psi", s.identity))
+	i.forward(s.tx, s.req.Clone(), to, opts)
 }
 
 // originating serves a request that an AS of the trust domain sends on behalf of a user or a PSI to the I-CSCF, with

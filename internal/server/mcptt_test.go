@@ -50,8 +50,8 @@ func udpInUse(a netip.AddrPort) bool {
 }
 
 // The MCPTT AS of the configuration runs with the IMS: in memory, of no socket, on its SIP port of each SIP address,
-// which its name of the home domain resolves to; its settings over the API. A restart of the core leaves it running,
-// its settings with it; one of a new home domain renames it.
+// which its name of the home domain resolves to; its settings over the API. A restart of the core leaves it running;
+// one of a new home domain starts it again under the new name, its settings kept.
 func TestMCPTT(t *testing.T) {
 	cfg := testConfig(t)
 	port := unusedPort(t)
@@ -61,7 +61,7 @@ func TestMCPTT(t *testing.T) {
 	}
 
 	srv := startIMS(t, cfg)
-	as := srv.mcptt
+	as := srv.mcptt.Load()
 
 	var status struct {
 		Result api.Status `json:"result"`
@@ -100,6 +100,13 @@ func TestMCPTT(t *testing.T) {
 	}
 
 	before := srv.core.Load()
+	srv.restartCore(t.Context(), srv.settings.Get(), "for the test")
+
+	if c := srv.core.Load(); c == nil || c == before || srv.mcptt.Load() != as {
+		t.Fatal("the MCPTT AS did not outlive the core")
+	}
+
+	before = srv.core.Load()
 	op := srv.settings.Get().Operator
 	op.MNC = "02"
 
@@ -112,15 +119,15 @@ func TestMCPTT(t *testing.T) {
 		return c != nil && c != before
 	})
 
-	if srv.mcptt != as {
-		t.Fatal("the MCPTT AS did not outlive the core")
+	if a := srv.mcptt.Load(); a == nil || a == as {
+		t.Fatal("the MCPTT AS not started again for the new home domain")
 	}
 
 	if !resolves("mcptt.ims.mnc002.mcc001.3gppnetwork.org") || resolves("mcptt.ims.mnc001.mcc001.3gppnetwork.org") {
 		t.Fatal("MCPTT not renamed for the new home domain")
 	}
 
-	if psi := as.Settings().Current().ParticipatingPSI().String(); psi != "sip:mcptt-participating@mcptt.ims.mnc002.mcc001.3gppnetwork.org" {
+	if psi := srv.mcptt.Load().Settings().Current().ParticipatingPSI().String(); psi != "sip:mcptt-participating@mcptt.ims.mnc002.mcc001.3gppnetwork.org" {
 		t.Fatalf("participating PSI %s after the new home domain", psi)
 	}
 
@@ -134,7 +141,7 @@ func TestMCPTT(t *testing.T) {
 func TestMCPTTDisabled(t *testing.T) {
 	srv := startIMS(t, testConfig(t))
 
-	if srv.mcptt != nil {
+	if srv.mcptt.Load() != nil {
 		t.Fatal("an MCPTT AS runs")
 	}
 

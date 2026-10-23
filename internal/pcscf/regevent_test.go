@@ -220,6 +220,24 @@ func answerSubscribe(icscf, scscf *siptest.Socket, sub *sip.Request, f sip.Flow,
 func (o *ownSub) notify(t *testing.T, state string, info *reginfo.Reginfo) *sip.Response {
 	t.Helper()
 
+	var body []byte
+
+	if info != nil {
+		b, err := reginfo.Encode(*info)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		body = b
+	}
+
+	return o.notifyBody(t, state, body)
+}
+
+// notifyBody sends a NOTIFY of the reg event document body, none if nil.
+func (o *ownSub) notifyBody(t *testing.T, state string, body []byte) *sip.Response {
+	t.Helper()
+
 	o.cseq++
 
 	contacts, err := o.sub.Header.Contacts()
@@ -242,12 +260,7 @@ func (o *ownSub) notify(t *testing.T, state string, info *reginfo.Reginfo) *sip.
 		n.Header.Add("Record-Route", rr)
 	}
 
-	if info != nil {
-		body, err := reginfo.Encode(*info)
-		if err != nil {
-			t.Fatal(err)
-		}
-
+	if body != nil {
 		n.SetBody(reginfo.ContentType, body)
 	}
 
@@ -485,6 +498,35 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 	initial, _ := s.icscf.RecvRequest()
 	if initial.Method != "SUBSCRIBE" || toTag(initial) != "" || initial.Header.CallID() == sub.Header.CallID() ||
 		initial.URI.String() != testIMPU {
+		t.Fatalf("got %s with To %q, want a new initial SUBSCRIBE", initial.StartLine(), initial.Header.Get("To"))
+	}
+}
+
+// unreadable is a reg event document the P-CSCF cannot read: a registration of no state the schema has.
+var unreadable = []byte(`<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="0" state="full">` +
+	`<registration aor="` + testIMPU + `" id="r1" state="gone"/></reginfo>`)
+
+// A document the P-CSCF cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a refresh
+// asks for the full state again (RFC 3680 §5.2); one of a NOTIFY that ends the subscription, a new subscription.
+func TestOwnNotifyUnreadable(t *testing.T) {
+	s := newRegScene(t)
+
+	_, sub, f := s.registered(7200)
+	o := answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
+
+	wantStatus(t, o.notifyBody(t, "active;expires=3000", unreadable), 400)
+
+	refresh, rf := s.scscf.RecvRequest()
+	if refresh.Method != "SUBSCRIBE" || toTag(refresh) == "" || refresh.Header.CallID() != sub.Header.CallID() {
+		t.Fatalf("got %s, want an in-dialog SUBSCRIBE", refresh.StartLine())
+	}
+
+	s.scscf.Send(rf.Transport, rf.Remote, sip.NewResponse(refresh, 200, ""))
+
+	wantStatus(t, o.notifyBody(t, "terminated", unreadable), 400)
+
+	initial, _ := s.icscf.RecvRequest()
+	if initial.Method != "SUBSCRIBE" || toTag(initial) != "" || initial.Header.CallID() == sub.Header.CallID() {
 		t.Fatalf("got %s with To %q, want a new initial SUBSCRIBE", initial.StartLine(), initial.Header.Get("To"))
 	}
 }

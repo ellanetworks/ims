@@ -429,10 +429,13 @@ type scscf struct {
 	notified, pending []*sip.Response
 	// initial are the <registration> elements of the first NOTIFY of the subscriptions, by IMPU; one of no contact
 	// if none. refusal is the code of the response to a SUBSCRIBE without regEvent, 403 if zero; subscribes counts
-	// the initial SUBSCRIBEs.
+	// the initial SUBSCRIBEs, refreshes the others but unsubscriptions. silent drops the SUBSCRIBEs unanswered, of an
+	// S-CSCF unreachable.
 	initial    map[string]string
 	refusal    int
 	subscribes int
+	refreshes  int
+	silent     bool
 }
 
 type regSub struct {
@@ -564,6 +567,10 @@ func (s *scscf) handle(req *sip.Request) {
 		t.Fatalf("%s of the server", req.Method)
 	}
 
+	if s.silent {
+		return
+	}
+
 	to, _ := req.Header.To()
 	from, _ := req.Header.From()
 	pai, _ := req.Header.Addresses("P-Asserted-Identity")
@@ -584,6 +591,8 @@ func (s *scscf) handle(req *sip.Request) {
 	case to.Tag() != "":
 		if req.Header.Get("Expires") == "0" {
 			s.unsubscribed = append(s.unsubscribed, to.URI.String())
+		} else {
+			s.refreshes++
 		}
 	case !s.regEvent:
 		code := s.refusal

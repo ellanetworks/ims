@@ -51,7 +51,7 @@ wait_for mongo 60 docker compose exec -T mongo mongosh --quiet --eval 'db.runCom
 docker compose up -d open5gs ims ims-routes
 wait_for "IMS API" 60 curl -fsS localhost:5020/api/v1/status
 ./ims/provision.sh
-wait_for "MCPTT API" 60 curl -fsS localhost:5020/api/v1/mcptt/system
+wait_for "MCPTT API" 60 curl -fsS localhost:5020/api/v1/mcptt/service-configuration
 ./mcptt/provision.sh
 wait_for "Diameter peers" 120 peers_open
 wait_for "S1/NG listener" 60 ran_listener

@@ -32,9 +32,9 @@ mcptt:
 ```
 
 Then, in the HSS (Ella Core: an application server, and the filter criteria of the profile), the AS of server name
-`sip:mcptt.<home domain>` and the PSIs `sip:mcptt-participating@mcptt.<home domain>` and
-`sip:mcptt-controlling@mcptt.<home domain>`; `GET /api/v1/status` has them. The IMS delivers what goes to that name
-to its MCPTT AS in memory.
+`sip:mcptt.<home domain>` and its iFCs. No PSI: the IMS routes its PSIs, `sip:mcptt-participating@mcptt.<home domain>`
+and `sip:mcptt-controlling@mcptt.<home domain>`, itself. `GET /api/v1/status` has the name and the PSIs. The IMS
+delivers what goes to that name to its MCPTT AS in memory.
 
 ### Provision users and groups
 

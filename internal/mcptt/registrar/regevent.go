@@ -139,11 +139,13 @@ func unsubscribe(s *ua.Subscription) {
 	_ = s.Unsubscribe(ua.Change{})
 }
 
-// ended forgets the subscription, ended by its notifier, a failure or an unsubscribe: the next third-party REGISTER
+// ended forgets the subscription, ended by its notifier, a refusal or an unsubscribe: the next third-party REGISTER
 // of the IMPU subscribes again. Of bindings restored, not reconciled yet: a 480, of an IMPU the S-CSCF has no binding
 // of (TS 24.229 §5.4.2.1.1 step 0), removes them; a 403, of a subscriber not authorised (step 1), leaves the
 // registration state unknown, the bindings kept until they expire or a third-party REGISTER changes them, and is not
-// sent again (RFC 3261 §21.4.4); another failure, of an S-CSCF unavailable or unreachable, subscribes again later.
+// sent again (RFC 3261 §21.4.4); another refusal, of an S-CSCF unavailable, subscribes again later. A failure of no
+// response, of an S-CSCF unreachable, as while the core of the IMS restarts, or of an expiry not refreshed,
+// subscribes again later, restored or not, as Resubscribe does once the core runs again.
 func (g *Registrar) ended(st *ua.Strand, w *watch, e ua.End) {
 	var (
 		ch    change
@@ -158,7 +160,9 @@ func (g *Registrar) ended(st *ua.Strand, w *watch, e ua.End) {
 	g.mu.Lock()
 
 	switch {
-	case g.watches[w.ik] != w || !w.restored || g.closed:
+	case g.watches[w.ik] != w || g.closed:
+		g.drop(w)
+	case !w.restored && e.Cause == ua.EndRejected:
 		g.drop(w)
 	case e.Cause == ua.EndRejected && code == 480:
 		g.unrestored(w, &ch)
@@ -263,23 +267,26 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 		return
 	}
 
-	var doc *reginfo.Reginfo
+	// A document the server cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2): its
+	// Subscription-State applies (§4.1.3), and a refresh asks for the full state again (RFC 3680 §5.2).
+	var (
+		doc        *reginfo.Reginfo
+		unreadable bool
+	)
 
 	switch part, ok, err := req.Content().Find(reginfo.ContentType); {
 	case err != nil:
-		_ = r.Respond(ua.Reply{Code: 400, Header: header})
-		return
+		unreadable = true
 	case ok:
 		d, err := reginfo.Decode(part.Body)
 		if err != nil {
-			g.cfg.Logger.Debug("invalid reg event document", slog.String("impu", w.impu.String()), slog.Any("error", err))
+			g.cfg.Logger.Warn("unreadable reg event document: refreshing", slog.String("impu", w.impu.String()),
+				slog.Any("error", err))
 
-			_ = r.Respond(ua.Reply{Code: 400, Header: header})
-
-			return
+			unreadable = true
+		} else {
+			doc = &d
 		}
-
-		doc = &d
 	}
 
 	var ch change
@@ -295,11 +302,12 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 		// RFC 6665 §4.1.3, §4.4.1: the subscription ends with this NOTIFY, and nothing is left to unsubscribe
 		// (TS 24.229 §5.7.1.1 NOTE 5); the next third-party REGISTER of the IMPU subscribes again. Of bindings
 		// restored, not reconciled by a document: "noresource" and "rejected", of a registration gone, remove them
-		// (§3.2.4); another reason subscribes again.
+		// (§3.2.4); another reason subscribes again. Of a document unreadable, but "rejected", a new subscription.
 		w.stopped, w.sub = true, nil
 		g.drop(w)
 
-		if w.restored && (doc == nil || doc.State != reginfo.Full) {
+		switch {
+		case w.restored && (doc == nil || doc.State != reginfo.Full):
 			switch reason(r.Message()) {
 			case "noresource", "rejected":
 				g.unrestored(w, &ch)
@@ -308,6 +316,20 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 				g.watches[w.ik] = again
 				g.retry(st, again, nil)
 			}
+		case unreadable && reason(r.Message()) != "rejected" && g.has(w.ik):
+			// What the document told is unknown: a new subscription tells it again.
+			again := &watch{ik: w.ik, impu: w.impu, scscf: w.scscf, as: w.as}
+			g.watches[w.ik] = again
+
+			st.AfterFunc(0, func() {
+				g.mu.Lock()
+				current := g.watches[w.ik] == again && again.sub == nil && !again.stopped && !g.closed
+				g.mu.Unlock()
+
+				if current {
+					g.subscribe(st, again)
+				}
+			})
 		}
 	}
 
@@ -325,7 +347,15 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 
 	g.mu.Unlock()
 
-	_ = r.Respond(ua.Reply{Code: 200, Header: header})
+	if unreadable {
+		_ = r.Respond(ua.Reply{Code: 400, Header: header})
+
+		if s.State() != ua.SubscriptionTerminated && !stopped {
+			_ = s.Refresh(ua.Change{}, nil)
+		}
+	} else {
+		_ = r.Respond(ua.Reply{Code: 200, Header: header})
+	}
 
 	g.apply(st, now, &ch)
 }

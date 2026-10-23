@@ -318,7 +318,10 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	}
 }
 
-// notify handles a NOTIFY of the reg event subscription, which the agent answered (RFC 3680 §5).
+// notify handles a NOTIFY of the reg event subscription (RFC 3680 §5), which the agent answers 200; one of a document
+// the UE cannot read, 400, which keeps the subscription (RFC 6665 §4.2.2): its Subscription-State applies, and the UE
+// asks for the full state again (RFC 3680 §5.2), refreshing the subscription, or making a new one of one it ended
+// for no reason the agent subscribes again of (Ended) or a change of authorisation (RFC 6665 §4.1.3).
 func (u *UE) notify(sub *subscription, r *ua.Request) {
 	req := r.Message()
 	ss, _, _ := req.Header.SubscriptionState()
@@ -341,7 +344,20 @@ func (u *UE) notify(sub *subscription, r *ua.Request) {
 		after []func()
 	)
 
+	if infoErr != nil && len(req.Body) > 0 {
+		_ = r.Respond(ua.Reply{Code: 400})
+
+		switch ss.Reason {
+		case sip.SubscriptionRejected, sip.SubscriptionDeactivated, sip.SubscriptionTimeout:
+			a.resubscribe = !terminated
+		default:
+			a.resubscribe = true
+		}
+	}
+
 	u.mu.Lock()
+
+	a.resubscribe = a.resubscribe && u.state.Registered
 
 	if infoErr == nil {
 		version := uint64(info.Version)
