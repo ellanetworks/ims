@@ -166,7 +166,18 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 		next.ID = sets[i].ID
 	}
 
-	return r.cfg.DB.SaveSet(ctx, next)
+	saved, err := r.cfg.DB.SaveSet(ctx, next)
+
+	// A registered set holds an identity of the profile, as one whose contacts expired, not yet removed: the request is
+	// served with the profile, which is not kept.
+	if errors.Is(err, db.ErrIdentityConflict) {
+		r.log.Debug("unregistered profile with an identity of a registered set: not kept", slog.String("impu", id),
+			slog.Any("error", err))
+
+		return next, nil
+	}
+
+	return saved, err
 }
 
 // releaseUnregistered drops the sets kept unregistered for a registration period, and clears the S-CSCF's name for

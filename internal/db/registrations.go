@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-// ErrIdentityConflict is a registration without a set whose identities are in several sets.
-var ErrIdentityConflict = errors.New("public identities in several implicit registration sets")
+// ErrIdentityConflict is a public identity that a set holds, of a registration, which another set would take, or a
+// registration without a set whose identities are in several sets: the HSS removes an identity from its set before it
+// adds it to another (TS 29.228 §6.5.2.1).
+var ErrIdentityConflict = errors.New("public identity in another implicit registration set")
 
 type PublicIdentity struct {
 	URI         string
@@ -111,8 +113,8 @@ const (
 		impu, registered_at`
 )
 
-// SaveSet stores the set, and its identities in place of those it had. An identity another set holds leaves it: the
-// HSS moved it (TS 29.228 §6.5.2.1).
+// SaveSet stores the set, and its identities in place of those it had. An identity that a set no registration refers
+// to holds, one kept unregistered, leaves it; one that a registered set holds is ErrIdentityConflict.
 func (d *DB) SaveSet(ctx context.Context, s ImplicitSet) (_ ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -182,8 +184,21 @@ func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error
 	}
 
 	for i, id := range s.Identities {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM set_identities WHERE key = ?`, id.Key); err != nil {
+		var registered bool
+
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM registrations WHERE set_id = i.set_id)
+			FROM set_identities i WHERE i.key = ?`, id.Key).Scan(&registered)
+
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
 			return ImplicitSet{}, err
+		case registered:
+			return ImplicitSet{}, fmt.Errorf("%s: %w", id.URI, ErrIdentityConflict)
+		default:
+			if _, err := tx.ExecContext(ctx, `DELETE FROM set_identities WHERE key = ?`, id.Key); err != nil {
+				return ImplicitSet{}, err
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx,
@@ -290,19 +305,6 @@ func (d *DB) DeleteSet(ctx context.Context, id int64) (err error) {
 	return nil
 }
 
-// DeleteOrphanSets removes the sets that are neither registered nor kept unregistered: those of registrations that
-// failed.
-func (d *DB) DeleteOrphanSets(ctx context.Context) (err error) {
-	defer d.observe(poolWrite, &err)()
-
-	if _, err := d.conn.ExecContext(ctx, `DELETE FROM implicit_sets WHERE expires_at IS NULL
-		AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = implicit_sets.id)`); err != nil {
-		return fmt.Errorf("delete orphan implicit sets: %w", err)
-	}
-
-	return nil
-}
-
 func querySets(ctx context.Context, q *sql.DB, query string, args ...any) ([]ImplicitSet, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -383,24 +385,93 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 		}
 	}
 
+	if r, err = saveRegistration(ctx, tx, r); err != nil {
+		return Registration{}, fmt.Errorf("save registration: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Registration{}, fmt.Errorf("save registration: %w", err)
+	}
+
+	return r, nil
+}
+
+// SaveAssignment stores the set that a server assignment answered for, as SaveSet does, and the registration of it by
+// a private identity, as SaveRegistration does, at once: in place of the registrations replaced, of the same private
+// identity, which it deletes, with their sets when no registration refers to them anymore. A set is never stored
+// without the registration it is stored for.
+func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, replaced []int64,
+) (_ ImplicitSet, _ Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	var left []int64
+
+	for _, id := range replaced {
+		var setID int64
+
+		err := tx.QueryRowContext(ctx, `DELETE FROM registrations WHERE id = ? AND impi = ? RETURNING set_id`, id, r.IMPI).
+			Scan(&setID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+
+		if err != nil {
+			return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+		}
+
+		left = append(left, setID)
+	}
+
+	if s, err = saveSet(ctx, tx, s); err != nil {
+		return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+	}
+
+	r.SetID = s.ID
+
+	if r, err = saveRegistration(ctx, tx, r); err != nil {
+		return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+	}
+
+	for _, id := range left {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM implicit_sets WHERE id = ? AND expires_at IS NULL
+			AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = ?)`, id, id); err != nil {
+			return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
+	}
+
+	return s, r, nil
+}
+
+func saveRegistration(ctx context.Context, tx *sql.Tx, r Registration) (Registration, error) {
 	if r.ID == 0 {
 		res, err := tx.ExecContext(ctx, `INSERT INTO registrations (impi, impu, set_id) VALUES (?, ?, ?)`, r.IMPI, r.IMPU, r.SetID)
 		if err != nil {
-			return Registration{}, fmt.Errorf("save registration: %w", err)
+			return Registration{}, err
 		}
 
 		if r.ID, err = res.LastInsertId(); err != nil {
-			return Registration{}, fmt.Errorf("save registration: %w", err)
+			return Registration{}, err
 		}
 	} else {
 		res, err := tx.ExecContext(ctx, `UPDATE registrations SET impu = ? WHERE id = ? AND impi = ? AND set_id = ?`,
 			r.IMPU, r.ID, r.IMPI, r.SetID)
 		if err != nil {
-			return Registration{}, fmt.Errorf("save registration: %w", err)
+			return Registration{}, err
 		}
 
 		if err := checkAffected(res); err != nil {
-			return Registration{}, fmt.Errorf("save registration %d: %w", r.ID, err)
+			return Registration{}, fmt.Errorf("registration %d: %w", r.ID, err)
 		}
 	}
 
@@ -412,8 +483,9 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 		b := &r.Bindings[i]
 		b.Event = cmp.Or(b.Event, BindingRegistered)
 
+		var err error
 		if b.ID, err = saveBinding(ctx, tx, r.ID, *b); err != nil {
-			return Registration{}, fmt.Errorf("save registration: %w", err)
+			return Registration{}, err
 		}
 
 		kept = append(kept, b.ID)
@@ -421,11 +493,7 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM bindings WHERE registration_id = ? AND id NOT IN (`+placeholders(len(kept)-1)+`)`, kept...); err != nil {
-		return Registration{}, fmt.Errorf("save registration: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return Registration{}, fmt.Errorf("save registration: %w", err)
+		return Registration{}, err
 	}
 
 	return r, nil

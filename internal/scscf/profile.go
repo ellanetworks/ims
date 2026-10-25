@@ -67,6 +67,36 @@ func diffProfile(before []db.PublicIdentity, beforeData []byte, after db.Implici
 	return pc
 }
 
+// current is the change as the identities the set holds now still show it, for a private identity that learns of it
+// after a later change of the set: an identity dropped and back since, or added and dropped since, is left out, and one
+// removed and back barred is barred (TS 29.228 §6.5.2.1).
+func (pc profileChange) current(ids []db.PublicIdentity) profileChange {
+	unbarred := func(key string) bool {
+		return slices.ContainsFunc(ids, func(id db.PublicIdentity) bool { return id.Key == key && !id.Barred })
+	}
+
+	out := pc
+	out.set.Identities, out.removed, out.barred, out.added = ids, nil, nil, nil
+
+	for _, id := range pc.dropped() {
+		switch {
+		case unbarred(id.Key):
+		case holds(pc.removed, id.Key) && !holds(ids, id.Key):
+			out.removed = append(out.removed, id)
+		default:
+			out.barred = append(out.barred, id)
+		}
+	}
+
+	for _, id := range pc.added {
+		if unbarred(id.Key) {
+			out.added = append(out.added, id)
+		}
+	}
+
+	return out
+}
+
 // dropped are the identities that leave the registered non-barred ones: removed or barred.
 func (pc profileChange) dropped() []db.PublicIdentity {
 	return append(slices.Clone(pc.removed), pc.barred...)
@@ -155,6 +185,9 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 	if i < 0 || !st.registered(&st.regs[i]) {
 		return nil
 	}
+
+	// The tasks of the private identities run in no order: a later change of the set may have been applied already.
+	pc = pc.current(st.regs[i].Identities)
 
 	if reg, ok := withIdentities(st.regs[i], pc.set.Identities); ok {
 		saved, err := r.cfg.DB.SaveRegistration(ctx, reg)
@@ -261,7 +294,7 @@ func (r *Registrar) profileNotice(ctx context.Context, impi string, pc profileCh
 		}
 	}
 
-	ch.removed = []removal{{reg: db.Registration{IMPI: impi, Identities: dropped}, bindings: bindings, event: reginfo.Rejected}}
+	ch.rejected = rejection{impi: impi, identities: dropped, bindings: bindings}
 	ch.reason = reasonRejected
 
 	// A subscription is to the identity of the set its Request-URI names, in the first of its forms the set held.

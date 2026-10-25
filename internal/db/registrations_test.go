@@ -343,34 +343,86 @@ func TestUnregisteredSets(t *testing.T) {
 	}
 }
 
-func TestDeleteOrphanSets(t *testing.T) {
+// TS 29.228 §6.5.2.1: the HSS removes an identity from a registered set before it adds it to another.
+func TestSaveSetKeepsIdentitiesOfRegisteredSet(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	orphan, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false)}})
-	if err != nil {
-		t.Fatalf("SaveSet: %v", err)
-	}
-
-	kept, err := d.SaveSet(ctx, ImplicitSet{Unregistered: &Unregistered{Identity: "sip:b@x", ExpiresAt: testNow}})
-	if err != nil {
-		t.Fatalf("SaveSet: %v", err)
-	}
-
 	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 
-	if err := d.DeleteOrphanSets(ctx); err != nil {
-		t.Fatalf("DeleteOrphanSets: %v", err)
+	_, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false), identity("tel:+15551230001", false)}})
+	if !errors.Is(err, ErrIdentityConflict) {
+		t.Fatalf("SaveSet = %v, want ErrIdentityConflict", err)
 	}
 
-	if _, err := d.GetSet(ctx, orphan.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("orphan set: %v, want it gone", err)
+	if got, _ := d.GetSet(ctx, r.SetID); !reflect.DeepEqual(got.Identities, r.Identities) {
+		t.Fatalf("registered set = %+v, want it unchanged", got.Identities)
 	}
 
-	for _, id := range []int64{kept.ID, r.SetID} {
-		if _, err := d.GetSet(ctx, id); err != nil {
-			t.Fatalf("set %d: %v, want it kept", id, err)
-		}
+	if sets, err := d.FindSets(ctx, []string{"sip:a@x"}); err != nil || len(sets) != 0 {
+		t.Fatalf("FindSets = %+v, %v; want no set stored", sets, err)
+	}
+}
+
+// A set is stored with its registration, in place of the expired ones that held its identities.
+func TestSaveAssignment(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	// A new set.
+	set, reg, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false)}},
+		Registration{IMPI: testIMPI, IMPU: "sip:a@x"}, nil)
+	if err != nil {
+		t.Fatalf("SaveAssignment: %v", err)
+	}
+
+	if set.ID == 0 || reg.SetID != set.ID {
+		t.Fatalf("set %d, registration of set %d; want the registration of the set", set.ID, reg.SetID)
+	}
+
+	// The set of a stale registration grows: the registration goes, the set stays.
+	set.Identities = append(set.Identities, identity("sip:c@x", false))
+
+	grown, next, err := d.SaveAssignment(ctx, set, Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{reg.ID})
+	if err != nil {
+		t.Fatalf("SaveAssignment: %v", err)
+	}
+
+	if grown.ID != set.ID || next.SetID != set.ID {
+		t.Fatalf("set %d, registration of set %d; want set %d", grown.ID, next.SetID, set.ID)
+	}
+
+	if regs := listByIMPI(t, d); len(regs) != 1 || regs[0].ID != next.ID {
+		t.Fatalf("registrations = %+v, want the new one only", regs)
+	}
+
+	// A stale registration of a set whose identities another set takes goes with its set.
+	moved, last, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:c@x", false)}},
+		Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{next.ID})
+	if err != nil {
+		t.Fatalf("SaveAssignment: %v", err)
+	}
+
+	if _, err := d.GetSet(ctx, set.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSet = %v, want the set left without registration gone", err)
+	}
+
+	if regs := listByIMPI(t, d); len(regs) != 1 || regs[0].ID != last.ID || regs[0].SetID != moved.ID {
+		t.Fatalf("registrations = %+v, want the last one only", regs)
+	}
+
+	// An identity of a registered set stays there, and nothing is stored.
+	other := testRegistration("other@"+testDomain, "15551230002")
+	other.Identities = []PublicIdentity{identity("sip:d@x", false)}
+	mustSaveRegistration(t, d, other)
+
+	if _, _, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:d@x", false)}},
+		Registration{IMPI: testIMPI, IMPU: "sip:d@x"}, []int64{last.ID}); !errors.Is(err, ErrIdentityConflict) {
+		t.Fatalf("SaveAssignment = %v, want ErrIdentityConflict", err)
+	}
+
+	if regs := listByIMPI(t, d); len(regs) != 1 || regs[0].ID != last.ID {
+		t.Fatalf("registrations = %+v, want them unchanged", regs)
 	}
 }
 

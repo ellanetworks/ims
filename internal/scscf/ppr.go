@@ -152,6 +152,12 @@ func (r *Registrar) pushedSet(ctx context.Context, sub cx.IMSSubscription) (db.I
 		return db.ImplicitSet{}, nil, err
 	}
 
+	// TS 29.228 §6.5.2.1: a push is of one set, and adds only identities in no set: the HSS moves an identity in two
+	// steps, out of its set first.
+	if len(sets) > 1 {
+		return db.ImplicitSet{}, nil, fmt.Errorf("%w: profile push with the identities of %d sets", ErrUnableToComply, len(sets))
+	}
+
 	if len(sets) == 0 {
 		kept, err := r.cfg.DB.ListUnregisteredSets(ctx)
 		if err != nil {

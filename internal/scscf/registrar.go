@@ -431,10 +431,6 @@ func (r *Registrar) runSweep() {
 	r.sweepExpired(r.ctx)
 	r.releaseUnregistered(r.ctx)
 
-	if err := r.cfg.DB.DeleteOrphanSets(r.ctx); err != nil {
-		r.log.Warn("failed to delete the implicit sets left by failed registrations", slog.Any("error", err))
-	}
-
 	r.armSweep()
 }
 

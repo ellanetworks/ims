@@ -672,15 +672,13 @@ func TestPushProfileRemovesRegisteredIdentity(t *testing.T) {
 	})
 }
 
-// TS 24.229 §5.4.1.8, TS 29.228 §6.6: a profile the HSS downloads with a re-registration changes it as a push does.
-func TestReRegistrationProfileChange(t *testing.T) {
-	sh := newSessionHarness(t)
-	sh.hss.nextSAR(t)
-
-	sh.answered(t)
+// reRegisterWith refreshes the registration of the UE, the HSS downloading the first implicit set of
+// testSubscriptions as change makes it (TS 29.228 §6.6).
+func (sh *sessionHarness) reRegisterWith(t *testing.T, change func(sub *cx.IMSSubscription)) {
+	t.Helper()
 
 	sub := testSubscriptions()[0]
-	sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+	change(&sub)
 
 	data, err := cx.MarshalUserData(sub)
 	if err != nil {
@@ -692,6 +690,18 @@ func TestReRegistrationProfileChange(t *testing.T) {
 	// Every re-registration notifies the HSS (TS 23.228 §5.2.2.4 step 6), a refresh without a challenge included.
 	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
 	sh.hss.wantSAR(t, cx.AssignmentReRegistration)
+}
+
+// TS 24.229 §5.4.1.8, TS 29.228 §6.6: a profile the HSS downloads with a re-registration changes it as a push does.
+func TestReRegistrationProfileChange(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	sh.answered(t)
+
+	sh.reRegisterWith(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+	})
 
 	bye(t, sh.term)
 	bye(t, sh.icscf)
@@ -699,6 +709,51 @@ func TestReRegistrationProfileChange(t *testing.T) {
 	if holds(sh.registration(testMSISDN).Identities, identityKeyOf(testTel)) {
 		t.Fatal("tel URI kept in the set")
 	}
+}
+
+// TS 24.229 §5.4.1.8 step 2, NOTE 2: an identity barred, or another identity removed, with a re-registration leaves
+// the calls in progress.
+func TestReRegistrationProfileChangeKeepsCalls(t *testing.T) {
+	for name, change := range map[string]func(sub *cx.IMSSubscription){
+		"barred":          func(sub *cx.IMSSubscription) { sub.ServiceProfiles[0].PublicIdentities[2].Barred = true },
+		"another removed": func(sub *cx.IMSSubscription) { sub.ServiceProfiles = sub.ServiceProfiles[:1] },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sh := newSessionHarness(t)
+			sh.hss.nextSAR(t)
+			sh.answered(t)
+
+			sh.reRegisterWith(t, change)
+
+			sh.term.RecvNone(100 * time.Millisecond)
+			sh.icscf.RecvNone(50 * time.Millisecond)
+		})
+	}
+}
+
+// TS 24.229 §5.4.1.8 step 3: an identity removed with a re-registration releases its calls, not those of the other
+// identities of the contact.
+func TestReRegistrationReleasesCallsOfRemovedIdentity(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	tel := sh.answeredTo(t, testTel)
+	sh.answeredTo(t, testAlias)
+
+	sh.reRegisterWith(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+	})
+
+	if got := bye(t, sh.term); got != tel {
+		t.Fatalf("BYE of call %s, want that to the tel URI, %s", got, tel)
+	}
+
+	if got := bye(t, sh.icscf); got != tel {
+		t.Fatalf("BYE of call %s, want that to the tel URI, %s", got, tel)
+	}
+
+	sh.term.RecvNone(100 * time.Millisecond)
+	sh.icscf.RecvNone(50 * time.Millisecond)
 }
 
 // A refresh while the HSS cannot be reached keeps the registration, with the profile held.
@@ -747,5 +802,161 @@ func TestUnregisteredProfileAfterRestart(t *testing.T) {
 		}
 
 		break
+	}
+}
+
+// TS 29.228 §6.5.2.1: a push that adds an identity of another set, whose removal from it the HSS did not push first,
+// is refused: the other set keeps it.
+func TestPushProfileOfSeveralSets(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	u.impu = secondIMPU
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	err := h.reg.PushProfile(t.Context(), pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[1].PublicIdentities = append(sub.ServiceProfiles[1].PublicIdentities, cx.ProfileIdentity{Identity: secondIMPU})
+	}))
+	if !errors.Is(err, ErrUnableToComply) {
+		t.Fatalf("PushProfile = %v, want ErrUnableToComply", err)
+	}
+
+	if reg := h.registration(secondIMPU); len(reg.Identities) != 1 {
+		t.Fatalf("identities = %+v, want the second set unchanged", reg.Identities)
+	}
+
+	if reg := h.registration(testMSISDN); len(reg.Identities) != 4 {
+		t.Fatalf("identities = %+v, want the first set unchanged", reg.Identities)
+	}
+}
+
+// TS 29.228 §6.5.2.1: a registration whose profile holds an identity of another registered set, whose removal from it
+// the HSS did not push first, fails, and stores nothing: each set keeps its identities.
+func TestRegisterIdentityOfAnotherRegisteredSet(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	// The set of the second identity is kept unregistered.
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", secondIMPU))
+	final(t, sh.icscf)
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentUnregisteredUser {
+		t.Fatalf("SAR = %+v, want UNREGISTERED_USER", sar)
+	}
+
+	sh.hss.set(func(f *fakeHSS) {
+		f.subscriptions[1] = cx.IMSSubscription{PrivateIdentity: testIMPI, ServiceProfiles: []cx.ServiceProfile{{
+			PublicIdentities: []cx.ProfileIdentity{{Identity: secondIMPU}, {Identity: testAlias}},
+		}}}
+	})
+
+	sh.ue.impu = secondIMPU
+	nonce := sh.ue.challenged(registerOptions{})
+	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(nonce, testVector.XRES)}), 500)
+	sh.hss.wantSAR(t, cx.AssignmentRegistration)
+
+	sets, err := sh.db.FindSets(t.Context(), []string{identityKeyOf(secondIMPU)})
+	if err != nil || len(sets) != 1 || sets[0].Unregistered == nil || len(sets[0].Identities) != 1 {
+		t.Fatalf("sets = %+v, %v; want the set kept unregistered unchanged", sets, err)
+	}
+
+	if reg := sh.registration(testAlias); len(reg.Identities) != 4 || len(reg.Bindings) != 1 {
+		t.Fatalf("registration = %+v, want it unchanged", reg)
+	}
+}
+
+// A registration of a set that an expired registration of the private identity, not yet removed, refers to takes it
+// over: the set stays, with its new identity.
+func TestRegisterSetOfExpiredRegistration(t *testing.T) {
+	const third = "sip:third@" + homeDomain
+
+	h := newHarness(t)
+	u := h.newUE()
+	u.impu = secondIMPU
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	expired := h.registration(secondIMPU)
+	for i := range expired.Bindings {
+		expired.Bindings[i].ExpiresAt = h.clock.Now().Add(-time.Second)
+	}
+
+	if _, err := h.db.SaveRegistration(t.Context(), expired); err != nil {
+		t.Fatal(err)
+	}
+
+	h.hss.set(func(f *fakeHSS) {
+		f.subscriptions[1] = cx.IMSSubscription{PrivateIdentity: testIMPI, ServiceProfiles: []cx.ServiceProfile{{
+			PublicIdentities: []cx.ProfileIdentity{{Identity: secondIMPU}, {Identity: third}},
+		}}}
+	})
+
+	u.impu = third
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	regs := h.registrations(testIMPI)
+	if len(regs) != 1 || regs[0].SetID != expired.SetID || len(regs[0].Identities) != 2 {
+		t.Fatalf("registrations = %+v, want one of set %d, with both identities", regs, expired.SetID)
+	}
+}
+
+// TS 29.228 §6.5.2.1: the private identities learn of the changes of a set in no order; each applies the set as it is
+// by then. An identity removed, then back, keeps its calls.
+func TestPushProfilesOutOfOrder(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+	sh.answered(t)
+
+	if err := sh.reg.lock(t.Context(), testIMPI); err != nil {
+		t.Fatal(err)
+	}
+
+	sh.push(pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+	}))
+	sh.push(pushed(t, nil))
+
+	sh.reg.unlock(testIMPI)
+
+	sh.term.RecvNone(100 * time.Millisecond)
+	sh.icscf.RecvNone(50 * time.Millisecond)
+
+	if reg := sh.registration(testTel); reg.IMPU != testIMPU || len(reg.Identities) != 4 {
+		t.Fatalf("registration = %+v, want the tel URI back in the set", reg)
+	}
+}
+
+// A request to an identity whose registration expired, not yet removed, is served with the profile the HSS sends,
+// which is not kept: the set of the registration keeps its identities.
+func TestUnregisteredProfileOfExpiredRegistration(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	expired := sh.registration(testTel)
+	for i := range expired.Bindings {
+		expired.Bindings[i].ExpiresAt = sh.clock.Now().Add(-time.Second)
+	}
+
+	if _, err := sh.db.SaveRegistration(t.Context(), expired); err != nil {
+		t.Fatal(err)
+	}
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", testTel))
+	final(t, sh.icscf)
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentUnregisteredUser {
+		t.Fatalf("SAR = %+v, want UNREGISTERED_USER", sar)
+	}
+
+	if reg := sh.registration(testTel); reg.SetID != expired.SetID || len(reg.Identities) != 4 {
+		t.Fatalf("registration = %+v, want its set unchanged", reg)
+	}
+
+	if sets, err := sh.db.ListUnregisteredSets(t.Context()); err != nil || len(sets) != 0 {
+		t.Fatalf("sets kept unregistered = %+v, %v; want none", sets, err)
 	}
 }

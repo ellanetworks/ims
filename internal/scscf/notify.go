@@ -43,8 +43,18 @@ type removal struct {
 	calls map[bindingKey]map[*proxy.Dialog]proxy.Side
 }
 
+// rejection is the identities that the HSS removed from a registered set of a private identity, or barred in it, with
+// the contacts of the set, which the reg event reports terminated (TS 24.229 §5.4.1.8 step 4): unlike a removal, it
+// leaves the contacts bound, and their calls in progress (NOTE 2).
+type rejection struct {
+	impi       string
+	identities []db.PublicIdentity
+	bindings   []db.Binding
+}
+
 type change struct {
 	removed   []removal
+	rejected  rejection
 	reason    string
 	shortened string
 
@@ -387,6 +397,10 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.
 		}
 	}
 
+	if ch.rejected.impi == st.impi {
+		sets = append(sets, db.Registration{Identities: ch.rejected.identities})
+	}
+
 	seen := map[string]bool{}
 
 	for _, set := range sets {
@@ -471,6 +485,14 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			}
 
 			reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, reginfo.Terminated, rm.event, st.now))
+		}
+	}
+
+	if holds(ch.rejected.identities, id.Key) {
+		for _, b := range ch.rejected.bindings {
+			if !slices.Contains(active, bindingAt{b.ID, b.RegisteredAt.UnixNano()}) {
+				reg.Contacts = append(reg.Contacts, contactElement(b, id.Key, reginfo.Terminated, reginfo.Rejected, st.now))
+			}
 		}
 	}
 

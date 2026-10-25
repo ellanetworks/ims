@@ -12,8 +12,8 @@ import (
 
 const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
 
-// bye receives the next request on s, wants it a BYE with a Reason of 480, and answers it.
-func bye(t *testing.T, s *siptest.Socket) {
+// bye receives the next request on s, wants it a BYE with a Reason of 480, answers it, and returns its Call-ID.
+func bye(t *testing.T, s *siptest.Socket) string {
 	t.Helper()
 
 	for {
@@ -28,7 +28,7 @@ func bye(t *testing.T, s *siptest.Socket) {
 
 		s.Send(f.Transport, f.Remote, sip.NewResponse(req, 200, ""))
 
-		return
+		return req.Header.CallID()
 	}
 }
 
@@ -36,7 +36,14 @@ func bye(t *testing.T, s *siptest.Socket) {
 func (sh *sessionHarness) answered(t *testing.T) {
 	t.Helper()
 
-	invite := sh.terminating("INVITE", testTel)
+	sh.answeredTo(t, testTel)
+}
+
+// answeredTo sets up a call toward the identity of the UE, and returns its Call-ID once the I-CSCF side ACKed its 200.
+func (sh *sessionHarness) answeredTo(t *testing.T, target string) string {
+	t.Helper()
+
+	invite := sh.terminating("INVITE", target)
 	sh.icscf.Send(sip.UDP, sh.scscf, invite)
 
 	got, f := sh.term.RecvRequest()
@@ -58,6 +65,8 @@ func (sh *sessionHarness) answered(t *testing.T) {
 	if req, _ := sh.term.RecvRequest(); req.Method != "ACK" {
 		t.Fatalf("UE got %s, want the ACK", req.StartLine())
 	}
+
+	return invite.Header.CallID()
 }
 
 // TS 24.229 §5.4.1.4 step 5
