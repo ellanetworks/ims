@@ -36,7 +36,7 @@ type Store interface {
 // removed, which OnChange applies to it.
 type Live struct {
 	store    Store
-	onChange func()
+	onChange func(before, after *Snapshot)
 
 	// mu serializes the changes, each from the settings before it.
 	mu      sync.Mutex
@@ -62,8 +62,9 @@ func NewLive(store Store, initial Settings) (*Live, error) {
 	return l, nil
 }
 
-// OnChange makes f called after each change, once it took effect; before the first change.
-func (l *Live) OnChange(f func()) { l.onChange = f }
+// OnChange makes f called after each change, once it took effect, with the snapshots of the settings before and after
+// it; before the first change. The changes are serialized: each call's before is the after of the one before it.
+func (l *Live) OnChange(f func(before, after *Snapshot)) { l.onChange = f }
 
 // Current is the snapshot of the current settings.
 func (l *Live) Current() *Snapshot { return l.current.Load().snap }
@@ -336,10 +337,10 @@ func (l *Live) change(edit func(next *Settings) (string, error), save func() err
 		return fmt.Errorf("save settings: %w", err)
 	}
 
-	l.current.Store(&state{written: next, snap: snap})
+	before := l.current.Swap(&state{written: next, snap: snap}).snap
 
 	if l.onChange != nil {
-		l.onChange()
+		l.onChange(before, snap)
 	}
 
 	return nil

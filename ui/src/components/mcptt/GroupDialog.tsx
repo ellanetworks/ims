@@ -41,8 +41,11 @@ export default function GroupDialog({
   const [duration, setDuration] = useState(
     String(group ? group.maximum_duration_ms / 60000 : DEFAULT_DURATION_MIN),
   );
+  // An empty hang time is the server's default, which a group without one keeps following.
   const [hang, setHang] = useState(
-    String((group?.hang_timer_ms ?? DEFAULT_HANG_TIME_S * 1000) / 1000),
+    group?.hang_timer_ms === undefined
+      ? ""
+      : String(group.hang_timer_ms / 1000),
   );
   const [members, setMembers] = useState<string[]>([]);
   const [affiliate, setAffiliate] = useState(true);
@@ -63,6 +66,7 @@ export default function GroupDialog({
   const minutes = /^\d+(\.\d+)?$/.test(duration.trim())
     ? Number(duration)
     : NaN;
+  const defaultHang = hang.trim() === "";
   const seconds = /^\d+(\.\d{1,3})?$/.test(hang.trim()) ? Number(hang) : NaN;
 
   const errors = {
@@ -73,7 +77,7 @@ export default function GroupDialog({
         ? "Required"
         : "A name, group@domain or a SIP URI",
     duration: minutes > 0 ? undefined : "A positive number of minutes",
-    hang: seconds >= 0 ? undefined : "A number of seconds",
+    hang: defaultHang || seconds >= 0 ? undefined : "A number of seconds",
   };
   const valid = Object.values(errors).every((e) => e === undefined);
 
@@ -82,7 +86,7 @@ export default function GroupDialog({
       group_id: expanded ?? "",
       display_name: name,
       maximum_duration_ms: Math.round(minutes * 60000),
-      hang_timer_ms: Math.round(seconds * 1000),
+      hang_timer_ms: defaultHang ? undefined : Math.round(seconds * 1000),
       release_on_initiator_leave: releaseOnLeave,
       // An update keeps the members as they are, and their affiliations.
       members: group
@@ -178,8 +182,10 @@ export default function GroupDialog({
         value={hang}
         onChange={(e) => setHang(e.target.value)}
         error={errors.hang !== undefined}
+        placeholder={String(DEFAULT_HANG_TIME_S)}
         helperText={
-          errors.hang ?? "A call ends after this long without anyone talking."
+          errors.hang ??
+          `A call ends after this long without anyone talking; ${DEFAULT_HANG_TIME_S} s if empty.`
         }
         slotProps={{
           input: {

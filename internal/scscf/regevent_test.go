@@ -452,6 +452,41 @@ func TestSubscribeASNumberSIPForm(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.7.1.1 a; TS 23.003 §13.4; RFC 3261 §19.1.6: of an implicit registration set of a tel URI of a local
+// number, an AS subscribes with the SIP URI of the number, "user=phone", with its phone-context: it is the
+// registration of the tel URI.
+func TestSubscribeASLocalNumberSIPForm(t *testing.T) {
+	localTel := "tel:5550101;phone-context=" + homeDomain
+
+	h := newHarness(t)
+	h.hss.set(func(f *fakeHSS) {
+		f.subscriptions[0].ServiceProfiles[0].PublicIdentities = []cx.ProfileIdentity{
+			{Identity: testIMPU, Barred: true}, {Identity: localTel},
+		}
+	})
+
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	h.withAS(as)
+
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	s := h.asSubscriber(as)
+	s.impu = "sip:5550101;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone"
+	n := s.subscribed()
+
+	if got := n.aors(); !slices.Contains(got, localTel) {
+		t.Fatalf("registrations = %v, want that of %s", got, localTel)
+	}
+
+	wantContact(t, n.contact(t, localTel, u.contact), reginfo.Active, reginfo.Created)
+
+	if subs := h.subscriptions(); len(subs) != 1 || subs[0].Subscriber != db.SubscriberAS || subs[0].IMPU != s.impu {
+		t.Fatalf("subscriptions = %+v", subs)
+	}
+}
+
 // TS 24.229 §5.4.2.1.2 step 5: the NOTIFYs have the icid-value of the SUBSCRIBE that created the dialog, not of a
 // refresh, and an orig-ioi of the S-CSCF's network, of type 3 towards an AS, of type 1 towards the UE, without
 // term-ioi; the S-CSCF keeps the term-ioi of the responses. A SUBSCRIBE without icid-value makes NOTIFYs without
@@ -1606,4 +1641,48 @@ func TestRTRServerChangeDeregistersEverything(t *testing.T) {
 	}
 
 	h.wantUnregistered()
+}
+
+// The resource of a reg event SUBSCRIBE is the first form of its identity a registration holds, out of one read
+// of the registrations of all its forms: its own first, then the tel URI of its number.
+func TestSubscribedKey(t *testing.T) {
+	sipForm, err := sip.ParseURI(testMSISDN)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys := identityKeys(sipForm, homeDomain)
+	if len(keys) < 2 {
+		t.Fatalf("keys = %v, want the tel URI too", keys)
+	}
+
+	of := func(id int64, key string) db.Registration {
+		return db.Registration{ID: id, Identities: []db.PublicIdentity{{Key: key}}}
+	}
+
+	tel, own := of(1, keys[1]), of(2, keys[0])
+
+	for _, tc := range []struct {
+		name    string
+		regs    []db.Registration
+		key     string
+		holding []int64
+	}{
+		{"none", nil, keys[0], nil},
+		{"tel URI only", []db.Registration{tel}, keys[1], []int64{1}},
+		{"own form first", []db.Registration{tel, own}, keys[0], []int64{2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key, regs := subscribed(tc.regs, keys)
+
+			var ids []int64
+			for _, r := range regs {
+				ids = append(ids, r.ID)
+			}
+
+			if key != tc.key || !slices.Equal(ids, tc.holding) {
+				t.Fatalf("subscribed = %s, %v, want %s, %v", key, ids, tc.key, tc.holding)
+			}
+		})
+	}
 }

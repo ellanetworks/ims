@@ -535,3 +535,30 @@ func TestCascades(t *testing.T) {
 		}
 	})
 }
+
+// OnChange is told the snapshots before and after each change that took effect, each change's before the after of
+// the one before it; not of a change refused.
+func TestOnChange(t *testing.T) {
+	l, _ := newLive(t)
+
+	var got [][2]*settings.Snapshot
+
+	l.OnChange(func(before, after *settings.Snapshot) { got = append(got, [2]*settings.Snapshot{before, after}) })
+
+	first := l.Current()
+	s := example(t).System
+
+	for range 2 {
+		if err := l.UpdateSystem(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := l.DeleteUser(context.Background(), "sip:nobody@mcptt.example.com"); err == nil {
+		t.Fatal("unknown user deleted")
+	}
+
+	if len(got) != 2 || got[0][0] != first || got[1][0] != got[0][1] || got[1][1] != l.Current() || got[0][1] == first {
+		t.Errorf("OnChange calls %v, first %p, current %p", got, first, l.Current())
+	}
+}

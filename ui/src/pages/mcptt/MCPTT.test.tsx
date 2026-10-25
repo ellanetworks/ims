@@ -142,6 +142,38 @@ describe("MCPTT pages", () => {
     );
   });
 
+  it("keep a group without a hang time on the default when editing it", async () => {
+    const groupPath = `/api/v1/mcptt/groups/${encodeURIComponent(fire.group_id)}`;
+    const fetch = serve({ [groupPath]: () => json(200, { result: fire }) });
+    renderAt("groups");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Fire" }));
+
+    const dialog = await screen.findByRole("dialog");
+    const hang = within(dialog).getByRole("textbox", { name: "Hang Time" });
+    expect(hang).toHaveValue("");
+    expect(hang).toHaveAttribute("placeholder", "30");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), {
+      target: { value: "Fire Brigade" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
+
+    await waitFor(() =>
+      expect(requests(fetch, "PUT", groupPath)).toEqual([
+        {
+          group_id: fire.group_id,
+          display_name: "Fire Brigade",
+          maximum_duration_ms: 600000,
+          release_on_initiator_leave: false,
+          members: fire.members.map(({ mcptt_id, recvonly }) => ({
+            mcptt_id,
+            recvonly,
+          })),
+        },
+      ]),
+    );
+  });
+
   it("show the group calls and who talks", async () => {
     serve();
     renderAt("calls");

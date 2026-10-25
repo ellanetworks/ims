@@ -12,7 +12,7 @@ import (
 
 // MCPTTState is the live state of the running MCPTT AS, in its memory: its clients' registrations, their
 // affiliations and the group calls, or one of them by its ID, and whether there is one. An error is of the AS not
-// answering: restarting, or its calls busy past ctx.
+// answering: restarting, or its calls busy past ctx, every one of them for Calls, which leaves out a call busy alone.
 type MCPTTState interface {
 	Registrations() ([]MCPTTRegistration, error)
 	Affiliations() ([]MCPTTAffiliation, error)

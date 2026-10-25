@@ -1096,7 +1096,16 @@ func TestIdentityKeys(t *testing.T) {
 	}{
 		{testTel, []string{testTel, testMSISDN}},
 		{testMSISDN, []string{testMSISDN, testTel}},
-		{"tel:0498765432100;phone-context=" + homeDomain, []string{"tel:0498765432100;phone-context=" + homeDomain, "tel:0498765432100"}},
+		{"tel:0498765432100;phone-context=" + homeDomain, []string{
+			"tel:0498765432100;phone-context=" + homeDomain,
+			"sip:0498765432100;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", "tel:0498765432100",
+		}},
+		{"sip:5550101;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", []string{
+			"sip:5550101;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", "tel:5550101;phone-context=" + homeDomain,
+		}},
+		{"tel:555-0101;phone-context=+1555", []string{
+			"tel:5550101;phone-context=+1555", "sip:5550101;phone-context=+1555@" + homeDomain + ";user=phone", "tel:5550101",
+		}},
 		{testAlias, []string{testAlias}},
 		{"sip:%2B15551230001@" + homeDomain + ";user=phone", []string{"sip:%2B15551230001@" + homeDomain + ";user=phone", testTel, testMSISDN}},
 	}

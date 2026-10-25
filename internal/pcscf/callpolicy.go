@@ -590,19 +590,6 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline tim
 	result := &handoff{c: make(chan grantResult, 1)}
 
 	if !p.policy.spawn(func() {
-		var late bool
-
-		// A session lost after the exchange gave up on its answer still ends the call (RFC 6733 §8.18), once the
-		// session is released.
-		defer func() {
-			if late {
-				cr.orphaned.Store(true)
-				p.releaseOrphaned(c, d)
-			}
-		}()
-		defer s.pending.Store(false)
-		defer s.mu.Unlock()
-
 		g, err := p.policy.authorize(s, r)
 
 		if g.Ref != "" {
@@ -624,7 +611,17 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline tim
 			cr.mu.Unlock()
 		}
 
-		late = !result.give(grantResult{g, err}) && errors.Is(err, policy.ErrSessionLost)
+		// The session takes the next request before the exchange learns of the answer: the exchange's next one,
+		// an SDP answer that follows at once, would otherwise find this one still pending and go unauthorised.
+		s.mu.Unlock()
+		s.pending.Store(false)
+
+		// A session lost after the exchange gave up on its answer still ends the call (RFC 6733 §8.18), once the
+		// session is released.
+		if !result.give(grantResult{g, err}) && errors.Is(err, policy.ErrSessionLost) {
+			cr.orphaned.Store(true)
+			p.releaseOrphaned(c, d)
+		}
 	}) {
 		s.mu.Unlock()
 		s.pending.Store(false)

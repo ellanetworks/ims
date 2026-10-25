@@ -516,31 +516,6 @@ func (rs *registrations) fromSourceLocked(src netip.AddrPort) *db.PCSCFRegistrat
 	return nil
 }
 
-// bound reports whether a live registration binds u, the Request-URI of a request toward a UE: one of its contacts,
-// or one of its public identities (TS 24.229 §5.2.6.4.1: "has no binding for the identity in the Request-URI").
-func (rs *registrations) bound(u sip.URI) bool {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	s, now := u.String(), rs.clock.Now()
-
-	for _, r := range rs.byKey {
-		if !r.ExpiresAt.After(now) {
-			continue
-		}
-
-		if _, ok := matchURI(r.Contacts, s); ok {
-			return true
-		}
-
-		if _, ok := matchURI(r.AssociatedURIs, s); ok {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

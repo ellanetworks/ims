@@ -60,6 +60,7 @@ func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []si
 
 type subscribeRequest struct {
 	req        *sip.Request
+	key        string
 	impi       string
 	subscriber db.Subscriber
 	expires    time.Duration
@@ -70,9 +71,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		return sip.NewResponse(req, 416, ""), nil
 	}
 
-	key := r.subscribedKey(ctx, req.URI)
-
-	sr, res := r.authorize(ctx, req, key, routes)
+	sr, res := r.authorize(ctx, req, routes)
 	if res != nil {
 		return res, nil
 	}
@@ -96,7 +95,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		return retryLater(req), nil
 	}
 
-	if !st.registered(st.set(key)) {
+	if !st.registered(st.set(sr.key)) {
 		return sip.NewResponse(req, 480, ""), nil
 	}
 
@@ -161,29 +160,31 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 	return res, []*outgoing{o}
 }
 
-// subscribedKey is the identity key of the resource of a SUBSCRIBE's Request-URI u (TS 24.229 §5.4.2.1.1): its own,
-// else, of a number, that of its other form a registration holds, as identityKeys has it of a terminating request. An
-// AS subscribes with "a SIP URI that contains the public user identity" of the To of the third-party REGISTER
-// (§5.7.1.1 a), which, of a tel URI, is the SIP URI of its number, "user=phone" (TS 23.003 §13.4; RFC 3261 §19.1.6),
-// though the implicit registration set need hold only the tel URI. A failed read is left to authorize.
-func (r *Registrar) subscribedKey(ctx context.Context, u sip.URI) string {
-	keys := identityKeys(u, r.cfg.HomeDomain)
-
+// subscribed is the resource of a SUBSCRIBE's Request-URI u (TS 24.229 §5.4.2.1.1), out of regs, the registrations
+// holding any of keys, the identity keys of u: its own key, else, of a number, that of its other form a registration
+// holds, as identityKeys has it of a terminating request. An AS subscribes with "a SIP URI that contains the public
+// user identity" of the To of the third-party REGISTER (§5.7.1.1 a), which, of a tel URI, is the SIP URI of its
+// number, "user=phone" (TS 23.003 §13.4; RFC 3261 §19.1.6), though the implicit registration set need hold only the
+// tel URI. It returns the key and the registrations that hold it.
+func subscribed(regs []db.Registration, keys []string) (string, []db.Registration) {
 	for _, k := range keys {
-		regs, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, k)
-		if err != nil {
-			break
+		var held []db.Registration
+
+		for _, reg := range regs {
+			if slices.ContainsFunc(reg.Identities, func(id db.PublicIdentity) bool { return id.Key == k }) {
+				held = append(held, reg)
+			}
 		}
 
-		if len(regs) > 0 {
-			return k
+		if len(held) > 0 {
+			return k, held
 		}
 	}
 
-	return keys[0]
+	return keys[0], nil
 }
 
-func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string, routes []sip.URI,
+func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []sip.URI,
 ) (*subscribeRequest, *sip.Response) {
 	if accept := req.Header.Values("Accept"); len(accept) > 0 && !accepts(req.Header.Elements("Accept")) {
 		res := sip.NewResponse(req, 406, "")
@@ -192,11 +193,16 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		return nil, res
 	}
 
-	regs, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, key)
+	// One read for all the forms of the identity: a number has up to three.
+	keys := identityKeys(req.URI, r.cfg.HomeDomain)
+
+	all, err := r.cfg.DB.ListRegistrationsByIdentities(ctx, keys)
 	if err != nil {
 		r.log.Warn("failed to read the registrations", slog.String("impu", req.URI.String()), slog.Any("error", err))
 		return nil, retryLater(req)
 	}
+
+	key, regs := subscribed(all, keys)
 
 	now := r.clock.Now()
 
@@ -219,14 +225,14 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 		for _, reg := range regs {
 			for _, b := range liveAt(reg.Bindings, now) {
 				if pathHolds(b.Contact.Path, a.URI) {
-					return &subscribeRequest{req: req, impi: reg.IMPI, subscriber: db.SubscriberPCSCF}, nil
+					return &subscribeRequest{req: req, key: key, impi: reg.IMPI, subscriber: db.SubscriberPCSCF}, nil
 				}
 			}
 		}
 	}
 
 	if impi, ok := r.asSubscriber(ctx, req, regs, asserted, now); ok {
-		return &subscribeRequest{req: req, impi: impi, subscriber: db.SubscriberAS}, nil
+		return &subscribeRequest{req: req, key: key, impi: impi, subscriber: db.SubscriberAS}, nil
 	}
 
 	if impi, ok := serviceRouteUser(regs, routes); ok {
@@ -236,7 +242,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string,
 	for _, a := range asserted {
 		for _, reg := range regs {
 			if r.ownedBy(ctx, reg.IMPI, identityKey(a.URI)) {
-				return &subscribeRequest{req: req, impi: reg.IMPI, subscriber: db.SubscriberUE}, nil
+				return &subscribeRequest{req: req, key: key, impi: reg.IMPI, subscriber: db.SubscriberUE}, nil
 			}
 		}
 	}

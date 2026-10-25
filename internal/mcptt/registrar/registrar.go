@@ -49,11 +49,11 @@ const (
 )
 
 // Affiliations are what service authorisation does to the affiliations of a client: the implicit affiliation to its
-// user's configured groups once authorised (TS 24.379 §9.2.2.2.15), and again once they change while it stays
-// authorised (Reconfigure), their removal once logged off (TS 23.280 §5.2.5).
+// user's configured groups once authorised (TS 24.379 §9.2.2.2.15), and to those a change of them, from before to
+// user, adds or removes while it stays authorised (Reconfigure), their removal once logged off (TS 23.280 §5.2.5).
 type Affiliations interface {
 	ImplicitConfigured(now time.Time, user *settings.User, client string)
-	Reconfigure(now time.Time, user *settings.User, client string)
+	Reconfigure(now time.Time, before, user *settings.User, client string)
 	LogOff(now time.Time, user sip.URI, client string)
 }
 
@@ -562,11 +562,12 @@ func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
 	}
 }
 
-// Revoke removes the bindings whose users the current settings no longer authorise at their IMPUs, deleted or of
-// the IMPU removed, logging their clients off (TS 23.280 §5.2.5), on the strands of their IMPUs; the clients of the
-// others have the implicit affiliations to their users' configured groups brought to the settings
-// (Affiliations.Reconfigure; TS 24.379 §9.2.2.2.15).
-func (g *Registrar) Revoke() {
+// Revoke applies the change of the settings from before to after, on the strands of the IMPUs: it removes the bindings
+// whose users after no longer authorises at their IMPUs, deleted or of the IMPU removed, logging their clients off
+// (TS 23.280 §5.2.5); the clients of the others have the change of their users' configured groups applied to their
+// implicit affiliations (Affiliations.Reconfigure; TS 24.379 §9.2.2.2.15). A binding expired, which its timer has not
+// removed yet, is no client's any longer (RFC 3261 §10.3): it is affiliated to nothing.
+func (g *Registrar) Revoke(before, after *settings.Snapshot) {
 	g.mu.Lock()
 
 	iks := make([]string, 0, len(g.impus))
@@ -579,21 +580,23 @@ func (g *Registrar) Revoke() {
 	for _, ik := range iks {
 		st := g.cfg.StrandOf(ik)
 		st.Post(func() {
-			snap := g.cfg.Source.Current()
 			now := g.cfg.Clock.Now()
 
 			var (
 				ch   change
-				kept []authorisation
+				kept []reconfiguration
 			)
 
 			g.mu.Lock()
 
 			for _, b := range g.impus[ik] {
-				if u := snap.User(b.MCPTTID); u == nil || !slices.ContainsFunc(b.IMPUs, u.HasIMPU) {
+				// A binding expired is affiliated to nothing; one of a user new to the change was authorised under
+				// after, or later, which ran §9.2.2.2.15 then.
+				switch u, was := after.User(b.MCPTTID), before.User(b.MCPTTID); {
+				case u == nil || !slices.ContainsFunc(b.IMPUs, u.HasIMPU):
 					g.unbind(b, &ch, causeUnauthorised)
-				} else {
-					kept = append(kept, authorisation{user: u, client: b.ClientID})
+				case now.Before(b.Expires) && was != nil:
+					kept = append(kept, reconfiguration{before: was, user: u, client: b.ClientID})
 				}
 			}
 
@@ -601,11 +604,17 @@ func (g *Registrar) Revoke() {
 
 			g.apply(st, now, &ch)
 
-			for _, a := range kept {
-				g.cfg.Affiliations.Reconfigure(now, a.user, a.client)
+			for _, r := range kept {
+				g.cfg.Affiliations.Reconfigure(now, r.before, r.user, r.client)
 			}
 		})
 	}
+}
+
+// reconfiguration is a change of the user of a client that stays authorised, from before.
+type reconfiguration struct {
+	before, user *settings.User
+	client       string
 }
 
 // Close stops the expiry timers of the bindings and sequences, which are the registrar's, not the agent's, and arms

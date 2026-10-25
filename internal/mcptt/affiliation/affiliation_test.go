@@ -440,8 +440,8 @@ func TestReconfigure(t *testing.T) {
 	a := user()
 	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
 
-	a = user("sip:g1@example.com", "sip:g3@example.com")
-	p.Reconfigure(now, a, "c1")
+	before, a := a, user("sip:g1@example.com", "sip:g3@example.com")
+	p.Reconfigure(now, before, a, "c1")
 
 	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 2 || !got["g1"] || got["g3"] {
 		t.Fatalf("configured %v", got)
@@ -452,14 +452,14 @@ func TestReconfigure(t *testing.T) {
 	}
 
 	// Unchanged: nothing to do.
-	p.Reconfigure(now, a, "c1")
+	p.Reconfigure(now, a, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 2 {
 		t.Fatalf("statuses %v", got)
 	}
 
-	a = user()
-	p.Reconfigure(now, a, "c1")
+	before, a = a, user()
+	p.Reconfigure(now, before, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 1 || got["g3"] != Affiliated {
 		t.Errorf("statuses %v", got)
@@ -470,9 +470,66 @@ func TestReconfigure(t *testing.T) {
 	}
 
 	// Of a client with no entries, nothing is made.
-	p.Reconfigure(now, a, "c2")
+	p.Reconfigure(now, a, a, "c2")
 
 	if _, ok := p.users[settings.Key(a.ID())].clients["c2"]; ok {
 		t.Error("client made")
+	}
+}
+
+// §9.2.2.2.3 step 14 a ii: a configured group the client left by its publication stays left through a change of the
+// settings that does not touch it, a change of another group of the user's or of none of them; a change that adds it
+// back, the operator's latest act, affiliates the client again.
+func TestReconfigureKeepsLeft(t *testing.T) {
+	cfg := configuration()
+	src := &fixed{}
+	user := func(implicit ...string) *settings.User {
+		t.Helper()
+
+		cfg.Users[0].ImplicitAffiliations = implicit
+
+		s, err := settings.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		src.s = s
+
+		return s.User(u(t, "sip:a@example.com"))
+	}
+
+	c := NewControlling(src)
+	p := NewParticipating(c, nil)
+	now := time.Unix(1000, 0)
+	g1, g2 := u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")
+
+	a := user("sip:g1@example.com")
+	p.ImplicitConfigured(now, a, "c1")
+	p.Publish(now, Publication{User: a, Client: "c1", Expires: MaxExpires}, "e1")
+
+	// Left, its de-affiliating entry expired.
+	now = now.Add(deaffiliating + time.Second)
+
+	p.Reconfigure(now, a, a, "c1")
+
+	if got := statuses(p, now, a); len(got) != 0 || c.Affiliated(now, g1, a.ID(), "c1") {
+		t.Fatalf("left group affiliated again by a change not of it: %v", got)
+	}
+
+	before, a := a, user("sip:g1@example.com", "sip:g2@example.com")
+	p.Reconfigure(now, before, a, "c1")
+
+	if got := statuses(p, now, a); len(got) != 1 || got["g2"] != Affiliated || !c.Affiliated(now, g2, a.ID(), "c1") {
+		t.Fatalf("statuses %v", got)
+	}
+
+	// g1 off, then on again.
+	before, a = a, user("sip:g2@example.com")
+	p.Reconfigure(now, before, a, "c1")
+	before, a = a, user("sip:g2@example.com", "sip:g1@example.com")
+	p.Reconfigure(now, before, a, "c1")
+
+	if got := statuses(p, now, a); len(got) != 2 || got["g1"] != Affiliated || !c.Affiliated(now, g1, a.ID(), "c1") {
+		t.Fatalf("group added back not affiliated: %v", got)
 	}
 }

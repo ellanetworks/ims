@@ -773,8 +773,8 @@ func (s *scene) restartIMS(lose bool) {
 }
 
 // A UE whose security associations survive a restart of the IMS is still reached. One whose security associations
-// the restart lost is no binding of the P-CSCF, which rejects a call to it with a 404 (Not Found) at once
-// (TS 24.229 §4.14.2, §5.2.6.4.1, §5.2.5.1 step 2), until it registers again.
+// the restart lost is no binding of the P-CSCF (TS 24.229 §5.2.5.1 step 2), whose flow fails at once with a 430
+// (RFC 5626 §5.3.1), which the S-CSCF answers with a 480 (Temporarily Unavailable), until it registers again.
 //
 // Such a UE's own requests, protected by security associations the IMS no longer has, are dropped by the kernel
 // and time out: it detects the P-CSCF as unreachable and registers again (§4.14.2).
@@ -807,7 +807,7 @@ func TestCallAfterARestart(t *testing.T) {
 		s := sc.in(t)
 		start := time.Now()
 
-		failed(t, s.ctx(), invite(t, d, phone(1), testue.CallOptions{}), 404)
+		failed(t, s.ctx(), invite(t, d, phone(1), testue.CallOptions{}), 480)
 
 		if d := time.Since(start); d > 5*time.Second {
 			t.Fatalf("the call failed after %v, want at once", d)

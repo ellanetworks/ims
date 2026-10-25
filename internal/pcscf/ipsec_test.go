@@ -967,8 +967,9 @@ func finalResponse(t *testing.T, sock *siptest.Socket) *sip.Response {
 	}
 }
 
-// TS 24.229 §5.2.5.1 step 2, §4.14.2, §5.2.6.4.1: a registration whose security associations a restart lost is not
-// restored, and a request toward its UE gets a 404 (Not Found), not the 430 of a failed flow.
+// TS 24.229 §5.2.5.1 step 2: a registration whose security associations a restart lost is not restored, and a
+// request toward its UE gets the 430 of a failed flow (RFC 5626 §5.3.1), which the S-CSCF answers upstream with a
+// 480: not the 404 (Not Found) of P-CSCF restoration (TS 24.229 §5.2.6.4.1), which this network does not support.
 func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	token, o := s.registerOverIPsec(u)
@@ -993,7 +994,7 @@ func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
 	}
 
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", nil))
-	wantStatus(t, finalResponse(t, s.scscf), 404)
+	wantStatus(t, finalResponse(t, s.scscf), 430)
 	u.us.RecvNone(quiet)
 }
 
@@ -1020,9 +1021,9 @@ func TestRestoreKeepsTheRegistrationsOfKeptSets(t *testing.T) {
 	}
 }
 
-// RFC 5626 §5.3.1: a flow token the P-CSCF does not know, toward a contact it still binds, gets the 430 of a failed
-// flow, for the S-CSCF to try the UE's other flows; to a contact of no binding, a 404 (TS 24.229 §5.2.6.4.1).
-func TestUnknownFlowTowardABoundContact(t *testing.T) {
+// RFC 5626 §5.3.1: a flow token the P-CSCF does not know gets the 430 of a failed flow, whatever the Request-URI:
+// a registered contact, or the remote target of a dialog, such as a GRUU, that no registered contact matches.
+func TestUnknownFlowGets430(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
 
@@ -1034,7 +1035,15 @@ func TestUnknownFlowTowardABoundContact(t *testing.T) {
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", path, func(r *sip.Request) {
 		r.URI = sip.URI{Scheme: "sip", User: "other", Host: "127.0.0.9", Port: 5060}
 	}))
-	wantStatus(t, finalResponse(t, s.scscf), 404)
+	wantStatus(t, finalResponse(t, s.scscf), 430)
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "BYE", path, func(r *sip.Request) {
+		r.URI = sip.URI{Scheme: "sip", User: "ue", Host: homeDomain}
+		r.URI.Params.Set("gr", "urn:uuid:00000000-0000-1000-8000-000000000001")
+		r.Header.Set("To", "<"+testIMPU+">;tag=callee")
+		r.Header.Del("Record-Route")
+	}))
+	wantStatus(t, finalResponse(t, s.scscf), 430)
 	u.us.RecvNone(quiet)
 }
 

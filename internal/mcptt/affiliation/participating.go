@@ -527,11 +527,12 @@ func (p *Participating) setETag(u *user, c *client, etag string) {
 // expiration interval, which the clause leaves open, is MaxExpires, as of an explicit affiliation: the affiliations
 // last until the client logs off (TS 23.280 §5.2.5).
 func (p *Participating) ImplicitConfigured(now time.Time, cfg *settings.User, clientID string) {
-	p.flush(now, p.implicitConfigured(now, cfg, clientID))
+	p.flush(now, p.implicitConfigured(now, cfg, clientID, nil))
 	p.persist(now)
 }
 
-func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, clientID string) []job {
+// implicitConfigured affiliates client to the groups of cfg's <ImplicitAffiliations> not of had, which may be nil.
+func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, clientID string, had map[string]bool) []job {
 	groups := cfg.ImplicitGroups()
 	if len(groups) == 0 {
 		return nil
@@ -555,7 +556,7 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 
 	for _, g := range groups {
 		k := settings.Key(g.ID())
-		if find(cand, k, now) == nil {
+		if !had[k] && find(cand, k, now) == nil {
 			cand = slices.DeleteFunc(cand, func(e *entry) bool { return e.key == k })
 			cand = append(cand, &entry{
 				group: g.ID(), key: k, status: Affiliating, expires: now.Add(MaxExpires), configured: true,
@@ -587,21 +588,37 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 	return jobs
 }
 
-// Reconfigure applies a change of the <ImplicitAffiliations> of a user (TS 24.484 §8.3.2.1) to client of the user,
-// whose service authorisation stands, at once: the groups no longer of them that the implicit affiliation to
-// configured groups affiliated the client to de-affiliated, as by the client's publication not listing them
-// (§9.2.2.2.3 step 14 a ii), and published to the server owning each group (§9.2.2.2.6); then the groups now of them
-// affiliated, as at service authorisation (ImplicitConfigured). §9.2.2.2.15 runs at service authorisation, and the
-// specs leave a change of the profile to the clients authorised already open: by local policy, it applies at once.
-// The groups the client listed itself stay (§9.2.2.2.3), those of the implicit affiliations of requests too
-// (§9.2.2.2.12). Of the settings as they are: a client affiliated before a restart is brought to those of after it.
-func (p *Participating) Reconfigure(now time.Time, cfg *settings.User, clientID string) {
-	jobs := p.unconfigure(now, cfg, clientID)
-	p.flush(now, append(jobs, p.implicitConfigured(now, cfg, clientID)...))
+// Reconfigure applies the change of the <ImplicitAffiliations> of a user from before to cfg (TS 24.484 §8.3.2.1) to
+// client of the user, whose service authorisation stands, at once: the groups of before no longer of cfg that the
+// implicit affiliation to configured groups affiliated the client to de-affiliated, as by the client's publication not
+// listing them (§9.2.2.2.3 step 14 a ii), and published to the server owning each group (§9.2.2.2.6); then the groups
+// of cfg not of before affiliated, as at service authorisation (ImplicitConfigured). §9.2.2.2.15 runs at service
+// authorisation, and the specs leave a change of the profile to the clients authorised already open: by local policy,
+// it applies at once, to the groups the change adds or removes only. A group the client left by its publication
+// (§9.2.2.2.3 step 14 a ii) stays left through a change that does not touch it, and is affiliated again by one that
+// adds it back: the operator's latest act. The groups the client listed itself stay (§9.2.2.2.3), those of the
+// implicit affiliations of requests too (§9.2.2.2.12).
+func (p *Participating) Reconfigure(now time.Time, before, cfg *settings.User, clientID string) {
+	had := implicitKeys(before)
+
+	jobs := p.unconfigure(now, had, cfg, clientID)
+	p.flush(now, append(jobs, p.implicitConfigured(now, cfg, clientID, had)...))
 	p.persist(now)
 }
 
-func (p *Participating) unconfigure(now time.Time, cfg *settings.User, clientID string) []job {
+// implicitKeys are the keys of the groups of the <ImplicitAffiliations> of u.
+func implicitKeys(u *settings.User) map[string]bool {
+	keys := map[string]bool{}
+	for _, g := range u.ImplicitGroups() {
+		keys[settings.Key(g.ID())] = true
+	}
+
+	return keys
+}
+
+// unconfigure de-affiliates the configured entries of client of the groups of had no longer of cfg's
+// <ImplicitAffiliations>.
+func (p *Participating) unconfigure(now time.Time, had map[string]bool, cfg *settings.User, clientID string) []job {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -611,16 +628,12 @@ func (p *Participating) unconfigure(now time.Time, cfg *settings.User, clientID 
 	}
 
 	c := u.clients[clientID]
-
-	configured := map[string]bool{}
-	for _, g := range cfg.ImplicitGroups() {
-		configured[settings.Key(g.ID())] = true
-	}
+	configured := implicitKeys(cfg)
 
 	var jobs []job
 
 	for _, e := range c.groups {
-		if !e.configured || configured[e.key] || !now.Before(e.expires) ||
+		if !e.configured || configured[e.key] || !had[e.key] || !now.Before(e.expires) ||
 			e.status != Affiliating && e.status != Affiliated {
 			continue
 		}

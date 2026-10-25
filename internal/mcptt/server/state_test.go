@@ -198,6 +198,57 @@ func TestRestore(t *testing.T) {
 	}
 }
 
+// TS 24.379 §9.2.2.2.15, §9.2.2.2.3 step 14 a ii: a restore is no service authorisation: alice, affiliated to fire
+// implicitly, leaves it by her publication, and the restart does not affiliate her to it again; her own affiliation
+// to police is restored.
+func TestRestoreKeepsLeft(t *testing.T) {
+	st := newMemState()
+	h := newHarnessOf(t, registrar.ThroughIMS, st)
+	s := h.scscf
+	s.regEvent = true
+
+	ue := h.client(aliceIM)
+
+	if res := s.send(s.register(aliceIM, "t1", 600, ue.register("sip:ims.example.com", 600, info(token(alice), client1)))); res.StatusCode != 200 {
+		t.Fatalf("alice: %d", res.StatusCode)
+	}
+
+	s.pump()
+
+	if !h.affiliated(alice, client1, fire) {
+		t.Fatal("alice not affiliated to fire implicitly")
+	}
+
+	if res := s.send(s.forward(ue.publish(alice, client1, 4294967295, police), aliceIM)); res.StatusCode != 200 {
+		t.Fatalf("PUBLISH: %d", res.StatusCode)
+	}
+
+	// The de-affiliating entry expires (§9.2.2.2.7).
+	h.n.Advance(2 * 64 * transaction.DefaultT1)
+	s.pump()
+
+	if got := st.groups(settings.Key(uri(t, alice)), client1); !slices.Equal(got, []string{police}) {
+		t.Fatalf("alice's affiliations kept %v", got)
+	}
+
+	s.initial[aliceIM] = `<registration aor="` + aliceIM + `" id="r1" state="active">` + activeContact("t1") + `</registration>`
+
+	h.restart(st)
+
+	if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, aliceIM)}, client1); !ok {
+		t.Fatal("alice not served after the restart")
+	}
+
+	if h.affiliated(alice, client1, fire) || !h.affiliated(alice, client1, police) {
+		t.Errorf("alice after the restart: fire %v, police %v", h.affiliated(alice, client1, fire),
+			h.affiliated(alice, client1, police))
+	}
+
+	if got := st.groups(settings.Key(uri(t, alice)), client1); !slices.Equal(got, []string{police}) {
+		t.Errorf("alice's affiliations kept after the restart %v", got)
+	}
+}
+
 // TS 24.229 §5.7.1.1 a; TS 23.003 §13.4: the bindings restored of a tel URI IMPU whose implicit registration set has
 // no SIP URI, as of Ella Core's HSS, are reconciled by the subscription made again to the SIP URI of its number,
 // "user=phone": the client of a UE the first full document reports registered, of the tel URI or of the SIP URI,
@@ -466,8 +517,7 @@ func TestRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.src.p.Store(snap)
-	h.s.Revoke()
+	h.s.Revoke(h.src.p.Swap(snap), snap)
 	h.n.Quiesce()
 	s.pump()
 

@@ -2,6 +2,9 @@ package controlling
 
 import (
 	"context"
+	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
@@ -36,34 +39,48 @@ type Participant struct {
 }
 
 // Calls are the group calls of the function, in no order. Each session's state is of the strand of its group: a call
-// is copied there, so Calls waits for each group's strand, until ctx is done.
+// is copied there, so Calls waits for each group's strand, until ctx is done. A call whose strand is still busy then,
+// in a large call setup or a slow media close, is left out, and logged by its ID, so that one group does not hide the
+// calls of the others; Calls fails only if there are calls and none answered, the function then busy as a whole.
 func (c *Controlling) Calls(ctx context.Context) ([]Call, error) {
 	c.mu.Lock()
 
-	sessions := make([]*session, 0, len(c.sessions))
-	for _, s := range c.sessions {
-		sessions = append(sessions, s)
-	}
+	sessions := make(map[string]*session, len(c.sessions))
+	maps.Copy(sessions, c.sessions)
 
 	c.mu.Unlock()
 
-	// Buffered: a strand that answers after ctx is done does not block.
-	copies := make(chan *Call, len(sessions))
+	type copied struct {
+		id   string
+		call *Call
+	}
 
-	for _, s := range sessions {
-		s.grp.st.Post(func() { copies <- s.snapshot() })
+	// Buffered: a strand that answers after ctx is done does not block.
+	copies := make(chan copied, len(sessions))
+
+	for id, s := range sessions {
+		s.grp.st.Post(func() { copies <- copied{id, s.snapshot()} })
 	}
 
 	out := make([]Call, 0, len(sessions))
 
-	for range sessions {
+	for answered := range len(sessions) {
 		select {
-		case call := <-copies:
-			if call != nil {
-				out = append(out, *call)
+		case cp := <-copies:
+			delete(sessions, cp.id)
+
+			if cp.call != nil {
+				out = append(out, *cp.call)
 			}
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			if answered == 0 {
+				return nil, ctx.Err()
+			}
+
+			c.cfg.Logger.Warn("calls listed without those of busy groups",
+				slog.Any("call_ids", slices.Sorted(maps.Keys(sessions))), slog.Any("error", ctx.Err()))
+
+			return out, nil
 		}
 	}
 

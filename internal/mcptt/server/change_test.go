@@ -9,6 +9,7 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/controlling"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 // change applies the settings edit makes of callConfiguration to w's server, as settings.Live does (its OnChange),
@@ -24,8 +25,7 @@ func (w *world) change(edit func(cfg *settings.Settings)) {
 		w.t.Fatal(err)
 	}
 
-	w.src.p.Store(snap)
-	w.s.Revoke()
+	w.s.Revoke(w.src.p.Swap(snap), snap)
 	w.n.Quiesce()
 }
 
@@ -194,5 +194,59 @@ func TestImplicitAffiliationsChanged(t *testing.T) {
 	if w.s.Controlling().Affiliated(w.s.Now(), mustURI(t, fire), id, client) ||
 		!w.s.Controlling().Affiliated(w.s.Now(), mustURI(t, quorum), id, client) {
 		t.Error("the owners hold the affiliations taken back, or not dave's own")
+	}
+}
+
+// TS 24.379 §9.2.2.2.3 step 14 a ii: dave, given fire, leaves it by his publication; a change of the settings that
+// does not touch his implicit affiliations, of alice's alias, does not affiliate him to fire again. Fire taken back
+// and given again, the operator's latest act, it does.
+func TestImplicitAffiliationLeftStays(t *testing.T) {
+	w := newWorld(t, nil)
+	dave := w.users["dave"]
+	id := mustURI(t, dave.id)
+	client := "urn:uuid:00000000-0000-1000-8000-000000000004"
+	given := func(cfg *settings.Settings) { cfg.Users[3].ImplicitAffiliations = []string{fire} }
+
+	affiliated := func() bool {
+		return w.s.Participating().Affiliated(w.s.Now(), id, client, mustURI(t, fire)) ||
+			w.s.Controlling().Affiliated(w.s.Now(), mustURI(t, fire), id, client)
+	}
+
+	w.change(given)
+
+	if !affiliated() {
+		t.Fatal("dave not affiliated to fire once given it")
+	}
+
+	var res *sip.Response
+
+	if err := dave.Affiliate([]sip.URI{mustURI(t, quorum)}, func(r *sip.Response, _ error) { res = r }); err != nil {
+		t.Fatal(err)
+	}
+
+	w.n.Quiesce()
+
+	if res == nil || !res.IsSuccess() {
+		t.Fatalf("PUBLISH answered %v", res)
+	}
+
+	// The de-affiliating entry expires (§9.2.2.2.7).
+	w.n.Advance(2 * 64 * transaction.DefaultT1)
+	w.n.Quiesce()
+
+	w.change(func(cfg *settings.Settings) {
+		given(cfg)
+		cfg.Users[0].Alias = "Alice"
+	})
+
+	if affiliated() {
+		t.Fatal("dave affiliated again to fire, which he left, by a change not of it")
+	}
+
+	w.change(func(*settings.Settings) {})
+	w.change(given)
+
+	if !affiliated() {
+		t.Error("dave not affiliated to fire once given it again")
 	}
 }

@@ -179,7 +179,7 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 		g.sequenced(seq, expires, &ch)
 	}
 
-	ch.watch = &watch{ik: ik, impu: subscribed(impus, g.cfg.HomeDomain), scscf: scscf.URI, as: req.URI}
+	ch.watch = &watch{ik: ik, impu: subscribed(impu, impus, g.cfg.HomeDomain), scscf: scscf.URI, as: req.URI}
 
 	g.mu.Unlock()
 
@@ -376,34 +376,43 @@ func implicitSet(req *sip.Request, impu sip.URI) []sip.URI {
 	return set
 }
 
-// subscribed is the IMPU of the reg event subscription of the implicit registration set impus, the To of the
-// third-party REGISTER first, of the IMS of home domain home (§5.7.1.1 a, c: "a SIP URI that contains the public user
-// identity"): its first SIP URI, the To itself, or, of a tel URI, a SIP URI of its set; else, of a tel URI of a global
-// number, the SIP URI of its number at home (numberURI), as the set of a tel URI and a barred temporary IMPU alone
-// has it (TS 23.003 §13.4B; Ella Core's HSS). Zero if none.
-func subscribed(impus []sip.URI, home string) sip.URI {
-	if i := slices.IndexFunc(impus, sip.URI.IsSIP); i >= 0 {
-		return impus[i]
+// subscribed is the IMPU of the reg event subscription of impu, the To of the third-party REGISTER, of the implicit
+// registration set set, of the IMS of home domain home (§5.7.1.1 a, c: "a SIP URI that contains the public user
+// identity"): impu itself, a SIP URI; of a tel URI, a SIP URI of its set; else the SIP URI of its number at home
+// (numberURI), as the set of a tel URI and a barred temporary IMPU alone has it (TS 23.003 §13.4B; Ella Core's HSS).
+// Zero if none.
+func subscribed(impu sip.URI, set []sip.URI, home string) sip.URI {
+	if impu.IsSIP() {
+		return impu
 	}
 
-	if len(impus) == 0 {
-		return sip.URI{}
+	if i := slices.IndexFunc(set, sip.URI.IsSIP); i >= 0 {
+		return set[i]
 	}
 
-	return numberURI(impus[0], home)
+	return numberURI(impu, home)
 }
 
-// numberURI is the SIP URI of the tel URI u of a global number at the host home, which the S-CSCF of home resolves to
-// the registration of u: its number, without visual separators or parameters (TS 23.003 §13.4: "a SIP URI that
-// includes a "user=phone" URI parameter"; RFC 3261 §19.1.6; RFC 3966 §5.1.4). Zero of another URI, of a local number,
-// which its phone-context scopes (RFC 3966 §5.1.5), or without home.
+// numberURI is the SIP URI of the tel URI u at the host home, which the S-CSCF of home resolves to the registration of
+// u: of "user=phone", of the userinfo of the tel URI (TS 23.003 §13.4: "a SIP URI that includes a "user=phone" URI
+// parameter and a "userinfo" part that shall follow the same format as the Tel URI"; RFC 3261 §19.1.6). Its number
+// is without visual separators (RFC 3966 §5.1.1); of a global number, without parameters; of a local number, with
+// the phone-context that scopes it (RFC 3966 §5.1.5), and its "#" escaped (RFC 3261 §25.1: no "user" character).
+// Zero of another URI, of a number that is neither, or without home.
 func numberURI(u sip.URI, home string) sip.URI {
 	if !u.IsTel() || home == "" {
 		return sip.URI{}
 	}
 
-	n := u.Identity().User
-	if len(n) < 2 || n[0] != '+' || strings.Trim(n[1:], "0123456789") != "" {
+	id := u.Identity()
+	n := id.User
+	pc, local := id.Params.Get("phone-context")
+
+	switch {
+	case !local && len(n) >= 2 && n[0] == '+' && strings.Trim(n[1:], "0123456789") == "":
+	case local && n != "" && pc != "" && strings.Trim(n, "0123456789abcdef*#") == "":
+		n = strings.ReplaceAll(n, "#", "%23") + ";phone-context=" + pc
+	default:
 		return sip.URI{}
 	}
 

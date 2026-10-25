@@ -201,8 +201,11 @@ func (b bindings) Resolve(req *sip.Request, ids []sip.URI, client string) (sip.U
 func (s *Server) Agent() *ua.Agent { return s.agent }
 
 // Restore puts back the registrations and affiliations of State, before the agent serves: the bindings registrar
-// Restore keeps, and the affiliations of their clients, published to the controlling function. Resubscribe follows,
-// once the agent serves.
+// Restore keeps, and the affiliations of their clients as kept, configured or not, published to the controlling
+// function. The implicit affiliation to configured groups runs at service authorisation (TS 24.379 §9.2.2.2.15),
+// which a restore is not, and the settings change only through settings.Live while the server runs: none changed
+// while it was down, and a configured group a client left by its publication (§9.2.2.2.3 step 14 a ii) stays left.
+// Resubscribe follows, once the agent serves.
 func (s *Server) Restore(registrations []registrar.Record, affiliations []affiliation.Record) {
 	restored := s.reg.Restore(registrations)
 
@@ -217,27 +220,19 @@ func (s *Server) Restore(registrations []registrar.Record, affiliations []affili
 		return bound[[2]string{settings.Key(id), client}]
 	})
 
-	// The implicit affiliations of the settings as they are now (TS 24.379 §9.2.2.2.15): of a group configured while
-	// the server was down, or of a write lost; those the server made of a group no longer configured de-affiliated.
-	snap := s.cfg.Source.Current()
-	for _, b := range restored {
-		if u := snap.User(b.MCPTTID); u != nil {
-			s.part.Reconfigure(now, u, b.ClientID)
-		}
-	}
-
 	s.log.Info("registrations restored", slog.Int("bindings", len(bound)))
 }
 
-// Revoke applies a change of the settings to the registrations, affiliations and calls at once: the affiliations to
-// the groups no longer of their users removed, the clients of the users no longer authorised at their IMPUs logged
-// off, those of the others affiliated to their users' configured groups as they are now (registrar.Revoke), and the
-// members no longer of a group removed from its call, the call of a group deleted released (controlling.Revoke). It
-// waits for none of the strands it posts to.
-func (s *Server) Revoke() {
+// Revoke applies the change of the settings from before to after, of settings.Live's OnChange, to the registrations,
+// affiliations and calls at once: the affiliations to the groups no longer of their users removed, the clients of the
+// users no longer authorised at their IMPUs logged off, those of the others affiliated to the configured groups the
+// change adds to their users and de-affiliated from those it removes (registrar.Revoke), and the members no longer of
+// a group removed from its call, the call of a group deleted released (controlling.Revoke). It waits for none of the
+// strands it posts to.
+func (s *Server) Revoke(before, after *settings.Snapshot) {
 	s.controlling.Revoke()
 	s.part.Revoke(s.agent.Layer().Clock().Now(), s.controlling.Eligible)
-	s.reg.Revoke()
+	s.reg.Revoke(before, after)
 	s.ctrlCalls.Revoke()
 }
 

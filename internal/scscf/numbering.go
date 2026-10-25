@@ -202,11 +202,35 @@ func identityKeys(u sip.URI, homeDomain string) []string {
 		return keys
 	}
 
+	// A local number has the same two forms, scoped by its phone-context (TS 23.003 §13.4, RFC 3261 §19.1.6,
+	// RFC 3966 §5.1.5): an AS subscribes to the reg event of a tel URI of a local number with its SIP form
+	// (TS 24.229 §5.7.1.1 a).
+	if number, context, ok := localTelephoneNumber(u); ok {
+		tel := sip.URI{Scheme: "tel", User: number}
+		tel.Params.Set("phone-context", context)
+
+		add(identityKey(tel))
+		add(identityKey(phoneURI(number+";phone-context="+context, homeDomain)))
+	}
+
 	if u.IsTel() {
 		add(identityKey(sip.URI{Scheme: "tel", User: u.User}))
 	}
 
 	return keys
+}
+
+// localTelephoneNumber is the number, without visual separators, and the phone-context of a tel URI of a local
+// number, or of its SIP form, "user=phone" (RFC 3966 §5.1.5, RFC 3261 §19.1.6).
+func localTelephoneNumber(u sip.URI) (number, context string, ok bool) {
+	number, context, _, ok = telephoneNumber(u)
+	number = withoutSeparators(number)
+
+	if !ok || number == "" || strings.HasPrefix(number, "+") || context == "" {
+		return "", "", false
+	}
+
+	return number, strings.ToLower(context), true
 }
 
 func phoneURI(number, homeDomain string) sip.URI {

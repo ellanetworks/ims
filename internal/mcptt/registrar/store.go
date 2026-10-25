@@ -156,7 +156,7 @@ func (g *Registrar) Restore(records []Record) []Binding {
 
 		// The subscription of the IMPU, toward the S-CSCF of its latest registration; of a tel URI, of the SIP URI of
 		// its number if its set has none.
-		impu := subscribed(r.IMPUs, g.cfg.HomeDomain)
+		impu := subscribed(r.IMPU, r.IMPUs, g.cfg.HomeDomain)
 		if w := g.watches[ik]; r.AS.Scheme != "" && impu.IsSIP() && (w == nil || r.Expires.After(latest[ik])) {
 			g.watches[ik] = &watch{ik: ik, impu: impu, scscf: r.SCSCF, as: r.AS, restored: true}
 			latest[ik] = r.Expires
