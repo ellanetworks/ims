@@ -378,19 +378,24 @@ func implicitSet(req *sip.Request, impu sip.URI) []sip.URI {
 
 // subscribed is the IMPU of the reg event subscription of impu, the To of the third-party REGISTER, of the implicit
 // registration set set, of the IMS of home domain home (§5.7.1.1 a, c: "a SIP URI that contains the public user
-// identity"): impu itself, a SIP URI; of a tel URI, a SIP URI of its set; else the SIP URI of its number at home
-// (numberURI), as the set of a tel URI and a barred temporary IMPU alone has it (TS 23.003 §13.4B; Ella Core's HSS).
-// Zero if none.
+// identity" received in the To): impu itself, a SIP URI; of a tel URI, the SIP URI of its number at home (numberURI;
+// §4.2 NOTE 4, TS 23.003 §13.4), not another SIP URI of the set, a different public user identity, which may be of
+// another service profile, without the AS in its iFCs (§5.7.1.1 NOTE 3); a SIP URI of the set only of a tel URI of
+// no number. Zero if none.
 func subscribed(impu sip.URI, set []sip.URI, home string) sip.URI {
 	if impu.IsSIP() {
 		return impu
+	}
+
+	if u := numberURI(impu, home); u.IsSIP() {
+		return u
 	}
 
 	if i := slices.IndexFunc(set, sip.URI.IsSIP); i >= 0 {
 		return set[i]
 	}
 
-	return numberURI(impu, home)
+	return sip.URI{}
 }
 
 // numberURI is the SIP URI of the tel URI u at the host home, which the S-CSCF of home resolves to the registration of

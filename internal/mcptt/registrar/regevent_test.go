@@ -26,7 +26,9 @@ func TestSubscribed(t *testing.T) {
 		{"SIP", []string{"sip:alice@" + home, "tel:+15555550101"}, home, "sip:alice@" + home},
 		{"SIP, after a tel URI of the set", []string{"sip:alice@" + home, "tel:+15555550101", "sip:a2@" + home}, home, "sip:alice@" + home},
 		{"SIP without home domain", []string{"sip:alice@" + home}, "", "sip:alice@" + home},
-		{"tel, SIP URI in the set", []string{"tel:+15555550101", "sip:alice@" + home}, home, "sip:alice@" + home},
+		// §5.7.1.1 a: the SIP URI of the To's number, not another public user identity of the set.
+		{"tel, SIP URI in the set", []string{"tel:+15555550101", "sip:alice@" + home}, home, "sip:+15555550101@" + home + ";user=phone"},
+		{"tel of no home domain, SIP URI in the set", []string{"tel:+15555550101", "sip:alice@" + home}, "", "sip:alice@" + home},
 		{"tel alone", []string{"tel:+15555550101"}, home, "sip:+15555550101@" + home + ";user=phone"},
 		{"tel, another tel URI first in the set", []string{"tel:+15555550101", "tel:+15555550199"}, home, "sip:+15555550101@" + home + ";user=phone"},
 		{"tel of visual separators and parameters", []string{"tel:+1-555-555-0101;isub=1"}, home, "sip:+15555550101@" + home + ";user=phone"},
