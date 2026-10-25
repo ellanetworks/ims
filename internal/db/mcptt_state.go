@@ -38,9 +38,9 @@ func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Rec
 			}
 
 			if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO mcptt_registrations (client_id, mcptt_id, impu, impus,
-				expires_at, scscf, as_uri, token, instance, reg_id, contact, call_id, cseq, icid, orig_ioi,
-				charging_function_addresses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ClientID,
-				r.MCPTTID.String(), r.IMPU.String(), string(set), r.Expires.UnixMilli(), uriString(r.SCSCF),
+				expires_at, since, scscf, as_uri, token, instance, reg_id, contact, call_id, cseq, icid, orig_ioi,
+				charging_function_addresses) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ClientID,
+				r.MCPTTID.String(), r.IMPU.String(), string(set), r.Expires.UnixMilli(), r.Since.UnixMilli(), uriString(r.SCSCF),
 				uriString(r.AS), r.Token, r.Instance, r.RegID, uriString(r.Contact), r.CallID, r.CSeq,
 				r.Charging.ICID, r.Charging.OrigIOI, r.Charging.FunctionAddresses); err != nil {
 				return err
@@ -65,7 +65,7 @@ func (d *DB) MCPTTRegistrations(ctx context.Context) (_ []registrar.Record, err 
 }
 
 func (d *DB) mcpttRegistrations(ctx context.Context) ([]registrar.Record, []string, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT client_id, mcptt_id, impu, impus, expires_at, scscf, as_uri, token,
+	rows, err := d.conn.QueryContext(ctx, `SELECT client_id, mcptt_id, impu, impus, expires_at, since, scscf, as_uri, token,
 		instance, reg_id, contact, call_id, cseq, icid, orig_ioi, charging_function_addresses FROM mcptt_registrations
 		ORDER BY client_id`)
 	if err != nil {
@@ -83,15 +83,15 @@ func (d *DB) mcpttRegistrations(ctx context.Context) ([]registrar.Record, []stri
 		var (
 			r                                 registrar.Record
 			id, impu, set, scscf, as, contact string
-			expires                           int64
+			expires, since                    int64
 		)
 
-		if err := rows.Scan(&r.ClientID, &id, &impu, &set, &expires, &scscf, &as, &r.Token, &r.Instance, &r.RegID,
+		if err := rows.Scan(&r.ClientID, &id, &impu, &set, &expires, &since, &scscf, &as, &r.Token, &r.Instance, &r.RegID,
 			&contact, &r.CallID, &r.CSeq, &r.Charging.ICID, &r.Charging.OrigIOI, &r.Charging.FunctionAddresses); err != nil {
 			return nil, nil, fmt.Errorf("get MCPTT registrations: %w", err)
 		}
 
-		r.Expires = time.UnixMilli(expires)
+		r.Expires, r.Since = time.UnixMilli(expires), time.UnixMilli(since)
 
 		if !parseMCPTTRecord(&r, []string{id, impu, scscf, as, contact}, set) {
 			bad = append(bad, r.ClientID)

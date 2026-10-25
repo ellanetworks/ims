@@ -59,6 +59,14 @@ func TestValid(t *testing.T) {
 		t.Errorf("server timers %+v", timers)
 	}
 
+	// T7, of no default of the table, the server's.
+	c := valid()
+	c.ServiceConfiguration.OnNetwork.FCTimersCounters.T7 = nil
+
+	if s, err := New(c); err != nil || s.ServerTimers(s.Group(mustURI(t, "sip:g@example.com"))).T7 != DefaultT7 {
+		t.Errorf("T7 of none: %v", err)
+	}
+
 	if n, limited := s.User(mustURI(t, "sip:a@example.com")).N2(); limited {
 		t.Errorf("N2 %d of a user without", n)
 	}
@@ -196,10 +204,6 @@ func TestInvalid(t *testing.T) {
 		{
 			"T1 below the server's minimum", func(c *Settings) { c.ServiceConfiguration.OnNetwork.FCTimersCounters.T1 = ptr(500 * time.Millisecond) },
 			[]string{"service-configuration.on-network.fc-timers-counters.T1-end-of-rtp-media: 500ms is below 1s"},
-		},
-		{
-			"no T7", func(c *Settings) { c.ServiceConfiguration.OnNetwork.FCTimersCounters.T7 = nil },
-			[]string{"service-configuration.on-network.fc-timers-counters.T7-floor-idle: is required"},
 		},
 		{
 			"C7", func(c *Settings) { c.ServiceConfiguration.OnNetwork.FCTimersCounters.C7 = ptr(65536) },

@@ -200,6 +200,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	if cfg.MCPTT != nil {
 		apiCfg.MCPTT = mcpttView{s}
+		apiCfg.MCPTTState = mcpttView{s}
 		apiCfg.MCPTTStatus = mcpttView{s}.Status
 	}
 

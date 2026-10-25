@@ -8,31 +8,27 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTGroup is an MCPTT group: the <list-service> of its group document (TS 24.481 §7.2) and the server's local policy
-// for it. An absent optional field is of its default.
+// MCPTTGroup is an MCPTT group: of the <list-service> of its group document (TS 24.481 §7.2) and the server's local
+// policy for it, what an operator sets. The group is a prearranged group, the only kind supported, of AMR-WB (TS
+// 26.179 §4.1.1); the server fixes the rest of the document to its defaults: no limit of participants, no minimum
+// to start nor of affiliated members, no required member.
 type MCPTTGroup struct {
-	GroupID string `json:"group_id"`
-	// InviteMembers is true, of a prearranged group, if absent: the only kind supported, chat groups to come.
-	InviteMembers               *bool         `json:"invite_members,omitempty"`
-	MaxParticipantCount         int           `json:"max_participant_count"`
-	PreferredVoiceEncodings     []string      `json:"preferred_voice_encodings"`
-	HangTimerMS                 *int64        `json:"hang_timer_ms,omitempty"`
-	MaximumDurationMS           int64         `json:"maximum_duration_ms"`
-	MinimumNumberToStart        int           `json:"minimum_number_to_start"`
-	TimeoutForAcknowledgementMS int64         `json:"timeout_for_acknowledgement_of_required_members_ms"`
-	ActionUponTimeout           string        `json:"action_upon_expiration_of_timeout_for_acknowledgement_of_required_members"`
-	MinimumNumberOfAffiliated   int           `json:"minimum_number_of_affiliated_members"`
-	ReleaseOnInitiatorLeave     bool          `json:"release_on_initiator_leave"`
-	Members                     []MCPTTMember `json:"members"`
+	GroupID                 string        `json:"group_id"`
+	DisplayName             string        `json:"display_name"`
+	HangTimerMS             *int64        `json:"hang_timer_ms,omitempty"`
+	MaximumDurationMS       int64         `json:"maximum_duration_ms"`
+	ReleaseOnInitiatorLeave bool          `json:"release_on_initiator_leave"`
+	Members                 []MCPTTMember `json:"members"`
 }
 
-// MCPTTMember is an <entry> of the group's list: an MCPTT user.
+// MCPTTMember is an <entry> of the group's list: an MCPTT user, receive-only or not, of the lowest priority, neither
+// required nor required to be affiliated. ImplicitAffiliation is of the user's profile, not of the entry: whether the
+// group is one of the user's implicit affiliations (TS 24.484 §8.3.2.7). Of a request, absent keeps what the user
+// has; removing a member removes it.
 type MCPTTMember struct {
 	MCPTTID             string `json:"mcptt_id"`
-	UserPriority        int    `json:"user_priority"`
-	Required            bool   `json:"required"`
 	RecvOnly            bool   `json:"recvonly"`
-	AffiliationRequired bool   `json:"affiliation_required"`
+	ImplicitAffiliation *bool  `json:"implicit_affiliation,omitempty"`
 }
 
 type MCPTTGroups struct {
@@ -50,11 +46,11 @@ func ListMCPTTGroups(cfg Config) http.Handler {
 			return
 		}
 
-		groups := cfg.MCPTT.Get().Groups
-		resp := MCPTTGroups{Items: []MCPTTGroup{}, Page: page, PerPage: perPage, TotalCount: len(groups)}
+		s := cfg.MCPTT.Get()
+		resp := MCPTTGroups{Items: []MCPTTGroup{}, Page: page, PerPage: perPage, TotalCount: len(s.Groups)}
 
-		for _, g := range paged(groups, page, perPage) {
-			resp.Items = append(resp.Items, mcpttGroupResponse(g))
+		for _, g := range paged(s.Groups, page, perPage) {
+			resp.Items = append(resp.Items, mcpttGroupResponse(g, s))
 		}
 
 		writeResponse(w, resp, http.StatusOK, cfg.Logger)
@@ -71,7 +67,7 @@ func GetMCPTTGroup(cfg Config) http.Handler {
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(s.Groups[i]), http.StatusOK, cfg.Logger)
+		writeResponse(w, mcpttGroupResponse(s.Groups[i], s), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -88,14 +84,14 @@ func CreateMCPTTGroup(cfg Config) http.Handler {
 			return
 		}
 
-		g, err := cfg.MCPTT.CreateGroup(r.Context(), g)
+		g, err := cfg.MCPTT.CreateGroup(r.Context(), g, mcpttImplicit(p.Members))
 		if err != nil {
 			writeMCPTTSettingsError(w, err, "Failed to create the group", mcpttField, cfg.Logger)
 			return
 		}
 
 		w.Header().Set("Location", "/api/v1/mcptt/groups/"+url.PathEscape(g.URI))
-		writeResponse(w, mcpttGroupResponse(g), http.StatusCreated, cfg.Logger)
+		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusCreated, cfg.Logger)
 	})
 }
 
@@ -122,17 +118,17 @@ func UpdateMCPTTGroup(cfg Config) http.Handler {
 			return
 		}
 
-		g, err := cfg.MCPTT.UpdateGroup(r.Context(), g)
+		g, err := cfg.MCPTT.UpdateGroup(r.Context(), g, mcpttImplicit(p.Members))
 		if err != nil {
 			writeMCPTTSettingsError(w, err, "Failed to update the group", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(g), http.StatusOK, cfg.Logger)
+		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
 	})
 }
 
-// DeleteMCPTTGroup deletes the group of the path, unless it is an implicit affiliation of a user.
+// DeleteMCPTTGroup deletes the group of the path, which goes from the implicit affiliations of its users.
 func DeleteMCPTTGroup(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteGroup(r.Context(), r.PathValue("group_id")); err != nil {
@@ -162,7 +158,7 @@ func PutMCPTTMember(cfg Config) http.Handler {
 
 		p.MCPTTID = id
 
-		g, added, err := cfg.MCPTT.PutMember(r.Context(), group, mcpttEntrySettings(p))
+		g, added, err := cfg.MCPTT.PutMember(r.Context(), group, mcpttEntrySettings(p), p.ImplicitAffiliation)
 		if err != nil {
 			writeMCPTTSettingsError(w, err, "Failed to put the member", mcpttMemberField, cfg.Logger)
 			return
@@ -173,7 +169,7 @@ func PutMCPTTMember(cfg Config) http.Handler {
 			status = http.StatusCreated
 		}
 
-		writeResponse(w, mcpttGroupResponse(g), status, cfg.Logger)
+		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), status, cfg.Logger)
 	})
 }
 
@@ -188,35 +184,42 @@ func DeleteMCPTTMember(cfg Config) http.Handler {
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(g), http.StatusOK, cfg.Logger)
+		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
 	})
+}
+
+// mcpttImplicit is the implicit affiliation of the members that have one.
+func mcpttImplicit(members []MCPTTMember) mcpttsettings.Implicit {
+	implicit := mcpttsettings.Implicit{}
+
+	for _, m := range members {
+		if m.ImplicitAffiliation != nil {
+			implicit[m.MCPTTID] = *m.ImplicitAffiliation
+		}
+	}
+
+	return implicit
 }
 
 // mcpttGroupSettings is the group of p, or the problem with its durations.
 func mcpttGroupSettings(p MCPTTGroup) (mcpttsettings.Group, string) {
 	g := mcpttsettings.Group{
-		URI: p.GroupID, InviteMembers: p.InviteMembers == nil || *p.InviteMembers, MaxParticipants: p.MaxParticipantCount,
-		Encodings: p.PreferredVoiceEncodings, MinimumToStart: p.MinimumNumberToStart,
-		TNG1Action: mcpttsettings.Action(p.ActionUponTimeout), MinimumAffiliated: p.MinimumNumberOfAffiliated,
-		ReleaseOnInitiatorLeave: p.ReleaseOnInitiatorLeave,
+		URI: p.GroupID, DisplayName: p.DisplayName, InviteMembers: true, ReleaseOnInitiatorLeave: p.ReleaseOnInitiatorLeave,
 	}
 
 	var problems []string
 
-	add := func(problem string) {
-		if problem != "" {
-			problems = append(problems, problem)
-		}
+	t4, problem := optionalDuration("hang_timer_ms", p.HangTimerMS)
+	if problem != "" {
+		problems = append(problems, problem)
 	}
 
-	var problem string
+	tng3, problem := duration("maximum_duration_ms", p.MaximumDurationMS)
+	if problem != "" {
+		problems = append(problems, problem)
+	}
 
-	g.T4, problem = optionalDuration("hang_timer_ms", p.HangTimerMS)
-	add(problem)
-	g.TNG3, problem = duration("maximum_duration_ms", p.MaximumDurationMS)
-	add(problem)
-	g.TNG1, problem = duration("timeout_for_acknowledgement_of_required_members_ms", p.TimeoutForAcknowledgementMS)
-	add(problem)
+	g.T4, g.TNG3 = t4, tng3
 
 	for _, m := range p.Members {
 		g.List.Entries = append(g.List.Entries, mcpttEntrySettings(m))
@@ -226,27 +229,20 @@ func mcpttGroupSettings(p MCPTTGroup) (mcpttsettings.Group, string) {
 }
 
 func mcpttEntrySettings(m MCPTTMember) mcpttsettings.Entry {
-	return mcpttsettings.Entry{
-		URI: m.MCPTTID, UserPriority: m.UserPriority, Required: m.Required, ReceiveOnly: m.RecvOnly,
-		AffiliationRequired: m.AffiliationRequired,
-	}
+	return mcpttsettings.Entry{URI: m.MCPTTID, ReceiveOnly: m.RecvOnly}
 }
 
-func mcpttGroupResponse(g mcpttsettings.Group) MCPTTGroup {
+// mcpttGroupResponse is g, its members' implicit affiliations those of their users of s.
+func mcpttGroupResponse(g mcpttsettings.Group, s mcpttsettings.Settings) MCPTTGroup {
 	resp := MCPTTGroup{
-		GroupID: g.URI, InviteMembers: &g.InviteMembers, MaxParticipantCount: g.MaxParticipants,
-		PreferredVoiceEncodings: orEmpty(g.Encodings), HangTimerMS: optionalMilliseconds(g.T4),
-		MaximumDurationMS: milliseconds(g.TNG3), MinimumNumberToStart: g.MinimumToStart,
-		TimeoutForAcknowledgementMS: milliseconds(g.TNG1), ActionUponTimeout: string(g.TNG1Action),
-		MinimumNumberOfAffiliated: g.MinimumAffiliated, ReleaseOnInitiatorLeave: g.ReleaseOnInitiatorLeave,
-		Members: []MCPTTMember{},
+		GroupID: g.URI, DisplayName: g.DisplayName, HangTimerMS: optionalMilliseconds(g.T4),
+		MaximumDurationMS: milliseconds(g.TNG3), ReleaseOnInitiatorLeave: g.ReleaseOnInitiatorLeave, Members: []MCPTTMember{},
 	}
 
 	for _, e := range g.List.Entries {
-		resp.Members = append(resp.Members, MCPTTMember{
-			MCPTTID: e.URI, UserPriority: e.UserPriority, Required: e.Required, RecvOnly: e.ReceiveOnly,
-			AffiliationRequired: e.AffiliationRequired,
-		})
+		implicit := implicitlyAffiliated(s, e.URI, g.URI)
+
+		resp.Members = append(resp.Members, MCPTTMember{MCPTTID: e.URI, RecvOnly: e.ReceiveOnly, ImplicitAffiliation: &implicit})
 	}
 
 	return resp

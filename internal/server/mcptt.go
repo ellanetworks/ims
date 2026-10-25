@@ -8,7 +8,10 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/mcptt"
+	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
+	"github.com/ellanetworks/ims/internal/mcptt/controlling"
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
+	"github.com/ellanetworks/ims/sip"
 )
 
 // errMCPTTRestarting is of a change of the MCPTT settings while the AS restarts, for a new home domain.
@@ -65,7 +68,127 @@ type mcpttView struct {
 	s *Server
 }
 
-var _ api.MCPTTSettings = mcpttView{}
+var (
+	_ api.MCPTTSettings = mcpttView{}
+	_ api.MCPTTState    = mcpttView{}
+)
+
+func (v mcpttView) as() (*mcptt.AS, error) {
+	if a := v.s.mcptt.Load(); a != nil {
+		return a, nil
+	}
+
+	return nil, errMCPTTRestarting
+}
+
+func (v mcpttView) Registrations() ([]api.MCPTTRegistration, error) {
+	a, err := v.as()
+	if err != nil {
+		return nil, err
+	}
+
+	clients := a.Clients()
+	out := make([]api.MCPTTRegistration, len(clients))
+
+	for i, b := range clients {
+		out[i] = api.MCPTTRegistration{
+			MCPTTID: b.MCPTTID.String(), ClientID: b.ClientID, IMPU: b.IMPU.String(), IMPUs: uriStrings(b.IMPUs),
+			Since: b.Since, Expires: b.Expires,
+		}
+
+		for _, c := range b.Contacts {
+			out[i].Contacts = append(out[i].Contacts, c.URI.String())
+		}
+	}
+
+	return out, nil
+}
+
+func (v mcpttView) Affiliations() ([]api.MCPTTAffiliation, error) {
+	a, err := v.as()
+	if err != nil {
+		return nil, err
+	}
+
+	var out []api.MCPTTAffiliation
+
+	for _, c := range a.Affiliations() {
+		for _, g := range c.Groups {
+			// A de-affiliated entry waits to go: the client is no longer affiliated (TS 24.379 §9.2.2.2.2).
+			if g.Status == affiliation.Deaffiliated {
+				continue
+			}
+
+			out = append(out, api.MCPTTAffiliation{
+				MCPTTID: c.User.String(), ClientID: c.Client, GroupID: g.ID.String(), Status: string(g.Status),
+			})
+		}
+	}
+
+	return out, nil
+}
+
+func (v mcpttView) Calls(ctx context.Context) ([]api.MCPTTCall, error) {
+	a, err := v.as()
+	if err != nil {
+		return nil, err
+	}
+
+	calls, err := a.Calls(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]api.MCPTTCall, len(calls))
+	for i, c := range calls {
+		out[i] = mcpttCall(c)
+	}
+
+	return out, nil
+}
+
+func (v mcpttView) Call(ctx context.Context, id string) (api.MCPTTCall, bool, error) {
+	a, err := v.as()
+	if err != nil {
+		return api.MCPTTCall{}, false, err
+	}
+
+	c, ok, err := a.Call(ctx, id)
+	if err != nil || !ok {
+		return api.MCPTTCall{}, false, err
+	}
+
+	return mcpttCall(c), true, nil
+}
+
+func mcpttCall(c controlling.Call) api.MCPTTCall {
+	out := api.MCPTTCall{
+		ID: c.ID, SessionID: c.Session.String(), GroupID: c.Group.String(), Originator: c.Originator.String(),
+		Created: c.Created, Started: c.Started, Ends: c.Ends, TalkingSince: c.TalkingSince,
+	}
+
+	// No talker: the floor is idle.
+	if c.Talker.Host != "" {
+		out.Talker = c.Talker.String()
+	}
+
+	for _, p := range c.Participants {
+		out.Participants = append(out.Participants, api.MCPTTParticipant{
+			MCPTTID: p.ID.String(), Joined: p.Joined, Required: p.Required, ReceiveOnly: p.ReceiveOnly,
+		})
+	}
+
+	return out
+}
+
+func uriStrings(uris []sip.URI) []string {
+	out := make([]string, len(uris))
+	for i, u := range uris {
+		out[i] = u.String()
+	}
+
+	return out
+}
 
 func (v mcpttView) live() (*mcpttsettings.Live, error) {
 	if a := v.s.mcptt.Load(); a != nil {
@@ -133,22 +256,22 @@ func (v mcpttView) DeleteUser(ctx context.Context, id string) error {
 	return l.DeleteUser(ctx, id)
 }
 
-func (v mcpttView) CreateGroup(ctx context.Context, g mcpttsettings.Group) (mcpttsettings.Group, error) {
+func (v mcpttView) CreateGroup(ctx context.Context, g mcpttsettings.Group, implicit mcpttsettings.Implicit) (mcpttsettings.Group, error) {
 	l, err := v.live()
 	if err != nil {
 		return mcpttsettings.Group{}, err
 	}
 
-	return l.CreateGroup(ctx, g)
+	return l.CreateGroup(ctx, g, implicit)
 }
 
-func (v mcpttView) UpdateGroup(ctx context.Context, g mcpttsettings.Group) (mcpttsettings.Group, error) {
+func (v mcpttView) UpdateGroup(ctx context.Context, g mcpttsettings.Group, implicit mcpttsettings.Implicit) (mcpttsettings.Group, error) {
 	l, err := v.live()
 	if err != nil {
 		return mcpttsettings.Group{}, err
 	}
 
-	return l.UpdateGroup(ctx, g)
+	return l.UpdateGroup(ctx, g, implicit)
 }
 
 func (v mcpttView) DeleteGroup(ctx context.Context, uri string) error {
@@ -160,13 +283,13 @@ func (v mcpttView) DeleteGroup(ctx context.Context, uri string) error {
 	return l.DeleteGroup(ctx, uri)
 }
 
-func (v mcpttView) PutMember(ctx context.Context, group string, e mcpttsettings.Entry) (mcpttsettings.Group, bool, error) {
+func (v mcpttView) PutMember(ctx context.Context, group string, e mcpttsettings.Entry, implicit *bool) (mcpttsettings.Group, bool, error) {
 	l, err := v.live()
 	if err != nil {
 		return mcpttsettings.Group{}, false, err
 	}
 
-	return l.PutMember(ctx, group, e)
+	return l.PutMember(ctx, group, e, implicit)
 }
 
 func (v mcpttView) DeleteMember(ctx context.Context, group, id string) (mcpttsettings.Group, error) {

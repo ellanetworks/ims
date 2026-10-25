@@ -13,18 +13,20 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Store persists the changes of Live, each before it takes effect. A user or group is found by the identity of its
-// MCPTT ID or URI, as Key has it.
+// Store persists the changes of Live, each before it takes effect, in one transaction. A user or group is found by
+// the identity of its MCPTT ID or URI, as Key has it. Of a change of a group or member, users are the users whose
+// implicit affiliations it changes, which it stores too. A user deleted goes from the groups it is a member of; a
+// group deleted, or a member removed, from the implicit affiliations of its users.
 type Store interface {
 	UpdateSystem(ctx context.Context, s System) error
 	UpdateServiceConfiguration(ctx context.Context, c ServiceConfiguration) error
 	CreateUser(ctx context.Context, u User) error
 	UpdateUser(ctx context.Context, u User) error
 	DeleteUser(ctx context.Context, mcpttID string) error
-	CreateGroup(ctx context.Context, g Group) error
-	UpdateGroup(ctx context.Context, g Group) error
+	CreateGroup(ctx context.Context, g Group, users []User) error
+	UpdateGroup(ctx context.Context, g Group, users []User) error
 	DeleteGroup(ctx context.Context, uri string) error
-	PutMember(ctx context.Context, group string, e Entry) error
+	PutMember(ctx context.Context, group string, e Entry, users []User) error
 	DeleteMember(ctx context.Context, group, mcpttID string) error
 }
 
@@ -114,7 +116,8 @@ func (l *Live) UpdateUser(ctx context.Context, u User) (User, error) {
 	return u, err
 }
 
-// DeleteUser deletes the user of MCPTT ID id, unless it is a member of a group.
+// DeleteUser deletes the user of MCPTT ID id, and removes it from the groups it is a member of. What the removal makes
+// invalid of a group is a conflict.
 func (l *Live) DeleteUser(ctx context.Context, id string) error {
 	var written string
 
@@ -126,40 +129,52 @@ func (l *Live) DeleteUser(ctx context.Context, id string) error {
 
 		written = next.Users[i].MCPTTUserID
 		k := keyOf(written)
+		member := func(e Entry) bool { return keyOf(e.URI) == k }
 
-		var of []string
-
-		for _, g := range next.Groups {
-			if slices.ContainsFunc(g.List.Entries, func(e Entry) bool { return keyOf(e.URI) == k }) {
-				of = append(of, g.URI)
-			}
+		groups := slices.Clone(next.Groups)
+		for j := range groups {
+			groups[j].List.Entries = slices.DeleteFunc(slices.Clone(groups[j].List.Entries), member)
 		}
 
-		if len(of) > 0 {
-			return "", refused(ErrConflict, fmt.Sprintf("%s is a member of %s", written, strings.Join(of, ", ")))
-		}
-
+		next.Groups = groups
 		next.Users = slices.Delete(slices.Clone(next.Users), i, i+1)
 
 		return "", nil
 	}, func() error { return l.store.DeleteUser(ctx, written) })
 }
 
-// CreateGroup adds g, after the other groups, and returns it as stored.
-func (l *Live) CreateGroup(ctx context.Context, g Group) (Group, error) {
+// Implicit is, of members by MCPTT ID, whether the group is an implicit affiliation of their user: true makes it one,
+// after the user's others, false not one. A member absent keeps what its user has.
+type Implicit map[string]bool
+
+// CreateGroup adds g, after the other groups, makes it an implicit affiliation of its members as implicit has it, and
+// returns it as stored.
+func (l *Live) CreateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
+	var users []User
+
 	err := l.change(func(next *Settings) (string, error) {
 		g.List.Entries = next.memberURIs(g.List.Entries)
 		next.Groups = append(slices.Clone(next.Groups), g)
 
+		changed := map[int]bool{}
+		for id, on := range implicit {
+			next.affiliate(id, g.URI, on, changed)
+		}
+
+		users = next.usersAt(changed)
+
 		return "groups[" + strconv.Itoa(len(next.Groups)-1) + "]", nil
-	}, func() error { return l.store.CreateGroup(ctx, g) })
+	}, func() error { return l.store.CreateGroup(ctx, g, users) })
 
 	return g, err
 }
 
 // UpdateGroup replaces the group of g's URI with g, members included, which keeps the URI as the group has it, and
-// returns it as stored.
-func (l *Live) UpdateGroup(ctx context.Context, g Group) (Group, error) {
+// returns it as stored. The group goes from the implicit affiliations of the members it no longer has, and is one of
+// its members' as implicit has it.
+func (l *Live) UpdateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
+	var users []User
+
 	err := l.change(func(next *Settings) (string, error) {
 		i := next.GroupIndex(g.URI)
 		if i < 0 {
@@ -168,16 +183,31 @@ func (l *Live) UpdateGroup(ctx context.Context, g Group) (Group, error) {
 
 		g.URI = next.Groups[i].URI
 		g.List.Entries = next.memberURIs(g.List.Entries)
+
+		changed := map[int]bool{}
+
+		for _, e := range next.Groups[i].List.Entries {
+			k := keyOf(e.URI)
+			if !slices.ContainsFunc(g.List.Entries, func(f Entry) bool { return keyOf(f.URI) == k }) {
+				next.affiliate(e.URI, g.URI, false, changed)
+			}
+		}
+
+		for id, on := range implicit {
+			next.affiliate(id, g.URI, on, changed)
+		}
+
 		next.Groups = slices.Clone(next.Groups)
 		next.Groups[i] = g
+		users = next.usersAt(changed)
 
 		return "groups[" + strconv.Itoa(i) + "]", nil
-	}, func() error { return l.store.UpdateGroup(ctx, g) })
+	}, func() error { return l.store.UpdateGroup(ctx, g, users) })
 
 	return g, err
 }
 
-// DeleteGroup deletes the group of URI uri, unless it is an implicit affiliation of a user.
+// DeleteGroup deletes the group of URI uri, and removes it from the implicit affiliations of its users.
 func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 	var written string
 
@@ -188,19 +218,10 @@ func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 		}
 
 		written = next.Groups[i].URI
-		k := keyOf(written)
 
-		var of []string
-
+		changed := map[int]bool{}
 		for _, u := range next.Users {
-			if slices.ContainsFunc(u.ImplicitAffiliations, func(a string) bool { return keyOf(a) == k }) {
-				of = append(of, u.MCPTTUserID)
-			}
-		}
-
-		if len(of) > 0 {
-			return "", refused(ErrConflict, fmt.Sprintf("%s is an implicit affiliation of %s", written,
-				strings.Join(of, ", ")))
+			next.affiliate(u.MCPTTUserID, written, false, changed)
 		}
 
 		next.Groups = slices.Delete(slices.Clone(next.Groups), i, i+1)
@@ -210,12 +231,14 @@ func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 }
 
 // PutMember adds e to the members of the group of URI group, after the others, or replaces the member of its MCPTT
-// ID where it is. It returns the group as stored, and whether e was added.
-func (l *Live) PutMember(ctx context.Context, group string, e Entry) (Group, bool, error) {
+// ID where it is; the group is an implicit affiliation of its user if implicit is true, not one if false, as it was
+// if nil. It returns the group as stored, and whether e was added.
+func (l *Live) PutMember(ctx context.Context, group string, e Entry, implicit *bool) (Group, bool, error) {
 	var (
 		written string
 		stored  Group
 		added   bool
+		users   []User
 	)
 
 	err := l.change(func(next *Settings) (string, error) {
@@ -243,14 +266,21 @@ func (l *Live) PutMember(ctx context.Context, group string, e Entry) (Group, boo
 		next.Groups = slices.Clone(next.Groups)
 		next.Groups[i], stored = g, g
 
+		if implicit != nil {
+			changed := map[int]bool{}
+			next.affiliate(e.URI, written, *implicit, changed)
+			users = next.usersAt(changed)
+		}
+
 		return fmt.Sprintf("groups[%d].list.entries[%d]", i, j), nil
-	}, func() error { return l.store.PutMember(ctx, written, e) })
+	}, func() error { return l.store.PutMember(ctx, written, e, users) })
 
 	return stored, added, err
 }
 
-// DeleteMember removes the member of MCPTT ID id from the group of URI group, and returns the group as stored. What
-// the removal makes invalid, of the group or of its members' affiliations, is a conflict: the request has no body.
+// DeleteMember removes the member of MCPTT ID id from the group of URI group, and the group from the implicit
+// affiliations of its user, and returns the group as stored. What the removal makes invalid of the group is a
+// conflict: the request has no body.
 func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error) {
 	var (
 		written, member string
@@ -275,6 +305,7 @@ func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error
 		g.List.Entries = slices.Delete(slices.Clone(g.List.Entries), j, j+1)
 		next.Groups = slices.Clone(next.Groups)
 		next.Groups[i], stored = g, g
+		next.affiliate(member, written, false, map[int]bool{})
 
 		return "", nil
 	}, func() error { return l.store.DeleteMember(ctx, written, member) })
@@ -409,6 +440,49 @@ func (s Settings) GroupIndex(uri string) int {
 	k := keyOf(uri)
 
 	return slices.IndexFunc(s.Groups, func(g Group) bool { return k != "" && keyOf(g.URI) == k })
+}
+
+// affiliate makes the group of URI group an implicit affiliation of the user of MCPTT ID id, after its others, if on,
+// or not one; and marks the user's index changed if it changes. Of no such user, it does nothing: a member of no
+// user is an error of its group.
+func (s *Settings) affiliate(id, group string, on bool, changed map[int]bool) {
+	i := s.UserIndex(id)
+	if i < 0 {
+		return
+	}
+
+	u := s.Users[i]
+	k := keyOf(group)
+
+	switch j := slices.IndexFunc(u.ImplicitAffiliations, func(a string) bool { return keyOf(a) == k }); {
+	case on && j < 0:
+		u.ImplicitAffiliations = append(slices.Clone(u.ImplicitAffiliations), group)
+	case !on && j >= 0:
+		u.ImplicitAffiliations = slices.Delete(slices.Clone(u.ImplicitAffiliations), j, j+1)
+	default:
+		return
+	}
+
+	// The users of the settings before are shared: cloned once, on the first change.
+	if len(changed) == 0 {
+		s.Users = slices.Clone(s.Users)
+	}
+
+	s.Users[i] = u
+	changed[i] = true
+}
+
+// usersAt are the users of the indexes changed, in order.
+func (s Settings) usersAt(changed map[int]bool) []User {
+	var users []User
+
+	for i := range s.Users {
+		if changed[i] {
+			users = append(users, s.Users[i])
+		}
+	}
+
+	return users
 }
 
 // memberURIs are entries, each of the MCPTT ID as its user has it, as the store has them.

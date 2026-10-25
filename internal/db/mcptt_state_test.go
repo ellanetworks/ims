@@ -28,10 +28,11 @@ func TestRegistrations(t *testing.T) {
 	d := openTestDB(t)
 
 	expires := time.UnixMilli(time.Now().Add(time.Hour).UnixMilli())
+	since := expires.Add(-2 * time.Hour)
 	full := registrar.Record{
 		Binding: registrar.Binding{
 			MCPTTID: mustURI(t, "sip:a@example.com"), ClientID: "c1", IMPU: mustURI(t, "sip:a@ims.example.com"),
-			IMPUs: []sip.URI{mustURI(t, "sip:a@ims.example.com"), mustURI(t, "tel:+15550100")}, Expires: expires,
+			IMPUs: []sip.URI{mustURI(t, "sip:a@ims.example.com"), mustURI(t, "tel:+15550100")}, Expires: expires, Since: since,
 			SCSCF: mustURI(t, "sip:scscf.ims.example.com:6060;transport=tcp"), Token: "t1",
 			Charging: registrar.Charging{ICID: "4a2f", OrigIOI: "ims.example.com", FunctionAddresses: "ccf=192.0.2.1"},
 		},
@@ -40,7 +41,7 @@ func TestRegistrations(t *testing.T) {
 	}
 	bare := registrar.Record{Binding: registrar.Binding{
 		MCPTTID: mustURI(t, "sip:b@example.com"), ClientID: "c2", IMPU: mustURI(t, "sip:b@ims.example.com"),
-		IMPUs: []sip.URI{mustURI(t, "sip:b@ims.example.com")}, Expires: expires,
+		IMPUs: []sip.URI{mustURI(t, "sip:b@ims.example.com")}, Expires: expires, Since: since,
 	}}
 
 	if err := d.SaveMCPTTRegistrations(ctx, []registrar.Record{full, bare}, nil); err != nil {
@@ -126,7 +127,7 @@ func TestUnparsableState(t *testing.T) {
 	}
 
 	for _, q := range []string{
-		`INSERT INTO mcptt_registrations SELECT 'c2', mcptt_id, 'not a URI', impus, expires_at, scscf, as_uri, token, instance,
+		`INSERT INTO mcptt_registrations SELECT 'c2', mcptt_id, 'not a URI', impus, expires_at, since, scscf, as_uri, token, instance,
 			reg_id, contact, call_id, cseq, icid, orig_ioi, charging_function_addresses FROM mcptt_registrations`,
 		`INSERT INTO mcptt_affiliation_clients VALUES ('k', 'c2', 'not a URI', '')`,
 	} {

@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -154,6 +156,8 @@ type user struct {
 
 	name   string
 	id     string
+	sub    int
+	client string
 	ue     *mcUE
 	events chan client.Event
 }
@@ -168,7 +172,10 @@ func newUser(t *testing.T, name string, i int) *user {
 
 	var c atomic.Pointer[client.Client]
 
-	u := &user{name: name, id: "sip:" + name + "@" + domain, events: make(chan client.Event, 1024)}
+	u := &user{
+		name: name, id: "sip:" + name + "@" + domain, sub: i,
+		client: fmt.Sprintf("urn:uuid:00000000-0000-1000-8000-%012d", i+1), events: make(chan client.Event, 1024),
+	}
 	u.ue = newMCUE(t, i, service(&c))
 	register(t, u.ue.UE)
 
@@ -179,12 +186,15 @@ func newUser(t *testing.T, name string, i int) *user {
 
 	speaker := clienttest.NewSpeaker(u.ue.Agent().Layer().Clock())
 
+	// lastIdle tells the last floor event was an idle floor; OnEvent runs on the client's strand, one at a time.
+	var lastIdle bool
+
 	cl, err := client.New(client.Config{
 		Agent:     u.ue.Agent(),
 		Originate: func(req *sip.Request) error { return u.ue.Originate(req, mcpttService) },
 		IMPU:      impu,
 		MCPTTID:   mustURI(t, u.id),
-		ClientID:  fmt.Sprintf("urn:uuid:00000000-0000-1000-8000-%012d", i+1),
+		ClientID:  u.client,
 		Contact: func() sip.Address {
 			c, _ := u.ue.Contact(mcpttService)
 			return c
@@ -197,6 +207,17 @@ func newUser(t *testing.T, name string, i int) *user {
 		Floor:            floorTimers,
 		OnEvent: func(e client.Event) {
 			speaker.Event(e)
+
+			// The server announces an idle floor C7 times, 10 by default (TS 24.380 Table 11.2.3-1): a floor:idle is
+			// expected once, the repeats aside, so that one does not stand for a later one.
+			if e.Kind == client.EventFloor {
+				idle := e.Floor.Kind == floor.NoticeIdle
+				if idle && lastIdle {
+					return
+				}
+
+				lastIdle = idle
+			}
 
 			select {
 			case u.events <- e:
@@ -222,6 +243,75 @@ func newUser(t *testing.T, name string, i int) *user {
 // users are alice, bob and carol, logged on.
 func users(t *testing.T) (alice, bob, carol *user) {
 	return newUser(t, "alice", 0), newUser(t, "bob", 1), newUser(t, "carol", 2)
+}
+
+// registration is a registration of the MCPTT API (openapi.yaml), the fields the tests read.
+type registration struct {
+	ClientID string   `json:"client_id"`
+	IMPU     string   `json:"impu"`
+	IMPUs    []string `json:"impus"`
+}
+
+// affiliation is an affiliation of the MCPTT API (openapi.yaml), the fields the tests read.
+type affiliation struct {
+	GroupID            string `json:"group_id"`
+	Status             string `json:"status"`
+	ConfiguredImplicit bool   `json:"configured_implicit"`
+}
+
+// path is the path of the list of the MCPTT API of u's items.
+func (u *user) path(list string) string {
+	return "/api/v1/mcptt/" + list + "?mcptt_id=" + url.QueryEscape(u.id)
+}
+
+// wantRegistered waits for the one registration of u, of its client, served at the IMPU of its MSISDN
+// (mcptt/provision.sh).
+func wantRegistered(t *testing.T, core *netns, u *user) {
+	t.Helper()
+
+	p := poll(t, core, u.path("registrations"), func(p page[registration]) bool { return len(p.Items) > 0 })
+
+	impu := "sip:" + subscribers[u.sub].msisdn + "@" + homeDomain
+
+	if r := p.Items; len(r) != 1 || r[0].ClientID != u.client || !slices.Contains(r[0].IMPUs, r[0].IMPU) ||
+		!slices.Contains(r[0].IMPUs, impu) {
+		t.Fatalf("%s: registrations %+v, want one of %s, served at %s", u.name, r, u.client, impu)
+	}
+}
+
+// wantAffiliated waits for u to be affiliated to the groups of want and to no other, each configured as an implicit
+// affiliation of u as want has it. Affiliating and affiliated count as affiliated, deaffiliating does not (TS 24.379
+// §9.2.2.2.11 3a); the groups of want must be affiliated, their owner's answer applied (§9.2.2.2.7).
+func wantAffiliated(t *testing.T, core *netns, u *user, want map[string]bool) {
+	t.Helper()
+
+	poll(t, core, u.path("affiliations"), func(p page[affiliation]) bool {
+		n := 0
+
+		for _, a := range p.Items {
+			implicit, ok := want[a.GroupID]
+
+			switch {
+			case ok && a.Status == "affiliated" && a.ConfiguredImplicit == implicit:
+				n++
+			case a.Status == "affiliating" || a.Status == "affiliated":
+				return false
+			}
+		}
+
+		return n == len(want)
+	})
+}
+
+// wantLoggedOff waits for u to have no registration and no affiliation: logged off, all its affiliations revoked
+// (TS 23.280 §5.2.5).
+func wantLoggedOff(t *testing.T, core *netns, u *user) {
+	t.Helper()
+
+	none := func(p page[struct{}]) bool { return len(p.Items) == 0 }
+
+	poll(t, core, u.path("registrations"), none)
+	poll(t, core, u.path("affiliations"), none)
 }
 
 func mustURI(t *testing.T, s string) sip.URI {
@@ -433,13 +523,41 @@ func warned(res *sip.Response, text string) bool {
 }
 
 // TS 24.379 §7.2.1, §7.3.2, §9.2.1.2, §9.2.2.2: the users log on through the IMS, the server authorising them from
-// the mcptt-info of the REGISTER that the third-party REGISTER carries; each then publishes its affiliation to fire
-// to the participating function, which takes it from a user it serves.
+// the mcptt-info of the REGISTER that the third-party REGISTER carries, and affiliating each to the groups configured
+// as its implicit affiliations (§9.2.2.2.15). Each then publishes its affiliations to the participating function,
+// which takes them from a user it serves (§9.2.2.2.3): fire, and rescue for alice, which she is affiliated to
+// explicitly only; the groups the publication leaves out are de-affiliated (step 14 a ii).
 func TestRegisterAffiliate(t *testing.T) {
-	for _, u := range []*user{newUser(t, "alice", 0), newUser(t, "bob", 1), newUser(t, "carol", 2)} {
+	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
+	alice, bob, carol := users(t)
+
+	// The implicit affiliations of mcptt/provision.sh, then the publications, each group configured as an implicit
+	// affiliation or not.
+	for _, c := range []struct {
+		u                 *user
+		implicit, publish map[string]bool
+	}{
+		{
+			alice,
+			map[string]bool{fire: true, police: true, quiet: true, brief: true},
+			map[string]bool{fire: true, rescue: false},
+		},
+		{bob, map[string]bool{fire: true, police: true, quiet: true, brief: true}, map[string]bool{fire: true}},
+		{carol, map[string]bool{fire: true, police: true}, map[string]bool{fire: true}},
+	} {
+		u := c.u
+
+		wantRegistered(t, core, u)
+		wantAffiliated(t, core, u, c.implicit)
+
+		var groups []sip.URI
+		for _, g := range slices.Sorted(maps.Keys(c.publish)) {
+			groups = append(groups, mustURI(t, g))
+		}
+
 		res := make(chan *sip.Response, 1)
 
-		err := u.Affiliate([]sip.URI{mustURI(t, fire)}, func(r *sip.Response, err error) {
+		err := u.Affiliate(groups, func(r *sip.Response, err error) {
 			if err != nil {
 				t.Errorf("%s: PUBLISH: %v", u.name, err)
 			}
@@ -458,6 +576,8 @@ func TestRegisterAffiliate(t *testing.T) {
 		case <-time.After(wait):
 			t.Fatalf("%s: PUBLISH unanswered", u.name)
 		}
+
+		wantAffiliated(t, core, u, c.publish)
 	}
 }
 
@@ -519,13 +639,15 @@ func TestGroupCall(t *testing.T) {
 
 // TS 24.379 §7.2.1 NOTE 1, §7.3.2; TS 24.229 §5.4.1.7: carol logs off, her UE re-registering without the MCPTT
 // feature tags, and the S-CSCF tells the server in a third-party REGISTER: alice's call to police invites bob, not
-// carol. carol logs on again and is invited to the next call. Then her UE deregisters, which the third-party REGISTER
-// of Expires 0 tells (§5.4.1.7 f), and she is not invited to the next.
+// carol. carol logs on again, implicitly affiliated again (TS 24.379 §9.2.2.2.15), and is invited to the next call.
+// Then her UE deregisters, which the third-party REGISTER of Expires 0 tells (§5.4.1.7 f), and she is not invited to
+// the next.
 //
 // The S-CSCF would not route an INVITE of the server to the contact of a logged-off carol either, as it lacks the
 // MCPTT feature tags the INVITE requires (TS 24.379 §6.3.3.1.2 steps 2 and 4, §6.3.2.2.3 step 1; RFC 3841 §7.2): that
-// the server drops the binding is checked by internal/server's tests.
+// the server drops the binding, and her affiliations with it (TS 23.280 §5.2.5), is checked through the API.
 func TestLogOff(t *testing.T) {
+	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
 	alice, bob, carol := users(t)
 
 	// police releases its calls when alice, their initiator, leaves (§6.3.8.1 3).
@@ -542,6 +664,8 @@ func TestLogOff(t *testing.T) {
 		t.Fatalf("carol: log off: %v", err)
 	}
 
+	wantLoggedOff(t, core, carol)
+
 	before := carol.ue.invites.Load()
 
 	end(callOf(t, police, alice, bob), bob)
@@ -555,11 +679,16 @@ func TestLogOff(t *testing.T) {
 		t.Fatalf("carol: log on: %v", err)
 	}
 
+	wantRegistered(t, core, carol)
+	wantAffiliated(t, core, carol, map[string]bool{fire: true, police: true})
+
 	end(callOf(t, police, alice, bob, carol), bob, carol)
 
 	if err := carol.ue.Deregister(ctx(t)); err != nil {
 		t.Fatalf("carol: deregister: %v", err)
 	}
+
+	wantLoggedOff(t, core, carol)
 
 	before = carol.ue.invites.Load()
 

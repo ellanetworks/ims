@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/mcptt"
@@ -121,11 +122,10 @@ func (e *mcpttEnv) fails(status int, method, path, body, want string) {
 }
 
 const (
-	alice = `{"mcptt_id": "sip:alice@mcptt.example.com", "impus": ["sip:alice@ims.example.com"]}`
-	bob   = `{"mcptt_id": "sip:bob@mcptt.example.com", "impus": ["sip:bob@ims.example.com", "tel:+15555550102"],
-		"max_simultaneous_calls_n6": 2}`
-	fire = `{"group_id": "sip:fire@mcptt.example.com", "invite_members": true, "maximum_duration_ms": 600000,
-		"hang_timer_ms": 30000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com", "user_priority": 2},
+	alice = `{"mcptt_id": "sip:alice@mcptt.example.com", "alias": "Alice", "impus": ["sip:alice@ims.example.com"]}`
+	bob   = `{"mcptt_id": "sip:bob@mcptt.example.com", "impus": ["sip:bob@ims.example.com", "tel:+15555550102"]}`
+	fire  = `{"group_id": "sip:fire@mcptt.example.com", "display_name": "Fire", "maximum_duration_ms": 600000,
+		"hang_timer_ms": 30000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com"},
 		{"mcptt_id": "sip:bob@MCPTT.example.com", "recvonly": true}]}`
 )
 
@@ -137,7 +137,13 @@ func (e *mcpttEnv) provision() {
 	e.ok(http.StatusCreated, "POST", "/api/v1/mcptt/users", bob, nil)
 	e.ok(http.StatusCreated, "POST", "/api/v1/mcptt/groups", fire, nil)
 	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/users/sip:alice@mcptt.example.com",
-		`{"impus": ["sip:alice@ims.example.com"], "implicit_affiliations": ["sip:fire@mcptt.example.com"]}`, nil)
+		`{"alias": "Alice", "impus": ["sip:alice@ims.example.com"], "implicit_affiliations": ["sip:fire@mcptt.example.com"]}`, nil)
+}
+
+// member is m of its implicit affiliation, as a response has it.
+func member(m MCPTTMember, implicit bool) MCPTTMember {
+	m.ImplicitAffiliation = &implicit
+	return m
 }
 
 // A system provisioned in order, as stored: the absent optional fields absent, the identities as their user and
@@ -147,16 +153,24 @@ func TestProvision(t *testing.T) {
 
 	var sc MCPTTServiceConfiguration
 
-	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/service-configuration",
-		`{"domain": "mcptt.example.com", "transmit_time_limit_ms": 20000, "fc_timers_counters": {"t7_floor_idle_ms": 1500, "c7_floor_idle": 0}}`, &sc)
+	// The domain of the organisation is the home domain's until set.
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/service-configuration", "", &sc)
 
-	if *sc.TransmitTimeLimitMS != 20000 || *sc.FCTimersCounters.T7FloorIdleMS != 1500 || *sc.FCTimersCounters.C7FloorIdle != 0 ||
-		sc.FCTimersCounters.T1EndOfRTPMediaMS != nil || sc.NumLevelsPriorityHierarchy != nil {
+	if sc != (MCPTTServiceConfiguration{Domain: homeDomain}) {
+		t.Errorf("seed service configuration %+v", sc)
+	}
+
+	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/service-configuration",
+		`{"domain": "mcptt.example.com", "transmit_time_limit_ms": 20000}`, &sc)
+
+	if sc.Domain != "mcptt.example.com" || *sc.TransmitTimeLimitMS != 20000 {
 		t.Errorf("service configuration %+v", sc)
 	}
 
-	if timers := e.live.Current().ServiceConfiguration().OnNetwork; timers.FCTimersCounters.T7.Milliseconds() != 1500 {
-		t.Errorf("snapshot %+v", timers)
+	// The rest fixed, to the defaults of TS 24.380 Table 11.1.3-1, T7 the server's.
+	if on := e.live.Current().ServiceConfiguration().OnNetwork; *on.FCTimersCounters.T7 != mcpttsettings.DefaultT7 ||
+		*on.TransmitTime.TimeLimit != 20*time.Second {
+		t.Errorf("snapshot %+v", on)
 	}
 
 	e.provision()
@@ -166,7 +180,7 @@ func TestProvision(t *testing.T) {
 	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/users/sip%3Aalice%40mcptt.example.com", "", &u)
 
 	want := MCPTTUser{
-		MCPTTID: "sip:alice@mcptt.example.com", IMPUs: []string{"sip:alice@ims.example.com"},
+		MCPTTID: "sip:alice@mcptt.example.com", Alias: "Alice", IMPUs: []string{"sip:alice@ims.example.com"},
 		ImplicitAffiliations: []string{"sip:fire@mcptt.example.com"},
 	}
 	if !reflect.DeepEqual(u, want) {
@@ -177,8 +191,11 @@ func TestProvision(t *testing.T) {
 
 	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/groups/sip:fire@MCPTT.example.com", "", &g)
 
-	if len(g.Members) != 2 || g.Members[1] != (MCPTTMember{MCPTTID: "sip:bob@mcptt.example.com", RecvOnly: true}) ||
-		*g.HangTimerMS != 30000 || g.MaximumDurationMS != 600000 || len(g.PreferredVoiceEncodings) != 0 {
+	wantMembers := []MCPTTMember{
+		member(MCPTTMember{MCPTTID: "sip:alice@mcptt.example.com"}, true),
+		member(MCPTTMember{MCPTTID: "sip:bob@mcptt.example.com", RecvOnly: true}, false),
+	}
+	if !reflect.DeepEqual(g.Members, wantMembers) || g.DisplayName != "Fire" || *g.HangTimerMS != 30000 || g.MaximumDurationMS != 600000 {
 		t.Errorf("fire %+v", g)
 	}
 
@@ -187,7 +204,7 @@ func TestProvision(t *testing.T) {
 	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/users?per_page=1&page=2", "", &users)
 
 	if users.TotalCount != 2 || len(users.Items) != 1 || users.Items[0].MCPTTID != "sip:bob@mcptt.example.com" ||
-		*users.Items[0].MaxSimultaneousCallsN6 != 2 || users.Items[0].ImplicitAffiliations == nil {
+		users.Items[0].ImplicitAffiliations == nil {
 		t.Errorf("users %+v", users)
 	}
 
@@ -232,7 +249,8 @@ func TestLocation(t *testing.T) {
 	}
 }
 
-// A member is added after the others, replaced where it is, and removed; the user then, once no group has it.
+// A member is added after the others, replaced where it is, and removed, of its implicit affiliation as the request
+// has it, or as it was; a user deleted leaves its groups, and a group deleted the implicit affiliations of its users.
 func TestMembers(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.provision()
@@ -241,29 +259,48 @@ func TestMembers(t *testing.T) {
 	var g MCPTTGroup
 
 	e.ok(http.StatusCreated, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:carol@mcptt.example.com",
-		`{"user_priority": 7}`, &g)
+		`{"recvonly": true, "implicit_affiliation": true}`, &g)
 	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:alice@mcptt.example.com",
-		`{"mcptt_id": "sip:alice@MCPTT.example.com", "affiliation_required": true}`, &g)
+		`{"mcptt_id": "sip:alice@MCPTT.example.com", "recvonly": true}`, &g)
 
 	want := []MCPTTMember{
-		{MCPTTID: "sip:alice@mcptt.example.com", AffiliationRequired: true},
-		{MCPTTID: "sip:bob@mcptt.example.com", RecvOnly: true},
-		{MCPTTID: "sip:carol@mcptt.example.com", UserPriority: 7},
+		member(MCPTTMember{MCPTTID: "sip:alice@mcptt.example.com", RecvOnly: true}, true),
+		member(MCPTTMember{MCPTTID: "sip:bob@mcptt.example.com", RecvOnly: true}, false),
+		member(MCPTTMember{MCPTTID: "sip:carol@mcptt.example.com", RecvOnly: true}, true),
 	}
 	if !reflect.DeepEqual(g.Members, want) {
 		t.Errorf("members %+v", g.Members)
 	}
 
-	e.fails(http.StatusConflict, "DELETE", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", "",
-		"sip:carol@mcptt.example.com is a member of sip:fire@mcptt.example.com")
-	e.ok(http.StatusOK, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:carol@mcptt.example.com", "", &g)
-	e.ok(http.StatusOK, "DELETE", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", "", nil)
-	e.fails(http.StatusNotFound, "GET", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", "", "user not found")
+	var u MCPTTUser
 
-	e.fails(http.StatusConflict, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com", "",
-		"sip:fire@mcptt.example.com is an implicit affiliation of sip:alice@mcptt.example.com")
-	e.ok(http.StatusOK, "PUT", "/api/v1/mcptt/users/sip:alice@mcptt.example.com", alice, nil)
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", "", &u)
+
+	if !reflect.DeepEqual(u.ImplicitAffiliations, []string{"sip:fire@mcptt.example.com"}) {
+		t.Errorf("carol's affiliations %v", u.ImplicitAffiliations)
+	}
+
+	e.ok(http.StatusOK, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:carol@mcptt.example.com", "", &g)
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", "", &u)
+
+	if len(u.ImplicitAffiliations) != 0 {
+		t.Errorf("carol's affiliations once not a member %v", u.ImplicitAffiliations)
+	}
+
+	e.ok(http.StatusOK, "DELETE", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", "", nil)
+	e.fails(http.StatusNotFound, "GET", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", "", "user not found")
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com", "", &g)
+
+	if len(g.Members) != 1 || g.Members[0].MCPTTID != "sip:alice@mcptt.example.com" {
+		t.Errorf("members once bob is deleted %+v", g.Members)
+	}
+
 	e.ok(http.StatusOK, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com", "", nil)
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/users/sip:alice@mcptt.example.com", "", &u)
+
+	if len(u.ImplicitAffiliations) != 0 {
+		t.Errorf("alice's affiliations once fire is deleted %v", u.ImplicitAffiliations)
+	}
 }
 
 // The problems of a refused change are at the fields of the request body: 400 of the body itself, 409 of what it
@@ -291,25 +328,12 @@ func TestRefused(t *testing.T) {
 			400, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"mcptt_id": "sip:carol@mcptt.example.com", "impus": ["tel:+1"]}`,
 			"mcptt_id: sip:carol@mcptt.example.com is not the MCPTT ID of the path, which a user keeps",
 		},
-		{
-			400, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"impus": ["tel:+1"], "max_simultaneous_calls_n6": 0}`,
-			"max_simultaneous_calls_n6: 0 is not positive",
-		},
 		{404, "PUT", "/api/v1/mcptt/users/sip:x@mcptt.example.com", `{"impus": ["tel:+1"]}`, "user not found"},
 		{404, "DELETE", "/api/v1/mcptt/users/sip:x@mcptt.example.com", "", "user not found"},
 		{
-			409, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com", "invite_members": true,
+			409, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com",
 				"maximum_duration_ms": 1000, "members": [{"mcptt_id": "sip:x@mcptt.example.com"}]}`,
 			"members[0].mcptt_id: sip:x@mcptt.example.com is not a configured user",
-		},
-		{
-			400, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com", "maximum_duration_ms": 1000,
-				"members": [{"mcptt_id": "sip:alice@mcptt.example.com", "user_priority": 256}]}`,
-			"members[0].user_priority: 256 is not within 0 and 255 (TS 24.481 §7.2.4.2)",
-		},
-		{
-			400, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com", "invite_members": false, "maximum_duration_ms": 1000}`,
-			"invite_members: is false, of a chat group (TS 24.481 §7.2.7): only prearranged groups are supported",
 		},
 		{400, "POST", "/api/v1/mcptt/users", alice + ` {}`, "Invalid request data"},
 		{
@@ -317,28 +341,27 @@ func TestRefused(t *testing.T) {
 			"Invalid request data",
 		},
 		{
-			400, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com", "invite_members": true, "maximum_duration_ms": 9223372036854775807}`,
+			400, "POST", "/api/v1/mcptt/groups", `{"group_id": "sip:police@mcptt.example.com", "maximum_duration_ms": 9223372036854775807}`,
 			"maximum_duration_ms: 9223372036854775807 is out of range",
 		},
 		{
-			400, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:bob@mcptt.example.com", `{"user_priority": -1}`,
-			"user_priority: -1 is not within 0 and 255 (TS 24.481 §7.2.4.2)",
+			// A field the server fixes.
+			400, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:bob@mcptt.example.com", `{"user_priority": 1}`,
+			"Invalid request data",
 		},
 		{
 			409, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:x@mcptt.example.com", `{}`,
 			"mcptt_id: sip:x@mcptt.example.com is not a configured user",
 		},
 		{
-			// alice, affiliated to fire, would no longer be a member of it.
-			409, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:alice@mcptt.example.com", "",
-			"the user sip:alice@mcptt.example.com: implicit_affiliations[0]: sip:fire@mcptt.example.com is a group sip:alice@mcptt.example.com is not a member of",
+			400, "PUT", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", `{"alias": "Bob\u0007", "impus": ["tel:+1"]}`,
+			`alias: "Bob\a" has a control character`,
 		},
 		{404, "DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:x@mcptt.example.com", "", "member not found"},
 		{404, "GET", "/api/v1/mcptt/groups/sip:x@mcptt.example.com", "", "group not found"},
 		{
-			400, "PUT", "/api/v1/mcptt/service-configuration", `{"domain": "mcptt.example.com", "fc_timers_counters": {"t1_end_of_rtp_media_ms": 7000}}`,
-			"fc_timers_counters.t7_floor_idle_ms: is required: it has no default (TS 24.380 Table 11.1.3-1); " +
-				"fc_timers_counters.t1_end_of_rtp_media_ms: 7s is above its maximum of 6s (TS 24.380 Table 11.1.3-1)",
+			400, "PUT", "/api/v1/mcptt/service-configuration", `{"domain": "-", "transmit_time_limit_ms": 0}`,
+			`domain: "-" is not a domain name; transmit_time_limit_ms: is zero, which means nothing (TS 24.380 Table 11.1.3-1)`,
 		},
 		{
 			409, "POST", "/api/v1/mcptt/groups", `{"group_id": "` + mcptt.System(homeDomain).ParticipatingPSI + `", "maximum_duration_ms": 60000}`,
@@ -418,9 +441,8 @@ func TestField(t *testing.T) {
 		"on-network-hang-timer":               "hang_timer_ms",
 		"on-network-invite-members":           "invite_members",
 		"preferred-voice-encodings[1]":        "preferred_voice_encodings[1]",
-		"on-network.fc-timers-counters.C7-floor-idle": "fc_timers_counters.c7_floor_idle",
-		"on-network.transmit-time.time-limit":         "transmit_time_limit_ms",
-		"participating-psi":                           "participating_psi",
+		"on-network.transmit-time.time-limit": "transmit_time_limit_ms",
+		"participating-psi":                   "participating_psi",
 	} {
 		if got := mcpttField(in); got != want {
 			t.Errorf("field(%q) = %q, want %q", in, got, want)
@@ -435,6 +457,11 @@ func (e *mcpttEnv) stored() {
 	stored, err := e.db.GetMCPTTSettings(e.t.Context())
 	if err != nil {
 		e.t.Fatal(err)
+	}
+
+	// The domain of the organisation the home domain's is stored empty.
+	if stored.ServiceConfiguration.Domain == "" {
+		stored.ServiceConfiguration.Domain = homeDomain
 	}
 
 	if stored.System = mcptt.System(homeDomain); !reflect.DeepEqual(normal(stored), normal(e.live.Get())) {
@@ -484,15 +511,16 @@ func TestStoredAsServed(t *testing.T) {
 	e := newMCPTTEnv(t)
 
 	for _, c := range []struct{ method, path, body string }{
-		{"PUT", "/api/v1/mcptt/service-configuration", `{"domain": "mcptt.example.com", "fc_timers_counters": {"t7_floor_idle_ms": 2000}}`},
+		{"PUT", "/api/v1/mcptt/service-configuration", `{"domain": "mcptt.example.com", "transmit_time_limit_ms": 20000}`},
+		{"PUT", "/api/v1/mcptt/service-configuration", `{"domain": "` + homeDomain + `"}`},
 		{"POST", "/api/v1/mcptt/users", alice},
 		{"POST", "/api/v1/mcptt/users", bob},
 		{"POST", "/api/v1/mcptt/users", `{"mcptt_id": "sip:carol@mcptt.example.com", "impus": ["sip:carol@ims.example.com"]}`},
 		{"POST", "/api/v1/mcptt/groups", fire},
 		{"PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:carol@MCPTT.example.com", `{"recvonly": true}`},
 		{"PUT", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", `{"impus": ["tel:+15550103"], "implicit_affiliations": ["sip:fire@MCPTT.example.com"]}`},
-		{"PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com", `{"maximum_duration_ms": 60000, "preferred_voice_encodings": ["AMR-WB"],
-			"members": [{"mcptt_id": "sip:carol@mcptt.example.com"}, {"mcptt_id": "sip:alice@mcptt.example.com", "user_priority": 3}]}`},
+		{"PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com", `{"maximum_duration_ms": 60000, "release_on_initiator_leave": true,
+			"members": [{"mcptt_id": "sip:carol@mcptt.example.com"}, {"mcptt_id": "sip:alice@mcptt.example.com", "recvonly": true}]}`},
 		{"DELETE", "/api/v1/mcptt/users/sip:bob@mcptt.example.com", ""},
 		{"DELETE", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:alice@mcptt.example.com", ""},
 		{"PUT", "/api/v1/mcptt/users/sip:carol@mcptt.example.com", `{"impus": ["tel:+15550103"]}`},

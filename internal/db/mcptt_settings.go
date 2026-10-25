@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
@@ -34,69 +35,58 @@ func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error
 	var s settings.Settings
 
 	var (
-		on                 = &s.ServiceConfiguration.OnNetwork
-		levels, c7         sql.NullInt64
-		t2, t1, t3, t7, t8 sql.NullInt64
+		t2 sql.NullInt64
 		// users and groups are the indexes of the users and groups, by row id.
 		users, groups = map[int64]int{}, map[int64]int{}
 	)
 
-	if err := tx.QueryRowContext(ctx, `SELECT domain, num_levels_priority_hierarchy, time_limit_ns, t1_ns, t3_ns, t7_ns, t8_ns, c7
-		FROM mcptt_service_configuration WHERE id = 1`).Scan(&s.ServiceConfiguration.Domain, &levels, &t2, &t1, &t3, &t7,
-		&t8, &c7); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT domain, time_limit_ns FROM mcptt_service_configuration WHERE id = 1`).Scan(
+		&s.ServiceConfiguration.Domain, &t2); err != nil {
 		return settings.Settings{}, fmt.Errorf("get MCPTT service configuration: %w", err)
 	}
 
-	on.NumLevelsPriorityHierarchy, on.TransmitTime.TimeLimit = intOf(levels), durationOf(t2)
-	fc := &on.FCTimersCounters
-	fc.T1, fc.T3, fc.T7, fc.T8, fc.C7 = durationOf(t1), durationOf(t3), durationOf(t7), durationOf(t8), intOf(c7)
+	s.ServiceConfiguration.OnNetwork.TransmitTime.TimeLimit = durationOf(t2)
 
-	err := queryRows(ctx, tx, "get MCPTT users", `SELECT id, mcptt_id, max_affiliations_n2, max_simultaneous_calls_n6 FROM mcptt_users
-		ORDER BY id`, func(rows *sql.Rows) error {
-		var (
-			id     int64
-			u      settings.User
-			n2, n6 sql.NullInt64
-		)
+	err := queryRows(ctx, tx, "get MCPTT users", `SELECT id, mcptt_id, alias FROM mcptt_users ORDER BY id`,
+		func(rows *sql.Rows) error {
+			var (
+				id int64
+				u  settings.User
+			)
 
-		if err := rows.Scan(&id, &u.MCPTTUserID, &n2, &n6); err != nil {
-			return err
-		}
+			if err := rows.Scan(&id, &u.MCPTTUserID, &u.Alias); err != nil {
+				return err
+			}
 
-		u.MaxAffiliationsN2, u.MaxSimultaneousCallsN6 = intOf(n2), intOf(n6)
-		users[id] = len(s.Users)
-		s.Users = append(s.Users, u)
+			users[id] = len(s.Users)
+			s.Users = append(s.Users, u)
 
-		return nil
-	})
+			return nil
+		})
 	if err != nil {
 		return settings.Settings{}, err
 	}
 
-	err = queryRows(ctx, tx, "get MCPTT groups", `SELECT id, uri, invite_members, max_participants, t4_ns, tng3_ns, minimum_to_start,
-		tng1_ns, tng1_action, minimum_affiliated, release_on_initiator_leave FROM mcptt_groups ORDER BY id`,
-		func(rows *sql.Rows) error {
-			var (
-				id                int64
-				g                 settings.Group
-				t4                sql.NullInt64
-				tng3, tng1        int64
-				action            string
-				invite, initiator bool
-			)
+	// The groups are prearranged groups, the only kind supported.
+	err = queryRows(ctx, tx, "get MCPTT groups", `SELECT id, uri, display_name, t4_ns, tng3_ns, release_on_initiator_leave
+		FROM mcptt_groups ORDER BY id`, func(rows *sql.Rows) error {
+		var (
+			id   int64
+			g    = settings.Group{InviteMembers: true}
+			t4   sql.NullInt64
+			tng3 int64
+		)
 
-			if err := rows.Scan(&id, &g.URI, &invite, &g.MaxParticipants, &t4, &tng3, &g.MinimumToStart, &tng1,
-				&action, &g.MinimumAffiliated, &initiator); err != nil {
-				return err
-			}
+		if err := rows.Scan(&id, &g.URI, &g.DisplayName, &t4, &tng3, &g.ReleaseOnInitiatorLeave); err != nil {
+			return err
+		}
 
-			g.InviteMembers, g.ReleaseOnInitiatorLeave = invite, initiator
-			g.T4, g.TNG3, g.TNG1, g.TNG1Action = durationOf(t4), time.Duration(tng3), time.Duration(tng1), settings.Action(action)
-			groups[id] = len(s.Groups)
-			s.Groups = append(s.Groups, g)
+		g.T4, g.TNG3 = durationOf(t4), time.Duration(tng3)
+		groups[id] = len(s.Groups)
+		s.Groups = append(s.Groups, g)
 
-			return nil
-		})
+		return nil
+	})
 	if err != nil {
 		return settings.Settings{}, err
 	}
@@ -149,38 +139,14 @@ func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error
 		return settings.Settings{}, err
 	}
 
-	if err := queryRows(ctx, tx, "get MCPTT encodings", `SELECT group_id, name FROM mcptt_group_encodings ORDER BY group_id, position`,
-		func(rows *sql.Rows) error {
-			var (
-				id   int64
-				name string
-			)
-
-			if err := rows.Scan(&id, &name); err != nil {
-				return err
-			}
-
-			i, ok := groups[id]
-			if !ok {
-				return orphan("encoding", name)
-			}
-
-			g := &s.Groups[i]
-			g.Encodings = append(g.Encodings, name)
-
-			return nil
-		}); err != nil {
-		return settings.Settings{}, err
-	}
-
-	if err := queryRows(ctx, tx, "get MCPTT members", `SELECT group_id, user_id, user_priority, required, recvonly,
-		affiliation_required FROM mcptt_group_members ORDER BY group_id, position`, func(rows *sql.Rows) error {
+	if err := queryRows(ctx, tx, "get MCPTT members", `SELECT group_id, user_id, recvonly FROM mcptt_group_members
+		ORDER BY group_id, position`, func(rows *sql.Rows) error {
 		var (
 			gid, uid int64
 			e        settings.Entry
 		)
 
-		if err := rows.Scan(&gid, &uid, &e.UserPriority, &e.Required, &e.ReceiveOnly, &e.AffiliationRequired); err != nil {
+		if err := rows.Scan(&gid, &uid, &e.ReceiveOnly); err != nil {
 			return err
 		}
 
@@ -234,13 +200,8 @@ func queryRows(ctx context.Context, tx *sql.Tx, what, query string, scan func(*s
 func (d *DB) UpdateMCPTTServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	on := c.OnNetwork
-	fc := on.FCTimersCounters
-
-	res, err := d.conn.ExecContext(ctx, `UPDATE mcptt_service_configuration SET domain = ?, num_levels_priority_hierarchy = ?,
-		time_limit_ns = ?, t1_ns = ?, t3_ns = ?, t7_ns = ?, t8_ns = ?, c7 = ? WHERE id = 1`, c.Domain,
-		nullInt(on.NumLevelsPriorityHierarchy), nullDuration(on.TransmitTime.TimeLimit), nullDuration(fc.T1),
-		nullDuration(fc.T3), nullDuration(fc.T7), nullDuration(fc.T8), nullInt(fc.C7))
+	res, err := d.conn.ExecContext(ctx, `UPDATE mcptt_service_configuration SET domain = ?, time_limit_ns = ? WHERE id = 1`,
+		c.Domain, nullDuration(c.OnNetwork.TransmitTime.TimeLimit))
 
 	return oneRow(res, err, "update MCPTT service configuration")
 }
@@ -268,9 +229,8 @@ func (d *DB) CreateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 			return err
 		}
 
-		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_users (mcptt_id, key, max_affiliations_n2,
-			max_simultaneous_calls_n6) VALUES (?, ?, ?, ?)`, u.MCPTTUserID, k, nullInt(u.MaxAffiliationsN2),
-			nullInt(u.MaxSimultaneousCallsN6))
+		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_users (mcptt_id, key, alias) VALUES (?, ?, ?)`, u.MCPTTUserID, k,
+			u.Alias)
 		if err != nil {
 			return duplicate(err)
 		}
@@ -294,32 +254,51 @@ func (d *DB) UpdateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 			return err
 		}
 
-		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_users SET mcptt_id = ?, max_affiliations_n2 = ?,
-			max_simultaneous_calls_n6 = ? WHERE id = ?`, u.MCPTTUserID, nullInt(u.MaxAffiliationsN2),
-			nullInt(u.MaxSimultaneousCallsN6), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_users SET mcptt_id = ?, alias = ? WHERE id = ?`, u.MCPTTUserID, u.Alias,
+			id); err != nil {
 			return err
 		}
 
-		for _, q := range []string{
-			`DELETE FROM mcptt_user_impus WHERE user_id = ?`,
-			`DELETE FROM mcptt_user_implicit_affiliations WHERE user_id = ?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return err
-			}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_user_impus WHERE user_id = ?`, id); err != nil {
+			return err
 		}
 
 		return putMCPTTUserLists(ctx, tx, id, u)
 	})
 }
 
-// putUserLists inserts the IMPUs and implicit affiliations of u, of row id.
+// putUserLists inserts the IMPUs and replaces the implicit affiliations of u, of row id.
 func putMCPTTUserLists(ctx context.Context, tx *sql.Tx, id int64, u settings.User) error {
 	for i, impu := range u.IMPUs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mcptt_user_impus (user_id, position, impu) VALUES (?, ?, ?)`,
 			id, i, impu); err != nil {
 			return err
 		}
+	}
+
+	return putMCPTTImplicitAffiliations(ctx, tx, id, u)
+}
+
+// putMCPTTAffiliationsOf replaces the implicit affiliations of users, of a change of a group or member.
+func putMCPTTAffiliationsOf(ctx context.Context, tx *sql.Tx, users []settings.User) error {
+	for _, u := range users {
+		id, err := mcpttRowID(ctx, tx, "mcptt_users", u.MCPTTUserID)
+		if err != nil {
+			return err
+		}
+
+		if err := putMCPTTImplicitAffiliations(ctx, tx, id, u); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// putMCPTTImplicitAffiliations replaces the implicit affiliations of u, of row id: groups it is a member of.
+func putMCPTTImplicitAffiliations(ctx context.Context, tx *sql.Tx, id int64, u settings.User) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_user_implicit_affiliations WHERE user_id = ?`, id); err != nil {
+		return err
 	}
 
 	for i, g := range u.ImplicitAffiliations {
@@ -337,8 +316,7 @@ func putMCPTTUserLists(ctx context.Context, tx *sql.Tx, id int64, u settings.Use
 	return nil
 }
 
-// DeleteUser deletes the user of MCPTT ID mcpttID; ErrNotFound if there is none. A user that is a member of a group
-// is not deleted.
+// DeleteUser deletes the user of MCPTT ID mcpttID, and its memberships; ErrNotFound if there is none.
 func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -354,8 +332,9 @@ func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
 	})
 }
 
-// CreateGroup adds g, its members users of the database; ErrDuplicate if a group has its URI.
-func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group) (err error) {
+// CreateGroup adds g, its members users of the database, and replaces the implicit affiliations of users; ErrDuplicate
+// if a group has its URI.
+func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
 	return d.inTx(ctx, "create MCPTT group", func(tx *sql.Tx) error {
@@ -364,10 +343,8 @@ func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group) (err error)
 			return err
 		}
 
-		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_groups (uri, key, invite_members, max_participants, t4_ns, tng3_ns,
-			minimum_to_start, tng1_ns, tng1_action, minimum_affiliated, release_on_initiator_leave)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.URI, k, g.InviteMembers, g.MaxParticipants, nullDuration(g.T4),
-			int64(g.TNG3), g.MinimumToStart, int64(g.TNG1), string(g.TNG1Action), g.MinimumAffiliated,
+		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_groups (uri, key, display_name, t4_ns, tng3_ns,
+			release_on_initiator_leave) VALUES (?, ?, ?, ?, ?, ?)`, g.URI, k, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
 			g.ReleaseOnInitiatorLeave)
 		if err != nil {
 			return duplicate(err)
@@ -378,12 +355,17 @@ func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group) (err error)
 			return err
 		}
 
-		return putMCPTTGroupLists(ctx, tx, id, g)
+		if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
+			return err
+		}
+
+		return putMCPTTAffiliationsOf(ctx, tx, users)
 	})
 }
 
-// UpdateGroup replaces the group of g's URI with g, members included; ErrNotFound if there is none.
-func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group) (err error) {
+// UpdateGroup replaces the group of g's URI with g, members included, and the implicit affiliations of users;
+// ErrNotFound if there is none. A member removed goes from the implicit affiliations of its user.
+func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
 	return d.inTx(ctx, "update MCPTT group", func(tx *sql.Tx) error {
@@ -392,36 +374,40 @@ func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group) (err error)
 			return err
 		}
 
-		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_groups SET uri = ?, invite_members = ?, max_participants = ?, t4_ns = ?,
-			tng3_ns = ?, minimum_to_start = ?, tng1_ns = ?, tng1_action = ?, minimum_affiliated = ?,
-			release_on_initiator_leave = ? WHERE id = ?`, g.URI, g.InviteMembers, g.MaxParticipants,
-			nullDuration(g.T4), int64(g.TNG3), g.MinimumToStart, int64(g.TNG1), string(g.TNG1Action),
-			g.MinimumAffiliated, g.ReleaseOnInitiatorLeave, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_groups SET uri = ?, display_name = ?, t4_ns = ?, tng3_ns = ?,
+			release_on_initiator_leave = ? WHERE id = ?`, g.URI, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
+			g.ReleaseOnInitiatorLeave, id); err != nil {
 			return err
 		}
 
-		for _, q := range []string{
-			`DELETE FROM mcptt_group_encodings WHERE group_id = ?`,
-			`DELETE FROM mcptt_group_members WHERE group_id = ?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return err
+		// The members kept are updated, not deleted: their implicit affiliations go with their rows.
+		kept := make([]any, 0, len(g.List.Entries)+1)
+		kept = append(kept, id)
+
+		for _, e := range g.List.Entries {
+			uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
+			if err != nil {
+				return fmt.Errorf("member %s: %w", e.URI, err)
 			}
+
+			kept = append(kept, uid)
 		}
 
-		return putMCPTTGroupLists(ctx, tx, id, g)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_group_members WHERE group_id = ? AND user_id NOT IN (SELECT value
+			FROM json_each(?))`, id, jsonInts(kept[1:])); err != nil {
+			return err
+		}
+
+		if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
+			return err
+		}
+
+		return putMCPTTAffiliationsOf(ctx, tx, users)
 	})
 }
 
-// putGroupLists inserts the encodings and members of g, of row id.
+// putGroupLists inserts or updates the members of g, of row id.
 func putMCPTTGroupLists(ctx context.Context, tx *sql.Tx, id int64, g settings.Group) error {
-	for i, name := range g.Encodings {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO mcptt_group_encodings (group_id, position, name) VALUES (?, ?, ?)`,
-			id, i, name); err != nil {
-			return err
-		}
-	}
-
 	for i, e := range g.List.Entries {
 		if err := putMCPTTMember(ctx, tx, id, i, e); err != nil {
 			return err
@@ -437,17 +423,15 @@ func putMCPTTMember(ctx context.Context, tx *sql.Tx, groupID int64, position int
 		return fmt.Errorf("member %s: %w", e.URI, err)
 	}
 
-	_, err = tx.ExecContext(ctx, `INSERT INTO mcptt_group_members (group_id, user_id, position, user_priority, required,
-		recvonly, affiliation_required) VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (group_id, user_id) DO UPDATE SET user_priority = excluded.user_priority,
-		required = excluded.required, recvonly = excluded.recvonly, affiliation_required = excluded.affiliation_required`,
-		groupID, uid, position, e.UserPriority, e.Required, e.ReceiveOnly, e.AffiliationRequired)
+	_, err = tx.ExecContext(ctx, `INSERT INTO mcptt_group_members (group_id, user_id, position, recvonly) VALUES (?, ?, ?, ?)
+		ON CONFLICT (group_id, user_id) DO UPDATE SET position = excluded.position, recvonly = excluded.recvonly`,
+		groupID, uid, position, e.ReceiveOnly)
 
 	return err
 }
 
-// DeleteGroup deletes the group of URI uri; ErrNotFound if there is none. A group that is an implicit affiliation of
-// a user is not deleted.
+// DeleteGroup deletes the group of URI uri, its members and their implicit affiliations to it; ErrNotFound if there
+// is none.
 func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -464,8 +448,8 @@ func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
 }
 
 // PutMember adds e to the members of the group of URI group, after the others, or replaces the member of its MCPTT ID
-// where it is; ErrNotFound if there is no such group.
-func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry) (err error) {
+// where it is, and replaces the implicit affiliations of users; ErrNotFound if there is no such group.
+func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
 	return d.inTx(ctx, "put MCPTT member", func(tx *sql.Tx) error {
@@ -474,17 +458,29 @@ func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry)
 			return err
 		}
 
-		var next int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM mcptt_group_members
-			WHERE group_id = ?`, id).Scan(&next); err != nil {
+		uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
+		if err != nil {
+			return fmt.Errorf("member %s: %w", e.URI, err)
+		}
+
+		// Where the member is, or after the others.
+		var position int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT position FROM mcptt_group_members
+			WHERE group_id = ? AND user_id = ?), (SELECT COALESCE(MAX(position), -1) + 1 FROM mcptt_group_members
+			WHERE group_id = ?))`, id, uid, id).Scan(&position); err != nil {
 			return err
 		}
 
-		return putMCPTTMember(ctx, tx, id, next, e)
+		if err := putMCPTTMember(ctx, tx, id, position, e); err != nil {
+			return err
+		}
+
+		return putMCPTTAffiliationsOf(ctx, tx, users)
 	})
 }
 
-// DeleteMember removes the member of MCPTT ID mcpttID from the group of URI group; ErrNotFound if either is not.
+// DeleteMember removes the member of MCPTT ID mcpttID from the group of URI group, and the group from the implicit
+// affiliations of its user; ErrNotFound if either is not.
 func (d *DB) DeleteMCPTTMember(ctx context.Context, group, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -555,12 +551,23 @@ func duplicate(err error) error {
 	return err
 }
 
-func nullInt(v *int) sql.NullInt64 {
-	if v == nil {
-		return sql.NullInt64{}
+// jsonInts is ids as a JSON array, for json_each.
+func jsonInts(ids []any) string {
+	var b strings.Builder
+
+	b.WriteByte('[')
+
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+
+		fmt.Fprint(&b, id)
 	}
 
-	return sql.NullInt64{Int64: int64(*v), Valid: true}
+	b.WriteByte(']')
+
+	return b.String()
 }
 
 func nullDuration(v *time.Duration) sql.NullInt64 {
@@ -569,16 +576,6 @@ func nullDuration(v *time.Duration) sql.NullInt64 {
 	}
 
 	return sql.NullInt64{Int64: int64(*v), Valid: true}
-}
-
-func intOf(v sql.NullInt64) *int {
-	if !v.Valid {
-		return nil
-	}
-
-	n := int(v.Int64)
-
-	return &n
 }
 
 func durationOf(v sql.NullInt64) *time.Duration {

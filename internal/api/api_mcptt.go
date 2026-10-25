@@ -16,10 +16,10 @@ type MCPTTSettings interface {
 	CreateUser(ctx context.Context, u mcpttsettings.User) (mcpttsettings.User, error)
 	UpdateUser(ctx context.Context, u mcpttsettings.User) (mcpttsettings.User, error)
 	DeleteUser(ctx context.Context, id string) error
-	CreateGroup(ctx context.Context, g mcpttsettings.Group) (mcpttsettings.Group, error)
-	UpdateGroup(ctx context.Context, g mcpttsettings.Group) (mcpttsettings.Group, error)
+	CreateGroup(ctx context.Context, g mcpttsettings.Group, implicit mcpttsettings.Implicit) (mcpttsettings.Group, error)
+	UpdateGroup(ctx context.Context, g mcpttsettings.Group, implicit mcpttsettings.Implicit) (mcpttsettings.Group, error)
 	DeleteGroup(ctx context.Context, uri string) error
-	PutMember(ctx context.Context, group string, e mcpttsettings.Entry) (mcpttsettings.Group, bool, error)
+	PutMember(ctx context.Context, group string, e mcpttsettings.Entry, implicit *bool) (mcpttsettings.Group, bool, error)
 	DeleteMember(ctx context.Context, group, id string) (mcpttsettings.Group, error)
 }
 

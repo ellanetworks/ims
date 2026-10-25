@@ -55,28 +55,18 @@ func invalidMCPTT(w http.ResponseWriter, message string, logger *slog.Logger) {
 
 // mcpttPrefixes are the paths of the settings that are another path of the request bodies, longest first.
 var mcpttPrefixes = []struct{ from, to string }{
-	{"on-network.fc-timers-counters.", "fc_timers_counters."},
 	{"on-network.transmit-time.time-limit", "transmit_time_limit_ms"},
-	{"on-network.num-levels-priority-hierarchy", "num_levels_priority_hierarchy"},
 	{"list.entries", "members"},
 }
 
 // mcpttNames are the keys of the settings that are another field of the request bodies; the others are those of the
 // keys, in snake case.
 var mcpttNames = map[string]string{
-	"mcptt-user-id":                    "mcptt_id",
-	"T1-end-of-rtp-media":              "t1_end_of_rtp_media_ms",
-	"T3-stop-talking-grace":            "t3_stop_talking_grace_ms",
-	"T7-floor-idle":                    "t7_floor_idle_ms",
-	"T8-floor-revoke":                  "t8_floor_revoke_ms",
-	"C7-floor-idle":                    "c7_floor_idle",
-	"on-network-max-participant-count": "max_participant_count",
-	"on-network-hang-timer":            "hang_timer_ms",
-	"on-network-maximum-duration":      "maximum_duration_ms",
-	"on-network-timeout-for-acknowledgement-of-required-members": "timeout_for_acknowledgement_of_required_members_ms",
-	"on-network-required":                      "required",
-	"on-network-recvonly":                      "recvonly",
-	"on-network-affiliation-to-group-required": "affiliation_required",
+	"mcptt-user-id":               "mcptt_id",
+	"user-alias":                  "alias",
+	"on-network-hang-timer":       "hang_timer_ms",
+	"on-network-maximum-duration": "maximum_duration_ms",
+	"on-network-recvonly":         "recvonly",
 }
 
 // mcpttMemberField is the field of a member's request body of the path of a settings.FieldError of the member.

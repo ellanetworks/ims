@@ -7,14 +7,13 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTUser is an MCPTT user: of its user profile (TS 24.484 §8.3), what the server reads, and its IMS public user
-// identities. An absent optional field is of its default.
+// MCPTTUser is an MCPTT user: of its user profile (TS 24.484 §8.3), what an operator sets, and its IMS public user
+// identities. The server fixes the rest: no limit of N2 nor N6.
 type MCPTTUser struct {
-	MCPTTID                string   `json:"mcptt_id"`
-	IMPUs                  []string `json:"impus"`
-	ImplicitAffiliations   []string `json:"implicit_affiliations"`
-	MaxAffiliationsN2      *int     `json:"max_affiliations_n2,omitempty"`
-	MaxSimultaneousCallsN6 *int     `json:"max_simultaneous_calls_n6,omitempty"`
+	MCPTTID              string   `json:"mcptt_id"`
+	Alias                string   `json:"alias"`
+	IMPUs                []string `json:"impus"`
+	ImplicitAffiliations []string `json:"implicit_affiliations"`
 }
 
 type MCPTTUsers struct {
@@ -102,7 +101,7 @@ func UpdateMCPTTUser(cfg Config) http.Handler {
 	})
 }
 
-// DeleteMCPTTUser deletes the user of the path, unless it is a member of a group.
+// DeleteMCPTTUser deletes the user of the path, which leaves its groups.
 func DeleteMCPTTUser(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteUser(r.Context(), r.PathValue("mcptt_id")); err != nil {
@@ -116,14 +115,12 @@ func DeleteMCPTTUser(cfg Config) http.Handler {
 
 func mcpttUserSettings(p MCPTTUser) mcpttsettings.User {
 	return mcpttsettings.User{
-		MCPTTUserID: p.MCPTTID, IMPUs: p.IMPUs, ImplicitAffiliations: p.ImplicitAffiliations,
-		MaxAffiliationsN2: p.MaxAffiliationsN2, MaxSimultaneousCallsN6: p.MaxSimultaneousCallsN6,
+		MCPTTUserID: p.MCPTTID, Alias: p.Alias, IMPUs: p.IMPUs, ImplicitAffiliations: p.ImplicitAffiliations,
 	}
 }
 
 func mcpttUserResponse(u mcpttsettings.User) MCPTTUser {
 	return MCPTTUser{
-		MCPTTID: u.MCPTTUserID, IMPUs: orEmpty(u.IMPUs), ImplicitAffiliations: orEmpty(u.ImplicitAffiliations),
-		MaxAffiliationsN2: u.MaxAffiliationsN2, MaxSimultaneousCallsN6: u.MaxSimultaneousCallsN6,
+		MCPTTID: u.MCPTTUserID, Alias: u.Alias, IMPUs: orEmpty(u.IMPUs), ImplicitAffiliations: orEmpty(u.ImplicitAffiliations),
 	}
 }

@@ -143,8 +143,8 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 		b := &binding{
 			key: bindingKey{ik, a.client}, user: settings.Key(a.user.ID()), reg: ue, as: req.URI,
 			Binding: Binding{
-				MCPTTID: a.user.ID(), ClientID: a.client, IMPU: impu, IMPUs: impus, Expires: expires, SCSCF: scscf.URI,
-				Token: token, Charging: charging(req),
+				MCPTTID: a.user.ID(), ClientID: a.client, IMPU: impu, IMPUs: impus, Expires: expires, Since: now,
+				SCSCF: scscf.URI, Token: token, Charging: charging(req),
 			},
 		}
 		b.registered(client)

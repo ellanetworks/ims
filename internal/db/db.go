@@ -204,10 +204,13 @@ var migrations = []string{
 		retention_days INTEGER NOT NULL
 	);
 	INSERT INTO call_record_settings VALUES (1, 90);`,
-	// The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain: an optional element absent from them is NULL, its
-	// default the one of the MCPTT settings package, so that a later release's defaults apply. A duration is in
-	// nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user that is a
-	// member, or a group that is an implicit affiliation, is not deleted. key is the identity as the MCPTT settings
+	// The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain, and but what
+	// the server fixes to the defaults of the MCPTT settings package (the floor control timers but T2, a user's N2 and
+	// N6, a group's call rules and encodings, a member's priority and acknowledgement): an optional element absent
+	// from them is NULL, so that a later release's defaults apply; the domain of the organisation empty, the home
+	// domain's. A duration is in
+	// nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user deleted
+	// leaves its groups, and an implicit affiliation is of a member of the group, which goes with its membership. key is the identity as the MCPTT settings
 	// package's Key has it, by which a user or group is found. Its runtime state through the IMS, kept across
 	// restarts: the bindings of service authorisation, a client at one IMPU at a time, and the affiliations of the
 	// clients. They are keyed by identity, not by row of users: the server reconciles them with the settings when it
@@ -215,21 +218,14 @@ var migrations = []string{
 	`CREATE TABLE mcptt_service_configuration (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		domain TEXT NOT NULL,
-		num_levels_priority_hierarchy INTEGER,
-		time_limit_ns INTEGER,
-		t1_ns INTEGER,
-		t3_ns INTEGER,
-		t7_ns INTEGER,
-		t8_ns INTEGER,
-		c7 INTEGER
+		time_limit_ns INTEGER
 	);
-	INSERT INTO mcptt_service_configuration VALUES (1, 'mcptt.example.com', NULL, NULL, NULL, NULL, 2000000000, NULL, NULL);
+	INSERT INTO mcptt_service_configuration VALUES (1, '', NULL);
 	CREATE TABLE mcptt_users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		mcptt_id TEXT NOT NULL,
 		key TEXT NOT NULL UNIQUE,
-		max_affiliations_n2 INTEGER,
-		max_simultaneous_calls_n6 INTEGER
+		alias TEXT NOT NULL
 	);
 	CREATE TABLE mcptt_user_impus (
 		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE CASCADE,
@@ -241,38 +237,25 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		uri TEXT NOT NULL,
 		key TEXT NOT NULL UNIQUE,
-		invite_members INTEGER NOT NULL CHECK (invite_members IN (0, 1)),
-		max_participants INTEGER NOT NULL,
+		display_name TEXT NOT NULL,
 		t4_ns INTEGER,
 		tng3_ns INTEGER NOT NULL,
-		minimum_to_start INTEGER NOT NULL,
-		tng1_ns INTEGER NOT NULL,
-		tng1_action TEXT NOT NULL,
-		minimum_affiliated INTEGER NOT NULL,
 		release_on_initiator_leave INTEGER NOT NULL CHECK (release_on_initiator_leave IN (0, 1))
-	);
-	CREATE TABLE mcptt_group_encodings (
-		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE CASCADE,
-		position INTEGER NOT NULL,
-		name TEXT NOT NULL,
-		PRIMARY KEY (group_id, position)
 	);
 	CREATE TABLE mcptt_group_members (
 		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE CASCADE,
-		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE RESTRICT,
+		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE CASCADE,
 		position INTEGER NOT NULL,
-		user_priority INTEGER NOT NULL,
-		required INTEGER NOT NULL CHECK (required IN (0, 1)),
 		recvonly INTEGER NOT NULL CHECK (recvonly IN (0, 1)),
-		affiliation_required INTEGER NOT NULL CHECK (affiliation_required IN (0, 1)),
 		PRIMARY KEY (group_id, user_id)
 	);
 	CREATE INDEX mcptt_group_members_user_id ON mcptt_group_members (user_id);
 	CREATE TABLE mcptt_user_implicit_affiliations (
-		user_id INTEGER NOT NULL REFERENCES mcptt_users (id) ON DELETE CASCADE,
-		group_id INTEGER NOT NULL REFERENCES mcptt_groups (id) ON DELETE RESTRICT,
+		user_id INTEGER NOT NULL,
+		group_id INTEGER NOT NULL,
 		position INTEGER NOT NULL,
-		PRIMARY KEY (user_id, group_id)
+		PRIMARY KEY (user_id, group_id),
+		FOREIGN KEY (group_id, user_id) REFERENCES mcptt_group_members (group_id, user_id) ON DELETE CASCADE
 	);
 	CREATE INDEX mcptt_user_implicit_affiliations_group_id ON mcptt_user_implicit_affiliations (group_id);
 	CREATE TABLE mcptt_registrations (
@@ -281,6 +264,7 @@ var migrations = []string{
 		impu TEXT NOT NULL,
 		impus TEXT NOT NULL,
 		expires_at INTEGER NOT NULL,
+		since INTEGER NOT NULL,
 		scscf TEXT NOT NULL,
 		as_uri TEXT NOT NULL,
 		token TEXT NOT NULL,

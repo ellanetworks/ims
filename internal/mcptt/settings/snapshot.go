@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ellanetworks/ims/mcptt/floor"
 	"github.com/ellanetworks/ims/sip"
@@ -24,6 +26,10 @@ const defaultEncoding = "AMR-WB"
 
 // MaxUsers is the most users the server serves, as Ella Core the most subscribers.
 const MaxUsers = 1000
+
+// DefaultT7 is T7 (Floor Idle) when the service configuration has none: a local value, TS 24.380 Table 11.1.3-1
+// having no default.
+const DefaultT7 = 2 * time.Second
 
 // minPriorityLevels is the lowest <num-levels-priority-hierarchy> of its schema (TS 24.484 §8.4.2.3).
 const minPriorityLevels = 4
@@ -287,13 +293,8 @@ func (v *validator) service(c *ServiceConfiguration) {
 	v.timer(fc+"T3-stop-talking-grace", &t.T3, def.T3, true)
 	v.timer(fc+"T8-floor-revoke", &t.T8, def.T8, false)
 
-	if t.T7 == nil {
-		v.add(fc+"T7-floor-idle", "is required: it has no default (TS 24.380 Table 11.1.3-1)")
-
-		t.T7 = ptr(time.Duration(0))
-	} else {
-		v.timer(fc+"T7-floor-idle", &t.T7, 0, false)
-	}
+	// T7 has no default of TS 24.380 Table 11.1.3-1, which leaves it to the radio access network: the server's.
+	v.timer(fc+"T7-floor-idle", &t.T7, DefaultT7, false)
 
 	switch {
 	case *t.T1 > floor.MaxT1:
@@ -333,6 +334,7 @@ func (v *validator) duration(path string, d time.Duration) {
 // user validates u and returns its MCPTT ID, the zero URI if invalid.
 func (v *validator) user(path string, u *User) sip.URI {
 	id := v.identity(path+".mcptt-user-id", u.MCPTTUserID, "the user "+u.MCPTTUserID, false)
+	v.name(path+".user-alias", u.Alias)
 
 	if len(u.IMPUs) == 0 {
 		v.add(path+".impus", "needs at least one IMPU")
@@ -416,6 +418,7 @@ func (v *validator) affiliations(path string, u *User, id sip.URI, groups map[st
 // group validates g, indexes its entries, applies its defaults and returns its key, "" if its group ID is invalid.
 func (v *validator) group(path string, g *Group, users map[string]*User) string {
 	id := v.identity(path+".uri", g.URI, "the group "+g.URI, true)
+	v.name(path+".display-name", g.DisplayName)
 
 	if !g.InviteMembers {
 		v.add(path+".on-network-invite-members", "is false, of a chat group (TS 24.481 §7.2.7): only prearranged groups are supported")
@@ -535,6 +538,23 @@ func (v *validator) entries(path string, g *Group, users map[string]*User) int {
 	}
 
 	return required
+}
+
+// maxName is the most characters of a name: of a user's alias, of a group's display name.
+const maxName = 64
+
+// name validates the name at path, optional: of at most maxName characters, none a control character.
+func (v *validator) name(path, s string) {
+	switch {
+	case !utf8.ValidString(s):
+		v.add(path, "is not UTF-8")
+	case utf8.RuneCountInString(s) > maxName:
+		v.add(path, "is longer than %d characters", maxName)
+	case strings.TrimSpace(s) != s:
+		v.add(path, "%q begins or ends with a space", s)
+	case strings.ContainsFunc(s, unicode.IsControl):
+		v.add(path, "%q has a control character", s)
+	}
 }
 
 // isToken reports whether s is of the token characters (RFC 4566 §9).

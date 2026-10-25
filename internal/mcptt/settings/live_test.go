@@ -38,8 +38,19 @@ func (r *recorder) UpdateServiceConfiguration(_ context.Context, c settings.Serv
 	return r.record("update service configuration %s", c.Domain)
 }
 
-func (r *recorder) UpdateGroup(_ context.Context, g settings.Group) error {
-	return r.record("update group %s", g.URI)
+func (r *recorder) UpdateGroup(_ context.Context, g settings.Group, users []settings.User) error {
+	return r.record("update group %s%s", g.URI, affiliations(users))
+}
+
+// affiliations are the implicit affiliations of users, of a change of a group or member: none if empty.
+func affiliations(users []settings.User) string {
+	var b strings.Builder
+
+	for _, u := range users {
+		fmt.Fprintf(&b, ", %s %v", u.MCPTTUserID, u.ImplicitAffiliations)
+	}
+
+	return b.String()
 }
 
 func (r *recorder) CreateUser(_ context.Context, u settings.User) error {
@@ -54,16 +65,16 @@ func (r *recorder) DeleteUser(_ context.Context, id string) error {
 	return r.record("delete user %s", id)
 }
 
-func (r *recorder) CreateGroup(_ context.Context, g settings.Group) error {
-	return r.record("create group %s", g.URI)
+func (r *recorder) CreateGroup(_ context.Context, g settings.Group, users []settings.User) error {
+	return r.record("create group %s%s", g.URI, affiliations(users))
 }
 
 func (r *recorder) DeleteGroup(_ context.Context, uri string) error {
 	return r.record("delete group %s", uri)
 }
 
-func (r *recorder) PutMember(_ context.Context, group string, e settings.Entry) error {
-	return r.record("put member %s %s", group, e.URI)
+func (r *recorder) PutMember(_ context.Context, group string, e settings.Entry, users []settings.User) error {
+	return r.record("put member %s %s%s", group, e.URI, affiliations(users))
 }
 
 func (r *recorder) DeleteMember(_ context.Context, group, id string) error {
@@ -183,7 +194,7 @@ func TestChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := err3(l.PutMember(ctx, "sip:fire@MCPTT.example.com", settings.Entry{URI: "sip:dave@MCPTT.example.com"})); err != nil {
+	if err := err3(l.PutMember(ctx, "sip:fire@MCPTT.example.com", settings.Entry{URI: "sip:dave@MCPTT.example.com"}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,28 +259,32 @@ func TestRefused(t *testing.T) {
 		settings.ErrConflict, "the group sip:fire@mcptt.example.com: uri: sip:fire@mcptt.example.com is also an IMPU of sip:dave@mcptt.example.com")
 
 	changeError(t, l.UpdateServiceConfiguration(ctx, settings.ServiceConfiguration{Domain: "-"}), settings.ErrInvalid,
-		`domain: "-" is not a domain name`, "on-network.fc-timers-counters.T7-floor-idle: is required: it has no default (TS 24.380 Table 11.1.3-1)")
+		`domain: "-" is not a domain name`)
 
-	changeError(t, err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:x@mcptt.example.com", UserPriority: 256})),
+	changeError(t, err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:x@mcptt.example.com", UserPriority: 256}, nil)),
 		settings.ErrInvalid, "user-priority: 256 is not within 0 and 255 (TS 24.481 §7.2.4.2)",
 		"uri: sip:x@mcptt.example.com is not a configured user")
 
-	// carol is affiliated to fire, of which she would no longer be a member.
-	changeError(t, err2(l.DeleteMember(ctx, "sip:fire@mcptt.example.com", "sip:carol@mcptt.example.com")), settings.ErrConflict,
-		"the user sip:carol@mcptt.example.com: implicit-affiliations[0]: sip:fire@mcptt.example.com is a group sip:carol@mcptt.example.com is not a member of")
+	// An implicit affiliation of a member the group no longer has.
+	fire := example(t).Groups[0]
+	fire.List.Entries = fire.List.Entries[1:]
+	changeError(t, err2(l.UpdateGroup(ctx, fire, settings.Implicit{"sip:alice@mcptt.example.com": true})), settings.ErrConflict,
+		"the user sip:alice@mcptt.example.com: implicit-affiliations[0]: sip:fire@mcptt.example.com is a group sip:alice@mcptt.example.com is not a member of")
 
-	changeError(t, l.DeleteUser(ctx, "sip:bob@mcptt.example.com"), settings.ErrConflict,
-		"sip:bob@mcptt.example.com is a member of sip:fire@mcptt.example.com")
+	dave := settings.User{MCPTTUserID: "sip:dave@mcptt.example.com", IMPUs: []string{"tel:+1"}, Alias: " Dave"}
+	changeError(t, err2(l.CreateUser(ctx, dave)), settings.ErrInvalid, `user-alias: " Dave" begins or ends with a space`)
 
-	changeError(t, l.DeleteGroup(ctx, "sip:fire@mcptt.example.com"), settings.ErrConflict,
-		"sip:fire@mcptt.example.com is an implicit affiliation of sip:alice@mcptt.example.com, sip:bob@mcptt.example.com, sip:carol@mcptt.example.com")
+	long := settings.Group{
+		URI: "sip:fire@mcptt.example.com", InviteMembers: true, TNG3: time.Minute, DisplayName: strings.Repeat("F", 65),
+	}
+	changeError(t, err2(l.UpdateGroup(ctx, long, nil)), settings.ErrInvalid, "display-name: is longer than 64 characters")
 
 	for _, err := range []error{
 		err2(l.UpdateUser(ctx, settings.User{MCPTTUserID: "sip:x@mcptt.example.com"})),
 		l.DeleteUser(ctx, "sip:x@mcptt.example.com"),
-		err2(l.UpdateGroup(ctx, settings.Group{URI: "sip:x@mcptt.example.com"})),
+		err2(l.UpdateGroup(ctx, settings.Group{URI: "sip:x@mcptt.example.com"}, nil)),
 		l.DeleteGroup(ctx, "not a URI"),
-		err3(l.PutMember(ctx, "sip:x@mcptt.example.com", settings.Entry{URI: "sip:alice@mcptt.example.com"})),
+		err3(l.PutMember(ctx, "sip:x@mcptt.example.com", settings.Entry{URI: "sip:alice@mcptt.example.com"}, nil)),
 		err2(l.DeleteMember(ctx, "sip:fire@mcptt.example.com", "sip:x@mcptt.example.com")),
 	} {
 		if !errors.Is(err, settings.ErrNotFound) {
@@ -303,7 +318,7 @@ func TestMembers(t *testing.T) {
 	ctx := t.Context()
 	l, r := newLive(t)
 
-	if err := err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:alice@mcptt.example.com", UserPriority: 5})); err != nil {
+	if err := err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:alice@mcptt.example.com", UserPriority: 5}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -398,11 +413,125 @@ func TestDeleteMemberConflict(t *testing.T) {
 	fire := example(t).Groups[0]
 	fire.MinimumToStart = 2
 
-	if err := err2(l.UpdateGroup(ctx, fire)); err != nil {
+	if err := err2(l.UpdateGroup(ctx, fire, nil)); err != nil {
 		t.Fatal(err)
 	}
 
 	changeError(t, err2(l.DeleteMember(ctx, "sip:fire@mcptt.example.com", "sip:bob@mcptt.example.com")), settings.ErrConflict,
-		"the group sip:fire@mcptt.example.com: on-network-minimum-number-to-start: 2 is not within 0 and the 1 members to invite",
-		"the user sip:bob@mcptt.example.com: implicit-affiliations[0]: sip:fire@mcptt.example.com is a group sip:bob@mcptt.example.com is not a member of")
+		"the group sip:fire@mcptt.example.com: on-network-minimum-number-to-start: 2 is not within 0 and the 1 members to invite")
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// A member removed, a user or a group deleted, takes its implicit affiliations or memberships with it, in the same
+// change.
+func TestCascades(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("member", func(t *testing.T) {
+		l, r := newLive(t)
+
+		if err := err2(l.DeleteMember(ctx, "sip:fire@mcptt.example.com", "sip:carol@mcptt.example.com")); err != nil {
+			t.Fatal(err)
+		}
+
+		if a := l.Get().Users[2].ImplicitAffiliations; len(a) != 0 {
+			t.Errorf("carol's affiliations %v", a)
+		}
+
+		if want := []string{"delete member sip:fire@mcptt.example.com sip:carol@mcptt.example.com"}; !reflect.DeepEqual(r.calls, want) {
+			t.Errorf("store calls %q, want %q", r.calls, want)
+		}
+	})
+
+	t.Run("user", func(t *testing.T) {
+		l, _ := newLive(t)
+
+		if err := l.DeleteUser(ctx, "sip:bob@mcptt.example.com"); err != nil {
+			t.Fatal(err)
+		}
+
+		if e := l.Get().Groups[0].List.Entries; len(e) != 2 || e[1].URI != "sip:carol@mcptt.example.com" {
+			t.Errorf("fire's members %+v", e)
+		}
+	})
+
+	t.Run("group", func(t *testing.T) {
+		l, _ := newLive(t)
+
+		if err := l.DeleteGroup(ctx, "sip:fire@mcptt.example.com"); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, u := range l.Get().Users {
+			if len(u.ImplicitAffiliations) != 0 {
+				t.Errorf("%s's affiliations %v", u.MCPTTUserID, u.ImplicitAffiliations)
+			}
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		l, r := newLive(t)
+		held := l.Get()
+
+		// carol leaves fire; bob stays, no longer implicitly affiliated.
+		fire := example(t).Groups[0]
+		fire.List.Entries = fire.List.Entries[:2]
+
+		if err := err2(l.UpdateGroup(ctx, fire, settings.Implicit{"sip:bob@MCPTT.example.com": false})); err != nil {
+			t.Fatal(err)
+		}
+
+		want := []string{"update group sip:fire@mcptt.example.com, sip:bob@mcptt.example.com [], sip:carol@mcptt.example.com []"}
+		if !reflect.DeepEqual(r.calls, want) {
+			t.Errorf("store calls\n%q\nwant\n%q", r.calls, want)
+		}
+
+		if len(held.Users[1].ImplicitAffiliations) != 1 {
+			t.Error("the settings before changed")
+		}
+	})
+
+	t.Run("put", func(t *testing.T) {
+		l, r := newLive(t)
+
+		if err := err2(l.CreateUser(ctx, settings.User{MCPTTUserID: "sip:dave@mcptt.example.com", IMPUs: []string{"tel:+4"}})); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:dave@mcptt.example.com"}, ptr(true))); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := err3(l.PutMember(ctx, "sip:fire@mcptt.example.com", settings.Entry{URI: "sip:alice@mcptt.example.com"}, ptr(false))); err != nil {
+			t.Fatal(err)
+		}
+
+		want := []string{
+			"create user sip:dave@mcptt.example.com []",
+			"put member sip:fire@mcptt.example.com sip:dave@mcptt.example.com, sip:dave@mcptt.example.com [sip:fire@mcptt.example.com]",
+			"put member sip:fire@mcptt.example.com sip:alice@mcptt.example.com, sip:alice@mcptt.example.com []",
+		}
+		if !reflect.DeepEqual(r.calls, want) {
+			t.Errorf("store calls\n%q\nwant\n%q", r.calls, want)
+		}
+	})
+
+	t.Run("create", func(t *testing.T) {
+		l, r := newLive(t)
+
+		police := settings.Group{
+			URI: "sip:police@mcptt.example.com", DisplayName: "Police", InviteMembers: true, TNG3: time.Minute,
+			List: settings.List{Entries: []settings.Entry{{URI: "sip:alice@mcptt.example.com"}, {URI: "sip:bob@mcptt.example.com"}}},
+		}
+
+		if err := err2(l.CreateGroup(ctx, police, settings.Implicit{"sip:alice@mcptt.example.com": true})); err != nil {
+			t.Fatal(err)
+		}
+
+		want := []string{"create group sip:police@mcptt.example.com, sip:alice@mcptt.example.com [sip:fire@mcptt.example.com sip:police@mcptt.example.com]"}
+		if !reflect.DeepEqual(r.calls, want) {
+			t.Errorf("store calls\n%q\nwant\n%q", r.calls, want)
+		}
+	})
 }

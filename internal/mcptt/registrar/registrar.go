@@ -49,10 +49,11 @@ const (
 )
 
 // Affiliations are what service authorisation does to the affiliations of a client: the implicit affiliation to its
-// user's configured groups once authorised (TS 24.379 §9.2.2.2.15), their removal once logged off (TS 23.280
-// §5.2.5).
+// user's configured groups once authorised (TS 24.379 §9.2.2.2.15), and again once they change while it stays
+// authorised (Reconfigure), their removal once logged off (TS 23.280 §5.2.5).
 type Affiliations interface {
 	ImplicitConfigured(now time.Time, user *settings.User, client string)
+	Reconfigure(now time.Time, user *settings.User, client string)
 	LogOff(now time.Time, user sip.URI, client string)
 }
 
@@ -94,6 +95,8 @@ type Binding struct {
 	// registration set of IMPU (registrar.Resolve).
 	IMPUs   []sip.URI
 	Expires time.Time
+	// Since is when the client was authorised for the user (TS 24.379 §7.3.2), which the refreshes of its binding keep.
+	Since time.Time
 
 	// Contacts are where the client is reached, in direct mode (RFC 3261 §10.3).
 	Contacts []sip.Address
@@ -269,6 +272,24 @@ func (g *Registrar) Bindings(id sip.URI) []Binding {
 	return g.of(settings.Key(id))
 }
 
+// Clients are the unexpired bindings, of each client its one, in no order.
+func (g *Registrar) Clients() []Binding {
+	now := g.cfg.Clock.Now()
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	out := make([]Binding, 0, len(g.clients))
+
+	for _, b := range g.clients {
+		if now.Before(b.Expires) {
+			out = append(out, b.public())
+		}
+	}
+
+	return out
+}
+
 func (g *Registrar) of(user string) []Binding {
 	var out []Binding
 
@@ -417,6 +438,8 @@ func (g *Registrar) bind(b *binding, ch *change) {
 		cause := ""
 		if o.user != b.user {
 			cause = causeRebound
+		} else if !o.Since.IsZero() {
+			b.Since = o.Since
 		}
 
 		g.unbind(o, ch, cause)
@@ -537,7 +560,9 @@ func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
 }
 
 // Revoke removes the bindings whose users the current settings no longer authorise at their IMPUs, deleted or of
-// the IMPU removed, logging their clients off (TS 23.280 §5.2.5), on the strands of their IMPUs.
+// the IMPU removed, logging their clients off (TS 23.280 §5.2.5), on the strands of their IMPUs; the clients of the
+// others have the implicit affiliations to their users' configured groups brought to the settings
+// (Affiliations.Reconfigure; TS 24.379 §9.2.2.2.15).
 func (g *Registrar) Revoke() {
 	g.mu.Lock()
 
@@ -554,19 +579,28 @@ func (g *Registrar) Revoke() {
 			snap := g.cfg.Source.Current()
 			now := g.cfg.Clock.Now()
 
-			var ch change
+			var (
+				ch   change
+				kept []authorisation
+			)
 
 			g.mu.Lock()
 
 			for _, b := range g.impus[ik] {
 				if u := snap.User(b.MCPTTID); u == nil || !slices.ContainsFunc(b.IMPUs, u.HasIMPU) {
 					g.unbind(b, &ch, causeUnauthorised)
+				} else {
+					kept = append(kept, authorisation{user: u, client: b.ClientID})
 				}
 			}
 
 			g.mu.Unlock()
 
 			g.apply(st, now, &ch)
+
+			for _, a := range kept {
+				g.cfg.Affiliations.Reconfigure(now, a.user, a.client)
+			}
 		})
 	}
 }

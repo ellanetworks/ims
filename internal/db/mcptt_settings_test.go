@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,22 +28,16 @@ func getMCPTT(t *testing.T, d *DB) settings.Settings {
 	return s
 }
 
-// The settings of a new database are valid, of the PSIs of the home domain: the service configuration of the seed
-// row, no users or groups.
+// The settings of a new database are valid, of the PSIs and the domain of the organisation of the home domain: the
+// service configuration of the seed row, its domain empty, no users or groups.
 func TestSeed(t *testing.T) {
 	s := getMCPTT(t, openTestDB(t))
 
-	want := settings.Settings{
-		ServiceConfiguration: settings.ServiceConfiguration{
-			Domain: "mcptt.example.com",
-			OnNetwork: settings.OnNetwork{
-				FCTimersCounters: settings.FCTimersCounters{T7: ptr(2 * time.Second)},
-			},
-		},
+	if !reflect.DeepEqual(s, settings.Settings{}) {
+		t.Errorf("settings %+v", s)
 	}
-	if !reflect.DeepEqual(s, want) {
-		t.Errorf("settings %+v, want %+v", s, want)
-	}
+
+	s.ServiceConfiguration.Domain = "ims.mnc001.mcc001.3gppnetwork.org"
 
 	if _, err := settings.New(withPSIs(s)); err != nil {
 		t.Errorf("seed settings invalid: %v", err)
@@ -59,35 +54,29 @@ func withPSIs(s settings.Settings) settings.Settings {
 	return s
 }
 
-// example are settings of every column: optional elements present and absent, explicit zeros.
+// example are settings of every column: optional elements present and absent, explicit zeros. What the server fixes
+// to its defaults is not stored.
 func mcpttExample() settings.Settings {
 	return settings.Settings{
 		ServiceConfiguration: settings.ServiceConfiguration{
-			Domain: "example.com",
-			OnNetwork: settings.OnNetwork{
-				NumLevelsPriorityHierarchy: ptr(8),
-				TransmitTime:               settings.TransmitTime{TimeLimit: ptr(30 * time.Second)},
-				FCTimersCounters: settings.FCTimersCounters{
-					T1: ptr(4 * time.Second), T3: ptr(time.Duration(0)), T7: ptr(1500 * time.Millisecond), C7: ptr(0),
-				},
-			},
+			Domain:    "example.com",
+			OnNetwork: settings.OnNetwork{TransmitTime: settings.TransmitTime{TimeLimit: ptr(30 * time.Second)}},
 		},
 		Users: []settings.User{
 			{
-				MCPTTUserID: "sip:a@example.com", IMPUs: []string{"sip:a@ims.example.com", "tel:+15550100"},
-				ImplicitAffiliations: []string{"sip:g@example.com", "sip:h@example.com"}, MaxAffiliationsN2: ptr(2),
+				MCPTTUserID: "sip:a@example.com", Alias: "Alice", IMPUs: []string{"sip:a@ims.example.com", "tel:+15550100"},
+				ImplicitAffiliations: []string{"sip:g@example.com", "sip:h@example.com"},
 			},
-			{MCPTTUserID: "sip:b@example.com", IMPUs: []string{"sip:b@ims.example.com"}, MaxSimultaneousCallsN6: ptr(2)},
-			{MCPTTUserID: "sip:c@example.com", IMPUs: []string{"sip:c@ims.example.com"}, MaxAffiliationsN2: ptr(0)},
+			{MCPTTUserID: "sip:b@example.com", IMPUs: []string{"sip:b@ims.example.com"}},
+			{MCPTTUserID: "sip:c@example.com", IMPUs: []string{"sip:c@ims.example.com"}},
 		},
 		Groups: []settings.Group{
 			{
-				URI: "sip:g@example.com", InviteMembers: true, MaxParticipants: 10, Encodings: []string{"AMR-WB", "AMR"},
-				T4: ptr(time.Duration(0)), TNG3: 10 * time.Minute, MinimumToStart: 1, TNG1: 5 * time.Second,
-				TNG1Action: settings.Abandon, MinimumAffiliated: 2, ReleaseOnInitiatorLeave: true,
+				URI: "sip:g@example.com", DisplayName: "Fire Dept.", InviteMembers: true, T4: ptr(time.Duration(0)),
+				TNG3: 10 * time.Minute, ReleaseOnInitiatorLeave: true,
 				List: settings.List{Entries: []settings.Entry{
-					{URI: "sip:c@example.com", UserPriority: 3, Required: true},
-					{URI: "sip:a@example.com", ReceiveOnly: true, AffiliationRequired: true},
+					{URI: "sip:c@example.com"},
+					{URI: "sip:a@example.com", ReceiveOnly: true},
 					{URI: "sip:b@example.com"},
 				}},
 			},
@@ -118,7 +107,7 @@ func storeMCPTT(t *testing.T, d *DB, s settings.Settings) {
 	}
 
 	for _, g := range s.Groups {
-		if err := d.CreateMCPTTGroup(ctx, g); err != nil {
+		if err := d.CreateMCPTTGroup(ctx, g, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -186,7 +175,7 @@ func TestIdentities(t *testing.T) {
 		t.Errorf("duplicate user: %v", err)
 	}
 
-	if err := d.CreateMCPTTGroup(ctx, settings.Group{URI: "sips:g@example.com"}); !errors.Is(err, ErrDuplicate) {
+	if err := d.CreateMCPTTGroup(ctx, settings.Group{URI: "sips:g@example.com"}, nil); !errors.Is(err, ErrDuplicate) {
 		t.Errorf("duplicate group: %v", err)
 	}
 
@@ -211,9 +200,9 @@ func TestIdentities(t *testing.T) {
 	for _, err := range []error{
 		d.UpdateMCPTTUser(ctx, settings.User{MCPTTUserID: "sip:x@example.com"}),
 		d.DeleteMCPTTUser(ctx, "sip:x@example.com"),
-		d.UpdateMCPTTGroup(ctx, settings.Group{URI: "sip:x@example.com"}),
+		d.UpdateMCPTTGroup(ctx, settings.Group{URI: "sip:x@example.com"}, nil),
 		d.DeleteMCPTTGroup(ctx, "sip:x@example.com"),
-		d.PutMCPTTMember(ctx, "sip:x@example.com", settings.Entry{URI: "sip:a@example.com"}),
+		d.PutMCPTTMember(ctx, "sip:x@example.com", settings.Entry{URI: "sip:a@example.com"}, nil),
 		d.DeleteMCPTTMember(ctx, "sip:g@example.com", "sip:x@example.com"),
 		d.DeleteMCPTTMember(ctx, "sip:x@example.com", "sip:a@example.com"),
 	} {
@@ -227,50 +216,85 @@ func TestIdentities(t *testing.T) {
 	}
 }
 
-// A user that is a member and a group that is an implicit affiliation are not deleted; once not, they are. An update
-// of a group keeps the affiliations to it.
-func TestReferences(t *testing.T) {
+// A user deleted leaves its groups; a group deleted, or a member removed, goes from the implicit affiliations of its
+// users; an update of a group keeps the affiliations of the members it keeps, wherever they move.
+func TestCascades(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
 	storeMCPTT(t, d, mcpttExample())
 
-	if err := d.DeleteMCPTTUser(ctx, "sip:b@example.com"); err == nil {
-		t.Error("member deleted")
-	}
+	g := mcpttExample().Groups[0]
+	slices.Reverse(g.List.Entries)
 
-	if err := d.DeleteMCPTTGroup(ctx, "sip:h@example.com"); err == nil {
-		t.Error("implicit affiliation deleted")
-	}
-
-	h := mcpttExample().Groups[1]
-	h.List.Entries = append(h.List.Entries, settings.Entry{URI: "sip:c@example.com"})
-
-	if err := d.UpdateMCPTTGroup(ctx, h); err != nil {
+	if err := d.UpdateMCPTTGroup(ctx, g, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := d.DeleteMCPTTMember(ctx, "sip:g@example.com", "sip:b@example.com"); err != nil {
-		t.Fatal(err)
+	if a := getMCPTT(t, d).Users[0].ImplicitAffiliations; !reflect.DeepEqual(a, []string{"sip:g@example.com", "sip:h@example.com"}) {
+		t.Errorf("a's affiliations after a reorder %v", a)
 	}
 
 	if err := d.DeleteMCPTTUser(ctx, "sip:b@example.com"); err != nil {
 		t.Fatal(err)
 	}
 
-	a := mcpttExample().Users[0]
-	a.ImplicitAffiliations = []string{"sip:g@example.com"}
-
-	if err := d.UpdateMCPTTUser(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := d.DeleteMCPTTGroup(ctx, "sip:h@example.com"); err != nil {
+	if err := d.DeleteMCPTTMember(ctx, "sip:h@example.com", "sip:a@example.com"); err != nil {
 		t.Fatal(err)
 	}
 
 	s := getMCPTT(t, d)
-	if len(s.Users) != 2 || len(s.Groups) != 1 || len(s.Groups[0].List.Entries) != 2 {
-		t.Errorf("settings %+v", s)
+	if a := s.Users[0].ImplicitAffiliations; !reflect.DeepEqual(a, []string{"sip:g@example.com"}) {
+		t.Errorf("a's affiliations after its removal from h %v", a)
+	}
+
+	if e := s.Groups[0].List.Entries; len(e) != 2 || e[0].URI != "sip:a@example.com" {
+		t.Errorf("g's members after b's deletion %+v", e)
+	}
+
+	if err := d.DeleteMCPTTGroup(ctx, "sip:g@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	if s := getMCPTT(t, d); len(s.Users[0].ImplicitAffiliations) != 0 || len(s.Groups) != 1 {
+		t.Errorf("settings after g's deletion %+v", s)
+	}
+}
+
+// An implicit affiliation is of a member of the group; one written with a change of a group or member is in it.
+func TestImplicitAffiliations(t *testing.T) {
+	ctx := t.Context()
+	d := openTestDB(t)
+	storeMCPTT(t, d, mcpttExample())
+
+	b := mcpttExample().Users[1]
+	b.ImplicitAffiliations = []string{"sip:h@example.com"}
+
+	if err := d.UpdateMCPTTUser(ctx, b); err == nil {
+		t.Error("an implicit affiliation of a group b is not a member of")
+	}
+
+	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:b@example.com"}, []settings.User{b}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := mcpttExample().Users[2]
+	c.ImplicitAffiliations = []string{"sip:k@example.com"}
+	k := settings.Group{
+		URI: "sip:k@example.com", InviteMembers: true, TNG3: time.Minute,
+		List: settings.List{Entries: []settings.Entry{{URI: "sip:c@example.com"}}},
+	}
+
+	if err := d.CreateMCPTTGroup(ctx, k, []settings.User{c}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := getMCPTT(t, d)
+	if a := s.Users[1].ImplicitAffiliations; !reflect.DeepEqual(a, b.ImplicitAffiliations) {
+		t.Errorf("b's affiliations %v", a)
+	}
+
+	if a := s.Users[2].ImplicitAffiliations; !reflect.DeepEqual(a, c.ImplicitAffiliations) {
+		t.Errorf("c's affiliations %v", a)
 	}
 }
 
@@ -280,20 +304,20 @@ func TestPutMember(t *testing.T) {
 	d := openTestDB(t)
 	storeMCPTT(t, d, mcpttExample())
 
-	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:c@example.com", UserPriority: 1}); err != nil {
+	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:c@example.com"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:a@EXAMPLE.com", Required: true}); err != nil {
+	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:a@EXAMPLE.com", ReceiveOnly: true}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	want := []settings.Entry{{URI: "sip:a@example.com", Required: true}, {URI: "sip:c@example.com", UserPriority: 1}}
+	want := []settings.Entry{{URI: "sip:a@example.com", ReceiveOnly: true}, {URI: "sip:c@example.com"}}
 	if got := getMCPTT(t, d).Groups[1].List.Entries; !reflect.DeepEqual(got, want) {
 		t.Errorf("members %+v, want %+v", got, want)
 	}
 
-	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:x@example.com"}); !errors.Is(err, ErrNotFound) {
+	if err := d.PutMCPTTMember(ctx, "sip:h@example.com", settings.Entry{URI: "sip:x@example.com"}, nil); !errors.Is(err, ErrNotFound) {
 		t.Errorf("member not a user: %v", err)
 	}
 }
@@ -310,7 +334,7 @@ func TestAtomic(t *testing.T) {
 	g.Encodings = []string{"AMR"}
 	g.List.Entries = append(g.List.Entries, settings.Entry{URI: "sip:x@example.com"})
 
-	if err := d.UpdateMCPTTGroup(ctx, g); !errors.Is(err, ErrNotFound) {
+	if err := d.UpdateMCPTTGroup(ctx, g, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("update of a member not a user: %v", err)
 	}
 

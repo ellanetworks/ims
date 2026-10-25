@@ -13,8 +13,7 @@ func exampleSettings() settings.Settings {
 
 	return settings.Settings{
 		ServiceConfiguration: settings.ServiceConfiguration{
-			Domain:    "mcptt.example.com",
-			OnNetwork: settings.OnNetwork{FCTimersCounters: settings.FCTimersCounters{T7: new(2 * time.Second)}},
+			Domain: "mcptt.example.com",
 		},
 		Users: []settings.User{
 			{MCPTTUserID: "sip:alice@mcptt.example.com", IMPUs: []string{"sip:alice@ims.example.com"}, ImplicitAffiliations: []string{fire}},
@@ -45,7 +44,7 @@ func provision(ctx context.Context, l *settings.Live, s settings.Settings) error
 	}
 
 	for _, g := range s.Groups {
-		if _, err := l.CreateGroup(ctx, g); err != nil {
+		if _, err := l.CreateGroup(ctx, g, nil); err != nil {
 			return err
 		}
 	}

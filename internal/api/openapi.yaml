@@ -26,6 +26,7 @@ tags:
   - name: MCPTT service configuration
   - name: MCPTT users
   - name: MCPTT groups
+  - name: MCPTT live state
   - name: Status
   - name: Metrics
   - name: Specification
@@ -664,6 +665,7 @@ paths:
       tags: [MCPTT users]
       operationId: deleteMCPTTUser
       summary: Delete a user
+      description: The user leaves its groups; a group it leaves that would be invalid without it is a conflict.
       responses:
         "200":
           $ref: "#/components/responses/Deleted"
@@ -775,13 +777,12 @@ paths:
       tags: [MCPTT groups]
       operationId: deleteMCPTTGroup
       summary: Delete a group
+      description: The group goes from the implicit affiliations of its users.
       responses:
         "200":
           $ref: "#/components/responses/Deleted"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -824,6 +825,7 @@ paths:
       tags: [MCPTT groups]
       operationId: deleteMCPTTMember
       summary: Remove a member
+      description: The group goes from the user's implicit affiliations.
       responses:
         "200":
           description: The group as stored
@@ -837,6 +839,161 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/mcptt/registrations:
+    get:
+      tags: [MCPTT live state]
+      operationId: listMCPTTRegistrations
+      summary: List the registered clients
+      description: The MCPTT clients bound to their users by service authorisation, by MCPTT ID and client ID; of the user of mcptt_id if given.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: mcptt_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of them
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/MCPTTRegistration"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/mcptt/affiliations:
+    get:
+      tags: [MCPTT live state]
+      operationId: listMCPTTAffiliations
+      summary: List the affiliations
+      description: The affiliations of the clients to groups, by group, MCPTT ID and client ID; of the user of mcptt_id and the group of group_id if given.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: mcptt_id
+          in: query
+          schema:
+            type: string
+        - name: group_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of them
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/MCPTTAffiliation"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/mcptt/calls:
+    get:
+      tags: [MCPTT live state]
+      operationId: listMCPTTCalls
+      summary: List the group calls
+      description: The group calls, oldest first; of the group of group_id, with the participant of mcptt_id, if given.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: mcptt_id
+          in: query
+          schema:
+            type: string
+        - name: group_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of them
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items, page, per_page, total_count]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/MCPTTCall"
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_count:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/mcptt/calls/{call_id}:
+    parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [MCPTT live state]
+      operationId: getMCPTTCall
+      summary: Get a group call
+      responses:
+        "200":
+          description: The call
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/MCPTTCall"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /api/v1/status:
     get:
@@ -1366,31 +1523,22 @@ components:
 
     MCPTTServiceConfiguration:
       type: object
-      required: [domain, fc_timers_counters]
+      description: >-
+        The service configuration of the organisation (TS 24.484 §8.4) that an operator sets. The server fixes the
+        rest: the floor control timers and counters to the defaults of TS 24.380 Table 11.1.3-1 and Table 11.2.3-1, T7
+        (Floor Idle) to 2 s, 4 priority levels.
+      required: [domain]
       properties:
         domain:
           type: string
+          description: >-
+            The domain of the organisation, of its MCPTT IDs and group IDs, and the IOI of its charging. The IMS home
+            domain until set; setting the home domain makes it follow the home domain again.
           examples: [mcptt.example.com]
-        num_levels_priority_hierarchy:
-          type: integer
-          minimum: 4
-          maximum: 256
         transmit_time_limit_ms:
           type: integer
-        fc_timers_counters:
-          type: object
-          required: [t7_floor_idle_ms]
-          properties:
-            t1_end_of_rtp_media_ms:
-              type: integer
-            t3_stop_talking_grace_ms:
-              type: integer
-            t7_floor_idle_ms:
-              type: integer
-            t8_floor_revoke_ms:
-              type: integer
-            c7_floor_idle:
-              type: integer
+          minimum: 1
+          description: How long a participant may talk at a time, T2 (TS 24.380 Table 11.1.3-1); 30 s if absent.
     MCPTTServiceConfigurationResult:
       type: object
       properties:
@@ -1399,11 +1547,19 @@ components:
 
     MCPTTUserInput:
       type: object
+      description: >-
+        An MCPTT user (TS 24.484 §8.3) as an operator sets it. The server fixes the rest of its profile: no limit of
+        affiliations (N2) nor of simultaneous calls (N6).
       required: [impus]
       properties:
         mcptt_id:
           type: string
           examples: ["sip:alice@mcptt.example.com"]
+        alias:
+          type: string
+          maxLength: 64
+          description: The user's alias (TS 24.484 §8.3.2.7), its name for people; none if empty or absent.
+          examples: [Alice]
         impus:
           type: array
           items:
@@ -1414,12 +1570,6 @@ components:
           items:
             type: string
           examples: [["sip:fire@mcptt.example.com"]]
-        max_affiliations_n2:
-          type: integer
-          minimum: 0
-        max_simultaneous_calls_n6:
-          type: integer
-          minimum: 1
     MCPTTUserCreate:
       allOf:
         - $ref: "#/components/schemas/MCPTTUserInput"
@@ -1427,7 +1577,7 @@ components:
     MCPTTUser:
       allOf:
         - $ref: "#/components/schemas/MCPTTUserInput"
-        - required: [mcptt_id, impus, implicit_affiliations]
+        - required: [mcptt_id, alias, impus, implicit_affiliations]
     MCPTTUserResult:
       type: object
       required: [result]
@@ -1437,55 +1587,51 @@ components:
 
     MCPTTMemberInput:
       type: object
+      description: >-
+        A member of the group (TS 24.481 §7.2.2). The server fixes the rest of the entry: the lowest priority, neither
+        required nor required to be affiliated.
       properties:
         mcptt_id:
           type: string
-        user_priority:
-          type: integer
-          minimum: 0
-          maximum: 255
-        required:
-          type: boolean
         recvonly:
           type: boolean
-        affiliation_required:
+          description: The member may listen but not talk.
+        implicit_affiliation:
           type: boolean
+          description: >-
+            Whether the group is one of the user's implicit affiliations (its implicit_affiliations), which the user's
+            profile has, not the member. Absent from a request, it is as it was; a member removed loses it.
 
     MCPTTMember:
       allOf:
         - $ref: "#/components/schemas/MCPTTMemberInput"
-        - required: [mcptt_id, user_priority, required, recvonly, affiliation_required]
+        - required: [mcptt_id, recvonly, implicit_affiliation]
 
     MCPTTGroupInput:
       type: object
+      description: >-
+        A prearranged group (TS 24.481 §7.2) as an operator sets it, its calls of AMR-WB. The server fixes the rest of
+        its document: no limit of participants, no minimum to start nor of affiliated members.
       required: [maximum_duration_ms]
       properties:
         group_id:
           type: string
           examples: ["sip:fire@mcptt.example.com"]
-        invite_members:
-          type: boolean
-        max_participant_count:
-          type: integer
-        preferred_voice_encodings:
-          type: array
-          items:
-            type: string
+        display_name:
+          type: string
+          maxLength: 64
+          description: The group name (TS 24.481 §7.2.2); none if empty or absent.
+          examples: [Fire]
         hang_timer_ms:
           type: integer
+          description: How long a call lasts without anyone talking, T4 (TS 24.380 Table 11.1.3-1); 30 s if absent.
         maximum_duration_ms:
           type: integer
-        minimum_number_to_start:
-          type: integer
-        timeout_for_acknowledgement_of_required_members_ms:
-          type: integer
-        action_upon_expiration_of_timeout_for_acknowledgement_of_required_members:
-          type: string
-          enum: ["", proceed, abandon]
-        minimum_number_of_affiliated_members:
-          type: integer
+          minimum: 1
+          description: How long a call lasts at most, TNG3 (TS 24.379 §6.3.3.5).
         release_on_initiator_leave:
           type: boolean
+          description: A call ends when the member that started it leaves (TS 24.379 §6.3.8.1 3).
         members:
           type: array
           items:
@@ -1499,18 +1645,7 @@ components:
     MCPTTGroup:
       allOf:
         - $ref: "#/components/schemas/MCPTTGroupInput"
-        - required:
-            - group_id
-            - invite_members
-            - max_participant_count
-            - preferred_voice_encodings
-            - maximum_duration_ms
-            - minimum_number_to_start
-            - timeout_for_acknowledgement_of_required_members_ms
-            - action_upon_expiration_of_timeout_for_acknowledgement_of_required_members
-            - minimum_number_of_affiliated_members
-            - release_on_initiator_leave
-            - members
+        - required: [group_id, display_name, maximum_duration_ms, release_on_initiator_leave, members]
           properties:
             members:
               type: array
@@ -1522,6 +1657,116 @@ components:
       properties:
         result:
           $ref: "#/components/schemas/MCPTTGroup"
+
+    MCPTTRegistration:
+      type: object
+      required: [mcptt_id, client_id, impu, impus, since, expires_at, contacts]
+      properties:
+        mcptt_id:
+          type: string
+        client_id:
+          type: string
+          description: The MCPTT client ID (TS 24.379 §4.10).
+        impu:
+          type: string
+          description: The IMS public user identity the client registered at.
+        impus:
+          type: array
+          description: The public user identities it is served at, impu first.
+          items:
+            type: string
+        since:
+          type: string
+          format: date-time
+          description: When the client was authorised for the user, kept by the refreshes.
+        expires_at:
+          type: string
+          format: date-time
+        contacts:
+          type: array
+          description: The contacts the client registered, in direct mode; none through the IMS.
+          items:
+            type: string
+
+    MCPTTAffiliation:
+      type: object
+      required: [mcptt_id, client_id, group_id, status, configured_implicit]
+      properties:
+        mcptt_id:
+          type: string
+        client_id:
+          type: string
+        group_id:
+          type: string
+        status:
+          type: string
+          enum: [affiliating, affiliated, deaffiliating]
+          description: >-
+            The affiliation status at the participating function (TS 24.379 §9.2.2.2.2). Affiliating and affiliated
+            count as affiliated, deaffiliating does not (§9.2.2.2.11 3a). Group calls invite the members the
+            controlling function holds affiliated (§9.2.2.3.2), which can trail or lead this status around a PUBLISH.
+        configured_implicit:
+          type: boolean
+          description: >-
+            The group is one of the user's implicit affiliations in the current settings (TS 24.484 §8.3.2.7), not
+            how the client was affiliated. The server affiliates a client to them at its service authorisation only
+            (TS 24.379 §9.2.2.2.15): a change of the setting applies from the client's next registration, and
+            clearing it de-affiliates no one.
+
+    MCPTTCall:
+      type: object
+      required: [id, session_id, group_id, originator, created_at, started_at, ends_at, talker, participants]
+      properties:
+        id:
+          type: string
+          description: The "gr" of the MCPTT session identity, which names the call.
+        session_id:
+          type: string
+          description: The MCPTT session identity (TS 24.379 §4.5).
+        group_id:
+          type: string
+        originator:
+          type: string
+          description: The MCPTT ID of the member that started the call.
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the originator was answered; null while the call is set up.
+        ends_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the call's maximum duration (TNG3) releases it.
+        talker:
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [mcptt_id, since]
+              properties:
+                mcptt_id:
+                  type: string
+                since:
+                  type: string
+                  format: date-time
+          description: The participant with the floor, null if the floor is idle.
+        participants:
+          type: array
+          description: The members invited and joined, the originator first.
+          items:
+            type: object
+            required: [mcptt_id, state, required, recvonly]
+            properties:
+              mcptt_id:
+                type: string
+              state:
+                type: string
+                enum: [invited, joined]
+              required:
+                type: boolean
+              recvonly:
+                type: boolean
 
     MCPTTStatus:
       type: object
@@ -1574,6 +1819,12 @@ components:
             $ref: "#/components/schemas/Error"
     Conflict:
       description: Conflicts with other settings
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: The MCPTT AS is restarting or busy
       content:
         application/json:
           schema:

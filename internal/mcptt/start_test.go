@@ -209,7 +209,7 @@ func TestRestart(t *testing.T) {
 		t.Error("dave not served")
 	}
 
-	if err := d.UpdateMCPTTServiceConfiguration(t.Context(), settings.ServiceConfiguration{Domain: "mcptt.example.com"}); err != nil {
+	if err := d.UpdateMCPTTServiceConfiguration(t.Context(), settings.ServiceConfiguration{Domain: "-"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +217,7 @@ func TestRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Start(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "T7-floor-idle: is required") {
+	if _, err := Start(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "is not a domain name") {
 		t.Errorf("start of invalid settings: %v", err)
 	}
 }

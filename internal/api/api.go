@@ -20,8 +20,10 @@ type Config struct {
 	Frontend      fs.FS
 	// Metrics are the metrics GET /api/v1/metrics serves.
 	Metrics prometheus.Gatherer
-	// MCPTT and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404 otherwise.
+	// MCPTT, MCPTTState and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404
+	// otherwise.
 	MCPTT       MCPTTSettings
+	MCPTTState  MCPTTState
 	MCPTTStatus func() MCPTTStatus
 	Logger      *slog.Logger
 }
@@ -95,6 +97,10 @@ func routes(cfg Config) []route {
 		{"DELETE /api/v1/mcptt/groups/{group_id}", mcpttOnly(cfg, DeleteMCPTTGroup)},
 		{"PUT /api/v1/mcptt/groups/{group_id}/members/{mcptt_id}", mcpttOnly(cfg, PutMCPTTMember)},
 		{"DELETE /api/v1/mcptt/groups/{group_id}/members/{mcptt_id}", mcpttOnly(cfg, DeleteMCPTTMember)},
+		{"GET /api/v1/mcptt/registrations", mcpttOnly(cfg, ListMCPTTRegistrations)},
+		{"GET /api/v1/mcptt/affiliations", mcpttOnly(cfg, ListMCPTTAffiliations)},
+		{"GET /api/v1/mcptt/calls", mcpttOnly(cfg, ListMCPTTCalls)},
+		{"GET /api/v1/mcptt/calls/{call_id}", mcpttOnly(cfg, GetMCPTTCall)},
 		{"GET /api/v1/call-records", ListCallRecords(cfg)},
 		{"GET /api/v1/call-records/retention", GetCallRecordRetention(cfg)},
 		{"PUT /api/v1/call-records/retention", UpdateCallRecordRetention(cfg)},

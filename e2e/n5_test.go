@@ -4,11 +4,9 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -47,37 +45,9 @@ func pidOf(t *testing.T, env string) int {
 func smfGet(t *testing.T, core *netns, path string) []byte {
 	t.Helper()
 
-	var (
-		res []byte
-		err error
-	)
-
-	// The dial happens on the thread in the namespace: no http.Client, which dials on goroutines of its own.
-	core.Do(func() {
-		var c net.Conn
-
-		d := net.Dialer{Timeout: 5 * time.Second}
-
-		if c, err = d.DialContext(t.Context(), "tcp", smfMetrics); err != nil {
-			return
-		}
-
-		defer func() { _ = c.Close() }()
-
-		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-
-		if _, err = io.WriteString(c, "GET "+path+" HTTP/1.0\r\n\r\n"); err == nil {
-			res, err = io.ReadAll(c)
-		}
-	})
-
-	if err != nil {
-		t.Fatalf("SMF %s: %v", path, err)
-	}
-
-	_, body, ok := bytes.Cut(res, []byte("\r\n\r\n"))
-	if !ok {
-		t.Fatalf("SMF %s: no HTTP response in %q", path, res)
+	status, body := httpGet(t, core, smfMetrics, path)
+	if status != http.StatusOK {
+		t.Fatalf("SMF %s: %d %s", path, status, body)
 	}
 
 	return body

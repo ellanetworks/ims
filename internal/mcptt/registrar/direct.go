@@ -164,7 +164,7 @@ func (u *update) authorised(a *authorisation, aor sip.URI) {
 	if b == nil || b.user != user {
 		b = &binding{
 			key: k, user: user, direct: true,
-			Binding: Binding{MCPTTID: a.user.ID(), ClientID: a.client, IMPU: aor, IMPUs: []sip.URI{aor}},
+			Binding: Binding{MCPTTID: a.user.ID(), ClientID: a.client, IMPU: aor, IMPUs: []sip.URI{aor}, Since: u.now},
 		}
 		u.copies[k] = b
 	}

@@ -127,12 +127,13 @@ Prerequisites: an HSS that provisions iFCs, and phones whose SIMs allow the Andr
 
    ```sh
    api=http://localhost:5020/api/v1/mcptt
-   curl -X POST $api/users -d '{"mcptt_id": "sip:alice@mcptt.example.com", "impus": ["sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org"]}'
-   curl -X POST $api/groups -d '{"group_id": "sip:fire@mcptt.example.com", "invite_members": true,
-     "maximum_duration_ms": 600000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com"}]}'
-   curl -X PUT $api/users/sip:alice@mcptt.example.com -d '{"impus": ["sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org"],
-     "implicit_affiliations": ["sip:fire@mcptt.example.com"]}'
+   curl -X POST $api/users -d '{"mcptt_id": "sip:alice@mcptt.example.com", "alias": "Alice",
+     "impus": ["tel:+15550000001"]}'
+   curl -X POST $api/groups -d '{"group_id": "sip:fire@mcptt.example.com", "display_name": "Fire",
+     "maximum_duration_ms": 600000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com", "implicit_affiliation": true}]}'
    ```
+
+   `impus` are the user's IMS public identities as your HSS gives them: `tel:+<MSISDN>` with Ella Core. The MCPTT IDs and group IDs are of your organisation's domain, the IMS home domain unless you set it (`PUT $api/service-configuration`). `implicit_affiliation` affiliates the member's phones to the group whenever they register.
 
 5. Install the Android app (`android/`) on the phones, and set each user's MCPTT ID and groups in its settings.
 

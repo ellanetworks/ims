@@ -14,6 +14,8 @@ import (
 
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
+	"github.com/ellanetworks/ims/internal/mcptt/controlling"
 	"github.com/ellanetworks/ims/internal/mcptt/registrar"
 	"github.com/ellanetworks/ims/internal/mcptt/server"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
@@ -138,7 +140,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		Mode:            mode,
 		TrustedNetworks: trusted,
 		Media:           relay,
-		State:           store{cfg.DB},
+		State:           store{d: cfg.DB, home: cfg.HomeDomain},
 	})
 	if err != nil {
 		kill()
@@ -198,6 +200,23 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	return as, nil
 }
 
+// Clients are the registered clients, each its binding to its user, in no order.
+func (a *AS) Clients() []registrar.Binding { return a.srv.Registrar().Clients() }
+
+// Affiliations are the affiliations of the clients, as the participating function has them, in no order.
+func (a *AS) Affiliations() []affiliation.Affiliations {
+	return a.srv.Participating().Snapshot(a.srv.Now())
+}
+
+// Calls are the group calls, in no order; an error if a group's strand does not answer before ctx is done.
+func (a *AS) Calls(ctx context.Context) ([]controlling.Call, error) { return a.srv.Calls().Calls(ctx) }
+
+// Call is the group call of the "gr" id, and whether there is one; an error if its group's strand does not answer
+// before ctx is done.
+func (a *AS) Call(ctx context.Context, id string) (controlling.Call, bool, error) {
+	return a.srv.Calls().Call(ctx, id)
+}
+
 // Settings are the settings of the running AS, which persists and applies a change before it returns.
 func (a *AS) Settings() *settings.Live { return a.settings }
 
@@ -252,7 +271,7 @@ func (a *AS) Shutdown(ctx context.Context) error {
 }
 
 // NewSettings are the settings of the AS as the database has them, persisted to it as they change, and its PSIs
-// those of the home domain (System).
+// those of the home domain (System); the domain of the organisation the home domain unless set.
 func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Live, error) {
 	initial, err := d.GetMCPTTSettings(ctx)
 	if err != nil {
@@ -261,7 +280,12 @@ func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Li
 
 	initial.System = System(homeDomain)
 
-	live, err := settings.NewLive(store{d}, initial)
+	// The domain of the organisation is the home domain's unless set.
+	if initial.ServiceConfiguration.Domain == "" {
+		initial.ServiceConfiguration.Domain = homeDomain
+	}
+
+	live, err := settings.NewLive(store{d: d, home: homeDomain}, initial)
 	if err != nil {
 		return nil, fmt.Errorf("MCPTT settings: %w", err)
 	}

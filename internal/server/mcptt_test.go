@@ -94,6 +94,25 @@ func TestMCPTT(t *testing.T) {
 		t.Fatal("the name of MCPTT does not resolve to it")
 	}
 
+	// The live state, through mcpttView: no client registered, so none affiliated and no call.
+	for _, path := range []string{"/api/v1/mcptt/registrations", "/api/v1/mcptt/affiliations", "/api/v1/mcptt/calls"} {
+		var list struct {
+			Result struct {
+				Items []json.RawMessage `json:"items"`
+			} `json:"result"`
+		}
+
+		code, b := apiDo(t, srv, http.MethodGet, path, "")
+		if err := json.Unmarshal(b, &list); err != nil || code != http.StatusOK || list.Result.Items == nil ||
+			len(list.Result.Items) != 0 {
+			t.Fatalf("GET %s: %d %s, want no items", path, code, b)
+		}
+	}
+
+	if code, b := apiDo(t, srv, http.MethodGet, "/api/v1/mcptt/calls/x", ""); code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/mcptt/calls/x: %d %s", code, b)
+	}
+
 	if code, b := apiDo(t, srv, http.MethodPost, "/api/v1/mcptt/users",
 		`{"mcptt_id": "sip:alice@mcptt.example.com", "impus": ["sip:alice@ims.example.com"]}`); code != http.StatusCreated {
 		t.Fatalf("create a user: %d %s", code, b)

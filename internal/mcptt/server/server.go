@@ -215,11 +215,11 @@ func (s *Server) Restore(registrations []registrar.Record, affiliations []affili
 	})
 
 	// The implicit affiliations of the settings as they are now (TS 24.379 §9.2.2.2.15): of a group configured while
-	// the server was down, or of a write lost.
+	// the server was down, or of a write lost; those the server made of a group no longer configured de-affiliated.
 	snap := s.cfg.Source.Current()
 	for _, b := range restored {
 		if u := snap.User(b.MCPTTID); u != nil {
-			s.part.ImplicitConfigured(now, u, b.ClientID)
+			s.part.Reconfigure(now, u, b.ClientID)
 		}
 	}
 
@@ -261,6 +261,12 @@ func (s *Server) Registrar() *registrar.Registrar { return s.reg }
 func (s *Server) Participating() *affiliation.Participating { return s.part }
 
 func (s *Server) Controlling() *affiliation.Controlling { return s.controlling }
+
+// Calls is the controlling function of the group calls.
+func (s *Server) Calls() *controlling.Controlling { return s.ctrlCalls }
+
+// Now is the time of the agent's clock, the server's.
+func (s *Server) Now() time.Time { return s.agent.Layer().Clock().Now() }
 
 // strandFor is the strand of the IMS public user identity of a REGISTER or a PUBLISH outside a dialog (the
 // architecture's strands of the user, by its identity known before its body is read): To of a REGISTER, the

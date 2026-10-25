@@ -70,7 +70,7 @@ type TransmitTime struct {
 
 // FCTimersCounters is the <fc-timers-counters> element: the floor control server's timers and counters of TS 24.380
 // Table 11.1.3-1 and Table 11.2.3-1 that S1 runs, their defaults of the tables (floor.DefaultServerTimers) if absent;
-// T7 has none and is required.
+// T7, which has none, DefaultT7.
 type FCTimersCounters struct {
 	T1 *time.Duration
 	T3 *time.Duration
@@ -84,6 +84,9 @@ type FCTimersCounters struct {
 type User struct {
 	// MCPTTUserID is the <uri-entry> of <MCPTTUserID>: the MCPTT ID (§8.3.2.7), a SIP URI.
 	MCPTTUserID string
+	// Alias is the <alias-entry> of <UserAlias>: the alphanumeric alias of the user (§8.3.2.7), its name for people;
+	// none if empty. The functions do not read it.
+	Alias string
 	// IMPUs are the IMS public user identities the user may be served at (TS 23.003 §13.4), SIP or tel URIs, at least
 	// one; an IMPU may be of several users (TS 23.280 §8.3.1). They stand in for the validation of the access token
 	// until an identity management server issues tokens [PM 4]: in S1 the MCPTT ID comes from an access token that is
@@ -115,6 +118,8 @@ type User struct {
 type Group struct {
 	// URI is the "uri" attribute: the MCPTT group ID (§7.2.7), a SIP URI.
 	URI string
+	// DisplayName is <display-name>: the group name (TS 24.481 §7.2.2); none if empty. The functions do not read it.
+	DisplayName string
 	// InviteMembers is <on-network-invite-members>: true for a prearranged group, false, the default, for a chat
 	// group (§7.2.7), not supported yet.
 	InviteMembers bool

@@ -148,6 +148,7 @@ type Server struct {
 
 	// granted is the member with permission to send media, in 'G: Floor Taken' and 'G: pending Floor Revoke'.
 	granted  *Member
+	since    time.Time
 	priority uint8
 	// location is the Location field of the granted member's request, for the Floor Taken (§6.3.4.4.2 3a iii).
 	location floorctl.Field
@@ -546,7 +547,7 @@ func location(msg floorctl.Message) floorctl.Field {
 
 // grant enters 'G: Floor Taken' for m (§6.3.4.4.2), of its request's priority and location.
 func (s *Server) grant(m *Member, priority uint8, loc floorctl.Field) {
-	s.state, s.granted, s.priority, s.location = gTaken, m, priority, loc
+	s.state, s.granted, s.since, s.priority, s.location = gTaken, m, s.cfg.Clock.Now(), priority, loc
 	m.released = false
 
 	s.send(m, s.grantedMessage(m))
@@ -559,6 +560,18 @@ func (s *Server) grant(m *Member, priority uint8, loc floorctl.Field) {
 	}
 
 	s.t1.start(s.cfg.Clock, s.cfg.Timers.T1, s.expireT1)
+}
+
+// Talker is the member with permission to send media, nil if none, and since when: of 'G: Floor Taken' and 'G:
+// pending Floor Revoke' (§6.3.4.4, §6.3.4.5). A member that sent a Floor Release stays the talker for the drain
+// (ServerConfig.Drain), as the floor stays taken for the others until its Floor Idle: §6.3.4.4.6 step 4 enters 'G:
+// Floor Idle' at once, which the drain defers. Of the goroutine of the server's clock, as its other methods.
+func (s *Server) Talker() (*Member, time.Time) {
+	if s.granted == nil {
+		return nil, time.Time{}
+	}
+
+	return s.granted, s.since
 }
 
 // endGrant ends the permission of the granted member: its media no longer distributed, the floor idle

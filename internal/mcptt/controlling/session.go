@@ -58,7 +58,8 @@ type session struct {
 	// setup is the state of the setup, until the originator is answered; answered then.
 	setup    setup
 	answered bool
-	// started is when the originator was answered.
+	// created is when the session was created, started when the originator was answered.
+	created  time.Time
 	started  time.Time
 	tng3     *ua.Timer
 	released bool
@@ -297,6 +298,7 @@ func (s *session) start(entry *settings.Entry, offer *sdp.Session, ai, ci int) e
 
 	s.origin = m
 
+	s.created = c.now()
 	c.allocate(s, s.snap.ControllingPSI())
 	s.grp.sess = s
 	s.log = s.log.With(slog.String("session", s.id.String()))
