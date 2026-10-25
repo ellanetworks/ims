@@ -14,6 +14,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
@@ -82,7 +83,7 @@ type timers struct {
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, rtr *rtrHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
-	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), logger *slog.Logger,
+	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -92,7 +93,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	// IP layer and optional (TS 33.210 §4.1, §5.6.2 Zb): the trusted networks are the operator's to protect.
 	pcscfDomain := trust.New(cfg.SIP.Addresses, nil)
 	domain := trust.New(cfg.SIP.Addresses, cfg.SIP.TrustedNetworks)
-	resolver := &sip.Resolver{}
+	resolver := ases.resolver
 	observed := observedDiameter{node, m}
 	roles := newDispatcher(logger)
 	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
@@ -107,6 +108,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	}
 
 	s.layer = transaction.New(transaction.Config{
+		Network: ases.network,
 		Handler: roles,
 		Logger:  logger,
 		Aliases: op.SIPAliases(),
@@ -174,6 +176,13 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
+	}
+
+	// The built-in ASs reach the I-CSCF and the S-CSCF on the in-memory network, as these reach them.
+	for _, a := range append(s.bound(roleICSCF), s.bound(roleSCSCF)...) {
+		if err := s.layer.Serve(a); err != nil {
+			return nil, errors.Join(fmt.Errorf("serve %s in memory: %w", a, err), s.Close(ctx))
+		}
 	}
 
 	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
@@ -262,6 +271,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
+		PSISubdomain:         resolver.Has,
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		Records:              records,
@@ -736,4 +746,11 @@ func (h *placeholderHandler) respond(tx *transaction.ServerTransaction, res *sip
 	if err := tx.Respond(res); err != nil {
 		h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}
+}
+
+// builtinASs are the built-in ASs as the cores reach them: the in-memory network they share with the I-CSCF and the
+// S-CSCF, and the resolver of their hosts. Both outlive the cores.
+type builtinASs struct {
+	network  *transaction.Network
+	resolver *as.Resolver
 }

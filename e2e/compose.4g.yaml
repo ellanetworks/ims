@@ -105,6 +105,34 @@ services:
       radio2:
         ipv4_address: 10.80.3.3
 
+  enb3:
+    <<: *enb
+    command: ["enb", "--rf.device_args=tx_port=tcp://*:2000,rx_port=tcp://10.80.5.3:2001,id=enb,base_srate=23.04e6", "--expert.rrc_inactivity_timer=3600000"]
+    environment:
+      <<: *enb-env
+      ENB_ID: "0x19D"
+      GTP_BIND_ADDR: 10.80.1.23
+      S1C_BIND_ADDR: 10.80.1.23
+      UE_ADDRESS: 10.80.5.3
+    networks:
+      s1:
+        ipv4_address: 10.80.1.23
+      radio3:
+        ipv4_address: 10.80.5.2
+
+  ue3:
+    <<: *ue
+    depends_on: [enb3]
+    command: ["ue", "--rf.device_args=tx_port=tcp://10.80.5.3:2001,rx_port=tcp://10.80.5.2:2000,id=ue,base_srate=23.04e6", "--nas.apn=ims", "--nas.apn_protocol=ipv4"]
+    environment:
+      <<: *ue-env
+      MSISDN: "0000000003"
+      ENB_ADDRESS: 10.80.5.2
+      UE_ADDRESS: 10.80.5.3
+    networks:
+      radio3:
+        ipv4_address: 10.80.5.3
+
 networks:
   radio1:
     internal: true
@@ -116,3 +144,8 @@ networks:
     ipam:
       config:
         - subnet: 10.80.3.0/24
+  radio3:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.80.5.0/24

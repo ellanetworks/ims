@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A partial document of an S-CSCF: of two UEs at an IMPU, one deregistered, its contact the
+     "+sip.instance" of RFC 5626 and the GRUUs of RFC 5628; the IMPU of the implicit registration set with it. -->
+<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" xmlns:gr="urn:ietf:params:xml:ns:gruuinfo"
+    xmlns:x="urn:example:later" version="3" state="partial">
+  <registration aor="sip:alice@ims.example.com" id="a7" state="active">
+    <contact id="9" state="terminated" event="unregistered" callid="ue1@10.0.0.1" cseq="4">
+      <uri>sip:alice@10.0.0.1:5060</uri>
+      <display-name xml:lang="en">Alice</display-name>
+      <unknown-param name="+sip.instance">"&lt;urn:uuid:00000000-0000-1000-8000-000000000001&gt;"</unknown-param>
+      <unknown-param name="+g.3gpp.mcptt"/>
+      <gr:pub-gruu uri="sip:alice@ims.example.com;gr=urn:uuid:00000000-0000-1000-8000-000000000001"/>
+      <x:later/>
+    </contact>
+    <contact id="12" state="active" event="shortened" expires="60">
+      <uri>sip:alice@10.0.0.2:5060</uri>
+    </contact>
+  </registration>
+  <registration aor="tel:+15555550101" id="a8" state="terminated">
+    <contact id="13" state="terminated" event="probation" retry-after="300">
+      <uri>sip:alice@10.0.0.1:5060</uri>
+    </contact>
+  </registration>
+  <x:later/>
+</reginfo>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.2.1.2 step 5, §9.3.1.2: per-user affiliation information a client PUBLISHes: its tuple, the groups
+     the user is interested in at it, without status or expires, and the identifier of the PUBLISH. -->
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:mcpttPI10="urn:3gpp:ns:mcpttPresInfo:1.0"
+    entity="sip:alice@mcptt.example.com">
+  <tuple id="urn:uuid:00000000-0000-1000-8000-0123456789ab">
+    <status>
+      <mcpttPI10:affiliation group="sip:group1@mcptt.example.com"/>
+      <mcpttPI10:affiliation group="sip:group2@mcptt.example.com"/>
+    </status>
+  </tuple>
+  <mcpttPI10:p-id>f81d4fae-7dec-11d0-a765-00a0c91e6bf6</mcpttPI10:p-id>
+</presence>

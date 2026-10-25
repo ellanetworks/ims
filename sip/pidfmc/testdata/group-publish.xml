@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §9.2.2.2.6 step 10, §9.3.1.2: per-group affiliation information the participating function PUBLISHes to
+     the server owning the group: the tuple of the user, the clients at which it is interested, without expires. -->
+<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:mcpttPI10="urn:3gpp:ns:mcpttPresInfo:1.0"
+    entity="sip:group1@mcptt.example.com">
+  <tuple id="sip:alice@mcptt.example.com">
+    <status>
+      <mcpttPI10:affiliation client="urn:uuid:00000000-0000-1000-8000-0123456789ab"/>
+      <mcpttPI10:affiliation client="urn:uuid:00000000-0000-1000-8000-0123456789cd"/>
+    </status>
+  </tuple>
+  <mcpttPI10:p-id>6ba7b810-9dad-11d1-80b4-00c04fd430c8</mcpttPI10:p-id>
+</presence>

@@ -19,3 +19,7 @@ scscf:
 diameter:
   address: 127.0.0.1
   port: 3868
+# The built-in MCPTT AS: off without this section.
+# mcptt:
+#   media:
+#     address: 127.0.0.1

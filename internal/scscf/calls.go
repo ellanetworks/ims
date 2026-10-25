@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 // call is what the S-CSCF keeps of an INVITE dialog.
@@ -106,7 +106,7 @@ func (r *Registrar) releaseCalls(st *state, removed []removal) {
 
 	for _, rm := range removed {
 		for _, b := range rm.bindings {
-			if rm.event == regevent.Expired && st.bound(b.Contact) {
+			if rm.event == reginfo.Expired && st.bound(b.Contact) {
 				continue
 			}
 

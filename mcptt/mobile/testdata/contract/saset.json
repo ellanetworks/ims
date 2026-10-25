@@ -1,0 +1,1 @@
+{"id":"1-2","local":{"addr":"10.45.0.3","portC":40000,"portS":40001,"spiC":1,"spiS":2},"remote":{"addr":"10.206.0.2","portC":5064,"portS":5063,"spiC":3,"spiS":4},"integrity":"hmac-sha-1-96","encryption":"aes-cbc","ik":"abababababababababababababababab00000000","ck":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"}

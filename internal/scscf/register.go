@@ -12,9 +12,9 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
+	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
 const autsLen = 14
@@ -592,7 +592,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	var ch change
 
 	if expired := without(reg.Bindings, st.live(reg.Bindings)); len(expired) > 0 {
-		ch.removed = append(ch.removed, removal{reg: reg, bindings: expired, event: regevent.Expired})
+		ch.removed = append(ch.removed, removal{reg: reg, bindings: expired, event: reginfo.Expired})
 	}
 
 	reg.Bindings = st.live(reg.Bindings)
@@ -633,7 +633,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		kept := only(reg.Bindings, rr.contacts)
 
 		if dropped := without(reg.Bindings, kept); len(dropped) > 0 {
-			ch.removed = append(ch.removed, removal{reg: reg, bindings: dropped, event: regevent.Unregistered})
+			ch.removed = append(ch.removed, removal{reg: reg, bindings: dropped, event: reginfo.Unregistered})
 		}
 
 		reg.Bindings = kept
@@ -770,17 +770,17 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	var removed []removal
 
 	if len(deregistered) > 0 {
-		removed = append(removed, removal{reg: set, bindings: deregistered, event: regevent.Unregistered})
+		removed = append(removed, removal{reg: set, bindings: deregistered, event: reginfo.Unregistered})
 	}
 
 	if len(replaced) > 0 {
 		r.log.Info("registration flow replaced", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
-		removed = append(removed, removal{reg: set, bindings: replaced, event: regevent.Unregistered, calls: replacedCalls})
+		removed = append(removed, removal{reg: set, bindings: replaced, event: reginfo.Unregistered, calls: replacedCalls})
 	}
 
 	if expired := without(set.Bindings, st.live(set.Bindings)); len(expired) > 0 {
-		removed = append(removed, removal{reg: set, bindings: expired, event: regevent.Expired})
+		removed = append(removed, removal{reg: set, bindings: expired, event: reginfo.Expired})
 	}
 
 	return r.ok(ctx, rr, saved, deregistered), removed
@@ -801,7 +801,7 @@ func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st
 			continue
 		}
 
-		rm, deleted, err := r.removeBindings(ctx, st, reg, dropped, regevent.Unregistered)
+		rm, deleted, err := r.removeBindings(ctx, st, reg, dropped, reginfo.Unregistered)
 		if err != nil {
 			r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		}
@@ -842,7 +842,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 		}
 	}
 
-	rm, deleted, err := r.removeBindings(ctx, st, *set, removed, regevent.Unregistered)
+	rm, deleted, err := r.removeBindings(ctx, st, *set, removed, reginfo.Unregistered)
 	if err != nil {
 		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)

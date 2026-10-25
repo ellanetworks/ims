@@ -1,3 +1,5 @@
+# Open5GS (its HSS holding the subscribers and the MCPTT iFCs, provision.js) and Ella IMS with its MCPTT AS. The
+# access network is in compose.4g.yaml or compose.5g.yaml, which env.sh selects.
 name: ims-e2e
 
 services:
@@ -30,6 +32,8 @@ services:
         driver_opts:
           com.docker.network.endpoint.ifname: s1
 
+  # Ella IMS of this tree, and its MCPTT AS: its SIP in memory, its media on 10.80.0.5, routed to the UEs through the
+  # UPF.
   ims:
     image: ella-ims-e2e/ims
     build:

@@ -15,6 +15,7 @@
 - IPsec between phones and the IMS
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)
 - Application Servers (AS): connect voicemail, conferencing, MCPTT, supplementary services and other value-added services, with per-subscriber routing driven by your HSS (iFCs over ISC)
+- Push-to-talk: a built-in MCPTT server for group calls with floor control (TS 24.379, TS 24.380), and an Android client
 - Call records: who called whom, when, for how long and how the call ended
 - Complete IMS core in a single binary (P-CSCF, I-CSCF, S-CSCF)
 - Embedded database (SQLite)
@@ -60,7 +61,7 @@ sudo snap start --enable ella-ims.imsd
    - Under **HSS**, click the edit icon next to **HSS Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
 
 5. Under **Voice QoS**, on the same page:
-   - Click the edit icon next to **Policy Function**, select **PCRF** (for 4G and 5G), and click **Update**.
+   - Click the edit icon next to **Policy Function**, select **PCRF**, and click **Update**.
    - Click the edit icon next to **PCRF Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
 
 6. Route the phones' `ims` IP pool through Ella Core's N6 address:
@@ -73,23 +74,23 @@ sudo snap start --enable ella-ims.imsd
 
 ### Integrate with an Application Server
 
-Requires an HSS that provisions iFCs.
+Prerequisite: an HSS that provisions iFCs.
 
-1. In `ims.yaml`, add the AS's addresses to the trusted networks, then restart Ella IMS:
+1. In `ims.yaml`, add the AS's addresses to the trusted networks, and optionally set how long the AS has to answer, then restart Ella IMS:
 
    ```yaml
    sip:
      trusted_networks: [10.80.0.30/32]
    scscf:
-     as_timeout: 4s # optional, the default
+     as_timeout: 4s
    ```
 
 2. In the HSS, add iFCs to the subscribers' service profiles, with the AS's SIP URI as the server name, e.g. `sip:10.80.0.30:5060`:
-   - Third-party registration: a trigger point on method `REGISTER`, with Include Register Request and Include Register Response if the AS needs them.
-   - Originating or terminating services: a trigger point on the session case, plus the method, header or Request-URI to match.
-   - Default handling: `SESSION_CONTINUED` if calls go on without the AS, `SESSION_TERMINATED` if they fail.
+   - For third-party registration, add a trigger point on method `REGISTER`. Set Include Register Request and Include Register Response if the AS needs them.
+   - For originating or terminating services, add a trigger point on the session case, plus the method, header or Request-URI to match.
+   - Set the default handling to `SESSION_CONTINUED` for calls to go on without the AS, or to `SESSION_TERMINATED` for them to fail.
 
-3. For services reached by their own URI, such as a conference factory or MCPTT, add the PSIs to the HSS, distinct or wildcarded, with their iFCs or the AS as their server name.
+3. If the AS serves its own URIs, such as a conference factory, add its PSIs to the HSS, distinct or wildcarded, with their iFCs or the AS as their server name.
 
 4. Make the PSIs' host resolve to the AS (DNS A or SRV record).
 
@@ -99,6 +100,43 @@ Requires an HSS that provisions iFCs.
    - Send requests on behalf of a user or a PSI to the S-CSCF, port `5080`, with `orig` in the Route (`Route: <sip:10.6.0.5:5080;lr;orig>`) and the user in P-Served-User or P-Asserted-Identity.
 
 6. Register a phone, then check the AS received a third-party REGISTER or the first matching request.
+
+### Enable push-to-talk (MCPTT)
+
+Prerequisites: an HSS that provisions iFCs, and phones whose SIMs allow the Android app's signing certificate ([Signing](android/README.md#signing)).
+
+1. In `ims.yaml`, set the address phones reach the MCPTT media on, then restart Ella IMS:
+
+   ```yaml
+   mcptt:
+     media:
+       address: 10.6.0.5
+   ```
+
+2. Get the server name of the MCPTT server:
+
+   ```sh
+   curl -s http://localhost:5020/api/v1/status | jq -r .result.mcptt.name
+   ```
+
+3. In the HSS, add an application server of that server name, e.g. `sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org`, without PSIs. Add two iFCs to the subscribers' service profiles, with a lower priority value than any MMTel iFC:
+   - A trigger point on method `REGISTER`, with Include Register Request and Include Register Response, and default handling `SESSION_CONTINUED`.
+   - A trigger point on the originating session case and the `P-Asserted-Service` header `urn:urn-7:3gpp-service.ims.icsi.mcptt`, with default handling `SESSION_TERMINATED`.
+
+4. Provision users and groups:
+
+   ```sh
+   api=http://localhost:5020/api/v1/mcptt
+   curl -X POST $api/users -d '{"mcptt_id": "sip:alice@mcptt.example.com", "impus": ["sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org"]}'
+   curl -X POST $api/groups -d '{"group_id": "sip:fire@mcptt.example.com", "invite_members": true,
+     "maximum_duration_ms": 600000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com"}]}'
+   curl -X PUT $api/users/sip:alice@mcptt.example.com -d '{"impus": ["sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org"],
+     "implicit_affiliations": ["sip:fire@mcptt.example.com"]}'
+   ```
+
+5. Install the Android app (`android/`) on the phones, and set each user's MCPTT ID and groups in its settings.
+
+6. Start a group call from one phone, then check the others ring.
 
 ### Build
 
@@ -122,6 +160,10 @@ rockcraft pack
 snapcraft pack
 ```
 
+#### Android app
+
+See [`android/README.md`](android/README.md).
+
 ### Run
 
 ```sh
@@ -138,8 +180,6 @@ go test ./...
 npm test --prefix ui
 ```
 
-The IPsec tests use network namespaces. They are skipped where those are unavailable, and fail instead when `CI` is set.
-
 #### End-to-end tests
 
 ```sh
@@ -149,7 +189,17 @@ E2E_RAT=4g ./up.sh
 E2E_RAT=4g ./run.sh
 ```
 
-`E2E_RAT` is `4g` or `5g`.
+For 5G, set `E2E_RAT=5g`.
+
+#### Load tests
+
+On Linux:
+
+```sh
+ulimit -n 200000
+go test ./internal/mcptt -run '^$' -bench '^BenchmarkRegistration$' -benchtime 1000x -count 3
+go test ./internal/mcptt -run '^$' -bench '^BenchmarkGroupCalls$' -benchtime 1x -count 3
+```
 
 #### Fuzz tests
 
@@ -164,9 +214,21 @@ go test -run='^$' -fuzz='^FuzzParse$' .
 
 See [`ims.yaml`](ims.yaml).
 
+The `mcptt` section, absent by default:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `mcptt.media.address` | (required) | Address of the media sockets |
+| `mcptt.media.advertise` | `mcptt.media.address` | Address in the SDP; required if `address` is unspecified |
+| `mcptt.media.min_port` | `20000` | First port of the voice legs, even |
+| `mcptt.media.max_port` | `20999` | Last port of the voice legs |
+| `mcptt.media.control_port` | `21000` | Port of the floor control channels, outside the legs' range |
+| `mcptt.mode` | `ims` | `ims`, or `direct` for the lab: the MCPTT server is the phones' registrar |
+| `mcptt.port` | `5090` | SIP port of the MCPTT server on each `sip.addresses` |
+
 ### API
 
-[`openapi.yaml`](internal/api/openapi.yaml), served at `GET /api/v1/openapi.yaml`.
+[`openapi.yaml`](internal/api/openapi.yaml), served at `GET /api/v1/openapi.yaml`. MCPTT: `/api/v1/mcptt/`.
 
 ### Metrics
 
@@ -191,21 +253,21 @@ Prometheus metrics, served at `GET /api/v1/metrics`.
 
 ### Compatibility
 
+Validated against:
+
 #### Core Networks
 
-Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G compliant core. It has been explicitely validated against:
 - [Ella Core][ella-core]
 - Open5GS
 
-#### Application Servers
+#### MCPTT Clients
 
-Ella IMS follows 3GPP standards and should connect to any compliant application server.
+- Ella MCPTT for Android (`android/`)
 
 #### Phones
 
-Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G phone. It has been explicitely validated against:
 - Apple iPhone 11
-- Apply iPhone 16
+- Apple iPhone 16
 - Crosscall Core-Z5
 - Google Pixel 10a
 - Motorola Moto G 5G
@@ -230,6 +292,20 @@ Ella IMS follows 3GPP standards and should connect to any compliant 4G or 5G pho
 | Samsung Galaxy A56 | 4G  | SIM PLMN 001/01: VoLTE off (`LABSIM` profile, TS.43 entitlement 403)               |
 
 ## Explanation
+
+### Standards
+
+Ella IMS follows 3GPP standards: it should work with any compliant 4G or 5G core, application server and phone, beyond those it was validated against.
+
+### Push-to-talk
+
+The MCPTT server runs inside Ella IMS. Its server name, `sip:mcptt.<home domain>`, derives from the operator's MCC and MNC, and so do its addresses: Ella IMS routes every request to that host to it, in memory, so the HSS needs no PSI for it. Changing the MCC or MNC renames it.
+
+### Tests
+
+The IPsec tests use network namespaces. They are skipped where those are unavailable, and fail instead when `CI` is set.
+
+The load tests run the MCPTT server at 1,000 registered users and 200 concurrent group calls of 100 members, in one process over loopback. They report registrations and call setups per second, and the 50th, 90th and 99th percentiles of the MCPTT access time and of the server's share of the mouth-to-ear latency (TS 22.179 §6.15.3), in milliseconds.
 
 ### IPsec
 

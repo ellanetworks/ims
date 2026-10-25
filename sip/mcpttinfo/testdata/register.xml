@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TS 24.379 §7.2.1: the REGISTER of a client, with its access token (TS 24.482) and client ID. -->
+<mcpttinfo xmlns="urn:3gpp:ns:mcpttInfo:1.0">
+  <mcptt-Params>
+    <mcptt-access-token type="Normal">
+      <mcpttString>eyJhbGciOiJSUzI1NiJ9.eyJtY3B0dF9pZCI6InNpcDphbGljZUBtY3B0dC5leGFtcGxlLmNvbSJ9.c2ln</mcpttString>
+    </mcptt-access-token>
+    <mcptt-client-id type="Normal">
+      <mcpttString>urn:uuid:00000000-0000-1000-8000-0123456789ab</mcpttString>
+    </mcptt-client-id>
+  </mcptt-Params>
+</mcpttinfo>

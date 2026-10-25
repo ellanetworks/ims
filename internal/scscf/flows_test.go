@@ -315,7 +315,7 @@ func TestFlowReplaceNotify(t *testing.T) {
 
 	for _, c := range n.registration(t, testMSISDN).Contacts {
 		if c.URI == u.contact {
-			events = append(events, c.State+"/"+string(c.Event))
+			events = append(events, string(c.State)+"/"+string(c.Event))
 		}
 	}
 

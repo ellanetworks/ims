@@ -12,9 +12,9 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/hsstest"
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 	"github.com/ellanetworks/ims/testue"
@@ -676,7 +676,7 @@ func TestThirdPartyRegisterFailure(t *testing.T) {
 		u := s.newUE(false, testue.Config{T1: fastT1})
 		s.subscribed(u)
 
-		nextNotify(t, u).want(t, "terminated;reason=rejected", regevent.Terminated, regevent.Terminated, regevent.Rejected)
+		nextNotify(t, u).want(t, "terminated;reason=rejected", reginfo.Terminated, reginfo.Terminated, reginfo.Rejected)
 
 		eventually(t, "the HSS to forget the registration", func() bool {
 			sub, _ := s.hss.Subscriber(impi)

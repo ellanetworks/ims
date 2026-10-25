@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window of the Compose UI, in the background of the light Ella theme until Compose draws. -->
+    <style name="Theme.Mcptt" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFFFF</item>
+    </style>
+</resources>

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/regevent"
 	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
@@ -27,7 +27,7 @@ type notifier struct {
 	sf     sip.Flow
 	toTag  string
 	cseq   int
-	ver    uint64
+	ver    uint32
 	portUS uint16
 }
 
@@ -82,14 +82,14 @@ func (no *notifier) contact() string {
 	return sip.URI{Scheme: "sip", User: no.u.user, Host: sip.FormatHost(no.n.Addr), Port: no.portUS}.String()
 }
 
-func (no *notifier) reginfo(regState, contactState string, event regevent.Event, expires uint32) regevent.Reginfo {
-	info := regevent.Reginfo{Version: no.ver, State: regevent.Full}
+func (no *notifier) reginfo(regState, contactState reginfo.RegState, event reginfo.Event, expires uint64) reginfo.Reginfo {
+	info := reginfo.Reginfo{Version: no.ver, State: reginfo.Full}
 	no.ver++
 
 	for i, aor := range []string{msisdn, telIMPU} {
-		info.Registrations = append(info.Registrations, regevent.Registration{
+		info.Registrations = append(info.Registrations, reginfo.Registration{
 			AOR: aor, ID: "r" + strconv.Itoa(i), State: regState,
-			Contacts: []regevent.Contact{{
+			Contacts: []reginfo.Contact{{
 				ID: "c" + strconv.Itoa(i), State: contactState, Event: event, Expires: &expires, URI: no.contact(),
 			}},
 		})
@@ -98,7 +98,7 @@ func (no *notifier) reginfo(regState, contactState string, event regevent.Event,
 	return info
 }
 
-func (no *notifier) notify(state string, info regevent.Reginfo) *sip.Response {
+func (no *notifier) notify(state string, info reginfo.Reginfo) *sip.Response {
 	no.n.T.Helper()
 
 	no.send(no.request(state, info))
@@ -108,7 +108,7 @@ func (no *notifier) notify(state string, info regevent.Reginfo) *sip.Response {
 	return res
 }
 
-func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {
+func (no *notifier) notifyAndRefresh(state string, info reginfo.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {
 	no.n.T.Helper()
 
 	no.send(no.request(state, info))
@@ -139,12 +139,12 @@ func (no *notifier) notifyAndRefresh(state string, info regevent.Reginfo) (*sip.
 	return res, req, f
 }
 
-func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
+func (no *notifier) request(state string, info reginfo.Reginfo) *sip.Request {
 	no.n.T.Helper()
 
 	no.cseq++
 
-	body, err := regevent.Encode(info)
+	body, err := reginfo.Encode(info)
 	if err != nil {
 		no.n.T.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func (no *notifier) request(state string, info regevent.Reginfo) *sip.Request {
 	req.Header.Add("Record-Route", pcscfRR)
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Subscription-State", state)
-	req.SetBody(regevent.ContentType, body)
+	req.SetBody(reginfo.ContentType, body)
 
 	return req
 }
@@ -177,12 +177,12 @@ func (no *notifier) send(req *sip.Request) {
 func (no *notifier) active() {
 	no.n.T.Helper()
 
-	if res := no.notify("active;expires=600000", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600)); res.StatusCode != 200 {
+	if res := no.notify("active;expires=600000", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Registered, 3600)); res.StatusCode != 200 {
 		no.n.T.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 }
 
-func nextReginfo(t *testing.T, u *testUE) *regevent.Reginfo {
+func nextReginfo(t *testing.T, u *testUE) *reginfo.Reginfo {
 	t.Helper()
 
 	timeout := time.After(10 * time.Second)
@@ -217,7 +217,7 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 		"<sip:" + n.PS.Addr().String() + ";lr>", "<sip:orig@scscf." + domain + ":6060;lr>",
 	}):
 		t.Fatalf("Route = %q, want the P-CSCF's protected server port and the Service-Route", req.Header.Values("Route"))
-	case req.Header.Get("Event") != "reg" || req.Header.Get("Accept") != regevent.ContentType ||
+	case req.Header.Get("Event") != "reg" || req.Header.Get("Accept") != reginfo.ContentType ||
 		req.Header.Get("Expires") != "600000":
 		t.Fatalf("SUBSCRIBE:\n%s", req)
 	case req.Header.Get("Contact") != "<"+no.contact()+">":
@@ -268,7 +268,7 @@ func TestNotifyBeforeTheSubscribeResponse(t *testing.T) {
 	sub, sf := n.Recv(n.PS)
 	no := &notifier{n: n, u: u, sub: sub, sf: sf, toTag: sip.NewTag(), portUS: u.SAs()[0].Set.Local.PortS}
 
-	if res := no.notify("active;expires=500", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600)); res.StatusCode != 200 {
+	if res := no.notify("active;expires=500", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Registered, 3600)); res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 
@@ -293,7 +293,7 @@ func TestNotifyOutsideTheSubscription(t *testing.T) {
 
 	no := n.registerSubscribing(u)
 
-	req := no.request("active;expires=600", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600))
+	req := no.request("active;expires=600", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Registered, 3600))
 	req.Header.Set("Call-ID", "other@127.0.0.1")
 	no.send(req)
 
@@ -301,7 +301,7 @@ func TestNotifyOutsideTheSubscription(t *testing.T) {
 		t.Fatalf("NOTIFY of another dialog answered %q, want 481", res.StartLine())
 	}
 
-	req = no.request("active;expires=600", no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600))
+	req = no.request("active;expires=600", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Registered, 3600))
 	req.Header.Set("Event", "presence")
 	no.send(req)
 
@@ -382,7 +382,7 @@ func TestShortened(t *testing.T) {
 	no.active()
 	nextReginfo(t, u)
 
-	if res := no.notify("active;expires=600000", no.reginfo(regevent.Active, regevent.Active, regevent.Shortened, 2)); res.StatusCode != 200 {
+	if res := no.notify("active;expires=600000", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Shortened, 2)); res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
 
@@ -412,7 +412,7 @@ func TestDeactivated(t *testing.T) {
 
 	old := u.SAs()[0].Set
 
-	res := no.notify("terminated;reason=deactivated", no.reginfo(regevent.Terminated, regevent.Terminated, regevent.Deactivated, 0))
+	res := no.notify("terminated;reason=deactivated", no.reginfo(reginfo.Terminated, reginfo.Terminated, reginfo.Deactivated, 0))
 	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
@@ -481,12 +481,12 @@ func TestBindingReplaced(t *testing.T) {
 
 	old := u.SAs()[0].Set
 
-	expires := uint32(3600)
-	info := no.reginfo(regevent.Active, regevent.Terminated, regevent.Unregistered, 0)
+	expires := uint64(3600)
+	info := no.reginfo(reginfo.Active, reginfo.Terminated, reginfo.Unregistered, 0)
 
 	for i := range info.Registrations {
-		info.Registrations[i].Contacts = append(info.Registrations[i].Contacts, regevent.Contact{
-			ID: "v" + strconv.Itoa(i), State: regevent.Active, Event: regevent.Registered, Expires: &expires,
+		info.Registrations[i].Contacts = append(info.Registrations[i].Contacts, reginfo.Contact{
+			ID: "v" + strconv.Itoa(i), State: reginfo.Active, Event: reginfo.Registered, Expires: &expires,
 			URI: "sip:volte@" + sip.FormatHost(n.Addr) + ":5099",
 		})
 	}
@@ -517,7 +517,7 @@ func TestRejected(t *testing.T) {
 
 	old := u.SAs()[0].Set
 
-	res := no.notify("terminated;reason=rejected", no.reginfo(regevent.Terminated, regevent.Terminated, regevent.Rejected, 0))
+	res := no.notify("terminated;reason=rejected", no.reginfo(reginfo.Terminated, reginfo.Terminated, reginfo.Rejected, 0))
 	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
@@ -547,10 +547,10 @@ func TestOneIMPUTerminated(t *testing.T) {
 	no.active()
 	nextReginfo(t, u)
 
-	info := no.reginfo(regevent.Active, regevent.Active, regevent.Registered, 3600)
-	info.Registrations[1].State = regevent.Terminated
-	info.Registrations[1].Contacts[0].State = regevent.Terminated
-	info.Registrations[1].Contacts[0].Event = regevent.Unregistered
+	info := no.reginfo(reginfo.Active, reginfo.Active, reginfo.Registered, 3600)
+	info.Registrations[1].State = reginfo.Terminated
+	info.Registrations[1].Contacts[0].State = reginfo.Terminated
+	info.Registrations[1].Contacts[0].Event = reginfo.Unregistered
 
 	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
@@ -601,7 +601,7 @@ func TestSubscriptionTerminatedByTimeout(t *testing.T) {
 	no.active()
 
 	res, req, _ := no.notifyAndRefresh("terminated;reason=timeout",
-		no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600))
+		no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600))
 	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
@@ -649,7 +649,7 @@ func TestReginfoVersions(t *testing.T) {
 
 	no.ver = 0
 
-	stale := no.reginfo(regevent.Active, regevent.Active, regevent.Shortened, 2)
+	stale := no.reginfo(reginfo.Active, reginfo.Active, reginfo.Shortened, 2)
 	if res := no.notify("active;expires=600000", stale); res.StatusCode != 200 {
 		t.Fatalf("stale NOTIFY answered %q", res.StartLine())
 	}
@@ -661,7 +661,7 @@ func TestReginfoVersions(t *testing.T) {
 	no.ver = 5
 
 	res, req, f := no.notifyAndRefresh("active;expires=600000",
-		no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600))
+		no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600))
 	if res.StatusCode != 200 {
 		t.Fatalf("NOTIFY answered %q", res.StartLine())
 	}
@@ -673,6 +673,53 @@ func TestReginfoVersions(t *testing.T) {
 	no.accept(req, f)
 }
 
+// A document the UE cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a refresh asks
+// for the full state again (RFC 3680 §5.2); the registration stays.
+func TestReginfoUnreadable(t *testing.T) {
+	n := newRegEventNetwork(t)
+	u, _ := n.newUE(Config{})
+
+	no := n.registerSubscribing(u)
+	no.active()
+	nextReginfo(t, u)
+
+	req := no.request("active;expires=600000", no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600))
+	req.SetBody(reginfo.ContentType, []byte(`<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="9" state="full">`+
+		`<registration aor="`+msisdn+`" id="r0" state="gone"/></reginfo>`))
+	no.send(req)
+
+	var (
+		res     *sip.Response
+		refresh *sip.Request
+		f       sip.Flow
+	)
+
+	for res == nil || refresh == nil {
+		r := no.n.PS.Recv()
+
+		switch m := r.Msg.(type) {
+		case *sip.Response:
+			res = m
+		case *sip.Request:
+			refresh, f = m, r.Flow
+		}
+	}
+
+	if res.StatusCode != 400 {
+		t.Fatalf("NOTIFY of an unreadable document answered %q", res.StartLine())
+	}
+
+	if to, _ := refresh.Header.To(); refresh.Method != "SUBSCRIBE" || to.Tag() != no.toTag {
+		t.Fatalf("got\n%s\nwant a refresh for the full state", refresh)
+	}
+
+	no.accept(refresh, f)
+
+	if !u.State().Registered {
+		t.Error("deregistered of an unreadable document")
+	}
+}
+
 func TestFullStateReplacesIMPUs(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -681,7 +728,7 @@ func TestFullStateReplacesIMPUs(t *testing.T) {
 	no.active()
 	nextReginfo(t, u)
 
-	info := no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)
+	info := no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600)
 	info.Registrations = info.Registrations[:1]
 
 	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {
@@ -692,8 +739,8 @@ func TestFullStateReplacesIMPUs(t *testing.T) {
 		t.Fatalf("IMPUs = %v after a full document listing only %s", st.IMPUs, msisdn)
 	}
 
-	info = no.reginfo(regevent.Active, regevent.Active, regevent.Refreshed, 3600)
-	info.State = regevent.Partial
+	info = no.reginfo(reginfo.Active, reginfo.Active, reginfo.Refreshed, 3600)
+	info.State = reginfo.Partial
 	info.Registrations = info.Registrations[1:]
 
 	if res := no.notify("active;expires=600000", info); res.StatusCode != 200 {

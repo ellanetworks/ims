@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The full state of an address-of-record of no contacts (RFC 3680 §4.7.1). -->
+<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="0" state="full">
+  <registration aor="sip:bob@ims.example.com" id="b1" state="init"/>
+</reginfo>
