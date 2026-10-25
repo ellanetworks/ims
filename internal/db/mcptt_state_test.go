@@ -78,7 +78,7 @@ func TestAffiliations(t *testing.T) {
 		MCPTTID: mustURI(t, "sip:a@example.com"), ClientID: "c1", ETag: "e1",
 		Groups: []affiliation.Group{
 			{ID: mustURI(t, "sip:g2@example.com"), Status: affiliation.Affiliated, Expires: expires},
-			{ID: mustURI(t, "sip:g1@example.com"), Status: affiliation.Affiliating, Expires: expires},
+			{ID: mustURI(t, "sip:g1@example.com"), Status: affiliation.Affiliating, Expires: expires, Configured: true},
 		},
 		PIDs: []string{"p1", ""},
 	}

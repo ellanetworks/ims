@@ -103,7 +103,7 @@ Prerequisite: an HSS that provisions iFCs.
 
 ### Enable push-to-talk (MCPTT)
 
-Prerequisites: an HSS that provisions iFCs, and phones whose SIMs allow the Android app's signing certificate ([Signing](android/README.md#signing)).
+Prerequisites: Ella Core as the HSS, and phones whose SIMs allow the Android app's signing certificate ([Signing](android/README.md#signing)).
 
 1. In `ims.yaml`, set the address phones reach the MCPTT media on, then restart Ella IMS:
 
@@ -113,31 +113,19 @@ Prerequisites: an HSS that provisions iFCs, and phones whose SIMs allow the Andr
        address: 10.6.0.5
    ```
 
-2. Get the server name of the MCPTT server:
+2. In Ella Core:
+   - **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
+   - **Profiles →** the subscribers' profile **→ IMS Filter Criteria**: add the **MCPTT** preset, then **Save**.
 
-   ```sh
-   curl -s http://localhost:5020/api/v1/status | jq -r .result.mcptt.name
-   ```
+3. In Ella IMS, **Push-to-talk → Users → Add User**, for each person:
+   - **MCPTT ID**: e.g. `alice`.
+   - **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`.
 
-3. In the HSS, add an application server of that server name, e.g. `sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org`, without PSIs. Add two iFCs to the subscribers' service profiles, with a lower priority value than any MMTel iFC:
-   - A trigger point on method `REGISTER`, with Include Register Request and Include Register Response, and default handling `SESSION_CONTINUED`.
-   - A trigger point on the originating session case and the `P-Asserted-Service` header `urn:urn-7:3gpp-service.ims.icsi.mcptt`, with default handling `SESSION_TERMINATED`.
-
-4. Provision users and groups:
-
-   ```sh
-   api=http://localhost:5020/api/v1/mcptt
-   curl -X POST $api/users -d '{"mcptt_id": "sip:alice@mcptt.example.com", "alias": "Alice",
-     "impus": ["tel:+15550000001"]}'
-   curl -X POST $api/groups -d '{"group_id": "sip:fire@mcptt.example.com", "display_name": "Fire",
-     "maximum_duration_ms": 600000, "members": [{"mcptt_id": "sip:alice@mcptt.example.com", "implicit_affiliation": true}]}'
-   ```
-
-   `impus` are the user's IMS public identities as your HSS gives them: `tel:+<MSISDN>` with Ella Core. The MCPTT IDs and group IDs are of your organisation's domain, the IMS home domain unless you set it (`PUT $api/service-configuration`). `implicit_affiliation` affiliates the member's phones to the group whenever they register.
+4. **Push-to-talk → Groups → Add Group**: a group ID, e.g. `fire`, and its members.
 
 5. Install the Android app (`android/`) on the phones, and set each user's MCPTT ID and groups in its settings.
 
-6. Start a group call from one phone, then check the others ring.
+6. Start a group call from one phone. The others ring, and **Push-to-talk → Group Calls** shows the call.
 
 ### Build
 

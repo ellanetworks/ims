@@ -292,6 +292,7 @@ var migrations = []string{
 		status TEXT NOT NULL CHECK (status IN ('affiliating', 'affiliated')),
 		expires_at INTEGER NOT NULL,
 		pid TEXT NOT NULL,
+		configured INTEGER NOT NULL CHECK (configured IN (0, 1)),
 		PRIMARY KEY (user_key, client_id, position),
 		FOREIGN KEY (user_key, client_id) REFERENCES mcptt_affiliation_clients (user_key, client_id)
 			ON DELETE CASCADE ON UPDATE CASCADE

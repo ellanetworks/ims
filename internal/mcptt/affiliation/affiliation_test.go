@@ -1,6 +1,7 @@
 package affiliation
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -335,5 +336,143 @@ func TestNoStoreNoDirty(t *testing.T) {
 
 	if len(p.dirty) != 0 {
 		t.Errorf("%d clients to write", len(p.dirty))
+	}
+}
+
+// saved is a store keeping the last record of each client.
+type saved map[string]Record
+
+func (s saved) SaveAffiliations(_ context.Context, records []Record) error {
+	for _, r := range records {
+		s[r.ClientID] = r
+	}
+
+	return nil
+}
+
+// configured are the groups, by whether the server affiliated the client implicitly (§9.2.2.2.15).
+func configured(groups []Group) map[string]bool {
+	out := map[string]bool{}
+	for _, g := range groups {
+		out[g.ID.User] = g.Configured
+	}
+
+	return out
+}
+
+// TS 24.379 §9.2.2.2.15, §9.2.2.2.3 step 14 a i: the entries of the implicit affiliation to configured groups are the
+// server's, as kept and restored, until the client's publication lists their group, which makes them the client's;
+// one of a request (§9.2.2.2.12) is not.
+func TestConfiguredOrigin(t *testing.T) {
+	snap, a := setup(t)
+	store := saved{}
+	p := NewParticipating(NewControlling(fixed{snap}), nil)
+	p.SetStore(store)
+
+	now := time.Unix(1000, 0)
+	g1, g2 := u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")
+
+	p.ImplicitConfigured(now, a, "c1")
+
+	if got := configured(p.Groups(now, a.ID(), "c1")); !got["g1"] || !got["g2"] {
+		t.Fatalf("configured %v", got)
+	}
+
+	if got := configured(store["c1"].Groups); !got["g1"] || !got["g2"] {
+		t.Errorf("configured kept %v", got)
+	}
+
+	// Restored as kept.
+	r := NewParticipating(NewControlling(fixed{snap}), nil)
+	r.Restore(now, []Record{store["c1"]}, func(sip.URI, string) bool { return true })
+
+	if got := configured(r.Groups(now, a.ID(), "c1")); len(got) != 2 || !got["g1"] || !got["g2"] {
+		t.Errorf("configured restored %v", got)
+	}
+
+	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g1, g2}, Expires: MaxExpires}, "e1")
+
+	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 2 || got["g1"] || got["g2"] {
+		t.Errorf("listed by the client, still configured: %v", got)
+	}
+
+	if got := configured(store["c1"].Groups); len(got) != 2 || got["g1"] || got["g2"] {
+		t.Errorf("listed by the client, kept configured: %v", got)
+	}
+
+	p.LogOff(now, a.ID(), "c1")
+
+	if _, err := p.ImplicitAffiliate(now, a, "c1", u(t, "sip:g3@example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 1 || got["g3"] {
+		t.Errorf("implicit affiliation of a request configured: %v", got)
+	}
+}
+
+// A change of the user's <ImplicitAffiliations> applies to its client at once: a group added affiliates it as at
+// service authorisation (§9.2.2.2.15), a group removed de-affiliates the server's entry only (§9.2.2.2.6, §9.2.2.2.7),
+// the client's own affiliation to it staying (§9.2.2.2.3).
+func TestReconfigure(t *testing.T) {
+	cfg := configuration()
+	src := &fixed{}
+	user := func(implicit ...string) *settings.User {
+		t.Helper()
+
+		cfg.Users[0].ImplicitAffiliations = implicit
+
+		s, err := settings.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		src.s = s
+
+		return s.User(u(t, "sip:a@example.com"))
+	}
+
+	c := NewControlling(src)
+	p := NewParticipating(c, nil)
+	now := time.Unix(1000, 0)
+	g1, g3 := u(t, "sip:g1@example.com"), u(t, "sip:g3@example.com")
+
+	a := user()
+	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
+
+	a = user("sip:g1@example.com", "sip:g3@example.com")
+	p.Reconfigure(now, a, "c1")
+
+	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 2 || !got["g1"] || got["g3"] {
+		t.Fatalf("configured %v", got)
+	}
+
+	if got := statuses(p, now, a); got["g1"] != Affiliated || got["g3"] != Affiliated || !c.Affiliated(now, g1, a.ID(), "c1") {
+		t.Fatalf("statuses %v", got)
+	}
+
+	// Unchanged: nothing to do.
+	p.Reconfigure(now, a, "c1")
+
+	if got := statuses(p, now, a); len(got) != 2 {
+		t.Fatalf("statuses %v", got)
+	}
+
+	a = user()
+	p.Reconfigure(now, a, "c1")
+
+	if got := statuses(p, now, a); len(got) != 1 || got["g3"] != Affiliated {
+		t.Errorf("statuses %v", got)
+	}
+
+	if c.Affiliated(now, g1, a.ID(), "c1") || !c.Affiliated(now, g3, a.ID(), "c1") {
+		t.Error("the owner holds the configured affiliation removed, or not the client's")
+	}
+
+	// Of a client with no entries, nothing is made.
+	p.Reconfigure(now, a, "c2")
+
+	if _, ok := p.users[settings.Key(a.ID())].clients["c2"]; ok {
+		t.Error("client made")
 	}
 }

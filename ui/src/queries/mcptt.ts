@@ -50,8 +50,8 @@ export interface Affiliation {
   client_id: string;
   group_id: string;
   status: AffiliationStatus;
-  // Of the current settings, not how the client was affiliated: applied at its next registration.
-  configured_implicit: boolean;
+  // How the client was affiliated: by the server, from the user's implicit affiliations; false if by the client.
+  implicit: boolean;
 }
 
 export interface Participant {

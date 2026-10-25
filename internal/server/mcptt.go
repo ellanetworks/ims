@@ -121,6 +121,7 @@ func (v mcpttView) Affiliations() ([]api.MCPTTAffiliation, error) {
 
 			out = append(out, api.MCPTTAffiliation{
 				MCPTTID: c.User.String(), ClientID: c.Client, GroupID: g.ID.String(), Status: string(g.Status),
+				Implicit: g.Configured,
 			})
 		}
 	}

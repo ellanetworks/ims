@@ -40,6 +40,9 @@ type MCPTTAffiliation struct {
 	ClientID string
 	GroupID  string
 	Status   string
+	// Implicit tells the server affiliated the client to the group from the user's <ImplicitAffiliations> (TS 24.379
+	// §9.2.2.2.15), and the client's publications did not list it since.
+	Implicit bool
 }
 
 // MCPTTCall is a group call (TS 24.379 §10.1.1.4): its session, its participants and its talker, if any. Started is
@@ -82,11 +85,10 @@ type MCPTTAffiliationResponse struct {
 	ClientID string `json:"client_id"`
 	GroupID  string `json:"group_id"`
 	Status   string `json:"status"`
-	// ConfiguredImplicit tells the group is one of the user's <ImplicitAffiliations> in the current settings (TS 24.484
-	// §8.3.2.7), not how the client was affiliated: the server affiliates a client to them at its service authorisation
-	// only (TS 24.379 §9.2.2.2.15), so a change of the setting applies from the client's next registration, and
-	// clearing it de-affiliates no one.
-	ConfiguredImplicit bool `json:"configured_implicit"`
+	// Implicit tells how the client was affiliated: by the server, from the user's <ImplicitAffiliations> (TS 24.379
+	// §9.2.2.2.15), at its service authorisation or once the setting changed; false of the client's own affiliation
+	// (§9.2.2.2.3), its publication listing the group, which an implicit one becomes.
+	Implicit bool `json:"implicit"`
 }
 
 type MCPTTCallResponse struct {
@@ -177,14 +179,9 @@ func ListMCPTTAffiliations(cfg Config) http.Handler {
 			return cmp.Or(cmp.Compare(a.GroupID, b.GroupID), cmp.Compare(a.MCPTTID, b.MCPTTID), cmp.Compare(a.ClientID, b.ClientID))
 		})
 
-		s := cfg.MCPTT.Get()
-
 		resp := mcpttPage[MCPTTAffiliationResponse]{Items: []MCPTTAffiliationResponse{}, Page: page, PerPage: perPage, TotalCount: len(affs)}
 		for _, a := range paged(affs, page, perPage) {
-			resp.Items = append(resp.Items, MCPTTAffiliationResponse{
-				MCPTTID: a.MCPTTID, ClientID: a.ClientID, GroupID: a.GroupID, Status: a.Status,
-				ConfiguredImplicit: implicitlyAffiliated(s, a.MCPTTID, a.GroupID),
-			})
+			resp.Items = append(resp.Items, MCPTTAffiliationResponse(a))
 		}
 
 		writeResponse(w, resp, http.StatusOK, cfg.Logger)

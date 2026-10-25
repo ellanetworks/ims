@@ -254,9 +254,9 @@ type registration struct {
 
 // affiliation is an affiliation of the MCPTT API (openapi.yaml), the fields the tests read.
 type affiliation struct {
-	GroupID            string `json:"group_id"`
-	Status             string `json:"status"`
-	ConfiguredImplicit bool   `json:"configured_implicit"`
+	GroupID  string `json:"group_id"`
+	Status   string `json:"status"`
+	Implicit bool   `json:"implicit"`
 }
 
 // path is the path of the list of the MCPTT API of u's items.
@@ -279,8 +279,8 @@ func wantRegistered(t *testing.T, core *netns, u *user) {
 	}
 }
 
-// wantAffiliated waits for u to be affiliated to the groups of want and to no other, each configured as an implicit
-// affiliation of u as want has it. Affiliating and affiliated count as affiliated, deaffiliating does not (TS 24.379
+// wantAffiliated waits for u to be affiliated to the groups of want and to no other, each affiliated implicitly by the
+// server, from u's configured implicit affiliations, as want has it. Affiliating and affiliated count as affiliated, deaffiliating does not (TS 24.379
 // §9.2.2.2.11 3a); the groups of want must be affiliated, their owner's answer applied (§9.2.2.2.7).
 func wantAffiliated(t *testing.T, core *netns, u *user, want map[string]bool) {
 	t.Helper()
@@ -292,7 +292,7 @@ func wantAffiliated(t *testing.T, core *netns, u *user, want map[string]bool) {
 			implicit, ok := want[a.GroupID]
 
 			switch {
-			case ok && a.Status == "affiliated" && a.ConfiguredImplicit == implicit:
+			case ok && a.Status == "affiliated" && a.Implicit == implicit:
 				n++
 			case a.Status == "affiliating" || a.Status == "affiliated":
 				return false
@@ -525,14 +525,14 @@ func warned(res *sip.Response, text string) bool {
 // TS 24.379 §7.2.1, §7.3.2, §9.2.1.2, §9.2.2.2: the users log on through the IMS, the server authorising them from
 // the mcptt-info of the REGISTER that the third-party REGISTER carries, and affiliating each to the groups configured
 // as its implicit affiliations (§9.2.2.2.15). Each then publishes its affiliations to the participating function,
-// which takes them from a user it serves (§9.2.2.2.3): fire, and rescue for alice, which she is affiliated to
-// explicitly only; the groups the publication leaves out are de-affiliated (step 14 a ii).
+// which takes them from a user it serves (§9.2.2.2.3): fire, and rescue for alice; the groups the publication lists are
+// the client's own then, no longer implicit, and those it leaves out are de-affiliated (step 14 a ii).
 func TestRegisterAffiliate(t *testing.T) {
 	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
 	alice, bob, carol := users(t)
 
-	// The implicit affiliations of mcptt/provision.sh, then the publications, each group configured as an implicit
-	// affiliation or not.
+	// The implicit affiliations of mcptt/provision.sh, then the publications, each group affiliated implicitly by the
+	// server or not.
 	for _, c := range []struct {
 		u                 *user
 		implicit, publish map[string]bool
@@ -540,10 +540,10 @@ func TestRegisterAffiliate(t *testing.T) {
 		{
 			alice,
 			map[string]bool{fire: true, police: true, quiet: true, brief: true},
-			map[string]bool{fire: true, rescue: false},
+			map[string]bool{fire: false, rescue: false},
 		},
-		{bob, map[string]bool{fire: true, police: true, quiet: true, brief: true}, map[string]bool{fire: true}},
-		{carol, map[string]bool{fire: true, police: true}, map[string]bool{fire: true}},
+		{bob, map[string]bool{fire: true, police: true, quiet: true, brief: true}, map[string]bool{fire: false}},
+		{carol, map[string]bool{fire: true, police: true}, map[string]bool{fire: false}},
 	} {
 		u := c.u
 

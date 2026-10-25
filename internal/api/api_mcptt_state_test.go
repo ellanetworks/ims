@@ -51,7 +51,7 @@ func liveState() fakeMCPTTState {
 		},
 		affs: []MCPTTAffiliation{
 			{MCPTTID: "sip:bob@mcptt.example.com", ClientID: "b1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliating"},
-			{MCPTTID: "sip:alice@mcptt.example.com", ClientID: "a1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliated"},
+			{MCPTTID: "sip:alice@mcptt.example.com", ClientID: "a1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliated", Implicit: true},
 		},
 		calls: []MCPTTCall{
 			{
@@ -88,7 +88,7 @@ func TestMCPTTRegistrations(t *testing.T) {
 	}
 }
 
-// The affiliations by group, of whether the group is configured as an implicit affiliation of the user's.
+// The affiliations by group, of whether the server affiliated the client implicitly, as the state has it.
 func TestMCPTTAffiliations(t *testing.T) {
 	e := newMCPTTEnv(t).withState(liveState())
 	e.provision()
@@ -98,7 +98,7 @@ func TestMCPTTAffiliations(t *testing.T) {
 	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/affiliations?group_id=sip:fire@mcptt.example.com", "", &page)
 
 	want := []MCPTTAffiliationResponse{
-		{MCPTTID: "sip:alice@mcptt.example.com", ClientID: "a1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliated", ConfiguredImplicit: true},
+		{MCPTTID: "sip:alice@mcptt.example.com", ClientID: "a1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliated", Implicit: true},
 		{MCPTTID: "sip:bob@mcptt.example.com", ClientID: "b1", GroupID: "sip:fire@mcptt.example.com", Status: "affiliating"},
 	}
 	if !reflect.DeepEqual(page.Items, want) {

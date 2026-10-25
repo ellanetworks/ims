@@ -70,7 +70,7 @@ export const affiliations: Affiliation[] = [
     client_id: "urn:uuid:a1",
     group_id: fire.group_id,
     status: "affiliated",
-    configured_implicit: true,
+    implicit: true,
   },
 ];
 

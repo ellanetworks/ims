@@ -104,6 +104,28 @@ func (c *Controlling) group(id sip.URI) *group {
 	return g
 }
 
+// Revoke applies a change of the settings to the sessions, without waiting for them: on the strand of each group, its
+// session, if any, checked against the current settings (session.revoke). A session keeps the settings it started
+// with otherwise.
+func (c *Controlling) Revoke() {
+	c.mu.Lock()
+
+	groups := make([]*group, 0, len(c.groups))
+	for _, g := range c.groups {
+		groups = append(groups, g)
+	}
+
+	c.mu.Unlock()
+
+	for _, g := range groups {
+		g.st.Post(func() {
+			if s := g.sess; s != nil {
+				s.revoke()
+			}
+		})
+	}
+}
+
 // SessionParam is the URI parameter of the MCPTT session identity that tells the sessions apart: the "gr" of a GRUU
 // (RFC 5627 §3.1), of the controlling PSI, which routes it to the function and names no group or user (TS 24.379
 // §4.5, §4.8).

@@ -226,13 +226,16 @@ func (s *Server) Restore(registrations []registrar.Record, affiliations []affili
 	s.log.Info("registrations restored", slog.Int("bindings", len(bound)))
 }
 
-// Revoke applies a change of the settings to the registrations and affiliations at once: the affiliations to the
-// groups no longer of their users removed, and the clients of the users no longer authorised at their IMPUs logged
-// off (registrar.Revoke).
+// Revoke applies a change of the settings to the registrations, affiliations and calls at once: the affiliations to
+// the groups no longer of their users removed, the clients of the users no longer authorised at their IMPUs logged
+// off, those of the others affiliated to their users' configured groups as they are now (registrar.Revoke), and the
+// members no longer of a group removed from its call, the call of a group deleted released (controlling.Revoke). It
+// waits for none of the strands it posts to.
 func (s *Server) Revoke() {
 	s.controlling.Revoke()
 	s.part.Revoke(s.agent.Layer().Clock().Now(), s.controlling.Eligible)
 	s.reg.Revoke()
+	s.ctrlCalls.Revoke()
 }
 
 // Resubscribe subscribes to the reg event package of the IMPUs of the bindings restored, once the agent serves

@@ -32,7 +32,8 @@ type Store interface {
 
 // Live serves the current settings to the running server and persists changes before they take effect: the Source
 // of the functions. Each change is validated with the rest of the settings, as New validates them, and is for the
-// calls and requests after it; a call keeps the snapshot it started with.
+// calls and requests after it; a call keeps the snapshot it started with, but for its group deleted or its members
+// removed, which OnChange applies to it.
 type Live struct {
 	store    Store
 	onChange func()

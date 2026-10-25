@@ -665,7 +665,9 @@ paths:
       tags: [MCPTT users]
       operationId: deleteMCPTTUser
       summary: Delete a user
-      description: The user leaves its groups; a group it leaves that would be invalid without it is a conflict.
+      description: >-
+        The user leaves its groups; a group it leaves that would be invalid without it is a conflict. Its clients are
+        logged off, and leave the group calls they are in at once.
       responses:
         "200":
           $ref: "#/components/responses/Deleted"
@@ -777,7 +779,9 @@ paths:
       tags: [MCPTT groups]
       operationId: deleteMCPTTGroup
       summary: Delete a group
-      description: The group goes from the implicit affiliations of its users.
+      description: >-
+        The group goes from the implicit affiliations of its users, its affiliations are removed, and its call, if any,
+        is released at once.
       responses:
         "200":
           $ref: "#/components/responses/Deleted"
@@ -825,7 +829,9 @@ paths:
       tags: [MCPTT groups]
       operationId: deleteMCPTTMember
       summary: Remove a member
-      description: The group goes from the user's implicit affiliations.
+      description: >-
+        The group goes from the user's implicit affiliations, the user's clients are de-affiliated from it, and leave
+        its call, if any, at once.
       responses:
         "200":
           description: The group as stored
@@ -1600,7 +1606,9 @@ components:
           type: boolean
           description: >-
             Whether the group is one of the user's implicit affiliations (its implicit_affiliations), which the user's
-            profile has, not the member. Absent from a request, it is as it was; a member removed loses it.
+            profile has, not the member. Absent from a request, it is as it was; a member removed loses it. A change
+            applies to the user's registered clients at once: set, they are affiliated to the group; cleared, the
+            affiliations the server made from it are removed, those the clients made themselves stay.
 
     MCPTTMember:
       allOf:
@@ -1690,7 +1698,7 @@ components:
 
     MCPTTAffiliation:
       type: object
-      required: [mcptt_id, client_id, group_id, status, configured_implicit]
+      required: [mcptt_id, client_id, group_id, status, implicit]
       properties:
         mcptt_id:
           type: string
@@ -1705,13 +1713,14 @@ components:
             The affiliation status at the participating function (TS 24.379 §9.2.2.2.2). Affiliating and affiliated
             count as affiliated, deaffiliating does not (§9.2.2.2.11 3a). Group calls invite the members the
             controlling function holds affiliated (§9.2.2.3.2), which can trail or lead this status around a PUBLISH.
-        configured_implicit:
+        implicit:
           type: boolean
           description: >-
-            The group is one of the user's implicit affiliations in the current settings (TS 24.484 §8.3.2.7), not
-            how the client was affiliated. The server affiliates a client to them at its service authorisation only
-            (TS 24.379 §9.2.2.2.15): a change of the setting applies from the client's next registration, and
-            clearing it de-affiliates no one.
+            How the client was affiliated: true if the server affiliated it from the user's implicit affiliations (TS
+            24.379 §9.2.2.2.15), at its registration or once the setting changed; false if the client affiliated
+            itself (§9.2.2.2.3), which an implicit affiliation becomes once the client's PUBLISH lists the group. A
+            change of the implicit affiliations applies to the registered clients at once: a group added affiliates
+            them, a group removed de-affiliates the implicit affiliations only.
 
     MCPTTCall:
       type: object
