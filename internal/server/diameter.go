@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/core/sctp"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
@@ -56,7 +58,7 @@ func (r *realms) of(app settings.Application) func() string {
 	return func() string { return r.st.Load().Realm(app) }
 }
 
-func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, rtr *rtrHandler,
+func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, cxh *cxHandler,
 	rxh *rxHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
 	op := s.Operator
@@ -72,7 +74,7 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:           newDiameterMux(rtr, rxh),
+		Handler:           newDiameterMux(cxh, rxh),
 		HandshakeTimeout:  handshake,
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
 		Logger:            logger,
@@ -181,30 +183,34 @@ func diameterPeers(st settings.Settings, previous ...settings.Settings) []diamet
 	return out
 }
 
-func newDiameterMux(rtr *rtrHandler, rxh *rxHandler) *diameter.Mux {
+func newDiameterMux(cxh *cxHandler, rxh *rxHandler) *diameter.Mux {
 	mux := diameter.NewMux()
 
-	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, rtr)
+	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, diameter.HandlerFunc(cxh.registrationTermination))
+	mux.Handle(cx.ApplicationID, cx.CommandPushProfile, diameter.HandlerFunc(cxh.pushProfile))
 	mux.Handle(rx.ApplicationID, rx.CommandReAuth, diameter.HandlerFunc(rxh.reAuth))
 	mux.Handle(rx.ApplicationID, rx.CommandAbortSession, diameter.HandlerFunc(rxh.abortSession))
 
 	return mux
 }
 
-type terminator interface {
+// cxRegistrar is what the S-CSCF does of the requests of the HSS.
+type cxRegistrar interface {
 	Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error)
+	PushProfile(ctx context.Context, ppr cx.PushProfileRequest) error
 }
 
-type rtrHandler struct {
+// cxHandler serves the requests of the HSS to the S-CSCF.
+type cxHandler struct {
 	log    *slog.Logger
-	target atomic.Pointer[terminator]
+	target atomic.Pointer[cxRegistrar]
 }
 
-func newRTRHandler(logger *slog.Logger) *rtrHandler {
-	return &rtrHandler{log: logger}
+func newCxHandler(logger *slog.Logger) *cxHandler {
+	return &cxHandler{log: logger}
 }
 
-func (h *rtrHandler) bind(t terminator) {
+func (h *cxHandler) bind(t cxRegistrar) {
 	if t == nil {
 		h.target.Store(nil)
 		return
@@ -213,7 +219,7 @@ func (h *rtrHandler) bind(t terminator) {
 	h.target.Store(&t)
 }
 
-func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	rtr, err := cx.ParseRegistrationTerminationRequest(req)
 	if err != nil {
 		h.log.Warn("invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
@@ -240,6 +246,55 @@ func (h *rtrHandler) ServeDiameter(ctx context.Context, c *diameter.Conn, req *d
 	ans, err := cx.NewRegistrationTerminationAnswer(req, c.LocalIdentity(), a)
 	if err != nil {
 		h.log.Warn("building the RTA failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
+		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	return ans
+}
+
+// TS 29.228 §6.2.2.1
+func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+	ppr, err := cx.ParsePushProfileRequest(req)
+	if err != nil {
+		h.log.Warn("invalid Cx PPR", slog.String("peer", c.PeerID()), slog.Any("error", err))
+		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
+	}
+
+	t := h.target.Load()
+	if t == nil {
+		h.log.Warn("Cx PPR before the registrar started", slog.String("impi", ppr.PrivateIdentity))
+		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+	}
+
+	h.log.Debug("Cx PPR", slog.String("impi", ppr.PrivateIdentity), slog.Bool("userData", len(ppr.UserData) > 0),
+		slog.Bool("charging", ppr.Charging != nil), slog.Bool("allowedWebRTC", ppr.AllowedWebRTC != nil))
+
+	// The S-CSCF authenticates with IMS AKA only: it has no use for SIP Digest authentication data (TS 29.228 Table
+	// 6.2.2.1).
+	if _, ok := req.Find(cx.AVPSIPAuthDataItem, tgpp.VendorID); ok {
+		err = fmt.Errorf("%w: SIP-Auth-Data-Item", scscf.ErrUnsupportedUserData)
+	} else {
+		err = (*t).PushProfile(ctx, ppr)
+	}
+
+	if err != nil {
+		h.log.Warn("Cx PPR failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
+
+		result := tgpp.Result{Code: diameter.ResultUnableToComply}
+
+		switch {
+		case errors.Is(err, scscf.ErrUserUnknown):
+			result = tgpp.Experimental(tgpp.ResultErrorUserUnknown)
+		case errors.Is(err, scscf.ErrUnsupportedUserData):
+			result = tgpp.Experimental(tgpp.ResultErrorNotSupportedUserData)
+		}
+
+		return cx.NewAnswer(req, c.LocalIdentity(), result, 0)
+	}
+
+	ans, err := cx.NewPushProfileAnswer(req, c.LocalIdentity(), cx.PushProfile{})
+	if err != nil {
+		h.log.Warn("building the PPA failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 

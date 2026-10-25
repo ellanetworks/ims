@@ -62,7 +62,7 @@ type sipServer struct {
 	roles       *dispatcher
 	placeholder *placeholderHandler
 	registrar   *scscf.Registrar
-	rtr         *rtrHandler
+	cx          *cxHandler
 	rx          *rxHandler
 	pcscf       atomic.Pointer[pcscf.PCSCF]
 	xfrm        *ipsec.XFRM
@@ -81,7 +81,7 @@ type timers struct {
 }
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
-	tm timers, node *diameter.Node, rlm *realms, rtr *rtrHandler,
+	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
 	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, logger *slog.Logger,
 ) (*sipServer, error) {
@@ -96,7 +96,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	resolver := ases.resolver
 	observed := observedDiameter{node, m}
 	roles := newDispatcher(logger)
-	s := &sipServer{roles: roles, placeholder: ph, rtr: rtr, rx: rxh}
+	s := &sipServer{roles: roles, placeholder: ph, cx: cxh, rx: rxh}
 
 	if kernel == nil {
 		x, err := openXFRM(cfg.SIP.Addresses)
@@ -213,8 +213,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		Logger:               logger,
 	})
 
-	if rtr != nil {
-		rtr.bind(s.registrar)
+	if cxh != nil {
+		cxh.bind(s.registrar)
 	}
 
 	pol := pcscf.Policy{Backend: pf.backend, MediaLossTimeout: tm.mediaLossTimeout}
@@ -346,8 +346,8 @@ func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
 
 // Close stops SIP. The P-CSCF ends its policy sessions until ctx is done, or Close returns the context's error.
 func (s *sipServer) Close(ctx context.Context) error {
-	if s.rtr != nil {
-		s.rtr.bind(nil)
+	if s.cx != nil {
+		s.cx.bind(nil)
 	}
 
 	if s.rx != nil {

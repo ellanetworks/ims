@@ -249,10 +249,10 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		return nil, err
 	}
 
-	rtr := newRTRHandler(s.Logger)
+	cxh := newCxHandler(s.Logger)
 	rxh := newRxHandler(s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, rtr, rxh, s.Logger)
+	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, cxh, rxh, s.Logger)
 	if err != nil {
 		closeListeners(diameterLns)
 		return nil, fmt.Errorf("start Diameter: %w", err)
@@ -287,7 +287,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, rtr, rxh, pf, s.database, s.records,
+	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
 		s.metrics, s.IPsec, sipFailed, s.ases, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)

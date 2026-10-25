@@ -47,6 +47,10 @@ type change struct {
 	removed   []removal
 	reason    string
 	shortened string
+
+	// created are the keys of the public identities that the HSS added to a registered set of the user, or unbarred
+	// in it (TS 24.229 §5.4.1.8 step 1, §5.4.2.1.2 step 4e IV).
+	created map[string]bool
 }
 
 type outgoing struct {
@@ -416,12 +420,19 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 	var active []bindingAt
 
 	for _, set := range bound {
+		// A set that bars the identity does not register it (TS 24.229 §5.4.1.8 step 2).
+		if slices.ContainsFunc(set.Identities, func(other db.PublicIdentity) bool { return other.Key == id.Key && other.Barred }) {
+			continue
+		}
+
 		for _, b := range liveAt(set.Bindings, st.now) {
 			event := reginfo.Refreshed
 
 			switch {
 			case ch.shortened != "" && set.IMPI == ch.shortened:
 				event = reginfo.Shortened
+			case ch.created[id.Key] && set.IMPI == st.impi:
+				event = reginfo.Created
 			case b.Event != db.BindingRefreshed:
 				event = reginfo.Created
 

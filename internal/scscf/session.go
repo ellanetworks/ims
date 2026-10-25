@@ -405,7 +405,7 @@ func (s *Sessions) toICSCF(tx *transaction.ServerTransaction, out *sip.Request, 
 
 	opts := s.initialOptions(r, rr, first)
 	if opts.Dialog != nil && c.binding != 0 {
-		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller)
+		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
 	}
 
 	// The call as it leaves the S-CSCF, through any AS (TS 24.229 §5.4.3.2 step 15).
@@ -629,7 +629,7 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 
 			if opts.Dialog != nil {
 				for _, r := range append([]proxy.Branch{b}, b.Retry...) {
-					s.r.calls.add(opts.Dialog, r.Key.(bindingKey), proxy.Callee)
+					s.r.calls.add(opts.Dialog, r.Key.(bindingKey), proxy.Callee, c.servedKeys(s.r.cfg.HomeDomain))
 				}
 			}
 

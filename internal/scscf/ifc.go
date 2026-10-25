@@ -460,3 +460,84 @@ func compiled(expr string) *regexp.Regexp {
 
 	return re
 }
+
+// mayRegister reports whether a re-registration of the user may meet the trigger point, as thirdParties checks it: a
+// REGISTER of type RE_REGISTRATION, in the session case ORIGINATING_REGISTERED. The other SPTs depend on the request,
+// and may be met or not: the trigger point is worked out in three-valued logic, where a disjunction is the greatest of
+// its values and a conjunction the least (TS 29.228 Annex B.2.2, Annex C).
+func mayRegister(tp *cx.TriggerPoint) bool {
+	const (
+		no int8 = iota
+		maybe
+		yes
+	)
+
+	if tp == nil {
+		return true
+	}
+
+	value := func(s cx.ServicePointTrigger) int8 {
+		var met bool
+
+		switch {
+		case s.Method != nil:
+			met = *s.Method == "REGISTER" &&
+				(len(s.RegistrationTypes) == 0 || slices.Contains(s.RegistrationTypes, cx.RegistrationTypeReRegistration))
+		case s.SessionCase != nil:
+			met = *s.SessionCase == cx.SessionCaseOriginatingRegistered
+		default:
+			return maybe
+		}
+
+		if met != s.Negated {
+			return yes
+		}
+
+		return no
+	}
+
+	var groups []int32
+
+	for _, s := range tp.ServicePointTriggers {
+		for _, g := range s.Groups {
+			if !slices.Contains(groups, g) {
+				groups = append(groups, g)
+			}
+		}
+	}
+
+	// In CNF, a conjunction of groups that are disjunctions; in DNF, the other way round.
+	cnf := tp.ConjunctiveNormalForm
+
+	outer := no
+	if cnf {
+		outer = yes
+	}
+
+	for _, g := range groups {
+		inner := yes
+		if cnf {
+			inner = no
+		}
+
+		for _, s := range tp.ServicePointTriggers {
+			if !slices.Contains(s.Groups, g) {
+				continue
+			}
+
+			if cnf {
+				inner = max(inner, value(s))
+			} else {
+				inner = min(inner, value(s))
+			}
+		}
+
+		if cnf {
+			outer = min(outer, inner)
+		} else {
+			outer = max(outer, inner)
+		}
+	}
+
+	return outer != no
+}

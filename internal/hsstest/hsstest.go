@@ -693,3 +693,37 @@ func (h *HSS) RTR(ctx context.Context, reason cx.DeregistrationReason, impi stri
 
 	return cx.ParseRegistrationTerminationAnswer(ans)
 }
+
+// PPR pushes the subscriber's profile, as it is now, to the IMS (TS 29.228 §6.2.2).
+func (h *HSS) PPR(ctx context.Context, impi string) (cx.PushProfile, error) {
+	if p, ok := h.node.Peer(imsPeer); !ok || p.State != diameter.PeerOpen {
+		return cx.PushProfile{}, ErrNotConnected
+	}
+
+	s, ok := h.Subscriber(impi)
+	if !ok {
+		return cx.PushProfile{}, fmt.Errorf("hsstest: no subscriber %s", impi)
+	}
+
+	userData, err := cx.MarshalUserData(s.subscription())
+	if err != nil {
+		return cx.PushProfile{}, err
+	}
+
+	req, err := cx.NewPushProfileRequest(tgpp.Envelope{
+		SessionID:        h.node.NewSessionID(),
+		Origin:           h.node.Identity(),
+		DestinationHost:  h.cfg.IMSHost,
+		DestinationRealm: h.cfg.IMSRealm,
+	}, cx.PushProfileRequest{PrivateIdentity: impi, UserData: userData})
+	if err != nil {
+		return cx.PushProfile{}, err
+	}
+
+	ans, err := h.node.Do(ctx, imsPeer, req)
+	if err != nil {
+		return cx.PushProfile{}, err
+	}
+
+	return cx.ParsePushProfileAnswer(ans)
+}

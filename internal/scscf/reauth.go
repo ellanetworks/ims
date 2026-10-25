@@ -39,14 +39,24 @@ func (r *Registrar) reauthenticate(ctx context.Context, impi string) ([]*outgoin
 		return nil, ErrNotRegistered
 	}
 
+	if err := r.shorten(ctx, st); err != nil {
+		return nil, err
+	}
+
+	return r.notifyChange(ctx, impi, change{shortened: impi}), nil
+}
+
+// shorten brings the expiry of every binding of the user forward to ReauthExpires from now, and has its next
+// REGISTER challenged (TS 24.229 §5.4.1.6). The NOTIFY of the shortened bindings is the caller's.
+func (r *Registrar) shorten(ctx context.Context, st *state) error {
 	at := st.now.Add(r.cfg.ReauthExpires)
 
-	for _, reg := range st.regs {
+	for i, reg := range st.regs {
 		changed := false
 
-		for i, b := range reg.Bindings {
+		for j, b := range reg.Bindings {
 			if b.ExpiresAt.After(at) {
-				reg.Bindings[i].ExpiresAt = at
+				reg.Bindings[j].ExpiresAt = at
 				changed = true
 			}
 		}
@@ -55,17 +65,20 @@ func (r *Registrar) reauthenticate(ctx context.Context, impi string) ([]*outgoin
 			continue
 		}
 
-		if _, err := r.cfg.DB.SaveRegistration(ctx, reg); err != nil {
-			return nil, err
+		saved, err := r.cfg.DB.SaveRegistration(ctx, reg)
+		if err != nil {
+			return err
 		}
+
+		st.regs[i] = saved
 	}
 
 	r.mu.Lock()
-	r.reauth[impi]++
+	r.reauth[st.impi]++
 	r.mu.Unlock()
 
-	r.log.Info("network-initiated re-authentication", slog.String("impi", impi),
+	r.log.Info("network-initiated re-authentication", slog.String("impi", st.impi),
 		slog.Duration("expires", r.cfg.ReauthExpires))
 
-	return r.notifyChange(ctx, impi, change{shortened: impi}), nil
+	return nil
 }

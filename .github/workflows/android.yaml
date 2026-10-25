@@ -77,6 +77,11 @@ jobs:
             sleep $((attempt * 10))
           done
           exit 1
+      # ktlint and the Compose rules; spotlessApply fixes the format. Before the release key: the key's
+      # environment is only complete in the step that builds the release.
+      - name: Check the Kotlin
+        if: steps.changes.outputs.app == 'true'
+        run: ./gradlew :app:spotlessCheck
       - name: Decode the release key
         if: steps.changes.outputs.app == 'true' && env.SIGN == 'true'
         env:
@@ -85,10 +90,6 @@ jobs:
           [ -n "$MCPTT_KEYSTORE_BASE64" ] || { echo "MCPTT_KEYSTORE_BASE64 is not set"; exit 1; }
           echo "$MCPTT_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "MCPTT_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-      # ktlint and the Compose rules; spotlessApply fixes the format.
-      - name: Check the Kotlin
-        if: steps.changes.outputs.app == 'true'
-        run: ./gradlew :app:spotlessCheck
       - name: Lint, test and build
         if: steps.changes.outputs.app == 'true'
         env:

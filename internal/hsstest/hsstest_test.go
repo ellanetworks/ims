@@ -34,6 +34,7 @@ type client struct {
 	hss  *HSS
 	node *diameter.Node
 	rtrs chan cx.RegistrationTerminationRequest
+	pprs chan cx.PushProfileRequest
 
 	hold chan struct{}
 }
@@ -51,7 +52,10 @@ func newClient(t *testing.T) *client {
 		IMPUs: []cx.ProfileIdentity{{Identity: tempIMPU, Barred: true}, {Identity: msisdn}},
 	})
 
-	c := &client{t: t, hss: h, rtrs: make(chan cx.RegistrationTerminationRequest, 4)}
+	c := &client{
+		t: t, hss: h, rtrs: make(chan cx.RegistrationTerminationRequest, 4),
+		pprs: make(chan cx.PushProfileRequest, 4),
+	}
 
 	mux := diameter.NewMux()
 	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, diameter.HandlerFunc(
@@ -68,6 +72,20 @@ func newClient(t *testing.T) *client {
 			}
 
 			ans, _ := cx.NewRegistrationTerminationAnswer(req, conn.LocalIdentity(), cx.RegistrationTermination{})
+
+			return ans
+		}))
+
+	mux.Handle(cx.ApplicationID, cx.CommandPushProfile, diameter.HandlerFunc(
+		func(_ context.Context, conn *diameter.Conn, req *diameter.Message) *diameter.Message {
+			ppr, err := cx.ParsePushProfileRequest(req)
+			if err != nil {
+				return cx.NewErrorAnswer(req, conn.LocalIdentity(), err, 0)
+			}
+
+			c.pprs <- ppr
+
+			ans, _ := cx.NewPushProfileAnswer(req, conn.LocalIdentity(), cx.PushProfile{})
 
 			return ans
 		}))
@@ -678,6 +696,43 @@ func TestRTR(t *testing.T) {
 
 	if s := c.state(); s.State != NotRegistered {
 		t.Fatalf("subscriber = %+v, want not registered after the RTR of one IMPU", s)
+	}
+}
+
+func TestPPR(t *testing.T) {
+	c := newClient(t)
+	c.register()
+
+	register := "REGISTER"
+
+	c.hss.Update(impi, func(s *Subscriber) {
+		s.IFCs = []cx.InitialFilterCriteria{{
+			Trigger:           &cx.TriggerPoint{ServicePointTriggers: []cx.ServicePointTrigger{{Groups: []int32{0}, Method: &register}}},
+			ApplicationServer: cx.ApplicationServer{ServerName: "sip:as.example.com"},
+		}}
+	})
+
+	ppa, err := c.hss.PPR(t.Context(), impi)
+	if err != nil || !ppa.Result.Success() {
+		t.Fatalf("PPA = %+v, %v", ppa, err)
+	}
+
+	ppr := <-c.pprs
+	if ppr.PrivateIdentity != impi {
+		t.Fatalf("PPR = %+v", ppr)
+	}
+
+	sub, err := cx.ParseUserData(ppr.UserData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if p := sub.ServiceProfiles; len(p) != 1 || len(p[0].PublicIdentities) != 2 || len(p[0].InitialFilterCriteria) != 1 {
+		t.Fatalf("user data = %+v, want the subscriber's profile with its new iFC", sub)
+	}
+
+	if s := c.state(); s.State != Registered {
+		t.Fatalf("subscriber = %+v, want still registered after the PPR", s)
 	}
 }
 

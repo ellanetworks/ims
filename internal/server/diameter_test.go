@@ -795,3 +795,61 @@ func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 		t.Fatalf("routes = %+v, want %+v", got, want)
 	}
 }
+
+// TS 29.228 Table 6.2.2.1.1
+func TestPPRResults(t *testing.T) {
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(hss.config("hss"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss")
+
+	userData, err := cx.MarshalUserData(cx.IMSSubscription{
+		PrivateIdentity: testIMPI,
+		ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{{Identity: testIMPU}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		ppr  cx.PushProfileRequest
+		auth bool
+		want uint32
+	}{
+		{"unknown user", cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData}, false, tgpp.ResultErrorUserUnknown},
+		{"unknown user, charging", cx.PushProfileRequest{
+			PrivateIdentity: testIMPI, Charging: &cx.ChargingInformation{PrimaryEventChargingFunction: "aaa://ecf"},
+		}, false, tgpp.ResultErrorUserUnknown},
+		{
+			"malformed user data",
+			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: []byte("<IMSSubscription>")},
+			false,
+			tgpp.ResultErrorNotSupportedUserData,
+		},
+		{
+			"SIP Digest authentication data",
+			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData},
+			true,
+			tgpp.ResultErrorNotSupportedUserData,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := cx.NewPushProfileRequest(hss.envelope(), tt.ppr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if tt.auth {
+				req.AVPs = append(req.AVPs, diameter.Grouped(cx.AVPSIPAuthDataItem, diameter.AVPFlagMandatory, tgpp.VendorID))
+			}
+
+			if r := hss.send(t, req, nil); !r.IsExperimental(tt.want) {
+				t.Fatalf("PPA result = %s, want experimental %d", r, tt.want)
+			}
+		})
+	}
+}

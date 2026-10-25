@@ -20,21 +20,31 @@ type bindingKey int64
 
 // calls indexes the INVITE dialogs of the S-CSCF by the bindings they were initiated by (the
 // caller's) or terminated toward (the callee's), so that removing a binding releases them
-// (TS 24.229 §5.4.1.2.2 step 4A, §5.4.1.4 step 5, §5.4.1.5).
+// (TS 24.229 §5.4.1.2.2 step 4A, §5.4.1.4 step 5, §5.4.1.5), and keeps the identity keys of the
+// served user of each, so that removing a public identity from its set releases its own
+// (§5.4.1.8 step 3).
 type calls struct {
 	mu        sync.Mutex
 	byBinding map[bindingKey]map[*proxy.Dialog]proxy.Side
 	byDialog  map[*proxy.Dialog][]bindingKey
+	served    map[callKey][]string
+}
+
+type callKey struct {
+	d *proxy.Dialog
+	k bindingKey
 }
 
 func newCalls() *calls {
 	return &calls{
 		byBinding: make(map[bindingKey]map[*proxy.Dialog]proxy.Side),
 		byDialog:  make(map[*proxy.Dialog][]bindingKey),
+		served:    make(map[callKey][]string),
 	}
 }
 
-func (c *calls) add(d *proxy.Dialog, k bindingKey, side proxy.Side) {
+// add indexes the dialog under the binding, for the served user of the identity keys.
+func (c *calls) add(d *proxy.Dialog, k bindingKey, side proxy.Side, served []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -47,6 +57,7 @@ func (c *calls) add(d *proxy.Dialog, k bindingKey, side proxy.Side) {
 	if _, ok := ds[d]; !ok {
 		ds[d] = side
 		c.byDialog[d] = append(c.byDialog[d], k)
+		c.served[callKey{d, k}] = served
 	}
 }
 
@@ -56,6 +67,7 @@ func (c *calls) forget(d *proxy.Dialog) {
 
 	for _, k := range c.byDialog[d] {
 		delete(c.byBinding[k], d)
+		delete(c.served, callKey{d, k})
 
 		if len(c.byBinding[k]) == 0 {
 			delete(c.byBinding, k)
@@ -86,6 +98,22 @@ func (c *calls) of(k bindingKey) map[*proxy.Dialog]proxy.Side {
 	out := make(map[*proxy.Dialog]proxy.Side, len(c.byBinding[k]))
 	for d, side := range c.byBinding[k] {
 		out[d] = side
+	}
+
+	return out
+}
+
+// serving are the dialogs of the binding whose served user the function picks, by the identity keys of its forms.
+func (c *calls) serving(k bindingKey, pick func(served []string) bool) map[*proxy.Dialog]proxy.Side {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make(map[*proxy.Dialog]proxy.Side)
+
+	for d, side := range c.byBinding[k] {
+		if pick(c.served[callKey{d, k}]) {
+			out[d] = side
+		}
 	}
 
 	return out

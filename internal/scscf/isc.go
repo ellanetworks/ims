@@ -63,6 +63,11 @@ func (c *chain) originating() bool {
 	return false
 }
 
+// servedKeys are the identity keys of the served user, in each of its forms.
+func (c *chain) servedKeys(homeDomain string) []string {
+	return identityKeys(c.served.URI, homeDomain)
+}
+
 const (
 	hopPending int32 = iota
 	hopBack
@@ -254,7 +259,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	}
 
 	if opts.Dialog != nil && c.binding != 0 {
-		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller)
+		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
 	}
 
 	s.log.Debug("request sent to an AS", slog.String("request", out.StartLine()), slog.String("as", as.ServerName),
