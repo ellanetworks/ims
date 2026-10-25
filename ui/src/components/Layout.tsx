@@ -20,15 +20,12 @@ import {
   BugReport as BugReportIcon,
   Call as CallIcon,
   Feed as FeedIcon,
-  Groups as GroupsIcon,
   Hub as HubIcon,
   Info as InfoIcon,
   Menu as MenuIcon,
   PhoneAndroid as PhoneAndroidIcon,
   OpenInNew as OpenInNewIcon,
-  Person as PersonIcon,
   RecordVoiceOver as RecordVoiceOverIcon,
-  Settings as SettingsIcon,
 } from "@mui/icons-material";
 import { Link, useLocation } from "react-router-dom";
 import DeploymentIdentity from "@/components/DeploymentIdentity";
@@ -78,21 +75,10 @@ const navItems = [
     icon: <PhoneAndroidIcon color="primary" />,
   },
   { to: "/calls", label: "Calls", icon: <CallIcon color="primary" /> },
-];
-
-// pttItems are the pages of the built-in MCPTT AS, there when it is off too, to tell how to turn it on.
-const pttItems = [
-  { to: "/ptt/users", label: "Users", icon: <PersonIcon color="primary" /> },
-  { to: "/ptt/groups", label: "Groups", icon: <GroupsIcon color="primary" /> },
   {
-    to: "/ptt/calls",
-    label: "Group Calls",
+    to: "/ptt",
+    label: "Push-to-Talk",
     icon: <RecordVoiceOverIcon color="primary" />,
-  },
-  {
-    to: "/ptt/settings",
-    label: "Settings",
-    icon: <SettingsIcon color="primary" />,
   },
 ];
 
@@ -197,34 +183,26 @@ export default function Layout({ children }: { children: ReactNode }) {
           aria-label="Main"
           sx={{ flexGrow: 1, overflow: "auto" }}
         >
-          {[
-            { items: navItems },
-            { header: "Push-to-talk", items: pttItems },
-          ].map(({ header, items }) => (
-            <List
-              key={header ?? "main"}
-              subheader={header && <ListSubheader>{header}</ListSubheader>}
-            >
-              {items.map(({ to, label, icon }) => {
-                const current = pathname.startsWith(to);
-                return (
-                  <ListItem key={to} disablePadding>
-                    <ListItemButton
-                      component={Link}
-                      to={to}
-                      selected={current}
-                      aria-current={current ? "page" : undefined}
-                      onClick={handleNavClick}
-                      sx={drawerSelectedSx}
-                    >
-                      <ListItemIcon>{icon}</ListItemIcon>
-                      <ListItemText primary={label} />
-                    </ListItemButton>
-                  </ListItem>
-                );
-              })}
-            </List>
-          ))}
+          <List>
+            {navItems.map(({ to, label, icon }) => {
+              const current = pathname.startsWith(to);
+              return (
+                <ListItem key={to} disablePadding>
+                  <ListItemButton
+                    component={Link}
+                    to={to}
+                    selected={current}
+                    aria-current={current ? "page" : undefined}
+                    onClick={handleNavClick}
+                    sx={drawerSelectedSx}
+                  >
+                    <ListItemIcon>{icon}</ListItemIcon>
+                    <ListItemText primary={label} />
+                  </ListItemButton>
+                </ListItem>
+              );
+            })}
+          </List>
         </Box>
 
         <Divider />

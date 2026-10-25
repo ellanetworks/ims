@@ -453,14 +453,19 @@ func (p *PCSCF) endPolicy(r db.PCSCFRegistration, cause policy.Termination, wait
 	p.policy.end(s, cause, wait)
 }
 
-// restorePolicy ends, after a restart, the policy sessions stored with the registrations, and opens them again.
-func (p *PCSCF) restorePolicy(expired []db.PCSCFRegistration) {
+// restorePolicy ends, after a restart, the policy sessions stored with the registrations, and opens them again. Those
+// of the registrations expired, or lost with their security associations, it only ends.
+func (p *PCSCF) restorePolicy(expired, lost []db.PCSCFRegistration) {
 	if p.policy == nil {
 		return
 	}
 
 	for _, r := range expired {
 		p.endPolicy(r, policy.TerminationExpired, restoreWait)
+	}
+
+	for _, r := range lost {
+		p.endPolicy(r, policy.TerminationAdministrative, restoreWait)
 	}
 
 	for _, r := range p.regs.all() {

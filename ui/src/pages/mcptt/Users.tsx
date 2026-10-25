@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -16,8 +15,6 @@ import {
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import MCPTTGate from "@/components/MCPTTGate";
-import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import UserDialog from "@/components/mcptt/UserDialog";
 import UserDrawer from "@/components/mcptt/UserDrawer";
@@ -66,7 +63,7 @@ const matches = (u: MCPTTUser, search: string) => {
   );
 };
 
-function UsersContent() {
+export function UsersTab() {
   const queryClient = useQueryClient();
   const { users, groups, domain, homeDomain } = useMCPTTSettings();
   const { registrations, affiliations } = useMCPTTLive();
@@ -286,21 +283,5 @@ function UsersContent() {
         onClose={() => setSelected(null)}
       />
     </>
-  );
-}
-
-export default function MCPTTUsers() {
-  const { users } = useMCPTTSettings(false);
-
-  return (
-    <Box component="section" aria-labelledby="mcptt-users-title">
-      <PageHeader
-        id="mcptt-users-title"
-        title="Users"
-        count={users.data?.length}
-        description="The people of your push-to-talk service, and their phones."
-      />
-      <MCPTTGate>{() => <UsersContent />}</MCPTTGate>
-    </Box>
   );
 }

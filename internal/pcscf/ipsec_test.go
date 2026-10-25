@@ -956,6 +956,88 @@ func restart(t *testing.T, s *ipsecScene) {
 	s.late.h.Store(p)
 }
 
+// finalResponse is the first response of sock other than a 100 (Trying).
+func finalResponse(t *testing.T, sock *siptest.Socket) *sip.Response {
+	t.Helper()
+
+	for {
+		if res := first(sock.RecvResponse()); res.StatusCode != 100 {
+			return res
+		}
+	}
+}
+
+// TS 24.229 §5.2.5.1 step 2, §4.14.2, §5.2.6.4.1: a registration whose security associations a restart lost is not
+// restored, and a request toward its UE gets a 404 (Not Found), not the 430 of a failed flow.
+func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	token, o := s.registerOverIPsec(u)
+	wantStatus(t, o.notify(t, "active;expires=600000", nil), 200)
+
+	for set := range s.kernel.Installed() {
+		s.kernel.Lose(set)
+	}
+
+	restart(t, s)
+
+	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); ok {
+		t.Fatal("registration restored without its security associations")
+	}
+
+	if stored, _ := s.store.ListPCSCFRegistrations(context.Background()); len(stored) != 0 {
+		t.Fatalf("stored = %+v, want the registration deleted", stored)
+	}
+
+	if s.p.subs.has(testIMPI) {
+		t.Fatal("reg event subscription kept for no registration")
+	}
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", nil))
+	wantStatus(t, finalResponse(t, s.scscf), 404)
+	u.us.RecvNone(quiet)
+}
+
+// A registration whose security associations survived the restart is restored and reached through them.
+func TestRestoreKeepsTheRegistrationsOfKeptSets(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	token, o := s.registerOverIPsec(u)
+	wantStatus(t, o.notify(t, "active;expires=600000", nil), 200)
+
+	restart(t, s)
+
+	if _, ok := s.p.regs.get(regKey{impi: testIMPI, ue: ueAddr}); !ok {
+		t.Fatal("registration not restored")
+	}
+
+	if !s.p.subs.has(testIMPI) {
+		t.Fatal("reg event subscription not restored")
+	}
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", nil))
+
+	if got, _ := u.us.RecvRequest(); got.Method != "INVITE" {
+		t.Fatalf("UE got %s, want the INVITE", got.Method)
+	}
+}
+
+// RFC 5626 §5.3.1: a flow token the P-CSCF does not know, toward a contact it still binds, gets the 430 of a failed
+// flow, for the S-CSCF to try the UE's other flows; to a contact of no binding, a 404 (TS 24.229 §5.2.6.4.1).
+func TestUnknownFlowTowardABoundContact(t *testing.T) {
+	s, u := newIPsecRegScene(t)
+	s.registerOverIPsec(u)
+
+	path := "sip:nosuchflow@" + s.pcscf.String() + ";lr"
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", path, nil))
+	wantStatus(t, finalResponse(t, s.scscf), 430)
+
+	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", path, func(r *sip.Request) {
+		r.URI = sip.URI{Scheme: "sip", User: "other", Host: "127.0.0.9", Port: 5060}
+	}))
+	wantStatus(t, finalResponse(t, s.scscf), 404)
+	u.us.RecvNone(quiet)
+}
+
 // A Samsung phone offers only hmac-md5-96 and sends its protected REGISTER over TCP from port_uc,
 // with port_us in the Via and rport;keep.
 func TestSamsungRegistration(t *testing.T) {

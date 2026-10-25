@@ -420,6 +420,38 @@ func TestSubscribeASFullState(t *testing.T) {
 	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Created)
 }
 
+// TS 24.229 §5.7.1.1 a, §5.4.2.1.1; TS 23.003 §13.4: of an implicit registration set of a tel URI and a barred
+// temporary IMPU only, as Ella Core's HSS gives, an AS subscribes with the SIP URI of the number, "user=phone",
+// which the set does not hold: it is the registration of the tel URI, whose registrations the NOTIFY has.
+func TestSubscribeASNumberSIPForm(t *testing.T) {
+	h := newHarness(t)
+	h.hss.set(func(f *fakeHSS) {
+		f.subscriptions[0].ServiceProfiles[0].PublicIdentities = []cx.ProfileIdentity{
+			{Identity: testIMPU, Barred: true}, {Identity: testTel},
+		}
+	})
+
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	h.withAS(as)
+
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	s := h.asSubscriber(as)
+	n := s.subscribed()
+
+	if got, want := n.aors(), []string{testTel, testAlias}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("registrations = %v, want %v", got, want)
+	}
+
+	wantContact(t, n.contact(t, testTel, u.contact), reginfo.Active, reginfo.Created)
+
+	if subs := h.subscriptions(); len(subs) != 1 || subs[0].Subscriber != db.SubscriberAS || subs[0].IMPU != testMSISDN {
+		t.Fatalf("subscriptions = %+v", subs)
+	}
+}
+
 // TS 24.229 §5.4.2.1.2 step 5: the NOTIFYs have the icid-value of the SUBSCRIBE that created the dialog, not of a
 // refresh, and an orig-ioi of the S-CSCF's network, of type 3 towards an AS, of type 1 towards the UE, without
 // term-ioi; the S-CSCF keeps the term-ioi of the responses. A SUBSCRIBE without icid-value makes NOTIFYs without

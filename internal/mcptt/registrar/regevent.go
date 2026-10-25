@@ -337,7 +337,7 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 	if doc != nil && !stopped && (!w.versioned || doc.Version > w.version) {
 		w.version, w.versioned = doc.Version, true
 		w.registered(doc)
-		g.deregistered(w.ik, doc, &ch)
+		g.deregistered(w, doc, &ch)
 
 		if w.restored && doc.State == reginfo.Full {
 			g.staleIn(w, doc, now, &ch)
@@ -380,10 +380,43 @@ func (w *watch) registered(doc *reginfo.Reginfo) {
 	}
 }
 
-// deregistered removes the bindings of the IMPU of key ik that doc reports deregistered. Called with g.mu held.
-func (g *Registrar) deregistered(ik string, doc *reginfo.Reginfo, ch *change) {
+// reports reports whether aor, of a <registration> of a document of w, is of the IMPU of w (RFC 3680 §5.1: the
+// registrations of the document are of their aor, which the S-CSCF reports of each registered IMPU of the user, TS
+// 24.229 §5.4.2.1.2 step 3): the IMPU itself, the URI subscribed to, of a tel URI the SIP URI of its number, or an IMPU
+// of the implicit registration set of a binding of it, registered and deregistered together (TS 23.228 §4.3.3.2),
+// as an S-CSCF may report the tel URI of a SIP URI, or the other way round. Called with g.mu held.
+func (g *Registrar) reports(w *watch, aor string) bool {
+	u, err := sip.ParseURI(aor)
+	if err != nil {
+		return false
+	}
+
+	k := settings.Key(u)
+	if k == "" {
+		return false
+	}
+
+	if k == w.ik || k == settings.Key(w.impu) {
+		return true
+	}
+
+	for _, b := range g.impus[w.ik] {
+		for _, u := range b.IMPUs {
+			if settings.Key(u) == k {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// deregistered removes the bindings of the IMPU of w that doc reports deregistered (reports). Called with g.mu held.
+func (g *Registrar) deregistered(w *watch, doc *reginfo.Reginfo, ch *change) {
+	ik := w.ik
+
 	for _, reg := range doc.Registrations {
-		if aor, err := sip.ParseURI(reg.AOR); err != nil || settings.Key(aor) != ik {
+		if !g.reports(w, reg.AOR) {
 			continue
 		}
 

@@ -45,6 +45,9 @@ type Config struct {
 	// requests only the server takes through the IMS, required then; unused in direct mode [PM 14]. They must not
 	// cover the UEs.
 	TrustedNetworks []netip.Prefix
+	// HomeDomain is the IMS's, through the IMS: the host of the SIP URI of a telephone number, "user=phone", that the
+	// server subscribes with to the reg event package of an IMPU of a tel URI (TS 24.229 §5.7.1.1 a; TS 23.003 §13.4).
+	HomeDomain string
 	// Tokens checks the access tokens; registrar.Unvalidated if nil.
 	Tokens registrar.TokenCheck
 	// Media is the media plane of the calls, closed by Shutdown; without one, the server takes no call: an INVITE gets
@@ -153,7 +156,7 @@ func New(cfg Config) (*Server, error) {
 
 	s.reg = registrar.New(registrar.Config{
 		Source: cfg.Source, Mode: cfg.Mode, Store: store, StrandOf: s.impuStrand, Trusted: s.trusted, Agent: a,
-		Tokens: cfg.Tokens, Affiliations: s.part, Clock: a.Layer().Clock(), Logger: s.log,
+		HomeDomain: cfg.HomeDomain, Tokens: cfg.Tokens, Affiliations: s.part, Clock: a.Layer().Clock(), Logger: s.log,
 	})
 
 	// Direct mode reaches the clients at their contacts [PM 14]; through the IMS, at their S-CSCF.

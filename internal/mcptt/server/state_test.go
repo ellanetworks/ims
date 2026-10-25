@@ -198,6 +198,60 @@ func TestRestore(t *testing.T) {
 	}
 }
 
+// TS 24.229 §5.7.1.1 a; TS 23.003 §13.4: the bindings restored of a tel URI IMPU whose implicit registration set has
+// no SIP URI, as of Ella Core's HSS, are reconciled by the subscription made again to the SIP URI of its number,
+// "user=phone": the client of a UE the first full document reports registered, of the tel URI or of the SIP URI,
+// stays; the other, deregistered meanwhile, is logged off.
+func TestRestoreTelURI(t *testing.T) {
+	for _, aor := range []string{bobTel, bobPhone} {
+		t.Run(aor, func(t *testing.T) {
+			st := newMemState()
+			h := newHarnessOf(t, registrar.ThroughIMS, st)
+			s := h.scscf
+			s.regEvent = true
+			s.pau = []string{bobTel}
+
+			ue1, ue2 := h.client(bobTel), h.client(bobTel)
+
+			for i, ue := range []*client{ue1, ue2} {
+				c := []string{client1, client2}[i]
+				if res := s.send(s.register(bobTel, []string{"t1", "t2"}[i], 600, ue.register("sip:ims.example.com", 600, info(token(bob), c)))); res.StatusCode != 200 {
+					t.Fatalf("UE %d: %d", i, res.StatusCode)
+				}
+			}
+
+			s.pump()
+
+			if s.subs[bobPhone] == nil {
+				t.Fatalf("subscriptions %v", s.subs)
+			}
+
+			// The S-CSCF has the first UE registered still, the second no longer.
+			delete(s.subs, bobPhone)
+			s.subscribes = 0
+			s.initial[bobPhone] = `<registration aor="` + aor + `" id="r1" state="active">` + activeContact("t1") + `</registration>`
+
+			h.restart(st)
+
+			if s.subs[bobPhone] == nil || s.subscribes != 1 {
+				t.Fatalf("subscriptions %v, %d SUBSCRIBEs", s.subs, s.subscribes)
+			}
+
+			if b, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, bobTel)}, client1); !ok || b.Token != "t1" {
+				t.Fatalf("the client registered still: %+v, %v", b, ok)
+			}
+
+			if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, bobTel)}, client2); ok {
+				t.Fatal("the client deregistered meanwhile served")
+			}
+
+			if regs, _ := st.records(); len(regs) != 1 || regs[0].ClientID != client1 {
+				t.Fatalf("registrations kept %+v", regs)
+			}
+		})
+	}
+}
+
 // restoredAlice is a harness of alice registered through the IMS, and her registration kept in its state, with one
 // expired and one of a user no longer configured, which are not restored.
 func restoredAlice(t *testing.T) (*harness, *memState) {

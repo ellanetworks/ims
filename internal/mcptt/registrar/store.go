@@ -154,9 +154,11 @@ func (g *Registrar) Restore(records []Record) []Binding {
 			}
 		}
 
-		// The subscription of the IMPU, toward the S-CSCF of its latest registration.
-		if w := g.watches[ik]; r.AS.Scheme != "" && subscribed(r.IMPUs).IsSIP() && (w == nil || r.Expires.After(latest[ik])) {
-			g.watches[ik] = &watch{ik: ik, impu: subscribed(r.IMPUs), scscf: r.SCSCF, as: r.AS, restored: true}
+		// The subscription of the IMPU, toward the S-CSCF of its latest registration; of a tel URI, of the SIP URI of
+		// its number if its set has none.
+		impu := subscribed(r.IMPUs, g.cfg.HomeDomain)
+		if w := g.watches[ik]; r.AS.Scheme != "" && impu.IsSIP() && (w == nil || r.Expires.After(latest[ik])) {
+			g.watches[ik] = &watch{ik: ik, impu: impu, scscf: r.SCSCF, as: r.AS, restored: true}
 			latest[ik] = r.Expires
 		}
 
@@ -215,16 +217,16 @@ func (g *Registrar) Resubscribe() {
 }
 
 // staleIn reconciles the bindings of the IMPU of w restored, not refreshed since, with the full document doc, the
-// first of its subscription: one matched by an active contact of the registration of the IMPU (matchedLoosely) takes
-// the expiry of the contact, if any (RFC 3680 §5.1), of a UE that registered again while the server was down; one
-// matched by none goes, of a UE that deregistered meanwhile, all of them if the registration is not active. Unlike a
-// later document (notify), the first is the IMS's state of a registration the server was told of before it
-// restarted. Called with g.mu held.
+// first of its subscription: one matched by an active contact of a registration of the IMPU (reports,
+// matchedLoosely) takes the expiry of the contact, if any (RFC 3680 §5.1), of a UE that registered again while the
+// server was down; one matched by none goes, of a UE that deregistered meanwhile, all of them if the registration is
+// not active. Unlike a later document (notify), the first is the IMS's state of a registration the server was told of
+// before it restarted. Called with g.mu held.
 func (g *Registrar) staleIn(w *watch, doc *reginfo.Reginfo, now time.Time, ch *change) {
 	var active []reginfo.Contact
 
 	for _, reg := range doc.Registrations {
-		if aor, err := sip.ParseURI(reg.AOR); err != nil || settings.Key(aor) != w.ik || reg.State != reginfo.Active {
+		if !g.reports(w, reg.AOR) || reg.State != reginfo.Active {
 			continue
 		}
 

@@ -122,18 +122,40 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 		}
 	}
 
-	expired, err := p.regs.restore(ctx)
+	expired, lost, err := p.regs.restore(ctx, p.secured)
 	if err != nil {
 		return fmt.Errorf("restore registrations: %w", err)
 	}
 
-	p.restorePolicy(expired)
+	for _, r := range lost {
+		p.log.Warn("registration not restored: its security associations are lost; the UE must register again",
+			slog.String("impi", r.IMPI), slog.String("ue", r.UEAddress.String()), slog.Any("contacts", r.Contacts))
+	}
+
+	p.restorePolicy(expired, lost)
 
 	if err := p.subs.restore(ctx); err != nil {
 		return fmt.Errorf("restore reg event subscriptions: %w", err)
 	}
 
+	for _, r := range lost {
+		p.unsubscribeIfIdle(r.IMPI)
+	}
+
 	return nil
+}
+
+// secured reports whether the P-CSCF can still reach and authenticate the UE of a restored registration r: one of
+// no IPsec, or one of the security associations it registered over. Registration and security associations begin
+// and end together (TS 24.229 §5.2.5.1 step 2, TS 33.203 §7.4): without them, every request of the UE is dropped
+// and none reaches it, so a registration whose sets were lost, by the kernel in a restart that did not keep them,
+// is no binding, and a terminating request gets a 404 (TS 24.229 §4.14.2, §5.2.6.4.1).
+func (p *PCSCF) secured(r *db.PCSCFRegistration) bool {
+	if !r.Protected {
+		return true
+	}
+
+	return p.sas != nil && p.sas.hasSets(regKeyOf(r))
 }
 
 // Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,

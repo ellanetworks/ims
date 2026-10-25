@@ -2,8 +2,6 @@ import { useState } from "react";
 import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
 import CopyButton from "@/components/CopyButton";
 import DomainName from "@/components/DomainName";
-import MCPTTGate from "@/components/MCPTTGate";
-import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import SettingsTable from "@/components/SettingsTable";
 import {
@@ -49,7 +47,7 @@ function Section({
   );
 }
 
-function SettingsContent({ status }: { status: MCPTTStatus }) {
+export function SettingsTab({ status }: { status: MCPTTStatus }) {
   const [editing, setEditing] = useState<"domain" | "talk-time" | null>(null);
   const { config, homeDomain } = useMCPTTSettings();
   const c = config.data;
@@ -142,18 +140,5 @@ function SettingsContent({ status }: { status: MCPTTStatus }) {
         <EditTalkTimeDialog config={c} onClose={() => setEditing(null)} />
       )}
     </>
-  );
-}
-
-export default function MCPTTSettings() {
-  return (
-    <Box component="section" aria-labelledby="mcptt-settings-title">
-      <PageHeader
-        id="mcptt-settings-title"
-        title="Push-to-Talk Settings"
-        description="The built-in MCPTT server and your organisation's service."
-      />
-      <MCPTTGate>{(status) => <SettingsContent status={status} />}</MCPTTGate>
-    </Box>
   );
 }

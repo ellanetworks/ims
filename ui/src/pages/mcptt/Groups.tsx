@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -17,8 +16,6 @@ import {
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import MCPTTGate from "@/components/MCPTTGate";
-import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import GroupDialog from "@/components/mcptt/GroupDialog";
 import GroupDrawer from "@/components/mcptt/GroupDrawer";
@@ -29,7 +26,7 @@ import { groupLabel, sameIdentity, shortID, userLabel } from "@/utils/mcptt";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
-function GroupsContent() {
+export function GroupsTab() {
   const queryClient = useQueryClient();
   const { users, groups, domain } = useMCPTTSettings();
   const { affiliations, calls } = useMCPTTLive();
@@ -248,21 +245,5 @@ function GroupsContent() {
         onClose={() => setSelected(null)}
       />
     </>
-  );
-}
-
-export default function MCPTTGroups() {
-  const { groups } = useMCPTTSettings(false);
-
-  return (
-    <Box component="section" aria-labelledby="mcptt-groups-title">
-      <PageHeader
-        id="mcptt-groups-title"
-        title="Groups"
-        count={groups.data?.length}
-        description="Push-to-talk groups, their members, and who listens to them."
-      />
-      <MCPTTGate>{() => <GroupsContent />}</MCPTTGate>
-    </Box>
   );
 }

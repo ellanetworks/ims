@@ -139,6 +139,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		Source:          live,
 		Mode:            mode,
 		TrustedNetworks: trusted,
+		HomeDomain:      cfg.HomeDomain,
 		Media:           relay,
 		State:           store{d: cfg.DB, home: cfg.HomeDomain},
 	})

@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import MCPTTGroupCalls from "@/pages/mcptt/GroupCalls";
-import MCPTTGroups from "@/pages/mcptt/Groups";
-import MCPTTSettings from "@/pages/mcptt/Settings";
-import MCPTTUsers from "@/pages/mcptt/Users";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import PushToTalk from "@/pages/mcptt/PushToTalk";
 import { alice, bob, fire, mcpttRoutes, mcpttStatus } from "@/test/mcptt";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
@@ -27,6 +25,16 @@ const requests = (
     )
     .map(([, init]) => JSON.parse(String(init?.body)));
 
+// renderAt renders the page at the tab of the path.
+const renderAt = (tab: string) =>
+  renderWithClient(
+    <MemoryRouter initialEntries={[`/ptt/${tab}`]}>
+      <Routes>
+        <Route path="/ptt/:tab" element={<PushToTalk />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -34,7 +42,7 @@ afterEach(() => {
 describe("MCPTT pages", () => {
   it("tell how to turn MCPTT on when the IMS runs none", async () => {
     serve({}, false);
-    renderWithClient(<MCPTTUsers />);
+    renderAt("users");
 
     expect(await screen.findByText("Push-to-talk is off")).toBeInTheDocument();
     expect(screen.getByText(/mcptt:/)).toBeInTheDocument();
@@ -42,7 +50,7 @@ describe("MCPTT pages", () => {
 
   it("list the users, their groups and phones", async () => {
     serve();
-    renderWithClient(<MCPTTUsers />);
+    renderAt("users");
 
     const grid = await screen.findByRole("grid", { name: "Users" });
     await within(grid).findByText("Alice");
@@ -71,7 +79,7 @@ describe("MCPTT pages", () => {
               },
             }),
     });
-    renderWithClient(<MCPTTUsers />);
+    renderAt("users");
 
     await screen.findByText("Alice");
     fireEvent.click(await screen.findByRole("button", { name: "Add User" }));
@@ -115,7 +123,7 @@ describe("MCPTT pages", () => {
   it("make a member always affiliated from its group", async () => {
     const memberPath = `/api/v1/mcptt/groups/${encodeURIComponent(fire.group_id)}/members/${encodeURIComponent(bob.mcptt_id)}`;
     const fetch = serve({ [memberPath]: () => json(200, { result: fire }) });
-    renderWithClient(<MCPTTGroups />);
+    renderAt("groups");
 
     fireEvent.click(await screen.findByText("Fire"));
 
@@ -136,7 +144,7 @@ describe("MCPTT pages", () => {
 
   it("show the group calls and who talks", async () => {
     serve();
-    renderWithClient(<MCPTTGroupCalls />);
+    renderAt("calls");
 
     const grid = await screen.findByRole("grid", { name: "Group calls" });
     await within(grid).findByText("Fire");
@@ -146,7 +154,7 @@ describe("MCPTT pages", () => {
 
   it("show the server name to enter in the HSS", async () => {
     serve();
-    renderWithClient(<MCPTTSettings />);
+    renderAt("settings");
 
     const table = await screen.findByRole("table", {
       name: "This MCPTT server",
@@ -167,7 +175,7 @@ describe("MCPTT pages", () => {
               : { domain: "mcptt.example.com" },
         }),
     });
-    renderWithClient(<MCPTTSettings />);
+    renderAt("settings");
 
     await screen.findByText("30 s (default)");
     fireEvent.click(
@@ -189,5 +197,26 @@ describe("MCPTT pages", () => {
         { domain: "mcptt.example.com", transmit_time_limit_ms: 15000 },
       ]),
     );
+  });
+
+  it("keep each tab at its path", async () => {
+    serve();
+    renderAt("groups");
+
+    const tabs = await screen.findByRole("tablist", { name: "Push-to-talk" });
+    expect(
+      within(tabs)
+        .getAllByRole("tab")
+        .map((t) => t.getAttribute("href")),
+    ).toEqual(["/ptt/groups", "/ptt/users", "/ptt/calls", "/ptt/settings"]);
+  });
+
+  it("go to the groups of an unknown tab", async () => {
+    serve();
+    renderAt("nope");
+
+    expect(
+      await screen.findByRole("tab", { name: /Groups/, selected: true }),
+    ).toBeInTheDocument();
   });
 });

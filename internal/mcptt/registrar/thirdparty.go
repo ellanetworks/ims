@@ -179,7 +179,7 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 		g.sequenced(seq, expires, &ch)
 	}
 
-	ch.watch = &watch{ik: ik, impu: subscribed(impus), scscf: scscf.URI, as: req.URI}
+	ch.watch = &watch{ik: ik, impu: subscribed(impus, g.cfg.HomeDomain), scscf: scscf.URI, as: req.URI}
 
 	g.mu.Unlock()
 
@@ -376,15 +376,41 @@ func implicitSet(req *sip.Request, impu sip.URI) []sip.URI {
 	return set
 }
 
-// subscribed is the IMPU of the reg event subscription of the implicit registration set impus, its first SIP URI:
-// the To of the third-party REGISTER, or, of a tel URI, a SIP URI of its set (§5.7.1.1 a, c: "a SIP URI that contains
-// the public user identity"); zero if none.
-func subscribed(impus []sip.URI) sip.URI {
+// subscribed is the IMPU of the reg event subscription of the implicit registration set impus, the To of the
+// third-party REGISTER first, of the IMS of home domain home (§5.7.1.1 a, c: "a SIP URI that contains the public user
+// identity"): its first SIP URI, the To itself, or, of a tel URI, a SIP URI of its set; else, of a tel URI of a global
+// number, the SIP URI of its number at home (numberURI), as the set of a tel URI and a barred temporary IMPU alone
+// has it (TS 23.003 §13.4B; Ella Core's HSS). Zero if none.
+func subscribed(impus []sip.URI, home string) sip.URI {
 	if i := slices.IndexFunc(impus, sip.URI.IsSIP); i >= 0 {
 		return impus[i]
 	}
 
-	return sip.URI{}
+	if len(impus) == 0 {
+		return sip.URI{}
+	}
+
+	return numberURI(impus[0], home)
+}
+
+// numberURI is the SIP URI of the tel URI u of a global number at the host home, which the S-CSCF of home resolves to
+// the registration of u: its number, without visual separators or parameters (TS 23.003 §13.4: "a SIP URI that
+// includes a "user=phone" URI parameter"; RFC 3261 §19.1.6; RFC 3966 §5.1.4). Zero of another URI, of a local number,
+// which its phone-context scopes (RFC 3966 §5.1.5), or without home.
+func numberURI(u sip.URI, home string) sip.URI {
+	if !u.IsTel() || home == "" {
+		return sip.URI{}
+	}
+
+	n := u.Identity().User
+	if len(n) < 2 || n[0] != '+' || strings.Trim(n[1:], "0123456789") != "" {
+		return sip.URI{}
+	}
+
+	s := sip.URI{Scheme: "sip", User: n, Host: home}
+	s.Params.Set("user", "phone")
+
+	return s
 }
 
 // registerResponse is the 200 to the client's REGISTER of the message/sip bodies of a third-party REGISTER

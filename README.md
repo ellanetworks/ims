@@ -117,15 +117,15 @@ Prerequisites: Ella Core as the HSS, and phones whose SIMs allow the Android app
    - **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
    - **Profiles →** the subscribers' profile **→ IMS Filter Criteria**: add the **MCPTT** preset, then **Save**.
 
-3. In Ella IMS, **Push-to-talk → Users → Add User**, for each person:
+3. In Ella IMS, **Push-to-Talk → Users → Add User**, for each person:
    - **MCPTT ID**: e.g. `alice`.
    - **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`.
 
-4. **Push-to-talk → Groups → Add Group**: a group ID, e.g. `fire`, and its members.
+4. **Push-to-Talk → Groups → Add Group**: a group ID, e.g. `fire`, and its members.
 
 5. Install the Android app (`android/`) on the phones, and set each user's MCPTT ID and groups in its settings.
 
-6. Start a group call from one phone. The others ring, and **Push-to-talk → Group Calls** shows the call.
+6. Start a group call from one phone. The others ring, and **Push-to-Talk → Calls** shows the call.
 
 ### Build
 

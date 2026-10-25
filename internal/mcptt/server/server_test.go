@@ -123,6 +123,7 @@ func (h *harness) start(state State) {
 		Source:          h.src,
 		Mode:            h.mode,
 		TrustedNetworks: []netip.Prefix{prefix(h.scscf.p.Addr().Addr()), prefix(h.scscf2.p.Addr().Addr())},
+		HomeDomain:      "ims.example.com",
 		State:           state,
 	})
 	if err != nil {

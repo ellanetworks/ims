@@ -4,10 +4,7 @@ import Calls from "@/pages/Calls";
 import Cores from "@/pages/Cores";
 import Operator from "@/pages/Operator";
 import Registrations from "@/pages/Registrations";
-import MCPTTGroupCalls from "@/pages/mcptt/GroupCalls";
-import MCPTTGroups from "@/pages/mcptt/Groups";
-import MCPTTSettings from "@/pages/mcptt/Settings";
-import MCPTTUsers from "@/pages/mcptt/Users";
+import PushToTalk from "@/pages/mcptt/PushToTalk";
 
 export default function App() {
   return (
@@ -17,10 +14,8 @@ export default function App() {
         <Route path="/operator" element={<Operator />} />
         <Route path="/registrations" element={<Registrations />} />
         <Route path="/calls" element={<Calls />} />
-        <Route path="/ptt/users" element={<MCPTTUsers />} />
-        <Route path="/ptt/groups" element={<MCPTTGroups />} />
-        <Route path="/ptt/calls" element={<MCPTTGroupCalls />} />
-        <Route path="/ptt/settings" element={<MCPTTSettings />} />
+        <Route path="/ptt" element={<Navigate to="/ptt/groups" replace />} />
+        <Route path="/ptt/:tab" element={<PushToTalk />} />
         <Route path="*" element={<Navigate to="/cores" replace />} />
       </Routes>
     </Layout>

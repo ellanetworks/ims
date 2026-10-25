@@ -559,6 +559,20 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, id flowID, tr sip
 	}, true
 }
 
+// hasSets reports whether the registration k has a set left that is not temporary: one requestFlow can pick.
+func (a *associations) hasSets(k regKey) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for s := range a.sets {
+		if s.impi == k.impi && s.flow == k.flow && s.set.Remote.Addr == k.ue && s.state != temporary {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (a *associations) deregistered(k regKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -209,6 +209,54 @@ func TestRegEventTelURI(t *testing.T) {
 	}
 }
 
+// bobPhone is the SIP URI of bob's number, "user=phone", at the home domain (TS 23.003 §13.4; RFC 3261 §19.1.6).
+const bobPhone = "sip:+15555550102@ims.example.com;user=phone"
+
+// TS 24.229 §5.7.1.1 a, c; TS 23.003 §13.4B: the third-party REGISTER of a tel URI IMPU whose implicit registration
+// set has no other identity, as of Ella Core's HSS (a barred temporary IMPU, not in the P-Associated-URI): the reg
+// event subscription is to the SIP URI of its number, "user=phone", at the home domain, which the S-CSCF resolves to
+// the tel URI. Its documents report the registration of the tel URI, or of the SIP URI subscribed to: a deregistration
+// is told by either, and the server unsubscribes once the IMPU has no binding.
+func TestRegEventTelURIAlone(t *testing.T) {
+	for _, aor := range []string{bobTel, bobPhone} {
+		t.Run(aor, func(t *testing.T) {
+			h := newHarness(t, registrar.ThroughIMS)
+			s := h.scscf
+			s.regEvent = true
+			s.pau = []string{bobTel}
+
+			ue := h.client(bobTel)
+			ue.instance = "urn:uuid:00000000-0000-1000-8000-000000000001"
+
+			if res := s.send(s.register(bobTel, "t1", 600, ue.register("sip:ims.example.com", 600, info(token(bob), client1)))); res.StatusCode != 200 {
+				t.Fatalf("REGISTER: %d", res.StatusCode)
+			}
+
+			s.pump()
+
+			sub := s.subs[bobPhone]
+			if sub == nil || s.subscribes != 1 {
+				t.Fatalf("subscriptions %v", s.subs)
+			}
+
+			if u := sub.subscribe.URI; u.String() != bobPhone || !u.IsSIP() {
+				t.Fatalf("SUBSCRIBE Request-URI %s", u)
+			}
+
+			if res := s.send(s.register(bobTel, "", 0, nil)); res.StatusCode != 200 || len(h.s.Registrar().Bindings(uri(t, bob))) != 1 {
+				t.Fatalf("deregistration: %d", res.StatusCode)
+			}
+
+			s.notify(bobPhone, 1, "partial", `<registration aor="`+aor+`" id="r1" state="terminated"/>`)
+			s.pump()
+
+			if len(h.s.Registrar().Bindings(uri(t, bob))) != 0 || !slices.Equal(s.unsubscribed, []string{bobPhone}) {
+				t.Fatalf("bindings %+v, unsubscribed %v", h.s.Registrar().Bindings(uri(t, bob)), s.unsubscribed)
+			}
+		})
+	}
+}
+
 // RFC 6665 §4.1.3, §4.4.1; TS 24.229 §5.7.1.1 NOTE 5: a NOTIFY of Subscription-State terminated, all registrations
 // terminated, ends the subscription and the bindings: the server sends no SUBSCRIBE to end it (which the S-CSCF would
 // answer with a 481), and the next third-party REGISTER subscribes again.

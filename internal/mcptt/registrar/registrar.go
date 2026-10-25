@@ -71,6 +71,9 @@ type Config struct {
 	// deregistration then removing all the bindings of its IMPU. Its Config.Contact is the Contact of the
 	// subscriptions.
 	Agent *ua.Agent
+	// HomeDomain is the IMS's (TS 24.229 §5.1.1.2.1), the host of the SIP URI of a telephone number, "user=phone",
+	// that the server subscribes with to the reg event package of an IMPU of a tel URI (subscribed); none if "".
+	HomeDomain string
 	// Tokens checks the access tokens; Unvalidated if nil.
 	Tokens       TokenCheck
 	Affiliations Affiliations

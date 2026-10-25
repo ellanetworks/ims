@@ -269,9 +269,19 @@ func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target
 	}
 
 	// RFC 5626 §5.3.1: a flow that no longer exists gets a 430, so that the S-CSCF can try the UE's
-	// other flows (RFC 5626 §7). The S-CSCF answers 480 upstream when no other flow is left.
+	// other flows (RFC 5626 §7). The S-CSCF answers 480 upstream when no other flow is left. A P-CSCF that has no
+	// binding at all for the identity in the Request-URI, one it lost in a restart, or a registration that ended,
+	// rejects the request with a 404 (Not Found) instead (TS 24.229 §4.14.2, §5.2.6.4.1): no other flow of the UE
+	// goes through it.
 	f, ok := p.regs.flow(flowToken(removed))
 	if !ok {
+		if !p.regs.bound(req.URI) {
+			p.log.Debug("request toward a UE of no binding", slog.String("method", req.Method),
+				slog.String("uri", req.URI.String()))
+
+			return proxy.Target{}, sip.NewResponse(req, 404, "")
+		}
+
 		return proxy.Target{}, sip.NewResponse(req, 430, "")
 	}
 

@@ -751,3 +751,66 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 		t.Errorf("Reason %v", r)
 	}
 }
+
+// restartIMS stops and starts the IMS again, on the same database. lose has the kernel of the IMS lose its
+// security associations in between, as a restart of its container does.
+func (s *scene) restartIMS(lose bool) {
+	s.t.Helper()
+
+	s.srv.Shutdown(context.Background())
+
+	if lose {
+		s.ims.IP(s.t, "xfrm", "state", "flush")
+		s.ims.IP(s.t, "xfrm", "policy", "flush")
+	}
+
+	s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(s.t)}
+	if err := s.srv.Start(s.t.Context()); err != nil {
+		s.t.Fatalf("Start: %v", err)
+	}
+
+	s.diameterOpen("hss", "pcrf")
+}
+
+// A UE whose security associations survive a restart of the IMS is still reached. One whose security associations
+// the restart lost is no binding of the P-CSCF, which rejects a call to it with a 404 (Not Found) at once
+// (TS 24.229 §4.14.2, §5.2.6.4.1, §5.2.5.1 step 2), until it registers again.
+//
+// Such a UE's own requests, protected by security associations the IMS no longer has, are dropped by the kernel
+// and time out: it detects the P-CSCF as unreachable and registers again (§4.14.2).
+func TestCallAfterARestart(t *testing.T) {
+	sc := newScene(t)
+	sc.caller(0, false, testue.Config{Transport: sip.UDP})
+	b := sc.caller(1, false, testue.Config{Transport: sip.UDP})
+
+	sc.restartIMS(false)
+
+	c := sc.caller(2, false, testue.Config{Transport: sip.UDP})
+
+	t.Run("security associations kept", func(t *testing.T) {
+		s := sc.in(t)
+		cc, bc := connect(t, s.ctx(), c, b, phone(1), testue.CallOptions{})
+
+		if err := cc.Bye(s.ctx()); err != nil {
+			t.Fatal(err)
+		}
+
+		ended(t, bc, testue.RemoteBye)
+	})
+
+	sc.restartIMS(true)
+
+	// The caller registers after the restart; b, and c, lost their security associations.
+	d := sc.caller(3, false, testue.Config{Transport: sip.UDP})
+
+	t.Run("security associations lost", func(t *testing.T) {
+		s := sc.in(t)
+		start := time.Now()
+
+		failed(t, s.ctx(), invite(t, d, phone(1), testue.CallOptions{}), 404)
+
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("the call failed after %v, want at once", d)
+		}
+	})
+}

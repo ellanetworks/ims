@@ -12,8 +12,6 @@ import { Close as CloseIcon, Mic as MicIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import DrawerSection from "@/components/DrawerSection";
 import Fields from "@/components/Fields";
-import MCPTTGate from "@/components/MCPTTGate";
-import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import { useMCPTTLive, useMCPTTSettings } from "@/hooks/useMCPTT";
 import type { Group, GroupCall, MCPTTUser } from "@/queries/mcptt";
@@ -168,7 +166,7 @@ function CallDrawer({
   );
 }
 
-function CallsContent() {
+export function CallsTab() {
   const { users, groups, domain } = useMCPTTSettings();
   const { calls } = useMCPTTLive();
   const [selected, setSelected] = useState<string | null>(null);
@@ -263,21 +261,5 @@ function CallsContent() {
         onClose={() => setSelected(null)}
       />
     </>
-  );
-}
-
-export default function MCPTTGroupCalls() {
-  const { calls } = useMCPTTLive(false);
-
-  return (
-    <Box component="section" aria-labelledby="mcptt-calls-title">
-      <PageHeader
-        id="mcptt-calls-title"
-        title="Group Calls"
-        count={calls.data?.length}
-        description="The push-to-talk calls in progress, and who is talking."
-      />
-      <MCPTTGate>{() => <CallsContent />}</MCPTTGate>
-    </Box>
   );
 }

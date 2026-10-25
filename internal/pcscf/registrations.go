@@ -100,14 +100,18 @@ func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock,
 	}
 }
 
-func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, error) {
+// restore loads the stored registrations after a restart. It deletes those expired, and those that usable refuses,
+// whose UE the P-CSCF can no longer reach: they are no bindings, nor retired flows, so that a request to them gets
+// the 404 of a P-CSCF that lost them, not the 430 of a failed flow (TS 24.229 §4.14.2, §5.2.6.4.1).
+func (rs *registrations) restore(ctx context.Context, usable func(*db.PCSCFRegistration) bool,
+) (expired, lost []db.PCSCFRegistration, err error) {
 	if rs.store == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	regs, err := rs.store.ListPCSCFRegistrations(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rs.mu.Lock()
@@ -115,23 +119,23 @@ func (rs *registrations) restore(ctx context.Context) ([]db.PCSCFRegistration, e
 
 	now := rs.clock.Now()
 
-	var expired []db.PCSCFRegistration
-
 	for _, r := range regs {
-		if !r.ExpiresAt.After(now) {
-			if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
-				return nil, err
-			}
-
+		switch {
+		case !r.ExpiresAt.After(now):
 			expired = append(expired, r)
-
+		case usable != nil && !usable(&r):
+			lost = append(lost, r)
+		default:
+			rs.add(&r)
 			continue
 		}
 
-		rs.add(&r)
+		if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
+			return nil, nil, err
+		}
 	}
 
-	return expired, nil
+	return expired, lost, nil
 }
 
 func clone(r *db.PCSCFRegistration) db.PCSCFRegistration {
@@ -510,6 +514,31 @@ func (rs *registrations) fromSourceLocked(src netip.AddrPort) *db.PCSCFRegistrat
 	}
 
 	return nil
+}
+
+// bound reports whether a live registration binds u, the Request-URI of a request toward a UE: one of its contacts,
+// or one of its public identities (TS 24.229 §5.2.6.4.1: "has no binding for the identity in the Request-URI").
+func (rs *registrations) bound(u sip.URI) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	s, now := u.String(), rs.clock.Now()
+
+	for _, r := range rs.byKey {
+		if !r.ExpiresAt.After(now) {
+			continue
+		}
+
+		if _, ok := matchURI(r.Contacts, s); ok {
+			return true
+		}
+
+		if _, ok := matchURI(r.AssociatedURIs, s); ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {

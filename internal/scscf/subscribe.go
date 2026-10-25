@@ -70,7 +70,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		return sip.NewResponse(req, 416, ""), nil
 	}
 
-	key := identityKey(req.URI)
+	key := r.subscribedKey(ctx, req.URI)
 
 	sr, res := r.authorize(ctx, req, key, routes)
 	if res != nil {
@@ -159,6 +159,28 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 		slog.String("subscriber", string(sr.subscriber)))
 
 	return res, []*outgoing{o}
+}
+
+// subscribedKey is the identity key of the resource of a SUBSCRIBE's Request-URI u (TS 24.229 §5.4.2.1.1): its own,
+// else, of a number, that of its other form a registration holds, as identityKeys has it of a terminating request. An
+// AS subscribes with "a SIP URI that contains the public user identity" of the To of the third-party REGISTER
+// (§5.7.1.1 a), which, of a tel URI, is the SIP URI of its number, "user=phone" (TS 23.003 §13.4; RFC 3261 §19.1.6),
+// though the implicit registration set need hold only the tel URI. A failed read is left to authorize.
+func (r *Registrar) subscribedKey(ctx context.Context, u sip.URI) string {
+	keys := identityKeys(u, r.cfg.HomeDomain)
+
+	for _, k := range keys {
+		regs, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, k)
+		if err != nil {
+			break
+		}
+
+		if len(regs) > 0 {
+			return k
+		}
+	}
+
+	return keys[0]
 }
 
 func (r *Registrar) authorize(ctx context.Context, req *sip.Request, key string, routes []sip.URI,
