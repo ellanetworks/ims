@@ -323,3 +323,162 @@ func defaultIdentity(set []db.PublicIdentity) db.PublicIdentity {
 
 	return db.PublicIdentity{}
 }
+
+// move is a registered set that holds identities the HSS's answer to a server assignment puts in another set: the
+// removal of them from it, the first step of the move, did not reach the S-CSCF (TS 29.228 §6.5.2.1). The HSS is the
+// master of the profiles: the set loses them as a push of it without them would have it (TS 24.229 §5.4.1.8).
+type move struct {
+	pc    profileChange
+	taken []string
+
+	// deregistered tells that the set has no unbarred identity left, or another default identity: the HSS would have
+	// deregistered it instead (TS 29.228 §6.5.2.1).
+	deregistered bool
+}
+
+// moves are the registered sets, other than set, that hold identities of set; registered by other than the stale
+// registrations, which set replaces. The caller holds the lock of the profiles.
+func (r *Registrar) moves(ctx context.Context, set db.ImplicitSet, stale []db.Registration) ([]move, error) {
+	sets, err := r.cfg.DB.FindSets(ctx, identityKeysOf(set.Identities))
+	if err != nil {
+		return nil, err
+	}
+
+	var out []move
+
+	for _, s := range sets {
+		if s.ID == set.ID {
+			continue
+		}
+
+		regs, err := r.cfg.DB.ListRegistrationsBySet(ctx, s.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		if !slices.ContainsFunc(regs, func(reg db.Registration) bool {
+			return !slices.ContainsFunc(stale, func(old db.Registration) bool { return old.ID == reg.ID })
+		}) {
+			continue
+		}
+
+		var taken []string
+
+		for _, id := range s.Identities {
+			if holds(set.Identities, id.Key) {
+				taken = append(taken, id.Key)
+			}
+		}
+
+		sub, err := cx.ParseUserData(s.UserData)
+		if err != nil {
+			return nil, err
+		}
+
+		sub = withoutIdentities(sub, taken)
+
+		data, err := cx.MarshalUserData(sub)
+		if err != nil {
+			return nil, err
+		}
+
+		next := s
+		next.Identities, next.UserData = implicitSet(sub), data
+
+		out = append(out, move{
+			pc:           diffProfile(s.Identities, s.UserData, next, sub),
+			taken:        taken,
+			deregistered: !hasUnbarred(next.Identities) || defaultIdentity(s.Identities).Key != defaultIdentity(next.Identities).Key,
+		})
+	}
+
+	return out, nil
+}
+
+// withoutIdentities is the subscription without the public user identities of the keys, nor the service profiles left
+// without an identity.
+func withoutIdentities(sub cx.IMSSubscription, keys []string) cx.IMSSubscription {
+	profiles := make([]cx.ServiceProfile, 0, len(sub.ServiceProfiles))
+
+	for _, p := range sub.ServiceProfiles {
+		p.PublicIdentities = slices.DeleteFunc(slices.Clone(p.PublicIdentities), func(id cx.ProfileIdentity) bool {
+			return (id.Type == cx.IdentityDistinctPublicUserIdentity || id.Type == cx.IdentityNonDistinctIMPU) &&
+				slices.Contains(keys, identityKeyOf(id.Identity))
+		})
+
+		if len(p.PublicIdentities) > 0 {
+			profiles = append(profiles, p)
+		}
+	}
+
+	sub.ServiceProfiles = profiles
+
+	return sub
+}
+
+// applyMoves has the private identities that registered the sets the identities moved from learn of it: as of a push
+// of the set without them, or of a deregistration of the set by the HSS, without a Cx request for it: the HSS moved on.
+func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
+	for _, m := range moves {
+		r.log.Warn("the HSS's profile moved identities from another registered set", slog.String("impi", impi),
+			slog.Any("identities", m.taken), slog.Bool("deregistered", m.deregistered))
+
+		if !m.deregistered {
+			r.spreadProfile(ctx, m.pc, "", false)
+			continue
+		}
+
+		regs, err := r.cfg.DB.ListRegistrationsBySet(ctx, m.pc.set.ID)
+		if err != nil {
+			r.log.Warn("failed to list the registrations of a set", slog.Any("error", err))
+			continue
+		}
+
+		var impis []string
+
+		for _, reg := range regs {
+			if !slices.Contains(impis, reg.IMPI) {
+				impis = append(impis, reg.IMPI)
+			}
+		}
+
+		for _, other := range impis {
+			r.background(other, func(ctx context.Context) {
+				r.send(r.terminateMoved(ctx, other, m.pc))
+			})
+		}
+	}
+}
+
+// terminateMoved ends the registration of a set by a private identity, whose lock the caller holds, as a
+// network-initiated deregistration does (TS 24.229 §5.4.1.5): the identities the set had, those moved included, are
+// reported terminated.
+func (r *Registrar) terminateMoved(ctx context.Context, impi string, pc profileChange) []*outgoing {
+	st, err := r.load(ctx, impi)
+	if err != nil {
+		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		return nil
+	}
+
+	i := slices.IndexFunc(st.regs, func(reg db.Registration) bool { return reg.SetID == pc.set.ID })
+	if i < 0 {
+		return nil
+	}
+
+	reg := st.regs[i]
+	reg.Identities = pc.before
+
+	rm, _, err := r.removeBindings(ctx, st, reg, st.live(reg.Bindings), reginfo.Rejected)
+	if err != nil {
+		r.log.Warn("failed to delete the registration", slog.String("impi", impi), slog.Any("error", err))
+		return nil
+	}
+
+	r.log.Info("registration terminated: the HSS moved its default identity", slog.String("impi", impi),
+		slog.String("impu", reg.IMPU))
+
+	r.releaseCalls(st, []removal{rm})
+	r.deregistered(rm)
+
+	return r.notifyChange(ctx, impi, change{removed: []removal{rm}, reason: reasonRejected})
+}

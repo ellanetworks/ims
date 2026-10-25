@@ -403,6 +403,12 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.
 
 	seen := map[string]bool{}
 
+	// The contacts of an identity are those of the sets reported: one that left them, to another set, has none here.
+	ids := map[int64]bool{}
+	for _, set := range sets {
+		ids[set.SetID] = true
+	}
+
 	for _, set := range sets {
 		for _, id := range set.Identities {
 			if id.Barred || seen[id.Key] {
@@ -411,7 +417,7 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.
 
 			seen[id.Key] = true
 
-			reg, err := r.registrationElement(ctx, st, ch, id)
+			reg, err := r.registrationElement(ctx, st, ch, id, ids)
 			if err != nil {
 				return reginfo.Reginfo{}, err
 			}
@@ -423,7 +429,8 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.
 	return info, nil
 }
 
-func (r *Registrar) registrationElement(ctx context.Context, st *state, ch change, id db.PublicIdentity) (reginfo.Registration, error) {
+func (r *Registrar) registrationElement(ctx context.Context, st *state, ch change, id db.PublicIdentity, sets map[int64]bool,
+) (reginfo.Registration, error) {
 	reg := reginfo.Registration{AOR: id.URI, ID: elementID("r", id.Key), State: reginfo.Terminated}
 
 	bound, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, id.Key)
@@ -440,6 +447,10 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 	var active []bindingAt
 
 	for _, set := range bound {
+		if !sets[set.SetID] {
+			continue
+		}
+
 		// A set that bars the identity does not register it (TS 24.229 §5.4.1.8 step 2).
 		if slices.ContainsFunc(set.Identities, func(other db.PublicIdentity) bool { return other.Key == id.Key && other.Barred }) {
 			continue

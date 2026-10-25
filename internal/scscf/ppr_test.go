@@ -833,9 +833,111 @@ func TestPushProfileOfSeveralSets(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.5.2.1: a registration whose profile holds an identity of another registered set, whose removal from it
-// the HSS did not push first, fails, and stores nothing: each set keeps its identities.
-func TestRegisterIdentityOfAnotherRegisteredSet(t *testing.T) {
+// tabletWith is a UE of another private identity, whose subscription at the HSS is a set of its identity and the
+// identities given: as the HSS has it once it moved them from the set of the harness's UE (TS 29.228 §6.5.2.1).
+func (sh *sessionHarness) tabletWith(identities ...string) *ue {
+	const tabletIMPU = "sip:tablet@" + homeDomain
+
+	tablet := sh.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = tabletIMPU
+
+	ids := []cx.ProfileIdentity{{Identity: tabletIMPU}}
+	for _, id := range identities {
+		ids = append(ids, cx.ProfileIdentity{Identity: id})
+	}
+
+	sh.hss.set(func(f *fakeHSS) {
+		f.subscriptions = append(f.subscriptions, cx.IMSSubscription{
+			PrivateIdentity: tablet.impi, ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: ids}},
+		})
+	})
+
+	return tablet
+}
+
+// TS 29.228 §6.5.2.1, TS 24.229 §5.4.1.8 steps 2 to 4: the HSS's answer to a registration puts in the new set an
+// identity that another registered set still holds, its removal from it lost: it leaves that set as a push would have
+// it, with its calls, and the others of the set go on.
+func TestRegisterMovesIdentityFromAnotherRegisteredSet(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	ueSub := sh.ueSubscriber(sh.ue)
+	ueSub.subscribed()
+
+	tel := sh.answeredTo(t, testTel)
+	sh.answeredTo(t, testAlias)
+
+	tablet := sh.tabletWith(testTel)
+	tablet.register(registerOptions{})
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentRegistration || sar.PrivateIdentity != tablet.impi {
+		t.Fatalf("SAR = %+v, want REGISTRATION of the tablet", sar)
+	}
+
+	if got := bye(t, sh.term); got != tel {
+		t.Fatalf("BYE of call %s, want that to the tel URI, %s", got, tel)
+	}
+
+	if got := bye(t, sh.icscf); got != tel {
+		t.Fatalf("BYE of call %s, want that to the tel URI, %s", got, tel)
+	}
+
+	n := ueSub.recvNotify()
+	if r := n.registration(t, testTel); r.State != reginfo.Terminated || len(r.Contacts) != 1 {
+		t.Fatalf("registration = %+v, want it terminated, without the tablet's contact", r)
+	}
+
+	wantContact(t, n.contact(t, testTel, sh.ue.contact), reginfo.Terminated, reginfo.Rejected)
+
+	if r := n.registration(t, testMSISDN); r.State != reginfo.Active {
+		t.Fatalf("registration = %+v, want it active", r)
+	}
+
+	sh.term.RecvNone(100 * time.Millisecond)
+	sh.icscf.RecvNone(50 * time.Millisecond)
+
+	if holds(sh.registration(testMSISDN).Identities, identityKeyOf(testTel)) {
+		t.Fatal("tel URI kept in the first set")
+	}
+
+	if regs := sh.registrations(tablet.impi); len(regs) != 1 || !holds(regs[0].Identities, identityKeyOf(testTel)) {
+		t.Fatalf("registrations of the tablet = %+v, want the tel URI in its set", regs)
+	}
+
+	sh.hss.noCx(t)
+}
+
+// TS 29.228 §6.5.2.1: the default identity of a registered set moved, the set is deregistered as the HSS would have
+// with an RTR, without a Cx request for it.
+func TestRegisterMovesDefaultIdentityFromAnotherRegisteredSet(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+	sh.answered(t)
+
+	tablet := sh.tabletWith(testMSISDN)
+	tablet.register(registerOptions{})
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentRegistration || sar.PrivateIdentity != tablet.impi {
+		t.Fatalf("SAR = %+v, want REGISTRATION of the tablet", sar)
+	}
+
+	bye(t, sh.term)
+	bye(t, sh.icscf)
+
+	eventually(t, "the first set deregistered", func() bool { return len(sh.registrations(testIMPI)) == 0 })
+
+	if regs := sh.registrations(tablet.impi); len(regs) != 1 || !holds(regs[0].Identities, identityKeyOf(testMSISDN)) {
+		t.Fatalf("registrations of the tablet = %+v, want the MSISDN in its set", regs)
+	}
+
+	sh.hss.noCx(t)
+}
+
+// TS 29.228 §6.5.2.1: the HSS's answer wins over a set of the same private identity too: the set kept unregistered
+// that the registration takes over gets the identity of the registered set.
+func TestRegisterMovesIdentityFromOwnRegisteredSet(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
 
@@ -854,17 +956,19 @@ func TestRegisterIdentityOfAnotherRegisteredSet(t *testing.T) {
 	})
 
 	sh.ue.impu = secondIMPU
-	nonce := sh.ue.challenged(registerOptions{})
-	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(nonce, testVector.XRES)}), 500)
+	sh.ue.register(registerOptions{})
 	sh.hss.wantSAR(t, cx.AssignmentRegistration)
 
-	sets, err := sh.db.FindSets(t.Context(), []string{identityKeyOf(secondIMPU)})
-	if err != nil || len(sets) != 1 || sets[0].Unregistered == nil || len(sets[0].Identities) != 1 {
-		t.Fatalf("sets = %+v, %v; want the set kept unregistered unchanged", sets, err)
+	if reg := sh.registration(secondIMPU); !holds(reg.Identities, identityKeyOf(testAlias)) || len(reg.Bindings) != 1 {
+		t.Fatalf("registration = %+v, want the alias in the second set", reg)
 	}
 
-	if reg := sh.registration(testAlias); len(reg.Identities) != 4 || len(reg.Bindings) != 1 {
-		t.Fatalf("registration = %+v, want it unchanged", reg)
+	if reg := sh.registration(testMSISDN); holds(reg.Identities, identityKeyOf(testAlias)) || len(reg.Bindings) != 1 {
+		t.Fatalf("registration = %+v, want the first set registered without the alias", reg)
+	}
+
+	if sets, err := sh.db.ListUnregisteredSets(t.Context()); err != nil || len(sets) != 0 {
+		t.Fatalf("sets kept unregistered = %+v, %v; want the set taken over", sets, err)
 	}
 }
 

@@ -628,7 +628,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		return retryLater(rr.req)
 	}
 
-	pc, err := r.assignedSet(ctx, reg, rr.impuKey, sub, saa.UserData, from)
+	pc, err := r.assignedSet(ctx, reg, sub, saa.UserData, from)
 	if err != nil {
 		r.unlockProfiles()
 		r.log.Warn("failed to read the implicit set", slog.String("impi", rr.impi), slog.Any("error", err))
@@ -637,6 +637,21 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	}
 
 	reg.Identities, reg.UserData, reg.HSS = pc.set.Identities, pc.set.UserData, pc.set.HSS
+	stale := st.overlapping(reg)
+
+	// The HSS's answer wins over a registered set that still holds identities of it (TS 29.228 §6.5.2.1).
+	moves, err := r.moves(ctx, pc.set, stale)
+	if err != nil {
+		r.unlockProfiles()
+		r.log.Warn("failed to read the implicit sets", slog.String("impi", rr.impi), slog.Any("error", err))
+
+		return retryLater(rr.req)
+	}
+
+	losing := make([]db.ImplicitSet, 0, len(moves))
+	for _, m := range moves {
+		losing = append(losing, m.pc.set)
+	}
 
 	if replace {
 		kept := only(reg.Bindings, rr.contacts)
@@ -648,7 +663,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		reg.Bindings = kept
 	}
 
-	res, removed := r.bind(ctx, rr, st, reg, !registered, &pc.set, st.overlapping(reg))
+	res, removed := r.bind(ctx, rr, st, reg, !registered, &pc.set, stale, losing)
 
 	r.unlockProfiles()
 
@@ -660,6 +675,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 	// The other private identities that registered the set learn of the change now; this one with its registration.
 	r.spreadProfile(r.ctx, pc, rr.impi, false)
+	r.applyMoves(r.ctx, rr.impi, moves)
 
 	// TS 24.229 §5.4.1.8: a profile the HSS changed with the re-registration changes the registration.
 	if registered && pc.identitiesChanged() {
@@ -681,10 +697,11 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 // assignedSet is the set a server assignment answered for, to store with its registration: with the profile it
 // downloaded, if any, from the HSS that answered, and taken over from any set kept unregistered (TS 29.228 §6.1.2.1);
-// and how that changed it. A registration not yet of a set is of the set that holds its public identity, or else of
-// one that holds another identity of the profile. The caller holds the lock of the profiles.
-func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, impuKey string, sub *cx.IMSSubscription,
-	data []byte, from db.HSS,
+// and how that changed it. A registration not yet of a set is of the set with the default identity of the profile,
+// which the HSS does not change while the set is registered (TS 29.228 §6.5.2.1), or else of a set kept unregistered
+// that holds an identity of it, or else of a new set. The caller holds the lock of the profiles.
+func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, sub *cx.IMSSubscription, data []byte,
+	from db.HSS,
 ) (profileChange, error) {
 	var cur db.ImplicitSet
 
@@ -702,10 +719,15 @@ func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, impuKe
 			return profileChange{}, err
 		}
 
-		if i := slices.IndexFunc(sets, func(s db.ImplicitSet) bool { return holds(s.Identities, impuKey) }); i >= 0 {
+		def := defaultIdentity(implicitSet(*sub)).Key
+
+		i := slices.IndexFunc(sets, func(s db.ImplicitSet) bool { return defaultIdentity(s.Identities).Key == def })
+		if i < 0 {
+			i = slices.IndexFunc(sets, func(s db.ImplicitSet) bool { return s.Unregistered != nil })
+		}
+
+		if i >= 0 {
 			cur = sets[i]
-		} else if len(sets) > 0 {
-			cur = sets[0]
 		}
 	}
 
@@ -722,9 +744,10 @@ func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, impuKe
 }
 
 // bind stores the bindings of the REGISTER to the registration, and the registration with the set it registers, in
-// place of the stale ones, expired, that held its identities (db.SaveAssignment): set becomes the set as stored.
+// place of the stale ones, expired, that held its identities, and after the sets losing identities to it
+// (db.SaveAssignment): set becomes the set as stored.
 func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, reg db.Registration,
-	initial bool, set *db.ImplicitSet, stale []db.Registration,
+	initial bool, set *db.ImplicitSet, stale []db.Registration, losing []db.ImplicitSet,
 ) (*sip.Response, []removal) {
 	now := r.clock.Now()
 	before := reg
@@ -808,16 +831,8 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		ids = append(ids, old.ID)
 	}
 
-	stored, saved, err := r.cfg.DB.SaveAssignment(ctx, *set, reg, ids)
-
-	switch {
-	case errors.Is(err, db.ErrIdentityConflict):
-		// TS 29.228 §6.5.2.1: the HSS moves an identity out of a registered set before it adds it to another.
-		r.log.Warn("profile of the HSS with an identity of another registered set", slog.String("impi", rr.impi),
-			slog.Any("error", err))
-
-		return sip.NewResponse(rr.req, 500, ""), nil
-	case err != nil:
+	stored, saved, err := r.cfg.DB.SaveAssignment(ctx, *set, reg, ids, losing)
+	if err != nil {
 		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req), nil
 	}

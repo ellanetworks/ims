@@ -398,9 +398,10 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 
 // SaveAssignment stores the set that a server assignment answered for, as SaveSet does, and the registration of it by
 // a private identity, as SaveRegistration does, at once: in place of the registrations replaced, of the same private
-// identity, which it deletes, with their sets when no registration refers to them anymore. A set is never stored
-// without the registration it is stored for.
-func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, replaced []int64,
+// identity, which it deletes, with their sets when no registration refers to them anymore; and after the sets losing,
+// registered, which give up identities of s, stored first. A set is never stored without the registration it is
+// stored for.
+func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, replaced []int64, losing []ImplicitSet,
 ) (_ ImplicitSet, _ Registration, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -427,6 +428,12 @@ func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, 
 		}
 
 		left = append(left, setID)
+	}
+
+	for _, l := range losing {
+		if _, err := saveSet(ctx, tx, l); err != nil {
+			return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: set %d: %w", l.ID, err)
+		}
 	}
 
 	if s, err = saveSet(ctx, tx, s); err != nil {

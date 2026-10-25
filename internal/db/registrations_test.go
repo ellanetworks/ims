@@ -371,7 +371,7 @@ func TestSaveAssignment(t *testing.T) {
 
 	// A new set.
 	set, reg, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false)}},
-		Registration{IMPI: testIMPI, IMPU: "sip:a@x"}, nil)
+		Registration{IMPI: testIMPI, IMPU: "sip:a@x"}, nil, nil)
 	if err != nil {
 		t.Fatalf("SaveAssignment: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestSaveAssignment(t *testing.T) {
 	// The set of a stale registration grows: the registration goes, the set stays.
 	set.Identities = append(set.Identities, identity("sip:c@x", false))
 
-	grown, next, err := d.SaveAssignment(ctx, set, Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{reg.ID})
+	grown, next, err := d.SaveAssignment(ctx, set, Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{reg.ID}, nil)
 	if err != nil {
 		t.Fatalf("SaveAssignment: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestSaveAssignment(t *testing.T) {
 
 	// A stale registration of a set whose identities another set takes goes with its set.
 	moved, last, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:c@x", false)}},
-		Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{next.ID})
+		Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{next.ID}, nil)
 	if err != nil {
 		t.Fatalf("SaveAssignment: %v", err)
 	}
@@ -414,15 +414,32 @@ func TestSaveAssignment(t *testing.T) {
 	// An identity of a registered set stays there, and nothing is stored.
 	other := testRegistration("other@"+testDomain, "15551230002")
 	other.Identities = []PublicIdentity{identity("sip:d@x", false)}
-	mustSaveRegistration(t, d, other)
+	other = mustSaveRegistration(t, d, other)
 
 	if _, _, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:d@x", false)}},
-		Registration{IMPI: testIMPI, IMPU: "sip:d@x"}, []int64{last.ID}); !errors.Is(err, ErrIdentityConflict) {
+		Registration{IMPI: testIMPI, IMPU: "sip:d@x"}, []int64{last.ID}, nil); !errors.Is(err, ErrIdentityConflict) {
 		t.Fatalf("SaveAssignment = %v, want ErrIdentityConflict", err)
 	}
 
 	if regs := listByIMPI(t, d); len(regs) != 1 || regs[0].ID != last.ID {
 		t.Fatalf("registrations = %+v, want them unchanged", regs)
+	}
+
+	// Unless the registered set gives it up, stored first.
+	losing, err := d.GetSet(ctx, other.SetID)
+	if err != nil {
+		t.Fatalf("GetSet: %v", err)
+	}
+
+	losing.Identities = nil
+
+	if _, _, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:d@x", false)}},
+		Registration{IMPI: testIMPI, IMPU: "sip:d@x"}, []int64{last.ID}, []ImplicitSet{losing}); err != nil {
+		t.Fatalf("SaveAssignment: %v", err)
+	}
+
+	if got, _ := d.GetSet(ctx, other.SetID); len(got.Identities) != 0 {
+		t.Fatalf("identities = %+v, want the identity given up", got.Identities)
 	}
 }
 
