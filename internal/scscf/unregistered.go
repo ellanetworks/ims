@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
@@ -13,81 +14,103 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// unregistered is the user profile that SAR UNREGISTERED_USER downloaded for a public identity that is not registered,
-// a user's or a PSI's. The S-CSCF keeps it for the identity's later requests rather than ask again, for a registration
-// period, then clears its name at the HSS (TS 23.228 §5.12.1 steps 6 and 7, TS 24.229 §5.4.3.2 NOTE 24, §5.4.3.3
-// NOTE 27).
-type unregistered struct {
-	// identity is the canonical public identity of the SAR, and wildcard the wildcarded identity the HSS says it falls
-	// in, if any (TS 29.228 Table 6.1.2.2).
-	identity string
-	wildcard string
-	hss      db.HSS
-	sub      cx.IMSSubscription
-	expires  time.Time
+// The S-CSCF keeps the user profile that SAR UNREGISTERED_USER downloads for a public identity that is not
+// registered, a user's or a PSI's, as an implicit set kept unregistered: for the later requests of the identities of
+// the set, or of the wildcarded identity it falls in, rather than ask again, for a registration period, then clears its
+// name at the HSS (TS 23.228 §5.12.1 steps 6 and 7, TS 24.229 §5.4.3.2 NOTE 24, §5.4.3.3 NOTE 27, TS 29.228 §6.5.1.5).
 
-	// ready is closed once the SAA came, err its failure.
+// fetch is a download of the profile of a public identity that is not registered, in progress, which requests for the
+// same identity wait for.
+type fetch struct {
 	ready chan struct{}
+	set   db.ImplicitSet
 	err   error
 }
 
-func (e *unregistered) done() bool {
-	select {
-	case <-e.ready:
-		return true
-	default:
-		return false
+// unregisteredProfile is the set kept of the public identity u unregistered, and its subscription: the one kept, or
+// else the one the HSS sends.
+func (r *Registrar) unregisteredProfile(ctx context.Context, u sip.URI) (db.ImplicitSet, cx.IMSSubscription, error) {
+	set, ok, err := r.keptSet(ctx, u)
+	if err != nil {
+		return db.ImplicitSet{}, cx.IMSSubscription{}, err
 	}
+
+	if !ok {
+		if set, err = r.fetchOnce(ctx, u); err != nil {
+			return db.ImplicitSet{}, cx.IMSSubscription{}, err
+		}
+	}
+
+	sub, err := cx.ParseUserData(set.UserData)
+	if err != nil {
+		return db.ImplicitSet{}, cx.IMSSubscription{}, err
+	}
+
+	return set, sub, nil
 }
 
-// unregisteredProfile is the profile of the public identity u unregistered: the one kept, or else the one the HSS
-// sends, which requests for the same identity in the meantime wait for.
-func (r *Registrar) unregisteredProfile(ctx context.Context, u sip.URI) (*unregistered, error) {
-	id := canonicalIdentity(u)
+// keptSet is the set kept unregistered, unexpired, that holds u, or that was kept for it or for a wildcarded identity
+// it falls in.
+func (r *Registrar) keptSet(ctx context.Context, u sip.URI) (db.ImplicitSet, bool, error) {
 	now := r.clock.Now()
+	keys := identityKeys(u, r.cfg.HomeDomain)
+
+	sets, err := r.cfg.DB.FindUnregisteredSets(ctx, append(slices.Clone(keys), canonicalIdentity(u)))
+	if err != nil {
+		return db.ImplicitSet{}, false, err
+	}
+
+	for _, s := range sets {
+		kept := s.Unregistered
+
+		switch {
+		case !now.Before(kept.ExpiresAt):
+		case slices.Contains(keys, identityKeyOf(kept.Identity)), slices.ContainsFunc(keys, func(k string) bool { return holds(s.Identities, k) }),
+			kept.Wildcard != "" && wildcardMatch(kept.Wildcard, u):
+			return s, true, nil
+		}
+	}
+
+	return db.ImplicitSet{}, false, nil
+}
+
+// fetchOnce downloads the profile of u, or waits for the download in progress.
+func (r *Registrar) fetchOnce(ctx context.Context, u sip.URI) (db.ImplicitSet, error) {
+	id := canonicalIdentity(u)
 
 	r.mu.Lock()
 
-	e := r.unregistered[id]
-
-	fetch := e == nil || e.done() && !now.Before(e.expires)
-	if fetch {
-		e = &unregistered{identity: id, ready: make(chan struct{})}
-		r.unregistered[id] = e
+	f, waiting := r.fetching[id]
+	if !waiting {
+		f = &fetch{ready: make(chan struct{})}
+		r.fetching[id] = f
 	}
 
 	r.mu.Unlock()
 
-	if !fetch {
+	if waiting {
 		select {
-		case <-e.ready:
+		case <-f.ready:
+			return f.set, f.err
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return db.ImplicitSet{}, ctx.Err()
 		}
-
-		return e, e.err
 	}
 
-	err := r.fetchUnregistered(ctx, e)
-	if err != nil {
-		r.mu.Lock()
+	f.set, f.err = r.fetchUnregistered(ctx, u, id)
 
-		if r.unregistered[id] == e {
-			delete(r.unregistered, id)
-		}
+	r.mu.Lock()
+	delete(r.fetching, id)
+	r.mu.Unlock()
 
-		r.mu.Unlock()
-	}
+	close(f.ready)
 
-	e.err = err
-	close(e.ready)
-
-	return e, err
+	return f.set, f.err
 }
 
 // TS 29.228 §6.1.2.1
-func (r *Registrar) fetchUnregistered(ctx context.Context, e *unregistered) error {
-	req := cx.ServerAssignmentRequest{PublicIdentities: []string{e.identity}, Type: cx.AssignmentUnregisteredUser}
+func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string) (db.ImplicitSet, error) {
+	req := cx.ServerAssignmentRequest{PublicIdentities: []string{id}, Type: cx.AssignmentUnregisteredUser}
 
 	saa, from, err := r.serverAssignmentOf(ctx, db.HSS{}, req)
 
@@ -95,95 +118,143 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, e *unregistered) erro
 	// the wildcarded identity.
 	if se, ok := errors.AsType[*cx.ServerAssignmentError](err); ok && se.IsExperimental(tgpp.ResultErrorInAssignmentType) &&
 		se.WildcardedPublicIdentity != "" {
-		e.wildcard = se.WildcardedPublicIdentity
-		req.WildcardedPublicIdentity = e.wildcard
+		req.WildcardedPublicIdentity = se.WildcardedPublicIdentity
 
 		saa, from, err = r.serverAssignmentOf(ctx, db.HSS{}, req)
 	}
 
 	if err != nil {
-		return err
+		return db.ImplicitSet{}, err
 	}
 
 	if len(saa.UserData) == 0 {
-		return errNoUserData
+		return db.ImplicitSet{}, errNoUserData
 	}
 
 	sub, err := cx.ParseUserData(saa.UserData)
 	if err != nil {
-		return err
+		return db.ImplicitSet{}, err
 	}
 
-	e.wildcard = cmp.Or(saa.WildcardedPublicIdentity, e.wildcard)
-	e.hss, e.sub = from, sub
-	e.expires = r.clock.Now().Add(r.cfg.MaxExpires)
+	next := db.ImplicitSet{
+		Identities: implicitSet(sub), UserData: saa.UserData, HSS: from,
+		Unregistered: &db.Unregistered{
+			Identity: id, Wildcard: cmp.Or(saa.WildcardedPublicIdentity, req.WildcardedPublicIdentity),
+			ExpiresAt: r.clock.Now().Add(r.cfg.MaxExpires),
+		},
+	}
 
-	return nil
+	if err := r.lockProfiles(ctx); err != nil {
+		return db.ImplicitSet{}, err
+	}
+
+	defer r.unlockProfiles()
+
+	// The set of a profile kept, expired, is the same set downloaded again.
+	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
+	if err != nil {
+		return db.ImplicitSet{}, err
+	}
+
+	key := identityKey(u)
+
+	if i := slices.IndexFunc(sets, func(s db.ImplicitSet) bool {
+		return identityKeyOf(s.Unregistered.Identity) == key || slices.ContainsFunc(next.Identities, func(id db.PublicIdentity) bool {
+			return holds(s.Identities, id.Key)
+		})
+	}); i >= 0 {
+		next.ID = sets[i].ID
+	}
+
+	return r.cfg.DB.SaveSet(ctx, next)
 }
 
-// releaseUnregistered drops the unregistered profiles kept for a registration period, and clears the S-CSCF's name
-// for their identities at the HSS: TIMEOUT_DEREGISTRATION takes an unregistered identity to not registered (TS 23.228
+// releaseUnregistered drops the sets kept unregistered for a registration period, and clears the S-CSCF's name for
+// their identities at the HSS: TIMEOUT_DEREGISTRATION takes an unregistered identity to not registered (TS 23.228
 // §5.12.1, TS 29.228 §6.1.2.1). An identity registered since keeps the assignment of its registration.
 func (r *Registrar) releaseUnregistered(ctx context.Context) {
 	now := r.clock.Now()
 
-	var expired []*unregistered
-
-	r.mu.Lock()
-
-	for id, e := range r.unregistered {
-		if e.done() && e.err == nil && !now.Before(e.expires) {
-			expired = append(expired, e)
-
-			delete(r.unregistered, id)
-		}
+	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
+	if err != nil {
+		r.log.Warn("failed to list the unregistered profiles", slog.Any("error", err))
+		return
 	}
 
-	r.mu.Unlock()
+	for _, s := range sets {
+		if now.Before(s.Unregistered.ExpiresAt) {
+			break
+		}
 
-	for _, e := range expired {
-		u, err := sip.ParseURI(e.identity)
-		if err != nil {
+		if err := r.cfg.DB.DeleteSet(ctx, s.ID); err != nil {
+			r.log.Warn("failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
+				slog.Any("error", err))
+
 			continue
 		}
 
-		r.forgetASs([]string{identityKey(u)})
+		r.forgetASs(append(identityKeysOf(s.Identities), identityKeyOf(s.Unregistered.Identity)))
+
+		u, err := sip.ParseURI(s.Unregistered.Identity)
+		if err != nil {
+			continue
+		}
 
 		if regs, _, err := Recipients(ctx, r.cfg.DB, u, r.cfg.HomeDomain); err != nil || registeredAt(regs, now) {
 			continue
 		}
 
-		r.log.Debug("unregistered profile released", slog.String("impu", e.identity))
+		r.log.Debug("unregistered profile released", slog.String("impu", s.Unregistered.Identity))
 
 		req := cx.ServerAssignmentRequest{
-			PublicIdentities: []string{e.identity}, WildcardedPublicIdentity: e.wildcard, Type: assignTimeoutDeregistration,
+			PublicIdentities: []string{s.Unregistered.Identity}, WildcardedPublicIdentity: s.Unregistered.Wildcard,
+			Type: assignTimeoutDeregistration,
 		}
 
-		if _, _, err := r.serverAssignmentOf(ctx, e.hss, req); err != nil {
-			r.log.Warn("failed to release an unregistered profile at the HSS", slog.String("impu", e.identity), slog.Any("error", err))
+		if _, _, err := r.serverAssignmentOf(ctx, s.HSS, req); err != nil {
+			r.log.Warn("failed to release an unregistered profile at the HSS", slog.String("impu", s.Unregistered.Identity),
+				slog.Any("error", err))
 		}
 	}
 }
 
-// dropUnregistered forgets the unregistered profiles of public identities that registered, or that the HSS
-// deregistered (TS 29.228 §6.1.3), or of a private identity's subscription, without telling the HSS.
-func (r *Registrar) dropUnregistered(impi string, identities []string) {
-	ids := make(map[string]bool, len(identities))
+// dropUnregistered forgets the sets kept unregistered of a private identity's subscription, or that hold one of the
+// public identities, that the HSS deregistered (TS 29.228 §6.1.3), without telling the HSS.
+func (r *Registrar) dropUnregistered(ctx context.Context, impi string, identities []string) {
+	keys := make([]string, 0, len(identities))
 
 	for _, s := range identities {
-		if u, err := sip.ParseURI(s); err == nil {
-			ids[canonicalIdentity(u)] = true
-		}
+		keys = append(keys, identityKeyOf(s))
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
+	if err != nil {
+		r.log.Warn("failed to list the unregistered profiles", slog.Any("error", err))
+		return
+	}
 
-	for id, e := range r.unregistered {
-		if ids[id] || impi != "" && e.done() && e.err == nil && e.sub.PrivateIdentity == impi {
-			delete(r.unregistered, id)
+	for _, s := range sets {
+		held := slices.Contains(keys, identityKeyOf(s.Unregistered.Identity)) ||
+			slices.ContainsFunc(s.Identities, func(id db.PublicIdentity) bool { return slices.Contains(keys, id.Key) })
+
+		if !held && (impi == "" || privateIdentityOf(s.UserData) != impi) {
+			continue
+		}
+
+		if err := r.cfg.DB.DeleteSet(ctx, s.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
+			r.log.Warn("failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
+				slog.Any("error", err))
 		}
 	}
+}
+
+func identityKeysOf(ids []db.PublicIdentity) []string {
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, id.Key)
+	}
+
+	return keys
 }
 
 func registeredAt(regs []db.Registration, now time.Time) bool {

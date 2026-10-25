@@ -117,15 +117,27 @@ func TestSaveRegistrationUpdatesTheContactPath(t *testing.T) {
 }
 
 func TestSaveRegistrationUpdates(t *testing.T) {
+	ctx := context.Background()
 	d := openTestDB(t)
 
 	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
 	bindingID := r.Bindings[0].ID
 
+	set, err := d.GetSet(ctx, r.SetID)
+	if err != nil {
+		t.Fatalf("GetSet: %v", err)
+	}
+
+	set.Identities = set.Identities[1:]
+	set.UserData = []byte("<IMSSubscription>2</IMSSubscription>")
+	set.HSS = HSS{Host: "hss2." + testDomain, Realm: testDomain}
+
+	if _, err := d.SaveSet(ctx, set); err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
 	r.IMPU = "tel:+15551230001"
-	r.Identities = r.Identities[1:]
-	r.UserData = []byte("<IMSSubscription>2</IMSSubscription>")
-	r.HSS = HSS{Host: "hss2." + testDomain, Realm: testDomain}
+	r.Identities, r.UserData, r.HSS = set.Identities, set.UserData, set.HSS
 	r.Bindings[0].CSeq = 2
 	r.Bindings[0].ExpiresAt = testNow.Add(2 * time.Hour)
 	r.Bindings[0].Contact.Path = "<sip:term@pcscf2." + testDomain + ";lr>"
@@ -138,6 +150,21 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 
 	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], saved) {
 		t.Fatalf("registrations = %+v, want %+v", got, saved)
+	}
+}
+
+// A registration with a set leaves the set's profile: only SaveSet changes it, whoever registered the set.
+func TestSaveRegistrationLeavesTheSet(t *testing.T) {
+	d := openTestDB(t)
+
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	want := r.Identities
+
+	r.Identities, r.UserData = nil, []byte("<IMSSubscription>stale</IMSSubscription>")
+	mustSaveRegistration(t, d, r)
+
+	if got := listByIMPI(t, d); !reflect.DeepEqual(got[0].Identities, want) || string(got[0].UserData) != "<IMSSubscription/>" {
+		t.Fatalf("registration = %+v, want the set unchanged", got[0])
 	}
 }
 
@@ -173,7 +200,9 @@ func TestSetsBindAContactApart(t *testing.T) {
 	}
 }
 
+// TS 23.228 §4.3.3.4: the private identities that share a public identity register the one set that holds it.
 func TestSharedIdentity(t *testing.T) {
+	ctx := context.Background()
 	d := openTestDB(t)
 
 	phone := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
@@ -182,7 +211,11 @@ func TestSharedIdentity(t *testing.T) {
 	tablet.Bindings[0].Contact = testContact("2001:db8::2")
 	tablet = mustSaveRegistration(t, d, tablet)
 
-	regs, err := d.ListRegistrationsByIdentity(context.Background(), "tel:+15551230001")
+	if tablet.SetID != phone.SetID {
+		t.Fatalf("sets %d and %d, want the one set", phone.SetID, tablet.SetID)
+	}
+
+	regs, err := d.ListRegistrationsByIdentity(ctx, "tel:+15551230001")
 	if err != nil {
 		t.Fatalf("ListRegistrationsByIdentity: %v", err)
 	}
@@ -190,23 +223,154 @@ func TestSharedIdentity(t *testing.T) {
 	if len(regs) != 2 || regs[0].ID != phone.ID || regs[1].ID != tablet.ID {
 		t.Fatalf("registrations = %+v, want the phone's and the tablet's", regs)
 	}
+
+	if regs, err := d.ListRegistrationsBySet(ctx, phone.SetID); err != nil || len(regs) != 2 {
+		t.Fatalf("ListRegistrationsBySet = %+v, %v; want both", regs, err)
+	}
+
+	if err := d.DeleteRegistration(ctx, phone.ID); err != nil {
+		t.Fatalf("DeleteRegistration: %v", err)
+	}
+
+	if _, err := d.GetSet(ctx, phone.SetID); err != nil {
+		t.Fatalf("GetSet = %v, want the set kept for the tablet", err)
+	}
+
+	if err := d.DeleteRegistration(ctx, tablet.ID); err != nil {
+		t.Fatalf("DeleteRegistration: %v", err)
+	}
+
+	if _, err := d.GetSet(ctx, phone.SetID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetSet = %v, want the set gone with its last registration", err)
+	}
 }
 
-func TestIdentityConflictWithinIMPI(t *testing.T) {
+func TestIdentityConflict(t *testing.T) {
+	ctx := context.Background()
 	d := openTestDB(t)
 
-	a := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+	for _, uri := range []string{"tel:+15551230001", "sip:second@" + testDomain} {
+		if _, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity(uri, false)}}); err != nil {
+			t.Fatalf("SaveSet: %v", err)
+		}
+	}
 
-	b := testRegistration(testIMPI, "15551230001")
-	b.IMPU = "sip:second@" + testDomain
-	b.Identities = []PublicIdentity{identity(b.IMPU, false), identity("tel:+15551230001", false)}
+	r := testRegistration(testIMPI, "15551230001")
+	r.Identities = []PublicIdentity{identity("sip:second@"+testDomain, false), identity("tel:+15551230001", false)}
 
-	if _, err := d.SaveRegistration(context.Background(), b); !errors.Is(err, ErrIdentityConflict) {
+	if _, err := d.SaveRegistration(ctx, r); !errors.Is(err, ErrIdentityConflict) {
 		t.Fatalf("SaveRegistration err = %v, want ErrIdentityConflict", err)
 	}
 
-	if got := listByIMPI(t, d); len(got) != 1 || !reflect.DeepEqual(got[0], a) {
-		t.Fatalf("registrations = %+v, want only %+v", got, a)
+	if got := listByIMPI(t, d); len(got) != 0 {
+		t.Fatalf("registrations = %+v, want none", got)
+	}
+}
+
+// TS 29.228 §6.5.2.1: an identity the HSS moves to another set leaves the first.
+func TestSaveSetMovesIdentities(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	a, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false), identity("sip:b@x", false)}})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	b, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:c@x", false), identity("sip:b@x", false)}})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	if got, _ := d.GetSet(ctx, a.ID); !reflect.DeepEqual(got.Identities, a.Identities[:1]) {
+		t.Fatalf("first set = %+v, want b moved out", got)
+	}
+
+	if sets, err := d.FindSets(ctx, []string{"sip:b@x"}); err != nil || len(sets) != 1 || sets[0].ID != b.ID {
+		t.Fatalf("FindSets = %+v, %v; want the second set", sets, err)
+	}
+}
+
+// TS 29.228 §6.1.2.1: the sets kept for identities that are not registered, by expiry.
+func TestUnregisteredSets(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	psi, err := d.SaveSet(ctx, ImplicitSet{
+		UserData: []byte("<IMSSubscription/>"), HSS: HSS{Host: "hss", Realm: "realm"},
+		Unregistered: &Unregistered{Identity: "sip:conf1@x", Wildcard: "sip:conf!.*!@x", ExpiresAt: testNow},
+	})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	user, err := d.SaveSet(ctx, ImplicitSet{
+		Identities:   []PublicIdentity{identity("sip:alice@x", false)},
+		Unregistered: &Unregistered{Identity: "sip:alice@x", ExpiresAt: testNow.Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	if sets, err := d.FindSets(ctx, []string{"sip:alice@x"}); err != nil || len(sets) != 1 || sets[0].ID != user.ID {
+		t.Fatalf("FindSets = %+v, %v; want the user's set", sets, err)
+	}
+
+	sets, err := d.ListUnregisteredSets(ctx)
+	if err != nil || len(sets) != 2 || !reflect.DeepEqual(sets[0], psi) {
+		t.Fatalf("ListUnregisteredSets = %+v, %v; want %+v first", sets, err, psi)
+	}
+
+	// A registration takes the set over.
+	r := testRegistration(testIMPI, "15551230001")
+	r.SetID = user.ID
+	r = mustSaveRegistration(t, d, r)
+
+	if err := d.DeleteSet(ctx, user.ID); err == nil {
+		t.Fatal("DeleteSet of a registered set succeeded")
+	}
+
+	if err := d.DeleteSet(ctx, psi.ID); err != nil {
+		t.Fatalf("DeleteSet: %v", err)
+	}
+
+	if err := d.DeleteSet(ctx, psi.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteSet again = %v, want ErrNotFound", err)
+	}
+
+	if regs := listByIMPI(t, d); len(regs) != 1 || regs[0].ID != r.ID {
+		t.Fatalf("registrations = %+v", regs)
+	}
+}
+
+func TestDeleteOrphanSets(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	orphan, err := d.SaveSet(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false)}})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	kept, err := d.SaveSet(ctx, ImplicitSet{Unregistered: &Unregistered{Identity: "sip:b@x", ExpiresAt: testNow}})
+	if err != nil {
+		t.Fatalf("SaveSet: %v", err)
+	}
+
+	r := mustSaveRegistration(t, d, testRegistration(testIMPI, "15551230001"))
+
+	if err := d.DeleteOrphanSets(ctx); err != nil {
+		t.Fatalf("DeleteOrphanSets: %v", err)
+	}
+
+	if _, err := d.GetSet(ctx, orphan.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("orphan set: %v, want it gone", err)
+	}
+
+	for _, id := range []int64{kept.ID, r.SetID} {
+		if _, err := d.GetSet(ctx, id); err != nil {
+			t.Fatalf("set %d: %v, want it kept", id, err)
+		}
 	}
 }
 
@@ -259,7 +423,7 @@ func TestDeleteRegistrationCascades(t *testing.T) {
 		t.Fatalf("ListRegSubscriptions = %v, %v; want the subscription kept", subs, err)
 	}
 
-	for _, table := range []string{"registration_identities", "bindings"} {
+	for _, table := range []string{"implicit_sets", "set_identities", "bindings"} {
 		var n int
 		if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
 			t.Fatal(err)

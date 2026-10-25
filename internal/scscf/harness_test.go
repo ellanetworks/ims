@@ -120,6 +120,9 @@ type fakeHSS struct {
 
 	userData   []byte
 	noUserData bool
+
+	// override has the HSS download the profile even when the S-CSCF has it (TS 29.228 §6.6).
+	override bool
 }
 
 func newFakeHSS(t *testing.T) *fakeHSS {
@@ -226,7 +229,11 @@ func (h *fakeHSS) serverAssignment(ctx context.Context, req *diameter.Message) *
 		sar.UserDataAlreadyAvailable = true
 	}
 
-	if !sar.UserDataAlreadyAvailable {
+	h.mu.Lock()
+	override := h.override
+	h.mu.Unlock()
+
+	if !sar.UserDataAlreadyAvailable || override {
 		h.mu.Lock()
 		sub, ok := h.subscription(sar.PublicIdentities[0])
 		raw, none := h.userData, h.noUserData

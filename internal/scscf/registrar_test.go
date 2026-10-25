@@ -158,6 +158,12 @@ func TestInitialRegistration(t *testing.T) {
 			RegisteredAt: testEpoch,
 		}},
 	}
+	if reg.SetID == 0 {
+		t.Fatalf("registration = %+v, want it of a set", reg)
+	}
+
+	wantReg.SetID = reg.SetID
+
 	if !reflect.DeepEqual(reg, wantReg) {
 		t.Fatalf("registration = %+v, want %+v", reg, wantReg)
 	}
@@ -350,6 +356,7 @@ func TestStrangersChallengeDoesNotBlockRefresh(t *testing.T) {
 	stranger.challenged(registerOptions{})
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	h.hss.noCx(t)
 }
 
@@ -375,6 +382,12 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 
 	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "1200"})
 	wantStatus(t, res, 200)
+
+	// TS 23.228 §5.2.2.4 step 6: without a challenge, the re-registration notifies the HSS all the same.
+	if sar := h.hss.wantSAR(t, cx.AssignmentReRegistration); !sar.UserDataAlreadyAvailable {
+		t.Errorf("SAR = %+v, want the user data already available", sar)
+	}
+
 	h.hss.noCx(t)
 
 	if got := res.Header.Get("Service-Route"); got != serviceRoute(h.reg.cfg.Name, before.Bindings[0].ID) {
@@ -1126,6 +1139,7 @@ func TestReauthInterval(t *testing.T) {
 	h.clock.Advance(5 * time.Minute)
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	h.hss.noCx(t)
 
 	h.clock.Advance(6 * time.Minute)
@@ -1142,6 +1156,7 @@ func TestReauthInterval(t *testing.T) {
 	h.clock.Advance(5 * time.Minute)
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	h.hss.noCx(t)
 
 	h.clock.Advance(20 * time.Minute)

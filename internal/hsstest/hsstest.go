@@ -206,6 +206,18 @@ type store struct {
 	mu          sync.Mutex
 	subscribers map[string]*Subscriber
 	order       []string
+
+	// override has the HSS download the user profile in every SAA of a registration, the S-CSCF holding it or not
+	// (TS 29.228 §6.6).
+	override bool
+}
+
+// OverrideUserData has the HSS download the user profile in every SAA of a registration, or not.
+func (h *HSS) OverrideUserData(on bool) {
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
+
+	h.db.override = on
 }
 
 func New(t testing.TB, cfg Config) *HSS {
@@ -554,7 +566,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		}
 
 		s.ServerName, s.ReassignPending = sar.ServerName, false
-		s.State, userData = Registered, !sar.UserDataAlreadyAvailable
+		s.State, userData = Registered, !sar.UserDataAlreadyAvailable || h.db.override
 
 		if sar.Type == cx.AssignmentUnregisteredUser {
 			s.State, userData = Unregistered, true

@@ -67,10 +67,10 @@ sudo snap start --enable ella-ims.imsd
 6. Route the phones' `ims` IP pool through Ella Core's N6 address:
 
    ```sh
-   sudo ip route add 10.46.0.0/16 via 10.6.0.2
+   sudo ip route add 10.46.0.0/16 via 10.6.0.2 mtu lock 1400
    ```
 
-7. In Ella Core, follow steps 3 to 9 of [Enable Voice][ella-core-voice], with `10.6.0.5` as the P-CSCF address.
+7. In Ella Core, set **Operator → IMS → P-CSCF Addresses** to `10.6.0.5`, then follow [Enable Voice][ella-core-voice] from creating the voice data network.
 
 ### Integrate with an Application Server
 
@@ -114,18 +114,23 @@ Prerequisites: Ella Core as the HSS, and phones whose SIMs allow the Android app
    ```
 
 2. In Ella Core:
+   - **Networking → Data Networks → Create**: `mcx`, with an IP pool and **IMS** on.
+   - **Profiles → Create**: an MC profile, e.g. `mcptt`. On it, **Add Policy**: data network `mcx`, 5QI/QCI `69`, ARP `3`, **May pre-empt**, **Not pre-emptable**.
    - **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
-   - **Profiles →** the subscribers' profile **→ IMS Filter Criteria**: add the **MCPTT** preset, then **Save**.
+   - **Profiles →** the MC profile **→** edit **IMS Filter Criteria**: **Add from preset** the **MCPTT** preset, then **Save**.
+   - **Subscribers**: put each user on the MC profile, with an MSISDN.
 
-3. In Ella IMS, **Push-to-Talk → Users → Add User**, for each person:
+3. Route the `mcx` IP pool through Ella Core's N6 address, as for the `ims` pool.
+
+4. In Ella IMS, **Push-to-Talk → Users → Add User**, for each person:
    - **MCPTT ID**: e.g. `alice`.
    - **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`.
 
-4. **Push-to-Talk → Groups → Add Group**: a group ID, e.g. `fire`, and its members.
+5. **Push-to-Talk → Groups → Add Group**: a group ID, e.g. `fire`, and its members.
 
-5. Install the Android app (`android/`) on the phones, and set each user's MCPTT ID and groups in its settings.
+6. On the phones, set the APN to `mcx`, install the Android app (`android/`), and set each user's MCPTT ID and groups in its settings.
 
-6. Start a group call from one phone. The others ring, and **Push-to-Talk → Calls** shows the call.
+7. Start a group call from one phone. The others ring, and **Push-to-Talk → Calls** shows the call.
 
 ### Build
 

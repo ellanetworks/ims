@@ -51,6 +51,10 @@ type change struct {
 	// created are the keys of the public identities that the HSS added to a registered set of the user, or unbarred
 	// in it (TS 24.229 §5.4.1.8 step 1, §5.4.2.1.2 step 4e IV).
 	created map[string]bool
+
+	// ended, if set, reports whether the change ends the subscriptions to a resource: an identity the HSS removed
+	// from the set, or barred (TS 29.228 §6.5.2.1, RFC 6665 §4.2.2).
+	ended func(resource string) bool
 }
 
 type outgoing struct {
@@ -107,6 +111,8 @@ func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch cha
 		case gone && byUE:
 			r.dropSubscription(ctx, s)
 			continue
+		case ch.ended != nil && ch.ended(s.IMPU):
+			state = "terminated;reason=" + reasonRejected
 		case !active:
 		case gone:
 			state = "terminated;reason=" + reasonNoResource
@@ -429,10 +435,11 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			event := reginfo.Refreshed
 
 			switch {
+			// A contact new to the identity is created, shortened or not (RFC 3680 §5.1).
+			case ch.created[id.Key]:
+				event = reginfo.Created
 			case ch.shortened != "" && set.IMPI == ch.shortened:
 				event = reginfo.Shortened
-			case ch.created[id.Key] && set.IMPI == st.impi:
-				event = reginfo.Created
 			case b.Event != db.BindingRefreshed:
 				event = reginfo.Created
 

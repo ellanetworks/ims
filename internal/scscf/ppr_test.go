@@ -411,3 +411,341 @@ func TestMayRegister(t *testing.T) {
 		})
 	}
 }
+
+// eventually polls cond until it holds, for a change the S-CSCF makes in the background.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(siptest.Timeout)
+
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+const confPSI = "sip:conf@" + homeDomain
+
+// TS 29.228 §6.6.1, §6.2.2.1: the HSS pushes the profile of a PSI the S-CSCF keeps unregistered.
+func TestPushProfilePSI(t *testing.T) {
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	psi := cx.IMSSubscription{
+		PrivateIdentity: "conf@" + homeDomain,
+		ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{
+			{Identity: confPSI, Type: cx.IdentityDistinctPSI},
+		}}},
+	}
+
+	sh := newSessionHarnessWith(t, func(h *harness) {
+		h.hss.set(func(f *fakeHSS) { f.subscriptions = append(f.subscriptions, psi) })
+	})
+	sh.hss.nextSAR(t)
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", confPSI))
+
+	if res := final(t, sh.icscf); res.StatusCode != 480 {
+		t.Fatalf("got %q, want 480: no service for the PSI", res.StartLine())
+	}
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentUnregisteredUser {
+		t.Fatalf("SAR = %+v, want UNREGISTERED_USER", sar)
+	}
+
+	changed := cx.IMSSubscription{
+		PrivateIdentity: psi.PrivateIdentity,
+		ServiceProfiles: []cx.ServiceProfile{{
+			PublicIdentities:      psi.ServiceProfiles[0].PublicIdentities,
+			InitialFilterCriteria: []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"))},
+		}},
+	}
+
+	data, err := cx.MarshalUserData(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sh.push(cx.PushProfileRequest{PrivateIdentity: psi.PrivateIdentity, UserData: data})
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", confPSI))
+
+	if req, _ := as.RecvRequest(); req.Method != "MESSAGE" {
+		t.Fatalf("AS got %s, want the MESSAGE", req.StartLine())
+	}
+
+	sh.hss.noCx(t)
+}
+
+// TS 24.229 §5.4.1.8 step 2, NOTE 2: barring an identity leaves its calls in progress.
+func TestPushProfileBarringKeepsCalls(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+	sh.answered(t)
+
+	sh.push(pushed(t, func(sub *cx.IMSSubscription) { sub.ServiceProfiles[0].PublicIdentities[2].Barred = true }))
+
+	sh.term.RecvNone(100 * time.Millisecond)
+	sh.icscf.RecvNone(50 * time.Millisecond)
+
+	if id := sh.registration(testMSISDN).Identities[2]; id.Key != identityKeyOf(testTel) || !id.Barred {
+		t.Fatalf("identity = %+v, want the tel URI barred", id)
+	}
+}
+
+// TS 29.228 §6.2.2.1: on an error the S-CSCF keeps what it had: no call is released.
+func TestPushProfileFailureKeepsCalls(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+	sh.answered(t)
+
+	before := sh.registration(testMSISDN)
+
+	err := sh.reg.PushProfile(t.Context(), pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].PublicIdentities = []cx.ProfileIdentity{{Identity: testTel}}
+	}))
+	if !errors.Is(err, ErrUnableToComply) {
+		t.Fatalf("PushProfile = %v, want ErrUnableToComply: the default identity changes", err)
+	}
+
+	sh.term.RecvNone(100 * time.Millisecond)
+	sh.icscf.RecvNone(50 * time.Millisecond)
+
+	if after := sh.registration(testMSISDN); !bytes.Equal(after.UserData, before.UserData) {
+		t.Fatal("profile changed by a push refused")
+	}
+}
+
+// TS 24.229 §5.4.2.1.2 step 3: the NOTIFY of a change of a shared set lists the contacts of every user of it.
+func TestPushProfileSharedSetNotify(t *testing.T) {
+	h := newHarness(t)
+	p := h.newPCSCF()
+
+	phone := h.newUE()
+	phone.path = p.path()
+	phone.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	s := h.pcscfSubscriber(p)
+	s.subscribed()
+
+	tablet := h.newUE()
+	tablet.impi = "tablet@" + homeDomain
+	tablet.impu = testAlias
+	tablet.contact = "sip:tablet@127.0.0.1:5090"
+	tablet.register(registerOptions{})
+	h.hss.nextSAR(t)
+	s.recvNotify()
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[1].PublicIdentities = append(sub.ServiceProfiles[1].PublicIdentities, cx.ProfileIdentity{Identity: bobIMPU})
+	}))
+
+	n := s.recvNotify()
+	for _, c := range []string{phone.contact, tablet.contact} {
+		wantContact(t, n.contact(t, bobIMPU, c), reginfo.Active, reginfo.Created)
+	}
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) { sub.ServiceProfiles = sub.ServiceProfiles[:1] }))
+
+	n = s.recvNotify()
+	if r := n.registration(t, testAlias); r.State != reginfo.Terminated || len(r.Contacts) != 2 {
+		t.Fatalf("registration = %+v, want the alias terminated with both contacts", r)
+	}
+
+	for _, c := range []string{phone.contact, tablet.contact} {
+		wantContact(t, n.contact(t, testAlias, c), reginfo.Terminated, reginfo.Rejected)
+	}
+}
+
+// TS 29.228 Table 6.2.2.1.1: a private identity the S-CSCF knows, with a profile of a set it does not hold.
+func TestPushProfileUnknownSet(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	data, err := cx.MarshalUserData(cx.IMSSubscription{
+		PrivateIdentity: testIMPI,
+		ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{{Identity: unknownIMPU}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.reg.PushProfile(t.Context(), cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: data}); !errors.Is(err, ErrUnableToComply) {
+		t.Fatalf("PushProfile = %v, want ErrUnableToComply", err)
+	}
+}
+
+// RFC 3680 §5.1: an identity added by the push that shortens the registration is created, the others shortened.
+func TestPushProfileAddsIdentityAndRegisterAS(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+	_, s := h.subscribeBoth(u, p, registerOptions{})
+
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[1].PublicIdentities = append(sub.ServiceProfiles[1].PublicIdentities, cx.ProfileIdentity{Identity: bobIMPU})
+		sub.ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{
+			iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("REGISTER")),
+		}
+	}))
+
+	n := s.recvNotify()
+	wantContact(t, n.contact(t, bobIMPU, u.contact), reginfo.Active, reginfo.Created)
+	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Shortened)
+}
+
+// TS 24.229 §5.4.1.7: an AS already triggered for one service profile, now for another, gets a third-party REGISTER of
+// the other's identity: the registration is shortened.
+func TestPushProfileRegisterASForAnotherProfile(t *testing.T) {
+	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	trigger := iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("REGISTER"))
+
+	h := newHarness(t)
+	h.hss.set(func(f *fakeHSS) {
+		f.subscriptions[0].ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{trigger}
+	})
+
+	u := h.newUE()
+	p := h.newPCSCF()
+	_, s := h.subscribeBoth(u, p, registerOptions{})
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].InitialFilterCriteria = []cx.InitialFilterCriteria{trigger}
+		sub.ServiceProfiles[1].InitialFilterCriteria = []cx.InitialFilterCriteria{trigger}
+	}))
+
+	wantContact(t, s.recvNotify().contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Shortened)
+}
+
+// TS 29.228 §6.5.2.1: the subscriptions to an identity removed end; the others go on.
+func TestPushProfileEndsSubscriptionsToRemovedIdentity(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	p := h.newPCSCF()
+	u.path = p.path()
+
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	all := h.pcscfSubscriber(p)
+	all.subscribed()
+
+	tel := h.ueSubscriber(u)
+	tel.impu = testTel
+	tel.subscribed()
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) {
+		sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+	}))
+
+	if n := tel.recvNotify(); n.state != "terminated;reason=rejected" {
+		t.Fatalf("Subscription-State %q, want the subscription to the identity removed terminated", n.state)
+	}
+
+	if n := all.recvNotify(); n.state != "active;expires=600" {
+		t.Fatalf("Subscription-State %q, want the other subscription active", n.state)
+	}
+
+	h.waitSubscriptions(1)
+}
+
+// TS 29.228 §6.5.2.1: the identity a UE registered, removed, gives way to the default identity.
+func TestPushProfileRemovesRegisteredIdentity(t *testing.T) {
+	h := newHarness(t)
+	u := h.newUE()
+	u.impu = testAlias
+	u.register(registerOptions{})
+	h.hss.nextSAR(t)
+
+	h.push(pushed(t, func(sub *cx.IMSSubscription) { sub.ServiceProfiles = sub.ServiceProfiles[:1] }))
+
+	eventually(t, "the default identity in place of the one removed", func() bool {
+		reg := h.registration(testMSISDN)
+		return reg.IMPU == testMSISDN && reg.Bindings[0].IMPU == identityKeyOf(testMSISDN)
+	})
+}
+
+// TS 24.229 §5.4.1.8, TS 29.228 §6.6: a profile the HSS downloads with a re-registration changes it as a push does.
+func TestReRegistrationProfileChange(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	sh.answered(t)
+
+	sub := testSubscriptions()[0]
+	sub.ServiceProfiles[0].PublicIdentities = sub.ServiceProfiles[0].PublicIdentities[:2]
+
+	data, err := cx.MarshalUserData(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sh.hss.set(func(f *fakeHSS) { f.userData, f.override = data, true })
+
+	// Every re-registration notifies the HSS (TS 23.228 §5.2.2.4 step 6), a refresh without a challenge included.
+	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
+	sh.hss.wantSAR(t, cx.AssignmentReRegistration)
+
+	bye(t, sh.term)
+	bye(t, sh.icscf)
+
+	if holds(sh.registration(testMSISDN).Identities, identityKeyOf(testTel)) {
+		t.Fatal("tel URI kept in the set")
+	}
+}
+
+// A refresh while the HSS cannot be reached keeps the registration, with the profile held.
+func TestReRegistrationHSSDown(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.nextSAR(t)
+
+	sh.loop.SetDown(true)
+
+	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
+
+	if reg := sh.registration(testMSISDN); len(reg.Bindings) != 1 || !holds(reg.Identities, identityKeyOf(testTel)) {
+		t.Fatalf("registration = %+v, want it kept", reg)
+	}
+}
+
+// TS 29.228 §6.1.2.1: a profile kept unregistered outlives a restart, and is released at the HSS when it expires.
+func TestUnregisteredProfileAfterRestart(t *testing.T) {
+	sh := newSessionHarness(t)
+	sh.hss.wantSAR(t, cx.AssignmentRegistration)
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", secondIMPU))
+	final(t, sh.icscf)
+
+	if sar := sh.hss.nextSAR(t); sar.Type != cx.AssignmentUnregisteredUser {
+		t.Fatalf("SAR = %+v, want UNREGISTERED_USER", sar)
+	}
+
+	sh.restart()
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", secondIMPU))
+	final(t, sh.icscf)
+	sh.hss.noCx(t)
+
+	sh.clock.Advance(sh.cfg.MaxExpires)
+	sh.clock.Advance(2 * sweepInterval)
+
+	for {
+		sar := sh.hss.nextSAR(t)
+		if sar.PrivateIdentity != "" {
+			continue
+		}
+
+		if sar.Type != cx.AssignmentTimeoutDeregistration || !slices.Equal(sar.PublicIdentities, []string{secondIMPU}) {
+			t.Fatalf("SAR = %+v, want TIMEOUT_DEREGISTRATION of the identity", sar)
+		}
+
+		break
+	}
+}

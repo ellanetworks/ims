@@ -641,14 +641,19 @@ func TestTerminatingAcceptContact(t *testing.T) {
 	}
 }
 
-func TestTerminatingBarredInAnotherRegistration(t *testing.T) {
+// TS 29.228 Annex B.2.1: a request to an identity its set bars reaches no one.
+func TestTerminatingBarredIdentity(t *testing.T) {
 	sh := newSessionHarness(t)
 
-	other := db.Registration{
-		IMPI: "other@" + homeDomain, IMPU: testTel,
-		Identities: []db.PublicIdentity{{URI: testTel, Key: identityKeyOf(testTel), Barred: true}},
+	set, err := sh.db.GetSet(t.Context(), sh.registration(testTel).SetID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := sh.db.SaveRegistration(t.Context(), other); err != nil {
+
+	i := slices.IndexFunc(set.Identities, func(id db.PublicIdentity) bool { return id.Key == identityKeyOf(testTel) })
+	set.Identities[i].Barred = true
+
+	if _, err := sh.db.SaveSet(t.Context(), set); err != nil {
 		t.Fatal(err)
 	}
 

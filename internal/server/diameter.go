@@ -232,13 +232,18 @@ func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Con
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
+	if ans := featureUnsupported(req, c); ans != nil {
+		h.log.Warn("Cx RTR requires features the S-CSCF does not support", slog.String("impi", rtr.PrivateIdentity))
+		return ans
+	}
+
 	h.log.Debug("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
 		slog.String("reason", rtr.Reason.Code.String()))
 
 	associated, err := (*t).Terminate(ctx, rtr)
 	if err != nil {
 		h.log.Warn("Cx RTR failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
-		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
+		return cx.NewAnswer(req, c.LocalIdentity(), failure(err), 0)
 	}
 
 	a := cx.RegistrationTermination{AssociatedIdentities: associated}
@@ -266,30 +271,23 @@ func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diam
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
+	if ans := featureUnsupported(req, c); ans != nil {
+		h.log.Warn("Cx PPR requires features the S-CSCF does not support", slog.String("impi", ppr.PrivateIdentity))
+		return ans
+	}
+
 	h.log.Debug("Cx PPR", slog.String("impi", ppr.PrivateIdentity), slog.Bool("userData", len(ppr.UserData) > 0),
 		slog.Bool("charging", ppr.Charging != nil), slog.Bool("allowedWebRTC", ppr.AllowedWebRTC != nil))
 
-	// The S-CSCF authenticates with IMS AKA only: it has no use for SIP Digest authentication data (TS 29.228 Table
-	// 6.2.2.1).
+	// The S-CSCF authenticates with IMS AKA only: SIP Digest authentication data is of no use to it, and changes
+	// nothing it serves (TS 29.228 §6.5.2.4).
 	if _, ok := req.Find(cx.AVPSIPAuthDataItem, tgpp.VendorID); ok {
-		err = fmt.Errorf("%w: SIP-Auth-Data-Item", scscf.ErrUnsupportedUserData)
-	} else {
-		err = (*t).PushProfile(ctx, ppr)
+		h.log.Debug("Cx PPR: SIP Digest authentication data ignored", slog.String("impi", ppr.PrivateIdentity))
 	}
 
-	if err != nil {
+	if err := (*t).PushProfile(ctx, ppr); err != nil {
 		h.log.Warn("Cx PPR failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
-
-		result := tgpp.Result{Code: diameter.ResultUnableToComply}
-
-		switch {
-		case errors.Is(err, scscf.ErrUserUnknown):
-			result = tgpp.Experimental(tgpp.ResultErrorUserUnknown)
-		case errors.Is(err, scscf.ErrUnsupportedUserData):
-			result = tgpp.Experimental(tgpp.ResultErrorNotSupportedUserData)
-		}
-
-		return cx.NewAnswer(req, c.LocalIdentity(), result, 0)
+		return cx.NewAnswer(req, c.LocalIdentity(), failure(err), 0)
 	}
 
 	ans, err := cx.NewPushProfileAnswer(req, c.LocalIdentity(), cx.PushProfile{})
@@ -300,6 +298,34 @@ func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diam
 
 	return ans
 }
+
+// failure is the result of a request of the HSS that failed (TS 29.228 Table 6.1.3.1.1, Table 6.2.2.1.1).
+func failure(err error) tgpp.Result {
+	switch {
+	case errors.Is(err, scscf.ErrUserUnknown):
+		return tgpp.Experimental(tgpp.ResultErrorUserUnknown)
+	case errors.Is(err, scscf.ErrUnsupportedUserData):
+		return tgpp.Experimental(tgpp.ResultErrorNotSupportedUserData)
+	default:
+		return tgpp.Result{Code: diameter.ResultUnableToComply}
+	}
+}
+
+// featureUnsupported is the answer to a request that requires features of the Cx application the S-CSCF does not
+// support: DIAMETER_ERROR_FEATURE_UNSUPPORTED, with the features it supports, none (TS 29.229 §7.2.1).
+func featureUnsupported(req *diameter.Message, c *diameter.Conn) *diameter.Message {
+	if !cx.RequiresUnsupportedFeatures(req, 0) {
+		return nil
+	}
+
+	ans := cx.NewAnswer(req, c.LocalIdentity(), tgpp.Experimental(tgpp.ResultErrorFeatureUnsupported), 0)
+	ans.AVPs = append(ans.AVPs, tgpp.SupportedFeatures{VendorID: tgpp.VendorID, FeatureListID: cxFeatureListID}.AVP())
+
+	return ans
+}
+
+// cxFeatureListID is the Feature-List-ID of the features of the Cx application (TS 29.229 §7.1.1).
+const cxFeatureListID = 1
 
 type rxSessions interface {
 	ReAuth(sessionID string, r rx.ReAuthRequest) bool

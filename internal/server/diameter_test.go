@@ -20,6 +20,7 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -830,11 +831,19 @@ func TestPPRResults(t *testing.T) {
 			false,
 			tgpp.ResultErrorNotSupportedUserData,
 		},
+		// The S-CSCF ignores SIP Digest authentication data: the user is unknown all the same.
 		{
 			"SIP Digest authentication data",
 			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData},
 			true,
-			tgpp.ResultErrorNotSupportedUserData,
+			tgpp.ResultErrorUserUnknown,
+		},
+		// TS 29.229 §7.2.1
+		{
+			"required feature",
+			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData, Features: 1, FeaturesRequired: true},
+			false,
+			tgpp.ResultErrorFeatureUnsupported,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -851,5 +860,61 @@ func TestPPRResults(t *testing.T) {
 				t.Fatalf("PPA result = %s, want experimental %d", r, tt.want)
 			}
 		})
+	}
+}
+
+// TS 29.229 §6.1.12: a PPA of success, with the Vendor-Specific-Application-Id of Cx and Auth-Session-State
+// NO_STATE_MAINTAINED, without Supported-Features, the S-CSCF supporting none.
+func TestPPASuccess(t *testing.T) {
+	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
+
+	cfg := testConfig(t)
+	cfg.Peers = seedPeers(hss.config("hss"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "hss")
+
+	if _, err := srv.database.SaveRegistration(t.Context(), db.Registration{
+		IMPI: testIMPI, IMPU: testIMPU,
+		Identities: []db.PublicIdentity{{URI: testIMPU, Key: testIMPU}},
+		Bindings: []db.Binding{{
+			Contact: db.Contact{URI: "sip:ue@192.0.2.1"}, CallID: "c", CSeq: 1, ExpiresAt: time.Now().Add(time.Hour),
+			Event: db.BindingRegistered, IMPU: testIMPU, RegisteredAt: time.Now(),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := cx.NewPushProfileRequest(hss.envelope(), cx.PushProfileRequest{
+		PrivateIdentity: testIMPI, Charging: &cx.ChargingInformation{PrimaryEventChargingFunction: "aaa://ecf"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	ans, err := hss.node.Do(ctx, "ims", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if r, err := tgpp.ParseResult(ans); err != nil || !r.Success() || r.Experimental {
+		t.Fatalf("PPA result = %s, %v; want DIAMETER_SUCCESS", r, err)
+	}
+
+	if _, ok := ans.Find(diameter.AVPVendorSpecificApplicationID, 0); !ok {
+		t.Error("PPA without Vendor-Specific-Application-Id")
+	}
+
+	if a, ok := ans.Find(diameter.AVPAuthSessionState, 0); !ok {
+		t.Error("PPA without Auth-Session-State")
+	} else if v, err := a.Unsigned32(); err != nil || v != 1 {
+		t.Errorf("PPA Auth-Session-State %d, %v; want NO_STATE_MAINTAINED", v, err)
+	}
+
+	if _, ok := ans.Find(tgpp.AVPSupportedFeatures, tgpp.VendorID); ok {
+		t.Error("PPA with Supported-Features")
 	}
 }

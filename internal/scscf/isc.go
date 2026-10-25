@@ -456,17 +456,17 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 		return p, sub, true, nil
 	}
 
-	e, err := r.unregisteredProfile(ctx, u)
+	set, sub, err := r.unregisteredProfile(ctx, u)
 	if err != nil {
 		return cx.ServiceProfile{}, cx.IMSSubscription{}, false, err
 	}
 
-	p, ok := serviceProfileOf(e.sub, u, e.wildcard, r.cfg.HomeDomain)
+	p, ok := serviceProfileOf(sub, u, set.Unregistered.Wildcard, r.cfg.HomeDomain)
 	if !ok {
 		r.log.Warn("no service profile of the HSS holds the identity: no service", slog.String("impu", u.String()))
 	}
 
-	return p, e.sub, false, nil
+	return p, sub, false, nil
 }
 
 // criteria are the iFCs of a service profile that can be evaluated: one with a regular expression that does not

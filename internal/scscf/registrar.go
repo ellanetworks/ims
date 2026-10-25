@@ -119,10 +119,14 @@ type Registrar struct {
 	reauth map[string]uint64
 	sweep  transaction.Timer
 
-	// peers are the ASs of each public identity, by its key and the AS's SIP URI; unregistered the unregistered
-	// profiles kept, by canonical public identity.
-	peers        map[string]map[string]*asPeer
-	unregistered map[string]*unregistered
+	// peers are the ASs of each public identity, by its key and the AS's SIP URI; fetching the downloads of
+	// unregistered profiles in progress, by canonical public identity, which requests for the same identity wait for.
+	peers    map[string]map[string]*asPeer
+	fetching map[string]*fetch
+
+	// profiles serialises the changes of the profiles of the implicit sets, which several private identities share:
+	// each reads the set, and stores it changed, holding it.
+	profiles chan struct{}
 
 	calls *calls
 }
@@ -188,8 +192,9 @@ func New(cfg Config) *Registrar {
 		reauth:     make(map[string]uint64),
 		calls:      newCalls(),
 
-		peers:        make(map[string]map[string]*asPeer),
-		unregistered: make(map[string]*unregistered),
+		peers:    make(map[string]map[string]*asPeer),
+		fetching: make(map[string]*fetch),
+		profiles: make(chan struct{}, 1),
 	}
 
 	return r
@@ -311,6 +316,21 @@ func (r *Registrar) unlock(impi string) {
 	delete(r.busy, impi)
 }
 
+// lockProfiles takes the lock of the profiles of the implicit sets. It is taken after that of a private identity,
+// never before, and held only over database operations.
+func (r *Registrar) lockProfiles(ctx context.Context) error {
+	select {
+	case r.profiles <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Registrar) unlockProfiles() {
+	<-r.profiles
+}
+
 // authKey identifies what the S-CSCF authenticates: a private identity's registration, or each of its
 // registration flows, a registered contact of its own (TS 33.203 §6.1 NOTE 2).
 type authKey struct {
@@ -410,6 +430,11 @@ func (r *Registrar) runSweep() {
 
 	r.sweepExpired(r.ctx)
 	r.releaseUnregistered(r.ctx)
+
+	if err := r.cfg.DB.DeleteOrphanSets(r.ctx); err != nil {
+		r.log.Warn("failed to delete the implicit sets left by failed registrations", slog.Any("error", err))
+	}
+
 	r.armSweep()
 }
 

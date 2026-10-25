@@ -6,12 +6,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
-
-	"github.com/mattn/go-sqlite3"
 )
 
-var ErrIdentityConflict = errors.New("public identity in another registration set of the private identity")
+// ErrIdentityConflict is a registration without a set whose identities are in several sets.
+var ErrIdentityConflict = errors.New("public identities in several implicit registration sets")
 
 type PublicIdentity struct {
 	URI         string
@@ -20,15 +20,43 @@ type PublicIdentity struct {
 	Barred      bool
 }
 
+// ImplicitSet is an implicit registration set and its user profile, as the HSS downloaded or pushed it (TS 29.228
+// §6.5.1.1, §6.5.2.1): one for all the private identities that register it (TS 23.228 §4.3.3.4). A public identity is
+// in one set at most.
+type ImplicitSet struct {
+	ID int64
+	// Identities are the public user identities of the set, in the order of the profile: the first not barred is the
+	// default one.
+	Identities []PublicIdentity
+	UserData   []byte
+	// HSS is the HSS that serves the set, where the S-CSCF sends its Cx requests (TS 29.229 §5.5).
+	HSS HSS
+	// Unregistered, when set, tells that the S-CSCF keeps the set for a public identity that is not registered, until
+	// it clears its name at the HSS (TS 23.228 §5.12.1, TS 29.228 §6.1.2.1): no registration refers to it.
+	Unregistered *Unregistered
+}
+
+// Unregistered is what the S-CSCF keeps of a set downloaded for a public identity, a user's or a PSI's, that is not
+// registered (SAR UNREGISTERED_USER).
+type Unregistered struct {
+	// Identity is the canonical public identity of the SAR, and Wildcard the wildcarded identity the HSS said it falls
+	// in, if any (TS 29.228 Table 6.1.2.2).
+	Identity  string
+	Wildcard  string
+	ExpiresAt time.Time
+}
+
+// Registration is the registration of an implicit set by a private identity. Identities, UserData and HSS are those
+// of the set as read: SaveRegistration stores them only for a registration without a set yet.
 type Registration struct {
 	ID         int64
 	IMPI       string
 	IMPU       string
+	SetID      int64
 	Identities []PublicIdentity
 	UserData   []byte
-	// HSS is the HSS that serves the registration, where the S-CSCF sends its Cx requests (TS 29.229 §5.5).
-	HSS      HSS
-	Bindings []Binding
+	HSS        HSS
+	Bindings   []Binding
 }
 
 // HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its answers. Empty is unknown.
@@ -74,12 +102,271 @@ type Binding struct {
 }
 
 const (
-	registrationColumns = `id, impi, impu, user_data, hss_host, hss_realm`
+	registrationColumns = `r.id, r.impi, r.impu, r.set_id, s.user_data, s.hss_host, s.hss_realm`
+	registrationFrom    = ` FROM registrations r JOIN implicit_sets s ON s.id = r.set_id`
+
+	setColumns = `id, user_data, hss_host, hss_realm, unregistered_identity, wildcard, expires_at`
 
 	bindingColumns = `id, registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event,
 		impu, registered_at`
 )
 
+// SaveSet stores the set, and its identities in place of those it had. An identity another set holds leaves it: the
+// HSS moved it (TS 29.228 §6.5.2.1).
+func (d *DB) SaveSet(ctx context.Context, s ImplicitSet) (_ ImplicitSet, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return ImplicitSet{}, fmt.Errorf("save implicit set: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if s, err = saveSet(ctx, tx, s); err != nil {
+		return ImplicitSet{}, fmt.Errorf("save implicit set: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ImplicitSet{}, fmt.Errorf("save implicit set: %w", err)
+	}
+
+	return s, nil
+}
+
+func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error) {
+	var (
+		identity, wildcard sql.NullString
+		expires            sql.NullInt64
+	)
+
+	if u := s.Unregistered; u != nil {
+		identity = sql.NullString{String: u.Identity, Valid: true}
+		wildcard = nullableString(u.Wildcard)
+		expires = sql.NullInt64{Int64: u.ExpiresAt.UTC().UnixNano(), Valid: true}
+	}
+
+	data := s.UserData
+	if data == nil {
+		data = []byte{}
+	}
+
+	if s.ID == 0 {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO implicit_sets (user_data, hss_host, hss_realm, unregistered_identity, wildcard, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			data, s.HSS.Host, s.HSS.Realm, identity, wildcard, expires)
+		if err != nil {
+			return ImplicitSet{}, err
+		}
+
+		if s.ID, err = res.LastInsertId(); err != nil {
+			return ImplicitSet{}, err
+		}
+	} else {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE implicit_sets SET user_data = ?, hss_host = ?, hss_realm = ?, unregistered_identity = ?, wildcard = ?,
+				expires_at = ? WHERE id = ?`,
+			data, s.HSS.Host, s.HSS.Realm, identity, wildcard, expires, s.ID)
+		if err != nil {
+			return ImplicitSet{}, err
+		}
+
+		if err := checkAffected(res); err != nil {
+			return ImplicitSet{}, fmt.Errorf("set %d: %w", s.ID, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM set_identities WHERE set_id = ?`, s.ID); err != nil {
+		return ImplicitSet{}, err
+	}
+
+	for i, id := range s.Identities {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM set_identities WHERE key = ?`, id.Key); err != nil {
+			return ImplicitSet{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO set_identities (set_id, position, uri, key, display_name, barred) VALUES (?, ?, ?, ?, ?, ?)`,
+			s.ID, i, id.URI, id.Key, nullableString(id.DisplayName), id.Barred); err != nil {
+			return ImplicitSet{}, err
+		}
+	}
+
+	return s, nil
+}
+
+// GetSet returns the set with the ID.
+func (d *DB) GetSet(ctx context.Context, id int64) (_ ImplicitSet, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	sets, err := querySets(ctx, d.conn, `SELECT `+setColumns+` FROM implicit_sets WHERE id = ?`, id)
+	if err != nil {
+		return ImplicitSet{}, fmt.Errorf("get implicit set %d: %w", id, err)
+	}
+
+	if len(sets) == 0 {
+		return ImplicitSet{}, fmt.Errorf("get implicit set %d: %w", id, ErrNotFound)
+	}
+
+	return sets[0], nil
+}
+
+// FindSets returns the sets that hold one of the identity keys as one of their public user identities.
+func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	if len(keys) == 0 {
+		return []ImplicitSet{}, nil
+	}
+
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+
+	sets, err := querySets(ctx, d.conn, `SELECT `+setColumns+` FROM implicit_sets
+		WHERE id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find implicit sets of %d identities: %w", len(keys), err)
+	}
+
+	return sets, nil
+}
+
+// ListUnregisteredSets returns the sets kept unregistered, by expiry.
+func (d *DB) ListUnregisteredSets(ctx context.Context) (_ []ImplicitSet, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	sets, err := querySets(ctx, d.conn,
+		`SELECT `+setColumns+` FROM implicit_sets WHERE expires_at IS NOT NULL ORDER BY expires_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list unregistered implicit sets: %w", err)
+	}
+
+	return sets, nil
+}
+
+// FindUnregisteredSets returns the sets kept unregistered that may serve a public identity: those that hold one of its
+// keys, those kept for one of its forms, and those kept for a wildcarded identity, which the caller matches.
+func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	if len(keys) == 0 {
+		return []ImplicitSet{}, nil
+	}
+
+	args := make([]any, 0, 2*len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+
+	args = append(args, args...)
+
+	sets, err := querySets(ctx, d.conn, `SELECT `+setColumns+` FROM implicit_sets WHERE expires_at IS NOT NULL AND (
+		id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`))
+		OR unregistered_identity IN (`+placeholders(len(keys))+`) OR wildcard IS NOT NULL) ORDER BY expires_at, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find unregistered implicit sets of %d identities: %w", len(keys), err)
+	}
+
+	return sets, nil
+}
+
+// DeleteSet removes a set no registration refers to.
+func (d *DB) DeleteSet(ctx context.Context, id int64) (err error) {
+	defer d.observe(poolWrite, &err)()
+
+	res, err := d.conn.ExecContext(ctx,
+		`DELETE FROM implicit_sets WHERE id = ? AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = ?)`, id, id)
+	if err != nil {
+		return fmt.Errorf("delete implicit set %d: %w", id, err)
+	}
+
+	if err := checkAffected(res); err != nil {
+		return fmt.Errorf("delete implicit set %d: %w", id, err)
+	}
+
+	return nil
+}
+
+// DeleteOrphanSets removes the sets that are neither registered nor kept unregistered: those of registrations that
+// failed.
+func (d *DB) DeleteOrphanSets(ctx context.Context) (err error) {
+	defer d.observe(poolWrite, &err)()
+
+	if _, err := d.conn.ExecContext(ctx, `DELETE FROM implicit_sets WHERE expires_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = implicit_sets.id)`); err != nil {
+		return fmt.Errorf("delete orphan implicit sets: %w", err)
+	}
+
+	return nil
+}
+
+func querySets(ctx context.Context, q *sql.DB, query string, args ...any) ([]ImplicitSet, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	sets := []ImplicitSet{}
+
+	for rows.Next() {
+		var (
+			s                  ImplicitSet
+			identity, wildcard sql.NullString
+			expires            sql.NullInt64
+		)
+
+		if err := rows.Scan(&s.ID, &s.UserData, &s.HSS.Host, &s.HSS.Realm, &identity, &wildcard, &expires); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+
+		if identity.Valid {
+			s.Unregistered = &Unregistered{
+				Identity: identity.String, Wildcard: wildcard.String, ExpiresAt: time.Unix(0, expires.Int64).UTC(),
+			}
+		}
+
+		sets = append(sets, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	if len(sets) == 0 {
+		return sets, nil
+	}
+
+	index := make(map[int64]int, len(sets))
+	ids := make([]any, 0, len(sets))
+
+	for i, s := range sets {
+		index[s.ID] = i
+		ids = append(ids, s.ID)
+	}
+
+	identities, err := loadIdentities(ctx, q, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	for id, l := range identities {
+		sets[index[id]].Identities = l
+	}
+
+	return sets, nil
+}
+
+// SaveRegistration stores the registration and its bindings, in place of those it had. A registration without a set
+// is of the set that holds its identities, or else of a new set of its Identities, UserData and HSS.
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registration, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -90,10 +377,14 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 
 	defer func() { _ = tx.Rollback() }()
 
+	if r.SetID == 0 {
+		if r.SetID, err = setOf(ctx, tx, r); err != nil {
+			return Registration{}, fmt.Errorf("save registration: %w", err)
+		}
+	}
+
 	if r.ID == 0 {
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO registrations (impi, impu, user_data, hss_host, hss_realm) VALUES (?, ?, ?, ?, ?)`, r.IMPI, r.IMPU,
-			r.UserData, r.HSS.Host, r.HSS.Realm)
+		res, err := tx.ExecContext(ctx, `INSERT INTO registrations (impi, impu, set_id) VALUES (?, ?, ?)`, r.IMPI, r.IMPU, r.SetID)
 		if err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
@@ -102,9 +393,8 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
 	} else {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE registrations SET impu = ?, user_data = ?, hss_host = ?, hss_realm = ? WHERE id = ? AND impi = ?`, r.IMPU,
-			r.UserData, r.HSS.Host, r.HSS.Realm, r.ID, r.IMPI)
+		res, err := tx.ExecContext(ctx, `UPDATE registrations SET impu = ? WHERE id = ? AND impi = ? AND set_id = ?`,
+			r.IMPU, r.ID, r.IMPI, r.SetID)
 		if err != nil {
 			return Registration{}, fmt.Errorf("save registration: %w", err)
 		}
@@ -112,10 +402,6 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 		if err := checkAffected(res); err != nil {
 			return Registration{}, fmt.Errorf("save registration %d: %w", r.ID, err)
 		}
-	}
-
-	if err := saveIdentities(ctx, tx, r); err != nil {
-		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
 
 	r.Bindings = append([]Binding(nil), r.Bindings...)
@@ -145,26 +431,39 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 	return r, nil
 }
 
-func saveIdentities(ctx context.Context, tx *sql.Tx, r Registration) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM registration_identities WHERE registration_id = ?`, r.ID); err != nil {
-		return err
-	}
+// setOf is the set of a registration without one: the set that holds its identities, or else a new one.
+func setOf(ctx context.Context, tx *sql.Tx, r Registration) (int64, error) {
+	var found int64
 
-	for i, id := range r.Identities {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO registration_identities (registration_id, impi, position, uri, key, display_name, barred)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.IMPI, i, id.URI, id.Key, nullableString(id.DisplayName), id.Barred)
-		if isConstraint(err, sqlite3.ErrConstraintUnique) {
-			return fmt.Errorf("%s: %w", id.URI, ErrIdentityConflict)
+	for _, id := range r.Identities {
+		var setID int64
+
+		err := tx.QueryRowContext(ctx, `SELECT set_id FROM set_identities WHERE key = ?`, id.Key).Scan(&setID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
 
 		if err != nil {
-			return err
+			return 0, err
 		}
+
+		if found != 0 && found != setID {
+			return 0, ErrIdentityConflict
+		}
+
+		found = setID
 	}
 
-	return nil
+	if found != 0 {
+		return found, nil
+	}
+
+	saved, err := saveSet(ctx, tx, ImplicitSet{Identities: r.Identities, UserData: r.UserData, HSS: r.HSS})
+	if err != nil {
+		return 0, err
+	}
+
+	return saved.ID, nil
 }
 
 // saveBinding stores b over the registration's binding to the same contact: the same flow, or the same
@@ -191,15 +490,34 @@ func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Bindin
 	return id, err
 }
 
+// DeleteRegistration removes the registration, and its set when no other registration refers to it.
 func (d *DB) DeleteRegistration(ctx context.Context, id int64) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM registrations WHERE id = ?`, id)
+	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
 
-	if err := checkAffected(res); err != nil {
+	defer func() { _ = tx.Rollback() }()
+
+	var setID int64
+
+	err = tx.QueryRowContext(ctx, `DELETE FROM registrations WHERE id = ? RETURNING set_id`, id).Scan(&setID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+
+	if err != nil {
+		return fmt.Errorf("delete registration %d: %w", id, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM implicit_sets WHERE id = ? AND expires_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = ?)`, setID, setID); err != nil {
+		return fmt.Errorf("delete registration %d: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
 
@@ -210,9 +528,22 @@ func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) (_ []Regi
 	defer d.observe(poolWrite, &err)()
 
 	regs, err := queryRegistrations(ctx, d.conn,
-		`SELECT `+registrationColumns+` FROM registrations WHERE impi = ? ORDER BY id`, impi)
+		`SELECT `+registrationColumns+registrationFrom+` WHERE r.impi = ? ORDER BY r.id`, impi)
 	if err != nil {
 		return nil, fmt.Errorf("list registrations of %s: %w", impi, err)
+	}
+
+	return regs, nil
+}
+
+// ListRegistrationsBySet returns the registrations of the set, by every private identity.
+func (d *DB) ListRegistrationsBySet(ctx context.Context, setID int64) (_ []Registration, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	regs, err := queryRegistrations(ctx, d.conn,
+		`SELECT `+registrationColumns+registrationFrom+` WHERE r.set_id = ? ORDER BY r.id`, setID)
+	if err != nil {
+		return nil, fmt.Errorf("list registrations of set %d: %w", setID, err)
 	}
 
 	return regs, nil
@@ -222,8 +553,8 @@ func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) (_ []R
 	defer d.observe(poolWrite, &err)()
 
 	regs, err := queryRegistrations(ctx, d.conn,
-		`SELECT `+registrationColumns+` FROM registrations
-		WHERE id IN (SELECT registration_id FROM registration_identities WHERE key = ?) ORDER BY id`, key)
+		`SELECT `+registrationColumns+registrationFrom+`
+		WHERE r.set_id IN (SELECT set_id FROM set_identities WHERE key = ?) ORDER BY r.id`, key)
 	if err != nil {
 		return nil, fmt.Errorf("list registrations of %s: %w", key, err)
 	}
@@ -245,8 +576,8 @@ func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (
 	}
 
 	regs, err := queryRegistrations(ctx, d.conn,
-		`SELECT `+registrationColumns+` FROM registrations
-		WHERE id IN (SELECT registration_id FROM registration_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY id`,
+		`SELECT `+registrationColumns+registrationFrom+`
+		WHERE r.set_id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY r.id`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("list registrations of %d identities: %w", len(keys), err)
@@ -264,7 +595,7 @@ func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) (_ []Regi
 	}
 
 	regs, err := queryRegistrations(ctx, d.conn,
-		`SELECT `+registrationColumns+` FROM registrations ORDER BY id LIMIT ? OFFSET ?`, perPage, (page-1)*perPage)
+		`SELECT `+registrationColumns+registrationFrom+` ORDER BY r.id LIMIT ? OFFSET ?`, perPage, (page-1)*perPage)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list registrations: %w", err)
 	}
@@ -337,13 +668,24 @@ func queryRegistrations(ctx context.Context, q *sql.DB, query string, args ...an
 	index := make(map[int64]int, len(regs))
 	ids := make([]any, 0, len(regs))
 
+	var sets []any
+
 	for i, r := range regs {
 		index[r.ID] = i
 		ids = append(ids, r.ID)
+
+		if !slices.Contains(sets, any(r.SetID)) {
+			sets = append(sets, r.SetID)
+		}
 	}
 
-	if err := loadIdentities(ctx, q, regs, index, ids); err != nil {
+	identities, err := loadIdentities(ctx, q, sets)
+	if err != nil {
 		return nil, err
+	}
+
+	for i := range regs {
+		regs[i].Identities = slices.Clone(identities[regs[i].SetID])
 	}
 
 	if err := loadBindings(ctx, q, regs, index, ids); err != nil {
@@ -353,34 +695,35 @@ func queryRegistrations(ctx context.Context, q *sql.DB, query string, args ...an
 	return regs, nil
 }
 
-func loadIdentities(ctx context.Context, q *sql.DB, regs []Registration, index map[int64]int, ids []any) error {
+// loadIdentities returns the identities of the sets, by set.
+func loadIdentities(ctx context.Context, q *sql.DB, sets []any) (map[int64][]PublicIdentity, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT registration_id, uri, key, display_name, barred FROM registration_identities
-		WHERE registration_id IN (`+placeholders(len(ids))+`) ORDER BY registration_id, position`, ids...)
+		`SELECT set_id, uri, key, display_name, barred FROM set_identities
+		WHERE set_id IN (`+placeholders(len(sets))+`) ORDER BY set_id, position`, sets...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	defer func() { _ = rows.Close() }()
 
+	out := make(map[int64][]PublicIdentity, len(sets))
+
 	for rows.Next() {
 		var (
-			registrationID int64
-			identity       PublicIdentity
-			displayName    sql.NullString
+			setID       int64
+			identity    PublicIdentity
+			displayName sql.NullString
 		)
 
-		if err := rows.Scan(&registrationID, &identity.URI, &identity.Key, &displayName, &identity.Barred); err != nil {
-			return err
+		if err := rows.Scan(&setID, &identity.URI, &identity.Key, &displayName, &identity.Barred); err != nil {
+			return nil, err
 		}
 
 		identity.DisplayName = displayName.String
-
-		r := &regs[index[registrationID]]
-		r.Identities = append(r.Identities, identity)
+		out[setID] = append(out[setID], identity)
 	}
 
-	return rows.Err()
+	return out, rows.Err()
 }
 
 func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map[int64]int, ids []any) error {
@@ -420,7 +763,7 @@ func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map
 func scanRegistration(row scanner) (Registration, error) {
 	var r Registration
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.UserData, &r.HSS.Host, &r.HSS.Realm); err != nil {
+	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.SetID, &r.UserData, &r.HSS.Host, &r.HSS.Realm); err != nil {
 		return Registration{}, err
 	}
 

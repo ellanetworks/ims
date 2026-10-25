@@ -109,3 +109,28 @@ func TestPushProfileRegisterAS(t *testing.T) {
 		t.Fatal("UE not registered after the re-registration")
 	}
 }
+
+// TS 29.228 §6.6, TS 24.229 §5.4.1.8: an HSS that downloads the profile with every registration, in place of a push,
+// changes the registered set at the UE's next re-registration, a refresh without a challenge included.
+func TestReRegistrationProfile(t *testing.T) {
+	s := newScene(t)
+	u := s.newUE(false, testue.Config{T1: fastT1})
+
+	s.subscribed(u)
+
+	s.hss.OverrideUserData(true)
+	s.hss.Update(impi, func(sub *hsstest.Subscriber) {
+		sub.IMPUs = append(sub.IMPUs, cx.ProfileIdentity{Identity: bob})
+	})
+
+	if err := u.Reregister(s.ctx()); err != nil {
+		t.Fatal(err)
+	}
+
+	n := nextNotify(t, u)
+	if rs, c := n.contact(t, bob, ueAddrs[0].Addr()); rs != reginfo.Active || c.Event != reginfo.Created {
+		t.Fatalf("registration %s, contact %s; want bob active, created", rs, c.Event)
+	}
+
+	eventually(t, "the P-CSCF to associate bob", func() bool { return slices.Contains(s.associatedURIs(), bob) })
+}

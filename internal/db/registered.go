@@ -11,7 +11,7 @@ import (
 // the second argument matches: a part of the private identity or of one of the public identities, or all if empty.
 const registeredWhere = `FROM registrations r JOIN bindings b ON b.registration_id = r.id
 	WHERE b.expires_at > ? AND (? = '' OR r.impi LIKE ? ESCAPE '\' OR EXISTS (
-		SELECT 1 FROM registration_identities i WHERE i.registration_id = r.id AND i.uri LIKE ? ESCAPE '\'))`
+		SELECT 1 FROM set_identities i WHERE i.set_id = r.set_id AND i.uri LIKE ? ESCAPE '\'))`
 
 // ListRegisteredIMPIs returns a page of the private identities registered at now, in order, and their count. A
 // search matches a part of the private identity or of one of its public identities, and an empty one matches all.

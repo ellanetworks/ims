@@ -21,6 +21,7 @@ func TestRegistrationMetrics(t *testing.T) {
 
 	// A re-registration counts, a de-registration does not.
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)
 	h.hss.wantSAR(t, cx.AssignmentUserDeregistration)
 	wantRegistrations(t, h.cfg.RegistrationAttempts, map[string]float64{"accept": 2, "auth_failure": 0, "reject": 0})

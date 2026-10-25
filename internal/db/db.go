@@ -27,27 +27,34 @@ type DB struct {
 const maxReaders = 4
 
 var migrations = []string{
-	`CREATE TABLE registrations (
+	`CREATE TABLE implicit_sets (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_data BLOB NOT NULL,
+		hss_host TEXT NOT NULL,
+		hss_realm TEXT NOT NULL,
+		unregistered_identity TEXT,
+		wildcard TEXT,
+		expires_at INTEGER,
+		CHECK ((unregistered_identity IS NULL) = (expires_at IS NULL))
+	);
+	CREATE INDEX implicit_sets_expires_at ON implicit_sets (expires_at) WHERE expires_at IS NOT NULL;
+	CREATE TABLE set_identities (
+		set_id INTEGER NOT NULL REFERENCES implicit_sets (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		uri TEXT NOT NULL,
+		key TEXT NOT NULL UNIQUE,
+		display_name TEXT,
+		barred INTEGER NOT NULL CHECK (barred IN (0, 1)),
+		PRIMARY KEY (set_id, position)
+	);
+	CREATE TABLE registrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
 		impu TEXT NOT NULL,
-		user_data BLOB,
-		hss_host TEXT NOT NULL,
-		hss_realm TEXT NOT NULL
+		set_id INTEGER NOT NULL REFERENCES implicit_sets (id),
+		UNIQUE (impi, set_id)
 	);
-	CREATE INDEX registrations_impi ON registrations (impi);
-	CREATE TABLE registration_identities (
-		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
-		impi TEXT NOT NULL,
-		position INTEGER NOT NULL,
-		uri TEXT NOT NULL,
-		key TEXT NOT NULL,
-		display_name TEXT,
-		barred INTEGER NOT NULL CHECK (barred IN (0, 1)),
-		PRIMARY KEY (registration_id, position),
-		UNIQUE (impi, key)
-	);
-	CREATE INDEX registration_identities_key ON registration_identities (key);
+	CREATE INDEX registrations_set ON registrations (set_id);
 	CREATE TABLE bindings (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		registration_id INTEGER NOT NULL REFERENCES registrations (id) ON DELETE CASCADE,
@@ -203,19 +210,19 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		retention_days INTEGER NOT NULL
 	);
-	INSERT INTO call_record_settings VALUES (1, 90);`,
-	// The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain, and but what
-	// the server fixes to the defaults of the MCPTT settings package (the floor control timers but T2, a user's N2 and
-	// N6, a group's call rules and encodings, a member's priority and acknowledgement): an optional element absent
-	// from them is NULL, so that a later release's defaults apply; the domain of the organisation empty, the home
-	// domain's. A duration is in
-	// nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user deleted
-	// leaves its groups, and an implicit affiliation is of a member of the group, which goes with its membership. key is the identity as the MCPTT settings
-	// package's Key has it, by which a user or group is found. Its runtime state through the IMS, kept across
-	// restarts: the bindings of service authorisation, a client at one IMPU at a time, and the affiliations of the
-	// clients. They are keyed by identity, not by row of users: the server reconciles them with the settings when it
-	// restores them. Their times are Unix milliseconds.
-	`CREATE TABLE mcptt_service_configuration (
+	INSERT INTO call_record_settings VALUES (1, 90);
+	-- The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain, and but what
+	-- the server fixes to the defaults of the MCPTT settings package (the floor control timers but T2, a user's N2 and
+	-- N6, a group's call rules and encodings, a member's priority and acknowledgement): an optional element absent
+	-- from them is NULL, so that a later release's defaults apply; the domain of the organisation empty, the home
+	-- domain's. A duration is in
+	-- nanoseconds, of a column named _ns. Members and implicit affiliations reference rows by id: a user deleted
+	-- leaves its groups, and an implicit affiliation is of a member of the group, which goes with its membership. key is the identity as the MCPTT settings
+	-- package's Key has it, by which a user or group is found. Its runtime state through the IMS, kept across
+	-- restarts: the bindings of service authorisation, a client at one IMPU at a time, and the affiliations of the
+	-- clients. They are keyed by identity, not by row of users: the server reconciles them with the settings when it
+	-- restores them. Their times are Unix milliseconds.
+	CREATE TABLE mcptt_service_configuration (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		domain TEXT NOT NULL,
 		time_limit_ns INTEGER

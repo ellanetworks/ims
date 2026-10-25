@@ -65,6 +65,7 @@ func TestReauthenticate(t *testing.T) {
 	}
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(nonce, testVector.XRES), expires: "3600"}), 200)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	h.hss.noCx(t)
 }
 

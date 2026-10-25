@@ -193,7 +193,7 @@ func TestContactQ(t *testing.T) {
 }
 
 // registered_with lists the other private identities a request to a public identity reaches, as the S-CSCF routes
-// it: those with a live contact, and none at all when one of them bars the identity.
+// it: those with a live contact, and none at all when the set bars the identity.
 func TestRegisteredWith(t *testing.T) {
 	d, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
 	if err != nil {
@@ -223,7 +223,7 @@ func TestRegisteredWith(t *testing.T) {
 	save("phone", "tel:+15551230001", false, live)
 	save("watch", "tel:+15551230001", false, live)
 	save("stale", "tel:+15551230001", false, gone)
-	save("desk", "tel:+15551230002", false, live)
+	save("desk", "tel:+15551230002", true, live)
 	save("barring", "tel:+15551230002", true, live)
 
 	set := func(ids ...api.RegisteredIdentity) []api.ImplicitRegistrationSet {

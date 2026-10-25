@@ -887,7 +887,7 @@ func TestNotifyBody(t *testing.T) {
 	h.clock.Advance(time.Minute)
 
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), contact: contact}), 200)
-	h.hss.noCx(t)
+	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 
 	n := s.recvNotify()
 	wantState(t, n, "active;expires=540", 1)

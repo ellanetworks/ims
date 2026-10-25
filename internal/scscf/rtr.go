@@ -18,6 +18,9 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 
 	defer done()
 
+	ctx, cancel := context.WithTimeout(ctx, CxLockTimeout)
+	defer cancel()
+
 	impis := []string{rtr.PrivateIdentity}
 
 	for _, impi := range rtr.AssociatedIdentities {
@@ -33,7 +36,7 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 
 	// The unregistered profiles of the identities, or of the subscription, go as well (TS 29.228 §6.1.3).
 	for _, impi := range impis {
-		r.dropUnregistered(impi, rtr.PublicIdentities)
+		r.dropUnregistered(ctx, impi, rtr.PublicIdentities)
 	}
 
 	var out []*outgoing
