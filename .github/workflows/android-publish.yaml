@@ -1,0 +1,39 @@
+name: Android Publish
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: mcptt-edge
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: ella-mcptt-apk
+          path: dist
+      # The APK of each build of main replaces the last at a fixed URL:
+      # https://github.com/<repo>/releases/download/mcptt-edge/ella-mcptt.apk
+      - name: Publish the APK
+        run: |
+          version="$(cat version/VERSION)+${{ github.run_number }}"
+          cp dist/*.apk ella-mcptt.apk
+          sha256sum ella-mcptt.apk > ella-mcptt.apk.sha256
+          notes="Ella MCPTT $version, built from ${GITHUB_SHA}. Signing certificate SHA-1: $(grep -v '^#' android/release-cert.sha1)."
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --prerelease --title "Ella MCPTT (edge)" --notes "$notes"
+          else
+            gh release create "$TAG" --prerelease --title "Ella MCPTT (edge)" --notes "$notes"
+          fi
+          gh release upload "$TAG" ella-mcptt.apk ella-mcptt.apk.sha256 --clobber

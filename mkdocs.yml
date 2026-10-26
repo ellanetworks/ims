@@ -1,0 +1,113 @@
+site_name: Ella IMS Documentation
+site_description: An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+site_url: https://ellanetworks.github.io/ims/
+docs_dir: docs
+theme:
+  name: material
+  logo: images/logo-mark.svg
+  favicon: images/favicon.svg
+  palette:
+    primary: custom
+  font:
+    text: Source Code Pro
+  features:
+    - navigation.sections
+    - navigation.footer
+    - navigation.indexes
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+  custom_dir: docs/overrides
+extra_css:
+  - stylesheets/extra.css
+repo_url: https://github.com/ellanetworks/ims
+repo_name: ellanetworks/ims
+copyright: Copyright &copy; 2026 Ella Networks
+extra:
+  generator: false
+  social:
+  - icon: fontawesome/solid/globe
+    link: https://www.ellanetworks.com
+    name: Ella Networks website
+  - icon: fontawesome/brands/youtube
+    link: https://www.youtube.com/@ellanetworks
+    name: Ella Networks on YouTube
+  - icon: fontawesome/brands/linkedin
+    link: https://www.linkedin.com/company/ellanetworks
+    name: Ella Networks on LinkedIn
+  - icon: fontawesome/brands/github
+    link: https://www.github.com/ellanetworks/ims
+    name: Ella Networks on GitHub
+markdown_extensions:
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.blocks.caption
+  - tables
+  - toc:
+      permalink: true
+nav:
+  - Home: index.md
+  - Tutorials:
+    - tutorials/index.md
+    - Make Your First Voice Call: tutorials/first_voice_call.md
+  - How-to Guides:
+    - how_to/index.md
+    - Install: how_to/install.md
+    - Integrate with Ella Core: how_to/integrate_with_ella_core.md
+    - Integrate with an Application Server: how_to/integrate_with_application_server.md
+    - Install the Android MCPTT App: how_to/install_android_app.md
+    - Enable Push-to-Talk: how_to/enable_push_to_talk.md
+  - Reference:
+    - reference/index.md
+    - API:
+      - reference/api/index.md
+      - Operator: reference/api/operator.md
+      - Diameter: reference/api/diameter.md
+      - Policy: reference/api/policy.md
+      - SIP: reference/api/sip.md
+      - Registrations: reference/api/registrations.md
+      - Call Records: reference/api/call_records.md
+      - MCPTT Service Configuration: reference/api/mcptt_service_configuration.md
+      - MCPTT Users: reference/api/mcptt_users.md
+      - MCPTT Groups: reference/api/mcptt_groups.md
+      - MCPTT Live State: reference/api/mcptt_live_state.md
+      - Status: reference/api/status.md
+      - Metrics: reference/api/metrics.md
+    - Configuration File: reference/config_file.md
+    - Metrics: reference/metrics.md
+    - Connectivity: reference/connectivity.md
+    - Supported Mobile Equipment: reference/supported_mobile_equipment.md
+  - Explanation:
+    - explanation/index.md
+    - Architecture: explanation/architecture.md
+    - Security: explanation/security.md
+    - Push-to-Talk: explanation/push_to_talk.md
+plugins:
+  - search
+  - glightbox
+  - social:
+      cards_layout_options:
+        background_color: "#26374a"
+  - llmstxt:
+      markdown_description: An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+      full_output: llms-full.txt
+      sections:
+        Home:
+          - index.md
+        Tutorials:
+          - tutorials/*.md
+        How-to Guides:
+          - how_to/*.md
+        Reference:
+          - reference/*.md
+          - reference/api/*.md
+        Explanation:
+          - explanation/*.md
