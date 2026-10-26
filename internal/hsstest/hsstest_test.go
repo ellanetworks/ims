@@ -505,6 +505,19 @@ func TestPCSCFRestoration(t *testing.T) {
 	if s := c.state(); s.State != Unregistered || s.ServerName != scscfName {
 		t.Fatalf("subscriber = %+v, want unregistered at %s", s, scscfName)
 	}
+
+	// TS 29.228 §6.1.2.1: the restoration of a user that another S-CSCF has is not refused, and leaves it there.
+	const other = "sip:other-scscf." + realm
+
+	c.hss.Update(impi, func(s *Subscriber) { s.State, s.ServerName = Registered, other })
+
+	if _, err = c.sarWith(restoration); err != nil {
+		t.Fatalf("SAR of another S-CSCF's user: %v", err)
+	}
+
+	if s := c.state(); s.State != Unregistered || s.ServerName != other {
+		t.Fatalf("subscriber = %+v, want unregistered at %s", s, other)
+	}
 }
 
 func TestDeregistrationStoringTheServerName(t *testing.T) {

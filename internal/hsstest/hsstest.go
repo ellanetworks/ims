@@ -594,14 +594,17 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	switch sar.Type {
 	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
-		if other {
+		// TS 29.228 §6.1.2.1: the restoration of another S-CSCF's user is not refused, and does not take the user.
+		switch {
+		case other && !restoring:
 			return must(cx.NewServerAssignmentErrorAnswer(req, id, cx.ServerAssignmentError{
 				ResultError: cx.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorIdentityAlreadyRegistered)},
 				ServerName:  s.ServerName,
 			}))
+		case !other:
+			s.ServerName, s.ReassignPending = sar.ServerName, false
 		}
 
-		s.ServerName, s.ReassignPending = sar.ServerName, false
 		s.State, userData = Registered, !sar.UserDataAlreadyAvailable || h.db.override
 
 		if sar.Type == cx.AssignmentUnregisteredUser {

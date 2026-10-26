@@ -51,11 +51,11 @@ type SessionConfig struct {
 	// zero is DefaultGroupNoAnswer.
 	GroupNoAnswer time.Duration
 
-	// PCSCF, when set, reports, for the Path of a binding, whether its first hop is the P-CSCF next to the S-CSCF, and
-	// whether that P-CSCF has the registration flow: a 404 (Not Found) to a request toward a flow it has is the UE's,
-	// which does not start the P-CSCF restoration. Without it, or for another P-CSCF, every 404 does (TS 24.229
-	// §5.4.3.3).
-	PCSCF func(path string) (held, ours bool)
+	// PCSCF, when set, reports whether the first hop of the Path of a binding is the P-CSCF next to the S-CSCF, which
+	// gives itself as the Response-Source of its 404 (Not Found) for no binding: a 404 through it without one is the
+	// UE's, which does not start the P-CSCF restoration. Through another P-CSCF, a 404 without a Response-Source does
+	// (TS 24.229 §5.4.3.3).
+	PCSCF func(path string) bool
 }
 
 type Sessions struct {
@@ -765,7 +765,7 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(pr
 // restoration when the UE has no other (TS 24.229 §5.4.3.3, TS 23.380 §5.4.1).
 func (s *Sessions) pcscfFailure(t target, next func(proxy.Reply) proxy.Verdict) func(proxy.Reply) proxy.Verdict {
 	return func(r proxy.Reply) proxy.Verdict {
-		if res := r.Response; res != nil && res.StatusCode == 404 && s.noBinding(t.binding.Contact.Path) {
+		if res := r.Response; res != nil && res.StatusCode == 404 && s.pcscfNotFound(t.binding.Contact.Path, res) {
 			s.log.Info("the P-CSCF has no binding for the contact", slog.String("impi", t.reg.IMPI),
 				slog.String("contact", t.binding.Contact.URI))
 
@@ -778,20 +778,20 @@ func (s *Sessions) pcscfFailure(t target, next func(proxy.Reply) proxy.Verdict) 
 	}
 }
 
-// noBinding reports whether a 404 (Not Found) toward a binding with the Path is the P-CSCF's. A binding without a
-// Path has no P-CSCF.
-func (s *Sessions) noBinding(path string) bool {
+// pcscfNotFound reports whether a 404 (Not Found) toward a binding with the Path is the P-CSCF's, for no binding. A
+// binding without a Path has no P-CSCF. The Response-Source of the 404 tells the P-CSCF from the UE (TS 24.229
+// §7.2.17.5); without one, the 404 is the P-CSCF's (§5.4.3.3), unless the P-CSCF is the one next to the S-CSCF, which
+// gives it.
+func (s *Sessions) pcscfNotFound(path string, res *sip.Response) bool {
 	if path == "" {
 		return false
 	}
 
-	if s.cfg.PCSCF == nil {
-		return true
+	if src, ok, err := res.Header.ResponseSource(); ok && err == nil {
+		return src.FunctionalEntity() == sip.EntityPCSCF
 	}
 
-	held, ours := s.cfg.PCSCF(path)
-
-	return !ours || !held
+	return s.cfg.PCSCF == nil || !s.cfg.PCSCF(path)
 }
 
 // dialogCreating reports a method whose initial request creates a dialog (RFC 3261 §12, RFC 6665 §4.1, RFC 3515 §2.4.4).

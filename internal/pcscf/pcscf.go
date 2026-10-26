@@ -158,18 +158,12 @@ func (p *PCSCF) secured(r *db.PCSCFRegistration) bool {
 	return p.sas != nil && p.sas.hasSets(regKeyOf(r))
 }
 
-// HoldsFlow reports, for the Path of a binding at the S-CSCF, whether its first hop is this P-CSCF, and whether the
-// P-CSCF has the registration flow it names: a 404 (Not Found) to an initial request toward a flow it does not have
-// is the P-CSCF's, of no binding (TS 24.229 §5.2.6.4.1); toward a flow it has, the UE's.
-func (p *PCSCF) HoldsFlow(path string) (held, ours bool) {
+// OnPath reports whether the first hop of the Path of a binding at the S-CSCF is this P-CSCF, which gives itself as
+// the Response-Source of its 404 (Not Found) for no binding (TS 24.229 §5.2.6.4.1, §7.2.17.5).
+func (p *PCSCF) OnPath(path string) bool {
 	hops, err := sip.ParseAddressList(path)
-	if err != nil || len(hops) == 0 || !p.cfg.Proxy.IsLocal(hops[0].URI) {
-		return false, false
-	}
 
-	_, held = p.regs.flow(hops[0].URI.User)
-
-	return held, true
+	return err == nil && len(hops) > 0 && p.cfg.Proxy.IsLocal(hops[0].URI)
 }
 
 // Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,

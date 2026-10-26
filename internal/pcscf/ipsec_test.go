@@ -994,11 +994,19 @@ func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
 	}
 
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", "sip:"+token+"@"+s.pcscf.String()+";lr", nil))
-	wantStatus(t, finalResponse(t, s.scscf), 404)
+	wantPCSCFNotFound(t, finalResponse(t, s.scscf))
 	u.us.RecvNone(quiet)
+}
 
-	if held, ours := s.p.HoldsFlow("<sip:" + token + "@" + s.pcscf.String() + ";lr;ob>"); held || !ours {
-		t.Fatalf("HoldsFlow = %v, %v; want the P-CSCF's, not held", held, ours)
+// wantPCSCFNotFound checks that the response is the P-CSCF's 404 (Not Found) for no binding, with the P-CSCF as its
+// Response-Source (TS 24.229 §5.2.6.4.1, §7.2.17.5).
+func wantPCSCFNotFound(t *testing.T, res *sip.Response) {
+	t.Helper()
+
+	wantStatus(t, res, 404)
+
+	if src, ok, err := res.Header.ResponseSource(); !ok || err != nil || src.Entity != "p-cscf.term" {
+		t.Fatalf("Response-Source = %+v, %v, %v; want the P-CSCF, terminating", src, ok, err)
 	}
 }
 
@@ -1035,21 +1043,21 @@ func TestUnknownFlow(t *testing.T) {
 	path := "sip:nosuchflow@" + s.pcscf.String() + ";lr"
 
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", path, nil))
-	wantStatus(t, finalResponse(t, s.scscf), 404)
+	wantPCSCFNotFound(t, finalResponse(t, s.scscf))
 
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "INVITE", path, func(r *sip.Request) {
 		r.URI = sip.URI{Scheme: "sip", User: "other", Host: "127.0.0.9", Port: 5060}
 	}))
-	wantStatus(t, finalResponse(t, s.scscf), 404)
+	wantPCSCFNotFound(t, finalResponse(t, s.scscf))
 
-	for path, want := range map[string][2]bool{
-		"<" + path + ";ob>": {false, true},
-		"<sip:" + token + "@" + s.pcscf.String() + ";lr;ob>": {true, true},
-		"<sip:" + token + "@192.0.2.1:5060;lr;ob>":           {false, false},
-		"": {false, false},
+	for path, want := range map[string]bool{
+		"<" + path + ";ob>": true,
+		"<sip:" + token + "@" + s.pcscf.String() + ";lr;ob>": true,
+		"<sip:" + token + "@192.0.2.1:5060;lr;ob>":           false,
+		"": false,
 	} {
-		if held, ours := s.p.HoldsFlow(path); held != want[0] || ours != want[1] {
-			t.Errorf("HoldsFlow(%q) = %v, %v; want %v", path, held, ours, want)
+		if got := s.p.OnPath(path); got != want {
+			t.Errorf("OnPath(%q) = %v, want %v", path, got, want)
 		}
 	}
 

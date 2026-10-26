@@ -376,7 +376,7 @@ type harness struct {
 	icscf      *siptest.Socket
 	dns        *fakeDNS
 	numbering  Numbering
-	holdsFlow  func(path string) (held, ours bool)
+	onPath     func(path string) bool
 	sessions   *Sessions
 	sipProxy   *proxy.Proxy
 	scscfLayer *transaction.Layer
@@ -485,7 +485,7 @@ func (h *harness) start() {
 	h.sipProxy = proxy.New(proxy.Config{Layer: h.scscfLayer, Logger: h.cfg.Logger, Port: h.scscf.Port(), Clock: h.sipClock})
 	h.sessions = h.reg.Sessions(SessionConfig{
 		Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: func() Numbering { return h.numbering },
-		PCSCF: h.holdsFlow,
+		PCSCF: h.onPath,
 	})
 	h.pcscf.sessions.Store(h.sessions)
 

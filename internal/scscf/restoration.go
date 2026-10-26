@@ -107,9 +107,10 @@ func (r *Registrar) restorePCSCF(ctx context.Context, st *state, reg db.Registra
 		t = assignAdministrative
 	}
 
+	// The request makes use of the feature: its Supported-Features has the M bit (TS 29.229 §7.2.1).
 	_, from, err := r.serverAssignmentOf(ctx, reg.HSS, cx.ServerAssignmentRequest{
 		PrivateIdentity: reg.IMPI, PublicIdentities: []string{reg.IMPU}, Type: t, UserDataAlreadyAvailable: true,
-		PCSCFRestoration: true,
+		PCSCFRestoration: true, FeaturesRequired: true,
 	})
 	if err != nil {
 		r.log.Warn("the HSS did not start the P-CSCF restoration", slog.String("impi", reg.IMPI),
