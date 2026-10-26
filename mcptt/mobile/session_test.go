@@ -161,22 +161,43 @@ func restartableServer(t *testing.T) (netip.AddrPort, func()) {
 	return addr, restart
 }
 
-// serverPorts are the server's SIP address and the port of its control channels, free ports of loopback.
+// serverPorts are the server's SIP address and the port of its control channels, free ports of loopback: the SIP port
+// free of TCP as of UDP (the server listens on both), the two distinct, all held until both chosen.
 func serverPorts(t *testing.T) (netip.AddrPort, int) {
 	t.Helper()
 
-	free := func() int {
-		l, err := new(net.ListenConfig).ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+	lc := new(net.ListenConfig)
+
+	var addr netip.AddrPort
+
+	for addr.Port() == 0 {
+		tl, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		defer func() { _ = l.Close() }()
+		defer func() { _ = tl.Close() }()
 
-		return l.LocalAddr().(*net.UDPAddr).Port
+		p := tl.Addr().(*net.TCPAddr).AddrPort()
+
+		ul, err := lc.ListenPacket(t.Context(), "udp", p.String())
+		if err != nil {
+			continue // the UDP port taken; another, the TCP one held so as not to get it again
+		}
+
+		defer func() { _ = ul.Close() }()
+
+		addr = p
 	}
 
-	return netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(free())), free()
+	control, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = control.Close() }()
+
+	return addr, control.LocalAddr().(*net.UDPAddr).Port
 }
 
 // exampleSettings are alice, bob and carol, members of fire, affiliated to it on registration.
