@@ -779,7 +779,7 @@ func (s *scene) restartIMS(lose bool) {
 // restoration, which has the UE register again (TS 24.229 §5.2.6.4.1, §5.4.3.3, TS 23.380 §5.4.2.1).
 func TestCallAfterARestart(t *testing.T) {
 	sc := newScene(t)
-	sc.hss.SupportRestoration(hsstest.Restoring)
+	sc.hss.SupportRestoration(true)
 	sc.caller(0, false, testue.Config{Transport: sip.UDP})
 	b := sc.caller(1, false, testue.Config{Transport: sip.UDP})
 

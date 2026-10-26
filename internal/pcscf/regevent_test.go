@@ -904,9 +904,9 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		unknown[i] = strings.Replace(e, token+"@", "nosuchflow@", 1)
 	}
 
-	// RFC 5626 §5.3.1: a flow token the P-CSCF does not know names a flow that no longer exists.
+	// TS 24.229 §5.2.6.4.1: a flow token the P-CSCF does not know is no binding.
 	d.notify(t, s, 2, unknown)
-	wantStatus(t, first(s.scscf.RecvResponse()), 430)
+	wantPCSCFNotFound(t, first(s.scscf.RecvResponse()))
 	u.us.RecvNone(quiet)
 }
 

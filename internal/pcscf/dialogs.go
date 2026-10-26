@@ -268,24 +268,18 @@ func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
-	// An initial request toward a registration flow the P-CSCF has no binding for, as one lost in a restart, gets a
-	// 404 (Not Found), with the P-CSCF as its Response-Source, which tells it from a 404 of the UE: the S-CSCF tries
-	// the UE's other flows, answers 480 (Temporarily Unavailable) upstream when none is left, and starts the HSS based
-	// P-CSCF restoration, so that the UE registers again (TS 24.229 §4.14.2, §5.2.6.4.1, §5.4.3.3, §7.2.17.5). A
-	// request within a dialog, and one toward a binding whose flow is gone, get the 430 of RFC 5626 §5.3.1, so that
-	// the S-CSCF can try the UE's other flows (RFC 5626 §7). §5.2.6.4.1 has the 404 for any request, but the S-CSCF
-	// starts the restoration on initial requests only (§5.4.3.3), and a 404 within a dialog would tell the peer that
-	// the user does not exist.
+	// A request toward a registration flow the P-CSCF has no binding for, as one lost in a restart, gets a 404 (Not
+	// Found), with the P-CSCF as its Response-Source, which tells it from a 404 of the UE (TS 24.229 §5.2.6.4.1,
+	// §7.2.17.5). To an initial request, the S-CSCF tries the UE's other flows, answers 480 (Temporarily Unavailable)
+	// upstream when none is left, and starts the HSS based P-CSCF restoration, so that the UE registers again
+	// (§4.14.2, §5.4.3.3); within a dialog, the 404 ends the dialog (RFC 5057 §5.1). A request toward a binding whose
+	// flow is gone gets the 430 of RFC 5626 §5.3.1, so that the S-CSCF can try the UE's other flows (RFC 5626 §7).
 	f, ok := p.regs.flow(flowToken(removed))
 	if !ok {
-		if to, err := req.Header.To(); err == nil && to.Tag() == "" {
-			res := sip.NewResponse(req, 404, "")
-			res.Header.Set("Response-Source", sip.ResponseSource{Entity: sip.EntityPCSCF + "." + sip.SideTerm}.String())
+		res := sip.NewResponse(req, 404, "")
+		res.Header.Set("Response-Source", sip.ResponseSource{Entity: sip.EntityPCSCF + "." + sip.SideTerm}.String())
 
-			return proxy.Target{}, res
-		}
-
-		return proxy.Target{}, sip.NewResponse(req, 430, "")
+		return proxy.Target{}, res
 	}
 
 	to, ok := p.ueFlow(f)

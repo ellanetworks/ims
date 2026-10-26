@@ -486,16 +486,7 @@ func TestPCSCFRestoration(t *testing.T) {
 		t.Fatalf("SAA = %+v, %v, want no P-CSCF restoration feature", saa, err)
 	}
 
-	c.hss.SupportRestoration(NoRestoringNode)
-
-	_, err = c.sarWith(restoration)
-	wantExperimental(t, err, tgpp.ResultErrorServingNodeFeatureUnsupported)
-
-	if s := c.state(); s.State != Registered {
-		t.Fatalf("subscriber = %+v, want registered still", s)
-	}
-
-	c.hss.SupportRestoration(Restoring)
+	c.hss.SupportRestoration(true)
 
 	saa, err = c.sarWith(restoration)
 	if err != nil || saa.UserData != nil || saa.Features&cx.FeaturePCSCFRestoration == 0 {
@@ -504,19 +495,6 @@ func TestPCSCFRestoration(t *testing.T) {
 
 	if s := c.state(); s.State != Unregistered || s.ServerName != scscfName {
 		t.Fatalf("subscriber = %+v, want unregistered at %s", s, scscfName)
-	}
-
-	// TS 29.228 §6.1.2.1: the restoration of a user that another S-CSCF has is not refused, and leaves it there.
-	const other = "sip:other-scscf." + realm
-
-	c.hss.Update(impi, func(s *Subscriber) { s.State, s.ServerName = Registered, other })
-
-	if _, err = c.sarWith(restoration); err != nil {
-		t.Fatalf("SAR of another S-CSCF's user: %v", err)
-	}
-
-	if s := c.state(); s.State != Unregistered || s.ServerName != other {
-		t.Fatalf("subscriber = %+v, want unregistered at %s", s, other)
 	}
 }
 

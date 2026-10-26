@@ -211,7 +211,8 @@ type store struct {
 	// (TS 29.228 §6.6).
 	override bool
 
-	restoration Restoration
+	// restoration has the HSS support the HSS based P-CSCF restoration (TS 23.380 §5.4).
+	restoration bool
 }
 
 // OverrideUserData has the HSS download the user profile in every SAA of a registration, or not.
@@ -222,25 +223,13 @@ func (h *HSS) OverrideUserData(on bool) {
 	h.db.override = on
 }
 
-// Restoration is the HSS's support of the HSS based P-CSCF restoration (TS 23.380 §5.4).
-type Restoration int
-
-const (
-	// NoRestoration is an HSS without the P-CSCF-Restoration-mechanism feature (TS 29.229 Table 7.1.1).
-	NoRestoration Restoration = iota
-	// Restoring is an HSS with the feature, and a serving node of the user that supports it.
-	Restoring
-	// NoRestoringNode is an HSS with the feature, but no serving node of the user that supports it: a SAR asking for
-	// the restoration gets DIAMETER_ERROR_SERVING_NODE_FEATURE_UNSUPPORTED (TS 29.228 §6.1.2.1, TS 29.229 §6.2.2.12).
-	NoRestoringNode
-)
-
-// SupportRestoration sets the HSS's support of the P-CSCF restoration.
-func (h *HSS) SupportRestoration(r Restoration) {
+// SupportRestoration has the HSS advertise the P-CSCF-Restoration-mechanism feature (TS 29.229 Table 7.1.1), and
+// take the P-CSCF restoration indication, or not.
+func (h *HSS) SupportRestoration(on bool) {
 	h.db.mu.Lock()
 	defer h.db.mu.Unlock()
 
-	h.db.restoration = r
+	h.db.restoration = on
 }
 
 func New(t testing.TB, cfg Config) *HSS {
@@ -580,7 +569,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 	userData := false
 
 	var features cx.Features
-	if h.db.restoration != NoRestoration {
+	if h.db.restoration {
 		features = cx.FeaturePCSCFRestoration
 	}
 
@@ -588,23 +577,16 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 	restoring := sar.PCSCFRestoration && features != 0 &&
 		(sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentAdministrativeDeregistration)
 
-	if restoring && h.db.restoration == NoRestoringNode {
-		return cx.NewAnswer(req, id, tgpp.Experimental(tgpp.ResultErrorServingNodeFeatureUnsupported), features)
-	}
-
 	switch sar.Type {
 	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
-		// TS 29.228 §6.1.2.1: the restoration of another S-CSCF's user is not refused, and does not take the user.
-		switch {
-		case other && !restoring:
+		if other {
 			return must(cx.NewServerAssignmentErrorAnswer(req, id, cx.ServerAssignmentError{
 				ResultError: cx.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorIdentityAlreadyRegistered)},
 				ServerName:  s.ServerName,
 			}))
-		case !other:
-			s.ServerName, s.ReassignPending = sar.ServerName, false
 		}
 
+		s.ServerName, s.ReassignPending = sar.ServerName, false
 		s.State, userData = Registered, !sar.UserDataAlreadyAvailable || h.db.override
 
 		if sar.Type == cx.AssignmentUnregisteredUser {

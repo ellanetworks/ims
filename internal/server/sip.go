@@ -293,7 +293,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Numbering: numbering,
 
 			GroupNoAnswer: tm.groupNoAnswer,
-			PCSCF:         pc.OnPath,
 		}),
 		fallback: ph,
 	})

@@ -121,43 +121,23 @@ func TestPCSCFRestorationNoServingNode(t *testing.T) {
 	}
 }
 
-// A 404 of the UE is relayed, and starts no restoration: one through the P-CSCF next to the S-CSCF, which gives the
-// Response-Source of its own, and one that another entity gives as its Response-Source (TS 24.229 §7.2.17.5).
+// A 404 (Not Found) of the UE is relayed, and starts no restoration: one without a Response-Source, and one that
+// another entity gives as its Response-Source (TS 24.229 §7.2.17.5).
 func TestPCSCFRestorationNotForTheUE(t *testing.T) {
-	for name, tc := range map[string]struct {
-		onPath bool
-		fields []sip.Field
-	}{
-		"through the P-CSCF next to the S-CSCF": {onPath: true},
-		"with the UE as Response-Source":        {fields: []sip.Field{{Name: "Response-Source", Value: "fe=<urn:3gpp:fe:ue>"}}},
+	for name, fields := range map[string][]sip.Field{
+		"without a Response-Source":      nil,
+		"with the UE as Response-Source": {{Name: "Response-Source", Value: "fe=<urn:3gpp:fe:ue>"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sh := newSessionHarnessWith(t, func(h *harness) {
-				h.hss.set(func(f *fakeHSS) { f.features = cx.FeaturePCSCFRestoration })
-				h.onPath = func(string) bool { return tc.onPath }
-				h.restart()
-			})
+			sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
 
-			sh.hss.wantSAR(t, cx.AssignmentRegistration)
-
-			wantStatus(t, sh.notFound(t, tc.fields...), 404)
+			wantStatus(t, sh.notFound(t, fields...), 404)
 			sh.hss.noCx(t)
 
 			if regs := sh.registrations(testIMPI); len(regs) != 1 {
 				t.Fatalf("registrations = %+v, want the registration kept", regs)
 			}
 		})
-	}
-}
-
-// TS 24.229 §5.4.3.3: through a P-CSCF that gives no Response-Source, every 404 (Not Found) is the P-CSCF's.
-func TestPCSCFRestorationWithoutResponseSource(t *testing.T) {
-	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
-
-	wantStatus(t, sh.notFound(t), 480)
-
-	if sar := sh.hss.wantSAR(t, cx.AssignmentUnregisteredUser); !sar.PCSCFRestoration {
-		t.Fatalf("SAR = %+v, want the restoration indication", sar)
 	}
 }
 

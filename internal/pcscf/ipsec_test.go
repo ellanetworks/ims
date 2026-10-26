@@ -1033,12 +1033,12 @@ func TestRestoreKeepsTheRegistrationsOfKeptSets(t *testing.T) {
 	}
 }
 
-// An initial request toward a flow token the P-CSCF does not know gets the 404 (Not Found) of no binding (TS 24.229
-// §5.2.6.4.1), whatever the Request-URI: a registered contact, or one that no registered contact matches. A request
-// within a dialog, toward a remote target such as a GRUU, gets the 430 of a failed flow (RFC 5626 §5.3.1).
+// A request toward a flow token the P-CSCF does not know gets the 404 (Not Found) of no binding (TS 24.229
+// §5.2.6.4.1), whatever the Request-URI: a registered contact, one that no registered contact matches, or, within a
+// dialog, a remote target such as a GRUU.
 func TestUnknownFlow(t *testing.T) {
 	s, u := newIPsecRegScene(t)
-	token, _ := s.registerOverIPsec(u)
+	s.registerOverIPsec(u)
 
 	path := "sip:nosuchflow@" + s.pcscf.String() + ";lr"
 
@@ -1050,24 +1050,13 @@ func TestUnknownFlow(t *testing.T) {
 	}))
 	wantPCSCFNotFound(t, finalResponse(t, s.scscf))
 
-	for path, want := range map[string]bool{
-		"<" + path + ";ob>": true,
-		"<sip:" + token + "@" + s.pcscf.String() + ";lr;ob>": true,
-		"<sip:" + token + "@192.0.2.1:5060;lr;ob>":           false,
-		"": false,
-	} {
-		if got := s.p.OnPath(path); got != want {
-			t.Errorf("OnPath(%q) = %v, want %v", path, got, want)
-		}
-	}
-
 	s.scscf.Send(sip.UDP, s.pcscf, s.coreRequest(u, "BYE", path, func(r *sip.Request) {
 		r.URI = sip.URI{Scheme: "sip", User: "ue", Host: homeDomain}
 		r.URI.Params.Set("gr", "urn:uuid:00000000-0000-1000-8000-000000000001")
 		r.Header.Set("To", "<"+testIMPU+">;tag=callee")
 		r.Header.Del("Record-Route")
 	}))
-	wantStatus(t, finalResponse(t, s.scscf), 430)
+	wantPCSCFNotFound(t, finalResponse(t, s.scscf))
 	u.us.RecvNone(quiet)
 }
 
