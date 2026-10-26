@@ -8,7 +8,7 @@
 
 **Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application. It is designed to be easy to operate, reliable, and secure.
 
-[Get Started Now!](https://ellanetworks.github.io/ims/tutorials/)
+[Get Started Now!](https://docs.ellanetworks.com/ims/tutorials/)
 
 ## Key Features
 
@@ -27,7 +27,7 @@
 ## Quick Links
 
 - [Website](https://ellanetworks.com/)
-- [Documentation](https://ellanetworks.github.io/ims/)
+- [Documentation](https://docs.ellanetworks.com/ims/)
 - [Snap Store Listing](https://snapcraft.io/ella-ims)
 - [Ella Core](https://github.com/ellanetworks/core)
 - [Contributing](CONTRIBUTING.md)

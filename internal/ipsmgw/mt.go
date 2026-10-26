@@ -68,7 +68,7 @@ func (a *AS) RoutingInfo(ctx context.Context, id diameter.Identity, req *diamete
 		SMSFSupport: true,
 	})
 
-	reg, known := a.reg.byMSISDN(r.MSISDN)
+	reg, known := a.reg.byUser(r.MSISDN, routing.IMSI)
 
 	var re *s6c.ResultError
 
@@ -249,7 +249,7 @@ func (a *AS) ForwardShortMessage(ctx context.Context, id diameter.Identity, req 
 		if !last.ok && slices.ContainsFunc(outcomes, func(o outcome) bool {
 			return o.domain == domainIMS && o.tried && o.result.IsExperimental(tgpp.ResultErrorAbsentUser)
 		}) {
-			a.reg.unreachable(c.msisdn)
+			a.reg.unreachable(c.msisdn, c.imsi)
 		}
 	}
 
@@ -307,7 +307,7 @@ func (a *AS) attempt(ctx context.Context, c mtContext, m sgd.MTForwardShortMessa
 	}
 
 	if ims {
-		reg, ok := a.reg.availableFor(c.msisdn)
+		reg, ok := a.reg.availableFor(c.msisdn, c.imsi)
 
 		switch {
 		case !ok:

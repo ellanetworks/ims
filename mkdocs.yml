@@ -1,6 +1,6 @@
 site_name: Ella IMS Documentation
 site_description: An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
-site_url: https://ellanetworks.github.io/ims/
+site_url: https://docs.ellanetworks.com/ims/
 docs_dir: docs
 theme:
   name: material

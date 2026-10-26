@@ -282,6 +282,38 @@ func TestDeliveredOverIMS(t *testing.T) {
 	}
 }
 
+// A user registered of its IMSI, without an MSISDN in the service information, is found of the IMSI the HSS gives
+// (TS 24.341 §5.3.3.2, §5.3.3.3), and the short message goes over IMS.
+func TestDeliveredOverIMSOfIMSI(t *testing.T) {
+	w := newWorld(t, newFakeStore())
+	w.router.routing = mmeRouting()
+
+	impu := "sip:001010000000001@" + home
+	ue := "REGISTER sip:" + home + " SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1;branch=z9hG4bK-ue\r\n" +
+		"From: <" + impu + ">;tag=u\r\nTo: <" + impu + ">\r\nCall-ID: ue\r\nCSeq: 1 REGISTER\r\n" +
+		`Authorization: Digest username="001010000000001@` + home + `", realm="` + home + `", nonce="n", uri="sip:` +
+		home + `", response=""` + "\r\nContent-Length: 0\r\n\r\n"
+
+	w.register(impu, 600, "message/sip", ue)
+	w.notify(w.subscribed(), "active;expires=600", doc(0, impu, true))
+	w.hss.waitUpdates(t, update{impu: impu, number: "15550000100"})
+
+	routing, _ := s6c.ParseSendRoutingInfoForSMAnswer(w.routingInfo())
+	ans := w.forward(routing.IMSI, 30*time.Second)
+
+	req, data := w.delivered(202)
+	if req.URI.String() != impu {
+		t.Fatalf("MESSAGE to %s, want %s", req.URI, impu)
+	}
+
+	w.report(&sms.RPAck{Direction: nas.DirectionUplink, Reference: data.Reference, UserData: []byte{0x00, 0x00}},
+		req.Header.CallID())
+
+	if _, err := sgd.ParseMTForwardShortMessageAnswer(answerOf(t, ans)); err != nil || len(w.nodes.forwarded) != 0 {
+		t.Fatalf("TFA: %v, forwarded %+v", err, w.nodes.forwarded)
+	}
+}
+
 // A delivery report without In-Reply-To is of the short message of its reference to the sender.
 func TestDeliveryReportByReference(t *testing.T) {
 	w := newWorld(t, newFakeStore())

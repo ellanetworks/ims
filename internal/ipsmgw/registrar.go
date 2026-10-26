@@ -675,10 +675,11 @@ func (g *registrar) lookup(ids []sip.URI) (registration, bool) {
 	return registration{}, false
 }
 
-// byMSISDN is a copy of a registration of the MSISDN msisdn, if any: the IP-SM-GW has a public user identity of the
-// MSISDN (TS 24.341 §5.3.3.3). One that can receive short messages over IP comes first.
-func (g *registrar) byMSISDN(msisdn string) (registration, bool) {
-	if reg, ok := g.availableFor(msisdn); ok {
+// byUser is a copy of a registration of the MSISDN msisdn or of the IMSI imsi, if any: the IP-SM-GW has a public
+// user identity of the MSISDN (TS 24.341 §5.3.3.3), else of the IMSI it stored of a user of no MSISDN in the
+// <service-info> (§5.3.3.2). One that can receive short messages over IP comes first.
+func (g *registrar) byUser(msisdn, imsi string) (registration, bool) {
+	if reg, ok := g.availableFor(msisdn, imsi); ok {
 		return reg, true
 	}
 
@@ -686,7 +687,7 @@ func (g *registrar) byMSISDN(msisdn string) (registration, bool) {
 	defer g.mu.Unlock()
 
 	for _, reg := range g.regs {
-		if msisdn != "" && reg.msisdn == msisdn {
+		if reg.of(msisdn, imsi) {
 			return *reg, true
 		}
 	}
@@ -694,13 +695,14 @@ func (g *registrar) byMSISDN(msisdn string) (registration, bool) {
 	return registration{}, false
 }
 
-// availableFor is a copy of a registration of the MSISDN msisdn that can receive short messages over IP, if any.
-func (g *registrar) availableFor(msisdn string) (registration, bool) {
+// availableFor is a copy of a registration of the MSISDN msisdn or of the IMSI imsi that can receive short messages
+// over IP, if any.
+func (g *registrar) availableFor(msisdn, imsi string) (registration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	for _, reg := range g.regs {
-		if msisdn != "" && reg.msisdn == msisdn && reg.available {
+		if reg.of(msisdn, imsi) && reg.available {
 			return *reg, true
 		}
 	}
@@ -708,16 +710,21 @@ func (g *registrar) availableFor(msisdn string) (registration, bool) {
 	return registration{}, false
 }
 
-// unreachable sets the UNRI of the registrations of the MSISDN msisdn (TS 23.204 §6.5a step 17).
-func (g *registrar) unreachable(msisdn string) {
+// unreachable sets the UNRI of the registrations of the MSISDN msisdn or of the IMSI imsi (TS 23.204 §6.5a step 17).
+func (g *registrar) unreachable(msisdn, imsi string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	for _, reg := range g.regs {
-		if msisdn != "" && reg.msisdn == msisdn {
+		if reg.of(msisdn, imsi) {
 			reg.unri = true
 		}
 	}
+}
+
+// of reports whether reg is of the MSISDN msisdn or of the IMSI imsi.
+func (reg *registration) of(msisdn, imsi string) bool {
+	return (msisdn != "" && reg.msisdn == msisdn) || (imsi != "" && reg.imsi == imsi)
 }
 
 // reachable clears the UNRI of reg, if set, and has the HSS told again that the IP-SM-GW serves the user, for it to
