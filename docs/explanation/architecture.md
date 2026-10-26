@@ -4,6 +4,11 @@ description: How Ella IMS is built, and how it works with the core network.
 
 # Architecture
 
+<figure markdown="span">
+  ![Ella IMS with Ella Core](../images/ims_integration.svg){ width="800" }
+  <figcaption>Ella IMS with Ella Core</figcaption>
+</figure>
+
 An IP Multimedia Subsystem (IMS) is what lets phones on a 4G or 5G network make voice and video calls. The core network gives each phone an IP connection to the IMS. Over that connection, the phone registers and places calls with SIP, and the IMS routes them.
 
 ## Three CSCFs in one process

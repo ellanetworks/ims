@@ -5,7 +5,7 @@ description: An IP Multimedia Subsystem for private 4G and 5G networks - easy to
 # Ella IMS
 
 <p align="center">
-  <img src="images/ims_integration.svg" alt="Ella IMS with Ella Core" />
+  <img src="images/logo.svg" alt="Ella IMS Logo" width="200" />
 </p>
 
 **Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application, designed to be easy to operate, reliable, and secure.

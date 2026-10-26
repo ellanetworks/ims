@@ -37,7 +37,7 @@ sha256sum -c ella-mcptt.apk.sha256
 
 === "On the phone"
 
-    Open the APK's address in the phone's browser, allow the browser to install unknown apps, and install it.
+    In the phone's browser, open `https://github.com/ellanetworks/ims/releases/download/mcptt-edge/ella-mcptt.apk`, allow the browser to install unknown apps, and install it.
 
 ## 3. Grant the permissions
 

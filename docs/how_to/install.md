@@ -70,4 +70,57 @@ Choose one of the installation methods below.
     sudo ./ims --config ims.yaml
     ```
 
+=== "Docker"
+
+    Create a new directory:
+
+    ```shell
+    mkdir ella-ims
+    cd ella-ims
+    ```
+
+    Copy the following file into this directory:
+
+    ```yaml title="docker-compose.yaml"
+    configs:
+      ella_ims_config:
+        content: |
+          logging:
+            level: info
+          db:
+            path: /data/ims.db
+          api:
+            address: 0.0.0.0
+            port: 5020
+          sip:
+            addresses: [10.6.0.5]
+          diameter:
+            address: 10.3.0.5
+
+    services:
+      ella-ims:
+        image: ghcr.io/ellanetworks/ella-ims:latest
+        configs:
+          - source: ella_ims_config
+            target: /ims.yaml
+        entrypoint: /bin/ims --config /ims.yaml
+        restart: unless-stopped
+        network_mode: host
+        cap_add:
+          - NET_ADMIN
+        volumes:
+          - ella-ims-data:/data
+
+    volumes:
+      ella-ims-data:
+    ```
+
+    Set `sip.addresses` and `diameter.address` to addresses of the host.
+
+    Start the Ella IMS container:
+
+    ```shell
+    docker compose up -d
+    ```
+
 See the [configuration reference](../reference/config_file.md) for all options.
