@@ -116,6 +116,15 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		return
 	}
 
+	// TS 24.229 §5.2.10.3, §5.2.10.4: the IMS has no E-CSCF, so an emergency request is not forwarded.
+	if emergencyURN(out.URI) {
+		p.log.Info("emergency request refused: emergency sessions are not handled", slog.String("impi", reg.IMPI),
+			slog.String("method", req.Method), slog.String("uri", out.URI.String()))
+		reject(p.alternativeService(req, reg))
+
+		return
+	}
+
 	rec.open()
 
 	if len(reg.ServiceRoute) == 0 {
