@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,9 @@ func (f fakeDiameter) Identity() diameter.Identity { return diameter.Identity{} 
 func (f fakeDiameter) Peers() []diameter.PeerStatus { return f.peers }
 
 const hssPeer = `{"host": "hss.ims.mnc001.mcc001.3gppnetwork.org", "address": "10.0.0.10", "applications": ["cx"]}`
+
+const smscPeer = `{"host": "smsc.epc.mnc001.mcc001.3gppnetwork.org", "address": "10.0.0.12", "transport": "sctp",
+	"applications": ["sgd"], "service_centres": ["15550000000"]}`
 
 const pcrfPeer = `{"host": "pcrf.epc.mnc001.mcc001.3gppnetwork.org", "address": "10.0.0.11", "port": 3869,
 	"transport": "sctp", "applications": ["rx"], "priority": 0}`
@@ -188,6 +192,9 @@ func TestDiameterPeersRejected(t *testing.T) {
 		{"bad transport", http.MethodPost, "", strings.Replace(pcrfPeer, `"sctp"`, `"udp"`, 1), 400, "transport must be tcp or sctp"},
 		{"bad application", http.MethodPost, "", strings.Replace(hssPeer, `["cx"]`, `["gx"]`, 1), 400, `applications must list cx, rx, sh, s6c or sgd, not "gx"`},
 		{"same host", http.MethodPost, "", strings.Replace(hssPeer, `["cx"]`, `["rx"]`, 1), 409, "A Diameter peer already has host hss.ims.mnc001.mcc001.3gppnetwork.org"},
+		{"service centres without sgd", http.MethodPost, "", strings.Replace(hssPeer, `"applications"`, `"service_centres": ["15550000000"], "applications"`, 1), 400, "service_centres need sgd in applications"},
+		{"service centre not E.164", http.MethodPost, "", strings.Replace(smscPeer, "15550000000", "+1555", 1), 400, `service_centres must be E.164 numbers of up to 15 digits, not "+1555"`},
+		{"service centres without host", http.MethodPost, "", strings.Replace(smscPeer, "smsc.epc.mnc001.mcc001.3gppnetwork.org", "", 1), 400, "service_centres need a host, the Destination-Host of the short messages"},
 		{"update unknown", http.MethodPut, "/0192", pcrfPeer, 404, "Diameter peer not found"},
 		{"delete unknown", http.MethodDelete, "/0192", "", 404, "Diameter peer not found"},
 	}
@@ -278,5 +285,26 @@ func TestDiameterRoutes(t *testing.T) {
 		if code != tt.code || decodeError(t, body) != tt.want {
 			t.Errorf("%s %s = %d %s, want %d %q", tt.method, tt.path, code, body, tt.code, tt.want)
 		}
+	}
+}
+
+func TestDiameterPeerServiceCentres(t *testing.T) {
+	cfg := Config{Settings: newFakeSettings()}
+
+	created := createPeer(t, cfg, smscPeer)
+	if !slices.Equal(created.ServiceCentres, []string{"15550000000"}) {
+		t.Fatalf("created = %+v", created)
+	}
+
+	// A backup SMSC of the same service centre.
+	backup := strings.NewReplacer("smsc.epc", "backup.epc", "10.0.0.12", "10.0.0.13").Replace(smscPeer)
+	if p := createPeer(t, cfg, backup); !slices.Equal(p.ServiceCentres, []string{"15550000000"}) {
+		t.Fatalf("backup = %+v", p)
+	}
+
+	code, body := serve(t, cfg, http.MethodPut, "/api/v1/diameter/peers/"+created.ID,
+		strings.Replace(smscPeer, `["15550000000"]`, `[]`, 1))
+	if got := decodeResult[DiameterPeer](t, body); code != http.StatusOK || len(got.ServiceCentres) != 0 {
+		t.Fatalf("PUT without service centres = %d %s", code, body)
 	}
 }

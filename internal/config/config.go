@@ -20,7 +20,10 @@ const (
 	defaultPCSCFPort    = 5060
 	defaultICSCFPort    = 5070
 	defaultSCSCFPort    = 5080
-	defaultIPsecServer  = 5063
+
+	// IPSMGWPort is the SIP port of the built-in IP-SM-GW, in memory, on each of sip.addresses.
+	IPSMGWPort         = 5100
+	defaultIPsecServer = 5063
 )
 
 var defaultIPsecClients = []int{5064, 5065}
@@ -359,6 +362,11 @@ func (c Config) validatePorts() error {
 			if q.port == p.port {
 				return fmt.Errorf("%s and %s are both %d", q.name, p.name, p.port)
 			}
+		}
+
+		// The IP-SM-GW takes its port on the in-memory network the cores share with the built-in ASs.
+		if p.port == IPSMGWPort {
+			return fmt.Errorf("%s %d is the port of the IP-SM-GW", p.name, p.port)
 		}
 
 		if strings.HasPrefix(p.name, "pcscf.ipsec.") && (p.port == 5060 || p.port == 5061) {

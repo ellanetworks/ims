@@ -22,6 +22,7 @@ type Settings struct {
 	Routes      []Route
 	Policy      Policy
 	CallRecords CallRecords
+	IPSMGW      IPSMGW
 }
 
 type Operator struct {
@@ -112,6 +113,10 @@ func (s Settings) Validate() error {
 		return err
 	}
 
+	if err := s.IPSMGW.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -159,6 +164,7 @@ type Store interface {
 	UpdateRoute(ctx context.Context, r Route) error
 	UpdatePolicy(ctx context.Context, p Policy) error
 	UpdateCallRecords(ctx context.Context, c CallRecords) error
+	UpdateIPSMGW(ctx context.Context, g IPSMGW) error
 }
 
 // Live serves the current settings to the running IMS and persists changes before they take effect.
@@ -260,6 +266,13 @@ func (l *Live) UpdatePolicy(ctx context.Context, p Policy) error {
 		next.Policy = p
 		return nil
 	}, func() error { return l.store.UpdatePolicy(ctx, p) })
+}
+
+func (l *Live) UpdateIPSMGW(ctx context.Context, g IPSMGW) error {
+	return l.change(func(next *Settings) error {
+		next.IPSMGW = g
+		return nil
+	}, func() error { return l.store.UpdateIPSMGW(ctx, g) })
 }
 
 func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {

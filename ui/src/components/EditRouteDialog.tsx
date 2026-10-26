@@ -47,7 +47,12 @@ export default function EditRouteDialog({
         onChange={(e) => setRealm(e.target.value)}
         placeholder={homeDomain}
         error={error !== undefined}
-        helperText={error ?? "Empty for the home domain."}
+        helperText={
+          error ??
+          (route.application === "sh" || route.application === "s6c"
+            ? "Empty for the HSS realm."
+            : "Empty for the home domain.")
+        }
       />
     </EditDialog>
   );

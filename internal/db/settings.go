@@ -44,6 +44,10 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 		return settings.Settings{}, fmt.Errorf("get call record settings: %w", err)
 	}
 
+	if err := d.conn.QueryRowContext(ctx, `SELECT number FROM ip_sm_gw WHERE id = 1`).Scan(&s.IPSMGW.Number); err != nil {
+		return settings.Settings{}, fmt.Errorf("get IP-SM-GW settings: %w", err)
+	}
+
 	return s, nil
 }
 
@@ -239,4 +243,14 @@ func peerRow(p settings.Peer) []any {
 		p.ID, p.Host, p.Address.String(), p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority,
 		strings.Join(p.ServiceCentres, ","),
 	}
+}
+
+func (d *DB) UpdateIPSMGW(ctx context.Context, g settings.IPSMGW) (err error) {
+	defer d.observe(poolWrite, &err)()
+
+	if _, err := d.conn.ExecContext(ctx, `UPDATE ip_sm_gw SET number = ? WHERE id = 1`, g.Number); err != nil {
+		return fmt.Errorf("update IP-SM-GW settings: %w", err)
+	}
+
+	return nil
 }

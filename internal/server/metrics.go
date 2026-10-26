@@ -10,9 +10,13 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/rx"
+	"github.com/ellanetworks/core/diameter/s6c"
+	"github.com/ellanetworks/core/diameter/sgd"
+	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
@@ -25,11 +29,15 @@ import (
 // registeredTimeout bounds counting the registered subscribers for a scrape.
 const registeredTimeout = 2 * time.Second
 
-// The interfaces to the HSS and the policy function, which label the requests to peers.
+// The interfaces to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, which label the requests to
+// peers.
 const (
-	interfaceCx = "cx"
-	interfaceRx = "rx"
-	interfaceN5 = "n5"
+	interfaceCx  = "cx"
+	interfaceRx  = "rx"
+	interfaceN5  = "n5"
+	interfaceSh  = "sh"
+	interfaceS6c = "s6c"
+	interfaceSGd = "sgd"
 )
 
 // The results of a request to a peer: answered with success, answered with a failure, not answered, or not
@@ -57,6 +65,7 @@ type metrics struct {
 	sipResponses *prometheus.CounterVec
 	peerRequests *prometheus.CounterVec
 	peerDuration *prometheus.HistogramVec
+	ipsmgw       *ipsmgw.Metrics
 }
 
 // newMetrics registers the metrics of the Go runtime, the process, the build, the database, the registrations, the
@@ -66,14 +75,16 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m := &metrics{
 		registry:      prometheus.NewRegistry(),
 		registrations: regmetrics.New(),
+		ipsmgw:        ipsmgw.NewMetrics(),
 		sipResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_sip_responses_total",
 			Help: "Final responses the P-CSCF sent to UEs, by method and status class.",
 		}, []string{"method", "class"}),
 		peerRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_peer_requests_total",
-			Help: "Requests to the HSS (cx) and to the policy function (rx, n5), by interface and result: success, " +
-				"failure (answered with an error), error (not answered) and timeout.",
+			Help: "Requests to the HSS (cx, and sh and s6c of the IP-SM-GW), to the policy function (rx, n5), and " +
+				"of the IP-SM-GW to SMSCs, MMEs and SMSFs (sgd), by interface and result: success, failure (answered " +
+				"with an error), error (not answered) and timeout.",
 		}, []string{"interface", "result"}),
 		peerDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "ellaims_peer_request_duration_seconds",
@@ -92,7 +103,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		}
 	}
 
-	for _, iface := range []string{interfaceCx, interfaceRx, interfaceN5} {
+	for _, iface := range []string{interfaceCx, interfaceRx, interfaceN5, interfaceSh, interfaceS6c, interfaceSGd} {
 		m.peerDuration.WithLabelValues(iface)
 
 		for _, result := range []string{peerSuccess, peerFailure, peerError, peerTimeout} {
@@ -122,6 +133,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(database.Collectors()...)
 	m.registry.MustRegister(records.Collectors()...)
 	m.registry.MustRegister(m.registrations.Collectors()...)
+	m.registry.MustRegister(m.ipsmgw.Collectors()...)
 
 	return m
 }
@@ -207,6 +219,12 @@ func (d observedDiameter) Send(ctx context.Context, req *diameter.Message, opts 
 		iface = interfaceCx
 	case rx.ApplicationID:
 		iface = interfaceRx
+	case sh.ApplicationID:
+		iface = interfaceSh
+	case s6c.ApplicationID:
+		iface = interfaceS6c
+	case sgd.ApplicationID:
+		iface = interfaceSGd
 	default:
 		return d.Node.Send(ctx, req, opts...)
 	}

@@ -799,7 +799,7 @@ func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 	}
 }
 
-// An SMSC, and an MME or SMSF, serve sgd: SGd requests go to their hosts, through no route (TS 29.338 §6.3.1).
+// An SMSC, and an MME or SMSF, serve sgd: SGd requests go to the host of a peer, through no route.
 func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
 	st := settings.Settings{
 		Operator: settings.Operator{MCC: "001", MNC: "01"},

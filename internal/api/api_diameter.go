@@ -250,8 +250,8 @@ func peerStatus(p settings.Peer, statuses map[string]diameter.PeerStatus) Diamet
 	return status
 }
 
-// DiameterRouteParams are what an operator sets of a route: the realm of the HSS or the PCRF. Empty is the home
-// domain.
+// DiameterRouteParams are what an operator sets of a route: the realm of the HSS or the PCRF. Empty is the realm of
+// cx for sh and s6c, and the home domain otherwise.
 type DiameterRouteParams struct {
 	Realm string `json:"realm"`
 }

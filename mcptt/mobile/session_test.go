@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/mcptt/registrar"
 	"github.com/ellanetworks/ims/internal/mcptt/server"
 	serversettings "github.com/ellanetworks/ims/internal/mcptt/settings"
@@ -261,7 +262,7 @@ func startDirect(t *testing.T, addr netip.AddrPort, control int) *server.Server 
 	srv, err := server.New(server.Config{
 		UA: ua.Config{
 			Transaction: transaction.Config{},
-			Prepare:     server.Prepare(t.Context(), []netip.AddrPort{addr}, &sip.Resolver{}),
+			Prepare:     as.Prepare(t.Context(), []netip.AddrPort{addr}, &sip.Resolver{}),
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: "127.0.0.1", Port: addr.Port()}},
 		},
 		Source: fixed{snap}, Mode: registrar.Direct, Media: relay,

@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/mcptt"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
@@ -81,6 +82,11 @@ type Server struct {
 	ases  builtinASs
 	// mcpttHomeDomain is the home domain the MCPTT AS is named under: changed by follow only.
 	mcpttHomeDomain string
+
+	// ipsmgw is the built-in IP-SM-GW, which the iFCs of the HSS route to or not. Like the MCPTT AS, it outlives the
+	// cores but one for a new home domain. ipsmgwHomeDomain is the home domain it is named under.
+	ipsmgw           atomic.Pointer[ipsmgw.AS]
+	ipsmgwHomeDomain string
 
 	// The core is replaced when the operator's identity changes.
 	core       atomic.Pointer[core]
@@ -170,8 +176,19 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := s.startIPSMGW(ctx, initial.Operator.HomeDomain()); err != nil {
+		s.stopMCPTT(ctx)
+
+		_ = s.records.Close(ctx)
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		return err
+	}
+
 	c, err := s.startCore(ctx, initial)
 	if err != nil {
+		s.stopIPSMGW(ctx)
 		s.stopMCPTT(ctx)
 
 		_ = s.records.Close(ctx)
@@ -183,6 +200,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.core.Store(c)
 	s.resubscribeMCPTT()
+	s.resubscribeIPSMGW()
 
 	view := coreView{s}
 
@@ -252,7 +270,8 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	cxh := newCxHandler(s.Logger)
 	rxh := newRxHandler(s.Logger)
 
-	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, cxh, rxh, s.Logger)
+	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, cxh, rxh, ipsmgwHandler{s.ipsmgw.Load},
+		s.Logger)
 	if err != nil {
 		closeListeners(diameterLns)
 		return nil, fmt.Errorf("start Diameter: %w", err)
@@ -317,9 +336,16 @@ func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
 	backoff := minRetry
+	number := s.settings.Get().IPSMGW.Number
 
 	for {
 		changed := s.settings.Changed()
+
+		if st := s.settings.Get(); st.IPSMGW.Number != number {
+			number = st.IPSMGW.Number
+
+			s.ipsmgwNumberChanged()
+		}
 
 		var retry <-chan time.Time
 
@@ -415,6 +441,14 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		cancel()
 	}
 
+	// So does the IP-SM-GW: its host is under the home domain.
+	renamedIPSMGW := s.ipsmgw.Load() != nil && s.ipsmgwHomeDomain != st.Operator.HomeDomain()
+	if renamedIPSMGW {
+		stopCtx, cancel := context.WithTimeout(ctx, mcpttStopTime)
+		s.stopIPSMGW(stopCtx)
+		cancel()
+	}
+
 	if c := s.core.Swap(nil); c != nil {
 		stopCtx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
 		c.shutdown(stopCtx, s.Logger)
@@ -430,6 +464,12 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		}
 	}
 
+	if renamedIPSMGW {
+		if err := s.startIPSMGW(ctx, st.Operator.HomeDomain()); err != nil {
+			s.Logger.Error("failed to restart the IP-SM-GW for the new home domain", slog.Any("error", err))
+		}
+	}
+
 	c, err := s.startCore(ctx, st)
 	if err != nil {
 		s.Logger.Error("failed to restart "+why, slog.Any("error", err))
@@ -438,6 +478,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 
 	s.core.Store(c)
 	s.resubscribeMCPTT()
+	s.resubscribeIPSMGW()
 	s.Logger.Info("restarted "+why, c.attrs()...)
 }
 
@@ -506,6 +547,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// MCPTT first: its BYEs and unsubscriptions go through the core.
 	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
 	s.stopMCPTT(mcpttCtx)
+	s.stopIPSMGW(mcpttCtx)
 	cancel()
 
 	if c := s.core.Swap(nil); c != nil {

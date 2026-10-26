@@ -17,12 +17,14 @@ const serve = ({
   peers = [peer()],
   routes = [routeOf(), routeOf({ application: "rx" })],
   current = policy(),
+  number = "15550000100",
   answer,
 }: {
   listeners?: typeof sip.listeners;
   peers?: DiameterPeer[];
   routes?: DiameterRoute[];
   current?: PolicyWithStatus;
+  number?: string;
   answer?: (req: Request) => Response | undefined;
 } = {}) => {
   const requests: Request[] = [];
@@ -67,6 +69,15 @@ const serve = ({
               json(200, { result: { ...r, ...(req.body as object) } }),
             ),
           ]),
+        ),
+        "/api/v1/ip-sm-gw": route((req) =>
+          json(200, {
+            result: {
+              number,
+              ...(req.body as object),
+              name: "sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org",
+            },
+          }),
         ),
         "/api/v1/policy": route((req) =>
           req.method === "PUT"
@@ -239,6 +250,10 @@ describe("Cores", () => {
     expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
 
     fill(/^Service Centres/, "15550000000, 15550000001");
+    expect(
+      within(dialog).getByText("An SMSC needs a host"),
+    ).toBeInTheDocument();
+    fill(/^Host/, "smsc.example.org");
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
 
     await waitFor(() =>
@@ -249,7 +264,7 @@ describe("Cores", () => {
         method: "POST",
         path: "/api/v1/diameter/peers",
         body: {
-          host: "",
+          host: "smsc.example.org",
           address: "192.0.2.12",
           port: 3868,
           transport: "tcp",
@@ -614,6 +629,42 @@ describe("Cores", () => {
         method: "PUT",
         path: "/api/v1/policy",
         body: { interface: "n5", n5: { pcf_uri: "https://pcf.example.org" } },
+      },
+    ]);
+  });
+
+  it("shows and sets the IP-SM-GW number", async () => {
+    const requests = serve({ number: "" });
+
+    renderWithClient(<Cores />);
+
+    await waitFor(() =>
+      expect(settingRows("SMS over IP")).toEqual([
+        ["IP-SM-GW Name", "sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org"],
+        ["IP-SM-GW Number", "—"],
+      ]),
+    );
+    expect(
+      screen.getByText("No IP-SM-GW number: phones get no SMS over IP."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit IP-SM-GW Number" }),
+    );
+    fill(/^Number/, "+1555");
+    expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
+
+    fill(/^Number/, "15550000100");
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(requests).toEqual([
+      {
+        method: "PUT",
+        path: "/api/v1/ip-sm-gw",
+        body: { number: "15550000100" },
       },
     ]);
   });

@@ -115,11 +115,14 @@ export default function DiameterPeerDialog({
     port: portValid ? undefined : "1 to 65535",
     priority: priorityValid ? undefined : "0 to 65535",
     applications: applications.length > 0 ? undefined : "At least one",
-    serviceCentres:
+    serviceCentres: !(
       centres.every((s) => E164.test(s)) &&
       new Set(centres).size === centres.length
-        ? undefined
-        : "Distinct E.164 numbers of up to 15 digits",
+    )
+      ? "Distinct E.164 numbers of up to 15 digits"
+      : centres.length > 0 && host.trim() === ""
+        ? "An SMSC needs a host"
+        : undefined,
   };
   const valid =
     params.address !== "" &&
@@ -172,7 +175,7 @@ export default function DiameterPeerDialog({
           error={errors.serviceCentres !== undefined}
           helperText={
             errors.serviceCentres ??
-            "For an SMSC: its service centre addresses, comma-separated. Empty for an MME or SMSF."
+            "For an SMSC: its service centre addresses, comma-separated, and its host. Empty for an MME or SMSF."
           }
         />
       )}

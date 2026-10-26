@@ -31,6 +31,7 @@ func (m *memStore) UpdateRoute(context.Context, settings.Route) error { return m
 func (m *memStore) UpdatePolicy(context.Context, settings.Policy) error { return m.err }
 
 func (m *memStore) UpdateCallRecords(context.Context, settings.CallRecords) error { return m.err }
+func (m *memStore) UpdateIPSMGW(context.Context, settings.IPSMGW) error           { return m.err }
 
 func defaultSettings() settings.Settings {
 	return settings.Settings{

@@ -63,7 +63,7 @@ func (s *stubSessions) AbortSession(session string, _ rx.AbortSessionRequest) (f
 func rxClient(t *testing.T, h *rxHandler) (*fakePeer, *diameter.Node) {
 	t.Helper()
 
-	server := newFakePeerWithHandler(t, "pcscf.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, newDiameterMux(newCxHandler(h.log), h),
+	server := newFakePeerWithHandler(t, "pcscf.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, newDiameterMux(newCxHandler(h.log), h, ipsmgwHandler{}),
 		settings.ApplicationRx)
 
 	node := diametertest.Dial(t, diametertest.Config{

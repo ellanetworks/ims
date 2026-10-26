@@ -62,12 +62,13 @@ type Peer struct {
 	Applications []Application
 	Priority     int
 	// ServiceCentres are the E.164 service centre addresses of an SMSC serving sgd, whose mobile originated short
-	// messages the IP-SM-GW sends it (TS 29.338 §6.3.1.1).
+	// messages the IP-SM-GW sends it, to its host (TS 29.338 §6.3.1.1). The SMSCs of a service centre are tried by
+	// priority.
 	ServiceCentres []string
 }
 
-// Route is where the requests of an application go: the realm of the HSS for cx, sh and s6c, of the PCRF for rx,
-// of the SMSC for sgd (RFC 6733 §6.1.6). Its peers are those serving the application.
+// Route is where the requests of a routed application go: the realm of the HSS for cx, sh and s6c, of the PCRF for
+// rx (RFC 6733 §6.1.6). Its peers are those serving the application.
 type Route struct {
 	Application Application
 	// Realm is the Destination-Realm of the requests. Empty is the realm of cx for sh and s6c, and the home domain
@@ -97,6 +98,8 @@ func (p Peer) Validate() error {
 		return invalidf("applications must list at least one of cx, rx, sh, s6c and sgd")
 	case len(p.ServiceCentres) > 0 && !p.Serves(ApplicationSGd):
 		return invalidf("service_centres need sgd in applications")
+	case len(p.ServiceCentres) > 0 && p.Host == "":
+		return invalidf("service_centres need a host, the Destination-Host of the short messages")
 	}
 
 	for i, sc := range p.ServiceCentres {
@@ -189,15 +192,18 @@ func (s Settings) Serving(app Application) []Peer {
 	return out
 }
 
-// SMSC is the peer serving sgd of a service centre address.
-func (s Settings) SMSC(serviceCentre string) (Peer, bool) {
-	for _, p := range s.Peers {
+// SMSCs are the peers of a service centre address, in the order to try them: by priority, then in the order they
+// were created in.
+func (s Settings) SMSCs(serviceCentre string) []Peer {
+	var out []Peer
+
+	for _, p := range s.Serving(ApplicationSGd) {
 		if slices.Contains(p.ServiceCentres, serviceCentre) {
-			return p, true
+			out = append(out, p)
 		}
 	}
 
-	return Peer{}, false
+	return out
 }
 
 // Transports are the transports the peers use, which the IMS listens on.
@@ -234,12 +240,6 @@ func (s Settings) validatePeers() error {
 			// Without a host, a peer is known by its address and transport.
 			case p.Host == "" && q.Host == "" && p.Address == q.Address && p.Transport == q.Transport:
 				return conflictf("A Diameter peer without a host already has address %s over %s", p.Address, p.Transport)
-			}
-
-			for _, sc := range p.ServiceCentres {
-				if slices.Contains(q.ServiceCentres, sc) {
-					return conflictf("A Diameter peer already serves service centre %s", sc)
-				}
 			}
 		}
 	}

@@ -23,6 +23,7 @@ tags:
   - name: SIP
   - name: Registrations
   - name: Call records
+  - name: IP-SM-GW
   - name: MCPTT service configuration
   - name: MCPTT users
   - name: MCPTT groups
@@ -525,6 +526,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CallRecordRetentionResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/ip-sm-gw:
+    get:
+      tags: [IP-SM-GW]
+      operationId: getIPSMGW
+      summary: Get the built-in IP-SM-GW
+      responses:
+        "200":
+          description: The IP-SM-GW
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IPSMGWResult"
+    put:
+      tags: [IP-SM-GW]
+      operationId: updateIPSMGW
+      summary: Set the IP-SM-GW number
+      description: >-
+        The IP-SM-GW registers the new number at the HSS at once for the users it serves; an empty number
+        deregisters it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IPSMGWParams"
+      responses:
+        "200":
+          description: The IP-SM-GW, as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IPSMGWResult"
         "400":
           $ref: "#/components/responses/BadRequest"
         "500":
@@ -1177,7 +1215,8 @@ components:
           uniqueItems: true
           description: >-
             The service centre addresses of an SMSC, which needs sgd in applications: the IP-SM-GW sends a short
-            message from a phone to the SMSC of the service centre address the phone gives. No two peers share one.
+            message from a phone to an SMSC of the service centre address the phone gives, by priority, at its host,
+            which is then required.
           items:
             type: string
             pattern: "^[0-9]{1,15}$"
@@ -1533,6 +1572,36 @@ components:
       properties:
         result:
           $ref: "#/components/schemas/CallRecordRetention"
+
+    IPSMGWParams:
+      type: object
+      additionalProperties: false
+      required: [number]
+      properties:
+        number:
+          type: string
+          pattern: "^[0-9]{0,15}$"
+          description: >-
+            The E.164 number of the IP-SM-GW, digits only, which it registers at the HSS for the users able to
+            receive short messages over IP. Empty registers none.
+          examples: ["15550000100"]
+
+    IPSMGW:
+      allOf:
+        - $ref: "#/components/schemas/IPSMGWParams"
+        - type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+              description: The SIP URI of the IP-SM-GW, which the iFCs of the HSS name it by.
+              examples: ["sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org"]
+
+    IPSMGWResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/IPSMGW"
 
     Error:
       type: object

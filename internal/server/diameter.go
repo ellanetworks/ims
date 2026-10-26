@@ -43,8 +43,8 @@ var transports = map[settings.Transport]diameter.Transport{
 	settings.TransportSCTP: diameter.TransportSCTP,
 }
 
-// realms are the realms the running Diameter node routes Cx and Rx to, which the S-CSCF, I-CSCF and P-CSCF
-// address their requests to. They change with the node's routes.
+// realms are the realms the running Diameter node routes the routed applications to, which the S-CSCF, I-CSCF,
+// P-CSCF and IP-SM-GW address their requests to. They change with the node's routes.
 type realms struct {
 	st atomic.Pointer[settings.Settings]
 }
@@ -65,7 +65,7 @@ func (r *realms) of(app settings.Application) func() string {
 }
 
 func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, cxh *cxHandler,
-	rxh *rxHandler, logger *slog.Logger,
+	rxh *rxHandler, ish ipsmgwHandler, logger *slog.Logger,
 ) (*diameter.Node, error) {
 	op := s.Operator
 
@@ -80,7 +80,7 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 			HostIPAddresses: []netip.Addr{cfg.Address},
 			ProductName:     productName,
 		},
-		Handler:           newDiameterMux(cxh, rxh),
+		Handler:           newDiameterMux(cxh, rxh, ish),
 		HandshakeTimeout:  handshake,
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
 		Logger:            logger,
@@ -195,8 +195,13 @@ func diameterPeers(st settings.Settings, previous ...settings.Settings) []diamet
 	return out
 }
 
-func newDiameterMux(cxh *cxHandler, rxh *rxHandler) *diameter.Mux {
+func newDiameterMux(cxh *cxHandler, rxh *rxHandler, ish ipsmgwHandler) *diameter.Mux {
 	mux := diameter.NewMux()
+
+	if ish.as != nil {
+		mux.Handle(s6c.ApplicationID, s6c.CommandSendRoutingInfoForSM, diameter.HandlerFunc(ish.routingInfo))
+		mux.Handle(sgd.ApplicationID, sgd.CommandMTForwardShortMessage, diameter.HandlerFunc(ish.forwardShortMessage))
+	}
 
 	mux.Handle(cx.ApplicationID, cx.CommandRegistrationTermination, diameter.HandlerFunc(cxh.registrationTermination))
 	mux.Handle(cx.ApplicationID, cx.CommandPushProfile, diameter.HandlerFunc(cxh.pushProfile))

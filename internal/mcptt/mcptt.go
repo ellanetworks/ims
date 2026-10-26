@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
@@ -58,7 +59,7 @@ func System(homeDomain string) settings.System {
 // AS is the running MCPTT application server.
 type AS struct {
 	srv *server.Server
-	// kill ends the lifetime of the server, of the DNS queries of its next hops (server.Prepare).
+	// kill ends the lifetime of the server, of the DNS queries of its next hops (as.Prepare).
 	kill     context.CancelFunc
 	settings *settings.Live
 
@@ -132,7 +133,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	srv, err := server.New(server.Config{
 		UA: ua.Config{
 			Transaction: transaction.Config{Logger: logger, Network: cfg.Network},
-			Prepare:     server.Prepare(life, locals, &sip.Resolver{}),
+			Prepare:     as.Prepare(life, locals, &sip.Resolver{}),
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: sip.FormatHost(locals[0].Addr()), Port: locals[0].Port()}},
 			Logger:      logger,
 		},

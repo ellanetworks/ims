@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ func (f *fakeStore) UpdateRoute(_ context.Context, r Route) error { return f.sav
 func (f *fakeStore) UpdatePolicy(_ context.Context, p Policy) error { return f.save(p) }
 
 func (f *fakeStore) UpdateCallRecords(_ context.Context, c CallRecords) error { return f.save(c) }
+func (f *fakeStore) UpdateIPSMGW(_ context.Context, g IPSMGW) error           { return f.save(g) }
 
 func validSettings() Settings {
 	return Settings{
@@ -238,6 +240,12 @@ func TestPeerValidate(t *testing.T) {
 		"unknown application": {func(p *Peer) { p.Applications = []Application{"gx"} }, `applications must list cx, rx, sh, s6c or sgd, not "gx"`},
 		"service centres without sgd": {
 			func(p *Peer) { p.ServiceCentres = []string{"15550000000"} }, "service_centres need sgd in applications",
+		},
+		"service centres without host": {
+			func(p *Peer) {
+				p.Host, p.Applications, p.ServiceCentres = "", []Application{ApplicationSGd}, []string{"15550000000"}
+			},
+			"service_centres need a host, the Destination-Host of the short messages",
 		},
 		"service centre not E.164": {
 			func(p *Peer) { p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"+1555"} },
@@ -522,34 +530,41 @@ func TestHSSApplicationsDefaultToTheRealmOfCx(t *testing.T) {
 	}
 }
 
-func TestSMSCOfServiceCentre(t *testing.T) {
+func TestSMSCsOfServiceCentre(t *testing.T) {
 	smsc := Peer{
 		ID: "smsc", Host: "smsc.example.org", Address: netip.MustParseAddr("10.0.0.12"), Port: 3868,
-		Transport: TransportSCTP, Applications: []Application{ApplicationSGd}, Priority: DefaultPriority,
+		Transport: TransportSCTP, Applications: []Application{ApplicationSGd}, Priority: 20,
 		ServiceCentres: []string{"15550000000", "15550000001"},
 	}
+	backup := smsc
+	backup.ID, backup.Host, backup.Priority, backup.ServiceCentres = "backup", "backup.example.org", 10, []string{"15550000001"}
 
 	s := validSettings()
-	s.Peers = []Peer{hss(), smsc}
+	s.Peers = []Peer{hss(), smsc, backup}
 
 	if err := s.Validate(); err != nil {
 		t.Fatalf("Validate = %v", err)
 	}
 
-	if p, ok := s.SMSC("15550000001"); !ok || p.ID != "smsc" {
-		t.Fatalf("SMSC = %+v, %v", p, ok)
+	ids := func(ps []Peer) []string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.ID)
+		}
+
+		return out
 	}
 
-	if _, ok := s.SMSC("15559999999"); ok {
-		t.Fatal("an SMSC for an unknown service centre")
+	if got := ids(s.SMSCs("15550000001")); !slices.Equal(got, []string{"backup", "smsc"}) {
+		t.Fatalf("SMSCs = %v, want by priority", got)
 	}
 
-	other := smsc
-	other.ID, other.Host, other.ServiceCentres = "other", "other.example.org", []string{"15550000001"}
-	s.Peers = append(s.Peers, other)
+	if got := ids(s.SMSCs("15550000000")); !slices.Equal(got, []string{"smsc"}) {
+		t.Fatalf("SMSCs = %v", got)
+	}
 
-	if err := s.Validate(); !errors.Is(err, ErrConflict) || err.Error() != "A Diameter peer already serves service centre 15550000001" {
-		t.Fatalf("Validate with a shared service centre = %v", err)
+	if got := s.SMSCs("15559999999"); len(got) != 0 {
+		t.Fatalf("SMSCs of an unknown service centre = %v", got)
 	}
 }
 

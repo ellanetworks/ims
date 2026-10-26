@@ -1,4 +1,4 @@
-package server
+package as
 
 import (
 	"context"
@@ -99,4 +99,15 @@ func (dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) 
 	}
 
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+func uri(t *testing.T, s string) sip.URI {
+	t.Helper()
+
+	u, err := sip.ParseURI(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return u
 }

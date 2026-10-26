@@ -40,6 +40,7 @@ type Settings interface {
 	UpdateRoute(ctx context.Context, r settings.Route) error
 	UpdatePolicy(ctx context.Context, p settings.Policy) error
 	UpdateCallRecords(ctx context.Context, c settings.CallRecords) error
+	UpdateIPSMGW(ctx context.Context, g settings.IPSMGW) error
 }
 
 func NewHandler(cfg Config) http.Handler {
@@ -104,6 +105,8 @@ func routes(cfg Config) []route {
 		{"GET /api/v1/call-records", ListCallRecords(cfg)},
 		{"GET /api/v1/call-records/retention", GetCallRecordRetention(cfg)},
 		{"PUT /api/v1/call-records/retention", UpdateCallRecordRetention(cfg)},
+		{"GET /api/v1/ip-sm-gw", GetIPSMGW(cfg)},
+		{"PUT /api/v1/ip-sm-gw", UpdateIPSMGW(cfg)},
 		{"GET /api/v1/call-records/{id}", GetCallRecord(cfg)},
 	}
 }

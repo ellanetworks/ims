@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/mcptt/registrar"
 	"github.com/ellanetworks/ims/internal/mcptt/server"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
@@ -575,7 +576,7 @@ func newIMSWorld(t *testing.T) *imsWorld {
 		UA: ua.Config{
 			Transaction: n.Config(transaction.Config{}),
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: "mcptt", Host: w.addr.Addr().String(), Port: w.addr.Port()}},
-			Prepare:     server.Prepare(context.Background(), []netip.AddrPort{w.addr}, &sip.Resolver{DNS: dns{w.core.addr}}),
+			Prepare:     as.Prepare(context.Background(), []netip.AddrPort{w.addr}, &sip.Resolver{DNS: dns{w.core.addr}}),
 		},
 		Source:          source{snap},
 		Mode:            registrar.ThroughIMS,
