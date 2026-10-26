@@ -22,14 +22,14 @@ func NewMetrics() *Metrics {
 		shortMessages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_ipsmgw_short_messages_total",
 			Help: "Short messages the IP-SM-GW interworked: mobile originated (mo) to an SMSC, and mobile " +
-				"terminated (mt) by the domain it last tried (ims, mme, sgsn, smsf_3gpp, smsf_non_3gpp), by result.",
+				"terminated (mt) by the domain it last tried (ims, mme, sgsn, smsf_3gpp, smsf_non_3gpp, none), by result.",
 		}, []string{"direction", "domain", "result"}),
 	}
 
 	for _, result := range []string{resultSuccess, resultFailure} {
 		m.shortMessages.WithLabelValues(directionMO, "smsc", result)
 
-		for d := domainIMS; d <= domainSMSFNon3GPP; d++ {
+		for d := domainIMS; d <= domainNone; d++ {
 			m.shortMessages.WithLabelValues(directionMT, d.String(), result)
 		}
 	}

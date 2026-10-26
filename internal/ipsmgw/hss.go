@@ -64,9 +64,11 @@ type hssSync struct {
 	told     map[string]db.IPSMGWHSSRegistration
 	dirty    map[string]bool
 	attempts map[string]int
-	wake     chan struct{}
-	stop     context.CancelFunc
-	done     chan struct{}
+	// forced are the users to register at the HSS again, though registered already: of a UE reachable again.
+	forced map[string]bool
+	wake   chan struct{}
+	stop   context.CancelFunc
+	done   chan struct{}
 }
 
 func newHSSSync(hss HSS, store Store, number func() string, want func(string) (User, bool), told []db.IPSMGWHSSRegistration,
@@ -75,7 +77,8 @@ func newHSSSync(hss HSS, store Store, number func() string, want func(string) (U
 	h := &hssSync{
 		hss: hss, store: store, number: number, want: want, log: log,
 		told: map[string]db.IPSMGWHSSRegistration{}, dirty: map[string]bool{}, attempts: map[string]int{},
-		wake: make(chan struct{}, 1), done: make(chan struct{}),
+		forced: map[string]bool{},
+		wake:   make(chan struct{}, 1), done: make(chan struct{}),
 	}
 
 	for _, r := range told {
@@ -106,6 +109,16 @@ func (h *hssSync) close() {
 // mark has the user of userKey checked.
 func (h *hssSync) mark(userKey string) {
 	h.mu.Lock()
+	h.dirty[userKey] = true
+	h.mu.Unlock()
+
+	h.poke()
+}
+
+// force has the user of userKey registered at the HSS again, if it is to be registered.
+func (h *hssSync) force(userKey string) {
+	h.mu.Lock()
+	h.forced[userKey] = true
 	h.dirty[userKey] = true
 	h.mu.Unlock()
 
@@ -215,6 +228,8 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 
 	h.mu.Lock()
 	told, registered := h.told[k]
+	forced := h.forced[k]
+	delete(h.forced, k)
 	h.mu.Unlock()
 
 	want := ""
@@ -222,7 +237,7 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 		want = number
 	}
 
-	if want == told.Number {
+	if want == told.Number && (!forced || want == "") {
 		h.settled(k)
 		return
 	}
@@ -249,6 +264,12 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 	}
 
 	if err != nil {
+		if forced {
+			h.mu.Lock()
+			h.forced[k] = true
+			h.mu.Unlock()
+		}
+
 		if ctx.Err() != nil {
 			return
 		}

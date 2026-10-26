@@ -219,6 +219,8 @@ type world struct {
 	router *fakeRouter
 	nodes  *fakeNodes
 	cseq   int
+	// lastSub is the SUBSCRIBE of the registration of available.
+	lastSub *sip.Request
 }
 
 func newWorld(t *testing.T, store *fakeStore) *world {

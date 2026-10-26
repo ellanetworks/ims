@@ -79,7 +79,18 @@ func (a *AS) handleMessage(r *ua.Request) {
 func (a *AS) handleReport(r *ua.Request, header sip.Header) {
 	req := r.Message()
 
-	p, ok := a.pending.byCallID(strings.TrimSpace(req.Header.Get("In-Reply-To")))
+	var (
+		p  *pendingReport
+		ok bool
+	)
+
+	// In-Reply-To lists Call-IDs (RFC 3261 §20.21).
+	for v := range strings.SplitSeq(req.Header.Get("In-Reply-To"), ",") {
+		if p, ok = a.pending.byCallID(strings.TrimSpace(v)); ok {
+			break
+		}
+	}
+
 	if !ok {
 		_ = r.Reject(488, header...)
 		return
@@ -91,8 +102,14 @@ func (a *AS) handleReport(r *ua.Request, header sip.Header) {
 	case *sms.RPAck, *sms.RPError:
 		p.deliver(rp)
 	default:
-		a.log.Debug("MESSAGE in reply to a short message of no delivery report", slog.String("call_id", p.callID))
+		p.deliver(undecodableReport(p.reference))
 	}
+}
+
+// undecodableReport is the delivery report of a UE whose RPDU does not decode: a protocol error (TS 23.040 §11.1:
+// "Other error causes").
+func undecodableReport(ref uint8) sms.RPMessage {
+	return &sms.RPError{Direction: nas.DirectionUplink, Reference: ref, Cause: sms.RPCauseProtocolErrorUnspecified}
 }
 
 // sender is the SM-over-IP sender of a MESSAGE: its public user identities asserted by the P-CSCF or S-CSCF (RFC
@@ -147,6 +164,10 @@ func (a *AS) receive(s sender, rpdu []byte) {
 			a.answer(s, rpErrorFor(rpdu, herr))
 		case herr == nil && (h.MTI == sms.MTIDataMSToNetwork || h.MTI == sms.MTISMMAMSToNetwork):
 			a.answer(s, rpErrorFor(rpdu, err))
+		case herr == nil:
+			if p, ok := a.pending.of(h.Reference, s.ids); ok {
+				p.deliver(undecodableReport(h.Reference))
+			}
 		default:
 			a.log.Debug("undecodable RPDU dropped", slog.String("call_id", s.callID), slog.Any("error", err))
 		}

@@ -134,3 +134,43 @@ func TestShUpdate(t *testing.T) {
 		}
 	}
 }
+
+// A short message goes to the MME or SMSF the HSS names, a peer of its host, of the realm the HSS gave.
+func TestNodesForward(t *testing.T) {
+	var got *diameter.Message
+
+	mme := newFakePeerWithHandler(t, "core.epc.mnc001.mcc001.3gppnetwork.org", smscRealm,
+		diameter.HandlerFunc(func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+			got = req
+
+			ans, err := sgd.NewMTForwardShortMessageAnswer(req, c.LocalIdentity(), []byte{0x00, 0x00})
+			if err != nil {
+				t.Error(err)
+			}
+
+			return ans
+		}), settings.ApplicationSGd)
+
+	cfg := testConfig(t)
+	cfg.Peers = append(cfg.Peers, mme.config("core"))
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, "core")
+
+	ui, err := nodesClient{srv}.Forward(t.Context(), mme.host, smscRealm, sgd.MTForwardShortMessage{
+		IMSI: "001010000000001", ServiceCentreAddress: "15550000000", SMRPUI: []byte{0x04}, MMENumberForMTSMS: "15550000010",
+	})
+	if err != nil || !bytes.Equal(ui, []byte{0x00, 0x00}) {
+		t.Fatalf("Forward = %x, %v", ui, err)
+	}
+
+	if env := tgpp.ParseEnvelope(got); env.DestinationHost != mme.host || env.DestinationRealm != smscRealm {
+		t.Fatalf("TFR to %s in %s", env.DestinationHost, env.DestinationRealm)
+	}
+
+	if _, err := (nodesClient{srv}).Forward(t.Context(), "unknown.example.org", smscRealm, sgd.MTForwardShortMessage{
+		IMSI: "001010000000001", ServiceCentreAddress: "15550000000", SMRPUI: []byte{0x04},
+	}); err == nil {
+		t.Fatal("Forward to a host of no peer succeeded")
+	}
+}

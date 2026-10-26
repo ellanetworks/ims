@@ -43,9 +43,12 @@ type registration struct {
 	scscf, as    sip.URI
 	expires      time.Time
 	available    bool
-	expiry       *ua.Timer
-	watch        *watch
-	strand       *ua.Strand
+	// unri is set when the UE did not answer a short message over IMS: not reachable for IP (TS 23.040 §3.2.8;
+	// TS 23.204 §6.5a step 17), until it registers again or its reg event tells it reachable (§6.5b).
+	unri   bool
+	expiry *ua.Timer
+	watch  *watch
+	strand *ua.Strand
 }
 
 // user is the user of the registration, as the HSS knows it.
@@ -167,6 +170,8 @@ func (g *registrar) handleRegister(r *ua.Request) {
 
 	moved := !reg.scscf.Equivalent(scscf.URI)
 	reg.scscf = scscf.URI
+
+	g.reachable(reg)
 
 	g.expireAt(reg)
 	g.save(reg)
@@ -517,6 +522,8 @@ func (g *registrar) apply(reg *registration, w *watch, doc *reginfo.Reginfo) boo
 
 		g.log.Debug("SMS over IP availability changed", slog.String("impu", reg.impu.String()),
 			slog.Bool("available", available))
+	} else if available {
+		g.reachable(reg)
 	}
 
 	return ended
@@ -699,6 +706,31 @@ func (g *registrar) availableFor(msisdn string) (registration, bool) {
 	}
 
 	return registration{}, false
+}
+
+// unreachable sets the UNRI of the registrations of the MSISDN msisdn (TS 23.204 §6.5a step 17).
+func (g *registrar) unreachable(msisdn string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	for _, reg := range g.regs {
+		if msisdn != "" && reg.msisdn == msisdn {
+			reg.unri = true
+		}
+	}
+}
+
+// reachable clears the UNRI of reg, if set, and has the HSS told again that the IP-SM-GW serves the user, for it to
+// alert the service centres of the messages waiting (TS 23.204 §6.5b; TS 23.040 §3.2.6 2c). Called with g.mu held.
+func (g *registrar) reachable(reg *registration) {
+	if !reg.unri {
+		return
+	}
+
+	reg.unri = false
+
+	g.hss.force(reg.user().userKey())
+	g.log.Debug("UE reachable for IP again", slog.String("impu", reg.impu.String()))
 }
 
 // userKeys are the keys of the users of the registrations.

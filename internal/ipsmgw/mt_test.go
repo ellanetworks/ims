@@ -137,8 +137,8 @@ func (w *world) available() {
 	impu := "sip:alice@" + home
 
 	w.register(impu, 600, "application/3gpp-ims+xml", serviceInfo)
-	sub := w.subscribed()
-	w.notify(sub, "active;expires=600", doc(0, impu, true))
+	w.lastSub = w.subscribed()
+	w.notify(w.lastSub, "active;expires=600", doc(0, impu, true))
 	w.hss.waitUpdates(w.t, update{msisdn: "15551230001", number: "15550000100"})
 }
 
@@ -365,7 +365,7 @@ func TestAbsentEverywhere(t *testing.T) {
 	w.available()
 
 	routing, _ := s6c.ParseSendRoutingInfoForSMAnswer(w.routingInfo())
-	ans := w.forward(routing.IMSI, 3*time.Second)
+	ans := w.forward(routing.IMSI, 12*time.Second)
 
 	w.delivered(202)
 
@@ -374,20 +374,28 @@ func TestAbsentEverywhere(t *testing.T) {
 		t.Fatalf("TFA = %v", err)
 	}
 
+	// The MME that failed, for the HSS to answer with another if it has one (TS 29.338 §5.2.3.4).
 	rep := w.router.reports[0]
 	if rep.MSISDN != "15551230001" || rep.IPSMGW == nil || rep.IPSMGW.Cause != s6c.DeliveryCauseAbsentUser ||
 		rep.IPSMGW.AbsentDiagnostic == nil || *rep.IPSMGW.AbsentDiagnostic != tgpp.AbsentUserNoResponseIPSMGW ||
-		rep.MME == nil || rep.MME.Cause != s6c.DeliveryCauseAbsentUser {
+		rep.MME == nil || rep.MME.Cause != s6c.DeliveryCauseAbsentUser || rep.Failed.Serving != mmeRouting().Serving &&
+		(rep.Failed.Serving == nil || rep.Failed.Serving.MME.Name != mmeRouting().Serving.MME.Name) {
 		t.Fatalf("report = %+v", rep)
 	}
+
+	// Not reachable for IP: a NOTIFY of the UE reachable again has the HSS told again (TS 23.204 §6.5b).
+	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
+	w.notify(w.lastSub, "active;expires=600", doc(5, "sip:alice@"+home, true))
+	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001", number: "15550000100"})
 }
 
-// An MT Correlation ID the IP-SM-GW did not give is of an unknown user.
+// An MT Correlation ID the IP-SM-GW did not give is invalid.
 func TestUnknownCorrelationID(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 
+	// Invalid: a System Failure (TS 23.040 §8.1.4).
 	_, err := sgd.ParseMTForwardShortMessageAnswer(answerOf(t, w.forward("001010123456789", time.Second)))
-	if !tgpp.IsExperimental(err, tgpp.ResultErrorUserUnknown) {
+	if r, ok := tgpp.ResultOf(err); !ok || r.Code != diameter.ResultUnableToComply {
 		t.Fatalf("TFA = %v", err)
 	}
 }
@@ -395,5 +403,88 @@ func TestUnknownCorrelationID(t *testing.T) {
 func TestPLMNOf(t *testing.T) {
 	if got := plmnOf(home); got != "001001" {
 		t.Fatalf("plmnOf = %s", got)
+	}
+}
+
+// An error of the HSS other than an absent user is forwarded, whatever the registrations (TS 29.338 §5.2.1.4).
+func TestRoutingInfoBarred(t *testing.T) {
+	w := newWorld(t, newFakeStore())
+	w.available()
+	w.router.err = &s6c.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorServiceBarred)}
+
+	if _, err := s6c.ParseSendRoutingInfoForSMAnswer(w.routingInfo()); !tgpp.IsExperimental(err, tgpp.ResultErrorServiceBarred) {
+		t.Fatalf("answer = %v, want the HSS's barring", err)
+	}
+}
+
+// Of a UE not able to receive short messages over IP, the report has IMS absent, deregistered for IMS, for the HSS to
+// set the UNRI (TS 23.204 §6.5a step 17); the serving nodes the HSS answers with are tried at once (TS 29.338
+// §5.2.3.3).
+func TestNotOverIMSAndAlertRetry(t *testing.T) {
+	w := newWorld(t, newFakeStore())
+	w.router.routing = mmeRouting()
+	w.router.alert = s6c.ServingNodes{SMSF3GPP: &s6c.NodeAddress{Name: "smsf.example.org", Realm: "5gc.example.org", Number: "15550000030"}}
+	w.nodes.answers["core.epc.mnc001.mcc001.3gppnetwork.org"] = fakeAnswer{err: &sgd.ResultError{
+		Result: tgpp.Experimental(tgpp.ResultErrorAbsentUser),
+	}}
+	w.nodes.answers["smsf.example.org"] = fakeAnswer{ui: []byte{0x00, 0x02}}
+
+	routing, _ := s6c.ParseSendRoutingInfoForSMAnswer(w.routingInfo())
+
+	res, err := sgd.ParseMTForwardShortMessageAnswer(answerOf(t, w.forward(routing.IMSI, 12*time.Second)))
+	if err != nil || !bytes.Equal(res.SMRPUI, []byte{0x00, 0x02}) {
+		t.Fatalf("TFA = %+v, %v, want the SMSF's", res, err)
+	}
+
+	rep := w.router.reports[0]
+	if rep.IPSMGW == nil || rep.IPSMGW.AbsentDiagnostic == nil || *rep.IPSMGW.AbsentDiagnostic != tgpp.AbsentUserDeregisteredIMS {
+		t.Fatalf("report = %+v", rep)
+	}
+
+	if got := w.nodes.hosts; len(got) != 2 || got[1] != "smsf.example.org" {
+		t.Fatalf("forwarded to %v", got)
+	}
+}
+
+// A request of no intended delivery gets the IMSI of the HSS, of no MT Correlation ID (TS 23.040 §8.1.4).
+func TestRoutingInfoDeliveryNotIntended(t *testing.T) {
+	w := newWorld(t, newFakeStore())
+	w.router.routing = mmeRouting()
+
+	only := s6c.SMDeliveryNotIntendedIMSI
+
+	req, err := s6c.NewSendRoutingInfoForSMRequest(envelope(), s6c.RoutingRequest{
+		MSISDN: "15551230001", ServiceCentreAddress: "15550000000", DeliveryNotIntended: &only,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routing, err := s6c.ParseSendRoutingInfoForSMAnswer(w.a.RoutingInfo(t.Context(), ims, req))
+	if err != nil || routing.IMSI != mmeRouting().IMSI || w.router.requests[0].DeliveryNotIntended == nil {
+		t.Fatalf("answer = %+v, %v", routing, err)
+	}
+}
+
+// A delivery report that does not decode is a protocol error of the UE (TS 23.040 §11.1).
+func TestUndecodableDeliveryReport(t *testing.T) {
+	w := newWorld(t, newFakeStore())
+	w.router.routing = mmeRouting()
+	w.available()
+
+	routing, _ := s6c.ParseSendRoutingInfoForSMAnswer(w.routingInfo())
+	ans := w.forward(routing.IMSI, 30*time.Second)
+
+	req, _ := w.delivered(202)
+
+	if res := w.message(ContentType, []byte{0x02}, "In-Reply-To: other, "+req.Header.CallID()); res.StatusCode != 202 {
+		t.Fatalf("delivery report = %d", res.StatusCode)
+	}
+
+	_, err := sgd.ParseMTForwardShortMessageAnswer(answerOf(t, ans))
+
+	var re *sgd.ResultError
+	if !errors.As(err, &re) || re.DeliveryFailureCause == nil || *re.DeliveryFailureCause != sgd.CauseEquipmentProtocolError {
+		t.Fatalf("TFA = %v", err)
 	}
 }

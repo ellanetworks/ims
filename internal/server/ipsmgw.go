@@ -105,7 +105,8 @@ func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, n
 		return err
 	}
 
-	ans, err := observedDiameter{core.node, c.s.metrics}.Send(ctx, req)
+	// Not connected to the HSS, the update fails at once, and is tried again later (or not, at shutdown).
+	ans, err := observedDiameter{core.node, c.s.metrics}.Send(ctx, req, diameter.FailFast())
 	if err != nil {
 		return fmt.Errorf("Sh-Update: %w", err)
 	}
