@@ -28,6 +28,8 @@ jobs:
     uses: ./.github/workflows/ui-typecheck.yaml
   ui-test:
     uses: ./.github/workflows/ui-test.yaml
+  docs-build:
+    uses: ./.github/workflows/docs-build.yaml
   android:
     uses: ./.github/workflows/android.yaml
     secrets:

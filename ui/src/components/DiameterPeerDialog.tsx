@@ -27,7 +27,12 @@ export const DEFAULT_DIAMETER_PORT = 3868;
 
 export const DEFAULT_PRIORITY = 10;
 
-const APPLICATIONS: DiameterApplication[] = ["cx", "rx"];
+const APPLICATIONS: DiameterApplication[] = ["cx", "rx", "sh", "s6c", "sgd"];
+
+// A new peer is an HSS and a PCRF, as a core is.
+const DEFAULT_APPLICATIONS: DiameterApplication[] = ["cx", "rx"];
+
+const E164 = /^\d{1,15}$/;
 
 const TRANSPORTS: DiameterTransport[] = ["tcp", "sctp"];
 
@@ -51,7 +56,10 @@ export default function DiameterPeerDialog({
     peer?.transport ?? "tcp",
   );
   const [applications, setApplications] = useState<DiameterApplication[]>(
-    peer?.applications ?? APPLICATIONS,
+    peer?.applications ?? DEFAULT_APPLICATIONS,
+  );
+  const [serviceCentres, setServiceCentres] = useState(
+    (peer?.service_centres ?? []).join(", "),
   );
   const [priority, setPriority] = useState(
     String(peer?.priority ?? DEFAULT_PRIORITY),
@@ -79,6 +87,14 @@ export default function DiameterPeerDialog({
       ? peer.applications
       : APPLICATIONS.filter((app) => applications.includes(app));
 
+  const smsc = applications.includes("sgd");
+  const centres = smsc
+    ? serviceCentres
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s !== "")
+    : [];
+
   const portNumber = Number(port);
   const priorityNumber = Number(priority);
   const params: DiameterPeerParams = {
@@ -88,6 +104,8 @@ export default function DiameterPeerDialog({
     transport,
     applications: ordered,
     priority: priorityNumber,
+    // Absent clears them.
+    ...(centres.length > 0 && { service_centres: centres }),
   };
 
   const portValid =
@@ -97,6 +115,11 @@ export default function DiameterPeerDialog({
     port: portValid ? undefined : "1 to 65535",
     priority: priorityValid ? undefined : "0 to 65535",
     applications: applications.length > 0 ? undefined : "At least one",
+    serviceCentres:
+      centres.every((s) => E164.test(s)) &&
+      new Set(centres).size === centres.length
+        ? undefined
+        : "Distinct E.164 numbers of up to 15 digits",
   };
   const valid =
     params.address !== "" &&
@@ -140,6 +163,19 @@ export default function DiameterPeerDialog({
           <FormHelperText>{errors.applications}</FormHelperText>
         )}
       </FormControl>
+      {smsc && (
+        <TextField
+          label="Service Centres"
+          value={serviceCentres}
+          onChange={(e) => setServiceCentres(e.target.value)}
+          placeholder="15550000000"
+          error={errors.serviceCentres !== undefined}
+          helperText={
+            errors.serviceCentres ??
+            "For an SMSC: its service centre addresses, comma-separated. Empty for an MME or SMSF."
+          }
+        />
+      )}
       <TextField
         label="Port"
         value={port}

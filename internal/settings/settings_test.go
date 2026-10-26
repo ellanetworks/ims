@@ -234,8 +234,27 @@ func TestPeerValidate(t *testing.T) {
 		"unspecified address": {func(p *Peer) { p.Address = netip.IPv6Unspecified() }, "address must be a specific IPv4 or IPv6 address"},
 		"port out of range":   {func(p *Peer) { p.Port = 70000 }, "port must be between 1 and 65535"},
 		"unknown transport":   {func(p *Peer) { p.Transport = "udp" }, "transport must be tcp or sctp"},
-		"no applications":     {func(p *Peer) { p.Applications = nil }, "applications must list cx, rx or both"},
-		"unknown application": {func(p *Peer) { p.Applications = []Application{"gx"} }, `applications must list cx, rx or both, not "gx"`},
+		"no applications":     {func(p *Peer) { p.Applications = nil }, "applications must list at least one of cx, rx, sh, s6c and sgd"},
+		"unknown application": {func(p *Peer) { p.Applications = []Application{"gx"} }, `applications must list cx, rx, sh, s6c or sgd, not "gx"`},
+		"service centres without sgd": {
+			func(p *Peer) { p.ServiceCentres = []string{"15550000000"} }, "service_centres need sgd in applications",
+		},
+		"service centre not E.164": {
+			func(p *Peer) { p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"+1555"} },
+			`service_centres must be E.164 numbers of up to 15 digits, not "+1555"`,
+		},
+		"service centre too long": {
+			func(p *Peer) {
+				p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"1234567890123456"}
+			},
+			`service_centres must be E.164 numbers of up to 15 digits, not "1234567890123456"`,
+		},
+		"twice a service centre": {
+			func(p *Peer) {
+				p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"15550000000", "15550000000"}
+			},
+			"service_centres lists 15550000000 twice",
+		},
 		"twice an application": {
 			func(p *Peer) { p.Applications = []Application{ApplicationCx, ApplicationCx} }, "applications lists cx twice",
 		},
@@ -470,6 +489,67 @@ func TestLiveRoutes(t *testing.T) {
 
 	if err := live.UpdateRoute(t.Context(), Route{Application: ApplicationRx}); err != nil || live.Get().Realm(ApplicationRx) != "ims.mnc001.mcc001.3gppnetwork.org" {
 		t.Fatalf("reset to the home domain = %v", err)
+	}
+}
+
+func TestHSSApplicationsDefaultToTheRealmOfCx(t *testing.T) {
+	s := validSettings()
+	s.Routes = []Route{
+		{Application: ApplicationCx, Realm: "epc.mnc001.mcc001.3gppnetwork.org"},
+		{Application: ApplicationRx},
+		{Application: ApplicationSh},
+		{Application: ApplicationS6c},
+	}
+
+	for _, app := range []Application{ApplicationSh, ApplicationS6c} {
+		if got := s.Realm(app); got != "epc.mnc001.mcc001.3gppnetwork.org" {
+			t.Fatalf("%s realm = %q, want that of cx", app, got)
+		}
+	}
+
+	s.Routes[3].Realm = "hss.example.org"
+
+	if got := s.Realm(ApplicationS6c); got != "hss.example.org" {
+		t.Fatalf("s6c realm = %q, want its own", got)
+	}
+
+	if got := s.Realm(ApplicationRx); got != "ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("rx realm = %q, want the home domain", got)
+	}
+
+	if err := (Route{Application: ApplicationSGd}).Validate(); err == nil {
+		t.Fatal("a route of sgd, which goes to hosts, is valid")
+	}
+}
+
+func TestSMSCOfServiceCentre(t *testing.T) {
+	smsc := Peer{
+		ID: "smsc", Host: "smsc.example.org", Address: netip.MustParseAddr("10.0.0.12"), Port: 3868,
+		Transport: TransportSCTP, Applications: []Application{ApplicationSGd}, Priority: DefaultPriority,
+		ServiceCentres: []string{"15550000000", "15550000001"},
+	}
+
+	s := validSettings()
+	s.Peers = []Peer{hss(), smsc}
+
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate = %v", err)
+	}
+
+	if p, ok := s.SMSC("15550000001"); !ok || p.ID != "smsc" {
+		t.Fatalf("SMSC = %+v, %v", p, ok)
+	}
+
+	if _, ok := s.SMSC("15559999999"); ok {
+		t.Fatal("an SMSC for an unknown service centre")
+	}
+
+	other := smsc
+	other.ID, other.Host, other.ServiceCentres = "other", "other.example.org", []string{"15550000001"}
+	s.Peers = append(s.Peers, other)
+
+	if err := s.Validate(); !errors.Is(err, ErrConflict) || err.Error() != "A Diameter peer already serves service centre 15550000001" {
+		t.Fatalf("Validate with a shared service centre = %v", err)
 	}
 }
 

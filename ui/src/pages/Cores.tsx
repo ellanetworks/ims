@@ -90,7 +90,13 @@ const pcscfAddresses = (listeners: { role: string; address: string }[]) => {
 const routeHelp: Record<DiameterRoute["application"], string> = {
   cx: "The realm of your HSS, where Cx requests go.",
   rx: "The realm of your PCRF, where Rx requests go.",
+  sh: "The realm of your HSS, where the IP-SM-GW's Sh requests go.",
+  s6c: "The realm of your HSS, where the IP-SM-GW's S6c requests go.",
 };
+
+// The realm of an empty route: the HSS's for its other applications, else the home domain.
+const defaultRealmLabel = (application: DiameterRoute["application"]) =>
+  application === "sh" || application === "s6c" ? "HSS realm" : "home domain";
 
 // routeState is the state of the best connection on a route: open if any of its peers is.
 const routeState = (route: DiameterRoute | undefined) =>
@@ -298,7 +304,11 @@ export default function Cores() {
         <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
           <DomainName name={r.destination_realm} />
           {r.realm === "" && (
-            <Chip label="home domain" size="small" variant="outlined" />
+            <Chip
+              label={defaultRealmLabel(application)}
+              size="small"
+              variant="outlined"
+            />
           )}
         </Stack>
       ),
@@ -418,7 +428,7 @@ export default function Cores() {
       <SettingsTable
         label="HSS"
         loading={routes.isPending}
-        rows={[realmRow("cx")]}
+        rows={[realmRow("cx"), realmRow("sh"), realmRow("s6c")]}
       />
 
       <SectionHeader
@@ -447,7 +457,7 @@ export default function Cores() {
       <SectionHeader
         id="peers-title"
         title={peers.data ? `Peers (${peers.data.length})` : "Peers"}
-        description="The Diameter connections to your HSS and PCRF."
+        description="The Diameter connections to your HSS, PCRF and SMSC."
       >
         <Button
           variant="contained"

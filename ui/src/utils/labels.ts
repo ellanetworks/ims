@@ -7,6 +7,9 @@ import type { PolicyInterface } from "@/queries/policy";
 export const applicationLabels: Record<DiameterApplication, string> = {
   cx: "HSS",
   rx: "PCRF",
+  sh: "Sh",
+  s6c: "S6c",
+  sgd: "SGd",
 };
 
 export const transportLabels: Record<DiameterTransport, string> = {

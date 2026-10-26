@@ -218,7 +218,7 @@ paths:
         required: true
         schema:
           type: string
-          enum: [cx, rx]
+          enum: [cx, rx, sh, s6c]
     get:
       tags: [Diameter]
       operationId: getDiameterRoute
@@ -1157,10 +1157,12 @@ components:
           type: array
           minItems: 1
           uniqueItems: true
-          description: cx for an HSS or an SLF, rx for a PCRF or a DRA.
+          description: >-
+            cx for an HSS or an SLF, and sh and s6c for its IP-SM-GW functions; rx for a PCRF or a DRA; sgd for an
+            SMSC, and for an MME or SMSF that the IP-SM-GW delivers short messages to.
           items:
             type: string
-            enum: [cx, rx]
+            enum: [cx, rx, sh, s6c, sgd]
         priority:
           type: integer
           minimum: 0
@@ -1170,6 +1172,16 @@ components:
             Requests try the peers serving their application by priority, lowest first, and share them between
             peers of the same priority. HSSs of the same priority must share their state, as the nodes of a
             replicated HSS do.
+        service_centres:
+          type: array
+          uniqueItems: true
+          description: >-
+            The service centre addresses of an SMSC, which needs sgd in applications: the IP-SM-GW sends a short
+            message from a phone to the SMSC of the service centre address the phone gives. No two peers share one.
+          items:
+            type: string
+            pattern: "^[0-9]{1,15}$"
+            examples: ["15550000000"]
 
     DiameterPeer:
       allOf:
@@ -1217,7 +1229,9 @@ components:
       properties:
         realm:
           type: string
-          description: The realm of the HSS for cx, of the PCRF for rx. Absent or empty is the home domain.
+          description: >-
+            The realm of the HSS for cx, sh and s6c, of the PCRF for rx. Absent or empty is the realm of cx for sh
+            and s6c, and the home domain otherwise.
           examples: [epc.mnc001.mcc001.3gppnetwork.org]
 
     DiameterRoute:
@@ -1228,10 +1242,10 @@ components:
           properties:
             application:
               type: string
-              enum: [cx, rx]
+              enum: [cx, rx, sh, s6c]
             destination_realm:
               type: string
-              description: The Destination-Realm of the requests, the home domain if realm is empty.
+              description: The Destination-Realm of the requests, the default of realm if it is empty.
             peers:
               type: array
               description: The peers serving the application, in the order requests try them.

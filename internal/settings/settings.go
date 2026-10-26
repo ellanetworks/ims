@@ -18,7 +18,7 @@ type Settings struct {
 	Operator Operator
 	// Peers are in the order they were created in.
 	Peers []Peer
-	// Routes has one route per application, in the order of Applications.
+	// Routes has one route per routed application, in the order of RoutedApplications.
 	Routes      []Route
 	Policy      Policy
 	CallRecords CallRecords

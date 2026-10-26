@@ -18,6 +18,8 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/rx"
+	"github.com/ellanetworks/core/diameter/s6c"
+	"github.com/ellanetworks/core/diameter/sgd"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/db"
@@ -794,6 +796,41 @@ func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 		route("new.example.org", cx.ApplicationID), route("epc.example.org", rx.ApplicationID),
 	}; !slices.Equal(got, want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)
+	}
+}
+
+// An SMSC, and an MME or SMSF, serve sgd: SGd requests go to their hosts, through no route (TS 29.338 §6.3.1).
+func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
+	st := settings.Settings{
+		Operator: settings.Operator{MCC: "001", MNC: "01"},
+		Peers: []settings.Peer{{
+			ID: "core", Host: "core.epc.example.org", Address: netip.MustParseAddr("192.0.2.1"), Port: 3868,
+			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationS6c, settings.ApplicationSGd},
+			Priority:     10,
+		}},
+		Routes: []settings.Route{
+			{Application: settings.ApplicationCx, Realm: "epc.example.org"},
+			{Application: settings.ApplicationRx},
+			{Application: settings.ApplicationSh},
+			{Application: settings.ApplicationS6c},
+		},
+	}
+
+	p := diameterPeers(st)[0]
+
+	if got, want := p.Routes, []diameter.Route{
+		{Realm: "epc.example.org", Application: cx.ApplicationID, Priority: 10},
+		{Realm: "epc.example.org", Application: s6c.ApplicationID, Priority: 10},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("routes = %+v, want %+v", got, want)
+	}
+
+	if got, want := p.Applications, []diameter.Application{
+		{ID: cx.ApplicationID, VendorID: tgpp.VendorID},
+		{ID: s6c.ApplicationID, VendorID: tgpp.VendorID},
+		{ID: sgd.ApplicationID, VendorID: tgpp.VendorID},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("applications = %+v, want %+v", got, want)
 	}
 }
 

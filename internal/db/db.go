@@ -193,14 +193,15 @@ var migrations = []string{
 		port INTEGER NOT NULL,
 		transport TEXT NOT NULL,
 		applications TEXT NOT NULL,
-		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535)
+		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535),
+		service_centres TEXT NOT NULL
 	);
 	CREATE UNIQUE INDEX diameter_peers_host ON diameter_peers (host) WHERE host != '';
 	CREATE TABLE diameter_routes (
-		application TEXT PRIMARY KEY CHECK (application IN ('cx', 'rx')),
+		application TEXT PRIMARY KEY CHECK (application IN ('cx', 'rx', 'sh', 's6c')),
 		realm TEXT NOT NULL
 	);
-	INSERT INTO diameter_routes VALUES ('cx', ''), ('rx', '');
+	INSERT INTO diameter_routes VALUES ('cx', ''), ('rx', ''), ('sh', ''), ('s6c', '');
 	CREATE TABLE policy (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		interface TEXT NOT NULL,

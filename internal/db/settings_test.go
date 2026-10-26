@@ -73,8 +73,14 @@ func TestPeers(t *testing.T) {
 		Address: netip.MustParseAddr("10.0.0.11"), Port: 3869, Transport: settings.TransportSCTP,
 		Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx}, Priority: 0,
 	}
+	smsc := settings.Peer{
+		ID: "0192a000-0000-7000-8000-000000000003", Host: "smsc.example.org",
+		Address: netip.MustParseAddr("10.0.0.12"), Port: 3868, Transport: settings.TransportSCTP,
+		Applications: []settings.Application{settings.ApplicationSGd}, Priority: 10,
+		ServiceCentres: []string{"15550000000", "15550000001"},
+	}
 
-	for _, p := range []settings.Peer{pcrf, hss} {
+	for _, p := range []settings.Peer{pcrf, hss, smsc} {
 		if err := d.CreatePeer(t.Context(), p); err != nil {
 			t.Fatalf("CreatePeer: %v", err)
 		}
@@ -92,7 +98,7 @@ func TestPeers(t *testing.T) {
 		t.Fatalf("GetSettings: %v", err)
 	}
 
-	if want := []settings.Peer{hss, pcrf}; !reflect.DeepEqual(got.Peers, want) {
+	if want := []settings.Peer{hss, pcrf, smsc}; !reflect.DeepEqual(got.Peers, want) {
 		t.Fatalf("peers = %+v, want %+v in the order of their IDs", got.Peers, want)
 	}
 
@@ -142,9 +148,14 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("GetSettings: %v", err)
 	}
 
-	want := []settings.Route{{Application: settings.ApplicationCx}, {Application: settings.ApplicationRx}}
+	want := []settings.Route{
+		{Application: settings.ApplicationCx},
+		{Application: settings.ApplicationRx},
+		{Application: settings.ApplicationSh},
+		{Application: settings.ApplicationS6c},
+	}
 	if !reflect.DeepEqual(got.Routes, want) {
-		t.Fatalf("routes = %+v, want %+v: the home domain for both", got.Routes, want)
+		t.Fatalf("routes = %+v, want %+v: the default realms", got.Routes, want)
 	}
 
 	rx := settings.Route{Application: settings.ApplicationRx, Realm: "epc.example.org"}
@@ -152,7 +163,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("UpdateRoute: %v", err)
 	}
 
-	if got, _ = d.GetSettings(t.Context()); !reflect.DeepEqual(got.Routes, []settings.Route{want[0], rx}) {
+	if got, _ = d.GetSettings(t.Context()); !reflect.DeepEqual(got.Routes, []settings.Route{want[0], rx, want[2], want[3]}) {
 		t.Fatalf("routes = %+v after the update", got.Routes)
 	}
 

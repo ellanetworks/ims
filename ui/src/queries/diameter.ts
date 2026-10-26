@@ -5,7 +5,10 @@ export interface DiameterIdentity {
   realm: string;
 }
 
-export type DiameterApplication = "cx" | "rx";
+export type DiameterApplication = "cx" | "rx" | "sh" | "s6c" | "sgd";
+
+// SGd requests go to hosts: the SMSC of a service centre address, or the MME or SMSF the HSS names.
+export type DiameterRouteApplication = Exclude<DiameterApplication, "sgd">;
 
 export type DiameterTransport = "tcp" | "sctp";
 
@@ -20,6 +23,8 @@ export interface DiameterPeerParams {
   transport?: DiameterTransport;
   applications: DiameterApplication[];
   priority?: number;
+  // The service centre addresses of an SMSC serving sgd.
+  service_centres?: string[];
 }
 
 export interface DiameterPeerStatus {
@@ -37,9 +42,9 @@ export interface DiameterPeer extends DiameterPeerParams {
 }
 
 // DiameterRoute is where an application's requests go: to destination_realm, through its peers in the order they
-// are tried. An empty realm is the home domain.
+// are tried. An empty realm is the realm of cx for sh and s6c, and the home domain otherwise.
 export interface DiameterRoute {
-  application: DiameterApplication;
+  application: DiameterRouteApplication;
   realm: string;
   destination_realm: string;
   peers: {
@@ -96,7 +101,7 @@ export const listDiameterRoutes = async (): Promise<DiameterRoute[]> => {
 };
 
 export const updateDiameterRoute = (
-  application: DiameterApplication,
+  application: DiameterRouteApplication,
   realm: string,
 ): Promise<DiameterRoute> =>
   apiFetch<DiameterRoute>(
