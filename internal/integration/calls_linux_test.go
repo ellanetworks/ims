@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/sip"
@@ -773,13 +774,12 @@ func (s *scene) restartIMS(lose bool) {
 }
 
 // A UE whose security associations survive a restart of the IMS is still reached. One whose security associations
-// the restart lost is no binding of the P-CSCF (TS 24.229 §5.2.5.1 step 2), whose flow fails at once with a 430
-// (RFC 5626 §5.3.1), which the S-CSCF answers with a 480 (Temporarily Unavailable), until it registers again.
-//
-// Such a UE's own requests, protected by security associations the IMS no longer has, are dropped by the kernel
-// and time out: it detects the P-CSCF as unreachable and registers again (§4.14.2).
+// the restart lost is no binding of the P-CSCF (TS 24.229 §5.2.5.1 step 2), which answers a request toward it with a
+// 404 (Not Found): the S-CSCF answers 480 (Temporarily Unavailable) at once, and starts the HSS based P-CSCF
+// restoration, which has the UE register again (TS 24.229 §5.2.6.4.1, §5.4.3.3, TS 23.380 §5.4.2.1).
 func TestCallAfterARestart(t *testing.T) {
 	sc := newScene(t)
+	sc.hss.SupportRestoration(hsstest.Restoring)
 	sc.caller(0, false, testue.Config{Transport: sip.UDP})
 	b := sc.caller(1, false, testue.Config{Transport: sip.UDP})
 
@@ -805,6 +805,8 @@ func TestCallAfterARestart(t *testing.T) {
 
 	t.Run("security associations lost", func(t *testing.T) {
 		s := sc.in(t)
+		s.hss.Drain()
+
 		start := time.Now()
 
 		failed(t, s.ctx(), invite(t, d, phone(1), testue.CallOptions{}), 480)
@@ -812,5 +814,25 @@ func TestCallAfterARestart(t *testing.T) {
 		if d := time.Since(start); d > 5*time.Second {
 			t.Fatalf("the call failed after %v, want at once", d)
 		}
+
+		for {
+			r := s.hss.Next(t)
+			if sar := r.SAR; sar != nil && sar.PrivateIdentity == subscriberAt(1).impi {
+				if sar.Type != cx.AssignmentUnregisteredUser || !sar.PCSCFRestoration {
+					t.Fatalf("%s, want the P-CSCF restoration", r)
+				}
+
+				break
+			}
+		}
+
+		// The core releases b's IMS PDN connection, with reactivation requested: b connects again, without its security
+		// associations, and registers anew.
+		if err := b.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		b := s.caller(1, false, testue.Config{Transport: sip.UDP})
+		connect(t, s.ctx(), d, b, phone(1), testue.CallOptions{})
 	})
 }

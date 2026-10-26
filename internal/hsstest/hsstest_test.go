@@ -473,6 +473,40 @@ func TestUnregisteredUser(t *testing.T) {
 	}
 }
 
+// TS 29.228 §6.1.2.1: an HSS with the P-CSCF-Restoration-mechanism feature advertises it, unregisters the identity
+// without user data on the indication, or refuses it when no serving node of the user supports the restoration; one
+// without the feature does not advertise it (TS 29.229 Table 7.1.1, §6.2.2.12).
+func TestPCSCFRestoration(t *testing.T) {
+	c := newClient(t)
+
+	restoration := cx.ServerAssignmentRequest{Type: cx.AssignmentUnregisteredUser, PCSCFRestoration: true}
+
+	saa, err := c.sar(cx.AssignmentRegistration)
+	if err != nil || saa.Features&cx.FeaturePCSCFRestoration != 0 {
+		t.Fatalf("SAA = %+v, %v, want no P-CSCF restoration feature", saa, err)
+	}
+
+	c.hss.SupportRestoration(NoRestoringNode)
+
+	_, err = c.sarWith(restoration)
+	wantExperimental(t, err, tgpp.ResultErrorServingNodeFeatureUnsupported)
+
+	if s := c.state(); s.State != Registered {
+		t.Fatalf("subscriber = %+v, want registered still", s)
+	}
+
+	c.hss.SupportRestoration(Restoring)
+
+	saa, err = c.sarWith(restoration)
+	if err != nil || saa.UserData != nil || saa.Features&cx.FeaturePCSCFRestoration == 0 {
+		t.Fatalf("SAA = %+v, %v, want the feature and no User-Data", saa, err)
+	}
+
+	if s := c.state(); s.State != Unregistered || s.ServerName != scscfName {
+		t.Fatalf("subscriber = %+v, want unregistered at %s", s, scscfName)
+	}
+}
+
 func TestDeregistrationStoringTheServerName(t *testing.T) {
 	for _, typ := range []cx.AssignmentType{
 		cx.AssignmentUserDeregistrationStoreServer, cx.AssignmentTimeoutDeregistrationStoreServer,

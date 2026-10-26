@@ -71,10 +71,12 @@ func (r *Registrar) serverAssignment(ctx context.Context, to db.HSS, impi string
 	})
 }
 
-// serverAssignmentOf sends the SAR req with the S-CSCF's name.
+// serverAssignmentOf sends the SAR req with the S-CSCF's name, and the features it supports: the HSS answers with
+// those it supports, which the HSS returned holds (TS 29.229 §7.2).
 func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.ServerAssignmentRequest,
 ) (cx.ServerAssignment, db.HSS, error) {
 	req.ServerName = r.serverName
+	req.Features |= cx.FeaturePCSCFRestoration
 	available := req.UserDataAlreadyAvailable
 
 	ans, from, err := r.cx(ctx, to, func(env tgpp.Envelope) (*diameter.Message, error) {
@@ -91,6 +93,8 @@ func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.Se
 	if err != nil {
 		return cx.ServerAssignment{}, db.HSS{}, fmt.Errorf("SAA %s: %w", req.Type, err)
 	}
+
+	from.Features = uint32(saa.Features)
 
 	return saa, from, nil
 }

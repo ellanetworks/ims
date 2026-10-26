@@ -101,8 +101,8 @@ func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock,
 }
 
 // restore loads the stored registrations after a restart. It deletes those expired, and those that usable refuses,
-// whose UE the P-CSCF can no longer reach: they are no bindings, and a request to them gets the 430 of a flow that
-// no longer exists (RFC 5626 §5.3.1; the 404 of TS 24.229 §5.2.6.4.1 is of P-CSCF restoration, not supported).
+// whose UE the P-CSCF can no longer reach: they are no bindings, and an initial request to them gets the 404 of
+// TS 24.229 §5.2.6.4.1, which starts the P-CSCF restoration.
 func (rs *registrations) restore(ctx context.Context, usable func(*db.PCSCFRegistration) bool,
 ) (expired, lost []db.PCSCFRegistration, err error) {
 	if rs.store == nil {

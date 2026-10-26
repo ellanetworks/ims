@@ -61,10 +61,12 @@ type Registration struct {
 	Bindings   []Binding
 }
 
-// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its answers. Empty is unknown.
+// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its answers, and the Cx features it
+// supports, from the Supported-Features of its SAA (TS 29.229 §7.2). Empty is unknown.
 type HSS struct {
-	Host  string
-	Realm string
+	Host     string
+	Realm    string
+	Features uint32
 }
 
 // Contact is what a binding binds a registration set to (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6): a
@@ -104,10 +106,10 @@ type Binding struct {
 }
 
 const (
-	registrationColumns = `r.id, r.impi, r.impu, r.set_id, s.user_data, s.hss_host, s.hss_realm`
+	registrationColumns = `r.id, r.impi, r.impu, r.set_id, s.user_data, s.hss_host, s.hss_realm, s.hss_features`
 	registrationFrom    = ` FROM registrations r JOIN implicit_sets s ON s.id = r.set_id`
 
-	setColumns = `id, user_data, hss_host, hss_realm, unregistered_identity, wildcard, expires_at`
+	setColumns = `id, user_data, hss_host, hss_realm, hss_features, unregistered_identity, wildcard, expires_at`
 
 	bindingColumns = `id, registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event,
 		impu, registered_at`
@@ -155,9 +157,9 @@ func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error
 
 	if s.ID == 0 {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO implicit_sets (user_data, hss_host, hss_realm, unregistered_identity, wildcard, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			data, s.HSS.Host, s.HSS.Realm, identity, wildcard, expires)
+			`INSERT INTO implicit_sets (user_data, hss_host, hss_realm, hss_features, unregistered_identity, wildcard, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			data, s.HSS.Host, s.HSS.Realm, s.HSS.Features, identity, wildcard, expires)
 		if err != nil {
 			return ImplicitSet{}, err
 		}
@@ -167,9 +169,9 @@ func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error
 		}
 	} else {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE implicit_sets SET user_data = ?, hss_host = ?, hss_realm = ?, unregistered_identity = ?, wildcard = ?,
-				expires_at = ? WHERE id = ?`,
-			data, s.HSS.Host, s.HSS.Realm, identity, wildcard, expires, s.ID)
+			`UPDATE implicit_sets SET user_data = ?, hss_host = ?, hss_realm = ?, hss_features = ?, unregistered_identity = ?,
+				wildcard = ?, expires_at = ? WHERE id = ?`,
+			data, s.HSS.Host, s.HSS.Realm, s.HSS.Features, identity, wildcard, expires, s.ID)
 		if err != nil {
 			return ImplicitSet{}, err
 		}
@@ -320,7 +322,8 @@ func querySets(ctx context.Context, q *sql.DB, query string, args ...any) ([]Imp
 			expires            sql.NullInt64
 		)
 
-		if err := rows.Scan(&s.ID, &s.UserData, &s.HSS.Host, &s.HSS.Realm, &identity, &wildcard, &expires); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserData, &s.HSS.Host, &s.HSS.Realm, &s.HSS.Features, &identity, &wildcard,
+			&expires); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -838,7 +841,8 @@ func loadBindings(ctx context.Context, q *sql.DB, regs []Registration, index map
 func scanRegistration(row scanner) (Registration, error) {
 	var r Registration
 
-	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.SetID, &r.UserData, &r.HSS.Host, &r.HSS.Realm); err != nil {
+	if err := row.Scan(&r.ID, &r.IMPI, &r.IMPU, &r.SetID, &r.UserData, &r.HSS.Host, &r.HSS.Realm,
+		&r.HSS.Features); err != nil {
 		return Registration{}, err
 	}
 

@@ -32,6 +32,7 @@ var migrations = []string{
 		user_data BLOB NOT NULL,
 		hss_host TEXT NOT NULL,
 		hss_realm TEXT NOT NULL,
+		hss_features INTEGER NOT NULL DEFAULT 0,
 		unregistered_identity TEXT,
 		wildcard TEXT,
 		expires_at INTEGER,

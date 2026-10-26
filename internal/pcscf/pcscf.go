@@ -149,13 +149,27 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 // no IPsec, or one of the security associations it registered over. Registration and security associations begin
 // and end together (TS 24.229 §5.2.5.1 step 2, TS 33.203 §7.4): without them, every request of the UE is dropped
 // and none reaches it, so a registration whose sets were lost, by the kernel in a restart that did not keep them,
-// is no binding, and a terminating request gets a 430 (RFC 5626 §5.3.1; no P-CSCF restoration, TS 24.229 §5.2.6.4.1).
+// is no binding, and a terminating request gets a 404, which starts the P-CSCF restoration (TS 24.229 §5.2.6.4.1).
 func (p *PCSCF) secured(r *db.PCSCFRegistration) bool {
 	if !r.Protected {
 		return true
 	}
 
 	return p.sas != nil && p.sas.hasSets(regKeyOf(r))
+}
+
+// HoldsFlow reports, for the Path of a binding at the S-CSCF, whether its first hop is this P-CSCF, and whether the
+// P-CSCF has the registration flow it names: a 404 (Not Found) to an initial request toward a flow it does not have
+// is the P-CSCF's, of no binding (TS 24.229 §5.2.6.4.1); toward a flow it has, the UE's.
+func (p *PCSCF) HoldsFlow(path string) (held, ours bool) {
+	hops, err := sip.ParseAddressList(path)
+	if err != nil || len(hops) == 0 || !p.cfg.Proxy.IsLocal(hops[0].URI) {
+		return false, false
+	}
+
+	_, held = p.regs.flow(hops[0].URI.User)
+
+	return held, true
 }
 
 // Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,

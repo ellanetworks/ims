@@ -210,6 +210,8 @@ type store struct {
 	// override has the HSS download the user profile in every SAA of a registration, the S-CSCF holding it or not
 	// (TS 29.228 §6.6).
 	override bool
+
+	restoration Restoration
 }
 
 // OverrideUserData has the HSS download the user profile in every SAA of a registration, or not.
@@ -218,6 +220,27 @@ func (h *HSS) OverrideUserData(on bool) {
 	defer h.db.mu.Unlock()
 
 	h.db.override = on
+}
+
+// Restoration is the HSS's support of the HSS based P-CSCF restoration (TS 23.380 §5.4).
+type Restoration int
+
+const (
+	// NoRestoration is an HSS without the P-CSCF-Restoration-mechanism feature (TS 29.229 Table 7.1.1).
+	NoRestoration Restoration = iota
+	// Restoring is an HSS with the feature, and a serving node of the user that supports it.
+	Restoring
+	// NoRestoringNode is an HSS with the feature, but no serving node of the user that supports it: a SAR asking for
+	// the restoration gets DIAMETER_ERROR_SERVING_NODE_FEATURE_UNSUPPORTED (TS 29.228 §6.1.2.1, TS 29.229 §6.2.2.12).
+	NoRestoringNode
+)
+
+// SupportRestoration sets the HSS's support of the P-CSCF restoration.
+func (h *HSS) SupportRestoration(r Restoration) {
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
+
+	h.db.restoration = r
 }
 
 func New(t testing.TB, cfg Config) *HSS {
@@ -556,6 +579,19 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 	other := s.ServerName != "" && s.ServerName != sar.ServerName && !s.ReassignPending
 	userData := false
 
+	var features cx.Features
+	if h.db.restoration != NoRestoration {
+		features = cx.FeaturePCSCFRestoration
+	}
+
+	// TS 29.228 §6.1.2.1: an HSS without the feature ignores the indication.
+	restoring := sar.PCSCFRestoration && features != 0 &&
+		(sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentAdministrativeDeregistration)
+
+	if restoring && h.db.restoration == NoRestoringNode {
+		return cx.NewAnswer(req, id, tgpp.Experimental(tgpp.ResultErrorServingNodeFeatureUnsupported), features)
+	}
+
 	switch sar.Type {
 	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
 		if other {
@@ -569,7 +605,8 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		s.State, userData = Registered, !sar.UserDataAlreadyAvailable || h.db.override
 
 		if sar.Type == cx.AssignmentUnregisteredUser {
-			s.State, userData = Unregistered, true
+			// TS 29.228 §6.1.2.1: the restoration downloads no user data.
+			s.State, userData = Unregistered, !restoring
 		} else {
 			s.AuthPending = false
 		}
@@ -596,7 +633,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		return experimental(req, id, tgpp.ResultErrorInAssignmentType)
 	}
 
-	a := cx.ServerAssignment{PrivateIdentity: s.IMPI}
+	a := cx.ServerAssignment{PrivateIdentity: s.IMPI, Features: features}
 
 	// TS 29.228 Table 6.1.2.2: the wildcarded identity an identity falls in, unless the S-CSCF named it.
 	if (sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentNoAssignment) && sar.WildcardedPublicIdentity == "" &&

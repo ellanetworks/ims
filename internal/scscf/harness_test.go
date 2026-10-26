@@ -123,6 +123,11 @@ type fakeHSS struct {
 
 	// override has the HSS download the profile even when the S-CSCF has it (TS 29.228 §6.6).
 	override bool
+
+	// features are the Cx features the HSS supports, and restorationResult its answer to a SAR asking for the P-CSCF
+	// restoration, when not a success.
+	features          cx.Features
+	restorationResult uint32
 }
 
 func newFakeHSS(t *testing.T) *fakeHSS {
@@ -206,7 +211,11 @@ func (h *fakeHSS) serverAssignment(ctx context.Context, req *diameter.Message) *
 	h.sars <- sar
 
 	h.mu.Lock()
-	code, gate := h.sarResult, h.sarGate
+	code, gate, features := h.sarResult, h.sarGate, h.features
+
+	if sar.PCSCFRestoration && h.restorationResult != 0 {
+		code = h.restorationResult
+	}
 	h.mu.Unlock()
 
 	if gate != nil {
@@ -221,7 +230,7 @@ func (h *fakeHSS) serverAssignment(ctx context.Context, req *diameter.Message) *
 		return failure(req, h.id, code)
 	}
 
-	var a cx.ServerAssignment
+	a := cx.ServerAssignment{Features: features}
 
 	switch sar.Type {
 	case cx.AssignmentRegistration, cx.AssignmentReRegistration, cx.AssignmentUnregisteredUser:
@@ -367,6 +376,7 @@ type harness struct {
 	icscf      *siptest.Socket
 	dns        *fakeDNS
 	numbering  Numbering
+	holdsFlow  func(path string) (held, ours bool)
 	sessions   *Sessions
 	sipProxy   *proxy.Proxy
 	scscfLayer *transaction.Layer
@@ -473,7 +483,10 @@ func (h *harness) start() {
 	h.pcscf.reg.Store(h.reg)
 
 	h.sipProxy = proxy.New(proxy.Config{Layer: h.scscfLayer, Logger: h.cfg.Logger, Port: h.scscf.Port(), Clock: h.sipClock})
-	h.sessions = h.reg.Sessions(SessionConfig{Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: func() Numbering { return h.numbering }})
+	h.sessions = h.reg.Sessions(SessionConfig{
+		Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: func() Numbering { return h.numbering },
+		PCSCF: h.holdsFlow,
+	})
 	h.pcscf.sessions.Store(h.sessions)
 
 	h.reg.Start()
