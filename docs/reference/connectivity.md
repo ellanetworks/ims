@@ -13,7 +13,7 @@ description: Reference of the network interfaces and ports of Ella IMS.
 | SIP: S-CSCF | Application Servers | UDP and TCP | `sip.addresses` | `scscf.port` (`5080`) |
 | SIP: MCPTT, `direct` mode | MCPTT clients | UDP and TCP | `sip.addresses` | `mcptt.port` (`5090`) |
 | MCPTT media | MCPTT clients | UDP | `mcptt.media.address` | `mcptt.media.min_port`–`max_port` (`20000`–`20999`), `mcptt.media.control_port` (`21000`) |
-| Diameter: Cx, Rx | HSS, PCRF | TCP or SCTP, set per peer | `diameter.address` | `diameter.port` (`3868`) to receive, over each transport a peer uses; each peer's port (`3868`) to connect |
+| Diameter: Cx, Rx, Sh, S6c, SGd | HSS, PCRF, SMSC, MME, SMSF | TCP or SCTP, set per peer | `diameter.address` | `diameter.port` (`3868`) to receive, over each transport a peer uses; each peer's port (`3868`) to connect |
 | N5 | PCF | HTTP/2, optionally with mutual TLS | `n5.notify.address` | `n5.notify.port` (chosen by the system), while the policy interface is `n5` |
 
 Defaults are in parentheses.

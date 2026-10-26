@@ -65,6 +65,7 @@ nav:
     - Integrate with an Application Server: how_to/integrate_with_application_server.md
     - Install the Android MCPTT App: how_to/install_android_app.md
     - Enable Push-to-Talk: how_to/enable_push_to_talk.md
+    - Enable SMS over IP: how_to/enable_sms_over_ip.md
   - Reference:
     - reference/index.md
     - API:
@@ -75,6 +76,7 @@ nav:
       - SIP: reference/api/sip.md
       - Registrations: reference/api/registrations.md
       - Call Records: reference/api/call_records.md
+      - IP-SM-GW: reference/api/ip_sm_gw.md
       - MCPTT Service Configuration: reference/api/mcptt_service_configuration.md
       - MCPTT Users: reference/api/mcptt_users.md
       - MCPTT Groups: reference/api/mcptt_groups.md
@@ -90,6 +92,7 @@ nav:
     - Architecture: explanation/architecture.md
     - Security: explanation/security.md
     - Push-to-Talk: explanation/push_to_talk.md
+    - SMS over IP: explanation/sms_over_ip.md
 plugins:
   - search
   - glightbox

@@ -49,7 +49,7 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
         - `max_port` (int, optional): The last port of the voice legs. Default `20999`.
         - `control_port` (int, optional): The port of the floor control channels, outside the voice legs' range. Default `21000`.
 
-The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`) must all differ, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
+The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`) must all differ, must not be `5100`, which the built-in IP-SM-GW takes, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
 
 ## Example
 

@@ -4,7 +4,7 @@ description: RESTful API reference for managing Diameter peers and routes.
 
 # Diameter
 
-Diameter peers are the HSSs, SLFs, PCRFs and DRAs Ella IMS connects to. Routes set the realm the requests of each application go to.
+Diameter peers are the HSSs, SLFs, PCRFs, DRAs, SMSCs, MMEs and SMSFs Ella IMS connects to. Routes set the realm the requests of each routed application go to.
 
 ## Get the Diameter Identity
 
@@ -49,8 +49,9 @@ This path returns the list of Diameter peers, in the order they were created in.
 | `address`               | string | IPv4 or IPv6 address of the peer. |
 | `port`                  | int    | Port of the peer. |
 | `transport`             | string | `tcp` or `sctp`. |
-| `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, `rx` for a PCRF or a DRA. |
-| `priority`              | int    | Requests try the peers serving their application by priority, lowest first, and share them between peers of the same priority. |
+| `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, and `sh` and `s6c` for its IP-SM-GW functions; `rx` for a PCRF or a DRA; `sgd` for an SMSC, an MME or an SMSF. |
+| `priority`              | int    | Requests try the peers serving their application by priority, lowest first, and share them between peers of the same priority. SMSCs of the same service centre are tried by priority. |
+| `service_centres`       | array  | Service centre addresses of an SMSC, E.164 numbers without `+`. Absent if none. |
 | `status`                | object | Connection to the peer. |
 | `status.state`          | string | `down`, `connecting`, `open`, `suspect`, `reopen` or `closing`. `down` until the IMS has tried the peer. |
 | `status.since`          | string | Time of the last state change (RFC 3339). |
@@ -157,8 +158,9 @@ This path creates a Diameter peer, which the IMS then connects to.
 | `address`         | string | Yes      | Specific IPv4 or IPv6 address. |
 | `port`            | int    | No       | 1–65535. Default `3868`. |
 | `transport`       | string | No       | `tcp` or `sctp`. Default `tcp`. |
-| `applications`    | array  | Yes      | At least one of `cx` and `rx`, each once. |
+| `applications`    | array  | Yes      | At least one of `cx`, `rx`, `sh`, `s6c` and `sgd`, each once. |
 | `priority`        | int    | No       | 0–65535. Default `10`. |
+| `service_centres` | array  | No       | E.164 numbers of 1 to 15 digits, without `+`, each once. Requires `sgd` in `applications` and a `host`. |
 
 ### Response Codes
 
@@ -287,7 +289,7 @@ This path deletes a Diameter peer.
 
 ## List Diameter Routes
 
-This path returns the route of each routed application: `cx`, then `rx`.
+This path returns the route of each routed application: `cx`, `rx`, `sh`, then `s6c`.
 
 | Method | Path                      |
 | ------ | ------------------------- |
@@ -297,9 +299,9 @@ This path returns the route of each routed application: `cx`, then `rx`.
 
 | Field               | Type   | Description |
 | ------------------- | ------ | ----------- |
-| `application`       | string | `cx` or `rx`. |
-| `realm`             | string | Configured realm: of the HSS for `cx`, of the PCRF for `rx`. Empty if not set. |
-| `destination_realm` | string | Destination-Realm of the requests. The home domain if `realm` is empty. |
+| `application`       | string | `cx`, `rx`, `sh` or `s6c`. |
+| `realm`             | string | Configured realm: of the HSS for `cx`, `sh` and `s6c`, of the PCRF for `rx`. Empty if not set. |
+| `destination_realm` | string | Destination-Realm of the requests. If `realm` is empty: the `cx` realm for `sh` and `s6c`, the home domain otherwise. |
 | `peers`             | array  | Peers serving the application, in the order requests try them, each with its `id`, `host`, `priority` and `status`. |
 
 ### Sample Response
@@ -360,7 +362,7 @@ This path returns the route of an application.
 
 | Name          | Type   | Description |
 | ------------- | ------ | ----------- |
-| `application` | string | `cx` or `rx`. |
+| `application` | string | `cx`, `rx`, `sh` or `s6c`. |
 
 ### Response Codes
 
@@ -404,7 +406,7 @@ This path sets the realm of an application's requests. The next request goes to 
 
 | Name          | Type   | Description |
 | ------------- | ------ | ----------- |
-| `application` | string | `cx` or `rx`. |
+| `application` | string | `cx`, `rx`, `sh` or `s6c`. |
 
 ### Request Body
 
