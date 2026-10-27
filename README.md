@@ -1,14 +1,14 @@
 # Ella IMS (beta)
 
 <p align="center">
-  <img src="docs/images/ims_integration.svg" alt="Ella IMS with Ella Core"/>
+  <img src="docs/images/logo.svg" alt="Ella IMS"/>
 </p>
 
 [![ella-ims](https://snapcraft.io/ella-ims/badge.svg)](https://snapcraft.io/ella-ims)
 
 **Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application. It is designed to be easy to operate, reliable, and secure.
 
-[Get Started Now!](https://docs.ellanetworks.com/ims/tutorials/)
+[Get Started Now!](https://docs.ellanetworks.com/ims/tutorials/first_voice_call/)
 
 ## Key Features
 

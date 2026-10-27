@@ -35,7 +35,7 @@ import { MAX_WIDTH, PAGE_PADDING_X } from "@/utils/layout";
 
 const drawerWidth = 250;
 
-const DOCS_URL = "https://docs.ellanetworks.com";
+const DOCS_URL = "https://docs.ellanetworks.com/ims/";
 
 const NEW_ISSUE_URL = "https://github.com/ellanetworks/ims/issues/new/choose";
 

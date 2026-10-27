@@ -14,7 +14,7 @@ To complete this tutorial, you will need the following:
 
 **Ella Core**
 
-- A 5G network running Ella Core, as built in Ella Core's [Getting Started (5G Network with Radio Hardware)](https://docs.ellanetworks.com/tutorials/getting_started_hardware/) tutorial. In this tutorial, Ella Core's N6 interface, `ens3`, has the address `10.6.0.2`.
+- A 5G network running Ella Core, as built in Ella Core's [Getting Started (5G Network with Radio Hardware)](https://docs.ellanetworks.com/core/tutorials/getting_started_hardware/) tutorial. In this tutorial, Ella Core's N6 interface, `ens3`, has the address `10.6.0.2`.
 
 **Ella IMS**
 

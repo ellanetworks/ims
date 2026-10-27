@@ -10,7 +10,7 @@ source-code: https://github.com/ellanetworks/ims
 issues:
   - https://github.com/ellanetworks/ims/issues
 website:
-  - https://docs.ellanetworks.com
+  - https://docs.ellanetworks.com/ims/
 grade: stable
 confinement: strict
 license: BUSL-1.1

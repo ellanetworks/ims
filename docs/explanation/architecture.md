@@ -28,7 +28,7 @@ Ella IMS stores no subscribers. It relies on two functions of the core network:
 - **The HSS** holds the subscribers: their identities, the keys to authenticate them, and the filter criteria that bring in Application Servers. Ella IMS reaches it over Diameter (Cx).
 - **The policy function** has the core set up the dedicated bearers (4G) or QoS flows (5G) that carry voice and video. Ella IMS reaches it over Diameter (Rx), or a PCF over HTTP (N5).
 
-Ella Core provides both. For how it works with an IMS, see Ella Core's [IMS Integration](https://docs.ellanetworks.com/explanation/ims_integration/).
+Ella Core provides both. For how it works with an IMS, see Ella Core's [IMS Integration](https://docs.ellanetworks.com/core/explanation/ims_integration/).
 
 ## Standards
 

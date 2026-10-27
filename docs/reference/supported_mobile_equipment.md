@@ -8,7 +8,7 @@ Ella IMS follows 3GPP standards. Any compliant core network, Application Server 
 
 ## Core Networks
 
-- **[Ella Core](https://docs.ellanetworks.com/)**
+- **[Ella Core](https://docs.ellanetworks.com/core/)**
 - **[Open5GS](https://open5gs.org/)**
 
 ## Phones

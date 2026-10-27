@@ -63,7 +63,7 @@ describe("App", () => {
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
 
     const docs = screen.getByRole("link", { name: "Documentation" });
-    expect(docs).toHaveAttribute("href", "https://docs.ellanetworks.com");
+    expect(docs).toHaveAttribute("href", "https://docs.ellanetworks.com/ims/");
     expect(docs).toHaveAttribute("target", "_blank");
 
     const bug = screen.getByRole("link", { name: "Report a bug" });

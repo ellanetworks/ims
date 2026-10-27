@@ -67,4 +67,4 @@ sudo ip route add 10.46.0.0/16 via 10.6.0.2 mtu lock 1400
 
 ## 6. Point Ella Core to Ella IMS
 
-In Ella Core, set **Operator → IMS → P-CSCF Addresses** to `10.6.0.5`, then follow Ella Core's [Enable Voice](https://docs.ellanetworks.com/how_to/enable_voice/) guide.
+In Ella Core, set **Operator → IMS → P-CSCF Addresses** to `10.6.0.5`, then follow Ella Core's [Enable Voice](https://docs.ellanetworks.com/core/how_to/enable_voice/) guide.
