@@ -27,6 +27,9 @@ type Config struct {
 	IMSHost  string
 	IMSRealm string
 
+	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
+	IMSAddress netip.Addr
+
 	UEs []netip.Addr
 
 	Logger *slog.Logger
@@ -99,6 +102,7 @@ func New(t testing.TB, cfg Config) *PCRF {
 		Peer: diameter.Peer{
 			ID:           imsPeer,
 			Host:         cfg.IMSHost,
+			Addresses:    imsAddresses(cfg.IMSAddress),
 			Applications: []diameter.Application{{ID: rx.ApplicationID, VendorID: tgpp.VendorID}},
 		},
 		Handler: mux,
@@ -447,4 +451,13 @@ func (p *PCRF) ReAuth(ctx context.Context, session string, r rx.ReAuthRequest) (
 	}
 
 	return rx.ParseReAuthAnswer(ans)
+}
+
+// imsAddresses are the addresses of the IMS peer: none for the fake's own.
+func imsAddresses(a netip.Addr) []netip.Addr {
+	if !a.IsValid() {
+		return nil
+	}
+
+	return []netip.Addr{a}
 }

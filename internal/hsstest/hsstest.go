@@ -35,6 +35,9 @@ type Config struct {
 	IMSHost  string
 	IMSRealm string
 
+	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
+	IMSAddress netip.Addr
+
 	Logger *slog.Logger
 }
 
@@ -290,6 +293,7 @@ func newHSS(t testing.TB, cfg Config, db *store) *HSS {
 		Peer: diameter.Peer{
 			ID:           imsPeer,
 			Host:         cfg.IMSHost,
+			Addresses:    imsAddresses(cfg.IMSAddress),
 			Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
 		},
 		Handler: mux,
@@ -760,4 +764,13 @@ func (h *HSS) PPR(ctx context.Context, impi string) (cx.PushProfile, error) {
 	}
 
 	return cx.ParsePushProfileAnswer(ans)
+}
+
+// imsAddresses are the addresses of the IMS peer: none for the fake's own.
+func imsAddresses(a netip.Addr) []netip.Addr {
+	if !a.IsValid() {
+		return nil
+	}
+
+	return []netip.Addr{a}
 }
