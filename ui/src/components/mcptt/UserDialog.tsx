@@ -13,6 +13,7 @@ import { listRegistrations } from "@/queries/registrations";
 import {
   expandID,
   expandIMPU,
+  isMCPTTIdentity,
   groupLabel,
   groupsOf,
   sameIdentity,
@@ -62,7 +63,7 @@ export default function UserDialog({
     ...new Set(
       (registered.data?.items ?? []).flatMap((r) =>
         identitiesOf(r)
-          .filter((i) => !i.barred)
+          .filter((i) => !i.barred && isMCPTTIdentity(i.uri))
           .map((i) => i.uri),
       ),
     ),

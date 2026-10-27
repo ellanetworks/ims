@@ -34,7 +34,7 @@ Edit the HSS peer, check **Sh** and **S6c**, and click **Update**. If the HSS's 
 
 ## 4. Add iFCs in the HSS
 
-In the HSS, add two iFCs to the subscribers' service profiles, with the **IP-SM-GW Name** of the **Cores** page as the server name, e.g. `sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org`, and default handling `SESSION_CONTINUED`:
+In the HSS, add two iFCs to the subscribers' service profiles (with Ella Core, the service profile of the MMTel set), with the **IP-SM-GW Name** of the **Cores** page as the server name, e.g. `sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org`, and default handling `SESSION_CONTINUED`:
 
 - A trigger point on method `REGISTER`, with the subscriber's MSISDN as the service information, and **Include Register Request** and **Include Register Response** set.
 - A trigger point on method `MESSAGE`, session case `ORIGINATING_REGISTERED`, and header `Content-Type` matching `application/vnd\.3gpp\.sms`.

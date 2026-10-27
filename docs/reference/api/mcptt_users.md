@@ -27,7 +27,7 @@ This path returns the list of users, in the order they were created in.
 | ----------------------- | ------ | ----------- |
 | `mcptt_id`              | string | MCPTT ID of the user. |
 | `alias`                 | string | Alias of the user (TS 24.484 §8.3.2.7). Empty if none. |
-| `impus`                 | array  | IMS public user identities of the user. |
+| `impus`                 | array  | IMS public user identities the user's clients register, such as `sip:mcptt-<MSISDN>@<home domain>`. |
 | `implicit_affiliations` | array  | Group IDs the user's clients are affiliated to when they register. |
 
 ### Sample Response

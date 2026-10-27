@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   expandID,
   expandIMPU,
+  isMCPTTIdentity,
   formatDuration,
   formatElapsed,
   identityKey,
@@ -71,5 +72,13 @@ describe("mcptt durations", () => {
     expect(formatElapsed("2026-10-25T12:00:00Z", at + 3_725_000)).toBe(
       "1:02:05",
     );
+  });
+});
+
+describe("isMCPTTIdentity", () => {
+  it("tells the MCPTT identity from the voice and SMS identities", () => {
+    expect(isMCPTTIdentity("sip:mcptt-15550000001@ims.example.org")).toBe(true);
+    expect(isMCPTTIdentity("sip:+15550000001@ims.example.org")).toBe(false);
+    expect(isMCPTTIdentity("tel:+15550000001")).toBe(false);
   });
 });

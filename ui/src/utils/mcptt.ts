@@ -32,8 +32,13 @@ export const expandID = (input: string, domain: string): string | undefined => {
 };
 
 // expandIMPU is the IMS public user identity an operator typed (TS 23.003 §13.4): a URI as is, user@host a SIP URI of
-// it, user alone a SIP URI of the home domain, an E.164 number, with or without its +, the tel URI of it: the IMPU
-// Ella Core's HSS gives a subscriber of that MSISDN, which the server compares exactly.
+// it, user alone a SIP URI of the home domain, an E.164 number, with or without its +, the MCPTT identity of it,
+// sip:mcptt-<MSISDN>@<home domain>: the IMPU Ella Core's HSS gives the MCPTT client of that MSISDN, which the server
+// compares exactly.
+// isMCPTTIdentity tells the MCPTT identity Ella Core's HSS gives a subscriber, sip:mcptt-<MSISDN>@<home domain>.
+export const isMCPTTIdentity = (uri: string): boolean =>
+  /^sips?:mcptt-[^@]+@/i.test(uri);
+
 export const expandIMPU = (
   input: string,
   homeDomain: string,

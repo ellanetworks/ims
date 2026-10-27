@@ -10,7 +10,6 @@ This guide installs Ella MCPTT, the push-to-talk app for Ella IMS, on Android ph
 
 - **Phones**: Android 14 or later.
 - **SIMs**: access rules (ARA-M) that allow the app's signing certificate, SHA-1 `692EDA27666062D3982DF420E1FEC26FE806335B`.
-- **SIMs**: an ISIM whose EF.IMPU has the subscriber's MCPTT identity, `sip:mcptt-<MSISDN>@<home domain>`, after its first record. The app registers that identity, and shows **no MCPTT identity** on a SIM without it.
 
 ## 1. Download the app
 

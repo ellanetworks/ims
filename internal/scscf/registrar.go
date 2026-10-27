@@ -405,6 +405,21 @@ func (r *Registrar) pendingChallenge(k authKey) *challenge {
 	return r.challenges[k]
 }
 
+// challengeOf returns the pending challenge of the private identity that the credentials answer, of any public
+// user identity or flow.
+func (r *Registrar) challengeOf(impi string, c *credentials) (authKey, *challenge) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for k, ch := range r.challenges {
+		if k.impi == impi && c.answers(ch) {
+			return k, ch
+		}
+	}
+
+	return authKey{}, nil
+}
+
 func (r *Registrar) dropChallenge(k authKey, ch *challenge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -9,7 +9,8 @@ This guide enables group calls with floor control with Ella IMS's built-in Missi
 ## Prerequisites
 
 - **Ella Core**: integrated with Ella IMS, as in [Integrate with Ella Core](integrate_with_ella_core.md), and serving as the HSS.
-- **Phones**: the Ella MCPTT app, installed as in [Install the Android MCPTT App](install_android_app.md).
+- **Phones**: the Ella MCPTT app, installed as in [Install the Android MCPTT App](install_android_app.md), and an own IMS client that registers with a `reg-id` (SIP outbound, RFC 5626).
+- **SIMs**: with an ISIM you can program.
 
 ## 1. Enable the MCPTT server
 
@@ -29,7 +30,7 @@ In the Ella Core UI:
 - **Profiles → Create**: an MC profile, e.g. `mcptt`. On it, **Add Policy**: a name, data network `mcx`, 5QI/QCI `69`, ARP `3`, **May pre-empt**, **Not pre-emptable**.
 - On the MC profile, also add the policies the users had on their previous profile, e.g. `internet` and `ims`.
 - **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
-- **Operator → IMS → Add Service Profile**: name `mcptt`, **Add from preset** the **MCPTT** preset, then **Add**.
+- **Operator → IMS → Add Service Profile**: name `mcptt`; under **Add from preset**, select the **MCPTT** preset and click **Add**, then click **Add**.
 - **Profiles →** the MC profile **→** edit **IMS Service Profiles**: set **MCPTT** to `mcptt`, then **Save**.
 - **Subscribers**: put each user on the MC profile, with an MSISDN.
 
@@ -56,7 +57,7 @@ Go to **Push-to-Talk → Groups**, click **Add Group**, and enter a group ID, e.
 
 On each phone:
 
-- Program the SIM's ISIM with the MCPTT identity as the second EF.IMPU record, after `sip:+<MSISDN>@<home domain>`. The app registers it, alongside the phone's own IMS registration.
+- Program the SIM's ISIM with the MCPTT identity in a record of EF.IMPU after the first, which is `sip:+<MSISDN>@<home domain>`.
 - Set the APN to `mcx`.
 - In the app's settings, set the user's MCPTT ID as Ella IMS shows it, e.g. `alice@ims.mnc001.mcc001.3gppnetwork.org`, and groups.
 

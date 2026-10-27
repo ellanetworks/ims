@@ -163,7 +163,13 @@ func (r *Registrar) handleLocked(ctx context.Context, rr *registerRequest) *sip.
 	}
 
 	if ch := r.pendingChallenge(rr.authKey()); rr.creds.answers(ch) {
-		return r.answer(ctx, rr, ch)
+		return r.answer(ctx, rr, rr.authKey(), ch)
+	}
+
+	// A response to the challenge of another public user identity of the private identity does not answer it
+	// (TS 24.229 §5.4.1.2.2 step 4).
+	if k, ch := r.challengeOf(rr.impi, rr.creds); ch != nil {
+		return r.answer(ctx, rr, k, ch)
 	}
 
 	if !rr.protected || r.reauthDue(rr) {
@@ -428,33 +434,33 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 	return res
 }
 
-func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challenge) *sip.Response {
+func (r *Registrar) answer(ctx context.Context, rr *registerRequest, k authKey, ch *challenge) *sip.Response {
 	c := rr.creds
 
 	switch {
 	case c.auts == "" && c.response != "" && !rr.protected:
 		return r.challenge(ctx, rr, nil, 0, ch.hss)
 	case rr.callID != ch.callID || rr.impuKey != ch.impuKey || !strings.EqualFold(c.algorithm, algorithmAKAv1):
-		return r.authFailed(ctx, rr, ch)
+		return r.authFailed(ctx, rr, k, ch)
 	case c.auts != "":
 		auts, err := base64.StdEncoding.DecodeString(c.auts)
 		if err != nil || len(auts) != autsLen || ch.resyncs >= maxResyncs {
-			return r.authFailed(ctx, rr, ch)
+			return r.authFailed(ctx, rr, k, ch)
 		}
 
-		r.dropChallenge(rr.authKey(), ch)
+		r.dropChallenge(k, ch)
 
 		return r.challenge(ctx, rr, &cx.Resync{RAND: ch.vector.rand, AUTS: auts}, ch.resyncs+1, ch.hss)
 	case c.response == "":
-		return r.authFailed(ctx, rr, ch)
+		return r.authFailed(ctx, rr, k, ch)
 	case !verify(c, rr.req.Method, ch.nonce, ch.vector.xres):
-		return r.authFailed(ctx, rr, ch)
+		return r.authFailed(ctx, rr, k, ch)
 	}
 
-	r.dropChallenge(rr.authKey(), ch)
+	r.dropChallenge(k, ch)
 
 	r.mu.Lock()
-	r.authAt[rr.authKey()] = authenticated{at: r.clock.Now(), reauth: r.reauth[rr.impi]}
+	r.authAt[k] = authenticated{at: r.clock.Now(), reauth: r.reauth[rr.impi]}
 	r.mu.Unlock()
 
 	rr.hss, rr.initial = ch.hss, ch.initial
@@ -462,8 +468,8 @@ func (r *Registrar) answer(ctx context.Context, rr *registerRequest, ch *challen
 	return r.authenticated(ctx, rr)
 }
 
-func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, ch *challenge) *sip.Response {
-	r.dropChallenge(rr.authKey(), ch)
+func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, k authKey, ch *challenge) *sip.Response {
+	r.dropChallenge(k, ch)
 
 	rr.authFailed = true
 
