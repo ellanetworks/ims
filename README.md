@@ -1,7 +1,7 @@
 # Ella IMS (beta)
 
 <p align="center">
-  <img src="docs/images/logo.svg" alt="Ella IMS"/>
+  <img src="docs/images/logo.svg" alt="Ella IMS" width="120"/>
 </p>
 
 [![ella-ims](https://snapcraft.io/ella-ims/badge.svg)](https://snapcraft.io/ella-ims)
