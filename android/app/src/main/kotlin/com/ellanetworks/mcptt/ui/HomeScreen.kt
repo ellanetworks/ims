@@ -86,7 +86,7 @@ import com.ellanetworks.mcptt.ui.theme.Spacing
 import kotlinx.coroutines.delay
 
 /** How long a transient floor state (busy, revoked) stays shown, then the call's state again. */
-private const val TRANSIENT_MS = 2_000L
+internal const val TRANSIENT_MS = 2_000L
 
 /** The name a user is shown by: their alias, until the CMS, the user part of their MCPTT ID. */
 fun alias(mcpttId: String): String = groupName(mcpttId)
@@ -349,7 +349,7 @@ private fun GroupHeader(group: String, pickable: Boolean, onPick: () -> Unit) {
  * request refused, connecting, held; without a call, idle.
  */
 @Composable
-private fun pttOf(registered: Boolean, call: CallInfo?, failed: Failed?): Pair<PttState, String> {
+internal fun pttOf(registered: Boolean, call: CallInfo?, failed: Failed?): Pair<PttState, String> {
     val busy = transient(call?.refused)
     val failing = transient(failed?.at)
     // The user's own grant is no one else talking: before its first frame, or a tap already released.
@@ -369,7 +369,7 @@ private fun pttOf(registered: Boolean, call: CallInfo?, failed: Failed?): Pair<P
 }
 
 /** A press of [group] that set up no call (Ended.setupFailed), its INVITE's [status], [at] when. */
-private data class Failed(val group: String, val status: Int, val at: Long)
+internal data class Failed(val group: String, val status: Int, val at: Long)
 
 /** Why the call was not set up, for the user: who else is there, or whether they may. */
 @Composable

@@ -20,6 +20,21 @@ As CI does:
 
 In Android Studio, run `:app:bindMobile` once before the first sync, so that the classes of the Go session resolve.
 
+## Testing on phones
+
+The JVM tests cover the app's logic; the Go session's are in `../mcptt/mobile` and `../e2e`. What only a phone shows,
+checked before a release on each phone model of the fleet:
+
+- PTT both ways in a group call, the speech heard: `scripts/ptt-timing.sh` for the timings, the call media line
+  (`heard` equal to the talker's `sent`) in logcat.
+- PTT from the hardware key with the app in the background, after the service started in the background (a reboot,
+  or an update): refused with the notice until the app is opened once, then heard.
+- The dedicated bearer of the PTT's speech (QCI 65 in 4G, 5QI 65 in 5G) set up by the radio.
+
+No instrumented tests: under instrumentation the app's process runs in the foreground with the microphone's
+capability, which hides the while-in-use rule of the microphone; the emulator's ARM translation cannot run the Go
+runtime (`mrs midr_el1`).
+
 ## Signing
 
 The app runs AKA on the ISIM, which only an app signed by a certificate of the SIM's ARA-M rules may.
