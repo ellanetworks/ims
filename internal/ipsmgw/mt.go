@@ -68,13 +68,18 @@ func (a *AS) RoutingInfo(ctx context.Context, id diameter.Identity, req *diamete
 		SMSFSupport: true,
 	})
 
-	reg, known := a.reg.byUser(r.MSISDN, routing.IMSI)
-
 	var re *s6c.ResultError
+
+	imsi := routing.IMSI
+	if errors.As(err, &re) {
+		imsi = re.IMSI
+	}
+
+	reg, known := a.reg.byUser(r.MSISDN, imsi)
 
 	switch {
 	case err == nil:
-	case errors.As(err, &re) && re.Experimental && (!known || !re.IsExperimental(tgpp.ResultErrorAbsentUser)):
+	case re != nil && re.Experimental && (!known || !re.IsExperimental(tgpp.ResultErrorAbsentUser)):
 		ans, aerr := s6c.NewSendRoutingInfoForSMErrorAnswer(req, id, *re, r.SMSFSupport)
 		if aerr != nil {
 			return s6c.NewErrorAnswer(req, id, aerr)

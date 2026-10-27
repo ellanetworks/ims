@@ -3,7 +3,7 @@ module github.com/ellanetworks/ims
 go 1.27.3
 
 require (
-	github.com/ellanetworks/core/diameter v0.0.0-20261026150343-523cedc1617d
+	github.com/ellanetworks/core/diameter v0.0.0-20261027113435-b424f57240d2
 	github.com/ellanetworks/core/nas v0.0.0-20261022122753-8d5c8bdaaf89
 	github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f
 	github.com/ellanetworks/ims/sip v0.0.0-20261015132646-e86e133378fd

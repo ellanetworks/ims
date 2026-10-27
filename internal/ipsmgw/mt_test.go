@@ -285,8 +285,21 @@ func TestDeliveredOverIMS(t *testing.T) {
 // A user registered of its IMSI, without an MSISDN in the service information, is found of the IMSI the HSS gives
 // (TS 24.341 §5.3.3.2, §5.3.3.3), and the short message goes over IMS.
 func TestDeliveredOverIMSOfIMSI(t *testing.T) {
+	for name, hss := range map[string]func(*world){
+		"routing": func(w *world) { w.router.routing = mmeRouting() },
+		"absent user": func(w *world) {
+			w.router.err = &s6c.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorAbsentUser), IMSI: "001010000000001"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) { deliveredOverIMSOfIMSI(t, hss) })
+	}
+}
+
+func deliveredOverIMSOfIMSI(t *testing.T, hss func(*world)) {
+	t.Helper()
+
 	w := newWorld(t, newFakeStore())
-	w.router.routing = mmeRouting()
+	hss(w)
 
 	impu := "sip:001010000000001@" + home
 	ue := "REGISTER sip:" + home + " SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1;branch=z9hG4bK-ue\r\n" +
