@@ -460,3 +460,51 @@ func TestFlowPerRegistrationSet(t *testing.T) {
 		t.Fatalf("second set's binding %+v, want it replaced", b)
 	}
 }
+
+// TS 24.229 §3.1, §5.4.1.2.2 step 6d: the phone's IMS client and an MCPTT client of one device register
+// public user identities of different sets with the same private identity, instance ID and reg-id. They
+// are challenged and authenticated at the same time, each on its own flow, and neither replaces the other.
+func TestUAsOfOneInstanceRegisterSetsOfTheirOwn(t *testing.T) {
+	h, one := flowsHarness(t)
+	two := h.newUE()
+	two.impu, two.path = secondIMPU, "<sip:token2@pcscf."+homeDomain+";lr;ob>"
+
+	o1 := registerOptions{contact: one.flowContact(one.contact, "1")}
+	o2 := registerOptions{contact: two.flowContact(two.contact, "1")}
+
+	n1, n2 := one.challenged(o1), two.challenged(o2)
+
+	o1.auth, o2.auth = one.protected(n1, testVector.XRES), two.protected(n2, testVector.XRES)
+	wantStatus(t, one.send(o1), 200)
+	wantStatus(t, two.send(o2), 200)
+
+	for impu, contact := range map[string]string{testIMPU: one.contact, secondIMPU: two.contact} {
+		if b := h.registration(impu).Bindings; len(b) != 1 || b[0].Contact.URI != contact {
+			t.Fatalf("%s bindings %+v, want %s alone", impu, b, contact)
+		}
+	}
+
+	wantStatus(t, one.send(registerOptions{auth: o1.auth, contact: o1.contact}), 200)
+	wantStatus(t, two.send(registerOptions{auth: o2.auth, contact: o2.contact}), 200)
+}
+
+func TestSameContact(t *testing.T) {
+	flow := db.Contact{URI: "sip:a@127.0.0.1:5060", Instance: testInstance, RegID: 1}
+	other := flow
+	other.URI = "sip:b@127.0.0.1:5062"
+
+	for name, tc := range map[string]struct {
+		a, b db.Contact
+		want bool
+	}{
+		"same flow":                   {flow, flow, true},
+		"same flow of another UA":     {flow, other, false},
+		"another flow of the address": {flow, db.Contact{URI: flow.URI, Instance: testInstance, RegID: 2}, false},
+		"another address":             {db.Contact{URI: flow.URI}, db.Contact{URI: other.URI}, false},
+		"equivalent address":          {db.Contact{URI: flow.URI}, db.Contact{URI: "SIP:a@127.0.0.1:5060"}, true},
+	} {
+		if got := SameContact(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: SameContact = %t, want %t", name, got, tc.want)
+		}
+	}
+}

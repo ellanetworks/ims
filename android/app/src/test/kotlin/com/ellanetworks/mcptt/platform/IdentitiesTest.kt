@@ -16,6 +16,17 @@ class IdentitiesTest {
         assertEquals("ims.mnc123.mcc310.3gppnetwork.org", Identities.fromImsi("310123000000001", 3).homeDomain)
     }
 
+    // The MCPTT identity is the EF_IMPU record sip:mcptt-<MSISDN>@<domain>, whatever its place; without one, none.
+    @Test
+    fun mcpttImpu() {
+        val domain = "ims.mnc001.mcc001.3gppnetwork.org"
+        val ids = Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "tel:+15550000001", "sip:mcptt-15550000001@$domain"), domain, isim = true)
+        assertEquals("sip:+15550000001@$domain", ids.impu)
+        assertEquals("sip:mcptt-15550000001@$domain", ids.mcpttImpu)
+        assertNull(Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "sip:mcptt-@$domain", "tel:mcptt-1"), domain, isim = true).mcpttImpu)
+        assertNull(Identities.fromImsi("001010000000001", 2).mcpttImpu)
+    }
+
     // TS 31.103 §4.2.8: an FQDN, IPv4 or IPv6, as text or octets.
     @Test
     fun pcscfs() {

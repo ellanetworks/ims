@@ -75,11 +75,12 @@ func (c contactRequest) binds(stored db.Contact) bool {
 	return err == nil && u.Equivalent(c.addr.URI)
 }
 
-// authKey is what the REGISTER authenticates: its flow, or the private identity's registration.
+// authKey is what the REGISTER authenticates: its flow of the public user identity, or the private identity's
+// registration.
 func (rr *registerRequest) authKey() authKey {
 	for _, c := range rr.contacts {
 		if c.regID != 0 {
-			return authKey{impi: rr.impi, instance: c.instance, regID: c.regID}
+			return authKey{impi: rr.impi, impu: rr.impuKey, instance: c.instance, regID: c.regID}
 		}
 	}
 

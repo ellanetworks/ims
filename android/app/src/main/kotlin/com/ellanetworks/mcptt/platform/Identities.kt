@@ -11,7 +11,22 @@ data class Identities(val impi: String, val impus: List<String>, val homeDomain:
     val impu: String
         get() = impus.first()
 
+    /**
+     * The MCPTT public user identity, sip:mcptt-<MSISDN>@<domain>: a record of EF_IMPU after the default one, of an
+     * implicit registration set of its own, which the app registers beside the phone's IMS client (TS 24.229 §3.1).
+     */
+    val mcpttImpu: String?
+        get() = impus.firstOrNull(::isMcpttIdentity)
+
     companion object {
+        fun isMcpttIdentity(impu: String): Boolean {
+            val (scheme, rest) = impu.split(":", limit = 2).takeIf { it.size == 2 } ?: return false
+            return (scheme.equals("sip", ignoreCase = true) || scheme.equals("sips", ignoreCase = true)) &&
+                rest.startsWith(MCPTT_USER_PREFIX) && rest.indexOf('@') > MCPTT_USER_PREFIX.length
+        }
+
+        private const val MCPTT_USER_PREFIX = "mcptt-"
+
         /** The identities of the IMSI, of its MNC's length (TS 23.003 §13.2, §13.3, §13.4B). */
         fun fromImsi(imsi: String, mncLength: Int): Identities {
             require(imsi.length in 6..15 && imsi.all(Char::isDigit) && mncLength in 2..3) { "IMSI $imsi" }

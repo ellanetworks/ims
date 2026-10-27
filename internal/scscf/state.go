@@ -85,11 +85,13 @@ func (s *state) bound(c db.Contact) bool {
 	})
 }
 
-// SameContact reports whether two bindings bind the same contact: the same flow, or the same contact
-// address (RFC 5626 §6, RFC 3261 §10.3).
+// SameContact reports whether two bindings, of any registration sets, bind the same contact: the same contact
+// address, and the same flow when either is one (RFC 5626 §6, RFC 3261 §10.3). The instance ID alone does not tell
+// a UA across sets: a public user identity and the instance ID identify a UA instance (TS 24.229 §3.1), and two UAs
+// of one device register different public user identities with its IMEI.
 func SameContact(a, b db.Contact) bool {
-	if a.Flow() || b.Flow() {
-		return a.Instance == b.Instance && a.RegID == b.RegID
+	if (a.Flow() || b.Flow()) && (a.Instance != b.Instance || a.RegID != b.RegID) {
+		return false
 	}
 
 	ua, errA := sip.ParseURI(a.URI)

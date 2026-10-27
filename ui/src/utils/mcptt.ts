@@ -42,7 +42,8 @@ export const expandIMPU = (
   if (s === "") return undefined;
   if (/^(sips?|tel):/i.test(s)) return s;
   if (s.includes("@")) return `sip:${s}`;
-  if (/^\+?\d{1,15}$/.test(s)) return `tel:+${s.replace(/^\+/, "")}`;
+  if (/^\+?\d{1,15}$/.test(s))
+    return `sip:mcptt-${s.replace(/^\+/, "")}@${homeDomain}`;
   return /^[A-Za-z0-9\-_.!~*'()]+$/.test(s)
     ? `sip:${s}@${homeDomain}`
     : undefined;

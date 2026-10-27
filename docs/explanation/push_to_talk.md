@@ -18,7 +18,9 @@ The MCPTT server's name is `sip:mcptt.<home domain>`, and the home domain comes 
 
 ## Users and groups
 
-The HSS knows subscribers. The MCPTT server knows MCPTT users, identified by an MCPTT ID such as `alice`, and the groups they belong to. Each MCPTT user maps to the IMS identities of their subscriber, which is how the server ties a registered phone to a person.
+The HSS knows subscribers. The MCPTT server knows MCPTT users, identified by an MCPTT ID such as `alice`, and the groups they belong to. Each MCPTT user maps to the MCPTT identity of their subscriber, `sip:mcptt-<MSISDN>@<home domain>`, which is how the server ties a registered phone to a person.
+
+The MCPTT identity is an implicit registration set of its own, apart from the subscriber's voice and SMS identities. The app registers it with the same SIM as the phone's own IMS client, and neither registration replaces the other.
 
 ## Media
 

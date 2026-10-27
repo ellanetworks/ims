@@ -332,9 +332,12 @@ func (r *Registrar) unlockProfiles() {
 }
 
 // authKey identifies what the S-CSCF authenticates: a private identity's registration, or each of its
-// registration flows, a registered contact of its own (TS 33.203 §6.1 NOTE 2).
+// registration flows, a registered contact of its own (TS 33.203 §6.1 NOTE 2). A flow is a public user
+// identity's: two UAs of one private identity and instance ID register flows of their own when they register
+// public user identities of different sets (TS 24.229 §3.1, §5.4.1.2.2 step 6d).
 type authKey struct {
 	impi     string
+	impu     string
 	instance string
 	regID    int64
 }

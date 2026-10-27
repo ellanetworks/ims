@@ -232,11 +232,15 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
                 fail(e)
                 return@collectLatest
             }
+            val impu = ids.mcpttImpu ?: run {
+                state.value = Status.Failed(NO_MCPTT_IDENTITY)
+                return@collectLatest
+            }
             combine(network.current, accessNetwork.current) { n, ani -> n to ani }
                 .distinctUntilChanged()
                 .collectLatest { (n, ani) ->
                     try {
-                        withContext(Dispatchers.IO) { onNetwork(user, ids, imei, n, ani) }
+                        withContext(Dispatchers.IO) { onNetwork(user, ids, impu, imei, n, ani) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -266,7 +270,7 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
      * The session on the network [n]: made on the first, told of the next. Without one, the session waits, shown with
      * no network: Go learns of the next (SetNetwork, its sockets new), its retransmissions failing meanwhile.
      */
-    private fun onNetwork(user: UserSettings, ids: Identities, imei: String, n: Cellular?, ani: String) {
+    private fun onNetwork(user: UserSettings, ids: Identities, impu: String, imei: String, n: Cellular?, ani: String) {
         if (n == null) {
             if (session == null) state.value = Status.NoNetwork else publish(online = false)
             return
@@ -298,7 +302,7 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
             }
         }
         val settings = Settings(
-            impi = ids.impi, impu = ids.impu, homeDomain = ids.homeDomain,
+            impi = ids.impi, impu = impu, homeDomain = ids.homeDomain,
             imei = imei,
             pcscf = pcscf.text, network = handle, local = requireNotNull(local.hostAddress), accessNetworkInfo = ani,
             mcpttId = user.mcpttId, clientId = user.clientId, participatingPsi = user.participatingPsi,
@@ -386,6 +390,7 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
         const val LEVEL_WARN = 4
         const val LEVEL_ERROR = 8
         const val NO_CARRIER_PRIVILEGES = "no carrier privileges: the SIM's rules (ARA-M) lack the app's certificate"
+        const val NO_MCPTT_IDENTITY = "no MCPTT identity: the ISIM's EF_IMPU lacks sip:mcptt-<MSISDN>@<domain>"
     }
 }
 

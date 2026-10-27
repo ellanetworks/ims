@@ -184,7 +184,7 @@ export default function UserDialog({
                 ? errors.impus
                 : pendingIMPU
                   ? `Adds ${pendingIMPU}`
-                  : "The phones' public identities, as your HSS has them: pick a registered one, or type a number for tel:+<number>."
+                  : `The MCPTT identities of the phones, as your HSS has them: pick a registered one, or type an MSISDN for sip:mcptt-<MSISDN>@${homeDomain}.`
             }
           />
         )}

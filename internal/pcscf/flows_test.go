@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -524,5 +525,77 @@ func TestUnansweredChallengeIsLogged(t *testing.T) {
 
 	if strings.Contains(logs.String(), unanswered) {
 		t.Fatalf("replacing an answered challenge logged %q", logs.String())
+	}
+}
+
+// TS 24.229 §3.1: the phone's IMS client and an MCPTT client of one device register public user identities of
+// different sets with the same private identity, instance ID and reg-id, from the addresses of different PDN
+// connections. Each is a registration of its own; de-registering either leaves the other and the reg event
+// subscription of the private identity.
+func TestUAsOfOneDeviceOnTwoAddresses(t *testing.T) {
+	s := newRegScene(t)
+
+	const mcptt = "sip:mcptt-15551230001@" + homeDomain
+
+	other := siptest.NewSocket(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.3"), 0))
+	native, client := flowRegKey(1), regKey{impi: testIMPI, ue: other.Addr().Addr(), flow: flowID{instance: testInstance, regID: 1}}
+
+	toMCPTT := func(expires string) func(*sip.Request) {
+		return func(r *sip.Request) {
+			r.Header.Set("To", "<"+mcptt+">")
+			r.Header.Set("From", "<"+mcptt+">;tag="+sip.NewTag())
+			r.Header.Set("Authorization", `Digest username="`+testIMPI+`", realm="`+homeDomain+`", uri="sip:`+homeDomain+
+				`", nonce="", response=""`)
+			r.Header.Set("Expires", expires)
+		}
+	}
+
+	registerClient := func(expires string, associated ...string) {
+		s.over(other, func() {
+			req, f := s.register(s.withFlow(1, toMCPTT(expires)))
+			answerRegisterWith(s, req, f, associated...)
+		})
+	}
+
+	wantRegistered := func(k regKey, want ...string) {
+		t.Helper()
+
+		r, ok := s.p.regs.get(k)
+
+		switch {
+		case len(want) == 0 && ok:
+			t.Fatalf("registration %+v of %s, want none", r, k.ue)
+		case len(want) > 0 && (!ok || !slices.Equal(r.AssociatedURIs, want)):
+			t.Fatalf("registration of %s = %+v, %v; want %v", k.ue, r, ok, want)
+		}
+	}
+
+	req, f := s.register(s.withFlow(1, nil))
+	answerRegisterWith(s, req, f, testIMPU, testTel)
+
+	sub, sf := s.icscf.RecvRequest()
+	answerSubscribe(s.icscf, s.scscf, sub, sf, 600000)
+
+	registerClient("600", mcptt)
+	wantRegistered(native, testIMPU, testTel)
+	wantRegistered(client, mcptt)
+
+	registerClient("0")
+	wantRegistered(native, testIMPU, testTel)
+	wantRegistered(client)
+
+	if !s.p.subs.has(testIMPI) {
+		t.Fatal("subscription dropped with the MCPTT client's de-registration")
+	}
+
+	registerClient("600", mcptt)
+
+	req, f = s.register(s.withFlow(1, func(r *sip.Request) { r.Header.Set("Expires", "0") }))
+	answerRegisterWith(s, req, f)
+	wantRegistered(native)
+	wantRegistered(client, mcptt)
+
+	if !s.p.subs.has(testIMPI) {
+		t.Fatal("subscription dropped with the phone's de-registration while the MCPTT client is registered")
 	}
 }

@@ -103,7 +103,9 @@ describe("MCPTT pages", () => {
       },
     );
     expect(
-      within(dialog).getByText("Adds tel:+15550000003"),
+      within(dialog).getByText(
+        "Adds sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org",
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
@@ -113,7 +115,7 @@ describe("MCPTT pages", () => {
         {
           mcptt_id: "sip:carol@mcptt.example.com",
           alias: "Carol",
-          impus: ["tel:+15550000003"],
+          impus: ["sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org"],
           implicit_affiliations: [],
         },
       ]),

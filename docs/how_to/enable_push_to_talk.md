@@ -29,7 +29,8 @@ In the Ella Core UI:
 - **Profiles → Create**: an MC profile, e.g. `mcptt`. On it, **Add Policy**: a name, data network `mcx`, 5QI/QCI `69`, ARP `3`, **May pre-empt**, **Not pre-emptable**.
 - On the MC profile, also add the policies the users had on their previous profile, e.g. `internet` and `ims`.
 - **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
-- **Profiles →** the MC profile **→** edit **IMS Filter Criteria**: **Add from preset** the **MCPTT** preset, then **Save**.
+- **Operator → IMS → Add Service Profile**: name `mcptt`, **Add from preset** the **MCPTT** preset, then **Add**.
+- **Profiles →** the MC profile **→** edit **IMS Service Profiles**: set **MCPTT** to `mcptt`, then **Save**.
 - **Subscribers**: put each user on the MC profile, with an MSISDN.
 
 ## 3. Route the MC traffic
@@ -45,7 +46,7 @@ sudo ip route add 10.47.0.0/16 via 10.6.0.2 mtu lock 1400
 In the Ella IMS UI, go to **Push-to-Talk → Users**. For each person, click **Add User** and enter:
 
 - **MCPTT ID**: e.g. `alice`.
-- **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`.
+- **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`, for its MCPTT identity `sip:mcptt-15550000001@<home domain>`.
 
 ## 5. Add a group
 
@@ -55,6 +56,7 @@ Go to **Push-to-Talk → Groups**, click **Add Group**, and enter a group ID, e.
 
 On each phone:
 
+- Program the SIM's ISIM with the MCPTT identity as the second EF.IMPU record, after `sip:+<MSISDN>@<home domain>`. The app registers it, alongside the phone's own IMS registration.
 - Set the APN to `mcx`.
 - In the app's settings, set the user's MCPTT ID as Ella IMS shows it, e.g. `alice@ims.mnc001.mcc001.3gppnetwork.org`, and groups.
 
