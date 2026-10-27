@@ -83,6 +83,7 @@ func TestSetIndexes(t *testing.T) {
 		impi := fmt.Sprintf("00101000000000%d@%s", i, homeDomain)
 
 		first := register(impi, ue1.Next().Next(), 40000+uint16(10*i), nil)
+
 		check("registered")
 
 		register(impi, first.set.Remote.Addr, 41000+uint16(10*i), first)

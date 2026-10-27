@@ -466,6 +466,7 @@ func registerAll(t *testing.T, ues []*testue.UE) []int {
 		var l latencies
 
 		start := time.Now()
+
 		run(t, rate, n, func(j int) {
 			k := next + j
 			began := time.Now()
@@ -481,7 +482,9 @@ func registerAll(t *testing.T, ues []*testue.UE) []int {
 			l.add(registrationTime(k, began))
 
 			mu.Lock()
+
 			registered = append(registered, k)
+
 			mu.Unlock()
 		})
 
@@ -557,6 +560,7 @@ func callAll(t *testing.T, api string, registered []int) {
 					defer cancel()
 
 					began := time.Now()
+
 					if err := uesOf(k).Reregister(ctx); err != nil {
 						rereg.fail(err)
 						return

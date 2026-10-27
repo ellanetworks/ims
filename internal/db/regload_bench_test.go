@@ -52,13 +52,16 @@ SELECT i, 'sip:ue'||i||'@10.0.0.1:5060', '<urn:gsma:imei:'||i||'>', 1, ';+sip.in
 
 				conn, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_stmt_cache_size=%d", path, cache))
 				must(b, err)
+
 				conn.SetMaxOpenConns(1)
-				defer conn.Close()
+
+				defer func() { _ = conn.Close() }()
 
 				b.ResetTimer()
 
 				for i := 0; i < b.N; i++ {
 					impi := fmt.Sprintf("impi%d", i%n+1)
+
 					regs, err := queryRegistrations(ctx, conn, `SELECT `+registrationColumns+registrationFrom+` WHERE r.impi = ? ORDER BY r.id`, impi)
 					if err != nil || len(regs) != 1 || len(regs[0].Bindings) != 1 {
 						b.Fatal(err, len(regs))
