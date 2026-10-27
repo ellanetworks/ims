@@ -49,6 +49,7 @@
     <string name="call_talker">%1$s is talking</string>
     <string name="call_idle">Nobody is talking</string>
     <string name="call_no_microphone">Open the app once to talk with it in the background.</string>
+    <string name="ptt_no_microphone">PTT refused: no microphone</string>
     <string name="ptt">Push to talk</string>
     <string name="ptt_talking">Talking</string>
     <string name="answer">Answer</string>
@@ -125,6 +126,8 @@
 
     <string name="channel_missed">Missed calls</string>
     <string name="channel_missed_description">Group calls you did not answer, and calls the network lost</string>
+    <string name="channel_ptt">PTT</string>
+    <string name="channel_ptt_description">A press the app could not send: what to do for it to talk</string>
     <string name="missed_call">Missed call: %1$s</string>
     <string name="missed_from">From %1$s</string>
     <string name="status_group">%1$s · %2$s</string>

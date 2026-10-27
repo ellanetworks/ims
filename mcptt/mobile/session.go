@@ -435,11 +435,12 @@ func (s *Session) run(u *ue.UE, stop, done chan struct{}) {
 
 // retryDelay is the wait before registering again after failures consecutive failed attempts before the last (TS
 // 24.229 §5.1.1.2.1 a, RFC 5626 §4.5): uniform between half and all of min(maxBackoff, minBackoff·2^failures), so that
-// the clients of a network back do not register at once.
+// the clients of a network back do not register at once. The doubling compared before it is made: minBackoff·2^failures
+// overflows past 30 failures.
 func retryDelay(failures int) time.Duration {
 	w := maxBackoff
-	if failures < 32 {
-		w = min(maxBackoff, minBackoff<<failures)
+	if minBackoff <= maxBackoff>>failures {
+		w = minBackoff << failures
 	}
 
 	return w/2 + rand.N(w/2+1)

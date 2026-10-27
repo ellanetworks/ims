@@ -767,8 +767,17 @@ func TestRetryDelay(t *testing.T) {
 		}
 	}
 
-	if d := retryDelay(100); d < maxBackoff/2 || d > maxBackoff {
-		t.Fatalf("retryDelay(100) %v, want at most %v", d, maxBackoff)
+	// Every count of failures in the bound, past where minBackoff·2^failures overflows (31 of 5 s): the app aborted
+	// there, rand.N of a negative bound panicking.
+	for failures := range 101 {
+		bound := maxBackoff
+		if failures < 6 {
+			bound = min(maxBackoff, minBackoff<<failures)
+		}
+
+		if d := retryDelay(failures); d < bound/2 || d > bound {
+			t.Fatalf("retryDelay(%d) %v, want in [%v, %v]", failures, d, bound/2, bound)
+		}
 	}
 
 	for _, c := range []struct {

@@ -111,6 +111,9 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
     /** SessionService holds the microphone type: a call's PTT works with the app in the background (decision 13). */
     val microphone = MutableStateFlow(false)
 
+    /** The app is visible: it may record without the microphone type (the while-in-use rule). */
+    val visible = MutableStateFlow(false)
+
     @Volatile
     private var session: Session? = null
 
@@ -135,7 +138,7 @@ class Sessions(private val context: Context, private val store: DataStore<UserSe
     private val runs = Runs(scope, ::running)
 
     /** The calls of the session, through Telecom. */
-    val calls = Calls(context, Ops(), self = { mcpttId })
+    val calls = Calls(context, Ops(), self = { mcpttId }, recordable = { microphone.value || visible.value })
 
     /** The PTT, of the screen's button and the device's key. */
     val ptt = PttController(calls::talk, calls::release) { id -> calls.current.value.any { it.id == id } }

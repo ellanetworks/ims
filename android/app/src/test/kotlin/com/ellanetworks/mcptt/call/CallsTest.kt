@@ -53,15 +53,21 @@ class CallsTest {
     private val cues = FakeCues()
     private val audio = FakeAudio()
     private val ends: MutableList<Ended> = Collections.synchronizedList(mutableListOf())
+    private val unrecordable = AtomicInteger()
     private val collector = CoroutineScope(Dispatchers.Default)
     private lateinit var calls: Calls
+
+    /** The service holds the microphone type, or the app is visible. */
+    @Volatile
+    private var recordable = true
 
     @Before
     fun setUp() {
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
-        calls = Calls(app, ops, self = { "sip:me@mcptt.example" }, telecom, cues, audio)
+        calls = Calls(app, ops, self = { "sip:me@mcptt.example" }, recordable = { recordable }, telecom, cues, audio)
         collector.launch(start = CoroutineStart.UNDISPATCHED) { calls.ended.collect { ends += it } }
+        collector.launch(start = CoroutineStart.UNDISPATCHED) { calls.unrecordable.collect { unrecordable.incrementAndGet() } }
     }
 
     @After
@@ -178,6 +184,56 @@ class CallsTest {
         calls.event(Event.Floor(id, Event.Notice.GRANTED, null))
         eventually { "release $id" in ops.log }
         assertEquals(listOf("denied"), cues.log.toList())
+    }
+
+    // Allowed but not recordable (the service started in the background): Android would silence the recorder, so the
+    // press places no call, is denied and told, for the user to open the app.
+    @Test
+    fun unrecordableNotPlaced() {
+        recordable = false
+        assertEquals(null, calls.talk(GROUP))
+        assertEquals(listOf("denied"), cues.log.toList())
+        eventually { unrecordable.get() == 1 }
+        Thread.sleep(100)
+        assertTrue(ops.log.isEmpty())
+        assertTrue(calls.current.value.isEmpty())
+        assertEquals(0, audio.capturing.get())
+    }
+
+    // In a call heard with the app in the background: the speech plays, no microphone runs, nothing told until a press,
+    // which is refused, no floor requested. Recordable again (the app opened), the press talks.
+    @Test
+    fun unrecordableInACall() {
+        recordable = false
+        calls.event(Event.Incoming("in-1", GROUP, "sip:alice@mcptt.example", manual = false))
+        calls.event(Event.Established("in-1"))
+        eventually { audio.playing.get() == 1 }
+        calls.event(Event.Floor("in-1", Event.Notice.TAKEN, "sip:alice@mcptt.example"))
+        calls.event(Event.Floor("in-1", Event.Notice.IDLE, null))
+        eventually { calls.current.value.single().floor == Event.Notice.IDLE }
+        assertEquals(0, audio.capturing.get())
+        assertEquals(0, unrecordable.get())
+
+        assertEquals(null, calls.talk(GROUP))
+        assertEquals("denied", cues.log.last())
+        eventually { unrecordable.get() == 1 }
+        assertFalse("press in-1" in ops.log)
+
+        recordable = true
+        assertEquals("in-1", calls.talk(GROUP))
+        eventually { "press in-1" in ops.log }
+        assertEquals(1, unrecordable.get())
+    }
+
+    // Not allowed at all: denied, the permission the app's to ask for, not the app to open.
+    @Test
+    fun notAllowed() {
+        shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.RECORD_AUDIO)
+        assertEquals(null, calls.talk(GROUP))
+        assertEquals(listOf("denied"), cues.log.toList())
+        Thread.sleep(100)
+        assertEquals(0, unrecordable.get())
+        assertTrue(ops.log.isEmpty())
     }
 
     // An ended call's audio stays stopped: the events after its end start no microphone.

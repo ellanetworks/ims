@@ -116,11 +116,16 @@ data class CallInfo(
  * disconnect, hold) go to the session. Each active call plays its speech, and captures while the client transmits.
  * The session's calls of the user's ([CallOps]: they bind sockets and send SIP) run off the caller's thread, the main
  * one of the UI's, on one queue: in the order asked, a release never before its press.
+ *
+ * [recordable] tells whether the process may record now, beyond the permission: its service holds the microphone type,
+ * or the app is visible (the while-in-use rule). Without, Android silences the recorder, so a press would send
+ * silence: it is refused instead, and told on [unrecordable].
  */
 class Calls(
     private val context: Context,
     private val ops: CallOps,
     private val self: () -> String?,
+    private val recordable: () -> Boolean,
     private val telecom: Telecom = SystemTelecom(context),
     private val cues: Cues = DeviceCues(context),
     private val audio: Audio = DeviceAudio,
@@ -147,6 +152,11 @@ class Calls(
 
     /** The calls as they end. */
     val ended: SharedFlow<Ended> = endings.asSharedFlow()
+
+    private val refusals = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** A press refused for the microphone the process may not use now, its permission granted: the app to open. */
+    val unrecordable: SharedFlow<Unit> = refusals.asSharedFlow()
 
     /**
      * The courtesy tones: the floor free, the call lost, which the UI shows as well (TS 22.179 R-6.2.3.4-003). The
@@ -217,9 +227,8 @@ class Calls(
             // 400 to 800 ms to start, the floor granted with the call's 200), not waiting for Telecom, whose activation
             // would restart it; its frames sent while the session's call transmits: the talk permit is then
             // the moment speech is captured, none of its start lost (TS 22.179 R-6.15.3.2-016).
-            val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             val up = i.state == CallInfo.State.ACTIVE || (i.state == CallInfo.State.CALLING && i.caller == null)
-            if (up && !i.muted && mic) capture.start(mode) else capture.stop()
+            if (up && !i.muted && microphone()) capture.start(mode) else capture.stop()
             capture.send(i.state == CallInfo.State.ACTIVE && i.transmitting)
         }
     }
@@ -277,9 +286,8 @@ class Calls(
      */
     fun talk(group: String): String? {
         val c = synchronized(calls) { calls.values.lastOrNull { it.info.value.group == group } }
-        val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val id = when {
-            !mic -> null
+            !talkable() -> null
             c == null -> place(group)
             c.info.value.state == CallInfo.State.RINGING -> c.id.also { accept(it) }
             c.info.value.state == CallInfo.State.CALLING -> c.id
@@ -336,12 +344,23 @@ class Calls(
 
     fun leave(id: String) = later { ops.leave(id) }
 
+    private fun allowed(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** The microphone records now: allowed, and [recordable]. */
+    private fun microphone(): Boolean = allowed() && recordable()
+
+    /** A press may talk: the [microphone]'s; allowed but not recordable told on [unrecordable], the app to open. */
+    private fun talkable(): Boolean {
+        if (microphone()) return true
+        if (allowed()) refusals.tryEmit(Unit)
+        return false
+    }
+
     /** Presses the PTT of [c]: refused while Telecom mutes or holds the call, or without the microphone. */
     private fun press(c: Call): Boolean {
         val id = c.id
         val i = c.info.value
-        val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (i.state != CallInfo.State.ACTIVE || !c.telecomActive || i.muted || !mic) return false
+        if (i.state != CallInfo.State.ACTIVE || !c.telecomActive || i.muted || !talkable()) return false
         // Another talks: busy at once, as a radio's, not of the server's answer, which a tap released first never
         // gets (no queueing: the Floor Release before the Floor Deny). The request still goes: the server decides
         // (TS 22.179 R-6.2.3.2-005), its grant the talk.

@@ -62,6 +62,7 @@ class SessionService : LifecycleService() {
         if (visible) microphone()
         app.sessions.start()
         lifecycleScope.launch { app.sessions.calls.ended.collect(::ended) }
+        lifecycleScope.launch { app.sessions.calls.unrecordable.collect { unrecordable() } }
         lifecycleScope.launch { app.settings.data.collect { group = it.group } }
         keys.start()
         lifecycleScope.launch {
@@ -106,9 +107,12 @@ class SessionService : LifecycleService() {
         super.onDestroy()
     }
 
-    /** At a moment of the while-in-use rule: the microphone type added, if the user allows the app to record. */
+    /**
+     * At a moment of the while-in-use rule: the microphone type added, if the user allows the app to record. Asked
+     * again while not held, the system having refused it at an earlier moment.
+     */
     private fun microphone() {
-        if (microphone) return
+        if (app.sessions.microphone.value) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         microphone = true
         foreground(last ?: status(app.sessions.status.value, null))
@@ -164,6 +168,12 @@ class SessionService : LifecycleService() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_MISSED, getString(R.string.channel_missed), NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = getString(R.string.channel_missed_description)
+            },
+        )
+        // High: shown over the screen at the press, the user talking to no one otherwise.
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_PTT, getString(R.string.channel_ptt), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = getString(R.string.channel_ptt_description)
             },
         )
     }
@@ -229,6 +239,22 @@ class SessionService : LifecycleService() {
         getSystemService(NotificationManager::class.java).notify(e.call.id.hashCode(), n)
     }
 
+    /**
+     * A press refused for the microphone the service does not hold (started in the background, as at boot or restarted
+     * by the system): the app to open once, a moment of the while-in-use rule. One notification, replaced.
+     */
+    private fun unrecordable() {
+        val n = NotificationCompat.Builder(this, CHANNEL_PTT)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.ptt_no_microphone))
+            .setContentText(getString(R.string.call_no_microphone))
+            .setContentIntent(open())
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_NO_MICROPHONE, n)
+    }
+
     private fun callText(c: CallInfo): String = when {
         c.state == CallInfo.State.RINGING -> getString(R.string.call_incoming, c.caller?.let(::groupName).orEmpty())
         c.state == CallInfo.State.CALLING -> getString(R.string.call_calling)
@@ -251,7 +277,9 @@ class SessionService : LifecycleService() {
         private const val CHANNEL = "service"
         private const val CHANNEL_CALLS = "calls"
         private const val CHANNEL_MISSED = "missed"
+        private const val CHANNEL_PTT = "ptt"
         private const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_NO_MICROPHONE = 2
         private const val ACTION_VISIBLE = "com.ellanetworks.mcptt.VISIBLE"
         private const val ACTION_ANSWER = "com.ellanetworks.mcptt.ANSWER"
         private const val ACTION_DECLINE = "com.ellanetworks.mcptt.DECLINE"
@@ -282,6 +310,7 @@ class SessionService : LifecycleService() {
          */
         fun visible(context: Context, now: Boolean) {
             visible = now
+            (context.applicationContext as McpttApp).sessions.visible.value = now
             if (now && running) context.startService(Intent(context, SessionService::class.java).setAction(ACTION_VISIBLE))
         }
     }
