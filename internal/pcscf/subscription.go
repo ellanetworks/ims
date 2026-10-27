@@ -60,10 +60,13 @@ type subscriptions struct {
 	mu     sync.Mutex
 	closed bool
 	byIMPI map[string]*subscription
+
+	// byDialog is the subscriptions by the Call-ID and local tag of their dialog, which a NOTIFY carries.
+	byDialog map[[2]string]*subscription
 }
 
 func newSubscriptions(p *PCSCF) *subscriptions {
-	return &subscriptions{p: p, byIMPI: make(map[string]*subscription)}
+	return &subscriptions{p: p, byIMPI: make(map[string]*subscription), byDialog: make(map[[2]string]*subscription)}
 }
 
 func (ss *subscriptions) restore(ctx context.Context) error {
@@ -96,7 +99,7 @@ func (ss *subscriptions) restore(ctx context.Context) error {
 			impi: rec.IMPI, impu: rec.IMPU, callID: rec.CallID, localTag: rec.LocalTag,
 			dialog: d, version: rec.Version, expires: rec.ExpiresAt,
 		}
-		ss.byIMPI[s.impi] = s
+		ss.put(s)
 		ss.schedule(s)
 	}
 
@@ -182,7 +185,7 @@ func (ss *subscriptions) start(impi string) {
 	req.Flow = sip.Flow{Transport: sip.UDP, Local: local, Remote: netip.AddrPortFrom(local.Addr(), ss.p.cfg.ICSCFPort)}
 
 	s.subscribe = req
-	ss.byIMPI[impi] = s
+	ss.put(s)
 
 	ss.p.log.Debug("subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
 
@@ -393,6 +396,10 @@ func (ss *subscriptions) removeLocked(s *subscription) {
 		delete(ss.byIMPI, s.impi)
 	}
 
+	if ss.byDialog[[2]string{s.callID, s.localTag}] == s {
+		delete(ss.byDialog, [2]string{s.callID, s.localTag})
+	}
+
 	if store := ss.p.cfg.Registrations; store != nil {
 		ctx, cancel := context.WithTimeout(ss.p.ctx, storeTimeout)
 		if err := store.DeletePCSCFSubscription(ctx, s.impi); err != nil && !errors.Is(err, db.ErrNotFound) {
@@ -431,13 +438,18 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	for _, s := range ss.byIMPI {
-		if s.callID == id.CallID && s.localTag == id.LocalTag {
-			return s
-		}
+	// Only the subscription byIMPI holds: one it replaced has no NOTIFY to take.
+	if s := ss.byDialog[[2]string{id.CallID, id.LocalTag}]; s != nil && ss.byIMPI[s.impi] == s {
+		return s
 	}
 
 	return nil
+}
+
+// put makes s the subscription of its private identity.
+func (ss *subscriptions) put(s *subscription) {
+	ss.byIMPI[s.impi] = s
+	ss.byDialog[[2]string{s.callID, s.localTag}] = s
 }
 
 // notified handles a NOTIFY of the subscription s: its response, and what to do once it is sent, if anything.

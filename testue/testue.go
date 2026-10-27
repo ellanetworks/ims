@@ -3,6 +3,7 @@
 package testue
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -81,6 +82,9 @@ type Config struct {
 	Trace func(m sip.Message, f sip.Flow, sent bool)
 
 	Logger *slog.Logger
+
+	// EventBuffer is the capacity of the channel of the UE's events, 1024 if 0: those beyond it are dropped.
+	EventBuffer int
 }
 
 // UE is a test UE.
@@ -149,7 +153,7 @@ func New(cfg Config) (*UE, error) {
 	t := &UE{
 		cfg:    cfg,
 		usim:   usim.New(cfg.K, cfg.OPc, cfg.SQN),
-		events: make(chan ue.Event, 1024),
+		events: make(chan ue.Event, cmp.Or(cfg.EventBuffer, 1024)),
 	}
 
 	var services []ue.Service

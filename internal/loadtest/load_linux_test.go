@@ -17,12 +17,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	_ "net/http/pprof"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -36,6 +38,7 @@ import (
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcrftest"
+	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
 )
 
@@ -50,10 +53,19 @@ var (
 	regSteps = flag.String("reg-rates", "50,100,200", "the registrations per second the UEs register at, each for -reg-step, the last until all have")
 	regStep  = flag.Duration("reg-step", 30*time.Second, "how long each registration rate lasts")
 
+	cycleSteps = flag.String("cycle-rates", "", "the registrations per second to measure on the registered UEs, each a deregistration then a registration, each rate for -cycle-step")
+	cycleStep  = flag.Duration("cycle-step", time.Minute, "how long each registration rate of -cycle-rates lasts")
+
 	callSteps = flag.String("cps", "", "the calls per second to measure, each for -call-step")
 	callStep  = flag.Duration("call-step", 2*time.Minute, "how long each call rate lasts")
 	hold      = flag.Duration("hold", 90*time.Second, "how long an answered call lasts")
-	reregEach = flag.Duration("rereg", 3000*time.Second, "how often each registered UE re-registers during the calls, 0 for never")
+
+	preconditions = flag.Bool("preconditions", true, "make the calls with preconditions (TS 24.229 §5.1.3.1, IR.92 §2.4.1)")
+	reregEach     = flag.Duration("rereg", 3000*time.Second, "how often each registered UE re-registers during the calls, 0 for never")
+
+	role = flag.String("role", "all", "all: the fakes and the UEs; fakes: the fake HSS and PCRF only, until the test times out; ues: the UEs only, of an IMS a fakes run configured")
+
+	pprofAddr = flag.String("pprof", "", "the address to serve the load generator's profiles on, none if empty")
 
 	settle = flag.Duration("settle", 30*time.Second, "the wait before a measure of the memory")
 )
@@ -75,29 +87,46 @@ func TestLoad(t *testing.T) {
 		t.Skip("run with -load")
 	}
 
+	if *pprofAddr != "" {
+		go func() { _ = http.ListenAndServe(*pprofAddr, nil) }()
+	}
+
 	ims := netip.MustParseAddr(*imsAddr)
 	local := netip.MustParseAddr(*localAddr)
 	api := fmt.Sprintf("http://%s:%d/api/v1", ims, apiPort)
 
 	quiet := slog.New(slog.DiscardHandler)
 
-	hss := hsstest.New(t, hsstest.Config{Realm: domain, IMSHost: "ims." + domain, Address: local, IMSAddress: ims, Logger: quiet})
-	pcrf := pcrftest.New(t, pcrftest.Config{
-		Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: "ims." + domain, IMSRealm: domain, Address: local, IMSAddress: ims,
-		Logger: quiet,
-	})
+	if *role != "ues" {
+		hss := hsstest.New(t, hsstest.Config{Realm: domain, IMSHost: "ims." + domain, Address: local, IMSAddress: ims, Logger: quiet})
+		pcrf := pcrftest.New(t, pcrftest.Config{
+			Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: "ims." + domain, IMSRealm: domain, Address: local, IMSAddress: ims,
+			Logger: quiet,
+		})
 
-	// The fakes keep the requests they answer for the tests to look at: none here.
-	go func() {
-		for range hss.Requests() {
-		}
-	}()
-	go func() {
-		for range pcrf.Requests() {
-		}
-	}()
+		// The fakes keep the requests they answer for the tests to look at: none here.
+		go func() {
+			for range hss.Requests() {
+			}
+		}()
+		go func() {
+			for range pcrf.Requests() {
+			}
+		}()
 
-	configure(t, api, hss, pcrf)
+		for i := range *subs {
+			hss.Add(subscriberAt(i).hss())
+		}
+
+		configure(t, api, hss, pcrf)
+
+		if *role == "fakes" {
+			t.Log("fakes up")
+			<-t.Context().Done()
+
+			return
+		}
+	}
 
 	x, err := ipsec.Open()
 	if err != nil {
@@ -114,13 +143,15 @@ func TestLoad(t *testing.T) {
 	for i := range ues {
 		addr = addr.Next()
 		sub := subscriberAt(i)
-		hss.Add(sub.hss())
 
 		u, err := testue.New(testue.Config{
 			IMSI: sub.imsi, IMEI: sub.imei, K: testK, OPc: testOPc,
 			PCSCF: netip.AddrPortFrom(ims, pcscfPort), Local: addr, Kernel: kernel,
 			MMTel:  testue.MMTelConfig{AcceptCalls: true},
 			Logger: quiet,
+			// Nothing reads the events: a small buffer, for the garbage collector to scan little.
+			EventBuffer: 16,
+			Trace:       trace(i),
 		})
 		if err != nil {
 			t.Fatalf("UE %d: %v", i, err)
@@ -137,6 +168,8 @@ func TestLoad(t *testing.T) {
 	uesAll = ues
 	uesMu.Unlock()
 
+	registeredAt = make([]atomic.Int64, len(ues))
+
 	before := scrape(t, api)
 
 	registered := registerAll(t, ues)
@@ -150,9 +183,89 @@ func TestLoad(t *testing.T) {
 		(after["process_resident_memory_bytes"]-before["process_resident_memory_bytes"])/1024/float64(max(1, len(registered))),
 		int(after["go_goroutines"]))
 
+	if *cycleSteps != "" {
+		registered = cycleAll(t, api, registered)
+	}
+
 	if *callSteps != "" {
 		callAll(t, api, registered)
 	}
+}
+
+// cycleAll deregisters and registers again the registered UEs, one at a time each, at each rate of -cycle-rates in
+// turn, and returns those registered at the end.
+func cycleAll(t *testing.T, api string, registered []int) []int {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		free = slices.Clone(registered)
+		lost []int
+	)
+
+	for _, rate := range parseRates(t, *cycleSteps) {
+		n := int(rate * cycleStep.Seconds())
+
+		var (
+			l       latencies
+			busy    atomic.Int64
+			cpu0    = scrape(t, api)["process_cpu_seconds_total"]
+			started = time.Now()
+		)
+
+		wait := start(rate, n, func(int) {
+			mu.Lock()
+			if len(free) == 0 {
+				mu.Unlock()
+				busy.Add(1)
+
+				return
+			}
+
+			k := free[rand.IntN(len(free))]
+			free = slices.DeleteFunc(free, func(i int) bool { return i == k })
+			mu.Unlock()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+
+			// The initial registration, of a UE that deregistered first: the registered UEs stay as many.
+			err := uesOf(k).Deregister(ctx)
+
+			began := time.Now()
+
+			if err == nil {
+				err = uesOf(k).Register(ctx)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				l.fail(err)
+
+				lost = append(lost, k)
+
+				return
+			}
+
+			l.add(registrationTime(k, began))
+
+			free = append(free, k)
+		})
+
+		elapsed := time.Since(started)
+		m := scrape(t, api)
+
+		wait()
+
+		l.report(t, fmt.Sprintf("deregister + register at %4.0f/s", rate), n-int(busy.Load()), elapsed)
+		t.Logf("  IMS: %.0f%% of a CPU, %.1f MiB resident, %d registered, %d not made: no free subscribers",
+			100*(m["process_cpu_seconds_total"]-cpu0)/elapsed.Seconds(), m["process_resident_memory_bytes"]/(1<<20),
+			int(m["ellaims_registered_subscribers"]), busy.Load())
+	}
+
+	return slices.DeleteFunc(slices.Clone(registered), func(i int) bool { return slices.Contains(lost, i) })
 }
 
 // configure points the IMS at the fake HSS over Cx and the fake PCRF over Rx, in place of its peers.
@@ -365,7 +478,7 @@ func registerAll(t *testing.T, ues []*testue.UE) []int {
 				return
 			}
 
-			l.add(time.Since(began))
+			l.add(registrationTime(k, began))
 
 			mu.Lock()
 			registered = append(registered, k)
@@ -437,19 +550,19 @@ func callAll(t *testing.T, api string, registered []int) {
 				case <-tick.C:
 				}
 
-				u := uesOf(registered[rand.IntN(len(registered))])
+				k := registered[rand.IntN(len(registered))]
 
 				bg.Go(func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
 					began := time.Now()
-					if err := u.Reregister(ctx); err != nil {
+					if err := uesOf(k).Reregister(ctx); err != nil {
 						rereg.fail(err)
 						return
 					}
 
-					rereg.add(time.Since(began))
+					rereg.add(registrationTime(k, began))
 				})
 			}
 		})
@@ -461,6 +574,7 @@ func callAll(t *testing.T, api string, registered []int) {
 		var (
 			l       latencies
 			busy    atomic.Int64
+			dropped atomic.Int64
 			cpu0    = scrape(t, api)["process_cpu_seconds_total"]
 			started = time.Now()
 		)
@@ -479,11 +593,14 @@ func callAll(t *testing.T, api string, registered []int) {
 
 			began := time.Now()
 
-			c, err := uesOf(a).MMTel().Invite(subscriberAt(b).msisdn+";user=phone", testue.CallOptions{})
+			c, err := uesOf(a).MMTel().Invite(subscriberAt(b).msisdn+";user=phone", testue.CallOptions{Preconditions: *preconditions})
 			if err != nil {
 				l.fail(err)
 				return
 			}
+
+			callID := c.Invite().Header.CallID()
+			defer established.Delete(callID)
 
 			setup, setupCancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err = c.Wait(setup)
@@ -495,11 +612,20 @@ func callAll(t *testing.T, api string, registered []int) {
 				return
 			}
 
-			l.add(time.Since(began))
+			// TS 32.409 §4.1.2.6: from the INVITE to the first 180 or 2xx.
+			at, ok := established.Load(callID)
+			if !ok {
+				l.fail(errors.New("no 180 or 2xx traced"))
+				return
+			}
+
+			l.add(at.(time.Time).Sub(began))
 
 			select {
 			case <-time.After(*hold):
 			case <-c.Done():
+				// TS 32.454 §5.2.1: a call that ended before its caller hung up.
+				dropped.Add(1)
 				return
 			}
 
@@ -520,6 +646,7 @@ func callAll(t *testing.T, api string, registered []int) {
 		wait()
 
 		l.report(t, fmt.Sprintf("calls at %4.0f/s", rate), n-int(busy.Load()), elapsed)
+		t.Logf("  %d dropped", dropped.Load())
 		t.Logf("  IMS: %.0f%% of a CPU, %.1f MiB resident, %d calls in progress, %d calls not made: no free subscribers",
 			100*(m["process_cpu_seconds_total"]-cpu0)/elapsed.Seconds(), m["process_resident_memory_bytes"]/(1<<20),
 			int(m["ellaims_active_calls"]), busy.Load())
@@ -528,6 +655,40 @@ func callAll(t *testing.T, api string, registered []int) {
 	close(stop)
 
 	rereg.report(t, "re-registrations", rereg.count(), 0)
+}
+
+var (
+	// registeredAt is when each UE last received a 2xx to a REGISTER, in Unix nanoseconds; established, when the
+	// calling UE received the first 180 or 2xx to an INVITE, by Call-ID.
+	registeredAt []atomic.Int64
+	established  sync.Map
+)
+
+// trace records the responses of the UE i that end a registration or establish a call (TS 32.409 §4.1.1.1, §4.1.2.6).
+func trace(i int) func(m sip.Message, _ sip.Flow, sent bool) {
+	return func(m sip.Message, _ sip.Flow, sent bool) {
+		res, ok := m.(*sip.Response)
+		if !ok || sent {
+			return
+		}
+
+		cseq, err := res.Header.CSeq()
+		if err != nil {
+			return
+		}
+
+		switch {
+		case cseq.Method == "REGISTER" && res.StatusCode/100 == 2:
+			registeredAt[i].Store(time.Now().UnixNano())
+		case cseq.Method == "INVITE" && (res.StatusCode == 180 || res.StatusCode/100 == 2):
+			established.LoadOrStore(res.Header.CallID(), time.Now())
+		}
+	}
+}
+
+// registrationTime is the time from began to the 2xx of the UE i's REGISTER: without the SUBSCRIBE after it.
+func registrationTime(i int, began time.Time) time.Duration {
+	return time.Unix(0, registeredAt[i].Load()).Sub(began)
 }
 
 var (
@@ -668,9 +829,15 @@ func (l *latencies) report(t *testing.T, what string, n int, elapsed time.Durati
 		rate = fmt.Sprintf(" in %s (%.1f/s)", elapsed.Round(time.Second), float64(n)/elapsed.Seconds())
 	}
 
-	t.Logf("%s: %d%s, %d failed (%.3f%%), p50 %s p90 %s p99 %s max %s", what, n, rate, failed,
-		100*float64(failed)/float64(max(1, n)), l.at(0.5).Round(time.Millisecond), l.at(0.9).Round(time.Millisecond),
-		l.at(0.99).Round(time.Millisecond), l.at(1).Round(time.Millisecond))
+	var sum time.Duration
+	for _, d := range l.d {
+		sum += d
+	}
+
+	t.Logf("%s: %d%s, %d failed (%.3f%%), mean %s p50 %s p90 %s p99 %s max %s", what, n, rate, failed,
+		100*float64(failed)/float64(max(1, n)), (sum / time.Duration(max(1, len(l.d)))).Round(time.Millisecond),
+		l.at(0.5).Round(time.Millisecond), l.at(0.9).Round(time.Millisecond), l.at(0.99).Round(time.Millisecond),
+		l.at(1).Round(time.Millisecond))
 
 	for err, c := range l.errors {
 		t.Logf("  %d× %s", c, err)

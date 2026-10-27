@@ -6,4 +6,5 @@ This section provides detailed reference material for Ella IMS, from configurati
 - [Configuration File](config_file.md)
 - [Metrics](metrics.md)
 - [Connectivity](connectivity.md)
+- [Performance](performance.md)
 - [Supported Mobile Equipment](supported_mobile_equipment.md)

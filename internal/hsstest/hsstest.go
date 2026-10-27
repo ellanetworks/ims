@@ -210,6 +210,12 @@ type store struct {
 	subscribers map[string]*Subscriber
 	order       []string
 
+	// byKey is the position in order of the first subscriber with each distinct IMPU, by identityKey, and wildcards
+	// the positions of those with a wildcarded one: rebuilt on a lookup after Add or Update changed the subscribers.
+	byKey     map[string]int
+	wildcards []int
+	stale     bool
+
 	// override has the HSS download the user profile in every SAA of a registration, the S-CSCF holding it or not
 	// (TS 29.228 §6.6).
 	override bool
@@ -344,6 +350,7 @@ func (h *HSS) Add(s Subscriber) {
 	}
 
 	h.db.subscribers[s.IMPI] = &c
+	h.db.stale = true
 }
 
 func (h *HSS) Subscriber(impi string) (Subscriber, bool) {
@@ -365,6 +372,8 @@ func (h *HSS) Update(impi string, f func(*Subscriber)) {
 	if s, ok := h.db.subscribers[impi]; ok {
 		f(s)
 	}
+
+	h.db.stale = true
 }
 
 func (h *HSS) Requests() <-chan Request {
@@ -426,7 +435,51 @@ func must(ans *diameter.Message, err error) *diameter.Message {
 }
 
 func (h *HSS) knownIMPU(impu string) bool {
-	return slices.ContainsFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(impu) })
+	return h.ownerLocked(impu) >= 0
+}
+
+// ownerLocked is the position in order of the first subscriber that has impu, or -1: as a scan of order, without
+// one for the distinct IMPUs.
+func (h *HSS) ownerLocked(impu string) int {
+	d := h.db
+
+	if d.stale || d.byKey == nil {
+		d.byKey, d.wildcards, d.stale = map[string]int{}, nil, false
+
+		for i, impi := range d.order {
+			wildcard := false
+
+			for _, p := range d.subscribers[impi].IMPUs {
+				if p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
+					wildcard = true
+				} else if _, ok := d.byKey[identityKey(p.Identity)]; !ok {
+					d.byKey[identityKey(p.Identity)] = i
+				}
+			}
+
+			if wildcard {
+				d.wildcards = append(d.wildcards, i)
+			}
+		}
+	}
+
+	owner, ok := d.byKey[identityKey(impu)]
+	if !ok {
+		owner = -1
+	}
+
+	// A subscriber before it whose wildcarded IMPU matches comes first.
+	for _, i := range d.wildcards {
+		if owner >= 0 && i > owner {
+			break
+		}
+
+		if d.subscribers[d.order[i]].has(impu) {
+			return i
+		}
+	}
+
+	return owner
 }
 
 func (h *HSS) lookup(req *diameter.Message, id diameter.Identity, impi, impu string) (*Subscriber, *diameter.Message) {
@@ -553,7 +606,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	// UNREGISTERED_USER may come without a private identity, as for a PSI (TS 29.228 §6.1.2).
 	if impi == "" && len(sar.PublicIdentities) == 1 {
-		if i := slices.IndexFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(sar.PublicIdentities[0]) }); i >= 0 {
+		if i := h.ownerLocked(sar.PublicIdentities[0]); i >= 0 {
 			impi = h.db.order[i]
 		}
 	}
@@ -665,7 +718,7 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 
 	id := c.LocalIdentity()
 
-	i := slices.IndexFunc(h.db.order, func(impi string) bool { return h.db.subscribers[impi].has(lir.PublicIdentity) })
+	i := h.ownerLocked(lir.PublicIdentity)
 	if i < 0 {
 		return experimental(req, id, tgpp.ResultErrorUserUnknown)
 	}

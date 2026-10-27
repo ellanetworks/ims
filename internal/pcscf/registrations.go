@@ -78,6 +78,7 @@ type registrations struct {
 	byKey    map[regKey]*db.PCSCFRegistration
 	byToken  map[string]*db.PCSCFRegistration
 	bySource map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}
+	byIMPI   map[string]map[*db.PCSCFRegistration]struct{}
 	timers   map[regKey]transaction.Timer
 	retired  map[string]retired
 	pending  map[regKey]retired
@@ -94,6 +95,7 @@ func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock,
 		byKey:    make(map[regKey]*db.PCSCFRegistration),
 		byToken:  make(map[string]*db.PCSCFRegistration),
 		bySource: make(map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}),
+		byIMPI:   make(map[string]map[*db.PCSCFRegistration]struct{}),
 		timers:   make(map[regKey]transaction.Timer),
 		retired:  make(map[string]retired),
 		pending:  make(map[regKey]retired),
@@ -174,6 +176,14 @@ func (rs *registrations) add(r *db.PCSCFRegistration) {
 }
 
 func (rs *registrations) index(r *db.PCSCFRegistration) {
+	byIMPI, ok := rs.byIMPI[r.IMPI]
+	if !ok {
+		byIMPI = make(map[*db.PCSCFRegistration]struct{})
+		rs.byIMPI[r.IMPI] = byIMPI
+	}
+
+	byIMPI[r] = struct{}{}
+
 	if r.Protected {
 		return
 	}
@@ -188,6 +198,12 @@ func (rs *registrations) index(r *db.PCSCFRegistration) {
 }
 
 func (rs *registrations) unindex(r *db.PCSCFRegistration) {
+	delete(rs.byIMPI[r.IMPI], r)
+
+	if len(rs.byIMPI[r.IMPI]) == 0 {
+		delete(rs.byIMPI, r.IMPI)
+	}
+
 	m := rs.bySource[r.UEAddress]
 	delete(m, r)
 
@@ -522,8 +538,8 @@ func (rs *registrations) forIMPI(impi string) (db.PCSCFRegistration, bool) {
 
 	var best *db.PCSCFRegistration
 
-	for k, r := range rs.byKey {
-		if k.impi == impi && r.ExpiresAt.After(rs.clock.Now()) && (best == nil || r.ExpiresAt.After(best.ExpiresAt)) {
+	for r := range rs.byIMPI[impi] {
+		if r.ExpiresAt.After(rs.clock.Now()) && (best == nil || r.ExpiresAt.After(best.ExpiresAt)) {
 			best = r
 		}
 	}

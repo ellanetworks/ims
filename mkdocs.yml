@@ -86,6 +86,7 @@ nav:
     - Configuration File: reference/config_file.md
     - Metrics: reference/metrics.md
     - Connectivity: reference/connectivity.md
+    - Performance: reference/performance.md
     - Supported Mobile Equipment: reference/supported_mobile_equipment.md
   - Explanation:
     - explanation/index.md

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
-	"slices"
 	"sync"
 	"time"
 
@@ -142,6 +141,11 @@ type associations struct {
 	closed bool
 	sets   map[*saSet]struct{}
 	byFlow map[flowKey]*saSet
+
+	// byUE and byIMPI are the sets by the UE's address and by private identity: the searches for a UE's or a
+	// subscriber's sets look at theirs only, not at the sets of every UE.
+	byUE   map[netip.Addr]map[*saSet]struct{}
+	byIMPI map[string]map[*saSet]struct{}
 }
 
 func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger) *associations {
@@ -160,6 +164,8 @@ func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger) *assoc
 		spis:   ipsec.NewSPIs(),
 		sets:   make(map[*saSet]struct{}),
 		byFlow: make(map[flowKey]*saSet),
+		byUE:   make(map[netip.Addr]map[*saSet]struct{}),
+		byIMPI: make(map[string]map[*saSet]struct{}),
 	}
 
 	if cfg.Store != nil {
@@ -294,7 +300,7 @@ func (a *associations) received(s *saSet) {
 
 	s.inUse = true
 
-	for o := range a.sets {
+	for o := range a.byUE[s.set.Remote.Addr] {
 		if o.state == old && o.sameUE(s) {
 			a.shorten(o, a.cfg.Grace)
 		}
@@ -305,7 +311,7 @@ func (a *associations) hasEstablished(ue netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for s := range a.sets {
+	for s := range a.byUE[ue] {
 		if s.state != temporary && s.set.Remote.Addr == ue {
 			return true
 		}
@@ -329,7 +335,7 @@ type challenge struct {
 // server port of the UE, which stays fixed for the UE (TS 33.203 §7.1 NOTE 10).
 func (a *associations) clientPort(c challenge) (uint16, bool) {
 	used := func(port uint16) bool {
-		for s := range a.sets {
+		for s := range a.byUE[c.ue] {
 			if s.state == temporary || s.impi != c.impi || s.set.Remote.Addr != c.ue || s.set.Local.PortC != port {
 				continue
 			}
@@ -382,7 +388,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow. The UE is
 	// the address the sets are bound to (TS 33.203 §7.1); a client of the same private identity at another
 	// address is another UE, whose challenge in progress is left (TS 33.203 §6.1 NOTE 2).
-	for s := range a.sets {
+	for s := range a.byUE[c.ue] {
 		if s.state == temporary && s.impi == c.impi && s.set.Remote.Addr == c.ue {
 			a.unanswered(s)
 			a.remove(s)
@@ -402,7 +408,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	}
 	set.Remote.Addr = c.ue
 
-	for s := range a.sets {
+	for s := range a.byUE[c.ue] {
 		if s.set.Remote.Addr != c.ue || !conflicts(s.set, set) {
 			continue
 		}
@@ -419,7 +425,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 
 	n, all := 0, 0
 
-	for s := range a.sets {
+	for s := range a.byUE[c.ue] {
 		if s.impi == c.impi && s.set.Remote.Addr == c.ue {
 			all++
 
@@ -471,7 +477,7 @@ func (a *associations) registered(s *saSet, o outcome) {
 	}
 
 	if o.dereg {
-		for x := range a.sets {
+		for x := range a.byUE[s.set.Remote.Addr] {
 			if x.sameUE(s) {
 				a.shorten(x, a.cfg.Grace)
 			}
@@ -497,7 +503,7 @@ func (a *associations) registered(s *saSet, o outcome) {
 		expires = s.origin.expires
 	}
 
-	for x := range a.sets {
+	for _, x := range a.related(s) {
 		switch {
 		case x == s:
 		case x == s.origin && !x.removed:
@@ -538,7 +544,7 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, id flowID, tr sip
 
 	var best *saSet
 
-	for s := range a.sets {
+	for s := range a.byUE[ue.Unmap()] {
 		if s.impi != impi || s.flow != id || s.set.Remote.Addr != ue.Unmap() || s.state == temporary {
 			continue
 		}
@@ -564,7 +570,7 @@ func (a *associations) hasSets(k regKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for s := range a.sets {
+	for s := range a.byUE[k.ue] {
 		if s.impi == k.impi && s.flow == k.flow && s.set.Remote.Addr == k.ue && s.state != temporary {
 			return true
 		}
@@ -577,7 +583,7 @@ func (a *associations) deregistered(k regKey) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for s := range a.sets {
+	for s := range a.byUE[k.ue] {
 		if s.impi == k.impi && s.flow == k.flow && s.set.Remote.Addr == k.ue {
 			a.shorten(s, a.cfg.Grace)
 		}
@@ -628,8 +634,49 @@ func (a *associations) shorten(s *saSet, d time.Duration) {
 	}
 }
 
+// related are the sets registered may change for s: those of its UE, those of its private identity, and its origin.
+func (a *associations) related(s *saSet) []*saSet {
+	out := make([]*saSet, 0, len(a.byUE[s.set.Remote.Addr])+len(a.byIMPI[s.impi])+1)
+
+	for x := range a.byUE[s.set.Remote.Addr] {
+		out = append(out, x)
+	}
+
+	for x := range a.byIMPI[s.impi] {
+		if x.set.Remote.Addr != s.set.Remote.Addr {
+			out = append(out, x)
+		}
+	}
+
+	if o := s.origin; o != nil && o.set.Remote.Addr != s.set.Remote.Addr && o.impi != s.impi {
+		if _, ok := a.sets[o]; ok {
+			out = append(out, o)
+		}
+	}
+
+	return out
+}
+
+func index[K comparable](m map[K]map[*saSet]struct{}, k K, s *saSet) {
+	if m[k] == nil {
+		m[k] = make(map[*saSet]struct{})
+	}
+
+	m[k][s] = struct{}{}
+}
+
+func unindex[K comparable](m map[K]map[*saSet]struct{}, k K, s *saSet) {
+	delete(m[k], s)
+
+	if len(m[k]) == 0 {
+		delete(m, k)
+	}
+}
+
 func (a *associations) add(s *saSet) {
 	a.sets[s] = struct{}{}
+	index(a.byUE, s.set.Remote.Addr, s)
+	index(a.byIMPI, s.impi, s)
 
 	for _, k := range flowKeys(s.set) {
 		a.byFlow[k] = s
@@ -663,6 +710,8 @@ func (a *associations) remove(s *saSet) {
 	s.removed = true
 	s.timer.Stop()
 	delete(a.sets, s)
+	unindex(a.byUE, s.set.Remote.Addr, s)
+	unindex(a.byIMPI, s.impi, s)
 
 	for _, k := range flowKeys(s.set) {
 		if a.byFlow[k] == s {
@@ -791,8 +840,23 @@ func (a *associations) restore(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// The contacts with an old set, by what sameUE compares.
+	type contact struct {
+		impi string
+		ue   netip.Addr
+		flow flowID
+	}
+
+	withOld := map[contact]bool{}
+
 	for _, s := range sets {
-		if s.state == established && slices.ContainsFunc(sets, func(o *saSet) bool { return o.state == old && o.sameUE(s) }) {
+		if s.state == old {
+			withOld[contact{s.impi, s.set.Remote.Addr, s.flow}] = true
+		}
+	}
+
+	for _, s := range sets {
+		if s.state == established && withOld[contact{s.impi, s.set.Remote.Addr, s.flow}] {
 			s.inUse = false
 		}
 

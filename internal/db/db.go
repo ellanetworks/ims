@@ -74,6 +74,7 @@ var migrations = []string{
 	CREATE UNIQUE INDEX bindings_flow ON bindings (registration_id, instance_id, reg_id) WHERE reg_id IS NOT NULL;
 	CREATE UNIQUE INDEX bindings_uri ON bindings (registration_id, uri) WHERE reg_id IS NULL;
 	CREATE INDEX bindings_expires_at ON bindings (expires_at);
+	CREATE INDEX bindings_registration ON bindings (registration_id);
 	CREATE TABLE reg_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		impi TEXT NOT NULL,
@@ -336,7 +337,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// The path of a URI: escaped, of a "?", "#" or "%" that would end or escape it (https://sqlite.org/uri.html).
 	file := (&url.URL{Path: path}).EscapedPath()
 
-	conn, err := sql.Open("sqlite3", "file:"+file+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
+	conn, err := sql.Open("sqlite3", "file:"+file+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_stmt_cache_size=64")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -364,7 +365,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 
-	read, err := sql.Open("sqlite3", "file:"+file+"?_query_only=true&_busy_timeout=5000")
+	read, err := sql.Open("sqlite3", "file:"+file+"?_query_only=true&_busy_timeout=5000&_stmt_cache_size=64")
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("open database: %w", err)

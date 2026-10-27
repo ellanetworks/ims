@@ -25,7 +25,9 @@ const (
 	DefaultDialTimeout         = 10 * time.Second
 	DefaultFallbackTimeout     = 2 * time.Second
 	DefaultWriteTimeout        = 10 * time.Second
-	DefaultMaxConnections      = 2048
+
+	// DefaultMaxConnections is the limit of connections where the limit of open files is unknown.
+	DefaultMaxConnections = 2048
 
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
@@ -63,6 +65,8 @@ type Config struct {
 
 	MaxMessageSize int
 
+	// MaxConnections is the most connections the transport accepts while it holds them, three quarters of the
+	// process's limit of open files if 0: the rest for its other files.
 	MaxConnections int
 
 	IdleTimeout         time.Duration
@@ -151,7 +155,7 @@ func New(cfg Config) *Transport {
 	}
 
 	if t.maxConns <= 0 {
-		t.maxConns = DefaultMaxConnections
+		t.maxConns = defaultMaxConnections(openFileLimit())
 	}
 
 	if t.idleTimeout <= 0 {
@@ -701,4 +705,13 @@ func normalize(f sip.Flow) sip.Flow {
 	}
 
 	return f
+}
+
+// defaultMaxConnections is three quarters of the limit of open files, or DefaultMaxConnections if unknown.
+func defaultMaxConnections(openFiles int) int {
+	if n := openFiles / 4 * 3; n > 0 {
+		return n
+	}
+
+	return DefaultMaxConnections
 }
