@@ -23,7 +23,8 @@ Under **Peers**, click **Add Peer**, and enter:
 - **Address**: `10.3.0.7`.
 - **Roles**: **SGd** only.
 - **Service Centres**: `15550000000`.
-- **Host**: the SMSC's Diameter identity, e.g. `smsc.epc.mnc001.mcc001.3gppnetwork.org`.
+- **Transport**: **SCTP**, for Ella SMSC.
+- **Host**: the SMSC's Diameter identity, e.g. `smsc.node.epc.mnc001.mcc001.3gppnetwork.org` for Ella SMSC.
 
 Click **Add**.
 
