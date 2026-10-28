@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/uetest"
 	"github.com/ellanetworks/ims/sip"
@@ -607,6 +608,80 @@ func TestAddVideoAnsweredInReliable183(t *testing.T) {
 	p.send(peerResponse(t, p, update, 200, tag, answer))
 	p.send(peerResponse(t, p, reinvite, 200, tag, nil))
 	p.request("ACK")
+
+	if err := <-added; err != nil {
+		t.Fatalf("AddVideo: %v", err)
+	}
+
+	if _, ok := c.Stream(sdp.Video); !ok || !c.PreconditionsMet() {
+		t.Fatalf("streams %+v, preconditions met %v: want the video with its resources", c.Streams(), c.PreconditionsMet())
+	}
+}
+
+// RFC 3312 §5: a re-INVITE answered in a reliable 183 adds the video once the UPDATE reporting its resources is
+// answered, though the 200 of the re-INVITE comes first, as the two transactions' responses can.
+func TestAddVideoWaitsForItsUpdate(t *testing.T) {
+	ctx := testContext(t)
+	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
+	pm := newMedia(loopback, 50000, true, true)
+	tag := sip.NewTag()
+
+	c, err := p.u.MMTel().Invite("sip:+15550002@"+domain+";user=phone", CallOptions{Preconditions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invite := p.request("INVITE")
+
+	answer, err := pm.answer(sdpOf(t, invite.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.send(peerResponse(t, p, invite, 200, tag, answer))
+
+	if res, err := c.Wait(ctx); err != nil || res.StatusCode != 200 {
+		t.Fatalf("Wait = %v, %v", res, err)
+	}
+
+	p.request("ACK")
+
+	added := make(chan error, 1)
+
+	go func() { added <- c.AddVideo(ctx) }()
+
+	reinvite := p.request("INVITE")
+
+	answer, err = pm.answer(sdpOf(t, reinvite.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	progress := peerResponse(t, p, reinvite, 183, tag, answer)
+	progress.Header.Set("Require", "100rel, precondition")
+	progress.Header.Set("RSeq", "1")
+	p.send(progress)
+
+	prack := p.request("PRACK")
+	p.send(peerResponse(t, p, prack, 200, tag, nil))
+
+	update := p.request("UPDATE")
+
+	answer, err = pm.answer(sdpOf(t, update.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.send(peerResponse(t, p, reinvite, 200, tag, nil))
+	p.request("ACK")
+
+	select {
+	case err := <-added:
+		t.Fatalf("AddVideo returned %v before its UPDATE was answered", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	p.send(peerResponse(t, p, update, 200, tag, answer))
 
 	if err := <-added; err != nil {
 		t.Fatalf("AddVideo: %v", err)

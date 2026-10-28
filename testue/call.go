@@ -653,7 +653,10 @@ func (c *Call) progress(s *ua.Session, res *sip.Response) {
 func (c *Call) reportResources(ctx context.Context, l *leg) error {
 	defer func() {
 		c.mu.Lock()
+
 		l.reporting = false
+
+		c.notifyLocked()
 		c.mu.Unlock()
 	}()
 
@@ -1227,8 +1230,8 @@ func (c *Call) Refresh(ctx context.Context) error {
 }
 
 // reinvite offers the session as change leaves it (RFC 3261 §14.1), and restores it when the offer fails. A stream it
-// added has its resources reported in an UPDATE once it completes (RFC 3312 §5). The agent makes it once more after
-// a 491.
+// added has its resources reported in an UPDATE (RFC 3312 §5), sent on a reliable 183 that answered the re-INVITE, or
+// once it completes: the change completes with that UPDATE. The agent makes it once more after a 491.
 func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 	// RFC 3264 §4: the offer waits for the one in progress, such as an UPDATE of the call's setup still unanswered.
 	if err := c.waitFor(ctx, func() bool {
@@ -1297,7 +1300,8 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 		return c.reportResources(ctx, l)
 	}
 
-	return nil
+	// The UPDATE that a reliable 183 of the re-INVITE sent may still wait for its answer.
+	return c.waitFor(ctx, func() bool { return c.state == CallTerminated || !l.reporting })
 }
 
 // AddVideo adds video to the call (IR.94 §2.2.2), in a re-INVITE.

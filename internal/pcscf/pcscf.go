@@ -182,7 +182,10 @@ func (p *PCSCF) Close(ctx context.Context) error {
 		p.sas.close()
 	}
 
-	if !stop() {
+	// The context's end is its done channel closing, before its AfterFuncs start: stop can still stop p.cancel once what
+	// waited on ctx gave up. The context's error tells it.
+	if !stop() || ctx.Err() != nil {
+		p.cancel()
 		return ctx.Err()
 	}
 
