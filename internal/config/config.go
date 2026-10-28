@@ -68,8 +68,6 @@ type APITLS struct {
 }
 
 type SIP struct {
-	// Name is a network interface whose addresses are the Addresses, which are then not set.
-	Name      string       `yaml:"name"`
 	Addresses []netip.Addr `yaml:"addresses"`
 
 	// TrustedNetworks hold the other nodes of the trust domain, such as the ASs: the I-CSCF and the S-CSCF take their
@@ -93,8 +91,6 @@ type N5 struct {
 // N5Notify is where the P-CSCF listens for the PCF's notifications. A Port of 0 is one the system chooses: the
 // notification URI the PCF is given with each request has it (TS 29.514 §5.6.2.3).
 type N5Notify struct {
-	// Name is a network interface whose first address is the Address, which is then not set.
-	Name    string     `yaml:"name"`
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
 }
@@ -150,8 +146,6 @@ type SCSCF struct {
 }
 
 type Diameter struct {
-	// Name is a network interface whose first address is the Address, which is then not set.
-	Name    string     `yaml:"name"`
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
 }
@@ -168,10 +162,6 @@ func Load(path string) (Config, error) {
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
-	}
-
-	if err := cfg.resolveInterfaces(); err != nil {
-		return Config{}, err
 	}
 
 	if cfg.API.Port == 0 {
@@ -285,7 +275,7 @@ func (c Config) validateN5(n N5) error {
 
 	switch {
 	case !a.IsValid():
-		return errors.New("n5.notify.name or n5.notify.address is required")
+		return errors.New("n5.notify.address is required")
 	case a.IsUnspecified():
 		return fmt.Errorf("n5.notify.address must be a specific address, not %s, since the PCF sends to it", a)
 	case a.Zone() != "" || a.Is4In6():
@@ -428,7 +418,7 @@ func (c Config) apiSharesSIPAddress() bool {
 
 func (s SIP) validate() error {
 	if len(s.Addresses) == 0 {
-		return errors.New("sip.name or sip.addresses is required")
+		return errors.New("sip.addresses needs at least one address")
 	}
 
 	seen := make(map[netip.Addr]bool, len(s.Addresses))
@@ -463,7 +453,7 @@ func (s SIP) validate() error {
 func (d Diameter) validate() error {
 	switch {
 	case !d.Address.IsValid():
-		return errors.New("diameter.name or diameter.address is required")
+		return errors.New("diameter.address is required")
 	case d.Address.IsUnspecified():
 		return errors.New("diameter.address must be a specific address, not 0.0.0.0 or ::, since it is advertised to peers")
 	case d.Port < 1 || d.Port > 65535:

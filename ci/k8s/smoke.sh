@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke test of the Kubernetes manifests in k8s/: deploys them, through the
-# overlay ci/k8s/<MODE>, on a single-node kind cluster, and checks the IMS over
+# overlay ci/k8s, on a single-node kind cluster, and checks the IMS over
 # its API Service, with phones that register and call over IPsec, and across a
 # restart of the pod and, when PREVIOUS_IMAGE is set, an upgrade.
 #
@@ -9,20 +9,14 @@
 # the IP pool 10.46.0.0/16, whose addresses it takes as its own, as a UPF routes
 # them.
 #
-# MODE multus deploys k8s/. The kind node gets a second interface, eth1, on a
-# Docker network, N6, 10.6.0.0/24, whose link carries the Diameter network,
-# 10.3.0.0/24, too, as both NADs have eth1 as master: the NADs and the ConfigMap
-# are deployed as shipped. The core is 10.6.0.2, the gateway to the IP pool of
-# the SIP NAD, and 10.3.0.2.
-#
-# MODE pod-network deploys k8s/pod-network/, with no Multus. The core is on the
-# kind network, and routes the pod network through the node, which routes the
-# IP pool through the core, and does not masquerade the IMS's traffic to them:
-# the phones and the core reach the pod's address without NAT.
+# The kind node gets a second interface, eth1, on a Docker network, N6,
+# 10.6.0.0/24, whose link carries the Diameter network, 10.3.0.0/24, too, as
+# both NADs have eth1 as master: the NADs and the ConfigMap are deployed as
+# shipped. The core is 10.6.0.2, the gateway to the IP pool of the SIP NAD, and
+# 10.3.0.2. This host reaches the API on the IMS's SIP address.
 #
 # Needs docker, kind, kubectl, kubeconform, go, curl, jq and the sctp, esp4 and
 # xfrm_user kernel modules. Environment:
-#   MODE            multus or pod-network (multus)
 #   IMAGE           the image under test, in the local Docker (ella-ims:latest)
 #   PREVIOUS_IMAGE  an image to deploy first and upgrade from (none)
 #   N6_NET          the first three octets of the N6 network (10.6.0), to
@@ -31,7 +25,6 @@
 #   KEEP            set to keep the cluster, the core and the network afterwards
 set -euo pipefail
 
-MODE="${MODE:-multus}"
 IMAGE="${IMAGE:-ella-ims:latest}"
 PREVIOUS_IMAGE="${PREVIOUS_IMAGE:-}"
 
@@ -90,17 +83,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-case "${MODE}" in
-multus | pod-network) ;;
-*) fail "MODE must be multus or pod-network, not ${MODE}" ;;
-esac
-
-# Where this host reaches the API, and where the core reaches SIP and
-# Diameter, set once the IMS is deployed.
-API_ADDR=""
+# The IMS's addresses, on its Multus interfaces.
+SIP_ADDR="${N6}.5"
+DIAMETER_ADDR="${DIAMETER}.5"
+CORE_DIAMETER="${DIAMETER}.2"
 API_PORT=5020
-SIP_ADDR=""
-DIAMETER_ADDR=""
 
 # The admin of internal/api/apitest, as which the load client logs in too, and
 # the API token with which this script calls the API, set by log_in.
@@ -112,7 +99,7 @@ TOKEN=""
 api() {
   local auth=()
   [ -z "${TOKEN}" ] || auth=(-H "Authorization: Bearer ${TOKEN}")
-  curl -fsS --max-time 10 "${auth[@]}" "http://${API_ADDR}:${API_PORT}/api/v1$1" "${@:2}"
+  curl -fsS --max-time 10 "${auth[@]}" "http://${SIP_ADDR}:${API_PORT}/api/v1$1" "${@:2}"
 }
 
 # Creates the admin if the IMS has no user yet, logs it in, and creates the
@@ -136,7 +123,7 @@ node_ip() { kubectl get node "${NODE}" -o jsonpath='{.status.addresses[?(@.type=
 
 # The manifests of the overlay, with the networks of this host.
 manifests() {
-  kubectl kustomize "${ROOT}/ci/k8s/${MODE}" \
+  kubectl kustomize "${ROOT}/ci/k8s" \
     | sed -e "s/\b${SHIPPED_N6//./\\.}\./${N6}./g" -e "s/\b${SHIPPED_DIAMETER//./\\.}\./${DIAMETER}./g"
 }
 
@@ -162,21 +149,15 @@ wait_api() {
     api /status >/dev/null 2>&1 && return 0
     sleep 1
   done
-  fail "the API does not answer at ${API_ADDR}:${API_PORT}"
+  fail "the API does not answer at ${SIP_ADDR}:${API_PORT}"
 }
 
-# Sets where the IMS is: its Multus addresses, or the pod's.
-locate() {
-  if [ "${MODE}" = multus ]; then
-    SIP_ADDR="${N6}.5"
-    DIAMETER_ADDR="${DIAMETER}.5"
-    API_ADDR="${SIP_ADDR}"
-  else
-    SIP_ADDR="$(k get pod ella-ims-0 -o jsonpath='{.status.podIP}')"
-    DIAMETER_ADDR="${SIP_ADDR}"
-    API_ADDR="$(node_ip)"
-    API_PORT="$(node_port ella-ims http)"
-  fi
+# Checks that the P-CSCF listens on the SIP address.
+check_sip() {
+  k logs ella-ims-0 | grep '"msg":"ims started"' | tail -n 1 \
+    | jq -e --arg want "pcscf ${SIP_ADDR}:5060" '.sip | index($want)' >/dev/null \
+    || fail "the P-CSCF does not listen on ${SIP_ADDR}:5060"
+  echo "P-CSCF on ${SIP_ADDR}:5060"
 }
 
 # Deploys the overlay with the given image, loaded into the cluster as ella-ims:ci.
@@ -191,7 +172,6 @@ deploy() {
     k rollout restart statefulset/ella-ims
   fi
   wait_ready "${old}"
-  locate
   wait_api
 }
 
@@ -221,42 +201,22 @@ load() {
 
 step "Lint the manifests"
 version="$(cat "${ROOT}/version/VERSION")"
-for dir in k8s k8s/pod-network ci/k8s/multus ci/k8s/pod-network; do
+for dir in k8s ci/k8s; do
   kubectl kustomize "${ROOT}/${dir}" | kubeconform -strict -summary -skip NetworkAttachmentDefinition
 done
 endstep
 
 step "Create the cluster"
-if [ "${MODE}" = multus ]; then
-  if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
-    fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
-  fi
-  # Docker gives addresses from the upper half only, so those of the IMS and the core stay free.
-  docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
+if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
+  fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
 fi
+# Docker gives addresses from the upper half only, so those of the IMS and the core stay free.
+docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
 kind create cluster --name "${CLUSTER}" --wait 120s
-if [ "${MODE}" = multus ]; then
-  docker network connect "${NETWORK}" "${NODE}"
-  docker exec "${NODE}" ip -br addr show eth1
-fi
+docker network connect "${NETWORK}" "${NODE}"
+docker exec "${NODE}" ip -br addr show eth1
 endstep
 
-step "Check the Pod Security of the pod"
-# Only the privileged Pod Security Standard allows NET_ADMIN, which IPsec takes,
-# and root, to which Kubernetes gives it. The pod breaks no other rule of the
-# restricted one.
-kubectl create namespace pss-check >/dev/null
-kubectl label namespace pss-check pod-security.kubernetes.io/enforce=restricted >/dev/null
-# The pod of both variants is that of k8s/base, which has no namespace.
-violations="$(kubectl kustomize "${ROOT}/k8s/base" | kubectl -n pss-check create --dry-run=server -f - -o name 2>&1 >/dev/null \
-  | grep -o 'would violate PodSecurity.*' || true)"
-echo "${violations}"
-want='would violate PodSecurity "restricted:latest": unrestricted capabilities (container "ims" must not include "NET_ADMIN" in securityContext.capabilities.add), runAsNonRoot != true (pod or container "ims" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "ims" must not set runAsUser=0)'
-[ "${violations}" = "${want}" ] || fail "the pod breaks other rules of the restricted Pod Security Standard than NET_ADMIN and root"
-kubectl delete namespace pss-check --wait=false >/dev/null
-endstep
-
-if [ "${MODE}" = multus ]; then
 step "Install the CNI plugins and Multus"
 curl -fsSL "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz" \
   | tar -xz -C "${WORK}" ./macvlan ./static
@@ -267,28 +227,28 @@ curl -fsSL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${
   | kubectl apply -f -
 kubectl -n kube-system rollout status daemonset/kube-multus-ds --timeout=180s
 endstep
-fi
+
+step "Check the Pod Security of the pod"
+# Only the privileged Pod Security Standard allows NET_ADMIN, which IPsec takes,
+# and root, to which Kubernetes gives it. The pod breaks no other rule of the
+# restricted one.
+kubectl create namespace pss-check >/dev/null
+kubectl label namespace pss-check pod-security.kubernetes.io/enforce=restricted >/dev/null
+violations="$(kubectl kustomize "${ROOT}/k8s" | sed "s/^  namespace: ${NS}$/  namespace: pss-check/" \
+  | kubectl create --dry-run=server -f - -o name 2>&1 >/dev/null \
+  | grep -o 'would violate PodSecurity.*' || true)"
+echo "${violations}"
+want='would violate PodSecurity "restricted:latest": unrestricted capabilities (container "ims" must not include "NET_ADMIN" in securityContext.capabilities.add), runAsNonRoot != true (pod or container "ims" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "ims" must not set runAsUser=0)'
+[ "${violations}" = "${want}" ] || fail "the pod breaks other rules of the restricted Pod Security Standard than NET_ADMIN and root"
+kubectl delete namespace pss-check --wait=false >/dev/null
+endstep
 
 step "Start the core"
 (cd "${ROOT}" && CGO_ENABLED=0 go test -c -o "${WORK}/loadtest.test" ./internal/loadtest)
 # The node's image has the tools the core needs: ip, and a shell.
 node_image="$(docker inspect "${NODE}" -f '{{.Config.Image}}')"
-if [ "${MODE}" = multus ]; then
-  docker run -d --name "${CORE}" --privileged --network "${NETWORK}" --ip "${N6}.2" --entrypoint sleep "${node_image}" infinity >/dev/null
-  docker exec "${CORE}" ip addr add "${DIAMETER}.2/24" dev eth0
-  CORE_DIAMETER="${DIAMETER}.2"
-else
-  docker run -d --name "${CORE}" --privileged --network kind --entrypoint sleep "${node_image}" infinity >/dev/null
-  CORE_DIAMETER="$(docker inspect "${CORE}" -f '{{.NetworkSettings.Networks.kind.IPAddress}}')"
-  pod_cidr="$(kubectl get node "${NODE}" -o jsonpath='{.spec.podCIDR}')"
-  docker exec "${CORE}" ip route add "${pod_cidr}" via "$(node_ip)"
-  docker exec "${NODE}" ip route add "${UE_POOL}" via "${CORE_DIAMETER}"
-  # kind masquerades the pods' traffic out of the cluster, as most CNIs do by
-  # default: not to the core and the phones, which must see the IMS's address.
-  for dst in "${UE_POOL}" "${CORE_DIAMETER}/32"; do
-    docker exec "${NODE}" iptables -t nat -I KIND-MASQ-AGENT -d "${dst}" -j RETURN
-  done
-fi
+docker run -d --name "${CORE}" --privileged --network "${NETWORK}" --ip "${N6}.2" --entrypoint sleep "${node_image}" infinity >/dev/null
+docker exec "${CORE}" ip addr add "${CORE_DIAMETER}/24" dev eth0
 docker exec "${CORE}" ip route add local "${UE_POOL}" dev lo
 docker cp "${WORK}/loadtest.test" "${CORE}:/loadtest.test"
 endstep
@@ -327,10 +287,7 @@ echo "version ${running} at $(node_ip):${api_port}"
 endstep
 
 step "Check the SIP address"
-k logs ella-ims-0 | grep '"msg":"ims started"' | tail -n 1 \
-  | jq -e --arg want "pcscf ${SIP_ADDR}:5060" '.sip | index($want)' >/dev/null \
-  || fail "the P-CSCF does not listen on ${SIP_ADDR}:5060"
-echo "P-CSCF on ${SIP_ADDR}:5060"
+check_sip
 endstep
 
 step "Register ${SUBS} phones over IPsec at ${SIP_ADDR}, and call"
@@ -349,18 +306,15 @@ k delete pod ella-ims-0 --wait=false
 wait_ready "${uid}"
 kill "${WATCH_PID}"
 WATCH_PID=""
-before_ip="${SIP_ADDR}"
-locate
 wait_api
 
 grep -q '"msg":"ims stopping"' "${WORK}/stopped.log" || fail "the IMS did not log its shutdown"
 codes="$(awk -v uid="${uid}" '$1 == uid && NF == 2 { print $2 }' "${WORK}/watch.txt" | sort -u)"
 [ "${codes}" = 0 ] || fail "the IMS exited with code '${codes}', want 0"
 tail -n 3 "${WORK}/stopped.log" | cut -c 1-300
-[ "${SIP_ADDR}" = "${before_ip}" ] || fail "the IMS moved from ${before_ip} to ${SIP_ADDR}: the phones still reach the old address"
+check_sip
 # The API token is in the database.
 api /users/me >/dev/null || fail "the API token is gone after the restart"
-echo "IMS back at ${SIP_ADDR}"
 endstep
 
 # The IPsec security associations were in the pod's network namespace, gone with

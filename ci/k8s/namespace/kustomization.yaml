@@ -1,7 +1,0 @@
-# The namespace of the smoke test. IPsec takes CAP_NET_ADMIN, which only the
-# privileged Pod Security Standard allows: the smoke test checks that the pod
-# breaks no other rule of the restricted one.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - namespace.yaml

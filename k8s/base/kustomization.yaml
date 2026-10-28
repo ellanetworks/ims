@@ -1,7 +1,0 @@
-# What the two variants share: k8s/, with SIP and Diameter on Multus interfaces, and
-# k8s/pod-network/, with SIP and Diameter on the pod network.
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ims-statefulset.yaml
-  - ims-service.yaml

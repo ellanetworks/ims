@@ -37,8 +37,6 @@ const (
 
 // MCPTTMedia is the media relay of the calls: voice and the floor control channels.
 type MCPTTMedia struct {
-	// Name is a network interface whose first address is the Address, which is then not set.
-	Name string `yaml:"name"`
 	// Address is the address its sockets bind; Advertise the one of the SDP c= lines, required if Address is
 	// unspecified.
 	Address   netip.Addr `yaml:"address"`
@@ -86,7 +84,7 @@ func (c Config) validateMCPTT(m MCPTT) error {
 
 	switch a := md.Address; {
 	case !a.IsValid():
-		return errors.New("mcptt.media.name or mcptt.media.address is required")
+		return errors.New("mcptt.media.address is required")
 	case a.Zone() != "":
 		return fmt.Errorf("mcptt.media.address %s must not have a zone", a)
 	}
