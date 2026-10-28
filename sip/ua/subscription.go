@@ -333,7 +333,7 @@ func (att *subscribing) error(err error) {
 	att.done()
 
 	if s := att.first; s.d == nil {
-		s.end(End{Cause: EndTimeout, Err: err})
+		s.end(failureEnd(err))
 	}
 }
 

@@ -716,6 +716,97 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	return err
 }
 
+// Drop ends at once everything of the agent under way, sending nothing on its behalf: its INVITEs, sessions,
+// requests, subscriptions, notifiers and publications end with EndDropped, or ErrDropped, and the transactions of the
+// flows match reports with them (transaction.Layer.Drop). The application knows the flow they depend on failed, as a
+// UE whose registration's flow failed stops processing its dialogs and transactions (TS 24.229 §5.1.1.4.1). The
+// agent goes on with what the application starts afterwards. Drop must not be called from a handler, whose strand it
+// waits for.
+func (a *Agent) Drop(match func(sip.Flow) bool) {
+	// The transactions first: what ending the usages would still answer or send is refused.
+	a.layer.Drop(match)
+
+	a.mu.Lock()
+
+	var (
+		outgoing []*Outgoing
+		sessions []*Session
+		subs     []*Subscription
+		notifs   []*ServerSubscription
+	)
+
+	for o := range a.outgoing {
+		outgoing = append(outgoing, o)
+	}
+
+	for _, e := range a.dialogs {
+		if e.invite != nil {
+			sessions = append(sessions, e.invite)
+		}
+
+		subs = append(subs, e.subs...)
+		notifs = append(notifs, e.notifs...)
+	}
+
+	for _, att := range a.subscribing {
+		subs = append(subs, att.first)
+	}
+
+	pubs := make([]*Publication, 0, len(a.pubs))
+	for p := range a.pubs {
+		pubs = append(pubs, p)
+	}
+
+	requests := make([]*outOfDialog, 0, len(a.requests))
+	for c := range a.requests {
+		requests = append(requests, c)
+	}
+
+	a.mu.Unlock()
+
+	for _, o := range outgoing {
+		_ = o.st.do(func() error {
+			o.dropped()
+			return nil
+		})
+	}
+
+	for _, s := range sessions {
+		_ = s.st.do(func() error {
+			s.end(End{Cause: EndDropped})
+			return nil
+		})
+	}
+
+	for _, s := range subs {
+		_ = s.st.do(func() error {
+			s.end(End{Cause: EndDropped})
+			return nil
+		})
+	}
+
+	for _, n := range notifs {
+		_ = n.st.do(func() error {
+			n.end(End{Cause: EndDropped})
+			return nil
+		})
+	}
+
+	for _, p := range pubs {
+		_ = p.st.do(func() error {
+			p.end(End{Cause: EndDropped})
+			return nil
+		})
+	}
+
+	for _, c := range requests {
+		_ = c.st.do(func() error {
+			c.finish(nil, transaction.ErrDropped)
+			return nil
+		})
+	}
+}
+
 func (a *Agent) allowValue() string {
 	return strings.Join(a.allow, ", ")
 }

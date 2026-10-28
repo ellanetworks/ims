@@ -139,7 +139,7 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, 
 			err = fmt.Errorf("%w: %w", ErrTransport, err)
 		}
 
-		tx.fail(err)
+		tx.failClient(err)
 
 		return
 	}
@@ -150,7 +150,7 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, 
 	tx.conn = conn
 
 	if !tx.layer.connected(sent.Flow, conn) && tx.pending() {
-		tx.fail(fmt.Errorf("%w: %w: %s", ErrTransport, transport.ErrConnectionLost, sent.Flow))
+		tx.failClient(fmt.Errorf("%w: %w: %s", ErrTransport, transport.ErrConnectionLost, sent.Flow))
 		return
 	}
 
@@ -160,6 +160,21 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, 
 	for _, res := range early {
 		tx.handle(res)
 	}
+}
+
+// failClient fails the transaction, and tells the layer's OnClientError of it, with the state it failed in.
+func (tx *ClientTransaction) failClient(err error) {
+	if tx.state == Terminated {
+		return
+	}
+
+	// Told before the transaction's user, in the order of the transaction's events.
+	if f := tx.layer.onClientError; f != nil {
+		in, req := tx.state, tx.req
+		tx.emit(func() { f(req, in, err) })
+	}
+
+	tx.fail(err)
 }
 
 func (tx *ClientTransaction) sendCancel() {
@@ -243,7 +258,7 @@ func (tx *ClientTransaction) handleInvite(res *sip.Response) {
 
 		ack, err := sip.NewAck(tx.req, res)
 		if err != nil {
-			tx.fail(err)
+			tx.failClient(err)
 			return
 		}
 
@@ -277,7 +292,7 @@ func (tx *ClientTransaction) sendAck() {
 
 func (tx *ClientTransaction) sendResult(err error) {
 	if err != nil {
-		tx.fail(err)
+		tx.failClient(err)
 	}
 }
 
@@ -313,13 +328,13 @@ func (tx *ClientTransaction) retransmitTimer() {
 
 func (tx *ClientTransaction) timeoutTimer() {
 	if tx.pending() {
-		tx.fail(ErrTimeout)
+		tx.failClient(ErrTimeout)
 	}
 }
 
 func (tx *ClientTransaction) cancelTimer() {
 	if tx.state == Proceeding {
-		tx.fail(ErrTimeout)
+		tx.failClient(ErrTimeout)
 	}
 }
 

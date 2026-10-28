@@ -502,6 +502,19 @@ func (o *Outgoing) closed() {
 	o.release()
 }
 
+// dropped ends the INVITE at once, without a CANCEL, its sessions with EndDropped (Agent.Drop).
+func (o *Outgoing) dropped() {
+	if o.final {
+		return
+	}
+
+	o.final = true
+	o.done()
+	o.emitFailed(nil, transaction.ErrDropped)
+	o.endSessions(End{Cause: EndDropped})
+	o.release()
+}
+
 // error ends an outgoing INVITE that failed without a final response.
 func (o *Outgoing) error(err error) {
 	if o.final {
@@ -511,7 +524,7 @@ func (o *Outgoing) error(err error) {
 	o.final = true
 	o.done()
 	o.emitFailed(nil, err)
-	o.endSessions(End{Cause: EndTimeout, Err: err})
+	o.endSessions(failureEnd(err))
 	o.release()
 }
 

@@ -743,7 +743,7 @@ func (r *Request) failedOne(err error) {
 	r.held = nil
 
 	if r == s.initial() {
-		s.end(End{Cause: EndTimeout, Err: err})
+		s.end(failureEnd(err))
 	}
 
 	if s.in == r {

@@ -315,7 +315,7 @@ func (c *publishRequest) error(err error) {
 	p.emitDone(c.done, nil, err)
 
 	if c.initial || c.remove {
-		p.end(End{Cause: EndTimeout, Err: err})
+		p.end(failureEnd(err))
 		return
 	}
 

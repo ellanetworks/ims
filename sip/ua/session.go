@@ -73,7 +73,8 @@ const (
 	// EndUnsubscribed: the application ended the subscription before its first NOTIFY, or the SUBSCRIBE that ends it
 	// failed.
 	EndUnsubscribed
-	// EndDropped: the application ended the subscription without the network: Drop, or a NOTIFY it refused.
+	// EndDropped: the application ended the subscription without the network: Drop, or a NOTIFY it refused; or the
+	// session, the subscription or the publication with all of the agent's (Agent.Drop).
 	EndDropped
 	// EndNoSubscription: the 2xx to a REFER said it created no subscription (RFC 4488, RFC 7614).
 	EndNoSubscription
@@ -83,6 +84,16 @@ const (
 	// tells which: an ACK that could not be sent, a NOTIFY that could not be built.
 	EndFailed
 )
+
+// failureEnd is the end of a usage whose transaction failed with err: dropped with the agent's (Agent.Drop), or timed
+// out, or failed in transport.
+func failureEnd(err error) End {
+	if errors.Is(err, transaction.ErrDropped) {
+		return End{Cause: EndDropped, Err: err}
+	}
+
+	return End{Cause: EndTimeout, Err: err}
+}
 
 func (c EndCause) String() string {
 	switch c {

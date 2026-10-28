@@ -58,8 +58,10 @@ type core struct {
 	ran      uint64
 	draining bool
 
-	// sending counts the sends of the transaction in the outboxes of the layer.
+	// sending counts the sends of the transaction in the outboxes of the layer; dropped is set once its user dropped
+	// it (Layer.Drop): what it queued is not sent.
 	sending int
+	dropped bool
 
 	done     chan struct{}
 	doneSent bool
@@ -146,8 +148,16 @@ func (tx *core) push(f sip.Flow, send func() error, result func(error)) {
 	tx.sending++
 
 	ok := tx.layer.enqueue(f, func(ok bool) {
+		tx.mu.Lock()
+		dropped := tx.dropped
+		tx.mu.Unlock()
+
 		err := ErrClosed
-		if ok {
+
+		switch {
+		case dropped:
+			err = ErrDropped
+		case ok:
 			err = send()
 		}
 

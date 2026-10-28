@@ -36,6 +36,9 @@ var (
 	// as a 503 (Service Unavailable), a timeout as a 408 (§8.1.3.1).
 	ErrTransport = errors.New("sip/transaction: transport error")
 
+	// ErrDropped is the error of a transaction the layer's user dropped with its flow (Layer.Drop).
+	ErrDropped = errors.New("sip/transaction: dropped")
+
 	ErrTerminated = errors.New("sip/transaction: transaction terminated")
 
 	ErrFinalResponseSent = errors.New("sip/transaction: final response already sent")
@@ -79,6 +82,11 @@ type Config struct {
 	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
 	OnListenerFailed func(local netip.AddrPort, err error)
 
+	// OnClientError is told of each client transaction that failed, with its request, the state it failed in, and
+	// the error: ErrTimeout of Timer B or F, ErrTransport, ErrDropped, ErrClosed. A UE acts on those of Trying and
+	// Calling (TS 24.229 §5.1.2A.1.6).
+	OnClientError func(req *sip.Request, in State, err error)
+
 	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping
 	// transport.ErrConnectionLost, once the client transactions waiting on it failed (transport.Config.OnConnectionLost).
 	OnConnectionLost func(f sip.Flow, err error)
@@ -108,6 +116,8 @@ type Layer struct {
 	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
 	onFailed func(local netip.AddrPort, err error)
 	onLost   func(f sip.Flow, err error)
+
+	onClientError func(req *sip.Request, in State, err error)
 
 	t1, t2, t4, t100 time.Duration
 
@@ -176,14 +186,16 @@ func New(cfg Config) *Layer {
 		onDone:   cfg.OnServerDone,
 		onFailed: cfg.OnListenerFailed,
 		onLost:   cfg.OnConnectionLost,
-		t1:       cfg.T1,
-		t2:       cfg.T2,
-		t4:       cfg.T4,
-		lanes:    make(map[sip.Flow]*lane),
-		outboxes: make(map[sip.Flow]*outbox),
-		clients:  make(map[clientKey]*ClientTransaction),
-		servers:  make(map[serverKey]*ServerTransaction),
-		pending:  make(map[branchKey]*ServerTransaction),
+
+		onClientError: cfg.OnClientError,
+		t1:            cfg.T1,
+		t2:            cfg.T2,
+		t4:            cfg.T4,
+		lanes:         make(map[sip.Flow]*lane),
+		outboxes:      make(map[sip.Flow]*outbox),
+		clients:       make(map[clientKey]*ClientTransaction),
+		servers:       make(map[serverKey]*ServerTransaction),
+		pending:       make(map[branchKey]*ServerTransaction),
 	}
 
 	l.locals.Store(&addrSet{})
@@ -339,7 +351,7 @@ func (l *Layer) connectionLost(f sip.Flow, c transport.Conn, err error) {
 		tx.mu.Lock()
 
 		if tx.conn == c && tx.pending() {
-			tx.fail(fmt.Errorf("%w: %w", ErrTransport, err))
+			tx.failClient(fmt.Errorf("%w: %w", ErrTransport, err))
 		}
 
 		tx.unlock()
@@ -347,6 +359,52 @@ func (l *Layer) connectionLost(f sip.Flow, c transport.Conn, err error) {
 
 	if l.onLost != nil {
 		l.onLost(f, err)
+	}
+}
+
+// Drop ends at once every transaction whose flow match reports, with ErrDropped, sending nothing more on its behalf:
+// what it had queued to send is not sent, and its responses are refused. The layer's user knows the flow failed, and
+// stops processing its transactions (TS 24.229 §5.1.1.4.1).
+func (l *Layer) Drop(match func(sip.Flow) bool) {
+	l.mu.Lock()
+
+	if l.closed {
+		l.mu.Unlock()
+		return
+	}
+
+	clients := make([]*ClientTransaction, 0, len(l.clients))
+	for _, tx := range l.clients {
+		clients = append(clients, tx)
+	}
+
+	servers := make([]*ServerTransaction, 0, len(l.servers))
+	for _, tx := range l.servers {
+		servers = append(servers, tx)
+	}
+
+	l.mu.Unlock()
+
+	for _, tx := range clients {
+		tx.mu.Lock()
+
+		if tx.state != Terminated && match(tx.req.Flow) {
+			tx.dropped = true
+			tx.failClient(ErrDropped)
+		}
+
+		tx.unlock()
+	}
+
+	for _, tx := range servers {
+		tx.mu.Lock()
+
+		if tx.state != Terminated && match(tx.req.Flow) {
+			tx.dropped = true
+			tx.fail(ErrDropped)
+		}
+
+		tx.unlock()
 	}
 }
 
