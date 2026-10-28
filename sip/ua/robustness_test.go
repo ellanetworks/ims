@@ -3,6 +3,8 @@ package ua_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -323,4 +325,74 @@ func TestContactInTheFirstNotifyResponse(t *testing.T) {
 	if res.StatusCode != 200 || !res.Header.Has("Contact") {
 		t.Fatalf("200 to the first NOTIFY %d, Contact %q", res.StatusCode, res.Header.Get("Contact"))
 	}
+}
+
+// RFC 3261 §9.2: a CANCEL that comes before its INVITE reached its strand, the strand busy, follows it there: the
+// INVITE gets its 487, whether the application answered it first or not. The CANCEL comes before the INVITE reaches
+// its strand in about half of the attempts.
+func TestCancelBeforeTheInviteReachesItsStrand(t *testing.T) {
+	for range 20 {
+		cancelWhileTheStrandIsBusy(t)
+	}
+}
+
+func cancelWhileTheStrandIsBusy(t *testing.T) {
+	t.Helper()
+
+	var busy atomic.Pointer[ua.Strand]
+
+	bob := newPeerWith(t, "bob", func(c *ua.Config) {
+		c.StrandFor = func(*sip.Request) *ua.Strand { return busy.Load() }
+		c.OnInvite = func(r *ua.Request) ua.Handler {
+			_ = r.Progress(ua.Reply{Code: 180})
+			return ua.Handler{}
+		}
+	})
+
+	st := bob.a.NewStrand()
+	busy.Store(st)
+
+	// The strand stays busy until both requests are sent: no receiving meanwhile, which waits for it.
+	release := make(chan struct{})
+
+	st.Post(func() { <-release })
+
+	alice := newRaw(t)
+
+	invite := siptest.NewRequest("INVITE", "sip:bob@"+bob.addr.String(), sip.UDP, alice.sock.Addr())
+	invite.SetBodies(sdpOf("offer")...)
+	alice.sock.Send(sip.UDP, bob.addr, invite)
+
+	cancel, err := sip.NewCancel(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alice.sock.Send(sip.UDP, bob.addr, cancel)
+	close(release)
+
+	got := map[string]bool{}
+
+	for !got["487 INVITE"] || !got["200 CANCEL"] {
+		r, ok := alice.sock.RecvWithin(time.Second)
+		if !ok {
+			t.Fatalf("responses %v, want the 200 to the CANCEL and the 487", got)
+		}
+
+		res, isRes := r.Msg.(*sip.Response)
+		if !isRes {
+			t.Fatalf("got %q", r.Msg.StartLine())
+		}
+
+		cseq, _ := res.Header.CSeq()
+		got[fmt.Sprintf("%d %s", res.StatusCode, cseq.Method)] = true
+	}
+
+	for k := range got {
+		if !slices.Contains([]string{"100 INVITE", "180 INVITE", "200 CANCEL", "487 INVITE"}, k) {
+			t.Fatalf("responses %v", got)
+		}
+	}
+
+	alice.sock.RecvNone(50 * time.Millisecond)
 }

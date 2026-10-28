@@ -41,7 +41,9 @@ func TestMultipleDevices(t *testing.T) {
 			t.Fatalf("alice's response %v", res)
 		}
 
-		// The CANCEL takes the flow of the INVITE, without Prepare: its 487 tells it.
+		// The CANCEL takes the flow of the INVITE, without Prepare: its 487 tells it. Alice's 200 does not wait for it.
+		w.n.Quiesce()
+
 		lines := w.trace.take()
 		if sent(lines, "bob", "INVITE") != 1 || sent(lines, "bob2", "INVITE") != 1 || !slices.Contains(lines, "bob2>server 487 INVITE") {
 			t.Fatalf("trace:\n%s", strings.Join(lines, "\n"))
@@ -55,28 +57,36 @@ func TestMultipleDevices(t *testing.T) {
 
 	t.Run("both answer", func(t *testing.T) {
 		w := newWorld(t, nil)
-		bob2 := w.device()
+		w.device()
 
 		ca, res := w.established(w.users["alice"], fire)
 		if res.StatusCode != 200 {
 			t.Fatalf("alice's response %v", res)
 		}
 
-		lines := w.trace.take()
-		if sent(lines, "bob", "INVITE") != 1 || sent(lines, "bob2", "INVITE") != 1 || sent(lines, "bob", "BYE")+sent(lines, "bob2", "BYE") != 1 {
-			t.Fatalf("trace:\n%s", strings.Join(lines, "\n"))
-		}
+		// The ending of the other branch does not hold alice's 200.
+		w.n.Quiesce()
 
-		bob, kept := w.users["bob"], 0
+		// The other branch is ended as it stands: cancelled if not answered yet (RFC 3261 §9.1), its dialog ended with
+		// a BYE if answered too (§13.2.2.4).
+		lines, kept := w.trace.take(), 0
 
-		for _, u := range []*user{bob, bob2} {
-			if !slices.Contains(kinds(u.take()), "ended") {
+		for _, name := range []string{"bob", "bob2"} {
+			answered := slices.Contains(lines, name+">server 200 INVITE")
+			ended := sent(lines, name, "BYE") == 1
+
+			switch {
+			case sent(lines, name, "INVITE") != 1:
+				t.Fatalf("%s not invited once:\n%s", name, strings.Join(lines, "\n"))
+			case answered && !ended:
 				kept++
+			case !answered && !slices.Contains(lines, name+">server 487 INVITE"):
+				t.Fatalf("%s neither answered nor cancelled:\n%s", name, strings.Join(lines, "\n"))
 			}
 		}
 
 		if kept != 1 {
-			t.Fatalf("%d of bob's clients in the call", kept)
+			t.Fatalf("%d of bob's clients in the call:\n%s", kept, strings.Join(lines, "\n"))
 		}
 
 		ca.Leave()
@@ -128,6 +138,9 @@ func TestJoinSupersedesInvitation(t *testing.T) {
 	if !warned(res, identity.WarnSessionExists) {
 		t.Errorf("bob2's 200 warnings %v", res.Header.Values("Warning"))
 	}
+
+	// The superseded invitation's CANCEL does not hold bob2's 200.
+	w.n.Quiesce()
 
 	if lines := w.trace.take(); !slices.Contains(lines, "bob>server 487 INVITE") {
 		t.Fatalf("trace:\n%s", strings.Join(lines, "\n"))

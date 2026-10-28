@@ -402,10 +402,13 @@ type Agent struct {
 	closing int
 
 	// mu guards the tables of the agent. A strand's lock may be held when taking it, not the other way.
-	mu          sync.Mutex
-	closed      bool
-	dialogs     map[dialog.ID]*dialogEntry
-	invites     map[*transaction.ServerTransaction]*Request
+	mu      sync.Mutex
+	closed  bool
+	dialogs map[dialog.ID]*dialogEntry
+	invites map[*transaction.ServerTransaction]*Request
+	// arriving are the strands the initial INVITEs are on their way to, before invites has them: a CANCEL meanwhile
+	// follows its INVITE there (RFC 3261 §9.2).
+	arriving    map[*transaction.ServerTransaction]*Strand
 	initials    map[mergeKey]*transaction.ServerTransaction
 	outgoing    map[*Outgoing]struct{}
 	subscribing map[subscribeKey]*subscribing
@@ -438,6 +441,7 @@ func New(cfg Config) (*Agent, error) {
 		supported: []string{sip.OptionTag100rel, sip.OptionTagTimer},
 		dialogs:   map[dialog.ID]*dialogEntry{},
 		invites:   map[*transaction.ServerTransaction]*Request{},
+		arriving:  map[*transaction.ServerTransaction]*Strand{},
 		initials:  map[mergeKey]*transaction.ServerTransaction{},
 		outgoing:  map[*Outgoing]struct{}{},
 
@@ -816,6 +820,8 @@ func (a *Agent) addIncoming(s *Session, r *Request) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	delete(a.arriving, r.tx)
+
 	if a.closed {
 		return false
 	}
@@ -1073,6 +1079,7 @@ func (a *Agent) untrack(r *Request) {
 	defer a.mu.Unlock()
 
 	delete(a.invites, r.tx)
+	delete(a.arriving, r.tx)
 }
 
 func (a *Agent) tracked(tx *transaction.ServerTransaction) *Request {
@@ -1230,7 +1237,12 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if req.Method == "INVITE" {
+		a.mu.Lock()
+		a.arriving[tx] = st
+		a.mu.Unlock()
+
 		st.post(func() { a.invite(st, tx, req) })
+
 		return
 	}
 
@@ -1408,10 +1420,21 @@ func unmatchedNotify(req *sip.Request, subs []*Subscription) int {
 }
 
 // HandleCancel implements transaction.Handler: the transaction layer answered the CANCEL; the INVITE gets a 487
-// (RFC 3261 §9.2).
+// (RFC 3261 §9.2). A CANCEL that came before its INVITE reached its strand follows it there.
 func (a *Agent) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	if r := a.tracked(tx); r != nil {
+	a.mu.Lock()
+	r, st := a.invites[tx], a.arriving[tx]
+	a.mu.Unlock()
+
+	switch {
+	case r != nil:
 		r.st.post(func() { r.cancelled(cancel) })
+	case st != nil:
+		st.post(func() {
+			if r := a.tracked(tx); r != nil {
+				r.cancelled(cancel)
+			}
+		})
 	}
 }
 
