@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import Operator from "@/pages/Operator";
 import type { Operator as OperatorSettings } from "@/queries/operator";
-import { json, renderWithClient, stubApi } from "@/test/render";
+import { json, readOnlyAuth, renderWithClient, stubApi } from "@/test/render";
 
 const operator: OperatorSettings = {
   mcc: "001",
@@ -51,6 +51,16 @@ afterEach(() => {
 });
 
 describe("Operator", () => {
+  it("offers no edit to a Read Only user", async () => {
+    serve(() => json(500, {}));
+    renderWithClient(<Operator />, readOnlyAuth);
+
+    expect(await screen.findByText("001 / 01")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Edit / }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the operator settings", async () => {
     serve(() => json(500, {}));
 

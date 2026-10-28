@@ -48,7 +48,7 @@ func TestPostReauthentication(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			regs := &fakeRegistrations{err: tt.err}
-			h := NewHandler(Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
+			h := testHandler(t, Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
 
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost,
@@ -99,7 +99,7 @@ func TestListRegistrations(t *testing.T) {
 			}},
 		}},
 	}
-	h := NewHandler(Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
+	h := testHandler(t, Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
@@ -169,7 +169,7 @@ func TestListRegistrations(t *testing.T) {
 
 func TestListRegistrationsDefaults(t *testing.T) {
 	regs := &fakeRegistrations{}
-	h := NewHandler(Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
+	h := testHandler(t, Config{Registrations: regs, Logger: slog.New(slog.DiscardHandler)})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/registrations", nil))
@@ -196,7 +196,7 @@ func TestListRegistrationsErrors(t *testing.T) {
 		{"failure", "", errors.New("database closed"), http.StatusInternalServerError},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			h := NewHandler(Config{Registrations: &fakeRegistrations{err: tt.err}, Logger: slog.New(slog.DiscardHandler)})
+			h := testHandler(t, Config{Registrations: &fakeRegistrations{err: tt.err}, Logger: slog.New(slog.DiscardHandler)})
 
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/registrations"+tt.query, nil))

@@ -16,6 +16,7 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import UserDialog from "@/components/mcptt/UserDialog";
 import UserDrawer from "@/components/mcptt/UserDrawer";
 import { useMCPTTLive, useMCPTTSettings } from "@/hooks/useMCPTT";
@@ -65,6 +66,7 @@ const matches = (u: MCPTTUser, search: string) => {
 
 export function UsersTab() {
   const queryClient = useQueryClient();
+  const editable = useAuth().can("mcptt:update");
   const { users, groups, domain, homeDomain } = useMCPTTSettings();
   const { registrations, affiliations } = useMCPTTLive();
   const [search, setSearch] = useState("");
@@ -90,7 +92,7 @@ export function UsersTab() {
     ? (users.data?.find((u) => u.mcptt_id === selected) ?? null)
     : null;
 
-  const columns: GridColDef<MCPTTUser>[] = [
+  const allColumns: GridColDef<MCPTTUser>[] = [
     {
       field: "name",
       headerName: "Name",
@@ -190,6 +192,9 @@ export function UsersTab() {
       ),
     },
   ];
+  const columns = editable
+    ? allColumns
+    : allColumns.filter((c) => c.field !== "actions");
 
   const leaving = deleting ? groupsOf(allGroups, deleting.mcptt_id) : [];
 
@@ -212,15 +217,17 @@ export function UsersTab() {
           placeholder="Name, MCPTT ID or IMS identity"
           sx={{ minWidth: 280 }}
         />
-        <Button
-          variant="contained"
-          color="success"
-          startIcon={<AddIcon />}
-          onClick={() => setDialog({})}
-          disabled={users.data === undefined || groups.data === undefined}
-        >
-          Add User
-        </Button>
+        {editable && (
+          <Button
+            variant="contained"
+            color="success"
+            startIcon={<AddIcon />}
+            onClick={() => setDialog({})}
+            disabled={users.data === undefined || groups.data === undefined}
+          >
+            Add User
+          </Button>
+        )}
       </Stack>
       <QueryAlert
         error={users.error ?? groups.error}

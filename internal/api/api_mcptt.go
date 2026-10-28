@@ -35,6 +35,13 @@ type MCPTTStatus struct {
 	MediaControl     string   `json:"media_control"`
 }
 
+// GetMCPTTStatus serves what the MCPTT AS runs.
+func GetMCPTTStatus(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeResponse(w, cfg.MCPTTStatus(), http.StatusOK, cfg.Logger)
+	})
+}
+
 // mcpttOnly is h when the IMS runs the MCPTT AS, and a 404 otherwise.
 func mcpttOnly(cfg Config, h func(Config) http.Handler) http.Handler {
 	if cfg.MCPTT == nil {

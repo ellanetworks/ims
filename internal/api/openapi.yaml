@@ -14,9 +14,12 @@ servers:
       host:
         default: localhost:5020
 
-security: []
+security:
+  - BearerAuth: []
 
 tags:
+  - name: Auth
+  - name: Users
   - name: Operator
   - name: Diameter
   - name: Policy
@@ -39,6 +42,10 @@ paths:
       operationId: getOperator
       summary: Get the operator
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The operator
           content:
@@ -56,6 +63,10 @@ paths:
             schema:
               $ref: "#/components/schemas/Operator"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The operator as stored
           content:
@@ -73,6 +84,10 @@ paths:
       operationId: getDiameter
       summary: Get the Diameter identity of the IMS
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The Diameter identity
           content:
@@ -89,6 +104,10 @@ paths:
       operationId: listDiameterPeers
       summary: List the Diameter peers
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The peers, in the order they were created in
           content:
@@ -116,6 +135,10 @@ paths:
               $ref: "#/components/schemas/DiameterPeerParams"
               unevaluatedProperties: false
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: The peer created
           content:
@@ -142,6 +165,10 @@ paths:
       operationId: getDiameterPeer
       summary: Get a Diameter peer
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The peer
           content:
@@ -162,6 +189,10 @@ paths:
               $ref: "#/components/schemas/DiameterPeerParams"
               unevaluatedProperties: false
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The peer as stored
           content:
@@ -181,6 +212,10 @@ paths:
       operationId: deleteDiameterPeer
       summary: Delete a Diameter peer
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           $ref: "#/components/responses/Deleted"
         "404":
@@ -196,6 +231,10 @@ paths:
       operationId: listDiameterRoutes
       summary: List where Cx and Rx requests go
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The routes, cx then rx
           content:
@@ -225,6 +264,10 @@ paths:
       operationId: getDiameterRoute
       summary: Get where an application's requests go
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The route
           content:
@@ -246,6 +289,10 @@ paths:
               $ref: "#/components/schemas/DiameterRouteParams"
               unevaluatedProperties: false
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The route as stored
           content:
@@ -265,6 +312,10 @@ paths:
       operationId: getPolicy
       summary: Get the policy function of the P-CSCF
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The policy function, and the one running
           content:
@@ -283,6 +334,10 @@ paths:
               $ref: "#/components/schemas/Policy"
               unevaluatedProperties: false
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The policy function as stored
           content:
@@ -302,6 +357,10 @@ paths:
       operationId: getSIP
       summary: Get the SIP names and listeners of the IMS
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The home domain, the aliases derived from it, and the listeners
           content:
@@ -337,6 +396,10 @@ paths:
             maximum: 100
             default: 25
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of registrations
           content:
@@ -375,6 +438,10 @@ paths:
           schema:
             type: string
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "202":
           description: Re-authentication started
           content:
@@ -444,6 +511,10 @@ paths:
             maximum: 100
             default: 25
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of call records
           content:
@@ -483,6 +554,10 @@ paths:
             type: integer
             minimum: 1
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The call record
           content:
@@ -503,6 +578,10 @@ paths:
       operationId: getCallRecordRetention
       summary: Get how long call records are kept
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The retention
           content:
@@ -520,6 +599,10 @@ paths:
             schema:
               $ref: "#/components/schemas/CallRecordRetention"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The retention, as stored
           content:
@@ -537,6 +620,10 @@ paths:
       operationId: getIPSMGW
       summary: Get the built-in IP-SM-GW
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The IP-SM-GW
           content:
@@ -557,6 +644,10 @@ paths:
             schema:
               $ref: "#/components/schemas/IPSMGWParams"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The IP-SM-GW, as stored
           content:
@@ -568,12 +659,38 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/mcptt:
+    get:
+      tags: [MCPTT service configuration]
+      operationId: getMCPTTStatus
+      summary: Get what the MCPTT AS runs
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The MCPTT AS's mode, name, PSIs and addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/MCPTTStatus"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/mcptt/service-configuration:
     get:
       tags: [MCPTT service configuration]
       operationId: getMCPTTServiceConfiguration
       summary: Get the service configuration
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The service configuration
           content:
@@ -591,6 +708,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTServiceConfiguration"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The service configuration as stored
           content:
@@ -611,6 +732,10 @@ paths:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of the users
           content:
@@ -645,6 +770,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTUserCreate"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: The user as stored
           content:
@@ -666,6 +795,10 @@ paths:
       operationId: getMCPTTUser
       summary: Get a user
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The user
           content:
@@ -685,6 +818,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTUserInput"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The user as stored
           content:
@@ -707,6 +844,10 @@ paths:
         The user leaves its groups; a group it leaves that would be invalid without it is a conflict. Its clients are
         logged off, and leave the group calls they are in at once.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           $ref: "#/components/responses/Deleted"
         "404":
@@ -725,6 +866,10 @@ paths:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of the groups
           content:
@@ -759,6 +904,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTGroupCreate"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "201":
           description: The group as stored
           content:
@@ -780,6 +929,10 @@ paths:
       operationId: getMCPTTGroup
       summary: Get a group
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The group
           content:
@@ -799,6 +952,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTGroupInput"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The group as stored
           content:
@@ -821,6 +978,10 @@ paths:
         The group goes from the implicit affiliations of its users, its affiliations are removed, and its call, if any,
         is released at once.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           $ref: "#/components/responses/Deleted"
         "404":
@@ -843,6 +1004,10 @@ paths:
             schema:
               $ref: "#/components/schemas/MCPTTMemberInput"
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The group as stored
           content:
@@ -871,6 +1036,10 @@ paths:
         The group goes from the user's implicit affiliations, the user's clients are de-affiliated from it, and leave
         its call, if any, at once.
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The group as stored
           content:
@@ -898,6 +1067,10 @@ paths:
           schema:
             type: string
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of them
           content:
@@ -942,6 +1115,10 @@ paths:
           schema:
             type: string
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of them
           content:
@@ -986,6 +1163,10 @@ paths:
           schema:
             type: string
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: A page of them
           content:
@@ -1024,6 +1205,10 @@ paths:
       operationId: getMCPTTCall
       summary: Get a group call
       responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "200":
           description: The call
           content:
@@ -1043,6 +1228,7 @@ paths:
     get:
       tags: [Status]
       operationId: getStatus
+      security: []
       summary: Get the status of the IMS
       responses:
         "200":
@@ -1054,7 +1240,7 @@ paths:
                 properties:
                   result:
                     type: object
-                    required: [version, revision]
+                    required: [version, revision, initialized]
                     properties:
                       version:
                         type: string
@@ -1062,14 +1248,15 @@ paths:
                       revision:
                         type: string
                         description: Git commit of the build, empty in development builds.
-                      mcptt:
-                        $ref: "#/components/schemas/MCPTTStatus"
-                        description: What the MCPTT AS runs, absent if the IMS runs none.
+                      initialized:
+                        type: boolean
+                        description: Whether the first user exists. Until then, POST /api/v1/init creates it.
 
   /api/v1/metrics:
     get:
       tags: [Metrics]
       operationId: getMetrics
+      security: []
       summary: Get the metrics of the IMS in the Prometheus formats
       responses:
         "200":
@@ -1083,6 +1270,7 @@ paths:
     get:
       tags: [Specification]
       operationId: getOpenAPISpec
+      security: []
       summary: Get this specification
       responses:
         "200":
@@ -1090,8 +1278,441 @@ paths:
           content:
             application/openapi+yaml: {}
 
+  /api/v1/init:
+    post:
+      tags: [Auth]
+      operationId: initialize
+      security: []
+      summary: Create the first user
+      description: >-
+        Creates the first user, an admin, and logs it in. Until it is called, anyone who can reach the API can call it.
+        It fails once a user exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitializeParams"
+      responses:
+        "201":
+          $ref: "#/components/responses/Login"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      security: []
+      summary: Log in
+      description: >-
+        Returns an access token, valid for 15 minutes, and sets the session cookie with which
+        POST /api/v1/auth/refresh issues new ones. At most 20 attempts per minute per client address (IPv6 /64), and
+        100 wrong passwords per hour per account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Login"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refresh
+      security:
+        - SessionCookie: []
+      summary: Refresh the access token
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/RefreshResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      security: []
+      summary: Log out
+      description: Ends the session of the cookie, if any, and clears the cookie.
+      responses:
+        "204":
+          description: Logged out
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      operationId: getMyUser
+      summary: Get my user
+      responses:
+        "200":
+          $ref: "#/components/responses/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/users/me/password:
+    put:
+      tags: [Users]
+      operationId: updateMyPassword
+      summary: Change my password
+      description: >-
+        Ends the other sessions of the user. A wrong current password counts as a failed login of the account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMyPasswordParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/me/api-tokens:
+    get:
+      tags: [Users]
+      operationId: listMyAPITokens
+      summary: List my API tokens
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          $ref: "#/components/responses/APITokens"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Users]
+      operationId: createMyAPIToken
+      summary: Create an API token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAPITokenParams"
+      responses:
+        "201":
+          $ref: "#/components/responses/CreatedAPIToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/me/api-tokens/{id}:
+    delete:
+      tags: [Users]
+      operationId: deleteMyAPIToken
+      summary: Delete an API token
+      parameters:
+        - $ref: "#/components/parameters/APITokenID"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ListUsersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserParams"
+      responses:
+        "201":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{email}:
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get user
+      parameters:
+        - $ref: "#/components/parameters/Email"
+      responses:
+        "200":
+          $ref: "#/components/responses/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [Users]
+      operationId: updateUser
+      summary: Change the role of a user
+      description: Ends the sessions of the user. An admin cannot change its own role.
+      parameters:
+        - $ref: "#/components/parameters/Email"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete user
+      description: Deletes the user with its sessions and API tokens. An admin cannot delete itself.
+      parameters:
+        - $ref: "#/components/parameters/Email"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{email}/password:
+    put:
+      tags: [Users]
+      operationId: updateUserPassword
+      summary: Set the password of a user
+      description: Ends the sessions of the user.
+      parameters:
+        - $ref: "#/components/parameters/Email"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePasswordParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{email}/api-tokens:
+    get:
+      tags: [Users]
+      operationId: listUserAPITokens
+      summary: List the API tokens of a user
+      parameters:
+        - $ref: "#/components/parameters/Email"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          $ref: "#/components/responses/APITokens"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Users]
+      operationId: createUserAPIToken
+      summary: Create an API token for a user
+      parameters:
+        - $ref: "#/components/parameters/Email"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAPITokenParams"
+      responses:
+        "201":
+          $ref: "#/components/responses/CreatedAPIToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{email}/api-tokens/{id}:
+    delete:
+      tags: [Users]
+      operationId: deleteUserAPIToken
+      summary: Delete an API token of a user
+      parameters:
+        - $ref: "#/components/parameters/Email"
+        - $ref: "#/components/parameters/APITokenID"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        An access token from POST /api/v1/auth/login, or an API token, which starts with ellaims_. An access token
+        ends with its session. An API token cannot create API tokens, change a password, or manage users: those
+        operations answer 403 to it.
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: ims_session
+      description: >-
+        The session that a login or the initialization starts, for POST /api/v1/auth/refresh. Over TLS, the cookie is
+        __Host-ims_session.
+
   parameters:
+    Email:
+      name: email
+      in: path
+      required: true
+      schema:
+        type: string
+        format: email
+    APITokenID:
+      name: id
+      in: path
+      required: true
+      description: The ID of the token, the part of it between ellaims_ and the next underscore.
+      schema:
+        type: string
     Page:
       name: page
       in: query
@@ -1123,6 +1744,190 @@ components:
         examples: ["sip:fire@mcptt.example.com"]
 
   schemas:
+    LoginParams:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    InitializeParams:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          $ref: "#/components/schemas/Password"
+
+    LoginResponse:
+      type: object
+      required: [message, token]
+      properties:
+        message:
+          type: string
+        token:
+          type: string
+          description: The access token, valid for 15 minutes.
+
+    RefreshResponse:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    SuccessResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    Password:
+      type: string
+      description: 8 to 72 bytes.
+      minLength: 8
+      maxLength: 72
+
+    RoleID:
+      type: integer
+      enum: [1, 2, 3]
+      description: >-
+        1 Admin: everything. 2 Read Only: reads the settings and the state of the IMS. 3 Network Manager: also changes
+        the settings and re-authenticates registrations, but does not manage users.
+
+    User:
+      type: object
+      required: [email, role_id]
+      properties:
+        email:
+          type: string
+          format: email
+        role_id:
+          $ref: "#/components/schemas/RoleID"
+
+    ListUsersResponse:
+      type: object
+      required: [items, page, per_page, total_count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total_count:
+          type: integer
+
+    CreateUserParams:
+      type: object
+      required: [email, password, role_id]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          $ref: "#/components/schemas/Password"
+        role_id:
+          $ref: "#/components/schemas/RoleID"
+
+    UpdateUserParams:
+      type: object
+      required: [role_id]
+      additionalProperties: false
+      properties:
+        role_id:
+          $ref: "#/components/schemas/RoleID"
+
+    UpdatePasswordParams:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password:
+          $ref: "#/components/schemas/Password"
+
+    UpdateMyPasswordParams:
+      type: object
+      required: [current_password, password]
+      additionalProperties: false
+      properties:
+        current_password:
+          type: string
+        password:
+          $ref: "#/components/schemas/Password"
+
+    APIToken:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: Absent for a token that does not expire.
+        last_used_at:
+          type: string
+          format: date-time
+          description: Absent for a token never used. Updated at most once a minute.
+
+    ListAPITokensResponse:
+      type: object
+      required: [items, page, per_page, total_count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIToken"
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total_count:
+          type: integer
+
+    CreateAPITokenParams:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 50
+        expires_at:
+          type: string
+          format: date-time
+          description: When the token expires. Without it, the token does not expire.
+
+    CreateAPITokenResponse:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: The token, ellaims_ followed by its ID, an underscore and its secret.
+
+    E164:
+      type: string
+      pattern: '^\+[1-9][0-9]{0,14}$'
+      examples: ["+15551230001"]
     Operator:
       type: object
       additionalProperties: false
@@ -1885,6 +2690,86 @@ components:
           type: string
 
   responses:
+    Unauthorized:
+      description: Unauthorized
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: Too Many Requests
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Login:
+      description: Logged in. The response sets the ims_session cookie.
+      headers:
+        Set-Cookie:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result:
+                $ref: "#/components/schemas/LoginResponse"
+    Success:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result:
+                $ref: "#/components/schemas/SuccessResponse"
+    User:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result:
+                $ref: "#/components/schemas/User"
+    APITokens:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result:
+                $ref: "#/components/schemas/ListAPITokensResponse"
+    CreatedAPIToken:
+      description: Created. The response is the only time the token is shown.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result:
+                $ref: "#/components/schemas/CreateAPITokenResponse"
     Deleted:
       description: Deleted
       content:

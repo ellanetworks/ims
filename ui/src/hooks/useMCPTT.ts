@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  getMCPTTStatus,
   getServiceConfiguration,
   listAffiliations,
   listClientRegistrations,
@@ -9,24 +10,21 @@ import {
   mcpttKeys,
 } from "@/queries/mcptt";
 import { getOperator } from "@/queries/operator";
-import { getStatus } from "@/queries/status";
 import { homeDomain } from "@/utils/operator";
 
 // LIVE_REFRESH_MS is how often the live state is read again, as the IMS's pages do.
 export const LIVE_REFRESH_MS = 5000;
 
-// useMCPTTStatus is the status of the MCPTT AS: undefined while unknown, null if the IMS runs none.
+// useMCPTTStatus is the status of the MCPTT AS: undefined while unknown, null if the IMS runs none. It is of the
+// logged-in pages only: the route needs a login.
 export function useMCPTTStatus() {
   const { data, error } = useQuery({
-    queryKey: ["status"],
-    queryFn: getStatus,
+    queryKey: mcpttKeys.status,
+    queryFn: getMCPTTStatus,
     staleTime: Infinity,
   });
 
-  return {
-    status: data === undefined ? undefined : (data.mcptt ?? null),
-    error,
-  };
+  return { status: data, error };
 }
 
 // useMCPTTSettings are the settings of the AS, and the domains its identities are short of: the organisation's, of

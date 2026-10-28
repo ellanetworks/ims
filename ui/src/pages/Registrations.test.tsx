@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import Registrations from "@/pages/Registrations";
 import type { Registration } from "@/queries/registrations";
 import { contact, registration } from "@/test/fixtures";
-import { json, renderWithClient, stubApi } from "@/test/render";
+import { json, readOnlyAuth, renderWithClient, stubApi } from "@/test/render";
 import { identitiesOf } from "@/utils/registrations";
 
 const alice = registration({
@@ -103,6 +103,19 @@ afterEach(() => {
 });
 
 describe("Registrations", () => {
+  it("offers no re-authentication to a Read Only user", async () => {
+    serve([alice]);
+    renderWithClient(<Registrations />, readOnlyAuth);
+
+    await screen.findByText(imsiOf(alice));
+    expect(
+      screen.queryByRole("button", { name: /^Re-authenticate/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Actions" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("lists the registrations", async () => {
     serve([alice, bob]);
 

@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/pcrftest"
 	"github.com/ellanetworks/ims/testue"
@@ -68,7 +69,7 @@ func (s *scene) deletePeer(id string) {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}

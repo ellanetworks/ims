@@ -251,3 +251,44 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("Load succeeded for a missing file")
 	}
 }
+
+func TestLoadAPITLS(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+
+	for _, path := range []string{cert, key} {
+		if err := os.WriteFile(path, []byte("pem"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	withTLS := func(tls string) string {
+		return validDB + validAPI + "  tls:\n" + tls + validSIP + validDiameter
+	}
+
+	cfg, err := Load(writeConfig(t, withTLS("    cert: "+cert+"\n    key: "+key+"\n")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if want := (APITLS{Cert: cert, Key: key}); cfg.API.TLS == nil || *cfg.API.TLS != want {
+		t.Fatalf("API.TLS = %+v, want %+v", cfg.API.TLS, want)
+	}
+
+	if cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter)); err != nil || cfg.API.TLS != nil {
+		t.Fatalf("Load without tls = %+v, %v", cfg.API.TLS, err)
+	}
+
+	for name, tls := range map[string]string{
+		"cert only":     "    cert: " + cert + "\n",
+		"key only":      "    key: " + key + "\n",
+		"empty":         "    cert: \"\"\n",
+		"missing cert":  "    cert: " + filepath.Join(dir, "absent.pem") + "\n    key: " + key + "\n",
+		"missing key":   "    cert: " + cert + "\n    key: " + filepath.Join(dir, "absent.pem") + "\n",
+		"unknown field": "    cert: " + cert + "\n    key: " + key + "\n    ca: " + cert + "\n",
+	} {
+		if _, err := Load(writeConfig(t, withTLS(tls))); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}

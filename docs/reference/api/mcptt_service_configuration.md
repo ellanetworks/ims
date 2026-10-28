@@ -6,6 +6,40 @@ description: RESTful API reference for managing the MCPTT service configuration.
 
 The service configuration of the MCPTT organisation (TS 24.484 §8.4). The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
 
+## Get the Status of the MCPTT AS
+
+This path returns what the MCPTT AS runs.
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/mcptt` |
+
+### Response Fields
+
+| Field               | Type   | Description |
+| ------------------- | ------ | ----------- |
+| `mode`              | string | `ims` or `direct`. |
+| `name`              | string | Server name of the AS in the iFCs of the HSS. |
+| `participating_psi` | string | Participating PSI. |
+| `controlling_psi`   | string | Controlling PSI. |
+| `sip`               | array  | SIP addresses of the AS. Sockets in `direct` mode only. |
+| `media_control`     | string | Address of the floor control channels. |
+
+### Sample Response
+
+```json
+{
+    "result": {
+        "mode": "ims",
+        "name": "sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "participating_psi": "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "controlling_psi": "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "sip": ["127.0.0.1:5090"],
+        "media_control": "127.0.0.1:21000"
+    }
+}
+```
+
 ## Get the Service Configuration
 
 This path returns the service configuration.

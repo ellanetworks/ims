@@ -76,9 +76,13 @@ Start Ella IMS:
 sudo snap start --enable ella-ims.imsd
 ```
 
-Open your browser and navigate to `http://10.6.0.5:5020/`. You should see Ella IMS's **Cores** page.
+## 3. Initialize Ella IMS
 
-## 3. Connect Ella IMS to Ella Core
+Open your browser and navigate to `http://10.6.0.5:5020/`. The **Initialize Ella IMS** page opens.
+
+Enter an email and a password of at least 8 characters, and click **Create**. You should see Ella IMS's **Cores** page.
+
+## 4. Connect Ella IMS to Ella Core
 
 Go to the **Cores** page:
 
@@ -89,7 +93,7 @@ Go to the **Cores** page:
 
 Under **Peers**, Ella Core should show as **open**.
 
-## 4. Route the phones' traffic
+## 5. Route the phones' traffic
 
 On the Ella IMS machine, route the phones' voice addresses, which we create in the next step, through Ella Core:
 
@@ -97,7 +101,7 @@ On the Ella IMS machine, route the phones' voice addresses, which we create in t
 sudo ip route add 10.46.0.0/16 via 10.6.0.2 mtu lock 1400
 ```
 
-## 5. Prepare Ella Core for voice
+## 6. Prepare Ella Core for voice
 
 In the Ella Core UI, go to the **Operator** page and scroll to the **IMS** section. Click the edit icon next to **P-CSCF Addresses**, enter `10.6.0.5`, and click **Update**.
 
@@ -110,13 +114,13 @@ Go to the **Subscribers** page. For each of the two subscribers, click on it, cl
 - First subscriber: `+15551230001`
 - Second subscriber: `+15551230002`
 
-## 6. Register the phones
+## 7. Register the phones
 
 On each phone, turn on VoNR, then turn airplane mode on and off.
 
 In Ella IMS, go to the **Registrations** page. You should see both phones.
 
-## 7. Make a call
+## 8. Make a call
 
 From the first phone, call `+15551230002`. Answer on the second phone, talk, and hang up.
 

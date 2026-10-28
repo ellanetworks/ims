@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/pcscf"
@@ -424,7 +425,7 @@ func (s *scene) reauthenticate() int {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -443,7 +444,7 @@ func (s *scene) putOperator(body string) {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}

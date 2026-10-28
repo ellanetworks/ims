@@ -57,6 +57,14 @@ type DB struct {
 type API struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
+	// TLS, when set, serves the API and UI over HTTPS.
+	TLS *APITLS `yaml:"tls"`
+}
+
+// APITLS is a PEM certificate chain, the server's certificate first, and its private key.
+type APITLS struct {
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
 }
 
 type SIP struct {
@@ -207,6 +215,18 @@ func (c Config) validate() error {
 		return errors.New("api.address is required")
 	case c.API.Port < 1 || c.API.Port > 65535:
 		return fmt.Errorf("api.port %d is out of range", c.API.Port)
+	}
+
+	if tls := c.API.TLS; tls != nil {
+		if tls.Cert == "" || tls.Key == "" {
+			return errors.New("api.tls.cert and api.tls.key must both be set")
+		}
+
+		for name, path := range map[string]string{"api.tls.cert": tls.Cert, "api.tls.key": tls.Key} {
+			if _, err := os.Stat(path); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
 	}
 
 	if err := c.SIP.validate(); err != nil {

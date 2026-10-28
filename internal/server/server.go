@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,6 +65,8 @@ type Server struct {
 	ASTimeout        time.Duration
 	// PruneInterval changes how often call records are pruned in tests. Zero keeps the default.
 	PruneInterval time.Duration
+	// BcryptCost is the cost of the API's password hashes, lowered in tests: bcrypt's default when zero.
+	BcryptCost int
 
 	database *db.DB
 	// records outlives the cores, so that it closes the records of the calls a restart loses.
@@ -122,12 +125,23 @@ func (s *Server) Start(ctx context.Context) error {
 
 	cfg := s.Config
 
+	tlsConfig, err := apiTLS(cfg.API.TLS)
+	if err != nil {
+		return err
+	}
+
 	database, err := db.Open(ctx, cfg.DB.Path)
 	if err != nil {
 		return err
 	}
 
 	initial, err := database.GetSettings(ctx)
+	if err != nil {
+		_ = database.Close()
+		return err
+	}
+
+	jwtSecret, err := database.JWTSecret(ctx)
 	if err != nil {
 		_ = database.Close()
 		return err
@@ -213,7 +227,13 @@ func (s *Server) Start(ctx context.Context) error {
 		CallRecords:   database,
 		Frontend:      ui.FS(),
 		Metrics:       s.metrics.registry,
-		Logger:        s.Logger,
+		Auth:          database,
+		JWTSecret:     jwtSecret,
+		BcryptCost:    s.BcryptCost,
+		// The cookie is Secure, and HSTS on, only over TLS: a browser would not send a Secure cookie over HTTP.
+		SecureCookie: tlsConfig != nil,
+		Now:          time.Now,
+		Logger:       s.Logger,
 	}
 
 	if cfg.MCPTT != nil {
@@ -230,9 +250,14 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadTimeout:       time.Minute,
 		WriteTimeout:      time.Minute,
 		IdleTimeout:       2 * time.Minute,
+		TLSConfig:         tlsConfig,
 	}
 
-	go func() { _ = s.apiServer.Serve(apiLn) }()
+	if tlsConfig != nil {
+		go func() { _ = s.apiServer.ServeTLS(apiLn, "", "") }()
+	} else {
+		go func() { _ = s.apiServer.Serve(apiLn) }()
+	}
 
 	followCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	s.stopFollow, s.followDone = stop, make(chan struct{})
@@ -252,7 +277,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	v := version.Get()
-	attrs := []any{slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String())}
+	attrs := []any{
+		slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String()),
+		slog.Bool("tls", tlsConfig != nil),
+	}
 	s.Logger.Info("ims started", append(attrs, c.attrs()...)...)
 
 	return nil
@@ -635,4 +663,19 @@ func (v coreView) PolicyStatus() api.PolicyStatus {
 	}
 
 	return api.PolicyStatus{}
+}
+
+// apiTLS returns the TLS configuration of the API, or nil for none. Go's defaults choose the cipher suites and key
+// exchanges, which keeps the post-quantum hybrid key exchange that a list of curves would turn off.
+func apiTLS(c *config.APITLS) (*tls.Config, error) {
+	if c == nil {
+		return nil, nil //nolint:nilnil // No TLS is not an error.
+	}
+
+	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
+	if err != nil {
+		return nil, fmt.Errorf("load the API certificate: %w", err)
+	}
+
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, nil
 }

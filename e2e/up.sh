@@ -31,7 +31,7 @@ ran_listener() {
 }
 
 peers_open() {
-	[ "$(curl -fsS localhost:5020/api/v1/diameter/peers | grep -o '"state":"open"' | wc -l)" -ge "$E2E_PEERS" ]
+	[ "$(curl -fsS -H "Authorization: Bearer $(cat .ims-token)" localhost:5020/api/v1/diameter/peers | grep -o '"state":"open"' | wc -l)" -ge "$E2E_PEERS" ]
 }
 
 if ! docker compose pull --quiet open5gs; then
@@ -47,6 +47,7 @@ wait_for mongo 60 docker compose exec -T mongo mongosh --quiet --eval 'db.runCom
 
 docker compose up -d open5gs ims
 wait_for "IMS API" 60 curl -fsS localhost:5020/api/v1/status
+./ims/token.sh
 ./ims/provision.sh
 ./mcptt/provision.sh
 wait_for "Diameter peers" 120 peers_open

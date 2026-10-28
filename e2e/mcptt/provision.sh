@@ -11,15 +11,17 @@ api=http://localhost:5020/api/v1/mcptt
 domain=mcptt.example.com
 impu() { echo "sip:$1@ims.mnc001.mcc001.3gppnetwork.org"; }
 
+auth="Authorization: Bearer $(cat .ims-token)"
+
 call() {
 	local method=$1 path=$2 body=$3
-	curl -fsS -X "$method" -H 'Content-Type: application/json' -d "$body" "$api$path" >/dev/null
+	curl -fsS -X "$method" -H "$auth" -H 'Content-Type: application/json' -d "$body" "$api$path" >/dev/null
 }
 
 # create posts the body to the collection unless the item of id is there.
 create() {
 	local collection=$1 id=$2 body=$3
-	if ! curl -fs -o /dev/null "$api/$collection/$id"; then
+	if ! curl -fs -o /dev/null -H "$auth" "$api/$collection/$id"; then
 		call POST "/$collection" "$body"
 	fi
 }

@@ -1,6 +1,26 @@
-import { apiFetch, withQuery, type Page } from "@/queries/utils";
+import { ApiError, apiFetch, withQuery, type Page } from "@/queries/utils";
 
 const API = "/api/v1/mcptt";
+
+// MCPTTStatus is what the built-in MCPTT AS runs: its server name and PSIs, which the HSS routes to it.
+export interface MCPTTStatus {
+  mode: "ims" | "direct";
+  name: string;
+  participating_psi: string;
+  controlling_psi: string;
+  sip: string[];
+  media_control: string;
+}
+
+// getMCPTTStatus is the status of the MCPTT AS, or null if the IMS runs none, which the server answers with 404.
+export const getMCPTTStatus = async (): Promise<MCPTTStatus | null> => {
+  try {
+    return await apiFetch<MCPTTStatus>(API);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+};
 
 // ServiceConfiguration is what an operator sets of the organisation's service; the server fixes the rest. The
 // domain is the IMS home domain until set; the transmit time limit 30 s if absent.
@@ -154,6 +174,7 @@ export const listGroupCalls = (): Promise<GroupCall[]> =>
 
 // The query keys of the MCPTT settings and live state.
 export const mcpttKeys = {
+  status: ["mcptt", "status"],
   serviceConfiguration: ["mcptt", "service-configuration"],
   users: ["mcptt", "users"],
   groups: ["mcptt", "groups"],

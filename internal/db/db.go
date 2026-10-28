@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/mattn/go-sqlite3"
@@ -330,12 +331,49 @@ var migrations = []string{
 		msisdn TEXT NOT NULL,
 		impu TEXT NOT NULL,
 		number TEXT NOT NULL CHECK (number != '')
+	);
+	-- The users of the API and the UI (users.go), their sessions in the UI (sessions.go), their API tokens
+	-- (api_tokens.go), and the key that signs the access tokens (jwt_secret.go). Only hashes of the secrets are stored.
+	-- Times are Unix nanoseconds.
+	CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		role_id INTEGER NOT NULL CHECK (role_id IN (1, 2, 3)),
+		password_hash TEXT NOT NULL
+	);
+	CREATE TABLE sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+		token_hash BLOB NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE INDEX sessions_user_id ON sessions (user_id, created_at);
+	CREATE INDEX sessions_expires_at ON sessions (expires_at);
+	CREATE TABLE api_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token_id TEXT NOT NULL UNIQUE,
+		name TEXT NOT NULL,
+		token_hash BLOB NOT NULL,
+		user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER,
+		last_used_at INTEGER,
+		UNIQUE (user_id, name)
+	);
+	CREATE TABLE jwt_secret (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		secret BLOB NOT NULL CHECK (length(secret) >= 32)
 	);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
 	// The path of a URI: escaped, of a "?", "#" or "%" that would end or escape it (https://sqlite.org/uri.html).
 	file := (&url.URL{Path: path}).EscapedPath()
+
+	if err := restrict(path); err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
 
 	conn, err := sql.Open("sqlite3", "file:"+file+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_stmt_cache_size=64")
 	if err != nil {
@@ -422,6 +460,22 @@ func (d *DB) migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// restrict creates the database file if absent, readable and writable by its owner only, and makes an existing one so:
+// it holds the password hashes and the key that signs the access tokens. SQLite gives its journal files the
+// permissions of the database file.
+func restrict(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	return os.Chmod(path, 0o600)
 }
 
 type scanner interface {

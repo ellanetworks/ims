@@ -21,6 +21,7 @@ import {
 } from "@mui/icons-material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { useAuth } from "@/contexts/AuthContext";
 import CopyButton from "@/components/CopyButton";
 import DrawerSection from "@/components/DrawerSection";
 import Fields from "@/components/Fields";
@@ -56,8 +57,9 @@ function MemberRow({
   member: Member;
   name: string;
   affiliations: Affiliation[];
-  onEdit: () => void;
-  onRemove: () => void;
+  // onEdit and onRemove are absent for a role that cannot change the group, which sees the row read only.
+  onEdit?: () => void;
+  onRemove?: () => void;
 }) {
   const queryClient = useQueryClient();
   const toggle = useMutation({
@@ -86,21 +88,25 @@ function MemberRow({
           <Switch
             size="small"
             checked={implicit}
-            disabled={toggle.isPending}
+            disabled={toggle.isPending || !onEdit}
             onChange={(e) => toggle.mutate(e.target.checked)}
             slotProps={{ input: { "aria-label": `${name} always affiliated` } }}
           />
         </Tooltip>
-        <IconButton size="small" aria-label={`Edit ${name}`} onClick={onEdit}>
-          <EditIcon fontSize="small" color="primary" />
-        </IconButton>
-        <IconButton
-          size="small"
-          aria-label={`Remove ${name}`}
-          onClick={onRemove}
-        >
-          <DeleteIcon fontSize="small" color="primary" />
-        </IconButton>
+        {onEdit && (
+          <IconButton size="small" aria-label={`Edit ${name}`} onClick={onEdit}>
+            <EditIcon fontSize="small" color="primary" />
+          </IconButton>
+        )}
+        {onRemove && (
+          <IconButton
+            size="small"
+            aria-label={`Remove ${name}`}
+            onClick={onRemove}
+          >
+            <DeleteIcon fontSize="small" color="primary" />
+          </IconButton>
+        )}
       </Stack>
       {member.recvonly && (
         <Chip
@@ -135,6 +141,7 @@ function GroupDetail({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const editable = useAuth().can("mcptt:update");
   const [memberDialog, setMemberDialog] = useState<{ member?: Member } | null>(
     null,
   );
@@ -219,13 +226,15 @@ function GroupDetail({
           >
             Members ({group.members.length})
           </Typography>
-          <Button
-            size="small"
-            startIcon={<AddIcon />}
-            onClick={() => setMemberDialog({})}
-          >
-            Add Member
-          </Button>
+          {editable && (
+            <Button
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => setMemberDialog({})}
+            >
+              Add Member
+            </Button>
+          )}
         </Stack>
         {group.members.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
@@ -242,11 +251,17 @@ function GroupDetail({
                 affiliations={own.filter((a) =>
                   sameIdentity(a.mcptt_id, m.mcptt_id),
                 )}
-                onEdit={() => setMemberDialog({ member: m })}
-                onRemove={() => {
-                  removal.reset();
-                  setRemoving(m);
-                }}
+                onEdit={
+                  editable ? () => setMemberDialog({ member: m }) : undefined
+                }
+                onRemove={
+                  editable
+                    ? () => {
+                        removal.reset();
+                        setRemoving(m);
+                      }
+                    : undefined
+                }
               />
             ))}
           </Box>

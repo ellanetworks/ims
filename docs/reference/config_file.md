@@ -15,6 +15,9 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
 - `api` (object): The HTTP API and UI.
     - `address` (string): The IP address to listen on. `0.0.0.0` or `::` for all IPv4 and IPv6 addresses.
     - `port` (int, optional): The TCP port to listen on. Default `5020`.
+    - `tls` (object, optional): Serve over HTTPS. Default: plain HTTP.
+        - `cert` (string): The path to the PEM certificate chain, the server's certificate first.
+        - `key` (string): The path to the PEM private key.
 - `sip` (object): SIP, for every CSCF.
     - `addresses` (list of strings): The IP addresses the CSCFs listen on and phones reach. At least one; specific addresses, not `0.0.0.0` or `::`.
     - `trusted_networks` (list of strings, optional): The networks, in CIDR notation, of the other nodes of the trust domain, such as Application Servers. The S-CSCF accepts requests only from them, the I-CSCF accepts their asserted identities, and Application Servers are sent requests only in them. Must not cover every address of a family. See [Security](../explanation/security.md#the-trust-domain).

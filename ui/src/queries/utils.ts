@@ -1,4 +1,20 @@
-export type ApiErrorKind = "network" | "http";
+export type ApiErrorKind = "network" | "auth" | "forbidden" | "http";
+
+// The access token is kept in memory only, never in storage, so that a script injected into the page cannot read it
+// after a reload.
+let accessToken: string | null = null;
+
+export function setAccessToken(token: string | null) {
+  accessToken = token;
+}
+
+let renewAccessToken: (() => Promise<boolean>) | null = null;
+
+// setAccessTokenRenewer sets what renews the access token when the server refuses it, as when it expired while the
+// computer slept. It resolves to whether there is a new one; when the session is over, it ends it.
+export function setAccessTokenRenewer(renew: (() => Promise<boolean>) | null) {
+  renewAccessToken = renew;
+}
 
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
@@ -27,19 +43,27 @@ export interface PageParams {
 interface ApiFetchOptions {
   method?: string;
   body?: unknown;
+  // anonymous requests send no access token: those of the session itself, which the cookie authenticates.
+  anonymous?: boolean;
 }
 
 export async function apiFetch<T>(
   url: string,
   options: ApiFetchOptions = {},
+  retried = false,
 ): Promise<T> {
-  const { method = "GET", body } = options;
+  const { method = "GET", body, anonymous = false } = options;
+
+  const headers: Record<string, string> = {};
+  const token = anonymous ? null : accessToken;
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   const init: RequestInit = { method };
   if (body !== undefined) {
-    init.headers = { "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
+  if (Object.keys(headers).length > 0) init.headers = headers;
 
   let response: Response;
   try {
@@ -47,6 +71,8 @@ export async function apiFetch<T>(
   } catch {
     throw new ApiError("network", "Cannot reach the server.");
   }
+
+  if (response.status === 204) return undefined as T;
 
   let data: { result?: T; error?: string } | undefined;
   try {
@@ -56,11 +82,19 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    throw new ApiError(
-      "http",
-      data?.error || response.statusText || `HTTP ${response.status}`,
-      response.status,
-    );
+    const message =
+      data?.error || response.statusText || `HTTP ${response.status}`;
+    // A refused access token is renewed once, and the request retried. A failed login sends none.
+    if (response.status === 401 && token) {
+      if (!retried && (await renewAccessToken?.())) {
+        return apiFetch<T>(url, options, true);
+      }
+      throw new ApiError("auth", message, response.status);
+    }
+    if (response.status === 403) {
+      throw new ApiError("forbidden", message, response.status);
+    }
+    throw new ApiError("http", message, response.status);
   }
 
   if (data === undefined) {

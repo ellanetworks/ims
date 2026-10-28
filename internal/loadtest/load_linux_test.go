@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcrftest"
@@ -354,7 +355,7 @@ func call(t *testing.T, method, url string, body, out any) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(req.URL.Host).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

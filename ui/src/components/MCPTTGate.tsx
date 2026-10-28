@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Alert, AlertTitle, Box, Skeleton, Typography } from "@mui/material";
 import { useMCPTTStatus } from "@/hooks/useMCPTT";
-import type { MCPTTStatus } from "@/queries/status";
+import type { MCPTTStatus } from "@/queries/mcptt";
 
 const CONFIG = `mcptt:
   media:

@@ -7,11 +7,13 @@ require (
 	github.com/ellanetworks/core/nas v0.0.0-20261022122753-8d5c8bdaaf89
 	github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f
 	github.com/ellanetworks/ims/sip v0.0.0-20261015132646-e86e133378fd
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/prometheus/common v0.72.1
+	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )

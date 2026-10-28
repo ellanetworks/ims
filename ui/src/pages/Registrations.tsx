@@ -19,6 +19,7 @@ import MediaIcons from "@/components/MediaIcons";
 import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import RegistrationDrawer from "@/components/RegistrationDrawer";
 import SignallingPathChip from "@/components/SignallingPathChip";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -145,7 +146,15 @@ export default function Registrations() {
     mutationFn: (r: Registration) => reauthenticate(r.impi),
     onSuccess: () => setReauthing(null),
   });
-  const columns = useMemo(() => columnsFor(setReauthing), []);
+  // A role that cannot re-authenticate has no Actions column.
+  const canReauthenticate = useAuth().can("registration:reauthenticate");
+  const columns = useMemo(
+    () =>
+      canReauthenticate
+        ? columnsFor(setReauthing)
+        : columnsFor(setReauthing).filter((c) => c.field !== "actions"),
+    [canReauthenticate],
+  );
 
   const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
 

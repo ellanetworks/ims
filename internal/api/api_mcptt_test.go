@@ -49,7 +49,7 @@ func newMCPTTEnv(t *testing.T) *mcpttEnv {
 		t.Fatal(err)
 	}
 
-	h := NewHandler(Config{
+	h := testHandler(t, Config{
 		MCPTT: l,
 		MCPTTStatus: func() MCPTTStatus {
 			return MCPTTStatus{Mode: "ims", Name: "sip:" + mcptt.Host(homeDomain), SIP: []string{"127.0.0.1:5090"}, MediaControl: "127.0.0.1:21000"}
@@ -399,20 +399,20 @@ func TestSaveFails(t *testing.T) {
 func TestMCPTTStatus(t *testing.T) {
 	e := newMCPTTEnv(t)
 
-	var s Status
+	var m MCPTTStatus
 
-	e.ok(http.StatusOK, "GET", "/api/v1/status", "", &s)
+	e.ok(http.StatusOK, "GET", "/api/v1/mcptt", "", &m)
 
-	if m := s.MCPTT; m == nil || m.Mode != "ims" || len(m.SIP) != 1 || m.MediaControl != "127.0.0.1:21000" || s.Version == "" {
-		t.Errorf("status %+v", s)
+	if m.Mode != "ims" || len(m.SIP) != 1 || m.MediaControl != "127.0.0.1:21000" {
+		t.Errorf("status %+v", m)
 	}
 }
 
-// Without the MCPTT AS, its paths are not found, and the status has none.
+// Without the MCPTT AS, its paths, its status among them, are not found, and the public status does not tell.
 func TestMCPTTDisabled(t *testing.T) {
-	h := NewHandler(Config{Logger: slog.New(slog.DiscardHandler)})
+	h := testHandler(t, Config{Logger: slog.New(slog.DiscardHandler)})
 
-	for _, path := range []string{"/api/v1/mcptt/users", "/api/v1/mcptt/groups"} {
+	for _, path := range []string{"/api/v1/mcptt", "/api/v1/mcptt/users", "/api/v1/mcptt/groups"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 
@@ -614,7 +614,7 @@ func TestMaxUsersThroughAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e.live, e.h = l, NewHandler(Config{MCPTT: l, Logger: slog.New(slog.DiscardHandler)})
+	e.live, e.h = l, testHandler(t, Config{MCPTT: l, Logger: slog.New(slog.DiscardHandler)})
 	e.fails(http.StatusConflict, "POST", "/api/v1/mcptt/users", `{"mcptt_id": "sip:dave@mcptt.example.com", "impus": ["tel:+1"]}`,
 		"1001 users: the server serves at most 1000")
 }

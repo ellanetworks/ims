@@ -70,6 +70,9 @@ nav:
     - reference/index.md
     - API:
       - reference/api/index.md
+      - Initialize: reference/api/initialize.md
+      - Authentication: reference/api/auth.md
+      - Users: reference/api/users.md
       - Operator: reference/api/operator.md
       - Diameter: reference/api/diameter.md
       - Policy: reference/api/policy.md

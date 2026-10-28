@@ -11,14 +11,16 @@ set -euo pipefail
 
 api=http://localhost:5020/api/v1
 
+auth="Authorization: Bearer $(cat .ims-token)"
+
 call() {
 	local method=$1 path=$2 body=$3
-	curl -fsS -X "$method" -H 'Content-Type: application/json' -d "$body" "$api$path" >/dev/null
+	curl -fsS -X "$method" -H "$auth" -H 'Content-Type: application/json' -d "$body" "$api$path" >/dev/null
 }
 
 add_peer() {
 	local host=$1 body=$2
-	if ! curl -fsS "$api/diameter/peers" | grep -q "\"host\": *\"$host\""; then
+	if ! curl -fsS -H "$auth" "$api/diameter/peers" | grep -q "\"host\": *\"$host\""; then
 		call POST /diameter/peers "$body"
 	fi
 }

@@ -57,7 +57,7 @@ func serve(t *testing.T, cfg Config, method, path, body string) (int, []byte) {
 	cfg.Logger = slog.New(slog.DiscardHandler)
 
 	rec := httptest.NewRecorder()
-	NewHandler(cfg).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body)))
+	testHandler(t, cfg).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body)))
 
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("%s %s: Content-Type = %q, want application/json", method, path, ct)

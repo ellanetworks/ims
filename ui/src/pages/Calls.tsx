@@ -23,6 +23,7 @@ import EditRetentionDialog from "@/components/EditRetentionDialog";
 import MediaIcons from "@/components/MediaIcons";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import TimeRangePicker, {
   RELATIVE_RANGES,
   timeRangeFilter,
@@ -130,6 +131,7 @@ const gridSx = {
 };
 
 export default function Calls() {
+  const editable = useAuth().can("call_record:update_retention");
   const [search, setSearch] = useSearchParamState("search");
   const [outcomeParam, setOutcomeParam] = useSearchParamState("outcome");
   const [timeRange, setTimeRange] = useTimeRangeSearchParams({
@@ -247,7 +249,7 @@ export default function Calls() {
           <Typography variant="body2" color="textSecondary">
             Retention: <strong>{retention.data?.days ?? "…"}</strong> days
           </Typography>
-          {retention.data && (
+          {retention.data && editable && (
             <IconButton
               aria-label="edit call record retention"
               size="small"

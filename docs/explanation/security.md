@@ -1,5 +1,5 @@
 ---
-description: How Ella IMS authenticates phones, protects their signalling, and decides whom to trust.
+description: How Ella IMS authenticates phones, protects their signalling, decides whom to trust, and controls who can use its UI and API.
 ---
 
 # Security
@@ -21,3 +21,17 @@ SIP nodes tell each other who a request is from, for example with the P-Asserted
 Phones are never in the trust domain: the P-CSCF takes their identity from their authentication, not from what they claim. The P-CSCF trusts only Ella IMS's own addresses.
 
 The I-CSCF and the S-CSCF also trust the networks in `sip.trusted_networks`, where other nodes such as Application Servers live. Trust goes by source address, so these networks must be protected by the operator, and must never include the phones. For the same reason, Ella IMS rejects a trusted network that covers every IPv4 or every IPv6 address.
+
+## Users of the UI and API
+
+Everyone who uses the UI or the API is a user with a role: Admin, Read Only or Network Manager. The role decides what the user can see and do, from reading settings to managing other users. See [Roles](../reference/api/index.md#roles).
+
+The first user, an Admin, is created when Ella IMS is initialized. Admins create the others. Until then, anyone who reaches the UI can initialize Ella IMS, so initialize it as soon as it is installed.
+
+Ella IMS limits login attempts, from each address and for each account, to slow down password guessing.
+
+Programs, such as a monitoring system, use an API token rather than a password. A token belongs to a user and has that user's role, but it cannot create API tokens, change a password, or manage users. Tokens can expire, and an Admin or the token's user can delete one at any time.
+
+## HTTPS
+
+Ella IMS serves the UI and the API over plain HTTP unless it is given a certificate in `api.tls` (see the [configuration file](../reference/config_file.md)). Use HTTPS whenever the UI or the API is reachable over a network you do not control.

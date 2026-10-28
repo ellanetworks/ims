@@ -45,7 +45,7 @@ func pidOf(t *testing.T, env string) int {
 func smfGet(t *testing.T, core *netns, path string) []byte {
 	t.Helper()
 
-	status, body := httpGet(t, core, smfMetrics, path)
+	status, body := httpGet(t, core, smfMetrics, path, "")
 	if status != http.StatusOK {
 		t.Fatalf("SMF %s: %d %s", path, status, body)
 	}

@@ -6,6 +6,7 @@ import EditNumberingDialog from "@/components/EditNumberingDialog";
 import EditOperatorIdDialog from "@/components/EditOperatorIdDialog";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import SettingsTable, { SubFields } from "@/components/SettingsTable";
 import { getOperator } from "@/queries/operator";
 import { homeDomain } from "@/utils/operator";
@@ -13,6 +14,7 @@ import { homeDomain } from "@/utils/operator";
 const orNone = (value: string) => value || "None";
 
 export default function Operator() {
+  const editable = useAuth().can("operator:update");
   const [editing, setEditing] = useState<"id" | "numbering" | null>(null);
   const { data, error, isPending } = useQuery({
     queryKey: ["operator"],
@@ -39,7 +41,7 @@ export default function Operator() {
             label: "Operator ID (MCC/MNC)",
             help: "Must match your subscribers' IMSIs and your core.",
             value: data && `${data.mcc} / ${data.mnc}`,
-            onEdit: () => setEditing("id"),
+            onEdit: editable ? () => setEditing("id") : undefined,
           },
           {
             label: "Home Network Domain",
@@ -61,7 +63,7 @@ export default function Operator() {
                 ]}
               />
             ),
-            onEdit: () => setEditing("numbering"),
+            onEdit: editable ? () => setEditing("numbering") : undefined,
           },
         ]}
       />

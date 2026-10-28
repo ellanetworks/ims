@@ -17,6 +17,7 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import GroupDialog from "@/components/mcptt/GroupDialog";
 import GroupDrawer from "@/components/mcptt/GroupDrawer";
 import { useMCPTTLive, useMCPTTSettings } from "@/hooks/useMCPTT";
@@ -28,6 +29,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 export function GroupsTab() {
   const queryClient = useQueryClient();
+  const editable = useAuth().can("mcptt:update");
   const { users, groups, domain } = useMCPTTSettings();
   const { affiliations, calls } = useMCPTTLive();
   const [search, setSearch] = useState("");
@@ -63,7 +65,7 @@ export function GroupsTab() {
     return u ? userLabel(u, domain) : shortID(id, domain);
   };
 
-  const columns: GridColDef<Group>[] = [
+  const allColumns: GridColDef<Group>[] = [
     {
       field: "name",
       headerName: "Name",
@@ -155,6 +157,9 @@ export function GroupsTab() {
       ),
     },
   ];
+  const columns = editable
+    ? allColumns
+    : allColumns.filter((c) => c.field !== "actions");
 
   return (
     <>
@@ -175,15 +180,17 @@ export function GroupsTab() {
           placeholder="Name or group ID"
           sx={{ minWidth: 260 }}
         />
-        <Button
-          variant="contained"
-          color="success"
-          startIcon={<AddIcon />}
-          onClick={() => setDialog({})}
-          disabled={users.data === undefined}
-        >
-          Add Group
-        </Button>
+        {editable && (
+          <Button
+            variant="contained"
+            color="success"
+            startIcon={<AddIcon />}
+            onClick={() => setDialog({})}
+            disabled={users.data === undefined}
+          >
+            Add Group
+          </Button>
+        )}
       </Stack>
       <QueryAlert
         error={groups.error ?? users.error}

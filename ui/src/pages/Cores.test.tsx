@@ -4,7 +4,7 @@ import Cores from "@/pages/Cores";
 import type { DiameterPeer, DiameterRoute } from "@/queries/diameter";
 import type { PolicyWithStatus } from "@/queries/policy";
 import { identity, peer, policy, route as routeOf, sip } from "@/test/fixtures";
-import { json, renderWithClient, stubApi } from "@/test/render";
+import { json, readOnlyAuth, renderWithClient, stubApi } from "@/test/render";
 
 interface Request {
   method: string;
@@ -113,6 +113,20 @@ afterEach(() => {
 });
 
 describe("Cores", () => {
+  it("offers no change to a Read Only user", async () => {
+    serve();
+    renderWithClient(<Cores />, readOnlyAuth);
+
+    await peerRow(peer().host);
+    await screen.findByText("15550000100");
+    expect(
+      screen.queryByRole("button", { name: "Add Peer" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^(Edit|Delete) / }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows what to set in the core", async () => {
     serve();
 

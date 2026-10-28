@@ -4,13 +4,14 @@ import CopyButton from "@/components/CopyButton";
 import DomainName from "@/components/DomainName";
 import QueryAlert from "@/components/QueryAlert";
 import SettingsTable from "@/components/SettingsTable";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   DEFAULT_TRANSMIT_TIME_LIMIT_MS,
   EditDomainDialog,
   EditTalkTimeDialog,
 } from "@/components/mcptt/EditServiceConfigurationDialog";
 import { useMCPTTSettings } from "@/hooks/useMCPTT";
-import type { MCPTTStatus } from "@/queries/status";
+import type { MCPTTStatus } from "@/queries/mcptt";
 import { formatDuration } from "@/utils/mcptt";
 
 function Copyable({ value, label }: { value: string; label: string }) {
@@ -49,6 +50,7 @@ function Section({
 
 export function SettingsTab({ status }: { status: MCPTTStatus }) {
   const [editing, setEditing] = useState<"domain" | "talk-time" | null>(null);
+  const editable = useAuth().can("mcptt:update");
   const { config, homeDomain } = useMCPTTSettings();
   const c = config.data;
 
@@ -115,7 +117,7 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
                 )}
               </Stack>
             ),
-            onEdit: () => setEditing("domain"),
+            onEdit: editable ? () => setEditing("domain") : undefined,
           },
           {
             label: "Talk Time Limit",
@@ -125,7 +127,7 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
               (c.transmit_time_limit_ms === undefined
                 ? `${formatDuration(DEFAULT_TRANSMIT_TIME_LIMIT_MS)} (default)`
                 : formatDuration(c.transmit_time_limit_ms)),
-            onEdit: () => setEditing("talk-time"),
+            onEdit: editable ? () => setEditing("talk-time") : undefined,
           },
         ]}
       />

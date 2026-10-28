@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/settings"
 )
@@ -265,7 +266,7 @@ func TestAPIDuringRestarts(t *testing.T) {
 					return
 				}
 
-				res, err := http.DefaultClient.Do(req)
+				res, err := apitest.Client(srv.APIAddr().String()).Do(req)
 				if err != nil {
 					t.Errorf("GET %s: %v", path, err)
 					return

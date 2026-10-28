@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
@@ -121,7 +122,7 @@ func TestServerStartShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apitest.Client(srv.APIAddr().String()).Do(req)
 	if err != nil {
 		t.Fatalf("GET status: %v", err)
 	}

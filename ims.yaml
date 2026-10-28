@@ -5,6 +5,10 @@ db:
 api:
   address: 0.0.0.0
   port: 5020
+  # Optional: serve over HTTPS.
+  # tls:
+  #   cert: /path/to/cert.pem
+  #   key: /path/to/key.pem
 sip:
   addresses: [127.0.0.1]
 pcscf:

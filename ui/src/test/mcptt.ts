@@ -6,7 +6,7 @@ import type {
   MCPTTUser,
   ServiceConfiguration,
 } from "@/queries/mcptt";
-import type { MCPTTStatus } from "@/queries/status";
+import type { MCPTTStatus } from "@/queries/mcptt";
 import { json } from "@/test/render";
 
 export const mcpttStatus: MCPTTStatus = {
@@ -105,19 +105,19 @@ const page = (items: unknown[]) =>
     result: { items, page: 1, per_page: 100, total_count: items.length },
   });
 
-// mcpttRoutes are the API of an IMS running MCPTT, of the fixtures; status false of one running none.
+// mcpttRoutes are the API of an IMS running MCPTT, of the fixtures; enabled false of one running none.
 export const mcpttRoutes = (
   overrides: Record<string, (url: URL, init?: RequestInit) => Response> = {},
   enabled = true,
 ): Record<string, (url: URL, init?: RequestInit) => Response> => ({
   "/api/v1/status": () =>
     json(200, {
-      result: {
-        version: "v0.0.1",
-        revision: "",
-        ...(enabled && { mcptt: mcpttStatus }),
-      },
+      result: { version: "v0.0.1", revision: "", initialized: true },
     }),
+  "/api/v1/mcptt": () =>
+    enabled
+      ? json(200, { result: mcpttStatus })
+      : json(404, { error: "MCPTT is not enabled" }),
   "/api/v1/operator": () =>
     json(200, {
       result: {

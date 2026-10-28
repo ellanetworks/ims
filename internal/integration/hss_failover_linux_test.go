@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/hsstest"
 	"github.com/ellanetworks/ims/internal/server"
@@ -46,7 +47,7 @@ func (s *scene) addPeer(p api.DiameterPeerParams) string {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func (s *scene) put(path string, body any) {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}

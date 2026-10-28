@@ -36,7 +36,7 @@ func (f fakeMCPTTState) Call(_ context.Context, id string) (MCPTTCall, bool, err
 
 // withState is e serving state, of e's settings.
 func (e *mcpttEnv) withState(state MCPTTState) *mcpttEnv {
-	e.h = NewHandler(Config{MCPTT: e.live, MCPTTState: state, Logger: slog.New(slog.DiscardHandler)})
+	e.h = testHandler(e.t, Config{MCPTT: e.live, MCPTTState: state, Logger: slog.New(slog.DiscardHandler)})
 	return e
 }
 

@@ -20,7 +20,7 @@ func getSIPStatus(t *testing.T, cfg Config) SIPStatus {
 	cfg.Logger = slog.New(slog.DiscardHandler)
 
 	rec := httptest.NewRecorder()
-	NewHandler(cfg).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sip", nil))
+	testHandler(t, cfg).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sip", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)

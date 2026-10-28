@@ -123,4 +123,6 @@ Choose one of the installation methods below.
     docker compose up -d
     ```
 
+Ella IMS's UI and API are at `http://<host-ip>:5020`. Open the UI and create the first user.
+
 See the [configuration reference](../reference/config_file.md) for all options.

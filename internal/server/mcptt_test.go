@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -22,7 +23,7 @@ func apiDo(t *testing.T, srv *Server, method, path, body string) (int, []byte) {
 		t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(srv.APIAddr().String()).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,10 +65,10 @@ func TestMCPTT(t *testing.T) {
 	as := srv.mcptt.Load()
 
 	var status struct {
-		Result api.Status `json:"result"`
+		Result api.MCPTTStatus `json:"result"`
 	}
 
-	code, b := apiDo(t, srv, http.MethodGet, "/api/v1/status", "")
+	code, b := apiDo(t, srv, http.MethodGet, "/api/v1/mcptt", "")
 	if err := json.Unmarshal(b, &status); err != nil || code != http.StatusOK {
 		t.Fatalf("status: %d %s", code, b)
 	}
@@ -75,7 +76,7 @@ func TestMCPTT(t *testing.T) {
 	want := []string{
 		netip.AddrPortFrom(loopback, uint16(port)).String(), netip.AddrPortFrom(loopback6, uint16(port)).String(),
 	}
-	if m := status.Result.MCPTT; m == nil || m.Mode != "ims" || strings.Join(m.SIP, " ") != strings.Join(want, " ") ||
+	if m := status.Result; m.Mode != "ims" || strings.Join(m.SIP, " ") != strings.Join(want, " ") ||
 		m.Name != "sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org" ||
 		m.ParticipatingPSI != "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org" {
 		t.Fatalf("status %s, want MCPTT on %v", b, want)

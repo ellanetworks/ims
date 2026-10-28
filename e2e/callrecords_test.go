@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -19,8 +20,9 @@ import (
 const imsAPI = "10.80.0.5:5020"
 
 // httpGet GETs path of the HTTP server at addr from the namespace of the Open5GS container, on the core network: the
-// status code and the body. The test binary runs with no network of its own (run.sh).
-func httpGet(t *testing.T, core *netns, addr, path string) (int, []byte) {
+// status code and the body, with the bearer token unless empty. The test binary runs with no network of its own
+// (run.sh).
+func httpGet(t *testing.T, core *netns, addr, path, token string) (int, []byte) {
 	t.Helper()
 
 	var (
@@ -42,7 +44,12 @@ func httpGet(t *testing.T, core *netns, addr, path string) (int, []byte) {
 
 		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 
-		if _, err = io.WriteString(c, "GET "+path+" HTTP/1.0\r\n\r\n"); err == nil {
+		request := "GET " + path + " HTTP/1.0\r\n"
+		if token != "" {
+			request += "Authorization: Bearer " + token + "\r\n"
+		}
+
+		if _, err = io.WriteString(c, request+"\r\n"); err == nil {
 			raw, err = io.ReadAll(c)
 		}
 	})
@@ -96,7 +103,7 @@ func poll[T any](t *testing.T, core *netns, path string, pred func(T) bool) T {
 			last []byte
 		)
 
-		switch status, body := httpGet(t, core, imsAPI, path); status {
+		switch status, body := httpGet(t, core, imsAPI, path, os.Getenv("E2E_IMS_TOKEN")); status {
 		case http.StatusOK:
 			v = apiResult[T](t, path, body)
 			ok = pred(v)

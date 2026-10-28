@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -97,5 +98,39 @@ func TestReadsDoNotHoldUpWrites(t *testing.T) {
 
 	if _, err := d.read.ExecContext(t.Context(), `DELETE FROM call_records`); err == nil {
 		t.Fatal("the readers wrote")
+	}
+}
+
+// TestDatabaseIsPrivate checks that only its owner can read the database, which holds the password hashes and the key
+// that signs the access tokens, and its journal.
+func TestDatabaseIsPrivate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ims.db")
+
+	// An existing database that others can read is made private.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = d.Close() })
+
+	if _, err := d.CreateUser(context.Background(), NewUser{Email: "a@example.com", Role: RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"ims.db", "ims.db-wal", "ims.db-shm"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, mode)
+		}
 	}
 }

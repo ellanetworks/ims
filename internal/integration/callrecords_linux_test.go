@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/testue"
 )
 
@@ -43,7 +44,7 @@ func (s *scene) callRecords() []api.CallRecordResponse {
 		s.t.Fatal(err)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := apitest.Client(s.srv.APIAddr().String()).Do(req)
 	if err != nil {
 		s.t.Fatal(err)
 	}

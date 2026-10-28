@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,7 +40,9 @@ func TestOpenAPISpec(t *testing.T) {
 
 	served := map[string]bool{}
 
-	for _, r := range routes(Config{}) {
+	cfg := Config{BcryptCost: bcrypt.MinCost, Now: time.Now}
+
+	for _, r := range routes(cfg, newAuth(cfg)) {
 		method, path, _ := strings.Cut(r.pattern, " ")
 		served[strings.ToLower(method)+" "+path] = true
 

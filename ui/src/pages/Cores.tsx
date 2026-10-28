@@ -27,6 +27,7 @@ import EditRouteDialog from "@/components/EditRouteDialog";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import QueryAlert from "@/components/QueryAlert";
+import { useAuth } from "@/contexts/AuthContext";
 import SettingsTable, { type SettingRow } from "@/components/SettingsTable";
 import {
   deleteDiameterPeer,
@@ -182,6 +183,8 @@ function SectionHeader({
 
 export default function Cores() {
   const queryClient = useQueryClient();
+  const auth = useAuth();
+  const canDiameter = auth.can("diameter:update");
   const [peerDialog, setPeerDialog] = useState<{ peer?: DiameterPeer } | null>(
     null,
   );
@@ -222,7 +225,7 @@ export default function Cores() {
     },
   });
 
-  const columns: GridColDef<DiameterPeer>[] = [
+  const allColumns: GridColDef<DiameterPeer>[] = [
     {
       field: "host",
       headerName: "Host",
@@ -296,6 +299,10 @@ export default function Cores() {
     },
   ];
 
+  const columns = canDiameter
+    ? allColumns
+    : allColumns.filter((c) => c.field !== "actions");
+
   const route = (application: DiameterRoute["application"]) =>
     routes.data?.find((r) => r.application === application);
 
@@ -316,7 +323,7 @@ export default function Cores() {
           )}
         </Stack>
       ),
-      onEdit: r && (() => setEditingRoute(r)),
+      onEdit: r && canDiameter ? () => setEditingRoute(r) : undefined,
     };
   };
 
@@ -378,7 +385,9 @@ export default function Cores() {
       label: "Policy Function",
       help: "Where the IMS requests voice QoS for calls.",
       value: policy.data && policyLabels[policy.data.interface],
-      onEdit: () => setEditingPolicy(true),
+      onEdit: auth.can("policy:update")
+        ? () => setEditingPolicy(true)
+        : undefined,
     },
   ];
   if (policy.data?.interface === "rx") {
@@ -488,7 +497,10 @@ export default function Cores() {
             label: "IP-SM-GW Number",
             help: "Registered at the HSS for phones that can take SMS over IP.",
             value: ipsmgw.data && (ipsmgw.data.number || "—"),
-            onEdit: ipsmgw.data && (() => setEditingIPSMGW(true)),
+            onEdit:
+              ipsmgw.data && auth.can("ip_sm_gw:update")
+                ? () => setEditingIPSMGW(true)
+                : undefined,
           },
         ]}
       />
@@ -498,15 +510,17 @@ export default function Cores() {
         title={peers.data ? `Peers (${peers.data.length})` : "Peers"}
         description="The Diameter connections to your HSS, PCRF and SMSC."
       >
-        <Button
-          variant="contained"
-          color="success"
-          size="small"
-          startIcon={<AddIcon />}
-          onClick={() => setPeerDialog({})}
-        >
-          Add Peer
-        </Button>
+        {canDiameter && (
+          <Button
+            variant="contained"
+            color="success"
+            size="small"
+            startIcon={<AddIcon />}
+            onClick={() => setPeerDialog({})}
+          >
+            Add Peer
+          </Button>
+        )}
       </SectionHeader>
       <QueryAlert
         error={peers.error}
