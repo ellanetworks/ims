@@ -90,6 +90,7 @@ nav:
     - Metrics: reference/metrics.md
     - Connectivity: reference/connectivity.md
     - Performance: reference/performance.md
+    - System Requirements: reference/system_reqs.md
     - Supported Mobile Equipment: reference/supported_mobile_equipment.md
   - Explanation:
     - explanation/index.md

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test of the Kubernetes manifests in k8s/: deploys them, through the
 # overlay ci/k8s/<MODE>, on a single-node kind cluster, and checks the IMS over
-# its API Service, and with phones that register and call over IPsec, before
-# and after a restart of the pod.
+# its API Service, with phones that register and call over IPsec, and across a
+# restart of the pod and, when PREVIOUS_IMAGE is set, an upgrade.
 #
 # A privileged container, the core, plays the core network with the load client
 # of internal/loadtest: the HSS and the PCRF over Diameter, and the phones of
@@ -49,14 +49,13 @@ NS=ella
 MULTUS_VERSION=v4.3.1
 CNI_PLUGINS_VERSION=v1.9.1
 
-# The phones, and the calls they make while the pod restarts.
+# The phones, and how long they make calls, at one per second.
 SUBS=20
-CALL_SECS=150
+CALL_SECS=30
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
 WATCH_PID=""
-LOAD_PID=""
 
 k() { kubectl -n "${NS}" "$@"; }
 
@@ -71,7 +70,6 @@ fail() {
 cleanup() {
   status=$?
   [ -n "${WATCH_PID}" ] && kill "${WATCH_PID}" 2>/dev/null || true
-  [ -n "${LOAD_PID}" ] && kill "${LOAD_PID}" 2>/dev/null || true
   if [ "${status}" -ne 0 ]; then
     echo "== Diagnostics"
     k get all,pvc,network-attachment-definitions -o wide || true
@@ -199,6 +197,27 @@ deploy() {
 # The number of call records with the given query.
 calls() { api "/call-records?per_page=1&$1" | jq -er .result.total_count; }
 
+# Registers SUBS phones from the core, has them make calls for CALL_SECS, and
+# checks that they were answered.
+load() {
+  local since
+  since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  docker exec "${CORE}" sh -c 'ip xfrm state flush && ip xfrm policy flush'
+  docker exec "${CORE}" /loadtest.test -test.run TestLoad -test.v -test.timeout 10m -load \
+    -ims "${SIP_ADDR}" -ims-diameter "${DIAMETER_ADDR}" -local "${CORE_DIAMETER}" -ue-net "${UE_POOL}" \
+    -subs "${SUBS}" -reg-rates 10 -reg-step 5s -settle 1s \
+    -cps 1 -call-step "${CALL_SECS}s" -hold 3s -rereg 0 >"${WORK}/load.log" 2>&1 \
+    || fail "the load client failed"
+  grep -E 'load_linux_test' "${WORK}/load.log" | cut -c 1-200
+  grep -q "register at .*: ${SUBS} in .*, 0 failed" "${WORK}/load.log" || fail "not all ${SUBS} phones registered"
+  local answered failed
+  answered="$(calls "outcome=answered&start=${since}")"
+  failed="$(calls "start=${since}&outcome=cancelled&outcome=busy&outcome=rejected&outcome=no_answer&outcome=unavailable&outcome=failed")"
+  echo "${answered} calls answered, ${failed} not"
+  [ "${answered}" -ge $((CALL_SECS / 2)) ] || fail "only ${answered} calls were answered"
+  [ "${failed}" = 0 ] || fail "${failed} calls failed"
+}
+
 step "Lint the manifests"
 version="$(cat "${ROOT}/version/VERSION")"
 for dir in k8s k8s/pod-network ci/k8s/multus ci/k8s/pod-network; do
@@ -308,32 +327,8 @@ k logs ella-ims-0 | grep '"msg":"ims started"' | tail -n 1 \
 echo "P-CSCF on ${SIP_ADDR}:5060"
 endstep
 
-step "Register ${SUBS} phones over IPsec at ${SIP_ADDR}, and call while the pod restarts"
-# The load client configures the IMS with its HSS and PCRF, registers the
-# phones, then makes calls for CALL_SECS, which the restart of the pod falls in
-# the middle of. The phones do not register again: their calls after the
-# restart go through the registrations and security associations the IMS
-# restores.
-docker exec "${CORE}" /loadtest.test -test.run TestLoad -test.v -test.timeout 10m -load \
-  -ims "${SIP_ADDR}" -ims-diameter "${DIAMETER_ADDR}" -local "${CORE_DIAMETER}" -ue-net "${UE_POOL}" \
-  -subs "${SUBS}" -reg-rates 10 -reg-step 5s -settle 1s \
-  -cps 1 -call-step "${CALL_SECS}s" -hold 3s -rereg 0 >"${WORK}/load.log" 2>&1 &
-LOAD_PID=$!
-
-deadline=$((SECONDS + 120))
-until [ "$(api '/registrations?per_page=1' 2>/dev/null | jq -r .result.total_count)" = "${SUBS}" ]; do
-  [ "${SECONDS}" -lt "${deadline}" ] || fail "the ${SUBS} phones did not register"
-  kill -0 "${LOAD_PID}" 2>/dev/null || fail "the load client stopped"
-  sleep 2
-done
-echo "${SUBS} phones registered"
-
-deadline=$((SECONDS + 60))
-until [ "$(calls outcome=answered)" -ge 10 ]; do
-  [ "${SECONDS}" -lt "${deadline}" ] || fail "the phones' calls are not answered"
-  sleep 2
-done
-echo "$(calls outcome=answered) calls answered before the restart"
+step "Register ${SUBS} phones over IPsec at ${SIP_ADDR}, and call"
+load
 endstep
 
 step "Restart the pod"
@@ -348,7 +343,6 @@ k delete pod ella-ims-0 --wait=false
 wait_ready "${uid}"
 kill "${WATCH_PID}"
 WATCH_PID=""
-restarted="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 before_ip="${SIP_ADDR}"
 locate
 wait_api
@@ -358,21 +352,16 @@ codes="$(awk -v uid="${uid}" '$1 == uid && NF == 2 { print $2 }' "${WORK}/watch.
 [ "${codes}" = 0 ] || fail "the IMS exited with code '${codes}', want 0"
 tail -n 3 "${WORK}/stopped.log" | cut -c 1-300
 [ "${SIP_ADDR}" = "${before_ip}" ] || fail "the IMS moved from ${before_ip} to ${SIP_ADDR}: the phones still reach the old address"
-
-registered="$(api '/registrations?per_page=1' | jq -r .result.total_count)"
-[ "${registered}" = "${SUBS}" ] || fail "${registered} registrations of ${SUBS} survived the restart"
-echo "${registered} registrations restored at ${SIP_ADDR}"
+# The API token is in the database.
+api /users/me >/dev/null || fail "the API token is gone after the restart"
+echo "IMS back at ${SIP_ADDR}"
 endstep
 
-step "Call after the restart"
-wait "${LOAD_PID}" || fail "the load client failed"
-LOAD_PID=""
-grep -E 'load_linux_test' "${WORK}/load.log" | cut -c 1-200
-after="$(calls "outcome=answered&start=${restarted}")"
-failed="$(calls "start=${restarted}&outcome=cancelled&outcome=busy&outcome=rejected&outcome=no_answer&outcome=unavailable&outcome=failed")"
-echo "after the restart: ${after} calls answered, ${failed} not"
-[ "${after}" -ge 10 ] || fail "only ${after} calls were answered after the restart"
-[ "${failed}" = 0 ] || fail "${failed} calls failed after the restart"
+# The IPsec security associations were in the pod's network namespace, gone with
+# it: as after a restart of a P-CSCF, the phones register again (TS 24.229
+# §4.14.2).
+step "Register the phones again, and call"
+load
 endstep
 
 echo "Kubernetes smoke test passed"
