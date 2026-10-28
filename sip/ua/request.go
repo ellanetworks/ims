@@ -758,6 +758,12 @@ func (r *Request) failedOne(err error) {
 
 // invite receives an initial INVITE (RFC 3261 §13.3). The session starts at once; OnInvite is its first event.
 func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.Request) {
+	// Dropped with its flow before it reached its strand (Agent.Drop): nothing of it is processed.
+	if tx.State() == transaction.Terminated {
+		a.untrack(&Request{a: a, tx: tx, req: req})
+		return
+	}
+
 	if a.cfg.OnInvite == nil {
 		a.reply(tx, 480)
 		a.untrack(&Request{a: a, tx: tx, req: req})

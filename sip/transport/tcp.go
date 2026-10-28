@@ -24,7 +24,6 @@ var crlf = []byte("\r\n")
 const drainTimeout = time.Second
 
 type conn struct {
-	id    Conn
 	flow  sip.Flow
 	ready chan struct{}
 	nc    *net.TCPConn
@@ -98,7 +97,7 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		t.mu.Unlock()
 		return nil, errNoConn
 	default:
-		c = &conn{id: t.newConn(), flow: f, ready: make(chan struct{})}
+		c = &conn{flow: f, ready: make(chan struct{})}
 		t.conns[f] = c
 		t.wg.Add(1)
 		t.mu.Unlock()
@@ -227,7 +226,7 @@ func (t *Transport) accept(l *listener) {
 		backoff = 0
 
 		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
-		c := &conn{id: t.newConn(), flow: f, ready: make(chan struct{}), nc: nc}
+		c := &conn{flow: f, ready: make(chan struct{}), nc: nc}
 		c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
 		c.touch()
 		close(c.ready)
@@ -392,12 +391,7 @@ func (t *Transport) forget(c *conn, cause error) {
 		return
 	}
 
-	go t.onLost(c.flow, c.id, fmt.Errorf("%w: %s: %w", ErrConnectionLost, c.flow, cause))
-}
-
-// newConn is the identity of a new connection.
-func (t *Transport) newConn() Conn {
-	return Conn(t.lastConn.Add(1))
+	go t.onLost(c.flow, fmt.Errorf("%w: %s: %w", ErrConnectionLost, c.flow, cause))
 }
 
 type idleReader struct {

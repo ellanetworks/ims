@@ -2,9 +2,12 @@ package ua_test
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -74,4 +77,64 @@ func TestDropOutgoing(t *testing.T) {
 	}
 
 	bob.none()
+}
+
+// An INVITE that reached the agent but not its strand when Drop ran is processed no further: no session, no
+// application event, no response.
+func TestDropArrivingInvite(t *testing.T) {
+	var busy atomic.Pointer[ua.Strand]
+
+	arrived := make(chan struct{}, 1)
+
+	bob := newPeerWith(t, "bob", func(c *ua.Config) {
+		c.StrandFor = func(*sip.Request) *ua.Strand {
+			arrived <- struct{}{}
+			return busy.Load()
+		}
+	})
+
+	st := bob.a.NewStrand()
+	busy.Store(st)
+
+	release := make(chan struct{})
+
+	st.Post(func() { <-release })
+
+	alice := newRaw(t)
+
+	invite := siptest.NewRequest("INVITE", "sip:bob@"+bob.addr.String(), sip.UDP, alice.sock.Addr())
+	invite.SetBodies(sdpOf("offer")...)
+	alice.sock.Send(sip.UDP, bob.addr, invite)
+
+	<-arrived
+	bob.a.Drop(allFlows)
+	close(release)
+
+	bob.none()
+
+	if res, _ := alice.sock.RecvResponse(); res.StatusCode != 100 {
+		t.Fatalf("got %q, want the 100 alone", res.StartLine())
+	}
+
+	alice.sock.RecvNone(50 * time.Millisecond)
+}
+
+// Drop waits for no strand: a handler may call it, its own session ending once it returns.
+func TestDropFromAHandler(t *testing.T) {
+	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
+
+	var bobAgent atomic.Pointer[ua.Agent]
+
+	bob := newPeerWith(t, "bob", func(c *ua.Config) {
+		c.OnInvite = func(r *ua.Request) ua.Handler {
+			bobAgent.Load().Drop(allFlows)
+			return ua.Handler{}
+		}
+	})
+	bobAgent.Store(bob.a)
+
+	alice.invite(bob, "offer-1")
+
+	netOf(t).Quiesce()
+	alice.none()
 }

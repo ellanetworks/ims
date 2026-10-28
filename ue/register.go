@@ -32,6 +32,15 @@ func (u *UE) Register(ctx context.Context) error {
 	u.op.Lock()
 	defer u.op.Unlock()
 
+	// TS 24.229 §5.1.9: no initial registration through a P-CSCF marked unavailable.
+	u.mu.Lock()
+	pcscf, marked := u.pcscf, u.markedLocked(u.pcscf)
+	u.mu.Unlock()
+
+	if marked {
+		return fmt.Errorf("%w: %s", ErrPCSCFUnavailable, pcscf)
+	}
+
 	if err := u.ready(); err != nil {
 		return err
 	}
@@ -495,8 +504,9 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		impus = u.state.IMPUs
 	}
 
-	// A registration through a P-CSCF marked unavailable makes it available again.
-	u.unavailable = slices.DeleteFunc(u.unavailable, func(a netip.AddrPort) bool { return a == u.pcscf })
+	// The P-CSCF the contact is bound through, which a registration resets the failures of (RFC 5626 §4.5).
+	u.registeredVia = u.pcscf
+	delete(u.marks, u.pcscf)
 
 	u.auth = p.auth
 	u.state = State{
@@ -577,8 +587,20 @@ func (u *UE) keepalive() {
 // transactions of the flow, sending nothing on their behalf (TS 24.229 §5.1.1.4.1, NOTE 13), and the owner registers
 // again (RFC 5626 §4.4, §4.5), Register forming a new flow. Not called from a handler, whose strand Drop waits for.
 func (u *UE) flowFailed(err error) {
-	if u.unbind() {
-		u.agent.Drop(func(sip.Flow) bool { return true })
+	// The dialogs of the flow are stopped even when another failure, of a request, unbound the contact first.
+	bound := u.unbind()
+
+	u.mu.Lock()
+	closed := u.closed
+	u.mu.Unlock()
+
+	if closed {
+		return
+	}
+
+	u.agent.Drop(func(sip.Flow) bool { return true })
+
+	if bound {
 		u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})
 	}
 }
@@ -621,22 +643,20 @@ func (u *UE) requestFailed(req *sip.Request, in transaction.State, err error) {
 		return
 	}
 
-	// The P-CSCF as configured (SetPCSCF): the request went to one of its ports.
-	pcscf := u.pcscfAddr()
-	if req.Flow.Remote.Addr() != pcscf.Addr() {
-		return
-	}
-
 	go func() {
+		// The P-CSCF the contact was registered through (§5.1.2A.1.6 B), which the request went to a port of.
 		u.mu.Lock()
 
-		if !u.closed && u.state.Registered && !slices.Contains(u.unavailable, pcscf) {
-			u.unavailable = append(u.unavailable, pcscf)
+		pcscf := u.registeredVia
+		bound := !u.closed && u.state.Registered && req.Flow.Remote.Addr() == pcscf.Addr()
+
+		if bound {
+			u.markLocked(pcscf)
 		}
 
 		u.mu.Unlock()
 
-		if u.unbind() {
+		if bound && u.unbind() {
 			u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err, UnavailablePCSCF: pcscf})
 		}
 	}()

@@ -95,8 +95,10 @@ type settings struct {
 	Groups            []string `json:"groups"`
 	LogLevel          string   `json:"logLevel"`
 
-	// plain and noRegEvent are the tests', against a server in direct mode (mcptt plan, PM 14).
+	// plain and noRegEvent are the tests', against a server in direct mode (mcptt plan, PM 14); t1, their T1 when not
+	// zero, shortening Timer F.
 	plain, noRegEvent bool
+	t1                time.Duration
 }
 
 // callState is a call of the session, as State gives it.
@@ -238,6 +240,7 @@ func (s *Session) build(network, local, pcscf, ani string) error {
 		Plain:             s.set.plain,
 		AccessNetworkInfo: ani,
 		NoRegEvent:        s.set.noRegEvent,
+		T1:                s.set.t1,
 		Services:          []ue.Service{s.service(current.Load)},
 		IPsec:             ipsec{s.p},
 		Control:           bindControl(s.p),
@@ -402,6 +405,13 @@ func (s *Session) run(u *ue.UE, stop, done chan struct{}) {
 
 		if ctx.Err() != nil {
 			return
+		}
+
+		// TS 24.229 §5.1.2A.1.6 D, §5.1.9: its P-CSCF marked unavailable, the session discovers the P-CSCFs anew, the
+		// platform's for the network, which clears the marks, and registers at once.
+		if errors.Is(err, ue.ErrPCSCFUnavailable) {
+			u.ClearPCSCFMarks()
+			continue
 		}
 
 		if err != nil {

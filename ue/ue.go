@@ -174,8 +174,8 @@ type State struct {
 	IMPUs []string
 
 	// UnavailablePCSCFs are the P-CSCF addresses marked unavailable, a request through one having timed out or failed
-	// in transport (TS 24.229 §5.1.2A.1.6): the owner selects another one (SetPCSCF) if it has, or gets new ones
-	// (§9.2.1). A registration through one makes it available again.
+	// in transport (TS 24.229 §5.1.2A.1.6), until the mark expires (§5.1.9): the UE registers through none of them;
+	// the owner selects another one (SetPCSCF) if it has, or discovers them anew (ClearPCSCFMarks).
 	UnavailablePCSCFs []netip.AddrPort
 }
 
@@ -266,11 +266,13 @@ type UE struct {
 	mu     sync.Mutex
 	closed bool
 	pcscf  netip.AddrPort
-	// unavailable are the P-CSCFs marked unavailable (State.UnavailablePCSCFs).
-	unavailable []netip.AddrPort
-	ani         string
-	clientPorts []uint16
-	retired     []uint16
+	// marks are the P-CSCF addresses marked unavailable (State.UnavailablePCSCFs); registeredVia is the P-CSCF the
+	// contact was last registered through.
+	marks         map[netip.AddrPort]pcscfMark
+	registeredVia netip.AddrPort
+	ani           string
+	clientPorts   []uint16
+	retired       []uint16
 	// failed are the ports whose listeners failed, listened on again before the next registration.
 	failed      []uint16
 	pending     int
@@ -353,6 +355,7 @@ func New(cfg Config) (*UE, error) {
 		auto:    true,
 		pcscf:   cfg.PCSCF,
 		ani:     cfg.AccessNetworkInfo,
+		marks:   map[netip.AddrPort]pcscfMark{},
 	}
 
 	if len(u.offers) == 0 {
@@ -544,7 +547,7 @@ func (u *UE) State() State {
 	s.AssociatedURIs = slices.Clone(s.AssociatedURIs)
 	s.ServiceRoute = slices.Clone(s.ServiceRoute)
 	s.IMPUs = slices.Clone(s.IMPUs)
-	s.UnavailablePCSCFs = slices.Clone(u.unavailable)
+	s.UnavailablePCSCFs = u.unavailableLocked()
 
 	return s
 }

@@ -9,7 +9,6 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,10 +50,6 @@ var (
 	ErrConnectionLost = errors.New("sip/transport: connection lost")
 )
 
-// Conn identifies a TCP connection of the transport, dialled or accepted: the one a request went out on (SendRequest).
-// Zero is none: a request sent over UDP.
-type Conn uint64
-
 type Handler interface {
 	HandleMessage(m sip.Message)
 
@@ -93,10 +88,11 @@ type Config struct {
 	// can be listened on again. It runs on a goroutine of its own; closing the transport is no failure.
 	OnListenerFailed func(local netip.AddrPort, err error)
 
-	// OnConnectionLost is told of a TCP connection that ended, of flow f, with why, wrapping ErrConnectionLost: the
-	// requests that went out on it get no response on it (RFC 3261 §18.4). It runs on a goroutine of its own; closing
-	// the transport is no loss.
-	OnConnectionLost func(f sip.Flow, c Conn, err error)
+	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping ErrConnectionLost: of an
+	// outbound registration, its flow failed (RFC 5626 §4.4). The transactions that sent on it are left to their
+	// timers: their responses can come on another connection (RFC 3261 §18.2.2). It runs on a goroutine of its own;
+	// closing the transport is no loss.
+	OnConnectionLost func(f sip.Flow, err error)
 }
 
 type Transport struct {
@@ -114,8 +110,7 @@ type Transport struct {
 	writeTimeout time.Duration
 	trace        func(m sip.Message, f sip.Flow, sent bool)
 	onFailed     func(local netip.AddrPort, err error)
-	onLost       func(f sip.Flow, c Conn, err error)
-	lastConn     atomic.Uint64
+	onLost       func(f sip.Flow, err error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -286,7 +281,7 @@ func (t *Transport) Send(ctx context.Context, m sip.Message) error {
 
 	switch m := m.(type) {
 	case *sip.Request:
-		_, err = t.sendRequest(ctx, m)
+		err = t.sendRequest(ctx, m)
 	case *sip.Response:
 		err = t.sendResponse(ctx, m)
 	}
@@ -298,29 +293,8 @@ func (t *Transport) Send(ctx context.Context, m sip.Message) error {
 	return nil
 }
 
-// SendRequest is Send of a request, which also returns the TCP connection the request went out on, zero over UDP: its
-// loss is that of the request's response (OnConnectionLost, Connected).
-func (t *Transport) SendRequest(ctx context.Context, r *sip.Request) (Conn, error) {
-	c, err := t.sendRequest(ctx, r)
-	if err != nil {
-		return 0, fmt.Errorf("sip/transport: send %s: %w", r.StartLine(), err)
-	}
-
-	return c, nil
-}
-
-// Connected reports whether c is still the TCP connection of flow f, not lost.
-func (t *Transport) Connected(f sip.Flow, c Conn) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	cc := t.conns[normalize(f)]
-
-	return cc != nil && cc.id == c && !cc.closed.Load()
-}
-
 func (t *Transport) SendOnFlow(ctx context.Context, m sip.Message) error {
-	if _, err := t.sendOnFlow(ctx, m); err != nil {
+	if err := t.sendOnFlow(ctx, m); err != nil {
 		return fmt.Errorf("sip/transport: send %s: %w", m.StartLine(), err)
 	}
 
@@ -339,49 +313,43 @@ func (t *Transport) sendUDPTraced(l *listener, m sip.Message, f sip.Flow, b []by
 	return sendUDP(l, f.Remote, b)
 }
 
-func (t *Transport) sendTCPTraced(ctx context.Context, m sip.Message, f sip.Flow, b []byte, dial bool) (Conn, error) {
+func (t *Transport) sendTCPTraced(ctx context.Context, m sip.Message, f sip.Flow, b []byte, dial bool) error {
 	c, err := t.conn(ctx, f, dial)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	t.traced(m, f, true)
 
-	if err := t.write(c, b); err != nil {
-		return 0, err
-	}
-
-	return c.id, nil
+	return t.write(c, b)
 }
 
-func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) (Conn, error) {
+func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
 	f := normalize(m.Env().Flow)
 	if !f.Remote.IsValid() {
-		return 0, errors.New("no remote address in the flow")
+		return errors.New("no remote address in the flow")
 	}
 
 	l, err := t.listener(f)
 	if err != nil {
-		return 0, err
+		return err
 	}
-
-	var c Conn
 
 	switch f.Transport {
 	case sip.UDP:
 		err = t.sendUDPTraced(l, m, f, m.Bytes())
 	case sip.TCP:
 		ensureContentLength(m.Env())
-		c, err = t.sendTCPTraced(ctx, m, f, m.Bytes(), true)
+		err = t.sendTCPTraced(ctx, m, f, m.Bytes(), true)
 	}
 
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	m.Env().Flow = f
 
-	return c, nil
+	return nil
 }
 
 func ensureContentLength(env *sip.Envelope) {
@@ -390,7 +358,7 @@ func ensureContentLength(env *sip.Envelope) {
 	}
 }
 
-func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) (Conn, error) {
+func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) error {
 	if r.Flow.Transport == sip.UDP && !t.largeUDP && len(r.Bytes()) > MaxUDPRequest {
 		return t.sendLargeRequest(ctx, r)
 	}
@@ -398,27 +366,27 @@ func (t *Transport) sendRequest(ctx context.Context, r *sip.Request) (Conn, erro
 	return t.sendOnFlow(ctx, r)
 }
 
-func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) (Conn, error) {
+func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) error {
 	f := normalize(r.Flow)
 	if !f.Remote.IsValid() {
-		return 0, errors.New("no remote address in the flow")
+		return errors.New("no remote address in the flow")
 	}
 
 	l, err := t.listener(f)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	saved := r.Header.Clone()
 
 	via, err := r.Header.TopVia()
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	via.Transport = sip.TCP
 	if err := r.Header.SetTopVia(via); err != nil {
-		return 0, err
+		return err
 	}
 
 	ensureContentLength(&r.Envelope)
@@ -427,30 +395,30 @@ func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) (Conn,
 	tf.Transport = sip.TCP
 
 	tcpCtx, cancel := context.WithTimeout(ctx, t.fallback)
-	c, err := t.sendTCPTraced(tcpCtx, r, tf, r.Bytes(), true)
+	err = t.sendTCPTraced(tcpCtx, r, tf, r.Bytes(), true)
 
 	cancel()
 
 	if err == nil {
 		r.Flow = tf
-		return c, nil
+		return nil
 	}
 
 	r.Header = saved
 
 	if ctx.Err() != nil || !tcpFailed(err) {
-		return 0, err
+		return err
 	}
 
 	t.log.Debug("TCP failed, sending large request over UDP", slog.String("remote", f.Remote.String()), slog.Any("error", err))
 
 	if err := t.sendUDPTraced(l, r, f, r.Bytes()); err != nil {
-		return 0, err
+		return err
 	}
 
 	r.Flow = f
 
-	return 0, nil
+	return nil
 }
 
 // RFC 3261 §18.1.1
@@ -490,13 +458,13 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 			return err
 		}
 	case sip.TCP:
-		_, err := t.sendTCPTraced(ctx, r, f, b, false)
+		err := t.sendTCPTraced(ctx, r, f, b, false)
 		if err != nil && ctx.Err() == nil {
 			if f.Remote, err = tcpDestination(via); err != nil {
 				return err
 			}
 
-			_, err = t.sendTCPTraced(ctx, r, f, b, true)
+			err = t.sendTCPTraced(ctx, r, f, b, true)
 		}
 
 		if err != nil {

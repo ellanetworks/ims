@@ -31,9 +31,9 @@ var (
 
 	ErrTimeout = errors.New("sip/transaction: timeout")
 
-	// ErrTransport is the error of a client transaction whose request the transport failed to send, or whose
-	// connection was lost before a response (RFC 3261 §17.1.4, §18.4): a fatal transport error, which the TU treats
-	// as a 503 (Service Unavailable), a timeout as a 408 (§8.1.3.1).
+	// ErrTransport is the error of a client transaction whose request the network did not take: a connection that
+	// could not be opened or written, an ICMP error (RFC 3261 §17.1.4, §18.4). A fatal transport error, which the TU
+	// treats as a 503 (Service Unavailable), a timeout as a 408 (§8.1.3.1).
 	ErrTransport = errors.New("sip/transaction: transport error")
 
 	// ErrDropped is the error of a transaction the layer's user dropped with its flow (Layer.Drop).
@@ -88,7 +88,7 @@ type Config struct {
 	OnClientError func(req *sip.Request, in State, err error)
 
 	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping
-	// transport.ErrConnectionLost, once the client transactions waiting on it failed (transport.Config.OnConnectionLost).
+	// transport.ErrConnectionLost (transport.Config.OnConnectionLost).
 	OnConnectionLost func(f sip.Flow, err error)
 
 	T1, T2, T4 time.Duration
@@ -330,34 +330,14 @@ func (l *Layer) listenerFailed(local netip.AddrPort, err error) {
 	}
 }
 
-// connectionLost fails the client transactions waiting for a response to a request that went out on the TCP connection
-// c, lost (RFC 3261 §17.1.4, §18.4), and tells the layer's user.
-func (l *Layer) connectionLost(f sip.Flow, c transport.Conn, err error) {
+// connectionLost tells the layer's user of a TCP connection that ended. The transactions that sent on it wait for
+// their responses, which can come on another connection (RFC 3261 §18.2.2), or for their timers.
+func (l *Layer) connectionLost(f sip.Flow, err error) {
 	l.mu.Lock()
-
-	if l.closed {
-		l.mu.Unlock()
-		return
-	}
-
-	clients := make([]*ClientTransaction, 0, len(l.clients))
-	for _, tx := range l.clients {
-		clients = append(clients, tx)
-	}
-
+	closed := l.closed
 	l.mu.Unlock()
 
-	for _, tx := range clients {
-		tx.mu.Lock()
-
-		if tx.conn == c && tx.pending() {
-			tx.failClient(fmt.Errorf("%w: %w", ErrTransport, err))
-		}
-
-		tx.unlock()
-	}
-
-	if l.onLost != nil {
+	if !closed && l.onLost != nil {
 		l.onLost(f, err)
 	}
 }

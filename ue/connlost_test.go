@@ -57,8 +57,8 @@ func flowFailedWithin(t *testing.T, u *testUE, d time.Duration) Event {
 	}
 }
 
-// RFC 3261 §17.1.4, TS 24.229 §5.1.1.4.1 NOTE 13: a reregistration whose connection is lost before its response fails
-// at once with a transport error, as timer F would later: the UE is to register again.
+// RFC 3261 §18.2.2: the connection of a reregistration lost before its response, the P-CSCF sends it on a new one,
+// which the UE takes: the registration goes on.
 func TestReregistrationConnectionLost(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP})
@@ -66,15 +66,16 @@ func TestReregistrationConnectionLost(t *testing.T) {
 
 	done := uetest.Start(u.Reregister)
 
-	_, f := n.Recv(n.PS)
+	req, f := n.Recv(n.PS)
 	n.PS.CloseConn(f.Remote)
+	n.OK(req, f, n.PC, 3600)
 
-	if err := uetest.Wait(t, done); !errors.Is(err, transaction.ErrTransport) {
-		t.Fatalf("Reregister = %v, want a transport error", err)
+	if err := uetest.Wait(t, done); err != nil {
+		t.Fatalf("Reregister = %v", err)
 	}
 
-	if e := flowFailedWithin(t, u, time.Second); !errors.Is(e.Err, transaction.ErrTransport) {
-		t.Fatalf("flow failed with %v, want a transport error", e.Err)
+	if !u.State().Registered {
+		t.Fatal("not registered")
 	}
 }
 
@@ -207,10 +208,83 @@ func TestRequestTimeoutUnbinds(t *testing.T) {
 		t.Fatalf("P-CSCF %v unavailable, state %v", e.UnavailablePCSCF, u.State().UnavailablePCSCFs)
 	}
 
+	// TS 24.229 §5.1.9: no initial registration through it, until a new discovery clears the marks.
+	if err := u.Register(t.Context()); !errors.Is(err, ErrPCSCFUnavailable) {
+		t.Fatalf("Register = %v, want the P-CSCF unavailable", err)
+	}
+
+	u.ClearPCSCFMarks()
 	n.Register(u)
 
 	if got := u.State().UnavailablePCSCFs; len(got) != 0 {
-		t.Fatalf("P-CSCFs unavailable %v after registering through it", got)
+		t.Fatalf("P-CSCFs unavailable %v after a new discovery", got)
+	}
+}
+
+// TS 24.229 §5.1.2A.1.6 B: the P-CSCF marked is the one the contact was registered through, though the owner selected
+// another one for its next registration.
+func TestRequestFailureMarksTheRegisteredPCSCF(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{})
+	n.Register(u)
+
+	registered := u.pcscfAddr()
+	if err := u.SetPCSCF(netip.AddrPortFrom(registered.Addr(), registered.Port()+1)); err != nil {
+		t.Fatal(err)
+	}
+
+	req := sip.NewRequest("MESSAGE", sip.URI{Scheme: "sip", Host: domain})
+	req.Flow = sip.Flow{Transport: sip.UDP, Local: u.Unprotected(), Remote: netip.AddrPortFrom(registered.Addr(), 5063)}
+
+	u.requestFailed(req, transaction.Trying, transaction.ErrTimeout)
+
+	if e := flowFailedWithin(t, u, time.Second); e.UnavailablePCSCF != registered {
+		t.Fatalf("P-CSCF %v marked, want %v", e.UnavailablePCSCF, registered)
+	}
+
+	if got := u.State().UnavailablePCSCFs; !slices.Equal(got, []netip.AddrPort{registered}) {
+		t.Fatalf("P-CSCFs unavailable %v, want %v", got, registered)
+	}
+}
+
+// The flow of the registration failing after a request's failure unbound the contact, its transactions are dropped
+// all the same (TS 24.229 §5.1.1.4.1).
+func TestFlowFailedAfterARequestFailure(t *testing.T) {
+	n := newNetwork(t)
+	u, _ := n.newUE(Config{})
+	n.Register(u)
+
+	sent := message(u)
+
+	n.Recv(n.PS)
+
+	req := sip.NewRequest("OPTIONS", sip.URI{Scheme: "sip", Host: domain})
+	req.Flow = sip.Flow{Transport: sip.UDP, Local: u.Unprotected(), Remote: netip.AddrPortFrom(u.pcscfAddr().Addr(), 5063)}
+
+	u.requestFailed(req, transaction.Trying, transaction.ErrTimeout)
+	flowFailedWithin(t, u, time.Second)
+
+	u.flowFailed(errors.New("keep-alive not answered"))
+
+	select {
+	case err := <-sent:
+		if !errors.Is(err, transaction.ErrDropped) {
+			t.Fatalf("MESSAGE = %v, want it dropped", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("MESSAGE still under way after the flow failed")
+	}
+}
+
+// TS 24.229 §5.1.9: a mark lasts the retry delay of RFC 5626 §4.5, of base-time 30 s and max-time 1800 s, plus 5
+// minutes.
+func TestMarkDuration(t *testing.T) {
+	for failures, w := range map[int]time.Duration{1: time.Minute, 2: 2 * time.Minute, 5: 960 * time.Second, 6: 1800 * time.Second, 40: 1800 * time.Second} {
+		for range 50 {
+			if d := markDuration(failures); d < w/2+5*time.Minute || d > w+5*time.Minute {
+				t.Fatalf("markDuration(%d) = %s, want between %s and %s", failures, d, w/2+5*time.Minute, w+5*time.Minute)
+			}
+		}
 	}
 }
 

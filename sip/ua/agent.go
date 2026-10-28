@@ -716,94 +716,61 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Drop ends at once everything of the agent under way, sending nothing on its behalf: its INVITEs, sessions,
-// requests, subscriptions, notifiers and publications end with EndDropped, or ErrDropped, and the transactions of the
-// flows match reports with them (transaction.Layer.Drop). The application knows the flow they depend on failed, as a
-// UE whose registration's flow failed stops processing its dialogs and transactions (TS 24.229 §5.1.1.4.1). The
-// agent goes on with what the application starts afterwards. Drop must not be called from a handler, whose strand it
-// waits for.
+// Drop ends everything of the agent under way, sending nothing on its behalf: the transactions of the flows match
+// reports at once (transaction.Layer.Drop), then, on their strands, its INVITEs, sessions, requests, subscriptions,
+// notifiers and publications, with EndDropped or ErrDropped. The application knows the flow they depend on failed, as
+// a UE whose registration's flow failed stops processing its dialogs and transactions (TS 24.229 §5.1.1.4.1). Drop
+// waits for no strand, so a handler may call it. The agent goes on with what the application starts afterwards.
 func (a *Agent) Drop(match func(sip.Flow) bool) {
 	// The transactions first: what ending the usages would still answer or send is refused.
 	a.layer.Drop(match)
 
-	a.mu.Lock()
-
-	var (
-		outgoing []*Outgoing
-		sessions []*Session
-		subs     []*Subscription
-		notifs   []*ServerSubscription
-	)
-
-	for o := range a.outgoing {
-		outgoing = append(outgoing, o)
+	type ending struct {
+		st  *Strand
+		end func()
 	}
 
+	var ends []ending
+
+	a.mu.Lock()
+
+	for o := range a.outgoing {
+		ends = append(ends, ending{o.st, o.dropped})
+	}
+
+	dropped := End{Cause: EndDropped}
+
 	for _, e := range a.dialogs {
-		if e.invite != nil {
-			sessions = append(sessions, e.invite)
+		if s := e.invite; s != nil {
+			ends = append(ends, ending{s.st, func() { s.end(dropped) }})
 		}
 
-		subs = append(subs, e.subs...)
-		notifs = append(notifs, e.notifs...)
+		for _, s := range e.subs {
+			ends = append(ends, ending{s.st, func() { s.end(dropped) }})
+		}
+
+		for _, n := range e.notifs {
+			ends = append(ends, ending{n.st, func() { n.end(dropped) }})
+		}
 	}
 
 	for _, att := range a.subscribing {
-		subs = append(subs, att.first)
+		s := att.first
+		ends = append(ends, ending{s.st, func() { s.end(dropped) }})
 	}
 
-	pubs := make([]*Publication, 0, len(a.pubs))
 	for p := range a.pubs {
-		pubs = append(pubs, p)
+		ends = append(ends, ending{p.st, func() { p.end(dropped) }})
 	}
 
-	requests := make([]*outOfDialog, 0, len(a.requests))
 	for c := range a.requests {
-		requests = append(requests, c)
+		ends = append(ends, ending{c.st, func() { c.finish(nil, transaction.ErrDropped) }})
 	}
 
 	a.mu.Unlock()
 
-	for _, o := range outgoing {
-		_ = o.st.do(func() error {
-			o.dropped()
-			return nil
-		})
-	}
-
-	for _, s := range sessions {
-		_ = s.st.do(func() error {
-			s.end(End{Cause: EndDropped})
-			return nil
-		})
-	}
-
-	for _, s := range subs {
-		_ = s.st.do(func() error {
-			s.end(End{Cause: EndDropped})
-			return nil
-		})
-	}
-
-	for _, n := range notifs {
-		_ = n.st.do(func() error {
-			n.end(End{Cause: EndDropped})
-			return nil
-		})
-	}
-
-	for _, p := range pubs {
-		_ = p.st.do(func() error {
-			p.end(End{Cause: EndDropped})
-			return nil
-		})
-	}
-
-	for _, c := range requests {
-		_ = c.st.do(func() error {
-			c.finish(nil, transaction.ErrDropped)
-			return nil
-		})
+	for _, e := range ends {
+		e.st.post(e.end)
 	}
 }
 

@@ -23,11 +23,8 @@ type ClientTransaction struct {
 	h      ClientHandler
 	invite bool
 	sent   bool
-	// conn is the TCP connection the request went out on, whose loss fails the transaction while it waits for a
-	// response (RFC 3261 §17.1.4): zero in memory or over UDP.
-	conn  transport.Conn
-	early []*sip.Response
-	ack   *sip.Request
+	early  []*sip.Response
+	ack    *sip.Request
 
 	cancelled bool
 	prepare   func(*sip.Request)
@@ -76,15 +73,7 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 
 	out := req.Clone()
 
-	var conn transport.Conn
-
-	tx.push(out.Flow, func() error {
-		var err error
-
-		conn, err = l.sendRequest(l.ctx, out)
-
-		return err
-	}, func(err error) { tx.sentResult(out, conn, err) })
+	tx.push(out.Flow, func() error { return l.send(l.ctx, out, false) }, func(err error) { tx.sentResult(out, err) })
 
 	return tx, nil
 }
@@ -131,11 +120,12 @@ func (tx *ClientTransaction) CancelWith(prepare func(cancel *sip.Request)) error
 	return nil
 }
 
-// sentResult takes the outcome of sending the request, on conn: a failure to send it is a transport error, as is the
-// loss of conn before this (RFC 3261 §17.1.4, §18.4).
-func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, err error) {
+// sentResult takes the outcome of sending the request: a failure toward the network is a transport error (RFC 3261
+// §17.1.4, §18.4). Once sent, the request waits for its response, which can come on another connection than the one
+// it went out on (§18.2.2), or for its timer.
+func (tx *ClientTransaction) sentResult(sent *sip.Request, err error) {
 	if err != nil {
-		if !errors.Is(err, ErrClosed) {
+		if networkFailure(err) {
 			err = fmt.Errorf("%w: %w", ErrTransport, err)
 		}
 
@@ -147,12 +137,6 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, 
 	tx.sent = true
 	tx.req = sent
 	tx.reliable = tx.layer.reliable(sent.Flow)
-	tx.conn = conn
-
-	if !tx.layer.connected(sent.Flow, conn) && tx.pending() {
-		tx.failClient(fmt.Errorf("%w: %w: %s", ErrTransport, transport.ErrConnectionLost, sent.Flow))
-		return
-	}
 
 	early := tx.early
 	tx.early = nil
@@ -160,6 +144,13 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, 
 	for _, res := range early {
 		tx.handle(res)
 	}
+}
+
+// networkFailure reports whether err, of sending a request, is the network's: not the layer closing, nor a local
+// failure, such as no listener on the local address, which the next hop has nothing to do with.
+func networkFailure(err error) bool {
+	return !errors.Is(err, ErrClosed) && !errors.Is(err, transport.ErrNoListener) &&
+		!errors.Is(err, transport.ErrUnsupportedTransport)
 }
 
 // failClient fails the transaction, and tells the layer's OnClientError of it, with the state it failed in.

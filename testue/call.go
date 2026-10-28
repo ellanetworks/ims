@@ -871,7 +871,7 @@ func (c *Call) ended(s *ua.Session, e ua.End) {
 	}
 
 	if !c.incoming && (l != c.leg || c.state == CallEarly && e.Cause != ua.EndCancelled && e.Cause != ua.EndRejected &&
-		e.Cause != ua.EndTimeout && e.Cause != ua.EndClosed) {
+		e.Cause != ua.EndTimeout && e.Cause != ua.EndTransport && e.Cause != ua.EndDropped && e.Cause != ua.EndClosed) {
 		c.releaseLocked(l)
 		c.notifyLocked()
 

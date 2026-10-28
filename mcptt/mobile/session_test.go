@@ -291,12 +291,17 @@ func testSettings(server netip.AddrPort, name string, i int) settings {
 
 // session is the session of user name of the example configuration, at 127.0.0.i, its UE registering with the server
 // in direct mode, plain, started and registered.
-func session(t *testing.T, server netip.AddrPort, name string, i int) (*Session, *platform) {
+func session(t *testing.T, server netip.AddrPort, name string, i int, opts ...func(*settings)) (*Session, *platform) {
 	t.Helper()
 
 	p := newPlatform()
 
-	s, err := newSession(p, testSettings(server, name, i))
+	set := testSettings(server, name, i)
+	for _, o := range opts {
+		o(&set)
+	}
+
+	s, err := newSession(p, set)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,15 +423,20 @@ func TestRetryUnknown(t *testing.T) {
 
 	t.Cleanup(func() { minBackoff = saved })
 
+	// Timer F shortened: a refresh that the restart left unanswered ends sooner.
+	fast := func(s *settings) { s.t1 = 20 * time.Millisecond }
+
 	addr, restart := restartableServer(t)
-	alice, pa := session(t, addr, "alice", 2)
-	bob, pb := session(t, addr, "bob", 3)
+	alice, pa := session(t, addr, "alice", 2, fast)
+	bob, pb := session(t, addr, "bob", 3, fast)
 
 	restart()
 
-	// Bob's binding back, as by his own refresh, which affiliates him again. The restart lost the connection the refresh
-	// may go out on: then it fails at once, and his session registers again on a new one (TS 24.229 §5.1.1.4.1).
-	if err := bob.currentUE().Reregister(t.Context()); err != nil && !errors.Is(err, transaction.ErrTransport) {
+	// Bob's binding back, as by his own refresh, which affiliates him again. The restart lost the connection the
+	// refresh may go out on: written there, it is lost with it, the server restarted knowing nothing of it, and Timer F
+	// ends it, or the write fails; either way his session registers again, on a new connection (TS 24.229 §5.1.1.4.1).
+	err := bob.currentUE().Reregister(t.Context())
+	if err != nil && !errors.Is(err, transaction.ErrTimeout) && !errors.Is(err, transaction.ErrTransport) {
 		t.Fatal(err)
 	}
 
