@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ella
+resources:
+  - base
+  - ims-configmap.yaml
+  - ims-sip-nad.yaml
+  - ims-diameter-nad.yaml
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: ella-ims
+      spec:
+        template:
+          metadata:
+            annotations:
+              k8s.v1.cni.cncf.io/networks: |
+                [
+                  {"name": "ims-sip", "interface": "sip"},
+                  {"name": "ims-diameter", "interface": "diameter"}
+                ]

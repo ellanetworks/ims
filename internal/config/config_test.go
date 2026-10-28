@@ -158,6 +158,32 @@ func TestLoadMCPTT(t *testing.T) {
 	}
 }
 
+// TestLoadInterfaceNames takes the addresses of a pod's eth0, unknown in advance, from the name of the interface: here
+// lo, whose addresses every host has.
+func TestLoadInterfaceNames(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+"sip:\n  name: lo\n"+"diameter:\n  name: lo\n"+
+		"n5:\n  notify:\n    name: lo\n    port: 7778\n"+"mcptt:\n  media:\n    name: lo\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	loopback := netip.MustParseAddr("127.0.0.1")
+
+	// SIP takes all of lo's addresses, ::1 too if it has it, IPv4 first; the others the first.
+	if len(cfg.SIP.Addresses) == 0 || cfg.SIP.Addresses[0] != loopback {
+		t.Fatalf("sip.addresses = %v, want 127.0.0.1 first", cfg.SIP.Addresses)
+	}
+
+	for name, a := range map[string]netip.Addr{
+		"diameter.address": cfg.Diameter.Address, "n5.notify.address": cfg.N5.Notify.Address,
+		"mcptt.media.address": cfg.MCPTT.Media.Address,
+	} {
+		if a != loopback {
+			t.Errorf("%s = %s, want %s", name, a, loopback)
+		}
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	valid := validDB + validAPI + validSIP
 
@@ -168,7 +194,7 @@ func TestLoadInvalid(t *testing.T) {
 	}{
 		{"missing db path", validAPI + validDiameter, "db.path is required"},
 		{"unknown log level", "logging:\n  level: trace\n" + valid + validDiameter, `level string "trace": unknown name`},
-		{"no sip addresses", validDB + validAPI + validDiameter, "sip.addresses needs at least one address"},
+		{"no sip addresses", validDB + validAPI + validDiameter, "sip.name or sip.addresses is required"},
 		{"unspecified sip address", validDB + validAPI + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
 		{"unspecified sip ipv6 address", validDB + validAPI + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
 		{"sip address with zone", validDB + validAPI + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
@@ -204,20 +230,26 @@ func TestLoadInvalid(t *testing.T) {
 		{"the operator", valid + validDiameter + "ims:\n  mcc: \"001\"\n", "field ims not found"},
 		{"the peers", valid + validDiameter + "  peers: []\n", "field peers not found"},
 		{"the policy", valid + "pcscf:\n  policy:\n    rx: pcrf\n" + validDiameter, "field policy not found"},
-		{"missing diameter", valid, "diameter.address is required"},
+		{"missing diameter", valid, "diameter.name or diameter.address is required"},
+		{"diameter name and address", valid + "diameter:\n  name: lo\n  address: 10.0.0.5\n", "diameter.name and diameter.address cannot both be set"},
+		{"diameter name of no interface", valid + "diameter:\n  name: nosuchif0\n", "diameter.name nosuchif0: "},
+		{"sip name and addresses", validDB + validAPI + "sip:\n  name: lo\n  addresses: [10.0.0.5]\n" + validDiameter, "sip.name and sip.addresses cannot both be set"},
+		{"sip name of no interface", validDB + validAPI + "sip:\n  name: nosuchif0\n" + validDiameter, "sip.name nosuchif0: "},
+		{"n5 notify name and address", valid + validDiameter + strings.Replace(n5, "    address: 10.0.0.5\n", "    name: lo\n    address: 10.0.0.5\n", 1), "n5.notify.name and n5.notify.address cannot both be set"},
+		{"mcptt media name and address", valid + validDiameter + mcptt + "    name: lo\n", "mcptt.media.name and mcptt.media.address cannot both be set"},
 		{"unspecified diameter address", valid + "diameter:\n  address: 0.0.0.0\n", "diameter.address must be a specific address"},
 		{"diameter port out of range", valid + "diameter:\n  address: 10.0.0.5\n  port: 70000\n", "diameter.port 70000 is out of range"},
 		{"n5 tls without ca", valid + validDiameter + strings.Replace(n5TLS, "    ca: /etc/ims/tls/ca.crt\n", "", 1), "n5.tls.ca is required"},
 		{"n5 tls without cert", valid + validDiameter + strings.Replace(n5TLS, "    cert: /etc/ims/tls/ims.crt\n", "", 1), "n5.tls.cert is required"},
 		{"n5 tls without key", valid + validDiameter + strings.Replace(n5TLS, "    key: /etc/ims/tls/ims.key\n", "", 1), "n5.tls.key is required"},
-		{"n5 without notify address", valid + validDiameter + strings.Replace(n5, "    address: 10.0.0.5\n", "", 1), "n5.notify.address is required"},
+		{"n5 without notify address", valid + validDiameter + strings.Replace(n5, "    address: 10.0.0.5\n", "", 1), "n5.notify.name or n5.notify.address is required"},
 		{"n5 unspecified notify address", valid + validDiameter + strings.Replace(n5, "address: 10.0.0.5", "address: 0.0.0.0", 1), "must be a specific address"},
 		{"n5 notify port out of range", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 65536", 1), "n5.notify.port 65536 is out of range"},
 		{"n5 notify port on SIP", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 5060", 1), "n5.notify.port and pcscf.port are both 5060 on 10.0.0.5"},
 		{"n5 notify port on Diameter", valid + validDiameter + strings.Replace(n5, "port: 7778", "port: 3868", 1), "n5.notify.port and diameter.port are both 3868"},
 		{"mcptt mode", valid + validDiameter + mcptt + "  mode: proxy\n", `mcptt.mode "proxy" is neither "ims" nor "direct"`},
 		{"mcptt port on a role port", valid + validDiameter + mcptt + "  port: 5080\n", "scscf.port and mcptt.port are both 5080"},
-		{"mcptt without media address", valid + validDiameter + "mcptt:\n  port: 5090\n", "mcptt.media.address is required"},
+		{"mcptt without media address", valid + validDiameter + "mcptt:\n  port: 5090\n", "mcptt.media.name or mcptt.media.address is required"},
 		{"mcptt unspecified media address", valid + validDiameter + "mcptt:\n  media:\n    address: 0.0.0.0\n", "mcptt.media.advertise is required"},
 		{"mcptt advertise of another family", valid + validDiameter + mcptt + "    advertise: \"2001:db8::5\"\n", "is not of the family"},
 		{"mcptt odd min port", valid + validDiameter + mcptt + "    min_port: 20001\n", "mcptt.media.min_port 20001 is odd"},

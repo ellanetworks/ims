@@ -46,9 +46,10 @@ import (
 var (
 	load = flag.Bool("load", false, "load the IMS at -ims")
 
-	imsAddr   = flag.String("ims", "", "the address of the IMS: its P-CSCF on port 5060, its API on port 5020")
-	localAddr = flag.String("local", "", "the address of this host, the fake HSS's and PCRF's")
-	ueNet     = flag.String("ue-net", "10.64.0.0/14", "the addresses of the UEs, local to this host")
+	imsAddr     = flag.String("ims", "", "the address of the IMS: its P-CSCF on port 5060, its API on port 5020")
+	imsDiameter = flag.String("ims-diameter", "", "the Diameter address of the IMS, if not -ims")
+	localAddr   = flag.String("local", "", "the address of this host, the fake HSS's and PCRF's")
+	ueNet       = flag.String("ue-net", "10.64.0.0/14", "the addresses of the UEs, local to this host")
 
 	subs     = flag.Int("subs", 1000, "the subscribers, each a UE that registers")
 	regSteps = flag.String("reg-rates", "50,100,200", "the registrations per second the UEs register at, each for -reg-step, the last until all have")
@@ -94,15 +95,22 @@ func TestLoad(t *testing.T) {
 
 	ims := netip.MustParseAddr(*imsAddr)
 	local := netip.MustParseAddr(*localAddr)
+
+	imsDiameterAddr := ims
+	if *imsDiameter != "" {
+		imsDiameterAddr = netip.MustParseAddr(*imsDiameter)
+	}
+
 	api := fmt.Sprintf("http://%s:%d/api/v1", ims, apiPort)
 
 	quiet := slog.New(slog.DiscardHandler)
 
 	if *role != "ues" {
-		hss := hsstest.New(t, hsstest.Config{Realm: domain, IMSHost: "ims." + domain, Address: local, IMSAddress: ims, Logger: quiet})
+		hss := hsstest.New(t, hsstest.Config{Realm: domain, IMSHost: "ims." + domain, Address: local, IMSAddress: imsDiameterAddr, Logger: quiet})
 		pcrf := pcrftest.New(t, pcrftest.Config{
-			Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: "ims." + domain, IMSRealm: domain, Address: local, IMSAddress: ims,
-			Logger: quiet,
+			Realm: "epc.mnc001.mcc001.3gppnetwork.org", IMSHost: "ims." + domain, IMSRealm: domain, Address: local,
+			IMSAddress: imsDiameterAddr,
+			Logger:     quiet,
 		})
 
 		// The fakes keep the requests they answer for the tests to look at: none here.

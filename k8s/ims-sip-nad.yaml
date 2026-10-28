@@ -1,0 +1,22 @@
+# The network the phones reach Ella IMS on, through the core's N6 (5G) or SGi
+# (4G) address, 10.6.0.2, which routes the phones' IP pool, 10.46.0.0/16.
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ims-sip
+spec:
+  config: '{
+    "cniVersion": "1.0.0",
+    "type": "macvlan",
+    "master": "eth1",
+    "mode": "bridge",
+    "ipam": {
+      "type": "static",
+      "addresses": [
+        {"address": "10.6.0.5/24"}
+      ],
+      "routes": [
+        {"dst": "10.46.0.0/16", "gw": "10.6.0.2"}
+      ]
+    }
+  }'

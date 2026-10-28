@@ -69,6 +69,8 @@ type Server struct {
 	BcryptCost int
 
 	database *db.DB
+	// draining is set once Shutdown starts, and makes the API unready.
+	draining atomic.Bool
 	// records outlives the cores, so that it closes the records of the calls a restart loses.
 	records     *callrecords.Recorder
 	metrics     *metrics
@@ -226,6 +228,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Policy:        view,
 		CallRecords:   database,
 		Frontend:      ui.FS(),
+		Ready:         func(ctx context.Context) error { return s.ready(ctx, database) },
 		Metrics:       s.metrics.registry,
 		Auth:          database,
 		JWTSecret:     jwtSecret,
@@ -565,6 +568,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.Logger.Info("ims stopping")
 
+	s.draining.Store(true)
+
 	if err := s.apiServer.Shutdown(ctx); err != nil {
 		s.Logger.Warn("failed to stop the API cleanly", slog.Any("error", err))
 	}
@@ -595,6 +600,16 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
 	}
+}
+
+// ready is whether the API can serve: it is not once Shutdown starts, or while the database does not answer. The core
+// does not count: the API is what fixes the settings a core failed to start with, so it must stay reachable.
+func (s *Server) ready(ctx context.Context, database *db.DB) error {
+	if s.draining.Load() {
+		return errors.New("shutting down")
+	}
+
+	return database.Ping(ctx)
 }
 
 // before is ctx, done d before ctx is, so that what runs under it leaves d to what comes after.

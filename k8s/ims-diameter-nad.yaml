@@ -1,0 +1,18 @@
+# The network Ella IMS reaches the HSS and the PCRF on.
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ims-diameter
+spec:
+  config: '{
+    "cniVersion": "1.0.0",
+    "type": "macvlan",
+    "master": "eth1",
+    "mode": "bridge",
+    "ipam": {
+      "type": "static",
+      "addresses": [
+        {"address": "10.3.0.5/24"}
+      ]
+    }
+  }'

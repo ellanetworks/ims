@@ -132,6 +132,31 @@ func TestServerStartShutdown(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
+
+	// The kubelet's probes, without a token.
+	for path, want := range map[string]int{"/api/v1/livez": http.StatusNoContent, "/api/v1/readyz": http.StatusNoContent} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.APIAddr().String()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+
+	srv.draining.Store(true)
+
+	if err := srv.ready(ctx, srv.database); err == nil {
+		t.Fatal("ready while shutting down")
+	}
 }
 
 func TestStartNeedsIPsec(t *testing.T) {

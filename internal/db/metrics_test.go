@@ -71,7 +71,7 @@ func TestMetricsLint(t *testing.T) {
 // TestEveryCallIsObserved checks that each exported method of DB that calls the database starts with
 // defer d.observe(...)(), so that a new one cannot be left out of the metrics.
 func TestEveryCallIsObserved(t *testing.T) {
-	unobserved := map[string]bool{"Close": true, "Collectors": true}
+	unobserved := map[string]bool{"Close": true, "Collectors": true, "Ping": true}
 
 	files, err := filepath.Glob("*.go")
 	if err != nil {

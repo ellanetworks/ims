@@ -1,0 +1,10 @@
+# The manifests of k8s as the smoke test deploys them, with the image it loads.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../namespace
+  - ../../../k8s
+images:
+  - name: ghcr.io/ellanetworks/ella-ims
+    newName: ella-ims
+    newTag: ci

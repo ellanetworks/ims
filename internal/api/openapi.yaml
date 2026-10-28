@@ -1224,6 +1224,36 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
 
+  /api/v1/livez:
+    get:
+      tags: [Status]
+      operationId: getLivez
+      security: []
+      summary: Check liveness
+      description: >-
+        Answers while the process serves HTTP.
+      responses:
+        "204":
+          description: Live.
+
+  /api/v1/readyz:
+    get:
+      tags: [Status]
+      operationId: getReadyz
+      security: []
+      summary: Check readiness
+      description: >-
+        Answers whether the IMS can serve requests: its database answers, and it is not shutting down.
+      responses:
+        "204":
+          description: Ready.
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/status:
     get:
       tags: [Status]

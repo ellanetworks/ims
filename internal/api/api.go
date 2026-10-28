@@ -19,6 +19,9 @@ type Config struct {
 	Policy        Policy
 	CallRecords   CallRecords
 	Frontend      fs.FS
+	// Ready reports why the IMS cannot serve requests, or nil when it can. GET /api/v1/readyz answers 503 when it
+	// fails. Nil is always ready.
+	Ready func(ctx context.Context) error
 	// Metrics are the metrics GET /api/v1/metrics serves.
 	Metrics prometheus.Gatherer
 	// MCPTT, MCPTTState and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404
@@ -106,6 +109,8 @@ type route struct {
 // routes are the API, which openapi.yaml describes.
 func routes(cfg Config, a *auth) []route {
 	return []route{
+		{"GET /api/v1/livez", public, Livez()},
+		{"GET /api/v1/readyz", public, Readyz(cfg)},
 		{"GET /api/v1/status", public, GetStatus(cfg)},
 		{"GET /api/v1/openapi.yaml", public, OpenAPISpec()},
 		{"GET /api/v1/metrics", public, GetMetrics(cfg)},

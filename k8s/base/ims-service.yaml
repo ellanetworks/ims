@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ella-ims
+  labels:
+    app: ella-ims
+spec:
+  selector:
+    app: ella-ims
+  type: NodePort
+  ports:
+  - name: http
+    protocol: TCP
+    port: 5020
+    targetPort: 5020

@@ -1,0 +1,8 @@
+# Ella IMS without Multus: SIP and Diameter listen on the pod's eth0. The phones
+# and the core must reach the pod's address without NAT: see the install guide.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ella
+resources:
+  - ../base
+  - ims-configmap.yaml

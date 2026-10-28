@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ims-config
+data:
+  ims.yaml: |
+    logging:
+      level: info
+    db:
+      path: /data/ims.db
+    api:
+      address: 0.0.0.0
+      port: 5020
+    sip:
+      addresses: [10.6.0.5]
+    diameter:
+      address: 10.3.0.5

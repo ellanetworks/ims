@@ -423,6 +423,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	return d, nil
 }
 
+// Ping checks that the database answers. It is not observed: see TestEveryCallIsObserved.
+func (d *DB) Ping(ctx context.Context) error {
+	return d.conn.PingContext(ctx)
+}
+
 func (d *DB) Close() error {
 	return errors.Join(d.read.Close(), d.conn.Close())
 }
