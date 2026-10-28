@@ -945,3 +945,66 @@ func TestListenHeldOrNotLocal(t *testing.T) {
 		t.Errorf("not local: %v", err)
 	}
 }
+
+// RFC 3261 §18.4: the end of a connection that a request went out on is told, with that connection, so that its
+// requests fail; the transport's own closing is not.
+func TestConnectionLost(t *testing.T) {
+	type lost struct {
+		f   sip.Flow
+		c   transport.Conn
+		err error
+	}
+
+	losses := make(chan lost, 2)
+	tr, _ := siptest.NewTransport(t, transport.Config{OnConnectionLost: func(f sip.Flow, c transport.Conn, err error) {
+		losses <- lost{f, c, err}
+	}})
+	local := siptest.Listen(t, tr, lo)
+	peer := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
+
+	req := siptest.NewRequest("OPTIONS", "sip:a@"+peer.Addr().String(), sip.TCP, local)
+	req.Flow = sip.Flow{Transport: sip.TCP, Local: local, Remote: peer.Addr()}
+
+	c, err := tr.SendRequest(context.Background(), req)
+	if err != nil || c == 0 {
+		t.Fatalf("SendRequest = %d, %v", c, err)
+	}
+
+	peer.RecvRequest()
+
+	if !tr.Connected(req.Flow, c) {
+		t.Fatal("not connected after sending")
+	}
+
+	peer.CloseConn(local)
+
+	select {
+	case l := <-losses:
+		if l.f != req.Flow || l.c != c || !errors.Is(l.err, transport.ErrConnectionLost) {
+			t.Fatalf("lost %v %d %v, want %v %d", l.f, l.c, l.err, req.Flow, c)
+		}
+	case <-time.After(siptest.Timeout):
+		t.Fatal("loss not told")
+	}
+
+	if tr.Connected(req.Flow, c) {
+		t.Fatal("connected after the loss")
+	}
+
+	next, err := tr.SendRequest(context.Background(), req)
+	if err != nil || next == c || !tr.Connected(req.Flow, next) {
+		t.Fatalf("SendRequest after the loss = %d, %v; want a new connection", next, err)
+	}
+
+	peer.RecvRequest()
+
+	if err := tr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case l := <-losses:
+		t.Fatalf("closing the transport told a loss: %v", l.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

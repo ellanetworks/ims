@@ -1,10 +1,13 @@
 package transaction
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transport"
 )
 
 type ClientHandler interface {
@@ -20,8 +23,11 @@ type ClientTransaction struct {
 	h      ClientHandler
 	invite bool
 	sent   bool
-	early  []*sip.Response
-	ack    *sip.Request
+	// conn is the TCP connection the request went out on, whose loss fails the transaction while it waits for a
+	// response (RFC 3261 §17.1.4): zero in memory or over UDP.
+	conn  transport.Conn
+	early []*sip.Response
+	ack   *sip.Request
 
 	cancelled bool
 	prepare   func(*sip.Request)
@@ -70,7 +76,15 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 
 	out := req.Clone()
 
-	tx.push(out.Flow, func() error { return l.send(l.ctx, out, false) }, func(err error) { tx.sentResult(out, err) })
+	var conn transport.Conn
+
+	tx.push(out.Flow, func() error {
+		var err error
+
+		conn, err = l.sendRequest(l.ctx, out)
+
+		return err
+	}, func(err error) { tx.sentResult(out, conn, err) })
 
 	return tx, nil
 }
@@ -117,15 +131,28 @@ func (tx *ClientTransaction) CancelWith(prepare func(cancel *sip.Request)) error
 	return nil
 }
 
-func (tx *ClientTransaction) sentResult(sent *sip.Request, err error) {
+// sentResult takes the outcome of sending the request, on conn: a failure to send it is a transport error, as is the
+// loss of conn before this (RFC 3261 §17.1.4, §18.4).
+func (tx *ClientTransaction) sentResult(sent *sip.Request, conn transport.Conn, err error) {
 	if err != nil {
+		if !errors.Is(err, ErrClosed) {
+			err = fmt.Errorf("%w: %w", ErrTransport, err)
+		}
+
 		tx.fail(err)
+
 		return
 	}
 
 	tx.sent = true
 	tx.req = sent
 	tx.reliable = tx.layer.reliable(sent.Flow)
+	tx.conn = conn
+
+	if !tx.layer.connected(sent.Flow, conn) && tx.pending() {
+		tx.fail(fmt.Errorf("%w: %w: %s", ErrTransport, transport.ErrConnectionLost, sent.Flow))
+		return
+	}
 
 	early := tx.early
 	tx.early = nil

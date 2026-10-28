@@ -210,10 +210,11 @@ const (
 	// DeregisteredExpired is the registration expiring, not refreshed in time.
 	DeregisteredExpired Deregistration = "expired"
 
-	// DeregisteredFlowFailed is the flow of the registration failing: a keep-alive not answered (RFC 5626 §4.4.1), or a
-	// listener of the UE failing for good, as its sockets destroyed with the network (TS 24.229 §5.1.1.4.1 NOTE 13);
-	// Event.Err is why. The UE is to register again (RFC 5626 §4.5): Register forms the new flow, listening again on
-	// the ports that failed.
+	// DeregisteredFlowFailed is the flow of the registration failing: a keep-alive not answered (RFC 5626 §4.4.1), the
+	// TCP connection of an outbound registration lost (RFC 5626 §4.4), a listener of the UE failing for good, as its
+	// sockets destroyed with the network (TS 24.229 §5.1.1.4.1 NOTE 13), or a reregistration ended by timer F or a
+	// fatal transport error (TS 24.229 §5.1.1.4.1, §5.1.2A.1.6); Event.Err is why. The UE is to register again (RFC
+	// 5626 §4.5): Register forms the new flow, listening again on the ports that failed.
 	DeregisteredFlowFailed Deregistration = "flow-failed"
 )
 
@@ -404,6 +405,7 @@ func New(cfg Config) (*UE, error) {
 			},
 			// TS 24.229 §5.1.1.4.1 NOTE 13: a listener failing is the flow of the registration failing.
 			OnListenerFailed: u.listenerFailed,
+			OnConnectionLost: u.connectionLost,
 		},
 		Prepare: u.prepare,
 		Respond: u.respondHeaders,

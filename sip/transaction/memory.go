@@ -195,6 +195,21 @@ func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	return l.tr.Send(ctx, m)
 }
 
+// sendRequest sends the request of a client transaction, and returns the TCP connection it went out on: zero in memory
+// or over UDP.
+func (l *Layer) sendRequest(ctx context.Context, r *sip.Request) (transport.Conn, error) {
+	if l.inMemory(r.Flow.Remote) || l.network.closed {
+		return 0, l.send(ctx, r, false)
+	}
+
+	return l.tr.SendRequest(ctx, r)
+}
+
+// connected reports whether the TCP connection c of flow f is not lost: always for none, in memory or over UDP.
+func (l *Layer) connected(f sip.Flow, c transport.Conn) bool {
+	return c == 0 || l.tr.Connected(f, c)
+}
+
 // deliver passes a copy of m to the endpoint of its remote address, on the lane of its flow.
 func (l *Layer) deliver(m sip.Message) error {
 	f := m.Env().Flow

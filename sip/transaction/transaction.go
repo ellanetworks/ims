@@ -31,6 +31,11 @@ var (
 
 	ErrTimeout = errors.New("sip/transaction: timeout")
 
+	// ErrTransport is the error of a client transaction whose request the transport failed to send, or whose
+	// connection was lost before a response (RFC 3261 §17.1.4, §18.4): a fatal transport error, which the TU treats
+	// as a 503 (Service Unavailable), a timeout as a 408 (§8.1.3.1).
+	ErrTransport = errors.New("sip/transaction: transport error")
+
 	ErrTerminated = errors.New("sip/transaction: transaction terminated")
 
 	ErrFinalResponseSent = errors.New("sip/transaction: final response already sent")
@@ -74,6 +79,10 @@ type Config struct {
 	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
 	OnListenerFailed func(local netip.AddrPort, err error)
 
+	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping
+	// transport.ErrConnectionLost, once the client transactions waiting on it failed (transport.Config.OnConnectionLost).
+	OnConnectionLost func(f sip.Flow, err error)
+
 	T1, T2, T4 time.Duration
 
 	Clock Clock
@@ -98,6 +107,7 @@ type Layer struct {
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
 	onFailed func(local netip.AddrPort, err error)
+	onLost   func(f sip.Flow, err error)
 
 	t1, t2, t4, t100 time.Duration
 
@@ -165,6 +175,7 @@ func New(cfg Config) *Layer {
 		respFlow: cfg.ResponseFlow,
 		onDone:   cfg.OnServerDone,
 		onFailed: cfg.OnListenerFailed,
+		onLost:   cfg.OnConnectionLost,
 		t1:       cfg.T1,
 		t2:       cfg.T2,
 		t4:       cfg.T4,
@@ -216,6 +227,7 @@ func New(cfg Config) *Layer {
 	tc := cfg.Transport
 	tc.Handler = transportHandler{l}
 	tc.OnListenerFailed = l.listenerFailed
+	tc.OnConnectionLost = l.connectionLost
 
 	if tc.Logger == nil {
 		tc.Logger = l.log
@@ -303,6 +315,38 @@ func (l *Layer) listenerFailed(local netip.AddrPort, err error) {
 
 	if l.onFailed != nil {
 		l.onFailed(local, err)
+	}
+}
+
+// connectionLost fails the client transactions waiting for a response to a request that went out on the TCP connection
+// c, lost (RFC 3261 §17.1.4, §18.4), and tells the layer's user.
+func (l *Layer) connectionLost(f sip.Flow, c transport.Conn, err error) {
+	l.mu.Lock()
+
+	if l.closed {
+		l.mu.Unlock()
+		return
+	}
+
+	clients := make([]*ClientTransaction, 0, len(l.clients))
+	for _, tx := range l.clients {
+		clients = append(clients, tx)
+	}
+
+	l.mu.Unlock()
+
+	for _, tx := range clients {
+		tx.mu.Lock()
+
+		if tx.conn == c && tx.pending() {
+			tx.fail(fmt.Errorf("%w: %w", ErrTransport, err))
+		}
+
+		tx.unlock()
+	}
+
+	if l.onLost != nil {
+		l.onLost(f, err)
 	}
 }
 

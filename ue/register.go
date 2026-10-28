@@ -121,7 +121,15 @@ func (u *UE) refresh(ctx context.Context, dereg bool) error {
 		p.start, p.startVerify, p.origin = protectedFlow(est, u.cfg.Transport), est.server, est
 	}
 
-	return u.run(ctx, p)
+	err := u.run(ctx, p)
+
+	// TS 24.229 §5.1.1.4.1, §5.1.2A.1.6: a reregistration that timer F or a fatal transport error ended leaves the
+	// contact bound to no public user identity: the owner registers again, on a new flow.
+	if !dereg && (errors.Is(err, transaction.ErrTimeout) || errors.Is(err, transaction.ErrTransport)) {
+		u.flowFailed(err)
+	}
+
+	return err
 }
 
 func (u *UE) newDialog() {
@@ -583,6 +591,25 @@ func (u *UE) flowFailed(err error) {
 
 	after()
 	u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})
+}
+
+// connectionLost is a TCP connection of the UE ending, of flow f: that of an outbound registration is its flow, which
+// failed (RFC 5626 §3, §4.4). Without outbound, the registration outlives its connections, the P-CSCF opening one of
+// its own to reach the UE.
+func (u *UE) connectionLost(f sip.Flow, err error) {
+	u.mu.Lock()
+	outbound := !u.closed && u.state.Registered && u.state.Outbound
+	u.mu.Unlock()
+
+	if !outbound {
+		return
+	}
+
+	if flow, _, ferr := u.requestFlow(u.cfg.Transport); ferr != nil || flow != f {
+		return
+	}
+
+	u.flowFailed(err)
 }
 
 // listenerFailed is a listener of the UE failing for good, of its unprotected port or of a protected one, as when the

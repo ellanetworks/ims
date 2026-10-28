@@ -413,14 +413,20 @@ func TestGroupCall(t *testing.T) {
 // 141; the session registers again, which binds her anew, and places the call again under its ID: established, not
 // ended. Bob, registered again too, is invited.
 func TestRetryUnknown(t *testing.T) {
+	saved := minBackoff
+	minBackoff = 100 * time.Millisecond
+
+	t.Cleanup(func() { minBackoff = saved })
+
 	addr, restart := restartableServer(t)
 	alice, pa := session(t, addr, "alice", 2)
 	bob, pb := session(t, addr, "bob", 3)
 
 	restart()
 
-	// Bob's binding back, as by his own refresh, which affiliates him again.
-	if err := bob.currentUE().Reregister(t.Context()); err != nil {
+	// Bob's binding back, as by his own refresh, which affiliates him again. The restart lost the connection the refresh
+	// may go out on: then it fails at once, and his session registers again on a new one (TS 24.229 §5.1.1.4.1).
+	if err := bob.currentUE().Reregister(t.Context()); err != nil && !errors.Is(err, transaction.ErrTransport) {
 		t.Fatal(err)
 	}
 
