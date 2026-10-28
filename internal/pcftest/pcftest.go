@@ -137,11 +137,14 @@ type PCF struct {
 	violations []string
 	nextID     int
 	sessions   map[string]*appSession
-	moved      map[string]string
-	refuse     func(Request) *Failure
-	answer     func(Request) *n5.EventsNotification
-	hold       chan struct{}
-	abandoned  int
+	// creating are the contexts being created, recorded but not answered yet: each channel closes once its context is
+	// created, or refused.
+	creating  map[string]chan struct{}
+	moved     map[string]string
+	refuse    func(Request) *Failure
+	answer    func(Request) *n5.EventsNotification
+	hold      chan struct{}
+	abandoned int
 }
 
 func New(t testing.TB, cfg Config) *PCF {
@@ -185,6 +188,7 @@ func New(t testing.TB, cfg Config) *PCF {
 		client:   &http.Client{Transport: transport, Timeout: notificationTimeout},
 		requests: make(chan Request, 1024),
 		sessions: make(map[string]*appSession),
+		creating: make(map[string]chan struct{}),
 		moved:    make(map[string]string),
 	}
 
@@ -419,10 +423,28 @@ func Signalling(c Context) bool {
 	return true
 }
 
+// created is the context at uri, once created: a PCF tells of a context only after it created it, which a create
+// recorded (Next) has not yet.
+func (p *PCF) created(ctx context.Context, uri string) (Context, bool) {
+	p.mu.Lock()
+	creating := p.creating[p.id(uri)]
+	p.mu.Unlock()
+
+	if creating != nil {
+		select {
+		case <-creating:
+		case <-ctx.Done():
+			return Context{}, false
+		}
+	}
+
+	return p.Context(uri)
+}
+
 // Terminate asks the consumer to delete the context at uri (TS 29.514 §4.2.5.3). The context stays until the
 // consumer deletes it.
 func (p *PCF) Terminate(ctx context.Context, uri string, cause n5.TerminationCause) (Response, error) {
-	c, ok := p.Context(uri)
+	c, ok := p.created(ctx, uri)
 	if !ok {
 		return Response{}, fmt.Errorf("pcftest: no context at %q", uri)
 	}
@@ -433,7 +455,7 @@ func (p *PCF) Terminate(ctx context.Context, uri string, cause n5.TerminationCau
 // Notify reports events of the context at uri to its events subscription (TS 29.514 §4.2.5.2). Every event must
 // be subscribed to. An empty evSubsUri is the context's Events Subscription sub-resource.
 func (p *PCF) Notify(ctx context.Context, uri string, n n5.EventsNotification) (Response, error) {
-	c, ok := p.Context(uri)
+	c, ok := p.created(ctx, uri)
 	if !ok {
 		return Response{}, fmt.Errorf("pcftest: no context at %q", uri)
 	}
@@ -637,7 +659,16 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 
 	p.mu.Lock()
 	id := p.newID()
+	created := make(chan struct{})
+	p.creating[id] = created
 	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		delete(p.creating, id)
+		p.mu.Unlock()
+		close(created)
+	}()
 
 	req := Request{Op: n5.OpCreate, URI: p.uri(id), Create: &asc}
 
