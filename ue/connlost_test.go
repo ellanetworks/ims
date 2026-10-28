@@ -57,8 +57,8 @@ func flowFailedWithin(t *testing.T, u *testUE, d time.Duration) Event {
 	}
 }
 
-// RFC 3261 §18.2.2: the connection of a reregistration lost before its response, the P-CSCF sends it on a new one,
-// which the UE takes: the registration goes on.
+// RFC 3261 §18.2.2: the connection of a reregistration lost before its response, the P-CSCF sends it on a new one, to
+// the sent-by of the request, which the UE takes: the registration goes on.
 func TestReregistrationConnectionLost(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP})
@@ -68,7 +68,9 @@ func TestReregistrationConnectionLost(t *testing.T) {
 
 	req, f := n.Recv(n.PS)
 	n.PS.CloseConn(f.Remote)
-	n.OK(req, f, n.PC, 3600)
+
+	via, _ := req.Header.TopVia()
+	n.OK(req, sip.Flow{Transport: sip.TCP, Local: n.PC.Addr(), Remote: netip.AddrPortFrom(n.Addr, via.Port)}, n.PC, 3600)
 
 	if err := uetest.Wait(t, done); err != nil {
 		t.Fatalf("Reregister = %v", err)

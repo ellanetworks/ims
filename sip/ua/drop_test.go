@@ -112,11 +112,17 @@ func TestDropArrivingInvite(t *testing.T) {
 
 	bob.none()
 
-	if res, _ := alice.sock.RecvResponse(); res.StatusCode != 100 {
-		t.Fatalf("got %q, want the 100 alone", res.StartLine())
-	}
+	// The 100 of the transaction, if sent before Drop: nothing it queued is sent after.
+	for {
+		r, ok := alice.sock.RecvWithin(50 * time.Millisecond)
+		if !ok {
+			return
+		}
 
-	alice.sock.RecvNone(50 * time.Millisecond)
+		if res, isRes := r.Msg.(*sip.Response); !isRes || res.StatusCode != 100 {
+			t.Fatalf("got %q, want the 100 at most", r.Msg.StartLine())
+		}
+	}
 }
 
 // Drop waits for no strand: a handler may call it, its own session ending once it returns.
