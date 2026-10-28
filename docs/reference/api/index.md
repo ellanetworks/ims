@@ -17,7 +17,7 @@ The token is either:
 - an access token, from [log in](auth.md#log-in) or [refresh the access token](auth.md#refresh-the-access-token), valid for 15 minutes;
 - an [API token](users.md#create-an-api-token), which starts with `ellaims_`.
 
-These paths take no token: `GET /api/v1/status`, `GET /api/v1/metrics`, `GET /api/v1/openapi.yaml`, `POST /api/v1/init`, and `POST /api/v1/auth/login`, `/refresh` and `/logout`.
+These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/v1/status`, `GET /api/v1/metrics`, `GET /api/v1/openapi.yaml`, `POST /api/v1/init`, and `POST /api/v1/auth/login`, `/refresh` and `/logout`.
 
 ### Roles
 
@@ -49,7 +49,7 @@ A failed response carries an `error`:
 }
 ```
 
-`GET /api/v1/metrics` returns text in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), `GET /api/v1/openapi.yaml` returns YAML, and unknown paths and methods answer in plain text.
+`GET /api/v1/livez` and `GET /api/v1/readyz` answer 204 with no body when they succeed. `GET /api/v1/metrics` returns text in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), `GET /api/v1/openapi.yaml` returns YAML, and unknown paths and methods answer in plain text.
 
 ## OpenAPI Specification
 
@@ -73,4 +73,4 @@ GET /api/v1/openapi.yaml
 - 409 - Conflict.
 - 429 - Too many requests. `Retry-After` is the seconds to wait.
 - 500 - Internal server error.
-- 503 - Service unavailable.
+- 503 - Service unavailable, or not ready. See [Check readiness](status.md#check-readiness).

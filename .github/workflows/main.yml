@@ -49,13 +49,18 @@ jobs:
   snap-strict-test:
     needs: [snap-build]
     uses: ./.github/workflows/snap-strict-test.yaml
+  k8s-smoke:
+    needs: [image-build]
+    uses: ./.github/workflows/k8s-smoke.yaml
   image-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, e2e, image-build]
+    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, e2e, image-build, k8s-smoke]
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/image-publish.yaml
+    with:
+      release: false
   android-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [android]

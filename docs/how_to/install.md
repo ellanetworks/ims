@@ -123,6 +123,37 @@ Choose one of the installation methods below.
     docker compose up -d
     ```
 
+=== "Kubernetes"
+
+    Ensure your Kubernetes cluster is running with the [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) installed.
+
+    Download the Ella IMS manifests:
+
+    ```shell
+    git clone --depth 1 https://github.com/ellanetworks/ims.git
+    ```
+
+    Edit `ims/k8s/ims-sip-nad.yaml`: set `master`, the SIP address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address.
+
+    Edit `ims/k8s/ims-diameter-nad.yaml`: set `master` and the Diameter address.
+
+    Edit `ims/k8s/ims-configmap.yaml`: set `sip.addresses` and `diameter.address` to the same addresses.
+
+    Create the namespace:
+
+    ```shell
+    kubectl create namespace ella
+    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
+    ```
+
+    Deploy Ella IMS:
+
+    ```shell
+    kubectl apply -k ims/k8s
+    ```
+
+    Ella IMS's UI and API are on the `ella-ims` NodePort Service.
+
 Ella IMS's UI and API are at `http://<host-ip>:5020`. Open the UI and create the first user.
 
 See the [configuration reference](../reference/config_file.md) for all options.

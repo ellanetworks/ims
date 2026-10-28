@@ -1,0 +1,70 @@
+name: Kubernetes Smoke Test
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  k8s-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [multus, pod-network]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      KIND_VERSION: v0.33.0
+      KUBECTL_VERSION: v1.37.1
+      KUBECONFORM_VERSION: v0.8.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tags, to upgrade from the previous release.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            sip/go.sum
+
+      # The kind node and the core share the runner's kernel, so this makes SCTP and IPsec available to them.
+      - name: Load kernel modules
+        run: sudo modprobe -a sctp esp4 xfrm_user
+
+      - name: Install kind, kubectl and kubeconform
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          cd "${RUNNER_TEMP}/bin"
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar -xz kubeconform
+          chmod +x kind kubectl kubeconform
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ellaims-image-amd64
+
+      - name: Load the image
+        run: docker load -i ellaims_latest-amd64.tar
+
+      - name: Find the previous release
+        run: |
+          version="$(cat version/VERSION)"
+          previous="$(git tag --list 'v*' --merged HEAD --sort=-v:refname | grep -vxF "${version}" | head -n 1 || true)"
+          if [ -n "${previous}" ]; then
+            echo "PREVIOUS_IMAGE=ghcr.io/ellanetworks/ella-ims:${previous}" >> "${GITHUB_ENV}"
+            echo "upgrading from ${previous}"
+          else
+            echo "no previous release to upgrade from"
+          fi
+
+      - name: Smoke test
+        run: ci/k8s/smoke.sh
+        env:
+          MODE: ${{ matrix.mode }}
+          IMAGE: ella-ims:latest

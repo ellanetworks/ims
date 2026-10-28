@@ -1,0 +1,38 @@
+name: Release workflow
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  check-version:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag against version/VERSION
+        run: |
+          version="$(cat version/VERSION)"
+          if [ "${GITHUB_REF_NAME}" != "${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version/VERSION (${version})"
+            exit 1
+          fi
+  image-build:
+    needs: [check-version]
+    uses: ./.github/workflows/image-build.yaml
+  k8s-smoke:
+    needs: [image-build]
+    uses: ./.github/workflows/k8s-smoke.yaml
+  image-publish:
+    needs: [image-build, k8s-smoke]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image-publish.yaml
+    with:
+      release: true

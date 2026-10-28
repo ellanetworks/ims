@@ -10,9 +10,10 @@
 # them.
 #
 # MODE multus deploys k8s/. The kind node gets a second interface, eth1, on a
-# Docker network with the two networks of the manifests: N6, 10.6.0.0/24, and
-# Diameter, 10.3.0.0/24, so the NADs and the ConfigMap are deployed as shipped.
-# The core is 10.6.0.2, the gateway to the IP pool of the SIP NAD, and 10.3.0.2.
+# Docker network, N6, 10.6.0.0/24, whose link carries the Diameter network,
+# 10.3.0.0/24, too, as both NADs have eth1 as master: the NADs and the ConfigMap
+# are deployed as shipped. The core is 10.6.0.2, the gateway to the IP pool of
+# the SIP NAD, and 10.3.0.2.
 #
 # MODE pod-network deploys k8s/pod-network/, with no Multus. The core is on the
 # kind network, and routes the pod network through the node, which routes the
@@ -23,9 +24,9 @@
 #   MODE            multus or pod-network (multus)
 #   IMAGE           the image under test, in the local Docker (ella-ims:latest)
 #   PREVIOUS_IMAGE  an image to deploy first and upgrade from (none)
-#   N6_NET          the first three octets of the N6 network (10.6.0), and
-#   DIAMETER_NET    of the Diameter network (10.3.0), to change on a host that
-#                   already has them
+#   N6_NET          the first three octets of the N6 network (10.6.0), to
+#                   change on a host that already has it
+#   DIAMETER_NET    of the Diameter network (10.3.0)
 #   KEEP            set to keep the cluster, the core and the network afterwards
 set -euo pipefail
 
@@ -207,15 +208,11 @@ endstep
 
 step "Create the cluster"
 if [ "${MODE}" = multus ]; then
-  for net in "${N6}" "${DIAMETER}"; do
-    if ip -4 route show to match "${net}.1" | grep -qv '^default'; then
-      fail "${net}.0/24 is already routed on this host; set N6_NET and DIAMETER_NET to free /24s"
-    fi
-  done
-  # Docker gives addresses from the upper halves only, so those of the IMS and the core stay free.
-  docker network create "${NETWORK}" \
-    --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" \
-    --subnet "${DIAMETER}.0/24" --ip-range "${DIAMETER}.128/25" --gateway "${DIAMETER}.1" >/dev/null
+  if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
+    fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
+  fi
+  # Docker gives addresses from the upper half only, so those of the IMS and the core stay free.
+  docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
 fi
 kind create cluster --name "${CLUSTER}" --wait 120s
 if [ "${MODE}" = multus ]; then
@@ -230,7 +227,8 @@ step "Check the Pod Security of the pod"
 # restricted one.
 kubectl create namespace pss-check >/dev/null
 kubectl label namespace pss-check pod-security.kubernetes.io/enforce=restricted >/dev/null
-violations="$(manifests | kubectl -n pss-check create --dry-run=server -f - -o name 2>&1 >/dev/null \
+# The pod of both variants is that of k8s/base, which has no namespace.
+violations="$(kubectl kustomize "${ROOT}/k8s/base" | kubectl -n pss-check create --dry-run=server -f - -o name 2>&1 >/dev/null \
   | grep -o 'would violate PodSecurity.*' || true)"
 echo "${violations}"
 want='would violate PodSecurity "restricted:latest": unrestricted capabilities (container "ims" must not include "NET_ADMIN" in securityContext.capabilities.add), runAsNonRoot != true (pod or container "ims" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "ims" must not set runAsUser=0)'
@@ -279,9 +277,8 @@ if [ -n "${PREVIOUS_IMAGE}" ]; then
 
   step "Upgrade to ${IMAGE}"
   deploy "${IMAGE}" restart
-  TOKEN=""
-  api /status | jq -e '.result.initialized' >/dev/null || fail "the admin created before the upgrade is gone"
-  log_in
+  # The API token is in the database.
+  api /users/me >/dev/null || fail "the API token created before the upgrade is gone"
   endstep
 else
   step "Deploy ${IMAGE}"
@@ -355,7 +352,6 @@ restarted="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 before_ip="${SIP_ADDR}"
 locate
 wait_api
-log_in
 
 grep -q '"msg":"ims stopping"' "${WORK}/stopped.log" || fail "the IMS did not log its shutdown"
 codes="$(awk -v uid="${uid}" '$1 == uid && NF == 2 { print $2 }' "${WORK}/watch.txt" | sort -u)"

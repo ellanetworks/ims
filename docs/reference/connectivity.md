@@ -21,5 +21,5 @@ Defaults are in parentheses.
 ## Requirements
 
 - **ESP**: firewalls between phones and Ella IMS must pass ESP (IP protocol 50).
-- **`CAP_NET_ADMIN`**: Ella IMS sets up IPsec in the kernel. Run it as root, connect the snap's `network-control` interface, or add the capability to its container.
+- **`CAP_NET_ADMIN`**: Ella IMS sets up IPsec in the kernel. Run it as root, connect the snap's `network-control` interface, or add the capability to its container. On Kubernetes, only the `privileged` Pod Security Standard allows it.
 - **Routes**: Ella IMS needs a route to the phones' IP pools through the core network's N6 (5G) or SGi (4G) address.

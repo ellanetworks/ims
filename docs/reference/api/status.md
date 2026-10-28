@@ -1,5 +1,5 @@
 ---
-description: RESTful API reference for viewing the status of Ella IMS.
+description: RESTful API reference for viewing the status and health of Ella IMS.
 ---
 
 # Status
@@ -29,5 +29,31 @@ This path returns the version of the IMS, and whether it has been initialized. I
         "revision": "",
         "initialized": true
     }
+}
+```
+
+## Check Liveness
+
+This path answers while the process serves HTTP. It takes no token.
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/livez` |
+
+It answers `204 No Content`.
+
+## Check Readiness
+
+This path returns whether the IMS can serve requests: its database answers, and it is not shutting down. It takes no token.
+
+| Method | Path             |
+| ------ | ---------------- |
+| GET    | `/api/v1/readyz` |
+
+It answers `204 No Content` when ready, and `503 Service Unavailable` otherwise:
+
+```json
+{
+    "error": "Not ready"
 }
 ```
