@@ -103,9 +103,19 @@ func (no *notifier) notify(state string, info reginfo.Reginfo) *sip.Response {
 
 	no.send(no.request(state, info))
 
-	res, _ := no.n.PS.RecvResponse()
+	// A short T1 can retransmit a request answered already, such as the SUBSCRIBE, before its answer arrives.
+	for {
+		r := no.n.PS.Recv()
 
-	return res
+		switch m := r.Msg.(type) {
+		case *sip.Response:
+			return m
+		case *sip.Request:
+			if via, _ := m.Header.TopVia(); !no.n.Seen[via.Branch()] {
+				no.n.T.Fatalf("got %q, want the response to the NOTIFY", m.StartLine())
+			}
+		}
+	}
 }
 
 func (no *notifier) notifyAndRefresh(state string, info reginfo.Reginfo) (*sip.Response, *sip.Request, sip.Flow) {

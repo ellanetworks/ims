@@ -77,10 +77,14 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:5020/ | grep -q '<div id="root"></div>'
 
-      # Diameter only listens for the transports of its peers.
+      # Diameter only listens for the transports of its peers. Adding one needs a user: the first, which the
+      # initialization creates and logs in.
       - name: Assert Diameter listens over SCTP
         run: |
-          curl -fsS -X POST -H 'Content-Type: application/json' \
+          token="$(curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d '{"email": "admin@example.com", "password": "snap test password"}' \
+            http://127.0.0.1:5020/api/v1/init | jq -er .result.token)"
+          curl -fsS -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
             -d '{"host": "hss.example.org", "address": "127.0.0.1", "port": 3869, "transport": "sctp", "applications": ["cx"]}' \
             http://127.0.0.1:5020/api/v1/diameter/peers
           deadline=$((SECONDS + 15))
