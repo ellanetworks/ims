@@ -20,10 +20,13 @@ class IdentitiesTest {
     @Test
     fun mcpttImpu() {
         val domain = "ims.mnc001.mcc001.3gppnetwork.org"
-        val ids = Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "tel:+15550000001", "sip:mcptt-15550000001@$domain"), domain, isim = true)
+        val ids =
+            Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "tel:+15550000001", "sip:mcptt-15550000001@$domain"), domain, isim = true)
         assertEquals("sip:+15550000001@$domain", ids.impu)
         assertEquals("sip:mcptt-15550000001@$domain", ids.mcpttImpu)
-        assertNull(Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "sip:mcptt-@$domain", "tel:mcptt-1"), domain, isim = true).mcpttImpu)
+        assertNull(
+            Identities("001010000000001@$domain", listOf("sip:+15550000001@$domain", "sip:mcptt-@$domain", "tel:mcptt-1"), domain, isim = true).mcpttImpu,
+        )
         assertNull(Identities.fromImsi("001010000000001", 2).mcpttImpu)
     }
 
