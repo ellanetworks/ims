@@ -17,20 +17,24 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { useTheme } from "@mui/material/styles";
+import { useColorScheme, useTheme } from "@mui/material/styles";
 import {
   AccountCircle as AccountCircleIcon,
-  AdminPanelSettings as AdminPanelSettingsIcon,
+  Brightness6 as ThemeIcon,
   BugReport as BugReportIcon,
-  Call as CallIcon,
+  Check as CheckIcon,
+  DarkMode as DarkModeIcon,
   Feed as FeedIcon,
   Hub as HubIcon,
   Info as InfoIcon,
+  LightMode as LightModeIcon,
   Logout as LogoutIcon,
   Menu as MenuIcon,
-  Person as PersonIcon,
-  PhoneAndroid as PhoneAndroidIcon,
   OpenInNew as OpenInNewIcon,
+  AdminPanelSettings as AdminPanelSettingsIcon,
+  Person as PersonIcon,
+  Call as CallIcon,
+  PhoneAndroid as PhoneAndroidIcon,
   RecordVoiceOver as RecordVoiceOverIcon,
 } from "@mui/icons-material";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -69,31 +73,50 @@ const drawerSelectedSx = {
   },
 };
 
+const THEME_MODES = [
+  { value: "system", label: "System", Icon: ThemeIcon },
+  { value: "light", label: "Light", Icon: LightModeIcon },
+  { value: "dark", label: "Dark", Icon: DarkModeIcon },
+] as const;
+
 interface NavItem {
   to: string;
   label: string;
   icon: ReactNode;
-  // permission is what the item needs, when not every role has it.
-  permission?: Permission;
+  permission: Permission;
 }
 
+// Each page shows to the roles with the permission it needs to load.
 const navItems: NavItem[] = [
-  { to: "/cores", label: "Cores", icon: <HubIcon color="primary" /> },
+  {
+    to: "/cores",
+    label: "Cores",
+    icon: <HubIcon color="primary" />,
+    permission: "diameter:read",
+  },
   {
     to: "/operator",
     label: "Operator",
     icon: <FeedIcon color="primary" />,
+    permission: "operator:read",
   },
   {
     to: "/registrations",
     label: "Registrations",
     icon: <PhoneAndroidIcon color="primary" />,
+    permission: "registration:read",
   },
-  { to: "/calls", label: "Calls", icon: <CallIcon color="primary" /> },
+  {
+    to: "/calls",
+    label: "Calls",
+    icon: <CallIcon color="primary" />,
+    permission: "call_record:read",
+  },
   {
     to: "/ptt",
     label: "Push-to-Talk",
     icon: <RecordVoiceOverIcon color="primary" />,
+    permission: "mcptt:read",
   },
 ];
 
@@ -115,6 +138,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("lg"));
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { mode, setMode } = useColorScheme();
 
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -125,9 +149,6 @@ export default function Layout({ children }: { children: ReactNode }) {
     document.getElementById("main-content")?.focus();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [pathname]);
-
-  const allowed = ({ permission }: NavItem) =>
-    permission === undefined || auth.can(permission);
 
   const handleNavClick = () => {
     if (isMobile) setMobileOpen(false);
@@ -230,6 +251,35 @@ export default function Layout({ children }: { children: ReactNode }) {
               <ListItemText primary="Profile" />
             </MenuItem>
             <Divider />
+            <ListSubheader disableSticky role="presentation">
+              Theme
+            </ListSubheader>
+            {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role */}
+            <li role="group" aria-label="Theme">
+              {THEME_MODES.map(({ value, label, Icon }) => (
+                <MenuItem
+                  key={value}
+                  component="div"
+                  role="menuitemradio"
+                  aria-label={`${label} theme`}
+                  aria-checked={mode === value}
+                  selected={mode === value}
+                  onClick={() => {
+                    setMode(value);
+                    setAccountEl(null);
+                  }}
+                >
+                  <ListItemIcon>
+                    <Icon fontSize="small" color="primary" />
+                  </ListItemIcon>
+                  <ListItemText primary={label} />
+                  {mode === value && (
+                    <CheckIcon fontSize="small" sx={{ ml: 2 }} />
+                  )}
+                </MenuItem>
+              ))}
+            </li>
+            <Divider />
             <MenuItem
               onClick={() => {
                 setAccountEl(null);
@@ -266,29 +316,33 @@ export default function Layout({ children }: { children: ReactNode }) {
           sx={{ flexGrow: 1, overflow: "auto" }}
         >
           <List>
-            {navItems.filter(allowed).map((item) => (
-              <NavLink
-                key={item.to}
-                item={item}
-                pathname={pathname}
-                onClick={handleNavClick}
-              />
-            ))}
-            {systemItems.some(allowed) && (
+            {navItems
+              .filter(({ permission }) => auth.can(permission))
+              .map((item) => (
+                <NavLink
+                  key={item.to}
+                  item={item}
+                  pathname={pathname}
+                  onClick={handleNavClick}
+                />
+              ))}
+            {systemItems.some(({ permission }) => auth.can(permission)) && (
               <>
                 <ListSubheader
                   sx={{ borderTop: 1, borderColor: "divider", mt: 1, pt: 1 }}
                 >
                   System
                 </ListSubheader>
-                {systemItems.filter(allowed).map((item) => (
-                  <NavLink
-                    key={item.to}
-                    item={item}
-                    pathname={pathname}
-                    onClick={handleNavClick}
-                  />
-                ))}
+                {systemItems
+                  .filter(({ permission }) => auth.can(permission))
+                  .map((item) => (
+                    <NavLink
+                      key={item.to}
+                      item={item}
+                      pathname={pathname}
+                      onClick={handleNavClick}
+                    />
+                  ))}
               </>
             )}
           </List>

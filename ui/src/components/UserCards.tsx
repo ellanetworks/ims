@@ -7,7 +7,6 @@ import {
   CardContent,
   Checkbox,
   Chip,
-  DialogContentText,
   FormControlLabel,
   IconButton,
   Stack,
@@ -29,7 +28,7 @@ import {
 } from "@mui/icons-material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import { useSnackbar } from "@/contexts/SnackbarContext";
+import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import EditDialog from "@/components/EditDialog";
 import {
@@ -184,9 +183,12 @@ export function UserAPITokensCard({
         "success",
       );
     },
-    onSettled: (_result, error) => {
-      if (!error) setDeleting(null);
-    },
+    onError: (error) =>
+      showSnackbar(
+        `Failed to delete API token: ${errorMessage(error)}`,
+        "error",
+      ),
+    onSettled: () => setDeleting(null),
   });
 
   const full = tokens.length >= MAX_API_TOKENS;
@@ -321,10 +323,7 @@ export function UserAPITokensCard({
                         <IconButton
                           aria-label={`Delete ${token.name}`}
                           size="small"
-                          onClick={() => {
-                            remove.reset();
-                            setDeleting(token);
-                          }}
+                          onClick={() => setDeleting(token)}
                         >
                           <DeleteIcon fontSize="small" color="primary" />
                         </IconButton>
@@ -350,17 +349,13 @@ export function UserAPITokensCard({
       )}
       {deleting && (
         <ConfirmDialog
-          title={`Delete the API token "${deleting.name}"?`}
-          action="Delete"
+          title="Delete API Token"
+          description={`Delete the API token "${deleting.name}"? The programs that use it can no longer call the API.`}
+          confirmLabel="Delete"
           pending={remove.isPending}
-          error={remove.error}
           onConfirm={() => remove.mutate(deleting)}
           onClose={() => setDeleting(null)}
-        >
-          <DialogContentText>
-            The programs that use it can no longer call the API.
-          </DialogContentText>
-        </ConfirmDialog>
+        />
       )}
     </>
   );
@@ -429,6 +424,7 @@ function CreateAPITokenDialog({
       onClose={onClose}
       submitLabel="Create"
       pendingLabel="Creating…"
+      failure="Could not create the API token"
     >
       <TextField
         label="Name"

@@ -28,16 +28,8 @@ export default function Profile() {
         title="Profile"
         description="Your account, your password, and your API tokens."
       />
-      <QueryAlert
-        error={user.error}
-        hasData={user.data !== undefined}
-        subject="your account"
-      />
-      <QueryAlert
-        error={tokens.error}
-        hasData={tokens.data !== undefined}
-        subject="your API tokens"
-      />
+      <QueryAlert query={user} subject="your account" />
+      <QueryAlert query={tokens} subject="your API tokens" />
       <Box
         sx={{
           display: "grid",

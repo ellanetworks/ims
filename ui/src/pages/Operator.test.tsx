@@ -70,7 +70,7 @@ describe("Operator", () => {
     expect(rows()).toEqual([
       "001 / 01",
       "ims.mnc001.mcc001.3gppnetwork.org",
-      "Country Code+1National PrefixNoneInternational PrefixNone",
+      "Country Code1National PrefixN/AInternational PrefixN/A",
     ]);
     expect(
       screen.queryByRole("button", { name: "Edit Home Network Domain" }),
@@ -86,7 +86,7 @@ describe("Operator", () => {
     fireEvent.mouseOver(screen.getByText("Operator ID (MCC/MNC)"));
     expect(
       await screen.findByRole("tooltip", {
-        name: "Must match your subscribers' IMSIs and your core.",
+        name: "Mobile Country Code and Mobile Network Code of your network. They set this IMS's home network domain, Diameter host and realm.",
       }),
     ).toBeInTheDocument();
   });
@@ -143,9 +143,7 @@ describe("Operator", () => {
 
     renderWithClient(<Operator />);
     await loaded();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Edit Numbering Plan" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit Numbering" }));
 
     fill("Country Code", "33");
     fill("National Prefix", "0");
@@ -183,9 +181,7 @@ describe("Operator", () => {
 
     renderWithClient(<Operator />);
     await loaded();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Edit Numbering Plan" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit Numbering" }));
     fill("Country Code", "33");
     fireEvent.click(screen.getByRole("button", { name: "Update" }));
 

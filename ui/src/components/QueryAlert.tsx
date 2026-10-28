@@ -1,29 +1,45 @@
 import { Alert } from "@mui/material";
+import ErrorAlert from "@/components/ErrorAlert";
 
-interface QueryAlertProps {
-  error: Error | null;
-  hasData: boolean;
-  subject: string;
-}
-
+// QueryAlert is the state of a query that the page cannot show, as Ella Core's QueryState: offline, a failed first
+// load with a retry, or a failed refresh, which keeps the last data on screen.
 export default function QueryAlert({
-  error,
-  hasData,
+  query,
   subject,
-}: QueryAlertProps) {
-  if (!error) return null;
-
-  if (hasData) {
+}: {
+  query: {
+    error: Error | null;
+    data: unknown;
+    fetchStatus: string;
+    isFetching: boolean;
+    refetch: () => unknown;
+  };
+  subject: string;
+}) {
+  if (query.fetchStatus === "paused") {
     return (
       <Alert severity="warning" sx={{ mb: 2 }}>
-        Showing the last loaded {subject}. Refresh failed: {error.message}
+        You appear to be offline. The {subject} cannot be updated right now.
+      </Alert>
+    );
+  }
+
+  if (!query.error) return null;
+
+  if (query.data !== undefined) {
+    return (
+      <Alert severity="warning" sx={{ mb: 2 }}>
+        Showing the last loaded {subject}. Refresh failed: {query.error.message}
       </Alert>
     );
   }
 
   return (
-    <Alert severity="error" sx={{ mb: 2 }}>
-      Could not load {subject}: {error.message}
-    </Alert>
+    <ErrorAlert
+      resource={subject}
+      error={query.error}
+      onRetry={() => void query.refetch()}
+      retrying={query.isFetching}
+    />
   );
 }

@@ -16,6 +16,7 @@ import {
   putMember,
 } from "@/queries/mcptt";
 import { sameIdentity, userLabel } from "@/utils/mcptt";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 export default function MemberDialog({
   group,
@@ -31,6 +32,7 @@ export default function MemberDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [id, setID] = useState<string | null>(member?.mcptt_id ?? null);
   const [recvonly, setRecvonly] = useState(member?.recvonly ?? false);
   const [implicit, setImplicit] = useState(
@@ -43,6 +45,10 @@ export default function MemberDialog({
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.groups });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.affiliations });
+      showSnackbar(
+        member ? "Member updated successfully." : "Member added successfully.",
+        "success",
+      );
       onClose();
     },
   });
@@ -60,6 +66,9 @@ export default function MemberDialog({
       title={member ? `Edit ${label(member.mcptt_id)}` : "Add Member"}
       submitLabel={member ? "Update" : "Add"}
       pendingLabel={member ? "Updating…" : "Adding…"}
+      failure={
+        member ? "Could not update the member" : "Could not add the member"
+      }
       valid={id !== null}
       pending={mutation.isPending}
       error={mutation.error}

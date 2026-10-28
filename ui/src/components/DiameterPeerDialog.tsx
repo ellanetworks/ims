@@ -22,6 +22,7 @@ import {
 } from "@/queries/diameter";
 import { applicationLabels, transportLabels } from "@/utils/labels";
 import { changesTransports, RESTART_WARNING } from "@/utils/restart";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 export const DEFAULT_DIAMETER_PORT = 3868;
 
@@ -49,6 +50,7 @@ export default function DiameterPeerDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [host, setHost] = useState(peer?.host ?? "");
   const [address, setAddress] = useState(peer?.address ?? "");
   const [port, setPort] = useState(String(peer?.port ?? DEFAULT_DIAMETER_PORT));
@@ -72,6 +74,10 @@ export default function DiameterPeerDialog({
       void queryClient.invalidateQueries({ queryKey: ["diameter-peers"] });
       void queryClient.invalidateQueries({ queryKey: ["diameter-routes"] });
       void queryClient.invalidateQueries({ queryKey: ["policy"] });
+      showSnackbar(
+        peer ? "Peer updated successfully." : "Peer created successfully.",
+        "success",
+      );
       onClose();
     },
   });
@@ -130,9 +136,10 @@ export default function DiameterPeerDialog({
 
   return (
     <EditDialog
-      title={peer ? "Edit Peer" : "Add Peer"}
-      submitLabel={peer ? "Update" : "Add"}
-      pendingLabel={peer ? "Updating…" : "Adding…"}
+      title={peer ? "Edit Peer" : "Create Peer"}
+      submitLabel={peer ? "Update" : "Create"}
+      pendingLabel={peer ? "Updating…" : "Creating…"}
+      failure={peer ? "Could not update the peer" : "Could not create the peer"}
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}

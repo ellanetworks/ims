@@ -22,6 +22,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useAuth } from "@/contexts/AuthContext";
+import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
 import CopyButton from "@/components/CopyButton";
 import DrawerSection from "@/components/DrawerSection";
 import Fields from "@/components/Fields";
@@ -62,6 +63,7 @@ function MemberRow({
   onRemove?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const toggle = useMutation({
     mutationFn: (on: boolean) =>
       putMember(group.group_id, { ...member, implicit_affiliation: on }),
@@ -69,6 +71,10 @@ function MemberRow({
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.groups });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.affiliations });
+      showSnackbar("Member updated successfully.", "success");
+    },
+    onError: (error) => {
+      showSnackbar(`Failed to update member: ${errorMessage(error)}`, "error");
     },
   });
   const implicit = member.implicit_affiliation ?? false;
@@ -141,6 +147,7 @@ function GroupDetail({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const editable = useAuth().can("mcptt:update");
   const [memberDialog, setMemberDialog] = useState<{ member?: Member } | null>(
     null,
@@ -152,6 +159,11 @@ function GroupDetail({
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.groups });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
       setRemoving(null);
+      showSnackbar("Member removed successfully.", "success");
+    },
+    onError: (error) => {
+      setRemoving(null);
+      showSnackbar(`Failed to remove member: ${errorMessage(error)}`, "error");
     },
   });
 
@@ -278,18 +290,13 @@ function GroupDetail({
       )}
       {removing && (
         <ConfirmDialog
-          title={`Remove ${nameOf(removing.mcptt_id)} from ${groupLabel(group, domain)}?`}
-          action="Remove"
+          title="Remove Member"
+          description={`Remove ${nameOf(removing.mcptt_id)} from ${groupLabel(group, domain)}? The user leaves the group's call in progress, if any, and can no longer call the group nor hear its calls.`}
+          confirmLabel="Remove"
           pending={removal.isPending}
-          error={removal.error}
           onConfirm={() => removal.mutate(removing)}
           onClose={() => setRemoving(null)}
-        >
-          <Typography>
-            The user leaves the group's call in progress, if any, and can no
-            longer call the group nor hear its calls.
-          </Typography>
-        </ConfirmDialog>
+        />
       )}
     </Stack>
   );

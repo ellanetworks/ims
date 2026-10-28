@@ -10,11 +10,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import {
-  Add as AddIcon,
-  Delete as DeleteIcon,
-  Edit as EditIcon,
-} from "@mui/icons-material";
+import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -28,6 +24,7 @@ import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import QueryAlert from "@/components/QueryAlert";
 import { useAuth } from "@/contexts/AuthContext";
+import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
 import SettingsTable, { type SettingRow } from "@/components/SettingsTable";
 import {
   deleteDiameterPeer,
@@ -45,25 +42,18 @@ import { formatEndpoint, hostOf, portOf } from "@/utils/addresses";
 import { formatTimestamp } from "@/utils/dates";
 import { applicationLabels, policyLabels } from "@/utils/labels";
 import { changesTransports, RESTART_WARNING } from "@/utils/restart";
+import { GRID_SX } from "@/utils/layout";
 
 export const REFRESH_MS = 5000;
 
 const gridSx = {
-  width: "100%",
-  border: 1,
-  borderColor: "divider",
-  bgcolor: "background.paper",
+  ...GRID_SX,
   "& .MuiDataGrid-cell": {
-    borderBottom: "1px solid",
-    borderColor: "divider",
+    ...GRID_SX["& .MuiDataGrid-cell"],
     display: "flex",
     alignItems: "center",
     py: 1,
     overflowWrap: "anywhere",
-  },
-  "& .MuiDataGrid-columnHeaders": {
-    borderBottom: "1px solid",
-    borderColor: "divider",
   },
 };
 
@@ -183,6 +173,7 @@ function SectionHeader({
 
 export default function Cores() {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const auth = useAuth();
   const canDiameter = auth.can("diameter:update");
   const [peerDialog, setPeerDialog] = useState<{ peer?: DiameterPeer } | null>(
@@ -222,6 +213,11 @@ export default function Cores() {
       void queryClient.invalidateQueries({ queryKey: ["diameter-routes"] });
       void queryClient.invalidateQueries({ queryKey: ["policy"] });
       setDeleting(null);
+      showSnackbar("Peer deleted successfully.", "success");
+    },
+    onError: (error) => {
+      setDeleting(null);
+      showSnackbar(`Failed to delete peer: ${errorMessage(error)}`, "error");
     },
   });
 
@@ -415,11 +411,8 @@ export default function Cores() {
         description="Enter these values in your core."
         first
       />
-      <QueryAlert
-        error={sip.error ?? identity.error}
-        hasData={sip.data !== undefined && identity.data !== undefined}
-        subject="IMS identity"
-      />
+      <QueryAlert query={identity} subject="IMS identity" />
+      <QueryAlert query={sip} subject="SIP addresses" />
       <SettingsTable
         label="This IMS"
         loading={sip.isPending || identity.isPending}
@@ -433,11 +426,7 @@ export default function Cores() {
       >
         {routeStatus(route("cx"))}
       </SectionHeader>
-      <QueryAlert
-        error={routes.error}
-        hasData={routes.data !== undefined}
-        subject="Diameter routes"
-      />
+      <QueryAlert query={routes} subject="Diameter routes" />
       <SettingsTable
         label="HSS"
         loading={routes.isPending}
@@ -451,11 +440,7 @@ export default function Cores() {
       >
         {policy.data && policyStatus(policy.data, routes.data)}
       </SectionHeader>
-      <QueryAlert
-        error={policy.error}
-        hasData={policy.data !== undefined}
-        subject="voice QoS"
-      />
+      <QueryAlert query={policy} subject="voice QoS" />
       {policy.data?.interface === "none" && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           Calls get no dedicated voice bearer.
@@ -472,11 +457,7 @@ export default function Cores() {
         title="SMS over IP"
         description="The built-in IP-SM-GW, which carries SMS between phones on IMS and your SMSC."
       />
-      <QueryAlert
-        error={ipsmgw.error}
-        hasData={ipsmgw.data !== undefined}
-        subject="IP-SM-GW"
-      />
+      <QueryAlert query={ipsmgw} subject="IP-SM-GW" />
       {ipsmgw.data?.number === "" && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           No IP-SM-GW number: phones get no SMS over IP.
@@ -515,18 +496,13 @@ export default function Cores() {
             variant="contained"
             color="success"
             size="small"
-            startIcon={<AddIcon />}
             onClick={() => setPeerDialog({})}
           >
-            Add Peer
+            Create Peer
           </Button>
         )}
       </SectionHeader>
-      <QueryAlert
-        error={peers.error}
-        hasData={peers.data !== undefined}
-        subject="Diameter peers"
-      />
+      <QueryAlert query={peers} subject="Diameter peers" />
       {peers.isPending && <Skeleton variant="rounded" height={160} />}
       {peers.data && (
         <DataGrid<DiameterPeer>
@@ -555,21 +531,13 @@ export default function Cores() {
       )}
       {deleting && (
         <ConfirmDialog
-          title={
-            <>
-              Delete <DomainName name={peerName(deleting)} />?
-            </>
-          }
-          action="Delete"
+          title="Delete Peer"
+          description={`Delete ${peerName(deleting)}?${changesTransports(peers.data ?? [], deleting, undefined) ? ` ${RESTART_WARNING}` : ""}`}
+          confirmLabel="Delete"
           pending={deletion.isPending}
-          error={deletion.error}
           onConfirm={() => deletion.mutate(deleting)}
           onClose={() => setDeleting(null)}
-        >
-          {changesTransports(peers.data ?? [], deleting, undefined) && (
-            <Alert severity="warning">{RESTART_WARNING}</Alert>
-          )}
-        </ConfirmDialog>
+        />
       )}
       {editingRoute && (
         <EditRouteDialog

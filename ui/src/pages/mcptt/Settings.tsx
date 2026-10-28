@@ -95,11 +95,7 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
         title="Service"
         description="Your organisation's push-to-talk service, for all its users and groups."
       />
-      <QueryAlert
-        error={config.error}
-        hasData={c !== undefined}
-        subject="service configuration"
-      />
+      <QueryAlert query={config} subject="service configuration" />
       <SettingsTable
         label="Service"
         loading={config.isPending}

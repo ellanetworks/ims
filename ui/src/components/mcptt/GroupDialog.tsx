@@ -17,6 +17,7 @@ import {
   updateGroup,
 } from "@/queries/mcptt";
 import { expandID, sameIdentity, userLabel } from "@/utils/mcptt";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 // DEFAULT_DURATION_MIN is the maximum duration of a new group's calls.
 const DEFAULT_DURATION_MIN = 10;
@@ -36,6 +37,7 @@ export default function GroupDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [name, setName] = useState(group?.display_name ?? "");
   const [id, setID] = useState(group?.group_id ?? "");
   const [duration, setDuration] = useState(
@@ -58,6 +60,10 @@ export default function GroupDialog({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.groups });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
+      showSnackbar(
+        group ? "Group updated successfully." : "Group created successfully.",
+        "success",
+      );
       onClose();
     },
   });
@@ -103,9 +109,12 @@ export default function GroupDialog({
 
   return (
     <EditDialog
-      title={group ? "Edit Group" : "Add Group"}
-      submitLabel={group ? "Update" : "Add"}
-      pendingLabel={group ? "Updating…" : "Adding…"}
+      title={group ? "Edit Group" : "Create Group"}
+      submitLabel={group ? "Update" : "Create"}
+      pendingLabel={group ? "Updating…" : "Creating…"}
+      failure={
+        group ? "Could not update the group" : "Could not create the group"
+      }
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}

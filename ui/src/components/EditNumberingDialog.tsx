@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { InputAdornment, TextField } from "@mui/material";
+import { TextField } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import EditDialog from "@/components/EditDialog";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 import { type Operator, updateOperator } from "@/queries/operator";
 
 export default function EditNumberingDialog({
@@ -12,12 +13,14 @@ export default function EditNumberingDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [numbering, setNumbering] = useState(operator.numbering);
 
   const mutation = useMutation({
     mutationFn: updateOperator,
     onSuccess: (updated) => {
       queryClient.setQueryData(["operator"], updated);
+      showSnackbar("Numbering plan updated successfully.", "success");
       onClose();
     },
   });
@@ -50,23 +53,14 @@ export default function EditNumberingDialog({
 
   return (
     <EditDialog
-      title="Edit Numbering Plan"
+      title="Edit Numbering"
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}
       onSubmit={() => mutation.mutate({ ...operator, numbering })}
       onClose={onClose}
     >
-      <TextField
-        label="Country Code"
-        {...field("country_code")}
-        slotProps={{
-          input: {
-            startAdornment: <InputAdornment position="start">+</InputAdornment>,
-          },
-        }}
-        required
-      />
+      <TextField label="Country Code" {...field("country_code")} required />
       <TextField label="National Prefix" {...field("national_prefix")} />
       <TextField
         label="International Prefix"

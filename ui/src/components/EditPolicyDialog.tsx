@@ -17,6 +17,7 @@ import {
 } from "@/queries/policy";
 import { policyLabels } from "@/utils/labels";
 import { RESTART_WARNING } from "@/utils/restart";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const INTERFACES: PolicyInterface[] = ["none", "rx", "n5"];
 
@@ -28,6 +29,7 @@ export default function EditPolicyDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [policyInterface, setPolicyInterface] = useState(policy.interface);
   const [pcfURI, setPCFURI] = useState(policy.n5?.pcf_uri ?? "");
 
@@ -35,6 +37,7 @@ export default function EditPolicyDialog({
     mutationFn: updatePolicy,
     onSuccess: (updated) => {
       queryClient.setQueryData(["policy"], updated);
+      showSnackbar("Voice QoS updated successfully.", "success");
       onClose();
     },
   });

@@ -228,11 +228,7 @@ export function CallsTab() {
 
   return (
     <>
-      <QueryAlert
-        error={calls.error}
-        hasData={calls.data !== undefined}
-        subject="group calls"
-      />
+      <QueryAlert query={calls} subject="group calls" />
       <DataGrid<GroupCall>
         aria-label="Group calls"
         rows={calls.data ?? []}

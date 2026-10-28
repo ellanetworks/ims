@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import EditDialog from "@/components/EditDialog";
 import { type DiameterRoute, updateDiameterRoute } from "@/queries/diameter";
 import { applicationLabels } from "@/utils/labels";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const DOMAIN_NAME =
   /^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
@@ -18,12 +19,14 @@ export default function EditRouteDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [realm, setRealm] = useState(route.realm);
 
   const mutation = useMutation({
     mutationFn: (next: string) => updateDiameterRoute(route.application, next),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["diameter-routes"] });
+      showSnackbar("Realm updated successfully.", "success");
       onClose();
     },
   });

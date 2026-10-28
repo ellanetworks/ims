@@ -7,6 +7,7 @@ import {
   type ServiceConfiguration,
   updateServiceConfiguration,
 } from "@/queries/mcptt";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 // DEFAULT_TRANSMIT_TIME_LIMIT_MS is T2 (Stop talking) when none is set (TS 24.380 Table 11.1.3-1).
 export const DEFAULT_TRANSMIT_TIME_LIMIT_MS = 30000;
@@ -16,11 +17,13 @@ const DOMAIN =
 
 function useUpdate(onClose: () => void) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   return useMutation({
     mutationFn: updateServiceConfiguration,
     onSuccess: (updated) => {
       queryClient.setQueryData(mcpttKeys.serviceConfiguration, updated);
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
+      showSnackbar("Service configuration updated successfully.", "success");
       onClose();
     },
   });

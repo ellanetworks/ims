@@ -3,6 +3,7 @@ import { Alert, TextField } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import DomainName from "@/components/DomainName";
 import EditDialog from "@/components/EditDialog";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 import { type Operator, updateOperator } from "@/queries/operator";
 import { homeDomain } from "@/utils/operator";
 import { RESTART_WARNING } from "@/utils/restart";
@@ -15,6 +16,7 @@ export default function EditOperatorIdDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [mcc, setMcc] = useState(operator.mcc);
   const [mnc, setMnc] = useState(operator.mnc);
 
@@ -24,6 +26,7 @@ export default function EditOperatorIdDialog({
       queryClient.setQueryData(["operator"], updated);
       void queryClient.invalidateQueries({ queryKey: ["sip"] });
       void queryClient.invalidateQueries({ queryKey: ["diameter"] });
+      showSnackbar("Operator ID updated successfully.", "success");
       onClose();
     },
   });

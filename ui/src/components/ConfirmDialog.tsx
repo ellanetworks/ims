@@ -1,45 +1,33 @@
-import type { ReactNode } from "react";
 import {
-  Alert,
   Button,
   Dialog,
   DialogActions,
   DialogContent,
+  DialogContentText,
   DialogTitle,
-  Stack,
 } from "@mui/material";
 
-interface ConfirmDialogProps {
-  title: ReactNode;
-  action: string;
-  pending: boolean;
-  error: Error | null;
-  onConfirm: () => void;
-  onClose: () => void;
-  children?: ReactNode;
-}
-
+// ConfirmDialog asks before an action that cannot be undone, such as a deletion. Its outcome is a notification.
 export default function ConfirmDialog({
   title,
-  action,
+  description,
+  confirmLabel,
   pending,
-  error,
   onConfirm,
   onClose,
-  children,
-}: ConfirmDialogProps) {
+}: {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
-        <Stack spacing={2}>
-          {error && (
-            <Alert severity="error">
-              Could not {action.toLowerCase()}: {error.message}
-            </Alert>
-          )}
-          {children}
-        </Stack>
+        <DialogContentText>{description}</DialogContentText>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
@@ -49,7 +37,7 @@ export default function ConfirmDialog({
           onClick={onConfirm}
           disabled={pending}
         >
-          {action}
+          {confirmLabel}
         </Button>
       </DialogActions>
     </Dialog>

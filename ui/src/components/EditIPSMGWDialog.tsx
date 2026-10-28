@@ -3,6 +3,7 @@ import { TextField } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import EditDialog from "@/components/EditDialog";
 import { type IPSMGW, updateIPSMGW } from "@/queries/ipsmgw";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const E164 = /^\d{1,15}$/;
 
@@ -14,12 +15,14 @@ export default function EditIPSMGWDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [number, setNumber] = useState(ipsmgw.number);
 
   const mutation = useMutation({
     mutationFn: updateIPSMGW,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ip-sm-gw"] });
+      showSnackbar("IP-SM-GW number updated successfully.", "success");
       onClose();
     },
   });

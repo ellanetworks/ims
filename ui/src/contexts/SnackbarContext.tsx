@@ -8,7 +8,7 @@ import {
 } from "react";
 import { Alert, Button, Snackbar, type AlertColor } from "@mui/material";
 
-// SnackbarAction is a button in a notification.
+// SnackbarAction is a button in a notification, such as View on a sent message.
 export interface SnackbarAction {
   label: string;
   onClick: () => void;

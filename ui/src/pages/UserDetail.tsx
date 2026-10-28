@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Box, Button, DialogContentText, Skeleton } from "@mui/material";
+import { Box, Button, Skeleton } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -13,7 +13,7 @@ import {
 } from "@/components/UserCards";
 import { EditRoleDialog, PasswordDialog } from "@/components/UserDialogs";
 import { useAuth } from "@/contexts/AuthContext";
-import { useSnackbar } from "@/contexts/SnackbarContext";
+import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
 import { listAPITokens } from "@/queries/api_tokens";
 import { deleteUser, getUser } from "@/queries/users";
 
@@ -48,6 +48,10 @@ export default function UserDetail() {
       showSnackbar("User deleted successfully.", "success");
       navigate("/users", { replace: true });
     },
+    onError: (error) => {
+      setEditing(null);
+      showSnackbar(`Failed to delete user: ${errorMessage(error)}`, "error");
+    },
   });
 
   return (
@@ -61,26 +65,15 @@ export default function UserDetail() {
             <Button
               variant="outlined"
               color="error"
-              onClick={() => {
-                remove.reset();
-                setEditing("delete");
-              }}
+              onClick={() => setEditing("delete")}
             >
               Delete
             </Button>
           )
         }
       />
-      <QueryAlert
-        error={user.error}
-        hasData={user.data !== undefined}
-        subject="this user"
-      />
-      <QueryAlert
-        error={tokens.error}
-        hasData={tokens.data !== undefined}
-        subject="this user's API tokens"
-      />
+      <QueryAlert query={user} subject="this user" />
+      <QueryAlert query={tokens} subject="this user's API tokens" />
       <Box
         sx={{
           display: "grid",
@@ -119,17 +112,13 @@ export default function UserDetail() {
       )}
       {editing === "delete" && (
         <ConfirmDialog
-          title={`Delete ${email}?`}
-          action="Delete"
+          title="Delete User"
+          description={`Delete ${email}? Its API tokens stop working. This cannot be undone.`}
+          confirmLabel="Delete"
           pending={remove.isPending}
-          error={remove.error}
           onConfirm={() => remove.mutate()}
           onClose={() => setEditing(null)}
-        >
-          <DialogContentText>
-            Its API tokens stop working. This cannot be undone.
-          </DialogContentText>
-        </ConfirmDialog>
+        />
       )}
     </Box>
   );

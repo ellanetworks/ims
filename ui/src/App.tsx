@@ -1,6 +1,7 @@
+import type { ReactElement } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "@/components/Layout";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth, type Permission } from "@/contexts/AuthContext";
 import Calls from "@/pages/Calls";
 import Cores from "@/pages/Cores";
 import Initialize from "@/pages/Initialize";
@@ -31,26 +32,44 @@ export default function App() {
   );
 }
 
-// Pages are the pages of the logged-in user's role: every role reads every page but Users.
+const pages: { path: string; element: ReactElement; permission: Permission }[] =
+  [
+    { path: "/cores", element: <Cores />, permission: "diameter:read" },
+    { path: "/operator", element: <Operator />, permission: "operator:read" },
+    {
+      path: "/registrations",
+      element: <Registrations />,
+      permission: "registration:read",
+    },
+    { path: "/calls", element: <Calls />, permission: "call_record:read" },
+    {
+      path: "/ptt",
+      element: <Navigate to="/ptt/groups" replace />,
+      permission: "mcptt:read",
+    },
+    { path: "/ptt/:tab", element: <PushToTalk />, permission: "mcptt:read" },
+    { path: "/users", element: <Users />, permission: "user:admin" },
+    {
+      path: "/users/:email",
+      element: <UserDetail />,
+      permission: "user:admin",
+    },
+  ];
+
+// Pages are the pages of the logged-in user's role. Any other path goes to its first page.
 function Pages() {
   const auth = useAuth();
+  const home = auth.can("diameter:read") ? "/cores" : "/profile";
 
   return (
     <Routes>
-      <Route path="/cores" element={<Cores />} />
-      <Route path="/operator" element={<Operator />} />
-      <Route path="/registrations" element={<Registrations />} />
-      <Route path="/calls" element={<Calls />} />
-      <Route path="/ptt" element={<Navigate to="/ptt/groups" replace />} />
-      <Route path="/ptt/:tab" element={<PushToTalk />} />
+      {pages
+        .filter(({ permission }) => auth.can(permission))
+        .map(({ path, element }) => (
+          <Route key={path} path={path} element={element} />
+        ))}
       <Route path="/profile" element={<Profile />} />
-      {auth.can("user:admin") && (
-        <>
-          <Route path="/users" element={<Users />} />
-          <Route path="/users/:email" element={<UserDetail />} />
-        </>
-      )}
-      <Route path="*" element={<Navigate to="/cores" replace />} />
+      <Route path="*" element={<Navigate to={home} replace />} />
     </Routes>
   );
 }

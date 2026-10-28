@@ -19,6 +19,7 @@ import {
   sameIdentity,
 } from "@/utils/mcptt";
 import { identitiesOf } from "@/utils/registrations";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const MAX_ALIAS = 64;
 
@@ -46,6 +47,7 @@ export default function UserDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [alias, setAlias] = useState(user?.alias ?? "");
   const [id, setID] = useState(user?.mcptt_id ?? "");
   const [impus, setIMPUs] = useState<string[]>(user?.impus ?? []);
@@ -74,6 +76,10 @@ export default function UserDialog({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.users });
       void queryClient.invalidateQueries({ queryKey: mcpttKeys.groups });
+      showSnackbar(
+        user ? "User updated successfully." : "User created successfully.",
+        "success",
+      );
       onClose();
     },
   });
@@ -109,9 +115,10 @@ export default function UserDialog({
 
   return (
     <EditDialog
-      title={user ? "Edit User" : "Add User"}
-      submitLabel={user ? "Update" : "Add"}
-      pendingLabel={user ? "Updating…" : "Adding…"}
+      title={user ? "Edit User" : "Create User"}
+      submitLabel={user ? "Update" : "Create"}
+      pendingLabel={user ? "Updating…" : "Creating…"}
+      failure={user ? "Could not update the user" : "Could not create the user"}
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}

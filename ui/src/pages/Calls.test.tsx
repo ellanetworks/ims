@@ -336,7 +336,7 @@ describe("Calls", () => {
       screen.getByRole("button", { name: "edit call record retention" }),
     );
 
-    const days = await screen.findByRole("textbox", { name: "Days" });
+    const days = await screen.findByRole("spinbutton", { name: "Days" });
     fireEvent.change(days, { target: { value: "0" } });
     expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
 

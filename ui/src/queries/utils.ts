@@ -19,12 +19,20 @@ export function setAccessTokenRenewer(renew: (() => Promise<boolean>) | null) {
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
+  // detail is the technical line under the message, such as "HTTP 500 Internal Server Error".
+  readonly detail?: string;
 
-  constructor(kind: ApiErrorKind, message: string, status?: number) {
+  constructor(
+    kind: ApiErrorKind,
+    message: string,
+    status?: number,
+    detail?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -84,17 +92,20 @@ export async function apiFetch<T>(
   if (!response.ok) {
     const message =
       data?.error || response.statusText || `HTTP ${response.status}`;
+    const detail =
+      `HTTP ${response.status} ${response.statusText}`.trimEnd() +
+      ` · ${method} ${url}`;
     // A refused access token is renewed once, and the request retried. A failed login sends none.
     if (response.status === 401 && token) {
       if (!retried && (await renewAccessToken?.())) {
         return apiFetch<T>(url, options, true);
       }
-      throw new ApiError("auth", message, response.status);
+      throw new ApiError("auth", message, response.status, detail);
     }
     if (response.status === 403) {
-      throw new ApiError("forbidden", message, response.status);
+      throw new ApiError("forbidden", message, response.status, detail);
     }
-    throw new ApiError("http", message, response.status);
+    throw new ApiError("http", message, response.status, detail);
   }
 
   if (data === undefined) {

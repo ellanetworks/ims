@@ -18,32 +18,54 @@ import {
 } from "@/queries/utils";
 import { decodeAccessToken } from "@/utils/jwt";
 
-// Permission is a change that the server allows a role. Every role reads everything but the users, so the UI only
-// hides what a role cannot change; the server enforces it.
+// Permission is what the server checks on a route. The UI only hides what a role cannot do; the server enforces it.
 export type Permission =
+  | "operator:read"
   | "operator:update"
+  | "diameter:read"
   | "diameter:update"
+  | "policy:read"
   | "policy:update"
-  | "ip_sm_gw:update"
+  | "sip:read"
+  | "registration:read"
   | "registration:reauthenticate"
+  | "call_record:read"
+  | "call_record:read_retention"
   | "call_record:update_retention"
+  | "ip_sm_gw:read"
+  | "ip_sm_gw:update"
+  | "mcptt:read"
   | "mcptt:update"
   | "user:admin";
 
-const networkManager: Permission[] = [
+// readPermissions are reading every setting and every state of the IMS.
+const readPermissions: Permission[] = [
+  "operator:read",
+  "diameter:read",
+  "policy:read",
+  "sip:read",
+  "registration:read",
+  "call_record:read",
+  "call_record:read_retention",
+  "ip_sm_gw:read",
+  "mcptt:read",
+];
+
+// operatePermissions are changing the settings of the IMS, and acting on its registrations.
+const operatePermissions: Permission[] = [
   "operator:update",
   "diameter:update",
   "policy:update",
-  "ip_sm_gw:update",
   "registration:reauthenticate",
   "call_record:update_retention",
+  "ip_sm_gw:update",
   "mcptt:update",
 ];
 
 const permissions: Record<RoleID, Permission[]> = {
-  [RoleID.Admin]: [...networkManager, "user:admin"],
-  [RoleID.ReadOnly]: [],
-  [RoleID.NetworkManager]: networkManager,
+  [RoleID.Admin]: [...readPermissions, ...operatePermissions, "user:admin"],
+  [RoleID.ReadOnly]: readPermissions,
+  [RoleID.NetworkManager]: [...readPermissions, ...operatePermissions],
 };
 
 export interface Auth {

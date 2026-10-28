@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Alert, TextField, Typography } from "@mui/material";
+import { Alert, TextField } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import EditDialog from "@/components/EditDialog";
 import {
   type CallRecordRetention,
   updateCallRecordRetention,
 } from "@/queries/callRecords";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const MIN_DAYS = 1;
 const MAX_DAYS = 3650;
@@ -18,12 +19,14 @@ export default function EditRetentionDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { showSnackbar } = useSnackbar();
   const [days, setDays] = useState(String(retention.days));
 
   const mutation = useMutation({
     mutationFn: updateCallRecordRetention,
     onSuccess: (updated) => {
       queryClient.setQueryData(["call-record-retention"], updated);
+      showSnackbar("Retention updated successfully.", "success");
       onClose();
     },
   });
@@ -34,17 +37,13 @@ export default function EditRetentionDialog({
 
   return (
     <EditDialog
-      title="Edit Call Record Retention Policy"
+      title="Edit Retention"
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}
       onSubmit={() => mutation.mutate({ days: n })}
       onClose={onClose}
     >
-      <Typography variant="body2" color="textSecondary">
-        Set the number of days to retain call records. After this period,
-        records will be automatically deleted.
-      </Typography>
       {reduced && (
         <Alert severity="warning">
           Reducing retention from {retention.days} to {n} days will permanently
@@ -53,11 +52,16 @@ export default function EditRetentionDialog({
       )}
       <TextField
         label="Days"
+        type="number"
         value={days}
-        onChange={(e) => setDays(e.target.value.trim())}
-        error={days !== "" && !valid}
-        helperText={`${MIN_DAYS} to ${MAX_DAYS} days`}
-        slotProps={{ htmlInput: { inputMode: "numeric" } }}
+        onChange={(e) => setDays(e.target.value)}
+        error={!valid}
+        helperText={
+          valid
+            ? "Call records older than this are deleted."
+            : `A whole number of days, ${MIN_DAYS} to ${MAX_DAYS}.`
+        }
+        slotProps={{ htmlInput: { min: MIN_DAYS, max: MAX_DAYS, step: 1 } }}
         required
       />
     </EditDialog>

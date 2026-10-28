@@ -48,6 +48,7 @@ export function CreateUserDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       submitLabel="Create"
       pendingLabel="Creating…"
+      failure="Could not create the user"
     >
       <TextField
         label="Email"
@@ -146,6 +147,7 @@ export function PasswordDialog({
       error={mutation.error}
       onSubmit={() => mutation.mutate()}
       onClose={onClose}
+      failure="Could not change the password"
     >
       {email === undefined && (
         <PasswordField

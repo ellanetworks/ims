@@ -73,7 +73,7 @@ describe("MCPTT pages", () => {
     const grid = await screen.findByRole("grid", { name: "Users" });
     await within(grid).findByText("Alice");
     expect(
-      screen.queryByRole("button", { name: "Add User" }),
+      screen.queryByRole("button", { name: "Create User" }),
     ).not.toBeInTheDocument();
     expect(
       within(grid).queryByRole("button", { name: /^(Edit|Delete) / }),
@@ -114,7 +114,7 @@ describe("MCPTT pages", () => {
     renderAt("users");
 
     await screen.findByText("Alice");
-    fireEvent.click(await screen.findByRole("button", { name: "Add User" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create User" }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), {
@@ -140,7 +140,7 @@ describe("MCPTT pages", () => {
       ),
     ).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
 
     await waitFor(() =>
       expect(requests(fetch, "POST", "/api/v1/mcptt/users")).toEqual([

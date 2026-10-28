@@ -11,6 +11,7 @@ import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import { CreateUserDialog } from "@/components/UserDialogs";
 import { listUsers, roleLabels, type User } from "@/queries/users";
+import { GRID_SX } from "@/utils/layout";
 
 const columns: GridColDef<User>[] = [
   {
@@ -23,6 +24,7 @@ const columns: GridColDef<User>[] = [
         component={RouterLink}
         to={`/users/${encodeURIComponent(row.email)}`}
         variant="body2"
+        sx={{ color: "link", textDecoration: "underline" }}
       >
         {row.email}
       </Link>
@@ -35,13 +37,6 @@ const columns: GridColDef<User>[] = [
     valueGetter: (_value, row) => roleLabels[row.role_id],
   },
 ];
-
-const gridSx = {
-  width: "100%",
-  border: 1,
-  borderColor: "divider",
-  bgcolor: "background.paper",
-};
 
 export default function Users() {
   const [creating, setCreating] = useState(false);
@@ -75,11 +70,7 @@ export default function Users() {
           </Button>
         }
       />
-      <QueryAlert
-        error={users.error}
-        hasData={data !== undefined}
-        subject="users"
-      />
+      <QueryAlert query={users} subject="users" />
       <DataGrid
         aria-label="Users"
         rows={data?.items ?? []}
@@ -97,7 +88,7 @@ export default function Users() {
         disableVirtualization
         autoHeight
         localeText={{ noRowsLabel: "No users." }}
-        sx={gridSx}
+        sx={GRID_SX}
       />
       {creating && <CreateUserDialog onClose={() => setCreating(false)} />}
     </Box>

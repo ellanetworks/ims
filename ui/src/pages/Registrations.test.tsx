@@ -373,8 +373,9 @@ describe("Registrations", () => {
     );
 
     const dialog = screen.getByRole("dialog", {
-      name: "Re-authenticate +15551230001?",
+      name: "Re-authenticate Subscriber",
     });
+    expect(dialog).toHaveTextContent("Re-authenticate +15551230001?");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Re-authenticate" }),
     );
@@ -398,9 +399,11 @@ describe("Registrations", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      `Could not re-authenticate: no registration for ${alice.impi}`,
-    );
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        `Failed to re-authenticate: no registration for ${alice.impi}`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

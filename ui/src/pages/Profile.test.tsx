@@ -7,7 +7,7 @@ import { json, renderWithClient, stubApi } from "@/test/render";
 
 const token: APIToken = {
   id: "abcdefghijkl",
-  name: "Monitoring",
+  name: "OTA platform",
   created_at: "2026-09-29T10:00:00.000Z",
   last_used_at: "2026-09-30T10:00:00.000Z",
 };
@@ -33,7 +33,7 @@ const serve = () => {
               { ...token, id: "mnopqrstuvwx", name: "CI pipeline" },
             ];
             return json(201, {
-              result: { token: "ellaims_mnopqrstuvwx_SECRET" },
+              result: { token: "ellasmsc_mnopqrstuvwx_SECRET" },
             });
           }
           return json(200, { result: page(tokens) });
@@ -78,7 +78,7 @@ describe("Profile", () => {
     expect(await screen.findByText("admin@example.com")).toBeInTheDocument();
     expect(screen.getByText("Admin")).toBeInTheDocument();
     const row = within(await screen.findByRole("table", { name: "API tokens" }))
-      .getByText("Monitoring")
+      .getByText("OTA platform")
       .closest("tr") as HTMLElement;
     expect(within(row).getByText("Active")).toBeInTheDocument();
     expect(within(row).getByText("Never")).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("Profile", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByTestId("new-api-token")).toHaveTextContent(
-      "ellaims_mnopqrstuvwx_SECRET",
+      "ellasmsc_mnopqrstuvwx_SECRET",
     );
     expect(calls).toEqual([
       {
@@ -116,7 +116,7 @@ describe("Profile", () => {
     renderWithClient(<Profile />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Delete Monitoring" }),
+      await screen.findByRole("button", { name: "Delete OTA platform" }),
     );
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
@@ -125,7 +125,7 @@ describe("Profile", () => {
     );
 
     await waitFor(() =>
-      expect(screen.queryByText("Monitoring")).not.toBeInTheDocument(),
+      expect(screen.queryByText("OTA platform")).not.toBeInTheDocument(),
     );
     expect(calls).toEqual([
       { method: "DELETE", path: "/api/v1/users/me/api-tokens/abcdefghijkl" },
@@ -193,7 +193,7 @@ describe("Profile notifications", () => {
     renderWithClient(<Profile />);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Delete Monitoring" }),
+      await screen.findByRole("button", { name: "Delete OTA platform" }),
     );
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
@@ -201,11 +201,44 @@ describe("Profile notifications", () => {
       }),
     );
 
-    // The dialog stays open with the error, so that the deletion can be retried.
     expect(
-      await within(screen.getByRole("dialog")).findByText(
-        "Could not delete: database is locked",
-      ),
+      await screen.findByText("Failed to delete API token: database is locked"),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("lets the error of a dialog be dismissed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        stubApi({
+          "/api/v1/users/me": () =>
+            json(200, { result: { email: "admin@example.com", role_id: 1 } }),
+          "/api/v1/users/me/api-tokens": () =>
+            json(200, { result: page([token]) }),
+          "/api/v1/users/me/password": () =>
+            json(400, { error: "Current password is incorrect" }),
+        }),
+      ),
+    );
+    renderWithClient(<Profile />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change Password" }),
+    );
+    fill("Current password", "wrong");
+    fill("New password", "battery staple");
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    const dialog = screen.getByRole("dialog");
+    await within(dialog).findByText(/Current password is incorrect/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(
+        within(dialog).queryByText(/Current password is incorrect/),
+      ).not.toBeInTheDocument(),
+    );
   });
 });
