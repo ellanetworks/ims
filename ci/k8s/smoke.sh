@@ -17,7 +17,8 @@
 #
 # MODE pod-network deploys k8s/pod-network/, with no Multus. The core is on the
 # kind network, and routes the pod network through the node, which routes the
-# IP pool through the core: the phones reach the pod's address without NAT.
+# IP pool through the core, and does not masquerade the IMS's traffic to them:
+# the phones and the core reach the pod's address without NAT.
 #
 # Needs docker, kind, kubectl, kubeconform, go, curl, jq and the sctp, esp4 and
 # xfrm_user kernel modules. Environment:
@@ -282,6 +283,11 @@ else
   pod_cidr="$(kubectl get node "${NODE}" -o jsonpath='{.spec.podCIDR}')"
   docker exec "${CORE}" ip route add "${pod_cidr}" via "$(node_ip)"
   docker exec "${NODE}" ip route add "${UE_POOL}" via "${CORE_DIAMETER}"
+  # kind masquerades the pods' traffic out of the cluster, as most CNIs do by
+  # default: not to the core and the phones, which must see the IMS's address.
+  for dst in "${UE_POOL}" "${CORE_DIAMETER}/32"; do
+    docker exec "${NODE}" iptables -t nat -I KIND-MASQ-AGENT -d "${dst}" -j RETURN
+  done
 fi
 docker exec "${CORE}" ip route add local "${UE_POOL}" dev lo
 docker cp "${WORK}/loadtest.test" "${CORE}:/loadtest.test"
