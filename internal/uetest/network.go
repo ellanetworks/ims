@@ -101,6 +101,29 @@ func (n *Network) Recv(s *siptest.Socket) (*sip.Request, sip.Flow) {
 	}
 }
 
+// RecvNone fails on a request new to the network, or a response, on s within d: a retransmission of a request it
+// received already, which a short T1 can send before its answer arrives, is none.
+func (n *Network) RecvNone(s *siptest.Socket, d time.Duration) {
+	n.T.Helper()
+
+	deadline := time.Now().Add(d)
+
+	for {
+		r, ok := s.RecvWithin(time.Until(deadline))
+		if !ok {
+			return
+		}
+
+		if req, isReq := r.Msg.(*sip.Request); isReq {
+			if via, _ := req.Header.TopVia(); n.Seen[via.Branch()] {
+				continue
+			}
+		}
+
+		n.T.Fatalf("uetest: unexpected %q on %s", r.Msg.StartLine(), s.Addr())
+	}
+}
+
 func (n *Network) WWWAuthenticate() string {
 	return `Digest realm="` + Domain + `", nonce="` + n.Nonce + `", algorithm=AKAv1-MD5, qop="auth"`
 }

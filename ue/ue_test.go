@@ -244,7 +244,7 @@ func TestTwoInvalidChallenges(t *testing.T) {
 		t.Fatalf("Register = %v, want ErrNetworkAuthentication after the third invalid challenge", err)
 	}
 
-	n.PCSCF.RecvNone(100 * time.Millisecond)
+	n.RecvNone(n.PCSCF, 100*time.Millisecond)
 }
 
 func TestNoSecurityServer(t *testing.T) {
@@ -551,7 +551,7 @@ func TestExpiry(t *testing.T) {
 		t.Fatalf("deregistered %q, registered %v, want expired", got, u.State().Registered)
 	}
 
-	n.PS.RecvNone(100 * time.Millisecond)
+	n.RecvNone(n.PS, 100*time.Millisecond)
 }
 
 // TS 23.003 §13.2–§13.4B: the identities of a UE without an ISIM.
@@ -639,7 +639,7 @@ func TestRequestsOutsideTheSAsAreDropped(t *testing.T) {
 	stranger.Send(sip.UDP, netip.AddrPortFrom(loopback, sa.Set.Local.PortS), n.Options(sa.Set.Local.PortS))
 	stranger.RecvNone(200 * time.Millisecond)
 
-	n.PS.RecvNone(200 * time.Millisecond)
+	n.RecvNone(n.PS, 200*time.Millisecond)
 
 	n.Request(n.PC, toIPsec(sa.Set))
 
@@ -790,7 +790,7 @@ func TestZeroExpiry(t *testing.T) {
 		t.Fatalf("state %+v and SAs %v after a 200 granting no time", u.State(), kernel.Installed())
 	}
 
-	n.PS.RecvNone(200 * time.Millisecond)
+	n.RecvNone(n.PS, 200*time.Millisecond)
 }
 
 func TestTCPRegistration(t *testing.T) {

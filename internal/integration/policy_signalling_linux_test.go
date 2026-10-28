@@ -134,9 +134,9 @@ func TestPolicySignallingAborted(t *testing.T) {
 			return ok && reg.SignallingLost && reg.Policy.ID == ""
 		})
 
-		if err := s.pol.abort(session); err == nil {
-			t.Fatal("the ended session was aborted again")
-		}
+		// RFC 6733 §8.1: until the answer to its termination ends it, the session takes an abort again, answered without
+		// another termination; then it is unknown.
+		eventually(t, "the ended session unknown to an abort", func() bool { return s.pol.abort(session) != nil })
 
 		if err := u.Reregister(s.ctx()); err != nil {
 			t.Fatal(err)

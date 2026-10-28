@@ -515,7 +515,7 @@ func TestBindingReplaced(t *testing.T) {
 		t.Fatalf("state %+v after the binding was replaced", u.State())
 	}
 
-	n.PCSCF.RecvNone(200 * time.Millisecond)
+	n.RecvNone(n.PCSCF, 200*time.Millisecond)
 }
 
 func TestRejected(t *testing.T) {
@@ -546,7 +546,7 @@ func TestRejected(t *testing.T) {
 		t.Fatalf("deregistered %q, want %q", got, DeregisteredRejected)
 	}
 
-	n.PCSCF.RecvNone(200 * time.Millisecond)
+	n.RecvNone(n.PCSCF, 200*time.Millisecond)
 }
 
 func TestOneIMPUTerminated(t *testing.T) {
@@ -599,8 +599,8 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	}
 
 	// TS 24.229 §5.1.1.6.1, §5.1.1.7: the subscription is considered ended, as if unsubscribed, without a SUBSCRIBE.
-	n.PS.RecvNone(300 * time.Millisecond)
-	n.PC.RecvNone(0)
+	n.RecvNone(n.PS, 300*time.Millisecond)
+	n.RecvNone(n.PC, 0)
 }
 
 func TestSubscriptionTerminatedByTimeout(t *testing.T) {

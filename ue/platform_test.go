@@ -163,7 +163,7 @@ func TestProbation(t *testing.T) {
 				t.Fatalf("deregistered %q after %s, want probation after 90s", e.Deregistered, e.RetryAfter)
 			}
 
-			n.PCSCF.RecvNone(200 * time.Millisecond)
+			n.RecvNone(n.PCSCF, 200*time.Millisecond)
 
 			return
 		case <-timeout:
