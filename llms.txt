@@ -1,0 +1,60 @@
+# Ella IMS Documentation
+
+> An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+
+An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+
+## Home
+
+- [Home](https://docs.ellanetworks.com/ims/index.md)
+
+## Tutorials
+
+- [Tutorials](https://docs.ellanetworks.com/ims/tutorials/index.md)
+- [Make Your First Voice Call](https://docs.ellanetworks.com/ims/tutorials/first_voice_call/index.md)
+
+## How-to Guides
+
+- [How-to Guides](https://docs.ellanetworks.com/ims/how_to/index.md)
+- [Enable Push-to-Talk](https://docs.ellanetworks.com/ims/how_to/enable_push_to_talk/index.md)
+- [Enable SMS over IP](https://docs.ellanetworks.com/ims/how_to/enable_sms_over_ip/index.md)
+- [Install](https://docs.ellanetworks.com/ims/how_to/install/index.md)
+- [Install the Android MCPTT App](https://docs.ellanetworks.com/ims/how_to/install_android_app/index.md)
+- [Integrate with an Application Server](https://docs.ellanetworks.com/ims/how_to/integrate_with_application_server/index.md)
+- [Integrate with Ella Core](https://docs.ellanetworks.com/ims/how_to/integrate_with_ella_core/index.md)
+
+## Reference
+
+- [Reference](https://docs.ellanetworks.com/ims/reference/index.md)
+- [Configuration File](https://docs.ellanetworks.com/ims/reference/config_file/index.md)
+- [Connectivity](https://docs.ellanetworks.com/ims/reference/connectivity/index.md)
+- [Metrics](https://docs.ellanetworks.com/ims/reference/metrics/index.md)
+- [Performance](https://docs.ellanetworks.com/ims/reference/performance/index.md)
+- [Supported Mobile Equipment](https://docs.ellanetworks.com/ims/reference/supported_mobile_equipment/index.md)
+- [System Requirements](https://docs.ellanetworks.com/ims/reference/system_reqs/index.md)
+- [API](https://docs.ellanetworks.com/ims/reference/api/index.md)
+- [Authentication](https://docs.ellanetworks.com/ims/reference/api/auth/index.md)
+- [Call Records](https://docs.ellanetworks.com/ims/reference/api/call_records/index.md)
+- [Diameter](https://docs.ellanetworks.com/ims/reference/api/diameter/index.md)
+- [Initialize](https://docs.ellanetworks.com/ims/reference/api/initialize/index.md)
+- [IP-SM-GW](https://docs.ellanetworks.com/ims/reference/api/ip_sm_gw/index.md)
+- [MCPTT Groups](https://docs.ellanetworks.com/ims/reference/api/mcptt_groups/index.md)
+- [MCPTT Live State](https://docs.ellanetworks.com/ims/reference/api/mcptt_live_state/index.md)
+- [MCPTT Service Configuration](https://docs.ellanetworks.com/ims/reference/api/mcptt_service_configuration/index.md)
+- [MCPTT Users](https://docs.ellanetworks.com/ims/reference/api/mcptt_users/index.md)
+- [Metrics](https://docs.ellanetworks.com/ims/reference/api/metrics/index.md)
+- [Operator](https://docs.ellanetworks.com/ims/reference/api/operator/index.md)
+- [Policy](https://docs.ellanetworks.com/ims/reference/api/policy/index.md)
+- [Registrations](https://docs.ellanetworks.com/ims/reference/api/registrations/index.md)
+- [SIP](https://docs.ellanetworks.com/ims/reference/api/sip/index.md)
+- [Status](https://docs.ellanetworks.com/ims/reference/api/status/index.md)
+- [Users](https://docs.ellanetworks.com/ims/reference/api/users/index.md)
+
+## Explanation
+
+- [Explanation](https://docs.ellanetworks.com/ims/explanation/index.md)
+- [Architecture](https://docs.ellanetworks.com/ims/explanation/architecture/index.md)
+- [Push-to-Talk](https://docs.ellanetworks.com/ims/explanation/push_to_talk/index.md)
+- [Security](https://docs.ellanetworks.com/ims/explanation/security/index.md)
+- [SMS over IP](https://docs.ellanetworks.com/ims/explanation/sms_over_ip/index.md)
+

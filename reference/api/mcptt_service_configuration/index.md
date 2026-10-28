@@ -1,0 +1,97 @@
+# MCPTT Service Configuration
+
+The service configuration of the MCPTT organisation (TS 24.484 §8.4). The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
+
+## Get the Status of the MCPTT AS
+
+This path returns what the MCPTT AS runs.
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/mcptt` |
+
+### Response Fields
+
+| Field               | Type   | Description                                             |
+| ------------------- | ------ | ------------------------------------------------------- |
+| `mode`              | string | `ims` or `direct`.                                      |
+| `name`              | string | Server name of the AS in the iFCs of the HSS.           |
+| `participating_psi` | string | Participating PSI.                                      |
+| `controlling_psi`   | string | Controlling PSI.                                        |
+| `sip`               | array  | SIP addresses of the AS. Sockets in `direct` mode only. |
+| `media_control`     | string | Address of the floor control channels.                  |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mode": "ims",
+        "name": "sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "participating_psi": "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "controlling_psi": "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "sip": ["127.0.0.1:5090"],
+        "media_control": "127.0.0.1:21000"
+    }
+}
+```
+
+## Get the Service Configuration
+
+This path returns the service configuration.
+
+| Method | Path                                  |
+| ------ | ------------------------------------- |
+| GET    | `/api/v1/mcptt/service-configuration` |
+
+### Response Fields
+
+| Field                    | Type   | Description                                                                                                             |
+| ------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `domain`                 | string | Domain of the organisation, of its MCPTT IDs and group IDs, and the IOI of its charging. The IMS home domain until set. |
+| `transmit_time_limit_ms` | int    | How long a participant may talk at a time, T2 (TS 24.380 Table 11.1.3-1). Absent if not set, in which case it is 30 s.  |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "domain": "ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+## Update the Service Configuration
+
+This path replaces the service configuration.
+
+| Method | Path                                  |
+| ------ | ------------------------------------- |
+| PUT    | `/api/v1/mcptt/service-configuration` |
+
+### Request Body
+
+| Field                    | Type   | Required | Description                 |
+| ------------------------ | ------ | -------- | --------------------------- |
+| `domain`                 | string | Yes      | Domain of the organisation. |
+| `transmit_time_limit_ms` | int    | No       | At least 1.                 |
+
+### Sample Request
+
+```
+{
+    "domain": "mcptt.example.com",
+    "transmit_time_limit_ms": 30000
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "domain": "mcptt.example.com",
+        "transmit_time_limit_ms": 30000
+    }
+}
+```

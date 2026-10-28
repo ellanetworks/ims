@@ -1,0 +1,3547 @@
+# Ella IMS Documentation
+
+> An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+
+An IP Multimedia Subsystem for private 4G and 5G networks - easy to operate, reliable, and secure.
+
+# Home
+
+# Ella IMS
+
+**Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application, designed to be easy to operate, reliable, and secure.
+
+## Key features
+
+- **Voice and video calls** over 4G (VoLTE) and 5G (VoNR).
+- **SIM-based authentication** with your existing HSS (IMS-AKA over Cx), and IPsec between phones and the IMS.
+- **Voice QoS** from the 4G or 5G core: PCRF over Rx, or PCF over N5 with optional mutual TLS.
+- **Application Servers**: connect voicemail, conferencing, supplementary services and other services, routed per subscriber by your HSS (iFCs over ISC).
+- **Push-to-talk**: a built-in MCPTT server for group calls with floor control, and an Android client.
+- **Call records**: who called whom, when, for how long, and how the call ended.
+- **Easy to operate**: a single binary with an embedded database, a web UI, an HTTP API, and Prometheus metrics.
+
+## In this documentation
+
+- [**Tutorials**](https://docs.ellanetworks.com/ims/tutorials/index.md)
+
+  ______________________________________________________________________
+
+  **Start here**: a hands-on introduction to Ella IMS. Make your first voice call.
+
+- [**How-to Guides**](https://docs.ellanetworks.com/ims/how_to/index.md)
+
+  ______________________________________________________________________
+
+  **Step-by-step guides** covering key operations and common tasks.
+
+- [**Reference**](https://docs.ellanetworks.com/ims/reference/index.md)
+
+  ______________________________________________________________________
+
+  **Technical information** - API, configuration, metrics, and more.
+
+- [**Explanation**](https://docs.ellanetworks.com/ims/explanation/index.md)
+
+  ______________________________________________________________________
+
+  **Discussion and clarification** of key topics.
+# Tutorials
+
+# Tutorials
+
+In this tutorial, we will add voice calls to a private 5G network with Ella IMS.
+
+| Tutorial                                                                                            | Hardware Required                                        | Installation Method | Duration |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------- | -------- |
+| [Make Your First Voice Call](https://docs.ellanetworks.com/ims/tutorials/first_voice_call/index.md) | An Ella Core 5G network, a second Linux host, two phones | Snap                | ~30 min  |
+
+# Make Your First Voice Call
+
+In this tutorial, we will add Ella IMS to a private 5G network running Ella Core, and make a voice call (VoNR) between two phones.
+
+You can expect to spend about 30 minutes completing this tutorial.
+
+## Pre-requisites
+
+To complete this tutorial, you will need the following:
+
+**Ella Core**
+
+- A 5G network running Ella Core, as built in Ella Core's [Getting Started (5G Network with Radio Hardware)](https://docs.ellanetworks.com/core/tutorials/getting_started_hardware/) tutorial. In this tutorial, Ella Core's N6 interface, `ens3`, has the address `10.6.0.2`.
+
+**Ella IMS**
+
+- A second Linux machine running Ubuntu 26.04 LTS, on Ella Core's N6 network. In this tutorial, it has the address `10.6.0.5`.
+
+**Phones**
+
+- Two [5G phones that support VoNR](https://docs.ellanetworks.com/ims/reference/supported_mobile_equipment/#phones), each with a SIM provisioned as a subscriber in Ella Core.
+
+## 1. Enable Diameter in Ella Core
+
+On the Ella Core machine, edit the configuration file:
+
+```
+sudo vim /var/snap/ella-core/common/core.yaml
+```
+
+Under `interfaces`, add the address Ella Core accepts Diameter connections on:
+
+/var/snap/ella-core/common/core.yaml
+
+```
+interfaces:
+  diameter:
+    address: "10.6.0.2"
+```
+
+Restart Ella Core:
+
+```
+sudo snap restart ella-core.cored
+```
+
+## 2. Install Ella IMS
+
+On the Ella IMS machine, install the Ella IMS snap:
+
+```
+sudo snap install ella-ims
+sudo snap connect ella-ims:network-control
+```
+
+Edit the configuration file:
+
+```
+sudo vim /var/snap/ella-ims/common/ims.yaml
+```
+
+Set the address phones reach Ella IMS on, and the address it reaches Ella Core from:
+
+/var/snap/ella-ims/common/ims.yaml
+
+```
+sip:
+  addresses: [10.6.0.5]
+diameter:
+  address: 10.6.0.5
+```
+
+Start Ella IMS:
+
+```
+sudo snap start --enable ella-ims.imsd
+```
+
+## 3. Initialize Ella IMS
+
+Open your browser and navigate to `http://10.6.0.5:5020/`. The **Initialize Ella IMS** page opens.
+
+Enter an email and a password of at least 8 characters, and click **Create**. You should see Ella IMS's **Cores** page.
+
+## 4. Connect Ella IMS to Ella Core
+
+Go to the **Cores** page:
+
+- Under **Peers**, click **Add Peer**, enter `10.6.0.2`, check **HSS** and **PCRF**, and click **Add**.
+- Under **HSS**, click the edit icon next to **HSS Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
+- Under **Voice QoS**, click the edit icon next to **Policy Function**, select **PCRF**, and click **Update**.
+- Click the edit icon next to **PCRF Realm**, enter `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
+
+Under **Peers**, Ella Core should show as **open**.
+
+## 5. Route the phones' traffic
+
+On the Ella IMS machine, route the phones' voice addresses, which we create in the next step, through Ella Core:
+
+```
+sudo ip route add 10.46.0.0/16 via 10.6.0.2 mtu lock 1400
+```
+
+## 6. Prepare Ella Core for voice
+
+In the Ella Core UI, go to the **Operator** page and scroll to the **IMS** section. Click the edit icon next to **P-CSCF Addresses**, enter `10.6.0.5`, and click **Update**.
+
+Go to the **Networking** page and open the **Data Networks** tab. Click **Create**, enter `ims` as the **Name**, `10.46.0.0/16` as the **IPv4 Pool**, turn on **IMS (voice and mission critical services)**, and click **Create**.
+
+Go to the **Profiles** page and click on the `default` profile. Click **Add Policy**, enter `voice` as the **Name**, set the **Data Network** to `ims`, and click **Create**.
+
+Go to the **Subscribers** page. For each of the two subscribers, click on it, click the edit icon next to **MSISDN**, enter a number, and click **Update**:
+
+- First subscriber: `+15551230001`
+- Second subscriber: `+15551230002`
+
+## 7. Register the phones
+
+On each phone, turn on VoNR, then turn airplane mode on and off.
+
+In Ella IMS, go to the **Registrations** page. You should see both phones.
+
+## 8. Make a call
+
+From the first phone, call `+15551230002`. Answer on the second phone, talk, and hang up.
+
+In Ella IMS, go to the **Calls** page. You should see the call, with the outcome **answered**.
+
+Success
+
+Congratulations! You have made a voice call over your private 5G network, through Ella Core and Ella IMS.
+# How-to Guides
+
+# How-to Guides
+
+These how-to guides cover key operations and common tasks in Ella IMS.
+
+- [Install](https://docs.ellanetworks.com/ims/how_to/install/index.md)
+- [Integrate with Ella Core](https://docs.ellanetworks.com/ims/how_to/integrate_with_ella_core/index.md)
+- [Integrate with an Application Server](https://docs.ellanetworks.com/ims/how_to/integrate_with_application_server/index.md)
+- [Install the Android MCPTT App](https://docs.ellanetworks.com/ims/how_to/install_android_app/index.md)
+- [Enable Push-to-Talk](https://docs.ellanetworks.com/ims/how_to/enable_push_to_talk/index.md)
+- [Enable SMS over IP](https://docs.ellanetworks.com/ims/how_to/enable_sms_over_ip/index.md)
+
+# Enable Push-to-Talk
+
+This guide enables group calls with floor control with Ella IMS's built-in Mission Critical Push To Talk (MCPTT) server. The examples use `10.6.0.5` as Ella IMS's SIP address.
+
+## Prerequisites
+
+- **Ella Core**: integrated with Ella IMS, as in [Integrate with Ella Core](https://docs.ellanetworks.com/ims/how_to/integrate_with_ella_core/index.md), and serving as the HSS.
+- **Phones**: the Ella MCPTT app, installed as in [Install the Android MCPTT App](https://docs.ellanetworks.com/ims/how_to/install_android_app/index.md), and a native IMS client that registers with a `reg-id`.
+- **SIMs**: with an ISIM you can program.
+
+## 1. Enable the MCPTT server
+
+In `ims.yaml`, set the address phones reach the MCPTT media on, and restart Ella IMS:
+
+```
+mcptt:
+  media:
+    address: 10.6.0.5
+```
+
+## 2. Configure Ella Core
+
+In the Ella Core UI:
+
+- **Networking → Data Networks → Create**: `mcx`, with an IP pool and **IMS** on.
+- **Profiles → Create**: an MC profile, e.g. `mcptt`. On it, **Add Policy**: a name, data network `mcx`, 5QI/QCI `69`, ARP `3`, **May pre-empt**, **Not pre-emptable**.
+- On the MC profile, also add the policies the users had on their previous profile, e.g. `internet` and `ims`.
+- **Operator → IMS → Add Application Server**: click **Fill for Ella IMS MCPTT**, then **Add**.
+- **Operator → IMS → Add Service Profile**: name `mcptt`; under **Add from preset**, select the **MCPTT** preset and click **Add Criteria**, then click **Add**.
+- **Profiles →** the MC profile **→** edit **IMS Service Profiles**: set **MCPTT** to `mcptt`, and **MMTel (voice, SMS)** to the service profile of the users' previous profile, if any, then **Save**.
+- **Subscribers**: put each user on the MC profile, with an MSISDN.
+
+## 3. Route the MC traffic
+
+On the Ella IMS host, route the `mcx` IP pool through Ella Core's N6 address, e.g.:
+
+```
+sudo ip route add 10.47.0.0/16 via 10.6.0.2 mtu lock 1400
+```
+
+## 4. Add the users
+
+In the Ella IMS UI, go to **Push-to-Talk → Users**. For each person, click **Add User** and enter:
+
+- **MCPTT ID**: e.g. `alice`.
+- **IMS Identities**: the subscriber's MSISDN, e.g. `15550000001`.
+
+## 5. Add a group
+
+Go to **Push-to-Talk → Groups**, click **Add Group**, and enter a group ID, e.g. `fire`, and its members.
+
+## 6. Set up the phones
+
+On each phone:
+
+- Program the SIM's ISIM with `sip:mcptt-<MSISDN>@<home domain>` in a record of EF.IMPU after the first.
+- Set the APN to `mcx`.
+- In the app's settings, set the user's MCPTT ID as Ella IMS shows it, e.g. `alice@ims.mnc001.mcc001.3gppnetwork.org`, and groups.
+
+## 7. Make a group call
+
+Start a group call from one phone. The other members' phones should ring, and **Push-to-Talk → Calls** should show the call.
+
+# Enable SMS over IP
+
+This guide lets phones send and receive SMS over IMS with Ella IMS's built-in IP-SM-GW. The examples use `10.3.0.7` as the SMSC's Diameter address and `15550000000` as its service centre address.
+
+## Prerequisites
+
+- **HSS**: an HSS connected to Ella IMS that supports the Sh-Update of SMSRegistrationInfo and forwards routing requests to the IP-SM-GW over S6c.
+- **SMSC**: an SMSC with an SGd interface, such as Ella SMSC.
+- **MME or SMSF**, for delivery over NAS when IMS fails: reachable over SGd.
+
+## 1. Set the IP-SM-GW number
+
+In the Ella IMS UI, go to the **Cores** page. Under **SMS over IP**, click the edit icon next to **IP-SM-GW Number**, enter an E.164 number without `+`, e.g. `15550000100`, and click **Update**.
+
+## 2. Add the SMSC
+
+Under **Peers**, click **Add Peer**, and enter:
+
+- **Address**: `10.3.0.7`.
+- **Roles**: **SGd** only.
+- **Service Centres**: `15550000000`.
+- **Transport**: **SCTP**, for Ella SMSC.
+- **Host**: the SMSC's Diameter identity, e.g. `smsc.node.epc.mnc001.mcc001.3gppnetwork.org` for Ella SMSC.
+
+Click **Add**.
+
+## 3. Let the HSS reach the IP-SM-GW
+
+Edit the HSS peer, check **Sh** and **S6c**, and click **Update**. If the HSS's core also serves the MME or SMSF, check **SGd** too.
+
+## 4. Add iFCs in the HSS
+
+With Ella Core:
+
+- **Operator → IMS → Add Application Server**: name `ip-sm-gw`, the **IP-SM-GW Name** of the **Cores** page as the **Server Name**, then **Add**.
+- **Operator → IMS → Add Service Profile**: name `sms-over-ip`; under **Add from preset**, select the **SMS over IP** preset and the `ip-sm-gw` **Application Server**, click **Add Criteria**, then click **Add**.
+- **Profiles →** the subscribers' profile **→** edit **IMS Service Profiles**: set **MMTel (voice, SMS)** to `sms-over-ip`, then **Save**.
+
+With another HSS, add two iFCs to the subscribers' service profiles, with the **IP-SM-GW Name** of the **Cores** page as the server name, e.g. `sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org`, and default handling `SESSION_CONTINUED`:
+
+- A trigger point on method `REGISTER`, with the subscriber's MSISDN as the service information, and **Include Register Request** and **Include Register Response** set.
+- A trigger point on method `MESSAGE`, session case `ORIGINATING_REGISTERED`, and header `Content-Type` matching `application/vnd\.3gpp\.sms`.
+
+## 5. Verify
+
+Register a phone with SMS over IP enabled, and send an SMS. `ellaims_ipsmgw_short_messages_total` should count it, with direction `mo` and result `success`.
+
+# Install
+
+Choose one of the installation methods below.
+
+Install the Ella IMS snap:
+
+```
+sudo snap install ella-ims
+sudo snap connect ella-ims:network-control
+```
+
+Configure Ella IMS:
+
+```
+sudo vim /var/snap/ella-ims/common/ims.yaml
+```
+
+Start Ella IMS:
+
+```
+sudo snap start --enable ella-ims.imsd
+```
+
+Install the required dependencies:
+
+```
+sudo snap install go --channel=1.27/stable --classic
+sudo snap install node --channel=24/stable --classic
+sudo apt update
+sudo apt -y install gcc
+```
+
+Clone the Ella IMS repository:
+
+```
+git clone https://github.com/ellanetworks/ims.git
+cd ims
+```
+
+Build the frontend:
+
+```
+npm install --prefix ui
+npm run build --prefix ui
+```
+
+Build Ella IMS:
+
+```
+go build -o ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=$(git rev-parse HEAD)" ./cmd/ims
+```
+
+Configure Ella IMS:
+
+```
+vim ims.yaml
+```
+
+Start Ella IMS:
+
+```
+sudo ./ims --config ims.yaml
+```
+
+Create a new directory:
+
+```
+mkdir ella-ims
+cd ella-ims
+```
+
+Copy the following file into this directory:
+
+docker-compose.yaml
+
+```
+configs:
+  ella_ims_config:
+    content: |
+      logging:
+        level: info
+      db:
+        path: /data/ims.db
+      api:
+        address: 0.0.0.0
+        port: 5020
+      sip:
+        addresses: [10.6.0.5]
+      diameter:
+        address: 10.3.0.5
+
+services:
+  ella-ims:
+    image: ghcr.io/ellanetworks/ella-ims:latest
+    configs:
+      - source: ella_ims_config
+        target: /ims.yaml
+    entrypoint: /bin/ims --config /ims.yaml
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ella-ims-data:/data
+
+volumes:
+  ella-ims-data:
+```
+
+Set `sip.addresses` and `diameter.address` to addresses of the host.
+
+Start the Ella IMS container:
+
+```
+docker compose up -d
+```
+
+Ensure your Kubernetes cluster is running with the [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) installed.
+
+Download the Ella IMS manifests:
+
+```
+git clone --depth 1 https://github.com/ellanetworks/ims.git
+```
+
+Edit `ims/k8s/ims-sip-nad.yaml`: set `master`, the SIP address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address.
+
+Edit `ims/k8s/ims-diameter-nad.yaml`: set `master` and the Diameter address.
+
+Edit `ims/k8s/ims-configmap.yaml`: set `sip.addresses` and `diameter.address` to the same addresses.
+
+Create the namespace:
+
+```
+kubectl create namespace ella
+kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
+```
+
+Deploy Ella IMS:
+
+```
+kubectl apply -k ims/k8s
+```
+
+Ella IMS's UI and API are on the `ella-ims` NodePort Service.
+
+Ella IMS's UI and API are at `http://<host-ip>:5020`. Open the UI and create the first user.
+
+See the [configuration reference](https://docs.ellanetworks.com/ims/reference/config_file/index.md) for all options.
+
+# Install the Android MCPTT App
+
+This guide installs Ella MCPTT, the push-to-talk app for Ella IMS, on Android phones.
+
+## Prerequisites
+
+- **Phones**: Android 14 or later.
+- **SIMs**: access rules (ARA-M) that allow the app's signing certificate, SHA-1 `692EDA27666062D3982DF420E1FEC26FE806335B`.
+
+## 1. Download the app
+
+Download the app and its checksum, and check them:
+
+```
+curl -LO https://github.com/ellanetworks/ims/releases/download/mcptt-edge/ella-mcptt.apk
+curl -LO https://github.com/ellanetworks/ims/releases/download/mcptt-edge/ella-mcptt.apk.sha256
+sha256sum -c ella-mcptt.apk.sha256
+```
+
+## 2. Install the app
+
+In your MDM, add `ella-mcptt.apk` as a private or in-house app, and assign it to the phones.
+
+Connect the phone over USB, with USB debugging on, and run:
+
+```
+adb install -r ella-mcptt.apk
+```
+
+In the phone's browser, open `https://github.com/ellanetworks/ims/releases/download/mcptt-edge/ella-mcptt.apk`, allow the browser to install unknown apps, and install it.
+
+## 3. Grant the permissions
+
+Open Ella MCPTT and go to **Settings → Diagnostics → Permissions**. Tap **Allow** on each item, and allow it in the prompt. It should show **The app has everything it needs.**
+
+To update the app, install a newer APK the same way. Its settings are kept.
+
+# Integrate with an Application Server
+
+This guide connects an Application Server (AS), such as voicemail or conferencing, to Ella IMS. The examples use `10.80.0.30` as the AS's address and `10.6.0.5` as Ella IMS's SIP address.
+
+## Prerequisites
+
+- **HSS**: an HSS that provisions initial Filter Criteria (iFCs).
+
+## 1. Trust the AS
+
+In `ims.yaml`, add the AS's address to the trusted networks, optionally set how long the AS has to answer, and restart Ella IMS:
+
+```
+sip:
+  trusted_networks: [10.80.0.30/32]
+scscf:
+  as_timeout: 4s
+```
+
+## 2. Add iFCs in the HSS
+
+In the HSS, add iFCs to the subscribers' service profiles, with the AS's SIP URI as the server name, e.g. `sip:10.80.0.30:5060`:
+
+- For third-party registration, add a trigger point on method `REGISTER`. Set **Include Register Request** and **Include Register Response** if the AS needs them.
+- For originating or terminating services, add a trigger point on the session case, plus the method, header or Request-URI to match.
+- Set the default handling to `SESSION_CONTINUED` to go on without the AS, or to `SESSION_TERMINATED` to fail the call, or deregister the user on `REGISTER`.
+
+## 3. Add the AS's PSIs
+
+If the AS serves its own URIs, such as a conference factory:
+
+- Add its PSIs to the HSS, distinct or wildcarded, with their iFCs or the AS as their server name.
+- If the server name is a host name, make it resolve to the AS, with a DNS A or SRV record.
+
+## 4. Configure the AS
+
+On the AS:
+
+- Trust Ella IMS's SIP address, `10.6.0.5`.
+- Send requests to a user to the I-CSCF, port `5070`.
+- Send requests on behalf of a user or a PSI to the S-CSCF, port `5080`, with `orig` in the Route header, `Route: <sip:10.6.0.5:5080;lr;orig>`, and the user in P-Served-User or P-Asserted-Identity.
+
+## 5. Verify
+
+Register a phone. The AS should receive a third-party REGISTER, or the first request that matches its iFCs.
+
+# Integrate with Ella Core
+
+This guide connects Ella IMS to Ella Core, with Ella Core as the HSS and the PCRF.
+
+## Prerequisites
+
+- **Ella IMS**: installed and started, as in [Install](https://docs.ellanetworks.com/ims/how_to/install/index.md).
+
+The examples use these addresses:
+
+| Address        | Role                                      |
+| -------------- | ----------------------------------------- |
+| `10.3.0.2`     | Ella Core's Diameter address              |
+| `10.6.0.2`     | Ella Core's N6 address                    |
+| `10.3.0.5`     | Ella IMS's Diameter address               |
+| `10.6.0.5`     | Ella IMS's SIP address                    |
+| `10.46.0.0/16` | IP pool of Ella Core's `ims` data network |
+
+## 1. Enable Diameter in Ella Core
+
+In Ella Core's configuration file, set the Diameter address, and restart Ella Core:
+
+```
+interfaces:
+  diameter:
+    address: "10.3.0.2"
+```
+
+## 2. Set the Ella IMS addresses
+
+In `ims.yaml`, set the address phones reach Ella IMS on, and the address it reaches Ella Core from, and restart Ella IMS:
+
+```
+sip:
+  addresses: [10.6.0.5]
+diameter:
+  address: 10.3.0.5
+```
+
+## 3. Set the operator
+
+In the Ella IMS UI, go to the **Operator** page:
+
+- Click the edit icon next to **Operator ID (MCC/MNC)**, enter Ella Core's MCC and MNC, e.g. `001` / `01`, and click **Update**.
+- Click the edit icon next to **Numbering Plan**, enter your country code and prefixes, and click **Update**.
+
+## 4. Add Ella Core as the HSS and PCRF
+
+Go to the **Cores** page:
+
+- Under **Peers**, click **Add Peer**, enter `10.3.0.2`, check **HSS** and **PCRF**, and click **Add**.
+- Under **HSS**, click the edit icon next to **HSS Realm**, enter `epc.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, with the MNC padded to 3 digits, e.g. `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
+- Under **Voice QoS**, click the edit icon next to **Policy Function**, select **PCRF**, and click **Update**.
+- Click the edit icon next to **PCRF Realm**, enter the same realm, and click **Update**.
+
+## 5. Route the phones' traffic
+
+On the Ella IMS host, route the `ims` data network through Ella Core's N6 address:
+
+```
+sudo ip route add 10.46.0.0/16 via 10.6.0.2 mtu lock 1400
+```
+
+## 6. Point Ella Core to Ella IMS
+
+In Ella Core, set **Operator → IMS → P-CSCF Addresses** to `10.6.0.5`, then follow Ella Core's [Enable Voice](https://docs.ellanetworks.com/core/how_to/enable_voice/) guide.
+# Reference
+
+# Reference
+
+This section provides detailed reference material for Ella IMS, from configuration options to complete API documentation.
+
+- [API](https://docs.ellanetworks.com/ims/reference/api/index.md)
+- [Configuration File](https://docs.ellanetworks.com/ims/reference/config_file/index.md)
+- [Metrics](https://docs.ellanetworks.com/ims/reference/metrics/index.md)
+- [Connectivity](https://docs.ellanetworks.com/ims/reference/connectivity/index.md)
+- [Performance](https://docs.ellanetworks.com/ims/reference/performance/index.md)
+- [System Requirements](https://docs.ellanetworks.com/ims/reference/system_reqs/index.md)
+- [Supported Mobile Equipment](https://docs.ellanetworks.com/ims/reference/supported_mobile_equipment/index.md)
+
+# Configuration File
+
+Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` flag to specify its path. Unknown keys are rejected.
+
+## Parameters
+
+- `logging` (object, optional): The logging configuration.
+  - `level` (string, optional): The log level: `debug`, `info`, `warn`, or `error`. Default `info`.
+- `db` (object): The database configuration.
+  - `path` (string): The path to the SQLite database file.
+- `api` (object): The HTTP API and UI.
+  - `address` (string): The IP address to listen on. `0.0.0.0` or `::` for all IPv4 and IPv6 addresses.
+  - `port` (int, optional): The TCP port to listen on. Default `5020`.
+  - `tls` (object, optional): Serve over HTTPS. Default: plain HTTP.
+    - `cert` (string): The path to the PEM certificate chain, the server's certificate first.
+    - `key` (string): The path to the PEM private key.
+- `sip` (object): SIP, for every CSCF.
+  - `addresses` (list of strings): The IP addresses the CSCFs listen on and phones reach. At least one; specific addresses, not `0.0.0.0` or `::`.
+  - `trusted_networks` (list of strings, optional): The networks, in CIDR notation, of the other nodes of the trust domain, such as Application Servers. The S-CSCF accepts requests only from them, the I-CSCF accepts their asserted identities, and Application Servers are sent requests only in them. Must not cover every address of a family. See [Security](https://docs.ellanetworks.com/ims/explanation/security/#the-trust-domain).
+- `pcscf` (object, optional): The P-CSCF.
+  - `port` (int, optional): The SIP port, UDP and TCP. Default `5060`.
+  - `ipsec` (object, optional): The IPsec ports.
+    - `server_port` (int, optional): The protected server port. Default `5063`.
+    - `client_ports` (list of 2 ints, optional): The protected client ports. Default `[5064, 5065]`.
+- `icscf` (object, optional): The I-CSCF.
+  - `port` (int, optional): The SIP port, UDP and TCP. Default `5070`.
+- `scscf` (object, optional): The S-CSCF.
+  - `port` (int, optional): The SIP port, UDP and TCP. Default `5080`.
+  - `as_timeout` (duration, optional): How long an Application Server has to respond before the default handling of its iFC applies, e.g. `4s`. Under `32s`. Default `4s`.
+- `diameter` (object): Diameter, to the HSS and the PCRF.
+  - `address` (string): The IP address of the Diameter connections, advertised to peers. A specific address, not `0.0.0.0` or `::`.
+  - `port` (int, optional): The port. Default `3868`.
+- `n5` (object, optional): N5, to a PCF. Required to select the PCF as the policy function.
+  - `notify` (object): Where the P-CSCF receives the PCF's notifications.
+    - `address` (string): The IP address. A specific address, not `0.0.0.0` or `::`.
+    - `port` (int, optional): The TCP port. `0`, the default, lets the system choose one. Must differ from the other TCP ports on its address.
+  - `tls` (object, optional): Mutual TLS on N5. Required for a PCF URI with the `https` scheme. The files are read when the PCF URI is set.
+    - `ca` (string): The path to the PEM file of the CA certificates that the PCF's certificate must chain to.
+    - `cert` (string): The path to the PEM file of Ella IMS's certificate, presented as both client and server. Must be valid for `n5.notify.address`.
+    - `key` (string): The path to the PEM file of the certificate's private key.
+- `mcptt` (object, optional): The built-in MCPTT server. When absent, the MCPTT server doesn't run and opens no ports.
+  - `mode` (string, optional): `ims`, the default, or `direct`: the MCPTT server is the registrar of its clients, without the IMS, for labs and tests.
+  - `port` (int, optional): The SIP port on each of `sip.addresses`. In `direct` mode, the UDP and TCP port clients send to. Default `5090`.
+  - `media` (object): The media relay.
+    - `address` (string): The IP address of the media sockets.
+    - `advertise` (string, optional): The IP address in the SDP, of the same family as `address`. Required if `address` is `0.0.0.0` or `::`. Default `address`.
+    - `min_port` (int, optional): The first port of the voice legs. Even. Default `20000`.
+    - `max_port` (int, optional): The last port of the voice legs. Default `20999`.
+    - `control_port` (int, optional): The port of the floor control channels, outside the voice legs' range. Default `21000`.
+
+The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`) must all differ, must not be `5100`, which the built-in IP-SM-GW takes, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
+
+## Example
+
+```
+logging:
+  level: info
+db:
+  path: ims.db
+api:
+  address: 0.0.0.0
+  port: 5020
+sip:
+  addresses: [10.6.0.5]
+pcscf:
+  port: 5060
+  ipsec:
+    server_port: 5063
+    client_ports: [5064, 5065]
+icscf:
+  port: 5070
+scscf:
+  port: 5080
+diameter:
+  address: 10.3.0.5
+  port: 3868
+```
+
+# Connectivity
+
+| Interface                      | Peer                                | Transport                          | Address               | Port                                                                                                       |
+| ------------------------------ | ----------------------------------- | ---------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| API                            | Operators, Prometheus               | TCP                                | `api.address`         | `api.port` (`5020`)                                                                                        |
+| SIP: P-CSCF                    | Phones                              | UDP and TCP                        | `sip.addresses`       | `pcscf.port` (`5060`)                                                                                      |
+| SIP: P-CSCF, IPsec             | Phones                              | UDP and TCP, in ESP                | `sip.addresses`       | `pcscf.ipsec.server_port` (`5063`), `pcscf.ipsec.client_ports` (`5064`, `5065`)                            |
+| SIP: I-CSCF                    | Application Servers, other networks | UDP and TCP                        | `sip.addresses`       | `icscf.port` (`5070`)                                                                                      |
+| SIP: S-CSCF                    | Application Servers                 | UDP and TCP                        | `sip.addresses`       | `scscf.port` (`5080`)                                                                                      |
+| SIP: MCPTT, `direct` mode      | MCPTT clients                       | UDP and TCP                        | `sip.addresses`       | `mcptt.port` (`5090`)                                                                                      |
+| MCPTT media                    | MCPTT clients                       | UDP                                | `mcptt.media.address` | `mcptt.media.min_port`–`max_port` (`20000`–`20999`), `mcptt.media.control_port` (`21000`)                  |
+| Diameter: Cx, Rx, Sh, S6c, SGd | HSS, PCRF, SMSC, MME, SMSF          | TCP or SCTP, set per peer          | `diameter.address`    | `diameter.port` (`3868`) to receive, over each transport a peer uses; each peer's port (`3868`) to connect |
+| N5                             | PCF                                 | HTTP/2, optionally with mutual TLS | `n5.notify.address`   | `n5.notify.port` (chosen by the system), while the policy interface is `n5`                                |
+
+Defaults are in parentheses.
+
+## Requirements
+
+- **ESP**: firewalls between phones and Ella IMS must pass ESP (IP protocol 50).
+- **`CAP_NET_ADMIN`**: Ella IMS sets up IPsec in the kernel. Run it as root, connect the snap's `network-control` interface, or add the capability to its container. On Kubernetes, only the `privileged` Pod Security Standard allows it.
+- **Routes**: Ella IMS needs a route to the phones' IP pools through the core network's N6 (5G) or SGi (4G) address.
+
+# Metrics
+
+Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
+
+| Metric                                    | Type                    | Description                                                                                                                                                                                                      |
+| ----------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ellaims_build_info`                      | Gauge                   | Always 1. The version and revision of the running build are in its labels.                                                                                                                                       |
+| `ellaims_registered_subscribers`          | Gauge                   | Subscribers registered now.                                                                                                                                                                                      |
+| `ellaims_registration_attempts_total`     | Counter                 | Registrations and re-registrations, by result: `accept`, `auth_failure`, `reject`.                                                                                                                               |
+| `ellaims_active_calls`                    | Gauge                   | Calls in progress.                                                                                                                                                                                               |
+| `ellaims_calls_total`                     | Counter                 | Calls that ended, by outcome: `answered`, `cancelled`, `busy`, `rejected`, `no_answer`, `unavailable`, `failed`.                                                                                                 |
+| `ellaims_sip_responses_total`             | Counter                 | Final responses the P-CSCF sent to phones, by method and status class.                                                                                                                                           |
+| `ellaims_diameter_peer_up`                | Gauge                   | 1 if the connection to a Diameter peer is open, by peer and application.                                                                                                                                         |
+| `ellaims_peer_requests_total`             | Counter                 | Requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface (`cx`, `rx`, `n5`, `sh`, `s6c`, `sgd`) and result (`success`, `failure`, `error`, `timeout`).                           |
+| `ellaims_peer_request_duration_seconds`   | Histogram               | Duration of requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface.                                                                                                            |
+| `ellaims_ipsmgw_short_messages_total`     | Counter                 | Short messages the IP-SM-GW carried, by direction (`mo`, `mt`), domain (`smsc` for `mo`; `ims`, `mme`, `sgsn`, `smsf_3gpp`, `smsf_non_3gpp`, `none` for `mt`, the last tried) and result (`success`, `failure`). |
+| `ellaims_database_query_duration_seconds` | Histogram               | Duration of database calls, by connection pool: `write`, `read`.                                                                                                                                                 |
+| `ellaims_database_query_errors_total`     | Counter                 | Failed database calls, by connection pool.                                                                                                                                                                       |
+| `ellaims_database_storage_bytes`          | Gauge                   | Size of the database on disk, by file: `main`, `wal`.                                                                                                                                                            |
+| `go_*`                                    | Gauge, Counter, Summary | Go runtime: goroutines, heap, garbage-collection pauses.                                                                                                                                                         |
+| `process_*`                               | Gauge, Counter          | Process: memory, CPU, open file descriptors, start time.                                                                                                                                                         |
+
+# Performance
+
+Measured registration and call capacity of Ella IMS, with 20,000 registered subscribers on a 4 vCPU host.
+
+## Registrations
+
+Registration time: from the initial REGISTER to its 200 OK, through the IMS-AKA challenge, measured at the phone (TS 32.409 §4.1.1.1).
+
+| Load                                       | Rate (/s) | Initial registration success rate | Mean  | p99    | CPU (cores) |
+| ------------------------------------------ | --------- | --------------------------------- | ----- | ------ | ----------- |
+| From 0 to 20,000 registered, in 3 min 20 s | 100       | 100%                              | 21 ms | 81 ms  | —           |
+| 20,000 registered                          | 50        | 100%                              | 32 ms | 127 ms | 0.58        |
+| 20,000 registered                          | 100       | 100%                              | 56 ms | 1.04 s | 1.19        |
+| 20,000 registered                          | 150       | 100%                              | 2.6 s | 4.5 s  | 1.43        |
+
+| Re-registration              | Value                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| Rate                         | 6.7/s: each of the 20,000 subscribers every 3,000 s (TS 24.229 §5.1.1.4.1) |
+| Re-registration success rate | 100%                                                                       |
+| Mean                         | 19 ms                                                                      |
+| p99                          | 97 ms                                                                      |
+
+## Calls
+
+Voice calls with preconditions (IR.92 §2.4.1), answered at once and held 90 s. Session setup time: from the INVITE to the first 180 or 2xx, measured at the calling phone (TS 32.409 §4.1.2.6).
+
+| Rate (/s) | Calls per hour | Session establishment success rate | Call drop rate | Session setup time, mean | p99    | Calls in progress | CPU (cores) | Resident memory |
+| --------- | -------------- | ---------------------------------- | -------------- | ------------------------ | ------ | ----------------- | ----------- | --------------- |
+| 25        | 90,000         | 100%                               | 0%             | 42 ms                    | 129 ms | 1,499             | 0.26        | 1.8 GiB         |
+| 50        | 180,000        | 100%                               | 0%             | 57 ms                    | 155 ms | 2,999             | 0.47        | 2.0 GiB         |
+| 100       | 360,000        | 100%                               | 0%             | 59 ms                    | 150 ms | 6,000             | 0.93        | 2.7 GiB         |
+
+## Memory
+
+| Item                                      | Value                     |
+| ----------------------------------------- | ------------------------- |
+| Resident memory, idle                     | 25 MiB                    |
+| Resident memory per registered subscriber | 76 KiB                    |
+| Memory of ended calls                     | Released within 2 minutes |
+
+## Limits
+
+| Limit                  | Value                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| Registered subscribers | 20,000 tested                                                                                 |
+| SIP TCP connections    | 3/4 of the open-file limit: 393,216 at systemd's default of 524,288. Each phone uses up to 2. |
+| MCPTT users            | 1,000                                                                                         |
+
+## Host Requirements
+
+| Requirement                   | Value                                                                                                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Receive Packet Steering (RPS) | On all CPUs, on a network interface with a single receive queue: `/sys/class/net/<interface>/queues/rx-0/rps_cpus`. Without it, one CPU processes all incoming traffic. |
+| Linux 6.13 and later          | The kernel's processing of incoming IPsec traffic grows with the number of registered phones per receiving CPU.                                                         |
+
+## Test Setup
+
+| Item             | Value                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Version          | Ella IMS built from source, after v0.0.1, default configuration                                                                                                    |
+| Host             | VM, 4 vCPU, 8 GB RAM, Ubuntu 26.04, Linux 7.0, on an Intel Core Ultra 7 265K                                                                                       |
+| Network          | One receive queue, RPS on all 4 CPUs                                                                                                                               |
+| Open-file limit  | 524,288 (systemd default)                                                                                                                                          |
+| Load generator   | Separate VM, 10 vCPU, 10 GB RAM                                                                                                                                    |
+| Phones           | Simulated: IMS-AKA, IPsec with integrity protection only (`hmac-sha-1-96`, no encryption), SIP over TCP, one IP address per phone, registration event subscription |
+| Re-registrations | Not re-authenticated (S-CSCF default)                                                                                                                              |
+| HSS              | Simulated, over Cx: 2.5 ms mean response time                                                                                                                      |
+| Policy           | Simulated PCRF, over Rx: 3.6 ms mean response time                                                                                                                 |
+| Media            | Not carried by Ella IMS                                                                                                                                            |
+
+# Supported Mobile Equipment
+
+Ella IMS follows 3GPP standards. Any compliant core network, Application Server and phone should work with it. This page lists those validated against Ella IMS.
+
+## Core Networks
+
+- **[Ella Core](https://docs.ellanetworks.com/core/)**
+- **[Open5GS](https://open5gs.org/)**
+
+## Phones
+
+- **Apple iPhone 11**
+- **Apple iPhone 16**
+- **Crosscall Core-Z5**
+- **Google Pixel 10a**
+- **Motorola Moto G 5G**
+- **Samsung Galaxy A56**
+
+## MCPTT Clients
+
+- **Ella MCPTT for Android**, in the [`android`](https://github.com/ellanetworks/ims/tree/main/android) directory.
+
+## Phone Quirks
+
+| Phone              | RAT | Observed                                                                           |
+| ------------------ | --- | ---------------------------------------------------------------------------------- |
+| Apple iPhone 11    | 4G  | Live Voicemail answers declined and unanswered calls (`200 OK`).                   |
+| Apple iPhone 16    | 4G  | Live Voicemail answers declined and unanswered calls (`200 OK`).                   |
+|                    | 4G  | 3 IMS addresses in 6 minutes.                                                      |
+|                    | 4G  | No video calls: registers with `audio` only, no `video` feature tag.               |
+|                    | 5G  | 5G SA unavailable without SUCI on the SIM (USIM service 124, `EF.SUCI_Calc_Info`). |
+|                    | 5G  | Rejects NEA0 (Security Mode Reject, cause 24).                                     |
+|                    | 5G  | SIM PLMN 001/01: never attempts the 5G SA cell.                                    |
+|                    | 5G  | SIM PLMN 999/01: data only, no voice settings, no IMS PDU session.                 |
+| Google Pixel 10a   | 4G  | Video call to an iPhone: the dialer offers Google Meet instead.                    |
+| Motorola Moto G 5G | 5G  | SIM PLMN 999/01: 5G SA only with network type "NR only".                           |
+|                    | 5G  | Video call answered without a camera, then switched to `recvonly` (once in 5).     |
+|                    | 4G  | SIM PLMN 999/01: IMS doesn't start.                                                |
+| Samsung Galaxy A56 | 4G  | SIM PLMN 001/01: VoLTE off (`LABSIM` profile, TS.43 entitlement 403).              |
+
+# System Requirements
+
+Ella IMS runs on Linux. It supports **amd64** and **arm64** architectures.
+
+|                      | Production                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **CPU**              | 4 cores                                                                                                               |
+| **Memory**           | 8 GB RAM                                                                                                              |
+| **Operating System** | Ubuntu 26.04 LTS                                                                                                      |
+| **Kernel**           | IPsec: `xfrm_user`, `esp4`, `esp6` for IPv6, and `authenc`. SCTP, for Diameter peers over SCTP.                       |
+| **Privileges**       | `CAP_NET_ADMIN` (see the [connectivity reference](https://docs.ellanetworks.com/ims/reference/connectivity/index.md)) |
+
+The production host is the one of the [performance reference](https://docs.ellanetworks.com/ims/reference/performance/index.md): 20,000 registered subscribers.
+
+# API
+
+## Authentication
+
+Requests send a token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+The token is either:
+
+- an access token, from [log in](https://docs.ellanetworks.com/ims/reference/api/auth/#log-in) or [refresh the access token](https://docs.ellanetworks.com/ims/reference/api/auth/#refresh-the-access-token), valid for 15 minutes;
+- an [API token](https://docs.ellanetworks.com/ims/reference/api/users/#create-an-api-token), which starts with `ellaims_`.
+
+These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/v1/status`, `GET /api/v1/metrics`, `GET /api/v1/openapi.yaml`, `POST /api/v1/init`, and `POST /api/v1/auth/login`, `/refresh` and `/logout`.
+
+### Roles
+
+| Role            | `role_id` | Allows                                                                         |
+| --------------- | --------- | ------------------------------------------------------------------------------ |
+| Admin           | `1`       | Everything.                                                                    |
+| Read Only       | `2`       | Reading the settings, the registrations, the call records and the MCPTT state. |
+| Network Manager | `3`       | Read Only, plus changing the settings and re-authenticating registrations.     |
+
+Only an Admin manages users. Every user reads its own user, changes its own password, and manages its own API tokens.
+
+An API token has the role of its user, but cannot create API tokens, change a password, or manage users.
+
+## Responses
+
+Ella IMS's API responses are JSON objects. A successful response carries a `result`:
+
+```
+{
+    "result": "Result content"
+}
+```
+
+A failed response carries an `error`:
+
+```
+{
+    "error": "Error message"
+}
+```
+
+`GET /api/v1/livez` and `GET /api/v1/readyz` answer 204 with no body when they succeed. `GET /api/v1/metrics` returns text in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), `GET /api/v1/openapi.yaml` returns YAML, and unknown paths and methods answer in plain text.
+
+## OpenAPI Specification
+
+The full API is described by an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) specification embedded in the binary. Fetch it from any running Ella IMS instance:
+
+```
+GET /api/v1/openapi.yaml
+```
+
+## Status codes
+
+- 200 - Success.
+- 201 - Created.
+- 202 - Accepted.
+- 204 - No content.
+- 400 - Bad request.
+- 401 - Missing, invalid or expired token.
+- 403 - Not allowed for the role or the token.
+- 404 - Not found.
+- 405 - Method not allowed.
+- 409 - Conflict.
+- 429 - Too many requests. `Retry-After` is the seconds to wait.
+- 500 - Internal server error.
+- 503 - Service unavailable, or not ready. See [Check readiness](https://docs.ellanetworks.com/ims/reference/api/status/#check-readiness).
+
+# Authentication
+
+## Log In
+
+This path returns an access token, and sets the session cookie, `ims_session`, or `__Host-ims_session` over TLS. The session lasts 30 days, and a user has at most 10.
+
+| Method | Path                 |
+| ------ | -------------------- |
+| POST   | `/api/v1/auth/login` |
+
+### Request Body
+
+| Field      | Type   | Required | Description                 |
+| ---------- | ------ | -------- | --------------------------- |
+| `email`    | string | Yes      | Email address, in any case. |
+| `password` | string | Yes      | Password.                   |
+
+### Response Codes
+
+| Code  | Description                                                                                                                              |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `401` | Wrong email or password.                                                                                                                 |
+| `429` | More than 20 attempts in a minute from the client address, or its IPv6 /64; or more than 100 wrong passwords in an hour for the account. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "message": "Login successful",
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+}
+```
+
+## Refresh the Access Token
+
+This path returns a new access token for the session of the cookie.
+
+| Method | Path                   |
+| ------ | ---------------------- |
+| POST   | `/api/v1/auth/refresh` |
+
+### Response Codes
+
+| Code  | Description                                                       |
+| ----- | ----------------------------------------------------------------- |
+| `401` | No session, or the session ended. The response clears the cookie. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+}
+```
+
+## Log Out
+
+This path ends the session of the cookie, and its access tokens, and clears the cookie.
+
+| Method | Path                  |
+| ------ | --------------------- |
+| POST   | `/api/v1/auth/logout` |
+
+### Response Codes
+
+| Code  | Description                |
+| ----- | -------------------------- |
+| `204` | Logged out, or no session. |
+
+# Call Records
+
+A call record describes a call the IMS handled, after TS 32.298 §5.1.3.1.
+
+## List Call Records
+
+This path returns the list of call records, most recently requested first.
+
+| Method | Path                   |
+| ------ | ---------------------- |
+| GET    | `/api/v1/call-records` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed                                                                           | Description                                                                  |
+| ---------- | ----- | ---- | ------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `search`   | query | str  |         |                                                                                   | Substring of the ICID or of an identity of the caller or the callee.         |
+| `start`    | query | str  |         |                                                                                   | Inclusive lower bound of the request time, RFC 3339. Unbounded when omitted. |
+| `end`      | query | str  |         |                                                                                   | Exclusive upper bound of the request time, RFC 3339. Unbounded when omitted. |
+| `outcome`  | query | str  |         | `answered`, `cancelled`, `busy`, `rejected`, `no_answer`, `unavailable`, `failed` | Outcome to include. Repeatable.                                              |
+| `page`     | query | int  | `1`     | `>= 1`                                                                            | 1-based page index.                                                          |
+| `per_page` | query | int  | `25`    | `1…100`                                                                           | Number of items per page.                                                    |
+
+### Response Fields
+
+| Field               | Type    | Description                                                                                                                                                                            |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                | int     | Record identifier.                                                                                                                                                                     |
+| `icid`              | string  | icid-value of the P-Charging-Vector (§5.1.3.1.19).                                                                                                                                     |
+| `session_id`        | string  | Call-ID of the INVITE (§5.1.3.1.59).                                                                                                                                                   |
+| `calling_party`     | array   | P-Asserted-Identity values (§5.1.3.1.24).                                                                                                                                              |
+| `caller_impi`       | string  | Private user identity of the caller (§5.1.3.1.36).                                                                                                                                     |
+| `requested_party`   | string  | Request-URI from the caller (§5.1.3.1.43).                                                                                                                                             |
+| `called_party`      | string  | Request-URI after normalisation by the S-CSCF (§5.1.3.1.9).                                                                                                                            |
+| `callee_impi`       | string  | Private user identity of the answering registration (§5.1.3.1.36).                                                                                                                     |
+| `requested_at`      | string  | Reception time of the INVITE (§5.1.3.1.58).                                                                                                                                            |
+| `delivery_start_at` | string  | Time of the final response to the caller (§5.1.3.1.55).                                                                                                                                |
+| `delivery_end_at`   | string  | End time of an answered call (§5.1.3.1.54).                                                                                                                                            |
+| `sip_status`        | int     | Final status of the INVITE sent to the caller (§5.1.3.1.57).                                                                                                                           |
+| `outcome`           | string  | `answered` (2xx), `cancelled` (487 to a caller CANCEL), `busy` (486, 600), `rejected` (603), `no_answer` (408 after a 180), `unavailable` (480), or `failed` (any other final status). |
+| `ended_by`          | string  | `caller`, `callee` or `network`.                                                                                                                                                       |
+| `alerted`           | boolean | Whether a 180 reached the caller.                                                                                                                                                      |
+| `media`             | array   | Media types of the accepted m-lines.                                                                                                                                                   |
+| `in_progress`       | boolean | Whether the call has not ended.                                                                                                                                                        |
+| `incomplete`        | boolean | Whether the record was closed without the end of the call.                                                                                                                             |
+| `duration_ms`       | int     | Duration of an answered call that ended, in milliseconds.                                                                                                                              |
+
+A value the IMS did not observe is absent. Times are RFC 3339.
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "id": 42,
+                "icid": "1a2b3c4d5e6f7a8b",
+                "session_id": "a84b4c76e66710@10.45.0.2",
+                "calling_party": [
+                    "sip:+15550000001@ims.mnc001.mcc001.3gppnetwork.org",
+                    "tel:+15550000001"
+                ],
+                "caller_impi": "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+                "requested_party": "tel:15550000002",
+                "called_party": "tel:+15550000002",
+                "callee_impi": "001010000000002@ims.mnc001.mcc001.3gppnetwork.org",
+                "requested_at": "2026-10-26T18:21:10.204Z",
+                "delivery_start_at": "2026-10-26T18:21:14.871Z",
+                "delivery_end_at": "2026-10-26T18:23:02.330Z",
+                "sip_status": 200,
+                "outcome": "answered",
+                "ended_by": "caller",
+                "alerted": true,
+                "media": ["audio"],
+                "in_progress": false,
+                "incomplete": false,
+                "duration_ms": 107459
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## Get a Call Record
+
+This path returns a specific call record.
+
+| Method | Path                        |
+| ------ | --------------------------- |
+| GET    | `/api/v1/call-records/{id}` |
+
+### Path Parameters
+
+| Name | Type | Description        |
+| ---- | ---- | ------------------ |
+| `id` | int  | Record identifier. |
+
+### Response Codes
+
+| Code  | Description                    |
+| ----- | ------------------------------ |
+| `404` | No record has this identifier. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "id": 43,
+        "icid": "2b3c4d5e6f7a8b9c",
+        "session_id": "b95c5d87f77821@10.45.0.3",
+        "calling_party": [
+            "sip:+15550000002@ims.mnc001.mcc001.3gppnetwork.org"
+        ],
+        "caller_impi": "001010000000002@ims.mnc001.mcc001.3gppnetwork.org",
+        "requested_party": "tel:+15550000001",
+        "called_party": "tel:+15550000001",
+        "requested_at": "2026-10-26T18:30:41.019Z",
+        "delivery_start_at": "2026-10-26T18:30:50.552Z",
+        "sip_status": 486,
+        "outcome": "busy",
+        "ended_by": "callee",
+        "alerted": true,
+        "media": [],
+        "in_progress": false,
+        "incomplete": false
+    }
+}
+```
+
+## Get Call Record Retention Policy
+
+This path returns how long call records are kept.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| GET    | `/api/v1/call-records/retention` |
+
+### Response Fields
+
+| Field  | Type | Description                           |
+| ------ | ---- | ------------------------------------- |
+| `days` | int  | Number of days call records are kept. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "days": 90
+    }
+}
+```
+
+## Update Call Record Retention Policy
+
+This path changes how long call records are kept, from their next pruning.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| PUT    | `/api/v1/call-records/retention` |
+
+### Request Body
+
+| Field  | Type | Required | Description |
+| ------ | ---- | -------- | ----------- |
+| `days` | int  | Yes      | 1–3650.     |
+
+### Sample Request
+
+```
+{
+    "days": 30
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "days": 30
+    }
+}
+```
+
+# Diameter
+
+Diameter peers are the HSSs, SLFs, PCRFs, DRAs, SMSCs, MMEs and SMSFs Ella IMS connects to. Routes set the realm the requests of each routed application go to.
+
+## Get the Diameter Identity
+
+This path returns the Diameter identity of the IMS, derived from the operator settings.
+
+| Method | Path               |
+| ------ | ------------------ |
+| GET    | `/api/v1/diameter` |
+
+### Response Fields
+
+| Field   | Type   | Description              |
+| ------- | ------ | ------------------------ |
+| `host`  | string | Origin-Host of the IMS.  |
+| `realm` | string | Origin-Realm of the IMS. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "host": "ims.ims.mnc001.mcc001.3gppnetwork.org",
+        "realm": "ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+## List Diameter Peers
+
+This path returns the list of Diameter peers, in the order they were created in.
+
+| Method | Path                     |
+| ------ | ------------------------ |
+| GET    | `/api/v1/diameter/peers` |
+
+### Response Fields
+
+| Field                   | Type   | Description                                                                                                                                                                            |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | string | Peer identifier, a UUIDv7.                                                                                                                                                             |
+| `host`                  | string | DiameterIdentity of the peer, which must match the Origin-Host of its capabilities exchange. Empty takes the Origin-Host the peer gives.                                               |
+| `address`               | string | IPv4 or IPv6 address of the peer.                                                                                                                                                      |
+| `port`                  | int    | Port of the peer.                                                                                                                                                                      |
+| `transport`             | string | `tcp` or `sctp`.                                                                                                                                                                       |
+| `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, and `sh` and `s6c` for its IP-SM-GW functions; `rx` for a PCRF or a DRA; `sgd` for an SMSC, an MME or an SMSF.                |
+| `priority`              | int    | Requests try the peers serving their application by priority, lowest first, and share them between peers of the same priority. SMSCs of the same service centre are tried by priority. |
+| `service_centres`       | array  | Service centre addresses of an SMSC, E.164 numbers without `+`. Absent if none.                                                                                                        |
+| `status`                | object | Connection to the peer.                                                                                                                                                                |
+| `status.state`          | string | `down`, `connecting`, `open`, `suspect`, `reopen` or `closing`. `down` until the IMS has tried the peer.                                                                               |
+| `status.since`          | string | Time of the last state change (RFC 3339).                                                                                                                                              |
+| `status.remote_address` | string | Remote address of the connection.                                                                                                                                                      |
+| `status.host`           | string | Origin-Host the peer gave in its last capabilities exchange, else the configured host.                                                                                                 |
+| `status.realm`          | string | Origin-Realm the peer gave in its last capabilities exchange.                                                                                                                          |
+| `status.error`          | string | Why the last connection to the peer failed.                                                                                                                                            |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+                "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                "address": "127.0.0.1",
+                "port": 3869,
+                "transport": "tcp",
+                "applications": ["cx"],
+                "priority": 10,
+                "status": {
+                    "state": "down",
+                    "since": "2026-10-26T18:14:14.963Z",
+                    "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                    "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3869: connect: connection refused"
+                }
+            },
+            {
+                "id": "01a1796b-90bb-7a57-8972-269dab84d5af",
+                "host": "",
+                "address": "127.0.0.1",
+                "port": 3870,
+                "transport": "tcp",
+                "applications": ["rx"],
+                "priority": 10,
+                "status": {
+                    "state": "down",
+                    "since": "2026-10-26T18:14:14.971Z",
+                    "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3870: connect: connection refused"
+                }
+            }
+        ]
+    }
+}
+```
+
+## Get a Diameter Peer
+
+This path returns the details of a specific Diameter peer.
+
+| Method | Path                          |
+| ------ | ----------------------------- |
+| GET    | `/api/v1/diameter/peers/{id}` |
+
+### Path Parameters
+
+| Name | Type   | Description      |
+| ---- | ------ | ---------------- |
+| `id` | string | Peer identifier. |
+
+### Response Codes
+
+| Code  | Description                  |
+| ----- | ---------------------------- |
+| `404` | No peer has this identifier. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+        "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+        "address": "127.0.0.1",
+        "port": 3869,
+        "transport": "tcp",
+        "applications": ["cx"],
+        "priority": 10,
+        "status": {
+            "state": "down",
+            "since": "2026-10-26T18:14:14.963Z",
+            "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+            "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3869: connect: connection refused"
+        }
+    }
+}
+```
+
+## Create a Diameter Peer
+
+This path creates a Diameter peer, which the IMS then connects to.
+
+| Method | Path                     |
+| ------ | ------------------------ |
+| POST   | `/api/v1/diameter/peers` |
+
+### Request Body
+
+| Field             | Type   | Required | Description                                                                                             |
+| ----------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------- |
+| `host`            | string | No       | Domain name. Unique among peers.                                                                        |
+| `address`         | string | Yes      | Specific IPv4 or IPv6 address.                                                                          |
+| `port`            | int    | No       | 1–65535. Default `3868`.                                                                                |
+| `transport`       | string | No       | `tcp` or `sctp`. Default `tcp`.                                                                         |
+| `applications`    | array  | Yes      | At least one of `cx`, `rx`, `sh`, `s6c` and `sgd`, each once.                                           |
+| `priority`        | int    | No       | 0–65535. Default `10`.                                                                                  |
+| `service_centres` | array  | No       | E.164 numbers of 1 to 15 digits, without `+`, each once. Requires `sgd` in `applications` and a `host`. |
+
+### Response Codes
+
+| Code  | Description                                                                       |
+| ----- | --------------------------------------------------------------------------------- |
+| `409` | Another peer has the same host, or the same address and transport without a host. |
+
+### Sample Request
+
+```
+{
+    "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+    "address": "127.0.0.1",
+    "port": 3869,
+    "transport": "tcp",
+    "applications": ["cx"],
+    "priority": 10
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+        "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+        "address": "127.0.0.1",
+        "port": 3869,
+        "transport": "tcp",
+        "applications": ["cx"],
+        "priority": 10,
+        "status": {
+            "state": "down"
+        }
+    }
+}
+```
+
+## Update a Diameter Peer
+
+This path replaces a Diameter peer, which the IMS then reconnects to. The request body is that of [Create a Diameter Peer](#create-a-diameter-peer).
+
+| Method | Path                          |
+| ------ | ----------------------------- |
+| PUT    | `/api/v1/diameter/peers/{id}` |
+
+### Path Parameters
+
+| Name | Type   | Description      |
+| ---- | ------ | ---------------- |
+| `id` | string | Peer identifier. |
+
+### Response Codes
+
+| Code  | Description                                                                                                                                      |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `404` | No peer has this identifier.                                                                                                                     |
+| `409` | Another peer has the same host, or the same address and transport without a host; or the policy interface is `rx` and no other peer serves `rx`. |
+
+### Sample Request
+
+```
+{
+    "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+    "address": "127.0.0.1",
+    "port": 3869,
+    "transport": "tcp",
+    "applications": ["cx"],
+    "priority": 5
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+        "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+        "address": "127.0.0.1",
+        "port": 3869,
+        "transport": "tcp",
+        "applications": ["cx"],
+        "priority": 5,
+        "status": {
+            "state": "down",
+            "since": "2026-10-26T18:14:14.963Z",
+            "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+            "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3869: connect: connection refused"
+        }
+    }
+}
+```
+
+## Delete a Diameter Peer
+
+This path deletes a Diameter peer.
+
+| Method | Path                          |
+| ------ | ----------------------------- |
+| DELETE | `/api/v1/diameter/peers/{id}` |
+
+### Path Parameters
+
+| Name | Type   | Description      |
+| ---- | ------ | ---------------- |
+| `id` | string | Peer identifier. |
+
+### Response Codes
+
+| Code  | Description                                                 |
+| ----- | ----------------------------------------------------------- |
+| `404` | No peer has this identifier.                                |
+| `409` | The policy interface is `rx` and no other peer serves `rx`. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "message": "Diameter peer deleted"
+    }
+}
+```
+
+## List Diameter Routes
+
+This path returns the route of each routed application: `cx`, `rx`, `sh`, then `s6c`.
+
+| Method | Path                      |
+| ------ | ------------------------- |
+| GET    | `/api/v1/diameter/routes` |
+
+### Response Fields
+
+| Field               | Type   | Description                                                                                                           |
+| ------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| `application`       | string | `cx`, `rx`, `sh` or `s6c`.                                                                                            |
+| `realm`             | string | Configured realm: of the HSS for `cx`, `sh` and `s6c`, of the PCRF for `rx`. Empty if not set.                        |
+| `destination_realm` | string | Destination-Realm of the requests. If `realm` is empty: the `cx` realm for `sh` and `s6c`, the home domain otherwise. |
+| `peers`             | array  | Peers serving the application, in the order requests try them, each with its `id`, `host`, `priority` and `status`.   |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "application": "cx",
+                "realm": "epc.mnc001.mcc001.3gppnetwork.org",
+                "destination_realm": "epc.mnc001.mcc001.3gppnetwork.org",
+                "peers": [
+                    {
+                        "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+                        "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                        "priority": 5,
+                        "status": {
+                            "state": "down",
+                            "since": "2026-10-26T18:14:21.052Z",
+                            "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                            "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3869: connect: connection refused"
+                        }
+                    }
+                ]
+            },
+            {
+                "application": "rx",
+                "realm": "",
+                "destination_realm": "ims.mnc001.mcc001.3gppnetwork.org",
+                "peers": [
+                    {
+                        "id": "01a1796b-90bb-7a57-8972-269dab84d5af",
+                        "host": "",
+                        "priority": 10,
+                        "status": {
+                            "state": "down",
+                            "since": "2026-10-26T18:14:14.971Z",
+                            "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3870: connect: connection refused"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}
+```
+
+## Get a Diameter Route
+
+This path returns the route of an application.
+
+| Method | Path                                    |
+| ------ | --------------------------------------- |
+| GET    | `/api/v1/diameter/routes/{application}` |
+
+### Path Parameters
+
+| Name          | Type   | Description                |
+| ------------- | ------ | -------------------------- |
+| `application` | string | `cx`, `rx`, `sh` or `s6c`. |
+
+### Response Codes
+
+| Code  | Description                    |
+| ----- | ------------------------------ |
+| `404` | The application is not routed. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "application": "rx",
+        "realm": "",
+        "destination_realm": "ims.mnc001.mcc001.3gppnetwork.org",
+        "peers": [
+            {
+                "id": "01a1796b-90bb-7a57-8972-269dab84d5af",
+                "host": "",
+                "priority": 10,
+                "status": {
+                    "state": "down",
+                    "since": "2026-10-26T18:14:14.971Z",
+                    "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3870: connect: connection refused"
+                }
+            }
+        ]
+    }
+}
+```
+
+## Update a Diameter Route
+
+This path sets the realm of an application's requests. The next request goes to the new realm.
+
+| Method | Path                                    |
+| ------ | --------------------------------------- |
+| PUT    | `/api/v1/diameter/routes/{application}` |
+
+### Path Parameters
+
+| Name          | Type   | Description                |
+| ------------- | ------ | -------------------------- |
+| `application` | string | `cx`, `rx`, `sh` or `s6c`. |
+
+### Request Body
+
+| Field   | Type   | Required | Description                                        |
+| ------- | ------ | -------- | -------------------------------------------------- |
+| `realm` | string | No       | Domain name. Absent or empty restores the default. |
+
+### Response Codes
+
+| Code  | Description                    |
+| ----- | ------------------------------ |
+| `404` | The application is not routed. |
+
+### Sample Request
+
+```
+{
+    "realm": "epc.mnc001.mcc001.3gppnetwork.org"
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "application": "cx",
+        "realm": "epc.mnc001.mcc001.3gppnetwork.org",
+        "destination_realm": "epc.mnc001.mcc001.3gppnetwork.org",
+        "peers": [
+            {
+                "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+                "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                "priority": 10,
+                "status": {
+                    "state": "down",
+                    "since": "2026-10-26T18:14:14.963Z",
+                    "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                    "error": "tcp: dial tcp 127.0.0.1:0->127.0.0.1:3869: connect: connection refused"
+                }
+            }
+        ]
+    }
+}
+```
+
+# Initialize
+
+## Initialize Ella IMS
+
+This path creates the first user, an Admin, and logs it in.
+
+| Method | Path           |
+| ------ | -------------- |
+| POST   | `/api/v1/init` |
+
+### Request Body
+
+| Field      | Type   | Required | Description    |
+| ---------- | ------ | -------- | -------------- |
+| `email`    | string | Yes      | Email address. |
+| `password` | string | Yes      | 8 to 72 bytes. |
+
+### Response Codes
+
+| Code  | Description                                |
+| ----- | ------------------------------------------ |
+| `201` | Created.                                   |
+| `403` | A user exists.                             |
+| `429` | Too many attempts from the client address. |
+
+### Sample Request
+
+```
+{
+    "email": "admin@example.com",
+    "password": "correct horse"
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "message": "System initialized successfully",
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+}
+```
+
+# IP-SM-GW
+
+The IP-SM-GW is Ella IMS's built-in IP Short Message Gateway: the Application Server that carries SMS over IP.
+
+## Get the IP-SM-GW
+
+This path returns the IP-SM-GW settings and name.
+
+| Method | Path               |
+| ------ | ------------------ |
+| GET    | `/api/v1/ip-sm-gw` |
+
+### Response Fields
+
+| Field    | Type   | Description                                                                               |
+| -------- | ------ | ----------------------------------------------------------------------------------------- |
+| `number` | string | E.164 number of the IP-SM-GW, without `+`. Empty if not set.                              |
+| `name`   | string | SIP URI of the IP-SM-GW, the server name of its iFCs. Derived from the operator settings. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "number": "15550000100",
+        "name": "sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+## Update the IP-SM-GW
+
+This path sets the IP-SM-GW number. The IP-SM-GW registers the new number at the HSS for the users it serves. An empty number deregisters it.
+
+| Method | Path               |
+| ------ | ------------------ |
+| PUT    | `/api/v1/ip-sm-gw` |
+
+### Request Body
+
+| Field    | Type   | Required | Description                                            |
+| -------- | ------ | -------- | ------------------------------------------------------ |
+| `number` | string | Yes      | E.164 number of 1 to 15 digits, without `+`, or empty. |
+
+### Sample Request
+
+```
+{
+    "number": "15550000100"
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "number": "15550000100",
+        "name": "sip:ipsmgw.ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+# MCPTT Groups
+
+An MCPTT group is a prearranged group (TS 24.481 §7.2) whose calls use AMR-WB. The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
+
+## List Groups
+
+This path returns the list of groups, in the order they were created in.
+
+| Method | Path                   |
+| ------ | ---------------------- |
+| GET    | `/api/v1/mcptt/groups` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Response Fields
+
+| Field                            | Type    | Description                                                                                                                                                                   |
+| -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `group_id`                       | string  | Group ID.                                                                                                                                                                     |
+| `display_name`                   | string  | Group name (TS 24.481 §7.2.2). Empty if none.                                                                                                                                 |
+| `hang_timer_ms`                  | int     | How long a call lasts without anyone talking, T4 (TS 24.380 Table 11.1.3-1). `0` releases the call as soon as the floor is idle. Absent if not set, in which case it is 30 s. |
+| `maximum_duration_ms`            | int     | How long a call lasts at most, TNG3 (TS 24.379 §6.3.3.5).                                                                                                                     |
+| `release_on_initiator_leave`     | boolean | Whether a call ends when the member that started it leaves (TS 24.379 §6.3.8.1).                                                                                              |
+| `members`                        | array   | Members of the group.                                                                                                                                                         |
+| `members[].mcptt_id`             | string  | MCPTT ID of the member.                                                                                                                                                       |
+| `members[].recvonly`             | boolean | Whether the member may listen but not talk.                                                                                                                                   |
+| `members[].implicit_affiliation` | boolean | Whether the group is one of the member's `implicit_affiliations`.                                                                                                             |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "group_id": "sip:fire@mcptt.example.com",
+                "display_name": "Fire",
+                "maximum_duration_ms": 300000,
+                "release_on_initiator_leave": false,
+                "members": [
+                    {
+                        "mcptt_id": "sip:alice@mcptt.example.com",
+                        "recvonly": false,
+                        "implicit_affiliation": true
+                    }
+                ]
+            },
+            {
+                "group_id": "sip:police@mcptt.example.com",
+                "display_name": "Police",
+                "hang_timer_ms": 10000,
+                "maximum_duration_ms": 600000,
+                "release_on_initiator_leave": true,
+                "members": [
+                    {
+                        "mcptt_id": "sip:bob@mcptt.example.com",
+                        "recvonly": false,
+                        "implicit_affiliation": false
+                    },
+                    {
+                        "mcptt_id": "sip:carol@mcptt.example.com",
+                        "recvonly": false,
+                        "implicit_affiliation": true
+                    }
+                ]
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 2
+    }
+}
+```
+
+## Get a Group
+
+This path returns the details of a specific group.
+
+| Method | Path                              |
+| ------ | --------------------------------- |
+| GET    | `/api/v1/mcptt/groups/{group_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description                                         |
+| ---------- | ------ | --------------------------------------------------- |
+| `group_id` | string | Group ID, for example `sip:fire@mcptt.example.com`. |
+
+### Response Codes
+
+| Code  | Description                 |
+| ----- | --------------------------- |
+| `404` | No group has this group ID. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "group_id": "sip:police@mcptt.example.com",
+        "display_name": "Police",
+        "hang_timer_ms": 10000,
+        "maximum_duration_ms": 600000,
+        "release_on_initiator_leave": true,
+        "members": [
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": false
+            },
+            {
+                "mcptt_id": "sip:carol@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            }
+        ]
+    }
+}
+```
+
+## Create a Group
+
+This path creates a group.
+
+| Method | Path                   |
+| ------ | ---------------------- |
+| POST   | `/api/v1/mcptt/groups` |
+
+### Request Body
+
+| Field                            | Type    | Required | Description                                                                                              |
+| -------------------------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `group_id`                       | string  | Yes      | SIP URI. Unique among users and groups.                                                                  |
+| `display_name`                   | string  | No       | Up to 64 characters.                                                                                     |
+| `hang_timer_ms`                  | int     | No       |                                                                                                          |
+| `maximum_duration_ms`            | int     | Yes      | At least 1.                                                                                              |
+| `release_on_initiator_leave`     | boolean | No       | Default `false`.                                                                                         |
+| `members`                        | array   | No       |                                                                                                          |
+| `members[].mcptt_id`             | string  | Yes      | MCPTT ID of a user.                                                                                      |
+| `members[].recvonly`             | boolean | No       | Default `false`.                                                                                         |
+| `members[].implicit_affiliation` | boolean | No       | Adds the group to, or removes it from, the user's `implicit_affiliations`. Absent leaves them unchanged. |
+
+### Response Codes
+
+| Code  | Description                                                                            |
+| ----- | -------------------------------------------------------------------------------------- |
+| `409` | The request conflicts with other users or groups, such as a member that is not a user. |
+
+### Sample Request
+
+```
+{
+    "group_id": "sip:fire@mcptt.example.com",
+    "display_name": "Fire",
+    "maximum_duration_ms": 300000,
+    "members": [
+        {
+            "mcptt_id": "sip:alice@mcptt.example.com",
+            "implicit_affiliation": true
+        },
+        {
+            "mcptt_id": "sip:bob@mcptt.example.com",
+            "recvonly": true
+        }
+    ]
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "group_id": "sip:fire@mcptt.example.com",
+        "display_name": "Fire",
+        "maximum_duration_ms": 300000,
+        "release_on_initiator_leave": false,
+        "members": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            },
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "recvonly": true,
+                "implicit_affiliation": false
+            }
+        ]
+    }
+}
+```
+
+## Update a Group
+
+This path replaces a group, members included. The request body is that of [Create a Group](#create-a-group); `group_id` is optional and, if present, must be that of the path. A member removed loses the group from its `implicit_affiliations`.
+
+| Method | Path                              |
+| ------ | --------------------------------- |
+| PUT    | `/api/v1/mcptt/groups/{group_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description |
+| ---------- | ------ | ----------- |
+| `group_id` | string | Group ID.   |
+
+### Response Codes
+
+| Code  | Description                                                                            |
+| ----- | -------------------------------------------------------------------------------------- |
+| `404` | No group has this group ID.                                                            |
+| `409` | The request conflicts with other users or groups, such as a member that is not a user. |
+
+### Sample Request
+
+```
+{
+    "display_name": "Police",
+    "hang_timer_ms": 10000,
+    "maximum_duration_ms": 600000,
+    "release_on_initiator_leave": true,
+    "members": [
+        {
+            "mcptt_id": "sip:bob@mcptt.example.com"
+        },
+        {
+            "mcptt_id": "sip:carol@mcptt.example.com",
+            "implicit_affiliation": true
+        }
+    ]
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "group_id": "sip:police@mcptt.example.com",
+        "display_name": "Police",
+        "hang_timer_ms": 10000,
+        "maximum_duration_ms": 600000,
+        "release_on_initiator_leave": true,
+        "members": [
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": false
+            },
+            {
+                "mcptt_id": "sip:carol@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            }
+        ]
+    }
+}
+```
+
+## Delete a Group
+
+This path deletes a group. The group leaves the `implicit_affiliations` of its users, its affiliations are removed, and its call, if any, is released.
+
+| Method | Path                              |
+| ------ | --------------------------------- |
+| DELETE | `/api/v1/mcptt/groups/{group_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description |
+| ---------- | ------ | ----------- |
+| `group_id` | string | Group ID.   |
+
+### Response Codes
+
+| Code  | Description                 |
+| ----- | --------------------------- |
+| `404` | No group has this group ID. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "message": "group deleted"
+    }
+}
+```
+
+## Add or Replace a Member
+
+This path adds a user to the members of a group, after the others, or replaces the member where it is. It returns the group.
+
+| Method | Path                                                 |
+| ------ | ---------------------------------------------------- |
+| PUT    | `/api/v1/mcptt/groups/{group_id}/members/{mcptt_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description           |
+| ---------- | ------ | --------------------- |
+| `group_id` | string | Group ID.             |
+| `mcptt_id` | string | MCPTT ID of the user. |
+
+### Request Body
+
+| Field                  | Type    | Required | Description                                                                                              |
+| ---------------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `mcptt_id`             | string  | No       | Must be that of the path.                                                                                |
+| `recvonly`             | boolean | No       | Default `false`.                                                                                         |
+| `implicit_affiliation` | boolean | No       | Adds the group to, or removes it from, the user's `implicit_affiliations`. Absent leaves them unchanged. |
+
+The body is required; `{}` takes the defaults.
+
+### Response Codes
+
+| Code  | Description                 |
+| ----- | --------------------------- |
+| `200` | The member was replaced.    |
+| `201` | The member was added.       |
+| `404` | No group has this group ID. |
+| `409` | The user does not exist.    |
+
+### Sample Request
+
+```
+{
+    "recvonly": false,
+    "implicit_affiliation": true
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "group_id": "sip:fire@mcptt.example.com",
+        "display_name": "Fire",
+        "maximum_duration_ms": 300000,
+        "release_on_initiator_leave": false,
+        "members": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            },
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            }
+        ]
+    }
+}
+```
+
+## Remove a Member
+
+This path removes a user from the members of a group. The group leaves the user's `implicit_affiliations`, and the user's clients are de-affiliated from it and leave its call, if any. It returns the group.
+
+| Method | Path                                                 |
+| ------ | ---------------------------------------------------- |
+| DELETE | `/api/v1/mcptt/groups/{group_id}/members/{mcptt_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description             |
+| ---------- | ------ | ----------------------- |
+| `group_id` | string | Group ID.               |
+| `mcptt_id` | string | MCPTT ID of the member. |
+
+### Response Codes
+
+| Code  | Description                                              |
+| ----- | -------------------------------------------------------- |
+| `404` | No group has this group ID, or the user is not a member. |
+| `409` | The group would be invalid without the member.           |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "group_id": "sip:fire@mcptt.example.com",
+        "display_name": "Fire",
+        "maximum_duration_ms": 300000,
+        "release_on_initiator_leave": false,
+        "members": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "recvonly": false,
+                "implicit_affiliation": true
+            }
+        ]
+    }
+}
+```
+
+# MCPTT Live State
+
+The registrations, affiliations and group calls the MCPTT AS holds in memory. The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
+
+## List Registrations
+
+This path returns the list of MCPTT clients bound to their users by service authorisation, ordered by MCPTT ID and client ID.
+
+| Method | Path                          |
+| ------ | ----------------------------- |
+| GET    | `/api/v1/mcptt/registrations` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `mcptt_id` | query | str  |         |         | Filter by MCPTT ID.       |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Response Fields
+
+| Field        | Type   | Description                                                                    |
+| ------------ | ------ | ------------------------------------------------------------------------------ |
+| `mcptt_id`   | string | MCPTT ID of the user.                                                          |
+| `client_id`  | string | MCPTT client ID (TS 24.379 §4.10).                                             |
+| `impu`       | string | IMS public user identity the client registered at.                             |
+| `impus`      | array  | Public user identities the client is served at, `impu` first.                  |
+| `since`      | string | When the client was authorised for the user (RFC 3339). Kept across refreshes. |
+| `expires_at` | string | Expiry time (RFC 3339).                                                        |
+| `contacts`   | array  | Contacts the client registered, in direct mode. Empty through the IMS.         |
+
+### Response Codes
+
+| Code  | Description                         |
+| ----- | ----------------------------------- |
+| `503` | The MCPTT AS is restarting or busy. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "client_id": "urn:uuid:00000000-0000-1000-8000-000000000001",
+                "impu": "sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org",
+                "impus": [
+                    "sip:15550000001@ims.mnc001.mcc001.3gppnetwork.org",
+                    "tel:+15550000001"
+                ],
+                "since": "2026-10-26T18:40:02.118Z",
+                "expires_at": "2026-10-26T19:40:02.118Z",
+                "contacts": []
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## List Affiliations
+
+This path returns the list of affiliations of clients to groups, ordered by group ID, MCPTT ID and client ID.
+
+| Method | Path                         |
+| ------ | ---------------------------- |
+| GET    | `/api/v1/mcptt/affiliations` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `mcptt_id` | query | str  |         |         | Filter by MCPTT ID.       |
+| `group_id` | query | str  |         |         | Filter by group ID.       |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Response Fields
+
+| Field       | Type    | Description                                                                                                                                                       |
+| ----------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcptt_id`  | string  | MCPTT ID of the user.                                                                                                                                             |
+| `client_id` | string  | MCPTT client ID.                                                                                                                                                  |
+| `group_id`  | string  | Group ID.                                                                                                                                                         |
+| `status`    | string  | Affiliation status at the participating function (TS 24.379 §9.2.2.2.2): `affiliating`, `affiliated` or `deaffiliating`. The first two count as affiliated.       |
+| `implicit`  | boolean | `true` if the server affiliated the client from the user's `implicit_affiliations` (TS 24.379 §9.2.2.2.15); `false` if the client affiliated itself (§9.2.2.2.3). |
+
+### Response Codes
+
+| Code  | Description                         |
+| ----- | ----------------------------------- |
+| `503` | The MCPTT AS is restarting or busy. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "client_id": "urn:uuid:00000000-0000-1000-8000-000000000001",
+                "group_id": "sip:fire@mcptt.example.com",
+                "status": "affiliated",
+                "implicit": true
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## List Group Calls
+
+This path returns the list of group calls, oldest first.
+
+| Method | Path                  |
+| ------ | --------------------- |
+| GET    | `/api/v1/mcptt/calls` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description                     |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------------- |
+| `mcptt_id` | query | str  |         |         | Filter by participant MCPTT ID. |
+| `group_id` | query | str  |         |         | Filter by group ID.             |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.             |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page.       |
+
+### Response Fields
+
+| Field                     | Type    | Description                                                                               |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `id`                      | string  | Call identifier, the "gr" of the MCPTT session identity.                                  |
+| `session_id`              | string  | MCPTT session identity (TS 24.379 §4.5).                                                  |
+| `group_id`                | string  | Group ID.                                                                                 |
+| `originator`              | string  | MCPTT ID of the member that started the call.                                             |
+| `created_at`              | string  | Creation time (RFC 3339).                                                                 |
+| `started_at`              | string  | When the originator was answered (RFC 3339). `null` while the call is set up.             |
+| `ends_at`                 | string  | When the maximum duration (TNG3) releases the call (RFC 3339). `null` if none.            |
+| `talker`                  | object  | Participant with the floor, with its `mcptt_id` and `since`. `null` if the floor is idle. |
+| `participants`            | array   | Members invited and joined, the originator first.                                         |
+| `participants[].mcptt_id` | string  | MCPTT ID of the participant.                                                              |
+| `participants[].state`    | string  | `invited` or `joined`.                                                                    |
+| `participants[].required` | boolean | Whether the participant is required.                                                      |
+| `participants[].recvonly` | boolean | Whether the participant may listen but not talk.                                          |
+
+### Response Codes
+
+| Code  | Description                         |
+| ----- | ----------------------------------- |
+| `503` | The MCPTT AS is restarting or busy. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "id": "XBDRKQ5VJ7T4M2N6P3HYWLC7AE",
+                "session_id": "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org;gr=XBDRKQ5VJ7T4M2N6P3HYWLC7AE",
+                "group_id": "sip:fire@mcptt.example.com",
+                "originator": "sip:alice@mcptt.example.com",
+                "created_at": "2026-10-26T18:45:10.402Z",
+                "started_at": "2026-10-26T18:45:10.655Z",
+                "ends_at": "2026-10-26T18:50:10.655Z",
+                "talker": {
+                    "mcptt_id": "sip:alice@mcptt.example.com",
+                    "since": "2026-10-26T18:45:11.020Z"
+                },
+                "participants": [
+                    {
+                        "mcptt_id": "sip:alice@mcptt.example.com",
+                        "state": "joined",
+                        "required": false,
+                        "recvonly": false
+                    },
+                    {
+                        "mcptt_id": "sip:bob@mcptt.example.com",
+                        "state": "invited",
+                        "required": false,
+                        "recvonly": true
+                    }
+                ]
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## Get a Group Call
+
+This path returns a specific group call.
+
+| Method | Path                            |
+| ------ | ------------------------------- |
+| GET    | `/api/v1/mcptt/calls/{call_id}` |
+
+### Path Parameters
+
+| Name      | Type   | Description      |
+| --------- | ------ | ---------------- |
+| `call_id` | string | Call identifier. |
+
+### Response Codes
+
+| Code  | Description                         |
+| ----- | ----------------------------------- |
+| `404` | No call has this identifier.        |
+| `503` | The MCPTT AS is restarting or busy. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "id": "XBDRKQ5VJ7T4M2N6P3HYWLC7AE",
+        "session_id": "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org;gr=XBDRKQ5VJ7T4M2N6P3HYWLC7AE",
+        "group_id": "sip:fire@mcptt.example.com",
+        "originator": "sip:alice@mcptt.example.com",
+        "created_at": "2026-10-26T18:45:10.402Z",
+        "started_at": "2026-10-26T18:45:10.655Z",
+        "ends_at": "2026-10-26T18:50:10.655Z",
+        "talker": null,
+        "participants": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "state": "joined",
+                "required": false,
+                "recvonly": false
+            },
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "state": "joined",
+                "required": false,
+                "recvonly": true
+            }
+        ]
+    }
+}
+```
+
+# MCPTT Service Configuration
+
+The service configuration of the MCPTT organisation (TS 24.484 §8.4). The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
+
+## Get the Status of the MCPTT AS
+
+This path returns what the MCPTT AS runs.
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/mcptt` |
+
+### Response Fields
+
+| Field               | Type   | Description                                             |
+| ------------------- | ------ | ------------------------------------------------------- |
+| `mode`              | string | `ims` or `direct`.                                      |
+| `name`              | string | Server name of the AS in the iFCs of the HSS.           |
+| `participating_psi` | string | Participating PSI.                                      |
+| `controlling_psi`   | string | Controlling PSI.                                        |
+| `sip`               | array  | SIP addresses of the AS. Sockets in `direct` mode only. |
+| `media_control`     | string | Address of the floor control channels.                  |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mode": "ims",
+        "name": "sip:mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "participating_psi": "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "controlling_psi": "sip:mcptt-controlling@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
+        "sip": ["127.0.0.1:5090"],
+        "media_control": "127.0.0.1:21000"
+    }
+}
+```
+
+## Get the Service Configuration
+
+This path returns the service configuration.
+
+| Method | Path                                  |
+| ------ | ------------------------------------- |
+| GET    | `/api/v1/mcptt/service-configuration` |
+
+### Response Fields
+
+| Field                    | Type   | Description                                                                                                             |
+| ------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `domain`                 | string | Domain of the organisation, of its MCPTT IDs and group IDs, and the IOI of its charging. The IMS home domain until set. |
+| `transmit_time_limit_ms` | int    | How long a participant may talk at a time, T2 (TS 24.380 Table 11.1.3-1). Absent if not set, in which case it is 30 s.  |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "domain": "ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+## Update the Service Configuration
+
+This path replaces the service configuration.
+
+| Method | Path                                  |
+| ------ | ------------------------------------- |
+| PUT    | `/api/v1/mcptt/service-configuration` |
+
+### Request Body
+
+| Field                    | Type   | Required | Description                 |
+| ------------------------ | ------ | -------- | --------------------------- |
+| `domain`                 | string | Yes      | Domain of the organisation. |
+| `transmit_time_limit_ms` | int    | No       | At least 1.                 |
+
+### Sample Request
+
+```
+{
+    "domain": "mcptt.example.com",
+    "transmit_time_limit_ms": 30000
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "domain": "mcptt.example.com",
+        "transmit_time_limit_ms": 30000
+    }
+}
+```
+
+# MCPTT Users
+
+An MCPTT user (TS 24.484 §8.3) and the IMS public user identities its clients register at. The `/api/v1/mcptt` paths answer `404` when the IMS does not run the MCPTT AS.
+
+## List Users
+
+This path returns the list of users, in the order they were created in.
+
+| Method | Path                  |
+| ------ | --------------------- |
+| GET    | `/api/v1/mcptt/users` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Response Fields
+
+| Field                   | Type   | Description                                                                         |
+| ----------------------- | ------ | ----------------------------------------------------------------------------------- |
+| `mcptt_id`              | string | MCPTT ID of the user.                                                               |
+| `alias`                 | string | Alias of the user (TS 24.484 §8.3.2.7). Empty if none.                              |
+| `impus`                 | array  | IMS public user identities of the user, such as `sip:mcptt-<MSISDN>@<home domain>`. |
+| `implicit_affiliations` | array  | Group IDs the user's clients are affiliated to when they register.                  |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "mcptt_id": "sip:alice@mcptt.example.com",
+                "alias": "Alice",
+                "impus": ["sip:mcptt-15550000001@ims.mnc001.mcc001.3gppnetwork.org"],
+                "implicit_affiliations": ["sip:fire@mcptt.example.com"]
+            },
+            {
+                "mcptt_id": "sip:carol@mcptt.example.com",
+                "alias": "Carol",
+                "impus": ["sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org"],
+                "implicit_affiliations": ["sip:police@mcptt.example.com"]
+            },
+            {
+                "mcptt_id": "sip:bob@mcptt.example.com",
+                "alias": "Bob",
+                "impus": ["sip:mcptt-15550000002@ims.mnc001.mcc001.3gppnetwork.org"],
+                "implicit_affiliations": []
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 3
+    }
+}
+```
+
+## Get a User
+
+This path returns the details of a specific user.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| GET    | `/api/v1/mcptt/users/{mcptt_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description                                                      |
+| ---------- | ------ | ---------------------------------------------------------------- |
+| `mcptt_id` | string | MCPTT ID of the user, for example `sip:alice@mcptt.example.com`. |
+
+### Response Codes
+
+| Code  | Description                |
+| ----- | -------------------------- |
+| `404` | No user has this MCPTT ID. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mcptt_id": "sip:alice@mcptt.example.com",
+        "alias": "Alice",
+        "impus": ["sip:mcptt-15550000001@ims.mnc001.mcc001.3gppnetwork.org"],
+        "implicit_affiliations": ["sip:fire@mcptt.example.com"]
+    }
+}
+```
+
+## Create a User
+
+This path creates a user.
+
+| Method | Path                  |
+| ------ | --------------------- |
+| POST   | `/api/v1/mcptt/users` |
+
+### Request Body
+
+| Field                   | Type   | Required | Description                                  |
+| ----------------------- | ------ | -------- | -------------------------------------------- |
+| `mcptt_id`              | string | Yes      | SIP URI. Unique among users and groups.      |
+| `alias`                 | string | No       | Up to 64 characters.                         |
+| `impus`                 | array  | Yes      | At least one.                                |
+| `implicit_affiliations` | array  | No       | Group IDs of groups the user is a member of. |
+
+### Response Codes
+
+| Code  | Description                                                                           |
+| ----- | ------------------------------------------------------------------------------------- |
+| `409` | The request conflicts with other users or groups, such as an MCPTT ID already in use. |
+
+### Sample Request
+
+```
+{
+    "mcptt_id": "sip:alice@mcptt.example.com",
+    "alias": "Alice",
+    "impus": ["sip:mcptt-15550000001@ims.mnc001.mcc001.3gppnetwork.org"]
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mcptt_id": "sip:alice@mcptt.example.com",
+        "alias": "Alice",
+        "impus": ["sip:mcptt-15550000001@ims.mnc001.mcc001.3gppnetwork.org"],
+        "implicit_affiliations": []
+    }
+}
+```
+
+## Update a User
+
+This path replaces a user. The request body is that of [Create a User](#create-a-user); `mcptt_id` is optional and, if present, must be that of the path.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| PUT    | `/api/v1/mcptt/users/{mcptt_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description           |
+| ---------- | ------ | --------------------- |
+| `mcptt_id` | string | MCPTT ID of the user. |
+
+### Response Codes
+
+| Code  | Description                                                                                                               |
+| ----- | ------------------------------------------------------------------------------------------------------------------------- |
+| `404` | No user has this MCPTT ID.                                                                                                |
+| `409` | The request conflicts with other users or groups, such as an implicit affiliation to a group the user is not a member of. |
+
+### Sample Request
+
+```
+{
+    "alias": "Carol",
+    "impus": ["sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org"],
+    "implicit_affiliations": ["sip:police@mcptt.example.com"]
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mcptt_id": "sip:carol@mcptt.example.com",
+        "alias": "Carol",
+        "impus": ["sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org"],
+        "implicit_affiliations": ["sip:police@mcptt.example.com"]
+    }
+}
+```
+
+## Delete a User
+
+This path deletes a user. The user leaves its groups, and its clients are logged off and leave the group calls they are in.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| DELETE | `/api/v1/mcptt/users/{mcptt_id}` |
+
+### Path Parameters
+
+| Name       | Type   | Description           |
+| ---------- | ------ | --------------------- |
+| `mcptt_id` | string | MCPTT ID of the user. |
+
+### Response Codes
+
+| Code  | Description                                          |
+| ----- | ---------------------------------------------------- |
+| `404` | No user has this MCPTT ID.                           |
+| `409` | A group the user leaves would be invalid without it. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "message": "user deleted"
+    }
+}
+```
+
+# Metrics
+
+## Get Metrics
+
+This path returns the metrics of the IMS in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), negotiated from the request's `Accept` header.
+
+| Method | Path              |
+| ------ | ----------------- |
+| GET    | `/api/v1/metrics` |
+
+### Sample Response
+
+```
+# HELP ellaims_active_calls Calls in progress: attempted and not yet ended.
+# TYPE ellaims_active_calls gauge
+ellaims_active_calls 0
+# HELP ellaims_calls_total Calls that ended, by outcome, as their call records show it.
+# TYPE ellaims_calls_total counter
+ellaims_calls_total{outcome="answered"} 0
+ellaims_calls_total{outcome="busy"} 0
+ellaims_calls_total{outcome="cancelled"} 0
+ellaims_calls_total{outcome="failed"} 0
+ellaims_calls_total{outcome="no_answer"} 0
+ellaims_calls_total{outcome="rejected"} 0
+ellaims_calls_total{outcome="unavailable"} 0
+# HELP ellaims_database_query_errors_total Database calls that failed, by connection pool. A record not found or in conflict is a result, not a failure.
+# TYPE ellaims_database_query_errors_total counter
+ellaims_database_query_errors_total{pool="read"} 0
+ellaims_database_query_errors_total{pool="write"} 0
+# HELP ellaims_database_storage_bytes Size of the database on disk, by file: the main file and its write-ahead log.
+# TYPE ellaims_database_storage_bytes gauge
+ellaims_database_storage_bytes{file="main"} 4096
+ellaims_database_storage_bytes{file="wal"} 646872
+```
+
+# Operator
+
+The operator is the PLMN of the IMS, from which its home domain and Diameter identity derive, and the numbering plan that converts dial strings to E.164 numbers.
+
+## Get the Operator
+
+This path returns the operator settings.
+
+| Method | Path               |
+| ------ | ------------------ |
+| GET    | `/api/v1/operator` |
+
+### Response Fields
+
+| Field                            | Type   | Description                                  |
+| -------------------------------- | ------ | -------------------------------------------- |
+| `mcc`                            | string | Mobile Country Code.                         |
+| `mnc`                            | string | Mobile Network Code.                         |
+| `numbering`                      | object | Conversion of dial strings to E.164 numbers. |
+| `numbering.country_code`         | string | Country code.                                |
+| `numbering.national_prefix`      | string | National prefix.                             |
+| `numbering.international_prefix` | string | International prefix.                        |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mcc": "001",
+        "mnc": "01",
+        "numbering": {
+            "country_code": "1",
+            "national_prefix": "1",
+            "international_prefix": "011"
+        }
+    }
+}
+```
+
+## Update the Operator
+
+This path replaces the operator settings. A change of MCC or MNC changes the home domain, and the IMS restarts Diameter and SIP under the new names.
+
+| Method | Path               |
+| ------ | ------------------ |
+| PUT    | `/api/v1/operator` |
+
+### Request Body
+
+| Field                            | Type   | Required | Description                                                       |
+| -------------------------------- | ------ | -------- | ----------------------------------------------------------------- |
+| `mcc`                            | string | Yes      | 3 digits.                                                         |
+| `mnc`                            | string | Yes      | 2 or 3 digits.                                                    |
+| `numbering`                      | object | Yes      |                                                                   |
+| `numbering.country_code`         | string | Yes      | 1 to 3 digits, not starting with 0.                               |
+| `numbering.national_prefix`      | string | Yes      | Up to 4 digits. Differs from `international_prefix` unless empty. |
+| `numbering.international_prefix` | string | Yes      | Up to 4 digits.                                                   |
+
+### Sample Request
+
+```
+{
+    "mcc": "001",
+    "mnc": "01",
+    "numbering": {
+        "country_code": "1",
+        "national_prefix": "1",
+        "international_prefix": "011"
+    }
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "mcc": "001",
+        "mnc": "01",
+        "numbering": {
+            "country_code": "1",
+            "national_prefix": "1",
+            "international_prefix": "011"
+        }
+    }
+}
+```
+
+# Policy
+
+The policy function is the interface the P-CSCF uses for policy control: none, Rx to a PCRF, or N5 to a PCF.
+
+## Get the Policy
+
+This path returns the policy function settings and the policy function running.
+
+| Method | Path             |
+| ------ | ---------------- |
+| GET    | `/api/v1/policy` |
+
+### Response Fields
+
+| Field                   | Type    | Description                                                                    |
+| ----------------------- | ------- | ------------------------------------------------------------------------------ |
+| `interface`             | string  | `none`, `rx` or `n5`.                                                          |
+| `n5`                    | object  | Present for the `n5` interface only.                                           |
+| `n5.pcf_uri`            | string  | API root of the PCF, `http[s]://host[:port][/prefix]`.                         |
+| `status`                | object  | Policy function running. Differs from the settings while the IMS applies them. |
+| `status.interface`      | string  | `none`, `rx` or `n5`.                                                          |
+| `status.endpoint`       | string  | `rx` for Rx; the API root of the PCF for N5.                                   |
+| `status.notify`         | string  | Address of the N5 notification listener.                                       |
+| `status.last`           | object  | Outcome of the last request to the PCF. N5 only.                               |
+| `status.last.at`        | string  | Time of the request (RFC 3339).                                                |
+| `status.last.reachable` | boolean | Whether the PCF answered.                                                      |
+| `status.last.result`    | string  | Result of the request.                                                         |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "interface": "rx",
+        "status": {
+            "interface": "rx",
+            "endpoint": "rx"
+        }
+    }
+}
+```
+
+## Update the Policy
+
+This path replaces the policy function settings. Calls and registrations after the change use the new policy function.
+
+| Method | Path             |
+| ------ | ---------------- |
+| PUT    | `/api/v1/policy` |
+
+### Request Body
+
+| Field        | Type   | Required | Description                                                                                                  |
+| ------------ | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `interface`  | string | Yes      | `none`, `rx` or `n5`. `n5` requires `n5` in the configuration file.                                          |
+| `n5`         | object | No       | For the `n5` interface only.                                                                                 |
+| `n5.pcf_uri` | string | Yes      | `http[s]://host[:port][/prefix]`. `https` requires `n5.tls` in the configuration file, `http` requires none. |
+
+### Sample Request
+
+```
+{
+    "interface": "none"
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "interface": "none",
+        "status": {
+            "interface": "rx",
+            "endpoint": "rx"
+        }
+    }
+}
+```
+
+# Registrations
+
+A registration is a private user identity registered with the S-CSCF, with its registered implicit registration sets.
+
+## List Registrations
+
+This path returns the list of registered private identities.
+
+| Method | Path                    |
+| ------ | ----------------------- |
+| GET    | `/api/v1/registrations` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description                                |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------------------------ |
+| `search`   | query | str  |         |         | Substring of a private or public identity. |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.                        |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page.                  |
+
+### Response Fields
+
+| Field                                     | Type    | Description                                                                                                                  |
+| ----------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `impi`                                    | string  | Private user identity.                                                                                                       |
+| `implicit_registration_sets`              | array   | Registered implicit registration sets of the private identity. A set registers and deregisters as one (TS 23.228 §5.2.1a.0). |
+| `implicit_registration_sets[].hss`        | object  | Origin-Host (`host`) and Origin-Realm (`realm`) of the last Cx answer for the set. Absent while unknown.                     |
+| `implicit_registration_sets[].identities` | array   | Public user identities of the set.                                                                                           |
+| `identities[].uri`                        | string  | Public user identity.                                                                                                        |
+| `identities[].display_name`               | string  | Display name. Absent if none.                                                                                                |
+| `identities[].barred`                     | boolean | Whether the identity is barred.                                                                                              |
+| `identities[].registered_with`            | array   | Other private identities a request to this public identity reaches (TS 24.229 §5.4.3.3 step 8).                              |
+| `implicit_registration_sets[].contacts`   | array   | Unexpired contacts bound to the set. A contact bound to several sets is listed in each.                                      |
+| `contacts[].contact`                      | string  | Contact URI.                                                                                                                 |
+| `contacts[].instance`                     | string  | Instance ID, an IMEI URN when available (TS 23.003 §13.8). Absent if none.                                                   |
+| `contacts[].reg_id`                       | int     | reg-id of the flow (RFC 5626). Absent if none.                                                                               |
+| `contacts[].q`                            | number  | q-value (RFC 3841 §7.2.3).                                                                                                   |
+| `contacts[].media`                        | array   | Media the device registered for: `audio`, `video`.                                                                           |
+| `contacts[].registered_at`                | string  | Registration time (RFC 3339).                                                                                                |
+| `contacts[].expires_at`                   | string  | Expiry time (RFC 3339).                                                                                                      |
+| `contacts[].address`                      | string  | Address and port of the device, as seen by the P-CSCF. Absent if unknown.                                                    |
+| `contacts[].transport`                    | string  | `udp` or `tcp`. Absent if unknown.                                                                                           |
+| `contacts[].protected`                    | boolean | Whether IPsec protects the signalling of the device.                                                                         |
+| `contacts[].signalling_path`              | string  | State of the IMS signalling path of the device: `unmonitored`, `monitored` or `lost`.                                        |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "impi": "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+                "implicit_registration_sets": [
+                    {
+                        "hss": {
+                            "host": "hss.epc.mnc001.mcc001.3gppnetwork.org",
+                            "realm": "epc.mnc001.mcc001.3gppnetwork.org"
+                        },
+                        "identities": [
+                            {
+                                "uri": "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+                                "barred": true,
+                                "registered_with": []
+                            },
+                            {
+                                "uri": "tel:+15550000001",
+                                "barred": false,
+                                "registered_with": []
+                            }
+                        ],
+                        "contacts": [
+                            {
+                                "contact": "sip:001010000000001@10.45.0.2:5064",
+                                "instance": "urn:gsma:imei:35000000-000001-0",
+                                "reg_id": 1,
+                                "q": 1,
+                                "media": ["audio", "video"],
+                                "registered_at": "2026-10-26T18:20:04.512Z",
+                                "expires_at": "2026-10-26T19:20:04.512Z",
+                                "address": "10.45.0.2:5064",
+                                "transport": "udp",
+                                "protected": true,
+                                "signalling_path": "monitored"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## Re-authenticate a Registration
+
+This path brings forward the expiry of the bindings of a registered private identity and has its next REGISTER challenged (TS 24.229 §5.4.1.6).
+
+| Method | Path                                          |
+| ------ | --------------------------------------------- |
+| POST   | `/api/v1/registrations/{impi}/reauthenticate` |
+
+### Path Parameters
+
+| Name   | Type   | Description            |
+| ------ | ------ | ---------------------- |
+| `impi` | string | Private user identity. |
+
+### Response Codes
+
+| Code  | Description                                  |
+| ----- | -------------------------------------------- |
+| `202` | Re-authentication started.                   |
+| `404` | The private identity is not registered.      |
+| `503` | The IMS is restarting to apply its settings. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "impi": "001010000000001@ims.mnc001.mcc001.3gppnetwork.org"
+    }
+}
+```
+
+# SIP
+
+The SIP names of Ella IMS derive from the operator settings.
+
+## Get SIP Information
+
+This path returns the home domain, the host names the IMS answers to, and the SIP listeners.
+
+| Method | Path          |
+| ------ | ------------- |
+| GET    | `/api/v1/sip` |
+
+### Response Fields
+
+| Field                    | Type   | Description                                             |
+| ------------------------ | ------ | ------------------------------------------------------- |
+| `home_domain`            | string | Home network domain name, derived from the MCC and MNC. |
+| `aliases`                | array  | Host names the IMS answers to.                          |
+| `listeners`              | array  | SIP listeners.                                          |
+| `listeners[].role`       | string | `pcscf`, `pcscf-protected`, `icscf` or `scscf`.         |
+| `listeners[].address`    | string | Address and port.                                       |
+| `listeners[].transports` | array  | Transports of the listener.                             |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "home_domain": "ims.mnc001.mcc001.3gppnetwork.org",
+        "aliases": [
+            "ims.mnc001.mcc001.3gppnetwork.org",
+            "pcscf.ims.mnc001.mcc001.3gppnetwork.org",
+            "scscf.ims.mnc001.mcc001.3gppnetwork.org"
+        ],
+        "listeners": [
+            {
+                "role": "pcscf",
+                "address": "127.0.0.1:5060",
+                "transports": ["udp", "tcp"]
+            },
+            {
+                "role": "pcscf-protected",
+                "address": "127.0.0.1:5063",
+                "transports": ["udp", "tcp"]
+            },
+            {
+                "role": "pcscf-protected",
+                "address": "127.0.0.1:5064",
+                "transports": ["udp", "tcp"]
+            },
+            {
+                "role": "pcscf-protected",
+                "address": "127.0.0.1:5065",
+                "transports": ["udp", "tcp"]
+            },
+            {
+                "role": "icscf",
+                "address": "127.0.0.1:5070",
+                "transports": ["udp", "tcp"]
+            },
+            {
+                "role": "scscf",
+                "address": "127.0.0.1:5080",
+                "transports": ["udp", "tcp"]
+            }
+        ]
+    }
+}
+```
+
+# Status
+
+## Get the Status
+
+This path returns the version of the IMS, and whether it has been initialized. It takes no token.
+
+| Method | Path             |
+| ------ | ---------------- |
+| GET    | `/api/v1/status` |
+
+### Response Fields
+
+| Field         | Type    | Description                                                                                                                            |
+| ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`     | string  | Version.                                                                                                                               |
+| `revision`    | string  | Git commit of the build. Empty in development builds.                                                                                  |
+| `initialized` | boolean | Whether the first user exists. Until then, [initialize](https://docs.ellanetworks.com/ims/reference/api/initialize/index.md) Ella IMS. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "version": "v0.0.1",
+        "revision": "",
+        "initialized": true
+    }
+}
+```
+
+## Check Liveness
+
+This path answers while the process serves HTTP. It takes no token.
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/livez` |
+
+It answers `204 No Content`.
+
+## Check Readiness
+
+This path returns whether the IMS can serve requests: its database answers, and it is not shutting down. It takes no token.
+
+| Method | Path             |
+| ------ | ---------------- |
+| GET    | `/api/v1/readyz` |
+
+It answers `204 No Content` when ready, and `503 Service Unavailable` otherwise:
+
+```
+{
+    "error": "Not ready"
+}
+```
+
+# Users
+
+Paths under `/api/v1/users/me` act on the user of the token. The others require Admin, and an access token: an API token gets `403`.
+
+## Get My User
+
+| Method | Path               |
+| ------ | ------------------ |
+| GET    | `/api/v1/users/me` |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "email": "admin@example.com",
+        "role_id": 1
+    }
+}
+```
+
+## Update My Password
+
+This path ends the user's other sessions. It requires an access token.
+
+| Method | Path                        |
+| ------ | --------------------------- |
+| PUT    | `/api/v1/users/me/password` |
+
+### Request Body
+
+| Field              | Type   | Required | Description                  |
+| ------------------ | ------ | -------- | ---------------------------- |
+| `current_password` | string | Yes      | Current password.            |
+| `password`         | string | Yes      | New password, 8 to 72 bytes. |
+
+### Response Codes
+
+| Code  | Description                                                                       |
+| ----- | --------------------------------------------------------------------------------- |
+| `400` | Wrong current password, or invalid new password.                                  |
+| `429` | More than 100 wrong passwords in an hour for the account, counting failed logins. |
+
+## List Users
+
+| Method | Path            |
+| ------ | --------------- |
+| GET    | `/api/v1/users` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "email": "admin@example.com",
+                "role_id": 1
+            },
+            {
+                "email": "noc@example.com",
+                "role_id": 2
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 2
+    }
+}
+```
+
+## Create a User
+
+At most 50 users.
+
+| Method | Path            |
+| ------ | --------------- |
+| POST   | `/api/v1/users` |
+
+### Request Body
+
+| Field      | Type   | Required | Description                                                                      |
+| ---------- | ------ | -------- | -------------------------------------------------------------------------------- |
+| `email`    | string | Yes      | Email address. Stored in lower case.                                             |
+| `password` | string | Yes      | 8 to 72 bytes.                                                                   |
+| `role_id`  | int    | Yes      | `1` to `3`. See [roles](https://docs.ellanetworks.com/ims/reference/api/#roles). |
+
+### Response Codes
+
+| Code  | Description                        |
+| ----- | ---------------------------------- |
+| `201` | Created.                           |
+| `400` | Invalid field, or 50 users exist.  |
+| `409` | A user has the email, in any case. |
+
+## Get a User
+
+| Method | Path                    |
+| ------ | ----------------------- |
+| GET    | `/api/v1/users/{email}` |
+
+## Update a User
+
+This path changes the role of a user, and ends its sessions. An Admin cannot change its own role.
+
+| Method | Path                    |
+| ------ | ----------------------- |
+| PUT    | `/api/v1/users/{email}` |
+
+### Request Body
+
+| Field     | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `role_id` | int  | Yes      | `1` to `3`. |
+
+## Update a User's Password
+
+This path ends the user's sessions. An Admin cannot update its own password here.
+
+| Method | Path                             |
+| ------ | -------------------------------- |
+| PUT    | `/api/v1/users/{email}/password` |
+
+### Request Body
+
+| Field      | Type   | Required | Description    |
+| ---------- | ------ | -------- | -------------- |
+| `password` | string | Yes      | 8 to 72 bytes. |
+
+## Delete a User
+
+This path deletes the user with its sessions and API tokens. An Admin cannot delete itself.
+
+| Method | Path                    |
+| ------ | ----------------------- |
+| DELETE | `/api/v1/users/{email}` |
+
+## Create an API Token
+
+This path returns the token, the only time it is shown. At most 12 per user. Requires an access token.
+
+| Method | Path                               |
+| ------ | ---------------------------------- |
+| POST   | `/api/v1/users/me/api-tokens`      |
+| POST   | `/api/v1/users/{email}/api-tokens` |
+
+### Request Body
+
+| Field        | Type   | Required | Description                                                         |
+| ------------ | ------ | -------- | ------------------------------------------------------------------- |
+| `name`       | string | Yes      | 3 to 50 characters, unique among the user's tokens.                 |
+| `expires_at` | string | No       | RFC 3339 time in the future. Without it, the token does not expire. |
+
+### Response Codes
+
+| Code  | Description                        |
+| ----- | ---------------------------------- |
+| `201` | Created.                           |
+| `400` | Invalid field, or 12 tokens exist. |
+| `409` | The user has a token of that name. |
+
+### Sample Request
+
+```
+{
+    "name": "Monitoring",
+    "expires_at": "2027-10-27T00:00:00Z"
+}
+```
+
+### Sample Response
+
+```
+{
+    "result": {
+        "token": "ellaims_aB3dE5fG7hJ9_KQ4ZN2X7WJ5R3TQY6PLM2VA4CF"
+    }
+}
+```
+
+## List API Tokens
+
+| Method | Path                               |
+| ------ | ---------------------------------- |
+| GET    | `/api/v1/users/me/api-tokens`      |
+| GET    | `/api/v1/users/{email}/api-tokens` |
+
+### Query Parameters
+
+| Name       | In    | Type | Default | Allowed | Description               |
+| ---------- | ----- | ---- | ------- | ------- | ------------------------- |
+| `page`     | query | int  | `1`     | `>= 1`  | 1-based page index.       |
+| `per_page` | query | int  | `25`    | `1…100` | Number of items per page. |
+
+### Response Fields
+
+| Field          | Type   | Description                                                                  |
+| -------------- | ------ | ---------------------------------------------------------------------------- |
+| `id`           | string | Token identifier: the part of the token between `ellaims_` and the next `_`. |
+| `name`         | string | Name.                                                                        |
+| `created_at`   | string | Creation time.                                                               |
+| `expires_at`   | string | Expiry time. Absent for a token that does not expire.                        |
+| `last_used_at` | string | Time of the last use, to the minute. Absent for a token never used.          |
+
+### Sample Response
+
+```
+{
+    "result": {
+        "items": [
+            {
+                "id": "aB3dE5fG7hJ9",
+                "name": "Monitoring",
+                "created_at": "2026-10-27T18:44:19.436Z",
+                "expires_at": "2027-10-27T00:00:00.000Z",
+                "last_used_at": "2026-10-27T19:02:00.000Z"
+            }
+        ],
+        "page": 1,
+        "per_page": 25,
+        "total_count": 1
+    }
+}
+```
+
+## Delete an API Token
+
+| Method | Path                                    |
+| ------ | --------------------------------------- |
+| DELETE | `/api/v1/users/me/api-tokens/{id}`      |
+| DELETE | `/api/v1/users/{email}/api-tokens/{id}` |
+# Explanation
+
+# Explanation
+
+These explanations provide context on how Ella IMS works.
+
+- [Architecture](https://docs.ellanetworks.com/ims/explanation/architecture/index.md)
+- [Security](https://docs.ellanetworks.com/ims/explanation/security/index.md)
+- [Push-to-Talk](https://docs.ellanetworks.com/ims/explanation/push_to_talk/index.md)
+- [SMS over IP](https://docs.ellanetworks.com/ims/explanation/sms_over_ip/index.md)
+
+# Architecture
+
+Ella IMS with Ella Core
+
+An IP Multimedia Subsystem (IMS) is what lets phones on a 4G or 5G network make voice and video calls. The core network gives each phone an IP connection to the IMS. Over that connection, the phone registers and places calls with SIP, and the IMS routes them.
+
+## Three CSCFs in one process
+
+3GPP splits the IMS's SIP routing into three Call Session Control Functions (CSCFs):
+
+- **P-CSCF**: the phone's first contact. It protects the phone's signalling with IPsec, and asks the core network for the QoS that voice and video need.
+- **I-CSCF**: the entry point of the network. It asks the HSS which S-CSCF serves a user.
+- **S-CSCF**: the registrar. It authenticates phones against the HSS, routes calls, and involves Application Servers when a subscriber's filter criteria say so.
+
+In most IMS deployments, these are separate nodes. Ella IMS runs all three in one process, with one database, one UI and one API. Each CSCF still has its own SIP port, and the three exchange standard SIP messages, in memory, so from the outside Ella IMS looks like any other IMS.
+
+## What Ella IMS relies on
+
+Ella IMS stores no subscribers. It relies on two functions of the core network:
+
+- **The HSS** holds the subscribers: their identities, the keys to authenticate them, and the filter criteria that bring in Application Servers. Ella IMS reaches it over Diameter (Cx).
+- **The policy function** has the core set up the dedicated bearers (4G) or QoS flows (5G) that carry voice and video. Ella IMS reaches it over Diameter (Rx), or a PCF over HTTP (N5).
+
+Ella Core provides both. For how it works with an IMS, see Ella Core's [IMS Integration](https://docs.ellanetworks.com/core/explanation/ims_integration/).
+
+## Standards
+
+Ella IMS follows 3GPP standards. It should work with any compliant 4G or 5G core, Application Server and phone, beyond those it was [validated against](https://docs.ellanetworks.com/ims/reference/supported_mobile_equipment/index.md).
+
+# Push-to-Talk
+
+Mission Critical Push To Talk (MCPTT) is the 3GPP standard for group calls with floor control: one member talks at a time, and the others listen. It runs as an Application Server on top of the IMS.
+
+## A server inside the IMS
+
+Ella IMS includes an MCPTT server, so push-to-talk needs no separate node. It runs in the same process as the CSCFs, which reach it in memory rather than over the network.
+
+Like any Application Server, it learns about its users through the IMS. When an MCPTT user's app registers, the S-CSCF tells the MCPTT server, as the user's **MCPTT** service profile asks.
+
+## Naming
+
+The MCPTT server's name is `sip:mcptt.<home domain>`, and the home domain comes from the operator's MCC and MNC. Ella IMS routes every request for that host to the server, so the HSS needs no Public Service Identity for it. Changing the MCC or MNC renames the server.
+
+## Users and groups
+
+The HSS knows subscribers. The MCPTT server knows MCPTT users, identified by an MCPTT ID such as `alice`, and the groups they belong to. Each MCPTT user maps to the MCPTT identity of their subscriber, `sip:mcptt-<MSISDN>@<home domain>`, which is how the server ties a registered phone to a person.
+
+The app reads the MCPTT identity from the ISIM and registers it alongside the phone's own IMS client. Both stay registered only if the phone's IMS client registers with a `reg-id`.
+
+## Media
+
+Unlike a regular call, a group call's voice goes through Ella IMS: its media relay receives each talker's audio and copies it to every listener. Floor control, deciding who may talk, runs on a separate control channel. That's why the MCPTT server has its own media ports.
+
+# Security
+
+## Authenticating phones
+
+Phones authenticate with the keys on their SIM, with IMS-AKA, a variant of the AKA the core network uses at attach. When a phone registers, the S-CSCF fetches an authentication vector from the HSS, challenges the phone, and checks its answer. The phone checks the network in turn, so each side proves itself to the other. No password is configured on the phone or in Ella IMS.
+
+## Protecting signalling with IPsec
+
+The same authentication produces keys that the phone and the P-CSCF use to set up IPsec between them. From then on, the phone's SIP messages travel in ESP on dedicated ports. This protects the signalling from tampering, and ties every request to the phone that authenticated.
+
+Ella IMS sets up these IPsec associations in the Linux kernel. That's why it needs `CAP_NET_ADMIN`, and why ESP must reach it through any firewall.
+
+## The trust domain
+
+SIP nodes tell each other who a request is from, for example with the P-Asserted-Identity header. A node only believes such claims from nodes it trusts: its trust domain.
+
+Phones are never in the trust domain: the P-CSCF takes their identity from their authentication, not from what they claim. The P-CSCF trusts only Ella IMS's own addresses.
+
+The I-CSCF and the S-CSCF also trust the networks in `sip.trusted_networks`, where other nodes such as Application Servers live. Trust goes by source address, so these networks must be protected by the operator, and must never include the phones. For the same reason, Ella IMS rejects a trusted network that covers every IPv4 or every IPv6 address.
+
+## Users of the UI and API
+
+Everyone who uses the UI or the API is a user with a role: Admin, Read Only or Network Manager. The role decides what the user can see and do, from reading settings to managing other users. See [Roles](https://docs.ellanetworks.com/ims/reference/api/#roles).
+
+The first user, an Admin, is created when Ella IMS is initialized. Admins create the others. Until then, anyone who reaches the UI can initialize Ella IMS, so initialize it as soon as it is installed.
+
+Ella IMS limits login attempts, from each address and for each account, to slow down password guessing.
+
+Programs, such as a monitoring system, use an API token rather than a password. A token belongs to a user and has that user's role, but it cannot create API tokens, change a password, or manage users. Tokens can expire, and an Admin or the token's user can delete one at any time.
+
+## HTTPS
+
+Ella IMS serves the UI and the API over plain HTTP unless it is given a certificate in `api.tls` (see the [configuration file](https://docs.ellanetworks.com/ims/reference/config_file/index.md)). Use HTTPS whenever the UI or the API is reachable over a network you do not control.
+
+# SMS over IP
+
+Phones on IMS can send and receive SMS as SIP MESSAGEs instead of over the 4G or 5G signalling (NAS). The IP Short Message Gateway (IP-SM-GW) is the Application Server that carries them between the phones and the SMSC.
+
+## A server inside the IMS
+
+Ella IMS includes an IP-SM-GW, which runs in the same process as the CSCFs. Its name is `sip:ipsmgw.<home domain>`. The HSS's filter criteria decide which subscribers it serves: without them, it receives nothing, and filter criteria naming another server bring in an external IP-SM-GW instead.
+
+## Registration
+
+When a phone registers, the S-CSCF tells the IP-SM-GW, which follows the phone's registration. While the phone advertises SMS over IP, the IP-SM-GW registers itself at the HSS for the subscriber. The HSS then sends the routing requests of the subscriber's incoming SMS to the IP-SM-GW. When the phone no longer advertises it, or deregisters, the IP-SM-GW deregisters too.
+
+## Sending
+
+The phone's SMS reaches the IP-SM-GW through the S-CSCF, and the IP-SM-GW forwards it to the SMSC of the service centre address the phone uses. The SMSC's answer goes back to the phone as a submit report. Without an SMSC, the IP-SM-GW refuses the SMS, and the phone sends it over NAS.
+
+## Receiving
+
+The IP-SM-GW delivers an incoming SMS over IMS first, if the phone advertises SMS over IP, then through the MME or SMSF the HSS names.
