@@ -359,6 +359,7 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		Handler: h.hss.serve,
 	}
 	loop.SetDown(o.hssDown)
+	t.Cleanup(loop.Close)
 
 	if !o.scscfAddr.IsValid() {
 		o.scscfAddr = loopback

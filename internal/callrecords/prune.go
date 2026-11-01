@@ -56,9 +56,9 @@ func Prune(ctx context.Context, cfg PruneConfig) {
 
 		switch {
 		case err != nil && ctx.Err() == nil:
-			cfg.Logger.Error("pruning call records failed", slog.Any("error", err))
+			cfg.Logger.ErrorContext(ctx, "pruning call records failed", slog.Any("error", err))
 		case n > 0:
-			cfg.Logger.Info("pruned call records", slog.Int64("records", n))
+			cfg.Logger.InfoContext(ctx, "pruned call records", slog.Int64("records", n))
 		}
 
 		select {

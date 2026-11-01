@@ -44,14 +44,14 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 		return pf, nil
 	case settings.PolicyN5:
 	default:
-		logger.Info("no policy function: the P-CSCF runs without policy sessions")
+		logger.InfoContext(ctx, "no policy function: the P-CSCF runs without policy sessions")
 		return pf, nil
 	}
 
 	// The API checks policies against the configuration file, which may since have changed. Policy sessions then
 	// wait for the file or the policy to be fixed, rather than the IMS and its API.
 	if err := checkPolicy(cfg, s); err != nil {
-		logger.Error("no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
+		logger.ErrorContext(ctx, "no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
 		return pf, nil
 	}
 

@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RegistrationStore interface {
@@ -62,14 +64,16 @@ type retired struct {
 const pendingToken = DefaultAwaitAuth
 
 type registrations struct {
-	// ctx bounds the writes to the store, cancelled when the P-CSCF gives up on them.
-	ctx   context.Context
-	store RegistrationStore
-	log   *slog.Logger
-	clock Clock
-	grace time.Duration
+	// ctx bounds the writes to the store and the expiries, cancelled when the P-CSCF gives up on them.
+	ctx      context.Context
+	store    RegistrationStore
+	log      *slog.Logger
+	clock    Clock
+	grace    time.Duration
+	detached tracing.Detached
 
-	expired func(db.PCSCFRegistration)
+	// expired is called, in the trace of the expiry, with a registration that expired.
+	expired func(context.Context, db.PCSCFRegistration)
 
 	lost atomic.Int64
 
@@ -80,11 +84,14 @@ type registrations struct {
 	bySource map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}
 	byIMPI   map[string]map[*db.PCSCFRegistration]struct{}
 	timers   map[regKey]transaction.Timer
-	retired  map[string]retired
-	pending  map[regKey]retired
+	// causes are the span contexts of what set the expiry of each registration, to which its expiry links.
+	causes  map[regKey]trace.SpanContext
+	retired map[string]retired
+	pending map[regKey]retired
 }
 
 func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger,
+	detached tracing.Detached,
 ) *registrations {
 	return &registrations{
 		ctx:      ctx,
@@ -92,11 +99,13 @@ func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock,
 		log:      logger,
 		clock:    clock,
 		grace:    grace,
+		detached: detached,
 		byKey:    make(map[regKey]*db.PCSCFRegistration),
 		byToken:  make(map[string]*db.PCSCFRegistration),
 		bySource: make(map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}),
 		byIMPI:   make(map[string]map[*db.PCSCFRegistration]struct{}),
 		timers:   make(map[regKey]transaction.Timer),
+		causes:   make(map[regKey]trace.SpanContext),
 		retired:  make(map[string]retired),
 		pending:  make(map[regKey]retired),
 	}
@@ -233,6 +242,7 @@ func (rs *registrations) armLocked(k regKey, at time.Time) {
 	rs.timers[k] = rs.clock.AfterFunc(at.Sub(rs.clock.Now()), func() { rs.expire(k) })
 }
 
+// expire ends the registration k when it expired: in a trace of its own, linked to what set its expiry.
 func (rs *registrations) expire(k regKey) {
 	rs.mu.Lock()
 
@@ -249,13 +259,16 @@ func (rs *registrations) expire(k regKey) {
 		return
 	}
 
-	old, _ := rs.removeLocked(k)
+	ctx, span := rs.detached.Start(rs.ctx, "registration expiry", rs.causes[k])
+	defer span.End()
+
+	old, _ := rs.removeLocked(ctx, k)
 	rs.mu.Unlock()
 
-	rs.log.Debug("registration expired", slog.String("impi", k.impi), slog.String("ue", k.ue.String()))
+	rs.log.DebugContext(ctx, "registration expired", slog.String("impi", k.impi), slog.String("ue", k.ue.String()))
 
 	if rs.expired != nil {
-		rs.expired(old)
+		rs.expired(ctx, old)
 	}
 }
 
@@ -311,7 +324,8 @@ func (rs *registrations) token(k regKey) string {
 	return token
 }
 
-func (rs *registrations) save(r db.PCSCFRegistration) {
+// save stores r, which ctx registered.
+func (rs *registrations) save(ctx context.Context, r db.PCSCFRegistration) {
 	r = clone(&r)
 	r.UEAddress = netip.AddrPortFrom(r.UEAddress.Addr().Unmap(), r.UEAddress.Port())
 
@@ -330,29 +344,30 @@ func (rs *registrations) save(r db.PCSCFRegistration) {
 	}
 
 	if rs.store != nil {
-		ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
-		saved, err := rs.store.SavePCSCFRegistration(ctx, r)
+		sctx, cancel := storeContext(rs.ctx, ctx)
+		saved, err := rs.store.SavePCSCFRegistration(sctx, r)
 
 		cancel()
 
 		if err != nil {
-			rs.log.Error("saving the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
+			rs.log.ErrorContext(ctx, "saving the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
 		} else {
 			r = saved
 		}
 	}
 
+	rs.causes[regKeyOf(&r)] = trace.SpanContextFromContext(ctx)
 	rs.add(&r)
 }
 
-func (rs *registrations) remove(k regKey) (db.PCSCFRegistration, bool) {
+func (rs *registrations) remove(ctx context.Context, k regKey) (db.PCSCFRegistration, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	return rs.removeLocked(k)
+	return rs.removeLocked(ctx, k)
 }
 
-func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
+func (rs *registrations) removeLocked(ctx context.Context, k regKey) (db.PCSCFRegistration, bool) {
 	r, ok := rs.byKey[k]
 	if !ok {
 		return db.PCSCFRegistration{}, false
@@ -368,12 +383,14 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 		delete(rs.timers, k)
 	}
 
+	delete(rs.causes, k)
+
 	rs.retired[r.FlowToken] = retired{f: flowOf(r), expires: rs.clock.Now().Add(rs.grace)}
 
 	if rs.store != nil && r.ID != 0 {
-		ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
-		if err := rs.store.DeletePCSCFRegistration(ctx, r.ID); err != nil {
-			rs.log.Error("deleting the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
+		sctx, cancel := storeContext(rs.ctx, ctx)
+		if err := rs.store.DeletePCSCFRegistration(sctx, r.ID); err != nil {
+			rs.log.ErrorContext(ctx, "deleting the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
 		}
 
 		cancel()
@@ -382,7 +399,8 @@ func (rs *registrations) removeLocked(k regKey) (db.PCSCFRegistration, bool) {
 	return clone(r), true
 }
 
-func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) bool) []db.PCSCFRegistration {
+// update changes the registrations of impi as ctx tells.
+func (rs *registrations) update(ctx context.Context, impi string, f func(r *db.PCSCFRegistration) bool) []db.PCSCFRegistration {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -396,7 +414,7 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 		c := clone(r)
 
 		if !f(&c) {
-			if old, ok := rs.removeLocked(k); ok {
+			if old, ok := rs.removeLocked(ctx, k); ok {
 				removed = append(removed, old)
 			}
 
@@ -404,6 +422,7 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 		}
 
 		if !c.ExpiresAt.Equal(r.ExpiresAt) {
+			rs.causes[k] = trace.SpanContextFromContext(ctx)
 			rs.armLocked(k, c.ExpiresAt)
 		}
 
@@ -411,13 +430,13 @@ func (rs *registrations) update(impi string, f func(r *db.PCSCFRegistration) boo
 		rs.unindex(r)
 		*r = c
 		rs.index(r)
-		rs.storeLocked(r)
+		rs.storeLocked(ctx, r)
 	}
 
 	return removed
 }
 
-func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bool {
+func (rs *registrations) edit(ctx context.Context, k regKey, f func(r *db.PCSCFRegistration) bool) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -433,17 +452,17 @@ func (rs *registrations) edit(k regKey, f func(r *db.PCSCFRegistration) bool) bo
 	}
 
 	rs.countLost(was, r.SignallingLost)
-	rs.storeLocked(r)
+	rs.storeLocked(ctx, r)
 
 	return true
 }
 
-func (rs *registrations) restoreSignalling(k regKey) bool {
+func (rs *registrations) restoreSignalling(ctx context.Context, k regKey) bool {
 	if rs.lost.Load() == 0 {
 		return false
 	}
 
-	return rs.edit(k, func(r *db.PCSCFRegistration) bool {
+	return rs.edit(ctx, k, func(r *db.PCSCFRegistration) bool {
 		if !r.SignallingLost {
 			return false
 		}
@@ -454,16 +473,16 @@ func (rs *registrations) restoreSignalling(k regKey) bool {
 	})
 }
 
-func (rs *registrations) storeLocked(r *db.PCSCFRegistration) {
+func (rs *registrations) storeLocked(ctx context.Context, r *db.PCSCFRegistration) {
 	if rs.store == nil {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(rs.ctx, storeTimeout)
+	sctx, cancel := storeContext(rs.ctx, ctx)
 	defer cancel()
 
-	if _, err := rs.store.SavePCSCFRegistration(ctx, *r); err != nil {
-		rs.log.Error("saving the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
+	if _, err := rs.store.SavePCSCFRegistration(sctx, *r); err != nil {
+		rs.log.ErrorContext(ctx, "saving the registration failed", slog.String("impi", r.IMPI), slog.Any("error", err))
 	}
 }
 

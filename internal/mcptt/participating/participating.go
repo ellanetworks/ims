@@ -251,7 +251,7 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 	// The refusals are logged with their reason, the warning text if any (the INVITE's transaction is logged with
 	// its final response).
 	reject := func(code int, reason string, header ...sip.Field) {
-		log.Debug("group call refused", slog.Int("code", code), slog.String("reason", reason))
+		log.DebugContext(ctx, "group call refused", slog.Int("code", code), slog.String("reason", reason))
 
 		h := sip.Header(header)
 		Charged(&h, charging, ioi, true)

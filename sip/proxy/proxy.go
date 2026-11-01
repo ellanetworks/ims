@@ -51,7 +51,7 @@ type Config struct {
 
 	DialogLifetime time.Duration
 
-	OnDialog func(DialogEvent)
+	OnDialog func(ctx context.Context, e DialogEvent)
 }
 
 type Proxy struct {
@@ -66,7 +66,7 @@ type Proxy struct {
 
 	dialogLifetime time.Duration
 	lingerBye      time.Duration
-	onDialog       func(DialogEvent)
+	onDialog       func(ctx context.Context, e DialogEvent)
 
 	mu       sync.Mutex
 	contexts map[*transaction.ServerTransaction]*responseContext
@@ -371,7 +371,7 @@ func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, gro
 	begun := first.dialog != nil && first.initial
 
 	if begun {
-		if err := d.begin(tx, c, first.out, first.rr); err != nil {
+		if err := d.begin(ctx, tx, c, first.out, first.rr); err != nil {
 			c.mu.Lock()
 			c.groups = nil
 			c.mu.Unlock()
@@ -398,16 +398,16 @@ func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, gro
 			break
 		}
 
-		started, failed := c.start(picked)
+		started, failed := c.start(ctx, picked)
 		failures = append(failures, failed...)
 
 		if started > 0 {
 			if begun {
-				d.started()
+				d.started(ctx)
 			}
 
 			for _, f := range failures {
-				c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
+				c.dispatch(ctx, f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
 			}
 
 			return nil
@@ -555,7 +555,7 @@ func looped(req *sip.Request, loop string) bool {
 	return false
 }
 
-func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) error {
+func (p *Proxy) Relay(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) error {
 	p.mu.Lock()
 	c := p.contexts[tx]
 	p.mu.Unlock()
@@ -568,7 +568,7 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 		return ErrAnswered
 	}
 
-	return c.relay(res.Clone())
+	return c.relay(ctx, res.Clone())
 }
 
 // Reached stops the Timeout of the branch of tx with key (Branch.Key): the request reached its target, which waits
@@ -622,7 +622,7 @@ func (p *Proxy) Cancel(ctx context.Context, tx *transaction.ServerTransaction, c
 
 	c, ok := p.contexts[tx]
 	if !ok {
-		c = newContext(context.Background(), p, tx)
+		c = newContext(ctx, p, tx)
 		c.final = true
 		p.contexts[tx] = c
 	}

@@ -125,8 +125,14 @@ func listenDiameter(ctx context.Context, cfg config.Diameter, st settings.Settin
 	return lns, nil
 }
 
-// probeSCTP checks that the host can listen for Diameter over SCTP on an address.
+// probeTimeout bounds probeSCTP, which an API request waits for.
+const probeTimeout = 5 * time.Second
+
+// probeSCTP checks that the host can listen for Diameter over SCTP on an address, within ctx and probeTimeout.
 func probeSCTP(ctx context.Context, a netip.Addr) error {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
 	ln, err := listenDiameterOn(ctx, settings.TransportSCTP, netip.AddrPortFrom(a, 0))
 	if err != nil {
 		return err
@@ -247,27 +253,27 @@ func (h *cxHandler) bind(t cxRegistrar) {
 func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	rtr, err := cx.ParseRegistrationTerminationRequest(req)
 	if err != nil {
-		h.log.Warn("invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
+		h.log.WarnContext(ctx, "invalid Cx RTR", slog.String("peer", c.PeerID()), slog.Any("error", err))
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
 	t := h.target.Load()
 	if t == nil {
-		h.log.Warn("Cx RTR before the registrar started", slog.String("impi", rtr.PrivateIdentity))
+		h.log.WarnContext(ctx, "Cx RTR before the registrar started", slog.String("impi", rtr.PrivateIdentity))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
 	if ans := featureUnsupported(req, c); ans != nil {
-		h.log.Warn("Cx RTR requires features the S-CSCF does not support", slog.String("impi", rtr.PrivateIdentity))
+		h.log.WarnContext(ctx, "Cx RTR requires features the S-CSCF does not support", slog.String("impi", rtr.PrivateIdentity))
 		return ans
 	}
 
-	h.log.Debug("Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
+	h.log.DebugContext(ctx, "Cx RTR", slog.String("impi", rtr.PrivateIdentity), slog.Any("impus", rtr.PublicIdentities),
 		slog.String("reason", rtr.Reason.Code.String()))
 
 	associated, err := (*t).Terminate(ctx, rtr)
 	if err != nil {
-		h.log.Warn("Cx RTR failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
+		h.log.WarnContext(ctx, "Cx RTR failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), failure(err), 0)
 	}
 
@@ -275,7 +281,7 @@ func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Con
 
 	ans, err := cx.NewRegistrationTerminationAnswer(req, c.LocalIdentity(), a)
 	if err != nil {
-		h.log.Warn("building the RTA failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
+		h.log.WarnContext(ctx, "building the RTA failed", slog.String("impi", rtr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
@@ -286,38 +292,38 @@ func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Con
 func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	ppr, err := cx.ParsePushProfileRequest(req)
 	if err != nil {
-		h.log.Warn("invalid Cx PPR", slog.String("peer", c.PeerID()), slog.Any("error", err))
+		h.log.WarnContext(ctx, "invalid Cx PPR", slog.String("peer", c.PeerID()), slog.Any("error", err))
 		return cx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
 	t := h.target.Load()
 	if t == nil {
-		h.log.Warn("Cx PPR before the registrar started", slog.String("impi", ppr.PrivateIdentity))
+		h.log.WarnContext(ctx, "Cx PPR before the registrar started", slog.String("impi", ppr.PrivateIdentity))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
 	if ans := featureUnsupported(req, c); ans != nil {
-		h.log.Warn("Cx PPR requires features the S-CSCF does not support", slog.String("impi", ppr.PrivateIdentity))
+		h.log.WarnContext(ctx, "Cx PPR requires features the S-CSCF does not support", slog.String("impi", ppr.PrivateIdentity))
 		return ans
 	}
 
-	h.log.Debug("Cx PPR", slog.String("impi", ppr.PrivateIdentity), slog.Bool("userData", len(ppr.UserData) > 0),
+	h.log.DebugContext(ctx, "Cx PPR", slog.String("impi", ppr.PrivateIdentity), slog.Bool("userData", len(ppr.UserData) > 0),
 		slog.Bool("charging", ppr.Charging != nil), slog.Bool("allowedWebRTC", ppr.AllowedWebRTC != nil))
 
 	// The S-CSCF authenticates with IMS AKA only: SIP Digest authentication data is of no use to it, and changes
 	// nothing it serves (TS 29.228 §6.5.2.4).
 	if _, ok := req.Find(cx.AVPSIPAuthDataItem, tgpp.VendorID); ok {
-		h.log.Debug("Cx PPR: SIP Digest authentication data ignored", slog.String("impi", ppr.PrivateIdentity))
+		h.log.DebugContext(ctx, "Cx PPR: SIP Digest authentication data ignored", slog.String("impi", ppr.PrivateIdentity))
 	}
 
 	if err := (*t).PushProfile(ctx, ppr); err != nil {
-		h.log.Warn("Cx PPR failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
+		h.log.WarnContext(ctx, "Cx PPR failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), failure(err), 0)
 	}
 
 	ans, err := cx.NewPushProfileAnswer(req, c.LocalIdentity(), cx.PushProfile{})
 	if err != nil {
-		h.log.Warn("building the PPA failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
+		h.log.WarnContext(ctx, "building the PPA failed", slog.String("impi", ppr.PrivateIdentity), slog.Any("error", err))
 		return cx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
@@ -381,24 +387,24 @@ func (h *rxHandler) reAuth(ctx context.Context, c *diameter.Conn, req *diameter.
 
 	rar, err := rx.ParseReAuthRequest(req)
 	if err != nil {
-		h.log.Warn("invalid Rx RAR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		h.log.WarnContext(ctx, "invalid Rx RAR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
 		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
 	t := h.target.Load()
 	if t == nil {
-		h.log.Warn("Rx RAR before the P-CSCF started", slog.String("session", session))
+		h.log.WarnContext(ctx, "Rx RAR before the P-CSCF started", slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
 	if !(*t).ReAuth(ctx, session, rar) {
-		h.log.Debug("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		h.log.DebugContext(ctx, "Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
 
 	ans, err := rx.NewReAuthAnswer(req, c.LocalIdentity(), rx.ReAuthAnswer{})
 	if err != nil {
-		h.log.Warn("building the Rx RAA failed", slog.String("session", session), slog.Any("error", err))
+		h.log.WarnContext(ctx, "building the Rx RAA failed", slog.String("session", session), slog.Any("error", err))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
@@ -411,19 +417,19 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 
 	asr, err := rx.ParseAbortSessionRequest(req)
 	if err != nil {
-		h.log.Warn("invalid Rx ASR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
+		h.log.WarnContext(ctx, "invalid Rx ASR", slog.String("peer", c.PeerID()), slog.String("session", session), slog.Any("error", err))
 		return rx.NewErrorAnswer(req, c.LocalIdentity(), err, 0)
 	}
 
 	t := h.target.Load()
 	if t == nil {
-		h.log.Warn("Rx ASR before the P-CSCF started", slog.String("session", session))
+		h.log.WarnContext(ctx, "Rx ASR before the P-CSCF started", slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
 	terminate, known := (*t).AbortSession(ctx, session, asr)
 	if !known {
-		h.log.Debug("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
+		h.log.DebugContext(ctx, "Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
 
@@ -433,7 +439,7 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 
 	ans, err := rx.NewAbortSessionAnswer(req, c.LocalIdentity(), rx.AbortSessionAnswer{})
 	if err != nil {
-		h.log.Warn("building the Rx ASA failed", slog.String("session", session), slog.Any("error", err))
+		h.log.WarnContext(ctx, "building the Rx ASA failed", slog.String("session", session), slog.Any("error", err))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 

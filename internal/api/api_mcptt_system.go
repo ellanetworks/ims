@@ -15,8 +15,8 @@ type MCPTTServiceConfiguration struct {
 }
 
 func GetMCPTTServiceConfiguration(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, mcpttServiceConfigurationResponse(cfg.MCPTT.Get().ServiceConfiguration), http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, mcpttServiceConfigurationResponse(cfg.MCPTT.Get().ServiceConfiguration), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -31,18 +31,18 @@ func UpdateMCPTTServiceConfiguration(cfg Config) http.Handler {
 
 		limit, problem := optionalDuration("transmit_time_limit_ms", p.TransmitTimeLimitMS)
 		if problem != "" {
-			invalidMCPTT(w, problem, cfg.Logger)
+			invalidMCPTT(r.Context(), w, problem, cfg.Logger)
 			return
 		}
 
 		c.OnNetwork.TransmitTime.TimeLimit = limit
 
 		if err := cfg.MCPTT.UpdateServiceConfiguration(r.Context(), c); err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to update the service configuration", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to update the service configuration", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttServiceConfigurationResponse(cfg.MCPTT.Get().ServiceConfiguration), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttServiceConfigurationResponse(cfg.MCPTT.Get().ServiceConfiguration), http.StatusOK, cfg.Logger)
 	})
 }
 

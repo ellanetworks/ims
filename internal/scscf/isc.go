@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DefaultASTimeout is how long the S-CSCF waits for an AS to respond before it applies the default handling of the
@@ -86,6 +87,9 @@ type hop struct {
 	// state is hopBack once a request came back from the AS, and hopFailed once the default handling of its iFC
 	// applied: the chain went on without the AS, or ended.
 	state atomic.Int32
+
+	// sent is the span context the request went to the AS in.
+	sent trace.SpanContext
 }
 
 // addHop keeps the hop while its transaction lasts, and 64*T1 after: an AS may send more requests with the same
@@ -131,18 +135,24 @@ func (s *Sessions) hopOf(removed []sip.URI) (*hop, bool) {
 // of the chain twice.
 func (s *Sessions) resume(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, h *hop) {
 	if !h.state.CompareAndSwap(hopPending, hopBack) && h.state.Load() != hopBack {
-		s.log.Warn("request back from an AS whose default handling applied", slog.String("request", out.StartLine()))
-		s.answer(tx, sip.NewResponse(tx.Request(), 403, "Unknown Original Dialog Identifier"))
+		s.log.WarnContext(ctx, "request back from an AS whose default handling applied", slog.String("request", out.StartLine()))
+		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 403, "Unknown Original Dialog Identifier"))
 
 		return
 	}
 
 	s.proxy.Reached(h.tx, h)
 
+	// A request back from an AS that did not continue the trace, as one outside the trust domain, is a trace of its
+	// own: where it goes next links to the request sent to the AS.
+	if trace.SpanContextFromContext(ctx).TraceID() != h.sent.TraceID() {
+		ctx = transaction.WithLinks(ctx, h.sent)
+	}
+
 	c := h.c
 
 	if !c.originating() && !sameTarget(out.URI, c.ruri, s.r.cfg.HomeDomain) {
-		s.log.Debug("request retargeted by an AS", slog.String("from", c.ruri.String()), slog.String("to", out.URI.String()))
+		s.log.DebugContext(ctx, "request retargeted by an AS", slog.String("from", c.ruri.String()), slog.String("to", out.URI.String()))
 		s.toICSCF(ctx, tx, out, c, false)
 
 		return
@@ -187,8 +197,8 @@ func (s *Sessions) next(ctx context.Context, tx *transaction.ServerTransaction, 
 		s.toICSCF(ctx, tx, out, c, first)
 	case c.sescase == cx.SessionCaseTerminatingUnregistered:
 		// TS 24.229 §5.4.3.3: no more AS to contact.
-		s.log.Debug("request to an unregistered user", slog.String("impu", c.served.URI.String()))
-		s.answer(tx, sip.NewResponse(tx.Request(), 480, ""))
+		s.log.DebugContext(ctx, "request to an unregistered user", slog.String("impu", c.served.URI.String()))
+		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 480, ""))
 	default:
 		s.deliver(ctx, tx, out, c, !first)
 	}
@@ -211,13 +221,13 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	}
 
 	if err != nil {
-		s.log.Warn("unusable AS", slog.String("as", as.ServerName), slog.Any("error", err))
+		s.log.WarnContext(ctx, "unusable AS", slog.String("as", as.ServerName), slog.Any("error", err))
 		s.asFailed(ctx, tx, out, c, i, first, nil)
 
 		return
 	}
 
-	h := &hop{c: c, next: i + 1, tx: tx}
+	h := &hop{c: c, next: i + 1, tx: tx, sent: trace.SpanContextFromContext(ctx)}
 
 	odi := sip.URI{Scheme: "sip", User: odiPrefix + s.addHop(h), Host: sip.FormatHost(to.Flow.Local.Addr()), Port: to.Flow.Local.Port()}
 	if to.Flow.Transport != sip.UDP {
@@ -262,7 +272,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
 	}
 
-	s.log.Debug("request sent to an AS", slog.String("request", out.StartLine()), slog.String("as", as.ServerName),
+	s.log.DebugContext(ctx, "request sent to an AS", slog.String("request", out.StartLine()), slog.String("as", as.ServerName),
 		slog.String("served", c.served.URI.String()), slog.String("case", c.sescase.String()))
 
 	err = s.proxy.Fork(ctx, tx, [][]proxy.Branch{{{Request: r, Target: to, Options: opts, Key: h}}})
@@ -275,7 +285,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 		return
 	}
 
-	s.log.Debug("forwarding to an AS failed", slog.String("as", as.ServerName), slog.Any("error", err))
+	s.log.DebugContext(ctx, "forwarding to an AS failed", slog.String("as", as.ServerName), slog.Any("error", err))
 
 	if h.state.CompareAndSwap(hopPending, hopFailed) {
 		s.asFailed(ctx, tx, out, c, i, first, nil)
@@ -329,7 +339,7 @@ func (s *Sessions) asReply(tx *transaction.ServerTransaction, out *sip.Request, 
 			err := s.r.cfg.Layer.Go(ctx, func(ctx context.Context) {
 				ctx, done, ok := s.r.begin(ctx)
 				if !ok {
-					s.answer(tx, retryLater(tx.Request()))
+					s.answer(ctx, tx, retryLater(tx.Request()))
 					return
 				}
 
@@ -338,7 +348,7 @@ func (s *Sessions) asReply(tx *transaction.ServerTransaction, out *sip.Request, 
 				s.asFailed(ctx, tx, out, c, i, first, &r)
 			})
 			if err != nil {
-				s.answer(tx, retryLater(tx.Request()))
+				s.answer(ctx, tx, retryLater(tx.Request()))
 			}
 
 			return proxy.Hold
@@ -368,14 +378,14 @@ func (s *Sessions) asFailed(ctx context.Context, tx *transaction.ServerTransacti
 	}
 
 	if !terminates(as) {
-		s.log.Info("AS failed: session continued", slog.String("as", as.ServerName), slog.String("request", out.StartLine()),
+		s.log.InfoContext(ctx, "AS failed: session continued", slog.String("as", as.ServerName), slog.String("request", out.StartLine()),
 			slog.Any("error", cause))
 		s.next(ctx, tx, out, c, i+1, first)
 
 		return
 	}
 
-	s.log.Info("AS failed: request ended", slog.String("as", as.ServerName), slog.String("request", out.StartLine()),
+	s.log.InfoContext(ctx, "AS failed: request ended", slog.String("as", as.ServerName), slog.String("request", out.StartLine()),
 		slog.Any("error", cause))
 
 	switch {
@@ -383,11 +393,11 @@ func (s *Sessions) asFailed(ctx context.Context, tx *transaction.ServerTransacti
 		// The response goes up as the proxy relays it.
 	case r != nil && out.Method != "INVITE":
 		// No 408 to a non-INVITE request (RFC 4320 §4.2).
-		s.answer(tx, sip.NewResponse(tx.Request(), 504, ""))
+		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 504, ""))
 	case r != nil:
-		s.answer(tx, sip.NewResponse(tx.Request(), 408, ""))
+		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 408, ""))
 	default:
-		s.answer(tx, sip.NewResponse(tx.Request(), 500, ""))
+		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 500, ""))
 	}
 }
 
@@ -450,7 +460,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 
 		p, ok := serviceProfile(sub, u, r.cfg.HomeDomain)
 		if !ok {
-			r.log.Warn("no service profile holds the identity: no service", slog.String("impu", u.String()))
+			r.log.WarnContext(ctx, "no service profile holds the identity: no service", slog.String("impu", u.String()))
 		}
 
 		return p, sub, true, nil
@@ -463,7 +473,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 
 	p, ok := serviceProfileOf(sub, u, set.Unregistered.Wildcard, r.cfg.HomeDomain)
 	if !ok {
-		r.log.Warn("no service profile of the HSS holds the identity: no service", slog.String("impu", u.String()))
+		r.log.WarnContext(ctx, "no service profile of the HSS holds the identity: no service", slog.String("impu", u.String()))
 	}
 
 	return p, sub, false, nil

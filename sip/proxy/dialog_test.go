@@ -1089,7 +1089,7 @@ func TestDialogDiscard(t *testing.T) {
 	c := ring(s)
 	c.answerCall(false)
 
-	c.d.Discard()
+	c.d.Discard(context.Background())
 
 	if e := s.r.nextEvent(proxy.EventEnded); e.End != proxy.EndDiscarded {
 		t.Errorf("ended event %+v", e)

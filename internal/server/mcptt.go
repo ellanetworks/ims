@@ -51,7 +51,7 @@ func (s *Server) stopMCPTT(ctx context.Context) {
 	s.ases.resolver.Set(mcptt.Host(s.mcpttHomeDomain), nil)
 
 	if err := a.Shutdown(ctx); err != nil {
-		s.Logger.Warn("failed to stop MCPTT cleanly", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to stop MCPTT cleanly", slog.Any("error", err))
 	}
 }
 

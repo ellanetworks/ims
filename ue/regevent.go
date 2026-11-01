@@ -99,7 +99,7 @@ func (u *UE) resubscribe(ctx context.Context) error {
 
 	done := make(chan result, 1)
 
-	if err := s.Refresh(context.Background(), ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
+	if err := s.Refresh(ctx, ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
 		return u.subscribe(ctx)
 	}
 
@@ -175,10 +175,10 @@ func (u *UE) subscribe(ctx context.Context) error {
 	u.mu.Unlock()
 
 	if old != nil {
-		_ = old.Unsubscribe(context.Background(), ua.Change{})
+		_ = old.Unsubscribe(ctx, ua.Change{})
 	}
 
-	s, err := u.agent.Subscribe(context.Background(), req, u.regEventHandler(sub))
+	s, err := u.agent.Subscribe(ctx, req, u.regEventHandler(sub))
 	if err != nil {
 		u.endSubscription(sub)
 		return fmt.Errorf("ue: SUBSCRIBE: %w", err)
@@ -190,7 +190,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	u.mu.Unlock()
 
 	if dropped {
-		s.Drop(context.Background())
+		s.Drop(ctx)
 	}
 
 	select {
@@ -580,6 +580,7 @@ func (u *UE) act(a action, answered <-chan struct{}) {
 
 	var err error
 
+	// Each is a trace of its own, as it starts after the NOTIFY or the end of the subscription that caused it.
 	switch {
 	case a.teardown && a.reregister:
 		err = u.Register(context.Background())

@@ -26,19 +26,19 @@ type lateHandler struct {
 }
 
 func (l *lateHandler) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
-	l.h.Load().HandleRequest(context.Background(), tx, req)
+	l.h.Load().HandleRequest(ctx, tx, req)
 }
 
 func (l *lateHandler) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	l.h.Load().HandleCancel(context.Background(), tx, cancel)
+	l.h.Load().HandleCancel(ctx, tx, cancel)
 }
 
 func (l *lateHandler) HandleAck(ctx context.Context, ack *sip.Request) {
-	l.h.Load().HandleAck(context.Background(), ack)
+	l.h.Load().HandleAck(ctx, ack)
 }
 
 func (l *lateHandler) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
-	l.h.Load().HandleTransactionError(context.Background(), tx, err)
+	l.h.Load().HandleTransactionError(ctx, tx, err)
 }
 
 func TestRegisterGoesToTheICSCF(t *testing.T) {

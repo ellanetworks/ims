@@ -91,7 +91,7 @@ func newForkSceneWith(t *testing.T, shape []int, opts proxy.Options, track bool,
 
 	pc := proxy.Config{Layer: f.l, Clock: clock}
 	if track {
-		pc.OnDialog = func(e proxy.DialogEvent) { f.events <- e }
+		pc.OnDialog = func(_ context.Context, e proxy.DialogEvent) { f.events <- e }
 	}
 
 	f.p = proxy.New(pc)
@@ -909,7 +909,7 @@ func TestForkAfterAStop(t *testing.T) {
 
 			refork <- f.p.Forward(context.Background(), tx, tx.Request(), proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: tx.Request().Flow.Local, Remote: f.groups[0][0].Addr()}}, proxy.Options{})
 
-			if err := f.p.Relay(tx, sip.NewResponse(tx.Request(), 603, "")); err != nil {
+			if err := f.p.Relay(context.Background(), tx, sip.NewResponse(tx.Request(), 603, "")); err != nil {
 				t.Error(err)
 			}
 

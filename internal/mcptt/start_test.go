@@ -135,7 +135,7 @@ func TestStartRegister(t *testing.T) {
 
 	codes := make(chan int, 1)
 
-	if err := c.Register(time.Hour, func(res *sip.Response, err error) {
+	if err := c.Register(context.Background(), time.Hour, func(res *sip.Response, err error) {
 		if err != nil {
 			t.Error(err)
 

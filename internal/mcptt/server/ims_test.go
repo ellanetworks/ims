@@ -302,7 +302,7 @@ func (c *core) notify(sub *regSub, state, regState string) {
 }
 
 func (c *core) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	c.p.Cancel(tx, cancel)
+	c.p.Cancel(context.Background(), tx, cancel)
 }
 
 func (c *core) HandleAck(ctx context.Context, ack *sip.Request) {
@@ -715,7 +715,7 @@ func TestThroughIMS(t *testing.T) {
 		t.Errorf("reg event subscriptions: %v", codes)
 	}
 
-	ca, err := alice.Call(mustURI(t, police))
+	ca, err := alice.Call(context.Background(), mustURI(t, police))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +803,7 @@ func TestThroughIMS(t *testing.T) {
 
 	// A member's BYE, through the S-CSCF to the session identity, which its domain resolves.
 	w.core.requests("BYE")
-	cb.Leave()
+	cb.Leave(context.Background())
 	w.n.Quiesce()
 	bob.expect(t, "ended")
 	alice.expectNot(t, "ended")
@@ -815,7 +815,7 @@ func TestThroughIMS(t *testing.T) {
 	// The initiator leaving releases police (TS 24.379 §6.3.8.1 3): the server's BYE to carol goes to the S-CSCF
 	// on the route of her dialog.
 	w.core.requests("BYE")
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 
 	alice.expect(t, "ended")
@@ -874,7 +874,7 @@ func TestThroughIMSUntrusted(t *testing.T) {
 	w.core.forge = "12"
 	w.core.mu.Unlock()
 
-	if _, err := alice.Call(mustURI(t, fire)); err != nil {
+	if _, err := alice.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -898,7 +898,7 @@ func TestThroughIMSNewToken(t *testing.T) {
 		t.Fatalf("reregistration: %d", res.StatusCode)
 	}
 
-	ca, err := alice.Call(mustURI(t, fire))
+	ca, err := alice.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +910,7 @@ func TestThroughIMSNewToken(t *testing.T) {
 		t.Fatalf("INVITEs to the AS %v", isc)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -931,7 +931,7 @@ func TestThroughIMSNetworkDeregistration(t *testing.T) {
 		t.Errorf("SUBSCRIBEs after the deregistration: %v", subs)
 	}
 
-	ca, err := alice.Call(mustURI(t, fire))
+	ca, err := alice.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,6 +945,6 @@ func TestThroughIMSNetworkDeregistration(t *testing.T) {
 		t.Errorf("INVITEs of the AS %v", invites)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }

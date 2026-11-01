@@ -144,8 +144,10 @@ func (l *Layer) untraced(m sip.Message) sip.Message {
 // linksKey is the key of the span contexts a client span links to, besides its parent.
 type linksKey struct{}
 
-// withLinks is ctx, for a client transaction whose span links to the valid span contexts of scs.
-func withLinks(ctx context.Context, scs ...trace.SpanContext) context.Context {
+// WithLinks is ctx, for the client transactions whose spans link to the valid span contexts of scs besides their
+// parent: work that a request continues, other than its parent, such as a request that came back from an AS outside
+// the trust domain and carries no trace context of its own.
+func WithLinks(ctx context.Context, scs ...trace.SpanContext) context.Context {
 	var links []trace.Link
 
 	for _, sc := range scs {

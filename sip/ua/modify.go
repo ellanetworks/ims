@@ -80,9 +80,6 @@ type modification struct {
 	glared bool
 	minSE  uint32
 	wait   *timer
-
-	// cancel completes the CANCEL of a re-INVITE the application cancelled before it went.
-	cancel *Change
 }
 
 func (s *Session) modify(op string, m *modification) error {
@@ -227,10 +224,6 @@ func (s *Session) newClientInvite(m *modification, c Change) (*clientInvite, err
 	ci := &clientInvite{s: s, m: m, req: req, key: keyOf(local, req)}
 	s.offerRequest(ci.key, sessionSDPOf(c.Bodies))
 	s.started(ci)
-
-	if m.cancel != nil {
-		ci.cancel(m.ctx, *m.cancel)
-	}
 
 	return ci, nil
 }

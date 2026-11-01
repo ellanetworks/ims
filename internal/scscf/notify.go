@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/reginfo"
 )
@@ -83,7 +84,7 @@ func (r *Registrar) notifyChange(ctx context.Context, impi string, ch change) []
 func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch change) []*outgoing {
 	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -93,13 +94,13 @@ func (r *Registrar) notifySubscriptions(ctx context.Context, impi string, ch cha
 
 	st, err := r.load(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
 	info, err := r.reginfo(ctx, st, ch)
 	if err != nil {
-		r.log.Warn("failed to build the reg event state", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to build the reg event state", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -169,7 +170,7 @@ func (r *Registrar) notifySharing(ctx context.Context, impi string, ch change) {
 	}
 
 	for other := range others {
-		r.background(other, func(ctx context.Context) {
+		r.background(ctx, other, func(ctx context.Context) {
 			r.send(ctx, r.notifySubscriptions(ctx, other, ch))
 		})
 	}
@@ -231,7 +232,7 @@ func seconds(d time.Duration) int64 {
 
 func (r *Registrar) dropSubscription(ctx context.Context, s db.RegSubscription) {
 	if err := r.cfg.DB.DeleteRegSubscription(ctx, s.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
-		r.log.Warn("failed to delete a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to delete a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
 	}
 }
 
@@ -242,7 +243,7 @@ func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscrip
 
 	o, err := r.newNotify(ctx, st, &s, info, subState)
 	if err != nil {
-		r.log.Warn("failed to build a NOTIFY", slog.String("impi", s.IMPI), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to build a NOTIFY", slog.String("impi", s.IMPI), slog.Any("error", err))
 		r.dropSubscription(ctx, s)
 
 		return nil
@@ -251,7 +252,7 @@ func (r *Registrar) buildNotify(ctx context.Context, st *state, s db.RegSubscrip
 	if final {
 		r.dropSubscription(ctx, s)
 	} else if err := r.cfg.DB.UpdateRegSubscription(ctx, s); err != nil {
-		r.log.Warn("failed to store a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to store a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
 		return nil
 	}
 
@@ -556,8 +557,8 @@ func elementID(prefix, key string) string {
 func (r *Registrar) send(ctx context.Context, out []*outgoing) {
 	for _, o := range out {
 		if _, err := r.cfg.Layer.Request(ctx, o.req, &notifyTransaction{r: r, o: o}); err != nil {
-			r.log.Debug("sending a NOTIFY failed", slog.String("impi", o.impi), slog.Any("error", err))
-			r.notifyFailed(o)
+			r.log.DebugContext(ctx, "sending a NOTIFY failed", slog.String("impi", o.impi), slog.Any("error", err))
+			r.notifyFailed(ctx, o)
 		}
 	}
 }
@@ -571,24 +572,24 @@ func (t *notifyTransaction) HandleResponse(ctx context.Context, res *sip.Respons
 	switch {
 	case res.StatusCode < 200:
 	case res.IsSuccess():
-		t.r.notified(t.o, res)
+		t.r.notified(ctx, t.o, res)
 	case endsSubscription(res.StatusCode):
-		t.r.log.Debug("NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
-		t.r.notifyFailed(t.o)
+		t.r.log.DebugContext(ctx, "NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
+		t.r.notifyFailed(ctx, t.o)
 	// RFC 3261 §12.2.1.2: a 408 within a dialog SHOULD end it, as a timeout does
 	// under RFC 6665 §4.2.2. RFC 4320 forbids it for a NOTIFY, but not every proxy complies.
 	case res.StatusCode == 408:
-		t.r.log.Debug("NOTIFY timed out", slog.String("impi", t.o.impi))
-		t.r.notifyFailed(t.o)
+		t.r.log.DebugContext(ctx, "NOTIFY timed out", slog.String("impi", t.o.impi))
+		t.r.notifyFailed(ctx, t.o)
 	default:
-		t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
-		t.r.notified(t.o, res)
+		t.r.log.DebugContext(ctx, "NOTIFY failed", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
+		t.r.notified(ctx, t.o, res)
 	}
 }
 
 func (t *notifyTransaction) HandleError(ctx context.Context, err error) {
-	t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Any("error", err))
-	t.r.notifyFailed(t.o)
+	t.r.log.DebugContext(ctx, "NOTIFY failed", slog.String("impi", t.o.impi), slog.Any("error", err))
+	t.r.notifyFailed(ctx, t.o)
 }
 
 func endsSubscription(code int) bool {
@@ -601,25 +602,25 @@ func endsSubscription(code int) bool {
 	return false
 }
 
-func (r *Registrar) notifyFailed(o *outgoing) {
+func (r *Registrar) notifyFailed(ctx context.Context, o *outgoing) {
 	if o.final {
 		return
 	}
 
-	r.background(o.impi, func(ctx context.Context) {
+	r.background(ctx, o.impi, func(ctx context.Context) {
 		s, err := r.cfg.DB.GetRegSubscriptionByID(ctx, o.subID)
 		if err != nil {
 			return
 		}
 
 		r.dropSubscription(ctx, s)
-		r.log.Debug("reg event subscription ended by a failed NOTIFY", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.DebugContext(ctx, "reg event subscription ended by a failed NOTIFY", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 	})
 }
 
 // notified keeps, of a final response to a NOTIFY of a subscription that goes on, the term-ioi (TS 24.229 §5.4.2.1.2)
 // and, of a 2xx, the remote target (RFC 6665 §4.1.2.2, RFC 3261 §12.2.1.2).
-func (r *Registrar) notified(o *outgoing, res *sip.Response) {
+func (r *Registrar) notified(ctx context.Context, o *outgoing, res *sip.Response) {
 	ioi := termIOIOf(res)
 	target := res.IsSuccess() && res.Header.Has("Contact")
 
@@ -627,7 +628,7 @@ func (r *Registrar) notified(o *outgoing, res *sip.Response) {
 		return
 	}
 
-	r.background(o.impi, func(ctx context.Context) {
+	r.background(ctx, o.impi, func(ctx context.Context) {
 		s, err := r.cfg.DB.GetRegSubscriptionByID(ctx, o.subID)
 		if err != nil {
 			return
@@ -647,7 +648,7 @@ func (r *Registrar) notified(o *outgoing, res *sip.Response) {
 		}
 
 		if err := r.cfg.DB.UpdateRegSubscription(ctx, s); err != nil && !errors.Is(err, db.ErrNotFound) {
-			r.log.Warn("failed to store a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to store a reg event subscription", slog.String("impi", s.IMPI), slog.Any("error", err))
 		}
 	})
 }
@@ -669,20 +670,27 @@ func refreshTarget(s *db.RegSubscription, res *sip.Response) bool {
 	return true
 }
 
-func (r *Registrar) background(impi string, f func(ctx context.Context)) {
+// background runs f, work that cause gives the registrar, on a goroutine of its own, holding the lock of the private
+// identity: in the trace of cause, while the registrar runs, bounded by backgroundTimeout once it holds the lock.
+func (r *Registrar) background(cause context.Context, impi string, f func(ctx context.Context)) {
 	if !r.start() {
 		return
 	}
 
+	ctx := lifetime.With(r.ctx, cause)
+
 	go func() {
 		defer r.wg.Done()
 
-		if err := r.lock(r.ctx, impi); err != nil {
+		if err := r.lock(ctx, impi); err != nil {
 			return
 		}
 
 		defer r.unlock(impi)
 
-		f(r.ctx)
+		ctx, cancel := context.WithTimeout(ctx, backgroundTimeout)
+		defer cancel()
+
+		f(ctx)
 	}()
 }

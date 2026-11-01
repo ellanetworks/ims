@@ -22,7 +22,6 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const secAgree = "sec-agree"
@@ -70,28 +69,20 @@ type Config struct {
 
 const tracerName = "github.com/ellanetworks/ims/internal/pcscf"
 
-// detach starts the span of work of the P-CSCF that starts later than cause, as a timer cause armed fires: in a trace
-// of its own, linked to that of cause.
-func (p *PCSCF) detach(cause context.Context, name string) (context.Context, trace.Span) {
-	tp := trace.TracerProvider(noop.NewTracerProvider())
-	if p.cfg.Layer != nil {
-		tp = p.cfg.Layer.TracerProvider()
-	}
-
-	return tracing.NewTrace(cause, tp.Tracer(tracerName), name)
-}
-
 type PCSCF struct {
 	cfg   Config
 	log   *slog.Logger
 	clock Clock
-	// ctx bounds the writes to the stores, cancelled when Close gives up on them.
+	// ctx is the P-CSCF's lifetime: it bounds the writes to the stores and the detached work, cancelled when Close
+	// gives up on them.
 	ctx    context.Context
 	cancel context.CancelFunc
-	sas    *associations
-	regs   *registrations
-	subs   *subscriptions
-	policy *policyClient
+	// detached traces the work that starts later than its cause, as a timer fires.
+	detached tracing.Detached
+	sas      *associations
+	regs     *registrations
+	subs     *subscriptions
+	policy   *policyClient
 }
 
 func New(cfg Config) *PCSCF {
@@ -102,6 +93,13 @@ func New(cfg Config) *PCSCF {
 		p.log = slog.Default()
 	}
 
+	var tp trace.TracerProvider
+	if cfg.Layer != nil {
+		tp = cfg.Layer.TracerProvider()
+	}
+
+	p.detached = tracing.NewDetached(tp, tracerName, "pcscf")
+
 	if p.clock == nil {
 		p.clock = systemClock{}
 	}
@@ -111,7 +109,7 @@ func New(cfg Config) *PCSCF {
 		grace = DefaultGrace
 	}
 
-	p.regs = newRegistrations(p.ctx, cfg.Registrations, p.clock, grace, p.log)
+	p.regs = newRegistrations(p.ctx, cfg.Registrations, p.clock, grace, p.log, p.detached)
 	p.subs = newSubscriptions(p)
 	p.policy = newPolicyClient(cfg.Policy, p.log, p.clock.Now)
 	p.regs.expired = p.expired
@@ -121,7 +119,7 @@ func New(cfg Config) *PCSCF {
 	}
 
 	if cfg.IPsec.Kernel != nil {
-		p.sas = newAssociations(p.ctx, cfg.IPsec, p.log)
+		p.sas = newAssociations(p.ctx, cfg.IPsec, p.log, p.detached)
 
 		if cfg.Layer != nil {
 			p.sas.closeFlow = cfg.Layer.CloseFlow
@@ -144,18 +142,18 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 	}
 
 	for _, r := range lost {
-		p.log.Warn("registration not restored: its security associations are lost; the UE must register again",
+		p.log.WarnContext(ctx, "registration not restored: its security associations are lost; the UE must register again",
 			slog.String("impi", r.IMPI), slog.String("ue", r.UEAddress.String()), slog.Any("contacts", r.Contacts))
 	}
 
-	p.restorePolicy(expired, lost)
+	p.restorePolicy(ctx, expired, lost)
 
 	if err := p.subs.restore(ctx); err != nil {
 		return fmt.Errorf("restore reg event subscriptions: %w", err)
 	}
 
 	for _, r := range lost {
-		p.unsubscribeIfIdle(r.IMPI)
+		p.unsubscribeIfIdle(ctx, r.IMPI)
 	}
 
 	return nil
@@ -208,12 +206,12 @@ func (p *PCSCF) Close(ctx context.Context) error {
 	return nil
 }
 
-func (p *PCSCF) expired(r db.PCSCFRegistration) {
+func (p *PCSCF) expired(ctx context.Context, r db.PCSCFRegistration) {
 	if p.sas != nil {
 		p.sas.deregistered(regKeyOf(&r))
 	}
 
-	p.endPolicy(r, policy.TerminationExpired, 0)
+	p.endPolicy(ctx, r, policy.TerminationExpired, 0)
 }
 
 func (p *PCSCF) anyRegistration(impi string) (db.PCSCFRegistration, bool) {
@@ -291,7 +289,7 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 }
 
 func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
-	p.signallingRestored(req)
+	p.signallingRestored(ctx, req)
 
 	if req.Method != "REGISTER" {
 		switch top, ok := p.terminatingRoute(req); {
@@ -309,13 +307,13 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 	}
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 		return
 	}
 
 	out, _, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		p.respond(ctx, tx, sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
@@ -336,7 +334,7 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 				p.sas.challengeAnswered(v.s)
 			}
 		} else if ok {
-			p.log.Debug("REGISTER over another registration flow's security associations", slog.String("impi", r.impi))
+			p.log.DebugContext(ctx, "REGISTER over another registration flow's security associations", slog.String("impi", r.impi))
 		}
 	}
 
@@ -345,20 +343,20 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 	// be told apart (TS 24.229 §5.2.2.1 NOTE 16).
 	if r.in == nil {
 		if other, ok := p.regs.fromSource(req.Flow.Remote); ok && other.IMPI == r.impi && regKeyOf(&other) != r.key() {
-			p.log.Debug("REGISTER for another flow over a registered one", slog.String("impi", r.impi),
+			p.log.DebugContext(ctx, "REGISTER for another flow over a registered one", slog.String("impi", r.impi),
 				slog.String("source", req.Flow.Remote.String()))
-			p.respond(tx, sip.NewResponse(req, 403, "Flow In Use"))
+			p.respond(ctx, tx, sip.NewResponse(req, 403, "Flow In Use"))
 
 			return
 		}
 	}
 
-	if res := p.secAgree(req, out, r); res != nil {
+	if res := p.secAgree(ctx, req, out, r); res != nil {
 		if r.in != nil {
 			p.sas.failed(r.in.s)
 		}
 
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 
 		return
 	}
@@ -396,7 +394,7 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 		code = serr.StatusCode
 	}
 
-	p.respond(tx, sip.NewResponse(req, code, ""))
+	p.respond(ctx, tx, sip.NewResponse(req, code, ""))
 }
 
 type registration struct {
@@ -454,7 +452,7 @@ func contactFlow(params sip.Params) flowID {
 	return flowID{instance: instance, regID: n}
 }
 
-func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
+func (p *PCSCF) secAgree(ctx context.Context, req, out *sip.Request, r *registration) *sip.Response {
 	clients, err := req.Header.SecurityMechanisms("Security-Client")
 	if err != nil {
 		return sip.NewResponse(req, 400, "Bad Security-Client")
@@ -469,11 +467,11 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	ipsecOffered := err == nil
 
 	for _, err := range skipped {
-		p.log.Debug("skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
+		p.log.DebugContext(ctx, "skipped Security-Client mechanism", slog.String("impi", r.impi), slog.Any("error", err))
 	}
 
 	if p.sas != nil && r.in == nil && !ipsecOffered {
-		p.log.Debug("REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
+		p.log.DebugContext(ctx, "REGISTER without IPsec in Security-Client", slog.String("impi", r.impi),
 			slog.String("security-client", req.Header.Get("Security-Client")))
 
 		return p.secAgreeRequired(req)
@@ -482,7 +480,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	if ipsecOffered && p.sas != nil {
 		o, err := p.cfg.IPsec.Policy.Select(offers)
 		if err != nil {
-			p.log.Debug("no acceptable IPsec algorithm", slog.String("impi", r.impi),
+			p.log.DebugContext(ctx, "no acceptable IPsec algorithm", slog.String("impi", r.impi),
 				slog.String("security-client", req.Header.Get("Security-Client")))
 
 			return sip.NewResponse(req, 403, "No Acceptable IPsec Algorithm")
@@ -492,7 +490,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	}
 
 	if r.in != nil && !viaMatches(req, r.ue) {
-		p.log.Debug("protected REGISTER whose Via is not its source address alone", slog.String("impi", r.impi),
+		p.log.DebugContext(ctx, "protected REGISTER whose Via is not its source address alone", slog.String("impi", r.impi),
 			slog.String("source", r.ue.String()), slog.Any("via", req.Header.Values("Via")))
 
 		return sip.NewResponse(req, 403, "")
@@ -507,12 +505,12 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		case len(verify) == 0 || len(clients) == 0:
 			return sip.NewResponse(req, 400, "Missing Security-Verify or Security-Client")
 		case !verifies(verify, r.in.server):
-			p.log.Debug("Security-Verify differs from the Security-Server", slog.String("impi", r.impi),
+			p.log.DebugContext(ctx, "Security-Verify differs from the Security-Server", slog.String("impi", r.impi),
 				slog.String("security-verify", req.Header.Get("Security-Verify")), slog.String("security-server", r.in.server.String()))
 
 			return sip.NewResponse(req, 403, "Security Agreement Mismatch")
 		case !sameOffers(clients, r.in.client):
-			p.log.Debug("Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
+			p.log.DebugContext(ctx, "Security-Client differs from the challenged REGISTER's", slog.String("impi", r.impi),
 				slog.String("security-client", req.Header.Get("Security-Client")),
 				slog.String("challenged", mechanismsString(r.in.client)))
 
@@ -532,7 +530,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 		}
 
 		if r.offer == nil {
-			p.log.Debug("protected REGISTER without Security-Client", slog.String("impi", r.impi))
+			p.log.DebugContext(ctx, "protected REGISTER without Security-Client", slog.String("impi", r.impi))
 		}
 
 		if r.in.state == established {
@@ -578,22 +576,22 @@ func (p *PCSCF) reply(ctx context.Context, tx *transaction.ServerTransaction, re
 	}
 
 	relay := func() proxy.Verdict {
-		p.logRejectedRegister(req, res)
+		p.logRejectedRegister(ctx, req, res)
 
 		if !open && r.removed == nil {
 			return proxy.Relay
 		}
 
-		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
-			p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		if err := p.cfg.Proxy.Relay(ctx, tx, res); err != nil {
+			p.log.DebugContext(ctx, "P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
 		if r.removed != nil {
-			p.endPolicy(*r.removed, policy.TerminationLogout, 0)
+			p.endPolicy(ctx, *r.removed, policy.TerminationLogout, 0)
 		}
 
 		if open {
-			p.openSignalling(r.key(), 0)
+			p.openSignalling(ctx, r.key(), 0)
 		}
 
 		return proxy.Hold
@@ -605,12 +603,12 @@ func (p *PCSCF) reply(ctx context.Context, tx *transaction.ServerTransaction, re
 
 	switch {
 	case res.StatusCode == 401 && r.offer == nil && r.in != nil && r.in.state != temporary:
-		p.log.Debug("re-authentication of a UE that sent no Security-Client", slog.String("impi", r.impi))
-		return p.replace(tx, req, 403)
+		p.log.DebugContext(ctx, "re-authentication of a UE that sent no Security-Client", slog.String("impi", r.impi))
+		return p.replace(ctx, tx, req, 403)
 	case res.StatusCode == 401 && r.offer != nil:
 		if keysErr != nil {
-			p.log.Error("401 without usable ck and ik", slog.String("impi", r.impi), slog.Any("error", keysErr))
-			return p.replace(tx, req, 500)
+			p.log.ErrorContext(ctx, "401 without usable ck and ik", slog.String("impi", r.impi), slog.Any("error", keysErr))
+			return p.replace(ctx, tx, req, 500)
 		}
 
 		var origin *saSet
@@ -618,17 +616,17 @@ func (p *PCSCF) reply(ctx context.Context, tx *transaction.ServerTransaction, re
 			origin = r.in.s
 		}
 
-		s, err := p.sas.challenged(challenge{
+		s, err := p.sas.challenged(ctx, challenge{
 			impi: r.impi, flow: r.flow, local: r.local, ue: r.ue, offer: *r.offer, client: r.client, origin: origin,
 		}, keys)
 		if err != nil {
-			p.log.Error("setting up security associations failed", slog.String("impi", r.impi), slog.Any("error", err))
+			p.log.ErrorContext(ctx, "setting up security associations failed", slog.String("impi", r.impi), slog.Any("error", err))
 
 			if errors.Is(err, errSAConflict) || errors.Is(err, errTooManySAs) {
-				return p.replace(tx, req, 403)
+				return p.replace(ctx, tx, req, 403)
 			}
 
-			return p.replace(tx, req, 500)
+			return p.replace(ctx, tx, req, 500)
 		}
 
 		res.Header.Add("Security-Server", s.String())
@@ -636,7 +634,7 @@ func (p *PCSCF) reply(ctx context.Context, tx *transaction.ServerTransaction, re
 	case res.IsSuccess() && r.in != nil:
 		o := registrationOutcome(req, res)
 		o.dereg = o.dereg && ended
-		p.sas.registered(r.in.s, o)
+		p.sas.registered(ctx, r.in.s, o)
 	case r.in != nil && r.in.state == temporary:
 		p.sas.failed(r.in.s)
 	}
@@ -657,23 +655,23 @@ func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Respo
 
 			if len(existing.Sets) > 0 {
 				existing.AssociatedURIs = union(existing.AssociatedURIs, existing.Sets)
-				p.regs.save(existing)
+				p.regs.save(ctx, existing)
 
-				p.log.Debug("public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
+				p.log.DebugContext(ctx, "public identity deregistered", slog.String("impi", r.impi), slog.String("impu", impu))
 
 				return false
 			}
 		}
 
-		if old, ok := p.regs.remove(r.key()); ok {
-			p.log.Debug("UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
+		if old, ok := p.regs.remove(ctx, r.key()); ok {
+			p.log.DebugContext(ctx, "UE deregistered", slog.String("impi", r.impi), slog.String("ue", r.ue.String()))
 
 			if old.Policy.ID != "" {
 				r.removed = &old
 			}
 		}
 
-		p.unsubscribeIfIdle(r.impi)
+		p.unsubscribeIfIdle(ctx, r.impi)
 
 		return true
 	}
@@ -723,7 +721,7 @@ func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Respo
 	reg.Sets[impu] = associated
 	reg.AssociatedURIs = union(append(slices.Clone(reg.AssociatedURIs), associated...), reg.Sets)
 
-	p.regs.save(reg)
+	p.regs.save(ctx, reg)
 
 	if len(associated) == 0 || p.cfg.Layer == nil {
 		return false
@@ -732,7 +730,7 @@ func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Respo
 	// A new registration renews the subscription to the reg event package, unless it is a flow that
 	// adds to the UE's others.
 	if !known && (r.flow == flowID{} || !others) {
-		p.subs.stop(r.impi)
+		p.subs.stop(ctx, r.impi)
 	}
 
 	if !p.subs.has(r.impi) {
@@ -790,19 +788,19 @@ func later(a, b time.Time) time.Time {
 	return b
 }
 
-func (p *PCSCF) unsubscribeIfIdle(impi string) {
+func (p *PCSCF) unsubscribeIfIdle(ctx context.Context, impi string) {
 	if _, ok := p.regs.forIMPI(impi); !ok {
-		p.subs.stop(impi)
+		p.subs.stop(ctx, impi)
 	}
 }
 
-func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
+func (p *PCSCF) replace(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, code int) proxy.Verdict {
 	res := sip.NewResponse(req, code, "")
 	p.cfg.RegistrationAttempts.Answered(req, res, false)
-	p.logRejectedRegister(req, res)
+	p.logRejectedRegister(ctx, req, res)
 
-	if err := p.cfg.Proxy.Relay(tx, res); err != nil {
-		p.log.Debug("P-CSCF response failed", slog.Int("code", code), slog.Any("error", err))
+	if err := p.cfg.Proxy.Relay(ctx, tx, res); err != nil {
+		p.log.DebugContext(ctx, "P-CSCF response failed", slog.Int("code", code), slog.Any("error", err))
 	}
 
 	return proxy.Hold
@@ -810,7 +808,7 @@ func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, cod
 
 func (p *PCSCF) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	if p.cfg.Proxy.Proxied(tx) {
-		p.cfg.Proxy.Cancel(tx, cancel)
+		p.cfg.Proxy.Cancel(ctx, tx, cancel)
 		return
 	}
 
@@ -822,23 +820,23 @@ func (p *PCSCF) HandleTransactionError(ctx context.Context, tx *transaction.Serv
 }
 
 // respond answers a request with a response of the P-CSCF's.
-func (p *PCSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
+func (p *PCSCF) respond(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) {
 	p.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
-	p.logRejectedRegister(tx.Request(), res)
+	p.logRejectedRegister(ctx, tx.Request(), res)
 
 	if err := tx.Respond(res); err != nil {
-		p.log.Debug("P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		p.log.DebugContext(ctx, "P-CSCF response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}
 }
 
 // logRejectedRegister logs a final answer to a REGISTER other than a success or a challenge, whoever made it, so
 // that the operator sees why a UE does not register. The node that refused it logs the details.
-func (p *PCSCF) logRejectedRegister(req *sip.Request, res *sip.Response) {
+func (p *PCSCF) logRejectedRegister(ctx context.Context, req *sip.Request, res *sip.Response) {
 	if req.Method != "REGISTER" || res.StatusCode < 300 || res.StatusCode == 401 {
 		return
 	}
 
-	p.log.Info("REGISTER rejected", slog.String("impi", privateIdentity(req)), slog.String("source", req.Flow.Remote.String()),
+	p.log.InfoContext(ctx, "REGISTER rejected", slog.String("impi", privateIdentity(req)), slog.String("source", req.Flow.Remote.String()),
 		slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
 }
 

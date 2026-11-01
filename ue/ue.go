@@ -23,6 +23,7 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -140,6 +141,10 @@ type Config struct {
 	// OnEvent receives the events of the UE: the requests it receives and the responses to its own, the reg event
 	// NOTIFYs, the errors of its automatic re-registrations and subscriptions. It must not block.
 	OnEvent func(Event)
+
+	// TracerProvider traces the UE's transactions, as children of the contexts of the calls that start them; none
+	// when nil. The UE sends no trace context: it is outside the IMS's trust domain.
+	TracerProvider trace.TracerProvider
 
 	Logger *slog.Logger
 }
@@ -400,11 +405,12 @@ func New(cfg Config) (*UE, error) {
 
 	u.agent, err = ua.New(ua.Config{
 		Transaction: transaction.Config{
-			Logger:       cfg.Logger,
-			Filter:       u.filter,
-			ResponseFlow: u.responseFlow,
-			T1:           cfg.T1,
-			Clock:        cfg.Clock,
+			Logger:         cfg.Logger,
+			TracerProvider: cfg.TracerProvider,
+			Filter:         u.filter,
+			ResponseFlow:   u.responseFlow,
+			T1:             cfg.T1,
+			Clock:          cfg.Clock,
 			Transport: transport.Config{
 				Trace:    u.trace,
 				LargeUDP: cfg.LargeUDP,
@@ -765,7 +771,8 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
-	if _, err := u.layer.Request(context.Background(), req, w); err != nil {
+	// ctx carries the caller's trace to the transaction; it bounds only the wait below.
+	if _, err := u.layer.Request(ctx, req, w); err != nil {
 		return nil, fmt.Errorf("ue: send %s: %w", req.Method, err)
 	}
 

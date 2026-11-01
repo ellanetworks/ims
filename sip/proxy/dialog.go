@@ -160,11 +160,14 @@ type DialogEvent struct {
 }
 
 type DialogConfig struct {
-	Target func(toward Side, req *sip.Request) (Target, error)
+	// Target is where req, a request the dialog generates toward toward, goes; ctx is its trace.
+	Target func(ctx context.Context, toward Side, req *sip.Request) (Target, error)
 
 	Value any
 
-	OnEvent func(DialogEvent)
+	// OnEvent is told of the events of the dialog; ctx is the trace of what caused it: the request or response, or the
+	// Release, and none for a timer of the dialog's, as its expiry.
+	OnEvent func(ctx context.Context, e DialogEvent)
 }
 
 type Release struct {
@@ -254,7 +257,7 @@ type Dialog struct {
 	byeFrom  Side
 	ended    bool
 
-	outbox   []DialogEvent
+	outbox   []queuedEvent
 	flushing bool
 
 	ctx      *responseContext
@@ -320,11 +323,18 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 	}
 }
 
-func (d *Dialog) publish(e DialogEvent) {
+// publish queues e, of the trace of ctx, for flush.
+func (d *Dialog) publish(ctx context.Context, e DialogEvent) {
 	if d.p.onDialog != nil || d.cfg.OnEvent != nil {
 		e.Dialog = d
-		d.outbox = append(d.outbox, e)
+		d.outbox = append(d.outbox, queuedEvent{ctx: ctx, e: e})
 	}
+}
+
+// queuedEvent is an event waiting for flush, with the trace of what caused it.
+type queuedEvent struct {
+	ctx context.Context
+	e   DialogEvent
 }
 
 func (d *Dialog) flush() {
@@ -338,17 +348,17 @@ func (d *Dialog) flush() {
 	d.flushing = true
 
 	for len(d.outbox) > 0 {
-		e := d.outbox[0]
+		q := d.outbox[0]
 		d.outbox = d.outbox[1:]
 
 		d.mu.Unlock()
 
 		if d.p.onDialog != nil {
-			d.p.onDialog(e)
+			d.p.onDialog(q.ctx, q.e)
 		}
 
 		if d.cfg.OnEvent != nil {
-			d.cfg.OnEvent(e)
+			d.cfg.OnEvent(q.ctx, q.e)
 		}
 
 		d.mu.Lock()
@@ -590,7 +600,7 @@ func calleeRoute(rr []sip.Address, own func(sip.Address) bool) []sip.Address {
 }
 
 // begin starts the dialog on the initial INVITE, before any branch of it is sent.
-func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, out *sip.Request, rr *RecordRoute) error {
+func (d *Dialog) begin(ctx context.Context, tx *transaction.ServerTransaction, c *responseContext, out *sip.Request, rr *RecordRoute) error {
 	from, err := out.Header.From()
 	if err != nil {
 		return &sip.StatusError{StatusCode: 400, Err: err}
@@ -620,7 +630,7 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	d.caller = party{addr: from, contact: contact, seq: cseq.Seq, haveSeq: true, route: route}
 	d.invites[Caller] = cseq.Seq
 	_, d.offered = sessionBody(Caller, out.Envelope)
-	d.requestBody(&d.sdp, Caller, d.inviteTx, out.Envelope)
+	d.requestBody(ctx, &d.sdp, Caller, d.inviteTx, out.Envelope)
 	d.arm(d.p.dialogLifetime)
 
 	d.mu.Unlock()
@@ -632,9 +642,9 @@ func (d *Dialog) begin(tx *transaction.ServerTransaction, c *responseContext, ou
 	return nil
 }
 
-func (d *Dialog) started() {
+func (d *Dialog) started(ctx context.Context) {
 	d.mu.Lock()
-	d.publish(DialogEvent{Kind: EventStarted})
+	d.publish(ctx, DialogEvent{Kind: EventStarted})
 	d.mu.Unlock()
 
 	d.flush()
@@ -695,7 +705,7 @@ func (d *Dialog) calleeLeg(tag string) *party {
 	return d.early[tag]
 }
 
-func (d *Dialog) request(out *sip.Request) (bool, error) {
+func (d *Dialog) request(ctx context.Context, out *sip.Request) (bool, error) {
 	defer d.flush()
 
 	cseq, err := out.Header.CSeq()
@@ -746,7 +756,7 @@ func (d *Dialog) request(out *sip.Request) (bool, error) {
 		}
 	}
 
-	d.requestBody(d.negotiation(callee), side, key, out.Envelope)
+	d.requestBody(ctx, d.negotiation(callee), side, key, out.Envelope)
 
 	return true, nil
 }
@@ -803,7 +813,7 @@ func (d *Dialog) ack(ctx context.Context, ack *sip.Request) error {
 		}
 	}
 
-	d.requestBody(d.negotiation(callee), side, txKey{from: side, seq: cseq.Seq, method: "ACK"}, ack.Envelope)
+	d.requestBody(ctx, d.negotiation(callee), side, txKey{from: side, seq: cseq.Seq, method: "ACK"}, ack.Envelope)
 
 	return nil
 }
@@ -814,7 +824,7 @@ func (d *Dialog) cancelledByCaller() {
 	d.mu.Unlock()
 }
 
-func (d *Dialog) response(req *sip.Request, r Reply) {
+func (d *Dialog) response(ctx context.Context, req *sip.Request, r Reply) {
 	res := r.Response
 	if res == nil {
 		res = sip.NewResponse(req, 408, "")
@@ -862,21 +872,21 @@ func (d *Dialog) response(req *sip.Request, r Reply) {
 		delete(d.refresh, key)
 	}
 
-	d.responseBody(d.negotiation(callee), side.other(), key, res)
+	d.responseBody(ctx, d.negotiation(callee), side.other(), key, res)
 
 	confirmed := d.state == Ending || d.state == Confirmed || d.state == Answered
 
 	switch {
 	case d.ended || !confirmed || res.StatusCode < 200:
 	case req.Method == "BYE":
-		d.end(EndBye, d.byeFrom, d.p.lingerBye)
+		d.end(ctx, EndBye, d.byeFrom, d.p.lingerBye)
 	case res.StatusCode == 481 || res.StatusCode == 408:
 		by := side.other()
 		if !downstream {
 			by = 0
 		}
 
-		d.end(EndLost, by, d.p.lingerBye)
+		d.end(ctx, EndLost, by, d.p.lingerBye)
 	}
 
 	d.mu.Unlock()
@@ -885,7 +895,7 @@ func (d *Dialog) response(req *sip.Request, r Reply) {
 }
 
 // inviteResponse follows a provisional or 2xx response to the initial INVITE on branch b.
-func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
+func (d *Dialog) inviteResponse(ctx context.Context, b *branch, res *sip.Response) {
 	to, _ := res.Header.To()
 	tag := to.Tag()
 
@@ -923,7 +933,7 @@ func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
 			d.offered = true
 		}
 
-		d.responseBody(&pt.sdp, Callee, d.inviteTx, res)
+		d.responseBody(ctx, &pt.sdp, Callee, d.inviteTx, res)
 	case res.IsSuccess():
 		switch {
 		case d.silent:
@@ -968,16 +978,16 @@ func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
 		d.early = nil
 		d.state = Answered
 		d.code = res.StatusCode
-		d.publish(DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
+		d.publish(ctx, DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
 
 		// The session is the exchange the 2xx completes, or else the one its early dialog had.
 		seq := d.sdp.seq
-		if d.responseBody(&d.sdp, Callee, d.inviteTx, res); d.sdp.seq == seq {
-			d.negotiated(&d.sdp)
+		if d.responseBody(ctx, &d.sdp, Callee, d.inviteTx, res); d.sdp.seq == seq {
+			d.negotiated(ctx, &d.sdp)
 		}
 
 		d.arm(sessionExpires(res, d.p.dialogLifetime))
-		d.noAck = d.p.clock.AfterFunc(2*64*d.p.layer.T1(), d.noAckFired)
+		d.noAck = d.p.clock.AfterFunc(2*64*d.p.layer.T1(), func() { d.noAckFired(context.Background()) })
 	}
 
 	d.mu.Unlock()
@@ -1014,7 +1024,7 @@ func (d *Dialog) dropEarly(drop func(tag string, pt *party) bool) {
 
 // failed ends the dialog on the final response the INVITE got once every branch failed: res, from
 // downstream or generated by the proxy.
-func (d *Dialog) failed(res *sip.Response, downstream bool) {
+func (d *Dialog) failed(ctx context.Context, res *sip.Response, downstream bool) {
 	d.mu.Lock()
 
 	if d.state == Early {
@@ -1032,14 +1042,14 @@ func (d *Dialog) failed(res *sip.Response, downstream bool) {
 			d.state = Ended
 		case !downstream:
 			d.released = true
-			d.end(EndFailed, 0, d.p.timerC)
+			d.end(ctx, EndFailed, 0, d.p.timerC)
 		default:
 			by := Callee
 			if res.StatusCode == 487 && (d.cancelled || d.byeFrom == Caller) {
 				by = Caller
 			}
 
-			d.end(EndFailed, by, d.p.lingerBye)
+			d.end(ctx, EndFailed, by, d.p.lingerBye)
 		}
 	}
 
@@ -1121,7 +1131,7 @@ func (d *Dialog) sendAck(ctx context.Context, leg *closingLeg) {
 	if out == nil {
 		ack := leg.ack.Clone()
 
-		to, err := d.target(Callee, &leg.callee, ack)
+		to, err := d.target(ctx, Callee, &leg.callee, ack)
 		if err != nil {
 			d.p.log.Debug("no target for a generated ACK", slog.String("dialog", d.id), slog.Any("error", err))
 			return
@@ -1199,7 +1209,7 @@ func (d *Dialog) release(ctx context.Context, r Release, cause EndCause) error {
 		d.code = releaseCode(r)
 	}
 
-	d.end(cause, 0, d.p.timerC)
+	d.end(ctx, cause, 0, d.p.timerC)
 
 	d.mu.Unlock()
 
@@ -1214,10 +1224,10 @@ func (d *Dialog) release(ctx context.Context, r Release, cause EndCause) error {
 		c.cancel(ctx, reasonFields(r.Reason))
 
 		if r.Toward&Caller != 0 {
-			_ = c.relay(releaseResponse(c, r))
+			_ = c.relay(ctx, releaseResponse(c, r))
 		}
 	case leg != nil:
-		if r.Toward&Caller != 0 && c != nil && c.relay(releaseResponse(c, r)) == nil {
+		if r.Toward&Caller != 0 && c != nil && c.relay(ctx, releaseResponse(c, r)) == nil {
 			d.mu.Lock()
 			leg.bye = false
 			d.mu.Unlock()
@@ -1314,7 +1324,7 @@ func releaseResponse(c *responseContext, r Release) *sip.Response {
 }
 
 // TS 24.229 §5.2.8.1.4
-func (d *Dialog) Discard() {
+func (d *Dialog) Discard(ctx context.Context) {
 	d.mu.Lock()
 
 	if !d.begun || d.ended {
@@ -1324,14 +1334,14 @@ func (d *Dialog) Discard() {
 
 	d.released = true
 	d.silent = true
-	d.end(EndDiscarded, 0, d.p.timerC)
+	d.end(ctx, EndDiscarded, 0, d.p.timerC)
 
 	d.mu.Unlock()
 
 	d.flush()
 }
 
-func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) {
+func (d *Dialog) end(ctx context.Context, cause EndCause, by Side, linger time.Duration) {
 	if d.ended {
 		return
 	}
@@ -1348,7 +1358,7 @@ func (d *Dialog) end(cause EndCause, by Side, linger time.Duration) {
 	}
 
 	d.arm(linger)
-	d.publish(DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, By: by, End: cause})
+	d.publish(ctx, DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, By: by, End: cause})
 }
 
 func (d *Dialog) arm(after time.Duration) {
@@ -1358,7 +1368,8 @@ func (d *Dialog) arm(after time.Duration) {
 
 	d.timerGen++
 	gen := d.timerGen
-	d.timer = d.p.clock.AfterFunc(after, func() { d.expire(gen) })
+	// A timer of the proxy is the cause of what it does: its work has no trace of the request that armed it.
+	d.timer = d.p.clock.AfterFunc(after, func() { d.expire(context.Background(), gen) })
 }
 
 func (d *Dialog) stopTimers() {
@@ -1371,7 +1382,7 @@ func (d *Dialog) stopTimers() {
 	d.timerGen++
 }
 
-func (d *Dialog) expire(gen int) {
+func (d *Dialog) expire(ctx context.Context, gen int) {
 	d.mu.Lock()
 
 	if gen != d.timerGen {
@@ -1384,7 +1395,7 @@ func (d *Dialog) expire(gen int) {
 
 		d.ended = true
 		d.state = Ended
-		d.publish(DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, End: EndExpired})
+		d.publish(ctx, DialogEvent{Kind: EventEnded, Code: d.code, Tag: d.codeTag, End: EndExpired})
 	}
 
 	d.stopTimers()
@@ -1396,12 +1407,12 @@ func (d *Dialog) expire(gen int) {
 }
 
 // RFC 3261 §13.3.1.4
-func (d *Dialog) noAckFired() {
+func (d *Dialog) noAckFired(ctx context.Context) {
 	d.mu.Lock()
 
 	if d.state == Answered && !d.ended {
 		d.p.log.Debug("2xx never ACKed", slog.String("dialog", d.id))
-		d.end(EndNoAck, 0, d.p.lingerBye)
+		d.end(ctx, EndNoAck, 0, d.p.lingerBye)
 	}
 
 	d.mu.Unlock()
@@ -1460,9 +1471,9 @@ func randomSeq() uint32 {
 
 // target is where a request the dialog generates goes; toward the callee, after the branch the
 // callee answered on.
-func (d *Dialog) target(toward Side, callee *party, req *sip.Request) (Target, error) {
+func (d *Dialog) target(ctx context.Context, toward Side, callee *party, req *sip.Request) (Target, error) {
 	if d.cfg.Target != nil {
-		return d.cfg.Target(toward, req)
+		return d.cfg.Target(ctx, toward, req)
 	}
 
 	tr, dest, err := sip.NextHop(req)
@@ -1480,7 +1491,7 @@ func (d *Dialog) target(toward Side, callee *party, req *sip.Request) (Target, e
 
 // send sends a request the dialog generates, in the trace of ctx; callee, toward the callee, is the one it goes to.
 func (d *Dialog) send(ctx context.Context, req *sip.Request, toward Side, callee *party) {
-	to, err := d.target(toward, callee, req)
+	to, err := d.target(ctx, toward, callee, req)
 	if err != nil {
 		d.p.log.Debug("no target for a generated request", slog.String("dialog", d.id), slog.String("request", req.StartLine()),
 			slog.Any("error", err))
@@ -1516,24 +1527,24 @@ func (g generated) HandleError(_ context.Context, err error) {
 		slog.Any("error", err))
 }
 
-func (d *Dialog) requestBody(n *negotiation, from Side, key txKey, e sip.Envelope) {
+func (d *Dialog) requestBody(ctx context.Context, n *negotiation, from Side, key txKey, e sip.Envelope) {
 	body, ok := sessionBody(from, e)
 	if !ok {
 		return
 	}
 
 	if n.Request(key.oa(), body.Data) == offeranswer.Answer {
-		d.answered(n)
+		d.answered(ctx, n)
 	}
 }
 
 // RFC 3264, RFC 6337 §3.1: an exchange completed, or its answer changed.
-func (d *Dialog) answered(n *negotiation) {
+func (d *Dialog) answered(ctx context.Context, n *negotiation) {
 	d.exchanges++
 	n.seq = d.exchanges
 
 	if n == &d.sdp && d.answerTag != "" {
-		d.negotiated(n)
+		d.negotiated(ctx, n)
 	}
 }
 
@@ -1547,20 +1558,20 @@ func (n *negotiation) exchange() (Exchange, bool) {
 }
 
 // negotiated publishes the exchange of n, if complete.
-func (d *Dialog) negotiated(n *negotiation) {
+func (d *Dialog) negotiated(ctx context.Context, n *negotiation) {
 	if x, ok := n.exchange(); ok {
-		d.publish(DialogEvent{Kind: EventNegotiated, Exchange: x})
+		d.publish(ctx, DialogEvent{Kind: EventNegotiated, Exchange: x})
 	}
 }
 
-func (d *Dialog) responseBody(n *negotiation, from Side, key txKey, res *sip.Response) {
+func (d *Dialog) responseBody(ctx context.Context, n *negotiation, from Side, key txKey, res *sip.Response) {
 	var data []byte
 	if body, ok := sessionBody(from, res.Envelope); ok {
 		data = body.Data
 	}
 
 	if n.Response(key.oa(), res.StatusCode, data) == offeranswer.Answer {
-		d.answered(n)
+		d.answered(ctx, n)
 	}
 }
 

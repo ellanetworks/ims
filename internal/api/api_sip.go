@@ -27,7 +27,7 @@ type SIPStatus struct {
 }
 
 func GetSIPStatus(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		op := cfg.Settings.Get().Operator
 
 		resp := SIPStatus{
@@ -40,6 +40,6 @@ func GetSIPStatus(cfg Config) http.Handler {
 			resp.Listeners = append(resp.Listeners, SIPListener{Role: l.Role, Address: l.Address.String(), Transports: []string{"udp", "tcp"}})
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }

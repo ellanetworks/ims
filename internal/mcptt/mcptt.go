@@ -106,7 +106,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	if cfg.Mode == config.MCPTTModeDirect {
 		mode = registrar.Direct
 
-		logger.Warn("MCPTT in direct mode: the AS is the registrar of its clients, without the IMS, for the lab and tests only")
+		logger.WarnContext(ctx, "MCPTT in direct mode: the AS is the registrar of its clients, without the IMS, for the lab and tests only")
 	}
 
 	live, err := NewSettings(ctx, cfg.DB, cfg.HomeDomain)
@@ -205,7 +205,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		as.status.SIP = append(as.status.SIP, l.String())
 	}
 
-	logger.Info("MCPTT started", slog.String("mode", as.status.Mode), slog.Any("sip", as.status.SIP),
+	logger.InfoContext(ctx, "MCPTT started", slog.String("mode", as.status.Mode), slog.Any("sip", as.status.SIP),
 		slog.String("media_control", as.status.MediaControl))
 
 	return as, nil

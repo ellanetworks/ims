@@ -932,7 +932,7 @@ func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
 	s.clock.Advance(600 * time.Second)
 	pcrf.wantSTR(id, rx.TerminationAuthExpired)
 
-	s.p.regs.save(snapshot)
+	s.p.regs.save(context.Background(), snapshot)
 
 	if r, _ := s.record(); r.Policy.ID != "" {
 		t.Fatalf("session = %q, want the ended session not brought back", r.Policy.ID)
@@ -1114,7 +1114,7 @@ func TestRxShutdownGivesUpOnTheSTR(t *testing.T) {
 }
 
 func TestSourceIndexFollowsTheRecords(t *testing.T) {
-	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler), noTrace())
 
 	a := netip.AddrPortFrom(ueAddr, 5060)
 	b := netip.AddrPortFrom(ueAddr, 5070)
@@ -1122,14 +1122,14 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 		IMPI: testIMPI, FlowToken: "t", UEAddress: a, PCSCFAddress: loopback, ExpiresAt: testEpoch.Add(time.Hour),
 	}
 
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if k, ok := rs.sourceKey(a); !ok || k != (regKey{impi: testIMPI, ue: ueAddr}) {
 		t.Fatalf("sourceKey(%s) = %v, %v", a, k, ok)
 	}
 
 	r.UEAddress = b
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if _, ok := rs.sourceKey(a); ok {
 		t.Fatal("the old port still indexed after the record moved")
@@ -1140,15 +1140,15 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 	}
 
 	r.Protected = true
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if _, ok := rs.sourceKey(b); ok {
 		t.Fatal("a protected record indexed by its source")
 	}
 
 	r.Protected = false
-	rs.save(r)
-	rs.remove(regKey{impi: testIMPI, ue: ueAddr})
+	rs.save(context.Background(), r)
+	rs.remove(context.Background(), regKey{impi: testIMPI, ue: ueAddr})
 
 	if _, ok := rs.sourceKey(b); ok || len(rs.bySource) != 0 {
 		t.Fatalf("index = %v after the removal", rs.bySource)
@@ -1446,7 +1446,7 @@ func TestPolicyCloseGivesUp(t *testing.T) {
 	cancelled := make(chan error, 1)
 
 	c.spawn(func() {
-		ctx, cancel := c.deadline(0)
+		ctx, cancel := c.deadline(context.Background(), 0)
 		defer cancel()
 
 		cancelled <- c.cfg.Backend.Terminate(ctx, "id", "", policy.TerminationAdministrative, false)

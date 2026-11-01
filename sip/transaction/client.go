@@ -204,7 +204,7 @@ func (tx *ClientTransaction) sendCancel() {
 			tx.prepare(cancel)
 		}
 
-		_, err = tx.layer.Request(withLinks(tx.ctx, tx.cancelCause), cancel, nil)
+		_, err = tx.layer.Request(WithLinks(tx.ctx, tx.cancelCause), cancel, nil)
 	}
 
 	if err != nil {

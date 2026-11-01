@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -51,7 +52,7 @@ func TestMultipleDevices(t *testing.T) {
 
 		w.users["bob"].expect(t, "incoming", "established")
 
-		ca.Leave()
+		ca.Leave(context.Background())
 		w.n.Quiesce()
 	})
 
@@ -89,7 +90,7 @@ func TestMultipleDevices(t *testing.T) {
 			t.Fatalf("%d of bob's clients in the call:\n%s", kept, strings.Join(lines, "\n"))
 		}
 
-		ca.Leave()
+		ca.Leave(context.Background())
 		w.n.Quiesce()
 	})
 
@@ -114,7 +115,7 @@ func TestMultipleDevices(t *testing.T) {
 		w.n.Quiesce()
 		bob2.expectAll(t, "floor:taken")
 
-		ca.Leave()
+		ca.Leave(context.Background())
 		w.n.Quiesce()
 	})
 }
@@ -146,7 +147,7 @@ func TestJoinSupersedesInvitation(t *testing.T) {
 		t.Fatalf("trace:\n%s", strings.Join(lines, "\n"))
 	}
 
-	c2.Leave()
-	ca.Leave()
+	c2.Leave(context.Background())
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }

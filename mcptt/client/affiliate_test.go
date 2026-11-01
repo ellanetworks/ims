@@ -188,14 +188,14 @@ func TestPublication(t *testing.T) {
 
 	var r results
 
-	if err := a.Affiliate(nil, r.done); !errors.Is(err, client.ErrNotPublished) {
+	if err := a.Affiliate(context.Background(), nil, r.done); !errors.Is(err, client.ErrNotPublished) {
 		t.Fatalf("de-affiliation without a publication: %v", err)
 	}
 
 	fireOnly := []sip.URI{mustURI(t, fire)}
 	both := []sip.URI{mustURI(t, fire), mustURI(t, police)}
 
-	if err := a.Affiliate(fireOnly, r.done); err != nil {
+	if err := a.Affiliate(context.Background(), fireOnly, r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,7 +238,7 @@ func TestPublication(t *testing.T) {
 	s.lose = true
 	s.mu.Unlock()
 
-	if err := a.Affiliate(both, r.done); err != nil {
+	if err := a.Affiliate(context.Background(), both, r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -246,25 +246,25 @@ func TestPublication(t *testing.T) {
 	check("412", []int{200}, want{"e2", "4294967295", fire + " " + police}, want{"", "4294967295", fire + " " + police})
 
 	// Two changes at once: the second after the first, conditional on its entity-tag.
-	if err := a.Affiliate(fireOnly, r.done); err != nil {
+	if err := a.Affiliate(context.Background(), fireOnly, r.done); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := a.Affiliate(both, r.done); err != nil {
+	if err := a.Affiliate(context.Background(), both, r.done); err != nil {
 		t.Fatal(err)
 	}
 
 	e.n.Quiesce()
 	check("serialised", []int{200, 200}, want{"e3", "4294967295", fire}, want{"e4", "4294967295", fire + " " + police})
 
-	if err := a.Affiliate(nil, r.done); err != nil {
+	if err := a.Affiliate(context.Background(), nil, r.done); err != nil {
 		t.Fatal(err)
 	}
 
 	e.n.Quiesce()
 	check("removal", []int{200}, want{"e5", "0", ""})
 
-	if err := a.Affiliate(nil, r.done); !errors.Is(err, client.ErrNotPublished) {
+	if err := a.Affiliate(context.Background(), nil, r.done); !errors.Is(err, client.ErrNotPublished) {
 		t.Errorf("de-affiliation once removed: %v", err)
 	}
 
@@ -283,7 +283,7 @@ func TestRefreshAfterUnregister(t *testing.T) {
 
 	t0 := e.n.Clock().Now()
 
-	if err := a.Register(600*time.Second, r.done); err != nil {
+	if err := a.Register(context.Background(), 600*time.Second, r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ func TestRefreshAfterUnregister(t *testing.T) {
 
 	e.n.Advance(301 * time.Second)
 
-	if err := a.Unregister(r.done); err != nil {
+	if err := a.Unregister(context.Background(), r.done); err != nil {
 		t.Fatal(err)
 	}
 

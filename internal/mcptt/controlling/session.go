@@ -151,7 +151,7 @@ func (c *Controlling) Group(ctx context.Context, o *participating.Origination) {
 			reason = warn
 		}
 
-		log.Debug("group call refused", slog.Int("code", code), slog.String("reason", reason))
+		log.DebugContext(ctx, "group call refused", slog.Int("code", code), slog.String("reason", reason))
 
 		rp := ua.Reply{Code: code}
 		if warn != "" {
@@ -255,7 +255,7 @@ func (c *Controlling) Group(ctx context.Context, o *participating.Origination) {
 	}
 
 	if err := s.start(ctx, entry, offer, ai, ci); err != nil {
-		log.Warn("group session not created", slog.Any("error", err))
+		log.WarnContext(ctx, "group session not created", slog.Any("error", err))
 		refuse(500, "", err.Error())
 
 		return
@@ -265,6 +265,8 @@ func (c *Controlling) Group(ctx context.Context, o *participating.Origination) {
 	// that one refused at once does not decide for those not invited yet.
 	if slices.ContainsFunc(invitees, func(m *member) bool { return m.required }) {
 		s.setup.ack = ackWaiting
+		// TNG1 runs within the originator's INVITE, before its final response: its expiry is part of the INVITE's trace,
+		// as ua's own timers within an operation are.
 		s.setup.tng1 = grp.st.AfterFunc(g.TNG1, func() { s.expireTNG1(ctx) })
 	}
 
@@ -495,7 +497,7 @@ func (s *session) join(ctx context.Context, o *participating.Origination, entry 
 	joiner := memberAttr(entry.ID(), o.Request.Message().Header.CallID())
 
 	refuse := func(rp ua.Reply, reason string) {
-		s.log.Debug("participant not joined", joiner, slog.Int("code", rp.Code), slog.String("reason", reason))
+		s.log.DebugContext(ctx, "participant not joined", joiner, slog.Int("code", rp.Code), slog.String("reason", reason))
 		_ = o.Request.Respond(o.Reply(rp))
 	}
 
@@ -513,14 +515,14 @@ func (s *session) join(ctx context.Context, o *participating.Origination, entry 
 
 	m, err := s.participant(o, entry, offer, st, ai, ci, true)
 	if err != nil {
-		s.log.Warn("participant not added", joiner, slog.Any("error", err))
+		s.log.WarnContext(ctx, "participant not added", joiner, slog.Any("error", err))
 		refuse(ua.Reply{Code: 500}, err.Error())
 
 		return
 	}
 
 	if s.respond(ctx, m, o, sip.Header{identity.Warning(host, identity.WarnSessionExists)}) {
-		s.logMember(slog.LevelDebug, "participant joined", m)
+		s.logMember(ctx, slog.LevelDebug, "participant joined", m)
 		s.joinFloor(m, m.offerParams.FloorSSRC, m.offerParams.HasFloorSSRC, m.offered.Priority, m.offered.ImplicitRequest)
 		s.supersede(ctx, m)
 		// During the setup, a participant to answer the originator's call into (§6.3.3.3).
@@ -542,7 +544,7 @@ func (s *session) supersede(ctx context.Context, m *member) {
 
 		o.acked = true
 		s.set(o, gone)
-		s.logMember(slog.LevelDebug, "invitation superseded", o)
+		s.logMember(ctx, slog.LevelDebug, "invitation superseded", o)
 
 		for _, l := range o.branches {
 			_ = l.End(ctx, ua.Reply{})
@@ -619,7 +621,7 @@ func (s *session) invite(ctx context.Context, m *member) {
 
 	ml, err := s.media.AddLeg(s.legConfig(m, s.sp.codec.Payload, false, true))
 	if err != nil {
-		s.log.Warn("member not invited: no media", m.attr(), slog.Any("error", err))
+		s.log.WarnContext(ctx, "member not invited: no media", m.attr(), slog.Any("error", err))
 		s.declined(ctx, m, failure(500, nil))
 
 		return
@@ -634,7 +636,7 @@ func (s *session) invite(ctx context.Context, m *member) {
 
 	req, err := s.memberInvite(m, ml)
 	if err != nil {
-		s.log.Warn("member not invited", m.attr(), slog.Any("error", err))
+		s.log.WarnContext(ctx, "member not invited", m.attr(), slog.Any("error", err))
 		ml.Close()
 		s.declined(ctx, m, failure(500, nil))
 
@@ -799,7 +801,7 @@ func (s *session) accepted(ctx context.Context, m *member) {
 	s.joinFloor(m, params.FloorSSRC, params.HasFloorSSRC, params.Priority, false)
 	m.acked = true
 	s.setup.oks++
-	s.logMember(slog.LevelDebug, "member joined", m)
+	s.logMember(ctx, slog.LevelDebug, "member joined", m)
 
 	s.maybeAnswer(ctx)
 }
@@ -813,13 +815,13 @@ func (s *session) declined(ctx context.Context, m *member, fs ...b2bua.Failure) 
 
 	s.set(m, failed)
 
-	if s.log.Enabled(context.Background(), slog.LevelDebug) {
+	if s.log.Enabled(ctx, slog.LevelDebug) {
 		attrs := []slog.Attr{slog.Int("code", b2bua.Best(fs).Code)}
 		if i := slices.IndexFunc(fs, func(f b2bua.Failure) bool { return f.Err != nil }); i >= 0 {
 			attrs = append(attrs, slog.Any("error", fs[i].Err))
 		}
 
-		s.logMember(slog.LevelDebug, "member declined", m, attrs...)
+		s.logMember(ctx, slog.LevelDebug, "member declined", m, attrs...)
 	}
 
 	if s.answered {
@@ -960,7 +962,7 @@ func (s *session) answer(ctx context.Context) {
 	}
 
 	s.answered, s.started = true, s.c.now()
-	s.log.Info("group call started", slog.String("originator", o.id.String()), slog.Int("participants", s.count(joined)),
+	s.log.InfoContext(ctx, "group call started", slog.String("originator", o.id.String()), slog.Int("participants", s.count(joined)),
 		slog.Int("invited", len(s.members)-1))
 }
 
@@ -987,7 +989,7 @@ func (s *session) left(ctx context.Context, m *member) {
 	s.set(m, gone)
 
 	if participant {
-		s.logMember(slog.LevelDebug, "participant left", m)
+		s.logMember(ctx, slog.LevelDebug, "participant left", m)
 	}
 
 	if m.fm != nil {
@@ -1049,7 +1051,7 @@ func (s *session) revoke(ctx context.Context) {
 // floor participant leaves the floor control server, its media is released, and the release policy applies
 // (§6.3.8.1). The originator not answered yet releases the session, as by its CANCEL.
 func (s *session) remove(ctx context.Context, m *member, cause string) {
-	s.logMember(slog.LevelInfo, "participant removed", m, slog.String("cause", cause))
+	s.logMember(ctx, slog.LevelInfo, "participant removed", m, slog.String("cause", cause))
 
 	if m == s.origin && !s.answered {
 		s.release(ctx, "originator "+cause, ua.Reply{})
@@ -1080,9 +1082,9 @@ func (s *session) release(ctx context.Context, cause string, rp ua.Reply) {
 	s.released = true
 
 	if s.answered {
-		s.log.Info("group call released", slog.String("cause", cause), slog.Duration("duration", s.c.now().Sub(s.started)))
+		s.log.InfoContext(ctx, "group call released", slog.String("cause", cause), slog.Duration("duration", s.c.now().Sub(s.started)))
 	} else {
-		s.log.Info("group call not started", slog.String("cause", cause))
+		s.log.InfoContext(ctx, "group call not started", slog.String("cause", cause))
 	}
 
 	for _, t := range []*ua.Timer{s.setup.tng1, s.tng3} {
@@ -1187,7 +1189,8 @@ func (o floorOut) Forward(fm *floor.Member, on bool) {
 			msg = "floor released"
 		}
 
-		o.s.logMember(slog.LevelDebug, msg, m)
+		// A floor event, of no request.
+		o.s.logMember(context.Background(), slog.LevelDebug, msg, m)
 		o.s.media.Forward(m.media, on)
 	}
 }
@@ -1205,17 +1208,16 @@ func (o floorOut) Inactive() {
 func (o floorOut) Disconnect(fm *floor.Member) {
 	if m := o.s.floors[fm]; m != nil {
 		ctx, span := o.s.detach("group call media not revoked")
-		defer span.End()
 
-		o.s.logMember(slog.LevelInfo, "participant disconnected: media not revoked", m)
-		_ = m.leg.End(ctx, ua.Reply{})
+		o.s.logMember(ctx, slog.LevelInfo, "participant disconnected: media not revoked", m)
+		tracing.End(span, m.leg.End(ctx, ua.Reply{}))
 	}
 }
 
 // detach starts the span of work of the session that starts later than the setup, as a timer or the floor control
-// server starts: in a trace of its own, linked to that of the originator's INVITE.
+// server starts: in a trace of its own, linked to that of the originator's INVITE, bound to the agent's lifetime.
 func (s *session) detach(name string) (context.Context, trace.Span) {
-	return tracing.NewTrace(trace.ContextWithSpanContext(context.Background(), s.cause), s.c.tracer, name)
+	return s.c.detached.Start(s.c.cfg.Agent.Layer().Lifetime(), name, s.cause)
 }
 
 // acceptsMCPTT reports whether the Accept-Contact of req has the MCPTT feature tag and its ICSI (TS 24.379
@@ -1282,12 +1284,12 @@ func textOf(c *mcpttinfo.Content) (string, bool) {
 }
 
 // logMember logs msg of m, with attrs, if level is enabled.
-func (s *session) logMember(level slog.Level, msg string, m *member, attrs ...slog.Attr) {
-	if !s.log.Enabled(context.Background(), level) {
+func (s *session) logMember(ctx context.Context, level slog.Level, msg string, m *member, attrs ...slog.Attr) {
+	if !s.log.Enabled(ctx, level) {
 		return
 	}
 
-	s.log.LogAttrs(context.Background(), level, msg, append(attrs, m.attr())...)
+	s.log.LogAttrs(ctx, level, msg, append(attrs, m.attr())...)
 }
 
 // attr is the member as logged: its MCPTT ID and the Call-ID of its leg, else of its first branch, if any.

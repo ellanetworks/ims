@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/reginfo"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const autsLen = 14
@@ -151,7 +152,7 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest, res
 	// Queued with the private identity locked, the third-party REGISTERs follow the order of the registration events.
 	if res.StatusCode == 200 && rr.event != nil {
 		rr.event.res = res
-		r.notifyASs(*rr.event, responded)
+		r.notifyASs(ctx, *rr.event, responded)
 	}
 
 	return res
@@ -389,7 +390,7 @@ func slicesContainsURI(addrs []sip.Address, u sip.URI) bool {
 func (r *Registrar) knownHSS(ctx context.Context, rr *registerRequest) db.HSS {
 	st, err := r.load(ctx, rr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
 		return db.HSS{}
 	}
 
@@ -403,7 +404,7 @@ func (r *Registrar) knownHSS(ctx context.Context, rr *registerRequest) db.HSS {
 func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *cx.Resync, resyncs int, to db.HSS) *sip.Response {
 	v, from, err := r.multimediaAuth(ctx, to, rr.impi, rr.impu, resync)
 	if err != nil {
-		return r.cxFailure(rr, err)
+		return r.cxFailure(ctx, rr, err)
 	}
 
 	nonce := akaNonce(v)
@@ -417,9 +418,10 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 		resyncs: resyncs,
 		hss:     from,
 		initial: !rr.protected,
+		cause:   trace.SpanContextFromContext(ctx),
 	})
 
-	r.log.Debug("challenged REGISTER", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
+	r.log.DebugContext(ctx, "challenged REGISTER", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
 		slog.Bool("resync", resync != nil))
 
 	res := sip.NewResponse(rr.req, 401, "")
@@ -473,10 +475,10 @@ func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, k authK
 
 	rr.authFailed = true
 
-	r.log.Info("REGISTER failed authentication", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+	r.log.InfoContext(ctx, "REGISTER failed authentication", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
 	if _, _, err := r.serverAssignment(ctx, ch.hss, rr.impi, []string{ch.impu}, assignAuthenticationFailure, false); err != nil {
-		r.log.Warn("failed to tell the HSS of an authentication failure", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to tell the HSS of an authentication failure", slog.String("impi", rr.impi), slog.Any("error", err))
 	}
 
 	return sip.NewResponse(rr.req, 403, "")
@@ -485,7 +487,7 @@ func (r *Registrar) authFailed(ctx context.Context, rr *registerRequest, k authK
 func (r *Registrar) authenticated(ctx context.Context, rr *registerRequest) *sip.Response {
 	st, err := r.load(ctx, rr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 
@@ -511,12 +513,12 @@ func (r *Registrar) authenticated(ctx context.Context, rr *registerRequest) *sip
 func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Response {
 	st, err := r.load(ctx, rr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 
 	if !st.any() {
-		r.log.Debug("protected REGISTER from an unregistered user", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.DebugContext(ctx, "protected REGISTER from an unregistered user", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 		return sip.NewResponse(rr.req, 500, "")
 	}
 
@@ -538,7 +540,7 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 	// a new flow does not need one.
 	for _, c := range rr.contacts {
 		if _, ok := st.contact(c); c.expires != 0 && c.regID == 0 && !ok {
-			r.log.Debug("protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
+			r.log.DebugContext(ctx, "protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
 				slog.String("contact", c.addr.URI.String()))
 
 			return sip.NewResponse(rr.req, 403, "")
@@ -572,12 +574,12 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	case err == nil:
 	// A registered set keeps the profile it holds while its HSS cannot be reached.
 	case registered && !refused(err) && !permanent(err):
-		r.log.Warn("HSS unreachable on re-registration: the profile held is kept", slog.String("impi", rr.impi),
+		r.log.WarnContext(ctx, "HSS unreachable on re-registration: the profile held is kept", slog.String("impi", rr.impi),
 			slog.String("impu", rr.impu), slog.Any("error", err))
 
 		saa, from = cx.ServerAssignment{}, set.HSS
 	default:
-		return r.cxFailure(rr, err)
+		return r.cxFailure(ctx, rr, err)
 	}
 
 	reg := db.Registration{IMPI: rr.impi}
@@ -609,7 +611,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	case len(saa.UserData) > 0:
 		s, err := cx.ParseUserData(saa.UserData)
 		if err != nil {
-			r.log.Warn("invalid User-Data from the HSS", slog.String("impi", rr.impi), slog.Any("error", err))
+			r.log.WarnContext(ctx, "invalid User-Data from the HSS", slog.String("impi", rr.impi), slog.Any("error", err))
 
 			undo = assignTooMuchData
 
@@ -619,12 +621,12 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		sub = &s
 		reg.Identities = implicitSet(s)
 	case !registered:
-		r.log.Warn("SAA without User-Data", slog.String("impi", rr.impi))
+		r.log.WarnContext(ctx, "SAA without User-Data", slog.String("impi", rr.impi))
 		return sip.NewResponse(rr.req, 500, "")
 	}
 
 	if !holds(reg.Identities, rr.impuKey) || !hasUnbarred(reg.Identities) {
-		r.log.Debug("REGISTER of an IMPU outside its set, or of a set that is all barred",
+		r.log.DebugContext(ctx, "REGISTER of an IMPU outside its set, or of a set that is all barred",
 			slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
 		return sip.NewResponse(rr.req, 403, "")
@@ -638,7 +640,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	pc, err := r.assignedSet(ctx, reg, sub, saa.UserData, from)
 	if err != nil {
 		r.unlockProfiles()
-		r.log.Warn("failed to read the implicit set", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the implicit set", slog.String("impi", rr.impi), slog.Any("error", err))
 
 		return retryLater(rr.req)
 	}
@@ -650,7 +652,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	moves, err := r.moves(ctx, pc.set, stale)
 	if err != nil {
 		r.unlockProfiles()
-		r.log.Warn("failed to read the implicit sets", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the implicit sets", slog.String("impi", rr.impi), slog.Any("error", err))
 
 		return retryLater(rr.req)
 	}
@@ -681,8 +683,8 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	ch.removed = append(ch.removed, removed...)
 
 	// The other private identities that registered the set learn of the change now; this one with its registration.
-	r.spreadProfile(r.ctx, pc, rr.impi, false)
-	r.applyMoves(r.ctx, rr.impi, moves)
+	r.spreadProfile(ctx, pc, rr.impi, false)
+	r.applyMoves(ctx, rr.impi, moves)
 
 	// TS 24.229 §5.4.1.8: a profile the HSS changed with the re-registration changes the registration.
 	if registered && pc.identitiesChanged() {
@@ -769,7 +771,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		i := bindingIndex(bindings, c)
 
 		if i >= 0 && bindings[i].CallID == rr.callID && bindings[i].CSeq >= int64(rr.cseq) {
-			r.log.Debug("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
+			r.log.DebugContext(ctx, "out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
 			return sip.NewResponse(rr.req, 500, "Out Of Order"), nil
 		}
 
@@ -840,7 +842,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 
 	stored, saved, err := r.cfg.DB.SaveAssignment(ctx, *set, reg, ids, losing)
 	if err != nil {
-		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req), nil
 	}
 
@@ -854,10 +856,12 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 		}
 	}
 
+	r.noteCauses(ctx, rr.impi, rr.event.bindings)
+
 	if initial {
-		r.log.Info("registered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.InfoContext(ctx, "registered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 	} else {
-		r.log.Debug("registration refreshed", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.DebugContext(ctx, "registration refreshed", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 	}
 
 	var removed []removal
@@ -867,7 +871,7 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 	}
 
 	if len(replaced) > 0 {
-		r.log.Info("registration flow replaced", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.InfoContext(ctx, "registration flow replaced", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 
 		removed = append(removed, removal{reg: before, bindings: replaced, event: reginfo.Unregistered, calls: replacedCalls})
 	}
@@ -896,13 +900,13 @@ func (r *Registrar) replaceContacts(ctx context.Context, rr *registerRequest, st
 
 		rm, deleted, err := r.removeBindings(ctx, st, reg, dropped, reginfo.Unregistered)
 		if err != nil {
-			r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		}
 
 		removed = append(removed, rm)
 
 		if deleted {
-			r.log.Info("registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
+			r.log.InfoContext(ctx, "registration replaced by a new contact", slog.String("impi", rr.impi), slog.String("impu", reg.IMPU))
 			r.deregisterAtHSS(ctx, reg.HSS, rr.impi, reg.IMPU, assignAdministrative)
 		}
 	}
@@ -930,14 +934,14 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 	// RFC 3261 §10.3 step 7: a binding is removed only by a REGISTER newer than the one that made it.
 	for _, b := range removed {
 		if b.CallID == rr.callID && b.CSeq >= int64(rr.cseq) {
-			r.log.Debug("out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
+			r.log.DebugContext(ctx, "out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
 			return sip.NewResponse(rr.req, 500, "Out Of Order")
 		}
 	}
 
 	rm, deleted, err := r.removeBindings(ctx, st, *set, removed, reginfo.Unregistered)
 	if err != nil {
-		r.log.Warn("failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to store the registration", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 
@@ -949,10 +953,10 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 	}
 
 	if deleted {
-		r.log.Info("deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
+		r.log.InfoContext(ctx, "deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu))
 		r.deregisterAtHSS(ctx, set.HSS, rr.impi, rr.impu, assignUserDeregistration)
 	} else {
-		r.log.Info("contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
+		r.log.InfoContext(ctx, "contacts deregistered", slog.String("impi", rr.impi), slog.String("impu", rr.impu),
 			slog.Int("contacts", len(removed)))
 	}
 
@@ -975,7 +979,7 @@ func (r *Registrar) flowLimit(ctx context.Context, rr *registerRequest) *sip.Res
 
 	st, err := r.load(ctx, rr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", rr.impi), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 
@@ -1000,7 +1004,7 @@ func (r *Registrar) flowLimit(ctx context.Context, rr *registerRequest) *sip.Res
 		}
 
 		if n >= maxFlowsPerInstance {
-			r.log.Info("REGISTER refused: too many registration flows", slog.String("impi", rr.impi),
+			r.log.InfoContext(ctx, "REGISTER refused: too many registration flows", slog.String("impi", rr.impi),
 				slog.String("instance", c.instance), slog.Int("flows", n))
 
 			return sip.NewResponse(rr.req, 403, "Too Many Flows")
@@ -1060,7 +1064,7 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 
 	bound, err := r.cfg.DB.ListRegistrationsByIdentity(ctx, rr.impuKey)
 	if err != nil {
-		r.log.Warn("failed to list the IMPU's contacts", slog.String("impu", rr.impu), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the IMPU's contacts", slog.String("impu", rr.impu), slog.Any("error", err))
 	}
 
 	for _, other := range bound {
@@ -1087,16 +1091,16 @@ func contactValue(c db.Contact, expires int) string {
 	return "<" + c.URI + ">" + c.Params + ";expires=" + strconv.Itoa(expires)
 }
 
-func (r *Registrar) cxFailure(rr *registerRequest, err error) *sip.Response {
+func (r *Registrar) cxFailure(ctx context.Context, rr *registerRequest, err error) *sip.Response {
 	switch {
 	case refused(err):
-		r.log.Info("HSS refused the user", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
+		r.log.InfoContext(ctx, "HSS refused the user", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
 		return sip.NewResponse(rr.req, 403, "")
 	case permanent(err), errors.Is(err, errNoAKAVector):
-		r.log.Warn("Cx request failed", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
+		r.log.WarnContext(ctx, "Cx request failed", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
 		return sip.NewResponse(rr.req, 500, "")
 	default:
-		r.log.Warn("Cx request failed", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
+		r.log.WarnContext(ctx, "Cx request failed", slog.String("impi", rr.impi), slog.String("impu", rr.impu), slog.Any("error", err))
 		return retryLater(rr.req)
 	}
 }

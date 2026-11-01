@@ -24,7 +24,7 @@ type registration struct {
 
 func (i *ICSCF) register(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
-		i.log.Warn("REGISTER from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+		i.log.WarnContext(ctx, "REGISTER from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return
@@ -129,9 +129,9 @@ func authorizationType(h sip.Header) (cx.AuthorizationType, string) {
 func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 	uaa, err := i.userAuthorization(ctx, reg.uar)
 	if err != nil {
-		i.log.Info("user registration status query failed", slog.String("impu", reg.uar.PublicIdentity),
+		i.log.InfoContext(ctx, "user registration status query failed", slog.String("impu", reg.uar.PublicIdentity),
 			slog.String("impi", reg.uar.PrivateIdentity), slog.Any("error", err))
-		i.answer(reg.tx, registrationFailure(err))
+		i.answer(ctx, reg.tx, registrationFailure(err))
 
 		return
 	}
@@ -142,7 +142,7 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 	case uaa.ServerName != "":
 		name = i.assigned(uaa.ServerName, reg.uar.PublicIdentity)
 	case !i.capable(uaa.Capabilities):
-		i.answer(reg.tx, 600)
+		i.answer(ctx, reg.tx, 600)
 		return
 	}
 
@@ -151,21 +151,21 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 
 	to, ok := i.target(reg.req.Flow, name)
 	if !ok {
-		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", name.String()))
-		i.answer(reg.tx, 480)
+		i.log.WarnContext(ctx, "no listener for the S-CSCF", slog.String("scscf", name.String()))
+		i.answer(ctx, reg.tx, 480)
 
 		return
 	}
 
 	i.forward(ctx, reg.tx, out, to, proxy.Options{
 		Timeout: i.branchTimeout(reg.deadline),
-		OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.registerReply(reg, r) },
+		OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.registerReply(ctx, reg, r) },
 	})
 }
 
-func (i *ICSCF) registerReply(reg *registration, r proxy.Reply) proxy.Verdict {
+func (i *ICSCF) registerReply(ctx context.Context, reg *registration, r proxy.Reply) proxy.Verdict {
 	if unresponsive(r, false) {
-		i.answer(reg.tx, 504)
+		i.answer(ctx, reg.tx, 504)
 		return proxy.Hold
 	}
 

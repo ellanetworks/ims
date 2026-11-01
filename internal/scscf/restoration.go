@@ -20,8 +20,8 @@ import (
 // not take.
 
 // pcscfLost removes the binding of the registration that the P-CSCF has no binding for, in the background.
-func (r *Registrar) pcscfLost(impi string, regID, bindingID int64) {
-	r.background(impi, func(ctx context.Context) {
+func (r *Registrar) pcscfLost(ctx context.Context, impi string, regID, bindingID int64) {
+	r.background(ctx, impi, func(ctx context.Context) {
 		r.send(ctx, r.restore(ctx, impi, regID, bindingID))
 	})
 }
@@ -31,7 +31,7 @@ func (r *Registrar) pcscfLost(impi string, regID, bindingID int64) {
 func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID int64) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -61,7 +61,7 @@ func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID i
 
 	rm, deleted, err := r.removeBindings(ctx, st, reg, live[j:j+1], reginfo.Deactivated)
 	if err != nil {
-		r.log.Warn("failed to store the registration", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to store the registration", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -73,12 +73,12 @@ func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID i
 		r.keepUnregistered(ctx, reg, hss)
 	}
 
-	r.log.Info("contact deregistered: the P-CSCF has no binding for it", slog.String("impi", impi),
+	r.log.InfoContext(ctx, "contact deregistered: the P-CSCF has no binding for it", slog.String("impi", impi),
 		slog.String("impu", reg.IMPU), slog.String("contact", live[j].Contact.URI), slog.Bool("restoration", restoring))
 
 	r.releaseCalls(ctx, st, []removal{rm})
 
-	r.deregistered(rm)
+	r.deregistered(ctx, rm)
 
 	return r.notifyChange(ctx, impi, change{removed: []removal{rm}, reason: reasonDeactivated})
 }
@@ -90,7 +90,7 @@ func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID i
 // restoration, keeps the registration (TS 29.228 §6.1.2.1, TS 29.229 §6.2.2.12).
 func (r *Registrar) restorePCSCF(ctx context.Context, st *state, reg db.Registration) (db.HSS, cx.AssignmentType, bool) {
 	if cx.Features(reg.HSS.Features)&cx.FeaturePCSCFRestoration == 0 {
-		r.log.Info("no P-CSCF restoration: the HSS does not support it", slog.String("impi", reg.IMPI),
+		r.log.InfoContext(ctx, "no P-CSCF restoration: the HSS does not support it", slog.String("impi", reg.IMPI),
 			slog.String("impu", reg.IMPU), slog.String("hss", reg.HSS.Host))
 
 		return db.HSS{}, 0, false
@@ -98,7 +98,7 @@ func (r *Registrar) restorePCSCF(ctx context.Context, st *state, reg db.Registra
 
 	regs, err := r.cfg.DB.ListRegistrationsBySet(ctx, reg.SetID)
 	if err != nil {
-		r.log.Warn("failed to read the registrations of the set", slog.String("impi", reg.IMPI), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations of the set", slog.String("impi", reg.IMPI), slog.Any("error", err))
 		return db.HSS{}, 0, false
 	}
 
@@ -113,13 +113,13 @@ func (r *Registrar) restorePCSCF(ctx context.Context, st *state, reg db.Registra
 		PCSCFRestoration: true, FeaturesRequired: true,
 	})
 	if err != nil {
-		r.log.Warn("the HSS did not start the P-CSCF restoration", slog.String("impi", reg.IMPI),
+		r.log.WarnContext(ctx, "the HSS did not start the P-CSCF restoration", slog.String("impi", reg.IMPI),
 			slog.String("impu", reg.IMPU), slog.Any("error", err))
 
 		return db.HSS{}, 0, false
 	}
 
-	r.log.Info("P-CSCF restoration started", slog.String("impi", reg.IMPI), slog.String("impu", reg.IMPU),
+	r.log.InfoContext(ctx, "P-CSCF restoration started", slog.String("impi", reg.IMPI), slog.String("impu", reg.IMPU),
 		slog.String("type", t.String()))
 
 	return from, t, true
@@ -144,6 +144,6 @@ func (r *Registrar) keepUnregistered(ctx context.Context, reg db.Registration, h
 		Identities: reg.Identities, UserData: reg.UserData, HSS: hss,
 		Unregistered: &db.Unregistered{Identity: canonicalIdentity(u), ExpiresAt: r.clock.Now().Add(r.cfg.MaxExpires)},
 	}); err != nil {
-		r.log.Warn("failed to keep the unregistered profile", slog.String("impu", reg.IMPU), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to keep the unregistered profile", slog.String("impu", reg.IMPU), slog.Any("error", err))
 	}
 }

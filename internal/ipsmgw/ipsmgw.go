@@ -25,6 +25,7 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Port is the SIP port of the IP-SM-GW on each of the IMS's SIP addresses, in memory.
@@ -129,15 +130,18 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	life, kill := context.WithCancel(context.Background())
 	a.kill, a.life = kill, life
 
-	g := &registrar{store: cfg.Store, home: cfg.HomeDomain, log: logger, seed: maphash.MakeSeed(), regs: map[string]*registration{}}
+	g := &registrar{
+		store: cfg.Store, home: cfg.HomeDomain, log: logger, life: life, seed: maphash.MakeSeed(),
+		regs: map[string]*registration{}, dirty: map[string]bool{},
+	}
 	a.reg = g
 
 	tc := cfg.Transaction
 	tc.Logger, tc.Filter, tc.OnServerDone = logger, a.trustDomain, a.logTransaction
 	// Trace context crosses the flows of the trust domain only (W3C Trace Context §6.1).
 	tc.TraceContext = func(f sip.Flow) bool { return a.isTrusted(f.Remote.Addr()) }
-	role := []attribute.KeyValue{tracing.RoleKey.String("ipsmgw")}
-	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return role }
+	roleAttrs := []attribute.KeyValue{tracing.RoleKey.String(role)}
+	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return roleAttrs }
 
 	agent, err := ua.New(ua.Config{
 		Transaction: tc,
@@ -161,12 +165,13 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 
 	a.agent = agent
 	g.agent = agent
+	g.detached = tracing.NewDetached(agent.Layer().TracerProvider(), tracerName, role)
 
 	for i := range g.strands {
 		g.strands[i] = agent.NewStrand()
 	}
 
-	a.hss = newHSSSync(cfg.HSS, cfg.Store, cfg.Number, g.want, told, logger)
+	a.hss = newHSSSync(life, agent.Layer().TracerProvider(), cfg.HSS, cfg.Store, cfg.Number, g.want, told, logger)
 	g.hss = a.hss
 
 	defer func() {
@@ -185,7 +190,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 
 	a.hss.start()
 
-	logger.Info("IP-SM-GW started", slog.String("name", "sip:"+Host(cfg.HomeDomain)), slog.Int("registrations", len(g.regs)))
+	logger.InfoContext(ctx, "IP-SM-GW started", slog.String("name", "sip:"+Host(cfg.HomeDomain)), slog.Int("registrations", len(g.regs)))
 
 	return a, nil
 }
@@ -205,11 +210,14 @@ func (a *AS) Servers() []sip.Server {
 // its core runs, which the SUBSCRIBEs and the updates go through.
 func (a *AS) Resubscribe(ctx context.Context) {
 	a.reg.resubscribeAll(ctx)
-	a.hss.markAll(a.reg.userKeys())
+	a.hss.markAll(trace.SpanContextFromContext(ctx), a.reg.userKeys())
 }
 
-// NumberChanged has the HSS registrations of the users updated to the IP-SM-GW number of the settings.
-func (a *AS) NumberChanged() { a.hss.markAll(a.reg.userKeys()) }
+// NumberChanged has the HSS registrations of the users updated to the IP-SM-GW number of the settings, ctx being the
+// trace of the change: the updates link to it.
+func (a *AS) NumberChanged(ctx context.Context) {
+	a.hss.markAll(trace.SpanContextFromContext(ctx), a.reg.userKeys())
+}
 
 // Shutdown stops the IP-SM-GW until ctx is done: its timers and its updates of the HSS; then it deregisters at the
 // HSS for its users (hssSync.deregisterAll), and its agent ends its subscriptions. The registrations are kept for the
@@ -281,8 +289,8 @@ var errUntrusted = errors.New("ipsmgw: from outside the IMS")
 
 // logTransaction logs each server transaction once it ends, at debug: its request and response summarised, their
 // bodies never logged.
-func (a *AS) logTransaction(req *sip.Request, res *sip.Response, elapsed time.Duration) {
-	if !a.log.Enabled(context.Background(), slog.LevelDebug) {
+func (a *AS) logTransaction(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
+	if !a.log.Enabled(ctx, slog.LevelDebug) {
 		return
 	}
 
@@ -295,7 +303,7 @@ func (a *AS) logTransaction(req *sip.Request, res *sip.Response, elapsed time.Du
 		attrs = append(attrs, slog.Int("status", res.StatusCode))
 	}
 
-	a.log.Debug("SIP transaction", attrs...)
+	a.log.DebugContext(ctx, "SIP transaction", attrs...)
 }
 
 // homeRealm is a home domain of TS 23.003 §13.2.

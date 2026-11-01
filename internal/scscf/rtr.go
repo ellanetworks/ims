@@ -59,7 +59,7 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 
 func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, reason cx.ReasonCode) ([]*outgoing, error) {
 	if reason == cx.ReasonRemoveSCSCF {
-		r.log.Debug("RTR REMOVE_S-CSCF: no profile kept", slog.String("impi", impi))
+		r.log.DebugContext(ctx, "RTR REMOVE_S-CSCF: no profile kept", slog.String("impi", impi))
 		return nil, nil
 	}
 
@@ -99,7 +99,7 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 			ch.removed = append(ch.removed, rm)
 		}
 
-		r.log.Info("registration terminated by the HSS", slog.String("impi", impi), slog.String("impu", reg.IMPU),
+		r.log.InfoContext(ctx, "registration terminated by the HSS", slog.String("impi", impi), slog.String("impu", reg.IMPU),
 			slog.String("reason", reason.String()))
 	}
 
@@ -111,7 +111,7 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 		}
 
 		for _, rm := range ch.removed {
-			r.deregistered(rm)
+			r.deregistered(ctx, rm)
 		}
 
 		return r.notifyChange(ctx, impi, ch), nil

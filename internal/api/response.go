@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -14,25 +15,25 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func writeResponse(w http.ResponseWriter, v any, status int, logger *slog.Logger) {
-	writeJSON(w, Response{Result: v}, status, logger)
+func writeResponse(ctx context.Context, w http.ResponseWriter, v any, status int, logger *slog.Logger) {
+	writeJSON(ctx, w, Response{Result: v}, status, logger)
 }
 
 // writeError answers with a message for the client, and logs the error behind it.
-func writeError(w http.ResponseWriter, status int, message string, err error, logger *slog.Logger) {
+func writeError(ctx context.Context, w http.ResponseWriter, status int, message string, err error, logger *slog.Logger) {
 	if status >= http.StatusInternalServerError {
-		logger.Error(message, slog.Any("error", err))
+		logger.ErrorContext(ctx, message, slog.Any("error", err))
 	} else {
-		logger.Debug(message, slog.Any("error", err))
+		logger.DebugContext(ctx, message, slog.Any("error", err))
 	}
 
-	writeJSON(w, ErrorResponse{Error: message}, status, logger)
+	writeJSON(ctx, w, ErrorResponse{Error: message}, status, logger)
 }
 
-func writeJSON(w http.ResponseWriter, v any, status int, logger *slog.Logger) {
+func writeJSON(ctx context.Context, w http.ResponseWriter, v any, status int, logger *slog.Logger) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		logger.Error("failed to encode API response", slog.Any("error", err))
+		logger.ErrorContext(ctx, "failed to encode API response", slog.Any("error", err))
 		w.WriteHeader(http.StatusInternalServerError)
 
 		return
@@ -42,6 +43,6 @@ func writeJSON(w http.ResponseWriter, v any, status int, logger *slog.Logger) {
 	w.WriteHeader(status)
 
 	if _, err := w.Write(b); err != nil {
-		logger.Debug("failed to write API response", slog.Any("error", err))
+		logger.DebugContext(ctx, "failed to write API response", slog.Any("error", err))
 	}
 }

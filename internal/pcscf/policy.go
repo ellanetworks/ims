@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
@@ -112,7 +113,7 @@ func (c *policyClient) close(ctx context.Context) {
 
 	for _, s := range calls {
 		s.call.end()
-		c.end(s, policy.TerminationAdministrative, 0)
+		c.end(ctx, s, policy.TerminationAdministrative, 0)
 	}
 
 	c.mu.Lock()
@@ -223,17 +224,18 @@ func (c *policyClient) serves(p db.PolicySession) bool {
 	return strings.EqualFold(p.Endpoint, c.cfg.Backend.Endpoint())
 }
 
-// deadline bounds a request: a positive wait also lets the backend wait for its peer to connect.
-func (c *policyClient) deadline(wait time.Duration) (context.Context, context.CancelFunc) {
+// deadline bounds a request caused by cause: in its trace, ended with the client. A positive wait also lets the
+// backend wait for its peer to connect.
+func (c *policyClient) deadline(cause context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
 	if wait <= 0 {
 		wait = c.cfg.Timeout
 	}
 
-	return context.WithTimeout(c.ctx, wait)
+	return context.WithTimeout(lifetime.With(c.ctx, cause), wait)
 }
 
-func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (string, error) {
-	ctx, cancel := c.deadline(wait)
+func (c *policyClient) openSignalling(ctx context.Context, s *policySession, wait time.Duration) (string, error) {
+	ctx, cancel := c.deadline(ctx, wait)
 	defer cancel()
 
 	return s.backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
@@ -241,7 +243,7 @@ func (c *policyClient) openSignalling(s *policySession, wait time.Duration) (str
 
 // TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: a transient failure is retried until the policy function
 // answers or the P-CSCF stops. A session lost with its policy function is not (RFC 6733 §8.18).
-func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wait time.Duration) error {
+func (c *policyClient) endLocked(ctx context.Context, s *policySession, cause policy.Termination, wait time.Duration) error {
 	if s.ended {
 		return nil
 	}
@@ -260,29 +262,29 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 	for delay := c.cfg.TerminationRetry; ; delay = min(2*delay, maxTerminationRetry) {
 		start := time.Now()
 
-		ctx, cancel := c.deadline(wait)
-		err := s.backend.Terminate(ctx, s.id, s.ref, cause, wait > 0)
+		rctx, cancel := c.deadline(ctx, wait)
+		err := s.backend.Terminate(rctx, s.id, s.ref, cause, wait > 0)
 
 		cancel()
 
 		switch {
 		case err == nil:
-			c.log.Debug("policy session terminated", attrs...)
+			c.log.DebugContext(ctx, "policy session terminated", attrs...)
 			return nil
 		case errors.Is(err, policy.ErrUnknownSession):
-			c.log.Debug("policy session already ended at the policy function", attrs...)
+			c.log.DebugContext(ctx, "policy session already ended at the policy function", attrs...)
 			return nil
 		case errors.Is(err, policy.ErrSessionLost):
-			c.log.Info("policy session lost with its policy function", append(attrs, slog.Any("error", err))...)
+			c.log.InfoContext(ctx, "policy session lost with its policy function", append(attrs, slog.Any("error", err))...)
 			return nil
 		case !policy.Transient(err) || c.closing():
-			c.log.Warn("policy session termination failed", append(attrs, slog.Any("error", err))...)
+			c.log.WarnContext(ctx, "policy session termination failed", append(attrs, slog.Any("error", err))...)
 			return err
 		}
 
 		delay = max(delay, policy.Backoff(err))
 
-		c.log.Warn("policy session termination failed, will retry", append(attrs, slog.Any("error", err),
+		c.log.WarnContext(ctx, "policy session termination failed, will retry", append(attrs, slog.Any("error", err),
 			slog.Duration("retry_in", delay))...)
 
 		// Without a link, the next attempt waits for it, so it goes out as soon as the policy function is back.
@@ -301,21 +303,22 @@ func (c *policyClient) endLocked(s *policySession, cause policy.Termination, wai
 	}
 }
 
-func (c *policyClient) end(s *policySession, cause policy.Termination, wait time.Duration) {
+// end ends s in the background, in the trace of ctx, what ended it.
+func (c *policyClient) end(ctx context.Context, s *policySession, cause policy.Termination, wait time.Duration) {
 	c.spawn(func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		_ = c.endLocked(s, cause, wait)
+		_ = c.endLocked(ctx, s, cause, wait)
 		c.forget(s)
 	})
 }
 
 // TS 29.213 Annex B.1, TS 29.514 §4.2.6.7
-func (p *PCSCF) openSignalling(k regKey, wait time.Duration) {
+func (p *PCSCF) openSignalling(ctx context.Context, k regKey, wait time.Duration) {
 	s := p.policy.begin(k)
 
-	attached := p.regs.edit(k, func(r *db.PCSCFRegistration) bool {
+	attached := p.regs.edit(ctx, k, func(r *db.PCSCFRegistration) bool {
 		if r.Policy.ID != "" {
 			return false
 		}
@@ -325,12 +328,12 @@ func (p *PCSCF) openSignalling(k regKey, wait time.Duration) {
 		return true
 	})
 
-	if attached && p.policy.spawn(func() { p.initialOpen(s, wait) }) {
+	if attached && p.policy.spawn(func() { p.initialOpen(ctx, s, wait) }) {
 		return
 	}
 
 	if attached {
-		p.detachPolicy(s)
+		p.detachPolicy(ctx, s)
 	}
 
 	s.ended = true
@@ -338,17 +341,17 @@ func (p *PCSCF) openSignalling(k regKey, wait time.Duration) {
 	s.mu.Unlock()
 }
 
-func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
+func (p *PCSCF) initialOpen(ctx context.Context, s *policySession, wait time.Duration) {
 	defer s.mu.Unlock()
 
 	attrs := []any{slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()), slog.String("session", s.id)}
 
-	ref, err := p.policy.openSignalling(s, wait)
+	ref, err := p.policy.openSignalling(ctx, s, wait)
 	if err == nil {
 		s.ref = ref
 
 		if ref != "" {
-			p.regs.edit(s.key, func(r *db.PCSCFRegistration) bool {
+			p.regs.edit(ctx, s.key, func(r *db.PCSCFRegistration) bool {
 				if r.Policy.ID != s.id {
 					return false
 				}
@@ -359,7 +362,7 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 			})
 		}
 
-		p.log.Debug("policy session for IMS signalling opened", attrs...)
+		p.log.DebugContext(ctx, "policy session for IMS signalling opened", attrs...)
 
 		return
 	}
@@ -370,8 +373,8 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 	}
 
 	if errors.Is(err, policy.ErrRefused) || errors.Is(err, policy.ErrUnknownSession) {
-		p.log.Warn("policy session for IMS signalling refused", attrs...)
-		p.detachPolicy(s)
+		p.log.WarnContext(ctx, "policy session for IMS signalling refused", attrs...)
+		p.detachPolicy(ctx, s)
 
 		s.ended = true
 		p.policy.forget(s)
@@ -383,8 +386,8 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 		return
 	}
 
-	p.log.Warn("policy session for IMS signalling failed", attrs...)
-	p.detachPolicy(s)
+	p.log.WarnContext(ctx, "policy session for IMS signalling failed", attrs...)
+	p.detachPolicy(ctx, s)
 
 	cause, wait := policy.TerminationAdministrative, time.Duration(0)
 
@@ -395,12 +398,12 @@ func (p *PCSCF) initialOpen(s *policySession, wait time.Duration) {
 		wait = p.policy.cfg.Timeout
 	}
 
-	_ = p.policy.endLocked(s, cause, wait)
+	_ = p.policy.endLocked(ctx, s, cause, wait)
 	p.policy.forget(s)
 }
 
-func (p *PCSCF) detachPolicy(s *policySession) {
-	p.regs.edit(s.key, func(r *db.PCSCFRegistration) bool {
+func (p *PCSCF) detachPolicy(ctx context.Context, s *policySession) {
+	p.regs.edit(ctx, s.key, func(r *db.PCSCFRegistration) bool {
 		if r.Policy.ID != s.id {
 			return false
 		}
@@ -444,28 +447,29 @@ func graver(a, b reginfo.Event) reginfo.Event {
 	return a
 }
 
-func (p *PCSCF) endPolicy(r db.PCSCFRegistration, cause policy.Termination, wait time.Duration) {
+// endPolicy ends the policy session of r, in the trace of ctx, what ended r.
+func (p *PCSCF) endPolicy(ctx context.Context, r db.PCSCFRegistration, cause policy.Termination, wait time.Duration) {
 	if p.policy == nil || r.Policy.ID == "" || !p.policy.serves(r.Policy) {
 		return
 	}
 
 	s := p.policy.track(r.Policy.ID, regKeyOf(&r), r.Policy.Ref)
-	p.policy.end(s, cause, wait)
+	p.policy.end(ctx, s, cause, wait)
 }
 
 // restorePolicy ends, after a restart, the policy sessions stored with the registrations, and opens them again. Those
 // of the registrations expired, or lost with their security associations, it only ends.
-func (p *PCSCF) restorePolicy(expired, lost []db.PCSCFRegistration) {
+func (p *PCSCF) restorePolicy(ctx context.Context, expired, lost []db.PCSCFRegistration) {
 	if p.policy == nil {
 		return
 	}
 
 	for _, r := range expired {
-		p.endPolicy(r, policy.TerminationExpired, restoreWait)
+		p.endPolicy(ctx, r, policy.TerminationExpired, restoreWait)
 	}
 
 	for _, r := range lost {
-		p.endPolicy(r, policy.TerminationAdministrative, restoreWait)
+		p.endPolicy(ctx, r, policy.TerminationAdministrative, restoreWait)
 	}
 
 	for _, r := range p.regs.all() {
@@ -484,10 +488,10 @@ func (p *PCSCF) restorePolicy(expired, lost []db.PCSCFRegistration) {
 			if foreign {
 				s.ended = true
 
-				p.log.Info("dropping a policy session of another policy function", slog.String("impi", s.key.impi),
+				p.log.InfoContext(ctx, "dropping a policy session of another policy function", slog.String("impi", s.key.impi),
 					slog.String("ue", s.key.ue.String()), slog.String("session", s.id), slog.String("endpoint", r.Policy.Endpoint))
 			} else {
-				err = p.policy.endLocked(s, policy.TerminationAdministrative, restoreWait)
+				err = p.policy.endLocked(ctx, s, policy.TerminationAdministrative, restoreWait)
 			}
 
 			if err != nil && (errors.Is(err, context.Canceled) || p.policy.closing()) {
@@ -497,17 +501,17 @@ func (p *PCSCF) restorePolicy(expired, lost []db.PCSCFRegistration) {
 				return
 			}
 
-			p.detachPolicy(s)
+			p.detachPolicy(ctx, s)
 			p.policy.forget(s)
 			s.mu.Unlock()
 
-			p.openSignalling(s.key, restoreWait)
+			p.openSignalling(ctx, s.key, restoreWait)
 		})
 	}
 }
 
 // TS 24.229 §5.2.6.4.3
-func (p *PCSCF) signallingRestored(req *sip.Request) {
+func (p *PCSCF) signallingRestored(ctx context.Context, req *sip.Request) {
 	if p.regs.lost.Load() == 0 {
 		return
 	}
@@ -521,14 +525,15 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 		}
 	}
 
-	if p.regs.restoreSignalling(k) {
-		p.log.Info("IMS signalling path restored", slog.String("impi", k.impi), slog.String("ue", k.ue.String()),
+	if p.regs.restoreSignalling(ctx, k) {
+		p.log.InfoContext(ctx, "IMS signalling path restored", slog.String("impi", k.impi), slog.String("ue", k.ue.String()),
 			slog.String("method", req.Method))
 	}
 }
 
 // Notify handles an event the policy function reports for a session (TS 29.214 §4.4.6.2, §4.4.6.3, §4.4.6.5,
-// TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10).
+// TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10). ctx is that of the report, without its cancellation: what Notify does
+// after the report, it does bound to the P-CSCF's lifetime.
 func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bool {
 	if p.policy == nil {
 		return false
@@ -540,7 +545,7 @@ func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bo
 	}
 
 	if s.call != nil {
-		p.log.Debug("policy event for a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.DebugContext(ctx, "policy event for a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("events", e.Kinds))
 
 		p.callNotify(ctx, s, e)
@@ -548,7 +553,7 @@ func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bo
 		return true
 	}
 
-	if e.Has(policy.EventBearerLost, policy.EventBearerReleased, policy.EventResourcesFailed) && p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {
+	if e.Has(policy.EventBearerLost, policy.EventBearerReleased, policy.EventResourcesFailed) && p.regs.edit(ctx, s.key, func(reg *db.PCSCFRegistration) bool {
 		if reg.Policy.ID != s.id {
 			return false
 		}
@@ -557,14 +562,15 @@ func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bo
 
 		return true
 	}) {
-		p.log.Info("IMS signalling path lost", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.InfoContext(ctx, "IMS signalling path lost", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.Any("events", e.Kinds))
 	}
 
 	return true
 }
 
-// Abort handles the policy function ending a session (TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3).
+// Abort handles the policy function ending a session (TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3). ctx is that of the
+// abort, without its cancellation, as for Notify; terminate ends the session in its trace.
 func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (terminate func(), known bool) {
 	if p.policy == nil {
 		return nil, false
@@ -576,7 +582,7 @@ func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (te
 	}
 
 	if s.call != nil {
-		p.log.Info("call media aborted by the policy function", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
+		p.log.InfoContext(ctx, "call media aborted by the policy function", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.String("cause", a.Cause))
 
 		cp := s.call
@@ -590,13 +596,13 @@ func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (te
 		cp.end()
 
 		if cp.dialog != nil {
-			p.releaseCall(ctx, cp.call, cp.dialog, !a.InsufficientResources)
+			_ = p.releaseCall(ctx, cp.call, cp.dialog, !a.InsufficientResources)
 		}
 
-		return func() { p.policy.end(s, policy.TerminationAdministrative, 0) }, true
+		return func() { p.policy.end(ctx, s, policy.TerminationAdministrative, 0) }, true
 	}
 
-	p.regs.edit(s.key, func(reg *db.PCSCFRegistration) bool {
+	p.regs.edit(ctx, s.key, func(reg *db.PCSCFRegistration) bool {
 		if reg.Policy.ID != s.id {
 			return false
 		}
@@ -607,8 +613,8 @@ func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (te
 		return true
 	})
 
-	p.log.Info("IMS signalling path aborted by the policy function", slog.String("impi", s.key.impi),
+	p.log.InfoContext(ctx, "IMS signalling path aborted by the policy function", slog.String("impi", s.key.impi),
 		slog.String("ue", s.key.ue.String()), slog.String("cause", a.Cause))
 
-	return func() { p.policy.end(s, policy.TerminationAdministrative, 0) }, true
+	return func() { p.policy.end(ctx, s, policy.TerminationAdministrative, 0) }, true
 }

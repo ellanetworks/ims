@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/policy"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -122,7 +124,7 @@ func (p *PCSCF) mediaReply(ctx context.Context, tx *transaction.ServerTransactio
 
 	var job *answerJob
 	if rep.Err == nil {
-		job = p.responseAnswer(c, d, res, initial)
+		job = p.responseAnswer(ctx, c, d, res, initial)
 	}
 
 	run := func() {
@@ -136,8 +138,8 @@ func (p *PCSCF) mediaReply(ctx context.Context, tx *transaction.ServerTransactio
 
 		p.chargeUEResponse(c, res)
 
-		if err := p.cfg.Proxy.Relay(tx, res); err != nil {
-			p.log.Debug("relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		if err := p.cfg.Proxy.Relay(ctx, tx, res); err != nil {
+			p.log.DebugContext(ctx, "relaying a held response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
 		if job == nil && priority {
@@ -188,7 +190,7 @@ func (p *PCSCF) mediaRequest(ctx context.Context, d *proxy.Dialog, out *sip.Requ
 
 		answer, _, _ := out.Content().FindFunc(sip.BodyPart.IsSession)
 
-		x := p.parseExchange(c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: answer.Body}})
+		x := p.parseExchange(ctx, c, d, proxy.Exchange{Offer: offer, Answer: proxy.Body{From: other(offer.From), Data: answer.Body}})
 		if x == nil {
 			forward()
 
@@ -295,7 +297,7 @@ func (p *PCSCF) drain(cr *callPolicy, run func()) {
 }
 
 // TS 29.214 Annex A.1, A.3
-func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, initial bool) *answerJob {
+func (p *PCSCF) responseAnswer(ctx context.Context, c *call, d *proxy.Dialog, res *sip.Response, initial bool) *answerJob {
 	if res.StatusCode <= 100 || res.StatusCode >= 300 {
 		return nil
 	}
@@ -327,7 +329,7 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 		return nil
 	}
 
-	x := p.parseExchange(c, d, ex)
+	x := p.parseExchange(ctx, c, d, ex)
 	if x == nil {
 		return nil
 	}
@@ -335,16 +337,16 @@ func (p *PCSCF) responseAnswer(c *call, d *proxy.Dialog, res *sip.Response, init
 	return &answerJob{x: x, tag: calleeTag(d, res), early: early, initial: initial || early, final: final}
 }
 
-func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpExchange {
+func (p *PCSCF) parseExchange(ctx context.Context, c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpExchange {
 	o, err := sdp.Parse(ex.Offer.Data)
 	if err != nil {
-		p.log.Warn("unusable SDP offer", slog.String("dialog", d.ID()), slog.Any("error", err))
+		p.log.WarnContext(ctx, "unusable SDP offer", slog.String("dialog", d.ID()), slog.Any("error", err))
 		return nil
 	}
 
 	a, err := sdp.Parse(ex.Answer.Data)
 	if err != nil {
-		p.log.Warn("unusable SDP answer", slog.String("dialog", d.ID()), slog.Any("error", err))
+		p.log.WarnContext(ctx, "unusable SDP answer", slog.String("dialog", d.ID()), slog.Any("error", err))
 		return nil
 	}
 
@@ -382,7 +384,7 @@ func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job ans
 	// RFC 6733 §8.18 REFUSE_SERVICE: the PCRF of the call is lost, and the service ends with it: once the exchange
 	// in progress completes, or at once for media of an early dialog, which nothing authorizes.
 	if errors.Is(err, policy.ErrSessionLost) {
-		p.log.Warn("policy session of the call lost with its policy function: releasing the call", attrs...)
+		p.log.WarnContext(ctx, "policy session of the call lost with its policy function: releasing the call", attrs...)
 		c.policy.orphaned.Store(true)
 
 		if job.initial {
@@ -394,14 +396,14 @@ func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job ans
 	}
 
 	if !job.initial {
-		p.log.Warn("media authorization refused for a session modification", attrs...)
+		p.log.WarnContext(ctx, "media authorization refused for a session modification", attrs...)
 		return true
 	}
 
-	p.log.Warn("media authorization refused: releasing the call", attrs...)
+	p.log.WarnContext(ctx, "media authorization refused: releasing the call", attrs...)
 
 	if err := d.Release(ctx, proxy.Release{Toward: proxy.Both, Code: 500}); err != nil {
-		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+		p.log.DebugContext(ctx, "releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
 	}
 
 	return false
@@ -417,7 +419,7 @@ func (p *PCSCF) releaseOrphaned(ctx context.Context, c *call, d *proxy.Dialog) {
 
 	if err := d.Release(ctx, proxy.Release{Toward: proxy.Both, Code: 500, Reason: []sip.Reason{cause}}); err != nil &&
 		!errors.Is(err, proxy.ErrDialogEnded) {
-		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+		p.log.DebugContext(ctx, "releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
 	}
 }
 
@@ -490,13 +492,13 @@ func (p *PCSCF) updatePriority(ctx context.Context, c *call, d *proxy.Dialog) {
 	}
 
 	if errors.Is(err, policy.ErrSessionLost) {
-		p.log.Warn("policy session of the call lost with its policy function: releasing the call", attrs...)
+		p.log.WarnContext(ctx, "policy session of the call lost with its policy function: releasing the call", attrs...)
 		c.policy.orphaned.Store(true)
 
 		return
 	}
 
-	p.log.Warn("MCPTT priority update failed", attrs...)
+	p.log.WarnContext(ctx, "MCPTT priority update failed", attrs...)
 }
 
 // callAARBy authorizes the media of job, waiting for the policy function until deadline. A recovery opens a new
@@ -591,7 +593,7 @@ func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *an
 	result := &handoff{c: make(chan grantResult, 1)}
 
 	if !p.policy.spawn(func() {
-		g, err := p.policy.authorize(s, r)
+		g, err := p.policy.authorize(ctx, s, r)
 
 		if g.Ref != "" {
 			s.ref = g.Ref
@@ -646,7 +648,7 @@ func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *an
 
 	if res.err != nil {
 		if errors.Is(res.err, policy.ErrUnknownSession) && !initial {
-			p.log.Warn("policy session of a call unknown to the policy function: opening a new one",
+			p.log.WarnContext(ctx, "policy session of a call unknown to the policy function: opening a new one",
 				slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("session", s.id))
 
 			return p.callAARBy(ctx, c, d, job, deadline, true)
@@ -692,7 +694,7 @@ func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *an
 		attrs = append(attrs, slog.String("mcptt_priority", priority.Namespace+"."+strconv.Itoa(int(priority.Level))))
 	}
 
-	p.log.Debug("media authorized", attrs...)
+	p.log.DebugContext(ctx, "media authorized", attrs...)
 
 	return nil
 }
@@ -813,15 +815,27 @@ func activeComponents(components []policy.MediaComponent) map[uint32]policy.Medi
 	return out
 }
 
-// TS 29.213 Annex B.4.1
-func (p *PCSCF) callEnded(c *call) {
+// callEnded ends the policy session of the call (TS 29.213 Annex B.4.1), in the trace of ctx, what ended it: a
+// request, a response or a release; a call that ended by itself, as on its expiry, in a trace of its own, linked to
+// its INVITE.
+func (p *PCSCF) callEnded(ctx context.Context, c *call) {
 	if c.policy == nil {
 		return
 	}
 
-	if s := c.policy.end(); s != nil {
-		p.policy.end(s, policy.TerminationLogout, 0)
+	s := c.policy.end()
+	if s == nil {
+		return
 	}
+
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		var span trace.Span
+
+		ctx, span = p.detached.Start(p.ctx, "call end", c.invite)
+		defer span.End()
+	}
+
+	p.policy.end(ctx, s, policy.TerminationLogout, 0)
 }
 
 func (c *policyClient) callSession(cr *callPolicy) *policySession {
@@ -840,8 +854,8 @@ type retryHold struct {
 	digest string
 }
 
-// TS 29.214 §4.4.1
-func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Grant, error) {
+// TS 29.214 §4.4.1: in the trace of ctx, the exchange that needs it.
+func (c *policyClient) authorize(ctx context.Context, s *policySession, r policy.Request) (policy.Grant, error) {
 	b, err := json.Marshal(struct {
 		Components []policy.MediaComponent
 		MCPTT      *policy.MCPTTPriority
@@ -868,7 +882,7 @@ func (c *policyClient) authorize(s *policySession, r policy.Request) (policy.Gra
 		return policy.Grant{}, errRetryInterval
 	}
 
-	ctx, cancel := c.deadline(0)
+	ctx, cancel := c.deadline(ctx, 0)
 	defer cancel()
 
 	g, err := s.backend.Authorize(ctx, s.id, s.ref, r)
@@ -1066,15 +1080,14 @@ func (p *PCSCF) callNotify(ctx context.Context, s *policySession, e policy.Event
 	}
 
 	cr.lost = components
+	cause := trace.SpanContextFromContext(ctx)
 	cr.loss = p.clock.AfterFunc(p.policy.cfg.MediaLossTimeout, func() {
-		ctx, span := p.detach(ctx, "media loss")
-		defer span.End()
-
-		p.mediaLossExpired(ctx, cr)
+		ctx, span := p.detached.Start(p.ctx, "media loss", cause)
+		tracing.End(span, p.mediaLossExpired(ctx, cr))
 	})
 }
 
-func (p *PCSCF) mediaLossExpired(ctx context.Context, cr *callPolicy) {
+func (p *PCSCF) mediaLossExpired(ctx context.Context, cr *callPolicy) error {
 	cr.mu.Lock()
 
 	cr.loss = nil
@@ -1084,22 +1097,22 @@ func (p *PCSCF) mediaLossExpired(ctx context.Context, cr *callPolicy) {
 	cr.mu.Unlock()
 
 	if !live {
-		return
+		return nil
 	}
 
 	if video {
-		p.log.Info("video bearer lost: the call goes on without video", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
+		p.log.InfoContext(ctx, "video bearer lost: the call goes on without video", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
 			slog.String("ue", cr.key.ue.String()))
 	}
 
 	if !release {
-		return
+		return nil
 	}
 
-	p.log.Info("media bearer lost: releasing the call", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
+	p.log.InfoContext(ctx, "media bearer lost: releasing the call", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
 		slog.String("ue", cr.key.ue.String()))
 
-	p.releaseCall(ctx, cr.call, cr.dialog, false)
+	return p.releaseCall(ctx, cr.call, cr.dialog, false)
 }
 
 // lossReleases tells whether losing the bearers of the lost components (all of them when none is named) ends the
@@ -1140,7 +1153,7 @@ func lossReleases(active map[uint32]policy.MediaType, lost []uint32) (release, v
 }
 
 // TS 24.229 §5.2.8.1.1, §5.2.8.1.2
-func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signalling bool) {
+func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signalling bool) error {
 	cause, _ := sip.NewReason("SIP", 503, "")
 
 	var r proxy.Release
@@ -1158,12 +1171,15 @@ func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signa
 	case proxy.Answered, proxy.Confirmed:
 		r = proxy.Release{Toward: other(c.ue), Reason: []sip.Reason{cause}}
 	default:
-		return
+		return nil
 	}
 
 	if err := d.Release(ctx, r); err != nil {
-		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+		p.log.DebugContext(ctx, "releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
+		return err
 	}
+
+	return nil
 }
 
 // TS 29.214 §5.4, RFC 4006 §8.46

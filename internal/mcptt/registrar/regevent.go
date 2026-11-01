@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // watch is the subscription of the server to the reg event package of an IMPU it has bindings of through the IMS
@@ -87,8 +88,8 @@ func (g *Registrar) has(ik string) bool { return len(g.impus[ik]) > 0 }
 
 // subscribe sends the SUBSCRIBE of w on the strand of its IMPU (TS 24.229 §5.7.1.1 a to f), of the default duration
 // (RFC 3680 §4.4), which the agent refreshes. A SUBSCRIBE that cannot be sent leaves the IMPU without subscription,
-// until its next third-party REGISTER.
-func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) {
+// until its next third-party REGISTER; its error is returned.
+func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) error {
 	domain := g.cfg.Source.Current().ServiceConfiguration().Domain
 
 	req := sip.NewRequest("SUBSCRIBE", w.impu)
@@ -119,10 +120,10 @@ func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) {
 		}
 
 		g.mu.Unlock()
-		g.cfg.Logger.Warn("reg event SUBSCRIBE not sent", slog.String("impu", w.impu.String()), slog.Any("error", err),
+		g.cfg.Logger.WarnContext(ctx, "reg event SUBSCRIBE not sent", slog.String("impu", w.impu.String()), slog.Any("error", err),
 			slog.Duration("retry_after", after))
 
-		return
+		return err
 	}
 
 	w.sub = sub
@@ -133,6 +134,8 @@ func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) {
 	if stopped {
 		unsubscribe(ctx, sub)
 	}
+
+	return nil
 }
 
 // unsubscribe ends a subscription (RFC 6665 §4.1.2.3); one ended already needs nothing.
@@ -180,14 +183,14 @@ func (g *Registrar) ended(ctx context.Context, st *ua.Strand, w *watch, e ua.End
 
 	switch {
 	case w.restored && code == 403:
-		g.cfg.Logger.Error("reg event subscription refused: the server is not an AS of the user's initial filter "+
+		g.cfg.Logger.ErrorContext(ctx, "reg event subscription refused: the server is not an AS of the user's initial filter "+
 			"criteria, or not of the IMS's trust domain; its registrations restored stay until they expire",
 			slog.String("impu", w.impu.String()))
 	case after > 0:
-		g.cfg.Logger.Warn("reg event subscription failed: subscribing again", slog.String("impu", w.impu.String()),
+		g.cfg.Logger.WarnContext(ctx, "reg event subscription failed: subscribing again", slog.String("impu", w.impu.String()),
 			slog.String("cause", e.Cause.String()), slog.Int("code", code), slog.Duration("retry_after", after))
 	default:
-		g.cfg.Logger.Debug("reg event subscription ended", slog.String("impu", w.impu.String()),
+		g.cfg.Logger.DebugContext(ctx, "reg event subscription ended", slog.String("impu", w.impu.String()),
 			slog.String("cause", e.Cause.String()))
 	}
 
@@ -214,14 +217,16 @@ func (g *Registrar) retry(ctx context.Context, st *ua.Strand, w *watch, res *sip
 	w.attempts++
 	w.sub = nil
 
-	g.detach(ctx, st, after, resubscribeName, func(ctx context.Context) {
+	g.detach(trace.SpanContextFromContext(ctx), st, after, resubscribeName, func(ctx context.Context) error {
 		g.mu.Lock()
 		current := g.watches[w.ik] == w && !w.stopped && w.sub == nil && !g.closed && g.has(w.ik)
 		g.mu.Unlock()
 
-		if current {
-			g.subscribe(ctx, st, w)
+		if !current {
+			return nil
 		}
+
+		return g.subscribe(ctx, st, w)
 	})
 
 	return after
@@ -261,7 +266,7 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 	}
 
 	if g.cfg.Trusted == nil || !g.cfg.Trusted(req.Flow.Remote.Addr()) {
-		g.cfg.Logger.Debug("reg event NOTIFY from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
+		g.cfg.Logger.DebugContext(ctx, "reg event NOTIFY from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
 
 		_ = r.Respond(ua.Reply{Code: 403, Header: header})
 
@@ -281,7 +286,7 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 	case ok:
 		d, err := reginfo.Decode(part.Body)
 		if err != nil {
-			g.cfg.Logger.Warn("unreadable reg event document: refreshing", slog.String("impu", w.impu.String()),
+			g.cfg.Logger.WarnContext(ctx, "unreadable reg event document: refreshing", slog.String("impu", w.impu.String()),
 				slog.Any("error", err))
 
 			unreadable = true
@@ -318,18 +323,21 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 				g.retry(ctx, st, again, nil)
 			}
 		case unreadable && reason(r.Message()) != "rejected" && g.has(w.ik):
-			// What the document told is unknown: a new subscription tells it again.
+			// What the document told is unknown: a new subscription tells it again, once the NOTIFY is answered, in a
+			// trace of its own.
 			again := &watch{ik: w.ik, impu: w.impu, scscf: w.scscf, as: w.as}
 			g.watches[w.ik] = again
 
-			st.AfterFunc(0, func() {
+			g.detach(trace.SpanContextFromContext(ctx), st, 0, resubscribeName, func(ctx context.Context) error {
 				g.mu.Lock()
 				current := g.watches[w.ik] == again && again.sub == nil && !again.stopped && !g.closed
 				g.mu.Unlock()
 
-				if current {
-					g.subscribe(ctx, st, again)
+				if !current {
+					return nil
 				}
+
+				return g.subscribe(ctx, st, again)
 			})
 		}
 	}

@@ -153,7 +153,7 @@ func New(cfg Config) (*Server, error) {
 	var store registrar.Store
 	if cfg.State != nil && cfg.Mode == registrar.ThroughIMS {
 		store = cfg.State
-		s.part.SetStore(cfg.State)
+		s.part.SetStore(a.Layer().Lifetime(), cfg.State)
 	}
 
 	s.reg = registrar.New(registrar.Config{
@@ -219,11 +219,11 @@ func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, 
 
 	now := s.agent.Layer().Clock().Now()
 
-	s.part.Restore(now, affiliations, func(id sip.URI, client string) bool {
+	s.part.Restore(ctx, now, affiliations, func(id sip.URI, client string) bool {
 		return bound[[2]string{settings.Key(id), client}]
 	})
 
-	s.log.Info("registrations restored", slog.Int("bindings", len(bound)))
+	s.log.InfoContext(ctx, "registrations restored", slog.Int("bindings", len(bound)))
 }
 
 // Revoke applies the change of the settings from before to after, of settings.Live's OnChange, to the registrations,
@@ -234,7 +234,7 @@ func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, 
 // strands it posts to.
 func (s *Server) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	s.controlling.Revoke()
-	s.part.Revoke(s.agent.Layer().Clock().Now(), s.controlling.Eligible)
+	s.part.Revoke(ctx, s.agent.Layer().Clock().Now(), s.controlling.Eligible)
 	s.reg.Revoke(ctx, before, after)
 	s.ctrlCalls.Revoke(ctx)
 }
@@ -447,7 +447,7 @@ func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 	case "REGISTER":
 		s.reg.Handle(ctx, r)
 	case "PUBLISH":
-		s.part.HandlePublish(affiliation.Request{
+		s.part.HandlePublish(ctx, affiliation.Request{
 			Request: r, Config: s.cfg.Source.Current(), Now: s.agent.Layer().Clock().Now(), Originator: s.originator(req),
 		}, bindings{s.reg})
 	case "SUBSCRIBE":
@@ -501,10 +501,12 @@ var errUntrusted = errors.New("server: from outside sip.trusted_networks")
 
 // logTransaction logs each server transaction once it ends, after next if any, as Ella IMS does: of the requests of
 // a call, at info, the others at debug. Its request and response are summarised, their bodies never logged.
-func (s *Server) logTransaction(next func(*sip.Request, *sip.Response, time.Duration)) func(*sip.Request, *sip.Response, time.Duration) {
-	return func(req *sip.Request, res *sip.Response, elapsed time.Duration) {
+func (s *Server) logTransaction(
+	next func(context.Context, *sip.Request, *sip.Response, time.Duration),
+) func(context.Context, *sip.Request, *sip.Response, time.Duration) {
+	return func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
 		if next != nil {
-			next(req, res, elapsed)
+			next(ctx, req, res, elapsed)
 		}
 
 		level := slog.LevelDebug
@@ -514,7 +516,7 @@ func (s *Server) logTransaction(next func(*sip.Request, *sip.Response, time.Dura
 			level = slog.LevelInfo
 		}
 
-		if !s.log.Enabled(context.Background(), level) {
+		if !s.log.Enabled(ctx, level) {
 			return
 		}
 
@@ -531,12 +533,12 @@ func (s *Server) logTransaction(next func(*sip.Request, *sip.Response, time.Dura
 		attrs = append(attrs, slog.String("remote", req.Flow.Remote.String()), slog.Duration("duration", elapsed))
 
 		if res == nil {
-			s.log.LogAttrs(context.Background(), level, "SIP transaction ended without a final response", attrs...)
+			s.log.LogAttrs(ctx, level, "SIP transaction ended without a final response", attrs...)
 			return
 		}
 
 		attrs = append(attrs, slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
-		s.log.LogAttrs(context.Background(), level, "SIP transaction", attrs...)
+		s.log.LogAttrs(ctx, level, "SIP transaction", attrs...)
 	}
 }
 

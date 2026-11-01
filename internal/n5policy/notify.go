@@ -130,7 +130,7 @@ func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink po
 	abort := policy.Abort{Cause: string(t.TermCause), InsufficientResources: t.TermCause == n5.TerminationInsufficientQoSFlowResources}
 
 	if terminate, known := sink.Abort(context.WithoutCancel(ctx), id, abort); known {
-		b.log.Debug("PCF terminates an application session context", attrs...)
+		b.log.DebugContext(ctx, "PCF terminates an application session context", attrs...)
 		noContent(w)
 
 		if terminate != nil {
@@ -148,7 +148,7 @@ func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink po
 	if !ok && b.lostOne(id) {
 		// The PCF names its contexts other than pcf_uri does: Open5GS takes resUri from its first SBI server.
 		attrs = append(attrs, slog.String("pcf_uri", b.root.String()))
-		b.log.Warn("PCF terminates an application session context the P-CSCF lost, at a resUri outside pcf_uri: "+
+		b.log.WarnContext(ctx, "PCF terminates an application session context the P-CSCF lost, at a resUri outside pcf_uri: "+
 			"not deleting it", attrs...)
 		unknownContext(w)
 
@@ -156,15 +156,15 @@ func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink po
 	}
 
 	if !ok {
-		b.log.Warn("PCF terminates an unknown application session context", attrs...)
+		b.log.WarnContext(ctx, "PCF terminates an unknown application session context", attrs...)
 		unknownContext(w)
 
 		return
 	}
 
-	b.log.Info("PCF terminates an application session context the P-CSCF no longer has: deleting it", attrs...)
+	b.log.InfoContext(ctx, "PCF terminates an application session context the P-CSCF no longer has: deleting it", attrs...)
 	noContent(w)
-	b.deleteOrphan(id, uri)
+	b.deleteOrphan(ctx, id, uri)
 }
 
 func noContent(w http.ResponseWriter) {
@@ -235,22 +235,35 @@ func sameHost(a, b *url.URL) bool {
 	return strings.EqualFold(a.Hostname(), b.Hostname())
 }
 
-func (b *Backend) deleteOrphan(id, uri string) {
+// deleteOrphan deletes, after the 204 of the termination that cause is of, a context the P-CSCF no longer has: a trace
+// of its own, linked to the termination.
+func (b *Backend) deleteOrphan(cause context.Context, id, uri string) {
+	link := trace.SpanContextFromContext(cause)
+
 	b.wg.Add(1)
 
 	go func() {
 		defer b.wg.Done()
 
-		ctx, cancel := context.WithTimeout(b.ctx, deleteTimeout)
+		ctx, span := b.detached.Start(b.ctx, "delete orphan context", link)
+
+		var err error
+
+		defer func() { tracing.End(span, err) }()
+
+		ctx, cancel := context.WithTimeout(ctx, deleteTimeout)
 		defer cancel()
 
-		_, err := b.client.Delete(ctx, uri, nil)
+		_, err = b.client.Delete(ctx, uri, nil)
 		b.record(err, "204")
 		b.forget(id)
 
-		if err != nil && !errors.Is(classify(err), policy.ErrUnknownSession) && !errors.Is(err, context.Canceled) {
-			b.log.Warn("deleting an application session context failed", slog.String("uri", uri), slog.Any("error", err))
+		if err == nil || errors.Is(classify(err), policy.ErrUnknownSession) || errors.Is(err, context.Canceled) {
+			err = nil
+			return
 		}
+
+		b.log.WarnContext(ctx, "deleting an application session context failed", slog.String("uri", uri), slog.Any("error", err))
 	}()
 }
 
@@ -275,7 +288,7 @@ func (b *Backend) notified(ctx context.Context, w http.ResponseWriter, sink poli
 	e := event(n.EventsNotification)
 
 	if !sink.Notify(context.WithoutCancel(ctx), id, e) {
-		b.log.Debug("PCF notification for an unknown session", slog.String("session", id), slog.String("uri", n.EvSubsURI))
+		b.log.DebugContext(ctx, "PCF notification for an unknown session", slog.String("session", id), slog.String("uri", n.EvSubsURI))
 		unknownContext(w)
 
 		return

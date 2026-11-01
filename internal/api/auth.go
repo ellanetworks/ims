@@ -250,7 +250,7 @@ func (a *auth) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := a.principal(r)
 		if errors.Is(err, errUnavailable) {
-			writeError(w, http.StatusInternalServerError, "Failed to authenticate", err, a.cfg.Logger)
+			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to authenticate", err, a.cfg.Logger)
 			return
 		}
 
@@ -262,7 +262,7 @@ func (a *auth) authenticate(next http.Handler) http.Handler {
 			}
 
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, "Invalid token", err, a.cfg.Logger)
+			writeError(r.Context(), w, http.StatusUnauthorized, "Invalid token", err, a.cfg.Logger)
 
 			return
 		}
@@ -347,7 +347,7 @@ func (a *auth) touch(ctx context.Context, id int64, now time.Time) {
 	a.mu.Unlock()
 
 	if err := a.cfg.Auth.TouchAPIToken(ctx, id, now); err != nil {
-		a.cfg.Logger.Warn("failed to store the last use of an API token", slog.Any("error", err))
+		a.cfg.Logger.WarnContext(ctx, "failed to store the last use of an API token", slog.Any("error", err))
 	}
 }
 
@@ -403,7 +403,7 @@ func (a *auth) checkAccessToken(ctx context.Context, token string) (int64, error
 func (a *auth) authorize(perm Permission, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, ok := PrincipalFrom(r.Context()); !ok || !allowed(p.Role, perm) {
-			writeError(w, http.StatusForbidden, "Forbidden", nil, a.cfg.Logger)
+			writeError(r.Context(), w, http.StatusForbidden, "Forbidden", nil, a.cfg.Logger)
 			return
 		}
 
@@ -416,7 +416,7 @@ func (a *auth) authorize(perm Permission, next http.Handler) http.Handler {
 func (a *auth) needsLogin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, _ := PrincipalFrom(r.Context()); p.APIToken {
-			writeError(w, http.StatusForbidden, "This needs a login, not an API token", nil, a.cfg.Logger)
+			writeError(r.Context(), w, http.StatusForbidden, "This needs a login, not an API token", nil, a.cfg.Logger)
 			return
 		}
 
@@ -527,6 +527,6 @@ func (a *auth) audit(r *http.Request, action, actor, details string) {
 		actor = actor[:maxActorLength]
 	}
 
-	a.cfg.Logger.Info("audit event", slog.String("action", action), slog.String("actor", actor),
+	a.cfg.Logger.InfoContext(r.Context(), "audit event", slog.String("action", action), slog.String("actor", actor),
 		slog.String("ip", clientIP(r)), slog.String("details", details))
 }

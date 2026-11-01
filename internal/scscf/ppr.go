@@ -69,11 +69,11 @@ func (r *Registrar) PushProfile(ctx context.Context, ppr cx.PushProfileRequest) 
 		return err
 	}
 
-	r.log.Info("user profile updated by the HSS", slog.String("impi", ppr.PrivateIdentity),
+	r.log.InfoContext(ctx, "user profile updated by the HSS", slog.String("impi", ppr.PrivateIdentity),
 		slog.Int("added", len(pc.added)), slog.Int("removed", len(pc.removed)), slog.Int("barred", len(pc.barred)),
 		slog.Bool("reauthenticate", shorten))
 
-	r.spreadProfile(r.ctx, *pc, "", shorten)
+	r.spreadProfile(ctx, *pc, "", shorten)
 
 	return nil
 }

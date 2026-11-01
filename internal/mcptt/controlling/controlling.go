@@ -22,11 +22,11 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
 	"github.com/ellanetworks/ims/internal/mcptt/participating"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/mcptt/floor"
 	"github.com/ellanetworks/ims/mcptt/media"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Affiliations are the controlling function's affiliation state (TS 24.379 §9.2.2.3.2).
@@ -55,8 +55,9 @@ type Config struct {
 
 // Controlling is the controlling function.
 type Controlling struct {
-	cfg    Config
-	tracer trace.Tracer
+	cfg Config
+	// detached traces the work of the sessions that starts later than their setup (session.detach).
+	detached tracing.Detached
 
 	mu     sync.Mutex
 	groups map[string]*group
@@ -82,7 +83,7 @@ func New(cfg Config) *Controlling {
 	}
 
 	return &Controlling{
-		cfg: cfg, tracer: cfg.Agent.Layer().TracerProvider().Tracer(tracerName), groups: map[string]*group{}, sessions: map[string]*session{}, users: map[string]map[*session]int{},
+		cfg: cfg, detached: tracing.NewDetached(cfg.Agent.Layer().TracerProvider(), tracerName, "mcptt"), groups: map[string]*group{}, sessions: map[string]*session{}, users: map[string]map[*session]int{},
 	}
 }
 

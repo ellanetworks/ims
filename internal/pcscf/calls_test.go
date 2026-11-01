@@ -772,7 +772,7 @@ func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
 func TestUnregisteredUEOnItsSAsIsIgnored(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
-	s.p.regs.remove(regKey{impi: testIMPI, ue: ueAddr})
+	s.p.regs.remove(context.Background(), regKey{impi: testIMPI, ue: ueAddr})
 
 	u.uc.Send(sip.UDP, s.ps, s.ueInvite(u, nil))
 	u.us.RecvNone(quiet)

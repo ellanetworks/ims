@@ -77,7 +77,7 @@ func ListCallRecords(cfg Config) http.Handler {
 
 		records, total, err := cfg.CallRecords.ListCallRecords(r.Context(), f, page, perPage)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list call records", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusInternalServerError, "failed to list call records", err, cfg.Logger)
 			return
 		}
 
@@ -89,7 +89,7 @@ func ListCallRecords(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, callRecordResponse(rec))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -97,7 +97,7 @@ func GetCallRecord(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil || id < 1 {
-			writeError(w, http.StatusNotFound, "call record not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "call record not found", nil, cfg.Logger)
 			return
 		}
 
@@ -105,18 +105,18 @@ func GetCallRecord(cfg Config) http.Handler {
 
 		switch {
 		case errors.Is(err, db.ErrNotFound):
-			writeError(w, http.StatusNotFound, "call record not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "call record not found", nil, cfg.Logger)
 		case err != nil:
-			writeError(w, http.StatusInternalServerError, "failed to get the call record", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusInternalServerError, "failed to get the call record", err, cfg.Logger)
 		default:
-			writeResponse(w, callRecordResponse(rec), http.StatusOK, cfg.Logger)
+			writeResponse(r.Context(), w, callRecordResponse(rec), http.StatusOK, cfg.Logger)
 		}
 	})
 }
 
 func GetCallRecordRetention(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, CallRecordRetention{Days: cfg.Settings.Get().CallRecords.RetentionDays}, http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, CallRecordRetention{Days: cfg.Settings.Get().CallRecords.RetentionDays}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -129,11 +129,11 @@ func UpdateCallRecordRetention(cfg Config) http.Handler {
 		}
 
 		if err := cfg.Settings.UpdateCallRecords(r.Context(), settings.CallRecords{RetentionDays: params.Days}); err != nil {
-			writeSettingsError(w, err, "Failed to update the call record retention", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update the call record retention", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, CallRecordRetention{Days: cfg.Settings.Get().CallRecords.RetentionDays}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, CallRecordRetention{Days: cfg.Settings.Get().CallRecords.RetentionDays}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -152,13 +152,13 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 
 		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, b.name+" must be an RFC 3339 time", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusBadRequest, b.name+" must be an RFC 3339 time", nil, cfg.Logger)
 			return db.CallRecordFilter{}, false
 		}
 
 		// Times are stored in nanoseconds since the epoch.
 		if !time.Unix(0, t.UnixNano()).Equal(t) {
-			writeError(w, http.StatusBadRequest, b.name+" must be from 1678 to 2262", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusBadRequest, b.name+" must be from 1678 to 2262", nil, cfg.Logger)
 			return db.CallRecordFilter{}, false
 		}
 
@@ -166,14 +166,14 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 	}
 
 	if !f.Start.IsZero() && !f.End.IsZero() && !f.End.After(f.Start) {
-		writeError(w, http.StatusBadRequest, "end must be after start", nil, cfg.Logger)
+		writeError(r.Context(), w, http.StatusBadRequest, "end must be after start", nil, cfg.Logger)
 		return db.CallRecordFilter{}, false
 	}
 
 	for _, v := range q["outcome"] {
 		o, ok := outcomes[v]
 		if !ok {
-			writeError(w, http.StatusBadRequest,
+			writeError(r.Context(), w, http.StatusBadRequest,
 				"outcome must be answered, cancelled, busy, rejected, no_answer, unavailable or failed", nil, cfg.Logger)
 
 			return db.CallRecordFilter{}, false

@@ -21,9 +21,9 @@ type DiameterStatus struct {
 }
 
 func GetDiameterStatus(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		op := cfg.Settings.Get().Operator
-		writeResponse(w, DiameterStatus{Host: op.DiameterHost(), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, DiameterStatus{Host: op.DiameterHost(), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -63,7 +63,7 @@ type DiameterPeers struct {
 }
 
 func ListDiameterPeers(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		statuses := peerStatuses(cfg.Diameter)
 
 		resp := DiameterPeers{Items: []DiameterPeer{}}
@@ -71,7 +71,7 @@ func ListDiameterPeers(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, peerResponse(p, statuses))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -79,11 +79,11 @@ func GetDiameterPeer(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := findPeer(cfg.Settings.Get(), r.PathValue("id"))
 		if !ok {
-			writeError(w, http.StatusNotFound, "Diameter peer not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "Diameter peer not found", nil, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -101,11 +101,11 @@ func CreateDiameterPeer(cfg Config) http.Handler {
 		}
 
 		if err != nil {
-			writeSettingsError(w, err, "Failed to create Diameter peer", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to create Diameter peer", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusCreated, cfg.Logger)
+		writeResponse(r.Context(), w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusCreated, cfg.Logger)
 	})
 }
 
@@ -124,22 +124,22 @@ func UpdateDiameterPeer(cfg Config) http.Handler {
 		}
 
 		if err != nil {
-			writeSettingsError(w, err, "Failed to update Diameter peer", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update Diameter peer", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, peerResponse(p, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
 	})
 }
 
 func DeleteDiameterPeer(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.Settings.DeletePeer(r.Context(), r.PathValue("id")); err != nil {
-			writeSettingsError(w, err, "Failed to delete Diameter peer", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to delete Diameter peer", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, Message{Message: "Diameter peer deleted"}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, Message{Message: "Diameter peer deleted"}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -281,7 +281,7 @@ type DiameterRoutes struct {
 }
 
 func ListDiameterRoutes(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s, statuses := cfg.Settings.Get(), peerStatuses(cfg.Diameter)
 
 		resp := DiameterRoutes{Items: []DiameterRoute{}}
@@ -289,7 +289,7 @@ func ListDiameterRoutes(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, routeResponse(s, r, statuses))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -299,11 +299,11 @@ func GetDiameterRoute(cfg Config) http.Handler {
 
 		route, ok := findRoute(s, r.PathValue("application"))
 		if !ok {
-			writeError(w, http.StatusNotFound, "Diameter route not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "Diameter route not found", nil, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, routeResponse(s, route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, routeResponse(s, route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -318,11 +318,11 @@ func UpdateDiameterRoute(cfg Config) http.Handler {
 		route := settings.Route{Application: settings.Application(r.PathValue("application")), Realm: params.Realm}
 
 		if err := cfg.Settings.UpdateRoute(r.Context(), route); err != nil {
-			writeSettingsError(w, err, "Failed to update Diameter route", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update Diameter route", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, routeResponse(cfg.Settings.Get(), route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, routeResponse(cfg.Settings.Get(), route, peerStatuses(cfg.Diameter)), http.StatusOK, cfg.Logger)
 	})
 }
 

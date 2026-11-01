@@ -725,7 +725,7 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 
 	if err := checkFlows(c.AppSessionContextReqData); err != nil {
 		req.Problem = &n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseFilterRestrictions, Detail: err.Error()}
-		p.cfg.Logger.Warn("pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
 		p.record(req)
 		n5.WriteProblem(w, *req.Problem)
 
@@ -792,7 +792,7 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 
 	if err := checkFlows(c.AppSessionContextReqData); err != nil {
 		req.Problem = &n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseFilterRestrictions, Detail: err.Error()}
-		p.cfg.Logger.Warn("pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
 		p.record(req)
 		n5.WriteProblem(w, *req.Problem)
 
@@ -944,7 +944,7 @@ func (p *PCF) body(w http.ResponseWriter, r *http.Request, contentType string, r
 
 	switch {
 	case err != nil:
-		p.cfg.Logger.Warn("pcftest: cannot read the request", slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: cannot read the request", slog.Any("error", err))
 		return nil, false
 	case len(b) > maxBody:
 		p.violation(w, r, n5.ProblemDetails{Status: http.StatusRequestEntityTooLarge})
@@ -1035,7 +1035,7 @@ func (p *PCF) violation(w http.ResponseWriter, r *http.Request, pd n5.ProblemDet
 	p.violations = append(p.violations, msg)
 	p.mu.Unlock()
 
-	p.cfg.Logger.Warn("pcftest: request breaks TS 29.514", slog.String("violation", msg))
+	p.cfg.Logger.WarnContext(r.Context(), "pcftest: request breaks TS 29.514", slog.String("violation", msg))
 	n5.WriteProblem(w, pd)
 }
 

@@ -129,3 +129,47 @@ func TestNotificationsContinueThePCFsTrace(t *testing.T) {
 		t.Errorf("notification span parent %v, links %+v; want a child of the PCF's span", s.Parent(), s.Links())
 	}
 }
+
+// TestOrphanDeleteIsLinkedToTheTermination checks that the delete of a context the P-CSCF no longer has, which follows
+// the 204 to the PCF's termination, is a trace of its own linked to the termination's server span.
+func TestOrphanDeleteIsLinkedToTheTermination(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	f := newTracedFixture(t, pcftest.Config{}, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	id := f.b.NewSessionID()
+
+	uri, err := f.b.OpenSignalling(f.ctx(), id, policy.Signalling{UE: netip.MustParseAddr("2001:db8::1")}, false)
+	if err != nil {
+		t.Fatalf("OpenSignalling: %v", err)
+	}
+
+	f.pcf.Next(t)
+
+	res, err := f.pcf.Terminate(f.ctx(), uri, n5.TerminationPDUSessionTermination)
+	if err != nil || res.Status != http.StatusNoContent {
+		t.Fatalf("terminate = %+v, %v, want 204", res, err)
+	}
+
+	if r := f.pcf.Next(t); r.Op != n5.OpDelete {
+		t.Fatalf("got %s, want the delete", r)
+	}
+
+	terminate := spanNamed(t, rec, "POST "+SessionsPath+"/{id}/"+n5.TerminateSegment, trace.SpanKindServer)
+	orphan := spanNamed(t, rec, "delete orphan context", trace.SpanKindInternal)
+	del := spanNamed(t, rec, "POST "+n5.AppSessionsPath+"/{appSessionId}/delete", trace.SpanKindClient)
+
+	if orphan.Parent().IsValid() || orphan.SpanContext().TraceID() == terminate.SpanContext().TraceID() {
+		t.Errorf("orphan delete has parent %v in trace %v, want a root of its own", orphan.Parent(), orphan.SpanContext().TraceID())
+	}
+
+	if l := orphan.Links(); len(l) != 1 || !l[0].SpanContext.Equal(terminate.SpanContext()) {
+		t.Errorf("orphan delete links %+v, want the termination %v", l, terminate.SpanContext())
+	}
+
+	if got := attr(orphan, "ella.ims.role"); got != "pcscf" {
+		t.Errorf("orphan delete role %q, want pcscf", got)
+	}
+
+	if del.Parent().SpanID() != orphan.SpanContext().SpanID() {
+		t.Errorf("DELETE parent %v, want the orphan delete %v", del.Parent(), orphan.SpanContext())
+	}
+}

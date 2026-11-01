@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -15,10 +16,12 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/regmetrics"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -36,6 +39,13 @@ const (
 
 	DefaultMinExpires = 60 * time.Second
 	DefaultMaxExpires = 3600 * time.Second
+
+	// backgroundTimeout bounds the work the registrar does on its own, once it holds the lock it needs: its database
+	// operations and Cx requests, each of which CxTimeout bounds besides.
+	backgroundTimeout = time.Minute
+
+	tracerScope = "github.com/ellanetworks/ims/internal/scscf"
+	tracerRole  = "scscf"
 )
 
 type Diameter interface {
@@ -104,6 +114,7 @@ type Registrar struct {
 	cfg        Config
 	log        *slog.Logger
 	clock      Clock
+	detached   tracing.Detached
 	serverName string
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -129,6 +140,10 @@ type Registrar struct {
 	profiles chan struct{}
 
 	calls *calls
+
+	// causes are the span contexts of the REGISTERs that made or refreshed the bindings, by private identity and
+	// binding: what their expiry links to. They are kept in memory only, and go with the bindings (load).
+	causes map[string]map[int64]trace.SpanContext
 }
 
 type challenge struct {
@@ -142,6 +157,9 @@ type challenge struct {
 	// hss is the HSS that gave the vector, and initial tells that the REGISTER challenged was unprotected.
 	hss     db.HSS
 	initial bool
+
+	// cause is the span context of the REGISTER challenged.
+	cause trace.SpanContext
 }
 
 func New(cfg Config) *Registrar {
@@ -177,12 +195,19 @@ func New(cfg Config) *Registrar {
 		cfg.MaxExpires = max(DefaultMaxExpires, cfg.MinExpires)
 	}
 
+	// The registrar's lifetime: the root of the work it does on its own, which Close ends.
 	ctx, cancel := context.WithCancel(context.Background())
+
+	var tp trace.TracerProvider
+	if cfg.Layer != nil {
+		tp = cfg.Layer.TracerProvider()
+	}
 
 	r := &Registrar{
 		cfg:        cfg,
 		log:        cfg.Logger,
 		clock:      cfg.Clock,
+		detached:   tracing.NewDetached(tp, tracerScope, tracerRole),
 		serverName: cfg.Name.String(),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -191,6 +216,7 @@ func New(cfg Config) *Registrar {
 		authAt:     make(map[authKey]authenticated),
 		reauth:     make(map[string]uint64),
 		calls:      newCalls(),
+		causes:     make(map[string]map[int64]trace.SpanContext),
 
 		peers:    make(map[string]map[string]*asPeer),
 		fetching: make(map[string]*fetch),
@@ -361,6 +387,8 @@ func (r *Registrar) putChallenge(k authKey, ch *challenge) {
 	r.challenges[k] = ch
 }
 
+// challengeExpired ends a challenge that the UE did not answer in time (TS 24.229 §5.4.1.2.2 step 9): a trace of its
+// own, linked to the REGISTER challenged.
 func (r *Registrar) challengeExpired(k authKey, ch *challenge) {
 	impi := k.impi
 
@@ -390,11 +418,20 @@ func (r *Registrar) challengeExpired(k authKey, ch *challenge) {
 			return
 		}
 
-		r.log.Debug("reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
+		ctx, span := r.detached.Start(r.ctx, "challenge expiry", ch.cause)
 
-		if _, _, err := r.serverAssignment(r.ctx, ch.hss, impi, []string{ch.impu}, assignAuthenticationTimeout, false); err != nil {
-			r.log.Warn("failed to tell the HSS of an authentication timeout", slog.String("impi", impi), slog.Any("error", err))
+		ctx, cancel := context.WithTimeout(ctx, backgroundTimeout)
+		defer cancel()
+
+		r.log.DebugContext(ctx, "reg-await-auth expired", slog.String("impi", impi), slog.String("impu", ch.impu))
+
+		_, _, err := r.serverAssignment(ctx, ch.hss, impi, []string{ch.impu}, assignAuthenticationTimeout, false)
+		if err != nil {
+			r.log.WarnContext(ctx, "failed to tell the HSS of an authentication timeout", slog.String("impi", impi),
+				slog.Any("error", err))
 		}
+
+		tracing.End(span, err)
 	}()
 }
 
@@ -446,16 +483,21 @@ func (r *Registrar) runSweep() {
 
 	defer r.wg.Done()
 
-	r.sweepExpired(r.ctx)
-	r.releaseUnregistered(r.ctx)
+	// The sweep, which runs every second, has no trace: the expiry of each private identity it finds has its own.
+	r.sweepExpired()
+	r.releaseUnregistered()
 
 	r.armSweep()
 }
 
-func (r *Registrar) sweepExpired(ctx context.Context) {
+func (r *Registrar) sweepExpired() {
+	ctx, cancel := context.WithTimeout(r.ctx, backgroundTimeout)
 	impis, err := r.cfg.DB.ListExpiredIMPIs(ctx, r.clock.Now())
+
+	cancel()
+
 	if err != nil {
-		r.log.Warn("failed to list expired registrations", slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list expired registrations", slog.Any("error", err))
 		return
 	}
 
@@ -464,38 +506,71 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 			continue
 		}
 
-		out, expired := r.sweepIMPI(ctx, impi)
-
-		r.send(ctx, out)
-
-		if len(expired) == 0 || !r.start() {
-			r.unlock(impi)
-			continue
-		}
-
-		go func() {
-			defer r.wg.Done()
-			defer r.unlock(impi)
-
-			for _, reg := range expired {
-				r.deregisterAtHSS(r.ctx, reg.HSS, impi, reg.IMPU, assignTimeoutDeregistration)
-			}
-		}()
+		r.expire(impi)
 	}
 }
 
-func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []db.Registration) {
+// expire ends what expired of the registrations and reg event subscriptions of a private identity, which the caller
+// locked, and unlocks it: a trace of its own, linked to the REGISTERs that made or last refreshed the bindings
+// expired.
+func (r *Registrar) expire(impi string) {
+	ctx, cancel := context.WithTimeout(r.ctx, backgroundTimeout)
 	st, err := r.load(ctx, impi)
+
+	cancel()
+
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
-		return nil, nil
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.unlock(impi)
+
+		return
 	}
 
+	ctx, span := r.detached.Start(r.ctx, "registration expiry", r.expiryCauses(st)...)
+	ctx, cancel = context.WithTimeout(ctx, backgroundTimeout)
+
+	out, expired, err := r.sweepIMPI(ctx, st, impi)
+
+	r.send(ctx, out)
+
+	if len(expired) == 0 || !r.start() {
+		cancel()
+		r.unlock(impi)
+		tracing.End(span, err)
+
+		return
+	}
+
+	go func() {
+		defer r.wg.Done()
+		defer r.unlock(impi)
+		defer cancel()
+
+		errs := []error{err}
+
+		for _, reg := range expired {
+			if _, _, err := r.serverAssignment(ctx, reg.HSS, impi, []string{reg.IMPU}, assignTimeoutDeregistration, false); err != nil {
+				r.log.WarnContext(ctx, "failed to tell the HSS of a deregistration", slog.String("impi", impi),
+					slog.String("impu", reg.IMPU), slog.String("type", assignTimeoutDeregistration.String()),
+					slog.Any("error", err))
+
+				errs = append(errs, err)
+			}
+		}
+
+		tracing.End(span, errors.Join(errs...))
+	}()
+}
+
+// sweepIMPI removes the expired bindings and reg event subscriptions of a private identity, and returns the NOTIFYs
+// to send, the registration sets ended and the first failure.
+func (r *Registrar) sweepIMPI(ctx context.Context, st *state, impi string) ([]*outgoing, []db.Registration, error) {
 	out := r.expireSubscriptions(ctx, st, impi)
 
 	var (
 		ch           change
 		deregistered []db.Registration
+		failed       error
 	)
 
 	for _, reg := range st.regs {
@@ -506,28 +581,86 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 
 		rm, deleted, err := r.removeBindings(ctx, st, reg, expired, reginfo.Expired)
 		if err != nil {
-			r.log.Warn("failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to remove expired contacts", slog.String("impi", impi), slog.Any("error", err))
+			failed = cmp.Or(failed, err)
 		}
 
 		ch.removed = append(ch.removed, rm)
 
 		if deleted {
-			r.log.Info("registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
+			r.log.InfoContext(ctx, "registration expired", slog.String("impi", impi), slog.String("impu", reg.IMPU))
 			deregistered = append(deregistered, reg)
 		}
 	}
 
 	if len(ch.removed) == 0 {
-		return out, deregistered
+		return out, deregistered, failed
 	}
 
 	r.releaseCalls(ctx, st, ch.removed)
 
 	for _, rm := range ch.removed {
-		r.deregistered(rm)
+		r.deregistered(ctx, rm)
 	}
 
-	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered
+	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered, failed
+}
+
+// expiryCauses are the span contexts of the REGISTERs of the bindings of st that expired.
+func (r *Registrar) expiryCauses(st *state) []trace.SpanContext {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []trace.SpanContext
+
+	for _, reg := range st.regs {
+		for _, b := range without(reg.Bindings, st.live(reg.Bindings)) {
+			if sc, ok := r.causes[st.impi][b.ID]; ok && !slices.ContainsFunc(out, sc.Equal) {
+				out = append(out, sc)
+			}
+		}
+	}
+
+	return out
+}
+
+// noteCauses keeps the span context of the REGISTER that made or refreshed the bindings of a private identity.
+func (r *Registrar) noteCauses(ctx context.Context, impi string, bindings []int64) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() || len(bindings) == 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.causes[impi] == nil {
+		r.causes[impi] = make(map[int64]trace.SpanContext)
+	}
+
+	for _, id := range bindings {
+		r.causes[impi][id] = sc
+	}
+}
+
+// pruneCauses forgets the span contexts of the bindings of a private identity that are gone from st, as read.
+func (r *Registrar) pruneCauses(st *state) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	causes := r.causes[st.impi]
+
+	for id := range causes {
+		if !slices.ContainsFunc(st.regs, func(reg db.Registration) bool {
+			return slices.ContainsFunc(reg.Bindings, func(b db.Binding) bool { return b.ID == id })
+		}) {
+			delete(causes, id)
+		}
+	}
+
+	if len(causes) == 0 {
+		delete(r.causes, st.impi)
+	}
 }
 
 func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Registration, removed []db.Binding,
@@ -552,7 +685,7 @@ func (r *Registrar) removeBindings(ctx context.Context, st *state, reg db.Regist
 
 func (r *Registrar) deregisterAtHSS(ctx context.Context, to db.HSS, impi, impu string, t cx.AssignmentType) {
 	if _, _, err := r.serverAssignment(ctx, to, impi, []string{impu}, t, false); err != nil {
-		r.log.Warn("failed to tell the HSS of a deregistration", slog.String("impi", impi), slog.String("impu", impu),
+		r.log.WarnContext(ctx, "failed to tell the HSS of a deregistration", slog.String("impi", impi), slog.String("impu", impu),
 			slog.String("type", t.String()), slog.Any("error", err))
 	}
 }
@@ -560,7 +693,7 @@ func (r *Registrar) deregisterAtHSS(ctx context.Context, to db.HSS, impi, impu s
 func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi string) []*outgoing {
 	subs, err := r.cfg.DB.ListRegSubscriptions(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the reg event subscriptions", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -571,7 +704,7 @@ func (r *Registrar) expireSubscriptions(ctx context.Context, st *state, impi str
 			continue
 		}
 
-		r.log.Debug("reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
+		r.log.DebugContext(ctx, "reg event subscription expired", slog.String("impi", impi), slog.String("impu", s.IMPU))
 
 		if o := r.buildNotify(ctx, st, s, nil, "terminated;reason="+reasonTimeout); o != nil {
 			out = append(out, o)

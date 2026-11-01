@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type call struct {
@@ -26,6 +27,10 @@ type call struct {
 	rec *callRecord
 	// impi is the private identity of the UE a terminating call goes to.
 	impi string
+
+	// invite is the span context of the INVITE that started the call, which the end of a call no request ends, as
+	// its expiry, links to.
+	invite trace.SpanContext
 }
 
 func callOf(d *proxy.Dialog) *call {
@@ -69,19 +74,19 @@ func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	reg, ok := p.ueRegistration(req)
 	if !ok {
-		p.log.Debug("initial request from an unregistered UE", slog.String("method", req.Method),
+		p.log.DebugContext(ctx, "initial request from an unregistered UE", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()))
-		p.respond(tx, sip.NewResponse(req, 403, ""))
+		p.respond(ctx, tx, sip.NewResponse(req, 403, ""))
 
 		return
 	}
 
 	switch req.Method {
 	case "UPDATE":
-		p.respond(tx, sip.NewResponse(req, 403, "Target refresh outside dialog not allowed"))
+		p.respond(ctx, tx, sip.NewResponse(req, 403, "Target refresh outside dialog not allowed"))
 		return
 	case "BYE", "PRACK":
-		p.respond(tx, sip.NewResponse(req, 403, "Originating subsequent requests outside dialog not allowed"))
+		p.respond(ctx, tx, sip.NewResponse(req, 403, "Originating subsequent requests outside dialog not allowed"))
 		return
 	}
 
@@ -93,7 +98,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 
 	refuse := func(res *sip.Response) {
 		rec.rejecting(tx, res.StatusCode)
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 	}
 
 	reject := func(res *sip.Response) {
@@ -119,7 +124,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 
 	// TS 24.229 §5.2.10.3, §5.2.10.4: the IMS has no E-CSCF, so an emergency request is not forwarded.
 	if emergencyURN(out.URI) {
-		p.log.Info("emergency request refused: emergency sessions are not handled", slog.String("impi", reg.IMPI),
+		p.log.InfoContext(ctx, "emergency request refused: emergency sessions are not handled", slog.String("impi", reg.IMPI),
 			slog.String("method", req.Method), slog.String("uri", out.URI.String()))
 		reject(p.alternativeService(req, reg))
 
@@ -135,7 +140,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 
 	serviceRoute, err := sip.ParseAddressList(strings.Join(reg.ServiceRoute, ", "))
 	if err != nil {
-		p.log.Warn("unusable Service-Route", slog.String("impi", reg.IMPI), slog.Any("error", err))
+		p.log.WarnContext(ctx, "unusable Service-Route", slog.String("impi", reg.IMPI), slog.Any("error", err))
 		reject(sip.NewResponse(req, 500, ""))
 
 		return
@@ -143,7 +148,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 
 	if routes, err := out.Header.Routes(); err != nil || !sameRoutes(routes, serviceRoute) {
 		if len(routes) > 0 {
-			p.log.Debug("preloaded routes replaced by the Service-Route", slog.String("impi", reg.IMPI),
+			p.log.DebugContext(ctx, "preloaded routes replaced by the Service-Route", slog.String("impi", reg.IMPI),
 				slog.Any("route", out.Header.Values("Route")))
 		}
 
@@ -151,7 +156,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 	}
 
 	if len(asserted) == 0 {
-		p.log.Warn("registration without public identities", slog.String("impi", reg.IMPI))
+		p.log.WarnContext(ctx, "registration without public identities", slog.String("impi", reg.IMPI))
 		reject(sip.NewResponse(req, 403, ""))
 
 		return
@@ -167,7 +172,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 
 	to, ok := p.target(serviceRoute[0].URI, req.Flow.Local.Addr())
 	if !ok {
-		p.log.Warn("no route to the Service-Route", slog.String("route", reg.ServiceRoute[0]))
+		p.log.WarnContext(ctx, "no route to the Service-Route", slog.String("route", reg.ServiceRoute[0]))
 		reject(sip.NewResponse(req, 503, ""))
 
 		return
@@ -194,6 +199,7 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 	switch out.Method {
 	case "INVITE":
 		c := &call{ue: proxy.Caller, icid: cv.icid, policy: p.newCallPolicy(regKeyOf(&reg), asserted, ""), rec: rec}
+		c.invite = trace.SpanContextFromContext(ctx)
 
 		opts.NoAnswer = p.cfg.NoAnswer
 		dialog = p.cfg.Proxy.NewDialog(proxy.DialogConfig{
@@ -220,14 +226,14 @@ func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 	// A call the P-CSCF does not put through to the UE ends by the network.
 	refuse := func(res *sip.Response) {
 		p.cfg.Records.RejectingRequest(req, res.StatusCode, tx.ToTag())
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 	}
 
 	if !p.fromCore(req) {
-		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
+		p.log.WarnContext(ctx, "request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
 		// Not reported to the call records: its ICID is not to be trusted.
-		p.respond(tx, sip.NewResponse(req, 403, ""))
+		p.respond(ctx, tx, sip.NewResponse(req, 403, ""))
 
 		return
 	}
@@ -248,7 +254,7 @@ func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 		return
 	}
 
-	to, reject := p.ueTarget(req, out, removed)
+	to, reject := p.ueTarget(ctx, req, out, removed)
 	if reject != nil {
 		refuse(reject)
 		return
@@ -286,6 +292,7 @@ func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 	switch out.Method {
 	case "INVITE":
 		c := &call{ue: proxy.Callee, icid: cv.icid}
+		c.invite = trace.SpanContextFromContext(ctx)
 
 		if f, ok := p.regs.flow(top.User); ok {
 			c.impi = f.impi
@@ -312,8 +319,8 @@ func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 	p.forward(ctx, tx, req, out, to, opts, refuse)
 }
 
-func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
-	return func(e proxy.DialogEvent) {
+func (p *PCSCF) callEvent(c *call) func(context.Context, proxy.DialogEvent) {
+	return func(ctx context.Context, e proxy.DialogEvent) {
 		c.rec.event(e)
 
 		if c.ue == proxy.Callee {
@@ -321,7 +328,7 @@ func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {
 		}
 
 		if e.Kind == proxy.EventEnded {
-			p.callEnded(c)
+			p.callEnded(ctx, c)
 		}
 	}
 }
@@ -342,8 +349,10 @@ func (p *PCSCF) servedIdentities(f flow, called string) []string {
 }
 
 // TS 24.229 §5.2.8.1, TS 33.203 §7.4.2a
-func (p *PCSCF) dialogTarget(ue proxy.Side, token string, local netip.Addr) func(proxy.Side, *sip.Request) (proxy.Target, error) {
-	return func(toward proxy.Side, req *sip.Request) (proxy.Target, error) {
+func (p *PCSCF) dialogTarget(
+	ue proxy.Side, token string, local netip.Addr,
+) func(context.Context, proxy.Side, *sip.Request) (proxy.Target, error) {
+	return func(_ context.Context, toward proxy.Side, req *sip.Request) (proxy.Target, error) {
 		if toward == ue {
 			f, ok := p.regs.flow(token)
 			if !ok {
@@ -465,7 +474,7 @@ func telForm(u sip.URI) sip.URI {
 }
 
 // TS 24.229 §5.2.6.3.5, §5.2.6.3.9 steps 1 and 2
-func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Response {
+func (p *PCSCF) fromUEInDialog(ctx context.Context, req, out *sip.Request, d *proxy.Dialog) *sip.Response {
 	c := callOf(d)
 	if c == nil {
 		return nil
@@ -478,7 +487,7 @@ func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Resp
 	case !ok && c.ue == proxy.Caller && fromTag(req) == d.CallerTag():
 		return nil
 	default:
-		p.log.Debug("request from a UE not on the dialog", slog.String("request", req.StartLine()), slog.String("dialog", d.ID()))
+		p.log.DebugContext(ctx, "request from a UE not on the dialog", slog.String("request", req.StartLine()), slog.String("dialog", d.ID()))
 		return sip.NewResponse(req, 403, "Not on this dialog")
 	}
 
@@ -488,7 +497,7 @@ func (p *PCSCF) fromUEInDialog(req, out *sip.Request, d *proxy.Dialog) *sip.Resp
 	}
 
 	if routes, err := out.Header.Routes(); err != nil || !sameRoutes(routes, want) {
-		p.log.Debug("in-dialog routes replaced by the dialog's", slog.String("dialog", d.ID()),
+		p.log.DebugContext(ctx, "in-dialog routes replaced by the dialog's", slog.String("dialog", d.ID()),
 			slog.Any("route", out.Header.Values("Route")))
 		setRoutes(out, want)
 	}

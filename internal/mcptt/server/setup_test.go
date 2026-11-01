@@ -35,7 +35,7 @@ func (w *world) failed(u *user, group string) *sip.Response {
 	t := w.t
 	t.Helper()
 
-	if _, err := u.Call(mustURI(t, group)); err != nil {
+	if _, err := u.Call(context.Background(), mustURI(t, group)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func (w *world) established(u *user, group string) (*client.Call, *sip.Response)
 	t := w.t
 	t.Helper()
 
-	c, err := u.Call(mustURI(t, group))
+	c, err := u.Call(context.Background(), mustURI(t, group))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestSetupRefusedAtOnce(t *testing.T) {
 
 	w.users["carol"].expect(t, "incoming", "established")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -128,13 +128,13 @@ func TestSetupLeave(t *testing.T) {
 	alice, bob := w.users["alice"], w.users["bob"]
 	silent(w.users["carol"])
 
-	ca, err := alice.Call(mustURI(t, rescue))
+	ca, err := alice.Call(context.Background(), mustURI(t, rescue))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w.n.Advance(time.Second)
-	event(bob.expect(t, "incoming", "established"), client.EventIncoming).Call.Leave()
+	event(bob.expect(t, "incoming", "established"), client.EventIncoming).Call.Leave(context.Background())
 	w.n.Advance(time.Second)
 
 	alice.expectNot(t, "failed", "established")
@@ -146,7 +146,7 @@ func TestSetupLeave(t *testing.T) {
 	w.n.Advance(5 * time.Second)
 	alice.expectNot(t, "failed", "established")
 
-	cb, err := bob.Call(mustURI(t, rescue))
+	cb, err := bob.Call(context.Background(), mustURI(t, rescue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +161,8 @@ func TestSetupLeave(t *testing.T) {
 		t.Errorf("alice's 200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	cb.Leave()
-	ca.Leave()
+	cb.Leave(context.Background())
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -206,7 +206,7 @@ func TestRequiredAccepts(t *testing.T) {
 		t.Errorf("200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -227,7 +227,7 @@ func TestMaxParticipants(t *testing.T) {
 		t.Errorf("carol's response %d %v", res.StatusCode, res.Header.Values("Warning"))
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -259,8 +259,8 @@ func TestMinimumToStart(t *testing.T) {
 		t.Errorf("alice answered before both:\n%s", strings.Join(got, "\n"))
 	}
 
-	ca.Leave()
-	cb.Leave()
+	ca.Leave(context.Background())
+	cb.Leave(context.Background())
 	w.n.Quiesce()
 	w.n.Advance(time.Second)
 
@@ -286,13 +286,13 @@ func TestOriginatorCancels(t *testing.T) {
 	w := newWorld(t, nil)
 	silent(w.users["carol"])
 
-	ca, err := w.users["alice"].Call(mustURI(t, rescue))
+	ca, err := w.users["alice"].Call(context.Background(), mustURI(t, rescue))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	w.n.Advance(time.Second)
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Advance(time.Second)
 
 	if got := w.trace.take(); !slices.Contains(got, "carol>server 487 INVITE") || !slices.Contains(got, "server>bob BYE") {
@@ -315,7 +315,7 @@ func TestJoinNotMember(t *testing.T) {
 	})
 	dave := w.users["dave2"]
 
-	if err := dave.Affiliate([]sip.URI{mustURI(t, fire)}, func(*sip.Response, error) {}); err != nil {
+	if err := dave.Affiliate(context.Background(), []sip.URI{mustURI(t, fire)}, func(*sip.Response, error) {}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,7 +336,7 @@ func TestJoinNotMember(t *testing.T) {
 		t.Errorf("dave's response %d %v", res.StatusCode, res.Header.Values("Warning"))
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -363,9 +363,9 @@ func TestN6(t *testing.T) {
 		t.Errorf("fire: carol's 200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	c2.Leave()
-	cc.Leave()
-	ca.Leave()
+	c2.Leave(context.Background())
+	cc.Leave(context.Background())
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -400,7 +400,7 @@ func TestReleasedSession(t *testing.T) {
 		t.Fatal("no session identity")
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 
 	if bye == nil || bye.Header.Get("P-Asserted-Identity") != "<"+psi+">" {

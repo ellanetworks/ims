@@ -49,7 +49,7 @@ func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, 
 	}
 
 	if !trusted && out.Header.Has("Route") {
-		i.log.Debug("routes of a request from outside the trust domain dropped", slog.Any("route", out.Header.Values("Route")),
+		i.log.DebugContext(ctx, "routes of a request from outside the trust domain dropped", slog.Any("route", out.Header.Values("Route")),
 			slog.String("source", req.Flow.Remote.String()))
 		out.Header.Del("Route")
 	}
@@ -104,19 +104,19 @@ func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
 	to, err := i.serverTarget(ctx, s.req.Flow, s.req.URI)
 	if err != nil {
-		i.log.Warn("no AS for the PSI subdomain", slog.String("psi", s.identity), slog.Any("error", err))
-		i.answer(s.tx, 480)
+		i.log.WarnContext(ctx, "no AS for the PSI subdomain", slog.String("psi", s.identity), slog.Any("error", err))
+		i.answer(ctx, s.tx, 480)
 
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
 
 	if s.req.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
-	i.log.Debug("request routed to the AS of its PSI subdomain", slog.String("psi", s.identity))
+	i.log.DebugContext(ctx, "request routed to the AS of its PSI subdomain", slog.String("psi", s.identity))
 	i.forward(ctx, s.tx, s.req.Clone(), to, opts)
 }
 
@@ -131,7 +131,7 @@ func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 	}
 
 	if err != nil || len(served) == 0 {
-		i.log.Debug("originating request on behalf of no identity", slog.String("request", out.StartLine()))
+		i.log.DebugContext(ctx, "originating request on behalf of no identity", slog.String("request", out.StartLine()))
 		i.respond(tx, sip.NewResponse(tx.Request(), 403, ""))
 
 		return
@@ -154,8 +154,8 @@ func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, s.identity, s.orig)
 	if err != nil {
-		i.log.Debug("user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
-		i.answer(s.tx, locationFailure(err))
+		i.log.DebugContext(ctx, "user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
+		i.answer(ctx, s.tx, locationFailure(err))
 
 		return
 	}
@@ -170,12 +170,12 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	case lia.ServerName != "":
 		name, _ = sip.ParseURI(lia.ServerName)
 	case !i.capable(lia.Capabilities):
-		i.log.Debug("no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
-		i.answer(s.tx, 480)
+		i.log.DebugContext(ctx, "no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
+		i.answer(ctx, s.tx, 480)
 
 		return
 	default:
-		i.log.Debug("no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
+		i.log.DebugContext(ctx, "no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 	}
 
 	out := s.req.Clone()
@@ -191,13 +191,13 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 
 	to, ok := i.target(s.req.Flow, name)
 	if !ok {
-		i.log.Warn("no listener for the S-CSCF", slog.String("scscf", name.String()))
-		i.answer(s.tx, 480)
+		i.log.WarnContext(ctx, "no listener for the S-CSCF", slog.String("scscf", name.String()))
+		i.answer(ctx, s.tx, 480)
 
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
 
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
@@ -225,9 +225,9 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 	}
 
 	if err != nil {
-		i.log.Warn("unusable server from the HSS", slog.String("impu", s.identity), slog.String("server-name", name),
+		i.log.WarnContext(ctx, "unusable server from the HSS", slog.String("impu", s.identity), slog.String("server-name", name),
 			slog.Any("error", err))
-		i.answer(s.tx, 480)
+		i.answer(ctx, s.tx, 480)
 
 		return
 	}
@@ -235,21 +235,21 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 	out := s.req.Clone()
 	out.Header.Prepend("Route", "<"+u.String()+">")
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
 
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
-	i.log.Debug("request routed to the server the HSS names", slog.String("impu", s.identity), slog.String("server-name", name))
+	i.log.DebugContext(ctx, "request routed to the server the HSS names", slog.String("impu", s.identity), slog.String("server-name", name))
 	i.forward(ctx, s.tx, out, to, opts)
 }
 
-func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
+func (i *ICSCF) sessionReply(ctx context.Context, s *session, r proxy.Reply) proxy.Verdict {
 	res := r.Response
 
 	if unresponsive(r, s.req.Method == "INVITE") && (res == nil || res.StatusCode == 500) {
-		i.answer(s.tx, 480)
+		i.answer(ctx, s.tx, 480)
 		return proxy.Hold
 	}
 
@@ -278,7 +278,7 @@ func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) 
 // there, as if from the trust domain.
 func (i *ICSCF) subsequent(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
-		i.log.Debug("request within a dialog from outside the trust domain", slog.String("request", req.StartLine()),
+		i.log.DebugContext(ctx, "request within a dialog from outside the trust domain", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
 

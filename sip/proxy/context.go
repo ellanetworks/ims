@@ -251,13 +251,13 @@ type failure struct {
 }
 
 // start sends the branches picked; a branch that cannot be sent ends at once.
-func (c *responseContext) start(bs []*branch) (int, []failure) {
+func (c *responseContext) start(ctx context.Context, bs []*branch) (int, []failure) {
 	started := 0
 
 	var failed []failure
 
 	for _, b := range bs {
-		if err := c.send(b); err != nil {
+		if err := c.send(ctx, b); err != nil {
 			failed = append(failed, failure{b: b, err: err})
 			continue
 		}
@@ -268,11 +268,11 @@ func (c *responseContext) start(bs []*branch) (int, []failure) {
 	return started, failed
 }
 
-func (c *responseContext) send(b *branch) error {
+func (c *responseContext) send(ctx context.Context, b *branch) error {
 	d := b.dialog
 
 	if d != nil && !b.initial {
-		tracked, err := d.request(b.out)
+		tracked, err := d.request(ctx, b.out)
 		if err != nil {
 			c.drop(b)
 			return err
@@ -293,7 +293,7 @@ func (c *responseContext) send(b *branch) error {
 
 		// The dialog learns of the failure here, whether or not the failure is dispatched later.
 		if d := b.dialog; d != nil && !b.initial {
-			d.response(b.out, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
+			d.response(ctx, b.out, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
 
 			c.mu.Lock()
 			b.dialog = nil
@@ -330,17 +330,17 @@ func (c *responseContext) arm(b *branch) {
 		b.startTimerC()
 
 		if b.noAnswer > 0 {
-			b.noAnswerTimer = c.p.clock.AfterFunc(b.noAnswer, b.noAnswerFired)
+			b.noAnswerTimer = c.p.clock.AfterFunc(b.noAnswer, func() { b.noAnswerFired(context.Background()) })
 		}
 	}
 
 	if b.timeout > 0 && !b.stopsTimeout() {
-		b.timer = c.p.clock.AfterFunc(b.timeout, b.timeoutFired)
+		b.timer = c.p.clock.AfterFunc(b.timeout, func() { b.timeoutFired(context.Background()) })
 	}
 }
 
 // advance starts what can start; a branch that cannot be sent counts as answering with an error.
-func (c *responseContext) advance() {
+func (c *responseContext) advance(ctx context.Context) {
 	for {
 		c.mu.Lock()
 		picked := c.pickLocked()
@@ -350,10 +350,10 @@ func (c *responseContext) advance() {
 			return
 		}
 
-		_, failed := c.start(picked)
+		_, failed := c.start(ctx, picked)
 
 		for _, f := range failed {
-			c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
+			c.dispatch(ctx, f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
 		}
 
 		if len(failed) < len(picked) {
@@ -460,7 +460,8 @@ func (b *branch) startTimerC() {
 
 	b.genC++
 	gen := b.genC
-	b.timerC = b.c.p.clock.AfterFunc(b.c.p.timerC, func() { b.timerCFired(gen) })
+	// A timer of the proxy is the cause of what it does: its work has no trace of the request that armed it.
+	b.timerC = b.c.p.clock.AfterFunc(b.c.p.timerC, func() { b.timerCFired(context.Background(), gen) })
 }
 
 func (b *branch) finish() {
@@ -477,15 +478,15 @@ func (b *branch) stopTimers() {
 }
 
 // RFC 3261 §16.8
-func (b *branch) timerCFired(gen int) {
-	b.expire(func() bool { return gen == b.genC }, "Timer C")
+func (b *branch) timerCFired(ctx context.Context, gen int) {
+	b.expire(ctx, func() bool { return gen == b.genC }, "Timer C")
 }
 
-func (b *branch) noAnswerFired() {
-	b.expire(func() bool { return true }, "no answer")
+func (b *branch) noAnswerFired(ctx context.Context) {
+	b.expire(ctx, func() bool { return true }, "no answer")
 }
 
-func (b *branch) expire(current func() bool, cause string) {
+func (b *branch) expire(ctx context.Context, current func() bool, cause string) {
 	c := b.c
 
 	c.mu.Lock()
@@ -524,10 +525,10 @@ func (b *branch) expire(current func() bool, cause string) {
 		_ = client.Cancel(context.Background())
 	}
 
-	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause)})
+	c.dispatch(ctx, b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause)})
 }
 
-func (b *branch) timeoutFired() {
+func (b *branch) timeoutFired(ctx context.Context) {
 	c := b.c
 
 	c.mu.Lock()
@@ -559,7 +560,7 @@ func (b *branch) timeoutFired() {
 		res = c.generate(408)
 	}
 
-	c.dispatch(b, Reply{
+	c.dispatch(ctx, b, Reply{
 		Response: res, Err: fmt.Errorf("%w: no response within %s", transaction.ErrTimeout, b.timeout),
 		Responded: responded, Provisional: responded,
 	})
@@ -581,7 +582,7 @@ func (b *branch) settleLocked() bool {
 	return len(b.c.waiting) > 0
 }
 
-func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
+func (b *branch) HandleResponse(ctx context.Context, res *sip.Response) {
 	c := b.c
 
 	res = res.Clone()
@@ -658,7 +659,7 @@ func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
 			c.mu.Unlock()
 
 			if freed {
-				c.advance()
+				c.advance(ctx)
 			}
 
 			return
@@ -670,10 +671,10 @@ func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
 		if b.withdrawn != nil {
 			c.mu.Unlock()
 
-			c.dispatch(b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true, Provisional: provisional})
+			c.dispatch(ctx, b, Reply{Response: c.withdrawnResponse(b), Err: errWithdrawn, Responded: true, Provisional: provisional})
 
 			if freed {
-				c.advance()
+				c.advance(ctx)
 			}
 
 			return
@@ -683,10 +684,10 @@ func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
 		if b.expired {
 			c.mu.Unlock()
 
-			c.dispatch(b, Reply{Response: c.generate(408), Err: errRangOut, Responded: true, Provisional: provisional})
+			c.dispatch(ctx, b, Reply{Response: c.generate(408), Err: errRangOut, Responded: true, Provisional: provisional})
 
 			if freed {
-				c.advance()
+				c.advance(ctx)
 			}
 
 			return
@@ -695,14 +696,14 @@ func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
 
 	c.mu.Unlock()
 
-	c.dispatch(b, Reply{Response: res, Responded: true, Provisional: provisional && !res.IsProvisional()})
+	c.dispatch(ctx, b, Reply{Response: res, Responded: true, Provisional: provisional && !res.IsProvisional()})
 
 	if freed {
-		c.advance()
+		c.advance(ctx)
 	}
 }
 
-func (b *branch) HandleError(_ context.Context, err error) {
+func (b *branch) HandleError(ctx context.Context, err error) {
 	c := b.c
 
 	c.mu.Lock()
@@ -714,7 +715,7 @@ func (b *branch) HandleError(_ context.Context, err error) {
 		c.mu.Unlock()
 
 		if freed {
-			c.advance()
+			c.advance(ctx)
 		}
 
 		return
@@ -754,10 +755,10 @@ func (b *branch) HandleError(_ context.Context, err error) {
 	c.mu.Unlock()
 
 	c.p.log.Debug("proxied request failed", slog.String("request", c.tx.Request().StartLine()), slog.Any("error", err))
-	c.dispatch(b, Reply{Response: res, Err: err, Responded: responded, Provisional: responded})
+	c.dispatch(ctx, b, Reply{Response: res, Err: err, Responded: responded, Provisional: responded})
 
 	if freed {
-		c.advance()
+		c.advance(ctx)
 	}
 }
 
@@ -775,7 +776,7 @@ func (c *responseContext) generateLocked(code int) *sip.Response {
 	return res
 }
 
-func (c *responseContext) dispatch(b *branch, r Reply) {
+func (c *responseContext) dispatch(ctx context.Context, b *branch, r Reply) {
 	c.mu.Lock()
 
 	c.queue = append(c.queue, delivery{b: b, r: r})
@@ -797,7 +798,7 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 		}
 
 		c.mu.Unlock()
-		c.deliver(d.b, d.r)
+		c.deliver(ctx, d.b, d.r)
 		c.mu.Lock()
 	}
 
@@ -805,13 +806,13 @@ func (c *responseContext) dispatch(b *branch, r Reply) {
 	c.mu.Unlock()
 }
 
-func (c *responseContext) deliver(b *branch, r Reply) {
+func (c *responseContext) deliver(ctx context.Context, b *branch, r Reply) {
 	if d := b.dialog; d != nil {
-		c.toDialog(d, b, r)
+		c.toDialog(ctx, d, b, r)
 	}
 
 	if b.onReply == nil {
-		c.relayReply(b, r)
+		c.relayReply(ctx, b, r)
 		return
 	}
 
@@ -820,7 +821,7 @@ func (c *responseContext) deliver(b *branch, r Reply) {
 	c.mu.Unlock()
 
 	if b.onReply(c.ctx, r) == Relay {
-		c.relayReply(b, r)
+		c.relayReply(ctx, b, r)
 		return
 	}
 
@@ -833,15 +834,15 @@ func (c *responseContext) deliver(b *branch, r Reply) {
 
 // toDialog passes a response to the dialog the branch carries. A failed branch of the initial
 // INVITE ends only its early dialogs; the dialog fails with the INVITE, once no branch is left.
-func (c *responseContext) toDialog(d *Dialog, b *branch, r Reply) {
+func (c *responseContext) toDialog(ctx context.Context, d *Dialog, b *branch, r Reply) {
 	res := r.Response
 
 	switch {
 	case !b.initial:
-		d.response(b.req, r)
+		d.response(ctx, b.req, r)
 		return
 	case res != nil && (res.IsProvisional() || res.IsSuccess()):
-		d.inviteResponse(b, res)
+		d.inviteResponse(ctx, b, res)
 		return
 	}
 
@@ -860,24 +861,24 @@ func (c *responseContext) toDialog(d *Dialog, b *branch, r Reply) {
 	d.branchFailed(b)
 
 	if over {
-		d.failed(best, downstream)
+		d.failed(ctx, best, downstream)
 	}
 }
 
-func (c *responseContext) relayReply(b *branch, r Reply) {
-	if err := c.relayFrom(b, r.Response); err != nil && !errors.Is(err, ErrAnswered) {
+func (c *responseContext) relayReply(ctx context.Context, b *branch, r Reply) {
+	if err := c.relayFrom(ctx, b, r.Response); err != nil && !errors.Is(err, ErrAnswered) {
 		c.p.log.Debug("relaying a response failed", slog.Any("error", err))
 	}
 }
 
 // relay answers with a response its owner chose, ending the search: branches still live are
 // cancelled.
-func (c *responseContext) relay(res *sip.Response) error {
-	return c.relayFrom(nil, res)
+func (c *responseContext) relay(ctx context.Context, res *sip.Response) error {
+	return c.relayFrom(ctx, nil, res)
 }
 
 // RFC 3261 §16.7
-func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
+func (c *responseContext) relayFrom(ctx context.Context, b *branch, res *sip.Response) error {
 	c.mu.Lock()
 
 	switch {
@@ -933,7 +934,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 
 		c.mu.Unlock()
 
-		c.advance()
+		c.advance(ctx)
 
 		return c.conclude()
 	}
@@ -952,7 +953,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 	c.mu.Unlock()
 
 	sendAll(context.Background(), cancels)
-	c.advance()
+	c.advance(ctx)
 
 	err := c.conclude()
 

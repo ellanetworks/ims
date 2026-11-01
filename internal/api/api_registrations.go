@@ -138,7 +138,7 @@ func ListRegistrations(cfg Config) http.Handler {
 
 		regs, total, err := cfg.Registrations.ListRegistrations(r.Context(), r.URL.Query().Get("search"), page, perPage)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list registrations", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusInternalServerError, "failed to list registrations", err, cfg.Logger)
 			return
 		}
 
@@ -153,7 +153,7 @@ func ListRegistrations(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, registrationResponse(reg))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -220,13 +220,13 @@ func pagination(w http.ResponseWriter, r *http.Request, cfg Config) (int, int, b
 
 	page, ok := atoiDefault(q.Get("page"), 1)
 	if !ok || page < 1 {
-		writeError(w, http.StatusBadRequest, "page must be an integer >= 1", nil, cfg.Logger)
+		writeError(r.Context(), w, http.StatusBadRequest, "page must be an integer >= 1", nil, cfg.Logger)
 		return 0, 0, false
 	}
 
 	perPage, ok := atoiDefault(q.Get("per_page"), defaultPerPage)
 	if !ok || perPage < 1 || perPage > maxPerPage {
-		writeError(w, http.StatusBadRequest, "per_page must be an integer between 1 and 100", nil, cfg.Logger)
+		writeError(r.Context(), w, http.StatusBadRequest, "per_page must be an integer between 1 and 100", nil, cfg.Logger)
 		return 0, 0, false
 	}
 
@@ -255,13 +255,13 @@ func PostReauthentication(cfg Config) http.Handler {
 
 		switch {
 		case errors.Is(err, ErrUnavailable):
-			writeError(w, http.StatusServiceUnavailable, "The IMS is restarting", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusServiceUnavailable, "The IMS is restarting", err, cfg.Logger)
 		case errors.Is(err, ErrNotRegistered):
-			writeError(w, http.StatusNotFound, "no registration for "+impi, err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "no registration for "+impi, err, cfg.Logger)
 		case err != nil:
-			writeError(w, http.StatusInternalServerError, "re-authentication failed", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusInternalServerError, "re-authentication failed", err, cfg.Logger)
 		default:
-			writeResponse(w, Reauthentication{IMPI: impi}, http.StatusAccepted, cfg.Logger)
+			writeResponse(r.Context(), w, Reauthentication{IMPI: impi}, http.StatusAccepted, cfg.Logger)
 		}
 	})
 }

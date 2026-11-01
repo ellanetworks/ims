@@ -77,7 +77,7 @@ func (r *Registrar) shorten(ctx context.Context, st *state) error {
 	r.reauth[st.impi]++
 	r.mu.Unlock()
 
-	r.log.Info("network-initiated re-authentication", slog.String("impi", st.impi),
+	r.log.InfoContext(ctx, "network-initiated re-authentication", slog.String("impi", st.impi),
 		slog.Duration("expires", r.cfg.ReauthExpires))
 
 	return nil

@@ -34,6 +34,13 @@ import (
 var ErrAlreadyStarted = errors.New("server: already started")
 
 const (
+	// tracerName is the instrumentation scope of the spans of the server itself.
+	tracerName = "github.com/ellanetworks/ims/internal/server"
+	// roleIMS is the role of what the server does for the whole IMS, rather than for one of its roles.
+	roleIMS = "ims"
+)
+
+const (
 	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the MCPTT AS to end its
 	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers, for the call
 	// records to be saved and for the last spans to be exported.
@@ -80,6 +87,8 @@ type Server struct {
 	// and stops it.
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
+	// detached traces what follow does, which starts later than the API request that changed the settings.
+	detached tracing.Detached
 
 	database *db.DB
 	// draining is set once Shutdown starts, and makes the API unready.
@@ -149,6 +158,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
+	s.detached = tracing.NewDetached(s.tracerProvider, tracerName, roleIMS)
+
 	database, err := db.Open(ctx, cfg.DB.Path)
 	if err != nil {
 		s.stopTracing(ctx)
@@ -173,8 +184,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	live := settings.NewLive(database, initial, func(st settings.Settings) error {
-		return checkSettings(context.Background(), cfg, st)
+	live := settings.NewLive(database, initial, func(ctx context.Context, st settings.Settings) error {
+		return checkSettings(ctx, cfg, st)
 	})
 
 	// The calls in progress when the IMS last stopped were lost with it.
@@ -188,7 +199,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if closed > 0 {
-		s.Logger.Info("closed the call records of calls lost when the IMS stopped", slog.Int64("records", closed))
+		s.Logger.InfoContext(ctx, "closed the call records of calls lost when the IMS stopped", slog.Int64("records", closed))
 	}
 
 	var apiLC net.ListenConfig
@@ -321,7 +332,7 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String()),
 		slog.Bool("tls", tlsConfig != nil),
 	}
-	s.Logger.Info("ims started", append(attrs, c.attrs()...)...)
+	s.Logger.InfoContext(ctx, "ims started", append(attrs, c.attrs()...)...)
 
 	return nil
 }
@@ -399,37 +410,29 @@ func (s *Server) numbering() scscf.Numbering {
 }
 
 // follow applies the settings as they change: new Diameter peers and routes reconfigure the running node; a new
-// identity, Diameter transport or policy function replaces the core. Other settings are read when used.
+// identity, Diameter transport or policy function replaces the core. Other settings are read when used. What it does
+// starts later than the API requests that changed the settings: it is a trace of its own, linked to them.
 func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
 	backoff := minRetry
 	number := s.settings.Get().IPSMGW.Number
 
+	// causes are the changes not yet applied: kept while the core fails to build, for its retries to link to.
+	var causes []trace.SpanContext
+
 	for {
 		changed := s.settings.Changed()
 
-		if st := s.settings.Get(); st.IPSMGW.Number != number {
-			number = st.IPSMGW.Number
-
-			s.ipsmgwNumberChanged()
-		}
+		st, taken := s.settings.Take()
+		causes = append(causes, taken...)
+		causes = causes[max(0, len(causes)-maxCauses):]
 
 		var retry <-chan time.Time
 
-		if st := s.settings.Get(); ctx.Err() == nil {
-			current := s.coreSettings()
-			c := s.core.Load()
-
-			switch {
-			case c != nil && c.failed.Load():
-				s.restartCore(ctx, st, "for a failed SIP listener")
-			case current.SameCore(st):
-			case c != nil && current.SameNode(st):
-				s.reconfigureNode(ctx, st)
-			default:
-				s.restartCore(ctx, st, "for the new settings")
-			}
+		if ctx.Err() == nil {
+			s.apply(ctx, st, number != st.IPSMGW.Number, causes)
+			number = st.IPSMGW.Number
 
 			// A core that failed to build is retried, since what it failed on may come back, like a peer's
 			// certificate files or the SCTP module.
@@ -438,6 +441,7 @@ func (s *Server) follow(ctx context.Context) {
 				backoff = min(2*backoff, maxRetry)
 			} else {
 				backoff = minRetry
+				causes = nil
 			}
 		}
 
@@ -451,6 +455,45 @@ func (s *Server) follow(ctx context.Context) {
 	}
 }
 
+// apply applies st, if the running core or IP-SM-GW number differ from it, as a trace linked to causes.
+func (s *Server) apply(ctx context.Context, st settings.Settings, numberChanged bool, causes []trace.SpanContext) {
+	current := s.coreSettings()
+	c := s.core.Load()
+	failed := c != nil && c.failed.Load()
+
+	if !numberChanged && !failed && current.SameCore(st) {
+		return
+	}
+
+	name := "apply settings"
+	if failed {
+		name = "restart core"
+	}
+
+	ctx, span := s.detached.Start(ctx, name, causes...)
+
+	var err error
+
+	defer func() { tracing.End(span, err) }()
+
+	if numberChanged {
+		s.ipsmgwNumberChanged(ctx)
+	}
+
+	switch {
+	case failed:
+		err = s.restartCore(ctx, st, "for a failed SIP listener")
+	case current.SameCore(st):
+	case c != nil && current.SameNode(st):
+		err = s.reconfigureNode(ctx, st)
+	default:
+		err = s.restartCore(ctx, st, "for the new settings")
+	}
+}
+
+// maxCauses bounds the changes a restart links to, the latest kept.
+const maxCauses = 32
+
 const (
 	minRetry = time.Second
 	maxRetry = 30 * time.Second
@@ -459,7 +502,7 @@ const (
 // reconfigureNode gives the running Diameter node its new peers and routes, without a restart. While the realms
 // change, the node routes both the old and the new ones, so that a request built with either finds its route. A node
 // that refuses its new peers is replaced, so that it does not keep serving the old ones.
-func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) {
+func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) error {
 	c := s.core.Load()
 
 	err := c.node.SetPeers(diameterPeers(st, c.settings))
@@ -469,18 +512,18 @@ func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) {
 	}
 
 	if err != nil {
-		s.Logger.Error("failed to reconfigure the Diameter peers", slog.Any("error", err))
-		s.restartCore(ctx, st, "for the new settings")
-
-		return
+		s.Logger.ErrorContext(ctx, "failed to reconfigure the Diameter peers", slog.Any("error", err))
+		return s.restartCore(ctx, st, "for the new settings")
 	}
 
 	next := *c
 	next.settings = st
 	s.core.Store(&next)
 
-	s.Logger.Info("reconfigured the Diameter peers", slog.Int("diameter_peers", len(st.Peers)),
+	s.Logger.InfoContext(ctx, "reconfigured the Diameter peers", slog.Int("diameter_peers", len(st.Peers)),
 		slog.String("cx_realm", st.Realm(settings.ApplicationCx)), slog.String("rx_realm", st.Realm(settings.ApplicationRx)))
+
+	return nil
 }
 
 // coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,
@@ -494,9 +537,9 @@ func (s *Server) coreSettings() settings.Settings {
 }
 
 // restartCore replaces the core with one built from st, why it does. Peers and UEs reconnect to it; registrations and
-// security associations are restored from the database.
-func (s *Server) restartCore(ctx context.Context, st settings.Settings, why string) {
-	s.Logger.Info("restarting "+why,
+// security associations are restored from the database. The error is the new core's.
+func (s *Server) restartCore(ctx context.Context, st settings.Settings, why string) error {
+	s.Logger.InfoContext(ctx, "restarting "+why,
 		slog.String("home_domain", st.Operator.HomeDomain()), slog.Int("diameter_peers", len(st.Peers)),
 		slog.String("policy", string(st.Policy.Interface)))
 
@@ -528,26 +571,28 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 
 	if renamed {
 		if err := s.startMCPTT(ctx, st.Operator.HomeDomain()); err != nil {
-			s.Logger.Error("failed to restart MCPTT for the new home domain", slog.Any("error", err))
+			s.Logger.ErrorContext(ctx, "failed to restart MCPTT for the new home domain", slog.Any("error", err))
 		}
 	}
 
 	if renamedIPSMGW {
 		if err := s.startIPSMGW(ctx, st.Operator.HomeDomain()); err != nil {
-			s.Logger.Error("failed to restart the IP-SM-GW for the new home domain", slog.Any("error", err))
+			s.Logger.ErrorContext(ctx, "failed to restart the IP-SM-GW for the new home domain", slog.Any("error", err))
 		}
 	}
 
 	c, err := s.startCore(ctx, st)
 	if err != nil {
-		s.Logger.Error("failed to restart "+why, slog.Any("error", err))
-		return
+		s.Logger.ErrorContext(ctx, "failed to restart "+why, slog.Any("error", err))
+		return err
 	}
 
 	s.core.Store(c)
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
-	s.Logger.Info("restarted "+why, c.attrs()...)
+	s.Logger.InfoContext(ctx, "restarted "+why, c.attrs()...)
+
+	return nil
 }
 
 func (c *core) attrs() []any {
@@ -578,15 +623,15 @@ func (c *core) shutdown(ctx context.Context, logger *slog.Logger) {
 	defer cancel()
 
 	if err := c.sip.Close(sipCtx); err != nil {
-		logger.Warn("failed to stop SIP cleanly", slog.Any("error", err))
+		logger.WarnContext(ctx, "failed to stop SIP cleanly", slog.Any("error", err))
 	}
 
 	if err := c.policy.close(sipCtx); err != nil {
-		logger.Warn("failed to stop the N5 notification server cleanly", slog.Any("error", err))
+		logger.WarnContext(ctx, "failed to stop the N5 notification server cleanly", slog.Any("error", err))
 	}
 
 	if err := c.node.ShutdownWithCause(ctx, diameter.DisconnectCauseRebooting); err != nil {
-		logger.Warn("failed to stop Diameter cleanly", slog.Any("error", err))
+		logger.WarnContext(ctx, "failed to stop Diameter cleanly", slog.Any("error", err))
 	}
 }
 
@@ -603,12 +648,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		return
 	}
 
-	s.Logger.Info("ims stopping")
+	s.Logger.InfoContext(ctx, "ims stopping")
 
 	s.draining.Store(true)
 
 	if err := s.apiServer.Shutdown(ctx); err != nil {
-		s.Logger.Warn("failed to stop the API cleanly", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to stop the API cleanly", slog.Any("error", err))
 	}
 
 	s.stopFollow()
@@ -629,7 +674,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
 	recordsCtx, cancel := before(ctx, tracesFlushTime)
 	if err := s.records.Close(recordsCtx); err != nil {
-		s.Logger.Warn("failed to save the call records", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to save the call records", slog.Any("error", err))
 	}
 
 	cancel()
@@ -638,7 +683,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	<-s.pruneDone
 
 	if err := s.database.Close(); err != nil {
-		s.Logger.Warn("failed to close the database", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to close the database", slog.Any("error", err))
 	}
 
 	s.stopTracing(ctx)
@@ -673,7 +718,7 @@ func (s *Server) stopTracing(ctx context.Context) {
 	defer cancel()
 
 	if err := s.shutdownTracing(ctx); err != nil {
-		s.Logger.Warn("failed to export the last spans", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to export the last spans", slog.Any("error", err))
 	}
 }
 

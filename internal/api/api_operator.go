@@ -19,8 +19,8 @@ type Numbering struct {
 }
 
 func GetOperator(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, operatorResponse(cfg.Settings.Get().Operator), http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, operatorResponse(cfg.Settings.Get().Operator), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -44,11 +44,11 @@ func UpdateOperator(cfg Config) http.Handler {
 		}
 
 		if err := cfg.Settings.UpdateOperator(r.Context(), o); err != nil {
-			writeSettingsError(w, err, "Failed to update operator", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update operator", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, operatorResponse(cfg.Settings.Get().Operator), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, operatorResponse(cfg.Settings.Get().Operator), http.StatusOK, cfg.Logger)
 	})
 }
 

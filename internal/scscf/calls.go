@@ -80,7 +80,7 @@ func (c *calls) forget(d *proxy.Dialog) {
 
 // dialogEvent forgets the calls that end. One the S-CSCF releases is reported to the call records before the
 // release reaches the parties: the proxy publishes the end of a dialog it releases before releasing it.
-func (r *Registrar) dialogEvent(e proxy.DialogEvent) {
+func (r *Registrar) dialogEvent(_ context.Context, e proxy.DialogEvent) {
 	if e.Kind != proxy.EventEnded {
 		return
 	}
@@ -157,11 +157,11 @@ func (r *Registrar) releaseCalls(ctx context.Context, st *state, removed []remov
 
 				switch {
 				case err == nil:
-					r.log.Info("call released on deregistration", slog.String("impi", rm.reg.IMPI),
+					r.log.InfoContext(ctx, "call released on deregistration", slog.String("impi", rm.reg.IMPI),
 						slog.String("call-id", d.CallID()), slog.String("contact", b.Contact.URI))
 				case errors.Is(err, proxy.ErrDialogEnded), errors.Is(err, proxy.ErrNotReached):
 				default:
-					r.log.Warn("failed to release a call", slog.String("call-id", d.CallID()), slog.Any("error", err))
+					r.log.WarnContext(ctx, "failed to release a call", slog.String("call-id", d.CallID()), slog.Any("error", err))
 				}
 			}
 		}

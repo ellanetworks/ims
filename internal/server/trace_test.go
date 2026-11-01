@@ -9,6 +9,9 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -172,6 +175,113 @@ func TestRegisterIsOneTrace(t *testing.T) {
 		if len(ds) != 1 || !under(ds[0], want.parent) {
 			t.Fatalf("%s spans %d, want one in the trace of the REGISTER: %v", want.name, len(ds), names(spans.Ended()))
 		}
+	}
+}
+
+// TestTelemetryOffTracesNothing checks that an IMS with telemetry off traces nothing, its REGISTER, Diameter and API
+// requests included, even when a dependency sets the global provider.
+func TestTelemetryOffTracesNothing(t *testing.T) {
+	global := tracetest.NewSpanRecorder()
+
+	previous := otel.GetTracerProvider()
+
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(global)))
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+
+	hss := hsstest.New(t, hsstest.Config{Realm: imsRealm, IMSHost: imsHost})
+	hss.Add(hsstest.Subscriber{
+		IMPI: testIMPI, IMSI: testIMSI, K: testK, OPc: testOPc, SQN: 32,
+		IMPUs: []cx.ProfileIdentity{{Identity: testIMPU}},
+	})
+
+	peer := settings.Peer{
+		ID: "hss", Host: hss.Host(), Address: hss.Addr().Addr(), Port: int(hss.Addr().Port()),
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
+	}
+
+	cfg := testConfig(t)
+	cfg.SIP.Addresses = []netip.Addr{loopback}
+	cfg.Peers = seedPeers(peer)
+
+	srv := startIMS(t, cfg)
+	waitOpen(t, srv, peer.ID)
+
+	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
+	register := newRegister(ue.Addr())
+	register.Header.Add("Expires", "600")
+	register.Header.Add("Security-Client", "ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;port-c=6301;"+
+		"port-s=6300;alg=hmac-sha-1-96;ealg=null")
+	register.Header.Add("Require", "sec-agree")
+	register.Header.Add("Proxy-Require", "sec-agree")
+	ue.Send(sip.UDP, sipListener(t, srv, rolePCSCF, loopback), register)
+
+	res, _ := ue.RecvResponse()
+	for res.IsProvisional() {
+		res, _ = ue.RecvResponse()
+	}
+
+	if res.StatusCode != 401 {
+		t.Fatalf("REGISTER answered %d, want 401", res.StatusCode)
+	}
+
+	getDiameter(t, srv)
+
+	if started := global.Started(); len(started) != 0 {
+		t.Fatalf("telemetry off traced with the global provider: %v", names(global.Ended()))
+	}
+}
+
+// TestSettingsChangeIsLinkedToTheAPIRequest checks that the core restart a change of settings causes is a trace of
+// its own, of the IMS, linked to the request that changed them, and that its work is in that trace.
+func TestSettingsChangeIsLinkedToTheAPIRequest(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+
+	cfg := testConfig(t)
+	cfg.TracerProvider = tp
+
+	srv := startIMS(t, cfg)
+	before := srv.core.Load()
+
+	op := srv.settings.Get().Operator
+	op.MNC = "02"
+
+	ctx, request := tp.Tracer("test").Start(t.Context(), "PUT /api/v1/operator")
+	if err := srv.settings.UpdateOperator(ctx, op); err != nil {
+		t.Fatalf("UpdateOperator: %v", err)
+	}
+
+	request.End()
+
+	eventually(t, "the core under the new identity", func() bool {
+		c := srv.core.Load()
+		return c != nil && c != before
+	})
+
+	var applied []sdktrace.ReadOnlySpan
+
+	eventually(t, "the span of the restart", func() bool {
+		applied = spansNamed(spans.Ended(), "apply settings", trace.SpanKindInternal)
+		return len(applied) > 0
+	})
+
+	s := applied[0]
+
+	if len(applied) != 1 || s.Parent().IsValid() || s.SpanContext().TraceID() == request.SpanContext().TraceID() {
+		t.Fatalf("%d restart spans, parent %v: want one root of its own", len(applied), s.Parent())
+	}
+
+	if l := s.Links(); len(l) != 1 || !l[0].SpanContext.Equal(request.SpanContext()) {
+		t.Fatalf("restart links %+v, want the request %v", l, request.SpanContext())
+	}
+
+	attrs := attribute.NewSet(s.Attributes()...)
+	if v, _ := attrs.Value("ella.ims.role"); v.AsString() != roleIMS {
+		t.Fatalf("restart role %q, want %q", v.AsString(), roleIMS)
+	}
+
+	if s.Status().Code != codes.Unset {
+		t.Fatalf("restart status %v, want unset", s.Status())
 	}
 }
 

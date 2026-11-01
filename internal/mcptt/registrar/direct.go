@@ -118,7 +118,7 @@ func (g *Registrar) direct(ctx context.Context, r *ua.Request, snap *settings.Sn
 	_ = r.Respond(ua.Reply{Code: 200, Header: header, Bodies: bodies})
 
 	if ch.implicit != nil {
-		g.authorised(ch.implicit, aor)
+		g.authorised(ctx, ch.implicit, aor)
 	}
 
 	g.apply(ctx, r.Strand(), now, &ch)

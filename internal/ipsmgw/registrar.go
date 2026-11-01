@@ -2,6 +2,8 @@ package ipsmgw
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"hash/maphash"
 	"log/slog"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/ua"
 	"go.opentelemetry.io/otel/trace"
@@ -78,12 +81,21 @@ type registrar struct {
 	store Store
 	home  string
 	log   *slog.Logger
+	// life is the lifetime of the IP-SM-GW, which its timers and writes are bound to.
+	life     context.Context
+	detached tracing.Detached
 
 	seed    maphash.Seed
 	strands [strands]*ua.Strand
 
-	mu     sync.Mutex
-	regs   map[string]*registration
+	// saving orders the writes of the registrations: each writes the state of regs at its start, after the previous
+	// one.
+	saving sync.Mutex
+
+	mu   sync.Mutex
+	regs map[string]*registration
+	// dirty are the keys of the registrations the store has yet to be given: of regs, else deleted.
+	dirty  map[string]bool
 	hss    *hssSync
 	closed bool
 }
@@ -135,6 +147,9 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 
 	k := key(to.URI)
 
+	// Once the lock is released: the handler's context ends with the transaction, the writes are bound to life.
+	defer func() { _ = g.flush(ctx) }()
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -173,13 +188,13 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	moved := !reg.scscf.Equivalent(scscf.URI)
 	reg.scscf = scscf.URI
 
-	g.reachable(reg)
+	g.reachable(ctx, reg)
 
 	g.expireAt(ctx, reg)
 	g.save(reg)
 
 	if after := reg.user().userKey(); after != before {
-		g.hss.rekey(before, after)
+		g.hss.rekey(trace.SpanContextFromContext(ctx), before, after)
 	}
 
 	if reg.watch == nil || moved {
@@ -187,37 +202,44 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	}
 }
 
-const tracerName = "github.com/ellanetworks/ims/internal/ipsmgw"
+// tracerName is the instrumentation scope of the spans of the IP-SM-GW's own, role their ella.ims.role.
+const (
+	tracerName = "github.com/ellanetworks/ims/internal/ipsmgw"
+	role       = "ipsmgw"
+)
 
-// detach starts the span of work of the registrar that starts later than cause, which armed its timer: in a trace of
-// its own, linked to that of cause.
-func (g *registrar) detach(cause context.Context, name string) (context.Context, trace.Span) {
-	return tracing.NewTrace(cause, g.agent.Layer().TracerProvider().Tracer(tracerName), name)
-}
+// saveTimeout bounds a write to the store.
+const saveTimeout = 5 * time.Second
 
-// expireAt has reg removed once it expires, unless a REGISTER refreshes it. Called with g.mu held.
+// expireAt has reg removed once it expires, unless a REGISTER refreshes it: in a trace of its own, linked to that of
+// ctx, which armed the timer. Called with g.mu held.
 func (g *registrar) expireAt(ctx context.Context, reg *registration) {
 	if reg.expiry != nil {
 		reg.expiry.Stop()
 	}
 
 	d := max(reg.expires.Sub(g.agent.Layer().Clock().Now()), 0)
+	cause := trace.SpanContextFromContext(ctx)
 
 	reg.expiry = reg.strand.AfterFunc(d, func() {
-		ctx, span := g.detach(ctx, "registration expiry")
-		defer span.End()
-
-		g.mu.Lock()
-		defer g.mu.Unlock()
-
-		if g.regs[reg.key] == reg && !g.closed && !reg.expires.After(g.agent.Layer().Clock().Now()) {
-			g.log.Debug("IP-SM-GW registration expired", slog.String("impu", reg.impu.String()))
-			g.remove(ctx, reg)
-		}
+		ctx, span := g.detached.Start(g.life, "registration expiry", cause)
+		g.expire(ctx, reg)
+		tracing.End(span, g.flush(ctx))
 	})
 }
 
-// remove ends reg: its subscription, its row, and its user's availability. Called with g.mu held.
+// expire removes reg, if expired still.
+func (g *registrar) expire(ctx context.Context, reg *registration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.regs[reg.key] == reg && !g.closed && !reg.expires.After(g.agent.Layer().Clock().Now()) {
+		g.log.DebugContext(ctx, "IP-SM-GW registration expired", slog.String("impu", reg.impu.String()))
+		g.remove(ctx, reg)
+	}
+}
+
+// remove ends reg: its subscription, its row (at the next flush), and its user's availability. Called with g.mu held.
 func (g *registrar) remove(ctx context.Context, reg *registration) {
 	if g.regs[reg.key] != reg {
 		return
@@ -238,14 +260,15 @@ func (g *registrar) remove(ctx context.Context, reg *registration) {
 		}
 	}
 
-	if err := g.store.DeleteIPSMGWRegistration(context.Background(), reg.key); err != nil {
-		g.log.Error("failed to delete an IP-SM-GW registration", slog.String("impu", reg.impu.String()), slog.Any("error", err))
-	}
-
-	g.hss.mark(reg.user().userKey())
+	g.dirty[reg.key] = true
+	g.hss.mark(trace.SpanContextFromContext(ctx), reg.user().userKey())
 }
 
-func (g *registrar) save(reg *registration) {
+// save has reg written at the next flush. Called with g.mu held.
+func (g *registrar) save(reg *registration) { g.dirty[reg.key] = true }
+
+// row is the row of reg.
+func (reg *registration) row() db.IPSMGWRegistration {
 	r := db.IPSMGWRegistration{
 		IMPUKey: reg.key, IMPU: reg.impu.String(), MSISDN: reg.msisdn, IMSI: reg.imsi, SCSCF: reg.scscf.String(),
 		AS: reg.as.String(), ExpiresAt: reg.expires, Available: reg.available,
@@ -255,9 +278,65 @@ func (g *registrar) save(reg *registration) {
 		r.IMPUs = append(r.IMPUs, u.String())
 	}
 
-	if err := g.store.PutIPSMGWRegistration(context.Background(), r); err != nil {
-		g.log.Error("failed to store an IP-SM-GW registration", slog.String("impu", reg.impu.String()), slog.Any("error", err))
+	return r
+}
+
+// flush writes the registrations dirty, and the HSS registrations unsaved, outside g.mu, which no write holds: each
+// write is bounded by saveTimeout within life, as it may run after the transaction of ctx ended. Called without g.mu
+// held, after the changes it writes. The writes are in the order of flush calls, of g.saving, each of the state of
+// regs at its start, taken under g.mu: of a registration changed twice, the store ends with the later state, whichever
+// flush writes it. Those that fail are written at the next flush.
+func (g *registrar) flush(ctx context.Context) error {
+	return errors.Join(g.persist(ctx), g.hss.persist(ctx))
+}
+
+func (g *registrar) persist(ctx context.Context) error {
+	g.saving.Lock()
+	defer g.saving.Unlock()
+
+	g.mu.Lock()
+
+	rows := make(map[string]*db.IPSMGWRegistration, len(g.dirty))
+
+	for k := range g.dirty {
+		if reg := g.regs[k]; reg != nil {
+			r := reg.row()
+			rows[k] = &r
+		} else {
+			rows[k] = nil
+		}
 	}
+
+	clear(g.dirty)
+	g.mu.Unlock()
+
+	var errs []error
+
+	for k, r := range rows {
+		wctx, cancel := context.WithTimeout(lifetime.With(g.life, ctx), saveTimeout)
+
+		var err error
+		if r != nil {
+			err = g.store.PutIPSMGWRegistration(wctx, *r)
+		} else {
+			err = g.store.DeleteIPSMGWRegistration(wctx, k)
+		}
+
+		cancel()
+
+		if err != nil {
+			g.log.ErrorContext(ctx, "failed to store an IP-SM-GW registration", slog.String("impu", k),
+				slog.Bool("deleted", r == nil), slog.Any("error", err))
+
+			g.mu.Lock()
+			g.dirty[k] = true
+			g.mu.Unlock()
+
+			errs = append(errs, fmt.Errorf("store the IP-SM-GW registration: %w", err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // resubscribe replaces the subscription of reg with a new one, toward its S-CSCF. Called with g.mu held.
@@ -274,17 +353,27 @@ func (g *registrar) resubscribe(ctx context.Context, reg *registration) {
 	w := &watch{}
 	reg.watch = w
 
-	reg.strand.Post(func() { g.subscribe(ctx, reg, w) })
+	reg.strand.Post(func() { _ = g.subscribe(ctx, reg, w) })
 }
 
+// subscribeDetached subscribes w of reg in a trace of its own, linked to cause: work that starts later than its cause,
+// as a subscription ended (D5). Runs on the strand of reg.
+func (g *registrar) subscribeDetached(cause trace.SpanContext, reg *registration, w *watch) {
+	ctx, span := g.detached.Start(g.life, "reg event resubscribe", cause)
+	tracing.End(span, g.subscribe(ctx, reg, w))
+}
+
+var errNoSIPURI = errors.New("ipsmgw: no SIP URI to subscribe to the reg event package of")
+
 // subscribe sends the SUBSCRIBE of w to the reg event package of the IMPU of reg (TS 24.229 §5.7.1.1 a to f), of
-// the default duration (RFC 3680 §4.4), which the agent refreshes. Runs on the strand of reg.
-func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) {
+// the default duration (RFC 3680 §4.4), which the agent refreshes, and returns why it was not sent, if so. Runs on
+// the strand of reg.
+func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) error {
 	g.mu.Lock()
 
 	if g.closed || g.regs[reg.key] != reg || reg.watch != w || w.stopped {
 		g.mu.Unlock()
-		return
+		return nil
 	}
 
 	target := subscribed(reg.impu, reg.set, g.home)
@@ -293,8 +382,8 @@ func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) 
 	g.mu.Unlock()
 
 	if !target.IsSIP() {
-		g.log.Warn("no SIP URI to subscribe to the reg event package of", slog.String("impu", reg.impu.String()))
-		return
+		g.log.WarnContext(ctx, "no SIP URI to subscribe to the reg event package of", slog.String("impu", reg.impu.String()))
+		return errNoSIPURI
 	}
 
 	req := sip.NewRequest("SUBSCRIBE", target)
@@ -319,14 +408,14 @@ func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) 
 
 	if err != nil {
 		if g.closed || g.regs[reg.key] != reg || reg.watch != w || w.stopped {
-			return
+			return err
 		}
 
 		after := g.retry(ctx, reg, w)
-		g.log.Warn("reg event SUBSCRIBE not sent", slog.String("impu", reg.impu.String()), slog.Any("error", err),
-			slog.Duration("retry_after", after))
+		g.log.WarnContext(ctx, "reg event SUBSCRIBE not sent", slog.String("impu", reg.impu.String()),
+			slog.Any("error", err), slog.Duration("retry_after", after))
 
-		return
+		return err
 	}
 
 	w.sub = sub
@@ -334,6 +423,8 @@ func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) 
 	if w.stopped {
 		reg.strand.Post(func() { _ = sub.Unsubscribe(ctx, ua.Change{}) })
 	}
+
+	return nil
 }
 
 // retry subscribes again after a wait, doubling from minSubscribeRetry to maxSubscribeRetry, while reg lasts, and
@@ -342,8 +433,8 @@ func (g *registrar) retry(ctx context.Context, reg *registration, w *watch) time
 	return g.retryAfter(ctx, reg, w, 0)
 }
 
-// retryAfter subscribes again after the wait after, if any, else as retry does, and returns the wait. Called with
-// g.mu held.
+// retryAfter subscribes again after the wait after, if any, else as retry does, in a trace of its own linked to that
+// of ctx, and returns the wait. Called with g.mu held.
 func (g *registrar) retryAfter(ctx context.Context, reg *registration, w *watch, after time.Duration) time.Duration {
 	if after <= 0 {
 		after = min(minSubscribeRetry<<min(w.attempts, 5), maxSubscribeRetry)
@@ -353,12 +444,9 @@ func (g *registrar) retryAfter(ctx context.Context, reg *registration, w *watch,
 	w.stopped = true
 	reg.watch = next
 
-	reg.strand.AfterFunc(after, func() {
-		ctx, span := g.detach(ctx, "reg event resubscribe")
-		defer span.End()
+	cause := trace.SpanContextFromContext(ctx)
 
-		g.subscribe(ctx, reg, next)
-	})
+	reg.strand.AfterFunc(after, func() { g.subscribeDetached(cause, reg, next) })
 
 	return after
 }
@@ -372,6 +460,8 @@ func (g *registrar) ended(ctx context.Context, reg *registration, w *watch, e ua
 		code = e.Response.StatusCode
 	}
 
+	defer func() { _ = g.flush(ctx) }()
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -381,13 +471,13 @@ func (g *registrar) ended(ctx context.Context, reg *registration, w *watch, e ua
 
 	switch {
 	case e.Cause == ua.EndRejected && (code == 480 || code == 404):
-		g.log.Debug("reg event subscription refused: no registration", slog.String("impu", reg.impu.String()),
+		g.log.DebugContext(ctx, "reg event subscription refused: no registration", slog.String("impu", reg.impu.String()),
 			slog.Int("code", code))
 		g.remove(ctx, reg)
 	case e.Cause == ua.EndUnsubscribed, e.Cause == ua.EndClosed:
 	default:
 		after := g.retry(ctx, reg, w)
-		g.log.Warn("reg event subscription ended: subscribing again", slog.String("impu", reg.impu.String()),
+		g.log.WarnContext(ctx, "reg event subscription ended: subscribing again", slog.String("impu", reg.impu.String()),
 			slog.String("cause", e.Cause.String()), slog.Int("code", code), slog.Duration("retry_after", after))
 	}
 }
@@ -418,7 +508,8 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 	case ok:
 		d, err := reginfo.Decode(part.Body)
 		if err != nil {
-			g.log.Warn("unreadable reg event document", slog.String("impu", reg.impu.String()), slog.Any("error", err))
+			g.log.WarnContext(ctx, "unreadable reg event document", slog.String("impu", reg.impu.String()),
+				slog.Any("error", err))
 
 			unreadable = true
 		} else {
@@ -438,7 +529,7 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 
 	if current && doc != nil && (!w.versioned || doc.Version > w.version) {
 		w.version, w.versioned = doc.Version, true
-		ended = g.apply(reg, w, doc)
+		ended = g.apply(ctx, reg, w, doc)
 	}
 
 	if current && !ended && s.State() == ua.SubscriptionTerminated {
@@ -449,8 +540,12 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 		case "noresource", "rejected":
 			ended = true
 		case "deactivated":
-			reg.watch = nil
-			g.resubscribe(ctx, reg)
+			// At once, in a trace of its own linked to the NOTIFY's (D5).
+			next := &watch{}
+			reg.watch = next
+			cause := trace.SpanContextFromContext(ctx)
+
+			reg.strand.Post(func() { g.subscribeDetached(cause, reg, next) })
 		default:
 			var after time.Duration
 
@@ -472,6 +567,8 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 
 	g.mu.Unlock()
 
+	_ = g.flush(ctx)
+
 	if unreadable {
 		_ = n.Respond(ua.Reply{Code: 400, Header: header})
 
@@ -489,7 +586,7 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 // the registration of the IMPU of reg itself ended. The contacts of a registration the document reports not active
 // go, those of the others stay (TS 24.229 §5.4.1.8: an IMPU of a set may be deregistered alone). Called with g.mu
 // held.
-func (g *registrar) apply(reg *registration, w *watch, doc *reginfo.Reginfo) bool {
+func (g *registrar) apply(ctx context.Context, reg *registration, w *watch, doc *reginfo.Reginfo) bool {
 	if w.contacts == nil || doc.State == reginfo.Full {
 		w.contacts = map[string]map[string]bool{}
 	}
@@ -536,12 +633,12 @@ func (g *registrar) apply(reg *registration, w *watch, doc *reginfo.Reginfo) boo
 	if available != reg.available {
 		reg.available = available
 		g.save(reg)
-		g.hss.mark(reg.user().userKey())
+		g.hss.mark(trace.SpanContextFromContext(ctx), reg.user().userKey())
 
-		g.log.Debug("SMS over IP availability changed", slog.String("impu", reg.impu.String()),
+		g.log.DebugContext(ctx, "SMS over IP availability changed", slog.String("impu", reg.impu.String()),
 			slog.Bool("available", available))
 	} else if available {
-		g.reachable(reg)
+		g.reachable(ctx, reg)
 	}
 
 	return ended
@@ -621,6 +718,9 @@ func (g *registrar) want(userKey string) (User, bool) {
 // their reg event packages once the core runs.
 func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 	now := g.agent.Layer().Clock().Now()
+	cause := trace.SpanContextFromContext(ctx)
+
+	defer func() { _ = g.flush(ctx) }()
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -631,12 +731,10 @@ func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 		as, err3 := sip.ParseURI(row.AS)
 
 		if err1 != nil || err2 != nil || err3 != nil || !row.ExpiresAt.After(now) {
-			if err := g.store.DeleteIPSMGWRegistration(context.Background(), row.IMPUKey); err != nil {
-				g.log.Error("failed to delete an IP-SM-GW registration", slog.String("impu", row.IMPU), slog.Any("error", err))
-			}
+			g.dirty[row.IMPUKey] = true
 
 			u := User{MSISDN: row.MSISDN, IMSI: row.IMSI, IMPU: impu}
-			g.hss.mark(u.userKey())
+			g.hss.mark(cause, u.userKey())
 
 			continue
 		}
@@ -654,7 +752,7 @@ func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 
 		g.regs[reg.key] = reg
 		g.expireAt(ctx, reg)
-		g.hss.mark(reg.user().userKey())
+		g.hss.mark(cause, reg.user().userKey())
 	}
 }
 
@@ -747,15 +845,15 @@ func (reg *registration) of(msisdn, imsi string) bool {
 
 // reachable clears the UNRI of reg, if set, and has the HSS told again that the IP-SM-GW serves the user, for it to
 // alert the service centres of the messages waiting (TS 23.204 §6.5b; TS 23.040 §3.2.6 2c). Called with g.mu held.
-func (g *registrar) reachable(reg *registration) {
+func (g *registrar) reachable(ctx context.Context, reg *registration) {
 	if !reg.unri {
 		return
 	}
 
 	reg.unri = false
 
-	g.hss.force(reg.user().userKey())
-	g.log.Debug("UE reachable for IP again", slog.String("impu", reg.impu.String()))
+	g.hss.force(trace.SpanContextFromContext(ctx), reg.user().userKey())
+	g.log.DebugContext(ctx, "UE reachable for IP again", slog.String("impu", reg.impu.String()))
 }
 
 // userKeys are the keys of the users of the registrations.

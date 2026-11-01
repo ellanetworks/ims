@@ -26,8 +26,8 @@ func ipsmgwResponse(s settings.Settings) IPSMGW {
 }
 
 func GetIPSMGW(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, ipsmgwResponse(cfg.Settings.Get()), http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, ipsmgwResponse(cfg.Settings.Get()), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -40,10 +40,10 @@ func UpdateIPSMGW(cfg Config) http.Handler {
 		}
 
 		if err := cfg.Settings.UpdateIPSMGW(r.Context(), settings.IPSMGW{Number: params.Number}); err != nil {
-			writeSettingsError(w, err, "Failed to update the IP-SM-GW", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update the IP-SM-GW", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, ipsmgwResponse(cfg.Settings.Get()), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, ipsmgwResponse(cfg.Settings.Get()), http.StatusOK, cfg.Logger)
 	})
 }

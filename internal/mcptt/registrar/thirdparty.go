@@ -93,7 +93,7 @@ func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *setting
 	seq, ordered := sequenceOf(ik, client)
 
 	if ordered && g.outOfOrder(seq) {
-		g.cfg.Logger.Debug("REGISTER out of order ignored", slog.String("impu", impu.String()),
+		g.cfg.Logger.DebugContext(ctx, "REGISTER out of order ignored", slog.String("impu", impu.String()),
 			slog.Uint64("cseq", uint64(seq.cseq)))
 
 		_ = r.Respond(ua.Reply{Code: 200, Header: ok})
@@ -188,9 +188,9 @@ func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *setting
 
 	switch {
 	case a != nil:
-		g.authorised(a, impu)
+		g.authorised(ctx, a, impu)
 	case refreshed:
-		g.cfg.Logger.Debug("registration refreshed", slog.String("impu", impu.String()))
+		g.cfg.Logger.DebugContext(ctx, "registration refreshed", slog.String("impu", impu.String()))
 	}
 
 	g.apply(ctx, r.Strand(), now, &ch)

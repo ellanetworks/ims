@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -42,7 +43,13 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 func newSessionHarnessWith(t *testing.T, setup func(h *harness)) *sessionHarness {
 	t.Helper()
 
-	h := newHarness(t)
+	return newSessionHarnessOn(t, newHarness(t), setup)
+}
+
+// newSessionHarnessOn is newSessionHarnessWith on the harness h.
+func newSessionHarnessOn(t *testing.T, h *harness, setup func(h *harness)) *sessionHarness {
+	t.Helper()
+
 	if setup != nil {
 		setup(h)
 	}
@@ -807,7 +814,7 @@ func TestInDialogReleased(t *testing.T) {
 		t.Fatal("no dialog for the Record-Route")
 	}
 
-	d.Discard()
+	d.Discard(context.Background())
 
 	sh.orig.Send(sip.UDP, sh.scscf, sh.inDialog("BYE", invite, ok, rr[0].String()))
 

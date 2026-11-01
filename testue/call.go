@@ -1047,7 +1047,7 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*
 
 	done, f := callback()
 
-	err := l.s.Update(context.Background(), ch, f)
+	err := l.s.Update(ctx, ch, f)
 	if err == nil {
 		var res *sip.Response
 
@@ -1145,7 +1145,7 @@ func (c *Call) cancel(ctx context.Context, end EndReason, body *sdp.Session, ext
 		ch.Bodies = []sip.BodyPart{sip.NewBodyPart(sdp.ContentType, body.Bytes())}
 	}
 
-	if err := o.Cancel(ch); err != nil {
+	if err := o.Cancel(ctx, ch); err != nil {
 		return fmt.Errorf("testue: CANCEL: %w", err)
 	}
 
@@ -1188,7 +1188,7 @@ func (c *Call) bye(ctx context.Context, reason EndReason, extra ...sip.Field) er
 
 	done := make(chan error, 1)
 
-	if err := s.Bye(context.Background(), ua.Change{Header: sip.Header(extra)}, func(_ *sip.Response, err error) { done <- err }); err != nil {
+	if err := s.Bye(ctx, ua.Change{Header: sip.Header(extra)}, func(_ *sip.Response, err error) { done <- err }); err != nil {
 		if errors.Is(err, ua.ErrState) {
 			return nil
 		}
@@ -1269,7 +1269,7 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 
 	done, f := callback()
 
-	err = l.s.Reinvite(context.Background(), ch, f)
+	err = l.s.Reinvite(ctx, ch, f)
 	if err == nil {
 		var res *sip.Response
 

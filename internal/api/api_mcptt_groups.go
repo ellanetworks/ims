@@ -53,7 +53,7 @@ func ListMCPTTGroups(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, mcpttGroupResponse(g, s))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -63,11 +63,11 @@ func GetMCPTTGroup(cfg Config) http.Handler {
 
 		i := s.GroupIndex(r.PathValue("group_id"))
 		if i < 0 {
-			writeError(w, http.StatusNotFound, "group not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "group not found", nil, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(s.Groups[i], s), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttGroupResponse(s.Groups[i], s), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -80,18 +80,18 @@ func CreateMCPTTGroup(cfg Config) http.Handler {
 
 		g, problem := mcpttGroupSettings(p)
 		if problem != "" {
-			invalidMCPTT(w, problem, cfg.Logger)
+			invalidMCPTT(r.Context(), w, problem, cfg.Logger)
 			return
 		}
 
 		g, err := cfg.MCPTT.CreateGroup(r.Context(), g, mcpttImplicit(p.Members))
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to create the group", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to create the group", mcpttField, cfg.Logger)
 			return
 		}
 
 		w.Header().Set("Location", "/api/v1/mcptt/groups/"+url.PathEscape(g.URI))
-		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusCreated, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusCreated, cfg.Logger)
 	})
 }
 
@@ -106,7 +106,7 @@ func UpdateMCPTTGroup(cfg Config) http.Handler {
 		}
 
 		if p.GroupID != "" && !mcpttsettings.SameIdentity(p.GroupID, id) {
-			invalidMCPTT(w, "group_id: "+p.GroupID+" is not the group ID of the path, which a group keeps", cfg.Logger)
+			invalidMCPTT(r.Context(), w, "group_id: "+p.GroupID+" is not the group ID of the path, which a group keeps", cfg.Logger)
 			return
 		}
 
@@ -114,17 +114,17 @@ func UpdateMCPTTGroup(cfg Config) http.Handler {
 
 		g, problem := mcpttGroupSettings(p)
 		if problem != "" {
-			invalidMCPTT(w, problem, cfg.Logger)
+			invalidMCPTT(r.Context(), w, problem, cfg.Logger)
 			return
 		}
 
 		g, err := cfg.MCPTT.UpdateGroup(r.Context(), g, mcpttImplicit(p.Members))
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to update the group", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to update the group", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -132,11 +132,11 @@ func UpdateMCPTTGroup(cfg Config) http.Handler {
 func DeleteMCPTTGroup(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteGroup(r.Context(), r.PathValue("group_id")); err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to delete the group", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to delete the group", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, Message{Message: "group deleted"}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, Message{Message: "group deleted"}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -152,7 +152,7 @@ func PutMCPTTMember(cfg Config) http.Handler {
 		}
 
 		if p.MCPTTID != "" && !mcpttsettings.SameIdentity(p.MCPTTID, id) {
-			invalidMCPTT(w, "mcptt_id: "+p.MCPTTID+" is not the MCPTT ID of the path", cfg.Logger)
+			invalidMCPTT(r.Context(), w, "mcptt_id: "+p.MCPTTID+" is not the MCPTT ID of the path", cfg.Logger)
 			return
 		}
 
@@ -160,7 +160,7 @@ func PutMCPTTMember(cfg Config) http.Handler {
 
 		g, added, err := cfg.MCPTT.PutMember(r.Context(), group, mcpttEntrySettings(p), p.ImplicitAffiliation)
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to put the member", mcpttMemberField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to put the member", mcpttMemberField, cfg.Logger)
 			return
 		}
 
@@ -169,7 +169,7 @@ func PutMCPTTMember(cfg Config) http.Handler {
 			status = http.StatusCreated
 		}
 
-		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), status, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttGroupResponse(g, cfg.MCPTT.Get()), status, cfg.Logger)
 	})
 }
 
@@ -180,11 +180,11 @@ func DeleteMCPTTMember(cfg Config) http.Handler {
 
 		g, err := cfg.MCPTT.DeleteMember(r.Context(), group, r.PathValue("mcptt_id"))
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to delete the member", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to delete the member", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttGroupResponse(g, cfg.MCPTT.Get()), http.StatusOK, cfg.Logger)
 	})
 }
 

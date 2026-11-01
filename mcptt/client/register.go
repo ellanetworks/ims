@@ -70,17 +70,18 @@ func (c *Client) RegisterBodies() []sip.BodyPart {
 // Register registers the client with the server as its registrar, in direct mode [PM 14] (TS 24.379 §7.2.1): its
 // Contact with the MCPTT feature tags, for expires, its service authorisation in the mcptt-info body. done receives
 // the final response, or the error of the transaction. The client refreshes the registration halfway through the
-// duration the 200 grants its contact, each response told in an EventRegistration; Unregister ends it.
-func (c *Client) Register(expires time.Duration, done func(res *sip.Response, err error)) error {
-	return c.register(expires, done)
+// duration the 200 grants its contact, each response told in an EventRegistration, in a trace of its own; Unregister
+// ends it. ctx carries the trace of the REGISTER, as of the requests of sip/ua.
+func (c *Client) Register(ctx context.Context, expires time.Duration, done func(res *sip.Response, err error)) error {
+	return c.register(ctx, expires, done)
 }
 
 // Unregister removes the registration (RFC 3261 §10.2.2): logging off (TS 23.280 §5.2.5).
-func (c *Client) Unregister(done func(res *sip.Response, err error)) error {
-	return c.register(0, done)
+func (c *Client) Unregister(ctx context.Context, done func(res *sip.Response, err error)) error {
+	return c.register(ctx, 0, done)
 }
 
-func (c *Client) register(expires time.Duration, done func(res *sip.Response, err error)) error {
+func (c *Client) register(ctx context.Context, expires time.Duration, done func(res *sip.Response, err error)) error {
 	req := sip.NewRequest("REGISTER", c.cfg.Registrar)
 	aor := sip.Address{URI: c.cfg.IMPU}.String()
 
@@ -110,7 +111,7 @@ func (c *Client) register(expires time.Duration, done func(res *sip.Response, er
 		req.SetBodies(c.RegisterBodies()...)
 	}
 
-	return c.cfg.Agent.Request(context.Background(), req, func(res *sip.Response, err error) {
+	return c.cfg.Agent.Request(ctx, req, func(res *sip.Response, err error) {
 		if err == nil && res.IsSuccess() && expires > 0 {
 			c.scheduleRefresh(cseq, granted(res, c.contact(), expires), expires)
 		}
@@ -164,7 +165,8 @@ func (c *Client) scheduleRefresh(cseq uint32, d, expires time.Duration) {
 	}
 
 	c.reg.refresh = c.st.AfterFunc(d/2, func() {
-		err := c.register(expires, func(res *sip.Response, err error) {
+		// A refresh is a trace of its own.
+		err := c.register(context.Background(), expires, func(res *sip.Response, err error) {
 			c.emit(Event{Kind: EventRegistration, Response: res, Err: err})
 		})
 		if err != nil {

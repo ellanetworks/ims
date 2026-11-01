@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // memState is a State in memory, as the database keeps it.
@@ -22,6 +23,15 @@ type memState struct {
 	affs map[[2]string]affiliation.Record
 	// fail fails the writes.
 	fail bool
+	// affWrites are the contexts of the writes of affiliations, as they were then.
+	affWrites []write
+}
+
+// write is the context of a write: its span, error and deadline.
+type write struct {
+	span     oteltrace.SpanContext
+	err      error
+	deadline bool
 }
 
 func newMemState() *memState {
@@ -47,9 +57,12 @@ func (m *memState) SaveRegistrations(_ context.Context, records []registrar.Reco
 	return nil
 }
 
-func (m *memState) SaveAffiliations(_ context.Context, records []affiliation.Record) error {
+func (m *memState) SaveAffiliations(ctx context.Context, records []affiliation.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	_, deadline := ctx.Deadline()
+	m.affWrites = append(m.affWrites, write{span: oteltrace.SpanContextFromContext(ctx), err: ctx.Err(), deadline: deadline})
 
 	for _, r := range records {
 		k := [2]string{settings.Key(r.MCPTTID), r.ClientID}

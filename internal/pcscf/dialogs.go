@@ -111,7 +111,7 @@ func (p *PCSCF) forward(ctx context.Context, tx *transaction.ServerTransaction, 
 	res := sip.NewResponse(req, code, "")
 
 	if reject == nil {
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 	} else {
 		reject(res)
 	}
@@ -123,7 +123,7 @@ func (p *PCSCF) inDialog(ctx context.Context, tx *transaction.ServerTransaction,
 	if req.Method == "NOTIFY" {
 		if s := p.subs.match(req); s != nil {
 			res, after := p.subs.notified(ctx, s, req)
-			p.respond(tx, res)
+			p.respond(ctx, tx, res)
 
 			if after != nil {
 				after()
@@ -134,19 +134,19 @@ func (p *PCSCF) inDialog(ctx context.Context, tx *transaction.ServerTransaction,
 	}
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
-		p.respond(tx, res)
+		p.respond(ctx, tx, res)
 		return
 	}
 
 	out, removed, err := p.cfg.Proxy.Preprocess(req)
 	if err != nil {
-		p.respond(tx, sip.NewResponse(req, 400, "Bad Route"))
+		p.respond(ctx, tx, sip.NewResponse(req, 400, "Bad Route"))
 		return
 	}
 
 	if len(removed) == 0 {
 		if req.Method == "NOTIFY" {
-			p.respond(tx, sip.NewResponse(req, 481, ""))
+			p.respond(ctx, tx, sip.NewResponse(req, 481, ""))
 			return
 		}
 
@@ -158,7 +158,7 @@ func (p *PCSCF) inDialog(ctx context.Context, tx *transaction.ServerTransaction,
 	d := p.cfg.Proxy.Dialog(removed)
 
 	if d != nil && d.Released() {
-		p.respond(tx, sip.NewResponse(req, 481, ""))
+		p.respond(ctx, tx, sip.NewResponse(req, 481, ""))
 		return
 	}
 
@@ -185,28 +185,27 @@ func (p *PCSCF) HandleAck(ctx context.Context, ack *sip.Request) {
 	d := p.cfg.Proxy.Dialog(removed)
 
 	if p.towardUE(removed) {
-		to, reject = p.ueTarget(ack, out, removed)
+		to, reject = p.ueTarget(ctx, ack, out, removed)
 	} else {
-		to, reject = p.coreTarget(ack, out, removed, d)
+		to, reject = p.coreTarget(ctx, ack, out, removed, d)
 	}
 
 	if reject != nil {
-		p.log.Debug("dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Int("code", reject.StatusCode))
+		p.log.DebugContext(ctx, "dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Int("code", reject.StatusCode))
 		return
 	}
 
 	forward := func() {
 		if err := p.cfg.Proxy.ForwardAck(ctx, out, to, d); err != nil {
-			p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+			p.log.DebugContext(ctx, "ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 		}
 	}
 
+	// Sent once the policy function answered, after HandleAck returned: the proxy takes ctx for its trace, not its
+	// cancellation.
 	send := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 64*transaction.DefaultT1)
-		defer cancel()
-
 		if err := p.cfg.Proxy.SendAck(ctx, out, to, d); err != nil {
-			p.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+			p.log.DebugContext(ctx, "ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 		}
 	}
 
@@ -242,9 +241,9 @@ func flowToken(removed []sip.URI) string {
 }
 
 func (p *PCSCF) toUEFlow(ctx context.Context, tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) {
-	to, reject := p.ueTarget(req, out, removed)
+	to, reject := p.ueTarget(ctx, req, out, removed)
 	if reject != nil {
-		p.respond(tx, reject)
+		p.respond(ctx, tx, reject)
 		return
 	}
 
@@ -260,9 +259,9 @@ func (p *PCSCF) toUEFlow(ctx context.Context, tx *transaction.ServerTransaction,
 	})
 }
 
-func (p *PCSCF) ueTarget(req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
+func (p *PCSCF) ueTarget(ctx context.Context, req, out *sip.Request, removed []sip.URI) (proxy.Target, *sip.Response) {
 	if !p.fromCore(req) {
-		p.log.Warn("request toward a UE from outside the core", slog.String("method", req.Method),
+		p.log.WarnContext(ctx, "request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
 
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
@@ -312,9 +311,9 @@ func (p *PCSCF) ueFlow(f flow) (proxy.Target, bool) {
 }
 
 func (p *PCSCF) toCore(ctx context.Context, tx *transaction.ServerTransaction, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) {
-	to, reject := p.coreTarget(req, out, removed, d)
+	to, reject := p.coreTarget(ctx, req, out, removed, d)
 	if reject != nil {
-		p.respond(tx, reject)
+		p.respond(ctx, tx, reject)
 		return
 	}
 
@@ -336,7 +335,7 @@ func (p *PCSCF) forwardInDialog(ctx context.Context, tx *transaction.ServerTrans
 	priority bool, onReply func(context.Context, proxy.Reply) proxy.Verdict,
 ) {
 	forward := func() { p.forward(ctx, tx, req, out, to, proxy.Options{Dialog: d, OnReply: onReply}, nil) }
-	reject := func() { p.respond(tx, sip.NewResponse(req, 500, "")) }
+	reject := func() { p.respond(ctx, tx, sip.NewResponse(req, 500, "")) }
 
 	if !p.mediaRequest(ctx, d, out, priority, forward, reject) {
 		forward()
@@ -344,13 +343,13 @@ func (p *PCSCF) forwardInDialog(ctx context.Context, tx *transaction.ServerTrans
 }
 
 // TS 24.229 §5.2.6.3.5, §5.2.6.3.9
-func (p *PCSCF) coreTarget(req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
+func (p *PCSCF) coreTarget(ctx context.Context, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
-		p.log.Debug("in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
+		p.log.DebugContext(ctx, "in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
-	if res := p.fromUEInDialog(req, out, d); res != nil {
+	if res := p.fromUEInDialog(ctx, req, out, d); res != nil {
 		return proxy.Target{}, res
 	}
 

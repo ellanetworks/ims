@@ -92,7 +92,7 @@ func TestPublishStatuses(t *testing.T) {
 	p := NewParticipating(owner, nil)
 	now := time.Unix(1000, 0)
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")}, Expires: MaxExpires}, "e1")
 
 	if got := statuses(p, now, a); got["g1"] != Affiliating || got["g2"] != Affiliating || len(owner.published) != 2 {
 		t.Fatalf("statuses %v, published %v", got, owner.published)
@@ -102,7 +102,7 @@ func TestPublishStatuses(t *testing.T) {
 		t.Error("affiliating is affiliated (§9.2.2.2.11 step 3 a)")
 	}
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g2@example.com")}, Expires: MaxExpires}, "e2")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g2@example.com")}, Expires: MaxExpires}, "e2")
 
 	if got := statuses(p, now, a); got["g1"] != Deaffiliating || got["g2"] != Affiliating {
 		t.Fatalf("statuses %v", got)
@@ -122,7 +122,7 @@ func TestPublishStatuses(t *testing.T) {
 
 	owner.refuse = true
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g2@example.com"), u(t, "sip:g3@example.com")}, Expires: MaxExpires}, "e3")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g2@example.com"), u(t, "sip:g3@example.com")}, Expires: MaxExpires}, "e3")
 
 	if got := statuses(p, now, a); got["g3"] != "" || got["g2"] != Affiliating {
 		t.Errorf("refused group kept: %v", got)
@@ -137,7 +137,7 @@ func TestImplicitConfigured(t *testing.T) {
 	p := NewParticipating(c, nil)
 	now := time.Unix(1000, 0)
 
-	p.ImplicitConfigured(now, a, "c1")
+	p.ImplicitConfigured(t.Context(), now, a, "c1")
 
 	if got := statuses(p, now, a); got["g1"] != Affiliated || got["g2"] != Affiliated {
 		t.Fatalf("statuses %v", got)
@@ -152,7 +152,7 @@ func TestImplicitConfigured(t *testing.T) {
 		t.Errorf("implicit affiliation beyond N2: %v", err)
 	}
 
-	p.LogOff(now, a.ID(), "c1")
+	p.LogOff(t.Context(), now, a.ID(), "c1")
 
 	if len(p.Groups(now, a.ID(), "c1")) != 0 || len(c.Members(now, u(t, "sip:g1@example.com"))) != 0 {
 		t.Error("affiliated after the log off")
@@ -180,7 +180,7 @@ func TestImplicitRequest(t *testing.T) {
 		t.Fatal("controlling implicit affiliation")
 	}
 
-	p.CompleteImplicit(now, a.ID(), "c1", g3)
+	p.CompleteImplicit(t.Context(), now, a.ID(), "c1", g3)
 
 	if got := statuses(p, now, a); got["g3"] != Affiliated || !c.Affiliated(now, g3, a.ID(), "c1") {
 		t.Fatalf("completed: %v", got)
@@ -236,7 +236,7 @@ func TestPublishImplicitPending(t *testing.T) {
 
 	c.ImplicitAffiliate(now, g3, a.ID(), "c2")
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
 
 	if !c.Affiliated(now, g3, a.ID(), "c1") || !c.Affiliated(now, g3, a.ID(), "c2") {
 		t.Fatal("the pending implicit affiliation dropped by the owner")
@@ -247,7 +247,7 @@ func TestPublishImplicitPending(t *testing.T) {
 		t.Error("implicit affiliation completed by the publication")
 	}
 
-	p.CompleteImplicit(now, a.ID(), "c2", g3)
+	p.CompleteImplicit(t.Context(), now, a.ID(), "c2", g3)
 
 	if !affiliated(p, now, a, "c2", g3) {
 		t.Error("not affiliated once completed")
@@ -287,11 +287,11 @@ func TestPublishStale(t *testing.T) {
 	now := time.Unix(1000, 0)
 	g3 := u(t, "sip:g3@example.com")
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
 
-	o.during = func() { p.LogOff(now, a.ID(), "c1") }
+	o.during = func() { p.LogOff(t.Context(), now, a.ID(), "c1") }
 
-	p.Publish(now, Publication{User: a, Client: "c2", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e2")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c2", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e2")
 
 	// c1 and c2, then c2 of the log-off, then c2 again, of the stale publication.
 	if len(o.calls) != 4 || len(o.calls[3]) != 1 || o.calls[3][0] != "c2" {
@@ -313,8 +313,8 @@ func TestPublishExpiresZero(t *testing.T) {
 	p := NewParticipating(&pending{}, nil)
 	now := time.Unix(1000, 0)
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com")}, Expires: MaxExpires}, "e1")
-	p.Publish(now, Publication{User: a, Client: "c1"}, "e2")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com")}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1"}, "e2")
 
 	if _, ok := p.ETag(a.ID(), "e2"); ok {
 		t.Error("entity-tag of Expires 0 stored")
@@ -331,8 +331,8 @@ func TestNoStoreNoDirty(t *testing.T) {
 	p := NewParticipating(NewControlling(fixed{snap}), nil)
 	now := time.Unix(1e9, 0)
 
-	p.Publish(now, Publication{User: user, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com")}, Expires: MaxExpires}, "e1")
-	p.LogOff(now, user.ID(), "c1")
+	p.Publish(t.Context(), now, Publication{User: user, Client: "c1", Groups: []sip.URI{u(t, "sip:g1@example.com")}, Expires: MaxExpires}, "e1")
+	p.LogOff(t.Context(), now, user.ID(), "c1")
 
 	if len(p.dirty) != 0 {
 		t.Errorf("%d clients to write", len(p.dirty))
@@ -367,12 +367,12 @@ func TestConfiguredOrigin(t *testing.T) {
 	snap, a := setup(t)
 	store := saved{}
 	p := NewParticipating(NewControlling(fixed{snap}), nil)
-	p.SetStore(store)
+	p.SetStore(t.Context(), store)
 
 	now := time.Unix(1000, 0)
 	g1, g2 := u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")
 
-	p.ImplicitConfigured(now, a, "c1")
+	p.ImplicitConfigured(t.Context(), now, a, "c1")
 
 	if got := configured(p.Groups(now, a.ID(), "c1")); !got["g1"] || !got["g2"] {
 		t.Fatalf("configured %v", got)
@@ -384,13 +384,13 @@ func TestConfiguredOrigin(t *testing.T) {
 
 	// Restored as kept.
 	r := NewParticipating(NewControlling(fixed{snap}), nil)
-	r.Restore(now, []Record{store["c1"]}, func(sip.URI, string) bool { return true })
+	r.Restore(t.Context(), now, []Record{store["c1"]}, func(sip.URI, string) bool { return true })
 
 	if got := configured(r.Groups(now, a.ID(), "c1")); len(got) != 2 || !got["g1"] || !got["g2"] {
 		t.Errorf("configured restored %v", got)
 	}
 
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g1, g2}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{g1, g2}, Expires: MaxExpires}, "e1")
 
 	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 2 || got["g1"] || got["g2"] {
 		t.Errorf("listed by the client, still configured: %v", got)
@@ -400,7 +400,7 @@ func TestConfiguredOrigin(t *testing.T) {
 		t.Errorf("listed by the client, kept configured: %v", got)
 	}
 
-	p.LogOff(now, a.ID(), "c1")
+	p.LogOff(t.Context(), now, a.ID(), "c1")
 
 	if _, err := p.ImplicitAffiliate(now, a, "c1", u(t, "sip:g3@example.com")); err != nil {
 		t.Fatal(err)
@@ -438,10 +438,10 @@ func TestReconfigure(t *testing.T) {
 	g1, g3 := u(t, "sip:g1@example.com"), u(t, "sip:g3@example.com")
 
 	a := user()
-	p.Publish(now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Groups: []sip.URI{g3}, Expires: MaxExpires}, "e1")
 
 	before, a := a, user("sip:g1@example.com", "sip:g3@example.com")
-	p.Reconfigure(now, before, a, "c1")
+	p.Reconfigure(t.Context(), now, before, a, "c1")
 
 	if got := configured(p.Groups(now, a.ID(), "c1")); len(got) != 2 || !got["g1"] || got["g3"] {
 		t.Fatalf("configured %v", got)
@@ -452,14 +452,14 @@ func TestReconfigure(t *testing.T) {
 	}
 
 	// Unchanged: nothing to do.
-	p.Reconfigure(now, a, a, "c1")
+	p.Reconfigure(t.Context(), now, a, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 2 {
 		t.Fatalf("statuses %v", got)
 	}
 
 	before, a = a, user()
-	p.Reconfigure(now, before, a, "c1")
+	p.Reconfigure(t.Context(), now, before, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 1 || got["g3"] != Affiliated {
 		t.Errorf("statuses %v", got)
@@ -470,7 +470,7 @@ func TestReconfigure(t *testing.T) {
 	}
 
 	// Of a client with no entries, nothing is made.
-	p.Reconfigure(now, a, a, "c2")
+	p.Reconfigure(t.Context(), now, a, a, "c2")
 
 	if _, ok := p.users[settings.Key(a.ID())].clients["c2"]; ok {
 		t.Error("client made")
@@ -504,20 +504,20 @@ func TestReconfigureKeepsLeft(t *testing.T) {
 	g1, g2 := u(t, "sip:g1@example.com"), u(t, "sip:g2@example.com")
 
 	a := user("sip:g1@example.com")
-	p.ImplicitConfigured(now, a, "c1")
-	p.Publish(now, Publication{User: a, Client: "c1", Expires: MaxExpires}, "e1")
+	p.ImplicitConfigured(t.Context(), now, a, "c1")
+	p.Publish(t.Context(), now, Publication{User: a, Client: "c1", Expires: MaxExpires}, "e1")
 
 	// Left, its de-affiliating entry expired.
 	now = now.Add(deaffiliating + time.Second)
 
-	p.Reconfigure(now, a, a, "c1")
+	p.Reconfigure(t.Context(), now, a, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 0 || c.Affiliated(now, g1, a.ID(), "c1") {
 		t.Fatalf("left group affiliated again by a change not of it: %v", got)
 	}
 
 	before, a := a, user("sip:g1@example.com", "sip:g2@example.com")
-	p.Reconfigure(now, before, a, "c1")
+	p.Reconfigure(t.Context(), now, before, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 1 || got["g2"] != Affiliated || !c.Affiliated(now, g2, a.ID(), "c1") {
 		t.Fatalf("statuses %v", got)
@@ -525,9 +525,9 @@ func TestReconfigureKeepsLeft(t *testing.T) {
 
 	// g1 off, then on again.
 	before, a = a, user("sip:g2@example.com")
-	p.Reconfigure(now, before, a, "c1")
+	p.Reconfigure(t.Context(), now, before, a, "c1")
 	before, a = a, user("sip:g2@example.com", "sip:g1@example.com")
-	p.Reconfigure(now, before, a, "c1")
+	p.Reconfigure(t.Context(), now, before, a, "c1")
 
 	if got := statuses(p, now, a); len(got) != 2 || got["g1"] != Affiliated || !c.Affiliated(now, g1, a.ID(), "c1") {
 		t.Fatalf("group added back not affiliated: %v", got)

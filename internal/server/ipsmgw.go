@@ -50,7 +50,7 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 	s.ases.resolver.Set(ipsmgw.Host(s.ipsmgwHomeDomain), nil)
 
 	if err := a.Shutdown(ctx); err != nil {
-		s.Logger.Warn("failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
 	}
 }
 
@@ -62,10 +62,11 @@ func (s *Server) resubscribeIPSMGW(ctx context.Context) {
 	}
 }
 
-// ipsmgwNumberChanged has the IP-SM-GW, if it runs, register the new number of the settings at the HSS.
-func (s *Server) ipsmgwNumberChanged() {
+// ipsmgwNumberChanged has the IP-SM-GW, if it runs, register the new number of the settings at the HSS. ctx is the
+// trace of the change.
+func (s *Server) ipsmgwNumberChanged(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
-		a.NumberChanged()
+		a.NumberChanged(ctx)
 	}
 }
 

@@ -72,7 +72,7 @@ func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 	if cfg.track {
 		r.dialogs = make(chan *proxy.Dialog, 16)
 		r.events = make(chan proxy.DialogEvent, 64)
-		pc.OnDialog = func(e proxy.DialogEvent) { r.events <- e }
+		pc.OnDialog = func(_ context.Context, e proxy.DialogEvent) { r.events <- e }
 	}
 
 	if cfg.clock != nil {

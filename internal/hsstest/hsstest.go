@@ -39,7 +39,7 @@ type Config struct {
 	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
 	IMSAddress netip.Addr
 
-	// TracerProvider traces the HSS's requests, with the global provider when nil.
+	// TracerProvider traces the HSS's requests; none when nil.
 	TracerProvider trace.TracerProvider
 	Logger         *slog.Logger
 }

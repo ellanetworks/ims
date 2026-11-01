@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -101,7 +102,7 @@ func (s *Sessions) HandleRequest(ctx context.Context, tx *transaction.ServerTran
 	// AS's request was not sent for, or none (TS 24.229 §5.4.3.2 step 3, §5.4.3.3 step 1).
 	h, odi := s.hopOf(removed)
 	if odi && h == nil {
-		s.log.Warn("request with an unknown original dialog identifier", slog.String("request", req.StartLine()),
+		s.log.WarnContext(ctx, "request with an unknown original dialog identifier", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		s.respond(tx, sip.NewResponse(req, 403, "Unknown Original Dialog Identifier"))
 
@@ -110,7 +111,7 @@ func (s *Sessions) HandleRequest(ctx context.Context, tx *transaction.ServerTran
 
 	bindingID, orig, err := originatingBinding(removed)
 	if err != nil {
-		s.log.Debug("originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
+		s.log.DebugContext(ctx, "originating request on a malformed Service-Route", slog.String("request", req.StartLine()), slog.Any("error", err))
 		s.respond(tx, sip.NewResponse(req, 403, ""))
 
 		return
@@ -138,7 +139,7 @@ func (s *Sessions) spawn(ctx context.Context, tx *transaction.ServerTransaction,
 	err := s.r.cfg.Layer.Go(ctx, func(ctx context.Context) {
 		ctx, done, ok := s.r.begin(ctx)
 		if !ok {
-			s.answer(tx, retryLater(req))
+			s.answer(ctx, tx, retryLater(req))
 			return
 		}
 
@@ -147,31 +148,31 @@ func (s *Sessions) spawn(ctx context.Context, tx *transaction.ServerTransaction,
 		f(ctx)
 	})
 	if err != nil {
-		s.log.Debug("dropped a SIP request", slog.String("request", req.StartLine()), slog.Any("error", err))
+		s.log.DebugContext(ctx, "dropped a SIP request", slog.String("request", req.StartLine()), slog.Any("error", err))
 		s.respond(tx, retryLater(req))
 	}
 }
 
 func (s *Sessions) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	s.proxy.Cancel(tx, cancel)
+	s.proxy.Cancel(ctx, tx, cancel)
 }
 
 func (s *Sessions) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := s.proxy.Preprocess(ack)
 	if err != nil || len(removed) == 0 {
-		s.log.Debug("dropped an ACK not routed through the S-CSCF", slog.String("call-id", ack.Header.CallID()))
+		s.log.DebugContext(ctx, "dropped an ACK not routed through the S-CSCF", slog.String("call-id", ack.Header.CallID()))
 		return
 	}
 
 	forward := func(ctx context.Context) {
 		to, err := s.nextHop(ctx, out, ack.Flow)
 		if err != nil {
-			s.log.Debug("no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+			s.log.DebugContext(ctx, "no next hop for an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 			return
 		}
 
 		if err := s.proxy.ForwardAck(ctx, out, to, s.proxy.Dialog(removed)); err != nil {
-			s.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+			s.log.DebugContext(ctx, "ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 		}
 	}
 
@@ -191,7 +192,7 @@ func (s *Sessions) HandleAck(ctx context.Context, ack *sip.Request) {
 		forward(ctx)
 	})
 	if err != nil {
-		s.log.Debug("dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
+		s.log.DebugContext(ctx, "dropped an ACK", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 	}
 }
 
@@ -213,13 +214,13 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 
 	asserted, err := out.Header.Addresses("P-Asserted-Identity")
 	if err != nil {
-		s.answer(tx, sip.NewResponse(req, 400, "Bad P-Asserted-Identity"))
+		s.answer(ctx, tx, sip.NewResponse(req, 400, "Bad P-Asserted-Identity"))
 		return
 	}
 
 	served, reg, binding, res := s.servedUser(ctx, req, asserted, routeBinding)
 	if res != nil {
-		s.answer(tx, res)
+		s.answer(ctx, tx, res)
 		return
 	}
 
@@ -229,7 +230,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 
 	sub, err := cx.ParseUserData(reg.UserData)
 	if err != nil {
-		s.log.Warn("invalid user data of a registration: no service", slog.String("impu", served.URI.String()), slog.Any("error", err))
+		s.log.WarnContext(ctx, "invalid user data of a registration: no service", slog.String("impu", served.URI.String()), slog.Any("error", err))
 	}
 
 	out.Header.Del("P-Asserted-Identity")
@@ -240,7 +241,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	if out.Header.Has("Route") {
-		s.log.Debug("routes after the Service-Route dropped", slog.Any("route", out.Header.Values("Route")))
+		s.log.DebugContext(ctx, "routes after the Service-Route dropped", slog.Any("route", out.Header.Values("Route")))
 		out.Header.Del("Route")
 	}
 
@@ -252,7 +253,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	if err == nil {
 		p, ok := serviceProfile(sub, served.URI, s.r.cfg.HomeDomain)
 		if !ok {
-			s.log.Warn("no service profile holds the identity: no service", slog.String("impu", served.URI.String()))
+			s.log.WarnContext(ctx, "no service profile holds the identity: no service", slog.String("impu", served.URI.String()))
 		}
 
 		c.ifcs = s.r.criteria(p, true)
@@ -272,8 +273,8 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 	}
 
 	if err != nil || len(served) == 0 {
-		s.log.Debug("request on behalf of no identity", slog.String("request", req.StartLine()))
-		s.answer(tx, sip.NewResponse(req, 403, ""))
+		s.log.DebugContext(ctx, "request on behalf of no identity", slog.String("request", req.StartLine()))
+		s.answer(ctx, tx, sip.NewResponse(req, 403, ""))
 
 		return
 	}
@@ -282,7 +283,7 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 
 	c, res := s.servedChain(ctx, req, u, cx.SessionCaseOriginatingRegistered, cx.SessionCaseOriginatingUnregistered, 403)
 	if res != nil {
-		s.answer(tx, res)
+		s.answer(ctx, tx, res)
 		return
 	}
 
@@ -299,7 +300,7 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 	}
 
 	if out.Header.Has("Route") {
-		s.log.Debug("routes after the S-CSCF dropped", slog.Any("route", out.Header.Values("Route")))
+		s.log.DebugContext(ctx, "routes after the S-CSCF dropped", slog.Any("route", out.Header.Values("Route")))
 		out.Header.Del("Route")
 	}
 
@@ -315,10 +316,10 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 
 	switch {
 	case err != nil:
-		s.log.Warn("failed to read the registrations", slog.String("impu", u.String()), slog.Any("error", err))
+		s.log.WarnContext(ctx, "failed to read the registrations", slog.String("impu", u.String()), slog.Any("error", err))
 		return nil, retryLater(req)
 	case barred:
-		s.log.Debug("request of a barred identity", slog.String("impu", u.String()))
+		s.log.DebugContext(ctx, "request of a barred identity", slog.String("impu", u.String()))
 		return nil, sip.NewResponse(req, refused, "")
 	}
 
@@ -328,16 +329,16 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 	// (TS 24.229 §5.3.1.3).
 	switch {
 	case refusedIdentity(err):
-		s.log.Debug("the HSS does not know the identity", slog.String("impu", u.String()), slog.Any("error", err))
+		s.log.DebugContext(ctx, "the HSS does not know the identity", slog.String("impu", u.String()), slog.Any("error", err))
 		return nil, sip.NewResponse(req, refused, "")
 	case errors.Is(err, errNoUserData), errors.Is(err, cx.ErrInvalidUserData), permanent(err):
-		s.log.Info("no service profile for the identity", slog.String("impu", u.String()), slog.Any("error", err))
+		s.log.InfoContext(ctx, "no service profile for the identity", slog.String("impu", u.String()), slog.Any("error", err))
 		return nil, sip.NewResponse(req, 480, "")
 	case err != nil:
-		s.log.Warn("failed to get the service profile", slog.String("impu", u.String()), slog.Any("error", err))
+		s.log.WarnContext(ctx, "failed to get the service profile", slog.String("impu", u.String()), slog.Any("error", err))
 		return nil, sip.NewResponse(req, 480, "")
 	case barredIn(p, u, s.r.cfg.HomeDomain):
-		s.log.Debug("request of a barred identity", slog.String("impu", u.String()))
+		s.log.DebugContext(ctx, "request of a barred identity", slog.String("impu", u.String()))
 		return nil, sip.NewResponse(req, refused, "")
 	}
 
@@ -358,8 +359,8 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	req := tx.Request()
 
 	if out.Method == "MESSAGE" && out.Content().MediaType() == contentTypeSMS {
-		s.log.Debug("MESSAGE refused: no IP-SM-GW", slog.String("impu", c.served.URI.String()))
-		s.answer(tx, sip.NewResponse(req, messageRejectCode, messageRejectReason))
+		s.log.DebugContext(ctx, "MESSAGE refused: no IP-SM-GW", slog.String("impu", c.served.URI.String()))
+		s.answer(ctx, tx, sip.NewResponse(req, messageRejectCode, messageRejectReason))
 
 		return
 	}
@@ -368,22 +369,22 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	withoutRegistrationToken(&out.Header)
 
 	if u, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain); ok {
-		s.log.Debug("home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()))
+		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()))
 		out.URI = u
 	}
 
 	if localNumber(out.URI, s.r.cfg.HomeDomain) {
-		s.log.Debug("local number not translated to a global number", slog.String("impu", c.served.URI.String()),
+		s.log.DebugContext(ctx, "local number not translated to a global number", slog.String("impu", c.served.URI.String()),
 			slog.String("dialled", out.URI.String()))
-		s.answer(tx, sip.NewResponse(req, 404, ""))
+		s.answer(ctx, tx, sip.NewResponse(req, 404, ""))
 
 		return
 	}
 
 	to, ok := s.icscf(req.Flow)
 	if !ok {
-		s.log.Warn("no I-CSCF listener for an originating request", slog.String("local", req.Flow.Local.String()))
-		s.answer(tx, sip.NewResponse(req, 500, ""))
+		s.log.WarnContext(ctx, "no I-CSCF listener for an originating request", slog.String("local", req.Flow.Local.String()))
+		s.answer(ctx, tx, sip.NewResponse(req, 500, ""))
 
 		return
 	}
@@ -496,10 +497,10 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 
 	switch {
 	case errors.Is(err, db.ErrNotFound):
-		s.log.Debug("originating request on an unknown Service-Route", slog.Int64("binding", bindingID))
+		s.log.DebugContext(ctx, "originating request on an unknown Service-Route", slog.Int64("binding", bindingID))
 		return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Not Registered")
 	case err != nil:
-		s.log.Warn("failed to read the binding", slog.Int64("binding", bindingID), slog.Any("error", err))
+		s.log.WarnContext(ctx, "failed to read the binding", slog.Int64("binding", bindingID), slog.Any("error", err))
 		return sip.Address{}, db.Registration{}, 0, retryLater(req)
 	}
 
@@ -509,7 +510,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 		for _, key := range identityKeys(a.URI, s.r.cfg.HomeDomain) {
 			regs, err := s.r.cfg.DB.ListRegistrationsByIdentity(ctx, key)
 			if err != nil {
-				s.log.Warn("failed to read the registrations", slog.String("impu", a.URI.String()), slog.Any("error", err))
+				s.log.WarnContext(ctx, "failed to read the registrations", slog.String("impu", a.URI.String()), slog.Any("error", err))
 				return sip.Address{}, db.Registration{}, 0, retryLater(req)
 			}
 
@@ -531,7 +532,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 				}
 
 				if reg.Identities[i].Barred {
-					s.log.Debug("originating request from a barred identity", slog.String("impu", a.URI.String()))
+					s.log.DebugContext(ctx, "originating request from a barred identity", slog.String("impu", a.URI.String()))
 					return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Barred")
 				}
 
@@ -542,7 +543,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 		}
 	}
 
-	s.log.Debug("originating request from an unregistered identity", slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")),
+	s.log.DebugContext(ctx, "originating request from an unregistered identity", slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")),
 		slog.Int64("binding", bindingID))
 
 	return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Not Registered")
@@ -557,21 +558,21 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 		switch {
 		case err != nil:
-			s.log.Warn("failed to read the registrations", slog.String("impu", out.URI.String()), slog.Any("error", err))
-			s.answer(tx, retryLater(req))
+			s.log.WarnContext(ctx, "failed to read the registrations", slog.String("impu", out.URI.String()), slog.Any("error", err))
+			s.answer(ctx, tx, retryLater(req))
 
 			return
 		case barred:
-			s.log.Debug("request to a barred identity", slog.String("impu", out.URI.String()))
-			s.answer(tx, sip.NewResponse(req, 404, ""))
+			s.log.DebugContext(ctx, "request to a barred identity", slog.String("impu", out.URI.String()))
+			s.answer(ctx, tx, sip.NewResponse(req, 404, ""))
 
 			return
 		}
 
 		to, err := s.nextHop(ctx, out, req.Flow)
 		if err != nil {
-			s.log.Debug("no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
-			s.answer(tx, sip.NewResponse(req, 404, "No Route"))
+			s.log.DebugContext(ctx, "no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
+			s.answer(ctx, tx, sip.NewResponse(req, 404, "No Route"))
 
 			return
 		}
@@ -592,7 +593,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 
 	c, res := s.servedChain(ctx, req, out.URI, cx.SessionCaseTerminatingRegistered, cx.SessionCaseTerminatingUnregistered, 404)
 	if res != nil {
-		s.answer(tx, res)
+		s.answer(ctx, tx, res)
 		return
 	}
 
@@ -655,8 +656,8 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 	}
 
 	if len(groups) == 0 {
-		s.log.Debug("request to an unreachable user", slog.String("impu", called.String()))
-		s.answer(tx, sip.NewResponse(req, 480, ""))
+		s.log.DebugContext(ctx, "request to an unreachable user", slog.String("impu", called.String()))
+		s.answer(ctx, tx, sip.NewResponse(req, 480, ""))
 
 		return
 	}
@@ -678,8 +679,8 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 		code = serr.StatusCode
 	}
 
-	s.log.Debug("forking failed", slog.String("request", out.StartLine()), slog.Any("error", err))
-	s.answer(tx, sip.NewResponse(req, code, ""))
+	s.log.DebugContext(ctx, "forking failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+	s.answer(ctx, tx, sip.NewResponse(req, code, ""))
 }
 
 // DefaultGroupNoAnswer is how long the contacts of a group ring before the next group gets the
@@ -692,7 +693,7 @@ func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI,
 ) (proxy.Branch, bool) {
 	contact, err := sip.ParseURI(t.binding.Contact.URI)
 	if err != nil {
-		s.log.Warn("unusable registered contact", slog.String("contact", t.binding.Contact.URI), slog.Any("error", err))
+		s.log.WarnContext(ctx, "unusable registered contact", slog.String("contact", t.binding.Contact.URI), slog.Any("error", err))
 		return proxy.Branch{}, false
 	}
 
@@ -709,7 +710,7 @@ func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI,
 
 	to, err := s.nextHop(ctx, r, in)
 	if err != nil {
-		s.log.Warn("no route to the registered contact", slog.String("contact", t.binding.Contact.URI),
+		s.log.WarnContext(ctx, "no route to the registered contact", slog.String("contact", t.binding.Contact.URI),
 			slog.String("path", t.binding.Contact.Path), slog.Any("error", err))
 
 		return proxy.Branch{}, false
@@ -760,12 +761,12 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(co
 func (s *Sessions) pcscfFailure(t target, next func(context.Context, proxy.Reply) proxy.Verdict) func(context.Context, proxy.Reply) proxy.Verdict {
 	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		if res := r.Response; res != nil && res.StatusCode == 404 && pcscfNotFound(t.binding.Contact.Path, res) {
-			s.log.Info("the P-CSCF has no binding for the contact", slog.String("impi", t.reg.IMPI),
+			s.log.InfoContext(ctx, "the P-CSCF has no binding for the contact", slog.String("impi", t.reg.IMPI),
 				slog.String("contact", t.binding.Contact.URI))
 
 			res.StatusCode, res.Reason = 430, sip.ReasonPhrase(430)
 
-			s.r.pcscfLost(t.reg.IMPI, t.reg.ID, t.binding.ID)
+			s.r.pcscfLost(ctx, t.reg.IMPI, t.reg.ID, t.binding.ID)
 		}
 
 		return next(ctx, r)
@@ -830,9 +831,11 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, track bool) pro
 
 // dialogTarget is where the requests the S-CSCF generates within a dialog go, such as the BYEs that release it, from
 // the S-CSCF's address on in, the flow of the initial request: their next hop, whatever its form (RFC 3261 §8.1.2).
-func (s *Sessions) dialogTarget(in sip.Flow) func(proxy.Side, *sip.Request) (proxy.Target, error) {
-	return func(_ proxy.Side, req *sip.Request) (proxy.Target, error) {
-		return s.nextHop(s.r.ctx, req, in)
+// dialogTarget is where a request the dialog generates goes, resolved in the trace of ctx, within the registrar's
+// lifetime: a request the dialog generates on a timer has no other.
+func (s *Sessions) dialogTarget(in sip.Flow) func(context.Context, proxy.Side, *sip.Request) (proxy.Target, error) {
+	return func(ctx context.Context, _ proxy.Side, req *sip.Request) (proxy.Target, error) {
+		return s.nextHop(lifetime.With(s.r.ctx, ctx), req, in)
 	}
 }
 
@@ -841,7 +844,7 @@ func (s *Sessions) inDialog(ctx context.Context, tx *transaction.ServerTransacti
 	req := tx.Request()
 
 	if len(removed) == 0 {
-		s.log.Debug("in-dialog request not routed through the S-CSCF", slog.String("request", req.StartLine()),
+		s.log.DebugContext(ctx, "in-dialog request not routed through the S-CSCF", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
 		s.respond(tx, sip.NewResponse(req, 403, ""))
 
@@ -870,7 +873,7 @@ func (s *Sessions) forwardInDialog(ctx context.Context, tx *transaction.ServerTr
 
 	to, err := s.nextHop(ctx, out, req.Flow)
 	if err != nil {
-		s.log.Debug("no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
+		s.log.DebugContext(ctx, "no next hop", slog.String("request", out.StartLine()), slog.Any("error", err))
 		s.respond(tx, sip.NewResponse(req, 404, "No Route"))
 
 		return
@@ -1056,15 +1059,15 @@ func (s *Sessions) forward(ctx context.Context, tx *transaction.ServerTransactio
 		code = serr.StatusCode
 	}
 
-	s.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
-	s.answer(tx, sip.NewResponse(tx.Request(), code, ""))
+	s.log.DebugContext(ctx, "forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+	s.answer(ctx, tx, sip.NewResponse(tx.Request(), code, ""))
 }
 
 // answer answers a request with a response of the S-CSCF's, through the proxy if it has begun forwarding it.
-func (s *Sessions) answer(tx *transaction.ServerTransaction, res *sip.Response) {
+func (s *Sessions) answer(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) {
 	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 
-	if err := s.proxy.Relay(tx, res); err == nil {
+	if err := s.proxy.Relay(ctx, tx, res); err == nil {
 		return
 	}
 

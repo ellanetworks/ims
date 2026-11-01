@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -65,7 +66,7 @@ func TestCallLogs(t *testing.T) {
 
 	ca, _, _ := w.call(police)
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 	w.users["alice"].expect(t, "ended")
 

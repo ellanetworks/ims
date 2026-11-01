@@ -456,12 +456,14 @@ func (l *load) register(i int, expires time.Duration) error {
 
 	send := c.Unregister
 	if expires > 0 {
-		send = func(done func(*sip.Response, error)) error { return c.Register(expires, done) }
+		send = func(ctx context.Context, done func(*sip.Response, error)) error {
+			return c.Register(ctx, expires, done)
+		}
 	}
 
 	done := make(chan error, 1)
 
-	if err := send(func(res *sip.Response, err error) {
+	if err := send(context.Background(), func(res *sip.Response, err error) {
 		if err == nil && res.StatusCode != 200 {
 			err = fmt.Errorf("REGISTER of u%d: %d", i, res.StatusCode)
 		}
@@ -547,7 +549,7 @@ func (l *load) round(tb testing.TB, timer benchTimer, s samples, talk, interval 
 
 		g.start = now()
 
-		c, err := l.users[g.initiator].client.Call(g.uri)
+		c, err := l.users[g.initiator].client.Call(context.Background(), g.uri)
 		if err != nil {
 			tb.Fatal(err)
 		}
@@ -599,7 +601,7 @@ func (l *load) round(tb testing.TB, timer benchTimer, s samples, talk, interval 
 	for _, g := range l.groups {
 		s.add("ptt", time.Duration(g.pttGranted.Load()-g.pttStart))
 		g.secondCall.Load().ReleasePTT()
-		g.call.Leave()
+		g.call.Leave(context.Background())
 	}
 
 	l.waitFor(tb, fmt.Sprintf("%d members out of the calls", members), func() bool { return l.ended.Load() == members })

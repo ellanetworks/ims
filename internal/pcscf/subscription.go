@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -159,7 +161,7 @@ func (ss *subscriptions) start(ctx context.Context, impi string) {
 
 	target, err := sip.ParseURI(impu)
 	if err != nil {
-		ss.p.log.Debug("no identity to subscribe to", slog.String("impi", impi), slog.Any("error", err))
+		ss.p.log.DebugContext(ctx, "no identity to subscribe to", slog.String("impi", impi), slog.Any("error", err))
 		return
 	}
 
@@ -187,11 +189,11 @@ func (ss *subscriptions) start(ctx context.Context, impi string) {
 	s.subscribe = req
 	ss.put(s)
 
-	ss.p.log.Debug("subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
+	ss.p.log.DebugContext(ctx, "subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
 
 	if _, err := ss.p.cfg.Layer.Request(ctx, req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
-		ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", impi), slog.Any("error", err))
-		ss.removeLocked(s)
+		ss.p.log.WarnContext(ctx, "SUBSCRIBE failed", slog.String("impi", impi), slog.Any("error", err))
+		ss.removeLocked(ctx, s)
 	}
 }
 
@@ -221,13 +223,13 @@ func (t *subscribeTransaction) HandleResponse(ctx context.Context, res *sip.Resp
 }
 
 func (t *subscribeTransaction) HandleError(ctx context.Context, err error) {
-	t.ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", t.s.impi), slog.Any("error", err))
+	t.ss.p.log.WarnContext(ctx, "SUBSCRIBE failed", slog.String("impi", t.s.impi), slog.Any("error", err))
 	t.ss.failed(ctx, t.s, t.req, 408)
 }
 
 func (ss *subscriptions) answered(ctx context.Context, s *subscription, req *sip.Request, res *sip.Response) {
 	if !res.IsSuccess() {
-		ss.p.log.Warn("SUBSCRIBE refused", slog.String("impi", s.impi), slog.Int("code", res.StatusCode))
+		ss.p.log.WarnContext(ctx, "SUBSCRIBE refused", slog.String("impi", s.impi), slog.Int("code", res.StatusCode))
 		ss.failed(ctx, s, req, res.StatusCode)
 
 		return
@@ -243,22 +245,22 @@ func (ss *subscriptions) answered(ctx context.Context, s *subscription, req *sip
 	if s.dialog == nil {
 		d, err := dialog.NewUAC(req, res)
 		if err != nil {
-			ss.p.log.Warn("SUBSCRIBE answered without a dialog", slog.String("impi", s.impi), slog.Any("error", err))
-			ss.removeLocked(s)
+			ss.p.log.WarnContext(ctx, "SUBSCRIBE answered without a dialog", slog.String("impi", s.impi), slog.Any("error", err))
+			ss.removeLocked(ctx, s)
 
 			return
 		}
 
 		s.dialog = d
 	} else if err := s.dialog.ReceiveResponse(res); err != nil {
-		ss.p.log.Debug("SUBSCRIBE response outside its dialog", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.p.log.DebugContext(ctx, "SUBSCRIBE response outside its dialog", slog.String("impi", s.impi), slog.Any("error", err))
 	}
 
 	if v, err := res.Header.Expires(); err == nil {
 		s.expires = ss.p.clock.Now().Add(time.Duration(v) * time.Second)
 	}
 
-	ss.saveLocked(s)
+	ss.saveLocked(ctx, s)
 	ss.schedule(ctx, s)
 }
 
@@ -274,15 +276,15 @@ func (ss *subscriptions) failed(ctx context.Context, s *subscription, req *sip.R
 
 	switch {
 	case initial:
-		ss.removeLocked(s)
+		ss.removeLocked(ctx, s)
 	case code == 481:
-		ss.removeLocked(s)
+		ss.removeLocked(ctx, s)
 		ss.mu.Unlock()
 		ss.start(ctx, s.impi)
 
 		return
 	case !s.expires.After(ss.p.clock.Now()):
-		ss.removeLocked(s)
+		ss.removeLocked(ctx, s)
 		ss.mu.Unlock()
 		ss.start(ctx, s.impi)
 
@@ -294,12 +296,12 @@ func (ss *subscriptions) failed(ctx context.Context, s *subscription, req *sip.R
 	ss.mu.Unlock()
 }
 
-func (ss *subscriptions) stop(impi string) {
+func (ss *subscriptions) stop(ctx context.Context, impi string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	if s, ok := ss.byIMPI[impi]; ok {
-		ss.removeLocked(s)
+		ss.removeLocked(ctx, s)
 	}
 }
 
@@ -312,6 +314,7 @@ func toTag(req *sip.Request) string {
 	return to.Tag()
 }
 
+// schedule arms the refresh of s, which ctx caused.
 func (ss *subscriptions) schedule(ctx context.Context, s *subscription) {
 	if s.timer != nil {
 		s.timer.Stop()
@@ -328,23 +331,23 @@ func (ss *subscriptions) schedule(ctx context.Context, s *subscription) {
 		at = left - refreshAhead
 	}
 
-	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.detachedRefresh(ctx, s) })
+	cause := trace.SpanContextFromContext(ctx)
+	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.detachedRefresh(cause, s) })
 }
 
-// detachedRefresh refreshes s from its timer, armed by cause: in a trace of its own (PCSCF.detach).
-func (ss *subscriptions) detachedRefresh(cause context.Context, s *subscription) {
-	ctx, span := ss.p.detach(cause, "reg event refresh")
-	defer span.End()
-
-	ss.refresh(ctx, s)
+// detachedRefresh refreshes s from its timer, armed by cause: in a trace of its own, linked to cause.
+func (ss *subscriptions) detachedRefresh(cause trace.SpanContext, s *subscription) {
+	ctx, span := ss.p.detached.Start(ss.p.ctx, "reg event refresh", cause)
+	tracing.End(span, ss.refresh(ctx, s))
 }
 
-func (ss *subscriptions) refresh(ctx context.Context, s *subscription) {
+// refresh refreshes s, and returns why it could not send the re-SUBSCRIBE, if it had to and could not.
+func (ss *subscriptions) refresh(ctx context.Context, s *subscription) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	if s.removed || ss.closed {
-		return
+		return nil
 	}
 
 	now := ss.p.clock.Now()
@@ -352,27 +355,28 @@ func (ss *subscriptions) refresh(ctx context.Context, s *subscription) {
 	reg, ok := ss.p.anyRegistration(s.impi)
 	if !ok || s.dialog == nil {
 		if !s.expires.After(now) {
-			ss.removeLocked(s)
-			return
+			ss.removeLocked(ctx, s)
+			return nil
 		}
 
-		s.timer = ss.p.clock.AfterFunc(s.expires.Sub(now), func() { ss.detachedRefresh(ctx, s) })
+		cause := trace.SpanContextFromContext(ctx)
+		s.timer = ss.p.clock.AfterFunc(s.expires.Sub(now), func() { ss.detachedRefresh(cause, s) })
 
-		return
+		return nil
 	}
 
 	req, err := s.dialog.NewRequest("SUBSCRIBE")
 	if err != nil {
-		ss.removeLocked(s)
-		return
+		ss.removeLocked(ctx, s)
+		return err
 	}
 
 	tr, dest, err := sip.NextHop(req)
 	if err != nil {
-		ss.p.log.Warn("no destination for the re-SUBSCRIBE", slog.String("impi", s.impi), slog.Any("error", err))
-		ss.removeLocked(s)
+		ss.p.log.WarnContext(ctx, "no destination for the re-SUBSCRIBE", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.removeLocked(ctx, s)
 
-		return
+		return err
 	}
 
 	local := netip.AddrPortFrom(reg.PCSCFAddress, ss.p.cfg.Port)
@@ -381,15 +385,20 @@ func (ss *subscriptions) refresh(ctx context.Context, s *subscription) {
 	ss.p.subscribeHeaders(req, reg)
 	req.Flow = sip.Flow{Transport: tr, Local: local, Remote: dest}
 
-	ss.saveLocked(s)
+	ss.saveLocked(ctx, s)
 
 	if _, err := ss.p.cfg.Layer.Request(ctx, req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
-		ss.p.log.Warn("re-SUBSCRIBE failed", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.p.log.WarnContext(ctx, "re-SUBSCRIBE failed", slog.String("impi", s.impi), slog.Any("error", err))
 		ss.schedule(ctx, s)
+
+		return err
 	}
+
+	return nil
 }
 
-func (ss *subscriptions) removeLocked(s *subscription) {
+// removeLocked removes s; ctx is what removes it.
+func (ss *subscriptions) removeLocked(ctx context.Context, s *subscription) {
 	if s.removed {
 		return
 	}
@@ -409,16 +418,17 @@ func (ss *subscriptions) removeLocked(s *subscription) {
 	}
 
 	if store := ss.p.cfg.Registrations; store != nil {
-		ctx, cancel := context.WithTimeout(ss.p.ctx, storeTimeout)
+		ctx, cancel := storeContext(ss.p.ctx, ctx)
 		if err := store.DeletePCSCFSubscription(ctx, s.impi); err != nil && !errors.Is(err, db.ErrNotFound) {
-			ss.p.log.Error("deleting the subscription failed", slog.String("impi", s.impi), slog.Any("error", err))
+			ss.p.log.ErrorContext(ctx, "deleting the subscription failed", slog.String("impi", s.impi), slog.Any("error", err))
 		}
 
 		cancel()
 	}
 }
 
-func (ss *subscriptions) saveLocked(s *subscription) {
+// saveLocked stores s; ctx is what changed it.
+func (ss *subscriptions) saveLocked(ctx context.Context, s *subscription) {
 	store := ss.p.cfg.Registrations
 	if store == nil || s.dialog == nil {
 		return
@@ -429,14 +439,14 @@ func (ss *subscriptions) saveLocked(s *subscription) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(ss.p.ctx, storeTimeout)
+	ctx, cancel := storeContext(ss.p.ctx, ctx)
 	defer cancel()
 
 	if _, err := store.SavePCSCFSubscription(ctx, db.PCSCFSubscription{
 		IMPI: s.impi, IMPU: s.impu, CallID: s.callID, LocalTag: s.localTag, Dialog: snap, Version: s.version,
 		ExpiresAt: s.expires,
 	}); err != nil {
-		ss.p.log.Error("saving the subscription failed", slog.String("impi", s.impi), slog.Any("error", err))
+		ss.p.log.ErrorContext(ctx, "saving the subscription failed", slog.String("impi", s.impi), slog.Any("error", err))
 	}
 }
 
@@ -482,7 +492,7 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 		}
 
 		if i, err := reginfo.Decode(req.Body); err != nil {
-			ss.p.log.Warn("unreadable reg event document: subscribing again", slog.String("impi", s.impi),
+			ss.p.log.WarnContext(ctx, "unreadable reg event document: subscribing again", slog.String("impi", s.impi),
 				slog.Any("error", err))
 
 			unreadable = true
@@ -545,20 +555,20 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 	}
 
 	if terminated {
-		ss.removeLocked(s)
+		ss.removeLocked(ctx, s)
 	} else {
 		if state.Expires != nil {
 			s.expires = ss.p.clock.Now().Add(time.Duration(*state.Expires) * time.Second)
 		}
 
-		ss.saveLocked(s)
+		ss.saveLocked(ctx, s)
 		ss.schedule(ctx, s)
 	}
 
 	ss.mu.Unlock()
 
 	if info != nil {
-		ss.p.apply(s.impi, *info)
+		ss.p.apply(ctx, s.impi, *info)
 	}
 
 	if unreadable {
@@ -574,7 +584,7 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 func (ss *subscriptions) again(ctx context.Context, s *subscription, terminated bool, reason string) {
 	switch {
 	case !terminated:
-		ss.refresh(ctx, s)
+		_ = ss.refresh(ctx, s)
 	case reason != sip.SubscriptionRejected:
 		ss.start(ctx, s.impi)
 	}
@@ -586,11 +596,12 @@ func mediaType(ct string) string {
 	return strings.TrimSpace(mt)
 }
 
-func (p *PCSCF) apply(impi string, info reginfo.Reginfo) {
+// apply applies the reg event document of the NOTIFY ctx is of.
+func (p *PCSCF) apply(ctx context.Context, impi string, info reginfo.Reginfo) {
 	now := p.clock.Now()
 	ended := map[regKey]reginfo.Event{}
 
-	removed := p.regs.update(impi, func(r *db.PCSCFRegistration) bool {
+	removed := p.regs.update(ctx, impi, func(r *db.PCSCFRegistration) bool {
 		active := map[string]bool{}
 		mentioned := map[string]bool{}
 
@@ -659,17 +670,17 @@ func (p *PCSCF) apply(impi string, info reginfo.Reginfo) {
 	})
 
 	for _, r := range removed {
-		p.log.Debug("registration ended by the network", slog.String("impi", impi), slog.String("ue", r.UEAddress.Addr().String()))
+		p.log.DebugContext(ctx, "registration ended by the network", slog.String("impi", impi), slog.String("ue", r.UEAddress.Addr().String()))
 
 		if p.sas != nil {
 			p.sas.deregistered(regKeyOf(&r))
 		}
 
-		p.endPolicy(r, terminationCause(ended[regKeyOf(&r)]), 0)
+		p.endPolicy(ctx, r, terminationCause(ended[regKeyOf(&r)]), 0)
 	}
 
 	if len(removed) > 0 {
-		p.unsubscribeIfIdle(impi)
+		p.unsubscribeIfIdle(ctx, impi)
 	}
 }
 

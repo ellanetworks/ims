@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/core/nas"
 	"github.com/ellanetworks/core/nas/sms"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
@@ -71,6 +72,7 @@ func (a *AS) handleMessage(ctx context.Context, r *ua.Request) {
 	sender := a.sender(req)
 	rpdu := req.Content().Body
 
+	// Past the 202, in the MESSAGE's trace: the I/O of receive binds to the lifetime of the AS.
 	a.work.Go(func() { a.receive(ctx, sender, rpdu) })
 }
 
@@ -169,7 +171,7 @@ func (a *AS) receive(ctx context.Context, s sender, rpdu []byte) {
 				p.deliver(undecodableReport(h.Reference))
 			}
 		default:
-			a.log.Debug("undecodable RPDU dropped", slog.String("call_id", s.callID), slog.Any("error", err))
+			a.log.DebugContext(ctx, "undecodable RPDU dropped", slog.String("call_id", s.callID), slog.Any("error", err))
 		}
 
 		return
@@ -177,7 +179,7 @@ func (a *AS) receive(ctx context.Context, s sender, rpdu []byte) {
 
 	switch m := msg.(type) {
 	case *sms.RPData:
-		report := a.submit(s, m)
+		report := a.submit(ctx, s, m)
 		_, ok := report.(*sms.RPAck)
 		a.metrics.count(directionMO, "smsc", ok)
 		a.answer(ctx, s, report)
@@ -195,7 +197,7 @@ func (a *AS) receive(ctx context.Context, s sender, rpdu []byte) {
 			return
 		}
 
-		a.log.Debug("delivery report of no short message the IP-SM-GW delivered", slog.String("call_id", s.callID))
+		a.log.DebugContext(ctx, "delivery report of no short message the IP-SM-GW delivered", slog.String("call_id", s.callID))
 	}
 }
 
@@ -217,12 +219,13 @@ func rpErrorFor(rpdu []byte, err error) *sms.RPError {
 
 // submit forwards the short message of m to an SMSC of its service centre address, an international E.164 number
 // (TS 24.341 §5.3.3.4.1 step 2), and returns the RPDU of its submit report (TS 24.341 §5.3.3.4.3): an RP-ACK of the
-// SMS-SUBMIT-REPORT of the SMSC, or an RP-ERROR of the cause of TS 23.040 §11.3.
-func (a *AS) submit(s sender, m *sms.RPData) sms.RPMessage {
+// SMS-SUBMIT-REPORT of the SMSC, or an RP-ERROR of the cause of TS 23.040 §11.3. The MO-Forward is in the trace of
+// ctx, that of the MESSAGE, whose transaction may have ended: it is bound to the lifetime of the AS.
+func (a *AS) submit(ctx context.Context, s sender, m *sms.RPData) sms.RPMessage {
 	log := a.log.With(slog.String("call_id", s.callID), slog.Uint64("rp_reference", uint64(m.Reference)))
 
 	reject := func(cause sms.RPCause, diagnostic []byte, reason string, err error) sms.RPMessage {
-		log.Info("mobile originated short message rejected", slog.String("reason", reason),
+		log.InfoContext(ctx, "mobile originated short message rejected", slog.String("reason", reason),
 			slog.String("rp_cause", cause.String()), slog.Any("error", err))
 
 		var ud []byte
@@ -247,7 +250,7 @@ func (a *AS) submit(s sender, m *sms.RPData) sms.RPMessage {
 		return reject(sms.RPCauseInvalidMandatoryInformation, nil, "RP-DATA without a TPDU", nil)
 	}
 
-	ctx, cancel := context.WithTimeout(a.life, moTimeout)
+	ctx, cancel := context.WithTimeout(lifetime.With(a.life, ctx), moTimeout)
 	defer cancel()
 
 	ui, err := a.smscs.Forward(ctx, sgd.MOForwardShortMessage{
@@ -260,7 +263,7 @@ func (a *AS) submit(s sender, m *sms.RPData) sms.RPMessage {
 
 	switch {
 	case err == nil:
-		log.Info("mobile originated short message forwarded", slog.String("service_centre", d.Digits))
+		log.InfoContext(ctx, "mobile originated short message forwarded", slog.String("service_centre", d.Digits))
 
 		var ud []byte
 		if len(ui) > 0 {
@@ -320,7 +323,7 @@ func (a *AS) answer(ctx context.Context, s sender, msg sms.RPMessage) {
 		}
 
 		if body, err = msg.MarshalBinary(); err != nil {
-			a.log.Error("failed to encode an RPDU", slog.String("call_id", s.callID), slog.Any("error", err))
+			a.log.ErrorContext(ctx, "failed to encode an RPDU", slog.String("call_id", s.callID), slog.Any("error", err))
 			return
 		}
 	}
@@ -338,7 +341,7 @@ func (a *AS) answer(ctx context.Context, s sender, msg sms.RPMessage) {
 	}
 
 	if target.Scheme == "" {
-		a.log.Warn("no public user identity to answer a short message to", slog.String("call_id", s.callID))
+		a.log.WarnContext(ctx, "no public user identity to answer a short message to", slog.String("call_id", s.callID))
 		return
 	}
 
@@ -362,13 +365,14 @@ func (a *AS) answer(ctx context.Context, s sender, msg sms.RPMessage) {
 	err = a.agent.Request(ctx, req, func(res *sip.Response, err error) {
 		switch {
 		case err != nil:
-			a.log.Warn("short message answer not sent", slog.String("call_id", s.callID), slog.Any("error", err))
+			a.log.WarnContext(ctx, "short message answer not sent", slog.String("call_id", s.callID), slog.Any("error", err))
 		case res.StatusCode >= 300:
-			a.log.Warn("short message answer refused", slog.String("call_id", s.callID), slog.Int("status", res.StatusCode))
+			a.log.WarnContext(ctx, "short message answer refused", slog.String("call_id", s.callID),
+				slog.Int("status", res.StatusCode))
 		}
 	})
 	if err != nil {
-		a.log.Warn("short message answer not sent", slog.String("call_id", s.callID), slog.Any("error", err))
+		a.log.WarnContext(ctx, "short message answer not sent", slog.String("call_id", s.callID), slog.Any("error", err))
 	}
 }
 

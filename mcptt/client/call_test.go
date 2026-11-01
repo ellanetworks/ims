@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -27,7 +28,7 @@ import (
 func call(t *testing.T, e *env, a, b *user) (*client.Call, *client.Call) {
 	t.Helper()
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +239,7 @@ func TestGroupCall(t *testing.T) {
 	a.expect(t, "floor:idle")
 	b.expect(t, "transmit:off", "floor:idle")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	a.expect(t, "ended")
@@ -265,7 +266,7 @@ func TestImplicitGranted(t *testing.T) {
 
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.ImplicitRequest, c.Granted = true, true })
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +283,7 @@ func TestImplicitGranted(t *testing.T) {
 		t.Errorf("heard SSRC %d, want %d; %d sent", es[0].SSRC, s.originLeg.AudioSSRC(), ca.Sent())
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	a.expect(t, "transmit:off", "ended")
@@ -299,7 +300,7 @@ func TestFloorAfterOK(t *testing.T) {
 
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.ImplicitRequest, c.Granted = true, true })
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +311,7 @@ func TestFloorAfterOK(t *testing.T) {
 	a.expectGrant(t, "established", "floor:granted", "transmit:on")
 	b.expectUnordered(t, "incoming", "established", "floor:taken", "heard")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	a.expect(t, "transmit:off", "ended")
@@ -326,7 +327,7 @@ func TestManualCommencement(t *testing.T) {
 	s.answerMode = sip.AnswerModeManual
 	a := e.user("alice", 1, s.addr, nil)
 
-	if _, err := a.Call(mustURI(t, fire)); err != nil {
+	if _, err := a.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -443,7 +444,7 @@ func TestMemberLeaves(t *testing.T) {
 	ca, cb := call(t, e, a, b)
 	a.expect(t, "established", "floor:idle")
 
-	cb.Leave()
+	cb.Leave(context.Background())
 	e.n.Quiesce()
 
 	es := b.expect(t, "ended")
@@ -457,7 +458,7 @@ func TestMemberLeaves(t *testing.T) {
 		t.Errorf("%s: %+v", b.id, st)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	a.expect(t, "ended")
@@ -472,7 +473,7 @@ func TestCancel(t *testing.T) {
 	s.answerMode = sip.AnswerModeManual
 	a := e.user("alice", 1, s.addr, nil)
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +482,7 @@ func TestCancel(t *testing.T) {
 
 	es := b.expect(t, "incoming")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	got := a.expect(t, "failed")
@@ -508,7 +509,7 @@ func TestFloorBeforeOK(t *testing.T) {
 
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.ImplicitRequest = true })
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +519,7 @@ func TestFloorBeforeOK(t *testing.T) {
 	a.expectGrant(t, "established", "floor:granted", "transmit:on")
 	b.expectUnordered(t, "incoming", "established", "floor:taken", "heard")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 
 	a.expect(t, "transmit:off", "ended")
@@ -534,7 +535,7 @@ func TestBadAnswer(t *testing.T) {
 	s.badAudio = true
 	a := e.user("alice", 1, s.addr, nil)
 
-	if _, err := a.Call(mustURI(t, fire)); err != nil {
+	if _, err := a.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -566,7 +567,7 @@ func TestNoPort(t *testing.T) {
 	s := e.standIn(b)
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.MinPort, c.MaxPort = 30000, 30005 })
 
-	if _, err := a.Call(mustURI(t, fire)); err != nil {
+	if _, err := a.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -575,7 +576,7 @@ func TestNoPort(t *testing.T) {
 	b.expectUnordered(t, "incoming", "floor:idle", "established")
 	a.expect(t, "established", "floor:idle")
 
-	if _, err := a.Call(mustURI(t, fire)); !errors.Is(err, client.ErrNoPort) {
+	if _, err := a.Call(context.Background(), mustURI(t, fire)); !errors.Is(err, client.ErrNoPort) {
 		t.Errorf("second call: %v", err)
 	}
 
@@ -679,17 +680,17 @@ func TestOneCallAGroup(t *testing.T) {
 
 	b.expect(t)
 
-	if _, err := b.Call(mustURI(t, fire)); !errors.Is(err, client.ErrInCall) {
+	if _, err := b.Call(context.Background(), mustURI(t, fire)); !errors.Is(err, client.ErrInCall) {
 		t.Errorf("second call: %v", err)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 	a.expect(t, "ended")
 	b.expect(t, "ended")
 
 	// The group free again: the call not refused by the client (the stand-in serves one call; not run further).
-	if _, err := b.Call(mustURI(t, fire)); errors.Is(err, client.ErrInCall) {
+	if _, err := b.Call(context.Background(), mustURI(t, fire)); errors.Is(err, client.ErrInCall) {
 		t.Errorf("a call after the end: %v", err)
 	}
 }
@@ -742,7 +743,7 @@ func TestSessionTimerAndProbe(t *testing.T) {
 		t.Errorf("end %+v", es[1].End)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 	a.expect(t, "ended")
 }
@@ -759,7 +760,7 @@ func TestImplicitNotAccepted(t *testing.T) {
 
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.ImplicitRequest, c.Granted = true, true })
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +778,7 @@ func TestImplicitNotAccepted(t *testing.T) {
 	e.n.Advance(time.Second)
 	a.expect(t, "transmit:off", "floor:idle")
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 	a.expect(t, "ended")
 }
@@ -790,7 +791,7 @@ func TestImplicitReleasedEarly(t *testing.T) {
 
 	a := e.user("alice", 1, s.addr, func(c *client.Config) { c.ImplicitRequest, c.Granted = true, true })
 
-	ca, err := a.Call(mustURI(t, fire))
+	ca, err := a.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,7 +806,7 @@ func TestImplicitReleasedEarly(t *testing.T) {
 		t.Errorf("%d sent", ca.Sent())
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	e.n.Quiesce()
 	a.expect(t, "ended")
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -450,4 +451,248 @@ func TestCancelIsASpanLinkedToTheInvite(t *testing.T) {
 
 	wantAttr(t, cancelSpan, "sip.response.status_code", int64(200))
 	wantAttr(t, inviteSpan, "sip.response.status_code", int64(487))
+}
+
+func TestHandlerContextEndsWithTheTransaction(t *testing.T) {
+	h := newTraceHarness(t)
+
+	h.trusted.Send(sip.UDP, servedA, tracedRequest("MESSAGE", trustedPeer, servedA))
+
+	got := h.tu.NextRequest()
+
+	select {
+	case <-got.Ctx.Done():
+		t.Fatal("the context ended before the transaction")
+	default:
+	}
+
+	h.respond(got, 200)
+
+	// Timer J (RFC 3261 §17.2.2), zero on a reliable flow, ends the transaction.
+	h.clock.Advance(64 * t1)
+
+	select {
+	case <-got.Ctx.Done():
+	case <-time.After(siptest.Timeout):
+		t.Fatal("the context outlived the transaction")
+	}
+
+	if err := context.Cause(got.Ctx); !errors.Is(err, transaction.ErrTerminated) {
+		t.Fatalf("cause %v, want ErrTerminated", err)
+	}
+}
+
+func TestHandlerContextEndsWithACancel(t *testing.T) {
+	h := newTraceHarness(t)
+
+	invite := tracedRequest("INVITE", trustedPeer, servedA)
+	h.trusted.Send(sip.UDP, servedA, invite)
+
+	got := h.tu.NextRequest()
+	h.respond(got, 180)
+
+	cancel, err := sip.NewCancel(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.trusted.Send(sip.UDP, servedA, cancel)
+	h.tu.NextCancel()
+
+	select {
+	case <-got.Ctx.Done():
+	case <-time.After(siptest.Timeout):
+		t.Fatal("the INVITE's context did not end with its CANCEL")
+	}
+
+	if err := context.Cause(got.Ctx); !errors.Is(err, transaction.ErrCanceled) {
+		t.Fatalf("cause %v, want ErrCanceled", err)
+	}
+}
+
+type ctxKey struct{}
+
+// capture is a client handler that keeps the context of its calls.
+type capture struct{ ctxs chan context.Context }
+
+func (c capture) HandleResponse(ctx context.Context, _ *sip.Response) { c.ctxs <- ctx }
+
+func (c capture) HandleError(ctx context.Context, _ error) { c.ctxs <- ctx }
+
+func TestClientHandlerContextKeepsTheCallersValues(t *testing.T) {
+	h := newTraceHarness(t)
+
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "caller"))
+	c := capture{ctxs: make(chan context.Context, 4)}
+
+	if _, err := h.l.Request(parent, newFlowRequest("OPTIONS", sip.UDP, servedA, trustedPeer), c); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+
+	req, _ := h.trusted.RecvRequest()
+	h.trusted.Send(sip.UDP, servedA, sip.NewResponse(req, 200, ""))
+
+	ctx := <-c.ctxs
+	if ctx.Value(ctxKey{}) != "caller" {
+		t.Fatal("the caller's values are lost")
+	}
+
+	if ctx.Err() != nil {
+		t.Fatal("the response's context ended with the caller's, not the layer's")
+	}
+}
+
+func TestUnknownMethodIsOther(t *testing.T) {
+	h := newTraceHarness(t)
+
+	h.trusted.Send(sip.UDP, servedA, tracedRequest("XYZZY", trustedPeer, servedA))
+
+	got := h.tu.NextRequest()
+	h.respond(got, 501)
+
+	s := h.ended(1)[0]
+	if s.Name() != "_OTHER" {
+		t.Fatalf("span %q, want _OTHER", s.Name())
+	}
+
+	wantAttr(t, s, "sip.request.method", "_OTHER")
+	wantAttr(t, s, "sip.request.method_original", "XYZZY")
+}
+
+func TestErrorStatusDoesNotQuoteTheRequest(t *testing.T) {
+	h := newTraceHarness(t)
+
+	rs := siptest.NewResponses(t)
+	if _, err := h.l.Request(context.Background(), newFlowRequest("OPTIONS", sip.UDP, servedA, trustedPeer), rs); err != nil {
+		t.Fatal(err)
+	}
+
+	h.trusted.RecvRequest()
+	h.clock.Advance(64 * t1)
+
+	if err := rs.NextError(); !errors.Is(err, transaction.ErrTimeout) {
+		t.Fatalf("error %v", err)
+	}
+
+	if got := h.ended(1)[0].Status().Description; got != "timeout" {
+		t.Fatalf("status description %q, want the error's type", got)
+	}
+}
+
+func TestChallengeIsNotAnError(t *testing.T) {
+	for _, code := range []int{401, 407} {
+		h := newTraceHarness(t)
+
+		rs := h.request(context.Background(), "REGISTER", servedA, trustedPeer)
+
+		req, _ := h.trusted.RecvRequest()
+		h.trusted.Send(sip.UDP, servedA, sip.NewResponse(req, code, ""))
+		wantCode(t, rs.Next(), code)
+
+		s := h.ended(1)[0]
+		if s.Status().Code != codes.Unset {
+			t.Fatalf("%d: status %v", code, s.Status())
+		}
+
+		wantNoAttr(t, s, "error.type")
+		wantAttr(t, s, "sip.response.status_code", int64(code))
+	}
+}
+
+func TestOwnCancelIsLinkedAndNotAnError(t *testing.T) {
+	h := newTraceHarness(t)
+
+	rs := siptest.NewResponses(t)
+
+	tx, err := h.l.Request(context.Background(), newFlowRequest("INVITE", sip.UDP, servedA, trustedPeer), rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invite, _ := h.trusted.RecvRequest()
+	h.trusted.Send(sip.UDP, servedA, sip.NewResponse(invite, 180, ""))
+	wantCode(t, rs.Next(), 180)
+
+	cause, causeSpan := h.tracer.Start(context.Background(), "hang up")
+	causeSpan.End()
+
+	if err := tx.Cancel(cause); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel, _ := h.trusted.RecvRequest()
+	if cancel.Method != "CANCEL" {
+		t.Fatalf("got %s", cancel.Method)
+	}
+
+	h.trusted.Send(sip.UDP, servedA, sip.NewResponse(cancel, 200, ""))
+	h.trusted.Send(sip.UDP, servedA, sip.NewResponse(invite, 487, ""))
+	wantCode(t, rs.Next(), 487)
+
+	spans := h.ended(3)
+	byName := func(n string) sdktrace.ReadOnlySpan {
+		return spans[slices.IndexFunc(spans, func(s sdktrace.ReadOnlySpan) bool { return s.Name() == n })]
+	}
+
+	inviteSpan, cancelSpan := byName("INVITE"), byName("CANCEL")
+	if cancelSpan.Parent().SpanID() != inviteSpan.SpanContext().SpanID() {
+		t.Fatalf("CANCEL parent %v, want the INVITE's span", cancelSpan.Parent())
+	}
+
+	if got := links(cancelSpan); !slices.Equal(got, []trace.SpanID{causeSpan.SpanContext().SpanID()}) {
+		t.Fatalf("CANCEL links %v, want its cause", got)
+	}
+
+	if inviteSpan.Status().Code != codes.Unset {
+		t.Fatalf("the 487 of our own CANCEL is an error: %v", inviteSpan.Status())
+	}
+}
+
+func TestResponsesCarryNoTraceContext(t *testing.T) {
+	h := newTraceHarness(t)
+
+	h.untrusted.Send(sip.UDP, servedA, tracedRequest("MESSAGE", untrustedPeer, servedA))
+
+	got := h.tu.NextRequest()
+
+	// A response relayed from the core, which carries its trace context.
+	res := sip.NewResponse(got.Req, 200, "")
+	res.Header.Set("traceparent", remoteTraceparent)
+	res.Header.Set("tracestate", "vendor=1")
+
+	if err := got.Tx.Respond(res); err != nil {
+		t.Fatal(err)
+	}
+
+	sent, _ := h.untrusted.RecvResponse()
+	if sent.Header.Has("traceparent") || sent.Header.Has("tracestate") {
+		t.Fatalf("trace context sent to a UE: %q", sent.Header.Get("traceparent"))
+	}
+}
+
+func TestLayerWithoutProviderTracesNothing(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	global := otel.GetTracerProvider()
+
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(global) })
+
+	l, tu := siptest.NewLayer(t, transaction.Config{Clock: siptest.NewClock()})
+	if err := l.Serve(servedA); err != nil {
+		t.Fatal(err)
+	}
+
+	peer := siptest.NewPeer(t, l, trustedPeer)
+	peer.Send(sip.UDP, servedA, tracedRequest("MESSAGE", trustedPeer, servedA))
+
+	got := tu.NextRequest()
+	if err := got.Tx.Respond(sip.NewResponse(got.Req, 200, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	if spans := rec.Ended(); len(spans) != 0 {
+		t.Fatalf("the global provider traced %v", names(spans))
+	}
 }
