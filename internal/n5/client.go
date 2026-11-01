@@ -17,6 +17,10 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/sbitls"
+	"github.com/ellanetworks/ims/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -45,6 +49,8 @@ type Config struct {
 	// Observe, if set, is called after each request with how long it took, and with the status of the response
 	// or, when none came, the error.
 	Observe func(status int, err error, elapsed time.Duration)
+	// TracerProvider traces the requests, which carry their trace context to the PCF; none when nil.
+	TracerProvider trace.TracerProvider
 }
 
 // Client invokes Npcf_PolicyAuthorization on one PCF, over HTTP/2: with prior knowledge for http (RFC 9113 §3.3),
@@ -104,7 +110,22 @@ func New(cfg Config) (*Client, error) {
 		c.transport.DialTLSContext = c.dialTLS
 	}
 
-	c.http = &http.Client{Transport: c.transport, CheckRedirect: c.checkRedirect}
+	var rt http.RoundTripper = c.transport
+	if cfg.TracerProvider != nil {
+		rt = otelhttp.NewTransport(templated{rt},
+			otelhttp.WithTracerProvider(cfg.TracerProvider),
+			otelhttp.WithPropagators(tracing.Propagator),
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				if t := templateOf(r.Context()); t != "" {
+					return r.Method + " " + t
+				}
+
+				return r.Method
+			}),
+		)
+	}
+
+	c.http = &http.Client{Transport: rt, CheckRedirect: c.checkRedirect}
 
 	return c, nil
 }
@@ -333,7 +354,8 @@ type response struct {
 }
 
 func (c *Client) do(ctx context.Context, op Op, method, target, contentType string, body []byte) (*response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.WithValue(ctx, templateKey{}, op.template()), method, target,
+		bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -605,4 +627,36 @@ func mediaType(h http.Header) string {
 	}
 
 	return ""
+}
+
+type templateKey struct{}
+
+// template is the URI template of the resource of an operation (TS 29.514 §5.3.1), under the API root.
+func (o Op) template() string {
+	switch o {
+	case OpCreate:
+		return AppSessionsPath
+	case OpModify:
+		return AppSessionsPath + "/{appSessionId}"
+	case OpDelete:
+		return AppSessionsPath + "/{appSessionId}/" + DeleteSegment
+	}
+
+	return ""
+}
+
+func templateOf(ctx context.Context) string {
+	t, _ := ctx.Value(templateKey{}).(string)
+	return t
+}
+
+// templated sets the URI template of a request on its client span (url.template), which names the span.
+type templated struct{ next http.RoundTripper }
+
+func (t templated) RoundTrip(req *http.Request) (*http.Response, error) {
+	if tmpl := templateOf(req.Context()); tmpl != "" {
+		trace.SpanFromContext(req.Context()).SetAttributes(semconv.URLTemplate(tmpl))
+	}
+
+	return t.next.RoundTrip(req)
 }

@@ -310,7 +310,7 @@ func (tp *thirdParty) send(ctx context.Context) {
 
 	tp.timer = r.clock.AfterFunc(r.cfg.ASTimeout, func() { tp.failed(errors.New("no response in time")) })
 
-	if _, err := r.cfg.Layer.Request(req, tp); err != nil {
+	if _, err := r.cfg.Layer.Request(ctx, req, tp); err != nil {
 		tp.timer.Stop()
 		tp.failed(err)
 	}
@@ -318,7 +318,7 @@ func (tp *thirdParty) send(ctx context.Context) {
 
 // HandleResponse takes any response in time as the AS's, and keeps its term-ioi; a 408 or a 5xx fails the REGISTER
 // (TS 24.229 §5.4.1.7).
-func (tp *thirdParty) HandleResponse(res *sip.Response) {
+func (tp *thirdParty) HandleResponse(ctx context.Context, res *sip.Response) {
 	tp.timer.Stop()
 
 	if ioi := termIOIOf(res); ioi != "" {
@@ -334,7 +334,7 @@ func (tp *thirdParty) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (tp *thirdParty) HandleError(err error) {
+func (tp *thirdParty) HandleError(ctx context.Context, err error) {
 	tp.timer.Stop()
 	tp.failed(err)
 }
@@ -358,7 +358,7 @@ func (tp *thirdParty) failed(err error) {
 			slog.String("impi", tp.impi), slog.Any("error", err))
 
 		r.background(tp.impi, func(ctx context.Context) {
-			r.send(r.deregisterBindings(ctx, tp.impi, tp.ev.reg.ID, tp.ev.bindings))
+			r.send(ctx, r.deregisterBindings(ctx, tp.impi, tp.ev.reg.ID, tp.ev.bindings))
 		})
 	})
 }
@@ -398,7 +398,7 @@ func (r *Registrar) deregisterBindings(ctx context.Context, impi string, regID i
 	r.log.Info("contacts deregistered by the network", slog.String("impi", impi), slog.String("impu", reg.IMPU),
 		slog.Int("contacts", len(removed)))
 
-	r.releaseCalls(st, []removal{rm})
+	r.releaseCalls(ctx, st, []removal{rm})
 
 	r.deregistered(rm)
 

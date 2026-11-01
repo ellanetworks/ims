@@ -107,6 +107,8 @@ func New(cfg Config) (*Server, error) {
 
 	if cfg.Mode == registrar.ThroughIMS {
 		u.Transaction.Filter = s.trustDomain(u.Transaction.Filter)
+		// Trace context crosses the flows of the trust domain only (W3C Trace Context §6.1); in direct mode, none.
+		u.Transaction.TraceContext = func(f sip.Flow) bool { return s.trusted(f.Remote.Addr()) }
 	}
 
 	u.Transaction.OnServerDone = s.logTransaction(u.Transaction.OnServerDone)
@@ -157,6 +159,7 @@ func New(cfg Config) (*Server, error) {
 	s.reg = registrar.New(registrar.Config{
 		Source: cfg.Source, Mode: cfg.Mode, Store: store, StrandOf: s.impuStrand, Trusted: s.trusted, Agent: a,
 		HomeDomain: cfg.HomeDomain, Tokens: cfg.Tokens, Affiliations: s.part, Clock: a.Layer().Clock(), Logger: s.log,
+		TracerProvider: a.Layer().TracerProvider(),
 	})
 
 	// Direct mode reaches the clients at their contacts [PM 14]; through the IMS, at their S-CSCF.
@@ -181,7 +184,7 @@ func New(cfg Config) (*Server, error) {
 // [PM 11].
 type hop struct{ s *Server }
 
-func (h hop) Group(o *participating.Origination) { h.s.ctrlCalls.Group(o) }
+func (h hop) Group(ctx context.Context, o *participating.Origination) { h.s.ctrlCalls.Group(ctx, o) }
 
 func (h hop) GroupCalls(user sip.URI) []sip.URI { return h.s.ctrlCalls.GroupCalls(user) }
 
@@ -206,8 +209,8 @@ func (s *Server) Agent() *ua.Agent { return s.agent }
 // which a restore is not, and the settings change only through settings.Live while the server runs: none changed
 // while it was down, and a configured group a client left by its publication (§9.2.2.2.3 step 14 a ii) stays left.
 // Resubscribe follows, once the agent serves.
-func (s *Server) Restore(registrations []registrar.Record, affiliations []affiliation.Record) {
-	restored := s.reg.Restore(registrations)
+func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, affiliations []affiliation.Record) {
+	restored := s.reg.Restore(ctx, registrations)
 
 	bound := map[[2]string]bool{}
 	for _, b := range restored {
@@ -229,16 +232,16 @@ func (s *Server) Restore(registrations []registrar.Record, affiliations []affili
 // change adds to their users and de-affiliated from those it removes (registrar.Revoke), and the members no longer of
 // a group removed from its call, the call of a group deleted released (controlling.Revoke). It waits for none of the
 // strands it posts to.
-func (s *Server) Revoke(before, after *settings.Snapshot) {
+func (s *Server) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	s.controlling.Revoke()
 	s.part.Revoke(s.agent.Layer().Clock().Now(), s.controlling.Eligible)
-	s.reg.Revoke(before, after)
-	s.ctrlCalls.Revoke()
+	s.reg.Revoke(ctx, before, after)
+	s.ctrlCalls.Revoke(ctx)
 }
 
 // Resubscribe subscribes to the reg event package of the IMPUs of the bindings restored, once the agent serves
 // (registrar.Resubscribe).
-func (s *Server) Resubscribe() { s.reg.Resubscribe() }
+func (s *Server) Resubscribe(ctx context.Context) { s.reg.Resubscribe(ctx) }
 
 // Shutdown stops the server: the timers of the registrar, so that no binding expires nor subscription is made while
 // the agent closes, then the agent, ending its sessions and subscriptions until ctx is done, and the media relay last,
@@ -389,12 +392,12 @@ func (s *Server) target(u sip.URI) target {
 // as a UA (§5.7.2), the INVITEs it sends the members its own (§5.7.5.1: an initiating B2BUA): they do not carry the
 // original dialog identifier of the S-CSCF in its Route, which §5.7.5.1 makes optional, and its Record-Route, copied into the
 // responses (RFC 3261 §12.1.1), routes the requests of the dialog.
-func (s *Server) onInvite(r *ua.Request) ua.Handler {
+func (s *Server) onInvite(ctx context.Context, r *ua.Request) ua.Handler {
 	req := r.Message()
 
 	switch s.target(req.URI) {
 	case targetParticipating:
-		s.partCalls.Originate(r, s.originator(req))
+		s.partCalls.Originate(ctx, r, s.originator(req))
 	case targetNone:
 		_ = r.Reject(404)
 	default:
@@ -437,12 +440,12 @@ func (s *Server) originator(req *sip.Request) []sip.URI {
 // onRequest handles the requests outside dialogs. Through the IMS, they come from the trust domain only
 // (trustDomain): the originator of a PUBLISH is the one its P-Asserted-Identity asserts (TS 24.379 §9.2.2.2.3 step
 // 2).
-func (s *Server) onRequest(r *ua.Request) {
+func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 	req := r.Message()
 
 	switch req.Method {
 	case "REGISTER":
-		s.reg.Handle(r)
+		s.reg.Handle(ctx, r)
 	case "PUBLISH":
 		s.part.HandlePublish(affiliation.Request{
 			Request: r, Config: s.cfg.Source.Current(), Now: s.agent.Layer().Clock().Now(), Originator: s.originator(req),

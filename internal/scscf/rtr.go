@@ -47,12 +47,12 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 		out = append(out, o...)
 
 		if err != nil {
-			r.send(out)
+			r.send(ctx, out)
 			return nil, err
 		}
 	}
 
-	r.send(out)
+	r.send(ctx, out)
 
 	return impis[1:], nil
 }
@@ -103,7 +103,7 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 			slog.String("reason", reason.String()))
 	}
 
-	r.releaseCalls(st, ch.removed)
+	r.releaseCalls(ctx, st, ch.removed)
 
 	if reason != cx.ReasonNewServerAssigned {
 		if len(ch.removed) == 0 {

@@ -170,7 +170,7 @@ func (r *Registrar) notifySharing(ctx context.Context, impi string, ch change) {
 
 	for other := range others {
 		r.background(other, func(ctx context.Context) {
-			r.send(r.notifySubscriptions(ctx, other, ch))
+			r.send(ctx, r.notifySubscriptions(ctx, other, ch))
 		})
 	}
 }
@@ -553,9 +553,9 @@ func elementID(prefix, key string) string {
 	return prefix + hex.EncodeToString(sum[:8])
 }
 
-func (r *Registrar) send(out []*outgoing) {
+func (r *Registrar) send(ctx context.Context, out []*outgoing) {
 	for _, o := range out {
-		if _, err := r.cfg.Layer.Request(o.req, &notifyTransaction{r: r, o: o}); err != nil {
+		if _, err := r.cfg.Layer.Request(ctx, o.req, &notifyTransaction{r: r, o: o}); err != nil {
 			r.log.Debug("sending a NOTIFY failed", slog.String("impi", o.impi), slog.Any("error", err))
 			r.notifyFailed(o)
 		}
@@ -567,7 +567,7 @@ type notifyTransaction struct {
 	o *outgoing
 }
 
-func (t *notifyTransaction) HandleResponse(res *sip.Response) {
+func (t *notifyTransaction) HandleResponse(ctx context.Context, res *sip.Response) {
 	switch {
 	case res.StatusCode < 200:
 	case res.IsSuccess():
@@ -586,7 +586,7 @@ func (t *notifyTransaction) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (t *notifyTransaction) HandleError(err error) {
+func (t *notifyTransaction) HandleError(ctx context.Context, err error) {
 	t.r.log.Debug("NOTIFY failed", slog.String("impi", t.o.impi), slog.Any("error", err))
 	t.r.notifyFailed(t.o)
 }

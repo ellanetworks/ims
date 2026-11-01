@@ -24,7 +24,7 @@ var errNoCore = errors.New("the IMS core is restarting")
 // IMS.
 func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 	a, err := ipsmgw.Start(ctx, ipsmgw.Config{
-		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network}, HomeDomain: homeDomain,
+		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain,
 		Store:   s.database,
 		Metrics: s.metrics.ipsmgw,
 		HSS:     shClient{s}, SMSCs: smscClient{s}, Router: s6cClient{s}, Nodes: nodesClient{s}, Number: func() string { return s.settings.Get().IPSMGW.Number }, Logger: s.Logger,
@@ -56,9 +56,9 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 
 // resubscribeIPSMGW has the IP-SM-GW, if it runs, subscribe to the reg event package of its registrations of no
 // subscription, now that a core runs to take the SUBSCRIBEs.
-func (s *Server) resubscribeIPSMGW() {
+func (s *Server) resubscribeIPSMGW(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
-		a.Resubscribe()
+		a.Resubscribe(ctx)
 	}
 }
 

@@ -19,6 +19,10 @@ import (
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/sbitls"
+	"github.com/ellanetworks/ims/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const maxNotification = 1 << 20
@@ -40,6 +44,8 @@ func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	routed(r, op)
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		n5.WriteProblem(w, n5.ProblemDetails{Status: http.StatusMethodNotAllowed})
@@ -59,10 +65,19 @@ func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if op == n5.TerminateSegment {
-		b.terminated(w, *sink, id, body)
+		b.terminated(r.Context(), w, *sink, id, body)
 	} else {
-		b.notified(w, *sink, id, body)
+		b.notified(r.Context(), w, *sink, id, body)
 	}
+}
+
+// routed names the server span of a notification by its route, which ServeHTTP finds rather than a mux.
+func routed(r *http.Request, op string) {
+	route := SessionsPath + "/{id}/" + op
+
+	span := trace.SpanFromContext(r.Context())
+	span.SetName(r.Method + " " + route)
+	span.SetAttributes(semconv.HTTPRoute(route))
 }
 
 // readJSON reads a JSON body (TS 29.500 §5.2.7.2).
@@ -98,7 +113,7 @@ func unknownContext(w http.ResponseWriter) {
 // TS 29.514 §4.2.5.3: answer 204, then delete the context. The session is routed on its local ID, which only the
 // PCF that holds its notifUri knows. A context the P-CSCF lost track of is deleted all the same: one it still holds
 // the URI of, or the one an unanswered create made, at the resUri of the configured PCF.
-func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
+func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var t n5.TerminationInfo
 
 	if err := json.Unmarshal(body, &t); err != nil {
@@ -114,7 +129,7 @@ func (b *Backend) terminated(w http.ResponseWriter, sink policy.Sink, id string,
 	attrs := []any{slog.String("session", id), slog.String("uri", t.ResURI), slog.String("cause", string(t.TermCause))}
 	abort := policy.Abort{Cause: string(t.TermCause), InsufficientResources: t.TermCause == n5.TerminationInsufficientQoSFlowResources}
 
-	if terminate, known := sink.Abort(id, abort); known {
+	if terminate, known := sink.Abort(context.WithoutCancel(ctx), id, abort); known {
 		b.log.Debug("PCF terminates an application session context", attrs...)
 		noContent(w)
 
@@ -240,7 +255,7 @@ func (b *Backend) deleteOrphan(id, uri string) {
 }
 
 // TS 29.514 §4.2.5.2: the session is routed on its local ID.
-func (b *Backend) notified(w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
+func (b *Backend) notified(ctx context.Context, w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var n struct {
 		n5.EventsNotification
 		EvNotifs *[]n5.AfEventNotification `json:"evNotifs"`
@@ -259,7 +274,7 @@ func (b *Backend) notified(w http.ResponseWriter, sink policy.Sink, id string, b
 	n.EventsNotification.EvNotifs = *n.EvNotifs
 	e := event(n.EventsNotification)
 
-	if !sink.Notify(id, e) {
+	if !sink.Notify(context.WithoutCancel(ctx), id, e) {
 		b.log.Debug("PCF notification for an unknown session", slog.String("session", id), slog.String("uri", n.EvSubsURI))
 		unknownContext(w)
 
@@ -343,9 +358,15 @@ type Server struct {
 }
 
 // NewServer returns the notification server: HTTP/2 only, with prior knowledge without credentials (RFC 9113
-// §3.3), and over TLS with them, where the PCF must present a certificate (TS 33.501 §13.1.0).
-func NewServer(h http.Handler, creds *sbitls.Credentials, logger *slog.Logger) *Server {
+// §3.3), and over TLS with them, where the PCF must present a certificate (TS 33.501 §13.1.0). tp, when set, traces
+// the notifications.
+func NewServer(h http.Handler, creds *sbitls.Credentials, tp trace.TracerProvider, logger *slog.Logger) *Server {
 	var protocols http.Protocols
+
+	// The PCF is a network function of the operator's: its trace context is continued.
+	if tp != nil {
+		h = otelhttp.NewHandler(h, "", otelhttp.WithTracerProvider(tp), otelhttp.WithPropagators(tracing.Propagator))
+	}
 
 	srv := &http.Server{
 		Handler:           h,

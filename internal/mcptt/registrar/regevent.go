@@ -1,6 +1,7 @@
 package registrar
 
 import (
+	"context"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -87,7 +88,7 @@ func (g *Registrar) has(ik string) bool { return len(g.impus[ik]) > 0 }
 // subscribe sends the SUBSCRIBE of w on the strand of its IMPU (TS 24.229 §5.7.1.1 a to f), of the default duration
 // (RFC 3680 §4.4), which the agent refreshes. A SUBSCRIBE that cannot be sent leaves the IMPU without subscription,
 // until its next third-party REGISTER.
-func (g *Registrar) subscribe(st *ua.Strand, w *watch) {
+func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) {
 	domain := g.cfg.Source.Current().ServiceConfiguration().Domain
 
 	req := sip.NewRequest("SUBSCRIBE", w.impu)
@@ -102,9 +103,9 @@ func (g *Registrar) subscribe(st *ua.Strand, w *watch) {
 	route.Params.Set("lr", "")
 	req.Header.Set("Route", sip.Address{URI: route}.String())
 
-	sub, err := g.cfg.Agent.Subscribe(req, ua.SubscriptionHandler{
-		Notify: func(s *ua.Subscription, r *ua.Request) { g.notify(st, w, s, r) },
-		Ended:  func(_ *ua.Subscription, e ua.End) { g.ended(st, w, e) },
+	sub, err := g.cfg.Agent.Subscribe(ctx, req, ua.SubscriptionHandler{
+		Notify: func(ctx context.Context, s *ua.Subscription, r *ua.Request) { g.notify(ctx, st, w, s, r) },
+		Ended:  func(ctx context.Context, _ *ua.Subscription, e ua.End) { g.ended(ctx, st, w, e) },
 	}, ua.On(st))
 
 	g.mu.Lock()
@@ -112,7 +113,7 @@ func (g *Registrar) subscribe(st *ua.Strand, w *watch) {
 	if err != nil {
 		var after time.Duration
 		if w.restored {
-			after = g.retry(st, w, nil)
+			after = g.retry(ctx, st, w, nil)
 		} else {
 			g.drop(w)
 		}
@@ -130,13 +131,13 @@ func (g *Registrar) subscribe(st *ua.Strand, w *watch) {
 	g.mu.Unlock()
 
 	if stopped {
-		unsubscribe(sub)
+		unsubscribe(ctx, sub)
 	}
 }
 
 // unsubscribe ends a subscription (RFC 6665 §4.1.2.3); one ended already needs nothing.
-func unsubscribe(s *ua.Subscription) {
-	_ = s.Unsubscribe(ua.Change{})
+func unsubscribe(ctx context.Context, s *ua.Subscription) {
+	_ = s.Unsubscribe(ctx, ua.Change{})
 }
 
 // ended forgets the subscription, ended by its notifier, a refusal or an unsubscribe: the next third-party REGISTER
@@ -146,7 +147,7 @@ func unsubscribe(s *ua.Subscription) {
 // sent again (RFC 3261 §21.4.4); another refusal, of an S-CSCF unavailable, subscribes again later. A failure of no
 // response, of an S-CSCF unreachable, as while the core of the IMS restarts, or of an expiry not refreshed,
 // subscribes again later, restored or not, as Resubscribe does once the core runs again.
-func (g *Registrar) ended(st *ua.Strand, w *watch, e ua.End) {
+func (g *Registrar) ended(ctx context.Context, st *ua.Strand, w *watch, e ua.End) {
 	var (
 		ch    change
 		after time.Duration
@@ -172,7 +173,7 @@ func (g *Registrar) ended(st *ua.Strand, w *watch, e ua.End) {
 	case e.Cause == ua.EndClosed, e.Cause == ua.EndUnsubscribed, e.Cause == ua.EndDropped, e.Cause == ua.EndTerminated:
 		g.drop(w)
 	default:
-		after = g.retry(st, w, e.Response)
+		after = g.retry(ctx, st, w, e.Response)
 	}
 
 	g.mu.Unlock()
@@ -190,7 +191,7 @@ func (g *Registrar) ended(st *ua.Strand, w *watch, e ua.End) {
 			slog.String("cause", e.Cause.String()))
 	}
 
-	g.apply(st, g.cfg.Clock.Now(), &ch)
+	g.apply(ctx, st, g.cfg.Clock.Now(), &ch)
 }
 
 // The bounds of the waits between the subscriptions of bindings restored that failed.
@@ -201,7 +202,7 @@ const (
 
 // retry schedules the subscription of w again, of bindings restored: after the Retry-After of res, if any, else
 // doubling from minRetry to maxRetry, on its strand. It returns the wait. Called with g.mu held.
-func (g *Registrar) retry(st *ua.Strand, w *watch, res *sip.Response) time.Duration {
+func (g *Registrar) retry(ctx context.Context, st *ua.Strand, w *watch, res *sip.Response) time.Duration {
 	after := min(minRetry<<min(w.attempts, 5), maxRetry)
 
 	if res != nil {
@@ -213,13 +214,13 @@ func (g *Registrar) retry(st *ua.Strand, w *watch, res *sip.Response) time.Durat
 	w.attempts++
 	w.sub = nil
 
-	st.AfterFunc(after, func() {
+	g.detach(ctx, st, after, resubscribeName, func(ctx context.Context) {
 		g.mu.Lock()
 		current := g.watches[w.ik] == w && !w.stopped && w.sub == nil && !g.closed && g.has(w.ik)
 		g.mu.Unlock()
 
 		if current {
-			g.subscribe(st, w)
+			g.subscribe(ctx, st, w)
 		}
 	})
 
@@ -249,7 +250,7 @@ func (g *Registrar) drop(w *watch) {
 // a document reports go: one a full document leaves out stays until it expires, should the S-CSCF tell it apart
 // from the binding otherwise than the server does. A NOTIFY from outside the trust domain gets a 403; a document
 // that does not decode, a 400, which leaves the bindings. The 200 has the P-Charging-Vector of §5.7.1.1.
-func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Request) {
+func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Request) {
 	req := r.Message()
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
@@ -314,7 +315,7 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 			default:
 				again := &watch{ik: w.ik, impu: w.impu, scscf: w.scscf, as: w.as, restored: true, attempts: w.attempts}
 				g.watches[w.ik] = again
-				g.retry(st, again, nil)
+				g.retry(ctx, st, again, nil)
 			}
 		case unreadable && reason(r.Message()) != "rejected" && g.has(w.ik):
 			// What the document told is unknown: a new subscription tells it again.
@@ -327,7 +328,7 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 				g.mu.Unlock()
 
 				if current {
-					g.subscribe(st, again)
+					g.subscribe(ctx, st, again)
 				}
 			})
 		}
@@ -351,13 +352,13 @@ func (g *Registrar) notify(st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Re
 		_ = r.Respond(ua.Reply{Code: 400, Header: header})
 
 		if s.State() != ua.SubscriptionTerminated && !stopped {
-			_ = s.Refresh(ua.Change{}, nil)
+			_ = s.Refresh(ctx, ua.Change{}, nil)
 		}
 	} else {
 		_ = r.Respond(ua.Reply{Code: 200, Header: header})
 	}
 
-	g.apply(st, now, &ch)
+	g.apply(ctx, st, now, &ch)
 }
 
 // registered updates the aliases of w of doc: those of a full document replace them (RFC 3680 §5.2).

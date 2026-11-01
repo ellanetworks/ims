@@ -686,7 +686,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 	// TS 24.229 §5.4.1.8: a profile the HSS changed with the re-registration changes the registration.
 	if registered && pc.identitiesChanged() {
-		r.releaseRemoved(st, pc, st.live(reg.Bindings))
+		r.releaseRemoved(ctx, st, pc, st.live(reg.Bindings))
 
 		notice := r.profileNotice(ctx, rr.impi, pc)
 		ch.rejected, ch.created, ch.ended = notice.rejected, notice.created, notice.ended
@@ -696,7 +696,7 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		ch.removed = append(ch.removed, r.replaceContacts(ctx, rr, st, reg.ID)...)
 	}
 
-	r.releaseCalls(st, ch.removed)
+	r.releaseCalls(ctx, st, ch.removed)
 	rr.out = r.notifyChange(ctx, rr.impi, ch)
 
 	return res
@@ -956,7 +956,7 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 			slog.Int("contacts", len(removed)))
 	}
 
-	r.releaseCalls(st, []removal{rm})
+	r.releaseCalls(ctx, st, []removal{rm})
 	rr.out = r.notifyChange(ctx, rr.impi, change{removed: []removal{rm}})
 
 	return r.ok(ctx, rr, *set, removed)

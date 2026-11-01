@@ -32,14 +32,14 @@ func newNotifierAgent(t *testing.T, clock *siptest.Clock) *notifierPeer {
 			c.Transaction.Clock = clock
 		}
 
-		c.OnRequest = func(r *ua.Request) {
+		c.OnRequest = func(_ context.Context, r *ua.Request) {
 			s, err := r.AcceptSubscription(ua.Acceptance{
 				Expires: 600 * time.Second,
 				Pending: n.isPending(),
 				State: func(seq uint32) (ua.Notification, error) {
 					return ua.Notification{Bodies: []sip.BodyPart{n.body(seq)}, Full: true}, nil
 				},
-				Handler: ua.ServerSubscriptionHandler{Ended: func(_ *ua.ServerSubscription, e ua.End) { n.ended <- e }},
+				Handler: ua.ServerSubscriptionHandler{Ended: func(_ context.Context, _ *ua.ServerSubscription, e ua.End) { n.ended <- e }},
 			})
 			if err != nil {
 				t.Errorf("AcceptSubscription: %v", err)
@@ -84,9 +84,9 @@ func (s *subscriberOf) subscribe(t *testing.T, to *peer, expires string) *ua.Sub
 	req.Header.Add("Event", "test")
 	req.Header.Add("Expires", expires)
 
-	sub, err := s.p.a.Subscribe(req, ua.SubscriptionHandler{
-		Notify: func(_ *ua.Subscription, r *ua.Request) { s.notifys <- r },
-		Ended:  func(_ *ua.Subscription, e ua.End) { s.ended <- e },
+	sub, err := s.p.a.Subscribe(context.Background(), req, ua.SubscriptionHandler{
+		Notify: func(_ context.Context, _ *ua.Subscription, r *ua.Request) { s.notifys <- r },
+		Ended:  func(_ context.Context, _ *ua.Subscription, e ua.End) { s.ended <- e },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestNotifier(t *testing.T) {
 	n.version = "v1"
 	n.mu.Unlock()
 
-	if err := s.Notify(ua.Notification{Bodies: []sip.BodyPart{n.body(1)}, Full: true}); err != nil {
+	if err := s.Notify(context.Background(), ua.Notification{Bodies: []sip.BodyPart{n.body(1)}, Full: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +172,7 @@ func TestNotifier(t *testing.T) {
 
 	done, f := results()
 
-	if err := sub.Refresh(ua.Change{}, f); err != nil {
+	if err := sub.Refresh(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +182,7 @@ func TestNotifier(t *testing.T) {
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "v1 seq=2")
 
-	if err := sub.Unsubscribe(ua.Change{}); err != nil {
+	if err := sub.Unsubscribe(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,7 +213,7 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 
 	checkNotify(t, nextNotify(t, sb.notifys), "pending;expires=600", "v0 seq=0")
 
-	if err := s.Activate(); err != nil {
+	if err := s.Activate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +251,7 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 
 	nextNotify(t, sb2.notifys)
 
-	if err := s2.Terminate(sip.SubscriptionRejected, 0, ua.Notification{}); err != nil {
+	if err := s2.Terminate(context.Background(), sip.SubscriptionRejected, 0, ua.Notification{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,7 +285,7 @@ func TestNotifierQueue(t *testing.T) {
 		body string
 		full bool
 	}{{"a", false}, {"b", true}, {"c", false}} {
-		if err := s.Notify(ua.Notification{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(b.body))}, Full: b.full}); err != nil {
+		if err := s.Notify(context.Background(), ua.Notification{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(b.body))}, Full: b.full}); err != nil {
 			t.Fatal(err)
 		}
 	}

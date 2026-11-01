@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -75,7 +76,7 @@ func TestNotifyNotRendered(t *testing.T) {
 	r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(first, 200, ""))
 	netOf(t).Quiesce()
 
-	if err := res.Change(roster{"a", "bad"}, "bad"); err != nil {
+	if err := res.Change(context.Background(), roster{"a", "bad"}, "bad"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,7 +88,7 @@ func TestNotifyNotRendered(t *testing.T) {
 	r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(got, 200, ""))
 	netOf(t).Quiesce()
 
-	if err := res.Change(roster{"a", "bad", "worse"}, "worse"); err != nil {
+	if err := res.Change(context.Background(), roster{"a", "bad", "worse"}, "worse"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,7 +99,7 @@ func TestNotifyNotRendered(t *testing.T) {
 		r.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(got, 200, ""))
 	}
 
-	if err := res.Change(roster{"a", "bad", "worse", "bad"}, "bad"); err != nil {
+	if err := res.Change(context.Background(), roster{"a", "bad", "worse", "bad"}, "bad"); err != nil {
 		t.Fatal(err)
 	}
 

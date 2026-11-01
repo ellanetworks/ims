@@ -13,6 +13,7 @@
 package controlling
 
 import (
+	"context"
 	"crypto/rand"
 	"log/slog"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/ellanetworks/ims/mcptt/media"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Affiliations are the controlling function's affiliation state (TS 24.379 §9.2.2.3.2).
@@ -53,7 +55,8 @@ type Config struct {
 
 // Controlling is the controlling function.
 type Controlling struct {
-	cfg Config
+	cfg    Config
+	tracer trace.Tracer
 
 	mu     sync.Mutex
 	groups map[string]*group
@@ -62,6 +65,8 @@ type Controlling struct {
 	sessions map[string]*session
 	users    map[string]map[*session]int
 }
+
+const tracerName = "github.com/ellanetworks/ims/internal/mcptt/controlling"
 
 // group is a group of the function, its strand made on first use.
 type group struct {
@@ -76,7 +81,9 @@ func New(cfg Config) *Controlling {
 		cfg.Logger = slog.Default()
 	}
 
-	return &Controlling{cfg: cfg, groups: map[string]*group{}, sessions: map[string]*session{}, users: map[string]map[*session]int{}}
+	return &Controlling{
+		cfg: cfg, tracer: cfg.Agent.Layer().TracerProvider().Tracer(tracerName), groups: map[string]*group{}, sessions: map[string]*session{}, users: map[string]map[*session]int{},
+	}
 }
 
 // Strand is the strand of the calls of group id, a configured group: the INVITEs that start a session of the group
@@ -107,7 +114,7 @@ func (c *Controlling) group(id sip.URI) *group {
 // Revoke applies a change of the settings to the sessions, without waiting for them: on the strand of each group, its
 // session, if any, checked against the current settings (session.revoke). A session keeps the settings it started
 // with otherwise.
-func (c *Controlling) Revoke() {
+func (c *Controlling) Revoke(ctx context.Context) {
 	c.mu.Lock()
 
 	groups := make([]*group, 0, len(c.groups))
@@ -120,7 +127,7 @@ func (c *Controlling) Revoke() {
 	for _, g := range groups {
 		g.st.Post(func() {
 			if s := g.sess; s != nil {
-				s.revoke()
+				s.revoke(ctx)
 			}
 		})
 	}

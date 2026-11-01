@@ -2,6 +2,7 @@ package b2bua_test
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestRelayReinvite(t *testing.T) {
 		}
 	}
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,7 +81,7 @@ func TestRelayReinvite(t *testing.T) {
 	pol.RetryGlare = false
 	bs.SetPolicy(pol)
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-3")}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -104,7 +105,7 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 	f := func(res *sip.Response, _ error) { done <- res }
 
 	// A refresh is answered on alice's leg.
-	if err := as.Reinvite(ua.Change{}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,14 +114,14 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 	}
 
 	// Its 2xx offers the session as it was, which alice answers in the ACK.
-	_ = alice.next("offer").offer.Answer(ua.Change{Bodies: sdpOf("offer-1")})
+	_ = alice.next("offer").offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("offer-1")})
 
 	bob.none()
 
 	// One asking for more goes across, and fetches the offer of bob.
 	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>"))
 
-	if err := as.Reinvite(ua.Change{Bodies: []sip.BodyPart{info}}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: []sip.BodyPart{info}}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -136,7 +137,7 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 		t.Fatalf("alice got offer %q", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.Change{Bodies: sdpOf("answer-a")})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("answer-a")})
 
 	if e := bob.next("answer"); string(e.sdp) != "answer-a" {
 		t.Fatalf("bob got answer %q", e.sdp)
@@ -157,7 +158,7 @@ func TestRelayRequests(t *testing.T) {
 	done := make(chan *sip.Response, 2)
 	f := func(res *sip.Response, _ error) { done <- res }
 
-	if err := as.Update(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +177,7 @@ func TestRelayRequests(t *testing.T) {
 
 	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo>\r\n  <x/>\r\n</mcpttinfo>"))
 
-	if err := as.Send("INFO", ua.Change{Bodies: []sip.BodyPart{info}}, f); err != nil {
+	if err := as.Send(context.Background(), "INFO", ua.Change{Bodies: []sip.BodyPart{info}}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +206,7 @@ func TestBridgeBodiesAndMedia(t *testing.T) {
 	req.Header.Add("To", "<"+b.uri()+">")
 	req.SetBodies(ua.SDP([]byte("offer-1")), info)
 
-	if _, err := alice.a.Invite(req, alice.handler()); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler()); err != nil {
 		t.Fatal(err)
 	}
 

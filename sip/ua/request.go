@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,9 @@ import (
 // Request is a request of the peer the application responds to: the initial INVITE of a session, a request within
 // it, or a request outside a dialog. Its methods may be called from any goroutine; its state belongs to its strand.
 type Request struct {
+	// ctx is the trace of the request: what responding to it causes is part of it.
+	ctx context.Context
+
 	a   *Agent
 	st  *Strand
 	s   *Session
@@ -77,8 +81,8 @@ type reliable struct {
 	timer    *timer
 }
 
-func newRequest(s *Session, tx *transaction.ServerTransaction, req *sip.Request) *Request {
-	r := &Request{s: s, tx: tx, req: req, key: keyOf(remote, req)}
+func newRequest(ctx context.Context, s *Session, tx *transaction.ServerTransaction, req *sip.Request) *Request {
+	r := &Request{ctx: ctx, s: s, tx: tx, req: req, key: keyOf(remote, req)}
 	if s != nil {
 		r.a, r.st = s.a, s.st
 	}
@@ -569,7 +573,7 @@ func (r *Request) finish(res *sip.Response) error {
 		s.inBye = nil
 
 		err := r.tx.Respond(res)
-		s.end(End{Cause: EndBye, Remote: true, Request: r.req})
+		s.end(r.ctx, End{Cause: EndBye, Remote: true, Request: r.req})
 
 		return err
 	}
@@ -581,9 +585,9 @@ func (r *Request) finish(res *sip.Response) error {
 			e = *r.ending
 		}
 
-		s.end(e)
+		s.end(r.ctx, e)
 	case res.IsSuccess() && (r.req.Method == "INVITE" || r.req.Method == "UPDATE"):
-		s.timer.start(s)
+		s.timer.start(r.ctx, s)
 	}
 
 	if initial {
@@ -669,11 +673,11 @@ func (r *Request) noAck() {
 		r.acked()
 
 		if s.byeAfterAck != nil {
-			s.sendQueuedBye(EndTimeout)
+			s.sendQueuedBye(r.ctx, EndTimeout)
 			return
 		}
 
-		s.byeEnd(End{Cause: EndTimeout, Err: ErrNoAck}, Change{}, nil)
+		s.byeEnd(r.ctx, End{Cause: EndTimeout, Err: ErrNoAck}, Change{}, nil)
 	}
 }
 
@@ -683,15 +687,15 @@ func (r *Request) acked() {
 }
 
 // cancelled ends an INVITE its CANCEL reached before the final response (RFC 3261 §9.2): the initial INVITE ends the
-// session; a re-INVITE leaves it as it was, and Handler.Cancelled reports it.
-func (r *Request) cancelled(cancel *sip.Request) {
+// session; a re-INVITE leaves it as it was, and Handler.Cancelled reports it. ctx is the trace of the CANCEL.
+func (r *Request) cancelled(ctx context.Context, cancel *sip.Request) {
 	s := r.s
 
 	// A forked INVITE ends in all its dialogs; the last one answers it with the 487.
 	if r.forked() && !s.uac {
 		for _, m := range r.group() {
-			m.s.emitReceived(cancel)
-			m.s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
+			m.s.emitReceived(ctx, cancel)
+			m.s.end(ctx, End{Cause: EndCancelled, Remote: true, Request: cancel})
 		}
 
 		return
@@ -701,10 +705,10 @@ func (r *Request) cancelled(cancel *sip.Request) {
 		return
 	}
 
-	s.emitReceived(cancel)
+	s.emitReceived(ctx, cancel)
 
 	if r == s.initial() {
-		s.end(End{Cause: EndCancelled, Remote: true, Request: cancel})
+		s.end(ctx, End{Cause: EndCancelled, Remote: true, Request: cancel})
 		r.abandon(487)
 
 		return
@@ -718,32 +722,32 @@ func (r *Request) cancelled(cancel *sip.Request) {
 
 	s.emit(func(h Handler) {
 		if h.Cancelled != nil {
-			h.Cancelled(s, r, cancel)
+			h.Cancelled(ctx, s, r, cancel)
 		}
 	})
 }
 
 // failed handles the error of the server transaction of an INVITE.
-func (r *Request) failed(err error) {
+func (r *Request) failed(ctx context.Context, err error) {
 	if r.forked() && !r.s.uac {
 		for _, m := range r.group() {
-			m.failedOne(err)
+			m.failedOne(ctx, err)
 		}
 
 		return
 	}
 
-	r.failedOne(err)
+	r.failedOne(ctx, err)
 }
 
-func (r *Request) failedOne(err error) {
+func (r *Request) failedOne(ctx context.Context, err error) {
 	s := r.s
 
 	r.final = true
 	r.held = nil
 
 	if r == s.initial() {
-		s.end(failureEnd(err))
+		s.end(ctx, failureEnd(err))
 	}
 
 	if s.in == r {
@@ -757,7 +761,7 @@ func (r *Request) failedOne(err error) {
 }
 
 // invite receives an initial INVITE (RFC 3261 §13.3). The session starts at once; OnInvite is its first event.
-func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.Request) {
+func (a *Agent) invite(ctx context.Context, st *Strand, tx *transaction.ServerTransaction, req *sip.Request) {
 	// Dropped with its flow before it reached its strand (Agent.Drop): nothing of it is processed.
 	if tx.State() == transaction.Terminated {
 		a.untrack(&Request{a: a, tx: tx, req: req})
@@ -789,7 +793,7 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 		return
 	}
 
-	r := newRequest(s, tx, req)
+	r := newRequest(ctx, s, tx, req)
 	r.role = s.offerRequest(r.key, sessionSDP(req.Envelope))
 	r.forks = &forkSet{members: []*Request{r}}
 	s.in = r
@@ -805,7 +809,7 @@ func (a *Agent) invite(st *Strand, tx *transaction.ServerTransaction, req *sip.R
 
 	// The handler is set with the strand held, for the methods of the application that read it.
 	st.emit(func() {
-		h := a.cfg.OnInvite(r)
+		h := a.cfg.OnInvite(ctx, r)
 
 		_ = st.do(func() error {
 			if !s.handlerSet {

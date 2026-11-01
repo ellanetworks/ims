@@ -143,7 +143,7 @@ func (s *Sessions) resume(ctx context.Context, tx *transaction.ServerTransaction
 
 	if !c.originating() && !sameTarget(out.URI, c.ruri, s.r.cfg.HomeDomain) {
 		s.log.Debug("request retargeted by an AS", slog.String("from", c.ruri.String()), slog.String("to", out.URI.String()))
-		s.toICSCF(tx, out, c, false)
+		s.toICSCF(ctx, tx, out, c, false)
 
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Sessions) next(ctx context.Context, tx *transaction.ServerTransaction, 
 
 	switch {
 	case c.originating():
-		s.toICSCF(tx, out, c, first)
+		s.toICSCF(ctx, tx, out, c, first)
 	case c.sescase == cx.SessionCaseTerminatingUnregistered:
 		// TS 24.229 §5.4.3.3: no more AS to contact.
 		s.log.Debug("request to an unregistered user", slog.String("impu", c.served.URI.String()))
@@ -265,7 +265,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	s.log.Debug("request sent to an AS", slog.String("request", out.StartLine()), slog.String("as", as.ServerName),
 		slog.String("served", c.served.URI.String()), slog.String("case", c.sescase.String()))
 
-	err = s.proxy.Fork(tx, [][]proxy.Branch{{{Request: r, Target: to, Options: opts, Key: h}}})
+	err = s.proxy.Fork(ctx, tx, [][]proxy.Branch{{{Request: r, Target: to, Options: opts, Key: h}}})
 
 	if err != nil && opts.Dialog != nil {
 		s.r.calls.forget(opts.Dialog)
@@ -308,8 +308,8 @@ func servedUser(c *chain) string {
 // that goes back to the served UE or the I-CSCF rather than to an AS loses the registration token (TS 24.229
 // §5.4.3.3).
 func (s *Sessions) asReply(tx *transaction.ServerTransaction, out *sip.Request, c *chain, i int, first bool, h *hop,
-) func(proxy.Reply) proxy.Verdict {
-	return func(r proxy.Reply) proxy.Verdict {
+) func(context.Context, proxy.Reply) proxy.Verdict {
+	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		res := r.Response
 
 		if res != nil && first {
@@ -326,7 +326,7 @@ func (s *Sessions) asReply(tx *transaction.ServerTransaction, out *sip.Request, 
 
 		if !terminates(c.ifcs[i].ApplicationServer) {
 			// Going on may resolve the next AS: not on the goroutine of the response.
-			err := s.r.cfg.Layer.Go(func(ctx context.Context) {
+			err := s.r.cfg.Layer.Go(ctx, func(ctx context.Context) {
 				ctx, done, ok := s.r.begin(ctx)
 				if !ok {
 					s.answer(tx, retryLater(tx.Request()))
@@ -344,7 +344,7 @@ func (s *Sessions) asReply(tx *transaction.ServerTransaction, out *sip.Request, 
 			return proxy.Hold
 		}
 
-		s.asFailed(context.Background(), tx, out, c, i, first, &r)
+		s.asFailed(ctx, tx, out, c, i, first, &r)
 
 		if res != nil {
 			return proxy.Relay

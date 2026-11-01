@@ -20,11 +20,14 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/registrar"
 	"github.com/ellanetworks/ims/internal/mcptt/server"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/mcptt/identity"
 	"github.com/ellanetworks/ims/mcptt/media"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Config struct {
@@ -40,6 +43,8 @@ type Config struct {
 	HomeDomain string
 	DB         *db.DB
 	Logger     *slog.Logger
+	// TracerProvider traces the AS; none if nil.
+	TracerProvider trace.TracerProvider
 }
 
 // Host is the host name of the AS of the IMS of homeDomain (identity.Host): the name of the AS in the iFCs, the host
@@ -129,13 +134,17 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	}
 
 	life, kill := context.WithCancel(context.Background())
+	role := []attribute.KeyValue{tracing.RoleKey.String("mcptt")}
 
 	srv, err := server.New(server.Config{
 		UA: ua.Config{
-			Transaction: transaction.Config{Logger: logger, Network: cfg.Network},
-			Prepare:     as.Prepare(life, locals, &sip.Resolver{}),
-			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: sip.FormatHost(locals[0].Addr()), Port: locals[0].Port()}},
-			Logger:      logger,
+			Transaction: transaction.Config{
+				Logger: logger, Network: cfg.Network, TracerProvider: cfg.TracerProvider,
+				SpanAttributes: func(sip.Flow) []attribute.KeyValue { return role },
+			},
+			Prepare: as.Prepare(life, locals, &sip.Resolver{}),
+			Contact: sip.Address{URI: sip.URI{Scheme: "sip", Host: sip.FormatHost(locals[0].Addr()), Port: locals[0].Port()}},
+			Logger:  logger,
 		},
 		Source:          live,
 		Mode:            mode,
@@ -175,7 +184,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 			return nil, err
 		}
 
-		srv.Restore(regs, affs)
+		srv.Restore(ctx, regs, affs)
 	}
 
 	as.status = Status{
@@ -248,7 +257,7 @@ func (a *AS) Servers() []sip.Server {
 // Resubscribe subscribes to the reg event package of the IMPUs of no subscription: those of the bindings restored,
 // and those whose subscription failed (registrar.Registrar.Resubscribe). The IMS calls it once its core runs, which
 // the SUBSCRIBEs go through.
-func (a *AS) Resubscribe() { a.srv.Resubscribe() }
+func (a *AS) Resubscribe(ctx context.Context) { a.srv.Resubscribe(ctx) }
 
 func (a *AS) named(homeDomain string) {
 	sys := System(homeDomain)

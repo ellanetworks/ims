@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -195,7 +196,7 @@ func (c *Client) Call(group sip.URI) (*Call, error) {
 	if err == nil {
 		var out *ua.Outgoing
 
-		out, err = c.cfg.Agent.Invite(req, call.uacHandler(), ua.On(call.st), ua.WithPolicy(ua.ClientPolicy))
+		out, err = c.cfg.Agent.Invite(context.Background(), req, call.uacHandler(), ua.On(call.st), ua.WithPolicy(ua.ClientPolicy))
 		if err == nil {
 			call.st.Post(func() { call.out = out })
 			return call, nil
@@ -253,11 +254,11 @@ func (call *Call) invite() (*sip.Request, error) {
 
 func (call *Call) uacHandler() ua.Handler {
 	return ua.Handler{
-		Answer: func(s *ua.Session, b []byte) {
+		Answer: func(_ context.Context, s *ua.Session, b []byte) {
 			call.sess = s
 			call.takeAnswer(b)
 		},
-		Established: func(s *ua.Session, msg sip.Message) {
+		Established: func(_ context.Context, s *ua.Session, msg sip.Message) {
 			call.sess = s
 			// The 2xx confirms the session before it reports its answer.
 			if _, remote, ok := s.Negotiated(); ok {
@@ -267,7 +268,7 @@ func (call *Call) uacHandler() ua.Handler {
 			res, _ := msg.(*sip.Response)
 			call.originated(res)
 		},
-		Failed: func(_ *ua.Outgoing, res *sip.Response, err error) {
+		Failed: func(_ context.Context, _ *ua.Outgoing, res *sip.Response, err error) {
 			call.failed = true
 			call.release()
 			call.c.emit(Event{Kind: EventFailed, Call: call, Response: res, Err: err})
@@ -541,7 +542,7 @@ func (call *Call) decline() {
 }
 
 // answered is the ACK of the 200 of an invitation.
-func (call *Call) answered(*ua.Session, sip.Message) {
+func (call *Call) answered(context.Context, *ua.Session, sip.Message) {
 	if call.ended {
 		return
 	}
@@ -552,7 +553,7 @@ func (call *Call) answered(*ua.Session, sip.Message) {
 
 // endedBy is the end of the session: by the server's BYE (TS 24.379 §10.1.1.2.3.3, §6.2.6), the client's, or a
 // failure.
-func (call *Call) endedBy(_ *ua.Session, e ua.End) {
+func (call *Call) endedBy(_ context.Context, _ *ua.Session, e ua.End) {
 	call.release()
 
 	if call.failed || call.reported || call.incoming && !call.announced {
@@ -610,7 +611,7 @@ func (call *Call) leave() {
 	case call.sess != nil && (call.established || call.incoming || call.sess.State() == ua.Confirmed):
 		// TS 24.380 §6.2.2 step 1 before the BYE.
 		call.release()
-		_ = call.sess.Bye(ua.Change{}, nil)
+		_ = call.sess.Bye(context.Background(), ua.Change{}, nil)
 	case call.out != nil:
 		// The 2xx may come first: the session is then ended once established.
 		call.leaving = true
@@ -729,7 +730,7 @@ func (call *Call) probe() {
 		return
 	}
 
-	if err := call.sess.Update(ua.Change{}, nil); err != nil {
+	if err := call.sess.Update(context.Background(), ua.Change{}, nil); err != nil {
 		call.c.cfg.Logger.Debug("probe not sent", slog.Any("error", err))
 	}
 }

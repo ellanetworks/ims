@@ -222,7 +222,7 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func
 
 	respond(res)
 	close(responded)
-	r.send(out)
+	r.send(ctx, out)
 }
 
 func (r *Registrar) Close() {
@@ -466,7 +466,7 @@ func (r *Registrar) sweepExpired(ctx context.Context) {
 
 		out, expired := r.sweepIMPI(ctx, impi)
 
-		r.send(out)
+		r.send(ctx, out)
 
 		if len(expired) == 0 || !r.start() {
 			r.unlock(impi)
@@ -521,7 +521,7 @@ func (r *Registrar) sweepIMPI(ctx context.Context, impi string) ([]*outgoing, []
 		return out, deregistered
 	}
 
-	r.releaseCalls(st, ch.removed)
+	r.releaseCalls(ctx, st, ch.removed)
 
 	for _, rm := range ch.removed {
 		r.deregistered(rm)

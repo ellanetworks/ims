@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,8 @@ type responseContext struct {
 	p      *Proxy
 	tx     *transaction.ServerTransaction
 	invite bool
+	// ctx carries the span of the request the context forwards, the parent of its branches'.
+	ctx context.Context
 
 	// breadth is the Incoming Max-Breadth (RFC 5393 §5.3.2).
 	breadth int
@@ -67,7 +70,7 @@ type delivery struct {
 
 type branch struct {
 	c           *responseContext
-	onReply     func(r Reply) Verdict
+	onReply     func(ctx context.Context, r Reply) Verdict
 	timeout     time.Duration
 	anyResponse bool
 	noAnswer    time.Duration
@@ -149,9 +152,9 @@ func (c *responseContext) withdrawnResponse(b *branch) *sip.Response {
 	return res
 }
 
-func newContext(p *Proxy, tx *transaction.ServerTransaction) *responseContext {
+func newContext(ctx context.Context, p *Proxy, tx *transaction.ServerTransaction) *responseContext {
 	return &responseContext{
-		p: p, tx: tx, invite: tx.Request().Method == "INVITE",
+		p: p, tx: tx, invite: tx.Request().Method == "INVITE", ctx: ctx,
 		answers: make(map[string]bool), generated: make(map[*sip.Response]bool),
 	}
 }
@@ -281,7 +284,7 @@ func (c *responseContext) send(b *branch) error {
 
 	c.arm(b)
 
-	client, err := c.p.layer.Request(b.out, b)
+	client, err := c.p.layer.Request(c.ctx, b.out, b)
 	if err != nil {
 		c.drop(b)
 
@@ -569,7 +572,7 @@ func (b *branch) settleLocked() bool {
 	return len(b.c.waiting) > 0
 }
 
-func (b *branch) HandleResponse(res *sip.Response) {
+func (b *branch) HandleResponse(_ context.Context, res *sip.Response) {
 	c := b.c
 
 	res = res.Clone()
@@ -690,7 +693,7 @@ func (b *branch) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (b *branch) HandleError(err error) {
+func (b *branch) HandleError(_ context.Context, err error) {
 	c := b.c
 
 	c.mu.Lock()
@@ -807,7 +810,7 @@ func (c *responseContext) deliver(b *branch, r Reply) {
 	forks := c.forks
 	c.mu.Unlock()
 
-	if b.onReply(r) == Relay {
+	if b.onReply(c.ctx, r) == Relay {
 		c.relayReply(b, r)
 		return
 	}

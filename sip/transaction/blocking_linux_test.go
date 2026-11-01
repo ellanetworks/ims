@@ -71,7 +71,7 @@ func TestReaderNeverBlocksOnSend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.l.Request(h.newRequest("OPTIONS", sip.TCP), nil); err != nil {
+	if _, err := h.l.Request(context.Background(), h.newRequest("OPTIONS", sip.TCP), nil); err != nil {
 		t.Fatal(err)
 	}
 

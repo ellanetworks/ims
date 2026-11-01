@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -52,7 +53,7 @@ func TestCancelReinvite(t *testing.T) {
 
 	done, f := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +95,7 @@ func TestCancelReinvite(t *testing.T) {
 	}
 
 	// The next re-INVITE goes through.
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-3")}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,7 +121,7 @@ func TestModificationWaitsForAck(t *testing.T) {
 
 	done, f := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
 		t.Fatalf("re-INVITE before the ACK: %v", err)
 	}
 
@@ -132,7 +133,7 @@ func TestModificationWaitsForAck(t *testing.T) {
 		t.Errorf("cancelled before sent: %+v", res)
 	}
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +177,7 @@ func TestSendInOrder(t *testing.T) {
 	const n = 20
 
 	for i := range n {
-		if err := as.Send("INFO", ua.Change{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(fmt.Sprint(i)))}}, f); err != nil {
+		if err := as.Send(context.Background(), "INFO", ua.Change{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(fmt.Sprint(i)))}}, f); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -204,7 +205,7 @@ func TestSendInOrder(t *testing.T) {
 		}
 	}
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	if res := recv(t, done); !errors.Is(res.err, ua.ErrState) {
 		t.Errorf("INFO in progress at the BYE: %+v", res)
@@ -228,7 +229,7 @@ func TestTargetRefreshedByTheResponse(t *testing.T) {
 	target := func(want string) {
 		t.Helper()
 
-		if err := bs.Send("INFO", ua.Change{}, nil); err != nil {
+		if err := bs.Send(context.Background(), "INFO", ua.Change{}, nil); err != nil {
 			t.Fatal(err)
 		}
 
@@ -294,7 +295,7 @@ func TestExpiryDeferredByModification(t *testing.T) {
 
 		advance(clock, 50*time.Second, alice, bob)
 
-		if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+		if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 			t.Fatal(err)
 		}
 
@@ -365,7 +366,7 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 	// Alice's offer in an UPDATE is pending at bob when he is due to refresh, at 60 s.
 	done, f := results()
 
-	if err := as.Update(ua.Change{Bodies: sdpOf(realSDP(4002, 2))}, f); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf(realSDP(4002, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -428,7 +429,7 @@ func TestReinviteTimeout(t *testing.T) {
 
 	done, f := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,7 +493,7 @@ func TestUpdateInEarlyDialog(t *testing.T) {
 	early := alice.nextAll("answer", "progress")["progress"].s
 	done, f := results()
 
-	if err := early.Update(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := early.Update(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -531,7 +532,7 @@ func TestReinviteIntervalTooSmall(t *testing.T) {
 	done, f := results()
 	c := ua.Change{Header: sip.Header{{Name: "Session-Expires", Value: "100"}}, Bodies: sdpOf("offer-2")}
 
-	if err := as.Reinvite(c, f); err != nil {
+	if err := as.Reinvite(context.Background(), c, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -562,12 +563,12 @@ func TestForkedKept(t *testing.T) {
 
 	h := alice.handler()
 	forked := make(chan *ua.Session, 1)
-	h.Forked = func(s *ua.Session, res *sip.Response) bool {
+	h.Forked = func(_ context.Context, s *ua.Session, res *sip.Response) bool {
 		forked <- s
 		return true
 	}
 
-	if _, err := alice.a.Invite(req, h); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -621,7 +622,7 @@ func TestCallOverTCP(t *testing.T) {
 
 	done, f := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -638,7 +639,7 @@ func TestCallOverTCP(t *testing.T) {
 		t.Fatalf("re-INVITE %d", res.code())
 	}
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 
@@ -659,7 +660,7 @@ func forkedInvite(t *testing.T, alice *peer, h ua.Handler) (*ua.Outgoing, *sipte
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.SetBodies(ua.SDP([]byte(realSDP(4000, 1))))
 
-	o, err := alice.a.Invite(req, h)
+	o, err := alice.a.Invite(context.Background(), req, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,7 +809,7 @@ func TestReinviteDoneWhenSessionEnds(t *testing.T) {
 
 	done, f := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(5002, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func TestNoLeaks(t *testing.T) {
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
 
 	_, bs := established(t, alice, bob)
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 	bob.next("ended")
@@ -69,7 +70,7 @@ func TestHandlersAfterTheCall(t *testing.T) {
 
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			go func() {
 				mu.Lock()
 				defer mu.Unlock()
@@ -77,7 +78,7 @@ func TestHandlersAfterTheCall(t *testing.T) {
 				_ = r.Reject(486)
 			}()
 
-			return ua.Handler{Ended: func(*ua.Session, ua.End) {
+			return ua.Handler{Ended: func(context.Context, *ua.Session, ua.End) {
 				mu.Lock()
 				defer mu.Unlock()
 
@@ -103,14 +104,14 @@ func TestHandlersCallTheAgent(t *testing.T) {
 
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			if err := r.Reject(486); err != nil {
 				t.Error(err)
 			}
 
 			states <- r.Session().State()
 
-			return ua.Handler{Ended: func(s *ua.Session, _ ua.End) { states <- s.State() }}
+			return ua.Handler{Ended: func(_ context.Context, s *ua.Session, _ ua.End) { states <- s.State() }}
 		}
 	})
 
@@ -141,7 +142,7 @@ func TestRejectOfferInThePrack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	alice.next("offer").offer.Reject()
+	alice.next("offer").offer.Reject(context.Background())
 
 	a := bob.next("answer")
 
@@ -209,7 +210,7 @@ func TestReliableOutOfOrder(t *testing.T) {
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.SetBodies(ua.SDP([]byte(realSDP(4000, 1))))
 
-	if _, err := alice.a.Invite(req, alice.handler()); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler()); err != nil {
 		t.Fatal(err)
 	}
 

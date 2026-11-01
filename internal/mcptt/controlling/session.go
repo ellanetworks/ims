@@ -11,6 +11,7 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
 	"github.com/ellanetworks/ims/internal/mcptt/participating"
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/mcptt/controlchannel"
 	"github.com/ellanetworks/ims/mcptt/floor"
 	"github.com/ellanetworks/ims/mcptt/floorctl"
@@ -21,6 +22,7 @@ import (
 	"github.com/ellanetworks/ims/sip/mcpttinfo"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // session is a group session of a prearranged group call (TS 24.379 §10.1.1.4.2 step 14e), the Value of its call.
@@ -37,6 +39,8 @@ type session struct {
 	// log is the function's, with the group, the session identity once allocated, and the Call-ID of the
 	// originator's INVITE.
 	log *slog.Logger
+	// cause is the trace of the originator's INVITE, which the work the session starts later is linked to.
+	cause trace.SpanContext
 
 	sp     speech
 	media  *media.Call
@@ -134,7 +138,7 @@ const (
 
 // Group is the "SIP INVITE request for controlling MCPTT function of an MCPTT group" of o (TS 24.379 §10.1.1.4.2),
 // on the strand of its group.
-func (c *Controlling) Group(o *participating.Origination) {
+func (c *Controlling) Group(ctx context.Context, o *participating.Origination) {
 	snap := c.cfg.Source.Current()
 	r, req := o.Request, o.Invite
 	host := snap.ControllingPSI().Host
@@ -222,7 +226,7 @@ func (c *Controlling) Group(o *participating.Origination) {
 			return
 		}
 
-		s.join(o, entry, offer)
+		s.join(ctx, o, entry, offer)
 
 		return
 	}
@@ -250,7 +254,7 @@ func (c *Controlling) Group(o *participating.Origination) {
 		return
 	}
 
-	if err := s.start(entry, offer, ai, ci); err != nil {
+	if err := s.start(ctx, entry, offer, ai, ci); err != nil {
 		log.Warn("group session not created", slog.Any("error", err))
 		refuse(500, "", err.Error())
 
@@ -261,22 +265,22 @@ func (c *Controlling) Group(o *participating.Origination) {
 	// that one refused at once does not decide for those not invited yet.
 	if slices.ContainsFunc(invitees, func(m *member) bool { return m.required }) {
 		s.setup.ack = ackWaiting
-		s.setup.tng1 = grp.st.AfterFunc(g.TNG1, s.expireTNG1)
+		s.setup.tng1 = grp.st.AfterFunc(g.TNG1, func() { s.expireTNG1(ctx) })
 	}
 
 	s.setup.inviting = true
 
 	for _, m := range invitees {
-		s.invite(m)
+		s.invite(ctx, m)
 	}
 
 	s.setup.inviting = false
-	s.maybeAnswer()
+	s.maybeAnswer(ctx)
 }
 
 // start creates the session (TS 24.379 §10.1.1.4.2 step 14e), its MCPTT session identity, TNG3 (§6.3.3.5), the
 // floor control server and the media distributor of the call (step 14 g vi), and the originator's leg.
-func (s *session) start(entry *settings.Entry, offer *sdp.Session, ai, ci int) error {
+func (s *session) start(ctx context.Context, entry *settings.Entry, offer *sdp.Session, ai, ci int) error {
 	c := s.c
 
 	fs, err := floor.NewServer(floor.ServerConfig{
@@ -287,7 +291,7 @@ func (s *session) start(entry *settings.Entry, offer *sdp.Session, ai, ci int) e
 	}
 
 	s.fs, s.media = fs, c.cfg.Media.NewCall()
-	s.call = b2bua.NewCall(c.cfg.Agent, s.grp.st, b2bua.CallHandler{Ended: func(*b2bua.Call) { s.release("ended", ua.Reply{}) }})
+	s.call = b2bua.NewCall(c.cfg.Agent, s.grp.st, b2bua.CallHandler{Ended: func(ctx context.Context, _ *b2bua.Call) { s.release(ctx, "ended", ua.Reply{}) }})
 	s.call.SetValue(s)
 
 	m, err := s.participant(s.orig, entry, offer, s.sp.origin, ai, ci, false)
@@ -299,13 +303,19 @@ func (s *session) start(entry *settings.Entry, offer *sdp.Session, ai, ci int) e
 	s.origin = m
 
 	s.created = c.now()
+	s.cause = trace.SpanContextFromContext(ctx)
 	c.allocate(s, s.snap.ControllingPSI())
 	s.grp.sess = s
 	s.log = s.log.With(slog.String("session", s.id.String()))
 
 	// The group document requires <on-network-maximum-duration> of a prearranged group.
 	if s.g.TNG3 > 0 {
-		s.tng3 = s.grp.st.AfterFunc(s.g.TNG3, func() { s.release("maximum duration", ua.Reply{}) })
+		s.tng3 = s.grp.st.AfterFunc(s.g.TNG3, func() {
+			ctx, span := s.detach("group call maximum duration")
+			defer span.End()
+
+			s.release(ctx, "maximum duration", ua.Reply{})
+		})
 	}
 
 	return nil
@@ -406,7 +416,7 @@ func (s *session) participant(o *participating.Origination, entry *settings.Entr
 		return nil, err
 	}
 
-	l, err := s.call.Incoming(o.Request, b2bua.LegHandler{Ended: func(*b2bua.Leg, ua.End) { s.left(m) }, Decorate: s.decorate})
+	l, err := s.call.Incoming(o.Request, b2bua.LegHandler{Ended: func(ctx context.Context, _ *b2bua.Leg, _ ua.End) { s.left(ctx, m) }, Decorate: s.decorate})
 	if err != nil {
 		ml.Close()
 		return nil, err
@@ -480,7 +490,7 @@ func (s *session) legConfig(m *member, pt uint8, mux, shared bool) media.LegConf
 // join is the INVITE of a member joining the ongoing session (TS 24.379 §10.1.1.4.2 step 15): answered at once from
 // its own offer, refused with a 488 without the call's speech (RFC 3264 §6.1), with the warning text 123, its floor
 // participant told the floor's state, or its implicit floor request taken as a Floor Request (TS 24.380 §6.3.5.2.2 3).
-func (s *session) join(o *participating.Origination, entry *settings.Entry, offer *sdp.Session) {
+func (s *session) join(ctx context.Context, o *participating.Origination, entry *settings.Entry, offer *sdp.Session) {
 	host := s.snap.ControllingPSI().Host
 	joiner := memberAttr(entry.ID(), o.Request.Message().Header.CallID())
 
@@ -509,12 +519,12 @@ func (s *session) join(o *participating.Origination, entry *settings.Entry, offe
 		return
 	}
 
-	if s.respond(m, o, sip.Header{identity.Warning(host, identity.WarnSessionExists)}) {
+	if s.respond(ctx, m, o, sip.Header{identity.Warning(host, identity.WarnSessionExists)}) {
 		s.logMember(slog.LevelDebug, "participant joined", m)
 		s.joinFloor(m, m.offerParams.FloorSSRC, m.offerParams.HasFloorSSRC, m.offered.Priority, m.offered.ImplicitRequest)
-		s.supersede(m)
+		s.supersede(ctx, m)
 		// During the setup, a participant to answer the originator's call into (§6.3.3.3).
-		s.maybeAnswer()
+		s.maybeAnswer(ctx)
 	}
 }
 
@@ -522,7 +532,7 @@ func (s *session) join(o *participating.Origination, entry *settings.Entry, offe
 // call by its own INVITE (§10.1.1.4.2 step 15), as when it invited the server at the time the server invited it. The
 // specs leave a user's two legs in a call open; one leg a user, as of its clients invited (participating.Router), the
 // first to accept the member. Each is acknowledged, its user being in the call (step 8, §6.3.3.3).
-func (s *session) supersede(m *member) {
+func (s *session) supersede(ctx context.Context, m *member) {
 	k := settings.Key(m.id)
 
 	for _, o := range s.members {
@@ -535,7 +545,7 @@ func (s *session) supersede(m *member) {
 		s.logMember(slog.LevelDebug, "invitation superseded", o)
 
 		for _, l := range o.branches {
-			_ = l.End(ua.Reply{})
+			_ = l.End(ctx, ua.Reply{})
 		}
 
 		if o.media != nil {
@@ -546,7 +556,7 @@ func (s *session) supersede(m *member) {
 
 // respond sends the 200 of the INVITE of a participant (TS 24.379 §6.3.3.2.3.2): the session identity in its Contact
 // with the feature tags of the controlling function, the controlling PSI asserted, the SDP answer prepared.
-func (s *session) respond(m *member, o *participating.Origination, header sip.Header) bool {
+func (s *session) respond(ctx context.Context, m *member, o *participating.Origination, header sip.Header) bool {
 	psi := s.snap.ControllingPSI()
 
 	h := sip.Header{
@@ -556,7 +566,7 @@ func (s *session) respond(m *member, o *participating.Origination, header sip.He
 
 	err := m.leg.Request().Respond(o.Reply(ua.Reply{Code: 200, Header: append(h, header...), Bodies: []sip.BodyPart{ua.SDP(m.answerSDP)}}))
 	if err != nil {
-		_ = m.leg.End(ua.Reply{})
+		_ = m.leg.End(ctx, ua.Reply{})
 		return false
 	}
 
@@ -600,7 +610,7 @@ func (s *session) count(st state) int {
 // A member that cannot be invited is declined as by the final response it would have had (§6.3.3.3): the server
 // failing, a 500, or the participating function's refusal, its code and Warning header fields
 // (§10.1.1.3.1.1: "shall include Warning header field(s) that were received").
-func (s *session) invite(m *member) {
+func (s *session) invite(ctx context.Context, m *member) {
 	if s.released {
 		return
 	}
@@ -610,7 +620,7 @@ func (s *session) invite(m *member) {
 	ml, err := s.media.AddLeg(s.legConfig(m, s.sp.codec.Payload, false, true))
 	if err != nil {
 		s.log.Warn("member not invited: no media", m.attr(), slog.Any("error", err))
-		s.declined(m, failure(500, nil))
+		s.declined(ctx, m, failure(500, nil))
 
 		return
 	}
@@ -626,7 +636,7 @@ func (s *session) invite(m *member) {
 	if err != nil {
 		s.log.Warn("member not invited", m.attr(), slog.Any("error", err))
 		ml.Close()
-		s.declined(m, failure(500, nil))
+		s.declined(ctx, m, failure(500, nil))
 
 		return
 	}
@@ -634,18 +644,20 @@ func (s *session) invite(m *member) {
 	t := s.c.cfg.Participating.Terminate(req)
 	if len(t.Invites) == 0 {
 		ml.Close()
-		s.declined(m, failure(t.Code, t.Header))
+		s.declined(ctx, m, failure(t.Code, t.Header))
 
 		return
 	}
 
 	// t.Unconfirmed is an unconfirmed indication: without media buffering, it starts nothing (§10.1.1.4.2).
 	for _, inv := range t.Invites {
-		l, err := s.call.Dial(inv, b2bua.LegHandler{
-			Established: func(l *b2bua.Leg, _ sip.Message) { s.branchAccepted(m, l) },
-			Failed:      func(l *b2bua.Leg, res *sip.Response, err error) { s.branchFailed(m, res, err) },
-			Ended:       func(l *b2bua.Leg, _ ua.End) { s.branchEnded(m, l) },
-			Decorate:    s.decorate,
+		l, err := s.call.Dial(ctx, inv, b2bua.LegHandler{
+			Established: func(ctx context.Context, l *b2bua.Leg, _ sip.Message) { s.branchAccepted(ctx, m, l) },
+			Failed: func(ctx context.Context, l *b2bua.Leg, res *sip.Response, err error) {
+				s.branchFailed(ctx, m, res, err)
+			},
+			Ended:    func(ctx context.Context, l *b2bua.Leg, _ ua.End) { s.branchEnded(ctx, m, l) },
+			Decorate: s.decorate,
 		})
 		if err != nil {
 			m.failures = append(m.failures, b2bua.Failure{Err: err})
@@ -661,16 +673,16 @@ func (s *session) invite(m *member) {
 
 	if len(m.branches) == 0 {
 		ml.Close()
-		s.declined(m, m.failures...)
+		s.declined(ctx, m, m.failures...)
 	}
 }
 
 // branchAccepted is the 2xx of branch l of an invited member: the member's leg if the first, ended otherwise.
-func (s *session) branchAccepted(m *member, l *b2bua.Leg) {
+func (s *session) branchAccepted(ctx context.Context, m *member, l *b2bua.Leg) {
 	m.pending--
 
 	if s.released || m.state != invited || m.leg != nil {
-		_ = l.End(ua.Reply{})
+		_ = l.End(ctx, ua.Reply{})
 		return
 	}
 
@@ -678,15 +690,15 @@ func (s *session) branchAccepted(m *member, l *b2bua.Leg) {
 
 	for _, o := range m.branches {
 		if o != l {
-			_ = o.End(ua.Reply{})
+			_ = o.End(ctx, ua.Reply{})
 		}
 	}
 
-	s.accepted(m)
+	s.accepted(ctx, m)
 }
 
 // branchFailed is the failure of a branch of an invited member: once every branch failed, the member declined.
-func (s *session) branchFailed(m *member, res *sip.Response, err error) {
+func (s *session) branchFailed(ctx context.Context, m *member, res *sip.Response, err error) {
 	m.pending--
 
 	if m.leg != nil {
@@ -696,17 +708,17 @@ func (s *session) branchFailed(m *member, res *sip.Response, err error) {
 	m.failures = append(m.failures, b2bua.Failure{Response: res, Err: err})
 
 	if m.pending == 0 {
-		s.declined(m, m.failures...)
+		s.declined(ctx, m, m.failures...)
 	}
 }
 
 // branchEnded is the end of a branch of a member: the member leaves with its leg, or with its last branch when none
 // accepted.
-func (s *session) branchEnded(m *member, l *b2bua.Leg) {
+func (s *session) branchEnded(ctx context.Context, m *member, l *b2bua.Leg) {
 	m.live--
 
 	if l == m.leg || m.leg == nil && m.live == 0 {
-		s.left(m)
+		s.left(ctx, m)
 	}
 }
 
@@ -765,7 +777,7 @@ func (s *session) memberInvite(m *member, ml *media.Leg) (*sip.Request, error) {
 
 // accepted is the 200 of an invited member (TS 24.379 §10.1.1.4.1.1): its media and floor participant added to the
 // call (TS 24.380 §6.3), the counter of 200s incremented.
-func (s *session) accepted(m *member) {
+func (s *session) accepted(ctx context.Context, m *member) {
 	if s.released || m.state != invited {
 		return
 	}
@@ -776,8 +788,8 @@ func (s *session) accepted(m *member) {
 	if err != nil {
 		// Not the media of the call: the member removed (§6.3.3.1.5), as one refusing it with a 488 (Not Acceptable
 		// Here), for the required members' policy too (§6.3.3.3).
-		s.declined(m, failure(488, nil))
-		_ = m.leg.End(ua.Reply{})
+		s.declined(ctx, m, failure(488, nil))
+		_ = m.leg.End(ctx, ua.Reply{})
 
 		return
 	}
@@ -789,12 +801,12 @@ func (s *session) accepted(m *member) {
 	s.setup.oks++
 	s.logMember(slog.LevelDebug, "member joined", m)
 
-	s.maybeAnswer()
+	s.maybeAnswer(ctx)
 }
 
 // declined is the failure of the INVITE of an invited member: the final responses of its branches, or the errors of
 // their INVITEs.
-func (s *session) declined(m *member, fs ...b2bua.Failure) {
+func (s *session) declined(ctx context.Context, m *member, fs ...b2bua.Failure) {
 	if s.released || m.state != invited {
 		return
 	}
@@ -819,11 +831,11 @@ func (s *session) declined(m *member, fs ...b2bua.Failure) {
 	// §6.3.3.3: a required member refusing, the call abandoned by the policy of TNG1's expiry (NOTE 3), its response
 	// forwarded with the warning text 112.
 	if m.required && s.setup.ack == ackWaiting && s.g.TNG1Action == settings.Abandon {
-		s.release("required member declined", s.final(fs, identity.WarnAbandonedRequired))
+		s.release(ctx, "required member declined", s.final(fs, identity.WarnAbandonedRequired))
 		return
 	}
 
-	s.maybeAnswer()
+	s.maybeAnswer(ctx)
 }
 
 // final is the originator's final response for the failures of the members, with the warning texts of the
@@ -862,7 +874,7 @@ func failure(code int, header sip.Header) b2bua.Failure {
 // buffering, once an invited member accepted, <on-network-minimum-number-to-start> did, and a participant is left to
 // answer the call into; with required members, once they accepted, or TNG1 expired and the call proceeds. Once no
 // invitation is left and the call cannot start, the originator gets the final response of the members.
-func (s *session) maybeAnswer() {
+func (s *session) maybeAnswer(ctx context.Context) {
 	st := &s.setup
 	if s.answered || s.released || st.inviting {
 		return
@@ -901,7 +913,7 @@ func (s *session) maybeAnswer() {
 
 		if s.g.TNG1Action == settings.Abandon {
 			// §6.3.3.3 2.
-			s.release("required members not acknowledged", s.final(nil, identity.WarnAbandonedRequired))
+			s.release(ctx, "required members not acknowledged", s.final(nil, identity.WarnAbandonedRequired))
 			return
 		}
 
@@ -911,12 +923,12 @@ func (s *session) maybeAnswer() {
 	present := slices.ContainsFunc(s.members, func(m *member) bool { return m != s.origin && m.state == joined })
 
 	if st.ack != ackExpired && st.oks >= max(s.g.MinimumToStart, 1) && present {
-		s.answer()
+		s.answer(ctx)
 		return
 	}
 
 	if !pending(false) {
-		s.release("no member accepted", s.final(st.failures))
+		s.release(ctx, "no member accepted", s.final(st.failures))
 	}
 }
 
@@ -924,7 +936,7 @@ func (s *session) maybeAnswer() {
 // call proceeding without its required members (§6.3.3.3 1 a ii) and 122 of members not invited, and starts the floor
 // control: the originator's implicit floor request, granted in the 200 by mc_granted (TS 24.380 §6.3.4.2.2, §14.3.4).
 // The session is established: the setup's rules end, the release policy of §6.3.8.1 starts.
-func (s *session) answer() {
+func (s *session) answer(ctx context.Context) {
 	var warn []string
 
 	if s.setup.ack == ackProceeded {
@@ -943,7 +955,7 @@ func (s *session) answer() {
 	s.joinFloor(o, o.offerParams.FloorSSRC, o.offerParams.HasFloorSSRC, o.offered.Priority, o.offered.ImplicitRequest)
 	s.fs.Start(o.offered.Granted)
 
-	if !s.respond(o, s.orig, s.final(nil, warn...).Header) {
+	if !s.respond(ctx, o, s.orig, s.final(nil, warn...).Header) {
 		return
 	}
 
@@ -953,20 +965,20 @@ func (s *session) answer() {
 }
 
 // expireTNG1 is the expiry of TNG1 (TS 24.379 §6.3.3.3).
-func (s *session) expireTNG1() {
+func (s *session) expireTNG1(ctx context.Context) {
 	if s.answered || s.released || s.setup.ack != ackWaiting {
 		return
 	}
 
 	s.setup.ack = ackExpired
-	s.maybeAnswer()
+	s.maybeAnswer(ctx)
 }
 
 // left is the end of the leg of a member: its BYE (§6.3.3.2.4), the end of its session, or the failure of its
 // INVITE. Its media and floor participant are released. During the setup, the originator leaving (its CANCEL)
 // releases the session, and another member leaving has the setup evaluated again (§6.3.3.3); once established, the
 // session is released by its release policy (§6.3.8.1).
-func (s *session) left(m *member) {
+func (s *session) left(ctx context.Context, m *member) {
 	if m.state == gone {
 		return
 	}
@@ -991,16 +1003,16 @@ func (s *session) left(m *member) {
 	case s.released:
 	case m == s.origin && !s.answered:
 		// The originator cancelled.
-		s.release("cancelled", ua.Reply{})
+		s.release(ctx, "cancelled", ua.Reply{})
 	case !s.answered:
-		s.maybeAnswer()
+		s.maybeAnswer(ctx)
 	case !participant:
 	case m == s.origin && s.g.ReleaseOnInitiatorLeave:
 		// §6.3.8.1 3.
-		s.release("initiator left", ua.Reply{})
+		s.release(ctx, "initiator left", ua.Reply{})
 	case s.count(joined) <= 1:
 		// §6.3.8.1 2.
-		s.release("too few participants", ua.Reply{})
+		s.release(ctx, "too few participants", ua.Reply{})
 	}
 }
 
@@ -1010,20 +1022,20 @@ func (s *session) left(m *member) {
 // member of the group, removed from it or its user deleted (TS 23.280 §10.2.6.1), is removed from the session
 // (remove), as a client no longer affiliated is (§10.1.1.4.4.3: "e.g. due to de-affiliation"): it could not initiate
 // nor join the call now (§10.1.1.4.2 steps 14 b, 15 b).
-func (s *session) revoke() {
+func (s *session) revoke(ctx context.Context) {
 	if s.released {
 		return
 	}
 
 	g := s.c.cfg.Source.Current().Group(s.g.ID())
 	if g == nil {
-		s.release("group deleted", ua.Reply{})
+		s.release(ctx, "group deleted", ua.Reply{})
 		return
 	}
 
 	for _, m := range slices.Clone(s.members) {
 		if (m.state == invited || m.state == joined) && g.Entry(m.id) == nil {
-			s.remove(m, "no longer a member")
+			s.remove(ctx, m, "no longer a member")
 
 			if s.released {
 				return
@@ -1036,31 +1048,31 @@ func (s *session) revoke() {
 // a BYE once answered, a CANCEL to each branch of a member still invited, and m leaves as by its own BYE (left): its
 // floor participant leaves the floor control server, its media is released, and the release policy applies
 // (§6.3.8.1). The originator not answered yet releases the session, as by its CANCEL.
-func (s *session) remove(m *member, cause string) {
+func (s *session) remove(ctx context.Context, m *member, cause string) {
 	s.logMember(slog.LevelInfo, "participant removed", m, slog.String("cause", cause))
 
 	if m == s.origin && !s.answered {
-		s.release("originator "+cause, ua.Reply{})
+		s.release(ctx, "originator "+cause, ua.Reply{})
 		return
 	}
 
 	if m.leg != nil {
-		_ = m.leg.End(ua.Reply{})
+		_ = m.leg.End(ctx, ua.Reply{})
 	}
 
 	for _, l := range m.branches {
 		if l != m.leg {
-			_ = l.End(ua.Reply{})
+			_ = l.End(ctx, ua.Reply{})
 		}
 	}
 
-	s.left(m)
+	s.left(ctx, m)
 }
 
 // release releases the session (TS 24.379 §6.3.3.1.5, §10.1.1.4.4.2) for cause, as logged: its floor control and
 // media released, a BYE to each participant, a CANCEL to each member not answered yet, the originator not answered
 // rp; TNG1 and TNG3 stopped, the session identity freed.
-func (s *session) release(cause string, rp ua.Reply) {
+func (s *session) release(ctx context.Context, cause string, rp ua.Reply) {
 	if s.released {
 		return
 	}
@@ -1089,7 +1101,7 @@ func (s *session) release(cause string, rp ua.Reply) {
 		_ = s.origin.leg.Respond(s.orig.Reply(rp))
 	}
 
-	s.call.End(ua.Reply{})
+	s.call.End(ctx, ua.Reply{})
 	s.media.Close()
 
 	s.c.free(s)
@@ -1181,15 +1193,29 @@ func (o floorOut) Forward(fm *floor.Member, on bool) {
 }
 
 // Inactive is the expiry of T4 (Inactivity), which releases the call (TS 24.379 §6.3.8.1 1).
-func (o floorOut) Inactive() { o.s.release("inactivity", ua.Reply{}) }
+func (o floorOut) Inactive() {
+	ctx, span := o.s.detach("group call inactivity")
+	defer span.End()
+
+	o.s.release(ctx, "inactivity", ua.Reply{})
+}
 
 // Disconnect removes a member whose media the server could not revoke (TS 24.380 §6.3.5.7.3 NOTE; TS 24.379
 // §10.1.1.4.4.3).
 func (o floorOut) Disconnect(fm *floor.Member) {
 	if m := o.s.floors[fm]; m != nil {
+		ctx, span := o.s.detach("group call media not revoked")
+		defer span.End()
+
 		o.s.logMember(slog.LevelInfo, "participant disconnected: media not revoked", m)
-		_ = m.leg.End(ua.Reply{})
+		_ = m.leg.End(ctx, ua.Reply{})
 	}
+}
+
+// detach starts the span of work of the session that starts later than the setup, as a timer or the floor control
+// server starts: in a trace of its own, linked to that of the originator's INVITE.
+func (s *session) detach(name string) (context.Context, trace.Span) {
+	return tracing.NewTrace(trace.ContextWithSpanContext(context.Background(), s.cause), s.c.tracer, name)
 }
 
 // acceptsMCPTT reports whether the Accept-Contact of req has the MCPTT feature tag and its ICSI (TS 24.379

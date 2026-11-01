@@ -55,7 +55,7 @@ func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []si
 	}
 
 	respond(res)
-	r.send(out)
+	r.send(ctx, out)
 }
 
 type subscribeRequest struct {

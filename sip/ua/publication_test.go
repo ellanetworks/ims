@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ func newCompositor(t *testing.T, clock *siptest.Clock) *compositor {
 		}
 
 		cfg.Allow = append(cfg.Allow, "PUBLISH")
-		cfg.OnRequest = func(r *ua.Request) {
+		cfg.OnRequest = func(_ context.Context, r *ua.Request) {
 			<-c.ready
 			c.store.Handle(r)
 		}
@@ -85,9 +86,9 @@ func TestPublication(t *testing.T) {
 	published := make(chan *sip.Response, 4)
 	ended := make(chan ua.End, 1)
 
-	p, err := alice.a.Publish(publishRequest(esc.p, alice.uri(), "open", "120"), ua.PublicationHandler{
-		Published: func(_ *ua.Publication, res *sip.Response) { published <- res },
-		Ended:     func(_ *ua.Publication, e ua.End) { ended <- e },
+	p, err := alice.a.Publish(context.Background(), publishRequest(esc.p, alice.uri(), "open", "120"), ua.PublicationHandler{
+		Published: func(_ context.Context, _ *ua.Publication, res *sip.Response) { published <- res },
+		Ended:     func(_ context.Context, _ *ua.Publication, e ua.End) { ended <- e },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestPublication(t *testing.T) {
 
 	done, f := results()
 
-	if err := p.Modify([]sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("closed"))}, f); err != nil {
+	if err := p.Modify(context.Background(), []sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("closed"))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +139,7 @@ func TestPublication(t *testing.T) {
 	default:
 	}
 
-	if err := p.Remove(f); err != nil {
+	if err := p.Remove(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -167,7 +168,7 @@ func TestPublicationRecovery(t *testing.T) {
 	req.Header.Add("Expires", "3600")
 	req.SetBodies(sip.NewBodyPart("application/pidf+xml", []byte("s1")))
 
-	p, err := alice.a.Publish(req, ua.PublicationHandler{})
+	p, err := alice.a.Publish(context.Background(), req, ua.PublicationHandler{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +182,8 @@ func TestPublicationRecovery(t *testing.T) {
 	stale, f1 := results()
 	done, f2 := results()
 
-	_ = p.Modify([]sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("s2"))}, f1)
-	_ = p.Modify([]sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("s3"))}, f2)
+	_ = p.Modify(context.Background(), []sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("s2"))}, f1)
+	_ = p.Modify(context.Background(), []sip.BodyPart{sip.NewBodyPart("application/pidf+xml", []byte("s3"))}, f2)
 
 	if r := recv(t, stale); !errors.Is(r.err, ua.ErrStale) {
 		t.Errorf("replaced change: %+v", r)
@@ -281,7 +282,7 @@ func TestPublicationWithBodies(t *testing.T) {
 	esc := newPeerWith(t, "esc", func(cfg *ua.Config) {
 		cfg.Transaction.Clock = clock
 		cfg.Allow = append(cfg.Allow, "PUBLISH")
-		cfg.OnRequest = func(r *ua.Request) {
+		cfg.OnRequest = func(_ context.Context, r *ua.Request) {
 			got <- r.Message()
 
 			var h sip.Header
@@ -297,7 +298,7 @@ func TestPublicationWithBodies(t *testing.T) {
 
 	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("info"))
 
-	p, err := alice.a.Publish(publishRequest(esc, alice.uri(), "open", "120"), ua.PublicationHandler{}, ua.WithBodies(info))
+	p, err := alice.a.Publish(context.Background(), publishRequest(esc, alice.uri(), "open", "120"), ua.PublicationHandler{}, ua.WithBodies(info))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +328,7 @@ func TestPublicationWithBodies(t *testing.T) {
 	}
 
 	done, f := results()
-	if err := p.Remove(f); err != nil {
+	if err := p.Remove(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
 

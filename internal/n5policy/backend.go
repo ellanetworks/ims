@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/sbitls"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SessionsPath is where the P-CSCF receives notifications: each session has the notifUri
@@ -49,7 +50,9 @@ type Config struct {
 	TLS *sbitls.Credentials
 	// Observe, if set, is called after each request to the PCF, as n5.Config's.
 	Observe func(status int, err error, elapsed time.Duration)
-	Logger  *slog.Logger
+	// TracerProvider traces the requests to the PCF; none when nil.
+	TracerProvider trace.TracerProvider
+	Logger         *slog.Logger
 }
 
 // Backend is the policy backend over N5. It is also the HTTP handler of the PCF's notifications.
@@ -97,7 +100,7 @@ type Status struct {
 var _ policy.Backend = (*Backend)(nil)
 
 func New(cfg Config) (*Backend, error) {
-	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS, Observe: cfg.Observe})
+	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS, Observe: cfg.Observe, TracerProvider: cfg.TracerProvider})
 	if err != nil {
 		return nil, err
 	}

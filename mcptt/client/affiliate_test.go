@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,7 @@ func (e *env) registrarESC() *registrarESC {
 	return s
 }
 
-func (s *registrarESC) onRequest(r *ua.Request) {
+func (s *registrarESC) onRequest(_ context.Context, r *ua.Request) {
 	req := r.Message()
 
 	s.mu.Lock()

@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -571,7 +572,7 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 			answer(t, s.callee, c.fwd, c.f, 180)
 			wantResponse(t, s.caller, 180)
 
-			if err := c.d.Release(proxy.Release{Toward: tc.toward, Reason: []sip.Reason{cause503}, ResponseReason: []sip.Reason{failure}}); err != nil {
+			if err := c.d.Release(context.Background(), proxy.Release{Toward: tc.toward, Reason: []sip.Reason{cause503}, ResponseReason: []sip.Reason{failure}}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -682,7 +683,7 @@ func TestDialogLate2xxWithAnOffer(t *testing.T) {
 	answer(t, s.callee, fwd, f, 180)
 	wantResponse(t, s.caller, 180)
 
-	if err := d.Release(proxy.Release{Toward: proxy.Caller}); err != nil {
+	if err := d.Release(context.Background(), proxy.Release{Toward: proxy.Caller}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -763,7 +764,7 @@ func TestDialogReleaseAnswered(t *testing.T) {
 		c := ring(s)
 		c.answerCall(true)
 
-		if err := c.d.Release(proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}}); err != nil {
+		if err := c.d.Release(context.Background(), proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -807,7 +808,7 @@ func TestDialogReleaseAnswered(t *testing.T) {
 		s.r.nextEvent(proxy.EventAnswered)
 
 		failure, _ := sip.NewReason(sip.ReasonFailureCause, sip.FailureResourcesAllocation, "")
-		if err := c.d.Release(proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}, ResponseReason: []sip.Reason{failure}}); err != nil {
+		if err := c.d.Release(context.Background(), proxy.Release{Toward: proxy.Both, Reason: []sip.Reason{cause}, ResponseReason: []sip.Reason{failure}}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -852,7 +853,7 @@ func TestDialogNotStartedWhenTheInviteFails(t *testing.T) {
 	d := s.r.nextDialog()
 	s.r.noEvent()
 
-	if err := d.Release(proxy.Release{Toward: proxy.Both}); err == nil {
+	if err := d.Release(context.Background(), proxy.Release{Toward: proxy.Both}); err == nil {
 		t.Error("released a dialog that never started")
 	}
 }
@@ -998,7 +999,7 @@ func TestDialogByeCSeqAfterReinvites(t *testing.T) {
 		t.Errorf("callee CSeq %d, want %d", got, calleeSeq)
 	}
 
-	if err := c.d.Release(proxy.Release{Toward: proxy.Both}); err != nil {
+	if err := c.d.Release(context.Background(), proxy.Release{Toward: proxy.Both}); err != nil {
 		t.Fatal(err)
 	}
 

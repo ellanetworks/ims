@@ -74,7 +74,7 @@ func (r *Registrar) Sessions(cfg SessionConfig) *Sessions {
 	return &Sessions{r: r, cfg: cfg, proxy: cfg.Proxy, log: r.log, hops: make(map[string]*hop)}
 }
 
-func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Sessions) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := s.proxy.Check(req); res != nil {
 		s.respond(tx, res)
 		return
@@ -93,7 +93,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 	}
 
 	if to.Tag() != "" {
-		s.inDialog(tx, out, removed)
+		s.inDialog(ctx, tx, out, removed)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 		return
 	}
 
-	s.spawn(tx, func(ctx context.Context) {
+	s.spawn(ctx, tx, func(ctx context.Context) {
 		switch {
 		case h != nil:
 			s.resume(ctx, tx, out, h)
@@ -132,10 +132,10 @@ func (s *Sessions) HandleRequest(tx *transaction.ServerTransaction, req *sip.Req
 
 // spawn runs f for a request on a goroutine of its own while the S-CSCF runs, and answers the request with a 500
 // and a Retry-After when it cannot.
-func (s *Sessions) spawn(tx *transaction.ServerTransaction, f func(ctx context.Context)) {
+func (s *Sessions) spawn(ctx context.Context, tx *transaction.ServerTransaction, f func(ctx context.Context)) {
 	req := tx.Request()
 
-	err := s.r.cfg.Layer.Go(func(ctx context.Context) {
+	err := s.r.cfg.Layer.Go(ctx, func(ctx context.Context) {
 		ctx, done, ok := s.r.begin(ctx)
 		if !ok {
 			s.answer(tx, retryLater(req))
@@ -152,11 +152,11 @@ func (s *Sessions) spawn(tx *transaction.ServerTransaction, f func(ctx context.C
 	}
 }
 
-func (s *Sessions) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+func (s *Sessions) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	s.proxy.Cancel(tx, cancel)
 }
 
-func (s *Sessions) HandleAck(ack *sip.Request) {
+func (s *Sessions) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := s.proxy.Preprocess(ack)
 	if err != nil || len(removed) == 0 {
 		s.log.Debug("dropped an ACK not routed through the S-CSCF", slog.String("call-id", ack.Header.CallID()))
@@ -170,17 +170,17 @@ func (s *Sessions) HandleAck(ack *sip.Request) {
 			return
 		}
 
-		if err := s.proxy.ForwardAck(out, to, s.proxy.Dialog(removed)); err != nil {
+		if err := s.proxy.ForwardAck(ctx, out, to, s.proxy.Dialog(removed)); err != nil {
 			s.log.Debug("ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
 		}
 	}
 
 	if !needsDNS(out) {
-		forward(context.Background())
+		forward(ctx)
 		return
 	}
 
-	err = s.r.cfg.Layer.Go(func(ctx context.Context) {
+	err = s.r.cfg.Layer.Go(ctx, func(ctx context.Context) {
 		ctx, done, ok := s.r.begin(ctx)
 		if !ok {
 			return
@@ -354,7 +354,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 
 // toICSCF routes a request that leaves the chain of the served user through the I-CSCF (TS 24.229 §5.4.3.2 steps
 // 7 to 15).
-func (s *Sessions) toICSCF(tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
+func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
 	req := tx.Request()
 
 	if out.Method == "MESSAGE" && out.Content().MediaType() == contentTypeSMS {
@@ -420,7 +420,7 @@ func (s *Sessions) toICSCF(tx *transaction.ServerTransaction, out *sip.Request, 
 		s.r.cfg.Records.Routed(r.Header.ICID(), callrecords.Routing{Asserted: ids, RequestURI: r.URI.String()})
 	}
 
-	s.forward(tx, r, to, opts)
+	s.forward(ctx, tx, r, to, opts)
 }
 
 // assertService puts the ICSIs of the request in P-Asserted-Service (TS 24.229 §5.4.3.2 steps 4C, 4D): those the
@@ -576,7 +576,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 			return
 		}
 
-		var onReply func(proxy.Reply) proxy.Verdict
+		var onReply func(context.Context, proxy.Reply) proxy.Verdict
 
 		if len(regs) > 0 {
 			onReply = s.aliasReply(regs[0], "", out.Method)
@@ -585,7 +585,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 		opts := s.initialOptions(out, rrTerminating, true)
 		opts.OnReply = onReply
 
-		s.forward(tx, out, to, opts)
+		s.forward(ctx, tx, out, to, opts)
 
 		return
 	}
@@ -661,7 +661,7 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 		return
 	}
 
-	err := s.proxy.Fork(tx, groups)
+	err := s.proxy.Fork(ctx, tx, groups)
 
 	// A fork that failed, or found the request answered already (a CANCEL came first), never began
 	// the dialog: it would never end.
@@ -728,7 +728,7 @@ func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI,
 // aliasReply completes the 1xx and 2xx responses of the served user: the alias of its asserted identity, and the token
 // of the registration that answered, for the ASs they go back through, in the 1xx and 2xx responses that begin a
 // dialog and in the 200 of a standalone transaction (TS 24.229 §5.4.3.3 steps 2b, 3 and 6, steps 1A and 1B).
-func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(proxy.Reply) proxy.Verdict {
+func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(context.Context, proxy.Reply) proxy.Verdict {
 	// The subscription of the registration, parsed for the first response that asserts an identity: an invalid one
 	// holds no alias.
 	sub := sync.OnceValue(func() cx.IMSSubscription {
@@ -736,7 +736,7 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(pr
 		return sub
 	})
 
-	return func(r proxy.Reply) proxy.Verdict {
+	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		res := r.Response
 		if res == nil || res.StatusCode <= 100 || res.StatusCode >= 300 {
 			return proxy.Relay
@@ -757,8 +757,8 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(pr
 // failure of the flow: the UE's other flows are tried, and the response upstream is a 480 (Temporarily Unavailable)
 // when none is left (RFC 5626 §7, §11.5). The registrar removes the binding, and starts the HSS based P-CSCF
 // restoration when the UE has no other (TS 24.229 §5.4.3.3, TS 23.380 §5.4.1).
-func (s *Sessions) pcscfFailure(t target, next func(proxy.Reply) proxy.Verdict) func(proxy.Reply) proxy.Verdict {
-	return func(r proxy.Reply) proxy.Verdict {
+func (s *Sessions) pcscfFailure(t target, next func(context.Context, proxy.Reply) proxy.Verdict) func(context.Context, proxy.Reply) proxy.Verdict {
+	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		if res := r.Response; res != nil && res.StatusCode == 404 && pcscfNotFound(t.binding.Contact.Path, res) {
 			s.log.Info("the P-CSCF has no binding for the contact", slog.String("impi", t.reg.IMPI),
 				slog.String("contact", t.binding.Contact.URI))
@@ -768,7 +768,7 @@ func (s *Sessions) pcscfFailure(t target, next func(proxy.Reply) proxy.Verdict) 
 			s.r.pcscfLost(t.reg.IMPI, t.reg.ID, t.binding.ID)
 		}
 
-		return next(r)
+		return next(ctx, r)
 	}
 }
 
@@ -837,7 +837,7 @@ func (s *Sessions) dialogTarget(in sip.Flow) func(proxy.Side, *sip.Request) (pro
 }
 
 // TS 24.229 §5.4.3.2, §5.4.3.3
-func (s *Sessions) inDialog(tx *transaction.ServerTransaction, out *sip.Request, removed []sip.URI) {
+func (s *Sessions) inDialog(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, removed []sip.URI) {
 	req := tx.Request()
 
 	if len(removed) == 0 {
@@ -855,11 +855,11 @@ func (s *Sessions) inDialog(tx *transaction.ServerTransaction, out *sip.Request,
 	}
 
 	if !needsDNS(out) {
-		s.forwardInDialog(context.Background(), tx, out, removed, d)
+		s.forwardInDialog(ctx, tx, out, removed, d)
 		return
 	}
 
-	s.spawn(tx, func(ctx context.Context) { s.forwardInDialog(ctx, tx, out, removed, d) })
+	s.spawn(ctx, tx, func(ctx context.Context) { s.forwardInDialog(ctx, tx, out, removed, d) })
 }
 
 // forwardInDialog forwards a request within a dialog to its next hop (RFC 3261 §16.12).
@@ -884,7 +884,7 @@ func (s *Sessions) forwardInDialog(ctx context.Context, tx *transaction.ServerTr
 		refreshToken(out, removed, &opts)
 	}
 
-	s.forward(tx, out, to, opts)
+	s.forward(ctx, tx, out, to, opts)
 }
 
 // refreshToken puts the registration token of the initial request in a target refresh request towards the AS it
@@ -906,7 +906,7 @@ func refreshToken(out *sip.Request, removed []sip.URI, opts *proxy.Options) {
 	}
 
 	if token, ok := removed[0].Params.Get(tokenParam); ok {
-		opts.OnReply = func(r proxy.Reply) proxy.Verdict {
+		opts.OnReply = func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 			if res := r.Response; res != nil && res.StatusCode > 100 && res.StatusCode < 300 {
 				withRegistrationToken(&res.Header, token)
 			}
@@ -1039,8 +1039,8 @@ func (s *Sessions) icscf(in sip.Flow) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.ICSCF[i]}}, true
 }
 
-func (s *Sessions) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
-	err := s.proxy.Forward(tx, out, to, opts)
+func (s *Sessions) forward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
+	err := s.proxy.Forward(ctx, tx, out, to, opts)
 
 	if err != nil && opts.Dialog != nil {
 		s.r.calls.forget(opts.Dialog)

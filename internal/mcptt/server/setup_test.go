@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"regexp"
 	"slices"
 	"strings"
@@ -379,11 +380,11 @@ func TestReleasedSession(t *testing.T) {
 	bob.onInvite = func(r *ua.Request) ua.Handler {
 		h := bob.OnInvite(r)
 		inner := h.Bye
-		h.Bye = func(s *ua.Session, br *ua.Request) {
+		h.Bye = func(_ context.Context, s *ua.Session, br *ua.Request) {
 			bye = br.Message()
 
 			if inner != nil {
-				inner(s, br)
+				inner(context.Background(), s, br)
 			} else {
 				_ = br.Respond(ua.Reply{Code: 200})
 			}

@@ -152,7 +152,7 @@ func (e *env) user(name string, i int, outbound netip.AddrPort, configure func(*
 	var c *client.Client
 
 	u.agent = e.agent(u.addr, outbound, func(cfg *ua.Config) {
-		cfg.OnInvite = func(r *ua.Request) ua.Handler { return c.OnInvite(r) }
+		cfg.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler { return c.OnInvite(r) }
 	})
 
 	speaker := clienttest.NewSpeaker(u.agent.Layer().Clock())
@@ -437,7 +437,7 @@ func remote(t *testing.T, b []byte) (media.Remote, controlchannel.Params) {
 }
 
 // onInvite takes the originator's INVITE, and invites the members.
-func (s *standIn) onInvite(r *ua.Request) ua.Handler {
+func (s *standIn) onInvite(_ context.Context, r *ua.Request) ua.Handler {
 	offer, _ := r.Offer()
 	rem, params := remote(s.t, offer)
 
@@ -454,10 +454,10 @@ func (s *standIn) onInvite(r *ua.Request) ua.Handler {
 
 	s.pending = len(s.members)
 
-	return ua.Handler{Ended: func(*ua.Session, ua.End) {
+	return ua.Handler{Ended: func(_ context.Context, _ *ua.Session, _ ua.End) {
 		// The originator left: the call released (TS 24.379 §6.3.8.1).
 		for _, ss := range s.sessions {
-			_ = ss.Bye(ua.Change{}, nil)
+			_ = ss.Bye(context.Background(), ua.Change{}, nil)
 		}
 
 		s.fs.Release()
@@ -487,8 +487,8 @@ func (s *standIn) invite(inv invitee) {
 	offer := controlchannel.Offer(controlchannel.Params{FloorSSRC: ssrc, HasFloorSSRC: true})
 	req.SetBodies(ua.SDP(s.sdp(l, offer)), sip.NewBodyPart(mcpttinfo.ContentType, info))
 
-	_, err = s.agent.Invite(req, ua.Handler{
-		Established: func(ss *ua.Session, msg sip.Message) {
+	_, err = s.agent.Invite(context.Background(), req, ua.Handler{
+		Established: func(_ context.Context, ss *ua.Session, msg sip.Message) {
 			s.ok, _ = msg.(*sip.Response)
 			_, b, _ := ss.Negotiated()
 			rem, answer := remote(s.t, b)
@@ -502,17 +502,17 @@ func (s *standIn) invite(inv invitee) {
 			s.sessions = append(s.sessions, ss)
 			s.accepted()
 		},
-		Failed: func(_ *ua.Outgoing, res *sip.Response, _ error) {
+		Failed: func(_ context.Context, _ *ua.Outgoing, res *sip.Response, _ error) {
 			s.declined = append(s.declined, res)
 
 			l.Close()
 		},
-		Ended: func(*ua.Session, ua.End) {
+		Ended: func(_ context.Context, _ *ua.Session, _ ua.End) {
 			if m != nil {
 				m.Leave()
 			}
 		},
-		Request: func(_ *ua.Session, r *ua.Request) {
+		Request: func(_ context.Context, _ *ua.Session, r *ua.Request) {
 			if r.Message().Method == "UPDATE" {
 				s.updates.Add(1)
 			}

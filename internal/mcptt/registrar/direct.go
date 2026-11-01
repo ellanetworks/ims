@@ -1,6 +1,7 @@
 package registrar
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // (TS 24.379 §7.3.2). A client binds its contacts once authorised; a REGISTER without mcptt-info refreshes or removes
 // the contacts bound already, of users the configuration still authorises at the IMPU. The 200 lists the contacts of
 // the address of record (step 8) and, of a service authorisation, has the mcptt-info of §7.3.2 step 6.
-func (g *Registrar) direct(r *ua.Request, snap *settings.Snapshot, now time.Time) {
+func (g *Registrar) direct(ctx context.Context, r *ua.Request, snap *settings.Snapshot, now time.Time) {
 	req := r.Message()
 
 	// Step 1: the server is the registrar of the organisation's domain only, and no proxy.
@@ -120,7 +121,7 @@ func (g *Registrar) direct(r *ua.Request, snap *settings.Snapshot, now time.Time
 		g.authorised(ch.implicit, aor)
 	}
 
-	g.apply(r.Strand(), now, &ch)
+	g.apply(ctx, r.Strand(), now, &ch)
 }
 
 // update is the change of a direct REGISTER to the bindings of its address of record, on copies, committed once

@@ -331,7 +331,7 @@ func (u *UE) dispatch(r *ua.Request) *Service {
 }
 
 // incomingInvite gives an initial INVITE to its service.
-func (u *UE) incomingInvite(r *ua.Request) ua.Handler {
+func (u *UE) incomingInvite(_ context.Context, r *ua.Request) ua.Handler {
 	s := u.dispatch(r)
 	if s == nil {
 		return ua.Handler{}
@@ -342,7 +342,7 @@ func (u *UE) incomingInvite(r *ua.Request) ua.Handler {
 
 // requestReceived answers an OPTIONS with the capabilities of the UE (RFC 3261 §11.2), and gives the other initial
 // requests to their service.
-func (u *UE) requestReceived(r *ua.Request) {
+func (u *UE) requestReceived(_ context.Context, r *ua.Request) {
 	req := r.Message()
 
 	if req.Method == "OPTIONS" {

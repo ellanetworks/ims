@@ -598,7 +598,7 @@ func (u *UE) flowFailed(err error) {
 		return
 	}
 
-	u.agent.Drop(func(sip.Flow) bool { return true })
+	u.agent.Drop(context.Background(), func(sip.Flow) bool { return true })
 
 	if bound {
 		u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})

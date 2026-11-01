@@ -111,7 +111,7 @@ const saveTimeout = 5 * time.Second
 // users the settings still authorise at their IMPUs, as a refresh would (refresh); the others are removed from the
 // store. Their expiry timers, and those of the sequences of their REGISTERs, are armed on the strands of their IMPUs.
 // It returns the bindings put back; Resubscribe subscribes to the reg event package of their IMPUs.
-func (g *Registrar) Restore(records []Record) []Binding {
+func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
 
@@ -140,7 +140,9 @@ func (g *Registrar) Restore(records []Record) []Binding {
 		g.put(b)
 
 		st := g.cfg.StrandOf(ik)
-		b.timer = st.AfterFunc(b.Expires.Sub(now), func() { g.expire(st, b) })
+		b.timer = g.detach(ctx, st, b.Expires.Sub(now), expiryName, func(ctx context.Context) {
+			g.expire(ctx, st, b)
+		})
 
 		if r.CallID != "" {
 			s := &sequence{key: seqKey{ik, r.CallID}, cseq: r.CSeq, expires: r.Expires}
@@ -185,7 +187,7 @@ const resubscribePace = 20 * time.Millisecond
 // resubscribePace, on the strands of the IMPUs (TS 24.229 §5.7.1.1). The first full document of each removes the
 // bindings of the UEs it does not report registered, which deregistered meanwhile (notify), and a refusal of the
 // subscription of bindings restored all the bindings of its IMPU (ended).
-func (g *Registrar) Resubscribe() {
+func (g *Registrar) Resubscribe(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -204,13 +206,13 @@ func (g *Registrar) Resubscribe() {
 
 	for i, w := range ws {
 		st := g.cfg.StrandOf(w.ik)
-		st.AfterFunc(time.Duration(i)*resubscribePace, func() {
+		g.detach(ctx, st, time.Duration(i)*resubscribePace, resubscribeName, func(ctx context.Context) {
 			g.mu.Lock()
 			current := g.watches[w.ik] == w && !w.stopped && w.sub == nil && !g.closed
 			g.mu.Unlock()
 
 			if current {
-				g.subscribe(st, w)
+				g.subscribe(ctx, st, w)
 			}
 		})
 	}

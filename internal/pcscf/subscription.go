@@ -100,7 +100,7 @@ func (ss *subscriptions) restore(ctx context.Context) error {
 			dialog: d, version: rec.Version, expires: rec.ExpiresAt,
 		}
 		ss.put(s)
-		ss.schedule(s)
+		ss.schedule(ctx, s)
 	}
 
 	return nil
@@ -142,7 +142,7 @@ func (ss *subscriptions) has(impi string) bool {
 	return ok
 }
 
-func (ss *subscriptions) start(impi string) {
+func (ss *subscriptions) start(ctx context.Context, impi string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -189,7 +189,7 @@ func (ss *subscriptions) start(impi string) {
 
 	ss.p.log.Debug("subscribing to reg event", slog.String("impi", impi), slog.String("impu", impu))
 
-	if _, err := ss.p.cfg.Layer.Request(req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
+	if _, err := ss.p.cfg.Layer.Request(ctx, req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
 		ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", impi), slog.Any("error", err))
 		ss.removeLocked(s)
 	}
@@ -214,21 +214,21 @@ type subscribeTransaction struct {
 	req *sip.Request
 }
 
-func (t *subscribeTransaction) HandleResponse(res *sip.Response) {
+func (t *subscribeTransaction) HandleResponse(ctx context.Context, res *sip.Response) {
 	if res.StatusCode >= 200 {
-		t.ss.answered(t.s, t.req, res)
+		t.ss.answered(ctx, t.s, t.req, res)
 	}
 }
 
-func (t *subscribeTransaction) HandleError(err error) {
+func (t *subscribeTransaction) HandleError(ctx context.Context, err error) {
 	t.ss.p.log.Warn("SUBSCRIBE failed", slog.String("impi", t.s.impi), slog.Any("error", err))
-	t.ss.failed(t.s, t.req, 408)
+	t.ss.failed(ctx, t.s, t.req, 408)
 }
 
-func (ss *subscriptions) answered(s *subscription, req *sip.Request, res *sip.Response) {
+func (ss *subscriptions) answered(ctx context.Context, s *subscription, req *sip.Request, res *sip.Response) {
 	if !res.IsSuccess() {
 		ss.p.log.Warn("SUBSCRIBE refused", slog.String("impi", s.impi), slog.Int("code", res.StatusCode))
-		ss.failed(s, req, res.StatusCode)
+		ss.failed(ctx, s, req, res.StatusCode)
 
 		return
 	}
@@ -259,10 +259,10 @@ func (ss *subscriptions) answered(s *subscription, req *sip.Request, res *sip.Re
 	}
 
 	ss.saveLocked(s)
-	ss.schedule(s)
+	ss.schedule(ctx, s)
 }
 
-func (ss *subscriptions) failed(s *subscription, req *sip.Request, code int) {
+func (ss *subscriptions) failed(ctx context.Context, s *subscription, req *sip.Request, code int) {
 	ss.mu.Lock()
 
 	if s.removed {
@@ -278,17 +278,17 @@ func (ss *subscriptions) failed(s *subscription, req *sip.Request, code int) {
 	case code == 481:
 		ss.removeLocked(s)
 		ss.mu.Unlock()
-		ss.start(s.impi)
+		ss.start(ctx, s.impi)
 
 		return
 	case !s.expires.After(ss.p.clock.Now()):
 		ss.removeLocked(s)
 		ss.mu.Unlock()
-		ss.start(s.impi)
+		ss.start(ctx, s.impi)
 
 		return
 	default:
-		ss.schedule(s)
+		ss.schedule(ctx, s)
 	}
 
 	ss.mu.Unlock()
@@ -312,7 +312,7 @@ func toTag(req *sip.Request) string {
 	return to.Tag()
 }
 
-func (ss *subscriptions) schedule(s *subscription) {
+func (ss *subscriptions) schedule(ctx context.Context, s *subscription) {
 	if s.timer != nil {
 		s.timer.Stop()
 	}
@@ -328,10 +328,18 @@ func (ss *subscriptions) schedule(s *subscription) {
 		at = left - refreshAhead
 	}
 
-	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.refresh(s) })
+	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.detachedRefresh(ctx, s) })
 }
 
-func (ss *subscriptions) refresh(s *subscription) {
+// detachedRefresh refreshes s from its timer, armed by cause: in a trace of its own (PCSCF.detach).
+func (ss *subscriptions) detachedRefresh(cause context.Context, s *subscription) {
+	ctx, span := ss.p.detach(cause, "reg event refresh")
+	defer span.End()
+
+	ss.refresh(ctx, s)
+}
+
+func (ss *subscriptions) refresh(ctx context.Context, s *subscription) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -348,7 +356,7 @@ func (ss *subscriptions) refresh(s *subscription) {
 			return
 		}
 
-		s.timer = ss.p.clock.AfterFunc(s.expires.Sub(now), func() { ss.refresh(s) })
+		s.timer = ss.p.clock.AfterFunc(s.expires.Sub(now), func() { ss.detachedRefresh(ctx, s) })
 
 		return
 	}
@@ -375,9 +383,9 @@ func (ss *subscriptions) refresh(s *subscription) {
 
 	ss.saveLocked(s)
 
-	if _, err := ss.p.cfg.Layer.Request(req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
+	if _, err := ss.p.cfg.Layer.Request(ctx, req, &subscribeTransaction{ss: ss, s: s, req: req}); err != nil {
 		ss.p.log.Warn("re-SUBSCRIBE failed", slog.String("impi", s.impi), slog.Any("error", err))
-		ss.schedule(s)
+		ss.schedule(ctx, s)
 	}
 }
 
@@ -453,7 +461,7 @@ func (ss *subscriptions) put(s *subscription) {
 }
 
 // notified handles a NOTIFY of the subscription s: its response, and what to do once it is sent, if anything.
-func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Response, func()) {
+func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip.Request) (*sip.Response, func()) {
 	state, ok, err := req.Header.SubscriptionState()
 	if !ok || err != nil {
 		return sip.NewResponse(req, 400, "Bad Subscription-State"), nil
@@ -544,7 +552,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Respo
 		}
 
 		ss.saveLocked(s)
-		ss.schedule(s)
+		ss.schedule(ctx, s)
 	}
 
 	ss.mu.Unlock()
@@ -554,7 +562,7 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Respo
 	}
 
 	if unreadable {
-		return sip.NewResponse(req, 400, "Bad reginfo"), func() { ss.again(s, terminated, state.Reason) }
+		return sip.NewResponse(req, 400, "Bad reginfo"), func() { ss.again(ctx, s, terminated, state.Reason) }
 	}
 
 	return accepted, nil
@@ -563,12 +571,12 @@ func (ss *subscriptions) notified(s *subscription, req *sip.Request) (*sip.Respo
 // again asks for the full state of the subscription s after a document the P-CSCF could not read: a refresh of the
 // subscription, whose NOTIFY has the full state (RFC 3680 §5.2), or a new subscription if the NOTIFY ended it, unless
 // for a change of authorisation (RFC 6665 §4.1.3).
-func (ss *subscriptions) again(s *subscription, terminated bool, reason string) {
+func (ss *subscriptions) again(ctx context.Context, s *subscription, terminated bool, reason string) {
 	switch {
 	case !terminated:
-		ss.refresh(s)
+		ss.refresh(ctx, s)
 	case reason != sip.SubscriptionRejected:
-		ss.start(s.impi)
+		ss.start(ctx, s.impi)
 	}
 }
 

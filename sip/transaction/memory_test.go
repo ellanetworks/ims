@@ -58,7 +58,7 @@ func (h *memoryHarness) send(req *sip.Request) (*transaction.ClientTransaction, 
 
 	rs := siptest.NewResponses(h.t)
 
-	tx, err := h.l.Request(req, rs)
+	tx, err := h.l.Request(context.Background(), req, rs)
 	if err != nil {
 		h.t.Fatal(err)
 	}

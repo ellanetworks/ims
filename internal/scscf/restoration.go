@@ -22,7 +22,7 @@ import (
 // pcscfLost removes the binding of the registration that the P-CSCF has no binding for, in the background.
 func (r *Registrar) pcscfLost(impi string, regID, bindingID int64) {
 	r.background(impi, func(ctx context.Context) {
-		r.send(r.restore(ctx, impi, regID, bindingID))
+		r.send(ctx, r.restore(ctx, impi, regID, bindingID))
 	})
 }
 
@@ -76,7 +76,7 @@ func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID i
 	r.log.Info("contact deregistered: the P-CSCF has no binding for it", slog.String("impi", impi),
 		slog.String("impu", reg.IMPU), slog.String("contact", live[j].Contact.URI), slog.Bool("restoration", restoring))
 
-	r.releaseCalls(st, []removal{rm})
+	r.releaseCalls(ctx, st, []removal{rm})
 
 	r.deregistered(rm)
 

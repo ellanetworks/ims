@@ -24,7 +24,7 @@ func (s *Server) startMCPTT(ctx context.Context, homeDomain string) error {
 
 	a, err := mcptt.Start(ctx, mcptt.Config{
 		MCPTT: *cfg, Addresses: s.Config.SIP.Addresses, Network: s.ases.network, HomeDomain: homeDomain,
-		DB: s.database, Logger: s.Logger,
+		DB: s.database, Logger: s.Logger, TracerProvider: s.tracerProvider,
 	})
 	if err != nil {
 		return err
@@ -57,9 +57,9 @@ func (s *Server) stopMCPTT(ctx context.Context) {
 
 // resubscribeMCPTT has the MCPTT AS, if it runs, subscribe to the reg event package of the IMPUs it has no
 // subscription of, now that a core runs to take the SUBSCRIBEs.
-func (s *Server) resubscribeMCPTT() {
+func (s *Server) resubscribeMCPTT(ctx context.Context) {
 	if a := s.mcptt.Load(); a != nil {
-		a.Resubscribe()
+		a.Resubscribe(ctx)
 	}
 }
 

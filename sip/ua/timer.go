@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -26,6 +27,10 @@ type sessionTimer struct {
 	expired bool
 
 	refresh, abort *timer
+
+	// expiry is the trace of the expiry deferred while the session was being modified, which the BYE that ends it is
+	// part of.
+	expiry context.Context
 }
 
 func seconds(d time.Duration) uint32 {
@@ -205,7 +210,9 @@ func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 //
 // An early dialog has no session timer (RFC 4028 §7.2, §9: the interval applies once a 2xx confirms the session): the
 // timers start as the session is confirmed.
-func (t *sessionTimer) start(s *Session) {
+//
+// A refresh and an expiry are traces of their own, linked to ctx, the trace of what armed the timers.
+func (t *sessionTimer) start(ctx context.Context, s *Session) {
 	t.stop()
 	t.expired = false
 
@@ -216,24 +223,24 @@ func (t *sessionTimer) start(s *Session) {
 	interval := time.Duration(t.interval) * time.Second
 
 	if t.refresher {
-		t.refresh = s.st.after(interval/2, s.refreshSession)
-		t.abort = s.st.after(interval, s.expire)
+		t.refresh = s.st.detached(ctx, interval/2, "session refresh", s.refreshSession)
+		t.abort = s.st.detached(ctx, interval, "session expiry", s.expire)
 
 		return
 	}
 
-	t.abort = s.st.after(interval-min(32*time.Second, interval/3), s.expire)
+	t.abort = s.st.detached(ctx, interval-min(32*time.Second, interval/3), "session expiry", s.expire)
 }
 
 // retry tries again, a little later, a session refresh that could not be sent or failed; the abort timer still ends
-// the session at its expiry (RFC 4028 §10).
-func (t *sessionTimer) retry(s *Session) {
+// the session at its expiry (RFC 4028 §10). ctx is the trace of the refresh that failed.
+func (t *sessionTimer) retry(ctx context.Context, s *Session) {
 	if t.interval == 0 || !t.refresher {
 		return
 	}
 
 	t.refresh.stop()
-	t.refresh = s.st.after(refreshRetry, s.refreshSession)
+	t.refresh = s.st.detached(ctx, refreshRetry, "session refresh", s.refreshSession)
 }
 
 func (t *sessionTimer) stop() {
@@ -247,17 +254,18 @@ func (t *sessionTimer) stop() {
 //
 // The deferral is bounded: the requests of the peer have their deadlines, and Policy.AnswerTimeout after the expiry,
 // the time the agent gives the peer to answer one of its own, the session ends whatever is in progress.
-func (s *Session) expire() {
+func (s *Session) expire(ctx context.Context) {
 	switch {
 	case s.state == Terminated:
 	case s.modifying():
 		s.timer.expired = true
-		s.timer.abort = s.st.after(s.policy.answerTimeout(), func() {
+		s.timer.expiry = ctx
+		s.timer.abort = s.st.later(ctx, s.policy.answerTimeout(), func(ctx context.Context) {
 			if s.state != Terminated {
-				s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
+				s.byeEnd(ctx, End{Cause: EndExpired}, Change{}, nil)
 			}
 		})
 	default:
-		s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
+		s.byeEnd(ctx, End{Cause: EndExpired}, Change{}, nil)
 	}
 }

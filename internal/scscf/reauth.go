@@ -18,7 +18,7 @@ func (r *Registrar) Reauthenticate(ctx context.Context, impi string) error {
 
 	out, err := r.reauthenticate(ctx, impi)
 
-	r.send(out)
+	r.send(ctx, out)
 
 	return err
 }

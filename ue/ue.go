@@ -732,7 +732,7 @@ type waiter struct {
 	err   chan error
 }
 
-func (w *waiter) HandleResponse(res *sip.Response) {
+func (w *waiter) HandleResponse(_ context.Context, res *sip.Response) {
 	w.u.event(Event{Response: res})
 
 	if res.StatusCode >= 200 {
@@ -743,7 +743,7 @@ func (w *waiter) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (w *waiter) HandleError(err error) {
+func (w *waiter) HandleError(_ context.Context, err error) {
 	select {
 	case w.err <- err:
 	default:
@@ -765,7 +765,7 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
-	if _, err := u.layer.Request(req, w); err != nil {
+	if _, err := u.layer.Request(context.Background(), req, w); err != nil {
 		return nil, fmt.Errorf("ue: send %s: %w", req.Method, err)
 	}
 

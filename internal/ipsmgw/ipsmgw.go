@@ -20,9 +20,11 @@ import (
 	"github.com/ellanetworks/ims/internal/as"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Port is the SIP port of the IP-SM-GW on each of the IMS's SIP addresses, in memory.
@@ -132,6 +134,10 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 
 	tc := cfg.Transaction
 	tc.Logger, tc.Filter, tc.OnServerDone = logger, a.trustDomain, a.logTransaction
+	// Trace context crosses the flows of the trust domain only (W3C Trace Context §6.1).
+	tc.TraceContext = func(f sip.Flow) bool { return a.isTrusted(f.Remote.Addr()) }
+	role := []attribute.KeyValue{tracing.RoleKey.String("ipsmgw")}
+	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return role }
 
 	agent, err := ua.New(ua.Config{
 		Transaction: tc,
@@ -169,7 +175,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		}
 	}()
 
-	g.restore(rows)
+	g.restore(ctx, rows)
 
 	for _, l := range a.locals {
 		if err := agent.Layer().Serve(l); err != nil {
@@ -197,8 +203,8 @@ func (a *AS) Servers() []sip.Server {
 // Resubscribe subscribes to the reg event package of the registrations of no subscription: those restored; and
 // checks the HSS registrations of the users at once, those that failed while the core was down. The IMS calls it once
 // its core runs, which the SUBSCRIBEs and the updates go through.
-func (a *AS) Resubscribe() {
-	a.reg.resubscribeAll()
+func (a *AS) Resubscribe(ctx context.Context) {
+	a.reg.resubscribeAll(ctx)
 	a.hss.markAll(a.reg.userKeys())
 }
 
@@ -236,12 +242,12 @@ func (a *AS) Shutdown(ctx context.Context) error {
 
 // onRequest handles the requests outside dialogs, of the trust domain only (trustDomain): the third-party
 // REGISTERs and the MESSAGEs of short messages of the S-CSCF.
-func (a *AS) onRequest(r *ua.Request) {
+func (a *AS) onRequest(ctx context.Context, r *ua.Request) {
 	switch r.Message().Method {
 	case "REGISTER":
-		a.reg.handleRegister(r)
+		a.reg.handleRegister(ctx, r)
 	case "MESSAGE":
-		a.handleMessage(r)
+		a.handleMessage(ctx, r)
 	case "OPTIONS":
 		_ = r.Respond(ua.Reply{Code: 200, Header: a.agent.Capabilities()})
 	default:
@@ -249,12 +255,18 @@ func (a *AS) onRequest(r *ua.Request) {
 	}
 }
 
+// isTrusted reports whether addr is of the trust domain: of the IMS's own addresses.
+func (a *AS) isTrusted(addr netip.Addr) bool {
+	addr = addr.Unmap()
+
+	return slices.ContainsFunc(a.trusted, func(p netip.Prefix) bool { return p.Contains(addr) })
+}
+
 // trustDomain lets in the requests of the trust domain only, the IMS's own addresses (TS 24.229 §4.4.1): a request
 // from elsewhere gets a 403. Responses pass: a transaction matches only the requests the IP-SM-GW sent.
 func (a *AS) trustDomain(m sip.Message) error {
 	if req, ok := m.(*sip.Request); ok {
-		addr := req.Flow.Remote.Addr().Unmap()
-		if !slices.ContainsFunc(a.trusted, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+		if !a.isTrusted(req.Flow.Remote.Addr()) {
 			a.log.Warn("request from outside the trust domain", slog.String("method", req.Method),
 				slog.String("source", req.Flow.Remote.String()))
 

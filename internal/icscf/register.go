@@ -22,7 +22,7 @@ type registration struct {
 	deadline time.Time
 }
 
-func (i *ICSCF) register(tx *transaction.ServerTransaction, req *sip.Request) {
+func (i *ICSCF) register(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
 		i.log.Warn("REGISTER from outside the trust domain", slog.String("source", req.Flow.Remote.String()))
 		i.respond(tx, sip.NewResponse(req, 403, ""))
@@ -42,7 +42,7 @@ func (i *ICSCF) register(tx *transaction.ServerTransaction, req *sip.Request) {
 		return
 	}
 
-	i.spawn(tx, func(ctx context.Context) { i.queryRegistration(ctx, reg) })
+	i.spawn(ctx, tx, func(ctx context.Context) { i.queryRegistration(ctx, reg) })
 }
 
 func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Request) (*registration, *sip.Response) {
@@ -157,9 +157,9 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 		return
 	}
 
-	i.forward(reg.tx, out, to, proxy.Options{
+	i.forward(ctx, reg.tx, out, to, proxy.Options{
 		Timeout: i.branchTimeout(reg.deadline),
-		OnReply: func(r proxy.Reply) proxy.Verdict { return i.registerReply(reg, r) },
+		OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.registerReply(reg, r) },
 	})
 }
 

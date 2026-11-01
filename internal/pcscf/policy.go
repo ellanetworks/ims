@@ -529,7 +529,7 @@ func (p *PCSCF) signallingRestored(req *sip.Request) {
 
 // Notify handles an event the policy function reports for a session (TS 29.214 §4.4.6.2, §4.4.6.3, §4.4.6.5,
 // TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10).
-func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
+func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bool {
 	if p.policy == nil {
 		return false
 	}
@@ -543,7 +543,7 @@ func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
 		p.log.Debug("policy event for a call", slog.String("impi", s.key.impi), slog.String("ue", s.key.ue.String()),
 			slog.String("session", s.id), slog.Any("events", e.Kinds))
 
-		p.callNotify(s, e)
+		p.callNotify(ctx, s, e)
 
 		return true
 	}
@@ -565,7 +565,7 @@ func (p *PCSCF) Notify(sessionID string, e policy.Event) bool {
 }
 
 // Abort handles the policy function ending a session (TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3).
-func (p *PCSCF) Abort(sessionID string, a policy.Abort) (terminate func(), known bool) {
+func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (terminate func(), known bool) {
 	if p.policy == nil {
 		return nil, false
 	}
@@ -590,7 +590,7 @@ func (p *PCSCF) Abort(sessionID string, a policy.Abort) (terminate func(), known
 		cp.end()
 
 		if cp.dialog != nil {
-			p.releaseCall(cp.call, cp.dialog, !a.InsufficientResources)
+			p.releaseCall(ctx, cp.call, cp.dialog, !a.InsufficientResources)
 		}
 
 		return func() { p.policy.end(s, policy.TerminationAdministrative, 0) }, true

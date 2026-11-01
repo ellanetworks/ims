@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const openTimeout = 10 * time.Second
@@ -21,7 +22,9 @@ type Config struct {
 	Handler  diameter.Handler
 
 	OnPeerStateChange func(diameter.PeerStatus)
-	Logger            *slog.Logger
+	// TracerProvider traces the node's requests, with the global provider when nil.
+	TracerProvider trace.TracerProvider
+	Logger         *slog.Logger
 }
 
 func newNode(t testing.TB, cfg Config) *diameter.Node {
@@ -41,6 +44,7 @@ func newNode(t testing.TB, cfg Config) *diameter.Node {
 		Identity:          cfg.Identity,
 		Handler:           cfg.Handler,
 		OnPeerStateChange: cfg.OnPeerStateChange,
+		TracerProvider:    cfg.TracerProvider,
 		Logger:            cfg.Logger,
 	})
 	if err != nil {

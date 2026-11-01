@@ -104,7 +104,7 @@ func TestLayerGo(t *testing.T) {
 
 	ran := make(chan error, 1)
 
-	if err := h.l.Go(func(ctx context.Context) { <-ctx.Done(); ran <- ctx.Err() }); err != nil {
+	if err := h.l.Go(context.Background(), func(ctx context.Context) { <-ctx.Done(); ran <- ctx.Err() }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestLayerGo(t *testing.T) {
 		t.Fatal("Close returned before the goroutine ended")
 	}
 
-	if err := h.l.Go(func(context.Context) {}); !errors.Is(err, transaction.ErrClosed) {
+	if err := h.l.Go(context.Background(), func(context.Context) {}); !errors.Is(err, transaction.ErrClosed) {
 		t.Errorf("Go after Close: %v", err)
 	}
 }

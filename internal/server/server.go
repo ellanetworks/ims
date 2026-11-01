@@ -23,18 +23,22 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/ui"
 	"github.com/ellanetworks/ims/version"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ErrAlreadyStarted = errors.New("server: already started")
 
 const (
 	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the MCPTT AS to end its
-	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers and for the call records to be saved.
-	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime + time.Second
+	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers, for the call
+	// records to be saved and for the last spans to be exported.
+	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime +
+		tracesFlushTime + time.Second
 
 	// mcpttStopTime is what stopping the IMS leaves the MCPTT AS to end its calls and subscriptions, before the core.
 	mcpttStopTime = 5 * time.Second
@@ -44,6 +48,8 @@ const (
 	diameterDisconnectTime = 2 * time.Second
 	// recordsFlushTime is what stopping the IMS leaves the call records to be saved, after the core.
 	recordsFlushTime = 2 * time.Second
+	// tracesFlushTime is what stopping the IMS leaves the last spans to be exported, after the call records.
+	tracesFlushTime = 2 * time.Second
 )
 
 type Server struct {
@@ -67,6 +73,13 @@ type Server struct {
 	PruneInterval time.Duration
 	// BcryptCost is the cost of the API's password hashes, lowered in tests: bcrypt's default when zero.
 	BcryptCost int
+	// TracerProvider, when set, traces the IMS in place of the configuration's telemetry, in tests.
+	TracerProvider trace.TracerProvider
+
+	// tracerProvider traces the IMS, nil when telemetry is off, and shutdownTracing exports the spans that are left
+	// and stops it.
+	tracerProvider  trace.TracerProvider
+	shutdownTracing func(context.Context) error
 
 	database *db.DB
 	// draining is set once Shutdown starts, and makes the API unready.
@@ -132,20 +145,31 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := s.startTracing(ctx); err != nil {
+		return err
+	}
+
 	database, err := db.Open(ctx, cfg.DB.Path)
 	if err != nil {
+		s.stopTracing(ctx)
 		return err
 	}
 
 	initial, err := database.GetSettings(ctx)
 	if err != nil {
 		_ = database.Close()
+
+		s.stopTracing(ctx)
+
 		return err
 	}
 
 	jwtSecret, err := database.JWTSecret(ctx)
 	if err != nil {
 		_ = database.Close()
+
+		s.stopTracing(ctx)
+
 		return err
 	}
 
@@ -157,6 +181,9 @@ func (s *Server) Start(ctx context.Context) error {
 	closed, err := database.CloseOpenCallRecords(ctx, nil)
 	if err != nil {
 		_ = database.Close()
+
+		s.stopTracing(ctx)
+
 		return err
 	}
 
@@ -169,6 +196,9 @@ func (s *Server) Start(ctx context.Context) error {
 	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
 	if err != nil {
 		_ = database.Close()
+
+		s.stopTracing(ctx)
+
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
@@ -188,6 +218,8 @@ func (s *Server) Start(ctx context.Context) error {
 			_ = apiLn.Close()
 			_ = database.Close()
 
+			s.stopTracing(ctx)
+
 			return err
 		}
 	}
@@ -198,6 +230,8 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
 		_ = database.Close()
+
+		s.stopTracing(ctx)
 
 		return err
 	}
@@ -211,12 +245,14 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = apiLn.Close()
 		_ = database.Close()
 
+		s.stopTracing(ctx)
+
 		return err
 	}
 
 	s.core.Store(c)
-	s.resubscribeMCPTT()
-	s.resubscribeIPSMGW()
+	s.resubscribeMCPTT(ctx)
+	s.resubscribeIPSMGW(ctx)
 
 	view := coreView{s}
 
@@ -234,9 +270,10 @@ func (s *Server) Start(ctx context.Context) error {
 		JWTSecret:     jwtSecret,
 		BcryptCost:    s.BcryptCost,
 		// The cookie is Secure, and HSTS on, only over TLS: a browser would not send a Secure cookie over HTTP.
-		SecureCookie: tlsConfig != nil,
-		Now:          time.Now,
-		Logger:       s.Logger,
+		SecureCookie:   tlsConfig != nil,
+		TracerProvider: s.tracerProvider,
+		Now:            time.Now,
+		Logger:         s.Logger,
 	}
 
 	if cfg.MCPTT != nil {
@@ -302,7 +339,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	rxh := newRxHandler(s.Logger)
 
 	node, err := newDiameterNode(cfg.Diameter, st, s.DiameterHandshakeTimeout, cxh, rxh, ipsmgwHandler{s.ipsmgw.Load},
-		s.Logger)
+		s.tracerProvider, s.Logger)
 	if err != nil {
 		closeListeners(diameterLns)
 		return nil, fmt.Errorf("start Diameter: %w", err)
@@ -318,7 +355,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 
 	rlm := newRealms(st)
 
-	pf, err := newPolicyFunction(ctx, cfg, st, node, rlm, s.metrics, s.Logger)
+	pf, err := newPolicyFunction(ctx, cfg, st, node, rlm, s.metrics, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = node.Shutdown(ctx)
 		return nil, err
@@ -338,7 +375,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, sipFailed, s.ases, s.Logger)
+		s.metrics, s.IPsec, sipFailed, s.ases, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -508,8 +545,8 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	}
 
 	s.core.Store(c)
-	s.resubscribeMCPTT()
-	s.resubscribeIPSMGW()
+	s.resubscribeMCPTT(ctx)
+	s.resubscribeIPSMGW(ctx)
 	s.Logger.Info("restarted "+why, c.attrs()...)
 }
 
@@ -584,21 +621,59 @@ func (s *Server) Shutdown(ctx context.Context) {
 	cancel()
 
 	if c := s.core.Swap(nil); c != nil {
-		coreCtx, cancel := before(ctx, recordsFlushTime)
+		coreCtx, cancel := before(ctx, recordsFlushTime+tracesFlushTime)
 		c.shutdown(coreCtx, s.Logger)
 		cancel()
 	}
 
 	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
-	if err := s.records.Close(ctx); err != nil {
+	recordsCtx, cancel := before(ctx, tracesFlushTime)
+	if err := s.records.Close(recordsCtx); err != nil {
 		s.Logger.Warn("failed to save the call records", slog.Any("error", err))
 	}
+
+	cancel()
 
 	s.stopPrune()
 	<-s.pruneDone
 
 	if err := s.database.Close(); err != nil {
 		s.Logger.Warn("failed to close the database", slog.Any("error", err))
+	}
+
+	s.stopTracing(ctx)
+}
+
+// startTracing sets the provider that traces the IMS: the one of TracerProvider, one exporting to the collector of the
+// configuration, or none when telemetry is off.
+func (s *Server) startTracing(ctx context.Context) error {
+	s.shutdownTracing = func(context.Context) error { return nil }
+
+	switch {
+	case s.TracerProvider != nil:
+		s.tracerProvider = s.TracerProvider
+		return nil
+	case !s.Config.Telemetry.Enabled:
+		return nil
+	}
+
+	tp, err := tracing.NewProvider(ctx, s.Config.Telemetry.OTLPEndpoint, version.Get().Version, s.Logger)
+	if err != nil {
+		return fmt.Errorf("start tracing: %w", err)
+	}
+
+	s.tracerProvider, s.shutdownTracing = tp, tp.Shutdown
+
+	return nil
+}
+
+// stopTracing exports the spans that are left, within tracesFlushTime, and stops the tracing.
+func (s *Server) stopTracing(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tracesFlushTime)
+	defer cancel()
+
+	if err := s.shutdownTracing(ctx); err != nil {
+		s.Logger.Warn("failed to export the last spans", slog.Any("error", err))
 	}
 }
 

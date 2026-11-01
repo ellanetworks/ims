@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
@@ -211,7 +212,7 @@ func TestRetryAnotherTarget(t *testing.T) {
 		out := req.Clone()
 		out.URI, _ = sip.ParseURI(target(second, sip.UDP))
 
-		if err := s.r.p.Forward(tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
+		if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
 			t.Error(err)
 			return proxy.Relay
 		}
@@ -263,7 +264,7 @@ func TestTimeoutRetry(t *testing.T) {
 		out := req.Clone()
 		out.URI, _ = sip.ParseURI(target(second, sip.TCP))
 
-		if err := s.r.p.Forward(tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
+		if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
 			t.Error(err)
 		}
 
@@ -522,7 +523,7 @@ func TestForwardAfterAnswer(t *testing.T) {
 
 	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Forward after a final response: %v", err)
 	}
 }

@@ -28,7 +28,7 @@ func TestUnansweredRequests(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestUnansweredRequests(t *testing.T) {
 	carol.sock.Send(sip.UDP, bob.addr, carol.inDialog("INFO", invite, ok, 2))
 	bob.next("request")
 
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	for {
 		m, got := carol.sock.RecvWithin(wait)
@@ -79,12 +79,12 @@ func TestHeldByeAnsweredOnShutdown(t *testing.T) {
 
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
 
 			return ua.Handler{
-				Bye:   func(_ *ua.Session, r *ua.Request) { held <- r },
-				Ended: func(_ *ua.Session, e ua.End) { ended <- e },
+				Bye:   func(_ context.Context, _ *ua.Session, r *ua.Request) { held <- r },
+				Ended: func(_ context.Context, _ *ua.Session, e ua.End) { ended <- e },
 			}
 		}
 	})
@@ -96,7 +96,7 @@ func TestHeldByeAnsweredOnShutdown(t *testing.T) {
 
 	done, f := results()
 
-	_ = as.Bye(ua.Change{}, f)
+	_ = as.Bye(context.Background(), ua.Change{}, f)
 
 	<-held
 
@@ -140,7 +140,7 @@ func TestDecorateOnceAfterAChallenge(t *testing.T) {
 	as := alice.next("established").s
 	alice.next("answer")
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	bye := bob.nextRequest("BYE")
 	bob.answer(bye, 401, "", sip.Field{Name: "WWW-Authenticate", Value: `Digest realm="x", nonce="y"`})
@@ -213,7 +213,7 @@ func TestShutdownWaitsForTheCancelledInvite(t *testing.T) {
 	req.Header.Add("From", "<"+alice.uri()+">")
 	req.Header.Add("To", "<"+bob.uri()+">")
 
-	if _, err := alice.a.Invite(req, ua.Handler{}); !errors.Is(err, ua.ErrClosed) {
+	if _, err := alice.a.Invite(context.Background(), req, ua.Handler{}); !errors.Is(err, ua.ErrClosed) {
 		t.Errorf("Invite after Shutdown: %v", err)
 	}
 }
@@ -291,7 +291,7 @@ func TestStrandFor(t *testing.T) {
 
 			return nil
 		}
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			strands <- r.Strand()
 
 			_ = r.Accept(sdpOf("answer")...)
@@ -343,7 +343,7 @@ func cancelWhileTheStrandIsBusy(t *testing.T) {
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.StrandFor = func(*sip.Request) *ua.Strand { return busy.Load() }
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Progress(ua.Reply{Code: 180})
 			return ua.Handler{}
 		}

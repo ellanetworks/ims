@@ -166,7 +166,7 @@ func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except 
 
 	for _, impi := range impis {
 		r.background(impi, func(ctx context.Context) {
-			r.send(r.profileEffects(ctx, impi, pc, shorten))
+			r.send(ctx, r.profileEffects(ctx, impi, pc, shorten))
 		})
 	}
 }
@@ -201,7 +201,7 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 
 	live := st.live(st.regs[i].Bindings)
 
-	r.releaseRemoved(st, pc, live)
+	r.releaseRemoved(ctx, st, pc, live)
 
 	ch := r.profileNotice(ctx, impi, pc)
 
@@ -249,7 +249,7 @@ func withIdentities(reg db.Registration, ids []db.PublicIdentity) (db.Registrati
 
 // releaseRemoved releases the calls of the bindings for the identities removed from the set, in the form of the set
 // their request named (TS 24.229 §5.4.1.8 step 3, §5.4.5.1.2). The identities barred keep theirs (NOTE 2).
-func (r *Registrar) releaseRemoved(st *state, pc profileChange, live []db.Binding) {
+func (r *Registrar) releaseRemoved(ctx context.Context, st *state, pc profileChange, live []db.Binding) {
 	if len(pc.removed) == 0 {
 		return
 	}
@@ -264,7 +264,7 @@ func (r *Registrar) releaseRemoved(st *state, pc profileChange, live []db.Bindin
 		calls[bindingKey(b.ID)] = r.calls.serving(bindingKey(b.ID), pick)
 	}
 
-	r.releaseCalls(st, []removal{{
+	r.releaseCalls(ctx, st, []removal{{
 		reg: db.Registration{IMPI: st.impi}, bindings: live, event: reginfo.Rejected, calls: calls,
 	}})
 }
@@ -444,7 +444,7 @@ func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 
 		for _, other := range impis {
 			r.background(other, func(ctx context.Context) {
-				r.send(r.terminateMoved(ctx, other, m.pc))
+				r.send(ctx, r.terminateMoved(ctx, other, m.pc))
 			})
 		}
 	}
@@ -477,7 +477,7 @@ func (r *Registrar) terminateMoved(ctx context.Context, impi string, pc profileC
 	r.log.Info("registration terminated: the HSS moved its default identity", slog.String("impi", impi),
 		slog.String("impu", reg.IMPU))
 
-	r.releaseCalls(st, []removal{rm})
+	r.releaseCalls(ctx, st, []removal{rm})
 	r.deregistered(rm)
 
 	return r.notifyChange(ctx, impi, change{removed: []removal{rm}, reason: reasonRejected})

@@ -57,7 +57,7 @@ func (s *scene) forwarded() (*sip.Request, sip.Flow) {
 
 func TestForwardInvite(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, tr sip.Transport) {
-		s := newScene(t, tr, routerConfig{opts: proxy.Options{RecordRoute: recordRoute, OnReply: func(r proxy.Reply) proxy.Verdict {
+		s := newScene(t, tr, routerConfig{opts: proxy.Options{RecordRoute: recordRoute, OnReply: func(_ context.Context, r proxy.Reply) proxy.Verdict {
 			r.Response.Header.Add("X-Relayed", "yes")
 			return proxy.Relay
 		}}})
@@ -475,7 +475,7 @@ func TestCancelBeforeForward(t *testing.T) {
 
 	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Forward after CANCEL: %v", err)
 	}
 
@@ -491,11 +491,11 @@ func TestForwardTwice(t *testing.T) {
 	tx := <-s.r.held
 	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrForwarded) {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrForwarded) {
 		t.Errorf("second Forward: %v", err)
 	}
 }
@@ -659,13 +659,13 @@ func TestForwardErrors(t *testing.T) {
 	to := s.r.target(out, netip.MustParseAddrPort("127.0.0.1:1"))
 
 	var serr *sip.StatusError
-	if err := s.r.p.Forward(tx, out, to, proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 500 {
+	if err := s.r.p.Forward(context.Background(), tx, out, to, proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 500 {
 		t.Errorf("Forward from a socket the layer doesn't listen on: %v", err)
 	}
 
 	out.Header.Set("Max-Forwards", "0")
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 483 {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.As(err, &serr) || serr.StatusCode != 483 {
 		t.Errorf("Forward with Max-Forwards 0: %v", err)
 	}
 
@@ -767,7 +767,7 @@ func TestProxied(t *testing.T) {
 	}
 
 	out := s.r.preprocess(tx.Request())
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -22,7 +23,7 @@ const DefaultReferExpires = 4 * time.Minute
 // says there is none (Refer-Sub: false, or explicitsub), the subscription ends at once with EndNoSubscription, after
 // Accepted. A REFER within a dialog that cannot create a subscription, with Require: explicitsub, goes with
 // Session.Send.
-func (a *Agent) Refer(req *sip.Request, h SubscriptionHandler, opts ...Option) (*Subscription, error) {
+func (a *Agent) Refer(ctx context.Context, req *sip.Request, h SubscriptionHandler, opts ...Option) (*Subscription, error) {
 	if req.Method != "REFER" || !req.Header.Has("Refer-To") {
 		return nil, errors.New("sip/ua: Refer of a REFER with a Refer-To")
 	}
@@ -67,7 +68,7 @@ func (a *Agent) Refer(req *sip.Request, h SubscriptionHandler, opts ...Option) (
 		return nil, err
 	}
 
-	if err := st.do(att.send); err != nil {
+	if err := st.do(func() error { return att.send(ctx) }); err != nil {
 		a.removeSubscribing(att)
 		return nil, err
 	}
@@ -195,15 +196,16 @@ func (r *Request) referSubscription(o ReferAcceptance) (*ServerSubscription, err
 	}
 
 	r.a.addServerSubscription(refer)
-	refer.setExpiry(expires)
-	refer.enqueue(&pendingNotify{build: refer.stateOf, full: true})
+	refer.setExpiry(r.ctx, expires)
+	refer.enqueue(&pendingNotify{ctx: r.ctx, build: refer.stateOf, full: true})
 
 	return refer, nil
 }
 
 // ReferStatus reports the status of the request a REFER referred, in a NOTIFY of its sipfrag (RFC 3515 §2.4.5): a
-// provisional one keeps the subscription, a final one terminates it, reason noresource (§2.4.7).
-func (s *ServerSubscription) ReferStatus(code int, reason string) error {
+// provisional one keeps the subscription, a final one terminates it, reason noresource (§2.4.7). The NOTIFY is part of
+// the trace of ctx.
+func (s *ServerSubscription) ReferStatus(ctx context.Context, code int, reason string) error {
 	return s.st.do(func() error {
 		if s.ended || s.ending != nil {
 			return &Error{Op: "ReferStatus", State: Terminated, Err: ErrState}
@@ -214,11 +216,11 @@ func (s *ServerSubscription) ReferStatus(code int, reason string) error {
 		n := func(uint32) (Notification, error) { return Notification{Bodies: []sip.BodyPart{body}, Full: true}, nil }
 
 		if code < 200 {
-			s.enqueue(&pendingNotify{build: n, full: true})
+			s.enqueue(&pendingNotify{ctx: ctx, build: n, full: true})
 			return nil
 		}
 
-		s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionNoResource},
+		s.terminate(ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionNoResource},
 			End{Cause: EndTerminated}, n)
 
 		return nil

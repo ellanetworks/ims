@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -76,7 +77,7 @@ func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err er
 
 		return nil
 	case len(groups) == 0:
-		err := pb.p.Remove(done)
+		err := pb.p.Remove(context.Background(), done)
 		if errors.Is(err, ua.ErrState) {
 			// Ended, its handler yet to run.
 			c.aff = nil
@@ -93,7 +94,7 @@ func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err er
 		return err
 	}
 
-	err = pb.p.Modify([]sip.BodyPart{state}, func(res *sip.Response, err error) { c.modified(pb, done, res, err) })
+	err = pb.p.Modify(context.Background(), []sip.BodyPart{state}, func(res *sip.Response, err error) { c.modified(pb, done, res, err) })
 	if errors.Is(err, ua.ErrState) {
 		c.aff = nil
 		return c.publish(groups, done)
@@ -127,9 +128,9 @@ func (c *Client) publish(groups []sip.URI, done func(*sip.Response, error)) erro
 
 	pb := &publication{waiting: []func(*sip.Response, error){done}}
 
-	p, err := c.cfg.Agent.Publish(req, ua.PublicationHandler{
-		Published: func(_ *ua.Publication, res *sip.Response) { c.published(pb, res) },
-		Ended:     func(_ *ua.Publication, e ua.End) { c.publicationEnded(pb, e) },
+	p, err := c.cfg.Agent.Publish(context.Background(), req, ua.PublicationHandler{
+		Published: func(_ context.Context, _ *ua.Publication, res *sip.Response) { c.published(pb, res) },
+		Ended:     func(_ context.Context, _ *ua.Publication, e ua.End) { c.publicationEnded(pb, e) },
 	}, ua.On(c.st), ua.WithBodies(sip.NewBodyPart(mcpttinfo.ContentType, info)))
 	if err != nil {
 		return err

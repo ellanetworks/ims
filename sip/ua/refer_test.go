@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -21,9 +22,9 @@ func newReferee(t *testing.T, accept func(r *ua.Request) ua.ReferAcceptance) *re
 
 	rf.p = newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Extensions = ua.Extensions{NoReferSub: true, ExplicitSub: true}
-		c.OnRequest = func(r *ua.Request) {
+		c.OnRequest = func(_ context.Context, r *ua.Request) {
 			o := accept(r)
-			o.Handler.Ended = func(_ *ua.ServerSubscription, e ua.End) { rf.ended <- e }
+			o.Handler.Ended = func(_ context.Context, _ *ua.ServerSubscription, e ua.End) { rf.ended <- e }
 
 			s, err := r.AcceptRefer(o)
 			if err != nil {
@@ -50,9 +51,9 @@ func (s *subscriberOf) refer(t *testing.T, to *peer, header ...sip.Field) *ua.Su
 		req.Header.Add(f.Name, f.Value)
 	}
 
-	sub, err := s.p.a.Refer(req, ua.SubscriptionHandler{
-		Notify: func(_ *ua.Subscription, r *ua.Request) { s.notifys <- r },
-		Ended:  func(_ *ua.Subscription, e ua.End) { s.ended <- e },
+	sub, err := s.p.a.Refer(context.Background(), req, ua.SubscriptionHandler{
+		Notify: func(_ context.Context, _ *ua.Subscription, r *ua.Request) { s.notifys <- r },
+		Ended:  func(_ context.Context, _ *ua.Subscription, e ua.End) { s.ended <- e },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,13 +83,13 @@ func TestRefer(t *testing.T) {
 		t.Errorf("Content-Type %q", n.Header.Get("Content-Type"))
 	}
 
-	if err := s.ReferStatus(180, ""); err != nil {
+	if err := s.ReferStatus(context.Background(), 180, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "SIP/2.0 180 Ringing\r\n")
 
-	if err := s.ReferStatus(200, ""); err != nil {
+	if err := s.ReferStatus(context.Background(), 200, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,9 +146,9 @@ func TestReferWithoutSubscription(t *testing.T) {
 
 			alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 
-			if _, err := alice.a.Refer(req, ua.SubscriptionHandler{
-				Accepted: func(_ *ua.Subscription, res *sip.Response) { accepted <- res },
-				Ended:    func(_ *ua.Subscription, e ua.End) { ended <- e },
+			if _, err := alice.a.Refer(context.Background(), req, ua.SubscriptionHandler{
+				Accepted: func(_ context.Context, _ *ua.Subscription, res *sip.Response) { accepted <- res },
+				Ended:    func(_ context.Context, _ *ua.Subscription, e ua.End) { ended <- e },
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -183,10 +184,10 @@ func TestReferInTheSessionDialog(t *testing.T) {
 		}
 
 		c.Allow = append(slices.Clone(ua.Methods), "REFER")
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
 
-			return ua.Handler{Request: func(_ *ua.Session, r *ua.Request) {
+			return ua.Handler{Request: func(_ context.Context, _ *ua.Session, r *ua.Request) {
 				s, err := r.AcceptRefer(ua.ReferAcceptance{})
 				if err != nil {
 					t.Errorf("AcceptRefer: %v", err)
@@ -204,7 +205,7 @@ func TestReferInTheSessionDialog(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Send("REFER", ua.Change{Header: sip.Header{{Name: "Refer-To", Value: "<sip:carol@example.com>"}}}, f); err != nil {
+	if err := as.Send(context.Background(), "REFER", ua.Change{Header: sip.Header{{Name: "Refer-To", Value: "<sip:carol@example.com>"}}}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,7 +223,7 @@ func TestReferInTheSessionDialog(t *testing.T) {
 
 	_ = n.Respond(ua.Reply{Code: 200})
 
-	if err := as.Bye(ua.Change{}, nil); err != nil {
+	if err := as.Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,7 +233,7 @@ func TestReferInTheSessionDialog(t *testing.T) {
 		<-sent
 	}
 
-	if err := s.ReferStatus(200, ""); err != nil {
+	if err := s.ReferStatus(context.Background(), 200, ""); err != nil {
 		t.Fatal(err)
 	}
 

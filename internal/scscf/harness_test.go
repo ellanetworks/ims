@@ -387,7 +387,7 @@ type fakePCSCF struct {
 	wg       sync.WaitGroup
 }
 
-func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (p *fakePCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	respond := func(res *sip.Response) { _ = tx.Respond(res) }
 
 	switch {
@@ -396,7 +396,7 @@ func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Re
 	case req.Method == "REGISTER":
 		p.wg.Go(func() { p.reg.Load().Register(context.Background(), req, respond) })
 	default:
-		p.sessions.Load().HandleRequest(tx, req)
+		p.sessions.Load().HandleRequest(context.Background(), tx, req)
 	}
 }
 
@@ -412,15 +412,15 @@ func routes(req *sip.Request) []sip.URI {
 	return out
 }
 
-func (p *fakePCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	p.sessions.Load().HandleCancel(tx, cancel)
+func (p *fakePCSCF) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	p.sessions.Load().HandleCancel(context.Background(), tx, cancel)
 }
 
-func (p *fakePCSCF) HandleAck(ack *sip.Request) {
-	p.sessions.Load().HandleAck(ack)
+func (p *fakePCSCF) HandleAck(ctx context.Context, ack *sip.Request) {
+	p.sessions.Load().HandleAck(context.Background(), ack)
 }
 
-func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (*fakePCSCF) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()

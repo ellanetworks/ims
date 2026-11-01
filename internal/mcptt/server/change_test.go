@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func (w *world) change(edit func(cfg *settings.Settings)) {
 		w.t.Fatal(err)
 	}
 
-	w.s.Revoke(w.src.p.Swap(snap), snap)
+	w.s.Revoke(context.Background(), w.src.p.Swap(snap), snap)
 	w.n.Quiesce()
 }
 

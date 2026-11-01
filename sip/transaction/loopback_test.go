@@ -40,7 +40,7 @@ type relay struct {
 	branches map[*transaction.ServerTransaction]*transaction.ClientTransaction
 }
 
-func (r *relay) HandleRequest(stx *transaction.ServerTransaction, req *sip.Request) {
+func (r *relay) HandleRequest(_ context.Context, stx *transaction.ServerTransaction, req *sip.Request) {
 	out := req.Clone()
 	out.Flow = sip.Flow{Transport: req.Flow.Transport, Local: req.Flow.Local, Remote: r.callee}
 
@@ -48,7 +48,7 @@ func (r *relay) HandleRequest(stx *transaction.ServerTransaction, req *sip.Reque
 	via.Params.Set("branch", sip.NewBranch())
 	out.Header.Prepend("Via", via.String())
 
-	ctx, err := r.l.Request(out, branch{r: r, stx: stx})
+	ctx, err := r.l.Request(context.Background(), out, branch{r: r, stx: stx})
 	if err != nil {
 		r.t.Error(err)
 		return
@@ -59,7 +59,7 @@ func (r *relay) HandleRequest(stx *transaction.ServerTransaction, req *sip.Reque
 	r.mu.Unlock()
 }
 
-func (r *relay) HandleCancel(stx *transaction.ServerTransaction, _ *sip.Request) {
+func (r *relay) HandleCancel(_ context.Context, stx *transaction.ServerTransaction, _ *sip.Request) {
 	r.mu.Lock()
 	ctx := r.branches[stx]
 	r.mu.Unlock()
@@ -69,11 +69,11 @@ func (r *relay) HandleCancel(stx *transaction.ServerTransaction, _ *sip.Request)
 	}
 }
 
-func (r *relay) HandleAck(ack *sip.Request) {
+func (r *relay) HandleAck(ctx context.Context, ack *sip.Request) {
 	r.t.Errorf("unexpected ACK %q", ack.StartLine())
 }
 
-func (r *relay) HandleTransactionError(_ *transaction.ServerTransaction, err error) {
+func (r *relay) HandleTransactionError(ctx context.Context, _ *transaction.ServerTransaction, err error) {
 	if !errors.Is(err, transaction.ErrClosed) {
 		r.t.Error(err)
 	}
@@ -84,7 +84,7 @@ type branch struct {
 	stx *transaction.ServerTransaction
 }
 
-func (b branch) HandleResponse(res *sip.Response) {
+func (b branch) HandleResponse(ctx context.Context, res *sip.Response) {
 	if res.StatusCode == 100 {
 		return
 	}
@@ -97,7 +97,7 @@ func (b branch) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (b branch) HandleError(err error) {
+func (b branch) HandleError(ctx context.Context, err error) {
 	if !errors.Is(err, transaction.ErrClosed) {
 		b.r.t.Error(err)
 	}
@@ -200,7 +200,7 @@ func TestCloseEndsTransactions(t *testing.T) {
 	h.tu.None(quiet)
 	h.peer.RecvNone(quiet)
 
-	if _, err := h.l.Request(h.newRequest("OPTIONS", sip.UDP), nil); !errors.Is(err, transaction.ErrClosed) {
+	if _, err := h.l.Request(context.Background(), h.newRequest("OPTIONS", sip.UDP), nil); !errors.Is(err, transaction.ErrClosed) {
 		t.Errorf("Request after Close: %v", err)
 	}
 

@@ -261,7 +261,7 @@ func (w *world) user(name string, i int, configure func(string, *client.Config))
 		Respond: func(req *sip.Request, res *sip.Response) {
 			w.trace.add("%s>server %d %s", name, res.StatusCode, req.Method)
 		},
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			if u.onInvite != nil {
 				return u.onInvite(r)
 			}

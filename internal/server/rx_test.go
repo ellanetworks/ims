@@ -46,11 +46,11 @@ type stubSessions struct {
 	terminated chan struct{}
 }
 
-func (s *stubSessions) ReAuth(session string, _ rx.ReAuthRequest) bool {
+func (s *stubSessions) ReAuth(_ context.Context, session string, _ rx.ReAuthRequest) bool {
 	return session == s.session
 }
 
-func (s *stubSessions) AbortSession(session string, _ rx.AbortSessionRequest) (func(), bool) {
+func (s *stubSessions) AbortSession(_ context.Context, session string, _ rx.AbortSessionRequest) (func(), bool) {
 	if session != s.session {
 		return nil, false
 	}

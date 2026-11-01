@@ -16,10 +16,13 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/regmetrics"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const secAgree = "sec-agree"
@@ -63,6 +66,19 @@ type Config struct {
 	Fallback transaction.Handler
 	Clock    Clock
 	Logger   *slog.Logger
+}
+
+const tracerName = "github.com/ellanetworks/ims/internal/pcscf"
+
+// detach starts the span of work of the P-CSCF that starts later than cause, as a timer cause armed fires: in a trace
+// of its own, linked to that of cause.
+func (p *PCSCF) detach(cause context.Context, name string) (context.Context, trace.Span) {
+	tp := trace.TracerProvider(noop.NewTracerProvider())
+	if p.cfg.Layer != nil {
+		tp = p.cfg.Layer.TracerProvider()
+	}
+
+	return tracing.NewTrace(cause, tp.Tracer(tracerName), name)
 }
 
 type PCSCF struct {
@@ -274,19 +290,19 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 	return f, true, nil
 }
 
-func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	p.signallingRestored(req)
 
 	if req.Method != "REGISTER" {
 		switch top, ok := p.terminatingRoute(req); {
 		case toTag(req) != "":
-			p.inDialog(tx, req)
+			p.inDialog(ctx, tx, req)
 		case ok:
-			p.terminating(tx, req, top)
+			p.terminating(ctx, tx, req, top)
 		case p.fromCore(req):
-			p.cfg.Fallback.HandleRequest(tx, req)
+			p.cfg.Fallback.HandleRequest(ctx, tx, req)
 		default:
-			p.originating(tx, req)
+			p.originating(ctx, tx, req)
 		}
 
 		return
@@ -367,8 +383,8 @@ func (p *PCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		Remote:    netip.AddrPortFrom(req.Flow.Local.Addr(), p.cfg.ICSCFPort),
 	}}
 
-	err = p.cfg.Proxy.Forward(tx, out, to, proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
-		return p.reply(tx, req, r, rep)
+	err = p.cfg.Proxy.Forward(ctx, tx, out, to, proxy.Options{OnReply: func(ctx context.Context, rep proxy.Reply) proxy.Verdict {
+		return p.reply(ctx, tx, req, r, rep)
 	}})
 	if err == nil || errors.Is(err, proxy.ErrAnswered) {
 		return
@@ -536,7 +552,7 @@ func (p *PCSCF) secAgree(req, out *sip.Request, r *registration) *sip.Response {
 	return nil
 }
 
-func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *registration, rep proxy.Reply) proxy.Verdict {
+func (p *PCSCF) reply(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, r *registration, rep proxy.Reply) proxy.Verdict {
 	res := rep.Response
 
 	if res == nil || res.StatusCode < 200 {
@@ -557,7 +573,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 
 	ended, open := false, false
 	if res.IsSuccess() {
-		ended = p.registered(req, res, r)
+		ended = p.registered(ctx, req, res, r)
 		open = !ended && p.policy != nil && !emergency(req, res) && p.regs.withoutPolicy(r.key())
 	}
 
@@ -628,7 +644,7 @@ func (p *PCSCF) reply(tx *transaction.ServerTransaction, req *sip.Request, r *re
 	return relay()
 }
 
-func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration) bool {
+func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Response, r *registration) bool {
 	o := registrationOutcome(req, res)
 	impu := registeredIdentity(req)
 
@@ -720,7 +736,7 @@ func (p *PCSCF) registered(req *sip.Request, res *sip.Response, r *registration)
 	}
 
 	if !p.subs.has(r.impi) {
-		p.subs.start(r.impi)
+		p.subs.start(ctx, r.impi)
 	}
 
 	return false
@@ -792,17 +808,17 @@ func (p *PCSCF) replace(tx *transaction.ServerTransaction, req *sip.Request, cod
 	return proxy.Hold
 }
 
-func (p *PCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+func (p *PCSCF) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	if p.cfg.Proxy.Proxied(tx) {
 		p.cfg.Proxy.Cancel(tx, cancel)
 		return
 	}
 
-	p.cfg.Fallback.HandleCancel(tx, cancel)
+	p.cfg.Fallback.HandleCancel(ctx, tx, cancel)
 }
 
-func (p *PCSCF) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	p.cfg.Fallback.HandleTransactionError(tx, err)
+func (p *PCSCF) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	p.cfg.Fallback.HandleTransactionError(ctx, tx, err)
 }
 
 // respond answers a request with a response of the P-CSCF's.

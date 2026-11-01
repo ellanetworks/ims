@@ -129,11 +129,15 @@ func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) erro
 }
 
 // QueueAck sends the ACK of a 2xx (RFC 3261 §13.2.2.4), outside any transaction, in the order of its flow: before the
-// requests of the dialog sent after it. done, when not nil, receives the outcome on the goroutine of the outbox.
-func (l *Layer) QueueAck(ack *sip.Request, done func(error)) error {
+// requests of the dialog sent after it, with the trace context of ctx when its flow carries trace context. done, when
+// not nil, receives the outcome on the goroutine of the outbox.
+func (l *Layer) QueueAck(ctx context.Context, ack *sip.Request, done func(error)) error {
 	if ack.Method != "ACK" {
 		return errNotAck(ack)
 	}
+
+	ack = ack.Clone()
+	l.propagate(ctx, ack)
 
 	if !l.enqueue(ack.Flow, func(ok bool) {
 		err := ErrClosed

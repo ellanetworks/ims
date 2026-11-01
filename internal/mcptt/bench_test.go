@@ -318,7 +318,7 @@ func (l *load) newUser(tb testing.TB, i int, logger *slog.Logger) *benchUser {
 
 			return nil
 		},
-		OnInvite: func(r *ua.Request) ua.Handler { return u.client.OnInvite(r) },
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler { return u.client.OnInvite(r) },
 	})
 	if err != nil {
 		tb.Fatal(err)

@@ -41,7 +41,7 @@ type SMSCs interface {
 // delivered: of none, it gets a 488. Without an SMSC, one of a short message or a notification gets the 403 the
 // S-CSCF gives without an IP-SM-GW, so that the UE sends its short messages over NAS. Otherwise, it gets a 202, and
 // the IP-SM-GW answers a short message or a notification in a MESSAGE of its own.
-func (a *AS) handleMessage(r *ua.Request) {
+func (a *AS) handleMessage(ctx context.Context, r *ua.Request) {
 	req := r.Message()
 
 	h, _ := sms.ParseRPHeader(req.Content().Body, nas.DirectionUplink)
@@ -71,7 +71,7 @@ func (a *AS) handleMessage(r *ua.Request) {
 	sender := a.sender(req)
 	rpdu := req.Content().Body
 
-	a.work.Go(func() { a.receive(sender, rpdu) })
+	a.work.Go(func() { a.receive(ctx, sender, rpdu) })
 }
 
 // handleReport receives the delivery report of a MESSAGE of an In-Reply-To (TS 24.341 §5.3.3.4.1): of the Call-ID
@@ -152,7 +152,7 @@ func (a *AS) sender(req *sip.Request) sender {
 }
 
 // receive handles the RPDU of a MESSAGE of s, and sends the RPDU that answers it, if any.
-func (a *AS) receive(s sender, rpdu []byte) {
+func (a *AS) receive(ctx context.Context, s sender, rpdu []byte) {
 	msg, err := sms.ParseRP(rpdu, nas.DirectionUplink)
 	if msg == nil {
 		// An RP-DATA or RP-SMMA that does not decode gets an RP-ERROR (§5.3.3.4.1 steps 2, 3), as one of an unknown
@@ -161,9 +161,9 @@ func (a *AS) receive(s sender, rpdu []byte) {
 
 		switch {
 		case errors.Is(herr, sms.ErrUnknownMessageType):
-			a.answer(s, rpErrorFor(rpdu, herr))
+			a.answer(ctx, s, rpErrorFor(rpdu, herr))
 		case herr == nil && (h.MTI == sms.MTIDataMSToNetwork || h.MTI == sms.MTISMMAMSToNetwork):
-			a.answer(s, rpErrorFor(rpdu, err))
+			a.answer(ctx, s, rpErrorFor(rpdu, err))
 		case herr == nil:
 			if p, ok := a.pending.of(h.Reference, s.ids); ok {
 				p.deliver(undecodableReport(h.Reference))
@@ -180,11 +180,11 @@ func (a *AS) receive(s sender, rpdu []byte) {
 		report := a.submit(s, m)
 		_, ok := report.(*sms.RPAck)
 		a.metrics.count(directionMO, "smsc", ok)
-		a.answer(s, report)
+		a.answer(ctx, s, report)
 	case *sms.RPSMMA:
 		// The notification goes to the HSS in a ReadyForSM (TS 23.204 §6.6 step 3), of MAP only (TS 29.002 §12.4):
 		// no Diameter application has it. Its error FacilityNotSupported is RP-Cause #69 (TS 23.040 §11.2).
-		a.answer(s, &sms.RPError{
+		a.answer(ctx, s, &sms.RPError{
 			Direction: nas.DirectionDownlink, Reference: m.Reference,
 			Cause: sms.RPCauseRequestedFacilityNotImplemented,
 		})
@@ -309,7 +309,7 @@ func moFailureCause(e *sgd.ResultError) sms.RPCause {
 // a public user identity of the sender, the IMPU of its registration, else the tel URI of its MSISDN, else another,
 // through its S-CSCF, which serves it as terminating; of the In-Reply-To of the MESSAGE answered, and the IP-SM-GW
 // asserted. An RPDU whose user data is too long goes without it.
-func (a *AS) answer(s sender, msg sms.RPMessage) {
+func (a *AS) answer(ctx context.Context, s sender, msg sms.RPMessage) {
 	body, err := msg.MarshalBinary()
 	if err != nil {
 		switch m := msg.(type) {
@@ -359,7 +359,7 @@ func (a *AS) answer(s sender, msg sms.RPMessage) {
 
 	req.SetBody(ContentType, body)
 
-	err = a.agent.Request(req, func(res *sip.Response, err error) {
+	err = a.agent.Request(ctx, req, func(res *sip.Response, err error) {
 		switch {
 		case err != nil:
 			a.log.Warn("short message answer not sent", slog.String("call_id", s.callID), slog.Any("error", err))

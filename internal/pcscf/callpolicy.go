@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -111,7 +112,7 @@ type answerJob struct {
 
 // TS 29.214 Annex A.1, A.3, A.13, TS 29.213 Annex B.2, TS 29.513 §7.2.3. priority tells that the response changed
 // the authorised MCPTT priority.
-func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial, priority bool) proxy.Verdict {
+func (p *PCSCF) mediaReply(ctx context.Context, tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial, priority bool) proxy.Verdict {
 	c := callOf(d)
 	if c == nil || c.policy == nil || rep.Response == nil {
 		return proxy.Relay
@@ -125,7 +126,7 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 	}
 
 	run := func() {
-		if job != nil && !p.authorize(c, d, *job, res) {
+		if job != nil && !p.authorize(ctx, c, d, *job, res) {
 			return
 		}
 
@@ -140,10 +141,10 @@ func (p *PCSCF) mediaReply(tx *transaction.ServerTransaction, d *proxy.Dialog, r
 		}
 
 		if job == nil && priority {
-			p.updatePriority(c, d)
+			p.updatePriority(ctx, c, d)
 		}
 
-		p.releaseOrphaned(c, d)
+		p.releaseOrphaned(ctx, c, d)
 	}
 
 	if p.enqueue(c.policy, job != nil || priority, run) {
@@ -164,7 +165,7 @@ func (p *PCSCF) chargeUEResponse(c *call, res *sip.Response) {
 
 // RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1, A.13. priority tells that the request changed the authorised MCPTT
 // priority.
-func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, priority bool, forward, reject func()) bool {
+func (p *PCSCF) mediaRequest(ctx context.Context, d *proxy.Dialog, out *sip.Request, priority bool, forward, reject func()) bool {
 	c := callOf(d)
 	if c == nil || c.policy == nil {
 		return false
@@ -178,8 +179,8 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, priority bool, f
 			forward()
 
 			if priority {
-				p.updatePriority(c, d)
-				p.releaseOrphaned(c, d)
+				p.updatePriority(ctx, c, d)
+				p.releaseOrphaned(ctx, c, d)
 			}
 
 			return
@@ -192,8 +193,8 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, priority bool, f
 			forward()
 
 			if priority {
-				p.updatePriority(c, d)
-				p.releaseOrphaned(c, d)
+				p.updatePriority(ctx, c, d)
+				p.releaseOrphaned(ctx, c, d)
 			}
 
 			return
@@ -208,14 +209,14 @@ func (p *PCSCF) mediaRequest(d *proxy.Dialog, out *sip.Request, priority bool, f
 		switch {
 		case out.Method == "ACK":
 			forward()
-			p.authorize(c, d, job, nil)
-		case p.authorize(c, d, job, nil):
+			p.authorize(ctx, c, d, job, nil)
+		case p.authorize(ctx, c, d, job, nil):
 			forward()
 		case reject != nil:
 			reject()
 		}
 
-		p.releaseOrphaned(c, d)
+		p.releaseOrphaned(ctx, c, d)
 
 		if ex, ok := d.Exchange(out); ok {
 			c.policy.mu.Lock()
@@ -351,8 +352,8 @@ func (p *PCSCF) parseExchange(c *call, d *proxy.Dialog, ex proxy.Exchange) *sdpE
 }
 
 // TS 24.229 §5.2.7.2, TS 29.214 §4.4.1, TS 29.514 §4.2.2.2
-func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
-	err := p.callAAR(c, d, &job)
+func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
+	err := p.callAAR(ctx, c, d, &job)
 	if err == nil {
 		if res != nil {
 			p.chargeUEResponse(c, res)
@@ -385,7 +386,7 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 		c.policy.orphaned.Store(true)
 
 		if job.initial {
-			p.releaseOrphaned(c, d)
+			p.releaseOrphaned(ctx, c, d)
 			return false
 		}
 
@@ -399,7 +400,7 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 
 	p.log.Warn("media authorization refused: releasing the call", attrs...)
 
-	if err := d.Release(proxy.Release{Toward: proxy.Both, Code: 500}); err != nil {
+	if err := d.Release(ctx, proxy.Release{Toward: proxy.Both, Code: 500}); err != nil {
 		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
 	}
 
@@ -407,14 +408,14 @@ func (p *PCSCF) authorize(c *call, d *proxy.Dialog, job answerJob, res *sip.Resp
 }
 
 // releaseOrphaned ends, both ways, a call whose policy function is lost.
-func (p *PCSCF) releaseOrphaned(c *call, d *proxy.Dialog) {
+func (p *PCSCF) releaseOrphaned(ctx context.Context, c *call, d *proxy.Dialog) {
 	if !c.policy.orphaned.Load() {
 		return
 	}
 
 	cause, _ := sip.NewReason("SIP", 503, "")
 
-	if err := d.Release(proxy.Release{Toward: proxy.Both, Code: 500, Reason: []sip.Reason{cause}}); err != nil &&
+	if err := d.Release(ctx, proxy.Release{Toward: proxy.Both, Code: 500, Reason: []sip.Reason{cause}}); err != nil &&
 		!errors.Is(err, proxy.ErrDialogEnded) {
 		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
 	}
@@ -466,15 +467,15 @@ func (h *handoff) abandon() (grantResult, bool) {
 }
 
 // TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
-func (p *PCSCF) callAAR(c *call, d *proxy.Dialog, job *answerJob) error {
-	return p.callAARBy(c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
+func (p *PCSCF) callAAR(ctx context.Context, c *call, d *proxy.Dialog, job *answerJob) error {
+	return p.callAARBy(ctx, c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
 }
 
 // TS 24.229 §5.2.9.1, §5.2.9.2, TS 29.214 Annex A.13.1 NOTE 1, TS 29.514 Annex B.10.1 NOTE 1: an authorised MCPTT
 // Resource-Priority that changes without an SDP answer updates the session of the call, with the media the last
 // authorization left. A failure leaves the call as it is.
-func (p *PCSCF) updatePriority(c *call, d *proxy.Dialog) {
-	err := p.callAAR(c, d, nil)
+func (p *PCSCF) updatePriority(ctx context.Context, c *call, d *proxy.Dialog) {
+	err := p.callAAR(ctx, c, d, nil)
 	if err == nil || errors.Is(err, errCallEnded) {
 		return
 	}
@@ -502,7 +503,7 @@ func (p *PCSCF) updatePriority(c *call, d *proxy.Dialog) {
 // session for a call whose session the policy function lost: media the exchange removes has nothing to remove
 // there, so it is left out. Without a job, it sends the authorised MCPTT priority to an open session that does not
 // have it yet.
-func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline time.Time, recovery bool) error {
+func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *answerJob, deadline time.Time, recovery bool) error {
 	cr := c.policy
 
 	cr.mu.Lock()
@@ -620,7 +621,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline tim
 		// session is released.
 		if !result.give(grantResult{g, err}) && errors.Is(err, policy.ErrSessionLost) {
 			cr.orphaned.Store(true)
-			p.releaseOrphaned(c, d)
+			p.releaseOrphaned(ctx, c, d)
 		}
 	}) {
 		s.mu.Unlock()
@@ -648,7 +649,7 @@ func (p *PCSCF) callAARBy(c *call, d *proxy.Dialog, job *answerJob, deadline tim
 			p.log.Warn("policy session of a call unknown to the policy function: opening a new one",
 				slog.String("dialog", d.ID()), slog.String("impi", cr.key.impi), slog.String("session", s.id))
 
-			return p.callAARBy(c, d, job, deadline, true)
+			return p.callAARBy(ctx, c, d, job, deadline, true)
 		}
 
 		return res.err
@@ -1032,7 +1033,7 @@ func chargeResponse(c *call, res *sip.Response) {
 }
 
 // TS 29.214 §4.4.6.2, §4.4.6.5, TS 29.514 §4.2.5.2, TS 24.229 §5.2.7.4, §5.2.8.1
-func (p *PCSCF) callNotify(s *policySession, e policy.Event) {
+func (p *PCSCF) callNotify(ctx context.Context, s *policySession, e policy.Event) {
 	cr := s.call
 
 	if e.Charging != nil {
@@ -1065,10 +1066,15 @@ func (p *PCSCF) callNotify(s *policySession, e policy.Event) {
 	}
 
 	cr.lost = components
-	cr.loss = p.clock.AfterFunc(p.policy.cfg.MediaLossTimeout, func() { p.mediaLossExpired(cr) })
+	cr.loss = p.clock.AfterFunc(p.policy.cfg.MediaLossTimeout, func() {
+		ctx, span := p.detach(ctx, "media loss")
+		defer span.End()
+
+		p.mediaLossExpired(ctx, cr)
+	})
 }
 
-func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
+func (p *PCSCF) mediaLossExpired(ctx context.Context, cr *callPolicy) {
 	cr.mu.Lock()
 
 	cr.loss = nil
@@ -1093,7 +1099,7 @@ func (p *PCSCF) mediaLossExpired(cr *callPolicy) {
 	p.log.Info("media bearer lost: releasing the call", slog.String("dialog", cr.dialog.ID()), slog.String("impi", cr.key.impi),
 		slog.String("ue", cr.key.ue.String()))
 
-	p.releaseCall(cr.call, cr.dialog, false)
+	p.releaseCall(ctx, cr.call, cr.dialog, false)
 }
 
 // lossReleases tells whether losing the bearers of the lost components (all of them when none is named) ends the
@@ -1134,7 +1140,7 @@ func lossReleases(active map[uint32]policy.MediaType, lost []uint32) (release, v
 }
 
 // TS 24.229 §5.2.8.1.1, §5.2.8.1.2
-func (p *PCSCF) releaseCall(c *call, d *proxy.Dialog, signalling bool) {
+func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signalling bool) {
 	cause, _ := sip.NewReason("SIP", 503, "")
 
 	var r proxy.Release
@@ -1155,7 +1161,7 @@ func (p *PCSCF) releaseCall(c *call, d *proxy.Dialog, signalling bool) {
 		return
 	}
 
-	if err := d.Release(r); err != nil {
+	if err := d.Release(ctx, r); err != nil {
 		p.log.Debug("releasing the call failed", slog.String("dialog", d.ID()), slog.Any("error", err))
 	}
 }

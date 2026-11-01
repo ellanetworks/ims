@@ -63,7 +63,7 @@ func inviteRaw(t *testing.T, alice *peer, u *uas, sdp string, h ua.Handler) (*ua
 		req.SetBodies(sdpOf(sdp)...)
 	}
 
-	o, err := alice.a.Invite(req, h)
+	o, err := alice.a.Invite(context.Background(), req, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestOptions(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Allow = nil
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
 			return ua.Handler{}
 		}
@@ -90,7 +90,7 @@ func TestOptions(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Send("OPTIONS", ua.Change{}, f); err != nil {
+	if err := as.Send(context.Background(), "OPTIONS", ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +103,7 @@ func TestOptions(t *testing.T) {
 		t.Errorf("Allow %q lists INFO, which bob does not handle", res.Header.Get("Allow"))
 	}
 
-	if err := as.Send("INFO", ua.Change{}, f); err != nil {
+	if err := as.Send(context.Background(), "INFO", ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestOptions(t *testing.T) {
 	options.Header.Add("From", "<"+alice.uri()+">")
 	options.Header.Add("To", "<"+bob.uri()+">")
 
-	if err := alice.a.Request(options, f); err != nil {
+	if err := alice.a.Request(context.Background(), options, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,13 +145,13 @@ func TestLateReinvite2xx(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
 	reinvite := bob.nextRequest("INVITE")
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	bye := bob.nextRequest("BYE")
 	bob.answer(bye, 200, "")
@@ -180,7 +180,7 @@ func TestShutdownWaitsForTheAck(t *testing.T) {
 	answer := make(chan bool, 2)
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			if <-answer {
 				_ = r.Accept(sdpOf("answer-1")...)
 			}
@@ -254,7 +254,7 @@ func TestCancelAfterTheChangeApplied(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{Header: sip.Header{{Name: "Supported", Value: "100rel"}}, Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Header: sip.Header{{Name: "Supported", Value: "100rel"}}, Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,7 +339,7 @@ func TestMinSE(t *testing.T) {
 	req.Header.Add("Supported", "precondition")
 	req.SetBodies(sdpOf("offer-1")...)
 
-	if _, err := alice.a.Invite(req, alice.handler()); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,7 +442,7 @@ func TestOfferOf2xx(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -454,7 +454,7 @@ func TestOfferOf2xx(t *testing.T) {
 	res.SetBodies(sdpOf(realSDP(5000, 2))...)
 	carol.sock.Send(sip.UDP, carol.to, res)
 
-	alice.next("offer").offer.Reject()
+	alice.next("offer").offer.Reject(context.Background())
 
 	if ack := carol.nextRequest("ACK"); sessionBodyOf(ack) == nil {
 		t.Error("ACK without the refusal")
@@ -491,7 +491,7 @@ func TestCancelAfterTheAnswerAndChallengedBye(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Bye(ua.Change{}, f); err != nil {
+	if err := as.Bye(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 

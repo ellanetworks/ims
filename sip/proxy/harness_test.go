@@ -91,7 +91,7 @@ func (r *router) uri() string {
 	return "sip:" + r.local.String()
 }
 
-func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (r *router) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := r.p.Check(req); res != nil {
 		_ = tx.Respond(res)
 		return
@@ -116,7 +116,7 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 
 	opts := r.opts
 	if r.onReply != nil {
-		opts.OnReply = func(rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
+		opts.OnReply = func(_ context.Context, rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
 	}
 
 	if r.track {
@@ -134,7 +134,7 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		local = *o
 	}
 
-	err = r.p.Forward(tx, out, r.target(out, local), opts)
+	err = r.p.Forward(context.Background(), tx, out, r.target(out, local), opts)
 
 	var serr *sip.StatusError
 
@@ -166,13 +166,13 @@ func (r *router) target(out *sip.Request, local netip.AddrPort) proxy.Target {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}, SentBy: *r.sentBy.Load()}
 }
 
-func (r *router) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+func (r *router) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	r.p.Cancel(tx, cancel)
 
 	r.cancelled <- struct{}{}
 }
 
-func (r *router) HandleAck(ack *sip.Request) {
+func (r *router) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := r.p.Preprocess(ack)
 	if err != nil {
 		r.t.Error(err)
@@ -184,7 +184,7 @@ func (r *router) HandleAck(ack *sip.Request) {
 		d = r.p.Dialog(removed)
 	}
 
-	if err := r.p.ForwardAck(out, r.target(out, ack.Flow.Local), d); err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
+	if err := r.p.ForwardAck(context.Background(), out, r.target(out, ack.Flow.Local), d); err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
 		r.t.Error(err)
 	}
 }
@@ -238,7 +238,7 @@ func (r *router) noEvent() {
 	}
 }
 
-func (r *router) HandleTransactionError(_ *transaction.ServerTransaction, err error) {
+func (r *router) HandleTransactionError(ctx context.Context, _ *transaction.ServerTransaction, err error) {
 	if !errors.Is(err, transaction.ErrClosed) && !errors.Is(err, transaction.ErrTimeout) {
 		r.t.Error(err)
 	}

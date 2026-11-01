@@ -333,20 +333,20 @@ type lateHandler struct {
 	h atomic.Pointer[ICSCF]
 }
 
-func (l *lateHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	l.h.Load().HandleRequest(tx, req)
+func (l *lateHandler) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
+	l.h.Load().HandleRequest(context.Background(), tx, req)
 }
 
-func (l *lateHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	l.h.Load().HandleCancel(tx, cancel)
+func (l *lateHandler) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	l.h.Load().HandleCancel(context.Background(), tx, cancel)
 }
 
-func (l *lateHandler) HandleAck(ack *sip.Request) {
-	l.h.Load().HandleAck(ack)
+func (l *lateHandler) HandleAck(ctx context.Context, ack *sip.Request) {
+	l.h.Load().HandleAck(context.Background(), ack)
 }
 
-func (l *lateHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	l.h.Load().HandleTransactionError(tx, err)
+func (l *lateHandler) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	l.h.Load().HandleTransactionError(context.Background(), tx, err)
 }
 
 func newHarness(t *testing.T, o harnessOptions) *harness {

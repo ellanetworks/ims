@@ -154,7 +154,7 @@ func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardSh
 
 	responded := make(chan *sip.Response, 1)
 
-	if err := a.agent.Request(req, func(res *sip.Response, err error) {
+	if err := a.agent.Request(ctx, req, func(res *sip.Response, err error) {
 		if err != nil {
 			res = nil
 		}

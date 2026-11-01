@@ -420,23 +420,23 @@ func (b *Backend) Terminate(ctx context.Context, id, ref string, cause policy.Te
 }
 
 // TS 29.214 §4.4.6.3
-func (b *Backend) ReAuth(id string, r rx.ReAuthRequest) bool {
+func (b *Backend) ReAuth(ctx context.Context, id string, r rx.ReAuthRequest) bool {
 	s := b.sink.Load()
 	if s == nil {
 		return false
 	}
 
-	return (*s).Notify(id, event(r))
+	return (*s).Notify(context.WithoutCancel(ctx), id, event(r))
 }
 
 // TS 29.214 §4.4.6.1
-func (b *Backend) AbortSession(id string, r rx.AbortSessionRequest) (terminate func(), known bool) {
+func (b *Backend) AbortSession(ctx context.Context, id string, r rx.AbortSessionRequest) (terminate func(), known bool) {
 	s := b.sink.Load()
 	if s == nil {
 		return nil, false
 	}
 
-	return (*s).Abort(id, policy.Abort{Cause: r.Cause.String(), InsufficientResources: r.Cause == rx.AbortInsufficientBearerResources})
+	return (*s).Abort(context.WithoutCancel(ctx), id, policy.Abort{Cause: r.Cause.String(), InsufficientResources: r.Cause == rx.AbortInsufficientBearerResources})
 }
 
 func framed(r *rx.AARequest, ue netip.Addr) {
@@ -642,11 +642,11 @@ func mediaComponent(c policy.MediaComponent) rx.MediaComponent {
 	}
 
 	if c.MaxRequestedUL != nil {
-		out.MaxRequestedBandwidthUL = new(rx.Bandwidth(*c.MaxRequestedUL))
+		out.MaxRequestedBandwidthUL = new(tgpp.Bandwidth(*c.MaxRequestedUL))
 	}
 
 	if c.MaxRequestedDL != nil {
-		out.MaxRequestedBandwidthDL = new(rx.Bandwidth(*c.MaxRequestedDL))
+		out.MaxRequestedBandwidthDL = new(tgpp.Bandwidth(*c.MaxRequestedDL))
 	}
 
 	for _, codec := range c.Codecs {

@@ -27,7 +27,7 @@ type session struct {
 // outside the trust domain (TS 23.228 §4.6.1, TS 24.229 §5.3.2.1): those are only ever terminating, without the header
 // fields that the trust domain asserts and any Route past the I-CSCF; with "orig", they are refused
 // (TS 24.229 §4.4, §5.3.2.1, §5.3.2.1A).
-func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
+func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	trusted := i.trusted(req)
 	if !trusted && i.rejectOrig(tx, req) {
 		return
@@ -56,17 +56,17 @@ func (i *ICSCF) initial(tx *transaction.ServerTransaction, req *sip.Request) {
 
 	switch {
 	case slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has("orig") }):
-		i.originating(tx, out)
+		i.originating(ctx, tx, out)
 	case out.Header.Has("Route"):
-		i.forwardOnRoute(tx, out)
+		i.forwardOnRoute(ctx, tx, out)
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
-		i.terminating(tx, out)
+		i.terminating(ctx, tx, out)
 	}
 }
 
-func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request) {
+func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	if !out.URI.IsSIP() && !out.URI.IsTel() {
 		i.respond(tx, sip.NewResponse(tx.Request(), 416, ""))
 		return
@@ -91,11 +91,11 @@ func (i *ICSCF) terminating(tx *transaction.ServerTransaction, out *sip.Request)
 	s := &session{tx: tx, req: out, identity: identity, deadline: i.deadline()}
 
 	if out.URI.IsSIP() && i.cfg.PSISubdomain != nil && i.cfg.PSISubdomain(out.URI.Host) {
-		i.spawn(tx, func(ctx context.Context) { i.toPSISubdomain(ctx, s) })
+		i.spawn(ctx, tx, func(ctx context.Context) { i.toPSISubdomain(ctx, s) })
 		return
 	}
 
-	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
+	i.spawn(ctx, tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
 // toPSISubdomain routes a request to a PSI of a subdomain of the I-CSCF to the AS hosting it, which its
@@ -110,21 +110,21 @@ func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
 	if s.req.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
 	i.log.Debug("request routed to the AS of its PSI subdomain", slog.String("psi", s.identity))
-	i.forward(s.tx, s.req.Clone(), to, opts)
+	i.forward(ctx, s.tx, s.req.Clone(), to, opts)
 }
 
 // originating serves a request that an AS of the trust domain sends on behalf of a user or a PSI to the I-CSCF, with
 // "orig", as an AS that does not know the S-CSCF of the served user does: to that S-CSCF, or to the AS hosting the PSI,
 // as the HSS says. The served user is in P-Served-User, or else P-Asserted-Identity (TS 24.229 §5.3.2.1A, §5.7.3;
 // TS 23.228 §5.4.12.5 c).
-func (i *ICSCF) originating(tx *transaction.ServerTransaction, out *sip.Request) {
+func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	served, err := out.Header.Addresses("P-Served-User")
 	if err == nil && len(served) == 0 {
 		served, err = out.Header.Addresses("P-Asserted-Identity")
@@ -144,7 +144,7 @@ func (i *ICSCF) originating(tx *transaction.ServerTransaction, out *sip.Request)
 	}
 
 	s := &session{tx: tx, req: out, identity: identity, orig: true, deadline: i.deadline()}
-	i.spawn(tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
+	i.spawn(ctx, tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
 // queryLocation routes a request where the HSS says: to the server it names, ours or another, an AS hosting a PSI
@@ -197,13 +197,13 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
-	i.forward(s.tx, out, to, opts)
+	i.forward(ctx, s.tx, out, to, opts)
 }
 
 // toServer forwards a request to a server the HSS names that is not our S-CSCF: the AS hosting the PSI, for direct
@@ -235,14 +235,14 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 	out := s.req.Clone()
 	out.Header.Prepend("Route", "<"+u.String()+">")
 
-	opts := proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(s, r) }}
 
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
 	}
 
 	i.log.Debug("request routed to the server the HSS names", slog.String("impu", s.identity), slog.String("server-name", name))
-	i.forward(s.tx, out, to, opts)
+	i.forward(ctx, s.tx, out, to, opts)
 }
 
 func (i *ICSCF) sessionReply(s *session, r proxy.Reply) proxy.Verdict {
@@ -276,7 +276,7 @@ func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) 
 // subsequent forwards a request within a dialog to the S-CSCF. The I-CSCF does not record-route: the dialogs of the
 // S-CSCF do not go through it, and one from outside the trust domain would reach the S-CSCF, which takes none from
 // there, as if from the trust domain.
-func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) {
+func (i *ICSCF) subsequent(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
 		i.log.Debug("request within a dialog from outside the trust domain", slog.String("request", req.StartLine()),
 			slog.String("source", req.Flow.Remote.String()))
@@ -294,10 +294,10 @@ func (i *ICSCF) subsequent(tx *transaction.ServerTransaction, req *sip.Request) 
 		return
 	}
 
-	i.forwardOnRoute(tx, out)
+	i.forwardOnRoute(ctx, tx, out)
 }
 
-func (i *ICSCF) forwardOnRoute(tx *transaction.ServerTransaction, out *sip.Request) {
+func (i *ICSCF) forwardOnRoute(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	route, err := out.Header.TopRoute()
 	if err != nil || !i.cfg.SCSCF.Name.Equivalent(route.URI) {
 		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
@@ -310,7 +310,7 @@ func (i *ICSCF) forwardOnRoute(tx *transaction.ServerTransaction, out *sip.Reque
 		return
 	}
 
-	i.forward(tx, out, to, proxy.Options{OnReply: func(r proxy.Reply) proxy.Verdict {
+	i.forward(ctx, tx, out, to, proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		if r.Response != nil {
 			i.outgoing(tx.Request(), r.Response)
 		}

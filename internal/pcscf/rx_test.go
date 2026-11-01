@@ -60,20 +60,20 @@ func (f *fakePCRF) config(timeout time.Duration) func(*Config) {
 func (p *PCSCF) rxReAuth(session string, r rx.ReAuthRequest) bool {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
-		return p.Notify(session, policy.Event{})
+		return p.Notify(context.Background(), session, policy.Event{})
 	}
 
-	return b.ReAuth(session, r)
+	return b.ReAuth(context.Background(), session, r)
 }
 
 // rxAbortSession delivers an ASR as the Diameter server would, through the Rx backend.
 func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func(), bool) {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
-		return p.Abort(session, policy.Abort{})
+		return p.Abort(context.Background(), session, policy.Abort{})
 	}
 
-	return b.AbortSession(session, r)
+	return b.AbortSession(context.Background(), session, r)
 }
 
 func refClass(r db.PCSCFRegistration) [][]byte {

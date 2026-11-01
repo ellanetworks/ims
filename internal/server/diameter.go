@@ -22,6 +22,8 @@ import (
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const productName = "ims"
@@ -65,12 +67,17 @@ func (r *realms) of(app settings.Application) func() string {
 }
 
 func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Duration, cxh *cxHandler,
-	rxh *rxHandler, ish ipsmgwHandler, logger *slog.Logger,
+	rxh *rxHandler, ish ipsmgwHandler, tp trace.TracerProvider, logger *slog.Logger,
 ) (*diameter.Node, error) {
 	op := s.Operator
 
 	if handshake <= 0 {
 		handshake = DefaultHandshakeTimeout
+	}
+
+	// The node would otherwise trace with the global provider.
+	if tp == nil {
+		tp = noop.NewTracerProvider()
 	}
 
 	node, err := diameter.New(diameter.Config{
@@ -83,6 +90,7 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 		Handler:           newDiameterMux(cxh, rxh, ish),
 		HandshakeTimeout:  handshake,
 		OnPeerStateChange: func(p diameter.PeerStatus) { logPeerState(logger, p) },
+		TracerProvider:    tp,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -345,8 +353,8 @@ func featureUnsupported(req *diameter.Message, c *diameter.Conn) *diameter.Messa
 const cxFeatureListID = 1
 
 type rxSessions interface {
-	ReAuth(sessionID string, r rx.ReAuthRequest) bool
-	AbortSession(sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
+	ReAuth(ctx context.Context, sessionID string, r rx.ReAuthRequest) bool
+	AbortSession(ctx context.Context, sessionID string, r rx.AbortSessionRequest) (terminate func(), known bool)
 }
 
 type rxHandler struct {
@@ -368,7 +376,7 @@ func (h *rxHandler) bind(s rxSessions) {
 }
 
 // TS 29.214 §4.4.6.3
-func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
+func (h *rxHandler) reAuth(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
 	rar, err := rx.ParseReAuthRequest(req)
@@ -383,7 +391,7 @@ func (h *rxHandler) reAuth(_ context.Context, c *diameter.Conn, req *diameter.Me
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	if !(*t).ReAuth(session, rar) {
+	if !(*t).ReAuth(ctx, session, rar) {
 		h.log.Debug("Rx RAR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)
 	}
@@ -413,7 +421,7 @@ func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *dia
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnableToComply}, 0)
 	}
 
-	terminate, known := (*t).AbortSession(session, asr)
+	terminate, known := (*t).AbortSession(ctx, session, asr)
 	if !known {
 		h.log.Debug("Rx ASR for an unknown session", slog.String("peer", c.PeerID()), slog.String("session", session))
 		return rx.NewAnswer(req, c.LocalIdentity(), tgpp.Result{Code: diameter.ResultUnknownSessionID}, 0)

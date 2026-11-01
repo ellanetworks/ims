@@ -89,7 +89,7 @@ func TestRevokeReconfigures(t *testing.T) {
 	}
 
 	before, after := snapshot(), snapshot("sip:fire@mcptt.example.com")
-	g.Revoke(before, after)
+	g.Revoke(context.Background(), before, after)
 	n.Quiesce()
 
 	rec.mu.Lock()

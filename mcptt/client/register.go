@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"strconv"
@@ -109,7 +110,7 @@ func (c *Client) register(expires time.Duration, done func(res *sip.Response, er
 		req.SetBodies(c.RegisterBodies()...)
 	}
 
-	return c.cfg.Agent.Request(req, func(res *sip.Response, err error) {
+	return c.cfg.Agent.Request(context.Background(), req, func(res *sip.Response, err error) {
 		if err == nil && res.IsSuccess() && expires > 0 {
 			c.scheduleRefresh(cseq, granted(res, c.contact(), expires), expires)
 		}

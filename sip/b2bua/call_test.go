@@ -1,6 +1,7 @@
 package b2bua_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -31,8 +32,8 @@ func newController(t *testing.T, n *siptest.Net, members ...*party) *controller 
 	return c
 }
 
-func (c *controller) invite(r *ua.Request) ua.Handler {
-	call := b2bua.NewCall(c.a, r.Strand(), b2bua.CallHandler{Ended: func(call *b2bua.Call) { c.ended <- call }})
+func (c *controller) invite(_ context.Context, r *ua.Request) ua.Handler {
+	call := b2bua.NewCall(c.a, r.Strand(), b2bua.CallHandler{Ended: func(_ context.Context, call *b2bua.Call) { c.ended <- call }})
 
 	var (
 		failures []b2bua.Failure
@@ -41,17 +42,17 @@ func (c *controller) invite(r *ua.Request) ua.Handler {
 	)
 
 	_, _ = call.Incoming(r, b2bua.LegHandler{
-		Ended: func(*b2bua.Leg, ua.End) { call.End(ua.Reply{}) },
+		Ended: func(context.Context, *b2bua.Leg, ua.End) { call.End(context.Background(), ua.Reply{}) },
 	})
 
 	member := b2bua.LegHandler{
-		Established: func(l *b2bua.Leg, _ sip.Message) {
+		Established: func(_ context.Context, l *b2bua.Leg, _ sip.Message) {
 			if !answered {
 				answered = true
 				_ = r.Accept(sdpOf("group-answer")...)
 			}
 		},
-		Failed: func(_ *b2bua.Leg, res *sip.Response, err error) {
+		Failed: func(_ context.Context, _ *b2bua.Leg, res *sip.Response, err error) {
 			failures = append(failures, b2bua.Failure{Response: res, Err: err})
 			pending--
 
@@ -68,7 +69,7 @@ func (c *controller) invite(r *ua.Request) ua.Handler {
 		out.Header.Add("To", "<"+m.uri()+">")
 		out.SetBodies(sdpOf("group-offer")...)
 
-		if _, err := call.Dial(out, member); err != nil {
+		if _, err := call.Dial(context.Background(), out, member); err != nil {
 			pending--
 		}
 	}
@@ -101,7 +102,7 @@ func TestOneToMany(t *testing.T) {
 
 	bob.next("established")
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 	bob.next("ended")
@@ -157,7 +158,7 @@ func TestLegAcrossCalls(t *testing.T) {
 	// The pre-established session: alice's INVITE answered by the server, its leg on a call of its own.
 	server.mu.Lock()
 	server.onInvite = func(r *ua.Request) ua.Handler {
-		call := b2bua.NewCall(server.a, r.Strand(), b2bua.CallHandler{Ended: func(c *b2bua.Call) { ended <- c }})
+		call := b2bua.NewCall(server.a, r.Strand(), b2bua.CallHandler{Ended: func(_ context.Context, c *b2bua.Call) { ended <- c }})
 		pre, _ = call.Incoming(r, b2bua.LegHandler{})
 		st = r.Strand()
 		_ = r.Accept(sdpOf("server-answer")...)
@@ -180,8 +181,8 @@ func TestLegAcrossCalls(t *testing.T) {
 		st.Post(func() {
 			defer close(done)
 
-			call := b2bua.NewCall(server.a, st, b2bua.CallHandler{Ended: func(c *b2bua.Call) { ended <- c }})
-			if err := call.Attach(pre, b2bua.LegHandler{}); err != nil {
+			call := b2bua.NewCall(server.a, st, b2bua.CallHandler{Ended: func(_ context.Context, c *b2bua.Call) { ended <- c }})
+			if err := call.Attach(context.Background(), pre, b2bua.LegHandler{}); err != nil {
 				t.Errorf("Attach: %v", err)
 				return
 			}
@@ -192,7 +193,7 @@ func TestLegAcrossCalls(t *testing.T) {
 			out.Header.Add("To", "<"+to.uri()+">")
 			out.SetBodies(sdpOf("server-offer")...)
 
-			if _, err := call.Dial(out, b2bua.LegHandler{}); err != nil {
+			if _, err := call.Dial(context.Background(), out, b2bua.LegHandler{}); err != nil {
 				t.Errorf("Dial: %v", err)
 			}
 		})
@@ -211,7 +212,7 @@ func TestLegAcrossCalls(t *testing.T) {
 		_ = r.Accept(sdpOf("answer")...)
 
 		s := to.next("established").s
-		_ = s.Bye(ua.Change{}, nil)
+		_ = s.Bye(context.Background(), ua.Change{}, nil)
 
 		to.next("ended")
 	}
@@ -295,7 +296,7 @@ func TestBridgeByeOfCallee(t *testing.T) {
 		t.Fatalf("bob's session %s", bs.State())
 	}
 
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 	bob.next("ended")

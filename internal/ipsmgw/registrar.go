@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // smsipTag is the feature tag of a UE able to receive short messages over IP (TS 24.341 §5.3.1.2, §7.3).
@@ -95,7 +97,7 @@ func (g *registrar) strandOf(k string) *ua.Strand {
 // the IMPU, which tells whether it can receive short messages over IP. A deregistration of an IMPU of an active
 // subscription waits for its NOTIFY, as contacts of the IMPU may stay registered (TS 24.229 §5.4.1.7 NOTE 2);
 // without one, it ends the registration.
-func (g *registrar) handleRegister(r *ua.Request) {
+func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	req := r.Message()
 	now := g.agent.Layer().Clock().Now()
 
@@ -140,7 +142,7 @@ func (g *registrar) handleRegister(r *ua.Request) {
 
 	if secs == 0 {
 		if reg != nil && (reg.watch == nil || !reg.watch.active) {
-			g.remove(reg)
+			g.remove(ctx, reg)
 		}
 
 		return
@@ -173,7 +175,7 @@ func (g *registrar) handleRegister(r *ua.Request) {
 
 	g.reachable(reg)
 
-	g.expireAt(reg)
+	g.expireAt(ctx, reg)
 	g.save(reg)
 
 	if after := reg.user().userKey(); after != before {
@@ -181,12 +183,20 @@ func (g *registrar) handleRegister(r *ua.Request) {
 	}
 
 	if reg.watch == nil || moved {
-		g.resubscribe(reg)
+		g.resubscribe(ctx, reg)
 	}
 }
 
+const tracerName = "github.com/ellanetworks/ims/internal/ipsmgw"
+
+// detach starts the span of work of the registrar that starts later than cause, which armed its timer: in a trace of
+// its own, linked to that of cause.
+func (g *registrar) detach(cause context.Context, name string) (context.Context, trace.Span) {
+	return tracing.NewTrace(cause, g.agent.Layer().TracerProvider().Tracer(tracerName), name)
+}
+
 // expireAt has reg removed once it expires, unless a REGISTER refreshes it. Called with g.mu held.
-func (g *registrar) expireAt(reg *registration) {
+func (g *registrar) expireAt(ctx context.Context, reg *registration) {
 	if reg.expiry != nil {
 		reg.expiry.Stop()
 	}
@@ -194,18 +204,21 @@ func (g *registrar) expireAt(reg *registration) {
 	d := max(reg.expires.Sub(g.agent.Layer().Clock().Now()), 0)
 
 	reg.expiry = reg.strand.AfterFunc(d, func() {
+		ctx, span := g.detach(ctx, "registration expiry")
+		defer span.End()
+
 		g.mu.Lock()
 		defer g.mu.Unlock()
 
 		if g.regs[reg.key] == reg && !g.closed && !reg.expires.After(g.agent.Layer().Clock().Now()) {
 			g.log.Debug("IP-SM-GW registration expired", slog.String("impu", reg.impu.String()))
-			g.remove(reg)
+			g.remove(ctx, reg)
 		}
 	})
 }
 
 // remove ends reg: its subscription, its row, and its user's availability. Called with g.mu held.
-func (g *registrar) remove(reg *registration) {
+func (g *registrar) remove(ctx context.Context, reg *registration) {
 	if g.regs[reg.key] != reg {
 		return
 	}
@@ -221,7 +234,7 @@ func (g *registrar) remove(reg *registration) {
 		if w.sub != nil {
 			sub := w.sub
 
-			reg.strand.Post(func() { _ = sub.Unsubscribe(ua.Change{}) })
+			reg.strand.Post(func() { _ = sub.Unsubscribe(ctx, ua.Change{}) })
 		}
 	}
 
@@ -248,25 +261,25 @@ func (g *registrar) save(reg *registration) {
 }
 
 // resubscribe replaces the subscription of reg with a new one, toward its S-CSCF. Called with g.mu held.
-func (g *registrar) resubscribe(reg *registration) {
+func (g *registrar) resubscribe(ctx context.Context, reg *registration) {
 	if old := reg.watch; old != nil {
 		old.stopped = true
 		if old.sub != nil {
 			sub := old.sub
 
-			reg.strand.Post(func() { _ = sub.Unsubscribe(ua.Change{}) })
+			reg.strand.Post(func() { _ = sub.Unsubscribe(ctx, ua.Change{}) })
 		}
 	}
 
 	w := &watch{}
 	reg.watch = w
 
-	reg.strand.Post(func() { g.subscribe(reg, w) })
+	reg.strand.Post(func() { g.subscribe(ctx, reg, w) })
 }
 
 // subscribe sends the SUBSCRIBE of w to the reg event package of the IMPU of reg (TS 24.229 §5.7.1.1 a to f), of
 // the default duration (RFC 3680 §4.4), which the agent refreshes. Runs on the strand of reg.
-func (g *registrar) subscribe(reg *registration, w *watch) {
+func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) {
 	g.mu.Lock()
 
 	if g.closed || g.regs[reg.key] != reg || reg.watch != w || w.stopped {
@@ -296,9 +309,9 @@ func (g *registrar) subscribe(reg *registration, w *watch) {
 	route.Params.Set("lr", "")
 	req.Header.Set("Route", sip.Address{URI: route}.String())
 
-	sub, err := g.agent.Subscribe(req, ua.SubscriptionHandler{
-		Notify: func(s *ua.Subscription, n *ua.Request) { g.notify(reg, w, s, n) },
-		Ended:  func(_ *ua.Subscription, e ua.End) { g.ended(reg, w, e) },
+	sub, err := g.agent.Subscribe(ctx, req, ua.SubscriptionHandler{
+		Notify: func(ctx context.Context, s *ua.Subscription, n *ua.Request) { g.notify(ctx, reg, w, s, n) },
+		Ended:  func(ctx context.Context, _ *ua.Subscription, e ua.End) { g.ended(ctx, reg, w, e) },
 	}, ua.On(reg.strand))
 
 	g.mu.Lock()
@@ -309,7 +322,7 @@ func (g *registrar) subscribe(reg *registration, w *watch) {
 			return
 		}
 
-		after := g.retry(reg, w)
+		after := g.retry(ctx, reg, w)
 		g.log.Warn("reg event SUBSCRIBE not sent", slog.String("impu", reg.impu.String()), slog.Any("error", err),
 			slog.Duration("retry_after", after))
 
@@ -319,19 +332,19 @@ func (g *registrar) subscribe(reg *registration, w *watch) {
 	w.sub = sub
 
 	if w.stopped {
-		reg.strand.Post(func() { _ = sub.Unsubscribe(ua.Change{}) })
+		reg.strand.Post(func() { _ = sub.Unsubscribe(ctx, ua.Change{}) })
 	}
 }
 
 // retry subscribes again after a wait, doubling from minSubscribeRetry to maxSubscribeRetry, while reg lasts, and
 // returns the wait. Called with g.mu held.
-func (g *registrar) retry(reg *registration, w *watch) time.Duration {
-	return g.retryAfter(reg, w, 0)
+func (g *registrar) retry(ctx context.Context, reg *registration, w *watch) time.Duration {
+	return g.retryAfter(ctx, reg, w, 0)
 }
 
 // retryAfter subscribes again after the wait after, if any, else as retry does, and returns the wait. Called with
 // g.mu held.
-func (g *registrar) retryAfter(reg *registration, w *watch, after time.Duration) time.Duration {
+func (g *registrar) retryAfter(ctx context.Context, reg *registration, w *watch, after time.Duration) time.Duration {
 	if after <= 0 {
 		after = min(minSubscribeRetry<<min(w.attempts, 5), maxSubscribeRetry)
 	}
@@ -340,7 +353,12 @@ func (g *registrar) retryAfter(reg *registration, w *watch, after time.Duration)
 	w.stopped = true
 	reg.watch = next
 
-	reg.strand.AfterFunc(after, func() { g.subscribe(reg, next) })
+	reg.strand.AfterFunc(after, func() {
+		ctx, span := g.detach(ctx, "reg event resubscribe")
+		defer span.End()
+
+		g.subscribe(ctx, reg, next)
+	})
 
 	return after
 }
@@ -348,7 +366,7 @@ func (g *registrar) retryAfter(reg *registration, w *watch, after time.Duration)
 // ended handles the end of the subscription of w. A 480 or 404, of an IMPU the S-CSCF has no registration of
 // (TS 24.229 §5.4.2.1.1), ends the registration. Another end of a subscription not ended by the IP-SM-GW subscribes
 // again later, the availability unchanged meanwhile.
-func (g *registrar) ended(reg *registration, w *watch, e ua.End) {
+func (g *registrar) ended(ctx context.Context, reg *registration, w *watch, e ua.End) {
 	code := 0
 	if e.Response != nil {
 		code = e.Response.StatusCode
@@ -365,10 +383,10 @@ func (g *registrar) ended(reg *registration, w *watch, e ua.End) {
 	case e.Cause == ua.EndRejected && (code == 480 || code == 404):
 		g.log.Debug("reg event subscription refused: no registration", slog.String("impu", reg.impu.String()),
 			slog.Int("code", code))
-		g.remove(reg)
+		g.remove(ctx, reg)
 	case e.Cause == ua.EndUnsubscribed, e.Cause == ua.EndClosed:
 	default:
-		after := g.retry(reg, w)
+		after := g.retry(ctx, reg, w)
 		g.log.Warn("reg event subscription ended: subscribing again", slog.String("impu", reg.impu.String()),
 			slog.String("cause", e.Cause.String()), slog.Int("code", code), slog.Duration("retry_after", after))
 	}
@@ -381,7 +399,7 @@ func (g *registrar) ended(reg *registration, w *watch, e ua.End) {
 // the retry-after of "probation", after a backoff of no reason or another than "noresource" and "rejected", which end
 // the registration. A document that does not decode gets a 400, which keeps the subscription, and a refresh asks for
 // the full state again. Every response has the P-Charging-Vector of TS 24.229 §5.7.1.1.
-func (g *registrar) notify(reg *registration, w *watch, s *ua.Subscription, n *ua.Request) {
+func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *ua.Subscription, n *ua.Request) {
 	req := n.Message()
 
 	var header sip.Header
@@ -432,7 +450,7 @@ func (g *registrar) notify(reg *registration, w *watch, s *ua.Subscription, n *u
 			ended = true
 		case "deactivated":
 			reg.watch = nil
-			g.resubscribe(reg)
+			g.resubscribe(ctx, reg)
 		default:
 			var after time.Duration
 
@@ -444,12 +462,12 @@ func (g *registrar) notify(reg *registration, w *watch, s *ua.Subscription, n *u
 				}
 			}
 
-			g.retryAfter(reg, w, after)
+			g.retryAfter(ctx, reg, w, after)
 		}
 	}
 
 	if current && ended {
-		g.remove(reg)
+		g.remove(ctx, reg)
 	}
 
 	g.mu.Unlock()
@@ -458,7 +476,7 @@ func (g *registrar) notify(reg *registration, w *watch, s *ua.Subscription, n *u
 		_ = n.Respond(ua.Reply{Code: 400, Header: header})
 
 		if current && s.State() != ua.SubscriptionTerminated {
-			_ = s.Refresh(ua.Change{}, nil)
+			_ = s.Refresh(ctx, ua.Change{}, nil)
 		}
 
 		return
@@ -601,7 +619,7 @@ func (g *registrar) want(userKey string) (User, bool) {
 
 // restore puts back the registrations kept, but those expired, before the agent serves; Resubscribe subscribes to
 // their reg event packages once the core runs.
-func (g *registrar) restore(rows []db.IPSMGWRegistration) {
+func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 	now := g.agent.Layer().Clock().Now()
 
 	g.mu.Lock()
@@ -635,20 +653,20 @@ func (g *registrar) restore(rows []db.IPSMGWRegistration) {
 		}
 
 		g.regs[reg.key] = reg
-		g.expireAt(reg)
+		g.expireAt(ctx, reg)
 		g.hss.mark(reg.user().userKey())
 	}
 }
 
 // resubscribeAll subscribes to the reg event package of the registrations of no subscription, as restored, once the
 // core runs.
-func (g *registrar) resubscribeAll() {
+func (g *registrar) resubscribeAll(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	for _, reg := range g.regs {
 		if reg.watch == nil {
-			g.resubscribe(reg)
+			g.resubscribe(ctx, reg)
 		}
 	}
 }

@@ -163,7 +163,7 @@ func run(ctx context.Context, o options) error {
 
 			return nil
 		},
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			if c := cl.Load(); c != nil {
 				return c.OnInvite(r)
 			}

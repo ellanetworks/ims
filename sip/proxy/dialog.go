@@ -241,6 +241,10 @@ type Dialog struct {
 
 	mu sync.Mutex
 
+	// invite carries the span of the INVITE that created the dialog, the trace of the requests the dialog sends as
+	// part of it, such as a BYE to a 2xx that came after a release.
+	invite context.Context
+
 	begun    bool
 	state    DialogState
 	released bool
@@ -352,6 +356,28 @@ func (d *Dialog) flush() {
 
 	d.flushing = false
 	d.mu.Unlock()
+}
+
+// trace sets the trace of the INVITE that creates the dialog, from the first fork of it.
+func (d *Dialog) trace(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.invite == nil {
+		d.invite = ctx
+	}
+}
+
+// inviteTrace is the trace of the INVITE that created the dialog.
+func (d *Dialog) inviteTrace() context.Context {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.invite == nil {
+		return context.Background()
+	}
+
+	return d.invite
 }
 
 func (d *Dialog) ID() string {
@@ -725,7 +751,7 @@ func (d *Dialog) request(out *sip.Request) (bool, error) {
 	return true, nil
 }
 
-func (d *Dialog) ack(ack *sip.Request) error {
+func (d *Dialog) ack(ctx context.Context, ack *sip.Request) error {
 	defer d.flush()
 
 	cseq, err := ack.Header.CSeq()
@@ -748,7 +774,7 @@ func (d *Dialog) ack(ack *sip.Request) error {
 		d.mu.Unlock()
 
 		if bye != nil {
-			d.send(bye, Caller, nil)
+			d.send(ctx, bye, Caller, nil)
 		}
 
 		return ErrDialogEnded
@@ -910,7 +936,7 @@ func (d *Dialog) inviteResponse(b *branch, res *sip.Response) {
 				d.p.log.Debug("ending a 2xx to a released INVITE", slog.String("dialog", d.id))
 			}
 
-			d.closeCallee(leg, fresh)
+			d.closeCallee(d.inviteTrace(), leg, fresh)
 
 			return
 		}
@@ -1057,7 +1083,7 @@ func (d *Dialog) close(res *sip.Response, tag string, out Target) (*closingLeg, 
 	return leg, true
 }
 
-func (d *Dialog) closeCallee(leg *closingLeg, fresh bool) {
+func (d *Dialog) closeCallee(ctx context.Context, leg *closingLeg, fresh bool) {
 	var bye *sip.Request
 
 	if fresh {
@@ -1066,11 +1092,11 @@ func (d *Dialog) closeCallee(leg *closingLeg, fresh bool) {
 		d.mu.Unlock()
 	}
 
-	_ = d.p.layer.Go(func(ctx context.Context) {
+	_ = d.p.layer.Go(ctx, func(ctx context.Context) {
 		d.sendAck(ctx, leg)
 
 		if bye != nil {
-			d.send(bye, Callee, &leg.callee)
+			d.send(ctx, bye, Callee, &leg.callee)
 		}
 	})
 }
@@ -1083,7 +1109,7 @@ func (d *Dialog) retransmitted(res *sip.Response) {
 	d.mu.Unlock()
 
 	if leg != nil {
-		d.closeCallee(leg, false)
+		d.closeCallee(d.inviteTrace(), leg, false)
 	}
 }
 
@@ -1129,11 +1155,11 @@ func (d *Dialog) byeWithReason(toward Side, callee *party) *sip.Request {
 }
 
 // TS 24.229 §5.2.8.1, §5.4.5.1
-func (d *Dialog) Release(r Release) error {
-	return d.release(r, EndReleased)
+func (d *Dialog) Release(ctx context.Context, r Release) error {
+	return d.release(ctx, r, EndReleased)
 }
 
-func (d *Dialog) release(r Release, cause EndCause) error {
+func (d *Dialog) release(ctx context.Context, r Release, cause EndCause) error {
 	d.mu.Lock()
 
 	if !d.begun || d.ended || d.released {
@@ -1197,11 +1223,11 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 			d.mu.Unlock()
 		}
 
-		_ = d.p.layer.Go(func(ctx context.Context) {
+		_ = d.p.layer.Go(ctx, func(ctx context.Context) {
 			d.sendAck(ctx, leg)
 
 			for _, bye := range byes {
-				d.send(bye, Callee, &leg.callee)
+				d.send(ctx, bye, Callee, &leg.callee)
 			}
 		})
 
@@ -1218,7 +1244,7 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 			toward = Caller
 		}
 
-		d.send(bye, toward, &callee)
+		d.send(ctx, bye, toward, &callee)
 	}
 
 	return nil
@@ -1228,7 +1254,7 @@ func (d *Dialog) release(r Release, cause EndCause) error {
 // dialog once one of them answered; while early, only those branches, cancelled with the Reason of r
 // (RFC 3261 §16.10), unless no other branch is left to answer, when the whole dialog is released. It
 // returns ErrNotReached when the dialog does not reach key, or no longer can.
-func (d *Dialog) ReleaseCallee(key any, r Release) error {
+func (d *Dialog) ReleaseCallee(ctx context.Context, key any, r Release) error {
 	d.mu.Lock()
 
 	if !d.begun || d.ended || d.released {
@@ -1244,7 +1270,7 @@ func (d *Dialog) ReleaseCallee(key any, r Release) error {
 			return ErrNotReached
 		}
 
-		return d.Release(r)
+		return d.Release(ctx, r)
 	}
 
 	c := d.ctx
@@ -1258,12 +1284,12 @@ func (d *Dialog) ReleaseCallee(key any, r Release) error {
 		d.mu.Unlock()
 
 		if answered {
-			return d.Release(r)
+			return d.Release(ctx, r)
 		}
 
 		return ErrNotReached
 	case !others:
-		return d.Release(r)
+		return d.Release(ctx, r)
 	}
 
 	return nil
@@ -1452,8 +1478,8 @@ func (d *Dialog) target(toward Side, callee *party, req *sip.Request) (Target, e
 	return Target{Flow: sip.Flow{Transport: tr, Local: base.Flow.Local, Remote: dest}, SentBy: base.SentBy}, nil
 }
 
-// send sends a request the dialog generates; callee, toward the callee, is the one it goes to.
-func (d *Dialog) send(req *sip.Request, toward Side, callee *party) {
+// send sends a request the dialog generates, in the trace of ctx; callee, toward the callee, is the one it goes to.
+func (d *Dialog) send(ctx context.Context, req *sip.Request, toward Side, callee *party) {
 	to, err := d.target(toward, callee, req)
 	if err != nil {
 		d.p.log.Debug("no target for a generated request", slog.String("dialog", d.id), slog.String("request", req.StartLine()),
@@ -1467,7 +1493,7 @@ func (d *Dialog) send(req *sip.Request, toward Side, callee *party) {
 		return
 	}
 
-	if _, err := d.p.layer.Request(out, generated{d: d, req: out}); err != nil {
+	if _, err := d.p.layer.Request(ctx, out, generated{d: d, req: out}); err != nil {
 		d.p.log.Debug("sending a generated request failed", slog.String("dialog", d.id), slog.String("request", out.StartLine()),
 			slog.Any("error", err))
 	}
@@ -1478,14 +1504,14 @@ type generated struct {
 	req *sip.Request
 }
 
-func (g generated) HandleResponse(res *sip.Response) {
+func (g generated) HandleResponse(_ context.Context, res *sip.Response) {
 	if res.StatusCode >= 200 {
 		g.d.p.log.Debug("generated request answered", slog.String("dialog", g.d.id), slog.String("request", g.req.StartLine()),
 			slog.Int("code", res.StatusCode))
 	}
 }
 
-func (g generated) HandleError(err error) {
+func (g generated) HandleError(_ context.Context, err error) {
 	g.d.p.log.Debug("generated request failed", slog.String("dialog", g.d.id), slog.String("request", g.req.StartLine()),
 		slog.Any("error", err))
 }

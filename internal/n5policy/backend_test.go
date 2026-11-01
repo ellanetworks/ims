@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/pcftest"
 	"github.com/ellanetworks/ims/internal/policy"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ue4 = netip.MustParseAddr("10.45.0.2")
@@ -61,7 +62,7 @@ func (s *fakeSink) has(id string) bool {
 	return s.known[id]
 }
 
-func (s *fakeSink) Notify(id string, e policy.Event) bool {
+func (s *fakeSink) Notify(_ context.Context, id string, e policy.Event) bool {
 	if !s.has(id) {
 		return false
 	}
@@ -71,7 +72,7 @@ func (s *fakeSink) Notify(id string, e policy.Event) bool {
 	return true
 }
 
-func (s *fakeSink) Abort(id string, a policy.Abort) (func(), bool) {
+func (s *fakeSink) Abort(_ context.Context, id string, a policy.Abort) (func(), bool) {
 	if !s.has(id) {
 		return nil, false
 	}
@@ -98,6 +99,13 @@ func newFixture(t *testing.T) *fixture {
 func newFixtureWith(t *testing.T, cfg pcftest.Config) *fixture {
 	t.Helper()
 
+	return newTracedFixture(t, cfg, nil)
+}
+
+// newTracedFixture is a fixture whose backend and notification server trace with tp, when set.
+func newTracedFixture(t *testing.T, cfg pcftest.Config, tp trace.TracerProvider) *fixture {
+	t.Helper()
+
 	pcf := pcftest.New(t, cfg)
 
 	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -107,7 +115,9 @@ func newFixtureWith(t *testing.T, cfg pcftest.Config) *fixture {
 
 	root := "http://" + ln.Addr().String()
 
-	b, err := New(Config{PCF: pcf.URL(), Notify: root, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+	b, err := New(Config{
+		PCF: pcf.URL(), Notify: root, TracerProvider: tp, Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +125,7 @@ func newFixtureWith(t *testing.T, cfg pcftest.Config) *fixture {
 	sink := newSink()
 	b.Bind(sink)
 
-	srv := NewServer(b, nil, slog.New(slog.DiscardHandler))
+	srv := NewServer(b, nil, tp, slog.New(slog.DiscardHandler))
 
 	go func() { _ = srv.Serve(ln) }()
 

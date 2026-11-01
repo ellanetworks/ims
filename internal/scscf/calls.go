@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -124,7 +125,7 @@ func (c *calls) serving(k bindingKey, pick func(served []string) bool) map[*prox
 // toward it on its own branches only, so that the other contacts of a forked call ring on. An
 // expired binding releases them only when its contact has no other registration left in st
 // (§5.4.5.1.2A).
-func (r *Registrar) releaseCalls(st *state, removed []removal) {
+func (r *Registrar) releaseCalls(ctx context.Context, st *state, removed []removal) {
 	cause, err := sip.NewReason(sip.ReasonSIP, 480, sip.ReasonText(sip.ReasonSIP, 480))
 	if err != nil {
 		return
@@ -149,9 +150,9 @@ func (r *Registrar) releaseCalls(st *state, removed []removal) {
 				var err error
 
 				if side == proxy.Caller {
-					err = d.Release(rel)
+					err = d.Release(ctx, rel)
 				} else {
-					err = d.ReleaseCallee(k, rel)
+					err = d.ReleaseCallee(ctx, k, rel)
 				}
 
 				switch {

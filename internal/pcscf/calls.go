@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
@@ -65,7 +66,7 @@ func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 }
 
 // TS 24.229 §5.2.6.3.3, §5.2.6.3.7, §5.2.6.3.11
-func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request) {
+func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	reg, ok := p.ueRegistration(req)
 	if !ok {
 		p.log.Debug("initial request from an unregistered UE", slog.String("method", req.Method),
@@ -112,7 +113,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 	}
 
 	if !out.Header.Has("Route") && p.cfg.Proxy.IsLocal(out.URI) {
-		p.cfg.Fallback.HandleRequest(tx, req)
+		p.cfg.Fallback.HandleRequest(ctx, tx, req)
 		return
 	}
 
@@ -174,7 +175,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 
 	var dialog *proxy.Dialog
 
-	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
+	opts := proxy.Options{OnReply: func(ctx context.Context, rep proxy.Reply) proxy.Verdict {
 		priority := false
 
 		if res := rep.Response; res != nil {
@@ -187,7 +188,7 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 			}
 		}
 
-		return p.mediaReply(tx, dialog, rep, true, priority)
+		return p.mediaReply(ctx, tx, dialog, rep, true, priority)
 	}}
 
 	switch out.Method {
@@ -209,13 +210,13 @@ func (p *PCSCF) originating(tx *transaction.ServerTransaction, req *sip.Request)
 		}
 	}
 
-	if !p.forward(tx, req, out, to, opts, refuse) {
+	if !p.forward(ctx, tx, req, out, to, opts, refuse) {
 		rec.closed(tx)
 	}
 }
 
 // TS 24.229 §5.2.6.4.3, §5.2.6.4.7
-func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
+func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
 	// A call the P-CSCF does not put through to the UE ends by the network.
 	refuse := func(res *sip.Response) {
 		p.cfg.Records.RejectingRequest(req, res.StatusCode, tx.ToTag())
@@ -265,10 +266,10 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 	var dialog *proxy.Dialog
 
-	opts := proxy.Options{OnReply: func(rep proxy.Reply) proxy.Verdict {
+	opts := proxy.Options{OnReply: func(ctx context.Context, rep proxy.Reply) proxy.Verdict {
 		res := rep.Response
 		if res == nil || rep.Err != nil {
-			return p.mediaReply(tx, dialog, rep, true, false)
+			return p.mediaReply(ctx, tx, dialog, rep, true, false)
 		}
 
 		fromUEResponse(res)
@@ -279,7 +280,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 
 		p.respondCharging(req, res)
 
-		return p.mediaReply(tx, dialog, rep, true, false)
+		return p.mediaReply(ctx, tx, dialog, rep, true, false)
 	}}
 
 	switch out.Method {
@@ -308,7 +309,7 @@ func (p *PCSCF) terminating(tx *transaction.ServerTransaction, req *sip.Request,
 		}
 	}
 
-	p.forward(tx, req, out, to, opts, refuse)
+	p.forward(ctx, tx, req, out, to, opts, refuse)
 }
 
 func (p *PCSCF) callEvent(c *call) func(proxy.DialogEvent) {

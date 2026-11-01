@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -436,55 +437,55 @@ func (s *Session) emit(f func(h Handler)) {
 }
 
 // emitReceived reports a message of the peer the session took.
-func (s *Session) emitReceived(m sip.Message) {
+func (s *Session) emitReceived(ctx context.Context, m sip.Message) {
 	s.emit(func(h Handler) {
 		if h.Received != nil {
-			h.Received(s, m)
+			h.Received(ctx, s, m)
 		}
 	})
 }
 
-func (s *Session) emitEnded(e End) {
+func (s *Session) emitEnded(ctx context.Context, e End) {
 	s.emit(func(h Handler) {
 		if h.Ended != nil {
-			h.Ended(s, e)
+			h.Ended(ctx, s, e)
 		}
 	})
 }
 
-func (s *Session) emitAnswer(sdp []byte) {
+func (s *Session) emitAnswer(ctx context.Context, sdp []byte) {
 	s.emit(func(h Handler) {
 		if h.Answer != nil {
-			h.Answer(s, sdp)
+			h.Answer(ctx, s, sdp)
 		}
 	})
 }
 
-func (s *Session) emitEstablished(m sip.Message) {
+func (s *Session) emitEstablished(ctx context.Context, m sip.Message) {
 	s.emit(func(h Handler) {
 		if h.Established != nil {
-			h.Established(s, m)
+			h.Established(ctx, s, m)
 		}
 	})
 }
 
-func (s *Session) emitProgress(res *sip.Response) {
+func (s *Session) emitProgress(ctx context.Context, res *sip.Response) {
 	s.emit(func(h Handler) {
 		if h.Progress != nil {
-			h.Progress(s, res)
+			h.Progress(ctx, s, res)
 		}
 	})
 }
 
 // emitOffer asks the application for the answer to an offer in a response, or refuses it without a handler.
-func (s *Session) emitOffer(o *Offer) {
+func (s *Session) emitOffer(ctx context.Context, o *Offer) {
 	s.emit(func(h Handler) {
 		if h.Offer != nil {
-			h.Offer(s, o)
+			h.Offer(ctx, s, o)
 			return
 		}
 
-		o.Reject()
+		o.Reject(ctx)
 	})
 }
 
@@ -496,15 +497,15 @@ func (s *Session) emitDone(done func(*sip.Response, error), res *sip.Response, e
 
 // confirm confirms the session, with m its 2xx or its ACK; its session timer starts (RFC 4028 §7.2, §9: not on an
 // early dialog).
-func (s *Session) confirm(m sip.Message) {
+func (s *Session) confirm(ctx context.Context, m sip.Message) {
 	s.state = Confirmed
-	s.timer.start(s)
-	s.emitEstablished(m)
+	s.timer.start(ctx, s)
+	s.emitEstablished(ctx, m)
 }
 
 // end terminates the session, once: its timers stop, and a request of the peer still unanswered gets a 487, a 2xx
 // held for a PRACK included (RFC 3261 §15.1.2); the initial INVITE gets a 503 when the agent closes.
-func (s *Session) end(e End) {
+func (s *Session) end(ctx context.Context, e End) {
 	s.st.check()
 
 	if s.state == Terminated {
@@ -589,7 +590,7 @@ func (s *Session) end(e End) {
 	// The dialog ends with its last usage (RFC 5057 §4), its entry kept for the late responses.
 	s.a.removeSession(s)
 
-	s.emitEnded(e)
+	s.emitEnded(ctx, e)
 }
 
 // awaitingAck reports a 2xx of the agent awaiting its ACK.
@@ -609,7 +610,7 @@ func (s *Session) peerAllows(method string) bool {
 
 // transmit sends a request of the dialog in a client transaction; sent receives the transaction. The transaction
 // layer sends the requests of a flow in the order it takes them, those of the dialog in the order of their CSeq.
-func (s *Session) transmit(req *sip.Request, h transaction.ClientHandler, sent func(*transaction.ClientTransaction)) error {
+func (s *Session) transmit(ctx context.Context, req *sip.Request, h transaction.ClientHandler, sent func(*transaction.ClientTransaction)) error {
 	s.st.check()
 
 	// The request stays as built, for one sent again after a challenge, which Decorate completes anew.
@@ -619,7 +620,7 @@ func (s *Session) transmit(req *sip.Request, h transaction.ClientHandler, sent f
 		s.decorate(out)
 	}
 
-	tx, err := s.a.prepareAndSend(out, h)
+	tx, err := s.a.prepareAndSend(ctx, out, h)
 	if err == nil && sent != nil {
 		sent(tx)
 	}
@@ -628,8 +629,8 @@ func (s *Session) transmit(req *sip.Request, h transaction.ClientHandler, sent f
 }
 
 // queueAck sends an ACK of the dialog in the order of its flow, before the requests sent after it.
-func (s *Session) queueAck(ack *sip.Request) {
-	if err := s.a.layer.QueueAck(ack, func(err error) {
+func (s *Session) queueAck(ctx context.Context, ack *sip.Request) {
+	if err := s.a.layer.QueueAck(ctx, ack, func(err error) {
 		if err != nil {
 			s.logger().Debug("ACK failed", slog.Any("error", err))
 		}
@@ -639,12 +640,12 @@ func (s *Session) queueAck(ack *sip.Request) {
 }
 
 // sendRequest sends a request of the session, logging a failure.
-func (s *Session) sendRequest(req *sip.Request, h transaction.ClientHandler) {
-	if err := s.transmit(req, h, nil); err != nil {
+func (s *Session) sendRequest(ctx context.Context, req *sip.Request, h transaction.ClientHandler) {
+	if err := s.transmit(ctx, req, h, nil); err != nil {
 		s.logger().Debug("request failed", slog.String("method", req.Method), slog.Any("error", err))
 
 		if h != nil {
-			h.HandleError(err)
+			h.HandleError(ctx, err)
 		}
 	}
 }
@@ -652,10 +653,10 @@ func (s *Session) sendRequest(req *sip.Request, h transaction.ClientHandler) {
 // byeEnd ends the session with a BYE carrying c, when the dialog allows one; done receives its final response. A 2xx
 // offer still unanswered is acknowledged first, refused (RFC 3261 §13.2.2.4). The BYE transaction completes after
 // the session ended; Shutdown waits for it.
-func (s *Session) byeEnd(e End, c Change, done func(*sip.Response, error)) {
+func (s *Session) byeEnd(ctx context.Context, e End, c Change, done func(*sip.Response, error)) {
 	for seq, o := range s.answering {
 		o.used = true
-		o.refuse(nil)
+		o.refuse(ctx, nil)
 		delete(s.answering, seq)
 	}
 
@@ -665,19 +666,19 @@ func (s *Session) byeEnd(e End, c Change, done func(*sip.Response, error)) {
 
 		s.a.await(1)
 
-		if err := bye.send(); err != nil {
-			bye.finish(nil, err)
+		if err := bye.send(ctx); err != nil {
+			bye.finish(ctx, nil, err)
 		}
 	} else {
 		s.emitDone(done, nil, s.errorf("Bye", ErrState))
 	}
 
-	s.end(e)
+	s.end(ctx, e)
 }
 
 // close ends the session as the agent closes: with a BYE once confirmed, or once the ACK of its 2xx came; an early
-// one rejects or abandons its INVITE.
-func (s *Session) close() {
+// one rejects or abandons its INVITE. ctx is the trace of the shutdown.
+func (s *Session) close(ctx context.Context) {
 	switch {
 	case s.state == Terminated:
 	case s.state == Early && s.awaitingAck() && s.byeAfterAck == nil:
@@ -691,14 +692,14 @@ func (s *Session) close() {
 			s.a.await(1)
 		}
 	case s.state == Confirmed:
-		s.byeEnd(End{Cause: EndClosed}, Change{}, nil)
+		s.byeEnd(ctx, End{Cause: EndClosed}, Change{}, nil)
 	default:
-		s.end(End{Cause: EndClosed})
+		s.end(ctx, End{Cause: EndClosed})
 	}
 }
 
 // sendQueuedBye sends the BYE that waited for the ACK of the 2xx of a UAS.
-func (s *Session) sendQueuedBye(cause EndCause) {
+func (s *Session) sendQueuedBye(ctx context.Context, cause EndCause) {
 	pb := s.byeAfterAck
 	if pb == nil {
 		return
@@ -710,7 +711,7 @@ func (s *Session) sendQueuedBye(cause EndCause) {
 		cause = pb.cause
 	}
 
-	s.byeEnd(End{Cause: cause, Err: errorOf(cause)}, pb.change, pb.done)
+	s.byeEnd(ctx, End{Cause: cause, Err: errorOf(cause)}, pb.change, pb.done)
 
 	if pb.cause == EndClosed {
 		s.a.await(-1)
@@ -767,7 +768,7 @@ func keyOf(from offeranswer.Side, req *sip.Request) offeranswer.Key {
 }
 
 // receive handles a request of the peer within the dialog (RFC 3261 §12.2.2).
-func (s *Session) receive(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Session) receive(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if s.state == Terminated || s.d == nil {
 		s.reply(tx, 481)
 		return
@@ -787,31 +788,31 @@ func (s *Session) receive(tx *transaction.ServerTransaction, req *sip.Request) {
 	}
 
 	s.notePeer(req.Header)
-	s.emitReceived(req)
+	s.emitReceived(ctx, req)
 
 	switch req.Method {
 	case "BYE":
-		s.receiveBye(tx, req)
+		s.receiveBye(ctx, tx, req)
 	case "PRACK":
-		s.receivePrack(tx, req)
+		s.receivePrack(ctx, tx, req)
 	case "UPDATE", "INVITE":
-		s.receiveOffer(tx, req)
+		s.receiveOffer(ctx, tx, req)
 	default:
-		s.deliver(newRequest(s, tx, req))
+		s.deliver(ctx, newRequest(ctx, s, tx, req))
 	}
 }
 
 // receiveBye ends the session on a BYE of the peer (RFC 3261 §15.1.2): at once with a 200, or once Handler.Bye
 // responded, or 32*T1 after the BYE without a response, half the time the peer waits for one (Timer F).
-func (s *Session) receiveBye(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Session) receiveBye(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if s.h.Bye == nil || s.inBye != nil {
-		s.end(End{Cause: EndBye, Remote: true, Request: req})
+		s.end(ctx, End{Cause: EndBye, Remote: true, Request: req})
 		s.reply(tx, 200)
 
 		return
 	}
 
-	r := newRequest(s, tx, req)
+	r := newRequest(ctx, s, tx, req)
 	s.inBye = r
 
 	r.deadline = s.st.after(32*s.a.layer.T1(), func() {
@@ -820,11 +821,11 @@ func (s *Session) receiveBye(tx *transaction.ServerTransaction, req *sip.Request
 		}
 	})
 
-	s.emit(func(h Handler) { h.Bye(s, r) })
+	s.emit(func(h Handler) { h.Bye(ctx, s, r) })
 }
 
 // deliver gives a request to the application, or answers it for lack of a handler.
-func (s *Session) deliver(r *Request) {
+func (s *Session) deliver(ctx context.Context, r *Request) {
 	method := r.req.Method
 
 	if !s.a.allows(method) {
@@ -842,7 +843,7 @@ func (s *Session) deliver(r *Request) {
 
 	s.emit(func(h Handler) {
 		if h.Request != nil {
-			h.Request(s, r)
+			h.Request(ctx, s, r)
 			return
 		}
 
@@ -875,7 +876,7 @@ func (r *Request) RespondDefault() error {
 // receiveOffer handles a re-INVITE or an UPDATE: its conflicts with transactions in progress (RFC 3261 §14.2,
 // RFC 3311 §5.2), the session timer (RFC 4028 §9), and its offer. It goes to the application, unless Policy answers
 // the session refreshes.
-func (s *Session) receiveOffer(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Session) receiveOffer(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	offer := sessionSDP(req.Envelope)
 
 	if code, retry := s.conflict(req.Method, offer != nil); code != 0 {
@@ -899,7 +900,7 @@ func (s *Session) receiveOffer(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	r := newRequest(s, tx, req)
+	r := newRequest(ctx, s, tx, req)
 
 	// RFC 3264 §8, RFC 4028 §7.4: a refresh repeats the session unchanged, or asks for an offer of it.
 	r.unchanged, r.refresh = s.refreshAnswer(r, offer)
@@ -920,7 +921,7 @@ func (s *Session) receiveOffer(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	s.deliver(r)
+	s.deliver(ctx, r)
 }
 
 // refreshAnswer is the session description the agent answers a refresh with: none to an UPDATE without an offer, its
@@ -971,7 +972,7 @@ func (s *Session) conflict(method string, offer bool) (code int, retry bool) {
 }
 
 // receivePrack handles a PRACK (RFC 3262 §3, §5).
-func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Session) receivePrack(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	rack, err := req.Header.RAck()
 
 	var in *Request
@@ -993,12 +994,12 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	r := newRequest(s, tx, req)
+	r := newRequest(ctx, s, tx, req)
 	offer := sessionSDP(req.Envelope)
 	r.role = s.offerRequest(r.key, offer)
 
 	if r.role == offeranswer.Answer {
-		s.emitAnswer(offer)
+		s.emitAnswer(ctx, offer)
 	}
 
 	acked := in.unacked.res
@@ -1014,12 +1015,12 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 
 	s.emit(func(h Handler) {
 		if h.Pracked != nil {
-			h.Pracked(s, acked)
+			h.Pracked(ctx, s, acked)
 		}
 	})
 
 	if r.role == offeranswer.Offer {
-		s.deliver(r)
+		s.deliver(ctx, r)
 		return
 	}
 
@@ -1029,7 +1030,7 @@ func (s *Session) receivePrack(tx *transaction.ServerTransaction, req *sip.Reque
 }
 
 // receiveAck handles the ACK of a 2xx to an INVITE of the peer (RFC 3261 §13.3.1.4).
-func (s *Session) receiveAck(ack *sip.Request) {
+func (s *Session) receiveAck(ctx context.Context, ack *sip.Request) {
 	cseq, err := ack.Header.CSeq()
 	if err != nil {
 		return
@@ -1041,7 +1042,7 @@ func (s *Session) receiveAck(ack *sip.Request) {
 	}
 
 	delete(s.acking, cseq.Seq)
-	s.emitReceived(ack)
+	s.emitReceived(ctx, ack)
 
 	r.acked()
 
@@ -1049,21 +1050,21 @@ func (s *Session) receiveAck(ack *sip.Request) {
 	answer := sessionSDP(ack.Envelope)
 
 	if s.offerRequest(key, answer) == offeranswer.Answer {
-		s.emitAnswer(answer)
+		s.emitAnswer(ctx, answer)
 	}
 
 	// The ACK of the 2xx to the initial INVITE confirms the session, whatever came after it.
 	if s.state == Early && s.d != nil && r.initial {
-		s.confirm(ack)
+		s.confirm(ctx, ack)
 	}
 
 	switch offer, okey, pending := s.sdp.Pending(); {
 	case pending && offer.From == local && okey == r.key:
 		// RFC 3264 §4: the offer of the 2xx went unanswered: the session cannot go on.
 		s.sdp.Fail(okey)
-		s.byeEnd(End{Cause: EndLost, Err: errors.New("sip/ua: no answer in the ACK")}, Change{}, nil)
+		s.byeEnd(ctx, End{Cause: EndLost, Err: errors.New("sip/ua: no answer in the ACK")}, Change{}, nil)
 	case s.byeAfterAck != nil:
-		s.sendQueuedBye(EndBye)
+		s.sendQueuedBye(ctx, EndBye)
 	default:
 		s.pump()
 	}
@@ -1072,8 +1073,8 @@ func (s *Session) receiveAck(ack *sip.Request) {
 // Send sends a request within the dialog other than INVITE, UPDATE, PRACK, ACK, CANCEL and BYE, which the session
 // sends itself, with c added (RFC 3261 §12.2.1.1); done receives its final response or its error, as a handler. The
 // requests of the dialog reach the peer in the order of their CSeq (RFC 3261 §12.2.2); those in progress when the
-// session ends complete with ErrState.
-func (s *Session) Send(method string, c Change, done func(res *sip.Response, err error)) error {
+// session ends complete with ErrState. The request is part of the trace of ctx.
+func (s *Session) Send(ctx context.Context, method string, c Change, done func(res *sip.Response, err error)) error {
 	switch method {
 	case "INVITE", "UPDATE", "PRACK", "ACK", "CANCEL", "BYE":
 		return fmt.Errorf("sip/ua: %s is sent by the session", method)
@@ -1086,7 +1087,7 @@ func (s *Session) Send(method string, c Change, done func(res *sip.Response, err
 
 		cr := &clientRequest{s: s, method: method, change: c, done: done}
 
-		if err := cr.send(); err != nil {
+		if err := cr.send(ctx); err != nil {
 			return s.errorf("Send", err)
 		}
 
@@ -1102,8 +1103,8 @@ func (s *Session) Send(method string, c Change, done func(res *sip.Response, err
 // the INVITE instead, unless its 2xx is held for a PRACK, which a 487 replaces, or the INVITE was forked
 // (Request.Fork): Bye on one of its early dialogs ends that one alone, with
 // a 199 carrying c when the INVITE supports it (RFC 6228), done getting no response. Bye on an early dialog of a UAC
-// ends that dialog alone: Outgoing.Cancel cancels the INVITE, which ends them all.
-func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
+// ends that dialog alone: Outgoing.Cancel cancels the INVITE, which ends them all. The BYE is part of the trace of ctx.
+func (s *Session) Bye(ctx context.Context, c Change, done func(res *sip.Response, err error)) error {
 	return s.st.do(func() error {
 		switch {
 		case s.d == nil || s.state == Terminated || s.inBye != nil:
@@ -1114,13 +1115,13 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 		case !s.uac && s.state == Early && s.in != nil && s.in.held != nil && len(s.in.others()) == 0:
 			// The 2xx held for a PRACK is not sent: the INVITE gets a 487 in its place, and the session ends
 			// (RFC 3261 §15).
-			s.end(End{Cause: EndBye})
+			s.end(ctx, End{Cause: EndBye})
 			s.emitDone(done, nil, nil)
 
 			return nil
 		case !s.uac && s.state == Early && s.in != nil && s.in == s.initial() && len(s.in.others()) > 0:
 			// One early dialog of a forked INVITE, its others left to answer it.
-			s.in.drop(c)
+			s.in.drop(ctx, c)
 			s.emitDone(done, nil, nil)
 
 			return nil
@@ -1128,7 +1129,7 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 			return s.errorf("Bye", ErrState)
 		}
 
-		s.byeEnd(End{Cause: EndBye}, c, done)
+		s.byeEnd(ctx, End{Cause: EndBye}, c, done)
 
 		return nil
 	})
@@ -1137,29 +1138,29 @@ func (s *Session) Bye(c Change, done func(res *sip.Response, err error)) error {
 // fail applies to the session and its dialog the failure of a request within the dialog: res a final response other
 // than 2xx, or err the error of its transaction (RFC 5057 §5.1, §5.2). A failure that destroys the dialog ends all
 // its usages, without a BYE; one that destroys the usage ends the session.
-func (s *Session) fail(method string, res *sip.Response, err error) {
+func (s *Session) fail(ctx context.Context, method string, res *sip.Response, err error) {
 	if s.state == Terminated {
 		return
 	}
 
 	switch failureOf(method, res, err) {
 	case destroysDialog:
-		s.a.destroyDialog(s.id, res, err)
+		s.a.destroyDialog(ctx, s.id, res, err)
 	case destroysUsage:
-		s.lost(res, err)
+		s.lost(ctx, res, err)
 	}
 }
 
 // lost ends a session its peer no longer knows, with a BYE unless the peer answered 481 (RFC 3261 §12.2.1.2).
-func (s *Session) lost(res *sip.Response, err error) {
+func (s *Session) lost(ctx context.Context, res *sip.Response, err error) {
 	e := End{Cause: EndLost, Response: res, Err: err}
 
 	if res != nil && res.StatusCode == 481 {
-		s.end(e)
+		s.end(ctx, e)
 		return
 	}
 
-	s.byeEnd(e, Change{}, nil)
+	s.byeEnd(ctx, e, Change{}, nil)
 }
 
 // RFC 3261 §14.1: 2.1 to 4 s for the owner of the Call-ID, the UAC of the initial INVITE, 0 to 2 s for the other side,
@@ -1196,7 +1197,7 @@ type clientRequest struct {
 }
 
 // send builds the request with the next CSeq of the dialog, and sends it.
-func (c *clientRequest) send() error {
+func (c *clientRequest) send(ctx context.Context) error {
 	s := c.s
 
 	if c.req == nil {
@@ -1209,17 +1210,17 @@ func (c *clientRequest) send() error {
 		c.req = req
 	}
 
-	return s.transmit(c.req, s.st.client(c.response, c.error), nil)
+	return s.transmit(ctx, c.req, s.st.client(c.response, c.error), nil)
 }
 
-func (c *clientRequest) response(res *sip.Response) {
+func (c *clientRequest) response(ctx context.Context, res *sip.Response) {
 	s := c.s
 
 	if res.IsProvisional() || c.final {
 		return
 	}
 
-	s.emitReceived(res)
+	s.emitReceived(ctx, res)
 
 	if s.d != nil {
 		_ = s.d.ReceiveResponse(res)
@@ -1229,27 +1230,27 @@ func (c *clientRequest) response(res *sip.Response) {
 		c.tries++
 		c.req = next
 
-		if err := c.send(); err != nil {
-			c.finish(nil, err)
+		if err := c.send(ctx); err != nil {
+			c.finish(ctx, nil, err)
 		}
 
 		return
 	}
 
-	c.finish(res, nil)
+	c.finish(ctx, res, nil)
 }
 
-func (c *clientRequest) error(err error) {
+func (c *clientRequest) error(ctx context.Context, err error) {
 	if c.final {
 		return
 	}
 
-	c.finish(nil, err)
+	c.finish(ctx, nil, err)
 }
 
 // finish completes the request, then applies its failure to the session and the dialog: an OPTIONS or a MESSAGE,
 // of no usage, only ever affects the dialog (RFC 5057 §5.1–§5.3).
-func (c *clientRequest) finish(res *sip.Response, err error) {
+func (c *clientRequest) finish(ctx context.Context, res *sip.Response, err error) {
 	s := c.s
 
 	if c.final {
@@ -1267,7 +1268,7 @@ func (c *clientRequest) finish(res *sip.Response, err error) {
 	delete(s.sends, c)
 
 	if res == nil || !res.IsSuccess() {
-		s.fail(c.method, res, err)
+		s.fail(ctx, c.method, res, err)
 	}
 }
 
