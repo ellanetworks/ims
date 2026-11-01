@@ -195,7 +195,7 @@ func (f *forker) HandleRequest(ctx context.Context, tx *transaction.ServerTransa
 }
 
 func (f *forker) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	f.p.Cancel(tx, cancel)
+	f.p.Cancel(context.Background(), tx, cancel)
 }
 
 func (f *forker) HandleAck(ctx context.Context, ack *sip.Request) {

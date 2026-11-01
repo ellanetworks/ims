@@ -278,7 +278,7 @@ func TestCancelledReinviteUndone(t *testing.T) {
 	respond(reinvite, 100, "")
 	n.Advance(time.Second)
 
-	_ = as.CancelReinvite(ua.Change{})
+	_ = as.CancelReinvite(context.Background(), ua.Change{})
 
 	cancel, _ := bob.RecvRequest()
 	if cancel.Method != "CANCEL" {
@@ -481,7 +481,7 @@ func TestOneToManyLate2xx(t *testing.T) {
 	_ = rb.Progress(ua.Reply{Code: 180})
 	_ = rc.Progress(ua.Reply{Code: 180})
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	alice.next("failed")
 

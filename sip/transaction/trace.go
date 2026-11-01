@@ -6,21 +6,23 @@ import (
 	"strconv"
 
 	"github.com/ellanetworks/ims/sip"
-	"go.opentelemetry.io/otel"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const tracerName = "github.com/ellanetworks/ims/sip/transaction"
 
 // The attributes of SIP spans. OpenTelemetry has no SIP conventions: these are the names of OpenSIPS's.
 const (
-	methodKey = attribute.Key("sip.request.method")
-	statusKey = attribute.Key("sip.response.status_code")
-	callIDKey = attribute.Key("sip.call_id")
+	methodKey         = attribute.Key("sip.request.method")
+	methodOriginalKey = attribute.Key("sip.request.method_original")
+	statusKey         = attribute.Key("sip.response.status_code")
+	callIDKey         = attribute.Key("sip.call_id")
 	// The ICID of P-Charging-Vector (RFC 7315 §5.6), which joins a trace to its charging and call records.
 	icidKey = attribute.Key("ella.ims.icid")
 
@@ -36,12 +38,38 @@ const (
 
 var propagator = propagation.TraceContext{}
 
+// otherMethod names the spans of methods the stack does not know, as HTTP semconv does: a span name must be of low
+// cardinality, and a peer can send any token as a method.
+const otherMethod = "_OTHER"
+
+// knownMethods are the methods of RFC 3261 and of the extensions the stack implements.
+var knownMethods = map[string]bool{
+	"INVITE": true, "ACK": true, "BYE": true, "CANCEL": true, "OPTIONS": true, "REGISTER": true, "PRACK": true,
+	"SUBSCRIBE": true, "NOTIFY": true, "PUBLISH": true, "INFO": true, "REFER": true, "MESSAGE": true, "UPDATE": true,
+}
+
+// spanName is the name of the span of a request of method.
+func spanName(method string) string {
+	if knownMethods[method] {
+		return method
+	}
+
+	return otherMethod
+}
+
+// providerOf is tp, or a provider that traces nothing: a layer traces only with the provider it is given.
 func providerOf(tp trace.TracerProvider) trace.TracerProvider {
 	if tp == nil {
-		return otel.GetTracerProvider()
+		return noop.NewTracerProvider()
 	}
 
 	return tp
+}
+
+// Lifetime is the context of the layer's lifetime, done once it closes: the lifetime of the work the layer's users
+// start themselves (lifetime.With).
+func (l *Layer) Lifetime() context.Context {
+	return l.ctx
 }
 
 // TracerProvider traces the layer, for the agents on it to trace their own work with the same one.
@@ -84,6 +112,60 @@ func (l *Layer) propagate(ctx context.Context, req *sip.Request) {
 	}
 }
 
+// untraced is m without trace context when it must carry none: a response, which W3C Trace Context does not carry, or
+// a request on a flow that carries no trace context, as one a proxy relays statelessly to a UE. No trace context of
+// the IMS leaves the trust domain, whatever path a message takes.
+func (l *Layer) untraced(m sip.Message) sip.Message {
+	h := &m.Env().Header
+	if !h.Has(traceparent) && !h.Has(tracestate) {
+		return m
+	}
+
+	if req, ok := m.(*sip.Request); ok && l.traces(req.Flow) {
+		return m
+	}
+
+	switch v := m.(type) {
+	case *sip.Request:
+		m = v.Clone()
+	case *sip.Response:
+		m = v.Clone()
+	default:
+		return m
+	}
+
+	h = &m.Env().Header
+	h.Del(traceparent)
+	h.Del(tracestate)
+
+	return m
+}
+
+// linksKey is the key of the span contexts a client span links to, besides its parent.
+type linksKey struct{}
+
+// withLinks is ctx, for a client transaction whose span links to the valid span contexts of scs.
+func withLinks(ctx context.Context, scs ...trace.SpanContext) context.Context {
+	var links []trace.Link
+
+	for _, sc := range scs {
+		if sc.IsValid() {
+			links = append(links, trace.Link{SpanContext: sc})
+		}
+	}
+
+	if len(links) == 0 {
+		return ctx
+	}
+
+	return context.WithValue(ctx, linksKey{}, links)
+}
+
+func linksOf(ctx context.Context) []trace.Link {
+	links, _ := ctx.Value(linksKey{}).([]trace.Link)
+	return links
+}
+
 // remote is the context of the trace that req continues: the trace context it carries, when its flow carries trace
 // context.
 func (l *Layer) remote(req *sip.Request) context.Context {
@@ -99,7 +181,11 @@ func (l *Layer) remote(req *sip.Request) context.Context {
 func (l *Layer) requestAttributes(req *sip.Request) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.NetworkProtocolName("sip"),
-		methodKey.String(req.Method),
+		methodKey.String(spanName(req.Method)),
+	}
+
+	if spanName(req.Method) == otherMethod {
+		attrs = append(attrs, methodOriginalKey.String(req.Method))
 	}
 
 	switch req.Flow.Transport {
@@ -129,10 +215,10 @@ func (l *Layer) requestAttributes(req *sip.Request) []attribute.KeyValue {
 	return attrs
 }
 
-// scope is the context of the work that ctx causes on the layer: the trace of ctx, ended only once the layer closes.
-// The work a request causes outlives its transaction, and is part of its trace.
+// scope is the context of the work that ctx causes on the layer: the values and trace of ctx, ended only once the
+// layer closes. The work a request causes outlives its transaction, and is part of its trace.
 func (l *Layer) scope(ctx context.Context) context.Context {
-	return trace.ContextWithSpan(l.ctx, trace.SpanFromContext(ctx))
+	return lifetime.With(l.ctx, ctx)
 }
 
 // span is the span of a transaction, which ends once: at its first final response, or when the transaction ends
@@ -153,9 +239,9 @@ func (s *span) event(name string, attrs ...attribute.KeyValue) {
 	}
 }
 
-// end ends the span with the final response res, or with err when there is none. A response from failFrom is an error:
-// 500 for a server span, whose 4xx are the client's, and 400 for a client span.
-func (s *span) end(res *sip.Response, err error, failFrom int) {
+// end ends the span with the final response res, or with err when there is none. failed tells the responses that are
+// errors: serverFailed for a server span, clientFailed for a client span.
+func (s *span) end(res *sip.Response, err error, failed func(code int) bool) {
 	if s.Span == nil || s.ended {
 		return
 	}
@@ -166,16 +252,36 @@ func (s *span) end(res *sip.Response, err error, failFrom int) {
 	case res != nil:
 		s.SetAttributes(statusKey.Int(res.StatusCode))
 
-		if res.StatusCode >= failFrom {
+		if failed(res.StatusCode) {
 			s.SetAttributes(semconv.ErrorTypeKey.String(strconv.Itoa(res.StatusCode)))
 			s.SetStatus(codes.Error, "")
 		}
 	case err != nil:
 		s.SetAttributes(semconv.ErrorTypeKey.String(errorType(err)))
-		s.SetStatus(codes.Error, err.Error())
+		// The error itself, which may quote the request, stays out of the trace: its type tells what failed.
+		s.SetStatus(codes.Error, errorType(err))
 	}
 
 	s.End()
+}
+
+// serverFailed tells the final responses of a server transaction that are its errors: the 5xx. A 4xx is the client's.
+func serverFailed(code int) bool { return code >= 500 }
+
+// clientFailed tells the final responses to a client transaction that are its errors: from 400, but for the
+// challenges of digest authentication, a step of the exchange (RFC 3261 §22.2, §22.3), and the 487 of an INVITE the
+// client cancelled itself (§9.1).
+func clientFailed(cancelled bool) func(code int) bool {
+	return func(code int) bool {
+		switch code {
+		case 401, 407:
+			return false
+		case 487:
+			return !cancelled
+		}
+
+		return code >= 400
+	}
 }
 
 func errorType(err error) string {
@@ -203,8 +309,13 @@ func (l *Layer) handleAck(ack *sip.Request, invite trace.SpanContext) {
 
 	opts = append(opts, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(ack)...))
 
-	_, s := l.tracer.Start(l.remote(ack), ack.Method, opts...)
+	_, s := l.tracer.Start(l.remote(ack), spanName(ack.Method), opts...)
 	defer s.End()
 
-	l.h.HandleAck(l.scope(trace.ContextWithSpan(context.Background(), s)), ack)
+	// The context ends once the handler returns, as an HTTP request's does: work that outlives it binds itself to a
+	// lifetime of its own (lifetime.With).
+	ctx, cancel := context.WithCancel(lifetime.With(l.ctx, trace.ContextWithSpan(context.Background(), s)))
+	defer cancel()
+
+	l.h.HandleAck(ctx, ack)
 }

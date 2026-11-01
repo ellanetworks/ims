@@ -91,6 +91,11 @@ func newRequest(ctx context.Context, s *Session, tx *transaction.ServerTransacti
 }
 
 // Message is the request.
+// Context is the context of the request: that of its server transaction (transaction.Handler), with its trace.
+func (r *Request) Context() context.Context {
+	return r.ctx
+}
+
 func (r *Request) Message() *sip.Request {
 	return r.req
 }

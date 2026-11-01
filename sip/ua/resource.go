@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrResourceTerminated is the error of binding a subscription to a resource terminated, or of changing one.
@@ -194,14 +195,28 @@ func (r *Resource[S, D]) minInterval() time.Duration {
 // changed notifies the change to version v of the resource of s, partial rendering it as a partial notification
 // when the package has them. Called with the strand held.
 func (s *ServerSubscription) changed(ctx context.Context, v uint64, partial func(uint32) (Notification, error)) {
-	if s.ended || s.ending != nil || s.state != SubscriptionActive || v <= s.version || s.held != nil {
+	if s.ended || s.ending != nil || s.state != SubscriptionActive || v <= s.version {
 		return
 	}
 
-	// Within the interval since the last change notified, the changes wait for its end, together.
+	if s.held != nil {
+		// As many links as a span keeps by default (OpenTelemetry's span limits).
+		if len(s.heldCauses) < 128 {
+			s.heldCauses = append(s.heldCauses, trace.SpanContextFromContext(ctx))
+		}
+
+		return
+	}
+
+	// Within the interval since the last change notified, the changes wait for its end, together: their notification
+	// is a trace of its own, linked to each, as OpenTelemetry links a batch to the messages it carries.
 	if wait := s.nextChange.Sub(s.a.clock.Now()); wait > 0 {
-		s.held = s.st.later(ctx, wait, func(ctx context.Context) {
-			s.held = nil
+		s.heldCauses = []trace.SpanContext{trace.SpanContextFromContext(ctx)}
+		s.held = s.st.after(wait, func() {
+			ctx, span := s.a.startDetached(s.heldCauses, "subscription notify")
+			defer span.End()
+
+			s.held, s.heldCauses = nil, nil
 
 			if !s.ended && s.ending == nil && s.src.latest() > s.version {
 				s.notifyChange(ctx, nil)

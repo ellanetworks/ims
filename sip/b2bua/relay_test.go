@@ -265,7 +265,7 @@ func TestBridge2xxCrossingCancel(t *testing.T) {
 	respond(180, "")
 	alice.next("progress")
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	cancel, _ := bob.RecvRequest()
 	if cancel.Method != "CANCEL" {

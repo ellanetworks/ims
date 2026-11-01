@@ -197,7 +197,7 @@ func TestBridgeCancel(t *testing.T) {
 	alice.next("progress")
 
 	reason, _ := sip.NewReason("SIP", 200, "Call completed elsewhere")
-	_ = o.Cancel(ua.Reasons(reason))
+	_ = o.Cancel(context.Background(), ua.Reasons(reason))
 
 	if e := alice.next("failed"); e.res == nil || e.res.StatusCode != 487 {
 		t.Fatalf("alice's INVITE: %+v", e.res)

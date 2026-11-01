@@ -607,7 +607,9 @@ func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
 	return ok
 }
 
-func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+// Cancel cancels the request of tx, for the CANCEL cancel, ctx being the trace of the CANCEL: the CANCELs of its
+// branches link to it.
+func (p *Proxy) Cancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	var reason []sip.Field
 
 	if cancel != nil {
@@ -632,7 +634,7 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 			d.cancelledByCaller()
 		}
 
-		c.cancel(reason)
+		c.cancel(ctx, reason)
 
 		return
 	}

@@ -90,7 +90,7 @@ func TestForkCancelled(t *testing.T) {
 
 	alice.nextAll("progress", "progress")
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	for range 2 {
 		if e := bob.next("ended"); e.end.Cause != ua.EndCancelled {

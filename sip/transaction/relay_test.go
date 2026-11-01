@@ -85,7 +85,7 @@ func TestClientCancelExtraFields(t *testing.T) {
 	h.reply(sent, 180)
 	wantCode(t, rs.Next(), 180)
 
-	if err := tx.Cancel(sip.Field{Name: "Reason", Value: "SIP;cause=200"}); err != nil {
+	if err := tx.Cancel(context.Background(), sip.Field{Name: "Reason", Value: "SIP;cause=200"}); err != nil {
 		t.Fatal(err)
 	}
 

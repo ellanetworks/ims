@@ -425,7 +425,7 @@ func TestCancel(t *testing.T) {
 
 	alice.next("progress")
 
-	if err := o.Cancel(ua.Reasons(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}})); err != nil {
+	if err := o.Cancel(context.Background(), ua.Reasons(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}})); err != nil {
 		t.Fatal(err)
 	}
 

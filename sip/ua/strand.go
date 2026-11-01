@@ -236,7 +236,7 @@ func (st *Strand) detached(ctx context.Context, d time.Duration, name string, f 
 	link := trace.SpanContextFromContext(ctx)
 
 	return st.after(d, func() {
-		ctx, span := st.a.startDetached(link, name)
+		ctx, span := st.a.startDetached([]trace.SpanContext{link}, name)
 		defer span.End()
 
 		f(ctx)

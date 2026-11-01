@@ -41,7 +41,7 @@ func TestNoLeaks(t *testing.T) {
 
 	alice.next("progress")
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	bob.next("ended")
 	alice.nextAll("ended", "failed")

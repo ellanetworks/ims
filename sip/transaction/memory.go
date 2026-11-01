@@ -170,6 +170,7 @@ func (l *Layer) reliable(f sip.Flow) bool {
 }
 
 func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
+	m = l.untraced(m)
 	f := m.Env().Flow
 
 	if l.inMemory(f.Remote) {

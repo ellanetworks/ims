@@ -64,7 +64,7 @@ func (r *relay) HandleCancel(_ context.Context, stx *transaction.ServerTransacti
 	ctx := r.branches[stx]
 	r.mu.Unlock()
 
-	if err := ctx.Cancel(); err != nil {
+	if err := ctx.Cancel(context.Background()); err != nil {
 		r.t.Error(err)
 	}
 }

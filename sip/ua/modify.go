@@ -229,7 +229,7 @@ func (s *Session) newClientInvite(m *modification, c Change) (*clientInvite, err
 	s.started(ci)
 
 	if m.cancel != nil {
-		ci.cancel(*m.cancel)
+		ci.cancel(m.ctx, *m.cancel)
 	}
 
 	return ci, nil
@@ -298,14 +298,14 @@ func (s *Session) dropModifications(err error) {
 // CancelReinvite cancels the re-INVITE of Reinvite or Modify, the CANCEL carrying c, its Reason header fields
 // (Reasons) (RFC 3261 §9.1): one in progress, done receiving the 487, or the 2xx that came first; one waiting to be
 // sent, done receiving ErrCancelled. The session refreshes of the agent are not cancelled.
-func (s *Session) CancelReinvite(c Change) error {
+func (s *Session) CancelReinvite(ctx context.Context, c Change) error {
 	return s.st.do(func() error {
 		found := false
 
 		if ci := s.reinvite; ci != nil && !ci.m.refresh {
 			found = true
 
-			ci.cancel(c)
+			ci.cancel(ctx, c)
 		}
 
 		kept := s.queue[:0]

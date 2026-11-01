@@ -2,6 +2,14 @@
 // offer/answer exchanges, reliable provisional responses, UPDATE, re-INVITE and session timers, and requests outside
 // dialogs (RFC 3261 §8, §12–15, §22; RFC 3262; RFC 3264; RFC 3311; RFC 4028; RFC 5057). It sits on a transaction
 // layer, and leaves to the application what to offer, how to answer, and what other requests to send.
+//
+// # Contexts
+//
+// Every operation takes a context, and every handler gets one. A context passed to the agent carries the trace and
+// values of the work: it never cancels or bounds a SIP operation, whose lifetime is the protocol's (see
+// sip/transaction). A handler's context is that of the request or response it is about. Work the agent starts itself
+// later, such as a refresh or an expiry, is in a trace of its own, linked to what armed it, and ends once the agent
+// closes.
 package ua
 
 import (
@@ -17,6 +25,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -483,7 +492,7 @@ func New(cfg Config) (*Agent, error) {
 
 	a.clock = a.layer.Clock()
 	a.sched = a.layer.Scheduler()
-	a.tracer = a.layer.TracerProvider().Tracer(tracerName)
+	a.tracer = a.layer.TracerProvider().Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL))
 
 	return a, nil
 }
@@ -607,7 +616,7 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 		_ = o.st.do(func() error {
 			o.awaitFinal()
 
-			if err := o.cancelWith(Change{}); err != nil {
+			if err := o.cancelWith(ctx, Change{}); err != nil {
 				a.log.Debug("CANCEL failed", callAttr(o.ci.req), slog.Any("error", err))
 			}
 
@@ -1520,13 +1529,17 @@ func (a *Agent) HandleTransactionError(ctx context.Context, tx *transaction.Serv
 
 // startDetached starts the span of work of the agent that starts later than what caused it, as the refresh a timer
 // fires: a trace of its own, linked to link, the trace that armed the timer.
-func (a *Agent) startDetached(link trace.SpanContext, name string) (context.Context, trace.Span) {
+func (a *Agent) startDetached(causes []trace.SpanContext, name string) (context.Context, trace.Span) {
 	opts := []trace.SpanStartOption{trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal)}
-	if link.IsValid() {
-		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: link}))
+
+	for _, c := range causes {
+		if c.IsValid() {
+			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: c}))
+		}
 	}
 
-	return a.tracer.Start(context.Background(), name, opts...)
+	// The work ends with the agent's layer, as that of its handlers does.
+	return a.tracer.Start(a.layer.Lifetime(), name, opts...)
 }
 
 func containsFold(list []string, v string) bool {

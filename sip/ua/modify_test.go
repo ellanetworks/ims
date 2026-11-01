@@ -68,7 +68,7 @@ func TestCancelReinvite(t *testing.T) {
 
 	reason, _ := sip.NewReason("SIP", 487, "")
 
-	if err := bs.CancelReinvite(ua.Reasons(reason)); err != nil {
+	if err := bs.CancelReinvite(context.Background(), ua.Reasons(reason)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestCancelReinvite(t *testing.T) {
 		t.Error("the cancelled re-INVITE accepted")
 	}
 
-	if err := bs.CancelReinvite(ua.Change{}); !errors.Is(err, ua.ErrState) {
+	if err := bs.CancelReinvite(context.Background(), ua.Change{}); !errors.Is(err, ua.ErrState) {
 		t.Errorf("CancelReinvite without a re-INVITE: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestModificationWaitsForAck(t *testing.T) {
 		t.Fatalf("re-INVITE before the ACK: %v", err)
 	}
 
-	if err := bs.CancelReinvite(ua.Change{}); err != nil {
+	if err := bs.CancelReinvite(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -736,7 +736,7 @@ func TestAnswerCrossingCancel(t *testing.T) {
 
 	reason, _ := sip.NewReason("RELEASE_CAUSE", 1, "User ends call")
 
-	if err := o.Cancel(ua.Reasons(reason)); err != nil {
+	if err := o.Cancel(context.Background(), ua.Reasons(reason)); err != nil {
 		t.Fatal(err)
 	}
 

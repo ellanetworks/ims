@@ -1005,7 +1005,7 @@ func (p *Relay) bye(ctx context.Context, l *Leg, r *ua.Request) {
 
 // cancelled relays the CANCEL of a re-INVITE: its relayed re-INVITE is cancelled, and undone should its 2xx cross the
 // CANCEL.
-func (p *Relay) cancelled(l *Leg, r *ua.Request, cancel *sip.Request) {
+func (p *Relay) cancelled(ctx context.Context, l *Leg, r *ua.Request, cancel *sip.Request) {
 	pr := p.pairs[r.Session()]
 	if pr == nil || pr.op == nil || pr.op.r != r {
 		return
@@ -1014,7 +1014,7 @@ func (p *Relay) cancelled(l *Leg, r *ua.Request, cancel *sip.Request) {
 	pr.op.cancelled = true
 
 	if s := pr.other(p, l); s != nil {
-		p.report(s.CancelReinvite(p.change(l, cancel, nil)))
+		p.report(s.CancelReinvite(ctx, p.change(l, cancel, nil)))
 	}
 }
 

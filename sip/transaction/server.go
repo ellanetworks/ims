@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -22,9 +23,11 @@ type ServerTransaction struct {
 	started time.Time
 	final   bool
 
-	// ctx is the context of the handler's calls about the transaction, and span the transaction's.
-	ctx  context.Context
-	span span
+	// ctx is the context of the handler's calls about the transaction, cancelled by cancel once the transaction ends
+	// or is cancelled; span is the transaction's.
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	span   span
 }
 
 func newServer(l *Layer, req *sip.Request) *ServerTransaction {
@@ -40,7 +43,7 @@ func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 			tx.mu.Unlock()
 
 			if !final {
-				l.onDone(req, nil, time.Since(tx.started))
+				l.onDone(tx.ctx, req, nil, time.Since(tx.started))
 			}
 		})
 	}
@@ -70,11 +73,19 @@ func (tx *ServerTransaction) startSpan(link trace.SpanContext) {
 		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: link}))
 	}
 
-	_, s := l.tracer.Start(l.remote(tx.req), tx.req.Method, opts...)
+	_, s := l.tracer.Start(l.remote(tx.req), spanName(tx.req.Method), opts...)
 
 	tx.span = span{Span: s}
-	tx.ctx = l.scope(trace.ContextWithSpan(context.Background(), s))
-	tx.finish = func(err error) { tx.span.end(nil, err, 500) }
+	tx.ctx, tx.cancel = context.WithCancelCause(lifetime.With(l.ctx, trace.ContextWithSpan(context.Background(), s)))
+	tx.finish = func(err error) {
+		tx.span.end(nil, err, serverFailed)
+
+		if err == nil {
+			err = ErrTerminated
+		}
+
+		tx.cancel(err)
+	}
 }
 
 // spanContext is the span context of the transaction, if it has one.
@@ -194,11 +205,11 @@ func (tx *ServerTransaction) respond(res *sip.Response, tag bool) error {
 
 	if !res.IsProvisional() && !tx.final {
 		tx.final = true
-		tx.span.end(res, nil, 500)
+		tx.span.end(res, nil, serverFailed)
 
 		if f := tx.layer.onDone; f != nil {
 			elapsed := time.Since(tx.started)
-			tx.emit(func() { f(tx.req, res, elapsed) })
+			tx.emit(func() { f(tx.ctx, tx.req, res, elapsed) })
 		}
 	}
 
@@ -294,6 +305,8 @@ func (tx *ServerTransaction) receiveCancel(ctx context.Context, cancel *sip.Requ
 	tx.mu.Lock()
 
 	if tx.state == Proceeding {
+		// The client gave up: the work done for the request is no longer wanted (RFC 3261 §9.2).
+		tx.cancel(ErrCanceled)
 		tx.emit(func() { tx.layer.h.HandleCancel(ctx, tx, cancel) })
 	}
 

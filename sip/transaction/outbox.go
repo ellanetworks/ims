@@ -105,8 +105,9 @@ func (l *Layer) checkDrained() {
 	}
 }
 
-// sendInOrder sends m in its flow's order, and waits for the send.
-func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) error {
+// sendInOrder sends m in its flow's order, and waits for the send, or for the layer to close: like every send of the
+// layer, it is not bounded by its caller's context.
+func (l *Layer) sendInOrder(m sip.Message, exact bool) error {
 	done := make(chan error, 1)
 
 	if !l.enqueue(m.Env().Flow, func(ok bool) {
@@ -115,7 +116,7 @@ func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) erro
 			return
 		}
 
-		done <- l.send(ctx, m, exact)
+		done <- l.send(l.ctx, m, exact)
 	}) {
 		return ErrClosed
 	}
@@ -123,8 +124,8 @@ func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) erro
 	select {
 	case err := <-done:
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-l.ctx.Done():
+		return ErrClosed
 	}
 }
 

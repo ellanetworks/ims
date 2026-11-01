@@ -167,7 +167,7 @@ func (r *router) target(out *sip.Request, local netip.AddrPort) proxy.Target {
 }
 
 func (r *router) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	r.p.Cancel(tx, cancel)
+	r.p.Cancel(context.Background(), tx, cancel)
 
 	r.cancelled <- struct{}{}
 }

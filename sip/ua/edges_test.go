@@ -267,7 +267,7 @@ func TestCancelAfterTheChangeApplied(t *testing.T) {
 	alice.next("progress")
 	netOf(t).Quiesce()
 
-	if err := as.CancelReinvite(ua.Change{}); err != nil {
+	if err := as.CancelReinvite(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -485,7 +485,7 @@ func TestCancelAfterTheAnswerAndChallengedBye(t *testing.T) {
 	as := alice.next("established").s
 	alice.next("answer")
 
-	if err := o.Cancel(ua.Change{}); !errors.Is(err, ua.ErrState) {
+	if err := o.Cancel(context.Background(), ua.Change{}); !errors.Is(err, ua.ErrState) {
 		t.Errorf("Cancel after the 2xx: %v, want ErrState", err)
 	}
 

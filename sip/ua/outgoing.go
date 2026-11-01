@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/sip/offeranswer"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxMinSERetries bounds the retries of an initial INVITE after a 422 whose Min-SE rises (RFC 4028 §7.3): one per
@@ -45,6 +46,8 @@ type Outgoing struct {
 
 	// cancel is the change of the CANCEL of the application, sent once the transaction exists.
 	cancel *Change
+	// cancelCause is the span context of what cancelled the INVITE, which its CANCEL links to.
+	cancelCause trace.SpanContext
 
 	// closing: Shutdown waits for the final response, until closeBy.
 	closing bool
@@ -166,7 +169,7 @@ func (o *Outgoing) send(ctx context.Context) error {
 	o.tx = tx
 
 	if o.cancel != nil {
-		return tx.CancelWith(o.cancel.apply)
+		return tx.CancelWith(trace.ContextWithSpanContext(context.Background(), o.cancelCause), o.cancel.apply)
 	}
 
 	return nil
@@ -186,28 +189,30 @@ func (o *Outgoing) Request() *sip.Request {
 // Cancel cancels the INVITE, the CANCEL carrying c: its Reason header fields (RFC 3326, Reasons), or the session
 // description of a precondition failure (RFC 3312 §8). Its sessions end on the 487. It returns ErrState once a final
 // response came.
-func (o *Outgoing) Cancel(c Change) error {
+func (o *Outgoing) Cancel(ctx context.Context, c Change) error {
 	return o.st.do(func() error {
 		if o.final {
 			return &Error{Op: "Cancel", State: Confirmed, Err: ErrState}
 		}
 
-		return o.cancelWith(c)
+		return o.cancelWith(ctx, c)
 	})
 }
 
-func (o *Outgoing) cancelWith(c Change) error {
+// cancelWith cancels the INVITE with the change c of its CANCEL, ctx being the trace of what cancels it.
+func (o *Outgoing) cancelWith(ctx context.Context, c Change) error {
 	if o.cancel != nil {
 		return nil
 	}
 
 	o.cancel = &c
+	o.cancelCause = trace.SpanContextFromContext(ctx)
 
 	if o.tx == nil || o.final {
 		return nil
 	}
 
-	return o.tx.CancelWith(c.apply)
+	return o.tx.CancelWith(ctx, c.apply)
 }
 
 func (o *Outgoing) emitFailed(ctx context.Context, res *sip.Response, err error) {
@@ -584,8 +589,10 @@ type clientInvite struct {
 	tries int
 	final bool
 
-	// cancelled completes the CANCEL of a re-INVITE the application cancelled, sent once the transaction exists.
-	cancelled func(*sip.Request)
+	// cancelled completes the CANCEL of a re-INVITE the application cancelled, sent once the transaction exists, and
+	// cancelCause is the span context of what cancelled it.
+	cancelled   func(*sip.Request)
+	cancelCause trace.SpanContext
 }
 
 func (c *clientInvite) send(ctx context.Context) error {
@@ -595,7 +602,7 @@ func (c *clientInvite) send(ctx context.Context) error {
 		c.tx = tx
 
 		if c.cancelled != nil {
-			_ = tx.CancelWith(c.cancelled)
+			_ = tx.CancelWith(trace.ContextWithSpanContext(context.Background(), c.cancelCause), c.cancelled)
 		}
 	})
 	if err != nil {
@@ -610,10 +617,12 @@ func (c *clientInvite) send(ctx context.Context) error {
 
 // cancel cancels a re-INVITE of the agent with the change of its CANCEL; the transaction layer sends the CANCEL once
 // a provisional response came (RFC 3261 §9.1).
-func (c *clientInvite) cancel(ch Change) {
+func (c *clientInvite) cancel(ctx context.Context, ch Change) {
 	if c.cancelled != nil {
 		return
 	}
+
+	c.cancelCause = trace.SpanContextFromContext(ctx)
 
 	c.cancelled = func(cancel *sip.Request) {
 		ch.apply(cancel)
@@ -621,7 +630,7 @@ func (c *clientInvite) cancel(ch Change) {
 	}
 
 	if c.tx != nil {
-		_ = c.tx.CancelWith(c.cancelled)
+		_ = c.tx.CancelWith(ctx, c.cancelled)
 	}
 }
 
@@ -1016,7 +1025,7 @@ func (o *Offer) reject(ctx context.Context) {
 	switch _, waiting := s.answering[o.c.key.Seq]; {
 	case o.prack:
 		// RFC 3262 §5: the PRACK carries the answer; the CANCEL follows it.
-		o.refuse(ctx, func(context.Context) { o.cancelInvite() })
+		o.refuse(ctx, o.cancelInvite)
 	case waiting && o.initial:
 		o.refuse(ctx, nil)
 		s.byeEnd(ctx, End{Cause: EndBye}, Change{}, nil)
@@ -1056,11 +1065,11 @@ func (o *Offer) refuse(ctx context.Context, then func(context.Context)) {
 	o.s.sendAck(ctx, o.c, Change{Bodies: bodies})
 }
 
-func (o *Offer) cancelInvite() {
+func (o *Offer) cancelInvite(ctx context.Context) {
 	if o.c.out != nil {
-		_ = o.c.out.cancelWith(Change{})
+		_ = o.c.out.cancelWith(ctx, Change{})
 		return
 	}
 
-	o.c.cancel(Change{})
+	o.c.cancel(ctx, Change{})
 }

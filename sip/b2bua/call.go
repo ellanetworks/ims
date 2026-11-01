@@ -5,6 +5,11 @@
 // A Call and its legs run on one strand of the agent: their events come in order, and the application acts on any
 // leg of the call from them without locks. Their methods are called on that strand: from the handlers, or from a job
 // posted to it (Strand.Post).
+//
+// # Contexts
+//
+// A context passed to a call or a leg carries the trace and values of the work, never cancellation (see sip/ua). The
+// handlers of a leg get the context of the event they are about.
 package b2bua
 
 import (
@@ -500,7 +505,7 @@ func (l *Leg) End(ctx context.Context, rp ua.Reply) error {
 
 		return l.Respond(rp)
 	case l.out != nil:
-		return l.out.Cancel(c)
+		return l.out.Cancel(ctx, c)
 	}
 
 	return nil
@@ -605,7 +610,7 @@ func (l *Leg) handler() ua.Handler {
 			}
 
 			if l.relay != nil {
-				l.relay.cancelled(l, r, cancel)
+				l.relay.cancelled(ctx, l, r, cancel)
 			}
 
 			if f := l.h.Cancelled; f != nil {

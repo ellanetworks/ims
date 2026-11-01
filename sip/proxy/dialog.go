@@ -1211,7 +1211,7 @@ func (d *Dialog) release(ctx context.Context, r Release, cause EndCause) error {
 			return nil
 		}
 
-		c.cancel(reasonFields(r.Reason))
+		c.cancel(ctx, reasonFields(r.Reason))
 
 		if r.Toward&Caller != 0 {
 			_ = c.relay(releaseResponse(c, r))
@@ -1276,7 +1276,7 @@ func (d *Dialog) ReleaseCallee(ctx context.Context, key any, r Release) error {
 	c := d.ctx
 	d.mu.Unlock()
 
-	switch found, others := c.withdraw(key, reasonFields(r.Reason)); {
+	switch found, others := c.withdraw(ctx, key, reasonFields(r.Reason)); {
 	case !found:
 		// The branch may have answered since the state was read.
 		d.mu.Lock()

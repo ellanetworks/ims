@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Notification is the content of a NOTIFY: header fields beyond those of the subscription, and the bodies of the
@@ -132,6 +133,8 @@ type ServerSubscription struct {
 	version    uint64
 	nextChange time.Time
 	held       *timer
+	// heldCauses are the span contexts of the changes held, which their notification links to.
+	heldCauses []trace.SpanContext
 
 	// log is the logger of the dialog, made once.
 	log *slog.Logger
@@ -256,7 +259,7 @@ func (s *ServerSubscription) terminate(ctx context.Context, ss sip.SubscriptionS
 
 	s.expiry.stop()
 	s.held.stop()
-	s.held = nil
+	s.held, s.heldCauses = nil, nil
 
 	if build == nil {
 		build = func(uint32) (Notification, error) { return Notification{}, nil }
@@ -463,7 +466,7 @@ func (s *ServerSubscription) end(ctx context.Context, e End) {
 	s.queue = nil
 	s.expiry.stop()
 	s.held.stop()
-	s.held = nil
+	s.held, s.heldCauses = nil, nil
 
 	if s.src != nil {
 		s.src.detach(s)

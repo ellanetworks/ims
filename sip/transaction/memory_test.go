@@ -118,7 +118,7 @@ func TestServedAddressCancel(t *testing.T) {
 
 	wantCode(t, rs.Next(), 100)
 
-	if err := client.Cancel(); err != nil {
+	if err := client.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

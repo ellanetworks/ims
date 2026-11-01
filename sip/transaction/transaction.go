@@ -43,6 +43,8 @@ var (
 	ErrDropped = errors.New("sip/transaction: dropped")
 
 	ErrTerminated = errors.New("sip/transaction: transaction terminated")
+	// ErrCanceled is the cause of the end of the context of an INVITE server transaction its client cancelled.
+	ErrCanceled = errors.New("sip/transaction: canceled")
 
 	ErrFinalResponseSent = errors.New("sip/transaction: final response already sent")
 
@@ -55,16 +57,24 @@ var (
 	ErrInvalidResponse = errors.New("sip/transaction: response not allowed")
 )
 
-// Handler is the user of the server transactions. Each call's ctx carries the span of the request it is about, and ends
-// only once the layer closes, not with the transaction: work that the request causes, after its response included,
-// is part of its trace.
+// Handler is the user of the server transactions.
+//
+// The ctx of HandleRequest and HandleTransactionError is the transaction's, as an HTTP request's is: it carries the
+// server span of the transaction, and is cancelled once the transaction ends, or once a CANCEL arrives for its INVITE;
+// context.Cause tells which: ErrTerminated for an end with a final response, ErrCanceled, ErrTimeout, ErrTransport,
+// ErrDropped or ErrClosed. Work that outlives the transaction, as a registrar's after its 200, binds itself to a lifetime
+// of its own with lifetime.With, which keeps the trace.
+//
+// The server span of an INVITE ends with its first final response: an INVITE left unanswered keeps it open, which
+// ua bounds with its answer timeout and proxy with Timer C.
 type Handler interface {
 	HandleRequest(ctx context.Context, tx *ServerTransaction, req *sip.Request)
 
-	// HandleCancel is told of a CANCEL of the INVITE of tx, ctx carrying the CANCEL's span.
+	// HandleCancel is told of a CANCEL of the INVITE of tx, ctx being the CANCEL's transaction's.
 	HandleCancel(ctx context.Context, tx *ServerTransaction, cancel *sip.Request)
 
-	// HandleAck is told of an ACK to a 2xx, which has no transaction (RFC 3261 §17.1.1.3).
+	// HandleAck is told of an ACK to a 2xx, which has no transaction (RFC 3261 §17.1.1.3), in a span of its own. ctx
+	// ends once HandleAck returns.
 	HandleAck(ctx context.Context, ack *sip.Request)
 
 	HandleTransactionError(ctx context.Context, tx *ServerTransaction, err error)
@@ -83,8 +93,9 @@ type Config struct {
 	ResponseFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
 	// OnServerDone is called once per server transaction, with its first final
-	// response, or with a nil response if it ended without one.
-	OnServerDone func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+	// response, or with a nil response if it ended without one. ctx is the
+	// transaction's, for the trace of what it logs.
+	OnServerDone func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
 
 	// OnListenerFailed is told of a listener of the layer that failed for good, with the error
 	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
@@ -134,7 +145,7 @@ type Layer struct {
 	aliases  map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
-	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+	onDone   func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
 	onFailed func(local netip.AddrPort, err error)
 	onLost   func(f sip.Flow, err error)
 
@@ -433,15 +444,18 @@ func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
 	ack = ack.Clone()
 	l.propagate(ctx, ack)
 
-	return l.sendInOrder(ctx, ack, false)
+	return l.sendInOrder(ack, false)
 }
 
-func (l *Layer) SendResponse(ctx context.Context, res *sip.Response) error {
-	return l.sendInOrder(ctx, res, false)
+// SendResponse sends res outside any transaction, in the order of its flow. ctx is the trace of the work that sends
+// it.
+func (l *Layer) SendResponse(_ context.Context, res *sip.Response) error {
+	return l.sendInOrder(res, false)
 }
 
-func (l *Layer) SendOnFlow(ctx context.Context, m sip.Message) error {
-	return l.sendInOrder(ctx, m, true)
+// SendOnFlow sends m as it is, on its flow, outside any transaction. ctx is the trace of the work that sends it.
+func (l *Layer) SendOnFlow(_ context.Context, m sip.Message) error {
+	return l.sendInOrder(m, true)
 }
 
 func (l *Layer) CloseFlow(f sip.Flow) {

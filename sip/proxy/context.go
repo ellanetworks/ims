@@ -12,6 +12,7 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // responseContext is the RFC 3261 §16 response context of one server transaction: the branches it
@@ -39,7 +40,9 @@ type responseContext struct {
 	success   bool
 	cancelled bool
 	reason    []sip.Field
-	answers   map[string]bool
+	// cause is the span context of what cancelled the request, which the CANCELs of its branches link to.
+	cause   trace.SpanContext
+	answers map[string]bool
 
 	// stopped is set once a 2xx or 6xx arrived: no new branch may start (RFC 3261 §16.7 step 5).
 	stopped bool
@@ -377,17 +380,20 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 		reason []sip.Field
 	)
 
+	cause := context.Background()
+
 	switch {
 	case b.cancelled:
 		cancel, reason = true, b.cancelling
 	case c.cancelled && !b.done:
 		cancel, reason = true, c.reason
+		cause = trace.ContextWithSpanContext(cause, c.cause)
 	}
 
 	c.mu.Unlock()
 
 	if cancel {
-		_ = client.Cancel(reason...)
+		_ = client.Cancel(cause, reason...)
 	}
 }
 
@@ -408,9 +414,10 @@ type cancellation struct {
 	reason []sip.Field
 }
 
-func (x cancellation) send() {
+// send sends the CANCEL, in the trace of the INVITE's branch, linked to cause: what cancelled it.
+func (x cancellation) send(cause context.Context) {
 	if x.client != nil {
-		_ = x.client.Cancel(x.reason...)
+		_ = x.client.Cancel(cause, x.reason...)
 	}
 }
 
@@ -438,9 +445,11 @@ func (c *responseContext) stopLocked(reason []sip.Field) []cancellation {
 	return out
 }
 
-func sendAll(xs []cancellation) {
+// sendAll sends the CANCELs of xs, linked to cause: what cancelled them, if anything but the proxy itself, whose
+// CANCELs are in the trace of their INVITE alone.
+func sendAll(cause context.Context, xs []cancellation) {
 	for _, x := range xs {
-		x.send()
+		x.send(cause)
 	}
 }
 
@@ -499,7 +508,7 @@ func (b *branch) expire(current func() bool, cause string) {
 		c.mu.Unlock()
 
 		if client != nil {
-			_ = client.Cancel()
+			_ = client.Cancel(context.Background())
 		}
 
 		return
@@ -512,7 +521,7 @@ func (b *branch) expire(current func() bool, cause string) {
 	c.mu.Unlock()
 
 	if client != nil {
-		_ = client.Cancel()
+		_ = client.Cancel(context.Background())
 	}
 
 	c.dispatch(b, Reply{Response: c.generate(408), Err: fmt.Errorf("%w: %s", transaction.ErrTimeout, cause)})
@@ -544,7 +553,7 @@ func (b *branch) timeoutFired() {
 
 	if c.invite {
 		if client != nil {
-			_ = client.Cancel()
+			_ = client.Cancel(context.Background())
 		}
 
 		res = c.generate(408)
@@ -889,7 +898,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 
 		err := c.tx.Relay(res)
 
-		sendAll(cancels)
+		sendAll(context.Background(), cancels)
 		c.p.forget(c)
 
 		return err
@@ -901,7 +910,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 		cancels := c.stopLocked(nil)
 		c.mu.Unlock()
 
-		sendAll(cancels)
+		sendAll(context.Background(), cancels)
 
 		return c.finalize(res)
 	case res != nil && res.IsSuccess():
@@ -909,7 +918,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 		cancels := c.stopLocked(nil)
 		c.mu.Unlock()
 
-		sendAll(cancels)
+		sendAll(context.Background(), cancels)
 
 		return c.finalize(res)
 	}
@@ -942,7 +951,7 @@ func (c *responseContext) relayFrom(b *branch, res *sip.Response) error {
 
 	c.mu.Unlock()
 
-	sendAll(cancels)
+	sendAll(context.Background(), cancels)
 	c.advance()
 
 	err := c.conclude()
@@ -1138,7 +1147,8 @@ func reasonFor(code int) []sip.Field {
 }
 
 // RFC 3261 §16.10
-func (c *responseContext) cancel(reason []sip.Field) {
+// cancel cancels the request, ctx being the trace of what cancels it.
+func (c *responseContext) cancel(ctx context.Context, reason []sip.Field) {
 	c.mu.Lock()
 
 	if c.final || c.success || c.cancelled {
@@ -1148,6 +1158,7 @@ func (c *responseContext) cancel(reason []sip.Field) {
 
 	c.cancelled = true
 	c.reason = reason
+	c.cause = trace.SpanContextFromContext(ctx)
 
 	if !c.liveLocked() {
 		c.waiting, c.groups = nil, nil
@@ -1164,14 +1175,14 @@ func (c *responseContext) cancel(reason []sip.Field) {
 
 	c.mu.Unlock()
 
-	sendAll(cancels)
+	sendAll(ctx, cancels)
 }
 
 // withdraw ends the search toward the branches with key: those not yet sent never are, and those
 // ringing are cancelled with reason (RFC 3261 §16.10). It changes nothing when no branch with key is
 // pending or ringing (found is false), or when no other branch would be left to answer (others is
 // false).
-func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others bool) {
+func (c *responseContext) withdraw(ctx context.Context, key any, reason []sip.Field) (found, others bool) {
 	c.mu.Lock()
 
 	if !c.invite || c.final || c.stopped || c.cancelled {
@@ -1244,7 +1255,7 @@ func (c *responseContext) withdraw(key any, reason []sip.Field) (found, others b
 
 	c.mu.Unlock()
 
-	sendAll(cancels)
+	sendAll(ctx, cancels)
 
 	return true, true
 }
