@@ -101,12 +101,13 @@ func (f *fakePCRF) NewSessionID() string {
 }
 
 func (f *fakePCRF) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
-	f.reqs <- req
-
+	// The answer is the one set when the request is sent: once the test sees the request, answerWith is for the next.
 	f.mu.Lock()
 
 	answer := f.answer
 	f.mu.Unlock()
+
+	f.reqs <- req
 
 	if answer == nil {
 		return succeed(req)
