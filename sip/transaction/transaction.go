@@ -133,6 +133,12 @@ type Config struct {
 	// SpanAttributes are attributes of the spans of the transactions of flow f, as the role of the element that serves
 	// its local address.
 	SpanAttributes func(f sip.Flow) []attribute.KeyValue
+
+	// SpanLinks are the span contexts that the server span of req links to when req starts a trace of its own, as one
+	// from outside the trust domain does: what it continues, such as the INVITE of its dialog, or the REGISTER a
+	// refresh renews. A request that continues the trace of its peer needs none: the trace's root has them. It is
+	// called before the request is handled, without the layer's locks; it must not block.
+	SpanLinks func(req *sip.Request) []trace.SpanContext
 }
 
 type Layer struct {
@@ -155,6 +161,7 @@ type Layer struct {
 	tracer       trace.Tracer
 	traceContext func(f sip.Flow) bool
 	attributes   func(f sip.Flow) []attribute.KeyValue
+	spanLinks    func(req *sip.Request) []trace.SpanContext
 
 	t1, t2, t4, t100 time.Duration
 
@@ -228,6 +235,7 @@ func New(cfg Config) *Layer {
 		tp:            providerOf(cfg.TracerProvider),
 		traceContext:  cfg.TraceContext,
 		attributes:    cfg.SpanAttributes,
+		spanLinks:     cfg.SpanLinks,
 		t1:            cfg.T1,
 		t2:            cfg.T2,
 		t4:            cfg.T4,
@@ -672,6 +680,9 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		return
 	}
 
+	// The trace the request continues, and what it links to if it starts one, found before the transaction is locked.
+	parent, links := l.parent(req)
+
 	tx := newServer(l, req)
 
 	tx.mu.Lock()
@@ -691,10 +702,10 @@ func (l *Layer) handleRequest(req *sip.Request) {
 
 	if req.Method == "CANCEL" {
 		target = l.cancelTarget(key.branchKey)
-		tx.startSpan(target.spanContext())
+		tx.startSpan(parent, append(links, target.spanContext()))
 		l.answerCancel(tx, target)
 	} else {
-		tx.startSpan(trace.SpanContext{})
+		tx.startSpan(parent, links)
 		tx.start()
 	}
 

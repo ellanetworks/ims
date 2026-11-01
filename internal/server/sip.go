@@ -144,6 +144,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 
 			return domain.Trusted(f.Remote.Addr())
 		},
+		SpanLinks: roles.spanLinks,
 		SpanAttributes: func(f sip.Flow) []attribute.KeyValue {
 			switch r := roles.name(f.Local.Port()); r {
 			case rolePCSCF, rolePCSCFProtected:
@@ -494,6 +495,18 @@ func (d *dispatcher) role(f sip.Flow) transaction.Handler {
 	return d.roles[f.Local.Port()]
 }
 
+// spanLinks are what req links to when it starts a trace of its own (transaction.Config.SpanLinks): those the role on
+// its port tells, if it tells any.
+func (d *dispatcher) spanLinks(req *sip.Request) []trace.SpanContext {
+	if l, ok := d.role(req.Flow).(interface {
+		SpanLinks(req *sip.Request) []trace.SpanContext
+	}); ok {
+		return l.SpanLinks(req)
+	}
+
+	return nil
+}
+
 func (d *dispatcher) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	h := d.role(req.Flow)
 	if h == nil {
@@ -541,6 +554,12 @@ type scscfHandler struct {
 	registrar registrar
 	sessions  *scscf.Sessions
 	fallback  transaction.Handler
+}
+
+// SpanLinks are what a request of a dialog through the S-CSCF links to when it starts a trace of its own, as one back
+// from an AS outside the trust domain (transaction.Config.SpanLinks): the INVITE of the dialog.
+func (h *scscfHandler) SpanLinks(req *sip.Request) []trace.SpanContext {
+	return h.proxy.SpanLinks(req)
 }
 
 func (h *scscfHandler) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {

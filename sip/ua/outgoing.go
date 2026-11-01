@@ -48,6 +48,8 @@ type Outgoing struct {
 	cancel *Change
 	// cancelCause is the span context of what cancelled the INVITE, which its CANCEL links to.
 	cancelCause trace.SpanContext
+	// origin is the span context of the work that sent the INVITE: the origin of its dialogs.
+	origin trace.SpanContext
 
 	// closing: Shutdown waits for the final response, until closeBy.
 	closing bool
@@ -121,7 +123,10 @@ func (a *Agent) Invite(ctx context.Context, req *sip.Request, h Handler, opts ..
 		tmpl.Header.Set("Min-SE", strconv.FormatUint(uint64(minSE), 10))
 	}
 
-	o := &Outgoing{a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{}}
+	o := &Outgoing{
+		a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{},
+		origin: trace.SpanContextFromContext(ctx),
+	}
 
 	if err := a.addOutgoing(o); err != nil {
 		return nil, err
@@ -440,7 +445,7 @@ func (o *Outgoing) session(res *sip.Response, tag string) *Session {
 	s.contact = o.ci.req.Header.Get("Contact")
 
 	o.sessions[tag] = s
-	o.a.addSession(s)
+	o.a.addSession(s, o.origin)
 
 	return s
 }

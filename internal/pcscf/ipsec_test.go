@@ -22,6 +22,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -105,6 +106,13 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 	layer, fallback := siptest.NewLayer(t, transaction.Config{
 		Handler: s.late, Logger: slog.New(slog.DiscardHandler), Filter: s.late.filter, ResponseFlow: s.late.responseFlow,
 		Transport: lc.Transport, TracerProvider: lc.TracerProvider,
+		SpanLinks: func(req *sip.Request) []trace.SpanContext {
+			if p := s.late.h.Load(); p != nil {
+				return p.SpanLinks(req)
+			}
+
+			return nil
+		},
 	})
 	s.layer = layer
 	s.pcscf = siptest.ListenLayer(t, layer, addr)

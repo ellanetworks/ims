@@ -373,6 +373,9 @@ type dialogEntry struct {
 	st     *Strand
 	invite *Session
 	subs   []*Subscription
+	// origin is the span context of the request that created the dialog, which the requests of the dialog that start
+	// a trace of their own link to.
+	origin trace.SpanContext
 
 	// notifs are the subscriptions of the agent as notifier: of a SUBSCRIBE, or implicit ones of REFERs.
 	notifs []*ServerSubscription
@@ -486,6 +489,7 @@ func New(cfg Config) (*Agent, error) {
 	} else {
 		tcfg := cfg.Transaction
 		tcfg.Handler = a
+		tcfg.SpanLinks = a.chainSpanLinks(tcfg.SpanLinks)
 		a.layer = transaction.New(tcfg)
 		a.ownLayer = true
 	}
@@ -866,10 +870,10 @@ func (a *Agent) replaced(id dialog.ID) (e dialogEntry, ok bool) {
 	return dialogEntry{}, false
 }
 
-func (a *Agent) entry(id dialog.ID, st *Strand) *dialogEntry {
+func (a *Agent) entry(id dialog.ID, st *Strand, origin trace.SpanContext) *dialogEntry {
 	e := a.dialogs[id]
 	if e == nil {
-		e = &dialogEntry{st: st}
+		e = &dialogEntry{st: st, origin: origin}
 		a.dialogs[id] = e
 	}
 
@@ -882,11 +886,11 @@ func (a *Agent) entry(id dialog.ID, st *Strand) *dialogEntry {
 	return e
 }
 
-func (a *Agent) addSession(s *Session) {
+func (a *Agent) addSession(s *Session, origin trace.SpanContext) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.id, s.st)
+	e := a.entry(s.id, s.st, origin)
 	e.invite, e.invited = s, true
 }
 
@@ -903,7 +907,7 @@ func (a *Agent) addIncoming(s *Session, r *Request) bool {
 
 	a.invites[r.tx] = r
 
-	e := a.entry(s.id, s.st)
+	e := a.entry(s.id, s.st, trace.SpanContextFromContext(r.ctx))
 	e.invite, e.invited = s, true
 
 	return true
@@ -933,7 +937,7 @@ func (a *Agent) addSubscription(s *Subscription) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.d.ID(), s.st)
+	e := a.entry(s.d.ID(), s.st, s.att.origin)
 	e.subs = append(e.subs, s)
 }
 
@@ -960,11 +964,11 @@ func (a *Agent) removeSubscription(s *Subscription) bool {
 }
 
 // prune notes a dialog whose last usage ended, kept for 64*T1, and reports it.
-func (a *Agent) addServerSubscription(s *ServerSubscription) {
+func (a *Agent) addServerSubscription(s *ServerSubscription, origin trace.SpanContext) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.d.ID(), s.st)
+	e := a.entry(s.d.ID(), s.st, origin)
 	e.notifs = append(e.notifs, s)
 }
 
@@ -1524,6 +1528,36 @@ func (a *Agent) HandleAck(ctx context.Context, ack *sip.Request) {
 func (a *Agent) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
 	if r := a.tracked(tx); r != nil {
 		r.st.post(func() { r.failed(ctx, err) })
+	}
+}
+
+// SpanLinks is the span context of the request that created the dialog of req, an in-dialog request, if the agent has
+// the dialog: what a request of a dialog that starts a trace of its own, as one from a UE, links to
+// (transaction.Config.SpanLinks). An agent on a layer it makes sets it there itself.
+func (a *Agent) SpanLinks(req *sip.Request) []trace.SpanContext {
+	id := dialog.RequestID(req)
+	if id.LocalTag == "" {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if e := a.dialogs[id]; e != nil && e.origin.IsValid() {
+		return []trace.SpanContext{e.origin}
+	}
+
+	return nil
+}
+
+// chainSpanLinks is the agent's SpanLinks, after next.
+func (a *Agent) chainSpanLinks(next func(*sip.Request) []trace.SpanContext) func(*sip.Request) []trace.SpanContext {
+	if next == nil {
+		return a.SpanLinks
+	}
+
+	return func(req *sip.Request) []trace.SpanContext {
+		return append(next(req), a.SpanLinks(req)...)
 	}
 }
 

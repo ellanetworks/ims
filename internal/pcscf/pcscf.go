@@ -288,6 +288,22 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 	return f, true, nil
 }
 
+// SpanLinks are what a request from a UE, whose trace context the P-CSCF does not continue, links to
+// (transaction.Config.SpanLinks): a REGISTER the REGISTER its registration last renewed with, a request of a call the
+// INVITE of the call.
+func (p *PCSCF) SpanLinks(req *sip.Request) []trace.SpanContext {
+	if req.Method != "REGISTER" {
+		return p.cfg.Proxy.SpanLinks(req)
+	}
+
+	k := regKey{privateIdentity(req), req.Flow.Remote.Addr().Unmap(), registrationFlow(req)}
+	if sc := p.regs.cause(k); sc.IsValid() {
+		return []trace.SpanContext{sc}
+	}
+
+	return nil
+}
+
 func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	p.signallingRestored(ctx, req)
 

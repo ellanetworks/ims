@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 
 	"github.com/ellanetworks/ims/sip"
@@ -168,6 +169,29 @@ func linksOf(ctx context.Context) []trace.Link {
 	return links
 }
 
+// parent is the context of the trace that req continues (remote), and the span contexts its span links to if it
+// starts a trace of its own (Config.SpanLinks).
+func (l *Layer) parent(req *sip.Request) (context.Context, []trace.SpanContext) {
+	ctx := l.remote(req)
+	if l.spanLinks == nil || trace.SpanContextFromContext(ctx).IsValid() {
+		return ctx, nil
+	}
+
+	return ctx, l.spanLinks(req)
+}
+
+func validLinks(scs []trace.SpanContext) []trace.Link {
+	var links []trace.Link
+
+	for _, sc := range scs {
+		if sc.IsValid() {
+			links = append(links, trace.Link{SpanContext: sc})
+		}
+	}
+
+	return links
+}
+
 // remote is the context of the trace that req continues: the trace context it carries, when its flow carries trace
 // context.
 func (l *Layer) remote(req *sip.Request) context.Context {
@@ -304,14 +328,17 @@ func errorType(err error) string {
 // handleAck passes the ACK of a 2xx, which has no transaction (RFC 3261 §17.1.1.3), to the handler, in a span of its
 // own, linked to the INVITE's.
 func (l *Layer) handleAck(ack *sip.Request, invite trace.SpanContext) {
-	var opts []trace.SpanStartOption
-	if invite.IsValid() {
-		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: invite}))
+	parent, links := l.parent(ack)
+	if invite.IsValid() && !slices.ContainsFunc(links, invite.Equal) {
+		links = append(links, invite)
 	}
 
-	opts = append(opts, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(ack)...))
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(ack)...),
+		trace.WithLinks(validLinks(links)...),
+	}
 
-	_, s := l.tracer.Start(l.remote(ack), spanName(ack.Method), opts...)
+	_, s := l.tracer.Start(parent, spanName(ack.Method), opts...)
 	defer s.End()
 
 	// The context ends once the handler returns, as an HTTP request's does: work that outlives it binds itself to a

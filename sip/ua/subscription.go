@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SubscriptionState is the state of a subscription of the agent, as its NOTIFYs tell it (RFC 6665 §4.1.3).
@@ -125,6 +126,8 @@ type subscribing struct {
 	st    *Strand
 	key   subscribeKey
 	first *Subscription
+	// origin is the span context of the work that sent the SUBSCRIBE or REFER: the origin of its dialogs.
+	origin trace.SpanContext
 
 	// tmpl is the SUBSCRIBE or the REFER as built, before Prepare; sub the SUBSCRIBE whose header fields and bodies
 	// the refreshes repeat: tmpl itself, or for a REFER one asking for the refer event (RFC 3515 §2.4.4). tries
@@ -179,7 +182,7 @@ func (a *Agent) Subscribe(ctx context.Context, req *sip.Request, h SubscriptionH
 	st := a.options(opts).strand(a)
 	att := &subscribing{
 		a: a, st: st, key: subscribeKey{callID: tmpl.Header.CallID(), fromTag: from.Tag()},
-		tmpl: tmpl, sub: tmpl, subs: map[string]*Subscription{},
+		tmpl: tmpl, sub: tmpl, subs: map[string]*Subscription{}, origin: trace.SpanContextFromContext(ctx),
 	}
 	s := &Subscription{a: a, st: st, sh: h, att: att, event: event}
 	att.first = s

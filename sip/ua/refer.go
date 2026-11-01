@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DefaultReferExpires is the duration of the implicit subscription of a REFER the application accepts without one of
@@ -59,7 +60,7 @@ func (a *Agent) Refer(ctx context.Context, req *sip.Request, h SubscriptionHandl
 	st := a.options(opts).strand(a)
 	att := &subscribing{
 		a: a, st: st, key: subscribeKey{callID: tmpl.Header.CallID(), fromTag: from.Tag()},
-		tmpl: tmpl, sub: sub, refer: true, subs: map[string]*Subscription{},
+		tmpl: tmpl, sub: sub, refer: true, subs: map[string]*Subscription{}, origin: trace.SpanContextFromContext(ctx),
 	}
 	s := &Subscription{a: a, st: st, sh: h, att: att, event: event}
 	att.first = s
@@ -195,7 +196,7 @@ func (r *Request) referSubscription(o ReferAcceptance) (*ServerSubscription, err
 		stateOf: acc.State, state: SubscriptionActive, limit: expires,
 	}
 
-	r.a.addServerSubscription(refer)
+	r.a.addServerSubscription(refer, trace.SpanContextFromContext(r.ctx))
 	refer.setExpiry(r.ctx, expires)
 	refer.enqueue(&pendingNotify{ctx: r.ctx, build: refer.stateOf, full: true})
 

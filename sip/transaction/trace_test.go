@@ -51,6 +51,13 @@ type traceHarness struct {
 func newTraceHarness(t *testing.T) *traceHarness {
 	t.Helper()
 
+	return newTraceHarnessLinked(t, nil)
+}
+
+// newTraceHarnessLinked is newTraceHarness, with links the Config.SpanLinks of the layer.
+func newTraceHarnessLinked(t *testing.T, links func(*sip.Request) []trace.SpanContext) *traceHarness {
+	t.Helper()
+
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	clock := siptest.NewClock()
@@ -62,6 +69,7 @@ func newTraceHarness(t *testing.T) *traceHarness {
 			return f.Remote.Addr() == trustedPeer.Addr() || f.Remote == servedA || f.Remote == servedB
 		},
 		SpanAttributes: func(f sip.Flow) []attribute.KeyValue { return []attribute.KeyValue{roleKey.String(f.Local.String())} },
+		SpanLinks:      links,
 	})
 
 	for _, a := range []netip.AddrPort{servedA, servedB} {
@@ -694,5 +702,43 @@ func TestLayerWithoutProviderTracesNothing(t *testing.T) {
 
 	if spans := rec.Ended(); len(spans) != 0 {
 		t.Fatalf("the global provider traced %v", names(spans))
+	}
+}
+
+func TestRequestStartingATraceLinksToWhatItContinues(t *testing.T) {
+	dialogSpan := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled,
+	})
+
+	var asked []string
+
+	h := newTraceHarnessLinked(t, func(req *sip.Request) []trace.SpanContext {
+		asked = append(asked, req.Method)
+		return []trace.SpanContext{dialogSpan, {}}
+	})
+
+	// From a UE: a trace of its own, linked to its dialog.
+	h.untrusted.Send(sip.UDP, servedA, tracedRequest("BYE", untrustedPeer, servedA))
+	h.respond(h.tu.NextRequest(), 200)
+
+	s := h.ended(1)[0]
+	if s.Parent().IsValid() {
+		t.Fatalf("parent %v", s.Parent())
+	}
+
+	if got := links(s); !slices.Equal(got, []trace.SpanID{dialogSpan.SpanID()}) {
+		t.Fatalf("links %v, want the dialog's", got)
+	}
+
+	// From the trust domain: a child of its peer's span, which has the links.
+	h.trusted.Send(sip.UDP, servedA, tracedRequest("BYE", trustedPeer, servedA))
+	h.respond(h.tu.NextRequest(), 200)
+
+	if s := h.ended(2)[1]; len(s.Links()) != 0 || s.Parent().SpanID() != remoteParent.SpanID() {
+		t.Fatalf("links %v, parent %v", s.Links(), s.Parent())
+	}
+
+	if !slices.Equal(asked, []string{"BYE"}) {
+		t.Fatalf("SpanLinks asked for %v, want only the request that starts a trace", asked)
 	}
 }

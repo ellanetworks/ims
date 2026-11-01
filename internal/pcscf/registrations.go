@@ -42,6 +42,14 @@ type regKey struct {
 	flow flowID
 }
 
+// cause is the span context of what last set the expiry of the registration of k.
+func (rs *registrations) cause(k regKey) trace.SpanContext {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	return rs.causes[k]
+}
+
 func regKeyOf(r *db.PCSCFRegistration) regKey {
 	return regKey{r.IMPI, r.UEAddress.Addr().Unmap(), flowID{r.Instance, r.RegID}}
 }

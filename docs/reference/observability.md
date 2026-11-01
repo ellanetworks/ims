@@ -4,7 +4,7 @@ description: Reference for observability features in Ella IMS.
 
 # Observability
 
-Ella IMS supports two observability pillars: Metrics and Traces.
+Ella IMS supports three observability pillars: Metrics, Traces and Logs.
 
 ## Metrics
 
@@ -38,45 +38,31 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | Service | `ella-ims` |
 | Sampling | Parent-based, always on for a trace the IMS starts |
 | Propagation | W3C Trace Context |
+| Error status | HTTP and SIP: a server span from a 5xx response, a client span from a 4xx, except a SIP 401 or 407 challenge. Diameter: a client span from a Result-Code from 3000. |
+| SIP trust domain | Trace context is read and sent on SIP only within the trust domain: the IMS's own addresses, and for the I-CSCF, the S-CSCF and the MCPTT AS, `sip.trusted_networks`. It never reaches a phone. |
 
 ### Spans
 
-| Span | Kind | Description | `error.type` |
-| --- | --- | --- | --- |
-| `{method} {route}` | Server | A request to the API, except `/api/v1/livez`, `/api/v1/readyz` and `/api/v1/metrics`. Links to the caller's `traceparent`. | None. A 5xx response has the Error status. |
-| `{method} /npcf-policyauthorization/v1/app-sessions…` | Client | A request to the PCF on N5 (TS 29.514), named by the URI template of its resource. Carries `traceparent` to the PCF. | The HTTP status code from 400, or the Go type of the transport error, such as `*net.OpError`. |
-| `POST /n5/v1/sessions/{id}/notify`, `POST /n5/v1/sessions/{id}/terminate` | Server | A notification from the PCF on N5. Child of the PCF's trace context. | None. A 5xx response has the Error status. |
-| `Cx/{command}`, `Sh/{command}`, `Rx/{command}`, `S6c/{command}`, `SGd/{command}` | Server, Client | A Diameter request. Child of the peer's trace context. | Client: a Result-Code from 3000, `closed`, `not_connected`, `unknown_peer`, `application_unsupported`, `unable_to_deliver`, `loop_detected`, `not_proxiable`, `timeout`, `canceled`, `_OTHER`. Server: `3001`, `3002`, `3004`, `5012`, `overloaded`, `shutting_down`. |
-| `{method}`, such as `INVITE` or `REGISTER`; `_OTHER` for an unknown method | Server | A SIP server transaction, until its first final response. Child of the peer's trace context within the trust domain; otherwise a new trace. An `ACK` for a 2xx and a `CANCEL` link to the `INVITE`'s span. | The status code from 500, `timeout`, `transport`, `dropped`, `closed`, `_OTHER`. |
-| `{method}` | Client | A SIP client transaction, until its final response. Carries `traceparent` and `tracestate` within the trust domain. A `CANCEL` is a child of its `INVITE`'s span, linked to what cancelled it. | The status code from 400, but 401, 407, and 487 to an `INVITE` the IMS cancelled; `timeout`, `transport`, `dropped`, `closed`, `_OTHER`. |
-| `registration expiry`, `challenge expiry`, `security associations expiry`, `third-party registration`, `unregistered profile release`, `reg event resubscribe`, `reg event refresh`, `media loss`, `call end`, `ip-sm-gw hss update`, `delete orphan context`, `apply settings`, `restart core`, `group call maximum duration`, `group call inactivity`, `group call media not revoked`, `session refresh`, `session expiry`, `subscription refresh`, `subscription expiry`, `subscription notify`, `publication refresh`, `publication expiry` | Internal | Work that starts later than its cause: a timer, a queue, the media plane, a settings change. A new trace, linked to its causes. The roles' carry `ella.ims.role`; the `session`, `subscription` and `publication` spans are of the SIP stack. | The Go type of the error, for the roles'. |
+| Span | Kind | Description |
+| --- | --- | --- |
+| `{method} {route}` | Server | A request to the API, except `/api/v1/livez`, `/api/v1/readyz` and `/api/v1/metrics`. Links to the caller's `traceparent`. |
+| `{method} {url.template}` | Client | A request to the PCF on N5. |
+| `POST /n5/v1/sessions/{id}/{notify,terminate}` | Server | A notification from the PCF on N5. |
+| `Cx/{command}`, `Sh/{command}`, `Rx/{command}`, `S6c/{command}`, `SGd/{command}` | Server, Client | A Diameter request. |
+| `{method}`, such as `INVITE` | Server, Client | A SIP transaction, until its final response. A request from a phone starts a trace, linked to the INVITE of its call or the REGISTER it renews. |
+| `registration expiry`, `media loss`, … | Internal | Work that starts later than its cause, as on a timer or after a settings change: a new trace, linked to its cause. |
 
-### SIP
+### Attributes
 
-| Property | Value |
+| Attribute | Values |
 | --- | --- |
-| Trust domain | The IMS's own addresses. For the I-CSCF, the S-CSCF and the MCPTT AS, also `sip.trusted_networks`. |
-| Trace context | `traceparent` and `tracestate` header fields of requests, read and sent within the trust domain only. Removed from requests sent outside it, and from every response. |
+| `ella.ims.role` | `pcscf`, `icscf`, `scscf`, `mcptt`, `ipsmgw`, or `ims` for work of the IMS as a whole |
+| `sip.call_id` | The Call-ID of a SIP span |
+| `ella.ims.icid` | The ICID of P-Charging-Vector of a SIP span, which joins it to its [call record](api/call_records.md) |
 
-| Attribute | Value |
+## Logs
+
+| Field | Description |
 | --- | --- |
-| `ella.ims.role` | `pcscf`, `icscf`, `scscf`, `mcptt`, `ipsmgw`; `ims` for work of the IMS as a whole |
-| `sip.request.method` | The method, `_OTHER` if unknown |
-| `sip.request.method_original` | An unknown method |
-| `sip.response.status_code` | The final status code |
-| `sip.call_id` | The Call-ID |
-| `ella.ims.icid` | The ICID of P-Charging-Vector |
-| `network.protocol.name` | `sip` |
-| `network.transport` | `udp`, `tcp` |
-| `network.peer.address`, `network.peer.port` | The peer, within the trust domain only |
-
-| Event | Attributes |
-| --- | --- |
-| `sip.provisional_response` | `sip.response.status_code` |
-| `sip.retransmission` | None |
-
-### Logs
-
-| Field | Value |
-| --- | --- |
-| `trace_id`, `span_id` | The span a log record was written in, if any |
+| `trace_id` | Trace ID of the span the event happened in. Absent outside a span. |
+| `span_id` | Span ID of the span the event happened in. Absent outside a span. |

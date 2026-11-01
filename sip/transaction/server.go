@@ -63,17 +63,18 @@ func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 	return tx
 }
 
-// startSpan starts the span of the transaction, a child of the trace context of its request, and linked to link when
-// valid: the INVITE that a CANCEL cancels. Called with tx.mu held.
-func (tx *ServerTransaction) startSpan(link trace.SpanContext) {
+// startSpan starts the span of the transaction, a child of parent, the trace context of its request, and linked to the
+// valid span contexts of links: what a request that starts a trace continues, the INVITE that a CANCEL cancels. Called
+// with tx.mu held.
+func (tx *ServerTransaction) startSpan(parent context.Context, links []trace.SpanContext) {
 	l := tx.layer
 
-	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(tx.req)...)}
-	if link.IsValid() {
-		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: link}))
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(tx.req)...),
+		trace.WithLinks(validLinks(links)...),
 	}
 
-	_, s := l.tracer.Start(l.remote(tx.req), spanName(tx.req.Method), opts...)
+	_, s := l.tracer.Start(parent, spanName(tx.req.Method), opts...)
 
 	tx.span = span{Span: s}
 	tx.ctx, tx.cancel = context.WithCancelCause(lifetime.With(l.ctx, trace.ContextWithSpan(context.Background(), s)))

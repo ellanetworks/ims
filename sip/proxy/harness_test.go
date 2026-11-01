@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const quiet = 50 * time.Millisecond
@@ -52,6 +53,9 @@ type routerConfig struct {
 
 	track    bool
 	lifetime time.Duration
+
+	// tp traces the router's layer, whose requests then link to their dialogs (Proxy.SpanLinks).
+	tp trace.TracerProvider
 }
 
 var recordRoute = &proxy.RecordRoute{}
@@ -77,6 +81,11 @@ func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 
 	if cfg.clock != nil {
 		tc.Clock, pc.Clock = cfg.clock, cfg.clock
+	}
+
+	if cfg.tp != nil {
+		tc.TracerProvider = cfg.tp
+		tc.SpanLinks = func(req *sip.Request) []trace.SpanContext { return r.p.SpanLinks(req) }
 	}
 
 	r.l, _ = siptest.NewLayer(t, tc)
@@ -134,7 +143,7 @@ func (r *router) HandleRequest(ctx context.Context, tx *transaction.ServerTransa
 		local = *o
 	}
 
-	err = r.p.Forward(context.Background(), tx, out, r.target(out, local), opts)
+	err = r.p.Forward(ctx, tx, out, r.target(out, local), opts)
 
 	var serr *sip.StatusError
 

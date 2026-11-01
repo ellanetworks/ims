@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/sip/offeranswer"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -244,9 +245,10 @@ type Dialog struct {
 
 	mu sync.Mutex
 
-	// invite carries the span of the INVITE that created the dialog, the trace of the requests the dialog sends as
-	// part of it, such as a BYE to a 2xx that came after a release.
-	invite context.Context
+	// invite is the span context of the INVITE that created the dialog: the trace of the requests the dialog sends as
+	// part of it, such as a BYE to a 2xx that came after a release, and what the requests of the dialog that start a
+	// trace of their own link to.
+	invite trace.SpanContext
 
 	begun    bool
 	state    DialogState
@@ -297,6 +299,35 @@ func (p *Proxy) NewDialog(cfg DialogConfig) *Dialog {
 		refresh: make(map[txKey]sip.URI),
 		closing: make(map[string]*closingLeg),
 	}
+}
+
+// SpanLinks is the span context of the INVITE that created the dialog of req, an in-dialog request through the proxy,
+// found by the Route the proxy record-routed: what a request of a dialog that starts a trace of its own, as one from a
+// UE, links to (transaction.Config.SpanLinks).
+func (p *Proxy) SpanLinks(req *sip.Request) []trace.SpanContext {
+	routes, err := req.Header.Routes()
+	if err != nil {
+		return nil
+	}
+
+	for _, r := range routes {
+		id, ok := r.URI.Params.Get(dialogParam)
+		if !ok {
+			continue
+		}
+
+		p.mu.Lock()
+		d := p.dialogs[id]
+		p.mu.Unlock()
+
+		if d != nil {
+			if sc := d.inviteSpanContext(); sc.IsValid() {
+				return []trace.SpanContext{sc}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *Proxy) Dialog(removed []sip.URI) *Dialog {
@@ -373,9 +404,17 @@ func (d *Dialog) trace(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.invite == nil {
-		d.invite = ctx
+	if !d.invite.IsValid() {
+		d.invite = trace.SpanContextFromContext(ctx)
 	}
+}
+
+// inviteSpanContext is the span context of the INVITE that created the dialog.
+func (d *Dialog) inviteSpanContext() trace.SpanContext {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.invite
 }
 
 // inviteTrace is the trace of the INVITE that created the dialog.
@@ -383,11 +422,7 @@ func (d *Dialog) inviteTrace() context.Context {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.invite == nil {
-		return context.Background()
-	}
-
-	return d.invite
+	return trace.ContextWithSpanContext(context.Background(), d.invite)
 }
 
 func (d *Dialog) ID() string {
@@ -1502,6 +1537,11 @@ func (d *Dialog) send(ctx context.Context, req *sip.Request, toward Side, callee
 	out, err := d.p.prepare(req, to)
 	if err != nil {
 		return
+	}
+
+	// A request the dialog generates of itself, as on its expiry, links to the INVITE.
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		ctx = transaction.WithLinks(ctx, d.inviteSpanContext())
 	}
 
 	if _, err := d.p.layer.Request(ctx, out, generated{d: d, req: out}); err != nil {

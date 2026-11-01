@@ -5,6 +5,7 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // forkSet are the requests of one initial INVITE of the peer, answered in one early dialog or several: the first,
@@ -203,7 +204,12 @@ func (a *Agent) addFork(s *Session) bool {
 		return false
 	}
 
-	e := a.entry(s.id, s.st)
+	var origin trace.SpanContext
+	if s.out != nil {
+		origin = s.out.origin
+	}
+
+	e := a.entry(s.id, s.st, origin)
 	e.invite, e.invited = s, true
 
 	return true

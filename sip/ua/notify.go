@@ -748,7 +748,7 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 		return nil, err
 	}
 
-	a.addServerSubscription(s)
+	a.addServerSubscription(s, trace.SpanContextFromContext(r.ctx))
 
 	// Bound once it exists, its first NOTIFY rendering the state after the changes before; a resource terminated
 	// meanwhile ends it at once (RFC 6665 §4.1.3).
