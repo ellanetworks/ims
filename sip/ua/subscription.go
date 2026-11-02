@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SubscriptionState is the state of a subscription of the agent, as its NOTIFYs tell it (RFC 6665 §4.1.3).
@@ -43,19 +45,19 @@ func (s SubscriptionState) String() string {
 // a Handler do. No event follows Ended.
 type SubscriptionHandler struct {
 	// Accepted reports the 2xx to the initial SUBSCRIBE.
-	Accepted func(s *Subscription, res *sip.Response)
+	Accepted func(ctx context.Context, s *Subscription, res *sip.Response)
 
 	// Notify reports a NOTIFY r of the subscription, once the agent applied its Subscription-State. Notify may answer
 	// r itself (r.Respond), as with a 400 for a body it cannot use; a response that ends the subscription for its
 	// notifier (RFC 6665 §4.2.2, RFC 5057 Table 2), such as a 481, ends it with EndDropped. Otherwise the agent
 	// answers 200 once Notify returns: a subscriber does not wait for the user (RFC 6665 §4.1.3). r.Done tells when
 	// the transaction ends.
-	Notify func(s *Subscription, r *Request)
+	Notify func(ctx context.Context, s *Subscription, r *Request)
 
 	// Forked decides on a NOTIFY from another notifier than the first one, s the subscription it creates
 	// (RFC 6665 §4.1.4): true keeps s, a subscription of its own with this handler; false, or no Forked, answers the
 	// NOTIFY with a 481.
-	Forked func(s *Subscription, notify *sip.Request) bool
+	Forked func(ctx context.Context, s *Subscription, notify *sip.Request) bool
 
 	// Ended reports the end of the subscription:
 	//   - EndTerminated by a NOTIFY, End.State telling whether to subscribe again (sip.SubscriptionState.Resubscribe);
@@ -69,7 +71,7 @@ type SubscriptionHandler struct {
 	//     unsubscribe fails;
 	//   - EndDropped by Drop, or by a NOTIFY the application refused;
 	//   - EndClosed as the agent closes.
-	Ended func(s *Subscription, e End)
+	Ended func(ctx context.Context, s *Subscription, e End)
 }
 
 // Subscription is a subscription of the agent, as subscriber (RFC 6665 §4.1), and the dialog usage its first NOTIFY
@@ -124,6 +126,8 @@ type subscribing struct {
 	st    *Strand
 	key   subscribeKey
 	first *Subscription
+	// origin is the span context of the work that sent the SUBSCRIBE or REFER: the origin of its dialogs.
+	origin trace.SpanContext
 
 	// tmpl is the SUBSCRIBE or the REFER as built, before Prepare; sub the SUBSCRIBE whose header fields and bodies
 	// the refreshes repeat: tmpl itself, or for a REFER one asking for the refer event (RFC 3515 §2.4.4). tries
@@ -148,8 +152,9 @@ type subscribing struct {
 // its first NOTIFY. req carries the Request-URI, To, Event, Accept, Expires, the Route of an outbound proxy or a
 // service route, the header fields of the application and its bodies, such as a filter; the refreshes repeat them.
 // The agent adds what req leaves out: the From tag, a Call-ID, CSeq, Max-Forwards and Contact. It answers 401 and
-// 407 challenges through Config.Authenticate, and a 423 with its Min-Expires.
-func (a *Agent) Subscribe(req *sip.Request, h SubscriptionHandler, opts ...Option) (*Subscription, error) {
+// 407 challenges through Config.Authenticate, and a 423 with its Min-Expires. The SUBSCRIBE, its retries and what its
+// response causes are part of the trace of ctx.
+func (a *Agent) Subscribe(ctx context.Context, req *sip.Request, h SubscriptionHandler, opts ...Option) (*Subscription, error) {
 	if req.Method != "SUBSCRIBE" {
 		return nil, fmt.Errorf("sip/ua: Subscribe of a %s request", req.Method)
 	}
@@ -177,7 +182,7 @@ func (a *Agent) Subscribe(req *sip.Request, h SubscriptionHandler, opts ...Optio
 	st := a.options(opts).strand(a)
 	att := &subscribing{
 		a: a, st: st, key: subscribeKey{callID: tmpl.Header.CallID(), fromTag: from.Tag()},
-		tmpl: tmpl, sub: tmpl, subs: map[string]*Subscription{},
+		tmpl: tmpl, sub: tmpl, subs: map[string]*Subscription{}, origin: trace.SpanContextFromContext(ctx),
 	}
 	s := &Subscription{a: a, st: st, sh: h, att: att, event: event}
 	att.first = s
@@ -187,7 +192,7 @@ func (a *Agent) Subscribe(req *sip.Request, h SubscriptionHandler, opts ...Optio
 		return nil, err
 	}
 
-	if err := st.do(att.send); err != nil {
+	if err := st.do(func() error { return att.send(ctx) }); err != nil {
 		a.removeSubscribing(att)
 		return nil, err
 	}
@@ -200,21 +205,21 @@ func (s *Subscription) Strand() *Strand {
 	return s.st
 }
 
-func (att *subscribing) send() error {
+func (att *subscribing) send(ctx context.Context) error {
 	a := att.a
 
-	if _, err := a.prepareAndSend(att.tmpl, att.st.client(att.response, att.error)); err != nil {
+	if _, err := a.prepareAndSend(ctx, att.tmpl, att.st.client(att.response, att.error)); err != nil {
 		return err
 	}
 
 	att.timerN.stop()
-	att.timerN = att.st.after(64*a.layer.T1(), att.noNotify)
+	att.timerN = att.st.later(ctx, 64*a.layer.T1(), att.noNotify)
 
 	return nil
 }
 
 // response handles a response to the initial SUBSCRIBE.
-func (att *subscribing) response(res *sip.Response) {
+func (att *subscribing) response(ctx context.Context, res *sip.Response) {
 	a := att.a
 	first := att.first
 
@@ -244,8 +249,8 @@ func (att *subscribing) response(res *sip.Response) {
 				att.sub = next
 			}
 
-			if err := att.send(); err != nil {
-				att.error(err)
+			if err := att.send(ctx); err != nil {
+				att.error(ctx, err)
 			}
 
 			return
@@ -259,7 +264,7 @@ func (att *subscribing) response(res *sip.Response) {
 
 		// A NOTIFY that came first made the subscription; the 2xx is the notifier's word for it.
 		if first.d == nil {
-			first.end(End{Cause: EndRejected, Remote: true, Response: res})
+			first.end(ctx, End{Cause: EndRejected, Remote: true, Response: res})
 		}
 
 		return
@@ -272,10 +277,10 @@ func (att *subscribing) response(res *sip.Response) {
 		if first.d == nil && !first.ended {
 			first.emit(func(h SubscriptionHandler) {
 				if h.Accepted != nil {
-					h.Accepted(first, res)
+					h.Accepted(ctx, first, res)
 				}
 			})
-			first.end(End{Cause: EndNoSubscription, Remote: true, Response: res})
+			first.end(ctx, End{Cause: EndNoSubscription, Remote: true, Response: res})
 		}
 
 		return
@@ -294,7 +299,7 @@ func (att *subscribing) response(res *sip.Response) {
 	switch s := att.subs[att.okTag]; {
 	case att.okExpires == nil:
 	case s != nil:
-		s.granted(*att.okExpires)
+		s.granted(ctx, *att.okExpires)
 	case first.d == nil:
 		// Its timers start with its dialog.
 		first.duration = time.Duration(*att.okExpires) * time.Second
@@ -307,7 +312,7 @@ func (att *subscribing) response(res *sip.Response) {
 
 	first.emit(func(h SubscriptionHandler) {
 		if h.Accepted != nil {
-			h.Accepted(first, res)
+			h.Accepted(ctx, first, res)
 		}
 	})
 }
@@ -324,7 +329,7 @@ func raiseExpires(next *sip.Request, res *sip.Response) bool {
 	return true
 }
 
-func (att *subscribing) error(err error) {
+func (att *subscribing) error(ctx context.Context, err error) {
 	if att.final {
 		return
 	}
@@ -333,17 +338,17 @@ func (att *subscribing) error(err error) {
 	att.done()
 
 	if s := att.first; s.d == nil {
-		s.end(failureEnd(err))
+		s.end(ctx, failureEnd(err))
 	}
 }
 
 // noNotify ends the wait for the NOTIFYs of the initial SUBSCRIBE: the subscription fails without one; the NOTIFYs of
 // new notifiers get a 481 from now on (RFC 6665 §4.1.2.4).
-func (att *subscribing) noNotify() {
+func (att *subscribing) noNotify(ctx context.Context) {
 	att.done()
 
 	if s := att.first; s.d == nil {
-		s.end(End{Cause: EndNoNotify})
+		s.end(ctx, End{Cause: EndNoNotify})
 	}
 }
 
@@ -354,7 +359,7 @@ func (att *subscribing) done() {
 
 // notifyFor receives a NOTIFY outside the dialogs of the agent: the first one of a subscription of the SUBSCRIBE, or of
 // a fork (RFC 6665 §4.4.1).
-func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Request) {
+func (att *subscribing) notifyFor(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	a := att.a
 	first := att.first
 
@@ -383,7 +388,7 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 		att.done()
 
 		first.state = SubscriptionTerminated
-		first.notified(tx, req, func() { first.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
+		first.notified(ctx, tx, req, func() { first.end(ctx, End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
 
 		return
 	}
@@ -395,17 +400,17 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 	}
 
 	if first.d == nil {
-		first.bind(d, req)
-		first.receiveNotify(tx, req, ss)
+		first.bind(ctx, d, req)
+		first.receiveNotify(ctx, tx, req, ss)
 
 		return
 	}
 
 	fork := &Subscription{a: a, st: att.st, sh: first.sh, att: att, event: first.event}
-	fork.bind(d, req)
+	fork.bind(ctx, d, req)
 
 	att.st.emit(func() {
-		keep := fork.sh.Forked != nil && fork.sh.Forked(fork, req)
+		keep := fork.sh.Forked != nil && fork.sh.Forked(ctx, fork, req)
 
 		_ = att.st.do(func() error {
 			if !keep || fork.ended {
@@ -416,7 +421,7 @@ func (att *subscribing) notifyFor(tx *transaction.ServerTransaction, req *sip.Re
 				return nil
 			}
 
-			fork.receiveNotify(tx, req, ss)
+			fork.receiveNotify(ctx, tx, req, ss)
 
 			return nil
 		})
@@ -457,7 +462,7 @@ func (s *Subscription) matches(ev sip.Event) bool {
 
 // bind gives the subscription the dialog its first NOTIFY creates. A subscription of a REFER takes the Event of that
 // NOTIFY, with its id or without, for its refreshes (RFC 3515 §2.4.6).
-func (s *Subscription) bind(d *dialog.Dialog, notify *sip.Request) {
+func (s *Subscription) bind(ctx context.Context, d *dialog.Dialog, notify *sip.Request) {
 	if s.att.refer {
 		if ev, ok, err := notify.Header.Event(); ok && err == nil {
 			s.event = ev
@@ -471,7 +476,7 @@ func (s *Subscription) bind(d *dialog.Dialog, notify *sip.Request) {
 	s.a.addSubscription(s)
 
 	if tag == s.att.okTag && s.att.okExpires != nil {
-		s.granted(*s.att.okExpires)
+		s.granted(ctx, *s.att.okExpires)
 	}
 }
 
@@ -484,7 +489,7 @@ func (s *Subscription) unbind() {
 
 // receive handles a SUBSCRIBE, NOTIFY or REFER of the notifier within the dialog, for the Event of the subscription
 // (RFC 5057 §5.3).
-func (s *Subscription) receive(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *Subscription) receive(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	switch {
 	case s.ended || s.state == SubscriptionTerminated:
 		s.a.reply(tx, 481)
@@ -514,11 +519,11 @@ func (s *Subscription) receive(tx *transaction.ServerTransaction, req *sip.Reque
 		return
 	}
 
-	s.receiveNotify(tx, req, ss)
+	s.receiveNotify(ctx, tx, req, ss)
 }
 
 // receiveNotify applies the Subscription-State of a NOTIFY (RFC 6665 §4.1.3), then reports it, and answers it.
-func (s *Subscription) receiveNotify(tx *transaction.ServerTransaction, req *sip.Request, ss sip.SubscriptionState) {
+func (s *Subscription) receiveNotify(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, ss sip.SubscriptionState) {
 	// A NOTIFY ends the wait of a refresh; that of an unsubscribe waits for the terminated one (RFC 6665 §4.1.2.3).
 	s.timerN.stop()
 	s.timerN, s.nOwner = nil, nil
@@ -526,7 +531,7 @@ func (s *Subscription) receiveNotify(tx *transaction.ServerTransaction, req *sip
 	if ss.State == sip.SubscriptionTerminated {
 		// RFC 6665 §4.4.1: the subscription ends with the transaction of its terminated NOTIFY, once answered.
 		s.state = SubscriptionTerminated
-		s.notified(tx, req, func() { s.end(End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
+		s.notified(ctx, tx, req, func() { s.end(ctx, End{Cause: EndTerminated, Remote: true, Request: req, State: ss}) })
 
 		return
 	}
@@ -538,21 +543,21 @@ func (s *Subscription) receiveNotify(tx *transaction.ServerTransaction, req *sip
 	}
 
 	if ss.Expires != nil && !s.unsubscribing {
-		s.notifiedExpires(*ss.Expires)
+		s.notifiedExpires(ctx, *ss.Expires)
 	}
 
-	s.notified(tx, req, nil)
+	s.notified(ctx, tx, req, nil)
 }
 
 // notified reports a NOTIFY to the application, then answers it with a 200 unless Notify did; then, when not nil,
 // runs with the strand held.
-func (s *Subscription) notified(tx *transaction.ServerTransaction, req *sip.Request, then func()) {
-	r := newRequest(nil, tx, req)
+func (s *Subscription) notified(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, then func()) {
+	r := newRequest(ctx, nil, tx, req)
 	r.a, r.st, r.sub = s.a, s.st, s
 
 	s.st.emit(func() {
 		if h := s.sh.Notify; h != nil {
-			h(s, r)
+			h(ctx, s, r)
 		}
 
 		_ = s.st.do(func() error {
@@ -604,9 +609,9 @@ func (s *Subscription) answerNotify(r *Request, rp Reply) error {
 
 	switch failureOf("NOTIFY", res, nil) {
 	case destroysDialog:
-		s.a.destroyDialog(s.d.ID(), nil, nil)
+		s.a.destroyDialog(r.ctx, s.d.ID(), nil, nil)
 	case destroysUsage:
-		s.end(End{Cause: EndDropped, Response: res})
+		s.end(r.ctx, End{Cause: EndDropped, Response: res})
 	}
 
 	return nil
@@ -627,8 +632,9 @@ func refreshLead(d time.Duration) time.Duration {
 }
 
 // granted sets the duration the 2xx to a SUBSCRIBE granted, from now (RFC 6665 §4.1.2.1): the expiry, and the refresh
-// at its lead before it.
-func (s *Subscription) granted(seconds uint32) {
+// at its lead before it. ctx is the trace of the 2xx or the NOTIFY that granted it, which its refresh and its expiry
+// link to.
+func (s *Subscription) granted(ctx context.Context, seconds uint32) {
 	if s.ended {
 		return
 	}
@@ -636,20 +642,20 @@ func (s *Subscription) granted(seconds uint32) {
 	s.duration = time.Duration(seconds) * time.Second
 
 	if seconds == 0 {
-		s.expireNow()
+		s.expireNow(ctx)
 		return
 	}
 
 	s.lead = refreshLead(s.duration)
-	s.setExpiry(s.a.clock.Now().Add(s.duration))
-	s.schedule(s.expiresAt.Add(-s.lead), true)
+	s.setExpiry(ctx, s.a.clock.Now().Add(s.duration))
+	s.schedule(ctx, s.expiresAt.Add(-s.lead), true)
 }
 
 // notifiedExpires applies the expires of a NOTIFY (RFC 6665 §4.1.3): it moves the expiry; the refresh comes its lead
 // before it, or halfway to it when that is past, and stays where it was when earlier.
-func (s *Subscription) notifiedExpires(seconds uint32) {
+func (s *Subscription) notifiedExpires(ctx context.Context, seconds uint32) {
 	if seconds == 0 {
-		s.expireNow()
+		s.expireNow(ctx)
 		return
 	}
 
@@ -661,24 +667,27 @@ func (s *Subscription) notifiedExpires(seconds uint32) {
 		s.lead = refreshLead(d)
 	}
 
-	s.setExpiry(now.Add(d))
+	s.setExpiry(ctx, now.Add(d))
 
 	at := s.expiresAt.Add(-s.lead)
 	if !at.After(now) {
 		at = now.Add(d / 2)
 	}
 
-	s.schedule(at, false)
+	s.schedule(ctx, at, false)
 }
 
-func (s *Subscription) setExpiry(at time.Time) {
+// setExpiry ends the subscription at at, in a trace of its own linked to ctx.
+func (s *Subscription) setExpiry(ctx context.Context, at time.Time) {
 	s.expiresAt = at
 	s.expiry.stop()
-	s.expiry = s.st.after(at.Sub(s.a.clock.Now()), func() { s.end(End{Cause: EndExpired}) })
+	s.expiry = s.st.detached(ctx, at.Sub(s.a.clock.Now()), "subscription expiry", func(ctx context.Context) {
+		s.end(ctx, End{Cause: EndExpired})
+	})
 }
 
-// schedule sets the refresh at at, or keeps an earlier one unless force.
-func (s *Subscription) schedule(at time.Time, force bool) {
+// schedule sets the refresh at at, or keeps an earlier one unless force: a trace of its own, linked to ctx.
+func (s *Subscription) schedule(ctx context.Context, at time.Time, force bool) {
 	if s.d == nil || s.unsubscribing || s.ended {
 		return
 	}
@@ -689,30 +698,30 @@ func (s *Subscription) schedule(at time.Time, force bool) {
 
 	s.refreshAt = at
 	s.refresh.stop()
-	s.refresh = s.st.after(max(at.Sub(s.a.clock.Now()), 0), s.autoRefresh)
+	s.refresh = s.st.detached(ctx, max(at.Sub(s.a.clock.Now()), 0), "subscription refresh", s.autoRefresh)
 }
 
 // expireNow ends a subscription its notifier gave no time left: once the terminated NOTIFY comes, or without it
 // after 64*T1 (RFC 6665 §4.1.3).
-func (s *Subscription) expireNow() {
+func (s *Subscription) expireNow(ctx context.Context) {
 	s.refresh.stop()
 	s.expiry.stop()
 	s.refresh, s.expiry = nil, nil
 
 	if s.guard == nil {
-		s.guard = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndExpired}) })
+		s.guard = s.st.later(ctx, 64*s.a.layer.T1(), func(ctx context.Context) { s.end(ctx, End{Cause: EndExpired}) })
 	}
 }
 
-func (s *Subscription) autoRefresh() {
-	if err := s.subscribe(false, Change{}, nil); err != nil {
+func (s *Subscription) autoRefresh(ctx context.Context) {
+	if err := s.subscribe(ctx, false, Change{}, nil); err != nil {
 		s.logger().Debug("subscription refresh failed", slog.Any("error", err))
-		s.retryRefresh()
+		s.retryRefresh(ctx)
 	}
 }
 
 // retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one.
-func (s *Subscription) retryRefresh() {
+func (s *Subscription) retryRefresh(ctx context.Context) {
 	if s.unsubscribing || s.ended || s.expiresAt.IsZero() {
 		return
 	}
@@ -722,12 +731,12 @@ func (s *Subscription) retryRefresh() {
 		return
 	}
 
-	s.schedule(s.a.clock.Now().Add(left/2), true)
+	s.schedule(ctx, s.a.clock.Now().Add(left/2), true)
 }
 
 // end terminates the subscription, once: its timers stop, its requests in progress complete, and its dialog usage
 // ends, with the dialog if it was the last one (RFC 5057 §4).
-func (s *Subscription) end(e End) {
+func (s *Subscription) end(ctx context.Context, e End) {
 	s.st.check()
 
 	if s.ended {
@@ -766,7 +775,7 @@ func (s *Subscription) end(e End) {
 
 	s.emit(func(h SubscriptionHandler) {
 		if h.Ended != nil {
-			h.Ended(s, e)
+			h.Ended(ctx, s, e)
 		}
 	})
 }
@@ -823,16 +832,18 @@ func (s *Subscription) SetValue(v any) {
 
 // Refresh refreshes the subscription now, with a SUBSCRIBE within its dialog (RFC 6665 §4.1.2.2): the header fields
 // and bodies of the initial SUBSCRIBE, those of c in their place, such as another filter. done receives its final
-// response or its error, as a handler. The agent refreshes on its own before the subscription expires.
-func (s *Subscription) Refresh(c Change, done func(res *sip.Response, err error)) error {
-	return s.st.do(func() error { return s.subscribe(false, c, done) })
+// response or its error, as a handler. The agent refreshes on its own before the subscription expires. The SUBSCRIBE is
+// part of the trace of ctx.
+func (s *Subscription) Refresh(ctx context.Context, c Change, done func(res *sip.Response, err error)) error {
+	return s.st.do(func() error { return s.subscribe(ctx, false, c, done) })
 }
 
 // Unsubscribe ends the subscription with a SUBSCRIBE with Expires 0 (RFC 6665 §4.1.2.3), with the header fields of
 // the initial SUBSCRIBE and of c, and the bodies of c: it ends with the terminated NOTIFY that follows, or without it
 // after 64*T1. Before its first NOTIFY, or when that SUBSCRIBE fails, it ends at once, with EndUnsubscribed; its
-// NOTIFYs then get a 481, which ends it for the notifier too (RFC 6665 §4.2.2).
-func (s *Subscription) Unsubscribe(c Change) error {
+// NOTIFYs then get a 481, which ends it for the notifier too (RFC 6665 §4.2.2). The SUBSCRIBE and the end are part
+// of the trace of ctx.
+func (s *Subscription) Unsubscribe(ctx context.Context, c Change) error {
 	return s.st.do(func() error {
 		switch {
 		case s.ended:
@@ -840,12 +851,12 @@ func (s *Subscription) Unsubscribe(c Change) error {
 		case s.unsubscribing:
 			return nil
 		case s.d == nil:
-			s.end(End{Cause: EndUnsubscribed})
+			s.end(ctx, End{Cause: EndUnsubscribed})
 			return nil
 		}
 
-		if err := s.subscribe(true, c, nil); err != nil {
-			s.end(End{Cause: EndUnsubscribed, Err: err})
+		if err := s.subscribe(ctx, true, c, nil); err != nil {
+			s.end(ctx, End{Cause: EndUnsubscribed, Err: err})
 		}
 
 		return nil
@@ -853,17 +864,18 @@ func (s *Subscription) Unsubscribe(c Change) error {
 }
 
 // Drop ends the subscription at once, without a SUBSCRIBE: the application knows its notifier no longer has it,
-// as a UE once deregistered (TS 24.229 §5.1.1.7). Its NOTIFYs then get a 481 (RFC 6665 §4.2.2).
-func (s *Subscription) Drop() {
+// as a UE once deregistered (TS 24.229 §5.1.1.7). Its NOTIFYs then get a 481 (RFC 6665 §4.2.2). The end is part of
+// the trace of ctx.
+func (s *Subscription) Drop(ctx context.Context) {
 	_ = s.st.do(func() error {
-		s.end(End{Cause: EndDropped})
+		s.end(ctx, End{Cause: EndDropped})
 		return nil
 	})
 }
 
 // subscribe sends a SUBSCRIBE within the dialog: a refresh, with the Expires of the initial SUBSCRIBE, or an
 // unsubscribe. Timer N waits for the NOTIFY of a refresh; a guard, for the terminated NOTIFY of the unsubscribe.
-func (s *Subscription) subscribe(unsubscribe bool, ch Change, done func(*sip.Response, error)) error {
+func (s *Subscription) subscribe(ctx context.Context, unsubscribe bool, ch Change, done func(*sip.Response, error)) error {
 	if s.d == nil || s.ended || s.unsubscribing {
 		return ErrState
 	}
@@ -877,7 +889,7 @@ func (s *Subscription) subscribe(unsubscribe bool, ch Change, done func(*sip.Res
 
 	c.req = req
 
-	if err := c.send(); err != nil {
+	if err := c.send(ctx); err != nil {
 		return err
 	}
 
@@ -886,7 +898,7 @@ func (s *Subscription) subscribe(unsubscribe bool, ch Change, done func(*sip.Res
 		s.refresh.stop()
 		s.refresh = nil
 		s.guard.stop()
-		s.guard = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndUnsubscribed}) })
+		s.guard = s.st.later(ctx, 64*s.a.layer.T1(), func(ctx context.Context) { s.end(ctx, End{Cause: EndUnsubscribed}) })
 	}
 
 	return nil
@@ -965,10 +977,10 @@ func (c *subscribeRequest) build() (*sip.Request, error) {
 	return req, nil
 }
 
-func (c *subscribeRequest) send() error {
+func (c *subscribeRequest) send(ctx context.Context) error {
 	s := c.s
 
-	if _, err := s.a.prepareAndSend(c.req, s.st.client(c.response, c.error)); err != nil {
+	if _, err := s.a.prepareAndSend(ctx, c.req, s.st.client(c.response, c.error)); err != nil {
 		return err
 	}
 
@@ -980,7 +992,7 @@ func (c *subscribeRequest) send() error {
 
 	if !c.unsubscribe {
 		s.timerN.stop()
-		s.timerN, s.nOwner = s.st.after(64*s.a.layer.T1(), func() { s.end(End{Cause: EndNoNotify}) }), c
+		s.timerN, s.nOwner = s.st.later(ctx, 64*s.a.layer.T1(), func(ctx context.Context) { s.end(ctx, End{Cause: EndNoNotify}) }), c
 	}
 
 	return nil
@@ -996,7 +1008,7 @@ func refreshEnds(res *sip.Response) effect {
 	return failureOf("SUBSCRIBE", res, nil)
 }
 
-func (c *subscribeRequest) response(res *sip.Response) {
+func (c *subscribeRequest) response(ctx context.Context, res *sip.Response) {
 	s := c.s
 
 	if res.IsProvisional() || c.final || s.ended {
@@ -1008,8 +1020,8 @@ func (c *subscribeRequest) response(res *sip.Response) {
 	if next, ok := c.retry(res); ok {
 		c.req = next
 
-		if err := c.send(); err != nil {
-			c.error(err)
+		if err := c.send(ctx); err != nil {
+			c.error(ctx, err)
 		}
 
 		return
@@ -1028,19 +1040,19 @@ func (c *subscribeRequest) response(res *sip.Response) {
 
 		if !c.unsubscribe {
 			if v, err := res.Header.Expires(); err == nil {
-				s.granted(v)
+				s.granted(ctx, v)
 			} else if v, err := s.att.sub.Header.Expires(); err == nil {
-				s.granted(v)
+				s.granted(ctx, v)
 			}
 		}
 	case c.unsubscribe:
-		s.end(End{Cause: EndUnsubscribed, Remote: true, Response: res})
+		s.end(ctx, End{Cause: EndUnsubscribed, Remote: true, Response: res})
 	default:
 		switch refreshEnds(res) {
 		case destroysDialog:
-			s.a.destroyDialog(s.d.ID(), res, nil)
+			s.a.destroyDialog(ctx, s.d.ID(), res, nil)
 		case destroysUsage:
-			s.end(End{Cause: EndRejected, Remote: true, Response: res})
+			s.end(ctx, End{Cause: EndRejected, Remote: true, Response: res})
 		default:
 			// The subscription lasts until its expiry; the refresh is tried again halfway to it.
 			if s.nOwner == c {
@@ -1048,7 +1060,7 @@ func (c *subscribeRequest) response(res *sip.Response) {
 				s.timerN, s.nOwner = nil, nil
 			}
 
-			s.retryRefresh()
+			s.retryRefresh(ctx)
 		}
 	}
 
@@ -1094,7 +1106,7 @@ func (c *subscribeRequest) retry(res *sip.Response) (*sip.Request, bool) {
 	return next, true
 }
 
-func (c *subscribeRequest) error(err error) {
+func (c *subscribeRequest) error(ctx context.Context, err error) {
 	s := c.s
 
 	if c.final {
@@ -1107,14 +1119,14 @@ func (c *subscribeRequest) error(err error) {
 	switch {
 	case s.ended:
 	case c.unsubscribe:
-		s.end(End{Cause: EndUnsubscribed, Err: err})
+		s.end(ctx, End{Cause: EndUnsubscribed, Err: err})
 	default:
 		if s.nOwner == c {
 			s.timerN.stop()
 			s.timerN, s.nOwner = nil, nil
 		}
 
-		s.retryRefresh()
+		s.retryRefresh(ctx)
 	}
 
 	s.emitDone(c.done, nil, err)
@@ -1127,19 +1139,19 @@ func (s *Subscription) emitDone(done func(*sip.Response, error), res *sip.Respon
 }
 
 // close ends the subscription as the agent closes: one with a dialog unsubscribes, and waits for its terminated
-// NOTIFY, which Shutdown waits for; one without ends at once.
-func (s *Subscription) close() {
+// NOTIFY, which Shutdown waits for; one without ends at once. ctx is the trace of the shutdown.
+func (s *Subscription) close(ctx context.Context) {
 	if s.ended || s.closing {
 		return
 	}
 
 	if s.d == nil || s.unsubscribing {
-		s.end(End{Cause: EndClosed})
+		s.end(ctx, End{Cause: EndClosed})
 		return
 	}
 
-	if err := s.subscribe(true, Change{}, nil); err != nil {
-		s.end(End{Cause: EndClosed, Err: err})
+	if err := s.subscribe(ctx, true, Change{}, nil); err != nil {
+		s.end(ctx, End{Cause: EndClosed, Err: err})
 		return
 	}
 

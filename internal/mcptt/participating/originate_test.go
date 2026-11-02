@@ -35,7 +35,7 @@ type controlling struct {
 	calls []sip.URI
 }
 
-func (c *controlling) Group(o *Origination) {
+func (c *controlling) Group(_ context.Context, o *Origination) {
 	c.got = o
 	_ = o.Request.Respond(o.Reply(ua.Reply{Code: 480, Header: sip.Header{{Name: "P-Asserted-Identity", Value: "<sip:mcptt-controlling@mcptt.example.com>"}}}))
 }
@@ -91,8 +91,8 @@ func TestOriginate(t *testing.T) {
 
 			return nil
 		},
-		OnInvite: func(r *ua.Request) ua.Handler {
-			p.Originate(r, []sip.URI{bob.IMPU})
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
+			p.Originate(context.Background(), r, []sip.URI{bob.IMPU})
 			return ua.Handler{}
 		},
 	})

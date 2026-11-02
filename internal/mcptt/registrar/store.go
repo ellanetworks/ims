@@ -9,7 +9,9 @@ import (
 
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/reginfo"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Store keeps the bindings through the IMS across restarts. SaveRegistrations saves the bindings of records, one per
@@ -45,9 +47,11 @@ func (b *binding) record() Record {
 	return r
 }
 
-// persist writes the bindings changed through the IMS to the store, outside the lock: of each client changed, its
-// binding, or its removal. A write that fails is logged, and its clients written with the next change.
-func (g *Registrar) persist() {
+// persist writes the bindings changed through the IMS to the store, outside the lock, in the trace of ctx, what
+// changed them: of each client changed, its binding, or its removal. The write is bounded by the registrar's lifetime
+// and saveTimeout, the request of the change answered already. A write that fails is logged, and its clients written
+// with the next change.
+func (g *Registrar) persist(ctx context.Context) {
 	g.mu.Lock()
 	clean := len(g.dirty) == 0
 	g.mu.Unlock()
@@ -83,11 +87,11 @@ func (g *Registrar) persist() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), saveTimeout)
+	ctx, cancel := context.WithTimeout(lifetime.With(g.life, ctx), saveTimeout)
 	defer cancel()
 
 	if err := g.cfg.Store.SaveRegistrations(ctx, saved, deleted); err != nil {
-		g.cfg.Logger.Warn("registrations not saved", slog.Int("clients", len(saved)+len(deleted)), slog.Any("error", err))
+		g.cfg.Logger.WarnContext(ctx, "registrations not saved", slog.Int("clients", len(saved)+len(deleted)), slog.Any("error", err))
 
 		// Saved with the next change, of whatever client.
 		g.mu.Lock()
@@ -111,13 +115,14 @@ const saveTimeout = 5 * time.Second
 // users the settings still authorise at their IMPUs, as a refresh would (refresh); the others are removed from the
 // store. Their expiry timers, and those of the sequences of their REGISTERs, are armed on the strands of their IMPUs.
 // It returns the bindings put back; Resubscribe subscribes to the reg event package of their IMPUs.
-func (g *Registrar) Restore(records []Record) []Binding {
+func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
 
 	var out []Binding
 
 	latest := map[string]time.Time{}
+	cause := trace.SpanContextFromContext(ctx)
 
 	g.mu.Lock()
 
@@ -140,7 +145,10 @@ func (g *Registrar) Restore(records []Record) []Binding {
 		g.put(b)
 
 		st := g.cfg.StrandOf(ik)
-		b.timer = st.AfterFunc(b.Expires.Sub(now), func() { g.expire(st, b) })
+		b.timer = g.detach(cause, st, b.Expires.Sub(now), expiryName, func(ctx context.Context) error {
+			g.expire(ctx, st, b)
+			return nil
+		})
 
 		if r.CallID != "" {
 			s := &sequence{key: seqKey{ik, r.CallID}, cseq: r.CSeq, expires: r.Expires}
@@ -172,7 +180,7 @@ func (g *Registrar) Restore(records []Record) []Binding {
 
 	g.mu.Unlock()
 
-	g.persist()
+	g.persist(ctx)
 
 	return out
 }
@@ -185,7 +193,7 @@ const resubscribePace = 20 * time.Millisecond
 // resubscribePace, on the strands of the IMPUs (TS 24.229 §5.7.1.1). The first full document of each removes the
 // bindings of the UEs it does not report registered, which deregistered meanwhile (notify), and a refusal of the
 // subscription of bindings restored all the bindings of its IMPU (ended).
-func (g *Registrar) Resubscribe() {
+func (g *Registrar) Resubscribe(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -202,16 +210,20 @@ func (g *Registrar) Resubscribe() {
 
 	slices.SortFunc(ws, func(a, b *watch) int { return strings.Compare(a.ik, b.ik) })
 
+	cause := trace.SpanContextFromContext(ctx)
+
 	for i, w := range ws {
 		st := g.cfg.StrandOf(w.ik)
-		st.AfterFunc(time.Duration(i)*resubscribePace, func() {
+		g.detach(cause, st, time.Duration(i)*resubscribePace, resubscribeName, func(ctx context.Context) error {
 			g.mu.Lock()
 			current := g.watches[w.ik] == w && !w.stopped && w.sub == nil && !g.closed
 			g.mu.Unlock()
 
-			if current {
-				g.subscribe(st, w)
+			if !current {
+				return nil
 			}
+
+			return g.subscribe(ctx, st, w)
 		})
 	}
 }

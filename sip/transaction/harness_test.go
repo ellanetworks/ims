@@ -1,6 +1,7 @@
 package transaction_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
@@ -75,7 +76,7 @@ func (h *harness) send(req *sip.Request) (*transaction.ClientTransaction, *sipte
 
 	rs := siptest.NewResponses(h.t)
 
-	tx, err := h.l.Request(req, rs)
+	tx, err := h.l.Request(context.Background(), req, rs)
 	if err != nil {
 		h.t.Fatal(err)
 	}

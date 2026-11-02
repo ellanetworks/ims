@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -33,7 +34,7 @@ func TestReplaces(t *testing.T) {
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Transaction.Clock = clock
 		c.Extensions.Replaces = true
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			s, code, ok := r.Replaces()
 			if !ok {
 				_ = r.Accept(sdpOf("answer-1")...)
@@ -118,7 +119,7 @@ func TestReplaces(t *testing.T) {
 	}
 
 	// A dialog that just ended is declined (RFC 3891 §3), for 64*T1.
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 
@@ -139,7 +140,7 @@ func TestTargetDialog(t *testing.T) {
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Extensions.TargetDialog = true
-		c.OnRequest = func(r *ua.Request) { refers <- r }
+		c.OnRequest = func(_ context.Context, r *ua.Request) { refers <- r }
 	})
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 

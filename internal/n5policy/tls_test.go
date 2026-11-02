@@ -44,7 +44,7 @@ func newTLSFixture(t *testing.T, ca *sbitlstest.CA) *fixture {
 	sink := newSink()
 	b.Bind(sink)
 
-	srv := NewServer(b, creds, slog.New(slog.DiscardHandler))
+	srv := NewServer(b, creds, nil, slog.New(slog.DiscardHandler))
 
 	go func() { _ = srv.Serve(ln) }()
 

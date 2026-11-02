@@ -23,10 +23,13 @@ import (
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -83,7 +86,8 @@ type timers struct {
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
-	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, logger *slog.Logger,
+	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, tp trace.TracerProvider,
+	logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -130,8 +134,29 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			logger.Error("SIP listener failed: the core restarts", slog.String("address", local.String()), slog.Any("error", err))
 			failed(local, err)
 		},
-		OnServerDone: func(req *sip.Request, res *sip.Response, elapsed time.Duration) {
-			roles.logTransaction(req, res, elapsed)
+		TracerProvider: tp,
+		// Trace context crosses the flows of the trust domain of the role, which UEs are never in (W3C Trace Context
+		// §6.1).
+		TraceContext: func(f sip.Flow) bool {
+			if r := roles.name(f.Local.Port()); r == rolePCSCF || r == rolePCSCFProtected {
+				return pcscfDomain.Trusted(f.Remote.Addr())
+			}
+
+			return domain.Trusted(f.Remote.Addr())
+		},
+		SpanLinks: roles.spanLinks,
+		SpanAttributes: func(f sip.Flow) []attribute.KeyValue {
+			switch r := roles.name(f.Local.Port()); r {
+			case rolePCSCF, rolePCSCFProtected:
+				return []attribute.KeyValue{tracing.RoleKey.String(rolePCSCF)}
+			case "":
+				return nil
+			default:
+				return []attribute.KeyValue{tracing.RoleKey.String(r)}
+			}
+		},
+		OnServerDone: func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
+			roles.logTransaction(ctx, req, res, elapsed)
 
 			// The P-CSCF's responses to UEs, rather than to the nodes of the IMS.
 			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
@@ -413,7 +438,7 @@ func (d *dispatcher) set(port uint16, name string, h transaction.Handler) {
 	d.names[port] = name
 }
 
-func (d *dispatcher) logTransaction(req *sip.Request, res *sip.Response, elapsed time.Duration) {
+func (d *dispatcher) logTransaction(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
 	level := slog.LevelDebug
 
 	switch req.Method {
@@ -442,20 +467,25 @@ func (d *dispatcher) logTransaction(req *sip.Request, res *sip.Response, elapsed
 	attrs = append(attrs, slog.String("remote", req.Flow.Remote.String()), slog.Duration("duration", elapsed))
 
 	if res == nil {
-		d.log.LogAttrs(context.Background(), level, "SIP transaction ended without a final response", attrs...)
+		d.log.LogAttrs(ctx, level, "SIP transaction ended without a final response", attrs...)
 		return
 	}
 
 	attrs = append(attrs, slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
-	d.log.LogAttrs(context.Background(), level, "SIP transaction", attrs...)
+	d.log.LogAttrs(ctx, level, "SIP transaction", attrs...)
 }
 
 // is reports whether the role served on the port is role.
 func (d *dispatcher) is(port uint16, role string) bool {
+	return d.name(port) == role
+}
+
+// name is the role of port, "" if none.
+func (d *dispatcher) name(port uint16) string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	return d.names[port] == role
+	return d.names[port]
 }
 
 func (d *dispatcher) role(f sip.Flow) transaction.Handler {
@@ -465,37 +495,49 @@ func (d *dispatcher) role(f sip.Flow) transaction.Handler {
 	return d.roles[f.Local.Port()]
 }
 
-func (d *dispatcher) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+// spanLinks are what req links to when it starts a trace of its own (transaction.Config.SpanLinks): those the role on
+// its port tells, if it tells any.
+func (d *dispatcher) spanLinks(req *sip.Request) []trace.SpanContext {
+	if l, ok := d.role(req.Flow).(interface {
+		SpanLinks(req *sip.Request) []trace.SpanContext
+	}); ok {
+		return l.SpanLinks(req)
+	}
+
+	return nil
+}
+
+func (d *dispatcher) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	h := d.role(req.Flow)
 	if h == nil {
 		res := sip.NewResponse(req, 503, "")
 		res.Header.Set("Retry-After", "1")
 
 		if err := tx.Respond(res); err != nil {
-			d.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+			d.log.DebugContext(ctx, "SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
 		return
 	}
 
-	h.HandleRequest(tx, req)
+	h.HandleRequest(ctx, tx, req)
 }
 
-func (d *dispatcher) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+func (d *dispatcher) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	if h := d.role(tx.Request().Flow); h != nil {
-		h.HandleCancel(tx, cancel)
+		h.HandleCancel(ctx, tx, cancel)
 	}
 }
 
-func (d *dispatcher) HandleAck(ack *sip.Request) {
+func (d *dispatcher) HandleAck(ctx context.Context, ack *sip.Request) {
 	if h := d.role(ack.Flow); h != nil {
-		h.HandleAck(ack)
+		h.HandleAck(ctx, ack)
 	}
 }
 
-func (d *dispatcher) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+func (d *dispatcher) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
 	if h := d.role(tx.Request().Flow); h != nil {
-		h.HandleTransactionError(tx, err)
+		h.HandleTransactionError(ctx, tx, err)
 	}
 }
 
@@ -514,14 +556,20 @@ type scscfHandler struct {
 	fallback  transaction.Handler
 }
 
-func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+// SpanLinks are what a request of a dialog through the S-CSCF links to when it starts a trace of its own, as one back
+// from an AS outside the trust domain (transaction.Config.SpanLinks): the INVITE of the dialog.
+func (h *scscfHandler) SpanLinks(req *sip.Request) []trace.SpanContext {
+	return h.proxy.SpanLinks(req)
+}
+
+func (h *scscfHandler) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !h.trust.Trusted(req.Flow.Remote.Addr()) {
-		h.log.Warn("S-CSCF request from outside the trust domain", slog.String("method", req.Method),
+		h.log.WarnContext(ctx, "S-CSCF request from outside the trust domain", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()))
 
 		res := sip.NewResponse(req, 403, "")
 		if err := tx.Respond(res); err != nil {
-			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+			h.log.DebugContext(ctx, "SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 
 		return
@@ -529,7 +577,7 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 
 	respond := func(res *sip.Response) {
 		if err := tx.Respond(res); err != nil {
-			h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+			h.log.DebugContext(ctx, "SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 		}
 	}
 
@@ -552,15 +600,15 @@ func (h *scscfHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip
 
 		handle = func(ctx context.Context) { h.registrar.Subscribe(ctx, out, removed, respond) }
 	case req.Method == "OPTIONS" && h.addressedToSelf(req):
-		h.fallback.HandleRequest(tx, req)
+		h.fallback.HandleRequest(ctx, tx, req)
 		return
 	default:
-		h.sessions.HandleRequest(tx, req)
+		h.sessions.HandleRequest(ctx, tx, req)
 		return
 	}
 
-	if err := h.layer.Go(handle); err != nil {
-		h.log.Debug("dropped SIP request", slog.String("method", req.Method), slog.String("call-id", req.Header.CallID()),
+	if err := h.layer.Go(ctx, handle); err != nil {
+		h.log.DebugContext(ctx, "dropped SIP request", slog.String("method", req.Method), slog.String("call-id", req.Header.CallID()),
 			slog.Any("error", err))
 	}
 }
@@ -571,21 +619,21 @@ func (h *scscfHandler) addressedToSelf(req *sip.Request) bool {
 	return err == nil && !out.Header.Has("Route") && out.URI.User == "" && h.proxy.IsLocal(out.URI)
 }
 
-func (h *scscfHandler) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	h.sessions.HandleCancel(tx, cancel)
+func (h *scscfHandler) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	h.sessions.HandleCancel(ctx, tx, cancel)
 }
 
-func (h *scscfHandler) HandleAck(ack *sip.Request) {
+func (h *scscfHandler) HandleAck(ctx context.Context, ack *sip.Request) {
 	if !h.trust.Trusted(ack.Flow.Remote.Addr()) {
-		h.log.Debug("dropped an ACK from outside the trust domain", slog.String("source", ack.Flow.Remote.String()))
+		h.log.DebugContext(ctx, "dropped an ACK from outside the trust domain", slog.String("source", ack.Flow.Remote.String()))
 		return
 	}
 
-	h.sessions.HandleAck(ack)
+	h.sessions.HandleAck(ctx, ack)
 }
 
-func (h *scscfHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	h.fallback.HandleTransactionError(tx, err)
+func (h *scscfHandler) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	h.fallback.HandleTransactionError(ctx, tx, err)
 }
 
 type placeholderHandler struct {
@@ -623,20 +671,20 @@ func (h *placeholderHandler) addListener(local netip.AddrPort) {
 	h.listeners[local] = true
 }
 
-func (h *placeholderHandler) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (h *placeholderHandler) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	switch {
 	case req.Method == "OPTIONS" && h.isSelf(req.URI):
-		h.respond(tx, optionsResponse(req))
+		h.respond(ctx, tx, optionsResponse(req))
 	case req.Method == "OPTIONS":
-		h.respond(tx, sip.NewResponse(req, 480, ""))
+		h.respond(ctx, tx, sip.NewResponse(req, 480, ""))
 	case req.Method == "INVITE":
-		h.holdInvite(tx)
+		h.holdInvite(ctx, tx)
 	case knownMethods[req.Method]:
 		res := sip.NewResponse(req, 405, "")
 		res.Header.Set("Allow", placeholderAllow)
-		h.respond(tx, res)
+		h.respond(ctx, tx, res)
 	default:
-		h.respond(tx, sip.NewResponse(req, 501, ""))
+		h.respond(ctx, tx, sip.NewResponse(req, 501, ""))
 	}
 }
 
@@ -686,22 +734,22 @@ func (h *placeholderHandler) isSelf(u sip.URI) bool {
 	return false
 }
 
-func (h *placeholderHandler) HandleCancel(tx *transaction.ServerTransaction, _ *sip.Request) {
+func (h *placeholderHandler) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, _ *sip.Request) {
 	if h.release(tx) {
-		h.respond(tx, sip.NewResponse(tx.Request(), 487, ""))
+		h.respond(ctx, tx, sip.NewResponse(tx.Request(), 487, ""))
 	}
 }
 
-func (h *placeholderHandler) HandleAck(ack *sip.Request) {
-	h.log.Debug("dropped SIP ACK", slog.String("call-id", ack.Header.CallID()))
+func (h *placeholderHandler) HandleAck(ctx context.Context, ack *sip.Request) {
+	h.log.DebugContext(ctx, "dropped SIP ACK", slog.String("call-id", ack.Header.CallID()))
 }
 
-func (h *placeholderHandler) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+func (h *placeholderHandler) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
 	h.release(tx)
-	h.log.Debug("SIP server transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
+	h.log.DebugContext(ctx, "SIP server transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
 }
 
-func (h *placeholderHandler) holdInvite(tx *transaction.ServerTransaction) {
+func (h *placeholderHandler) holdInvite(ctx context.Context, tx *transaction.ServerTransaction) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -709,9 +757,12 @@ func (h *placeholderHandler) holdInvite(tx *transaction.ServerTransaction) {
 		return
 	}
 
+	// The timer keeps the INVITE's span context only, for its log.
+	sc := trace.SpanContextFromContext(ctx)
+
 	h.invites[tx] = time.AfterFunc(h.inviteTimeout, func() {
 		if h.release(tx) {
-			h.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
+			h.respond(trace.ContextWithSpanContext(context.Background(), sc), tx, sip.NewResponse(tx.Request(), 480, ""))
 		}
 	})
 }
@@ -742,9 +793,9 @@ func (h *placeholderHandler) close() {
 	h.mu.Unlock()
 }
 
-func (h *placeholderHandler) respond(tx *transaction.ServerTransaction, res *sip.Response) {
+func (h *placeholderHandler) respond(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) {
 	if err := tx.Respond(res); err != nil {
-		h.log.Debug("SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
+		h.log.DebugContext(ctx, "SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
 	}
 }
 

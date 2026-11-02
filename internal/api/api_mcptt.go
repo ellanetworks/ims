@@ -37,16 +37,16 @@ type MCPTTStatus struct {
 
 // GetMCPTTStatus serves what the MCPTT AS runs.
 func GetMCPTTStatus(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, cfg.MCPTTStatus(), http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, cfg.MCPTTStatus(), http.StatusOK, cfg.Logger)
 	})
 }
 
 // mcpttOnly is h when the IMS runs the MCPTT AS, and a 404 otherwise.
 func mcpttOnly(cfg Config, h func(Config) http.Handler) http.Handler {
 	if cfg.MCPTT == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			writeError(w, http.StatusNotFound, "MCPTT is not enabled", nil, cfg.Logger)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(r.Context(), w, http.StatusNotFound, "MCPTT is not enabled", nil, cfg.Logger)
 		})
 	}
 

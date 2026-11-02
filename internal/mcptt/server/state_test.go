@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // memState is a State in memory, as the database keeps it.
@@ -22,6 +23,15 @@ type memState struct {
 	affs map[[2]string]affiliation.Record
 	// fail fails the writes.
 	fail bool
+	// affWrites are the contexts of the writes of affiliations, as they were then.
+	affWrites []write
+}
+
+// write is the context of a write: its span, error and deadline.
+type write struct {
+	span     oteltrace.SpanContext
+	err      error
+	deadline bool
 }
 
 func newMemState() *memState {
@@ -47,9 +57,12 @@ func (m *memState) SaveRegistrations(_ context.Context, records []registrar.Reco
 	return nil
 }
 
-func (m *memState) SaveAffiliations(_ context.Context, records []affiliation.Record) error {
+func (m *memState) SaveAffiliations(ctx context.Context, records []affiliation.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	_, deadline := ctx.Deadline()
+	m.affWrites = append(m.affWrites, write{span: oteltrace.SpanContextFromContext(ctx), err: ctx.Err(), deadline: deadline})
 
 	for _, r := range records {
 		k := [2]string{settings.Key(r.MCPTTID), r.ClientID}
@@ -109,8 +122,8 @@ func (h *harness) restart(state *memState) {
 	h.start(state)
 
 	regs, affs := state.records()
-	h.s.Restore(regs, affs)
-	h.s.Resubscribe()
+	h.s.Restore(context.Background(), regs, affs)
+	h.s.Resubscribe(context.Background())
 
 	h.n.Advance(time.Second)
 	h.scscf.pump()
@@ -435,7 +448,7 @@ func TestSubscribeUnanswered(t *testing.T) {
 	s.pump()
 
 	s.silent = false
-	h.s.Resubscribe()
+	h.s.Resubscribe(context.Background())
 
 	h.n.Advance(time.Second)
 	s.pump()
@@ -517,7 +530,7 @@ func TestRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.s.Revoke(h.src.p.Swap(snap), snap)
+	h.s.Revoke(context.Background(), h.src.p.Swap(snap), snap)
 	h.n.Quiesce()
 	s.pump()
 
@@ -560,7 +573,7 @@ func TestRefreshBeforeResubscribe(t *testing.T) {
 	h.start(st)
 
 	regs, affs := st.records()
-	h.s.Restore(regs, affs)
+	h.s.Restore(context.Background(), regs, affs)
 
 	ue := h.client(aliceIM)
 	ue.instance = "urn:uuid:00000000-0000-1000-8000-000000000001"
@@ -570,7 +583,7 @@ func TestRefreshBeforeResubscribe(t *testing.T) {
 	}
 
 	// A first document of no contact.
-	h.s.Resubscribe()
+	h.s.Resubscribe(context.Background())
 	h.n.Advance(time.Second)
 	s.pump()
 
@@ -616,8 +629,8 @@ func TestShutdownBeforeResubscribe(t *testing.T) {
 	h.start(st)
 
 	regs, affs := st.records()
-	h.s.Restore(regs, affs)
-	h.s.Resubscribe()
+	h.s.Restore(context.Background(), regs, affs)
+	h.s.Resubscribe(context.Background())
 
 	s.subscribes = 0
 	srv := h.s

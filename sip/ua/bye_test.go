@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestByeWithChange(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Bye(c, f); err != nil {
+	if err := as.Bye(context.Background(), c, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -42,7 +43,7 @@ func TestByeWithChange(t *testing.T) {
 	}
 
 	var uerr *ua.Error
-	if err := as.Bye(ua.Change{}, nil); !errors.As(err, &uerr) || uerr.Op != "Bye" || uerr.State != ua.Terminated || !errors.Is(err, ua.ErrState) {
+	if err := as.Bye(context.Background(), ua.Change{}, nil); !errors.As(err, &uerr) || uerr.Op != "Bye" || uerr.State != ua.Terminated || !errors.Is(err, ua.ErrState) {
 		t.Errorf("Bye after the end: %v", err)
 	}
 }
@@ -56,11 +57,11 @@ func TestByeHandler(t *testing.T) {
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Transaction.Clock = clock
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
 
-			h := ua.Handler{Ended: func(s *ua.Session, e ua.End) { byes <- nil }}
-			h.Bye = func(s *ua.Session, r *ua.Request) { byes <- r }
+			h := ua.Handler{Ended: func(_ context.Context, s *ua.Session, e ua.End) { byes <- nil }}
+			h.Bye = func(_ context.Context, s *ua.Session, r *ua.Request) { byes <- r }
 
 			return h
 		}
@@ -74,7 +75,7 @@ func TestByeHandler(t *testing.T) {
 
 		done, f := results()
 
-		if err := as.Bye(ua.Change{}, f); err != nil {
+		if err := as.Bye(context.Background(), ua.Change{}, f); err != nil {
 			t.Fatal(err)
 		}
 
@@ -116,7 +117,7 @@ func TestByeHandler(t *testing.T) {
 // Handler.Decorate completes every message of the session, those the agent makes on its own included.
 func TestDecorate(t *testing.T) {
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			h := ua.Handler{Decorate: func(s *ua.Session, m sip.Message) {
 				m.Env().Header.Set("X-Leg", "b")
 			}}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -97,7 +98,7 @@ func TestUpdatePolicy(t *testing.T) {
 }
 
 func TestUpdatePolicyRejected(t *testing.T) {
-	check := func(s settings.Settings) error {
+	check := func(_ context.Context, s settings.Settings) error {
 		if s.Policy.HTTPS() {
 			return settings.Invalidf("n5 over https requires n5.tls in the configuration file")
 		}

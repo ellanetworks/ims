@@ -543,7 +543,9 @@ func TestOnChange(t *testing.T) {
 
 	var got [][2]*settings.Snapshot
 
-	l.OnChange(func(before, after *settings.Snapshot) { got = append(got, [2]*settings.Snapshot{before, after}) })
+	l.OnChange(func(_ context.Context, before, after *settings.Snapshot) {
+		got = append(got, [2]*settings.Snapshot{before, after})
+	})
 
 	first := l.Current()
 	s := example(t).System

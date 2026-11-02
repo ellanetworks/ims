@@ -1,6 +1,7 @@
 package transaction_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -12,7 +13,7 @@ func TestCancelWaitsForProvisional(t *testing.T) {
 	h := newHarness(t)
 	tx, rs, sent := h.request("INVITE", sip.UDP)
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,7 +36,7 @@ func TestCancelAfterFinalIsNoop(t *testing.T) {
 	h := newHarness(t)
 	tx, rs, sent := h.request("INVITE", sip.UDP)
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,7 +44,7 @@ func TestCancelAfterFinalIsNoop(t *testing.T) {
 	wantCode(t, rs.Next(), 486)
 	h.wantRequest("ACK")
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,13 +58,13 @@ func TestCancelInProceeding(t *testing.T) {
 	h.reply(sent, 183)
 	wantCode(t, rs.Next(), 183)
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
 	wantCancel(t, h.wantRequest("CANCEL"), tx.Request())
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,7 +86,7 @@ func TestCancelNonInvite(t *testing.T) {
 	h := newHarness(t)
 	tx, _, _ := h.request("MESSAGE", sip.UDP)
 
-	if err := tx.Cancel(); !errors.Is(err, transaction.ErrNotInvite) {
+	if err := tx.Cancel(context.Background()); !errors.Is(err, transaction.ErrNotInvite) {
 		t.Errorf("Cancel: %v", err)
 	}
 }
@@ -129,7 +130,7 @@ func TestLargeRequestIsReliable(t *testing.T) {
 	h.reply(sent, 180)
 	wantCode(t, rs.Next(), 180)
 
-	if err := tx.Cancel(); err != nil {
+	if err := tx.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -20,6 +20,9 @@ const (
 	defaultCxTimeout = 10 * time.Second
 
 	budgetMargin = 4
+
+	// resolveTimeout bounds the DNS queries that locate a server the HSS names.
+	resolveTimeout = 4 * time.Second
 )
 
 type Diameter interface {
@@ -99,7 +102,7 @@ func New(cfg Config) *ICSCF {
 	return i
 }
 
-func (i *ICSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (i *ICSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := i.cfg.Proxy.Check(req); res != nil {
 		i.respond(tx, res)
 		return
@@ -113,24 +116,24 @@ func (i *ICSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 
 	switch {
 	case req.Method == "REGISTER":
-		i.register(tx, req)
+		i.register(ctx, tx, req)
 	case to.Tag() != "":
-		i.subsequent(tx, req)
+		i.subsequent(ctx, tx, req)
 	default:
-		i.initial(tx, req)
+		i.initial(ctx, tx, req)
 	}
 }
 
-func (i *ICSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	i.cfg.Proxy.Cancel(tx, cancel)
+func (i *ICSCF) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	i.cfg.Proxy.Cancel(ctx, tx, cancel)
 }
 
-func (i *ICSCF) HandleAck(ack *sip.Request) {
-	i.log.Debug("dropped an ACK outside a transaction", slog.String("call-id", ack.Header.CallID()))
+func (i *ICSCF) HandleAck(ctx context.Context, ack *sip.Request) {
+	i.log.DebugContext(ctx, "dropped an ACK outside a transaction", slog.String("call-id", ack.Header.CallID()))
 }
 
-func (i *ICSCF) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	i.log.Debug("I-CSCF transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
+func (i *ICSCF) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	i.log.DebugContext(ctx, "I-CSCF transaction failed", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
 }
 
 func (i *ICSCF) deadline() time.Time {
@@ -164,14 +167,14 @@ func (i *ICSCF) outgoing(req *sip.Request, res *sip.Response) {
 	}
 }
 
-func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
-	err := i.cfg.Proxy.Forward(tx, out, to, opts)
+func (i *ICSCF) forward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {
+	err := i.cfg.Proxy.Forward(ctx, tx, out, to, opts)
 	if err == nil {
 		return
 	}
 
 	if errors.Is(err, proxy.ErrAnswered) {
-		i.log.Debug("request answered before it was forwarded", slog.String("request", out.StartLine()))
+		i.log.DebugContext(ctx, "request answered before it was forwarded", slog.String("request", out.StartLine()))
 		return
 	}
 
@@ -182,18 +185,18 @@ func (i *ICSCF) forward(tx *transaction.ServerTransaction, out *sip.Request, to 
 		code = serr.StatusCode
 	}
 
-	i.log.Debug("forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
-	i.answer(tx, code)
+	i.log.DebugContext(ctx, "forwarding failed", slog.String("request", out.StartLine()), slog.Any("error", err))
+	i.answer(ctx, tx, code)
 }
 
 // answer answers a request with a response of the I-CSCF's, through the proxy if it has begun forwarding it.
-func (i *ICSCF) answer(tx *transaction.ServerTransaction, code int) {
+func (i *ICSCF) answer(ctx context.Context, tx *transaction.ServerTransaction, code int) {
 	res := sip.NewResponse(tx.Request(), code, "")
 
 	i.cfg.Records.RejectingRequest(tx.Request(), code, tx.ToTag())
 	i.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
 
-	if err := i.cfg.Proxy.Relay(tx, res); err == nil {
+	if err := i.cfg.Proxy.Relay(ctx, tx, res); err == nil {
 		return
 	}
 
@@ -213,9 +216,9 @@ func (i *ICSCF) send(tx *transaction.ServerTransaction, res *sip.Response) {
 	}
 }
 
-func (i *ICSCF) spawn(tx *transaction.ServerTransaction, f func(ctx context.Context)) {
-	if err := i.cfg.Layer.Go(f); err != nil {
-		i.log.Debug("dropped a request", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
-		i.answer(tx, 500)
+func (i *ICSCF) spawn(ctx context.Context, tx *transaction.ServerTransaction, f func(ctx context.Context)) {
+	if err := i.cfg.Layer.Go(ctx, f); err != nil {
+		i.log.DebugContext(ctx, "dropped a request", slog.String("request", tx.Request().StartLine()), slog.Any("error", err))
+		i.answer(ctx, tx, 500)
 	}
 }

@@ -1,6 +1,7 @@
 package b2bua_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip/b2bua"
@@ -94,7 +95,7 @@ func TestBridgeMirrorsForks(t *testing.T) {
 
 	bob.nextAll("ended", "established")
 
-	_ = a2.Bye(ua.Change{}, nil)
+	_ = a2.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 	bob.next("ended")
@@ -105,7 +106,7 @@ func TestBridgeMirrorsForks(t *testing.T) {
 func TestBridgeDroppedFork(t *testing.T) {
 	alice, bob, first, fork, a1, a2 := forkedCall(t)
 
-	_ = first.Session().Bye(ua.Change{}, nil)
+	_ = first.Session().Bye(context.Background(), ua.Change{}, nil)
 
 	bob.next("ended")
 

@@ -111,7 +111,7 @@ func (c *core) uri() sip.URI {
 // asURI is the URI of the AS in the iFC, the Request-URI of the third-party REGISTERs (TS 24.229 §5.4.1.7 a).
 func (c *core) asURI() string { return "sip:" + c.as.String() }
 
-func (c *core) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (c *core) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := c.p.Check(req); res != nil {
 		_ = tx.Respond(res)
 		return
@@ -199,7 +199,7 @@ func (c *core) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request
 		c.mu.Unlock()
 	}
 
-	if err := c.p.Forward(tx, out, next, opts); err != nil {
+	if err := c.p.Forward(context.Background(), tx, out, next, opts); err != nil {
 		c.t.Errorf("forwarding %s: %v", out.StartLine(), err)
 	}
 }
@@ -296,26 +296,26 @@ func (c *core) notify(sub *regSub, state, regState string) {
 	n.SetBody("application/reginfo+xml", []byte(b.String()))
 	n.Flow = sip.Flow{Transport: sip.UDP, Local: c.addr, Remote: c.as}
 
-	if _, err := c.l.Request(n, &final{}); err != nil {
+	if _, err := c.l.Request(context.Background(), n, &final{}); err != nil {
 		c.t.Error(err)
 	}
 }
 
-func (c *core) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	c.p.Cancel(tx, cancel)
+func (c *core) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	c.p.Cancel(context.Background(), tx, cancel)
 }
 
-func (c *core) HandleAck(ack *sip.Request) {
+func (c *core) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := c.p.Preprocess(ack)
 	if err != nil {
 		c.t.Error(err)
 		return
 	}
 
-	_ = c.p.ForwardAck(out, c.target(out), c.p.Dialog(removed))
+	_ = c.p.ForwardAck(context.Background(), out, c.target(out), c.p.Dialog(removed))
 }
 
-func (c *core) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (c *core) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
 // target is the next hop of out: its top Route, or else its Request-URI, a domain of hosts resolved.
 func (c *core) target(out *sip.Request) proxy.Target {
@@ -438,7 +438,7 @@ func (c *core) send(n *siptest.Net, req *sip.Request) *sip.Response {
 	c.t.Helper()
 
 	h := &final{}
-	if _, err := c.l.Request(req, h); err != nil {
+	if _, err := c.l.Request(context.Background(), req, h); err != nil {
 		c.t.Fatal(err)
 	}
 
@@ -459,7 +459,7 @@ type final struct {
 	res *sip.Response
 }
 
-func (f *final) HandleResponse(res *sip.Response) {
+func (f *final) HandleResponse(ctx context.Context, res *sip.Response) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -468,7 +468,7 @@ func (f *final) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (f *final) HandleError(error) {}
+func (f *final) HandleError(context.Context, error) {}
 
 // requests are the requests of method the S-CSCF received from the AS, and sent it, since the last call.
 func (c *core) requests(method string) (from, to []*sip.Request) {
@@ -628,7 +628,7 @@ func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 
 			return nil
 		},
-		OnInvite: func(r *ua.Request) ua.Handler { return u.OnInvite(r) },
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler { return u.OnInvite(r) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -715,7 +715,7 @@ func TestThroughIMS(t *testing.T) {
 		t.Errorf("reg event subscriptions: %v", codes)
 	}
 
-	ca, err := alice.Call(mustURI(t, police))
+	ca, err := alice.Call(context.Background(), mustURI(t, police))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +803,7 @@ func TestThroughIMS(t *testing.T) {
 
 	// A member's BYE, through the S-CSCF to the session identity, which its domain resolves.
 	w.core.requests("BYE")
-	cb.Leave()
+	cb.Leave(context.Background())
 	w.n.Quiesce()
 	bob.expect(t, "ended")
 	alice.expectNot(t, "ended")
@@ -815,7 +815,7 @@ func TestThroughIMS(t *testing.T) {
 	// The initiator leaving releases police (TS 24.379 §6.3.8.1 3): the server's BYE to carol goes to the S-CSCF
 	// on the route of her dialog.
 	w.core.requests("BYE")
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 
 	alice.expect(t, "ended")
@@ -874,7 +874,7 @@ func TestThroughIMSUntrusted(t *testing.T) {
 	w.core.forge = "12"
 	w.core.mu.Unlock()
 
-	if _, err := alice.Call(mustURI(t, fire)); err != nil {
+	if _, err := alice.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -898,7 +898,7 @@ func TestThroughIMSNewToken(t *testing.T) {
 		t.Fatalf("reregistration: %d", res.StatusCode)
 	}
 
-	ca, err := alice.Call(mustURI(t, fire))
+	ca, err := alice.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +910,7 @@ func TestThroughIMSNewToken(t *testing.T) {
 		t.Fatalf("INVITEs to the AS %v", isc)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -931,7 +931,7 @@ func TestThroughIMSNetworkDeregistration(t *testing.T) {
 		t.Errorf("SUBSCRIBEs after the deregistration: %v", subs)
 	}
 
-	ca, err := alice.Call(mustURI(t, fire))
+	ca, err := alice.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,6 +945,6 @@ func TestThroughIMSNetworkDeregistration(t *testing.T) {
 		t.Errorf("INVITEs of the AS %v", invites)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }

@@ -5,10 +5,15 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Config struct {
@@ -37,8 +42,10 @@ type Config struct {
 	SecureCookie bool
 	// BcryptCost is the cost of the password hashes: bcrypt.DefaultCost when zero.
 	BcryptCost int
-	Now        func() time.Time
-	Logger     *slog.Logger
+	// TracerProvider traces the requests to the API; none when nil.
+	TracerProvider trace.TracerProvider
+	Now            func() time.Time
+	Logger         *slog.Logger
 }
 
 // Settings are the settings of the running IMS, which persists and applies a change before it returns. A change
@@ -81,7 +88,36 @@ func NewHandler(cfg Config) http.Handler {
 	// The session cookie authenticates the refresh and the logout, so a page of another origin must not be able to
 	// send them. CrossOriginProtection rejects the unsafe requests that a browser tells are cross-origin, and lets
 	// through those of other clients, which send none of the headers it checks.
-	return securityHeaders(cfg, http.NewCrossOriginProtection().Handler(mux))
+	return traced(cfg, securityHeaders(cfg, http.NewCrossOriginProtection().Handler(mux)))
+}
+
+// untraced are the API paths that are scraped periodically.
+var untraced = map[string]bool{"/api/v1/livez": true, "/api/v1/readyz": true, "/api/v1/metrics": true}
+
+// traced gives each request to the API a server span, named by its route. A caller's trace context is linked rather
+// than continued, since anyone can send one. The UI's static files are not traced, nor the probes and metrics, which
+// are scraped periodically.
+func traced(cfg Config, next http.Handler) http.Handler {
+	if cfg.TracerProvider == nil {
+		return next
+	}
+
+	route := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+
+		if i := strings.IndexByte(r.Pattern, '/'); i >= 0 {
+			trace.SpanFromContext(r.Context()).SetAttributes(semconv.HTTPRoute(r.Pattern[i:]))
+		}
+	})
+
+	return otelhttp.NewHandler(route, "",
+		otelhttp.WithTracerProvider(cfg.TracerProvider),
+		otelhttp.WithPropagators(tracing.Propagator),
+		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return strings.HasPrefix(r.URL.Path, "/api/") && !untraced[r.URL.Path]
+		}),
+	)
 }
 
 func securityHeaders(cfg Config, next http.Handler) http.Handler {

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func (w *world) change(edit func(cfg *settings.Settings)) {
 		w.t.Fatal(err)
 	}
 
-	w.s.Revoke(w.src.p.Swap(snap), snap)
+	w.s.Revoke(context.Background(), w.src.p.Swap(snap), snap)
 	w.n.Quiesce()
 }
 
@@ -113,7 +114,7 @@ func TestMemberRemovedReleasesCall(t *testing.T) {
 
 	_, _, cc := w.call(fire)
 	w.n.Quiesce()
-	cc.Leave()
+	cc.Leave(context.Background())
 	w.n.Quiesce()
 	alice.take()
 	bob.take()
@@ -159,7 +160,7 @@ func TestImplicitAffiliationsChanged(t *testing.T) {
 
 	var res *sip.Response
 
-	if err := dave.Affiliate([]sip.URI{mustURI(t, quorum)}, func(r *sip.Response, _ error) { res = r }); err != nil {
+	if err := dave.Affiliate(context.Background(), []sip.URI{mustURI(t, quorum)}, func(r *sip.Response, _ error) { res = r }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,7 +221,7 @@ func TestImplicitAffiliationLeftStays(t *testing.T) {
 
 	var res *sip.Response
 
-	if err := dave.Affiliate([]sip.URI{mustURI(t, quorum)}, func(r *sip.Response, _ error) { res = r }); err != nil {
+	if err := dave.Affiliate(context.Background(), []sip.URI{mustURI(t, quorum)}, func(r *sip.Response, _ error) { res = r }); err != nil {
 		t.Fatal(err)
 	}
 

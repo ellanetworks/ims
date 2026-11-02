@@ -57,8 +57,8 @@ type PolicyLastResponse struct {
 }
 
 func GetPolicy(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeResponse(w, policyResponse(cfg), http.StatusOK, cfg.Logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(r.Context(), w, policyResponse(cfg), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -74,7 +74,7 @@ func UpdatePolicy(cfg Config) http.Handler {
 
 		if params.N5 != nil {
 			if p.Interface != settings.PolicyN5 {
-				writeError(w, http.StatusBadRequest, "n5 is only for the n5 interface", nil, cfg.Logger)
+				writeError(r.Context(), w, http.StatusBadRequest, "n5 is only for the n5 interface", nil, cfg.Logger)
 				return
 			}
 
@@ -82,11 +82,11 @@ func UpdatePolicy(cfg Config) http.Handler {
 		}
 
 		if err := cfg.Settings.UpdatePolicy(r.Context(), p); err != nil {
-			writeSettingsError(w, err, "Failed to update policy", cfg.Logger)
+			writeSettingsError(r.Context(), w, err, "Failed to update policy", cfg.Logger)
 			return
 		}
 
-		writeResponse(w, policyResponse(cfg), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, policyResponse(cfg), http.StatusOK, cfg.Logger)
 	})
 }
 

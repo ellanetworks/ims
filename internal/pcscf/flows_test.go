@@ -159,7 +159,7 @@ func TestNotifyEndsOneFlow(t *testing.T) {
 // TS 33.203 §6.1 NOTE 2: each flow has its own security associations; a new flow leaves the others',
 // while a new registration without the multiple registration mechanism replaces them.
 func TestSecurityAssociationsPerFlow(t *testing.T) {
-	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, id flowID, state saState) *saSet {
@@ -180,7 +180,7 @@ func TestSecurityAssociationsPerFlow(t *testing.T) {
 	a.add(second)
 	a.mu.Unlock()
 
-	a.registered(second, outcome{lifetime: time.Hour})
+	a.registered(context.Background(), second, outcome{lifetime: time.Hour})
 
 	if time.Until(first.expires) < 30*time.Minute {
 		t.Fatalf("flow 1's set expires in %s after flow 2 registered", time.Until(first.expires))
@@ -196,7 +196,7 @@ func TestSecurityAssociationsPerFlow(t *testing.T) {
 	a.add(plain)
 	a.mu.Unlock()
 
-	a.registered(plain, outcome{lifetime: time.Hour})
+	a.registered(context.Background(), plain, outcome{lifetime: time.Hour})
 
 	if time.Until(first.expires) > time.Minute {
 		t.Fatalf("flow 1's set expires in %s after a registration without flows", time.Until(first.expires))
@@ -295,7 +295,7 @@ func TestFlowsSharingAURI(t *testing.T) {
 // refused when none is left.
 func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
-		slog.New(slog.DiscardHandler))
+		slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	newSet := func(regID int64, portC uint16, spi uint32) *saSet {
@@ -309,7 +309,7 @@ func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 	}
 
 	challengeFlow := func(regID int64) (*saSet, error) {
-		_, err := a.challenged(challenge{
+		_, err := a.challenged(context.Background(), challenge{
 			impi: testIMPI, flow: flowID{testInstance, regID}, local: loopback, ue: ueAddr,
 			offer: ipsec.Offer{
 				Endpoint:  ipsec.Endpoint{PortC: 6100 + uint16(regID), PortS: 6001, SPIC: uint32(100 + 2*regID), SPIS: uint32(101 + 2*regID)},
@@ -347,11 +347,11 @@ func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 // TS 24.229 §5.2.2.2: a challenge deletes the temporary sets toward the UE, whatever their flow.
 func TestOneTemporarySetPerUE(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
-		slog.New(slog.DiscardHandler))
+		slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	for i := range 20 {
-		_, err := a.challenged(challenge{
+		_, err := a.challenged(context.Background(), challenge{
 			impi: testIMPI, flow: flowID{testInstance, int64(i + 1)}, local: loopback, ue: ueAddr,
 			offer: ipsec.Offer{
 				Endpoint:  ipsec.Endpoint{PortC: uint16(7000 + 2*i), PortS: uint16(7001 + 2*i), SPIC: uint32(100 + 2*i), SPIS: uint32(101 + 2*i)},
@@ -375,7 +375,7 @@ func TestOneTemporarySetPerUE(t *testing.T) {
 // same private identity at another address, as a phone's VoLTE client on another PDN, keeps its own.
 func TestChallengeKeepsAnotherAddressesTemporarySet(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
-		slog.New(slog.DiscardHandler))
+		slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	other := netip.MustParseAddr("127.0.0.3")
@@ -383,7 +383,7 @@ func TestChallengeKeepsAnotherAddressesTemporarySet(t *testing.T) {
 	challengeAt := func(ue netip.Addr, regID int64, spi uint32) {
 		t.Helper()
 
-		if _, err := a.challenged(challenge{
+		if _, err := a.challenged(context.Background(), challenge{
 			impi: testIMPI, flow: flowID{testInstance, regID}, local: loopback, ue: ue,
 			offer: ipsec.Offer{
 				Endpoint:  ipsec.Endpoint{PortC: 6100, PortS: 6101, SPIC: spi, SPIS: spi + 1},
@@ -481,13 +481,13 @@ func TestUnansweredChallengeIsLogged(t *testing.T) {
 	var logs bytes.Buffer
 
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
-		slog.New(slog.NewTextHandler(&logs, nil)))
+		slog.New(slog.NewTextHandler(&logs, nil)), noTrace())
 	t.Cleanup(a.close)
 
 	challengeUE := func() *saSet {
 		t.Helper()
 
-		if _, err := a.challenged(challenge{
+		if _, err := a.challenged(context.Background(), challenge{
 			impi: testIMPI, local: loopback, ue: ueAddr,
 			offer: ipsec.Offer{
 				Endpoint:  ipsec.Endpoint{PortC: 6100, PortS: 6101, SPIC: 100, SPIS: 101},

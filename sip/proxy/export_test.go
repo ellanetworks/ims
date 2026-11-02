@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"slices"
 
 	"github.com/ellanetworks/ims/sip"
@@ -58,5 +59,5 @@ func (p *Proxy) HandleResponse(tx *transaction.ServerTransaction, key any, res *
 	b := c.branches[i]
 	c.mu.Unlock()
 
-	b.HandleResponse(res)
+	b.HandleResponse(context.Background(), res)
 }

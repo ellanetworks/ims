@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -44,8 +45,10 @@ type publication struct {
 //
 // Every PUBLISH carries the mcptt-info naming the user (step 2), its refreshes and its removal too, and the
 // modifications the state of all the groups (NOTE 4). They go one at a time, the latest state sent after the one in
-// flight; the client refreshes the publication before the expiry its 2xx grants (RFC 3903 §6 step 4).
-func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err error)) error {
+// flight; the client refreshes the publication before the expiry its 2xx grants (RFC 3903 §6 step 4). ctx carries the
+// trace of the PUBLISH, as of the requests of sip/ua; the groups published once a removal in flight ends, and the
+// refreshes, are traces of their own.
+func (c *Client) Affiliate(ctx context.Context, groups []sip.URI, done func(res *sip.Response, err error)) error {
 	if done == nil {
 		done = func(*sip.Response, error) {}
 	}
@@ -59,7 +62,7 @@ func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err er
 	case pb == nil && len(groups) == 0:
 		return ErrNotPublished
 	case pb == nil:
-		return c.publish(groups, done)
+		return c.publish(ctx, groups, done)
 	case pb.removing:
 		// Published once removed, the latest groups only.
 		if stale := pb.afterDone; stale != nil {
@@ -76,7 +79,7 @@ func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err er
 
 		return nil
 	case len(groups) == 0:
-		err := pb.p.Remove(done)
+		err := pb.p.Remove(ctx, done)
 		if errors.Is(err, ua.ErrState) {
 			// Ended, its handler yet to run.
 			c.aff = nil
@@ -93,17 +96,17 @@ func (c *Client) Affiliate(groups []sip.URI, done func(res *sip.Response, err er
 		return err
 	}
 
-	err = pb.p.Modify([]sip.BodyPart{state}, func(res *sip.Response, err error) { c.modified(pb, done, res, err) })
+	err = pb.p.Modify(ctx, []sip.BodyPart{state}, func(res *sip.Response, err error) { c.modified(pb, done, res, err) })
 	if errors.Is(err, ua.ErrState) {
 		c.aff = nil
-		return c.publish(groups, done)
+		return c.publish(ctx, groups, done)
 	}
 
 	return err
 }
 
 // publish sends the initial PUBLISH of groups (TS 24.379 §9.2.1.2), with c.mu held.
-func (c *Client) publish(groups []sip.URI, done func(*sip.Response, error)) error {
+func (c *Client) publish(ctx context.Context, groups []sip.URI, done func(*sip.Response, error)) error {
 	state, err := c.presence(groups)
 	if err != nil {
 		return err
@@ -127,9 +130,9 @@ func (c *Client) publish(groups []sip.URI, done func(*sip.Response, error)) erro
 
 	pb := &publication{waiting: []func(*sip.Response, error){done}}
 
-	p, err := c.cfg.Agent.Publish(req, ua.PublicationHandler{
-		Published: func(_ *ua.Publication, res *sip.Response) { c.published(pb, res) },
-		Ended:     func(_ *ua.Publication, e ua.End) { c.publicationEnded(pb, e) },
+	p, err := c.cfg.Agent.Publish(ctx, req, ua.PublicationHandler{
+		Published: func(_ context.Context, _ *ua.Publication, res *sip.Response) { c.published(pb, res) },
+		Ended:     func(_ context.Context, _ *ua.Publication, e ua.End) { c.publicationEnded(pb, e) },
 	}, ua.On(c.st), ua.WithBodies(sip.NewBodyPart(mcpttinfo.ContentType, info)))
 	if err != nil {
 		return err
@@ -182,7 +185,8 @@ func (c *Client) publicationEnded(pb *publication, e ua.End) {
 
 	if done != nil {
 		if c.aff == nil {
-			err = c.publish(groups, done)
+			// Later than the Affiliate that asked for them: a trace of its own.
+			err = c.publish(context.Background(), groups, done)
 		} else {
 			err = ua.ErrStale
 		}

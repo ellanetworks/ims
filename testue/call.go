@@ -512,7 +512,7 @@ func (c *Call) handler() ua.Handler {
 		Offer:       c.offerReceived,
 		Pracked:     c.pracked,
 		Request:     c.request,
-		Cancelled:   func(*ua.Session, *ua.Request, *sip.Request) {},
+		Cancelled:   func(context.Context, *ua.Session, *ua.Request, *sip.Request) {},
 		Received:    c.received,
 		Ended:       c.ended,
 		Failed:      c.failed,
@@ -521,7 +521,7 @@ func (c *Call) handler() ua.Handler {
 
 // received makes an Event of a message of the remote end the call took, a copy: the requests and responses of its
 // dialogs, as the agent handled them, without retransmissions or messages it refused before the call saw them.
-func (c *Call) received(_ *ua.Session, m sip.Message) {
+func (c *Call) received(ctx context.Context, _ *ua.Session, m sip.Message) {
 	switch m := m.(type) {
 	case *sip.Request:
 		c.event(ue.Event{Request: m.Clone()})
@@ -592,7 +592,7 @@ func (mm *MMTel) Invite(target string, opts CallOptions) (*Call, error) {
 	c.holdSALocked()
 	c.mu.Unlock()
 
-	o, err := u.core().Agent().Invite(req, c.handler())
+	o, err := u.core().Agent().Invite(context.Background(), req, c.handler())
 	if err != nil {
 		c.mu.Lock()
 		c.terminateLocked(TimedOut)
@@ -621,7 +621,7 @@ func reliable(res *sip.Response) bool {
 // progress handles a provisional response to an INVITE of the UE: of an outgoing call, an early dialog and its
 // answer; then, of the call or of a re-INVITE, the UPDATE that reports the resources of the UE once the remote end
 // has its preconditions (RFC 3312 §5, TS 24.229 §6.1.4.2).
-func (c *Call) progress(s *ua.Session, res *sip.Response) {
+func (c *Call) progress(ctx context.Context, s *ua.Session, res *sip.Response) {
 	c.mu.Lock()
 
 	l := c.legLocked(s)
@@ -664,7 +664,7 @@ func (c *Call) reportResources(ctx context.Context, l *leg) error {
 }
 
 // established handles the 2xx of an outgoing call, or the ACK of an incoming one.
-func (c *Call) established(s *ua.Session, m sip.Message) {
+func (c *Call) established(ctx context.Context, s *ua.Session, m sip.Message) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -700,7 +700,7 @@ func (c *Call) established(s *ua.Session, m sip.Message) {
 }
 
 // answerReceived applies the answer of the remote end to the last offer of the UE on the dialog.
-func (c *Call) answerReceived(s *ua.Session, body []byte) {
+func (c *Call) answerReceived(ctx context.Context, s *ua.Session, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -719,13 +719,13 @@ func (c *Call) answerReceived(s *ua.Session, body []byte) {
 }
 
 // offerReceived answers an offer of the remote end in a response (RFC 3262 §5, RFC 3261 §13.2.1).
-func (c *Call) offerReceived(s *ua.Session, o *ua.Offer) {
+func (c *Call) offerReceived(ctx context.Context, s *ua.Session, o *ua.Offer) {
 	c.mu.Lock()
 
 	l := c.legLocked(s)
 	if l == nil {
 		c.mu.Unlock()
-		o.Reject()
+		o.Reject(ctx)
 
 		return
 	}
@@ -743,12 +743,12 @@ func (c *Call) offerReceived(s *ua.Session, o *ua.Offer) {
 
 	if err != nil {
 		c.event(ue.Event{Err: err})
-		o.Reject()
+		o.Reject(ctx)
 
 		return
 	}
 
-	_ = o.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer.Bytes())}})
+	_ = o.Answer(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer.Bytes())}})
 }
 
 // SetAutoRefresh turns the session refreshes of the call on or off, those of the UE as refresher (RFC 4028 §7.4):
@@ -781,7 +781,7 @@ func (c *Call) SetAutoRefresh(on bool) {
 	}
 }
 
-func (c *Call) pracked(*ua.Session, *sip.Response) {
+func (c *Call) pracked(context.Context, *ua.Session, *sip.Response) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -792,7 +792,7 @@ func (c *Call) pracked(*ua.Session, *sip.Response) {
 // request answers a request of the remote end within a dialog of the call: an offer in a re-INVITE or an UPDATE gets
 // the answer of the UE (RFC 3264 §8); other requests a 200. A released early dialog takes none; another live early
 // dialog than the call's only an UPDATE.
-func (c *Call) request(s *ua.Session, r *ua.Request) {
+func (c *Call) request(ctx context.Context, s *ua.Session, r *ua.Request) {
 	req := r.Message()
 
 	c.mu.Lock()
@@ -861,7 +861,7 @@ func (c *Call) answerLocked(l *leg, req *sip.Request, body []byte) ua.Reply {
 
 // ended handles the end of a session of the call: the call's own ends the call; an early dialog of an outgoing call
 // that ends alone is released (RFC 6228 §4, RFC 3261 §12.2.1.2).
-func (c *Call) ended(s *ua.Session, e ua.End) {
+func (c *Call) ended(ctx context.Context, s *ua.Session, e ua.End) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -916,7 +916,7 @@ func (c *Call) ended(s *ua.Session, e ua.End) {
 }
 
 // failed handles the final response other than 2xx, or the error, of the INVITE of an outgoing call.
-func (c *Call) failed(_ *ua.Outgoing, res *sip.Response, err error) {
+func (c *Call) failed(ctx context.Context, _ *ua.Outgoing, res *sip.Response, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1047,7 +1047,7 @@ func (c *Call) update(ctx context.Context, l *leg, withOffer bool, change func(*
 
 	done, f := callback()
 
-	err := l.s.Update(ch, f)
+	err := l.s.Update(ctx, ch, f)
 	if err == nil {
 		var res *sip.Response
 
@@ -1145,7 +1145,7 @@ func (c *Call) cancel(ctx context.Context, end EndReason, body *sdp.Session, ext
 		ch.Bodies = []sip.BodyPart{sip.NewBodyPart(sdp.ContentType, body.Bytes())}
 	}
 
-	if err := o.Cancel(ch); err != nil {
+	if err := o.Cancel(ctx, ch); err != nil {
 		return fmt.Errorf("testue: CANCEL: %w", err)
 	}
 
@@ -1188,7 +1188,7 @@ func (c *Call) bye(ctx context.Context, reason EndReason, extra ...sip.Field) er
 
 	done := make(chan error, 1)
 
-	if err := s.Bye(ua.Change{Header: sip.Header(extra)}, func(_ *sip.Response, err error) { done <- err }); err != nil {
+	if err := s.Bye(ctx, ua.Change{Header: sip.Header(extra)}, func(_ *sip.Response, err error) { done <- err }); err != nil {
 		if errors.Is(err, ua.ErrState) {
 			return nil
 		}
@@ -1269,7 +1269,7 @@ func (c *Call) reinvite(ctx context.Context, change func(*media) error) error {
 
 	done, f := callback()
 
-	err = l.s.Reinvite(ch, f)
+	err = l.s.Reinvite(ctx, ch, f)
 	if err == nil {
 		var res *sip.Response
 

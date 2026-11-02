@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,7 +14,7 @@ import (
 // a Handler do. No event follows Ended.
 type PublicationHandler struct {
 	// Published reports a 2xx to a PUBLISH: its SIP-ETag and Expires (RFC 3903 §5).
-	Published func(p *Publication, res *sip.Response)
+	Published func(ctx context.Context, p *Publication, res *sip.Response)
 
 	// Ended reports the end of the publication:
 	//   - EndRemoved by Remove, End.Response its 2xx;
@@ -22,7 +23,7 @@ type PublicationHandler struct {
 	//   - EndExpired when its refreshes failed until it expired;
 	//   - EndTimeout by the error of a PUBLISH;
 	//   - EndClosed as the agent closes, after the PUBLISH removing it.
-	Ended func(p *Publication, e End)
+	Ended func(ctx context.Context, p *Publication, e End)
 }
 
 // Publication is event state the agent publishes, as an event publication agent (RFC 3903 §4), for one Request-URI
@@ -58,7 +59,9 @@ type Publication struct {
 // TS 24.379 §9.2.2.2.6), the Route and the header fields of the application, and the state in its bodies. The agent
 // adds what req leaves out: the From tag, a Call-ID, CSeq and Max-Forwards. It answers 401 and 407 challenges
 // through Config.Authenticate, and a 423 with its Min-Expires.
-func (a *Agent) Publish(req *sip.Request, h PublicationHandler, opts ...Option) (*Publication, error) {
+//
+// The PUBLISH, its retries and what its response causes are part of the trace of ctx.
+func (a *Agent) Publish(ctx context.Context, req *sip.Request, h PublicationHandler, opts ...Option) (*Publication, error) {
 	if req.Method != "PUBLISH" {
 		return nil, fmt.Errorf("sip/ua: Publish of a %s request", req.Method)
 	}
@@ -86,7 +89,7 @@ func (a *Agent) Publish(req *sip.Request, h PublicationHandler, opts ...Option) 
 		return nil, err
 	}
 
-	if err := p.st.do(func() error { return p.send(&publishRequest{p: p, bodies: parts}) }); err != nil {
+	if err := p.st.do(func() error { return p.send(&publishRequest{ctx: ctx, p: p, bodies: parts}) }); err != nil {
 		a.removePublication(p)
 		return nil, err
 	}
@@ -121,8 +124,8 @@ func (p *Publication) SetValue(v any) {
 }
 
 // Modify publishes the new state bodies (RFC 3903 §4.4); done receives the final response of its PUBLISH, or ErrStale
-// when a later Modify replaced it before it went.
-func (p *Publication) Modify(bodies []sip.BodyPart, done func(res *sip.Response, err error)) error {
+// when a later Modify replaced it before it went. The PUBLISH is part of the trace of ctx.
+func (p *Publication) Modify(ctx context.Context, bodies []sip.BodyPart, done func(res *sip.Response, err error)) error {
 	if len(bodies) == 0 {
 		return errors.New("sip/ua: a modifying PUBLISH carries the state (RFC 3903 §4.4)")
 	}
@@ -134,18 +137,19 @@ func (p *Publication) Modify(bodies []sip.BodyPart, done func(res *sip.Response,
 
 		p.state = bodies
 
-		return p.queue(&publishRequest{p: p, bodies: bodies, done: done})
+		return p.queue(&publishRequest{ctx: ctx, p: p, bodies: bodies, done: done})
 	})
 }
 
-// Remove removes the publication (RFC 3903 §4.5); it ends with the response, EndRemoved.
-func (p *Publication) Remove(done func(res *sip.Response, err error)) error {
+// Remove removes the publication (RFC 3903 §4.5); it ends with the response, EndRemoved. The PUBLISH is part of the
+// trace of ctx.
+func (p *Publication) Remove(ctx context.Context, done func(res *sip.Response, err error)) error {
 	return p.st.do(func() error {
 		if p.ended {
 			return &Error{Op: "Remove", State: Terminated, Err: ErrState}
 		}
 
-		return p.queue(&publishRequest{p: p, remove: true, done: done})
+		return p.queue(&publishRequest{ctx: ctx, p: p, remove: true, done: done})
 	})
 }
 
@@ -168,8 +172,10 @@ func (p *Publication) queue(c *publishRequest) error {
 	return nil
 }
 
-// publishRequest is a PUBLISH of the publication: initial, refreshing (no bodies), modifying or removing.
+// publishRequest is a PUBLISH of the publication: initial, refreshing (no bodies), modifying or removing. It may wait
+// for the one in flight, and goes in the trace of ctx: that of what made it.
 type publishRequest struct {
+	ctx     context.Context
 	p       *Publication
 	bodies  []sip.BodyPart
 	remove  bool
@@ -213,7 +219,7 @@ func (p *Publication) send(c *publishRequest) error {
 
 	c.build()
 
-	if _, err := p.a.prepareAndSend(c.req, p.st.client(c.response, c.error)); err != nil {
+	if _, err := p.a.prepareAndSend(c.ctx, c.req, p.st.client(c.response, c.error)); err != nil {
 		return err
 	}
 
@@ -222,7 +228,7 @@ func (p *Publication) send(c *publishRequest) error {
 	return nil
 }
 
-func (c *publishRequest) response(res *sip.Response) {
+func (c *publishRequest) response(ctx context.Context, res *sip.Response) {
 	p := c.p
 
 	if res.IsProvisional() || c.final || p.ended {
@@ -231,7 +237,7 @@ func (c *publishRequest) response(res *sip.Response) {
 
 	if c.retry(res) {
 		if err := p.send(c); err != nil {
-			c.error(err)
+			c.error(ctx, err)
 		}
 
 		return
@@ -242,30 +248,30 @@ func (c *publishRequest) response(res *sip.Response) {
 
 	switch {
 	case res.IsSuccess():
-		p.succeeded(c, res)
+		p.succeeded(ctx, c, res)
 	case res.StatusCode == 412 && !c.initial && !c.remove:
 		// RFC 3903 §5: the compositor lost the state: the entity-tag goes, and the state is published anew.
 		p.etag = ""
 		p.emitDone(c.done, res, nil)
 
 		if p.next == nil {
-			p.next = &publishRequest{p: p}
+			p.next = &publishRequest{ctx: ctx, p: p}
 		}
 	case c.remove:
 		p.emitDone(c.done, res, nil)
-		p.end(End{Cause: EndRemoved, Response: res})
+		p.end(ctx, End{Cause: EndRemoved, Response: res})
 
 		return
 	default:
 		p.emitDone(c.done, res, nil)
 
 		if c.initial || p.expiresAt.IsZero() || !p.a.clock.Now().Before(p.expiresAt) {
-			p.end(End{Cause: EndRejected, Remote: true, Response: res})
+			p.end(ctx, End{Cause: EndRejected, Remote: true, Response: res})
 			return
 		}
 
 		// The refresh failed: tried again halfway to the expiry.
-		p.retryRefresh()
+		p.retryRefresh(ctx)
 	}
 
 	p.sendNext()
@@ -302,7 +308,7 @@ func (c *publishRequest) retry(res *sip.Response) bool {
 	return true
 }
 
-func (c *publishRequest) error(err error) {
+func (c *publishRequest) error(ctx context.Context, err error) {
 	p := c.p
 
 	if c.final || p.ended {
@@ -315,17 +321,17 @@ func (c *publishRequest) error(err error) {
 	p.emitDone(c.done, nil, err)
 
 	if c.initial || c.remove {
-		p.end(failureEnd(err))
+		p.end(ctx, failureEnd(err))
 		return
 	}
 
-	p.retryRefresh()
+	p.retryRefresh(ctx)
 	p.sendNext()
 }
 
 // succeeded applies a 2xx: its entity-tag replaces the previous one, its Expires sets the expiry and the refresh
-// (RFC 3903 §4.1, §5).
-func (p *Publication) succeeded(c *publishRequest, res *sip.Response) {
+// (RFC 3903 §4.1, §5), traces of their own linked to ctx, that of the 2xx.
+func (p *Publication) succeeded(ctx context.Context, c *publishRequest, res *sip.Response) {
 	if etag, ok, err := res.Header.SIPETag(); ok && err == nil {
 		p.etag = etag
 	}
@@ -333,13 +339,13 @@ func (p *Publication) succeeded(c *publishRequest, res *sip.Response) {
 	p.emitDone(c.done, res, nil)
 
 	if c.remove {
-		p.end(End{Cause: EndRemoved, Response: res})
+		p.end(ctx, End{Cause: EndRemoved, Response: res})
 		return
 	}
 
 	p.st.emit(func() {
 		if p.h.Published != nil {
-			p.h.Published(p, res)
+			p.h.Published(ctx, p, res)
 		}
 	})
 
@@ -356,32 +362,33 @@ func (p *Publication) succeeded(c *publishRequest, res *sip.Response) {
 	p.expiresAt = p.a.clock.Now().Add(d)
 
 	p.refresh.stop()
-	p.refresh = p.st.after(d-refreshLead(d), p.autoRefresh)
+	p.refresh = p.st.detached(ctx, d-refreshLead(d), "publication refresh", p.autoRefresh)
 
 	p.expiry.stop()
-	p.expiry = p.st.after(d, func() { p.end(End{Cause: EndExpired}) })
+	p.expiry = p.st.detached(ctx, d, "publication expiry", func(ctx context.Context) { p.end(ctx, End{Cause: EndExpired}) })
 }
 
 // autoRefresh refreshes the publication, without a body (RFC 3903 §4.3), unless a PUBLISH is in flight or waiting.
-func (p *Publication) autoRefresh() {
+func (p *Publication) autoRefresh(ctx context.Context) {
 	if p.ended || p.inflight != nil || p.next != nil {
 		return
 	}
 
-	if err := p.send(&publishRequest{p: p}); err != nil {
-		p.retryRefresh()
+	if err := p.send(&publishRequest{ctx: ctx, p: p}); err != nil {
+		p.retryRefresh(ctx)
 	}
 }
 
-// retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one.
-func (p *Publication) retryRefresh() {
+// retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one, in a trace of its
+// own linked to ctx, that of the refresh that failed.
+func (p *Publication) retryRefresh(ctx context.Context) {
 	left := p.expiresAt.Sub(p.a.clock.Now())
 	if p.ended || left < 2*64*p.a.layer.T1() {
 		return
 	}
 
 	p.refresh.stop()
-	p.refresh = p.st.after(left/2, p.autoRefresh)
+	p.refresh = p.st.detached(ctx, left/2, "publication refresh", p.autoRefresh)
 }
 
 // sendNext sends the PUBLISH that waited for the one in flight.
@@ -406,7 +413,7 @@ func (p *Publication) emitDone(done func(*sip.Response, error), res *sip.Respons
 }
 
 // end ends the publication, once.
-func (p *Publication) end(e End) {
+func (p *Publication) end(ctx context.Context, e End) {
 	p.st.check()
 
 	if p.ended {
@@ -433,26 +440,27 @@ func (p *Publication) end(e End) {
 
 	p.st.emit(func() {
 		if p.h.Ended != nil {
-			p.h.Ended(p, e)
+			p.h.Ended(ctx, p, e)
 		}
 	})
 }
 
-// close removes the publication as the agent closes; Shutdown waits for the removal.
-func (p *Publication) close() {
+// close removes the publication as the agent closes; Shutdown waits for the removal. ctx is the trace of the
+// shutdown.
+func (p *Publication) close(ctx context.Context) {
 	if p.ended || p.closing {
 		return
 	}
 
 	if p.etag == "" && p.inflight == nil {
-		p.end(End{Cause: EndClosed})
+		p.end(ctx, End{Cause: EndClosed})
 		return
 	}
 
 	p.closing = true
 	p.a.await(1)
 
-	if err := p.queue(&publishRequest{p: p, remove: true}); err != nil {
-		p.end(End{Cause: EndClosed, Err: err})
+	if err := p.queue(&publishRequest{ctx: ctx, p: p, remove: true}); err != nil {
+		p.end(ctx, End{Cause: EndClosed, Err: err})
 	}
 }

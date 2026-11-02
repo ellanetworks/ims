@@ -11,12 +11,15 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
+// ServerRequest is a request the TU received, Ctx carrying its span.
 type ServerRequest struct {
+	Ctx context.Context
 	Tx  *transaction.ServerTransaction
 	Req *sip.Request
 }
 
 type TransactionError struct {
+	Ctx context.Context
 	Tx  *transaction.ServerTransaction
 	Err error
 }
@@ -50,20 +53,20 @@ func (u *TU) Stop() {
 	u.stop.Do(func() { close(u.done) })
 }
 
-func (u *TU) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	put(u.requests, ServerRequest{Tx: tx, Req: req}, u.done)
+func (u *TU) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
+	put(u.requests, ServerRequest{Ctx: ctx, Tx: tx, Req: req}, u.done)
 }
 
-func (u *TU) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	put(u.cancels, ServerRequest{Tx: tx, Req: cancel}, u.done)
+func (u *TU) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	put(u.cancels, ServerRequest{Ctx: ctx, Tx: tx, Req: cancel}, u.done)
 }
 
-func (u *TU) HandleAck(ack *sip.Request) {
+func (u *TU) HandleAck(_ context.Context, ack *sip.Request) {
 	put(u.acks, ack, u.done)
 }
 
-func (u *TU) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	put(u.errs, TransactionError{Tx: tx, Err: err}, u.done)
+func (u *TU) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	put(u.errs, TransactionError{Ctx: ctx, Tx: tx, Err: err}, u.done)
 }
 
 func (u *TU) NextRequest() ServerRequest {
@@ -122,11 +125,11 @@ func NewResponses(t testing.TB) *Responses {
 	return r
 }
 
-func (r *Responses) HandleResponse(res *sip.Response) {
+func (r *Responses) HandleResponse(_ context.Context, res *sip.Response) {
 	put(r.responses, res, r.done)
 }
 
-func (r *Responses) HandleError(err error) {
+func (r *Responses) HandleError(_ context.Context, err error) {
 	put(r.errs, err, r.done)
 }
 

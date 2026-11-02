@@ -193,7 +193,7 @@ func TestCallEndedBeforeItsFirstAAR(t *testing.T) {
 	c := &call{ue: proxy.Caller, policy: s.p.newCallPolicy(regKey{impi: testIMPI, ue: ueAddr}, nil, "")}
 	c.policy.session = s.p.policy.callSession(c.policy)
 
-	s.p.callEnded(c)
+	s.p.callEnded(context.Background(), c)
 	pcrf.none()
 }
 

@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestFailureEffects(t *testing.T) {
 
 			done, f := results()
 
-			if err := bs.Send(c.method, ua.Change{}, f); err != nil {
+			if err := bs.Send(context.Background(), c.method, ua.Change{}, f); err != nil {
 				t.Fatal(err)
 			}
 

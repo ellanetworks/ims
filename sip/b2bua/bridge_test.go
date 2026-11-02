@@ -1,6 +1,7 @@
 package b2bua_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -34,7 +35,7 @@ func TestBridgeCall(t *testing.T) {
 
 	held = make(chan *ua.Request, 1)
 	h := bob.handler()
-	h.Bye = func(_ *ua.Session, r *ua.Request) { held <- r }
+	h.Bye = func(_ context.Context, _ *ua.Session, r *ua.Request) { held <- r }
 	in.Session().SetHandler(h)
 
 	_ = in.Progress(ua.Reply{Code: 180})
@@ -56,7 +57,7 @@ func TestBridgeCall(t *testing.T) {
 	bob.next("established")
 
 	done := make(chan *sip.Response, 1)
-	_ = as.Bye(ua.Change{}, func(res *sip.Response, _ error) { done <- res })
+	_ = as.Bye(context.Background(), ua.Change{}, func(res *sip.Response, _ error) { done <- res })
 
 	r := <-held
 
@@ -137,7 +138,7 @@ func TestBridgeOfferIn2xx(t *testing.T) {
 		t.Fatalf("alice got offer %q", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.Change{Bodies: sdpOf("answer-a")})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("answer-a")})
 
 	if e := bob.next("answer"); string(e.sdp) != "answer-a" {
 		t.Fatalf("bob got answer %q", e.sdp)
@@ -165,7 +166,7 @@ func TestBridgeOfferInReliable1xx(t *testing.T) {
 		t.Fatalf("alice got offer %q", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.Change{Bodies: sdpOf("answer-a")})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("answer-a")})
 
 	if e := bob.next("answer"); string(e.sdp) != "answer-a" {
 		t.Fatalf("bob got answer %q", e.sdp)
@@ -196,7 +197,7 @@ func TestBridgeCancel(t *testing.T) {
 	alice.next("progress")
 
 	reason, _ := sip.NewReason("SIP", 200, "Call completed elsewhere")
-	_ = o.Cancel(ua.Reasons(reason))
+	_ = o.Cancel(context.Background(), ua.Reasons(reason))
 
 	if e := alice.next("failed"); e.res == nil || e.res.StatusCode != 487 {
 		t.Fatalf("alice's INVITE: %+v", e.res)

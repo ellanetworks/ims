@@ -36,7 +36,7 @@ type Store interface {
 // removed, which OnChange applies to it.
 type Live struct {
 	store    Store
-	onChange func(before, after *Snapshot)
+	onChange func(ctx context.Context, before, after *Snapshot)
 
 	// mu serializes the changes, each from the settings before it.
 	mu      sync.Mutex
@@ -63,8 +63,9 @@ func NewLive(store Store, initial Settings) (*Live, error) {
 }
 
 // OnChange makes f called after each change, once it took effect, with the snapshots of the settings before and after
-// it; before the first change. The changes are serialized: each call's before is the after of the one before it.
-func (l *Live) OnChange(f func(before, after *Snapshot)) { l.onChange = f }
+// it; before the first change. The changes are serialized: each call's before is the after of the one before it. ctx
+// is the trace of the change, which the work f starts outlives.
+func (l *Live) OnChange(f func(ctx context.Context, before, after *Snapshot)) { l.onChange = f }
 
 // Current is the snapshot of the current settings.
 func (l *Live) Current() *Snapshot { return l.current.Load().snap }
@@ -73,14 +74,14 @@ func (l *Live) Current() *Snapshot { return l.current.Load().snap }
 func (l *Live) Get() Settings { return l.current.Load().written }
 
 func (l *Live) UpdateSystem(ctx context.Context, s System) error {
-	return l.change(func(next *Settings) (string, error) {
+	return l.change(ctx, func(next *Settings) (string, error) {
 		next.System = s
 		return "system", nil
 	}, func() error { return l.store.UpdateSystem(ctx, s) })
 }
 
 func (l *Live) UpdateServiceConfiguration(ctx context.Context, c ServiceConfiguration) error {
-	return l.change(func(next *Settings) (string, error) {
+	return l.change(ctx, func(next *Settings) (string, error) {
 		next.ServiceConfiguration = c
 		return "service-configuration", nil
 	}, func() error { return l.store.UpdateServiceConfiguration(ctx, c) })
@@ -88,7 +89,7 @@ func (l *Live) UpdateServiceConfiguration(ctx context.Context, c ServiceConfigur
 
 // CreateUser adds u, after the other users, and returns it as stored.
 func (l *Live) CreateUser(ctx context.Context, u User) (User, error) {
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		u.ImplicitAffiliations = next.groupURIs(u.ImplicitAffiliations)
 		next.Users = append(slices.Clone(next.Users), u)
 
@@ -101,7 +102,7 @@ func (l *Live) CreateUser(ctx context.Context, u User) (User, error) {
 // UpdateUser replaces the user of u's MCPTT ID with u, which keeps the MCPTT ID as the user has it, and returns it as
 // stored.
 func (l *Live) UpdateUser(ctx context.Context, u User) (User, error) {
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		i := next.UserIndex(u.MCPTTUserID)
 		if i < 0 {
 			return "", refused(ErrNotFound, "user not found")
@@ -123,7 +124,7 @@ func (l *Live) UpdateUser(ctx context.Context, u User) (User, error) {
 func (l *Live) DeleteUser(ctx context.Context, id string) error {
 	var written string
 
-	return l.change(func(next *Settings) (string, error) {
+	return l.change(ctx, func(next *Settings) (string, error) {
 		i := next.UserIndex(id)
 		if i < 0 {
 			return "", refused(ErrNotFound, "user not found")
@@ -154,7 +155,7 @@ type Implicit map[string]bool
 func (l *Live) CreateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
 	var users []User
 
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		g.List.Entries = next.memberURIs(g.List.Entries)
 		next.Groups = append(slices.Clone(next.Groups), g)
 
@@ -177,7 +178,7 @@ func (l *Live) CreateGroup(ctx context.Context, g Group, implicit Implicit) (Gro
 func (l *Live) UpdateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
 	var users []User
 
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		i := next.GroupIndex(g.URI)
 		if i < 0 {
 			return "", refused(ErrNotFound, "group not found")
@@ -213,7 +214,7 @@ func (l *Live) UpdateGroup(ctx context.Context, g Group, implicit Implicit) (Gro
 func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 	var written string
 
-	return l.change(func(next *Settings) (string, error) {
+	return l.change(ctx, func(next *Settings) (string, error) {
 		i := next.GroupIndex(uri)
 		if i < 0 {
 			return "", refused(ErrNotFound, "group not found")
@@ -243,7 +244,7 @@ func (l *Live) PutMember(ctx context.Context, group string, e Entry, implicit *b
 		users   []User
 	)
 
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		i := next.GroupIndex(group)
 		if i < 0 {
 			return "", refused(ErrNotFound, "group not found")
@@ -289,7 +290,7 @@ func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error
 		stored          Group
 	)
 
-	err := l.change(func(next *Settings) (string, error) {
+	err := l.change(ctx, func(next *Settings) (string, error) {
 		i := next.GroupIndex(group)
 		if i < 0 {
 			return "", refused(ErrNotFound, "group not found")
@@ -317,7 +318,7 @@ func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error
 
 // change makes the next settings with edit, which returns the path of the document it changes, validates them, then
 // saves and applies them.
-func (l *Live) change(edit func(next *Settings) (string, error), save func() error) error {
+func (l *Live) change(ctx context.Context, edit func(next *Settings) (string, error), save func() error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -340,7 +341,7 @@ func (l *Live) change(edit func(next *Settings) (string, error), save func() err
 	before := l.current.Swap(&state{written: next, snap: snap}).snap
 
 	if l.onChange != nil {
-		l.onChange(before, snap)
+		l.onChange(context.WithoutCancel(ctx), before, snap)
 	}
 
 	return nil

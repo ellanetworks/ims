@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/server"
+	"github.com/ellanetworks/ims/internal/tracing"
 )
 
 func main() {
@@ -32,9 +33,10 @@ func main() {
 	}
 }
 
-// JSON with Ella Core's ts and lowercase level, and durations as "1.5s".
+// JSON with Ella Core's ts and lowercase level, and durations as "1.5s", and the
+// trace_id and span_id of a record's context.
 func newLogger(level slog.Level) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	return slog.New(tracing.LogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 			switch {
@@ -48,7 +50,7 @@ func newLogger(level slog.Level) *slog.Logger {
 
 			return a
 		},
-	}))
+	})))
 }
 
 func run(cfg config.Config, logger *slog.Logger) error {

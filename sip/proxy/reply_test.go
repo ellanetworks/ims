@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
@@ -168,13 +169,13 @@ func TestHoldAndRelay(t *testing.T) {
 	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, sip.UDP)+">")
 	s.caller.RecvNone(quiet)
 
-	if err := s.r.p.Relay(progress.tx, progress.r.Response); err != nil {
+	if err := s.r.p.Relay(context.Background(), progress.tx, progress.r.Response); err != nil {
 		t.Fatal(err)
 	}
 
 	wantResponse(t, s.caller, 183)
 
-	if err := s.r.p.Relay(answer.tx, answer.r.Response); err != nil {
+	if err := s.r.p.Relay(context.Background(), answer.tx, answer.r.Response); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,7 +212,7 @@ func TestRetryAnotherTarget(t *testing.T) {
 		out := req.Clone()
 		out.URI, _ = sip.ParseURI(target(second, sip.UDP))
 
-		if err := s.r.p.Forward(tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
+		if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
 			t.Error(err)
 			return proxy.Relay
 		}
@@ -263,7 +264,7 @@ func TestTimeoutRetry(t *testing.T) {
 		out := req.Clone()
 		out.URI, _ = sip.ParseURI(target(second, sip.TCP))
 
-		if err := s.r.p.Forward(tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
+		if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, tx.Request().Flow.Local), proxy.Options{}); err != nil {
 			t.Error(err)
 		}
 
@@ -504,7 +505,7 @@ func TestCancelWhileHoldingFinal(t *testing.T) {
 		t.Fatalf("got %v, want 200 and 487", codes)
 	}
 
-	if err := s.r.p.Relay(h.tx, h.r.Response); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Relay(context.Background(), h.tx, h.r.Response); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Relay after CANCEL: %v", err)
 	}
 }
@@ -522,7 +523,7 @@ func TestForwardAfterAnswer(t *testing.T) {
 
 	out := s.r.preprocess(tx.Request())
 
-	if err := s.r.p.Forward(tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Forward(context.Background(), tx, out, s.r.target(out, s.r.local), proxy.Options{}); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Forward after a final response: %v", err)
 	}
 }
@@ -580,7 +581,7 @@ func TestHeldReplyDroppedWhenTransactionEnds(t *testing.T) {
 		t.Errorf("%d pending contexts after the transaction ended", n)
 	}
 
-	if err := s.r.p.Relay(h.tx, h.r.Response); !errors.Is(err, proxy.ErrAnswered) {
+	if err := s.r.p.Relay(context.Background(), h.tx, h.r.Response); !errors.Is(err, proxy.ErrAnswered) {
 		t.Errorf("Relay after the transaction ended: %v", err)
 	}
 }

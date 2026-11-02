@@ -2,6 +2,7 @@ package b2bua_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -69,13 +70,13 @@ func TestMediaExchanges(t *testing.T) {
 	checkEvents(t, m, "offer INVITE offer-1", "answer answer-1", "end INVITE offer-1 true")
 
 	// A re-INVITE answered, then one refused.
-	_ = as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, nil)
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, nil)
 	_ = bob.next("request").req.Respond(ua.Reply{Code: 200, Bodies: sdpOf("answer-2")})
 	alice.next("answer")
 
 	checkEvents(t, m, "offer INVITE offer-2", "answer answer-2", "end INVITE offer-2 true")
 
-	_ = as.Reinvite(ua.Change{Bodies: sdpOf("offer-3")}, nil)
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, nil)
 	_ = bob.next("request").req.Reject(488)
 
 	b.net.Quiesce()
@@ -192,7 +193,7 @@ func TestJoin(t *testing.T) {
 		out.Header.Add("To", "<"+bob.uri()+">")
 		out.SetBodies(sdpOf("server-b")...)
 
-		lb, _ = call.Dial(out, b2bua.LegHandler{})
+		lb, _ = call.Dial(context.Background(), out, b2bua.LegHandler{})
 	})
 
 	_ = bob.next("invite").req.Accept(sdpOf("answer-b")...)
@@ -203,7 +204,7 @@ func TestJoin(t *testing.T) {
 	n.Quiesce()
 
 	st.Post(func() {
-		if _, err := b2bua.Join(la, lb, b2bua.RelayConfig{}, func(err error) { joined <- err }); err != nil {
+		if _, err := b2bua.Join(context.Background(), la, lb, b2bua.RelayConfig{}, func(err error) { joined <- err }); err != nil {
 			joined <- err
 		}
 	})
@@ -266,7 +267,7 @@ func TestCancelledReinviteUndone(t *testing.T) {
 		t.Fatalf("bob got %s", ack.Method)
 	}
 
-	_ = as.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, nil)
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, nil)
 
 	reinvite, _ := bob.RecvRequest()
 	if !hasSDP(reinvite, "offer-2") {
@@ -277,7 +278,7 @@ func TestCancelledReinviteUndone(t *testing.T) {
 	respond(reinvite, 100, "")
 	n.Advance(time.Second)
 
-	_ = as.CancelReinvite(ua.Change{})
+	_ = as.CancelReinvite(context.Background(), ua.Change{})
 
 	cancel, _ := bob.RecvRequest()
 	if cancel.Method != "CANCEL" {
@@ -324,7 +325,7 @@ func TestEndBeforeTheAckOfAFork(t *testing.T) {
 	ok := alice.response(200)
 
 	got := bob.nextAll("ended", "established")
-	_ = got["established"].s.Bye(ua.Change{}, nil)
+	_ = got["established"].s.Bye(context.Background(), ua.Change{}, nil)
 
 	bob.next("ended")
 
@@ -365,10 +366,10 @@ func TestGlareRetried(t *testing.T) {
 
 	results := make(chan result, 8)
 
-	_ = as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, func(res *sip.Response, err error) {
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-a")}, func(res *sip.Response, err error) {
 		results <- result{"alice", codeOf(res), err}
 	})
-	_ = bs.Reinvite(ua.Change{Bodies: sdpOf("offer-b")}, func(res *sip.Response, err error) {
+	_ = bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-b")}, func(res *sip.Response, err error) {
 		results <- result{"bob", codeOf(res), err}
 	})
 
@@ -437,7 +438,7 @@ func TestBodiesByteExact(t *testing.T) {
 	lists := sip.NewBodyPart("application/resource-lists+xml", []byte("<resource-lists>  </resource-lists>\r\n"))
 
 	done := make(chan *sip.Response, 2)
-	_ = as.Reinvite(ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte("offer-2")), info, lists}}, func(res *sip.Response, _ error) {
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte("offer-2")), info, lists}}, func(res *sip.Response, _ error) {
 		done <- res
 	})
 
@@ -459,7 +460,7 @@ func TestBodiesByteExact(t *testing.T) {
 		t.Fatalf("alice's 2xx parts %+v", rparts)
 	}
 
-	_ = bs.Bye(ua.Change{Bodies: []sip.BodyPart{info}}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{Bodies: []sip.BodyPart{info}}, nil)
 
 	e := alice.next("ended")
 	if e.end.Request == nil || !bytes.Equal(e.end.Request.Body, info.Body) {
@@ -480,7 +481,7 @@ func TestOneToManyLate2xx(t *testing.T) {
 	_ = rb.Progress(ua.Reply{Code: 180})
 	_ = rc.Progress(ua.Reply{Code: 180})
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	alice.next("failed")
 
@@ -507,10 +508,10 @@ func TestRefreshAnswerPropagated(t *testing.T) {
 	alice.invite(b.uri(), "offer-1", alice.handler())
 	as, _ := bridged(t, alice, bob)
 
-	_ = as.Reinvite(ua.Change{}, nil)
+	_ = as.Reinvite(context.Background(), ua.Change{}, nil)
 
 	o := alice.next("offer")
-	_ = o.offer.Answer(ua.Change{Bodies: sdpOf("offer-1-moved")})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("offer-1-moved")})
 
 	// Bob, ClientPolicy, answers the re-INVITE as a change the application decides on.
 	e := bob.next("request")

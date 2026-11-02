@@ -27,3 +27,7 @@ diameter:
 # mcptt:
 #   media:
 #     address: 127.0.0.1
+# Optional: export traces to an OTLP/gRPC collector.
+# telemetry:
+#   enabled: true
+#   otlp_endpoint: localhost:4317

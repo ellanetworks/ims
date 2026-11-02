@@ -103,7 +103,7 @@ const benchSDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r
 // callee answers every INVITE with a 200.
 func callee(b *testing.B) *benchAgent {
 	return newBenchAgent(b, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(ua.SDP([]byte(benchSDP)))
 			return ua.Handler{}
 		}
@@ -120,10 +120,12 @@ func call(b *testing.B, caller, to *benchAgent) {
 
 	ended := make(chan struct{})
 
-	_, err := caller.a.Invite(req, ua.Handler{
-		Established: func(s *ua.Session, _ sip.Message) { _ = s.Bye(ua.Change{}, nil) },
-		Ended:       func(*ua.Session, ua.End) { close(ended) },
-		Failed:      func(*ua.Outgoing, *sip.Response, error) { close(ended) },
+	_, err := caller.a.Invite(context.Background(), req, ua.Handler{
+		Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
+			_ = s.Bye(context.Background(), ua.Change{}, nil)
+		},
+		Ended:  func(context.Context, *ua.Session, ua.End) { close(ended) },
+		Failed: func(context.Context, *ua.Outgoing, *sip.Response, error) { close(ended) },
 	})
 	if err != nil {
 		b.Error(err)
@@ -216,13 +218,13 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 			req.Header.Set("Call-ID", fmt.Sprintf("bench-%d", i))
 			req.SetBodies(ua.SDP([]byte(benchSDP)))
 
-			if _, err := alice.a.Invite(req, ua.Handler{
-				Established: func(s *ua.Session, _ sip.Message) {
+			if _, err := alice.a.Invite(context.Background(), req, ua.Handler{
+				Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
 					sessions <- s
 
 					wg.Done()
 				},
-				Failed: func(*ua.Outgoing, *sip.Response, error) { wg.Done() },
+				Failed: func(context.Context, *ua.Outgoing, *sip.Response, error) { wg.Done() },
 			}); err != nil {
 				b.Fatal(err)
 			}
@@ -245,7 +247,7 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 		close(sessions)
 
 		for s := range sessions {
-			_ = s.Bye(ua.Change{}, nil)
+			_ = s.Bye(context.Background(), ua.Change{}, nil)
 		}
 
 		b.StartTimer()
@@ -321,14 +323,14 @@ func BenchmarkFanOut(b *testing.B) {
 				req.Header.Add("To", "<"+uri.String()+">")
 				req.SetBodies(ua.SDP([]byte(benchSDP)))
 
-				if _, err := hub.a.Invite(req, ua.Handler{
+				if _, err := hub.a.Invite(context.Background(), req, ua.Handler{
 					// On the strand of the group, as its release.
-					Established: func(s *ua.Session, _ sip.Message) {
+					Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
 						sessions[g] = append(sessions[g], s)
 
 						established.Done()
 					},
-					Failed: func(*ua.Outgoing, *sip.Response, error) {
+					Failed: func(context.Context, *ua.Outgoing, *sip.Response, error) {
 						b.Error("call failed")
 						established.Done()
 						ended.Done()
@@ -346,7 +348,7 @@ func BenchmarkFanOut(b *testing.B) {
 		for g, st := range strands {
 			st.Post(func() {
 				for _, s := range sessions[g] {
-					if err := s.Bye(ua.Change{}, func(*sip.Response, error) { ended.Done() }); err != nil {
+					if err := s.Bye(context.Background(), ua.Change{}, func(*sip.Response, error) { ended.Done() }); err != nil {
 						b.Error(err)
 						ended.Done()
 					}
@@ -432,7 +434,7 @@ func BenchmarkResourceChange(b *testing.B) {
 	})
 
 	_, server := netAgent(b, n, "group", func(c *ua.Config) {
-		c.OnRequest = func(r *ua.Request) {
+		c.OnRequest = func(_ context.Context, r *ua.Request) {
 			from, _ := r.Message().Header.From()
 			_, _ = r.AcceptSubscription(ua.Acceptance{Expires: time.Hour, Resource: res, Value: from.URI.User})
 		}
@@ -451,8 +453,8 @@ func BenchmarkResourceChange(b *testing.B) {
 		req.Header.Add("Event", "test")
 		req.Header.Add("Expires", "3600")
 
-		if _, err := client.Subscribe(req, ua.SubscriptionHandler{
-			Notify: func(*ua.Subscription, *ua.Request) { notified.Add(1) },
+		if _, err := client.Subscribe(context.Background(), req, ua.SubscriptionHandler{
+			Notify: func(context.Context, *ua.Subscription, *ua.Request) { notified.Add(1) },
 		}); err != nil {
 			b.Fatal(err)
 		}
@@ -474,7 +476,7 @@ func BenchmarkResourceChange(b *testing.B) {
 
 		m := fmt.Sprint(i)
 		state = append(state[:len(state):len(state)], m)
-		_ = res.Change(state, m)
+		_ = res.Change(context.Background(), state, m)
 
 		// Every subscriber notified before the next change, each NOTIFY a partial one.
 		n.Quiesce()

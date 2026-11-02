@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"slices"
 	"strings"
 
@@ -24,15 +25,16 @@ type Modification struct {
 // one UPDATE at a time, each once the session allows it (Modify); an offer of c that waited while another exchange
 // completed goes stale, done receiving ErrStale. A 491 is retried when Policy.RetryGlare. The changes of an exchange
 // within the re-INVITE that fails (a reliable 1xx and its PRACK, an UPDATE) stay: the application may send another
-// offer to settle the session (RFC 6141 §3.4). CancelReinvite cancels it.
-func (s *Session) Reinvite(c Change, done func(res *sip.Response, err error)) error {
-	return s.modify("Reinvite", &modification{method: "INVITE", build: fixed(c), fixed: true, done: done})
+// offer to settle the session (RFC 6141 §3.4). CancelReinvite cancels it. The re-INVITE is part of the trace of ctx,
+// whenever it goes.
+func (s *Session) Reinvite(ctx context.Context, c Change, done func(res *sip.Response, err error)) error {
+	return s.modify("Reinvite", &modification{ctx: ctx, method: "INVITE", build: fixed(c), fixed: true, done: done})
 }
 
 // Update sends an UPDATE with c (RFC 3311): with an offer when c has a session description; without one, it refreshes
 // the session timer and the target. It goes in order with the other modifications, as Reinvite.
-func (s *Session) Update(c Change, done func(res *sip.Response, err error)) error {
-	return s.modify("Update", &modification{method: "UPDATE", build: fixed(c), fixed: true, done: done})
+func (s *Session) Update(ctx context.Context, c Change, done func(res *sip.Response, err error)) error {
+	return s.modify("Update", &modification{ctx: ctx, method: "UPDATE", build: fixed(c), fixed: true, done: done})
 }
 
 // Modify sends a re-INVITE or an UPDATE whose change m.Build makes as it is sent: it never goes stale. It waits, in
@@ -41,12 +43,12 @@ func (s *Session) Update(c Change, done func(res *sip.Response, err error)) erro
 // (RFC 3264 §4), the PRACK of the reliable 1xx answering an initial INVITE before a UPDATE of the callee with an offer
 // (RFC 3311 §5.1), and the re-INVITE or the UPDATE of the agent in progress, of which there is one at a time
 // (RFC 3311 §5.2); an UPDATE goes during a re-INVITE of the agent, for its preconditions (RFC 3312).
-func (s *Session) Modify(m Modification, done func(res *sip.Response, err error)) error {
+func (s *Session) Modify(ctx context.Context, m Modification, done func(res *sip.Response, err error)) error {
 	if m.Method != "INVITE" && m.Method != "UPDATE" || m.Build == nil {
 		return &Error{Op: "Modify", Err: errorString("a Modification is an INVITE or an UPDATE, with Build")}
 	}
 
-	return s.modify("Modify", &modification{method: m.Method, build: m.Build, done: done})
+	return s.modify("Modify", &modification{ctx: ctx, method: m.Method, build: m.Build, done: done})
 }
 
 type errorString string
@@ -59,8 +61,10 @@ func fixed(c Change) func() (Change, error) {
 	return func() (Change, error) { return c, nil }
 }
 
-// modification is a re-INVITE or an UPDATE of the agent: of the application, or a session refresh.
+// modification is a re-INVITE or an UPDATE of the agent: of the application, or a session refresh. It waits in the
+// queue of the session, and goes in the trace of ctx: that of the call that made it, whatever makes it go later.
 type modification struct {
+	ctx    context.Context
 	method string
 	build  func() (Change, error)
 	done   func(*sip.Response, error)
@@ -76,9 +80,6 @@ type modification struct {
 	glared bool
 	minSE  uint32
 	wait   *timer
-
-	// cancel completes the CANCEL of a re-INVITE the application cancelled before it went.
-	cancel *Change
 }
 
 func (s *Session) modify(op string, m *modification) error {
@@ -155,7 +156,7 @@ func (s *Session) pumpOnce() {
 			continue
 		}
 
-		_ = ci.send()
+		_ = ci.send(m.ctx)
 	}
 }
 
@@ -224,10 +225,6 @@ func (s *Session) newClientInvite(m *modification, c Change) (*clientInvite, err
 	s.offerRequest(ci.key, sessionSDPOf(c.Bodies))
 	s.started(ci)
 
-	if m.cancel != nil {
-		ci.cancel(*m.cancel)
-	}
-
 	return ci, nil
 }
 
@@ -266,10 +263,11 @@ func (s *Session) modifying() bool {
 	return s.reinvite != nil || s.update != nil || len(s.queue) > 0 || s.in != nil || s.inUpdate != nil
 }
 
-// modified ends the session whose timer expired while it was being modified, once no modification refreshed it.
+// modified ends the session whose timer expired while it was being modified, once no modification refreshed it, in
+// the trace of the expiry.
 func (s *Session) modified() {
 	if s.timer.expired && !s.modifying() && s.state != Terminated {
-		s.byeEnd(End{Cause: EndExpired}, Change{}, nil)
+		s.byeEnd(s.timer.expiry, End{Cause: EndExpired}, Change{}, nil)
 	}
 }
 
@@ -293,14 +291,14 @@ func (s *Session) dropModifications(err error) {
 // CancelReinvite cancels the re-INVITE of Reinvite or Modify, the CANCEL carrying c, its Reason header fields
 // (Reasons) (RFC 3261 §9.1): one in progress, done receiving the 487, or the 2xx that came first; one waiting to be
 // sent, done receiving ErrCancelled. The session refreshes of the agent are not cancelled.
-func (s *Session) CancelReinvite(c Change) error {
+func (s *Session) CancelReinvite(ctx context.Context, c Change) error {
 	return s.st.do(func() error {
 		found := false
 
 		if ci := s.reinvite; ci != nil && !ci.m.refresh {
 			found = true
 
-			ci.cancel(c)
+			ci.cancel(ctx, c)
 		}
 
 		kept := s.queue[:0]
@@ -333,7 +331,7 @@ func (s *Session) CancelReinvite(c Change) error {
 // is answered (RFC 3261 §22.2), a 422 retried with its Min-SE while it rises (RFC 4028 §7.3), a 491 retried after
 // the delay of RFC 3261 §14.1 when Policy.RetryGlare; a failure that destroys the usage or the dialog ends them
 // (RFC 5057); a failed session refresh is tried again before the session expires (RFC 4028 §10).
-func (s *Session) modificationFailed(c *clientInvite, res *sip.Response) {
+func (s *Session) modificationFailed(ctx context.Context, c *clientInvite, res *sip.Response) {
 	m := c.m
 	minSE, hasMinSE, _ := res.Header.MinSE()
 
@@ -347,7 +345,7 @@ func (s *Session) modificationFailed(c *clientInvite, res *sip.Response) {
 			s.finishedQuietly(c)
 			s.started(ci)
 
-			_ = ci.send()
+			_ = ci.send(ctx)
 
 			return
 		}
@@ -373,9 +371,9 @@ func (s *Session) modificationFailed(c *clientInvite, res *sip.Response) {
 
 		return
 	case failureOf(c.key.Method, res, nil) != affectsTransaction:
-		s.fail(c.key.Method, res, nil)
+		s.fail(ctx, c.key.Method, res, nil)
 	case m.refresh:
-		s.timer.retry(s)
+		s.timer.retry(ctx, s)
 	}
 
 	s.finished(c)
@@ -394,20 +392,20 @@ func (s *Session) finishedQuietly(c *clientInvite) {
 
 // refreshSession refreshes the session (RFC 4028 §7.4): with an UPDATE without an offer when the peer allows UPDATE,
 // with a re-INVITE offering the session unchanged otherwise. A modification in progress or waiting refreshes the
-// session too: the refresh is tried again a little later.
-func (s *Session) refreshSession() {
+// session too: the refresh is tried again a little later. ctx is the trace of the refresh.
+func (s *Session) refreshSession(ctx context.Context) {
 	if s.state != Confirmed {
 		return
 	}
 
 	// A refresh skipped is tried again later: turning SkipRefreshes off resumes them.
 	if s.policy.SkipRefreshes {
-		s.timer.retry(s)
+		s.timer.retry(ctx, s)
 		return
 	}
 
 	if s.modifying() || s.awaitingAck() {
-		s.timer.retry(s)
+		s.timer.retry(ctx, s)
 		return
 	}
 
@@ -416,7 +414,7 @@ func (s *Session) refreshSession() {
 		method = "UPDATE"
 	}
 
-	m := &modification{method: method, refresh: true, exchanges: s.exchanges}
+	m := &modification{ctx: ctx, method: method, refresh: true, exchanges: s.exchanges}
 	m.build = func() (Change, error) {
 		var c Change
 

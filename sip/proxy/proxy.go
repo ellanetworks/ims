@@ -51,7 +51,7 @@ type Config struct {
 
 	DialogLifetime time.Duration
 
-	OnDialog func(DialogEvent)
+	OnDialog func(ctx context.Context, e DialogEvent)
 }
 
 type Proxy struct {
@@ -66,7 +66,7 @@ type Proxy struct {
 
 	dialogLifetime time.Duration
 	lingerBye      time.Duration
-	onDialog       func(DialogEvent)
+	onDialog       func(ctx context.Context, e DialogEvent)
 
 	mu       sync.Mutex
 	contexts map[*transaction.ServerTransaction]*responseContext
@@ -101,7 +101,8 @@ type Options struct {
 
 	NoAnswer time.Duration
 
-	OnReply func(r Reply) Verdict
+	// OnReply decides on each reply of the branch, ctx being the trace of the request the branch forwards.
+	OnReply func(ctx context.Context, r Reply) Verdict
 
 	Dialog *Dialog
 }
@@ -264,8 +265,9 @@ func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
 	return out, removed, nil
 }
 
-func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to Target, opts Options) error {
-	return p.Fork(tx, [][]Branch{{{Request: req, Target: to, Options: opts}}})
+// Forward forwards a request to one target, as Fork does.
+func (p *Proxy) Forward(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, to Target, opts Options) error {
+	return p.Fork(ctx, tx, [][]Branch{{{Request: req, Target: to, Options: opts}}})
 }
 
 // Fork forwards a request to several targets (RFC 3261 §16.6). The groups are tried one after
@@ -275,7 +277,9 @@ func (p *Proxy) Forward(tx *transaction.ServerTransaction, req *sip.Request, to 
 //
 // Every branch of a fork carries the same tracked Dialog, or none; on an initial INVITE, the
 // Dialog follows each early dialog the branches create, and the one answered.
-func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error {
+//
+// ctx is the trace of the request, which the branches are part of: that of the handler's call that received it.
+func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, groups [][]Branch) error {
 	total := 0
 
 	var d *Dialog
@@ -327,9 +331,13 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 
 	prepared := make([][]*branch, 0, len(groups))
 
-	c, fresh, err := p.context(tx)
+	c, fresh, err := p.context(ctx, tx)
 	if err != nil {
 		return err
+	}
+
+	if d != nil {
+		d.trace(c.ctx)
 	}
 
 	for _, g := range groups {
@@ -363,7 +371,7 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 	begun := first.dialog != nil && first.initial
 
 	if begun {
-		if err := d.begin(tx, c, first.out, first.rr); err != nil {
+		if err := d.begin(ctx, tx, c, first.out, first.rr); err != nil {
 			c.mu.Lock()
 			c.groups = nil
 			c.mu.Unlock()
@@ -390,16 +398,16 @@ func (p *Proxy) Fork(tx *transaction.ServerTransaction, groups [][]Branch) error
 			break
 		}
 
-		started, failed := c.start(picked)
+		started, failed := c.start(ctx, picked)
 		failures = append(failures, failed...)
 
 		if started > 0 {
 			if begun {
-				d.started()
+				d.started(ctx)
 			}
 
 			for _, f := range failures {
-				c.dispatch(f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
+				c.dispatch(ctx, f.b, Reply{Response: c.generate(statusCode(f.err)), Err: f.err})
 			}
 
 			return nil
@@ -547,7 +555,7 @@ func looped(req *sip.Request, loop string) bool {
 	return false
 }
 
-func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) error {
+func (p *Proxy) Relay(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) error {
 	p.mu.Lock()
 	c := p.contexts[tx]
 	p.mu.Unlock()
@@ -560,7 +568,7 @@ func (p *Proxy) Relay(tx *transaction.ServerTransaction, res *sip.Response) erro
 		return ErrAnswered
 	}
 
-	return c.relay(res.Clone())
+	return c.relay(ctx, res.Clone())
 }
 
 // Reached stops the Timeout of the branch of tx with key (Branch.Key): the request reached its target, which waits
@@ -599,7 +607,9 @@ func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
 	return ok
 }
 
-func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+// Cancel cancels the request of tx, for the CANCEL cancel, ctx being the trace of the CANCEL: the CANCELs of its
+// branches link to it.
+func (p *Proxy) Cancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	var reason []sip.Field
 
 	if cancel != nil {
@@ -612,7 +622,7 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 
 	c, ok := p.contexts[tx]
 	if !ok {
-		c = newContext(p, tx)
+		c = newContext(ctx, p, tx)
 		c.final = true
 		p.contexts[tx] = c
 	}
@@ -624,7 +634,7 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 			d.cancelledByCaller()
 		}
 
-		c.cancel(reason)
+		c.cancel(ctx, reason)
 
 		return
 	}
@@ -633,14 +643,15 @@ func (p *Proxy) Cancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
 	p.forget(c)
 }
 
-func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
-	out, err := p.prepareAck(ack, to, d)
+// ForwardAck forwards the ACK of a 2xx, in the trace of ctx: that of the handler's call that received it.
+func (p *Proxy) ForwardAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) error {
+	out, err := p.prepareAck(ctx, ack, to, d)
 	if err != nil {
 		return err
 	}
 
 	// In the order of its flow: before the requests forwarded after it.
-	return p.layer.QueueAck(out, func(err error) {
+	return p.layer.QueueAck(ctx, out, func(err error) {
 		if err != nil {
 			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
 		}
@@ -649,7 +660,7 @@ func (p *Proxy) ForwardAck(ack *sip.Request, to Target, d *Dialog) error {
 
 // SendAck forwards ack like ForwardAck, but returns once it is sent.
 func (p *Proxy) SendAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) error {
-	out, err := p.prepareAck(ack, to, d)
+	out, err := p.prepareAck(ctx, ack, to, d)
 	if err != nil {
 		return err
 	}
@@ -657,13 +668,13 @@ func (p *Proxy) SendAck(ctx context.Context, ack *sip.Request, to Target, d *Dia
 	return p.layer.SendAck(ctx, out)
 }
 
-func (p *Proxy) prepareAck(ack *sip.Request, to Target, d *Dialog) (*sip.Request, error) {
+func (p *Proxy) prepareAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) (*sip.Request, error) {
 	if ack.Method != "ACK" {
 		return nil, fmt.Errorf("sip/proxy: ForwardAck of a %s request", ack.Method)
 	}
 
 	if d != nil {
-		if err := d.ack(ack); err != nil {
+		if err := d.ack(ctx, ack); err != nil {
 			return nil, err
 		}
 	}
@@ -713,7 +724,7 @@ func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
 	return out, nil
 }
 
-func (p *Proxy) context(tx *transaction.ServerTransaction) (*responseContext, bool, error) {
+func (p *Proxy) context(ctx context.Context, tx *transaction.ServerTransaction) (*responseContext, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -725,7 +736,7 @@ func (p *Proxy) context(tx *transaction.ServerTransaction) (*responseContext, bo
 		return nil, false, ErrAnswered
 	}
 
-	c := newContext(p, tx)
+	c := newContext(ctx, p, tx)
 	p.contexts[tx] = c
 
 	return c, true, nil

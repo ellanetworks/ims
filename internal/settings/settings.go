@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Settings are the settings of the IMS in the database. Their slices are never modified in place, so that a copy
@@ -170,17 +171,19 @@ type Store interface {
 // Live serves the current settings to the running IMS and persists changes before they take effect.
 type Live struct {
 	store Store
-	check func(Settings) error
+	check func(context.Context, Settings) error
 
 	current atomic.Pointer[Settings]
 
 	mu      sync.Mutex
 	changed chan struct{}
+	// causes are the span contexts of the changes not yet taken by Take.
+	causes []trace.SpanContext
 }
 
 // NewLive serves settings from a store. Check, if any, makes the checks the settings cannot make themselves, such
-// as against the configuration file, on every change.
-func NewLive(store Store, initial Settings, check func(Settings) error) *Live {
+// as against the configuration file, on every change, with the context of the change.
+func NewLive(store Store, initial Settings, check func(context.Context, Settings) error) *Live {
 	l := &Live{store: store, check: check, changed: make(chan struct{})}
 	l.current.Store(&initial)
 
@@ -193,7 +196,7 @@ func (l *Live) Get() Settings {
 }
 
 func (l *Live) UpdateOperator(ctx context.Context, o Operator) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		next.Operator = o
 		return nil
 	}, func() error { return l.store.UpdateOperator(ctx, o) })
@@ -208,7 +211,7 @@ func (l *Live) CreatePeer(ctx context.Context, p Peer) (Peer, error) {
 
 	p.ID = id.String()
 
-	err = l.change(func(next *Settings) error {
+	err = l.change(ctx, func(next *Settings) error {
 		next.Peers = append(slices.Clone(next.Peers), p)
 		return nil
 	}, func() error { return l.store.CreatePeer(ctx, p) })
@@ -218,7 +221,7 @@ func (l *Live) CreatePeer(ctx context.Context, p Peer) (Peer, error) {
 
 // UpdatePeer replaces the peer of the same ID.
 func (l *Live) UpdatePeer(ctx context.Context, p Peer) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		i, ok := next.peer(p.ID)
 		if !ok {
 			return kindError{ErrNotFound, "Diameter peer not found"}
@@ -233,7 +236,7 @@ func (l *Live) UpdatePeer(ctx context.Context, p Peer) error {
 }
 
 func (l *Live) DeletePeer(ctx context.Context, id string) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		i, ok := next.peer(id)
 		if !ok {
 			return kindError{ErrNotFound, "Diameter peer not found"}
@@ -248,7 +251,7 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 
 // UpdateRoute sets the realm of an application's requests.
 func (l *Live) UpdateRoute(ctx context.Context, r Route) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		i := slices.IndexFunc(next.Routes, func(q Route) bool { return q.Application == r.Application })
 		if i < 0 {
 			return kindError{ErrNotFound, "Diameter route not found"}
@@ -262,28 +265,29 @@ func (l *Live) UpdateRoute(ctx context.Context, r Route) error {
 }
 
 func (l *Live) UpdatePolicy(ctx context.Context, p Policy) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		next.Policy = p
 		return nil
 	}, func() error { return l.store.UpdatePolicy(ctx, p) })
 }
 
 func (l *Live) UpdateIPSMGW(ctx context.Context, g IPSMGW) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		next.IPSMGW = g
 		return nil
 	}, func() error { return l.store.UpdateIPSMGW(ctx, g) })
 }
 
 func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {
-	return l.change(func(next *Settings) error {
+	return l.change(ctx, func(next *Settings) error {
 		next.CallRecords = c
 		return nil
 	}, func() error { return l.store.UpdateCallRecords(ctx, c) })
 }
 
-// change makes the next settings with edit, checks them, then saves and applies them.
-func (l *Live) change(edit func(next *Settings) error, save func() error) error {
+// change makes the next settings with edit, checks them, then saves and applies them. The span context of ctx is kept
+// for Take, so that what the change does later is linked to it.
+func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save func() error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -298,7 +302,7 @@ func (l *Live) change(edit func(next *Settings) error, save func() error) error 
 	}
 
 	if l.check != nil {
-		if err := l.check(next); err != nil {
+		if err := l.check(ctx, next); err != nil {
 			return err
 		}
 	}
@@ -308,6 +312,11 @@ func (l *Live) change(edit func(next *Settings) error, save func() error) error 
 	}
 
 	l.current.Store(&next)
+
+	// Bounded, the latest kept, should nothing take them.
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		l.causes = append(l.causes[max(0, len(l.causes)+1-maxCauses):], sc)
+	}
 
 	close(l.changed)
 	l.changed = make(chan struct{})
@@ -321,6 +330,21 @@ func (l *Live) Changed() <-chan struct{} {
 	defer l.mu.Unlock()
 
 	return l.changed
+}
+
+// maxCauses is the most span contexts of changes Live keeps for Take.
+const maxCauses = 32
+
+// Take returns the current settings and the span contexts of the changes that made them since the last Take, for the
+// work that applies them, which starts later, to link to.
+func (l *Live) Take() (Settings, []trace.SpanContext) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	causes := l.causes
+	l.causes = nil
+
+	return *l.current.Load(), causes
 }
 
 func isPrefix(s string) bool {

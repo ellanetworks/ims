@@ -295,7 +295,7 @@ func TestClientDropsForeignSentBy(t *testing.T) {
 func TestClientRejectsRequests(t *testing.T) {
 	h := newHarness(t)
 
-	if _, err := h.l.Request(h.newRequest("ACK", sip.UDP), nil); !errors.Is(err, transaction.ErrAck) {
+	if _, err := h.l.Request(context.Background(), h.newRequest("ACK", sip.UDP), nil); !errors.Is(err, transaction.ErrAck) {
 		t.Errorf("ACK: %v", err)
 	}
 
@@ -304,30 +304,30 @@ func TestClientRejectsRequests(t *testing.T) {
 	via.Params.Set("branch", "1234")
 	_ = old.Header.SetTopVia(via)
 
-	if _, err := h.l.Request(old, nil); err == nil {
+	if _, err := h.l.Request(context.Background(), old, nil); err == nil {
 		t.Error("accepted an RFC 2543 branch")
 	}
 
 	req := h.newRequest("OPTIONS", sip.UDP)
-	if _, err := h.l.Request(req, nil); err != nil {
+	if _, err := h.l.Request(context.Background(), req, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := h.l.Request(req, nil); !errors.Is(err, transaction.ErrExists) {
+	if _, err := h.l.Request(context.Background(), req, nil); !errors.Is(err, transaction.ErrExists) {
 		t.Errorf("duplicate: %v", err)
 	}
 
 	unrouted := h.newRequest("OPTIONS", sip.UDP)
 	unrouted.Flow.Local = netip.AddrPortFrom(loopback, 1)
 
-	if _, err := h.l.Request(unrouted, nil); err == nil {
+	if _, err := h.l.Request(context.Background(), unrouted, nil); err == nil {
 		t.Error("sent from a socket we do not listen on")
 	}
 
 	retry := unrouted.Clone()
 	retry.Flow = req.Flow
 
-	if _, err := h.l.Request(retry, nil); err != nil {
+	if _, err := h.l.Request(context.Background(), retry, nil); err != nil {
 		t.Errorf("branch still held after a failed send: %v", err)
 	}
 }

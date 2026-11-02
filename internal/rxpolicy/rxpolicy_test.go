@@ -218,12 +218,12 @@ type sink struct {
 	aborted  []policy.Abort
 }
 
-func (s *sink) Notify(id string, _ policy.Event) bool {
+func (s *sink) Notify(_ context.Context, id string, _ policy.Event) bool {
 	s.notified = append(s.notified, id)
 	return true
 }
 
-func (s *sink) Abort(_ string, a policy.Abort) (func(), bool) {
+func (s *sink) Abort(_ context.Context, _ string, a policy.Abort) (func(), bool) {
 	s.aborted = append(s.aborted, a)
 	return func() {}, true
 }
@@ -231,29 +231,29 @@ func (s *sink) Abort(_ string, a policy.Abort) (func(), bool) {
 func TestInboundNeedsASink(t *testing.T) {
 	b := New(Config{})
 
-	if b.ReAuth("s", rx.ReAuthRequest{}) {
+	if b.ReAuth(context.Background(), "s", rx.ReAuthRequest{}) {
 		t.Fatal("RAR known without a sink")
 	}
 
-	if _, known := b.AbortSession("s", rx.AbortSessionRequest{}); known {
+	if _, known := b.AbortSession(context.Background(), "s", rx.AbortSessionRequest{}); known {
 		t.Fatal("ASR known without a sink")
 	}
 
 	s := &sink{}
 	b.Bind(s)
 
-	if !b.ReAuth("s", rx.ReAuthRequest{}) || len(s.notified) != 1 {
+	if !b.ReAuth(context.Background(), "s", rx.ReAuthRequest{}) || len(s.notified) != 1 {
 		t.Fatal("RAR not delivered to the sink")
 	}
 
-	if _, known := b.AbortSession("s", rx.AbortSessionRequest{Cause: rx.AbortInsufficientBearerResources}); !known ||
+	if _, known := b.AbortSession(context.Background(), "s", rx.AbortSessionRequest{Cause: rx.AbortInsufficientBearerResources}); !known ||
 		len(s.aborted) != 1 || !s.aborted[0].InsufficientResources {
 		t.Fatalf("aborts %+v, want one for insufficient resources", s.aborted)
 	}
 
 	b.Bind(nil)
 
-	if b.ReAuth("s", rx.ReAuthRequest{}) {
+	if b.ReAuth(context.Background(), "s", rx.ReAuthRequest{}) {
 		t.Fatal("RAR known after unbinding")
 	}
 }

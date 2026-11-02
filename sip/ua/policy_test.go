@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestServerPolicyDeliversRefreshes(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf(offer)}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(offer)}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,7 +60,7 @@ func TestServerPolicyDeliversRefreshes(t *testing.T) {
 	alice.next("answer")
 
 	// An UPDATE without an offer refreshes too; a change of the session is no refresh.
-	if err := as.Update(ua.Change{}, f); err != nil {
+	if err := as.Update(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +75,7 @@ func TestServerPolicyDeliversRefreshes(t *testing.T) {
 		t.Fatalf("UPDATE %d", res.StatusCode)
 	}
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf(realSDP(4000, 2))}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(4000, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +104,7 @@ func TestClientPolicyLeavesRefreshesWithOtherBodies(t *testing.T) {
 
 	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>"))
 
-	if err := as.Reinvite(ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte(offer)), info}}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte(offer)), info}}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +120,7 @@ func TestClientPolicyLeavesRefreshesWithOtherBodies(t *testing.T) {
 	}
 
 	// With the SDP alone, the agent answers.
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf(offer)}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(offer)}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -135,7 +136,7 @@ func TestNoRequestHandler(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.Policy = ua.Policy{}
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 			return ua.Handler{}
 		}
@@ -148,7 +149,7 @@ func TestNoRequestHandler(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Update(ua.Change{}, f); err != nil {
+	if err := as.Update(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +157,7 @@ func TestNoRequestHandler(t *testing.T) {
 		t.Fatalf("refresh %d", res.StatusCode)
 	}
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf(realSDP(4000, 2))}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(realSDP(4000, 2))}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,7 +182,7 @@ func TestSkipRefreshes(t *testing.T) {
 	skip := ua.ClientPolicy
 	skip.SkipRefreshes = true
 
-	if _, err := alice.a.Invite(req, alice.handler(), ua.WithPolicy(skip)); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler(), ua.WithPolicy(skip)); err != nil {
 		t.Fatal(err)
 	}
 

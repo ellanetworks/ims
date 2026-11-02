@@ -25,7 +25,7 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 	finished := make(chan struct{})
 
 	ping := func(other *atomic.Pointer[ua.Session]) ua.Handler {
-		return ua.Handler{Request: func(_ *ua.Session, r *ua.Request) {
+		return ua.Handler{Request: func(_ context.Context, _ *ua.Session, r *ua.Request) {
 			_ = r.Respond(ua.Reply{Code: 200})
 
 			if n := received.Add(1); n == rounds {
@@ -35,13 +35,13 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 				return
 			}
 
-			_ = other.Load().Send("INFO", ua.Change{}, nil)
+			_ = other.Load().Send(context.Background(), "INFO", ua.Change{}, nil)
 		}}
 	}
 
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			bs.Store(r.Session())
 			_ = r.Accept(sdpOf("answer-1")...)
 
@@ -50,9 +50,9 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 	})
 
 	h := ping(&bs)
-	h.Established = func(s *ua.Session, _ sip.Message) { as.Store(s) }
+	h.Established = func(_ context.Context, s *ua.Session, _ sip.Message) { as.Store(s) }
 
-	if _, err := alice.a.Invite(inviteTo(alice, bob, "offer-1"), h); err != nil {
+	if _, err := alice.a.Invite(context.Background(), inviteTo(alice, bob, "offer-1"), h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,8 +63,8 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 	}
 
 	// Both sides send at once, each from its handlers.
-	_ = as.Load().Send("INFO", ua.Change{}, nil)
-	_ = bs.Load().Send("INFO", ua.Change{}, nil)
+	_ = as.Load().Send(context.Background(), "INFO", ua.Change{}, nil)
+	_ = bs.Load().Send(context.Background(), "INFO", ua.Change{}, nil)
 
 	netOf(t).Quiesce()
 
@@ -79,9 +79,9 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 func TestHandlerPanicRecovered(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
-			return ua.Handler{Established: func(*ua.Session, sip.Message) { panic("application bug") }}
+			return ua.Handler{Established: func(context.Context, *ua.Session, sip.Message) { panic("application bug") }}
 		}
 	})
 
@@ -90,7 +90,7 @@ func TestHandlerPanicRecovered(t *testing.T) {
 	as := alice.next("established").s
 	alice.next("answer")
 
-	_ = as.Bye(ua.Change{}, nil)
+	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
 }
@@ -139,7 +139,7 @@ func TestInviteOnStrand(t *testing.T) {
 	strands := make(chan *ua.Strand, 2)
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			strands <- r.Strand()
 			return ua.Handler{}
 		}
@@ -149,7 +149,7 @@ func TestInviteOnStrand(t *testing.T) {
 
 	st := <-strands
 
-	o, err := bob.a.Invite(inviteTo(bob, carol, "offer-1"), ua.Handler{}, ua.On(st))
+	o, err := bob.a.Invite(context.Background(), inviteTo(bob, carol, "offer-1"), ua.Handler{}, ua.On(st))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestSharedLayer(t *testing.T) {
 		Allow:   append(slices.Clone(ua.Methods), "INFO"),
 		Prepare: bob.prepare,
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: "bob", Host: addr.Addr().String(), Port: addr.Port()}},
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			_ = r.Accept(sdpOf("answer-1")...)
 			return bob.handler()
 		},
@@ -210,7 +210,7 @@ func TestSharedLayer(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Send("INFO", ua.Change{}, f); err != nil {
+	if err := as.Send(context.Background(), "INFO", ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -226,7 +226,7 @@ func TestSharedLayer(t *testing.T) {
 	options.Header.Add("From", "<"+alice.uri()+">")
 	options.Header.Add("To", "<"+bob.uri()+">")
 
-	if err := alice.a.Request(options, f); err != nil {
+	if err := alice.a.Request(context.Background(), options, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -250,23 +250,23 @@ type dispatcher struct {
 	a *ua.Agent
 }
 
-func (d *dispatcher) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (d *dispatcher) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if req.Method == "INVITE" || d.a.Owns(req) {
-		d.a.HandleRequest(tx, req)
+		d.a.HandleRequest(ctx, tx, req)
 		return
 	}
 
 	_ = tx.Respond(sip.NewResponse(req, 404, ""))
 }
 
-func (d *dispatcher) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	d.a.HandleCancel(tx, cancel)
+func (d *dispatcher) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	d.a.HandleCancel(ctx, tx, cancel)
 }
 
-func (d *dispatcher) HandleAck(ack *sip.Request) { d.a.HandleAck(ack) }
+func (d *dispatcher) HandleAck(ctx context.Context, ack *sip.Request) { d.a.HandleAck(ctx, ack) }
 
-func (d *dispatcher) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
-	d.a.HandleTransactionError(tx, err)
+func (d *dispatcher) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
+	d.a.HandleTransactionError(ctx, tx, err)
 }
 
 func inviteTo(from, to *peer, sdp string) *sip.Request {

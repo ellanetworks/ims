@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Notification is the content of a NOTIFY: header fields beyond those of the subscription, and the bodies of the
@@ -67,7 +69,7 @@ type ServerSubscriptionHandler struct {
 	// Request.AcceptSubscription (only Acceptance.Expires counts) or to reject. Without it, the agent grants the
 	// duration asked for, at most the Acceptance.Expires of the subscription. An unsubscribe (Expires 0) is not
 	// offered: the agent accepts it and ends the subscription with a terminated NOTIFY (RFC 6665 §4.2.1.4).
-	Refresh func(s *ServerSubscription, r *Request)
+	Refresh func(ctx context.Context, s *ServerSubscription, r *Request)
 
 	// Ended reports the end of the subscription:
 	//   - EndTerminated by Terminate, once its NOTIFY transaction ended;
@@ -78,7 +80,7 @@ type ServerSubscriptionHandler struct {
 	//   - EndFailed by a NOTIFY the application failed to build, the full state when a partial one failed, after a
 	//     terminated NOTIFY with reason probation and a retry-after;
 	//   - EndClosed as the agent closes, after its NOTIFY terminated with reason deactivated (RFC 6665 §4.4.2).
-	Ended func(s *ServerSubscription, e End)
+	Ended func(ctx context.Context, s *ServerSubscription, e End)
 }
 
 // ServerSubscription is a subscription of the agent as notifier (RFC 6665 §4.2): created by a SUBSCRIBE the
@@ -131,6 +133,8 @@ type ServerSubscription struct {
 	version    uint64
 	nextChange time.Time
 	held       *timer
+	// heldCauses are the span contexts of the changes held, which their notification links to.
+	heldCauses []trace.SpanContext
 
 	// log is the logger of the dialog, made once.
 	log *slog.Logger
@@ -140,7 +144,10 @@ type ServerSubscription struct {
 // enough that a subscriber does not loop on a failure that repeats.
 const probationRetryAfter = 5 * time.Minute
 
+// pendingNotify is a NOTIFY waiting in the queue of the subscription, which goes in the trace of ctx: that of what
+// queued it, whatever makes it go later.
 type pendingNotify struct {
+	ctx   context.Context
 	build func(seq uint32) (Notification, error)
 	full  bool
 
@@ -185,35 +192,37 @@ func (s *ServerSubscription) SetValue(v any) {
 	})
 }
 
-// Notify sends a NOTIFY of n, the state of the resource having changed (RFC 6665 §4.2.2), after those queued.
-func (s *ServerSubscription) Notify(n Notification) error {
-	return s.NotifyWith(n.Full, func(uint32) (Notification, error) { return n, nil })
+// Notify sends a NOTIFY of n, the state of the resource having changed (RFC 6665 §4.2.2), after those queued, in the
+// trace of ctx.
+func (s *ServerSubscription) Notify(ctx context.Context, n Notification) error {
+	return s.NotifyWith(ctx, n.Full, func(uint32) (Notification, error) { return n, nil })
 }
 
 // NotifyWith sends a NOTIFY whose content build makes as it is sent, after those queued, with the number of NOTIFYs
-// sent before it, for the versions of the packages that count them. full marks the full state of the resource.
-func (s *ServerSubscription) NotifyWith(full bool, build func(seq uint32) (Notification, error)) error {
+// sent before it, for the versions of the packages that count them. full marks the full state of the resource. The
+// NOTIFY is part of the trace of ctx.
+func (s *ServerSubscription) NotifyWith(ctx context.Context, full bool, build func(seq uint32) (Notification, error)) error {
 	return s.st.do(func() error {
 		if s.ended || s.ending != nil {
 			return &Error{Op: "Notify", State: Terminated, Err: ErrState}
 		}
 
-		s.enqueue(&pendingNotify{build: build, full: full})
+		s.enqueue(&pendingNotify{ctx: ctx, build: build, full: full})
 
 		return nil
 	})
 }
 
 // Activate moves a pending subscription to active, its subscriber authorized, with a NOTIFY of the full state
-// (RFC 6665 §4.2.2).
-func (s *ServerSubscription) Activate() error {
+// (RFC 6665 §4.2.2), in the trace of ctx.
+func (s *ServerSubscription) Activate(ctx context.Context) error {
 	return s.st.do(func() error {
 		if s.ended || s.ending != nil || s.state != SubscriptionPending {
 			return &Error{Op: "Activate", State: Terminated, Err: ErrState}
 		}
 
 		s.state = SubscriptionActive
-		s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+		s.enqueue(&pendingNotify{ctx: ctx, build: s.stateOf, full: true})
 
 		return nil
 	})
@@ -221,8 +230,8 @@ func (s *ServerSubscription) Activate() error {
 
 // Terminate ends the subscription with a NOTIFY of n terminated with reason (RFC 6665 §4.1.3: rejected for an
 // authorization declined, noresource for a resource gone, deactivated for a migration), and retryAfter when not
-// zero. The subscription ends once the NOTIFY transaction ends.
-func (s *ServerSubscription) Terminate(reason string, retryAfter time.Duration, n Notification) error {
+// zero. The subscription ends once the NOTIFY transaction ends. The NOTIFY is part of the trace of ctx.
+func (s *ServerSubscription) Terminate(ctx context.Context, reason string, retryAfter time.Duration, n Notification) error {
 	return s.st.do(func() error {
 		if s.ended || s.ending != nil {
 			return &Error{Op: "Terminate", State: Terminated, Err: ErrState}
@@ -235,28 +244,29 @@ func (s *ServerSubscription) Terminate(reason string, retryAfter time.Duration, 
 			ss.RetryAfter = &v
 		}
 
-		s.terminate(ss, End{Cause: EndTerminated}, func(uint32) (Notification, error) { return n, nil })
+		s.terminate(ctx, ss, End{Cause: EndTerminated}, func(uint32) (Notification, error) { return n, nil })
 
 		return nil
 	})
 }
 
-// terminate queues the terminated NOTIFY, in place of the NOTIFYs it makes obsolete, and the end it brings.
-func (s *ServerSubscription) terminate(ss sip.SubscriptionState, e End, build func(uint32) (Notification, error)) {
+// terminate queues the terminated NOTIFY, in place of the NOTIFYs it makes obsolete, and the end it brings, in the
+// trace of ctx.
+func (s *ServerSubscription) terminate(ctx context.Context, ss sip.SubscriptionState, e End, build func(uint32) (Notification, error)) {
 	if s.ended || s.ending != nil {
 		return
 	}
 
 	s.expiry.stop()
 	s.held.stop()
-	s.held = nil
+	s.held, s.heldCauses = nil, nil
 
 	if build == nil {
 		build = func(uint32) (Notification, error) { return Notification{}, nil }
 	}
 
 	s.ending = &e
-	s.enqueue(&pendingNotify{build: build, full: true, terminate: &ss, end: e})
+	s.enqueue(&pendingNotify{ctx: ctx, build: build, full: true, terminate: &ss, end: e})
 }
 
 func (s *ServerSubscription) enqueue(p *pendingNotify) {
@@ -283,13 +293,13 @@ func (s *ServerSubscription) pump() {
 				n = Notification{}
 			case !p.full && s.stateOf != nil:
 				// A partial notification the full state replaces (RFC 4575 §4.4).
-				s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+				s.enqueue(&pendingNotify{ctx: p.ctx, build: s.stateOf, full: true})
 				continue
 			default:
 				// The subscriber would keep a state the notifier no longer has: the subscription ends, the subscriber
 				// to retry once the failure may be over (RFC 6665 §4.1.3), with a terminated NOTIFY without state.
 				retry := uint32(probationRetryAfter / time.Second)
-				s.terminate(
+				s.terminate(p.ctx,
 					sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: "probation", RetryAfter: &retry},
 					End{Cause: EndFailed, Err: fmt.Errorf("sip/ua: NOTIFY not built: %w", err)}, nil)
 
@@ -299,8 +309,8 @@ func (s *ServerSubscription) pump() {
 
 		c := &notifyRequest{s: s, p: p, n: n}
 
-		if err := c.send(); err != nil {
-			c.finish(nil, err)
+		if err := c.send(p.ctx); err != nil {
+			c.finish(p.ctx, nil, err)
 		}
 	}
 }
@@ -351,7 +361,7 @@ func (c *notifyRequest) build() error {
 	return nil
 }
 
-func (c *notifyRequest) send() error {
+func (c *notifyRequest) send(ctx context.Context) error {
 	s := c.s
 
 	if c.req == nil {
@@ -360,7 +370,7 @@ func (c *notifyRequest) send() error {
 		}
 	}
 
-	if _, err := s.a.prepareAndSend(c.req, s.st.client(c.response, func(err error) { c.finish(nil, err) })); err != nil {
+	if _, err := s.a.prepareAndSend(ctx, c.req, s.st.client(c.response, func(ctx context.Context, err error) { c.finish(ctx, nil, err) })); err != nil {
 		return err
 	}
 
@@ -370,7 +380,7 @@ func (c *notifyRequest) send() error {
 	return nil
 }
 
-func (c *notifyRequest) response(res *sip.Response) {
+func (c *notifyRequest) response(ctx context.Context, res *sip.Response) {
 	s := c.s
 
 	if res.IsProvisional() || c.final {
@@ -390,8 +400,8 @@ func (c *notifyRequest) response(res *sip.Response) {
 				c.req = next
 				s.inflight = nil
 
-				if err := c.send(); err != nil {
-					c.finish(nil, err)
+				if err := c.send(ctx); err != nil {
+					c.finish(ctx, nil, err)
 				}
 
 				return
@@ -399,13 +409,13 @@ func (c *notifyRequest) response(res *sip.Response) {
 		}
 	}
 
-	c.finish(res, nil)
+	c.finish(ctx, res, nil)
 }
 
 // finish ends the NOTIFY transaction: a terminated NOTIFY ends the subscription, however its transaction ends; a
 // failure that ends the subscription for its subscriber ends it here (RFC 6665 §4.2.2, RFC 5057); then the next one
 // goes.
-func (c *notifyRequest) finish(res *sip.Response, err error) {
+func (c *notifyRequest) finish(ctx context.Context, res *sip.Response, err error) {
 	s := c.s
 
 	if c.final {
@@ -419,7 +429,7 @@ func (c *notifyRequest) finish(res *sip.Response, err error) {
 	}
 
 	if c.p.terminate != nil {
-		s.end(c.p.end)
+		s.end(ctx, c.p.end)
 		return
 	}
 
@@ -427,15 +437,15 @@ func (c *notifyRequest) finish(res *sip.Response, err error) {
 		switch failureOf("NOTIFY", res, err) {
 		case destroysDialog:
 			if s.shared {
-				s.a.destroyDialog(s.d.ID(), res, err)
+				s.a.destroyDialog(ctx, s.d.ID(), res, err)
 				return
 			}
 
-			s.end(End{Cause: EndLost, Response: res, Err: err})
+			s.end(ctx, End{Cause: EndLost, Response: res, Err: err})
 
 			return
 		case destroysUsage:
-			s.end(End{Cause: EndLost, Response: res, Err: err})
+			s.end(ctx, End{Cause: EndLost, Response: res, Err: err})
 			return
 		}
 	}
@@ -444,7 +454,7 @@ func (c *notifyRequest) finish(res *sip.Response, err error) {
 }
 
 // end terminates the subscription, once: its usage of the dialog ends, with the dialog if it was the last one.
-func (s *ServerSubscription) end(e End) {
+func (s *ServerSubscription) end(ctx context.Context, e End) {
 	s.st.check()
 
 	if s.ended {
@@ -456,7 +466,7 @@ func (s *ServerSubscription) end(e End) {
 	s.queue = nil
 	s.expiry.stop()
 	s.held.stop()
-	s.held = nil
+	s.held, s.heldCauses = nil, nil
 
 	if s.src != nil {
 		s.src.detach(s)
@@ -475,24 +485,24 @@ func (s *ServerSubscription) end(e End) {
 
 	s.st.emit(func() {
 		if s.h.Ended != nil {
-			s.h.Ended(s, e)
+			s.h.Ended(ctx, s, e)
 		}
 	})
 }
 
 // setExpiry sets when the subscription expires: then it ends with a terminated NOTIFY, reason timeout (RFC 6665
-// §4.2.1.4).
-func (s *ServerSubscription) setExpiry(d time.Duration) {
+// §4.2.1.4), in a trace of its own linked to ctx, that of the SUBSCRIBE that set it.
+func (s *ServerSubscription) setExpiry(ctx context.Context, d time.Duration) {
 	s.expiresAt = s.a.clock.Now().Add(d)
 	s.expiry.stop()
-	s.expiry = s.st.after(d, func() {
-		s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
+	s.expiry = s.st.detached(ctx, d, "subscription expiry", func(ctx context.Context) {
+		s.terminate(ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
 			End{Cause: EndExpired}, s.stateOf)
 	})
 }
 
 // receive handles a SUBSCRIBE within the dialog for the subscription: a refresh, or an unsubscribe.
-func (s *ServerSubscription) receive(tx *transaction.ServerTransaction, req *sip.Request) {
+func (s *ServerSubscription) receive(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if s.ended || s.ending != nil {
 		s.a.reply(tx, 481)
 		return
@@ -511,13 +521,13 @@ func (s *ServerSubscription) receive(tx *transaction.ServerTransaction, req *sip
 		return
 	}
 
-	r := newRequest(nil, tx, req)
+	r := newRequest(ctx, nil, tx, req)
 	r.a, r.st, r.server = s.a, s.st, s
 
 	if v, err := req.Header.Expires(); err == nil && v == 0 {
 		_ = r.respondSubscribe(0)
 
-		s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
+		s.terminate(ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
 			End{Cause: EndUnsubscribed, Remote: true, Request: req}, s.stateOf)
 
 		return
@@ -528,12 +538,12 @@ func (s *ServerSubscription) receive(tx *transaction.ServerTransaction, req *sip
 		return
 	}
 
-	s.st.emit(func() { s.h.Refresh(s, r) })
+	s.st.emit(func() { s.h.Refresh(ctx, s, r) })
 }
 
 // close ends the subscription as the agent closes, with a NOTIFY terminated with reason deactivated, for the
-// subscriber to subscribe again elsewhere (RFC 6665 §4.4.2); Shutdown waits for it.
-func (s *ServerSubscription) close() {
+// subscriber to subscribe again elsewhere (RFC 6665 §4.4.2); Shutdown waits for it. ctx is the trace of the shutdown.
+func (s *ServerSubscription) close(ctx context.Context) {
 	if s.ended || s.closing {
 		return
 	}
@@ -542,7 +552,7 @@ func (s *ServerSubscription) close() {
 	s.a.await(1)
 
 	if s.ending == nil {
-		s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionDeactivated},
+		s.terminate(ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionDeactivated},
 			End{Cause: EndClosed}, s.stateOf)
 	}
 }
@@ -605,8 +615,8 @@ func (r *Request) acceptSubscription(o Acceptance) error {
 		return err
 	}
 
-	s.setExpiry(d)
-	s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+	s.setExpiry(r.ctx, d)
+	s.enqueue(&pendingNotify{ctx: r.ctx, build: s.stateOf, full: true})
 
 	return nil
 }
@@ -738,14 +748,14 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 		return nil, err
 	}
 
-	a.addServerSubscription(s)
+	a.addServerSubscription(s, trace.SpanContextFromContext(r.ctx))
 
 	// Bound once it exists, its first NOTIFY rendering the state after the changes before; a resource terminated
 	// meanwhile ends it at once (RFC 6665 §4.1.3).
 	if s.src != nil {
 		if err := s.src.bind(s); err != nil {
 			s.src = nil
-			s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionNoResource},
+			s.terminate(r.ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionNoResource},
 				End{Cause: EndTerminated}, nil)
 
 			return s, nil
@@ -755,14 +765,14 @@ func (r *Request) subscribe(o Acceptance, event sip.Event, refer bool) (*ServerS
 	// RFC 6665 §4.4.3: a fetch ends with its NOTIFY.
 	if d == 0 && !refer {
 		s.expiresAt = a.clock.Now()
-		s.terminate(sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
+		s.terminate(r.ctx, sip.SubscriptionState{State: sip.SubscriptionTerminated, Reason: sip.SubscriptionTimeout},
 			End{Cause: EndExpired}, s.stateOf)
 
 		return s, nil
 	}
 
-	s.setExpiry(d)
-	s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+	s.setExpiry(r.ctx, d)
+	s.enqueue(&pendingNotify{ctx: r.ctx, build: s.stateOf, full: true})
 
 	return s, nil
 }

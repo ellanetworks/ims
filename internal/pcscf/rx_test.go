@@ -60,20 +60,20 @@ func (f *fakePCRF) config(timeout time.Duration) func(*Config) {
 func (p *PCSCF) rxReAuth(session string, r rx.ReAuthRequest) bool {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
-		return p.Notify(session, policy.Event{})
+		return p.Notify(context.Background(), session, policy.Event{})
 	}
 
-	return b.ReAuth(session, r)
+	return b.ReAuth(context.Background(), session, r)
 }
 
 // rxAbortSession delivers an ASR as the Diameter server would, through the Rx backend.
 func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func(), bool) {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
-		return p.Abort(session, policy.Abort{})
+		return p.Abort(context.Background(), session, policy.Abort{})
 	}
 
-	return b.AbortSession(session, r)
+	return b.AbortSession(context.Background(), session, r)
 }
 
 func refClass(r db.PCSCFRegistration) [][]byte {
@@ -101,12 +101,13 @@ func (f *fakePCRF) NewSessionID() string {
 }
 
 func (f *fakePCRF) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
-	f.reqs <- req
-
+	// The answer is the one set when the request is sent: once the test sees the request, answerWith is for the next.
 	f.mu.Lock()
 
 	answer := f.answer
 	f.mu.Unlock()
+
+	f.reqs <- req
 
 	if answer == nil {
 		return succeed(req)
@@ -932,7 +933,7 @@ func TestRxSnapshotOfARemovedRecordHasNoSession(t *testing.T) {
 	s.clock.Advance(600 * time.Second)
 	pcrf.wantSTR(id, rx.TerminationAuthExpired)
 
-	s.p.regs.save(snapshot)
+	s.p.regs.save(context.Background(), snapshot)
 
 	if r, _ := s.record(); r.Policy.ID != "" {
 		t.Fatalf("session = %q, want the ended session not brought back", r.Policy.ID)
@@ -1114,7 +1115,7 @@ func TestRxShutdownGivesUpOnTheSTR(t *testing.T) {
 }
 
 func TestSourceIndexFollowsTheRecords(t *testing.T) {
-	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler), noTrace())
 
 	a := netip.AddrPortFrom(ueAddr, 5060)
 	b := netip.AddrPortFrom(ueAddr, 5070)
@@ -1122,14 +1123,14 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 		IMPI: testIMPI, FlowToken: "t", UEAddress: a, PCSCFAddress: loopback, ExpiresAt: testEpoch.Add(time.Hour),
 	}
 
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if k, ok := rs.sourceKey(a); !ok || k != (regKey{impi: testIMPI, ue: ueAddr}) {
 		t.Fatalf("sourceKey(%s) = %v, %v", a, k, ok)
 	}
 
 	r.UEAddress = b
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if _, ok := rs.sourceKey(a); ok {
 		t.Fatal("the old port still indexed after the record moved")
@@ -1140,15 +1141,15 @@ func TestSourceIndexFollowsTheRecords(t *testing.T) {
 	}
 
 	r.Protected = true
-	rs.save(r)
+	rs.save(context.Background(), r)
 
 	if _, ok := rs.sourceKey(b); ok {
 		t.Fatal("a protected record indexed by its source")
 	}
 
 	r.Protected = false
-	rs.save(r)
-	rs.remove(regKey{impi: testIMPI, ue: ueAddr})
+	rs.save(context.Background(), r)
+	rs.remove(context.Background(), regKey{impi: testIMPI, ue: ueAddr})
 
 	if _, ok := rs.sourceKey(b); ok || len(rs.bySource) != 0 {
 		t.Fatalf("index = %v after the removal", rs.bySource)
@@ -1446,7 +1447,7 @@ func TestPolicyCloseGivesUp(t *testing.T) {
 	cancelled := make(chan error, 1)
 
 	c.spawn(func() {
-		ctx, cancel := c.deadline(0)
+		ctx, cancel := c.deadline(context.Background(), 0)
 		defer cancel()
 
 		cancelled <- c.cfg.Backend.Terminate(ctx, "id", "", policy.TerminationAdministrative, false)

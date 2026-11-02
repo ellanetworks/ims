@@ -29,12 +29,14 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/mcptt/identity"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/mcpttinfo"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 	"github.com/ellanetworks/ims/sip/xmltree"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Mode is how clients reach the server.
@@ -51,10 +53,11 @@ const (
 // Affiliations are what service authorisation does to the affiliations of a client: the implicit affiliation to its
 // user's configured groups once authorised (TS 24.379 §9.2.2.2.15), and to those a change of them, from before to
 // user, adds or removes while it stays authorised (Reconfigure), their removal once logged off (TS 23.280 §5.2.5).
+// Each runs in the trace of ctx, what changed the client, which may be answered already.
 type Affiliations interface {
-	ImplicitConfigured(now time.Time, user *settings.User, client string)
-	Reconfigure(now time.Time, before, user *settings.User, client string)
-	LogOff(now time.Time, user sip.URI, client string)
+	ImplicitConfigured(ctx context.Context, now time.Time, user *settings.User, client string)
+	Reconfigure(ctx context.Context, now time.Time, before, user *settings.User, client string)
+	LogOff(ctx context.Context, now time.Time, user sip.URI, client string)
 }
 
 type Config struct {
@@ -69,7 +72,8 @@ type Config struct {
 	Trusted func(netip.Addr) bool
 	// Agent subscribes to the reg event package of the IMPUs through the IMS (TS 24.229 §5.7.1.1); none without, a
 	// deregistration then removing all the bindings of its IMPU. Its Config.Contact is the Contact of the
-	// subscriptions.
+	// subscriptions, and the lifetime of its layer the registrar's: of its timers' work and its writes to the store.
+	// Without an agent, the registrar's lifetime ends with Close.
 	Agent *ua.Agent
 	// HomeDomain is the IMS's (TS 24.229 §5.1.1.2.1), the host of the SIP URI of a telephone number, "user=phone",
 	// that the server subscribes with to the reg event package of an IMPU of a tel URI (subscribed); none if "".
@@ -84,6 +88,8 @@ type Config struct {
 	DefaultExpires time.Duration
 	// Logger is the log of the registrar; slog.Default() if nil. Access tokens and bodies are never logged.
 	Logger *slog.Logger
+	// TracerProvider traces the work of the registrar's timers; none if nil.
+	TracerProvider trace.TracerProvider
 }
 
 // Binding is the binding of a service authorisation (TS 24.379 §7.3.2 step 4).
@@ -124,6 +130,11 @@ type Charging struct {
 // Registrar is the registrar and service authorisation of the server.
 type Registrar struct {
 	cfg Config
+	// life is the lifetime of the work of the registrar that outlives its cause, its timers' and its writes to the
+	// store: the agent's layer's, else ended by stop, of Close; detached traces that work.
+	life     context.Context
+	stop     context.CancelFunc
+	detached tracing.Detached
 
 	mu       sync.Mutex
 	bindings map[bindingKey]*binding
@@ -187,8 +198,19 @@ func New(cfg Config) *Registrar {
 		cfg.Logger = slog.Default()
 	}
 
+	var (
+		life context.Context
+		stop context.CancelFunc = func() {}
+	)
+
+	if cfg.Agent != nil {
+		life = cfg.Agent.Layer().Lifetime()
+	} else {
+		life, stop = context.WithCancel(context.Background())
+	}
+
 	return &Registrar{
-		cfg: cfg, bindings: map[bindingKey]*binding{}, impus: map[string]map[bindingKey]*binding{},
+		cfg: cfg, life: life, stop: stop, detached: tracing.NewDetached(cfg.TracerProvider, tracerName, "mcptt"), bindings: map[bindingKey]*binding{}, impus: map[string]map[bindingKey]*binding{},
 		users: map[string]map[bindingKey]*binding{}, clients: map[string]*binding{}, watches: map[string]*watch{},
 		sequences: map[seqKey]*sequence{}, dirty: map[string]bool{},
 	}
@@ -315,15 +337,32 @@ func (b *binding) public() Binding {
 	return out
 }
 
+const tracerName = "github.com/ellanetworks/ims/internal/mcptt/registrar"
+
+// The names of the spans of the work the registrar's timers start, each in a trace of its own (detach).
+const (
+	expiryName      = "registration expiry"
+	resubscribeName = "reg event resubscribe"
+)
+
+// detach runs f on st once d passed, unless stopped first, in a trace of its own linked to cause, what armed it, and
+// bound to the registrar's lifetime; the span ends with the error of f.
+func (g *Registrar) detach(cause trace.SpanContext, st *ua.Strand, d time.Duration, name string, f func(context.Context) error) *ua.Timer {
+	return st.AfterFunc(d, func() {
+		ctx, span := g.detached.Start(g.life, name, cause)
+		tracing.End(span, f(ctx))
+	})
+}
+
 // Handle answers a REGISTER, of OnRequest, on the strand of its IMPU.
-func (g *Registrar) Handle(r *ua.Request) {
+func (g *Registrar) Handle(ctx context.Context, r *ua.Request) {
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
 
 	if g.cfg.Mode == Direct {
-		g.direct(r, snap, now)
+		g.direct(ctx, r, snap, now)
 	} else {
-		g.thirdParty(r, snap, now)
+		g.thirdParty(ctx, r, snap, now)
 	}
 }
 
@@ -516,8 +555,10 @@ func drop(index map[string]map[bindingKey]*binding, k string, b *binding) {
 // apply follows a change, on the strand of its IMPU, once it is answered: it saves the bindings changed, arms the
 // timers of the bindings, logs the clients off and then affiliates the one authorised (TS 24.379 §9.2.2.2.15), and
 // subscribes to or unsubscribes from the reg event package of the IMPUs changed.
-func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
-	g.persist()
+func (g *Registrar) apply(ctx context.Context, st *ua.Strand, now time.Time, ch *change) {
+	g.persist(ctx)
+
+	cause := trace.SpanContextFromContext(ctx)
 
 	g.mu.Lock()
 
@@ -530,7 +571,10 @@ func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
 			b.timer.Stop()
 		}
 
-		b.timer = st.AfterFunc(b.Expires.Sub(now), func() { g.expire(st, b) })
+		b.timer = g.detach(cause, st, b.Expires.Sub(now), expiryName, func(ctx context.Context) error {
+			g.expire(ctx, st, b)
+			return nil
+		})
 	}
 
 	for _, s := range ch.sequences {
@@ -544,21 +588,21 @@ func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
 	g.mu.Unlock()
 
 	for _, o := range ch.off {
-		g.cfg.Logger.Info("logged off", slog.String("mcptt_id", o.user.String()), slog.String("client_id", o.client),
+		g.cfg.Logger.InfoContext(ctx, "logged off", slog.String("mcptt_id", o.user.String()), slog.String("client_id", o.client),
 			slog.String("cause", o.cause))
-		g.cfg.Affiliations.LogOff(now, o.user, o.client)
+		g.cfg.Affiliations.LogOff(ctx, now, o.user, o.client)
 	}
 
 	if a := ch.implicit; a != nil {
-		g.cfg.Affiliations.ImplicitConfigured(now, a.user, a.client)
+		g.cfg.Affiliations.ImplicitConfigured(ctx, now, a.user, a.client)
 	}
 
 	for _, s := range stop {
-		unsubscribe(s)
+		unsubscribe(ctx, s)
 	}
 
 	if start != nil {
-		g.subscribe(st, start)
+		_ = g.subscribe(ctx, st, start)
 	}
 }
 
@@ -567,7 +611,7 @@ func (g *Registrar) apply(st *ua.Strand, now time.Time, ch *change) {
 // (TS 23.280 §5.2.5); the clients of the others have the change of their users' configured groups applied to their
 // implicit affiliations (Affiliations.Reconfigure; TS 24.379 §9.2.2.2.15). A binding expired, which its timer has not
 // removed yet, is no client's any longer (RFC 3261 §10.3): it is affiliated to nothing.
-func (g *Registrar) Revoke(before, after *settings.Snapshot) {
+func (g *Registrar) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	g.mu.Lock()
 
 	iks := make([]string, 0, len(g.impus))
@@ -602,10 +646,10 @@ func (g *Registrar) Revoke(before, after *settings.Snapshot) {
 
 			g.mu.Unlock()
 
-			g.apply(st, now, &ch)
+			g.apply(ctx, st, now, &ch)
 
 			for _, r := range kept {
-				g.cfg.Affiliations.Reconfigure(now, r.before, r.user, r.client)
+				g.cfg.Affiliations.Reconfigure(ctx, now, r.before, r.user, r.client)
 			}
 		})
 	}
@@ -618,12 +662,14 @@ type reconfiguration struct {
 }
 
 // Close stops the expiry timers of the bindings and sequences, which are the registrar's, not the agent's, and arms
-// none after it: the agent closed, no binding expires and no client is logged off.
+// none after it: the agent closed, no binding expires and no client is logged off. Without an agent, it ends the
+// registrar's lifetime.
 func (g *Registrar) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	g.closed = true
+	g.stop()
 
 	for _, b := range g.bindings {
 		if b.timer != nil {
@@ -640,7 +686,7 @@ func (g *Registrar) Close() {
 
 // expire removes the contacts of b whose registration expired, and b with its last (RFC 3261 §10.3; TS 24.229
 // §5.7.1.1): its client is logged off.
-func (g *Registrar) expire(st *ua.Strand, b *binding) {
+func (g *Registrar) expire(ctx context.Context, st *ua.Strand, b *binding) {
 	now := g.cfg.Clock.Now()
 
 	var ch change
@@ -659,7 +705,7 @@ func (g *Registrar) expire(st *ua.Strand, b *binding) {
 
 	g.mu.Unlock()
 
-	g.apply(st, now, &ch)
+	g.apply(ctx, st, now, &ch)
 }
 
 // prune removes the contacts expired, and sets the expiry of b to that of its last contact, in direct mode.
@@ -707,7 +753,8 @@ func (g *Registrar) reject(r *ua.Request, cfg *settings.Snapshot, f *refusal, he
 		level = slog.LevelInfo
 	}
 
-	if g.cfg.Logger.Enabled(context.Background(), level) {
+	ctx := r.Context()
+	if g.cfg.Logger.Enabled(ctx, level) {
 		attrs := []slog.Attr{slog.Int("code", f.code)}
 		if to, err := r.Message().Header.To(); err == nil {
 			attrs = append(attrs, slog.String("impu", to.URI.String()))
@@ -717,14 +764,14 @@ func (g *Registrar) reject(r *ua.Request, cfg *settings.Snapshot, f *refusal, he
 			attrs = append(attrs, slog.String("warning", f.warning))
 		}
 
-		g.cfg.Logger.LogAttrs(context.Background(), level, "REGISTER refused", attrs...)
+		g.cfg.Logger.LogAttrs(ctx, level, "REGISTER refused", attrs...)
 	}
 
 	_ = r.Respond(ua.Reply{Code: f.code, Header: header})
 }
 
 // authorised logs the service authorisation of the client of a at impu (TS 24.379 §7.3.2).
-func (g *Registrar) authorised(a *authorisation, impu sip.URI) {
-	g.cfg.Logger.Info("service authorised", slog.String("mcptt_id", a.user.ID().String()), slog.String("client_id", a.client),
+func (g *Registrar) authorised(ctx context.Context, a *authorisation, impu sip.URI) {
+	g.cfg.Logger.InfoContext(ctx, "service authorised", slog.String("mcptt_id", a.user.ID().String()), slog.String("client_id", a.client),
 		slog.String("impu", impu.String()))
 }

@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -65,9 +66,9 @@ func TestASRegEventTelURI(t *testing.T) {
 	accepted := make(chan *sip.Response, 1)
 	docs := make(chan reginfo.Reginfo, 8)
 
-	_, err = srv.agent.Subscribe(req, ua.SubscriptionHandler{
-		Accepted: func(_ *ua.Subscription, res *sip.Response) { accepted <- res },
-		Notify: func(_ *ua.Subscription, n *ua.Request) {
+	_, err = srv.agent.Subscribe(context.Background(), req, ua.SubscriptionHandler{
+		Accepted: func(_ context.Context, _ *ua.Subscription, res *sip.Response) { accepted <- res },
+		Notify: func(_ context.Context, _ *ua.Subscription, n *ua.Request) {
 			part, ok, err := n.Message().Content().Find(reginfo.ContentType)
 			if err != nil || !ok {
 				return

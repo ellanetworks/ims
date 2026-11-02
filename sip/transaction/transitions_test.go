@@ -1,6 +1,7 @@
 package transaction_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"testing"
@@ -76,7 +77,7 @@ func TestClientInitialSendFailure(t *testing.T) {
 
 	rs := siptest.NewResponses(t)
 
-	tx, err := h.l.Request(req, rs)
+	tx, err := h.l.Request(context.Background(), req, rs)
 	if err != nil {
 		t.Fatal(err)
 	}

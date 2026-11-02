@@ -1,12 +1,14 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrResourceTerminated is the error of binding a subscription to a resource terminated, or of changing one.
@@ -66,8 +68,8 @@ func (r *Resource[S, D]) State() S {
 }
 
 // Change makes state the state of the resource, delta the change from the previous one, and notifies the
-// subscriptions.
-func (r *Resource[S, D]) Change(state S, delta D) error {
+// subscriptions, in the trace of ctx.
+func (r *Resource[S, D]) Change(ctx context.Context, state S, delta D) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -93,7 +95,7 @@ func (r *Resource[S, D]) Change(state S, delta D) error {
 			}
 		}
 
-		s.st.post(func() { s.changed(v, partial) })
+		s.st.post(func() { s.changed(ctx, v, partial) })
 	}
 
 	return nil
@@ -113,8 +115,9 @@ func (r *Resource[S, D]) Subscriptions() []*ServerSubscription {
 }
 
 // Terminate ends the subscriptions with a NOTIFY terminated with reason, without state (RFC 6665 §4.1.3: noresource
-// for a resource gone, deactivated for a migration), and retryAfter when not zero; the resource takes no more.
-func (r *Resource[S, D]) Terminate(reason string, retryAfter time.Duration) {
+// for a resource gone, deactivated for a migration), and retryAfter when not zero; the resource takes no more. The
+// NOTIFYs are part of the trace of ctx.
+func (r *Resource[S, D]) Terminate(ctx context.Context, reason string, retryAfter time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -132,7 +135,7 @@ func (r *Resource[S, D]) Terminate(reason string, retryAfter time.Duration) {
 	}
 
 	for s := range r.subs {
-		s.st.post(func() { s.terminate(ss, End{Cause: EndTerminated}, nil) })
+		s.st.post(func() { s.terminate(ctx, ss, End{Cause: EndTerminated}, nil) })
 	}
 }
 
@@ -191,18 +194,32 @@ func (r *Resource[S, D]) minInterval() time.Duration {
 
 // changed notifies the change to version v of the resource of s, partial rendering it as a partial notification
 // when the package has them. Called with the strand held.
-func (s *ServerSubscription) changed(v uint64, partial func(uint32) (Notification, error)) {
-	if s.ended || s.ending != nil || s.state != SubscriptionActive || v <= s.version || s.held != nil {
+func (s *ServerSubscription) changed(ctx context.Context, v uint64, partial func(uint32) (Notification, error)) {
+	if s.ended || s.ending != nil || s.state != SubscriptionActive || v <= s.version {
 		return
 	}
 
-	// Within the interval since the last change notified, the changes wait for its end, together.
+	if s.held != nil {
+		// As many links as a span keeps by default (OpenTelemetry's span limits).
+		if len(s.heldCauses) < 128 {
+			s.heldCauses = append(s.heldCauses, trace.SpanContextFromContext(ctx))
+		}
+
+		return
+	}
+
+	// Within the interval since the last change notified, the changes wait for its end, together: their notification
+	// is a trace of its own, linked to each, as OpenTelemetry links a batch to the messages it carries.
 	if wait := s.nextChange.Sub(s.a.clock.Now()); wait > 0 {
+		s.heldCauses = []trace.SpanContext{trace.SpanContextFromContext(ctx)}
 		s.held = s.st.after(wait, func() {
-			s.held = nil
+			ctx, span := s.a.startDetached(s.heldCauses, "subscription notify")
+			defer span.End()
+
+			s.held, s.heldCauses = nil, nil
 
 			if !s.ended && s.ending == nil && s.src.latest() > s.version {
-				s.notifyChange(nil)
+				s.notifyChange(ctx, nil)
 			}
 		})
 
@@ -211,24 +228,24 @@ func (s *ServerSubscription) changed(v uint64, partial func(uint32) (Notificatio
 
 	if partial != nil && v == s.version+1 && s.inflight == nil && len(s.queue) == 0 {
 		s.version = v
-		s.notifyChange(partial)
+		s.notifyChange(ctx, partial)
 
 		return
 	}
 
-	s.notifyChange(nil)
+	s.notifyChange(ctx, nil)
 }
 
-// notifyChange queues the NOTIFY of a change: partial, or the full state without it.
-func (s *ServerSubscription) notifyChange(partial func(uint32) (Notification, error)) {
+// notifyChange queues the NOTIFY of a change: partial, or the full state without it, in the trace of ctx.
+func (s *ServerSubscription) notifyChange(ctx context.Context, partial func(uint32) (Notification, error)) {
 	if d := s.src.minInterval(); d > 0 {
 		s.nextChange = s.a.clock.Now().Add(d)
 	}
 
 	if partial != nil {
-		s.enqueue(&pendingNotify{build: partial})
+		s.enqueue(&pendingNotify{ctx: ctx, build: partial})
 		return
 	}
 
-	s.enqueue(&pendingNotify{build: s.stateOf, full: true})
+	s.enqueue(&pendingNotify{ctx: ctx, build: s.stateOf, full: true})
 }

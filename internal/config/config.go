@@ -43,7 +43,14 @@ type Config struct {
 	// N5 is where the P-CSCF hears from a PCF, and is required for the n5 policy interface.
 	N5 *N5 `yaml:"n5"`
 	// MCPTT runs the built-in MCPTT application server.
-	MCPTT *MCPTT `yaml:"mcptt"`
+	MCPTT     *MCPTT    `yaml:"mcptt"`
+	Telemetry Telemetry `yaml:"telemetry"`
+}
+
+// Telemetry exports traces over OTLP/gRPC to OTLPEndpoint, a host:port, when Enabled.
+type Telemetry struct {
+	Enabled      bool   `yaml:"enabled"`
+	OTLPEndpoint string `yaml:"otlp_endpoint"`
 }
 
 type Logging struct {
@@ -215,6 +222,8 @@ func (c Config) validate() error {
 		return errors.New("api.address is required")
 	case c.API.Port < 1 || c.API.Port > 65535:
 		return fmt.Errorf("api.port %d is out of range", c.API.Port)
+	case c.Telemetry.Enabled && c.Telemetry.OTLPEndpoint == "":
+		return errors.New("telemetry.otlp_endpoint is required when telemetry.enabled is true")
 	}
 
 	if tls := c.API.TLS; tls != nil {

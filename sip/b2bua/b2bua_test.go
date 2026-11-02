@@ -59,7 +59,7 @@ func newParty(t *testing.T, n *siptest.Net, name string, configure func(*ua.Conf
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: p.addr.Addr().String(), Port: p.addr.Port()}},
 		Policy:  ua.ClientPolicy,
 		Allow:   append(slices.Clone(ua.Methods), "INFO", "MESSAGE"),
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			p.mu.Lock()
 			f := p.onInvite
 			p.mu.Unlock()
@@ -128,13 +128,19 @@ func (p *party) record(e event) {
 
 func (p *party) handler() ua.Handler {
 	return ua.Handler{
-		Progress:    func(s *ua.Session, res *sip.Response) { p.record(event{kind: "progress", s: s, res: res}) },
-		Established: func(s *ua.Session, m sip.Message) { p.record(event{kind: "established", s: s, msg: m}) },
-		Answer:      func(s *ua.Session, sdp []byte) { p.record(event{kind: "answer", s: s, sdp: sdp}) },
-		Offer:       func(s *ua.Session, o *ua.Offer) { p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()}) },
-		Request:     func(s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
-		Ended:       func(s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
-		Failed: func(_ *ua.Outgoing, res *sip.Response, _ error) {
+		Progress: func(_ context.Context, s *ua.Session, res *sip.Response) {
+			p.record(event{kind: "progress", s: s, res: res})
+		},
+		Established: func(_ context.Context, s *ua.Session, m sip.Message) {
+			p.record(event{kind: "established", s: s, msg: m})
+		},
+		Answer: func(_ context.Context, s *ua.Session, sdp []byte) { p.record(event{kind: "answer", s: s, sdp: sdp}) },
+		Offer: func(_ context.Context, s *ua.Session, o *ua.Offer) {
+			p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()})
+		},
+		Request: func(_ context.Context, s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
+		Ended:   func(_ context.Context, s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
+		Failed: func(_ context.Context, _ *ua.Outgoing, res *sip.Response, _ error) {
 			p.record(event{kind: "failed", res: res})
 		},
 	}
@@ -187,7 +193,7 @@ func (p *party) invite(target string, sdp string, h ua.Handler, header ...sip.Fi
 		req.SetBodies(ua.SDP([]byte(sdp)))
 	}
 
-	o, err := p.a.Invite(req, h)
+	o, err := p.a.Invite(context.Background(), req, h)
 	if err != nil {
 		p.t.Fatal(err)
 	}
@@ -219,8 +225,8 @@ func newB2BWith(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayC
 			configure(c)
 		}
 
-		c.OnInvite = func(r *ua.Request) ua.Handler {
-			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{Ended: func(c *b2bua.Call) { b.ended <- c }})
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
+			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{Ended: func(_ context.Context, c *b2bua.Call) { b.ended <- c }})
 			b.strands = append(b.strands, r.Strand())
 
 			target := to()
@@ -231,7 +237,7 @@ func newB2BWith(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayC
 			out.Header.Add("From", "<"+from.URI.String()+">")
 			out.Header.Add("To", "<"+target.uri()+">")
 
-			rel, err := b2bua.Bridge(call, r, out, b.cfg)
+			rel, err := b2bua.Bridge(context.Background(), call, r, out, b.cfg)
 			if rel != nil {
 				b.relays <- rel
 			}

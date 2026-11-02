@@ -152,7 +152,7 @@ func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except 
 
 	regs, err := r.cfg.DB.ListRegistrationsBySet(ctx, pc.set.ID)
 	if err != nil {
-		r.log.Warn("failed to list the registrations of a set", slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the registrations of a set", slog.Any("error", err))
 		return
 	}
 
@@ -165,8 +165,8 @@ func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except 
 	}
 
 	for _, impi := range impis {
-		r.background(impi, func(ctx context.Context) {
-			r.send(r.profileEffects(ctx, impi, pc, shorten))
+		r.background(ctx, impi, func(ctx context.Context) {
+			r.send(ctx, r.profileEffects(ctx, impi, pc, shorten))
 		})
 	}
 }
@@ -177,7 +177,7 @@ func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except 
 func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileChange, shorten bool) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -192,7 +192,7 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 	if reg, ok := withIdentities(st.regs[i], pc.set.Identities); ok {
 		saved, err := r.cfg.DB.SaveRegistration(ctx, reg)
 		if err != nil {
-			r.log.Warn("failed to store the registration", slog.String("impi", impi), slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to store the registration", slog.String("impi", impi), slog.Any("error", err))
 			return nil
 		}
 
@@ -201,13 +201,13 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 
 	live := st.live(st.regs[i].Bindings)
 
-	r.releaseRemoved(st, pc, live)
+	r.releaseRemoved(ctx, st, pc, live)
 
 	ch := r.profileNotice(ctx, impi, pc)
 
 	if shorten {
 		if err := r.shorten(ctx, st); err != nil {
-			r.log.Warn("failed to shorten the registration", slog.String("impi", impi), slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to shorten the registration", slog.String("impi", impi), slog.Any("error", err))
 			return nil
 		}
 
@@ -249,7 +249,7 @@ func withIdentities(reg db.Registration, ids []db.PublicIdentity) (db.Registrati
 
 // releaseRemoved releases the calls of the bindings for the identities removed from the set, in the form of the set
 // their request named (TS 24.229 §5.4.1.8 step 3, §5.4.5.1.2). The identities barred keep theirs (NOTE 2).
-func (r *Registrar) releaseRemoved(st *state, pc profileChange, live []db.Binding) {
+func (r *Registrar) releaseRemoved(ctx context.Context, st *state, pc profileChange, live []db.Binding) {
 	if len(pc.removed) == 0 {
 		return
 	}
@@ -264,7 +264,7 @@ func (r *Registrar) releaseRemoved(st *state, pc profileChange, live []db.Bindin
 		calls[bindingKey(b.ID)] = r.calls.serving(bindingKey(b.ID), pick)
 	}
 
-	r.releaseCalls(st, []removal{{
+	r.releaseCalls(ctx, st, []removal{{
 		reg: db.Registration{IMPI: st.impi}, bindings: live, event: reginfo.Rejected, calls: calls,
 	}})
 }
@@ -420,7 +420,7 @@ func withoutIdentities(sub cx.IMSSubscription, keys []string) cx.IMSSubscription
 // of the set without them, or of a deregistration of the set by the HSS, without a Cx request for it: the HSS moved on.
 func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 	for _, m := range moves {
-		r.log.Warn("the HSS's profile moved identities from another registered set", slog.String("impi", impi),
+		r.log.WarnContext(ctx, "the HSS's profile moved identities from another registered set", slog.String("impi", impi),
 			slog.Any("identities", m.taken), slog.Bool("deregistered", m.deregistered))
 
 		if !m.deregistered {
@@ -430,7 +430,7 @@ func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 
 		regs, err := r.cfg.DB.ListRegistrationsBySet(ctx, m.pc.set.ID)
 		if err != nil {
-			r.log.Warn("failed to list the registrations of a set", slog.Any("error", err))
+			r.log.WarnContext(ctx, "failed to list the registrations of a set", slog.Any("error", err))
 			continue
 		}
 
@@ -443,8 +443,8 @@ func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 		}
 
 		for _, other := range impis {
-			r.background(other, func(ctx context.Context) {
-				r.send(r.terminateMoved(ctx, other, m.pc))
+			r.background(ctx, other, func(ctx context.Context) {
+				r.send(ctx, r.terminateMoved(ctx, other, m.pc))
 			})
 		}
 	}
@@ -456,7 +456,7 @@ func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 func (r *Registrar) terminateMoved(ctx context.Context, impi string, pc profileChange) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
@@ -470,15 +470,15 @@ func (r *Registrar) terminateMoved(ctx context.Context, impi string, pc profileC
 
 	rm, _, err := r.removeBindings(ctx, st, reg, st.live(reg.Bindings), reginfo.Rejected)
 	if err != nil {
-		r.log.Warn("failed to delete the registration", slog.String("impi", impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to delete the registration", slog.String("impi", impi), slog.Any("error", err))
 		return nil
 	}
 
-	r.log.Info("registration terminated: the HSS moved its default identity", slog.String("impi", impi),
+	r.log.InfoContext(ctx, "registration terminated: the HSS moved its default identity", slog.String("impi", impi),
 		slog.String("impu", reg.IMPU))
 
-	r.releaseCalls(st, []removal{rm})
-	r.deregistered(rm)
+	r.releaseCalls(ctx, st, []removal{rm})
+	r.deregistered(ctx, rm)
 
 	return r.notifyChange(ctx, impi, change{removed: []removal{rm}, reason: reasonRejected})
 }

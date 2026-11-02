@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/ims/internal/netnstest"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
 )
 
@@ -96,7 +97,9 @@ func testRegistrationOverESP(t *testing.T, tr sip.Transport) {
 		return c, err
 	}}
 
-	pn.Do(func() { s = newIPsecSceneAt(t, pAddr, ipsec.DefaultPolicy(), pk, openStore(t), inNetns) })
+	pn.Do(func() {
+		s = newIPsecSceneAt(t, pAddr, ipsec.DefaultPolicy(), pk, openStore(t), transaction.Config{Transport: inNetns})
+	})
 
 	var u *ue
 

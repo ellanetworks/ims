@@ -2,6 +2,14 @@
 // offer/answer exchanges, reliable provisional responses, UPDATE, re-INVITE and session timers, and requests outside
 // dialogs (RFC 3261 §8, §12–15, §22; RFC 3262; RFC 3264; RFC 3311; RFC 4028; RFC 5057). It sits on a transaction
 // layer, and leaves to the application what to offer, how to answer, and what other requests to send.
+//
+// # Contexts
+//
+// Every operation takes a context, and every handler gets one. A context passed to the agent carries the trace and
+// values of the work: it never cancels or bounds a SIP operation, whose lifetime is the protocol's (see
+// sip/transaction). A handler's context is that of the request or response it is about. Work the agent starts itself
+// later, such as a refresh or an expiry, is in a trace of its own, linked to what armed it, and ends once the agent
+// closes.
 package ua
 
 import (
@@ -17,6 +25,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
 	"github.com/ellanetworks/ims/sip/transaction"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -221,11 +231,11 @@ type Config struct {
 
 	// OnInvite receives an initial INVITE, and returns the handler of its session, unless it set one with
 	// Session.SetHandler. Without it, initial INVITEs get a 480.
-	OnInvite func(r *Request) Handler
+	OnInvite func(ctx context.Context, r *Request) Handler
 
 	// OnRequest receives the initial requests other than INVITE. Without it, OPTIONS gets a 200 (RFC 3261 §11.2), the
 	// other methods a 405.
-	OnRequest func(r *Request)
+	OnRequest func(ctx context.Context, r *Request)
 
 	Logger *slog.Logger
 }
@@ -233,46 +243,47 @@ type Config struct {
 // Handler receives the events of a session. Each function is optional. Handlers run on the strand of the session, in
 // order, after the state change they report: they may call the agent, its sessions and requests, and should not
 // block, the strand waiting for them. Long work goes to a goroutine of the application, which calls the agent once
-// done, or posts to the strand.
+// done, or posts to the strand. Each function's ctx is the trace of what caused the event: a message of the peer, an
+// operation of the application, or a timer of the agent, whose work is a trace of its own.
 type Handler struct {
 	// Progress reports a provisional response to an INVITE of the agent, initial or re-INVITE; a reliable one once
 	// its PRACK completed, so that the requests the application sends then follow it. s is nil for a response to
 	// the initial INVITE without a To tag, which creates no dialog.
-	Progress func(s *Session, res *sip.Response)
+	Progress func(ctx context.Context, s *Session, res *sip.Response)
 
 	// Established reports that the session is confirmed by m: the 2xx (UAC), the ACK (UAS). Of a 2xx carrying the
 	// answer to the agent's offer, Established comes before Answer: the negotiated session is then
 	// Session.Negotiated already.
-	Established func(s *Session, m sip.Message)
+	Established func(ctx context.Context, s *Session, m sip.Message)
 
 	// Answer reports the peer's answer to an offer of the agent, after Established of the 2xx that carries it.
-	Answer func(s *Session, sdp []byte)
+	Answer func(ctx context.Context, s *Session, sdp []byte)
 
 	// Pracked reports the PRACK of a reliable 1xx res of the agent (RFC 3262 §3), once the queued reliable 1xx and the
 	// 2xx that waited for it are sent.
-	Pracked func(s *Session, res *sip.Response)
+	Pracked func(ctx context.Context, s *Session, res *sip.Response)
 
 	// Offer asks for the answer to an offer of the peer in a response: a reliable 1xx, answered in the PRACK, or a
 	// 2xx, answered in the ACK (RFC 3261 §13.2.1, RFC 3262 §5). Without it, the offer is refused.
-	Offer func(s *Session, o *Offer)
+	Offer func(ctx context.Context, s *Session, o *Offer)
 
 	// Request receives a request of the peer within the session other than BYE, ACK, CANCEL and the PRACKs without an
 	// offer, which the agent handles: re-INVITE and UPDATE, session refreshes included unless Policy.AnswerRefreshes
 	// answers them (Request.Refresh), a PRACK with a new offer, and the other methods Config.Allow lists. It must be
 	// responded to. Without it, the agent answers the refreshes, a re-INVITE or an UPDATE that changes the session
 	// gets a 488, an OPTIONS a 200, other requests a 500.
-	Request func(s *Session, r *Request)
+	Request func(ctx context.Context, s *Session, r *Request)
 
 	// Bye receives the BYE of the peer, for the application to respond to, once the other leg of a call has ended for
 	// one: the session ends as the response is sent, or 32*T1 after the BYE, when the agent sends a 200 itself, half
 	// the time the peer waits for one (RFC 3261 §17.1.2.2, Timer F).
 	// Without it, the agent answers the BYE with a 200 and the session ends at once (RFC 3261 §15.1.2).
-	Bye func(s *Session, r *Request)
+	Bye func(ctx context.Context, s *Session, r *Request)
 
 	// Cancelled reports a re-INVITE of the peer its CANCEL ended before the final response of the application: the
 	// agent answered it with a 487, and the session goes on as before (RFC 3261 §9.2); or, when an offer/answer
 	// exchange within the re-INVITE had already changed the session, with a 2xx (RFC 6141 §3.3, §3.8).
-	Cancelled func(s *Session, r *Request, cancel *sip.Request)
+	Cancelled func(ctx context.Context, s *Session, r *Request, cancel *sip.Request)
 
 	// Decorate completes each message the agent sends in the session, requests and responses, those it makes on its
 	// own included (ACK, PRACK, refreshes, BYE, automatic responses), before Config.Prepare or Config.Respond. Unlike
@@ -282,20 +293,20 @@ type Handler struct {
 	// Forked decides on a 2xx to the initial INVITE from another dialog than the first one answered, s its session
 	// (RFC 3261 §13.2.2.4): true keeps s, confirmed, with its own events; false, or no Forked, acknowledges the 2xx,
 	// refusing its offer, and ends s with a BYE.
-	Forked func(s *Session, res *sip.Response) bool
+	Forked func(ctx context.Context, s *Session, res *sip.Response) bool
 
 	// Received reports each message of the peer the session took, once handled, in order with the other events:
 	// requests within the dialog, its ACKs, the responses to the requests of the agent; the retransmissions the
 	// transaction layer or the session absorbed excluded. A response to the initial INVITE that created no session,
 	// as one without a To tag or a final failure, comes with s nil. The message is the agent's: read it, or clone it.
-	Received func(s *Session, m sip.Message)
+	Received func(ctx context.Context, s *Session, m sip.Message)
 
 	// Ended reports the end of the session.
-	Ended func(s *Session, e End)
+	Ended func(ctx context.Context, s *Session, e End)
 
 	// Failed reports the failure of the initial INVITE o (UAC): its final response, or the error of its transaction.
 	// Its early sessions end too.
-	Failed func(o *Outgoing, res *sip.Response, err error)
+	Failed func(ctx context.Context, o *Outgoing, res *sip.Response, err error)
 }
 
 // Reply is a response the application asks the agent to send.
@@ -362,6 +373,9 @@ type dialogEntry struct {
 	st     *Strand
 	invite *Session
 	subs   []*Subscription
+	// origin is the span context of the request that created the dialog, which the requests of the dialog that start
+	// a trace of their own link to.
+	origin trace.SpanContext
 
 	// notifs are the subscriptions of the agent as notifier: of a SUBSCRIBE, or implicit ones of REFERs.
 	notifs []*ServerSubscription
@@ -385,6 +399,9 @@ type mergeKey struct {
 // Each dialog set of the agent (an initial INVITE or SUBSCRIBE and the dialogs of its responses and requests) is on
 // a Strand, which serialises its state changes and runs its handlers. The methods of the agent, of its sessions,
 // subscriptions and requests may be called from any goroutine, handlers included.
+// tracerName is the instrumentation scope of the spans of the agent's own work, that its timers start.
+const tracerName = "github.com/ellanetworks/ims/sip/ua"
+
 type Agent struct {
 	cfg       Config
 	layer     *transaction.Layer
@@ -392,6 +409,7 @@ type Agent struct {
 	log       *slog.Logger
 	clock     transaction.Clock
 	sched     transaction.Scheduler
+	tracer    trace.Tracer
 	allow     []string
 	supported []string
 
@@ -471,12 +489,14 @@ func New(cfg Config) (*Agent, error) {
 	} else {
 		tcfg := cfg.Transaction
 		tcfg.Handler = a
+		tcfg.SpanLinks = a.chainSpanLinks(tcfg.SpanLinks)
 		a.layer = transaction.New(tcfg)
 		a.ownLayer = true
 	}
 
 	a.clock = a.layer.Clock()
 	a.sched = a.layer.Scheduler()
+	a.tracer = a.layer.TracerProvider().Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL))
 
 	return a, nil
 }
@@ -589,7 +609,7 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 
 	for _, p := range pubs {
 		_ = p.st.do(func() error {
-			p.close()
+			p.close(ctx)
 			return nil
 		})
 	}
@@ -600,7 +620,7 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 		_ = o.st.do(func() error {
 			o.awaitFinal()
 
-			if err := o.cancelWith(Change{}); err != nil {
+			if err := o.cancelWith(ctx, Change{}); err != nil {
 				a.log.Debug("CANCEL failed", callAttr(o.ci.req), slog.Any("error", err))
 			}
 
@@ -611,14 +631,14 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	// The notifications first, in their dialogs still: a REFER subscription in the dialog of a session.
 	for _, n := range notifs {
 		_ = n.st.do(func() error {
-			n.close()
+			n.close(ctx)
 			return nil
 		})
 	}
 
 	for _, s := range sessions {
 		_ = s.st.do(func() error {
-			s.close()
+			s.close(ctx)
 			return nil
 		})
 	}
@@ -626,7 +646,7 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	for _, s := range subs {
 		_ = s.st.do(func() error {
 			if s.d != nil || s.att.first == s {
-				s.close()
+				s.close(ctx)
 			}
 
 			return nil
@@ -673,28 +693,28 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 	// did not complete.
 	for _, s := range subs {
 		_ = s.st.do(func() error {
-			s.end(End{Cause: EndClosed})
+			s.end(ctx, End{Cause: EndClosed})
 			return nil
 		})
 	}
 
 	for _, n := range notifs {
 		_ = n.st.do(func() error {
-			n.end(End{Cause: EndClosed})
+			n.end(ctx, End{Cause: EndClosed})
 			return nil
 		})
 	}
 
 	for _, p := range pubs {
 		_ = p.st.do(func() error {
-			p.end(End{Cause: EndClosed})
+			p.end(ctx, End{Cause: EndClosed})
 			return nil
 		})
 	}
 
 	for _, o := range outgoing {
 		_ = o.st.do(func() error {
-			o.closed()
+			o.closed(ctx)
 			return nil
 		})
 	}
@@ -720,8 +740,9 @@ func (a *Agent) Shutdown(ctx context.Context) error {
 // reports at once (transaction.Layer.Drop), then, on their strands, its INVITEs, sessions, requests, subscriptions,
 // notifiers and publications, with EndDropped or ErrDropped. The application knows the flow they depend on failed, as
 // a UE whose registration's flow failed stops processing its dialogs and transactions (TS 24.229 §5.1.1.4.1). Drop
-// waits for no strand, so a handler may call it. The agent goes on with what the application starts afterwards.
-func (a *Agent) Drop(match func(sip.Flow) bool) {
+// waits for no strand, so a handler may call it. The agent goes on with what the application starts afterwards. The
+// ends it reports are part of the trace of ctx.
+func (a *Agent) Drop(ctx context.Context, match func(sip.Flow) bool) {
 	// The transactions first: what ending the usages would still answer or send is refused.
 	a.layer.Drop(match)
 
@@ -735,32 +756,32 @@ func (a *Agent) Drop(match func(sip.Flow) bool) {
 	a.mu.Lock()
 
 	for o := range a.outgoing {
-		ends = append(ends, ending{o.st, o.dropped})
+		ends = append(ends, ending{o.st, func() { o.dropped(ctx) }})
 	}
 
 	dropped := End{Cause: EndDropped}
 
 	for _, e := range a.dialogs {
 		if s := e.invite; s != nil {
-			ends = append(ends, ending{s.st, func() { s.end(dropped) }})
+			ends = append(ends, ending{s.st, func() { s.end(ctx, dropped) }})
 		}
 
 		for _, s := range e.subs {
-			ends = append(ends, ending{s.st, func() { s.end(dropped) }})
+			ends = append(ends, ending{s.st, func() { s.end(ctx, dropped) }})
 		}
 
 		for _, n := range e.notifs {
-			ends = append(ends, ending{n.st, func() { n.end(dropped) }})
+			ends = append(ends, ending{n.st, func() { n.end(ctx, dropped) }})
 		}
 	}
 
 	for _, att := range a.subscribing {
 		s := att.first
-		ends = append(ends, ending{s.st, func() { s.end(dropped) }})
+		ends = append(ends, ending{s.st, func() { s.end(ctx, dropped) }})
 	}
 
 	for p := range a.pubs {
-		ends = append(ends, ending{p.st, func() { p.end(dropped) }})
+		ends = append(ends, ending{p.st, func() { p.end(ctx, dropped) }})
 	}
 
 	for c := range a.requests {
@@ -849,10 +870,10 @@ func (a *Agent) replaced(id dialog.ID) (e dialogEntry, ok bool) {
 	return dialogEntry{}, false
 }
 
-func (a *Agent) entry(id dialog.ID, st *Strand) *dialogEntry {
+func (a *Agent) entry(id dialog.ID, st *Strand, origin trace.SpanContext) *dialogEntry {
 	e := a.dialogs[id]
 	if e == nil {
-		e = &dialogEntry{st: st}
+		e = &dialogEntry{st: st, origin: origin}
 		a.dialogs[id] = e
 	}
 
@@ -865,11 +886,11 @@ func (a *Agent) entry(id dialog.ID, st *Strand) *dialogEntry {
 	return e
 }
 
-func (a *Agent) addSession(s *Session) {
+func (a *Agent) addSession(s *Session, origin trace.SpanContext) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.id, s.st)
+	e := a.entry(s.id, s.st, origin)
 	e.invite, e.invited = s, true
 }
 
@@ -886,7 +907,7 @@ func (a *Agent) addIncoming(s *Session, r *Request) bool {
 
 	a.invites[r.tx] = r
 
-	e := a.entry(s.id, s.st)
+	e := a.entry(s.id, s.st, trace.SpanContextFromContext(r.ctx))
 	e.invite, e.invited = s, true
 
 	return true
@@ -916,7 +937,7 @@ func (a *Agent) addSubscription(s *Subscription) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.d.ID(), s.st)
+	e := a.entry(s.d.ID(), s.st, s.att.origin)
 	e.subs = append(e.subs, s)
 }
 
@@ -943,11 +964,11 @@ func (a *Agent) removeSubscription(s *Subscription) bool {
 }
 
 // prune notes a dialog whose last usage ended, kept for 64*T1, and reports it.
-func (a *Agent) addServerSubscription(s *ServerSubscription) {
+func (a *Agent) addServerSubscription(s *ServerSubscription, origin trace.SpanContext) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	e := a.entry(s.d.ID(), s.st)
+	e := a.entry(s.d.ID(), s.st, origin)
 	e.notifs = append(e.notifs, s)
 }
 
@@ -1001,20 +1022,20 @@ func (a *Agent) prune(id dialog.ID, e *dialogEntry) bool {
 
 // destroyDialog ends the usages of a dialog a failure destroyed (RFC 5057 §5.1), with its strand held: the peer
 // no longer has the dialog, so no BYE or unsubscribe goes.
-func (a *Agent) destroyDialog(id dialog.ID, res *sip.Response, err error) {
+func (a *Agent) destroyDialog(ctx context.Context, id dialog.ID, res *sip.Response, err error) {
 	s, subs, notifs := a.usages(id)
 	e := End{Cause: EndLost, Response: res, Err: err}
 
 	for _, sub := range subs {
-		sub.end(e)
+		sub.end(ctx, e)
 	}
 
 	for _, n := range notifs {
-		n.end(e)
+		n.end(ctx, e)
 	}
 
 	if s != nil {
-		s.end(e)
+		s.end(ctx, e)
 	}
 }
 
@@ -1214,14 +1235,14 @@ func (a *Agent) reply(tx *transaction.ServerTransaction, code int, extra ...sip.
 // prepareAndSend sends a copy of req, completed by Config.Prepare, in a client transaction: req stays as built, for
 // the request sent again after a challenge, which Prepare completes anew. The transaction layer sends the requests of
 // a flow in the order it takes them.
-func (a *Agent) prepareAndSend(req *sip.Request, h transaction.ClientHandler) (*transaction.ClientTransaction, error) {
+func (a *Agent) prepareAndSend(ctx context.Context, req *sip.Request, h transaction.ClientHandler) (*transaction.ClientTransaction, error) {
 	out := req.Clone()
 
 	if err := a.cfg.Prepare(out); err != nil {
 		return nil, fmt.Errorf("sip/ua: prepare %s: %w", req.Method, err)
 	}
 
-	return a.layer.Request(out, h)
+	return a.layer.Request(ctx, out, h)
 }
 
 // authenticate completes the next request after a 401 or 407 with credentials (RFC 3261 §22.2). It reports whether to
@@ -1253,7 +1274,7 @@ func (a *Agent) unsupported(req *sip.Request) []string {
 }
 
 // HandleRequest implements transaction.Handler.
-func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (a *Agent) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	to, err := req.Header.To()
 	if err != nil {
 		a.reply(tx, 400)
@@ -1266,7 +1287,7 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if to.Tag() != "" {
-		a.inDialog(tx, req)
+		a.inDialog(ctx, tx, req)
 		return
 	}
 
@@ -1299,17 +1320,17 @@ func (a *Agent) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reques
 		a.arriving[tx] = st
 		a.mu.Unlock()
 
-		st.post(func() { a.invite(st, tx, req) })
+		st.post(func() { a.invite(ctx, st, tx, req) })
 
 		return
 	}
 
-	r := newRequest(nil, tx, req)
+	r := newRequest(ctx, nil, tx, req)
 	r.a, r.st = a, st
 
 	switch {
 	case a.cfg.OnRequest != nil && a.allows(req.Method):
-		st.Post(func() { a.cfg.OnRequest(r) })
+		st.Post(func() { a.cfg.OnRequest(ctx, r) })
 	case req.Method == "OPTIONS":
 		_ = r.respond(Reply{Code: 200, Header: a.capabilities()})
 	default:
@@ -1379,7 +1400,7 @@ func (a *Agent) capabilities() sip.Header {
 
 // inDialog gives a request within a dialog to the usage it belongs to, on the strand of the dialog (RFC 5057 §5.3),
 // or to the SUBSCRIBE whose NOTIFY creates the dialog (RFC 6665 §4.4.1).
-func (a *Agent) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
+func (a *Agent) inDialog(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	id := dialog.RequestID(req)
 
 	a.mu.Lock()
@@ -1398,9 +1419,9 @@ func (a *Agent) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 	case ended:
 		a.reply(tx, 481)
 	case e != nil:
-		e.st.post(func() { a.route(id, tx, req) })
+		e.st.post(func() { a.route(ctx, id, tx, req) })
 	case att != nil:
-		att.st.post(func() { att.notifyFor(tx, req) })
+		att.st.post(func() { att.notifyFor(ctx, tx, req) })
 	default:
 		a.reply(tx, 481)
 	}
@@ -1409,7 +1430,7 @@ func (a *Agent) inDialog(tx *transaction.ServerTransaction, req *sip.Request) {
 // route gives a request within a dialog to its usage, with the dialog's strand held: INVITE, UPDATE, PRACK, BYE and
 // INFO to the INVITE session; SUBSCRIBE, NOTIFY and REFER to the subscription of their Event; the requests of no
 // usage, such as OPTIONS and MESSAGE, to the INVITE session if any (RFC 5057 §5.3).
-func (a *Agent) route(id dialog.ID, tx *transaction.ServerTransaction, req *sip.Request) {
+func (a *Agent) route(ctx context.Context, id dialog.ID, tx *transaction.ServerTransaction, req *sip.Request) {
 	s, subs, notifs := a.usages(id)
 	ev, _, _ := req.Header.Event()
 
@@ -1417,7 +1438,7 @@ func (a *Agent) route(id dialog.ID, tx *transaction.ServerTransaction, req *sip.
 	case "NOTIFY":
 		for _, sub := range subs {
 			if sub.matches(ev) {
-				sub.receive(tx, req)
+				sub.receive(ctx, tx, req)
 				return
 			}
 		}
@@ -1426,7 +1447,7 @@ func (a *Agent) route(id dialog.ID, tx *transaction.ServerTransaction, req *sip.
 		// new usage, refused (RFC 5057 §5.6), and one for the refer event of no REFER gets a 403 (RFC 3515 §2.4.4).
 		for _, n := range notifs {
 			if n.event.Matches(ev) {
-				n.receive(tx, req)
+				n.receive(ctx, tx, req)
 				return
 			}
 		}
@@ -1443,7 +1464,7 @@ func (a *Agent) route(id dialog.ID, tx *transaction.ServerTransaction, req *sip.
 
 	switch {
 	case s != nil:
-		s.receive(tx, req)
+		s.receive(ctx, tx, req)
 	case len(subs) == 0 && len(notifs) == 0:
 		a.reply(tx, 481)
 	case req.Method == "NOTIFY":
@@ -1479,35 +1500,80 @@ func unmatchedNotify(req *sip.Request, subs []*Subscription) int {
 
 // HandleCancel implements transaction.Handler: the transaction layer answered the CANCEL; the INVITE gets a 487
 // (RFC 3261 §9.2). A CANCEL that came before its INVITE reached its strand follows it there.
-func (a *Agent) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
+func (a *Agent) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	a.mu.Lock()
 	r, st := a.invites[tx], a.arriving[tx]
 	a.mu.Unlock()
 
 	switch {
 	case r != nil:
-		r.st.post(func() { r.cancelled(cancel) })
+		r.st.post(func() { r.cancelled(ctx, cancel) })
 	case st != nil:
 		st.post(func() {
 			if r := a.tracked(tx); r != nil {
-				r.cancelled(cancel)
+				r.cancelled(ctx, cancel)
 			}
 		})
 	}
 }
 
 // HandleAck implements transaction.Handler: the ACK of a 2xx (RFC 3261 §13.3.1.4).
-func (a *Agent) HandleAck(ack *sip.Request) {
+func (a *Agent) HandleAck(ctx context.Context, ack *sip.Request) {
 	if s := a.Session(dialog.RequestID(ack)); s != nil {
-		s.st.post(func() { s.receiveAck(ack) })
+		s.st.post(func() { s.receiveAck(ctx, ack) })
 	}
 }
 
 // HandleTransactionError implements transaction.Handler.
-func (a *Agent) HandleTransactionError(tx *transaction.ServerTransaction, err error) {
+func (a *Agent) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
 	if r := a.tracked(tx); r != nil {
-		r.st.post(func() { r.failed(err) })
+		r.st.post(func() { r.failed(ctx, err) })
 	}
+}
+
+// SpanLinks is the span context of the request that created the dialog of req, an in-dialog request, if the agent has
+// the dialog: what a request of a dialog that starts a trace of its own, as one from a UE, links to
+// (transaction.Config.SpanLinks). An agent on a layer it makes sets it there itself.
+func (a *Agent) SpanLinks(req *sip.Request) []trace.SpanContext {
+	id := dialog.RequestID(req)
+	if id.LocalTag == "" {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if e := a.dialogs[id]; e != nil && e.origin.IsValid() {
+		return []trace.SpanContext{e.origin}
+	}
+
+	return nil
+}
+
+// chainSpanLinks is the agent's SpanLinks, after next.
+func (a *Agent) chainSpanLinks(next func(*sip.Request) []trace.SpanContext) func(*sip.Request) []trace.SpanContext {
+	if next == nil {
+		return a.SpanLinks
+	}
+
+	return func(req *sip.Request) []trace.SpanContext {
+		return append(next(req), a.SpanLinks(req)...)
+	}
+}
+
+// startDetached starts the span of work of the agent that starts later than what caused it, as the refresh a timer
+// fires: a trace of its own, linked to link, the trace that armed the timer.
+func (a *Agent) startDetached(causes []trace.SpanContext, name string) (context.Context, trace.Span) {
+	opts := []trace.SpanStartOption{trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal)}
+
+	for _, c := range causes {
+		if c.IsValid() {
+			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: c}))
+		}
+	}
+
+	// The work ends with the agent's layer, as that of its handlers does.
+	return a.tracer.Start(a.layer.Lifetime(), name, opts...)
 }
 
 func containsFold(list []string, v string) bool {

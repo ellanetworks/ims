@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func TestCalleeUpdateWaitsForPrack(t *testing.T) {
 
 	done, f := results()
 
-	if err := r.Session().Update(ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
+	if err := r.Session().Update(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,11 +107,11 @@ func TestOneUpdateAtATime(t *testing.T) {
 	first, f1 := results()
 	second, f2 := results()
 
-	if err := as.Update(ua.Change{Header: sip.Header{{Name: "X-N", Value: "1"}}}, f1); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Header: sip.Header{{Name: "X-N", Value: "1"}}}, f1); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := as.Update(ua.Change{Header: sip.Header{{Name: "X-N", Value: "2"}}}, f2); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Header: sip.Header{{Name: "X-N", Value: "2"}}}, f2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,7 +148,7 @@ func TestReinviteWaitsForThePeers(t *testing.T) {
 
 	bobs, fb := results()
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-b")}, fb); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-b")}, fb); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,11 +157,11 @@ func TestReinviteWaitsForThePeers(t *testing.T) {
 	stale, fs := results()
 	asking, fa := results()
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, fs); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-a")}, fs); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := as.Reinvite(ua.Change{}, fa); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{}, fa); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,7 +185,7 @@ func TestReinviteWaitsForThePeers(t *testing.T) {
 		t.Fatalf("offer %q, want bob's session", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.Change{Bodies: sdpOf("answer-b")})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("answer-b")})
 
 	if res := recv(t, asking).res; res.StatusCode != 200 {
 		t.Fatalf("alice's re-INVITE %d", res.StatusCode)
@@ -198,7 +199,7 @@ func TestServerPolicyHandsBackGlare(t *testing.T) {
 
 	done, f := results()
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, f); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-a")}, f); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,7 +231,7 @@ func TestNoSessionTimerOnEarlyDialogs(t *testing.T) {
 
 	done, f := results()
 
-	if err := es.Update(ua.Change{}, f); err != nil {
+	if err := es.Update(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
 

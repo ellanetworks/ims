@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -9,8 +10,9 @@ import (
 
 // Request sends a request outside a dialog other than INVITE and SUBSCRIBE: REGISTER, MESSAGE, OPTIONS, PUBLISH. The
 // agent adds what req leaves out: the From tag, a Call-ID, CSeq and Max-Forwards; it answers 401 and 407 challenges
-// through Config.Authenticate. done receives the final response, or the error of the transaction, as a handler.
-func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error), opts ...Option) error {
+// through Config.Authenticate. done receives the final response, or the error of the transaction, as a handler. The
+// request, and the ones after a challenge, are part of the trace of ctx.
+func (a *Agent) Request(ctx context.Context, req *sip.Request, done func(res *sip.Response, err error), opts ...Option) error {
 	switch req.Method {
 	case "INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE":
 		return fmt.Errorf("sip/ua: %s outside a session", req.Method)
@@ -29,7 +31,7 @@ func (a *Agent) Request(req *sip.Request, done func(res *sip.Response, err error
 		return err
 	}
 
-	if err := c.st.do(c.send); err != nil {
+	if err := c.st.do(func() error { return c.send(ctx) }); err != nil {
 		a.removeRequest(c)
 		return err
 	}
@@ -146,12 +148,12 @@ type outOfDialog struct {
 	final bool
 }
 
-func (c *outOfDialog) send() error {
-	_, err := c.a.prepareAndSend(c.tmpl.Clone(), c.st.client(c.response, func(err error) { c.finish(nil, err) }))
+func (c *outOfDialog) send(ctx context.Context) error {
+	_, err := c.a.prepareAndSend(ctx, c.tmpl.Clone(), c.st.client(c.response, func(_ context.Context, err error) { c.finish(nil, err) }))
 	return err
 }
 
-func (c *outOfDialog) response(res *sip.Response) {
+func (c *outOfDialog) response(ctx context.Context, res *sip.Response) {
 	if res.IsProvisional() || c.final {
 		return
 	}
@@ -163,7 +165,7 @@ func (c *outOfDialog) response(res *sip.Response) {
 		c.tries++
 		c.tmpl = next
 
-		if err := c.send(); err != nil {
+		if err := c.send(ctx); err != nil {
 			c.finish(nil, err)
 		}
 

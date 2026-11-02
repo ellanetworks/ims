@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -483,7 +484,7 @@ func call(t *testing.T, group string, a, b, c *user) (ca, cb, cc *client.Call) {
 func callOf(t *testing.T, group string, a *user, members ...*user) []*client.Call {
 	t.Helper()
 
-	ca, err := a.Call(mustURI(t, group))
+	ca, err := a.Call(context.Background(), mustURI(t, group))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +493,7 @@ func callOf(t *testing.T, group string, a *user, members ...*user) []*client.Cal
 
 	t.Cleanup(func() {
 		for _, c := range calls {
-			c.Leave()
+			c.Leave(context.Background())
 		}
 
 		// The BYEs before the deregistrations of the cleanups of newMCUE.
@@ -557,7 +558,7 @@ func TestRegisterAffiliate(t *testing.T) {
 
 		res := make(chan *sip.Response, 1)
 
-		err := u.Affiliate(groups, func(r *sip.Response, err error) {
+		err := u.Affiliate(context.Background(), groups, func(r *sip.Response, err error) {
 			if err != nil {
 				t.Errorf("%s: PUBLISH: %v", u.name, err)
 			}
@@ -628,11 +629,11 @@ func TestGroupCall(t *testing.T) {
 	ca.ReleasePTT()
 
 	// alice leaving does not release fire; carol leaving then leaves bob alone, and does.
-	ca.Leave()
+	ca.Leave(context.Background())
 	alice.expect(t, "ended")
 	bob.expectNot(t, "ended")
 
-	cc.Leave()
+	cc.Leave(context.Background())
 	carol.expect(t, "ended")
 	bob.expect(t, "ended")
 }
@@ -652,7 +653,7 @@ func TestLogOff(t *testing.T) {
 
 	// police releases its calls when alice, their initiator, leaves (§6.3.8.1 3).
 	end := func(calls []*client.Call, members ...*user) {
-		calls[0].Leave()
+		calls[0].Leave(context.Background())
 		alice.expect(t, "ended")
 
 		for _, u := range members {
@@ -740,7 +741,7 @@ func TestReleaseInitiatorLeaves(t *testing.T) {
 	alice, bob, carol := users(t)
 	ca, _, _ := call(t, police, alice, bob, carol)
 
-	ca.Leave()
+	ca.Leave(context.Background())
 
 	for _, u := range []*user{alice, bob, carol} {
 		u.expect(t, "ended")
@@ -752,7 +753,7 @@ func TestReleaseInitiatorLeaves(t *testing.T) {
 func TestNotAffiliated(t *testing.T) {
 	alice, _, carol := users(t)
 
-	if _, err := carol.Call(mustURI(t, rescue)); err != nil {
+	if _, err := carol.Call(context.Background(), mustURI(t, rescue)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -796,7 +797,7 @@ func TestMCPTTCallQoSFlows(t *testing.T) {
 		}
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 
 	for _, u := range []*user{alice, bob, carol} {
 		u.expect(t, "ended")

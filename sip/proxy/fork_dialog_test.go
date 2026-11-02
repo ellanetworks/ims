@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
@@ -134,7 +135,7 @@ func TestForkedDialogBranchFails(t *testing.T) {
 	}
 
 	// A release reaches the callee that answered, on its branch.
-	if err := d.Release(proxy.Release{Toward: proxy.Callee}); err != nil {
+	if err := d.Release(context.Background(), proxy.Release{Toward: proxy.Callee}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -460,7 +461,7 @@ func TestReleaseCalleeEarly(t *testing.T) {
 	a.respond(180)
 	b.respond(180)
 
-	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[0][0].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -502,7 +503,7 @@ func TestReleaseCalleeLast(t *testing.T) {
 	b.respond(486)
 	s.next199()
 
-	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[0][0].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -530,7 +531,7 @@ func TestReleaseCalleePending(t *testing.T) {
 	a.respond(180)
 	s.relayed(180)
 
-	if err := d.ReleaseCallee(g[1][0].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[1][0].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -567,12 +568,12 @@ func TestReleaseCalleeAnswered(t *testing.T) {
 	}
 
 	for _, key := range []any{g[0][0].Addr(), "unknown"} {
-		if err := d.ReleaseCallee(key, released480()); !errors.Is(err, proxy.ErrNotReached) {
+		if err := d.ReleaseCallee(context.Background(), key, released480()); !errors.Is(err, proxy.ErrNotReached) {
 			t.Errorf("release of %v: %v", key, err)
 		}
 	}
 
-	if err := d.ReleaseCallee(g[0][1].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[0][1].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -589,7 +590,7 @@ func TestReleaseCalleeAnswered(t *testing.T) {
 		t.Errorf("ended %+v", e)
 	}
 
-	if err := d.ReleaseCallee(g[0][1].Addr(), released480()); !errors.Is(err, proxy.ErrDialogEnded) {
+	if err := d.ReleaseCallee(context.Background(), g[0][1].Addr(), released480()); !errors.Is(err, proxy.ErrDialogEnded) {
 		t.Errorf("second release: %v", err)
 	}
 }
@@ -608,7 +609,7 @@ func TestReleaseCalleeThenOthersFail(t *testing.T) {
 	a.respond(180)
 	b.respond(180)
 
-	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[0][0].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -638,7 +639,7 @@ func TestReleaseCalleeOnlyAnswer(t *testing.T) {
 	a.respond(180)
 	b.respond(180)
 
-	if err := d.ReleaseCallee(g[0][0].Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), g[0][0].Addr(), released480()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -667,7 +668,7 @@ func TestReleaseCalleeRetryOfPendingBranch(t *testing.T) {
 	a := received(t, g[0][0], "a")
 	a.respond(180)
 
-	if err := d.ReleaseCallee(flow.Addr(), released480()); err != nil {
+	if err := d.ReleaseCallee(context.Background(), flow.Addr(), released480()); err != nil {
 		t.Fatalf("ReleaseCallee: %v", err)
 	}
 

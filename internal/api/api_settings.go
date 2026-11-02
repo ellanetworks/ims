@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,7 +30,7 @@ func decodeStrictly(w http.ResponseWriter, r *http.Request, v any, logger *slog.
 	}
 
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request data", err, logger)
+		writeError(r.Context(), w, http.StatusBadRequest, "Invalid request data", err, logger)
 		return false
 	}
 
@@ -38,15 +39,15 @@ func decodeStrictly(w http.ResponseWriter, r *http.Request, v any, logger *slog.
 
 // writeSettingsError answers a failed change of settings: with its message for the client's mistakes, or with a
 // generic one if it could not be saved.
-func writeSettingsError(w http.ResponseWriter, err error, failed string, logger *slog.Logger) {
+func writeSettingsError(ctx context.Context, w http.ResponseWriter, err error, failed string, logger *slog.Logger) {
 	switch {
 	case errors.Is(err, settings.ErrInvalid):
-		writeError(w, http.StatusBadRequest, err.Error(), nil, logger)
+		writeError(ctx, w, http.StatusBadRequest, err.Error(), nil, logger)
 	case errors.Is(err, settings.ErrConflict):
-		writeError(w, http.StatusConflict, err.Error(), nil, logger)
+		writeError(ctx, w, http.StatusConflict, err.Error(), nil, logger)
 	case errors.Is(err, settings.ErrNotFound):
-		writeError(w, http.StatusNotFound, err.Error(), nil, logger)
+		writeError(ctx, w, http.StatusNotFound, err.Error(), nil, logger)
 	default:
-		writeError(w, http.StatusInternalServerError, failed, err, logger)
+		writeError(ctx, w, http.StatusInternalServerError, failed, err, logger)
 	}
 }

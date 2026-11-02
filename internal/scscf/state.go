@@ -21,7 +21,10 @@ func (r *Registrar) load(ctx context.Context, impi string) (*state, error) {
 		return nil, err
 	}
 
-	return &state{impi: impi, regs: regs, now: r.clock.Now()}, nil
+	st := &state{impi: impi, regs: regs, now: r.clock.Now()}
+	r.pruneCauses(st)
+
+	return st, nil
 }
 
 func (s *state) set(key string) *db.Registration {

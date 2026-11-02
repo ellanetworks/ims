@@ -218,7 +218,7 @@ func TestRejectOfferInTheAck(t *testing.T) {
 	_ = bob.next("invite").req.Accept(ua.SDP([]byte(realSDP(5000, 1))))
 	alice.next("established")
 
-	alice.next("offer").offer.Reject()
+	alice.next("offer").offer.Reject(context.Background())
 
 	answer := bob.next("answer")
 
@@ -267,7 +267,7 @@ func TestUasByeBeforeAck(t *testing.T) {
 
 	ok := r.response()
 
-	if err := in.Session().Bye(ua.Change{}, nil); err != nil {
+	if err := in.Session().Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -320,7 +320,7 @@ func TestSessionContact(t *testing.T) {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := bs.Update(ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := bs.Update(context.Background(), ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,7 +348,7 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := as.Reinvite(ua.Change{Bodies: sdpOf(offer)}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(offer)}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -358,7 +358,7 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 
 	alice.next("answer")
 
-	if err := as.Reinvite(ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Reinvite(context.Background(), ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +367,7 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 		t.Fatalf("offer %q, want bob's last description", o.sdp)
 	}
 
-	_ = o.offer.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte(offer))}})
+	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte(offer))}})
 
 	<-done
 
@@ -417,7 +417,7 @@ func TestAuthentication(t *testing.T) {
 func TestRequestOutsideDialogs(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnRequest = func(r *ua.Request) { _ = r.Respond(ua.Reply{Code: 200}) }
+		c.OnRequest = func(_ context.Context, r *ua.Request) { _ = r.Respond(ua.Reply{Code: 200}) }
 	})
 
 	uri, _ := sip.ParseURI(bob.uri())
@@ -432,7 +432,7 @@ func TestRequestOutsideDialogs(t *testing.T) {
 
 	done := make(chan result, 1)
 
-	if err := alice.a.Request(req, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
+	if err := alice.a.Request(context.Background(), req, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -452,7 +452,7 @@ func TestRequireInDialog(t *testing.T) {
 	as, _ := established(t, alice, bob)
 
 	done := make(chan *sip.Response, 1)
-	_ = as.Send("INFO", ua.Change{Header: sip.Header{{Name: "Require", Value: "foo"}}}, func(res *sip.Response, err error) {
+	_ = as.Send(context.Background(), "INFO", ua.Change{Header: sip.Header{{Name: "Require", Value: "foo"}}}, func(res *sip.Response, err error) {
 		done <- res
 	})
 
@@ -473,7 +473,7 @@ func TestChangeRepeatedHeaderFields(t *testing.T) {
 		Bodies: sdpOf("offer-2"),
 	}
 
-	_ = as.Reinvite(c, nil)
+	_ = as.Reinvite(context.Background(), c, nil)
 
 	r := bob.next("request").req
 	if n := r.Message().Header.Count("Accept-Contact"); n != 2 {

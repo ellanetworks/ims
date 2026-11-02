@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -170,8 +171,8 @@ func (c *Client) newCall(st *ua.Strand, incoming bool) (*Call, error) {
 // Call places a prearranged group call to group (TS 24.379 §10.1.1.2.1.1): an INVITE to the participating function
 // with the MCPTT feature tags and ICSI, the mcptt-info of the group and client, the SDP offer of the speech and the
 // control channel (§6.2.1), the implicit floor request and mc_granted as configured (TS 24.380 §14.2). The call
-// reports its establishment or failure in events.
-func (c *Client) Call(group sip.URI) (*Call, error) {
+// reports its establishment or failure in events. ctx carries the trace of the INVITE, as of the requests of sip/ua.
+func (c *Client) Call(ctx context.Context, group sip.URI) (*Call, error) {
 	call, err := c.newCall(c.cfg.Agent.NewStrand(), false)
 	if err != nil {
 		return nil, err
@@ -195,7 +196,7 @@ func (c *Client) Call(group sip.URI) (*Call, error) {
 	if err == nil {
 		var out *ua.Outgoing
 
-		out, err = c.cfg.Agent.Invite(req, call.uacHandler(), ua.On(call.st), ua.WithPolicy(ua.ClientPolicy))
+		out, err = c.cfg.Agent.Invite(ctx, req, call.uacHandler(), ua.On(call.st), ua.WithPolicy(ua.ClientPolicy))
 		if err == nil {
 			call.st.Post(func() { call.out = out })
 			return call, nil
@@ -253,11 +254,11 @@ func (call *Call) invite() (*sip.Request, error) {
 
 func (call *Call) uacHandler() ua.Handler {
 	return ua.Handler{
-		Answer: func(s *ua.Session, b []byte) {
+		Answer: func(_ context.Context, s *ua.Session, b []byte) {
 			call.sess = s
 			call.takeAnswer(b)
 		},
-		Established: func(s *ua.Session, msg sip.Message) {
+		Established: func(ctx context.Context, s *ua.Session, msg sip.Message) {
 			call.sess = s
 			// The 2xx confirms the session before it reports its answer.
 			if _, remote, ok := s.Negotiated(); ok {
@@ -265,9 +266,9 @@ func (call *Call) uacHandler() ua.Handler {
 			}
 
 			res, _ := msg.(*sip.Response)
-			call.originated(res)
+			call.originated(ctx, res)
 		},
-		Failed: func(_ *ua.Outgoing, res *sip.Response, err error) {
+		Failed: func(_ context.Context, _ *ua.Outgoing, res *sip.Response, err error) {
 			call.failed = true
 			call.release()
 			call.c.emit(Event{Kind: EventFailed, Call: call, Response: res, Err: err})
@@ -313,7 +314,7 @@ func (call *Call) takeAnswer(b []byte) {
 
 // originated is the 2xx of the call placed (TS 24.379 §10.1.1.2.1.1): the floor participant told (TS 24.380
 // §6.2.4.2.2).
-func (call *Call) originated(res *sip.Response) {
+func (call *Call) originated(ctx context.Context, res *sip.Response) {
 	switch {
 	case call.ended:
 		return
@@ -324,17 +325,17 @@ func (call *Call) originated(res *sip.Response) {
 		}
 
 		call.failed = true
-		call.leave()
+		call.leave(ctx)
 		call.c.emit(Event{Kind: EventFailed, Call: call, Response: res, Err: err})
 
 		return
 	case call.leaving:
-		call.leave()
+		call.leave(ctx)
 		return
 	}
 
 	call.established = true
-	call.c.cfg.Logger.Info("call established", slog.Duration("setup", call.c.clock.Now().Sub(call.placed)))
+	call.c.cfg.Logger.InfoContext(ctx, "call established", slog.Duration("setup", call.c.clock.Now().Sub(call.placed)))
 
 	cc := call.n.control
 	o := floor.Origination{Implicit: cc.ImplicitRequest, Granted: cc.Granted}
@@ -541,7 +542,7 @@ func (call *Call) decline() {
 }
 
 // answered is the ACK of the 200 of an invitation.
-func (call *Call) answered(*ua.Session, sip.Message) {
+func (call *Call) answered(context.Context, *ua.Session, sip.Message) {
 	if call.ended {
 		return
 	}
@@ -552,7 +553,7 @@ func (call *Call) answered(*ua.Session, sip.Message) {
 
 // endedBy is the end of the session: by the server's BYE (TS 24.379 §10.1.1.2.3.3, §6.2.6), the client's, or a
 // failure.
-func (call *Call) endedBy(_ *ua.Session, e ua.End) {
+func (call *Call) endedBy(_ context.Context, _ *ua.Session, e ua.End) {
 	call.release()
 
 	if call.failed || call.reported || call.incoming && !call.announced {
@@ -599,10 +600,11 @@ func (call *Call) Accept() { call.st.Post(call.accept) }
 func (call *Call) Decline() { call.st.Post(call.decline) }
 
 // Leave leaves the call (TS 24.379 §10.1.1.2.3.1, §6.2.4.1): the floor participant and the media released, a BYE
-// sent; a call placed not yet established is cancelled (§6.2.5.1 step 1), an invitation not answered declined.
-func (call *Call) Leave() { call.st.Post(call.leave) }
+// sent; a call placed not yet established is cancelled (§6.2.5.1 step 1), an invitation not answered declined. ctx
+// carries the trace of the BYE or CANCEL; a call placed that is established first ends in the trace of its 2xx.
+func (call *Call) Leave(ctx context.Context) { call.st.Post(func() { call.leave(ctx) }) }
 
-func (call *Call) leave() {
+func (call *Call) leave(ctx context.Context) {
 	switch {
 	case call.ended:
 	case call.req != nil:
@@ -610,11 +612,11 @@ func (call *Call) leave() {
 	case call.sess != nil && (call.established || call.incoming || call.sess.State() == ua.Confirmed):
 		// TS 24.380 §6.2.2 step 1 before the BYE.
 		call.release()
-		_ = call.sess.Bye(ua.Change{}, nil)
+		_ = call.sess.Bye(ctx, ua.Change{}, nil)
 	case call.out != nil:
 		// The 2xx may come first: the session is then ended once established.
 		call.leaving = true
-		if call.out.Cancel(ua.Change{}) != nil {
+		if call.out.Cancel(ctx, ua.Change{}) != nil {
 			return
 		}
 	default:
@@ -729,7 +731,7 @@ func (call *Call) probe() {
 		return
 	}
 
-	if err := call.sess.Update(ua.Change{}, nil); err != nil {
+	if err := call.sess.Update(context.Background(), ua.Change{}, nil); err != nil {
 		call.c.cfg.Logger.Debug("probe not sent", slog.Any("error", err))
 	}
 }

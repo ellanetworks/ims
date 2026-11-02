@@ -25,6 +25,7 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -180,6 +181,13 @@ var floorTimers = floor.ParticipantTimers{T100: time.Second, T101: time.Second}
 func newWorld(t *testing.T, configure func(name string, cfg *client.Config)) *world {
 	t.Helper()
 
+	return newTracedWorld(t, configure, nil)
+}
+
+// newTracedWorld is newWorld, its server traced by tp, if not nil.
+func newTracedWorld(t *testing.T, configure func(name string, cfg *client.Config), tp oteltrace.TracerProvider) *world {
+	t.Helper()
+
 	snap, err := settings.New(callConfiguration())
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +207,7 @@ func newWorld(t *testing.T, configure func(name string, cfg *client.Config)) *wo
 
 	w.s, err = server.New(server.Config{
 		UA: ua.Config{
-			Transaction: n.Config(transaction.Config{}),
+			Transaction: n.Config(transaction.Config{TracerProvider: tp}),
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: "mcptt", Host: w.addr.Addr().String(), Port: w.addr.Port()}},
 			Prepare: func(req *sip.Request) error {
 				tr, to, err := sip.NextHop(req)
@@ -261,7 +269,7 @@ func (w *world) user(name string, i int, configure func(string, *client.Config))
 		Respond: func(req *sip.Request, res *sip.Response) {
 			w.trace.add("%s>server %d %s", name, res.StatusCode, req.Method)
 		},
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			if u.onInvite != nil {
 				return u.onInvite(r)
 			}
@@ -326,7 +334,7 @@ func (w *world) user(name string, i int, configure func(string, *client.Config))
 
 	var res *sip.Response
 
-	if err := c.Register(time.Hour, func(r *sip.Response, _ error) { res = r }); err != nil {
+	if err := c.Register(context.Background(), time.Hour, func(r *sip.Response, _ error) { res = r }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -447,7 +455,7 @@ func (w *world) call(group string) (a, b, c *client.Call) {
 	t := w.t
 	t.Helper()
 
-	ca, err := w.users["alice"].Call(mustURI(t, group))
+	ca, err := w.users["alice"].Call(context.Background(), mustURI(t, group))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +537,7 @@ func TestGroupCallSetup(t *testing.T) {
 		}
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -579,9 +587,9 @@ func TestGroupCallFloor(t *testing.T) {
 	bob.expect(t, "floor:taken", "floor:idle")
 
 	ca.ReleasePTT()
-	ca.Leave()
-	cb.Leave()
-	cc.Leave()
+	ca.Leave(context.Background())
+	cb.Leave(context.Background())
+	cc.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -591,7 +599,7 @@ func TestReleaseInitiatorLeaves(t *testing.T) {
 
 	ca, _, _ := w.call(police)
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 
 	w.users["alice"].expect(t, "ended")
@@ -608,7 +616,7 @@ func TestReleaseOneParticipantLeft(t *testing.T) {
 	ca, cb, cc := w.call(fire)
 	w.n.Quiesce()
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 
 	w.users["alice"].expect(t, "ended")
@@ -622,7 +630,7 @@ func TestReleaseOneParticipantLeft(t *testing.T) {
 	cb.ReleasePTT()
 	w.n.Advance(time.Second)
 
-	cc.Leave()
+	cc.Leave(context.Background())
 	w.n.Quiesce()
 
 	carol.expect(t, "ended")
@@ -678,7 +686,7 @@ func TestTNG1Proceed(t *testing.T) {
 	alice := w.users["alice"]
 	silent(w.users["carol"])
 
-	ca, err := alice.Call(mustURI(t, rescue))
+	ca, err := alice.Call(context.Background(), mustURI(t, rescue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +702,7 @@ func TestTNG1Proceed(t *testing.T) {
 		t.Errorf("200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -705,7 +713,7 @@ func TestTNG1Abandon(t *testing.T) {
 	alice, bob := w.users["alice"], w.users["bob"]
 	silent(w.users["carol"])
 
-	if _, err := alice.Call(mustURI(t, hazmat)); err != nil {
+	if _, err := alice.Call(context.Background(), mustURI(t, hazmat)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -729,7 +737,7 @@ func TestNotAffiliated(t *testing.T) {
 	w := newWorld(t, nil)
 	dave := w.users["dave"]
 
-	if _, err := dave.Call(mustURI(t, fire)); err != nil {
+	if _, err := dave.Call(context.Background(), mustURI(t, fire)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -796,7 +804,7 @@ func TestRequestDistinction(t *testing.T) {
 		t.Errorf("SUBSCRIBE to an unknown identity: %d", code)
 	}
 
-	ca.Leave()
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -810,7 +818,7 @@ func TestTNG1RequiredRefuses(t *testing.T) {
 		return ua.Handler{}
 	}
 
-	if _, err := alice.Call(mustURI(t, hazmat)); err != nil {
+	if _, err := alice.Call(context.Background(), mustURI(t, hazmat)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -832,7 +840,7 @@ func TestJoinOngoing(t *testing.T) {
 
 	var res *sip.Response
 
-	if err := dave.Affiliate([]sip.URI{mustURI(t, fire)}, func(r *sip.Response, _ error) { res = r }); err != nil {
+	if err := dave.Affiliate(context.Background(), []sip.URI{mustURI(t, fire)}, func(r *sip.Response, _ error) { res = r }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -842,7 +850,7 @@ func TestJoinOngoing(t *testing.T) {
 		t.Fatalf("PUBLISH %v", res)
 	}
 
-	cd, err := dave.Call(mustURI(t, fire))
+	cd, err := dave.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,8 +869,8 @@ func TestJoinOngoing(t *testing.T) {
 	w.users["alice"].expectAll(t, "floor:taken", "heard")
 
 	cd.ReleasePTT()
-	cd.Leave()
-	ca.Leave()
+	cd.Leave(context.Background())
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }
 
@@ -875,13 +883,13 @@ func TestJoinOngoingImplicit(t *testing.T) {
 
 	ca, _, _ := w.call(fire)
 
-	if err := dave.Affiliate([]sip.URI{mustURI(t, fire)}, func(*sip.Response, error) {}); err != nil {
+	if err := dave.Affiliate(context.Background(), []sip.URI{mustURI(t, fire)}, func(*sip.Response, error) {}); err != nil {
 		t.Fatal(err)
 	}
 
 	w.n.Quiesce()
 
-	cd, err := dave.Call(mustURI(t, fire))
+	cd, err := dave.Call(context.Background(), mustURI(t, fire))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +911,7 @@ func TestJoinOngoingImplicit(t *testing.T) {
 	w.users["alice"].expectAll(t, "floor:taken")
 
 	cd.ReleasePTT()
-	cd.Leave()
-	ca.Leave()
+	cd.Leave(context.Background())
+	ca.Leave(context.Background())
 	w.n.Quiesce()
 }

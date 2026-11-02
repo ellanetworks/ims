@@ -105,8 +105,9 @@ func (l *Layer) checkDrained() {
 	}
 }
 
-// sendInOrder sends m in its flow's order, and waits for the send.
-func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) error {
+// sendInOrder sends m in its flow's order, and waits for the send, or for the layer to close: like every send of the
+// layer, it is not bounded by its caller's context.
+func (l *Layer) sendInOrder(m sip.Message, exact bool) error {
 	done := make(chan error, 1)
 
 	if !l.enqueue(m.Env().Flow, func(ok bool) {
@@ -115,7 +116,7 @@ func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) erro
 			return
 		}
 
-		done <- l.send(ctx, m, exact)
+		done <- l.send(l.ctx, m, exact)
 	}) {
 		return ErrClosed
 	}
@@ -123,17 +124,21 @@ func (l *Layer) sendInOrder(ctx context.Context, m sip.Message, exact bool) erro
 	select {
 	case err := <-done:
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-l.ctx.Done():
+		return ErrClosed
 	}
 }
 
 // QueueAck sends the ACK of a 2xx (RFC 3261 §13.2.2.4), outside any transaction, in the order of its flow: before the
-// requests of the dialog sent after it. done, when not nil, receives the outcome on the goroutine of the outbox.
-func (l *Layer) QueueAck(ack *sip.Request, done func(error)) error {
+// requests of the dialog sent after it, with the trace context of ctx when its flow carries trace context. done, when
+// not nil, receives the outcome on the goroutine of the outbox.
+func (l *Layer) QueueAck(ctx context.Context, ack *sip.Request, done func(error)) error {
 	if ack.Method != "ACK" {
 		return errNotAck(ack)
 	}
+
+	ack = ack.Clone()
+	l.propagate(ctx, ack)
 
 	if !l.enqueue(ack.Flow, func(ok bool) {
 		err := ErrClosed

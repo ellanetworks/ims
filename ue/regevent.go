@@ -99,7 +99,7 @@ func (u *UE) resubscribe(ctx context.Context) error {
 
 	done := make(chan result, 1)
 
-	if err := s.Refresh(ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
+	if err := s.Refresh(ctx, ua.Change{}, func(res *sip.Response, err error) { done <- result{res, err} }); err != nil {
 		return u.subscribe(ctx)
 	}
 
@@ -175,10 +175,10 @@ func (u *UE) subscribe(ctx context.Context) error {
 	u.mu.Unlock()
 
 	if old != nil {
-		_ = old.Unsubscribe(ua.Change{})
+		_ = old.Unsubscribe(ctx, ua.Change{})
 	}
 
-	s, err := u.agent.Subscribe(req, u.regEventHandler(sub))
+	s, err := u.agent.Subscribe(ctx, req, u.regEventHandler(sub))
 	if err != nil {
 		u.endSubscription(sub)
 		return fmt.Errorf("ue: SUBSCRIBE: %w", err)
@@ -190,7 +190,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	u.mu.Unlock()
 
 	if dropped {
-		s.Drop()
+		s.Drop(ctx)
 	}
 
 	select {
@@ -268,20 +268,20 @@ func (u *UE) stopSubscriptionLocked() func() {
 
 	s := sub.s
 
-	return s.Drop
+	return func() { s.Drop(context.Background()) }
 }
 
 // regEventHandler handles the events of the reg event subscription sub (RFC 6665, RFC 3680).
 func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	return ua.SubscriptionHandler{
-		Accepted: func(*ua.Subscription, *sip.Response) {
+		Accepted: func(context.Context, *ua.Subscription, *sip.Response) {
 			select {
 			case sub.accepted <- nil:
 			default:
 			}
 		},
-		Notify: func(_ *ua.Subscription, r *ua.Request) { u.notify(sub, r) },
-		Ended: func(s *ua.Subscription, e ua.End) {
+		Notify: func(_ context.Context, _ *ua.Subscription, r *ua.Request) { u.notify(sub, r) },
+		Ended: func(_ context.Context, s *ua.Subscription, e ua.End) {
 			if e.Cause == ua.EndRejected && e.Response != nil {
 				select {
 				case sub.accepted <- &ResponseError{Response: e.Response}:
@@ -580,6 +580,7 @@ func (u *UE) act(a action, answered <-chan struct{}) {
 
 	var err error
 
+	// Each is a trace of its own, as it starts after the NOTIFY or the end of the subscription that caused it.
 	switch {
 	case a.teardown && a.reregister:
 		err = u.Register(context.Background())

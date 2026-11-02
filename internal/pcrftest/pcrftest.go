@@ -197,7 +197,7 @@ func (p *PCRF) aa(ctx context.Context, c *diameter.Conn, req *diameter.Message) 
 	}
 
 	if err := checkFlows(aar, ue); err != nil {
-		p.cfg.Logger.Warn("pcrftest: refused Flow-Description", slog.String("session", session), slog.Any("error", err))
+		p.cfg.Logger.WarnContext(ctx, "pcrftest: refused Flow-Description", slog.String("session", session), slog.Any("error", err))
 		return fail(tgpp.Result{Code: diameter.ResultInvalidAVPValue})
 	}
 

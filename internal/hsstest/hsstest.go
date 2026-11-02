@@ -20,6 +20,7 @@ import (
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/milenage"
 	"github.com/ellanetworks/ims/sip"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const imsPeer = "ims"
@@ -38,7 +39,9 @@ type Config struct {
 	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
 	IMSAddress netip.Addr
 
-	Logger *slog.Logger
+	// TracerProvider traces the HSS's requests; none when nil.
+	TracerProvider trace.TracerProvider
+	Logger         *slog.Logger
 }
 
 type Subscriber struct {
@@ -302,8 +305,9 @@ func newHSS(t testing.TB, cfg Config, db *store) *HSS {
 			Addresses:    imsAddresses(cfg.IMSAddress),
 			Applications: []diameter.Application{{ID: cx.ApplicationID, VendorID: tgpp.VendorID}},
 		},
-		Handler: mux,
-		Logger:  cfg.Logger,
+		Handler:        mux,
+		TracerProvider: cfg.TracerProvider,
+		Logger:         cfg.Logger,
 	})
 
 	t.Cleanup(func() {

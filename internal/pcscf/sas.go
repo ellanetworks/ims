@@ -11,7 +11,10 @@ import (
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -26,6 +29,11 @@ const (
 	maxSetsPerUE = 4 * maxSetsPerFlow
 	storeTimeout = 5 * time.Second
 )
+
+// storeContext bounds a write to a store that cause asks for: in its trace, ended with life, the P-CSCF's.
+func storeContext(life, cause context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(lifetime.With(life, cause), storeTimeout)
+}
 
 var (
 	errSAConflict = errors.New("the UE's protected ports or SPIs are in use by another set of security associations")
@@ -91,6 +99,9 @@ type saSet struct {
 	server  sip.SecurityMechanism
 	origin  *saSet
 	initial bool
+
+	// cause is the span context of the REGISTER that set the set up, or last registered over it.
+	cause trace.SpanContext
 }
 
 type view struct {
@@ -127,11 +138,12 @@ func keyOf(f sip.Flow) flowKey {
 }
 
 type associations struct {
-	// ctx bounds the writes to the store, cancelled when the P-CSCF gives up on them.
-	ctx  context.Context
-	cfg  IPsec
-	log  *slog.Logger
-	spis *ipsec.SPIs
+	// ctx bounds the writes to the store and the expiries, cancelled when the P-CSCF gives up on them.
+	ctx      context.Context
+	cfg      IPsec
+	log      *slog.Logger
+	detached tracing.Detached
+	spis     *ipsec.SPIs
 
 	closeFlow func(sip.Flow)
 	writes    chan storeOp
@@ -148,7 +160,7 @@ type associations struct {
 	byIMPI map[string]map[*saSet]struct{}
 }
 
-func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger) *associations {
+func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger, detached tracing.Detached) *associations {
 	if cfg.AwaitAuth <= 0 {
 		cfg.AwaitAuth = DefaultAwaitAuth
 	}
@@ -158,14 +170,15 @@ func newAssociations(ctx context.Context, cfg IPsec, logger *slog.Logger) *assoc
 	}
 
 	a := &associations{
-		ctx:    ctx,
-		cfg:    cfg,
-		log:    logger,
-		spis:   ipsec.NewSPIs(),
-		sets:   make(map[*saSet]struct{}),
-		byFlow: make(map[flowKey]*saSet),
-		byUE:   make(map[netip.Addr]map[*saSet]struct{}),
-		byIMPI: make(map[string]map[*saSet]struct{}),
+		ctx:      ctx,
+		cfg:      cfg,
+		log:      logger,
+		detached: detached,
+		spis:     ipsec.NewSPIs(),
+		sets:     make(map[*saSet]struct{}),
+		byFlow:   make(map[flowKey]*saSet),
+		byUE:     make(map[netip.Addr]map[*saSet]struct{}),
+		byIMPI:   make(map[string]map[*saSet]struct{}),
 	}
 
 	if cfg.Store != nil {
@@ -183,6 +196,8 @@ type storeOp struct {
 	rec     db.SecurityAssociation
 	delete  bool
 	barrier chan struct{}
+	// cause is the span context of the set's cause, which the logs of the write carry.
+	cause trace.SpanContext
 }
 
 func (a *associations) write() {
@@ -207,19 +222,19 @@ func (a *associations) write() {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(a.ctx, storeTimeout)
+		ctx, cancel := storeContext(a.ctx, trace.ContextWithSpanContext(a.ctx, op.cause))
 
 		switch {
 		case op.delete && op.s.dbID != 0:
 			if err := a.cfg.Store.DeleteSecurityAssociation(ctx, op.s.dbID); err != nil {
-				a.log.Error("deleting security associations failed", slog.Int64("id", op.s.dbID), slog.Any("error", err))
+				a.log.ErrorContext(ctx, "deleting security associations failed", slog.Int64("id", op.s.dbID), slog.Any("error", err))
 			}
 		case !op.delete:
 			op.rec.ID = op.s.dbID
 
 			saved, err := a.cfg.Store.SaveSecurityAssociation(ctx, op.rec)
 			if err != nil {
-				a.log.Error("saving security associations failed", slog.String("impi", op.s.impi), slog.Any("error", err))
+				a.log.ErrorContext(ctx, "saving security associations failed", slog.String("impi", op.s.impi), slog.Any("error", err))
 			} else {
 				op.s.dbID = saved.ID
 			}
@@ -372,7 +387,7 @@ func conflicts(a, b ipsec.Set) bool {
 	return false
 }
 
-func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMechanism, error) {
+func (a *associations) challenged(ctx context.Context, c challenge, keys ipsec.Keys) (sip.SecurityMechanism, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -390,8 +405,8 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	// address is another UE, whose challenge in progress is left (TS 33.203 §6.1 NOTE 2).
 	for s := range a.byUE[c.ue] {
 		if s.state == temporary && s.impi == c.impi && s.set.Remote.Addr == c.ue {
-			a.unanswered(s)
-			a.remove(s)
+			a.unanswered(ctx, s)
+			_ = a.remove(ctx, s)
 		}
 	}
 
@@ -418,9 +433,9 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 			return sip.SecurityMechanism{}, errSAConflict
 		}
 
-		a.log.Debug("replacing security associations the UE no longer uses", slog.String("impi", s.impi),
+		a.log.DebugContext(ctx, "replacing security associations the UE no longer uses", slog.String("impi", s.impi),
 			slog.String("set", s.set.String()))
-		a.remove(s)
+		_ = a.remove(ctx, s)
 	}
 
 	n, all := 0, 0
@@ -461,6 +476,7 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 		server:  set.Server(),
 		origin:  c.origin,
 		initial: c.origin == nil,
+		cause:   trace.SpanContextFromContext(ctx),
 	}
 
 	a.add(s)
@@ -468,13 +484,15 @@ func (a *associations) challenged(c challenge, keys ipsec.Keys) (sip.SecurityMec
 	return s.server, nil
 }
 
-func (a *associations) registered(s *saSet, o outcome) {
+func (a *associations) registered(ctx context.Context, s *saSet, o outcome) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if s.removed {
 		return
 	}
+
+	s.cause = trace.SpanContextFromContext(ctx)
 
 	if o.dereg {
 		for x := range a.byUE[s.set.Remote.Addr] {
@@ -510,7 +528,7 @@ func (a *associations) registered(s *saSet, o outcome) {
 			x.state = old
 			a.save(x)
 		case x.sameUE(s):
-			a.remove(x)
+			_ = a.remove(ctx, x)
 		case s.initial && s.flow == flowID{} && x.impi == s.impi && x.state != temporary:
 			// TS 24.229 §5.4.1.2.2 step 4A: without the multiple registration mechanism, the new
 			// contact replaces the others of the private identity.
@@ -609,9 +627,9 @@ func (a *associations) challengeAnswered(s *saSet) {
 
 // unanswered logs a temporary set no protected REGISTER came over before it went: the UE did not answer its
 // challenge, or its answer did not reach the P-CSCF, as when ESP is dropped or NATed on the way.
-func (a *associations) unanswered(s *saSet) {
+func (a *associations) unanswered(ctx context.Context, s *saSet) {
 	if s.state == temporary && !s.answered {
-		a.log.Warn("no protected REGISTER came over the security associations of a challenge", slog.String("impi", s.impi),
+		a.log.WarnContext(ctx, "no protected REGISTER came over the security associations of a challenge", slog.String("impi", s.impi),
 			slog.String("ue", s.set.Remote.Addr.String()), slog.String("set", s.set.String()))
 	}
 }
@@ -698,13 +716,16 @@ func (a *associations) expire(s *saSet) {
 		return
 	}
 
-	a.unanswered(s)
-	a.remove(s)
+	ctx, span := a.detached.Start(a.ctx, "security associations expiry", s.cause)
+
+	a.unanswered(ctx, s)
+	tracing.End(span, a.remove(ctx, s))
 }
 
-func (a *associations) remove(s *saSet) {
+// remove removes s; ctx is what removes it. It returns why the kernel kept it, if it did.
+func (a *associations) remove(ctx context.Context, s *saSet) error {
 	if s.removed {
-		return
+		return nil
 	}
 
 	s.removed = true
@@ -719,8 +740,9 @@ func (a *associations) remove(s *saSet) {
 		}
 	}
 
-	if err := a.cfg.Kernel.Remove(s.set); err != nil {
-		a.log.Error("removing security associations failed", slog.String("set", s.set.String()), slog.Any("error", err))
+	err := a.cfg.Kernel.Remove(s.set)
+	if err != nil {
+		a.log.ErrorContext(ctx, "removing security associations failed", slog.String("set", s.set.String()), slog.Any("error", err))
 	}
 
 	if a.closeFlow != nil {
@@ -730,15 +752,17 @@ func (a *associations) remove(s *saSet) {
 	}
 
 	a.spis.Release(s.set.Local.SPIC, s.set.Local.SPIS)
-	a.enqueue(storeOp{s: s, delete: true})
+	a.enqueue(storeOp{s: s, delete: true, cause: s.cause})
 
-	a.log.Debug("security associations removed", slog.String("impi", s.impi), slog.String("state", s.state.String()),
+	a.log.DebugContext(ctx, "security associations removed", slog.String("impi", s.impi), slog.String("state", s.state.String()),
 		slog.String("set", s.set.String()))
+
+	return err
 }
 
 func (a *associations) save(s *saSet) {
 	if s.state != temporary {
-		a.enqueue(storeOp{s: s, rec: record(s)})
+		a.enqueue(storeOp{s: s, rec: record(s), cause: s.cause})
 	}
 }
 
@@ -861,7 +885,7 @@ func (a *associations) restore(ctx context.Context) error {
 		}
 
 		if lost[s.set] {
-			a.log.Warn("security associations lost by the kernel; the UE must register again",
+			a.log.WarnContext(ctx, "security associations lost by the kernel; the UE must register again",
 				slog.String("impi", s.impi), slog.String("set", s.set.String()))
 
 			_ = a.cfg.Kernel.Remove(s.set)

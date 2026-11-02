@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"slices"
@@ -90,7 +91,7 @@ func newForkSceneWith(t *testing.T, shape []int, opts proxy.Options, track bool,
 
 	pc := proxy.Config{Layer: f.l, Clock: clock}
 	if track {
-		pc.OnDialog = func(e proxy.DialogEvent) { f.events <- e }
+		pc.OnDialog = func(_ context.Context, e proxy.DialogEvent) { f.events <- e }
 	}
 
 	f.p = proxy.New(pc)
@@ -99,7 +100,7 @@ func newForkSceneWith(t *testing.T, shape []int, opts proxy.Options, track bool,
 	return &forkScene{t: t, f: f, caller: siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), clock: clock}, f.groups
 }
 
-func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (f *forker) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := f.p.Check(req); res != nil {
 		_ = tx.Respond(res)
 		return
@@ -114,7 +115,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 	opts := f.opts
 
 	if to, _ := out.Header.To(); to.Tag() != "" {
-		err := f.p.Forward(tx, out, nextHop(f.t, out, req.Flow.Local), proxy.Options{Dialog: f.p.Dialog(removed)})
+		err := f.p.Forward(context.Background(), tx, out, nextHop(f.t, out, req.Flow.Local), proxy.Options{Dialog: f.p.Dialog(removed)})
 		if err != nil {
 			f.t.Error(err)
 		}
@@ -123,7 +124,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 	}
 
 	if f.onReply != nil {
-		opts.OnReply = func(r proxy.Reply) proxy.Verdict { return f.onReply(tx, r) }
+		opts.OnReply = func(_ context.Context, r proxy.Reply) proxy.Verdict { return f.onReply(tx, r) }
 	}
 
 	if f.track && req.Method == "INVITE" {
@@ -176,7 +177,7 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		groups = append([][]proxy.Branch{{unsendable()}}, groups...)
 	}
 
-	err = f.p.Fork(tx, groups)
+	err = f.p.Fork(context.Background(), tx, groups)
 	if err == nil && f.forked != nil {
 		f.forked <- tx
 	}
@@ -193,18 +194,18 @@ func (f *forker) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 	}
 }
 
-func (f *forker) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	f.p.Cancel(tx, cancel)
+func (f *forker) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	f.p.Cancel(context.Background(), tx, cancel)
 }
 
-func (f *forker) HandleAck(ack *sip.Request) {
+func (f *forker) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := f.p.Preprocess(ack)
 	if err != nil {
 		f.t.Error(err)
 		return
 	}
 
-	err = f.p.ForwardAck(out, nextHop(f.t, out, ack.Flow.Local), f.p.Dialog(removed))
+	err = f.p.ForwardAck(context.Background(), out, nextHop(f.t, out, ack.Flow.Local), f.p.Dialog(removed))
 	if err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
 		f.t.Error(err)
 	}
@@ -219,7 +220,7 @@ func nextHop(t *testing.T, out *sip.Request, local netip.AddrPort) proxy.Target 
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}}
 }
 
-func (f *forker) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (f *forker) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
 func (s *forkScene) request(method string) *sip.Request {
 	req := siptest.NewRequest(method, "sip:bob@example.com", sip.UDP, s.caller.Addr())
@@ -839,7 +840,7 @@ func TestForkCancelledBranchEnds(t *testing.T) {
 		codes []int
 	)
 
-	s, g := newForkScene(t, []int{2}, proxy.Options{NoAnswer: time.Minute, OnReply: func(r proxy.Reply) proxy.Verdict {
+	s, g := newForkScene(t, []int{2}, proxy.Options{NoAnswer: time.Minute, OnReply: func(_ context.Context, r proxy.Reply) proxy.Verdict {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -906,9 +907,9 @@ func TestForkAfterAStop(t *testing.T) {
 				return proxy.Relay
 			}
 
-			refork <- f.p.Forward(tx, tx.Request(), proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: tx.Request().Flow.Local, Remote: f.groups[0][0].Addr()}}, proxy.Options{})
+			refork <- f.p.Forward(context.Background(), tx, tx.Request(), proxy.Target{Flow: sip.Flow{Transport: sip.UDP, Local: tx.Request().Flow.Local, Remote: f.groups[0][0].Addr()}}, proxy.Options{})
 
-			if err := f.p.Relay(tx, sip.NewResponse(tx.Request(), 603, "")); err != nil {
+			if err := f.p.Relay(context.Background(), tx, sip.NewResponse(tx.Request(), 603, "")); err != nil {
 				t.Error(err)
 			}
 

@@ -161,7 +161,7 @@ func startIMSWith(t *testing.T, cfg testIMS, kernel *ipsectest.Kernel) *Server {
 
 	cfg.seed(t)
 
-	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: kernel}
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: kernel, TracerProvider: cfg.TracerProvider}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

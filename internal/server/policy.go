@@ -19,6 +19,7 @@ import (
 	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/internal/sbitls"
 	"github.com/ellanetworks/ims/internal/settings"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // policyFunction is the PCRF or PCF of the P-CSCF, if any, with the server of the PCF's notifications.
@@ -31,7 +32,7 @@ type policyFunction struct {
 }
 
 func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settings, node *diameter.Node, rlm *realms,
-	m *metrics, logger *slog.Logger,
+	m *metrics, tp trace.TracerProvider, logger *slog.Logger,
 ) (*policyFunction, error) {
 	pf := &policyFunction{}
 
@@ -43,14 +44,14 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 		return pf, nil
 	case settings.PolicyN5:
 	default:
-		logger.Info("no policy function: the P-CSCF runs without policy sessions")
+		logger.InfoContext(ctx, "no policy function: the P-CSCF runs without policy sessions")
 		return pf, nil
 	}
 
 	// The API checks policies against the configuration file, which may since have changed. Policy sessions then
 	// wait for the file or the policy to be fixed, rather than the IMS and its API.
 	if err := checkPolicy(cfg, s); err != nil {
-		logger.Error("no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
+		logger.ErrorContext(ctx, "no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
 		return pf, nil
 	}
 
@@ -73,7 +74,7 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 	}
 
 	b, err := n5policy.New(n5policy.Config{
-		PCF: s.Policy.PCFURI, Notify: notify, TLS: creds, Observe: m.observeN5, Logger: logger,
+		PCF: s.Policy.PCFURI, Notify: notify, TLS: creds, Observe: m.observeN5, TracerProvider: tp, Logger: logger,
 	})
 	if err != nil {
 		_ = ln.Close()
@@ -81,7 +82,7 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 	}
 
 	pf.n5, pf.backend, pf.ln = b, b, ln
-	pf.notify = n5policy.NewServer(b, creds, logger)
+	pf.notify = n5policy.NewServer(b, creds, tp, logger)
 
 	return pf, nil
 }

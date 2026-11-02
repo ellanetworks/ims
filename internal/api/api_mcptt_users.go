@@ -38,7 +38,7 @@ func ListMCPTTUsers(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, mcpttUserResponse(u))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -48,11 +48,11 @@ func GetMCPTTUser(cfg Config) http.Handler {
 
 		i := s.UserIndex(r.PathValue("mcptt_id"))
 		if i < 0 {
-			writeError(w, http.StatusNotFound, "user not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "user not found", nil, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttUserResponse(s.Users[i]), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttUserResponse(s.Users[i]), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -65,12 +65,12 @@ func CreateMCPTTUser(cfg Config) http.Handler {
 
 		u, err := cfg.MCPTT.CreateUser(r.Context(), mcpttUserSettings(p))
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to create the user", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to create the user", mcpttField, cfg.Logger)
 			return
 		}
 
 		w.Header().Set("Location", "/api/v1/mcptt/users/"+url.PathEscape(u.MCPTTUserID))
-		writeResponse(w, mcpttUserResponse(u), http.StatusCreated, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttUserResponse(u), http.StatusCreated, cfg.Logger)
 	})
 }
 
@@ -85,7 +85,7 @@ func UpdateMCPTTUser(cfg Config) http.Handler {
 		}
 
 		if p.MCPTTID != "" && !mcpttsettings.SameIdentity(p.MCPTTID, id) {
-			invalidMCPTT(w, "mcptt_id: "+p.MCPTTID+" is not the MCPTT ID of the path, which a user keeps", cfg.Logger)
+			invalidMCPTT(r.Context(), w, "mcptt_id: "+p.MCPTTID+" is not the MCPTT ID of the path, which a user keeps", cfg.Logger)
 			return
 		}
 
@@ -93,11 +93,11 @@ func UpdateMCPTTUser(cfg Config) http.Handler {
 
 		u, err := cfg.MCPTT.UpdateUser(r.Context(), mcpttUserSettings(p))
 		if err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to update the user", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to update the user", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, mcpttUserResponse(u), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, mcpttUserResponse(u), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -105,11 +105,11 @@ func UpdateMCPTTUser(cfg Config) http.Handler {
 func DeleteMCPTTUser(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteUser(r.Context(), r.PathValue("mcptt_id")); err != nil {
-			writeMCPTTSettingsError(w, err, "Failed to delete the user", mcpttField, cfg.Logger)
+			writeMCPTTSettingsError(r.Context(), w, err, "Failed to delete the user", mcpttField, cfg.Logger)
 			return
 		}
 
-		writeResponse(w, Message{Message: "user deleted"}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, Message{Message: "user deleted"}, http.StatusOK, cfg.Logger)
 	})
 }
 
