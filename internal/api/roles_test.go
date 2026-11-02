@@ -79,6 +79,17 @@ func TestRoles(t *testing.T) {
 		"GET /api/v1/users/{email}/api-tokens":                      admin,
 		"POST /api/v1/users/{email}/api-tokens":                     admin,
 		"DELETE /api/v1/users/{email}/api-tokens/{id}":              admin,
+		"GET /api/v1/pprof/":                                        admin,
+		"GET /api/v1/pprof/allocs":                                  admin,
+		"GET /api/v1/pprof/goroutine":                               admin,
+		"GET /api/v1/pprof/goroutineleak":                           admin,
+		"GET /api/v1/pprof/heap":                                    admin,
+		"GET /api/v1/pprof/threadcreate":                            admin,
+		"GET /api/v1/pprof/cmdline":                                 admin,
+		"GET /api/v1/pprof/profile":                                 admin,
+		"GET /api/v1/pprof/symbol":                                  admin,
+		"POST /api/v1/pprof/symbol":                                 admin,
+		"GET /api/v1/pprof/trace":                                   admin,
 	}
 
 	store := openAuthStore(t)

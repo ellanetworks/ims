@@ -13,7 +13,7 @@ import (
 )
 
 // TestAPISpans checks that a request to the API has a server span named by its route, which links to the caller's
-// trace context rather than continue it. The UI and the probes are not traced.
+// trace context rather than continue it. The UI, the probes and the profiles are not traced.
 func TestAPISpans(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 
@@ -23,7 +23,7 @@ func TestAPISpans(t *testing.T) {
 	h := api.NewHandler(cfg)
 	token := initialize(t, h)
 
-	for _, path := range []string{"/", "/api/v1/livez"} {
+	for _, path := range []string{"/", "/api/v1/livez", "/api/v1/pprof/heap"} {
 		serve(h, request(http.MethodGet, path, "", ""))
 	}
 

@@ -390,7 +390,17 @@ func TestForkBestResponse(t *testing.T) {
 		{"503 as 500", []int{503}, 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, g := newForkScene(t, []int{len(tc.codes)}, proxy.Options{})
+			// The proxy has each reply in the order it sees them, so the next is sent once it saw the last.
+			seen := make(chan int, len(tc.codes))
+			s, g := newForkSceneWith(t, []int{len(tc.codes)}, proxy.Options{}, false, func(f *forker) {
+				f.onReply = func(_ *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict {
+					if r.Response != nil && !r.Response.IsProvisional() {
+						seen <- r.Response.StatusCode
+					}
+
+					return proxy.Relay
+				}
+			})
 
 			s.send(s.request("INVITE"))
 
@@ -401,6 +411,10 @@ func TestForkBestResponse(t *testing.T) {
 
 			for i, code := range tc.codes {
 				legs[i].respond(code)
+
+				if got := <-seen; got != code {
+					t.Fatalf("the proxy saw %d, want %d", got, code)
+				}
 
 				if code >= 600 {
 					break

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 	"time"
 
@@ -95,8 +96,8 @@ func NewHandler(cfg Config) http.Handler {
 var untraced = map[string]bool{"/api/v1/livez": true, "/api/v1/readyz": true, "/api/v1/metrics": true}
 
 // traced gives each request to the API a server span, named by its route. A caller's trace context is linked rather
-// than continued, since anyone can send one. The UI's static files are not traced, nor the probes and metrics, which
-// are scraped periodically.
+// than continued, since anyone can send one. The UI's static files are not traced, nor the probes, metrics and
+// profiles, which are scraped periodically.
 func traced(cfg Config, next http.Handler) http.Handler {
 	if cfg.TracerProvider == nil {
 		return next
@@ -115,7 +116,7 @@ func traced(cfg Config, next http.Handler) http.Handler {
 		otelhttp.WithPropagators(tracing.Propagator),
 		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
 		otelhttp.WithFilter(func(r *http.Request) bool {
-			return strings.HasPrefix(r.URL.Path, "/api/") && !untraced[r.URL.Path]
+			return strings.HasPrefix(r.URL.Path, "/api/") && !untraced[r.URL.Path] && !strings.HasPrefix(r.URL.Path, "/api/v1/pprof/")
 		}),
 	)
 }
@@ -214,5 +215,18 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/users/{email}/api-tokens", PermManageUsers, a.needsLogin(ListAPITokens(a, userOfPath(cfg)))},
 		{"POST /api/v1/users/{email}/api-tokens", PermManageUsers, a.needsLogin(CreateAPIToken(a, userOfPath(cfg)))},
 		{"DELETE /api/v1/users/{email}/api-tokens/{id}", PermManageUsers, a.needsLogin(DeleteAPIToken(a, userOfPath(cfg)))},
+
+		// The profiles take an API token, so that a profiler can scrape them.
+		{"GET /api/v1/pprof/{$}", PermReadProfiles, http.HandlerFunc(pprof.Index)},
+		{"GET /api/v1/pprof/allocs", PermReadProfiles, pprof.Handler("allocs")},
+		{"GET /api/v1/pprof/goroutine", PermReadProfiles, pprof.Handler("goroutine")},
+		{"GET /api/v1/pprof/goroutineleak", PermReadProfiles, pprof.Handler("goroutineleak")},
+		{"GET /api/v1/pprof/heap", PermReadProfiles, pprof.Handler("heap")},
+		{"GET /api/v1/pprof/threadcreate", PermReadProfiles, pprof.Handler("threadcreate")},
+		{"GET /api/v1/pprof/cmdline", PermReadProfiles, http.HandlerFunc(pprof.Cmdline)},
+		{"GET /api/v1/pprof/profile", PermReadProfiles, http.HandlerFunc(pprof.Profile)},
+		{"GET /api/v1/pprof/symbol", PermReadProfiles, http.HandlerFunc(pprof.Symbol)},
+		{"POST /api/v1/pprof/symbol", PermReadProfiles, http.HandlerFunc(pprof.Symbol)},
+		{"GET /api/v1/pprof/trace", PermReadProfiles, http.HandlerFunc(pprof.Trace)},
 	}
 }

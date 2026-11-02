@@ -104,6 +104,8 @@ const (
 	PermSelf Permission = "user:self"
 	// PermManageUsers is managing every user and their API tokens.
 	PermManageUsers Permission = "user:admin"
+	// PermReadProfiles is reading the runtime profiles of the IMS.
+	PermReadProfiles Permission = "pprof:read"
 )
 
 // readPermissions are reading every setting and every state of the IMS.
@@ -119,7 +121,7 @@ var operatePermissions = []Permission{
 }
 
 var permissions = map[db.Role][]Permission{
-	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers}),
+	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers, PermReadProfiles}),
 	db.RoleReadOnly:       readPermissions,
 	db.RoleNetworkManager: slices.Concat(readPermissions, operatePermissions),
 }
