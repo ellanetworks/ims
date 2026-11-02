@@ -30,7 +30,7 @@ Click **Add**.
 
 ## 3. Let the HSS reach the IP-SM-GW
 
-Edit the HSS peer, check **Sh** and **S6c**, and click **Update**. If the HSS's core also serves the MME or SMSF, check **SGd** too.
+Edit the HSS peer, check **Sh** and **S6c**, and click **Update**. If the HSS's core also serves the MME or SMSF, check **SGd** too, for fallback to SMS over NAS.
 
 ## 4. Add iFCs in the HSS
 
