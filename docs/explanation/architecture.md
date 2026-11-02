@@ -36,4 +36,4 @@ Ella Core provides both. For how it works with an IMS, see Ella Core's [IMS Inte
 
 Ella IMS connects calls only between the subscribers its HSS knows. It has no gateway to the PSTN or to other operators.
 
-Ella IMS does not handle emergency calls. It refuses them with 380 (Alternative Service), as TS 24.229 §5.2.10.5 specifies for an IMS without emergency support.
+Ella IMS does not handle emergency calls.
