@@ -20,7 +20,7 @@ SIP nodes tell each other who a request is from, for example with the `P-Asserte
 
 Phones are never trusted: the P-CSCF takes a phone's identity from its authentication.
 
-The I-CSCF and the S-CSCF also trust the networks in `sip.trusted_networks`, such as those of Application Servers. Trust goes by source address, so protect these networks, and keep the phones out of them.
+Besides Ella IMS itself, the I-CSCF and the S-CSCF trust the networks in `sip.trusted_networks`, such as those of Application Servers. Trust goes by source address, so protect these networks, and keep the phones out of them.
 
 ## Users of the UI and API
 

@@ -4,7 +4,7 @@ description: How Ella IMS's built-in IP-SM-GW carries SMS over IMS.
 
 # SMS over IP
 
-Ella IMS includes a built-in IP Short Message Gateway (IP-SM-GW) that allows phones to send and receive SMS over IMS.
+Ella IMS includes an IP Short Message Gateway (IP-SM-GW), which lets phones send and receive SMS over IMS.
 
 <figure markdown="span">
   ![SMS over IP](../images/sms_over_ip.svg){ width="800" }
