@@ -197,17 +197,13 @@ func TestMetricsOfSIPAndPeers(t *testing.T) {
 		}
 	}
 
+	durations := map[string]uint64{}
 	for _, m := range families["ellaims_sip_request_duration_seconds"].GetMetric() {
-		l := labels(m)
+		durations[labels(m)["method"]+" "+labels(m)["class"]] = m.GetHistogram().GetSampleCount()
+	}
 
-		want := uint64(0)
-		if l["method"] == "REGISTER" && l["class"] == "4xx" {
-			want = 1
-		}
-
-		if got := m.GetHistogram().GetSampleCount(); got != want {
-			t.Errorf("SIP request duration %v count = %v, want %v", l, got, want)
-		}
+	if want := map[string]uint64{"REGISTER 4xx": 1}; !maps.Equal(durations, want) {
+		t.Errorf("SIP request durations = %v, want %v", durations, want)
 	}
 
 	for _, m := range families["ellaims_peer_requests_total"].GetMetric() {

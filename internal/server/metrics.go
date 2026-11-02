@@ -104,10 +104,6 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	for _, method := range append(sipMethods, sipOtherMethod) {
 		for class := 2; class <= 6; class++ {
 			m.sipResponses.WithLabelValues(method, strconv.Itoa(class)+"xx")
-
-			if method != "INVITE" {
-				m.sipDuration.WithLabelValues(method, strconv.Itoa(class)+"xx")
-			}
 		}
 	}
 
