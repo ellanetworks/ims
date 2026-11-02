@@ -246,6 +246,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Frontend:       ui.FS(),
 		Ready:          func(ctx context.Context) error { return s.ready(ctx, database) },
 		Metrics:        s.metrics.registry,
+		Requests:       s.metrics.requests,
 		Auth:           database,
 		JWTSecret:      jwtSecret,
 		BcryptCost:     s.BcryptCost,

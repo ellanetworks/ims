@@ -197,6 +197,19 @@ func TestMetricsOfSIPAndPeers(t *testing.T) {
 		}
 	}
 
+	for _, m := range families["ellaims_sip_request_duration_seconds"].GetMetric() {
+		l := labels(m)
+
+		want := uint64(0)
+		if l["method"] == "REGISTER" && l["class"] == "4xx" {
+			want = 1
+		}
+
+		if got := m.GetHistogram().GetSampleCount(); got != want {
+			t.Errorf("SIP request duration %v count = %v, want %v", l, got, want)
+		}
+	}
+
 	for _, m := range families["ellaims_peer_requests_total"].GetMetric() {
 		l := labels(m)
 
@@ -318,8 +331,8 @@ func TestSIPResponseOfAnotherMethod(t *testing.T) {
 	m := testMetrics(t)
 
 	req := siptest.NewRequest("PUBLISH", "sip:"+imsRealm, sip.UDP, netip.MustParseAddrPort("127.0.0.2:6000"))
-	m.sipResponse(req, sip.NewResponse(req, 405, ""))
-	m.sipResponse(req, sip.NewResponse(req, 180, ""))
+	m.sipResponse(req, sip.NewResponse(req, 405, ""), time.Millisecond)
+	m.sipResponse(req, sip.NewResponse(req, 180, ""), time.Millisecond)
 
 	var v dto.Metric
 	if err := m.sipResponses.WithLabelValues(sipOtherMethod, "4xx").Write(&v); err != nil {
@@ -328,6 +341,51 @@ func TestSIPResponseOfAnotherMethod(t *testing.T) {
 
 	if v.GetCounter().GetValue() != 1 {
 		t.Fatalf("other 4xx = %v, want 1", v.GetCounter().GetValue())
+	}
+}
+
+func TestSIPDurationLeavesOutInvite(t *testing.T) {
+	m := testMetrics(t)
+
+	from := netip.MustParseAddrPort("127.0.0.2:6000")
+	invite := siptest.NewRequest("INVITE", "sip:"+imsRealm, sip.UDP, from)
+	message := siptest.NewRequest("MESSAGE", "sip:"+imsRealm, sip.UDP, from)
+
+	m.sipResponse(invite, sip.NewResponse(invite, 200, ""), 20*time.Second)
+	m.sipResponse(message, sip.NewResponse(message, 202, ""), 50*time.Millisecond)
+
+	var v dto.Metric
+	if err := m.sipResponses.WithLabelValues("INVITE", "2xx").Write(&v); err != nil {
+		t.Fatal(err)
+	}
+
+	if v.GetCounter().GetValue() != 1 {
+		t.Fatalf("INVITE 2xx responses = %v, want 1", v.GetCounter().GetValue())
+	}
+
+	if err := m.sipDuration.WithLabelValues("MESSAGE", "2xx").(prometheus.Histogram).Write(&v); err != nil {
+		t.Fatal(err)
+	}
+
+	if v.GetHistogram().GetSampleCount() != 1 || v.GetHistogram().GetSampleSum() != 0.05 {
+		t.Fatalf("MESSAGE 2xx duration = %v samples, %v s", v.GetHistogram().GetSampleCount(), v.GetHistogram().GetSampleSum())
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	m.sipDuration.Collect(ch)
+	close(ch)
+
+	for metric := range ch {
+		var d dto.Metric
+		if err := metric.Write(&d); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, l := range d.GetLabel() {
+			if l.GetName() == "method" && l.GetValue() == "INVITE" {
+				t.Fatal("SIP request duration has INVITE")
+			}
+		}
 	}
 }
 

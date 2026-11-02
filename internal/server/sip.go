@@ -152,7 +152,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			roles.logTransaction(ctx, req, res, elapsed)
 
 			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
-				m.sipResponse(req, res)
+				m.sipResponse(req, res, elapsed)
 			}
 		},
 	})

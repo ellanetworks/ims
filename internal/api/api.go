@@ -27,6 +27,7 @@ type Config struct {
 	Frontend       fs.FS
 	Ready          func(ctx context.Context) error
 	Metrics        prometheus.Gatherer
+	Requests       *RequestMetrics
 	MCPTT          MCPTTSettings
 	MCPTTState     MCPTTState
 	MCPTTStatus    func() MCPTTStatus
@@ -65,7 +66,7 @@ func NewHandler(cfg Config) http.Handler {
 			h = a.authenticate(a.authorize(rt.perm, h))
 		}
 
-		mux.Handle(rt.pattern, h)
+		mux.Handle(rt.pattern, cfg.Requests.instrument(rt.pattern, h))
 	}
 
 	if cfg.Frontend != nil {
