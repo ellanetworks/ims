@@ -11,6 +11,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -171,7 +172,7 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 	// A registered set holds an identity of the profile, as one whose contacts expired, not yet removed: the request is
 	// served with the profile, which is not kept.
 	if errors.Is(err, db.ErrIdentityConflict) {
-		r.log.Debug("unregistered profile with an identity of a registered set: not kept", slog.String("impu", id),
+		r.log.DebugContext(ctx, "unregistered profile with an identity of a registered set: not kept", slog.String("impu", id),
 			slog.Any("error", err))
 
 		return next, nil
@@ -183,12 +184,16 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 // releaseUnregistered drops the sets kept unregistered for a registration period, and clears the S-CSCF's name for
 // their identities at the HSS: TIMEOUT_DEREGISTRATION takes an unregistered identity to not registered (TS 23.228
 // §5.12.1, TS 29.228 §6.1.2.1). An identity registered since keeps the assignment of its registration.
-func (r *Registrar) releaseUnregistered(ctx context.Context) {
+func (r *Registrar) releaseUnregistered() {
 	now := r.clock.Now()
 
+	ctx, cancel := context.WithTimeout(r.ctx, backgroundTimeout)
 	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
+
+	cancel()
+
 	if err != nil {
-		r.log.Warn("failed to list the unregistered profiles", slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the unregistered profiles", slog.Any("error", err))
 		return
 	}
 
@@ -197,36 +202,56 @@ func (r *Registrar) releaseUnregistered(ctx context.Context) {
 			break
 		}
 
-		if err := r.cfg.DB.DeleteSet(ctx, s.ID); err != nil {
-			r.log.Warn("failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
-				slog.Any("error", err))
-
-			continue
-		}
-
-		r.forgetASs(append(identityKeysOf(s.Identities), identityKeyOf(s.Unregistered.Identity)))
-
-		u, err := sip.ParseURI(s.Unregistered.Identity)
-		if err != nil {
-			continue
-		}
-
-		if regs, _, err := Recipients(ctx, r.cfg.DB, u, r.cfg.HomeDomain); err != nil || registeredAt(regs, now) {
-			continue
-		}
-
-		r.log.Debug("unregistered profile released", slog.String("impu", s.Unregistered.Identity))
-
-		req := cx.ServerAssignmentRequest{
-			PublicIdentities: []string{s.Unregistered.Identity}, WildcardedPublicIdentity: s.Unregistered.Wildcard,
-			Type: assignTimeoutDeregistration,
-		}
-
-		if _, _, err := r.serverAssignmentOf(ctx, s.HSS, req); err != nil {
-			r.log.Warn("failed to release an unregistered profile at the HSS", slog.String("impu", s.Unregistered.Identity),
-				slog.Any("error", err))
-		}
+		r.releaseSet(s, now)
 	}
+}
+
+// releaseSet releases a set kept unregistered whose registration period ended: a trace of its own. The request that
+// had the S-CSCF keep it is long gone, and no span context of it is kept.
+func (r *Registrar) releaseSet(s db.ImplicitSet, now time.Time) {
+	ctx, span := r.detached.Start(r.ctx, "unregistered profile release")
+
+	ctx, cancel := context.WithTimeout(ctx, backgroundTimeout)
+	defer cancel()
+
+	tracing.End(span, r.release(ctx, s, now))
+}
+
+func (r *Registrar) release(ctx context.Context, s db.ImplicitSet, now time.Time) error {
+	if err := r.cfg.DB.DeleteSet(ctx, s.ID); err != nil {
+		r.log.WarnContext(ctx, "failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
+			slog.Any("error", err))
+
+		return err
+	}
+
+	r.forgetASs(append(identityKeysOf(s.Identities), identityKeyOf(s.Unregistered.Identity)))
+
+	u, err := sip.ParseURI(s.Unregistered.Identity)
+	if err != nil {
+		return nil
+	}
+
+	regs, _, err := Recipients(ctx, r.cfg.DB, u, r.cfg.HomeDomain)
+	if err != nil || registeredAt(regs, now) {
+		return err
+	}
+
+	r.log.DebugContext(ctx, "unregistered profile released", slog.String("impu", s.Unregistered.Identity))
+
+	req := cx.ServerAssignmentRequest{
+		PublicIdentities: []string{s.Unregistered.Identity}, WildcardedPublicIdentity: s.Unregistered.Wildcard,
+		Type: assignTimeoutDeregistration,
+	}
+
+	if _, _, err := r.serverAssignmentOf(ctx, s.HSS, req); err != nil {
+		r.log.WarnContext(ctx, "failed to release an unregistered profile at the HSS",
+			slog.String("impu", s.Unregistered.Identity), slog.Any("error", err))
+
+		return err
+	}
+
+	return nil
 }
 
 // dropUnregistered forgets the sets kept unregistered of a private identity's subscription, or that hold one of the
@@ -240,7 +265,7 @@ func (r *Registrar) dropUnregistered(ctx context.Context, impi string, identitie
 
 	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
 	if err != nil {
-		r.log.Warn("failed to list the unregistered profiles", slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to list the unregistered profiles", slog.Any("error", err))
 		return
 	}
 
@@ -253,7 +278,7 @@ func (r *Registrar) dropUnregistered(ctx context.Context, impi string, identitie
 		}
 
 		if err := r.cfg.DB.DeleteSet(ctx, s.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
-			r.log.Warn("failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
+			r.log.WarnContext(ctx, "failed to delete an unregistered profile", slog.String("impu", s.Unregistered.Identity),
 				slog.Any("error", err))
 		}
 	}

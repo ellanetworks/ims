@@ -44,6 +44,8 @@ type core struct {
 	forget  func()
 	onError func(error)
 	onEnd   []func()
+	// finish, when set, is told of the end of the transaction, with its error, under its lock.
+	finish func(err error)
 
 	mu       sync.Mutex
 	cond     sync.Cond
@@ -242,6 +244,10 @@ func (tx *core) terminate(err error) {
 	tx.state = Terminated
 	tx.err = err
 	tx.stopTimers()
+
+	if tx.finish != nil {
+		tx.finish(err)
+	}
 
 	if tx.forget != nil {
 		tx.forget()

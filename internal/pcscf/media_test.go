@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/rx"
+	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/rxpolicy"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
@@ -62,8 +63,8 @@ func TestMediaComponentFromTheCallerSide(t *testing.T) {
 		Number:                  1,
 		Type:                    new(rx.MediaAudio),
 		FlowStatus:              new(rx.FlowStatusEnabled),
-		MaxRequestedBandwidthUL: new(rx.Bandwidth(41000)),
-		MaxRequestedBandwidthDL: new(rx.Bandwidth(41000)),
+		MaxRequestedBandwidthUL: new(tgpp.Bandwidth(41000)),
+		MaxRequestedBandwidthDL: new(tgpp.Bandwidth(41000)),
 		RRBandwidth:             new(uint32(2000)),
 		RSBandwidth:             new(uint32(600)),
 		CodecData: []rx.CodecData{
@@ -383,7 +384,7 @@ func TestMediaComponentsFromLiveVideoCall(t *testing.T) {
 		c := got[w.number-1]
 
 		if c.Number != w.number || *c.Type != w.kind || *c.FlowStatus != rx.FlowStatusEnabled ||
-			*c.MaxRequestedBandwidthUL != rx.Bandwidth(w.ul) || *c.MaxRequestedBandwidthDL != rx.Bandwidth(w.dl) ||
+			*c.MaxRequestedBandwidthUL != tgpp.Bandwidth(w.ul) || *c.MaxRequestedBandwidthDL != tgpp.Bandwidth(w.dl) ||
 			*c.RRBandwidth != w.rr || *c.RSBandwidth != w.rs {
 			t.Errorf("component %d: %+v, want enabled %v at %d/%d bit/s with RR %d and RS %d", w.number, c, w.kind, w.ul, w.dl, w.rr, w.rs)
 		}

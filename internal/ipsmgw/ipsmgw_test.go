@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const home = "ims.mnc001.mcc001.3gppnetwork.org"
@@ -26,6 +27,8 @@ type fakeStore struct {
 	mu   sync.Mutex
 	regs map[string]db.IPSMGWRegistration
 	hss  map[string]db.IPSMGWHSSRegistration
+	// onPut, if set, is called by PutIPSMGWRegistration with its context, before it stores.
+	onPut func(ctx context.Context)
 }
 
 func newFakeStore() *fakeStore {
@@ -44,7 +47,11 @@ func (s *fakeStore) IPSMGWRegistrations(context.Context) ([]db.IPSMGWRegistratio
 	return out, nil
 }
 
-func (s *fakeStore) PutIPSMGWRegistration(_ context.Context, r db.IPSMGWRegistration) error {
+func (s *fakeStore) PutIPSMGWRegistration(ctx context.Context, r db.IPSMGWRegistration) error {
+	if s.onPut != nil {
+		s.onPut(ctx)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -226,6 +233,13 @@ type world struct {
 func newWorld(t *testing.T, store *fakeStore) *world {
 	t.Helper()
 
+	return newWorldTraced(t, store, nil)
+}
+
+// newWorldTraced is newWorld of the IP-SM-GW traced with tp.
+func newWorldTraced(t *testing.T, store *fakeStore, tp trace.TracerProvider) *world {
+	t.Helper()
+
 	n := siptest.NewNet(t)
 	w := &world{
 		t: t, n: n, scscf: n.Peer(), store: store, hss: &fakeHSS{}, smscs: &fakeSMSCs{}, router: &fakeRouter{},
@@ -234,8 +248,9 @@ func newWorld(t *testing.T, store *fakeStore) *world {
 	w.as = netip.AddrPortFrom(w.scscf.Addr().Addr(), Port)
 
 	a, err := Start(context.Background(), Config{
-		Addresses: []netip.Addr{w.scscf.Addr().Addr()}, Transaction: n.Config(transaction.Config{}), HomeDomain: home,
-		Store: store, HSS: w.hss, SMSCs: w.smscs, Router: w.router, Nodes: w.nodes,
+		Addresses: []netip.Addr{w.scscf.Addr().Addr()}, Transaction: n.Config(transaction.Config{TracerProvider: tp}),
+		HomeDomain: home,
+		Store:      store, HSS: w.hss, SMSCs: w.smscs, Router: w.router, Nodes: w.nodes,
 		Number: func() string { return "15550000100" },
 	})
 	if err != nil {
@@ -647,10 +662,10 @@ func TestSMSIPFeatureTag(t *testing.T) {
 func TestHSSRefusalNotRetried(t *testing.T) {
 	for _, reject := range []bool{true, false} {
 		h := &fakeHSS{reject: reject, fail: !reject}
-		s := newHSSSync(h, newFakeStore(), func() string { return "15550000100" },
+		s := newHSSSync(t.Context(), nil, h, newFakeStore(), func() string { return "15550000100" },
 			func(string) (User, bool) { return User{MSISDN: "15551230001"}, true }, nil, slog.New(slog.DiscardHandler))
 
-		s.sync(t.Context(), "msisdn:15551230001")
+		s.sync(t.Context(), "msisdn:15551230001", trace.SpanContext{})
 
 		s.mu.Lock()
 		retried := s.attempts["msisdn:15551230001"] > 0

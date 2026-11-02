@@ -133,7 +133,7 @@ func ListMCPTTRegistrations(cfg Config) http.Handler {
 
 		regs, err := cfg.MCPTTState.Registrations()
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
 			return
 		}
 
@@ -151,7 +151,7 @@ func ListMCPTTRegistrations(cfg Config) http.Handler {
 			})
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -166,7 +166,7 @@ func ListMCPTTAffiliations(cfg Config) http.Handler {
 
 		affs, err := cfg.MCPTTState.Affiliations()
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
 			return
 		}
 
@@ -184,7 +184,7 @@ func ListMCPTTAffiliations(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, MCPTTAffiliationResponse(a))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -214,7 +214,7 @@ func ListMCPTTCalls(cfg Config) http.Handler {
 			resp.Items = append(resp.Items, mcpttCallResponse(c))
 		}
 
-		writeResponse(w, resp, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -229,11 +229,11 @@ func GetMCPTTCall(cfg Config) http.Handler {
 
 		switch {
 		case err != nil:
-			writeError(w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
+			writeError(r.Context(), w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
 		case !found:
-			writeError(w, http.StatusNotFound, "call not found", nil, cfg.Logger)
+			writeError(r.Context(), w, http.StatusNotFound, "call not found", nil, cfg.Logger)
 		default:
-			writeResponse(w, mcpttCallResponse(call), http.StatusOK, cfg.Logger)
+			writeResponse(r.Context(), w, mcpttCallResponse(call), http.StatusOK, cfg.Logger)
 		}
 	})
 }
@@ -245,7 +245,7 @@ func mcpttCalls(w http.ResponseWriter, r *http.Request, cfg Config) ([]MCPTTCall
 
 	calls, err := cfg.MCPTTState.Calls(ctx)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
+		writeError(r.Context(), w, http.StatusServiceUnavailable, "MCPTT is unavailable", err, cfg.Logger)
 		return nil, false
 	}
 

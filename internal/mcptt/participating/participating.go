@@ -13,6 +13,7 @@
 package participating
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"strings"
@@ -159,7 +160,7 @@ func (r IMS) Route(req *sip.Request, bs []registrar.Binding) []*sip.Request {
 type Controlling interface {
 	// Group takes the "SIP INVITE request for controlling MCPTT function of an MCPTT group" (TS 24.379 §6.3.1.1)
 	// the function sends on receipt of the INVITE of a served user's client, on the strand of the group's call.
-	Group(o *Origination)
+	Group(ctx context.Context, o *Origination)
 	// GroupCalls are the groups of the group calls of user, which it takes part in or is invited to: those the
 	// function counts against <MaxSimultaneousCallsN6> (§10.1.1.3.1.1 step 5), the controlling function's with the
 	// hop elided, since the function keeps no state of its own.
@@ -240,7 +241,7 @@ func New(cfg Config) *Participating {
 // Originate is the "SIP INVITE request for originating participating MCPTT function" r of a served user (TS 24.379
 // §6.3.1.1), originator the IMS public user identities of its originator (registrar.Resolve). Only on-demand
 // prearranged group calls (§10.1.1.3.1.1) are served; another session type gets a 403.
-func (p *Participating) Originate(r *ua.Request, originator []sip.URI) {
+func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator []sip.URI) {
 	req := r.Message()
 	snap := p.cfg.Source.Current()
 	host := snap.ParticipatingPSI().Host
@@ -250,7 +251,7 @@ func (p *Participating) Originate(r *ua.Request, originator []sip.URI) {
 	// The refusals are logged with their reason, the warning text if any (the INVITE's transaction is logged with
 	// its final response).
 	reject := func(code int, reason string, header ...sip.Field) {
-		log.Debug("group call refused", slog.Int("code", code), slog.String("reason", reason))
+		log.DebugContext(ctx, "group call refused", slog.Int("code", code), slog.String("reason", reason))
 
 		h := sip.Header(header)
 		Charged(&h, charging, ioi, true)
@@ -315,7 +316,7 @@ func (p *Participating) Originate(r *ua.Request, originator []sip.URI) {
 		return
 	}
 
-	p.cfg.Controlling.Group(&Origination{
+	p.cfg.Controlling.Group(ctx, &Origination{
 		Request: r, Invite: p.toControlling(snap, req, offer, body), Charging: charging, psi: snap.ParticipatingPSI(), ioi: ioi,
 	})
 }

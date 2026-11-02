@@ -18,6 +18,8 @@ import (
 	"github.com/ellanetworks/ims/internal/n5"
 	"github.com/ellanetworks/ims/internal/policy"
 	"github.com/ellanetworks/ims/internal/sbitls"
+	"github.com/ellanetworks/ims/internal/tracing"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SessionsPath is where the P-CSCF receives notifications: each session has the notifUri
@@ -49,7 +51,9 @@ type Config struct {
 	TLS *sbitls.Credentials
 	// Observe, if set, is called after each request to the PCF, as n5.Config's.
 	Observe func(status int, err error, elapsed time.Duration)
-	Logger  *slog.Logger
+	// TracerProvider traces the requests to the PCF; none when nil.
+	TracerProvider trace.TracerProvider
+	Logger         *slog.Logger
 }
 
 // Backend is the policy backend over N5. It is also the HTTP handler of the PCF's notifications.
@@ -64,6 +68,8 @@ type Backend struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// detached traces the deletes that follow a termination's answer.
+	detached tracing.Detached
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -81,6 +87,13 @@ type session struct {
 	tried    []*n5.AppSessionContextUpdateData
 }
 
+const (
+	// tracerName is the instrumentation scope of the backend's own spans.
+	tracerName = "github.com/ellanetworks/ims/internal/n5policy"
+	// role is the role the backend serves, of its spans (tracing.RoleKey).
+	role = "pcscf"
+)
+
 // maxLost bounds the creates the backend remembers as unanswered.
 const maxLost = 1024
 
@@ -97,7 +110,7 @@ type Status struct {
 var _ policy.Backend = (*Backend)(nil)
 
 func New(cfg Config) (*Backend, error) {
-	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS, Observe: cfg.Observe})
+	client, err := n5.New(n5.Config{PCF: cfg.PCF, TLS: cfg.TLS, Observe: cfg.Observe, TracerProvider: cfg.TracerProvider})
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +140,7 @@ func New(cfg Config) (*Backend, error) {
 
 	return &Backend{
 		cfg: cfg, client: client, root: root, endpoint: "n5:" + root.String(), log: cfg.Logger,
-		ctx: ctx, cancel: cancel,
+		ctx: ctx, cancel: cancel, detached: tracing.NewDetached(cfg.TracerProvider, tracerName, role),
 		sessions: make(map[string]*session), lost: make(map[string]time.Time),
 		status: Status{PCF: root.String()},
 	}, nil
@@ -285,7 +298,7 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		return policy.Grant{}, err
 	}
 
-	b.bodyErr(id, n5.OpModify, res)
+	b.bodyErr(ctx, id, n5.OpModify, res)
 
 	if res.URI != "" {
 		uri = res.URI
@@ -323,11 +336,11 @@ func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionConte
 	}
 
 	if res.Existing {
-		b.log.Debug("the PCF already holds an equal application session context", slog.String("session", id),
+		b.log.DebugContext(ctx, "the PCF already holds an equal application session context", slog.String("session", id),
 			slog.String("uri", res.URI))
 	}
 
-	b.bodyErr(id, n5.OpCreate, res.Result)
+	b.bodyErr(ctx, id, n5.OpCreate, res.Result)
 	b.keep(id, res.URI, res.Features, next)
 
 	return res.URI, nil
@@ -360,7 +373,7 @@ func (b *Backend) Terminate(ctx context.Context, id, ref string, _ policy.Termin
 		return err
 	}
 
-	b.bodyErr(id, n5.OpDelete, res)
+	b.bodyErr(ctx, id, n5.OpDelete, res)
 	b.forget(id)
 
 	return nil
@@ -454,9 +467,9 @@ func (b *Backend) record(err error, success string) {
 }
 
 // TS 29.500 §5.2.7.3: the PCF carried out the request; only what it said about it is lost.
-func (b *Backend) bodyErr(id string, op n5.Op, r n5.Result) {
+func (b *Backend) bodyErr(ctx context.Context, id string, op n5.Op, r n5.Result) {
 	if r.BodyErr != nil {
-		b.log.Warn("unreadable response from the PCF", slog.String("session", id), slog.String("operation", string(op)),
+		b.log.WarnContext(ctx, "unreadable response from the PCF", slog.String("session", id), slog.String("operation", string(op)),
 			slog.Any("error", r.BodyErr))
 	}
 }

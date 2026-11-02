@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,7 +44,7 @@ func newResourceNotifier(t *testing.T, res ua.Source, minExpires time.Duration) 
 	n := &notifierPeer{subs: make(chan *ua.ServerSubscription, 4), ended: make(chan ua.End, 4)}
 
 	n.p = newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnRequest = func(r *ua.Request) {
+		c.OnRequest = func(_ context.Context, r *ua.Request) {
 			from, _ := r.Message().Header.From()
 
 			s, err := r.AcceptSubscription(ua.Acceptance{
@@ -51,7 +52,7 @@ func newResourceNotifier(t *testing.T, res ua.Source, minExpires time.Duration) 
 				MinExpires: minExpires,
 				Resource:   res,
 				Value:      from.URI.User,
-				Handler:    ua.ServerSubscriptionHandler{Ended: func(_ *ua.ServerSubscription, e ua.End) { n.ended <- e }},
+				Handler:    ua.ServerSubscriptionHandler{Ended: func(_ context.Context, _ *ua.ServerSubscription, e ua.End) { n.ended <- e }},
 			})
 			if err != nil {
 				return
@@ -110,7 +111,7 @@ func TestResourceFanOut(t *testing.T) {
 
 	for _, m := range []string{"b", "c", "d"} {
 		state = append(state[:len(state):len(state)], m)
-		if err := res.Change(state, m); err != nil {
+		if err := res.Change(context.Background(), state, m); err != nil {
 			t.Fatal(err)
 		}
 
@@ -136,7 +137,7 @@ func TestResourceFanOut(t *testing.T) {
 
 	// Up to date again, she gets the next change as a partial notification.
 	state = append(state[:len(state):len(state)], "e")
-	_ = res.Change(state, "e")
+	_ = res.Change(context.Background(), state, "e")
 
 	checkNotify(t, nextNotify(t, fast.notifys), "active", "add alice e seq=4")
 
@@ -161,17 +162,17 @@ func TestResourceFullOnly(t *testing.T) {
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "full alice [a] seq=0")
 
-	_ = res.Change(roster{"a", "b"}, "b")
+	_ = res.Change(context.Background(), roster{"a", "b"}, "b")
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "full alice [a b] seq=1")
 
-	if err := sub.Refresh(ua.Change{}, nil); err != nil {
+	if err := sub.Refresh(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "full alice [a b] seq=2")
 
-	if err := sub.Unsubscribe(ua.Change{}); err != nil {
+	if err := sub.Unsubscribe(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,12 +200,12 @@ func TestResourceRate(t *testing.T) {
 	// The first NOTIFY answered, the first change goes at once.
 	netOf(t).Quiesce()
 
-	_ = res.Change(roster{"a", "b"}, "b")
+	_ = res.Change(context.Background(), roster{"a", "b"}, "b")
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "add alice b seq=1")
 
-	_ = res.Change(roster{"a", "b", "c"}, "c")
-	_ = res.Change(roster{"a", "b", "c", "d"}, "d")
+	_ = res.Change(context.Background(), roster{"a", "b", "c"}, "c")
+	_ = res.Change(context.Background(), roster{"a", "b", "c", "d"}, "d")
 
 	advance(clock, 4*time.Second)
 
@@ -271,7 +272,7 @@ func TestResourceTerminate(t *testing.T) {
 	<-n.subs
 	nextNotify(t, sb.notifys)
 
-	res.Terminate(sip.SubscriptionNoResource, 0)
+	res.Terminate(context.Background(), sip.SubscriptionNoResource, 0)
 
 	checkNotify(t, nextNotify(t, sb.notifys), "terminated;reason=noresource", "")
 
@@ -279,7 +280,7 @@ func TestResourceTerminate(t *testing.T) {
 		t.Errorf("notifier ended %+v", e)
 	}
 
-	if err := res.Change(roster{}, ""); err == nil {
+	if err := res.Change(context.Background(), roster{}, ""); err == nil {
 		t.Error("a change to a terminated resource")
 	}
 
@@ -326,7 +327,7 @@ func TestResourceConverges(t *testing.T) {
 				mu.Lock()
 				m := fmt.Sprintf("m%d.%d", g, i)
 				state = append(state[:len(state):len(state)], m)
-				_ = res.Change(state, m)
+				_ = res.Change(context.Background(), state, m)
 				mu.Unlock()
 			}
 		})

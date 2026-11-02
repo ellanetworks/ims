@@ -53,7 +53,7 @@ func (u *ua) send(req *sip.Request) *siptest.Responses {
 	u.route(req)
 
 	rs := siptest.NewResponses(u.t)
-	if _, err := u.l.Request(req, rs); err != nil {
+	if _, err := u.l.Request(context.Background(), req, rs); err != nil {
 		u.t.Fatal(err)
 	}
 

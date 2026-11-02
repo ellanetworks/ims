@@ -120,7 +120,9 @@ func TestMCPTT(t *testing.T) {
 	}
 
 	before := srv.core.Load()
-	srv.restartCore(t.Context(), srv.settings.Get(), "for the test")
+	if err := srv.restartCore(t.Context(), srv.settings.Get(), "for the test"); err != nil {
+		t.Fatal(err)
+	}
 
 	if c := srv.core.Load(); c == nil || c == before || srv.mcptt.Load() != as {
 		t.Fatal("the MCPTT AS did not outlive the core")

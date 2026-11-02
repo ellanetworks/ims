@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -79,7 +80,7 @@ func (c *calls) forget(d *proxy.Dialog) {
 
 // dialogEvent forgets the calls that end. One the S-CSCF releases is reported to the call records before the
 // release reaches the parties: the proxy publishes the end of a dialog it releases before releasing it.
-func (r *Registrar) dialogEvent(e proxy.DialogEvent) {
+func (r *Registrar) dialogEvent(_ context.Context, e proxy.DialogEvent) {
 	if e.Kind != proxy.EventEnded {
 		return
 	}
@@ -124,7 +125,7 @@ func (c *calls) serving(k bindingKey, pick func(served []string) bool) map[*prox
 // toward it on its own branches only, so that the other contacts of a forked call ring on. An
 // expired binding releases them only when its contact has no other registration left in st
 // (§5.4.5.1.2A).
-func (r *Registrar) releaseCalls(st *state, removed []removal) {
+func (r *Registrar) releaseCalls(ctx context.Context, st *state, removed []removal) {
 	cause, err := sip.NewReason(sip.ReasonSIP, 480, sip.ReasonText(sip.ReasonSIP, 480))
 	if err != nil {
 		return
@@ -149,18 +150,18 @@ func (r *Registrar) releaseCalls(st *state, removed []removal) {
 				var err error
 
 				if side == proxy.Caller {
-					err = d.Release(rel)
+					err = d.Release(ctx, rel)
 				} else {
-					err = d.ReleaseCallee(k, rel)
+					err = d.ReleaseCallee(ctx, k, rel)
 				}
 
 				switch {
 				case err == nil:
-					r.log.Info("call released on deregistration", slog.String("impi", rm.reg.IMPI),
+					r.log.InfoContext(ctx, "call released on deregistration", slog.String("impi", rm.reg.IMPI),
 						slog.String("call-id", d.CallID()), slog.String("contact", b.Contact.URI))
 				case errors.Is(err, proxy.ErrDialogEnded), errors.Is(err, proxy.ErrNotReached):
 				default:
-					r.log.Warn("failed to release a call", slog.String("call-id", d.CallID()), slog.Any("error", err))
+					r.log.WarnContext(ctx, "failed to release a call", slog.String("call-id", d.CallID()), slog.Any("error", err))
 				}
 			}
 		}

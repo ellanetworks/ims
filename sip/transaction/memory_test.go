@@ -58,7 +58,7 @@ func (h *memoryHarness) send(req *sip.Request) (*transaction.ClientTransaction, 
 
 	rs := siptest.NewResponses(h.t)
 
-	tx, err := h.l.Request(req, rs)
+	tx, err := h.l.Request(context.Background(), req, rs)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestServedAddressCancel(t *testing.T) {
 
 	wantCode(t, rs.Next(), 100)
 
-	if err := client.Cancel(); err != nil {
+	if err := client.Cancel(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

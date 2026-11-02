@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestForkCancelled(t *testing.T) {
 
 	alice.nextAll("progress", "progress")
 
-	_ = o.Cancel(ua.Change{})
+	_ = o.Cancel(context.Background(), ua.Change{})
 
 	for range 2 {
 		if e := bob.next("ended"); e.end.Cause != ua.EndCancelled {
@@ -108,7 +109,7 @@ func TestForkEarlyBye(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, a1, _ := forked(t, alice, bob)
 
-	if err := a1.Bye(ua.Change{}, nil); err != nil {
+	if err := a1.Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,7 +158,7 @@ func TestForkDropped(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, a1, _ := forked(t, alice, bob)
 
-	if err := first.Session().Bye(ua.Change{}, nil); err != nil {
+	if err := first.Session().Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,7 +231,7 @@ func TestForkAnswerTimeout(t *testing.T) {
 	_ = first.Progress(ua.Reply{Code: 180})
 	_ = fork.Progress(ua.Reply{Code: 180})
 
-	_ = first.Session().Bye(ua.Change{}, nil)
+	_ = first.Session().Bye(context.Background(), ua.Change{}, nil)
 
 	advance(clock, 31*time.Second)
 
@@ -263,7 +264,7 @@ func TestByeWith2xxHeld(t *testing.T) {
 	_ = in.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf(realSDP(5000, 1))})
 	_ = in.Respond(ua.Reply{Code: 200, AfterPrack: true})
 
-	if err := in.Session().Bye(ua.Change{}, nil); err != nil {
+	if err := in.Session().Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatalf("Bye with the 2xx held: %v", err)
 	}
 
@@ -291,7 +292,7 @@ func TestWithoutOptionTags(t *testing.T) {
 	req.Header.Add("To", "<"+bob.uri()+">")
 	req.SetBodies(sdpOf("offer-1")...)
 
-	if _, err := alice.a.Invite(req, alice.handler(), ua.WithoutOptionTags(sip.OptionTag100rel, sip.OptionTag199)); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler(), ua.WithoutOptionTags(sip.OptionTag100rel, sip.OptionTag199)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -110,10 +110,11 @@ type Backend interface {
 	Terminate(ctx context.Context, id, ref string, cause Termination, wait bool) error
 }
 
-// Sink receives what the policy function reports about the P-CSCF's sessions.
+// Sink receives what the policy function reports about the P-CSCF's sessions. ctx is the trace of the report, without
+// its cancellation: the work it starts outlives the request that reports it.
 type Sink interface {
-	Notify(id string, e Event) bool
-	Abort(id string, a Abort) (terminate func(), known bool)
+	Notify(ctx context.Context, id string, e Event) bool
+	Abort(ctx context.Context, id string, a Abort) (terminate func(), known bool)
 }
 
 // TS 29.214 §4.4.5, TS 29.514 §4.2.6.7

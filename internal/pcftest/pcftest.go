@@ -25,6 +25,8 @@ import (
 
 	"github.com/ellanetworks/core/diameter/rx"
 	"github.com/ellanetworks/ims/internal/n5"
+	"github.com/ellanetworks/ims/internal/tracing"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // TS 29.500 Table 5.2.7.2-1
@@ -85,6 +87,8 @@ type Request struct {
 	Context Context
 	// Problem is set when the PCF refused the request itself, rather than through RefuseWhen.
 	Problem *n5.ProblemDetails
+	// Traceparent is the W3C trace context of the request, if any.
+	Traceparent string
 }
 
 func (r Request) String() string {
@@ -513,6 +517,8 @@ func (p *PCF) notify(ctx context.Context, target string, body any) (Response, er
 	req.Header.Set("Content-Type", n5.ContentJSON)
 	req.Header.Set("Accept", n5.ContentProblem)
 	req.Header.Set("User-Agent", "PCF")
+	// The trace context of ctx, as a traced PCF sends it.
+	tracing.Propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -679,7 +685,7 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 
 	defer p.settle(id)()
 
-	req := Request{Op: n5.OpCreate, URI: p.uri(id), Create: &asc}
+	req := Request{Op: n5.OpCreate, URI: p.uri(id), Create: &asc, Traceparent: r.Header.Get("traceparent")}
 
 	if len(raw.AscReqData) == 0 || string(raw.AscReqData) == "null" {
 		req.Problem = ptr(invalid(CauseMandatoryIEMissing, "/ascReqData", "no ascReqData"))
@@ -719,7 +725,7 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 
 	if err := checkFlows(c.AppSessionContextReqData); err != nil {
 		req.Problem = &n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseFilterRestrictions, Detail: err.Error()}
-		p.cfg.Logger.Warn("pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
 		p.record(req)
 		n5.WriteProblem(w, *req.Problem)
 
@@ -758,7 +764,7 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	req := Request{Op: n5.OpModify, URI: p.uri(id), Patch: patch}
+	req := Request{Op: n5.OpModify, URI: p.uri(id), Patch: patch, Traceparent: r.Header.Get("traceparent")}
 
 	if err := n5.CheckPatch(patch); err != nil {
 		req.Problem = ptr(invalid(CauseInvalidMsgFormat, "", err.Error()))
@@ -786,7 +792,7 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 
 	if err := checkFlows(c.AppSessionContextReqData); err != nil {
 		req.Problem = &n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseFilterRestrictions, Detail: err.Error()}
-		p.cfg.Logger.Warn("pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: refused flow description", slog.String("uri", req.URI), slog.Any("error", err))
 		p.record(req)
 		n5.WriteProblem(w, *req.Problem)
 
@@ -887,7 +893,7 @@ func (p *PCF) delete(w http.ResponseWriter, r *http.Request, id string) {
 
 	defer p.settle(id)()
 
-	req := Request{Op: n5.OpDelete, URI: p.uri(id)}
+	req := Request{Op: n5.OpDelete, URI: p.uri(id), Traceparent: r.Header.Get("traceparent")}
 
 	if c, ok := p.Context(req.URI); ok {
 		req.Context = c
@@ -938,7 +944,7 @@ func (p *PCF) body(w http.ResponseWriter, r *http.Request, contentType string, r
 
 	switch {
 	case err != nil:
-		p.cfg.Logger.Warn("pcftest: cannot read the request", slog.Any("error", err))
+		p.cfg.Logger.WarnContext(r.Context(), "pcftest: cannot read the request", slog.Any("error", err))
 		return nil, false
 	case len(b) > maxBody:
 		p.violation(w, r, n5.ProblemDetails{Status: http.StatusRequestEntityTooLarge})
@@ -1029,7 +1035,7 @@ func (p *PCF) violation(w http.ResponseWriter, r *http.Request, pd n5.ProblemDet
 	p.violations = append(p.violations, msg)
 	p.mu.Unlock()
 
-	p.cfg.Logger.Warn("pcftest: request breaks TS 29.514", slog.String("violation", msg))
+	p.cfg.Logger.WarnContext(r.Context(), "pcftest: request breaks TS 29.514", slog.String("violation", msg))
 	n5.WriteProblem(w, pd)
 }
 

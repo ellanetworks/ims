@@ -13,8 +13,8 @@ type registrar struct {
 	layer *transaction.Layer
 }
 
-func (r *registrar) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
-	err := r.layer.Go(func(ctx context.Context) {
+func (r *registrar) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
+	err := r.layer.Go(context.Background(), func(ctx context.Context) {
 		res := sip.NewResponse(req, 200, "")
 
 		select {
@@ -30,11 +30,11 @@ func (r *registrar) HandleRequest(tx *transaction.ServerTransaction, req *sip.Re
 	}
 }
 
-func (*registrar) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+func (*registrar) HandleCancel(context.Context, *transaction.ServerTransaction, *sip.Request) {}
 
-func (*registrar) HandleAck(*sip.Request) {}
+func (*registrar) HandleAck(context.Context, *sip.Request) {}
 
-func (*registrar) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (*registrar) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
 func ExampleLayer_Go() {
 	r := &registrar{}

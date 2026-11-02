@@ -139,9 +139,9 @@ func TestLiveState(t *testing.T) {
 		t.Errorf("talker once the floor is released %+v", calls)
 	}
 
-	ca.Leave()
-	cb.Leave()
-	cc.Leave()
+	ca.Leave(context.Background())
+	cb.Leave(context.Background())
+	cc.Leave(context.Background())
 	w.n.Quiesce()
 
 	if calls := w.calls(); len(calls) != 0 {

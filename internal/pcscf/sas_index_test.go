@@ -18,7 +18,7 @@ func TestSetIndexes(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{
 		Kernel: ipsectest.NewKernel(), Grace: time.Millisecond, AwaitAuth: time.Millisecond, ServerPort: 5100,
 		ClientPorts: [2]uint16{5101, 5102},
-	}, slog.New(slog.DiscardHandler))
+	}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	check := func(when string) {
@@ -64,7 +64,7 @@ func TestSetIndexes(t *testing.T) {
 			offer: ipsec.Offer{Endpoint: ipsec.Endpoint{PortC: port, PortS: port + 1, SPIC: uint32(port), SPIS: uint32(port) + 1}},
 		}
 
-		if _, err := a.challenged(c, ipsec.Keys{}); err != nil {
+		if _, err := a.challenged(context.Background(), c, ipsec.Keys{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -72,7 +72,7 @@ func TestSetIndexes(t *testing.T) {
 		s := a.byFlow[flowKey{netip.AddrPortFrom(ue, port), netip.AddrPortFrom(loopback, 5100)}]
 		a.mu.Unlock()
 
-		a.registered(s, outcome{lifetime: time.Hour})
+		a.registered(context.Background(), s, outcome{lifetime: time.Hour})
 
 		return s
 	}

@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -19,7 +20,7 @@ func TestDropConfirmed(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	established(t, alice, bob)
 
-	bob.a.Drop(allFlows)
+	bob.a.Drop(context.Background(), allFlows)
 
 	if e := bob.next("ended"); e.end.Cause != ua.EndDropped {
 		t.Fatalf("bob ended %+v", e.end)
@@ -40,7 +41,7 @@ func TestDropIncoming(t *testing.T) {
 
 	alice.next("progress")
 
-	bob.a.Drop(allFlows)
+	bob.a.Drop(context.Background(), allFlows)
 
 	if e := bob.next("ended"); e.end.Cause != ua.EndDropped {
 		t.Fatalf("bob ended %+v", e.end)
@@ -65,7 +66,7 @@ func TestDropOutgoing(t *testing.T) {
 
 	alice.next("progress")
 
-	alice.a.Drop(allFlows)
+	alice.a.Drop(context.Background(), allFlows)
 
 	got := alice.nextAll("ended", "failed")
 	if e := got["ended"]; e.end.Cause != ua.EndDropped {
@@ -107,7 +108,7 @@ func TestDropArrivingInvite(t *testing.T) {
 	alice.sock.Send(sip.UDP, bob.addr, invite)
 
 	<-arrived
-	bob.a.Drop(allFlows)
+	bob.a.Drop(context.Background(), allFlows)
 	close(release)
 
 	bob.none()
@@ -132,8 +133,8 @@ func TestDropFromAHandler(t *testing.T) {
 	var bobAgent atomic.Pointer[ua.Agent]
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
-		c.OnInvite = func(r *ua.Request) ua.Handler {
-			bobAgent.Load().Drop(allFlows)
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
+			bobAgent.Load().Drop(context.Background(), allFlows)
 			return ua.Handler{}
 		}
 	})

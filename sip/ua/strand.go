@@ -2,6 +2,7 @@ package ua
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"runtime"
 	"runtime/debug"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // checkLoop enables the assertions that the state of a usage is used with its strand held. Tests enable it.
@@ -223,6 +225,24 @@ func (st *Strand) after(d time.Duration, f func()) *timer {
 	return tm
 }
 
+// later is after, for a timer whose work is part of the trace of ctx: that of the operation that arms it.
+func (st *Strand) later(ctx context.Context, d time.Duration, f func(ctx context.Context)) *timer {
+	return st.after(d, func() { f(ctx) })
+}
+
+// detached is after, for a timer whose work is new: a trace of its own, in a span named name, linked to ctx, the trace
+// of what armed it (OpenTelemetry links work that starts later than its cause).
+func (st *Strand) detached(ctx context.Context, d time.Duration, name string, f func(ctx context.Context)) *timer {
+	link := trace.SpanContextFromContext(ctx)
+
+	return st.after(d, func() {
+		ctx, span := st.a.startDetached([]trace.SpanContext{link}, name)
+		defer span.End()
+
+		f(ctx)
+	})
+}
+
 func (tm *timer) stop() {
 	if tm != nil && !tm.stopped {
 		tm.stopped = true
@@ -230,23 +250,23 @@ func (tm *timer) stop() {
 	}
 }
 
-// client is a client transaction handler posting to a strand.
+// client is a client transaction handler posting to a strand, with the trace of the request.
 type client struct {
 	st       *Strand
-	response func(*sip.Response)
-	err      func(error)
+	response func(context.Context, *sip.Response)
+	err      func(context.Context, error)
 }
 
-func (st *Strand) client(response func(*sip.Response), err func(error)) transaction.ClientHandler {
+func (st *Strand) client(response func(context.Context, *sip.Response), err func(context.Context, error)) transaction.ClientHandler {
 	return client{st: st, response: response, err: err}
 }
 
-func (c client) HandleResponse(res *sip.Response) {
-	c.st.post(func() { c.response(res) })
+func (c client) HandleResponse(ctx context.Context, res *sip.Response) {
+	c.st.post(func() { c.response(ctx, res) })
 }
 
-func (c client) HandleError(err error) {
-	c.st.post(func() { c.err(err) })
+func (c client) HandleError(ctx context.Context, err error) {
+	c.st.post(func() { c.err(ctx, err) })
 }
 
 // checkStrands enables Strand.Confined, for tests.

@@ -18,6 +18,7 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -75,6 +76,8 @@ type harness struct {
 	addr netip.AddrPort
 	mode registrar.Mode
 	src  *swappable
+	// tp traces the server, if not nil.
+	tp oteltrace.TracerProvider
 	// scscf and scscf2 are S-CSCFs, of the trust domain.
 	scscf, scscf2 *scscf
 }
@@ -87,8 +90,15 @@ func newHarness(t *testing.T, mode registrar.Mode) *harness {
 func newHarnessOf(t *testing.T, mode registrar.Mode, state State) *harness {
 	t.Helper()
 
+	return newTracedHarness(t, mode, state, nil)
+}
+
+// newTracedHarness is newHarnessOf, its server traced by tp, if not nil.
+func newTracedHarness(t *testing.T, mode registrar.Mode, state State, tp oteltrace.TracerProvider) *harness {
+	t.Helper()
+
 	n := siptest.NewNet(t)
-	h := &harness{t: t, n: n, addr: n.Addr(), mode: mode, src: &swappable{}}
+	h := &harness{t: t, n: n, addr: n.Addr(), mode: mode, src: &swappable{}, tp: tp}
 	h.scscf = &scscf{h: h, p: n.Peer(), subs: map[string]*regSub{}, initial: map[string]string{}}
 	h.scscf2 = &scscf{h: h, p: n.Peer(), subs: map[string]*regSub{}, initial: map[string]string{}}
 
@@ -116,7 +126,7 @@ func (h *harness) start(state State) {
 
 	s, err := New(Config{
 		UA: ua.Config{
-			Transaction: h.n.Config(transaction.Config{}),
+			Transaction: h.n.Config(transaction.Config{TracerProvider: h.tp}),
 			Prepare:     h.prepare,
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: "as", Host: h.addr.Addr().String(), Port: h.addr.Port()}},
 		},

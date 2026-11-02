@@ -111,7 +111,7 @@ func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardSh
 		UserData: m.SMRPUI,
 	}).MarshalBinary()
 	if err != nil {
-		a.log.Warn("short message cannot be delivered over IMS", slog.Any("error", err))
+		a.log.WarnContext(ctx, "short message cannot be delivered over IMS", slog.Any("error", err))
 		return outcome{domain: domainIMS, result: tgpp.Result{Code: diameter.ResultUnableToComply}}
 	}
 
@@ -154,14 +154,14 @@ func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardSh
 
 	responded := make(chan *sip.Response, 1)
 
-	if err := a.agent.Request(req, func(res *sip.Response, err error) {
+	if err := a.agent.Request(ctx, req, func(res *sip.Response, err error) {
 		if err != nil {
 			res = nil
 		}
 
 		responded <- res
 	}); err != nil {
-		a.log.Warn("short message not sent over IMS", slog.Any("error", err))
+		a.log.WarnContext(ctx, "short message not sent over IMS", slog.Any("error", err))
 		return absentOverIMS()
 	}
 

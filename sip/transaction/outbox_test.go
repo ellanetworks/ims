@@ -30,7 +30,7 @@ func TestRequestsLeaveInOrder(t *testing.T) {
 				req := h.newRequest("INFO", tr)
 				req.Header.Set("CSeq", sip.CSeq{Seq: uint32(i + 1), Method: "INFO"}.String())
 
-				if _, err := h.l.Request(req, siptest.NewResponses(t)); err != nil {
+				if _, err := h.l.Request(context.Background(), req, siptest.NewResponses(t)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -38,14 +38,14 @@ func TestRequestsLeaveInOrder(t *testing.T) {
 			ack := h.newRequest("ACK", tr)
 			ack.Header.Set("CSeq", "1 ACK")
 
-			if err := h.l.QueueAck(ack, nil); err != nil {
+			if err := h.l.QueueAck(context.Background(), ack, nil); err != nil {
 				t.Fatal(err)
 			}
 
 			bye := h.newRequest("BYE", tr)
 			bye.Header.Set("CSeq", strconv.Itoa(n+1)+" BYE")
 
-			if _, err := h.l.Request(bye, siptest.NewResponses(t)); err != nil {
+			if _, err := h.l.Request(context.Background(), bye, siptest.NewResponses(t)); err != nil {
 				t.Fatal(err)
 			}
 
@@ -75,7 +75,7 @@ func TestShutdownSendsWhatItTook(t *testing.T) {
 		req := h.newRequest("MESSAGE", sip.TCP)
 		req.Header.Set("CSeq", sip.CSeq{Seq: uint32(i + 1), Method: "MESSAGE"}.String())
 
-		if _, err := h.l.Request(req, siptest.NewResponses(t)); err != nil {
+		if _, err := h.l.Request(context.Background(), req, siptest.NewResponses(t)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -104,7 +104,7 @@ func TestShutdownDeadline(t *testing.T) {
 	}
 
 	req := h.newRequest("MESSAGE", sip.TCP)
-	if _, err := h.l.Request(req, siptest.NewResponses(t)); !errors.Is(err, transaction.ErrClosed) {
+	if _, err := h.l.Request(context.Background(), req, siptest.NewResponses(t)); !errors.Is(err, transaction.ErrClosed) {
 		t.Errorf("Request after Shutdown: %v, want %v", err, transaction.ErrClosed)
 	}
 }

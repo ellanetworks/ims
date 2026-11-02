@@ -19,16 +19,16 @@ type reconfigured struct {
 	calls []reconfiguration
 }
 
-func (r *reconfigured) ImplicitConfigured(time.Time, *settings.User, string) {}
+func (r *reconfigured) ImplicitConfigured(context.Context, time.Time, *settings.User, string) {}
 
-func (r *reconfigured) Reconfigure(_ time.Time, before, user *settings.User, client string) {
+func (r *reconfigured) Reconfigure(_ context.Context, _ time.Time, before, user *settings.User, client string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.calls = append(r.calls, reconfiguration{before: before, user: user, client: client})
 }
 
-func (r *reconfigured) LogOff(time.Time, sip.URI, string) {}
+func (r *reconfigured) LogOff(context.Context, time.Time, sip.URI, string) {}
 
 // Revoke hands the change of a user's settings, before and after, to the clients its bindings keep authorised; not to
 // a binding expired that its timer has not removed yet (RFC 3261 §10.3), whose client would be affiliated for
@@ -89,7 +89,7 @@ func TestRevokeReconfigures(t *testing.T) {
 	}
 
 	before, after := snapshot(), snapshot("sip:fire@mcptt.example.com")
-	g.Revoke(before, after)
+	g.Revoke(context.Background(), before, after)
 	n.Quiesce()
 
 	rec.mu.Lock()

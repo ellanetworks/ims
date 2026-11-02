@@ -2,6 +2,7 @@ package b2bua
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"slices"
 	"time"
@@ -133,7 +134,9 @@ type operation struct {
 // cfg.Media, and a Replaces or Target-Dialog of r naming a relayed dialog of the agent names the dialog paired with
 // it (RFC 3891, RFC 4538), which the agent's Config.Extensions put on the strand of r. The extensions the outgoing leg advertises are those the incoming one supports (100rel,
 // 199). The legs are Relay.A and Relay.B; Config.OnInvite returns what it likes.
-func Bridge(c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...ua.Option) (*Relay, error) {
+//
+// The outgoing leg, and what the relay does for either, are part of the trace of ctx and of the events of the legs.
+func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...ua.Option) (*Relay, error) {
 	c.check()
 
 	a, err := c.Incoming(r, LegHandler{})
@@ -170,7 +173,7 @@ func Bridge(c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...u
 		p.initial = &Exchange{From: a, To: b, Method: "INVITE", Initial: true, Offer: sdp}
 
 		if sdp, err = p.begin(p.initial); err != nil {
-			b.removed()
+			b.removed(ctx)
 
 			_ = r.Reject(488)
 
@@ -195,7 +198,7 @@ func Bridge(c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...u
 		opts = append([]ua.Option{ua.WithoutOptionTags(without...)}, opts...)
 	}
 
-	if err := b.dial(out, opts...); err != nil {
+	if err := b.dial(ctx, out, opts...); err != nil {
 		p.endAll()
 
 		_ = r.Reject(500)
@@ -203,7 +206,7 @@ func Bridge(c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...u
 		return p, err
 	}
 
-	p.armTimerC()
+	p.armTimerC(ctx)
 
 	return p, nil
 }
@@ -238,8 +241,9 @@ func NewRelay(a, b *Leg, cfg RelayConfig) (*Relay, error) {
 
 // Join relays two legs with confirmed sessions to each other, making their sessions agree first (RFC 3725 §4.2):
 // a re-INVITE without an offer to a, its offer in the 2xx made into one for b in a re-INVITE, the answer of b back to
-// a in the ACK. done, when not nil, gets the outcome; the relay is in place meanwhile.
-func Join(a, b *Leg, cfg RelayConfig, done func(error)) (*Relay, error) {
+// a in the ACK. done, when not nil, gets the outcome; the relay is in place meanwhile. The re-INVITEs are part of the
+// trace of ctx.
+func Join(ctx context.Context, a, b *Leg, cfg RelayConfig, done func(error)) (*Relay, error) {
 	p, err := NewRelay(a, b, cfg)
 	if err != nil {
 		return nil, err
@@ -253,7 +257,7 @@ func Join(a, b *Leg, cfg RelayConfig, done func(error)) (*Relay, error) {
 	op := &operation{from: b, fetch: true, join: done}
 	pr.op = op
 
-	err = a.s.Reinvite(ua.Change{}, func(res *sip.Response, err error) {
+	err = a.s.Reinvite(ctx, ua.Change{}, func(res *sip.Response, err error) {
 		if res != nil && res.IsSuccess() && op.offer != nil {
 			return
 		}
@@ -430,7 +434,7 @@ func (p *Relay) mapDialogs(in *sip.Request, h *sip.Header) {
 }
 
 // armTimerC arms Timer C again, from a provisional response of b.
-func (p *Relay) armTimerC() {
+func (p *Relay) armTimerC(ctx context.Context) {
 	if p.cfg.TimerC <= 0 || p.final {
 		return
 	}
@@ -444,8 +448,8 @@ func (p *Relay) armTimerC() {
 			return
 		}
 
-		p.report(p.b.End(ua.Reply{}))
-		p.respond(nil, ua.Reply{Code: 408})
+		p.report(p.b.End(ctx, ua.Reply{}))
+		p.respond(ctx, nil, ua.Reply{Code: 408})
 	})
 }
 
@@ -477,12 +481,12 @@ func (p *Relay) mirrorOf(s *ua.Session) *pair {
 
 // progress relays a provisional response of b to the mirror of its early dialog: the answer in it, reliably when a
 // supports 100rel, kept for the 2xx otherwise.
-func (p *Relay) progress(l *Leg, s *ua.Session, res *sip.Response) {
+func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Response) {
 	if l != p.b || p.final || s == nil || res.StatusCode <= 100 || res.StatusCode == 199 {
 		return
 	}
 
-	p.armTimerC()
+	p.armTimerC(ctx)
 
 	pr := p.mirrorOf(s)
 	if pr == nil || pr.relayed[res] {
@@ -496,7 +500,7 @@ func (p *Relay) progress(l *Leg, s *ua.Session, res *sip.Response) {
 	if body := sessionSDP(res.Envelope); body != nil && p.initial != nil && !pr.answered {
 		answer, err := p.answerOf(p.initial, s, body)
 		if err != nil {
-			p.abandon(488)
+			p.abandon(ctx, 488)
 			return
 		}
 
@@ -514,9 +518,9 @@ func (p *Relay) progress(l *Leg, s *ua.Session, res *sip.Response) {
 // offer takes an offer of l in a response, reporting whether it is the relay's: of b to the INVITE of a without one,
 // carried on to the mirror in a reliable 1xx or its 2xx, for its answer in the PRACK or the ACK; of the leg a
 // re-INVITE without an offer was relayed to; or of a, to Join. The application takes the others.
-func (p *Relay) offer(l *Leg, s *ua.Session, o *ua.Offer) bool {
+func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) bool {
 	if pr := p.pairs[s]; pr != nil && pr.op != nil && pr.op.fetch && l != pr.op.from {
-		p.fetched(l, pr, o)
+		p.fetched(ctx, l, pr, o)
 		return true
 	}
 
@@ -526,7 +530,7 @@ func (p *Relay) offer(l *Leg, s *ua.Session, o *ua.Offer) bool {
 
 	pr := p.mirrorOf(s)
 	if pr == nil {
-		o.Reject()
+		o.Reject(ctx)
 		return true
 	}
 
@@ -534,7 +538,7 @@ func (p *Relay) offer(l *Leg, s *ua.Session, o *ua.Offer) bool {
 
 	if res.IsProvisional() && !p.rel100 {
 		// An offer in a reliable 1xx is answered in the PRACK, which a peer without 100rel cannot give.
-		o.Reject()
+		o.Reject(ctx)
 
 		p.failCode = 488
 
@@ -545,8 +549,8 @@ func (p *Relay) offer(l *Leg, s *ua.Session, o *ua.Offer) bool {
 
 	sdp, err := p.begin(x)
 	if err != nil {
-		o.Reject()
-		p.abandon(488)
+		o.Reject(ctx)
+		p.abandon(ctx, 488)
 
 		return true
 	}
@@ -564,21 +568,21 @@ func (p *Relay) offer(l *Leg, s *ua.Session, o *ua.Offer) bool {
 		return true
 	}
 
-	p.respond(pr, p.reply(l, res, res.StatusCode, sdp))
+	p.respond(ctx, pr, p.reply(l, res, res.StatusCode, sdp))
 
 	return true
 }
 
 // fetched carries on the offer o of l, made in the 2xx of a re-INVITE without an offer: to the peer of the other leg
 // in the 2xx of its own re-INVITE without one, or, to Join, in a re-INVITE.
-func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
+func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 	op := pr.op
 	to := p.other(l)
 	op.x = &Exchange{From: l, To: to, Method: "INVITE", Offer: o.SDP()}
 
 	sdp, err := p.begin(op.x)
 	if err != nil {
-		o.Reject()
+		o.Reject(ctx)
 
 		pr.op = nil
 
@@ -600,7 +604,7 @@ func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
 
 	target := pr.other(p, l)
 
-	err = target.Reinvite(ua.Change{Bodies: []sip.BodyPart{ua.SDP(sdp)}}, func(res *sip.Response, err error) {
+	err = target.Reinvite(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(sdp)}}, func(res *sip.Response, err error) {
 		pr.op = nil
 
 		var body []byte
@@ -609,7 +613,7 @@ func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
 		}
 
 		if body == nil {
-			o.Reject()
+			o.Reject(ctx)
 			p.end(op.x, nil)
 
 			if err == nil {
@@ -623,11 +627,11 @@ func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
 
 		answer, err := p.answerOf(op.x, target, body)
 		if err == nil {
-			err = o.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
+			err = o.Answer(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
 		}
 
 		if err != nil {
-			o.Reject()
+			o.Reject(ctx)
 			p.end(op.x, nil)
 		} else {
 			p.end(op.x, target)
@@ -638,7 +642,7 @@ func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
 	if err != nil {
 		pr.op = nil
 
-		o.Reject()
+		o.Reject(ctx)
 		p.end(op.x, nil)
 		op.join(err)
 	}
@@ -647,7 +651,7 @@ func (p *Relay) fetched(l *Leg, pr *pair, o *ua.Offer) {
 // answer carries an answer of l on to the offer of the other leg it answers: of the peer of a to an offer of b, in
 // the PRACK or the ACK of b; or of the peer of from to the offer a re-INVITE without one fetched. An answer to the
 // offer of a refresh answered on its leg that changes the session goes on to the other leg.
-func (p *Relay) answer(l *Leg, s *ua.Session, sdp []byte) {
+func (p *Relay) answer(ctx context.Context, l *Leg, s *ua.Session, sdp []byte) {
 	pr := p.pairs[s]
 	if pr == nil {
 		return
@@ -668,7 +672,7 @@ func (p *Relay) answer(l *Leg, s *ua.Session, sdp []byte) {
 		pr.refresh = nil
 
 		if !bytes.Equal(prev, sdp) {
-			p.propagate(l, pr, sdp)
+			p.propagate(ctx, l, pr, sdp)
 		}
 
 		return
@@ -678,12 +682,12 @@ func (p *Relay) answer(l *Leg, s *ua.Session, sdp []byte) {
 
 	answer, err := p.answerOf(x, s, sdp)
 	if err == nil {
-		err = o.Answer(ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
+		err = o.Answer(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
 	}
 
 	if err != nil {
 		p.report(err)
-		o.Reject()
+		o.Reject(ctx)
 		p.end(x, nil)
 
 		return
@@ -694,11 +698,11 @@ func (p *Relay) answer(l *Leg, s *ua.Session, sdp []byte) {
 
 // propagate carries a change of the session of the peer of l, made in its answer to the offer of a refresh answered
 // on its leg, to the other leg as an offer: their sessions agree again (RFC 3264 §8).
-func (p *Relay) propagate(l *Leg, pr *pair, sdp []byte) {
+func (p *Relay) propagate(ctx context.Context, l *Leg, pr *pair, sdp []byte) {
 	to := pr.other(p, l)
 	x := &Exchange{From: l, To: p.other(l), Method: "INVITE", Offer: sdp}
 
-	p.report(to.Modify(ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
+	p.report(to.Modify(ctx, ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
 		offer, err := p.begin(x)
 		if err != nil {
 			return ua.Change{}, err
@@ -721,7 +725,7 @@ func (p *Relay) propagate(l *Leg, pr *pair, sdp []byte) {
 
 // established relays the 2xx of b to the mirror of its dialog, with the answer a has not had reliably; a 2xx
 // crossing the end of a is acknowledged, and ended with a BYE.
-func (p *Relay) established(l *Leg, msg sip.Message) {
+func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 	if l != p.b {
 		return
 	}
@@ -734,7 +738,7 @@ func (p *Relay) established(l *Leg, msg sip.Message) {
 	pr := p.mirrorOf(p.b.s)
 
 	if p.final || p.a.state == ua.Terminated || pr == nil {
-		p.report(p.b.End(ua.Reply{}))
+		p.report(p.b.End(ctx, ua.Reply{}))
 		return
 	}
 
@@ -751,7 +755,7 @@ func (p *Relay) established(l *Leg, msg sip.Message) {
 		if body := sessionSDP(res.Envelope); body != nil {
 			answer, err := p.answerOf(p.initial, pr.b, body)
 			if err != nil {
-				p.abandon(488)
+				p.abandon(ctx, 488)
 				return
 			}
 
@@ -759,12 +763,12 @@ func (p *Relay) established(l *Leg, msg sip.Message) {
 		}
 	}
 
-	p.respond(pr, p.reply(l, res, res.StatusCode, sdp))
+	p.respond(ctx, pr, p.reply(l, res, res.StatusCode, sdp))
 }
 
 // respond answers the INVITE of a, once: a 2xx in the dialog of pr, which the exchange of the offer of a took effect
 // in, another response in any. A 2xx the agent refuses fails the call.
-func (p *Relay) respond(pr *pair, rp ua.Reply) {
+func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 	if p.final {
 		return
 	}
@@ -788,7 +792,7 @@ func (p *Relay) respond(pr *pair, rp ua.Reply) {
 		p.report(err)
 		p.end(p.initial, nil)
 		p.report(p.a.Respond(ua.Reply{Code: 500}))
-		p.report(p.b.End(ua.Reply{}))
+		p.report(p.b.End(ctx, ua.Reply{}))
 
 		return
 	}
@@ -797,13 +801,13 @@ func (p *Relay) respond(pr *pair, rp ua.Reply) {
 }
 
 // failed answers the INVITE of a with the failure of the INVITE of b.
-func (p *Relay) failed(l *Leg, res *sip.Response, err error) {
+func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error) {
 	if l != p.b || p.final {
 		return
 	}
 
 	if p.failCode != 0 {
-		p.respond(nil, ua.Reply{Code: p.failCode})
+		p.respond(ctx, nil, ua.Reply{Code: p.failCode})
 		return
 	}
 
@@ -817,18 +821,18 @@ func (p *Relay) failed(l *Leg, res *sip.Response, err error) {
 		rp = p.reply(l, res, rp.Code, nil)
 	}
 
-	p.respond(nil, rp)
+	p.respond(ctx, nil, rp)
 }
 
 // abandon ends both legs of an initial INVITE that cannot go on: a with code.
-func (p *Relay) abandon(code int) {
-	p.respond(nil, ua.Reply{Code: code})
-	p.report(p.b.End(ua.Reply{}))
+func (p *Relay) abandon(ctx context.Context, code int) {
+	p.respond(ctx, nil, ua.Reply{Code: code})
+	p.report(p.b.End(ctx, ua.Reply{}))
 }
 
 // earlyEnded ends the mirror of an early dialog that ended alone: one of b ended by its peer (a 199), one of a with a
 // BYE of its peer (RFC 3261 §15).
-func (p *Relay) earlyEnded(l *Leg, s *ua.Session, e ua.End) {
+func (p *Relay) earlyEnded(ctx context.Context, l *Leg, s *ua.Session, e ua.End) {
 	pr := p.pairs[s]
 	if pr == nil || p.final {
 		return
@@ -845,7 +849,7 @@ func (p *Relay) earlyEnded(l *Leg, s *ua.Session, e ua.End) {
 	c := ua.Reasons(e.Reasons()...)
 
 	if other := pr.other(p, l); other != nil && other.State() == ua.Early {
-		p.report(other.Bye(c, nil))
+		p.report(other.Bye(ctx, c, nil))
 	}
 }
 
@@ -869,7 +873,7 @@ func FinalFor(res *sip.Response, err error) ua.Reply {
 
 // ended ends the other leg however it stands, with the Reason of the end of l (RFC 3326): a CANCEL of the INVITE of
 // b, a failure or a BYE for a, answered or not. The exchanges in progress end without effect.
-func (p *Relay) ended(l *Leg, e ua.End) {
+func (p *Relay) ended(ctx context.Context, l *Leg, e ua.End) {
 	o := p.other(l)
 
 	if p.timerC != nil {
@@ -889,7 +893,7 @@ func (p *Relay) ended(l *Leg, e ua.End) {
 	}
 
 	if o.state != ua.Terminated {
-		p.report(o.End(ua.Reply{Header: ua.Reasons(e.Reasons()...).Header}))
+		p.report(o.End(ctx, ua.Reply{Header: ua.Reasons(e.Reasons()...).Header}))
 	}
 }
 
@@ -897,13 +901,13 @@ func (p *Relay) ended(l *Leg, e ua.End) {
 // relay does with those it takes: a BYE ends the other leg, its 200 waiting for the response there (TS 24.379
 // §6.3.2.1.6); a session refresh is answered on its own leg (RelayRefresh); another request goes in the dialog
 // paired with the one it came in.
-func (p *Relay) Forward(from *Leg, r *ua.Request) {
+func (p *Relay) Forward(ctx context.Context, from *Leg, r *ua.Request) {
 	p.a.call.check()
 
 	req := r.Message()
 
 	if req.Method == "BYE" {
-		p.bye(from, r)
+		p.bye(ctx, from, r)
 		return
 	}
 
@@ -932,12 +936,12 @@ func (p *Relay) Forward(from *Leg, r *ua.Request) {
 			return
 		}
 
-		p.modify(from, r, pr, to)
+		p.modify(ctx, from, r, pr, to)
 	case "REFER", "SUBSCRIBE", "NOTIFY":
 		// The subscriptions of a dialog, and the dialogs a REFER names, are the application's.
 		p.report(r.Reject(501))
 	default:
-		err := to.Send(req.Method, p.change(from, req, nil), func(res *sip.Response, err error) {
+		err := to.Send(ctx, req.Method, p.change(from, req, nil), func(res *sip.Response, err error) {
 			if res == nil {
 				p.report(r.Respond(FinalFor(nil, err)))
 				return
@@ -975,7 +979,7 @@ func (p *Relay) relayRefresh(l *Leg, r *ua.Request) bool {
 
 // bye relays the BYE of the peer of l: in an early dialog, it ends that one alone, the relay ending its mirror;
 // otherwise the 200 waits for the response to the BYE of the other leg (TS 24.379 §6.3.2.1.6).
-func (p *Relay) bye(l *Leg, r *ua.Request) {
+func (p *Relay) bye(ctx context.Context, l *Leg, r *ua.Request) {
 	respond := func(*sip.Response, error) { p.report(r.Respond(ua.Reply{Code: 200})) }
 
 	if l.state == ua.Early {
@@ -990,18 +994,18 @@ func (p *Relay) bye(l *Leg, r *ua.Request) {
 	case o.state == ua.Terminated:
 		respond(nil, nil)
 	case s != nil && s.State() == ua.Confirmed:
-		if err := s.Bye(c, respond); err != nil {
+		if err := s.Bye(ctx, c, respond); err != nil {
 			respond(nil, err)
 		}
 	default:
 		respond(nil, nil)
-		p.report(o.End(ua.Reply{Header: c.Header}))
+		p.report(o.End(ctx, ua.Reply{Header: c.Header}))
 	}
 }
 
 // cancelled relays the CANCEL of a re-INVITE: its relayed re-INVITE is cancelled, and undone should its 2xx cross the
 // CANCEL.
-func (p *Relay) cancelled(l *Leg, r *ua.Request, cancel *sip.Request) {
+func (p *Relay) cancelled(ctx context.Context, l *Leg, r *ua.Request, cancel *sip.Request) {
 	pr := p.pairs[r.Session()]
 	if pr == nil || pr.op == nil || pr.op.r != r {
 		return
@@ -1010,14 +1014,14 @@ func (p *Relay) cancelled(l *Leg, r *ua.Request, cancel *sip.Request) {
 	pr.op.cancelled = true
 
 	if s := pr.other(p, l); s != nil {
-		p.report(s.CancelReinvite(p.change(l, cancel, nil)))
+		p.report(s.CancelReinvite(ctx, p.change(l, cancel, nil)))
 	}
 }
 
 // modify relays a re-INVITE, an UPDATE or a PRACK with an offer of the peer of from to the dialog to: its offer
 // made by Media, the answer back; a re-INVITE without an offer fetches one from to, whose answer the peer of from
 // gives in its ACK. A 491 goes back as it is, and so does a conflict on to, for the peer to retry (RFC 3261 §14.1).
-func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
+func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 	req := r.Message()
 	offer, offered := r.Offer()
 
@@ -1058,7 +1062,7 @@ func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 			p.end(op.x, nil)
 
 			if res != nil && res.IsSuccess() && offered {
-				p.restore(from, o, to)
+				p.restore(ctx, from, o, to)
 			}
 		case res == nil && (errors.Is(err, ua.ErrPending) || errors.Is(err, ua.ErrStale) || errors.Is(err, ua.ErrCancelled)):
 			p.end(op.x, nil)
@@ -1084,7 +1088,7 @@ func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 				if err != nil {
 					p.end(op.x, nil)
 					p.report(r.Reject(488))
-					p.restore(from, o, to)
+					p.restore(ctx, from, o, to)
 
 					return
 				}
@@ -1095,7 +1099,7 @@ func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 			if err := r.Respond(p.reply(o, res, res.StatusCode, answer)); err != nil {
 				p.report(err)
 				p.end(op.x, nil)
-				p.restore(from, o, to)
+				p.restore(ctx, from, o, to)
 
 				return
 			}
@@ -1108,9 +1112,9 @@ func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 
 	var err error
 	if req.Method == "INVITE" {
-		err = to.Reinvite(c, done)
+		err = to.Reinvite(ctx, c, done)
 	} else {
-		err = to.Update(c, done)
+		err = to.Update(ctx, c, done)
 	}
 
 	if err != nil {
@@ -1131,7 +1135,7 @@ func (p *Relay) modify(from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 // restore offers to again the session description of the peer of from, which an exchange changed on to alone: a
 // re-INVITE cancelled after its 2xx, an answer Media could not carry back (RFC 3264 §8). Should that fail, the legs
 // cannot agree, and the call ends.
-func (p *Relay) restore(from, o *Leg, to *ua.Session) {
+func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session) {
 	s := from.Session()
 	if s == nil {
 		return
@@ -1144,7 +1148,7 @@ func (p *Relay) restore(from, o *Leg, to *ua.Session) {
 
 	x := &Exchange{From: from, To: o, Method: "INVITE", Offer: remote}
 
-	err := to.Modify(ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
+	err := to.Modify(ctx, ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
 		sdp, err := p.begin(x)
 		if err != nil {
 			return ua.Change{}, err
@@ -1155,7 +1159,7 @@ func (p *Relay) restore(from, o *Leg, to *ua.Session) {
 		if res == nil || !res.IsSuccess() {
 			p.end(x, nil)
 			p.report(err)
-			p.a.call.End(ua.Reply{})
+			p.a.call.End(ctx, ua.Reply{})
 
 			return
 		}

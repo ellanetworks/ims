@@ -1029,7 +1029,7 @@ func TestNewRegistrationSubscribesAgain(t *testing.T) {
 	_, sub, f := s.registered(600)
 	answerSubscribe(s.icscf, s.scscf, sub, f, 3000)
 
-	s.p.regs.remove(regKey{impi: testIMPI, ue: s.ue.Addr().Addr()})
+	s.p.regs.remove(context.Background(), regKey{impi: testIMPI, ue: s.ue.Addr().Addr()})
 
 	_, again, _ := s.registered(600)
 	if again.Header.CallID() == sub.Header.CallID() {
@@ -1167,13 +1167,13 @@ func TestNotifyOvertakingTheRegisterResponse(t *testing.T) {
 }
 
 func TestRegistrationsFromOneAddress(t *testing.T) {
-	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler))
+	rs := newRegistrations(context.Background(), nil, fakeClock{siptest.NewClock()}, time.Minute, slog.New(slog.DiscardHandler), noTrace())
 
 	a := netip.AddrPortFrom(ueAddr, 5060)
 	b := netip.AddrPortFrom(ueAddr, 5070)
 
 	for i, src := range []netip.AddrPort{a, b} {
-		rs.save(db.PCSCFRegistration{
+		rs.save(context.Background(), db.PCSCFRegistration{
 			IMPI: "ue" + strconv.Itoa(i) + "@" + homeDomain, FlowToken: "t" + strconv.Itoa(i), UEAddress: src,
 			PCSCFAddress: loopback, ExpiresAt: testEpoch.Add(time.Hour),
 		})
@@ -1191,7 +1191,7 @@ func TestRegistrationsFromOneAddress(t *testing.T) {
 }
 
 func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
-	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel()}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel()}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, state saState, inUse bool) *saSet {
@@ -1226,7 +1226,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 
 // TS 33.203 §7.4.2a
 func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
-	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler))
+	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
 
 	set := func(portC uint16, state saState, expires time.Duration) *saSet {

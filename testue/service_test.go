@@ -286,7 +286,7 @@ func TestServiceOriginate(t *testing.T) {
 
 	req.Header.Add("To", "<sip:group@mcptt.example.com>")
 
-	if _, err := u.Agent().Invite(req, ua.Handler{}); err != nil {
+	if _, err := u.Agent().Invite(context.Background(), req, ua.Handler{}); err != nil {
 		t.Fatal(err)
 	}
 

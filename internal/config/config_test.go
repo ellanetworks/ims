@@ -158,6 +158,28 @@ func TestLoadMCPTT(t *testing.T) {
 	}
 }
 
+func TestLoadTelemetry(t *testing.T) {
+	valid := validDB + validAPI + validSIP + validDiameter
+
+	cfg, err := Load(writeConfig(t, valid+"telemetry:\n  enabled: true\n  otlp_endpoint: collector:4317\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if want := (Telemetry{Enabled: true, OTLPEndpoint: "collector:4317"}); cfg.Telemetry != want {
+		t.Fatalf("telemetry = %+v, want %+v", cfg.Telemetry, want)
+	}
+
+	if cfg, err = Load(writeConfig(t, valid)); err != nil || cfg.Telemetry != (Telemetry{}) {
+		t.Fatalf("telemetry = %+v, %v, want off", cfg.Telemetry, err)
+	}
+
+	if _, err := Load(writeConfig(t, valid+"telemetry:\n  enabled: true\n")); err == nil ||
+		!strings.Contains(err.Error(), "telemetry.otlp_endpoint is required") {
+		t.Fatalf("Load without telemetry.otlp_endpoint = %v", err)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	valid := validDB + validAPI + validSIP
 

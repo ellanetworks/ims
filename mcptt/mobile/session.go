@@ -562,7 +562,8 @@ func (s *Session) affiliateThen(then func(error)) {
 		return
 	}
 
-	err := c.Affiliate(s.groups, func(res *sip.Response, err error) {
+	// gomobile takes no context: each affiliation is the root of its trace.
+	err := c.Affiliate(context.Background(), s.groups, func(res *sip.Response, err error) {
 		e := event{Type: "affiliation"}
 		if res != nil {
 			e.Status = res.StatusCode
@@ -767,7 +768,7 @@ func (s *Session) Call(id, group string) error {
 	}
 
 	// The lock held, the call's events wait for its ID (the agent never waits for them).
-	c, err := s.client.Call(g)
+	c, err := s.client.Call(context.Background(), g)
 	if err != nil {
 		return err
 	}
@@ -833,7 +834,7 @@ func (s *Session) retry(r *callRef, res *sip.Response) bool {
 
 		if err == nil && !r.left && !s.stopped {
 			var c *client.Call
-			if c, err = s.client.Call(r.group); err == nil {
+			if c, err = s.client.Call(context.Background(), r.group); err == nil {
 				r.call, s.byCall[c] = c, r
 				// Released, or left, while registering: as the client takes a release before the call is up.
 				if !r.held {
@@ -943,7 +944,7 @@ func (s *Session) leaveCalls() {
 	s.mu.Unlock()
 
 	for _, c := range calls {
-		c.Leave()
+		c.Leave(context.Background())
 	}
 }
 
@@ -965,7 +966,8 @@ func (s *Session) Decline(id string) error { return s.do(id, (*client.Call).Decl
 
 func (s *Session) Leave(id string) error {
 	s.mark(id, func(r *callRef) { r.left = true })
-	return s.do(id, (*client.Call).Leave)
+	// gomobile takes no context: the user's leaving is the root of its trace.
+	return s.do(id, func(c *client.Call) { c.Leave(context.Background()) })
 }
 
 // mark records what the user did of the call id, for a call placed again (retry).

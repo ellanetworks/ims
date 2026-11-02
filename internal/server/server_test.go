@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/settings"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // testIMS is the configuration file of a test IMS, with the settings its database starts with.
@@ -26,6 +27,8 @@ type testIMS struct {
 	Peers  []settings.Peer
 	Routes []settings.Route
 	Policy settings.Policy
+	// TracerProvider, when set, traces the IMS.
+	TracerProvider trace.TracerProvider
 }
 
 func testConfig(t *testing.T) testIMS {

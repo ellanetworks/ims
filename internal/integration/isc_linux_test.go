@@ -80,8 +80,8 @@ func newAS(t *testing.T, port uint16) *as {
 		},
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: "as", Host: asHost.String(), Port: port}},
 		Allow:   []string{"INVITE", "ACK", "BYE", "CANCEL", "OPTIONS", "MESSAGE", "REGISTER"},
-		OnInvite: func(r *ua.Request) ua.Handler {
-			a.take(r)
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
+			a.take(context.Background(), r)
 			return ua.Handler{}
 		},
 		OnRequest: a.take,
@@ -107,7 +107,7 @@ func newAS(t *testing.T, port uint16) *as {
 	return a
 }
 
-func (a *as) take(r *ua.Request) {
+func (a *as) take(_ context.Context, r *ua.Request) {
 	a.reqs <- r.Message().Clone()
 
 	if a.handle != nil {
@@ -152,7 +152,7 @@ func (a *as) send(t *testing.T, req *sip.Request) *sip.Response {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := a.agent.Request(req, func(res *sip.Response, err error) {
+	if err := a.agent.Request(context.Background(), req, func(res *sip.Response, err error) {
 		if err != nil {
 			t.Logf("AS request: %v", err)
 		}
@@ -198,7 +198,7 @@ func (a *as) relay(r *ua.Request) {
 
 	out.SetBodies(in.Content())
 
-	if err := a.agent.Request(out, func(res *sip.Response, err error) {
+	if err := a.agent.Request(context.Background(), out, func(res *sip.Response, err error) {
 		code := 500
 		if res != nil {
 			code = res.StatusCode
@@ -300,7 +300,7 @@ func mcpttMessage(t *testing.T, u *testue.UE, target string) *sip.Response {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := u.Agent().Request(req, func(res *sip.Response, err error) {
+	if err := u.Agent().Request(context.Background(), req, func(res *sip.Response, err error) {
 		if err != nil {
 			t.Logf("MESSAGE: %v", err)
 		}

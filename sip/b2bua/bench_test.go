@@ -47,7 +47,7 @@ func benchAgent(b *testing.B, n *siptest.Net, name string, onInvite func(a *ua.A
 	}
 
 	if onInvite != nil {
-		cfg.OnInvite = func(r *ua.Request) ua.Handler { return onInvite(a)(r) }
+		cfg.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler { return onInvite(a)(r) }
 	}
 
 	a, err := ua.New(cfg)
@@ -98,7 +98,7 @@ func bridgedNet(b *testing.B) (alice *ua.Agent, b2b netip.AddrPort) {
 			out.Header.Add("From", r.Message().Header.Get("From"))
 			out.Header.Add("To", "<"+target.String()+">")
 
-			_, _ = b2bua.Bridge(call, r, out, b2bua.RelayConfig{})
+			_, _ = b2bua.Bridge(context.Background(), call, r, out, b2bua.RelayConfig{})
 
 			return ua.Handler{}
 		}
@@ -118,7 +118,7 @@ func invite(b *testing.B, alice *ua.Agent, b2b netip.AddrPort, i int64, h ua.Han
 	req.Header.Set("Call-ID", fmt.Sprintf("bridged-%d", i))
 	req.SetBodies(ua.SDP([]byte(benchSDP)))
 
-	if _, err := alice.Invite(req, h); err != nil {
+	if _, err := alice.Invite(context.Background(), req, h); err != nil {
 		b.Fatal(err)
 	}
 }
@@ -146,9 +146,11 @@ func BenchmarkBridgedCalls(b *testing.B) {
 				ended := make(chan struct{})
 
 				invite(b, alice, b2b, i, ua.Handler{
-					Established: func(s *ua.Session, _ sip.Message) { _ = s.Bye(ua.Change{}, nil) },
-					Ended:       func(*ua.Session, ua.End) { close(ended) },
-					Failed:      func(*ua.Outgoing, *sip.Response, error) { b.Error("call failed") },
+					Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
+						_ = s.Bye(context.Background(), ua.Change{}, nil)
+					},
+					Ended:  func(context.Context, *ua.Session, ua.End) { close(ended) },
+					Failed: func(context.Context, *ua.Outgoing, *sip.Response, error) { b.Error("call failed") },
 				})
 
 				select {
@@ -193,12 +195,12 @@ func BenchmarkBridgedSessions(b *testing.B) {
 			wg.Add(1)
 
 			invite(b, alice, b2b, int64(i), ua.Handler{
-				Established: func(s *ua.Session, _ sip.Message) {
+				Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
 					sessions <- s
 
 					wg.Done()
 				},
-				Failed: func(*ua.Outgoing, *sip.Response, error) { wg.Done() },
+				Failed: func(context.Context, *ua.Outgoing, *sip.Response, error) { wg.Done() },
 			})
 		}
 
@@ -216,7 +218,7 @@ func BenchmarkBridgedSessions(b *testing.B) {
 		close(sessions)
 
 		for s := range sessions {
-			_ = s.Bye(ua.Change{}, nil)
+			_ = s.Bye(context.Background(), ua.Change{}, nil)
 		}
 
 		b.StartTimer()

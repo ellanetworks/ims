@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -916,7 +917,7 @@ func TestRetryNotAffiliated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv.Participating().LogOff(srv.Agent().Layer().Clock().Now(), id, testSettings(addr, "alice", 2).ClientID)
+	srv.Participating().LogOff(context.Background(), srv.Agent().Layer().Clock().Now(), id, testSettings(addr, "alice", 2).ClientID)
 
 	if err := alice.Call("a1", "sip:fire@mcptt.example.com"); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 package ua
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/ellanetworks/ims/sip/offeranswer"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxMinSERetries bounds the retries of an initial INVITE after a 422 whose Min-SE rises (RFC 4028 §7.3): one per
@@ -44,6 +46,10 @@ type Outgoing struct {
 
 	// cancel is the change of the CANCEL of the application, sent once the transaction exists.
 	cancel *Change
+	// cancelCause is the span context of what cancelled the INVITE, which its CANCEL links to.
+	cancelCause trace.SpanContext
+	// origin is the span context of the work that sent the INVITE: the origin of its dialogs.
+	origin trace.SpanContext
 
 	// closing: Shutdown waits for the final response, until closeBy.
 	closing bool
@@ -76,7 +82,9 @@ func (o *Outgoing) release() {
 // application and its bodies: an SDP one is the offer; without one, the offer comes in a reliable 1xx or the 2xx.
 // The agent adds what req leaves out: the From tag, a Call-ID, CSeq, Max-Forwards, Contact, Allow, and the option
 // tags, Session-Expires and Min-SE of 100rel, 199 and the session timer.
-func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, error) {
+//
+// The INVITE, its retries and what its responses cause are part of the trace of ctx.
+func (a *Agent) Invite(ctx context.Context, req *sip.Request, h Handler, opts ...Option) (*Outgoing, error) {
 	if req.Method != "INVITE" {
 		return nil, fmt.Errorf("sip/ua: Invite of a %s request", req.Method)
 	}
@@ -115,13 +123,16 @@ func (a *Agent) Invite(req *sip.Request, h Handler, opts ...Option) (*Outgoing, 
 		tmpl.Header.Set("Min-SE", strconv.FormatUint(uint64(minSE), 10))
 	}
 
-	o := &Outgoing{a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{}}
+	o := &Outgoing{
+		a: a, st: op.strand(a), h: h, policy: op.policyOr(a.cfg.Policy), tmpl: tmpl, sessions: map[string]*Session{},
+		origin: trace.SpanContextFromContext(ctx),
+	}
 
 	if err := a.addOutgoing(o); err != nil {
 		return nil, err
 	}
 
-	if err := o.st.do(o.send); err != nil {
+	if err := o.st.do(func() error { return o.send(ctx) }); err != nil {
 		a.removeOutgoing(o)
 		return nil, err
 	}
@@ -148,14 +159,14 @@ func (o *Outgoing) done() {
 }
 
 // send sends the INVITE of the template.
-func (o *Outgoing) send() error {
+func (o *Outgoing) send(ctx context.Context) error {
 	req := o.tmpl.Clone()
 
 	o.ci = &clientInvite{out: o, req: req, key: keyOf(local, req)}
 	o.sdp = offeranswer.Negotiation{KeepFirstAnswer: true}
 	o.sdp.Request(o.ci.key, sessionSDP(req.Envelope))
 
-	tx, err := o.a.prepareAndSend(req, o.st.client(o.response, o.error))
+	tx, err := o.a.prepareAndSend(ctx, req, o.st.client(o.response, o.error))
 	if err != nil {
 		return err
 	}
@@ -163,7 +174,7 @@ func (o *Outgoing) send() error {
 	o.tx = tx
 
 	if o.cancel != nil {
-		return tx.CancelWith(o.cancel.apply)
+		return tx.CancelWith(trace.ContextWithSpanContext(context.Background(), o.cancelCause), o.cancel.apply)
 	}
 
 	return nil
@@ -183,43 +194,45 @@ func (o *Outgoing) Request() *sip.Request {
 // Cancel cancels the INVITE, the CANCEL carrying c: its Reason header fields (RFC 3326, Reasons), or the session
 // description of a precondition failure (RFC 3312 §8). Its sessions end on the 487. It returns ErrState once a final
 // response came.
-func (o *Outgoing) Cancel(c Change) error {
+func (o *Outgoing) Cancel(ctx context.Context, c Change) error {
 	return o.st.do(func() error {
 		if o.final {
 			return &Error{Op: "Cancel", State: Confirmed, Err: ErrState}
 		}
 
-		return o.cancelWith(c)
+		return o.cancelWith(ctx, c)
 	})
 }
 
-func (o *Outgoing) cancelWith(c Change) error {
+// cancelWith cancels the INVITE with the change c of its CANCEL, ctx being the trace of what cancels it.
+func (o *Outgoing) cancelWith(ctx context.Context, c Change) error {
 	if o.cancel != nil {
 		return nil
 	}
 
 	o.cancel = &c
+	o.cancelCause = trace.SpanContextFromContext(ctx)
 
 	if o.tx == nil || o.final {
 		return nil
 	}
 
-	return o.tx.CancelWith(c.apply)
+	return o.tx.CancelWith(ctx, c.apply)
 }
 
-func (o *Outgoing) emitFailed(res *sip.Response, err error) {
+func (o *Outgoing) emitFailed(ctx context.Context, res *sip.Response, err error) {
 	o.st.emit(func() {
 		if f := o.h.Failed; f != nil {
-			f(o, res, err)
+			f(ctx, o, res, err)
 		}
 	})
 }
 
 // response handles a response to the INVITE.
-func (o *Outgoing) response(res *sip.Response) {
+func (o *Outgoing) response(ctx context.Context, res *sip.Response) {
 	// A 100 is hop by hop (RFC 3261 §8.2.6.1): reported, without a session.
 	if res.StatusCode == 100 {
-		o.report(nil, res)
+		o.report(ctx, nil, res)
 		return
 	}
 
@@ -238,26 +251,26 @@ func (o *Outgoing) response(res *sip.Response) {
 	tag := to.Tag()
 
 	if res.StatusCode >= 300 || res.StatusCode == 199 {
-		o.report(o.sessions[tag], res)
+		o.report(ctx, o.sessions[tag], res)
 	}
 
 	if res.StatusCode >= 300 {
-		o.failed(res)
+		o.failed(ctx, res)
 		return
 	}
 
 	if res.StatusCode == 199 {
-		o.earlyTerminated(res, tag)
+		o.earlyTerminated(ctx, res, tag)
 		return
 	}
 
 	if tag == "" {
-		o.report(nil, res)
+		o.report(ctx, nil, res)
 
 		if res.IsProvisional() {
 			o.st.emit(func() {
 				if f := o.h.Progress; f != nil {
-					f(nil, res)
+					f(ctx, nil, res)
 				}
 			})
 		}
@@ -267,51 +280,51 @@ func (o *Outgoing) response(res *sip.Response) {
 
 	s := o.session(res, tag)
 	if s == nil {
-		o.report(nil, res)
+		o.report(ctx, nil, res)
 		return
 	}
 
 	// A 2xx acknowledged already is a retransmission.
 	if _, seen := s.acks[o.ci.key.Seq]; !seen || !res.IsSuccess() {
-		s.emitReceived(res)
+		s.emitReceived(ctx, res)
 	}
 
 	if res.IsSuccess() && o.chosen == nil {
 		o.chosen = s
 		o.final = true
-		o.st.after(64*o.a.layer.T1(), o.endEarly)
+		o.st.later(ctx, 64*o.a.layer.T1(), o.endEarly)
 
 		// Answered, the INVITE has nothing left for Shutdown to cancel.
 		o.done()
 	}
 
 	if res.IsSuccess() && o.chosen != s {
-		o.forked(s, res)
+		o.forked(ctx, s, res)
 		return
 	}
 
 	// RFC 3261 §9.1, §15: a 2xx crossing the CANCEL confirms the session, which ends with a BYE carrying the Reason
 	// of the CANCEL.
 	if res.IsSuccess() && o.cancel != nil && s.state == Early {
-		s.clientResponse(o.ci, res)
-		s.byeEnd(End{Cause: EndCancelled, Response: res}, Change{Header: reasonFields(o.cancel.Header)}, nil)
+		s.clientResponse(ctx, o.ci, res)
+		s.byeEnd(ctx, End{Cause: EndCancelled, Response: res}, Change{Header: reasonFields(o.cancel.Header)}, nil)
 
 		return
 	}
 
-	s.clientResponse(o.ci, res)
+	s.clientResponse(ctx, o.ci, res)
 }
 
 // report reports a response to the INVITE to the session of its dialog, or without one (Handler.Received).
-func (o *Outgoing) report(s *Session, res *sip.Response) {
+func (o *Outgoing) report(ctx context.Context, s *Session, res *sip.Response) {
 	if s != nil {
-		s.emitReceived(res)
+		s.emitReceived(ctx, res)
 		return
 	}
 
 	o.st.emit(func() {
 		if f := o.h.Received; f != nil {
-			f(nil, res)
+			f(ctx, nil, res)
 		}
 	})
 }
@@ -333,7 +346,7 @@ func reasonFields(h sip.Header) sip.Header {
 // a reliable 199 of a dialog the agent did not know yet creates it for the PRACK, even without a Contact, as one a
 // forking proxy sends: the PRACK then goes to the Request-URI of the INVITE. An offer in it, which can only have no
 // streams (RFC 6228 §8), is answered refused in the PRACK.
-func (o *Outgoing) earlyTerminated(res *sip.Response, tag string) {
+func (o *Outgoing) earlyTerminated(ctx context.Context, res *sip.Response, tag string) {
 	if tag == "" {
 		return
 	}
@@ -372,36 +385,36 @@ func (o *Outgoing) earlyTerminated(res *sip.Response, tag string) {
 			}
 		}
 
-		s.prack(res, Change{Bodies: bodies}, nil)
+		s.prack(ctx, res, Change{Bodies: bodies}, nil)
 	}
 
 	delete(o.sessions, tag)
-	s.emitProgress(res)
-	s.end(End{Cause: EndNotChosen, Remote: true, Response: res})
+	s.emitProgress(ctx, res)
+	s.end(ctx, End{Cause: EndNotChosen, Remote: true, Response: res})
 }
 
 // forked handles a 2xx of another dialog than the one answered first: Handler.Forked keeps its session, confirmed;
 // otherwise it is acknowledged and ended with a BYE (RFC 3261 §13.2.2.4).
-func (o *Outgoing) forked(s *Session, res *sip.Response) {
+func (o *Outgoing) forked(ctx context.Context, s *Session, res *sip.Response) {
 	if s.state != Early || o.h.Forked == nil {
 		if s.state == Confirmed {
-			s.clientResponse(o.ci, res)
+			s.clientResponse(ctx, o.ci, res)
 		} else {
-			s.notChosen(o.ci, res)
+			s.notChosen(ctx, o.ci, res)
 		}
 
 		return
 	}
 
 	o.st.emit(func() {
-		keep := o.h.Forked(s, res)
+		keep := o.h.Forked(ctx, s, res)
 
 		_ = o.st.do(func() error {
 			switch {
 			case s.state == Early && keep, s.state == Terminated:
-				s.clientResponse(o.ci, res)
+				s.clientResponse(ctx, o.ci, res)
 			default:
-				s.notChosen(o.ci, res)
+				s.notChosen(ctx, o.ci, res)
 			}
 
 			return nil
@@ -432,14 +445,14 @@ func (o *Outgoing) session(res *sip.Response, tag string) *Session {
 	s.contact = o.ci.req.Header.Get("Contact")
 
 	o.sessions[tag] = s
-	o.a.addSession(s)
+	o.a.addSession(s, o.origin)
 
 	return s
 }
 
 // failed handles a final response other than 2xx: a challenge is answered (RFC 3261 §22.2), a 422 retried with its
 // Min-SE while it rises (RFC 4028 §7.3); otherwise the INVITE fails, then its sessions end.
-func (o *Outgoing) failed(res *sip.Response) {
+func (o *Outgoing) failed(ctx context.Context, res *sip.Response) {
 	if o.final {
 		return
 	}
@@ -467,11 +480,11 @@ func (o *Outgoing) failed(res *sip.Response) {
 	}
 
 	if retry {
-		o.endSessions(End{Cause: EndRejected, Remote: true, Response: res})
+		o.endSessions(ctx, End{Cause: EndRejected, Remote: true, Response: res})
 		o.tmpl = next
 
-		if err := o.send(); err != nil {
-			o.error(err)
+		if err := o.send(ctx); err != nil {
+			o.error(ctx, err)
 		}
 
 		return
@@ -485,70 +498,70 @@ func (o *Outgoing) failed(res *sip.Response) {
 	}
 
 	o.done()
-	o.emitFailed(res, nil)
-	o.endSessions(e)
+	o.emitFailed(ctx, res, nil)
+	o.endSessions(ctx, e)
 }
 
-// closed ends an outgoing INVITE the agent closed before its final response.
-func (o *Outgoing) closed() {
+// closed ends an outgoing INVITE the agent closed before its final response, ctx being the trace of the shutdown.
+func (o *Outgoing) closed(ctx context.Context) {
 	if o.final {
 		return
 	}
 
 	o.final = true
 	o.done()
-	o.emitFailed(nil, ErrClosed)
-	o.endSessions(End{Cause: EndClosed})
+	o.emitFailed(ctx, nil, ErrClosed)
+	o.endSessions(ctx, End{Cause: EndClosed})
 	o.release()
 }
 
 // dropped ends the INVITE at once, without a CANCEL, its sessions with EndDropped (Agent.Drop).
-func (o *Outgoing) dropped() {
+func (o *Outgoing) dropped(ctx context.Context) {
 	if o.final {
 		return
 	}
 
 	o.final = true
 	o.done()
-	o.emitFailed(nil, transaction.ErrDropped)
-	o.endSessions(End{Cause: EndDropped})
+	o.emitFailed(ctx, nil, transaction.ErrDropped)
+	o.endSessions(ctx, End{Cause: EndDropped})
 	o.release()
 }
 
 // error ends an outgoing INVITE that failed without a final response.
-func (o *Outgoing) error(err error) {
+func (o *Outgoing) error(ctx context.Context, err error) {
 	if o.final {
 		return
 	}
 
 	o.final = true
 	o.done()
-	o.emitFailed(nil, err)
-	o.endSessions(failureEnd(err))
+	o.emitFailed(ctx, nil, err)
+	o.endSessions(ctx, failureEnd(err))
 	o.release()
 }
 
 // endSessions ends the early sessions of the INVITE: all but the one chosen, and those Handler.Forked kept.
-func (o *Outgoing) endSessions(e End) {
+func (o *Outgoing) endSessions(ctx context.Context, e End) {
 	for tag, s := range o.sessions {
 		if s != o.chosen && s.state == Early {
 			delete(o.sessions, tag)
-			s.end(e)
+			s.end(ctx, e)
 		}
 	}
 }
 
 // endEarly ends, once the INVITE transaction is over, the early dialogs no 2xx confirmed (RFC 3261 §13.2.2.4).
-func (o *Outgoing) endEarly() {
-	o.endSessions(End{Cause: EndNotChosen})
+func (o *Outgoing) endEarly(ctx context.Context) {
+	o.endSessions(ctx, End{Cause: EndNotChosen})
 	o.done()
 }
 
 // notChosen acknowledges the 2xx of another dialog of a forked INVITE than the one answered first, refusing its offer,
 // and ends it with a BYE (RFC 3261 §13.2.2.4).
-func (s *Session) notChosen(c *clientInvite, res *sip.Response) {
+func (s *Session) notChosen(ctx context.Context, c *clientInvite, res *sip.Response) {
 	if _, seen := s.acks[c.key.Seq]; seen {
-		s.resendAck(c.key.Seq)
+		s.resendAck(ctx, c.key.Seq)
 		return
 	}
 
@@ -562,8 +575,8 @@ func (s *Session) notChosen(c *clientInvite, res *sip.Response) {
 		}
 	}
 
-	s.sendAck(c, Change{Bodies: bodies})
-	s.byeEnd(End{Cause: EndNotChosen, Response: res}, Change{}, nil)
+	s.sendAck(ctx, c, Change{Bodies: bodies})
+	s.byeEnd(ctx, End{Cause: EndNotChosen, Response: res}, Change{}, nil)
 }
 
 // clientInvite is an INVITE or an UPDATE of the agent: the initial INVITE of an Outgoing, or a re-INVITE or an
@@ -581,18 +594,20 @@ type clientInvite struct {
 	tries int
 	final bool
 
-	// cancelled completes the CANCEL of a re-INVITE the application cancelled, sent once the transaction exists.
-	cancelled func(*sip.Request)
+	// cancelled completes the CANCEL of a re-INVITE the application cancelled, sent once the transaction exists, and
+	// cancelCause is the span context of what cancelled it.
+	cancelled   func(*sip.Request)
+	cancelCause trace.SpanContext
 }
 
-func (c *clientInvite) send() error {
+func (c *clientInvite) send(ctx context.Context) error {
 	s := c.s
 
-	err := s.transmit(c.req, s.st.client(c.response, c.error), func(tx *transaction.ClientTransaction) {
+	err := s.transmit(ctx, c.req, s.st.client(c.response, c.error), func(tx *transaction.ClientTransaction) {
 		c.tx = tx
 
 		if c.cancelled != nil {
-			_ = tx.CancelWith(c.cancelled)
+			_ = tx.CancelWith(trace.ContextWithSpanContext(context.Background(), c.cancelCause), c.cancelled)
 		}
 	})
 	if err != nil {
@@ -607,10 +622,12 @@ func (c *clientInvite) send() error {
 
 // cancel cancels a re-INVITE of the agent with the change of its CANCEL; the transaction layer sends the CANCEL once
 // a provisional response came (RFC 3261 §9.1).
-func (c *clientInvite) cancel(ch Change) {
+func (c *clientInvite) cancel(ctx context.Context, ch Change) {
 	if c.cancelled != nil {
 		return
 	}
+
+	c.cancelCause = trace.SpanContextFromContext(ctx)
 
 	c.cancelled = func(cancel *sip.Request) {
 		ch.apply(cancel)
@@ -618,22 +635,22 @@ func (c *clientInvite) cancel(ch Change) {
 	}
 
 	if c.tx != nil {
-		_ = c.tx.CancelWith(c.cancelled)
+		_ = c.tx.CancelWith(ctx, c.cancelled)
 	}
 }
 
 // response handles a response to a re-INVITE or an UPDATE.
-func (c *clientInvite) response(res *sip.Response) {
+func (c *clientInvite) response(ctx context.Context, res *sip.Response) {
 	if res.StatusCode == 100 {
-		c.s.emitReceived(res)
+		c.s.emitReceived(ctx, res)
 		return
 	}
 
-	c.s.clientResponse(c, res)
+	c.s.clientResponse(ctx, c, res)
 }
 
 // error handles the error of the transaction of a re-INVITE or an UPDATE.
-func (c *clientInvite) error(err error) {
+func (c *clientInvite) error(ctx context.Context, err error) {
 	s := c.s
 
 	if c.final {
@@ -643,13 +660,13 @@ func (c *clientInvite) error(err error) {
 	c.final = true
 	s.sdp.Fail(c.key)
 
-	s.fail(c.key.Method, nil, err)
+	s.fail(ctx, c.key.Method, nil, err)
 	s.finished(c)
 	s.emitDone(c.m.done, nil, err)
 }
 
 // clientResponse handles a response to an INVITE or an UPDATE of the agent, in the dialog of s.
-func (s *Session) clientResponse(c *clientInvite, res *sip.Response) {
+func (s *Session) clientResponse(ctx context.Context, c *clientInvite, res *sip.Response) {
 	if res.StatusCode >= 200 && c.out == nil {
 		if c.final && (!res.IsSuccess() || c.key.Method != "INVITE") {
 			return
@@ -661,7 +678,7 @@ func (s *Session) clientResponse(c *clientInvite, res *sip.Response) {
 	// The responses to a re-INVITE or an UPDATE, those of the initial INVITE reported by its Outgoing, and a
 	// retransmitted 2xx not.
 	if _, seen := s.acks[c.key.Seq]; c.out == nil && (!seen || !res.IsSuccess() || c.key.Method != "INVITE") {
-		s.emitReceived(res)
+		s.emitReceived(ctx, res)
 	}
 
 	if s.d != nil {
@@ -672,27 +689,27 @@ func (s *Session) clientResponse(c *clientInvite, res *sip.Response) {
 
 	switch {
 	case res.IsProvisional():
-		s.clientProvisional(c, res)
+		s.clientProvisional(ctx, c, res)
 	case res.IsSuccess():
-		s.clientSuccess(c, res)
+		s.clientSuccess(ctx, c, res)
 	default:
 		s.offerResponse(c.key, res.StatusCode, nil)
 
 		if c.out == nil {
-			s.modificationFailed(c, res)
+			s.modificationFailed(ctx, c, res)
 		}
 	}
 }
 
 // clientProvisional handles a provisional response to an INVITE: a reliable one in order gets its PRACK, with the
 // answer to its offer (RFC 3262 §4, §5).
-func (s *Session) clientProvisional(c *clientInvite, res *sip.Response) {
+func (s *Session) clientProvisional(ctx context.Context, c *clientInvite, res *sip.Response) {
 	if c.key.Method != "INVITE" || s.state == Terminated {
 		return
 	}
 
 	if !res.Header.HasOptionTag("Require", sip.OptionTag100rel) {
-		s.emitProgress(res)
+		s.emitProgress(ctx, res)
 		return
 	}
 
@@ -713,21 +730,21 @@ func (s *Session) clientProvisional(c *clientInvite, res *sip.Response) {
 	// The reliable 1xx is reported once its PRACK completed: a request of the application, such as an UPDATE of
 	// preconditions (RFC 3312 §5), follows it. A 2xx that comes first reports it before itself.
 	s.unreported = append(s.unreported, res)
-	progress := func() { s.reportProgress(res) }
+	progress := func(ctx context.Context) { s.reportProgress(ctx, res) }
 
 	switch s.offerResponse(c.key, res.StatusCode, offer) {
 	case offeranswer.Answer:
-		s.emitAnswer(offer)
-		s.prack(res, Change{}, progress)
+		s.emitAnswer(ctx, offer)
+		s.prack(ctx, res, Change{}, progress)
 	case offeranswer.Offer:
-		s.emitOffer(&Offer{s: s, sdp: offer, res: res, c: c, prack: true, progress: progress})
+		s.emitOffer(ctx, &Offer{s: s, sdp: offer, res: res, c: c, prack: true, progress: progress})
 	default:
-		s.prack(res, Change{}, progress)
+		s.prack(ctx, res, Change{}, progress)
 	}
 }
 
 // reportProgress reports the reliable 1xx not reported yet, up to res, or all of them when res is nil.
-func (s *Session) reportProgress(res *sip.Response) {
+func (s *Session) reportProgress(ctx context.Context, res *sip.Response) {
 	if s.state == Terminated {
 		s.unreported = nil
 		return
@@ -739,7 +756,7 @@ func (s *Session) reportProgress(res *sip.Response) {
 	}
 
 	for _, r := range s.unreported[:i+1] {
-		s.emitProgress(r)
+		s.emitProgress(ctx, r)
 	}
 
 	s.unreported = s.unreported[i+1:]
@@ -747,7 +764,7 @@ func (s *Session) reportProgress(res *sip.Response) {
 
 // prack sends the PRACK of a reliable 1xx, with c; then, if any, runs once it completes. A challenge is answered
 // (RFC 3261 §22.2); a 481 or a 408 to it, or its timeout, loses the dialog (RFC 3261 §12.2.1.2).
-func (s *Session) prack(res *sip.Response, c Change, then func()) {
+func (s *Session) prack(ctx context.Context, res *sip.Response, c Change, then func(context.Context)) {
 	prack, err := s.d.NewPrack(res)
 	if err != nil {
 		return
@@ -760,7 +777,7 @@ func (s *Session) prack(res *sip.Response, c Change, then func()) {
 
 	var handler transaction.ClientHandler
 
-	finish := func(res *sip.Response, err error) {
+	finish := func(ctx context.Context, res *sip.Response, err error) {
 		if done {
 			return
 		}
@@ -768,42 +785,42 @@ func (s *Session) prack(res *sip.Response, c Change, then func()) {
 		done = true
 
 		if res == nil || !res.IsSuccess() {
-			s.fail("PRACK", res, err)
+			s.fail(ctx, "PRACK", res, err)
 		}
 
 		if then != nil {
-			then()
+			then(ctx)
 		}
 
 		s.pump()
 	}
 
-	handler = s.st.client(func(res *sip.Response) {
+	handler = s.st.client(func(ctx context.Context, res *sip.Response) {
 		if res.IsProvisional() || done {
 			return
 		}
 
-		s.emitReceived(res)
+		s.emitReceived(ctx, res)
 
 		if next, ok := s.challenged(prack, res, tries, false); ok {
 			tries++
 			prack = next
-			s.sendRequest(next, handler)
+			s.sendRequest(ctx, next, handler)
 
 			return
 		}
 
-		finish(res, nil)
-	}, func(err error) { finish(nil, err) })
+		finish(ctx, res, nil)
+	}, func(ctx context.Context, err error) { finish(ctx, nil, err) })
 
-	s.sendRequest(prack, handler)
+	s.sendRequest(ctx, prack, handler)
 }
 
 // clientSuccess handles a 2xx to an INVITE or an UPDATE of the agent.
-func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
+func (s *Session) clientSuccess(ctx context.Context, c *clientInvite, res *sip.Response) {
 	if c.key.Method == "INVITE" {
 		if _, seen := s.acks[c.key.Seq]; seen {
-			s.resendAck(c.key.Seq)
+			s.resendAck(ctx, c.key.Seq)
 			return
 		}
 	}
@@ -822,12 +839,12 @@ func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
 				}
 			}
 
-			s.sendAck(c, Change{Bodies: bodies})
+			s.sendAck(ctx, c, Change{Bodies: bodies})
 
 			if !s.byeSent {
 				if bye, err := s.d.NewRequest("BYE"); err == nil {
 					s.byeSent = true
-					s.sendRequest(bye, nil)
+					s.sendRequest(ctx, bye, nil)
 				}
 			}
 		}
@@ -840,17 +857,17 @@ func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
 	s.timer.fromResponse(c.req, res)
 
 	if c.key.Method == "INVITE" {
-		s.reportProgress(nil)
+		s.reportProgress(ctx, nil)
 	}
 
 	if c.key.Method == "INVITE" && s.state == Early {
-		s.confirm(res)
+		s.confirm(ctx, res)
 	} else {
-		s.timer.start(s)
+		s.timer.start(ctx, s)
 	}
 
 	if role == offeranswer.Answer {
-		s.emitAnswer(offer)
+		s.emitAnswer(ctx, offer)
 	}
 
 	// The ACK goes before the modifications that waited for this one.
@@ -865,10 +882,10 @@ func (s *Session) clientSuccess(c *clientInvite, res *sip.Response) {
 			o := &Offer{s: s, sdp: offer, res: res, c: c, initial: c.out != nil}
 			s.acks[c.key.Seq] = nil
 			s.answering[c.key.Seq] = o
-			o.deadline = s.st.after(answerDeadline*s.a.layer.T1(), o.expire)
-			s.emitOffer(o)
+			o.deadline = s.st.later(ctx, answerDeadline*s.a.layer.T1(), o.expire)
+			s.emitOffer(ctx, o)
 		} else {
-			s.sendAck(c, Change{})
+			s.sendAck(ctx, c, Change{})
 		}
 	}
 
@@ -883,10 +900,10 @@ const answerDeadline = 32
 
 // sendAck sends the ACK of the 2xx to an INVITE, with c, and keeps it for the retransmissions of the 2xx, until 64*T1
 // after it (RFC 3261 §13.2.2.4, RFC 6026).
-func (s *Session) sendAck(c *clientInvite, ch Change) {
+func (s *Session) sendAck(ctx context.Context, c *clientInvite, ch Change) {
 	ack, err := s.d.NewAck(c.req)
 	if err != nil {
-		s.ackFailed(err)
+		s.ackFailed(ctx, err)
 		return
 	}
 
@@ -899,14 +916,14 @@ func (s *Session) sendAck(c *clientInvite, ch Change) {
 	s.decorate(ack)
 
 	if err := s.a.cfg.Prepare(ack); err != nil {
-		s.ackFailed(err)
+		s.ackFailed(ctx, err)
 		return
 	}
 
 	seq := c.key.Seq
 	s.acks[seq] = ack
 	delete(s.answering, seq)
-	s.resendAck(seq)
+	s.resendAck(ctx, seq)
 
 	s.st.after(64*s.a.layer.T1(), func() {
 		delete(s.acks, seq)
@@ -919,19 +936,20 @@ func (s *Session) sendAck(c *clientInvite, ch Change) {
 // ackFailed ends a session whose 2xx the agent cannot acknowledge: the peer would end it once its 2xx goes
 // unacknowledged (RFC 3261 §13.3.1.4), and the session is lost (RFC 3261 §13.2.2.4). It ends, with a BYE, once the
 // handling of the 2xx is over.
-func (s *Session) ackFailed(err error) {
+func (s *Session) ackFailed(ctx context.Context, err error) {
 	s.logger().Warn("ACK not sent", slog.Any("error", err))
 
 	s.st.post(func() {
 		if s.state != Terminated {
-			s.byeEnd(End{Cause: EndFailed, Err: fmt.Errorf("sip/ua: ACK not sent: %w", err)}, Change{}, nil)
+			s.byeEnd(ctx, End{Cause: EndFailed, Err: fmt.Errorf("sip/ua: ACK not sent: %w", err)}, Change{}, nil)
 		}
 	})
 }
 
-func (s *Session) resendAck(seq uint32) {
+// resendAck sends the ACK of a 2xx again, in the trace of what makes it go: the 2xx it acknowledges.
+func (s *Session) resendAck(ctx context.Context, seq uint32) {
 	if ack := s.acks[seq]; ack != nil {
-		s.queueAck(ack.Clone())
+		s.queueAck(ctx, ack.Clone())
 	}
 }
 
@@ -946,7 +964,7 @@ type Offer struct {
 	used    bool
 
 	// progress reports the reliable 1xx of the offer once its PRACK completed.
-	progress func()
+	progress func(context.Context)
 
 	// deadline ends the session whose application leaves the offer of a 2xx unanswered.
 	deadline *timer
@@ -961,9 +979,9 @@ func (o *Offer) Response() *sip.Response {
 	return o.res
 }
 
-// Answer sends the PRACK or the ACK with c, whose bodies carry the answer. The offer of a 2xx is to be answered within
-// 32*T1: past it, the agent refuses it and ends the session (ErrNoAnswer).
-func (o *Offer) Answer(c Change) error {
+// Answer sends the PRACK or the ACK with c, whose bodies carry the answer, in the trace of ctx. The offer of a 2xx is to
+// be answered within 32*T1: past it, the agent refuses it and ends the session (ErrNoAnswer).
+func (o *Offer) Answer(ctx context.Context, c Change) error {
 	if sessionSDPOf(c.Bodies) == nil {
 		return errors.New("sip/ua: no session description in the answer")
 	}
@@ -979,9 +997,9 @@ func (o *Offer) Answer(c Change) error {
 		s := o.s
 
 		if o.prack {
-			s.prack(o.res, c, o.progress)
+			s.prack(ctx, o.res, c, o.progress)
 		} else if _, waiting := s.answering[o.c.key.Seq]; waiting {
-			s.sendAck(o.c, c)
+			s.sendAck(ctx, o.c, c)
 		}
 
 		return nil
@@ -991,15 +1009,15 @@ func (o *Offer) Answer(c Change) error {
 // Reject refuses the offer with an answer refusing its streams (RFC 3264 §6), which the PRACK or the ACK must carry
 // (RFC 3262 §5, RFC 3261 §13.2.2.4). The initial INVITE is then cancelled, or its session ended with a BYE
 // (RFC 3261 §13.2.2.4); the offer of a 2xx to a re-INVITE refused, the session goes on without the refused streams,
-// for the application to offer anew or to end.
-func (o *Offer) Reject() {
+// for the application to offer anew or to end. ctx is the trace of the refusal.
+func (o *Offer) Reject(ctx context.Context) {
 	_ = o.s.st.do(func() error {
-		o.reject()
+		o.reject(ctx)
 		return nil
 	})
 }
 
-func (o *Offer) reject() {
+func (o *Offer) reject(ctx context.Context) {
 	if o.used {
 		return
 	}
@@ -1012,17 +1030,18 @@ func (o *Offer) reject() {
 	switch _, waiting := s.answering[o.c.key.Seq]; {
 	case o.prack:
 		// RFC 3262 §5: the PRACK carries the answer; the CANCEL follows it.
-		o.refuse(o.cancelInvite)
+		o.refuse(ctx, o.cancelInvite)
 	case waiting && o.initial:
-		o.refuse(nil)
-		s.byeEnd(End{Cause: EndBye}, Change{}, nil)
+		o.refuse(ctx, nil)
+		s.byeEnd(ctx, End{Cause: EndBye}, Change{}, nil)
 	case waiting:
-		o.refuse(nil)
+		o.refuse(ctx, nil)
 	}
 }
 
-// expire refuses an offer of a 2xx the application did not answer in time, and ends the session.
-func (o *Offer) expire() {
+// expire refuses an offer of a 2xx the application did not answer in time, and ends the session, in the trace of the
+// 2xx.
+func (o *Offer) expire(ctx context.Context) {
 	if o.used {
 		return
 	}
@@ -1030,13 +1049,13 @@ func (o *Offer) expire() {
 	o.used = true
 
 	if _, waiting := o.s.answering[o.c.key.Seq]; waiting {
-		o.refuse(nil)
-		o.s.byeEnd(End{Cause: EndLost, Err: ErrNoAnswer}, Change{}, nil)
+		o.refuse(ctx, nil)
+		o.s.byeEnd(ctx, End{Cause: EndLost, Err: ErrNoAnswer}, Change{}, nil)
 	}
 }
 
 // refuse sends the PRACK or the ACK with an answer refusing every stream of the offer, then.
-func (o *Offer) refuse(then func()) {
+func (o *Offer) refuse(ctx context.Context, then func(context.Context)) {
 	var bodies []sip.BodyPart
 
 	if refusal, err := sdp.Refusal(o.sdp); err == nil {
@@ -1044,18 +1063,18 @@ func (o *Offer) refuse(then func()) {
 	}
 
 	if o.prack {
-		o.s.prack(o.res, Change{Bodies: bodies}, then)
+		o.s.prack(ctx, o.res, Change{Bodies: bodies}, then)
 		return
 	}
 
-	o.s.sendAck(o.c, Change{Bodies: bodies})
+	o.s.sendAck(ctx, o.c, Change{Bodies: bodies})
 }
 
-func (o *Offer) cancelInvite() {
+func (o *Offer) cancelInvite(ctx context.Context) {
 	if o.c.out != nil {
-		_ = o.c.out.cancelWith(Change{})
+		_ = o.c.out.cancelWith(ctx, Change{})
 		return
 	}
 
-	o.c.cancel(Change{})
+	o.c.cancel(ctx, Change{})
 }

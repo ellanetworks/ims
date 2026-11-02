@@ -1,6 +1,7 @@
 package siptest
 
 import (
+	"context"
 	"net/netip"
 	"runtime"
 	"strings"
@@ -263,10 +264,10 @@ func (s *Scheduler) wait(d time.Duration) bool {
 // noHandler is the handler of the layer of the peers of a net, which take their messages themselves.
 type noHandler struct{}
 
-func (noHandler) HandleRequest(*transaction.ServerTransaction, *sip.Request) {}
+func (noHandler) HandleRequest(context.Context, *transaction.ServerTransaction, *sip.Request) {}
 
-func (noHandler) HandleCancel(*transaction.ServerTransaction, *sip.Request) {}
+func (noHandler) HandleCancel(context.Context, *transaction.ServerTransaction, *sip.Request) {}
 
-func (noHandler) HandleAck(*sip.Request) {}
+func (noHandler) HandleAck(context.Context, *sip.Request) {}
 
-func (noHandler) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (noHandler) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}

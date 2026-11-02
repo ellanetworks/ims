@@ -16,6 +16,9 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transport"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -40,6 +43,8 @@ var (
 	ErrDropped = errors.New("sip/transaction: dropped")
 
 	ErrTerminated = errors.New("sip/transaction: transaction terminated")
+	// ErrCanceled is the cause of the end of the context of an INVITE server transaction its client cancelled.
+	ErrCanceled = errors.New("sip/transaction: canceled")
 
 	ErrFinalResponseSent = errors.New("sip/transaction: final response already sent")
 
@@ -52,14 +57,27 @@ var (
 	ErrInvalidResponse = errors.New("sip/transaction: response not allowed")
 )
 
+// Handler is the user of the server transactions.
+//
+// The ctx of HandleRequest and HandleTransactionError is the transaction's, as an HTTP request's is: it carries the
+// server span of the transaction, and is cancelled once the transaction ends, or once a CANCEL arrives for its INVITE;
+// context.Cause tells which: ErrTerminated for an end with a final response, ErrCanceled, ErrTimeout, ErrTransport,
+// ErrDropped or ErrClosed. Work that outlives the transaction, as a registrar's after its 200, binds itself to a lifetime
+// of its own with lifetime.With, which keeps the trace.
+//
+// The server span of an INVITE ends with its first final response: an INVITE left unanswered keeps it open, which
+// ua bounds with its answer timeout and proxy with Timer C.
 type Handler interface {
-	HandleRequest(tx *ServerTransaction, req *sip.Request)
+	HandleRequest(ctx context.Context, tx *ServerTransaction, req *sip.Request)
 
-	HandleCancel(tx *ServerTransaction, cancel *sip.Request)
+	// HandleCancel is told of a CANCEL of the INVITE of tx, ctx being the CANCEL's transaction's.
+	HandleCancel(ctx context.Context, tx *ServerTransaction, cancel *sip.Request)
 
-	HandleAck(ack *sip.Request)
+	// HandleAck is told of an ACK to a 2xx, which has no transaction (RFC 3261 §17.1.1.3), in a span of its own. ctx
+	// ends once HandleAck returns.
+	HandleAck(ctx context.Context, ack *sip.Request)
 
-	HandleTransactionError(tx *ServerTransaction, err error)
+	HandleTransactionError(ctx context.Context, tx *ServerTransaction, err error)
 }
 
 type Config struct {
@@ -75,8 +93,9 @@ type Config struct {
 	ResponseFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
 	// OnServerDone is called once per server transaction, with its first final
-	// response, or with a nil response if it ended without one.
-	OnServerDone func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+	// response, or with a nil response if it ended without one. ctx is the
+	// transaction's, for the trace of what it logs.
+	OnServerDone func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
 
 	// OnListenerFailed is told of a listener of the layer that failed for good, with the error
 	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
@@ -101,6 +120,25 @@ type Config struct {
 	// Network carries the messages between the addresses the layer serves or attaches and those of the other layers
 	// on it; without one, the layer has a network of its own.
 	Network *Network
+
+	// TracerProvider traces the transactions, with the global provider when nil.
+	TracerProvider trace.TracerProvider
+
+	// TraceContext reports whether the requests of a flow carry W3C trace context (traceparent and tracestate): those
+	// received on it are continued, and those sent on it carry theirs. A flow that does not is a trust boundary, such
+	// as one with a UE: the trace context of its requests is ignored, and its requests carry none. Without it, no flow
+	// does.
+	TraceContext func(f sip.Flow) bool
+
+	// SpanAttributes are attributes of the spans of the transactions of flow f, as the role of the element that serves
+	// its local address.
+	SpanAttributes func(f sip.Flow) []attribute.KeyValue
+
+	// SpanLinks are the span contexts that the server span of req links to when req starts a trace of its own, as one
+	// from outside the trust domain does: what it continues, such as the INVITE of its dialog, or the REGISTER a
+	// refresh renews. A request that continues the trace of its peer needs none: the trace's root has them. It is
+	// called before the request is handled, without the layer's locks; it must not block.
+	SpanLinks func(req *sip.Request) []trace.SpanContext
 }
 
 type Layer struct {
@@ -113,11 +151,17 @@ type Layer struct {
 	aliases  map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
-	onDone   func(req *sip.Request, res *sip.Response, elapsed time.Duration)
+	onDone   func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
 	onFailed func(local netip.AddrPort, err error)
 	onLost   func(f sip.Flow, err error)
 
 	onClientError func(req *sip.Request, in State, err error)
+
+	tp           trace.TracerProvider
+	tracer       trace.Tracer
+	traceContext func(f sip.Flow) bool
+	attributes   func(f sip.Flow) []attribute.KeyValue
+	spanLinks    func(req *sip.Request) []trace.SpanContext
 
 	t1, t2, t4, t100 time.Duration
 
@@ -188,6 +232,10 @@ func New(cfg Config) *Layer {
 		onLost:   cfg.OnConnectionLost,
 
 		onClientError: cfg.OnClientError,
+		tp:            providerOf(cfg.TracerProvider),
+		traceContext:  cfg.TraceContext,
+		attributes:    cfg.SpanAttributes,
+		spanLinks:     cfg.SpanLinks,
 		t1:            cfg.T1,
 		t2:            cfg.T2,
 		t4:            cfg.T4,
@@ -233,6 +281,7 @@ func New(cfg Config) *Layer {
 	}
 
 	l.t100 = timerEReachesT2(l.t1, l.t2)
+	l.tracer = l.tp.Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL))
 
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 
@@ -394,20 +443,27 @@ func (l *Layer) isLocalAddr(a netip.AddrPort) bool {
 	return ok
 }
 
+// SendAck sends the ACK of a 2xx, with the trace context of ctx when its flow carries trace context.
 func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
 	if ack.Method != "ACK" {
 		return errNotAck(ack)
 	}
 
-	return l.sendInOrder(ctx, ack, false)
+	ack = ack.Clone()
+	l.propagate(ctx, ack)
+
+	return l.sendInOrder(ack, false)
 }
 
-func (l *Layer) SendResponse(ctx context.Context, res *sip.Response) error {
-	return l.sendInOrder(ctx, res, false)
+// SendResponse sends res outside any transaction, in the order of its flow. ctx is the trace of the work that sends
+// it.
+func (l *Layer) SendResponse(_ context.Context, res *sip.Response) error {
+	return l.sendInOrder(res, false)
 }
 
-func (l *Layer) SendOnFlow(ctx context.Context, m sip.Message) error {
-	return l.sendInOrder(ctx, m, true)
+// SendOnFlow sends m as it is, on its flow, outside any transaction. ctx is the trace of the work that sends it.
+func (l *Layer) SendOnFlow(_ context.Context, m sip.Message) error {
+	return l.sendInOrder(m, true)
 }
 
 func (l *Layer) CloseFlow(f sip.Flow) {
@@ -618,11 +674,14 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		case l.isStatelessAck(req):
 			l.log.Debug("absorbed ACK to a stateless response", slog.String("flow", req.Flow.String()))
 		default:
-			l.h.HandleAck(req)
+			l.handleAck(req, trace.SpanContext{})
 		}
 
 		return
 	}
+
+	// The trace the request continues, and what it links to if it starts one, found before the transaction is locked.
+	parent, links := l.parent(req)
 
 	tx := newServer(l, req)
 
@@ -643,15 +702,19 @@ func (l *Layer) handleRequest(req *sip.Request) {
 
 	if req.Method == "CANCEL" {
 		target = l.cancelTarget(key.branchKey)
+		tx.startSpan(parent, append(links, target.spanContext()))
 		l.answerCancel(tx, target)
 	} else {
+		tx.startSpan(parent, links)
 		tx.start()
 	}
+
+	ctx := tx.ctx
 
 	tx.unlockInOrder()
 
 	if target != nil && target.invite {
-		target.receiveCancel(req)
+		target.receiveCancel(ctx, req)
 	}
 }
 
@@ -698,15 +761,19 @@ func (l *Layer) sendStateless(req *sip.Request, res *sip.Response) {
 	})
 }
 
-func (l *Layer) Go(f func(ctx context.Context)) error {
+// Go runs f on the layer's scheduler, in the trace of ctx, with a context that ends once the layer closes rather than
+// with ctx: what a request causes outlives its transaction.
+func (l *Layer) Go(ctx context.Context, f func(ctx context.Context)) error {
 	if !l.enter() {
 		return ErrClosed
 	}
 
+	ctx = l.scope(ctx)
+
 	l.sched.Go(func() {
 		defer l.wg.Done()
 
-		f(l.ctx)
+		f(ctx)
 	})
 
 	return nil

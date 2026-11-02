@@ -119,7 +119,7 @@ type ordered struct {
 	err   error
 }
 
-func (o *ordered) HandleResponse(res *sip.Response) {
+func (o *ordered) HandleResponse(ctx context.Context, res *sip.Response) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -132,7 +132,7 @@ func (o *ordered) HandleResponse(res *sip.Response) {
 	}
 }
 
-func (o *ordered) HandleError(err error) {
+func (o *ordered) HandleError(ctx context.Context, err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -145,7 +145,7 @@ func TestDoneAfterLastCallback(t *testing.T) {
 			h := newHarness(t)
 			o := &ordered{}
 
-			tx, err := h.l.Request(h.newRequest(method, sip.TCP), o)
+			tx, err := h.l.Request(context.Background(), h.newRequest(method, sip.TCP), o)
 			if err != nil {
 				t.Fatal(err)
 			}

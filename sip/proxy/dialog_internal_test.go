@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -30,12 +31,12 @@ func (s sdpStep) apply(d *Dialog) {
 	e.SetBodies(parts...)
 
 	if s.code == 0 {
-		d.requestBody(&d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
+		d.requestBody(context.Background(), &d.sdp, s.from, txKey{from: s.from, seq: s.seq, method: s.method}, e)
 		return
 	}
 
 	res := &sip.Response{StatusCode: s.code, Envelope: e}
-	d.responseBody(&d.sdp, s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
+	d.responseBody(context.Background(), &d.sdp, s.from.other(), txKey{from: s.from, seq: s.seq, method: s.method}, res)
 }
 
 func TestNegotiation(t *testing.T) {

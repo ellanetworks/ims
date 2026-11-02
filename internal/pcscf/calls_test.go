@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"context"
 	"net/netip"
 	"slices"
 	"strings"
@@ -750,7 +751,7 @@ func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
 	u.uc.Send(sip.UDP, s.ps, c.request("ACK", "1", ok))
 	s.scscf.RecvRequest()
 
-	if err := c.dialog(t).Release(proxy.Release{Toward: proxy.Caller}); err != nil {
+	if err := c.dialog(t).Release(context.Background(), proxy.Release{Toward: proxy.Caller}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -771,7 +772,7 @@ func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
 func TestUnregisteredUEOnItsSAsIsIgnored(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
-	s.p.regs.remove(regKey{impi: testIMPI, ue: ueAddr})
+	s.p.regs.remove(context.Background(), regKey{impi: testIMPI, ue: ueAddr})
 
 	u.uc.Send(sip.UDP, s.ps, s.ueInvite(u, nil))
 	u.us.RecvNone(quiet)

@@ -1,8 +1,11 @@
 package ua
 
 import (
+	"context"
+
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/dialog"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // forkSet are the requests of one initial INVITE of the peer, answered in one early dialog or several: the first,
@@ -37,7 +40,7 @@ func (r *Request) Fork(h Handler) (*Request, error) {
 			return &Error{Op: "Fork", Err: ErrState}
 		}
 
-		f = newRequest(fs, r.tx, r.req)
+		f = newRequest(r.ctx, fs, r.tx, r.req)
 		f.tag = id.LocalTag
 		f.role = fs.offerRequest(f.key, sessionSDP(r.req.Envelope))
 		fs.in = f
@@ -141,7 +144,7 @@ func (r *Request) settle(res *sip.Response) {
 		m.leave()
 
 		if !res.IsSuccess() {
-			m.s.end(End{Cause: EndRejected, Response: res})
+			m.s.end(r.ctx, End{Cause: EndRejected, Response: res})
 			continue
 		}
 
@@ -152,13 +155,13 @@ func (r *Request) settle(res *sip.Response) {
 			}
 		}
 
-		m.s.end(End{Cause: EndNotChosen})
+		m.s.end(r.ctx, End{Cause: EndNotChosen})
 	}
 }
 
 // drop ends the early dialog of r alone, its other members left to answer the INVITE: with a 199 carrying c when the
-// INVITE supports it (RFC 6228 §6).
-func (r *Request) drop(c Change) {
+// INVITE supports it (RFC 6228 §6). ctx is the trace of the BYE of the application that drops it.
+func (r *Request) drop(ctx context.Context, c Change) {
 	r.leave()
 
 	if r.s.d != nil && supports199(r.req) {
@@ -168,7 +171,7 @@ func (r *Request) drop(c Change) {
 		}
 	}
 
-	r.s.end(End{Cause: EndBye})
+	r.s.end(ctx, End{Cause: EndBye})
 }
 
 func supports199(req *sip.Request) bool {
@@ -201,7 +204,12 @@ func (a *Agent) addFork(s *Session) bool {
 		return false
 	}
 
-	e := a.entry(s.id, s.st)
+	var origin trace.SpanContext
+	if s.out != nil {
+		origin = s.out.origin
+	}
+
+	e := a.entry(s.id, s.st, origin)
 	e.invite, e.invited = s, true
 
 	return true

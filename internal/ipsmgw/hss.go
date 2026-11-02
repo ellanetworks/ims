@@ -8,7 +8,12 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // HSS registers the IP-SM-GW at the HSS for a user, by the Sh-Update of its SMSRegistrationInfo (TS 23.204 §6.1
@@ -51,19 +56,31 @@ const (
 // hssSync keeps the HSS registrations of the users in line with their availability (TS 24.341 §5.3.3.2): a user is
 // registered, of the IP-SM-GW number, while one of its IMPUs is available, and deregistered once none is. It updates
 // one user at a time, on its own goroutine, and tries a failed update again until it succeeds or is no longer needed.
+// An update starts later than its cause: it is a trace of its own, linked to the latest cause of the user (D5).
 type hssSync struct {
 	hss    HSS
 	store  Store
 	number func() string
 	// want is the user's registration to have: available, and its identity; of the registrar, under its lock.
 	want func(userKey string) (User, bool)
-	log  *slog.Logger
+	// life is the lifetime of the IP-SM-GW, which the updates and the writes of told are bound to.
+	life     context.Context
+	detached tracing.Detached
+	tracer   trace.Tracer
+	log      *slog.Logger
+
+	// saving orders the writes of told: each writes the state of told at its start, after the previous one.
+	saving sync.Mutex
 
 	mu sync.Mutex
 	// told are the users the HSS has the IP-SM-GW registered for, of the number it was given.
 	told     map[string]db.IPSMGWHSSRegistration
 	dirty    map[string]bool
 	attempts map[string]int
+	// causes are the span contexts of the latest causes of the users dirty, which their updates link to.
+	causes map[string]trace.SpanContext
+	// unsaved are the users whose told the store has yet to be given.
+	unsaved map[string]bool
 	// forced are the users to register at the HSS again, though registered already: of a UE reachable again.
 	forced map[string]bool
 	wake   chan struct{}
@@ -71,14 +88,19 @@ type hssSync struct {
 	done   chan struct{}
 }
 
-func newHSSSync(hss HSS, store Store, number func() string, want func(string) (User, bool), told []db.IPSMGWHSSRegistration,
-	log *slog.Logger,
+func newHSSSync(life context.Context, tp trace.TracerProvider, hss HSS, store Store, number func() string,
+	want func(string) (User, bool), told []db.IPSMGWHSSRegistration, log *slog.Logger,
 ) *hssSync {
+	if tp == nil {
+		tp = noop.NewTracerProvider()
+	}
+
 	h := &hssSync{
-		hss: hss, store: store, number: number, want: want, log: log,
+		hss: hss, store: store, number: number, want: want, life: life, log: log,
+		detached: tracing.NewDetached(tp, tracerName, role), tracer: tp.Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL)),
 		told: map[string]db.IPSMGWHSSRegistration{}, dirty: map[string]bool{}, attempts: map[string]int{},
-		forced: map[string]bool{},
-		wake:   make(chan struct{}, 1), done: make(chan struct{}),
+		causes: map[string]trace.SpanContext{}, unsaved: map[string]bool{}, forced: map[string]bool{},
+		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 
 	for _, r := range told {
@@ -90,7 +112,7 @@ func newHSSSync(hss HSS, store Store, number func() string, want func(string) (U
 }
 
 func (h *hssSync) start() {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(h.life)
 	h.stop = cancel
 
 	go h.run(ctx)
@@ -106,20 +128,30 @@ func (h *hssSync) close() {
 	<-h.done
 }
 
-// mark has the user of userKey checked.
-func (h *hssSync) mark(userKey string) {
+// mark has the user of userKey checked, of the cause cause.
+func (h *hssSync) mark(cause trace.SpanContext, userKey string) {
 	h.mu.Lock()
-	h.dirty[userKey] = true
+	h.markLocked(cause, userKey)
 	h.mu.Unlock()
 
 	h.poke()
 }
 
+// markLocked marks the user of userKey dirty, of the cause cause if valid, which replaces an earlier one. Called with
+// h.mu held.
+func (h *hssSync) markLocked(cause trace.SpanContext, userKey string) {
+	h.dirty[userKey] = true
+
+	if cause.IsValid() {
+		h.causes[userKey] = cause
+	}
+}
+
 // force has the user of userKey registered at the HSS again, if it is to be registered.
-func (h *hssSync) force(userKey string) {
+func (h *hssSync) force(cause trace.SpanContext, userKey string) {
 	h.mu.Lock()
 	h.forced[userKey] = true
-	h.dirty[userKey] = true
+	h.markLocked(cause, userKey)
 	h.mu.Unlock()
 
 	h.poke()
@@ -127,15 +159,15 @@ func (h *hssSync) force(userKey string) {
 
 // markAll has every user checked at once: those registered, and those of userKeys, as when the number changes, or
 // once the core that sends the updates runs again.
-func (h *hssSync) markAll(userKeys []string) {
+func (h *hssSync) markAll(cause trace.SpanContext, userKeys []string) {
 	h.mu.Lock()
 
 	for k := range h.told {
-		h.dirty[k] = true
+		h.markLocked(cause, k)
 	}
 
 	for _, k := range userKeys {
-		h.dirty[k] = true
+		h.markLocked(cause, k)
 	}
 
 	clear(h.attempts)
@@ -148,8 +180,8 @@ func (h *hssSync) markAll(userKeys []string) {
 // rekey has the HSS registration of the user of the key from, if any, be that of the key to, of the same user,
 // which a later third-party REGISTER told more of: the HSS keeps one registration of a user (TS 29.328 §6.1.2.1 step
 // 4b), which the user's next update, of its new identity, replaces, and which deregistering the user of its former
-// identity would delete.
-func (h *hssSync) rekey(from, to string) {
+// identity would delete. The store gets it at the next persist.
+func (h *hssSync) rekey(cause trace.SpanContext, from, to string) {
 	h.mu.Lock()
 
 	r, ok := h.told[from]
@@ -160,22 +192,65 @@ func (h *hssSync) rekey(from, to string) {
 
 		r.UserKey = to
 		h.told[to] = r
+		h.unsaved[from], h.unsaved[to] = true, true
 	}
 
+	h.markLocked(cause, from)
+	h.markLocked(cause, to)
 	h.mu.Unlock()
 
-	if ok && !taken {
-		if err := h.store.DeleteIPSMGWHSSRegistration(context.Background(), from); err != nil {
-			h.log.Error("failed to store an IP-SM-GW registration at the HSS", slog.String("user", from), slog.Any("error", err))
-		}
+	h.poke()
+}
 
-		if err := h.store.PutIPSMGWHSSRegistration(context.Background(), r); err != nil {
-			h.log.Error("failed to store an IP-SM-GW registration at the HSS", slog.String("user", to), slog.Any("error", err))
+// persist gives the store the registrations at the HSS of the users unsaved, as told has them now, each write bounded
+// by saveTimeout within the lifetime of the IP-SM-GW. Writes are in the order of persist calls, each of the state at
+// its start: the store ends with the latest. Those that fail are written at the next persist.
+func (h *hssSync) persist(ctx context.Context) error {
+	h.saving.Lock()
+	defer h.saving.Unlock()
+
+	h.mu.Lock()
+
+	rows := make(map[string]*db.IPSMGWHSSRegistration, len(h.unsaved))
+
+	for k := range h.unsaved {
+		if r, ok := h.told[k]; ok {
+			rows[k] = &r
+		} else {
+			rows[k] = nil
 		}
 	}
 
-	h.mark(from)
-	h.mark(to)
+	clear(h.unsaved)
+	h.mu.Unlock()
+
+	var errs []error
+
+	for k, r := range rows {
+		wctx, cancel := context.WithTimeout(lifetime.With(h.life, ctx), saveTimeout)
+
+		var err error
+		if r != nil {
+			err = h.store.PutIPSMGWHSSRegistration(wctx, *r)
+		} else {
+			err = h.store.DeleteIPSMGWHSSRegistration(wctx, k)
+		}
+
+		cancel()
+
+		if err != nil {
+			h.log.ErrorContext(ctx, "failed to store an IP-SM-GW registration at the HSS", slog.String("user", k),
+				slog.Bool("registered", r != nil), slog.Any("error", err))
+
+			h.mu.Lock()
+			h.unsaved[k] = true
+			h.mu.Unlock()
+
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 func (h *hssSync) poke() {
@@ -189,7 +264,7 @@ func (h *hssSync) run(ctx context.Context) {
 	defer close(h.done)
 
 	for {
-		k, ok := h.next()
+		k, cause, ok := h.next()
 		if !ok {
 			select {
 			case <-ctx.Done():
@@ -199,7 +274,7 @@ func (h *hssSync) run(ctx context.Context) {
 			}
 		}
 
-		h.sync(ctx, k)
+		h.sync(ctx, k, cause)
 
 		if ctx.Err() != nil {
 			return
@@ -207,22 +282,26 @@ func (h *hssSync) run(ctx context.Context) {
 	}
 }
 
-// next takes a user to check, if any.
-func (h *hssSync) next() (string, bool) {
+// next takes a user to check, if any, and the span context of its latest cause.
+func (h *hssSync) next() (string, trace.SpanContext, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	for k := range h.dirty {
+		cause := h.causes[k]
 		delete(h.dirty, k)
-		return k, true
+		delete(h.causes, k)
+
+		return k, cause, true
 	}
 
-	return "", false
+	return "", trace.SpanContext{}, false
 }
 
 // sync updates the HSS registration of the user of k, if it is not the one to have: of the number while the user is
-// available and the IP-SM-GW has a number, else none.
-func (h *hssSync) sync(ctx context.Context, k string) {
+// available and the IP-SM-GW has a number, else none. The update is the root of a trace of its own, linked to cause,
+// bound to life.
+func (h *hssSync) sync(life context.Context, k string, cause trace.SpanContext) {
 	u, available := h.want(k)
 	number := h.number()
 
@@ -250,15 +329,20 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 		}
 	}
 
+	ctx, span := h.detached.Start(life, "ip-sm-gw hss update", cause)
+
+	var err error
+	defer func() { tracing.End(span, err) }()
+
 	rctx, cancel := context.WithTimeout(ctx, hssReqTimeout)
-	err := h.hss.UpdateSMSRegistration(rctx, u, want)
+	err = h.hss.UpdateSMSRegistration(rctx, u, want)
 
 	cancel()
 
 	if errors.Is(err, ErrRejected) {
 		h.settled(k)
-		h.log.Error("IP-SM-GW registration at the HSS refused", slog.String("user", k), slog.Bool("register", want != ""),
-			slog.Any("error", err))
+		h.log.ErrorContext(ctx, "IP-SM-GW registration at the HSS refused", slog.String("user", k),
+			slog.Bool("register", want != ""), slog.Any("error", err))
 
 		return
 	}
@@ -270,13 +354,13 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 			h.mu.Unlock()
 		}
 
-		if ctx.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
 
-		after := h.retry(k)
-		h.log.Warn("IP-SM-GW registration at the HSS failed", slog.String("user", k), slog.Bool("register", want != ""),
-			slog.Any("error", err), slog.Duration("retry_after", after))
+		after := h.retry(cause, k)
+		h.log.WarnContext(ctx, "IP-SM-GW registration at the HSS failed", slog.String("user", k),
+			slog.Bool("register", want != ""), slog.Any("error", err), slog.Duration("retry_after", after))
 
 		return
 	}
@@ -286,13 +370,13 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 	if want == "" {
 		h.mu.Lock()
 		delete(h.told, k)
+		h.unsaved[k] = true
 		h.mu.Unlock()
 
-		if err := h.store.DeleteIPSMGWHSSRegistration(context.WithoutCancel(ctx), k); err != nil {
-			h.log.Error("failed to store an IP-SM-GW deregistration at the HSS", slog.String("user", k), slog.Any("error", err))
-		}
+		err = h.persist(ctx)
 
-		h.log.Debug("IP-SM-GW deregistered at the HSS", slog.String("user", k), slog.Bool("registered", registered))
+		h.log.DebugContext(ctx, "IP-SM-GW deregistered at the HSS", slog.String("user", k),
+			slog.Bool("registered", registered))
 
 		return
 	}
@@ -304,16 +388,15 @@ func (h *hssSync) sync(ctx context.Context, k string) {
 
 	h.mu.Lock()
 	h.told[k] = r
+	h.unsaved[k] = true
 	h.mu.Unlock()
 
-	if err := h.store.PutIPSMGWHSSRegistration(context.WithoutCancel(ctx), r); err != nil {
-		h.log.Error("failed to store an IP-SM-GW registration at the HSS", slog.String("user", k), slog.Any("error", err))
-	}
+	err = h.persist(ctx)
 
-	h.log.Debug("IP-SM-GW registered at the HSS", slog.String("user", k))
+	h.log.DebugContext(ctx, "IP-SM-GW registered at the HSS", slog.String("user", k))
 
-	// The user may have changed while the HSS answered.
-	h.mark(k)
+	// The user may have changed while the HSS answered: a change of its own cause, if so.
+	h.mark(trace.SpanContext{}, k)
 }
 
 func (h *hssSync) settled(k string) {
@@ -322,14 +405,15 @@ func (h *hssSync) settled(k string) {
 	h.mu.Unlock()
 }
 
-// retry checks the user of k again after a wait, doubling from minHSSRetry to maxHSSRetry, and returns the wait.
-func (h *hssSync) retry(k string) time.Duration {
+// retry checks the user of k again after a wait, doubling from minHSSRetry to maxHSSRetry, of the same cause, and
+// returns the wait.
+func (h *hssSync) retry(cause trace.SpanContext, k string) time.Duration {
 	h.mu.Lock()
 	after := min(minHSSRetry<<min(h.attempts[k], 8), maxHSSRetry)
 	h.attempts[k]++
 	h.mu.Unlock()
 
-	time.AfterFunc(after, func() { h.mark(k) })
+	time.AfterFunc(after, func() { h.mark(cause, k) })
 
 	return after
 }
@@ -341,13 +425,18 @@ const shutdownParallelism = 16
 // updates stopped: while the IP-SM-GW is down, the HSS routes the short messages to the users' other serving nodes
 // (TS 23.204 §6.2.2: a trigger of the IP-SM-GW of a network initiated deregistration). Those left at the deadline
 // stay registered. The registrations of the users are kept, so that the next start registers the IP-SM-GW again for
-// those available.
+// those available. Each update is in the trace of ctx, linked to the pending cause of its user, if any.
 func (h *hssSync) deregisterAll(ctx context.Context) {
 	h.mu.Lock()
 	told := make([]db.IPSMGWHSSRegistration, 0, len(h.told))
+	causes := make(map[string]trace.SpanContext, len(h.causes))
 
 	for _, r := range h.told {
 		told = append(told, r)
+	}
+
+	for k, c := range h.causes {
+		causes[k] = c
 	}
 	h.mu.Unlock()
 
@@ -367,13 +456,23 @@ func (h *hssSync) deregisterAll(ctx context.Context) {
 		wg.Go(func() {
 			defer func() { <-sem }()
 
+			opts := []trace.SpanStartOption{trace.WithAttributes(tracing.RoleKey.String(role))}
+			if c := causes[r.UserKey]; c.IsValid() {
+				opts = append(opts, trace.WithLinks(trace.Link{SpanContext: c}))
+			}
+
+			ctx, span := h.tracer.Start(ctx, "ip-sm-gw hss update", opts...)
+
+			var err error
+			defer func() { tracing.End(span, err) }()
+
 			u := User{MSISDN: r.MSISDN}
 			if r.MSISDN == "" {
 				u.IMPU, _ = sip.ParseURI(r.IMPU)
 			}
 
-			if err := h.hss.UpdateSMSRegistration(ctx, u, ""); err != nil {
-				h.log.Warn("IP-SM-GW not deregistered at the HSS at shutdown", slog.String("user", r.UserKey),
+			if err = h.hss.UpdateSMSRegistration(ctx, u, ""); err != nil {
+				h.log.WarnContext(ctx, "IP-SM-GW not deregistered at the HSS at shutdown", slog.String("user", r.UserKey),
 					slog.Any("error", err))
 
 				return
@@ -381,12 +480,10 @@ func (h *hssSync) deregisterAll(ctx context.Context) {
 
 			h.mu.Lock()
 			delete(h.told, r.UserKey)
+			h.unsaved[r.UserKey] = true
 			h.mu.Unlock()
 
-			if err := h.store.DeleteIPSMGWHSSRegistration(context.WithoutCancel(ctx), r.UserKey); err != nil {
-				h.log.Error("failed to store an IP-SM-GW deregistration at the HSS", slog.String("user", r.UserKey),
-					slog.Any("error", err))
-			}
+			err = h.persist(ctx)
 		})
 	}
 

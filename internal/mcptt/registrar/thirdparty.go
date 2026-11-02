@@ -1,6 +1,7 @@
 package registrar
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -49,7 +50,7 @@ const registrationToken = "g.3gpp.registration-token"
 // IMPU may stay registered after it (NOTE 2): the server subscribes to the reg event package of each IMPU it has
 // bindings of (§5.7.1.1), and the NOTIFYs tell which contacts went. Without that subscription, not yet active,
 // refused or failed, a deregistration removes all the bindings of the IMPU.
-func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.Time) {
+func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *settings.Snapshot, now time.Time) {
 	req := r.Message()
 
 	var header sip.Header
@@ -92,7 +93,7 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 	seq, ordered := sequenceOf(ik, client)
 
 	if ordered && g.outOfOrder(seq) {
-		g.cfg.Logger.Debug("REGISTER out of order ignored", slog.String("impu", impu.String()),
+		g.cfg.Logger.DebugContext(ctx, "REGISTER out of order ignored", slog.String("impu", impu.String()),
 			slog.Uint64("cseq", uint64(seq.cseq)))
 
 		_ = r.Respond(ua.Reply{Code: 200, Header: ok})
@@ -114,7 +115,7 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 		g.mu.Unlock()
 
 		_ = r.Respond(ua.Reply{Code: 200, Header: ok})
-		g.apply(r.Strand(), now, &ch)
+		g.apply(ctx, r.Strand(), now, &ch)
 
 		return
 	}
@@ -167,7 +168,7 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 			g.reject(r, snap, failed, header...)
 
 			// The bindings no longer authorised went: their clients logged off, and their rows.
-			g.apply(r.Strand(), now, &ch)
+			g.apply(ctx, r.Strand(), now, &ch)
 
 			return
 		}
@@ -187,12 +188,12 @@ func (g *Registrar) thirdParty(r *ua.Request, snap *settings.Snapshot, now time.
 
 	switch {
 	case a != nil:
-		g.authorised(a, impu)
+		g.authorised(ctx, a, impu)
 	case refreshed:
-		g.cfg.Logger.Debug("registration refreshed", slog.String("impu", impu.String()))
+		g.cfg.Logger.DebugContext(ctx, "registration refreshed", slog.String("impu", impu.String()))
 	}
 
-	g.apply(r.Strand(), now, &ch)
+	g.apply(ctx, r.Strand(), now, &ch)
 }
 
 // ueReg is the registration of a UE through the IMS, among those of its IMPU (TS 24.229 §5.7.1.3B): its

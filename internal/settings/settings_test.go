@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type fakeStore struct {
@@ -448,7 +449,7 @@ func TestLivePolicy(t *testing.T) {
 }
 
 func TestLiveCheck(t *testing.T) {
-	live := NewLive(&fakeStore{}, validSettings(), func(s Settings) error {
+	live := NewLive(&fakeStore{}, validSettings(), func(_ context.Context, s Settings) error {
 		if s.Policy.Interface == PolicyN5 {
 			return Invalidf("n5 needs n5 in the configuration file")
 		}
@@ -690,5 +691,49 @@ func TestSameNode(t *testing.T) {
 		if s.SameNode(changed) {
 			t.Errorf("%s: reconfigures the node, want another core", name)
 		}
+	}
+}
+
+// TestLiveChangeContext checks that the check of a change gets its context, and that Take returns the span context of
+// each change since the last Take, once.
+func TestLiveChangeContext(t *testing.T) {
+	type key struct{}
+
+	var checked context.Context
+
+	live := NewLive(&fakeStore{}, validSettings(), func(ctx context.Context, _ Settings) error {
+		checked = ctx
+		return nil
+	})
+
+	sc := func(b byte) trace.SpanContext {
+		return trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{b}, SpanID: trace.SpanID{b}, TraceFlags: trace.FlagsSampled})
+	}
+
+	ctx := context.WithValue(trace.ContextWithSpanContext(t.Context(), sc(1)), key{}, "request")
+	if err := live.UpdateIPSMGW(ctx, IPSMGW{Number: "15550001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if checked == nil || checked.Value(key{}) != "request" {
+		t.Fatal("the check did not get the change's context")
+	}
+
+	if err := live.UpdateIPSMGW(trace.ContextWithSpanContext(t.Context(), sc(2)), IPSMGW{Number: "15550002"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A change of no trace has no cause to keep.
+	if err := live.UpdateIPSMGW(t.Context(), IPSMGW{Number: "15550003"}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, causes := live.Take()
+	if st.IPSMGW.Number != "15550003" || len(causes) != 2 || !causes[0].Equal(sc(1)) || !causes[1].Equal(sc(2)) {
+		t.Fatalf("Take = %+v, %v; want the last settings and the 2 causes", st.IPSMGW, causes)
+	}
+
+	if _, causes := live.Take(); len(causes) != 0 {
+		t.Fatalf("second Take causes %v, want none", causes)
 	}
 }

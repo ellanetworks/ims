@@ -19,7 +19,7 @@ func BenchmarkRegistrationAmong(b *testing.B) {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {
 			a := newAssociations(context.Background(), IPsec{
 				Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102},
-			}, slog.New(slog.DiscardHandler))
+			}, slog.New(slog.DiscardHandler), noTrace())
 			b.Cleanup(a.close)
 
 			ueAt := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}) }
@@ -32,7 +32,7 @@ func BenchmarkRegistrationAmong(b *testing.B) {
 					offer: ipsec.Offer{Endpoint: ipsec.Endpoint{PortC: 40000, PortS: 40001, SPIC: 1000, SPIS: 1001}},
 				}
 
-				if _, err := a.challenged(c, ipsec.Keys{}); err != nil {
+				if _, err := a.challenged(context.Background(), c, ipsec.Keys{}); err != nil {
 					b.Fatal(err)
 				}
 
@@ -40,7 +40,7 @@ func BenchmarkRegistrationAmong(b *testing.B) {
 				s := a.byFlow[flowKey{netip.AddrPortFrom(c.ue, 40000), netip.AddrPortFrom(loopback, 5100)}]
 				a.mu.Unlock()
 
-				a.registered(s, outcome{lifetime: time.Hour})
+				a.registered(context.Background(), s, outcome{lifetime: time.Hour})
 
 				return s
 			}
@@ -55,7 +55,7 @@ func BenchmarkRegistrationAmong(b *testing.B) {
 				s := register(n + i%1000)
 
 				a.mu.Lock()
-				a.remove(s)
+				_ = a.remove(context.Background(), s)
 				a.mu.Unlock()
 			}
 		})

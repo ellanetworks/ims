@@ -55,7 +55,7 @@ func (r *Registrar) Subscribe(ctx context.Context, req *sip.Request, routes []si
 	}
 
 	respond(res)
-	r.send(out)
+	r.send(ctx, out)
 }
 
 type subscribeRequest struct {
@@ -91,7 +91,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 
 	st, err := r.load(ctx, sr.impi)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impi", sr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impi", sr.impi), slog.Any("error", err))
 		return retryLater(req), nil
 	}
 
@@ -136,7 +136,7 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 
 	o, err := r.newNotify(ctx, st, &s, nil, subState)
 	if err != nil {
-		r.log.Warn("failed to build a NOTIFY", slog.String("impi", sr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to build a NOTIFY", slog.String("impi", sr.impi), slog.Any("error", err))
 		return sip.NewResponse(req, 500, ""), nil
 	}
 
@@ -148,13 +148,13 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 	r.replaceDuplicates(ctx, s)
 
 	if s.ID, err = r.cfg.DB.PutRegSubscription(ctx, s); err != nil {
-		r.log.Warn("failed to store a reg event subscription", slog.String("impi", sr.impi), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to store a reg event subscription", slog.String("impi", sr.impi), slog.Any("error", err))
 		return retryLater(req), nil
 	}
 
 	o.subID = s.ID
 
-	r.log.Debug("subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
+	r.log.DebugContext(ctx, "subscribed to reg event", slog.String("impi", sr.impi), slog.String("impu", s.IMPU),
 		slog.String("subscriber", string(sr.subscriber)))
 
 	return res, []*outgoing{o}
@@ -198,7 +198,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []si
 
 	all, err := r.cfg.DB.ListRegistrationsByIdentities(ctx, keys)
 	if err != nil {
-		r.log.Warn("failed to read the registrations", slog.String("impu", req.URI.String()), slog.Any("error", err))
+		r.log.WarnContext(ctx, "failed to read the registrations", slog.String("impu", req.URI.String()), slog.Any("error", err))
 		return nil, retryLater(req)
 	}
 
@@ -247,7 +247,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []si
 		}
 	}
 
-	r.log.Debug("reg event SUBSCRIBE from an unauthorised identity", slog.String("impu", req.URI.String()),
+	r.log.DebugContext(ctx, "reg event SUBSCRIBE from an unauthorised identity", slog.String("impu", req.URI.String()),
 		slog.Any("p-asserted-identity", req.Header.Values("P-Asserted-Identity")))
 
 	return nil, sip.NewResponse(req, 403, "")
@@ -413,7 +413,7 @@ func (r *Registrar) replaceDuplicates(ctx context.Context, s db.RegSubscription)
 			continue
 		}
 
-		r.log.Debug("reg event subscription replaced", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.DebugContext(ctx, "reg event subscription replaced", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 		r.dropSubscription(ctx, old)
 	}
 }
@@ -447,7 +447,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 
 	d, err := restoreDialog(s.Dialog)
 	if err != nil {
-		r.log.Warn("invalid stored dialog", slog.String("impi", s.IMPI), slog.Any("error", err))
+		r.log.WarnContext(ctx, "invalid stored dialog", slog.String("impi", s.IMPI), slog.Any("error", err))
 		return sip.NewResponse(req, 481, ""), nil
 	}
 
@@ -481,7 +481,7 @@ func (r *Registrar) resubscribe(ctx context.Context, req *sip.Request) (*sip.Res
 	if expires == 0 {
 		subState = "terminated;reason=" + reasonTimeout
 
-		r.log.Debug("unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
+		r.log.DebugContext(ctx, "unsubscribed from reg event", slog.String("impi", s.IMPI), slog.String("impu", s.IMPU))
 	}
 
 	var out []*outgoing

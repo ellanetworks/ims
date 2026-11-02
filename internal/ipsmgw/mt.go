@@ -11,6 +11,7 @@ import (
 	"github.com/ellanetworks/core/diameter/s6c"
 	"github.com/ellanetworks/core/diameter/sgd"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/sip/lifetime"
 )
 
 // Router is the S6c client of the IP-SM-GW toward the HSS.
@@ -58,7 +59,7 @@ func (a *AS) RoutingInfo(ctx context.Context, id diameter.Identity, req *diamete
 		// MSISDN-less delivery in IMS (TS 23.204 §6.0a) is not supported.
 		return s6c.NewAnswer(req, id, tgpp.Experimental(tgpp.ResultErrorUserUnknown))
 	case number == "":
-		log.Warn("routing information request without an IP-SM-GW number")
+		log.WarnContext(ctx, "routing information request without an IP-SM-GW number")
 		return s6c.NewAnswer(req, id, tgpp.Result{Code: diameter.ResultUnableToComply})
 	}
 
@@ -87,7 +88,7 @@ func (a *AS) RoutingInfo(ctx context.Context, id diameter.Identity, req *diamete
 
 		return ans
 	case !known || r.DeliveryNotIntended != nil:
-		log.Warn("routing information of the HSS unavailable", slog.Any("error", err))
+		log.WarnContext(ctx, "routing information of the HSS unavailable", slog.Any("error", err))
 		return s6c.NewAnswer(req, id, tgpp.Result{Code: diameter.ResultUnableToComply})
 	default:
 		// Over IMS only.
@@ -126,7 +127,7 @@ func (a *AS) RoutingInfo(ctx context.Context, id diameter.Identity, req *diamete
 		return s6c.NewErrorAnswer(req, id, err)
 	}
 
-	log.Debug("routing information answered", slog.Bool("ims", known))
+	log.DebugContext(ctx, "routing information answered", slog.Bool("ims", known))
 
 	return ans
 }
@@ -211,7 +212,7 @@ func (a *AS) ForwardShortMessage(ctx context.Context, id diameter.Identity, req 
 
 	c, ok := a.corr.get(m.IMSI, now)
 	if !ok {
-		a.log.Debug("short message of an unknown MT Correlation ID")
+		a.log.DebugContext(ctx, "short message of an unknown MT Correlation ID")
 		return tgpp.NewResultAnswer(req, id, tgpp.Result{Code: diameter.ResultUnableToComply})
 	}
 
@@ -243,7 +244,7 @@ func (a *AS) ForwardShortMessage(ctx context.Context, id diameter.Identity, req 
 	if !last.ok {
 		alert, ok := a.report(ctx, c, m, outcomes)
 		if ok && !last.memoryExceeded() && ctx.Err() == nil {
-			log.Debug("retrying the delivery via the serving nodes the HSS reported")
+			log.DebugContext(ctx, "retrying the delivery via the serving nodes the HSS reported")
 
 			if retry := a.attempt(ctx, c, m, alert, false); len(retry) > 0 {
 				last = final(append(outcomes, retry...))
@@ -260,7 +261,7 @@ func (a *AS) ForwardShortMessage(ctx context.Context, id diameter.Identity, req 
 
 	a.metrics.count(directionMT, last.domain.String(), last.ok)
 
-	log.Info("mobile terminated short message", slog.String("domain", last.domain.String()), slog.Bool("delivered", last.ok),
+	log.InfoContext(ctx, "mobile terminated short message", slog.String("domain", last.domain.String()), slog.Bool("delivered", last.ok),
 		slog.String("result", last.result.String()))
 
 	return a.forwardAnswer(req, id, last)
@@ -491,13 +492,13 @@ func (a *AS) report(ctx context.Context, c mtContext, m sgd.MTForwardShortMessag
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < reportReserve {
 		var cancel context.CancelFunc
 
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), reportReserve)
+		ctx, cancel = context.WithTimeout(lifetime.With(a.life, ctx), reportReserve)
 		defer cancel()
 	}
 
 	res, err := a.router.ReportSMDeliveryStatus(ctx, rep)
 	if err != nil {
-		a.log.Warn("delivery status not reported to the HSS", slog.String("msisdn", c.msisdn), slog.Any("error", err))
+		a.log.WarnContext(ctx, "delivery status not reported to the HSS", slog.String("msisdn", c.msisdn), slog.Any("error", err))
 		return s6c.ServingNodes{}, false
 	}
 

@@ -30,6 +30,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -385,18 +386,38 @@ type fakePCSCF struct {
 	reg      atomic.Pointer[Registrar]
 	sessions atomic.Pointer[Sessions]
 	wg       sync.WaitGroup
+
+	// endWithResponse ends the context of a REGISTER with its response, as that of a transaction on a reliable or
+	// in-memory flow ends (transaction.Handler).
+	endWithResponse atomic.Bool
 }
 
-func (p *fakePCSCF) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+// HandleRequest gives the registrar the trace of the request, in a context that outlives its transaction, as
+// transaction.Layer.Go does.
+func (p *fakePCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	respond := func(res *sip.Response) { _ = tx.Respond(res) }
 
 	switch {
 	case req.Method == "SUBSCRIBE" && IsRegEvent(req):
-		p.wg.Go(func() { p.reg.Load().Subscribe(context.Background(), req, routes(req), respond) })
+		p.wg.Go(func() { p.reg.Load().Subscribe(context.WithoutCancel(ctx), req, routes(req), respond) })
 	case req.Method == "REGISTER":
-		p.wg.Go(func() { p.reg.Load().Register(context.Background(), req, respond) })
+		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+
+		if p.endWithResponse.Load() {
+			respond = func(res *sip.Response) {
+				_ = tx.Respond(res)
+
+				cancel()
+			}
+		}
+
+		p.wg.Go(func() {
+			defer cancel()
+
+			p.reg.Load().Register(ctx, req, respond)
+		})
 	default:
-		p.sessions.Load().HandleRequest(tx, req)
+		p.sessions.Load().HandleRequest(ctx, tx, req)
 	}
 }
 
@@ -412,17 +433,24 @@ func routes(req *sip.Request) []sip.URI {
 	return out
 }
 
-func (p *fakePCSCF) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	p.sessions.Load().HandleCancel(tx, cancel)
+func (p *fakePCSCF) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	p.sessions.Load().HandleCancel(ctx, tx, cancel)
 }
 
-func (p *fakePCSCF) HandleAck(ack *sip.Request) {
-	p.sessions.Load().HandleAck(ack)
+func (p *fakePCSCF) HandleAck(ctx context.Context, ack *sip.Request) {
+	p.sessions.Load().HandleAck(ctx, ack)
 }
 
-func (*fakePCSCF) HandleTransactionError(*transaction.ServerTransaction, error) {}
+func (*fakePCSCF) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	return newHarnessTraced(t, nil)
+}
+
+// newHarnessTraced is newHarness, its S-CSCF traced by tp.
+func newHarnessTraced(t *testing.T, tp trace.TracerProvider) *harness {
 	t.Helper()
 
 	h := &harness{t: t, hss: newFakeHSS(t), clock: fakeClock{siptest.NewClock()}, sipClock: siptest.NewClock(), dns: &fakeDNS{}}
@@ -440,14 +468,16 @@ func newHarness(t *testing.T) *harness {
 		Local:   diameter.Identity{OriginHost: imsHost, OriginRealm: homeDomain, ProductName: "ims"},
 		Handler: h.hss.serve,
 	}
+	t.Cleanup(h.loop.Close)
 
 	h.pcscf = &fakePCSCF{}
 	t.Cleanup(h.pcscf.wg.Wait)
 
 	layer, _ := siptest.NewLayer(t, transaction.Config{
-		Handler: h.pcscf,
-		Logger:  slog.New(slog.DiscardHandler),
-		Clock:   h.sipClock,
+		Handler:        h.pcscf,
+		Logger:         slog.New(slog.DiscardHandler),
+		Clock:          h.sipClock,
+		TracerProvider: tp,
 	})
 	h.scscf = siptest.ListenLayer(t, layer, loopback)
 	h.scscfLayer = layer

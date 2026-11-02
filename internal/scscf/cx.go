@@ -118,7 +118,7 @@ func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope)
 	} else {
 		ans, err = r.cxBound(ctx, to, build)
 		if undeliverable(ans, err) {
-			r.log.Info("the HSS of the registration is unreachable, trying the realm of the HSS", slog.String("hss", to.Host),
+			r.log.InfoContext(ctx, "the HSS of the registration is unreachable, trying the realm of the HSS", slog.String("hss", to.Host),
 				slog.Any("error", undeliverableReason(ans, err)))
 
 			ans, err = r.cxTo(ctx, db.HSS{}, build)

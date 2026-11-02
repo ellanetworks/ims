@@ -163,7 +163,7 @@ func run(ctx context.Context, o options) error {
 
 			return nil
 		},
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			if c := cl.Load(); c != nil {
 				return c.OnInvite(r)
 			}
@@ -215,14 +215,14 @@ func run(ctx context.Context, o options) error {
 
 	ui.printf("SIP on %s, server %s", bound, o.server)
 
-	if err := wait("register", func(done func(*sip.Response, error)) error { return c.Register(o.expires, done) }); err != nil {
+	if err := wait("register", func(done func(*sip.Response, error)) error { return c.Register(ctx, o.expires, done) }); err != nil {
 		return err
 	}
 
 	ui.printf("registered %s as %s", impu, id)
 
 	if len(groups) > 0 {
-		if err := wait("affiliate", func(done func(*sip.Response, error)) error { return c.Affiliate(groups, done) }); err != nil {
+		if err := wait("affiliate", func(done func(*sip.Response, error)) error { return c.Affiliate(ctx, groups, done) }); err != nil {
 			return err
 		}
 
@@ -232,7 +232,7 @@ func run(ctx context.Context, o options) error {
 	ui.printf(`commands: "call <group>", "p" (press), "r" (release), "ptt" (toggle), "leave", "quit"`)
 	ui.loop(c, os.Stdin)
 
-	if err := wait("unregister", c.Unregister); err != nil {
+	if err := wait("unregister", func(done func(*sip.Response, error)) error { return c.Unregister(ctx, done) }); err != nil {
 		ui.printf("%v", err)
 	}
 
@@ -306,6 +306,7 @@ func (u *console) setCall(c *client.Call) {
 	u.call, u.talking = c, false
 }
 
+// loop runs the commands of in, each the root of its own trace.
 func (u *console) loop(c *client.Client, in io.Reader) {
 	s := bufio.NewScanner(in)
 
@@ -318,7 +319,7 @@ func (u *console) loop(c *client.Client, in io.Reader) {
 		switch cmd, call := f[0], u.current(); {
 		case cmd == "quit" || cmd == "q":
 			if call != nil {
-				call.Leave()
+				call.Leave(context.Background())
 			}
 
 			return
@@ -329,7 +330,7 @@ func (u *console) loop(c *client.Client, in io.Reader) {
 				continue
 			}
 
-			call, err := c.Call(g)
+			call, err := c.Call(context.Background(), g)
 			if err != nil {
 				u.printf("call: %v", err)
 				continue
@@ -350,7 +351,7 @@ func (u *console) loop(c *client.Client, in io.Reader) {
 
 			u.press(call, on)
 		case cmd == "leave":
-			call.Leave()
+			call.Leave(context.Background())
 		default:
 			u.printf("unknown command %q", s.Text())
 		}

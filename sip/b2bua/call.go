@@ -5,9 +5,15 @@
 // A Call and its legs run on one strand of the agent: their events come in order, and the application acts on any
 // leg of the call from them without locks. Their methods are called on that strand: from the handlers, or from a job
 // posted to it (Strand.Post).
+//
+// # Contexts
+//
+// A context passed to a call or a leg carries the trace and values of the work, never cancellation (see sip/ua). The
+// handlers of a leg get the context of the event they are about.
 package b2bua
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
@@ -31,8 +37,8 @@ var (
 
 // CallHandler receives the events of a call. Each function is optional.
 type CallHandler struct {
-	// Ended reports the end of the call: its last leg ended, or left it.
-	Ended func(c *Call)
+	// Ended reports the end of the call: its last leg ended, or left it; ctx is the trace of what ended it.
+	Ended func(ctx context.Context, c *Call)
 
 	// Error reports an error of the agent the call met while relaying, which it could not report otherwise: a
 	// response or a request of a leg that failed.
@@ -93,12 +99,12 @@ func (c *Call) SetValue(v any) {
 	c.value = v
 }
 
-// End ends every leg of the call (Leg.End).
-func (c *Call) End(rp ua.Reply) {
+// End ends every leg of the call (Leg.End), in the trace of ctx.
+func (c *Call) End(ctx context.Context, rp ua.Reply) {
 	c.check()
 
 	for _, l := range c.Legs() {
-		c.report(l.End(rp))
+		c.report(l.End(ctx, rp))
 	}
 }
 
@@ -161,8 +167,9 @@ func (c *Call) Incoming(r *ua.Request, h LegHandler) (*Leg, error) {
 	return l, nil
 }
 
-// Dial makes the leg of an initial INVITE the agent sends, req as Agent.Invite takes it, on the strand of the call.
-func (c *Call) Dial(req *sip.Request, h LegHandler, opts ...ua.Option) (*Leg, error) {
+// Dial makes the leg of an initial INVITE the agent sends, req as Agent.Invite takes it, on the strand of the call, in
+// the trace of ctx: that of the leg it bridges, for one.
+func (c *Call) Dial(ctx context.Context, req *sip.Request, h LegHandler, opts ...ua.Option) (*Leg, error) {
 	c.check()
 
 	l, err := c.leg(h)
@@ -170,7 +177,7 @@ func (c *Call) Dial(req *sip.Request, h LegHandler, opts ...ua.Option) (*Leg, er
 		return nil, err
 	}
 
-	return l, l.dial(req, opts...)
+	return l, l.dial(ctx, req, opts...)
 }
 
 // leg makes an outgoing leg, to dial.
@@ -185,13 +192,13 @@ func (c *Call) leg(h LegHandler) (*Leg, error) {
 	return l, nil
 }
 
-func (l *Leg) dial(req *sip.Request, opts ...ua.Option) error {
+func (l *Leg) dial(ctx context.Context, req *sip.Request, opts ...ua.Option) error {
 	c := l.call
 
-	o, err := c.a.Invite(req, l.handler(), append([]ua.Option{ua.On(c.st)}, opts...)...)
+	o, err := c.a.Invite(ctx, req, l.handler(), append([]ua.Option{ua.On(c.st)}, opts...)...)
 	if err != nil {
 		l.state = ua.Terminated
-		l.removed()
+		l.removed(ctx)
 
 		return err
 	}
@@ -203,8 +210,8 @@ func (l *Leg) dial(req *sip.Request, opts ...ua.Option) error {
 
 // Attach moves l, a leg of another call on the same strand, to c, its events to h: the long-lived leg of a
 // pre-established session joining the call it serves next. Its former call ends if it was its last leg. A relay of
-// the leg stops.
-func (c *Call) Attach(l *Leg, h LegHandler) error {
+// the leg stops. ctx is the trace of the move, which the end of the former call is part of.
+func (c *Call) Attach(ctx context.Context, l *Leg, h LegHandler) error {
 	c.check()
 
 	switch {
@@ -224,7 +231,7 @@ func (c *Call) Attach(l *Leg, h LegHandler) error {
 		return nil
 	}
 
-	l.removed()
+	l.removed(ctx)
 	l.call = c
 	c.legs = append(c.legs, l)
 
@@ -232,8 +239,8 @@ func (c *Call) Attach(l *Leg, h LegHandler) error {
 }
 
 // remove takes l out of the call, which ends with its last leg: Ended runs as an event of the strand, after what
-// removed the leg.
-func (c *Call) remove(l *Leg) {
+// removed the leg, in the trace of ctx.
+func (c *Call) remove(ctx context.Context, l *Leg) {
 	for i, x := range c.legs {
 		if x == l {
 			c.legs = append(c.legs[:i], c.legs[i+1:]...)
@@ -249,53 +256,54 @@ func (c *Call) remove(l *Leg) {
 	close(c.done)
 
 	if f := c.h.Ended; f != nil {
-		c.st.Post(func() { f(c) })
+		c.st.Post(func() { f(ctx, c) })
 	}
 }
 
 // LegHandler receives the events of a leg: those of ua.Handler for its sessions, with the leg, and the early dialog
-// they come from when it has several. Each function is optional. On a leg a Relay relays, the relay acts on each
+// they come from when it has several, and the ctx of the ua.Handler event, the trace of its cause, which what the
+// leg does about it is part of. Each function is optional. On a leg a Relay relays, the relay acts on each
 // event first, then the application's function runs; the decisions are the application's when it has a function for
 // them (Request, Bye, Forked), the relay's otherwise (Relay.Forward).
 type LegHandler struct {
 	// Progress reports a provisional response to an INVITE of the leg, initial or re-INVITE, of the early dialog s:
 	// one of several for an initial INVITE that forked.
-	Progress func(l *Leg, s *ua.Session, res *sip.Response)
+	Progress func(ctx context.Context, l *Leg, s *ua.Session, res *sip.Response)
 
 	// Established reports that the session of the leg is confirmed by m: the 2xx (outgoing leg), the ACK (incoming).
-	Established func(l *Leg, m sip.Message)
+	Established func(ctx context.Context, l *Leg, m sip.Message)
 
 	// Answer reports the answer of the peer to an offer of the leg in s; Offer an offer of the peer in a response,
 	// to answer in the PRACK or the ACK (ua.Handler), one a relay does not take; Pracked the PRACK of a reliable 1xx
 	// of the leg in s.
-	Answer  func(l *Leg, s *ua.Session, sdp []byte)
-	Offer   func(l *Leg, s *ua.Session, o *ua.Offer)
-	Pracked func(l *Leg, s *ua.Session, res *sip.Response)
+	Answer  func(ctx context.Context, l *Leg, s *ua.Session, sdp []byte)
+	Offer   func(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer)
+	Pracked func(ctx context.Context, l *Leg, s *ua.Session, res *sip.Response)
 
 	// Request receives a request of the peer, BYE aside, in one of the dialogs of the leg (Request.Session); Bye
 	// its BYE, for the application to respond to once the other legs ended (ua.Handler.Bye); Cancelled a re-INVITE
 	// of the peer cancelled. Without Request, the agent answers as it does on its own (ua.Request.RespondDefault),
 	// or the relay relays it.
-	Request   func(l *Leg, r *ua.Request)
-	Bye       func(l *Leg, r *ua.Request)
-	Cancelled func(l *Leg, r *ua.Request, cancel *sip.Request)
+	Request   func(ctx context.Context, l *Leg, r *ua.Request)
+	Bye       func(ctx context.Context, l *Leg, r *ua.Request)
+	Cancelled func(ctx context.Context, l *Leg, r *ua.Request, cancel *sip.Request)
 
 	// Forked decides on a 2xx of another dialog than the one answered first (ua.Handler.Forked): true keeps s, a
 	// session of the leg beside its own, which the application ends. Without it, s is ended with a BYE.
-	Forked func(l *Leg, s *ua.Session, res *sip.Response) bool
+	Forked func(ctx context.Context, l *Leg, s *ua.Session, res *sip.Response) bool
 
 	// Decorate completes each message of the leg, as ua.Handler.Decorate: with the strand held, not calling the agent.
 	Decorate func(l *Leg, m sip.Message)
 
 	// Failed reports the failure of the initial INVITE of an outgoing leg: its final response, or its error.
-	Failed func(l *Leg, res *sip.Response, err error)
+	Failed func(ctx context.Context, l *Leg, res *sip.Response, err error)
 
 	// EarlyEnded reports the end of one early dialog of the leg while the INVITE goes on in others.
-	EarlyEnded func(l *Leg, s *ua.Session, e ua.End)
+	EarlyEnded func(ctx context.Context, l *Leg, s *ua.Session, e ua.End)
 
 	// Ended reports the end of the leg, once: its session ended, its initial INVITE failed (after Failed), or, for an
 	// incoming leg, its last early dialog ended.
-	Ended func(l *Leg, e ua.End)
+	Ended func(ctx context.Context, l *Leg, e ua.End)
 }
 
 // Leg is one leg of a call: an INVITE session of the agent, with its peer. An incoming leg is made by an initial
@@ -474,8 +482,8 @@ func (l *Leg) Respond(rp ua.Reply) error {
 
 // End ends the leg however it stands: an incoming INVITE not answered gets rp (480 without a code), an outgoing one
 // is cancelled, a session, answered or confirmed, ends with a BYE; the header fields of rp, as a Reason (RFC 3326),
-// go in the CANCEL or the BYE.
-func (l *Leg) End(rp ua.Reply) error {
+// go in the CANCEL or the BYE, the BYE in the trace of ctx.
+func (l *Leg) End(ctx context.Context, rp ua.Reply) error {
 	l.call.check()
 
 	if l.state == ua.Terminated {
@@ -486,10 +494,10 @@ func (l *Leg) End(rp ua.Reply) error {
 
 	switch s := l.Session(); {
 	case s != nil && s.State() == ua.Confirmed:
-		return s.Bye(c, nil)
+		return s.Bye(ctx, c, nil)
 	case !l.outgoing && l.in.Chosen() != nil:
 		// Answered, its ACK or PRACK not in yet: the BYE waits for the ACK, a 2xx held for a PRACK gives way.
-		return s.Bye(c, nil)
+		return s.Bye(ctx, c, nil)
 	case !l.outgoing:
 		if rp.Code == 0 {
 			rp.Code = 480
@@ -497,7 +505,7 @@ func (l *Leg) End(rp ua.Reply) error {
 
 		return l.Respond(rp)
 	case l.out != nil:
-		return l.out.Cancel(c)
+		return l.out.Cancel(ctx, c)
 	}
 
 	return nil
@@ -506,7 +514,7 @@ func (l *Leg) End(rp ua.Reply) error {
 // handler is the ua.Handler of the leg's sessions.
 func (l *Leg) handler() ua.Handler {
 	return ua.Handler{
-		Progress: func(s *ua.Session, res *sip.Response) {
+		Progress: func(ctx context.Context, s *ua.Session, res *sip.Response) {
 			if l.state != ua.Early {
 				return
 			}
@@ -521,14 +529,14 @@ func (l *Leg) handler() ua.Handler {
 			}
 
 			if l.relay != nil {
-				l.relay.progress(l, s, res)
+				l.relay.progress(ctx, l, s, res)
 			}
 
 			if f := l.h.Progress; f != nil {
-				f(l, s, res)
+				f(ctx, l, s, res)
 			}
 		},
-		Established: func(s *ua.Session, m sip.Message) {
+		Established: func(ctx context.Context, s *ua.Session, m sip.Message) {
 			if l.state != ua.Early {
 				return
 			}
@@ -538,75 +546,75 @@ func (l *Leg) handler() ua.Handler {
 			l.own(s)
 
 			if l.relay != nil {
-				l.relay.established(l, m)
+				l.relay.established(ctx, l, m)
 			}
 
 			if f := l.h.Established; f != nil {
-				f(l, m)
+				f(ctx, l, m)
 			}
 		},
-		Answer: func(s *ua.Session, sdp []byte) {
+		Answer: func(ctx context.Context, s *ua.Session, sdp []byte) {
 			if !l.mine(s) {
 				return
 			}
 
 			if l.relay != nil {
-				l.relay.answer(l, s, sdp)
+				l.relay.answer(ctx, l, s, sdp)
 			}
 
 			if f := l.h.Answer; f != nil {
-				f(l, s, sdp)
+				f(ctx, l, s, sdp)
 			}
 		},
-		Offer: func(s *ua.Session, o *ua.Offer) {
+		Offer: func(ctx context.Context, s *ua.Session, o *ua.Offer) {
 			switch {
 			case !l.mine(s):
-				o.Reject()
-			case l.relay != nil && l.relay.offer(l, s, o):
+				o.Reject(ctx)
+			case l.relay != nil && l.relay.offer(ctx, l, s, o):
 			case l.h.Offer != nil:
-				l.h.Offer(l, s, o)
+				l.h.Offer(ctx, l, s, o)
 			default:
-				o.Reject()
+				o.Reject(ctx)
 			}
 		},
-		Pracked: func(s *ua.Session, res *sip.Response) {
+		Pracked: func(ctx context.Context, s *ua.Session, res *sip.Response) {
 			if f := l.h.Pracked; f != nil && l.mine(s) {
-				f(l, s, res)
+				f(ctx, l, s, res)
 			}
 		},
-		Request: func(s *ua.Session, r *ua.Request) {
+		Request: func(ctx context.Context, s *ua.Session, r *ua.Request) {
 			switch {
 			case !l.mine(s):
 				_ = r.Reject(481)
 			case l.h.Request != nil:
-				l.h.Request(l, r)
+				l.h.Request(ctx, l, r)
 			case l.relay != nil:
-				l.relay.Forward(l, r)
+				l.relay.Forward(ctx, l, r)
 			default:
 				l.call.report(r.RespondDefault())
 			}
 		},
-		Bye: func(s *ua.Session, r *ua.Request) {
+		Bye: func(ctx context.Context, s *ua.Session, r *ua.Request) {
 			switch {
 			case l.h.Bye != nil && l.mine(s):
-				l.h.Bye(l, r)
+				l.h.Bye(ctx, l, r)
 			case l.relay != nil && l.mine(s):
-				l.relay.Forward(l, r)
+				l.relay.Forward(ctx, l, r)
 			default:
 				_ = r.Respond(ua.Reply{Code: 200})
 			}
 		},
-		Cancelled: func(s *ua.Session, r *ua.Request, cancel *sip.Request) {
+		Cancelled: func(ctx context.Context, s *ua.Session, r *ua.Request, cancel *sip.Request) {
 			if !l.mine(s) {
 				return
 			}
 
 			if l.relay != nil {
-				l.relay.cancelled(l, r, cancel)
+				l.relay.cancelled(ctx, l, r, cancel)
 			}
 
 			if f := l.h.Cancelled; f != nil {
-				f(l, r, cancel)
+				f(ctx, l, r, cancel)
 			}
 		},
 		Decorate: func(_ *ua.Session, m sip.Message) {
@@ -618,29 +626,29 @@ func (l *Leg) handler() ua.Handler {
 				f(l, m)
 			}
 		},
-		Forked: func(s *ua.Session, res *sip.Response) bool {
+		Forked: func(ctx context.Context, s *ua.Session, res *sip.Response) bool {
 			if f := l.h.Forked; f != nil && l.state != ua.Terminated {
-				return f(l, s, res)
+				return f(ctx, l, s, res)
 			}
 
 			return false
 		},
-		Failed: func(_ *ua.Outgoing, res *sip.Response, err error) {
+		Failed: func(ctx context.Context, _ *ua.Outgoing, res *sip.Response, err error) {
 			if l.state == ua.Terminated {
 				return
 			}
 
 			if l.relay != nil {
-				l.relay.failed(l, res, err)
+				l.relay.failed(ctx, l, res, err)
 			}
 
 			if f := l.h.Failed; f != nil {
-				f(l, res, err)
+				f(ctx, l, res, err)
 			}
 
-			l.ended(failure(res, err))
+			l.ended(ctx, failure(res, err))
 		},
-		Ended: func(s *ua.Session, e ua.End) {
+		Ended: func(ctx context.Context, s *ua.Session, e ua.End) {
 			if l.state == ua.Terminated {
 				return
 			}
@@ -648,7 +656,7 @@ func (l *Leg) handler() ua.Handler {
 			// Confirmed, the leg ends with its session; a forked session kept, or a late early dialog, without it.
 			if l.state == ua.Confirmed {
 				if s == l.s {
-					l.ended(e)
+					l.ended(ctx, e)
 				}
 
 				return
@@ -663,17 +671,17 @@ func (l *Leg) handler() ua.Handler {
 			// Early, an outgoing leg ends with its INVITE (Failed), an incoming one with its last early dialog.
 			if l.outgoing || len(l.early) > 0 {
 				if l.relay != nil {
-					l.relay.earlyEnded(l, s, e)
+					l.relay.earlyEnded(ctx, l, s, e)
 				}
 
 				if f := l.h.EarlyEnded; f != nil {
-					f(l, s, e)
+					f(ctx, l, s, e)
 				}
 
 				return
 			}
 
-			l.ended(e)
+			l.ended(ctx, e)
 		},
 	}
 }
@@ -683,7 +691,7 @@ func (l *Leg) mine(s *ua.Session) bool {
 	return l.state != ua.Terminated && (s == l.s || l.early[s] || l.s == nil)
 }
 
-func (l *Leg) ended(e ua.End) {
+func (l *Leg) ended(ctx context.Context, e ua.End) {
 	if l.state == ua.Terminated {
 		return
 	}
@@ -694,18 +702,18 @@ func (l *Leg) ended(e ua.End) {
 	l.disown()
 
 	if l.relay != nil {
-		l.relay.ended(l, e)
+		l.relay.ended(ctx, l, e)
 	}
 
 	if f := l.h.Ended; f != nil {
-		f(l, e)
+		f(ctx, l, e)
 	}
 
-	l.removed()
+	l.removed(ctx)
 }
 
-func (l *Leg) removed() {
-	l.call.remove(l)
+func (l *Leg) removed(ctx context.Context) {
+	l.call.remove(ctx, l)
 }
 
 // disown takes the sessions of the leg out of LegOf, as it ends.

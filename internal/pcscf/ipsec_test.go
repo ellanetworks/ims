@@ -22,7 +22,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
-	"github.com/ellanetworks/ims/sip/transport"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -86,14 +86,15 @@ func newIPsecScene(t *testing.T, policy ipsec.Policy, opts ...func(*Config)) *ip
 func newIPsecSceneWith(t *testing.T, policy ipsec.Policy, kernel *ipsectest.Kernel, store *db.DB, opts ...func(*Config)) *ipsecScene {
 	t.Helper()
 
-	s := newIPsecSceneAt(t, loopback, policy, kernel, store, transport.Config{}, opts...)
+	s := newIPsecSceneAt(t, loopback, policy, kernel, store, transaction.Config{}, opts...)
 	s.kernel = kernel
 	s.ue = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	return s
 }
 
-func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, tc transport.Config,
+// newIPsecSceneAt starts the scene at addr, with the layer of lc: its transport and tracer provider.
+func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, lc transaction.Config,
 	opts ...func(*Config),
 ) *ipsecScene {
 	t.Helper()
@@ -104,7 +105,14 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 
 	layer, fallback := siptest.NewLayer(t, transaction.Config{
 		Handler: s.late, Logger: slog.New(slog.DiscardHandler), Filter: s.late.filter, ResponseFlow: s.late.responseFlow,
-		Transport: tc,
+		Transport: lc.Transport, TracerProvider: lc.TracerProvider,
+		SpanLinks: func(req *sip.Request) []trace.SpanContext {
+			if p := s.late.h.Load(); p != nil {
+				return p.SpanLinks(req)
+			}
+
+			return nil
+		},
 	})
 	s.layer = layer
 	s.pcscf = siptest.ListenLayer(t, layer, addr)
@@ -1273,7 +1281,7 @@ func TestResponsesNeverLeaveAProtectedPortInClear(t *testing.T) {
 		s.p.sas.mu.Lock()
 		for x := range s.p.sas.sets {
 			if x.set == set {
-				s.p.sas.remove(x)
+				_ = s.p.sas.remove(context.Background(), x)
 			}
 		}
 		s.p.sas.mu.Unlock()

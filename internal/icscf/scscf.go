@@ -85,6 +85,9 @@ func (i *ICSCF) target(in sip.Flow, u sip.URI) (proxy.Target, bool) {
 // address the URI resolves to (RFC 3263 §4) in that address family and in the trust domain. The trust domain goes by
 // the address, whatever the form of the URI.
 func (i *ICSCF) serverTarget(ctx context.Context, in sip.Flow, u sip.URI) (proxy.Target, error) {
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
 	servers, err := i.cfg.Resolver.Resolve(ctx, u)
 	if err != nil {
 		return proxy.Target{}, err

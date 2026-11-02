@@ -1,6 +1,7 @@
 package affiliation
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
@@ -46,8 +47,9 @@ type Request struct {
 //
 // The publications are not those of ua.PublicationStore: its resource is the Request-URI, the PSI, where here it is
 // the served MCPTT ID of the body (step 1), and §9.2.1.2 NOTE 4 deviates from RFC 3903: the client's affiliations,
-// not the publication, are the state, and a later publication replaces them whatever its entity-tag.
-func (p *Participating) HandlePublish(r Request, bs Bindings) {
+// not the publication, are the state, and a later publication replaces them whatever its entity-tag. ctx is the
+// PUBLISH's, whose trace the change follows, after its response.
+func (p *Participating) HandlePublish(ctx context.Context, r Request, bs Bindings) {
 	req := r.Message()
 	snap := r.Config
 
@@ -145,21 +147,21 @@ func (p *Participating) HandlePublish(r Request, bs Bindings) {
 		return
 	// A refresh of a publication without state (RFC 3903 §6 step 5).
 	case doc == nil && expires != 0:
-		p.Publish(r.Now, Publication{User: u, Client: clientID, Groups: p.current(r.Now, id, clientID), Expires: MaxExpires}, next)
+		p.Publish(ctx, r.Now, Publication{User: u, Client: clientID, Groups: p.current(r.Now, id, clientID), Expires: MaxExpires}, next)
 	default:
 		var pid string
 		if doc != nil {
 			pid = doc.pid
 		}
 
-		p.Publish(r.Now, Publication{
+		p.Publish(ctx, r.Now, Publication{
 			User: u, Client: clientID, Groups: groups, PID: pid, Expires: time.Duration(expires) * time.Second,
 		}, next)
 	}
 
 	// A log-off of the client between Resolve and Publish, by another strand, found nothing to remove.
 	if !bs.Bound(id, clientID) {
-		p.LogOff(r.Now, id, clientID)
+		p.LogOff(ctx, r.Now, id, clientID)
 	}
 }
 

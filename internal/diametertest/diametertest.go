@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const openTimeout = 10 * time.Second
@@ -21,7 +24,9 @@ type Config struct {
 	Handler  diameter.Handler
 
 	OnPeerStateChange func(diameter.PeerStatus)
-	Logger            *slog.Logger
+	// TracerProvider traces the node's requests; none when nil, never the global provider.
+	TracerProvider trace.TracerProvider
+	Logger         *slog.Logger
 }
 
 func newNode(t testing.TB, cfg Config) *diameter.Node {
@@ -35,12 +40,18 @@ func newNode(t testing.TB, cfg Config) *diameter.Node {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
+	// The node would otherwise trace with the global provider.
+	if cfg.TracerProvider == nil {
+		cfg.TracerProvider = noop.NewTracerProvider()
+	}
+
 	cfg.Peer.Transports = []diameter.Transport{diameter.TransportTCP}
 
 	node, err := diameter.New(diameter.Config{
 		Identity:          cfg.Identity,
 		Handler:           cfg.Handler,
 		OnPeerStateChange: cfg.OnPeerStateChange,
+		TracerProvider:    cfg.TracerProvider,
 		Logger:            cfg.Logger,
 	})
 	if err != nil {
@@ -111,12 +122,26 @@ func WaitOpen(t testing.TB, node *diameter.Node, peerID string) {
 	}
 }
 
+// Loop is a Diameter client whose requests Handler answers in memory. As a node's handler, Handler gets a context of
+// its own, not the caller's: the lifetime of the loop, until Close, and the caller's span context as a remote parent,
+// with a server span when TracerProvider is set. A caller that gives up gets its context's error, while Handler runs
+// on; a nil answer is none.
 type Loop struct {
 	Local   diameter.Identity
 	Handler func(ctx context.Context, req *diameter.Message) *diameter.Message
+	// TracerProvider, when set, gives each request a server span, as a node does.
+	TracerProvider trace.TracerProvider
 
 	down atomic.Bool
 	seq  atomic.Uint64
+
+	once   sync.Once
+	life   context.Context
+	cancel context.CancelFunc
+
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
 }
 
 func (l *Loop) Identity() diameter.Identity {
@@ -129,6 +154,24 @@ func (l *Loop) NewSessionID() string {
 
 func (l *Loop) SetDown(down bool) {
 	l.down.Store(down)
+}
+
+func (l *Loop) lifetime() context.Context {
+	l.once.Do(func() { l.life, l.cancel = context.WithCancel(context.Background()) })
+
+	return l.life
+}
+
+// Close ends the lifetime of the handlers and waits for them to return. The loop is then not connected.
+func (l *Loop) Close() {
+	l.lifetime()
+
+	l.mu.Lock()
+	l.closed = true
+	l.mu.Unlock()
+
+	l.cancel()
+	l.wg.Wait()
 }
 
 func (l *Loop) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
@@ -144,13 +187,58 @@ func (l *Loop) Send(ctx context.Context, req *diameter.Message, _ ...diameter.Re
 		return nil, err
 	}
 
-	ans := l.Handler(ctx, in)
-	if ans == nil {
-		<-ctx.Done()
+	answer := make(chan *diameter.Message, 1)
+
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil, diameter.ErrNotConnected
+	}
+
+	l.wg.Add(1)
+	l.mu.Unlock()
+
+	go func() {
+		defer l.wg.Done()
+
+		answer <- l.serve(ctx, in)
+	}()
+
+	select {
+	case ans := <-answer:
+		if ans != nil {
+			return roundTrip(ans)
+		}
+	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 
-	return roundTrip(ans)
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+// serve runs Handler as a node does: in the loop's lifetime, the caller's span context its remote parent.
+func (l *Loop) serve(caller context.Context, req *diameter.Message) *diameter.Message {
+	ctx := l.lifetime()
+	if sc := trace.SpanContextFromContext(caller); sc.IsValid() {
+		ctx = trace.ContextWithRemoteSpanContext(ctx, sc)
+	}
+
+	if l.TracerProvider == nil {
+		return l.Handler(ctx, req)
+	}
+
+	name := "diameter"
+	if n, ok := diameter.Method(req.ApplicationID, req.CommandCode); ok {
+		name = n
+	}
+
+	ctx, span := l.TracerProvider.Tracer("github.com/ellanetworks/ims/internal/diametertest").Start(ctx, name,
+		trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
+	return l.Handler(ctx, req)
 }
 
 func roundTrip(m *diameter.Message) (*diameter.Message, error) {

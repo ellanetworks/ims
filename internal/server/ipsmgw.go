@@ -24,7 +24,7 @@ var errNoCore = errors.New("the IMS core is restarting")
 // IMS.
 func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 	a, err := ipsmgw.Start(ctx, ipsmgw.Config{
-		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network}, HomeDomain: homeDomain,
+		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain,
 		Store:   s.database,
 		Metrics: s.metrics.ipsmgw,
 		HSS:     shClient{s}, SMSCs: smscClient{s}, Router: s6cClient{s}, Nodes: nodesClient{s}, Number: func() string { return s.settings.Get().IPSMGW.Number }, Logger: s.Logger,
@@ -50,22 +50,23 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 	s.ases.resolver.Set(ipsmgw.Host(s.ipsmgwHomeDomain), nil)
 
 	if err := a.Shutdown(ctx); err != nil {
-		s.Logger.Warn("failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
+		s.Logger.WarnContext(ctx, "failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
 	}
 }
 
 // resubscribeIPSMGW has the IP-SM-GW, if it runs, subscribe to the reg event package of its registrations of no
 // subscription, now that a core runs to take the SUBSCRIBEs.
-func (s *Server) resubscribeIPSMGW() {
+func (s *Server) resubscribeIPSMGW(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
-		a.Resubscribe()
+		a.Resubscribe(ctx)
 	}
 }
 
-// ipsmgwNumberChanged has the IP-SM-GW, if it runs, register the new number of the settings at the HSS.
-func (s *Server) ipsmgwNumberChanged() {
+// ipsmgwNumberChanged has the IP-SM-GW, if it runs, register the new number of the settings at the HSS. ctx is the
+// trace of the change.
+func (s *Server) ipsmgwNumberChanged(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
-		a.NumberChanged()
+		a.NumberChanged(ctx)
 	}
 }
 

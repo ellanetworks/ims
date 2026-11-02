@@ -1,6 +1,7 @@
 package ua_test
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestRefreshBodies(t *testing.T) {
 	refresh := func(c ua.Change) *sip.Request {
 		t.Helper()
 
-		if err := s.Refresh(c, nil); err != nil {
+		if err := s.Refresh(context.Background(), c, nil); err != nil {
 			t.Fatal(err)
 		}
 
@@ -120,7 +121,7 @@ func TestRefreshBodies(t *testing.T) {
 		t.Errorf("refresh with a Change: body %q, %d Content-Type", req.Body, req.Header.Count("Content-Type"))
 	}
 
-	if err := s.Unsubscribe(ua.Change{}); err != nil {
+	if err := s.Unsubscribe(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,7 +150,7 @@ func TestChallengedRefresh(t *testing.T) {
 	}), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
 
-	_ = s.Refresh(ua.Change{}, nil)
+	_ = s.Refresh(context.Background(), ua.Change{}, nil)
 
 	n.respond(n.recvSubscribe(), 401, "")
 
@@ -166,7 +167,7 @@ func TestUnsubscribeWaitsAndFails(t *testing.T) {
 	sb, n := newSubscriber(t, clock), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
 
-	_ = s.Unsubscribe(ua.Change{})
+	_ = s.Unsubscribe(context.Background(), ua.Change{})
 
 	n.respond(n.recvSubscribe(), 200, "0")
 
@@ -185,7 +186,7 @@ func TestUnsubscribeWaitsAndFails(t *testing.T) {
 	sb2, n2 := newSubscriber(t, nil), newNotifier(t)
 	s2 := active(t, sb2, n2, "600", "active")
 
-	_ = s2.Unsubscribe(ua.Change{})
+	_ = s2.Unsubscribe(context.Background(), ua.Change{})
 
 	n2.respond(n2.recvSubscribe(), 500, "")
 
@@ -275,7 +276,7 @@ func TestIntervalTooBriefSubscription(t *testing.T) {
 	n.notify(n.tag, "active")
 	sb.next("notify")
 
-	_ = s.Refresh(ua.Change{}, nil)
+	_ = s.Refresh(context.Background(), ua.Change{}, nil)
 
 	tooBrief(n.recvSubscribe())
 
@@ -292,7 +293,7 @@ func TestRefreshWithoutNotify(t *testing.T) {
 
 	done, f := results()
 
-	_ = s.Refresh(ua.Change{}, f)
+	_ = s.Refresh(context.Background(), ua.Change{}, f)
 
 	n.respond(n.recvSubscribe(), 204, "600")
 
@@ -330,7 +331,7 @@ func TestDrop(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
 
-	s.Drop()
+	s.Drop(context.Background())
 
 	if e := sb.next("ended"); e.end.Cause != ua.EndDropped {
 		t.Errorf("ended %+v", e.end)
@@ -373,7 +374,7 @@ func TestSubscriptionDialogRequests(t *testing.T) {
 
 	sb.none()
 
-	_ = s.Refresh(ua.Change{}, nil)
+	_ = s.Refresh(context.Background(), ua.Change{}, nil)
 
 	n.respond(n.recvSubscribe(), 404, "")
 

@@ -598,7 +598,7 @@ func (u *UE) flowFailed(err error) {
 		return
 	}
 
-	u.agent.Drop(func(sip.Flow) bool { return true })
+	u.agent.Drop(context.Background(), func(sip.Flow) bool { return true })
 
 	if bound {
 		u.event(Event{Deregistered: DeregisteredFlowFailed, Err: err})
@@ -777,6 +777,7 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 		return
 	}
 
+	// The refresh is a trace of its own: the timer is its cause.
 	u.reregTimer = u.layer.Clock().AfterFunc(reregisterIn(remaining), func() {
 		err := u.Reregister(context.Background())
 		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {

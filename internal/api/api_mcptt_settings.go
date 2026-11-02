@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math"
@@ -15,7 +16,7 @@ import (
 
 // writeMCPTTSettingsError answers a failed change of settings: with its problems for the client's mistakes, each at the
 // field of the request body, own of the body's document, or with a generic message if it could not be saved.
-func writeMCPTTSettingsError(w http.ResponseWriter, err error, failed string, own func(string) string, logger *slog.Logger) {
+func writeMCPTTSettingsError(ctx context.Context, w http.ResponseWriter, err error, failed string, own func(string) string, logger *slog.Logger) {
 	status := http.StatusInternalServerError
 
 	switch {
@@ -29,7 +30,7 @@ func writeMCPTTSettingsError(w http.ResponseWriter, err error, failed string, ow
 
 	var ce *mcpttsettings.ChangeError
 	if status == http.StatusInternalServerError || !errors.As(err, &ce) {
-		writeError(w, http.StatusInternalServerError, failed, err, logger)
+		writeError(ctx, w, http.StatusInternalServerError, failed, err, logger)
 		return
 	}
 
@@ -45,12 +46,12 @@ func writeMCPTTSettingsError(w http.ResponseWriter, err error, failed string, ow
 		msgs[i] = p.Error()
 	}
 
-	writeError(w, status, strings.Join(msgs, "; "), nil, logger)
+	writeError(ctx, w, status, strings.Join(msgs, "; "), nil, logger)
 }
 
 // invalidMCPTT answers a request body invalid by itself.
-func invalidMCPTT(w http.ResponseWriter, message string, logger *slog.Logger) {
-	writeError(w, http.StatusBadRequest, message, nil, logger)
+func invalidMCPTT(ctx context.Context, w http.ResponseWriter, message string, logger *slog.Logger) {
+	writeError(ctx, w, http.StatusBadRequest, message, nil, logger)
 }
 
 // mcpttPrefixes are the paths of the settings that are another path of the request bodies, longest first.

@@ -83,7 +83,7 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: p.addr.Addr().String(), Port: p.addr.Port()}},
 		Policy:  ua.ClientPolicy,
 		Allow:   append(slices.Clone(ua.Methods), "INFO", "MESSAGE", "REFER", "NOTIFY", "SUBSCRIBE"),
-		OnInvite: func(r *ua.Request) ua.Handler {
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			p.record(event{kind: "invite", req: r})
 
 			p.mu.Lock()
@@ -153,16 +153,20 @@ func (p *peer) record(e event) {
 
 func (p *peer) handler() ua.Handler {
 	return ua.Handler{
-		Progress:    func(s *ua.Session, res *sip.Response) { p.record(event{kind: "progress", s: s, res: res}) },
-		Established: func(s *ua.Session, _ sip.Message) { p.record(event{kind: "established", s: s}) },
-		Answer:      func(s *ua.Session, sdp []byte) { p.record(event{kind: "answer", s: s, sdp: sdp}) },
-		Offer:       func(s *ua.Session, o *ua.Offer) { p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()}) },
-		Request:     func(s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
-		Cancelled: func(s *ua.Session, r *ua.Request, _ *sip.Request) {
+		Progress: func(_ context.Context, s *ua.Session, res *sip.Response) {
+			p.record(event{kind: "progress", s: s, res: res})
+		},
+		Established: func(_ context.Context, s *ua.Session, _ sip.Message) { p.record(event{kind: "established", s: s}) },
+		Answer:      func(_ context.Context, s *ua.Session, sdp []byte) { p.record(event{kind: "answer", s: s, sdp: sdp}) },
+		Offer: func(_ context.Context, s *ua.Session, o *ua.Offer) {
+			p.record(event{kind: "offer", s: s, offer: o, sdp: o.SDP()})
+		},
+		Request: func(_ context.Context, s *ua.Session, r *ua.Request) { p.record(event{kind: "request", s: s, req: r}) },
+		Cancelled: func(_ context.Context, s *ua.Session, r *ua.Request, _ *sip.Request) {
 			p.record(event{kind: "cancelled", s: s, req: r})
 		},
-		Ended: func(s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
-		Failed: func(o *ua.Outgoing, res *sip.Response, err error) {
+		Ended: func(_ context.Context, s *ua.Session, e ua.End) { p.record(event{kind: "ended", s: s, end: e}) },
+		Failed: func(_ context.Context, o *ua.Outgoing, res *sip.Response, err error) {
 			p.record(event{kind: "failed", res: res, err: err})
 		},
 	}
@@ -245,7 +249,7 @@ func (p *peer) invite(to *peer, sdp string) *ua.Outgoing {
 		req.SetBodies(ua.SDP([]byte(sdp)))
 	}
 
-	o, err := p.a.Invite(req, p.handler())
+	o, err := p.a.Invite(context.Background(), req, p.handler())
 	if err != nil {
 		p.t.Fatal(err)
 	}
@@ -328,7 +332,7 @@ func TestCall(t *testing.T) {
 		t.Errorf("dialog IDs %+v %+v", as.ID(), bs.ID())
 	}
 
-	if err := bs.Bye(ua.Change{}, nil); err != nil {
+	if err := bs.Bye(context.Background(), ua.Change{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -396,7 +400,7 @@ func TestLateOffer(t *testing.T) {
 		t.Fatalf("offer %q", o.sdp)
 	}
 
-	if err := o.offer.Answer(ua.Change{Bodies: sdpOf("answer-a")}); err != nil {
+	if err := o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("answer-a")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -421,7 +425,7 @@ func TestCancel(t *testing.T) {
 
 	alice.next("progress")
 
-	if err := o.Cancel(ua.Reasons(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}})); err != nil {
+	if err := o.Cancel(context.Background(), ua.Reasons(sip.Reason{Protocol: "SIP", Params: sip.Params{{Name: "cause", Value: "200"}}})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -476,7 +480,7 @@ func TestReinviteAndUpdate(t *testing.T) {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-2")}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -498,7 +502,7 @@ func TestReinviteAndUpdate(t *testing.T) {
 	}
 
 	// An UPDATE without an offer is answered by the agent.
-	if err := as.Update(ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Update(context.Background(), ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -510,13 +514,13 @@ func TestReinviteAndUpdate(t *testing.T) {
 
 	// An UPDATE with an offer goes to the application. A second one waits for it; once the first exchange
 	// completed, its offer no longer builds on the session (RFC 3264 §8): it goes stale, unsent.
-	if err := as.Update(ua.Change{Bodies: sdpOf("offer-3")}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
 	stale := make(chan error, 1)
 
-	if err := as.Update(ua.Change{Bodies: sdpOf("offer-4")}, func(_ *sip.Response, err error) { stale <- err }); err != nil {
+	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf("offer-4")}, func(_ *sip.Response, err error) { stale <- err }); err != nil {
 		t.Fatalf("second offer: %v", err)
 	}
 
@@ -551,7 +555,7 @@ func TestOtherRequests(t *testing.T) {
 
 	done := make(chan *sip.Response, 1)
 
-	if err := as.Send("INFO", ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
+	if err := as.Send(context.Background(), "INFO", ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -566,7 +570,7 @@ func TestOtherRequests(t *testing.T) {
 		t.Fatalf("INFO %d", res.StatusCode)
 	}
 
-	if err := as.Send("BYE", ua.Change{}, nil); err == nil {
+	if err := as.Send(context.Background(), "BYE", ua.Change{}, nil); err == nil {
 		t.Error("BYE through Send")
 	}
 }
@@ -613,7 +617,7 @@ func TestForking(t *testing.T) {
 	req.Header.Add("To", "<"+uri.String()+">")
 	req.SetBodies(ua.SDP([]byte("offer-1")))
 
-	if _, err := alice.a.Invite(req, alice.handler()); err != nil {
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -811,19 +815,19 @@ func TestGlare(t *testing.T) {
 
 			if build {
 				builds := 0
-				err = as.Modify(ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
+				err = as.Modify(context.Background(), ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
 					builds++
 					return ua.Change{Bodies: sdpOf(fmt.Sprint("offer-a", builds))}, nil
 				}}, result("alice"))
 			} else {
-				err = as.Reinvite(ua.Change{Bodies: sdpOf("offer-a")}, result("alice"))
+				err = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-a")}, result("alice"))
 			}
 
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if err := bs.Reinvite(ua.Change{Bodies: sdpOf("offer-b")}, result("bob")); err != nil {
+			if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-b")}, result("bob")); err != nil {
 				t.Fatal(err)
 			}
 

@@ -62,16 +62,20 @@ func (sb *subscriber) record(e subEvent) {
 
 func (sb *subscriber) handler() ua.SubscriptionHandler {
 	return ua.SubscriptionHandler{
-		Accepted: func(s *ua.Subscription, res *sip.Response) { sb.record(subEvent{kind: "accepted", s: s, res: res}) },
-		Notify: func(s *ua.Subscription, r *ua.Request) {
+		Accepted: func(_ context.Context, s *ua.Subscription, res *sip.Response) {
+			sb.record(subEvent{kind: "accepted", s: s, res: res})
+		},
+		Notify: func(_ context.Context, s *ua.Subscription, r *ua.Request) {
 			sb.record(subEvent{kind: "notify", s: s, notify: r.Message()})
 
 			if code := sb.verdict.Load(); code != 0 {
 				_ = r.Respond(ua.Reply{Code: int(code)})
 			}
 		},
-		Forked: func(*ua.Subscription, *sip.Request) bool { return sb.fork.Load() },
-		Ended:  func(s *ua.Subscription, e ua.End) { sb.record(subEvent{kind: "ended", s: s, end: e}) },
+		Forked: func(context.Context, *ua.Subscription, *sip.Request) bool { return sb.fork.Load() },
+		Ended: func(_ context.Context, s *ua.Subscription, e ua.End) {
+			sb.record(subEvent{kind: "ended", s: s, end: e})
+		},
 	}
 }
 
@@ -136,7 +140,7 @@ func (sb *subscriber) subscribeWith(n *notifier, bodies []sip.BodyPart) *ua.Subs
 	req.Header.Add("Expires", "600")
 	req.SetBodies(bodies...)
 
-	s, err := sb.p.a.Subscribe(req, sb.handler())
+	s, err := sb.p.a.Subscribe(context.Background(), req, sb.handler())
 	if err != nil {
 		sb.t.Fatal(err)
 	}
@@ -373,7 +377,7 @@ func TestUnsubscribe(t *testing.T) {
 	n.notify(n.tag, "active;expires=600")
 	sb.next("notify")
 
-	if err := s.Unsubscribe(ua.Change{}); err != nil {
+	if err := s.Unsubscribe(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -390,7 +394,7 @@ func TestUnsubscribe(t *testing.T) {
 		t.Errorf("ended %+v", e.end)
 	}
 
-	if err := s.Unsubscribe(ua.Change{}); err == nil {
+	if err := s.Unsubscribe(context.Background(), ua.Change{}); err == nil {
 		t.Error("Unsubscribe of an ended subscription")
 	}
 }
@@ -410,7 +414,7 @@ func TestRefreshFailures(t *testing.T) {
 
 		done, f := results()
 
-		if err := s.Refresh(ua.Change{}, f); err != nil {
+		if err := s.Refresh(context.Background(), ua.Change{}, f); err != nil {
 			t.Fatal(err)
 		}
 
@@ -520,7 +524,7 @@ func TestUnsubscribeBeforeNotify(t *testing.T) {
 	n.respond(n.recvSubscribe(), 200, "600")
 	sb.next("accepted")
 
-	if err := s.Unsubscribe(ua.Change{}); err != nil {
+	if err := s.Unsubscribe(context.Background(), ua.Change{}); err != nil {
 		t.Fatal(err)
 	}
 

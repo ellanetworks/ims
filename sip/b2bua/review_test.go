@@ -2,6 +2,7 @@ package b2bua_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestEndBeforeTheAck(t *testing.T) {
 	bs := bob.next("established").s
 
 	// Bob hangs up before alice's ACK.
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	bob.next("ended")
 
@@ -115,7 +116,7 @@ func TestEndWith2xxHeld(t *testing.T) {
 	_ = in.Accept()
 
 	bs := bob.next("established").s
-	_ = bs.Bye(ua.Change{}, nil)
+	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	bob.next("ended")
 
@@ -164,7 +165,7 @@ func TestAnswerRepeatedIn2xx(t *testing.T) {
 func TestEarlyByeOfTheCaller(t *testing.T) {
 	alice, bob, first, fork, a1, a2 := forkedCall(t)
 
-	_ = a1.Bye(ua.Change{}, nil)
+	_ = a1.Bye(context.Background(), ua.Change{}, nil)
 
 	if e := bob.next("ended"); e.s != first.Session() {
 		t.Fatalf("bob's other dialog ended: %+v", e.end)
@@ -213,7 +214,7 @@ func TestPlainLegLives(t *testing.T) {
 	}
 
 	done := make(chan *sip.Response, 1)
-	_ = as.Send("OPTIONS", ua.Change{}, func(res *sip.Response, _ error) { done <- res })
+	_ = as.Send(context.Background(), "OPTIONS", ua.Change{}, func(res *sip.Response, _ error) { done <- res })
 
 	n.Quiesce()
 
@@ -228,7 +229,7 @@ func TestEarlyUpdateInItsMirror(t *testing.T) {
 	f := forkedCallOf(t)
 	alice, fork, a2 := f.alice, f.fork, f.a2
 
-	_ = fork.Session().Update(ua.Change{Bodies: sdpOf("offer-3")}, nil)
+	_ = fork.Session().Update(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, nil)
 
 	e := alice.next("request")
 	if e.s != a2 || e.req.Message().Method != "UPDATE" {
@@ -253,9 +254,9 @@ func TestOwnOfferOnARelayedLeg(t *testing.T) {
 	st.Post(func() {
 		defer close(done)
 
-		rel.B().SetHandler(b2bua.LegHandler{Offer: func(_ *b2bua.Leg, _ *ua.Session, o *ua.Offer) { offers <- o }})
+		rel.B().SetHandler(b2bua.LegHandler{Offer: func(_ context.Context, _ *b2bua.Leg, _ *ua.Session, o *ua.Offer) { offers <- o }})
 
-		if err := rel.B().Session().Reinvite(ua.Change{}, nil); err != nil {
+		if err := rel.B().Session().Reinvite(context.Background(), ua.Change{}, nil); err != nil {
 			t.Error(err)
 		}
 	})
@@ -270,7 +271,7 @@ func TestOwnOfferOnARelayedLeg(t *testing.T) {
 			t.Errorf("offer %q", o.SDP())
 		}
 
-		_ = o.Answer(ua.Change{Bodies: sdpOf("offer-1")})
+		_ = o.Answer(context.Background(), ua.Change{Bodies: sdpOf("offer-1")})
 	default:
 		t.Fatal("the application did not get the offer")
 	}
@@ -285,7 +286,7 @@ func TestReasonOfTheBye(t *testing.T) {
 	as, _ := bridged(t, alice, bob)
 
 	reason, _ := sip.NewReason("SIP", 200, "user ended")
-	_ = as.Bye(ua.Reasons(reason), nil)
+	_ = as.Bye(context.Background(), ua.Reasons(reason), nil)
 
 	e := bob.next("ended")
 	if e.end.Request == nil || e.end.Request.Header.Get("Reason") == "" {
@@ -305,7 +306,7 @@ func TestBridgeKeepsTheApplicationBodies(t *testing.T) {
 
 	b = newParty(t, n, "b2b", func(c *ua.Config) {
 		c.Policy = ua.Policy{}
-		c.OnInvite = func(r *ua.Request) ua.Handler {
+		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
 			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{})
 
 			uri, _ := sip.ParseURI(bob.uri())
@@ -314,7 +315,7 @@ func TestBridgeKeepsTheApplicationBodies(t *testing.T) {
 			out.Header.Add("To", "<"+bob.uri()+">")
 			out.SetBodies(own)
 
-			_, _ = b2bua.Bridge(call, r, out, b2bua.RelayConfig{})
+			_, _ = b2bua.Bridge(context.Background(), call, r, out, b2bua.RelayConfig{})
 
 			return ua.Handler{}
 		}
@@ -331,7 +332,7 @@ func TestBridgeKeepsTheApplicationBodies(t *testing.T) {
 	req.SetBodies(ua.SDP([]byte("offer-1")),
 		sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo>client</mcpttinfo>")), lists)
 
-	_, _ = alice.a.Invite(req, alice.handler())
+	_, _ = alice.a.Invite(context.Background(), req, alice.handler())
 
 	parts, _ := bob.next("invite").req.Message().Content().Parts()
 

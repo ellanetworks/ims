@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const quiet = 50 * time.Millisecond
@@ -52,6 +53,9 @@ type routerConfig struct {
 
 	track    bool
 	lifetime time.Duration
+
+	// tp traces the router's layer, whose requests then link to their dialogs (Proxy.SpanLinks).
+	tp trace.TracerProvider
 }
 
 var recordRoute = &proxy.RecordRoute{}
@@ -72,11 +76,16 @@ func newRouter(t *testing.T, addr netip.Addr, cfg routerConfig) *router {
 	if cfg.track {
 		r.dialogs = make(chan *proxy.Dialog, 16)
 		r.events = make(chan proxy.DialogEvent, 64)
-		pc.OnDialog = func(e proxy.DialogEvent) { r.events <- e }
+		pc.OnDialog = func(_ context.Context, e proxy.DialogEvent) { r.events <- e }
 	}
 
 	if cfg.clock != nil {
 		tc.Clock, pc.Clock = cfg.clock, cfg.clock
+	}
+
+	if cfg.tp != nil {
+		tc.TracerProvider = cfg.tp
+		tc.SpanLinks = func(req *sip.Request) []trace.SpanContext { return r.p.SpanLinks(req) }
 	}
 
 	r.l, _ = siptest.NewLayer(t, tc)
@@ -91,7 +100,7 @@ func (r *router) uri() string {
 	return "sip:" + r.local.String()
 }
 
-func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Request) {
+func (r *router) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if res := r.p.Check(req); res != nil {
 		_ = tx.Respond(res)
 		return
@@ -116,7 +125,7 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 
 	opts := r.opts
 	if r.onReply != nil {
-		opts.OnReply = func(rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
+		opts.OnReply = func(_ context.Context, rep proxy.Reply) proxy.Verdict { return r.onReply(tx, out, rep) }
 	}
 
 	if r.track {
@@ -134,7 +143,7 @@ func (r *router) HandleRequest(tx *transaction.ServerTransaction, req *sip.Reque
 		local = *o
 	}
 
-	err = r.p.Forward(tx, out, r.target(out, local), opts)
+	err = r.p.Forward(ctx, tx, out, r.target(out, local), opts)
 
 	var serr *sip.StatusError
 
@@ -166,13 +175,13 @@ func (r *router) target(out *sip.Request, local netip.AddrPort) proxy.Target {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: local, Remote: to}, SentBy: *r.sentBy.Load()}
 }
 
-func (r *router) HandleCancel(tx *transaction.ServerTransaction, cancel *sip.Request) {
-	r.p.Cancel(tx, cancel)
+func (r *router) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
+	r.p.Cancel(context.Background(), tx, cancel)
 
 	r.cancelled <- struct{}{}
 }
 
-func (r *router) HandleAck(ack *sip.Request) {
+func (r *router) HandleAck(ctx context.Context, ack *sip.Request) {
 	out, removed, err := r.p.Preprocess(ack)
 	if err != nil {
 		r.t.Error(err)
@@ -184,7 +193,7 @@ func (r *router) HandleAck(ack *sip.Request) {
 		d = r.p.Dialog(removed)
 	}
 
-	if err := r.p.ForwardAck(out, r.target(out, ack.Flow.Local), d); err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
+	if err := r.p.ForwardAck(context.Background(), out, r.target(out, ack.Flow.Local), d); err != nil && !errors.Is(err, proxy.ErrDialogEnded) {
 		r.t.Error(err)
 	}
 }
@@ -238,7 +247,7 @@ func (r *router) noEvent() {
 	}
 }
 
-func (r *router) HandleTransactionError(_ *transaction.ServerTransaction, err error) {
+func (r *router) HandleTransactionError(ctx context.Context, _ *transaction.ServerTransaction, err error) {
 	if !errors.Is(err, transaction.ErrClosed) && !errors.Is(err, transaction.ErrTimeout) {
 		r.t.Error(err)
 	}

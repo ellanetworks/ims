@@ -21,6 +21,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/pidfmc"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -68,6 +69,8 @@ type Participating struct {
 	owner Owner
 	log   *slog.Logger
 	store Store
+	// life is the lifetime of the writes to the store, which outlive the requests that caused them.
+	life context.Context
 
 	// saving serializes the writes to the store, each of the state after the one before it.
 	saving sync.Mutex
@@ -143,7 +146,7 @@ func NewParticipating(owner Owner, log *slog.Logger) *Participating {
 	}
 
 	return &Participating{
-		owner: owner, log: log, users: map[string]*user{}, etags: map[string]clientRef{}, last: map[groupRef]uint64{},
+		owner: owner, log: log, life: context.Background(), users: map[string]*user{}, etags: map[string]clientRef{}, last: map[groupRef]uint64{},
 		dirty: map[clientRef]sip.URI{},
 	}
 }
@@ -167,14 +170,15 @@ type Record struct {
 	PIDs []string
 }
 
-// SetStore makes the state kept in store, from its next change; before the state is used.
-func (p *Participating) SetStore(store Store) { p.store = store }
+// SetStore makes the state kept in store, from its next change, by writes bound to life, the server's lifetime; before
+// the state is used.
+func (p *Participating) SetStore(life context.Context, store Store) { p.store, p.life = store, life }
 
 // Restore puts the affiliations of records not expired, of the clients bound reports bound, and publishes them to
 // the owner, as the changes that made them did: its outcome makes them affiliated, or removes those it refuses, of a
 // group no longer configured or of a user no longer a member of it. The records of the others are removed. Before the
 // state is used.
-func (p *Participating) Restore(now time.Time, records []Record, bound func(id sip.URI, client string) bool) {
+func (p *Participating) Restore(ctx context.Context, now time.Time, records []Record, bound func(id sip.URI, client string) bool) {
 	var jobs []job
 
 	p.mu.Lock()
@@ -229,14 +233,14 @@ func (p *Participating) Restore(now time.Time, records []Record, bound func(id s
 
 	p.mu.Unlock()
 
-	p.flush(now, jobs)
-	p.persist(now)
+	p.flush(ctx, now, jobs)
+	p.persist(ctx, now)
 }
 
 // Revoke removes the entries of the groups eligible no longer reports eligible for their users (TS 24.379 §9.2.2.3.8),
 // of a change of the settings: a group deleted, or a member removed from it. The server owning the group removed them
 // already (Controlling.Revoke).
-func (p *Participating) Revoke(now time.Time, eligible func(group, user sip.URI) bool) {
+func (p *Participating) Revoke(ctx context.Context, now time.Time, eligible func(group, user sip.URI) bool) {
 	p.mu.Lock()
 
 	for _, u := range p.users {
@@ -252,7 +256,7 @@ func (p *Participating) Revoke(now time.Time, eligible func(group, user sip.URI)
 
 	p.mu.Unlock()
 
-	p.persist(now)
+	p.persist(ctx, now)
 }
 
 // touch marks client of u changed, for the store, if any. Called with p.mu held.
@@ -262,9 +266,10 @@ func (p *Participating) touch(u *user, client string) {
 	}
 }
 
-// persist writes the clients changed to the store, if any: their affiliations of a Record, outside the lock. A write
-// that fails is logged, and its clients written with the next change.
-func (p *Participating) persist(now time.Time) {
+// persist writes the clients changed to the store, if any: their affiliations of a Record, outside the lock, in the
+// trace of ctx, what changed them, bounded by the lifetime of the store and saveTimeout: the request of the change
+// may be answered already. A write that fails is logged, and its clients written with the next change.
+func (p *Participating) persist(ctx context.Context, now time.Time) {
 	p.mu.Lock()
 	clean := len(p.dirty) == 0
 	p.mu.Unlock()
@@ -305,11 +310,11 @@ func (p *Participating) persist(now time.Time) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), saveTimeout)
+	ctx, cancel := context.WithTimeout(lifetime.With(p.life, ctx), saveTimeout)
 	defer cancel()
 
 	if err := p.store.SaveAffiliations(ctx, records); err != nil {
-		p.log.Warn("affiliations not saved", slog.Int("clients", len(records)), slog.Any("error", err))
+		p.log.WarnContext(ctx, "affiliations not saved", slog.Int("clients", len(records)), slog.Any("error", err))
 
 		p.mu.Lock()
 
@@ -405,9 +410,9 @@ type Publication struct {
 // client's publication, none of an expiration of zero (RFC 3903 §6 step 5: no state is stored). N2 is enforced by
 // the policy of step 14 c: the groups the user is affiliated to already stay, the new ones go, the last of the
 // publication first.
-func (p *Participating) Publish(now time.Time, pub Publication, etag string) {
-	p.flush(now, p.apply(now, pub, etag))
-	p.persist(now)
+func (p *Participating) Publish(ctx context.Context, now time.Time, pub Publication, etag string) {
+	p.flush(ctx, now, p.apply(now, pub, etag))
+	p.persist(ctx, now)
 }
 
 func (p *Participating) apply(now time.Time, pub Publication, etag string) []job {
@@ -526,9 +531,9 @@ func (p *Participating) setETag(u *user, c *client, etag string) {
 // already, within N2 by the policy of step 9 c, the last groups of the configuration going first. The candidate
 // expiration interval, which the clause leaves open, is MaxExpires, as of an explicit affiliation: the affiliations
 // last until the client logs off (TS 23.280 §5.2.5).
-func (p *Participating) ImplicitConfigured(now time.Time, cfg *settings.User, clientID string) {
-	p.flush(now, p.implicitConfigured(now, cfg, clientID, nil))
-	p.persist(now)
+func (p *Participating) ImplicitConfigured(ctx context.Context, now time.Time, cfg *settings.User, clientID string) {
+	p.flush(ctx, now, p.implicitConfigured(now, cfg, clientID, nil))
+	p.persist(ctx, now)
 }
 
 // implicitConfigured affiliates client to the groups of cfg's <ImplicitAffiliations> not of had, which may be nil.
@@ -598,12 +603,12 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 // (§9.2.2.2.3 step 14 a ii) stays left through a change that does not touch it, and is affiliated again by one that
 // adds it back: the operator's latest act. The groups the client listed itself stay (§9.2.2.2.3), those of the
 // implicit affiliations of requests too (§9.2.2.2.12).
-func (p *Participating) Reconfigure(now time.Time, before, cfg *settings.User, clientID string) {
+func (p *Participating) Reconfigure(ctx context.Context, now time.Time, before, cfg *settings.User, clientID string) {
 	had := implicitKeys(before)
 
 	jobs := p.unconfigure(now, had, cfg, clientID)
-	p.flush(now, append(jobs, p.implicitConfigured(now, cfg, clientID, had)...))
-	p.persist(now)
+	p.flush(ctx, now, append(jobs, p.implicitConfigured(now, cfg, clientID, had)...))
+	p.persist(ctx, now)
 }
 
 // implicitKeys are the keys of the groups of the <ImplicitAffiliations> of u.
@@ -681,7 +686,7 @@ func (p *Participating) ImplicitAffiliate(now time.Time, cfg *settings.User, cli
 
 // CompleteImplicit is the implicit affiliation status change completion (TS 24.379 §9.2.2.2.13): the entry
 // ImplicitAffiliate added affiliated, on the 2xx of the controlling function.
-func (p *Participating) CompleteImplicit(now time.Time, id sip.URI, clientID string, group sip.URI) {
+func (p *Participating) CompleteImplicit(ctx context.Context, now time.Time, id sip.URI, clientID string, group sip.URI) {
 	p.mu.Lock()
 
 	if e := p.implicit(id, clientID, group, now); e != nil {
@@ -692,7 +697,7 @@ func (p *Participating) CompleteImplicit(now time.Time, id sip.URI, clientID str
 
 	p.mu.Unlock()
 
-	p.persist(now)
+	p.persist(ctx, now)
 }
 
 // CancelImplicit is the implicit affiliation status change cancellation (TS 24.379 §9.2.2.2.14): the entry
@@ -723,9 +728,9 @@ func (p *Participating) implicit(id sip.URI, clientID string, group sip.URI, now
 // LogOff removes the client of a user, its service authorisation gone: all its affiliations are revoked (TS 23.280
 // §5.2.5; TS 24.379 §7.3.5 step 3 NOTE), and the server owning each group it was affiliated to is told
 // (§9.2.2.2.6).
-func (p *Participating) LogOff(now time.Time, id sip.URI, clientID string) {
-	p.flush(now, p.logOff(now, id, clientID))
-	p.persist(now)
+func (p *Participating) LogOff(ctx context.Context, now time.Time, id sip.URI, clientID string) {
+	p.flush(ctx, now, p.logOff(now, id, clientID))
+	p.persist(ctx, now)
 }
 
 func (p *Participating) logOff(now time.Time, id sip.URI, clientID string) []job {
@@ -788,17 +793,17 @@ func (p *Participating) job(now time.Time, u *user, group sip.URI) job {
 // flush sends the publications of a change to the owner, outside the lock, and applies their outcomes; one made
 // stale by a publication of the user and group that followed it, which may have reached the owner first, is sent
 // again with the current clients.
-func (p *Participating) flush(now time.Time, jobs []job) {
+func (p *Participating) flush(ctx context.Context, now time.Time, jobs []job) {
 	for len(jobs) > 0 {
 		j := jobs[0]
 		jobs = jobs[1:]
 
 		held, err := p.owner.Publish(now, j.group, j.user, j.clients)
 		if err != nil {
-			p.log.Debug("affiliation refused by the server owning the group", slog.String("mcptt_id", j.user.String()),
+			p.log.DebugContext(ctx, "affiliation refused by the server owning the group", slog.String("mcptt_id", j.user.String()),
 				slog.String("group", j.group.String()), slog.Any("error", err))
 		} else {
-			p.log.Debug("affiliation published", slog.String("mcptt_id", j.user.String()), slog.String("group", j.group.String()),
+			p.log.DebugContext(ctx, "affiliation published", slog.String("mcptt_id", j.user.String()), slog.String("group", j.group.String()),
 				slog.Any("clients", held))
 		}
 

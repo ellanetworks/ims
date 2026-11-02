@@ -1,6 +1,7 @@
 package transaction
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,12 +9,15 @@ import (
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transport"
+	"go.opentelemetry.io/otel/trace"
 )
 
+// ClientHandler is the user of a client transaction. Each call's ctx is that of the request (Layer.Request), ending
+// only once the layer closes: what a response causes is part of the trace of the request.
 type ClientHandler interface {
-	HandleResponse(res *sip.Response)
+	HandleResponse(ctx context.Context, res *sip.Response)
 
-	HandleError(err error)
+	HandleError(ctx context.Context, err error)
 }
 
 type ClientTransaction struct {
@@ -27,10 +31,21 @@ type ClientTransaction struct {
 	ack    *sip.Request
 
 	cancelled bool
-	prepare   func(*sip.Request)
+	// cancelCause is the span context of what cancelled the INVITE, which its CANCEL links to.
+	cancelCause trace.SpanContext
+	prepare     func(*sip.Request)
+
+	// ctx carries the span of the transaction, the parent of its CANCEL's, and caller the trace of the request, which
+	// the handler's calls get.
+	ctx    context.Context
+	caller context.Context
+	span   span
 }
 
-func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, error) {
+// Request starts a client transaction of req, in a span of the trace of ctx. The request carries the trace context of
+// the span when its flow carries trace context (Config.TraceContext). ctx is the trace the request is part of: the
+// transaction does not end with it.
+func (l *Layer) Request(ctx context.Context, req *sip.Request, h ClientHandler) (*ClientTransaction, error) {
 	if req.Method == "ACK" {
 		return nil, ErrAck
 	}
@@ -53,8 +68,10 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 		tx.state = Calling
 	}
 
+	tx.caller = l.scope(ctx)
+
 	if h != nil {
-		tx.onError = h.HandleError
+		tx.onError = func(err error) { h.HandleError(tx.caller, err) }
 	}
 
 	tx.mu.Lock()
@@ -63,6 +80,14 @@ func (l *Layer) Request(req *sip.Request, h ClientHandler) (*ClientTransaction, 
 	if err := l.addClient(clientKey{branch: branch, method: req.Method}, tx); err != nil {
 		return nil, err
 	}
+
+	spanCtx, s := l.tracer.Start(ctx, spanName(req.Method), trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(l.requestAttributes(req)...), trace.WithLinks(linksOf(ctx)...))
+
+	tx.ctx, tx.span = spanCtx, span{Span: s}
+	tx.finish = func(err error) { tx.span.end(nil, err, clientFailed(tx.cancelled)) }
+
+	l.propagate(spanCtx, req)
 
 	if !l.reliable(req.Flow) {
 		tx.interval = l.t1
@@ -85,11 +110,12 @@ func (tx *ClientTransaction) Request() *sip.Request {
 	return tx.req.Clone()
 }
 
-// Cancel cancels the INVITE (RFC 3261 §9.1), the CANCEL carrying the extra header fields.
-func (tx *ClientTransaction) Cancel(extra ...sip.Field) error {
+// Cancel cancels the INVITE (RFC 3261 §9.1), the CANCEL carrying the extra header fields. ctx is the trace of what
+// cancels it: the CANCEL's span, a child of the INVITE's, links to it.
+func (tx *ClientTransaction) Cancel(ctx context.Context, extra ...sip.Field) error {
 	extra = slices.Clone(extra)
 
-	return tx.CancelWith(func(cancel *sip.Request) {
+	return tx.CancelWith(ctx, func(cancel *sip.Request) {
 		for _, f := range extra {
 			cancel.Header.Insert(f.Name, f.Value)
 		}
@@ -97,8 +123,8 @@ func (tx *ClientTransaction) Cancel(extra ...sip.Field) error {
 }
 
 // CancelWith cancels the INVITE (RFC 3261 §9.1), prepare, when not nil, completing the CANCEL built for it: a Reason
-// (RFC 3326), or the SDP of a precondition failure (RFC 3312 §8).
-func (tx *ClientTransaction) CancelWith(prepare func(cancel *sip.Request)) error {
+// (RFC 3326), or the SDP of a precondition failure (RFC 3312 §8). ctx is the trace of what cancels it, as for Cancel.
+func (tx *ClientTransaction) CancelWith(ctx context.Context, prepare func(cancel *sip.Request)) error {
 	if !tx.invite {
 		return ErrNotInvite
 	}
@@ -112,6 +138,7 @@ func (tx *ClientTransaction) CancelWith(prepare func(cancel *sip.Request)) error
 
 	tx.cancelled = true
 	tx.prepare = prepare
+	tx.cancelCause = trace.SpanContextFromContext(ctx)
 
 	if tx.state == Proceeding {
 		tx.sendCancel()
@@ -177,7 +204,7 @@ func (tx *ClientTransaction) sendCancel() {
 			tx.prepare(cancel)
 		}
 
-		_, err = tx.layer.Request(cancel, nil)
+		_, err = tx.layer.Request(WithLinks(tx.ctx, tx.cancelCause), cancel, nil)
 	}
 
 	if err != nil {
@@ -226,6 +253,10 @@ func (tx *ClientTransaction) handleInvite(res *sip.Response) {
 
 	switch {
 	case res.IsProvisional():
+		if res.StatusCode > 100 {
+			tx.span.event(provisionalEvent, statusKey.Int(res.StatusCode))
+		}
+
 		first := tx.state == Calling
 		if first {
 			tx.state = Proceeding
@@ -240,11 +271,13 @@ func (tx *ClientTransaction) handleInvite(res *sip.Response) {
 	case res.IsSuccess():
 		tx.state = Accepted
 		tx.stopTimers()
+		tx.span.end(res, nil, clientFailed(tx.cancelled))
 		tx.deliver(res)
 		tx.after(64*tx.layer.t1, tx.end)
 	default:
 		tx.state = Completed
 		tx.stopTimers()
+		tx.span.end(res, nil, clientFailed(tx.cancelled))
 		tx.deliver(res)
 
 		ack, err := sip.NewAck(tx.req, res)
@@ -264,12 +297,15 @@ func (tx *ClientTransaction) handleNonInvite(res *sip.Response) {
 		return
 	}
 
-	tx.deliver(res)
-
 	if res.IsProvisional() {
+		tx.deliver(res)
 		tx.state = Proceeding
+
 		return
 	}
+
+	tx.span.end(res, nil, clientFailed(tx.cancelled))
+	tx.deliver(res)
 
 	tx.state = Completed
 	tx.stopTimers()
@@ -301,6 +337,8 @@ func (tx *ClientTransaction) retransmitTimer() {
 	}
 
 	if tx.sent {
+		tx.span.event(retransmissionEvent)
+
 		req := tx.req.Clone()
 		tx.push(req.Flow, func() error { return tx.layer.send(tx.layer.ctx, req, true) }, tx.sendResult)
 	}
@@ -331,6 +369,7 @@ func (tx *ClientTransaction) cancelTimer() {
 
 func (tx *ClientTransaction) deliver(res *sip.Response) {
 	if h := tx.h; h != nil {
-		tx.emit(func() { h.HandleResponse(res) })
+		ctx := tx.caller
+		tx.emit(func() { h.HandleResponse(ctx, res) })
 	}
 }

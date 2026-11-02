@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestRegister(t *testing.T) {
 	id := mustURI(t, a.id)
 
 	var r result
-	if err := a.Register(600*time.Second, r.done); err != nil {
+	if err := a.Register(context.Background(), 600*time.Second, r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -135,7 +136,7 @@ func TestRegister(t *testing.T) {
 	a.events.take()
 
 	r = result{}
-	if err := a.Unregister(r.done); err != nil {
+	if err := a.Unregister(context.Background(), r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +164,7 @@ func TestAffiliate(t *testing.T) {
 	}
 
 	var r result
-	if err := a.Register(600*time.Second, r.done); err != nil {
+	if err := a.Register(context.Background(), 600*time.Second, r.done); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,7 +189,7 @@ func TestAffiliate(t *testing.T) {
 		}
 
 		r = result{}
-		if err := a.Affiliate(groups, r.done); err != nil {
+		if err := a.Affiliate(context.Background(), groups, r.done); err != nil {
 			t.Fatal(err)
 		}
 
