@@ -1,22 +1,3 @@
-// Package registrar is the registration and service authorisation of the MCPTT server (TS 24.379 §7.3): the
-// REGISTER of a client, to the server as its registrar in direct mode [PM 14] (RFC 3261 §10.3), or in the message/sip
-// body of a third-party REGISTER of the S-CSCF (TS 24.229 §5.4.1.7, §5.7.1.1), authorised by one path (§7.3.2), that
-// binds the MCPTT ID and MCPTT client ID to the IMS public user identity.
-//
-// The bindings are by IMPU and client ID: an IMPU may be of several users (TS 23.280 §8.3.1), and a client is of one
-// user at one IMPU at a time, a later service authorisation of it re-binding it (TS 33.180 §5.1.3.2.1). They live in
-// memory, safe for concurrent use; the requests of an IMPU come on one strand, in order, and the expiry of its
-// bindings, and the NOTIFYs of its reg event subscription, run on it. A change of the settings takes effect at once
-// (Revoke): a user no longer configured, or no longer at its IMPU, is logged off.
-//
-// Through the IMS, a Store keeps the bindings across restarts: the S-CSCF sends the third-party REGISTERs of the
-// REGISTERs of the UEs only (TS 24.229 §5.4.1.7), and nothing makes it send them again to a server restarted. Restore
-// puts them back, and Resubscribe subscribes to the reg event package of their IMPUs again, whose first full document
-// removes those the UEs deregistered meanwhile.
-//
-// The state changes atomically, under the lock; what a change does to the other functions, the log-offs and the
-// implicit affiliations, and to the subscriptions, follows its response, outside the lock (TS 24.229 §5.4.1.7: the
-// S-CSCF waits for no more than the response).
 package registrar
 
 import (
@@ -39,21 +20,15 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Mode is how clients reach the server.
 type Mode int
 
 const (
-	// ThroughIMS: the server is an application server, told of registrations by third-party REGISTERs (TS 24.229
-	// §5.7.1.1).
 	ThroughIMS Mode = iota
-	// Direct: the server is the registrar of its clients [PM 14], of the domain of the service configuration.
 	Direct
 )
 
-// Affiliations are what service authorisation does to the affiliations of a client: the implicit affiliation to its
-// user's configured groups once authorised (TS 24.379 §9.2.2.2.15), and to those a change of them, from before to
-// user, adds or removes while it stays authorised (Reconfigure), their removal once logged off (TS 23.280 §5.2.5).
-// Each runs in the trace of ctx, what changed the client, which may be answered already.
+// TS 24.379 clause 9.2.2.2.15
+// TS 23.280 clause 5.2.5
 type Affiliations interface {
 	ImplicitConfigured(ctx context.Context, now time.Time, user *settings.User, client string)
 	Reconfigure(ctx context.Context, now time.Time, before, user *settings.User, client string)
@@ -61,98 +36,59 @@ type Affiliations interface {
 }
 
 type Config struct {
-	Source settings.Source
-	Mode   Mode
-	// Store, if any, keeps the bindings through the IMS; StrandOf is the strand of the IMPU of a key, of its
-	// REGISTERs, for those Restore puts back.
-	Store    Store
-	StrandOf func(ik string) *ua.Strand
-	// Trusted reports whether an address is of the trust domain (TS 24.229 §4.4.1), whose reg event NOTIFYs only are
-	// taken; none is if nil.
-	Trusted func(netip.Addr) bool
-	// Agent subscribes to the reg event package of the IMPUs through the IMS (TS 24.229 §5.7.1.1); none without, a
-	// deregistration then removing all the bindings of its IMPU. Its Config.Contact is the Contact of the
-	// subscriptions, and the lifetime of its layer the registrar's: of its timers' work and its writes to the store.
-	// Without an agent, the registrar's lifetime ends with Close.
-	Agent *ua.Agent
-	// HomeDomain is the IMS's (TS 24.229 §5.1.1.2.1), the host of the SIP URI of a telephone number, "user=phone",
-	// that the server subscribes with to the reg event package of an IMPU of a tel URI (subscribed); none if "".
-	HomeDomain string
-	// Tokens checks the access tokens; Unvalidated if nil.
-	Tokens       TokenCheck
-	Affiliations Affiliations
-	// Clock is the agent's.
-	Clock transaction.Clock
-	// DefaultExpires is the expiration of a direct registration that asks for none (RFC 3261 §10.3 step 7); an hour
-	// if zero.
+	Source         settings.Source
+	Mode           Mode
+	Store          Store
+	StrandOf       func(ik string) *ua.Strand
+	Trusted        func(netip.Addr) bool
+	Agent          *ua.Agent
+	HomeDomain     string
+	Tokens         TokenCheck
+	Affiliations   Affiliations
+	Clock          transaction.Clock
 	DefaultExpires time.Duration
-	// Logger is the log of the registrar; slog.Default() if nil. Access tokens and bodies are never logged.
-	Logger *slog.Logger
-	// TracerProvider traces the work of the registrar's timers; none if nil.
+	Logger         *slog.Logger
 	TracerProvider trace.TracerProvider
 }
 
-// Binding is the binding of a service authorisation (TS 24.379 §7.3.2 step 4).
+// TS 24.379 clause 7.3.2
 type Binding struct {
 	MCPTTID  sip.URI
 	ClientID string
-	// IMPU is the public user identity the client registered at: the To of its REGISTER in direct mode, of the
-	// third-party REGISTER through the IMS (TS 24.229 §5.4.1.7 c), where the requests to the client go (TS 24.379
-	// §6.3.2.2.5.2 step 4).
-	IMPU sip.URI
-	// IMPUs are the public user identities the client is served at, IMPU first: through the IMS, the implicit
-	// registration set of IMPU (registrar.Resolve).
-	IMPUs   []sip.URI
-	Expires time.Time
-	// Since is when the client was authorised for the user (TS 24.379 §7.3.2), which the refreshes of its binding keep.
-	Since time.Time
+	IMPU     sip.URI
+	IMPUs    []sip.URI
+	Expires  time.Time
+	Since    time.Time
 
-	// Contacts are where the client is reached, in direct mode (RFC 3261 §10.3).
 	Contacts []sip.Address
 
-	// SCSCF is the S-CSCF of the user, the Contact of the third-party REGISTER (TS 24.229 §5.4.1.7 d): where the
-	// requests the server originates to the client go.
-	SCSCF sip.URI
-	// Token is the "+g.3gpp.registration-token" of the third-party REGISTER (TS 24.229 §5.7.1.1): the registration of
-	// the UE among those of the IMPU.
-	Token string
-	// Charging are the charging values of the third-party REGISTER (TS 24.229 §5.7.1.1).
+	SCSCF    sip.URI
+	Token    string
 	Charging Charging
 }
 
-// Charging are the charging values an application server stores of a third-party REGISTER (TS 24.229 §5.7.1.1): the
-// icid-value and orig-ioi of P-Charging-Vector, P-Charging-Function-Addresses.
+// TS 24.229 clause 5.7.1.1
 type Charging struct {
 	ICID, OrigIOI     string
 	FunctionAddresses string
 }
 
-// Registrar is the registrar and service authorisation of the server.
 type Registrar struct {
-	cfg Config
-	// life is the lifetime of the work of the registrar that outlives its cause, its timers' and its writes to the
-	// store: the agent's layer's, else ended by stop, of Close; detached traces that work.
+	cfg      Config
 	life     context.Context
 	stop     context.CancelFunc
 	detached tracing.Detached
 
-	mu       sync.Mutex
-	bindings map[bindingKey]*binding
-	// impus and users are the bindings by IMPU key and by user key, clients by client ID: a client is bound at one
-	// IMPU at a time (bind). They change with bindings only (put, remove).
-	impus   map[string]map[bindingKey]*binding
-	users   map[string]map[bindingKey]*binding
-	clients map[string]*binding
-	// watches are the reg event subscriptions, by IMPU key.
-	watches map[string]*watch
-	// sequences are the last REGISTERs of the UEs applied through the IMS, of each IMPU and Call-ID (thirdParty).
+	mu        sync.Mutex
+	bindings  map[bindingKey]*binding
+	impus     map[string]map[bindingKey]*binding
+	users     map[string]map[bindingKey]*binding
+	clients   map[string]*binding
+	watches   map[string]*watch
 	sequences map[seqKey]*sequence
-	// closed is set by Close: no timer is armed after it.
-	closed bool
-	// dirty are the clients whose bindings changed since the last write to the store.
-	dirty map[string]bool
-	// saving serializes the writes to the store, each of the state after the one before it.
-	saving sync.Mutex
+	closed    bool
+	dirty     map[string]bool
+	saving    sync.Mutex
 }
 
 type bindingKey struct{ impu, client string }
@@ -160,23 +96,19 @@ type bindingKey struct{ impu, client string }
 type binding struct {
 	Binding
 
-	key  bindingKey
-	user string
-	// direct: of a direct registration, its expiry that of its last contact.
+	key      bindingKey
+	user     string
 	direct   bool
 	contacts []contact
 	timer    *ua.Timer
-	// reg is the registration of the UE through the IMS, and callID and cseq those of its REGISTER; as is the
-	// Request-URI of its third-party REGISTER, the AS the iFC names (TS 24.229 §5.4.1.7), which subscribes.
-	reg    ueReg
-	callID string
-	cseq   uint32
-	as     sip.URI
-	// restored: put back by Restore, not refreshed nor reconciled since by a reg event document (staleIn).
+	reg      ueReg
+	callID   string
+	cseq     uint32
+	as       sip.URI
 	restored bool
 }
 
-// contact is a contact of a direct registration, with what RFC 3261 §10.3 step 7 orders the updates by.
+// RFC 3261 section 10.3
 type contact struct {
 	addr    sip.Address
 	expires time.Time
@@ -184,7 +116,6 @@ type contact struct {
 	cseq    uint32
 }
 
-// New is a registrar.
 func New(cfg Config) *Registrar {
 	if cfg.Tokens == nil {
 		cfg.Tokens = Unvalidated{}
@@ -216,21 +147,8 @@ func New(cfg Config) *Registrar {
 	}
 }
 
-// Resolve is the served user of a request req, of P-Asserted-Identity ids, which may carry a SIP and a tel URI (RFC
-// 3325 §9.1), and <mcptt-client-id> client (TS 24.379 §10.1.1.3.1.1 steps 2, 2a; §9.2.2.2.3 step 2; §6.3.6 NOTE): the
-// unexpired binding of client served at one of ids. In direct mode [PM 14], ids are the From. req may be nil.
-//
-// Through the IMS, the asserted identity may be any public user identity of the implicit registration set of the IMPU
-// the client registered at, which the S-CSCF chooses the To of the third-party REGISTER among (TS 24.229 §5.4.1.7 c):
-// the P-CSCF asserts the default public user identity, the first of the P-Associated-URI, or the one the UE
-// preferred (§5.2.6.3.1, §5.4.1.2.2F b). The set is that of the third-party REGISTER (thirdParty), and the IMPUs the
-// reg event package reports registered (§5.4.2.1.2 step 3: a <registration> for each public user identity the user
-// owns).
-//
-// A request whose Feature-Caps has a registration token is of the registration of that token (§5.7.1.3B, §7.9A.8),
-// the initial requests for a dialog and the standalone transactions alike: the client ID of an mcptt-info is the
-// UE's to claim, and the UEs of an IMPU may be of different users (TS 23.280 §8.3.1). Without a token on either side,
-// the asserted identity and the client ID are all there is.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.7.1.3B
 func (g *Registrar) Resolve(req *sip.Request, ids []sip.URI, client string) (Binding, bool) {
 	token := TokenOf(req)
 	now := g.cfg.Clock.Now()
@@ -246,8 +164,6 @@ func (g *Registrar) Resolve(req *sip.Request, ids []sip.URI, client string) (Bin
 	return b.public(), true
 }
 
-// serves reports whether b is served at one of ids: of its IMPUs, or of those the reg event subscription w of its
-// IMPU reports registered, if any.
 func (b *binding) serves(ids []sip.URI, w *watch) bool {
 	for _, id := range ids {
 		k := settings.Key(id)
@@ -263,7 +179,7 @@ func (b *binding) serves(ids []sip.URI, w *watch) bool {
 	return false
 }
 
-// TokenOf is the registration token of the Feature-Caps of req (TS 24.229 §7.9A.8), "" if none or req is nil.
+// TS 24.229 clause 7.9A.8
 func TokenOf(req *sip.Request) string {
 	if req == nil {
 		return ""
@@ -279,7 +195,6 @@ func TokenOf(req *sip.Request) string {
 	return ""
 }
 
-// Bound reports whether client is bound to the MCPTT ID id, at any IMPU.
 func (g *Registrar) Bound(id sip.URI, client string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -289,7 +204,6 @@ func (g *Registrar) Bound(id sip.URI, client string) bool {
 	return b != nil && b.user == settings.Key(id)
 }
 
-// Bindings are the bindings of the MCPTT ID id, in no order.
 func (g *Registrar) Bindings(id sip.URI) []Binding {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -297,7 +211,6 @@ func (g *Registrar) Bindings(id sip.URI) []Binding {
 	return g.of(settings.Key(id))
 }
 
-// Clients are the unexpired bindings, of each client its one, in no order.
 func (g *Registrar) Clients() []Binding {
 	now := g.cfg.Clock.Now()
 
@@ -339,14 +252,11 @@ func (b *binding) public() Binding {
 
 const tracerName = "github.com/ellanetworks/ims/internal/mcptt/registrar"
 
-// The names of the spans of the work the registrar's timers start, each in a trace of its own (detach).
 const (
 	expiryName      = "registration expiry"
 	resubscribeName = "reg event resubscribe"
 )
 
-// detach runs f on st once d passed, unless stopped first, in a trace of its own linked to cause, what armed it, and
-// bound to the registrar's lifetime; the span ends with the error of f.
 func (g *Registrar) detach(cause trace.SpanContext, st *ua.Strand, d time.Duration, name string, f func(context.Context) error) *ua.Timer {
 	return st.AfterFunc(d, func() {
 		ctx, span := g.detached.Start(g.life, name, cause)
@@ -354,7 +264,6 @@ func (g *Registrar) detach(cause trace.SpanContext, st *ua.Strand, d time.Durati
 	})
 }
 
-// Handle answers a REGISTER, of OnRequest, on the strand of its IMPU.
 func (g *Registrar) Handle(ctx context.Context, r *ua.Request) {
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
@@ -366,13 +275,12 @@ func (g *Registrar) Handle(ctx context.Context, r *ua.Request) {
 	}
 }
 
-// authorisation is a service authorisation the REGISTER of a client asks for (TS 24.379 §7.3.2).
+// TS 24.379 clause 7.3.2
 type authorisation struct {
 	user   *settings.User
 	client string
 }
 
-// refusal is a final response refusing a REGISTER: its code, and its warning text.
 type refusal struct {
 	code    int
 	warning string
@@ -380,19 +288,11 @@ type refusal struct {
 
 var failed = &refusal{code: 403, warning: identity.WarnServiceAuthorisationFailed}
 
-// xmldsig is the namespace of the <Signature> of integrity protected XML (TS 24.379 §6.6.3.4.1).
+// TS 24.379 clause 6.6.3.4.1
 const xmldsig = "http://www.w3.org/2000/09/xmldsig#"
 
-// authorise is the service authorisation of the REGISTER reg of a client at the public user identities impus (TS 24.379 §7.3.1A, §7.3.2 steps 2
-// to 3): nil without an mcptt-info body, a registration without service authorisation (§7.2.1AA; TS 33.180
-// §5.1.3.2.1: the access token in any REGISTER is optional). An access token and client ID that are not both in the
-// clear, or a body integrity protected, are refused: protection is off [PM 9], and without the keys of TS 33.180 the
-// server can decrypt nothing (§7.3.1A step 2 c, step 3 a) nor verify a signature (§6.6.3.4.2 steps 4, 5). Encrypted
-// content gets the warning text of a decryption that failed (§6.6.2.4.2 step 3), as does content of which only one
-// element is encrypted, whose confidentiality protection §7.3.1A step 3 a fails, as §7.3.3 step 3 answers it.
-//
-// The maximum simultaneous authorisations of §7.3.2 steps 2a and 2b, of the <anyExt> of <OnNetwork> of the user
-// profile and of the service configuration (TS 24.484), are not configured yet: no limit applies.
+// TS 24.379 clause 7.3.1A
+// TS 24.379 clause 7.3.2
 func (g *Registrar) authorise(snap *settings.Snapshot, reg *sip.Request, impus []sip.URI) (*authorisation, *refusal) {
 	part, ok, err := reg.Content().Find(mcpttinfo.ContentType)
 
@@ -403,7 +303,6 @@ func (g *Registrar) authorise(snap *settings.Snapshot, reg *sip.Request, impus [
 		return nil, nil
 	}
 
-	// A malformed element of another is no matter (F.1.3).
 	info, _ := mcpttinfo.Decode(part.Body)
 
 	p := info.Params
@@ -415,7 +314,6 @@ func (g *Registrar) authorise(snap *settings.Snapshot, reg *sip.Request, impus [
 		return nil, &refusal{code: 403, warning: identity.WarnIntegrityCheckFailed}
 	}
 
-	// §7.3.1A.
 	if encrypted(p.AccessToken) || encrypted(p.ClientID) {
 		return nil, &refusal{code: 403, warning: identity.WarnUnableToDecrypt}
 	}
@@ -428,7 +326,6 @@ func (g *Registrar) authorise(snap *settings.Snapshot, reg *sip.Request, impus [
 		return nil, failed
 	}
 
-	// Step 3.
 	u, err := g.cfg.Tokens.Authorise(snap, strings.TrimSpace(token), impus)
 	if err != nil {
 		return nil, failed
@@ -445,9 +342,6 @@ func signed(es []*xmltree.Element) bool {
 	})
 }
 
-// change is what a REGISTER, an expiry or a NOTIFY did to the bindings: the clients logged off, the bindings and
-// sequences whose timers to arm, the client authorised to affiliate implicitly, and the IMPUs whose bindings changed,
-// with the reg event subscription to make of the IMPU of a third-party REGISTER.
 type change struct {
 	off       []logOff
 	armed     []*binding
@@ -471,10 +365,8 @@ type logOff struct {
 	cause  string
 }
 
-// bind binds the client of a to impu, as b, replacing the bindings of the client at every IMPU (TS 24.379 §7.3.2
-// step 4), which re-bind (TS 33.180 §5.1.3.2.1: the IMPU changed, or another user logged onto the UE): a client is of
-// one user at a time, another user's affiliations at it logged off. The user's bindings at other clients stay
-// (§7.3.2 step 4a). Called with g.mu held.
+// TS 24.379 clause 7.3.2
+// TS 33.180 clause 5.1.3.2.1
 func (g *Registrar) bind(b *binding, ch *change) {
 	if o := g.clients[b.key.client]; o != nil {
 		cause := ""
@@ -492,7 +384,6 @@ func (g *Registrar) bind(b *binding, ch *change) {
 	ch.touch(b.key.impu)
 }
 
-// The causes of a log-off, as logged.
 const (
 	causeDeregistered = "deregistered"
 	causeExpired      = "expired"
@@ -500,7 +391,6 @@ const (
 	causeUnauthorised = "no longer authorised"
 )
 
-// unbind removes b, logging its client off for cause, unless "". Called with g.mu held.
 func (g *Registrar) unbind(b *binding, ch *change, cause string) {
 	if g.bindings[b.key] != b {
 		return
@@ -518,8 +408,6 @@ func (g *Registrar) unbind(b *binding, ch *change, cause string) {
 	}
 }
 
-// put adds b, of a client without a binding, and remove removes b, to bindings and the indexes. Called with g.mu
-// held.
 func (g *Registrar) put(b *binding) {
 	g.bindings[b.key] = b
 	add(g.impus, b.key.impu, b)
@@ -552,9 +440,7 @@ func drop(index map[string]map[bindingKey]*binding, k string, b *binding) {
 	}
 }
 
-// apply follows a change, on the strand of its IMPU, once it is answered: it saves the bindings changed, arms the
-// timers of the bindings, logs the clients off and then affiliates the one authorised (TS 24.379 §9.2.2.2.15), and
-// subscribes to or unsubscribes from the reg event package of the IMPUs changed.
+// TS 24.379 clause 9.2.2.2.15
 func (g *Registrar) apply(ctx context.Context, st *ua.Strand, now time.Time, ch *change) {
 	g.persist(ctx)
 
@@ -606,11 +492,8 @@ func (g *Registrar) apply(ctx context.Context, st *ua.Strand, now time.Time, ch 
 	}
 }
 
-// Revoke applies the change of the settings from before to after, on the strands of the IMPUs: it removes the bindings
-// whose users after no longer authorises at their IMPUs, deleted or of the IMPU removed, logging their clients off
-// (TS 23.280 §5.2.5); the clients of the others have the change of their users' configured groups applied to their
-// implicit affiliations (Affiliations.Reconfigure; TS 24.379 §9.2.2.2.15). A binding expired, which its timer has not
-// removed yet, is no client's any longer (RFC 3261 §10.3): it is affiliated to nothing.
+// TS 23.280 clause 5.2.5
+// TS 24.379 clause 9.2.2.2.15
 func (g *Registrar) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	g.mu.Lock()
 
@@ -634,8 +517,6 @@ func (g *Registrar) Revoke(ctx context.Context, before, after *settings.Snapshot
 			g.mu.Lock()
 
 			for _, b := range g.impus[ik] {
-				// A binding expired is affiliated to nothing; one of a user new to the change was authorised under
-				// after, or later, which ran §9.2.2.2.15 then.
 				switch u, was := after.User(b.MCPTTID), before.User(b.MCPTTID); {
 				case u == nil || !slices.ContainsFunc(b.IMPUs, u.HasIMPU):
 					g.unbind(b, &ch, causeUnauthorised)
@@ -655,15 +536,11 @@ func (g *Registrar) Revoke(ctx context.Context, before, after *settings.Snapshot
 	}
 }
 
-// reconfiguration is a change of the user of a client that stays authorised, from before.
 type reconfiguration struct {
 	before, user *settings.User
 	client       string
 }
 
-// Close stops the expiry timers of the bindings and sequences, which are the registrar's, not the agent's, and arms
-// none after it: the agent closed, no binding expires and no client is logged off. Without an agent, it ends the
-// registrar's lifetime.
 func (g *Registrar) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -684,8 +561,8 @@ func (g *Registrar) Close() {
 	}
 }
 
-// expire removes the contacts of b whose registration expired, and b with its last (RFC 3261 §10.3; TS 24.229
-// §5.7.1.1): its client is logged off.
+// RFC 3261 section 10.3
+// TS 24.229 clause 5.7.1.1
 func (g *Registrar) expire(ctx context.Context, st *ua.Strand, b *binding) {
 	now := g.cfg.Clock.Now()
 
@@ -708,7 +585,6 @@ func (g *Registrar) expire(ctx context.Context, st *ua.Strand, b *binding) {
 	g.apply(ctx, st, now, &ch)
 }
 
-// prune removes the contacts expired, and sets the expiry of b to that of its last contact, in direct mode.
 func (b *binding) prune(now time.Time) {
 	if !b.direct {
 		return
@@ -724,8 +600,7 @@ func (b *binding) prune(now time.Time) {
 	}
 }
 
-// devices is the mcptt-info of the 200 to the REGISTER that authorised user: of <multiple-devices-ind> "true" if
-// more than one binding exists for it (TS 24.379 §7.3.2 step 6), none otherwise. Called with g.mu held.
+// TS 24.379 clause 7.3.2
 func (g *Registrar) devices(user string) []sip.BodyPart {
 	if len(g.of(user)) < 2 {
 		return nil
@@ -741,8 +616,7 @@ func (g *Registrar) devices(user string) []sip.BodyPart {
 	return []sip.BodyPart{sip.NewBodyPart(mcpttinfo.ContentType, b)}
 }
 
-// reject answers a REGISTER with a refusal, with its Warning (TS 24.379 §4.4.1) and the header fields of header. A
-// refused service authorisation is logged at info, as Ella IMS logs a failed authentication; the others at debug.
+// TS 24.379 clause 4.4.1
 func (g *Registrar) reject(r *ua.Request, cfg *settings.Snapshot, f *refusal, header ...sip.Field) {
 	if f.warning != "" {
 		header = append(header, identity.Warning(cfg.ServiceConfiguration().Domain, f.warning))
@@ -770,7 +644,6 @@ func (g *Registrar) reject(r *ua.Request, cfg *settings.Snapshot, f *refusal, he
 	_ = r.Respond(ua.Reply{Code: f.code, Header: header})
 }
 
-// authorised logs the service authorisation of the client of a at impu (TS 24.379 §7.3.2).
 func (g *Registrar) authorised(ctx context.Context, a *authorisation, impu sip.URI) {
 	g.cfg.Logger.InfoContext(ctx, "service authorised", slog.String("mcptt_id", a.user.ID().String()), slog.String("client_id", a.client),
 		slog.String("impu", impu.String()))

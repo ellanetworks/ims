@@ -11,8 +11,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// device logs bob on at a second client, bob2, of his IMPU (TS 24.379 §7.3.2 step 4a), implicitly affiliated as his
-// first.
 func (w *world) device() *user {
 	t := w.t
 	w.user("bob2", 5, func(_ string, c *client.Config) {
@@ -23,14 +21,15 @@ func (w *world) device() *user {
 	return w.users["bob2"]
 }
 
-// sent are the requests of method the server sent to name in the trace lines.
 func sent(lines []string, name, method string) int {
 	return len(slices.DeleteFunc(slices.Clone(lines), func(l string) bool { return l != "server>"+name+" "+method }))
 }
 
-// TS 24.379 §7.3.2 step 4a, §9.2.2.2.11, §10.1.1.3.2 [PM]: bob logged on at two clients, both affiliated, is invited at
-// both, one participant: the first to accept joins the call, the other's INVITE is cancelled (RFC 3261 §9.1), or, of
-// a 2xx too, its dialog ended with a BYE (§13.2.2.4). A client refusing leaves bob to the other.
+// TS 24.379 clause 7.3.2
+// TS 24.379 clause 9.2.2.2.11
+// TS 24.379 clause 10.1.1.3.2
+// RFC 3261 section 9.1
+// RFC 3261 section 13.2.2.4
 func TestMultipleDevices(t *testing.T) {
 	t.Run("cancelled", func(t *testing.T) {
 		w := newWorld(t, nil)
@@ -42,7 +41,6 @@ func TestMultipleDevices(t *testing.T) {
 			t.Fatalf("alice's response %v", res)
 		}
 
-		// The CANCEL takes the flow of the INVITE, without Prepare: its 487 tells it. Alice's 200 does not wait for it.
 		w.n.Quiesce()
 
 		lines := w.trace.take()
@@ -65,11 +63,8 @@ func TestMultipleDevices(t *testing.T) {
 			t.Fatalf("alice's response %v", res)
 		}
 
-		// The ending of the other branch does not hold alice's 200.
 		w.n.Quiesce()
 
-		// The other branch is ended as it stands: cancelled if not answered yet (RFC 3261 §9.1), its dialog ended with
-		// a BYE if answered too (§13.2.2.4).
 		lines, kept := w.trace.take(), 0
 
 		for _, name := range []string{"bob", "bob2"} {
@@ -110,7 +105,6 @@ func TestMultipleDevices(t *testing.T) {
 
 		bob2.expect(t, "incoming", "established")
 
-		// bob2 is the participant: the floor is taken for it.
 		w.talk(ca, 0)
 		w.n.Quiesce()
 		bob2.expectAll(t, "floor:taken")
@@ -120,8 +114,8 @@ func TestMultipleDevices(t *testing.T) {
 	})
 }
 
-// TS 24.379 §10.1.1.4.2 step 15: bob invited, not answering yet, joins from another client of his: his invitation is
-// superseded, cancelled (RFC 3261 §9.1), one leg of bob's in the call.
+// TS 24.379 clause 10.1.1.4.2
+// RFC 3261 section 9.1
 func TestJoinSupersedesInvitation(t *testing.T) {
 	w := newWorld(t, nil)
 	silent(w.users["bob"])
@@ -140,7 +134,6 @@ func TestJoinSupersedesInvitation(t *testing.T) {
 		t.Errorf("bob2's 200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	// The superseded invitation's CANCEL does not hold bob2's 200.
 	w.n.Quiesce()
 
 	if lines := w.trace.take(); !slices.Contains(lines, "bob>server 487 INVITE") {

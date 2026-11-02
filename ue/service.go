@@ -11,73 +11,39 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// ErrUnknownService is the error of naming a service the UE does not host; ErrServiceDisabled of originating a
-// request for one disabled.
 var (
 	ErrUnknownService  = errors.New("ue: unknown service")
 	ErrServiceDisabled = errors.New("ue: service disabled")
 )
 
-// Service is a service the UE hosts on its agent: an IMS communication service with its ICSI (TS 24.229 §7.2A.8,
-// §7.9.2), such as MMTel (TS 24.173) or an MCPTT client (TS 24.379 §7.2.1), or one without, as SMS over IP
-// (TS 24.341). The UE registers its feature tags while it is enabled, takes its
-// methods and option tags, completes the initial requests it originates (Originate) and gives it the initial
-// requests for it.
 type Service struct {
-	// Name identifies the service in the UE: "mmtel", "sms", "mcptt".
 	Name string
 
-	// ICSI identifies an IMS communication service ("urn:urn-7:3gpp-service.ims.icsi.mmtel"): in the
-	// g.3gpp.icsi-ref of the Contact the UE registers and of the dialogs of the service, and in the
-	// P-Preferred-Service of its requests (TS 24.229 §5.1.1.2.1, §5.1.2A.1.1, RFC 6050). Empty for a service without.
 	ICSI string
 
-	// Features are the other media feature tags of the service, in the Contact the UE registers and in those of the
-	// dialogs of the service (RFC 3840 §9): audio and video for MMTel, g.3gpp.mcptt for MCPTT (TS 24.379 §7.2.1).
 	Features sip.FeatureSet
 
-	// RegisterFeatures are feature tags of the Contact the UE registers only: g.3gpp.smsip (TS 24.341 §5.3.1.2), the
-	// capability of a service without dialogs.
 	RegisterFeatures sip.FeatureSet
 
-	// AcceptContact are the caller preferences of the initial requests of the service (RFC 3841), which Originate
-	// adds to those without an Accept-Contact: "*;+g.3gpp.mcptt;require;explicit" (TS 24.379 §10.1.1.2.1.1).
 	AcceptContact []sip.CallerPreference
 
-	// Allow are the methods of the service, beyond those of the UE: ACK, BYE, CANCEL, NOTIFY, OPTIONS.
 	Allow []string
 
-	// Supported are option tags the service supports, which Originate advertises in its initial requests;
-	// Understood those it accepts in Require without advertising them. The UE refuses with a 420 an initial request
-	// for the service that requires an option tag only another service has.
 	Supported, Understood []string
 
-	// Match tells whether the service is the one for an initial request by its contents, when its Accept-Contact
-	// prefers no service over the others (TS 24.229 §5.1.2A.2): the media of its SDP, its Content-Type. Nil matches
-	// nothing.
 	Match func(req *sip.Request) bool
 
-	// RegisterBodies are the bodies of the service in each REGISTER of the UE while the service is enabled: an
-	// application/vnd.3gpp.mcptt-info+xml for MCPTT service authorisation (TS 24.379 §7.2.1).
 	RegisterBodies func() []sip.BodyPart
 
-	// Disabled is the initial state of the service: not registered, taking no requests, until UE.Enable.
 	Disabled bool
 
-	// OnInvite receives the initial INVITEs for the service, and returns the handler of their session (ua.Config);
-	// without it, or INVITE in Allow, the service takes none.
 	OnInvite func(r *ua.Request) ua.Handler
 
-	// OnRequest receives its initial requests of the other methods of Allow but OPTIONS, which the UE answers;
-	// without it, the service takes none.
 	OnRequest func(r *ua.Request)
 }
 
-// ownAllow are the methods the UE allows for itself: its registration, its reg event subscription (TS 24.229
-// §5.1.1.3), and the dialogs of every service.
 var ownAllow = []string{"ACK", "BYE", "CANCEL", "NOTIFY", "OPTIONS"}
 
-// features is the feature set of the service in the Contact of its dialogs: its ICSI, then its other feature tags.
 func (s *Service) features() sip.FeatureSet {
 	if s.ICSI == "" {
 		return slices.Clone(s.Features)
@@ -86,14 +52,13 @@ func (s *Service) features() sip.FeatureSet {
 	return append(sip.FeatureSet{sip.NewFeature("+g.3gpp.icsi-ref", s.ICSI)}, s.Features...)
 }
 
-// registered is the feature set of the service in the Contact the UE registers, against which the S-CSCF matched the
-// requests for it (RFC 3841 §7.2.4).
+// RFC 3841 section 7.2.4
 func (s *Service) registered() sip.FeatureSet {
 	return append(s.features(), s.RegisterFeatures...)
 }
 
-// featureSet is the feature set of the Contact the UE registers: the feature tags of its services, the ICSIs in one
-// g.3gpp.icsi-ref (TS 24.229 §5.1.1.2.1, §7.2A.8.2), a tag two services share once.
+// TS 24.229 clause 5.1.1.2.1
+// TS 24.229 clause 7.2A.8.2
 func featureSet(services []*Service) sip.FeatureSet {
 	var out sip.FeatureSet
 
@@ -116,8 +81,6 @@ func featureSet(services []*Service) sip.FeatureSet {
 	return out
 }
 
-// checkServices validates the services of a UE: each with its own name and ICSI, feature tags the UE does not set
-// itself, and something to register.
 func checkServices(services []Service) error {
 	for i, s := range services {
 		if s.Name == "" {
@@ -148,7 +111,6 @@ func checkServices(services []Service) error {
 	return nil
 }
 
-// union is the methods or option tags of the UE and its services, each once.
 func union(own []string, services []Service, of func(s *Service) []string) []string {
 	out := slices.Clone(own)
 
@@ -163,7 +125,6 @@ func union(own []string, services []Service, of func(s *Service) []string) []str
 	return out
 }
 
-// enabled are the services of the UE enabled now, in order.
 func (u *UE) enabled() []*Service {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -179,14 +140,11 @@ func (u *UE) enabled() []*Service {
 	return out
 }
 
-// Enable enables the service name, which re-registers a registered UE with its feature tags (TS 24.229 §5.1.1.4.1:
-// the ICSIs it uses changed).
+// TS 24.229 clause 5.1.1.4.1
 func (u *UE) Enable(ctx context.Context, name string) error {
 	return u.setEnabled(ctx, name, true)
 }
 
-// Disable disables the service name, which re-registers a registered UE without its feature tags: an MCPTT client
-// logging off (TS 24.379 §7.2.1 NOTE 1). The dialogs of the service go on.
 func (u *UE) Disable(ctx context.Context, name string) error {
 	return u.setEnabled(ctx, name, false)
 }
@@ -209,11 +167,9 @@ func (u *UE) setEnabled(ctx context.Context, name string, on bool) error {
 	return u.Reregister(ctx)
 }
 
-// serviceFor is the service an initial request of the network is for (RFC 3841 §7.2): of the enabled services that
-// take its method, those its Reject-Contact leaves, the one its Accept-Contact prefers, as if each service were a
-// contact of its own; of those it prefers alike, the first whose Match takes the request, else the first (TS 24.229
-// §5.1.2A.2). Without one, code is the response: 400 for predicates that do not parse, which would otherwise prefer
-// nothing they meant to; 405 when no service takes the method; 480 when the preferences leave none (RFC 3841 §7.2.4).
+// RFC 3841 section 7.2
+// RFC 3841 section 7.2.4
+// TS 24.229 clause 5.1.2A.2
 func (u *UE) serviceFor(req *sip.Request) (*Service, int) {
 	accepts, err := req.Header.AcceptContact()
 	if err != nil {
@@ -268,7 +224,6 @@ func (u *UE) serviceFor(req *sip.Request) (*Service, int) {
 	return nil, 405
 }
 
-// takes reports whether the service takes initial requests of the method.
 func (s *Service) takes(method string) bool {
 	if !slices.Contains(s.Allow, method) {
 		return false
@@ -281,8 +236,7 @@ func (s *Service) takes(method string) bool {
 	return s.OnRequest != nil
 }
 
-// unsupported are the option tags the request requires that the service has not, though another service has
-// (RFC 3261 §8.2.2.3): the agent accepted them for the other.
+// RFC 3261 section 8.2.2.3
 func (u *UE) unsupported(s *Service, req *sip.Request) []string {
 	var out []string
 
@@ -301,7 +255,6 @@ func (u *UE) unsupported(s *Service, req *sip.Request) []string {
 	return out
 }
 
-// service is the service of the UE named name.
 func (u *UE) service(name string) (*Service, error) {
 	i := slices.IndexFunc(u.services, func(s Service) bool { return s.Name == name })
 	if i < 0 {
@@ -311,8 +264,6 @@ func (u *UE) service(name string) (*Service, error) {
 	return &u.services[i], nil
 }
 
-// dispatch finds the service of an initial request, refusing the request without one, or with an option tag the
-// service lacks.
 func (u *UE) dispatch(r *ua.Request) *Service {
 	s, code := u.serviceFor(r.Message())
 	if s == nil {
@@ -330,7 +281,6 @@ func (u *UE) dispatch(r *ua.Request) *Service {
 	return s
 }
 
-// incomingInvite gives an initial INVITE to its service.
 func (u *UE) incomingInvite(_ context.Context, r *ua.Request) ua.Handler {
 	s := u.dispatch(r)
 	if s == nil {
@@ -340,8 +290,7 @@ func (u *UE) incomingInvite(_ context.Context, r *ua.Request) ua.Handler {
 	return s.OnInvite(r)
 }
 
-// requestReceived answers an OPTIONS with the capabilities of the UE (RFC 3261 §11.2), and gives the other initial
-// requests to their service.
+// RFC 3261 section 11.2
 func (u *UE) requestReceived(_ context.Context, r *ua.Request) {
 	req := r.Message()
 
@@ -357,9 +306,7 @@ func (u *UE) requestReceived(_ context.Context, r *ua.Request) {
 	}
 }
 
-// refuse answers an initial request no service takes: a 405 with the methods the UE allows but that one, which it
-// does not outside a dialog (RFC 3261 §21.4.6); the 480 of the preferences that leave no service; the 400 of
-// predicates that do not parse.
+// RFC 3261 section 21.4.6
 func (u *UE) refuse(r *ua.Request, code int) {
 	req := r.Message()
 	u.event(Event{Request: req.Clone()})
@@ -373,26 +320,22 @@ func (u *UE) refuse(r *ua.Request, code int) {
 	_ = r.Respond(rp)
 }
 
-// Contact is the Contact of the dialogs of the service name (TS 24.229 §5.1.2A.1.1, §5.1.3.1): the UE's protected
-// address, with the feature tags of the service.
+// TS 24.229 clause 5.1.2A.1.1
+// TS 24.229 clause 5.1.3.1
 func (u *UE) Contact(name string) (sip.Address, error) {
 	s, err := u.service(name)
 	if err != nil {
 		return sip.Address{}, err
 	}
 
-	// checkServices made sure they encode.
 	ps, _ := s.features().Params()
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: u.port(!u.cfg.Plain)}
 
 	return sip.Address{URI: uri, Params: ps}, nil
 }
 
-// Originate completes an initial request the service name originates, before it goes to the agent (TS 24.229
-// §5.1.2A.1.1, §5.1.2A.1.6): the preloaded Route to the P-CSCF and the service route, From and P-Preferred-Identity
-// with the default public user identity, P-Preferred-Service with the ICSI, the Accept-Contact and Supported of the
-// service, its Contact in a request that creates a dialog. It leaves the header fields req has. The agent's Prepare
-// then adds the Via and the header fields of the access network and of the security agreement.
+// TS 24.229 clause 5.1.2A.1.1
+// TS 24.229 clause 5.1.2A.1.6
 func (u *UE) Originate(req *sip.Request, name string) error {
 	s, err := u.service(name)
 	if err != nil {
@@ -465,16 +408,16 @@ func (u *UE) Originate(req *sip.Request, name string) error {
 	return nil
 }
 
-// dialogCreating reports whether a request creates a dialog (RFC 3261 §12, RFC 6665 §4.1.2, RFC 3515).
+// RFC 3261 section 12
+// RFC 6665 section 4.1.2
+// RFC 3515
 func dialogCreating(method string) bool {
 	return method == "INVITE" || method == "SUBSCRIBE" || method == "REFER"
 }
 
-// Agent is the agent of the UE, on which its services run: their sessions, subscriptions and requests.
 func (u *UE) Agent() *ua.Agent { return u.agent }
 
-// HoldSAs keeps the security associations a request or a session setup of a service uses until release, when the UE
-// re-registers in the meantime (TS 33.203 §7.4). Calling release more than once has no effect.
+// TS 33.203 clause 7.4
 func (u *UE) HoldSAs() (release func()) {
 	if u.cfg.Plain {
 		return func() {}

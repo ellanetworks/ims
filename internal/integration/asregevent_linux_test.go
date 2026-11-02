@@ -16,11 +16,11 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// TS 24.229 §5.7.1.1 a to e, §5.4.2.1.1, §5.4.2.1.2; TS 23.003 §13.4, §13.4B: of an implicit registration set of a
-// tel URI and a barred temporary IMPU alone, as Ella Core's HSS gives, the third-party REGISTER is to the tel URI, and
-// the AS subscribes to the reg event package with the SIP URI of its number, "user=phone", at the home domain, as the
-// MCPTT AS does (registrar.subscribed): the S-CSCF resolves it to the registration of the tel URI, whose documents
-// report it active, then terminated once the UE deregisters.
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.4.2.1.1
+// TS 24.229 clause 5.4.2.1.2
+// TS 23.003 clause 13.4
+// TS 23.003 clause 13.4B
 func TestASRegEventTelURI(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5092)
@@ -89,7 +89,6 @@ func TestASRegEventTelURI(t *testing.T) {
 		t.Fatal("the SUBSCRIBE of the SIP URI of the number not accepted")
 	}
 
-	// state is the state of the registration of the tel URI of the next document.
 	state := func() reginfo.RegState {
 		t.Helper()
 

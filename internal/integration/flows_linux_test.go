@@ -12,8 +12,8 @@ import (
 
 const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
 
-// flow is the callee's registration flow regID from host 1 (RFC 5626 §4.2): the same USIM and IMEI for
-// every flow, each with its own security associations (TS 33.203 §6.1).
+// RFC 5626 section 4.2
+// TS 33.203 clause 6.1
 func (s *scene) flow(regID int64, v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
@@ -29,7 +29,6 @@ func (s *scene) flow(regID int64, v6 bool, cfg testue.Config) *testue.UE {
 	return u
 }
 
-// noCall checks that u gets no call for a while.
 func noCall(t *testing.T, u *testue.UE) {
 	t.Helper()
 
@@ -40,15 +39,15 @@ func noCall(t *testing.T, u *testue.UE) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d, §5.4.1.4 step 6a ii, RFC 5626 §7: the flows of a device stay registered
-// side by side; a call reaches the most recent, and the others once it deregisters.
+// TS 24.229 clause 5.4.1.2.2
+// TS 24.229 clause 5.4.1.4
+// RFC 5626 section 7
 func TestFlowsOfOneDevice(t *testing.T) {
 	s := newScene(t)
 	caller := s.caller(0, false, testue.Config{})
 	one := s.flow(1, false, testue.Config{})
 	two := s.flow(2, false, testue.Config{})
 
-	// The registrations API shows each flow with the P-CSCF's registration of its own (TS 24.229 §5.2.2.1).
 	contacts := s.registrations(subscriberAt(1).imsi).Items[0].ImplicitRegistrationSets[0].Contacts
 	if len(contacts) != 2 || contacts[0].RegID == contacts[1].RegID || contacts[0].Address == contacts[1].Address ||
 		contacts[0].Address == "" || contacts[1].Address == "" {
@@ -83,7 +82,7 @@ func TestFlowsOfOneDevice(t *testing.T) {
 	ended(t, bc, testue.RemoteBye)
 }
 
-// Two devices under one private identity, each registering a flow, both ring (TS 24.229 §5.4.3.3).
+// TS 24.229 clause 5.4.3.3
 func TestDevicesSharingAPrivateIdentity(t *testing.T) {
 	s := newScene(t)
 	caller := s.caller(0, false, testue.Config{})
@@ -112,8 +111,7 @@ func TestDevicesSharingAPrivateIdentity(t *testing.T) {
 	ended(t, wc, testue.RemoteBye)
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d ii: a flow registered again over a new P-CSCF flow, here from another
-// address, replaces the old one, whose call is released.
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowReplacedReleasesItsCall(t *testing.T) {
 	s := newScene(t)
 	caller := s.caller(0, false, testue.Config{})
@@ -124,15 +122,12 @@ func TestFlowReplacedReleasesItsCall(t *testing.T) {
 
 	s.flow(1, true, testue.Config{})
 
-	// The old flow's UE drops its security associations once told its contact ended, which can be before
-	// the BYE toward it arrives: only the caller's is certain.
 	ended(t, ac, testue.RemoteBye)
 
 	if got := reason(t, ac); got != reason480 {
 		t.Errorf("caller's BYE Reason %q, want %q", got, reason480)
 	}
 
-	// The P-CSCF learns of the replacement from the reg-event NOTIFY, and drops the old flow (TS 24.229 §5.2.5.2).
 	eventually(t, "the P-CSCF dropping the replaced flow", func() bool {
 		regs := s.pcscfRegistrations()
 		return len(regs) == 1 && regs[0].RegID == 1 && regs[0].UEAddress.Addr().Is6()

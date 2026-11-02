@@ -7,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// exampleSettings are alice, bob and carol, members of fire, affiliated to it on registration.
 func exampleSettings() settings.Settings {
 	const fire = "sip:fire@mcptt.example.com"
 
@@ -29,8 +28,6 @@ func exampleSettings() settings.Settings {
 	}
 }
 
-// provision changes l to s as the API would, but its PSIs, which are of the home domain: the service configuration, the users without their
-// implicit affiliations, the groups, then the users' implicit affiliations.
 func provision(ctx context.Context, l *settings.Live, s settings.Settings) error {
 	if err := l.UpdateServiceConfiguration(ctx, s.ServiceConfiguration); err != nil {
 		return err

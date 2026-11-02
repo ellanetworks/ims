@@ -12,8 +12,6 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 )
 
-// BenchmarkRegistrationAmong measures a UE's challenge and registration while n other UEs are registered: the
-// P-CSCF's work on its security associations, which does not depend on n.
 func BenchmarkRegistrationAmong(b *testing.B) {
 	for _, n := range []int{1000, 10000, 50000} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {

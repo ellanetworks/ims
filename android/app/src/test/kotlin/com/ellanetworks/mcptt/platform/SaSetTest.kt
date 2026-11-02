@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SaSetTest {
-    // The SA set as the session encodes it: mobile's TestSAJSON keeps it.
     @Test
     fun decodes() {
         val s = SaSet.decode(contract("saset.json").readText())

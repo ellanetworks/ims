@@ -1,6 +1,3 @@
-// Command mcpttc is the in-house MCPTT client as a lab tool, in direct mode [PM 14]: a UDP agent that registers with
-// the server, affiliates to groups, then places, joins and leaves group calls and takes the floor as told on its
-// standard input, printing the call and floor events.
 package main
 
 import (
@@ -58,7 +55,6 @@ func main() {
 	flag.StringVar(&o.groups, "groups", "", "comma-separated MCPTT group IDs to affiliate to")
 	flag.UintVar(&o.minPort, "min-port", 30000, "first media port, even: four per call")
 	flag.UintVar(&o.maxPort, "max-port", 30099, "last media port")
-	// TS 24.483 §8.2.11, §8.2.12 configure them, without a default: these are lab values.
 	flag.DurationVar(&o.t100, "t100", time.Second, "T100 (Floor Release), TS 24.380 Table 11.1.1-1")
 	flag.DurationVar(&o.t101, "t101", time.Second, "T101 (Floor Request), TS 24.380 Table 11.1.1-1")
 	flag.DurationVar(&o.expires, "expires", time.Hour, "registration expiry asked for")
@@ -127,7 +123,6 @@ func run(ctx context.Context, o options) error {
 	}
 
 	if o.token == "" {
-		// The client then puts an unsigned token of the user and client in each REGISTER.
 		fmt.Fprintln(os.Stderr, "warning: no -token: an unsigned access token, which only a server that does not validate tokens takes")
 	}
 
@@ -136,7 +131,6 @@ func run(ctx context.Context, o options) error {
 	}
 
 	if !o.local.Addr().IsValid() || o.local.Addr().IsUnspecified() {
-		// The address is the Contact's and the SDP's c=, where 0.0.0.0 means no media is to be sent (RFC 3264 §8.4).
 		return fmt.Errorf("-local %s: an address of the host, not an unspecified one", o.local)
 	}
 
@@ -147,15 +141,13 @@ func run(ctx context.Context, o options) error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	// The client is set once the socket is bound, before the REGISTER that lets the server invite it.
 	var cl atomic.Pointer[client.Client]
 
-	var local atomic.Value // netip.AddrPort
+	var local atomic.Value
 
 	agent, err := ua.New(ua.Config{
 		Transaction: transaction.Config{Logger: logger},
 		Logger:      logger,
-		// Every request goes to the server, the client's registrar and outbound proxy.
 		Prepare: func(req *sip.Request) error {
 			l, _ := local.Load().(netip.AddrPort)
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: l, Remote: o.server}
@@ -239,7 +231,7 @@ func run(ctx context.Context, o options) error {
 	return nil
 }
 
-// newUUID is a random urn:uuid (RFC 9562 §5.4).
+// RFC 9562 section 5.4
 func newUUID() string {
 	var b [16]byte
 
@@ -250,7 +242,6 @@ func newUUID() string {
 	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// wait sends a request with send and waits for its final response: an error unless a 2xx.
 func wait(what string, send func(done func(*sip.Response, error)) error) error {
 	type result struct {
 		res *sip.Response
@@ -275,7 +266,6 @@ func wait(what string, send func(done func(*sip.Response, error)) error) error {
 	return nil
 }
 
-// console is the interactive loop and the printing of events, which come from the strands of the calls.
 type console struct {
 	out io.Writer
 
@@ -291,7 +281,6 @@ func (u *console) printf(format string, a ...any) {
 	_, _ = fmt.Fprintf(u.out, format+"\n", a...)
 }
 
-// current is the call the commands act on: the last placed or received, until it ends.
 func (u *console) current() *client.Call {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -306,7 +295,6 @@ func (u *console) setCall(c *client.Call) {
 	u.call, u.talking = c, false
 }
 
-// loop runs the commands of in, each the root of its own trace.
 func (u *console) loop(c *client.Client, in io.Reader) {
 	s := bufio.NewScanner(in)
 
@@ -422,7 +410,6 @@ func (u *console) event(e client.Event) {
 	}
 }
 
-// ended forgets call if it is the current one.
 func (u *console) ended(call *client.Call) {
 	u.mu.Lock()
 	defer u.mu.Unlock()

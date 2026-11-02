@@ -15,7 +15,7 @@ import (
 
 const mcpttICSI = "urn:urn-7:3gpp-service.ims.icsi.mcptt"
 
-// mcpttAA answers the AA-Requests as a PCRF that supports MCPTT (TS 29.214 §5.4.1).
+// TS 29.214 clause 5.4.1
 func mcpttAA(_ context.Context, req *diameter.Message) (*diameter.Message, error) {
 	if req.CommandCode == rx.CommandAA {
 		return rx.NewAAAnswer(req, pcrfIdentity, rx.AAAnswer{Features: rx.FeatureRel8 | rx.FeatureMCPTT})
@@ -42,7 +42,8 @@ func wantPriority(t *testing.T, aar rx.AARequest, namespace string, level rx.Res
 	}
 }
 
-// TS 24.229 §4.4.6, §5.1: Resource-Priority crosses the P-CSCF both ways between the UE and the core.
+// TS 24.229 clause 4.4.6
+// TS 24.229 clause 5.1
 func wantResourcePriority(t *testing.T, h sip.Header, want string) {
 	t.Helper()
 
@@ -59,7 +60,6 @@ func wantNoPriority(t *testing.T, aar rx.AARequest) {
 	}
 }
 
-// coreInDialog sends a request of the core in the originating call e, and returns it as the UE gets it.
 func (s *ipsecScene) coreInDialog(t *testing.T, u *ue, e *callUp, method string, cseq int, edit func(*sip.Request)) (*sip.Request, sip.Flow) {
 	t.Helper()
 
@@ -87,8 +87,6 @@ func (s *ipsecScene) coreInDialog(t *testing.T, u *ue, e *callUp, method string,
 	return got, f
 }
 
-// ueAnswers answers a request the UE got with a 200, with an SDP answer unless nil, and waits for the core to get
-// it.
 func (s *ipsecScene) ueAnswers(t *testing.T, u *ue, req *sip.Request, f sip.Flow, answer []byte) {
 	t.Helper()
 
@@ -110,8 +108,8 @@ func (s *ipsecScene) ueAnswers(t *testing.T, u *ue, req *sip.Request, f sip.Flow
 	}
 }
 
-// TS 29.214 Annex A.13.2, TS 24.229 §3.1: the Resource-Priority of an INVITE from the trust domain is authorised;
-// the initial AA-Request carries its MCPTT namespace and priority value, and the MCPTT ICSI.
+// TS 29.214 clause A.13.2
+// TS 24.229 clause 3.1
 func TestAnnexA13MCPTTPriorityOfTheTerminatingInvite(t *testing.T) {
 	s, u, pcrf, token := newMCPTTScene(t)
 
@@ -153,8 +151,9 @@ func TestAnnexA13MCPTTPriorityOfTheTerminatingInvite(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 Annex A.1 NOTE 3, Annex A.13.2, TS 24.229 §3.1: an originating call takes the ICSI of the Feature-Caps
-// and the authorised Resource-Priority of the responses from the trust domain, not the UE's own.
+// TS 29.214 clause A.1
+// TS 29.214 clause A.13.2
+// TS 24.229 clause 3.1
 func TestAnnexA13MCPTTPriorityOfTheOriginatingResponse(t *testing.T) {
 	s, u, pcrf, _ := newMCPTTScene(t)
 
@@ -195,8 +194,8 @@ func TestAnnexA13MCPTTPriorityOfTheOriginatingResponse(t *testing.T) {
 	wantPriority(t, aar, "mcpttp", 11)
 }
 
-// TS 24.229 §3.1, §5.2.9.1: the P-CSCF knows no priority privileges of its users, so a Resource-Priority from the
-// UE is not authorised: it asks for no priority, at the call's set-up or later.
+// TS 24.229 clause 3.1
+// TS 24.229 clause 5.2.9.1
 func TestAnnexA13MCPTTPriorityFromTheUEIsNotAuthorised(t *testing.T) {
 	s, u, pcrf, _ := newMCPTTScene(t)
 
@@ -285,9 +284,9 @@ func TestAnnexA13MCPTTPriorityFromTheUEIsNotAuthorised(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 Annex A.13.1 NOTE 1, TS 24.229 §5.2.9.2, TS 24.379 §6.3.3.1.8: a normal MCPTT call made an emergency
-// call by a re-INVITE, and normal again by an UPDATE without SDP; each change of the authorised Resource-Priority
-// updates the session at once, with the media authorised so far.
+// TS 29.214 clause A.13.1
+// TS 24.229 clause 5.2.9.2
+// TS 24.379 clause 6.3.3.1.8
 func TestAnnexA13MCPTTPriorityUpgradeAndDowngrade(t *testing.T) {
 	s, u, pcrf, _ := newMCPTTScene(t)
 
@@ -355,8 +354,9 @@ func TestAnnexA13MCPTTPriorityUpgradeAndDowngrade(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 Annex A.13.1 NOTE 1, Annex A.13.2, TS 24.229 §5.2.9.1: the authorised Resource-Priority of a response
-// to the UE's request, without SDP, in the mcpttq namespace, its lowest value DEFAULT.
+// TS 29.214 clause A.13.1
+// TS 29.214 clause A.13.2
+// TS 24.229 clause 5.2.9.1
 func TestAnnexA13MCPTTQueueingPriorityWithoutSDP(t *testing.T) {
 	s, u, pcrf, _ := newMCPTTScene(t)
 	e := s.establish(t, u, pcrf, true, sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
@@ -389,7 +389,7 @@ func TestAnnexA13MCPTTQueueingPriorityWithoutSDP(t *testing.T) {
 	wantPriority(t, aar, "mcpttq", rx.ReservationPriorityDefault)
 }
 
-// TS 29.214 Annex A.13.2: only the MCPTT namespaces and their priority values 0 to 15 count.
+// TS 29.214 clause A.13.2
 func TestAnnexA13MCPTTPriorityValues(t *testing.T) {
 	for _, tc := range []struct {
 		rp        []string
@@ -422,8 +422,9 @@ func TestAnnexA13MCPTTPriorityValues(t *testing.T) {
 	}
 }
 
-// TS 29.214 Annex A.13.1 NOTE 3, Annex A.1 NOTE 3, TS 24.229 §7.2A.8.2: the percent-encoded MCPTT ICSI of
-// Feature-Caps.
+// TS 29.214 clause A.13.1
+// TS 29.214 clause A.1
+// TS 24.229 clause 7.2A.8.2
 func TestAnnexA13MCPTTICSI(t *testing.T) {
 	h := sip.Header{{Name: "Feature-Caps", Value: `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`}}
 

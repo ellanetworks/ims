@@ -1,6 +1,6 @@
 package com.ellanetworks.mcptt.platform
 
-/** A response APDU (ISO/IEC 7816-4 §5.1): its data, and its status word. */
+// ISO/IEC 7816-4 clause 5.1
 class Response(val data: ByteArray, val sw: Int) {
     val ok: Boolean
         get() = sw == SW_OK
@@ -8,7 +8,6 @@ class Response(val data: ByteArray, val sw: Int) {
     companion object {
         const val SW_OK = 0x9000
 
-        /** Parses a response of TelephonyManager's APDU methods: the data and the status word, in hex. */
         fun parse(hex: String?): Response? {
             if (hex == null || hex.length < 4 || hex.length % 2 != 0) return null
             val b = hex.hexToByteArrayOrNull() ?: return null
@@ -18,10 +17,8 @@ class Response(val data: ByteArray, val sw: Int) {
     }
 }
 
-/**
- * The value of a BER-TLV data object of [tag] at the start of [b] (ISO/IEC 7816-4 §5.2, one-byte tags), lengths of one
- * byte or '81' and one: the ISIM's EFs (TS 31.103 §4.2), their padding of 'FF' after it ignored.
- */
+// ISO/IEC 7816-4 clause 5.2
+// TS 31.103 clause 4.2
 fun tlv(b: ByteArray, tag: Int): ByteArray? {
     if (b.size < 2 || (b[0].toInt() and 0xff) != tag) return null
     var off = 2
@@ -37,7 +34,7 @@ fun tlv(b: ByteArray, tag: Int): ByteArray? {
     return b.copyOfRange(off, off + len)
 }
 
-/** The number of records of a linear fixed EF, of its FCP (ETSI TS 102 221 §11.1.1.4.3: tag '82'), or null. */
+// ETSI TS 102 221 clause 11.1.1.4.3
 fun recordCount(fcp: ByteArray): Int? {
     val t = tlv(fcp, 0x62) ?: return null
     var i = 0

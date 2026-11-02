@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// PCSCFRegistration is a registration through the P-CSCF of a UE, identified by its private identity and
-// address, and by its Instance and RegID when it is one of the UE's registration flows (RFC 5626).
 type PCSCFRegistration struct {
 	ID             int64
 	IMPI           string
@@ -31,8 +29,8 @@ type PCSCFRegistration struct {
 	SignallingLost bool
 }
 
-// PolicySession is the P-CSCF's session for IMS signalling with a policy function (TS 29.214 §4.4.5,
-// TS 29.514 §4.2.6.7): the endpoint it was opened with, its session ID and the backend's reference to it.
+// TS 29.214 clause 4.4.5
+// TS 29.514 clause 4.2.6.7
 type PolicySession struct {
 	Endpoint string
 	ID       string

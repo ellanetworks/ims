@@ -57,7 +57,6 @@ func TestAnswered(t *testing.T) {
 
 	r.Answered(req, sip.NewResponse(req, 403, ""), true)
 
-	// Neither a de-registration nor another method is an attempt to register.
 	dereg := register("*", "0")
 	r.Answered(dereg, sip.NewResponse(dereg, 500, ""), false)
 

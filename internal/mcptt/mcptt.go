@@ -1,7 +1,3 @@
-// Package mcptt is the built-in MCPTT application server of the IMS: the participating and controlling functions of
-// one MCPTT system (TS 24.379), their settings and runtime state in the IMS's database, their media relay. Through the
-// IMS, it is an AS like any other, which its I-CSCF and S-CSCF reach over SIP; in memory, on the network it shares
-// with them, by the host name of the AS (Host), which the iFCs and PSIs of the HSS name it by.
 package mcptt
 
 import (
@@ -33,27 +29,17 @@ import (
 type Config struct {
 	config.MCPTT
 
-	// Addresses are the IMS's SIP addresses: the AS has its SIP port on each, and through the IMS takes requests from
-	// them only, its I-CSCF's and S-CSCF's.
-	Addresses []netip.Addr
-	// Network is the in-memory network of the IMS, which the AS serves its addresses on through the IMS; in direct
-	// mode, they are sockets.
-	Network *transaction.Network
-	// HomeDomain is the IMS's, which the host of the AS is under.
-	HomeDomain string
-	DB         *db.DB
-	Logger     *slog.Logger
-	// TracerProvider traces the AS; none if nil.
+	Addresses      []netip.Addr
+	Network        *transaction.Network
+	HomeDomain     string
+	DB             *db.DB
+	Logger         *slog.Logger
 	TracerProvider trace.TracerProvider
 }
 
-// Host is the host name of the AS of the IMS of homeDomain (identity.Host): the name of the AS in the iFCs, the host
-// of its PSIs and of the session identities of its calls (TS 24.379 §4.5). Under the home domain, it is the IMS's
-// own: no other server is reached by it.
 func Host(homeDomain string) string { return identity.Host(homeDomain) }
 
-// System are the PSIs of the functions of the AS (TS 24.379 Annex H), of its host: fixed, they are what the HSS
-// routes to the AS, and what the clients default to.
+// TS 24.379 annex H
 func System(homeDomain string) settings.System {
 	return settings.System{
 		ParticipatingPSI: identity.ParticipatingPSI(homeDomain),
@@ -61,10 +47,8 @@ func System(homeDomain string) settings.System {
 	}
 }
 
-// AS is the running MCPTT application server.
 type AS struct {
-	srv *server.Server
-	// kill ends the lifetime of the server, of the DNS queries of its next hops (as.Prepare).
+	srv      *server.Server
 	kill     context.CancelFunc
 	settings *settings.Live
 
@@ -72,8 +56,6 @@ type AS struct {
 	status Status
 }
 
-// Status is what the AS runs: its mode; its name and PSIs, which the HSS gives the IMS (Host, System); the addresses
-// of its SIP, UDP and TCP, in memory through the IMS; and that of its floor control channels.
 type Status struct {
 	Mode             string
 	Name             string
@@ -83,9 +65,6 @@ type Status struct {
 	MediaControl     string
 }
 
-// Start starts the AS of cfg: its settings of the database, its media relay, its SIP. Through the IMS, it restores the
-// registrations and affiliations it had when it stopped, and subscribes to their reg event package at Resubscribe;
-// in direct mode, its clients register again.
 func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -166,7 +145,6 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		}
 	}()
 
-	// A change of the settings over the API takes effect on the registrations and affiliations at once.
 	live.OnChange(srv.Revoke)
 
 	if mode == registrar.Direct {
@@ -211,24 +189,18 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	return as, nil
 }
 
-// Clients are the registered clients, each its binding to its user, in no order.
 func (a *AS) Clients() []registrar.Binding { return a.srv.Registrar().Clients() }
 
-// Affiliations are the affiliations of the clients, as the participating function has them, in no order.
 func (a *AS) Affiliations() []affiliation.Affiliations {
 	return a.srv.Participating().Snapshot(a.srv.Now())
 }
 
-// Calls are the group calls, in no order; an error if a group's strand does not answer before ctx is done.
 func (a *AS) Calls(ctx context.Context) ([]controlling.Call, error) { return a.srv.Calls().Calls(ctx) }
 
-// Call is the group call of the "gr" id, and whether there is one; an error if its group's strand does not answer
-// before ctx is done.
 func (a *AS) Call(ctx context.Context, id string) (controlling.Call, bool, error) {
 	return a.srv.Calls().Call(ctx, id)
 }
 
-// Settings are the settings of the running AS, which persists and applies a change before it returns.
 func (a *AS) Settings() *settings.Live { return a.settings }
 
 func (a *AS) Status() Status {
@@ -238,7 +210,6 @@ func (a *AS) Status() Status {
 	return a.status
 }
 
-// Servers are the addresses of the SIP of the AS, which its host resolves to: in memory through the IMS.
 func (a *AS) Servers() []sip.Server {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -254,9 +225,6 @@ func (a *AS) Servers() []sip.Server {
 	return servers
 }
 
-// Resubscribe subscribes to the reg event package of the IMPUs of no subscription: those of the bindings restored,
-// and those whose subscription failed (registrar.Registrar.Resubscribe). The IMS calls it once its core runs, which
-// the SUBSCRIBEs go through.
 func (a *AS) Resubscribe(ctx context.Context) { a.srv.Resubscribe(ctx) }
 
 func (a *AS) named(homeDomain string) {
@@ -269,9 +237,6 @@ func (a *AS) named(homeDomain string) {
 	a.status.ParticipatingPSI, a.status.ControllingPSI = sys.ParticipatingPSI, sys.ControllingPSI
 }
 
-// Shutdown stops the AS until ctx is done: its calls end and its subscriptions go. The DNS queries of the BYEs and
-// unsubscriptions run until then, and fail at once after it: the lifetime ends with the deadline of the shutdown,
-// not at its start, which would leave the calls through a next hop named by a domain name without their BYE.
 func (a *AS) Shutdown(ctx context.Context) error {
 	defer a.kill()
 
@@ -281,8 +246,6 @@ func (a *AS) Shutdown(ctx context.Context) error {
 	return a.srv.Shutdown(ctx)
 }
 
-// NewSettings are the settings of the AS as the database has them, persisted to it as they change, and its PSIs
-// those of the home domain (System); the domain of the organisation the home domain unless set.
 func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Live, error) {
 	initial, err := d.GetMCPTTSettings(ctx)
 	if err != nil {
@@ -291,7 +254,6 @@ func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Li
 
 	initial.System = System(homeDomain)
 
-	// The domain of the organisation is the home domain's unless set.
 	if initial.ServiceConfiguration.Domain == "" {
 		initial.ServiceConfiguration.Domain = homeDomain
 	}

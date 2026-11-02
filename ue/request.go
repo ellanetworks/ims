@@ -8,7 +8,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// RFC 3261 §8.1.2, RFC 3263 §4.1
+// RFC 3261 section 8.1.2
+// RFC 3263 section 4.1
 func (u *UE) requestTransport(req *sip.Request) sip.Transport {
 	if route, err := req.Header.TopRoute(); err == nil {
 		if v, ok := route.URI.Params.Get("transport"); ok && v != "" {
@@ -19,7 +20,7 @@ func (u *UE) requestTransport(req *sip.Request) sip.Transport {
 	return u.cfg.Transport
 }
 
-// prepare completes a request of the UE for its flow (TS 24.229 §5.1.2A.1): the agent's requests and the UE's own.
+// TS 24.229 clause 5.1.2A.1
 func (u *UE) prepare(req *sip.Request) error {
 	flow, verify, err := u.requestFlow(u.requestTransport(req))
 	if err != nil {
@@ -51,15 +52,14 @@ func (u *UE) prepare(req *sip.Request) error {
 	return nil
 }
 
-// respondHeaders completes a response of the agent (TS 24.229 §5.1.2A.2).
+// TS 24.229 clause 5.1.2A.2
 func (u *UE) respondHeaders(_ *sip.Request, res *sip.Response) {
 	if !u.cfg.Plain && !res.Header.Has("P-Access-Network-Info") {
 		res.Header.Add("P-Access-Network-Info", u.accessNetworkInfo())
 	}
 }
 
-// Send sends a request outside a dialog that a service originated (Originate), with its Max-Forwards, To, Call-ID
-// and CSeq: on the UE's flow, protected by its SAs (TS 24.229 §5.1.2A.1). It returns the final response.
+// TS 24.229 clause 5.1.2A.1
 func (u *UE) Send(ctx context.Context, req *sip.Request) (*sip.Response, error) {
 	if err := u.prepare(req); err != nil {
 		return nil, err

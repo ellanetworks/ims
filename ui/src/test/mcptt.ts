@@ -105,7 +105,6 @@ const page = (items: unknown[]) =>
     result: { items, page: 1, per_page: 100, total_count: items.length },
   });
 
-// mcpttRoutes are the API of an IMS running MCPTT, of the fixtures; enabled false of one running none.
 export const mcpttRoutes = (
   overrides: Record<string, (url: URL, init?: RequestInit) => Response> = {},
   enabled = true,

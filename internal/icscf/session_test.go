@@ -268,7 +268,7 @@ func TestInviteCancelledBeforeAnAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.3.2.1: the request goes to the server the HSS names, another S-CSCF than ours here.
+// TS 24.229 clause 5.3.2.1
 func TestInviteToAnotherAssignedSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	other := h.newAS(loopback)
@@ -290,8 +290,9 @@ func TestInviteToAnotherAssignedSCSCF(t *testing.T) {
 	h.scscf.sock.RecvNone(quiet)
 }
 
-// TS 24.229 §5.3.2.1, TS 29.228 §6.1.4.1 step 2: the AS hosting a PSI that the HSS names, whether or not it sets the
-// PSI direct routing indication, which is optional (TS 29.229 §6.3.59), by address or domain name (RFC 3263).
+// TS 24.229 clause 5.3.2.1
+// TS 29.228 clause 6.1.4.1
+// TS 29.229 clause 6.3.59
 func TestPSIDirectRouting(t *testing.T) {
 	for _, tt := range []struct {
 		name           string
@@ -335,8 +336,7 @@ func TestPSIDirectRouting(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.3.2.1 steps 1c, 3: a request to a PSI subdomain of the I-CSCF, a session identity of a GRUU among
-// them, goes to the AS its Request-URI resolves to, without a location query, the Request-URI kept.
+// TS 24.229 clause 5.3.2.1
 func TestPSISubdomain(t *testing.T) {
 	sub := "mcptt." + homeDomain
 	h := newHarness(t, harnessOptions{hosts: map[string][]netip.Addr{sub: {loopback}}, psiSubdomains: []string{sub}})
@@ -359,7 +359,7 @@ func TestPSISubdomain(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TS 24.229 §5.3.2.1: with the PSI direct routing indication, the name of our S-CSCF stays a route to it.
+// TS 24.229 clause 5.3.2.1
 func TestPSIDirectRoutingToOurSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscf
@@ -380,8 +380,7 @@ func TestPSIDirectRoutingToOurSCSCF(t *testing.T) {
 	u.ack(invite, u.wantFinal(486))
 }
 
-// TS 24.229 §5.3.2.1: a server the HSS names that the I-CSCF cannot reach makes a 480: a domain name without an
-// address, another address family than the request's, an address outside the trust domain, or no response.
+// TS 24.229 clause 5.3.2.1
 func TestPSIDirectRoutingFailures(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	silent := h.newAS(loopback)
@@ -453,9 +452,8 @@ func TestInviteFromOutsideTheTrustDomain(t *testing.T) {
 	u.ack(invite, res)
 }
 
-// TS 24.229 §5.3.2.1A, TS 23.228 §5.4.12.5 c: an AS of the trust domain sends a request on behalf of the user in
-// P-Served-User, or else P-Asserted-Identity, to the I-CSCF: an originating location query, and the S-CSCF the HSS
-// names gets the request with "orig"; the AS hosting a PSI, without.
+// TS 24.229 clause 5.3.2.1A
+// TS 23.228 clause 5.4.12.5
 func TestOrigOnTheICSCF(t *testing.T) {
 	const psi = "sip:mcptt-tpf@" + homeDomain
 
@@ -508,7 +506,7 @@ func TestOrigOnTheICSCF(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.3.2.1A: an originating request on behalf of no identity, or of one the HSS does not know.
+// TS 24.229 clause 5.3.2.1A
 func TestOrigOnTheICSCFRefused(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	u := h.newUE(loopback)
@@ -531,8 +529,7 @@ func TestOrigOnTheICSCFRefused(t *testing.T) {
 	h.scscf.sock.RecvNone(quiet)
 }
 
-// TS 24.229 §5.3.2.1: a request from outside the trust domain is terminating: the Route it names past the I-CSCF
-// goes, and the location query decides.
+// TS 24.229 clause 5.3.2.1
 func TestInviteFromOutsideTheTrustDomainWithRoute(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscf
@@ -661,8 +658,6 @@ func TestSubsequentRequest(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// The dialogs of the S-CSCF do not go through the I-CSCF: one from outside the trust domain would reach the S-CSCF
-// as if from the trust domain.
 func TestSubsequentRequestFromOutsideTheTrustDomain(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	s := h.scscf

@@ -5,7 +5,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// outcomes are how a call ends, which label the calls.
 var outcomes = []db.CallOutcome{
 	db.OutcomeAnswered, db.OutcomeCancelled, db.OutcomeBusy, db.OutcomeRejected, db.OutcomeNoAnswer,
 	db.OutcomeUnavailable, db.OutcomeFailed,
@@ -35,7 +34,6 @@ func newMetrics() metrics {
 	return m
 }
 
-// Collectors are the metrics of the calls.
 func (r *Recorder) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{r.metrics.active, r.metrics.calls}
 }

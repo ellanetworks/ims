@@ -6,7 +6,6 @@ const base64url = (value: unknown) =>
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
 
-// makeToken is an access token with the claims the UI reads, and an invalid signature, which only the server checks.
 export const makeToken = (
   email = "admin@example.com",
   roleId = RoleID.Admin,

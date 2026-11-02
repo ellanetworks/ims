@@ -68,7 +68,6 @@ func TestLoadAcceptsNoExtKeyUsage(t *testing.T) {
 	load(t, unrestricted.Files)
 }
 
-// handshake connects a client to a server over loopback, and returns the error each side ends with.
 func handshake(t *testing.T, client, server *tls.Config) (clientErr, serverErr error) {
 	t.Helper()
 
@@ -93,7 +92,6 @@ func handshake(t *testing.T, client, server *tls.Config) (clientErr, serverErr e
 		tc := tls.Server(conn, server)
 
 		if err = tc.HandshakeContext(t.Context()); err == nil {
-			// TLS 1.3 clients finish before the server has checked their certificate: a read surfaces its verdict.
 			if _, err = tc.Read(make([]byte, 1)); errors.Is(err, io.EOF) {
 				err = nil
 			}
@@ -109,7 +107,6 @@ func handshake(t *testing.T, client, server *tls.Config) (clientErr, serverErr e
 
 	conn, err := d.DialContext(ctx, "tcp", ln.Addr().String())
 	if err == nil {
-		// Read the server's alert, if any, or time out.
 		_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 		_, err = conn.Read(make([]byte, 1))
 
@@ -185,7 +182,6 @@ func TestMutualTLS(t *testing.T) {
 	t.Run("server to a client of another CA", func(t *testing.T) {
 		cfg := sbitlstest.Peer(stranger.Cert, ca)
 		cfg.ServerName = "ims.example.org"
-		// Present the certificate even though the server does not list its CA.
 		cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &stranger.Cert, nil }
 
 		var v *tls.CertificateVerificationError
@@ -195,7 +191,8 @@ func TestMutualTLS(t *testing.T) {
 	})
 }
 
-// TS 33.210 §6.2.1, §6.2.3
+// TS 33.210 clause 6.2.1
+// TS 33.210 clause 6.2.3
 func TestProfile(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	ims := load(t, ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"ims.example.org"}}).Files)

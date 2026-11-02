@@ -10,8 +10,7 @@ const (
 	AnswerModeManual = "Manual"
 )
 
-// AnswerMode is an Answer-Mode or Priv-Answer-Mode value (RFC 5373 §6). Unknown modes are kept, for the recipient
-// to ignore.
+// RFC 5373 section 6
 type AnswerMode struct {
 	Mode   string
 	Params Params
@@ -26,12 +25,12 @@ func ParseAnswerMode(s string) (AnswerMode, error) {
 	return AnswerMode{Mode: mode, Params: ps}, nil
 }
 
-// Is compares the mode case-insensitively (RFC 5373 §6).
+// RFC 5373 section 6
 func (a AnswerMode) Is(mode string) bool {
 	return strings.EqualFold(a.Mode, mode)
 }
 
-// Require reports whether the UAS must honour the mode or reject the request (RFC 5373 §7.1).
+// RFC 5373 section 7.1
 func (a AnswerMode) Require() bool {
 	return a.Params.Has("require")
 }
@@ -64,7 +63,7 @@ const (
 	AnswerStateUnconfirmed = "Unconfirmed"
 )
 
-// PAnswerState is a P-Answer-State value (RFC 4964 §7.1).
+// RFC 4964 section 7.1
 type PAnswerState struct {
 	State  string
 	Params Params

@@ -155,8 +155,7 @@ func (m *Media) RTPMaps() ([]RTPMap, error) {
 	return out, errors.Join(errs...)
 }
 
-// Fmtp is the parameters of the fmtp attribute of a format of the media, the format compared case-insensitively
-// (RFC 4855 §3): a client writes the "MCPTT" of its m= line "mcptt" (TS 24.379 Table A.1.3-1).
+// RFC 4855 section 3
 func (m *Media) Fmtp(format string) (string, bool) {
 	for _, v := range m.Attrs("fmtp") {
 		f, params := cutWSP(v)
@@ -429,7 +428,7 @@ func cutWSP(s string) (before, after string) {
 	return s[:i], trimWSP(s[i:])
 }
 
-// SourceAttr is a source-level attribute (RFC 5576 §4.1): "a=ssrc:<ssrc-id> <attribute>[:<value>]".
+// RFC 5576 section 4.1
 type SourceAttr struct {
 	SSRC        uint32
 	Name, Value string
@@ -460,7 +459,6 @@ func (a SourceAttr) String() string {
 	return s
 }
 
-// SourceAttrs are the a=ssrc attributes of the media, in order; the malformed ones are left out and reported.
 func (m *Media) SourceAttrs() ([]SourceAttr, error) {
 	var (
 		out  []SourceAttr

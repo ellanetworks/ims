@@ -29,7 +29,6 @@ func decodeFile(t *testing.T, name string) ResourceLists {
 	return r
 }
 
-// stable checks that r encodes, decodes to what encodes again the same: the elements kept, malformed, too.
 func stable(t *testing.T, r ResourceLists) {
 	t.Helper()
 
@@ -49,8 +48,7 @@ func stable(t *testing.T, r ResourceLists) {
 	}
 }
 
-// RFC 4826 §3.3: a list of an entry, an entry reference and a list of entries and an external list. The line folding
-// of the example, for display (§3.3), is white space in the attribute values (XML 1.0 §3.3.3), kept.
+// RFC 4826 section 3.3
 func TestExample33(t *testing.T) {
 	r := decodeFile(t, "rfc4826-3.3.xml")
 
@@ -84,7 +82,7 @@ func TestExample33(t *testing.T) {
 	stable(t, r)
 }
 
-// RFC 5364 §6 Figure 3: a recipient list; Figure 4: the recipient-history list of the URI-list server, of counts.
+// RFC 5364 section 6
 func TestCopyControl(t *testing.T) {
 	r := decodeFile(t, "rfc5364-figure3.xml")
 
@@ -120,9 +118,7 @@ func TestCopyControl(t *testing.T) {
 	}
 }
 
-// RFC 5366 §4 Figure 1: the flat list of a URI list. Figure 3 gives the namespace of RFC 5364 as
-// urn:ietf:params:xml:ns:copyControl, which is not that of RFC 5364 §5 and §9.2, urn:ietf:params:xml:ns:copycontrol:
-// its attributes are extensions of a namespace unknown, kept.
+// RFC 5366 section 4
 func TestURIList(t *testing.T) {
 	r := decodeFile(t, "rfc5366-figure1.xml")
 
@@ -143,7 +139,8 @@ func TestURIList(t *testing.T) {
 	stable(t, r)
 }
 
-// TS 24.379 §10.1.4.2.1, §17.5: the functional alias of an entry kept in its Other.
+// TS 24.379 clause 10.1.4.2.1
+// TS 24.379 clause 17.5
 func TestMCPTT(t *testing.T) {
 	r := decodeFile(t, "ts24379-10.1.4.2.1.xml")
 
@@ -156,9 +153,11 @@ func TestMCPTT(t *testing.T) {
 	stable(t, r)
 }
 
-// RFC 4826 §3.2, §6, RFC 5364 §5: the members of each kind, the extension elements and attributes, the copy control
-// attributes of members other than entries, entries of a URI twice (RFC 5364 §4), which Encode refuses (RFC 4826
-// §3.1).
+// RFC 4826 section 3.2
+// RFC 4826 section 6
+// RFC 5364 section 5
+// RFC 5364 section 4
+// RFC 4826 section 3.1
 func TestExtensions(t *testing.T) {
 	r := decodeFile(t, "extensions.xml")
 
@@ -196,7 +195,7 @@ func TestExtensions(t *testing.T) {
 	stable(t, r)
 }
 
-// RFC 4826 §3.2: a malformed element kept, not decoded; the first of an element given once counting.
+// RFC 4826 section 3.2
 func TestMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, list string
@@ -231,7 +230,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, r)
 	}
 
-	// Given more than once: the first counts, malformed or not, the others kept, malformed.
 	r, err := Decode([]byte(`<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists"><list><display-name>a</display-name>` +
 		`<display-name>b</display-name><entry uri="u"><display-name><b/></display-name><display-name>d</display-name></entry></list>` +
 		`</resource-lists>`))
@@ -242,7 +240,6 @@ func TestMalformed(t *testing.T) {
 
 	stable(t, r)
 
-	// A display name of no text nor language is as none: one may follow. Elements other than lists kept at the root.
 	r, err = Decode([]byte(`<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists"><list><display-name/>` +
 		`<display-name>b</display-name></list><entry uri="v"/></resource-lists>`))
 	if err != nil || r.Lists[0].DisplayName.Text != "b" || len(r.Lists[0].Other) != 0 || len(r.Other) != 1 {
@@ -252,7 +249,7 @@ func TestMalformed(t *testing.T) {
 	stable(t, r)
 }
 
-// XML Schema Part 2 §3.3.20.1: count is an xs:nonNegativeInteger, of a sign or not.
+// XML Schema Part 2 section 3.3.20.1
 func TestCount(t *testing.T) {
 	r, err := Decode([]byte(`<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists" xmlns:cp="urn:ietf:params:xml:ns:copycontrol">` +
 		`<list><entry uri="a" cp:count="+5"/><entry uri="b" cp:count="-00"/><entry uri="c" cp:count=" 007 "/></list></resource-lists>`))
@@ -318,8 +315,6 @@ func TestEncode(t *testing.T) {
 		}
 	}
 
-	// The keys of different kinds, of lists of no name, of AnonymousURI of different levels (RFC 5364 Figure 4) do not
-	// clash; the names of the lists of the root do.
 	if b, err := Encode(ResourceLists{Lists: []List{{Members: []Member{
 		&Entry{URI: "u"}, &EntryRef{Ref: "u"}, &External{Anchor: "u"}, &List{Name: "u"}, &List{}, &List{},
 		&Entry{URI: AnonymousURI, Copy: Copy{CopyControl: To}}, &Entry{URI: AnonymousURI, Copy: Copy{CopyControl: CC}},
@@ -353,7 +348,6 @@ func FuzzDecode(f *testing.F) {
 			return
 		}
 
-		// Decode keeps the members of a key twice (RFC 5364 §4), which Encode refuses (RFC 4826 §3.1).
 		out, encErr := Encode(r)
 		if errors.Is(encErr, errDuplicate) {
 			return
@@ -361,7 +355,6 @@ func FuzzDecode(f *testing.F) {
 
 		stable(t, r)
 
-		// A document decoded without error encodes to one decoded without error.
 		if err == nil {
 			if _, err := Decode(out); err != nil {
 				t.Fatalf("Decode(Encode): %v\n%s\n%s", err, b, out)

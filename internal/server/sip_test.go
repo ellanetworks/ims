@@ -359,9 +359,7 @@ func TestSCSCFAnswersOptions(t *testing.T) {
 	}
 }
 
-// TS 24.229 §4.4: the trusted networks are the I-CSCF's and the S-CSCF's. To the P-CSCF, a node there is no more the
-// core than a UE is: it refuses its MESSAGE as an unregistered UE's, where it would hand one from the core to the
-// placeholder. The S-CSCF takes nothing from outside the trust domain, "orig" included.
+// TS 24.229 clause 4.4
 func TestTrustByRole(t *testing.T) {
 	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
 	srv.Config.SIP.TrustedNetworks = []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}

@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Snapshot is validated settings, immutable: what it returns must not be modified.
 type Snapshot struct {
 	cfg                        Settings
 	participating, controlling sip.URI
@@ -21,26 +20,16 @@ type Snapshot struct {
 	groups                     map[string]*Group
 }
 
-// defaultEncoding is the codec the clients must support (TS 26.179 §4.1.1).
+// TS 26.179 clause 4.1.1
 const defaultEncoding = "AMR-WB"
 
-// MaxUsers is the most users the server serves, as Ella Core the most subscribers.
 const MaxUsers = 1000
 
-// DefaultT7 is T7 (Floor Idle) when the service configuration has none: a local value, TS 24.380 Table 11.1.3-1
-// having no default.
 const DefaultT7 = 2 * time.Second
 
-// minPriorityLevels is the lowest <num-levels-priority-hierarchy> of its schema (TS 24.484 §8.4.2.3).
+// TS 24.484 clause 8.4.2.3
 const minPriorityLevels = 4
 
-// New validates c and makes it a snapshot, of a copy of c with the defaults of TS 24.481, TS 24.484 and TS 24.380
-// applied to what is absent. Its error joins a FieldError for every error of c, each after the path of its key, such
-// as groups[2].list.entries[0].uri; one of an identity taken names what has it, such as the user sip:a@example.com.
-//
-// New rejects what settings should not have; a source of documents of a management server maps them to Settings first,
-// as their specifications read them: a value of <on-network-action-upon-expiration-of-timeout-for-acknowledgement-
-// of-required-members> other than "proceed", of a later release, is "abandon" (TS 24.481 §7.2.2 u).
 func New(c Settings) (*Snapshot, error) {
 	s := &Snapshot{cfg: clone(c), users: map[string]*User{}, groups: map[string]*Group{}}
 	v := &validator{ids: map[string]string{}, services: map[string]bool{}, impus: map[string]string{}}
@@ -74,7 +63,6 @@ func New(c Settings) (*Snapshot, error) {
 		}
 	}
 
-	// The users' references to the groups, once the groups are known.
 	for i := range s.cfg.Users {
 		v.affiliations(fmt.Sprintf("users[%d]", i), &s.cfg.Users[i], ids[i], s.groups)
 	}
@@ -86,23 +74,18 @@ func New(c Settings) (*Snapshot, error) {
 	return s, nil
 }
 
-// ServiceConfiguration is the service configuration of the organisation.
 func (s *Snapshot) ServiceConfiguration() *ServiceConfiguration { return &s.cfg.ServiceConfiguration }
 
-// ParticipatingPSI and ControllingPSI are the PSIs of the system, parsed.
 func (s *Snapshot) ParticipatingPSI() sip.URI { return s.participating }
 
 func (s *Snapshot) ControllingPSI() sip.URI { return s.controlling }
 
-// User is the user of MCPTT ID id, nil if none.
 func (s *Snapshot) User(id sip.URI) *User { return s.users[key(id)] }
 
-// Group is the group of MCPTT group ID id, nil if none.
 func (s *Snapshot) Group(id sip.URI) *Group { return s.groups[key(id)] }
 
-// ServerTimers are the timers and counters of the floor control server of a call of g: from the service
-// configuration and the group document, as TS 24.380 Table 11.1.3-1 and Table 11.2.3-1 obtain them. Those not
-// configured are zero, the defaults of the tables, which floor applies.
+// TS 24.380 clause 11.1.3
+// TS 24.380 clause 11.2.3
 func (s *Snapshot) ServerTimers(g *Group) floor.ServerTimers {
 	on := s.cfg.ServiceConfiguration.OnNetwork
 	fc := on.FCTimersCounters
@@ -112,20 +95,17 @@ func (s *Snapshot) ServerTimers(g *Group) floor.ServerTimers {
 	}
 }
 
-// ID is the MCPTT ID of u.
 func (u *User) ID() sip.URI { return u.id }
 
-// HasIMPU reports whether impu is an IMS public user identity of u, as RFC 3261 §19.1.4 and RFC 3966 §4 compare
-// them.
+// RFC 3261 section 19.1.4
+// RFC 3966 section 4
 func (u *User) HasIMPU(impu sip.URI) bool {
 	k := key(impu)
 	return k != "" && slices.Contains(u.impus, k)
 }
 
-// ImplicitGroups are the groups of <ImplicitAffiliations>, in order.
 func (u *User) ImplicitGroups() []*Group { return u.implicit }
 
-// N2 is <MaxAffiliationsN2>, and whether it limits the affiliations of u: not if absent.
 func (u *User) N2() (n int, limited bool) {
 	if u.MaxAffiliationsN2 == nil {
 		return 0, false
@@ -134,7 +114,6 @@ func (u *User) N2() (n int, limited bool) {
 	return *u.MaxAffiliationsN2, true
 }
 
-// N6 is <MaxSimultaneousCallsN6>, and whether it limits the group calls of u: not if absent.
 func (u *User) N6() (n int, limited bool) {
 	if u.MaxSimultaneousCallsN6 == nil {
 		return 0, false
@@ -143,13 +122,10 @@ func (u *User) N6() (n int, limited bool) {
 	return *u.MaxSimultaneousCallsN6, true
 }
 
-// ID is the MCPTT ID of the member.
 func (e *Entry) ID() sip.URI { return e.id }
 
-// ID is the MCPTT group ID of g.
 func (g *Group) ID() sip.URI { return g.id }
 
-// Entry is the entry of g of MCPTT ID id: the member, nil if id is not one.
 func (g *Group) Entry(id sip.URI) *Entry {
 	i, ok := g.entries[key(id)]
 	if !ok {
@@ -200,30 +176,21 @@ func clonePtr[T any](p *T) *T {
 	return &v
 }
 
-// validator collects the errors of settings, each with its path.
 type validator struct {
-	errs []error
-	// ids are what has each identity, by key, such as the user sip:a@example.com: an identity is of one user, group
-	// or function. services are those of the functions and the groups, and impus what has each IMPU, such as an IMPU
-	// of sip:a@example.com: an IMPU is none of them, which a P-Asserted-Identity would make ambiguous.
+	errs     []error
 	ids      map[string]string
 	services map[string]bool
 	impus    map[string]string
 }
 
-// add adds the error of the value at path.
 func (v *validator) add(path, format string, a ...any) {
 	v.errs = append(v.errs, &FieldError{Path: path, Message: fmt.Sprintf(format, a...)})
 }
 
-// conflict adds the error of the value at path with the rest of the settings.
 func (v *validator) conflict(path, format string, a ...any) {
 	v.errs = append(v.errs, &FieldError{Path: path, Message: fmt.Sprintf(format, a...), Conflict: true})
 }
 
-// identity parses the identity at path, a SIP URI of no parameters, headers or password, and claims it for what, a
-// function or group if service; "" if it is not one. One already claimed is an error, and still the identity of what
-// has it here, so that the references to it are not errors too.
 func (v *validator) identity(path, s, what string, service bool) sip.URI {
 	u, ok := v.uri(path, s)
 	if !ok {
@@ -287,20 +254,17 @@ func (v *validator) service(c *ServiceConfiguration) {
 
 	const fc = "service-configuration.on-network.fc-timers-counters."
 
-	// TS 24.380 Table 11.1.3-1: T1, T2, T7 and T8 of zero mean nothing; T3 of zero is the one of audio cut-in.
 	v.timer("service-configuration.on-network.transmit-time.time-limit", &on.TransmitTime.TimeLimit, def.T2, false)
 	v.timer(fc+"T1-end-of-rtp-media", &t.T1, def.T1, false)
 	v.timer(fc+"T3-stop-talking-grace", &t.T3, def.T3, true)
 	v.timer(fc+"T8-floor-revoke", &t.T8, def.T8, false)
 
-	// T7 has no default of TS 24.380 Table 11.1.3-1, which leaves it to the radio access network: the server's.
 	v.timer(fc+"T7-floor-idle", &t.T7, DefaultT7, false)
 
 	switch {
 	case *t.T1 > floor.MaxT1:
 		v.add(fc+"T1-end-of-rtp-media", "%s is above its maximum of %s (TS 24.380 Table 11.1.3-1)", *t.T1, floor.MaxT1)
 	case *t.T1 > 0 && *t.T1 < floor.MinT1:
-		// Table 11.1.3-1 sets no minimum; the server's (floor.MinT1).
 		v.add(fc+"T1-end-of-rtp-media", "%s is below %s (media reported every 200 ms)", *t.T1, floor.MinT1)
 	}
 
@@ -311,7 +275,6 @@ func (v *validator) service(c *ServiceConfiguration) {
 	}
 }
 
-// timer validates the timer at path, of default def if absent: not negative, nor zero unless zero is.
 func (v *validator) timer(path string, d **time.Duration, def time.Duration, zero bool) {
 	switch {
 	case *d == nil:
@@ -331,7 +294,6 @@ func (v *validator) duration(path string, d time.Duration) {
 	}
 }
 
-// user validates u and returns its MCPTT ID, the zero URI if invalid.
 func (v *validator) user(path string, u *User) sip.URI {
 	id := v.identity(path+".mcptt-user-id", u.MCPTTUserID, "the user "+u.MCPTTUserID, false)
 	v.name(path+".user-alias", u.Alias)
@@ -381,7 +343,6 @@ func (v *validator) user(path string, u *User) sip.URI {
 	return id
 }
 
-// affiliations validates the implicit affiliations of u, of MCPTT ID id: groups of which u is a member, within N2.
 func (v *validator) affiliations(path string, u *User, id sip.URI, groups map[string]*Group) {
 	seen := map[string]bool{}
 
@@ -401,7 +362,6 @@ func (v *validator) affiliations(path string, u *User, id sip.URI, groups map[st
 		case seen[k]:
 			v.add(p, "%s is listed twice", s)
 		case id.IsSIP() && grp.Entry(id) == nil:
-			// TS 24.379 §9.2.2.3.3 step 5: a user is affiliated to the groups it is a member of only.
 			v.conflict(p, "%s is a group %s is not a member of", s, u.MCPTTUserID)
 		default:
 			u.implicit = append(u.implicit, grp)
@@ -415,7 +375,6 @@ func (v *validator) affiliations(path string, u *User, id sip.URI, groups map[st
 	}
 }
 
-// group validates g, indexes its entries, applies its defaults and returns its key, "" if its group ID is invalid.
 func (v *validator) group(path string, g *Group, users map[string]*User) string {
 	id := v.identity(path+".uri", g.URI, "the group "+g.URI, true)
 	v.name(path+".display-name", g.DisplayName)
@@ -424,7 +383,6 @@ func (v *validator) group(path string, g *Group, users map[string]*User) string 
 		v.add(path+".on-network-invite-members", "is false, of a chat group (TS 24.481 §7.2.7): only prearranged groups are supported")
 	}
 
-	// TS 24.380 Table 11.1.3-1: T4 of zero releases the call as soon as the floor is idle.
 	v.timer(path+".on-network-hang-timer", &g.T4, floor.DefaultServerTimers.T4, true)
 	v.duration(path+".on-network-maximum-duration", g.TNG3)
 	v.duration(path+".on-network-timeout-for-acknowledgement-of-required-members", g.TNG1)
@@ -446,7 +404,6 @@ func (v *validator) group(path string, g *Group, users map[string]*User) string 
 		v.add(path+".on-network-max-participant-count", "%d is fewer than the %d required members (TS 24.379 §6.3.5.5 NOTE 4)", m, required)
 	}
 
-	// The invited members are the members but the initiator (TS 24.379 §6.3.3.3).
 	if m := g.MinimumToStart; m < 0 || m > 65535 || m > max(n-1, 0) {
 		v.add(path+".on-network-minimum-number-to-start", "%d is not within 0 and the %d members to invite", m, max(n-1, 0))
 	}
@@ -464,7 +421,6 @@ func (v *validator) group(path string, g *Group, users map[string]*User) string 
 	}
 
 	if required > 0 {
-		// TS 24.379 §6.3.3.3: TNG1 runs when there are required members.
 		if g.TNG1 == 0 {
 			v.add(path+".on-network-timeout-for-acknowledgement-of-required-members", "is required with required members (TS 24.379 §6.3.3.3)")
 		}
@@ -501,7 +457,6 @@ func (v *validator) encodings(path string, g *Group) {
 	}
 }
 
-// entries validates and indexes the entries of g, members of the users, and returns how many are required.
 func (v *validator) entries(path string, g *Group, users map[string]*User) int {
 	g.entries = make(map[string]int, len(g.List.Entries))
 	required := 0
@@ -540,10 +495,8 @@ func (v *validator) entries(path string, g *Group, users map[string]*User) int {
 	return required
 }
 
-// maxName is the most characters of a name: of a user's alias, of a group's display name.
 const maxName = 64
 
-// name validates the name at path, optional: of at most maxName characters, none a control character.
 func (v *validator) name(path, s string) {
 	switch {
 	case !utf8.ValidString(s):
@@ -557,7 +510,7 @@ func (v *validator) name(path, s string) {
 	}
 }
 
-// isToken reports whether s is of the token characters (RFC 4566 §9).
+// RFC 4566 section 9
 func isToken(s string) bool {
 	if s == "" {
 		return false
@@ -573,7 +526,7 @@ func isToken(s string) bool {
 	return true
 }
 
-// isDomain reports whether s is a domain name of letters, digits and hyphens (RFC 1123 §2.1).
+// RFC 1123 section 2.1
 func isDomain(s string) bool {
 	if s == "" || len(s) > 253 {
 		return false

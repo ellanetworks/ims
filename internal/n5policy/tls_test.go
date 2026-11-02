@@ -16,7 +16,6 @@ import (
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 )
 
-// newTLSFixture runs N5 over mutually authenticated TLS, with both ends named localhost.
 func newTLSFixture(t *testing.T, ca *sbitlstest.CA) *fixture {
 	t.Helper()
 
@@ -56,7 +55,7 @@ func newTLSFixture(t *testing.T, ca *sbitlstest.CA) *fixture {
 	return &fixture{t: t, pcf: pcf, b: b, sink: sink, notify: root}
 }
 
-// TS 33.501 §13.1.0: the P-CSCF and the PCF authenticate each other both ways.
+// TS 33.501 clause 13.1.0
 func TestTLS(t *testing.T) {
 	f := newTLSFixture(t, sbitlstest.NewCA(t, "ca"))
 	id := f.b.NewSessionID()
@@ -87,7 +86,6 @@ func TestTLS(t *testing.T) {
 	}
 }
 
-// Only a client with a certificate from the CA reaches the notification server.
 func TestTLSNotifier(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	other := sbitlstest.NewCA(t, "other")
@@ -120,7 +118,6 @@ func TestTLSNotifier(t *testing.T) {
 
 			status, err := post(f, tr, target)
 			if tc.ok {
-				// An unknown session: the server answered.
 				if err != nil || status != http.StatusBadRequest {
 					t.Fatalf("POST = %d, %v, want 400", status, err)
 				}
@@ -148,7 +145,6 @@ func TestTLSNotifier(t *testing.T) {
 	})
 }
 
-// post sends a termination to target, and returns the status of the answer.
 func post(f *fixture, tr *http.Transport, target string) (int, error) {
 	body := `{"termCause":"PDU_SESSION_TERMINATION","resUri":"https://localhost/x"}`
 
@@ -201,7 +197,6 @@ func TestTLSConfig(t *testing.T) {
 	}
 }
 
-// Hosts that are addresses compare as addresses.
 func TestOursAddress(t *testing.T) {
 	b, err := New(Config{PCF: "http://[::1]:7777", Notify: "http://127.0.0.1:7778"})
 	if err != nil {

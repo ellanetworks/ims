@@ -15,7 +15,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// bound resolves every originator to one binding, if set.
 type bound struct{ b *registrar.Binding }
 
 func (r bound) Resolve(*sip.Request, []sip.URI, string) (registrar.Binding, bool) {
@@ -28,8 +27,6 @@ func (r bound) Resolve(*sip.Request, []sip.URI, string) (registrar.Binding, bool
 
 func (bound) Bindings(sip.URI) []registrar.Binding { return nil }
 
-// controlling takes the originations, refusing them with a 480 whose P-Asserted-Identity is the controlling PSI, and
-// has the user in the group calls of calls.
 type controlling struct {
 	got   *Origination
 	calls []sip.URI
@@ -45,14 +42,9 @@ func (c *controlling) GroupCalls(sip.URI) []sip.URI { return c.calls }
 const speechOffer = "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\n" +
 	"m=audio 30000 RTP/AVP 96\r\na=rtpmap:96 AMR-WB/16000\r\n"
 
-// TS 24.379 §10.1.1.3.1.1, §6.3.2.1.3, §6.3.2.1.5: the INVITE of a client to the participating PSI. Refused: of
-// another session type with a 403, of a user without a binding with a 404 and 141 (step 2), without speech with a
-// 488 (step 4), beyond N6 with a 486 and 103 (step 5), of a group not configured with a 404 and 142 (steps 6, 7).
-// Passed on: to the controlling PSI, with the calling user ID set (step 5), the Accept-Contact and Session-Expires as
-// received, no Answer-Mode or Priv-Answer-Mode (step 4), the participating PSI asserted, its Contact with the MCPTT
-// feature tag, the ICSI asserted, the SDP offer as received; the controlling function's response relayed with the
-// participating PSI asserted. Each response has the P-Charging-Vector of TS 24.229 §5.7.2: the icid-value and
-// orig-ioi of the INVITE, a type 3 term-ioi.
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 6.3.2.1.3
+// TS 24.379 clause 6.3.2.1.5
 func TestOriginate(t *testing.T) {
 	snap, err := settings.New(testConfig())
 	if err != nil {

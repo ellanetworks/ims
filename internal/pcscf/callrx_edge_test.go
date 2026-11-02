@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip/proxy"
 )
 
-// gateAA holds every AA-Request until the gate opens, then answers with answer.
 func gateAA(f *fakePCRF, answer func(context.Context, *diameter.Message) (*diameter.Message, error)) (open func()) {
 	gate := make(chan struct{})
 
@@ -33,7 +32,7 @@ func gateAA(f *fakePCRF, answer func(context.Context, *diameter.Message) (*diame
 	return func() { close(gate) }
 }
 
-// TS 24.229 §5.2.7.2: a 2xx held behind a refused answer never reaches the caller.
+// TS 24.229 clause 5.2.7.2
 func TestCallRefusedWithA2xxQueued(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	got, f := s.originate(t, u)
@@ -59,7 +58,8 @@ func TestCallRefusedWithA2xxQueued(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// RFC 3264, TS 24.229 §5.2.7.2: a refused answer in the ACK still reaches the callee, then the call is released.
+// RFC 3264
+// TS 24.229 clause 5.2.7.2
 func TestCallMediaRefusedInTheAck(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, false)
@@ -104,7 +104,7 @@ func TestCallMediaRefusedInTheAck(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 Annex A.3.1: an UPDATE exchange within a forked early dialogue is SEVERAL_DIALOGUES.
+// TS 29.214 clause A.3.1
 func TestForkedCallEarlyUpdate(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, true)
@@ -154,7 +154,7 @@ func TestForkedCallEarlyUpdate(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 200)
 }
 
-// TS 29.214 §4.4.4: the SIP side gives up at the call timeout; a late successful AA-Answer is followed by an STR.
+// TS 29.214 clause 4.4.4
 func TestCallMediaLateAnswerEndsTheSession(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
 	got, f := s.originate(t, u)
@@ -176,7 +176,7 @@ func TestCallMediaLateAnswerEndsTheSession(t *testing.T) {
 	pcrf.wantSTR(session, rx.TerminationLogout)
 }
 
-// TS 29.214 §4.4.4: a call session is terminated at shutdown.
+// TS 29.214 clause 4.4.4
 func TestCallSessionEndsAtShutdown(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -186,7 +186,7 @@ func TestCallSessionEndsAtShutdown(t *testing.T) {
 	pcrf.wantSTR(e.session, rx.TerminationAdministrative)
 }
 
-// TS 29.214 §4.4.4: no STR before a successful initial AA-Answer.
+// TS 29.214 clause 4.4.4
 func TestCallEndedBeforeItsFirstAAR(t *testing.T) {
 	s, _, pcrf, _ := newRxIPsecScene(t)
 
@@ -197,7 +197,8 @@ func TestCallEndedBeforeItsFirstAAR(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 Annex A.1, RFC 3262 §3: a 2xx repeating a pending answer is not a new answer.
+// TS 29.214 clause A.1
+// RFC 3262 section 3
 func TestCallRepeatedAnswerAuthorisedOnce(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	got, f := s.originate(t, u)
@@ -223,7 +224,7 @@ func TestCallRepeatedAnswerAuthorisedOnce(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 24.229 §5.2.7.3: the access network charging information goes in the first reliable response from the UE.
+// TS 24.229 clause 5.2.7.3
 func TestTerminatingChargingInfoOnTheFirstReliableResponse(t *testing.T) {
 	s, u, pcrf, token := newRxIPsecScene(t)
 
@@ -284,7 +285,7 @@ func TestTerminatingChargingInfoOnTheFirstReliableResponse(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.8.1.1: an abort for insufficient bearer resources during setup is a media loss.
+// TS 24.229 clause 5.2.8.1.1
 func TestCallAbortedForBearerResourcesDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishEarly(t, u, pcrf)

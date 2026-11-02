@@ -20,26 +20,23 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// smsipTag is the feature tag of a UE able to receive short messages over IP (TS 24.341 §5.3.1.2, §7.3).
+// TS 24.341 clause 5.3.1.2
+// TS 24.341 clause 7.3
 const smsipTag = "+g.3gpp.smsip"
 
-// strands is the number of strands the registrations share: those of an IMPU go on one, in order.
 const strands = 16
 
-// defaultExpires is the expiration of a third-party REGISTER of neither an expires parameter nor an Expires header
-// field (RFC 3261 §10.3 step 7): TS 24.229 §5.4.1.2.1 has the S-CSCF grant at most 600000 s; 3600 s is the default of
-// RFC 3261 §10.2.1.1.
+// RFC 3261 section 10.3
+// TS 24.229 clause 5.4.1.2.1
+// RFC 3261 section 10.2.1.1
 const defaultExpires = 3600
 
-// The bounds of the waits between the attempts of a reg event subscription that failed.
 const (
 	minSubscribeRetry = 30 * time.Second
 	maxSubscribeRetry = 10 * time.Minute
 )
 
-// registration is the IP-SM-GW's registration of an IMPU (TS 24.341 §5.3.3.2): of its third-party REGISTERs, its
-// user's identities, and the reg event subscription that tells whether a contact of the IMPU can receive short
-// messages over IP. Its fields are under the registrar's lock.
+// TS 24.341 clause 5.3.3.2
 type registration struct {
 	key          string
 	impu         sip.URI
@@ -48,53 +45,43 @@ type registration struct {
 	scscf, as    sip.URI
 	expires      time.Time
 	available    bool
-	// unri is set when the UE did not answer a short message over IMS: not reachable for IP (TS 23.040 §3.2.8;
-	// TS 23.204 §6.5a step 17), until it registers again or its reg event tells it reachable (§6.5b).
-	unri   bool
-	expiry *ua.Timer
-	watch  *watch
-	strand *ua.Strand
+	unri         bool
+	expiry       *ua.Timer
+	watch        *watch
+	strand       *ua.Strand
 }
 
-// user is the user of the registration, as the HSS knows it.
 func (r *registration) user() User {
 	return User{MSISDN: r.msisdn, IMSI: r.imsi, IMPU: r.impu}
 }
 
-// watch is a reg event subscription of a registration (RFC 3680; TS 24.229 §5.7.1.1).
+// RFC 3680
+// TS 24.229 clause 5.7.1.1
 type watch struct {
-	sub    *ua.Subscription
-	active bool
-	// version is that of the last document, once one came (RFC 3680 §5.2).
+	sub       *ua.Subscription
+	active    bool
 	version   uint32
 	versioned bool
-	// contacts are the active contacts of the IMPUs of the implicit registration set, by the key of the aor of their
-	// <registration> (RFC 3680 §5.2), then by their id, and whether each can receive short messages over IP.
-	contacts map[string]map[string]bool
-	stopped  bool
-	attempts int
+	contacts  map[string]map[string]bool
+	stopped   bool
+	attempts  int
 }
 
-// registrar keeps the registrations of the IP-SM-GW, and the HSS in line with them.
 type registrar struct {
-	agent *ua.Agent
-	store Store
-	home  string
-	log   *slog.Logger
-	// life is the lifetime of the IP-SM-GW, which its timers and writes are bound to.
+	agent    *ua.Agent
+	store    Store
+	home     string
+	log      *slog.Logger
 	life     context.Context
 	detached tracing.Detached
 
 	seed    maphash.Seed
 	strands [strands]*ua.Strand
 
-	// saving orders the writes of the registrations: each writes the state of regs at its start, after the previous
-	// one.
 	saving sync.Mutex
 
-	mu   sync.Mutex
-	regs map[string]*registration
-	// dirty are the keys of the registrations the store has yet to be given: of regs, else deleted.
+	mu     sync.Mutex
+	regs   map[string]*registration
 	dirty  map[string]bool
 	hss    *hssSync
 	closed bool
@@ -104,11 +91,9 @@ func (g *registrar) strandOf(k string) *ua.Strand {
 	return g.strands[maphash.String(g.seed, k)%strands]
 }
 
-// handleRegister answers a third-party REGISTER of the S-CSCF (TS 24.341 §5.3.3.2; TS 24.229 §5.7.1.1): a 200 of
-// the expiration the S-CSCF granted; the identities of the user stored; a subscription to the reg event package of
-// the IMPU, which tells whether it can receive short messages over IP. A deregistration of an IMPU of an active
-// subscription waits for its NOTIFY, as contacts of the IMPU may stay registered (TS 24.229 §5.4.1.7 NOTE 2);
-// without one, it ends the registration.
+// TS 24.341 clause 5.3.3.2
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.4.1.7
 func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	req := r.Message()
 	now := g.agent.Layer().Clock().Now()
@@ -128,7 +113,6 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 
 	scscf := contacts[0]
 
-	// The expires parameter of the Contact, else the Expires header field, else a default (RFC 3261 §10.3 step 7).
 	secs := uint32(defaultExpires)
 
 	if v, ok := scscf.Params.Get("expires"); ok {
@@ -147,7 +131,6 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 
 	k := key(to.URI)
 
-	// Once the lock is released: the handler's context ends with the transaction, the writes are bound to life.
 	defer func() { _ = g.flush(ctx) }()
 
 	g.mu.Lock()
@@ -175,12 +158,10 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	reg.impu, reg.as = to.URI, req.URI
 	reg.expires = now.Add(time.Duration(secs) * time.Second)
 
-	// A REGISTER without the implicit registration set keeps the one an earlier one told.
 	if set := implicitSet(req, to.URI); len(set) > 1 || len(reg.set) == 0 {
 		reg.set = set
 	}
 
-	// A REGISTER without them keeps those an earlier one told.
 	if msisdn != "" || imsi != "" {
 		reg.msisdn, reg.imsi = msisdn, imsi
 	}
@@ -202,17 +183,13 @@ func (g *registrar) handleRegister(ctx context.Context, r *ua.Request) {
 	}
 }
 
-// tracerName is the instrumentation scope of the spans of the IP-SM-GW's own, role their ella.ims.role.
 const (
 	tracerName = "github.com/ellanetworks/ims/internal/ipsmgw"
 	role       = "ipsmgw"
 )
 
-// saveTimeout bounds a write to the store.
 const saveTimeout = 5 * time.Second
 
-// expireAt has reg removed once it expires, unless a REGISTER refreshes it: in a trace of its own, linked to that of
-// ctx, which armed the timer. Called with g.mu held.
 func (g *registrar) expireAt(ctx context.Context, reg *registration) {
 	if reg.expiry != nil {
 		reg.expiry.Stop()
@@ -228,7 +205,6 @@ func (g *registrar) expireAt(ctx context.Context, reg *registration) {
 	})
 }
 
-// expire removes reg, if expired still.
 func (g *registrar) expire(ctx context.Context, reg *registration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -239,7 +215,6 @@ func (g *registrar) expire(ctx context.Context, reg *registration) {
 	}
 }
 
-// remove ends reg: its subscription, its row (at the next flush), and its user's availability. Called with g.mu held.
 func (g *registrar) remove(ctx context.Context, reg *registration) {
 	if g.regs[reg.key] != reg {
 		return
@@ -264,10 +239,8 @@ func (g *registrar) remove(ctx context.Context, reg *registration) {
 	g.hss.mark(trace.SpanContextFromContext(ctx), reg.user().userKey())
 }
 
-// save has reg written at the next flush. Called with g.mu held.
 func (g *registrar) save(reg *registration) { g.dirty[reg.key] = true }
 
-// row is the row of reg.
 func (reg *registration) row() db.IPSMGWRegistration {
 	r := db.IPSMGWRegistration{
 		IMPUKey: reg.key, IMPU: reg.impu.String(), MSISDN: reg.msisdn, IMSI: reg.imsi, SCSCF: reg.scscf.String(),
@@ -281,11 +254,6 @@ func (reg *registration) row() db.IPSMGWRegistration {
 	return r
 }
 
-// flush writes the registrations dirty, and the HSS registrations unsaved, outside g.mu, which no write holds: each
-// write is bounded by saveTimeout within life, as it may run after the transaction of ctx ended. Called without g.mu
-// held, after the changes it writes. The writes are in the order of flush calls, of g.saving, each of the state of
-// regs at its start, taken under g.mu: of a registration changed twice, the store ends with the later state, whichever
-// flush writes it. Those that fail are written at the next flush.
 func (g *registrar) flush(ctx context.Context) error {
 	return errors.Join(g.persist(ctx), g.hss.persist(ctx))
 }
@@ -339,7 +307,6 @@ func (g *registrar) persist(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// resubscribe replaces the subscription of reg with a new one, toward its S-CSCF. Called with g.mu held.
 func (g *registrar) resubscribe(ctx context.Context, reg *registration) {
 	if old := reg.watch; old != nil {
 		old.stopped = true
@@ -356,8 +323,6 @@ func (g *registrar) resubscribe(ctx context.Context, reg *registration) {
 	reg.strand.Post(func() { _ = g.subscribe(ctx, reg, w) })
 }
 
-// subscribeDetached subscribes w of reg in a trace of its own, linked to cause: work that starts later than its cause,
-// as a subscription ended (D5). Runs on the strand of reg.
 func (g *registrar) subscribeDetached(cause trace.SpanContext, reg *registration, w *watch) {
 	ctx, span := g.detached.Start(g.life, "reg event resubscribe", cause)
 	tracing.End(span, g.subscribe(ctx, reg, w))
@@ -365,9 +330,8 @@ func (g *registrar) subscribeDetached(cause trace.SpanContext, reg *registration
 
 var errNoSIPURI = errors.New("ipsmgw: no SIP URI to subscribe to the reg event package of")
 
-// subscribe sends the SUBSCRIBE of w to the reg event package of the IMPU of reg (TS 24.229 §5.7.1.1 a to f), of
-// the default duration (RFC 3680 §4.4), which the agent refreshes, and returns why it was not sent, if so. Runs on
-// the strand of reg.
+// TS 24.229 clause 5.7.1.1
+// RFC 3680 section 4.4
 func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) error {
 	g.mu.Lock()
 
@@ -427,14 +391,10 @@ func (g *registrar) subscribe(ctx context.Context, reg *registration, w *watch) 
 	return nil
 }
 
-// retry subscribes again after a wait, doubling from minSubscribeRetry to maxSubscribeRetry, while reg lasts, and
-// returns the wait. Called with g.mu held.
 func (g *registrar) retry(ctx context.Context, reg *registration, w *watch) time.Duration {
 	return g.retryAfter(ctx, reg, w, 0)
 }
 
-// retryAfter subscribes again after the wait after, if any, else as retry does, in a trace of its own linked to that
-// of ctx, and returns the wait. Called with g.mu held.
 func (g *registrar) retryAfter(ctx context.Context, reg *registration, w *watch, after time.Duration) time.Duration {
 	if after <= 0 {
 		after = min(minSubscribeRetry<<min(w.attempts, 5), maxSubscribeRetry)
@@ -451,9 +411,7 @@ func (g *registrar) retryAfter(ctx context.Context, reg *registration, w *watch,
 	return after
 }
 
-// ended handles the end of the subscription of w. A 480 or 404, of an IMPU the S-CSCF has no registration of
-// (TS 24.229 §5.4.2.1.1), ends the registration. Another end of a subscription not ended by the IP-SM-GW subscribes
-// again later, the availability unchanged meanwhile.
+// TS 24.229 clause 5.4.2.1.1
 func (g *registrar) ended(ctx context.Context, reg *registration, w *watch, e ua.End) {
 	code := 0
 	if e.Response != nil {
@@ -482,13 +440,10 @@ func (g *registrar) ended(ctx context.Context, reg *registration, w *watch, e ua
 	}
 }
 
-// notify handles a NOTIFY of w (RFC 3680 §5.2; TS 24.341 §5.3.3.2): of a document newer than the last, the contacts
-// of the IMPUs of the implicit registration set it reports, and whether one of them can receive short messages over
-// IP; a change of that updates the HSS. A document that reports the registration of the IMPU itself terminated ends
-// the registration. A subscription the S-CSCF ends is made again (RFC 6665 §4.1.3): at once of "deactivated", after
-// the retry-after of "probation", after a backoff of no reason or another than "noresource" and "rejected", which end
-// the registration. A document that does not decode gets a 400, which keeps the subscription, and a refresh asks for
-// the full state again. Every response has the P-Charging-Vector of TS 24.229 §5.7.1.1.
+// RFC 3680 section 5.2
+// TS 24.341 clause 5.3.3.2
+// RFC 6665 section 4.1.3
+// TS 24.229 clause 5.7.1.1
 func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *ua.Subscription, n *ua.Request) {
 	req := n.Message()
 
@@ -540,7 +495,6 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 		case "noresource", "rejected":
 			ended = true
 		case "deactivated":
-			// At once, in a trace of its own linked to the NOTIFY's (D5).
 			next := &watch{}
 			reg.watch = next
 			cause := trace.SpanContextFromContext(ctx)
@@ -582,10 +536,7 @@ func (g *registrar) notify(ctx context.Context, reg *registration, w *watch, s *
 	_ = n.Respond(ua.Reply{Code: 200, Header: header})
 }
 
-// apply applies doc to the contacts of w, and the availability of reg; it reports whether the document tells that
-// the registration of the IMPU of reg itself ended. The contacts of a registration the document reports not active
-// go, those of the others stay (TS 24.229 §5.4.1.8: an IMPU of a set may be deregistered alone). Called with g.mu
-// held.
+// TS 24.229 clause 5.4.1.8
 func (g *registrar) apply(ctx context.Context, reg *registration, w *watch, doc *reginfo.Reginfo) bool {
 	if w.contacts == nil || doc.State == reginfo.Full {
 		w.contacts = map[string]map[string]bool{}
@@ -644,8 +595,8 @@ func (g *registrar) apply(ctx context.Context, reg *registration, w *watch, doc 
 	return ended
 }
 
-// smsip reports whether a contact can receive short messages over IP: of the feature tag of TS 24.341 §5.3.1.2, of
-// no value or of TRUE (RFC 3840 §9: "boolean"), not negated.
+// TS 24.341 clause 5.3.1.2
+// RFC 3840 section 9
 func smsip(c reginfo.Contact) bool {
 	v, ok := c.Param(smsipTag)
 	if !ok {
@@ -660,8 +611,6 @@ func smsip(c reginfo.Contact) bool {
 	}
 }
 
-// reported is the key of aor, of a <registration> of a reg event document, if it is of the IMPU of reg: one of its
-// implicit registration set, or the URI subscribed to, whose key is that of the IMPU.
 func (r *registration) reported(aor string) (string, bool) {
 	u, err := sip.ParseURI(aor)
 	if err != nil {
@@ -686,8 +635,6 @@ func (r *registration) reported(aor string) (string, bool) {
 	return "", false
 }
 
-// want is the HSS registration to have for the user of userKey: available while one of its IMPUs is, and its
-// identity.
 func (g *registrar) want(userKey string) (User, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -714,8 +661,6 @@ func (g *registrar) want(userKey string) (User, bool) {
 	return u, false
 }
 
-// restore puts back the registrations kept, but those expired, before the agent serves; Resubscribe subscribes to
-// their reg event packages once the core runs.
 func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 	now := g.agent.Layer().Clock().Now()
 	cause := trace.SpanContextFromContext(ctx)
@@ -756,8 +701,6 @@ func (g *registrar) restore(ctx context.Context, rows []db.IPSMGWRegistration) {
 	}
 }
 
-// resubscribeAll subscribes to the reg event package of the registrations of no subscription, as restored, once the
-// core runs.
 func (g *registrar) resubscribeAll(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -769,7 +712,6 @@ func (g *registrar) resubscribeAll(ctx context.Context) {
 	}
 }
 
-// lookup is a copy of the registration of one of ids, if any: the first of ids registered.
 func (g *registrar) lookup(ids []sip.URI) (registration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -791,9 +733,8 @@ func (g *registrar) lookup(ids []sip.URI) (registration, bool) {
 	return registration{}, false
 }
 
-// byUser is a copy of a registration of the MSISDN msisdn or of the IMSI imsi, if any: the IP-SM-GW has a public
-// user identity of the MSISDN (TS 24.341 §5.3.3.3), else of the IMSI it stored of a user of no MSISDN in the
-// <service-info> (§5.3.3.2). One that can receive short messages over IP comes first.
+// TS 24.341 clause 5.3.3.3
+// TS 24.341 clause 5.3.3.2
 func (g *registrar) byUser(msisdn, imsi string) (registration, bool) {
 	if reg, ok := g.availableFor(msisdn, imsi); ok {
 		return reg, true
@@ -811,8 +752,6 @@ func (g *registrar) byUser(msisdn, imsi string) (registration, bool) {
 	return registration{}, false
 }
 
-// availableFor is a copy of a registration of the MSISDN msisdn or of the IMSI imsi that can receive short messages
-// over IP, if any.
 func (g *registrar) availableFor(msisdn, imsi string) (registration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -826,7 +765,7 @@ func (g *registrar) availableFor(msisdn, imsi string) (registration, bool) {
 	return registration{}, false
 }
 
-// unreachable sets the UNRI of the registrations of the MSISDN msisdn or of the IMSI imsi (TS 23.204 §6.5a step 17).
+// TS 23.204 clause 6.5a
 func (g *registrar) unreachable(msisdn, imsi string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -838,13 +777,12 @@ func (g *registrar) unreachable(msisdn, imsi string) {
 	}
 }
 
-// of reports whether reg is of the MSISDN msisdn or of the IMSI imsi.
 func (reg *registration) of(msisdn, imsi string) bool {
 	return (msisdn != "" && reg.msisdn == msisdn) || (imsi != "" && reg.imsi == imsi)
 }
 
-// reachable clears the UNRI of reg, if set, and has the HSS told again that the IP-SM-GW serves the user, for it to
-// alert the service centres of the messages waiting (TS 23.204 §6.5b; TS 23.040 §3.2.6 2c). Called with g.mu held.
+// TS 23.204 clause 6.5b
+// TS 23.040 clause 3.2.6
 func (g *registrar) reachable(ctx context.Context, reg *registration) {
 	if !reg.unri {
 		return
@@ -856,7 +794,6 @@ func (g *registrar) reachable(ctx context.Context, reg *registration) {
 	g.log.DebugContext(ctx, "UE reachable for IP again", slog.String("impu", reg.impu.String()))
 }
 
-// userKeys are the keys of the users of the registrations.
 func (g *registrar) userKeys() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -882,8 +819,7 @@ func (g *registrar) close() {
 	}
 }
 
-// chargingVector is the P-Charging-Vector of a response to req (TS 24.229 §5.7.1.1): its icid-value and orig-ioi,
-// and the type 3 term-ioi of the home domain; "" without an icid-value.
+// TS 24.229 clause 5.7.1.1
 func chargingVector(req *sip.Request, home string) string {
 	ps, err := sip.ParseParams(req.Header.Get("P-Charging-Vector"))
 	if err != nil {
@@ -903,8 +839,7 @@ func chargingVector(req *sip.Request, home string) string {
 	return v + ";term-ioi=" + home
 }
 
-// newChargingVector is the P-Charging-Vector of a request of the IP-SM-GW (TS 24.229 §5.7.3): a new icid-value, and
-// the type 3 orig-ioi of the home domain.
+// TS 24.229 clause 5.7.3
 func newChargingVector(home string) string {
 	return "icid-value=" + strings.ReplaceAll(sip.NewBranch(), "z9hG4bK", "") + ";orig-ioi=" + home
 }

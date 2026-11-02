@@ -20,14 +20,11 @@ export const endedByLabels: Record<
   network: "Network",
 };
 
-// partyOf shows a party by its number, else by its URI.
 export const partyOf = (uri: string): string => numberOfURI(uri) ?? uri;
 
-// dialledOf is what the caller dialled: its number, the digits of a local number, else the URI.
 export const dialledOf = (uri: string): string =>
   numberOfURI(uri) ?? /^tel:([^;]+)/i.exec(uri)?.[1] ?? uri;
 
-// callerOf is the caller's number, else its first asserted identity, else its private identity.
 export const callerOf = (record: CallRecord): string => {
   const number = record.calling_party
     .map(numberOfURI)
@@ -36,11 +33,9 @@ export const callerOf = (record: CallRecord): string => {
   return number ?? record.calling_party[0] ?? record.caller_impi ?? "—";
 };
 
-// calleeOf is the party the IMS routed the call to, else the one the caller dialled.
 export const calleeOf = (record: CallRecord): string =>
   partyOf(record.called_party ?? record.requested_party);
 
-// formatDuration is a duration as m:ss, or h:mm:ss from an hour.
 export const formatDuration = (ms: number): string => {
   const total = Math.round(ms / 1000);
   const h = Math.floor(total / 3600);

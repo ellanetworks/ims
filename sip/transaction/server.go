@@ -23,8 +23,6 @@ type ServerTransaction struct {
 	started time.Time
 	final   bool
 
-	// ctx is the context of the handler's calls about the transaction, cancelled by cancel once the transaction ends
-	// or is cancelled; span is the transaction's.
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	span   span
@@ -63,9 +61,6 @@ func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 	return tx
 }
 
-// startSpan starts the span of the transaction, a child of parent, the trace context of its request, and linked to the
-// valid span contexts of links: what a request that starts a trace continues, the INVITE that a CANCEL cancels. Called
-// with tx.mu held.
 func (tx *ServerTransaction) startSpan(parent context.Context, links []trace.SpanContext) {
 	l := tx.layer
 
@@ -89,7 +84,6 @@ func (tx *ServerTransaction) startSpan(parent context.Context, links []trace.Spa
 	}
 }
 
-// spanContext is the span context of the transaction, if it has one.
 func (tx *ServerTransaction) spanContext() trace.SpanContext {
 	if tx == nil {
 		return trace.SpanContext{}
@@ -113,7 +107,7 @@ func (tx *ServerTransaction) ToTag() string {
 	return tx.tag
 }
 
-// RFC 3261 §9.2
+// RFC 3261 section 9.2
 func (tx *ServerTransaction) cancelTag() string {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
@@ -127,7 +121,6 @@ func (tx *ServerTransaction) cancelTag() string {
 	return tx.tag
 }
 
-// Status is the status code of the final response the transaction sent, or 0 if it has sent none.
 func (tx *ServerTransaction) Status() int {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
@@ -301,12 +294,10 @@ func (tx *ServerTransaction) receiveAck(ack *sip.Request) {
 	tx.unlockInOrder()
 }
 
-// receiveCancel tells the handler of a CANCEL of the transaction, ctx carrying the CANCEL's span.
 func (tx *ServerTransaction) receiveCancel(ctx context.Context, cancel *sip.Request) {
 	tx.mu.Lock()
 
 	if tx.state == Proceeding {
-		// The client gave up: the work done for the request is no longer wanted (RFC 3261 §9.2).
 		tx.cancel(ErrCanceled)
 		tx.emit(func() { tx.layer.h.HandleCancel(ctx, tx, cancel) })
 	}

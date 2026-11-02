@@ -68,8 +68,8 @@ function Copyable({ value, label }: { value: string; label: string }) {
   );
 }
 
-// SIP_PORT is where phones send their first REGISTER, since the core gives them only the P-CSCF's address
-// (TS 24.229 §9.2.1, RFC 3261 §19.1.2).
+// TS 24.229 clause 9.2.1
+// RFC 3261 section 19.1.2
 const SIP_PORT = 5060;
 
 const pcscfAddresses = (listeners: { role: string; address: string }[]) => {
@@ -87,16 +87,13 @@ const routeHelp: Record<DiameterRoute["application"], string> = {
   s6c: "The realm of your HSS, where the IP-SM-GW's S6c requests go.",
 };
 
-// The realm of an empty route: the HSS's for its other applications, else the home domain.
 const defaultRealmLabel = (application: DiameterRoute["application"]) =>
   application === "sh" || application === "s6c" ? "HSS realm" : "home domain";
 
-// routeState is the state of the best connection on a route: open if any of its peers is.
 const routeState = (route: DiameterRoute | undefined) =>
   route?.peers.find((p) => p.status.state === "open")?.status.state ??
   route?.peers[0]?.status.state;
 
-// routeStatus is the state of a route's best connection, or that no peer serves it.
 function routeStatus(route: DiameterRoute | undefined): ReactNode {
   if (!route) return null;
   const state = routeState(route);

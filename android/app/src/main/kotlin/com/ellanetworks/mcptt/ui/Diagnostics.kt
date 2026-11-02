@@ -70,14 +70,8 @@ import kotlinx.coroutines.launch
 private const val LEVEL_WARN = 4
 private const val LEVEL_ERROR = 8
 
-/** The height of the log's lines in the section, a screen's scroll within Settings' own. */
 private val LOG_HEIGHT = 400.dp
 
-/**
- * What a field engineer needs, the last section of Settings and folded away: the registration in detail, what the app
- * still needs, an administrator's settings, and the session's log, which on some devices (the Core-Z5) logcat does
- * not keep whole. [shown] on opening, it is brought into view.
- */
 @Composable
 fun Diagnostics(vm: AppViewModel, settings: UserSettings, expanded: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier, shown: Boolean = false) {
     val requester = remember { BringIntoViewRequester() }
@@ -119,10 +113,6 @@ fun Diagnostics(vm: AppViewModel, settings: UserSettings, expanded: Boolean, onT
     }
 }
 
-/**
- * The session's log: its actions by its heading, the debug switch, the level filter, and the lines, followed while the
- * newest is in view; scrolled back, they stay where the user put them.
- */
 @Composable
 private fun Log(vm: AppViewModel) {
     val lines by vm.log.collectAsStateWithLifecycle()
@@ -220,11 +210,6 @@ private fun StatusDetails(status: Status) {
     }
 }
 
-/**
- * An administrator's settings, until the UE's initial configuration provides them: the participating function's PSI
- * (TS 24.484 §7.2, its <Server-URI>) of an MCPTT AS other than Ella IMS's, and the P-CSCF for a SIM without one
- * (TS 24.229 §9.2.1 III).
- */
 @Composable
 private fun Advanced(savedPsi: String, saved: String, onSave: (String, String) -> Unit) {
     var psi by rememberSaveable(savedPsi) { mutableStateOf(savedPsi) }
@@ -276,7 +261,6 @@ private fun Permissions(needs: List<Need>) {
     }
 }
 
-/** A line of the log: its level a letter as well as a colour. */
 @Composable
 private fun Line(line: LogLine) {
     val (letter, color) = when {
@@ -291,7 +275,6 @@ private fun Line(line: LogLine) {
     }
 }
 
-/** Shares the log as text, by the user's choice of app. */
 private fun Context.share(lines: List<LogLine>) {
     val text = lines.joinToString("\n") { it.text }
     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)

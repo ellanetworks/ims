@@ -9,8 +9,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// forked has bob answer alice's INVITE in two early dialogs, the first and a fork, each with a 180; it returns bob's
-// requests and alice's two early sessions, in that order.
 func forked(t *testing.T, alice, bob *peer) (first, fork *ua.Request, a1, a2 *ua.Session) {
 	t.Helper()
 
@@ -29,7 +27,6 @@ func forked(t *testing.T, alice, bob *peer) (first, fork *ua.Request, a1, a2 *ua
 	e := alice.nextAll("progress", "answer")
 	a1 = e["progress"].s
 
-	// The reliable 183, reported once PRACKed.
 	a2 = alice.next("progress").s
 
 	if a1 == a2 || a1.ID().RemoteTag == a2.ID().RemoteTag {
@@ -39,8 +36,8 @@ func forked(t *testing.T, alice, bob *peer) (first, fork *ua.Request, a1, a2 *ua
 	return first, fork, a1, a2
 }
 
-// RFC 3261 §12.1.1, RFC 6228: a fork of an INVITE is an early dialog of its own; its 2xx confirms it, and ends the
-// other one with a 199.
+// RFC 3261 section 12.1.1
+// RFC 6228
 func TestForkAnswered(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, _, a2 := forked(t, alice, bob)
@@ -49,7 +46,6 @@ func TestForkAnswered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The 199 of the other dialog, reported, then its end.
 	got := alice.nextAll("progress", "ended", "established")
 	if got["progress"].res.StatusCode != 199 {
 		t.Errorf("alice got a %d", got["progress"].res.StatusCode)
@@ -77,7 +73,7 @@ func TestForkAnswered(t *testing.T) {
 	}
 }
 
-// RFC 3261 §9.2: a CANCEL ends every early dialog of the INVITE, answered once with a 487.
+// RFC 3261 section 9.2
 func TestForkCancelled(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -103,8 +99,7 @@ func TestForkCancelled(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15: a BYE in one early dialog ends it alone; the INVITE goes on in the other, then fails with a 487
-// once the last one ends.
+// RFC 3261 section 15
 func TestForkEarlyBye(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, a1, _ := forked(t, alice, bob)
@@ -128,7 +123,6 @@ func TestForkEarlyBye(t *testing.T) {
 	bob.next("established")
 }
 
-// A failure of one member answers the INVITE: every early dialog ends with it.
 func TestForkRejected(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, _, _ := forked(t, alice, bob)
@@ -153,7 +147,7 @@ func TestForkRejected(t *testing.T) {
 	}
 }
 
-// RFC 6228: Bye on one early dialog of a forked INVITE ends it alone, with a 199; the other goes on.
+// RFC 6228
 func TestForkDropped(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	first, fork, a1, _ := forked(t, alice, bob)
@@ -175,13 +169,12 @@ func TestForkDropped(t *testing.T) {
 	bob.next("established")
 }
 
-// A member whose 2xx is held for a PRACK is still a dialog of the INVITE: a CANCEL ends it, the 2xx replaced by the
-// 487 (RFC 3261 §9.2, RFC 3262 §3).
+// RFC 3261 section 9.2
+// RFC 3262 section 3
 func TestForkHeldCancelled(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
 
-	// The raw caller sends no PRACK: the 2xx of the fork stays held.
 	invite := r.invite(bob, realSDP(4000, 1), sip.Field{Name: "Supported", Value: "100rel"})
 
 	first := bob.next("invite").req
@@ -218,7 +211,6 @@ func TestForkHeldCancelled(t *testing.T) {
 	}
 }
 
-// The deadline of a forked INVITE outlives the member that armed it (Policy.AnswerTimeout).
 func TestForkAnswerTimeout(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
@@ -253,7 +245,7 @@ func TestForkAnswerTimeout(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15: a UAS ends a session whose 2xx waits for a PRACK with Bye: the 2xx is replaced by a 487.
+// RFC 3261 section 15
 func TestByeWith2xxHeld(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -282,7 +274,6 @@ func TestByeWith2xxHeld(t *testing.T) {
 	_ = invite
 }
 
-// WithoutOptionTags leaves option tags out of an INVITE.
 func TestWithoutOptionTags(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 

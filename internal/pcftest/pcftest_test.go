@@ -29,7 +29,6 @@ type consumer struct {
 	client *n5.Client
 	notifs chan notification
 	af     *httptest.Server
-	// status answers notifications; zero is 204.
 	status int
 }
 
@@ -132,7 +131,6 @@ func (c *consumer) nextNotification() notification {
 	return notification{}
 }
 
-// raw sends a request that the n5 client would refuse to.
 type answer struct {
 	status  int
 	header  http.Header
@@ -192,7 +190,6 @@ func TestCreate(t *testing.T) {
 		t.Fatalf("URI %q", created.URI)
 	}
 
-	// TS 29.514 §5.8: the intersection of what both support.
 	if created.Features != n5.Features(n5.FeatureIMSSBI) || created.BodyErr != nil {
 		t.Fatalf("features %q, body error %v", created.Features, created.BodyErr)
 	}
@@ -218,8 +215,7 @@ func TestCreateSignalling(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.2.2: session binding fails with PDU_SESSION_NOT_AVAILABLE. An IPv6 address binds to the
-// prefix of the PDU session.
+// TS 29.514 clause 4.2.2.2
 func TestBinding(t *testing.T) {
 	c := newConsumer(t, Config{UEs: []netip.Addr{netip.MustParseAddr("10.45.0.9"), netip.MustParseAddr("2001:db8:1:2::1")}})
 
@@ -242,7 +238,9 @@ func TestBinding(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.2.2, §5.6.2.3, TS 29.500 §5.2.7.2.
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 5.6.2.3
+// TS 29.500 clause 5.2.7.2
 func TestCreateValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, contentType, body string
@@ -280,7 +278,6 @@ func TestCreateValidation(t *testing.T) {
 	}
 }
 
-// A violation fails the test that let it through.
 func TestViolationFailsTest(t *testing.T) {
 	ft := &fakeTB{TB: t}
 	p := New(ft, Config{Logger: slog.New(slog.DiscardHandler)})
@@ -308,7 +305,7 @@ func (f *fakeTB) cleanup() {
 	}
 }
 
-// TS 29.514 §4.2.3.2
+// TS 29.514 clause 4.2.3.2
 func TestModify(t *testing.T) {
 	c := newConsumer(t, Config{})
 
@@ -365,7 +362,6 @@ func TestModifyValidation(t *testing.T) {
 				t.Fatalf("%d %s, want %d %s", a.status, a.problem.Cause, tc.status, tc.cause)
 			}
 
-			// TS 29.500 §5.2.7.2
 			if tc.status == http.StatusUnsupportedMediaType && a.header.Get("Accept-Patch") != n5.ContentMergePatch {
 				t.Fatalf("Accept-Patch %q", a.header.Get("Accept-Patch"))
 			}
@@ -390,7 +386,8 @@ func TestModifyValidation(t *testing.T) {
 	})
 }
 
-// TS 29.514 §5.7.3, TS 29.500 §5.2.7.2.
+// TS 29.514 clause 5.7.3
+// TS 29.500 clause 5.2.7.2
 func TestUnknownContext(t *testing.T) {
 	c := newConsumer(t, Config{})
 
@@ -432,7 +429,6 @@ func TestRouting(t *testing.T) {
 	}
 }
 
-// Decision 3: HTTP/2 with prior knowledge only.
 func TestHTTP1(t *testing.T) {
 	p := New(t, Config{Logger: slog.New(slog.DiscardHandler)})
 
@@ -450,7 +446,7 @@ func TestHTTP1(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.4.2
+// TS 29.514 clause 4.2.4.2
 func TestDelete(t *testing.T) {
 	c := newConsumer(t, Config{})
 	created := c.create(c.call("c1"))
@@ -469,7 +465,6 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("contexts %v", c.pcf.Contexts())
 	}
 
-	// With events, and evsNotif to report: 200.
 	created = c.create(c.call("c2"))
 	c.pcf.Next(t)
 	c.pcf.AnswerWith(func(r Request) *n5.EventsNotification {
@@ -549,7 +544,6 @@ func TestHold(t *testing.T) {
 		t.Fatal("held create answered")
 	}
 
-	// The client gives up before the PCF learns of it (RST_STREAM): s1 must be dropped before the release.
 	for deadline := time.Now().Add(5 * time.Second); c.pcf.abandonedAnswers() != 1; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the abandoned create is still held")
@@ -576,7 +570,7 @@ func TestHold(t *testing.T) {
 	}
 }
 
-// TS 29.500 §6.10.9: the client follows the 308 and learns the new URI.
+// TS 29.500 clause 6.10.9
 func TestMove(t *testing.T) {
 	c := newConsumer(t, Config{})
 	created := c.create(c.signalling("s1"))
@@ -600,7 +594,7 @@ func TestMove(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.5.3
+// TS 29.514 clause 4.2.5.3
 func TestTerminate(t *testing.T) {
 	c := newConsumer(t, Config{})
 	created := c.create(c.call("c1"))
@@ -620,7 +614,6 @@ func TestTerminate(t *testing.T) {
 		t.Fatalf("%s: %v", n.body, err)
 	}
 
-	// The context stays until the consumer deletes it.
 	if _, ok := c.pcf.Context(created.URI); !ok {
 		t.Fatal("context gone")
 	}
@@ -638,7 +631,7 @@ func TestTerminate(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.5.2
+// TS 29.514 clause 4.2.5.2
 func TestNotify(t *testing.T) {
 	c := newConsumer(t, Config{})
 	created := c.create(c.call("c1"))
@@ -670,7 +663,6 @@ func TestNotify(t *testing.T) {
 		t.Fatal("notified an event without a subscription")
 	}
 
-	// The events subscription as patched.
 	patch, err := n5.NewPatch(&n5.AppSessionContextUpdateData{EvSubsc: c.call("c1").AscReqData.EvSubsc}, &n5.AppSessionContextUpdateData{})
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +678,6 @@ func TestNotify(t *testing.T) {
 	}
 }
 
-// A notifUri with a trailing "/" is not hidden.
 func TestNotifURISlash(t *testing.T) {
 	c := newConsumer(t, Config{})
 

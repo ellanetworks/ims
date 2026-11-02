@@ -14,14 +14,8 @@ const (
 	defaultMCPTTControlPort = 21000
 )
 
-// MCPTT is the built-in MCPTT application server (TS 24.379): the participating and controlling functions of one
-// MCPTT system. Without it, the IMS runs none, and opens none of its ports.
 type MCPTT struct {
-	// Mode is how clients reach it: through the IMS, as its application server, the default; or directly, as the
-	// registrar of its clients, for the lab and tests only.
-	Mode MCPTTMode `yaml:"mode"`
-	// Port is its SIP port on each of sip.addresses: through the IMS, in memory, where its name, mcptt.<home domain>,
-	// takes the I-CSCF's and S-CSCF's requests; in direct mode, UDP and TCP sockets, which its clients send to.
+	Mode  MCPTTMode  `yaml:"mode"`
 	Port  int        `yaml:"port"`
 	Media MCPTTMedia `yaml:"media"`
 }
@@ -29,23 +23,17 @@ type MCPTT struct {
 type MCPTTMode string
 
 const (
-	// MCPTTModeIMS: the AS is told of registrations by third-party REGISTERs (TS 24.229 §5.4.1.7).
-	MCPTTModeIMS MCPTTMode = "ims"
-	// MCPTTModeDirect: the AS is the registrar of its clients, without the IMS.
+	// TS 24.229 clause 5.4.1.7
+	MCPTTModeIMS    MCPTTMode = "ims"
 	MCPTTModeDirect MCPTTMode = "direct"
 )
 
-// MCPTTMedia is the media relay of the calls: voice and the floor control channels.
 type MCPTTMedia struct {
-	// Address is the address its sockets bind; Advertise the one of the SDP c= lines, required if Address is
-	// unspecified.
-	Address   netip.Addr `yaml:"address"`
-	Advertise netip.Addr `yaml:"advertise"`
-	// MinPort and MaxPort are the range of the ports of the legs, MinPort even: audio on an even port, its RTCP on the
-	// next (RFC 3550 §11). ControlPort is the port the control channels share (TS 24.380 §4.3.3.1), outside the range.
-	MinPort     int `yaml:"min_port"`
-	MaxPort     int `yaml:"max_port"`
-	ControlPort int `yaml:"control_port"`
+	Address     netip.Addr `yaml:"address"`
+	Advertise   netip.Addr `yaml:"advertise"`
+	MinPort     int        `yaml:"min_port"`
+	MaxPort     int        `yaml:"max_port"`
+	ControlPort int        `yaml:"control_port"`
 }
 
 func (m *MCPTT) applyDefaults() {
@@ -98,7 +86,6 @@ func (c Config) validateMCPTT(m MCPTT) error {
 	case a.Zone() != "":
 		return fmt.Errorf("mcptt.media.advertise %s must not have a zone", a)
 	case md.Address != netip.IPv6Unspecified() && md.Address.Is4() != a.Is4():
-		// The media to the SDP's address reach the sockets: of its family, unless they bind :: (RFC 3493 §3.7).
 		return fmt.Errorf("mcptt.media.advertise %s is not of the family of mcptt.media.address %s", a, md.Address)
 	}
 
@@ -120,7 +107,6 @@ func (c Config) validateMCPTT(m MCPTT) error {
 		return fmt.Errorf("mcptt.media.control_port %d is in the range of the legs' ports", md.ControlPort)
 	}
 
-	// The media sockets are UDP, as SIP's: on an address of SIP, none takes a port of SIP.
 	if !slices.ContainsFunc(c.SIP.Addresses, func(a netip.Addr) bool { return overlaps(a, md.Address) }) {
 		return nil
 	}

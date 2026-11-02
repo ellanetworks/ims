@@ -13,8 +13,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// testHandler is the API of cfg, on a database of users of its own unless cfg has one, which sends the requests
-// without credentials as its first user, an admin.
 func testHandler(t *testing.T, cfg Config) http.Handler {
 	t.Helper()
 

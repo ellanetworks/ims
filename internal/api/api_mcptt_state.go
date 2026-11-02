@@ -10,9 +10,6 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTState is the live state of the running MCPTT AS, in its memory: its clients' registrations, their
-// affiliations and the group calls, or one of them by its ID, and whether there is one. An error is of the AS not
-// answering: restarting, or its calls busy past ctx, every one of them for Calls, which leaves out a call busy alone.
 type MCPTTState interface {
 	Registrations() ([]MCPTTRegistration, error)
 	Affiliations() ([]MCPTTAffiliation, error)
@@ -20,8 +17,7 @@ type MCPTTState interface {
 	Call(ctx context.Context, id string) (MCPTTCall, bool, error)
 }
 
-// MCPTTRegistration is the binding of an MCPTT client to its user by service authorisation (TS 24.379 §7.3.2): the
-// IMPU it registered at, those it is served at, since when, until when; the contacts it registered, in direct mode.
+// TS 24.379 clause 7.3.2
 type MCPTTRegistration struct {
 	MCPTTID  string
 	ClientID string
@@ -32,21 +28,16 @@ type MCPTTRegistration struct {
 	Contacts []string
 }
 
-// MCPTTAffiliation is the affiliation of an MCPTT client of a user to a group, as the participating function has it
-// (TS 24.379 §9.2.2.2.2): affiliating, affiliated or deaffiliating. The first two count as affiliated, the last does
-// not (§9.2.2.2.11 3a).
+// TS 24.379 clause 9.2.2.2.2
 type MCPTTAffiliation struct {
 	MCPTTID  string
 	ClientID string
 	GroupID  string
 	Status   string
-	// Implicit tells the server affiliated the client to the group from the user's <ImplicitAffiliations> (TS 24.379
-	// §9.2.2.2.15), and the client's publications did not list it since.
 	Implicit bool
 }
 
-// MCPTTCall is a group call (TS 24.379 §10.1.1.4): its session, its participants and its talker, if any. Started is
-// zero while it is set up, Ends if no TNG3 releases it, Talker if the floor is idle.
+// TS 24.379 clause 10.1.1.4
 type MCPTTCall struct {
 	ID           string
 	SessionID    string
@@ -67,7 +58,6 @@ type MCPTTParticipant struct {
 	ReceiveOnly bool
 }
 
-// mcpttStateTimeout bounds a read of the calls: each waits for the strand of its group.
 const mcpttStateTimeout = 2 * time.Second
 
 type MCPTTRegistrationResponse struct {
@@ -85,10 +75,7 @@ type MCPTTAffiliationResponse struct {
 	ClientID string `json:"client_id"`
 	GroupID  string `json:"group_id"`
 	Status   string `json:"status"`
-	// Implicit tells how the client was affiliated: by the server, from the user's <ImplicitAffiliations> (TS 24.379
-	// §9.2.2.2.15), at its service authorisation or once the setting changed; false of the client's own affiliation
-	// (§9.2.2.2.3), its publication listing the group, which an implicit one becomes.
-	Implicit bool `json:"implicit"`
+	Implicit bool   `json:"implicit"`
 }
 
 type MCPTTCallResponse struct {
@@ -122,8 +109,6 @@ type mcpttPage[T any] struct {
 	TotalCount int `json:"total_count"`
 }
 
-// ListMCPTTRegistrations returns a page of the registered clients, by MCPTT ID and client ID, of the user of
-// mcptt_id if given.
 func ListMCPTTRegistrations(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page, perPage, ok := pagination(w, r, cfg)
@@ -155,8 +140,6 @@ func ListMCPTTRegistrations(cfg Config) http.Handler {
 	})
 }
 
-// ListMCPTTAffiliations returns a page of the affiliations, by group, MCPTT ID and client ID, of the user of
-// mcptt_id and the group of group_id if given.
 func ListMCPTTAffiliations(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page, perPage, ok := pagination(w, r, cfg)
@@ -188,8 +171,6 @@ func ListMCPTTAffiliations(cfg Config) http.Handler {
 	})
 }
 
-// ListMCPTTCalls returns a page of the group calls, oldest first, of the group of group_id and with the participant
-// of mcptt_id if given.
 func ListMCPTTCalls(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page, perPage, ok := pagination(w, r, cfg)
@@ -218,8 +199,6 @@ func ListMCPTTCalls(cfg Config) http.Handler {
 	})
 }
 
-// GetMCPTTCall returns the group call of the path's call ID, the "gr" of its MCPTT session identity: of the strand of
-// its group only.
 func GetMCPTTCall(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), mcpttStateTimeout)
@@ -238,7 +217,6 @@ func GetMCPTTCall(cfg Config) http.Handler {
 	})
 }
 
-// mcpttCalls are the calls, oldest first, or false once the error is answered.
 func mcpttCalls(w http.ResponseWriter, r *http.Request, cfg Config) ([]MCPTTCall, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), mcpttStateTimeout)
 	defer cancel()
@@ -290,12 +268,10 @@ func optionalTime(t time.Time) *string {
 	return &s
 }
 
-// matches reports whether the identity id is that of filter, if any.
 func matches(filter, id string) bool {
 	return filter == "" || mcpttsettings.SameIdentity(filter, id)
 }
 
-// implicitlyAffiliated reports whether group is an implicit affiliation of the user of MCPTT ID id in s.
 func implicitlyAffiliated(s mcpttsettings.Settings, id, group string) bool {
 	i := s.UserIndex(id)
 

@@ -32,7 +32,6 @@ type fakePCF struct {
 	exchanges []exchange
 }
 
-// newPCF serves handler over cleartext HTTP/2 only, so that the client must speak it with prior knowledge.
 func newPCF(t *testing.T, handler http.HandlerFunc) *fakePCF {
 	t.Helper()
 
@@ -126,7 +125,7 @@ func sameJSON(t *testing.T, got, want []byte) {
 
 func ptr[T any](v T) *T { return &v }
 
-// TS 29.514 §4.2.6.7
+// TS 29.514 clause 4.2.6.7
 func signallingContext() *AppSessionContext {
 	notif := "http://192.0.2.10:7778/n5/v1/sessions/s1"
 
@@ -172,7 +171,8 @@ func callContext() *AppSessionContext {
 	}}
 }
 
-// TS 29.514 §4.2.2.2, §5.8: the PCF answers 201 with the context, its URI in Location, and the negotiated features.
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 5.8
 func TestCreate(t *testing.T) {
 	for name, tc := range map[string]struct {
 		asc     *AppSessionContext
@@ -209,7 +209,7 @@ func TestCreate(t *testing.T) {
 	}
 }
 
-// TS 29.514 §5.3.2.3.1: 303 points at an existing context with the same content.
+// TS 29.514 clause 5.3.2.3.1
 func TestCreateExisting(t *testing.T) {
 	pcf := newPCF(t, reply(http.StatusSeeOther, "", "", "Location", "http://pcf.example:7777/npcf-policyauthorization/v1/app-sessions/7"))
 
@@ -253,7 +253,7 @@ func TestCreateLocation(t *testing.T) {
 	}
 }
 
-// TS 29.500 §5.2.7.3: the PCF created the context, so a body that cannot be read does not fail the create.
+// TS 29.500 clause 5.2.7.3
 func TestCreateBody(t *testing.T) {
 	loc := []string{"Location", "/npcf-policyauthorization/v1/app-sessions/1"}
 
@@ -285,7 +285,7 @@ func TestCreateBody(t *testing.T) {
 	}
 }
 
-// TS 29.514 §5.8: the negotiated features are in ascRespData, and only there.
+// TS 29.514 clause 5.8
 func TestCreateFeatures(t *testing.T) {
 	loc := []string{"Location", "/npcf-policyauthorization/v1/app-sessions/1"}
 
@@ -314,7 +314,7 @@ func TestCreateWithoutLocation(t *testing.T) {
 	}
 }
 
-// TS 29.514 §5.6.2.3
+// TS 29.514 clause 5.6.2.3
 func TestCreateValidation(t *testing.T) {
 	pcf := newPCF(t, reply(http.StatusCreated, ContentJSON, `{}`))
 
@@ -348,7 +348,8 @@ func TestCreateValidation(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.3.2, §5.2.2.2
+// TS 29.514 clause 4.2.3.2
+// TS 29.514 clause 5.2.2.2
 func TestModify(t *testing.T) {
 	for name, tc := range map[string]struct {
 		h    http.HandlerFunc
@@ -389,7 +390,8 @@ func TestModify(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.4.2, §5.3.3.4.2
+// TS 29.514 clause 4.2.4.2
+// TS 29.514 clause 5.3.3.4.2
 func TestDelete(t *testing.T) {
 	uri := "/npcf-policyauthorization/v1/app-sessions/42"
 
@@ -433,7 +435,8 @@ func TestDelete(t *testing.T) {
 	})
 }
 
-// TS 29.500 §5.2.7, TS 29.514 §5.7
+// TS 29.500 clause 5.2.7
+// TS 29.514 clause 5.7
 func TestErrors(t *testing.T) {
 	date := time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)
 
@@ -497,8 +500,9 @@ func TestErrors(t *testing.T) {
 	}
 }
 
-// RFC 9110 §15.4.8, §15.4.9: 307 and 308 repeat the request at the new URI; only 308 moves the context
-// (TS 29.500 §6.10.9).
+// RFC 9110 section 15.4.8
+// RFC 9110 section 15.4.9
+// TS 29.500 clause 6.10.9
 func TestRedirect(t *testing.T) {
 	var pcf *fakePCF
 
@@ -654,7 +658,6 @@ func TestConfig(t *testing.T) {
 	}
 }
 
-// Bodies captured between the P-CSCF and the Open5GS PCF (testdata/README.md).
 func TestOpen5GS(t *testing.T) {
 	const location = "http://10.80.0.10:7777/npcf-policyauthorization/v1/app-sessions/3"
 
@@ -679,8 +682,6 @@ func TestOpen5GS(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// No ascRespData, so no negotiated features (TS 29.514 §5.8): Open5GS narrows the echoed
-		// ascReqData.suppFeat instead.
 		if got.URI != location || got.Features != "" || got.BodyErr != nil {
 			t.Fatalf("created %+v", got)
 		}
@@ -697,7 +698,6 @@ func TestOpen5GS(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Open5GS rebuilds a patched component from the patch: it came whole, with its medType.
 		if c := p.AscReqData.MedComponents["1"]; c.MedType != MediaAudio || len(c.MedSubComps) != 2 || len(c.Codecs) != 2 {
 			t.Fatalf("captured patch component %+v", c)
 		}
@@ -716,11 +716,9 @@ func TestOpen5GS(t *testing.T) {
 			t.Fatalf("Modify = %+v, %v", got, err)
 		}
 
-		// The same service information gives the same patch as the one Open5GS took.
 		sameJSON(t, pcf.last(t).body, patch)
 	})
 
-	// TS 29.514 §4.2.6.7 leaves medType out of the signalling component; Open5GS requires it.
 	t.Run("signalling refused", func(t *testing.T) {
 		pcf := newPCF(t, reply(http.StatusBadRequest, ContentProblem, string(fixture(t, "open5gs/problem_signalling.json"))))
 

@@ -26,10 +26,8 @@ import (
 	"github.com/ellanetworks/ims/ue"
 )
 
-// platform is the app of a session in the tests: sockets on loopback, no IPsec, its events on a channel.
 type platform struct {
-	events chan event
-	// onEvent, if set, runs on each event, on the session's event goroutine.
+	events  chan event
 	onEvent func(event)
 
 	mu     sync.Mutex
@@ -93,7 +91,6 @@ func (p *platform) Event(s string) {
 	p.events <- e
 }
 
-// await is the next event of the type (and kind or notice, if not empty), the others before it skipped.
 func (p *platform) await(t *testing.T, typ, kind string) event {
 	t.Helper()
 
@@ -111,7 +108,6 @@ func (p *platform) await(t *testing.T, typ, kind string) event {
 	}
 }
 
-// awaitAll are the events of each type:kind of want, in any order, the others skipped.
 func (p *platform) awaitAll(t *testing.T, want ...string) map[string]event {
 	t.Helper()
 
@@ -135,8 +131,6 @@ func (p *platform) awaitAll(t *testing.T, want ...string) map[string]event {
 	return got
 }
 
-// directServer runs the server of the example configuration in direct mode (mcptt plan, PM 14) on loopback, free
-// ports, and returns its SIP address.
 func directServer(t *testing.T) netip.AddrPort {
 	t.Helper()
 
@@ -145,8 +139,6 @@ func directServer(t *testing.T) netip.AddrPort {
 	return addr
 }
 
-// restartableServer is directServer, and its restart: the server shut down and started anew on its ports, its
-// registrations' bindings lost, as of a server restarted.
 func restartableServer(t *testing.T) (netip.AddrPort, func()) {
 	t.Helper()
 
@@ -163,8 +155,6 @@ func restartableServer(t *testing.T) (netip.AddrPort, func()) {
 	return addr, restart
 }
 
-// serverPorts are the server's SIP address and the port of its control channels, free ports of loopback: the SIP port
-// free of TCP as of UDP (the server listens on both), the two distinct, all held until both chosen.
 func serverPorts(t *testing.T) (netip.AddrPort, int) {
 	t.Helper()
 
@@ -184,7 +174,7 @@ func serverPorts(t *testing.T) (netip.AddrPort, int) {
 
 		ul, err := lc.ListenPacket(t.Context(), "udp", p.String())
 		if err != nil {
-			continue // the UDP port taken; another, the TCP one held so as not to get it again
+			continue
 		}
 
 		defer func() { _ = ul.Close() }()
@@ -202,7 +192,6 @@ func serverPorts(t *testing.T) (netip.AddrPort, int) {
 	return addr, control.LocalAddr().(*net.UDPAddr).Port
 }
 
-// exampleSettings are alice, bob and carol, members of fire, affiliated to it on registration.
 func exampleSettings() serversettings.Settings {
 	const fire = "sip:fire@mcptt.example.com"
 
@@ -240,7 +229,6 @@ func exampleSettings() serversettings.Settings {
 	}
 }
 
-// fixed is the source of the settings of one snapshot.
 type fixed struct{ s *serversettings.Snapshot }
 
 func (f fixed) Current() *serversettings.Snapshot { return f.s }
@@ -290,8 +278,6 @@ func testSettings(server netip.AddrPort, name string, i int) settings {
 	}
 }
 
-// session is the session of user name of the example configuration, at 127.0.0.i, its UE registering with the server
-// in direct mode, plain, started and registered.
 func session(t *testing.T, server netip.AddrPort, name string, i int, opts ...func(*settings)) (*Session, *platform) {
 	t.Helper()
 
@@ -324,9 +310,10 @@ func session(t *testing.T, server netip.AddrPort, name string, i int, opts ...fu
 	return s, p
 }
 
-// TS 24.379 §7.2.1, §9.2.1.2, §10.1.1.2.1, TS 24.380 §6.2.4: two sessions log on in their registrations and affiliate
-// to fire; a call of one, of the app's ID, reaches the other; the caller's speech, once granted the floor, plays at
-// the member; the state tells the call and its talker; the caller leaving ends it, locally.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 9.2.1.2
+// TS 24.379 clause 10.1.1.2.1
+// TS 24.380 clause 6.2.4
 func TestGroupCall(t *testing.T) {
 	addr := directServer(t)
 	alice, pa := session(t, addr, "alice", 2)
@@ -368,7 +355,6 @@ func TestGroupCall(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// The Floor Taken and the media race (TS 24.380 §6.2.4.4.2 step 7).
 	if e := pb.awaitAll(t, "heard", "floor:taken")["heard"]; e.Call != in.Call {
 		t.Fatalf("heard %+v", e)
 	}
@@ -415,16 +401,13 @@ func TestGroupCall(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.3.1.1 step 2a: the server restarted, its bindings lost, alice's call is refused with the warning
-// 141; the session registers again, which binds her anew, and places the call again under its ID: established, not
-// ended. Bob, registered again too, is invited.
+// TS 24.379 clause 10.1.1.3.1.1
 func TestRetryUnknown(t *testing.T) {
 	saved := minBackoff
 	minBackoff = 100 * time.Millisecond
 
 	t.Cleanup(func() { minBackoff = saved })
 
-	// Timer F shortened: a refresh that the restart left unanswered ends sooner.
 	fast := func(s *settings) { s.t1 = 20 * time.Millisecond }
 
 	addr, restart := restartableServer(t)
@@ -433,9 +416,6 @@ func TestRetryUnknown(t *testing.T) {
 
 	restart()
 
-	// Bob's binding back, as by his own refresh, which affiliates him again. The restart lost the connection the
-	// refresh may go out on: written there, it is lost with it, the server restarted knowing nothing of it, and Timer F
-	// ends it, or the write fails; either way his session registers again, on a new connection (TS 24.229 §5.1.1.4.1).
 	err := bob.currentUE().Reregister(t.Context())
 	if err != nil && !errors.Is(err, transaction.ErrTimeout) && !errors.Is(err, transaction.ErrTransport) {
 		t.Fatal(err)
@@ -462,7 +442,7 @@ func TestRetryUnknown(t *testing.T) {
 	pa.await(t, "call", "ended")
 }
 
-// The server shut down during a call, its BYEs end the call at both members (TS 24.379 §6.3.8.1).
+// TS 24.379 clause 6.3.8.1
 func TestServerRestartEndsCalls(t *testing.T) {
 	addr, restart := restartableServer(t)
 	alice, pa := session(t, addr, "alice", 2)
@@ -486,8 +466,8 @@ func TestServerRestartEndsCalls(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.7: rejected, the session leaves its calls and registers no more; RFC 3680 §5.1: on probation, it
-// registers again after the retry-after.
+// TS 24.229 clause 5.1.1.7
+// RFC 3680 section 5.1
 func TestDeregistrations(t *testing.T) {
 	saved := minBackoff
 	minBackoff = 100 * time.Millisecond
@@ -524,7 +504,7 @@ func TestDeregistrations(t *testing.T) {
 	}
 }
 
-// A new address on the MCPTT network, or another network, is a new registration (TS 24.229 §5.1.1.2).
+// TS 24.229 clause 5.1.1.2
 func TestSetNetwork(t *testing.T) {
 	addr := directServer(t)
 	alice, pa := session(t, addr, "alice", 2)
@@ -547,7 +527,6 @@ func TestSetNetwork(t *testing.T) {
 		t.Fatalf("registration %+v from the new address", e)
 	}
 
-	// The network lost and back, of the same address.
 	if err := alice.SetNetwork("101", "127.0.0.4", addr.String(), ""); err != nil {
 		t.Fatal(err)
 	}
@@ -557,8 +536,6 @@ func TestSetNetwork(t *testing.T) {
 	}
 }
 
-// The events go to the platform one at a time, in order, on a goroutine of their own: Stop from one does not
-// deadlock, the last event "stopped".
 func TestEvents(t *testing.T) {
 	addr := directServer(t)
 	p := newPlatform()
@@ -603,15 +580,13 @@ func TestEvents(t *testing.T) {
 	}
 }
 
-// Settings of another schema version are refused.
 func TestSettingsVersion(t *testing.T) {
 	if _, err := NewSession(newPlatform(), `{"version": 2}`); err == nil {
 		t.Fatal("settings of version 2 accepted")
 	}
 }
 
-// TS 31.102 §7.1.2.1: RES, CK, IK (and Kc) after DB; AUTS after DC; 98 62 a MAC failure; another status word, a
-// response malformed or of keys of the wrong sizes, or the platform failing, an error of the UE, not a MAC failure.
+// TS 31.102 clause 7.1.2.1
 func TestAuthenticate(t *testing.T) {
 	p := newPlatform()
 	u := uicc{p}
@@ -655,8 +630,7 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
-// TS 33.203 Annex I: the SA set to install, its ID its local SPIs, IK with 32 zero bits for HMAC-SHA-1-96, CK for
-// AES-CBC.
+// TS 33.203 annex I
 func TestSAJSON(t *testing.T) {
 	set := ue.SASet{
 		Local:     ue.Endpoint{Addr: netip.MustParseAddr("10.45.0.3"), PortC: 40000, PortS: 40001, SPIC: 1, SPIS: 2},
@@ -680,12 +654,9 @@ func TestSAJSON(t *testing.T) {
 		t.Fatalf("SA set %s", s)
 	}
 
-	// The app's tests decode it too (android/app/src/test).
 	golden(t, "saset.json", []byte(s+"\n"))
 }
 
-// A timer of a minute or more also wakes the device: by the alarm, it fires once, on its own goroutine, the device
-// kept awake; a stopped timer cancels its alarm; another clock's alarms are not this one's; close cancels them all.
 func TestClock(t *testing.T) {
 	p := newPlatform()
 	c := newClock(p)
@@ -707,7 +678,6 @@ func TestClock(t *testing.T) {
 		t.Fatalf("alarm ID %x, want an epoch", id)
 	}
 
-	// The alarm goes off, the platform's no more.
 	p.CancelWake(id)
 	c.woken(id)
 	c.woken(id)
@@ -755,7 +725,6 @@ func TestClock(t *testing.T) {
 	}
 }
 
-// Each line of the log goes with its level, from the minimum of the settings.
 func TestLogLevels(t *testing.T) {
 	p := newPlatform()
 	h := newLogHandler(p, "warn")
@@ -773,8 +742,8 @@ func TestLogLevels(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.2.1, RFC 5626 §4.5: the waits after failures, half to all of the doubling bound; a Retry-After
-// instead when the REGISTER's response has one.
+// TS 24.229 clause 5.1.1.2.1
+// RFC 5626 section 4.5
 func TestRetryDelay(t *testing.T) {
 	for failures, bound := range []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second} {
 		for range 100 {
@@ -784,8 +753,6 @@ func TestRetryDelay(t *testing.T) {
 		}
 	}
 
-	// Every count of failures in the bound, past where minBackoff·2^failures overflows (31 of 5 s): the app aborted
-	// there, rand.N of a negative bound panicking.
 	for failures := range 101 {
 		bound := maxBackoff
 		if failures < 6 {
@@ -820,8 +787,7 @@ func TestRetryDelay(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.2.1: a REGISTER answered 480 with a Retry-After, the session registers again after it, not after its
-// own backoff, longer here; the network back by then (the server on the P-CSCF's address), registered.
+// TS 24.229 clause 5.1.1.2.1
 func TestRetryAfterRecovery(t *testing.T) {
 	saved := minBackoff
 	minBackoff = time.Minute
@@ -830,7 +796,6 @@ func TestRetryAfterRecovery(t *testing.T) {
 
 	addr, control := serverPorts(t)
 
-	// The network down: each REGISTER answered 480, Retry-After 1.
 	stub, err := new(net.ListenConfig).ListenPacket(t.Context(), "udp", addr.String())
 	if err != nil {
 		t.Fatal(err)
@@ -885,7 +850,6 @@ func TestRetryAfterRecovery(t *testing.T) {
 		t.Fatalf("registration %+v, want the 480", e)
 	}
 
-	// The network back.
 	_ = stub.Close()
 	start := time.Now()
 	srv := startDirect(t, addr, control)
@@ -901,8 +865,7 @@ func TestRetryAfterRecovery(t *testing.T) {
 	}
 }
 
-// A call refused as of a user not affiliated to the group (TS 24.379 §10.1.1.4.2, warning 120), of a server that lost
-// the client's affiliations, is placed again once the client affiliated again.
+// TS 24.379 clause 10.1.1.4.2
 func TestRetryNotAffiliated(t *testing.T) {
 	addr, control := serverPorts(t)
 	srv := startDirect(t, addr, control)
@@ -934,7 +897,6 @@ func TestRetryNotAffiliated(t *testing.T) {
 	pb.await(t, "call", "incoming")
 }
 
-// Without a participating PSI, the session has that of the MCPTT AS of Ella IMS of its home domain.
 func TestDefaultPSI(t *testing.T) {
 	set := testSettings(netip.MustParseAddrPort("127.0.0.1:5060"), "alice", 2)
 	set.ParticipatingPSI, set.HomeDomain = "", "ims.mnc001.mcc001.3gppnetwork.org"

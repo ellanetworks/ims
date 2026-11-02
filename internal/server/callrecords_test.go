@@ -9,8 +9,6 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 )
 
-// TestCallRecordsAtStart checks that the IMS closes the records of the calls its last run lost, and prunes the
-// records past the retention, when it starts.
 func TestCallRecordsAtStart(t *testing.T) {
 	cfg := testConfig(t)
 	now := time.Now()
@@ -44,7 +42,6 @@ func TestCallRecordsAtStart(t *testing.T) {
 	}
 }
 
-// TestCoreRestartClosesCallsInProgress checks that the calls a core restart loses are recorded as incomplete.
 func TestCoreRestartClosesCallsInProgress(t *testing.T) {
 	srv := startIMS(t, testConfig(t))
 	before := srv.core.Load()

@@ -15,7 +15,6 @@ type goScheduler struct{}
 
 func (goScheduler) Go(f func()) { go f() }
 
-// leg is a leg of a relay on addr.
 func leg(t *testing.T, addr string) *media.Leg {
 	t.Helper()
 
@@ -48,8 +47,6 @@ func parse(t *testing.T, audio string) *sdp.Session {
 	return s
 }
 
-// originator is a call's speech: AMR-WB of payload type 96, bandwidth-efficient, of a mode-set, recvonly, without
-// b=AS.
 func originator(t *testing.T) speech {
 	t.Helper()
 
@@ -62,8 +59,8 @@ func originator(t *testing.T) speech {
 	return sp
 }
 
-// RFC 3264 §6.1, RFC 4867 §8.3.1: a joiner answered from its own offer: its payload type, profile and direction; its
-// mode-set returned as offered; refused for another codec, configuration or mode-set.
+// RFC 3264 section 6.1
+// RFC 4867 section 8.3.1
 func TestJoiningAnswer(t *testing.T) {
 	sp := originator(t)
 	l := leg(t, "192.0.2.1")
@@ -123,9 +120,8 @@ func TestJoiningAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.3.1.1, TS 24.229 §6.1.1: the offer to an invited member: the call's payload type, RTP/AVP,
-// sendrecv whatever the originator's direction, the b=AS of TS 26.114 Table K.6 for the server's IPv6 address
-// without one in the originator's offer.
+// TS 24.379 clause 6.3.3.1.1
+// TS 24.229 clause 6.1.1
 func TestOfferToMember(t *testing.T) {
 	sp := originator(t)
 
@@ -148,8 +144,8 @@ func TestOfferToMember(t *testing.T) {
 	}
 }
 
-// RFC 3264 §5.1, §6.1: the relay's direction of a peer's stream, the reverse of the peer's, of its media or session
-// level.
+// RFC 3264 section 5.1
+// RFC 3264 section 6.1
 func TestRemoteDirection(t *testing.T) {
 	for audio, want := range map[string]media.Direction{
 		"m=audio 4000 RTP/AVP 96\r\n":               media.SendRecv,

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Event is an Event value (RFC 6665 §8.2.1): an event package with its templates, and the id of the subscription.
+// RFC 6665 section 8.2.1
 type Event struct {
 	Package   string
 	Templates []string
@@ -46,13 +46,11 @@ func ParseEvent(s string) (Event, error) {
 	return e, nil
 }
 
-// Type is the event-type: the package and its templates.
 func (e Event) Type() string {
 	return strings.Join(append([]string{e.Package}, e.Templates...), ".")
 }
 
-// Matches reports whether two Event values name the same subscription: same event-type and id, byte by byte
-// (RFC 6665 §8.2.1).
+// RFC 6665 section 8.2.1
 func (e Event) Matches(o Event) bool {
 	return e.Type() == o.Type() && e.ID == o.ID
 }
@@ -77,7 +75,7 @@ func (fs Header) Event() (Event, bool, error) {
 	return e, true, err
 }
 
-// AllowEvents are the event types of the Allow-Events header fields (RFC 6665 §8.2.2).
+// RFC 6665 section 8.2.2
 func (fs Header) AllowEvents() ([]string, error) {
 	var out []string
 
@@ -100,7 +98,7 @@ const (
 	SubscriptionTerminated = "terminated"
 )
 
-// Reasons of a terminated subscription (RFC 6665 §4.1.3).
+// RFC 6665 section 4.1.3
 const (
 	SubscriptionDeactivated = "deactivated"
 	SubscriptionProbation   = "probation"
@@ -111,7 +109,7 @@ const (
 	SubscriptionInvariant   = "invariant"
 )
 
-// SubscriptionState is a Subscription-State value (RFC 6665 §8.2.3). State and Reason are lower-cased.
+// RFC 6665 section 8.2.3
 type SubscriptionState struct {
 	State      string
 	Reason     string
@@ -172,9 +170,7 @@ func (ss SubscriptionState) String() string {
 	return s + ss.Params.String()
 }
 
-// Resubscribe is what a subscriber should do once a subscription terminated with this state, of a terminated
-// Subscription-State (RFC 6665 §4.1.3): whether to subscribe again, not before after. A rejected, noresource or invariant subscription is not retried; a
-// deactivated or timeout one at once; the others, and unknown reasons, after their retry-after, if any.
+// RFC 6665 section 4.1.3
 func (ss SubscriptionState) Resubscribe() (ok bool, after time.Duration) {
 	switch ss.Reason {
 	case SubscriptionRejected, SubscriptionNoResource, SubscriptionInvariant:
@@ -201,12 +197,12 @@ func (fs Header) SubscriptionState() (SubscriptionState, bool, error) {
 	return ss, true, err
 }
 
-// SIPETag is the entity-tag a PUBLISH response assigns (RFC 3903 §11.3.1).
+// RFC 3903 section 11.3.1
 func (fs Header) SIPETag() (string, bool, error) {
 	return fs.entityTag("SIP-ETag")
 }
 
-// SIPIfMatch is the entity-tag a PUBLISH refreshes, modifies or removes (RFC 3903 §11.3.2).
+// RFC 3903 section 11.3.2
 func (fs Header) SIPIfMatch() (string, bool, error) {
 	return fs.entityTag("SIP-If-Match")
 }

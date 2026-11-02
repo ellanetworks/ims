@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// ones is a frame of type ft of c, all its bits set.
 func ones(c Codec, ft uint8) Frame {
 	n, _ := c.Bits(ft)
 
@@ -46,7 +45,7 @@ func roundTrip(t *testing.T, c Codec, p Payload, octetAligned bool) []byte {
 	return b
 }
 
-// RFC 4867 §4.3.5.1: a bandwidth-efficient AMR payload of one 7.4 kbit/s frame, CMR 15, two padding bits.
+// RFC 4867 section 4.3.5.1
 func TestBandwidthEfficientSingleFrame(t *testing.T) {
 	b := roundTrip(t, AMR, Payload{CMR: 15, Frames: []Frame{ones(AMR, 4)}}, false)
 
@@ -55,8 +54,7 @@ func TestBandwidthEfficientSingleFrame(t *testing.T) {
 	}
 }
 
-// RFC 4867 §4.3.5.2: a bandwidth-efficient AMR-WB payload of four frames: 6.6 kbit/s, SID, NO_DATA, 8.85 kbit/s;
-// CMR 1, seven padding bits.
+// RFC 4867 section 4.3.5.2
 func TestBandwidthEfficientMultipleFrames(t *testing.T) {
 	p := Payload{CMR: 1, Frames: []Frame{ones(WB, 0), ones(WB, 9), {Type: FrameNoData, Good: true}, ones(WB, 1)}}
 	b := roundTrip(t, WB, p, false)
@@ -66,7 +64,7 @@ func TestBandwidthEfficientMultipleFrames(t *testing.T) {
 	}
 }
 
-// RFC 4867 §4.4.5.1: an octet-aligned AMR payload of two 7.95 kbit/s frames, CMR 6, each frame padded.
+// RFC 4867 section 4.4.5.1
 func TestOctetAlignedMultipleFrames(t *testing.T) {
 	b := roundTrip(t, AMR, Payload{CMR: 6, Frames: []Frame{ones(AMR, 5), ones(AMR, 5)}}, true)
 
@@ -75,8 +73,7 @@ func TestOctetAlignedMultipleFrames(t *testing.T) {
 	}
 }
 
-// RFC 4867 §4.3.2: a frame type for future use, 10 to 13 for AMR-WB, makes the payload discarded; a payload shorter
-// than its table of contents is refused.
+// RFC 4867 section 4.3.2
 func TestPayloadRefused(t *testing.T) {
 	if _, err := WB.ParsePayload([]byte{0xf5, 0x40}, false); !errors.Is(err, ErrFrameType) {
 		t.Errorf("FT 10: %v", err)
@@ -95,7 +92,7 @@ func TestPayloadRefused(t *testing.T) {
 	}
 }
 
-// RFC 4867 §5.3: a frame in the storage format is its header octet, then its bits octet-aligned.
+// RFC 4867 section 5.3
 func TestStorage(t *testing.T) {
 	for _, f := range []Frame{ones(WB, 2), ones(WB, 9), {Type: FrameSpeechLost}, {Type: FrameNoData}} {
 		b, err := WB.AppendStorage(nil, f)
@@ -118,7 +115,6 @@ func TestStorage(t *testing.T) {
 	}
 }
 
-// A payload that parses packs again to one that parses alike.
 func FuzzParsePayload(f *testing.F) {
 	f.Add([]byte{0xf2, 0x7f, 0xff}, false)
 	f.Add([]byte{0x60, 0xac, 0x2c, 0xff}, true)
@@ -141,8 +137,7 @@ func FuzzParsePayload(f *testing.F) {
 	})
 }
 
-// TS 26.114 Tables K.5 and K.7: the payload of one AMR-WB frame, CMR 15, in octets, bandwidth-efficient and
-// octet-aligned.
+// TS 26.114 clause K.4
 func TestPayloadSizes(t *testing.T) {
 	for _, tc := range []struct {
 		mode               uint8

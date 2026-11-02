@@ -7,8 +7,6 @@ const CONFIG = `mcptt:
   media:
     address: 192.0.2.10`;
 
-// MCPTTGate shows its children, of the status of the MCPTT AS, when the IMS runs one, and how to turn it on
-// otherwise.
 export default function MCPTTGate({
   children,
 }: {

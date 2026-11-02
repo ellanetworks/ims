@@ -160,12 +160,10 @@ func (r *Registrar) subscribe(ctx context.Context, req *sip.Request, routes []si
 	return res, []*outgoing{o}
 }
 
-// subscribed is the resource of a SUBSCRIBE's Request-URI u (TS 24.229 §5.4.2.1.1), out of regs, the registrations
-// holding any of keys, the identity keys of u: its own key, else, of a number, that of its other form a registration
-// holds, as identityKeys has it of a terminating request. An AS subscribes with "a SIP URI that contains the public
-// user identity" of the To of the third-party REGISTER (§5.7.1.1 a), which, of a tel URI, is the SIP URI of its
-// number, "user=phone" (TS 23.003 §13.4; RFC 3261 §19.1.6), though the implicit registration set need hold only the
-// tel URI. It returns the key and the registrations that hold it.
+// TS 24.229 clause 5.4.2.1.1
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4
+// RFC 3261 section 19.1.6
 func subscribed(regs []db.Registration, keys []string) (string, []db.Registration) {
 	for _, k := range keys {
 		var held []db.Registration
@@ -193,7 +191,6 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []si
 		return nil, res
 	}
 
-	// One read for all the forms of the identity: a number has up to three.
 	keys := identityKeys(req.URI, r.cfg.HomeDomain)
 
 	all, err := r.cfg.DB.ListRegistrationsByIdentities(ctx, keys)
@@ -253,11 +250,10 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []si
 	return nil, sip.NewResponse(req, 403, "")
 }
 
-// asSubscriber is the private identity of the user whose registration state an AS subscribes to, when the SUBSCRIBE
-// comes from the trust domain and asserts the SIP URI of an AS of the user's iFCs (TS 24.229 §5.4.2.1.1 step 1 and
-// NOTE 1, §5.7.1.1 b and e): the first user with bindings of the IMPU that has one. The AS goes by the identity it
-// asserts, as the P-CSCF does, not by its address, which need not be the one its URI resolves to; the trust domain by
-// the source address, as for every request the S-CSCF takes (RFC 3325 §4, TS 24.229 §4.4).
+// TS 24.229 clause 4.4
+// TS 24.229 clause 5.4.2.1.1
+// TS 24.229 clause 5.7.1.1
+// RFC 3325 section 4
 func (r *Registrar) asSubscriber(ctx context.Context, req *sip.Request, regs []db.Registration, asserted []sip.Address,
 	now time.Time,
 ) (string, bool) {
@@ -280,8 +276,8 @@ func (r *Registrar) asSubscriber(ctx context.Context, req *sip.Request, regs []d
 	return "", false
 }
 
-// listsAS reports whether u is the SIP URI of an AS of the iFCs of the user of impi (RFC 3261 §19.1.4): of any
-// service profile of its IMS subscription, of the registered or the unregistered part (TS 29.228 Annex B.2.2).
+// RFC 3261 section 19.1.4
+// TS 29.228 clause B.2.2
 func (r *Registrar) listsAS(ctx context.Context, impi string, u sip.URI) bool {
 	if !u.IsSIP() {
 		return false

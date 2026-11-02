@@ -22,7 +22,12 @@ func ueAddr(i int, v6 bool) netip.Addr {
 	return ueAddrsAt(i)[0].Addr()
 }
 
-// TS 29.214 Annex A.1, TS 29.213 Annex B.2.1, B.4.1, TS 29.514 §4.2.2.2, §4.2.3.2, TS 29.513 §7.2.3
+// TS 29.214 clause A.1
+// TS 29.213 clause B.2.1
+// TS 29.213 clause B.4.1
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
+// TS 29.513 clause 7.2.3
 func TestCallPolicySessions(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		for _, family := range []struct {
@@ -49,7 +54,6 @@ func TestCallPolicySessions(t *testing.T) {
 					t.Fatalf("call sessions %+v, want one per UE", sessions)
 				}
 
-				// Over N5, a PATCH that would change nothing is not sent: the UPDATE answer may add no request.
 				requests := 2
 				if iface != policyRx {
 					requests = 1
@@ -101,7 +105,9 @@ func TestCallPolicySessions(t *testing.T) {
 	})
 }
 
-// TS 24.229 §5.2.7.2, TS 29.214 §4.4.1, TS 29.514 §4.2.2.2
+// TS 24.229 clause 5.2.7.2
+// TS 29.214 clause 4.4.1
+// TS 29.514 clause 4.2.2.2
 func TestCallMediaRefused(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
@@ -119,13 +125,14 @@ func TestCallMediaRefused(t *testing.T) {
 		failed(t, ctx, ac, 500)
 		ended(t, bc, testue.Cancelled)
 
-		// The call failed on the refused authorization, not before it.
 		s.pol.firstCall(netip.Addr{})
 		s.pol.noCallEnd(200 * time.Millisecond)
 	})
 }
 
-// TS 24.229 §5.2.8.1.2, TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3
+// TS 24.229 clause 5.2.8.1.2
+// TS 29.214 clause 4.4.6.1
+// TS 29.514 clause 4.2.5.3
 func TestCallAbortedByThePolicyFunction(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
@@ -150,7 +157,9 @@ func TestCallAbortedByThePolicyFunction(t *testing.T) {
 	})
 }
 
-// TS 24.229 §5.2.8.1.2, TS 29.214 §4.4.6.2, TS 29.514 §4.2.5.8
+// TS 24.229 clause 5.2.8.1.2
+// TS 29.214 clause 4.4.6.2
+// TS 29.514 clause 4.2.5.8
 func TestCallMediaLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
@@ -171,8 +180,9 @@ func TestCallMediaLost(t *testing.T) {
 	})
 }
 
-// GSMA IR.94 §2.4.1, NG.114 §4.6.2, TS 24.229 §6.1.1: a video call that loses its video bearer goes on as voice, and
-// the UE that lost it removes the video.
+// GSMA IR.94 section 2.4.1
+// GSMA NG.114 section 4.6.2
+// TS 24.229 clause 6.1.1
 func TestCallVideoBearerLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })
@@ -208,7 +218,7 @@ func TestCallVideoBearerLost(t *testing.T) {
 	})
 }
 
-// NG.114 §4.6.2: a video call that loses its voice bearer ends.
+// GSMA NG.114 section 4.6.2
 func TestCallVideoCallVoiceLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, func(srv *server.Server) { srv.MediaLossTimeout = 100 * time.Millisecond })

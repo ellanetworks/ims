@@ -26,7 +26,6 @@ func iscTrigger(as *siptest.Socket, handling cx.DefaultHandling, spts ...cx.Serv
 	}
 }
 
-// newISCHarness registers the UE with the iFCs in the profile of its MSISDN.
 func newISCHarness(t *testing.T, ifcs func(as *siptest.Socket) []cx.InitialFilterCriteria) (*sessionHarness, *siptest.Socket) {
 	t.Helper()
 
@@ -39,8 +38,7 @@ func newISCHarness(t *testing.T, ifcs func(as *siptest.Socket) []cx.InitialFilte
 	return sh, as
 }
 
-// proxied is a request as an AS acting as a SIP proxy sends it on: without its own Route, through its Via,
-// record-routed (TS 24.229 §5.7.4).
+// TS 24.229 clause 5.7.4
 func proxied(req *sip.Request, as *siptest.Socket, rr bool) *sip.Request {
 	out := req.Clone()
 	out.Header.PopFirst("Route")
@@ -53,7 +51,6 @@ func proxied(req *sip.Request, as *siptest.Socket, rr bool) *sip.Request {
 	return out
 }
 
-// proxiedResponse is a response as the AS acting as a SIP proxy relays it, to the next Via.
 func proxiedResponse(t *testing.T, res *sip.Response) (*sip.Response, netip.AddrPort) {
 	t.Helper()
 
@@ -68,7 +65,6 @@ func proxiedResponse(t *testing.T, res *sip.Response) (*sip.Response, netip.Addr
 	return out, netip.AddrPortFrom(netip.MustParseAddr(via.Host), via.Port)
 }
 
-// responseOn is the next response a socket gets, past the retransmitted requests.
 func responseOn(t *testing.T, s *siptest.Socket) *sip.Response {
 	t.Helper()
 
@@ -81,9 +77,9 @@ func responseOn(t *testing.T, s *siptest.Socket) *sip.Response {
 
 func methodSPT(m string) cx.ServicePointTrigger { return cx.ServicePointTrigger{Method: &m} }
 
-// TS 24.229 §5.4.3.2 steps 3, 5 and 13, §5.4.3.4, §5.7.4: the INVITE through an AS acting as a SIP proxy, which
-// sends it back with the original dialog identifier; the S-CSCF record-routes both legs, and the INFO, REFER and
-// UPDATE of the dialog go through the AS, the target refresh with the registration token (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.4
+// TS 24.229 clause 5.7.4
 func TestISCProxyAS(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("INVITE"))}
@@ -107,7 +103,6 @@ func TestISCProxyAS(t *testing.T) {
 
 	invite, fi := sh.icscf.RecvRequest()
 
-	// The S-CSCF's entries before the AS face either way, the one towards the AS with the registration token.
 	rrs := invite.Header.Values("Record-Route")
 	if len(rrs) != 4 || !strings.Contains(rrs[1], as.Addr().String()) || !strings.Contains(rrs[2], tokenParam+"=") ||
 		strings.Contains(rrs[3], tokenParam) {
@@ -171,8 +166,7 @@ func TestISCProxyAS(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2: once the request came back from the AS, the S-CSCF waits for the final response however long it
-// takes, and the default handling does not apply.
+// TS 24.229 clause 5.4.3.2
 func TestISCReturnedRequestWaits(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionTerminated, methodSPT("MESSAGE"))}
@@ -199,8 +193,8 @@ func TestISCReturnedRequestWaits(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2: SESSION_TERMINATED ends a MESSAGE the AS does not answer, with a 504 rather than a 408
-// (RFC 4320 §4.2).
+// TS 24.229 clause 5.4.3.2
+// RFC 4320 section 4.2
 func TestISCTimeoutTerminated(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionTerminated, methodSPT("MESSAGE"))}
@@ -209,7 +203,6 @@ func TestISCTimeoutTerminated(t *testing.T) {
 	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("MESSAGE", remoteTel, "<"+testMSISDN+">"))
 	as.RecvRequest()
 
-	// The timeout starts once the request is out, which the AS may see first.
 	sh.sipClock.Advance(DefaultASTimeout)
 	sh.sipClock.Advance(DefaultASTimeout)
 
@@ -220,8 +213,7 @@ func TestISCTimeoutTerminated(t *testing.T) {
 	sh.icscf.RecvNone(10 * time.Millisecond)
 }
 
-// TS 24.229 §5.4.3.3 step 3 a: a terminating request the AS retargets leaves the iFCs of the served user for the
-// I-CSCF.
+// TS 24.229 clause 5.4.3.3
 func TestISCRetargeted(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		term := cx.SessionCaseTerminatingRegistered
@@ -253,9 +245,8 @@ func TestISCRetargeted(t *testing.T) {
 	sh.term.RecvNone(10 * time.Millisecond)
 }
 
-// TS 24.229 §5.4.3.2 step 5 c to e, §5.4.3.3 step 4 d and f: towards an AS, originating and terminating, the
-// P-Charging-Vector keeps its icid-value and access-network-charging-info, the AS being in the trust domain, and has
-// a type 3 orig-ioi of the S-CSCF's network in place of the one received, without term-ioi nor transit-ioi.
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func TestISCChargingVector(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		orig, term := cx.SessionCaseOriginatingRegistered, cx.SessionCaseTerminatingRegistered
@@ -313,8 +304,7 @@ func TestISCChargingVector(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 step 5: the iFCs apply to every initial request and standalone transaction; the S-CSCF
-// record-routes a SUBSCRIBE to the AS.
+// TS 24.229 clause 5.4.3.2
 func TestISCMethods(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		spt := func(m string, g int32) cx.ServicePointTrigger {
@@ -361,8 +351,7 @@ func TestISCMethods(t *testing.T) {
 	sh.icscf.RecvNone(10 * time.Millisecond)
 }
 
-// TS 24.229 §5.4.3.3 steps 2b and 6: the 2xx of the served user carries the registration token to the AS, but not on
-// to the I-CSCF, which another network may be behind.
+// TS 24.229 clause 5.4.3.3
 func TestISCTerminatingToken(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		term := cx.SessionCaseTerminatingRegistered
@@ -392,7 +381,8 @@ func TestISCTerminatingToken(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 step 3, §5.4.3.4: an original dialog identifier that names nothing is refused.
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.4
 func TestISCUnknownODI(t *testing.T) {
 	sh, _ := newISCHarness(t, func(*siptest.Socket) []cx.InitialFilterCriteria { return nil })
 
@@ -405,8 +395,7 @@ func TestISCUnknownODI(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2: once the default handling went on without the AS, what the AS sends back late is refused,
-// rather than run the rest of the iFCs a second time.
+// TS 24.229 clause 5.4.3.2
 func TestISCLateReturn(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"))}
@@ -437,8 +426,8 @@ func TestISCLateReturn(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 NOTE 8, §5.4.3.4 NOTE: an AS that answered the request sends another with its original dialog
-// identifier, as a B2BUA does; it goes on with the iFCs after the AS's.
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.4
 func TestISCODIReused(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionTerminated, methodSPT("MESSAGE"))}
@@ -472,9 +461,8 @@ func TestISCODIReused(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 b: an AS that sent a 1xx, a 100 included, has not failed: its 5xx goes to the served user, as a
-// 500 (RFC 3261 §16.7 step 6). Without one, the default handling applies. That the 100 stops the AS's timeout too is
-// the proxy's (Options.AnyResponse).
+// TS 24.229 clause 5.4.3.2
+// RFC 3261 section 16.7
 func TestISCResponseAfterTrying(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("MESSAGE"))}
@@ -505,8 +493,7 @@ func TestISCResponseAfterTrying(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 step 1 a: the served user of a request from an AS is the identity of P-Served-User, which may
-// differ from the one the AS asserts; its iFCs apply.
+// TS 24.229 clause 5.4.3.2
 func TestISCServedUserOtherThanAsserted(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		orig := cx.SessionCaseOriginatingRegistered
@@ -540,9 +527,7 @@ func TestISCServedUserOtherThanAsserted(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7 h: the third-party REGISTERs of the registration and the reregistration have the icid-value of
-// the REGISTER, and a type 3 orig-ioi of the S-CSCF's network in place of the P-CSCF's, without term-ioi; the
-// S-CSCF keeps the term-ioi of the AS's response. That of the deregistration has none.
+// TS 24.229 clause 5.4.1.7
 func TestThirdPartyRegisterCharging(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 	serverName := "sip:" + as.Addr().String()
@@ -619,9 +604,8 @@ func TestThirdPartyRegisterCharging(t *testing.T) {
 	thirdParty("", "as3.example.net")
 }
 
-// RFC 3261 §10.2, TS 24.229 §5.4.1.7: the third-party REGISTERs to an AS for an identity follow the registration
-// events, on one Call-ID with the CSeq one more each time, and none goes before the previous one has its final
-// response. A deregistration is the last of them: the next registration starts anew.
+// RFC 3261 section 10.2
+// TS 24.229 clause 5.4.1.7
 func TestThirdPartyRegisterOrder(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
@@ -640,7 +624,6 @@ func TestThirdPartyRegisterOrder(t *testing.T) {
 
 	var last *sip.Request
 
-	// next is the next third-party REGISTER, over retransmissions of the last one, nil without one within d.
 	next := func(d time.Duration) (*sip.Request, sip.Flow) {
 		t.Helper()
 
@@ -725,8 +708,7 @@ func TestThirdPartyRegisterOrder(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.1 item 1, §3.1: a UE that restarted registers its contact again, unprotected: an initial
-// registration for the ASs, as the first one was, where a refresh is not.
+// TS 24.229 clause 5.4.1.1
 func TestThirdPartyInitialAfterRestart(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
@@ -768,9 +750,9 @@ func TestThirdPartyInitialAfterRestart(t *testing.T) {
 	thirdParty()
 }
 
-// TS 23.228 §5.12.1 steps 6 and 7, TS 24.229 §5.4.3.3 NOTE 27: the S-CSCF keeps the profile that SAR
-// UNREGISTERED_USER downloads, for the canonical identity (TS 29.229 §6.3.2), for the identity's later requests, and
-// clears its name at the HSS a registration period after (TS 29.228 §6.1.2.1).
+// TS 23.228 clause 5.12.1
+// TS 24.229 clause 5.4.3.3
+// TS 29.228 clause 6.1.2.1
 func TestUnregisteredProfileKept(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.wantSAR(t, cx.AssignmentRegistration)
@@ -807,7 +789,7 @@ func TestUnregisteredProfileKept(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.3.1.3: an HSS that cannot be reached for the profile of an identity makes a 480, as at the I-CSCF.
+// TS 24.229 clause 5.3.1.3
 func TestTerminatingHSSDown(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.loop.SetDown(true)
@@ -819,7 +801,7 @@ func TestTerminatingHSSDown(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 step 18: the token goes, the other indicators stay, a ";" in a quoted value included.
+// TS 24.229 clause 5.4.3.2
 func TestWithoutRegistrationToken(t *testing.T) {
 	var h sip.Header
 

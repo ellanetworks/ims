@@ -45,8 +45,7 @@ func recv(t *testing.T, c chan result) result {
 	}
 }
 
-// RFC 3261 §9: a re-INVITE of the agent cancelled once in progress gets a 487; the session goes on unchanged, on both
-// sides.
+// RFC 3261 section 9
 func TestCancelReinvite(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, bs := established(t, alice, bob)
@@ -94,7 +93,6 @@ func TestCancelReinvite(t *testing.T) {
 		}
 	}
 
-	// The next re-INVITE goes through.
 	if err := bs.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, f); err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +105,6 @@ func TestCancelReinvite(t *testing.T) {
 	}
 }
 
-// A UAS whose 2xx awaits its ACK sends its re-INVITEs and UPDATEs once the ACK comes; one cancelled meanwhile is not
-// sent.
 func TestModificationWaitsForAck(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -137,7 +133,6 @@ func TestModificationWaitsForAck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only the 2xx, retransmitted, comes before the ACK.
 	advance(netOf(t).Clock(), 700*time.Millisecond)
 
 	for {
@@ -166,8 +161,7 @@ func TestModificationWaitsForAck(t *testing.T) {
 	}
 }
 
-// RFC 3261 §12.2.2: the requests of a dialog reach the peer in the order of their CSeq, without waiting for each
-// other; those in progress when the session ends complete with ErrState.
+// RFC 3261 section 12.2.2
 func TestSendInOrder(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -212,8 +206,7 @@ func TestSendInOrder(t *testing.T) {
 	}
 }
 
-// RFC 6141 §4.6: the Contact of a target refresh request becomes the remote target once a 2xx to it is sent, not
-// with an error response.
+// RFC 6141 section 4.6
 func TestTargetRefreshedByTheResponse(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -276,13 +269,11 @@ func TestTargetRefreshedByTheResponse(t *testing.T) {
 	target("moved")
 }
 
-// A session whose timer expires while a re-INVITE is in progress ends only if it fails: its 2xx refreshes the session.
 func TestExpiryDeferredByModification(t *testing.T) {
 	for _, accept := range []bool{true, false} {
 		clock := netOf(t).Clock()
 		timer := ua.SessionTimer{Interval: 120 * time.Second}
 
-		// Alice does not allow UPDATE: bob, the refresher, refreshes with re-INVITEs, which conflict with hers.
 		alice := newPeerWith(t, "alice", func(c *ua.Config) {
 			c.Transaction.Clock = clock
 			c.SessionTimer = timer
@@ -304,7 +295,6 @@ func TestExpiryDeferredByModification(t *testing.T) {
 
 		alice.next("progress")
 
-		// Past the expiry of both sides: alice at 88 s, bob at 120 s.
 		for range 8 {
 			advance(clock, 10*time.Second, alice, bob)
 		}
@@ -315,7 +305,6 @@ func TestExpiryDeferredByModification(t *testing.T) {
 		if !accept {
 			_ = r.Reject(488)
 
-			// Bob's BYE follows his 488, and may overtake it: the session of alice ends with her re-INVITE.
 			if res := recv(t, done); res.code() != 488 && !errors.Is(res.err, ua.ErrState) {
 				t.Fatalf("re-INVITE %d %v", res.code(), res.err)
 			}
@@ -343,7 +332,7 @@ func TestExpiryDeferredByModification(t *testing.T) {
 	}
 }
 
-// RFC 4028 §10: a refresh that conflicts with a transaction of the peer is retried, and refreshes the session.
+// RFC 4028 section 10
 func TestRefreshRetriedAfterConflict(t *testing.T) {
 	clock := netOf(t).Clock()
 	timer := ua.SessionTimer{Interval: 120 * time.Second}
@@ -363,7 +352,6 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 
 	advance(clock, 55*time.Second, alice, bob)
 
-	// Alice's offer in an UPDATE is pending at bob when he is due to refresh, at 60 s.
 	done, f := results()
 
 	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf(realSDP(4002, 2))}, f); err != nil {
@@ -380,14 +368,12 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 		t.Fatalf("UPDATE %d", res.code())
 	}
 
-	// The retry, 5 s later, is a re-INVITE offering the session unchanged, which alice answers herself.
 	advance(clock, 5*time.Second, alice, bob)
 
 	if e := bob.next("answer"); !strings.Contains(string(e.sdp), "4000") {
 		t.Errorf("refresh answered with %q", e.sdp)
 	}
 
-	// The session lives past its first expiry, refreshed again at half its interval.
 	for range 12 {
 		advance(clock, 10*time.Second, alice, bob)
 	}
@@ -413,7 +399,7 @@ func TestRefreshRetriedAfterConflict(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: a re-INVITE without a response times out, and the session ends, lost, with a BYE.
+// RFC 3261 section 14.1
 func TestReinviteTimeout(t *testing.T) {
 	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
@@ -452,8 +438,8 @@ func TestReinviteTimeout(t *testing.T) {
 	}
 }
 
-// RFC 3262 §4, RFC 3261 §13.2.2.4: the RSeq of reliable 1xx and the ACKs of 2xx are kept for 64*T1 after the 2xx,
-// then dropped.
+// RFC 3262 section 4
+// RFC 3261 section 13.2.2.4
 func TestKeptForRetransmissions(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
@@ -481,7 +467,7 @@ func TestKeptForRetransmissions(t *testing.T) {
 	}
 }
 
-// RFC 3311 §5.1: an UPDATE with an offer in an early dialog, once the initial exchange completed.
+// RFC 3311 section 5.1
 func TestUpdateInEarlyDialog(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -523,7 +509,7 @@ func TestUpdateInEarlyDialog(t *testing.T) {
 	}
 }
 
-// RFC 4028 §7.3: a re-INVITE refused with a 422 is sent again with the Min-SE, its Session-Expires raised to it.
+// RFC 4028 section 7.3
 func TestReinviteIntervalTooSmall(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{MinSE: 1800 * time.Second})
@@ -550,7 +536,7 @@ func TestReinviteIntervalTooSmall(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4: Handler.Forked keeps the session of a second 2xx, confirmed.
+// RFC 3261 section 13.2.2.4
 func TestForkedKept(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	fork := netOf(t).Peer()
@@ -613,7 +599,6 @@ func TestForkedKept(t *testing.T) {
 	}
 }
 
-// A call over TCP: INVITE, re-INVITE, BYE.
 func TestCallOverTCP(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice.tr, bob.tr = sip.TCP, sip.TCP
@@ -648,7 +633,6 @@ func TestCallOverTCP(t *testing.T) {
 	}
 }
 
-// forkedInvite sends an INVITE of alice to a raw socket standing for the callees behind a forking proxy.
 func forkedInvite(t *testing.T, alice *peer, h ua.Handler) (*ua.Outgoing, *siptest.Peer, *sip.Request, func(code int, tag string, header ...sip.Field)) {
 	t.Helper()
 
@@ -686,8 +670,7 @@ func forkedInvite(t *testing.T, alice *peer, h ua.Handler) (*ua.Outgoing, *sipte
 	return o, fork, inv, respond
 }
 
-// RFC 6228: a 199 ends the early dialog it names, PRACKed when reliable, even of a dialog not seen before; the INVITE
-// goes on.
+// RFC 6228
 func TestEarlyDialogTerminated(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	_, fork, inv, respond := forkedInvite(t, alice, alice.handler())
@@ -725,8 +708,7 @@ func TestEarlyDialogTerminated(t *testing.T) {
 	}
 }
 
-// RFC 3261 §9.1: a 2xx crossing the CANCEL is acknowledged, and the session ended with a BYE carrying the Reason of the
-// CANCEL.
+// RFC 3261 section 9.1
 func TestAnswerCrossingCancel(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	o, fork, _, respond := forkedInvite(t, alice, alice.handler())
@@ -775,7 +757,7 @@ func TestAnswerCrossingCancel(t *testing.T) {
 	}
 }
 
-// RFC 3261 §12.2.1.2: a 481 to the PRACK loses that early dialog only.
+// RFC 3261 section 12.2.1.2
 func TestPrackLosesEarlyDialog(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	_, fork, _, respond := forkedInvite(t, alice, alice.handler())
@@ -785,7 +767,6 @@ func TestPrackLosesEarlyDialog(t *testing.T) {
 	prack, f := fork.RecvRequest()
 	fork.Send(sip.UDP, f.Remote, sip.NewResponse(prack, 481, ""))
 
-	// The 183 is not reported: its dialog is lost before its PRACK completed.
 	if e := alice.next("ended"); e.end.Cause != ua.EndLost {
 		t.Errorf("ended %+v", e.end)
 	}
@@ -794,7 +775,6 @@ func TestPrackLosesEarlyDialog(t *testing.T) {
 	alice.next("established")
 }
 
-// A re-INVITE the peer leaves unanswered once it ended the session completes with ErrState.
 func TestReinviteDoneWhenSessionEnds(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)

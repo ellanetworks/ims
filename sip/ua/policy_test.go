@@ -9,7 +9,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// serverPeer is a peer with the zero Policy, the one of servers: nothing automatic beyond what the RFCs require.
 func serverPeer(t *testing.T, name string) *peer {
 	return newPeerWith(t, name, func(c *ua.Config) { c.Policy = ua.Policy{} })
 }
@@ -30,9 +29,9 @@ func realCall(t *testing.T, alice, bob *peer) (as *ua.Session, offer, answer str
 	return as, offer, answer
 }
 
-// With the zero Policy, the session refreshes of the peer reach the application, which may answer them unchanged
-// (RFC 3264 §8, RFC 4028 §7.4): an MCPTT server sees the re-INVITE that keeps the session but carries an emergency
-// upgrade in its other parts (TS 24.379 §6.3.3.1.6).
+// RFC 3264 section 8
+// RFC 4028 section 7.4
+// TS 24.379 clause 6.3.3.1.6
 func TestServerPolicyDeliversRefreshes(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), serverPeer(t, "bob")
 	as, offer, answer := realCall(t, alice, bob)
@@ -59,7 +58,6 @@ func TestServerPolicyDeliversRefreshes(t *testing.T) {
 
 	alice.next("answer")
 
-	// An UPDATE without an offer refreshes too; a change of the session is no refresh.
 	if err := as.Update(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +93,6 @@ func TestServerPolicyDeliversRefreshes(t *testing.T) {
 	}
 }
 
-// ClientPolicy answers the refreshes, unless they carry other bodies than SDP: those reach the application.
 func TestClientPolicyLeavesRefreshesWithOtherBodies(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, offer, _ := realCall(t, alice, bob)
@@ -119,7 +116,6 @@ func TestClientPolicyLeavesRefreshesWithOtherBodies(t *testing.T) {
 		t.Fatalf("re-INVITE %d", res.StatusCode)
 	}
 
-	// With the SDP alone, the agent answers.
 	if err := as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(offer)}, f); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +127,6 @@ func TestClientPolicyLeavesRefreshesWithOtherBodies(t *testing.T) {
 	bob.none()
 }
 
-// Without Handler.Request, the agent answers the refreshes whatever its Policy, and refuses changes with a 488.
 func TestNoRequestHandler(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
@@ -166,8 +161,7 @@ func TestNoRequestHandler(t *testing.T) {
 	}
 }
 
-// RFC 4028 §10: a refresher that does not refresh (Policy.SkipRefreshes, a fault) sees the other side end the session
-// with a BYE before the interval ends.
+// RFC 4028 section 10
 func TestSkipRefreshes(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{Interval: 120 * time.Second})
@@ -196,7 +190,6 @@ func TestSkipRefreshes(t *testing.T) {
 		t.Fatalf("alice timer %v refresher %v", iv, refresher)
 	}
 
-	// Bob ends the session min(32 s, 40 s) before the 120 s, at 88 s.
 	advance(clock, 87*time.Second, alice, bob)
 	bob.none()
 

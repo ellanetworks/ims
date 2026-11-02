@@ -7,8 +7,7 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTUser is an MCPTT user: of its user profile (TS 24.484 §8.3), what an operator sets, and its IMS public user
-// identities. The server fixes the rest: no limit of N2 nor N6.
+// TS 24.484 clause 8.3
 type MCPTTUser struct {
 	MCPTTID              string   `json:"mcptt_id"`
 	Alias                string   `json:"alias"`
@@ -23,7 +22,6 @@ type MCPTTUsers struct {
 	TotalCount int         `json:"total_count"`
 }
 
-// ListMCPTTUsers returns a page of the users, in the order they were created in.
 func ListMCPTTUsers(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page, perPage, ok := pagination(w, r, cfg)
@@ -74,7 +72,6 @@ func CreateMCPTTUser(cfg Config) http.Handler {
 	})
 }
 
-// UpdateMCPTTUser replaces the user of the path. The MCPTT ID of the body, if any, is the user's.
 func UpdateMCPTTUser(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("mcptt_id")
@@ -101,7 +98,6 @@ func UpdateMCPTTUser(cfg Config) http.Handler {
 	})
 }
 
-// DeleteMCPTTUser deletes the user of the path, which leaves its groups.
 func DeleteMCPTTUser(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteUser(r.Context(), r.PathValue("mcptt_id")); err != nil {

@@ -7,8 +7,6 @@ const labels = {
   deaffiliating: "Leaving",
 } as const;
 
-// AffiliationChip is the affiliation of a user's phones to a group: the best status of them, how many phones, or
-// none.
 export default function AffiliationChip({
   affiliations,
 }: {

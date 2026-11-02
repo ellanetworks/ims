@@ -16,7 +16,6 @@ import (
 
 const police = "sip:police@mcptt.example.com"
 
-// configuration is alice, a member of fire and police, affiliated to fire on registration.
 func configuration() settings.Settings {
 	group := func(uri string) settings.Group {
 		return settings.Group{
@@ -43,7 +42,6 @@ type fixed struct{ s *settings.Snapshot }
 
 func (f fixed) Current() *settings.Snapshot { return f.s }
 
-// direct is the server in direct mode [PM 14] on the net, and a client of alice sending to it.
 func direct(t *testing.T) (*env, *server.Server, *user) {
 	t.Helper()
 
@@ -71,7 +69,6 @@ func direct(t *testing.T) (*env, *server.Server, *user) {
 	return e, s, e.user("alice", 1, addr, nil)
 }
 
-// result records the final response of a request of the client.
 type result struct {
 	res *sip.Response
 	err error
@@ -93,8 +90,8 @@ func (r *result) code(t *testing.T) int {
 	return r.res.StatusCode
 }
 
-// TS 24.379 §7.2.1, §7.3.2 [PM 14]: the client registers with the server, its access token and client ID in the
-// mcptt-info; refreshes halfway through the duration granted; unregisters.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 7.3.2
 func TestRegister(t *testing.T) {
 	e, s, a := direct(t)
 	id := mustURI(t, a.id)
@@ -119,7 +116,6 @@ func TestRegister(t *testing.T) {
 		t.Errorf("contact features %v", fs)
 	}
 
-	// Refreshed at 300 s, the binding outlives the first 600 s.
 	e.n.Advance(301 * time.Second)
 
 	es := a.expect(t, "registration")
@@ -146,13 +142,12 @@ func TestRegister(t *testing.T) {
 		t.Fatalf("unregister: %d %+v", r.code(t), s.Registrar().Bindings(id))
 	}
 
-	// No refresh once unregistered.
 	e.n.Advance(time.Hour)
 	a.expect(t)
 }
 
-// TS 24.379 §9.2.1.2, §9.2.2.2.3: the client affiliates to groups, changes them, and de-affiliates from all with
-// Expires 0.
+// TS 24.379 clause 9.2.1.2
+// TS 24.379 clause 9.2.2.2.3
 func TestAffiliate(t *testing.T) {
 	e, s, a := direct(t)
 	id := mustURI(t, a.id)

@@ -43,8 +43,7 @@ func TestNewPatch(t *testing.T) {
 	for name, tc := range map[string]struct {
 		prev, next *AppSessionContextUpdateData
 		want       string
-		// The PCF ends with less than next: what cannot be removed stays (TS 29.501 §5.3.8.2).
-		kept string
+		kept       string
 	}{
 		"no previous": {
 			prev: nil, next: &AppSessionContextUpdateData{MedComponents: map[string]MediaComponent{"1": {MedCompN: 1, MedType: MediaAudio}}},
@@ -108,7 +107,6 @@ func TestNewPatch(t *testing.T) {
 			prev: base, next: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
 			want: `{"ascReqData":{"medComponents":{"1":` + audio49000 + `},"sipForkInd":"SEVERAL_DIALOGUES"}}`,
 		},
-		// Annex B.3.1: every update within the forked early dialogues says SEVERAL_DIALOGUES.
 		"forking goes on": {
 			prev: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
 			next: with(func(n *AppSessionContextUpdateData) { n.SipForkInd = ForkingSeveralDialogues }),
@@ -145,7 +143,6 @@ func TestNewPatch(t *testing.T) {
 				return
 			}
 
-			// RFC 7396 §2: applying the patch to prev gives next.
 			prev, _ := json.Marshal(tc.prev)
 
 			var patch struct {
@@ -167,7 +164,6 @@ func TestNewPatch(t *testing.T) {
 	}
 }
 
-// After an unanswered PATCH, the PCF holds the state before or after it: the patch fits both.
 func TestNewResyncPatch(t *testing.T) {
 	events := &EventsSubscReqData{Events: []AfEventSubscription{{Event: EventChargingCorrelation}}, NotifURI: "http://ims/n"}
 	before := &AppSessionContextUpdateData{AFAppID: "app", EvSubsc: events, MedComponents: map[string]MediaComponent{"1": audio(false, 64000)}}
@@ -212,7 +208,6 @@ func TestNewResyncPatch(t *testing.T) {
 		sameJSON(t, got, w)
 	}
 
-	// Nothing held: next in full.
 	if p, err := NewResyncPatch(next); err != nil || !strings.Contains(p.String(), `"afAppId":"app"`) {
 		t.Fatalf("NewResyncPatch(next) = %s, %v", p, err)
 	}
@@ -224,7 +219,10 @@ func TestNewPatchWithoutEvents(t *testing.T) {
 	}
 }
 
-// TS 29.501 §5.3.8.2, TS 29.514 §5.6.2.25-27
+// TS 29.501 clause 5.3.8.2
+// TS 29.514 clause 5.6.2.25
+// TS 29.514 clause 5.6.2.26
+// TS 29.514 clause 5.6.2.27
 func TestCheckPatch(t *testing.T) {
 	for body, ok := range map[string]bool{
 		`{}`: true,

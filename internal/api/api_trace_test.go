@@ -12,8 +12,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestAPISpans checks that a request to the API has a server span named by its route, which links to the caller's
-// trace context rather than continue it. The UI, the probes and the profiles are not traced.
 func TestAPISpans(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 

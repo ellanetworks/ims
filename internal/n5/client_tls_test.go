@@ -20,12 +20,9 @@ import (
 
 type tlsPCF struct {
 	*httptest.Server
-	// peer is the certificate the last client presented.
 	peer chan string
 }
 
-// newTLSPCF serves handler over HTTP/2 and TLS only, and requires a client certificate issued by ca. Each of
-// adjust changes the TLS configuration before the server starts.
 func newTLSPCF(t *testing.T, ca *sbitlstest.CA, cert tls.Certificate, handler http.HandlerFunc, adjust ...func(*tls.Config)) *tlsPCF {
 	t.Helper()
 
@@ -58,7 +55,6 @@ func newTLSPCF(t *testing.T, ca *sbitlstest.CA, cert tls.Certificate, handler ht
 	return p
 }
 
-// named is the URL of the PCF with localhost in place of its address.
 func (p *tlsPCF) named() string {
 	return strings.Replace(p.URL, "127.0.0.1", "localhost", 1)
 }
@@ -88,7 +84,7 @@ func created(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ascRespData":{"suppFeat":"10"}}`))
 }
 
-// TS 33.501 §13.1.0: mutually authenticated TLS, with the PCF named by domain name or IP address.
+// TS 33.501 clause 13.1.0
 func TestTLS(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	ims := ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"ims.example.org"}})
@@ -142,7 +138,6 @@ func TestTLSRejectsPCF(t *testing.T) {
 	}
 }
 
-// The PCF cannot move a request, or a context, off TLS.
 func TestTLSDowngrade(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	ims := ca.Issue(t, "ims", sbitlstest.Leaf{})
@@ -197,14 +192,13 @@ func TestTLSConfig(t *testing.T) {
 	}
 }
 
-// TS 29.500 §5.2.1: a PCF that does not negotiate h2 is not reached over HTTP/1.1 instead.
+// TS 29.500 clause 5.2.1
 func TestTLSRequiresHTTP2(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	ims := ca.Issue(t, "ims", sbitlstest.Leaf{})
 
 	var reached atomic.Bool
 
-	// A TLS server without ALPN, serving HTTP/1.1.
 	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -233,9 +227,6 @@ func TestTLSRequiresHTTP2(t *testing.T) {
 	}
 }
 
-// A PCF that refuses the client certificate never got the request. With TLS 1.3 the refusal comes after the client
-// finished its handshake and wrote the request, and net/http may then report a reset write instead of the alert:
-// such an error stays one that may have reached the PCF. The test waits for the alert to come through.
 func TestTLSRejectedByPCF(t *testing.T) {
 	ca := sbitlstest.NewCA(t, "ca")
 	other := sbitlstest.NewCA(t, "other")
@@ -245,7 +236,6 @@ func TestTLSRejectedByPCF(t *testing.T) {
 	for name, version := range map[string]uint16{"TLS 1.2": tls.VersionTLS12, "TLS 1.3": tls.VersionTLS13} {
 		t.Run(name, func(t *testing.T) {
 			for range 20 {
-				// The PCF trusts another CA than the IMS's.
 				pcf := newTLSPCF(t, other, cert, created, func(c *tls.Config) { c.MaxVersion = version })
 				c := newTLSClient(t, pcf.named(), ims.Files)
 

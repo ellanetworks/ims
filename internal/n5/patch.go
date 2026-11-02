@@ -9,24 +9,17 @@ import (
 	"slices"
 )
 
-// Patch is the content of a PATCH request: an AppSessionContextUpdateDataPatch encoded as a JSON merge patch
-// (TS 29.514 §4.2.3.2, RFC 7396).
+// TS 29.514 clause 4.2.3.2
+// RFC 7396
 type Patch struct {
 	body []byte
 }
 
-// NewPatch returns the merge patch that turns the service information the PCF holds, prev, into next.
-//
-//   - A media component that changes is sent in full, with its sub-components: the P-CSCF derives each media
-//     component from the whole SDP exchange (TS 29.513 §7.2.3), and TS 29.514 Annex B.3 asks for the full
-//     service information.
-//   - While next has sipForkInd SEVERAL_DIALOGUES, every patch carries it and every media component (Annex
-//     B.3.1); when sipForkInd changes, every media component is sent too (Annex B.3.2).
-//   - What prev has and next lacks is set to null where the schema lets it be removed (TS 29.501 §5.3.8.2): a
-//     media component, a sub-component, a bit rate, flow descriptions, the events subscription, and sipForkInd
-//     (Annex B.3.2). A flow usage falls back to NO_INFO. Anything else keeps its previous value at the PCF.
-//
-// A nil prev patches only what next sets.
+// TS 29.513 clause 7.2.3
+// TS 29.514 clause B.3
+// TS 29.514 clause B.3.1
+// TS 29.514 clause B.3.2
+// TS 29.501 clause 5.3.8.2
 func NewPatch(prev, next *AppSessionContextUpdateData) (Patch, error) {
 	from, to, err := trees(next, prev)
 	if err != nil {
@@ -35,7 +28,6 @@ func NewPatch(prev, next *AppSessionContextUpdateData) (Patch, error) {
 
 	changed := !reflect.DeepEqual(from["sipForkInd"], to["sipForkInd"])
 
-	// While forking, sipForkInd goes in every patch, as if the PCF did not hold it.
 	forking := to["sipForkInd"] == string(ForkingSeveralDialogues)
 	if forking {
 		delete(from, "sipForkInd")
@@ -44,10 +36,7 @@ func NewPatch(prev, next *AppSessionContextUpdateData) (Patch, error) {
 	return patch(from, to, forking || changed, false)
 }
 
-// NewResyncPatch returns the merge patch that turns any of the states the PCF may hold into next, as when a
-// PATCH went unanswered (TS 29.500 §5.2.7.2) and the PCF may or may not have applied it: next is sent in full, and
-// what any of held has and next lacks is set to null as in NewPatch. With no state held, it patches only what next
-// sets, in full.
+// TS 29.500 clause 5.2.7.2
 func NewResyncPatch(next *AppSessionContextUpdateData, held ...*AppSessionContextUpdateData) (Patch, error) {
 	from, to, err := trees(next, held...)
 	if err != nil {
@@ -57,7 +46,6 @@ func NewResyncPatch(next *AppSessionContextUpdateData, held ...*AppSessionContex
 	return patch(from, to, true, true)
 }
 
-// trees returns the JSON trees of next and of the union of held, whose attributes are those of any of them.
 func trees(next *AppSessionContextUpdateData, held ...*AppSessionContextUpdateData) (from, to map[string]any, err error) {
 	if next != nil && next.EvSubsc != nil && len(next.EvSubsc.Events) == 0 {
 		return nil, nil, errors.New("patch: events subscription without events")
@@ -81,7 +69,6 @@ func trees(next *AppSessionContextUpdateData, held ...*AppSessionContextUpdateDa
 	return from, to, nil
 }
 
-// union returns a with what b adds: the values of b, and the keys of both objects at every level.
 func union(a, b any) any {
 	x, okA := a.(map[string]any)
 	y, okB := b.(map[string]any)
@@ -107,8 +94,6 @@ func union(a, b any) any {
 	return out
 }
 
-// patch returns the merge patch from one tree to the other. all sends every media component; every sends every
-// attribute of to, changed or not.
 func patch(from, to map[string]any, all, every bool) (Patch, error) {
 	diff := map[string]any{}
 
@@ -138,7 +123,6 @@ func patch(from, to map[string]any, all, every bool) (Patch, error) {
 	return Patch{body: b}, err
 }
 
-// Empty reports whether the patch changes nothing.
 func (p Patch) Empty() bool {
 	return len(p.body) == 0 || bytes.Equal(p.body, []byte("{}"))
 }
@@ -176,14 +160,13 @@ func object(v any) map[string]any {
 	return m
 }
 
-// TS 29.514 §5.6.2.26, §5.6.2.27: the attributes of the Rm types this package writes that may be null.
+// TS 29.514 clause 5.6.2.26
+// TS 29.514 clause 5.6.2.27
 var (
 	nullableComponent    = []string{"marBwDl", "marBwUl", "mirBwDl", "mirBwUl", "rrBw", "rsBw"}
 	nullableSubComponent = []string{"fDescs", "marBwDl", "marBwUl"}
 )
 
-// components returns the medComponents of a patch: removed components as null, and changed ones (all of them
-// when all is set) in full.
 func components(from, to map[string]any, all bool) map[string]any {
 	out := map[string]any{}
 
@@ -242,7 +225,7 @@ func removed(next, prev map[string]any, k string) {
 	}
 }
 
-// ApplyPatch applies a merge patch to a JSON document (RFC 7396 §2), as the PCF does.
+// RFC 7396 section 2
 func ApplyPatch(doc, patch []byte) ([]byte, error) {
 	var target, p any
 
@@ -281,10 +264,10 @@ func mergePatch(target, patch any) any {
 	return t
 }
 
-// CheckPatch checks an AppSessionContextUpdateDataPatch for what a merge patch can break in the schema: a null
-// for an attribute that may not be removed (TS 29.501 §5.3.8.2), or a changed object without its required
-// attributes (TS 29.514 §5.6.2.25 EventsSubscReqDataRm, §5.6.2.26 MediaComponentRm, §5.6.2.27
-// MediaSubComponentRm). It knows the attributes this package writes; others pass.
+// TS 29.501 clause 5.3.8.2
+// TS 29.514 clause 5.6.2.25
+// TS 29.514 clause 5.6.2.26
+// TS 29.514 clause 5.6.2.27
 func CheckPatch(patch []byte) error {
 	var p struct {
 		AscReqData map[string]any `json:"ascReqData"`
@@ -330,7 +313,6 @@ func pathString(p []string) string {
 	return string(b)
 }
 
-// required returns the attributes an object needs at path, below ascReqData.
 func required(path []string) []string {
 	switch {
 	case len(path) == 1 && path[0] == "evSubsc":
@@ -344,7 +326,6 @@ func required(path []string) []string {
 	return nil
 }
 
-// nullable reports whether the attribute at path, below ascReqData, may be set to null.
 func nullable(path []string) bool {
 	switch {
 	case len(path) == 1:

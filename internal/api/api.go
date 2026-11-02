@@ -18,40 +18,27 @@ import (
 )
 
 type Config struct {
-	Settings      Settings
-	Diameter      Diameter
-	SIP           SIP
-	Registrations Registrations
-	Policy        Policy
-	CallRecords   CallRecords
-	Frontend      fs.FS
-	// Ready reports why the IMS cannot serve requests, or nil when it can. GET /api/v1/readyz answers 503 when it
-	// fails. Nil is always ready.
-	Ready func(ctx context.Context) error
-	// Metrics are the metrics GET /api/v1/metrics serves.
-	Metrics prometheus.Gatherer
-	// MCPTT, MCPTTState and MCPTTStatus are of the built-in MCPTT AS, if the IMS runs it: /api/v1/mcptt answers 404
-	// otherwise.
-	MCPTT       MCPTTSettings
-	MCPTTState  MCPTTState
-	MCPTTStatus func() MCPTTStatus
-	// Auth stores the users, their sessions and their API tokens.
-	Auth AuthStore
-	// JWTSecret signs the access tokens.
-	JWTSecret []byte
-	// SecureCookie marks the session cookie Secure, and turns on HSTS, for an API served over TLS.
-	SecureCookie bool
-	// BcryptCost is the cost of the password hashes: bcrypt.DefaultCost when zero.
-	BcryptCost int
-	// TracerProvider traces the requests to the API; none when nil.
+	Settings       Settings
+	Diameter       Diameter
+	SIP            SIP
+	Registrations  Registrations
+	Policy         Policy
+	CallRecords    CallRecords
+	Frontend       fs.FS
+	Ready          func(ctx context.Context) error
+	Metrics        prometheus.Gatherer
+	MCPTT          MCPTTSettings
+	MCPTTState     MCPTTState
+	MCPTTStatus    func() MCPTTStatus
+	Auth           AuthStore
+	JWTSecret      []byte
+	SecureCookie   bool
+	BcryptCost     int
 	TracerProvider trace.TracerProvider
 	Now            func() time.Time
 	Logger         *slog.Logger
 }
 
-// Settings are the settings of the running IMS, which persists and applies a change before it returns. A change
-// fails with an error of the kinds settings.ErrInvalid, ErrConflict or ErrNotFound, or another if it could not be
-// saved.
 type Settings interface {
 	Get() settings.Settings
 	UpdateOperator(ctx context.Context, o settings.Operator) error
@@ -81,23 +68,15 @@ func NewHandler(cfg Config) http.Handler {
 		mux.Handle(rt.pattern, h)
 	}
 
-	// The UI is static files: all its data comes from the API, which authenticates it.
 	if cfg.Frontend != nil {
 		mux.Handle("GET /", Frontend(cfg.Frontend))
 	}
 
-	// The session cookie authenticates the refresh and the logout, so a page of another origin must not be able to
-	// send them. CrossOriginProtection rejects the unsafe requests that a browser tells are cross-origin, and lets
-	// through those of other clients, which send none of the headers it checks.
 	return traced(cfg, securityHeaders(cfg, http.NewCrossOriginProtection().Handler(mux)))
 }
 
-// untraced are the API paths that are scraped periodically.
 var untraced = map[string]bool{"/api/v1/livez": true, "/api/v1/readyz": true, "/api/v1/metrics": true}
 
-// traced gives each request to the API a server span, named by its route. A caller's trace context is linked rather
-// than continued, since anyone can send one. The UI's static files are not traced, nor the probes, metrics and
-// profiles, which are scraped periodically.
 func traced(cfg Config, next http.Handler) http.Handler {
 	if cfg.TracerProvider == nil {
 		return next
@@ -136,14 +115,12 @@ func securityHeaders(cfg Config, next http.Handler) http.Handler {
 	})
 }
 
-// route is a route of the API, and the permission that it needs: public for none.
 type route struct {
 	pattern string
 	perm    Permission
 	handler http.Handler
 }
 
-// routes are the API, which openapi.yaml describes.
 func routes(cfg Config, a *auth) []route {
 	return []route{
 		{"GET /api/v1/livez", public, Livez()},
@@ -198,8 +175,6 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/ip-sm-gw", PermReadIPSMGW, GetIPSMGW(cfg)},
 		{"PUT /api/v1/ip-sm-gw", PermUpdateIPSMGW, UpdateIPSMGW(cfg)},
 
-		// The routes that create credentials or manage users need a login rather than an API token, so that a leaked
-		// API token cannot make itself others that outlive its revocation, or take an account.
 		{"GET /api/v1/users/me", PermSelf, GetMyUser(a)},
 		{"PUT /api/v1/users/me/password", PermSelf, a.needsLogin(UpdateMyPassword(a))},
 		{"GET /api/v1/users/me/api-tokens", PermSelf, ListAPITokens(a, myself(cfg))},
@@ -216,7 +191,6 @@ func routes(cfg Config, a *auth) []route {
 		{"POST /api/v1/users/{email}/api-tokens", PermManageUsers, a.needsLogin(CreateAPIToken(a, userOfPath(cfg)))},
 		{"DELETE /api/v1/users/{email}/api-tokens/{id}", PermManageUsers, a.needsLogin(DeleteAPIToken(a, userOfPath(cfg)))},
 
-		// The profiles take an API token, so that a profiler can scrape them.
 		{"GET /api/v1/pprof/{$}", PermReadProfiles, http.HandlerFunc(pprof.Index)},
 		{"GET /api/v1/pprof/allocs", PermReadProfiles, pprof.Handler("allocs")},
 		{"GET /api/v1/pprof/goroutine", PermReadProfiles, pprof.Handler("goroutine")},

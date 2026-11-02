@@ -260,7 +260,6 @@ func TestResponseFlowPerResponse(t *testing.T) {
 	h.peer.RecvNone(quiet)
 }
 
-// The local addresses, read without a lock as messages come and go, grow as the layer listens on more.
 func TestListenWhileMatching(t *testing.T) {
 	l, _ := siptest.NewLayer(t, transaction.Config{})
 
@@ -299,8 +298,6 @@ func TestListenWhileMatching(t *testing.T) {
 	}
 }
 
-// A listener of the layer that failed for good is told to its user, its address no longer the layer's; the transport's
-// own report is the layer's to take.
 func TestListenerFailure(t *testing.T) {
 	type failure struct {
 		local netip.AddrPort
@@ -318,7 +315,6 @@ func TestListenerFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
 	var shut error
 	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
 		t.Fatalf("shutdown: %v, %v", err, shut)

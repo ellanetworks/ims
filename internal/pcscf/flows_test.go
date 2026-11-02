@@ -26,7 +26,7 @@ func flowRegKey(regID int64) regKey {
 	return regKey{impi: testIMPI, ue: ueAddr, flow: flowID{instance: testInstance, regID: regID}}
 }
 
-// withFlow makes a REGISTER that of the UE's registration flow regID (RFC 5626 §4.2).
+// RFC 5626 section 4.2
 func (s *regScene) withFlow(regID int64, edit func(*sip.Request)) func(*sip.Request) {
 	return func(r *sip.Request) {
 		r.Header.Set("Contact", s.contact()+`;+sip.instance="<`+testInstance+`>";reg-id=`+strconv.FormatInt(regID, 10))
@@ -37,7 +37,7 @@ func (s *regScene) withFlow(regID int64, edit func(*sip.Request)) func(*sip.Requ
 	}
 }
 
-// over has the UE send and receive over sock while f runs: another network flow (RFC 5626 §3.1).
+// RFC 5626 section 3.1
 func (s *regScene) over(sock *siptest.Socket, f func()) {
 	ue := s.ue
 	s.ue = sock
@@ -47,8 +47,6 @@ func (s *regScene) over(sock *siptest.Socket, f func()) {
 	f()
 }
 
-// registerFlows registers the UE's flows 1 and 2, each over a network flow of its own, and returns their
-// flow tokens.
 func (s *regScene) registerFlows() (string, string) {
 	s.t.Helper()
 
@@ -70,7 +68,7 @@ func (s *regScene) registerFlows() (string, string) {
 	return onlyPath(s.t, req).User, onlyPath(s.t, req2).User
 }
 
-// TS 24.229 §5.2.2.1: a registration flow has its own registration, and its own IMS flow token.
+// TS 24.229 clause 5.2.2.1
 func TestFlowsRegisterApart(t *testing.T) {
 	s := newRegScene(t)
 
@@ -94,7 +92,7 @@ func TestFlowsRegisterApart(t *testing.T) {
 	s.icscf.RecvNone(quiet)
 }
 
-// TS 24.229 §5.2.5.1 steps 1A and 2A
+// TS 24.229 clause 5.2.5.1
 func TestDeregisterOneFlow(t *testing.T) {
 	s := newRegScene(t)
 	s.registerFlows()
@@ -115,7 +113,7 @@ func TestDeregisterOneFlow(t *testing.T) {
 	}
 }
 
-// A NOTIFY that ends one flow leaves the others, though they share its contact URI (RFC 5626 §6).
+// RFC 5626 section 6
 func TestNotifyEndsOneFlow(t *testing.T) {
 	s := newRegScene(t)
 
@@ -156,8 +154,7 @@ func TestNotifyEndsOneFlow(t *testing.T) {
 	}
 }
 
-// TS 33.203 §6.1 NOTE 2: each flow has its own security associations; a new flow leaves the others',
-// while a new registration without the multiple registration mechanism replaces them.
+// TS 33.203 clause 6.1
 func TestSecurityAssociationsPerFlow(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)
@@ -207,8 +204,8 @@ func flowContact(base string, regID int) string {
 	return base + `;+sip.instance="<` + testInstance + `>";reg-id=` + strconv.Itoa(regID)
 }
 
-// TS 24.229 §5.2.2.2 step 1, TS 33.203 §6.1 NOTE 2: a REGISTER for flow 2 over flow 1's security
-// associations is not protected by its own; it is passed on unprotected, to be challenged.
+// TS 24.229 clause 5.2.2.2
+// TS 33.203 clause 6.1
 func TestRegisterOverAnotherFlowsAssociations(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	flow := func(regID int) func(*sip.Request) {
@@ -245,7 +242,7 @@ func TestRegisterOverAnotherFlowsAssociations(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.5.1 step 1A: the 200 lists the other flows, at the same URI; the P-CSCF reads its flow's.
+// TS 24.229 clause 5.2.5.1
 func TestFlowsSharingAURI(t *testing.T) {
 	answer := func(s *regScene, req *sip.Request, f sip.Flow, expires map[int]string) {
 		res := sip.NewResponse(req, 200, "")
@@ -290,9 +287,8 @@ func TestFlowsSharingAURI(t *testing.T) {
 	})
 }
 
-// TS 33.203 §7.1 NOTE 10, §6.1 NOTE 2: flows of a UE share its protected server port; a new flow gets
-// another client port of the P-CSCF rather than taking over another flow's associations, and is
-// refused when none is left.
+// TS 33.203 clause 7.1
+// TS 33.203 clause 6.1
 func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.DiscardHandler), noTrace())
@@ -344,7 +340,7 @@ func TestNewFlowKeepsOtherFlowsAssociations(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.2.2: a challenge deletes the temporary sets toward the UE, whatever their flow.
+// TS 24.229 clause 5.2.2.2
 func TestOneTemporarySetPerUE(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.DiscardHandler), noTrace())
@@ -371,8 +367,8 @@ func TestOneTemporarySetPerUE(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.2.2, TS 33.203 §7.1: a challenge deletes the temporary sets toward its UE only; a client of the
-// same private identity at another address, as a phone's VoLTE client on another PDN, keeps its own.
+// TS 24.229 clause 5.2.2.2
+// TS 33.203 clause 7.1
 func TestChallengeKeepsAnotherAddressesTemporarySet(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute, ServerPort: 5100, ClientPorts: [2]uint16{5101, 5102}},
 		slog.New(slog.DiscardHandler), noTrace())
@@ -423,8 +419,8 @@ func TestChallengeKeepsAnotherAddressesTemporarySet(t *testing.T) {
 	}
 }
 
-// RFC 5626 §4.2, §11.1: a flow needs a non-empty instance ID and a reg-id from 1 to 2^31 - 1, read as
-// a number, like the S-CSCF's.
+// RFC 5626 section 4.2
+// RFC 5626 section 11.1
 func TestContactFlow(t *testing.T) {
 	for contact, want := range map[string]flowID{
 		`<sip:ue@127.0.0.2>;+sip.instance="<urn:x>";reg-id=1`:  {"urn:x", 1},
@@ -450,8 +446,7 @@ func TestContactFlow(t *testing.T) {
 	}
 }
 
-// RFC 5626 §3.1: each registration flow is a network flow of its own; a REGISTER for another flow over a
-// registered one is refused, as the requests from it could not be told apart.
+// RFC 5626 section 3.1
 func TestFlowOverAnotherFlow(t *testing.T) {
 	s := newRegScene(t)
 
@@ -475,8 +470,6 @@ func TestFlowOverAnotherFlow(t *testing.T) {
 	s.icscf.RecvNone(quiet)
 }
 
-// A challenge whose temporary set no protected REGISTER came over is logged when a new challenge replaces it: the
-// UE's answer did not reach the P-CSCF, as when ESP is dropped on the way. One that came over it is not.
 func TestUnansweredChallengeIsLogged(t *testing.T) {
 	var logs bytes.Buffer
 
@@ -528,10 +521,7 @@ func TestUnansweredChallengeIsLogged(t *testing.T) {
 	}
 }
 
-// TS 24.229 §3.1: the phone's IMS client and an MCPTT client of one device register public user identities of
-// different sets with the same private identity, instance ID and reg-id, from the addresses of different PDN
-// connections. Each is a registration of its own; de-registering either leaves the other and the reg event
-// subscription of the private identity.
+// TS 24.229 clause 3.1
 func TestUAsOfOneDeviceOnTwoAddresses(t *testing.T) {
 	s := newRegScene(t)
 

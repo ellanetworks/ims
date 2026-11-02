@@ -8,13 +8,12 @@ import (
 	"strings"
 )
 
-// hnvMarks are the characters other than alphanumerics allowed unescaped in an hname or an hvalue: the marks of
-// unreserved and hnv-unreserved (RFC 3261 §25.1).
+// RFC 3261 section 25.1
 const hnvMarks = "-_.!~*'()[]/?:+$"
 
 const bodyHname = "body"
 
-// RFC 3261 §25.1: headers = "?" header *( "&" header ), header = hname "=" hvalue.
+// RFC 3261 section 25.1
 func checkURIHeaders(s string) error {
 	for h := range strings.SplitSeq(s, "&") {
 		name, value, ok := strings.Cut(h, "=")
@@ -34,8 +33,7 @@ func checkURIHeaders(s string) error {
 	return nil
 }
 
-// Embedded returns the header fields and the body the headers component of a SIP URI asks to put in a request formed
-// from it, unescaped (RFC 3261 §19.1.1). The special hname "body" is the body, described by the Content-* fields.
+// RFC 3261 section 19.1.1
 func (u URI) Embedded() (Envelope, error) {
 	var e Envelope
 
@@ -83,8 +81,7 @@ func (u URI) Embedded() (Envelope, error) {
 	return e, nil
 }
 
-// SetEmbedded replaces the headers component of a SIP URI with the header fields and the body of e, escaped
-// (RFC 3261 §19.1.1). Content-Length is left out: the body is its own length.
+// RFC 3261 section 19.1.1
 func (u *URI) SetEmbedded(e Envelope) {
 	var b []byte
 
@@ -127,8 +124,7 @@ func appendHnv(b []byte, s string) []byte {
 	return b
 }
 
-// RFC 3261 §19.1.4: header components are never ignored, and match field by field, in any order. Values match
-// case-insensitively, bodies exactly.
+// RFC 3261 section 19.1.4
 func uriHeadersEquivalent(a, b string) bool {
 	if a == b {
 		return true
@@ -160,18 +156,14 @@ func uriHeadersEquivalent(a, b string) bool {
 	return true
 }
 
-// unhonoured are the header fields a request formed from a URI leaves out: the dangerous ones, Route, and the ones
-// that would advertise the capabilities or the location of the sender in its stead (RFC 3261 §19.1.5).
+// RFC 3261 section 19.1.5
 var unhonoured = []string{
 	"From", "Call-ID", "CSeq", "Via", "Record-Route", "Route",
 	"Accept", "Accept-Encoding", "Accept-Language", "Allow", "Contact", "Organization", "Supported", "User-Agent",
 	"Content-Length",
 }
 
-// FormRequest forms a request from a SIP URI (RFC 3261 §19.1.5): the method parameter, or method when there is none,
-// the URI without its method parameter and headers component as Request-URI, and the header fields and the body
-// of the headers component, except those that must not be honoured. The caller adds the From, To, Call-ID, CSeq,
-// Via, Max-Forwards and Contact header fields.
+// RFC 3261 section 19.1.5
 func FormRequest(u URI, method string) (*Request, error) {
 	if !u.IsSIP() {
 		return nil, fmt.Errorf("form a request from %s: not a SIP URI", u.Scheme)
@@ -210,7 +202,6 @@ func FormRequest(u URI, method string) (*Request, error) {
 			return nil, errors.New("form a request: body without Content-Type")
 		}
 
-		// RFC 3261 §19.1.5: descriptive header fields are verified, here that a multipart body is one.
 		if isMultipart(body.MediaType()) {
 			if _, err := body.Multipart(); err != nil {
 				return nil, fmt.Errorf("form a request: %w", err)

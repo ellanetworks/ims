@@ -7,7 +7,7 @@ import (
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
-// TS 26.114 Tables K.1 to K.8: b=AS at ptime 20, by codec, mode, framing and address family.
+// TS 26.114 clause K.4
 func TestBandwidthAS(t *testing.T) {
 	for _, tc := range []struct {
 		c                  Codec
@@ -39,7 +39,7 @@ func TestBandwidthAS(t *testing.T) {
 	}
 }
 
-// RFC 4867 §8.3.1: the payload format configuration, absent parameters of their defaults; the mode-set.
+// RFC 4867 section 8.3.1
 func TestConfiguration(t *testing.T) {
 	p := sdp.ParseFormatParams
 

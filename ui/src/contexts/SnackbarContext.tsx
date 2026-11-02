@@ -8,7 +8,6 @@ import {
 } from "react";
 import { Alert, Button, Snackbar, type AlertColor } from "@mui/material";
 
-// SnackbarAction is a button in a notification, such as View on a sent message.
 export interface SnackbarAction {
   label: string;
   onClick: () => void;
@@ -28,8 +27,6 @@ const SnackbarContext = createContext<SnackbarContextValue | undefined>(
 
 export const AUTO_HIDE_MS = 5000;
 
-// SnackbarProvider shows the outcome of an action, as Ella Core does: a filled alert at the top of the page, which
-// hides itself.
 export function SnackbarProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -101,6 +98,5 @@ export function useSnackbar(): SnackbarContextValue {
   return ctx;
 }
 
-// errorMessage is the message of a failure, for a notification.
 export const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "Unknown error occurred.";

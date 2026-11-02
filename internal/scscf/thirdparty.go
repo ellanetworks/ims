@@ -23,9 +23,8 @@ import (
 
 const contentTypeIMS = "application/3gpp-ims+xml"
 
-// registration is what the third-party REGISTERs of a registration event carry: the REGISTER of the UE, or one
-// standing for a network-initiated deregistration, and its response (TS 24.229 §5.4.1.7, TS 23.218 §5.2.3). ended
-// tells that the registration set has no contact left.
+// TS 24.229 clause 5.4.1.7
+// TS 23.218 clause 5.2.3
 type registration struct {
 	reg      db.Registration
 	impu     string
@@ -37,9 +36,6 @@ type registration struct {
 	ended    bool
 }
 
-// thirdParty is a third-party REGISTER to an AS, for the identity to, and the default handling of its iFC. It waits
-// for held, if any, to close before it goes; done closes once it has its final response, has timed out or has failed,
-// and err is then why it failed, if it did. cause is the span context of the registration event.
 type thirdParty struct {
 	r     *Registrar
 	as    cx.ApplicationServer
@@ -59,9 +55,8 @@ type thirdParty struct {
 
 var errNoResponse = errors.New("no response in time")
 
-// thirdParties are the third-party REGISTERs of a registration event: one for each iFC that the REGISTER matches in
-// each service profile of the registration set, to a non-barred identity of the profile (TS 24.229 §5.4.1.7, TS
-// 23.218 §6.3).
+// TS 24.229 clause 5.4.1.7
+// TS 23.218 clause 6.3
 func (r *Registrar) thirdParties(ctx context.Context, ev registration) []*thirdParty {
 	sub, err := cx.ParseUserData(ev.reg.UserData)
 	if err != nil {
@@ -108,7 +103,8 @@ func (r *Registrar) thirdParties(ctx context.Context, ev registration) []*thirdP
 	return out
 }
 
-// TS 24.229 §5.4.1.7, §5.4.1.7A
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
 func (r *Registrar) thirdPartyRegister(ev registration, to sip.URI, as cx.ApplicationServer, srv sip.Server) (*sip.Request, error) {
 	asURI, err := sip.ParseURI(as.ServerName)
 	if err != nil {
@@ -145,7 +141,6 @@ func (r *Registrar) thirdPartyRegister(ev registration, to sip.URI, as cx.Applic
 	req.Header.Add("Contact", contact.String())
 	req.Header.Add("Expires", strconv.Itoa(ev.expires))
 
-	// The AS is in the trust domain (TS 24.229 §5.7.3).
 	for _, name := range []string{"P-Access-Network-Info", "P-Visited-Network-ID"} {
 		for _, v := range ev.req.Header.Values(name) {
 			req.Header.Add(name, v)
@@ -153,8 +148,6 @@ func (r *Registrar) thirdPartyRegister(ev registration, to sip.URI, as cx.Applic
 	}
 
 	if ev.regType != cx.RegistrationTypeDeregistration {
-		// TS 24.229 §5.4.1.7 h: the icid-value of the REGISTER, and a type 3 orig-ioi in place of the one received,
-		// without term-ioi.
 		if icid := icidOf(ev.req.Header); icid != "" {
 			req.Header.Add(pChargingVector, r.chargingVector(icid))
 		}
@@ -181,7 +174,7 @@ func (r *Registrar) thirdPartyRegister(ev registration, to sip.URI, as cx.Applic
 	return req, nil
 }
 
-// serviceInfo is the 3GPP IM CN subsystem XML body of the service information of an iFC (TS 24.229 §7.6).
+// TS 24.229 clause 7.6
 func serviceInfo(info string) []byte {
 	var b strings.Builder
 
@@ -192,10 +185,8 @@ func serviceInfo(info string) []byte {
 	return []byte(b.String())
 }
 
-// notifyASs sends the third-party REGISTERs of a registration event (TS 24.229 §5.4.1.7), held until held closes,
-// if not nil. It is called with the private identity locked, so that the third-party REGISTERs to an AS for an
-// identity follow the order of the events. Once those of a deregistration are out, what the S-CSCF keeps of the ASs
-// of the deregistered identities goes (TS 24.229 §5.4.1.5). ctx is that of the event.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.5
 func (r *Registrar) notifyASs(ctx context.Context, ev registration, held <-chan struct{}) {
 	for _, tp := range r.thirdParties(ctx, ev) {
 		tp.held = held
@@ -207,9 +198,7 @@ func (r *Registrar) notifyASs(ctx context.Context, ev registration, held <-chan 
 	}
 }
 
-// queue appends a third-party REGISTER to those to its AS for its identity, which go one at a time, in order, each
-// with the next CSeq once the previous has its final response or has timed out (RFC 3261 §10.2). One that goes at
-// once is in the trace of its event, ctx; one that waits for others has a trace of its own, linked to it.
+// RFC 3261 section 10.2
 func (r *Registrar) queue(ctx context.Context, tp *thirdParty) {
 	id := identityKeyOf(tp.to)
 
@@ -228,8 +217,6 @@ func (r *Registrar) queue(ctx context.Context, tp *thirdParty) {
 	}
 }
 
-// drain sends the third-party REGISTERs pending to an AS for an identity, off the caller's goroutine: first, that of
-// the event ctx, in its trace.
 func (r *Registrar) drain(ctx context.Context, id, serverName string, p *asPeer, first *thirdParty) {
 	if !r.start() {
 		r.mu.Lock()
@@ -280,13 +267,11 @@ func (r *Registrar) drain(ctx context.Context, id, serverName string, p *asPeer,
 	}()
 }
 
-// runQueued runs a third-party REGISTER that waited for others: a trace of its own, linked to its event's.
 func (tp *thirdParty) runQueued() bool {
 	ctx, span := tp.r.detached.Start(tp.r.ctx, "third-party registration", tp.cause)
 
 	ok := tp.run(ctx)
 
-	// tp.err is set once done, which a run cut short by the registrar's closing does not wait for.
 	err := context.Cause(ctx)
 	if ok {
 		err = tp.err
@@ -297,8 +282,6 @@ func (tp *thirdParty) runQueued() bool {
 	return ok
 }
 
-// run sends the third-party REGISTER once it is no longer held, and waits for it to be done, unless the registrar
-// closes first.
 func (tp *thirdParty) run(ctx context.Context) bool {
 	if tp.held != nil {
 		select {
@@ -352,7 +335,6 @@ func (tp *thirdParty) send(ctx context.Context) {
 	r.log.DebugContext(ctx, "third-party REGISTER", slog.String("as", tp.as.ServerName), slog.String("to", tp.to),
 		slog.String("type", tp.ev.regType.String()))
 
-	// The timeout is run's to apply, in the trace of the REGISTER.
 	tp.timer = r.clock.AfterFunc(r.cfg.ASTimeout, func() { close(tp.expired) })
 
 	if _, err := r.cfg.Layer.Request(ctx, req, tp); err != nil {
@@ -361,8 +343,7 @@ func (tp *thirdParty) send(ctx context.Context) {
 	}
 }
 
-// HandleResponse takes any response in time as the AS's, and keeps its term-ioi; a 408 or a 5xx fails the REGISTER
-// (TS 24.229 §5.4.1.7).
+// TS 24.229 clause 5.4.1.7
 func (tp *thirdParty) HandleResponse(ctx context.Context, res *sip.Response) {
 	tp.timer.Stop()
 
@@ -384,8 +365,7 @@ func (tp *thirdParty) HandleError(ctx context.Context, err error) {
 	tp.failed(ctx, err)
 }
 
-// failed applies the default handling of the iFC: SESSION_TERMINATED deregisters the contacts of the REGISTER
-// (TS 24.229 §5.4.1.7), in the trace of ctx. The timer is the caller's to stop, if it runs.
+// TS 24.229 clause 5.4.1.7
 func (tp *thirdParty) failed(ctx context.Context, err error) {
 	tp.once.Do(func() {
 		tp.err = err
@@ -410,9 +390,7 @@ func (tp *thirdParty) failed(ctx context.Context, err error) {
 	})
 }
 
-// deregisterBindings is the network-initiated deregistration of bindings of a registration set, which the UE is not
-// expected to register again: it would fail the same way. Their contacts are then "rejected", rather than
-// "deactivated", which would have the UE register again at once (TS 24.229 §5.4.1.5). The private identity is locked.
+// TS 24.229 clause 5.4.1.5
 func (r *Registrar) deregisterBindings(ctx context.Context, impi string, regID int64, ids []int64) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
@@ -452,10 +430,8 @@ func (r *Registrar) deregisterBindings(ctx context.Context, impi string, regID i
 	return r.notifyChange(ctx, impi, change{removed: []removal{rm}, reason: reasonRejected})
 }
 
-// deregistered sends the third-party REGISTERs of a network-initiated deregistration, as if the UE had sent the
-// equivalent REGISTER: its contacts, those removed, with expires 0 and the parameters they registered with, so that
-// the iFCs match as they did on registration (TS 23.218 §5.2.3, TS 24.229 §5.4.1.5). The third-party deregistration
-// on expiry is the one of TS 23.218 §5.2.3 too. The private identity is locked; ctx is that of the deregistration.
+// TS 23.218 clause 5.2.3
+// TS 24.229 clause 5.4.1.5
 func (r *Registrar) deregistered(ctx context.Context, rm removal) {
 	impu, err := sip.ParseURI(rm.reg.IMPU)
 	if len(rm.bindings) == 0 || rm.reg.IMPU == "" || err != nil {
@@ -495,7 +471,6 @@ func (r *Registrar) deregistered(ctx context.Context, rm removal) {
 	}, nil)
 }
 
-// setKeys are the keys of the public identities of a registration set.
 func setKeys(reg db.Registration) []string {
 	keys := make([]string, 0, len(reg.Identities))
 	for _, id := range reg.Identities {

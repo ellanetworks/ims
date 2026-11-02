@@ -153,7 +153,6 @@ func TestURIEquivalent(t *testing.T) {
 		{"sip:bob@biloxi.com", "sips:bob@biloxi.com", false},
 		{"tel:+15551230001", "TEL:+15551230001", true},
 		{"tel:+15551230001", "tel:+15551230002", false},
-		// RFC 3261 §19.1.4: header components are never ignored, and match whatever their order or escaping.
 		{"sip:biloxi.com;transport=tcp;method=REGISTER?to=sip:bob%40biloxi.com", "sip:biloxi.com;method=REGISTER;transport=tcp?to=sip:bob%40biloxi.com", true},
 		{"sip:carol@chicago.com", "sip:carol@chicago.com?Subject=next%20meeting", false},
 		{"sip:a@b?Subject=x&Priority=urgent", "sip:a@b?priority=URGENT&subject=x", true},
@@ -161,12 +160,10 @@ func TestURIEquivalent(t *testing.T) {
 		{"sip:a@b?s=x", "sip:a@b?Subject=x", true},
 		{"sip:a@b?Subject=x&Subject=y", "sip:a@b?Subject=x&Subject=x", false},
 		{"sip:a@b?body=x", "sip:a@b?body=X", false},
-		// RFC 3261 §19.1.4: escapes of characters other than reserved ones are equivalent to them.
 		{"sip:%61lice@atlanta.com;transport=TCP", "sip:alice@AtLanTa.CoM;Transport=tcp", true},
 		{"sip:alice%2b1@atlanta.com", "sip:alice%2B1@atlanta.com", true},
 		{"sip:alice%2B1@atlanta.com", "sip:alice+1@atlanta.com", false},
 		{"sip:a@b;x=%41", "sip:a@b;x=a", true},
-		// RFC 3966 §4.
 		{"tel:+1-555-123-0001", "tel:+1(555)1230001", true},
 		{"tel:7042;phone-context=example.com", "tel:7042;PHONE-CONTEXT=Example.COM", true},
 		{"tel:7042;phone-context=+1-555", "tel:7042;phone-context=+1555", true},
@@ -196,7 +193,8 @@ func TestURIEquivalent(t *testing.T) {
 	}
 }
 
-// TS 23.003 §13.4, TS 29.229 §6.3.2: the canonical form of an identity, equal for equivalent identities.
+// TS 23.003 clause 13.4
+// TS 29.229 clause 6.3.2
 func TestURIIdentity(t *testing.T) {
 	for in, want := range map[string]string{
 		"sip:alice@Example.COM:5060;transport=tcp?x=y":   "sip:alice@example.com",

@@ -31,7 +31,7 @@ func TestEmergencyURN(t *testing.T) {
 	}
 }
 
-// wantAlternativeService checks a 380 rejecting an emergency request, which the UE acts on (TS 24.229 §5.2.10.5).
+// TS 24.229 clause 5.2.10.5
 func wantAlternativeService(t *testing.T, s *ipsecScene, res *sip.Response, token string) {
 	t.Helper()
 

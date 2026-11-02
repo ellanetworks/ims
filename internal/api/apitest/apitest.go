@@ -1,4 +1,3 @@
-// Package apitest calls the API of a running IMS as an admin, the first user, which it creates if the IMS has none.
 package apitest
 
 import (
@@ -15,11 +14,8 @@ const (
 	Password = "correct horse"
 )
 
-// tokens are the access tokens of the admin, by address of the API.
 var tokens sync.Map
 
-// Client is a client that sends the requests to the API at addr, a host and port, as the admin. It logs in once per
-// address, and again when the API answers 401, which a new IMS at the address of an earlier one does.
 func Client(addr string) *http.Client {
 	return &http.Client{Transport: bearer{addr: addr}}
 }
@@ -44,7 +40,6 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return b.retry(r)
 }
 
-// retry logs in, and sends r again.
 func (b bearer) retry(r *http.Request) (*http.Response, error) {
 	token, err := logIn(r.Context(), b.addr)
 	if err != nil {
@@ -73,7 +68,6 @@ func (b bearer) send(r *http.Request, token string) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// logIn creates the admin, unless a user exists, and logs it in.
 func logIn(ctx context.Context, addr string) (string, error) {
 	credentials, _ := json.Marshal(map[string]string{"email": Email, "password": Password})
 

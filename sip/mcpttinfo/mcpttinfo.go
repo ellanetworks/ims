@@ -1,9 +1,3 @@
-// Package mcpttinfo is the MCPTT information document, application/vnd.3gpp.mcptt-info+xml (TS 24.379 Annex F.1).
-//
-// Decode keeps what it does not know, elements of other namespaces, of later releases, and attributes, and Encode
-// writes it back, so a function that sets an element of a document it relays passes the others on (F.1.3); so it
-// does of the elements it cannot decode, malformed or repeated. A body relayed unchanged is copied as received, not
-// decoded: so is a signed one (TS 24.379 §4.8), whose signature an encoding would break.
 package mcpttinfo
 
 import (
@@ -20,13 +14,10 @@ const (
 	Namespace   = "urn:3gpp:ns:mcpttInfo:1.0"
 )
 
-// encryptedData is the element of encrypted content (F.1.3 3b).
 var encryptedData = xml.Name{Space: "http://www.w3.org/2001/04/xmlenc#", Local: "EncryptedData"}
 
-// maxSize bounds a document: an access token (TS 24.482) and encrypted elements fit.
 const maxSize = 1 << 16
 
-// SessionType is the value of <session-type> (F.1.3).
 type SessionType string
 
 const (
@@ -38,7 +29,6 @@ const (
 	SessionAdhoc            SessionType = "adhoc"
 )
 
-// FloorState is the value of <floor-state> (F.1.3).
 type FloorState string
 
 const (
@@ -46,17 +36,13 @@ const (
 	FloorTaken FloorState = "floor-taken"
 )
 
-// Info is the <mcpttinfo> root element.
 type Info struct {
 	Params *Params
-	// Other are the child elements not decoded, in order: of other namespaces, unknown, or repeated.
-	Other []*xmltree.Element
-	// Ext are the children of <anyExt>.
-	Ext  []*xmltree.Element
-	Attr []xml.Attr
+	Other  []*xmltree.Element
+	Ext    []*xmltree.Element
+	Attr   []xml.Attr
 }
 
-// Params is the <mcptt-Params> element. A nil or empty field is an absent element.
 type Params struct {
 	AccessToken       *Content
 	SessionType       SessionType
@@ -73,19 +59,15 @@ type Params struct {
 	FloorState        FloorState
 	AssociatedGroupID *Content
 	OriginatedBy      *Content
-	// MKFCGKTPs is the <MKFC-GKTPs> element, kept as received: its content is TS 24.481 §7.4 security.
-	MKFCGKTPs    *xmltree.Element
-	ClientID     *Content
-	AlertIndRcvd *Content
-	GWMCPTTUsage *bool
-	// Other are the child elements not decoded, in order: of other namespaces, unknown, malformed or repeated.
-	Other []*xmltree.Element
-	// Ext are the children of <anyExt>.
-	Ext  []*xmltree.Element
-	Attr []xml.Attr
+	MKFCGKTPs         *xmltree.Element
+	ClientID          *Content
+	AlertIndRcvd      *Content
+	GWMCPTTUsage      *bool
+	Other             []*xmltree.Element
+	Ext               []*xmltree.Element
+	Attr              []xml.Attr
 }
 
-// Protection is the "type" attribute of a contentType element.
 type Protection string
 
 const (
@@ -93,7 +75,6 @@ const (
 	Encrypted Protection = "Encrypted"
 )
 
-// Kind is the choice of a contentType element.
 type Kind int
 
 const (
@@ -101,56 +82,39 @@ const (
 	KindURI
 	KindString
 	KindBoolean
-	// KindOther is an element of another namespace or <anyExt>: <xenc:EncryptedData> for encrypted content, <anyExt>
-	// for a value of a later release in the clear.
 	KindOther
 )
 
 var kindNames = [...]string{KindURI: "mcpttURI", KindString: "mcpttString", KindBoolean: "mcpttBoolean"}
 
-// Content is an element of contentType: a value as an <mcpttURI>, <mcpttString> or <mcpttBoolean>, or encrypted.
 type Content struct {
-	// Type is Normal or Encrypted; Decode takes content without it as in the clear, and Encode writes it so.
-	Type Protection
-	Kind Kind
-	// Value is the text of an <mcpttURI> or <mcpttString>, "true" or "false" for an <mcpttBoolean>.
-	Value string
-	// Element is the element of KindOther.
+	Type    Protection
+	Kind    Kind
+	Value   string
 	Element *xmltree.Element
-	// Attr are the attributes but "type".
-	Attr []xml.Attr
+	Attr    []xml.Attr
 }
 
-// URI is content of an <mcpttURI> in the clear.
 func URI(v string) *Content { return &Content{Type: Normal, Kind: KindURI, Value: v} }
 
-// Text is content of an <mcpttString> in the clear.
 func Text(v string) *Content { return &Content{Type: Normal, Kind: KindString, Value: v} }
 
-// Bool is content of an <mcpttBoolean> in the clear.
 func Bool(v bool) *Content {
 	return &Content{Type: Normal, Kind: KindBoolean, Value: boolText(v)}
 }
 
-// EncryptedContent is encrypted content: el is its <xenc:EncryptedData> (F.1.3 3).
 func EncryptedContent(el *xmltree.Element) *Content {
 	return &Content{Type: Encrypted, Kind: KindOther, Element: el}
 }
 
-// ExtContent is the element of contentType local of c, for the <anyExt> of mcptt-Params: an element of a later
-// release, such as <multiple-devices-ind> (F.1.2, F.1.3).
 func ExtContent(local string, c *Content) *xmltree.Element {
 	return c.element(local)
 }
 
-// URI is the value of an <mcpttURI> in the clear.
 func (c *Content) URI() (string, bool) { return c.clear(KindURI) }
 
-// Text is the value of an <mcpttString> in the clear.
 func (c *Content) Text() (string, bool) { return c.clear(KindString) }
 
-// Bool is the value of an <mcpttBoolean> in the clear: an absent element is not one of "false", as an
-// <emergency-ind> cancelling an emergency call (F.1.3 8b).
 func (c *Content) Bool() (v, ok bool) {
 	t, ok := c.clear(KindBoolean)
 	return t == "true", ok
@@ -164,12 +128,8 @@ func (c *Content) clear(k Kind) (string, bool) {
 	return c.Value, true
 }
 
-// ErrValue is wrapped by the errors of the elements Decode does not decode, malformed: the document it returns is
-// usable without them, and keeps them.
 var ErrValue = errors.New("malformed element")
 
-// Decode decodes the document b. A malformed element of mcptt-Params is kept in Other, with an error wrapping
-// ErrValue; of an element given twice, the first well-formed counts and the others are kept in Other.
 func Decode(b []byte) (Info, error) {
 	if len(b) > maxSize {
 		return Info{}, fmt.Errorf("mcpttinfo: document of %d bytes exceeds %d", len(b), maxSize)
@@ -210,7 +170,6 @@ type decoder struct {
 	errs []error
 }
 
-// known is the name of e in the namespace of the document, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -251,7 +210,6 @@ func (d *decoder) params(e *xmltree.Element) *Params {
 	return p
 }
 
-// field decodes c as f into p, and reports whether it did: c is malformed otherwise.
 func (d *decoder) field(p *Params, f any, c *xmltree.Element) bool {
 	switch f := f.(type) {
 	case contentField:
@@ -282,7 +240,6 @@ func (d *decoder) field(p *Params, f any, c *xmltree.Element) bool {
 	return true
 }
 
-// content decodes c as contentType, of kind want in the clear (F.1.3 2), any for KindNone.
 func (d *decoder) content(c *xmltree.Element, want Kind) *Content {
 	name := c.Name.Local
 	v := &Content{}
@@ -365,7 +322,6 @@ func (d *decoder) boolean(c *xmltree.Element) (bool, bool) {
 	return b, ok && !c.HasElements()
 }
 
-// parseBoolean parses an xs:boolean, its whitespace collapsed.
 func parseBoolean(s string) (bool, bool) {
 	switch collapse(s) {
 	case "true", "1":
@@ -377,8 +333,7 @@ func parseBoolean(s string) (bool, bool) {
 	return false, false
 }
 
-// collapse is s without the leading and trailing white space the whiteSpace facet collapse of XML Schema Part 2
-// §4.3.6 removes from xs:anyURI and xs:boolean values: #x20, #x9, #xA and #xD, not other Unicode spaces.
+// XML Schema Part 2 section 4.3.6
 func collapse(s string) string { return strings.Trim(s, " \t\n\r") }
 
 func boolText(b bool) string {
@@ -389,8 +344,6 @@ func boolText(b bool) string {
 	return "false"
 }
 
-// check verifies c against the rules of F.1.3 2 and 3 for an element whose value in the clear is of kind want, any
-// kind for KindNone. A Content without the optional type is taken as in the clear.
 func (c *Content) check(want Kind) error {
 	if c.Kind == KindOther && c.Element == nil {
 		return errors.New("no element")
@@ -404,7 +357,6 @@ func (c *Content) check(want Kind) error {
 			return errors.New("encrypted without <xenc:EncryptedData>")
 		}
 	case c.Kind == KindOther && c.Element.Name == name("anyExt"):
-		// The extension of contentType (F.1.2), for a value of a later release.
 	case want != KindNone && c.Kind != want:
 		if c.Kind == KindOther {
 			return fmt.Errorf("<%s> in the clear, want %s", c.Element.Name.Local, kindNames[want])
@@ -424,7 +376,6 @@ func (c *Content) check(want Kind) error {
 	return nil
 }
 
-// Encode encodes info, mcptt-Params in the order of the schema, then the elements of other namespaces, then anyExt.
 func Encode(info Info) ([]byte, error) {
 	root := &xmltree.Element{Name: name("mcpttinfo"), Attr: info.Attr}
 
@@ -527,7 +478,6 @@ func appendExt(ns []xmltree.Node, ext []*xmltree.Element) []xmltree.Node {
 
 func name(local string) xml.Name { return xml.Name{Space: Namespace, Local: local} }
 
-// The elements of mcptt-Params, in the order of the schema, and the kind of value of each in the clear (F.1.3 2).
 type (
 	contentField struct {
 		kind Kind

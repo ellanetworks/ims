@@ -56,7 +56,6 @@ func (f *fakePCRF) config(timeout time.Duration) func(*Config) {
 	}
 }
 
-// rxReAuth delivers an RAR as the Diameter server would, through the Rx backend.
 func (p *PCSCF) rxReAuth(session string, r rx.ReAuthRequest) bool {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
@@ -66,7 +65,6 @@ func (p *PCSCF) rxReAuth(session string, r rx.ReAuthRequest) bool {
 	return b.ReAuth(context.Background(), session, r)
 }
 
-// rxAbortSession delivers an ASR as the Diameter server would, through the Rx backend.
 func (p *PCSCF) rxAbortSession(session string, r rx.AbortSessionRequest) (func(), bool) {
 	b, ok := p.cfg.Policy.Backend.(*rxpolicy.Backend)
 	if !ok {
@@ -88,7 +86,7 @@ func refClass(r db.PCSCFRegistration) [][]byte {
 	return ref.Class
 }
 
-// undeliverable is an agent's answer that it has no path to the PCRF (RFC 6733 §7.1.3).
+// RFC 6733 section 7.1.3
 func undeliverable(req *diameter.Message) *diameter.Message {
 	return diameter.NewAnswer(req, diameter.Identity{OriginHost: "dra.epc.test", OriginRealm: "epc.test"},
 		diameter.ResultUnableToDeliver)
@@ -101,7 +99,6 @@ func (f *fakePCRF) NewSessionID() string {
 }
 
 func (f *fakePCRF) Send(ctx context.Context, req *diameter.Message, _ ...diameter.RequestOption) (*diameter.Message, error) {
-	// The answer is the one set when the request is sent: once the test sees the request, answerWith is for the next.
 	f.mu.Lock()
 
 	answer := f.answer
@@ -278,7 +275,6 @@ func TestRxSessionOnInitialRegistration(t *testing.T) {
 		t.Fatalf("ParseAARequest: %v", err)
 	}
 
-	// TS 29.214 §4.4.5: no Media-Type.
 	initial, signalling := rx.RequestInitial, rx.FlowUsageAFSignalling
 	want := rx.AARequest{
 		MediaComponents: []rx.MediaComponent{{
@@ -642,7 +638,6 @@ func (s *regScene) wantSignallingLost(lost bool) {
 }
 
 func TestRxReAuthMarksTheSignallingLost(t *testing.T) {
-	// TS 29.514 §4.2.5.10 reports signalling path loss as FAILED_RESOURCES_ALLOCATION.
 	for _, action := range []rx.SpecificAction{
 		rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer, rx.ActionIndicationOfFailedResourcesAllocation,
 	} {
@@ -772,8 +767,6 @@ func TestRxAbortSession(t *testing.T) {
 	s.wantSession(again)
 }
 
-// An abort during shutdown could not be followed by its termination: it is refused, and the session stays stored
-// for the restart to end.
 func TestAbortSessionAfterClose(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 
@@ -1013,7 +1006,6 @@ func TestRxClassSurvivesRestart(t *testing.T) {
 	}
 }
 
-// A session stored for another policy function is not terminated here: it is dropped and opened again.
 func TestRestartReopensTheSessionOfAnotherEndpoint(t *testing.T) {
 	s, pcrf := newRxScene(t, 0)
 
@@ -1088,8 +1080,6 @@ func TestRxShutdownLetsTheSTRFinish(t *testing.T) {
 	}
 }
 
-// Close gives up on an STR still unanswered when its context is done, cancelling it, and returns the context's
-// error.
 func TestRxShutdownGivesUpOnTheSTR(t *testing.T) {
 	s, pcrf := newRxScene(t, time.Hour)
 
@@ -1225,7 +1215,7 @@ func slowRetry(c *Config) { c.Policy.TerminationRetry = time.Hour }
 
 func fastRetry(c *Config) { c.Policy.TerminationRetry = 20 * time.Millisecond }
 
-// failSTRs answers the first n STRs as a PCRF too busy for them, which keeps them pending (RFC 6733 §7.1.3).
+// RFC 6733 section 7.1.3
 func failSTRs(n int64) func(context.Context, *diameter.Message) (*diameter.Message, error) {
 	var failed atomic.Int64
 
@@ -1257,8 +1247,8 @@ func TestRxSTRRetriedUntilAnswered(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE, the default: an STR with no connection or no path to its PCRF ends the
-// session, and is not sent again.
+// RFC 6733 section 5.5.4
+// RFC 6733 section 8.18
 func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
 	for name, connected := range map[string]bool{"no connection": false, "no path": true} {
 		t.Run(name, func(t *testing.T) {
@@ -1288,7 +1278,7 @@ func TestRxSTRToALostPCRFIsNotRetried(t *testing.T) {
 	}
 }
 
-// overloadOnce fails the first termination as an overloaded policy function does (TS 29.500 §6.4.2).
+// TS 29.500 clause 6.4.2
 type overloadOnce struct {
 	policy.Backend
 	backoff time.Duration
@@ -1347,8 +1337,6 @@ func TestRxRestoreKeepsTheSessionUntilTheSTA(t *testing.T) {
 		}
 	})
 
-	// After a restart the PCRF is not connected yet: the STR waits for it, as the Diameter node holds a request that
-	// may wait for its peer.
 	pcrf.answerWith(func(ctx context.Context, req *diameter.Message) (*diameter.Message, error) {
 		if req.CommandCode == rx.CommandSessionTermination {
 			select {
@@ -1416,7 +1404,7 @@ func TestRxShutdownStopsTheSTRRetries(t *testing.T) {
 	}
 }
 
-// RFC 6733 §8.16: the P-CSCF keeps its sessions across a restart, so its requests carry no Origin-State-Id.
+// RFC 6733 section 8.16
 func TestRxWithoutOriginStateID(t *testing.T) {
 	pcrf := newFakePCRF(t)
 	s := newRegScene(t, pcrf.config(0))
@@ -1439,8 +1427,6 @@ func TestRxWithoutOriginStateID(t *testing.T) {
 	noState(pcrf.next())
 }
 
-// TestPolicyCloseGivesUp checks that closing does not wait past its context on a policy function that does not
-// answer, and cancels the request in progress.
 func TestPolicyCloseGivesUp(t *testing.T) {
 	c := newPolicyClient(Policy{Backend: unanswered{}, Timeout: time.Hour}, slog.New(slog.DiscardHandler), time.Now)
 
@@ -1475,7 +1461,6 @@ func TestPolicyCloseGivesUp(t *testing.T) {
 	}
 }
 
-// unanswered is a policy function that answers no termination.
 type unanswered struct {
 	policy.Backend
 }

@@ -35,8 +35,6 @@ const (
 	psi     = "sip:mcptt-participating@mcptt.example.com"
 )
 
-// configuration is the server's: alice and bob, members of fire and police, affiliated to fire on registration;
-// bob of a tel IMPU too, and N2 1.
 func configuration() settings.Settings {
 	group := func(uri string) settings.Group {
 		return settings.Group{
@@ -59,10 +57,8 @@ func configuration() settings.Settings {
 	}
 }
 
-// prefix is the network of a alone.
 func prefix(a netip.Addr) netip.Prefix { return netip.PrefixFrom(a, a.BitLen()) }
 
-// swappable is a source whose snapshot a test changes.
 type swappable struct {
 	p atomic.Pointer[settings.Snapshot]
 }
@@ -70,15 +66,13 @@ type swappable struct {
 func (s *swappable) Current() *settings.Snapshot { return s.p.Load() }
 
 type harness struct {
-	t    *testing.T
-	n    *siptest.Net
-	s    *Server
-	addr netip.AddrPort
-	mode registrar.Mode
-	src  *swappable
-	// tp traces the server, if not nil.
-	tp oteltrace.TracerProvider
-	// scscf and scscf2 are S-CSCFs, of the trust domain.
+	t             *testing.T
+	n             *siptest.Net
+	s             *Server
+	addr          netip.AddrPort
+	mode          registrar.Mode
+	src           *swappable
+	tp            oteltrace.TracerProvider
 	scscf, scscf2 *scscf
 }
 
@@ -86,14 +80,12 @@ func newHarness(t *testing.T, mode registrar.Mode) *harness {
 	return newHarnessOf(t, mode, nil)
 }
 
-// newHarnessOf is newHarness, its registrations and affiliations kept in state, if any.
 func newHarnessOf(t *testing.T, mode registrar.Mode, state State) *harness {
 	t.Helper()
 
 	return newTracedHarness(t, mode, state, nil)
 }
 
-// newTracedHarness is newHarnessOf, its server traced by tp, if not nil.
 func newTracedHarness(t *testing.T, mode registrar.Mode, state State, tp oteltrace.TracerProvider) *harness {
 	t.Helper()
 
@@ -111,7 +103,6 @@ func newTracedHarness(t *testing.T, mode registrar.Mode, state State, tp oteltra
 	return h
 }
 
-// start starts the server on h.addr, of state.
 func (h *harness) start(state State) {
 	h.t.Helper()
 
@@ -149,7 +140,6 @@ func (h *harness) start(state State) {
 
 func (h *harness) now() time.Time { return h.s.Agent().Layer().Clock().Now() }
 
-// prepare sends a request of the server to the host and port of its top Route, or else of its Request-URI.
 func (h *harness) prepare(req *sip.Request) error {
 	tr, to, err := sip.NextHop(req)
 	if err != nil {
@@ -173,14 +163,13 @@ func uri(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// token is an access token of claim mcptt_id (TS 33.180 Table B.2.2.3-1), its signature not one.
 func token(id string) string {
 	enc := base64.RawURLEncoding.EncodeToString
 
 	return enc([]byte(`{"alg":"RS256"}`)) + "." + enc([]byte(`{"mcptt_id":"`+id+`","client_id":"c","scope":"openid 3gpp:mcptt:ptt_server"}`)) + ".c2ln"
 }
 
-// info is the mcptt-info of the REGISTER of a client (TS 24.379 §7.2.1): its access token and client ID, as given.
+// TS 24.379 clause 7.2.1
 func info(token, client string) sip.BodyPart {
 	var b strings.Builder
 
@@ -199,8 +188,9 @@ func info(token, client string) sip.BodyPart {
 	return sip.NewBodyPart(mcpttinfo.ContentType, []byte(b.String()))
 }
 
-// client is a client of an IMPU, of a dialog of REGISTERs (RFC 3261 §10.2.4: one Call-ID, the CSeq incremented),
-// and, if instance, of a "+sip.instance" (RFC 5626 §4.1), if regID of a "reg-id" (§4.2).
+// RFC 3261 section 10.2.4
+// RFC 5626 section 4.1
+// RFC 5626 section 4.2
 type client struct {
 	h        *harness
 	p        *siptest.Peer
@@ -215,7 +205,6 @@ func (h *harness) client(impu string) *client {
 	return &client{h: h, p: h.n.Peer(), impu: impu, callID: sip.NewTag() + "@ue"}
 }
 
-// contact is the Contact of the client's REGISTER: the MCPTT feature tags, its instance ID.
 func (c *client) contact() string {
 	v := fmt.Sprintf(`<sip:ue@%s>;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mcptt"`, c.p.Addr())
 	if c.instance != "" {
@@ -229,7 +218,7 @@ func (c *client) contact() string {
 	return v
 }
 
-// register builds a REGISTER of the client (TS 24.379 §7.2.1).
+// TS 24.379 clause 7.2.1
 func (c *client) register(target string, expires int, bodies ...sip.BodyPart) *sip.Request {
 	c.cseq++
 
@@ -290,9 +279,9 @@ func (h *harness) affiliated(user, client, group string) bool {
 	return p
 }
 
-// RFC 3261 §10.3, TS 24.379 §7.3.2, §9.2.2.2.15 [PM 14]: a client registers to the server, its contacts bound and its
-// user implicitly affiliated to its configured groups; a refresh extends the binding, a REGISTER out of order is
-// refused, and the binding expires, its affiliations with it.
+// RFC 3261 section 10.3
+// TS 24.379 clause 7.3.2
+// TS 24.379 clause 9.2.2.2.15
 func TestDirectRegisterRefreshExpiry(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c := h.client(aliceIM)
@@ -322,12 +311,10 @@ func TestDirectRegisterRefreshExpiry(t *testing.T) {
 
 	h.n.Advance(500 * time.Second)
 
-	// A refresh without the access token (TS 33.180 §5.1.3.2.1).
 	if res := c.send(c.register("sip:"+domain, 600)); res.StatusCode != 200 {
 		t.Fatalf("refresh: %d", res.StatusCode)
 	}
 
-	// Step 7: a CSeq not higher.
 	c.cseq--
 	if res := c.send(c.register("sip:"+domain, 600)); res.StatusCode != 500 {
 		t.Fatalf("REGISTER out of order: %d", res.StatusCode)
@@ -350,8 +337,6 @@ func TestDirectRegisterRefreshExpiry(t *testing.T) {
 	}
 }
 
-// The expiry timers of the bindings end with the server: after Shutdown, on its agent closed, a binding does not
-// expire, nor its client is logged off.
 func TestShutdownStopsExpiry(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c := h.client(aliceIM)
@@ -373,8 +358,7 @@ func TestShutdownStopsExpiry(t *testing.T) {
 	}
 }
 
-// RFC 3261 §10.3 steps 6, 7: Expires 0 and Contact "*" remove the bindings, and log the client off (TS 23.280
-// §5.2.5); a contact without service authorisation is not bound.
+// RFC 3261 section 10.3
 func TestDirectDeregister(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c := h.client(aliceIM)
@@ -419,34 +403,23 @@ func TestDirectDeregister(t *testing.T) {
 	}
 }
 
-// scscf is a stand-in S-CSCF, sending third-party REGISTERs as Ella IMS does (TS 24.229 §5.4.1.7, §5.4.1.7A): From
-// and Contact the S-CSCF, To the IMPU, the registration token, the expiration of its 200, the icid-value, the
-// client's REGISTER and the 200 in message/sip bodies of a multipart/mixed body; a deregistration without body or
-// token. It refuses the reg event subscriptions, unless regEvent: then it accepts them, with a first NOTIFY of no
-// contact, and sends the NOTIFYs of notify, of Subscription-State state, active if "". The 200 to the client's
-// REGISTER has the P-Associated-URI pau, if any (TS 24.229 §5.4.1.2.2F b); of pauHeader, as Kamailio does, the
-// third-party REGISTER has it instead, and the client's REGISTER only.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
 type scscf struct {
-	h         *harness
-	p         *siptest.Peer
-	regEvent  bool
-	state     string
-	pau       []string
-	pauHeader bool
-	// subs are the subscriptions, by IMPU; unsubscribed the IMPUs of a SUBSCRIBE of Expires 0.
-	subs         map[string]*regSub
-	unsubscribed []string
-	// notified are the responses to the NOTIFYs; pending the others pump received.
+	h                 *harness
+	p                 *siptest.Peer
+	regEvent          bool
+	state             string
+	pau               []string
+	pauHeader         bool
+	subs              map[string]*regSub
+	unsubscribed      []string
 	notified, pending []*sip.Response
-	// initial are the <registration> elements of the first NOTIFY of the subscriptions, by IMPU; one of no contact
-	// if none. refusal is the code of the response to a SUBSCRIBE without regEvent, 403 if zero; subscribes counts
-	// the initial SUBSCRIBEs, refreshes the others but unsubscriptions. silent drops the SUBSCRIBEs unanswered, of an
-	// S-CSCF unreachable.
-	initial    map[string]string
-	refusal    int
-	subscribes int
-	refreshes  int
-	silent     bool
+	initial           map[string]string
+	refusal           int
+	subscribes        int
+	refreshes         int
+	silent            bool
 }
 
 type regSub struct {
@@ -496,7 +469,6 @@ func (s *scscf) register(impu, regToken string, expires int, client *sip.Request
 	return req
 }
 
-// contact is the S-CSCF's Contact, of the registration token.
 func (s *scscf) contact(regToken string) sip.Address {
 	contact := sip.Address{URI: sip.URI{Scheme: "sip", Host: s.p.Addr().Addr().String(), Port: s.p.Addr().Port()}}
 
@@ -512,7 +484,6 @@ func (s *scscf) contact(regToken string) sip.Address {
 	return contact
 }
 
-// send sends req and returns its final response, handling the requests of the server meanwhile.
 func (s *scscf) send(req *sip.Request) *sip.Response {
 	s.h.t.Helper()
 	s.p.Send(sip.UDP, s.h.addr, req)
@@ -538,7 +509,6 @@ func (s *scscf) send(req *sip.Request) *sip.Response {
 	}
 }
 
-// pump handles what the server sent.
 func (s *scscf) pump() {
 	s.h.t.Helper()
 
@@ -569,7 +539,7 @@ func (s *scscf) notifyResponse(res *sip.Response) bool {
 	return true
 }
 
-// handle answers a SUBSCRIBE of the server to the reg event package (TS 24.229 §5.7.1.1 a to f), and checks it.
+// TS 24.229 clause 5.7.1.1
 func (s *scscf) handle(req *sip.Request) {
 	t := s.h.t
 	t.Helper()
@@ -586,7 +556,6 @@ func (s *scscf) handle(req *sip.Request) {
 	from, _ := req.Header.From()
 	pai, _ := req.Header.Addresses("P-Asserted-Identity")
 
-	// a: the Request-URI of an initial SUBSCRIBE; within the dialog, its remote target (RFC 3261 §12.2.1.1).
 	if ev := req.Header.Get("Event"); ev != "reg" || to.Tag() == "" && !to.URI.Equivalent(req.URI) || from.URI.String() != "sip:as.mcptt.example.com" ||
 		len(pai) != 1 || !pai[0].URI.Equivalent(from.URI) || !strings.Contains(req.Header.Get("P-Charging-Vector"), "orig-ioi="+domain) {
 		t.Fatalf("SUBSCRIBE %s", req)
@@ -629,7 +598,6 @@ func (s *scscf) handle(req *sip.Request) {
 	}
 }
 
-// notify sends a NOTIFY of the subscription of impu, of a document of version, state and registration content.
 func (s *scscf) notify(impu string, version int, state, registration string) {
 	sub := s.subs[impu]
 	if sub == nil {
@@ -665,8 +633,8 @@ func (s *scscf) notify(impu string, version int, state, registration string) {
 	s.pump()
 }
 
-// TS 24.379 §7.3.2, TS 24.229 §5.7.1.1: third-party registration, refresh, expiry and deregistration through the
-// IMS.
+// TS 24.379 clause 7.3.2
+// TS 24.229 clause 5.7.1.1
 func TestThirdParty(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -690,7 +658,6 @@ func TestThirdParty(t *testing.T) {
 		t.Fatal("not implicitly affiliated")
 	}
 
-	// A reregistration whose REGISTER has no mcptt-info refreshes the binding of its token.
 	h.n.Advance(500 * time.Second)
 
 	if res := s.send(s.register(aliceIM, "7", 600, ue.register("sip:ims.example.com", 600000))); res.StatusCode != 200 {
@@ -709,7 +676,6 @@ func TestThirdParty(t *testing.T) {
 		t.Fatal("binding or affiliation after the expiry")
 	}
 
-	// Registration, then deregistration.
 	if res := s.send(s.register(aliceIM, "8", 600, ue.register("sip:ims.example.com", 600000, info(token(alice), client1)))); res.StatusCode != 200 {
 		t.Fatalf("REGISTER: %d", res.StatusCode)
 	}
@@ -722,7 +688,6 @@ func TestThirdParty(t *testing.T) {
 		t.Fatal("binding or affiliation after the deregistration")
 	}
 
-	// TS 24.379 §7.2.1 NOTE 1: a reregistration without the MCPTT feature tags logs the client off.
 	if res := s.send(s.register(aliceIM, "9", 600, ue.register("sip:ims.example.com", 600000, info(token(alice), client1)))); res.StatusCode != 200 {
 		t.Fatalf("REGISTER: %d", res.StatusCode)
 	}
@@ -739,10 +704,8 @@ func TestThirdParty(t *testing.T) {
 	}
 }
 
-// RFC 3261 §10.3 step 7; TS 24.379 §7.2.1 NOTE 1: the third-party REGISTERs of the REGISTERs of a UE come out of
-// order, each answered 200. The IMS registration without the MCPTT feature tags, after the log-on of a later CSeq,
-// does not log the client off; the log-on, after the log-off of a later CSeq, does not log it on again. Its
-// registration expired, the sequence of the Call-ID is forgotten.
+// RFC 3261 section 10.3
+// TS 24.379 clause 7.2.1
 func TestThirdPartyOutOfOrder(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -792,10 +755,9 @@ func TestThirdPartyOutOfOrder(t *testing.T) {
 	}
 }
 
-// TS 24.379 §7.3.2 step 3, §7.3.1A, §6.6.3.4: service authorisation failures are answered 403 with the warning
-// text (§7.3.3 step 6, §6.6.3.4.2): a token of a user not configured, of a user the IMPU is not of, missing; content
-// encrypted [PM 9] (§6.6.2.4.2 step 3, §7.3.3 step 3), a body integrity protected. Each refusal, and the 400 of a
-// malformed REGISTER, has the P-Charging-Vector of TS 24.229 §5.7.1.1.
+// TS 24.379 clause 7.3.2
+// TS 24.379 clause 7.3.1A
+// TS 24.379 clause 6.6.3.4
 func TestAuthorisationFailures(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -852,8 +814,7 @@ func TestAuthorisationFailures(t *testing.T) {
 	}
 }
 
-// TS 24.379 §7.3.2 steps 4a, 6: the user at a second client gets a second binding, and the 200 tells of the
-// multiple devices.
+// TS 24.379 clause 7.3.2
 func TestSecondClient(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c1, c2 := h.client(aliceIM), h.client(aliceIM)
@@ -884,8 +845,7 @@ func TestSecondClient(t *testing.T) {
 	}
 }
 
-// publish is an affiliation PUBLISH of a client (TS 24.379 §9.2.1.2), of the per-user affiliation information of its
-// groups, none for no body.
+// TS 24.379 clause 9.2.1.2
 func (c *client) publish(id, clientID string, expires int, groups ...string) *sip.Request {
 	req := siptest.NewRequest("PUBLISH", psi, sip.UDP, c.p.Addr())
 	req.Header.Set("From", "<"+c.impu+">;tag="+sip.NewTag())
@@ -916,9 +876,8 @@ func (c *client) publish(id, clientID string, expires int, groups ...string) *si
 	return req
 }
 
-// TS 24.379 §9.2.2.2.3: affiliation PUBLISHes of a registered client, applied and answered 200 (RFC 3903 §6); the
-// groups left are de-affiliated, the server owning them told (§9.2.2.2.6); Expires 0 de-affiliates all, and stores
-// no entity-tag (RFC 3903 §6 step 5); refusals, a client not registered among them (step 2).
+// TS 24.379 clause 9.2.2.2.3
+// RFC 3903 section 6
 func TestAffiliationPublish(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c := h.client(aliceIM)
@@ -941,7 +900,6 @@ func TestAffiliationPublish(t *testing.T) {
 		t.Errorf("members of police %+v", members)
 	}
 
-	// §9.2.2.2.3 step 14 a ii: a group left is de-affiliating, then de-affiliated once its owner is told.
 	if res := c.send(c.publish(alice, client1, 4294967295, police)); res.StatusCode != 200 {
 		t.Fatalf("PUBLISH: %d", res.StatusCode)
 	}
@@ -950,7 +908,6 @@ func TestAffiliationPublish(t *testing.T) {
 		t.Fatal("fire left")
 	}
 
-	// RFC 3903 §6: Expires 0 of the entity-tag, without a body (§9.2.1.2 NOTE 2).
 	etag := c.send(c.publish(alice, client1, 4294967295, police)).Header.Get("SIP-ETag")
 
 	end := c.publish(alice, client1, 0)
@@ -965,7 +922,6 @@ func TestAffiliationPublish(t *testing.T) {
 		t.Fatal("still affiliated")
 	}
 
-	// The de-affiliated entries expire at once (§9.2.2.2.7).
 	if gs := h.s.Participating().Groups(h.now(), uri(t, alice), client1); len(gs) != 0 {
 		t.Errorf("groups %+v", gs)
 	}
@@ -1001,15 +957,13 @@ func TestAffiliationPublish(t *testing.T) {
 		t.Errorf("PUBLISH: %d", res.StatusCode)
 	}
 
-	// A client not registered has no MCPTT ID (step 2): its affiliations would outlive no service authorisation (TS
-	// 23.280 §5.2.5).
 	if res := c.send(c.publish(alice, client2, 4294967295, fire)); res.StatusCode != 403 || h.affiliated(alice, client2, fire) {
 		t.Errorf("PUBLISH of a client not registered: %d", res.StatusCode)
 	}
 }
 
-// TS 24.379 §9.2.2.2.3 step 14 c, §9.2.2.2.15 step 9: N2. Bob's N2 of 1, his implicit affiliation to fire, keeps him
-// out of police.
+// TS 24.379 clause 9.2.2.2.3
+// TS 24.379 clause 9.2.2.2.15
 func TestN2(t *testing.T) {
 	h := newHarness(t, registrar.Direct)
 	c := h.client(bobIM)
@@ -1026,7 +980,6 @@ func TestN2(t *testing.T) {
 		t.Fatal("N2 not enforced")
 	}
 
-	// A second client counts the groups of the first.
 	c2 := h.client(bobIM)
 
 	if res := c2.send(c2.register("sip:"+domain, 600, info(token(bob), client2))); res.StatusCode != 200 {
@@ -1037,7 +990,6 @@ func TestN2(t *testing.T) {
 		t.Fatalf("PUBLISH: %d", res.StatusCode)
 	}
 
-	// Fire left at the second client, police beyond N2; the first client stays affiliated to fire.
 	if h.affiliated(bob, client2, police) || h.affiliated(bob, client2, fire) || !h.affiliated(bob, client1, fire) {
 		t.Fatal("N2 across clients")
 	}
@@ -1053,8 +1005,7 @@ func with(req *sip.Request, name, value string) *sip.Request {
 	return req
 }
 
-// forward is req as the S-CSCF forwards it to the server: from its address, with the P-Asserted-Identity of ids
-// (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func (s *scscf) forward(req *sip.Request, ids ...string) *sip.Request {
 	req.Header.Set("Via", sip.NewVia(sip.UDP, s.p.Addr()).String())
 
@@ -1065,9 +1016,8 @@ func (s *scscf) forward(req *sip.Request, ids ...string) *sip.Request {
 	return req
 }
 
-// TS 24.229 §4.4.1, §5.7.1.4: through the IMS, the server takes REGISTERs and the identities asserted from the trust
-// domain only; from it, a PUBLISH of P-Asserted-Identity is of the user bound at one of its identities, a tel URI
-// among them (TS 24.379 §9.2.2.2.3 step 2).
+// TS 24.229 clause 4.4.1
+// TS 24.229 clause 5.7.1.4
 func TestTrustDomain(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -1098,7 +1048,6 @@ func TestTrustDomain(t *testing.T) {
 		t.Fatalf("PUBLISH: %d", res.StatusCode)
 	}
 
-	// Bob, registered at his tel URI, and asserted by a SIP URI not his and that tel URI (RFC 3325 §9.1).
 	bue := h.client(bobTel)
 
 	if res := s.send(s.register(bobTel, "2", 600, bue.register("sip:ims.example.com", 600, info(token(bob), client2)))); res.StatusCode != 200 {
@@ -1118,9 +1067,8 @@ func TestTrustDomain(t *testing.T) {
 	}
 }
 
-// TS 33.180 §5.1.3.2.1, TS 24.379 §7.3.2 step 4: a client is of one user at a time. Another user's service
-// authorisation at it, at another IMPU, re-binds it, its former user logged off; the same user's, at another IMPU,
-// moves its binding, its affiliations kept.
+// TS 33.180 clause 5.1.3.2.1
+// TS 24.379 clause 7.3.2
 func TestRebind(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -1154,9 +1102,8 @@ func TestRebind(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.1.3B NOTE, §5.4.1.7 l: two MCPTT UEs at an IMPU, of registration tokens or not, told apart by them
-// or by the instance IDs of their REGISTERs (RFC 5626 §4.1). A reregistration refreshes its UE's binding only; a UE
-// without MCPTT logs no other off, and one dropping the MCPTT feature tags logs its own client off only.
+// TS 24.229 clause 5.7.1.3B
+// TS 24.229 clause 5.4.1.7
 func TestTwoUEs(t *testing.T) {
 	for _, tokens := range []bool{true, false} {
 		t.Run(fmt.Sprint("tokens ", tokens), func(t *testing.T) {
@@ -1217,8 +1164,7 @@ func TestTwoUEs(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7A: a third-party REGISTER of the client's REGISTER only is of a single message/sip body; its
-// expiration, of the Contact (RFC 3261 §10.2.1.1), is the one of the 200.
+// TS 24.229 clause 5.4.1.7A
 func TestSingleBody(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -1239,13 +1185,11 @@ func TestSingleBody(t *testing.T) {
 	}
 }
 
-// terminated is the <contact> of a reginfo document (RFC 3680 §5.1) of a terminated contact, of the instance ID,
-// Call-ID and CSeq if not empty.
+// RFC 3680 section 5.1
 func terminated(id, instance, callID string, cseq int) string {
 	return terminatedFlow(id, instance, "", callID, cseq)
 }
 
-// terminatedFlow is terminated, of a reg-id if not empty (TS 24.229 §5.4.2.1.2 NOTE 6).
 func terminatedFlow(id, instance, regID, callID string, cseq int) string {
 	v := `<contact id="` + id + `" state="terminated" event="unregistered"`
 	if callID != "" {
@@ -1264,16 +1208,12 @@ func terminatedFlow(id, instance, regID, callID string, cseq int) string {
 	return v + `</contact>`
 }
 
-// active is the <registration> of Alice's IMPU, active, of contacts.
 func active(contacts string) string {
 	return `<registration aor="` + aliceIM + `" id="r1" state="active">` + contacts + `</registration>`
 }
 
-// TS 24.229 §5.7.1.1, §5.4.1.7 NOTE 2: the server subscribes to the reg event package of the IMPU it has bindings
-// of; a deregistration then removes no binding, the NOTIFYs telling which contacts went: by their instance IDs, their
-// ids the registration tokens (NOTE 4), and the registration of the IMPU itself (RFC 3680 §4.7.1). A document not
-// newer than the last (§5.2), and a contact of an earlier REGISTER, change nothing. The last binding gone, the server
-// unsubscribes.
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.4.1.7
 func TestRegEvent(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -1301,7 +1241,6 @@ func TestRegEvent(t *testing.T) {
 		t.Fatalf("deregistration: %d", res.StatusCode)
 	}
 
-	// UE 1, by its instance ID: its contact's id is not its token.
 	s.notify(aliceIM, 1, "partial", active(terminated("c9", ue1.instance, "", 0)))
 
 	if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, aliceIM)}, client1); ok || h.affiliated(alice, client1, fire) || !h.affiliated(alice, client2, fire) {
@@ -1314,7 +1253,6 @@ func TestRegEvent(t *testing.T) {
 		t.Fatal("document of an old version applied")
 	}
 
-	// UE 1 registers again; the NOTIFY of its former contact comes late.
 	if res := s.send(s.register(aliceIM, "t3", 600, ue1.register("sip:ims.example.com", 600, info(token(alice), client1)))); res.StatusCode != 200 {
 		t.Fatalf("UE 1 again: %d", res.StatusCode)
 	}
@@ -1325,7 +1263,6 @@ func TestRegEvent(t *testing.T) {
 		t.Fatal("UE 1 deregistered by its former contact")
 	}
 
-	// UE 2, by its token.
 	s.notify(aliceIM, 3, "partial", active(terminated("t2", "", "", 0)))
 
 	if !h.affiliated(alice, client1, fire) || h.affiliated(alice, client2, fire) {
@@ -1345,8 +1282,7 @@ func TestRegEvent(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7 NOTE 2: without a reg event subscription, refused, a deregistration removes all the bindings
-// of the IMPU.
+// TS 24.229 clause 5.4.1.7
 func TestDeregistrationFallback(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf

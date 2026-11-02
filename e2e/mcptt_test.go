@@ -28,10 +28,8 @@ import (
 	imsue "github.com/ellanetworks/ims/ue"
 )
 
-// The MCPTT system of mcptt/provision.sh.
 const (
 	domain = "mcptt.example.com"
-	// psi is the participating PSI of the MCPTT AS of the IMS, of its home domain.
 	psi    = "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org"
 	fire   = "sip:fire@" + domain
 	police = "sip:police@" + domain
@@ -40,8 +38,6 @@ const (
 	brief  = "sip:brief@" + domain
 )
 
-// mcUE is the test UE of a subscriber, a dedicated MC UE (no MMTel, no SMS) hosting the MCPTT service: ns its network
-// namespace, local its address there, invites the initial INVITEs it received.
 type mcUE struct {
 	*testue.UE
 
@@ -50,7 +46,6 @@ type mcUE struct {
 	invites atomic.Int32
 }
 
-// newMCUE makes the MC UE of subscriber i, hosting the services.
 func newMCUE(t *testing.T, i int, services ...imsue.Service) *mcUE {
 	t.Helper()
 
@@ -72,15 +67,13 @@ func newMCUE(t *testing.T, i int, services ...imsue.Service) *mcUE {
 	return out
 }
 
-// mcpttService is the name of the MCPTT service of the UEs.
 const mcpttService = "mcptt"
 
-// service is internal/client as a service of a testue UE (TS 24.379 §7.2.1, §10.1.1.2.1.1): the client c holds
-// once made, on the UE's agent, and disabled until then, the UE registered without it.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 10.1.1.2.1.1
 func service(c *atomic.Pointer[client.Client]) imsue.Service {
 	var features sip.FeatureSet
 
-	// The UE sets the ICSI's g.3gpp.icsi-ref itself.
 	icsiRef := sip.NewFeature(identity.ICSITag).Tag
 
 	for _, f := range client.Features() {
@@ -94,7 +87,6 @@ func service(c *atomic.Pointer[client.Client]) imsue.Service {
 		accept.Add("Accept-Contact", v)
 	}
 
-	// The client's values parse.
 	prefs, _ := accept.AcceptContact()
 
 	return imsue.Service{
@@ -102,9 +94,7 @@ func service(c *atomic.Pointer[client.Client]) imsue.Service {
 		ICSI:          identity.ICSI,
 		Features:      features,
 		AcceptContact: prefs,
-		// Its sessions: INVITE, their refreshes and reliable provisional responses.
-		Allow: []string{"INVITE", "UPDATE", "PRACK"},
-		// An offer with the control channel (TS 24.380 §4.3.3.1).
+		Allow:         []string{"INVITE", "UPDATE", "PRACK"},
 		Match: func(req *sip.Request) bool {
 			part, ok, err := req.Content().Find("application/sdp")
 			if err != nil || !ok {
@@ -115,8 +105,6 @@ func service(c *atomic.Pointer[client.Client]) imsue.Service {
 
 			return err == nil && controlchannel.Channel(s) >= 0
 		},
-		// The mcptt-info of the service authorisation (TS 24.379 §7.2.1), in the REGISTER the third-party REGISTER
-		// carries (§7.3.2).
 		RegisterBodies: func() []sip.BodyPart {
 			if cl := c.Load(); cl != nil {
 				return cl.RegisterBodies()
@@ -137,7 +125,6 @@ func service(c *atomic.Pointer[client.Client]) imsue.Service {
 	}
 }
 
-// nsNetwork is the UDP network of a UE's namespace: the media sockets of its client.
 type nsNetwork struct{ ns *netns }
 
 func (n nsNetwork) Listen(addr netip.AddrPort, h func(b []byte, from netip.AddrPort)) (media.Conn, error) {
@@ -151,7 +138,6 @@ func (n nsNetwork) Listen(addr netip.AddrPort, h func(b []byte, from netip.AddrP
 	return c, err
 }
 
-// user is an MCPTT user of mcptt/provision.sh with its client, on the UE of its subscriber.
 type user struct {
 	*client.Client
 
@@ -165,9 +151,9 @@ type user struct {
 
 var floorTimers = floor.ParticipantTimers{T100: time.Second, T101: time.Second}
 
-// newUser makes user name, of subscriber i: its UE registered with the IMS, then its client logged on, the UE
-// re-registering with the MCPTT feature tags and the mcptt-info (TS 24.379 §7.2.1; TS 24.229 §5.1.1.4.1: the ICSIs
-// it uses changed), which the S-CSCF tells the MCPTT server of in a third-party REGISTER (TS 24.229 §5.4.1.7).
+// TS 24.379 clause 7.2.1
+// TS 24.229 clause 5.1.1.4.1
+// TS 24.229 clause 5.4.1.7
 func newUser(t *testing.T, name string, i int) *user {
 	t.Helper()
 
@@ -187,7 +173,6 @@ func newUser(t *testing.T, name string, i int) *user {
 
 	speaker := clienttest.NewSpeaker(u.ue.Agent().Layer().Clock())
 
-	// lastIdle tells the last floor event was an idle floor; OnEvent runs on the client's strand, one at a time.
 	var lastIdle bool
 
 	cl, err := client.New(client.Config{
@@ -209,8 +194,6 @@ func newUser(t *testing.T, name string, i int) *user {
 		OnEvent: func(e client.Event) {
 			speaker.Event(e)
 
-			// The server announces an idle floor C7 times, 10 by default (TS 24.380 Table 11.2.3-1): a floor:idle is
-			// expected once, the repeats aside, so that one does not stand for a later one.
 			if e.Kind == client.EventFloor {
 				idle := e.Floor.Kind == floor.NoticeIdle
 				if idle && lastIdle {
@@ -241,32 +224,26 @@ func newUser(t *testing.T, name string, i int) *user {
 	return u
 }
 
-// users are alice, bob and carol, logged on.
 func users(t *testing.T) (alice, bob, carol *user) {
 	return newUser(t, "alice", 0), newUser(t, "bob", 1), newUser(t, "carol", 2)
 }
 
-// registration is a registration of the MCPTT API (openapi.yaml), the fields the tests read.
 type registration struct {
 	ClientID string   `json:"client_id"`
 	IMPU     string   `json:"impu"`
 	IMPUs    []string `json:"impus"`
 }
 
-// affiliation is an affiliation of the MCPTT API (openapi.yaml), the fields the tests read.
 type affiliation struct {
 	GroupID  string `json:"group_id"`
 	Status   string `json:"status"`
 	Implicit bool   `json:"implicit"`
 }
 
-// path is the path of the list of the MCPTT API of u's items.
 func (u *user) path(list string) string {
 	return "/api/v1/mcptt/" + list + "?mcptt_id=" + url.QueryEscape(u.id)
 }
 
-// wantRegistered waits for the one registration of u, of its client, served at the IMPU of its MSISDN
-// (mcptt/provision.sh).
 func wantRegistered(t *testing.T, core *netns, u *user) {
 	t.Helper()
 
@@ -280,9 +257,8 @@ func wantRegistered(t *testing.T, core *netns, u *user) {
 	}
 }
 
-// wantAffiliated waits for u to be affiliated to the groups of want and to no other, each affiliated implicitly by the
-// server, from u's configured implicit affiliations, as want has it. Affiliating and affiliated count as affiliated, deaffiliating does not (TS 24.379
-// §9.2.2.2.11 3a); the groups of want must be affiliated, their owner's answer applied (§9.2.2.2.7).
+// TS 24.379 clause 9.2.2.2.11
+// TS 24.379 clause 9.2.2.2.7
 func wantAffiliated(t *testing.T, core *netns, u *user, want map[string]bool) {
 	t.Helper()
 
@@ -304,8 +280,7 @@ func wantAffiliated(t *testing.T, core *netns, u *user, want map[string]bool) {
 	})
 }
 
-// wantLoggedOff waits for u to have no registration and no affiliation: logged off, all its affiliations revoked
-// (TS 23.280 §5.2.5).
+// TS 23.280 clause 5.2.5
 func wantLoggedOff(t *testing.T, core *netns, u *user) {
 	t.Helper()
 
@@ -339,18 +314,14 @@ func kind(e client.Event) string {
 	return e.Kind.String()
 }
 
-// wait is how long an event may take: the SIP and floor control round trips through the IMS and the RAN simulator.
 const wait = 15 * time.Second
 
-// The timers of mcptt/provision.sh: T2 (Stop talking) of the service configuration, T4 (Inactivity) of quiet, TNG3
-// (Group call timer) of brief.
 const (
 	t2   = 5 * time.Second
 	t4   = 3 * time.Second
 	tng3 = 4 * time.Second
 )
 
-// expect waits for the events want, in order, others between them aside, and returns those it read.
 func (u *user) expect(t *testing.T, want ...string) []client.Event {
 	t.Helper()
 
@@ -374,7 +345,6 @@ func (u *user) expect(t *testing.T, want ...string) []client.Event {
 	return got
 }
 
-// expectOr is expect, failing at once on the event fail: a call failing before it is established.
 func (u *user) expectOr(t *testing.T, fail string, want ...string) []client.Event {
 	t.Helper()
 
@@ -405,8 +375,6 @@ func (u *user) expectOr(t *testing.T, fail string, want ...string) []client.Even
 	return got
 }
 
-// expectAll waits for the events want, in any order: the first media of a talker races the Floor Taken announcing
-// it (TS 24.380 §6.2.4.4.2 step 7).
 func (u *user) expectAll(t *testing.T, want ...string) {
 	t.Helper()
 
@@ -430,10 +398,8 @@ func (u *user) expectAll(t *testing.T, want ...string) {
 	}
 }
 
-// silence is how long expectNot watches for events that must not come.
 const silence = 2 * time.Second
 
-// expectNot checks that none of the events of the next silence are not.
 func (u *user) expectNot(t *testing.T, not ...string) {
 	t.Helper()
 
@@ -470,7 +436,6 @@ func event(es []client.Event, k client.EventKind) *client.Event {
 	return nil
 }
 
-// call places a call of a to group, its members b and c invited and answering automatically: the calls of each.
 func call(t *testing.T, group string, a, b, c *user) (ca, cb, cc *client.Call) {
 	t.Helper()
 
@@ -479,8 +444,6 @@ func call(t *testing.T, group string, a, b, c *user) (ca, cb, cc *client.Call) {
 	return calls[0], calls[1], calls[2]
 }
 
-// callOf places a call of a to group, the members invited and answering automatically: the call of a, then of each
-// member. The calls left at the end of the test are left, before the UEs deregister.
 func callOf(t *testing.T, group string, a *user, members ...*user) []*client.Call {
 	t.Helper()
 
@@ -496,7 +459,6 @@ func callOf(t *testing.T, group string, a *user, members ...*user) []*client.Cal
 			c.Leave(context.Background())
 		}
 
-		// The BYEs before the deregistrations of the cleanups of newMCUE.
 		time.Sleep(time.Second)
 	})
 
@@ -523,17 +485,16 @@ func warned(res *sip.Response, text string) bool {
 	return err == nil && slices.ContainsFunc(ws, func(w sip.Warning) bool { return w.Code == 399 && w.Text == text })
 }
 
-// TS 24.379 §7.2.1, §7.3.2, §9.2.1.2, §9.2.2.2: the users log on through the IMS, the server authorising them from
-// the mcptt-info of the REGISTER that the third-party REGISTER carries, and affiliating each to the groups configured
-// as its implicit affiliations (§9.2.2.2.15). Each then publishes its affiliations to the participating function,
-// which takes them from a user it serves (§9.2.2.2.3): fire, and rescue for alice; the groups the publication lists are
-// the client's own then, no longer implicit, and those it leaves out are de-affiliated (step 14 a ii).
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 7.3.2
+// TS 24.379 clause 9.2.1.2
+// TS 24.379 clause 9.2.2.2
+// TS 24.379 clause 9.2.2.2.15
+// TS 24.379 clause 9.2.2.2.3
 func TestRegisterAffiliate(t *testing.T) {
 	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
 	alice, bob, carol := users(t)
 
-	// The implicit affiliations of mcptt/provision.sh, then the publications, each group affiliated implicitly by the
-	// server or not.
 	for _, c := range []struct {
 		u                 *user
 		implicit, publish map[string]bool
@@ -582,15 +543,16 @@ func TestRegisterAffiliate(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1, TS 24.380 §6.2.4, §6.3.4, §6.3.5, Annex A.3: alice calls fire, bob and carol answering
-// automatically; the floor exchange: Request, Granted, Taken with bob's media heard, a request while the floor is
-// taken denied, Release, Idle, a talker past T2 revoked; the call goes on when alice leaves, and ends when carol leaves
-// bob alone in it (§6.3.8.1 2).
+// TS 24.379 clause 10.1.1
+// TS 24.380 clause 6.2.4
+// TS 24.380 clause 6.3.4
+// TS 24.380 clause 6.3.5
+// TS 24.380 clause A.3
+// TS 24.379 clause 6.3.8.1
 func TestGroupCall(t *testing.T) {
 	alice, bob, carol := users(t)
 	ca, cb, cc := call(t, fire, alice, bob, carol)
 
-	// Request, Granted, Taken.
 	cb.PressPTT()
 	bob.expect(t, "floor:granted")
 	alice.expectAll(t, "floor:taken", "heard")
@@ -600,19 +562,16 @@ func TestGroupCall(t *testing.T) {
 		t.Errorf("alice heard %+v", h)
 	}
 
-	// Deny: carol asks while bob talks.
 	cc.PressPTT()
 	carol.expect(t, "floor:denied")
 	cc.ReleasePTT()
 
-	// Release, Idle.
 	cb.ReleasePTT()
 
 	for _, u := range []*user{alice, bob, carol} {
 		u.expect(t, "floor:idle")
 	}
 
-	// Revoke after T2, the floor idle after the grace of T3 (3 s).
 	ca.PressPTT()
 	alice.expect(t, "floor:granted")
 
@@ -628,7 +587,6 @@ func TestGroupCall(t *testing.T) {
 	bob.expect(t, "floor:idle")
 	ca.ReleasePTT()
 
-	// alice leaving does not release fire; carol leaving then leaves bob alone, and does.
 	ca.Leave(context.Background())
 	alice.expect(t, "ended")
 	bob.expectNot(t, "ended")
@@ -638,20 +596,15 @@ func TestGroupCall(t *testing.T) {
 	bob.expect(t, "ended")
 }
 
-// TS 24.379 §7.2.1 NOTE 1, §7.3.2; TS 24.229 §5.4.1.7: carol logs off, her UE re-registering without the MCPTT
-// feature tags, and the S-CSCF tells the server in a third-party REGISTER: alice's call to police invites bob, not
-// carol. carol logs on again, implicitly affiliated again (TS 24.379 §9.2.2.2.15), and is invited to the next call.
-// Then her UE deregisters, which the third-party REGISTER of Expires 0 tells (§5.4.1.7 f), and she is not invited to
-// the next.
-//
-// The S-CSCF would not route an INVITE of the server to the contact of a logged-off carol either, as it lacks the
-// MCPTT feature tags the INVITE requires (TS 24.379 §6.3.3.1.2 steps 2 and 4, §6.3.2.2.3 step 1; RFC 3841 §7.2): that
-// the server drops the binding, and her affiliations with it (TS 23.280 §5.2.5), is checked through the API.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 7.3.2
+// TS 24.229 clause 5.4.1.7
+// TS 24.379 clause 9.2.2.2.15
+// TS 23.280 clause 5.2.5
 func TestLogOff(t *testing.T) {
 	core := enter(t, pidOf(t, "E2E_OPEN5GS_PID"))
 	alice, bob, carol := users(t)
 
-	// police releases its calls when alice, their initiator, leaves (§6.3.8.1 3).
 	end := func(calls []*client.Call, members ...*user) {
 		calls[0].Leave(context.Background())
 		alice.expect(t, "ended")
@@ -701,7 +654,9 @@ func TestLogOff(t *testing.T) {
 	}
 }
 
-// TS 24.380 §6.3.4.3.2, §6.3.4.3.5; TS 24.379 §6.3.8.1 1: a call of quiet, its floor idle for T4, is released.
+// TS 24.380 clause 6.3.4.3.2
+// TS 24.380 clause 6.3.4.3.5
+// TS 24.379 clause 6.3.8.1
 func TestReleaseInactivity(t *testing.T) {
 	alice, bob, _ := users(t)
 
@@ -717,8 +672,8 @@ func TestReleaseInactivity(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.3.5.1, §6.3.8.1 5: a call of brief is released when TNG3 expires, though its floor is taken, before
-// T2 would revoke it.
+// TS 24.379 clause 6.3.3.5.1
+// TS 24.379 clause 6.3.8.1
 func TestReleaseMaximumDuration(t *testing.T) {
 	alice, bob, _ := users(t)
 
@@ -736,7 +691,7 @@ func TestReleaseMaximumDuration(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.8.1 3: police releases its calls when its initiator leaves.
+// TS 24.379 clause 6.3.8.1
 func TestReleaseInitiatorLeaves(t *testing.T) {
 	alice, bob, carol := users(t)
 	ca, _, _ := call(t, police, alice, bob, carol)
@@ -748,8 +703,8 @@ func TestReleaseInitiatorLeaves(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.4.2 step 14 a, §6.3.6: carol, a member of rescue affiliated to it by no one, gets a 403 with the
-// warning text 120, and alice no invitation.
+// TS 24.379 clause 10.1.1.4.2
+// TS 24.379 clause 6.3.6
 func TestNotAffiliated(t *testing.T) {
 	alice, _, carol := users(t)
 
@@ -765,10 +720,9 @@ func TestNotAffiliated(t *testing.T) {
 	alice.expectNot(t, "incoming")
 }
 
-// TS 23.379 §5.7.3; TS 29.514 §4.2.2.2, TS 29.513 §7.2.3: each participant of a group call gets a QoS flow for the
-// voice and one for the floor control channel, whose application media component the P-CSCF authorises with the
-// PCF (open5gs/qos.patch), released with the call. In 4G the call itself shows that the PCRF authorised them: the
-// P-CSCF releases a call whose media it refuses.
+// TS 23.379 clause 5.7.3
+// TS 29.514 clause 4.2.2.2
+// TS 29.513 clause 7.2.3
 func TestMCPTTCallQoSFlows(t *testing.T) {
 	if os.Getenv("E2E_RAT") != "5g" {
 		t.Skip("QoS flows: run with E2E_RAT=5g")
@@ -783,13 +737,10 @@ func TestMCPTTCallQoSFlows(t *testing.T) {
 	alice, bob, carol := users(t)
 	before := qosFlows(t, core)
 
-	// police releases its calls when its initiator leaves.
 	ca, _, _ := call(t, police, alice, bob, carol)
 
 	waitQoSFlows(t, core, before+3*2)
 
-	// TS 23.379 §5.7.3: voice on 65, floor control on 69 (open5gs/qos.patch), the caller's as the members': its
-	// P-CSCF has the MCPTT ICSI from the Feature-Caps of the 200 (TS 29.514 Annex B.1 NOTE 3).
 	qis := fiveQIs(t, core)
 	for i, u := range []*user{alice, bob, carol} {
 		if got := qis["imsi-"+subscribers[i].imsi]; !slices.Contains(got, 65) || !slices.Contains(got, 69) {

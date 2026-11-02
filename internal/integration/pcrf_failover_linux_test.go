@@ -20,7 +20,6 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// addPCRF adds a second PCRF of the realm of the scene's PCRF, after it in priority.
 func (s *scene) addPCRF() *pcrftest.PCRF {
 	s.t.Helper()
 
@@ -81,8 +80,7 @@ func (s *scene) deletePeer(id string) {
 	}
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE, the default: a call that no path reaches its PCRF with ends, though another PCRF is
-// up: that PCRF answers that it cannot deliver the session's requests.
+// RFC 6733 section 8.18
 func TestCallEndsWithItsPCRF(t *testing.T) {
 	s := newScene(t)
 	other := s.addPCRF()
@@ -106,8 +104,8 @@ func TestCallEndsWithItsPCRF(t *testing.T) {
 	}
 }
 
-// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: a call whose PCRF is down, though still configured, ends: with no connection
-// to its PCRF, the call's request is undelivered.
+// RFC 6733 section 5.5.4
+// RFC 6733 section 8.18
 func TestCallEndsWhileItsPCRFIsDown(t *testing.T) {
 	s := newScene(t)
 	s.addPCRF()
@@ -126,8 +124,8 @@ func TestCallEndsWhileItsPCRFIsDown(t *testing.T) {
 	ended(t, bc, testue.RemoteBye)
 }
 
-// RFC 6733 §8.18 TRY_AGAIN: a call whose PCRF is lost goes on with another PCRF of the realm, which opens a new
-// session for it (TS 29.214 §4.4.2).
+// RFC 6733 section 8.18
+// TS 29.214 clause 4.4.2
 func TestCallMovesToAnotherPCRF(t *testing.T) {
 	s := newScene(t)
 	other := s.addPCRF()
@@ -162,8 +160,8 @@ func TestCallMovesToAnotherPCRF(t *testing.T) {
 	ended(t, bc, testue.RemoteBye)
 }
 
-// TS 29.213 §7.3.4: a redirect DRA sends the first AAR of each session to the PCRF of the UE; the session's
-// next AARs and its STR go to that PCRF, not through the DRA (§7.3.4.1).
+// TS 29.213 clause 7.3.4
+// TS 29.213 clause 7.3.4.1
 func TestCallThroughARedirectDRA(t *testing.T) {
 	s := newScene(t)
 

@@ -2,5 +2,4 @@
 
 package transport
 
-// openFileLimit is the process's limit of open files, 0 if unknown.
 func openFileLimit() int { return 0 }

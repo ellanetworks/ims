@@ -28,8 +28,6 @@ import (
 
 const productName = "ims"
 
-// Above freeDiameter's 10 s CNX_TIMEOUT: while its own dial to us is pending,
-// it holds our CER and answers only when that timer fires (libfdcore p_psm.c).
 const DefaultHandshakeTimeout = 15 * time.Second
 
 var applications = map[settings.Application]diameter.Application{
@@ -45,8 +43,6 @@ var transports = map[settings.Transport]diameter.Transport{
 	settings.TransportSCTP: diameter.TransportSCTP,
 }
 
-// realms are the realms the running Diameter node routes the routed applications to, which the S-CSCF, I-CSCF,
-// P-CSCF and IP-SM-GW address their requests to. They change with the node's routes.
 type realms struct {
 	st atomic.Pointer[settings.Settings]
 }
@@ -75,7 +71,6 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 		handshake = DefaultHandshakeTimeout
 	}
 
-	// The node would otherwise trace with the global provider.
 	if tp == nil {
 		tp = noop.NewTracerProvider()
 	}
@@ -105,8 +100,8 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 	return node, nil
 }
 
-// RFC 6733 §2.1: a node that dials its peers must still accept their
-// connections; §5.6.4 elects one when both sides connect at once.
+// RFC 6733 section 2.1
+// RFC 6733 section 5.6.4
 func listenDiameter(ctx context.Context, cfg config.Diameter, st settings.Settings) ([]diameter.Listener, error) {
 	addr := netip.AddrPortFrom(cfg.Address, uint16(cfg.Port))
 
@@ -125,10 +120,8 @@ func listenDiameter(ctx context.Context, cfg config.Diameter, st settings.Settin
 	return lns, nil
 }
 
-// probeTimeout bounds probeSCTP, which an API request waits for.
 const probeTimeout = 5 * time.Second
 
-// probeSCTP checks that the host can listen for Diameter over SCTP on an address, within ctx and probeTimeout.
 func probeSCTP(ctx context.Context, a netip.Addr) error {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -169,9 +162,6 @@ func closeListeners(lns []diameter.Listener) {
 	}
 }
 
-// diameterPeers are the peers of the Diameter node, each on the route of the routed applications it serves, to the
-// realm of the application, and to its realm in the previous settings, if any. SGd has no route: its requests go to
-// a host (settings.Peer).
 func diameterPeers(st settings.Settings, previous ...settings.Settings) []diameter.Peer {
 	out := make([]diameter.Peer, 0, len(st.Peers))
 
@@ -225,13 +215,11 @@ func newDiameterMux(cxh *cxHandler, rxh *rxHandler, ish ipsmgwHandler) *diameter
 	return mux
 }
 
-// cxRegistrar is what the S-CSCF does of the requests of the HSS.
 type cxRegistrar interface {
 	Terminate(ctx context.Context, rtr cx.RegistrationTerminationRequest) ([]string, error)
 	PushProfile(ctx context.Context, ppr cx.PushProfileRequest) error
 }
 
-// cxHandler serves the requests of the HSS to the S-CSCF.
 type cxHandler struct {
 	log    *slog.Logger
 	target atomic.Pointer[cxRegistrar]
@@ -288,7 +276,7 @@ func (h *cxHandler) registrationTermination(ctx context.Context, c *diameter.Con
 	return ans
 }
 
-// TS 29.228 §6.2.2.1
+// TS 29.228 clause 6.2.2.1
 func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	ppr, err := cx.ParsePushProfileRequest(req)
 	if err != nil {
@@ -310,8 +298,6 @@ func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diam
 	h.log.DebugContext(ctx, "Cx PPR", slog.String("impi", ppr.PrivateIdentity), slog.Bool("userData", len(ppr.UserData) > 0),
 		slog.Bool("charging", ppr.Charging != nil), slog.Bool("allowedWebRTC", ppr.AllowedWebRTC != nil))
 
-	// The S-CSCF authenticates with IMS AKA only: SIP Digest authentication data is of no use to it, and changes
-	// nothing it serves (TS 29.228 §6.5.2.4).
 	if _, ok := req.Find(cx.AVPSIPAuthDataItem, tgpp.VendorID); ok {
 		h.log.DebugContext(ctx, "Cx PPR: SIP Digest authentication data ignored", slog.String("impi", ppr.PrivateIdentity))
 	}
@@ -330,7 +316,8 @@ func (h *cxHandler) pushProfile(ctx context.Context, c *diameter.Conn, req *diam
 	return ans
 }
 
-// failure is the result of a request of the HSS that failed (TS 29.228 Table 6.1.3.1.1, Table 6.2.2.1.1).
+// TS 29.228 clause 6.1.3.1
+// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 func failure(err error) tgpp.Result {
 	switch {
 	case errors.Is(err, scscf.ErrUserUnknown):
@@ -342,8 +329,7 @@ func failure(err error) tgpp.Result {
 	}
 }
 
-// featureUnsupported is the answer to a request that requires features of the Cx application the S-CSCF does not
-// support: DIAMETER_ERROR_FEATURE_UNSUPPORTED, with the features it supports, none (TS 29.229 §7.2.1).
+// TS 29.229 clause 7.2.1
 func featureUnsupported(req *diameter.Message, c *diameter.Conn) *diameter.Message {
 	if !cx.RequiresUnsupportedFeatures(req, 0) {
 		return nil
@@ -355,7 +341,7 @@ func featureUnsupported(req *diameter.Message, c *diameter.Conn) *diameter.Messa
 	return ans
 }
 
-// cxFeatureListID is the Feature-List-ID of the features of the Cx application (TS 29.229 §7.1.1).
+// TS 29.229 clause 7.1.1
 const cxFeatureListID = 1
 
 type rxSessions interface {
@@ -381,7 +367,7 @@ func (h *rxHandler) bind(s rxSessions) {
 	h.target.Store(&s)
 }
 
-// TS 29.214 §4.4.6.3
+// TS 29.214 clause 4.4.6.3
 func (h *rxHandler) reAuth(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
@@ -411,7 +397,7 @@ func (h *rxHandler) reAuth(ctx context.Context, c *diameter.Conn, req *diameter.
 	return ans
 }
 
-// TS 29.214 §4.4.6.1
+// TS 29.214 clause 4.4.6.1
 func (h *rxHandler) abortSession(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	session := tgpp.ParseEnvelope(req).SessionID
 
@@ -478,7 +464,6 @@ func logPeerState(logger *slog.Logger, p diameter.PeerStatus) {
 		attrs = append(attrs, slog.String("error", p.LastError))
 	}
 
-	// RFC 3539 §3.4.1 [5]: a reconnected peer carries no request until three watchdog exchanges succeed.
 	if p.State == diameter.PeerReopen {
 		logger.Info("Diameter peer reconnected, unused until three watchdog exchanges succeed", attrs...)
 		return

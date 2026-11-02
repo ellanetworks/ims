@@ -7,7 +7,6 @@ import (
 )
 
 const (
-	// MaxRecords is how many call records are kept at most: past it, the oldest are deleted, however recent.
 	MaxRecords = 1_000_000
 
 	DefaultPruneInterval = time.Hour
@@ -18,19 +17,14 @@ type Pruner interface {
 }
 
 type PruneConfig struct {
-	Store Pruner
-	// Retention returns how long records are kept, when they are pruned, so that it can change at runtime.
-	Retention func() time.Duration
-	// MaxRecords is how many records are kept at most, MaxRecords if 0.
+	Store      Pruner
+	Retention  func() time.Duration
 	MaxRecords int
-	// Interval is how often records are pruned, DefaultPruneInterval if 0.
-	Interval time.Duration
-	Clock    Clock
-	Logger   *slog.Logger
+	Interval   time.Duration
+	Clock      Clock
+	Logger     *slog.Logger
 }
 
-// Prune deletes the records requested longer than the retention ago, and the oldest past the most kept, at once
-// and then at each interval, until ctx is done.
 func Prune(ctx context.Context, cfg PruneConfig) {
 	if cfg.MaxRecords <= 0 {
 		cfg.MaxRecords = MaxRecords

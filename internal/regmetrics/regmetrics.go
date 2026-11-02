@@ -1,6 +1,3 @@
-// Package regmetrics counts the IMS's final answers to the REGISTER requests that register or re-register. Each
-// node counts the answers it makes itself: the P-CSCF and the I-CSCF their rejections, and the S-CSCF the rest, so
-// that no REGISTER is counted twice.
 package regmetrics
 
 import (
@@ -10,14 +7,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// The results of a REGISTER, which label the registration attempts.
 const (
 	Accept      = "accept"
 	AuthFailure = "auth_failure"
 	Reject      = "reject"
 )
 
-// Registrations counts the registration attempts. A nil Registrations counts nothing.
 type Registrations struct {
 	attempts *prometheus.CounterVec
 }
@@ -42,8 +37,6 @@ func (r *Registrations) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{r.attempts}
 }
 
-// Answered counts the answer to a request, if it is a REGISTER that registers or re-registers, of a UE that failed
-// IMS-AKA if authFailed. A 401 challenges the UE, which registers with its next REGISTER, so it is not counted.
 func (r *Registrations) Answered(req *sip.Request, res *sip.Response, authFailed bool) {
 	if r == nil || req.Method != "REGISTER" || res.StatusCode < 200 || res.StatusCode == 401 || deregistration(req) {
 		return
@@ -61,8 +54,7 @@ func (r *Registrations) Answered(req *sip.Request, res *sip.Response, authFailed
 	r.attempts.WithLabelValues(result).Inc()
 }
 
-// deregistration reports a REGISTER whose contacts all expire now (RFC 3261 §10.2.2). One that cannot be parsed
-// is not.
+// RFC 3261 section 10.2.2
 func deregistration(req *sip.Request) bool {
 	contacts, err := req.Header.Contacts()
 	if err != nil || len(contacts) == 0 {

@@ -80,12 +80,6 @@ import com.ellanetworks.mcptt.settings.shown
 import com.ellanetworks.mcptt.settings.sipUri
 import com.ellanetworks.mcptt.ui.theme.Spacing
 
-/**
- * The user's settings, until the CMS provides them (decision 6), out of the operational flow: the account, which
- * restarts the registration once saved, and signing out; the groups; the tones; the display. Each a word, no
- * explanation; last, Diagnostics, folded away, with an administrator's settings (the PSI, the P-CSCF). [diagnostics],
- * the screen opens on it, unfolded.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, modifier: Modifier = Modifier, diagnostics: Boolean = false) {
@@ -131,7 +125,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, modifier: Modifier = Mo
     }
 }
 
-/** A section's divider and heading, its [action] at the heading's end. */
 @Composable
 private fun Section(title: Int, action: (@Composable () -> Unit)? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.m)) {
@@ -148,10 +141,6 @@ private fun Section(title: Int, action: (@Composable () -> Unit)? = null) {
     }
 }
 
-/**
- * The account: the MCPTT ID typed without its scheme, saved explicitly, the registration restarting with it; and
- * signing out, the service stopped (TS 22.179's sign-out: deregistered), or in.
- */
 @Composable
 private fun Account(saved: UserSettings, status: Status, vm: AppViewModel) {
     var mcpttId by rememberSaveable(saved.mcpttId) { mutableStateOf(shown(saved.mcpttId)) }
@@ -188,18 +177,11 @@ private fun Account(saved: UserSettings, status: Status, vm: AppViewModel) {
     }
 }
 
-/**
- * The user's groups, in the picker's order: added, removed and reordered by their handles, each change saved at once,
- * a move on its drop. A group of the user's MC system is its name alone, typed and shown; another's, its URI (TS
- * 23.280 §8.1.3.1). Moved up and down by accessibility actions too, a drag out of TalkBack's and Switch Access's reach.
- */
 @Composable
 private fun Groups(groups: List<String>, mcpttId: String, adding: Boolean, onAdding: (Boolean) -> Unit, onChange: (List<String>) -> Unit) {
     val home = domainOf(mcpttId)
     val haptics = LocalHapticFeedback.current
     val gap = with(LocalDensity.current) { Spacing.m.toPx() }
-    // The order shown, the saved one's until a drag moves it; the saved one again once saved, the handles' gestures
-    // anew with it.
     var order by remember(groups) { mutableStateOf(groups) }
     var dragged by remember { mutableStateOf<String?>(null) }
     var offset by remember { mutableFloatStateOf(0f) }
@@ -252,7 +234,6 @@ private fun Groups(groups: List<String>, mcpttId: String, adding: Boolean, onAdd
                         Icon(Icons.Rounded.Delete, contentDescription = stringResource(R.string.group_remove, groupName(g)))
                     }
                     if (order.size > 1) {
-                        // The handle: dragged, the row follows the finger, passing its neighbours' middles.
                         Box(
                             Modifier
                                 .size(Spacing.fieldTarget)

@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
-// memStore is a settings.Store in memory, which fails to save with err.
 type memStore struct {
 	err error
 }

@@ -12,16 +12,11 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// direct answers a REGISTER of a client to the server as its registrar [PM 14] (RFC 3261 §10.3), the address of
-// record its To, an IMPU of the user: the server takes the IMPUs of the configuration as valid for its domain (step
-// 5), whatever their domains, a lab's deviation; the service authorisation of its mcptt-info the one of a third-party REGISTER
-// (TS 24.379 §7.3.2). A client binds its contacts once authorised; a REGISTER without mcptt-info refreshes or removes
-// the contacts bound already, of users the configuration still authorises at the IMPU. The 200 lists the contacts of
-// the address of record (step 8) and, of a service authorisation, has the mcptt-info of §7.3.2 step 6.
+// RFC 3261 section 10.3
+// TS 24.379 clause 7.3.2
 func (g *Registrar) direct(ctx context.Context, r *ua.Request, snap *settings.Snapshot, now time.Time) {
 	req := r.Message()
 
-	// Step 1: the server is the registrar of the organisation's domain only, and no proxy.
 	if req.URI.User != "" || !strings.EqualFold(req.URI.Host, snap.ServiceConfiguration().Domain) {
 		g.reject(r, snap, &refusal{code: 404})
 		return
@@ -47,7 +42,6 @@ func (g *Registrar) direct(ctx context.Context, r *ua.Request, snap *settings.Sn
 		return
 	}
 
-	// Step 6.
 	star := slices.ContainsFunc(contacts, func(c sip.Address) bool { return c.Star })
 	if star && (len(contacts) != 1 || !hasExpires || secs != 0) {
 		g.reject(r, snap, &refusal{code: 400})
@@ -124,8 +118,7 @@ func (g *Registrar) direct(ctx context.Context, r *ua.Request, snap *settings.Sn
 	g.apply(ctx, r.Strand(), now, &ch)
 }
 
-// update is the change of a direct REGISTER to the bindings of its address of record, on copies, committed once
-// all its contacts applied (RFC 3261 §10.3 step 7: an update aborted changes nothing).
+// RFC 3261 section 10.3
 type update struct {
 	g      *Registrar
 	snap   *settings.Snapshot
@@ -134,13 +127,10 @@ type update struct {
 	callID string
 	cseq   uint32
 
-	// copies are the bindings of the address of record, by key; target is the binding of the client authorised.
 	copies map[bindingKey]*binding
 	target *binding
 }
 
-// load copies the bindings of the address of record whose users the configuration still authorises at it; the others
-// go at the commit.
 func (u *update) load() {
 	u.copies = map[bindingKey]*binding{}
 
@@ -155,8 +145,6 @@ func (u *update) load() {
 	}
 }
 
-// authorised makes the binding of the client of a the target of the contacts: a new one, unless one of its user is
-// there.
 func (u *update) authorised(a *authorisation, aor sip.URI) {
 	k := bindingKey{u.ik, a.client}
 	user := settings.Key(a.user.ID())
@@ -173,7 +161,6 @@ func (u *update) authorised(a *authorisation, aor sip.URI) {
 	u.target = b
 }
 
-// find is the binding and index of the contact of URI uri, of any binding of the address of record.
 func (u *update) find(uri sip.URI) (*binding, int) {
 	for _, b := range u.copies {
 		if i := slices.IndexFunc(b.contacts, func(c contact) bool { return c.addr.URI.Equivalent(uri) }); i >= 0 {
@@ -184,9 +171,7 @@ func (u *update) find(uri sip.URI) (*binding, int) {
 	return nil, -1
 }
 
-// contact applies a contact of the REGISTER (RFC 3261 §10.3 step 7), or returns the code refusing the REGISTER: of a
-// Call-ID of the binding and a CSeq not higher, which RFC 3261 names none for, a 500; of a contact to bind without a
-// service authorisation, a 403.
+// RFC 3261 section 10.3
 func (u *update) contact(c sip.Address, exp time.Duration) int {
 	b, i := u.find(c.URI)
 
@@ -202,7 +187,6 @@ func (u *update) contact(c sip.Address, exp time.Duration) int {
 		return 0
 	}
 
-	// Without a service authorisation, a contact bound is refreshed.
 	t := u.target
 	if t == nil {
 		t = b
@@ -219,8 +203,6 @@ func (u *update) contact(c sip.Address, exp time.Duration) int {
 	return 0
 }
 
-// removeAll removes the contacts of the address of record (step 6, Contact "*"), unless one is of the Call-ID and
-// not of a lower CSeq.
 func (u *update) removeAll() int {
 	for _, b := range u.copies {
 		for _, c := range b.contacts {
@@ -237,8 +219,6 @@ func (u *update) removeAll() int {
 	return 0
 }
 
-// commit replaces the bindings of the address of record with the copies: those left without contacts go, their
-// clients logged off. Called with g.mu held.
 func (u *update) commit(ch *change) {
 	g := u.g
 
@@ -265,7 +245,6 @@ func (u *update) commit(ch *change) {
 		}
 
 		if b := g.bindings[k]; b != nil {
-			// The same binding, its timer kept for apply to stop.
 			c.timer = b.timer
 
 			g.remove(b)
@@ -275,8 +254,7 @@ func (u *update) commit(ch *change) {
 	}
 }
 
-// contactsOf are the Contact header fields of the bindings of the address of record of key ik, of their remaining
-// durations (RFC 3261 §10.3 step 8). Called with g.mu held.
+// RFC 3261 section 10.3
 func (g *Registrar) contactsOf(ik string, now time.Time) sip.Header {
 	var h sip.Header
 

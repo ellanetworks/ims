@@ -8,8 +8,8 @@ import (
 	"github.com/ellanetworks/ims/internal/policy"
 )
 
-// medComponents returns the medComponents for the components (TS 29.513 §7.2.3). A removed component is the one
-// the PCF holds, prev, with fStatus REMOVED: a null would remove it from the context instead (TS 29.501 §5.3.8.2).
+// TS 29.513 clause 7.2.3
+// TS 29.501 clause 5.3.8.2
 func medComponents(cs []policy.MediaComponent, prev *n5.AppSessionContextUpdateData) map[string]n5.MediaComponent {
 	if len(cs) == 0 {
 		return nil
@@ -35,7 +35,8 @@ func medComponents(cs []policy.MediaComponent, prev *n5.AppSessionContextUpdateD
 	return out
 }
 
-// TS 29.514 §5.6.2.7, TS 29.513 §7.2.3
+// TS 29.514 clause 5.6.2.7
+// TS 29.513 clause 7.2.3
 func medComponent(c policy.MediaComponent) n5.MediaComponent {
 	out := n5.MediaComponent{
 		MedCompN: c.Number,
@@ -89,7 +90,8 @@ func bitRate(v *uint64) *n5.BitRate {
 	return new(n5.BitRate(*v))
 }
 
-// TS 29.514 §5.6.3.2: CodecData is encoded as the Codec-Data AVP (TS 29.214 §5.3.7).
+// TS 29.514 clause 5.6.3.2
+// TS 29.214 clause 5.3.7
 func codecData(c policy.Codec) n5.CodecData {
 	direction, kind := rx.CodecDownlink, rx.CodecOffer
 
@@ -104,7 +106,8 @@ func codecData(c policy.Codec) n5.CodecData {
 	return direction.String() + "\n" + kind.String() + "\n" + c.SDP
 }
 
-// TS 29.514 §5.6.3.2: FlowDescription is encoded as the Flow-Description AVP (TS 29.214 §5.3.8).
+// TS 29.514 clause 5.6.3.2
+// TS 29.214 clause 5.3.8
 func flowDescription(f policy.Flow) n5.FlowDescription {
 	d := rx.FlowDescription{
 		Direction: rx.FlowDirectionOut, Protocol: rx.Protocol(f.Protocol),

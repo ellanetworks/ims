@@ -23,7 +23,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// noTrace traces nothing.
 func noTrace() tracing.Detached {
 	return tracing.NewDetached(nil, tracerName, "pcscf")
 }
@@ -34,7 +33,6 @@ func recorder() (*tracetest.SpanRecorder, trace.TracerProvider) {
 	return sr, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 }
 
-// traceDetached traces the detached work of p with tp.
 func traceDetached(p *PCSCF, tp trace.TracerProvider) {
 	d := tracing.NewDetached(tp, tracerName, "pcscf")
 	p.detached = d
@@ -45,7 +43,6 @@ func traceDetached(p *PCSCF, tp trace.TracerProvider) {
 	}
 }
 
-// startCause starts a span standing for what causes work, as a request does.
 func startCause(tp trace.TracerProvider, name string) (context.Context, trace.Span) {
 	return tp.Tracer("test").Start(context.Background(), name)
 }
@@ -69,7 +66,6 @@ func endedSpan(t *testing.T, sr *tracetest.SpanRecorder, name string) sdktrace.R
 	return found
 }
 
-// wantDetached checks that s is the root of a trace of its own, of the P-CSCF, linked to cause.
 func wantDetached(t *testing.T, s sdktrace.ReadOnlySpan, cause trace.SpanContext) {
 	t.Helper()
 
@@ -100,7 +96,6 @@ func wantDetached(t *testing.T, s sdktrace.ReadOnlySpan, cause trace.SpanContext
 	}
 }
 
-// A policy request is in the trace of its cause, and outlives it: it ends with the client.
 func TestPolicyRequestInTheTraceOfItsCause(t *testing.T) {
 	_, tp := recorder()
 
@@ -136,8 +131,6 @@ func TestPolicyRequestInTheTraceOfItsCause(t *testing.T) {
 	}
 }
 
-// The expiry of a registration is a trace of its own, linked to what registered it, and bound to the P-CSCF's
-// lifetime.
 func TestRegistrationExpiryIsDetached(t *testing.T) {
 	sr, tp := recorder()
 	clk := fakeClock{siptest.NewClock()}
@@ -185,7 +178,6 @@ func TestRegistrationExpiryIsDetached(t *testing.T) {
 	}
 }
 
-// The STR of an expired registration is in the trace of the expiry.
 func TestRxSTROnExpiryInItsTrace(t *testing.T) {
 	sr, tp := recorder()
 	s, pcrf := newRxScene(t, 0)
@@ -209,7 +201,6 @@ func TestRxSTROnExpiryInItsTrace(t *testing.T) {
 	}
 }
 
-// The refresh of the reg event subscription is a trace of its own, linked to what armed it.
 func TestRegEventRefreshIsDetached(t *testing.T) {
 	sr, tp := recorder()
 	s := newRegScene(t)
@@ -237,8 +228,6 @@ func TestRegEventRefreshIsDetached(t *testing.T) {
 	wantDetached(t, endedSpan(t, sr, "reg event refresh"), armed.SpanContext())
 }
 
-// The release of a call whose media is lost is a trace of its own, linked to the report of the loss; the end of the
-// policy session of the call is in it.
 func TestMediaLossIsDetached(t *testing.T) {
 	sr, tp := recorder()
 	clk, opt := mediaLossClock()
@@ -273,7 +262,6 @@ func TestMediaLossIsDetached(t *testing.T) {
 	}
 }
 
-// contexts records the contexts of the requests of command the policy function gets from now on.
 func (f *fakePCRF) contexts(command uint32) *requestContexts {
 	r := &requestContexts{t: f.t, c: make(chan requestContext, 8)}
 
@@ -298,7 +286,6 @@ type requestContexts struct {
 	c chan requestContext
 }
 
-// of is the context of the next request for session.
 func (r *requestContexts) of(session string) context.Context {
 	r.t.Helper()
 
@@ -314,7 +301,6 @@ func (r *requestContexts) of(session string) context.Context {
 	}
 }
 
-// newTracedRxIPsecScene is newRxIPsecScene with the layer traced by tp.
 func newTracedRxIPsecScene(t *testing.T, tp trace.TracerProvider) (*ipsecScene, *ue, *fakePCRF) {
 	t.Helper()
 
@@ -333,7 +319,6 @@ func newTracedRxIPsecScene(t *testing.T, tp trace.TracerProvider) (*ipsecScene, 
 	return s, u, f
 }
 
-// wantInTraceOf checks that ctx is in the trace of the P-CSCF's server transaction of method.
 func wantInTraceOf(t *testing.T, sr *tracetest.SpanRecorder, method string, ctx context.Context) {
 	t.Helper()
 
@@ -354,8 +339,6 @@ func wantInTraceOf(t *testing.T, sr *tracetest.SpanRecorder, method string, ctx 
 	}
 }
 
-// The media authorization of a call is in the trace of the INVITE, and the end of its policy session in that of the
-// BYE (B1).
 func TestCallPolicyInTheTraceOfItsRequest(t *testing.T) {
 	sr, tp := recorder()
 	s, u, pcrf := newTracedRxIPsecScene(t, tp)

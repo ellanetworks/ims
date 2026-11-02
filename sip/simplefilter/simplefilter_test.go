@@ -28,7 +28,6 @@ func decodeFile(t *testing.T, name string) FilterSet {
 	return fs
 }
 
-// stable checks that fs encodes, decodes to what encodes again the same: the elements kept, malformed, too.
 func stable(t *testing.T, fs FilterSet) {
 	t.Helper()
 
@@ -50,7 +49,12 @@ func stable(t *testing.T, fs FilterSet) {
 
 var pidfBinding = NSBinding{Prefix: "pidf", URN: "urn:ietf:params:xml:ns:pidf"}
 
-// RFC 4661 §6.1 to §6.6.
+// RFC 4661 section 6.1
+// RFC 4661 section 6.2
+// RFC 4661 section 6.3
+// RFC 4661 section 6.4
+// RFC 4661 section 6.5
+// RFC 4661 section 6.6
 func TestExamples(t *testing.T) {
 	fs := decodeFile(t, "rfc4661-6.1.xml")
 
@@ -91,7 +95,6 @@ func TestExamples(t *testing.T) {
 
 	stable(t, fs)
 
-	// §6.5 uses the prefix pidf without binding it: the selection is kept as given.
 	fs = decodeFile(t, "rfc4661-6.5.xml")
 
 	if f := fs.Filters[0]; f.URI != "" || len(fs.NSBindings) != 1 || !strings.Contains(f.What.Includes[0].Value, `pidf:status[game-ext:label="game-X"]`) {
@@ -110,7 +113,7 @@ func TestExamples(t *testing.T) {
 	stable(t, fs)
 }
 
-// TS 24.379 §9.3.2.2: the restrictions of presence notifications per client and per group.
+// TS 24.379 clause 9.3.2.2
 func TestMCPTT(t *testing.T) {
 	fs := decodeFile(t, "ts24379-9.3.2.2-client.xml")
 
@@ -131,7 +134,8 @@ func TestMCPTT(t *testing.T) {
 	stable(t, fs)
 }
 
-// RFC 4661 §3, §4: the attributes of filters, the kinds of triggers, the extensions.
+// RFC 4661 section 3
+// RFC 4661 section 4
 func TestExtensions(t *testing.T) {
 	fs := decodeFile(t, "extensions.xml")
 
@@ -161,7 +165,8 @@ func TestExtensions(t *testing.T) {
 	stable(t, fs)
 }
 
-// RFC 4661 §3, §7: a malformed element kept, not decoded; the first of an element given once counting.
+// RFC 4661 section 3
+// RFC 4661 section 7
 func TestMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, body string
@@ -208,7 +213,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, fs)
 	}
 
-	// Given more than once: the first counts, malformed or not, the others kept, malformed.
 	fs, err := Decode([]byte(`<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter"><ns-bindings><ns-binding prefix="a" urn="u"/></ns-bindings>` +
 		`<ns-bindings><ns-binding prefix="b" urn="v"/></ns-bindings><filter id="1"><what/><what><include>x</include></what></filter></filter-set>`))
 	if !errors.Is(err, ErrValue) || fs.NSBindings[0].Prefix != "a" || len(fs.Other) != 1 || len(fs.Filters[0].What.Includes) != 0 ||
@@ -227,7 +231,7 @@ func TestMalformed(t *testing.T) {
 	stable(t, fs)
 }
 
-// RFC 4661 §3.6.1.4: from and to of a change by an amount are decimals.
+// RFC 4661 section 3.6.1.4
 func TestChangedBy(t *testing.T) {
 	fs, err := Decode([]byte(`<filter-set xmlns="urn:ietf:params:xml:ns:simple-filter"><filter id="1"><trigger>` +
 		`<changed by="2" from=" -1.5 " to="+3">//a</changed><changed from="x" to="y">//b</changed></trigger></filter></filter-set>`))
@@ -339,7 +343,6 @@ func FuzzDecode(f *testing.F) {
 
 		stable(t, fs)
 
-		// A document decoded without error encodes to one decoded without error.
 		if err == nil {
 			out, _ := Encode(fs)
 			if _, err := Decode(out); err != nil {

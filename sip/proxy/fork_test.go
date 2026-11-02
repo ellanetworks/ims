@@ -17,7 +17,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// forker forks every request it receives to the callees, group by group.
 type forker struct {
 	t     *testing.T
 	l     *transaction.Layer
@@ -28,21 +27,15 @@ type forker struct {
 	opts   proxy.Options
 	errs   chan error
 
-	// retry are other flows to the UA of the first branch of group retryGroup, for a 430.
 	retry      []*siptest.Socket
 	retryGroup int
 
-	// unsendable adds a first group with one branch that cannot be sent, and unsendableRetry a flow that cannot
-	// be sent to the first branch's retries.
 	unsendable, unsendableRetry bool
 
-	// onReply, when set, sees the replies of every branch, with the server transaction.
 	onReply func(tx *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict
 
-	// forked, when set, gets the server transaction of each request forked.
 	forked chan *transaction.ServerTransaction
 
-	// track has every INVITE carry a Dialog, and in-dialog requests follow it.
 	track   bool
 	dialogs chan *proxy.Dialog
 	events  chan proxy.DialogEvent
@@ -63,7 +56,6 @@ func newForkSceneTracking(t *testing.T, shape []int, opts proxy.Options, track b
 	return newForkSceneWith(t, shape, opts, track, nil)
 }
 
-// newForkSceneWith has configure set up the forker before it receives anything.
 func newForkSceneWith(t *testing.T, shape []int, opts proxy.Options, track bool, configure func(*forker)) (*forkScene, [][]*siptest.Socket) {
 	t.Helper()
 
@@ -234,7 +226,6 @@ func (s *forkScene) send(req *sip.Request) {
 	s.caller.Send(sip.UDP, s.f.local, req)
 }
 
-// final receives the next final response to the caller, other than one to a CANCEL.
 func (s *forkScene) final() *sip.Response {
 	s.t.Helper()
 
@@ -246,7 +237,6 @@ func (s *forkScene) final() *sip.Response {
 	}
 }
 
-// relayed waits until the caller has a provisional response with code.
 func (s *forkScene) relayed(code int) {
 	s.t.Helper()
 
@@ -293,7 +283,6 @@ func (l *leg) respond(code int, extra ...string) {
 	l.s.Send(l.f.Transport, l.f.Remote, res)
 }
 
-// cancelled expects a CANCEL, answers it and the INVITE, and returns the CANCEL's Reason.
 func (l *leg) cancelled() string {
 	l.t.Helper()
 
@@ -312,7 +301,8 @@ func (l *leg) cancelled() string {
 	return cancel.Header.Get("Reason")
 }
 
-// RFC 3261 §16.7 step 10, TS 24.229 §5.4.3.3
+// RFC 3261 section 16.7
+// TS 24.229 clause 5.4.3.3
 func TestForkFirstAnswerWins(t *testing.T) {
 	s, g := newForkScene(t, []int{2}, proxy.Options{})
 
@@ -342,7 +332,7 @@ func TestForkFirstAnswerWins(t *testing.T) {
 	s.caller.RecvNone(quiet)
 }
 
-// A 2xx from a branch being cancelled still reaches the caller (RFC 3261 §16.7 step 5).
+// RFC 3261 section 16.7
 func TestForkSecondAnswer(t *testing.T) {
 	s, g := newForkScene(t, []int{2}, proxy.Options{})
 
@@ -376,7 +366,7 @@ func toTagOf(res *sip.Response) string {
 	return to.Tag()
 }
 
-// RFC 3261 §16.7 steps 6 and 7
+// RFC 3261 section 16.7
 func TestForkBestResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -390,7 +380,6 @@ func TestForkBestResponse(t *testing.T) {
 		{"503 as 500", []int{503}, 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The proxy has each reply in the order it sees them, so the next is sent once it saw the last.
 			seen := make(chan int, len(tc.codes))
 			s, g := newForkSceneWith(t, []int{len(tc.codes)}, proxy.Options{}, false, func(f *forker) {
 				f.onReply = func(_ *transaction.ServerTransaction, r proxy.Reply) proxy.Verdict {
@@ -459,7 +448,8 @@ func TestForkMergesChallenges(t *testing.T) {
 	}
 }
 
-// RFC 3261 §16.7 step 5, TS 24.229 §5.4.3.3
+// RFC 3261 section 16.7
+// TS 24.229 clause 5.4.3.3
 func TestForkDeclineEndsTheSearch(t *testing.T) {
 	s, g := newForkScene(t, []int{2, 1}, proxy.Options{})
 
@@ -482,7 +472,8 @@ func TestForkDeclineEndsTheSearch(t *testing.T) {
 	g[1][0].RecvNone(quiet)
 }
 
-// RFC 3261 §16.6, RFC 3841 §9.1
+// RFC 3261 section 16.6
+// RFC 3841 section 9.1
 func TestForkGroupsInTurn(t *testing.T) {
 	s, g := newForkScene(t, []int{2, 1}, proxy.Options{})
 
@@ -508,7 +499,6 @@ func TestForkGroupsInTurn(t *testing.T) {
 	}
 }
 
-// A group that rings without answer gives way to the next once its no-answer time is over.
 func TestForkGroupNoAnswer(t *testing.T) {
 	s, g := newForkScene(t, []int{1, 1}, proxy.Options{NoAnswer: 20 * time.Second})
 
@@ -533,7 +523,8 @@ func TestForkGroupNoAnswer(t *testing.T) {
 	}
 }
 
-// RFC 3261 §16.10, RFC 3326
+// RFC 3261 section 16.10
+// RFC 3326
 func TestForkCancelledByCaller(t *testing.T) {
 	s, g := newForkScene(t, []int{2, 1}, proxy.Options{})
 
@@ -567,7 +558,7 @@ func TestForkCancelledByCaller(t *testing.T) {
 	g[1][0].RecvNone(quiet)
 }
 
-// RFC 3261 §16.7: the first 2xx to a non-INVITE request is the answer, and no CANCEL follows.
+// RFC 3261 section 16.7
 func TestForkMessage(t *testing.T) {
 	s, g := newForkScene(t, []int{2}, proxy.Options{})
 
@@ -587,7 +578,7 @@ func TestForkMessage(t *testing.T) {
 	a.s.RecvNone(quiet)
 }
 
-// RFC 5393 §5.3.3
+// RFC 5393 section 5.3.3
 func TestForkMaxBreadth(t *testing.T) {
 	breadth := func(l *leg) int {
 		n, err := l.req.Header.MaxBreadth()
@@ -637,7 +628,6 @@ func TestForkMaxBreadth(t *testing.T) {
 		a.respond(486)
 		b.respond(486)
 
-		// The next group reuses the whole Max-Breadth (RFC 5393 §5.3.3.1).
 		if n := breadth(received(t, g[1][0], "c")); n != 3 {
 			t.Errorf("Max-Breadth %d in the next group", n)
 		}
@@ -698,7 +688,7 @@ func TestForkMaxBreadth(t *testing.T) {
 	})
 }
 
-// RFC 5393 §4.2
+// RFC 5393 section 4.2
 func TestLoopDetection(t *testing.T) {
 	s, g := newForkScene(t, []int{1}, proxy.Options{})
 
@@ -707,7 +697,6 @@ func TestLoopDetection(t *testing.T) {
 
 	a := received(t, g[0][0], "a")
 
-	// The request comes back with nothing changed that decides where it goes: a loop.
 	looped := a.req.Clone()
 	looped.URI = invite.URI
 	looped.Header.Prepend("Route", invite.Header.Get("Route"))
@@ -728,7 +717,6 @@ func TestLoopDetection(t *testing.T) {
 		break
 	}
 
-	// Retargeted, it spirals and goes on.
 	spiral := looped.Clone()
 	spiral.URI, _ = sip.ParseURI("sip:carol@example.com")
 	spiral.Header.Set("CSeq", "3 INVITE")
@@ -755,7 +743,7 @@ func TestLoopDetection(t *testing.T) {
 	}
 }
 
-// RFC 5626 §7
+// RFC 5626 section 7
 func TestForkRetriesAnotherFlow(t *testing.T) {
 	flows := []*siptest.Socket{siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0)), siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))}
 	s, g := newForkSceneWith(t, []int{2}, proxy.Options{}, true, func(f *forker) { f.retry = flows })
@@ -784,7 +772,6 @@ func TestForkRetriesAnotherFlow(t *testing.T) {
 	s.nextEvent(proxy.EventAnswered)
 }
 
-// With no other flow left, the 430 counts as any final response, and reaches the caller as a 480.
 func TestForkFlowsExhausted(t *testing.T) {
 	flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, false, func(f *forker) { f.retry = []*siptest.Socket{flow} })
@@ -799,9 +786,8 @@ func TestForkFlowsExhausted(t *testing.T) {
 	}
 }
 
-// A final response that comes on one branch while that of another is being delivered is weighed before the context
-// concludes, whichever goroutine delivers it: a 430 still has the request retried on another flow (RFC 5626 §7), and
-// a 2xx is the answer, with no 486 forwarded first (RFC 3261 §16.7 steps 5 and 6).
+// RFC 5626 section 7
+// RFC 3261 section 16.7
 func TestForkResponseDuringDelivery(t *testing.T) {
 	for _, code := range []int{430, 200} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
@@ -847,7 +833,7 @@ func TestForkResponseDuringDelivery(t *testing.T) {
 	}
 }
 
-// A branch cancelled because another answered ends with its 487: no timer of it fires later (RFC 3261 §16.8).
+// RFC 3261 section 16.8
 func TestForkCancelledBranchEnds(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -889,7 +875,6 @@ func TestForkCancelledBranchEnds(t *testing.T) {
 	}
 }
 
-// A group none of whose branches can be sent counts as failed: the dialog ends with the INVITE.
 func TestForkUnsendableGroup(t *testing.T) {
 	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, true, func(f *forker) { f.unsendable = true })
 
@@ -911,7 +896,7 @@ func TestForkUnsendableGroup(t *testing.T) {
 	}
 }
 
-// A context stopped by a 6xx takes no new fork (RFC 3261 §16.7 step 5).
+// RFC 3261 section 16.7
 func TestForkAfterAStop(t *testing.T) {
 	refork := make(chan error, 1)
 
@@ -949,7 +934,7 @@ func TestForkAfterAStop(t *testing.T) {
 	}
 }
 
-// A 430 whose retry flow cannot be sent still answers the caller, as a 480 (RFC 5626 §11.5).
+// RFC 5626 section 11.5
 func TestForkRetryUnsendable(t *testing.T) {
 	s, g := newForkSceneWith(t, []int{1}, proxy.Options{}, false, func(f *forker) { f.unsendableRetry = true })
 
@@ -962,7 +947,7 @@ func TestForkRetryUnsendable(t *testing.T) {
 	}
 }
 
-// Reached stops the Timeout of the one branch it names (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func TestReachedOneBranch(t *testing.T) {
 	replies := make(chan proxy.Reply, 4)
 	forked := make(chan *transaction.ServerTransaction, 1)

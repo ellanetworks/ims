@@ -8,7 +8,6 @@ export interface APIToken {
   last_used_at?: string;
 }
 
-// The API tokens of the logged-in user when email is undefined, else of that user.
 const tokensPath = (email?: string) =>
   email === undefined
     ? "/api/v1/users/me/api-tokens"

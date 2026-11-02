@@ -21,13 +21,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.ellanetworks.mcptt.R
 
-/** A thing the session needs of the device: its explanation, and the way to grant it, none if only an admin can. */
 data class Need(val text: Int, val action: (() -> Unit)?, val blocking: Boolean = false)
 
-/**
- * What the session needs of the device now, the most important first (carrier privileges, the microphone,
- * notifications, full-screen calls, the battery, then alarms): checked again each time the app resumes.
- */
 @Composable
 fun rememberNeeds(vm: AppViewModel): List<Need> {
     val context = LocalContext.current
@@ -37,7 +32,6 @@ fun rememberNeeds(vm: AppViewModel): List<Need> {
         onPauseOrDispose {}
     }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
-    // Allowed while the app is visible: the service takes the microphone type at once.
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         tick++
         if (it) vm.visible()
@@ -53,12 +47,9 @@ fun rememberNeeds(vm: AppViewModel): List<Need> {
             if (!context.granted(Manifest.permission.POST_NOTIFICATIONS)) {
                 add(Need(R.string.need_notifications, { notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }))
             }
-            // Granted at install outside Google Play; the user may have turned it off.
             if (!context.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()) {
                 add(Need(R.string.need_full_screen, { context.open(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT) }))
             }
-            // Exempt from battery optimisation, the app's alarms are exact and unrestricted while the device sleeps:
-            // the exact alarm permission is then not needed.
             if (!context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)) {
                 @Suppress("BatteryLife")
                 add(Need(R.string.need_battery, { context.open(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) }))

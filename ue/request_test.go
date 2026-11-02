@@ -7,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// respond is a response of the UE's agent to req.
 func respond(u *UE, req *sip.Request, code int) *sip.Response {
 	res := sip.NewResponse(req, code, "")
 	u.respondHeaders(req, res)
@@ -26,7 +25,8 @@ func TestResponsesCarryAccessNetworkInfo(t *testing.T) {
 	}
 }
 
-// RFC 3261 §8.1.2, RFC 3263 §4.1
+// RFC 3261 section 8.1.2
+// RFC 3263 section 4.1
 func TestRequestTransportFollowsTheRoute(t *testing.T) {
 	u, _ := newNetwork(t).newUE(Config{Plain: true})
 

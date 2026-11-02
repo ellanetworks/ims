@@ -6,7 +6,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// bootTime is the time since boot, the time asleep included (CLOCK_BOOTTIME, which Android's elapsedRealtime reads).
 func bootTime() time.Duration {
 	var ts unix.Timespec
 

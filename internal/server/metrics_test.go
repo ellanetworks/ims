@@ -73,7 +73,6 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 
-	// The IMS has read its settings at start, so the writer pool has timed a call.
 	for _, m := range families["ellaims_database_query_duration_seconds"].GetMetric() {
 		if m.GetLabel()[0].GetValue() == "write" && m.GetHistogram().GetSampleCount() == 0 {
 			t.Error("no database call on the write pool was timed")
@@ -106,8 +105,6 @@ func TestMetricsOfRegistrations(t *testing.T) {
 	}
 }
 
-// TestMetricsOfRejectedRegistrations checks that the registrations that the P-CSCF and the I-CSCF reject
-// themselves, which never reach the S-CSCF, are counted.
 func TestMetricsOfRejectedRegistrations(t *testing.T) {
 	hss, peer := newHSS(t)
 
@@ -121,7 +118,6 @@ func TestMetricsOfRejectedRegistrations(t *testing.T) {
 	pcscf := sipListener(t, srv, rolePCSCF, loopback)
 	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
 
-	// The HSS does not know the subscriber: the I-CSCF answers its UAR with a 403.
 	unknown := newRegister(ue.Addr())
 	unknown.Header.Set("To", "<sip:unknown@"+imsRealm+">")
 	unknown.Header.Set("From", "<sip:unknown@"+imsRealm+">;tag="+sip.NewTag())
@@ -137,7 +133,6 @@ func TestMetricsOfRejectedRegistrations(t *testing.T) {
 	hss.Next(t)
 	wantResponse(t, ue, 403, "REGISTER")
 
-	// The P-CSCF refuses a Security-Client without an algorithm it supports itself.
 	bad := newRegister(ue.Addr())
 	bad.Header.Add("Expires", "600")
 	bad.Header.Add("Security-Client", "ipsec-3gpp;prot=esp;spi-c=bad")
@@ -169,7 +164,6 @@ func TestMetricsOfSIPAndPeers(t *testing.T) {
 
 	pcscf := sipListener(t, srv, rolePCSCF, loopback)
 
-	// A UE registers through the P-CSCF, which sends it the S-CSCF's challenge after a UAR and a MAR.
 	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
 	register := newRegister(ue.Addr())
 	register.Header.Add("Expires", "600")
@@ -183,7 +177,6 @@ func TestMetricsOfSIPAndPeers(t *testing.T) {
 	hss.Next(t)
 	wantResponse(t, ue, 401, "REGISTER")
 
-	// A node of the IMS is not a UE.
 	core := newPeer(t, srv, netip.AddrPortFrom(loopback, 6001))
 	options := siptest.NewRequest("OPTIONS", "sip:"+imsRealm, sip.UDP, core.Addr())
 	options.Header.Set("To", "<sip:"+imsRealm+">")

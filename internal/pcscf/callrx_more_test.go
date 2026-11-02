@@ -15,8 +15,6 @@ import (
 	"github.com/ellanetworks/ims/sip/dialog"
 )
 
-// ueOffer sends an in-dialog request from the UE with an SDP offer, answers it from the core with an SDP
-// answer, and returns the response the UE receives.
 func (s *ipsecScene) ueOffer(t *testing.T, u *ue, e *callUp, method string, offer, answer []byte) *sip.Response {
 	t.Helper()
 
@@ -48,7 +46,7 @@ func (s *ipsecScene) ueOffer(t *testing.T, u *ue, e *callUp, method string, offe
 	return res
 }
 
-// TS 29.214 §4.4.1: a refused modification keeps the call and the previous authorisation.
+// TS 29.214 clause 4.4.1
 func TestCallModificationRefusedKeepsTheCall(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -63,7 +61,7 @@ func TestCallModificationRefusedKeepsTheCall(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 29.214 §4.4.1: a PCRF that lost the call's session gets a new one for the modification.
+// TS 29.214 clause 4.4.1
 func TestCallModificationOfAnUnknownSessionOpensANewOne(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -103,7 +101,9 @@ func TestCallModificationOfAnUnknownSessionOpensANewOne(t *testing.T) {
 	pcrf.wantSTR(id, rx.TerminationAdministrative)
 }
 
-// TS 29.214 Annex A.2.0, TS 29.213 Table 6.2.1/6.2.2 NOTE 3: hold and resume.
+// TS 29.214 clause A.2.0
+// TS 29.213 clause 6.2 table 6.2.1
+// TS 29.213 clause 6.2 table 6.2.2
 func TestCallHoldAndResume(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -135,7 +135,8 @@ func TestCallHoldAndResume(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14, TS 29.214 Annex A.1: the answer in the 2xx to a re-INVITE.
+// RFC 3261 section 14
+// TS 29.214 clause A.1
 func TestCallReinviteAnswer(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -153,7 +154,7 @@ func TestCallReinviteAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.7.2: a refused answer in the PRACK releases the call and the PRACK gets 500.
+// TS 24.229 clause 5.2.7.2
 func TestCallMediaRefusedInThePrack(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, false)
@@ -201,7 +202,7 @@ func TestCallMediaRefusedInThePrack(t *testing.T) {
 	}
 }
 
-// RFC 3262 §5: on the terminating side the network answers the UE's offer in the PRACK.
+// RFC 3262 section 5
 func TestTerminatingMediaAnsweredInThePrack(t *testing.T) {
 	s, u, pcrf, token := newRxIPsecScene(t)
 
@@ -261,7 +262,7 @@ func TestTerminatingMediaAnsweredInThePrack(t *testing.T) {
 	}
 }
 
-// TS 29.213 Annex B.4.1: a call cancelled after its answer was authorised ends its session.
+// TS 29.213 clause B.4.1
 func TestCallCancelledEndsTheSession(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishEarly(t, u, pcrf)
@@ -286,7 +287,7 @@ func TestCallCancelledEndsTheSession(t *testing.T) {
 	pcrf.wantSTR(e.session, rx.TerminationLogout)
 }
 
-// TS 29.214 §4.4.1: Retry-Interval holds only the same service information, and only for its duration.
+// TS 29.214 clause 4.4.1
 func TestCallMediaRetryIntervalExpires(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -320,7 +321,8 @@ func TestCallMediaRetryIntervalExpires(t *testing.T) {
 	call("5000", true)
 }
 
-// TS 29.214 §4.4.6.5, TS 24.229 §5.2.7.4: charging information reported later in a RAR.
+// TS 29.214 clause 4.4.6.5
+// TS 24.229 clause 5.2.7.4
 func TestCallChargingInfoFromAReAuth(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -349,7 +351,7 @@ func TestCallChargingInfoFromAReAuth(t *testing.T) {
 	}
 }
 
-// TS 29.214 §5.6.3: IP-CAN-Type is optional in a RAR, so a later one without it keeps the 5GS access.
+// TS 29.214 clause 5.6.3
 func TestCallChargingInfoKeepsTheAccess(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -381,7 +383,7 @@ func TestCallChargingInfoKeepsTheAccess(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.1: a 5002 that comes after the call timeout still gets the next exchange a new session.
+// TS 29.214 clause 4.4.1
 func TestCallLateUnknownSessionOpensANewOne(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
 	e := s.establishConfirmed(t, u, pcrf)
@@ -427,7 +429,7 @@ func TestCallLateUnknownSessionOpensANewOne(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.1: the new session for a lost one has nothing to remove.
+// TS 29.214 clause 4.4.1
 func TestCallRecoveryLeavesRemovedMediaOut(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -460,7 +462,8 @@ func TestCallRecoveryLeavesRemovedMediaOut(t *testing.T) {
 	}
 }
 
-// TS 29.214 §5.3.13 NOTE 2a, TS 24.229 §5.2.8.1.1: failed resources allocation is a media loss.
+// TS 29.214 clause 5.3.13
+// TS 24.229 clause 5.2.8.1.1
 func TestCallFailedResourcesAllocation(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -480,7 +483,7 @@ func TestCallFailedResourcesAllocation(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 500)
 }
 
-// TS 24.229 §6.2: media of another address family than the offer cannot be authorised.
+// TS 24.229 clause 6.2
 func TestCallMixedAddressFamilies(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	got, f := s.originate(t, u)
@@ -500,8 +503,8 @@ func TestCallMixedAddressFamilies(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: with no connection or no path to the PCRF of the call, the modification is
-// undelivered and the call ends, both ways.
+// RFC 6733 section 5.5.4
+// RFC 6733 section 8.18
 func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 	for name, connected := range map[string]bool{"no connection": false, "no path": true} {
 		t.Run(name, func(t *testing.T) {
@@ -557,8 +560,7 @@ func TestCallModificationWithItsPCRFLostReleasesTheCall(t *testing.T) {
 	}
 }
 
-// RFC 6733 §7.1.3: a PCRF too busy for the modification has not lost the call's session: the modification is refused
-// and the call goes on.
+// RFC 6733 section 7.1.3
 func TestCallModificationWithItsPCRFTooBusyKeepsTheCall(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -579,8 +581,7 @@ func TestCallModificationWithItsPCRFTooBusyKeepsTheCall(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE: a session lost in an early dialog ends the call at once, with the media of the
-// exchange left unauthorized.
+// RFC 6733 section 8.18
 func TestEarlyCallWithItsPCRFLostIsReleased(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, true)
@@ -645,7 +646,7 @@ func TestEarlyCallWithItsPCRFLostIsReleased(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE: a session lost after the exchange gave up on its answer still ends the call.
+// RFC 6733 section 8.18
 func TestCallWithItsPCRFLostAfterTheCallTimeoutIsReleased(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t, func(c *Config) { c.Policy.CallTimeout = 100 * time.Millisecond })
 	e := s.establishConfirmed(t, u, pcrf)
@@ -674,8 +675,7 @@ func TestCallWithItsPCRFLostAfterTheCallTimeoutIsReleased(t *testing.T) {
 	pcrf.none()
 }
 
-// RFC 6733 §8.18 ALLOW_SERVICE: a modification no path takes to the PCRF of the call succeeds, and the session goes
-// on unbound: the next request goes by realm, and the call is not released.
+// RFC 6733 section 8.18
 func TestCallModificationWithItsPCRFLostAllowsService(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 

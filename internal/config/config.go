@@ -21,33 +21,29 @@ const (
 	defaultICSCFPort    = 5070
 	defaultSCSCFPort    = 5080
 
-	// IPSMGWPort is the SIP port of the built-in IP-SM-GW, in memory, on each of sip.addresses.
 	IPSMGWPort         = 5100
 	defaultIPsecServer = 5063
 )
 
 var defaultIPsecClients = []int{5064, 5065}
 
-// maxASTimeout is 64*T1 with the default T1 (RFC 3261 §17.1.1.2).
+// RFC 3261 section 17.1.1.2
 const maxASTimeout = 32 * time.Second
 
 type Config struct {
-	Logging  Logging  `yaml:"logging"`
-	DB       DB       `yaml:"db"`
-	API      API      `yaml:"api"`
-	SIP      SIP      `yaml:"sip"`
-	PCSCF    PCSCF    `yaml:"pcscf"`
-	ICSCF    ICSCF    `yaml:"icscf"`
-	SCSCF    SCSCF    `yaml:"scscf"`
-	Diameter Diameter `yaml:"diameter"`
-	// N5 is where the P-CSCF hears from a PCF, and is required for the n5 policy interface.
-	N5 *N5 `yaml:"n5"`
-	// MCPTT runs the built-in MCPTT application server.
+	Logging   Logging   `yaml:"logging"`
+	DB        DB        `yaml:"db"`
+	API       API       `yaml:"api"`
+	SIP       SIP       `yaml:"sip"`
+	PCSCF     PCSCF     `yaml:"pcscf"`
+	ICSCF     ICSCF     `yaml:"icscf"`
+	SCSCF     SCSCF     `yaml:"scscf"`
+	Diameter  Diameter  `yaml:"diameter"`
+	N5        *N5       `yaml:"n5"`
 	MCPTT     *MCPTT    `yaml:"mcptt"`
 	Telemetry Telemetry `yaml:"telemetry"`
 }
 
-// Telemetry exports traces over OTLP/gRPC to OTLPEndpoint, a host:port, when Enabled.
 type Telemetry struct {
 	Enabled      bool   `yaml:"enabled"`
 	OTLPEndpoint string `yaml:"otlp_endpoint"`
@@ -64,11 +60,9 @@ type DB struct {
 type API struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
-	// TLS, when set, serves the API and UI over HTTPS.
-	TLS *APITLS `yaml:"tls"`
+	TLS     *APITLS    `yaml:"tls"`
 }
 
-// APITLS is a PEM certificate chain, the server's certificate first, and its private key.
 type APITLS struct {
 	Cert string `yaml:"cert"`
 	Key  string `yaml:"key"`
@@ -77,10 +71,6 @@ type APITLS struct {
 type SIP struct {
 	Addresses []netip.Addr `yaml:"addresses"`
 
-	// TrustedNetworks hold the other nodes of the trust domain, such as the ASs: the I-CSCF and the S-CSCF take their
-	// requests and the identities they assert (RFC 3325, TS 24.229 §4.4, §5.7.3), and send requests to ASs there
-	// only. They must not cover the UEs, which the P-CSCF alone serves: the P-CSCF trusts the IMS's own addresses
-	// only. The trust goes by source address: the networks are the operator's to protect (TS 33.210 §5.6.2).
 	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
 }
 
@@ -91,19 +81,14 @@ type PCSCF struct {
 
 type N5 struct {
 	Notify N5Notify `yaml:"notify"`
-	// TLS makes N5 run over https, and is required for a PCF URI of that scheme.
-	TLS *TLS `yaml:"tls"`
+	TLS    *TLS     `yaml:"tls"`
 }
 
-// N5Notify is where the P-CSCF listens for the PCF's notifications. A Port of 0 is one the system chooses: the
-// notification URI the PCF is given with each request has it (TS 29.514 §5.6.2.3).
 type N5Notify struct {
 	Address netip.Addr `yaml:"address"`
 	Port    int        `yaml:"port"`
 }
 
-// N5NotifyURI is the root of the notification URIs: the address the P-CSCF listens on, which needs no DNS at the
-// PCF. Over https, the certificate must be valid for that address.
 func (c Config) N5NotifyURI() string {
 	if c.N5 == nil {
 		return ""
@@ -112,7 +97,6 @@ func (c Config) N5NotifyURI() string {
 	return c.N5NotifyURIAt(uint16(c.N5.Notify.Port))
 }
 
-// N5NotifyURIAt is N5NotifyURI of the port the P-CSCF listens on: of a Port of 0, the one the system chose.
 func (c Config) N5NotifyURIAt(port uint16) string {
 	n := c.N5
 	if n == nil {
@@ -127,8 +111,6 @@ func (c Config) N5NotifyURIAt(port uint16) string {
 	return scheme + "://" + netip.AddrPortFrom(n.Notify.Address, port).String()
 }
 
-// TLS are PEM files: the CA certificates that the peers' certificates must chain to, and the certificate and
-// private key of the IMS, which it presents both as a client and as a server.
 type TLS struct {
 	CA   string `yaml:"ca"`
 	Cert string `yaml:"cert"`
@@ -147,8 +129,6 @@ type ICSCF struct {
 type SCSCF struct {
 	Port int `yaml:"port"`
 
-	// ASTimeout is how long an AS has to respond before the default handling of its iFC applies (TS 24.229
-	// §5.4.1.7, §5.4.3.2, §5.4.3.3). Zero is the S-CSCF's default.
 	ASTimeout time.Duration `yaml:"as_timeout"`
 }
 
@@ -246,7 +226,6 @@ func (c Config) validate() error {
 		return err
 	}
 
-	// RFC 3261 §17.1.1.2: past 64*T1, the transaction times out whatever the AS does.
 	if t := c.SCSCF.ASTimeout; t < 0 || t >= maxASTimeout {
 		return fmt.Errorf("scscf.as_timeout %s must be positive and under %s", t, maxASTimeout)
 	}
@@ -292,11 +271,9 @@ func (c Config) validateN5(n N5) error {
 	case n.Notify.Port < 0 || n.Notify.Port > 65535:
 		return fmt.Errorf("n5.notify.port %d is out of range", n.Notify.Port)
 	case n.Notify.Port == 0:
-		// The system's choice takes no port of the others.
 		return nil
 	}
 
-	// TCP ports on the same address: the API, SIP over TCP, and Diameter.
 	taken := []struct {
 		name string
 		addr []netip.Addr
@@ -335,7 +312,6 @@ func (c Config) validateN5(n N5) error {
 	return nil
 }
 
-// overlaps reports whether a listener on b takes a's port, b being a specific or an unspecified address.
 func overlaps(a, b netip.Addr) bool {
 	switch {
 	case b == netip.IPv6Unspecified():
@@ -347,13 +323,11 @@ func overlaps(a, b netip.Addr) bool {
 	return a == b
 }
 
-// namedPort is a port of the configuration, and the key that sets it.
 type namedPort struct {
 	name string
 	port int
 }
 
-// sipPorts are the ports SIP listens on, UDP and TCP, on each of sip.addresses.
 func (c Config) sipPorts() []namedPort {
 	ports := []namedPort{
 		{"pcscf.port", c.PCSCF.Port},
@@ -393,7 +367,6 @@ func (c Config) validatePorts() error {
 			}
 		}
 
-		// The IP-SM-GW takes its port on the in-memory network the cores share with the built-in ASs.
 		if p.port == IPSMGWPort {
 			return fmt.Errorf("%s %d is the port of the IP-SM-GW", p.name, p.port)
 		}

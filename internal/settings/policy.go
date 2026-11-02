@@ -12,17 +12,11 @@ const (
 	PolicyN5   PolicyInterface = "n5"
 )
 
-// Policy is the policy function of the P-CSCF: the PCRF over Rx, which is the Diameter peer serving rx, or a PCF
-// over N5. Without one, the P-CSCF opens no policy sessions.
 type Policy struct {
 	Interface PolicyInterface
-	// PCFURI is the API root of the PCF over N5, http[s]://host[:port][/prefix]. The PCF must name its contexts
-	// with the same scheme, host and port, so that the P-CSCF can delete those the PCF terminates after it lost
-	// track of them.
-	PCFURI string
+	PCFURI    string
 }
 
-// HTTPS reports whether N5 runs over TLS.
 func (p Policy) HTTPS() bool {
 	u, err := url.Parse(p.PCFURI)
 	return err == nil && u.Scheme == "https"

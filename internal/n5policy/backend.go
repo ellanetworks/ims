@@ -22,41 +22,30 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// SessionsPath is where the P-CSCF receives notifications: each session has the notifUri
-// {root}/n5/v1/sessions/{id}, to which the PCF appends /notify or /terminate (TS 29.514 §5.5).
+// TS 29.514 clause 5.5
 const SessionsPath = "/n5/v1/sessions"
 
-// IMS_SBI and PatchCorrection (TS 29.514 §5.8): without PatchCorrection, a PCF only interoperates when no
-// context is updated. A call also supports MCPTT.
+// TS 29.514 clause 5.8
 var (
 	features     = n5.Features(n5.FeatureIMSSBI, n5.FeaturePatchCorrection)
 	callFeatures = n5.Features(n5.FeatureIMSSBI, n5.FeatureMCPTT, n5.FeaturePatchCorrection)
 )
 
-// The events a session subscribes to. FAILED_RESOURCES_ALLOCATION reports the loss of the signalling path
-// (TS 29.514 §4.2.5.10) and of call media (§4.2.5.8).
+// TS 29.514 clause 4.2.5.10
+// TS 29.514 clause 4.2.5.8
 var events = []n5.AfEventSubscription{{Event: n5.EventFailedResourcesAllocation}}
 
-// deleteTimeout bounds the delete of a context the P-CSCF does not know, which the PCF asked to terminate.
 const deleteTimeout = 10 * time.Second
 
 type Config struct {
-	// PCF is the API root of the PCF, http[s]://host[:port][/prefix].
-	PCF string
-	// Notify is the root of the notification URIs, scheme://host[:port] with the scheme of PCF, at which the
-	// backend is served.
-	Notify string
-	// TLS are the credentials of the P-CSCF over https: as the client of the PCF, and as the server of its
-	// notifications.
-	TLS *sbitls.Credentials
-	// Observe, if set, is called after each request to the PCF, as n5.Config's.
-	Observe func(status int, err error, elapsed time.Duration)
-	// TracerProvider traces the requests to the PCF; none when nil.
+	PCF            string
+	Notify         string
+	TLS            *sbitls.Credentials
+	Observe        func(status int, err error, elapsed time.Duration)
 	TracerProvider trace.TracerProvider
 	Logger         *slog.Logger
 }
 
-// Backend is the policy backend over N5. It is also the HTTP handler of the PCF's notifications.
 type Backend struct {
 	cfg      Config
 	client   *n5.Client
@@ -65,10 +54,9 @@ type Backend struct {
 	log      *slog.Logger
 	sink     atomic.Pointer[policy.Sink]
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	// detached traces the deletes that follow a termination's answer.
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 	detached tracing.Detached
 
 	mu       sync.Mutex
@@ -77,9 +65,6 @@ type Backend struct {
 	status   Status
 }
 
-// session is what the backend keeps of a context it created: its URI, the features negotiated at its creation,
-// and the service information the PCF holds, which the next PATCH is computed from. tried is what unanswered
-// PATCHes since then sent: the PCF may hold any of them instead.
 type session struct {
 	uri      string
 	features n5.SupportedFeatures
@@ -88,21 +73,15 @@ type session struct {
 }
 
 const (
-	// tracerName is the instrumentation scope of the backend's own spans.
 	tracerName = "github.com/ellanetworks/ims/internal/n5policy"
-	// role is the role the backend serves, of its spans (tracing.RoleKey).
-	role = "pcscf"
+	role       = "pcscf"
 )
 
-// maxLost bounds the creates the backend remembers as unanswered.
 const maxLost = 1024
 
-// Status is the outcome of the last request to the PCF.
 type Status struct {
-	PCF string
-	// At is zero until a request is made.
-	At time.Time
-	// Reachable means the PCF, or an intermediary, answered.
+	PCF       string
+	At        time.Time
 	Reachable bool
 	Result    string
 }
@@ -146,19 +125,18 @@ func New(cfg Config) (*Backend, error) {
 	}, nil
 }
 
-// Close stops the deletes in progress and drops idle connections.
 func (b *Backend) Close() {
 	b.cancel()
 	b.wg.Wait()
 	b.client.Close()
 }
 
-// Endpoint names the PCF by its API root, with the host in lower case (RFC 3986 §6.2.2.1).
+// RFC 3986 section 6.2.2.1
 func (b *Backend) Endpoint() string {
 	return b.endpoint
 }
 
-// NewSessionID returns a random ID that a URI path segment carries as is (RFC 3986 §2.3).
+// RFC 3986 section 2.3
 func (b *Backend) NewSessionID() string {
 	var id [16]byte
 
@@ -176,7 +154,6 @@ func (b *Backend) Bind(s policy.Sink) {
 	b.sink.Store(&s)
 }
 
-// Status returns the outcome of the last request to the PCF.
 func (b *Backend) Status() Status {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -188,7 +165,7 @@ func (b *Backend) notifURI(id string) string {
 	return b.cfg.Notify + SessionsPath + "/" + id
 }
 
-// TS 29.514 §4.2.6.7
+// TS 29.514 clause 4.2.6.7
 func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signalling, _ bool) (string, error) {
 	notif := b.notifURI(id)
 	req := n5.AppSessionContextReqData{
@@ -206,7 +183,9 @@ func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signal
 	return b.create(ctx, id, &req, nil)
 }
 
-// TS 29.514 §4.2.2.2, §4.2.3.2, Annex B
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
+// TS 29.514 annex B
 func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Request) (policy.Grant, error) {
 	notif := b.notifURI(id)
 
@@ -256,13 +235,10 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 		return policy.Grant{}, errors.New("npcf-policyauthorization modify: no application session context")
 	}
 
-	// TS 29.514 Annex B.3.2: SEVERAL_DIALOGUES while the early dialogues fork, removed at the final answer.
 	if r.Forking == policy.ForkingSeveralDialogues {
 		next.SipForkInd = n5.ForkingSeveralDialogues
 	}
 
-	// Without the service information the PCF holds, or when it may hold what an unanswered PATCH sent, the
-	// patch sets it whole.
 	var (
 		patch n5.Patch
 		err   error
@@ -309,8 +285,8 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	return policy.Grant{Ref: uri}, nil
 }
 
-// TS 29.514 Annex B.10.2: the MCPTT namespace in mcpttId, and its priority value n in resPrio as PRIO_(n+1). A
-// create sends them before the PCF tells whether it supports MCPTT; an update only to a PCF that does (§5.8).
+// TS 29.514 clause B.10.2
+// TS 29.514 clause 5.8
 func mcptt(d *n5.AppSessionContextUpdateData, p *policy.MCPTTPriority, supported bool) {
 	if p == nil || !supported {
 		return
@@ -327,7 +303,6 @@ func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionConte
 	if err != nil {
 		err = classify(err)
 
-		// The PCF may have created a context it could not report; its terminate names it (TS 29.514 §4.2.5.3).
 		if policy.Transient(err) && !errors.Is(err, n5.ErrConnect) {
 			b.lose(id)
 		}
@@ -346,7 +321,7 @@ func (b *Backend) create(ctx context.Context, id string, req *n5.AppSessionConte
 	return res.URI, nil
 }
 
-// TS 29.514 §4.2.4.2. Without a URI, the create was not answered and there is no context to delete.
+// TS 29.514 clause 4.2.4.2
 func (b *Backend) Terminate(ctx context.Context, id, ref string, _ policy.Termination, _ bool) error {
 	uri := ref
 
@@ -386,7 +361,6 @@ func (b *Backend) keep(id, uri string, features n5.SupportedFeatures, last *n5.A
 	b.sessions[id] = &session{uri: uri, features: features, last: last}
 }
 
-// tried notes a PATCH the PCF may or may not have applied.
 func (b *Backend) tried(id, uri string, features n5.SupportedFeatures, last, next *n5.AppSessionContextUpdateData) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -407,7 +381,6 @@ func (b *Backend) forget(id string) {
 	delete(b.sessions, id)
 }
 
-// lose remembers a create that got no answer, the oldest forgotten first.
 func (b *Backend) lose(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -427,8 +400,6 @@ func (b *Backend) lose(id string) {
 	b.lost[id] = time.Now()
 }
 
-// found reports, once, whether the create of id got no answer.
-// lostOne reports whether id is a create that got no answer, without forgetting it as found does.
 func (b *Backend) lostOne(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -466,7 +437,7 @@ func (b *Backend) record(err error, success string) {
 	b.mu.Unlock()
 }
 
-// TS 29.500 §5.2.7.3: the PCF carried out the request; only what it said about it is lost.
+// TS 29.500 clause 5.2.7.3
 func (b *Backend) bodyErr(ctx context.Context, id string, op n5.Op, r n5.Result) {
 	if r.BodyErr != nil {
 		b.log.WarnContext(ctx, "unreadable response from the PCF", slog.String("session", id), slog.String("operation", string(op)),
@@ -484,7 +455,8 @@ func ue(r *n5.AppSessionContextReqData, a netip.Addr) {
 	}
 }
 
-// TS 29.514 §5.6.2.3, TS 29.571 §5.3.2 (Gpsi, ^msisdn-[0-9]{5,15}$): the first E.164 number of the user.
+// TS 29.514 clause 5.6.2.3
+// TS 29.571 clause 5.3.2
 func gpsi(subs []policy.Subscriber) string {
 	for _, s := range subs {
 		if s.Kind == policy.SubscriberE164 && len(s.ID) >= 5 && len(s.ID) <= 15 && digits(s.ID) {

@@ -23,13 +23,9 @@ type call struct {
 
 	policy *callPolicy
 
-	// rec is the record of an originating call.
-	rec *callRecord
-	// impi is the private identity of the UE a terminating call goes to.
+	rec  *callRecord
 	impi string
 
-	// invite is the span context of the INVITE that started the call, which the end of a call no request ends, as
-	// its expiry, links to.
 	invite trace.SpanContext
 }
 
@@ -43,7 +39,7 @@ func callOf(d *proxy.Dialog) *call {
 	return c
 }
 
-// TS 24.229 §5.2.6.2
+// TS 24.229 clause 5.2.6.2
 func (p *PCSCF) terminatingRoute(req *sip.Request) (sip.URI, bool) {
 	routes, err := req.Header.Routes()
 	if err != nil || len(routes) == 0 || !p.cfg.Proxy.IsLocal(routes[0].URI) {
@@ -55,7 +51,7 @@ func (p *PCSCF) terminatingRoute(req *sip.Request) (sip.URI, bool) {
 	return top, top.User != "" && p.towardUE([]sip.URI{top})
 }
 
-// TS 24.229 §5.2.6.3.2A
+// TS 24.229 clause 5.2.6.3.2A
 func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 	if req.Method == "REGISTER" || req.Method == "ACK" || req.Method == "CANCEL" || toTag(req) != "" {
 		return false
@@ -70,7 +66,9 @@ func (p *PCSCF) unregisteredOrigin(req *sip.Request) bool {
 	return !ok
 }
 
-// TS 24.229 §5.2.6.3.3, §5.2.6.3.7, §5.2.6.3.11
+// TS 24.229 clause 5.2.6.3.3
+// TS 24.229 clause 5.2.6.3.7
+// TS 24.229 clause 5.2.6.3.11
 func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	reg, ok := p.ueRegistration(req)
 	if !ok {
@@ -122,7 +120,6 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 		return
 	}
 
-	// TS 24.229 §5.2.10.3, §5.2.10.4: the IMS has no E-CSCF, so an emergency request is not forwarded.
 	if emergencyURN(out.URI) {
 		p.log.InfoContext(ctx, "emergency request refused: emergency sessions are not handled", slog.String("impi", reg.IMPI),
 			slog.String("method", req.Method), slog.String("uri", out.URI.String()))
@@ -221,9 +218,9 @@ func (p *PCSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 	}
 }
 
-// TS 24.229 §5.2.6.4.3, §5.2.6.4.7
+// TS 24.229 clause 5.2.6.4.3
+// TS 24.229 clause 5.2.6.4.7
 func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, top sip.URI) {
-	// A call the P-CSCF does not put through to the UE ends by the network.
 	refuse := func(res *sip.Response) {
 		p.cfg.Records.RejectingRequest(req, res.StatusCode, tx.ToTag())
 		p.respond(ctx, tx, res)
@@ -232,7 +229,6 @@ func (p *PCSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 	if !p.fromCore(req) {
 		p.log.WarnContext(ctx, "request toward a UE from outside the core", slog.String("method", req.Method),
 			slog.String("source", req.Flow.Remote.String()), slog.String("local", req.Flow.Local.String()))
-		// Not reported to the call records: its ICID is not to be trusted.
 		p.respond(ctx, tx, sip.NewResponse(req, 403, ""))
 
 		return
@@ -333,7 +329,7 @@ func (p *PCSCF) callEvent(c *call) func(context.Context, proxy.DialogEvent) {
 	}
 }
 
-// TS 29.214 §5.4
+// TS 29.214 clause 5.4
 func (p *PCSCF) servedIdentities(f flow, called string) []string {
 	if called != "" {
 		return []string{strings.Trim(called, "<>")}
@@ -348,7 +344,8 @@ func (p *PCSCF) servedIdentities(f flow, called string) []string {
 	return nil
 }
 
-// TS 24.229 §5.2.8.1, TS 33.203 §7.4.2a
+// TS 24.229 clause 5.2.8.1
+// TS 33.203 clause 7.4.2a
 func (p *PCSCF) dialogTarget(
 	ue proxy.Side, token string, local netip.Addr,
 ) func(context.Context, proxy.Side, *sip.Request) (proxy.Target, error) {
@@ -400,7 +397,8 @@ func setRoutes(req *sip.Request, routes []sip.Address) {
 	req.Header.Add("Route", strings.Join(values, ", "))
 }
 
-// TS 24.229 §5.2.6.3.1, RFC 3325 §9.1
+// TS 24.229 clause 5.2.6.3.1
+// RFC 3325 section 9.1
 func assertedIdentities(preferred []sip.Address, associated []string) []string {
 	var (
 		out              []string
@@ -438,7 +436,7 @@ func assertedIdentities(preferred []sip.Address, associated []string) []string {
 	return out
 }
 
-// TS 24.229 §5.2.6.3.1
+// TS 24.229 clause 5.2.6.3.1
 func matchIdentity(associated []string, u sip.URI) (string, bool) {
 	if id, ok := matchURI(associated, u.String()); ok {
 		return id, true
@@ -473,7 +471,8 @@ func telForm(u sip.URI) sip.URI {
 	return t
 }
 
-// TS 24.229 §5.2.6.3.5, §5.2.6.3.9 steps 1 and 2
+// TS 24.229 clause 5.2.6.3.5
+// TS 24.229 clause 5.2.6.3.9
 func (p *PCSCF) fromUEInDialog(ctx context.Context, req, out *sip.Request, d *proxy.Dialog) *sip.Response {
 	c := callOf(d)
 	if c == nil {
@@ -533,8 +532,7 @@ func (p *PCSCF) newChargingVector(local netip.Addr) chargingVector {
 	}
 }
 
-// parseChargingVector parses a P-Charging-Vector, keeping its values as they are on the wire, quoted or not
-// (RFC 7315 §5.6).
+// RFC 7315 section 5.6
 func parseChargingVector(s string) (chargingVector, bool) {
 	ps, err := sip.ParseParams(s)
 	if err != nil {
@@ -590,7 +588,10 @@ func (cv chargingVector) set(req *sip.Request) {
 	}
 }
 
-// TS 24.229 §5.2.6.4.4 step 6, §5.2.6.4.6, §5.2.6.4.8, §5.2.6.4.10
+// TS 24.229 clause 5.2.6.4.4
+// TS 24.229 clause 5.2.6.4.6
+// TS 24.229 clause 5.2.6.4.8
+// TS 24.229 clause 5.2.6.4.10
 func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 	res.Header.Del("P-Charging-Vector")
 
@@ -602,7 +603,8 @@ func (p *PCSCF) respondCharging(req *sip.Request, res *sip.Response) {
 	res.Header.Add("P-Charging-Vector", chargingVector{icid: cv.icid, origIOI: cv.origIOI, termIOI: p.cfg.HomeDomain}.String())
 }
 
-// TS 24.229 §5.2.6.3.5 step 7, §5.2.6.3.9 step 3
+// TS 24.229 clause 5.2.6.3.5
+// TS 24.229 clause 5.2.6.3.9
 func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVector {
 	if c := callOf(d); c != nil && c.icid != "" {
 		return chargingVector{icid: c.icid, origIOI: p.cfg.HomeDomain, access: c.policy.takeCharging()}
@@ -611,7 +613,8 @@ func (p *PCSCF) inDialogCharging(req *sip.Request, d *proxy.Dialog) chargingVect
 	return p.newChargingVector(req.Flow.Local.Addr())
 }
 
-// TS 24.229 §4.4, §5.2.1
+// TS 24.229 clause 4.4
+// TS 24.229 clause 5.2.1
 func toUERequest(req *sip.Request) {
 	kept := keptTowardUE(req.Header)
 
@@ -629,9 +632,13 @@ func toUEResponse(res *sip.Response) {
 	res.Header = append(res.Header, kept...)
 }
 
-// RFC 3325, RFC 5009, TS 24.229 §5.2.6.4.2, §4.4.13, TS 24.237 §4.4.4,
-// RFC 7044 §10.1.2. Resource-Priority goes to the UE, which echoes it in the requests of the dialog (TS 24.229
-// §5.1).
+// RFC 3325
+// RFC 5009
+// TS 24.229 clause 5.2.6.4.2
+// TS 24.229 clause 4.4.13
+// TS 24.237 clause 4.4.4
+// RFC 7044 section 10.1.2
+// TS 24.229 clause 5.1
 func keptTowardUE(h sip.Header) []sip.Field {
 	priv, err := h.Privacy()
 	private := err != nil
@@ -661,7 +668,7 @@ func keptTowardUE(h sip.Header) []sip.Field {
 	return kept
 }
 
-// RFC 7044 §10.1.2
+// RFC 7044 section 10.1.2
 func publicHistory(v string) string {
 	var out []string
 
@@ -674,20 +681,21 @@ func publicHistory(v string) string {
 	return strings.Join(out, ", ")
 }
 
-// TS 24.229 §5.2.6.4.1, RFC 5009
+// TS 24.229 clause 5.2.6.4.1
+// RFC 5009
 func earlyMediaSupported(h sip.Header) bool {
 	em, ok, err := h.EarlyMedia()
 	return ok && err == nil && em.Has(sip.EarlyMediaSupported)
 }
 
-// TS 24.229 §5.2.1
+// TS 24.229 clause 5.2.1
 func dropFromAll(del func(string) int) {
 	for _, name := range []string{"P-Charging-Vector", "P-Charging-Function-Addresses", "P-Media-Authorization"} {
 		del(name)
 	}
 }
 
-// TS 24.229 §5.2.1 step 8
+// TS 24.229 clause 5.2.1
 func removeLocationSource(req *sip.Request) {
 	values := req.Header.Values("Geolocation")
 	if !slices.ContainsFunc(values, func(v string) bool { return strings.Contains(strings.ToLower(v), "loc-src") }) {

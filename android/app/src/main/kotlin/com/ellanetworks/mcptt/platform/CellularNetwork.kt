@@ -14,27 +14,19 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 
-/** The cellular network the session runs on, and the device's addresses on it. */
 data class Cellular(val network: Network, val addresses: List<InetAddress>) {
-    /** The device's address of the P-CSCF's family, a global one. */
     fun local(pcscf: InetAddress): InetAddress? = addresses.firstOrNull {
         (it is Inet4Address) == (pcscf is Inet4Address) && !it.isLinkLocalAddress
     }
 
-    /** Binds socket [fd], valid during the call only, to the network. */
     fun bind(fd: Int) = ParcelFileDescriptor.fromFd(fd).use { network.bindSocket(it.fileDescriptor) }
 }
 
-/**
- * The cellular network of the app (decision 8: cellular only): the unrestricted one with internet (decision 9: the IMS
- * network is restricted to the system), requested so that it stays up with Wi-Fi the default.
- */
 class CellularNetwork(context: Context) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private val state = MutableStateFlow<Cellular?>(null)
     private val links = HashMap<Network, LinkProperties>()
 
-    /** The network, or null without one. */
     val current: StateFlow<Cellular?> = state.asStateFlow()
 
     private val callback = object : ConnectivityManager.NetworkCallback() {

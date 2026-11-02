@@ -74,7 +74,6 @@ func (s *ipsecScene) originateWith(t *testing.T, u *ue, offer bool) (*sip.Reques
 	return s.originateBody(t, u, body)
 }
 
-// originateBody sends an INVITE from the UE with the given SDP offer, none when nil.
 func (s *ipsecScene) originateBody(t *testing.T, u *ue, offer []byte) (*sip.Request, *sip.Request, sip.Flow) {
 	t.Helper()
 
@@ -270,7 +269,7 @@ func TestCallMediaAuthorizedOnTheTerminatingAnswer(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.4: no STR without a successful initial AA-Answer.
+// TS 29.214 clause 4.4.4
 func TestCallMediaUnansweredReleasesTheCall(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	got, f := s.originate(t, u)
@@ -297,7 +296,7 @@ func TestCallMediaUnansweredReleasesTheCall(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 24.379 §6.5: an MCPTT INVITE carries its SDP next to other bodies. The media is authorised all the same.
+// TS 24.379 clause 6.5
 func TestCallMediaAuthorizedFromMultipartBodies(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 

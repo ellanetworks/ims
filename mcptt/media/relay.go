@@ -14,61 +14,38 @@ import (
 	"github.com/ellanetworks/ims/mcptt/rtp"
 )
 
-// Config is the configuration of a relay.
 type Config struct {
-	Network Network
-	// Clock is the time of the media reports; time.Now without one.
-	Clock interface{ Now() time.Time }
-	// Addr is the address the relay's sockets bind; Advertise the one of the SDP c= lines, Addr if invalid.
-	Addr, Advertise netip.Addr
-	// MinPort, MaxPort are the range of the ports of the legs: audio on an even port, its RTCP on the next (RFC
-	// 3550 §11) unless multiplexed (RFC 5761), floor control on a port of its own when not on the shared one.
+	Network          Network
+	Clock            interface{ Now() time.Time }
+	Addr, Advertise  netip.Addr
 	MinPort, MaxPort uint16
-	// ControlPort is the port the control channels share (TS 24.380 §4.3.3.1); one the system chooses if zero.
-	ControlPort uint16
-	// ReportInterval is the least time between two reports of the media of a leg; 200 ms if zero: well below T1, at
-	// least floor.MinT1, and T103 (TS 24.380 §11.1).
-	ReportInterval time.Duration
-	// Logger logs, at debug, the floor control messages the relay drops; none without one.
-	Logger *slog.Logger
+	ControlPort      uint16
+	ReportInterval   time.Duration
+	Logger           *slog.Logger
 }
 
-// Relay is the media plane of the server: its ports, the shared control port, and the calls on them.
 type Relay struct {
 	cfg     Config
 	control Conn
 
-	// ports serializes the allocation of ports; next is where the next search starts, MinPort at first and never
-	// below, so that a port freed is taken again last.
 	ports sync.Mutex
 	used  map[uint16]bool
 	next  int
 
-	// ids guards the identifiers the legs are found by and the SSRCs the relay assigned, which every packet on the
-	// shared control port reads.
-	ids sync.RWMutex
-	// floor are the legs on the shared control port by the SSRC the server assigned each in mc_floor_ssrc, peers
-	// by the address of their control channel, of peers that do not multiplex (§14.4).
-	floor map[uint32]*Leg
-	peers map[netip.AddrPort]*Leg
-	// audio are the Audio SSRCs assigned (§6.3.4.4.2 1f).
-	audio map[uint32]bool
-	// legs are the legs open, closed with the relay; closed, that the relay is, so that no leg is added.
+	ids    sync.RWMutex
+	floor  map[uint32]*Leg
+	peers  map[netip.AddrPort]*Leg
+	audio  map[uint32]bool
 	legs   map[*Leg]bool
 	closed bool
 
 	stats Stats
 }
 
-// Stats are the counters of a relay, since it started.
 type Stats struct {
-	// Packets and Octets received; Forwarded, the packets sent to the receivers; Dropped, those received and
-	// not forwarded: of a leg without permission, of a payload type other than its leg's, malformed, or floor
-	// control of no leg open (of a call released, or an SSRC and a source the relay does not know).
 	Packets, Octets, Forwarded, Dropped atomic.Uint64
 }
 
-// New starts a relay: its shared control port open.
 func New(cfg Config) (*Relay, error) {
 	if cfg.Clock == nil {
 		cfg.Clock = systemClock{}
@@ -109,11 +86,8 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-// Stats are the counters of r.
 func (r *Relay) Stats() *Stats { return &r.stats }
 
-// Close closes the shared control port and the legs, and returns once their readers returned (Conn.Close): a leg
-// added after it gets ErrClosed.
 func (r *Relay) Close() error {
 	r.ids.Lock()
 	r.closed = true
@@ -131,17 +105,13 @@ func (r *Relay) Close() error {
 	return r.control.Close()
 }
 
-// advertised is a local address of the relay as the SDP has it.
 func (r *Relay) advertised(a netip.AddrPort) netip.AddrPort {
 	return netip.AddrPortFrom(r.cfg.Advertise, a.Port())
 }
 
-// ErrNoPort is the error of a range without the ports a leg needs.
 var ErrNoPort = errors.New("media: no port left")
 
-// listen opens sockets on consecutive ports of the range, one per handler: an even first port for audio (RFC 3550
-// §11), any for a control channel. The ports are reserved under the lock and the sockets opened outside it, which the
-// allocations of the other calls wait for.
+// RFC 3550 section 11
 func (r *Relay) listen(even bool, hs ...func([]byte, netip.AddrPort)) ([]Conn, error) {
 	r.ports.Lock()
 	defer r.ports.Unlock()
@@ -167,7 +137,6 @@ func (r *Relay) listen(even bool, hs ...func([]byte, netip.AddrPort)) ([]Conn, e
 			return cs, nil
 		}
 
-		// Taken outside the relay: the next ones.
 		r.mark(p, len(hs), false)
 	}
 
@@ -213,8 +182,6 @@ func (r *Relay) open(port uint16, hs []func([]byte, netip.AddrPort)) ([]Conn, er
 	return cs, nil
 }
 
-// release closes the sockets cs, then frees their ports: closed outside the lock, which the allocations of the other
-// calls wait for.
 func (r *Relay) release(cs ...Conn) {
 	ports := make([]uint16, 0, 3)
 
@@ -233,7 +200,7 @@ func (r *Relay) release(cs ...Conn) {
 	}
 }
 
-// assign is a new random SSRC, not in taken (RFC 3550 §8.1).
+// RFC 3550 section 8.1
 func assign(taken func(uint32) bool) uint32 {
 	for {
 		if ssrc := rand.Uint32(); !taken(ssrc) {
@@ -242,8 +209,9 @@ func assign(taken func(uint32) bool) uint32 {
 	}
 }
 
-// register records the identifiers of l: its Audio SSRC, unique among the relay's (TS 24.380 §6.3.4.4.2 1f), and
-// on the shared control port the SSRC of its control channel, unique on it (§14.2.7, §14.3.8); ErrClosed once r is.
+// TS 24.380 clause 6.3.4.4.2
+// TS 24.380 clause 14.2.7
+// TS 24.380 clause 14.3.8
 func (r *Relay) register(l *Leg) error {
 	r.ids.Lock()
 	defer r.ids.Unlock()
@@ -283,7 +251,6 @@ func (r *Relay) unregister(l *Leg) {
 	}
 }
 
-// byPeer has l found by the address of its peer's control channel on the shared port.
 func (r *Relay) byPeer(l *Leg, peer netip.AddrPort, on bool) {
 	r.ids.Lock()
 	defer r.ids.Unlock()
@@ -299,8 +266,8 @@ func (r *Relay) byPeer(l *Leg, peer netip.AddrPort, on bool) {
 	}
 }
 
-// receiveControl is a datagram on the shared control port: its floor control messages, each to the leg whose SSRC
-// is in its header (TS 24.380 §4.3.3.1, §8.1.2), or to the leg of its source, of a peer that does not multiplex.
+// TS 24.380 clause 4.3.3.1
+// TS 24.380 clause 8.1.2
 func (r *Relay) receiveControl(b []byte, from netip.AddrPort) {
 	ps, err := rtp.ParseRTCP(b)
 	if err != nil {
@@ -331,7 +298,6 @@ func (r *Relay) receiveControl(b []byte, from netip.AddrPort) {
 	}
 }
 
-// dropFloor counts and logs a floor control message the relay drops, of from, for why.
 func (r *Relay) dropFloor(app *rtp.App, from netip.AddrPort, why string) {
 	r.stats.Dropped.Add(1)
 	r.cfg.Logger.Debug("floor control message dropped", slog.String("reason", why), slog.String("from", from.String()),

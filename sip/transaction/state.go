@@ -44,8 +44,7 @@ type core struct {
 	forget  func()
 	onError func(error)
 	onEnd   []func()
-	// finish, when set, is told of the end of the transaction, with its error, under its lock.
-	finish func(err error)
+	finish  func(err error)
 
 	mu       sync.Mutex
 	cond     sync.Cond
@@ -60,8 +59,6 @@ type core struct {
 	ran      uint64
 	draining bool
 
-	// sending counts the sends of the transaction in the outboxes of the layer; dropped is set once its user dropped
-	// it (Layer.Drop): what it queued is not sent.
 	sending int
 	dropped bool
 
@@ -144,8 +141,6 @@ func (tx *core) drain() {
 	tx.mu.Unlock()
 }
 
-// push sends a message of the transaction on the flow f, in the order of the flow (outbox); result, when not nil,
-// receives the outcome under the lock of the transaction.
 func (tx *core) push(f sip.Flow, send func() error, result func(error)) {
 	tx.sending++
 

@@ -41,7 +41,6 @@ export const gridSx = {
   },
 };
 
-// NameCell is a name above its identity, when the name is not the identity's short form.
 export function NameCell({ name, id }: { name: string; id: string }) {
   return (
     <Stack sx={{ minWidth: 0 }}>
@@ -55,7 +54,6 @@ export function NameCell({ name, id }: { name: string; id: string }) {
   );
 }
 
-// matches reports whether a user matches a search: of its name, MCPTT ID or IMS identities.
 const matches = (u: MCPTTUser, search: string) => {
   const s = search.toLowerCase();
   return [u.alias, u.mcptt_id, ...u.impus].some((v) =>

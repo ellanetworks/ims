@@ -24,7 +24,6 @@ class PttControllerTest {
         assertEquals(listOf("talk g c1", "release c1"), log)
     }
 
-    // Both down: one press, released by the last up.
     @Test
     fun twoSources() {
         assertEquals("c1", ptt.press(SCREEN, "g"))
@@ -35,7 +34,6 @@ class PttControllerTest {
         assertEquals(listOf("talk g c1", "release c1"), log)
     }
 
-    // An up of a source not down releases nothing.
     @Test
     fun upNotDown() {
         ptt.press(SCREEN, "g")
@@ -43,7 +41,6 @@ class PttControllerTest {
         assertEquals(listOf("talk g c1"), log)
     }
 
-    // Refused: nothing held, its up releases nothing.
     @Test
     fun refused() {
         refuse = true
@@ -52,7 +49,6 @@ class PttControllerTest {
         assertEquals(emptyList<String>(), log)
     }
 
-    // The held call ended: the next down talks anew, the old press forgotten.
     @Test
     fun endedWhileHeld() {
         ptt.press(SCREEN, "g")

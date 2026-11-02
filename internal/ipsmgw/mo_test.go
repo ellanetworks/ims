@@ -13,11 +13,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// submitTPDU is an SMS-SUBMIT.
 var submitTPDU = []byte{0x01, 0x07, 0x0b, 0x91, 0x51, 0x55, 0x21, 0x03, 0x00, 0xf2, 0x00, 0x00, 0x02, 0xe8, 0x34}
 
-// message sends a MESSAGE of the sender alice, from the S-CSCF, of body and the extra header fields, and returns
-// the response.
 func (w *world) message(contentType string, body []byte, extra ...string) *sip.Response {
 	w.t.Helper()
 
@@ -47,8 +44,6 @@ func (w *world) message(contentType string, body []byte, extra ...string) *sip.R
 	return res
 }
 
-// answered takes the MESSAGE of the IP-SM-GW that answers a short message, answers it 200, and returns it and its
-// RPDU.
 func (w *world) answered() (*sip.Request, sms.RPMessage) {
 	w.t.Helper()
 
@@ -78,8 +73,8 @@ func rpData(t *testing.T, sc *sms.Address) []byte {
 	return b
 }
 
-// A short message goes to the SMSC of its service centre address, and the SMSC's submit report back to the sender,
-// in a MESSAGE of the IP-SM-GW (TS 24.341 §5.3.3.4.1, §5.3.3.4.3).
+// TS 24.341 clause 5.3.3.4.1
+// TS 24.341 clause 5.3.3.4.3
 func TestShortMessageSubmitted(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.smscs.ui = []byte{0x01, 0x00, 0x62, 0x90}
@@ -124,7 +119,7 @@ func TestShortMessageSubmitted(t *testing.T) {
 	}
 }
 
-// A refusal of the SMSC, or no SMSC, is an RP-ERROR of the cause of TS 23.040 §11.3.
+// TS 23.040 clause 11.3
 func TestShortMessageRefused(t *testing.T) {
 	congestion := sgd.CauseSCCongestion
 
@@ -166,8 +161,8 @@ func TestShortMessageRefused(t *testing.T) {
 	}
 }
 
-// A notification of available memory gets an RP-ERROR #69, of no ReadyForSM over Diameter (TS 23.040 §11.2); an
-// RP-DATA that does not decode, an RP-ERROR #96, and one of an unknown type #97 (TS 24.011 §9.3).
+// TS 23.040 clause 11.2
+// TS 24.011 clause 9.3
 func TestOtherRPDUs(t *testing.T) {
 	smma, _ := (&sms.RPSMMA{Reference: 7}).MarshalBinary()
 
@@ -203,8 +198,6 @@ func TestOtherRPDUs(t *testing.T) {
 	}
 }
 
-// A MESSAGE gets the 403 of no IP-SM-GW without an SMSC, a 488 of an In-Reply-To of no short message the IP-SM-GW
-// delivered, and a 415 of another body.
 func TestMessageRefused(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 
@@ -226,7 +219,7 @@ func TestMessageRefused(t *testing.T) {
 	w.scscf.RecvNone(0)
 }
 
-// An RP-DATA without a TPDU is of invalid mandatory information (TS 24.011 §9).
+// TS 24.011 clause 9
 func TestShortMessageWithoutTPDU(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 

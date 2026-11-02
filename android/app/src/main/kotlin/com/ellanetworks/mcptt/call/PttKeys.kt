@@ -7,14 +7,7 @@ import android.content.IntentFilter
 import android.util.Log
 import androidx.core.content.ContextCompat
 
-/**
- * A device's PTT key, as its vendor broadcasts it to the app chosen for it: the Crosscall Core-Z5's (Settings →
- * Buttons → the button's long press → "Push to Talk application"), FUNCTION_KEY_DOWN_PRESSED at the key's down and
- * FUNCTION_KEY_RELEASED at its up, sent by the system with the screen off too (android_ptt_keys.md). Held, it talks to
- * the selected group ([group]), as the screen's PTT does.
- */
 class PttKeys(private val context: Context, private val ptt: PttController, private val group: () -> String?) {
-    /** The key down. */
     private var down = false
 
     private val receiver = object : BroadcastReceiver() {
@@ -31,7 +24,6 @@ class PttKeys(private val context: Context, private val ptt: PttController, priv
             addAction(DOWN)
             addAction(UP)
         }
-        // Not exported: the system sends them, which reaches a receiver of any app; another app may not.
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 

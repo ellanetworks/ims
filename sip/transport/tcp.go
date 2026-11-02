@@ -139,13 +139,10 @@ func (t *Transport) dial(c *conn) {
 		},
 	}
 
-	// Plain TCP, as the listeners (listen.Pair), whatever GODEBUG=multipathtcp says.
 	d.SetMultipathTCP(false)
 
 	nc, err := t.dialFunc(t.ctx, &d, network("tcp", c.flow.Remote.Addr()), c.flow.Remote.String())
 
-	// The kernel refuses the flow's 4-tuple while the peer's connection of the same flow holds it, established but not
-	// yet accepted: accept hands that connection to c.
 	if errors.Is(err, syscall.EADDRNOTAVAIL) {
 		t.awaitAccept(c)
 	}
@@ -271,7 +268,6 @@ func (t *Transport) accept(l *listener) {
 	}
 }
 
-// adopt gives the dial under way of c the connection the peer dialed of the same flow.
 func (t *Transport) adopt(c *conn, nc *net.TCPConn) {
 	c.nc = nc
 	c.limit.Store(int64(t.idleTimeout))
@@ -287,7 +283,6 @@ func (t *Transport) adopt(c *conn, nc *net.TCPConn) {
 func (t *Transport) readTCP(c *conn) {
 	defer t.wg.Done()
 
-	// cause is why the connection ends: an error of the other end or of the network, or the transport's own closing.
 	var cause error
 
 	defer func() { t.forget(c, cause) }()
@@ -374,7 +369,6 @@ func tooLargeResponse(req *sip.Request) *sip.Response {
 	return res
 }
 
-// forget closes c, ended by cause, and tells OnConnectionLost, unless the transport closed it.
 func (t *Transport) forget(c *conn, cause error) {
 	c.close()
 

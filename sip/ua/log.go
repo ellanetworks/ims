@@ -7,9 +7,6 @@ import (
 	"github.com/ellanetworks/ims/sip/dialog"
 )
 
-// The log records of a dialog carry its Call-ID and tags (RFC 3261 §12), those of a request outside one its Call-ID,
-// so that the records of one call can be found together.
-
 func dialogAttr(id dialog.ID) slog.Attr {
 	return slog.Group("dialog",
 		slog.String("call_id", id.CallID), slog.String("local_tag", id.LocalTag), slog.String("remote_tag", id.RemoteTag))
@@ -18,8 +15,6 @@ func dialogAttr(id dialog.ID) slog.Attr {
 func callAttr(req *sip.Request) slog.Attr {
 	return slog.String("call_id", req.Header.CallID())
 }
-
-// The loggers of a dialog are made once, on the strand of the dialog.
 
 func (s *Session) logger() *slog.Logger {
 	if s.log == nil {

@@ -8,8 +8,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/floorctl"
 )
 
-// FuzzServer drives a server and its members by the bytes of the input, and checks after each input that at most one
-// member may talk, that only its media is forwarded, and that every message sent is one TS 24.380 §8.2 allows.
 func FuzzServer(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
 	f.Add([]byte{3, 3, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 6})

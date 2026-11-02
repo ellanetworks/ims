@@ -15,8 +15,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// spanNamed waits for the one span of a name and kind: a server span ends once its handler returns, which may be after
-// the client has the response.
 func spanNamed(t *testing.T, rec *tracetest.SpanRecorder, name string, kind trace.SpanKind) sdktrace.ReadOnlySpan {
 	t.Helper()
 
@@ -50,8 +48,6 @@ func attr(s sdktrace.ReadOnlySpan, key attribute.Key) string {
 	return v.AsString()
 }
 
-// TestRequestsToThePCFAreTraced checks that each request to the PCF has a client span named by the TS 29.514
-// resource it targets, and carries the span's trace context to the PCF.
 func TestRequestsToThePCFAreTraced(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	f := newTracedFixture(t, pcftest.Config{}, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
@@ -91,8 +87,6 @@ func TestRequestsToThePCFAreTraced(t *testing.T) {
 	}
 }
 
-// TestNotificationsContinueThePCFsTrace checks that a notification from the PCF has a server span, named by its route,
-// that continues the PCF's trace.
 func TestNotificationsContinueThePCFsTrace(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	f := newTracedFixture(t, pcftest.Config{}, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
@@ -130,8 +124,6 @@ func TestNotificationsContinueThePCFsTrace(t *testing.T) {
 	}
 }
 
-// TestOrphanDeleteIsLinkedToTheTermination checks that the delete of a context the P-CSCF no longer has, which follows
-// the 204 to the PCF's termination, is a trace of its own linked to the termination's server span.
 func TestOrphanDeleteIsLinkedToTheTermination(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	f := newTracedFixture(t, pcftest.Config{}, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))

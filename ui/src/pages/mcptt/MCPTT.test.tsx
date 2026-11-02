@@ -11,7 +11,6 @@ const serve = (...args: Parameters<typeof mcpttRoutes>) => {
   return fetch;
 };
 
-// requests are the bodies of the requests of method to path.
 const requests = (
   fetch: ReturnType<typeof serve>,
   method: string,
@@ -25,7 +24,6 @@ const requests = (
     )
     .map(([, init]) => JSON.parse(String(init?.body)));
 
-// renderAt renders the page at the tab of the path.
 const renderAt = (tab: string) =>
   renderWithClient(
     <MemoryRouter initialEntries={[`/ptt/${tab}`]}>
@@ -92,7 +90,6 @@ describe("MCPTT pages", () => {
     expect(within(rows[0]).getByText("alice")).toBeInTheDocument();
     expect(within(rows[0]).getByText("Fire")).toBeInTheDocument();
     await within(rows[0]).findByText("1 registered");
-    // bob has no alias: his short MCPTT ID is his name.
     expect(within(rows[1]).getByText("bob")).toBeInTheDocument();
     expect(within(rows[1]).getByText("None")).toBeInTheDocument();
   });

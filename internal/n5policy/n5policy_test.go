@@ -80,7 +80,7 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.2.2: only REQUESTED_SERVICE_TEMPORARILY_NOT_AUTHORIZED holds the same service information back.
+// TS 29.514 clause 4.2.2.2
 func TestClassifyRetryAfter(t *testing.T) {
 	temporary := &n5.Error{
 		Op: n5.OpCreate, Status: 403, RetryAfter: 30 * time.Second,
@@ -95,7 +95,6 @@ func TestClassifyRetryAfter(t *testing.T) {
 		t.Fatalf("Backoff = %s for a temporary refusal, want none", got)
 	}
 
-	// TS 29.500 §6.4.2: an overloaded PCF takes no request until Retry-After elapses.
 	overload := &n5.Error{Op: n5.OpCreate, Status: 503, RetryAfter: 30 * time.Second}
 	if got := policy.RetryAfter(classify(overload)); got != 0 {
 		t.Fatalf("RetryAfter = %s for an overload, want none", got)

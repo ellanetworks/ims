@@ -1,4 +1,3 @@
-// Package settings holds the IMS settings that live in the database and change at runtime, over the API.
 package settings
 
 import (
@@ -13,13 +12,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Settings are the settings of the IMS in the database. Their slices are never modified in place, so that a copy
-// can be read while the next is made.
 type Settings struct {
-	Operator Operator
-	// Peers are in the order they were created in.
-	Peers []Peer
-	// Routes has one route per routed application, in the order of RoutedApplications.
+	Operator    Operator
+	Peers       []Peer
 	Routes      []Route
 	Policy      Policy
 	CallRecords CallRecords
@@ -32,15 +27,13 @@ type Operator struct {
 	Numbering Numbering
 }
 
-// Numbering is how dial strings become E.164 numbers.
 type Numbering struct {
 	CountryCode         string
 	NationalPrefix      string
 	InternationalPrefix string
 }
 
-// HomeDomain is the home network domain name of the PLMN, as a UE without an ISIM derives it from its IMSI
-// (TS 23.003 §13.2). The names of the IMS are all derived from it.
+// TS 23.003 clause 13.2
 func (o Operator) HomeDomain() string {
 	mnc := o.MNC
 	if len(mnc) == 2 {
@@ -50,13 +43,10 @@ func (o Operator) HomeDomain() string {
 	return "ims.mnc" + mnc + ".mcc" + o.MCC + ".3gppnetwork.org"
 }
 
-// DiameterHost is the Origin-Host of the IMS. TS 23.003 has no operator subdomain under the IMS domain, unlike
-// node.epc (§19.4.2.8) and node.5gc (§28.17), so the host is directly under the home domain.
 func (o Operator) DiameterHost() string {
 	return "ims." + o.HomeDomain()
 }
 
-// DiameterRealm is the Origin-Realm of the IMS.
 func (o Operator) DiameterRealm() string {
 	return o.HomeDomain()
 }
@@ -69,30 +59,22 @@ func (o Operator) SCSCFHost() string {
 	return "scscf." + o.HomeDomain()
 }
 
-// SCSCFName is the SIP URI of the S-CSCF on a port, the Server-Name it gives the HSS.
 func (o Operator) SCSCFName(port int) string {
 	return "sip:" + o.SCSCFHost() + ":" + strconv.Itoa(port)
 }
 
-// SIPAliases are the host names the IMS answers to.
 func (o Operator) SIPAliases() []string {
 	return []string{o.HomeDomain(), o.PCSCFHost(), o.SCSCFHost()}
 }
 
-// SameIdentity reports whether two operators give the IMS the same names, so that changing from one to the other
-// needs no restart.
 func (o Operator) SameIdentity(p Operator) bool {
 	return o.HomeDomain() == p.HomeDomain()
 }
 
-// SameCore reports whether two settings run the same Diameter, policy function and SIP, and only differ in what
-// those read when they use it, such as the numbering plan or the call record retention.
 func (s Settings) SameCore(t Settings) bool {
 	return s.SameNode(t) && slices.EqualFunc(s.Peers, t.Peers, Peer.equal) && slices.Equal(s.Routes, t.Routes)
 }
 
-// SameNode reports whether t only changes the peers and routes of the running Diameter node, which it takes without
-// a restart: the S-CSCF, I-CSCF and P-CSCF send by realm, and the node listens on the same transports.
 func (s Settings) SameNode(t Settings) bool {
 	return s.Operator.SameIdentity(t.Operator) && s.Policy == t.Policy && slices.Equal(s.Transports(), t.Transports())
 }
@@ -121,8 +103,6 @@ func (s Settings) Validate() error {
 	return nil
 }
 
-// keepsPCRF refuses to take away the last peer serving rx while rx is the policy function, as every call would
-// then fail. Rx without any such peer yet is allowed: it is where a new install starts.
 func (s Settings) keepsPCRF(had bool) error {
 	if had && s.Policy.Interface == PolicyRx && len(s.Serving(ApplicationRx)) == 0 {
 		return conflictf("rx requires a Diameter peer serving rx")
@@ -168,7 +148,6 @@ type Store interface {
 	UpdateIPSMGW(ctx context.Context, g IPSMGW) error
 }
 
-// Live serves the current settings to the running IMS and persists changes before they take effect.
 type Live struct {
 	store Store
 	check func(context.Context, Settings) error
@@ -177,12 +156,9 @@ type Live struct {
 
 	mu      sync.Mutex
 	changed chan struct{}
-	// causes are the span contexts of the changes not yet taken by Take.
-	causes []trace.SpanContext
+	causes  []trace.SpanContext
 }
 
-// NewLive serves settings from a store. Check, if any, makes the checks the settings cannot make themselves, such
-// as against the configuration file, on every change, with the context of the change.
 func NewLive(store Store, initial Settings, check func(context.Context, Settings) error) *Live {
 	l := &Live{store: store, check: check, changed: make(chan struct{})}
 	l.current.Store(&initial)
@@ -190,7 +166,6 @@ func NewLive(store Store, initial Settings, check func(context.Context, Settings
 	return l
 }
 
-// Get returns the current settings. Callers must not modify its slices.
 func (l *Live) Get() Settings {
 	return *l.current.Load()
 }
@@ -202,7 +177,6 @@ func (l *Live) UpdateOperator(ctx context.Context, o Operator) error {
 	}, func() error { return l.store.UpdateOperator(ctx, o) })
 }
 
-// CreatePeer adds a peer, and returns it with the ID it was given.
 func (l *Live) CreatePeer(ctx context.Context, p Peer) (Peer, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -219,7 +193,6 @@ func (l *Live) CreatePeer(ctx context.Context, p Peer) (Peer, error) {
 	return p, err
 }
 
-// UpdatePeer replaces the peer of the same ID.
 func (l *Live) UpdatePeer(ctx context.Context, p Peer) error {
 	return l.change(ctx, func(next *Settings) error {
 		i, ok := next.peer(p.ID)
@@ -249,7 +222,6 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 	}, func() error { return l.store.DeletePeer(ctx, id) })
 }
 
-// UpdateRoute sets the realm of an application's requests.
 func (l *Live) UpdateRoute(ctx context.Context, r Route) error {
 	return l.change(ctx, func(next *Settings) error {
 		i := slices.IndexFunc(next.Routes, func(q Route) bool { return q.Application == r.Application })
@@ -285,8 +257,6 @@ func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {
 	}, func() error { return l.store.UpdateCallRecords(ctx, c) })
 }
 
-// change makes the next settings with edit, checks them, then saves and applies them. The span context of ctx is kept
-// for Take, so that what the change does later is linked to it.
 func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save func() error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -313,7 +283,6 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save
 
 	l.current.Store(&next)
 
-	// Bounded, the latest kept, should nothing take them.
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		l.causes = append(l.causes[max(0, len(l.causes)+1-maxCauses):], sc)
 	}
@@ -324,7 +293,6 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save
 	return nil
 }
 
-// Changed returns a channel that is closed on the next successful update.
 func (l *Live) Changed() <-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -332,11 +300,8 @@ func (l *Live) Changed() <-chan struct{} {
 	return l.changed
 }
 
-// maxCauses is the most span contexts of changes Live keeps for Take.
 const maxCauses = 32
 
-// Take returns the current settings and the span contexts of the changes that made them since the last Take, for the
-// work that applies them, which starts later, to link to.
 func (l *Live) Take() (Settings, []trace.SpanContext) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

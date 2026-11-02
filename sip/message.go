@@ -52,8 +52,6 @@ type Envelope struct {
 	Flow Flow
 }
 
-// SetBody replaces the body of the message. The Content-* header fields describe the body, so they are all
-// replaced: use SetBodies to set others than Content-Type.
 func (e *Envelope) SetBody(contentType string, body []byte) {
 	e.Header = slices.DeleteFunc(e.Header, func(f Field) bool { return isContentField(f.Name) })
 

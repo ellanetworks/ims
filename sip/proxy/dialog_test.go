@@ -576,7 +576,6 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The caller gets the release's 500 only when it is released too.
 			code := 0
 			if tc.toward&proxy.Caller != 0 {
 				code = 500
@@ -651,7 +650,7 @@ func TestDialogLate2xxAfterRelease(t *testing.T) {
 	}
 }
 
-// RFC 3261 §16.8: a branch that rang past Timer C is cancelled; if the callee answers anyway, the call is answered.
+// RFC 3261 section 16.8
 func TestDialogAnsweredAfterTimerC(t *testing.T) {
 	clock := siptest.NewClock()
 	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true, clock: clock})
@@ -711,8 +710,6 @@ func TestDialogLate2xxWithAnOffer(t *testing.T) {
 	wantRequest(t, s.callee, "BYE")
 }
 
-// TestDialogEndedWithTheStatusSentUpstream checks that a failed INVITE ends its dialog with the status the caller
-// got, which is not always the callee's.
 func TestDialogEndedWithTheStatusSentUpstream(t *testing.T) {
 	for _, tc := range []struct{ callee, caller int }{{486, 486}, {503, 500}, {430, 480}} {
 		t.Run(strconv.Itoa(tc.callee), func(t *testing.T) {
@@ -738,7 +735,6 @@ func TestDialogTimerCWithoutAnswer(t *testing.T) {
 	answer(t, s.callee, c.fwd, c.f, 180)
 	wantResponse(t, s.caller, 180)
 
-	// RFC 3261 §16.8: the branch is cancelled; its 487 reaches the caller as a 408 the proxy generated.
 	clock.Advance(proxy.DefaultTimerC)
 	wantRequest(t, s.callee, "CANCEL")
 	s.r.noEvent()
@@ -1154,7 +1150,8 @@ func earlyAnswer(t *testing.T, s *scene, fwd *sip.Request, f sip.Flow, tag strin
 	return wantResponse(t, s.caller, 183)
 }
 
-// TS 29.214 Annex A.3.2, RFC 3264
+// TS 29.214 clause A.3.2
+// RFC 3264
 func TestDialogExchangePerEarlyDialog(t *testing.T) {
 	s := newScene(t, sip.TCP, routerConfig{opts: proxy.Options{RecordRoute: recordRoute}, track: true})
 
@@ -1188,8 +1185,6 @@ func TestDialogExchangePerEarlyDialog(t *testing.T) {
 	}
 }
 
-// TestDialogNegotiated checks that the session's exchanges are published once the dialog is answered: the one it
-// was answered with, then those that complete after.
 func TestDialogNegotiated(t *testing.T) {
 	for _, early := range []bool{false, true} {
 		t.Run(fmt.Sprintf("early answer %t", early), func(t *testing.T) {
@@ -1197,7 +1192,6 @@ func TestDialogNegotiated(t *testing.T) {
 
 			c := ring(s)
 
-			// respond sends the callee's response, with an SDP answer on port if any.
 			respond := func(code, port int) (sent, got *sip.Response) {
 				sent = sip.NewResponse(c.fwd, code, "")
 				_ = sent.Header.SetToTag("callee")
@@ -1254,7 +1248,6 @@ func TestDialogNegotiated(t *testing.T) {
 			sendFrom(t, s.caller, s.tr, ack)
 			wantRequest(t, s.callee, "ACK")
 
-			// A re-INVITE from the callee, which the caller answers.
 			_, got, f := c.request(proxy.Callee, "INVITE", 6000)
 			answer(t, s.caller, got, f, 200)
 			wantResponse(t, s.callee, 200)

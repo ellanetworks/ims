@@ -9,28 +9,25 @@ import (
 	"strings"
 )
 
-// Server is where a request to a URI goes: an address, and the transport to reach it over (RFC 3263 §4).
+// RFC 3263 section 4
 type Server struct {
 	Transport Transport
 	Addr      netip.AddrPort
 }
 
-// DNS is what a Resolver asks of the DNS; *net.Resolver has it.
 type DNS interface {
 	LookupSRV(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-// Resolver locates the servers of a SIP URI, over UDP or TCP (RFC 3263 §4). It makes no NAPTR query: it does what
-// RFC 3263 §4.1 says to do when a domain has none, the SRV queries of UDP then TCP, and the address records over UDP
-// when there is no SRV record either.
+// RFC 3263 section 4
+// RFC 3263 section 4.1
 type Resolver struct {
-	// DNS is nil for net.DefaultResolver.
 	DNS DNS
 }
 
-// Resolve returns the servers of u in the order to try them (RFC 3263 §4.2, RFC 2782): a URI with an IP address has
-// one, with no DNS query.
+// RFC 3263 section 4.2
+// RFC 2782
 func (r *Resolver) Resolve(ctx context.Context, u URI) ([]Server, error) {
 	if _, ok := u.Addr(); ok {
 		tr, dest, err := Destination(u)
@@ -56,7 +53,6 @@ func (r *Resolver) Resolve(ctx context.Context, u URI) ([]Server, error) {
 		transports = []Transport{tr}
 	}
 
-	// RFC 3263 §4.2: a port in the URI skips SRV.
 	if u.Port != 0 {
 		return r.addresses(ctx, u.Host, transports[0], u.Port)
 	}
@@ -71,8 +67,7 @@ func (r *Resolver) Resolve(ctx context.Context, u URI) ([]Server, error) {
 	return r.addresses(ctx, u.Host, transports[0], DefaultPort)
 }
 
-// srv returns the servers of the SRV records of the domain for a transport, in the order of RFC 2782, which
-// LookupSRV sorts them in. A domain without any has none.
+// RFC 2782
 func (r *Resolver) srv(ctx context.Context, domain string, tr Transport) ([]Server, error) {
 	_, records, err := r.dns().LookupSRV(ctx, "sip", strings.ToLower(string(tr)), domain)
 
@@ -88,7 +83,6 @@ func (r *Resolver) srv(ctx context.Context, domain string, tr Transport) ([]Serv
 	var out []Server
 
 	for _, rec := range records {
-		// RFC 2782: a target of "." means the service is not available at the domain.
 		if rec.Target == "." {
 			continue
 		}

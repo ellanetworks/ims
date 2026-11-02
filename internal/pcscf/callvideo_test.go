@@ -32,7 +32,8 @@ func wantBYE(t *testing.T, s *ipsecScene) {
 	wantReason503(t, bye)
 }
 
-// GSMA IR.94 §2.4.1, NG.114 §4.6.2: the call goes on as voice when only its video bearer is lost.
+// GSMA IR.94 section 2.4.1
+// GSMA NG.114 section 4.6.2
 func TestCallVideoLostContinuesAsVoice(t *testing.T) {
 	for _, action := range []rx.SpecificAction{
 		rx.ActionIndicationOfReleaseOfBearer, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfFailedResourcesAllocation,
@@ -51,7 +52,7 @@ func TestCallVideoLostContinuesAsVoice(t *testing.T) {
 	}
 }
 
-// TS 24.229 §6.1.1: the UE removes the lost video, and the call goes on as voice.
+// TS 24.229 clause 6.1.1
 func TestCallVideoLostThenRemoved(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -94,7 +95,7 @@ func TestCallVideoLostThenRemoved(t *testing.T) {
 	s.scscf.RecvNone(quiet)
 }
 
-// NG.114 §4.6.2: losing the voice bearer ends the call, video or not.
+// GSMA NG.114 section 4.6.2
 func TestCallVideoCallAudioLost(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -107,7 +108,6 @@ func TestCallVideoCallAudioLost(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// Video lost, then voice lost within the operator time: the call ends.
 func TestCallVideoThenAudioLost(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -120,7 +120,6 @@ func TestCallVideoThenAudioLost(t *testing.T) {
 	wantBYE(t, s)
 }
 
-// Video lost and the call kept, then voice lost on its own: the call ends.
 func TestCallVideoKeptThenAudioLost(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -135,7 +134,6 @@ func TestCallVideoKeptThenAudioLost(t *testing.T) {
 	wantBYE(t, s)
 }
 
-// An indication naming no flow covers every media of the call.
 func TestCallVideoCallAllLost(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -147,7 +145,6 @@ func TestCallVideoCallAllLost(t *testing.T) {
 	wantBYE(t, s)
 }
 
-// A refused video bearer during setup neither cancels nor fails the call.
 func TestCallVideoRefusedDuringSetup(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -160,7 +157,6 @@ func TestCallVideoRefusedDuringSetup(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// A call left with only video has no voice to go on with: losing the video ends it.
 func TestCallVideoOnlyLost(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)

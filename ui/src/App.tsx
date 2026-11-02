@@ -56,7 +56,6 @@ const pages: { path: string; element: ReactElement; permission: Permission }[] =
     },
   ];
 
-// Pages are the pages of the logged-in user's role. Any other path goes to its first page.
 function Pages() {
   const auth = useAuth();
   const home = auth.can("diameter:read") ? "/cores" : "/profile";

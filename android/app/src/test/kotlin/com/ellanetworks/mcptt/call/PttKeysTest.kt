@@ -35,7 +35,6 @@ class PttKeysTest {
         assertEquals(listOf("talk g", "release c"), log)
     }
 
-    // Stopped with the key down: released.
     @Test
     fun stoppedWhileDown() {
         keys.start()
@@ -46,7 +45,6 @@ class PttKeysTest {
         assertEquals(listOf("talk g", "release c"), log)
     }
 
-    // No group selected: the key does nothing.
     @Test
     fun noGroup() {
         group = null

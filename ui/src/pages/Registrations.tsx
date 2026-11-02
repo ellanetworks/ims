@@ -62,7 +62,6 @@ function NumberCell({ registration }: { registration: Registration }) {
 function DevicesCell({ registration }: { registration: Registration }) {
   const contacts = contactsOf(registration);
   const devices = devicesOf(contacts).length;
-  // RFC 3840 §9: the media its devices registered for.
   const media = [...new Set(contacts.flatMap((c) => c.media))];
 
   return (
@@ -160,7 +159,6 @@ export default function Registrations() {
       );
     },
   });
-  // A role that cannot re-authenticate has no Actions column.
   const canReauthenticate = useAuth().can("registration:reauthenticate");
   const columns = useMemo(
     () =>
@@ -185,7 +183,6 @@ export default function Registrations() {
   });
   const { data, isFetching } = registrations;
 
-  // The drawer follows the refreshed list, and keeps the registration it shows once it leaves the list.
   const shown = selected
     ? (data?.items.find((r) => r.impi === selected.impi) ?? selected)
     : null;

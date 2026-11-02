@@ -6,8 +6,7 @@ import (
 	"strconv"
 )
 
-// Refusal is an answer that refuses every stream of an offer (RFC 3264 §6): its media lines with port 0, under an
-// origin of its own.
+// RFC 3264 section 6
 func Refusal(offer []byte) ([]byte, error) {
 	s, err := Parse(offer)
 	if err != nil {
@@ -30,8 +29,7 @@ func Refusal(offer []byte) ([]byte, error) {
 	return s.Bytes(), nil
 }
 
-// Unchanged reports whether a session description repeats a previous one: the same origin, version included, which
-// makes it identical (RFC 3264 §8).
+// RFC 3264 section 8
 func Unchanged(prev, next []byte) bool {
 	p, err := Parse(prev)
 	if err != nil {

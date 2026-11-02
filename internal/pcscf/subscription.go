@@ -63,7 +63,6 @@ type subscriptions struct {
 	closed bool
 	byIMPI map[string]*subscription
 
-	// byDialog is the subscriptions by the Call-ID and local tag of their dialog, which a NOTIFY carries.
 	byDialog map[[2]string]*subscription
 }
 
@@ -314,7 +313,6 @@ func toTag(req *sip.Request) string {
 	return to.Tag()
 }
 
-// schedule arms the refresh of s, which ctx caused.
 func (ss *subscriptions) schedule(ctx context.Context, s *subscription) {
 	if s.timer != nil {
 		s.timer.Stop()
@@ -335,13 +333,11 @@ func (ss *subscriptions) schedule(ctx context.Context, s *subscription) {
 	s.timer = ss.p.clock.AfterFunc(max(at, minRefresh), func() { ss.detachedRefresh(cause, s) })
 }
 
-// detachedRefresh refreshes s from its timer, armed by cause: in a trace of its own, linked to cause.
 func (ss *subscriptions) detachedRefresh(cause trace.SpanContext, s *subscription) {
 	ctx, span := ss.p.detached.Start(ss.p.ctx, "reg event refresh", cause)
 	tracing.End(span, ss.refresh(ctx, s))
 }
 
-// refresh refreshes s, and returns why it could not send the re-SUBSCRIBE, if it had to and could not.
 func (ss *subscriptions) refresh(ctx context.Context, s *subscription) error {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -397,7 +393,6 @@ func (ss *subscriptions) refresh(ctx context.Context, s *subscription) error {
 	return nil
 }
 
-// removeLocked removes s; ctx is what removes it.
 func (ss *subscriptions) removeLocked(ctx context.Context, s *subscription) {
 	if s.removed {
 		return
@@ -427,7 +422,6 @@ func (ss *subscriptions) removeLocked(ctx context.Context, s *subscription) {
 	}
 }
 
-// saveLocked stores s; ctx is what changed it.
 func (ss *subscriptions) saveLocked(ctx context.Context, s *subscription) {
 	store := ss.p.cfg.Registrations
 	if store == nil || s.dialog == nil {
@@ -456,7 +450,6 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	// Only the subscription byIMPI holds: one it replaced has no NOTIFY to take.
 	if s := ss.byDialog[[2]string{id.CallID, id.LocalTag}]; s != nil && ss.byIMPI[s.impi] == s {
 		return s
 	}
@@ -464,13 +457,11 @@ func (ss *subscriptions) match(req *sip.Request) *subscription {
 	return nil
 }
 
-// put makes s the subscription of its private identity.
 func (ss *subscriptions) put(s *subscription) {
 	ss.byIMPI[s.impi] = s
 	ss.byDialog[[2]string{s.callID, s.localTag}] = s
 }
 
-// notified handles a NOTIFY of the subscription s: its response, and what to do once it is sent, if anything.
 func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip.Request) (*sip.Response, func()) {
 	state, ok, err := req.Header.SubscriptionState()
 	if !ok || err != nil {
@@ -479,8 +470,6 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 
 	terminated := state.State == sip.SubscriptionTerminated
 
-	// A document the P-CSCF cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2); the
-	// Subscription-State still applies (§4.1.3), and the P-CSCF asks for the full state again (RFC 3680 §5.2).
 	var (
 		info       *reginfo.Reginfo
 		unreadable bool
@@ -523,7 +512,6 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 			return sip.NewResponse(req, code, ""), nil
 		}
 
-		// The 200 below applies the Contact of the NOTIFY (RFC 6141 §4.6).
 		s.dialog.PrepareResponse(req, accepted)
 	case s.subscribe != nil:
 		d, err := dialog.NewFromNotify(s.subscribe, req)
@@ -534,14 +522,11 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 
 		s.dialog = d
 
-		// The 200 to the NOTIFY that creates the dialog carries its Record-Route (RFC 3261 §12.1.1).
 		if d != nil {
 			d.PrepareResponse(req, accepted)
 		}
 	}
 
-	// A NOTIFY refreshes the target of the dialog (RFC 6665 §4.4.1): its 200 carries the Contact of the P-CSCF in
-	// it, the one that created the dialog included (RFC 3261 §12.1.1).
 	if accepted.IsSuccess() && s.subscribe != nil && !accepted.Header.Has("Contact") {
 		accepted.Header.Set("Contact", s.subscribe.Header.Get("Contact"))
 	}
@@ -578,9 +563,8 @@ func (ss *subscriptions) notified(ctx context.Context, s *subscription, req *sip
 	return accepted, nil
 }
 
-// again asks for the full state of the subscription s after a document the P-CSCF could not read: a refresh of the
-// subscription, whose NOTIFY has the full state (RFC 3680 §5.2), or a new subscription if the NOTIFY ended it, unless
-// for a change of authorisation (RFC 6665 §4.1.3).
+// RFC 3680 section 5.2
+// RFC 6665 section 4.1.3
 func (ss *subscriptions) again(ctx context.Context, s *subscription, terminated bool, reason string) {
 	switch {
 	case !terminated:
@@ -596,7 +580,6 @@ func mediaType(ct string) string {
 	return strings.TrimSpace(mt)
 }
 
-// apply applies the reg event document of the NOTIFY ctx is of.
 func (p *PCSCF) apply(ctx context.Context, impi string, info reginfo.Reginfo) {
 	now := p.clock.Now()
 	ended := map[regKey]reginfo.Event{}
@@ -637,7 +620,6 @@ func (p *PCSCF) apply(ctx context.Context, impi string, info reginfo.Reginfo) {
 				active[uri], here = true, true
 
 				if c.Expires != nil {
-					// An xs:unsignedLong, bounded to what a time.Duration holds.
 					longest = max(longest, time.Duration(min(*c.Expires, uint64(math.MaxInt64/time.Second)))*time.Second)
 				}
 			}
@@ -684,9 +666,7 @@ func (p *PCSCF) apply(ctx context.Context, impi string, info reginfo.Reginfo) {
 	}
 }
 
-// sameFlow reports whether a contact of a reg event is bound through registration r's flow: the same
-// instance ID and reg-id, or none for a registration without the multiple registration mechanism. Flows
-// may share a contact URI (RFC 5626 §6).
+// RFC 5626 section 6
 func sameFlow(r *db.PCSCFRegistration, c reginfo.Contact) bool {
 	var params sip.Params
 

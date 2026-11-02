@@ -11,8 +11,6 @@ type Policy interface {
 	PolicyStatus() PolicyStatus
 }
 
-// PolicyStatus is the policy function the P-CSCF runs. Interface is empty without one. The state of an Rx peer is
-// in its Diameter peer; over N5, Last is the outcome of the last request to the PCF.
 type PolicyStatus struct {
 	Interface string
 	Endpoint  string
@@ -26,7 +24,6 @@ type PolicyResult struct {
 	Result    string
 }
 
-// PolicyParams are what an operator sets of the policy function. N5 is for the n5 interface only.
 type PolicyParams struct {
 	Interface string    `json:"interface"`
 	N5        *PolicyN5 `json:"n5,omitempty"`
@@ -41,8 +38,6 @@ type PolicyResponse struct {
 	Status PolicyStatusResponse `json:"status"`
 }
 
-// PolicyStatusResponse is the policy function as it runs, which may differ from its settings while the IMS
-// applies them, or if they no longer fit the configuration file.
 type PolicyStatusResponse struct {
 	Interface string              `json:"interface"`
 	Endpoint  string              `json:"endpoint,omitempty"`
@@ -62,7 +57,6 @@ func GetPolicy(cfg Config) http.Handler {
 	})
 }
 
-// UpdatePolicy replaces the policy function. Calls and registrations after the change use the new one.
 func UpdatePolicy(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params PolicyParams

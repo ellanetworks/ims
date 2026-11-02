@@ -14,7 +14,6 @@ import (
 
 var ErrDuplicateICID = errors.New("a call record has this ICID")
 
-// CallOutcome is how a call ended, from its final status, who ended it and whether a device rang.
 type CallOutcome string
 
 const (
@@ -27,7 +26,6 @@ const (
 	OutcomeFailed      CallOutcome = "failed"
 )
 
-// CallParty is the side that ended a call.
 type CallParty string
 
 const (
@@ -36,70 +34,40 @@ const (
 	PartyNetwork CallParty = "network"
 )
 
-// CallRecord is what the IMS observed of one call attempt, identified by its ICID. The fields follow the IMS CDR
-// parameters of TS 32.298 §5.1.3.1. Zero values are absent: a call in progress has no SIPStatus until its final
-// response, and no EndedBy until it ends.
+// TS 32.298 clause 5.1.3.1
 type CallRecord struct {
-	ID int64
-	// ICID is the icid-value of the P-Charging-Vector (§5.1.3.1.19).
-	ICID string
-	// SessionID is the Call-ID of the INVITE (§5.1.3.1.59).
-	SessionID string
-	// CallingParty is the P-Asserted-Identity of the INVITE (§5.1.3.1.24), empty when nothing was asserted.
-	CallingParty []string
-	// CallerIMPI is the private identity of the caller's registration (§5.1.3.1.36).
-	CallerIMPI string
-	// RequestedParty is the Request-URI as received from the UE (§5.1.3.1.43).
-	RequestedParty string
-	// CalledParty is the Request-URI the originating S-CSCF sent on (§5.1.3.1.9).
-	CalledParty string
-	// CalleeIMPI is the private identity of the registration that answered (§5.1.3.1.36).
-	CalleeIMPI string
-	// RequestedAt is when the INVITE was received from the UE (§5.1.3.1.58).
-	RequestedAt time.Time
-	// DeliveryStartAt is when the final response was sent toward the caller (§5.1.3.1.55).
+	ID              int64
+	ICID            string
+	SessionID       string
+	CallingParty    []string
+	CallerIMPI      string
+	RequestedParty  string
+	CalledParty     string
+	CalleeIMPI      string
+	RequestedAt     time.Time
 	DeliveryStartAt time.Time
-	// DeliveryEndAt is when an answered call ended (§5.1.3.1.54).
-	DeliveryEndAt time.Time
-	// SIPStatus is the final status of the INVITE.
-	SIPStatus int
-	Outcome   CallOutcome
-	EndedBy   CallParty
-	// Alerted reports whether a 180 reached the caller.
-	Alerted bool
-	// Media are the media types of the m= lines that an SDP answer accepted, derived from §5.1.3.1.49.
-	Media []string
-	// Incomplete reports that the record was closed without the end of its call, which the IMS lost.
-	Incomplete bool
+	DeliveryEndAt   time.Time
+	SIPStatus       int
+	Outcome         CallOutcome
+	EndedBy         CallParty
+	Alerted         bool
+	Media           []string
+	Incomplete      bool
 }
 
-// CallRecordFilter selects call records. Its zero value selects all.
 type CallRecordFilter struct {
-	// Search matches a part of an identity of the caller or the callee, or of the ICID.
-	Search string
-	// Start and End bound when the calls were requested, in [Start, End). A zero bound is open.
+	Search     string
 	Start, End time.Time
-	// Outcomes, if any, are the outcomes to select.
-	Outcomes []CallOutcome
+	Outcomes   []CallOutcome
 }
 
 const (
 	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
 		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete`
 
-	// callRecordBatch is how many records a statement deletes at a time, so that the SIP handling waiting on the
-	// database connection is not held up for long.
 	callRecordBatch = 1000
 )
 
-// SaveCallRecords inserts the records without an ID, giving them one, updates the others and deletes those of the
-// IDs in deleted, in one transaction. An update leaves the fields that never change after the record is inserted,
-// such as its ICID, as they were. Deleting a record that is not there is not an error. Inserting a record deletes
-// those of the earlier attempts of its Call-ID by its caller that failed, which it retries (RFC 3261 §8.1.3.5).
-//
-// A record that cannot be saved, because another record has its ICID, it breaks a constraint or it was deleted,
-// does not keep the others from being saved: its error is at its index in errs, which is nil if all were saved.
-// When the transaction itself fails, it saves none and returns err, and saving them again may succeed.
 func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -110,7 +78,6 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted
 
 	var inserted []*CallRecord
 
-	// The records inserted keep no ID when nothing was saved.
 	fail := func(err error) error {
 		_ = tx.Rollback()
 
@@ -159,8 +126,6 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted
 	return errs, nil
 }
 
-// isRecordError reports whether saving a call record failed for what the record holds, which trying again does
-// not change.
 func isRecordError(err error) bool {
 	var e sqlite3.Error
 
@@ -232,8 +197,6 @@ func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err err
 	return r, nil
 }
 
-// ListCallRecords returns a page of the records the filter selects, the most recently requested first, and their
-// count, both of the same snapshot of the database.
 func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) (_ []CallRecord, _ int, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -261,9 +224,6 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 	return records, total, nil
 }
 
-// PruneCallRecords deletes the records requested before a time, then the oldest beyond maxRows, and returns how
-// many it deleted. It deletes them in batches, so that the SIP handling waiting on the database connection is not
-// held up for long.
 func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -318,8 +278,6 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	return deleted, nil
 }
 
-// CloseOpenCallRecords marks the records of the calls that have not ended as incomplete, but for those of the
-// ICIDs in live, since the IMS lost them, and returns how many it marked.
 func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -342,7 +300,6 @@ func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (_ int64, 
 	return n, nil
 }
 
-// where is the condition of the filter, and its arguments.
 func (f CallRecordFilter) where() (string, []any) {
 	conds := []string{"1"}
 
@@ -445,7 +402,6 @@ func nonNilList(l []string) []string {
 	return l
 }
 
-// jsonList is a list as a JSON array, or NULL if empty.
 func jsonList(l []string) (sql.NullString, error) {
 	if len(l) == 0 {
 		return sql.NullString{}, nil

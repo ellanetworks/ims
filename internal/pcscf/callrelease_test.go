@@ -28,21 +28,18 @@ type callUp struct {
 	ue          *dialog.Dialog
 }
 
-// An originating call answered by the core with SDP in a 183.
 func (s *ipsecScene) establishEarly(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
 	t.Helper()
 
 	return s.establish(t, u, pcrf, false, sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
 }
 
-// An originating call answered by the core with SDP in a 183, then a 200, and ACKed.
 func (s *ipsecScene) establishConfirmed(t *testing.T, u *ue, pcrf *fakePCRF) *callUp {
 	t.Helper()
 
 	return s.establish(t, u, pcrf, true, sdpBody(ueAddr.String(), "4000"), sdpBody("192.0.2.9", "5000"))
 }
 
-// An originating audio and video call (components 1 and 2), answered in a 183, then a 200, and ACKed.
 func (s *ipsecScene) establishVideo(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool) *callUp {
 	t.Helper()
 
@@ -91,7 +88,7 @@ func (s *ipsecScene) establish(t *testing.T, u *ue, pcrf *fakePCRF, confirm bool
 	return e
 }
 
-// TS 24.229 §5.2.8.1: no cause received from the bearer layer.
+// TS 24.229 clause 5.2.8.1
 func wantReason503(t *testing.T, req *sip.Request) {
 	t.Helper()
 
@@ -100,7 +97,7 @@ func wantReason503(t *testing.T, req *sip.Request) {
 	}
 }
 
-// TS 24.229 §5.2.8.1.2: signalling bearer lost, BYE toward the remote party only.
+// TS 24.229 clause 5.2.8.1.2
 func TestCallAbortedWhileEstablished(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishConfirmed(t, u, pcrf)
@@ -124,7 +121,7 @@ func TestCallAbortedWhileEstablished(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 24.229 §5.2.8.1.1: signalling bearer lost during setup, CANCEL from the originating P-CSCF.
+// TS 24.229 clause 5.2.8.1.1
 func TestCallAbortedDuringSetup(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	e := s.establishEarly(t, u, pcrf)
@@ -144,7 +141,7 @@ func TestCallAbortedDuringSetup(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 24.229 §5.2.8.1.1: the terminating P-CSCF answers 500.
+// TS 24.229 clause 5.2.8.1.1
 func TestTerminatingCallAbortedDuringSetup(t *testing.T) {
 	s, u, pcrf, token := newRxIPsecScene(t)
 
@@ -205,7 +202,7 @@ func lossRAR(t *testing.T, s *ipsecScene, session string, components ...uint32) 
 	}
 }
 
-// TS 24.229 §5.2.8.1.2: media bearer lost, BYE toward the remote party once the operator timer expires.
+// TS 24.229 clause 5.2.8.1.2
 func TestCallMediaLostWhileEstablished(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -225,7 +222,7 @@ func TestCallMediaLostWhileEstablished(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// TS 24.229 §5.2.8.1.1: media bearer lost during setup, 500 to the INVITE and CANCEL with cause 503.
+// TS 24.229 clause 5.2.8.1.1
 func TestCallMediaLostDuringSetup(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -245,7 +242,7 @@ func TestCallMediaLostDuringSetup(t *testing.T) {
 	wantStatus(t, first(u.us.RecvResponse()), 500)
 }
 
-// TS 24.229 §5.2.8.1.2: a SIP message removing the lost media within the operator time keeps the call.
+// TS 24.229 clause 5.2.8.1.2
 func TestCallMediaLostThenRemoved(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -282,7 +279,7 @@ func TestCallMediaLostThenRemoved(t *testing.T) {
 	s.scscf.RecvNone(quiet)
 }
 
-// TS 24.229 §5.2.8.1.2: each indication counts, a later one naming the active media included.
+// TS 24.229 clause 5.2.8.1.2
 func TestCallMediaLostIndicationsMerge(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -298,7 +295,7 @@ func TestCallMediaLostIndicationsMerge(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.8.1.2: only media still authorised counts.
+// TS 24.229 clause 5.2.8.1.2
 func TestCallMediaLostOnInactiveMedia(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -310,7 +307,6 @@ func TestCallMediaLostOnInactiveMedia(t *testing.T) {
 	s.scscf.RecvNone(quiet)
 }
 
-// The media-loss timer stops with the call.
 func TestCallMediaLossTimerStopsWithTheCall(t *testing.T) {
 	clk, opt := mediaLossClock()
 	s, u, pcrf, _ := newRxIPsecScene(t, opt)
@@ -340,7 +336,6 @@ func TestCallMediaLossTimerStopsWithTheCall(t *testing.T) {
 	}
 }
 
-// coreAnswer sends a response to the INVITE got from the core, with an SDP answer on port unless empty.
 func (s *ipsecScene) coreAnswer(got *sip.Request, f sip.Flow, code int, tag, port string) {
 	res := s.coreResponse(got, code, tag)
 	if port != "" {
@@ -350,7 +345,7 @@ func (s *ipsecScene) coreAnswer(got *sip.Request, f sip.Flow, code int, tag, por
 	s.scscf.Send(f.Transport, f.Remote, res)
 }
 
-// TS 29.214 Annex A.3
+// TS 29.214 clause A.3
 func TestForkedCallMedia(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	_, got, f := s.originateWith(t, u, true)
@@ -392,7 +387,7 @@ func TestForkedCallMedia(t *testing.T) {
 	}
 }
 
-// RFC 3262 §5: the answer to an offer in a reliable 183 comes in the PRACK.
+// RFC 3262 section 5
 func TestCallMediaAnsweredInThePrack(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, false)
@@ -439,7 +434,7 @@ func TestCallMediaAnsweredInThePrack(t *testing.T) {
 	}
 }
 
-// RFC 3264: the answer to an offer in the 2xx comes in the ACK.
+// RFC 3264
 func TestCallMediaAnsweredInTheAck(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 	invite, got, f := s.originateWith(t, u, false)
@@ -474,7 +469,7 @@ func TestCallMediaAnsweredInTheAck(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.1: the same service information is not sent again within the Retry-Interval.
+// TS 29.214 clause 4.4.1
 func TestCallMediaRetryInterval(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 
@@ -499,7 +494,8 @@ func TestCallMediaRetryInterval(t *testing.T) {
 	pcrf.none()
 }
 
-// TS 24.229 §5.2.7.2, §7.2A.5.2.7
+// TS 24.229 clause 5.2.7.2
+// TS 24.229 clause 7.2A.5.2.7
 func TestCallAccessNetworkChargingInfo(t *testing.T) {
 	s, u, pcrf, _ := newRxIPsecScene(t)
 

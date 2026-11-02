@@ -17,11 +17,8 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// errNoCore is of a request of the IP-SM-GW while the core restarts, without a Diameter node to send it.
 var errNoCore = errors.New("the IMS core is restarting")
 
-// startIPSMGW starts the IP-SM-GW under homeDomain: named after it, its host resolved to it in memory through the
-// IMS.
 func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 	a, err := ipsmgw.Start(ctx, ipsmgw.Config{
 		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain,
@@ -40,7 +37,6 @@ func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 	return nil
 }
 
-// stopIPSMGW stops the IP-SM-GW, if it runs, until ctx is done.
 func (s *Server) stopIPSMGW(ctx context.Context) {
 	a := s.ipsmgw.Swap(nil)
 	if a == nil {
@@ -54,28 +50,21 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 	}
 }
 
-// resubscribeIPSMGW has the IP-SM-GW, if it runs, subscribe to the reg event package of its registrations of no
-// subscription, now that a core runs to take the SUBSCRIBEs.
 func (s *Server) resubscribeIPSMGW(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
 		a.Resubscribe(ctx)
 	}
 }
 
-// ipsmgwNumberChanged has the IP-SM-GW, if it runs, register the new number of the settings at the HSS. ctx is the
-// trace of the change.
 func (s *Server) ipsmgwNumberChanged(ctx context.Context) {
 	if a := s.ipsmgw.Load(); a != nil {
 		a.NumberChanged(ctx)
 	}
 }
 
-// shClient is the Sh client of the IP-SM-GW, through the Diameter node of the running core, to the realm of the
-// settings for sh.
 type shClient struct{ s *Server }
 
-// UpdateSMSRegistration sends the Sh-Update of the SMSRegistrationInfo of user (TS 29.328 §6.1.2.1 step 4b): of the
-// IP-SM-GW number, or of an empty one, which deregisters the IP-SM-GW.
+// TS 29.328 clause 6.1.2.1
 func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, number string) error {
 	core := c.s.core.Load()
 	if core == nil {
@@ -87,7 +76,6 @@ func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, n
 		return err
 	}
 
-	// An IMPU is in its canonical form over Diameter (TS 23.003 §13.4).
 	id := sh.UserIdentity{MSISDN: user.MSISDN}
 	if user.MSISDN == "" {
 		id.PublicIdentity = user.IMPU.Identity().String()
@@ -106,7 +94,6 @@ func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, n
 		return err
 	}
 
-	// Not connected to the HSS, the update fails at once, and is tried again later (or not, at shutdown).
 	ans, err := observedDiameter{core.node, c.s.metrics}.Send(ctx, req, diameter.FailFast())
 	if err != nil {
 		return fmt.Errorf("Sh-Update: %w", err)
@@ -123,12 +110,9 @@ func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, n
 	return nil
 }
 
-// smscAttemptTimeout bounds the forwarding of a short message to an SMSC: within the TR1M of the UE, 35 to 45 s (TS
-// 24.011 §10), for the next SMSC to have time too.
+// TS 24.011 clause 10
 const smscAttemptTimeout = 10 * time.Second
 
-// smscClient is the SGd client of the IP-SM-GW toward the SMSCs of the settings, through the Diameter node of the
-// running core.
 type smscClient struct{ s *Server }
 
 func (c smscClient) Any() bool {
@@ -141,9 +125,7 @@ func (c smscClient) Any() bool {
 	return false
 }
 
-// Forward sends the short message to the SMSCs of its service centre address, by priority, to the host of each
-// connected one, in the realm it gave in its capabilities exchange (TS 29.338 §6.3.1.1), until one answers: the
-// answer of an SMSC is final, that it accepted the message or not.
+// TS 29.338 clause 6.3.1.1
 func (c smscClient) Forward(ctx context.Context, m sgd.MOForwardShortMessage) ([]byte, error) {
 	smscs := c.s.settings.Get().SMSCs(m.ServiceCentreAddress)
 	if len(smscs) == 0 {
@@ -189,7 +171,6 @@ func (c smscClient) Forward(ctx context.Context, m sgd.MOForwardShortMessage) ([
 
 		cancel()
 
-		// The next SMSC only of a request not sent: another, sent again, could deliver the message twice.
 		if errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver) {
 			continue
 		}
@@ -209,8 +190,6 @@ func (c smscClient) Forward(ctx context.Context, m sgd.MOForwardShortMessage) ([
 	return nil, fmt.Errorf("OFR: %w", err)
 }
 
-// s6cClient is the S6c client of the IP-SM-GW toward the HSS, through the Diameter node of the running core, to the
-// realm of the settings for s6c.
 type s6cClient struct{ s *Server }
 
 func (c s6cClient) send(ctx context.Context, build func(tgpp.Envelope) (*diameter.Message, error)) (*diameter.Message, error) {
@@ -252,8 +231,6 @@ func (c s6cClient) ReportSMDeliveryStatus(ctx context.Context, rep s6c.DeliveryR
 	return s6c.ParseReportSMDeliveryStatusAnswer(ans)
 }
 
-// nodesClient is the SGd client of the IP-SM-GW toward the MMEs, SGSNs and SMSFs the HSS names, through the Diameter
-// node of the running core, to a peer of their host.
 type nodesClient struct{ s *Server }
 
 func (c nodesClient) Forward(ctx context.Context, host, realm string, m sgd.MTForwardShortMessage) ([]byte, error) {
@@ -282,8 +259,6 @@ func (c nodesClient) Forward(ctx context.Context, host, realm string, m sgd.MTFo
 	return res.SMRPUI, nil
 }
 
-// ipsmgwHandler serves the requests of the IP-SM-GW of the HSS and the SMSCs: the Send Routing Info for SM the HSS
-// forwards (S6c), and the MT Forward Short Message of the SMS-GMSC (SGd), to the IP-SM-GW that runs.
 type ipsmgwHandler struct {
 	as func() *ipsmgw.AS
 }

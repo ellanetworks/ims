@@ -13,41 +13,27 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// maxExpires is the Expires of an affiliation PUBLISH of a user interested in a group (TS 24.379 §9.2.1.2 step 5a).
+// TS 24.379 clause 9.2.1.2
 const maxExpires = "4294967295"
 
-// ErrNotPublished is the error of de-affiliating from all groups without an affiliation published: an initial
-// PUBLISH carries a body (RFC 3903 §4.2), so the client does not remove the implicit affiliations of its user
-// profile, which end with the registration.
 var ErrNotPublished = errors.New("client: no affiliation published")
 
-// errPublicationEnded is the error of a PUBLISH whose publication ended without a response to tell.
 var errPublicationEnded = errors.New("client: the affiliation publication ended")
 
-// publication is the publication of the affiliations of the client (TS 24.379 §9.2.1.2) on a sip/ua publication:
-// its PUBLISHes one at a time, refreshed as their 2xx grants (RFC 3903 §4.1), published anew after a 412 (§4.4).
+// TS 24.379 clause 9.2.1.2
+// RFC 3903 section 4.1
+// RFC 3903 section 4.4
 type publication struct {
-	p *ua.Publication
-	// waiting are told by the next 2xx or the end of the publication: the caller of its initial PUBLISH, those of
-	// a PUBLISH answered 412.
-	waiting []func(*sip.Response, error)
-	// removing is set by the removal; after are the groups to publish once removed, and their caller.
+	p         *ua.Publication
+	waiting   []func(*sip.Response, error)
 	removing  bool
 	after     []sip.URI
 	afterDone func(*sip.Response, error)
 }
 
-// Affiliate makes groups the groups the user is interested in at the client (TS 24.379 §9.2.1.2): the per-user
-// affiliation information of all of them published to the participating function or, without any, the publication
-// removed (step 4, Expires 0), which de-affiliates the client from those it had; ErrNotPublished without one. done
-// receives the final response, or the error of the transaction; of a modification answered 412, the response to the
-// publication sent anew (RFC 3903 §4.4).
-//
-// Every PUBLISH carries the mcptt-info naming the user (step 2), its refreshes and its removal too, and the
-// modifications the state of all the groups (NOTE 4). They go one at a time, the latest state sent after the one in
-// flight; the client refreshes the publication before the expiry its 2xx grants (RFC 3903 §6 step 4). ctx carries the
-// trace of the PUBLISH, as of the requests of sip/ua; the groups published once a removal in flight ends, and the
-// refreshes, are traces of their own.
+// TS 24.379 clause 9.2.1.2
+// RFC 3903 section 4.4
+// RFC 3903 section 6
 func (c *Client) Affiliate(ctx context.Context, groups []sip.URI, done func(res *sip.Response, err error)) error {
 	if done == nil {
 		done = func(*sip.Response, error) {}
@@ -64,7 +50,6 @@ func (c *Client) Affiliate(ctx context.Context, groups []sip.URI, done func(res 
 	case pb == nil:
 		return c.publish(ctx, groups, done)
 	case pb.removing:
-		// Published once removed, the latest groups only.
 		if stale := pb.afterDone; stale != nil {
 			c.st.Post(func() { stale(nil, ua.ErrStale) })
 		}
@@ -81,7 +66,6 @@ func (c *Client) Affiliate(ctx context.Context, groups []sip.URI, done func(res 
 	case len(groups) == 0:
 		err := pb.p.Remove(ctx, done)
 		if errors.Is(err, ua.ErrState) {
-			// Ended, its handler yet to run.
 			c.aff = nil
 			return ErrNotPublished
 		}
@@ -105,7 +89,7 @@ func (c *Client) Affiliate(ctx context.Context, groups []sip.URI, done func(res 
 	return err
 }
 
-// publish sends the initial PUBLISH of groups (TS 24.379 §9.2.1.2), with c.mu held.
+// TS 24.379 clause 9.2.1.2
 func (c *Client) publish(ctx context.Context, groups []sip.URI, done func(*sip.Response, error)) error {
 	state, err := c.presence(groups)
 	if err != nil {
@@ -117,7 +101,6 @@ func (c *Client) publish(ctx context.Context, groups []sip.URI, done func(*sip.R
 		return err
 	}
 
-	// Steps 1, 5a.
 	req := sip.NewRequest("PUBLISH", c.cfg.ParticipatingPSI)
 	req.Header.Set("To", sip.Address{URI: c.cfg.ParticipatingPSI}.String())
 	req.Header.Set("Event", "presence")
@@ -143,7 +126,6 @@ func (c *Client) publish(ctx context.Context, groups []sip.URI, done func(*sip.R
 	return nil
 }
 
-// modified is the final response to a modification: a 412 waits for the publication sent anew.
 func (c *Client) modified(pb *publication, done func(*sip.Response, error), res *sip.Response, err error) {
 	if err == nil && res.StatusCode == 412 {
 		c.mu.Lock()
@@ -157,7 +139,6 @@ func (c *Client) modified(pb *publication, done func(*sip.Response, error), res 
 	done(res, err)
 }
 
-// published is a 2xx to a PUBLISH of the publication.
 func (c *Client) published(pb *publication, res *sip.Response) {
 	c.mu.Lock()
 	ws := pb.waiting
@@ -169,8 +150,6 @@ func (c *Client) published(pb *publication, res *sip.Response) {
 	}
 }
 
-// publicationEnded is the end of the publication: removed, rejected or expired; the groups asked for meanwhile then
-// published anew.
 func (c *Client) publicationEnded(pb *publication, e ua.End) {
 	c.mu.Lock()
 
@@ -185,7 +164,6 @@ func (c *Client) publicationEnded(pb *publication, e ua.End) {
 
 	if done != nil {
 		if c.aff == nil {
-			// Later than the Affiliate that asked for them: a trace of its own.
 			err = c.publish(context.Background(), groups, done)
 		} else {
 			err = ua.ErrStale
@@ -208,13 +186,13 @@ func (c *Client) publicationEnded(pb *publication, e ua.End) {
 	}
 }
 
-// presence is the per-user affiliation information of groups (TS 24.379 §9.3.1.2, §9.2.1.2 step 5).
+// TS 24.379 clause 9.3.1.2
+// TS 24.379 clause 9.2.1.2
 func (c *Client) presence(groups []sip.URI) (sip.BodyPart, error) {
 	p := pidf.Presence{Entity: c.cfg.MCPTTID.String(), Tuples: []pidf.Tuple{{ID: c.cfg.ClientID}}}
 
 	var st pidfmc.Status
 	for _, g := range groups {
-		// 5e: neither status nor expires.
 		st.Affiliations = append(st.Affiliations, pidfmc.Affiliation{Group: g.String()})
 	}
 
@@ -234,7 +212,6 @@ func (c *Client) presence(groups []sip.URI) (sip.BodyPart, error) {
 	return sip.NewBodyPart(pidf.ContentType, doc), nil
 }
 
-// pid is a globally unique <p-id> (step 5f): 128 random bits.
 func pid() string {
 	var b [16]byte
 

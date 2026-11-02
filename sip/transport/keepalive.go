@@ -11,11 +11,9 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// ErrNoPong is the error of a keep-alive the other end did not answer (RFC 5626 §4.4.1): the flow failed.
+// RFC 5626 section 4.4.1
 var ErrNoPong = errors.New("sip/transport: keep-alive not answered")
 
-// pongs are the keep-alives waiting for their answers: on a TCP connection, the next CRLF on it; on UDP, the STUN
-// Binding response of the request's transaction ID.
 type pongs struct {
 	mu  sync.Mutex
 	tcp map[*conn][]chan struct{}
@@ -26,9 +24,9 @@ func newPongs() *pongs {
 	return &pongs{tcp: map[*conn][]chan struct{}{}, udp: map[[12]byte]chan struct{}{}}
 }
 
-// Ping sends a keep-alive on flow f and waits for its answer until ctx is done (RFC 5626 §4.4.1, §4.4.2): a double
-// CRLF on its TCP connection, answered by a CRLF; on UDP, a STUN Binding request from its local address (RFC 5389
-// §7.1), answered by its response. It fails with ErrNoPong without one.
+// RFC 5626 section 4.4.1
+// RFC 5626 section 4.4.2
+// RFC 5389 section 7.1
 func (t *Transport) Ping(ctx context.Context, f sip.Flow) error {
 	switch f.Transport {
 	case sip.TCP:
@@ -78,7 +76,6 @@ func (t *Transport) pingTCP(ctx context.Context, f sip.Flow) error {
 	return awaitPong(ctx, ch, f)
 }
 
-// tcpPong is a CRLF on c: the answer to its keep-alives.
 func (t *Transport) tcpPong(c *conn) {
 	t.pongs.mu.Lock()
 	defer t.pongs.mu.Unlock()
@@ -129,7 +126,6 @@ func (t *Transport) pingUDP(ctx context.Context, f sip.Flow) error {
 	return awaitPong(ctx, ch, f)
 }
 
-// udpPong is a STUN message received: the answer to a keep-alive, if a Binding response of one's transaction ID.
 func (t *Transport) udpPong(data []byte) {
 	if len(data) < stunHeaderSize || binary.BigEndian.Uint16(data[0:2]) != stunBindingResponse ||
 		binary.BigEndian.Uint32(data[4:8]) != stunMagicCookie {

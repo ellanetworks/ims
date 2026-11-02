@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// RFC 3841 §7.2.5.
+// RFC 3841 section 7.2.5
 func TestCallerPreferenceExample(t *testing.T) {
 	contacts := map[string]string{
 		"u1": `<sip:u1@h.example.com>;audio;video;methods="INVITE,BYE";q=0.2`,
@@ -69,8 +69,8 @@ func TestCallerPreferenceExample(t *testing.T) {
 	}
 }
 
+// RFC 3840 section 5
 func TestParseFeatureSet(t *testing.T) {
-	// RFC 3840 §5.
 	a, err := ParseAddress(`<sip:user@pc.example.com>;mobility="fixed";events="!presence,message-summary";language="en,de"` +
 		`;description="<PC>";+sip.newparam;+rangeparam="#-4:+5.125";other-param=66372;q=0.5`)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestParseFeatureSet(t *testing.T) {
 	}
 }
 
-// TS 24.229 §7.9.2: a URN value is percent-encoded in a token.
+// TS 24.229 clause 7.9.2
 func TestFeatureICSI(t *testing.T) {
 	for _, v := range []string{
 		`"urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`,
@@ -132,7 +132,6 @@ func TestFeatureICSI(t *testing.T) {
 		t.Errorf("TRUE encoded as %s=%s", p.Name, p.Value)
 	}
 
-	// TS 24.379 §6.2.1: the Accept-Contact of an MCPTT request matches the Contact of an MCPTT client.
 	var h Header
 
 	h.Add("Accept-Contact", `*;+g.3gpp.mcptt;require;explicit`)
@@ -173,14 +172,14 @@ func TestFeatureTagNames(t *testing.T) {
 		}
 	}
 
-	// RFC 3841 §7.2.3: a "+" parameter for a base tag already there is ignored.
 	fs, err := ParseFeatureSet(Params{{Name: "+sip.video", Value: `"FALSE"`}, {Name: "video"}, {Name: "reg-id", Value: "1"}})
 	if err != nil || len(fs) != 1 || fs.Tokens("sip.video")[0] != "TRUE" {
 		t.Errorf("features %+v, %v", fs, err)
 	}
 }
 
-// RFC 2533 matching, as RFC 3841 §7.2.4 uses it.
+// RFC 2533
+// RFC 3841 section 7.2.4
 func TestFeatureMatching(t *testing.T) {
 	for _, tc := range []struct {
 		pref, contact string
@@ -274,8 +273,7 @@ func equalFeatureSets(a, b FeatureSet) bool {
 	return true
 }
 
-// TS 24.229 §7.2A.8.2: only the URN of g.3gpp.icsi-ref and g.3gpp.iari-ref is percent-encoded; unescaped URNs, as some
-// clients send them, are accepted.
+// TS 24.229 clause 7.2A.8.2
 func TestFeatureURNLeniency(t *testing.T) {
 	var h Header
 
@@ -300,7 +298,6 @@ func TestFeatureURNLeniency(t *testing.T) {
 	}
 }
 
-// A malformed predicate is left out whole; the others stay. A contact keeps its valid features.
 func TestFeaturePartialParsing(t *testing.T) {
 	var h Header
 
@@ -330,7 +327,6 @@ func TestFeaturePartialParsing(t *testing.T) {
 }
 
 func TestFeatureStrings(t *testing.T) {
-	// RFC 3840 §9: a string-value holds quoted-pairs.
 	fs, err := ParseFeatureSet(Params{{Name: "+sip.foo", Value: `"<a\"b\>c>"`}})
 	if err != nil || fs.Tokens("sip.foo")[0] != `a"b>c` {
 		t.Fatalf("features %+v, %v", fs, err)
@@ -346,7 +342,6 @@ func TestFeatureStrings(t *testing.T) {
 		t.Errorf("%s=%s: %+v, %v", p.Name, p.Value, again, err)
 	}
 
-	// RFC 3840 §5: a string value is alone and not negated.
 	for _, term := range []FeatureTerm{
 		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureString, Text: "a", Negated: true}}},
 		{Tag: "sip.foo", Values: []FeatureValue{{Kind: FeatureString, Text: "a"}, {Text: "b"}}},
@@ -360,7 +355,6 @@ func TestFeatureStrings(t *testing.T) {
 		}
 	}
 
-	// RFC 3841 §7.2.3 step 3.
 	fs, err = ParseFeatureSet(Params{{Name: "+video", Value: `"FALSE"`}, {Name: "video"}})
 	if err != nil || len(fs) != 1 || fs.Tokens("sip.video")[0] != "TRUE" {
 		t.Errorf("+video next to video: %+v, %v", fs, err)
@@ -391,7 +385,7 @@ func TestCallerPreferenceValue(t *testing.T) {
 	}
 }
 
-// RFC 3840 §9: a base tag given as its feature parameter is the sip. tag, and encodes back without a "+".
+// RFC 3840 section 9
 func TestNewFeatureBaseParam(t *testing.T) {
 	for _, name := range []string{"audio", "Video", "sip.audio"} {
 		f := NewFeature(name)

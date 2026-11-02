@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// active brings a subscription of sb to n up: its 200 with Expires, then an active NOTIFY.
 func active(t *testing.T, sb *subscriber, n *notifier, expires string, notifyState string) *ua.Subscription {
 	t.Helper()
 
@@ -27,8 +26,7 @@ func active(t *testing.T, sb *subscriber, n *notifier, expires string, notifySta
 	return s
 }
 
-// RFC 6665 §4.1.3: a NOTIFY's expires moves the expiry, without pushing the refresh toward it: the refresh still
-// comes halfway through the duration the 2xx granted.
+// RFC 6665 section 4.1.3
 func TestRefreshDoesNotDrift(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -40,7 +38,6 @@ func TestRefreshDoesNotDrift(t *testing.T) {
 		sb.next("notify")
 	}
 
-	// 270 s in: the refresh is due at 300 s, not later.
 	advance(clock, 31*time.Second, sb.p)
 
 	if req := n.recvSubscribe(); req.Header.Get("Expires") != "600" {
@@ -48,8 +45,7 @@ func TestRefreshDoesNotDrift(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.3: a subscription granted for more than 1200 s is refreshed 600 s before it expires, also once a
-// NOTIFY shortened it.
+// TS 24.229 clause 5.1.1.3
 func TestRefreshBeforeShortenedExpiry(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -66,7 +62,7 @@ func TestRefreshBeforeShortenedExpiry(t *testing.T) {
 	n.recvSubscribe()
 }
 
-// RFC 6665 §4.1.2.4: a terminated NOTIFY overtaking the 2xx ends the subscription; the 2xx then reports nothing.
+// RFC 6665 section 4.1.2.4
 func TestNothingAfterEnded(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
@@ -84,8 +80,7 @@ func TestNothingAfterEnded(t *testing.T) {
 	sb.none()
 }
 
-// RFC 6665 §4.1.2.2: a refresh repeats the bodies of the initial SUBSCRIBE, or those of its Change; an unsubscribe
-// has none.
+// RFC 6665 section 4.1.2.2
 func TestRefreshBodies(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	filter := sip.NewBodyPart("application/simple-filter+xml", []byte("<filter-set/>"))
@@ -130,7 +125,7 @@ func TestRefreshBodies(t *testing.T) {
 	}
 }
 
-// RFC 3261 §22.2: a challenged refresh is built anew, Prepare's header fields once.
+// RFC 3261 section 22.2
 func TestChallengedRefresh(t *testing.T) {
 	sb, n := newSubscriberWith(t, nil, func(c *ua.Config) {
 		prepare := c.Prepare
@@ -160,8 +155,7 @@ func TestChallengedRefresh(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.3: an unsubscribe waits for the terminated NOTIFY, not for another one; one that fails ends the
-// subscription.
+// RFC 6665 section 4.1.2.3
 func TestUnsubscribeWaitsAndFails(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -171,7 +165,6 @@ func TestUnsubscribeWaitsAndFails(t *testing.T) {
 
 	n.respond(n.recvSubscribe(), 200, "0")
 
-	// A NOTIFY crossing the unsubscribe does not end the wait for the terminated one.
 	n.notify(n.tag, "active;expires=600")
 	sb.next("notify")
 	advance(clock, 20*time.Second, sb.p)
@@ -195,8 +188,8 @@ func TestUnsubscribeWaitsAndFails(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3, §4.2.2: a NOTIFY the application refuses with 481 ends the subscription; one it refuses with 400
-// leaves it.
+// RFC 6665 section 4.1.3
+// RFC 6665 section 4.2.2
 func TestNotifyVerdict(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
@@ -227,7 +220,7 @@ func TestNotifyVerdict(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3: expires 0 leaves the subscription to its terminated NOTIFY, or to expire.
+// RFC 6665 section 4.1.3
 func TestNotifyExpiresZero(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -243,7 +236,7 @@ func TestNotifyExpiresZero(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.2.1.1: without Expires in the 2xx, the duration asked for.
+// RFC 6665 section 4.2.1.1
 func TestNoExpiresInTheResponse(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 
@@ -252,7 +245,7 @@ func TestNoExpiresInTheResponse(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.2.1.1: a 423 is answered with its Min-Expires, initial SUBSCRIBE and refresh alike.
+// RFC 6665 section 4.2.1.1
 func TestIntervalTooBriefSubscription(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := sb.subscribe(n)
@@ -285,7 +278,8 @@ func TestIntervalTooBriefSubscription(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.2, RFC 5839: a 204 to a refresh brings no NOTIFY; Timer N stops.
+// RFC 6665 section 4.1.2.2
+// RFC 5839
 func TestRefreshWithoutNotify(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -297,7 +291,6 @@ func TestRefreshWithoutNotify(t *testing.T) {
 
 	n.respond(n.recvSubscribe(), 204, "600")
 
-	// The 204 is taken before the clock passes Timer N.
 	if res := recv(t, done).res; res.StatusCode != 204 {
 		t.Fatalf("refresh %d", res.StatusCode)
 	}
@@ -306,7 +299,6 @@ func TestRefreshWithoutNotify(t *testing.T) {
 	sb.none()
 }
 
-// A notifier whose fork was refused gets a 481 to its next NOTIFYs, Forked not asked again.
 func TestRefusedForkStaysRefused(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	active(t, sb, n, "600", "active")
@@ -326,7 +318,6 @@ func TestRefusedForkStaysRefused(t *testing.T) {
 	sb.none()
 }
 
-// Drop ends a subscription without a SUBSCRIBE; its NOTIFYs then get a 481.
 func TestDrop(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
@@ -344,8 +335,9 @@ func TestDrop(t *testing.T) {
 	}
 }
 
-// RFC 5057 §5.3, §5.6: in the dialog of a subscription, another event's NOTIFY gets a 489, BYE a 481, OPTIONS a 200,
-// SUBSCRIBE a 603; a refresh failure that destroys the dialog ends the subscription (RFC 5057 §5.1).
+// RFC 5057 section 5.3
+// RFC 5057 section 5.6
+// RFC 5057 section 5.1
 func TestSubscriptionDialogRequests(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := active(t, sb, n, "600", "active")
@@ -383,7 +375,6 @@ func TestSubscriptionDialogRequests(t *testing.T) {
 	}
 }
 
-// Shutdown unsubscribes, and answers the terminated NOTIFY that follows with a 200.
 func TestShutdownWaitsForTheTerminatedNotify(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	active(t, sb, n, "600", "active")

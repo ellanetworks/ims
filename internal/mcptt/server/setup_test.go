@@ -18,8 +18,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// refuse has the participating function refuse at once the INVITEs to the user of name, with a 404 and the warning
-// text 141, as when its binding expired.
 func refuse(w *world, name string) {
 	server.InterposeTerminate(w.s, func(req *sip.Request, t participating.Termination) participating.Termination {
 		if strings.Contains(req.Header.Get("To"), name+"@") {
@@ -30,7 +28,6 @@ func refuse(w *world, name string) {
 	})
 }
 
-// failed places a call of u to group that fails, and returns its final response.
 func (w *world) failed(u *user, group string) *sip.Response {
 	t := w.t
 	t.Helper()
@@ -49,7 +46,6 @@ func (w *world) failed(u *user, group string) *sip.Response {
 	return res
 }
 
-// established places a call of u to group that is answered, and returns its 200 and the call.
 func (w *world) established(u *user, group string) (*client.Call, *sip.Response) {
 	t := w.t
 	t.Helper()
@@ -64,7 +60,6 @@ func (w *world) established(u *user, group string) (*client.Call, *sip.Response)
 	return c, event(u.expect(t, "established"), client.EventEstablished).Response
 }
 
-// request sends a request of method to target from outside, and returns the code of its final response.
 func (w *world) request(method, target string, header ...string) int {
 	p := w.n.Peer()
 	req := siptest.NewRequest(method, target, sip.UDP, p.Addr())
@@ -88,8 +83,7 @@ func (w *world) request(method, target string, header ...string) int {
 	}
 }
 
-// TS 24.379 §10.1.1.4.2 step 14 g v: bob, refused at once by the participating function, does not release the call
-// before carol is invited; carol accepts and alice's call starts.
+// TS 24.379 clause 10.1.1.4.2
 func TestSetupRefusedAtOnce(t *testing.T) {
 	w := newWorld(t, nil)
 	refuse(w, "bob")
@@ -105,8 +99,9 @@ func TestSetupRefusedAtOnce(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §10.1.1.4.2, §10.1.1.3.1.1, RFC 3261 §16.7 step 6: no member accepting, alice gets the best of their final
-// responses, the participating function's refusal of bob at once, a 404, with the Warning header fields received.
+// TS 24.379 clause 10.1.1.4.2
+// TS 24.379 clause 10.1.1.3.1.1
+// RFC 3261 section 16.7
 func TestSetupNoneAccepts(t *testing.T) {
 	w := newWorld(t, nil)
 	refuse(w, "bob")
@@ -120,9 +115,8 @@ func TestSetupNoneAccepts(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.3.3, §6.3.8.1 2: in rescue, bob accepts then leaves while TNG1 waits for carol: the call is not
-// released, and on TNG1's expiry it is not answered into an empty call; bob calling rescue again joins it (step 15),
-// and alice's 200 follows, with the warning text 111.
+// TS 24.379 clause 6.3.3.3
+// TS 24.379 clause 6.3.8.1
 func TestSetupLeave(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob := w.users["alice"], w.users["bob"]
@@ -166,8 +160,7 @@ func TestSetupLeave(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.3.3: carol, required in hazmat, refused at once by the participating function: the call is abandoned,
-// alice getting the refusal with its Warning and the warning text 112, before bob is invited.
+// TS 24.379 clause 6.3.3.3
 func TestRequiredRefusedAtOnce(t *testing.T) {
 	w := newWorld(t, nil)
 	refuse(w, "carol")
@@ -180,8 +173,8 @@ func TestRequiredRefusedAtOnce(t *testing.T) {
 	w.users["bob"].expectNot(t, "incoming")
 }
 
-// TS 24.379 §6.3.3.3, §6.3.3.1.5: carol, required in hazmat, accepts with an answer refusing the control channel: she
-// is removed as refusing, and the call abandoned, alice getting a 488 with the warning text 112.
+// TS 24.379 clause 6.3.3.3
+// TS 24.379 clause 6.3.3.1.5
 func TestRequiredUnusableAnswer(t *testing.T) {
 	w := newWorld(t, nil)
 	w.users["carol"].onInvite = func(r *ua.Request) ua.Handler {
@@ -197,7 +190,7 @@ func TestRequiredUnusableAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.3.3: carol, required in rescue, accepts: TNG1 stops, alice's 200 without the warning text 111.
+// TS 24.379 clause 6.3.3.3
 func TestRequiredAccepts(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -210,8 +203,8 @@ func TestRequiredAccepts(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.5.5, §10.1.1.4.2 steps 14 g i, 15 d: small has two participants at most: bob alone is invited, the
-// first in order, alice's 200 with the warning text 122; carol calling small gets a 486 with 122.
+// TS 24.379 clause 6.3.5.5
+// TS 24.379 clause 10.1.1.4.2
 func TestMaxParticipants(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -231,8 +224,7 @@ func TestMaxParticipants(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §10.1.1.4.2 step 14 g i: quorum needs four members affiliated, escort dave affiliated; with dave not
-// affiliated, a call of either gets a 480 with the warning text 112, no member invited.
+// TS 24.379 clause 10.1.1.4.2
 func TestAffiliationsRequired(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -245,8 +237,8 @@ func TestAffiliationsRequired(t *testing.T) {
 	w.users["bob"].expectNot(t, "incoming")
 }
 
-// TS 24.379 §6.3.3.3, §10.1.1.4.2: two needs two members to accept: alice's 200 follows both; once carol refuses, bob
-// alone does not start the call, and alice gets carol's 486.
+// TS 24.379 clause 6.3.3.3
+// TS 24.379 clause 10.1.1.4.2
 func TestMinimumToStart(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -280,8 +272,7 @@ func TestMinimumToStart(t *testing.T) {
 	w.users["bob"].expect(t, "incoming", "established", "ended")
 }
 
-// TS 24.379 §10.1.1.4.4.2: alice cancels her call to rescue while carol has not answered: carol's INVITE is cancelled,
-// bob, who accepted, gets a BYE.
+// TS 24.379 clause 10.1.1.4.4.2
 func TestOriginatorCancels(t *testing.T) {
 	w := newWorld(t, nil)
 	silent(w.users["carol"])
@@ -302,8 +293,7 @@ func TestOriginatorCancels(t *testing.T) {
 	w.users["bob"].expect(t, "incoming", "established", "ended")
 }
 
-// TS 24.379 §10.1.1.4.2 step 15 b: dave, affiliated to fire, is no longer a member of it after a reload; his call to
-// fire's ongoing call, from a client of his not in it, gets a 403 with the warning text 121.
+// TS 24.379 clause 10.1.1.4.2
 func TestJoinNotMember(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -321,7 +311,6 @@ func TestJoinNotMember(t *testing.T) {
 
 	w.n.Quiesce()
 
-	// Dave no longer a member of fire.
 	cfg := callConfiguration()
 	cfg.Groups[0].List.Entries = cfg.Groups[0].List.Entries[:3]
 
@@ -340,9 +329,7 @@ func TestJoinNotMember(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §10.1.1.3.1.1 step 5: carol, of N6 1, in fire's call, calling police from a second client gets a 486 with
-// the warning text 103; calling fire, the same call, she joins it (§10.1.1.4.2 step 15), told it exists (step 15j).
-// Her second client: the one in the call places no second call to its group (the client's §10.1.1.2.1.2 step 1c).
+// TS 24.379 clause 10.1.1.3.1.1
 func TestN6(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -369,8 +356,9 @@ func TestN6(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.2.2.8.1 step 3: the BYE of police's release to bob has the participating PSI asserted; §10.1.1.4.5.1
-// step 2, §6.3.7.1: an INVITE or SUBSCRIBE to the session identity of the call released gets a 404.
+// TS 24.379 clause 6.3.2.2.8.1
+// TS 24.379 clause 10.1.1.4.5.1
+// TS 24.379 clause 6.3.7.1
 func TestReleasedSession(t *testing.T) {
 	w := newWorld(t, nil)
 	bob := w.users["bob"]

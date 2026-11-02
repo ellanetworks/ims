@@ -194,7 +194,6 @@ func FuzzFeatureSet(f *testing.F) {
 		_, _ = fs.Preference([]sip.CallerPreference{{Features: fs, Require: true, Explicit: true}})
 		_ = fs.RejectedBy([]sip.CallerPreference{{Features: fs}})
 
-		// Parsing is lenient where encoding is not: values only the parser accepts do not encode.
 		out, err := fs.Params()
 		if err != nil {
 			return

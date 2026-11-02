@@ -7,18 +7,13 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// Failure is the failure of the INVITE of a leg: its final response, or the error of its transaction.
 type Failure struct {
 	Response *sip.Response
 	Err      error
 }
 
-// Best is the final response to give for the failures of several legs, as a controlling function whose invited
-// members all failed: the best of their responses as a forking proxy chooses it (RFC 3261 §16.7 step 6), with the
-// Warning header fields of them all (RFC 3261 §20.43). A 6xx wins; otherwise the lowest class, a response that tells
-// the caller how to retry (415, 420, 484) first. The B2BUA follows no redirection and answers no challenge for its
-// caller: a 3xx counts as a 480, a 401 or 407 as a 500; a 503 is turned into a 500. Without responses, Best is that of
-// the first error (FinalFor): a 408 when the legs timed out.
+// RFC 3261 section 16.7
+// RFC 3261 section 20.43
 func Best(failures []Failure) ua.Reply {
 	var (
 		best     *sip.Response
@@ -69,7 +64,6 @@ func Best(failures []Failure) ua.Reply {
 	return rp
 }
 
-// relayable is the code a B2BUA relays for a failure.
 func relayable(code int) int {
 	switch {
 	case code < 400:
@@ -81,7 +75,7 @@ func relayable(code int) int {
 	return code
 }
 
-// better reports whether code is a better final response than best (RFC 3261 §16.7 step 6).
+// RFC 3261 section 16.7
 func better(code, best int) bool {
 	switch {
 	case best >= 600:

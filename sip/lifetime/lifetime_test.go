@@ -81,8 +81,6 @@ func TestChildrenEndWithTheLifetime(t *testing.T) {
 	}
 }
 
-// TestChildrenDoNotLeak checks that a child cancelled before its lifetime ends no longer waits on it, through
-// AfterFunc rather than a goroutine of its own.
 func TestChildrenDoNotLeak(t *testing.T) {
 	life, stop := context.WithCancel(context.Background())
 	defer stop()

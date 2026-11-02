@@ -17,7 +17,8 @@ type Subscriber string
 const (
 	SubscriberUE    Subscriber = "ue"
 	SubscriberPCSCF Subscriber = "pcscf"
-	// SubscriberAS is an AS of the user's iFCs (TS 24.229 §5.4.2.1.1 step 1, §5.7.1.1).
+	// TS 24.229 clause 5.4.2.1.1
+	// TS 24.229 clause 5.7.1.1
 	SubscriberAS Subscriber = "as"
 )
 
@@ -33,10 +34,8 @@ type RegSubscription struct {
 	Dialog       []byte
 	Version      int64
 	ExpiresAt    time.Time
-	// ICID is the icid-value of the SUBSCRIBE that created the dialog, for the NOTIFYs; TermIOI the term-ioi of the
-	// last response to one (TS 24.229 §5.4.2.1.2).
-	ICID    string
-	TermIOI string
+	ICID         string
+	TermIOI      string
 }
 
 const regSubscriptionColumns = `id, impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,

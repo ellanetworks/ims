@@ -8,15 +8,12 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// forkedCall has bob answer the INVITE of the B2BUA in two early dialogs, each with its answer in a reliable 183; it
-// returns bob's two requests and alice's early sessions answered with each.
 func forkedCall(t *testing.T) (alice, bob *party, first, fork *ua.Request, a1, a2 *ua.Session) {
 	f := forkedCallOf(t)
 
 	return f.alice, f.bob, f.first, f.fork, f.a1, f.a2
 }
 
-// forked is a call through b whose callee answered in two early dialogs.
 type forked struct {
 	alice, bob  *party
 	b           *b2b
@@ -46,7 +43,6 @@ func forkedParts(t *testing.T) (alice, bob *party, b *b2b, first, fork *ua.Reque
 	_ = first.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf("answer-1")})
 	_ = fork.Progress(ua.Reply{Code: 183, Reliable: true, Bodies: sdpOf("answer-2")})
 
-	// The answer of each early dialog, and its 183 once PRACKed: the dialogs' events interleave.
 	answers := map[string]*ua.Session{}
 	progress := 0
 
@@ -76,8 +72,8 @@ func forkedParts(t *testing.T) (alice, bob *party, b *b2b, first, fork *ua.Reque
 	return alice, bob, b, first, fork, a1, a2
 }
 
-// RFC 3261 §13.2.2.4: each early dialog of bob is mirrored in one of alice's, with its own answer; the 2xx of one
-// confirms its mirror, and ends the other one with a 199 (RFC 6228).
+// RFC 3261 section 13.2.2.4
+// RFC 6228
 func TestBridgeMirrorsForks(t *testing.T) {
 	f := forkedCallOf(t)
 	alice, bob, fork, a2 := f.alice, f.bob, f.fork, f.a2
@@ -102,7 +98,6 @@ func TestBridgeMirrorsForks(t *testing.T) {
 	settled(t, f.b.net, alice, bob, f.b.party)
 }
 
-// An early dialog bob ends alone ends its mirror; the other goes on.
 func TestBridgeDroppedFork(t *testing.T) {
 	alice, bob, first, fork, a1, a2 := forkedCall(t)
 

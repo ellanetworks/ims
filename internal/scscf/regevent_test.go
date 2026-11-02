@@ -33,7 +33,6 @@ type subscriber struct {
 	toTag   string
 	cseq    int
 
-	// charging is the P-Charging-Vector of the SUBSCRIBEs.
 	charging string
 }
 
@@ -84,8 +83,6 @@ func (h *harness) pcscfSubscriber(p *fakeProxy) *subscriber {
 	}
 }
 
-// withAS puts an AS, of the socket inbox, in the iFCs of the profile of the alias, not of the MSISDN's, for INVITEs
-// only: no third-party REGISTER goes to it.
 func (h *harness) withAS(inbox *siptest.Socket) {
 	h.hss.set(func(f *fakeHSS) {
 		f.subscriptions[0].ServiceProfiles[1].InitialFilterCriteria = []cx.InitialFilterCriteria{
@@ -94,8 +91,7 @@ func (h *harness) withAS(inbox *siptest.Socket) {
 	})
 }
 
-// asSubscriber is an AS subscribing to the MSISDN as TS 24.229 §5.7.1.1 has it: From and P-Asserted-Identity its SIP
-// URI, the ServerName of the iFC, as the Request-URI of the third-party REGISTER has it.
+// TS 24.229 clause 5.7.1.1
 func (h *harness) asSubscriber(inbox *siptest.Socket) *subscriber {
 	return &subscriber{
 		h:       h,
@@ -401,8 +397,7 @@ func TestSubscribe(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.2.1.2: an AS of the iFCs gets the full state of all the registered IMPUs of the user, as the UE and
-// the P-CSCF do.
+// TS 24.229 clause 5.4.2.1.2
 func TestSubscribeASFullState(t *testing.T) {
 	h := newHarness(t)
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
@@ -420,9 +415,9 @@ func TestSubscribeASFullState(t *testing.T) {
 	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Created)
 }
 
-// TS 24.229 §5.7.1.1 a, §5.4.2.1.1; TS 23.003 §13.4: of an implicit registration set of a tel URI and a barred
-// temporary IMPU only, as Ella Core's HSS gives, an AS subscribes with the SIP URI of the number, "user=phone",
-// which the set does not hold: it is the registration of the tel URI, whose registrations the NOTIFY has.
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.4.2.1.1
+// TS 23.003 clause 13.4
 func TestSubscribeASNumberSIPForm(t *testing.T) {
 	h := newHarness(t)
 	h.hss.set(func(f *fakeHSS) {
@@ -452,9 +447,9 @@ func TestSubscribeASNumberSIPForm(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.1.1 a; TS 23.003 §13.4; RFC 3261 §19.1.6: of an implicit registration set of a tel URI of a local
-// number, an AS subscribes with the SIP URI of the number, "user=phone", with its phone-context: it is the
-// registration of the tel URI.
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4
+// RFC 3261 section 19.1.6
 func TestSubscribeASLocalNumberSIPForm(t *testing.T) {
 	localTel := "tel:5550101;phone-context=" + homeDomain
 
@@ -487,10 +482,7 @@ func TestSubscribeASLocalNumberSIPForm(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.2.1.2 step 5: the NOTIFYs have the icid-value of the SUBSCRIBE that created the dialog, not of a
-// refresh, and an orig-ioi of the S-CSCF's network, of type 3 towards an AS, of type 1 towards the UE, without
-// term-ioi; the S-CSCF keeps the term-ioi of the responses. A SUBSCRIBE without icid-value makes NOTIFYs without
-// P-Charging-Vector.
+// TS 24.229 clause 5.4.2.1.2
 func TestNotifyChargingVector(t *testing.T) {
 	for _, name := range []string{"ue", "as", "without icid"} {
 		t.Run(name, func(t *testing.T) {
@@ -551,7 +543,7 @@ func TestNotifyChargingVector(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.2.1.1 step 1: an AS is authorised when listed in the user's iFCs and in the trust domain.
+// TS 24.229 clause 5.4.2.1.1
 func TestSubscribeASRejected(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -560,7 +552,6 @@ func TestSubscribeASRejected(t *testing.T) {
 		{"another port of the AS", func(_ *harness, s *subscriber) {
 			s.pai = "<sip:" + netip.AddrPortFrom(loopback, s.inbox.Addr().Port()+1).String() + ">"
 		}},
-		// NOTE 1: the identity is that of P-Asserted-Identity; From has the AS's URI.
 		{"AS not in the iFCs", func(_ *harness, s *subscriber) { s.pai = "<sip:other-as@" + homeDomain + ">" }},
 		{"outside the trust domain", func(h *harness, _ *subscriber) {
 			h.cfg.Trust = trust.New(nil, nil)
@@ -599,7 +590,7 @@ func TestSubscribeASRejected(t *testing.T) {
 	}
 }
 
-// RFC 3263 §4: the NOTIFY goes to the remote target of the subscription, which a domain name can name.
+// RFC 3263 section 4
 func TestNotifyToDomainName(t *testing.T) {
 	h := newHarness(t)
 	h.dns.add("as.example.com", loopback)
@@ -1643,8 +1634,6 @@ func TestRTRServerChangeDeregistersEverything(t *testing.T) {
 	h.wantUnregistered()
 }
 
-// The resource of a reg event SUBSCRIBE is the first form of its identity a registration holds, out of one read
-// of the registrations of all its forms: its own first, then the tel URI of its number.
 func TestSubscribedKey(t *testing.T) {
 	sipForm, err := sip.ParseURI(testMSISDN)
 	if err != nil {

@@ -1,5 +1,3 @@
-// Package testue is a test UE: a ue.UE with the services of a phone, MMTel (TS 24.173) and SMS over IP (TS 24.341),
-// a USIM in software, identities derived from its IMSI and IMEI, and its events on a channel.
 package testue
 
 import (
@@ -20,15 +18,12 @@ import (
 )
 
 type Config struct {
-	// IMSI gives the identities of the UE (ue.IdentitiesFromIMSI) and its access network info, which IMPI, IMPU and
-	// HomeDomain override.
 	IMSI       string
 	MNCLength  int
 	IMPI       string
 	IMPU       string
 	HomeDomain string
 
-	// K, OPc and SQN are those of the USIM.
 	K   []byte
 	OPc []byte
 
@@ -54,15 +49,11 @@ type Config struct {
 
 	NoRegEvent bool
 
-	// MMTel configures the MMTel service of the UE, unless NoMMTel: a UE without it, such as a dedicated MCPTT UE,
-	// hosts only Services.
 	MMTel   MMTelConfig
 	NoMMTel bool
 
-	// NoSMS is a UE without SMS over IP (TS 24.341), which a UE has otherwise (SMS).
 	NoSMS bool
 
-	// Services are the services the UE hosts beside MMTel and SMS, after them.
 	Services []ue.Service
 
 	LargeUDP bool
@@ -83,15 +74,12 @@ type Config struct {
 
 	Logger *slog.Logger
 
-	// EventBuffer is the capacity of the channel of the UE's events, 1024 if 0: those beyond it are dropped.
 	EventBuffer int
 }
 
-// UE is a test UE.
 type UE struct {
 	*ue.UE
 
-	// base is the embedded UE for the services' callbacks, which its agent can run before New returns.
 	base atomic.Pointer[ue.UE]
 
 	cfg    Config
@@ -204,14 +192,12 @@ func New(cfg Config) (*UE, error) {
 	return t, nil
 }
 
-// core is the ue.UE of the test UE, nil until New returns it.
 func (u *UE) core() *ue.UE { return u.base.Load() }
 
 func accessNetworkInfo(mcc, mnc string) string {
 	return "3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=" + mcc + mnc + "0001" + "0000001"
 }
 
-// authenticator is the USIM as the UE's Authenticator.
 type authenticator struct{ u *usim.USIM }
 
 func (a authenticator) Authenticate(rand, autn []byte) (ue.AKAResult, error) {
@@ -223,19 +209,14 @@ func (a authenticator) Authenticate(rand, autn []byte) (ue.AKAResult, error) {
 	return ue.AKAResult{RES: res, CK: ck, IK: ik, AUTS: auts}, err
 }
 
-// MMTel is the MMTel service of the UE, nil with NoMMTel.
 func (u *UE) MMTel() *MMTel { return u.mmtel }
 
-// SMS is the SMS over IP service of the UE, nil with NoSMS.
 func (u *UE) SMS() *SMS { return u.sms }
 
-// SQN is the highest SQN the USIM accepted.
 func (u *UE) SQN() uint64 { return u.usim.SQN() }
 
-// Events are the events of the UE (ue.Config.OnEvent) and of its MMTel and SMS.
 func (u *UE) Events() <-chan ue.Event { return u.events }
 
-// Dropped is the number of events the UE dropped, Events being full.
 func (u *UE) Dropped() int {
 	u.mu.Lock()
 	defer u.mu.Unlock()

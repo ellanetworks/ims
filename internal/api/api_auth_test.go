@@ -15,7 +15,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// login logs a user in, and returns its access token and its session cookie.
 func (a *testAPI) login(t *testing.T, email, password string) (string, *http.Cookie) {
 	t.Helper()
 
@@ -54,7 +53,6 @@ func sessionCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 	return nil
 }
 
-// refresh asks for a new access token with a session cookie, and returns the status.
 func (a *testAPI) refresh(t *testing.T, cookie *http.Cookie) int {
 	t.Helper()
 
@@ -116,7 +114,6 @@ func TestInitialize(t *testing.T) {
 		t.Fatalf("second init = %d %q, want %d", code, errMsg, http.StatusForbidden)
 	}
 
-	// The email is stored in lower case, and the admin can log in with it.
 	token, _ := a.login(t, "admin@example.com", "correct horse")
 
 	code, result, _ := a.doAs(t, token, http.MethodGet, "/api/v1/users/me", "")
@@ -175,7 +172,6 @@ func TestLogin(t *testing.T) {
 		t.Fatalf("cookie expires %v, want %v", c.Expires, want)
 	}
 
-	// An unknown email and a wrong password get the same answer, so that it does not tell which emails exist.
 	code, _, unknownEmail := a.doAs(t, "", http.MethodPost, "/api/v1/auth/login",
 		`{"email": "nobody@example.com", "password": "wrong password"}`)
 	if code != http.StatusUnauthorized {
@@ -193,7 +189,6 @@ func TestLogin(t *testing.T) {
 	}
 }
 
-// loginFrom sends a login from an address, and returns its status.
 func (a *testAPI) loginFrom(addr, email, password string) int {
 	req := request(http.MethodPost, "/api/v1/auth/login", `{"email": "`+email+`", "password": "`+password+`"}`, "")
 	req.RemoteAddr = addr
@@ -232,8 +227,6 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
-// TestLoginRateLimitPerIPv6Prefix checks that the addresses of an IPv6 /64, which a single host commonly has, share
-// their limit.
 func TestLoginRateLimitPerIPv6Prefix(t *testing.T) {
 	a := newTestAPI(t)
 
@@ -250,8 +243,6 @@ func TestLoginRateLimitPerIPv6Prefix(t *testing.T) {
 	}
 }
 
-// TestAccountFailureLimit checks that the wrong passwords for an account are limited whatever their source, that the
-// wrong current passwords of a password change count with them, and that a login resets them.
 func TestAccountFailureLimit(t *testing.T) {
 	a := newTestAPI(t)
 
@@ -286,8 +277,6 @@ func TestAccountFailureLimit(t *testing.T) {
 	}
 }
 
-// TestInitAfterInitialization checks that a call to init on an initialized system is refused, and rate-limited
-// like a login.
 func TestInitAfterInitialization(t *testing.T) {
 	a := newTestAPI(t)
 	body := `{"email": "other@example.com", "password": "correct horse"}`
@@ -303,8 +292,6 @@ func TestInitAfterInitialization(t *testing.T) {
 	}
 }
 
-// TestEndedSessionEndsAccessTokens checks that an access token does not outlive its session: after a logout, or a
-// change of role, it no longer authenticates.
 func TestEndedSessionEndsAccessTokens(t *testing.T) {
 	a := newTestAPI(t)
 	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
@@ -444,7 +431,6 @@ func TestAccessTokens(t *testing.T) {
 		return s
 	}
 
-	// The session of the initialization is the first.
 	valid := jwt.MapClaims{
 		"id": 1, "email": testAdmin, "role_id": 1, "sid": 1, "iat": testNow.Unix(),
 		"exp": testNow.Add(time.Minute).Unix(),

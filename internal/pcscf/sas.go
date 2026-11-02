@@ -24,13 +24,10 @@ const (
 	registrationMargin = 30 * time.Second
 	maxSetsPerFlow     = 3
 
-	// maxSetsPerUE bounds the sets of a private identity and address over its flows: those of four
-	// flows, the most the S-CSCF registers for a UE instance.
 	maxSetsPerUE = 4 * maxSetsPerFlow
 	storeTimeout = 5 * time.Second
 )
 
-// storeContext bounds a write to a store that cause asks for: in its trace, ended with life, the P-CSCF's.
 func storeContext(life, cause context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(lifetime.With(life, cause), storeTimeout)
 }
@@ -92,7 +89,6 @@ type saSet struct {
 	inUse   bool
 	removed bool
 
-	// answered reports that a protected REGISTER, the UE's answer to the challenge, came over the temporary set.
 	answered bool
 
 	client  []sip.SecurityMechanism
@@ -100,7 +96,6 @@ type saSet struct {
 	origin  *saSet
 	initial bool
 
-	// cause is the span context of the REGISTER that set the set up, or last registered over it.
 	cause trace.SpanContext
 }
 
@@ -113,8 +108,7 @@ type view struct {
 	server sip.SecurityMechanism
 }
 
-// sameUE reports whether two sets protect the same registered contact: the same UE and registration
-// flow (TS 33.203 §6.1 NOTE 2).
+// TS 33.203 clause 6.1
 func (s *saSet) sameUE(o *saSet) bool {
 	return s.impi == o.impi && s.set.Remote.Addr == o.set.Remote.Addr && s.flow == o.flow
 }
@@ -138,7 +132,6 @@ func keyOf(f sip.Flow) flowKey {
 }
 
 type associations struct {
-	// ctx bounds the writes to the store and the expiries, cancelled when the P-CSCF gives up on them.
 	ctx      context.Context
 	cfg      IPsec
 	log      *slog.Logger
@@ -154,8 +147,6 @@ type associations struct {
 	sets   map[*saSet]struct{}
 	byFlow map[flowKey]*saSet
 
-	// byUE and byIMPI are the sets by the UE's address and by private identity: the searches for a UE's or a
-	// subscriber's sets look at theirs only, not at the sets of every UE.
 	byUE   map[netip.Addr]map[*saSet]struct{}
 	byIMPI map[string]map[*saSet]struct{}
 }
@@ -196,8 +187,7 @@ type storeOp struct {
 	rec     db.SecurityAssociation
 	delete  bool
 	barrier chan struct{}
-	// cause is the span context of the set's cause, which the logs of the write carry.
-	cause trace.SpanContext
+	cause   trace.SpanContext
 }
 
 func (a *associations) write() {
@@ -345,9 +335,8 @@ type challenge struct {
 	origin *saSet
 }
 
-// clientPort is the P-CSCF's protected client port for a new set: one its flow's set being
-// re-authenticated does not use (TS 33.203 §7.4), nor another flow's set toward the same protected
-// server port of the UE, which stays fixed for the UE (TS 33.203 §7.1 NOTE 10).
+// TS 33.203 clause 7.4
+// TS 33.203 clause 7.1
 func (a *associations) clientPort(c challenge) (uint16, bool) {
 	used := func(port uint16) bool {
 		for s := range a.byUE[c.ue] {
@@ -395,14 +384,10 @@ func (a *associations) challenged(ctx context.Context, c challenge, keys ipsec.K
 		return sip.SecurityMechanism{}, errors.New("P-CSCF closed")
 	}
 
-	// A REGISTER for another flow over these associations is not their re-authentication.
 	if c.origin != nil && (c.origin.removed || c.origin.state == temporary || c.origin.flow != c.flow) {
 		c.origin = nil
 	}
 
-	// TS 24.229 §5.2.2.2: a new challenge deletes any temporary set toward the UE, whatever its flow. The UE is
-	// the address the sets are bound to (TS 33.203 §7.1); a client of the same private identity at another
-	// address is another UE, whose challenge in progress is left (TS 33.203 §6.1 NOTE 2).
 	for s := range a.byUE[c.ue] {
 		if s.state == temporary && s.impi == c.impi && s.set.Remote.Addr == c.ue {
 			a.unanswered(ctx, s)
@@ -428,7 +413,6 @@ func (a *associations) challenged(ctx context.Context, c challenge, keys ipsec.K
 			continue
 		}
 
-		// Another flow's associations are in use, not left over (TS 33.203 §6.1 NOTE 2).
 		if s == c.origin || s.impi == c.impi && s.flow != c.flow && s.state != temporary {
 			return sip.SecurityMechanism{}, errSAConflict
 		}
@@ -530,8 +514,6 @@ func (a *associations) registered(ctx context.Context, s *saSet, o outcome) {
 		case x.sameUE(s):
 			_ = a.remove(ctx, x)
 		case s.initial && s.flow == flowID{} && x.impi == s.impi && x.state != temporary:
-			// TS 24.229 §5.4.1.2.2 step 4A: without the multiple registration mechanism, the new
-			// contact replaces the others of the private identity.
 			a.shorten(x, a.cfg.Grace)
 		}
 	}
@@ -540,7 +522,8 @@ func (a *associations) registered(ctx context.Context, s *saSet, o outcome) {
 	a.extend(s, expires)
 }
 
-// TS 33.203 §7.4.2a, TS 24.229 Table 5.2.2-1
+// TS 33.203 clause 7.4.2a
+// TS 24.229 clause 5.2.2.2 table 5.2.2-1
 func (a *associations) requestFlow(impi string, ue netip.Addr, id flowID, tr sip.Transport) (sip.Flow, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -583,7 +566,6 @@ func (a *associations) requestFlow(impi string, ue netip.Addr, id flowID, tr sip
 	}, true
 }
 
-// hasSets reports whether the registration k has a set left that is not temporary: one requestFlow can pick.
 func (a *associations) hasSets(k regKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -617,7 +599,6 @@ func (a *associations) failed(s *saSet) {
 	}
 }
 
-// challengeAnswered records that a protected REGISTER came over the set.
 func (a *associations) challengeAnswered(s *saSet) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -625,8 +606,6 @@ func (a *associations) challengeAnswered(s *saSet) {
 	s.answered = true
 }
 
-// unanswered logs a temporary set no protected REGISTER came over before it went: the UE did not answer its
-// challenge, or its answer did not reach the P-CSCF, as when ESP is dropped or NATed on the way.
 func (a *associations) unanswered(ctx context.Context, s *saSet) {
 	if s.state == temporary && !s.answered {
 		a.log.WarnContext(ctx, "no protected REGISTER came over the security associations of a challenge", slog.String("impi", s.impi),
@@ -652,7 +631,6 @@ func (a *associations) shorten(s *saSet, d time.Duration) {
 	}
 }
 
-// related are the sets registered may change for s: those of its UE, those of its private identity, and its origin.
 func (a *associations) related(s *saSet) []*saSet {
 	out := make([]*saSet, 0, len(a.byUE[s.set.Remote.Addr])+len(a.byIMPI[s.impi])+1)
 
@@ -722,7 +700,6 @@ func (a *associations) expire(s *saSet) {
 	tracing.End(span, a.remove(ctx, s))
 }
 
-// remove removes s; ctx is what removes it. It returns why the kernel kept it, if it did.
 func (a *associations) remove(ctx context.Context, s *saSet) error {
 	if s.removed {
 		return nil
@@ -864,7 +841,6 @@ func (a *associations) restore(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// The contacts with an old set, by what sameUE compares.
 	type contact struct {
 		impi string
 		ue   netip.Addr

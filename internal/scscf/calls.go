@@ -11,19 +11,16 @@ import (
 	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
-// call is what the S-CSCF keeps of an INVITE dialog.
 type call struct {
 	icid string
 }
 
-// bindingKey identifies a binding of an implicit registration set to a contact: its ID.
 type bindingKey int64
 
-// calls indexes the INVITE dialogs of the S-CSCF by the bindings they were initiated by (the
-// caller's) or terminated toward (the callee's), so that removing a binding releases them
-// (TS 24.229 §5.4.1.2.2 step 4A, §5.4.1.4 step 5, §5.4.1.5), and keeps the identity keys of the
-// served user of each, so that removing a public identity from its set releases its own
-// (§5.4.1.8 step 3).
+// TS 24.229 clause 5.4.1.2.2
+// TS 24.229 clause 5.4.1.4
+// TS 24.229 clause 5.4.1.5
+// TS 24.229 clause 5.4.1.8
 type calls struct {
 	mu        sync.Mutex
 	byBinding map[bindingKey]map[*proxy.Dialog]proxy.Side
@@ -44,7 +41,6 @@ func newCalls() *calls {
 	}
 }
 
-// add indexes the dialog under the binding, for the served user of the identity keys.
 func (c *calls) add(d *proxy.Dialog, k bindingKey, side proxy.Side, served []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -78,8 +74,6 @@ func (c *calls) forget(d *proxy.Dialog) {
 	delete(c.byDialog, d)
 }
 
-// dialogEvent forgets the calls that end. One the S-CSCF releases is reported to the call records before the
-// release reaches the parties: the proxy publishes the end of a dialog it releases before releasing it.
 func (r *Registrar) dialogEvent(_ context.Context, e proxy.DialogEvent) {
 	if e.Kind != proxy.EventEnded {
 		return
@@ -104,7 +98,6 @@ func (c *calls) of(k bindingKey) map[*proxy.Dialog]proxy.Side {
 	return out
 }
 
-// serving are the dialogs of the binding whose served user the function picks, by the identity keys of its forms.
 func (c *calls) serving(k bindingKey, pick func(served []string) bool) map[*proxy.Dialog]proxy.Side {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,11 +113,8 @@ func (c *calls) serving(k bindingKey, pick func(served []string) bool) map[*prox
 	return out
 }
 
-// releaseCalls releases the INVITE dialogs of the bindings removed, with a 480 in their Reason
-// (TS 24.229 §5.4.5.1.2): a dialog the contact initiated toward both parties, one terminated
-// toward it on its own branches only, so that the other contacts of a forked call ring on. An
-// expired binding releases them only when its contact has no other registration left in st
-// (§5.4.5.1.2A).
+// TS 24.229 clause 5.4.5.1.2
+// TS 24.229 clause 5.4.5.1.2A
 func (r *Registrar) releaseCalls(ctx context.Context, st *state, removed []removal) {
 	cause, err := sip.NewReason(sip.ReasonSIP, 480, sip.ReasonText(sip.ReasonSIP, 480))
 	if err != nil {

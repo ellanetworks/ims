@@ -12,8 +12,10 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// serviceProfile is the service profile of the subscription that holds the public identity u: under a distinct
-// identity, or else a wildcarded one u matches (TS 29.228 §6.1.4.1, Annex B.2.1; TS 23.003 §13.4A, §13.5).
+// TS 29.228 clause 6.1.4.1
+// TS 29.228 clause B.2.1
+// TS 23.003 clause 13.4A
+// TS 23.003 clause 13.5
 func serviceProfile(sub cx.IMSSubscription, u sip.URI, homeDomain string) (cx.ServiceProfile, bool) {
 	keys := identityKeys(u, homeDomain)
 
@@ -38,8 +40,8 @@ func serviceProfile(sub cx.IMSSubscription, u sip.URI, homeDomain string) (cx.Se
 	return cx.ServiceProfile{}, false
 }
 
-// serviceProfileOf is the service profile of u in a subscription the HSS sent, under the wildcarded identity the HSS
-// says u falls in, if it said, or else as serviceProfile finds it (TS 29.228 Table 6.1.2.2, §6.1.2.1).
+// TS 29.228 clause 6.1.2 table 6.1.2.2
+// TS 29.228 clause 6.1.2.1
 func serviceProfileOf(sub cx.IMSSubscription, u sip.URI, wildcard, homeDomain string) (cx.ServiceProfile, bool) {
 	if wildcard != "" {
 		for _, p := range sub.ServiceProfiles {
@@ -64,9 +66,9 @@ func wildcarded(id cx.ProfileIdentity) bool {
 	return false
 }
 
-// wildcardMatch reports whether u, in its canonical form, is one of the identities of a wildcarded identity: its fixed
-// parts around the regular expression the outer pair of "!" delimits (TS 23.003 §13.4, §13.5). The domain of the
-// wildcarded identity matches regardless of case, as the canonical form lowers that of u (RFC 3261 §19.1.4).
+// TS 23.003 clause 13.4
+// TS 23.003 clause 13.5
+// RFC 3261 section 19.1.4
 func wildcardMatch(wildcard string, u sip.URI) bool {
 	i, j := strings.IndexByte(wildcard, '!'), strings.LastIndexByte(wildcard, '!')
 	if i < 0 || i == j {
@@ -78,8 +80,8 @@ func wildcardMatch(wildcard string, u sip.URI) bool {
 	return re != nil && re.MatchString(canonicalIdentity(u))
 }
 
-// filterCriteria are the initial filter criteria of a service profile for a user registered or not, in priority
-// order: those of its part, and those of the common part (TS 29.228 Annex B.2.2, TS 23.218 §5.2.3).
+// TS 29.228 clause B.2.2
+// TS 23.218 clause 5.2.3
 func filterCriteria(p cx.ServiceProfile, registered bool) []cx.InitialFilterCriteria {
 	part := cx.ProfilePartUnregistered
 	if registered {
@@ -99,8 +101,7 @@ func filterCriteria(p cx.ServiceProfile, registered bool) []cx.InitialFilterCrit
 	return out
 }
 
-// invalidExpression is the first regular expression of a trigger point that does not compile (TS 29.228 Annex F): an
-// SPT that cannot be evaluated, which negated would match every request.
+// TS 29.228 annex F
 func invalidExpression(tp *cx.TriggerPoint) (string, bool) {
 	if tp == nil {
 		return "", false
@@ -137,19 +138,15 @@ func invalidExpression(tp *cx.TriggerPoint) (string, bool) {
 	return "", false
 }
 
-// trigger is what the trigger points of the iFCs are checked against: a request, in a session case, and the type of
-// a REGISTER (TS 29.228 Annex B.2.3).
+// TS 29.228 clause B.2.3
 type trigger struct {
 	req     *sip.Request
 	sescase cx.SessionCase
 	regType cx.RegistrationType
 }
 
-// matches reports whether the trigger point is met: a conjunction of disjunctions of SPTs, each group a
-// disjunction, in CNF, or the other way round in DNF; no trigger point always is (TS 29.228 Annex B.2.2, Annex C).
-//
-// The groups are checked in the order they first appear, and each SPT once, when a group first needs it: a group
-// that decides the trigger point leaves the SPTs of the next ones unchecked.
+// TS 29.228 clause B.2.2
+// TS 29.228 annex C
 func (t trigger) matches(tp *cx.TriggerPoint) bool {
 	if tp == nil {
 		return true
@@ -186,15 +183,13 @@ func (t trigger) matches(tp *cx.TriggerPoint) bool {
 	return tp.ConjunctiveNormalForm
 }
 
-// SPT values of a trigger point as matches works them out.
 const (
 	sptUnknown int8 = iota
 	sptFalse
 	sptTrue
 )
 
-// group reports whether group g of the trigger point is met: one of its SPTs in CNF, where a group is a disjunction,
-// all of them in DNF, where it is a conjunction (TS 29.228 Annex B.2.2). values keeps each SPT's value once checked.
+// TS 29.228 clause B.2.2
 func (t trigger) group(tp *cx.TriggerPoint, values []int8, g int32) bool {
 	for i, s := range tp.ServicePointTriggers {
 		if !slices.Contains(s.Groups, g) {
@@ -216,13 +211,13 @@ func (t trigger) group(tp *cx.TriggerPoint, values []int8, g int32) bool {
 	return !tp.ConjunctiveNormalForm
 }
 
-// condition reports whether the SPT's condition holds, before its negation (TS 29.228 Annex B.2.3, Annex F).
+// TS 29.228 clause B.2.3
+// TS 29.228 annex F
 func (t trigger) condition(s cx.ServicePointTrigger) bool {
 	switch {
 	case s.RequestURI != nil:
 		return search(*s.RequestURI, requestURIPart(t.req.URI))
 	case s.Method != nil:
-		// RFC 3261 §7.1: the method is case-sensitive.
 		if *s.Method != t.req.Method {
 			return false
 		}
@@ -239,8 +234,7 @@ func (t trigger) condition(s cx.ServicePointTrigger) bool {
 	return false
 }
 
-// requestURIPart is what a RequestURI SPT matches: the hostport of a SIP URI, the telephone-subscriber of a tel URI
-// (TS 29.228 Annex F).
+// TS 29.228 annex F
 func requestURIPart(u sip.URI) string {
 	if u.IsTel() {
 		_, sub, _ := strings.Cut(u.String(), ":")
@@ -250,8 +244,8 @@ func requestURIPart(u sip.URI) string {
 	return u.HostPort()
 }
 
-// header matches each header field of the request, and each of the values of a list (TS 29.228 Annex F). The header
-// name matches regardless of case (RFC 3261 §7.3.1).
+// TS 29.228 annex F
+// RFC 3261 section 7.3.1
 func (t trigger) header(m cx.HeaderMatch) bool {
 	header := headerName(m.Header)
 	if header == nil {
@@ -295,16 +289,15 @@ func (t trigger) header(m cx.HeaderMatch) bool {
 	return false
 }
 
-// authHeaders and textHeaders are the header fields whose value is no comma-separated list but may hold commas
-// (RFC 3261 §25.1): the exceptions of RFC 3261 §7.3.1, whose commas separate parameters, and those of a date, a
-// comment or free text, whose white space is part of the value rather than SWS.
 var (
+	// RFC 3261 section 25.1
+	// RFC 3261 section 7.3.1
 	authHeaders = []string{"Authorization", "Proxy-Authorization", "WWW-Authenticate", "Proxy-Authenticate", "Authentication-Info"}
 	textHeaders = []string{"Date", "Subject", "Organization", "Server", "User-Agent", "Retry-After"}
 )
 
-// headerValue is a header value as Annex F of TS 29.228 matches it: each run of linear white space reduced to a SP,
-// and the optional white space around separators (SWS, RFC 3261 §25.1) removed, outside quoted strings.
+// TS 29.228 annex F
+// RFC 3261 section 25.1
 func headerValue(v string) string {
 	v = collapseLWS(v)
 
@@ -320,11 +313,9 @@ func headerValue(v string) string {
 			b = append(b, c, v[i+1])
 			i++
 		case c == '"' && !quoted:
-			// LDQUOT (RFC 3261 §25.1).
 			b = append(trimSP(b), c)
 			quoted = true
 		case c == '"':
-			// RDQUOT (RFC 3261 §25.1).
 			b = append(b, c)
 			quoted = false
 
@@ -349,7 +340,7 @@ func trimSP(b []byte) []byte {
 	return b
 }
 
-// sessionDescription matches each field of the SDP of the request: its type, and its value (TS 29.228 Annex F).
+// TS 29.228 annex F
 func (t trigger) sessionDescription(m cx.SessionDescriptionMatch) bool {
 	sdp, ok, err := t.req.Content().Find("application/sdp")
 	if err != nil || !ok {
@@ -379,8 +370,8 @@ func (t trigger) sessionDescription(m cx.SessionDescriptionMatch) bool {
 	return false
 }
 
-// collapseLWS reduces each run of linear white space to a single space, and trims it (TS 29.228 Annex F). LWS is SP,
-// HTAB and line folding (RFC 3261 §25.1): other white space of a UTF-8 value, such as a no-break space, is kept.
+// TS 29.228 annex F
+// RFC 3261 section 25.1
 func collapseLWS(v string) string {
 	if !hasLWSRun(v) {
 		return v
@@ -406,7 +397,6 @@ func collapseLWS(v string) string {
 	return string(b)
 }
 
-// hasLWSRun reports whether v has LWS that collapseLWS changes: other than a SP between two other characters.
 func hasLWSRun(v string) bool {
 	for i := 0; i < len(v); i++ {
 		switch v[i] {
@@ -422,16 +412,14 @@ func hasLWSRun(v string) bool {
 	return false
 }
 
-// search reports whether the regular expression matches part of s, as regexec does with an extended regular
-// expression (TS 29.228 Annex F): RE2 accepts the ERE syntax. An invalid expression matches nothing.
+// TS 29.228 annex F
 func search(expr, s string) bool {
 	re := compiled(expr)
 
 	return re != nil && re.MatchString(s)
 }
 
-// headerName is the expression of the header name of a SIPHeader SPT, which matches regardless of case (RFC 3261
-// §7.3.1): kept by the expression, rather than built for each header field it is checked against.
+// RFC 3261 section 7.3.1
 func headerName(expr string) *regexp.Regexp {
 	if re, ok := headerExpressions.Load(expr); ok {
 		return re.(*regexp.Regexp)
@@ -461,10 +449,8 @@ func compiled(expr string) *regexp.Regexp {
 	return re
 }
 
-// mayRegister reports whether a re-registration of the user may meet the trigger point, as thirdParties checks it: a
-// REGISTER of type RE_REGISTRATION, in the session case ORIGINATING_REGISTERED. The other SPTs depend on the request,
-// and may be met or not: the trigger point is worked out in three-valued logic, where a disjunction is the greatest of
-// its values and a conjunction the least (TS 29.228 Annex B.2.2, Annex C).
+// TS 29.228 clause B.2.2
+// TS 29.228 annex C
 func mayRegister(tp *cx.TriggerPoint) bool {
 	const (
 		no int8 = iota
@@ -506,7 +492,6 @@ func mayRegister(tp *cx.TriggerPoint) bool {
 		}
 	}
 
-	// In CNF, a conjunction of groups that are disjunctions; in DNF, the other way round.
 	cnf := tp.ConjunctiveNormalForm
 
 	outer := no

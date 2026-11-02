@@ -19,7 +19,6 @@ func writeResponse(ctx context.Context, w http.ResponseWriter, v any, status int
 	writeJSON(ctx, w, Response{Result: v}, status, logger)
 }
 
-// writeError answers with a message for the client, and logs the error behind it.
 func writeError(ctx context.Context, w http.ResponseWriter, status int, message string, err error, logger *slog.Logger) {
 	if status >= http.StatusInternalServerError {
 		logger.ErrorContext(ctx, message, slog.Any("error", err))

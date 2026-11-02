@@ -7,11 +7,8 @@ import (
 	"fmt"
 )
 
-// ErrDuplicate is of the creation of an MCPTT user or group of an identity another has.
 var ErrDuplicate = errors.New("duplicate")
 
-// checkForeignKeys refuses a database of rows referencing none, which only a change outside the IMS makes
-// (https://sqlite.org/pragma.html#pragma_foreign_key_check).
 func (d *DB) checkForeignKeys(ctx context.Context) error {
 	rows, err := d.conn.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
@@ -38,8 +35,6 @@ func (d *DB) checkForeignKeys(ctx context.Context) error {
 	return rows.Err()
 }
 
-// rekeyMCPTT recomputes the keys of the identities as the MCPTT settings package's Key has them, which a release of the sip package may
-// change: of the users, the groups and the clients of the affiliations. Two identities of one key fail it.
 func (d *DB) rekeyMCPTT(ctx context.Context) error {
 	return d.inTx(ctx, "recompute MCPTT keys", func(tx *sql.Tx) error {
 		for _, t := range []struct{ table, id, key string }{

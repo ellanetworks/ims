@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// nextRequest is the next request the raw peer receives, other than retransmissions of responses it ignores.
 func (r *raw) nextRequest(method string) *sip.Request {
 	r.t.Helper()
 
@@ -32,7 +31,6 @@ func (r *raw) nextRequest(method string) *sip.Request {
 	}
 }
 
-// noRequest checks that no request came once the net is quiet, responses aside.
 func (r *raw) noRequest() {
 	r.t.Helper()
 
@@ -48,8 +46,7 @@ func (r *raw) noRequest() {
 	}
 }
 
-// RFC 3311 §5.1: the callee sends an UPDATE with an offer once the reliable 1xx with its answer is PRACKed. Asked
-// for earlier, the UPDATE waits for the PRACK instead of crossing it.
+// RFC 3311 section 5.1
 func TestCalleeUpdateWaitsForPrack(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice := newRaw(t)
@@ -98,8 +95,7 @@ func sessionBodyOf(req *sip.Request) []byte {
 	return p.Body
 }
 
-// RFC 3311 §5.2: one UPDATE of the agent at a time; a second waits for the first, which the peer would otherwise
-// refuse with a 500.
+// RFC 3311 section 5.2
 func TestOneUpdateAtATime(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), serverPeer(t, "bob")
 	as, _ := established(t, alice, bob)
@@ -140,8 +136,7 @@ func TestOneUpdateAtATime(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: a re-INVITE of the agent waits for the INVITE transaction of the peer in progress, instead of a
-// glare. One without an offer is still good once the peer's exchange completed; a fixed offer would be stale.
+// RFC 3261 section 14.1
 func TestReinviteWaitsForThePeers(t *testing.T) {
 	alice, bob := serverPeer(t, "alice"), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, bs := established(t, alice, bob)
@@ -179,7 +174,6 @@ func TestReinviteWaitsForThePeers(t *testing.T) {
 		t.Fatalf("alice's offer: %v, want ErrStale", res.err)
 	}
 
-	// Bob, with ClientPolicy, answers the re-INVITE without an offer with his session; alice answers in the ACK.
 	o := alice.next("offer")
 	if string(o.sdp) != "offer-b" {
 		t.Fatalf("offer %q, want bob's session", o.sdp)
@@ -192,7 +186,6 @@ func TestReinviteWaitsForThePeers(t *testing.T) {
 	}
 }
 
-// With the zero Policy, a 491 is not retried: done receives it, for the application, a B2BUA passing it back.
 func TestServerPolicyHandsBackGlare(t *testing.T) {
 	alice, bob := serverPeer(t, "alice"), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -212,8 +205,8 @@ func TestServerPolicyHandsBackGlare(t *testing.T) {
 	bob.none()
 }
 
-// RFC 4028 §7.2, §9: an UPDATE of an early dialog sets no session timer; it starts once the session is confirmed
-// (S19).
+// RFC 4028 section 7.2
+// RFC 4028 section 9
 func TestNoSessionTimerOnEarlyDialogs(t *testing.T) {
 	clock := netOf(t).Clock()
 	timer := ua.SessionTimer{Interval: 90 * time.Second}
@@ -239,7 +232,6 @@ func TestNoSessionTimerOnEarlyDialogs(t *testing.T) {
 		t.Fatalf("early UPDATE %d, Session-Expires %q", res.StatusCode, res.Header.Get("Session-Expires"))
 	}
 
-	// Ringing past the interval: no refresh and no expiry on the early dialog.
 	advance(clock, 120*time.Second, alice, bob)
 
 	alice.none()

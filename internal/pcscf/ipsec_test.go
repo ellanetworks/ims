@@ -93,7 +93,6 @@ func newIPsecSceneWith(t *testing.T, policy ipsec.Policy, kernel *ipsectest.Kern
 	return s
 }
 
-// newIPsecSceneAt starts the scene at addr, with the layer of lc: its transport and tracer provider.
 func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel Kernel, store *db.DB, lc transaction.Config,
 	opts ...func(*Config),
 ) *ipsecScene {
@@ -964,7 +963,6 @@ func restart(t *testing.T, s *ipsecScene) {
 	s.late.h.Store(p)
 }
 
-// finalResponse is the first response of sock other than a 100 (Trying).
 func finalResponse(t *testing.T, sock *siptest.Socket) *sip.Response {
 	t.Helper()
 
@@ -975,9 +973,8 @@ func finalResponse(t *testing.T, sock *siptest.Socket) *sip.Response {
 	}
 }
 
-// TS 24.229 §5.2.5.1 step 2: a registration whose security associations a restart lost is not restored, and a
-// request toward its UE gets the 404 (Not Found) of no binding, which starts the P-CSCF restoration (TS 24.229
-// §5.2.6.4.1).
+// TS 24.229 clause 5.2.5.1
+// TS 24.229 clause 5.2.6.4.1
 func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	token, o := s.registerOverIPsec(u)
@@ -1006,8 +1003,8 @@ func TestRestoreDropsTheRegistrationsOfLostSets(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// wantPCSCFNotFound checks that the response is the P-CSCF's 404 (Not Found) for no binding, with the P-CSCF as its
-// Response-Source (TS 24.229 §5.2.6.4.1, §7.2.17.5).
+// TS 24.229 clause 5.2.6.4.1
+// TS 24.229 clause 7.2.17.5
 func wantPCSCFNotFound(t *testing.T, res *sip.Response) {
 	t.Helper()
 
@@ -1018,7 +1015,6 @@ func wantPCSCFNotFound(t *testing.T, res *sip.Response) {
 	}
 }
 
-// A registration whose security associations survived the restart is restored and reached through them.
 func TestRestoreKeepsTheRegistrationsOfKeptSets(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	token, o := s.registerOverIPsec(u)
@@ -1041,9 +1037,7 @@ func TestRestoreKeepsTheRegistrationsOfKeptSets(t *testing.T) {
 	}
 }
 
-// A request toward a flow token the P-CSCF does not know gets the 404 (Not Found) of no binding (TS 24.229
-// §5.2.6.4.1), whatever the Request-URI: a registered contact, one that no registered contact matches, or, within a
-// dialog, a remote target such as a GRUU.
+// TS 24.229 clause 5.2.6.4.1
 func TestUnknownFlow(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -1068,8 +1062,6 @@ func TestUnknownFlow(t *testing.T) {
 	u.us.RecvNone(quiet)
 }
 
-// A Samsung phone offers only hmac-md5-96 and sends its protected REGISTER over TCP from port_uc,
-// with port_us in the Via and rport;keep.
 func TestSamsungRegistration(t *testing.T) {
 	s := newIPsecScene(t, ipsec.DefaultPolicy())
 	u := s.newUE(25656)

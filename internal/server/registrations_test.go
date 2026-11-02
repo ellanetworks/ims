@@ -50,7 +50,6 @@ func TestRegistrationStatus(t *testing.T) {
 			binding(db.Contact{URI: gone}, listNow.Add(-2*time.Hour), listNow),
 		},
 	}, {
-		// A second implicit registration set, bound to another HSS node: the phone's binding to it is its own.
 		IMPI: listIMPI,
 		Identities: []db.PublicIdentity{
 			{URI: "sip:alice@" + listDomain},
@@ -74,7 +73,6 @@ func TestRegistrationStatus(t *testing.T) {
 		Contacts:  []string{phone},
 		Policy:    db.PolicySession{ID: "pcscf;1;2"},
 	}, {
-		// Matched by the flow token in the contact's Path, not by its list of contacts.
 		IMPI:           listIMPI,
 		FlowToken:      "token2",
 		Instance:       tabletInstance,
@@ -134,7 +132,7 @@ func TestRegistrationStatus(t *testing.T) {
 	}
 }
 
-// A set whose contacts have all expired is no longer registered (TS 23.228 §5.2.1a.0).
+// TS 23.228 clause 5.2.1a.0
 func TestRegistrationStatusSkipsExpiredSets(t *testing.T) {
 	regs := []db.Registration{{
 		IMPI:       listIMPI,
@@ -180,8 +178,6 @@ func TestRegistrationStatusWithoutFlow(t *testing.T) {
 	}
 }
 
-// A q-value the registrar would now refuse, stored before it did, lists as none rather than as a number JSON
-// cannot carry.
 func TestContactQ(t *testing.T) {
 	for params, want := range map[string]float64{``: 1, `;q=0.5`: 0.5, `;q=0`: 0, `;q=NaN`: 1, `;q=5`: 1, `;q=1e-1`: 1} {
 		b := binding(db.Contact{URI: "sip:ue@192.0.2.9:5060", Params: params}, listNow, listNow.Add(time.Hour))
@@ -192,8 +188,6 @@ func TestContactQ(t *testing.T) {
 	}
 }
 
-// registered_with lists the other private identities a request to a public identity reaches, as the S-CSCF routes
-// it: those with a live contact, and none at all when the set bars the identity.
 func TestRegisteredWith(t *testing.T) {
 	d, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ims.db"))
 	if err != nil {
@@ -253,9 +247,6 @@ func TestRegisteredWith(t *testing.T) {
 	}
 }
 
-// Flows sharing a contact URI each show the P-CSCF's registration of their own flow (RFC 5626), found by the flow
-// token in their Path: after a flow is replaced from another address, the P-CSCF still has the old flow's
-// registration until it learns of the replacement.
 func TestRegistrationStatusFlows(t *testing.T) {
 	const (
 		uri      = "sip:001010000000001@192.0.2.7:5060"

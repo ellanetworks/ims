@@ -23,7 +23,6 @@ import { useSnackbar } from "@/contexts/SnackbarContext";
 
 const MAX_ALIAS = 64;
 
-// aliasError is the problem with an alias, as the server validates it.
 export const aliasError = (alias: string, what: string): string | undefined => {
   if ([...alias].length > MAX_ALIAS) return `At most ${MAX_ALIAS} characters`;
   if (alias.trim() !== alias) return `The ${what} begins or ends with a space`;
@@ -56,7 +55,6 @@ export default function UserDialog({
     user?.implicit_affiliations ?? [],
   );
 
-  // The identities the IMS registered, which the HSS wrote as the server compares them.
   const registered = useQuery({
     queryKey: ["registrations", "", { page: 0, pageSize: 100 }],
     queryFn: () => listRegistrations({ page: 1, perPage: 100 }),

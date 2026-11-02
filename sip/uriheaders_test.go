@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TS 24.379 §10.1.2.2.2.1: the uri of an <entry> carries Accept-Contact header fields and, in the hname "body", the
-// SDP offer and the mcptt-info of the call.
+// TS 24.379 clause 10.1.2.2.2.1
 func TestURIEmbeddedMCPTTEntry(t *testing.T) {
 	var e Envelope
 
@@ -165,8 +164,7 @@ func TestFormRequest(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.2.2.2.1: the Refer-To of a REFER for a pre-established session is a cid URL to a resource-lists
-// body of the REFER.
+// TS 24.379 clause 10.1.2.2.2.1
 func TestReferToContentID(t *testing.T) {
 	lists := NewBodyPart("application/resource-lists+xml", []byte("<resource-lists/>"))
 	lists.SetContentID("cn35t8jf02@ims-op.net")

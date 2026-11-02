@@ -21,8 +21,6 @@ func attempt(icid string, at time.Time) *CallRecord {
 	}
 }
 
-// ended makes r a call that ended with status, by a party, a second after it was requested; and that was
-// answered, then lasted a minute, if status is 2xx.
 func ended(r *CallRecord, status int, outcome CallOutcome, by CallParty) *CallRecord {
 	r.SIPStatus, r.Outcome, r.EndedBy = status, outcome, by
 	r.DeliveryStartAt = r.RequestedAt.Add(time.Second)
@@ -68,7 +66,7 @@ func TestCallRecordLifecycle(t *testing.T) {
 	r.EndedBy = PartyCallee
 
 	saved := *r
-	saved.SessionID, saved.RequestedParty = "changed", "changed" // never updated
+	saved.SessionID, saved.RequestedParty = "changed", "changed"
 
 	saveCalls(t, d, &saved)
 
@@ -124,7 +122,6 @@ func TestSaveCallRecordsFailing(t *testing.T) {
 	}
 }
 
-// TestCallRecordConstraints checks that the database refuses records whose fields contradict each other.
 func TestCallRecordConstraints(t *testing.T) {
 	cases := map[string]func(r *CallRecord){
 		"answered with an error status": func(r *CallRecord) {
@@ -255,7 +252,6 @@ func TestPruneCallRecords(t *testing.T) {
 
 	saveCalls(t, d, records...)
 
-	// More than a batch is too old.
 	before := callT0.Add(time.Duration(callRecordBatch+2) * time.Second)
 
 	deleted, err := d.PruneCallRecords(t.Context(), before, n)
@@ -267,7 +263,6 @@ func TestPruneCallRecords(t *testing.T) {
 		t.Fatalf("deleted %d, want %d", deleted, callRecordBatch+2)
 	}
 
-	// Then the oldest beyond the cap.
 	if deleted, err = d.PruneCallRecords(t.Context(), before, 3); err != nil || deleted != 5 {
 		t.Fatalf("PruneCallRecords = %d, %v; want 5 deleted", deleted, err)
 	}

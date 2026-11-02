@@ -70,7 +70,6 @@ describe("AuthProvider", () => {
 
     renderProvider();
     await act(() => vi.advanceTimersByTimeAsync(0));
-    // StrictMode starts the session twice in tests.
     const started = refresh.mock.calls.length;
 
     await act(() => vi.advanceTimersByTimeAsync(779_000));
@@ -137,7 +136,6 @@ describe("AuthProvider", () => {
     renderProvider();
     await screen.findByText("admin@example.com admin");
 
-    // The access token expired while the computer slept.
     token = makeToken("admin@example.com", RoleID.Admin, 900) + "renewed";
     await expect(apiFetch("/api/v1/operator")).resolves.toEqual({ ok: true });
     expect(screen.queryByText("login page")).not.toBeInTheDocument();

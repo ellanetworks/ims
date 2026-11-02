@@ -3,11 +3,6 @@ package com.ellanetworks.mcptt.platform
 import com.ellanetworks.mcptt.go.mobile.Platform
 import java.io.IOException
 
-/**
- * The platform of a session (the Go package mobile's Platform): the network its sockets are bound to, the UICC for
- * AKA, IpSecManager for its SAs, the alarms and wake locks of the device, and where its events and log go. The
- * session calls it from its goroutines: each method is thread-safe and returns promptly.
- */
 class AndroidPlatform(
     private val network: () -> Cellular?,
     private val isim: Isim,

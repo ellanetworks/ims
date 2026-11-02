@@ -51,7 +51,6 @@ func (a *SPIs) Allocate(avoid ...uint32) (uint32, uint32, error) {
 	return out[0], out[1], nil
 }
 
-// AllocateOne allocates one SPI, not among avoid.
 func (a *SPIs) AllocateOne(avoid ...uint32) (uint32, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

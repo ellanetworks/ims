@@ -10,37 +10,17 @@ import (
 )
 
 var (
-	// ErrStale is the error of a notification of a version not above the local one: it is discarded (§4.6).
+	// RFC 4575 section 4.6
 	ErrStale = errors.New("conferenceinfo: version not newer than the local one")
-	// ErrVersionGap is the error of a partial notification that does not follow the local version, or comes before
-	// any full one: the subscriber MUST refresh the subscription for a full notification (§4.6).
+	// RFC 4575 section 4.6
 	ErrVersionGap = errors.New("conferenceinfo: partial notification out of sequence")
-	// ErrIncoherent is the error of a partial notification of the version following the local one from which no
-	// coherent state can be built (§4.6): one after a deleted notification, of a conference that has ceased to exist,
-	// or one of which an element merged keeps in Other an element of the conference-info namespace, malformed or
-	// repeated, that step 3.2 cannot apply as "received in the schema". The subscriber refreshes the subscription for
-	// a full notification, as for ErrVersionGap.
+	// RFC 4575 section 4.6
 	ErrIncoherent = errors.New("conferenceinfo: partial notification not applicable")
-	// ErrEntity is the error of a notification of another conference than the local state's: the entity of the root
-	// is the conference URI subscribed to (§5.2).
+	// RFC 4575 section 5.2
 	ErrEntity = errors.New("conferenceinfo: notification of another conference")
 )
 
-// Apply updates i, the conference state of a subscription, with the notification n by the procedure of §4.6. A
-// zero i has no state yet. A full or deleted n replaces i, a full one even after a deleted one, as the procedure has
-// it; a deleted one ends the conference, its children ignored (§4.4), and the subscriber SHOULD then unsubscribe. A
-// partial n of the version following that of i updates it, element by element:
-//
-//   - an element of a key (§4.5) updates the sibling of its key, or is added; one of state full or without state
-//     replaces it, one of state deleted removes it, one of state partial or without a state attribute in the schema
-//     (<media>, the entries of uris-type) updates its children by the same rules;
-//   - an element without key nor state attribute in the schema is replaced as a whole, an extension element too:
-//     the extension elements and attributes of n replace those of i of their name (§4.4: extensions are atomic but
-//     where they define otherwise).
-//
-// Apply keeps the slices and elements of n in i, and changes neither those nor those of i: a copy of i taken before
-// is unchanged. An element of n of state deleted not in i is ignored. The elements updated are left without state, as
-// the elements of a full document may be. On an error, i is unchanged.
+// RFC 4575 section 4.6
 func (i *Info) Apply(n Info) error {
 	switch {
 	case i.Entity == "" && n.State == Partial:
@@ -81,13 +61,10 @@ func (i *Info) Apply(n Info) error {
 	return nil
 }
 
-// merger applies a partial notification. It changes no slice nor element it is given: it replaces them, of copies
-// where it changes them.
 type merger struct {
 	err error
 }
 
-// merge applies a conference-type of state partial: the root, or a sidebar.
 func (c *Conference) merge(m *merger, n *Conference) {
 	c.Entity = n.Entity
 	c.State = ""
@@ -177,7 +154,7 @@ func (s *Sidebars) merge(m *merger, n *Sidebars) {
 	s.Other = m.other(s.Other, n.Other)
 }
 
-// replace is the value of an element of n, or l's without one: step 3.2 of §4.6.
+// RFC 4575 section 4.6
 func replace[T comparable](l, n T) T {
 	var zero T
 	if n == zero {
@@ -195,7 +172,6 @@ func replaceList(l, n []string) []string {
 	return n
 }
 
-// mergeContainer applies n, a container of keyed elements with a state attribute, to l: to a copy of it.
 func mergeContainer[T any](l, n *T, state func(*T) State, merge func(*T, *T)) *T {
 	switch {
 	case n == nil:
@@ -216,8 +192,7 @@ func mergeContainer[T any](l, n *T, state func(*T) State, merge func(*T, *T)) *T
 	return &c
 }
 
-// mergeKeyed applies the elements of n to those of l of their keys (§4.6 step 3.1): to a copy of l, the rows merged
-// copies.
+// RFC 4575 section 4.6
 func mergeKeyed[T any](l, n []T, key func(*T) string, state func(*T) State, merge func(*T, *T)) []T {
 	l = slices.Clone(l)
 
@@ -247,7 +222,7 @@ func mergeKeyed[T any](l, n []T, key func(*T) string, state func(*T) State, merg
 	return l
 }
 
-// mergeAttr replaces the attributes of l by those of n of their names: an extension is atomic (§4.4).
+// RFC 4575 section 4.4
 func mergeAttr(l, n []xml.Attr) []xml.Attr {
 	if len(n) == 0 {
 		return l
@@ -260,8 +235,7 @@ func mergeAttr(l, n []xml.Attr) []xml.Attr {
 	return append(l, n...)
 }
 
-// other replaces the elements of l by those of n of their names: an extension is atomic (§4.4). An element of n of
-// the conference-info namespace is one Decode did not decode: the notification is refused.
+// RFC 4575 section 4.4
 func (m *merger) other(l, n []*xmltree.Element) []*xmltree.Element {
 	for _, e := range n {
 		if e.Name.Space == Namespace && m.err == nil {

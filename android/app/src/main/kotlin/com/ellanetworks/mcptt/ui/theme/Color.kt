@@ -6,7 +6,6 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-/** The light scheme of Ella: Ella Core's tokens, the rgba ones flattened on white. */
 val lightColors = lightColorScheme(
     primary = Color(0xFF26374A),
     onPrimary = Color(0xFFFFFFFF),
@@ -35,7 +34,6 @@ val lightColors = lightColorScheme(
     outlineVariant = Color(0xFFE2E2E2),
 )
 
-/** The dark scheme of Ella: Ella Core's tokens, the rgba ones flattened on its background. */
 val darkColors = darkColorScheme(
     primary = Color(0xFF5B9DFF),
     onPrimary = Color(0xFF14161B),
@@ -64,10 +62,6 @@ val darkColors = darkColorScheme(
     outlineVariant = Color(0xFF2E333F),
 )
 
-/**
- * The colours of Ella that Material's scheme has no role for: the states of a registration and of the floor
- * (transmit: you have the floor; success: someone else talks), and links.
- */
 @Immutable
 data class EllaColors(
     val success: Color,
@@ -85,7 +79,6 @@ data class EllaColors(
     val onTransmit: Color,
 )
 
-/** The extended colours of the light theme. */
 val lightEllaColors = EllaColors(
     success = Color(0xFF1B6C1C),
     onSuccess = Color(0xFFFFFFFF),
@@ -102,7 +95,6 @@ val lightEllaColors = EllaColors(
     onTransmit = Color(0xFFFFFFFF),
 )
 
-/** The extended colours of the dark theme. */
 val darkEllaColors = EllaColors(
     success = Color(0xFF4ABF4B),
     onSuccess = Color(0xFF14161B),
@@ -119,5 +111,4 @@ val darkEllaColors = EllaColors(
     onTransmit = Color(0xFF14161B),
 )
 
-/** The extended colours of the theme, EllaTheme's. */
 val LocalEllaColors = staticCompositionLocalOf { lightEllaColors }

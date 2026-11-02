@@ -95,8 +95,6 @@ export const contact = (
   ...overrides,
 });
 
-// registration is a registration with one implicit registration set, built from identities, contacts and hss,
-// unless implicit_registration_sets gives them all.
 export const registration = ({
   impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
   identities = [

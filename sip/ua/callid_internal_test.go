@@ -7,7 +7,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// The Call-ID of an initial request is a word of its own, of a tel URI as of a SIP URI (RFC 3261 §8.1.1.4, §25.1).
+// RFC 3261 section 8.1.1.4
+// RFC 3261 section 25.1
 func TestCallIDOfInitial(t *testing.T) {
 	for _, target := range []string{"tel:+15550000003", "sip:bob@example.com"} {
 		uri, err := sip.ParseURI(target)

@@ -1,5 +1,3 @@
-// Package sbitlstest issues certificates for tests: a CA, and end entity certificates written to files that
-// sbitls loads.
 package sbitlstest
 
 import (
@@ -25,7 +23,6 @@ type CA struct {
 	Cert *x509.Certificate
 	key  crypto.Signer
 	dir  string
-	// File holds the CA certificate.
 	File string
 }
 
@@ -61,24 +58,18 @@ func NewCA(t testing.TB, name string) *CA {
 	return ca
 }
 
-// Leaf is an end entity certificate to issue.
 type Leaf struct {
-	// Hosts are the domain names and IP addresses in subjectAltName.
-	Hosts []string
-	// KeyUsage defaults to digitalSignature, and ExtKeyUsage to serverAuth and clientAuth (TS 33.310 §6.1.3c.3).
-	KeyUsage    x509.KeyUsage
-	ExtKeyUsage []x509.ExtKeyUsage
-	// NotBefore and NotAfter default to an hour ago and a day from now.
+	Hosts               []string
+	KeyUsage            x509.KeyUsage
+	ExtKeyUsage         []x509.ExtKeyUsage
 	NotBefore, NotAfter time.Time
 }
 
-// Issued is a certificate, as files and as what crypto/tls takes.
 type Issued struct {
 	Files sbitls.Files
 	Cert  tls.Certificate
 }
 
-// Issue writes a certificate and its key to files named after name. Files.CA is the CA's file.
 func (ca *CA) Issue(t testing.TB, name string, l Leaf) Issued {
 	t.Helper()
 
@@ -142,7 +133,6 @@ func (ca *CA) Issue(t testing.TB, name string, l Leaf) Issued {
 	return out
 }
 
-// Pool holds the certificates of the CAs.
 func Pool(cas ...*CA) *x509.CertPool {
 	p := x509.NewCertPool()
 	for _, ca := range cas {
@@ -152,8 +142,6 @@ func Pool(cas ...*CA) *x509.CertPool {
 	return p
 }
 
-// Peer returns the configuration of a peer, as client or server, that presents cert, trusts the CAs, and requires
-// a client certificate when it serves.
 func Peer(cert tls.Certificate, cas ...*CA) *tls.Config {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,

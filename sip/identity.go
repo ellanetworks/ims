@@ -2,11 +2,10 @@ package sip
 
 import "strings"
 
-// Identity is u as a public user identity or public service identity in its canonical form (TS 23.003 §13.4, TS
-// 29.229 §6.3.2): a SIP URI of its user and host, without port, parameters and headers, the user part of a number
-// (user=phone) without its parameters; a tel URI of its number without visual separators (RFC 3966 §5.1.1) and, of a
-// local number, its phone-context. Escapes are normalized (RFC 3261 §19.1.4) and the host and tel URI lower-cased,
-// so that equivalent identities have one canonical form. A URI of another scheme loses its headers only.
+// TS 23.003 clause 13.4
+// TS 29.229 clause 6.3.2
+// RFC 3966 section 5.1.1
+// RFC 3261 section 19.1.4
 func (u URI) Identity() URI {
 	switch {
 	case u.IsTel():
@@ -20,7 +19,6 @@ func (u URI) Identity() URI {
 	case u.IsSIP():
 		user := normalizeEscapes(u.User)
 
-		// TS 23.003 §13.4: the user part of a number follows the tel URI, without its parameters.
 		if v, _ := u.Params.Get("user"); strings.EqualFold(v, "phone") {
 			user, _, _ = strings.Cut(user, ";")
 		}
@@ -34,8 +32,7 @@ func (u URI) Identity() URI {
 	return u
 }
 
-// phoneContext is a phone-context in its canonical form (RFC 3966 §4): a domain name lower-cased, global number digits
-// without visual separators.
+// RFC 3966 section 4
 func phoneContext(pc string) string {
 	if strings.HasPrefix(pc, "+") {
 		pc = withoutVisualSeparators(pc)
@@ -44,7 +41,7 @@ func phoneContext(pc string) string {
 	return strings.ToLower(pc)
 }
 
-// withoutVisualSeparators is a tel URI number without its visual separators (RFC 3966 §3: "-", ".", "(", ")").
+// RFC 3966 section 3
 func withoutVisualSeparators(number string) string {
 	return strings.Map(func(c rune) rune {
 		if strings.ContainsRune("-.()", c) {
@@ -55,12 +52,11 @@ func withoutVisualSeparators(number string) string {
 	}, number)
 }
 
-// reserved are the characters of RFC 2396 §2.2 whose escapes are not equivalent to them (RFC 3261 §19.1.4).
+// RFC 2396 section 2.2
+// RFC 3261 section 19.1.4
 const reserved = ";/?:@&=+$,"
 
-// normalizeEscapes is s with the escapes of characters other than reserved ones decoded, and the others' hex digits
-// upper-cased: equal for URIs equivalent by RFC 3261 §19.1.4 ("Characters other than those in the 'reserved' set
-// are equivalent to their '%' HEX HEX encoding").
+// RFC 3261 section 19.1.4
 func normalizeEscapes(s string) string {
 	if !strings.Contains(s, "%") {
 		return s

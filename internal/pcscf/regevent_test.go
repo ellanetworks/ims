@@ -202,7 +202,6 @@ type ownSub struct {
 	from  *siptest.Socket
 	pcscf netip.AddrPort
 
-	// rr is the Record-Route of the NOTIFYs, as proxies on the way would add it.
 	rr []string
 }
 
@@ -234,7 +233,6 @@ func (o *ownSub) notify(t *testing.T, state string, info *reginfo.Reginfo) *sip.
 	return o.notifyBody(t, state, body)
 }
 
-// notifyBody sends a NOTIFY of the reg event document body, none if nil.
 func (o *ownSub) notifyBody(t *testing.T, state string, body []byte) *sip.Response {
 	t.Helper()
 
@@ -411,8 +409,8 @@ func TestOwnSubscribe(t *testing.T) {
 	})
 }
 
-// RFC 3261 §12.1.1, RFC 6665 §4.4.1: the 200 to the NOTIFY that creates the dialog of the P-CSCF's subscription
-// carries the Record-Route of the NOTIFY and the Contact of the P-CSCF.
+// RFC 3261 section 12.1.1
+// RFC 6665 section 4.4.1
 func TestFirstNotifyResponseCreatesTheDialog(t *testing.T) {
 	s := newRegScene(t)
 
@@ -502,12 +500,11 @@ func TestOwnSubscriptionRefresh(t *testing.T) {
 	}
 }
 
-// unreadable is a reg event document the P-CSCF cannot read: a registration of no state the schema has.
 var unreadable = []byte(`<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="0" state="full">` +
 	`<registration aor="` + testIMPU + `" id="r1" state="gone"/></reginfo>`)
 
-// A document the P-CSCF cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a refresh
-// asks for the full state again (RFC 3680 §5.2); one of a NOTIFY that ends the subscription, a new subscription.
+// RFC 6665 section 4.2.2
+// RFC 3680 section 5.2
 func TestOwnNotifyUnreadable(t *testing.T) {
 	s := newRegScene(t)
 
@@ -904,7 +901,6 @@ func TestInDialogThroughThePCSCF(t *testing.T) {
 		unknown[i] = strings.Replace(e, token+"@", "nosuchflow@", 1)
 	}
 
-	// TS 24.229 §5.2.6.4.1: a flow token the P-CSCF does not know is no binding.
 	d.notify(t, s, 2, unknown)
 	wantPCSCFNotFound(t, first(s.scscf.RecvResponse()))
 	u.us.RecvNone(quiet)
@@ -1224,7 +1220,7 @@ func TestRequestsUseTheOldSetUntilTheNewOneIsUsed(t *testing.T) {
 	}
 }
 
-// TS 33.203 §7.4.2a
+// TS 33.203 clause 7.4.2a
 func TestRequestsUseTheNewSetWhenTheOldOneExpires(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{Kernel: ipsectest.NewKernel(), Grace: time.Minute}, slog.New(slog.DiscardHandler), noTrace())
 	t.Cleanup(a.close)

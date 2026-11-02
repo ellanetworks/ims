@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// TestRateLimiterIsBounded checks that a limiter refuses new keys once it tracks maxRateKeys in their windows, and
-// takes them again once the windows are over.
 func TestRateLimiterIsBounded(t *testing.T) {
 	now := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 	l := newRateLimiter(1, time.Minute, func() time.Time { return now })

@@ -34,29 +34,20 @@ import (
 var ErrAlreadyStarted = errors.New("server: already started")
 
 const (
-	// tracerName is the instrumentation scope of the spans of the server itself.
 	tracerName = "github.com/ellanetworks/ims/internal/server"
-	// roleIMS is the role of what the server does for the whole IMS, rather than for one of its roles.
-	roleIMS = "ims"
+	roleIMS    = "ims"
 )
 
 const (
-	// ShutdownTimeout is the time stopping the IMS takes at most when nothing fails: for the MCPTT AS to end its
-	// calls, for the P-CSCF to end its policy sessions, then for Diameter to disconnect from its peers, for the call
-	// records to be saved and for the last spans to be exported.
 	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime +
 		tracesFlushTime + time.Second
 
-	// mcpttStopTime is what stopping the IMS leaves the MCPTT AS to end its calls and subscriptions, before the core.
 	mcpttStopTime = 5 * time.Second
 
-	// diameterDisconnectTime is what stopping the core leaves Diameter to disconnect from its peers (RFC 6733
-	// §5.4), after SIP, whose policy sessions end over Diameter.
+	// RFC 6733 section 5.4
 	diameterDisconnectTime = 2 * time.Second
-	// recordsFlushTime is what stopping the IMS leaves the call records to be saved, after the core.
-	recordsFlushTime = 2 * time.Second
-	// tracesFlushTime is what stopping the IMS leaves the last spans to be exported, after the call records.
-	tracesFlushTime = 2 * time.Second
+	recordsFlushTime       = 2 * time.Second
+	tracesFlushTime        = 2 * time.Second
 )
 
 type Server struct {
@@ -67,8 +58,6 @@ type Server struct {
 
 	DiameterHandshakeTimeout time.Duration
 
-	// These change the S-CSCF's and P-CSCF's timers in tests. Zero keeps their defaults; ReauthInterval and
-	// NoAnswerTimeout are off by default.
 	MinExpires       time.Duration
 	ReauthInterval   time.Duration
 	ReauthExpires    time.Duration
@@ -76,24 +65,16 @@ type Server struct {
 	MediaLossTimeout time.Duration
 	GroupNoAnswer    time.Duration
 	ASTimeout        time.Duration
-	// PruneInterval changes how often call records are pruned in tests. Zero keeps the default.
-	PruneInterval time.Duration
-	// BcryptCost is the cost of the API's password hashes, lowered in tests: bcrypt's default when zero.
-	BcryptCost int
-	// TracerProvider, when set, traces the IMS in place of the configuration's telemetry, in tests.
-	TracerProvider trace.TracerProvider
+	PruneInterval    time.Duration
+	BcryptCost       int
+	TracerProvider   trace.TracerProvider
 
-	// tracerProvider traces the IMS, nil when telemetry is off, and shutdownTracing exports the spans that are left
-	// and stops it.
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
-	// detached traces what follow does, which starts later than the API request that changed the settings.
-	detached tracing.Detached
+	detached        tracing.Detached
 
-	database *db.DB
-	// draining is set once Shutdown starts, and makes the API unready.
-	draining atomic.Bool
-	// records outlives the cores, so that it closes the records of the calls a restart loses.
+	database    *db.DB
+	draining    atomic.Bool
 	records     *callrecords.Recorder
 	metrics     *metrics
 	stopPrune   context.CancelFunc
@@ -102,30 +83,20 @@ type Server struct {
 	apiServer   *http.Server
 	apiListener net.Listener
 
-	// mcptt is the built-in MCPTT AS, if configured. It outlives the cores: a restart of the core leaves its calls
-	// and registrations alone, but one for a new home domain, which renames it, restarts it. ases is where the cores
-	// find it.
-	mcptt atomic.Pointer[mcptt.AS]
-	ases  builtinASs
-	// mcpttHomeDomain is the home domain the MCPTT AS is named under: changed by follow only.
+	mcptt           atomic.Pointer[mcptt.AS]
+	ases            builtinASs
 	mcpttHomeDomain string
 
-	// ipsmgw is the built-in IP-SM-GW, which the iFCs of the HSS route to or not. Like the MCPTT AS, it outlives the
-	// cores but one for a new home domain. ipsmgwHomeDomain is the home domain it is named under.
 	ipsmgw           atomic.Pointer[ipsmgw.AS]
 	ipsmgwHomeDomain string
 
-	// The core is replaced when the operator's identity changes.
 	core       atomic.Pointer[core]
 	stopFollow context.CancelFunc
 	followDone chan struct{}
 
-	// sipFailed wakes follow when a SIP listener of the core failed, for it to restart the core.
 	sipFailed chan struct{}
 }
 
-// core is the part of the IMS that its settings build, apart from what it reads when it uses it: Diameter, the
-// policy function and SIP.
 type core struct {
 	settings    settings.Settings
 	node        *diameter.Node
@@ -134,7 +105,6 @@ type core struct {
 	policy      *policyFunction
 	sip         *sipServer
 
-	// failed is set once a SIP listener of the core failed for good: the core is restarted.
 	failed *atomic.Bool
 }
 
@@ -188,7 +158,6 @@ func (s *Server) Start(ctx context.Context) error {
 		return checkSettings(ctx, cfg, st)
 	})
 
-	// The calls in progress when the IMS last stopped were lost with it.
 	closed, err := database.CloseOpenCallRecords(ctx, nil)
 	if err != nil {
 		_ = database.Close()
@@ -268,19 +237,18 @@ func (s *Server) Start(ctx context.Context) error {
 	view := coreView{s}
 
 	apiCfg := api.Config{
-		Settings:      live,
-		Diameter:      view,
-		SIP:           view,
-		Registrations: view,
-		Policy:        view,
-		CallRecords:   database,
-		Frontend:      ui.FS(),
-		Ready:         func(ctx context.Context) error { return s.ready(ctx, database) },
-		Metrics:       s.metrics.registry,
-		Auth:          database,
-		JWTSecret:     jwtSecret,
-		BcryptCost:    s.BcryptCost,
-		// The cookie is Secure, and HSTS on, only over TLS: a browser would not send a Secure cookie over HTTP.
+		Settings:       live,
+		Diameter:       view,
+		SIP:            view,
+		Registrations:  view,
+		Policy:         view,
+		CallRecords:    database,
+		Frontend:       ui.FS(),
+		Ready:          func(ctx context.Context) error { return s.ready(ctx, database) },
+		Metrics:        s.metrics.registry,
+		Auth:           database,
+		JWTSecret:      jwtSecret,
+		BcryptCost:     s.BcryptCost,
 		SecureCookie:   tlsConfig != nil,
 		TracerProvider: s.tracerProvider,
 		Now:            time.Now,
@@ -337,7 +305,6 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// startCore starts Diameter, the policy function and SIP from their settings.
 func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, error) {
 	cfg := s.Config
 
@@ -374,8 +341,6 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 
 	failed := new(atomic.Bool)
 
-	// A SIP listener that failed for good, as its address removed, is a P-CSCF, I-CSCF or S-CSCF no longer reachable
-	// on it: the core is restarted, as for new settings, and retried until it listens again.
 	sipFailed := func(netip.AddrPort, error) {
 		failed.Store(true)
 
@@ -409,16 +374,12 @@ func (s *Server) numbering() scscf.Numbering {
 	}
 }
 
-// follow applies the settings as they change: new Diameter peers and routes reconfigure the running node; a new
-// identity, Diameter transport or policy function replaces the core. Other settings are read when used. What it does
-// starts later than the API requests that changed the settings: it is a trace of its own, linked to them.
 func (s *Server) follow(ctx context.Context) {
 	defer close(s.followDone)
 
 	backoff := minRetry
 	number := s.settings.Get().IPSMGW.Number
 
-	// causes are the changes not yet applied: kept while the core fails to build, for its retries to link to.
 	var causes []trace.SpanContext
 
 	for {
@@ -434,8 +395,6 @@ func (s *Server) follow(ctx context.Context) {
 			s.apply(ctx, st, number != st.IPSMGW.Number, causes)
 			number = st.IPSMGW.Number
 
-			// A core that failed to build is retried, since what it failed on may come back, like a peer's
-			// certificate files or the SCTP module.
 			if s.core.Load() == nil {
 				retry = time.After(backoff)
 				backoff = min(2*backoff, maxRetry)
@@ -455,7 +414,6 @@ func (s *Server) follow(ctx context.Context) {
 	}
 }
 
-// apply applies st, if the running core or IP-SM-GW number differ from it, as a trace linked to causes.
 func (s *Server) apply(ctx context.Context, st settings.Settings, numberChanged bool, causes []trace.SpanContext) {
 	current := s.coreSettings()
 	c := s.core.Load()
@@ -491,7 +449,6 @@ func (s *Server) apply(ctx context.Context, st settings.Settings, numberChanged 
 	}
 }
 
-// maxCauses bounds the changes a restart links to, the latest kept.
 const maxCauses = 32
 
 const (
@@ -499,9 +456,6 @@ const (
 	maxRetry = 30 * time.Second
 )
 
-// reconfigureNode gives the running Diameter node its new peers and routes, without a restart. While the realms
-// change, the node routes both the old and the new ones, so that a request built with either finds its route. A node
-// that refuses its new peers is replaced, so that it does not keep serving the old ones.
 func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) error {
 	c := s.core.Load()
 
@@ -526,8 +480,6 @@ func (s *Server) reconfigureNode(ctx context.Context, st settings.Settings) erro
 	return nil
 }
 
-// coreSettings are the settings the current core was built from. Without a core, as after it failed to restart,
-// they are none, so that the next change tries again.
 func (s *Server) coreSettings() settings.Settings {
 	if c := s.core.Load(); c != nil {
 		return c.settings
@@ -536,15 +488,11 @@ func (s *Server) coreSettings() settings.Settings {
 	return settings.Settings{}
 }
 
-// restartCore replaces the core with one built from st, why it does. Peers and UEs reconnect to it; registrations and
-// security associations are restored from the database. The error is the new core's.
 func (s *Server) restartCore(ctx context.Context, st settings.Settings, why string) error {
 	s.Logger.InfoContext(ctx, "restarting "+why,
 		slog.String("home_domain", st.Operator.HomeDomain()), slog.Int("diameter_peers", len(st.Peers)),
 		slog.String("policy", string(st.Policy.Interface)))
 
-	// A new home domain renames the MCPTT AS, its PSIs, and the session identities of its calls, which it ends first,
-	// through the core: it starts again under the new name, as after a restart of the IMS.
 	renamed := s.mcptt.Load() != nil && s.mcpttHomeDomain != st.Operator.HomeDomain()
 	if renamed {
 		stopCtx, cancel := context.WithTimeout(ctx, mcpttStopTime)
@@ -552,7 +500,6 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		cancel()
 	}
 
-	// So does the IP-SM-GW: its host is under the home domain.
 	renamedIPSMGW := s.ipsmgw.Load() != nil && s.ipsmgwHomeDomain != st.Operator.HomeDomain()
 	if renamedIPSMGW {
 		stopCtx, cancel := context.WithTimeout(ctx, mcpttStopTime)
@@ -566,7 +513,6 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		cancel()
 	}
 
-	// The calls in progress were lost with the core.
 	s.records.CloseOpen()
 
 	if renamed {
@@ -617,7 +563,6 @@ func (c *core) attrs() []any {
 	return attrs
 }
 
-// shutdown stops the core until ctx is done, Diameter last, since SIP ends its policy sessions over Diameter or N5.
 func (c *core) shutdown(ctx context.Context, logger *slog.Logger) {
 	sipCtx, cancel := before(ctx, diameterDisconnectTime)
 	defer cancel()
@@ -659,7 +604,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopFollow()
 	<-s.followDone
 
-	// MCPTT first: its BYEs and unsubscriptions go through the core.
 	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
 	s.stopMCPTT(mcpttCtx)
 	s.stopIPSMGW(mcpttCtx)
@@ -671,7 +615,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 		cancel()
 	}
 
-	// The records of the calls in progress are saved as they are, and closed when the IMS starts again.
 	recordsCtx, cancel := before(ctx, tracesFlushTime)
 	if err := s.records.Close(recordsCtx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to save the call records", slog.Any("error", err))
@@ -689,8 +632,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopTracing(ctx)
 }
 
-// startTracing sets the provider that traces the IMS: the one of TracerProvider, one exporting to the collector of the
-// configuration, or none when telemetry is off.
 func (s *Server) startTracing(ctx context.Context) error {
 	s.shutdownTracing = func(context.Context) error { return nil }
 
@@ -712,7 +653,6 @@ func (s *Server) startTracing(ctx context.Context) error {
 	return nil
 }
 
-// stopTracing exports the spans that are left, within tracesFlushTime, and stops the tracing.
 func (s *Server) stopTracing(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tracesFlushTime)
 	defer cancel()
@@ -722,8 +662,6 @@ func (s *Server) stopTracing(ctx context.Context) {
 	}
 }
 
-// ready is whether the API can serve: it is not once Shutdown starts, or while the database does not answer. The core
-// does not count: the API is what fixes the settings a core failed to start with, so it must stay reachable.
 func (s *Server) ready(ctx context.Context, database *db.DB) error {
 	if s.draining.Load() {
 		return errors.New("shutting down")
@@ -732,7 +670,6 @@ func (s *Server) ready(ctx context.Context, database *db.DB) error {
 	return database.Ping(ctx)
 }
 
-// before is ctx, done d before ctx is, so that what runs under it leaves d to what comes after.
 func before(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -754,8 +691,6 @@ func (s *Server) timers() timers {
 	}
 }
 
-// coreView serves the API from the current core. While the core restarts, there is none: the IMS reports no peers,
-// listeners or policy function, and has no registrations.
 type coreView struct {
 	s *Server
 }
@@ -800,11 +735,9 @@ func (v coreView) PolicyStatus() api.PolicyStatus {
 	return api.PolicyStatus{}
 }
 
-// apiTLS returns the TLS configuration of the API, or nil for none. Go's defaults choose the cipher suites and key
-// exchanges, which keeps the post-quantum hybrid key exchange that a list of curves would turn off.
 func apiTLS(c *config.APITLS) (*tls.Config, error) {
 	if c == nil {
-		return nil, nil //nolint:nilnil // No TLS is not an error.
+		return nil, nil //nolint:nilnil
 	}
 
 	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)

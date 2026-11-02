@@ -18,10 +18,6 @@ import org.robolectric.ParameterizedRobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/**
- * The PTT's every state, light and dark (src/test/screenshots/ptt): verifyRoborazziDebug compares them, recordRoborazziDebug
- * records them anew.
- */
 @RunWith(ParameterizedRobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w360dp-h220dp-xxhdpi")
@@ -31,7 +27,6 @@ class PttScreenshotTest(private val state: PttState, private val label: String, 
 
     @Test
     fun screenshot() {
-        // The ring's frames stopped: its time left fixed.
         compose.mainClock.autoAdvance = false
         val total = 30_000L
         compose.setContent {

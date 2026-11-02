@@ -1,6 +1,3 @@
-// Package pcftest is a fake PCF for tests: the NF service producer side of Npcf_PolicyAuthorization (TS 29.514)
-// over cleartext HTTP/2, or over mutually authenticated TLS. It follows TS 29.514 where Open5GS deviates, and it checks every request strictly: one
-// that breaks TS 29.514 or TS 29.500 fails the test, unless Config.AllowViolations is set.
 package pcftest
 
 import (
@@ -29,7 +26,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-// TS 29.500 Table 5.2.7.2-1
+// TS 29.500 clause 5.2.7.2 table 5.2.7.2-1
 const (
 	CauseInvalidMsgFormat     = "INVALID_MSG_FORMAT"
 	CauseMandatoryIEIncorrect = "MANDATORY_IE_INCORRECT"
@@ -45,49 +42,33 @@ const (
 
 type Config struct {
 	Address netip.Addr
-	// Host is the host of the API root, a domain name that resolves to Address. It defaults to Address.
-	Host string
+	Host    string
 
-	// TLS, if set, makes the PCF serve https and send notifications over TLS: it presents the certificate of
-	// TLS, checks the consumer's against the CAs of TLS, and requires one from a client.
 	TLS *tls.Config
 
-	// UEs are the addresses with a PDU session. An IPv6 address binds to the /64 of one of them (TS 29.513
-	// §6.2). Empty, every UE has one.
 	UEs []netip.Addr
 
-	// Features are the features the PCF supports; it negotiates their intersection with the consumer's
-	// (TS 29.514 §5.8). They default to IMS_SBI and PatchCorrection.
 	Features n5.SupportedFeatures
 
-	// AllowViolations stops a request that breaks TS 29.514 or TS 29.500 from failing the test.
 	AllowViolations bool
 
 	Logger *slog.Logger
 }
 
-// Context is an Individual Application Session Context as the PCF holds it: its service information with every
-// patch merged in.
 type Context struct {
 	URI string
 	n5.AppSessionContextReqData
-	// SipForkInd is only in the AppSessionContextUpdateData of a patch, and so in the merged context.
 	SipForkInd n5.SipForkingIndication `json:"sipForkInd,omitempty"`
 }
 
-// Request is a create, modify or delete that reached the PCF.
 type Request struct {
-	Op n5.Op
-	// URI is the context the request targets. For a create, it is the URI the context gets if it is created.
-	URI    string
-	Create *n5.AppSessionContext
-	Patch  json.RawMessage
-	Delete *n5.EventsSubscReqData
-	// Context is the context a create or modify leads to, or the one a delete ends.
-	Context Context
-	// Problem is set when the PCF refused the request itself, rather than through RefuseWhen.
-	Problem *n5.ProblemDetails
-	// Traceparent is the W3C trace context of the request, if any.
+	Op          n5.Op
+	URI         string
+	Create      *n5.AppSessionContext
+	Patch       json.RawMessage
+	Delete      *n5.EventsSubscReqData
+	Context     Context
+	Problem     *n5.ProblemDetails
 	Traceparent string
 }
 
@@ -105,17 +86,14 @@ func (r Request) String() string {
 	return "empty request"
 }
 
-// Failure is an error the PCF answers instead of carrying out a request.
 type Failure struct {
 	Status     int
 	Cause      string
 	Detail     string
 	RetryAfter time.Duration
-	// Drop resets the stream without an answer.
-	Drop bool
+	Drop       bool
 }
 
-// Response is what the consumer answered to a notification.
 type Response struct {
 	Status  int
 	Header  http.Header
@@ -141,14 +119,12 @@ type PCF struct {
 	violations []string
 	nextID     int
 	sessions   map[string]*appSession
-	// pending are the contexts a create or a delete of is under way, recorded but not answered yet: each channel closes
-	// once the context is created or deleted, or the request refused.
-	pending   map[string]chan struct{}
-	moved     map[string]string
-	refuse    func(Request) *Failure
-	answer    func(Request) *n5.EventsNotification
-	hold      chan struct{}
-	abandoned int
+	pending    map[string]chan struct{}
+	moved      map[string]string
+	refuse     func(Request) *Failure
+	answer     func(Request) *n5.EventsNotification
+	hold       chan struct{}
+	abandoned  int
 }
 
 func New(t testing.TB, cfg Config) *PCF {
@@ -234,7 +210,6 @@ func (p *PCF) Addr() netip.AddrPort {
 	return p.addr
 }
 
-// URL is the API root of the PCF.
 func (p *PCF) URL() string {
 	return p.root
 }
@@ -250,7 +225,6 @@ func (p *PCF) Dropped() int {
 	return p.dropped
 }
 
-// Violations lists the requests that broke TS 29.514 or TS 29.500, and why.
 func (p *PCF) Violations() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -281,7 +255,6 @@ func (p *PCF) Next(t testing.TB) Request {
 	return Request{}
 }
 
-// Context returns the context at uri.
 func (p *PCF) Context(uri string) (Context, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -296,7 +269,6 @@ func (p *PCF) Context(uri string) (Context, bool) {
 	return c, err == nil
 }
 
-// Contexts returns every context the PCF holds.
 func (p *PCF) Contexts() []Context {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -314,7 +286,6 @@ func (p *PCF) Contexts() []Context {
 	return out
 }
 
-// RefuseWhen answers f's failure, if any, to a create, modify or delete that passes the PCF's own checks.
 func (p *PCF) RefuseWhen(f func(Request) *Failure) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -322,7 +293,6 @@ func (p *PCF) RefuseWhen(f func(Request) *Failure) {
 	p.refuse = f
 }
 
-// RefuseMedia refuses every create and modify but those of signalling contexts (TS 29.514 §4.2.6.7).
 func (p *PCF) RefuseMedia(f Failure) {
 	p.RefuseWhen(func(r Request) *Failure {
 		if r.Op == n5.OpDelete || Signalling(r.Context) {
@@ -333,8 +303,7 @@ func (p *PCF) RefuseMedia(f Failure) {
 	})
 }
 
-// AnswerWith sets the evsNotif of the answer to a create, modify or delete. An answer to a delete with events is a
-// 200 rather than a 204 (TS 29.514 §4.2.4.2).
+// TS 29.514 clause 4.2.4.2
 func (p *PCF) AnswerWith(f func(Request) *n5.EventsNotification) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -342,7 +311,6 @@ func (p *PCF) AnswerWith(f func(Request) *n5.EventsNotification) {
 	p.answer = f
 }
 
-// Hold delays the answer to every create and modify until release is called.
 func (p *PCF) Hold() (release func()) {
 	hold := make(chan struct{})
 
@@ -365,8 +333,7 @@ func (p *PCF) Hold() (release func()) {
 	}
 }
 
-// Move gives the context at uri a new URI. Requests to the old one are permanently redirected
-// (TS 29.500 §6.10.9).
+// TS 29.500 clause 6.10.9
 func (p *PCF) Move(uri string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -393,7 +360,6 @@ func (p *PCF) Move(uri string) (string, error) {
 	return p.uri(s.id), nil
 }
 
-// Forget drops the context at uri without a notification, as the Open5GS PCF does at PDU session release.
 func (p *PCF) Forget(uri string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -405,8 +371,7 @@ func (p *PCF) Forget(uri string) bool {
 	return ok
 }
 
-// Signalling reports whether c is the context of the AF signalling flows (TS 29.514 §4.2.6.7): media component 0,
-// with only AF_SIGNALLING sub-components.
+// TS 29.514 clause 4.2.6.7
 func Signalling(c Context) bool {
 	if len(c.MedComponents) == 0 {
 		return false
@@ -427,7 +392,6 @@ func Signalling(c Context) bool {
 	return true
 }
 
-// settle marks a create or a delete of the context id under way, until the function it returns ends it.
 func (p *PCF) settle(id string) func() {
 	done := make(chan struct{})
 
@@ -443,8 +407,6 @@ func (p *PCF) settle(id string) func() {
 	}
 }
 
-// settled is the context at uri, once a create or a delete of it recorded (Next) is done: a PCF tells of a context
-// only after it created it, and not after it deleted it.
 func (p *PCF) settled(ctx context.Context, uri string) (Context, bool) {
 	p.mu.Lock()
 	pending := p.pending[p.id(uri)]
@@ -461,8 +423,7 @@ func (p *PCF) settled(ctx context.Context, uri string) (Context, bool) {
 	return p.Context(uri)
 }
 
-// Terminate asks the consumer to delete the context at uri (TS 29.514 §4.2.5.3). The context stays until the
-// consumer deletes it.
+// TS 29.514 clause 4.2.5.3
 func (p *PCF) Terminate(ctx context.Context, uri string, cause n5.TerminationCause) (Response, error) {
 	c, ok := p.settled(ctx, uri)
 	if !ok {
@@ -472,8 +433,7 @@ func (p *PCF) Terminate(ctx context.Context, uri string, cause n5.TerminationCau
 	return p.notify(ctx, c.NotifURI+"/"+n5.TerminateSegment, n5.TerminationInfo{TermCause: cause, ResURI: c.URI})
 }
 
-// Notify reports events of the context at uri to its events subscription (TS 29.514 §4.2.5.2). Every event must
-// be subscribed to. An empty evSubsUri is the context's Events Subscription sub-resource.
+// TS 29.514 clause 4.2.5.2
 func (p *PCF) Notify(ctx context.Context, uri string, n n5.EventsNotification) (Response, error) {
 	c, ok := p.settled(ctx, uri)
 	if !ok {
@@ -501,8 +461,6 @@ func (p *PCF) Notify(ctx context.Context, uri string, n n5.EventsNotification) (
 	return p.notify(ctx, c.EvSubsc.NotifURI+"/"+n5.NotifySegment, n)
 }
 
-// notify sends a notification to the URI it is given, appending to the notifUri as the PCF does, so that a
-// notifUri with a trailing "/" shows.
 func (p *PCF) notify(ctx context.Context, target string, body any) (Response, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -517,7 +475,6 @@ func (p *PCF) notify(ctx context.Context, target string, body any) (Response, er
 	req.Header.Set("Content-Type", n5.ContentJSON)
 	req.Header.Set("Accept", n5.ContentProblem)
 	req.Header.Set("User-Agent", "PCF")
-	// The trace context of ctx, as a traced PCF sends it.
 	tracing.Propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := p.client.Do(req)
@@ -553,7 +510,6 @@ func (p *PCF) uri(id string) string {
 	return p.root + n5.AppSessionsPath + "/" + id
 }
 
-// id returns the ID of a context URI, or "".
 func (p *PCF) id(uri string) string {
 	id, ok := strings.CutPrefix(uri, p.root+n5.AppSessionsPath+"/")
 	if !ok || id == "" || strings.Contains(id, "/") {
@@ -578,7 +534,7 @@ func parseContext(doc json.RawMessage) (Context, error) {
 	return c, err
 }
 
-// TS 29.514 §5.3: the resources and methods of the API that a P-CSCF uses.
+// TS 29.514 clause 5.3
 func (p *PCF) serve(w http.ResponseWriter, r *http.Request) {
 	rest, ok := strings.CutPrefix(r.URL.Path, n5.AppSessionsPath)
 
@@ -607,7 +563,7 @@ func (p *PCF) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// TS 29.500 §5.2.7.2: 405 with the methods of the resource.
+// TS 29.500 clause 5.2.7.2
 func allow(w http.ResponseWriter, r *http.Request, methods ...string) bool {
 	if slices.Contains(methods, r.Method) {
 		return true
@@ -619,8 +575,7 @@ func allow(w http.ResponseWriter, r *http.Request, methods ...string) bool {
 	return false
 }
 
-// session routes a request to an Individual Application Session Context: a moved one is redirected, an unknown
-// one is APPLICATION_SESSION_CONTEXT_NOT_FOUND (TS 29.514 §5.7.3).
+// TS 29.514 clause 5.7.3
 func (p *PCF) session(w http.ResponseWriter, r *http.Request, id, suffix string, h func(http.ResponseWriter, *http.Request, string)) {
 	p.mu.Lock()
 	to, moved := p.moved[id]
@@ -656,7 +611,7 @@ func (p *PCF) individual(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, map[string]any{"ascReqData": s.doc})
 }
 
-// TS 29.514 §4.2.2.2
+// TS 29.514 clause 4.2.2.2
 func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 	body, ok := p.body(w, r, n5.ContentJSON, true)
 	if !ok {
@@ -757,7 +712,7 @@ func (p *PCF) create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// TS 29.514 §4.2.3.2
+// TS 29.514 clause 4.2.3.2
 func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 	patch, ok := p.body(w, r, n5.ContentMergePatch, true)
 	if !ok {
@@ -810,7 +765,6 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	// Merged again, onto the patches that landed while this one was held.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -831,7 +785,6 @@ func (p *PCF) modify(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, map[string]any{"ascReqData": doc, "evsNotif": evs})
 }
 
-// merge returns the context the patch leads to, without storing it.
 func (p *PCF) merge(id string, patch []byte) (Context, *n5.ProblemDetails) {
 	p.mu.Lock()
 	s, ok := p.sessions[id]
@@ -852,7 +805,6 @@ func (p *PCF) merge(id string, patch []byte) (Context, *n5.ProblemDetails) {
 	return c, pd
 }
 
-// mergeDoc applies a patch to the ascReqData of a context, and checks the result.
 func (p *PCF) mergeDoc(doc json.RawMessage, patch []byte) (json.RawMessage, Context, *n5.ProblemDetails) {
 	merged, err := n5.ApplyPatch(doc, patchedReqData(patch))
 	if err != nil {
@@ -871,7 +823,6 @@ func (p *PCF) mergeDoc(doc json.RawMessage, patch []byte) (json.RawMessage, Cont
 	return merged, c, nil
 }
 
-// patchedReqData returns the ascReqData of an AppSessionContextUpdateDataPatch, as a merge patch of its own.
 func patchedReqData(patch []byte) []byte {
 	var p struct {
 		AscReqData json.RawMessage `json:"ascReqData"`
@@ -884,7 +835,7 @@ func patchedReqData(patch []byte) []byte {
 	return p.AscReqData
 }
 
-// TS 29.514 §4.2.4.2
+// TS 29.514 clause 4.2.4.2
 func (p *PCF) delete(w http.ResponseWriter, r *http.Request, id string) {
 	body, ok := p.body(w, r, n5.ContentJSON, false)
 	if !ok {
@@ -938,7 +889,8 @@ func (p *PCF) delete(w http.ResponseWriter, r *http.Request, id string) {
 	}
 }
 
-// body reads a request body of the given content type (TS 29.514 §5.2.2.2, TS 29.500 §5.2.7.2).
+// TS 29.514 clause 5.2.2.2
+// TS 29.500 clause 5.2.7.2
 func (p *PCF) body(w http.ResponseWriter, r *http.Request, contentType string, required bool) ([]byte, bool) {
 	b, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 
@@ -972,7 +924,6 @@ func (p *PCF) body(w http.ResponseWriter, r *http.Request, contentType string, r
 	return b, true
 }
 
-// wait holds an answer until Hold is released or the request is cancelled.
 func (p *PCF) wait(r *http.Request) bool {
 	p.mu.Lock()
 	hold := p.hold
@@ -994,7 +945,6 @@ func (p *PCF) wait(r *http.Request) bool {
 	}
 }
 
-// refused answers an injected failure, if any. Otherwise it returns the evsNotif of the answer.
 func (p *PCF) refused(w http.ResponseWriter, req Request) (*n5.EventsNotification, bool) {
 	p.mu.Lock()
 	refuse, answer := p.refuse, p.answer
@@ -1023,7 +973,6 @@ func (p *PCF) refused(w http.ResponseWriter, req Request) (*n5.EventsNotificatio
 	return nil, true
 }
 
-// violation answers a request that breaks TS 29.514 or TS 29.500, and keeps it for the test to fail on.
 func (p *PCF) violation(w http.ResponseWriter, r *http.Request, pd n5.ProblemDetails) {
 	msg := fmt.Sprintf("%s %s: %d %s %s", r.Method, r.URL.Path, pd.Status, pd.Cause, pd.Detail)
 
@@ -1048,7 +997,8 @@ func invalid(cause, param, reason string) n5.ProblemDetails {
 	return pd
 }
 
-// checkCreate checks the AppSessionContextReqData of a create (TS 29.514 §4.2.2.2, §5.6.2.3).
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 5.6.2.3
 func (p *PCF) checkCreate(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	switch {
 	case r.SuppFeat == "":
@@ -1068,8 +1018,10 @@ func (p *PCF) checkCreate(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	return p.checkContext(r)
 }
 
-// checkContext checks what a create and a patch can both break: the notification URIs (TS 29.514 §4.2.2.2,
-// §4.2.3.2), which have the scheme of the PCF, and the map keys (§5.6.2.3, §5.6.2.7).
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
+// TS 29.514 clause 5.6.2.3
+// TS 29.514 clause 5.6.2.7
 func (p *PCF) checkContext(r n5.AppSessionContextReqData) *n5.ProblemDetails {
 	if r.NotifURI == "" {
 		return ptr(invalid(CauseMandatoryIEMissing, "/ascReqData/notifUri", "no notifUri"))
@@ -1110,8 +1062,7 @@ func (p *PCF) notifURI(s string) bool {
 	return err == nil && strings.HasPrefix(p.root, u.Scheme+"://") && u.Host != "" && u.RawQuery == "" && u.Fragment == ""
 }
 
-// bound applies session binding by UE address (TS 29.513 §6.2): an IPv6 address binds to the prefix of the PDU
-// session, here a /64.
+// TS 29.513 clause 6.2
 func (p *PCF) bound(r n5.AppSessionContextReqData) bool {
 	if len(p.cfg.UEs) == 0 {
 		return true
@@ -1138,8 +1089,7 @@ func samePrefix64(a, b netip.Addr) bool {
 	return pa == pb
 }
 
-// The flow description checks of the Open5GS PCF and SMF (lib/proto/types.c, lib/ipfw/ogs-ipfw.c), as in
-// pcrftest: TS 29.514 §4.2.2.2 refuses them with FILTER_RESTRICTIONS.
+// TS 29.514 clause 4.2.2.2
 func checkFlows(r n5.AppSessionContextReqData) error {
 	ue := r.UEIPv4
 	if !ue.IsValid() {
@@ -1214,7 +1164,6 @@ func mediaType(h http.Header) string {
 
 func ptr[T any](v T) *T { return &v }
 
-// abandonedAnswers is the number of answers Hold delayed until their request was cancelled.
 func (p *PCF) abandonedAnswers() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

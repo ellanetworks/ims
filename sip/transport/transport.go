@@ -26,14 +26,11 @@ const (
 	DefaultFallbackTimeout     = 2 * time.Second
 	DefaultWriteTimeout        = 10 * time.Second
 
-	// DefaultMaxConnections is the limit of connections where the limit of open files is unknown.
 	DefaultMaxConnections = 2048
 
 	maxDatagram   = 65535
 	udpReadBuffer = 4 << 20
 
-	// The wait after an accept or a read of a listener failed, as net/http's Server's: from 5 ms, doubled to at most a
-	// second.
 	minRetryBackoff = 5 * time.Millisecond
 	maxRetryBackoff = time.Second
 )
@@ -45,8 +42,6 @@ var (
 
 	ErrUnsupportedTransport = errors.New("sip/transport: unsupported transport")
 
-	// ErrConnectionLost is the error of a TCP connection that ended: closed or reset by the other end, failed, or
-	// closed idle (OnConnectionLost).
 	ErrConnectionLost = errors.New("sip/transport: connection lost")
 )
 
@@ -62,15 +57,10 @@ type Config struct {
 
 	Dial func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
 
-	// Control runs on each socket of the transport before it is bound, as net.ListenConfig's and net.Dialer's: to bind
-	// it to a network, or protect it. address is the socket's local address, its port 0 for any; for a dialled
-	// connection, that of its flow.
 	Control func(network, address string, c syscall.RawConn) error
 
 	MaxMessageSize int
 
-	// MaxConnections is the most connections the transport accepts while it holds them, three quarters of the
-	// process's limit of open files if 0: the rest for its other files.
 	MaxConnections int
 
 	IdleTimeout         time.Duration
@@ -83,15 +73,8 @@ type Config struct {
 
 	Trace func(m sip.Message, f sip.Flow, sent bool)
 
-	// OnListenerFailed is told of a listener whose socket failed for good, its UDP socket or its TCP listener, with the
-	// error: the transport closed both and forgot the listener, sends from local failing with ErrNoListener, and local
-	// can be listened on again. It runs on a goroutine of its own; closing the transport is no failure.
 	OnListenerFailed func(local netip.AddrPort, err error)
 
-	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping ErrConnectionLost: of an
-	// outbound registration, its flow failed (RFC 5626 §4.4). The transactions that sent on it are left to their
-	// timers: their responses can come on another connection (RFC 3261 §18.2.2). It runs on a goroutine of its own;
-	// closing the transport is no loss.
 	OnConnectionLost func(f sip.Flow, err error)
 }
 
@@ -234,7 +217,6 @@ func (t *Transport) Listen(ctx context.Context, local netip.AddrPort) (netip.Add
 
 func bind(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*listener, error) {
 	if local.Port() != 0 {
-		// EADDRINUSE: a socket holds the port; another error is the address's (EADDRNOTAVAIL: no more local).
 		if err := sockopt.CheckNoListener(local); errors.Is(err, syscall.EADDRINUSE) {
 			return nil, fmt.Errorf("port held by another socket: %w", err)
 		} else if err != nil {
@@ -252,8 +234,6 @@ func bind(ctx context.Context, local netip.AddrPort, control func(network, addre
 	return &listener{local: unmap(tl.Addr().(*net.TCPAddr).AddrPort()), udp: udp, tcp: tl}, nil
 }
 
-// Sockets are the sockets listening on local, its UDP socket and its TCP listener, for options of their own: their
-// protection by IPsec (TS 33.203 §7.1), which the connections the listener accepts inherit.
 func (t *Transport) Sockets(local netip.AddrPort) ([]syscall.RawConn, error) {
 	t.mu.Lock()
 	l, ok := t.listeners[unmap(local)]
@@ -421,7 +401,7 @@ func (t *Transport) sendLargeRequest(ctx context.Context, r *sip.Request) error 
 	return nil
 }
 
-// RFC 3261 §18.1.1
+// RFC 3261 section 18.1.1
 func tcpFailed(err error) bool {
 	var ne net.Error
 
@@ -518,26 +498,18 @@ func (t *Transport) CloseFlow(f sip.Flow) {
 	}
 }
 
-// socketFailed reports whether an error of an accept or a read is that of the socket itself, which never recovers: no
-// longer listening (EINVAL), as a TCP listener Android destroyed with the network it was bound to (SOCK_DESTROY), or no
-// longer a socket. Others, as running out of file descriptors or memory, or the network errors Linux passes on from a
-// pending connection (accept(2)), are the moment's.
 func socketFailed(err error) bool {
 	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.EBADF) || errors.Is(err, syscall.ENOTSOCK)
 }
 
-// udpFailed reports whether a read error of a UDP socket is the socket's own: besides those of socketFailed,
-// ECONNABORTED, which Linux gives an unconnected UDP socket only when it destroys it (SOCK_DESTROY).
 func udpFailed(err error) bool {
 	return socketFailed(err) || errors.Is(err, syscall.ECONNABORTED)
 }
 
-// retryBackoff is the wait after an accept or a read failed, d the wait after the one before it.
 func retryBackoff(d time.Duration) time.Duration {
 	return min(max(2*d, minRetryBackoff), maxRetryBackoff)
 }
 
-// pause waits d, or until the transport closes: false then.
 func (t *Transport) pause(d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -550,9 +522,7 @@ func (t *Transport) pause(d time.Duration) bool {
 	}
 }
 
-// fail drops a listener whose socket failed for good: it closes both its sockets, a server listening for TCP wherever
-// it listens for UDP (RFC 3261 §18.2.1), forgets it and tells OnListenerFailed. The first of the two to fail reports
-// it; the other then ends with net.ErrClosed, as on Close, which is not a failure.
+// RFC 3261 section 18.2.1
 func (t *Transport) fail(l *listener, err error) {
 	t.mu.Lock()
 
@@ -719,7 +689,6 @@ func normalize(f sip.Flow) sip.Flow {
 	return f
 }
 
-// defaultMaxConnections is three quarters of the limit of open files, or DefaultMaxConnections if unknown.
 func defaultMaxConnections(openFiles int) int {
 	if n := openFiles / 4 * 3; n > 0 {
 		return n

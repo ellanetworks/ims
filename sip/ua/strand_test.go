@@ -12,8 +12,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// The handlers of two agents call each other's sessions without deadlocking: a call never waits for a handler, as
-// a B2BUA bridging two agents does.
 func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 	const rounds = 200
 
@@ -62,7 +60,6 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 		t.Fatal("no session")
 	}
 
-	// Both sides send at once, each from its handlers.
 	_ = as.Load().Send(context.Background(), "INFO", ua.Change{}, nil)
 	_ = bs.Load().Send(context.Background(), "INFO", ua.Change{}, nil)
 
@@ -75,7 +72,6 @@ func TestHandlersOfTwoAgentsCallEachOther(t *testing.T) {
 	}
 }
 
-// A handler that panics does not stop its strand: the next events still come.
 func TestHandlerPanicRecovered(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
@@ -95,7 +91,6 @@ func TestHandlerPanicRecovered(t *testing.T) {
 	alice.next("ended")
 }
 
-// Post and AfterFunc run on the strand, in order with the handlers, on the clock of the agent.
 func TestStrandPostAndAfterFunc(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
@@ -131,7 +126,6 @@ func TestStrandPostAndAfterFunc(t *testing.T) {
 	}
 }
 
-// The legs of a call on one strand: the outgoing INVITE of a B2BUA on the strand of the incoming one.
 func TestInviteOnStrand(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	carol := newPeer(t, "carol", nil, ua.SessionTimer{})
@@ -161,7 +155,6 @@ func TestInviteOnStrand(t *testing.T) {
 	carol.next("invite")
 }
 
-// An agent on a shared transaction layer: the dispatcher gives it the requests it owns.
 func TestSharedLayer(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 
@@ -189,7 +182,6 @@ func TestSharedLayer(t *testing.T) {
 	bob.a = a
 	d.a = a
 
-	// The layer serves once the dispatcher has the agent.
 	if err := layer.Serve(addr); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +212,6 @@ func TestSharedLayer(t *testing.T) {
 		t.Fatalf("INFO %d", res.code())
 	}
 
-	// A request outside the agent's dialogs goes to the dispatcher's other users.
 	uri, _ := sip.ParseURI(bob.uri())
 	options := sip.NewRequest("OPTIONS", uri)
 	options.Header.Add("From", "<"+alice.uri()+">")
@@ -234,7 +225,6 @@ func TestSharedLayer(t *testing.T) {
 		t.Errorf("OPTIONS %d, want the dispatcher's 404", res.code())
 	}
 
-	// Closing the agent leaves the layer to its owner.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
@@ -245,7 +235,6 @@ func TestSharedLayer(t *testing.T) {
 	}
 }
 
-// dispatcher shares a layer between an agent, for INVITEs and its dialogs, and a stand-in for other users.
 type dispatcher struct {
 	a *ua.Agent
 }

@@ -24,8 +24,6 @@ func GetOperator(cfg Config) http.Handler {
 	})
 }
 
-// UpdateOperator replaces the operator settings. A change of MCC or MNC renames the IMS, which restarts Diameter
-// and SIP under the new names.
 func UpdateOperator(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p Operator

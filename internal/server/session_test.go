@@ -41,7 +41,6 @@ type callScene struct {
 	bobContact string
 }
 
-// newCallScene starts the IMS with a numbering plan, or the default one without.
 func newCallScene(t *testing.T, numbering *settings.Numbering) *callScene {
 	t.Helper()
 

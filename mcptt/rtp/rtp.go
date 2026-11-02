@@ -1,6 +1,3 @@
-// Package rtp is the coding of RTP and RTCP packets (RFC 3550) and their demultiplexing on one port (RFC 5761).
-//
-// Parsing aliases the buffer parsed: payloads, extensions and application data are slices of it.
 package rtp
 
 import (
@@ -9,29 +6,26 @@ import (
 	"fmt"
 )
 
-// version is the version of RTP and RTCP (RFC 3550 §5.1).
+// RFC 3550 section 5.1
 const version = 2
 
-// headerSize is the size of the fixed RTP header (RFC 3550 §5.1).
+// RFC 3550 section 5.1
 const headerSize = 12
 
-// Packet is an RTP data packet (RFC 3550 §5.1). Padding is not kept: Parse strips it and Append adds none.
+// RFC 3550 section 5.1
 type Packet struct {
-	Marker      bool
-	PayloadType uint8
-	Sequence    uint16
-	Timestamp   uint32
-	SSRC        uint32
-	CSRC        []uint32
-	// Extension is the header extension of RFC 3550 §5.3.1, if HasExtension: its profile-defined 16 bits and its
-	// data, a multiple of 4 octets.
+	Marker           bool
+	PayloadType      uint8
+	Sequence         uint16
+	Timestamp        uint32
+	SSRC             uint32
+	CSRC             []uint32
 	HasExtension     bool
 	ExtensionProfile uint16
 	Extension        []byte
 	Payload          []byte
 }
 
-// Parse parses the RTP packet b.
 func Parse(b []byte) (Packet, error) {
 	if len(b) < headerSize {
 		return Packet{}, fmt.Errorf("rtp: packet of %d octets", len(b))
@@ -98,7 +92,6 @@ func Parse(b []byte) (Packet, error) {
 	return p, nil
 }
 
-// Append appends the packet p to dst.
 func (p *Packet) Append(dst []byte) ([]byte, error) {
 	if len(p.CSRC) > 15 {
 		return dst, fmt.Errorf("rtp: %d CSRCs", len(p.CSRC))
@@ -140,8 +133,7 @@ func (p *Packet) Append(dst []byte) ([]byte, error) {
 	return append(dst, p.Payload...), nil
 }
 
-// IsRTCP reports whether b, received on a port RTP and RTCP share, is RTCP: its second octet, the RTCP packet type
-// or the RTP marker and payload type, is in 192–223 (RFC 5761 §4), as payload types of RTP are chosen to keep it.
+// RFC 5761 section 4
 func IsRTCP(b []byte) bool {
 	return len(b) >= 2 && b[1] >= 192 && b[1] <= 223
 }

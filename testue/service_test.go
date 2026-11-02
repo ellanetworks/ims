@@ -16,7 +16,7 @@ import (
 	"github.com/ellanetworks/ims/ue"
 )
 
-// An MCPTT client as a service of the UE (TS 24.379 §7.2.1), with what the tests saw of it.
+// TS 24.379 clause 7.2.1
 const icsiMCPTT = "urn:urn-7:3gpp-service.ims.icsi.mcptt"
 
 type mcpttService struct {
@@ -34,14 +34,12 @@ func newMCPTTService() (*mcpttService, ue.Service) {
 		Name:     "mcptt",
 		ICSI:     icsiMCPTT,
 		Features: sip.FeatureSet{tag, sip.NewFeature("audio")},
-		// TS 24.379 §10.1.1.2.1.1 steps 5, 7.
 		AcceptContact: []sip.CallerPreference{
 			{Features: sip.FeatureSet{tag}, Require: true, Explicit: true},
 			{Features: sip.FeatureSet{icsi}, Require: true, Explicit: true},
 		},
 		Allow:     []string{"INVITE", "UPDATE", "MESSAGE", "INFO", "REFER"},
 		Supported: []string{"tdialog"},
-		// An offer with the control channel (TS 24.380 §4.3.3.1).
 		Match: func(req *sip.Request) bool {
 			body, ok := offerOf(req)
 			return ok && strings.Contains(string(body), "udp MCPTT")
@@ -64,7 +62,6 @@ func newMCPTTService() (*mcpttService, ue.Service) {
 	}
 }
 
-// serviceUE is a UE with the MCPTT service, whose P-CSCF is a socket.
 func serviceUE(t *testing.T, cfg Config) (*UE, *mcpttService, *siptest.Socket) {
 	t.Helper()
 
@@ -76,8 +73,8 @@ func serviceUE(t *testing.T, cfg Config) (*UE, *mcpttService, *siptest.Socket) {
 	return newCallUE(t, "001010000000001", pcscf.Addr(), cfg), m, pcscf
 }
 
-// TS 24.379 §7.2.1, TS 24.229 §5.1.1.2.1: one Contact with the feature tags of every service, the ICSIs in one
-// g.3gpp.icsi-ref, a tag both share once; the Allow of the UE has the methods of each.
+// TS 24.379 clause 7.2.1
+// TS 24.229 clause 5.1.1.2.1
 func TestServicesRegisteredContact(t *testing.T) {
 	u, _, _ := serviceUE(t, Config{})
 
@@ -105,7 +102,6 @@ func TestServicesRegisteredContact(t *testing.T) {
 		t.Errorf("Contact %s has audio %d times", contact, n)
 	}
 
-	// TS 24.229 §5.1.2A.1.1: the Contact of a dialog has its service's tags only; smsip, of no dialog, none.
 	call, _ := u.Contact(MMTelService)
 	if cs, _ := call.Features(); cs.Has("g.3gpp.smsip") || cs.Has("g.3gpp.mcptt") || !cs.Has("sip.audio") {
 		t.Errorf("MMTel Contact %s", call)
@@ -120,7 +116,6 @@ func TestServicesRegisteredContact(t *testing.T) {
 	}
 }
 
-// A UE without MMTel registers only the feature tags of its services.
 func TestMCPTTOnlyContact(t *testing.T) {
 	u, _, _ := serviceUE(t, Config{NoMMTel: true, NoSMS: true})
 
@@ -161,7 +156,6 @@ func TestServiceConfig(t *testing.T) {
 	}
 }
 
-// incomingRequest is an initial request of the network to the UE, with Accept-Contact values.
 func incomingRequest(u *UE, from *siptest.Socket, method string, accept ...string) *sip.Request {
 	contact, _ := u.RegisterContact()
 
@@ -184,7 +178,6 @@ func incomingRequest(u *UE, from *siptest.Socket, method string, accept ...strin
 	return req
 }
 
-// The final response of the UE to req.
 func finalTo(t *testing.T, s *siptest.Socket, req *sip.Request) *sip.Response {
 	t.Helper()
 
@@ -196,8 +189,8 @@ func finalTo(t *testing.T, s *siptest.Socket, req *sip.Request) *sip.Response {
 	}
 }
 
-// RFC 3841 §7.2.4, TS 24.379 §10.1.1.3.1: the UE gives an initial request to the service its Accept-Contact prefers,
-// and the requests that prefer none to MMTel.
+// RFC 3841 section 7.2.4
+// TS 24.379 clause 10.1.1.3.1
 func TestServiceRouting(t *testing.T) {
 	u, m, net := serviceUE(t, Config{})
 
@@ -244,8 +237,7 @@ func TestServiceRouting(t *testing.T) {
 	}
 }
 
-// RFC 3841 §7.2.4: a request that requires a service the UE does not host goes to none, and gets a 480; one whose
-// method no service takes, a 405.
+// RFC 3841 section 7.2.4
 func TestServiceRequired(t *testing.T) {
 	u, m, net := serviceUE(t, Config{NoMMTel: true, NoSMS: true})
 
@@ -256,7 +248,6 @@ func TestServiceRequired(t *testing.T) {
 		t.Fatalf("got %s, %d to the service", res.StartLine(), len(m.invites))
 	}
 
-	// MCPTT takes MESSAGE, but the SMS requires a service the UE does not host.
 	msg := incomingRequest(u, net, "MESSAGE", "*;+g.3gpp.smsip;require;explicit")
 	net.Send(sip.UDP, u.Unprotected(), msg)
 
@@ -264,7 +255,6 @@ func TestServiceRequired(t *testing.T) {
 		t.Fatalf("got %s, %d to the service", res.StartLine(), len(m.requests))
 	}
 
-	// RFC 3261 §21.4.6: a method no service takes gets a 405 whose Allow leaves it out.
 	pub := incomingRequest(u, net, "PUBLISH")
 	net.Send(sip.UDP, u.Unprotected(), pub)
 
@@ -274,8 +264,8 @@ func TestServiceRequired(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.2A.1.1, TS 24.379 §10.1.1.2.1.1: an initial request of a service has the Route to the P-CSCF, the
-// identity of the UE, the ICSI in P-Preferred-Service, and the Contact of the service.
+// TS 24.229 clause 5.1.2A.1.1
+// TS 24.379 clause 10.1.1.2.1.1
 func TestServiceOriginate(t *testing.T) {
 	u, _, pcscf := serviceUE(t, Config{})
 
@@ -331,8 +321,8 @@ func TestServiceOriginate(t *testing.T) {
 	}
 }
 
-// TS 24.379 §7.2.1 NOTE 1, TS 24.229 §5.1.1.4.1: a service enabled or disabled re-registers the UE with or without its
-// feature tags and REGISTER bodies; a disabled one originates nothing and takes no request.
+// TS 24.379 clause 7.2.1
+// TS 24.229 clause 5.1.1.4.1
 func TestServiceEnable(t *testing.T) {
 	n := newNetwork(t)
 
@@ -374,7 +364,6 @@ func TestServiceEnable(t *testing.T) {
 		}
 	}
 
-	// Already disabled: nothing to register.
 	if err := u.Disable(t.Context(), "mcptt"); err != nil {
 		t.Fatal(err)
 	}
@@ -386,8 +375,8 @@ func TestServiceEnable(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.2A.2: an initial request that prefers no service goes to the one its contents match; RFC 3261
-// §8.2.2.3: the option tags of a service are not another's; a predicate that does not parse prefers nothing it meant.
+// TS 24.229 clause 5.1.2A.2
+// RFC 3261 section 8.2.2.3
 func TestServiceByContents(t *testing.T) {
 	u, m, net := serviceUE(t, Config{})
 

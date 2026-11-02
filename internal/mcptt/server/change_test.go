@@ -13,8 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// change applies the settings edit makes of callConfiguration to w's server, as settings.Live does (its OnChange),
-// and runs the strands it posts to.
 func (w *world) change(edit func(cfg *settings.Settings)) {
 	w.t.Helper()
 
@@ -30,7 +28,6 @@ func (w *world) change(edit func(cfg *settings.Settings)) {
 	w.n.Quiesce()
 }
 
-// without removes the groups of drop from the implicit affiliations of the users of cfg, as settings.Live's cascades.
 func without(cfg *settings.Settings, drop ...string) {
 	for i := range cfg.Users {
 		cfg.Users[i].ImplicitAffiliations = slices.DeleteFunc(slices.Clone(cfg.Users[i].ImplicitAffiliations),
@@ -38,9 +35,11 @@ func without(cfg *settings.Settings, drop ...string) {
 	}
 }
 
-// TS 24.379 §10.1.1.4.4.3, §6.3.3.1.5, TS 24.380 §6.3: carol, removed from fire while talking in its call, leaves it
-// at once: a BYE ends her call, the floor is no longer hers, and the call goes on without her. Fire deleted, its call
-// is released (§10.1.1.4.4.2; TS 23.280 §10.2.8 NOTE 1).
+// TS 24.379 clause 10.1.1.4.4.3
+// TS 24.379 clause 6.3.3.1.5
+// TS 24.380 clause 6.3
+// TS 24.379 clause 10.1.1.4.4.2
+// TS 23.280 clause 10.2.8
 func TestMemberRemovedLeavesCall(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob, carol := w.users["alice"], w.users["bob"], w.users["carol"]
@@ -83,7 +82,6 @@ func TestMemberRemovedLeavesCall(t *testing.T) {
 		t.Errorf("records %v", rs)
 	}
 
-	// The call goes on: bob takes the floor.
 	w.talk(cb, time.Second)
 
 	if calls := w.calls(); len(calls) != 1 || calls[0].Talker.String() != bob.id {
@@ -107,7 +105,7 @@ func TestMemberRemovedLeavesCall(t *testing.T) {
 	}
 }
 
-// A member removed leaving fewer than two participants, the call is released (TS 24.379 §6.3.8.1 2).
+// TS 24.379 clause 6.3.8.1
 func TestMemberRemovedReleasesCall(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob, carol := w.users["alice"], w.users["bob"], w.users["carol"]
@@ -139,10 +137,8 @@ func TestMemberRemovedReleasesCall(t *testing.T) {
 	}
 }
 
-// A change of the implicit affiliations applies to the registered clients at once (TS 24.379 §9.2.2.2.15 by local
-// policy): dave, given fire, is affiliated to it implicitly, held by the controlling function, without registering
-// again; fire taken back, that affiliation goes, while quorum, which he affiliated to himself (§9.2.2.2.3) and was
-// given too, stays.
+// TS 24.379 clause 9.2.2.2.15
+// TS 24.379 clause 9.2.2.2.3
 func TestImplicitAffiliationsChanged(t *testing.T) {
 	w := newWorld(t, nil)
 	dave := w.users["dave"]
@@ -198,9 +194,7 @@ func TestImplicitAffiliationsChanged(t *testing.T) {
 	}
 }
 
-// TS 24.379 §9.2.2.2.3 step 14 a ii: dave, given fire, leaves it by his publication; a change of the settings that
-// does not touch his implicit affiliations, of alice's alias, does not affiliate him to fire again. Fire taken back
-// and given again, the operator's latest act, it does.
+// TS 24.379 clause 9.2.2.2.3
 func TestImplicitAffiliationLeftStays(t *testing.T) {
 	w := newWorld(t, nil)
 	dave := w.users["dave"]
@@ -231,7 +225,6 @@ func TestImplicitAffiliationLeftStays(t *testing.T) {
 		t.Fatalf("PUBLISH answered %v", res)
 	}
 
-	// The de-affiliating entry expires (§9.2.2.2.7).
 	w.n.Advance(2 * 64 * transaction.DefaultT1)
 	w.n.Quiesce()
 

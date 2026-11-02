@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Nothing leaves the device: the settings hold the user's identities, and a managed fleet provisions each phone. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" />

@@ -46,8 +46,7 @@ func (r *Registrar) reauthenticate(ctx context.Context, impi string) ([]*outgoin
 	return r.notifyChange(ctx, impi, change{shortened: impi}), nil
 }
 
-// shorten brings the expiry of every binding of the user forward to ReauthExpires from now, and has its next
-// REGISTER challenged (TS 24.229 §5.4.1.6). The NOTIFY of the shortened bindings is the caller's.
+// TS 24.229 clause 5.4.1.6
 func (r *Registrar) shorten(ctx context.Context, st *state) error {
 	at := st.now.Add(r.cfg.ReauthExpires)
 

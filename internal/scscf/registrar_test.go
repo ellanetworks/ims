@@ -383,7 +383,6 @@ func TestReRegistrationWithoutChallenge(t *testing.T) {
 	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "1200"})
 	wantStatus(t, res, 200)
 
-	// TS 23.228 §5.2.2.4 step 6: without a challenge, the re-registration notifies the HSS all the same.
 	if sar := h.hss.wantSAR(t, cx.AssignmentReRegistration); !sar.UserDataAlreadyAvailable {
 		t.Errorf("SAR = %+v, want the user data already available", sar)
 	}
@@ -575,8 +574,6 @@ func TestRegisterAnotherIMPU(t *testing.T) {
 	}
 
 	first, second := h.registration(testIMPU), h.registration(secondIMPU)
-	// TS 24.229 §5.4.1.2.2 step 6, §5.4.1.2.2F c: each set has its own binding to the contact, with its own
-	// Service-Route.
 	if first.ID == second.ID || first.Bindings[0].ID == second.Bindings[0].ID ||
 		first.Bindings[0].Contact.URI != second.Bindings[0].Contact.URI {
 		t.Fatalf("registrations %+v and %+v, want two sets each with a binding to one contact", first, second)
@@ -977,10 +974,9 @@ func TestBadRequests(t *testing.T) {
 		"star without expires":   {contact: "*"},
 		"star and a contact":     {contact: "*, <sip:a@127.0.0.1>", expires: "0"},
 		"bad Expires":            {expires: "soon"},
-		// RFC 3261 §25.1
-		"q-value not a number": {contact: "<sip:a@127.0.0.1>;q=NaN"},
-		"q-value above 1":      {contact: "<sip:a@127.0.0.1>;q=5"},
-		"q-value exponent":     {contact: "<sip:a@127.0.0.1>;q=1e-1"},
+		"q-value not a number":   {contact: "<sip:a@127.0.0.1>;q=NaN"},
+		"q-value above 1":        {contact: "<sip:a@127.0.0.1>;q=5"},
+		"q-value exponent":       {contact: "<sip:a@127.0.0.1>;q=1e-1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o.auth = u.unprotected()

@@ -32,25 +32,18 @@ const (
 	domain = "mcptt.example.com"
 	psi    = "sip:mcptt-participating@mcptt.example.com"
 	fire   = "sip:fire@mcptt.example.com"
-	// police releases its calls when the initiator leaves (TS 24.379 §6.3.8.1 3); short has a TNG3 of a minute, and
-	// a T4 longer; rescue and hazmat require carol, proceeding and abandoning on TNG1.
 	police = "sip:police@mcptt.example.com"
 	short  = "sip:short@mcptt.example.com"
 	rescue = "sip:rescue@mcptt.example.com"
 	hazmat = "sip:hazmat@mcptt.example.com"
-	// small has at most two participants; quorum needs four members affiliated, escort dave affiliated; two needs two
-	// members to accept.
 	small  = "sip:small@mcptt.example.com"
 	quorum = "sip:quorum@mcptt.example.com"
 	escort = "sip:escort@mcptt.example.com"
 	two    = "sip:two@mcptt.example.com"
 )
 
-// every are the groups of callConfiguration.
 var every = []string{fire, police, short, rescue, hazmat, small, quorum, escort, two}
 
-// callConfiguration has alice, bob and carol affiliated to every group on registration, dave a member of fire not
-// affiliated to it; carol in at most one group call at once (N6).
 func callConfiguration() settings.Settings {
 	const (
 		alice = "sip:alice@mcptt.example.com"
@@ -107,15 +100,12 @@ type source struct{ s *settings.Snapshot }
 
 func (f source) Current() *settings.Snapshot { return f.s }
 
-// reloadable are settings a test changes.
 type reloadable struct {
 	p atomic.Pointer[settings.Snapshot]
 }
 
 func (r *reloadable) Current() *settings.Snapshot { return r.p.Load() }
 
-// trace is the messages of a test in the order sent: the SIP requests and responses of the server and the clients,
-// and the floor notices of the clients.
 type trace struct {
 	mu    sync.Mutex
 	names map[netip.AddrPort]string
@@ -146,7 +136,6 @@ func (tr *trace) take() []string {
 	return out
 }
 
-// world is the server in direct mode [PM 14] and its clients, on one SIP and media network and clock.
 type world struct {
 	t     *testing.T
 	n     *siptest.Net
@@ -156,23 +145,19 @@ type world struct {
 	trace *trace
 	src   *reloadable
 	users map[string]*user
-	// last are the events of alice at the setup of the last call.
-	last []client.Event
-	// logs are the server's, in JSON from debug.
-	logs *logs
+	last  []client.Event
+	logs  *logs
 }
 
-// user is a client of a test: alice at 192.0.2.1, bob at .2, carol at .3, dave at .4.
 type user struct {
 	*client.Client
 
-	name   string
-	id     string
-	agent  *ua.Agent
-	addr   netip.AddrPort
-	mu     sync.Mutex
-	events []client.Event
-	// onInvite, if set, takes the INVITEs of the client instead of it.
+	name     string
+	id       string
+	agent    *ua.Agent
+	addr     netip.AddrPort
+	mu       sync.Mutex
+	events   []client.Event
 	onInvite func(r *ua.Request) ua.Handler
 }
 
@@ -184,7 +169,6 @@ func newWorld(t *testing.T, configure func(name string, cfg *client.Config)) *wo
 	return newTracedWorld(t, configure, nil)
 }
 
-// newTracedWorld is newWorld, its server traced by tp, if not nil.
 func newTracedWorld(t *testing.T, configure func(name string, cfg *client.Config), tp oteltrace.TracerProvider) *world {
 	t.Helper()
 
@@ -258,7 +242,6 @@ func (w *world) user(name string, i int, configure func(string, *client.Config))
 	cfg := ua.Config{
 		Transaction: w.n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: u.addr.Addr().String(), Port: u.addr.Port()}},
-		// The server is the outbound proxy of the client in direct mode: the registrar of its domain.
 		Prepare: func(req *sip.Request) error {
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: u.addr, Remote: w.addr}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, u.addr).String())
@@ -364,7 +347,6 @@ var notices = map[floor.NoticeKind]string{
 	floor.NoticeRevoked: "revoked", floor.NoticeRequestTimeout: "timeout", floor.NoticeMediaEnded: "media-ended",
 }
 
-// take returns the events since the last take.
 func (u *user) take() []client.Event {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -390,8 +372,6 @@ func kinds(es []client.Event) []string {
 	return out
 }
 
-// expect checks that the events since the last take have want, in order, and returns them; floor:idle repeated (the
-// C7 Floor Idles) aside.
 func (u *user) expect(t *testing.T, want ...string) []client.Event {
 	t.Helper()
 
@@ -403,8 +383,6 @@ func (u *user) expect(t *testing.T, want ...string) []client.Event {
 	return es
 }
 
-// expectAll checks that the events since the last take have want, in any order: the first media of a talker races
-// the Floor Taken announcing it (TS 24.380 §6.2.4.4.2 step 7).
 func (u *user) expectAll(t *testing.T, want ...string) {
 	t.Helper()
 
@@ -416,7 +394,6 @@ func (u *user) expectAll(t *testing.T, want ...string) {
 	}
 }
 
-// expectNot checks that the events since the last take have none of kinds.
 func (u *user) expectNot(t *testing.T, not ...string) {
 	t.Helper()
 
@@ -450,7 +427,6 @@ func event(es []client.Event, k client.EventKind) *client.Event {
 	return nil
 }
 
-// call places a call of alice to group, answered once the others accepted: the calls of alice, bob and carol.
 func (w *world) call(group string) (a, b, c *client.Call) {
 	t := w.t
 	t.Helper()
@@ -483,7 +459,6 @@ func (w *world) call(group string) (a, b, c *client.Call) {
 	return ca, calls[0], calls[1]
 }
 
-// talk presses PTT on call, and holds it for d.
 func (w *world) talk(call *client.Call, d time.Duration) {
 	call.PressPTT()
 	w.n.Advance(d)
@@ -494,13 +469,11 @@ func warned(res *sip.Response, text string) bool {
 	return err == nil && slices.ContainsFunc(ws, func(w sip.Warning) bool { return w.Code == 399 && w.Text == text })
 }
 
-// TS 23.379 §10.6.2.3.1.1.2, TS 24.379 §10.1.1.3.1.1, §10.1.1.4.2, §6.3.2.2.5.2, TS 24.380 §6.3.4.2.2: alice calls
-// fire with an implicit floor request; bob and carol, invited, answer automatically; alice's 200 follows their
-// accepting, and the floor is granted to her, taken for the others. The steps in order: the group call request (2),
-// the group call requests to the members (4a, 4b), their responses (5), the response to alice (6), the floor
-// granted and taken (8): the floor control starts on the first acceptance (TS 24.380 §6.3.4.2.2), before the
-// response, so that alice's media is forwarded from her first packet; she takes its Floor Granted once established
-// (§6.2.4.2.2 step 2), the others their Floor Taken as it comes.
+// TS 23.379 clause 10.6.2.3.1.1.2
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 10.1.1.4.2
+// TS 24.379 clause 6.3.2.2.5.2
+// TS 24.380 clause 6.3.4.2.2
 func TestGroupCallSetup(t *testing.T) {
 	w := newWorld(t, func(name string, c *client.Config) { c.ImplicitRequest = name == "alice" })
 
@@ -521,8 +494,6 @@ func TestGroupCallSetup(t *testing.T) {
 	ok := at("server>alice 200 INVITE")
 	granted, taken := at("alice floor:granted"), []int{at("bob floor:taken"), at("carol floor:taken")}
 
-	// Each member answers its own request; the response to alice follows the requests to the members (NOTE 4) and,
-	// without media buffering, the first member accepting (TS 24.380 §6.3.2.2); her floor follows her response.
 	inOrder := invite < slices.Min(invites) && invites[0] < oks[0] && invites[1] < oks[1] &&
 		slices.Max(invites) < ok && slices.Min(oks) < ok && ok < granted &&
 		oks[0] < taken[0] && oks[1] < taken[1]
@@ -530,7 +501,6 @@ func TestGroupCallSetup(t *testing.T) {
 		t.Errorf("steps out of order:\n%s", strings.Join(got, "\n"))
 	}
 
-	// Automatic commencement: no 180 or 183 from the members, invited with Answer-Mode Auto.
 	for _, l := range got {
 		if strings.HasPrefix(l, "bob>server 18") || strings.HasPrefix(l, "carol>server 18") {
 			t.Errorf("provisional response %s", l)
@@ -541,9 +511,9 @@ func TestGroupCallSetup(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.380 §6.3.4, §6.3.5, Annex A.3: the floor exchange of a call of three: Request, Granted, Taken, Release, Idle;
-// a request while the floor is taken denied; the talker beyond T2 (Stop talking) revoked, and its media stopped by
-// T3 (Stop talking grace).
+// TS 24.380 clause 6.3.4
+// TS 24.380 clause 6.3.5
+// TS 24.380 clause A.3
 func TestGroupCallFloor(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob, carol := w.users["alice"], w.users["bob"], w.users["carol"]
@@ -555,7 +525,6 @@ func TestGroupCallFloor(t *testing.T) {
 		u.take()
 	}
 
-	// Request, Granted, Taken.
 	w.talk(cb, time.Second)
 	bob.expect(t, "floor:granted")
 	alice.expectAll(t, "floor:taken", "heard")
@@ -565,13 +534,11 @@ func TestGroupCallFloor(t *testing.T) {
 		t.Errorf("alice heard %+v", h)
 	}
 
-	// Deny: carol asks while bob talks.
 	cc.PressPTT()
 	w.n.Advance(100 * time.Millisecond)
 	carol.expect(t, "floor:denied")
 	cc.ReleasePTT()
 
-	// Release, Idle.
 	cb.ReleasePTT()
 	w.n.Advance(time.Second)
 
@@ -579,7 +546,6 @@ func TestGroupCallFloor(t *testing.T) {
 		u.expect(t, "floor:idle")
 	}
 
-	// Revoke after T2 (20 s), the grace of T3 (3 s) then the floor idle.
 	w.talk(ca, 21*time.Second)
 	alice.expect(t, "floor:granted", "floor:revoked")
 
@@ -593,7 +559,7 @@ func TestGroupCallFloor(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.8.1 3: police releases its call when its initiator leaves.
+// TS 24.379 clause 6.3.8.1
 func TestReleaseInitiatorLeaves(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -607,8 +573,8 @@ func TestReleaseInitiatorLeaves(t *testing.T) {
 	w.users["carol"].expect(t, "ended")
 }
 
-// TS 24.379 §6.3.3.2.4, §6.3.8.1 2: a member's BYE removes its leg, and the call goes on while two participants are
-// left: alice leaving fire does not release it; carol leaving then leaves bob alone, and releases it.
+// TS 24.379 clause 6.3.3.2.4
+// TS 24.379 clause 6.3.8.1
 func TestReleaseOneParticipantLeft(t *testing.T) {
 	w := newWorld(t, nil)
 	bob, carol := w.users["bob"], w.users["carol"]
@@ -623,7 +589,6 @@ func TestReleaseOneParticipantLeft(t *testing.T) {
 	bob.expectNot(t, "ended")
 	carol.expectNot(t, "ended")
 
-	// The floor between the two left.
 	w.talk(cb, time.Second)
 	bob.expect(t, "floor:granted")
 	carol.expectAll(t, "floor:taken", "heard")
@@ -637,7 +602,8 @@ func TestReleaseOneParticipantLeft(t *testing.T) {
 	bob.expect(t, "ended")
 }
 
-// TS 24.379 §6.3.8.1 1, TS 24.380 §6.3.4.3.5: the floor idle for T4 (Inactivity, 30 s by default) releases the call.
+// TS 24.379 clause 6.3.8.1
+// TS 24.380 clause 6.3.4.3.5
 func TestReleaseT4(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -653,7 +619,8 @@ func TestReleaseT4(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.3.3.5, §6.3.8.1 5: TNG3 (group call timer) of short, a minute, releases its call however active.
+// TS 24.379 clause 6.3.3.5
+// TS 24.379 clause 6.3.8.1
 func TestReleaseTNG3(t *testing.T) {
 	w := newWorld(t, nil)
 
@@ -671,7 +638,6 @@ func TestReleaseTNG3(t *testing.T) {
 	}
 }
 
-// silent has u take its INVITEs without answering them, a provisional response aside.
 func silent(u *user) {
 	u.onInvite = func(r *ua.Request) ua.Handler {
 		_ = r.Progress(ua.Reply{Code: 180})
@@ -679,8 +645,7 @@ func silent(u *user) {
 	}
 }
 
-// TS 24.379 §6.3.3.3 1: carol, required in rescue, does not answer; on TNG1's expiry the call proceeds, alice's 200
-// with the warning text 111.
+// TS 24.379 clause 6.3.3.3
 func TestTNG1Proceed(t *testing.T) {
 	w := newWorld(t, nil)
 	alice := w.users["alice"]
@@ -706,8 +671,7 @@ func TestTNG1Proceed(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.3.3 2: carol, required in hazmat, does not answer; on TNG1's expiry the call is abandoned: alice gets
-// a 480 with the warning text 112, bob, who accepted, a BYE, carol a CANCEL, which its 487 tells.
+// TS 24.379 clause 6.3.3.3
 func TestTNG1Abandon(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob := w.users["alice"], w.users["bob"]
@@ -731,8 +695,8 @@ func TestTNG1Abandon(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.4.2 step 14 a, §6.3.6: dave, a member of fire not affiliated to it, gets a 403 with the warning
-// text 120; no member is invited.
+// TS 24.379 clause 10.1.1.4.2
+// TS 24.379 clause 6.3.6
 func TestNotAffiliated(t *testing.T) {
 	w := newWorld(t, nil)
 	dave := w.users["dave"]
@@ -751,8 +715,8 @@ func TestNotAffiliated(t *testing.T) {
 	w.users["bob"].expectNot(t, "incoming")
 }
 
-// TS 24.379 §6.3.7.1, §6.3.1.4: an INVITE to a public service identity the server does not have gets a 404; a
-// SUBSCRIBE to the conference event package of a session gets a 489 until S2, and to an unknown identity a 404.
+// TS 24.379 clause 6.3.7.1
+// TS 24.379 clause 6.3.1.4
 func TestRequestDistinction(t *testing.T) {
 	w := newWorld(t, nil)
 	p := w.n.Peer()
@@ -808,8 +772,7 @@ func TestRequestDistinction(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.379 §6.3.3.3 (NOTE 3): carol, required in hazmat, refuses before TNG1 expires; the call is abandoned by the
-// policy of hazmat, her response forwarded to alice with the warning text 112.
+// TS 24.379 clause 6.3.3.3
 func TestTNG1RequiredRefuses(t *testing.T) {
 	w := newWorld(t, nil)
 	alice := w.users["alice"]
@@ -830,8 +793,7 @@ func TestTNG1RequiredRefuses(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.4.2 step 15: dave, affiliated once fire's call is ongoing, calls fire and joins it: his 200 at
-// once, with the warning text 123, the floor's state told; he talks to the others.
+// TS 24.379 clause 10.1.1.4.2
 func TestJoinOngoing(t *testing.T) {
 	w := newWorld(t, nil)
 	dave := w.users["dave"]
@@ -874,9 +836,8 @@ func TestJoinOngoing(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.380 §6.3.5.2.2 3: dave, pressing his PTT for fire while its call is ongoing and its floor idle, calls fire
-// with an implicit floor request: he joins it with the floor granted, as a Floor Request (§6.3.4.3.3), without
-// mc_granted; the others are told it taken.
+// TS 24.380 clause 6.3.5.2.2
+// TS 24.380 clause 6.3.4.3.3
 func TestJoinOngoingImplicit(t *testing.T) {
 	w := newWorld(t, func(name string, c *client.Config) { c.ImplicitRequest = name == "dave" })
 	dave := w.users["dave"]
@@ -903,7 +864,6 @@ func TestJoinOngoingImplicit(t *testing.T) {
 		t.Errorf("200 warnings %v", res.Header.Values("Warning"))
 	}
 
-	// The implicit request accepted in the answer (§14.3.5), not only the client's Floor Request after it.
 	if part, ok, err := res.Content().Find("application/sdp"); err != nil || !ok || !strings.Contains(string(part.Body), "mc_implicit_request") {
 		t.Errorf("200 SDP without mc_implicit_request: %v %v", ok, err)
 	}

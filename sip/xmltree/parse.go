@@ -9,16 +9,13 @@ import (
 	"unicode/utf8"
 )
 
-// xmlnsURL is the namespace of the xmlns prefix (Namespaces in XML 1.0 §3).
+// Namespaces in XML 1.0 section 3
 const xmlnsURL = "http://www.w3.org/2000/xmlns/"
 
-// maxDepth bounds the nesting of a parsed document.
 const maxDepth = 64
 
-// Parse parses the document b into its root element: a well-formed XML 1.0 document (XML 1.0 §2.1) that is
-// namespace-well-formed (Namespaces in XML 1.0 §7), in UTF-8, with or without a byte order mark (§4.3.3). A document
-// type declaration is refused: no entity but the predefined ones (§4.6) is then declared. Comments and processing
-// instructions are left out; line ends are normalized (§2.11), attribute values too (§3.3.3, as of type CDATA).
+// XML 1.0 section 2.1
+// Namespaces in XML 1.0 section 7
 func Parse(b []byte) (*Element, error) {
 	if !utf8.Valid(b) {
 		return nil, errors.New("xmltree: not UTF-8")
@@ -55,7 +52,7 @@ func (p *parser) eat(prefix string) bool {
 	return false
 }
 
-// space skips S (§2.3) and reports whether there was any.
+// XML 1.0 section 2.3
 func (p *parser) space() bool {
 	start := p.pos
 	for p.pos < len(p.s) && isSpace(p.s[p.pos]) {
@@ -67,7 +64,7 @@ func (p *parser) space() bool {
 
 func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 
-// document is document ::= prolog element Misc* (§2.1), the prolog without a doctypedecl.
+// XML 1.0 section 2.1
 func (p *parser) document() (*Element, error) {
 	if strings.HasPrefix(p.rest(), "<?xml") && len(p.rest()) > 5 && (isSpace(p.s[p.pos+5]) || p.s[p.pos+5] == '?') {
 		if err := p.xmlDecl(); err != nil {
@@ -103,7 +100,8 @@ func (p *parser) document() (*Element, error) {
 	return root, nil
 }
 
-// xmlDecl is XMLDecl (§2.8, §4.3.3): version 1.x, an encoding of UTF-8, which US-ASCII is a subset of.
+// XML 1.0 section 2.8
+// XML 1.0 section 4.3.3
 func (p *parser) xmlDecl() error {
 	p.pos += len("<?xml")
 
@@ -186,7 +184,6 @@ func isDigits(s string) bool {
 	return s != ""
 }
 
-// declValue is Eq and a quoted value of the XML declaration.
 func (p *parser) declValue() (string, error) {
 	p.space()
 
@@ -214,7 +211,7 @@ func (p *parser) declValue() (string, error) {
 	return v, nil
 }
 
-// misc skips Misc* (§2.8): comments, processing instructions, white space.
+// XML 1.0 section 2.8
 func (p *parser) misc() error {
 	for {
 		p.space()
@@ -234,7 +231,7 @@ func (p *parser) misc() error {
 	}
 }
 
-// comment skips a Comment (§2.5).
+// XML 1.0 section 2.5
 func (p *parser) comment() error {
 	p.pos += len("<!--")
 
@@ -252,7 +249,7 @@ func (p *parser) comment() error {
 	return nil
 }
 
-// pi skips a PI (§2.6); a target of "xml" in any case is reserved, an XML declaration after the start.
+// XML 1.0 section 2.6
 func (p *parser) pi() error {
 	p.pos += len("<?")
 
@@ -265,7 +262,6 @@ func (p *parser) pi() error {
 		return errors.New("XML declaration not at the start")
 	}
 
-	// Namespaces in XML 1.0 §7: no colon in a processing instruction target.
 	if strings.Contains(target, ":") {
 		return fmt.Errorf("processing instruction target %q", target)
 	}
@@ -292,7 +288,7 @@ func (p *parser) pi() error {
 	return nil
 }
 
-// name is a Name (§2.3).
+// XML 1.0 section 2.3
 func (p *parser) name() (string, error) {
 	start := p.pos
 
@@ -312,7 +308,7 @@ func (p *parser) name() (string, error) {
 	return p.s[start:p.pos], nil
 }
 
-// scope is the namespaces in scope (Namespaces in XML 1.0 §6.1): the default one and the prefixes bound.
+// Namespaces in XML 1.0 section 6.1
 type scope struct {
 	def    string
 	prefix map[string]string
@@ -331,7 +327,7 @@ func (sc scope) resolve(prefix string) (string, bool) {
 	return ns, ok
 }
 
-// element parses an element (§3.1) and its content, iteratively: its depth is bounded, not the stack's.
+// XML 1.0 section 3.1
 func (p *parser) element(sc scope) (*Element, error) {
 	type open struct {
 		e     *Element
@@ -366,7 +362,6 @@ func (p *parser) element(sc scope) (*Element, error) {
 			sc = inner
 		}
 
-		// The content to the next start tag, closing the elements whose end tags come first.
 		for len(stack) > 0 {
 			if err := p.charData(stack[len(stack)-1].e); err != nil {
 				return nil, err
@@ -403,12 +398,12 @@ func (p *parser) element(sc scope) (*Element, error) {
 	}
 }
 
-// startTag parses a STag or EmptyElemTag (§3.1), and the namespaces in scope in the element (Namespaces in XML 1.0
-// §5): its declarations apply to its own name and attributes.
+// XML 1.0 section 3.1
+// Namespaces in XML 1.0 section 5
 func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 	type rawAttr struct{ qname, value string }
 
-	p.pos++ // <
+	p.pos++
 
 	qname, err := p.name()
 	if err != nil {
@@ -473,7 +468,6 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 		switch {
 		case a.qname == "xmlns":
 		case strings.HasPrefix(a.qname, "xmlns:"):
-			// PrefixedAttName (Namespaces in XML 1.0 §3 [2]): 'xmlns:' NCName.
 			if prefix = a.qname[len("xmlns:"):]; !isNCName(prefix) {
 				return nil, "", sc, false, fmt.Errorf("<%s>: namespace declaration %s", qname, a.qname)
 			}
@@ -529,8 +523,7 @@ func (p *parser) startTag(sc scope) (*Element, string, scope, bool, error) {
 	return e, qname, inner, empty, nil
 }
 
-// checkBinding checks a namespace declaration (Namespaces in XML 1.0 §3, NSC Reserved Prefixes and Namespace Names,
-// NSC No Prefix Undeclaring).
+// Namespaces in XML 1.0 section 3
 func checkBinding(prefix, ns string) error {
 	switch {
 	case prefix == "xmlns":
@@ -550,8 +543,8 @@ func checkBinding(prefix, ns string) error {
 	return nil
 }
 
-// qname resolves a QName (Namespaces in XML 1.0 §4, §6.2): an element without a prefix is in the default namespace,
-// an attribute in none.
+// Namespaces in XML 1.0 section 4
+// Namespaces in XML 1.0 section 6.2
 func (sc scope) qname(q string, element bool) (xml.Name, error) {
 	prefix, local, hasPrefix := strings.Cut(q, ":")
 	if !hasPrefix {
@@ -578,8 +571,8 @@ func (sc scope) qname(q string, element bool) (xml.Name, error) {
 	return xml.Name{Space: ns, Local: local}, nil
 }
 
-// attValue is an AttValue (§2.3), its references replaced and its value normalized (§3.3.3): each white space
-// character, not of a character reference, a space.
+// XML 1.0 section 2.3
+// XML 1.0 section 3.3.3
 func (p *parser) attValue() (string, error) {
 	if p.pos >= len(p.s) || p.s[p.pos] != '"' && p.s[p.pos] != '\'' {
 		return "", errors.New("value not quoted")
@@ -627,7 +620,8 @@ func (p *parser) attValue() (string, error) {
 	}
 }
 
-// reference is a CharRef or the reference of a predefined entity (§4.1, §4.6).
+// XML 1.0 section 4.1
+// XML 1.0 section 4.6
 func (p *parser) reference() (rune, error) {
 	end := strings.IndexByte(p.rest(), ';')
 	if end < 0 {
@@ -665,7 +659,6 @@ func (p *parser) reference() (rune, error) {
 		return 0, fmt.Errorf("character reference %q", ref)
 	}
 
-	// Any number of digits (§4.1 [66]), leading zeros included; a value above the Char range is not one.
 	var r rune
 
 	for i := range len(digits) {
@@ -699,8 +692,7 @@ func digitValue(c byte) int {
 	return -1
 }
 
-// charData parses the content of e (§3.1) to its next start tag or end tag: character data and references, CDATA
-// sections; comments and processing instructions, left out, the text around them one Text.
+// XML 1.0 section 3.1
 func (p *parser) charData(e *Element) error {
 	var b strings.Builder
 

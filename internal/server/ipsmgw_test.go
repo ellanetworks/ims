@@ -17,8 +17,7 @@ import (
 
 const smscRealm = "epc.mnc001.mcc001.3gppnetwork.org"
 
-// A short message goes to the SMSC of its service centre address, at its host and realm (TS 29.338 §6.3.1.1),
-// whose answer is final.
+// TS 29.338 clause 6.3.1.1
 func TestSMSCForward(t *testing.T) {
 	report := []byte{0x01, 0x00}
 
@@ -40,7 +39,6 @@ func TestSMSCForward(t *testing.T) {
 	p := smsc.config("smsc")
 	p.ServiceCentres = []string{"15550000000"}
 
-	// A first SMSC, never connected: the message goes to the next.
 	down := settings.Peer{
 		ID: "down", Host: "down.epc.mnc001.mcc001.3gppnetwork.org", Address: loopback, Port: unusedPort(t),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationSGd}, Priority: 1,
@@ -76,8 +74,7 @@ func TestSMSCForward(t *testing.T) {
 	}
 }
 
-// The IP-SM-GW registers at the HSS by an Sh-Update of SMSRegistrationInfo, of the MSISDN, else of the IMPU (TS
-// 29.328 §6.1.2.1 step 4b).
+// TS 29.328 clause 6.1.2.1
 func TestShUpdate(t *testing.T) {
 	var got []sh.ProfileUpdateRequest
 
@@ -135,7 +132,6 @@ func TestShUpdate(t *testing.T) {
 	}
 }
 
-// A short message goes to the MME or SMSF the HSS names, a peer of its host, of the realm the HSS gave.
 func TestNodesForward(t *testing.T) {
 	var got *diameter.Message
 

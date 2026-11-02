@@ -14,8 +14,6 @@ import (
 
 type key struct{}
 
-// TestLoopServesAsANode checks that Loop's handler gets what a node's does: a server span continuing the caller's
-// trace, none of the caller's values, and a context the caller giving up does not cancel.
 func TestLoopServesAsANode(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))

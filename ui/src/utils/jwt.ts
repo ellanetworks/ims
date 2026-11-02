@@ -6,8 +6,6 @@ export interface AccessClaims {
   exp: number;
 }
 
-// decodeAccessToken reads the claims of an access token, without checking it: the server does on each request. It
-// returns null for anything that is not a JWT with them, or with a role this UI does not know.
 export function decodeAccessToken(token: string): AccessClaims | null {
   const payload = token.split(".")[1];
   if (!payload) return null;

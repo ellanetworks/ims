@@ -8,12 +8,9 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// TS 24.229 §5.7.1.1 a, c; TS 23.003 §13.4; RFC 3261 §19.1.6: the reg event subscription of an IMPU, the To of the
-// third-party REGISTER, is of a SIP URI that contains it: a SIP IMPU itself; of a tel URI, a SIP URI of its implicit
-// registration set, else the SIP URI of its number at the home domain, "user=phone", of the userinfo of the tel URI,
-// as of Ella Core's set of a tel URI and a barred temporary IMPU, which the P-Associated-URI leaves out: of a global
-// number, without parameters; of a local number, with its phone-context. The IMPU decides, wherever the set has it.
-// None without home domain, or of a number that is neither.
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4
+// RFC 3261 section 19.1.6
 func TestSubscribed(t *testing.T) {
 	const home = "ims.mnc001.mcc001.3gppnetwork.org"
 
@@ -26,7 +23,6 @@ func TestSubscribed(t *testing.T) {
 		{"SIP", []string{"sip:alice@" + home, "tel:+15555550101"}, home, "sip:alice@" + home},
 		{"SIP, after a tel URI of the set", []string{"sip:alice@" + home, "tel:+15555550101", "sip:a2@" + home}, home, "sip:alice@" + home},
 		{"SIP without home domain", []string{"sip:alice@" + home}, "", "sip:alice@" + home},
-		// §5.7.1.1 a: the SIP URI of the To's number, not another public user identity of the set.
 		{"tel, SIP URI in the set", []string{"tel:+15555550101", "sip:alice@" + home}, home, "sip:+15555550101@" + home + ";user=phone"},
 		{"tel of no home domain, SIP URI in the set", []string{"tel:+15555550101", "sip:alice@" + home}, "", "sip:alice@" + home},
 		{"tel alone", []string{"tel:+15555550101"}, home, "sip:+15555550101@" + home + ";user=phone"},
@@ -50,7 +46,6 @@ func TestSubscribed(t *testing.T) {
 				impu = impus[0]
 			}
 
-			// The set as stored may be in any order: the IMPU decides.
 			slices.Reverse(impus)
 
 			got := subscribed(impu, impus, tc.home)
@@ -62,7 +57,6 @@ func TestSubscribed(t *testing.T) {
 				return
 			}
 
-			// RFC 3261 §19.1.4: "user" compared, if either has it.
 			if !got.IsSIP() || !got.Equivalent(uri(t, tc.want)) {
 				t.Fatalf("subscribed %s, want %s", got, tc.want)
 			}
@@ -70,9 +64,8 @@ func TestSubscribed(t *testing.T) {
 	}
 }
 
-// RFC 3680 §5.1; TS 24.229 §5.4.2.1.2 step 3: the <registration> elements of the documents of the subscription of
-// an IMPU are of it whether of the IMPU, of the URI subscribed to, the SIP URI of the number of a tel URI, or of
-// another IMPU of the implicit registration set of its bindings; not of another IMPU.
+// RFC 3680 section 5.1
+// TS 24.229 clause 5.4.2.1.2
 func TestReports(t *testing.T) {
 	const home = "ims.example.com"
 

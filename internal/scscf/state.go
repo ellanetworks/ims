@@ -81,17 +81,14 @@ func (s *state) overlapping(reg db.Registration) []db.Registration {
 	return out
 }
 
-// bound reports whether the contact has a live binding, in any registration set.
 func (s *state) bound(c db.Contact) bool {
 	return slices.ContainsFunc(s.regs, func(reg db.Registration) bool {
 		return slices.ContainsFunc(s.live(reg.Bindings), func(b db.Binding) bool { return SameContact(b.Contact, c) })
 	})
 }
 
-// SameContact reports whether two bindings, of any registration sets, bind the same contact: the same contact
-// address, and the same flow when either is one (RFC 5626 §6, RFC 3261 §10.3). The instance ID alone does not tell
-// a UA across sets: a public user identity and the instance ID identify a UA instance (TS 24.229 §3.1), and two UAs
-// of one device register different public user identities with its IMEI.
+// RFC 5626 section 6
+// RFC 3261 section 10.3
 func SameContact(a, b db.Contact) bool {
 	if (a.Flow() || b.Flow()) && (a.Instance != b.Instance || a.RegID != b.RegID) {
 		return false

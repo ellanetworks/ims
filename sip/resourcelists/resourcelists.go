@@ -1,14 +1,3 @@
-// Package resourcelists is the resource lists document, application/resource-lists+xml (RFC 4826 §3), with the
-// copy control attributes of RFC 5364 §4: the URI list of a URI-list service (RFC 5366 §4).
-//
-// Decode keeps the extension elements (RFC 4826 §6: the xs:any of other namespaces), and the elements it cannot
-// decode, malformed or repeated, as Other, and the extension attributes (xs:anyAttribute) as Attr; Encode writes them
-// back. An extension, such as TS 24.379 §17.5's <functional-alias> of an <entry>, decodes from them and sets them.
-//
-// The keys of the members of a list, unique among their siblings (§3.1), are not to be so in a document Decode
-// decodes: RFC 5364 §4 gives the handling of the entries of one URI. Encode requires them unique.
-//
-// A <display-name> of no text nor language decodes as none, and the zero value encodes as no element.
 package resourcelists
 
 import (
@@ -25,43 +14,35 @@ import (
 const (
 	ContentType = "application/resource-lists+xml"
 	Namespace   = "urn:ietf:params:xml:ns:resource-lists"
-	// CopyControlNamespace is that of the copy control attributes (RFC 5364 §5, §9.2).
+	// RFC 5364 section 5
+	// RFC 5364 section 9.2
 	CopyControlNamespace = "urn:ietf:params:xml:ns:copycontrol"
-	// AnonymousURI is the URI of the anonymized entries of a recipient-history list (RFC 5364 §4).
+	// RFC 5364 section 4
 	AnonymousURI = "sip:anonymous@anonymous.invalid"
 )
 
-// maxSize bounds a document: a list of thousands of URIs fits.
 const maxSize = 1 << 18
 
-// ResourceLists is the <resource-lists> root element (§3.1).
+// RFC 4826 section 3.1
 type ResourceLists struct {
 	Lists []List
-	// Other are the child elements not decoded, in order: elements other than lists, malformed lists.
 	Other []*xmltree.Element
 }
 
-// List is a <list> (§3.1): a resource list.
+// RFC 4826 section 3.1
 type List struct {
-	// Name is the handle of the list, empty without one.
 	Name        string
 	DisplayName DisplayName
-	// Members are the entries, entry references, external lists and lists of the list, in order.
-	Members []Member
+	Members     []Member
 	Copy
-	// Attr are the attributes of other namespaces but the copy control ones: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, and the elements of the resource-lists
-	// namespace unknown, malformed or repeated.
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// Member is a member of a list: an *Entry, *EntryRef, *External or *List.
 type Member interface {
 	element() (*xmltree.Element, error)
 }
 
-// Entries are the entries of l, without those of its lists.
 func (l *List) Entries() []*Entry {
 	var es []*Entry
 
@@ -74,58 +55,45 @@ func (l *List) Entries() []*Entry {
 	return es
 }
 
-// Entry is an <entry> (§3.1): a resource.
+// RFC 4826 section 3.1
 type Entry struct {
 	URI         string
 	DisplayName DisplayName
 	Copy
-	// Attr are the attributes of other namespaces but the copy control ones: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// EntryRef is an <entry-ref> (§3.1): an entry by reference, meaningful in a document of XCAP.
+// RFC 4826 section 3.1
 type EntryRef struct {
-	// Ref is the relative path, from the XCAP root, of an entry.
 	Ref         string
 	DisplayName DisplayName
 	Copy
-	// Attr are the attributes of other namespaces but the copy control ones: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// External is an <external> (§3.1): a list by reference, meaningful in a document of XCAP.
+// RFC 4826 section 3.1
 type External struct {
-	// Anchor is the absolute HTTP URI of the list, mandatory (§3.1; the schema of §3.2 leaves it optional).
 	Anchor      string
 	DisplayName DisplayName
 	Copy
-	// Attr are the attributes of other namespaces but the copy control ones: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// DisplayName is a <display-name>, its language the xml:lang of the element, if any; zero without one.
 type DisplayName struct {
 	Text string
 	Lang string
 }
 
-// Copy are the copy control attributes of a member of a list (RFC 5364 §4).
+// RFC 5364 section 4
 type Copy struct {
-	// CopyControl is the copy control level, empty without a copyControl attribute: bcc.
 	CopyControl CopyControl
-	// Anonymize is the anonymize attribute: whether a URI-list server hides the URI in recipient-history lists.
-	Anonymize bool
-	// Count is the number of equal URIs: nil without a count attribute, 1.
-	Count *uint64
+	Anonymize   bool
+	Count       *uint64
 }
 
-// CopyControl is the value of a copyControl attribute.
 type CopyControl string
 
 const (
@@ -134,14 +102,8 @@ const (
 	BCC CopyControl = "bcc"
 )
 
-// ErrValue is wrapped by the errors of the elements Decode does not decode, malformed (RFC 4826 §3.2): the document
-// it returns is usable without them, and keeps them.
 var ErrValue = errors.New("malformed element")
 
-// Decode decodes the document b. A malformed element is kept in the Other of its parent, with an error wrapping
-// ErrValue: a member without its URI attribute, or of a copy control attribute malformed. An element given more than
-// the schema allows is kept the same way, the first counting, malformed or not, but a <display-name> of no text nor
-// language, as none. Members of a key given twice are kept, as members.
 func Decode(b []byte) (ResourceLists, error) {
 	if len(b) > maxSize {
 		return ResourceLists{}, fmt.Errorf("resourcelists: document of %d bytes exceeds %d", len(b), maxSize)
@@ -183,7 +145,6 @@ func (d *decoder) fail(element, format string, a ...any) {
 	d.errs = append(d.errs, fmt.Errorf("resourcelists: <%s>: %w: %s", element, ErrValue, fmt.Sprintf(format, a...)))
 }
 
-// known is the name of e in the resource-lists namespace, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -292,7 +253,6 @@ func (d *decoder) external(e *xmltree.Element) (External, bool) {
 	return x, true
 }
 
-// children decodes the content of an entry, entry reference or external list: a display name, the extensions.
 func (d *decoder) children(e *xmltree.Element) (DisplayName, []*xmltree.Element) {
 	var (
 		n       DisplayName
@@ -311,8 +271,6 @@ func (d *decoder) children(e *xmltree.Element) (DisplayName, []*xmltree.Element)
 	return n, other
 }
 
-// displayName decodes the <display-name> of a list or member into v, given telling whether one was already: the
-// first counts, malformed or not, but one of no text nor language, which Encode does not write, as none.
 func (d *decoder) displayName(e *xmltree.Element, v *DisplayName, given *bool) bool {
 	if *given {
 		d.fail("display-name", "given more than once")
@@ -333,7 +291,6 @@ func (d *decoder) displayName(e *xmltree.Element, v *DisplayName, given *bool) b
 	return true
 }
 
-// attributes decodes the copy control attributes of a member of a list, and its other extension attributes.
 func (d *decoder) attributes(e *xmltree.Element) (Copy, []xml.Attr, bool) {
 	var (
 		c  Copy
@@ -374,8 +331,7 @@ func (d *decoder) attributes(e *xmltree.Element) (Copy, []xml.Attr, bool) {
 	return c, as, true
 }
 
-// parseNonNegativeInteger parses an xs:nonNegativeInteger (XML Schema Part 2 §3.3.20.1), of 64 bits: decimal
-// digits, after a "+" or not, or after a "-" of zero.
+// XML Schema Part 2 section 3.3.20.1
 func parseNonNegativeInteger(s string) (uint64, bool) {
 	s = xsd.Collapse(s)
 
@@ -395,11 +351,9 @@ func parseNonNegativeInteger(s string) (uint64, bool) {
 	return n, err == nil
 }
 
-// errDuplicate is wrapped by the errors of Encode of a key not unique among its siblings.
 var errDuplicate = errors.New("not unique")
 
-// Encode encodes r, in the order of the schema (§3.2): the elements of Other after those decoded, where the schema's
-// extension point is. The keys of the members of a list are to be unique among their siblings (§3.1).
+// RFC 4826 section 3.2
 func Encode(r ResourceLists) ([]byte, error) {
 	root := &xmltree.Element{Name: name("resource-lists")}
 
@@ -469,10 +423,7 @@ func (l *List) element() (*xmltree.Element, error) {
 	return e, nil
 }
 
-// unique checks that the keys of the members ms of a list are unique among them (§3.1), by case-sensitive string
-// comparison: the names of lists, of those of a name, the URIs of entries, the refs of entry references, the anchors
-// of external lists. The entries of AnonymousURI are keyed by their copy control level too: a recipient-history list
-// has one per level (RFC 5364 §6, Figure 4).
+// RFC 4826 section 3.1
 func unique(ms []Member) error {
 	keys := map[[2]string]bool{}
 
@@ -550,7 +501,6 @@ func (x *External) element() (*xmltree.Element, error) {
 	return member("external", "anchor", x.Anchor, x.DisplayName, x.Copy, x.Attr, x.Other)
 }
 
-// member is the element of an entry, entry reference or external list.
 func member(local, attr, value string, n DisplayName, c Copy, as []xml.Attr, other []*xmltree.Element) (*xmltree.Element, error) {
 	e := &xmltree.Element{Name: name(local), Attr: []xml.Attr{{Name: xml.Name{Local: attr}, Value: value}}}
 	if err := setAttributes(e, c, as); err != nil {
@@ -563,8 +513,6 @@ func member(local, attr, value string, n DisplayName, c Copy, as []xml.Attr, oth
 	return e, nil
 }
 
-// setAttributes sets the copy control attributes c of e, and the extension attributes as: of a namespace, other than
-// resource-lists's, not of copy control.
 func setAttributes(e *xmltree.Element, c Copy, as []xml.Attr) error {
 	cc := func(local, value string) xml.Attr {
 		return xml.Attr{Name: xml.Name{Space: CopyControlNamespace, Local: local}, Value: value}

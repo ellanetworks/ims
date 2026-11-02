@@ -44,12 +44,8 @@ type SessionConfig struct {
 
 	ICSCF []netip.AddrPort
 
-	// Numbering returns the numbering plan when a request is routed, so that it can change at runtime. Without
-	// it, no dial string is normalised.
 	Numbering func() Numbering
 
-	// GroupNoAnswer is how long the contacts of a group ring before the next group gets the request;
-	// zero is DefaultGroupNoAnswer.
 	GroupNoAnswer time.Duration
 }
 
@@ -98,8 +94,6 @@ func (s *Sessions) HandleRequest(ctx context.Context, tx *transaction.ServerTran
 		return
 	}
 
-	// An original dialog identifier of the S-CSCF's that names nothing: the request would otherwise run iFCs the
-	// AS's request was not sent for, or none (TS 24.229 §5.4.3.2 step 3, §5.4.3.3 step 1).
 	h, odi := s.hopOf(removed)
 	if odi && h == nil {
 		s.log.WarnContext(ctx, "request with an unknown original dialog identifier", slog.String("request", req.StartLine()),
@@ -131,8 +125,6 @@ func (s *Sessions) HandleRequest(ctx context.Context, tx *transaction.ServerTran
 	})
 }
 
-// spawn runs f for a request on a goroutine of its own while the S-CSCF runs, and answers the request with a 500
-// and a Retry-After when it cannot.
 func (s *Sessions) spawn(ctx context.Context, tx *transaction.ServerTransaction, f func(ctx context.Context)) {
 	req := tx.Request()
 
@@ -196,7 +188,7 @@ func (s *Sessions) HandleAck(ctx context.Context, ack *sip.Request) {
 	}
 }
 
-// originatingBinding is the binding the Service-Route the request came with names (TS 24.229 §5.4.1.2.2F c).
+// TS 24.229 clause 5.4.1.2.2F
 func originatingBinding(removed []sip.URI) (int64, bool, error) {
 	for _, u := range removed {
 		if id, ok := strings.CutPrefix(u.User, "orig-"); ok {
@@ -208,7 +200,7 @@ func originatingBinding(removed []sip.URI) (int64, bool, error) {
 	return 0, false, nil
 }
 
-// originating serves a request of a registered UE (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, routeBinding int64) {
 	req := tx.Request()
 
@@ -262,8 +254,9 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	s.next(ctx, tx, out, c, 0, true)
 }
 
-// onBehalf serves a request an AS of the trust domain sends on behalf of a user or a PSI, its served user in
-// P-Served-User or else P-Asserted-Identity (TS 24.229 §5.4.3.1, §5.4.3.2 step 1, §5.7.3).
+// TS 24.229 clause 5.4.3.1
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.7.3
 func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	req := tx.Request()
 
@@ -292,7 +285,6 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 	out.Header.Del("P-Served-User")
 	s.assertService(out, c.served, true)
 
-	// TS 24.229 §5.4.3.2 step 9: the alias of the identity the AS asserts, which no S-CSCF added yet.
 	if asserted, err := out.Header.Addresses("P-Asserted-Identity"); err == nil && len(asserted) == 1 {
 		if alias, ok := assertedAlias(asserted[0], c.sub, s.r.cfg.HomeDomain); ok {
 			out.Header.Add("P-Asserted-Identity", alias.String())
@@ -307,8 +299,8 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 	s.next(ctx, tx, out, c, 0, true)
 }
 
-// servedChain is the chain of the iFCs of the served identity u, registered or not, in the session case for either;
-// a barred or unknown identity gets the response refused (TS 24.229 §5.4.3.2 step 1, §5.4.3.3 step 1).
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI, registered, unregistered cx.SessionCase,
 	refused int,
 ) (*chain, *sip.Response) {
@@ -325,8 +317,6 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 
 	p, sub, isRegistered, err := s.r.profileOf(ctx, u, regs)
 
-	// An HSS that cannot be reached answers as the I-CSCF does when its query cannot be completed: a 480
-	// (TS 24.229 §5.3.1.3).
 	switch {
 	case refusedIdentity(err):
 		s.log.DebugContext(ctx, "the HSS does not know the identity", slog.String("impu", u.String()), slog.Any("error", err))
@@ -353,8 +343,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 	return c, nil
 }
 
-// toICSCF routes a request that leaves the chain of the served user through the I-CSCF (TS 24.229 §5.4.3.2 steps
-// 7 to 15).
+// TS 24.229 clause 5.4.3.2
 func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
 	req := tx.Request()
 
@@ -409,7 +398,6 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
 	}
 
-	// The call as it leaves the S-CSCF, through any AS (TS 24.229 §5.4.3.2 step 15).
 	if r.Method == "INVITE" && c.originating() {
 		asserted, _ := r.Header.Addresses("P-Asserted-Identity")
 
@@ -424,9 +412,9 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	s.forward(ctx, tx, r, to, opts)
 }
 
-// assertService puts the ICSIs of the request in P-Asserted-Service (TS 24.229 §5.4.3.2 steps 4C, 4D): those the
-// request prefers, as the profile restricts no service (TS 29.228 Annex B.2.1A); else, from a trusted AS, those it
-// asserted; else those its Accept-Contact requires; else MMTel for an INVITE (TS 24.173 §5.2).
+// TS 24.229 clause 5.4.3.2
+// TS 29.228 clause B.2.1A
+// TS 24.173 clause 5.2
 func (s *Sessions) assertService(out *sip.Request, served sip.Address, trusted bool) {
 	preferred, err := out.Header.PreferredServices()
 	if err != nil {
@@ -466,8 +454,8 @@ func (s *Sessions) assertService(out *sip.Request, served sip.Address, trusted b
 	}
 }
 
-// requiredICSIs are the ICSIs of the g.3gpp.icsi-ref of the Accept-Contact values that require them (RFC 3841 §9.2,
-// TS 24.229 §7.2A.8).
+// RFC 3841 section 9.2
+// TS 24.229 clause 7.2A.8
 func requiredICSIs(h sip.Header) []string {
 	prefs, _ := h.AcceptContact()
 
@@ -488,9 +476,7 @@ func requiredICSIs(h sip.Header) []string {
 	return out
 }
 
-// TS 24.229 §5.4.3.2 step 1: the served user is an asserted identity registered with the contact that the
-// Service-Route's binding binds. The UE may assert an identity of another of its registration sets than the one
-// whose Service-Route it uses. The binding of the served user's set is returned.
+// TS 24.229 clause 5.4.3.2
 func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []sip.Address, bindingID int64,
 ) (sip.Address, db.Registration, int64, *sip.Response) {
 	route, impi, err := s.r.cfg.DB.GetBinding(ctx, bindingID)
@@ -549,7 +535,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 	return sip.Address{}, db.Registration{}, 0, sip.NewResponse(req, 403, "Not Registered")
 }
 
-// terminating serves a request to a served user, registered or not, or to a PSI (TS 24.229 §5.4.3.3).
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	req := tx.Request()
 
@@ -600,8 +586,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	s.next(ctx, tx, out, c, 0, true)
 }
 
-// deliver forks the request to the registered contacts of the served user (TS 24.229 §5.4.3.3 steps 8 to 14); viaAS
-// tells that it comes back from an AS.
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, viaAS bool) {
 	req := tx.Request()
 	called := out.URI
@@ -642,7 +627,6 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 		}
 	}
 
-	// Every group but the last that is left rings for a while before the next one gets the request.
 	if step {
 		for _, g := range groups[:max(len(groups)-1, 0)] {
 			for i := range g {
@@ -664,8 +648,6 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 
 	err := s.proxy.Fork(ctx, tx, groups)
 
-	// A fork that failed, or found the request answered already (a CANCEL came first), never began
-	// the dialog: it would never end.
 	if err != nil && opts.Dialog != nil {
 		s.r.calls.forget(opts.Dialog)
 	}
@@ -683,11 +665,9 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 	s.answer(ctx, tx, sip.NewResponse(req, code, ""))
 }
 
-// DefaultGroupNoAnswer is how long the contacts of a group ring before the next group gets the
-// request.
 const DefaultGroupNoAnswer = 20 * time.Second
 
-// branch is the request to one registered contact (TS 24.229 §5.4.3.3 step 10).
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI, t target, opts proxy.Options, in sip.Flow,
 	viaAS bool,
 ) (proxy.Branch, bool) {
@@ -726,12 +706,8 @@ func (s *Sessions) branch(ctx context.Context, out *sip.Request, called sip.URI,
 	return proxy.Branch{Request: r, Target: to, Options: opts, Key: bindingKey(t.binding.ID)}, true
 }
 
-// aliasReply completes the 1xx and 2xx responses of the served user: the alias of its asserted identity, and the token
-// of the registration that answered, for the ASs they go back through, in the 1xx and 2xx responses that begin a
-// dialog and in the 200 of a standalone transaction (TS 24.229 §5.4.3.3 steps 2b, 3 and 6, steps 1A and 1B).
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(context.Context, proxy.Reply) proxy.Verdict {
-	// The subscription of the registration, parsed for the first response that asserts an identity: an invalid one
-	// holds no alias.
 	sub := sync.OnceValue(func() cx.IMSSubscription {
 		sub, _ := cx.ParseUserData(reg.UserData)
 		return sub
@@ -754,10 +730,11 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(co
 	}
 }
 
-// pcscfFailure takes the 404 (Not Found) of a P-CSCF that has no binding for the UE (TS 24.229 §5.2.6.4.1) as the
-// failure of the flow: the UE's other flows are tried, and the response upstream is a 480 (Temporarily Unavailable)
-// when none is left (RFC 5626 §7, §11.5). The registrar removes the binding, and starts the HSS based P-CSCF
-// restoration when the UE has no other (TS 24.229 §5.4.3.3, TS 23.380 §5.4.1).
+// TS 24.229 clause 5.2.6.4.1
+// TS 24.229 clause 5.4.3.3
+// TS 23.380 clause 5.4.1
+// RFC 5626 section 7
+// RFC 5626 section 11.5
 func (s *Sessions) pcscfFailure(t target, next func(context.Context, proxy.Reply) proxy.Verdict) func(context.Context, proxy.Reply) proxy.Verdict {
 	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
 		if res := r.Response; res != nil && res.StatusCode == 404 && pcscfNotFound(t.binding.Contact.Path, res) {
@@ -773,9 +750,8 @@ func (s *Sessions) pcscfFailure(t target, next func(context.Context, proxy.Reply
 	}
 }
 
-// pcscfNotFound reports whether a 404 (Not Found) toward a binding with the Path is the P-CSCF's, for no binding: the
-// P-CSCF gives itself as its Response-Source, which tells it from a 404 of the UE (TS 24.229 §5.2.6.4.1, §7.2.17.5).
-// A binding without a Path has no P-CSCF.
+// TS 24.229 clause 5.2.6.4.1
+// TS 24.229 clause 7.2.17.5
 func pcscfNotFound(path string, res *sip.Response) bool {
 	if path == "" {
 		return false
@@ -786,7 +762,9 @@ func pcscfNotFound(path string, res *sip.Response) bool {
 	return ok && err == nil && src.FunctionalEntity() == sip.EntityPCSCF
 }
 
-// dialogCreating reports a method whose initial request creates a dialog (RFC 3261 §12, RFC 6665 §4.1, RFC 3515 §2.4.4).
+// RFC 3261 section 12
+// RFC 6665 section 4.1
+// RFC 3515 section 2.4.4
 func dialogCreating(method string) bool {
 	switch method {
 	case "INVITE", "SUBSCRIBE", "REFER":
@@ -796,7 +774,7 @@ func dialogCreating(method string) bool {
 	return false
 }
 
-// TS 24.229 §5.4.3.3
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) assertAlias(res *sip.Response, sub func() cx.IMSSubscription) {
 	asserted, err := res.Header.Addresses("P-Asserted-Identity")
 	if err != nil || len(asserted) != 1 {
@@ -808,8 +786,8 @@ func (s *Sessions) assertAlias(res *sip.Response, sub func() cx.IMSSubscription)
 	}
 }
 
-// initialOptions record-route the initial request of a dialog; track adds the S-CSCF's own record of an INVITE
-// dialog, kept on the leg of the served UE (TS 24.229 §5.4.3.2 steps 13 and 16, §5.4.3.3 steps 11 and 13).
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) initialOptions(out *sip.Request, user string, track bool) proxy.Options {
 	var opts proxy.Options
 
@@ -829,17 +807,15 @@ func (s *Sessions) initialOptions(out *sip.Request, user string, track bool) pro
 	return opts
 }
 
-// dialogTarget is where the requests the S-CSCF generates within a dialog go, such as the BYEs that release it, from
-// the S-CSCF's address on in, the flow of the initial request: their next hop, whatever its form (RFC 3261 §8.1.2).
-// dialogTarget is where a request the dialog generates goes, resolved in the trace of ctx, within the registrar's
-// lifetime: a request the dialog generates on a timer has no other.
+// RFC 3261 section 8.1.2
 func (s *Sessions) dialogTarget(in sip.Flow) func(context.Context, proxy.Side, *sip.Request) (proxy.Target, error) {
 	return func(ctx context.Context, _ proxy.Side, req *sip.Request) (proxy.Target, error) {
 		return s.nextHop(lifetime.With(s.r.ctx, ctx), req, in)
 	}
 }
 
-// TS 24.229 §5.4.3.2, §5.4.3.3
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func (s *Sessions) inDialog(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, removed []sip.URI) {
 	req := tx.Request()
 
@@ -865,7 +841,7 @@ func (s *Sessions) inDialog(ctx context.Context, tx *transaction.ServerTransacti
 	s.spawn(ctx, tx, func(ctx context.Context) { s.forwardInDialog(ctx, tx, out, removed, d) })
 }
 
-// forwardInDialog forwards a request within a dialog to its next hop (RFC 3261 §16.12).
+// RFC 3261 section 16.12
 func (s *Sessions) forwardInDialog(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, removed []sip.URI,
 	d *proxy.Dialog,
 ) {
@@ -890,10 +866,7 @@ func (s *Sessions) forwardInDialog(ctx context.Context, tx *transaction.ServerTr
 	s.forward(ctx, tx, out, to, opts)
 }
 
-// refreshToken puts the registration token of the initial request in a target refresh request towards the AS it
-// went to, and in the 1xx and 2xx responses to one from it (TS 24.229 §5.4.3.2); a request that goes elsewhere loses
-// any (§5.4.3.2 step 18). The S-CSCF's Record-Route entry that faces the AS holds it: the second entry the request
-// names when it goes there, the first when it comes from there.
+// TS 24.229 clause 5.4.3.2
 func refreshToken(out *sip.Request, removed []sip.URI, opts *proxy.Options) {
 	if len(removed) > 1 {
 		if token, ok := removed[1].Params.Get(tokenParam); ok {
@@ -940,10 +913,10 @@ func recordRouteOf(removed []sip.URI) *proxy.RecordRoute {
 	return rr
 }
 
-// resolveTimeout bounds the DNS queries that locate the next hop of a request.
 const resolveTimeout = 4 * time.Second
 
-// hopURI is the URI a request goes to next: its first Route, or else its Request-URI (RFC 3261 §8.1.2, §16.12).
+// RFC 3261 section 8.1.2
+// RFC 3261 section 16.12
 func hopURI(out *sip.Request) (sip.URI, error) {
 	route, err := out.Header.TopRoute()
 
@@ -957,7 +930,6 @@ func hopURI(out *sip.Request) (sip.URI, error) {
 	}
 }
 
-// needsDNS reports whether the next hop of a request is named by a domain name, which only the DNS locates.
 func needsDNS(out *sip.Request) bool {
 	u, err := hopURI(out)
 	if err != nil {
@@ -969,9 +941,9 @@ func needsDNS(out *sip.Request) bool {
 	return !literal
 }
 
-// nextHop is where the S-CSCF sends a request: the first server its next hop resolves to (RFC 3261 §8.1.2, §16.12,
-// RFC 3263 §4) that a listener of the S-CSCF shares the address family of. A next hop named by its IP address
-// takes no DNS query.
+// RFC 3261 section 8.1.2
+// RFC 3261 section 16.12
+// RFC 3263 section 4
 func (s *Sessions) nextHop(ctx context.Context, out *sip.Request, in sip.Flow) (proxy.Target, error) {
 	u, err := hopURI(out)
 	if err != nil {
@@ -1063,7 +1035,6 @@ func (s *Sessions) forward(ctx context.Context, tx *transaction.ServerTransactio
 	s.answer(ctx, tx, sip.NewResponse(tx.Request(), code, ""))
 }
 
-// answer answers a request with a response of the S-CSCF's, through the proxy if it has begun forwarding it.
 func (s *Sessions) answer(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) {
 	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 
@@ -1074,7 +1045,6 @@ func (s *Sessions) answer(ctx context.Context, tx *transaction.ServerTransaction
 	s.send(tx, res)
 }
 
-// respond answers a request with a response of the S-CSCF's.
 func (s *Sessions) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	s.r.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 	s.send(tx, res)

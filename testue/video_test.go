@@ -22,7 +22,6 @@ func videoPair(t *testing.T) (*UE, *UE) {
 	return pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{MMTel: MMTelConfig{Video: true}})
 }
 
-// wantStreams checks the kinds of the call's streams and which are active, and that each active one has endpoints.
 func wantStreams(t *testing.T, c *Call, want ...string) {
 	t.Helper()
 
@@ -46,7 +45,6 @@ func wantStreams(t *testing.T, c *Call, want ...string) {
 	}
 }
 
-// Both ends see the same media on each stream: one's local endpoint is the other's remote one.
 func wantMirrored(t *testing.T, a, b *Call) {
 	t.Helper()
 
@@ -83,7 +81,10 @@ func videoMedia(t *testing.T, s *sdp.Session) *sdp.Media {
 	return nil
 }
 
-// IR.94 §2.2.1, §2.2.2, §3.3, NG.114 §3.3.2.1
+// GSMA IR.94 section 2.2.1
+// GSMA IR.94 section 2.2.2
+// GSMA IR.94 section 3.3
+// GSMA NG.114 section 3.3.2.1
 func TestVideoCall(t *testing.T) {
 	for _, preconditions := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "preconditions"}[preconditions], func(t *testing.T) {
@@ -136,7 +137,7 @@ func TestVideoCall(t *testing.T) {
 	}
 }
 
-// IR.94 §2.2.2: a voice only UE declines video with port 0, and the call goes on as voice.
+// GSMA IR.94 section 2.2.2
 func TestVideoDeclined(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{})
@@ -150,7 +151,6 @@ func TestVideoDeclined(t *testing.T) {
 		t.Errorf("caller Contact = %q, want video", c)
 	}
 
-	// Later offers keep the declined stream at port 0 (RFC 3264 §8.2).
 	if err := ac.Hold(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,6 @@ func TestVideoDeclined(t *testing.T) {
 	}
 }
 
-// A voice only UE makes no video call and adds no video.
 func TestVideoNotEnabled(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
@@ -178,7 +177,7 @@ func TestVideoNotEnabled(t *testing.T) {
 	wantStreams(t, ac, sdp.Audio)
 }
 
-// IR.94 §2.2.2: video added to a voice call and removed again, by re-INVITE.
+// GSMA IR.94 section 2.2.2
 func TestAddAndRemoveVideo(t *testing.T) {
 	for _, preconditions := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "preconditions"}[preconditions], func(t *testing.T) {
@@ -196,7 +195,6 @@ func TestAddAndRemoveVideo(t *testing.T) {
 			wantStreams(t, bc, sdp.Audio, sdp.Video)
 			wantMirrored(t, ac, bc)
 
-			// RFC 3312 §5: the stream added has its resources reported in an UPDATE once the re-INVITE completes.
 			uetest.Eventually(t, "preconditions met", func() bool { return ac.PreconditionsMet() && bc.PreconditionsMet() })
 
 			if err := ac.AddVideo(ctx); !errors.Is(err, ErrCallState) {
@@ -214,7 +212,6 @@ func TestAddAndRemoveVideo(t *testing.T) {
 				t.Errorf("second RemoveVideo = %v, want ErrNoStream", err)
 			}
 
-			// RFC 3264 §8.3: video added again takes the m-line of the removed one.
 			if err := ac.AddVideo(ctx); err != nil {
 				t.Fatalf("AddVideo again: %v", err)
 			}
@@ -229,7 +226,7 @@ func TestAddAndRemoveVideo(t *testing.T) {
 	}
 }
 
-// IR.94 §2.3.2: hold and resume cover every stream of the call in one offer.
+// GSMA IR.94 section 2.3.2
 func TestHoldVideoCall(t *testing.T) {
 	ctx := testContext(t)
 	a, b := videoPair(t)
@@ -266,7 +263,8 @@ func TestHoldVideoCall(t *testing.T) {
 	}
 }
 
-// TS 24.229 §6.1.1, IR.94 §2.4.1: a phone that loses its video bearer removes the video, and the call goes on.
+// TS 24.229 clause 6.1.1
+// GSMA IR.94 section 2.4.1
 func TestVideoBearerLost(t *testing.T) {
 	ctx := testContext(t)
 	a, b := videoPair(t)
@@ -284,7 +282,6 @@ func TestVideoBearerLost(t *testing.T) {
 		t.Errorf("caller got %v, want the re-INVITE", methods)
 	}
 
-	// The video is already gone: nothing more to lose.
 	if err := bc.BearerLost(ctx, sdp.Video); err != nil {
 		t.Fatalf("second BearerLost: %v", err)
 	}
@@ -294,7 +291,8 @@ func TestVideoBearerLost(t *testing.T) {
 	}
 }
 
-// IR.94 §2.4.1, §3.3.2 Note 1: a video bearer refused during setup has the video removed in an UPDATE.
+// GSMA IR.94 section 2.4.1
+// GSMA IR.94 section 3.3.2
 func TestVideoBearerRefusedDuringSetup(t *testing.T) {
 	ctx := testContext(t)
 	a, b := videoPair(t)
@@ -343,7 +341,8 @@ func wantMediaLossReason(t *testing.T, c *Call) {
 	t.Errorf("reasons %v, want RELEASE_CAUSE %d", c.Reasons(), sip.ReleaseMediaBearerLoss)
 }
 
-// TS 24.229 §6.1.1, §5.1.5: losing the voice bearer ends the call, with RELEASE_CAUSE 3.
+// TS 24.229 clause 6.1.1
+// TS 24.229 clause 5.1.5
 func TestVoiceBearerLost(t *testing.T) {
 	t.Run("confirmed", func(t *testing.T) {
 		ctx := testContext(t)
@@ -360,7 +359,6 @@ func TestVoiceBearerLost(t *testing.T) {
 		wantMediaLossReason(t, bc)
 	})
 
-	// TS 24.229 §5.1.3.1: the INVITE is cancelled.
 	t.Run("calling", func(t *testing.T) {
 		ctx := testContext(t)
 		a, b := pair(t)
@@ -386,7 +384,6 @@ func TestVoiceBearerLost(t *testing.T) {
 		ended(t, bc, Cancelled)
 		wantMediaLossReason(t, bc)
 
-		// RFC 3312 §8, as the Crosscall Core-Z5 does (call_precondition_failure_580/014-CANCEL).
 		for e := range bc.Events() {
 			if e.Request != nil && e.Request.Method == "CANCEL" {
 				wantPreconditionFailure(t, e.Request.Body)
@@ -395,8 +392,6 @@ func TestVoiceBearerLost(t *testing.T) {
 		}
 	})
 
-	// RFC 3312 §8: the callee rejects the INVITE with 580 (Precondition Failure), describing the failure, or 488
-	// without preconditions, with the Reason, as the Crosscall Core-Z5 does (call_precondition_failure_580/011-580).
 	for _, c := range []struct {
 		preconditions bool
 		code          int
@@ -437,8 +432,7 @@ func TestVoiceBearerLost(t *testing.T) {
 	}
 }
 
-// wantPreconditionFailure checks the SDP of a precondition failure (RFC 3312 §8): every m-line at port 0, the local QoS
-// desired failing.
+// RFC 3312 section 8
 func wantPreconditionFailure(t *testing.T, body []byte) {
 	t.Helper()
 
@@ -470,7 +464,8 @@ func pixelVideoOffer(t *testing.T) *sdp.Session {
 	return sdpOf(t, bytes.ReplaceAll(body, []byte("\n"), []byte("\r\n")))
 }
 
-// A Pixel 10a's video offer: AVP with AVPF through SDP capability negotiation (RFC 5939, IR.94 §3.3.2), H.265 first.
+// RFC 5939
+// GSMA IR.94 section 3.3.2
 func TestAnswerPixelVideoOffer(t *testing.T) {
 	m := newMedia(loopback, 40000, true, true)
 
@@ -492,7 +487,6 @@ func TestAnswerPixelVideoOffer(t *testing.T) {
 
 	wantAttrs(t, video, "acfg:1 t=1", "extmap:7 "+cvoURN, "rtcp-fb:* ccm fir")
 
-	// Voice only, the same offer has its video declined.
 	answer, err = newMedia(loopback, 40000, true, false).answer(pixelVideoOffer(t))
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +497,7 @@ func TestAnswerPixelVideoOffer(t *testing.T) {
 	}
 }
 
-// IR.94 §2.2.1: a video capable UE registers with the video feature tag.
+// GSMA IR.94 section 2.2.1
 func TestVideoContact(t *testing.T) {
 	a, _ := pairWith(t, Config{MMTel: MMTelConfig{Video: true}}, Config{})
 
@@ -512,13 +506,11 @@ func TestVideoContact(t *testing.T) {
 	}
 }
 
-// RFC 8285 §6: the answer keeps the offer's extmap ID for video orientation, mirroring its direction, and has none
-// when the offer has none.
+// RFC 8285 section 6
 func TestVideoOrientationID(t *testing.T) {
 	for _, c := range []struct{ extmap, want string }{
 		{"a=extmap:3 urn:3gpp:video-orientation\r\n", "3"},
 		{"a=extmap:3/sendrecv urn:3gpp:video-orientation\r\n", "3/sendrecv"},
-		// RFC 8285 §6, TS 26.114 §6.2.3.3: CVO answered only in the directions offered.
 		{"a=extmap:5/sendonly urn:3gpp:video-orientation\r\n", "5/recvonly"},
 		{"a=extmap:6/recvonly urn:3gpp:video-orientation\r\n", "6/sendonly"},
 		{"a=extmap:4 urn:ietf:params:rtp-hdrext:toffset\r\na=extmap:5\r\n", ""},
@@ -533,7 +525,6 @@ func TestVideoOrientationID(t *testing.T) {
 	}
 }
 
-// peerResponse is the response of the scripted peer to req, in its dialog.
 func peerResponse(t *testing.T, p *peer, req *sip.Request, code int, tag string, body *sdp.Session) *sip.Response {
 	t.Helper()
 
@@ -548,8 +539,9 @@ func peerResponse(t *testing.T, p *peer, req *sip.Request, code int, tag string,
 	return res
 }
 
-// TS 24.229 §6.1.4.2, RFC 3312 §5, RFC 3262 §5: a phone answers a re-INVITE adding video with preconditions in a
-// reliable 183, and holds its 200, without SDP, until the UPDATE reports the resources.
+// TS 24.229 clause 6.1.4.2
+// RFC 3312 section 5
+// RFC 3262 section 5
 func TestAddVideoAnsweredInReliable183(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
@@ -618,8 +610,7 @@ func TestAddVideoAnsweredInReliable183(t *testing.T) {
 	}
 }
 
-// RFC 3312 §5: a re-INVITE answered in a reliable 183 adds the video once the UPDATE reporting its resources is
-// answered, though the 200 of the re-INVITE comes first, as the two transactions' responses can.
+// RFC 3312 section 5
 func TestAddVideoWaitsForItsUpdate(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
@@ -692,7 +683,7 @@ func TestAddVideoWaitsForItsUpdate(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: a re-INVITE refused after a reliable 183 answered it leaves the session as it was.
+// RFC 3261 section 14.1
 func TestAddVideoRefusedAfterReliable183(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{MMTel: MMTelConfig{Video: true}})
@@ -754,8 +745,8 @@ func TestAddVideoRefusedAfterReliable183(t *testing.T) {
 	}
 }
 
-// RFC 3261 §9.1, TS 24.229 §5.1.5: a 2xx crossing the CANCEL of a call whose voice bearer was lost has the call
-// ended by a BYE with the same RELEASE_CAUSE.
+// RFC 3261 section 9.1
+// TS 24.229 clause 5.1.5
 func TestVoiceBearerLostCrossing2xx(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
@@ -803,7 +794,8 @@ func TestVoiceBearerLostCrossing2xx(t *testing.T) {
 	ended(t, c, MediaLost)
 }
 
-// RFC 3261 §14.2, RFC 3264 §8: an offer the UE cannot accept leaves the session as it was.
+// RFC 3261 section 14.2
+// RFC 3264 section 8
 func TestRefusedOfferKeepsTheStreams(t *testing.T) {
 	m := newMedia(loopback, 40000, false, true)
 
@@ -816,7 +808,6 @@ func TestRefusedOfferKeepsTheStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Video over AVP without CVO, and audio the UE has no codec for.
 	if _, err := m.answer(sdpOf(t, []byte(head+
 		"m=audio 5000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"+
 		"m=video 5002 RTP/AVP 98\r\na=rtpmap:98 H265/90000\r\n"))); !errors.Is(err, ErrNoCodec) {
@@ -841,7 +832,7 @@ func TestRefusedOfferKeepsTheStreams(t *testing.T) {
 	}
 }
 
-// RFC 3264 §6: an answer has as many m-lines as the offer.
+// RFC 3264 section 6
 func TestShortAnswerRefused(t *testing.T) {
 	m := newMedia(loopback, 40000, false, true)
 
@@ -872,8 +863,8 @@ func videoOffer(t *testing.T, lines ...string) *sdp.Session {
 		"m=audio 5000 RTP/AVP 116\r\na=rtpmap:116 AMR-WB/16000/1\r\n"+strings.Join(lines, "\r\n")+"\r\n"))
 }
 
-// RFC 4585 §4.2, TS 26.114 §6.2.3.2: the answer has the feedback the offer has and the UE takes, for the chosen
-// payload type or all of them, with the offered values.
+// RFC 4585 section 4.2
+// TS 26.114 clause 6.2.3.2
 func TestAnswerFeedback(t *testing.T) {
 	answer, err := newMedia(loopback, 40000, false, true).answer(videoOffer(t,
 		"m=video 5002 RTP/AVPF 99 100",
@@ -889,7 +880,6 @@ func TestAnswerFeedback(t *testing.T) {
 		t.Fatalf("answered rtcp-fb %q", got)
 	}
 
-	// Over AVP, there is no feedback (RFC 4585 §4).
 	answer, err = newMedia(loopback, 40000, false, true).answer(videoOffer(t,
 		"m=video 5002 RTP/AVP 99", "a=rtpmap:99 H264/90000", "a=fmtp:99 profile-level-id=42e01f;packetization-mode=1",
 		"a=rtcp-fb:* nack"))
@@ -902,8 +892,12 @@ func TestAnswerFeedback(t *testing.T) {
 	}
 }
 
-// IR.94 §3.3.1, NG.114 §3.3.2.1, RFC 6184 §8.1, RFC 7798 §7.2.2, ITU-T H.264 A.2.1.1, A.2.4.2: the UE takes H.265
-// Main and H.264 Constrained Baseline or Constrained High, and answers H.265 with the offer's symmetric parameters.
+// GSMA IR.94 section 3.3.1
+// GSMA NG.114 section 3.3.2.1
+// RFC 6184 section 8.1
+// RFC 7798 section 7.2.2
+// ITU-T H.264 section A.2.1.1
+// ITU-T H.264 section A.2.4.2
 func TestChooseVideo(t *testing.T) {
 	const h265Symmetric = "profile-space=0;tier-flag=0;profile-id=1;level-id=120;" +
 		"profile-compatibility-indicator=60000000;interop-constraints=B00000000000"
@@ -942,7 +936,8 @@ func TestChooseVideo(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.3.1, §5.1.5: the user ending a call says so, as phones do.
+// TS 24.229 clause 5.1.3.1
+// TS 24.229 clause 5.1.5
 func TestUserEndsCallReason(t *testing.T) {
 	wantUserEnds := func(t *testing.T, c *Call) {
 		t.Helper()

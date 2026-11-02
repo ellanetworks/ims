@@ -548,7 +548,7 @@ func (c *moCall) dialog(t *testing.T) *proxy.Dialog {
 	return d
 }
 
-// TS 24.229 §5.2.6.3.9 step 2
+// TS 24.229 clause 5.2.6.3.9
 func TestEarlyRoutesAreTheDialogs(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -574,7 +574,7 @@ func TestEarlyRoutesAreTheDialogs(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4
+// RFC 3261 section 13.2.2.4
 func TestSecondAnswerCanBeEnded(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -596,7 +596,8 @@ func TestSecondAnswerCanBeEnded(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.6.3.1, §5.2.2 NOTE 3
+// TS 24.229 clause 5.2.6.3.1
+// TS 24.229 clause 5.2.2
 func TestProtectedRPortIsThePortUS(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -620,7 +621,10 @@ func TestProtectedRPortIsThePortUS(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.6.3.5, §5.2.6.3.6, §5.2.6.4.5, §5.2.6.4.6
+// TS 24.229 clause 5.2.6.3.5
+// TS 24.229 clause 5.2.6.3.6
+// TS 24.229 clause 5.2.6.4.5
+// TS 24.229 clause 5.2.6.4.6
 func TestTargetRefreshesAreRecordRouted(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -693,7 +697,7 @@ func TestTargetRefreshesAreRecordRouted(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.6.4.10
+// TS 24.229 clause 5.2.6.4.10
 func TestCoreRequestOnACall(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)
@@ -740,7 +744,7 @@ func TestCoreRequestOnACall(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.8.1
+// TS 24.229 clause 5.2.8.1
 func TestReleaseReachesTheUEOnItsSAs(t *testing.T) {
 	s, u := newIPsecRegScene(t)
 	s.registerOverIPsec(u)

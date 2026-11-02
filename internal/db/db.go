@@ -15,12 +15,8 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type DB struct {
-	// conn is the only connection that writes, so that writes never wait on each other's locks.
-	conn *sql.DB
-	// read serves the reads that may take long, such as searches of the call records, so that they never hold up
-	// conn: in WAL mode, readers and the writer do not wait on each other.
-	read *sql.DB
-	// path is the database file, whose size the metrics report.
+	conn    *sql.DB
+	read    *sql.DB
 	path    string
 	metrics metrics
 }
@@ -368,7 +364,6 @@ var migrations = []string{
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
-	// The path of a URI: escaped, of a "?", "#" or "%" that would end or escape it (https://sqlite.org/uri.html).
 	file := (&url.URL{Path: path}).EscapedPath()
 
 	if err := restrict(path); err != nil {
@@ -423,7 +418,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	return d, nil
 }
 
-// Ping checks that the database answers. It is not observed: see TestEveryCallIsObserved.
 func (d *DB) Ping(ctx context.Context) error {
 	return d.conn.PingContext(ctx)
 }
@@ -467,9 +461,6 @@ func (d *DB) migrate(ctx context.Context) error {
 	return nil
 }
 
-// restrict creates the database file if absent, readable and writable by its owner only, and makes an existing one so:
-// it holds the password hashes and the key that signs the access tokens. SQLite gives its journal files the
-// permissions of the database file.
 func restrict(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {

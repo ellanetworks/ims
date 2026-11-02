@@ -24,10 +24,9 @@ import (
 const home = "ims.mnc001.mcc001.3gppnetwork.org"
 
 type fakeStore struct {
-	mu   sync.Mutex
-	regs map[string]db.IPSMGWRegistration
-	hss  map[string]db.IPSMGWHSSRegistration
-	// onPut, if set, is called by PutIPSMGWRegistration with its context, before it stores.
+	mu    sync.Mutex
+	regs  map[string]db.IPSMGWRegistration
+	hss   map[string]db.IPSMGWHSSRegistration
 	onPut func(ctx context.Context)
 }
 
@@ -106,8 +105,6 @@ func (s *fakeStore) reg(k string) db.IPSMGWRegistration {
 	return s.regs[k]
 }
 
-// waitEmpty waits for the store to have no registration of either kind, the HSS goroutine storing its own off the
-// net's clock.
 func (s *fakeStore) waitEmpty(t *testing.T) {
 	t.Helper()
 
@@ -130,7 +127,6 @@ func (s *fakeStore) waitEmpty(t *testing.T) {
 	}
 }
 
-// update is a Sh-Update the HSS received.
 type update struct {
 	msisdn, impu, number string
 }
@@ -167,7 +163,6 @@ func (h *fakeHSS) UpdateSMSRegistration(_ context.Context, u User, number string
 	return nil
 }
 
-// waitUpdates waits for the HSS to have received want, the updates of the HSS goroutine running off the net's clock.
 func (h *fakeHSS) waitUpdates(t *testing.T, want ...update) {
 	t.Helper()
 
@@ -190,7 +185,6 @@ func (h *fakeHSS) waitUpdates(t *testing.T, want ...update) {
 	}
 }
 
-// fakeSMSCs answers the forwarded short messages of a service centre with ui and err.
 type fakeSMSCs struct {
 	mu        sync.Mutex
 	none      bool
@@ -215,18 +209,17 @@ func (f *fakeSMSCs) Forward(_ context.Context, m sgd.MOForwardShortMessage) ([]b
 }
 
 type world struct {
-	t      *testing.T
-	n      *siptest.Net
-	scscf  *siptest.Peer
-	as     netip.AddrPort
-	a      *AS
-	store  *fakeStore
-	hss    *fakeHSS
-	smscs  *fakeSMSCs
-	router *fakeRouter
-	nodes  *fakeNodes
-	cseq   int
-	// lastSub is the SUBSCRIBE of the registration of available.
+	t       *testing.T
+	n       *siptest.Net
+	scscf   *siptest.Peer
+	as      netip.AddrPort
+	a       *AS
+	store   *fakeStore
+	hss     *fakeHSS
+	smscs   *fakeSMSCs
+	router  *fakeRouter
+	nodes   *fakeNodes
+	cseq    int
 	lastSub *sip.Request
 }
 
@@ -236,7 +229,6 @@ func newWorld(t *testing.T, store *fakeStore) *world {
 	return newWorldTraced(t, store, nil)
 }
 
-// newWorldTraced is newWorld of the IP-SM-GW traced with tp.
 func newWorldTraced(t *testing.T, store *fakeStore, tp trace.TracerProvider) *world {
 	t.Helper()
 
@@ -266,16 +258,12 @@ func newWorldTraced(t *testing.T, store *fakeStore, tp trace.TracerProvider) *wo
 	return w
 }
 
-// register sends a third-party REGISTER of impu, of expires seconds and body, a Content-Type and its body or "",
-// and returns the response.
 func (w *world) register(impu string, expires int, contentType, body string) *sip.Response {
 	w.t.Helper()
 
 	return w.registerWith(impu, "", fmt.Sprintf("Expires: %d", expires), contentType, body)
 }
 
-// registerWith sends a third-party REGISTER of impu, of the Contact parameters params, the header fields header and
-// body, a Content-Type and its body or "", and returns the response.
 func (w *world) registerWith(impu, params, header, contentType, body string) *sip.Response {
 	w.t.Helper()
 
@@ -309,7 +297,6 @@ func (w *world) registerWith(impu, params, header, contentType, body string) *si
 	return res
 }
 
-// subscribed takes the SUBSCRIBE of the IP-SM-GW, answers it 200, and returns it.
 func (w *world) subscribed() *sip.Request {
 	w.t.Helper()
 
@@ -330,8 +317,6 @@ func (w *world) subscribed() *sip.Request {
 	return req
 }
 
-// notify sends a NOTIFY of the subscription of sub, of doc and the Subscription-State state, and returns the
-// response.
 func (w *world) notify(sub *sip.Request, state string, doc reginfo.Reginfo) *sip.Response {
 	w.t.Helper()
 
@@ -378,7 +363,6 @@ func mustParse(t *testing.T, s string) sip.Message {
 	return m
 }
 
-// doc is a full reg event document of aor, of one active contact, of the smsip feature tag if smsip.
 func doc(version uint32, aor string, smsip bool) reginfo.Reginfo {
 	c := reginfo.Contact{ID: "c1", State: reginfo.Active, Event: reginfo.Registered, URI: "sip:ue@192.0.2.1:5060"}
 	if smsip {
@@ -392,8 +376,7 @@ func doc(version uint32, aor string, smsip bool) reginfo.Reginfo {
 
 const serviceInfo = `<?xml version="1.0"?><ims-3gpp version="1"><service-info>15551230001</service-info></ims-3gpp>`
 
-// A third-party REGISTER is answered 200, and its IMPU subscribed to; a contact of the smsip feature tag registers
-// the IP-SM-GW at the HSS for the MSISDN of the <service-info>, and its loss deregisters it (TS 24.341 §5.3.3.2).
+// TS 24.341 clause 5.3.3.2
 func TestRegistrationFollowsAvailability(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:alice@" + home
@@ -423,7 +406,6 @@ func TestRegistrationFollowsAvailability(t *testing.T) {
 		t.Fatalf("stored = %+v", got)
 	}
 
-	// An older document changes nothing.
 	w.notify(sub, "active;expires=600", doc(1, impu, false))
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
 
@@ -431,7 +413,6 @@ func TestRegistrationFollowsAvailability(t *testing.T) {
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001"})
 }
 
-// Without an MSISDN, the user is the IMPU, of the IMSI of the REGISTER of the UE.
 func TestRegistrationWithoutMSISDN(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:001010000000001@" + home
@@ -452,7 +433,6 @@ func TestRegistrationWithoutMSISDN(t *testing.T) {
 	}
 }
 
-// A deregistration without an active subscription ends the registration, and the HSS registration of its user.
 func TestDeregistration(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:bob@" + home
@@ -462,7 +442,6 @@ func TestDeregistration(t *testing.T) {
 	w.notify(sub, "active;expires=600", doc(0, impu, true))
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
 
-	// The S-CSCF ends the subscription, as its registration went.
 	w.notify(sub, "terminated;reason=deactivated", reginfo.Reginfo{
 		Version: 1, State: reginfo.Full,
 		Registrations: []reginfo.Registration{{AOR: impu, ID: "r1", State: reginfo.Terminated}},
@@ -477,7 +456,6 @@ func TestDeregistration(t *testing.T) {
 	}
 }
 
-// A registration expires without a refresh.
 func TestRegistrationExpires(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:carol@" + home
@@ -491,7 +469,6 @@ func TestRegistrationExpires(t *testing.T) {
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001"})
 }
 
-// A restart keeps the registrations unexpired, and deregisters at the HSS the users of none left.
 func TestRestore(t *testing.T) {
 	store := newFakeStore()
 	store.regs["sip:dave@"+home] = db.IPSMGWRegistration{
@@ -547,8 +524,7 @@ func TestSubscribed(t *testing.T) {
 	}
 }
 
-// The expires parameter of the Contact takes precedence over the Expires header field, and neither is a default
-// (RFC 3261 §10.3 step 7).
+// RFC 3261 section 10.3
 func TestRegistrationExpiration(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 
@@ -563,8 +539,7 @@ func TestRegistrationExpiration(t *testing.T) {
 	}
 }
 
-// A user without an MSISDN is told apart by its IMSI; its MSISDN, told later, keeps its HSS registration, which the
-// HSS has of the same user (TS 29.328 §6.1.2.1 step 4b).
+// TS 29.328 clause 6.1.2.1
 func TestUserKeyChangeKeepsTheHSSRegistration(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:grace@" + home
@@ -578,12 +553,10 @@ func TestUserKeyChangeKeepsTheHSSRegistration(t *testing.T) {
 	w.register(impu, 600, "application/3gpp-ims+xml", serviceInfo)
 	w.n.Quiesce()
 
-	// The registration is the HSS's still, under the user's new key: neither registered again, nor deregistered.
 	w.notify(sub, "active;expires=600", doc(1, impu, false))
 	w.hss.waitUpdates(t, update{impu: impu, number: "15550000100"}, update{impu: impu})
 }
 
-// Two IMPUs of a user: the HSS registration stays while one of them can receive short messages over IP.
 func TestUserAvailableWhileOneIMPUIs(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	a, b := "sip:heidi@"+home, "sip:heidi.work@"+home
@@ -605,7 +578,7 @@ func TestUserAvailableWhileOneIMPUIs(t *testing.T) {
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001"})
 }
 
-// An IMPU of the implicit registration set deregistered alone leaves the others' contacts (TS 24.229 §5.4.1.8).
+// TS 24.229 clause 5.4.1.8
 func TestOtherIMPUOfTheSetTerminated(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu, other := "sip:ivan@"+home, "sip:ivan.other@"+home
@@ -633,7 +606,7 @@ func TestOtherIMPUOfTheSetTerminated(t *testing.T) {
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
 }
 
-// A subscription the S-CSCF deactivates is made again at once (RFC 6665 §4.1.3).
+// RFC 6665 section 4.1.3
 func TestDeactivatedSubscriptionRenewed(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	impu := "sip:judy@" + home
@@ -648,7 +621,7 @@ func TestDeactivatedSubscriptionRenewed(t *testing.T) {
 	}
 }
 
-// The feature tag counts of no value or TRUE only (RFC 3840 §9).
+// RFC 3840 section 9
 func TestSMSIPFeatureTag(t *testing.T) {
 	for v, want := range map[string]bool{"": true, `"TRUE"`: true, "TRUE": true, `"FALSE"`: false, `"!TRUE"`: false} {
 		c := reginfo.Contact{UnknownParams: []reginfo.Param{{Name: "+g.3gpp.smsip", Value: v}}}
@@ -658,7 +631,6 @@ func TestSMSIPFeatureTag(t *testing.T) {
 	}
 }
 
-// An update the HSS refuses for good is not tried again; one that fails is.
 func TestHSSRefusalNotRetried(t *testing.T) {
 	for _, reject := range []bool{true, false} {
 		h := &fakeHSS{reject: reject, fail: !reject}
@@ -677,8 +649,6 @@ func TestHSSRefusalNotRetried(t *testing.T) {
 	}
 }
 
-// A shutdown deregisters the IP-SM-GW at the HSS for its users, and the next start registers it again for those
-// available, of the registrations kept.
 func TestShutdownDeregisters(t *testing.T) {
 	store := newFakeStore()
 	w := newWorld(t, store)
@@ -696,7 +666,6 @@ func TestShutdownDeregisters(t *testing.T) {
 		t.Fatalf("registration = %+v, want kept", got)
 	}
 
-	// The next start, on a clock past the expiry of none.
 	store.mu.Lock()
 	r := store.regs[key(mustURI(t, impu))]
 	r.ExpiresAt = r.ExpiresAt.Add(1000 * time.Hour)

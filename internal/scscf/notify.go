@@ -36,17 +36,12 @@ type removal struct {
 	event    reginfo.Event
 	byUE     bool
 
-	// ended is set when the registration set has no binding left.
 	ended bool
 
-	// calls, when set, are the calls of the bindings as they were before the change: a flow replaced in
-	// place keeps its binding, and the calls on its successor are not the removed flow's.
 	calls map[bindingKey]map[*proxy.Dialog]proxy.Side
 }
 
-// rejection is the identities that the HSS removed from a registered set of a private identity, or barred in it, with
-// the contacts of the set, which the reg event reports terminated (TS 24.229 §5.4.1.8 step 4): unlike a removal, it
-// leaves the contacts bound, and their calls in progress (NOTE 2).
+// TS 24.229 clause 5.4.1.8
 type rejection struct {
 	impi       string
 	identities []db.PublicIdentity
@@ -59,12 +54,8 @@ type change struct {
 	reason    string
 	shortened string
 
-	// created are the keys of the public identities that the HSS added to a registered set of the user, or unbarred
-	// in it (TS 24.229 §5.4.1.8 step 1, §5.4.2.1.2 step 4e IV).
 	created map[string]bool
 
-	// ended, if set, reports whether the change ends the subscriptions to a resource: an identity the HSS removed
-	// from the set, or barred (TS 29.228 §6.5.2.1, RFC 6665 §4.2.2).
 	ended func(resource string) bool
 }
 
@@ -307,8 +298,6 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Subscription-State", subState)
 
-	// TS 24.229 §5.4.2.1.2 step 5: the icid-value of the SUBSCRIBE, and an orig-ioi of type 3 towards an AS, of type 1
-	// otherwise, without term-ioi.
 	if s.ICID != "" {
 		req.Header.Add(pChargingVector, r.chargingVector(s.ICID))
 	}
@@ -319,8 +308,8 @@ func (r *Registrar) newNotify(ctx context.Context, st *state, s *db.RegSubscript
 	return &outgoing{impi: s.IMPI, subID: s.ID, req: req}, nil
 }
 
-// notifyHop is where a NOTIFY goes, and the S-CSCF's address it goes from: the first server its next hop resolves to
-// (RFC 3261 §8.1.2, RFC 3263 §4), such as the Contact of an AS by domain name, that the S-CSCF has a listener for.
+// RFC 3261 section 8.1.2
+// RFC 3263 section 4
 func (r *Registrar) notifyHop(ctx context.Context, req *sip.Request) (sip.Transport, netip.AddrPort, netip.AddrPort, error) {
 	u, err := hopURI(req)
 	if err != nil {
@@ -404,7 +393,6 @@ func (r *Registrar) reginfo(ctx context.Context, st *state, ch change) (reginfo.
 
 	seen := map[string]bool{}
 
-	// The contacts of an identity are those of the sets reported: one that left them, to another set, has none here.
 	ids := map[int64]bool{}
 	for _, set := range sets {
 		ids[set.SetID] = true
@@ -439,8 +427,6 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 		return reginfo.Registration{}, err
 	}
 
-	// active holds the bindings listed active, by binding and registration time: a flow replaced in
-	// place is the same binding registered anew (TS 24.229 §5.4.1.2.2 step 6d).
 	type bindingAt struct {
 		binding, registeredAt int64
 	}
@@ -452,7 +438,6 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			continue
 		}
 
-		// A set that bars the identity does not register it (TS 24.229 §5.4.1.8 step 2).
 		if slices.ContainsFunc(set.Identities, func(other db.PublicIdentity) bool { return other.Key == id.Key && other.Barred }) {
 			continue
 		}
@@ -461,7 +446,6 @@ func (r *Registrar) registrationElement(ctx context.Context, st *state, ch chang
 			event := reginfo.Refreshed
 
 			switch {
-			// A contact new to the identity is created, shortened or not (RFC 3680 §5.1).
 			case ch.created[id.Key]:
 				event = reginfo.Created
 			case ch.shortened != "" && set.IMPI == ch.shortened:
@@ -576,8 +560,6 @@ func (t *notifyTransaction) HandleResponse(ctx context.Context, res *sip.Respons
 	case endsSubscription(res.StatusCode):
 		t.r.log.DebugContext(ctx, "NOTIFY refused", slog.String("impi", t.o.impi), slog.Int("code", res.StatusCode))
 		t.r.notifyFailed(ctx, t.o)
-	// RFC 3261 §12.2.1.2: a 408 within a dialog SHOULD end it, as a timeout does
-	// under RFC 6665 §4.2.2. RFC 4320 forbids it for a NOTIFY, but not every proxy complies.
 	case res.StatusCode == 408:
 		t.r.log.DebugContext(ctx, "NOTIFY timed out", slog.String("impi", t.o.impi))
 		t.r.notifyFailed(ctx, t.o)
@@ -618,8 +600,9 @@ func (r *Registrar) notifyFailed(ctx context.Context, o *outgoing) {
 	})
 }
 
-// notified keeps, of a final response to a NOTIFY of a subscription that goes on, the term-ioi (TS 24.229 §5.4.2.1.2)
-// and, of a 2xx, the remote target (RFC 6665 §4.1.2.2, RFC 3261 §12.2.1.2).
+// TS 24.229 clause 5.4.2.1.2
+// RFC 6665 section 4.1.2.2
+// RFC 3261 section 12.2.1.2
 func (r *Registrar) notified(ctx context.Context, o *outgoing, res *sip.Response) {
 	ioi := termIOIOf(res)
 	target := res.IsSuccess() && res.Header.Has("Contact")
@@ -653,7 +636,6 @@ func (r *Registrar) notified(ctx context.Context, o *outgoing, res *sip.Response
 	})
 }
 
-// refreshTarget updates the dialog of a subscription with a 2xx to its NOTIFY.
 func refreshTarget(s *db.RegSubscription, res *sip.Response) bool {
 	d, err := restoreDialog(s.Dialog)
 	if err != nil || d.ReceiveResponse(res) != nil {
@@ -670,8 +652,6 @@ func refreshTarget(s *db.RegSubscription, res *sip.Response) bool {
 	return true
 }
 
-// background runs f, work that cause gives the registrar, on a goroutine of its own, holding the lock of the private
-// identity: in the trace of cause, while the registrar runs, bounded by backgroundTimeout once it holds the lock.
 func (r *Registrar) background(cause context.Context, impi string, f func(ctx context.Context)) {
 	if !r.start() {
 		return

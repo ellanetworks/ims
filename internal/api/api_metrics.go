@@ -15,7 +15,6 @@ const (
 	metricsMaxRequestsInFlight = 32
 )
 
-// GetMetrics serves the metrics in the Prometheus formats. Without a Metrics registry, it serves none.
 func GetMetrics(cfg Config) http.Handler {
 	g := cfg.Metrics
 	if g == nil {
@@ -30,7 +29,6 @@ func GetMetrics(cfg Config) http.Handler {
 	})
 }
 
-// metricsErrorLog logs the metrics that could not be gathered, which a scrape leaves out.
 type metricsErrorLog struct {
 	logger *slog.Logger
 }

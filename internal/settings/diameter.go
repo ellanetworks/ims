@@ -17,17 +17,12 @@ const (
 	ApplicationSGd Application = "sgd"
 )
 
-// Applications are the Diameter applications of the IMS.
 var Applications = []Application{ApplicationCx, ApplicationRx, ApplicationSh, ApplicationS6c, ApplicationSGd}
 
-// RoutedApplications are the applications whose requests go to a realm, through the peers serving them, in the
-// order the API lists their routes. SGd requests go to a host instead (Peer).
 var RoutedApplications = []Application{ApplicationCx, ApplicationRx, ApplicationSh, ApplicationS6c}
 
-// hssApplications are those of the HSS besides cx, whose requests go to the realm of cx unless set.
 var hssApplications = []Application{ApplicationSh, ApplicationS6c}
 
-// Routed reports whether the requests of the application go to a realm (RoutedApplications).
 func (a Application) Routed() bool { return slices.Contains(RoutedApplications, a) }
 
 type Transport string
@@ -41,39 +36,28 @@ const (
 	DefaultDiameterPort = 3868
 	DefaultPriority     = 10
 	maxPriority         = 65535
-	// maxE164Digits is the length of an international number (ITU-T E.164 §6).
+	// ITU-T E.164 section 6
 	maxE164Digits = 15
 )
 
-// Peer is a Diameter peer of the IMS: an HSS or an SLF serves cx, and sh and s6c for the IP-SM-GW; a PCRF or a DRA
-// serves rx; an SMSC, and an MME or SMSF that the IP-SM-GW delivers short messages to, serve sgd. The requests of a
-// routed application go to the peers serving it by priority, lowest first, and are shared between peers of the same
-// priority (RFC 6733 §2.7, §5.1). SGd requests go to a host: the SMSC of the service centre address of a short
-// message, or the MME or SMSF that the HSS names (TS 29.338 §6.3.1). The peer's realm is the one it gives in the
-// capabilities exchange.
+// RFC 6733 section 2.7
+// RFC 6733 section 5.1
+// TS 29.338 clause 6.3.1
 type Peer struct {
-	ID string
-	// Host is the Origin-Host the peer must give in the capabilities exchange. Empty takes the one it gives
-	// (RFC 6733 §2.6, §12).
-	Host         string
-	Address      netip.Addr
-	Port         int
-	Transport    Transport
-	Applications []Application
-	Priority     int
-	// ServiceCentres are the E.164 service centre addresses of an SMSC serving sgd, whose mobile originated short
-	// messages the IP-SM-GW sends it, to its host (TS 29.338 §6.3.1.1). The SMSCs of a service centre are tried by
-	// priority.
+	ID             string
+	Host           string
+	Address        netip.Addr
+	Port           int
+	Transport      Transport
+	Applications   []Application
+	Priority       int
 	ServiceCentres []string
 }
 
-// Route is where the requests of a routed application go: the realm of the HSS for cx, sh and s6c, of the PCRF for
-// rx (RFC 6733 §6.1.6). Its peers are those serving the application.
+// RFC 6733 section 6.1.6
 type Route struct {
 	Application Application
-	// Realm is the Destination-Realm of the requests. Empty is the realm of cx for sh and s6c, and the home domain
-	// otherwise.
-	Realm string
+	Realm       string
 }
 
 func (p Peer) Serves(app Application) bool {
@@ -140,7 +124,7 @@ func (p Peer) equal(q Peer) bool {
 		slices.Equal(p.ServiceCentres, q.ServiceCentres)
 }
 
-// isFQDN reports whether s is a DiameterIdentity or a realm: a domain name (RFC 6733 §4.3.1).
+// RFC 6733 section 4.3.1
 func isFQDN(s string) bool {
 	if s == "" || len(s) > 253 {
 		return false
@@ -161,7 +145,6 @@ func isFQDN(s string) bool {
 	return true
 }
 
-// Realm is the Destination-Realm of an application's requests.
 func (s Settings) Realm(app Application) string {
 	for _, r := range s.Routes {
 		if r.Application == app && r.Realm != "" {
@@ -176,8 +159,6 @@ func (s Settings) Realm(app Application) string {
 	return s.Operator.HomeDomain()
 }
 
-// Serving returns the peers serving an application, in the order requests try them: by priority, then in the order
-// they were created in.
 func (s Settings) Serving(app Application) []Peer {
 	var out []Peer
 
@@ -192,8 +173,6 @@ func (s Settings) Serving(app Application) []Peer {
 	return out
 }
 
-// SMSCs are the peers of a service centre address, in the order to try them: by priority, then in the order they
-// were created in.
 func (s Settings) SMSCs(serviceCentre string) []Peer {
 	var out []Peer
 
@@ -206,7 +185,6 @@ func (s Settings) SMSCs(serviceCentre string) []Peer {
 	return out
 }
 
-// Transports are the transports the peers use, which the IMS listens on.
 func (s Settings) Transports() []Transport {
 	var out []Transport
 
@@ -234,10 +212,8 @@ func (s Settings) validatePeers() error {
 
 		for _, q := range s.Peers[:i] {
 			switch {
-			// Diameter identities are case-insensitive.
 			case p.Host != "" && strings.EqualFold(q.Host, p.Host):
 				return conflictf("A Diameter peer already has host %s", p.Host)
-			// Without a host, a peer is known by its address and transport.
 			case p.Host == "" && q.Host == "" && p.Address == q.Address && p.Transport == q.Transport:
 				return conflictf("A Diameter peer without a host already has address %s over %s", p.Address, p.Transport)
 			}

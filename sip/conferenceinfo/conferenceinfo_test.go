@@ -30,7 +30,6 @@ func decodeFile(t *testing.T, name string) Info {
 	return i
 }
 
-// stable checks that i encodes, decodes to what encodes again the same: the elements kept, malformed, too.
 func stable(t *testing.T, i Info) {
 	t.Helper()
 
@@ -50,7 +49,7 @@ func stable(t *testing.T, i Info) {
 	}
 }
 
-// RFC 4575 §7.1: a full document.
+// RFC 4575 section 7.1
 func TestExample71(t *testing.T) {
 	i := decodeFile(t, "rfc4575-7.1.xml")
 
@@ -88,7 +87,7 @@ func TestExample71(t *testing.T) {
 	stable(t, i)
 }
 
-// RFC 4575 §7.2: a partial document of every element of the schema but <cascaded-focus>.
+// RFC 4575 section 7.2
 func TestExample72(t *testing.T) {
 	i := decodeFile(t, "rfc4575-7.2.xml")
 
@@ -143,7 +142,8 @@ func TestExample72(t *testing.T) {
 	stable(t, i)
 }
 
-// TS 24.379 §6.3.3.4: the functional alias of §10.1.3.6.1 kept in the endpoint's Other.
+// TS 24.379 clause 6.3.3.4
+// TS 24.379 clause 10.1.3.6.1
 func TestMCPTT(t *testing.T) {
 	i := decodeFile(t, "ts24379-6.3.3.4.xml")
 
@@ -166,7 +166,7 @@ func TestMCPTT(t *testing.T) {
 	}
 }
 
-// RFC 4575 §6: the extension elements kept where the schema allows them, the lexical forms of the schema's types.
+// RFC 4575 section 6
 func TestExtensions(t *testing.T) {
 	i := decodeFile(t, "extensions.xml")
 
@@ -218,7 +218,7 @@ func TestExtensions(t *testing.T) {
 	stable(t, i)
 }
 
-// RFC 4575 §6: a malformed element kept, not decoded; the first of an element given once counting.
+// RFC 4575 section 6
 func TestMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, body string
@@ -285,7 +285,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, i)
 	}
 
-	// Given more than the schema allows: the first counts, malformed or not, the others kept, malformed.
 	for _, c := range []struct {
 		name, body string
 		check      func(Info) bool
@@ -333,7 +332,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, i)
 	}
 
-	// An optional element of the empty string is as none: one of its name may follow.
 	i, err := Decode([]byte(`<conference-info xmlns="urn:ietf:params:xml:ns:conference-info" entity="sip:c@x" version="1">` +
 		`<conference-description><subject/><subject>b</subject><keywords> </keywords><keywords>k</keywords></conference-description></conference-info>`))
 	if err != nil || i.Description.Subject != "b" || !reflect.DeepEqual(i.Description.Keywords, []string{"k"}) || len(i.Description.Other) != 0 {
@@ -341,7 +339,7 @@ func TestMalformed(t *testing.T) {
 	}
 }
 
-// RFC 4575 §4.4: an element of state deleted SHOULD NOT have children, a uris-type of entries too.
+// RFC 4575 section 4.4
 func TestDeletedURIs(t *testing.T) {
 	i, err := Decode([]byte(`<conference-info xmlns="urn:ietf:params:xml:ns:conference-info" entity="sip:c@x" version="1" state="partial">` +
 		`<sidebars-by-ref state="deleted"/></conference-info>`))
@@ -355,7 +353,7 @@ func TestDeletedURIs(t *testing.T) {
 	}
 }
 
-// RFC 4575 §5.7.2: <when> of the XML dateTime type, of a timezone or not; one of a year Encode cannot write refused.
+// RFC 4575 section 5.7.2
 func TestWhen(t *testing.T) {
 	i, err := Decode([]byte(`<conference-info xmlns="urn:ietf:params:xml:ns:conference-info" entity="sip:c@x" version="1">` +
 		`<users><user entity="sip:a@x"><endpoint entity="e"><referred><when>2005-03-04T20:00:00</when></referred>` +
@@ -472,7 +470,7 @@ func TestEncode(t *testing.T) {
 	}
 }
 
-// RFC 4575 §4.6: the conference state built from a full notification and the partial ones that follow.
+// RFC 4575 section 4.6
 func TestApply(t *testing.T) {
 	var local Info
 
@@ -501,7 +499,6 @@ func TestApply(t *testing.T) {
 		t.Fatalf("users %+v", users)
 	}
 
-	// Version 4 does not follow 2; a full document of any newer version replaces the state.
 	gap := partial
 	gap.Version = 4
 
@@ -517,8 +514,7 @@ func TestApply(t *testing.T) {
 	stable(t, local)
 }
 
-// RFC 4575 §4.6 steps 3.1 to 3.3: keyed elements merged, those of no state attribute in the schema field by field,
-// those without key replaced as a whole, the extensions by name.
+// RFC 4575 section 4.6
 func TestApplyMerge(t *testing.T) {
 	decode := func(body string, version string, state State) Info {
 		i, err := Decode([]byte(`<conference-info xmlns="urn:ietf:params:xml:ns:conference-info" xmlns:x="urn:x" entity="sip:c@x" ` +
@@ -579,13 +575,11 @@ func TestApplyMerge(t *testing.T) {
 
 	stable(t, local)
 
-	// A deleted document replaces the state: the conference has ended.
 	if err := local.Apply(decode("", "3", Deleted)); err != nil || local.State != Deleted || local.Users != nil {
 		t.Errorf("deleted: %+v, %v", local, err)
 	}
 }
 
-// encoded is the document of i, to compare states.
 func encoded(t *testing.T, i Info) string {
 	t.Helper()
 
@@ -609,8 +603,6 @@ func decodeBody(t *testing.T, version string, state State, body string) Info {
 	return i
 }
 
-// Apply changes neither the states nor the notifications it was given: a snapshot of the state taken before is
-// unchanged, as is the full notification it stored.
 func TestApplyCopies(t *testing.T) {
 	full := decodeBody(t, "1", Full, `<users><user entity="a"><endpoint entity="e"><media id="1"><type>audio</type></media></endpoint>`+
 		`<x:a>1</x:a></user><user entity="b"/></users><sidebars-by-ref><entry><uri>sip:s</uri></entry></sidebars-by-ref>`)
@@ -645,7 +637,6 @@ func TestApplyCopies(t *testing.T) {
 		t.Errorf("full notification changed:\n%s\n%s", fullBefore, got)
 	}
 
-	// A partial notification on the state merges into copies of what the earlier one stored.
 	again := decodeBody(t, "3", Partial, `<users state="partial"><user entity="b" state="partial"><endpoint entity="f" state="deleted"/>`+
 		`</user></users>`)
 	if err := local.Apply(again); err != nil || len(local.Users.Users[0].Endpoints) != 0 {
@@ -657,8 +648,9 @@ func TestApplyCopies(t *testing.T) {
 	}
 }
 
-// RFC 4575 §4.4, §4.6, §5.2: the notifications Apply refuses, leaving the state unchanged; the children of a deleted
-// root ignored.
+// RFC 4575 section 4.4
+// RFC 4575 section 4.6
+// RFC 4575 section 5.2
 func TestApplyRefused(t *testing.T) {
 	var local Info
 	if err := local.Apply(decodeBody(t, "1", Full, `<users><user entity="a"><endpoint entity="e"><status>connected</status></endpoint></user></users>`)); err != nil {
@@ -702,13 +694,11 @@ func TestApplyRefused(t *testing.T) {
 		t.Errorf("another entity: %v", err)
 	}
 
-	// An element replaced as a whole keeps what it has, as in a full document; the extensions merged.
 	if err := local.Apply(decodeBody(t, "2", Partial, `<conference-description><subject>a</subject><subject>b</subject></conference-description>`+
 		`<x:a/>`)); err != nil || len(local.Description.Other) != 1 || len(local.Other) != 1 {
 		t.Errorf("%+v, %v", local, err)
 	}
 
-	// The children of a deleted root are ignored (§4.4); after it, no partial notification applies, a full one does.
 	if err := local.Apply(decodeBody(t, "3", Deleted, `<users><user entity="a"/></users><x:a/>`)); err != nil ||
 		local.State != Deleted || local.Users != nil || local.Other != nil || local.Version != 3 {
 		t.Errorf("deleted: %+v, %v", local, err)
@@ -748,7 +738,6 @@ func FuzzDecode(f *testing.F) {
 
 		stable(t, i)
 
-		// A document decoded without error encodes to one decoded without error.
 		if err == nil {
 			out, _ := Encode(i)
 			if _, err := Decode(out); err != nil {

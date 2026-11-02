@@ -10,18 +10,14 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// APIToken is a token with which a program calls the API as a user. Only the SHA-256 hash of its secret is stored;
-// TokenID finds it.
 type APIToken struct {
-	ID        int64
-	TokenID   string
-	Name      string
-	TokenHash []byte
-	UserID    int64
-	CreatedAt time.Time
-	// ExpiresAt is zero for a token that does not expire.
-	ExpiresAt time.Time
-	// LastUsedAt is zero for a token never used.
+	ID         int64
+	TokenID    string
+	Name       string
+	TokenHash  []byte
+	UserID     int64
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
 	LastUsedAt time.Time
 }
 
@@ -31,12 +27,9 @@ type NewAPIToken struct {
 	TokenHash []byte
 	UserID    int64
 	CreatedAt time.Time
-	// ExpiresAt is zero for a token that does not expire.
 	ExpiresAt time.Time
 }
 
-// CreateAPIToken stores a token, or returns ErrDuplicate when its user has one of the same name, or when one has the
-// same token ID.
 func (d *DB) CreateAPIToken(ctx context.Context, t NewAPIToken) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -53,7 +46,6 @@ func (d *DB) CreateAPIToken(ctx context.Context, t NewAPIToken) (_ int64, err er
 	return res.LastInsertId()
 }
 
-// GetAPITokenByTokenID returns a token, whether or not it has expired.
 func (d *DB) GetAPITokenByTokenID(ctx context.Context, tokenID string) (_ APIToken, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -70,7 +62,6 @@ func (d *DB) GetAPITokenByTokenID(ctx context.Context, tokenID string) (_ APITok
 	return t, nil
 }
 
-// ListAPITokens returns a page of the tokens of a user, oldest first, and their total.
 func (d *DB) ListAPITokens(ctx context.Context, userID int64, page, perPage int) (_ []APIToken, _ int, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -118,7 +109,6 @@ func (d *DB) CountAPITokens(ctx context.Context, userID int64) (_ int, err error
 	return n, nil
 }
 
-// DeleteAPIToken deletes a token of a user, or returns ErrNotFound when the user has no token with that token ID.
 func (d *DB) DeleteAPIToken(ctx context.Context, userID int64, tokenID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -130,7 +120,6 @@ func (d *DB) DeleteAPIToken(ctx context.Context, userID int64, tokenID string) (
 	return checkAffected(res)
 }
 
-// TouchAPIToken records that a token was used at a time.
 func (d *DB) TouchAPIToken(ctx context.Context, id int64, at time.Time) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -163,7 +152,6 @@ func scanAPIToken(row scanner) (APIToken, error) {
 	return t, nil
 }
 
-// nullTime stores the zero time as NULL.
 func nullTime(t time.Time) sql.Null[int64] {
 	if t.IsZero() {
 		return sql.Null[int64]{}

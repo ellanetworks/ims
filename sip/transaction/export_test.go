@@ -2,7 +2,6 @@ package transaction
 
 import "github.com/ellanetworks/ims/sip"
 
-// Sent reports whether the transaction has recorded the first send of its request, which its retransmissions wait for.
 func (tx *ClientTransaction) Sent() bool {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
@@ -10,7 +9,6 @@ func (tx *ClientTransaction) Sent() bool {
 	return tx.sent
 }
 
-// Sending reports whether the layer has a client transaction for the request that has not recorded sending it yet.
 func (l *Layer) Sending(req *sip.Request) bool {
 	branch, err := branchOf(req)
 	if err != nil {
@@ -22,7 +20,6 @@ func (l *Layer) Sending(req *sip.Request) bool {
 	return tx != nil && !tx.Sent()
 }
 
-// Sending reports whether the transaction has a send under way, while which Timer G does not retransmit.
 func (tx *ServerTransaction) Sending() bool {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
@@ -30,7 +27,6 @@ func (tx *ServerTransaction) Sending() bool {
 	return tx.sending > 0
 }
 
-// HoldFlow holds the outbox of f until the layer closes, as a send that never completes would.
 func (l *Layer) HoldFlow(f sip.Flow) {
 	l.enqueue(f, func(bool) { <-l.ctx.Done() })
 }

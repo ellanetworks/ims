@@ -17,7 +17,6 @@ type change struct {
 	state []ua.Published
 }
 
-// compositor is an agent with a store for the "presence" event, its changes recorded.
 type compositor struct {
 	p       *peer
 	store   *ua.PublicationStore
@@ -76,8 +75,8 @@ func publishRequest(to *peer, from string, body string, expires string) *sip.Req
 	return req
 }
 
-// RFC 3903 §4, §6: an initial publication, its modification, its refresh before it expires and its removal; each
-// 2xx with a new entity-tag; the compositor reports the state of the resource as it changes.
+// RFC 3903 section 4
+// RFC 3903 section 6
 func TestPublication(t *testing.T) {
 	clock := netOf(t).Clock()
 	esc := newCompositor(t, clock)
@@ -123,7 +122,6 @@ func TestPublication(t *testing.T) {
 		t.Error("the same entity-tag after a modification")
 	}
 
-	// The refresh at half the interval keeps the state, with a new entity-tag, and changes nothing.
 	advance(clock, 61*time.Second, alice, esc.p)
 	<-published
 
@@ -154,8 +152,7 @@ func TestPublication(t *testing.T) {
 	}
 }
 
-// RFC 3903 §5: a 412 (the compositor lost the state) makes the publication initial again, with its last state; the
-// PUBLISHes go one at a time, a change made meanwhile replacing the one waiting.
+// RFC 3903 section 5
 func TestPublicationRecovery(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	esc := newUAS(t, alice)
@@ -178,7 +175,6 @@ func TestPublicationRecovery(t *testing.T) {
 		t.Fatal("an initial PUBLISH with SIP-If-Match")
 	}
 
-	// Two changes while the PUBLISH is in flight: the second replaces the first.
 	stale, f1 := results()
 	done, f2 := results()
 
@@ -207,8 +203,7 @@ func TestPublicationRecovery(t *testing.T) {
 	}
 }
 
-// RFC 3903 §6: the compositor refuses an unknown event package (489), a duration too brief (423), an unknown
-// entity-tag (412), and an initial publication without state (400).
+// RFC 3903 section 6
 func TestPublicationStoreRefusals(t *testing.T) {
 	esc := newCompositor(t, nil)
 	alice := newRaw(t)
@@ -242,7 +237,7 @@ func TestPublicationStoreRefusals(t *testing.T) {
 	}
 }
 
-// RFC 3903 §6: a publication not refreshed in time expires, and the compositor reports the state without it.
+// RFC 3903 section 6
 func TestPublicationStoreExpiry(t *testing.T) {
 	clock := netOf(t).Clock()
 	esc := newCompositor(t, clock)
@@ -273,8 +268,9 @@ func TestPublicationStoreExpiry(t *testing.T) {
 	}
 }
 
-// RFC 3903 §4.3, §4.5, TS 24.379 §9.2.1.2 step 2: the bodies of WithBodies go with each PUBLISH beside the state: the
-// initial one with the state, the refresh and the removal without.
+// RFC 3903 section 4.3
+// RFC 3903 section 4.5
+// TS 24.379 clause 9.2.1.2
 func TestPublicationWithBodies(t *testing.T) {
 	clock := netOf(t).Clock()
 	got := make(chan *sip.Request, 4)

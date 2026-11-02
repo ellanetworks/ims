@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// recorder is a Media anchoring nothing that records the life of the exchanges.
 type recorder struct {
 	mu     sync.Mutex
 	events []string
@@ -59,7 +58,6 @@ func checkEvents(t *testing.T, m *recorder, want ...string) {
 	}
 }
 
-// Each exchange of a call goes to the Media, and ends once: in the dialog it took effect in, or in none.
 func TestMediaExchanges(t *testing.T) {
 	m := &recorder{}
 	alice, bob, b := newCall(t, b2bua.RelayConfig{Media: m})
@@ -69,7 +67,6 @@ func TestMediaExchanges(t *testing.T) {
 
 	checkEvents(t, m, "offer INVITE offer-1", "answer answer-1", "end INVITE offer-1 true")
 
-	// A re-INVITE answered, then one refused.
 	_ = as.Reinvite(context.Background(), ua.Change{Bodies: sdpOf("offer-2")}, nil)
 	_ = bob.next("request").req.Respond(ua.Reply{Code: 200, Bodies: sdpOf("answer-2")})
 	alice.next("answer")
@@ -82,7 +79,6 @@ func TestMediaExchanges(t *testing.T) {
 	b.net.Quiesce()
 	checkEvents(t, m, "offer INVITE offer-3", "end INVITE offer-3 false")
 
-	// A failed call ends its exchange without effect.
 	alice.invite(b.uri(), "offer-9", alice.handler())
 
 	_ = bob.next("invite").req.Reject(486)
@@ -91,8 +87,7 @@ func TestMediaExchanges(t *testing.T) {
 	checkEvents(t, m, "offer INVITE offer-9", "end INVITE offer-9 false")
 }
 
-// RFC 3261 §16.6: past Timer C without a final response, the outgoing INVITE is cancelled and the incoming one gets a
-// 408.
+// RFC 3261 section 16.6
 func TestTimerC(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)
@@ -112,7 +107,6 @@ func TestTimerC(t *testing.T) {
 
 	alice.next("progress")
 
-	// Timer C restarts with each provisional response.
 	n.Advance(20 * time.Second)
 	alice.none()
 
@@ -127,8 +121,7 @@ func TestTimerC(t *testing.T) {
 	}
 }
 
-// RFC 3891 §3: a Replaces naming a dialog of the B2BUA names, on the outgoing leg, the dialog paired with it, as its
-// recipient knows it.
+// RFC 3891 section 3
 func TestReplacesMapped(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", func(c *ua.Config) { c.Extensions.Replaces = true })
@@ -138,7 +131,6 @@ func TestReplacesMapped(t *testing.T) {
 	alice.invite(b.uri(), "offer-1", alice.handler())
 	as, bs := bridged(t, alice, bob)
 
-	// Carol replaces alice: her INVITE names the dialog of alice and the B2BUA, as the B2BUA knows it.
 	carol := newParty(t, n, "carol", nil)
 	id := as.ID()
 	rep := sip.Replaces{CallID: id.CallID, ToTag: id.RemoteTag, FromTag: id.LocalTag}
@@ -154,8 +146,7 @@ func TestReplacesMapped(t *testing.T) {
 	}
 }
 
-// RFC 3725 §4.2: Join makes the sessions of two legs agree: the offer of one, fetched with a re-INVITE without one,
-// reaches the other, whose answer comes back in the ACK.
+// RFC 3725 section 4.2
 func TestJoin(t *testing.T) {
 	n := newNet(t)
 	alice, bob := newParty(t, n, "alice", nil), newParty(t, n, "bob", nil)
@@ -209,7 +200,6 @@ func TestJoin(t *testing.T) {
 		}
 	})
 
-	// Alice, ClientPolicy, answers the re-INVITE without an offer herself, with her session.
 	r := bob.next("request").req
 	if offer, _ := r.Offer(); string(offer) != "offer-a" {
 		t.Fatalf("bob got offer %q, want alice's", offer)
@@ -233,8 +223,7 @@ func TestJoin(t *testing.T) {
 	}
 }
 
-// RFC 3264 §8: a 2xx of the callee to a relayed re-INVITE that crossed its CANCEL is undone: the callee is offered
-// again the session of the caller.
+// RFC 3264 section 8
 func TestCancelledReinviteUndone(t *testing.T) {
 	n := newNet(t)
 	bob := n.Peer()
@@ -274,7 +263,6 @@ func TestCancelledReinviteUndone(t *testing.T) {
 		t.Fatalf("bob's re-INVITE %q", reinvite.Body)
 	}
 
-	// A CANCEL waits for a provisional response (RFC 3261 §9.1): bob's 100, and the B2BUA's to alice.
 	respond(reinvite, 100, "")
 	n.Advance(time.Second)
 
@@ -285,7 +273,6 @@ func TestCancelledReinviteUndone(t *testing.T) {
 		t.Fatalf("bob got %s", cancel.Method)
 	}
 
-	// The 2xx crosses the CANCEL.
 	respond(cancel, 200, "")
 	respond(reinvite, 200, "answer-2")
 
@@ -303,8 +290,7 @@ func TestCancelledReinviteUndone(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15: the callee ending before the caller's ACK of a 2xx sent in a fork ends that dialog, with a BYE once
-// the ACK comes.
+// RFC 3261 section 15
 func TestEndBeforeTheAckOfAFork(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)
@@ -352,7 +338,7 @@ func TestEndBeforeTheAckOfAFork(t *testing.T) {
 	b.callEnded(t)
 }
 
-// RFC 3261 §14.1: re-INVITEs of both sides crossing get 491s, and succeed when retried.
+// RFC 3261 section 14.1
 func TestGlareRetried(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -373,7 +359,6 @@ func TestGlareRetried(t *testing.T) {
 		results <- result{"bob", codeOf(res), err}
 	})
 
-	// Each answers the other's re-INVITE once it gets one, after the retries.
 	answer := func(p *party, sdp string) {
 		for {
 			select {
@@ -400,8 +385,6 @@ func TestGlareRetried(t *testing.T) {
 		}
 	}
 
-	// The first retried goes through; the other, offering the session as it was before, goes stale (ua.ErrStale)
-	// or through, retried after it.
 	through := 0
 
 	for _, who := range []string{"alice", "bob"} {
@@ -428,7 +411,7 @@ func codeOf(res *sip.Response) int {
 	return res.StatusCode
 }
 
-// TS 24.379 §6.3.2.1.5: the parts of the requests and responses within the call cross byte-exact.
+// TS 24.379 clause 6.3.2.1.5
 func TestBodiesByteExact(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -468,7 +451,6 @@ func TestBodiesByteExact(t *testing.T) {
 	}
 }
 
-// A member's 2xx coming after the caller of a 1:N call left is acknowledged and ended with a BYE; nothing is left.
 func TestOneToManyLate2xx(t *testing.T) {
 	n := newNet(t)
 	bob, carol := newParty(t, n, "bob", nil), newParty(t, n, "carol", nil)
@@ -485,7 +467,6 @@ func TestOneToManyLate2xx(t *testing.T) {
 
 	alice.next("failed")
 
-	// Carol's 200 crosses the CANCEL of her INVITE.
 	_ = rc.Accept(sdpOf("answer-c")...)
 
 	n.Quiesce()
@@ -502,7 +483,7 @@ func TestOneToManyLate2xx(t *testing.T) {
 	settled(t, n, alice, bob, carol, g.party)
 }
 
-// RFC 3264 §8: a refresh answered on its leg whose answer changes the session carries the change to the other leg.
+// RFC 3264 section 8
 func TestRefreshAnswerPropagated(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -513,7 +494,6 @@ func TestRefreshAnswerPropagated(t *testing.T) {
 	o := alice.next("offer")
 	_ = o.offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("offer-1-moved")})
 
-	// Bob, ClientPolicy, answers the re-INVITE as a change the application decides on.
 	e := bob.next("request")
 	if offer, _ := e.req.Offer(); string(offer) != "offer-1-moved" {
 		t.Fatalf("bob got %q", offer)
@@ -521,6 +501,5 @@ func TestRefreshAnswerPropagated(t *testing.T) {
 
 	_ = e.req.Respond(ua.Reply{Code: 200, Bodies: sdpOf("answer-1")})
 
-	// Bob's answer is the one alice has: nothing more goes to her.
 	alice.none()
 }

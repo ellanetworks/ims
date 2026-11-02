@@ -30,7 +30,6 @@ func TestListRegisteredIMPIs(t *testing.T) {
 	mustSaveRegistration(t, d, testRegistration(carol, "15551230003"))
 	mustSaveRegistration(t, d, testRegistration(alice, "15551230001"))
 
-	// Two registration sets of one private identity count once.
 	second := testRegistration(alice, "15551230009")
 	second.IMPU = "sip:second@" + testDomain
 	second.Identities = []PublicIdentity{identity("sip:second@"+testDomain, false)}
@@ -65,7 +64,6 @@ func TestListRegisteredIMPIs(t *testing.T) {
 		})
 	}
 
-	// The private identity of two registration sets counts once, and the expired one not at all.
 	if n, err := d.CountRegisteredIMPIs(context.Background(), testNow); err != nil || n != 2 {
 		t.Fatalf("CountRegisteredIMPIs = %d, %v, want 2", n, err)
 	}

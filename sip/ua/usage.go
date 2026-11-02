@@ -7,20 +7,17 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// effect is what a failure of a request within a dialog does to the dialog and its usages (RFC 5057 §5.1, §5.2).
+// RFC 5057 section 5.1
+// RFC 5057 section 5.2
 type effect int
 
 const (
-	// affectsTransaction: the failure is a complaint about the transaction only.
 	affectsTransaction effect = iota
-	// destroysUsage: the failure ends the usage the request belongs to, not the other usages of the dialog.
 	destroysUsage
-	// destroysDialog: the failure ends the dialog and all its usages.
 	destroysDialog
 )
 
-// usageOf is the usage a method within a dialog belongs to (RFC 5057 §5.3): "invite" for INVITE, UPDATE, PRACK, ACK,
-// CANCEL, BYE and INFO; "subscribe" for SUBSCRIBE, NOTIFY and REFER; none for OPTIONS, MESSAGE and the unknown methods.
+// RFC 5057 section 5.3
 func usageOf(method string) string {
 	switch method {
 	case "INVITE", "UPDATE", "PRACK", "ACK", "CANCEL", "BYE", "INFO":
@@ -32,8 +29,7 @@ func usageOf(method string) string {
 	return ""
 }
 
-// integral reports a method the usage cannot do without: a 405 or a 501 to it ends the usage, while one to INFO in an
-// invite usage, say, ends the transaction only (RFC 5057 §5.1 note 3).
+// RFC 5057 section 5.1
 func integral(method string) bool {
 	switch method {
 	case "INVITE", "UPDATE", "PRACK", "BYE", "SUBSCRIBE", "NOTIFY", "REFER":
@@ -43,8 +39,8 @@ func integral(method string) bool {
 	return false
 }
 
-// failureOf classifies the outcome of a request within a dialog, res its final response other than 2xx, or err the
-// error of its transaction (RFC 5057 Table 2, §5.2). A request that belongs to no usage only ever affects the dialog.
+// RFC 5057 section 5.1 table 2
+// RFC 5057 section 5.2
 func failureOf(method string, res *sip.Response, err error) effect {
 	usage := usageOf(method) != ""
 

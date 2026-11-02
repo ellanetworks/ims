@@ -24,9 +24,8 @@ type Config struct {
 	Handler  diameter.Handler
 
 	OnPeerStateChange func(diameter.PeerStatus)
-	// TracerProvider traces the node's requests; none when nil, never the global provider.
-	TracerProvider trace.TracerProvider
-	Logger         *slog.Logger
+	TracerProvider    trace.TracerProvider
+	Logger            *slog.Logger
 }
 
 func newNode(t testing.TB, cfg Config) *diameter.Node {
@@ -40,7 +39,6 @@ func newNode(t testing.TB, cfg Config) *diameter.Node {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	// The node would otherwise trace with the global provider.
 	if cfg.TracerProvider == nil {
 		cfg.TracerProvider = noop.NewTracerProvider()
 	}
@@ -122,14 +120,9 @@ func WaitOpen(t testing.TB, node *diameter.Node, peerID string) {
 	}
 }
 
-// Loop is a Diameter client whose requests Handler answers in memory. As a node's handler, Handler gets a context of
-// its own, not the caller's: the lifetime of the loop, until Close, and the caller's span context as a remote parent,
-// with a server span when TracerProvider is set. A caller that gives up gets its context's error, while Handler runs
-// on; a nil answer is none.
 type Loop struct {
-	Local   diameter.Identity
-	Handler func(ctx context.Context, req *diameter.Message) *diameter.Message
-	// TracerProvider, when set, gives each request a server span, as a node does.
+	Local          diameter.Identity
+	Handler        func(ctx context.Context, req *diameter.Message) *diameter.Message
 	TracerProvider trace.TracerProvider
 
 	down atomic.Bool
@@ -162,7 +155,6 @@ func (l *Loop) lifetime() context.Context {
 	return l.life
 }
 
-// Close ends the lifetime of the handlers and waits for them to return. The loop is then not connected.
 func (l *Loop) Close() {
 	l.lifetime()
 
@@ -218,7 +210,6 @@ func (l *Loop) Send(ctx context.Context, req *diameter.Message, _ ...diameter.Re
 	return nil, ctx.Err()
 }
 
-// serve runs Handler as a node does: in the loop's lifetime, the caller's span context its remote parent.
 func (l *Loop) serve(caller context.Context, req *diameter.Message) *diameter.Message {
 	ctx := l.lifetime()
 	if sc := trace.SpanContextFromContext(caller); sc.IsValid() {

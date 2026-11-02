@@ -19,17 +19,13 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// registrarESC is a minimal registrar and event state compositor (RFC 3903 §6) for the client's tests: it answers
-// each REGISTER and PUBLISH 200, a PUBLISH with a new entity-tag and the Expires it grants, unless told to answer
-// the next modification 412 or to hold the next REGISTER.
+// RFC 3903 section 6
 type registrarESC struct {
 	addr netip.AddrPort
 
-	mu   sync.Mutex
-	reqs []*sip.Request
-	tags int
-	// grant is the Expires of the 2xx to a PUBLISH; lose answers the next PUBLISH with a SIP-If-Match 412; hold
-	// keeps the next REGISTER unanswered, in held.
+	mu    sync.Mutex
+	reqs  []*sip.Request
+	tags  int
 	grant int
 	lose  bool
 	hold  bool
@@ -88,7 +84,6 @@ func (s *registrarESC) onRequest(_ context.Context, r *ua.Request) {
 	}
 }
 
-// registered is the 200 of a REGISTER, its contact bound for the Expires asked.
 func registered(req *sip.Request) ua.Reply {
 	rp := ua.Reply{Code: 200}
 	if e := req.Header.Get("Expires"); e != "0" {
@@ -98,7 +93,6 @@ func registered(req *sip.Request) ua.Reply {
 	return rp
 }
 
-// take returns the requests of method since the last take.
 func (s *registrarESC) take(method string) []*sip.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,7 +112,6 @@ func (s *registrarESC) take(method string) []*sip.Request {
 	return out
 }
 
-// results record the final responses of requests.
 type results struct {
 	mu    sync.Mutex
 	codes []int
@@ -146,8 +139,6 @@ func (r *results) take() []int {
 	return out
 }
 
-// groupsOf are the groups of the affiliation PUBLISH req, and whether it carries the mcptt-info naming the user
-// (TS 24.379 §9.2.1.2 step 2).
 func groupsOf(t *testing.T, req *sip.Request, user string) (string, bool) {
 	t.Helper()
 
@@ -177,10 +168,8 @@ func groupsOf(t *testing.T, req *sip.Request, user string) (string, bool) {
 	return strings.Join(groups, " "), named
 }
 
-// TS 24.379 §9.2.1.2, RFC 3903: the affiliations published, every PUBLISH with the mcptt-info naming the user; the
-// publication refreshed before the expiry its 2xx granted, without its state; a modification answered 412 published
-// anew, its caller told the final response; changes serialised, each conditional on the last entity-tag; removed
-// with Expires 0; removal without a publication refused locally.
+// TS 24.379 clause 9.2.1.2
+// RFC 3903
 func TestPublication(t *testing.T) {
 	e := newEnv(t)
 	s := e.registrarESC()
@@ -230,7 +219,6 @@ func TestPublication(t *testing.T) {
 
 	check("initial", []int{200}, want{"", "4294967295", fire})
 
-	// Refreshed halfway through the 60 s granted (RFC 3903 §4.1).
 	e.n.Advance(31 * time.Second)
 	check("refresh", nil, want{"e1", "4294967295", ""})
 
@@ -245,7 +233,6 @@ func TestPublication(t *testing.T) {
 	e.n.Quiesce()
 	check("412", []int{200}, want{"e2", "4294967295", fire + " " + police}, want{"", "4294967295", fire + " " + police})
 
-	// Two changes at once: the second after the first, conditional on its entity-tag.
 	if err := a.Affiliate(context.Background(), fireOnly, r.done); err != nil {
 		t.Fatal(err)
 	}
@@ -268,12 +255,11 @@ func TestPublication(t *testing.T) {
 		t.Errorf("de-affiliation once removed: %v", err)
 	}
 
-	// No refresh once removed.
 	e.n.Advance(time.Hour)
 	check("removed", nil)
 }
 
-// RFC 3261 §10.2.4: the 200 to a refresh in flight as the client unregisters does not bring the registration back.
+// RFC 3261 section 10.2.4
 func TestRefreshAfterUnregister(t *testing.T) {
 	e := newEnv(t)
 	s := e.registrarESC()
@@ -330,7 +316,6 @@ func TestRefreshAfterUnregister(t *testing.T) {
 
 	a.expect(t)
 
-	// TS 24.379 §7.2.1, TS 33.180 Tables B.2.2.2-1, B.2.2.3-1: the access token of each REGISTER, made for it.
 	for i, req := range reqs[:2] {
 		part, ok, err := req.Content().Find(mcpttinfo.ContentType)
 		if !ok || err != nil {
@@ -345,7 +330,6 @@ func TestRefreshAfterUnregister(t *testing.T) {
 		token, _ := info.Params.AccessToken.Text()
 		claims := tokenClaims(t, token)
 
-		// Sent at once, refreshed at 300 s.
 		sent := t0.Add(time.Duration(i) * 300 * time.Second)
 
 		if claims.MCPTTID != a.id || claims.ClientID != "urn:uuid:00000000-0000-1000-8000-000000000001" ||
@@ -362,7 +346,7 @@ type claims struct {
 	MCPTTID  string `json:"mcptt_id"`
 }
 
-// tokenClaims are the claims of an Unsecured JWT (RFC 7519 §6.1).
+// RFC 7519 section 6.1
 func tokenClaims(t *testing.T, token string) claims {
 	t.Helper()
 
@@ -384,7 +368,8 @@ func tokenClaims(t *testing.T, token string) claims {
 	return c
 }
 
-// TS 33.180 Tables B.2.2.2-1, B.2.2.3-1: the claims of an UnsignedToken.
+// TS 33.180 clause B.2.2.2
+// TS 33.180 clause B.2.2.3
 func TestUnsignedToken(t *testing.T) {
 	exp := time.Unix(1700000000, 0)
 

@@ -10,12 +10,10 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// bobIMSI is a public user identity of bob not configured for him, of his implicit registration set: one derived of
-// his IMSI (TS 23.003 §13.4B), the To of a third-party REGISTER from an S-CSCF that copies the UE's (TS 24.229
-// §5.4.1.7 c allows either).
+// TS 23.003 clause 13.4B
 const bobIMSI = "sip:001010000000002@ims.example.com"
 
-// featureCaps is a request of a registration token in its Feature-Caps (TS 24.229 §7.9A.8).
+// TS 24.229 clause 7.9A.8
 func featureCaps(token string) *sip.Request {
 	req := sip.NewRequest("INVITE", sip.URI{Scheme: "sip", Host: "mcptt.example.com"})
 	req.Header.Set("Feature-Caps", `*;+g.3gpp.registration-token="`+token+`"`)
@@ -23,12 +21,12 @@ func featureCaps(token string) *sip.Request {
 	return req
 }
 
-// TS 24.229 §5.4.1.7 c, §5.4.1.7A, §5.4.1.2.2F b, §5.4.2.1.2 step 3; TS 24.379 §10.1.1.3.1.1 step 2, §9.2.2.2.3
-// step 2: the To of the third-party REGISTER is one public user identity of the implicit registration set, and the
-// client is served at any of them, as the P-CSCF asserts the default one (§5.2.6.3.1): the set of the
-// P-Associated-URI of the 200 to the client's REGISTER (Ella IMS), else of the third-party REGISTER (Kamailio), else
-// of the IMPUs the reg event package reports registered. The service authorisation is at the set of the third-party
-// REGISTER: a To not configured for the user is authorised by another IMPU of the set.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
+// TS 24.229 clause 5.4.1.2.2F
+// TS 24.229 clause 5.4.2.1.2
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 9.2.2.2.3
 func TestImplicitRegistrationSet(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -44,7 +42,6 @@ func TestImplicitRegistrationSet(t *testing.T) {
 			s := h.scscf
 			s.pauHeader, s.regEvent = tc.pauHeader, tc.regEvent
 
-			// Of the reg event only, the To is the IMPU configured: the service authorisation precedes the NOTIFYs.
 			to := bobIM
 			if !tc.regEvent {
 				to, s.pau = bobIMSI, []string{bobTel, bobIM, bobIMSI}
@@ -77,7 +74,6 @@ func TestImplicitRegistrationSet(t *testing.T) {
 				t.Error("served at another IMPU")
 			}
 
-			// The affiliation PUBLISH of the default public user identity, a tel URI.
 			if res := s.send(s.forward(ue.publish(bob, client1, 4294967295, police), bobTel)); res.StatusCode != 200 {
 				t.Errorf("PUBLISH: %d", res.StatusCode)
 			}
@@ -85,10 +81,9 @@ func TestImplicitRegistrationSet(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7 l, §5.7.1.1; TS 24.379 §7.3.2: a reregistration of the UE of a binding, by its instance ID, of
-// another registration token and S-CSCF, a new registration whose deregistration the server missed: the binding takes
-// them, and its expiry; the requests of the former token are no longer of it. The reg event subscription moves to
-// the new S-CSCF, the former one ended.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.7.1.1
+// TS 24.379 clause 7.3.2
 func TestReregistrationNewToken(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s, s2 := h.scscf, h.scscf2
@@ -136,8 +131,7 @@ func TestReregistrationNewToken(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.1.3B: a request for a standalone transaction, as an affiliation PUBLISH, is of the registration of
-// its registration token: a UE of the IMPU publishes for its own client only.
+// TS 24.229 clause 5.7.1.3B
 func TestPublishRegistrationToken(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -166,9 +160,8 @@ func TestPublishRegistrationToken(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.1.1 a, c; §4.2 NOTE 4: the third-party REGISTER of a tel URI IMPU, of another SIP URI in its implicit
-// registration set: the reg event subscription is to the SIP URI of its number, "user=phone", not to that other public
-// user identity, and a deregistration is told by it; the server unsubscribes once the IMPU has no binding.
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 4.2
 func TestRegEventTelURI(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -209,14 +202,12 @@ func TestRegEventTelURI(t *testing.T) {
 	}
 }
 
-// bobPhone is the SIP URI of bob's number, "user=phone", at the home domain (TS 23.003 §13.4; RFC 3261 §19.1.6).
+// TS 23.003 clause 13.4
+// RFC 3261 section 19.1.6
 const bobPhone = "sip:+15555550102@ims.example.com;user=phone"
 
-// TS 24.229 §5.7.1.1 a, c; TS 23.003 §13.4B: the third-party REGISTER of a tel URI IMPU whose implicit registration
-// set has no other identity, as of Ella Core's HSS (a barred temporary IMPU, not in the P-Associated-URI): the reg
-// event subscription is to the SIP URI of its number, "user=phone", at the home domain, which the S-CSCF resolves to
-// the tel URI. Its documents report the registration of the tel URI, or of the SIP URI subscribed to: a deregistration
-// is told by either, and the server unsubscribes once the IMPU has no binding.
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4B
 func TestRegEventTelURIAlone(t *testing.T) {
 	for _, aor := range []string{bobTel, bobPhone} {
 		t.Run(aor, func(t *testing.T) {
@@ -257,9 +248,9 @@ func TestRegEventTelURIAlone(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3, §4.4.1; TS 24.229 §5.7.1.1 NOTE 5: a NOTIFY of Subscription-State terminated, all registrations
-// terminated, ends the subscription and the bindings: the server sends no SUBSCRIBE to end it (which the S-CSCF would
-// answer with a 481), and the next third-party REGISTER subscribes again.
+// RFC 6665 section 4.1.3
+// RFC 6665 section 4.4.1
+// TS 24.229 clause 5.7.1.1
 func TestRegEventTerminated(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -299,10 +290,10 @@ func TestRegEventTerminated(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 5 d, §5.4.2.1.2 NOTE 6, §5.1.1.2.1; RFC 5626 §4.2: the MCPTT client and the device's VoLTE
-// client share the instance ID of its IMEI, on registration flows of their own reg-ids. VoLTE's REGISTER, without the
-// MCPTT feature tags, is of another registration, as is its flow terminated in the reg event: the client stays logged
-// on. Its own flow terminated logs it off.
+// TS 24.229 clause 5.4.1.2.2
+// TS 24.229 clause 5.4.2.1.2
+// TS 24.229 clause 5.1.1.2.1
+// RFC 5626 section 4.2
 func TestFlowsOfOneInstance(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf

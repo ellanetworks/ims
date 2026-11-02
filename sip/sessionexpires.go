@@ -12,8 +12,7 @@ const (
 	RefresherUAS = "uas"
 )
 
-// SessionExpires is a Session-Expires value (RFC 4028 §4): the session interval, in seconds, and the refresher, when
-// chosen.
+// RFC 4028 section 4
 type SessionExpires struct {
 	Seconds   uint32
 	Refresher string
@@ -65,7 +64,7 @@ func (fs Header) SessionExpires() (SessionExpires, bool, error) {
 	return se, true, err
 }
 
-// MinSE is the Min-SE value, in seconds (RFC 4028 §5).
+// RFC 4028 section 5
 func (fs Header) MinSE() (uint32, bool, error) {
 	v, ok, err := fs.single("Min-SE")
 	if !ok || err != nil {
@@ -80,8 +79,8 @@ func (fs Header) MinSE() (uint32, bool, error) {
 	return n, true, nil
 }
 
-// delta-seconds *(SEMI param), with delta-seconds of RFC 3261 §25.1. Values above 2**32-1 count as 2**32-1, as RFC
-// 3261 §10.2.1.1 allows for expires.
+// RFC 3261 section 25.1
+// RFC 3261 section 10.2.1.1
 func parseDeltaParams(s string) (uint32, Params, error) {
 	v, rest, _ := strings.Cut(trimWSP(s), ";")
 

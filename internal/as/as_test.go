@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// noDNS answers no query.
 type noDNS struct{}
 
 var errNoDNS = errors.New("no DNS")
@@ -23,8 +22,6 @@ func (noDNS) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) 
 	return nil, errNoDNS
 }
 
-// The host of a built-in AS resolves to it, whatever the case, port and user of the URI, until removed; the others
-// through DNS, and an IP address as itself.
 func TestResolve(t *testing.T) {
 	r := &Resolver{DNS: &sip.Resolver{DNS: noDNS{}}}
 	in := []sip.Server{{Transport: sip.UDP, Addr: netip.MustParseAddrPort("10.0.0.5:5090")}}

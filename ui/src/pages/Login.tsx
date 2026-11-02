@@ -20,7 +20,6 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const { showSnackbar } = useSnackbar();
 
-  // A system without users goes to its initialization, and a user with a session goes on.
   useEffect(() => {
     let cancelled = false;
     (async () => {

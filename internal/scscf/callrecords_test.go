@@ -15,8 +15,6 @@ import (
 
 const testICID = "AB12CD34"
 
-// recorded makes the S-CSCF report to a recorder, which has the attempt of the call testICID names, as the
-// originating P-CSCF would have reported it.
 func (sh *sessionHarness) recorded(t *testing.T) *callrecords.Recorder {
 	t.Helper()
 
@@ -32,7 +30,6 @@ func (sh *sessionHarness) recorded(t *testing.T) *callrecords.Recorder {
 	return rec
 }
 
-// charged is a request in the call testICID names.
 func charged(req *sip.Request) *sip.Request {
 	req.Header.Set("P-Charging-Vector", "icid-value="+testICID+";orig-ioi="+homeDomain)
 	return req
@@ -77,7 +74,6 @@ func TestCallRecordRouted(t *testing.T) {
 	}
 }
 
-// TestCallRecordRejected checks that a call the S-CSCF refuses is recorded as ended by the network.
 func TestCallRecordRejected(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -115,7 +111,6 @@ func TestCallRecordRejected(t *testing.T) {
 				t.Fatalf("got %s, want %d", res.StartLine(), tt.code)
 			}
 
-			// The originating P-CSCF relays it to the caller.
 			to, _ := res.Header.To()
 			rec.Ended(testICID, callrecords.End{Code: tt.code, Tag: to.Tag(), By: proxy.Callee, Cause: proxy.EndFailed})
 
@@ -127,8 +122,6 @@ func TestCallRecordRejected(t *testing.T) {
 	}
 }
 
-// TestCallRecordReleasedOnDeregistration checks that a call the S-CSCF releases is recorded as ended by the
-// network, though the BYE reaches the caller as if from the callee.
 func TestCallRecordReleasedOnDeregistration(t *testing.T) {
 	sh := newSessionHarness(t)
 	rec := sh.recorded(t)
@@ -155,7 +148,6 @@ func TestCallRecordReleasedOnDeregistration(t *testing.T) {
 	bye(t, sh.icscf)
 	bye(t, sh.orig)
 
-	// The originating P-CSCF sees a BYE from the callee's side.
 	rec.Ended(testICID, callrecords.End{Code: 200, By: proxy.Callee, Cause: proxy.EndBye})
 
 	if r := sh.callRecord(t, rec); r.Outcome != db.OutcomeAnswered || r.EndedBy != db.PartyNetwork {
@@ -163,7 +155,6 @@ func TestCallRecordReleasedOnDeregistration(t *testing.T) {
 	}
 }
 
-// The call as it leaves the S-CSCF through an AS has its routing recorded too.
 func TestCallRecordRoutedThroughAnAS(t *testing.T) {
 	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
 		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("INVITE"))}

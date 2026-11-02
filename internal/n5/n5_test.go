@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TS 29.571 §5.2.2: feature n is bit n-1, the lowest features in the last character.
+// TS 29.571 clause 5.2.2
 func TestFeatures(t *testing.T) {
 	f := Features(FeatureIMSSBI, FeaturePatchCorrection)
 	if f != "8000010" {

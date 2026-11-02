@@ -22,14 +22,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// testIMS is the configuration file of a test IMS, with the settings its database starts with.
 type testIMS struct {
 	config.Config
 
-	Peers  []settings.Peer
-	Routes []settings.Route
-	Policy settings.Policy
-	// TracerProvider, when set, traces the IMS.
+	Peers          []settings.Peer
+	Routes         []settings.Route
+	Policy         settings.Policy
 	TracerProvider trace.TracerProvider
 }
 
@@ -53,7 +51,6 @@ func testConfig(t *testing.T) testIMS {
 	}
 }
 
-// seeded seeds the database, and returns the configuration file of the IMS to start on it.
 func (c testIMS) seeded(t *testing.T) config.Config {
 	t.Helper()
 
@@ -62,7 +59,6 @@ func (c testIMS) seeded(t *testing.T) config.Config {
 	return c.Config
 }
 
-// seed writes the peers and the policy into the database, before the IMS starts on it.
 func (c testIMS) seed(t *testing.T) {
 	t.Helper()
 
@@ -92,7 +88,6 @@ func (c testIMS) seed(t *testing.T) {
 	}
 }
 
-// unusedPort returns a port free on the IPv4 and IPv6 loopback for both UDP and TCP, as SIP takes all four.
 func unusedPort(t *testing.T) int {
 	t.Helper()
 
@@ -120,7 +115,6 @@ func unusedPort(t *testing.T) int {
 	return 0
 }
 
-// freeOn reports whether port is free for network on host.
 func freeOn(ctx context.Context, lc *net.ListenConfig, network, host string, port int) bool {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
@@ -174,7 +168,6 @@ func TestServerStartShutdown(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	// The kubelet's probes, without a token.
 	for path, want := range map[string]int{"/api/v1/livez": http.StatusNoContent, "/api/v1/readyz": http.StatusNoContent} {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.APIAddr().String()+path, nil)
 		if err != nil {

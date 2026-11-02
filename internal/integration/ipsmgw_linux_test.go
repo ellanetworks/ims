@@ -32,9 +32,6 @@ const (
 	ipsmgwNumber  = "15550000100"
 )
 
-// fakeCore is the HSS of the IP-SM-GW over Sh and S6c, and its SMSC over SGd, as one Diameter peer: it records the
-// Sh-Updates and the short messages submitted, answers the routing information of a user with an MME it cannot
-// reach, and sends the IP-SM-GW the requests of the HSS and the SMS-GMSC.
 type fakeCore struct {
 	node      *diameter.Node
 	updates   chan sh.ProfileUpdateRequest
@@ -128,7 +125,6 @@ func (s *scene) fakeCore(imsi string) *fakeCore {
 	return f
 }
 
-// send sends the IMS a request of the HSS or the SMS-GMSC, built of an envelope to the IMS.
 func (f *fakeCore) send(t *testing.T, build func(tgpp.Envelope) (*diameter.Message, error)) *diameter.Message {
 	t.Helper()
 
@@ -165,8 +161,8 @@ func recv[T any](t *testing.T, ch <-chan T, what string) T {
 	return zero
 }
 
-// smsIFCs are the iFCs of the IP-SM-GW of subscriber i (TS 23.204 §6.1, §6.3): its REGISTERs, of the MSISDN in the
-// service information, and its MESSAGEs of short messages.
+// TS 23.204 clause 6.1
+// TS 23.204 clause 6.3
 func (s *scene) smsIFCs(i int) {
 	ipsmgw := "sip:ipsmgw." + domain
 	msisdn := strings.TrimPrefix(subscriberAt(i).tel, "tel:+")
@@ -180,7 +176,6 @@ func (s *scene) smsIFCs(i int) {
 		caseIs(cx.SessionCaseOriginatingRegistered), headerIs("Content-Type", `application/vnd\.3gpp\.sms`)))
 }
 
-// smsOf waits for a MESSAGE of a short message the UE received, and returns it and its RP message.
 func smsOf(t *testing.T, u *testue.UE) (*sip.Request, sms.RPMessage) {
 	t.Helper()
 
@@ -199,10 +194,10 @@ func smsOf(t *testing.T, u *testue.UE) (*sip.Request, sms.RPMessage) {
 	}
 }
 
-// A UE registered for SMS over IP: the IP-SM-GW registers at the HSS for it (TS 24.341 §5.3.3.2); its short message
-// goes through the S-CSCF to the IP-SM-GW by the iFC, then to the SMSC, and its submit report comes back through the
-// S-CSCF (TS 23.204 §6.3); a short message of the SMS-GMSC reaches it over IMS, of the routing information the HSS
-// forwarded, and its delivery report goes back to the SMS-GMSC (TS 23.204 §6.4, §6.5).
+// TS 24.341 clause 5.3.3.2
+// TS 23.204 clause 6.3
+// TS 23.204 clause 6.4
+// TS 23.204 clause 6.5
 func TestSMSOverIP(t *testing.T) {
 	s := newScene(t)
 	sub := subscriberAt(0)

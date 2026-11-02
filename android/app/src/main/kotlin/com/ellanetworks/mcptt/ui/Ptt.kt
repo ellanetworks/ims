@@ -63,39 +63,25 @@ import com.ellanetworks.mcptt.R
 import com.ellanetworks.mcptt.ui.theme.EllaTheme
 import com.ellanetworks.mcptt.ui.theme.Spacing
 
-/** The floor's state as the PTT shows it, each its colour, icon and word (the brief's floor-state colours). */
 enum class PttState {
-    /** The PTT cannot talk now: not registered, the call held. */
     UNAVAILABLE,
     IDLE,
 
-    /** Pressed, the floor requested or the call placed. */
     WAITING,
     TALKING,
 
-    /** Another talks: still pressable, the request then refused or queued (TS 22.179 R-6.2.3.2-005). */
     RECEIVING,
 
-    /** The request just refused. */
     BUSY,
 }
 
 private val RING = 6.dp
 
-/** The ring's gap to the button's edge: wholly on the fill, its colour the content's, whatever the page behind. */
 private val RING_GAP = 6.dp
 private const val TRACK_ALPHA = 0.25f
 
 private fun Float?.orZero() = this ?: 0f
 
-/**
- * The PTT of the selected group, and the floor's state on it: the one element to look at. Held to talk, released to
- * stop (TS 24.380 §6.2.4.4, §6.2.4.5.3). While the user talks, a ring
- * along its border shrinks with the talk time left ([talkUntil] of [talkFor], the grant's Duration, TS 22.179
- * R-6.2.3.5-003). Held until the last finger lifts, wherever it moves: its moves consumed, a scrolling screen never takes
- * it. [onPress] returns the call pressed, null if refused; [onRelease] releases it. TalkBack and Switch Access start and
- * stop it with actions, holding being out of their reach.
- */
 @Composable
 fun Ptt(state: PttState, label: String, talkUntil: Long?, talkFor: Long?, onPress: () -> String?, onRelease: (String) -> Unit, modifier: Modifier = Modifier) {
     val view = LocalView.current
@@ -103,7 +89,6 @@ fun Ptt(state: PttState, label: String, talkUntil: Long?, talkFor: Long?, onPres
     val release by rememberUpdatedState(onRelease)
     var held by remember { mutableStateOf<String?>(null) }
 
-    // The press a light tick, its key's; the grant's and the refusal's haptics are Calls' (Cues), the floor's answer.
     fun start(): Boolean {
         val id = press()
         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -145,7 +130,6 @@ fun Ptt(state: PttState, label: String, talkUntil: Long?, talkFor: Long?, onPres
             .then(if (state == PttState.UNAVAILABLE) Modifier.border(BorderStroke(1.dp, scheme.outline), shape) else Modifier)
             .drawWithContent {
                 drawContent()
-                // Read here, in the draw phase: each frame redraws the ring, not the button.
                 val left = left?.floatValue
                 if (left != null) {
                     val inset = RING_GAP.toPx() + RING.toPx() / 2
@@ -164,7 +148,6 @@ fun Ptt(state: PttState, label: String, talkUntil: Long?, talkFor: Long?, onPres
                 role = Role.Button
                 contentDescription = label
                 stateDescription = description
-                // Told what others do, the floor's changes; not the user's own talking, which they know.
                 if (state != PttState.TALKING && state != PttState.WAITING) liveRegion = LiveRegionMode.Polite
                 onClick(if (held == null) startLabel else stopLabel) {
                     if (held == null) start() else stop()
@@ -188,7 +171,6 @@ fun Ptt(state: PttState, label: String, talkUntil: Long?, talkFor: Long?, onPres
                             event.changes.forEach { it.consume() }
                         } while (event.changes.any { it.pressed })
                     } finally {
-                        // Lifted, or the gesture cancelled: released.
                         stop()
                     }
                 }
@@ -215,10 +197,6 @@ private fun Content(icon: ImageVector, label: String, color: Color) {
     }
 }
 
-/**
- * A rounded rectangle's border from its top's middle, clockwise: the ring's start, as a clock's. A platform's rounded
- * rectangle starts elsewhere, its corner, and differs between versions.
- */
 private fun border(r: Rect, radius: Float) = Path().apply {
     val d = 2 * radius
     moveTo(r.center.x, r.top)
@@ -233,7 +211,6 @@ private fun border(r: Rect, radius: Float) = Path().apply {
     close()
 }
 
-/** The fraction of the talk time left, each frame; null when the user does not talk or no time was granted. */
 @Composable
 private fun talkLeft(talking: Boolean, until: Long?, total: Long?): FloatState? {
     val shown = talking && until != null && total != null && total > 0

@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// apiDo sends a request of body, if any, to the API, and returns its status and its body.
 func apiDo(t *testing.T, srv *Server, method, path, body string) (int, []byte) {
 	t.Helper()
 
@@ -38,7 +37,6 @@ func apiDo(t *testing.T, srv *Server, method, path, body string) (int, []byte) {
 	return res.StatusCode, b
 }
 
-// udpInUse reports whether a UDP socket is bound to a.
 func udpInUse(a netip.AddrPort) bool {
 	c, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(a))
 	if err != nil {
@@ -50,9 +48,6 @@ func udpInUse(a netip.AddrPort) bool {
 	return false
 }
 
-// The MCPTT AS of the configuration runs with the IMS: in memory, of no socket, on its SIP port of each SIP address,
-// which its name of the home domain resolves to; its settings over the API. A restart of the core leaves it running;
-// one of a new home domain starts it again under the new name, its settings kept.
 func TestMCPTT(t *testing.T) {
 	cfg := testConfig(t)
 	port := unusedPort(t)
@@ -95,7 +90,6 @@ func TestMCPTT(t *testing.T) {
 		t.Fatal("the name of MCPTT does not resolve to it")
 	}
 
-	// The live state, through mcpttView: no client registered, so none affiliated and no call.
 	for _, path := range []string{"/api/v1/mcptt/registrations", "/api/v1/mcptt/affiliations", "/api/v1/mcptt/calls"} {
 		var list struct {
 			Result struct {
@@ -159,7 +153,6 @@ func TestMCPTT(t *testing.T) {
 	}
 }
 
-// Without its configuration, the IMS runs no MCPTT AS: its paths of the API are not found.
 func TestMCPTTDisabled(t *testing.T) {
 	srv := startIMS(t, testConfig(t))
 

@@ -16,9 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** The app's state for its screens: the session's status, calls and log, and the user's settings. */
 class AppViewModel(private val app: McpttApp) : ViewModel() {
-    /** The session's subscription grants the app carrier privileges (its ISIM's AKA). */
     fun hasCarrierPrivileges(): Boolean = app.sessions.hasCarrierPrivileges()
 
     val status: StateFlow<Status> = app.sessions.status
@@ -30,10 +28,8 @@ class AppViewModel(private val app: McpttApp) : ViewModel() {
     val settings: StateFlow<UserSettings?> =
         app.settings.data.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
-    /** Saves the settings, the client ID kept: a running session restarts with them. */
     fun save(s: UserSettings) = update { s.copy(clientId = it.clientId) }
 
-    /** Changes the settings of what the user sees and hears: the session goes on (UserSettings.session). */
     fun update(change: (UserSettings) -> UserSettings) {
         viewModelScope.launch { app.settings.updateData(change) }
     }
@@ -44,13 +40,10 @@ class AppViewModel(private val app: McpttApp) : ViewModel() {
 
     fun stop() = SessionService.stop(app)
 
-    /** The app visible, or the microphone just allowed: the service takes the microphone type. */
     fun visible() = SessionService.visible(app, true)
 
-    /** The screen's PTT pressed for [group]: the call pressed, null if refused (PttController). */
     fun talk(group: String): String? = app.sessions.ptt.press(PttController.Source.SCREEN, group)
 
-    /** The screen's PTT released. */
     fun release() = app.sessions.ptt.release(PttController.Source.SCREEN)
 
     fun accept(id: String) {

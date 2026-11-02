@@ -37,7 +37,6 @@ const ringing = callRecord({
   duration_ms: undefined,
 });
 
-// shown is how the table shows a call's time, today or not.
 const shown = (r: CallRecord) => formatRecentTimestamp(r.requested_at);
 
 const serve = (items: CallRecord[], details: CallRecord[] = items) => {
@@ -94,7 +93,6 @@ const cells = (text: string) =>
     .getAllByRole("gridcell")
     .map((cell) => cell.textContent);
 
-// fields is the keys and values of a section of the drawer.
 const fields = (drawer: HTMLElement, section: string) =>
   within(within(drawer).getByRole("region", { name: section }))
     .getAllByRole("term")
@@ -264,7 +262,6 @@ describe("Calls", () => {
     const drawer = await screen.findByRole("dialog");
     await waitFor(() => expect(drawer).toHaveTextContent("Ended ByCaller"));
     expect(drawer).toHaveTextContent("Outcomeanswered");
-    // An answered call's 200 says nothing the outcome does not.
     expect(drawer).not.toHaveTextContent("SIP Status");
   });
 

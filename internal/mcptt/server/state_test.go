@@ -16,18 +16,14 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// memState is a State in memory, as the database keeps it.
 type memState struct {
-	mu   sync.Mutex
-	regs map[string]registrar.Record
-	affs map[[2]string]affiliation.Record
-	// fail fails the writes.
-	fail bool
-	// affWrites are the contexts of the writes of affiliations, as they were then.
+	mu        sync.Mutex
+	regs      map[string]registrar.Record
+	affs      map[[2]string]affiliation.Record
+	fail      bool
 	affWrites []write
 }
 
-// write is the context of a write: its span, error and deadline.
 type write struct {
 	span     oteltrace.SpanContext
 	err      error
@@ -96,7 +92,6 @@ func (m *memState) records() ([]registrar.Record, []affiliation.Record) {
 	return regs, affs
 }
 
-// groups are the groups of the affiliations kept of client of user.
 func (m *memState) groups(user, client string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,8 +104,6 @@ func (m *memState) groups(user, client string) []string {
 	return out
 }
 
-// restart shuts the server down and starts another, of the same state, on another address, which restores its
-// registrations and affiliations and subscribes again; the S-CSCF answers the SUBSCRIBEs.
 func (h *harness) restart(state *memState) {
 	h.t.Helper()
 
@@ -129,14 +122,10 @@ func (h *harness) restart(state *memState) {
 	h.scscf.pump()
 }
 
-// activeContact is a <contact> of a reg event document, active, of the registration token id.
 func activeContact(id string) string {
 	return `<contact id="` + id + `" state="active" event="registered"><uri>sip:ue@192.0.2.9</uri></contact>`
 }
 
-// The bindings and affiliations through the IMS outlive a restart: a client registered, and affiliated explicitly
-// and implicitly, is served after it as before; one that deregistered meanwhile, absent from the first full document
-// of the reg event subscription made again, is logged off; and what is restored expires as it would have.
 func TestRestore(t *testing.T) {
 	st := newMemState()
 	h := newHarnessOf(t, registrar.ThroughIMS, st)
@@ -163,7 +152,6 @@ func TestRestore(t *testing.T) {
 		t.Fatalf("alice's affiliations kept %v", got)
 	}
 
-	// The S-CSCF has alice's UE registered still, bob's no longer.
 	s.initial[aliceIM] = `<registration aor="` + aliceIM + `" id="r1" state="active">` + activeContact("t1") + `</registration>`
 	s.initial[bobIM] = `<registration aor="` + bobIM + `" id="r2" state="active"/>`
 
@@ -190,8 +178,6 @@ func TestRestore(t *testing.T) {
 		t.Fatalf("kept %d registrations, bob's affiliations %v", len(regs), st.groups(settings.Key(uri(t, bob)), client2))
 	}
 
-	// A refresh of the third-party REGISTER, as before the restart: its Call-ID, a CSeq higher; past the expiry of
-	// the registration restored, the refreshed one stays, until its own.
 	h.n.Advance(500 * time.Second)
 
 	if res := s.send(s.register(aliceIM, "t1", 600, ue1.register("sip:ims.example.com", 600))); res.StatusCode != 200 {
@@ -211,9 +197,8 @@ func TestRestore(t *testing.T) {
 	}
 }
 
-// TS 24.379 §9.2.2.2.15, §9.2.2.2.3 step 14 a ii: a restore is no service authorisation: alice, affiliated to fire
-// implicitly, leaves it by her publication, and the restart does not affiliate her to it again; her own affiliation
-// to police is restored.
+// TS 24.379 clause 9.2.2.2.15
+// TS 24.379 clause 9.2.2.2.3
 func TestRestoreKeepsLeft(t *testing.T) {
 	st := newMemState()
 	h := newHarnessOf(t, registrar.ThroughIMS, st)
@@ -236,7 +221,6 @@ func TestRestoreKeepsLeft(t *testing.T) {
 		t.Fatalf("PUBLISH: %d", res.StatusCode)
 	}
 
-	// The de-affiliating entry expires (§9.2.2.2.7).
 	h.n.Advance(2 * 64 * transaction.DefaultT1)
 	s.pump()
 
@@ -262,10 +246,8 @@ func TestRestoreKeepsLeft(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.1.1 a; TS 23.003 §13.4: the bindings restored of a tel URI IMPU whose implicit registration set has
-// no SIP URI, as of Ella Core's HSS, are reconciled by the subscription made again to the SIP URI of its number,
-// "user=phone": the client of a UE the first full document reports registered, of the tel URI or of the SIP URI,
-// stays; the other, deregistered meanwhile, is logged off.
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4
 func TestRestoreTelURI(t *testing.T) {
 	for _, aor := range []string{bobTel, bobPhone} {
 		t.Run(aor, func(t *testing.T) {
@@ -290,7 +272,6 @@ func TestRestoreTelURI(t *testing.T) {
 				t.Fatalf("subscriptions %v", s.subs)
 			}
 
-			// The S-CSCF has the first UE registered still, the second no longer.
 			delete(s.subs, bobPhone)
 			s.subscribes = 0
 			s.initial[bobPhone] = `<registration aor="` + aor + `" id="r1" state="active">` + activeContact("t1") + `</registration>`
@@ -316,8 +297,6 @@ func TestRestoreTelURI(t *testing.T) {
 	}
 }
 
-// restoredAlice is a harness of alice registered through the IMS, and her registration kept in its state, with one
-// expired and one of a user no longer configured, which are not restored.
 func restoredAlice(t *testing.T) (*harness, *memState) {
 	t.Helper()
 
@@ -348,9 +327,7 @@ func restoredAlice(t *testing.T) (*harness, *memState) {
 	return h, st
 }
 
-// A 480 to the reg event subscription made again, of an IMPU the S-CSCF has no binding of (TS 24.229 §5.4.2.1.1
-// step 0), removes the bindings restored of it; the expired ones, and those of a user no longer configured, are not
-// restored.
+// TS 24.229 clause 5.4.2.1.1
 func TestRestoreUnregistered(t *testing.T) {
 	h, st := restoredAlice(t)
 	h.scscf.regEvent, h.scscf.refusal = false, 480
@@ -366,8 +343,7 @@ func TestRestoreUnregistered(t *testing.T) {
 	}
 }
 
-// A 403, of the server not authorised to subscribe (step 1), leaves the registration state unknown: the bindings
-// restored stay, and the SUBSCRIBE is not sent again (RFC 3261 §21.4.4).
+// RFC 3261 section 21.4.4
 func TestRestoreForbidden(t *testing.T) {
 	h, st := restoredAlice(t)
 	h.scscf.regEvent = false
@@ -387,8 +363,6 @@ func TestRestoreForbidden(t *testing.T) {
 	}
 }
 
-// A 500, of an S-CSCF unavailable, subscribes again after its Retry-After or a backoff; the first full document then
-// reconciles the bindings restored, matched by the instance ID of their UE, and taking the expiry of its contact.
 func TestRestoreRetry(t *testing.T) {
 	h, st := restoredAlice(t)
 	s := h.scscf
@@ -413,7 +387,6 @@ func TestRestoreRetry(t *testing.T) {
 		t.Fatalf("%d SUBSCRIBEs", s.subscribes)
 	}
 
-	// Past the expiry restored, within the contact's.
 	h.n.Advance(30 * time.Minute)
 
 	if _, ok := h.s.Registrar().Resolve(nil, []sip.URI{uri(t, aliceIM)}, client1); !ok {
@@ -425,9 +398,6 @@ func TestRestoreRetry(t *testing.T) {
 	}
 }
 
-// A reg event subscription of no response, of an S-CSCF unreachable as while the core of the IMS restarts, is made
-// again once it is reachable (Resubscribe), not only at the next third-party REGISTER, though its bindings were not
-// restored.
 func TestSubscribeUnanswered(t *testing.T) {
 	st := newMemState()
 	h := newHarnessOf(t, registrar.ThroughIMS, st)
@@ -443,7 +413,6 @@ func TestSubscribeUnanswered(t *testing.T) {
 
 	s.pump()
 
-	// The SUBSCRIBE times out (RFC 3261 §17.1.2.2), unanswered.
 	h.n.Advance(64 * transaction.DefaultT1)
 	s.pump()
 
@@ -462,8 +431,8 @@ func TestSubscribeUnanswered(t *testing.T) {
 	}
 }
 
-// A reg event document the server cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a
-// refresh asks for the full state again (RFC 3680 §5.2); the bindings stay.
+// RFC 6665 section 4.2.2
+// RFC 3680 section 5.2
 func TestUnreadableDocument(t *testing.T) {
 	h := newHarness(t, registrar.ThroughIMS)
 	s := h.scscf
@@ -495,8 +464,7 @@ func TestUnreadableDocument(t *testing.T) {
 	}
 }
 
-// A change of the settings takes effect at once (TS 23.280 §5.2.5): the clients of a user deleted are logged off, and
-// a member removed from a group is de-affiliated from it, at both functions; the others stay.
+// TS 23.280 clause 5.2.5
 func TestRevoke(t *testing.T) {
 	st := newMemState()
 	h := newHarnessOf(t, registrar.ThroughIMS, st)
@@ -519,7 +487,6 @@ func TestRevoke(t *testing.T) {
 
 	s.pump()
 
-	// Bob deleted; alice no longer a member of police.
 	cfg := configuration()
 	cfg.Users = cfg.Users[:1]
 	cfg.Groups[0].List.Entries = cfg.Groups[0].List.Entries[:1]
@@ -559,8 +526,6 @@ func TestRevoke(t *testing.T) {
 	}
 }
 
-// A refresh between the restore and the subscription made again is the IMS's own word: the binding refreshed is not
-// reconciled by the first document, which may predate it.
 func TestRefreshBeforeResubscribe(t *testing.T) {
 	h, st := restoredAlice(t)
 	s := h.scscf
@@ -582,7 +547,6 @@ func TestRefreshBeforeResubscribe(t *testing.T) {
 		t.Fatalf("refresh: %d", res.StatusCode)
 	}
 
-	// A first document of no contact.
 	h.s.Resubscribe(context.Background())
 	h.n.Advance(time.Second)
 	s.pump()
@@ -592,7 +556,6 @@ func TestRefreshBeforeResubscribe(t *testing.T) {
 	}
 }
 
-// A write to the store that fails is made with the next change.
 func TestSaveRetried(t *testing.T) {
 	st := newMemState()
 	h := newHarnessOf(t, registrar.ThroughIMS, st)
@@ -616,7 +579,6 @@ func TestSaveRetried(t *testing.T) {
 	}
 }
 
-// A shutdown before the subscriptions of Resubscribe are made makes none.
 func TestShutdownBeforeResubscribe(t *testing.T) {
 	h, st := restoredAlice(t)
 	s := h.scscf

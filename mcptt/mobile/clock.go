@@ -10,26 +10,17 @@ import (
 )
 
 const (
-	// wakeAfter is the shortest timer that also wakes the device: those of the registration and the subscriptions, not
-	// those of the transactions and the floor, which run while the device is awake for them.
 	wakeAfter = time.Minute
 
-	// awakeFor is how long the device stays awake after an alarm: a transaction's Timer F (64·T1, RFC 3261 §17.1.2.2)
-	// and a margin, for the registration it fires.
 	awakeFor = 40 * time.Second
 )
 
-// clock is the clock of a session: its time the boot clock's, which counts the time the device sleeps (Go's
-// monotonic clock does not), its long timers also on the platform's alarms, since Go's timers do not run while the
-// device sleeps.
 type clock struct {
 	p Platform
 
-	// base and boot are the time and the boot clock when the clock started: Now is base and the boot clock since.
 	base time.Time
 	boot time.Duration
 
-	// epoch distinguishes the alarms of this clock from those of a previous session.
 	epoch int64
 	next  atomic.Int64
 
@@ -44,11 +35,8 @@ func newClock(p Platform) *clock {
 	}
 }
 
-// Now is the time of the boot clock: its differences include the time the device slept, and are immune to changes of
-// the wall clock.
 func (c *clock) Now() time.Time { return c.base.Add(bootTime() - c.boot) }
 
-// timer is a timer of the clock, which fires once: by the Go timer or by the platform's alarm, the first.
 type timer struct {
 	c     *clock
 	id    int64
@@ -79,8 +67,6 @@ func (c *clock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 	return t
 }
 
-// fire runs the function of the timer once: by its Go timer, the alarm cancelled; or by the alarm, woken, on a
-// goroutine of its own, the device kept awake meanwhile.
 func (t *timer) fire(woken bool) {
 	if !t.fired.CompareAndSwap(false, true) {
 		return
@@ -100,7 +86,6 @@ func (t *timer) fire(woken bool) {
 	go t.f()
 }
 
-// forget drops the timer's alarm, cancelling it with the platform unless it went off.
 func (t *timer) forget(cancel bool) {
 	if t.id == 0 {
 		return
@@ -126,7 +111,6 @@ func (t *timer) Stop() bool {
 	return true
 }
 
-// woken fires the timer of the alarm id, if it is still due.
 func (c *clock) woken(id int64) {
 	c.mu.Lock()
 	t := c.alarm[id]
@@ -137,7 +121,6 @@ func (c *clock) woken(id int64) {
 	}
 }
 
-// sleep waits d on the clock, an alarm waking the device for a long one; false if done is closed first.
 func (c *clock) sleep(d time.Duration, done <-chan struct{}) bool {
 	ch := make(chan struct{})
 	t := c.AfterFunc(d, func() { close(ch) })
@@ -151,7 +134,6 @@ func (c *clock) sleep(d time.Duration, done <-chan struct{}) bool {
 	}
 }
 
-// close cancels the alarms of the clock, its timers to fire no more by them.
 func (c *clock) close() {
 	c.mu.Lock()
 	c.closed = true

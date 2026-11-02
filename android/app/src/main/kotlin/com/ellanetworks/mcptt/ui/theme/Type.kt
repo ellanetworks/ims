@@ -10,7 +10,6 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import com.ellanetworks.mcptt.R
 
-/** Source Code Pro, Ella's typeface: the variable font, bundled, at the weights of the scale. */
 val SourceCodePro = FontFamily(
     sourceCodePro(500),
     sourceCodePro(600),
@@ -31,7 +30,6 @@ private fun style(size: TextUnit, line: TextUnit, weight: Int) = TextStyle(
     letterSpacing = 0.sp,
 )
 
-/** The type scale of Ella: Material's sizes, in Source Code Pro without letter spacing. */
 val typography = Typography(
     displayLarge = style(57.sp, 64.sp, 500),
     displayMedium = style(45.sp, 52.sp, 500),

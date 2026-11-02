@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// rawCaller is a caller sending its own messages, for the timing a user agent of the stack would not give.
 type rawCaller struct {
 	t      *testing.T
 	p      *siptest.Peer
@@ -38,7 +37,6 @@ func callRaw(t *testing.T, n *siptest.Net, to *party, sdp string, header ...sip.
 	return c
 }
 
-// response is the next response to the INVITE of code at least least.
 func (c *rawCaller) response(least int) *sip.Response {
 	c.t.Helper()
 
@@ -50,7 +48,6 @@ func (c *rawCaller) response(least int) *sip.Response {
 	}
 }
 
-// inDialog is a request of the caller in the dialog of res.
 func (c *rawCaller) inDialog(method string, res *sip.Response, seq string) *sip.Request {
 	req := siptest.NewRequest(method, c.to.uri(), sip.UDP, c.p.Addr())
 	req.Header.Set("From", c.invite.Header.Get("From"))
@@ -61,8 +58,7 @@ func (c *rawCaller) inDialog(method string, res *sip.Response, seq string) *sip.
 	return req
 }
 
-// B1: the callee ending while the caller's 2xx waits for its ACK ends the caller's session too, with a BYE once the
-// ACK comes (RFC 3261 §15).
+// RFC 3261 section 15
 func TestEndBeforeTheAck(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)
@@ -76,7 +72,6 @@ func TestEndBeforeTheAck(t *testing.T) {
 	ok := alice.response(200)
 	bs := bob.next("established").s
 
-	// Bob hangs up before alice's ACK.
 	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	bob.next("ended")
@@ -96,8 +91,7 @@ func TestEndBeforeTheAck(t *testing.T) {
 	settled(t, n, bob, b.party)
 }
 
-// B1: the callee ending while the caller's 2xx is held for her PRACK (TS 24.379 §6.3.2.2.5.2 step 2b) fails her
-// INVITE with a 487 in place of the 2xx.
+// TS 24.379 clause 6.3.2.2.5.2
 func TestEndWith2xxHeld(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)
@@ -112,7 +106,6 @@ func TestEndWith2xxHeld(t *testing.T) {
 		t.Fatalf("alice got %d", res.StatusCode)
 	}
 
-	// No PRACK from alice: the 2xx bob's 200 makes is held.
 	_ = in.Accept()
 
 	bs := bob.next("established").s
@@ -127,8 +120,7 @@ func TestEndWith2xxHeld(t *testing.T) {
 	b.callEnded(t)
 }
 
-// B2: an answer the caller got in an unreliable 1xx is repeated in the 2xx, even when the callee's 2xx carries none
-// (RFC 3261 §13.2.1).
+// RFC 3261 section 13.2.1
 func TestAnswerRepeatedIn2xx(t *testing.T) {
 	n := newNet(t)
 	bob := n.Peer()
@@ -161,7 +153,6 @@ func TestAnswerRepeatedIn2xx(t *testing.T) {
 	}
 }
 
-// B3: the caller's BYE in one early dialog ends it alone, and its mirror: the INVITE goes on in the other.
 func TestEarlyByeOfTheCaller(t *testing.T) {
 	alice, bob, first, fork, a1, a2 := forkedCall(t)
 
@@ -183,8 +174,7 @@ func TestEarlyByeOfTheCaller(t *testing.T) {
 	bob.next("established")
 }
 
-// B6: a leg without handlers answers the refreshes and OPTIONS of its peer as the agent does: a long-lived leg lives
-// through its session intervals (RFC 4028).
+// RFC 4028
 func TestPlainLegLives(t *testing.T) {
 	n := newNet(t)
 
@@ -223,8 +213,7 @@ func TestPlainLegLives(t *testing.T) {
 	}
 }
 
-// B7: a request in an early dialog goes to its mirror: an UPDATE of bob in his second early dialog reaches alice in
-// hers (RFC 3311 §5.1).
+// RFC 3311 section 5.1
 func TestEarlyUpdateInItsMirror(t *testing.T) {
 	f := forkedCallOf(t)
 	alice, fork, a2 := f.alice, f.fork, f.a2
@@ -239,7 +228,6 @@ func TestEarlyUpdateInItsMirror(t *testing.T) {
 	_ = e.req.Respond(ua.Reply{Code: 200, Bodies: sdpOf("answer-3")})
 }
 
-// B8: an offer of a response to the application's own re-INVITE on a relayed leg is the application's.
 func TestOwnOfferOnARelayedLeg(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -261,7 +249,6 @@ func TestOwnOfferOnARelayedLeg(t *testing.T) {
 		}
 	})
 
-	// Bob, ClientPolicy, answers the refresh himself, offering his session in the 2xx.
 	b.net.Quiesce()
 	<-done
 
@@ -279,7 +266,7 @@ func TestOwnOfferOnARelayedLeg(t *testing.T) {
 	alice.none()
 }
 
-// B11: the Reason of a BYE crosses with it (RFC 3326), with no configuration.
+// RFC 3326
 func TestReasonOfTheBye(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -294,8 +281,7 @@ func TestReasonOfTheBye(t *testing.T) {
 	}
 }
 
-// B12: the bodies of the application in the outgoing INVITE stay, those of the caller of other media types are
-// added (TS 24.379 §6.3.2.1.4).
+// TS 24.379 clause 6.3.2.1.4
 func TestBridgeKeepsTheApplicationBodies(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)
@@ -347,7 +333,6 @@ func TestBridgeKeepsTheApplicationBodies(t *testing.T) {
 	}
 }
 
-// B14: a Media error on the offer of the caller rejects her INVITE with a 488, and the call ends.
 func TestMediaErrorEndsTheCall(t *testing.T) {
 	n := newNet(t)
 	bob := newParty(t, n, "bob", nil)

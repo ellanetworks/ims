@@ -36,10 +36,8 @@ type Config struct {
 	IMSHost  string
 	IMSRealm string
 
-	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
 	IMSAddress netip.Addr
 
-	// TracerProvider traces the HSS's requests; none when nil.
 	TracerProvider trace.TracerProvider
 	Logger         *slog.Logger
 }
@@ -54,14 +52,10 @@ type Subscriber struct {
 
 	IMPUs []cx.ProfileIdentity
 
-	// IFCs are the initial filter criteria of the service profile (TS 29.228 Annex B.2.2).
 	IFCs []cx.InitialFilterCriteria
 
 	UnregisteredServices bool
 
-	// AS is the AS hosting the PSIs of a PSI user, which the LIA names for direct routing (TS 23.228 §5.4.12.2 b),
-	// with the PSI direct routing indication if PSIDirectRouting, which the HSS may leave out (TS 29.228 §6.1.4.1
-	// step 2, TS 29.229 §6.3.59).
 	AS               string
 	PSIDirectRouting bool
 
@@ -100,8 +94,7 @@ func (s Subscriber) has(impu string) bool {
 	return ok
 }
 
-// identity is the identity of the subscriber impu is: a distinct one, or else a wildcarded one it matches
-// (TS 23.003 §13.5).
+// TS 23.003 clause 13.5
 func (s Subscriber) identity(impu string) (cx.ProfileIdentity, bool) {
 	key := identityKey(impu)
 
@@ -203,7 +196,6 @@ type HSS struct {
 
 	requests chan Request
 
-	// db is the subscriber data, which the replicas of the HSS share.
 	db      *store
 	dropped int
 }
@@ -213,21 +205,15 @@ type store struct {
 	subscribers map[string]*Subscriber
 	order       []string
 
-	// byKey is the position in order of the first subscriber with each distinct IMPU, by identityKey, and wildcards
-	// the positions of those with a wildcarded one: rebuilt on a lookup after Add or Update changed the subscribers.
 	byKey     map[string]int
 	wildcards []int
 	stale     bool
 
-	// override has the HSS download the user profile in every SAA of a registration, the S-CSCF holding it or not
-	// (TS 29.228 §6.6).
 	override bool
 
-	// restoration has the HSS support the HSS based P-CSCF restoration (TS 23.380 §5.4).
 	restoration bool
 }
 
-// OverrideUserData has the HSS download the user profile in every SAA of a registration, or not.
 func (h *HSS) OverrideUserData(on bool) {
 	h.db.mu.Lock()
 	defer h.db.mu.Unlock()
@@ -235,8 +221,7 @@ func (h *HSS) OverrideUserData(on bool) {
 	h.db.override = on
 }
 
-// SupportRestoration has the HSS advertise the P-CSCF-Restoration-mechanism feature (TS 29.229 Table 7.1.1), and
-// take the P-CSCF restoration indication, or not.
+// TS 29.229 clause 7.1.1 table 7.1.1
 func (h *HSS) SupportRestoration(on bool) {
 	h.db.mu.Lock()
 	defer h.db.mu.Unlock()
@@ -250,8 +235,6 @@ func New(t testing.TB, cfg Config) *HSS {
 	return newHSS(t, cfg, &store{subscribers: make(map[string]*Subscriber)})
 }
 
-// Replica starts another HSS with the same subscriber data, as a node of a replicated HSS: its own host and address
-// in the same realm.
 func (h *HSS) Replica(t testing.TB, host string, addr netip.Addr) *HSS {
 	t.Helper()
 
@@ -319,7 +302,6 @@ func newHSS(t testing.TB, cfg Config, db *store) *HSS {
 	return h
 }
 
-// Stop disconnects the HSS from its peers and stops it, as a lost HSS node.
 func (h *HSS) Stop(t testing.TB) {
 	t.Helper()
 
@@ -442,8 +424,6 @@ func (h *HSS) knownIMPU(impu string) bool {
 	return h.ownerLocked(impu) >= 0
 }
 
-// ownerLocked is the position in order of the first subscriber that has impu, or -1: as a scan of order, without
-// one for the distinct IMPUs.
 func (h *HSS) ownerLocked(impu string) int {
 	d := h.db
 
@@ -472,7 +452,6 @@ func (h *HSS) ownerLocked(impu string) int {
 		owner = -1
 	}
 
-	// A subscriber before it whose wildcarded IMPU matches comes first.
 	for _, i := range d.wildcards {
 		if owner >= 0 && i > owner {
 			break
@@ -608,7 +587,6 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	impi := sar.PrivateIdentity
 
-	// UNREGISTERED_USER may come without a private identity, as for a PSI (TS 29.228 §6.1.2).
 	if impi == "" && len(sar.PublicIdentities) == 1 {
 		if i := h.ownerLocked(sar.PublicIdentities[0]); i >= 0 {
 			impi = h.db.order[i]
@@ -634,7 +612,6 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		features = cx.FeaturePCSCFRestoration
 	}
 
-	// TS 29.228 §6.1.2.1: an HSS without the feature ignores the indication.
 	restoring := sar.PCSCFRestoration && features != 0 &&
 		(sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentAdministrativeDeregistration)
 
@@ -651,7 +628,6 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 		s.State, userData = Registered, !sar.UserDataAlreadyAvailable || h.db.override
 
 		if sar.Type == cx.AssignmentUnregisteredUser {
-			// TS 29.228 §6.1.2.1: the restoration downloads no user data.
 			s.State, userData = Unregistered, !restoring
 		} else {
 			s.AuthPending = false
@@ -681,7 +657,6 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	a := cx.ServerAssignment{PrivateIdentity: s.IMPI, Features: features}
 
-	// TS 29.228 Table 6.1.2.2: the wildcarded identity an identity falls in, unless the S-CSCF named it.
 	if (sar.Type == cx.AssignmentUnregisteredUser || sar.Type == cx.AssignmentNoAssignment) && sar.WildcardedPublicIdentity == "" &&
 		len(sar.PublicIdentities) == 1 {
 		if p, _ := s.identity(sar.PublicIdentities[0]); p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
@@ -736,7 +711,6 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 
 	switch {
 	case s.AS != "" && !lir.Originating:
-		// TS 29.228 §6.1.4.1 step 2
 		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
 			ServerName: s.AS, WildcardedPublicIdentity: wildcard, PSIDirectRouting: s.PSIDirectRouting,
 		}))
@@ -789,7 +763,7 @@ func (h *HSS) RTR(ctx context.Context, reason cx.DeregistrationReason, impi stri
 	return cx.ParseRegistrationTerminationAnswer(ans)
 }
 
-// PPR pushes the subscriber's profile, as it is now, to the IMS (TS 29.228 §6.2.2).
+// TS 29.228 clause 6.2.2
 func (h *HSS) PPR(ctx context.Context, impi string) (cx.PushProfile, error) {
 	if p, ok := h.node.Peer(imsPeer); !ok || p.State != diameter.PeerOpen {
 		return cx.PushProfile{}, ErrNotConnected
@@ -823,7 +797,6 @@ func (h *HSS) PPR(ctx context.Context, impi string) (cx.PushProfile, error) {
 	return cx.ParsePushProfileAnswer(ans)
 }
 
-// imsAddresses are the addresses of the IMS peer: none for the fake's own.
 func imsAddresses(a netip.Addr) []netip.Addr {
 	if !a.IsValid() {
 		return nil

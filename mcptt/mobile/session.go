@@ -1,29 +1,3 @@
-// Package mobile is the MCPTT session of Ella MCPTT's Android client, for gomobile bind: an IMS UE (ims/ue)
-// registered with the ISIM's AKA and the platform's IPsec, hosting the MCPTT client (internal/client), logged on in
-// its registration (TS 24.379 §7.2.1), affiliated to the user's groups (§9.2.1.2), its calls and their speech.
-//
-// Only basic types cross to the app. The settings are JSON of schema version 1:
-//
-//	{"version": 1, "impi", "impu", "homeDomain": the ISIM's identities; "imei"; "pcscf": "addr:port"; "network": the
-//	 platform's handle of the MCPTT network, "local": the device's address on it; "accessNetworkInfo" (TS 24.229 §7.2A.4); "mcpttId", "clientId",
-//	 "participatingPsi", "groups": [...]: the user's MCPTT settings until the CMS, the PSI that of the MCPTT AS of
-//	 Ella IMS of the home domain if empty (identity.ParticipatingPSI); "logLevel": debug, info, warn or error}
-//
-// The events are JSON, each with "version" and "type":
-//
-//	registration  registered with "impu", or "error"
-//	deregistered  the network ended the registration: "reason" (ue.Deregistration), "retryAfter" in seconds
-//	stopped       the session registers no more: "reason" stop or rejected
-//	affiliation   the answer to the affiliation: "status", or "error"
-//	call          of "call": "kind" incoming ("group", "caller", "manual"), established, or ended ("cause": local,
-//	              remote, rejected, missed or error; "status", "error")
-//	floor         a notice of the floor participant of "call" (TS 24.380 §6.2.4): "notice", "party", of a grant "duration"
-//	transmit      the client starts ("on": true, "mode") or stops sending speech in "call"
-//	mode          the server requests the encoder's "mode" in "call" (RFC 4867 §4.3.1)
-//	heard         a talker heard for the first time in "call": "party"
-//
-// Calls are by an ID: the app's for a call it places (Call), the session's for an invitation. Speech crosses in
-// AMR-WB frames of the storage format (RFC 4867 §5.3), a frame each 20 ms.
 package mobile
 
 import (
@@ -51,32 +25,25 @@ import (
 	"github.com/ellanetworks/ims/ue"
 )
 
-// schemaVersion is the version of the settings and events of the session.
 const schemaVersion = 1
 
-// mcpttService is the name of the MCPTT service in the UE.
 const mcpttService = "mcptt"
 
-// minBackoff is the least wait before registering again, which the tests shorten.
 var minBackoff = 5 * time.Second
 
 const (
-	// registerTimeout bounds a registration; maxBackoff the longest wait between attempts, doubling from minBackoff.
 	registerTimeout = 30 * time.Second
 	maxBackoff      = 5 * time.Minute
 
-	// minRetryAfter is the least wait of a Retry-After, one of 0 not a loop.
 	minRetryAfter = time.Second
 
-	// stopTimeout bounds the deregistration of Stop.
 	stopTimeout = 5 * time.Second
 
-	// The media ports of the calls, four per call (client.Config).
 	minMediaPort = 30000
 	maxMediaPort = 30399
 )
 
-// noData is the frame of NO_DATA in the storage format, its quality bit set (TS 26.201 Table 1c).
+// TS 26.201 clause 4.1.3
 var noData = []byte{0x7c}
 
 type settings struct {
@@ -95,13 +62,10 @@ type settings struct {
 	Groups            []string `json:"groups"`
 	LogLevel          string   `json:"logLevel"`
 
-	// plain and noRegEvent are the tests', against a server in direct mode (mcptt plan, PM 14); t1, their T1 when not
-	// zero, shortening Timer F.
 	plain, noRegEvent bool
 	t1                time.Duration
 }
 
-// callState is a call of the session, as State gives it.
 type callState struct {
 	ID           string `json:"id"`
 	State        string `json:"state"`
@@ -117,13 +81,10 @@ type callRef struct {
 	call  *client.Call
 	state callState
 
-	// Of a call the user placed: its group; retried, placed again once (retry); held, the PTT as the user
-	// left it; left, the call left; for the call placed again.
 	group               sip.URI
 	retried, held, left bool
 }
 
-// Session is the MCPTT session of the device.
 type Session struct {
 	p      Platform
 	set    settings
@@ -142,9 +103,8 @@ type Session struct {
 	done    chan struct{}
 	ue      *ue.UE
 	client  *client.Client
-	// ended are the deregistrations of the UE not yet taken, ending signals one more.
-	ended  []ue.Event
-	ending chan struct{}
+	ended   []ue.Event
+	ending  chan struct{}
 
 	registered bool
 	calls      map[string]*callRef
@@ -152,7 +112,6 @@ type Session struct {
 	nextID     int
 }
 
-// NewSession makes the session of settings, in JSON, without registering it.
 func NewSession(p Platform, settingsJSON string) (*Session, error) {
 	var set settings
 	if err := json.Unmarshal([]byte(settingsJSON), &set); err != nil {
@@ -210,7 +169,6 @@ func newSession(p Platform, set settings) (*Session, error) {
 	return s, nil
 }
 
-// build makes the UE and its client on the network, of the device's address local, through pcscf.
 func (s *Session) build(network, local, pcscf, ani string) error {
 	l, err := netip.ParseAddr(local)
 	if err != nil {
@@ -227,7 +185,6 @@ func (s *Session) build(network, local, pcscf, ani string) error {
 		return err
 	}
 
-	// The client, made once the UE is: its service's callbacks wait for it.
 	var current atomic.Pointer[client.Client]
 
 	u, err := ue.New(ue.Config{
@@ -268,12 +225,10 @@ func (s *Session) build(network, local, pcscf, ani string) error {
 		MinPort:          minMediaPort,
 		MaxPort:          maxMediaPort,
 		Floor:            floor.ParticipantTimers{T100: time.Second, T101: time.Second},
-		// A call is placed by the PTT, as a radio: its INVITE the floor request, the floor granted in the 200
-		// (TS 24.380 §14.2.5, §14.2.4).
-		ImplicitRequest: true,
-		Granted:         true,
-		OnEvent:         s.clientEvent,
-		Logger:          s.log,
+		ImplicitRequest:  true,
+		Granted:          true,
+		OnEvent:          s.clientEvent,
+		Logger:           s.log,
 	})
 	if err != nil {
 		_ = u.Close()
@@ -290,8 +245,8 @@ func (s *Session) build(network, local, pcscf, ani string) error {
 	return nil
 }
 
-// service is the MCPTT service the UE hosts: the client's feature tags, Accept-Contact and mcptt-info (TS 24.379
-// §7.2.1, §10.1.1.2.1.1), its INVITEs.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 10.1.1.2.1.1
 func (s *Session) service(c func() *client.Client) ue.Service {
 	var features sip.FeatureSet
 
@@ -340,9 +295,11 @@ var (
 	errStopped = errors.New("mobile: session stopped")
 )
 
-// Start registers the UE, logging the client on (TS 24.379 §7.2.1), and affiliates it to the groups (§9.2.1.2); it
-// registers again when the network ends the registration, as the reason tells (TS 24.229 §5.1.1.7, RFC 3680 §5.1,
-// RFC 5626 §4.5), unless rejected, and after failures, waiting longer each time.
+// TS 24.379 clause 7.2.1
+// TS 24.379 clause 9.2.1.2
+// TS 24.229 clause 5.1.1.7
+// RFC 3680 section 5.1
+// RFC 5626 section 4.5
 func (s *Session) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -365,7 +322,6 @@ func (s *Session) startLocked() {
 	go s.run(s.ue, s.stop, s.done)
 }
 
-// halt stops the registration loop, and waits for it.
 func (s *Session) halt() {
 	s.mu.Lock()
 
@@ -407,8 +363,6 @@ func (s *Session) run(u *ue.UE, stop, done chan struct{}) {
 			return
 		}
 
-		// TS 24.229 §5.1.2A.1.6 D, §5.1.9: its P-CSCF marked unavailable, the session discovers the P-CSCFs anew, the
-		// platform's for the network, which clears the marks, and registers at once.
 		if errors.Is(err, ue.ErrPCSCFUnavailable) {
 			u.ClearPCSCFMarks()
 			continue
@@ -420,7 +374,6 @@ func (s *Session) run(u *ue.UE, stop, done chan struct{}) {
 			wait := retryDelay(failures)
 			failures++
 
-			// TS 24.229 §5.1.1.2.1: not again before a Retry-After, the count of failures then reset.
 			if ra, ok := retryAfter(err); ok {
 				wait, failures = max(ra, minRetryAfter), 0
 			}
@@ -443,10 +396,8 @@ func (s *Session) run(u *ue.UE, stop, done chan struct{}) {
 	}
 }
 
-// retryDelay is the wait before registering again after failures consecutive failed attempts before the last (TS
-// 24.229 §5.1.1.2.1 a, RFC 5626 §4.5): uniform between half and all of min(maxBackoff, minBackoff·2^failures), so that
-// the clients of a network back do not register at once. The doubling compared before it is made: minBackoff·2^failures
-// overflows past 30 failures.
+// TS 24.229 clause 5.1.1.2.1
+// RFC 5626 section 4.5
 func retryDelay(failures int) time.Duration {
 	w := maxBackoff
 	if minBackoff <= maxBackoff>>failures {
@@ -456,7 +407,7 @@ func retryDelay(failures int) time.Duration {
 	return w/2 + rand.N(w/2+1)
 }
 
-// retryAfter is the Retry-After of a REGISTER's final response err, in seconds (RFC 3261 §20.33), if any.
+// RFC 3261 section 20.33
 func retryAfter(err error) (time.Duration, bool) {
 	var re *ue.ResponseError
 	if !errors.As(err, &re) {
@@ -476,7 +427,6 @@ func retryAfter(err error) (time.Duration, bool) {
 	return 0, false
 }
 
-// registeredNow records and reports the registration, and affiliates the client.
 func (s *Session) registeredNow(u *ue.UE, affiliate bool) {
 	s.mu.Lock()
 	s.registered = true
@@ -489,9 +439,6 @@ func (s *Session) registeredNow(u *ue.UE, affiliate bool) {
 	}
 }
 
-// registration waits for the registration to end, and returns how long to wait before registering again: after the
-// network ended it, unregistered, expired, its flow failed, a retry-after of probation; the UE registered by itself
-// after a deactivation. ok is false to register no more: stopped, or rejected.
 func (s *Session) registration(u *ue.UE, stop chan struct{}) (time.Duration, bool) {
 	for {
 		select {
@@ -509,7 +456,6 @@ func (s *Session) registration(u *ue.UE, stop chan struct{}) (time.Duration, boo
 
 			switch e.Deregistered {
 			case ue.DeregisteredRejected:
-				// TS 24.229 §5.1.1.7: the dialogs of the identities released.
 				s.leaveCalls()
 				s.events.emit(event{Type: "stopped", Reason: "rejected"})
 
@@ -530,7 +476,7 @@ func (s *Session) registration(u *ue.UE, stop chan struct{}) (time.Duration, boo
 	}
 }
 
-// reregistered waits for the UE's own registration after a deactivation (TS 24.229 §5.1.1.7).
+// TS 24.229 clause 5.1.1.7
 func (s *Session) reregistered(u *ue.UE, stop chan struct{}) bool {
 	deadline := s.clock.Now().Add(registerTimeout)
 
@@ -549,8 +495,6 @@ func (s *Session) reregistered(u *ue.UE, stop chan struct{}) bool {
 
 func (s *Session) affiliate() { s.affiliateThen(nil) }
 
-// affiliateThen affiliates the client to the user's groups, then calls then, if not nil, with the outcome: nil of a
-// 2xx, or of no client or no groups to affiliate to.
 func (s *Session) affiliateThen(then func(error)) {
 	if then == nil {
 		then = func(error) {}
@@ -562,7 +506,6 @@ func (s *Session) affiliateThen(then func(error)) {
 		return
 	}
 
-	// gomobile takes no context: each affiliation is the root of its trace.
 	err := c.Affiliate(context.Background(), s.groups, func(res *sip.Response, err error) {
 		e := event{Type: "affiliation"}
 		if res != nil {
@@ -586,11 +529,9 @@ func (s *Session) affiliateThen(then func(error)) {
 	}
 }
 
-// reaffiliateDelay is the wait before an affiliation of a re-registration refused is published again.
 const reaffiliateDelay = 2 * time.Second
 
-// reregistered2xx reports whether res is a 2xx to a re-registration of the UE, of a contact registered: once
-// registered, a REGISTER of its own refreshing it (TS 24.229 §5.1.1.4).
+// TS 24.229 clause 5.1.1.4
 func (s *Session) reregistered2xx(res *sip.Response) bool {
 	if cseq, err := res.Header.CSeq(); err != nil || cseq.Method != "REGISTER" || res.StatusCode/100 != 2 {
 		return false
@@ -608,12 +549,7 @@ func (s *Session) reregistered2xx(res *sip.Response) bool {
 	})
 }
 
-// ueEvent takes the events of the UE: how the network ended the registration, queued in order.
 func (s *Session) ueEvent(e ue.Event) {
-	// A re-registration affiliates the client again: its affiliations refreshed at a server that kept them, published
-	// anew at one that lost them, restarted (TS 24.379 §9.2.1.2), as their publication, of 2^32-1 seconds, is not.
-	// The third-party REGISTER that binds the client again follows the 2xx (TS 24.229 §5.4.1.7): an affiliation that
-	// came first, refused, is published again once, after reaffiliateDelay.
 	if e.Response != nil && s.reregistered2xx(e.Response) {
 		go s.affiliateThen(func(err error) {
 			if err != nil {
@@ -646,7 +582,6 @@ func (s *Session) takeEnded() []ue.Event {
 	return out
 }
 
-// drainEnded forgets the deregistrations of a registration before a new one.
 func (s *Session) drainEnded() {
 	s.takeEnded()
 
@@ -656,8 +591,6 @@ func (s *Session) drainEnded() {
 	}
 }
 
-// Stop leaves the calls, deregisters the UE, logging the client off, and closes the session, its last event
-// "stopped". It may take seconds: the app calls it off its main thread, and may call it from Event.
 func (s *Session) Stop() {
 	s.mu.Lock()
 	if s.stopped {
@@ -687,10 +620,6 @@ func (s *Session) Stop() {
 	s.events.close()
 }
 
-// SetNetwork tells the session of the network now: the platform's handle of the MCPTT network, the device's address
-// on it, the P-CSCF, the access network info (TS 24.229 §7.2A.4). Another cell changes the access network info of the
-// next requests; another network, address or P-CSCF makes a new registration, the calls left: a network lost and
-// back, of the same address, has sockets of its own.
 func (s *Session) SetNetwork(network, local, pcscf, accessNetworkInfo string) error {
 	s.mu.Lock()
 	same := network == s.set.Network && local == s.set.Local && pcscf == s.set.PCSCF
@@ -714,7 +643,6 @@ func (s *Session) SetNetwork(network, local, pcscf, accessNetworkInfo string) er
 	s.halt()
 	s.leaveCalls()
 
-	// The old network gone, nothing signalled on it.
 	_ = u.Close()
 
 	if err := s.build(network, local, pcscf, accessNetworkInfo); err != nil {
@@ -730,7 +658,6 @@ func (s *Session) SetNetwork(network, local, pcscf, accessNetworkInfo string) er
 	return nil
 }
 
-// Woken is the alarm id of Platform.Wake gone off.
 func (s *Session) Woken(id int64) { s.clock.woken(id) }
 
 func (s *Session) currentUE() *ue.UE {
@@ -752,8 +679,7 @@ var (
 	errCallID = errors.New("mobile: call ID empty or in use")
 )
 
-// Call places a prearranged group call to group (TS 24.379 §10.1.1.2.1.1), of the app's ID id, unique among the
-// session's calls: the ID of its events.
+// TS 24.379 clause 10.1.1.2.1.1
 func (s *Session) Call(id, group string) error {
 	g, err := sip.ParseURI(group)
 	if err != nil {
@@ -767,7 +693,6 @@ func (s *Session) Call(id, group string) error {
 		return errCallID
 	}
 
-	// The lock held, the call's events wait for its ID (the agent never waits for them).
 	c, err := s.client.Call(context.Background(), g)
 	if err != nil {
 		return err
@@ -779,11 +704,8 @@ func (s *Session) Call(id, group string) error {
 	return nil
 }
 
-// retry places the call of r again, once, when its INVITE was refused as of a user the participating function does
-// not know (TS 24.379 §10.1.1.3.1.1 step 2a, warning 141), after registering and affiliating again; or as of a user
-// not affiliated to the group (§10.1.1.4.2, warning 120), after affiliating again: of a server that lost the
-// registration's binding or the affiliations, or of a registration that expired as the user pressed. A
-// re-registration's third-party REGISTER binds the user again (TS 24.229 §5.4.1.7). Its own failure is the call's.
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 10.1.1.4.2
 func (s *Session) retry(r *callRef, res *sip.Response) bool {
 	unknown := res != nil && res.StatusCode == 404 && warned(res, identity.WarnUserUnknown)
 	if !unknown && (res == nil || res.StatusCode != 403 || !warned(res, identity.WarnNotAffiliated) ||
@@ -836,7 +758,6 @@ func (s *Session) retry(r *callRef, res *sip.Response) bool {
 			var c *client.Call
 			if c, err = s.client.Call(context.Background(), r.group); err == nil {
 				r.call, s.byCall[c] = c, r
-				// Released, or left, while registering: as the client takes a release before the call is up.
 				if !r.held {
 					c.ReleasePTT()
 				}
@@ -860,7 +781,7 @@ func (s *Session) retry(r *callRef, res *sip.Response) bool {
 	return true
 }
 
-// warned reports whether res has the Warning of text (TS 24.379 §4.4).
+// TS 24.379 clause 4.4
 func warned(res *sip.Response, text string) bool {
 	ws, err := res.Header.Warnings()
 	if err != nil {
@@ -876,7 +797,6 @@ func warned(res *sip.Response, text string) bool {
 	return false
 }
 
-// callOf is the call of the session of c, an invitation given an ID "in-n" the first time.
 func (s *Session) callOf(c *client.Call) *callRef {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -933,7 +853,6 @@ func (s *Session) do(id string, f func(c *client.Call)) error {
 	return nil
 }
 
-// leaveCalls leaves every call of the session.
 func (s *Session) leaveCalls() {
 	s.mu.Lock()
 	calls := make([]*client.Call, 0, len(s.calls))
@@ -948,9 +867,7 @@ func (s *Session) leaveCalls() {
 	}
 }
 
-// PressPTT and ReleasePTT press and release the PTT of the call (TS 24.380 §6.2.4); Accept and Decline answer an
-// invitation of manual commencement (TS 24.379 §6.2.3.2); Leave leaves the call (§10.1.1.2.3). Holding or muting a
-// call is the app's: it refuses the PTT, and stops taking NextSpeech.
+// TS 24.380 clause 6.2.4
 func (s *Session) PressPTT(id string) error {
 	s.mark(id, func(r *callRef) { r.held = true })
 	return s.do(id, (*client.Call).PressPTT)
@@ -966,11 +883,9 @@ func (s *Session) Decline(id string) error { return s.do(id, (*client.Call).Decl
 
 func (s *Session) Leave(id string) error {
 	s.mark(id, func(r *callRef) { r.left = true })
-	// gomobile takes no context: the user's leaving is the root of its trace.
 	return s.do(id, func(c *client.Call) { c.Leave(context.Background()) })
 }
 
-// mark records what the user did of the call id, for a call placed again (retry).
 func (s *Session) mark(id string, f func(r *callRef)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -980,8 +895,6 @@ func (s *Session) mark(id string, f func(r *callRef)) {
 	}
 }
 
-// SendSpeech sends a frame of the encoder in the call while it transmits (client.Call.SendSpeech); NextSpeech is the
-// frame to decode for the next 20 ms (client.Call.NextSpeech), NO_DATA of a call gone.
 func (s *Session) SendSpeech(id string, frame []byte) error {
 	c, err := s.call(id)
 	if err != nil {
@@ -1000,9 +913,6 @@ func (s *Session) NextSpeech(id string) []byte {
 	return c.NextSpeech()
 }
 
-// State is the state of the session, in JSON: {"version", "registered", "calls": [{"id", "state" (calling,
-// incoming, established), "group", "caller", "floor" (its last notice), "talker", "transmitting"}]}, for the app to
-// rebuild its own after a restart.
 func (s *Session) State() string {
 	s.mu.Lock()
 
@@ -1022,10 +932,8 @@ func (s *Session) State() string {
 	return string(b)
 }
 
-// logHandler gives the platform each line of the log with its level, from a minimum.
 type logHandler struct {
-	p Platform
-	// min is the handler's least level, shared with the handlers of its attributes, changed at run time.
+	p     Platform
 	min   *slog.LevelVar
 	mu    *sync.Mutex
 	buf   *bytes.Buffer
@@ -1043,7 +951,6 @@ func newLogHandler(p Platform, level string) *logHandler {
 
 func (h *logHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.min.Level() }
 
-// setLevel sets v to level, a level of log/slog in text ("debug", "info", "warn", "error"), info if it is none.
 func setLevel(v *slog.LevelVar, level string) {
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(level)); err != nil || level == "" {
@@ -1053,7 +960,6 @@ func setLevel(v *slog.LevelVar, level string) {
 	v.Set(l)
 }
 
-// SetLogLevel changes the level of the session's log at once: "debug", "info", "warn" or "error".
 func (s *Session) SetLogLevel(level string) { setLevel(s.level, level) }
 
 func (h *logHandler) Handle(ctx context.Context, r slog.Record) error {

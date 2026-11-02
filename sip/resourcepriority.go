@@ -5,13 +5,13 @@ import (
 	"strings"
 )
 
-// Namespaces of RFC 8101 for MCPTT: mcpttp for priority, mcpttq for queueing, values 0 (lowest) to 15.
+// RFC 8101
 const (
 	ResourcePriorityMCPTTP = "mcpttp"
 	ResourcePriorityMCPTTQ = "mcpttq"
 )
 
-// ResourcePriority is an r-value of Resource-Priority or Accept-Resource-Priority (RFC 4412 §3.1).
+// RFC 4412 section 3.1
 type ResourcePriority struct {
 	Namespace string
 	Priority  string
@@ -26,12 +26,13 @@ func ParseResourcePriority(s string) (ResourcePriority, error) {
 	return ResourcePriority{Namespace: ns, Priority: p}, nil
 }
 
-// RFC 4412 §3.1, RFC 6665 §8.4: token-nodot.
+// RFC 4412 section 3.1
+// RFC 6665 section 8.4
 func isTokenNoDot(s string) bool {
 	return s != "" && !strings.Contains(s, ".") && isToken(s)
 }
 
-// Equal compares case-insensitively (RFC 4412 §3.1).
+// RFC 4412 section 3.1
 func (r ResourcePriority) Equal(o ResourcePriority) bool {
 	return strings.EqualFold(r.Namespace, o.Namespace) && strings.EqualFold(r.Priority, o.Priority)
 }
@@ -40,8 +41,7 @@ func (r ResourcePriority) String() string {
 	return r.Namespace + "." + r.Priority
 }
 
-// ResourcePriorities are the r-values of the Resource-Priority header fields. A namespace appears at most once
-// (RFC 4412 §3.1): the values come with the error when it does not, for the server to answer or apply its policy.
+// RFC 4412 section 3.1
 func (fs Header) ResourcePriorities() ([]ResourcePriority, error) {
 	rs, err := fs.rValues("Resource-Priority")
 	if err != nil {
@@ -59,7 +59,7 @@ func (fs Header) ResourcePriorities() ([]ResourcePriority, error) {
 	return rs, nil
 }
 
-// AcceptResourcePriorities are the r-values of the Accept-Resource-Priority header fields (RFC 4412 §3.2).
+// RFC 4412 section 3.2
 func (fs Header) AcceptResourcePriorities() ([]ResourcePriority, error) {
 	return fs.rValues("Accept-Resource-Priority")
 }

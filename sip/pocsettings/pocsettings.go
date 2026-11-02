@@ -1,10 +1,3 @@
-// Package pocsettings is the PoC settings document of the poc-settings event package, application/poc-settings+xml
-// (RFC 4354 §6).
-//
-// Decode keeps the extension elements (RFC 4354 §6.1: the xs:any of the schema), and the elements it cannot decode,
-// malformed or repeated, as Other, and the extension attributes (xs:anyAttribute, of any namespace) as Attr; Encode
-// writes them back. An extension, such as TS 24.379 §7.4.1.2's <selected-user-profile-index> of an <entity>, decodes
-// from them and sets them.
 package pocsettings
 
 import (
@@ -20,64 +13,42 @@ import (
 const (
 	ContentType = "application/poc-settings+xml"
 	Namespace   = "urn:oma:params:xml:ns:poc:poc-settings"
-	// Event is the name of the event package (§5.1).
+	// RFC 4354 section 5.1
 	Event = "poc-settings"
 )
 
-// maxSize bounds a document: the settings of the EPAs of a user (§5.16) fit.
 const maxSize = 1 << 16
 
-// Settings is the <poc-settings> root element (§6).
+// RFC 4354 section 6
 type Settings struct {
-	// Entities are the settings per EPA: one in a publication (§5.14), none in a notification of no publication
-	// (§5.7).
 	Entities []Entity
-	// Attr are the extension attributes.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions of other namespaces, and the elements of
-	// the poc-settings namespace unknown or malformed.
-	Other []*xmltree.Element
+	Attr     []xml.Attr
+	Other    []*xmltree.Element
 }
 
-// Entity is an <entity> (§6): the settings of an EPA.
+// RFC 4354 section 6
 type Entity struct {
-	// ID is the globally unique identifier of the EPA, unique among the entities.
-	ID string
-	// IncomingSessionBarring is the <isb-settings>, nil without one.
-	IncomingSessionBarring *Toggle
-	// AnswerMode is the <am-settings>, nil without one.
-	AnswerMode *AnswerModeSettings
-	// IncomingPersonalAlertBarring is the <ipab-settings>, nil without one.
+	ID                           string
+	IncomingSessionBarring       *Toggle
+	AnswerMode                   *AnswerModeSettings
 	IncomingPersonalAlertBarring *Toggle
-	// SimultaneousSessionsSupport is the <sss-settings>, nil without one.
-	SimultaneousSessionsSupport *Toggle
-	// Attr are the extension attributes.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, such as TS 24.379 §7.4.1.2's, and the
-	// elements of the poc-settings namespace unknown, malformed or repeated.
-	Other []*xmltree.Element
+	SimultaneousSessionsSupport  *Toggle
+	Attr                         []xml.Attr
+	Other                        []*xmltree.Element
 }
 
-// Toggle is an <isb-settings>, <ipab-settings> or <sss-settings>: the 'active' attribute of its element
-// <incoming-session-barring>, <incoming-personal-alert-barring> or <simultaneous-sessions-support>.
 type Toggle struct {
 	Active bool
-	// Attr are the extension attributes of the settings element.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, of any namespace.
-	Other []*xmltree.Element
+	Attr   []xml.Attr
+	Other  []*xmltree.Element
 }
 
-// AnswerModeSettings is an <am-settings>.
 type AnswerModeSettings struct {
 	AnswerMode AnswerMode
-	// Attr are the extension attributes.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, of any namespace.
-	Other []*xmltree.Element
+	Attr       []xml.Attr
+	Other      []*xmltree.Element
 }
 
-// AnswerMode is the value of an <answer-mode>.
 type AnswerMode string
 
 const (
@@ -85,20 +56,14 @@ const (
 	Manual    AnswerMode = "manual"
 )
 
-// The elements of the settings, and those of their values.
 var toggles = map[string]string{
 	"isb-settings":  "incoming-session-barring",
 	"ipab-settings": "incoming-personal-alert-barring",
 	"sss-settings":  "simultaneous-sessions-support",
 }
 
-// ErrValue is wrapped by the errors of the elements Decode does not decode, malformed (RFC 4354 §6.1): the document
-// it returns is usable without them, and keeps them.
 var ErrValue = errors.New("malformed element")
 
-// Decode decodes the document b. A malformed element is kept in the Other of its parent, with an error wrapping
-// ErrValue: an <entity> without id or of an id not unique (§6), settings without their element or of a malformed
-// one. An element given more than the schema allows is kept the same way, the first counting, malformed or not.
 func Decode(b []byte) (Settings, error) {
 	if len(b) > maxSize {
 		return Settings{}, fmt.Errorf("pocsettings: document of %d bytes exceeds %d", len(b), maxSize)
@@ -144,7 +109,6 @@ func (d *decoder) fail(element, format string, a ...any) {
 	d.errs = append(d.errs, fmt.Errorf("pocsettings: <%s>: %w: %s", element, ErrValue, fmt.Sprintf(format, a...)))
 }
 
-// known is the name of e in the poc-settings namespace, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -168,7 +132,6 @@ func (d *decoder) entity(e *xmltree.Element) (Entity, bool) {
 		}
 	}
 
-	// The settings already given, which the schema allows once (§6.1).
 	seen := map[string]bool{}
 
 	for _, c := range e.Elements() {
@@ -213,7 +176,7 @@ func (d *decoder) entity(e *xmltree.Element) (Entity, bool) {
 	return en, true
 }
 
-// toggle decodes settings of an element of an 'active' attribute: the element first, of nothing else (§6.1).
+// RFC 4354 section 6.1
 func (d *decoder) toggle(e *xmltree.Element) (*Toggle, bool) {
 	cs := e.Elements()
 	if len(cs) == 0 || known(cs[0]) != toggles[e.Name.Local] {
@@ -239,7 +202,6 @@ func (d *decoder) toggle(e *xmltree.Element) (*Toggle, bool) {
 	return t, true
 }
 
-// answerMode decodes an <am-settings>: its <answer-mode> first.
 func (d *decoder) answerMode(e *xmltree.Element) (*AnswerModeSettings, bool) {
 	cs := e.Elements()
 	if len(cs) == 0 || known(cs[0]) != "answer-mode" {
@@ -256,8 +218,7 @@ func (d *decoder) answerMode(e *xmltree.Element) (*AnswerModeSettings, bool) {
 	return &AnswerModeSettings{AnswerMode: m, Attr: e.Attr, Other: cs[1:]}, true
 }
 
-// Encode encodes s, in the order of the schema (§6.1): the elements of Other after those decoded, where the schema's
-// extension point is.
+// RFC 4354 section 6.1
 func Encode(s Settings) ([]byte, error) {
 	root := &xmltree.Element{Name: name("poc-settings"), Attr: s.Attr}
 

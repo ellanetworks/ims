@@ -9,8 +9,7 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// A call bridged from alice to bob: the offer of alice reaches bob, his 180 and 200 with the answer reach her; her
-// BYE reaches bob, and its 200 comes back once he answered his (TS 24.379 §6.3.2.1.6); the call then ends.
+// TS 24.379 clause 6.3.2.1.6
 func TestBridgeCall(t *testing.T) {
 	n := newNet(t)
 
@@ -81,8 +80,8 @@ func TestBridgeCall(t *testing.T) {
 	settled(t, n, alice, bob, b.party)
 }
 
-// RFC 3262: the answer of bob in a reliable 183 reaches alice in a reliable 183, PRACKed on each leg; his 200 then
-// carries no session description to her, and waits for her PRACK (TS 24.379 §6.3.2.2.5.2 step 2b).
+// RFC 3262
+// TS 24.379 clause 6.3.2.2.5.2
 func TestBridgeReliableAnswer(t *testing.T) {
 	n := newNet(t)
 
@@ -113,8 +112,7 @@ func TestBridgeReliableAnswer(t *testing.T) {
 	bob.next("established")
 }
 
-// RFC 3261 §13.2.1: alice's INVITE without an offer: bob's offer in his 200 reaches her in hers, and her answer in
-// the ACK reaches him in his.
+// RFC 3261 section 13.2.1
 func TestBridgeOfferIn2xx(t *testing.T) {
 	n := newNet(t)
 
@@ -147,8 +145,7 @@ func TestBridgeOfferIn2xx(t *testing.T) {
 	bob.next("established")
 }
 
-// RFC 3262 §5: an offer of bob in a reliable 183, to alice's INVITE without one, reaches her in a reliable 183;
-// her answer in the PRACK reaches him in his.
+// RFC 3262 section 5
 func TestBridgeOfferInReliable1xx(t *testing.T) {
 	n := newNet(t)
 
@@ -180,8 +177,7 @@ func TestBridgeOfferInReliable1xx(t *testing.T) {
 	bob.next("established")
 }
 
-// The CANCEL of alice cancels bob's INVITE, with her Reason (RFC 3326); his 487 does not reach her, whose INVITE
-// the agent answered with a 487 already.
+// RFC 3326
 func TestBridgeCancel(t *testing.T) {
 	n := newNet(t)
 
@@ -218,7 +214,7 @@ func TestBridgeCancel(t *testing.T) {
 	settled(t, n, alice, bob, b.party)
 }
 
-// A failure of bob reaches alice with its Warning; a 503 as a 500 (RFC 3261 §16.7 step 6).
+// RFC 3261 section 16.7
 func TestBridgeFailure(t *testing.T) {
 	for _, c := range []struct{ code, want int }{{486, 486}, {503, 500}, {302, 480}} {
 		n := newNet(t)

@@ -12,8 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip/xsd"
 )
 
-// Encode encodes i, in the order of the schema (§6): the elements of Other after those decoded, where the schema's
-// extension point is. Keys are to be unique among their siblings (§4.5), as Decode requires.
+// RFC 4575 section 6
 func Encode(i Info) ([]byte, error) {
 	root, err := i.element("conference-info")
 	if err != nil {
@@ -361,7 +360,6 @@ func (ep *Endpoint) element() (*xmltree.Element, error) {
 
 	var err error
 
-	// The values and executions in the order of the schema.
 	for _, x := range []struct {
 		local, value string
 		execution    *Execution
@@ -434,8 +432,6 @@ func (ep *Endpoint) element() (*xmltree.Element, error) {
 	return e, nil
 }
 
-// setState sets the state s of e, if any, and the extension attributes as: of a namespace, other than
-// conference-info's.
 func setState(e *xmltree.Element, s State, as []xml.Attr) error {
 	switch s {
 	case "":
@@ -458,7 +454,6 @@ func setState(e *xmltree.Element, s State, as []xml.Attr) error {
 
 func attr(local, value string) xml.Attr { return xml.Attr{Name: xml.Name{Local: local}, Value: value} }
 
-// text is the content of an element of the string s: none for an empty one.
 func text(s string) []xmltree.Node {
 	if s == "" {
 		return nil

@@ -45,8 +45,8 @@ func (s *scene) pushProfile() {
 	}
 }
 
-// TS 29.228 §6.5.2.1, TS 24.229 §5.4.1.8: the HSS adds an identity to the registered set, then removes it; the UE and
-// the P-CSCF learn of each from the reg event.
+// TS 29.228 clause 6.5.2.1
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileIdentities(t *testing.T) {
 	s := newScene(t)
 	u := s.newUE(false, testue.Config{T1: fastT1})
@@ -82,8 +82,7 @@ func TestPushProfileIdentities(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 4 b: a new AS of the REGISTER gets its third-party REGISTER from the re-registration the
-// shortened registration brings.
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileRegisterAS(t *testing.T) {
 	s := newSceneWith(t, func(srv *server.Server) {
 		srv.ASTimeout = asTimeout
@@ -110,8 +109,8 @@ func TestPushProfileRegisterAS(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.6, TS 24.229 §5.4.1.8: an HSS that downloads the profile with every registration, in place of a push,
-// changes the registered set at the UE's next re-registration, a refresh without a challenge included.
+// TS 29.228 clause 6.6
+// TS 24.229 clause 5.4.1.8
 func TestReRegistrationProfile(t *testing.T) {
 	s := newScene(t)
 	u := s.newUE(false, testue.Config{T1: fastT1})

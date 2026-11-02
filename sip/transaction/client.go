@@ -12,8 +12,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ClientHandler is the user of a client transaction. Each call's ctx is that of the request (Layer.Request), ending
-// only once the layer closes: what a response causes is part of the trace of the request.
 type ClientHandler interface {
 	HandleResponse(ctx context.Context, res *sip.Response)
 
@@ -30,21 +28,15 @@ type ClientTransaction struct {
 	early  []*sip.Response
 	ack    *sip.Request
 
-	cancelled bool
-	// cancelCause is the span context of what cancelled the INVITE, which its CANCEL links to.
+	cancelled   bool
 	cancelCause trace.SpanContext
 	prepare     func(*sip.Request)
 
-	// ctx carries the span of the transaction, the parent of its CANCEL's, and caller the trace of the request, which
-	// the handler's calls get.
 	ctx    context.Context
 	caller context.Context
 	span   span
 }
 
-// Request starts a client transaction of req, in a span of the trace of ctx. The request carries the trace context of
-// the span when its flow carries trace context (Config.TraceContext). ctx is the trace the request is part of: the
-// transaction does not end with it.
 func (l *Layer) Request(ctx context.Context, req *sip.Request, h ClientHandler) (*ClientTransaction, error) {
 	if req.Method == "ACK" {
 		return nil, ErrAck
@@ -110,8 +102,7 @@ func (tx *ClientTransaction) Request() *sip.Request {
 	return tx.req.Clone()
 }
 
-// Cancel cancels the INVITE (RFC 3261 §9.1), the CANCEL carrying the extra header fields. ctx is the trace of what
-// cancels it: the CANCEL's span, a child of the INVITE's, links to it.
+// RFC 3261 section 9.1
 func (tx *ClientTransaction) Cancel(ctx context.Context, extra ...sip.Field) error {
 	extra = slices.Clone(extra)
 
@@ -122,8 +113,7 @@ func (tx *ClientTransaction) Cancel(ctx context.Context, extra ...sip.Field) err
 	})
 }
 
-// CancelWith cancels the INVITE (RFC 3261 §9.1), prepare, when not nil, completing the CANCEL built for it: a Reason
-// (RFC 3326), or the SDP of a precondition failure (RFC 3312 §8). ctx is the trace of what cancels it, as for Cancel.
+// RFC 3261 section 9.1
 func (tx *ClientTransaction) CancelWith(ctx context.Context, prepare func(cancel *sip.Request)) error {
 	if !tx.invite {
 		return ErrNotInvite
@@ -147,9 +137,9 @@ func (tx *ClientTransaction) CancelWith(ctx context.Context, prepare func(cancel
 	return nil
 }
 
-// sentResult takes the outcome of sending the request: a failure toward the network is a transport error (RFC 3261
-// §17.1.4, §18.4). Once sent, the request waits for its response, which can come on another connection than the one
-// it went out on (§18.2.2), or for its timer.
+// RFC 3261 section 17.1.4
+// RFC 3261 section 18.4
+// RFC 3261 section 18.2.2
 func (tx *ClientTransaction) sentResult(sent *sip.Request, err error) {
 	if err != nil {
 		if networkFailure(err) {
@@ -173,20 +163,16 @@ func (tx *ClientTransaction) sentResult(sent *sip.Request, err error) {
 	}
 }
 
-// networkFailure reports whether err, of sending a request, is the network's: not the layer closing, nor a local
-// failure, such as no listener on the local address, which the next hop has nothing to do with.
 func networkFailure(err error) bool {
 	return !errors.Is(err, ErrClosed) && !errors.Is(err, transport.ErrNoListener) &&
 		!errors.Is(err, transport.ErrUnsupportedTransport)
 }
 
-// failClient fails the transaction, and tells the layer's OnClientError of it, with the state it failed in.
 func (tx *ClientTransaction) failClient(err error) {
 	if tx.state == Terminated {
 		return
 	}
 
-	// Told before the transaction's user, in the order of the transaction's events.
 	if f := tx.layer.onClientError; f != nil {
 		in, req := tx.state, tx.req
 		tx.emit(func() { f(req, in, err) })

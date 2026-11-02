@@ -11,8 +11,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestRegisterIsPartOfTheCallersTrace checks that the REGISTERs of Register are children of its caller's span, and
-// that the UE sends the P-CSCF no trace context.
 func TestRegisterIsPartOfTheCallersTrace(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))

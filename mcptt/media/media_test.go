@@ -49,7 +49,6 @@ func newEnv(t *testing.T, opts ...func(*media.Config)) *env {
 	return &env{t: t, n: n, net: mn, r: r}
 }
 
-// client is a participant's endpoint: its audio, RTCP and control sockets, and what its leg reported.
 type client struct {
 	audio, rtcp, control *mediatest.Peer
 	leg                  *media.Leg
@@ -106,10 +105,8 @@ func packet(t testing.TB, ssrc uint32, seq uint16, payload ...byte) []byte {
 	return b
 }
 
-// TS 24.380 §6.3.4.4.5 step 4: the talker's media reaches every other leg and not the talker, in the Audio SSRC
-// assigned the talker's leg (§6.2.4.4.2, §8.2.3.16) whichever it sent, in each receiver's payload type (RFC 3264
-// §5.1), the rest unchanged; the others' is dropped and reported; the talker's of another payload type dropped, not
-// reported; media is reported at most once per report interval.
+// TS 24.380 clause 6.3.4.4.5
+// RFC 3264 section 5.1
 func TestDistribution(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()
@@ -124,7 +121,6 @@ func TestDistribution(t *testing.T) {
 
 	c.Forward(a.leg, true)
 
-	// A talker of an SSRC of its own (before Rel-18), the marker set.
 	sent := rtp.Packet{Marker: true, PayloadType: 96, Sequence: 1, Timestamp: 320, SSRC: 0xabcd, Payload: []byte{1, 2, 3}}
 	p, _ := sent.Append(nil)
 	_ = a.audio.WriteTo(p, a.leg.Audio())
@@ -151,7 +147,6 @@ func TestDistribution(t *testing.T) {
 
 	e.n.Advance(200 * time.Millisecond)
 
-	// b without permission: dropped, reported; a of a payload type it did not negotiate: dropped, not reported.
 	_ = b.audio.WriteTo(packet(t, bs, 1, 9), b.leg.Audio())
 
 	other := rtp.Packet{PayloadType: 101, Sequence: 2, SSRC: as, Payload: []byte{9}}
@@ -164,7 +159,6 @@ func TestDistribution(t *testing.T) {
 		t.Fatalf("dropped media forwarded, or reported wrong: b %d, a %d", b.media.Load(), a.media.Load())
 	}
 
-	// Reports at most once per interval; packets without payload not reported.
 	for i := range 5 {
 		_ = a.audio.WriteTo(packet(t, as, uint16(3+i), 1), a.leg.Audio())
 	}
@@ -202,8 +196,7 @@ func TestDistribution(t *testing.T) {
 	}
 }
 
-// RFC 3264 §5.1: the SDP's address tells nothing of the source of the media: the talker's media from another
-// address forwarded; malformed media dropped.
+// RFC 3264 section 5.1
 func TestSource(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()
@@ -220,8 +213,8 @@ func TestSource(t *testing.T) {
 	}
 }
 
-// RFC 3550 §7.2, RFC 5761: the relay, a translator, forwards the RTCP of each leg to the others unchanged, on their
-// RTCP port or multiplexed.
+// RFC 3550 section 7.2
+// RFC 5761
 func TestRTCP(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()
@@ -265,9 +258,11 @@ func TestRTCP(t *testing.T) {
 	}
 }
 
-// TS 24.380 §4.3.3.1, §8.1, §14.2.7: floor control on the shared port, by the SSRC the server assigned, or on a port of
-// the leg; one APP packet a message, more in a datagram; messages of an unknown subtype ignored (§8.1.4); §14.4: a peer
-// offered mc_floor_ssrc that answers without it found by its address.
+// TS 24.380 clause 4.3.3.1
+// TS 24.380 clause 8.1
+// TS 24.380 clause 14.2.7
+// TS 24.380 clause 8.1.4
+// TS 24.380 clause 14.4
 func TestFloorControl(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()
@@ -335,8 +330,6 @@ func TestFloorControl(t *testing.T) {
 	}
 }
 
-// Floor control on the shared port of no leg open, of an SSRC and a source the relay does not know or of a leg
-// released, is dropped: counted, and logged at debug.
 func TestFloorDropped(t *testing.T) {
 	var logs bytes.Buffer
 
@@ -379,8 +372,6 @@ func TestFloorDropped(t *testing.T) {
 	}
 }
 
-// The ports of a leg: audio even, RTCP the next unless multiplexed; a control port any; the search on from the last
-// ports taken; the range exhausted; the advertised address.
 func TestPorts(t *testing.T) {
 	n := siptest.NewNet(t)
 
@@ -425,7 +416,6 @@ func TestPorts(t *testing.T) {
 	}
 }
 
-// A leg added after the relay closed gets ErrClosed, its ports free.
 func TestAddLegClosed(t *testing.T) {
 	n := siptest.NewNet(t)
 	m := mediatest.New(n.Scheduler())
@@ -455,7 +445,6 @@ func TestAddLegClosed(t *testing.T) {
 	}
 }
 
-// A port taken outside the relay is skipped, and the ports reserved with it are free again.
 func TestPortsTakenOutside(t *testing.T) {
 	n := siptest.NewNet(t)
 	m := mediatest.New(n.Scheduler())
@@ -486,7 +475,6 @@ func TestPortsTakenOutside(t *testing.T) {
 	}
 }
 
-// The first leg's ports in the range of a lower bound that is not a multiple of its span.
 func TestPortRange(t *testing.T) {
 	for _, rg := range [][2]uint16{{20000, 20100}, {32768, 60999}, {45002, 45999}, {20000, 20999}} {
 		n := siptest.NewNet(t)
@@ -517,8 +505,8 @@ func TestPortRange(t *testing.T) {
 	}
 }
 
-// RFC 3264 §5.1, §6.1: media not sent to a peer that does not receive, nor taken from one that does not send, nor
-// reported then; RTCP whatever the direction.
+// RFC 3264 section 5.1
+// RFC 3264 section 6.1
 func TestDirection(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()
@@ -562,9 +550,7 @@ func TestDirection(t *testing.T) {
 	}
 }
 
-// RFC 3550 §7.2: the RTCP of a talker of an SSRC of its own (before Rel-18) translated as its RTP is: its sender
-// report and SDES to the others in the assigned SSRC; the others' reports on it, in the assigned SSRC, to it in its
-// own, to the others unchanged.
+// RFC 3550 section 7.2
 func TestRTCPTranslation(t *testing.T) {
 	e := newEnv(t)
 	c := e.r.NewCall()

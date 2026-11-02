@@ -8,9 +8,6 @@ type Peer = DiameterPeerParams & { id?: string };
 const transports = (peers: Peer[]): Set<DiameterTransport> =>
   new Set(peers.map((p) => p.transport ?? "tcp"));
 
-// changesTransports reports whether replacing a peer (before) with another (after), either one absent for an
-// addition or a deletion, changes the transports the IMS listens on: the only peer change that restarts Diameter
-// and SIP.
 export const changesTransports = (
   peers: Peer[],
   before: Peer | undefined,

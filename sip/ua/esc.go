@@ -15,43 +15,28 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// Published is event state a publication established at a PublicationStore (RFC 3903 §6).
+// RFC 3903 section 6
 type Published struct {
 	ETag    string
 	Bodies  []sip.BodyPart
 	Expires time.Time
 }
 
-// StoreConfig configures a PublicationStore.
 type StoreConfig struct {
-	// Events are the event packages the store keeps state for; a PUBLISH for another gets a 489 (RFC 3903 §6 step 2).
 	Events []string
 
-	// Resource reports whether the store keeps state for a Request-URI; a PUBLISH for another gets a 404 (step 1).
-	// Without it, the store keeps state for all.
 	Resource func(uri sip.URI) bool
 
-	// Check accepts the state of a PUBLISH that carries one, or returns the code to refuse it with: 415 for a body
-	// of a type the event package does not define (step 5), 403 for a publisher not authorised. Without it, every
-	// state is accepted.
 	Check func(r *Request) int
 
-	// MinExpires refuses with a 423 a publication asking for less (step 4); DefaultExpires is the duration of one
-	// asking for none, required; MaxExpires cuts longer ones, unless zero. Durations up to 2^32-1 s are kept.
 	MinExpires     time.Duration
 	DefaultExpires time.Duration
 	MaxExpires     time.Duration
 
-	// Changed reports the state of a resource and event package after it changed: a publication established,
-	// modified, removed or expired, with the publications it has now, none once the last one went. It runs on the
-	// strand of the resource, in the order of the changes, outside its lock: a compositor notifies the subscribers
-	// of the resource from it.
 	Changed func(uri sip.URI, event string, state []Published)
 }
 
-// PublicationStore keeps the event state that publications establish, as an event state compositor (RFC 3903 §6):
-// their entity-tags, bodies and expiries, by Request-URI and event package. The agent processes the PUBLISHes of a
-// Request-URI on one strand, in the order they come (§6), each atomically.
+// RFC 3903 section 6
 type PublicationStore struct {
 	a   *Agent
 	cfg StoreConfig
@@ -70,12 +55,10 @@ type stored struct {
 	timer transaction.Timer
 }
 
-// NewPublicationStore makes a store of the agent; the application gives it the PUBLISHes of OnRequest.
 func (a *Agent) NewPublicationStore(cfg StoreConfig) *PublicationStore {
 	return &PublicationStore{a: a, cfg: cfg, resources: map[storeKey]map[string]*stored{}}
 }
 
-// resourceOf is the resource a Request-URI designates: its scheme, user, host and port, the host case-insensitive.
 func resourceOf(u sip.URI) string {
 	k := u.Scheme + ":" + u.User + "@" + strings.ToLower(u.Host)
 	if u.Port != 0 {
@@ -85,7 +68,6 @@ func resourceOf(u sip.URI) string {
 	return k
 }
 
-// State is the state of a resource for an event package: its publications in force.
 func (ps *PublicationStore) State(uri sip.URI, event string) []Published {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -105,8 +87,7 @@ func (ps *PublicationStore) stateLocked(k storeKey) []Published {
 	return out
 }
 
-// Handle processes a PUBLISH (RFC 3903 §6) and responds to it, then reports the change, if any. The application
-// calls it from OnRequest, on the strand of the Request-URI.
+// RFC 3903 section 6
 func (ps *PublicationStore) Handle(r *Request) {
 	code, header, changed := ps.process(r)
 
@@ -119,23 +100,19 @@ func (ps *PublicationStore) Handle(r *Request) {
 	}
 }
 
-// process applies a PUBLISH to the store, atomically, and returns the response, and the report of the change.
 func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 	req := r.req
 	cfg := ps.cfg
 
-	// Step 1.
 	if cfg.Resource != nil && !cfg.Resource(req.URI) {
 		return 404, nil, nil
 	}
 
-	// Step 2.
 	ev, ok, err := req.Header.Event()
 	if !ok || err != nil || !slices.Contains(cfg.Events, ev.Type()) {
 		return 489, sip.Header{{Name: "Allow-Events", Value: strings.Join(cfg.Events, ", ")}}, nil
 	}
 
-	// Step 4, before the state changes.
 	expires := cfg.DefaultExpires
 
 	if v, err := req.Header.Expires(); err == nil {
@@ -155,7 +132,6 @@ func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 		return 400, nil, nil
 	}
 
-	// Step 5: the state of a PUBLISH that carries one is accepted first.
 	if len(parts) > 0 && cfg.Check != nil {
 		if code := cfg.Check(r); code != 0 {
 			return code, nil, nil
@@ -169,7 +145,6 @@ func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 
 	pubs := ps.resources[k]
 
-	// Step 3.
 	etag, conditional, err := req.Header.SIPIfMatch()
 
 	var p *stored
@@ -182,10 +157,8 @@ func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 			return 412, nil, nil
 		}
 	case len(parts) == 0:
-		// An initial publication carries the state.
 		return 400, nil, nil
 	case expires == 0:
-		// An initial publication that would remove itself at once stores nothing.
 		return 200, sip.Header{{Name: "Expires", Value: "0"}, {Name: "SIP-ETag", Value: newETag()}}, nil
 	}
 
@@ -194,7 +167,6 @@ func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 		ps.resources[k] = pubs
 	}
 
-	// Step 5: the state, its refresh or its removal; step 6: a new entity-tag for each.
 	next := newETag()
 
 	if p != nil {
@@ -233,7 +205,6 @@ func (ps *PublicationStore) process(r *Request) (int, sip.Header, func()) {
 	return 200, header, ps.report(req.URI, k)
 }
 
-// report is the report of the state of a resource, as it is now.
 func (ps *PublicationStore) report(uri sip.URI, k storeKey) func() {
 	if ps.cfg.Changed == nil {
 		return nil
@@ -244,7 +215,7 @@ func (ps *PublicationStore) report(uri sip.URI, k storeKey) func() {
 	return func() { ps.cfg.Changed(uri, k.event, state) }
 }
 
-// expire removes a publication that was not refreshed in time (RFC 3903 §6).
+// RFC 3903 section 6
 func (ps *PublicationStore) expire(uri sip.URI, k storeKey, p *stored) {
 	ps.mu.Lock()
 
@@ -268,7 +239,7 @@ func (ps *PublicationStore) expire(uri sip.URI, k storeKey, p *stored) {
 	}
 }
 
-// newETag is an entity-tag unique among those of the store, and not used before (RFC 3903 §6 step 6).
+// RFC 3903 section 6
 func newETag() string {
 	var b [12]byte
 
@@ -277,8 +248,7 @@ func newETag() string {
 	return hex.EncodeToString(b[:])
 }
 
-// keyedStrand is the strand of a key, as the Request-URI of PUBLISHes, whose requests must go in order (RFC 3903
-// §6): one of a fixed set, by hash.
+// RFC 3903 section 6
 func (a *Agent) keyedStrand(key string) *Strand {
 	i := maphash.String(seed, key) % uint64(len(a.keyed))
 
@@ -294,8 +264,7 @@ func (a *Agent) keyedStrand(key string) *Strand {
 
 var seed = maphash.MakeSeed()
 
-// respondStateless responds to a request outside a dialog that creates none, as a PUBLISH: without a Record-Route
-// (RFC 3903 §6).
+// RFC 3903 section 6
 func (r *Request) respondStateless(rp Reply) error {
 	return r.st.do(func() error {
 		if r.final {

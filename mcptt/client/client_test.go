@@ -32,7 +32,6 @@ const (
 	fire   = "sip:fire@mcptt.example.com"
 )
 
-// env is the SIP and media networks of a test, on one clock and scheduler.
 type env struct {
 	t *testing.T
 	n *siptest.Net
@@ -58,8 +57,6 @@ func mustURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// agent is an agent on the net at addr: its requests go to outbound if valid, else to the address of their
-// Request-URI.
 func (e *env) agent(addr, outbound netip.AddrPort, configure func(*ua.Config)) *ua.Agent {
 	e.t.Helper()
 
@@ -104,7 +101,6 @@ func (e *env) agent(addr, outbound netip.AddrPort, configure func(*ua.Config)) *
 	return a
 }
 
-// events records the events of a client.
 type events struct {
 	mu sync.Mutex
 	es []client.Event
@@ -117,7 +113,6 @@ func (r *events) add(e client.Event) {
 	r.es = append(r.es, e)
 }
 
-// take returns the events since the last take.
 func (r *events) take() []client.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -128,7 +123,6 @@ func (r *events) take() []client.Event {
 	return es
 }
 
-// user is a client of a test, on an agent of its own.
 type user struct {
 	*client.Client
 
@@ -137,13 +131,11 @@ type user struct {
 	addr   netip.AddrPort
 	events *events
 
-	// mute keeps the speaker of the tests quiet: the test sends the frames.
 	mute atomic.Bool
 }
 
 var timers = floor.ParticipantTimers{T100: time.Second, T101: time.Second}
 
-// user makes the client of name on the net, its media at 192.0.2.i; its requests go to outbound if valid.
 func (e *env) user(name string, i int, outbound netip.AddrPort, configure func(*client.Config)) *user {
 	e.t.Helper()
 
@@ -193,7 +185,6 @@ func (e *env) user(name string, i int, outbound netip.AddrPort, configure func(*
 	return u
 }
 
-// kinds are the kinds of events, the floor notices by theirs.
 func kinds(es []client.Event) []string {
 	var out []string
 
@@ -231,9 +222,6 @@ func (u *user) expect(t *testing.T, want ...string) []client.Event {
 	return es
 }
 
-// expectGrant checks the events of a call placed with the floor granted in its 200 (mc_granted): the Floor Granted
-// the server sends as it takes the floor (TS 24.380 §6.3.4.4.2), its Duration told in a second grant notice, races
-// the other events and is left out.
 func (u *user) expectGrant(t *testing.T, want ...string) {
 	t.Helper()
 
@@ -253,7 +241,6 @@ func (u *user) expectGrant(t *testing.T, want ...string) {
 	}
 }
 
-// expectUnordered checks the events, of an order the network does not define: of messages of the server that race.
 func (u *user) expectUnordered(t *testing.T, want ...string) []client.Event {
 	t.Helper()
 
@@ -269,9 +256,8 @@ func (u *user) expectUnordered(t *testing.T, want ...string) []client.Event {
 	return es
 }
 
-// standIn is a minimal controlling function for the client's tests: it answers an INVITE once the members it
-// invites accepted, with the control channel of TS 24.380 §14.3, and runs the floor control server of the call over
-// the media relay (TS 24.380 §6.3).
+// TS 24.380 clause 14.3
+// TS 24.380 clause 6.3
 type standIn struct {
 	t     *testing.T
 	agent *ua.Agent
@@ -282,13 +268,8 @@ type standIn struct {
 	fs    *floor.Server
 	legs  map[*floor.Member]*media.Leg
 
-	// members are invited, at their contacts, with the Answer-Mode given.
-	members    []invitee
-	answerMode string
-	// grant is the mc_granted of the originator's 200; lateFloor has the floor control start after the 200 is sent,
-	// not before as the controlling function does;
-	// badAudio answers the originator's speech in a payload type it did not offer; noImplicit does not accept its
-	// implicit floor request (TS 24.380 §14.3.5).
+	members                                []invitee
+	answerMode                             string
 	grant, lateFloor, badAudio, noImplicit bool
 
 	origin       *ua.Request
@@ -296,17 +277,13 @@ type standIn struct {
 	originParams controlchannel.Params
 	originID     string
 	originMember *floor.Member
-	// invite is the originator's INVITE; ok the 200 of the last member that accepted.
-	inviteReq *sip.Request
-	ok        *sip.Response
-	sessions  []*ua.Session
-	pending   int
-	// declined are the final responses of the members that did not accept.
-	declined []*sip.Response
-	// updates are the UPDATEs the stand-in received on the members' sessions; forget, that it answers them with a
-	// 481, as a server whose leg the network released (TS 24.229 §5.2.8.1.2).
-	updates atomic.Int32
-	forget  atomic.Bool
+	inviteReq    *sip.Request
+	ok           *sip.Response
+	sessions     []*ua.Session
+	pending      int
+	declined     []*sip.Response
+	updates      atomic.Int32
+	forget       atomic.Bool
 }
 
 type invitee struct {
@@ -371,10 +348,8 @@ func (s *standIn) Inactive() {}
 
 func (s *standIn) Disconnect(*floor.Member) {}
 
-// leg adds a leg whose floor messages and media go to the member *m, on the strand.
 func (s *standIn) leg(m **floor.Member, shared bool) *media.Leg {
 	l, err := s.call.AddLeg(media.LegConfig{
-		// The payload type of the client's offers and of the stand-in's.
 		SharedControl: shared, PayloadType: 96,
 		OnFloor: func(msg floorctl.Message) {
 			s.st.Post(func() {
@@ -417,7 +392,6 @@ func (s *standIn) sdpOf(l *media.Leg, control controlchannel.Params, pt int) []b
 	return ss.Bytes()
 }
 
-// remote are the media addresses and control parameters of a client's SDP.
 func remote(t *testing.T, b []byte) (media.Remote, controlchannel.Params) {
 	t.Helper()
 
@@ -436,7 +410,6 @@ func remote(t *testing.T, b []byte) (media.Remote, controlchannel.Params) {
 	}, p
 }
 
-// onInvite takes the originator's INVITE, and invites the members.
 func (s *standIn) onInvite(_ context.Context, r *ua.Request) ua.Handler {
 	offer, _ := r.Offer()
 	rem, params := remote(s.t, offer)
@@ -455,7 +428,6 @@ func (s *standIn) onInvite(_ context.Context, r *ua.Request) ua.Handler {
 	s.pending = len(s.members)
 
 	return ua.Handler{Ended: func(_ context.Context, _ *ua.Session, _ ua.End) {
-		// The originator left: the call released (TS 24.379 §6.3.8.1).
 		for _, ss := range s.sessions {
 			_ = ss.Bye(context.Background(), ua.Change{}, nil)
 		}
@@ -532,8 +504,7 @@ func (s *standIn) invite(inv invitee) {
 	}
 }
 
-// accepted starts the floor control once the first member accepted (TS 24.380 §6.3.4.2.2), and answers the
-// originator.
+// TS 24.380 clause 6.3.4.2.2
 func (s *standIn) accepted() {
 	r := s.origin
 	if r == nil {

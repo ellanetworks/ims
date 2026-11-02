@@ -28,8 +28,6 @@ func getMCPTT(t *testing.T, d *DB) settings.Settings {
 	return s
 }
 
-// The settings of a new database are valid, of the PSIs and the domain of the organisation of the home domain: the
-// service configuration of the seed row, its domain empty, no users or groups.
 func TestSeed(t *testing.T) {
 	s := getMCPTT(t, openTestDB(t))
 
@@ -44,7 +42,6 @@ func TestSeed(t *testing.T) {
 	}
 }
 
-// withPSIs is s of PSIs, which the database does not store: they are of the home domain.
 func withPSIs(s settings.Settings) settings.Settings {
 	s.System = settings.System{
 		ParticipatingPSI: "sip:mcptt-participating@mcptt.ims.mnc001.mcc001.3gppnetwork.org",
@@ -54,8 +51,6 @@ func withPSIs(s settings.Settings) settings.Settings {
 	return s
 }
 
-// example are settings of every column: optional elements present and absent, explicit zeros. What the server fixes
-// to its defaults is not stored.
 func mcpttExample() settings.Settings {
 	return settings.Settings{
 		ServiceConfiguration: settings.ServiceConfiguration{
@@ -88,8 +83,6 @@ func mcpttExample() settings.Settings {
 	}
 }
 
-// store writes s to d in the order the API would: the users without their implicit affiliations, the groups, then
-// the affiliations.
 func storeMCPTT(t *testing.T, d *DB, s settings.Settings) {
 	t.Helper()
 
@@ -119,7 +112,6 @@ func storeMCPTT(t *testing.T, d *DB, s settings.Settings) {
 	}
 }
 
-// What is written is what is read, the NULLs of the absent elements included, and after a reopen.
 func TestRoundTrip(t *testing.T) {
 	want := mcpttExample()
 	if _, err := settings.New(withPSIs(want)); err != nil {
@@ -154,7 +146,6 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("settings after a reopen\n%+v\nwant\n%+v", got, want)
 	}
 
-	// And back to absent.
 	if err := d.UpdateMCPTTServiceConfiguration(t.Context(), settings.ServiceConfiguration{Domain: "example.org"}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,8 +155,6 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-// A user and a group are found by their identity, as settings.Key has it: an update may write it otherwise, and a
-// creation of another of the same identity is a duplicate.
 func TestIdentities(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -192,7 +181,6 @@ func TestIdentities(t *testing.T) {
 		t.Errorf("user %+v, want %+v", s.Users[0], a)
 	}
 
-	// The members show the MCPTT ID as the user has it.
 	if e := s.Groups[0].List.Entries[1]; e.URI != "sip:a@EXAMPLE.com" {
 		t.Errorf("member %+v", e)
 	}
@@ -216,8 +204,6 @@ func TestIdentities(t *testing.T) {
 	}
 }
 
-// A user deleted leaves its groups; a group deleted, or a member removed, goes from the implicit affiliations of its
-// users; an update of a group keeps the affiliations of the members it keeps, wherever they move.
 func TestCascades(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -260,7 +246,6 @@ func TestCascades(t *testing.T) {
 	}
 }
 
-// An implicit affiliation is of a member of the group; one written with a change of a group or member is in it.
 func TestImplicitAffiliations(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -298,7 +283,6 @@ func TestImplicitAffiliations(t *testing.T) {
 	}
 }
 
-// A new member goes after the others; a member put again keeps its place.
 func TestPutMember(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -322,7 +306,6 @@ func TestPutMember(t *testing.T) {
 	}
 }
 
-// A change that fails changes nothing.
 func TestAtomic(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -351,7 +334,6 @@ func TestAtomic(t *testing.T) {
 	}
 }
 
-// The context of a call is that of its statements.
 func TestCanceled(t *testing.T) {
 	d := openTestDB(t)
 
@@ -363,8 +345,6 @@ func TestCanceled(t *testing.T) {
 	}
 }
 
-// A row of a user deleted outside the server, with the foreign keys off as the sqlite3 shell has them, is no other
-// user's: the settings are refused, and so is the database at its next opening.
 func TestOrphans(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "ims.db")
@@ -407,7 +387,6 @@ func TestOrphans(t *testing.T) {
 	}
 }
 
-// An update of a row deleted outside the server fails.
 func TestSingleRowGone(t *testing.T) {
 	d := openTestDB(t)
 
@@ -420,7 +399,6 @@ func TestSingleRowGone(t *testing.T) {
 	}
 }
 
-// A path of the characters of a URI's query, fragment and escapes is a file of that name.
 func TestPathOfURICharacters(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a?b#c%d e.db")
@@ -439,7 +417,6 @@ func TestPathOfURICharacters(t *testing.T) {
 	}
 }
 
-// The keys stored are recomputed at the opening: one of another form, of an earlier sip package, is found again.
 func TestRekey(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "ims.db")

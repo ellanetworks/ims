@@ -8,7 +8,6 @@ interface PageHeaderProps {
   count?: number;
   description?: string;
   action?: ReactNode;
-  // parent is the page this one is under, which the title leads with, as in Ella Core: "Users / admin@example.com".
   parent?: { label: string; to: string };
 }
 

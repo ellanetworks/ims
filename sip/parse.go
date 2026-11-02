@@ -109,8 +109,6 @@ func splitHead(head string) (string, Header, *ParseError) {
 	return start, fields, err
 }
 
-// parseFields parses CRLF-separated header lines, with folding, and returns the first error after parsing
-// every other line.
 func parseFields(rest string) (Header, *ParseError) {
 	var (
 		fields Header

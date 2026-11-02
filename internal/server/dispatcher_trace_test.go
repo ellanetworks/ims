@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// plainRole is a role that tells nothing of what its requests link to.
 type plainRole struct{}
 
 func (plainRole) HandleRequest(context.Context, *transaction.ServerTransaction, *sip.Request) {}
@@ -22,7 +21,6 @@ func (plainRole) HandleAck(context.Context, *sip.Request) {}
 
 func (plainRole) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
-// linkingRole is a role that tells what the requests on its port link to.
 type linkingRole struct {
 	plainRole
 

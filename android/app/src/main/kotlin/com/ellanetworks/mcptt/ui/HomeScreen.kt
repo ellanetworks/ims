@@ -85,16 +85,10 @@ import com.ellanetworks.mcptt.ui.theme.EllaTheme
 import com.ellanetworks.mcptt.ui.theme.Spacing
 import kotlinx.coroutines.delay
 
-/** How long a transient floor state (busy, revoked) stays shown, then the call's state again. */
 internal const val TRANSIENT_MS = 2_000L
 
-/** The name a user is shown by: their alias, until the CMS, the user part of their MCPTT ID. */
 fun alias(mcpttId: String): String = groupName(mcpttId)
 
-/**
- * The one operational screen, as a radio's: the selected group and its call, the floor's state, the PTT; the
- * registration and what the app needs as banners; settings, diagnostics among them, behind the top bar's button.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(vm: AppViewModel, onSettings: () -> Unit, onDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
@@ -107,8 +101,6 @@ fun HomeScreen(vm: AppViewModel, onSettings: () -> Unit, onDiagnostics: () -> Un
     var failed by remember { mutableStateOf<Failed?>(null) }
     var picking by remember { mutableStateOf(false) }
 
-    // A call ends of itself, its hang time over (TS 22.179 R-6.2.4-003): unremarked, the group's PTT the same. Only
-    // its loss is told, and a press that set up no call, why on the PTT (R-6.2.3.2-002).
     LaunchedEffect(Unit) {
         vm.ended.collect { e ->
             if (e.cause == Event.Cause.ERROR && e.call.state == CallInfo.State.ACTIVE) lost = e.call.group
@@ -244,7 +236,6 @@ private fun RegistrationChip(status: Status) {
     }
 }
 
-/** The registration's trouble, with what to do about it. */
 @Composable
 private fun RegistrationBanner(status: Status, vm: AppViewModel, onSettings: () -> Unit, onDiagnostics: () -> Unit) {
     val colors = EllaTheme.colors
@@ -257,7 +248,6 @@ private fun RegistrationBanner(status: Status, vm: AppViewModel, onSettings: () 
             vm::start,
         )
 
-        // The MCPTT ID the user's, in Settings; what an administrator sets, in Settings' Diagnostics.
         is Status.Unconfigured -> {
             val user = UserSettings.MCPTT_ID in status.missing
             Banner(
@@ -321,7 +311,6 @@ private fun EmptyState(title: String, detail: String?, modifier: Modifier = Modi
     }
 }
 
-/** The selected group: tapped, the picker of the others. */
 @Composable
 private fun GroupHeader(group: String, pickable: Boolean, onPick: () -> Unit) {
     val name = groupName(group)
@@ -344,15 +333,10 @@ private fun GroupHeader(group: String, pickable: Boolean, onPick: () -> Unit) {
     }
 }
 
-/**
- * The PTT's state and word of the selected group's call: talking, someone else talking, busy for [TRANSIENT_MS] after a
- * request refused, connecting, held; without a call, idle.
- */
 @Composable
 internal fun pttOf(registered: Boolean, call: CallInfo?, failed: Failed?): Pair<PttState, String> {
     val busy = transient(call?.refused)
     val failing = transient(failed?.at)
-    // The user's own grant is no one else talking: before its first frame, or a tap already released.
     val talker = call?.talker?.takeIf { !call.transmitting && call.floor != Event.Notice.GRANTED }?.let(::alias)
     return when {
         !registered -> PttState.UNAVAILABLE to stringResource(R.string.ptt_unavailable)
@@ -368,24 +352,15 @@ internal fun pttOf(registered: Boolean, call: CallInfo?, failed: Failed?): Pair<
     }
 }
 
-/** A press of [group] that set up no call (Ended.setupFailed), its INVITE's [status], [at] when. */
 internal data class Failed(val group: String, val status: Int, val at: Long)
 
-/** Why the call was not set up, for the user: who else is there, or whether they may. */
 @Composable
 private fun Failed.reason(): String = when (status) {
-    // TS 24.379 §10.1.1.4.1.1: no other member affiliated.
     480 -> stringResource(R.string.call_failed_nobody, groupName(group))
-
     403 -> stringResource(R.string.call_failed_forbidden)
-
     else -> stringResource(R.string.call_failed)
 }
 
-/**
- * Whether a transient state of [at] (SystemClock.elapsedRealtime) is still shown, for [TRANSIENT_MS]: of its time since,
- * not since this composition, the screen back showing none anew.
- */
 @Composable
 private fun transient(at: Long?): Boolean {
     val since = at?.let { SystemClock.elapsedRealtime() - it }
@@ -399,7 +374,6 @@ private fun transient(at: Long?): Boolean {
     return shown
 }
 
-/** An invitation to answer (manual commencement, TS 24.379 §6.2.3.2): large buttons, for gloves. */
 @Composable
 private fun Incoming(vm: AppViewModel, call: CallInfo) {
     Surface(
@@ -426,7 +400,6 @@ private fun Incoming(vm: AppViewModel, call: CallInfo) {
     }
 }
 
-/** The call of another group than the selected one: tapped, that group selected. */
 @Composable
 private fun OtherCall(call: CallInfo, onSelect: () -> Unit) {
     val line = call.talker?.let { stringResource(R.string.group_in_call_talker, alias(it)) } ?: stringResource(R.string.group_in_call)
@@ -440,7 +413,6 @@ private fun OtherCall(call: CallInfo, onSelect: () -> Unit) {
     }
 }
 
-/** The audio route of the call and the way out of it, apart from the PTT. */
 @Composable
 private fun CallControls(vm: AppViewModel, call: CallInfo) {
     var routes by remember { mutableStateOf(false) }
@@ -497,7 +469,6 @@ private fun route(type: Int?): Pair<ImageVector, String> = when (type) {
     else -> Icons.Rounded.VolumeUp to stringResource(R.string.route_audio)
 }
 
-/** The user's groups, the selected one checked: each with its call, if any. */
 @Composable
 private fun GroupPicker(groups: List<String>, selected: String?, calls: List<CallInfo>, onPick: (String) -> Unit) {
     Column(Modifier.padding(bottom = Spacing.l).navigationBarsPadding()) {

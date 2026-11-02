@@ -25,7 +25,6 @@ import (
 
 var loopback = netip.MustParseAddr("127.0.0.1")
 
-// freePort is a UDP port of loopback free a moment ago.
 func freePort(t testing.TB) int {
 	t.Helper()
 
@@ -39,7 +38,6 @@ func freePort(t testing.TB) int {
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
 
-// openDB is a new database of the IMS, closed at the end of the test.
 func openDB(t testing.TB, dir string) *db.DB {
 	t.Helper()
 
@@ -53,7 +51,6 @@ func openDB(t testing.TB, dir string) *db.DB {
 	return d
 }
 
-// directConfig is the AS in direct mode on loopback, of free ports, its settings in d.
 func directConfig(t *testing.T, d *db.DB) Config {
 	t.Helper()
 
@@ -69,7 +66,6 @@ func directConfig(t *testing.T, d *db.DB) Config {
 	}
 }
 
-// startExample starts the AS of cfg, provisioned with the example settings if its database has none.
 func startExample(t *testing.T, cfg Config) *AS {
 	t.Helper()
 
@@ -89,7 +85,6 @@ func startExample(t *testing.T, cfg Config) *AS {
 	return as
 }
 
-// The AS of the example settings, in direct mode on loopback, registers a client over UDP, and stops.
 func TestStartRegister(t *testing.T) {
 	cfg := directConfig(t, openDB(t, t.TempDir()))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -170,7 +165,6 @@ func TestStartRegister(t *testing.T) {
 	}
 }
 
-// Without SIP addresses, the AS does not start.
 func TestStartNoSIP(t *testing.T) {
 	cfg := directConfig(t, openDB(t, t.TempDir()))
 	cfg.Addresses = nil
@@ -180,8 +174,6 @@ func TestStartNoSIP(t *testing.T) {
 	}
 }
 
-// The settings changed are those of the AS after a restart; settings in the database that are not valid, which
-// only a change of the database outside the API makes, stop the start.
 func TestRestart(t *testing.T) {
 	d := openDB(t, t.TempDir())
 	cfg := directConfig(t, d)

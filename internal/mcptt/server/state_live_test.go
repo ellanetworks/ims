@@ -11,14 +11,12 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/registrar"
 )
 
-// calls are the group calls of w's server, its strands run.
 func (w *world) calls() []controlling.Call {
 	w.t.Helper()
 
 	return onStrands(w, func(ctx context.Context) ([]controlling.Call, error) { return w.s.Calls().Calls(ctx) })
 }
 
-// callOf is the group call of the "gr" id of w's server, and whether there is one, its strands run.
 func (w *world) callOf(id string) (controlling.Call, bool) {
 	w.t.Helper()
 
@@ -35,7 +33,6 @@ func (w *world) callOf(id string) (controlling.Call, bool) {
 	return f.call, f.ok
 }
 
-// onStrands is the result of read, which waits for strands of w's server, run meanwhile.
 func onStrands[T any](w *world, read func(context.Context) (T, error)) T {
 	w.t.Helper()
 
@@ -66,8 +63,6 @@ func onStrands[T any](w *world, read func(context.Context) (T, error)) T {
 	}
 }
 
-// The live state: the registered clients since their authorisation, kept by a refresh; their affiliations; the group
-// call, its participants and its talker, and none once released.
 func TestLiveState(t *testing.T) {
 	w := newWorld(t, nil)
 	alice, bob := w.users["alice"], w.users["bob"]
@@ -152,7 +147,6 @@ func TestLiveState(t *testing.T) {
 		t.Errorf("call %s once released", c.ID)
 	}
 
-	// The refreshes of the registration keep when the client was authorised.
 	w.n.Advance(time.Hour)
 
 	clients = w.s.Registrar().Clients()

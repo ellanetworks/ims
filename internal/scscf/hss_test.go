@@ -19,24 +19,19 @@ const (
 	hss2 = "hss2." + homeDomain
 )
 
-// hssCluster is several HSS nodes of one realm sharing the fake HSS's subscribers, as a replicated HSS: a request to
-// a Destination-Host goes to that node, and one routed by realm to the first node up.
 type hssCluster struct {
 	loop *diametertest.Loop
 
-	mu    sync.Mutex
-	nodes []string
-	down  map[string]bool
-	busy  map[string]bool
-	hung  map[string]bool
-	noCx  map[string]bool
-	// behind are the nodes reached through an agent, in their own realm: a request to one of them needs a route,
-	// which only the configured realm has.
+	mu     sync.Mutex
+	nodes  []string
+	down   map[string]bool
+	busy   map[string]bool
+	hung   map[string]bool
+	noCx   map[string]bool
 	behind map[string]string
 	sent   []cxSent
 }
 
-// cxSent is a Cx request: where the S-CSCF addressed it, and the HSS that answered.
 type cxSent struct {
 	command uint32
 	to      string
@@ -128,7 +123,6 @@ func (c *hssCluster) set(f func(c *hssCluster)) {
 	f(c)
 }
 
-// take returns the Cx requests sent since the last call.
 func (c *hssCluster) take() []cxSent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,7 +152,7 @@ func wantSent(t *testing.T, got []cxSent, want ...cxSent) {
 	}
 }
 
-// TS 29.229 §5.5: the first request goes to the realm, the next ones to the HSS that answered.
+// TS 29.229 clause 5.5
 func TestRegistrationGoesToTheHSSThatAnswered(t *testing.T) {
 	h := newHarness(t)
 	c := newHSSCluster(h, hss1, hss2)
@@ -190,8 +184,7 @@ func TestRegistrationGoesToTheHSSThatAnswered(t *testing.T) {
 	)
 }
 
-// TS 29.229 §5.5: the HSS is stored per Public Identity: another one of the private identity goes to the realm, and
-// each then goes to its own HSS.
+// TS 29.229 clause 5.5
 func TestHSSPerPublicIdentity(t *testing.T) {
 	h := newHarness(t)
 	c := newHSSCluster(h, hss1, hss2)
@@ -329,8 +322,7 @@ func TestRegistrationWithoutAnyHSS(t *testing.T) {
 	}
 }
 
-// RFC 3539 §3.10: an HSS that keeps its connection but answers nothing is not failed over on a timer; its watchdog
-// decides.
+// RFC 3539 section 3.10
 func TestHungHSSIsNotFailedOver(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.CxTimeout = 100 * time.Millisecond
@@ -356,8 +348,7 @@ func TestHungHSSIsNotFailedOver(t *testing.T) {
 	wantSent(t, c.take(), cxSent{cx.CommandMultimediaAuth, hss1, hss1})
 }
 
-// TS 29.229 §5.5: an HSS behind an agent, in a realm the S-CSCF has no route for, is still reached through the
-// configured realm, and stays the HSS of the registration.
+// TS 29.229 clause 5.5
 func TestHSSBehindAnAgentInAnotherRealm(t *testing.T) {
 	const realm = "hss.example.net"
 

@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/rtp"
 )
 
-// The relay on the system's UDP, on the loopback: the talker's media reaches the other leg.
 func TestUDPLoopback(t *testing.T) {
 	lo := netip.MustParseAddr("127.0.0.1")
 
@@ -71,7 +70,6 @@ func TestUDPLoopback(t *testing.T) {
 	}
 }
 
-// discard is a network whose sockets send nowhere, for the cost of the relay alone.
 type discard struct {
 	handlers map[netip.AddrPort]func([]byte, netip.AddrPort)
 }
@@ -87,7 +85,6 @@ func (discardConn) WriteTo([]byte, netip.AddrPort) error { return nil }
 func (c discardConn) LocalAddr() netip.AddrPort          { return netip.AddrPort(c) }
 func (discardConn) Close() error                         { return nil }
 
-// The forwarding of a talker's packet to the 99 other legs of a 100-member call, per core.
 func BenchmarkForward100(b *testing.B) {
 	d := &discard{handlers: map[netip.AddrPort]func([]byte, netip.AddrPort){}}
 
@@ -119,7 +116,6 @@ func BenchmarkForward100(b *testing.B) {
 	h := d.handlers[talker.Audio()]
 	from := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 2, 0, 0}), 4000)
 
-	// An AMR-WB frame of 23.85 kbit/s in 20 ms (TS 26.179 §4.1.1, RFC 4867).
 	pkt := packet(b, talker.AudioSSRC(), 1, make([]byte, 62)...)
 
 	b.ReportAllocs()
@@ -132,7 +128,7 @@ func BenchmarkForward100(b *testing.B) {
 	b.ReportMetric(float64(b.N*99)/b.Elapsed().Seconds(), "sends/s")
 }
 
-// RFC 3550 §7.2: the RTCP of a talker of an SSRC of its own, translated to the 99 other legs without allocating.
+// RFC 3550 section 7.2
 func TestRTCPAllocs(t *testing.T) {
 	d := &discard{handlers: map[netip.AddrPort]func([]byte, netip.AddrPort){}}
 
@@ -173,7 +169,6 @@ func TestRTCPAllocs(t *testing.T) {
 	}
 }
 
-// Close returns once the reader of the socket returned: no datagram is handled after it.
 func TestUDPCloseWaitsForReader(t *testing.T) {
 	conns := make(chan media.Conn, 1)
 	entered := make(chan struct{})
@@ -185,7 +180,6 @@ func TestUDPCloseWaitsForReader(t *testing.T) {
 
 		close(entered)
 
-		// Until Close has closed the socket.
 		for c.WriteTo([]byte{0}, from) == nil {
 			runtime.Gosched()
 		}

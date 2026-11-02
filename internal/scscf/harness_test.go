@@ -68,7 +68,6 @@ type fakeClock struct {
 	*siptest.Clock
 }
 
-// fakeDNS knows the addresses of the hosts added to it, and no SRV record.
 type fakeDNS struct {
 	mu    sync.Mutex
 	hosts map[string][]netip.Addr
@@ -122,11 +121,8 @@ type fakeHSS struct {
 	userData   []byte
 	noUserData bool
 
-	// override has the HSS download the profile even when the S-CSCF has it (TS 29.228 §6.6).
 	override bool
 
-	// features are the Cx features the HSS supports, and restorationResult its answer to a SAR asking for the P-CSCF
-	// restoration, when not a success.
 	features          cx.Features
 	restorationResult uint32
 }
@@ -387,13 +383,9 @@ type fakePCSCF struct {
 	sessions atomic.Pointer[Sessions]
 	wg       sync.WaitGroup
 
-	// endWithResponse ends the context of a REGISTER with its response, as that of a transaction on a reliable or
-	// in-memory flow ends (transaction.Handler).
 	endWithResponse atomic.Bool
 }
 
-// HandleRequest gives the registrar the trace of the request, in a context that outlives its transaction, as
-// transaction.Layer.Go does.
 func (p *fakePCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	respond := func(res *sip.Response) { _ = tx.Respond(res) }
 
@@ -449,7 +441,6 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessTraced(t, nil)
 }
 
-// newHarnessTraced is newHarness, its S-CSCF traced by tp.
 func newHarnessTraced(t *testing.T, tp trace.TracerProvider) *harness {
 	t.Helper()
 

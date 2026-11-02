@@ -13,8 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// A group whose strand stays busy past the deadline of the listing hides only its own call: the calls of the others
-// are listed. If none answered, the listing fails; the call of the busy group alone fails to be read too.
 func TestCallsBusyGroup(t *testing.T) {
 	n := siptest.NewNet(t)
 	addr := n.Addr()
@@ -55,7 +53,6 @@ func TestCallsBusyGroup(t *testing.T) {
 		}
 	}
 
-	// Fire's strand busy until released.
 	release := make(chan struct{})
 
 	t.Cleanup(func() { close(release) })

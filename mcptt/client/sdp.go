@@ -13,27 +13,25 @@ import (
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
-// The audio of the client's offers (TS 26.179 §4.1.2, §4.1.3): one AMR-WB payload type, bandwidth-efficient, all
-// modes, mode-change-capability 2 and max-red 0, one channel, ptime 20 and maxptime 240.
+// TS 26.179 clause 4.1.2
+// TS 26.179 clause 4.1.3
 const (
 	offeredPT   = 96
 	offeredFmtp = "mode-change-capability=2;max-red=0"
 	avp         = "RTP/AVP"
 )
 
-// audioFormat is the AMR-WB payload type of a call, and how the client sends it: the mode of its frames, within the
-// mode-set, nil for all modes (RFC 4867 §8.1).
+// RFC 4867 section 8.1
 type audioFormat struct {
 	pt           uint8
 	octetAligned bool
 	mode         int
 	modeSet      []int
-	// fmtp are its parameters in the client's SDP; maxMode the highest mode of its mode-set.
-	fmtp    string
-	maxMode int
+	fmtp         string
+	maxMode      int
 }
 
-// modes are the modes the client may send in (RFC 4867 §8.2).
+// RFC 4867 section 8.2
 func (f audioFormat) modes() []int {
 	if f.modeSet != nil {
 		return f.modeSet
@@ -47,15 +45,12 @@ func (f audioFormat) modes() []int {
 	return all
 }
 
-// remoteMedia are the media addresses of the server, of its SDP.
 type remoteMedia struct {
 	audio, rtcp, control netip.AddrPort
 }
 
-// errMedia is the error of an SDP without the media of a call.
 var errMedia = errors.New("client: SDP without MCPTT speech or control channel")
 
-// header is the session-level part of an SDP of the client.
 func header(addr netip.Addr, id uint64, version int) (*sdp.Session, error) {
 	ip := sdp.IP4
 	if addr.Is6() {
@@ -71,8 +66,8 @@ func header(addr netip.Addr, id uint64, version int) (*sdp.Session, error) {
 	}, "\r\n") + "\r\n"))
 }
 
-// audioMedia is the m=audio of the MCPTT speech (TS 24.379 §6.2.1 step 2, §6.2.2 step 3): i=speech, its bandwidth,
-// the AMR-WB payload type, its direction when not sendrecv.
+// TS 24.379 clause 6.2.1
+// TS 24.379 clause 6.2.2
 func audioMedia(addr netip.Addr, port uint16, f audioFormat, dir sdp.Direction) *sdp.Media {
 	pt := strconv.Itoa(int(f.pt))
 
@@ -96,8 +91,8 @@ func audioMedia(addr netip.Addr, port uint16, f audioFormat, dir sdp.Direction) 
 	return m
 }
 
-// offer is the SDP offer of an initial INVITE (TS 24.379 §6.2.1): the speech, then the control channel with the
-// fmtp:MCPTT parameters of local (TS 24.380 §14.2).
+// TS 24.379 clause 6.2.1
+// TS 24.380 clause 14.2
 func offer(addr netip.Addr, id uint64, audio, control uint16, local controlchannel.Params) ([]byte, error) {
 	s, err := header(addr, id, 1)
 	if err != nil {
@@ -111,17 +106,15 @@ func offer(addr netip.Addr, id uint64, audio, control uint16, local controlchann
 	return s.Bytes(), nil
 }
 
-// negotiated is what an offer/answer exchange of a call settled.
 type negotiated struct {
-	format audioFormat
-	remote remoteMedia
-	// control are the fmtp:MCPTT parameters as the client takes them: of the answer to its offer (TS 24.380 §14.4),
-	// or of its answer to the server's offer, along with the server's offered.
+	format           audioFormat
+	remote           remoteMedia
 	control, offered controlchannel.Params
 }
 
-// takeAnswer is the answer to offer (RFC 3264 §6, TS 24.380 §14.4): the speech accepted in the payload type
-// offered, of the same octet-align (RFC 4867 §8.3.1), and the control channel.
+// RFC 3264 section 6
+// TS 24.380 clause 14.4
+// RFC 4867 section 8.3.1
 func takeAnswer(b []byte, local controlchannel.Params) (negotiated, error) {
 	var n negotiated
 
@@ -154,16 +147,15 @@ func takeAnswer(b []byte, local controlchannel.Params) (negotiated, error) {
 		return n, err
 	}
 
-	// A malformed parameter is left out (§12.1.2), and an mc_priority above the one offered discarded.
 	params, _ := controlchannel.MediaParams(s.Media[1])
 	n.control, _ = local.Accept(params)
 
 	return n, nil
 }
 
-// answerOffer is the answer to an offer of the server (TS 24.379 §6.2.2, TS 24.380 §14.3): its first speech stream
-// of AMR-WB the source can send accepted, in the direction that reverses its own, and its control channel answered
-// with local; the other streams refused (RFC 3264 §6).
+// TS 24.379 clause 6.2.2
+// TS 24.380 clause 14.3
+// RFC 3264 section 6
 func answerOffer(b []byte, addr netip.Addr, id uint64, audio, control uint16, local controlchannel.Params) ([]byte, negotiated, error) {
 	var n negotiated
 
@@ -184,8 +176,6 @@ func answerOffer(b []byte, addr netip.Addr, id uint64, audio, control uint16, lo
 
 		switch {
 		case err != nil || m.Port() == 0:
-		// RTP/SAVP refused while security is out of scope [PM 9]: a deviation from TS 26.179 §4.1.2, which has
-		// MCPTT clients not reject an offer for its RTP profile.
 		case ai < 0 && desc.Type == sdp.Audio && desc.Proto == avp:
 			f, ok := amrwb(m, desc)
 			if !ok {
@@ -226,7 +216,6 @@ func answerOffer(b []byte, addr netip.Addr, id uint64, audio, control uint16, lo
 	return ans.Bytes(), n, nil
 }
 
-// remoteOf are the addresses of the speech of index ai and the control channel of index ci of s.
 func remoteOf(s *sdp.Session, ai, ci int) (remoteMedia, error) {
 	audio, err1 := s.RTPEndpoint(ai)
 	rtcp, err2 := s.RTCPEndpoint(ai)
@@ -241,8 +230,7 @@ func remoteOf(s *sdp.Session, ai, ci int) (remoteMedia, error) {
 	return remoteMedia{audio: ap(audio), rtcp: ap(rtcp), control: ap(control)}, nil
 }
 
-// amrwb is the first payload type of m of AMR-WB the source can send (RFC 4867 §8.2): one channel, a mode it may
-// use, without frame CRCs, robust sorting or interleaving, which it does not implement.
+// RFC 4867 section 8.2
 func amrwb(m *sdp.Media, desc sdp.MediaDesc) (audioFormat, bool) {
 	maps, _ := m.RTPMaps()
 
@@ -276,15 +264,13 @@ func amrwb(m *sdp.Media, desc sdp.MediaDesc) (audioFormat, bool) {
 	return audioFormat{}, false
 }
 
-// answerFmtp are the AMR-WB parameters of the answer to the offered fp (RFC 4867 §8.3.1): the payload format
-// configuration and the mode-set as offered, the client's mode-change-capability and max-red (TS 26.179 §4.1.3);
-// the parameters it does not know removed, and those declaring the server's own (mode-change-period,
-// mode-change-neighbor) left out.
+// RFC 4867 section 8.3.1
+// TS 26.179 clause 4.1.3
 func answerFmtp(fp sdp.FormatParams) string {
 	return append(amr.Configuration(fp), sdp.ParseFormatParams(offeredFmtp)...).String()
 }
 
-// chooseMode is the mode of the frames within the mode-set (RFC 4867 §8.2): the default one, or else the first.
+// RFC 4867 section 8.2
 func chooseMode(fp sdp.FormatParams) (int, bool) {
 	if !fp.Has("mode-set") {
 		return defaultMode, true
@@ -302,7 +288,6 @@ func chooseMode(fp sdp.FormatParams) (int, bool) {
 	return 0, false
 }
 
-// param is the value of the parameter name of fp, "" without it.
 func param(fp sdp.FormatParams, name string) string {
 	v, _ := fp.Get(name)
 	return v

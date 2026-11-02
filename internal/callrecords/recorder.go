@@ -1,4 +1,3 @@
-// Package callrecords keeps a record of each call attempt, which the nodes on the call's path add to by its ICID.
 package callrecords
 
 import (
@@ -15,17 +14,13 @@ import (
 )
 
 const (
-	// DefaultMaxUnsaved is how many records of ended calls wait to be saved before the recorder drops those of
-	// the calls that end next.
 	DefaultMaxUnsaved = 100_000
 
-	// maxBatch is how many records the writer saves in one transaction.
 	maxBatch = 512
 
 	minRetry = 50 * time.Millisecond
 	maxRetry = 5 * time.Second
 
-	// writeTimeout bounds a write to the database, so that one stuck is retried rather than waited on.
 	writeTimeout = 10 * time.Second
 )
 
@@ -43,50 +38,32 @@ type systemClock struct{}
 func (systemClock) Now() time.Time { return time.Now() }
 
 type Config struct {
-	Store Store
-	// MaxUnsaved is how many records of ended calls wait to be saved, DefaultMaxUnsaved if 0.
+	Store      Store
 	MaxUnsaved int
 	Clock      Clock
 	Logger     *slog.Logger
 }
 
-// Attempt is an INVITE from a registered UE, as the originating P-CSCF received it.
 type Attempt struct {
-	ICID string
-	// CallID is the Call-ID of the INVITE.
-	CallID string
-	// RequestURI is the Request-URI of the INVITE.
+	ICID       string
+	CallID     string
 	RequestURI string
-	// IMPI is the private identity of the caller's registration.
-	IMPI string
-	// Asserted are the identities the P-CSCF asserts for the caller.
-	Asserted []string
+	IMPI       string
+	Asserted   []string
 }
 
-// Routing is the INVITE as the originating S-CSCF sends it on.
 type Routing struct {
-	// Asserted are the P-Asserted-Identity values of the INVITE.
-	Asserted []string
-	// RequestURI is the Request-URI of the INVITE, normalised.
+	Asserted   []string
 	RequestURI string
 }
 
-// End is how the originating P-CSCF's dialog of a call ended.
 type End struct {
-	// Code is the final status of the INVITE that the caller got. It is only read for a call that was not
-	// answered, and a 0 there leaves the record incomplete.
-	Code int
-	// Tag is the To tag of the response of an error Code, if known.
+	Code  int
 	Tag   string
 	By    proxy.Side
 	Cause proxy.EndCause
 }
 
-// Recorder keeps the records of calls. The nodes report what they see of a call by its ICID, from SIP handlers,
-// which must not wait on the database: a report only changes the record in memory, and a writer saves the
-// records that changed. When the database cannot keep up, the records of ended calls wait in memory, up to a
-// limit past which the recorder drops them: the writer then closes them as incomplete once it catches up. A nil
-// Recorder records nothing.
 type Recorder struct {
 	store      Store
 	clock      Clock
@@ -94,38 +71,25 @@ type Recorder struct {
 	maxUnsaved int
 	metrics    metrics
 
-	// ctx bounds the writes, cancelled when Close gives up on them.
 	ctx    context.Context
 	cancel context.CancelFunc
-	// wake tells the writer that records changed.
-	wake chan struct{}
-	stop chan struct{}
-	done chan struct{}
+	wake   chan struct{}
+	stop   chan struct{}
+	done   chan struct{}
 
-	mu sync.Mutex
-	// calls are the records of the calls in progress, and of those that ended until they are saved.
-	calls map[string]*call
-	// sessions are the latest calls of each session of a caller, by sessionKey.
+	mu       sync.Mutex
+	calls    map[string]*call
 	sessions map[string]*call
-	// changed are the records changed since the writer last took them, in the order they first changed.
-	changed []*call
-	// unsaved is how many records of ended calls are in calls.
-	unsaved int
-	// dropped is how many records of ended calls were dropped since the writer last logged it.
-	dropped int
-	// orphaned reports that records may have been left open in the database for calls the recorder no longer
-	// keeps, which the writer closes once it has saved the others.
+	changed  []*call
+	unsaved  int
+	dropped  int
 	orphaned bool
 	closed   bool
 }
 
-// rejection is a response a node of the IMS answered an INVITE with itself, as the caller gets it.
 type rejection struct {
-	code int
-	// tag is the To tag of the response.
-	tag string
-	// rewritten reports a response that a proxy on the way to the caller replaces with one of its own, of another
-	// tag.
+	code      int
+	tag       string
 	rewritten bool
 }
 
@@ -134,21 +98,15 @@ func (j rejection) matches(code int, tag string) bool {
 }
 
 type call struct {
-	rec db.CallRecord
-	// network reports that the IMS released the call.
-	network bool
-	// rejecting are the responses the nodes of the IMS answered the INVITE with themselves: the call ended on one
-	// of them ended by the network.
-	rejecting []rejection
-	ended     bool
-	// superseded reports an attempt that the caller made again, whose record is deleted once it fails.
+	rec        db.CallRecord
+	network    bool
+	rejecting  []rejection
+	ended      bool
 	superseded bool
-	// discard reports a superseded attempt that failed, whose record is deleted rather than saved.
-	discard bool
-	changed bool
+	discard    bool
+	changed    bool
 }
 
-// New starts a recorder, which Close stops.
 func New(cfg Config) *Recorder {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -176,10 +134,6 @@ func New(cfg Config) *Recorder {
 	return r
 }
 
-// Close saves the records that changed, including those of the calls in progress as they are, then stops the
-// recorder. It ignores what is reported after. When ctx is done first, it cancels the write in progress, and the
-// records left unsaved are lost; those left open in the database are closed when the IMS starts again. Close then
-// returns the context's error.
 func (r *Recorder) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -209,7 +163,6 @@ func (r *Recorder) Close(ctx context.Context) error {
 	return nil
 }
 
-// Attempt opens the record of a call, at the originating P-CSCF, for every INVITE from a registered UE.
 func (r *Recorder) Attempt(a Attempt) {
 	if r == nil {
 		return
@@ -234,7 +187,6 @@ func (r *Recorder) Attempt(a Attempt) {
 	r.calls[a.ICID] = c
 	r.metrics.active.Inc()
 
-	// RFC 3261 §8.1.3.5: a UE tries a failed INVITE again with its Call-ID.
 	key := sessionKey(a.IMPI, a.CallID)
 	if prev, ok := r.sessions[key]; ok && prev.rec.SIPStatus/100 != 2 {
 		prev.superseded = true
@@ -253,9 +205,6 @@ func sessionKey(impi, callID string) string {
 	return impi + "\x00" + callID
 }
 
-// Rejecting reports that the originating P-CSCF answers the INVITE itself with an error response of a status and
-// a To tag, before it does. The call is then ended by the network if the caller gets that response: a CANCEL
-// that came first makes it end on the 487 instead.
 func (r *Recorder) Rejecting(icid string, code int, tag string) {
 	r.reject(icid, rejection{code: code, tag: tag})
 }
@@ -268,9 +217,6 @@ func (r *Recorder) reject(icid string, j rejection) {
 	})
 }
 
-// RejectingRequest reports that a node of the IMS behind the originating P-CSCF answers a request itself with a
-// response of a status and a To tag, before it does, when the request is the INVITE that starts a call and the
-// status ends it.
 func (r *Recorder) RejectingRequest(req *sip.Request, code int, tag string) {
 	if r == nil || req.Method != "INVITE" || code < 300 {
 		return
@@ -280,12 +226,10 @@ func (r *Recorder) RejectingRequest(req *sip.Request, code int, tag string) {
 		return
 	}
 
-	// The proxies on the way back to the caller replace some statuses with responses of their own.
 	up := proxy.UpstreamStatus(code)
 	r.reject(req.Header.ICID(), rejection{code: up, tag: tag, rewritten: up != code})
 }
 
-// Routed reports the INVITE as the originating S-CSCF sends it on.
 func (r *Recorder) Routed(icid string, rt Routing) {
 	asserted := slices.Clone(rt.Asserted)
 
@@ -295,21 +239,18 @@ func (r *Recorder) Routed(icid string, rt Routing) {
 	})
 }
 
-// Reached reports the private identity of the registration that answered, at the terminating P-CSCF.
 func (r *Recorder) Reached(icid string, impi string) {
 	r.update(icid, func(c *call, _ time.Time) {
 		c.rec.CalleeIMPI = impi
 	})
 }
 
-// Alerted reports a 180 relayed to the caller.
 func (r *Recorder) Alerted(icid string) {
 	r.update(icid, func(c *call, _ time.Time) {
 		c.rec.Alerted = true
 	})
 }
 
-// Answered reports the 2xx relayed to the caller.
 func (r *Recorder) Answered(icid string, code int) {
 	r.update(icid, func(c *call, now time.Time) {
 		if c.rec.SIPStatus == 0 {
@@ -318,7 +259,6 @@ func (r *Recorder) Answered(icid string, code int) {
 	})
 }
 
-// Media reports the media types of the m= lines that an SDP answer accepted, with a non-zero port.
 func (r *Recorder) Media(icid string, types []string) {
 	r.update(icid, func(c *call, _ time.Time) {
 		for _, t := range types {
@@ -329,16 +269,12 @@ func (r *Recorder) Media(icid string, types []string) {
 	})
 }
 
-// Released reports that a node of the IMS is releasing the call, before it does: the BYE or final response that
-// the release makes reach the caller from downstream, as if from the callee.
 func (r *Recorder) Released(icid string) {
 	r.update(icid, func(c *call, _ time.Time) {
 		c.network = true
 	})
 }
 
-// Ended reports the end of the originating P-CSCF's dialog of the call, or the final response the P-CSCF sent
-// the caller itself, without a dialog.
 func (r *Recorder) Ended(icid string, e End) {
 	r.update(icid, func(c *call, now time.Time) {
 		by := EndedBy(e.Cause, e.By)
@@ -352,7 +288,6 @@ func (r *Recorder) Ended(icid string, e End) {
 	})
 }
 
-// CloseOpen closes the records of the calls in progress as incomplete, for when the IMS loses them.
 func (r *Recorder) CloseOpen() {
 	if r == nil {
 		return
@@ -371,7 +306,6 @@ func (r *Recorder) CloseOpen() {
 	}
 }
 
-// update changes the record of a call in progress.
 func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
 	if r == nil {
 		return
@@ -387,15 +321,11 @@ func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
 
 	change(c, r.clock.Now())
 
-	// endLocked may have dropped it.
 	if r.calls[icid] == c {
 		r.changeLocked(c)
 	}
 }
 
-// endLocked ends the record of a call with the final status of its INVITE, which only counts if it was not
-// answered. A superseded attempt that fails is discarded. It drops the record instead when too many ended ones
-// are not saved yet: the record is then left as last saved, open, until the writer closes it as incomplete.
 func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) {
 	if r.unsaved >= r.maxUnsaved {
 		r.dropLocked(c)
@@ -416,7 +346,6 @@ func (r *Recorder) endLocked(c *call, code int, by db.CallParty, now time.Time) 
 		c.discard = true
 		return
 	case code < 200 || code > 699:
-		// The caller's final response is unknown.
 		c.rec.Incomplete = true
 		return
 	default:
@@ -441,7 +370,6 @@ func (r *Recorder) changeLocked(c *call) {
 	r.wakeLocked()
 }
 
-// orphanedLocked notes that a record may be left open in the database without a call the recorder keeps.
 func (r *Recorder) orphanedLocked() {
 	r.orphaned = true
 	r.wakeLocked()
@@ -454,7 +382,6 @@ func (r *Recorder) wakeLocked() {
 	}
 }
 
-// dropLocked forgets a record. It may stay in changed, which the writer skips once it is no longer changed.
 func (r *Recorder) dropLocked(c *call) {
 	if c.ended {
 		r.unsaved--
@@ -508,8 +435,6 @@ func (r *Recorder) write() {
 	}
 }
 
-// flush saves the records that changed, and closes those dropped calls left open, and gives up at the first
-// failure, so that stopping does not wait on a failing database, or once Close cancels the writes.
 func (r *Recorder) flush() {
 	for {
 		more, err := r.sync()
@@ -524,8 +449,6 @@ func (r *Recorder) flush() {
 	}
 }
 
-// sync saves a batch of the records that changed, or once all are saved closes those left open by calls the
-// recorder dropped, and reports whether work is left.
 func (r *Recorder) sync() (more bool, err error) {
 	if more, err = r.save(); err != nil || more {
 		return more, err
@@ -534,9 +457,6 @@ func (r *Recorder) sync() (more bool, err error) {
 	return false, r.closeOrphans()
 }
 
-// closeOrphans closes as incomplete the records left open in the database by calls the recorder dropped: those
-// open but of the calls it keeps. The writer alone inserts records, so none of a call that starts meanwhile is
-// in the database yet.
 func (r *Recorder) closeOrphans() error {
 	r.mu.Lock()
 
@@ -570,8 +490,6 @@ func (r *Recorder) closeOrphans() error {
 	return nil
 }
 
-// save saves a batch of the records that changed, and deletes those discarded, and reports whether others are
-// left. When the transaction fails, the records stay changed, to be saved again.
 func (r *Recorder) save() (more bool, err error) {
 	r.mu.Lock()
 
@@ -599,7 +517,6 @@ func (r *Recorder) save() (more bool, err error) {
 		c.changed = false
 
 		if c.discard {
-			// No batch is being saved, so one never saved is not in the database.
 			if c.rec.ID == 0 {
 				r.dropLocked(c)
 			} else {
@@ -653,11 +570,9 @@ func (r *Recorder) save() (more bool, err error) {
 		}
 
 		if errs != nil && errs[i] != nil {
-			// Saving it again would fail again.
 			r.log.Error("dropped a call record that cannot be saved", slog.Any("error", errs[i]))
 			r.dropLocked(c)
 
-			// One saved before is left as it was then, maybe open.
 			if c.rec.ID != 0 {
 				r.orphaned = true
 			}

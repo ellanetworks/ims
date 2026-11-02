@@ -7,7 +7,6 @@ import {
   DialogTitle,
 } from "@mui/material";
 
-// ConfirmDialog asks before an action that cannot be undone, such as a deletion. Its outcome is a notification.
 export default function ConfirmDialog({
   title,
   description,

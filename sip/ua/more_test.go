@@ -23,8 +23,6 @@ func checkTables(t *testing.T, p *peer) {
 	}
 }
 
-// Nothing is left in the tables of the agents once calls end, however they end, and their transactions too: an
-// initial request is noted until its transaction ends (RFC 3261 §8.2.2.2).
 func TestNoLeaks(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice, bob := newPeer(t, "alice", clock, ua.SessionTimer{}), newPeer(t, "bob", clock, ua.SessionTimer{})
@@ -51,7 +49,6 @@ func TestNoLeaks(t *testing.T) {
 	bob.next("ended")
 	alice.next("failed")
 
-	// The transactions end on their timers: Timer I runs from the ACK, which may come after the first step.
 	for range 4 {
 		advance(clock, 64*transaction.DefaultT1+time.Second, alice, bob)
 	}
@@ -61,8 +58,6 @@ func TestNoLeaks(t *testing.T) {
 	}
 }
 
-// A call of the application from another goroutine returns before the handlers it makes due run: the application
-// may hold its own lock while calling the agent, and take it in a handler.
 func TestHandlersAfterTheCall(t *testing.T) {
 	var mu sync.Mutex
 
@@ -98,7 +93,6 @@ func TestHandlersAfterTheCall(t *testing.T) {
 	alice.next("failed")
 }
 
-// Handlers call the agent directly: a handler ending the session reads its state at once.
 func TestHandlersCallTheAgent(t *testing.T) {
 	states := make(chan ua.State, 2)
 
@@ -130,8 +124,8 @@ func TestHandlersCallTheAgent(t *testing.T) {
 	}
 }
 
-// RFC 3262 §5, RFC 3264 §6: an offer of a reliable 1xx refused is answered in the PRACK with its streams refused, and
-// the INVITE cancelled.
+// RFC 3262 section 5
+// RFC 3264 section 6
 func TestRejectOfferInThePrack(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -155,8 +149,8 @@ func TestRejectOfferInThePrack(t *testing.T) {
 	}
 }
 
-// RFC 3311 §5.2: an offer while one of the peer is pending gets a 500 with Retry-After; a PRACK matching nothing a 481
-// (RFC 3262 §3).
+// RFC 3311 section 5.2
+// RFC 3262 section 3
 func TestConflicts(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -199,7 +193,7 @@ func TestConflicts(t *testing.T) {
 	}
 }
 
-// RFC 3262 §4: a reliable 1xx out of order is not acknowledged; the next one in order is.
+// RFC 3262 section 4
 func TestReliableOutOfOrder(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	r := newRaw(t)

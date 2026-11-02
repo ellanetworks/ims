@@ -9,13 +9,11 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// asPeer is what the S-CSCF keeps of an AS for a public identity, by the identity's key and the AS's SIP URI as the
-// iFC names it, with all its parameters (TS 24.229 §5.4.0): the server it sent the identity's first request or
-// third-party REGISTER to, where the later ones go too (TS 24.229 §5.4.0, §5.4.1.7, §5.4.3.2 step 5i, §5.4.3.3 step
-// 4h), the Call-ID and CSeq of its third-party REGISTERs (RFC 3261 §10.2), and the type 3 term-ioi of the last
-// response to one (TS 24.229 §5.4.1.7). pending are the third-party REGISTERs to it, in the order of their
-// registration events, each sent once the previous one has its final response or has timed out (RFC 3261 §10.2);
-// sending tells that one of them is under way.
+// TS 24.229 clause 5.4.0
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
+// RFC 3261 section 10.2
 type asPeer struct {
 	server  sip.Server
 	callID  string
@@ -26,8 +24,6 @@ type asPeer struct {
 	sending bool
 }
 
-// peerJob is a third-party REGISTER to an AS, or, with forget, the point from which the S-CSCF no longer keeps what
-// it knew of the AS for the identity: the identity was deregistered.
 type peerJob struct {
 	tp     *thirdParty
 	forget bool
@@ -39,9 +35,7 @@ func (p *asPeer) blank() bool {
 
 var errUntrustedAS = errors.New("the AS is outside the trust domain")
 
-// asServer is the server of the AS named serverName for the public identity u: the one stored for them, or else the
-// first that the AS URI resolves to (RFC 3263 §4) in the address family of a listener of the S-CSCF and in the trust
-// domain, which is then stored. The trust domain goes by the addresses the URI resolves to, whatever its form.
+// RFC 3263 section 4
 func (r *Registrar) asServer(ctx context.Context, u sip.URI, serverName string) (sip.Server, error) {
 	id := identityKey(u)
 
@@ -66,7 +60,6 @@ func (r *Registrar) asServer(ctx context.Context, u sip.URI, serverName string) 
 		return sip.Server{}, err
 	}
 
-	// An AS named by its address resolves to it every time: nothing to store.
 	_, literal := asURI.Addr()
 
 	err = fmt.Errorf("no S-CSCF listener in the address family of %s", serverName)
@@ -98,8 +91,7 @@ func (r *Registrar) asServer(ctx context.Context, u sip.URI, serverName string) 
 	return sip.Server{}, err
 }
 
-// registerSequence is the Call-ID and the next CSeq of the third-party REGISTERs to an AS for a public identity: the
-// same Call-ID for all of them, the CSeq one more each time (RFC 3261 §10.2).
+// RFC 3261 section 10.2
 func (r *Registrar) registerSequence(u sip.URI, serverName string, local netip.AddrPort) (string, uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -115,9 +107,7 @@ func (r *Registrar) registerSequence(u sip.URI, serverName string, local netip.A
 	return p.callID, p.cseq
 }
 
-// storeTermIOI keeps the term-ioi of a response of an AS to a third-party REGISTER with the Call-ID callID for the
-// public identity impu (TS 24.229 §5.4.1.7), unless what the S-CSCF kept of the AS for the identity is gone: it was
-// deregistered since.
+// TS 24.229 clause 5.4.1.7
 func (r *Registrar) storeTermIOI(impu, serverName, callID, ioi string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -127,9 +117,9 @@ func (r *Registrar) storeTermIOI(impu, serverName, callID, ioi string) {
 	}
 }
 
-// forgetASs drops what the S-CSCF keeps of the ASs for public identities once they are deregistered (TS 24.229
-// §5.4.1.4, §5.4.1.5) or their unregistered profile is released: at once for an AS with no third-party REGISTER
-// under way, or else after those queued so far, which still go to the server stored (TS 24.229 §5.4.1.7).
+// TS 24.229 clause 5.4.1.4
+// TS 24.229 clause 5.4.1.5
+// TS 24.229 clause 5.4.1.7
 func (r *Registrar) forgetASs(identityKeys []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -149,13 +139,10 @@ func (r *Registrar) forgetASs(identityKeys []string) {
 	}
 }
 
-// forget is a forget job reached in the queue of p: the next third-party REGISTER, if any, starts anew.
 func (p *asPeer) forget() {
 	p.server, p.callID, p.cseq, p.termIOI = sip.Server{}, "", 0, ""
 }
 
-// dropLocked removes what the S-CSCF keeps of the AS named serverName for the identity id, if p is still it and
-// holds nothing.
 func (r *Registrar) dropLocked(id, serverName string, p *asPeer) {
 	if r.peers[id][serverName] != p || !p.blank() {
 		return

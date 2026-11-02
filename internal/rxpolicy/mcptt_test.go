@@ -9,7 +9,6 @@ import (
 	"github.com/ellanetworks/ims/internal/policy"
 )
 
-// aaRecorder is a PCRF that keeps the AA-Requests it gets and answers them with its features.
 type aaRecorder struct {
 	t        *testing.T
 	features rx.Features
@@ -63,8 +62,9 @@ func wantMCPTT(t *testing.T, aar rx.AARequest, namespace string, level *rx.Reser
 	}
 }
 
-// TS 29.214 Annex A.13.1 NOTE 1, Annex A.13.2, §5.4.1: the MCPTT namespace and priority value go in every AA-Request
-// of a PCRF that negotiated MCPTT, the lowest value DEFAULT and the highest PRIORITY-FIFTEEN.
+// TS 29.214 clause A.13.1
+// TS 29.214 clause A.13.2
+// TS 29.214 clause 5.4.1
 func TestAnnexA13MCPTTPriority(t *testing.T) {
 	pcrf := &aaRecorder{t: t, features: rx.FeatureRel8 | rx.FeatureMCPTT}
 	b := New(Config{Diameter: pcrf, Realm: func() string { return pcrfRealm }})
@@ -103,8 +103,7 @@ func TestAnnexA13MCPTTPriority(t *testing.T) {
 	wantMCPTT(t, pcrf.last(), "", nil)
 }
 
-// TS 29.214 §5.4.1: the initial AA-Request sends the MCPTT priority before the PCRF tells its features; the
-// updates of a session whose PCRF does not support MCPTT leave it out.
+// TS 29.214 clause 5.4.1
 func TestAnnexA13MCPTTPriorityNotNegotiated(t *testing.T) {
 	pcrf := &aaRecorder{t: t, features: rx.FeatureRel8}
 	b := New(Config{Diameter: pcrf, Realm: func() string { return pcrfRealm }})

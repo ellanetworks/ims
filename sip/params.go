@@ -198,7 +198,7 @@ func parseURIParams(s string) (Params, error) {
 	return ps, nil
 }
 
-// ParseQValue parses a q-value: qvalue = ( "0" [ "." 0*3DIGIT ] ) / ( "1" [ "." 0*3("0") ] ) (RFC 3261 §25.1).
+// RFC 3261 section 25.1
 func ParseQValue(s string) (float64, error) {
 	whole, frac, _ := strings.Cut(s, ".")
 

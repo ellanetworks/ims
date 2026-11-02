@@ -15,24 +15,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// responseContext is the RFC 3261 §16 response context of one server transaction: the branches it
-// forwarded, in groups tried one after another, and the responses they returned.
+// RFC 3261 section 16
 type responseContext struct {
 	p      *Proxy
 	tx     *transaction.ServerTransaction
 	invite bool
-	// ctx carries the span of the request the context forwards, the parent of its branches'.
-	ctx context.Context
+	ctx    context.Context
 
-	// breadth is the Incoming Max-Breadth (RFC 5393 §5.3.2).
 	breadth int
 
 	mu sync.Mutex
 
-	// branches holds every branch started, in order.
 	branches []*branch
 
-	// waiting holds the branches of the current group not started yet, and groups the groups after it.
 	waiting []*branch
 	groups  [][]*branch
 
@@ -40,28 +35,20 @@ type responseContext struct {
 	success   bool
 	cancelled bool
 	reason    []sip.Field
-	// cause is the span context of what cancelled the request, which the CANCELs of its branches link to.
-	cause   trace.SpanContext
-	answers map[string]bool
+	cause     trace.SpanContext
+	answers   map[string]bool
 
-	// stopped is set once a 2xx or 6xx arrived: no new branch may start (RFC 3261 §16.7 step 5).
 	stopped bool
 
-	// held is set while the owner of a branch holds a final response it will answer with itself.
 	held bool
 
-	// forks counts the forks opened, to tell whether the owner forwarded again on a held reply.
 	forks int
 
-	// best is the best final response so far (RFC 3261 §16.7 step 6), and challenges every 401
-	// and 407 received (step 7).
 	best       *sip.Response
 	challenges []*sip.Response
 
-	// generated holds the responses the proxy made up for branches that got none.
 	generated map[*sip.Response]bool
 
-	// queue holds the replies dispatched and not yet delivered, in order: one goroutine at a time delivers them.
 	queue    []delivery
 	draining bool
 }
@@ -87,12 +74,8 @@ type branch struct {
 	done      bool
 	responded bool
 
-	// settled is set once the branch has its final response: received, or taken as a 408 when
-	// it expired (RFC 3261 §16.8), or failed. Until then it counts toward the Outgoing
-	// Max-Breadth (RFC 5393 §5.3.2).
 	settled bool
 
-	// cancelling holds the Reason of a CANCEL due before the client transaction exists.
 	cancelling []sip.Field
 	cancelled  bool
 
@@ -103,49 +86,33 @@ type branch struct {
 	req     *sip.Request
 	initial bool
 
-	// delivered is set once the dialog learnt the branch failed.
 	delivered bool
 
-	// taken is set once the context took the final reply of the branch, as it delivers it (RFC 3261 §16.7 step 4).
-	// Until then the branch may still change the answer, with a better response, a 2xx or a 430 that retries it,
-	// even once its client transaction ended: the context cannot conclude (step 6).
 	taken bool
 
-	// early holds the To tags of the early dialogs that came on the branch, and ended those a
-	// 199 already ended (RFC 6228 §6).
 	early, ended []string
 
-	// retry holds the branches to try in turn in its place while it fails with 430.
 	retry []*branch
 
-	// expired is set once the branch rang past its Timer C or no-answer time: it was cancelled, and the final
-	// response it ends with is delivered as a 408.
 	expired bool
 
-	// reached is set once the request is known to have reached the target (Proxy.Reached): its Timeout no longer
-	// applies.
 	reached bool
 
-	// withdrawn holds the Reason of a branch withdrawn from the search (withdraw): it was cancelled,
-	// and the final response it ends with is delivered as a 480 with that Reason (TS 24.229 §5.4.5.1.1).
 	withdrawn []sip.Field
 
 	key any
 }
 
-// retries reports whether res sends the request to b's next flow instead of ending b's search
-// (RFC 5626 §7).
+// RFC 5626 section 7
 func (b *branch) retries(res *sip.Response) bool {
 	return res != nil && res.StatusCode == 430 && len(b.retry) > 0
 }
 
-// errRangOut is the error of a branch that rang past its Timer C or no-answer time (RFC 3261 §16.8).
+// RFC 3261 section 16.8
 var errRangOut = fmt.Errorf("%w: rang out", transaction.ErrTimeout)
 
-// errWithdrawn is the error of a branch withdrawn from the search.
 var errWithdrawn = errors.New("sip/proxy: branch withdrawn")
 
-// withdrawnResponse is the final response a withdrawn branch stands for: a 480, with its Reason.
 func (c *responseContext) withdrawnResponse(b *branch) *sip.Response {
 	res := c.generate(480)
 	for _, f := range b.withdrawn {
@@ -162,8 +129,6 @@ func newContext(ctx context.Context, p *Proxy, tx *transaction.ServerTransaction
 	}
 }
 
-// open installs the groups of a new fork; a context takes a new fork only once the earlier
-// branches all ended without an answer the context relayed.
 func (c *responseContext) open(groups [][]*branch, breadth int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -186,7 +151,7 @@ func (c *responseContext) liveLocked() bool {
 	return slices.ContainsFunc(c.branches, func(b *branch) bool { return !b.done })
 }
 
-// RFC 5393 §5.3.2
+// RFC 5393 section 5.3.2
 func (c *responseContext) outgoingLocked() int {
 	n := 0
 
@@ -199,8 +164,6 @@ func (c *responseContext) outgoingLocked() int {
 	return n
 }
 
-// pickLocked takes the branches that can start now: those of the current group, as far as the
-// Max-Breadth left allows, or once every branch of it ended, those of the next group.
 func (c *responseContext) pickLocked() []*branch {
 	if c.final || c.stopped || c.cancelled || c.held {
 		return nil
@@ -223,9 +186,6 @@ func (c *responseContext) pickLocked() []*branch {
 	picked := c.waiting[:n:n]
 	c.waiting = c.waiting[n:]
 
-	// The branches started together share the Max-Breadth left; when it is too small for the
-	// whole group, they get 1 each and the rest of the group follows as they end
-	// (RFC 5393 §5.3.3, §5.5).
 	for i, b := range picked {
 		b.breadth = 1
 
@@ -250,7 +210,6 @@ type failure struct {
 	err error
 }
 
-// start sends the branches picked; a branch that cannot be sent ends at once.
 func (c *responseContext) start(ctx context.Context, bs []*branch) (int, []failure) {
 	started := 0
 
@@ -291,7 +250,6 @@ func (c *responseContext) send(ctx context.Context, b *branch) error {
 	if err != nil {
 		c.drop(b)
 
-		// The dialog learns of the failure here, whether or not the failure is dispatched later.
 		if d := b.dialog; d != nil && !b.initial {
 			d.response(ctx, b.out, Reply{Response: sip.NewResponse(b.out, 500, ""), Err: err})
 
@@ -315,9 +273,7 @@ func (c *responseContext) drop(b *branch) {
 	c.mu.Unlock()
 }
 
-// arm starts the timers of b as its request goes: Timer C and the no-answer timer of an INVITE (RFC 3261 §16.6 step
-// 11), the timeout of the options. Before the send, so that none starts late of a response that comes first; one that
-// fires before the client transaction exists leaves its CANCEL to started.
+// RFC 3261 section 16.6
 func (c *responseContext) arm(b *branch) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -339,7 +295,6 @@ func (c *responseContext) arm(b *branch) {
 	}
 }
 
-// advance starts what can start; a branch that cannot be sent counts as answering with an error.
 func (c *responseContext) advance(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -397,8 +352,6 @@ func (c *responseContext) started(b *branch, client *transaction.ClientTransacti
 	}
 }
 
-// cancelLocked marks b for a CANCEL and returns the client transaction to send it on, if it
-// exists already.
 func (b *branch) cancelLocked(reason []sip.Field) *transaction.ClientTransaction {
 	if b.cancelled || b.settled {
 		return nil
@@ -414,15 +367,14 @@ type cancellation struct {
 	reason []sip.Field
 }
 
-// send sends the CANCEL, in the trace of the INVITE's branch, linked to cause: what cancelled it.
 func (x cancellation) send(cause context.Context) {
 	if x.client != nil {
 		_ = x.client.Cancel(cause, x.reason...)
 	}
 }
 
-// stopLocked ends the search: pending groups never start, and every branch still live is
-// cancelled (RFC 3261 §16.7 step 10, §16.10).
+// RFC 3261 section 16.7
+// RFC 3261 section 16.10
 func (c *responseContext) stopLocked(reason []sip.Field) []cancellation {
 	c.waiting, c.groups = nil, nil
 
@@ -445,8 +397,6 @@ func (c *responseContext) stopLocked(reason []sip.Field) []cancellation {
 	return out
 }
 
-// sendAll sends the CANCELs of xs, linked to cause: what cancelled them, if anything but the proxy itself, whose
-// CANCELs are in the trace of their INVITE alone.
 func sendAll(cause context.Context, xs []cancellation) {
 	for _, x := range xs {
 		x.send(cause)
@@ -460,7 +410,6 @@ func (b *branch) startTimerC() {
 
 	b.genC++
 	gen := b.genC
-	// A timer of the proxy is the cause of what it does: its work has no trace of the request that armed it.
 	b.timerC = b.c.p.clock.AfterFunc(b.c.p.timerC, func() { b.timerCFired(context.Background(), gen) })
 }
 
@@ -477,7 +426,7 @@ func (b *branch) stopTimers() {
 	}
 }
 
-// RFC 3261 §16.8
+// RFC 3261 section 16.8
 func (b *branch) timerCFired(ctx context.Context, gen int) {
 	b.expire(ctx, func() bool { return gen == b.genC }, "Timer C")
 }
@@ -486,6 +435,7 @@ func (b *branch) noAnswerFired(ctx context.Context) {
 	b.expire(ctx, func() bool { return true }, "no answer")
 }
 
+// RFC 3261 section 16.8
 func (b *branch) expire(ctx context.Context, current func() bool, cause string) {
 	c := b.c
 
@@ -498,9 +448,6 @@ func (b *branch) expire(ctx context.Context, current func() bool, cause string) 
 
 	c.p.log.Debug("INVITE branch expired", slog.String("cause", cause), slog.String("request", c.tx.Request().StartLine()))
 
-	// RFC 3261 §16.8: a branch with a provisional response is cancelled, and ends with the final response that
-	// brings; until then it is live, and counts toward the Outgoing Max-Breadth (RFC 5393 §5.3.2). One without
-	// is taken as answering with a 408.
 	if b.responded {
 		b.expired = true
 		b.stopTimers()
@@ -570,8 +517,7 @@ func (b *branch) stopsTimeout() bool {
 	return b.reached || (b.c.invite || b.anyResponse) && b.responded
 }
 
-// settleLocked records that the client transaction has its final outcome, and reports whether
-// that frees Max-Breadth for branches still waiting (RFC 5393 §5.3.3.1).
+// RFC 5393 section 5.3.3.1
 func (b *branch) settleLocked() bool {
 	if b.settled {
 		return false
@@ -652,8 +598,6 @@ func (b *branch) HandleResponse(ctx context.Context, res *sip.Response) {
 
 		b.finish()
 	default:
-		// A branch the context cancelled once it had its answer ends here, unseen: its timers stop, so it cannot
-		// expire into a 408 later.
 		if b.done || c.final {
 			b.finish()
 			c.mu.Unlock()
@@ -667,7 +611,6 @@ func (b *branch) HandleResponse(ctx context.Context, res *sip.Response) {
 
 		b.finish()
 
-		// The branch was withdrawn: whatever final response it ends with stands for its release.
 		if b.withdrawn != nil {
 			c.mu.Unlock()
 
@@ -680,7 +623,6 @@ func (b *branch) HandleResponse(ctx context.Context, res *sip.Response) {
 			return
 		}
 
-		// The branch rang out and was cancelled: whatever final response it ends with stands for the timeout.
 		if b.expired {
 			c.mu.Unlock()
 
@@ -832,8 +774,6 @@ func (c *responseContext) deliver(ctx context.Context, b *branch, r Reply) {
 	}
 }
 
-// toDialog passes a response to the dialog the branch carries. A failed branch of the initial
-// INVITE ends only its early dialogs; the dialog fails with the INVITE, once no branch is left.
 func (c *responseContext) toDialog(ctx context.Context, d *Dialog, b *branch, r Reply) {
 	res := r.Response
 
@@ -871,13 +811,11 @@ func (c *responseContext) relayReply(ctx context.Context, b *branch, r Reply) {
 	}
 }
 
-// relay answers with a response its owner chose, ending the search: branches still live are
-// cancelled.
 func (c *responseContext) relay(ctx context.Context, res *sip.Response) error {
 	return c.relayFrom(ctx, nil, res)
 }
 
-// RFC 3261 §16.7
+// RFC 3261 section 16.7
 func (c *responseContext) relayFrom(ctx context.Context, b *branch, res *sip.Response) error {
 	c.mu.Lock()
 
@@ -925,7 +863,6 @@ func (c *responseContext) relayFrom(ctx context.Context, b *branch, res *sip.Res
 	}
 
 	if b.retries(res) && !c.stopped && !c.cancelled {
-		// The 430 stays a candidate: should every flow fail, it is the answer (RFC 5626 §11.5).
 		c.considerLocked(res)
 
 		next := b.retry[0]
@@ -964,9 +901,8 @@ func (c *responseContext) relayFrom(ctx context.Context, b *branch, res *sip.Res
 	return err
 }
 
-// earlyTerminated tells the caller, with a 199, of each early dialog of branch b that the final
-// response res ended, when that response does not go upstream at once (RFC 6228 §6, TS 24.229
-// §5.4.3.3).
+// RFC 6228 section 6
+// TS 24.229 clause 5.4.3.3
 func (c *responseContext) earlyTerminated(b *branch, res *sip.Response) {
 	in := c.tx.Request()
 
@@ -1008,7 +944,7 @@ func (c *responseContext) earlyTerminated(b *branch, res *sip.Response) {
 	}
 }
 
-// considerLocked weighs a final response against the best one so far (RFC 3261 §16.7 step 6).
+// RFC 3261 section 16.7
 func (c *responseContext) considerLocked(res *sip.Response) {
 	if res.StatusCode == 401 || res.StatusCode == 407 {
 		c.challenges = append(c.challenges, res)
@@ -1017,8 +953,6 @@ func (c *responseContext) considerLocked(res *sip.Response) {
 	c.best = c.bestWithLocked(res)
 }
 
-// bestWithLocked is the best final response once res is weighed too. Within what better leaves equal, it prefers
-// a response a branch returned to one the context generated, such as the 408 of a branch that rang out.
 func (c *responseContext) bestWithLocked(res *sip.Response) *sip.Response {
 	switch {
 	case c.best == nil, better(res.StatusCode, c.best.StatusCode):
@@ -1031,8 +965,6 @@ func (c *responseContext) bestWithLocked(res *sip.Response) *sip.Response {
 	return c.best
 }
 
-// better reports whether a final response with code is better than one with than: 6xx first,
-// then the lowest class, and in the 4xx class those that tell how to resubmit the request.
 func better(code, than int) bool {
 	class, thanClass := code/100, than/100
 
@@ -1048,7 +980,6 @@ func better(code, than int) bool {
 	return false
 }
 
-// resubmission reports a response that tells the client how to resubmit the request.
 func resubmission(code int) bool {
 	switch code {
 	case 401, 407, 415, 420, 484:
@@ -1058,8 +989,7 @@ func resubmission(code int) bool {
 	return false
 }
 
-// conclude sends the best response once the context took the final reply of every branch and no group is left
-// (RFC 3261 §16.7 step 6).
+// RFC 3261 section 16.7
 func (c *responseContext) conclude() error {
 	c.mu.Lock()
 
@@ -1091,7 +1021,7 @@ func (c *responseContext) conclude() error {
 	return c.finalize(best)
 }
 
-// RFC 3261 §16.7 step 7
+// RFC 3261 section 16.7
 func withChallenges(best *sip.Response, all []*sip.Response) *sip.Response {
 	best = best.Clone()
 
@@ -1108,8 +1038,8 @@ func withChallenges(best *sip.Response, all []*sip.Response) *sip.Response {
 	return best
 }
 
-// finalize relays the final response. A 503 goes upstream as a 500 (RFC 3261 §16.7 step 6), and a
-// 430, meant for the proxy holding the registration, as a 480 (RFC 5626 §11.5).
+// RFC 3261 section 16.7
+// RFC 5626 section 11.5
 func (c *responseContext) finalize(res *sip.Response) error {
 	if code := UpstreamStatus(res.StatusCode); code != res.StatusCode {
 		res = c.generate(code)
@@ -1121,9 +1051,8 @@ func (c *responseContext) finalize(res *sip.Response) error {
 	return err
 }
 
-// UpstreamStatus is the status a proxy sends upstream for a best response of a status code: not a 503, which would
-// make the client try another server (RFC 3261 §16.7 step 6), nor a 430, which only concerns this hop's flow
-// (RFC 5626 §11.5).
+// RFC 3261 section 16.7
+// RFC 5626 section 11.5
 func UpstreamStatus(code int) int {
 	switch code {
 	case 503:
@@ -1137,7 +1066,8 @@ func UpstreamStatus(code int) int {
 
 var completedElsewhere = reasonFor(200)
 
-// TS 24.229 §5.4.3.3, RFC 3326
+// TS 24.229 clause 5.4.3.3
+// RFC 3326
 func reasonFor(code int) []sip.Field {
 	r, err := sip.NewReason(sip.ReasonSIP, code, sip.ReasonText(sip.ReasonSIP, code))
 	if err != nil {
@@ -1147,8 +1077,7 @@ func reasonFor(code int) []sip.Field {
 	return []sip.Field{{Name: "Reason", Value: r.String()}}
 }
 
-// RFC 3261 §16.10
-// cancel cancels the request, ctx being the trace of what cancels it.
+// RFC 3261 section 16.10
 func (c *responseContext) cancel(ctx context.Context, reason []sip.Field) {
 	c.mu.Lock()
 
@@ -1179,10 +1108,7 @@ func (c *responseContext) cancel(ctx context.Context, reason []sip.Field) {
 	sendAll(ctx, cancels)
 }
 
-// withdraw ends the search toward the branches with key: those not yet sent never are, and those
-// ringing are cancelled with reason (RFC 3261 §16.10). It changes nothing when no branch with key is
-// pending or ringing (found is false), or when no other branch would be left to answer (others is
-// false).
+// RFC 3261 section 16.10
 func (c *responseContext) withdraw(ctx context.Context, key any, reason []sip.Field) (found, others bool) {
 	c.mu.Lock()
 

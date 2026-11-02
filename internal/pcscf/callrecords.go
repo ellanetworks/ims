@@ -10,15 +10,12 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// callRecord reports a call from a UE to the call records. A nil callRecord, for a request that is not an INVITE
-// or without a recorder, reports nothing.
 type callRecord struct {
 	r       *callrecords.Recorder
 	attempt callrecords.Attempt
 	opened  bool
 }
 
-// attempt is the record of an INVITE from a registered UE, which open, rejecting or closed opens.
 func (p *PCSCF) attempt(req *sip.Request, impi string, asserted []string, icid string) *callRecord {
 	if req.Method != "INVITE" || p.cfg.Records == nil {
 		return nil
@@ -29,7 +26,6 @@ func (p *PCSCF) attempt(req *sip.Request, impi string, asserted []string, icid s
 	}}
 }
 
-// open opens the record, once the INVITE is known to be a call.
 func (c *callRecord) open() {
 	if c == nil || c.opened {
 		return
@@ -39,7 +35,6 @@ func (c *callRecord) open() {
 	c.r.Attempt(c.attempt)
 }
 
-// rejecting reports that the P-CSCF answers the INVITE itself with an error status, before it does.
 func (c *callRecord) rejecting(tx *transaction.ServerTransaction, code int) {
 	if c == nil {
 		return
@@ -49,8 +44,6 @@ func (c *callRecord) rejecting(tx *transaction.ServerTransaction, code int) {
 	c.r.Rejecting(c.attempt.ICID, code, tx.ToTag())
 }
 
-// closed ends the record of an INVITE that the P-CSCF answered without forwarding it, with the final response the
-// caller got: the P-CSCF's own, or the 487 to a CANCEL that came first.
 func (c *callRecord) closed(tx *transaction.ServerTransaction) {
 	if c == nil {
 		return
@@ -62,7 +55,6 @@ func (c *callRecord) closed(tx *transaction.ServerTransaction) {
 	})
 }
 
-// alerted reports a 180 toward the UE.
 func (c *callRecord) alerted() {
 	if c != nil {
 		c.r.Alerted(c.attempt.ICID)
@@ -84,10 +76,7 @@ func (c *callRecord) event(e proxy.DialogEvent) {
 	}
 }
 
-// terminatingRecord reports to the call records the UE that answers a call, and the release of a call toward a
-// UE, which the proxy publishes before releasing it, so that the caller's end of it follows.
 func (p *PCSCF) terminatingRecord(c *call, e proxy.DialogEvent) {
-	// The call records know a call by its ICID unquoted, and the P-CSCF keeps it as on the wire.
 	icid := sip.Unquote(c.icid)
 
 	switch {
@@ -98,7 +87,7 @@ func (p *PCSCF) terminatingRecord(c *call, e proxy.DialogEvent) {
 	}
 }
 
-// acceptedMedia are the media types of the m-lines that an SDP answer accepts, those with a port (RFC 3264 §6).
+// RFC 3264 section 6
 func acceptedMedia(answer []byte) []string {
 	s, err := sdp.Parse(answer)
 	if err != nil {

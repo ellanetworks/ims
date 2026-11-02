@@ -554,7 +554,9 @@ func TestExpiry(t *testing.T) {
 	n.RecvNone(n.PS, 100*time.Millisecond)
 }
 
-// TS 23.003 §13.2–§13.4B: the identities of a UE without an ISIM.
+// TS 23.003 clause 13.2
+// TS 23.003 clause 13.3
+// TS 23.003 clause 13.4B
 func TestIdentitiesFromIMSI(t *testing.T) {
 	for _, tc := range []struct {
 		imsi      string
@@ -593,7 +595,6 @@ func TestIdentitiesFromIMSI(t *testing.T) {
 	}
 }
 
-// New refuses a UE without the identities, instance ID, Authenticator, IPsec or access network info it needs.
 func TestNewChecksTheConfig(t *testing.T) {
 	id := Identities{IMPI: "alice@example.org", IMPU: "sip:alice@example.org", HomeDomain: "example.org"}
 	instance, _ := IMEIInstanceID(imei)

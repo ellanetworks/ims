@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 )
 
-// maxAuthBody is the largest body of a request to the authentication and user routes.
 const maxAuthBody = 4 << 10
 
 type LoginParams struct {
@@ -26,8 +25,6 @@ type InitializeParams struct {
 	Password string `json:"password"`
 }
 
-// LoginResponse is the response to a login or to the initialization: the access token of the user, whose session is
-// in a cookie.
 type LoginResponse struct {
 	Message string `json:"message"`
 	Token   string `json:"token"`
@@ -37,12 +34,10 @@ type RefreshResponse struct {
 	Token string `json:"token"`
 }
 
-// SuccessResponse is the response to a change that returns nothing else.
 type SuccessResponse struct {
 	Message string `json:"message"`
 }
 
-// Login checks the email and password of a user, starts a session in a cookie, and returns an access token.
 func Login(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -108,8 +103,6 @@ func Login(a *auth) http.Handler {
 	})
 }
 
-// allowLogin counts an attempt to log in or to initialize from the client of a request, and writes 429 when there have
-// been too many.
 func (a *auth) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	if a.logins.allow(clientKey(r)) {
 		return true
@@ -121,7 +114,6 @@ func (a *auth) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// allowAccount writes 429 when an account has had too many wrong passwords, from whatever clients.
 func (a *auth) allowAccount(ctx context.Context, w http.ResponseWriter, account string) bool {
 	if !a.failures.exceeded(account) {
 		return true
@@ -134,7 +126,6 @@ func (a *auth) allowAccount(ctx context.Context, w http.ResponseWriter, account 
 	return false
 }
 
-// logIn starts a session of a user and returns its access token, or writes the error.
 func (a *auth) logIn(w http.ResponseWriter, r *http.Request, u db.User) (string, bool) {
 	sessionID, err := a.startSession(w, r, u)
 	if err != nil {
@@ -151,7 +142,6 @@ func (a *auth) logIn(w http.ResponseWriter, r *http.Request, u db.User) (string,
 	return token, true
 }
 
-// Refresh returns a new access token for the session in the cookie of the request.
 func Refresh(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -209,7 +199,6 @@ func Refresh(a *auth) http.Handler {
 	})
 }
 
-// Logout ends the session in the cookie of the request, if any, and so its access tokens.
 func Logout(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -232,8 +221,6 @@ func Logout(a *auth) http.Handler {
 	})
 }
 
-// Initialize creates the first user, an admin, and logs it in. It fails once a user exists, before it hashes the
-// password, so that an initialized system spends no CPU on it. It is rate-limited like a login.
 func Initialize(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -286,7 +273,6 @@ func Initialize(a *auth) http.Handler {
 		a.initialize.Lock()
 		defer a.initialize.Unlock()
 
-		// Another request may have created the first user while this one hashed.
 		if initialized() {
 			return
 		}
@@ -313,7 +299,6 @@ func Initialize(a *auth) http.Handler {
 	})
 }
 
-// decodeBody decodes the small JSON body of a request into v, rejecting unknown fields, or writes the error.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any, cfg Config) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAuthBody))
 	dec.DisallowUnknownFields()
@@ -326,8 +311,6 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any, cfg Config) bool 
 	return true
 }
 
-// normalEmail returns a bare email address in lower case, or false for anything else, such as one with a display
-// name.
 func normalEmail(s string) (string, bool) {
 	a, err := mail.ParseAddress(s)
 	if err != nil || a.Address != s {
@@ -337,7 +320,6 @@ func normalEmail(s string) (string, bool) {
 	return strings.ToLower(s), true
 }
 
-// validPassword returns why a new password is not valid.
 func validPassword(p string) (string, bool) {
 	if len(p) < MinPasswordLength || len(p) > MaxPasswordLength {
 		return fmt.Sprintf("password must be %d to %d bytes long", MinPasswordLength, MaxPasswordLength), false

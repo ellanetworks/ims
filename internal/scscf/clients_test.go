@@ -8,8 +8,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// twoClients has the phone's IMS client register its set and an MCPTT client of the same device register another,
-// with the same private identity, instance ID and reg-id, from contacts of their own (TS 24.229 §3.1).
 func twoClients(t *testing.T) (*harness, *ue, *ue, registerOptions, registerOptions) {
 	t.Helper()
 
@@ -32,8 +30,7 @@ func liveBindings(h *harness, impu string) int {
 	return n
 }
 
-// TS 24.229 §5.4.1.2.2 step 4: a response to the challenge of another public user identity of the private identity
-// does not authenticate the REGISTER.
+// TS 24.229 clause 5.4.1.2.2
 func TestResponseToTheOtherClientsChallengeFails(t *testing.T) {
 	h, one, two, o1, o2 := twoClients(t)
 
@@ -68,7 +65,6 @@ func TestDeregisteringOneClientKeepsTheOther(t *testing.T) {
 	}
 }
 
-// A re-authentication the network asks for applies to each client, until it authenticates again.
 func TestReauthenticationOfEachClient(t *testing.T) {
 	h, one, two, o1, o2 := twoClients(t)
 
@@ -90,7 +86,7 @@ func TestReauthenticationOfEachClient(t *testing.T) {
 	wantStatus(t, one.send(o1), 200)
 }
 
-// TS 24.229 §5.4.1.2.1 step 4: resynchronising one client's challenge leaves the other's.
+// TS 24.229 clause 5.4.1.2.1
 func TestResyncOfOneClientKeepsTheOthersChallenge(t *testing.T) {
 	h, one, two, o1, o2 := twoClients(t)
 
@@ -104,8 +100,7 @@ func TestResyncOfOneClientKeepsTheOthersChallenge(t *testing.T) {
 	wantStatus(t, two.send(o2), 200)
 }
 
-// TS 24.229 §5.4.5.1.2A: the expiry of one client's binding releases its calls, though the other client of the
-// device, of the same instance ID and reg-id, stays registered.
+// TS 24.229 clause 5.4.5.1.2A
 func TestExpiryOfOneClientReleasesItsCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	contact := sh.ue.flowContact(sh.ue.contact, "1")
@@ -126,7 +121,7 @@ func TestExpiryOfOneClientReleasesItsCalls(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// TS 24.229 §5.4.3.2 step 1: a client does not originate as an identity of the other client's set.
+// TS 24.229 clause 5.4.3.2
 func TestOriginatingAsTheOtherClientsIdentity(t *testing.T) {
 	sh := newSessionHarness(t)
 

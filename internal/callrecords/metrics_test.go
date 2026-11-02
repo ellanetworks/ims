@@ -17,7 +17,6 @@ func TestRecorderMetrics(t *testing.T) {
 		r.Attempt(attempt(icid))
 	}
 
-	// An attempt that the caller tries again, which fails, is not a call.
 	for _, icid := range []string{"FIRST", "RETRY"} {
 		a := attempt(icid)
 		a.CallID = "call-retried"
@@ -32,13 +31,11 @@ func TestRecorderMetrics(t *testing.T) {
 	r.Ended("ANSWERED", End{By: proxy.Caller, Cause: proxy.EndBye})
 	r.Ended("BUSY", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 	r.Ended("FIRST", End{Code: 422, By: proxy.Callee, Cause: proxy.EndFailed})
-	// Its final response is unknown, so it has no outcome.
 	r.Ended("UNKNOWN", End{By: proxy.Callee, Cause: proxy.EndFailed})
 
 	wantGauge(t, r.metrics.active, 2)
 	wantCalls(t, r, map[db.CallOutcome]float64{db.OutcomeAnswered: 1, db.OutcomeBusy: 1, db.OutcomeFailed: 0})
 
-	// The calls the IMS loses are no longer in progress.
 	r.CloseOpen()
 	wantGauge(t, r.metrics.active, 0)
 	wantCalls(t, r, map[db.CallOutcome]float64{db.OutcomeAnswered: 1, db.OutcomeBusy: 1, db.OutcomeFailed: 0})
@@ -59,7 +56,6 @@ func TestRecorderMetricsOfDroppedRecords(t *testing.T) {
 	r.Ended("KEPT", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 	r.Ended("DROPPED", End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 
-	// The dropped call is no longer in progress, and it has no record that shows how it ended.
 	wantGauge(t, r.metrics.active, 0)
 	wantCalls(t, r, map[db.CallOutcome]float64{db.OutcomeBusy: 1})
 }

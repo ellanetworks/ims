@@ -96,8 +96,8 @@ func newPolicyClient(cfg Policy, logger *slog.Logger, now func() time.Time) *pol
 	}
 }
 
-// close ends the sessions of calls, and waits for the requests in progress up to the timeout of a request, or until
-// ctx is done, then cancels those left (TS 29.214 §4.4.4, TS 29.514 §4.2.4.2).
+// TS 29.214 clause 4.4.4
+// TS 29.514 clause 4.2.4.2
 func (c *policyClient) close(ctx context.Context) {
 	c.mu.Lock()
 
@@ -213,19 +213,14 @@ func (c *policyClient) forget(s *policySession) {
 	}
 }
 
-// resolve returns the policy function that serves the UE's address, whatever its access. A session keeps the one
-// it was opened with. One is configured for now.
 func (c *policyClient) resolve(netip.Addr) policy.Backend {
 	return c.cfg.Backend
 }
 
-// serves reports whether a stored session was opened with this client's policy function.
 func (c *policyClient) serves(p db.PolicySession) bool {
 	return strings.EqualFold(p.Endpoint, c.cfg.Backend.Endpoint())
 }
 
-// deadline bounds a request caused by cause: in its trace, ended with the client. A positive wait also lets the
-// backend wait for its peer to connect.
 func (c *policyClient) deadline(cause context.Context, wait time.Duration) (context.Context, context.CancelFunc) {
 	if wait <= 0 {
 		wait = c.cfg.Timeout
@@ -241,8 +236,10 @@ func (c *policyClient) openSignalling(ctx context.Context, s *policySession, wai
 	return s.backend.OpenSignalling(ctx, s.id, policy.Signalling{UE: s.key.ue}, wait > 0)
 }
 
-// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2, RFC 6733 §8.4: a transient failure is retried until the policy function
-// answers or the P-CSCF stops. A session lost with its policy function is not (RFC 6733 §8.18).
+// TS 29.214 clause 4.4.4
+// TS 29.514 clause 4.2.4.2
+// RFC 6733 section 8.4
+// RFC 6733 section 8.18
 func (c *policyClient) endLocked(ctx context.Context, s *policySession, cause policy.Termination, wait time.Duration) error {
 	if s.ended {
 		return nil
@@ -287,7 +284,6 @@ func (c *policyClient) endLocked(ctx context.Context, s *policySession, cause po
 		c.log.WarnContext(ctx, "policy session termination failed, will retry", append(attrs, slog.Any("error", err),
 			slog.Duration("retry_in", delay))...)
 
-		// Without a link, the next attempt waits for it, so it goes out as soon as the policy function is back.
 		if errors.Is(err, policy.ErrUnreachable) {
 			wait = delay
 		}
@@ -303,7 +299,6 @@ func (c *policyClient) endLocked(ctx context.Context, s *policySession, cause po
 	}
 }
 
-// end ends s in the background, in the trace of ctx, what ended it.
 func (c *policyClient) end(ctx context.Context, s *policySession, cause policy.Termination, wait time.Duration) {
 	c.spawn(func() {
 		s.mu.Lock()
@@ -314,7 +309,8 @@ func (c *policyClient) end(ctx context.Context, s *policySession, cause policy.T
 	})
 }
 
-// TS 29.213 Annex B.1, TS 29.514 §4.2.6.7
+// TS 29.213 clause B.1
+// TS 29.514 clause 4.2.6.7
 func (p *PCSCF) openSignalling(ctx context.Context, k regKey, wait time.Duration) {
 	s := p.policy.begin(k)
 
@@ -414,7 +410,7 @@ func (p *PCSCF) detachPolicy(ctx context.Context, s *policySession) {
 	})
 }
 
-// RFC 3680 §5.2: why the registration ended.
+// RFC 3680 section 5.2
 func terminationCause(e reginfo.Event) policy.Termination {
 	switch e {
 	case reginfo.Unregistered:
@@ -447,7 +443,6 @@ func graver(a, b reginfo.Event) reginfo.Event {
 	return a
 }
 
-// endPolicy ends the policy session of r, in the trace of ctx, what ended r.
 func (p *PCSCF) endPolicy(ctx context.Context, r db.PCSCFRegistration, cause policy.Termination, wait time.Duration) {
 	if p.policy == nil || r.Policy.ID == "" || !p.policy.serves(r.Policy) {
 		return
@@ -457,8 +452,6 @@ func (p *PCSCF) endPolicy(ctx context.Context, r db.PCSCFRegistration, cause pol
 	p.policy.end(ctx, s, cause, wait)
 }
 
-// restorePolicy ends, after a restart, the policy sessions stored with the registrations, and opens them again. Those
-// of the registrations expired, or lost with their security associations, it only ends.
 func (p *PCSCF) restorePolicy(ctx context.Context, expired, lost []db.PCSCFRegistration) {
 	if p.policy == nil {
 		return
@@ -510,7 +503,7 @@ func (p *PCSCF) restorePolicy(ctx context.Context, expired, lost []db.PCSCFRegis
 	}
 }
 
-// TS 24.229 §5.2.6.4.3
+// TS 24.229 clause 5.2.6.4.3
 func (p *PCSCF) signallingRestored(ctx context.Context, req *sip.Request) {
 	if p.regs.lost.Load() == 0 {
 		return
@@ -531,9 +524,12 @@ func (p *PCSCF) signallingRestored(ctx context.Context, req *sip.Request) {
 	}
 }
 
-// Notify handles an event the policy function reports for a session (TS 29.214 §4.4.6.2, §4.4.6.3, §4.4.6.5,
-// TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10). ctx is that of the report, without its cancellation: what Notify does
-// after the report, it does bound to the P-CSCF's lifetime.
+// TS 29.214 clause 4.4.6.2
+// TS 29.214 clause 4.4.6.3
+// TS 29.214 clause 4.4.6.5
+// TS 29.514 clause 4.2.5.2
+// TS 29.514 clause 4.2.5.8
+// TS 29.514 clause 4.2.5.10
 func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bool {
 	if p.policy == nil {
 		return false
@@ -569,8 +565,8 @@ func (p *PCSCF) Notify(ctx context.Context, sessionID string, e policy.Event) bo
 	return true
 }
 
-// Abort handles the policy function ending a session (TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3). ctx is that of the
-// abort, without its cancellation, as for Notify; terminate ends the session in its trace.
+// TS 29.214 clause 4.4.6.1
+// TS 29.514 clause 4.2.5.3
 func (p *PCSCF) Abort(ctx context.Context, sessionID string, a policy.Abort) (terminate func(), known bool) {
 	if p.policy == nil {
 		return nil, false

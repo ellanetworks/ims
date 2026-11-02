@@ -6,14 +6,14 @@ import (
 	"strconv"
 )
 
-// AppSessionContext is the Individual Application Session Context resource (TS 29.514 §5.6.2.2).
+// TS 29.514 clause 5.6.2.2
 type AppSessionContext struct {
 	AscReqData  *AppSessionContextReqData  `json:"ascReqData,omitempty"`
 	AscRespData *AppSessionContextRespData `json:"ascRespData,omitempty"`
 	EvsNotif    *EventsNotification        `json:"evsNotif,omitempty"`
 }
 
-// TS 29.514 §5.6.2.3. NotifURI and SuppFeat are required, and so is one of UEIPv4 and UEIPv6.
+// TS 29.514 clause 5.6.2.3
 type AppSessionContextReqData struct {
 	AFAppID       string                    `json:"afAppId,omitempty"`
 	AFChargID     string                    `json:"afChargId,omitempty"`
@@ -32,14 +32,12 @@ type AppSessionContextReqData struct {
 	UEIPv6        netip.Addr                `json:"ueIpv6,omitzero"`
 }
 
-// TS 29.514 §5.6.2.4
+// TS 29.514 clause 5.6.2.4
 type AppSessionContextRespData struct {
 	SuppFeat SupportedFeatures `json:"suppFeat,omitempty"`
 }
 
-// AppSessionContextUpdateData carries the service information of a PATCH (TS 29.514 §5.6.2.5). Its media
-// components and event subscription are the nullable MediaComponentRm and EventsSubscReqDataRm; NewPatch writes
-// the nulls that remove what an earlier request set.
+// TS 29.514 clause 5.6.2.5
 type AppSessionContextUpdateData struct {
 	AFAppID       string                    `json:"afAppId,omitempty"`
 	EvSubsc       *EventsSubscReqData       `json:"evSubsc,omitempty"`
@@ -49,13 +47,13 @@ type AppSessionContextUpdateData struct {
 	SipForkInd    SipForkingIndication      `json:"sipForkInd,omitempty"`
 }
 
-// TS 29.514 §5.6.2.43
+// TS 29.514 clause 5.6.2.43
 type AppSessionContextUpdateDataPatch struct {
 	AscReqData *AppSessionContextUpdateData `json:"ascReqData,omitempty"`
 }
 
-// MediaComponent is a media component (TS 29.514 §5.6.2.7) or, in a PATCH, its MediaComponentRm form (§5.6.2.26).
-// The map of sub-components is keyed by their FNum, as decimal.
+// TS 29.514 clause 5.6.2.7
+// TS 29.514 clause 5.6.2.26
 type MediaComponent struct {
 	Codecs      []CodecData                  `json:"codecs,omitempty"`
 	FStatus     FlowStatus                   `json:"fStatus,omitempty"`
@@ -68,7 +66,8 @@ type MediaComponent struct {
 	RSBw        *BitRate                     `json:"rsBw,omitempty"`
 }
 
-// MediaSubComponent is a media sub-component (TS 29.514 §5.6.2.8) or its MediaSubComponentRm form (§5.6.2.27).
+// TS 29.514 clause 5.6.2.8
+// TS 29.514 clause 5.6.2.27
 type MediaSubComponent struct {
 	FNum      uint32            `json:"fNum"`
 	FDescs    []FlowDescription `json:"fDescs,omitempty"`
@@ -76,26 +75,28 @@ type MediaSubComponent struct {
 	FlowUsage FlowUsage         `json:"flowUsage,omitempty"`
 }
 
-// FlowDescription is an IPFilterRule as in the Flow-Description AVP (TS 29.514 §5.6.3.2, TS 29.214 §5.3.8).
+// TS 29.514 clause 5.6.3.2
+// TS 29.214 clause 5.3.8
 type FlowDescription = string
 
-// CodecData is the codec information of the Codec-Data AVP (TS 29.514 §5.6.3.2, TS 29.214 §5.3.7).
+// TS 29.514 clause 5.6.3.2
+// TS 29.214 clause 5.3.7
 type CodecData = string
 
-// EventsSubscReqData is an events subscription (TS 29.514 §5.6.2.6) or its EventsSubscReqDataRm form (§5.6.2.25).
-// Notifications go to NotifURI + "/notify".
+// TS 29.514 clause 5.6.2.6
+// TS 29.514 clause 5.6.2.25
 type EventsSubscReqData struct {
 	Events   []AfEventSubscription `json:"events"`
 	NotifURI string                `json:"notifUri,omitempty"`
 }
 
-// TS 29.514 §5.6.2.10
+// TS 29.514 clause 5.6.2.10
 type AfEventSubscription struct {
 	Event       AfEvent       `json:"event"`
 	NotifMethod AfNotifMethod `json:"notifMethod,omitempty"`
 }
 
-// EventsNotification is the body of a notify request (TS 29.514 §5.6.2.9), and the evsNotif of a response.
+// TS 29.514 clause 5.6.2.9
 type EventsNotification struct {
 	AccessType                string                        `json:"accessType,omitempty"`
 	AnChargAddr               *AccNetChargingAddress        `json:"anChargAddr,omitempty"`
@@ -114,74 +115,73 @@ type EventsNotification struct {
 	UETimeZone                string                        `json:"ueTimeZone,omitempty"`
 }
 
-// TS 29.514 §5.6.2.11
+// TS 29.514 clause 5.6.2.11
 type AfEventNotification struct {
 	Event      AfEvent `json:"event"`
 	Flows      []Flows `json:"flows,omitempty"`
 	RetryAfter *uint32 `json:"retryAfter,omitempty"`
 }
 
-// Flows names the flows of one media component, all of them when FNums is empty (TS 29.514 §5.6.2.21).
+// TS 29.514 clause 5.6.2.21
 type Flows struct {
 	FNums    []uint32 `json:"fNums,omitempty"`
 	MedCompN uint32   `json:"medCompN"`
 }
 
-// TS 29.514 §5.6.2.14
+// TS 29.514 clause 5.6.2.14
 type ResourcesAllocationInfo struct {
 	McResourcStatus MediaComponentResourcesStatus `json:"mcResourcStatus,omitempty"`
 	Flows           []Flows                       `json:"flows,omitempty"`
 	AltSerReq       string                        `json:"altSerReq,omitempty"`
 }
 
-// TS 29.514 §5.6.2.15
+// TS 29.514 clause 5.6.2.15
 type QosNotificationControlInfo struct {
 	NotifType QosNotifType `json:"notifType"`
 	Flows     []Flows      `json:"flows,omitempty"`
 	AltSerReq string       `json:"altSerReq,omitempty"`
 }
 
-// TS 29.571 §5.4.4.2
+// TS 29.571 clause 5.4.4.2
 type Snssai struct {
 	SST uint8  `json:"sst"`
 	SD  string `json:"sd,omitempty"`
 }
 
-// TS 29.571 §5.4.4.33
+// TS 29.571 clause 5.4.4.33
 type PlmnIDNid struct {
 	MCC string `json:"mcc"`
 	MNC string `json:"mnc"`
 	NID string `json:"nid,omitempty"`
 }
 
-// AccessNetChargingIdentifier has one of AccNetChargIDString and the deprecated AccNetChaIDValue
-// (TS 29.514 §5.6.2.32).
+// TS 29.514 clause 5.6.2.32
 type AccessNetChargingIdentifier struct {
 	AccNetChaIDValue    *uint32 `json:"accNetChaIdValue,omitempty"`
 	AccNetChargIDString string  `json:"accNetChargIdString,omitempty"`
 	Flows               []Flows `json:"flows,omitempty"`
 }
 
-// TS 29.512 (AccNetChargingAddress)
+// TS 29.512
 type AccNetChargingAddress struct {
 	AnChargIPv4Addr netip.Addr `json:"anChargIpv4Addr,omitzero"`
 	AnChargIPv6Addr netip.Addr `json:"anChargIpv6Addr,omitzero"`
 }
 
-// TS 29.514 §5.6.2.20
+// TS 29.514 clause 5.6.2.20
 type AnGwAddress struct {
 	AnGwIPv4Addr netip.Addr `json:"anGwIpv4Addr,omitzero"`
 	AnGwIPv6Addr netip.Addr `json:"anGwIpv6Addr,omitzero"`
 }
 
-// TerminationInfo is the body of a terminate request (TS 29.514 §5.6.2.12).
+// TS 29.514 clause 5.6.2.12
 type TerminationInfo struct {
 	TermCause TerminationCause `json:"termCause"`
 	ResURI    string           `json:"resUri"`
 }
 
-// ProblemDetails is an error body (TS 29.571 §5.2.4.1), including the acceptableServInfo of the
-// ExtendedProblemDetails of TS 29.514 §5.6.2.29.
+// TS 29.571 clause 5.2.4.1
+// TS 29.514 clause 5.6.2.29
 type ProblemDetails struct {
 	Type              string            `json:"type,omitempty"`
 	Title             string            `json:"title,omitempty"`
@@ -195,22 +195,20 @@ type ProblemDetails struct {
 	AcceptableServInfo *AcceptableServiceInfo `json:"acceptableServInfo,omitempty"`
 }
 
-// AcceptableServiceInfo is the service information the PCF would accept, in a 403 (TS 29.514 §5.6.2.30).
+// TS 29.514 clause 5.6.2.30
 type AcceptableServiceInfo struct {
 	AccBwMedComps map[string]MediaComponent `json:"accBwMedComps,omitempty"`
 	MarBwUl       *BitRate                  `json:"marBwUl,omitempty"`
 	MarBwDl       *BitRate                  `json:"marBwDl,omitempty"`
 }
 
-// TS 29.571 §5.2.4.6
+// TS 29.571 clause 5.2.4.6
 type InvalidParam struct {
 	Param  string `json:"param"`
 	Reason string `json:"reason,omitempty"`
 }
 
-// Enumerations are strings: TS 29.501 §5.3.12 lets a peer send values this release does not define.
-
-// TS 29.514 §5.6.3.7
+// TS 29.514 clause 5.6.3.7
 type AfEvent string
 
 const (
@@ -224,7 +222,7 @@ const (
 	EventSuccessfulResourcesAllocation AfEvent = "SUCCESSFUL_RESOURCES_ALLOCATION"
 )
 
-// TS 29.514 §5.6.3.8
+// TS 29.514 clause 5.6.3.8
 type AfNotifMethod string
 
 const (
@@ -233,7 +231,7 @@ const (
 	NotifPeriodic       AfNotifMethod = "PERIODIC"
 )
 
-// TS 29.514 §5.6.3.12
+// TS 29.514 clause 5.6.3.12
 type FlowStatus string
 
 const (
@@ -244,7 +242,7 @@ const (
 	FlowRemoved         FlowStatus = "REMOVED"
 )
 
-// TS 29.514 §5.6.3.3
+// TS 29.514 clause 5.6.3.3
 type MediaType string
 
 const (
@@ -258,7 +256,7 @@ const (
 	MediaOther       MediaType = "OTHER"
 )
 
-// TS 29.514 §5.6.3.14
+// TS 29.514 clause 5.6.3.14
 type FlowUsage string
 
 const (
@@ -267,7 +265,7 @@ const (
 	FlowUsageAFSignalling FlowUsage = "AF_SIGNALLING"
 )
 
-// TS 29.514 §5.6.3.10
+// TS 29.514 clause 5.6.3.10
 type TerminationCause string
 
 const (
@@ -283,7 +281,7 @@ const (
 	TerminationReflectiveQoSNotSupportedInUE TerminationCause = "REFLECTIVE_QOS_NOT_SUPPORTED_IN_UE"
 )
 
-// TS 29.514 §5.6.3.9
+// TS 29.514 clause 5.6.3.9
 type QosNotifType string
 
 const (
@@ -293,7 +291,7 @@ const (
 	QoSNotGuaranteedUL QosNotifType = "NOT_GUARANTEED_UL"
 )
 
-// TS 29.514 §5.6.3.17
+// TS 29.514 clause 5.6.3.17
 type SipForkingIndication string
 
 const (
@@ -301,15 +299,14 @@ const (
 	ForkingSeveralDialogues SipForkingIndication = "SEVERAL_DIALOGUES"
 )
 
-// ReservPriority is a reservation priority, PRIO_1 the lowest to PRIO_16 the highest (TS 29.514 §5.6.3.4).
+// TS 29.514 clause 5.6.3.4
 type ReservPriority string
 
-// Prio returns PRIO_n, for n from 1 to 16.
 func Prio(n int) ReservPriority {
 	return ReservPriority("PRIO_" + strconv.Itoa(n))
 }
 
-// TS 29.514 §5.6.3.13
+// TS 29.514 clause 5.6.3.13
 type MediaComponentResourcesStatus string
 
 const (

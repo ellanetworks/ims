@@ -11,7 +11,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// ServerRequest is a request the TU received, Ctx carrying its span.
 type ServerRequest struct {
 	Ctx context.Context
 	Tx  *transaction.ServerTransaction

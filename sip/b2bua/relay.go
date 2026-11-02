@@ -13,67 +13,33 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// RelayConfig configures a relay.
 type RelayConfig struct {
-	// Headers is what crosses from one leg to the other: all but what belongs to one leg without it.
 	Headers Headers
 
-	// Media, when set, makes the session descriptions of each leg from those of the other, exchange by exchange;
-	// they cross unchanged without it.
 	Media Media
 
-	// AfterPrack holds the 2xx to the initial INVITE of the incoming leg until the PRACK of its last reliable 1xx
-	// (ua.Reply.AfterPrack, TS 24.379 §6.3.2.2.5.2 step 2b).
 	AfterPrack bool
 
-	// TimerC, when not zero, bounds the wait for the final response to the INVITE of the outgoing leg, from each of
-	// its provisional responses (RFC 3261 §16.6 step 11, which wants more than 3 minutes): past it, the INVITE is
-	// cancelled, and the incoming one answered with a 408. Without it, the deadline of the incoming INVITE
-	// (ua.Policy.AnswerTimeout) bounds both.
 	TimerC time.Duration
 
-	// Request, when set, completes each request the relay makes from req, a request of the peer of from, on the leg
-	// to: what it carries is c. The initial INVITE of Bridge is the caller's.
 	Request func(from, to *Leg, req *sip.Request, c *ua.Change)
 
-	// Response, when set, completes each response the relay makes from res, a response of the peer of from, on the
-	// leg to.
 	Response func(from, to *Leg, res *sip.Response, rp *ua.Reply)
 
-	// RelayRefresh reports whether a session refresh of the peer of from (ua.Request.Refresh) goes on to the other
-	// leg, where a re-INVITE without an offer then asks for one: by default, one carrying more than a session
-	// description, as the mcptt-info of an emergency upgrade (TS 24.379 §6.3.3.1.6). The others are answered on their
-	// own leg, each leg keeping its own session timer (RFC 4028); an answer that changes the session there goes on.
 	RelayRefresh func(from *Leg, r *ua.Request) bool
 
-	// Final is the response of the incoming leg to the failure of the INVITE of the outgoing one, res or err; nil
-	// for FinalFor.
 	Final func(res *sip.Response, err error) ua.Reply
 }
 
-// Relay relays two legs of a call to each other (RFC 7092 §3.1): the INVITE of the incoming leg answered with the
-// responses of the outgoing one (Bridge), each early dialog of the outgoing leg mirrored in one of the incoming leg,
-// then each leg's requests relayed in the dialog paired with theirs, each session refreshed on its own leg, and the
-// end of one leg ending the other.
-//
-// The relay sits under the application's handlers of the legs (Leg.SetHandler): it acts on each event first, then
-// the application's function runs. A request, or a BYE, goes to the application's Request or Bye when it has one,
-// which takes it, to respond to itself or to Forward; it is relayed otherwise. Its methods are called on the strand
-// of the call.
+// RFC 7092 section 3.1
 type Relay struct {
 	cfg  RelayConfig
 	a, b *Leg
 
-	// pairs are the dialogs of a and b relayed to each other, by the session of either: during the initial INVITE,
-	// each early dialog of b and its mirror in a; then the two sessions.
 	pairs map[*ua.Session]*pair
 
-	// open are the exchanges in progress.
 	open []*Exchange
 
-	// The initial INVITE, a to b: its exchange when a offered; whether a supports 100rel; whether its INVITE was
-	// answered; the code to answer it with should b fail; the header fields of its INVITE that b's requests carry;
-	// Timer C.
 	initial  *Exchange
 	rel100   bool
 	final    bool
@@ -82,10 +48,6 @@ type Relay struct {
 	timerC   *ua.Timer
 }
 
-// pair is a dialog of a and one of b relayed to each other. During the initial INVITE: in answers the INVITE of a in
-// its dialog; answer is the answer of b given to a, reliably when answered; offer is an offer of b waiting for the
-// answer of a, in exchange x; relayed are the responses of b carried on. op is the modification of either dialog in
-// progress on the other; refresh is a refresh one leg answered on its own, whose answer may change the session.
 type pair struct {
 	in       *ua.Request
 	a, b     *ua.Session
@@ -98,14 +60,11 @@ type pair struct {
 	refresh  *refresh
 }
 
-// refresh is a re-INVITE without an offer of the peer of leg, answered on its leg with the session as it was: prev
-// is the description of that peer then.
 type refresh struct {
 	leg  *Leg
 	prev []byte
 }
 
-// other is the dialog of the pair on the other leg than the one from is on.
 func (pr *pair) other(p *Relay, from *Leg) *ua.Session {
 	if from == p.a {
 		return pr.b
@@ -114,10 +73,6 @@ func (pr *pair) other(p *Relay, from *Leg) *ua.Session {
 	return pr.a
 }
 
-// operation is a re-INVITE, an UPDATE or a PRACK with an offer of the peer of from, relayed to the other leg as a
-// re-INVITE or an UPDATE: r waits for its response, x is its exchange. fetch marks a re-INVITE without an offer,
-// whose offer the other leg makes in its 2xx, and offer that offer, waiting for the answer of from in its ACK;
-// cancelled a re-INVITE cancelled, whose 2xx on the other leg is undone; join the exchange of Join, r nil.
 type operation struct {
 	from      *Leg
 	r         *ua.Request
@@ -128,14 +83,6 @@ type operation struct {
 	join      func(error)
 }
 
-// Bridge relays r, the initial INVITE of the peer of an incoming leg, to a new outgoing leg (Relay). out is the INVITE
-// of that leg as Agent.Invite takes it: the Request-URI, From, To, Route, and the header fields and bodies of the
-// application; the header fields of r that cross and its bodies of other media types are added, its offer made by
-// cfg.Media, and a Replaces or Target-Dialog of r naming a relayed dialog of the agent names the dialog paired with
-// it (RFC 3891, RFC 4538), which the agent's Config.Extensions put on the strand of r. The extensions the outgoing leg advertises are those the incoming one supports (100rel,
-// 199). The legs are Relay.A and Relay.B; Config.OnInvite returns what it likes.
-//
-// The outgoing leg, and what the relay does for either, are part of the trace of ctx and of the events of the legs.
 func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg RelayConfig, opts ...ua.Option) (*Relay, error) {
 	c.check()
 
@@ -211,9 +158,7 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 	return p, nil
 }
 
-// NewRelay relays two legs with confirmed sessions to each other, as they stand: a leg joining another whose session
-// already agrees with it, as the pre-established session of TS 24.379 §10.1.1.3.1.2 whose media the B2BUA anchors.
-// Join first makes the sessions agree. The relay of an initial INVITE is Bridge.
+// TS 24.379 clause 10.1.1.3.1.2
 func NewRelay(a, b *Leg, cfg RelayConfig) (*Relay, error) {
 	a.call.check()
 
@@ -239,10 +184,7 @@ func NewRelay(a, b *Leg, cfg RelayConfig) (*Relay, error) {
 	return p, nil
 }
 
-// Join relays two legs with confirmed sessions to each other, making their sessions agree first (RFC 3725 §4.2):
-// a re-INVITE without an offer to a, its offer in the 2xx made into one for b in a re-INVITE, the answer of b back to
-// a in the ACK. done, when not nil, gets the outcome; the relay is in place meanwhile. The re-INVITEs are part of the
-// trace of ctx.
+// RFC 3725 section 4.2
 func Join(ctx context.Context, a, b *Leg, cfg RelayConfig, done func(error)) (*Relay, error) {
 	p, err := NewRelay(a, b, cfg)
 	if err != nil {
@@ -280,7 +222,6 @@ func Join(ctx context.Context, a, b *Leg, cfg RelayConfig, done func(error)) (*R
 	return p, nil
 }
 
-// joinError is the failure of the re-INVITE of Join.
 type joinError struct{ res *sip.Response }
 
 func (e *joinError) Error() string {
@@ -291,11 +232,9 @@ func (e *joinError) Error() string {
 	return "sip/b2bua: join failed: " + e.res.StartLine()
 }
 
-// A is the incoming leg of the relay, B the outgoing one (Bridge); the legs given, in order (NewRelay, Join).
 func (p *Relay) A() *Leg { return p.a }
 func (p *Relay) B() *Leg { return p.b }
 
-// Paired is the dialog relayed to s, a dialog of either leg: its mirror, or the other session.
 func (p *Relay) Paired(s *ua.Session) *ua.Session {
 	p.a.call.check()
 
@@ -311,8 +250,6 @@ func (p *Relay) Paired(s *ua.Session) *ua.Session {
 	return pr.a
 }
 
-// Stop ends the relay: the events of the legs go to the application's handlers alone. The exchanges in progress end
-// without effect for the Media.
 func (p *Relay) Stop() {
 	p.a.call.check()
 
@@ -341,7 +278,6 @@ func (p *Relay) report(err error) {
 	p.a.call.report(err)
 }
 
-// reply is the response relayed from res, a response on from, with sdp as its session description.
 func (p *Relay) reply(from *Leg, res *sip.Response, code int, sdp []byte) ua.Reply {
 	to := p.other(from)
 	rp := ua.Reply{Code: code, Bodies: p.cfg.Headers.bodies(from, to, res, nil, sdp)}
@@ -359,7 +295,6 @@ func (p *Relay) reply(from *Leg, res *sip.Response, code int, sdp []byte) ua.Rep
 	return rp
 }
 
-// change is what a request relayed from req, a request on from, carries, sdp its session description.
 func (p *Relay) change(from *Leg, req *sip.Request, sdp []byte) ua.Change {
 	to := p.other(from)
 	c := ua.Change{Bodies: p.cfg.Headers.bodies(from, to, req, nil, sdp)}
@@ -372,7 +307,6 @@ func (p *Relay) change(from *Leg, req *sip.Request, sdp []byte) ua.Change {
 	return c
 }
 
-// decorate adds the sticky header fields of the INVITE of a to the requests of b.
 func (p *Relay) decorate(l *Leg, m sip.Message) {
 	req, ok := m.(*sip.Request)
 	if !ok || l != p.b {
@@ -386,8 +320,8 @@ func (p *Relay) decorate(l *Leg, m sip.Message) {
 	}
 }
 
-// mapDialogs sets in h the Replaces and Target-Dialog of in, which name a dialog of the agent, to name the dialog
-// relayed to it, as its peer knows it (RFC 3891 §3, RFC 4538 §3): its local tag that of the peer.
+// RFC 3891 section 3
+// RFC 4538 section 3
 func (p *Relay) mapDialogs(in *sip.Request, h *sip.Header) {
 	a := p.a.call.a
 
@@ -397,8 +331,6 @@ func (p *Relay) mapDialogs(in *sip.Request, h *sip.Header) {
 			return dialog.ID{}, false
 		}
 
-		// A relay on the strand of this call alone: the agent puts a request naming a dialog on its strand
-		// (Config.Extensions).
 		l := LegOf(s)
 		if l == nil || l.relay == nil || l.call.st != p.a.call.st {
 			return dialog.ID{}, false
@@ -433,7 +365,6 @@ func (p *Relay) mapDialogs(in *sip.Request, h *sip.Header) {
 	}
 }
 
-// armTimerC arms Timer C again, from a provisional response of b.
 func (p *Relay) armTimerC(ctx context.Context) {
 	if p.cfg.TimerC <= 0 || p.final {
 		return
@@ -453,10 +384,6 @@ func (p *Relay) armTimerC(ctx context.Context) {
 	})
 }
 
-// The initial INVITE.
-
-// mirrorOf is the pair of the early dialog s of b: the first one answered in the first early dialog of a, the others
-// in forks of it; nil when a can no longer fork.
 func (p *Relay) mirrorOf(s *ua.Session) *pair {
 	if pr := p.pairs[s]; pr != nil {
 		return pr
@@ -479,8 +406,6 @@ func (p *Relay) mirrorOf(s *ua.Session) *pair {
 	return pr
 }
 
-// progress relays a provisional response of b to the mirror of its early dialog: the answer in it, reliably when a
-// supports 100rel, kept for the 2xx otherwise.
 func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Response) {
 	if l != p.b || p.final || s == nil || res.StatusCode <= 100 || res.StatusCode == 199 {
 		return
@@ -515,9 +440,6 @@ func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Re
 	p.report(pr.in.Progress(rp))
 }
 
-// offer takes an offer of l in a response, reporting whether it is the relay's: of b to the INVITE of a without one,
-// carried on to the mirror in a reliable 1xx or its 2xx, for its answer in the PRACK or the ACK; of the leg a
-// re-INVITE without an offer was relayed to; or of a, to Join. The application takes the others.
 func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) bool {
 	if pr := p.pairs[s]; pr != nil && pr.op != nil && pr.op.fetch && l != pr.op.from {
 		p.fetched(ctx, l, pr, o)
@@ -537,7 +459,6 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 	res := o.Response()
 
 	if res.IsProvisional() && !p.rel100 {
-		// An offer in a reliable 1xx is answered in the PRACK, which a peer without 100rel cannot give.
 		o.Reject(ctx)
 
 		p.failCode = 488
@@ -573,8 +494,6 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 	return true
 }
 
-// fetched carries on the offer o of l, made in the 2xx of a re-INVITE without an offer: to the peer of the other leg
-// in the 2xx of its own re-INVITE without one, or, to Join, in a re-INVITE.
 func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 	op := pr.op
 	to := p.other(l)
@@ -648,9 +567,6 @@ func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 	}
 }
 
-// answer carries an answer of l on to the offer of the other leg it answers: of the peer of a to an offer of b, in
-// the PRACK or the ACK of b; or of the peer of from to the offer a re-INVITE without one fetched. An answer to the
-// offer of a refresh answered on its leg that changes the session goes on to the other leg.
 func (p *Relay) answer(ctx context.Context, l *Leg, s *ua.Session, sdp []byte) {
 	pr := p.pairs[s]
 	if pr == nil {
@@ -696,8 +612,7 @@ func (p *Relay) answer(ctx context.Context, l *Leg, s *ua.Session, sdp []byte) {
 	p.end(x, s)
 }
 
-// propagate carries a change of the session of the peer of l, made in its answer to the offer of a refresh answered
-// on its leg, to the other leg as an offer: their sessions agree again (RFC 3264 §8).
+// RFC 3264 section 8
 func (p *Relay) propagate(ctx context.Context, l *Leg, pr *pair, sdp []byte) {
 	to := pr.other(p, l)
 	x := &Exchange{From: l, To: p.other(l), Method: "INVITE", Offer: sdp}
@@ -723,8 +638,6 @@ func (p *Relay) propagate(ctx context.Context, l *Leg, pr *pair, sdp []byte) {
 	}))
 }
 
-// established relays the 2xx of b to the mirror of its dialog, with the answer a has not had reliably; a 2xx
-// crossing the end of a is acknowledged, and ended with a BYE.
 func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 	if l != p.b {
 		return
@@ -742,7 +655,6 @@ func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 		return
 	}
 
-	// An offer of the 2xx goes on with Offer.
 	if p.initial == nil && sessionSDP(res.Envelope) != nil {
 		return
 	}
@@ -766,8 +678,6 @@ func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 	p.respond(ctx, pr, p.reply(l, res, res.StatusCode, sdp))
 }
 
-// respond answers the INVITE of a, once: a 2xx in the dialog of pr, which the exchange of the offer of a took effect
-// in, another response in any. A 2xx the agent refuses fails the call.
 func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 	if p.final {
 		return
@@ -800,7 +710,6 @@ func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 	p.end(p.initial, pr.b)
 }
 
-// failed answers the INVITE of a with the failure of the INVITE of b.
 func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error) {
 	if l != p.b || p.final {
 		return
@@ -824,14 +733,12 @@ func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error
 	p.respond(ctx, nil, rp)
 }
 
-// abandon ends both legs of an initial INVITE that cannot go on: a with code.
 func (p *Relay) abandon(ctx context.Context, code int) {
 	p.respond(ctx, nil, ua.Reply{Code: code})
 	p.report(p.b.End(ctx, ua.Reply{}))
 }
 
-// earlyEnded ends the mirror of an early dialog that ended alone: one of b ended by its peer (a 199), one of a with a
-// BYE of its peer (RFC 3261 §15).
+// RFC 3261 section 15
 func (p *Relay) earlyEnded(ctx context.Context, l *Leg, s *ua.Session, e ua.End) {
 	pr := p.pairs[s]
 	if pr == nil || p.final {
@@ -853,9 +760,7 @@ func (p *Relay) earlyEnded(ctx context.Context, l *Leg, s *ua.Session, e ua.End)
 	}
 }
 
-// FinalFor is the final response to relay for the failure of an INVITE: its own, but for a challenge, which was the
-// B2BUA's to answer (500), and a redirection, which the B2BUA does not follow (480); a 503 as a 500 (RFC 3261 §16.7
-// step 6); 408 for its timeout and 503 for the agent closing, 500 for another error.
+// RFC 3261 section 16.7
 func FinalFor(res *sip.Response, err error) ua.Reply {
 	switch {
 	case res != nil:
@@ -869,10 +774,6 @@ func FinalFor(res *sip.Response, err error) ua.Reply {
 	return ua.Reply{Code: 500}
 }
 
-// The end of the legs.
-
-// ended ends the other leg however it stands, with the Reason of the end of l (RFC 3326): a CANCEL of the INVITE of
-// b, a failure or a BYE for a, answered or not. The exchanges in progress end without effect.
 func (p *Relay) ended(ctx context.Context, l *Leg, e ua.End) {
 	o := p.other(l)
 
@@ -886,7 +787,6 @@ func (p *Relay) ended(ctx context.Context, l *Leg, e ua.End) {
 		p.final = true
 
 		if l == p.b {
-			// A failure answered a already (failed); any other end of b fails it.
 			p.report(p.a.Respond(ua.Reply{Code: 480}))
 			return
 		}
@@ -897,10 +797,7 @@ func (p *Relay) ended(ctx context.Context, l *Leg, e ua.End) {
 	}
 }
 
-// Forward relays a request of the peer of from, one the application's Request or Bye took, to the other leg, as the
-// relay does with those it takes: a BYE ends the other leg, its 200 waiting for the response there (TS 24.379
-// §6.3.2.1.6); a session refresh is answered on its own leg (RelayRefresh); another request goes in the dialog
-// paired with the one it came in.
+// TS 24.379 clause 6.3.2.1.6
 func (p *Relay) Forward(ctx context.Context, from *Leg, r *ua.Request) {
 	p.a.call.check()
 
@@ -918,7 +815,6 @@ func (p *Relay) Forward(ctx context.Context, from *Leg, r *ua.Request) {
 		to = pr.other(p, from)
 	}
 
-	// Without the dialog of the other leg yet, or once it ended, the request cannot go on (RFC 3311 §5.2).
 	if to == nil || to.State() == ua.Terminated {
 		p.report(r.Reject(500, sip.Field{Name: "Retry-After", Value: "1"}))
 		return
@@ -938,7 +834,6 @@ func (p *Relay) Forward(ctx context.Context, from *Leg, r *ua.Request) {
 
 		p.modify(ctx, from, r, pr, to)
 	case "REFER", "SUBSCRIBE", "NOTIFY":
-		// The subscriptions of a dialog, and the dialogs a REFER names, are the application's.
 		p.report(r.Reject(501))
 	default:
 		err := to.Send(ctx, req.Method, p.change(from, req, nil), func(res *sip.Response, err error) {
@@ -955,8 +850,6 @@ func (p *Relay) Forward(ctx context.Context, from *Leg, r *ua.Request) {
 	}
 }
 
-// answerRefresh answers a refresh on its own leg; a re-INVITE without an offer gets the session as it was in its
-// 2xx, whose answer in the ACK goes on should it change the session.
 func (p *Relay) answerRefresh(from *Leg, r *ua.Request, pr *pair) {
 	if _, offered := r.Offer(); !offered && r.Message().Method == "INVITE" {
 		if _, remote, ok := r.Session().Negotiated(); ok {
@@ -977,8 +870,7 @@ func (p *Relay) relayRefresh(l *Leg, r *ua.Request) bool {
 	return slices.ContainsFunc(parts, func(part sip.BodyPart) bool { return !part.IsSession() })
 }
 
-// bye relays the BYE of the peer of l: in an early dialog, it ends that one alone, the relay ending its mirror;
-// otherwise the 200 waits for the response to the BYE of the other leg (TS 24.379 §6.3.2.1.6).
+// TS 24.379 clause 6.3.2.1.6
 func (p *Relay) bye(ctx context.Context, l *Leg, r *ua.Request) {
 	respond := func(*sip.Response, error) { p.report(r.Respond(ua.Reply{Code: 200})) }
 
@@ -1003,8 +895,6 @@ func (p *Relay) bye(ctx context.Context, l *Leg, r *ua.Request) {
 	}
 }
 
-// cancelled relays the CANCEL of a re-INVITE: its relayed re-INVITE is cancelled, and undone should its 2xx cross the
-// CANCEL.
 func (p *Relay) cancelled(ctx context.Context, l *Leg, r *ua.Request, cancel *sip.Request) {
 	pr := p.pairs[r.Session()]
 	if pr == nil || pr.op == nil || pr.op.r != r {
@@ -1018,15 +908,11 @@ func (p *Relay) cancelled(ctx context.Context, l *Leg, r *ua.Request, cancel *si
 	}
 }
 
-// modify relays a re-INVITE, an UPDATE or a PRACK with an offer of the peer of from to the dialog to: its offer
-// made by Media, the answer back; a re-INVITE without an offer fetches one from to, whose answer the peer of from
-// gives in its ACK. A 491 goes back as it is, and so does a conflict on to, for the peer to retry (RFC 3261 §14.1).
+// RFC 3261 section 14.1
 func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, to *ua.Session) {
 	req := r.Message()
 	offer, offered := r.Offer()
 
-	// One offer at a time across the pair; an UPDATE without one, as for preconditions, goes during a re-INVITE
-	// (RFC 3311 §5.2).
 	if pr.op != nil && (offered || req.Method == "INVITE") {
 		p.report(r.Reject(491))
 		return
@@ -1058,7 +944,6 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 
 		switch {
 		case op.cancelled:
-			// r was answered with a 487: a 2xx crossing the CANCEL is undone.
 			p.end(op.x, nil)
 
 			if res != nil && res.IsSuccess() && offered {
@@ -1074,12 +959,10 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 			p.end(op.x, nil)
 			p.report(r.Respond(p.reply(o, res, res.StatusCode, nil)))
 		case op.fetch && op.offer == nil:
-			// A 2xx without the offer it owes.
 			pr.op = nil
 
 			p.report(r.Reject(500))
 		case op.fetch:
-			// The offer of the 2xx went on with Offer; the answer of the ACK follows it.
 		default:
 			var answer []byte
 
@@ -1132,9 +1015,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 	}
 }
 
-// restore offers to again the session description of the peer of from, which an exchange changed on to alone: a
-// re-INVITE cancelled after its 2xx, an answer Media could not carry back (RFC 3264 §8). Should that fail, the legs
-// cannot agree, and the call ends.
+// RFC 3264 section 8
 func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session) {
 	s := from.Session()
 	if s == nil {

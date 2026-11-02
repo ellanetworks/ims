@@ -123,7 +123,6 @@ func (fs Header) Count(name string) int {
 	return n
 }
 
-// single returns the value of a header field that a message carries at most once.
 func (fs Header) single(name string) (string, bool, error) {
 	switch fs.Count(name) {
 	case 0:

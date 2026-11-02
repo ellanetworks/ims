@@ -338,7 +338,7 @@ func TestLargeRequestFallsBackToUDP(t *testing.T) {
 	})
 }
 
-// RFC 3261 §18.1.1
+// RFC 3261 section 18.1.1
 func TestLargeRequestFallsBackToUDPWhenTCPHangs(t *testing.T) {
 	addr := loopbacks[0].addr
 	dialed := make(chan struct{}, 1)

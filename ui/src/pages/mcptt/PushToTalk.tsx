@@ -8,7 +8,6 @@ import { SettingsTab } from "@/pages/mcptt/Settings";
 import { UsersTab } from "@/pages/mcptt/Users";
 import type { MCPTTStatus } from "@/queries/mcptt";
 
-// TABS are the tabs of the page, each of its path: groups first, what operators think in.
 export const TABS = ["groups", "users", "calls", "settings"] as const;
 
 type TabName = (typeof TABS)[number];

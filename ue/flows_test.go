@@ -9,8 +9,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// RFC 5626 §4.2, TS 24.229 §5.1.1.2.1: a UE registering a flow puts its reg-id in its Contact and
-// outbound in Supported, and takes the expiry of its own flow from the 200.
+// RFC 5626 section 4.2
+// TS 24.229 clause 5.1.1.2.1
 func TestRegisterFlow(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Plain: true, RegID: 2})

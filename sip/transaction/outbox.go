@@ -7,16 +7,11 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// An outbox sends the messages of one flow in the order the layer took them: the requests of a dialog in the order
-// of their CSeq, which their recipient enforces (RFC 3261 §12.2.2), an ACK before the request that follows it, a
-// response before the request it precedes. One task drains each outbox while it has messages; the transport
-// writes on it.
+// RFC 3261 section 12.2.2
 type outbox struct {
 	jobs []func(ok bool)
 }
 
-// enqueue takes a send of the flow f in order. The job runs with ok on the goroutine of the outbox, or without it once
-// the layer closed, to complete; enqueue reports false when the layer is already closed.
 func (l *Layer) enqueue(f sip.Flow, job func(ok bool)) bool {
 	f = normalizedFlow(f)
 
@@ -67,10 +62,6 @@ func (l *Layer) drainOutbox(f sip.Flow, ob *outbox) {
 	}
 }
 
-// Shutdown closes the layer once the messages it took are sent, or ctx is done: the responses and requests of the
-// transactions under way leave before the transport closes, and those in memory are delivered. When ctx is done
-// first, the layer closes all the same, dropping the messages left, and Shutdown returns the context's error, joined
-// with that of Close.
 func (l *Layer) Shutdown(ctx context.Context) error {
 	l.qmu.Lock()
 
@@ -97,7 +88,6 @@ func (l *Layer) Shutdown(ctx context.Context) error {
 	return l.Close()
 }
 
-// checkDrained closes drained once the outboxes and the lanes are empty. Called with l.qmu held.
 func (l *Layer) checkDrained() {
 	if len(l.outboxes) == 0 && len(l.lanes) == 0 && l.drained != nil {
 		close(l.drained)
@@ -105,8 +95,6 @@ func (l *Layer) checkDrained() {
 	}
 }
 
-// sendInOrder sends m in its flow's order, and waits for the send, or for the layer to close: like every send of the
-// layer, it is not bounded by its caller's context.
 func (l *Layer) sendInOrder(m sip.Message, exact bool) error {
 	done := make(chan error, 1)
 
@@ -129,9 +117,7 @@ func (l *Layer) sendInOrder(m sip.Message, exact bool) error {
 	}
 }
 
-// QueueAck sends the ACK of a 2xx (RFC 3261 §13.2.2.4), outside any transaction, in the order of its flow: before the
-// requests of the dialog sent after it, with the trace context of ctx when its flow carries trace context. done, when
-// not nil, receives the outcome on the goroutine of the outbox.
+// RFC 3261 section 13.2.2.4
 func (l *Layer) QueueAck(ctx context.Context, ack *sip.Request, done func(error)) error {
 	if ack.Method != "ACK" {
 		return errNotAck(ack)

@@ -9,7 +9,6 @@ import {
 } from "@mui/material";
 import Logo from "@/components/Logo";
 
-// AuthLayout is the page of the login and of the initialization: the top bar, and a card centered under it.
 export default function AuthLayout({
   title,
   intro,
@@ -81,7 +80,6 @@ export default function AuthLayout({
   );
 }
 
-// AuthFrame is the top bar, and its content centered under it.
 export function AuthFrame({ children }: { children: ReactNode }) {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>

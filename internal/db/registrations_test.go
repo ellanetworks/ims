@@ -153,7 +153,6 @@ func TestSaveRegistrationUpdates(t *testing.T) {
 	}
 }
 
-// A registration with a set leaves the set's profile: only SaveSet changes it, whoever registered the set.
 func TestSaveRegistrationLeavesTheSet(t *testing.T) {
 	d := openTestDB(t)
 
@@ -168,8 +167,8 @@ func TestSaveRegistrationLeavesTheSet(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d, RFC 5626 §6: each registration set has its own binding to a contact, with
-// its own Path, so that one set's change leaves the other's.
+// TS 24.229 clause 5.4.1.2.2
+// RFC 5626 section 6
 func TestSetsBindAContactApart(t *testing.T) {
 	d := openTestDB(t)
 
@@ -200,7 +199,7 @@ func TestSetsBindAContactApart(t *testing.T) {
 	}
 }
 
-// TS 23.228 §4.3.3.4: the private identities that share a public identity register the one set that holds it.
+// TS 23.228 clause 4.3.3.4
 func TestSharedIdentity(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -267,7 +266,7 @@ func TestIdentityConflict(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.5.2.1: an identity the HSS moves to another set leaves the first.
+// TS 29.228 clause 6.5.2.1
 func TestSaveSetMovesIdentities(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -291,7 +290,7 @@ func TestSaveSetMovesIdentities(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.1.2.1: the sets kept for identities that are not registered, by expiry.
+// TS 29.228 clause 6.1.2.1
 func TestUnregisteredSets(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -321,7 +320,6 @@ func TestUnregisteredSets(t *testing.T) {
 		t.Fatalf("ListUnregisteredSets = %+v, %v; want %+v first", sets, err, psi)
 	}
 
-	// A registration takes the set over.
 	r := testRegistration(testIMPI, "15551230001")
 	r.SetID = user.ID
 	r = mustSaveRegistration(t, d, r)
@@ -343,7 +341,7 @@ func TestUnregisteredSets(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.5.2.1: the HSS removes an identity from a registered set before it adds it to another.
+// TS 29.228 clause 6.5.2.1
 func TestSaveSetKeepsIdentitiesOfRegisteredSet(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
@@ -364,12 +362,10 @@ func TestSaveSetKeepsIdentitiesOfRegisteredSet(t *testing.T) {
 	}
 }
 
-// A set is stored with its registration, in place of the expired ones that held its identities.
 func TestSaveAssignment(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	// A new set.
 	set, reg, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:a@x", false)}},
 		Registration{IMPI: testIMPI, IMPU: "sip:a@x"}, nil, nil)
 	if err != nil {
@@ -380,7 +376,6 @@ func TestSaveAssignment(t *testing.T) {
 		t.Fatalf("set %d, registration of set %d; want the registration of the set", set.ID, reg.SetID)
 	}
 
-	// The set of a stale registration grows: the registration goes, the set stays.
 	set.Identities = append(set.Identities, identity("sip:c@x", false))
 
 	grown, next, err := d.SaveAssignment(ctx, set, Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{reg.ID}, nil)
@@ -396,7 +391,6 @@ func TestSaveAssignment(t *testing.T) {
 		t.Fatalf("registrations = %+v, want the new one only", regs)
 	}
 
-	// A stale registration of a set whose identities another set takes goes with its set.
 	moved, last, err := d.SaveAssignment(ctx, ImplicitSet{Identities: []PublicIdentity{identity("sip:c@x", false)}},
 		Registration{IMPI: testIMPI, IMPU: "sip:c@x"}, []int64{next.ID}, nil)
 	if err != nil {
@@ -411,7 +405,6 @@ func TestSaveAssignment(t *testing.T) {
 		t.Fatalf("registrations = %+v, want the last one only", regs)
 	}
 
-	// An identity of a registered set stays there, and nothing is stored.
 	other := testRegistration("other@"+testDomain, "15551230002")
 	other.Identities = []PublicIdentity{identity("sip:d@x", false)}
 	other = mustSaveRegistration(t, d, other)
@@ -425,7 +418,6 @@ func TestSaveAssignment(t *testing.T) {
 		t.Fatalf("registrations = %+v, want them unchanged", regs)
 	}
 
-	// Unless the registered set gives it up, stored first.
 	losing, err := d.GetSet(ctx, other.SetID)
 	if err != nil {
 		t.Fatalf("GetSet: %v", err)
@@ -530,8 +522,7 @@ func TestListExpiredIMPIs(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6: a flow is bound by its instance ID and reg-id. Several flows share a URI, a flow keeps
-// its binding over a new URI, and a contact address without reg-id is another binding.
+// RFC 5626 section 6
 func TestFlowBindings(t *testing.T) {
 	d := openTestDB(t)
 

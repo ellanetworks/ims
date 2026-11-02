@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// ReferSub is a Refer-Sub value (RFC 4488 §4): Subscribe false asks for no implicit subscription.
+// RFC 4488 section 4
 type ReferSub struct {
 	Subscribe bool
 	Params    Params
@@ -32,7 +32,6 @@ func (r ReferSub) String() string {
 	return strconv.FormatBool(r.Subscribe) + r.Params.String()
 }
 
-// ReferSub is the Refer-Sub of a REFER or of its 2xx.
 func (fs Header) ReferSub() (ReferSub, bool, error) {
 	v, ok, err := fs.single("Refer-Sub")
 	if !ok || err != nil {
@@ -44,7 +43,7 @@ func (fs Header) ReferSub() (ReferSub, bool, error) {
 	return r, true, err
 }
 
-// RefusedURIs are the P-Refused-URI-List entries (RFC 5318 §5), each with its members cid parameter, if any.
+// RFC 5318 section 5
 func (fs Header) RefusedURIs() ([]Address, error) {
 	return fs.Addresses("P-Refused-URI-List")
 }

@@ -86,8 +86,8 @@ func cxCommands(h *hsstest.HSS) []string {
 	}
 }
 
-// RFC 6733 §5.5.4, TS 29.229 §5.5: with the HSS of a registration lost, its next Cx requests go to another node of
-// the HSS realm, which then serves the registration.
+// RFC 6733 section 5.5.4
+// TS 29.229 clause 5.5
 func TestRegistrationMovesToAnotherHSSNode(t *testing.T) {
 	s := newSceneWith(t, func(srv *server.Server) { srv.ReauthInterval = time.Nanosecond })
 
@@ -147,7 +147,8 @@ func (s *scene) put(path string, body any) {
 	}
 }
 
-// newSLF starts an SLF that redirects every Cx request to an HSS, for each user (TS 29.228 §8.6, RFC 6733 §6.13).
+// TS 29.228 clause 8.6
+// RFC 6733 section 6.13
 func newSLF(t *testing.T, to *hsstest.HSS, redirected *commandLog) (string, netip.AddrPort) {
 	t.Helper()
 
@@ -175,7 +176,7 @@ func newSLF(t *testing.T, to *hsstest.HSS, redirected *commandLog) (string, neti
 	return id.OriginHost, addr
 }
 
-// TS 29.229 §5.5: any node of a replicated HSS may terminate a registration, over its own connection.
+// TS 29.229 clause 5.5
 func TestRTRFromAnotherHSSNode(t *testing.T) {
 	s := newScene(t)
 
@@ -197,7 +198,7 @@ func TestRTRFromAnotherHSSNode(t *testing.T) {
 	eventually(t, "the registration to end", func() bool { return s.registrations("").TotalCount == 0 })
 }
 
-// TS 29.229 §5.5: requests for a user go to the HSS the SLF redirects them to, and the S-CSCF then addresses that HSS.
+// TS 29.229 clause 5.5
 func TestRegistrationThroughAnSLF(t *testing.T) {
 	s := newScene(t)
 
@@ -229,8 +230,6 @@ func TestRegistrationThroughAnSLF(t *testing.T) {
 	}
 }
 
-// commandLog is the commands of the requests a fake peer received. An LIR names no user (TS 29.229 §6.1.4), so no
-// redirect is cached for it.
 type commandLog struct {
 	mu       sync.Mutex
 	commands []uint32

@@ -7,8 +7,7 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// RFC 3261 §8.1.3.1: a fatal transport error is taken as a 503, a timeout as a 408; a dropped transaction ends its
-// usage dropped.
+// RFC 3261 section 8.1.3.1
 func TestFailureEnd(t *testing.T) {
 	for err, want := range map[error]EndCause{
 		transaction.ErrTimeout:                              EndTimeout,

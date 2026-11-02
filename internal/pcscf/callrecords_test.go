@@ -16,7 +16,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// newRecordScene is a scene with a registered UE whose calls the P-CSCF records.
 func newRecordScene(t *testing.T) (*ipsecScene, *ue, *callrecords.Recorder) {
 	t.Helper()
 
@@ -34,7 +33,6 @@ func newRecordScene(t *testing.T) (*ipsecScene, *ue, *callrecords.Recorder) {
 	return s, u, rec
 }
 
-// callRecords stops the recorder, and returns the records it saved.
 func (s *ipsecScene) callRecords(t *testing.T, rec *callrecords.Recorder) []db.CallRecord {
 	t.Helper()
 
@@ -48,7 +46,6 @@ func (s *ipsecScene) callRecords(t *testing.T, rec *callrecords.Recorder) []db.C
 	return l
 }
 
-// callRecord returns the only record the recorder saved.
 func (s *ipsecScene) callRecord(t *testing.T, rec *callrecords.Recorder) db.CallRecord {
 	t.Helper()
 
@@ -64,8 +61,6 @@ func audioVideoSDP(addr string, port string) []byte {
 	return sdpBody(addr, port, "m=video "+port+"2 RTP/AVP 99", "a=rtpmap:99 H264/90000")
 }
 
-// TestCallRecordOfAnAnsweredCall follows a call that rings, is answered with audio, adds video and is ended by
-// the caller.
 func TestCallRecordOfAnAnsweredCall(t *testing.T) {
 	s, u, rec := newRecordScene(t)
 
@@ -89,7 +84,6 @@ func TestCallRecordOfAnAnsweredCall(t *testing.T) {
 	u.uc.Send(sip.UDP, s.ps, c.request("ACK", seq(0), res))
 	wantMethod(t, s.scscf, "ACK")
 
-	// A re-INVITE adds video.
 	reinvite := c.request("INVITE", seq(1), res)
 	reinvite.Header.Set("Contact", ueContact(u))
 	reinvite.SetBody("application/sdp", audioVideoSDP(ueAddr.String(), "4000"))
@@ -158,7 +152,6 @@ func TestCallRecordOfAFailedCall(t *testing.T) {
 		{"rang out", true, 408, db.OutcomeNoAnswer},
 		{"unavailable after ringing", true, 480, db.OutcomeUnavailable},
 		{"unavailable", false, 480, db.OutcomeUnavailable},
-		// The caller gets a 500 for a 503 (RFC 3261 §16.7).
 		{"server error", false, 503, db.OutcomeFailed},
 	}
 
@@ -225,7 +218,6 @@ func TestCallRecordOfACancelledCall(t *testing.T) {
 	}
 }
 
-// TestCallRecordOfARejectedCall checks that a call the P-CSCF refuses itself is recorded as ended by the network.
 func TestCallRecordOfARejectedCall(t *testing.T) {
 	s, u, rec := newRecordScene(t)
 
@@ -239,8 +231,6 @@ func TestCallRecordOfARejectedCall(t *testing.T) {
 	}
 }
 
-// TestCallRecordOfARetriedAttempt checks that an attempt the UE tries again with its Call-ID, here with a longer
-// session interval, leaves only the record of the retry, and that one it does not try again is kept.
 func TestCallRecordOfARetriedAttempt(t *testing.T) {
 	for _, retried := range []bool{true, false} {
 		t.Run(fmt.Sprintf("retried %t", retried), func(t *testing.T) {
@@ -300,7 +290,6 @@ func TestNoCallRecordForAnUnregisteredUE(t *testing.T) {
 	invite.Header.Set("Contact", "<sip:ue@"+s.ue.Addr().String()+">")
 	s.ue.Send(sip.UDP, s.pcscf, invite)
 
-	// The P-CSCF drops requests from unregistered UEs.
 	s.ue.RecvNone(quiet)
 
 	if l := s.callRecords(t, rec); len(l) != 0 {
@@ -323,7 +312,6 @@ func TestAcceptedMedia(t *testing.T) {
 	}
 }
 
-// lastResponse is the next final response to the UE.
 func lastResponse(t *testing.T, u *ue) *sip.Response {
 	t.Helper()
 
@@ -343,8 +331,6 @@ func wantMethod(t *testing.T, s *siptest.Socket, method string) {
 	}
 }
 
-// recordTo makes the P-CSCF of a scene report to a recorder, which has the attempt of the call coreRequest's ICID
-// names, as the originating P-CSCF would have reported it.
 func recordTo(rec **callrecords.Recorder) func(*Config) {
 	return func(c *Config) {
 		*rec = callrecords.New(callrecords.Config{Store: c.Registrations.(*db.DB)})
@@ -353,7 +339,6 @@ func recordTo(rec **callrecords.Recorder) func(*Config) {
 	}
 }
 
-// TestCallRecordReached checks that the terminating P-CSCF reports the UE that answers.
 func TestCallRecordReached(t *testing.T) {
 	var rec *callrecords.Recorder
 
@@ -384,8 +369,6 @@ func TestCallRecordReached(t *testing.T) {
 	}
 }
 
-// TestCallRecordReleasedTowardTheUE checks that a call the terminating P-CSCF releases, when the UE's signalling
-// bearer is lost, is recorded as ended by the network, though its 500 reaches the caller from downstream.
 func TestCallRecordReleasedTowardTheUE(t *testing.T) {
 	var rec *callrecords.Recorder
 
@@ -420,7 +403,6 @@ func TestCallRecordReleasedTowardTheUE(t *testing.T) {
 
 	wantStatus(t, first(s.scscf.RecvResponse()), 500)
 
-	// The originating P-CSCF sees a 500 from downstream.
 	rec.Ended("AB12", callrecords.End{Code: 500, By: proxy.Callee, Cause: proxy.EndFailed})
 
 	if r := s.callRecord(t, rec); r.SIPStatus != 500 || r.EndedBy != db.PartyNetwork {
@@ -428,8 +410,6 @@ func TestCallRecordReleasedTowardTheUE(t *testing.T) {
 	}
 }
 
-// TestCallRecordRefusedTowardTheUE checks that a call the terminating P-CSCF refuses itself is recorded as ended
-// by the network, though its response reaches the caller from downstream.
 func TestCallRecordRefusedTowardTheUE(t *testing.T) {
 	var rec *callrecords.Recorder
 
@@ -445,7 +425,6 @@ func TestCallRecordRefusedTowardTheUE(t *testing.T) {
 	res := lastCoreResponse(t, s)
 	wantStatus(t, res, 483)
 
-	// The originating P-CSCF sees the 483 from downstream.
 	to, _ := res.Header.To()
 	rec.Ended("AB12", callrecords.End{Code: 483, Tag: to.Tag(), By: proxy.Callee, Cause: proxy.EndFailed})
 
@@ -454,8 +433,7 @@ func TestCallRecordRefusedTowardTheUE(t *testing.T) {
 	}
 }
 
-// TestCallRecordReachedWithAQuotedICID checks that the terminating P-CSCF reports a call whose ICID is a quoted
-// string by its value (RFC 7315 §5.6).
+// RFC 7315 section 5.6
 func TestCallRecordReachedWithAQuotedICID(t *testing.T) {
 	var rec *callrecords.Recorder
 
@@ -488,7 +466,6 @@ func TestCallRecordReachedWithAQuotedICID(t *testing.T) {
 	}
 }
 
-// lastCoreResponse is the next final response to the S-CSCF.
 func lastCoreResponse(t *testing.T, s *ipsecScene) *sip.Response {
 	t.Helper()
 

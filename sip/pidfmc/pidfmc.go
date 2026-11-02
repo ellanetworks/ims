@@ -1,17 +1,3 @@
-// Package pidfmc is the MCPTT extension of the presence information data format, of namespace
-// urn:3gpp:ns:mcpttPresInfo:1.0 (TS 24.379 §9.3.1), on the documents of sip/pidf: per-user affiliation information,
-// per-group affiliation information and per-group dynamic data information (§9.3.1.2).
-//
-// The three are of one schema (Table 9.3.1.2-1) and differ in what the entity, the tuple IDs and the attributes of
-// <affiliation> identify. A procedure knows which it handles from the request, by its Request-URI and its event
-// subscription (§9.2.2.2.3, §9.2.2.3.3, §9.2.2.3.9, §9.2.1.3, §9.2.1.6), not from the document, so they share the
-// types here, and the entity and tuple IDs are those of pidf.Presence and pidf.Tuple.
-//
-// DecodePresence and DecodeStatus decode the extension elements of a <presence> and of a tuple's <status> from their
-// Other; SetPresence and SetStatus replace the elements those decode and keep the others: of other extensions, of
-// later releases, unknown, malformed or repeated, so a document decoded and set passes them on. An <affiliation> or
-// <functionalAlias> with a child marked mustUnderstand, which the extension does not know, is unrecognized: kept, not
-// decoded (RFC 3863 §4.2.3).
 package pidfmc
 
 import (
@@ -26,46 +12,26 @@ import (
 
 const Namespace = "urn:3gpp:ns:mcpttPresInfo:1.0"
 
-// Presence is the extension of a <presence>.
 type Presence struct {
-	// PID identifies the PUBLISH of the document (§9.3.1.2 item 4): set by the client (§9.2.1.2 5f) and the
-	// participating function (§9.2.2.2.6 step 7), and in the NOTIFY the PUBLISH triggered (§9.2.2.2.5 step 3d,
-	// §9.2.2.3.5 step 3b); "" without one.
-	PID string
-	// GroupStatus and AdditionalData are of per-group dynamic data; nil without one.
+	PID            string
 	GroupStatus    *GroupStatus
 	AdditionalData *AdditionalData
 }
 
-// Status is the extension of a tuple's <status>.
 type Status struct {
-	// Affiliations are, in per-user affiliation information, of the groups the user is interested in at the client
-	// of the tuple, one per group (§9.3.1.2 item 7); in per-group information, of the clients at which the member of
-	// the tuple is, one per client (items 7, 12).
-	Affiliations []Affiliation
-	// FunctionalAliases are those the member of the tuple activated, in per-group information, one per functional
-	// alias (items 10, 15).
+	Affiliations      []Affiliation
 	FunctionalAliases []FunctionalAlias
 }
 
-// Affiliation is an <affiliation>.
 type Affiliation struct {
-	// Group is the MCPTT group ID, of per-user affiliation information (§9.3.1.2 item 8).
-	Group string
-	// Client is the MCPTT client ID, of per-group information (items 8, 13).
-	Client string
-	// Status is the affiliation status, "" without one: a client publishes none (§9.2.1.2 5e).
-	Status AffiliationStatus
-	// Expires is the expiration of the affiliation; nil without one: a client and a participating function publish
-	// none (§9.2.1.2 5e, §9.2.2.2.6 step 10), the server owning the group notifies it (§9.2.2.3.5 step 3a).
+	Group   string
+	Client  string
+	Status  AffiliationStatus
 	Expires *xsd.DateTime
-	// Other are the child elements, of later releases.
-	Other []*xmltree.Element
-	// Attr are the attributes but group, client, status and expires.
-	Attr []xml.Attr
+	Other   []*xmltree.Element
+	Attr    []xml.Attr
 }
 
-// AffiliationStatus is the value of the "status" attribute of an <affiliation> (statusType).
 type AffiliationStatus string
 
 const (
@@ -74,27 +40,20 @@ const (
 	Deaffiliating AffiliationStatus = "deaffiliating"
 )
 
-// FunctionalAlias is a <functionalAlias>.
 type FunctionalAlias struct {
-	// ID is the functional alias ID (§9.3.1.2 items 10, 15).
 	ID      string
 	Expires *xsd.DateTime
-	// Other are the child elements, of later releases.
-	Other []*xmltree.Element
-	// Attr are the attributes but functionalAliasID and expires.
-	Attr []xml.Attr
+	Other   []*xmltree.Element
+	Attr    []xml.Attr
 }
 
-// GroupStatus is a <groupStatus>: the status of the group (TS 23.280 §10.1.5.5), and the MCPTT ID of the user that
-// last changed it (§9.2.2.3.2).
+// TS 23.280 clause 10.1.5.5
 type GroupStatus struct {
 	Value      GroupState
 	ModifiedBy string
-	// Attr are the attributes but ModifiedBy.
-	Attr []xml.Attr
+	Attr       []xml.Attr
 }
 
-// GroupState is the value of a <groupStatus> (Table 9.3.1.2-3).
 type GroupState string
 
 const (
@@ -102,38 +61,25 @@ const (
 	Emergency GroupState = "emergency"
 )
 
-// AdditionalData is an <additionalData>.
 type AdditionalData struct {
-	// BroadcastAlias, RegroupAlias and CallOngoing are the groupBroadcastAlias, groupRegroupAlias and
-	// groupCallOngoing attributes; "" and nil without one.
 	BroadcastAlias string
 	RegroupAlias   string
 	CallOngoing    *bool
-	// Attr are the other attributes.
-	Attr []xml.Attr
+	Attr           []xml.Attr
 }
 
-// ErrValue is pidf.ErrValue: an element of the extension DecodePresence or DecodeStatus does not decode, malformed,
-// is kept as one of the document is, and the result is usable without it.
 var ErrValue = pidf.ErrValue
 
-// DecodePresence decodes the extension of p from p.Other. Of an element given more than once, the first well-formed
-// counts; the others, and the malformed, are not decoded, with an error wrapping ErrValue.
 func DecodePresence(p pidf.Presence) (Presence, error) {
 	x, _, err := decodePresence(p.Other)
 	return x, err
 }
 
-// DecodeStatus decodes the extension of s from s.Other. Of an affiliation of a group and client given more than once,
-// or of a functional alias, the first well-formed counts; the others, and the malformed, are not decoded, with an
-// error wrapping ErrValue.
 func DecodeStatus(s pidf.Status) (Status, error) {
 	x, _, err := decodeStatus(s.Other)
 	return x, err
 }
 
-// SetPresence replaces the elements of p.Other DecodePresence decodes with those of x, first, in the order of the
-// schema; the others follow.
 func SetPresence(p *pidf.Presence, x Presence) error {
 	var es []*xmltree.Element
 
@@ -173,8 +119,6 @@ func SetPresence(p *pidf.Presence, x Presence) error {
 	return nil
 }
 
-// SetStatus replaces the elements of s.Other DecodeStatus decodes with those of x, first, the affiliations then the
-// functional aliases; the others follow.
 func SetStatus(s *pidf.Status, x Status) error {
 	var es []*xmltree.Element
 
@@ -221,7 +165,6 @@ func SetStatus(s *pidf.Status, x Status) error {
 	return nil
 }
 
-// keep is es followed by the elements of old not used.
 func keep(es, old []*xmltree.Element, used []bool) []*xmltree.Element {
 	for i, e := range old {
 		if !used[i] {
@@ -266,8 +209,6 @@ func (f *FunctionalAlias) element() (*xmltree.Element, error) {
 	return children("functionalAlias", at, f.Other)
 }
 
-// children is the element local of attributes at and child elements other, of which none is to understand:
-// DecodeStatus, which does not understand them, would not decode it.
 func children(local string, at []xml.Attr, other []*xmltree.Element) (*xmltree.Element, error) {
 	e := &xmltree.Element{Name: name(local), Attr: at}
 
@@ -295,8 +236,6 @@ func dateTime(d *xsd.DateTime) (string, error) {
 	return s, nil
 }
 
-// attrs is the attributes of the name and value pairs kv, of the values not empty, followed by other, which holds
-// none of their names.
 func attrs(other []xml.Attr, kv ...string) ([]xml.Attr, error) {
 	var at []xml.Attr
 
@@ -327,7 +266,6 @@ func (d *decoder) fail(element, format string, a ...any) {
 	d.errs = append(d.errs, fmt.Errorf("pidfmc: <%s>: %w: %s", element, ErrValue, fmt.Sprintf(format, a...)))
 }
 
-// known is the name of e in the namespace of the extension, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -336,7 +274,6 @@ func known(e *xmltree.Element) string {
 	return e.Name.Local
 }
 
-// decodePresence decodes the extension of a presence from its elements es, and reports which it decoded.
 func decodePresence(es []*xmltree.Element) (Presence, []bool, error) {
 	var (
 		d    decoder
@@ -363,7 +300,6 @@ func decodePresence(es []*xmltree.Element) (Presence, []bool, error) {
 
 		switch n {
 		case "p-id":
-			// An empty <p-id> identifies no PUBLISH: kept, not decoded.
 			if e.HasElements() {
 				d.fail(n, "elements in a string")
 			} else if x.PID = e.Text(); x.PID != "" {
@@ -402,7 +338,6 @@ func (d *decoder) groupStatus(e *xmltree.Element) *GroupStatus {
 	return g
 }
 
-// additionalData decodes an <additionalData>, of empty content (emptyType): not even white space.
 func (d *decoder) additionalData(e *xmltree.Element) *AdditionalData {
 	if len(e.Children) != 0 {
 		d.fail("additionalData", "content in an empty element")
@@ -433,7 +368,6 @@ func (d *decoder) additionalData(e *xmltree.Element) *AdditionalData {
 	return x
 }
 
-// decodeStatus decodes the extension of a status from its elements es, and reports which it decoded.
 func decodeStatus(es []*xmltree.Element) (Status, []bool, error) {
 	type key struct{ group, client string }
 
@@ -496,7 +430,6 @@ func (d *decoder) affiliation(e *xmltree.Element) (Affiliation, bool) {
 		case xml.Name{Local: "client"}:
 			a.Client = xsd.Collapse(at.Value)
 		case xml.Name{Local: "status"}:
-			// statusType restricts xs:string, of white space preserved.
 			switch a.Status = AffiliationStatus(at.Value); a.Status {
 			case Affiliating, Affiliated, Deaffiliating:
 			default:
@@ -539,8 +472,7 @@ func (d *decoder) functionalAlias(e *xmltree.Element) (FunctionalAlias, bool) {
 	return f, true
 }
 
-// content is the child elements of e, of element-only content (xs:any): false if one is to understand, which it does
-// not know, e unrecognized (RFC 3863 §4.2.3), or if e has character data.
+// RFC 3863 section 4.2.3
 func (d *decoder) content(e *xmltree.Element) ([]*xmltree.Element, bool) {
 	other := e.Elements()
 
@@ -558,8 +490,6 @@ func (d *decoder) content(e *xmltree.Element) ([]*xmltree.Element, bool) {
 	return other, true
 }
 
-// dateTime decodes an xs:dateTime; nil if malformed, or if of the year 10000 once 24:00:00 is the next day, which
-// xsd.DateTime does not write.
 func (d *decoder) dateTime(element, v string) *xsd.DateTime {
 	t, err := xsd.ParseDateTime(v)
 	if err != nil || t.String() == "" {

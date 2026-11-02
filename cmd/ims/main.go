@@ -33,8 +33,6 @@ func main() {
 	}
 }
 
-// JSON with Ella Core's ts and lowercase level, and durations as "1.5s", and the
-// trace_id and span_id of a record's context.
 func newLogger(level slog.Level) *slog.Logger {
 	return slog.New(tracing.LogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,

@@ -12,7 +12,6 @@ import (
 
 const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
 
-// bye receives the next request on s, wants it a BYE with a Reason of 480, answers it, and returns its Call-ID.
 func bye(t *testing.T, s *siptest.Socket) string {
 	t.Helper()
 
@@ -32,14 +31,12 @@ func bye(t *testing.T, s *siptest.Socket) string {
 	}
 }
 
-// answered sets up a call toward the UE and returns once the I-CSCF side ACKed its 200.
 func (sh *sessionHarness) answered(t *testing.T) {
 	t.Helper()
 
 	sh.answeredTo(t, testTel)
 }
 
-// answeredTo sets up a call toward the identity of the UE, and returns its Call-ID once the I-CSCF side ACKed its 200.
 func (sh *sessionHarness) answeredTo(t *testing.T, target string) string {
 	t.Helper()
 
@@ -69,7 +66,7 @@ func (sh *sessionHarness) answeredTo(t *testing.T, target string) string {
 	return invite.Header.CallID()
 }
 
-// TS 24.229 §5.4.1.4 step 5
+// TS 24.229 clause 5.4.1.4
 func TestDeregistrationReleasesTerminatingCall(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.answered(t)
@@ -80,7 +77,7 @@ func TestDeregistrationReleasesTerminatingCall(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// TS 24.229 §5.4.1.2.2 step 4A a
+// TS 24.229 clause 5.4.1.2.2
 func TestNewContactReleasesCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.answered(t)
@@ -91,7 +88,7 @@ func TestNewContactReleasesCalls(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// TS 24.229 §5.4.1.4 step 5: the call the UE made is released toward both parties.
+// TS 24.229 clause 5.4.1.4
 func TestDeregistrationReleasesOriginatingCall(t *testing.T) {
 	sh := newSessionHarness(t)
 
@@ -110,7 +107,7 @@ func TestDeregistrationReleasesOriginatingCall(t *testing.T) {
 	bye(t, sh.orig)
 }
 
-// RFC 3263 §4: the BYE the S-CSCF sends goes to the remote target, which a domain name can name.
+// RFC 3263 section 4
 func TestDeregistrationReleasesCallToDomainName(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.dns.add("mcptt.example.com", loopback)
@@ -133,7 +130,6 @@ func TestDeregistrationReleasesCallToDomainName(t *testing.T) {
 	bye(t, sh.orig)
 }
 
-// A refresh from the same contact leaves its calls alone.
 func TestRefreshKeepsCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.answered(t)
@@ -144,7 +140,6 @@ func TestRefreshKeepsCalls(t *testing.T) {
 	sh.icscf.RecvNone(50 * time.Millisecond)
 }
 
-// Deregistering one contact of a forked call cancels its branch; the other contacts ring on.
 func TestDeregistrationCancelsItsBranch(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.addBinding(t, "sip:tablet@127.0.0.1:5999", "")
@@ -185,7 +180,7 @@ func TestDeregistrationCancelsItsBranch(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.5
+// TS 24.229 clause 5.4.1.5
 func TestNetworkDeregistrationReleasesCalls(t *testing.T) {
 	for _, reason := range []cx.ReasonCode{cx.ReasonPermanentTermination, cx.ReasonServerChange, cx.ReasonNewServerAssigned} {
 		t.Run(reason.String(), func(t *testing.T) {
@@ -205,7 +200,7 @@ func TestNetworkDeregistrationReleasesCalls(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.5.1.2A
+// TS 24.229 clause 5.4.5.1.2A
 func TestExpiryReleasesCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.answered(t)
@@ -216,7 +211,7 @@ func TestExpiryReleasesCalls(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d ii: a flow replaced by a new one has its calls released.
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowReplaceReleasesCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	contact := sh.ue.flowContact(sh.ue.contact, "1")
@@ -237,8 +232,6 @@ func TestFlowReplaceReleasesCalls(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// A call cancelled before it was forked leaves no dialog in the calls index: one that never began
-// would never end.
 func TestCancelledCallsLeaveNoIndex(t *testing.T) {
 	sh := newSessionHarness(t)
 

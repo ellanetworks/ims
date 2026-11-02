@@ -26,21 +26,16 @@ const (
 
 	asTimeout = time.Second
 
-	// scscfURI is where an AS sends its requests to the S-CSCF, icscfURI to the I-CSCF, the entry point of the
-	// network (TS 24.229 §5.7.3).
 	scscfURI = "sip:10.0.0.1:5080;lr"
 	icscfURI = "sip:10.0.0.1:5070;lr"
 )
 
-// The ASs are on the loopback, a network of the trust domain apart from the IMS's own addresses. Nothing answers on
-// silent, and refused takes no TCP connection.
 var (
 	asHost  = netip.MustParseAddr("127.0.0.1")
 	silent  = "sip:" + netip.AddrPortFrom(asHost, 5998).String()
 	refused = "sip:" + netip.AddrPortFrom(asHost, 5999).String() + ";transport=tcp"
 )
 
-// newISCScene is a scene whose S-CSCF trusts the ASs on the loopback, and gives up on them after asTimeout.
 func newISCScene(t *testing.T) *scene {
 	t.Helper()
 
@@ -50,8 +45,6 @@ func newISCScene(t *testing.T) *scene {
 	})
 }
 
-// as is a stand-in AS on sip/ua: it records each initial request it gets, and handles it with its service logic,
-// a 200 by default.
 type as struct {
 	t      *testing.T
 	agent  *ua.Agent
@@ -118,7 +111,6 @@ func (a *as) take(_ context.Context, r *ua.Request) {
 	_ = r.Respond(ua.Reply{Code: 200})
 }
 
-// URI is the AS's SIP URI, as the iFCs name it.
 func (a *as) URI() string {
 	return "sip:" + a.addr.String()
 }
@@ -146,7 +138,6 @@ func (a *as) none(t *testing.T, d time.Duration) {
 	}
 }
 
-// send sends an initial request outside a dialog from the AS, and returns its final response.
 func (a *as) send(t *testing.T, req *sip.Request) *sip.Response {
 	t.Helper()
 
@@ -172,9 +163,8 @@ func (a *as) send(t *testing.T, req *sip.Request) *sip.Response {
 	return nil
 }
 
-// relay is the service logic of a routeing B2BUA: the request goes on as a new one, back to the S-CSCF on the
-// Route the AS got after its own, with the original dialog identifier (TS 24.229 §5.4.3.4, §5.7.5); its final
-// response answers the request.
+// TS 24.229 clause 5.4.3.4
+// TS 24.229 clause 5.7.5
 func (a *as) relay(r *ua.Request) {
 	in := r.Message()
 
@@ -223,7 +213,7 @@ func headerIs(name, content string) cx.ServicePointTrigger {
 	return cx.ServicePointTrigger{SIPHeader: &cx.HeaderMatch{Header: name, Content: &content}}
 }
 
-// ifc is an iFC whose trigger point is the conjunction of the SPTs (TS 29.228 Annex C).
+// TS 29.228 annex C
 func ifc(priority int32, server string, handling cx.DefaultHandling, spts ...cx.ServicePointTrigger) cx.InitialFilterCriteria {
 	tp := &cx.TriggerPoint{ConjunctiveNormalForm: true}
 
@@ -240,8 +230,6 @@ func (s *scene) setIFCs(i int, ifcs ...cx.InitialFilterCriteria) {
 	s.hss.Update(subscriberAt(i).impi, func(sub *hsstest.Subscriber) { sub.IFCs = ifcs })
 }
 
-// mcpttService is an MCPTT client service of a UE: it takes MESSAGEs and INVITEs that require it, answering them with
-// code.
 func mcpttService(got chan<- *sip.Request, code int) ue.Service {
 	mcptt := sip.FeatureSet{sip.NewFeature("+g.3gpp.mcptt")}
 
@@ -266,7 +254,6 @@ func mcpttService(got chan<- *sip.Request, code int) ue.Service {
 	}
 }
 
-// mcpttUE registers a UE with the MCPTT service; got, if any, takes its requests.
 func (s *scene) mcpttUE(i int, got chan *sip.Request) *testue.UE {
 	s.t.Helper()
 
@@ -280,7 +267,6 @@ func (s *scene) mcpttUE(i int, got chan *sip.Request) *testue.UE {
 	return u
 }
 
-// mcpttMessage sends an MCPTT MESSAGE saying hello from the UE, and returns its final response.
 func mcpttMessage(t *testing.T, u *testue.UE, target string) *sip.Response {
 	t.Helper()
 
@@ -353,7 +339,7 @@ func asserted(t *testing.T, req *sip.Request) []string {
 	return out
 }
 
-// TS 24.229 §5.4.3.2: a MESSAGE that is not SMS goes from UE to UE.
+// TS 24.229 clause 5.4.3.2
 func TestMessageRouting(t *testing.T) {
 	s := newISCScene(t)
 	got := make(chan *sip.Request, 4)
@@ -370,8 +356,9 @@ func TestMessageRouting(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2 steps 3 and 5, §5.4.3.4; TS 23.218 §5.2.3: the iFCs of the caller in priority order, each AS
-// once, the request coming back from each with the original dialog identifier.
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.4
+// TS 23.218 clause 5.2.3
 func TestOriginatingTrigger(t *testing.T) {
 	s := newISCScene(t)
 	first, second := newAS(t, 5091), newAS(t, 5092)
@@ -423,7 +410,7 @@ func TestOriginatingTrigger(t *testing.T) {
 	second.none(t, 0)
 }
 
-// TS 24.229 §5.4.3.3 step 4: the iFC of the callee takes the call, and the AS's final response ends it.
+// TS 24.229 clause 5.4.3.3
 func TestTerminatingTrigger(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5091)
@@ -449,9 +436,8 @@ func TestTerminatingTrigger(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.2: the default handling of the iFC of an AS that does not answer, or cannot be reached. An AS
-// that answered, if only with the 100 of its INVITE transaction, failed no more: its 503 goes to the caller, as a 500
-// (RFC 3261 §16.7 step 6).
+// TS 24.229 clause 5.4.3.2
+// RFC 3261 section 16.7
 func TestDefaultHandling(t *testing.T) {
 	unavailable := newAS(t, 5093)
 	unavailable.handle = func(r *ua.Request) { _ = r.Reject(503) }
@@ -495,8 +481,9 @@ func TestDefaultHandling(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7, §5.4.1.7A; TS 23.218 §6.3: the AS hears of the registration, with the REGISTER and its 200 in
-// message/sip bodies and the service information in a 3GPP IM CN subsystem XML body, then of the deregistration.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
+// TS 23.218 clause 6.3
 func TestThirdPartyRegister(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5091)
@@ -559,8 +546,6 @@ func TestThirdPartyRegister(t *testing.T) {
 		t.Errorf("Expires %s, want %s as in the 200", r.Header.Get("Expires"), want)
 	}
 
-	// TS 24.229 §5.4.1.7 h: the icid-value of the REGISTER, the S-CSCF's network as the type 3 orig-ioi in place of
-	// the P-CSCF's, no term-ioi.
 	icid, err := sip.ParseParams(req.Header.Get("P-Charging-Vector"))
 	if err != nil {
 		t.Fatal(err)
@@ -576,12 +561,10 @@ func TestThirdPartyRegister(t *testing.T) {
 	}
 
 	dereg := srv.next(t)
-	// TS 24.229 §5.4.1.7 g and h: for registration and reregistration only.
 	if dereg.Header.Get("Expires") != "0" || len(dereg.Body) != 0 || dereg.Header.Has("P-Charging-Vector") {
 		t.Fatalf("AS got:\n%s\nwant a deregistration without a body nor P-Charging-Vector", dereg)
 	}
 
-	// RFC 3261 §10.2: the same Call-ID for the registrations of the identity at the AS, the CSeq one more.
 	first, _ := r.Header.CSeq()
 	next, _ := dereg.Header.CSeq()
 
@@ -590,9 +573,9 @@ func TestThirdPartyRegister(t *testing.T) {
 	}
 }
 
-// TS 23.218 §5.2.3, TS 24.229 §5.4.1.5: a network-initiated deregistration reaches the AS as if the UE had sent the
-// REGISTER: an iFC on the Contact of the UE matches, as it did on registration. With NEW_SERVER_ASSIGNED, the
-// S-CSCF only forgets the user, whom a new S-CSCF registered at the ASs (TS 29.228 §6.1.3).
+// TS 23.218 clause 5.2.3
+// TS 24.229 clause 5.4.1.5
+// TS 29.228 clause 6.1.3
 func TestThirdPartyDeregistrationByTheNetwork(t *testing.T) {
 	for _, tt := range []struct {
 		reason cx.ReasonCode
@@ -630,8 +613,8 @@ func TestThirdPartyDeregistrationByTheNetwork(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.0, RFC 3263: an AS named by its domain name; the S-CSCF sends the requests of the identity to the
-// address it resolved first.
+// TS 24.229 clause 5.4.0
+// RFC 3263
 func TestASByDomainName(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5091)
@@ -657,7 +640,7 @@ func TestASByDomainName(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.7: a third-party REGISTER that gets no response deregisters the UE only with SESSION_TERMINATED.
+// TS 24.229 clause 5.4.1.7
 func TestThirdPartyRegisterFailure(t *testing.T) {
 	t.Run("session continued", func(t *testing.T) {
 		s := newISCScene(t)
@@ -668,7 +651,6 @@ func TestThirdPartyRegisterFailure(t *testing.T) {
 		noNotify(t, u, 2*asTimeout)
 	})
 
-	// TS 24.229 §5.4.1.5: the UE is not expected to register again, which would fail the same way.
 	t.Run("session terminated", func(t *testing.T) {
 		s := newISCScene(t)
 		s.setIFCs(0, ifc(0, silent, cx.DefaultHandlingSessionTerminated, methodIs("REGISTER")))
@@ -684,7 +666,6 @@ func TestThirdPartyRegisterFailure(t *testing.T) {
 		})
 	})
 
-	// An AS the S-CSCF cannot send to fails at once.
 	t.Run("session terminated, AS outside the trust domain", func(t *testing.T) {
 		s := newISCScene(t)
 		s.setIFCs(0, ifc(0, "sip:192.0.2.1:5060", cx.DefaultHandlingSessionTerminated, methodIs("REGISTER")))
@@ -698,8 +679,9 @@ func TestThirdPartyRegisterFailure(t *testing.T) {
 	})
 }
 
-// TS 23.228 §5.4.12.2, TS 24.229 §5.3.2.1, §5.4.3.3: requests to the PSIs of an AS, distinct and wildcarded, through
-// the S-CSCF of the PSI user and its terminating iFCs, or straight from the I-CSCF on direct routing.
+// TS 23.228 clause 5.4.12.2
+// TS 24.229 clause 5.3.2.1
+// TS 24.229 clause 5.4.3.3
 func TestPSIRouting(t *testing.T) {
 	s := newISCScene(t)
 	srv, direct := newAS(t, 5091), newAS(t, 5092)
@@ -758,7 +740,6 @@ func TestPSIRouting(t *testing.T) {
 		t.Fatalf("MESSAGE to a PSI without iFCs got %s, want 480", res.StartLine())
 	}
 
-	// TS 24.229 §5.3.2.1, §5.4.3.3 step 1: a PSI the HSS does not know, or that it bars, is not found.
 	s.hss.Add(hsstest.Subscriber{
 		IMPI:                 "mcptt-barred@" + domain,
 		IMPUs:                []cx.ProfileIdentity{{Identity: "sip:mcptt-barred@" + domain, Type: cx.IdentityDistinctPSI, Barred: true}},
@@ -772,7 +753,8 @@ func TestPSIRouting(t *testing.T) {
 	}
 }
 
-// TS 23.228 §5.4.12.2, TS 24.229 §5.4.3.3: an INVITE to a PSI reaches the AS of its iFC, whose answer ends it.
+// TS 23.228 clause 5.4.12.2
+// TS 24.229 clause 5.4.3.3
 func TestInviteToAPSI(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5091)
@@ -797,8 +779,9 @@ func TestInviteToAPSI(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.3.1, §5.4.3.2, §5.7.3: requests of an AS on behalf of a user, with "orig", of a PSI, and to a
-// served user; the AS's P-Asserted-Identity is trusted.
+// TS 24.229 clause 5.4.3.1
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.7.3
 func TestASOriginated(t *testing.T) {
 	s := newISCScene(t)
 	srv := newAS(t, 5091)
@@ -834,7 +817,6 @@ func TestASOriginated(t *testing.T) {
 		return req
 	}
 
-	// TS 24.229 §5.4.3.2 step 9: the S-CSCF adds the tel URI that the SIP URI of the user aliases.
 	for _, tt := range []struct {
 		name, from, route string
 		alias             string

@@ -14,7 +14,8 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
+// TS 29.214 clause 4.4.5
+// TS 29.514 clause 4.2.6.7
 func TestPolicySignallingSession(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		for _, family := range []struct {
@@ -40,8 +41,6 @@ func TestPolicySignallingSession(t *testing.T) {
 
 				s.pol.wantEnd(session, rx.TerminationLogout)
 
-				// The session was opened and closed, each with a request answered with success: the answer to the
-				// closing one counted once the IMS takes it, after the policy function got the request.
 				eventually(t, iface+" requests answered with success", func() bool {
 					return s.peerRequests(t, iface, "success") >= 2
 				})
@@ -81,8 +80,6 @@ func TestPolicySessionEndsWithTheNetworkDeregistration(t *testing.T) {
 
 		session := s.pol.signalling(ueAddr(0, false))
 
-		// The P-CSCF learns of the network's deregistration from its reg event subscription (TS 24.229 §5.2.3,
-		// §5.2.5.2), which it makes once the registration is done: an RTR before it, the subscription is refused.
 		eventually(t, "the P-CSCF's reg event subscription", func() bool { return s.subscribers()[db.SubscriberPCSCF] })
 
 		if _, err := s.hss.RTR(s.ctx(), cx.DeregistrationReason{Code: cx.ReasonPermanentTermination}, impi); err != nil {
@@ -93,7 +90,8 @@ func TestPolicySessionEndsWithTheNetworkDeregistration(t *testing.T) {
 	})
 }
 
-// TS 29.214 §4.4.6.5, TS 29.514 §4.2.5.10
+// TS 29.214 clause 4.4.6.5
+// TS 29.514 clause 4.2.5.10
 func TestPolicySignallingPathLost(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
@@ -113,7 +111,8 @@ func TestPolicySignallingPathLost(t *testing.T) {
 	})
 }
 
-// TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3
+// TS 29.214 clause 4.4.6.1
+// TS 29.514 clause 4.2.5.3
 func TestPolicySignallingAborted(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
@@ -134,8 +133,6 @@ func TestPolicySignallingAborted(t *testing.T) {
 			return ok && reg.SignallingLost && reg.Policy.ID == ""
 		})
 
-		// RFC 6733 §8.1: until the answer to its termination ends it, the session takes an abort again, answered without
-		// another termination; then it is unknown.
 		eventually(t, "the ended session unknown to an abort", func() bool { return s.pol.abort(session) != nil })
 
 		if err := u.Reregister(s.ctx()); err != nil {
@@ -154,7 +151,6 @@ func TestPolicySignallingAborted(t *testing.T) {
 	})
 }
 
-// After a restart, the session stored with the registration is ended and a new one opened.
 func TestPolicySignallingReopenedAfterRestart(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)

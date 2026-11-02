@@ -14,11 +14,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// errMCPTTRestarting is of a change of the MCPTT settings while the AS restarts, for a new home domain.
 var errMCPTTRestarting = errors.New("MCPTT is restarting")
 
-// startMCPTT starts the MCPTT AS of the configuration under homeDomain: named after it, its host resolved to it in
-// memory through the IMS.
 func (s *Server) startMCPTT(ctx context.Context, homeDomain string) error {
 	cfg := s.Config.MCPTT
 
@@ -40,8 +37,6 @@ func (s *Server) startMCPTT(ctx context.Context, homeDomain string) error {
 	return nil
 }
 
-// stopMCPTT stops the MCPTT AS, if it runs, until ctx is done: its calls end and its subscriptions go, through the
-// core, which must still run.
 func (s *Server) stopMCPTT(ctx context.Context) {
 	a := s.mcptt.Swap(nil)
 	if a == nil {
@@ -55,15 +50,12 @@ func (s *Server) stopMCPTT(ctx context.Context) {
 	}
 }
 
-// resubscribeMCPTT has the MCPTT AS, if it runs, subscribe to the reg event package of the IMPUs it has no
-// subscription of, now that a core runs to take the SUBSCRIBEs.
 func (s *Server) resubscribeMCPTT(ctx context.Context) {
 	if a := s.mcptt.Load(); a != nil {
 		a.Resubscribe(ctx)
 	}
 }
 
-// mcpttView serves the API from the MCPTT AS that runs: none while it restarts.
 type mcpttView struct {
 	s *Server
 }
@@ -114,7 +106,6 @@ func (v mcpttView) Affiliations() ([]api.MCPTTAffiliation, error) {
 
 	for _, c := range a.Affiliations() {
 		for _, g := range c.Groups {
-			// A de-affiliated entry waits to go: the client is no longer affiliated (TS 24.379 §9.2.2.2.2).
 			if g.Status == affiliation.Deaffiliated {
 				continue
 			}
@@ -168,7 +159,6 @@ func mcpttCall(c controlling.Call) api.MCPTTCall {
 		Created: c.Created, Started: c.Started, Ends: c.Ends, TalkingSince: c.TalkingSince,
 	}
 
-	// No talker: the floor is idle.
 	if c.Talker.Host != "" {
 		out.Talker = c.Talker.String()
 	}

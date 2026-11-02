@@ -1,7 +1,3 @@
-// Package ue is an IMS UE (TS 24.229 §5.1): its registration with IMS AKA and the ipsec-3gpp security agreement
-// (TS 33.203), its reg event subscription (TS 24.229 §5.1.1.3), and the IMS communication services it hosts on its
-// agent, such as an MCPTT client (TS 24.379). The platform gives it the AKA of the UICC (Authenticator), its IPsec,
-// and a hook on its sockets.
 package ue
 
 import (
@@ -37,7 +33,6 @@ const (
 
 	maxChallenges = 4
 
-	// closeWait is how long Close waits for the agent to end the sessions of the services.
 	closeWait = 500 * time.Millisecond
 )
 
@@ -54,8 +49,7 @@ var (
 
 	ErrTooManyChallenges = errors.New("ue: too many challenges")
 
-	// ErrSynchronisation is the error of a registration whose challenges the UICC found out of sequence more often than
-	// it resynchronised (TS 33.102 §6.3.5).
+	// TS 33.102 clause 6.3.5
 	ErrSynchronisation = errors.New("ue: AKA synchronisation failure")
 
 	ErrClosed = errors.New("ue: closed")
@@ -74,45 +68,28 @@ func (e *ResponseError) Error() string {
 type Config struct {
 	Identities Identities
 
-	// InstanceID identifies the UE in its Contact (TS 24.229 §5.1.1.2.1, RFC 5626 §4.1): IMEIInstanceID for a UE with
-	// an IMEI.
 	InstanceID string
 
-	// AKA runs the challenges of the registrations (TS 33.203 §6.1).
 	AKA Authenticator
 
-	// PCSCF is the P-CSCF the UE registers through (TS 24.229 §9.2.1), Local its address, Transport the transport of
-	// its requests (UDP by default).
 	PCSCF     netip.AddrPort
 	Local     netip.Addr
 	Transport sip.Transport
 
 	Offers []Offer
 
-	// ContactParams are added to the Contact the UE registers: a q-value (RFC 3261 §10.2.1.2)
-	// or feature tags (RFC 3840 §9), other than those the UE sets itself: its instance, its reg-id, and the feature
-	// tags of its services.
 	ContactParams sip.Params
 
-	// RegID, when not zero, makes the UE's registration flow RegID of its instance (RFC 5626 §4.2):
-	// its Contact has the reg-id, and its REGISTER outbound in Supported (TS 24.229 §5.1.1.2.1). UEs
-	// with the same IMPI and IMEI and other RegIDs are the device's other flows, each with its own
-	// security associations (TS 33.203 §6.1).
 	RegID int64
 
-	// Plain is a UE without the security agreement: no SAs, all its requests unprotected.
 	Plain bool
 
-	// AccessNetworkInfo is the P-Access-Network-Info of the UE's requests and responses (TS 24.229 §5.1.1.2.1,
-	// §7.2A.4): its access type and cell. Required without Plain.
 	AccessNetworkInfo string
 
 	Expires time.Duration
 
 	NoRegEvent bool
 
-	// Services are the services the UE hosts (Service): of the services an initial request prefers alike, the first its
-	// Match takes gets it, else the first.
 	Services []Service
 
 	LargeUDP bool
@@ -121,36 +98,23 @@ type Config struct {
 
 	T1 time.Duration
 
-	// IPsec is where the UE installs the SAs of its registrations. Required without Plain.
 	IPsec IPsec
 
-	// Control runs on each socket of the UE before it is bound or connects, as net.ListenConfig's and net.Dialer's: to
-	// bind it to a network, or protect it with SAs. address is the local address the socket is to be bound to, its
-	// port 0 for any.
 	Control func(network, address string, c syscall.RawConn) error
 
-	// Clock runs the timers of the UE, of its registration and reg event subscription, and of the sessions of its
-	// services: the system clock when nil.
 	Clock transaction.Clock
 
-	// Do runs the creation of the UE's sockets: in a network namespace.
 	Do func(f func())
 
 	Trace func(m sip.Message, f sip.Flow, sent bool)
 
-	// OnEvent receives the events of the UE: the requests it receives and the responses to its own, the reg event
-	// NOTIFYs, the errors of its automatic re-registrations and subscriptions. It must not block.
 	OnEvent func(Event)
 
-	// TracerProvider traces the UE's transactions, as children of the contexts of the calls that start them; none
-	// when nil. The UE sends no trace context: it is outside the IMS's trust domain.
 	TracerProvider trace.TracerProvider
 
 	Logger *slog.Logger
 }
 
-// reservedContactParams are the Contact parameters the UE sets whatever its services: its instance and reg-id, and
-// the media type feature tags (RFC 3840 §10.1–§10.6).
 var reservedContactParams = sip.Params{
 	{Name: "+sip.instance"},
 	{Name: "reg-id"},
@@ -165,8 +129,6 @@ var reservedContactParams = sip.Params{
 type State struct {
 	Registered bool
 
-	// Outbound is set when the registrar registered the UE's flow: its 200 required outbound
-	// (RFC 5626 §6).
 	Outbound bool
 
 	Expires        time.Time
@@ -178,9 +140,6 @@ type State struct {
 
 	IMPUs []string
 
-	// UnavailablePCSCFs are the P-CSCF addresses marked unavailable, a request through one having timed out or failed
-	// in transport (TS 24.229 §5.1.2A.1.6), until the mark expires (§5.1.9): the UE registers through none of them;
-	// the owner selects another one (SetPCSCF) if it has, or discovers them anew (ClearPCSCFMarks).
 	UnavailablePCSCFs []netip.AddrPort
 }
 
@@ -190,48 +149,34 @@ type Event struct {
 	Reginfo  *reginfo.Reginfo
 	Err      error
 
-	// Deregistered is set when the registration of the UE ended without a REGISTER of its own: by the reg event
-	// NOTIFY of Request, or on its expiry; RetryAfter, of DeregisteredProbation, when to register again.
 	Deregistered Deregistration
 	RetryAfter   time.Duration
 
-	// UnavailablePCSCF, with DeregisteredFlowFailed, is the P-CSCF that the failure of a request marked unavailable
-	// (TS 24.229 §5.1.2A.1.6).
 	UnavailablePCSCF netip.AddrPort
 }
 
-// Deregistration is how the registration of a UE ended without a REGISTER of its own: the event of its contacts in
-// the NOTIFY that ended it (RFC 3680 §5.1, TS 24.229 §5.1.1.7), or its expiry.
+// RFC 3680 section 5.1
+// TS 24.229 clause 5.1.1.7
 type Deregistration string
 
 const (
-	// DeregisteredUnregistered is the network removing the UE's bindings: a registration of the same private user
-	// identity without the multiple registration mechanism replacing them (TS 24.229 §5.4.1.2.2 step 2).
+	// TS 24.229 clause 5.4.1.2.2
 	DeregisteredUnregistered Deregistration = "unregistered"
 
-	// DeregisteredDeactivated is the network expecting the UE to register again, which it does (TS 24.229
-	// §5.1.1.7).
+	// TS 24.229 clause 5.1.1.7
 	DeregisteredDeactivated Deregistration = "deactivated"
 
-	// DeregisteredRejected is the network not expecting the UE to register again: the services release their dialogs
-	// (TS 24.229 §5.1.1.7).
+	// TS 24.229 clause 5.1.1.7
 	DeregisteredRejected Deregistration = "rejected"
 
-	// DeregisteredProbation is the network expecting the UE to register again after Event.RetryAfter (RFC 3680
-	// §5.1).
+	// RFC 3680 section 5.1
 	DeregisteredProbation Deregistration = "probation"
 
-	// DeregisteredExpired is the registration expiring, not refreshed in time.
 	DeregisteredExpired Deregistration = "expired"
 
-	// DeregisteredFlowFailed is the flow of the registration failing: a keep-alive not answered (RFC 5626 §4.4.1), the
-	// TCP connection of an outbound registration lost (RFC 5626 §4.4), a listener of the UE failing for good, as its
-	// sockets destroyed with the network (TS 24.229 §5.1.1.4.1 NOTE 13), or a reregistration ended by timer F (TS
-	// 24.229 §5.1.1.4.1) or a fatal transport error (its NOTE 13): the UE stopped processing its dialogs and
-	// transactions, which end with ua.EndDropped. Or another request through the P-CSCF timed out or failed in
-	// transport, leaving the contact bound to nothing and the P-CSCF unavailable (TS 24.229 §5.1.2A.1.6,
-	// Event.UnavailablePCSCF). Event.Err is why. The UE is to register again (RFC 5626 §4.5): Register forms the new
-	// flow, listening again on the ports that failed.
+	// TS 24.229 clause 5.1.1.4.1
+	// TS 24.229 clause 5.1.2A.1.6
+	// RFC 5626 section 4.4
 	DeregisteredFlowFailed Deregistration = "flow-failed"
 )
 
@@ -268,41 +213,35 @@ type UE struct {
 
 	op sync.Mutex
 
-	mu     sync.Mutex
-	closed bool
-	pcscf  netip.AddrPort
-	// marks are the P-CSCF addresses marked unavailable (State.UnavailablePCSCFs); registeredVia is the P-CSCF the
-	// contact was last registered through.
+	mu            sync.Mutex
+	closed        bool
+	pcscf         netip.AddrPort
 	marks         map[netip.AddrPort]pcscfMark
 	registeredVia netip.AddrPort
 	ani           string
 	clientPorts   []uint16
 	retired       []uint16
-	// failed are the ports whose listeners failed, listened on again before the next registration.
-	failed      []uint16
-	pending     int
-	newSAUsed   bool
-	expires     time.Duration
-	callID      string
-	fromTag     string
-	cseq        uint32
-	auth        string
-	state       State
-	sets        []*saSet
-	auto        bool
-	reregTimer  transaction.Timer
-	expiryTimer transaction.Timer
-	// keepTimer is the next keep-alive of the flow, flowTimer the Flow-Timer of its registration (RFC 5626 §4.4).
-	keepTimer transaction.Timer
-	flowTimer time.Duration
-	sub       *subscription
+	failed        []uint16
+	pending       int
+	newSAUsed     bool
+	expires       time.Duration
+	callID        string
+	fromTag       string
+	cseq          uint32
+	auth          string
+	state         State
+	sets          []*saSet
+	auto          bool
+	reregTimer    transaction.Timer
+	expiryTimer   transaction.Timer
+	keepTimer     transaction.Timer
+	flowTimer     time.Duration
+	sub           *subscription
 
 	services []Service
 
-	// serviceTags are the option tags of the services, which the agent accepts for any of them.
 	serviceTags []string
 
-	// The lock guards disabled, the services disabled now.
 	disabled map[string]bool
 	allow    []string
 }
@@ -381,8 +320,6 @@ func New(cfg Config) (*UE, error) {
 	u.serviceTags = union(union(nil, u.services, func(s *Service) []string { return s.Supported }), u.services,
 		func(s *Service) []string { return s.Understood })
 
-	// The UE sets these itself (RFC 3840 §9, RFC 5626 §4.2): its instance, its reg-id, and the feature tags of its
-	// services, their media types included, so that ContactParams claim no medium no service takes.
 	all := make([]*Service, len(u.services))
 	for i := range u.services {
 		all[i] = &u.services[i]
@@ -426,19 +363,15 @@ func New(cfg Config) (*UE, error) {
 					return c, err
 				},
 			},
-			// TS 24.229 §5.1.1.4.1 NOTE 13: a listener failing is the flow of the registration failing.
 			OnListenerFailed: u.listenerFailed,
 			OnConnectionLost: u.connectionLost,
 			OnClientError:    u.requestFailed,
 		},
-		Prepare: u.prepare,
-		Respond: u.respondHeaders,
-		Policy:  ua.ClientPolicy,
-		Allow:   u.allow,
-		// The option tags of the services are accepted for all, then checked for the one a request is for; each
-		// service advertises its own (Originate).
-		Understood: u.serviceTags,
-		// TS 24.229 §5.1.4.1: the UE as UAS lets the caller refresh.
+		Prepare:      u.prepare,
+		Respond:      u.respondHeaders,
+		Policy:       ua.ClientPolicy,
+		Allow:        u.allow,
+		Understood:   u.serviceTags,
 		SessionTimer: ua.SessionTimer{Refresher: sip.RefresherUAC},
 		OnInvite:     u.incomingInvite,
 		OnRequest:    u.requestReceived,
@@ -458,7 +391,6 @@ func New(cfg Config) (*UE, error) {
 	return u, nil
 }
 
-// trace follows the messages of the UE: the received ones of a call are its events.
 func (u *UE) trace(m sip.Message, f sip.Flow, sent bool) {
 	if u.cfg.Trace != nil {
 		u.cfg.Trace(m, f, sent)
@@ -490,14 +422,10 @@ func (u *UE) IMPI() string       { return u.id.IMPI }
 func (u *UE) IMPU() string       { return u.id.IMPU }
 func (u *UE) HomeDomain() string { return u.id.HomeDomain }
 
-// Local is the address of the UE.
 func (u *UE) Local() netip.Addr { return u.cfg.Local }
 
 func (u *UE) Unprotected() netip.AddrPort { return u.unprotected }
 
-// SetPCSCF changes the P-CSCF of the UE's next initial registration (TS 24.229 §5.1.1.2.1): one of the P-CSCFs it
-// discovered (§9.2.1) when the current one fails. The SAs and the requests of the current registration stay with the
-// P-CSCF they were set up with.
 func (u *UE) SetPCSCF(p netip.AddrPort) error {
 	if !p.IsValid() || p.Addr().Is4() != u.cfg.Local.Is4() {
 		return fmt.Errorf("ue: P-CSCF %s for local address %s", p, u.cfg.Local)
@@ -511,8 +439,7 @@ func (u *UE) SetPCSCF(p netip.AddrPort) error {
 	return nil
 }
 
-// SetAccessNetworkInfo changes the P-Access-Network-Info of the UE's next requests and responses (TS 24.229
-// §7.2A.4): the cell after a handover. A UE of Plain sends none.
+// TS 24.229 clause 7.2A.4
 func (u *UE) SetAccessNetworkInfo(ani string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -534,7 +461,7 @@ func (u *UE) pcscfAddr() netip.AddrPort {
 	return u.pcscf
 }
 
-// NewCallID is a new Call-ID of the UE (RFC 3261 §8.1.1.4): a time UUID at its address.
+// RFC 3261 section 8.1.1.4
 func (u *UE) NewCallID() string {
 	return timeUUID() + "@" + sip.FormatHost(u.cfg.Local)
 }
@@ -586,14 +513,11 @@ func (u *UE) SetAutoReregister(on bool) {
 	}
 }
 
-// Close makes the UE vanish, as a UE losing its radio: the sessions of its services and its subscription end locally,
-// nothing reaches the network. Shutdown ends them first.
 func (u *UE) Close() error {
 	if !u.close() {
 		return nil
 	}
 
-	// The transport goes first: the agent ends the usages without signalling.
 	_ = u.agent.Layer().Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), closeWait)
@@ -602,8 +526,6 @@ func (u *UE) Close() error {
 	return u.release(u.agent.Shutdown(ctx))
 }
 
-// Shutdown ends the sessions of the services and the subscription of the UE with the network, a BYE, a CANCEL or an unsubscribe, waits
-// for them until ctx is done, then closes it.
 func (u *UE) Shutdown(ctx context.Context) error {
 	if !u.close() {
 		return nil
@@ -628,7 +550,6 @@ func (u *UE) close() bool {
 	return true
 }
 
-// release removes the SAs of the UE once its agent closed.
 func (u *UE) release(err error) error {
 	u.op.Lock()
 	defer u.op.Unlock()
@@ -688,7 +609,7 @@ func (u *UE) filter(m sip.Message) error {
 	return nil
 }
 
-// TS 33.203 §7.1
+// TS 33.203 clause 7.1
 func (u *UE) responseFlow(req *sip.Request, _ *sip.Response) (sip.Flow, bool, error) {
 	f := req.Flow
 	if u.cfg.Plain || f.Transport != sip.UDP && !u.cfg.TCPResponsesFromClientPort {
@@ -771,7 +692,6 @@ func (u *UE) request(ctx context.Context, req *sip.Request) (*sip.Response, erro
 
 	w := &waiter{u: u, final: make(chan *sip.Response, 1), err: make(chan error, 1)}
 
-	// ctx carries the caller's trace to the transaction; it bounds only the wait below.
 	if _, err := u.layer.Request(ctx, req, w); err != nil {
 		return nil, fmt.Errorf("ue: send %s: %w", req.Method, err)
 	}
@@ -903,7 +823,6 @@ func (u *UE) install(c client, o ipsec.Offer, keys Keys, server []string) (*saSe
 		return nil, fmt.Errorf("ue: %w", err)
 	}
 
-	// The sockets of the protected ports, bound before the SAs: their UDP sockets and TCP listeners.
 	for _, port := range []uint16{set.Local.PortC, set.Local.PortS} {
 		if err := u.protectSockets(set, port); err != nil {
 			_ = u.cfg.IPsec.Remove(set)
@@ -989,7 +908,6 @@ func (u *UE) removeSet(s *saSet) error {
 	return err
 }
 
-// protectSockets has the SAs of set protect the sockets listening on its port port.
 func (u *UE) protectSockets(set SASet, port uint16) error {
 	rcs, err := u.layer.Sockets(netip.AddrPortFrom(u.cfg.Local, port))
 	if err != nil {
@@ -1005,8 +923,7 @@ func (u *UE) protectSockets(set SASet, port uint16) error {
 	return nil
 }
 
-// control runs on each socket of the UE before it is bound or connects: the platform's Control, then, of a TCP
-// connection dialled from a protected client port, the protection of its SAs (TS 33.203 §7.1).
+// TS 33.203 clause 7.1
 func (u *UE) control(network, address string, c syscall.RawConn) error {
 	if u.cfg.Control != nil {
 		if err := u.cfg.Control(network, address, c); err != nil {
@@ -1060,7 +977,6 @@ func (u *UE) established() *saSet {
 	return nil
 }
 
-// now is the time on the clock of the UE, the one of its agent and of all its timers.
 func (u *UE) now() time.Time {
 	return u.layer.Clock().Now()
 }

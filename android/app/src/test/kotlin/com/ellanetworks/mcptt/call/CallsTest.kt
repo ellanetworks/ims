@@ -57,7 +57,6 @@ class CallsTest {
     private val collector = CoroutineScope(Dispatchers.Default)
     private lateinit var calls: Calls
 
-    /** The service holds the microphone type, or the app is visible. */
     @Volatile
     private var recordable = true
 
@@ -76,7 +75,6 @@ class CallsTest {
         collector.cancel()
     }
 
-    // A1: answered by Telecom (a headset's button), the call is active: its audio on, its PTT pressed.
     @Test
     fun answeredByTelecom() {
         calls.event(Event.Incoming("in-1", GROUP, "sip:alice@mcptt.example", manual = true))
@@ -92,7 +90,6 @@ class CallsTest {
         assertFalse("denied" in cues.log)
     }
 
-    // The INVITE off the caller's thread, and the release after it.
     @Test
     fun placesOffTheCallersThread() {
         val placing = CountDownLatch(1)
@@ -106,7 +103,6 @@ class CallsTest {
         assertEquals(listOf("place $id $GROUP", "release $id"), ops.log.toList())
     }
 
-    // P3: a press whose INVITE fails is told: the denied cue, an end of setup failed.
     @Test
     fun placeFailed() {
         ops.fail = true
@@ -120,7 +116,6 @@ class CallsTest {
         assertIdle()
     }
 
-    // P3: rejected by the server (480: nobody else affiliated) while CALLING.
     @Test
     fun rejectedWhileCalling() {
         val id = requireNotNull(calls.talk(GROUP))
@@ -134,7 +129,6 @@ class CallsTest {
         assertIdle()
     }
 
-    // Ended by the user before an answer: no failure told.
     @Test
     fun leftWhileCalling() {
         val id = requireNotNull(calls.talk(GROUP))
@@ -144,7 +138,6 @@ class CallsTest {
         assertTrue(cues.log.isEmpty())
     }
 
-    // P7: the talker's indications play with the courtesy tones off; the floor free does not.
     @Test
     fun mandatoryCues() {
         calls.tones = false
@@ -153,7 +146,6 @@ class CallsTest {
         calls.event(Event.Floor("in-1", Event.Notice.TAKEN, "sip:bob@mcptt.example"))
         calls.event(Event.Floor("in-1", Event.Notice.IDLE, null))
         calls.event(Event.Floor("in-1", Event.Notice.GRANTED, null))
-        // The talk permit once the microphone records, or after its wait.
         eventually { "grant" in cues.log }
         calls.event(Event.Floor("in-1", Event.Notice.REVOKED, null))
         calls.event(Event.Floor("in-1", Event.Notice.TIMEOUT, null))
@@ -161,7 +153,6 @@ class CallsTest {
         assertEquals(listOf("grant", "revoked", "revoked"), cues.log.toList())
     }
 
-    // R-6.15.3.2-016: granted before the microphone records, the talk permit waits for it.
     @Test
     fun permitWaitsForMicrophone() {
         audio.slow = true
@@ -175,7 +166,6 @@ class CallsTest {
         eventually { "grant" in cues.log }
     }
 
-    // The microphone not recording after the wait: no talk permit, the floor given back, the press refused.
     @Test
     fun noMicrophone() {
         audio.slow = true
@@ -186,8 +176,6 @@ class CallsTest {
         assertEquals(listOf("denied"), cues.log.toList())
     }
 
-    // Allowed but not recordable (the service started in the background): Android would silence the recorder, so the
-    // press places no call, is denied and told, for the user to open the app.
     @Test
     fun unrecordableNotPlaced() {
         recordable = false
@@ -200,8 +188,6 @@ class CallsTest {
         assertEquals(0, audio.capturing.get())
     }
 
-    // In a call heard with the app in the background: the speech plays, no microphone runs, nothing told until a press,
-    // which is refused, no floor requested. Recordable again (the app opened), the press talks.
     @Test
     fun unrecordableInACall() {
         recordable = false
@@ -225,7 +211,6 @@ class CallsTest {
         assertEquals(1, unrecordable.get())
     }
 
-    // Not allowed at all: denied, the permission the app's to ask for, not the app to open.
     @Test
     fun notAllowed() {
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.RECORD_AUDIO)
@@ -236,7 +221,6 @@ class CallsTest {
         assertTrue(ops.log.isEmpty())
     }
 
-    // An ended call's audio stays stopped: the events after its end start no microphone.
     @Test
     fun endedStopsAudio() {
         val id = requireNotNull(calls.talk(GROUP))
@@ -249,7 +233,6 @@ class CallsTest {
         assertEquals(0, audio.playing.get())
     }
 
-    // Each way a call ends leaves nothing running: its microphone, playout, timers and pending talk permit.
     @Test
     fun endedRemotely() {
         val id = active()
@@ -307,7 +290,6 @@ class CallsTest {
         }
     }
 
-    /** A call of the user's, established in the session and active in Telecom. */
     private fun active(): String {
         val id = requireNotNull(calls.talk(GROUP))
         telecom.await()
@@ -316,7 +298,6 @@ class CallsTest {
         return id
     }
 
-    /** No call, and none of their audio running. */
     private fun assertIdle() {
         eventually { calls.current.value.isEmpty() }
         Thread.sleep(100)
@@ -324,7 +305,6 @@ class CallsTest {
         assertEquals("playing", 0, audio.playing.get())
     }
 
-    // A5: the calls in the order they came, the newest last.
     @Test
     fun newestLast() {
         val ids = (1..20).map { "in-$it" }
@@ -409,12 +389,10 @@ class CallsTest {
         }
     }
 
-    /** The calls' audio: how many play. */
     private class FakeAudio : Audio {
         val playing = AtomicInteger()
         val capturing = AtomicInteger()
 
-        /** The microphone slow: its readiness told by [record], not at its start. */
         @Volatile
         var slow = false
         private val pending = LinkedBlockingQueue<() -> Unit>()

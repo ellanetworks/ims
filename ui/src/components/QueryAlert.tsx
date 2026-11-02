@@ -1,8 +1,6 @@
 import { Alert } from "@mui/material";
 import ErrorAlert from "@/components/ErrorAlert";
 
-// QueryAlert is the state of a query that the page cannot show, as Ella Core's QueryState: offline, a failed first
-// load with a retry, or a failed refresh, which keeps the last data on screen.
 export default function QueryAlert({
   query,
   subject,

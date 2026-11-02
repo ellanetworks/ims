@@ -296,7 +296,6 @@ func TestDiameterPeerServiceCentres(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	// A backup SMSC of the same service centre.
 	backup := strings.NewReplacer("smsc.epc", "backup.epc", "10.0.0.12", "10.0.0.13").Replace(smscPeer)
 	if p := createPeer(t, cfg, backup); !slices.Equal(p.ServiceCentres, []string{"15550000000"}) {
 		t.Fatalf("backup = %+v", p)

@@ -86,7 +86,6 @@ interface NavItem {
   permission: Permission;
 }
 
-// Each page shows to the roles with the permission it needs to load.
 const navItems: NavItem[] = [
   {
     to: "/cores",
@@ -120,7 +119,6 @@ const navItems: NavItem[] = [
   },
 ];
 
-// systemItems are the settings of the platform itself, under their own heading.
 const systemItems: NavItem[] = [
   {
     to: "/users",

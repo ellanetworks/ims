@@ -8,28 +8,22 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// RFC 4028 §4: the smallest session interval.
+// RFC 4028 section 4
 const minSessionExpires = 90
 
-// refreshRetry is the delay before trying again a session refresh that could not be sent, or failed.
 const refreshRetry = 5 * time.Second
 
-// sessionTimer is the session timer of a dialog (RFC 4028): its session interval, and whether the agent refreshes.
+// RFC 4028
 type sessionTimer struct {
 	interval  uint32
 	refresher bool
 
-	// minSE is the largest Min-SE of a 422 or of a session refresh request on the dialog (RFC 4028 §7.4).
 	minSE uint32
 
-	// expired marks a session whose timer expired while a re-INVITE or an UPDATE was in progress: the session ends
-	// once it completes, unless it refreshed the session.
 	expired bool
 
 	refresh, abort *timer
 
-	// expiry is the trace of the expiry deferred while the session was being modified, which the BYE that ends it is
-	// part of.
 	expiry context.Context
 }
 
@@ -41,8 +35,7 @@ func (t *sessionTimer) noteMinSE(v uint32) {
 	t.minSE = max(t.minSE, v)
 }
 
-// check refuses a session refresh request of a UAC supporting session timers that asks for less than the minimum of
-// the agent, with a 422 carrying it (RFC 4028 §9), and notes its Min-SE.
+// RFC 4028 section 9
 func (t *sessionTimer) check(a *Agent, req *sip.Request) *sip.Response {
 	if v, ok, err := req.Header.MinSE(); ok && err == nil {
 		t.noteMinSE(v)
@@ -72,13 +65,11 @@ func supportsTimer(h sip.Header) bool {
 	return h.HasOptionTag("Supported", sip.OptionTagTimer) || h.HasOptionTag("Require", sip.OptionTagTimer)
 }
 
-// least is the smallest session interval allowed on the dialog.
 func (t *sessionTimer) least() uint32 {
 	return max(t.minSE, minSessionExpires)
 }
 
-// requestHeaders adds to a re-INVITE or an UPDATE of the agent the session timer of the dialog, keeping the
-// refresher (RFC 4028 §7.4).
+// RFC 4028 section 7.4
 func (t *sessionTimer) requestHeaders(a *Agent, req *sip.Request) {
 	if t.minSE > 0 && !req.Header.Has("Min-SE") {
 		req.Header.Set("Min-SE", strconv.FormatUint(uint64(t.minSE), 10))
@@ -89,7 +80,6 @@ func (t *sessionTimer) requestHeaders(a *Agent, req *sip.Request) {
 		interval = seconds(a.cfg.SessionTimer.Interval)
 	}
 
-	// RFC 4028 §7.3: a Session-Expires of the application below the Min-SE of the dialog is raised to it.
 	if se, ok, err := req.Header.SessionExpires(); ok && err == nil {
 		if se.Seconds < t.least() {
 			se.Seconds = t.least()
@@ -115,9 +105,7 @@ func (t *sessionTimer) requestHeaders(a *Agent, req *sip.Request) {
 	req.Header.Set("Session-Expires", se.String())
 }
 
-// responseHeaders sets the session timer of the 2xx of the agent to a session refresh request (RFC 4028 §9): the
-// Session-Expires of the reply, or else the one of the request, or else the interval of the agent; and the session
-// timer of the dialog.
+// RFC 4028 section 9
 func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 	supported := supportsTimer(req.Header)
 	least := max(minSessionExpires, t.minSE)
@@ -140,7 +128,6 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 		case ok && err == nil:
 			se = asked
 
-			// The UAS may reduce the interval, not below the Min-SE.
 			if mine := seconds(a.cfg.SessionTimer.Interval); mine > 0 && mine < se.Seconds {
 				se.Seconds = max(mine, least)
 			}
@@ -152,7 +139,6 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 		}
 	}
 
-	// RFC 4028 §9 Table 2: a UAC without session timers cannot refresh; otherwise the refresher of the request.
 	asked, _, _ := req.Header.SessionExpires()
 
 	switch {
@@ -179,10 +165,8 @@ func (t *sessionTimer) responseHeaders(a *Agent, req *sip.Request, rp *Reply) {
 	t.interval, t.refresher = se.Seconds, se.Refresher == sip.RefresherUAS
 }
 
-// fromResponse sets the session timer of the dialog from the 2xx to a session refresh request of the agent
-// (RFC 4028 §7.2).
-//
-// A UAS may not reduce the interval below the Min-SE of the request (RFC 4028 §9): one that does gets the Min-SE.
+// RFC 4028 section 7.2
+// RFC 4028 section 9
 func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 	if se, ok, err := res.Header.SessionExpires(); ok && err == nil {
 		least := minSessionExpires
@@ -195,7 +179,6 @@ func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 		return
 	}
 
-	// The UAS does not support session timers: the UAC that asked for one refreshes.
 	if se, ok, err := req.Header.SessionExpires(); ok && err == nil {
 		t.interval, t.refresher = se.Seconds, true
 		return
@@ -204,14 +187,9 @@ func (t *sessionTimer) fromResponse(req *sip.Request, res *sip.Response) {
 	t.interval = 0
 }
 
-// start arms the timers of the session after a 2xx to a session refresh request: the refresh at half the interval
-// when the agent refreshes, and the BYE before the end of the interval otherwise, or when refreshes fail
-// (RFC 4028 §7.2, §10).
-//
-// An early dialog has no session timer (RFC 4028 §7.2, §9: the interval applies once a 2xx confirms the session): the
-// timers start as the session is confirmed.
-//
-// A refresh and an expiry are traces of their own, linked to ctx, the trace of what armed the timers.
+// RFC 4028 section 7.2
+// RFC 4028 section 10
+// RFC 4028 section 9
 func (t *sessionTimer) start(ctx context.Context, s *Session) {
 	t.stop()
 	t.expired = false
@@ -232,8 +210,7 @@ func (t *sessionTimer) start(ctx context.Context, s *Session) {
 	t.abort = s.st.detached(ctx, interval-min(32*time.Second, interval/3), "session expiry", s.expire)
 }
 
-// retry tries again, a little later, a session refresh that could not be sent or failed; the abort timer still ends
-// the session at its expiry (RFC 4028 §10). ctx is the trace of the refresh that failed.
+// RFC 4028 section 10
 func (t *sessionTimer) retry(ctx context.Context, s *Session) {
 	if t.interval == 0 || !t.refresher {
 		return
@@ -249,11 +226,7 @@ func (t *sessionTimer) stop() {
 	t.refresh, t.abort = nil, nil
 }
 
-// expire ends a session whose timer expired without a refresh (RFC 4028 §10). A re-INVITE or an UPDATE in progress
-// defers it: its 2xx refreshes the session.
-//
-// The deferral is bounded: the requests of the peer have their deadlines, and Policy.AnswerTimeout after the expiry,
-// the time the agent gives the peer to answer one of its own, the session ends whatever is in progress.
+// RFC 4028 section 10
 func (s *Session) expire(ctx context.Context) {
 	switch {
 	case s.state == Terminated:

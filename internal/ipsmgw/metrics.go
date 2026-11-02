@@ -2,7 +2,6 @@ package ipsmgw
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// The directions and results of the short messages the IP-SM-GW interworks.
 const (
 	directionMO = "mo"
 	directionMT = "mt"
@@ -11,8 +10,6 @@ const (
 	resultFailure = "failure"
 )
 
-// Metrics are the IP-SM-GW's, which outlive it, so that a restart keeps the counts. A nil Metrics records nothing.
-// No message content is ever recorded.
 type Metrics struct {
 	shortMessages *prometheus.CounterVec
 }

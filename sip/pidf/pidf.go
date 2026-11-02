@@ -1,7 +1,3 @@
-// Package pidf is the Presence Information Data Format, application/pidf+xml (RFC 3863).
-//
-// Decode keeps the extension elements (RFC 3863 §4.2), and the elements it cannot decode, malformed or repeated, as
-// Other, which Encode writes back: an extension, such as TS 24.379 §9.3.1's, decodes from them and sets them.
 package pidf
 
 import (
@@ -22,42 +18,33 @@ const (
 	Namespace   = "urn:ietf:params:xml:ns:pidf"
 )
 
-// maxSize bounds a document: the per-group dynamic data of TS 24.379 §9.3.1.2, a tuple per affiliated member of a
-// group, fits.
 const maxSize = 1 << 20
 
-// Presence is the <presence> root element (§4.1.1).
+// RFC 3863 section 4.1.1
 type Presence struct {
-	// Entity is the presentity's URI.
 	Entity string
 	Tuples []Tuple
 	Notes  []Note
-	// Other are the child elements not decoded, in order: the extensions of other namespaces, and the elements of
-	// the PIDF namespace unknown, malformed or repeated.
-	Other []*xmltree.Element
+	Other  []*xmltree.Element
 }
 
-// Tuple is a <tuple> (§4.1.2).
+// RFC 3863 section 4.1.2
 type Tuple struct {
-	// ID is unique among the presentity's tuples: an arbitrary string (§4.1.2), not the xs:ID of the schema, which
-	// TS 24.379 §9.3.1.2's MCPTT client IDs, URNs, are not (§4.4: the schema is not for validation on the fly).
-	ID     string
-	Status Status
-	// Other are the child elements not decoded, in order: the extensions, between <status> and <contact>.
+	ID        string
+	Status    Status
 	Other     []*xmltree.Element
 	Contact   *Contact
 	Notes     []Note
 	Timestamp *time.Time
 }
 
-// Status is a <status> (§4.1.3): <basic>, the status extensions, at least one.
+// RFC 3863 section 4.1.3
 type Status struct {
 	Basic Basic
-	// Other are the status values not decoded, in order: the extensions.
 	Other []*xmltree.Element
 }
 
-// Basic is the value of <basic> (§4.1.4); empty without one.
+// RFC 3863 section 4.1.4
 type Basic string
 
 const (
@@ -65,26 +52,20 @@ const (
 	Closed Basic = "closed"
 )
 
-// Contact is a <contact> (§4.1.5).
+// RFC 3863 section 4.1.5
 type Contact struct {
-	URI string
-	// Priority is the priority in thousandths, 0 to 1000; nil without one, the lowest.
+	URI      string
 	Priority *uint16
 }
 
-// Note is a <note> (§4.1.6), its language the xml:lang of the element, if any.
+// RFC 3863 section 4.1.6
 type Note struct {
 	Text string
 	Lang string
 }
 
-// ErrValue is wrapped by the errors of the elements Decode does not decode, malformed (RFC 3863 §4.4): the document it
-// returns is usable without them, and keeps them.
 var ErrValue = errors.New("malformed element")
 
-// Decode decodes the document b. A malformed element is kept in the Other of its parent, with an error wrapping
-// ErrValue: a <tuple> of an ID not unique or without <status> in that of the presence. So is an element given more
-// times than the schema allows, the first counting.
 func Decode(b []byte) (Presence, error) {
 	if len(b) > maxSize {
 		return Presence{}, fmt.Errorf("pidf: document of %d bytes exceeds %d", len(b), maxSize)
@@ -141,7 +122,6 @@ func (d *decoder) fail(element, format string, a ...any) {
 	d.errs = append(d.errs, fmt.Errorf("pidf: <%s>: %w: %s", element, ErrValue, fmt.Sprintf(format, a...)))
 }
 
-// known is the name of e in the PIDF namespace, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -198,7 +178,7 @@ func (d *decoder) tuple(e *xmltree.Element) (Tuple, bool) {
 	return t, true
 }
 
-// status decodes a <status>: at least one status value (§4.1.3).
+// RFC 3863 section 4.1.3
 func (d *decoder) status(e *xmltree.Element) (Status, bool) {
 	var s Status
 
@@ -228,7 +208,7 @@ func (d *decoder) status(e *xmltree.Element) (Status, bool) {
 	return s, true
 }
 
-// contact decodes a <contact>; a priority out of range is ignored (§4.1.5).
+// RFC 3863 section 4.1.5
 func (d *decoder) contact(e *xmltree.Element) *Contact {
 	if e.HasElements() {
 		d.fail("contact", "elements in a URI")
@@ -244,7 +224,7 @@ func (d *decoder) contact(e *xmltree.Element) *Contact {
 	return c
 }
 
-// parseQValue parses a qvalue of the schema (§4.4): 0 to 1, at most 3 decimals, in thousandths.
+// RFC 3863 section 4.4
 func parseQValue(s string) *uint16 {
 	whole, frac, hasFrac := strings.Cut(s, ".")
 	if whole != "0" && whole != "1" || len(frac) > 3 || hasFrac && strings.Trim(frac, "0123456789") != "" {
@@ -277,8 +257,8 @@ func (d *decoder) note(e *xmltree.Element) (Note, bool) {
 	return Note{Text: e.Text(), Lang: lang}, true
 }
 
-// timestamp decodes a <timestamp>, an RFC 3339 date and time (§4.1.7): an xs:dateTime of a timezone, a leap second
-// taken (RFC 3339 §5.7).
+// RFC 3863 section 4.1.7
+// RFC 3339 section 5.7
 func (d *decoder) timestamp(e *xmltree.Element) *time.Time {
 	t, err := xsd.ParseDateTime(e.Text())
 	if err != nil || !t.Zoned || e.HasElements() {
@@ -289,8 +269,7 @@ func (d *decoder) timestamp(e *xmltree.Element) *time.Time {
 	return &t.Time
 }
 
-// MustUnderstand reports whether e carries mustUnderstand="true" or "1" (§4.2.3): an extension that does not know e
-// treats the element of its own that contains it as unrecognized.
+// RFC 3863 section 4.2.3
 func MustUnderstand(e *xmltree.Element) bool {
 	v, _ := e.AttrValue(Namespace, "mustUnderstand")
 	v = xsd.Collapse(v)
@@ -298,8 +277,7 @@ func MustUnderstand(e *xmltree.Element) bool {
 	return v == "true" || v == "1"
 }
 
-// Encode encodes p, in the order of the schema (§4.4): the extensions of a tuple after its <status>, the elements of
-// Other of the PIDF namespace, not decoded, after those decoded.
+// RFC 3863 section 4.4
 func Encode(p Presence) ([]byte, error) {
 	if xsd.Collapse(p.Entity) == "" {
 		return nil, errors.New("pidf: presence without entity")
@@ -352,7 +330,6 @@ func (t *Tuple) element() (*xmltree.Element, error) {
 
 	status.Children = appendElements(status.Children, s.Other)
 
-	// The extensions between <status> and <contact>; the PIDF elements not decoded last, after those decoded.
 	var ext, own []*xmltree.Element
 
 	for _, o := range t.Other {

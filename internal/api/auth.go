@@ -22,37 +22,25 @@ import (
 )
 
 const (
-	AccessTokenDuration  = 15 * time.Minute
-	SessionTokenDuration = 30 * 24 * time.Hour
-	SessionCookieName    = "ims_session"
-	// SecureSessionCookieName is the name of the session cookie over TLS. The __Host- prefix makes a browser accept
-	// it only Secure, for the whole host, and from the host itself, so that no other site can set it.
+	AccessTokenDuration     = 15 * time.Minute
+	SessionTokenDuration    = 30 * 24 * time.Hour
+	SessionCookieName       = "ims_session"
 	SecureSessionCookieName = "__Host-ims_session"
-	// sessionTokenLength is the length in bytes of the random value of a session cookie.
-	sessionTokenLength = 32
-	MaxSessionsPerUser = 10
-	LoginRateLimit     = 20
-	LoginRateWindow    = time.Minute
-	// AccountFailureLimit is the most wrong passwords for an account per AccountFailureWindow, whatever their
-	// source: NIST SP 800-63B allows at most 100 consecutive ones.
-	AccountFailureLimit  = 100
-	AccountFailureWindow = time.Hour
-	MaxNumUsers          = 50
-	MaxNumAPITokens      = 12
-	// APITokenPrefix starts every API token, which tells it from an access token and names the product it is for.
-	APITokenPrefix = "ellaims_"
-	// apiTokenIDLength is the length of the part of an API token that finds it. The secret that follows is
-	// crypto/rand.Text, of about 130 bits.
-	apiTokenIDLength = 12
-	// MinPasswordLength is the shortest password NIST SP 800-63B allows, and MaxPasswordLength the longest that
-	// bcrypt hashes, in bytes.
-	MinPasswordLength = 8
-	MaxPasswordLength = 72
-	// touchInterval is how often at most the last use of an API token is stored.
-	touchInterval = time.Minute
+	sessionTokenLength      = 32
+	MaxSessionsPerUser      = 10
+	LoginRateLimit          = 20
+	LoginRateWindow         = time.Minute
+	AccountFailureLimit     = 100
+	AccountFailureWindow    = time.Hour
+	MaxNumUsers             = 50
+	MaxNumAPITokens         = 12
+	APITokenPrefix          = "ellaims_"
+	apiTokenIDLength        = 12
+	MinPasswordLength       = 8
+	MaxPasswordLength       = 72
+	touchInterval           = time.Minute
 )
 
-// AuthStore stores the users, their sessions in the UI, and their API tokens.
 type AuthStore interface {
 	CountUsers(ctx context.Context) (int, error)
 	CreateUser(ctx context.Context, u db.NewUser) (int64, error)
@@ -77,10 +65,8 @@ type AuthStore interface {
 	TouchAPIToken(ctx context.Context, id int64, at time.Time) error
 }
 
-// Permission is what a route needs the role of its caller to allow.
 type Permission string
 
-// public is the permission of the routes that need no authentication.
 const public Permission = ""
 
 const (
@@ -100,21 +86,16 @@ const (
 	PermUpdateIPSMGW              Permission = "ip_sm_gw:update"
 	PermReadMCPTT                 Permission = "mcptt:read"
 	PermUpdateMCPTT               Permission = "mcptt:update"
-	// PermSelf is reading one's own user, changing one's own password, and managing one's own API tokens.
-	PermSelf Permission = "user:self"
-	// PermManageUsers is managing every user and their API tokens.
-	PermManageUsers Permission = "user:admin"
-	// PermReadProfiles is reading the runtime profiles of the IMS.
-	PermReadProfiles Permission = "pprof:read"
+	PermSelf                      Permission = "user:self"
+	PermManageUsers               Permission = "user:admin"
+	PermReadProfiles              Permission = "pprof:read"
 )
 
-// readPermissions are reading every setting and every state of the IMS.
 var readPermissions = []Permission{
 	PermReadOperator, PermReadDiameter, PermReadPolicy, PermReadSIP, PermReadRegistrations, PermReadCallRecords,
 	PermReadCallRecordRetention, PermReadIPSMGW, PermReadMCPTT, PermSelf,
 }
 
-// operatePermissions are changing the settings of the IMS, and acting on its registrations.
 var operatePermissions = []Permission{
 	PermUpdateOperator, PermUpdateDiameter, PermUpdatePolicy, PermReauthenticate, PermUpdateCallRecordRetention,
 	PermUpdateIPSMGW, PermUpdateMCPTT,
@@ -135,43 +116,32 @@ func validRole(role db.Role) bool {
 	return ok
 }
 
-// Principal is the user that a request authenticated as.
 type Principal struct {
-	UserID int64
-	Email  string
-	Role   db.Role
-	// APIToken is whether the request authenticated with an API token, rather than an access token from a login.
+	UserID   int64
+	Email    string
+	Role     db.Role
 	APIToken bool
 }
 
 type principalKey struct{}
 
-// PrincipalFrom returns the user that the request of ctx authenticated as.
 func PrincipalFrom(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
 	return p, ok
 }
 
-// auth holds what the authentication routes and middleware share.
 type auth struct {
-	cfg Config
-	// dummyHash is checked against the password of a login with an unknown email, so that a login takes as long
-	// whether or not its email exists. It is computed in the background, so that it does not hold up the start.
-	dummyHash func() []byte
-	// logins limits the logins and initializations per client, and failures the wrong passwords per account.
-	logins   *rateLimiter
-	failures *rateLimiter
-	// bcrypt bounds the concurrent bcrypt computations, which take tens of milliseconds of CPU each, so that a flood of
-	// logins cannot take every CPU.
-	bcrypt chan struct{}
-	// initialize serializes the creation of the first user.
+	cfg        Config
+	dummyHash  func() []byte
+	logins     *rateLimiter
+	failures   *rateLimiter
+	bcrypt     chan struct{}
 	initialize sync.Mutex
 
 	mu      sync.Mutex
 	touched map[int64]time.Time
 }
 
-// newAuth panics when cfg.BcryptCost is out of range, which is a programming error.
 func newAuth(cfg Config) *auth {
 	if c := cfg.BcryptCost; c != 0 && (c < bcrypt.MinCost || c > bcrypt.MaxCost) {
 		panic(fmt.Sprintf("api: bcrypt cost %d is out of range", c))
@@ -179,9 +149,9 @@ func newAuth(cfg Config) *auth {
 
 	dummyHash := sync.OnceValue(func() []byte {
 		password := make([]byte, 32)
-		_, _ = rand.Read(password) // It never fails.
+		_, _ = rand.Read(password)
 
-		hash, _ := bcrypt.GenerateFromPassword(password, cfg.BcryptCost) // It fails only of a cost out of range.
+		hash, _ := bcrypt.GenerateFromPassword(password, cfg.BcryptCost)
 
 		return hash
 	})
@@ -198,7 +168,6 @@ func newAuth(cfg Config) *auth {
 	}
 }
 
-// hashPassword returns the bcrypt hash of a password.
 func (a *auth) hashPassword(ctx context.Context, password string) (string, error) {
 	if err := a.acquireBcrypt(ctx); err != nil {
 		return "", err
@@ -211,7 +180,6 @@ func (a *auth) hashPassword(ctx context.Context, password string) (string, error
 	return string(hash), err
 }
 
-// checkPassword reports whether a password is the one of a bcrypt hash, or fails when the request is cancelled.
 func (a *auth) checkPassword(ctx context.Context, hash []byte, password string) (bool, error) {
 	if err := a.acquireBcrypt(ctx); err != nil {
 		return false, err
@@ -233,11 +201,9 @@ func (a *auth) acquireBcrypt(ctx context.Context) error {
 
 var (
 	errInvalidToken = errors.New("invalid token")
-	// errUnavailable is a failure to check a token, rather than a token that is not valid.
-	errUnavailable = errors.New("cannot check the token")
+	errUnavailable  = errors.New("cannot check the token")
 )
 
-// storeError returns the error of looking up what a token names: not found means that the token is not valid.
 func storeError(what string, err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return fmt.Errorf("%s: %w", what, err)
@@ -246,8 +212,6 @@ func storeError(what string, err error) error {
 	return fmt.Errorf("%w: %s: %w", errUnavailable, what, err)
 }
 
-// authenticate passes on the requests with a valid bearer token, with their principal in their context. The token is
-// either an access token from a login, or an API token.
 func (a *auth) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := a.principal(r)
@@ -257,8 +221,6 @@ func (a *auth) authenticate(next http.Handler) http.Handler {
 		}
 
 		if err != nil {
-			// A request without credentials is not an authentication attempt, and logging each would let anyone fill
-			// the log.
 			if r.Header.Get("Authorization") != "" {
 				a.audit(r, "user_authentication", "", "Unauthorized: "+err.Error())
 			}
@@ -300,7 +262,6 @@ func (a *auth) principal(r *http.Request) (Principal, error) {
 		return Principal{}, err
 	}
 
-	// The user is read again, so that deleting it or changing its role takes effect at once.
 	u, err := a.cfg.Auth.GetUserByID(r.Context(), userID)
 	if err != nil {
 		return Principal{}, storeError("get user", err)
@@ -335,8 +296,6 @@ func (a *auth) checkAPIToken(ctx context.Context, token string) (int64, error) {
 	return t.UserID, nil
 }
 
-// touch stores the last use of an API token, at most every touchInterval, so that a busy client does not write on
-// each request.
 func (a *auth) touch(ctx context.Context, id int64, now time.Time) {
 	a.mu.Lock()
 
@@ -354,15 +313,13 @@ func (a *auth) touch(ctx context.Context, id int64, now time.Time) {
 }
 
 type claims struct {
-	ID     int64   `json:"id"`
-	Email  string  `json:"email"`
-	RoleID db.Role `json:"role_id"`
-	// SessionID is the session that the access token is of, which it does not outlive.
-	SessionID int64 `json:"sid"`
+	ID        int64   `json:"id"`
+	Email     string  `json:"email"`
+	RoleID    db.Role `json:"role_id"`
+	SessionID int64   `json:"sid"`
 	jwt.RegisteredClaims
 }
 
-// accessToken returns an access token of a user, in a session.
 func (a *auth) accessToken(u db.User, sessionID int64) (string, error) {
 	now := a.cfg.Now()
 
@@ -378,8 +335,6 @@ func (a *auth) accessToken(u db.User, sessionID int64) (string, error) {
 	}).SignedString(a.cfg.JWTSecret)
 }
 
-// checkAccessToken returns the user of a valid access token, whose session still exists: a logout, or a change of
-// role or password, ends the access tokens of the sessions that it ends.
 func (a *auth) checkAccessToken(ctx context.Context, token string) (int64, error) {
 	var c claims
 
@@ -401,7 +356,6 @@ func (a *auth) checkAccessToken(ctx context.Context, token string) (int64, error
 	return c.ID, nil
 }
 
-// authorize passes on the requests whose principal's role allows perm.
 func (a *auth) authorize(perm Permission, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, ok := PrincipalFrom(r.Context()); !ok || !allowed(p.Role, perm) {
@@ -413,8 +367,6 @@ func (a *auth) authorize(perm Permission, next http.Handler) http.Handler {
 	})
 }
 
-// needsLogin passes on the requests authenticated by a login, and refuses those with an API token: a leaked API
-// token must not be able to create others, which would outlive its revocation, or to take the account.
 func (a *auth) needsLogin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, _ := PrincipalFrom(r.Context()); p.APIToken {
@@ -426,10 +378,9 @@ func (a *auth) needsLogin(next http.Handler) http.Handler {
 	})
 }
 
-// startSession stores a new session of a user, sets its cookie, and returns its ID.
 func (a *auth) startSession(w http.ResponseWriter, r *http.Request, u db.User) (int64, error) {
 	raw := make([]byte, sessionTokenLength)
-	_, _ = rand.Read(raw) // It never fails.
+	_, _ = rand.Read(raw)
 
 	hash := sha256.Sum256(raw)
 	now := a.cfg.Now()
@@ -475,7 +426,6 @@ func (a *auth) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// sessionHash returns the hash of the session token in the cookie of a request, or nil when it has none valid.
 func (a *auth) sessionHash(r *http.Request) []byte {
 	cookie, err := r.Cookie(a.cookieName())
 	if err != nil {
@@ -492,7 +442,6 @@ func (a *auth) sessionHash(r *http.Request) []byte {
 	return hash[:]
 }
 
-// newAPIToken returns a new API token, its token ID, and the hash of its secret.
 func newAPIToken() (token, tokenID string, hash []byte) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -507,12 +456,11 @@ func newAPIToken() (token, tokenID string, hash []byte) {
 	return APITokenPrefix + string(id) + "_" + secret, string(id), sum[:]
 }
 
-// randIntN returns a uniform random integer in [0, n), for n up to 256.
 func randIntN(n int) int {
 	b := make([]byte, 1)
 
 	for {
-		_, _ = rand.Read(b) // It never fails.
+		_, _ = rand.Read(b)
 
 		if int(b[0]) < 256-256%n {
 			return int(b[0]) % n
@@ -520,10 +468,8 @@ func randIntN(n int) int {
 	}
 }
 
-// maxActorLength is the longest an email address can be (RFC 5321), past which the actor of an audit event is cut.
 const maxActorLength = 254
 
-// audit logs an event of the audit trail: a login, a change to a user or an API token, or a failed authentication.
 func (a *auth) audit(r *http.Request, action, actor, details string) {
 	if len(actor) > maxActorLength {
 		actor = actor[:maxActorLength]

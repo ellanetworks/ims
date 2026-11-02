@@ -8,12 +8,11 @@ import (
 )
 
 type sdpStep struct {
-	from   Side
-	seq    uint32
-	method string
-	code   int
-	sdp    string
-	// multipart sends the SDP next to an mcptt-info body, or the mcptt-info body alone without SDP (TS 24.379 §6.5).
+	from      Side
+	seq       uint32
+	method    string
+	code      int
+	sdp       string
 	multipart bool
 }
 
@@ -160,7 +159,8 @@ func TestNegotiation(t *testing.T) {
 	}
 }
 
-// RFC 3264, RFC 6337 §3.1: a repeated answer is the same exchange, a changed one is new.
+// RFC 3264
+// RFC 6337 section 3.1
 func TestExchangeSequence(t *testing.T) {
 	d := &Dialog{}
 
@@ -195,7 +195,8 @@ func TestExchangeSequence(t *testing.T) {
 	}
 }
 
-// RFC 3262 §5, RFC 3264: only a PRACK or ACK from the other side answers a pending offer.
+// RFC 3262 section 5
+// RFC 3264
 func TestPendingOffer(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -259,7 +260,8 @@ func mustAddress(t *testing.T, s string) sip.Address {
 	return as[0]
 }
 
-// RFC 3959, RFC 5621 §6: only the SDP with the session disposition is the offer or the answer.
+// RFC 3959
+// RFC 5621 section 6
 func TestSessionBodyDisposition(t *testing.T) {
 	early := sip.NewBodyPart("application/sdp", []byte("early"))
 	early.Header.Add("Content-Disposition", "early-session")

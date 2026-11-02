@@ -22,9 +22,6 @@ import (
 
 const isolatedEnv = "SIP_TRANSPORT_ISOLATED"
 
-// isolated runs the test in a process of its own, root in a user and network namespace of its own: for the sockets it
-// destroys (SOCK_DESTROY needs CAP_NET_ADMIN) and the limits it lowers. It reports whether the test runs here: false
-// in the parent, once the child passed. Without user namespaces, the test is skipped, and fails when CI is set.
 func isolated(t *testing.T) bool {
 	t.Helper()
 
@@ -62,8 +59,6 @@ func isolated(t *testing.T) bool {
 	return false
 }
 
-// destroy has the kernel destroy the sockets of a protocol bound to port, as Android does with those of a network
-// that went away (SOCK_DESTROY).
 func destroy(t *testing.T, proto string, port uint16) {
 	t.Helper()
 
@@ -77,8 +72,7 @@ func destroy(t *testing.T, proto string, port uint16) {
 	}
 }
 
-// A listener whose UDP socket or TCP listener the kernel destroyed fails as a whole (RFC 3261 §18.2.1), reported with
-// its error: a TCP listener no longer listening fails accept with EINVAL, a UDP socket its next read with ECONNABORTED.
+// RFC 3261 section 18.2.1
 func TestDestroyedListener(t *testing.T) {
 	for proto, want := range map[string]syscall.Errno{"tcp": syscall.EINVAL, "udp": syscall.ECONNABORTED} {
 		t.Run(proto, func(t *testing.T) {
@@ -107,8 +101,6 @@ func TestDestroyedListener(t *testing.T) {
 	}
 }
 
-// Out of file descriptors, accept fails for the moment: retried after a wait doubled from 5 ms, the listener kept,
-// accepting the connection once descriptors are back.
 func TestAcceptBacksOff(t *testing.T) {
 	if !isolated(t) {
 		return
@@ -140,7 +132,6 @@ func TestAcceptBacksOff(t *testing.T) {
 
 	_ = syscall.Close(next)
 
-	// No descriptor left for the connection accept takes.
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{Cur: uint64(next), Max: limit.Max}); err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +174,6 @@ func TestAcceptBacksOff(t *testing.T) {
 	}
 }
 
-// TCP is plain TCP, listened on and dialled, never Multipath TCP, whatever Go's default or GODEBUG: the SAs are bound
-// to the addresses and ports of the flow (TS 33.203 §7.1), and an MPTCP listener destroyed is not seen to fail.
 func TestPlainTCP(t *testing.T) {
 	t.Setenv("GODEBUG", "multipathtcp=1")
 
