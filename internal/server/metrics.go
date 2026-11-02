@@ -14,6 +14,7 @@ import (
 	"github.com/ellanetworks/core/diameter/sgd"
 	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
@@ -55,9 +56,11 @@ type metrics struct {
 	registrations *regmetrics.Registrations
 
 	sipResponses *prometheus.CounterVec
+	sipDuration  *prometheus.HistogramVec
 	peerRequests *prometheus.CounterVec
 	peerDuration *prometheus.HistogramVec
 	ipsmgw       *ipsmgw.Metrics
+	requests     *api.RequestMetrics
 }
 
 func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]settings.Peer, []diameter.PeerStatus),
@@ -66,9 +69,20 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		registry:      prometheus.NewRegistry(),
 		registrations: regmetrics.New(),
 		ipsmgw:        ipsmgw.NewMetrics(),
+		requests:      api.NewRequestMetrics(),
 		sipResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_sip_responses_total",
 			Help: "Final responses the P-CSCF sent to UEs, by method and status class.",
+		}, []string{"method", "class"}),
+		sipDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "ellaims_sip_request_duration_seconds",
+			Help: "Time from a request of a phone to the final response the P-CSCF sent, by method and status class, " +
+				"the answer of the far end included when the request is forwarded. INVITE is left out: its final " +
+				"response waits for the callee.",
+			Buckets:                         []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
+			NativeHistogramBucketFactor:     1.1,
+			NativeHistogramMaxBucketNumber:  100,
+			NativeHistogramMinResetDuration: time.Hour,
 		}, []string{"method", "class"}),
 		peerRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_peer_requests_total",
@@ -77,8 +91,9 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 				"with an error), error (not answered) and timeout.",
 		}, []string{"interface", "result"}),
 		peerDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:                            "ellaims_peer_request_duration_seconds",
-			Help:                            "Duration of requests to the HSS and to the policy function, by interface.",
+			Name: "ellaims_peer_request_duration_seconds",
+			Help: "Duration of requests to the HSS (cx, and sh and s6c of the IP-SM-GW), to the policy function (rx, n5), " +
+				"and of the IP-SM-GW to SMSCs, MMEs and SMSFs (sgd), by interface.",
 			Buckets:                         []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5},
 			NativeHistogramBucketFactor:     1.1,
 			NativeHistogramMaxBucketNumber:  100,
@@ -114,6 +129,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		registeredCollector{database},
 		diameterPeersCollector{peers},
 		m.sipResponses,
+		m.sipDuration,
 		m.peerRequests,
 		m.peerDuration,
 	)
@@ -121,6 +137,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(records.Collectors()...)
 	m.registry.MustRegister(m.registrations.Collectors()...)
 	m.registry.MustRegister(m.ipsmgw.Collectors()...)
+	m.registry.MustRegister(m.requests.Collectors()...)
 
 	return m
 }
@@ -152,7 +169,7 @@ func (c registeredCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(registeredDesc, prometheus.GaugeValue, float64(n))
 }
 
-func (m *metrics) sipResponse(req *sip.Request, res *sip.Response) {
+func (m *metrics) sipResponse(req *sip.Request, res *sip.Response, elapsed time.Duration) {
 	if res == nil || res.StatusCode < 200 || res.StatusCode > 699 {
 		return
 	}
@@ -162,7 +179,12 @@ func (m *metrics) sipResponse(req *sip.Request, res *sip.Response) {
 		method = req.Method
 	}
 
-	m.sipResponses.WithLabelValues(method, strconv.Itoa(res.StatusCode/100)+"xx").Inc()
+	class := strconv.Itoa(res.StatusCode/100) + "xx"
+	m.sipResponses.WithLabelValues(method, class).Inc()
+
+	if method != "INVITE" {
+		m.sipDuration.WithLabelValues(method, class).Observe(elapsed.Seconds())
+	}
 }
 
 func (m *metrics) peerRequest(iface, result string, elapsed time.Duration) {
