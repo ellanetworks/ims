@@ -33,6 +33,7 @@ tags:
   - name: MCPTT live state
   - name: Status
   - name: Metrics
+  - name: Profiling
   - name: Specification
 
 paths:
@@ -1296,6 +1297,228 @@ paths:
               schema:
                 type: string
 
+  /api/v1/pprof/:
+    get:
+      tags: [Profiling]
+      operationId: getPprofIndex
+      summary: Get pprof index
+      description: The HTML page that lists the profiles.
+      responses:
+        "200":
+          description: OK
+          content:
+            text/html:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/allocs:
+    get:
+      tags: [Profiling]
+      operationId: getPprofAllocs
+      summary: Get the allocation profile
+      parameters:
+        - $ref: "#/components/parameters/PprofDebug"
+        - $ref: "#/components/parameters/PprofDelta"
+      responses:
+        "200":
+          $ref: "#/components/responses/PprofProfile"
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/goroutine:
+    get:
+      tags: [Profiling]
+      operationId: getPprofGoroutine
+      summary: Get the goroutine profile
+      parameters:
+        - $ref: "#/components/parameters/PprofDebug"
+        - $ref: "#/components/parameters/PprofDelta"
+      responses:
+        "200":
+          $ref: "#/components/responses/PprofProfile"
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/goroutineleak:
+    get:
+      tags: [Profiling]
+      operationId: getPprofGoroutineLeak
+      summary: Get the goroutine leak profile
+      parameters:
+        - $ref: "#/components/parameters/PprofDebug"
+        - $ref: "#/components/parameters/PprofDelta"
+      responses:
+        "200":
+          $ref: "#/components/responses/PprofProfile"
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/heap:
+    get:
+      tags: [Profiling]
+      operationId: getPprofHeap
+      summary: Get the heap profile
+      parameters:
+        - $ref: "#/components/parameters/PprofDebug"
+        - $ref: "#/components/parameters/PprofGC"
+        - $ref: "#/components/parameters/PprofDelta"
+      responses:
+        "200":
+          $ref: "#/components/responses/PprofProfile"
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/threadcreate:
+    get:
+      tags: [Profiling]
+      operationId: getPprofThreadcreate
+      summary: Get the thread creation profile
+      parameters:
+        - $ref: "#/components/parameters/PprofDebug"
+      responses:
+        "200":
+          $ref: "#/components/responses/PprofProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/cmdline:
+    get:
+      tags: [Profiling]
+      operationId: getPprofCmdline
+      summary: Get the command line
+      description: The arguments of the process, separated by NUL bytes.
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/profile:
+    get:
+      tags: [Profiling]
+      operationId: getPprofCPUProfile
+      summary: Get a CPU profile
+      parameters:
+        - name: seconds
+          in: query
+          description: Duration of the profile.
+          schema:
+            type: integer
+            minimum: 1
+            default: 30
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/PprofError"
+
+  /api/v1/pprof/symbol:
+    get:
+      tags: [Profiling]
+      operationId: getPprofSymbol
+      summary: Get the number of symbols
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Profiling]
+      operationId: postPprofSymbol
+      summary: Resolve program counters to function names
+      requestBody:
+        description: Program counters in hexadecimal, separated by +.
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/pprof/trace:
+    get:
+      tags: [Profiling]
+      operationId: getPprofTrace
+      summary: Get an execution trace
+      parameters:
+        - name: seconds
+          in: query
+          description: Duration of the trace.
+          schema:
+            type: number
+            exclusiveMinimum: 0
+            default: 1
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/PprofError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/PprofError"
+
   /api/v1/openapi.yaml:
     get:
       tags: [Specification]
@@ -1758,6 +1981,28 @@ components:
         minimum: 1
         maximum: 100
         default: 25
+    PprofDebug:
+      name: debug
+      in: query
+      description: 0 for the protobuf format, 1 for text, 2 for the goroutine stacks in the format of a panic.
+      schema:
+        type: integer
+        enum: [0, 1, 2]
+        default: 0
+    PprofDelta:
+      name: seconds
+      in: query
+      description: Returns the difference of the profile over this duration.
+      schema:
+        type: integer
+        minimum: 1
+    PprofGC:
+      name: gc
+      in: query
+      description: Greater than 0 runs a garbage collection first.
+      schema:
+        type: integer
+        default: 0
     MCPTTID:
       name: mcptt_id
       in: path
@@ -2736,6 +2981,22 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    PprofProfile:
+      description: OK
+      content:
+        application/octet-stream:
+          schema:
+            type: string
+            format: binary
+        text/plain:
+          schema:
+            type: string
+    PprofError:
+      description: The error of a profiling path, in plain text.
+      content:
+        text/plain:
+          schema:
+            type: string
     TooManyRequests:
       description: Too Many Requests
       headers:

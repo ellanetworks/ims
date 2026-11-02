@@ -4,7 +4,7 @@ description: Reference for observability features in Ella IMS.
 
 # Observability
 
-Ella IMS supports three observability pillars: Metrics, Traces and Logs.
+Ella IMS supports four observability pillars: Metrics, Traces, Logs and Profiles.
 
 ## Metrics
 
@@ -45,7 +45,7 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 
 | Span | Kind | Description |
 | --- | --- | --- |
-| `{method} {route}` | Server | A request to the API, except `/api/v1/livez`, `/api/v1/readyz` and `/api/v1/metrics`. Links to the caller's `traceparent`. |
+| `{method} {route}` | Server | A request to the API, except `/api/v1/livez`, `/api/v1/readyz`, `/api/v1/metrics` and `/api/v1/pprof/`. Links to the caller's `traceparent`. |
 | `{method} {url.template}` | Client | A request to the PCF on N5. |
 | `POST /n5/v1/sessions/{id}/{notify,terminate}` | Server | A notification from the PCF on N5. |
 | `Cx/{command}`, `Sh/{command}`, `Rx/{command}`, `S6c/{command}`, `SGd/{command}` | Server, Client | A Diameter request. |
@@ -66,3 +66,7 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | --- | --- |
 | `trace_id` | Trace ID of the span the event happened in. Absent outside a span. |
 | `span_id` | Span ID of the span the event happened in. Absent outside a span. |
+
+## Profiles
+
+Ella IMS exposes the [net/http/pprof](https://pkg.go.dev/net/http/pprof) API at [`/api/v1/pprof/`](api/pprof.md).

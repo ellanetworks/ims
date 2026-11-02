@@ -44,6 +44,7 @@ func TestOpenAPISpec(t *testing.T) {
 
 	for _, r := range routes(cfg, newAuth(cfg)) {
 		method, path, _ := strings.Cut(r.pattern, " ")
+		path = strings.TrimSuffix(path, "{$}")
 		served[strings.ToLower(method)+" "+path] = true
 
 		if _, ok := spec.Paths[path][strings.ToLower(method)]; !ok {
