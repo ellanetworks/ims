@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -90,20 +92,56 @@ func (c testIMS) seed(t *testing.T) {
 	}
 }
 
+// unusedPort returns a port free on the IPv4 and IPv6 loopback for both UDP and TCP, as SIP takes all four.
 func unusedPort(t *testing.T) int {
 	t.Helper()
 
 	var lc net.ListenConfig
 
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 100 {
+		pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		port := pc.LocalAddr().(*net.UDPAddr).Port
+		free := freeOn(t.Context(), &lc, "tcp", "127.0.0.1", port) && freeOn(t.Context(), &lc, "udp", "::1", port) &&
+			freeOn(t.Context(), &lc, "tcp", "::1", port)
+
+		_ = pc.Close()
+
+		if free {
+			return port
+		}
 	}
 
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
+	t.Fatal("no port free for UDP and TCP")
 
-	return port
+	return 0
+}
+
+// freeOn reports whether port is free for network on host.
+func freeOn(ctx context.Context, lc *net.ListenConfig, network, host string, port int) bool {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	var (
+		c   io.Closer
+		err error
+	)
+
+	if network == "udp" {
+		c, err = lc.ListenPacket(ctx, network, addr)
+	} else {
+		c, err = lc.Listen(ctx, network, addr)
+	}
+
+	if err != nil {
+		return false
+	}
+
+	_ = c.Close()
+
+	return true
 }
 
 func TestServerStartShutdown(t *testing.T) {
