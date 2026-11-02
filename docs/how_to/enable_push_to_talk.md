@@ -64,3 +64,8 @@ On each phone:
 ## 7. Make a group call
 
 Start a group call from one phone. The other members' phones should ring, and **Push-to-Talk → Calls** should show the call.
+
+<figure markdown="span">
+  ![A group call in the Ella MCPTT app](../images/mcptt_screenshot.jpg){ width="200" }
+  <figcaption>A group call in the Ella MCPTT app</figcaption>
+</figure>
