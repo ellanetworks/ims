@@ -72,8 +72,6 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	}
 }
 
-// TestReadsDoNotHoldUpWrites checks that a read in progress on the readers lets the writer write, and that the
-// readers cannot write.
 func TestReadsDoNotHoldUpWrites(t *testing.T) {
 	d := openTestDB(t)
 
@@ -101,13 +99,10 @@ func TestReadsDoNotHoldUpWrites(t *testing.T) {
 	}
 }
 
-// TestDatabaseIsPrivate checks that only its owner can read the database, which holds the password hashes and the key
-// that signs the access tokens, and its journal.
 func TestDatabaseIsPrivate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ims.db")
 
-	// An existing database that others can read is made private.
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -67,9 +67,9 @@ func identityKeyOf(s string) string {
 	return identityKey(u)
 }
 
-// canonicalIdentity is the form of a public identity on Cx: "sip:user@domain", without port or parameters, or a tel
-// URI of a global number without parameters or visual separators (TS 29.229 §6.3.2, TS 23.003 §13.4). A local number
-// keeps the phone-context that scopes it (RFC 3966 §5.1.5).
+// TS 29.229 clause 6.3.2
+// TS 23.003 clause 13.4
+// RFC 3966 section 5.1.5
 func canonicalIdentity(u sip.URI) string {
 	return u.Identity().String()
 }

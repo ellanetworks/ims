@@ -12,8 +12,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// TestRoles checks the role that each route allows, behind the authentication of NewHandler: each route serves a stub,
-// so that the permission of the route, not its handler, answers.
 func TestRoles(t *testing.T) {
 	const (
 		admin = 1 << iota

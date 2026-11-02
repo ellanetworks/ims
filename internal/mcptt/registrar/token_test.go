@@ -22,9 +22,7 @@ func uri(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// TS 33.180 §B.2.2: the mcptt_id claim of the access token of the REGISTER of TS 24.379 §7.2.1, authorised at the
-// IMPUs of its user only: at a registration one IMPU of its user is of, an implicit registration set (TS 24.229
-// §5.4.1.7 c).
+// TS 33.180 clause B.2.2
 func TestUnvalidated(t *testing.T) {
 	cfg, err := settings.New(settings.Settings{
 		System: settings.System{

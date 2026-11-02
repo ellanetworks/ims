@@ -27,10 +27,6 @@ import com.ellanetworks.mcptt.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
-/**
- * The app's one activity. Visible, it is the while-in-use moment the service's microphone needs (decision 13); during a
- * call it shows over the lock screen, and an invitation to answer turns the screen on (its full-screen intent).
- */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,14 +63,9 @@ class MainActivity : ComponentActivity() {
 @Serializable
 private data object HomeRoute
 
-/** Settings, opened on its Diagnostics section, unfolded, by [diagnostics]. */
 @Serializable
 private data class SettingsRoute(val diagnostics: Boolean = false)
 
-/**
- * Home the one start destination; Settings behind its button, Back returning to it. Over the lock screen, during a
- * call, Home alone: Settings, its account, sign-out and log, once the user unlocks.
- */
 @Composable
 private fun App(vm: AppViewModel) {
     val nav = rememberNavController()
@@ -93,7 +84,6 @@ private fun App(vm: AppViewModel) {
     }
 }
 
-/** Runs [action] unlocked: at once, or once the user dismissed the keyguard (nothing if they did not). */
 private fun Activity?.unlocked(action: () -> Unit) {
     val keyguard = this?.getSystemService(KeyguardManager::class.java)
     if (keyguard == null || !keyguard.isKeyguardLocked) {

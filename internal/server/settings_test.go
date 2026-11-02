@@ -68,7 +68,6 @@ func TestNumberingChangeKeepsTheCore(t *testing.T) {
 		t.Fatalf("numbering = %+v, want the new plan", got)
 	}
 
-	// The core follows changes asynchronously: give it the time to restart, if it wrongly would.
 	time.Sleep(200 * time.Millisecond)
 
 	if srv.core.Load() != before {
@@ -134,8 +133,6 @@ func TestN5PolicyAgainstTheConfigurationFile(t *testing.T) {
 }
 
 func TestN5PolicyOutOfTheConfigurationFile(t *testing.T) {
-	// A policy the configuration file no longer allows leaves the P-CSCF without a policy function, and its API up
-	// to fix it.
 	cfg := testConfig(t)
 	cfg.Policy = settings.Policy{Interface: settings.PolicyN5, PCFURI: "http://127.0.0.1:7777"}
 
@@ -231,7 +228,6 @@ func TestCoreRetriedAfterAFailedRestart(t *testing.T) {
 
 	srv := startIMS(t, cfg)
 
-	// The notification port is taken, which no check of the settings foresees: the core fails to start.
 	if err := srv.settings.UpdatePolicy(t.Context(), settings.Policy{Interface: settings.PolicyN5, PCFURI: "http://127.0.0.1:7777"}); err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)
 	}
@@ -299,7 +295,6 @@ func TestAPIDuringRestarts(t *testing.T) {
 	})
 }
 
-// A SIP listener that failed for good, its socket no longer listening, restarts the core, which listens again.
 func TestFailedSIPListenerRestartsTheCore(t *testing.T) {
 	srv := startIMS(t, testConfig(t))
 	before := srv.core.Load()
@@ -317,7 +312,6 @@ func TestFailedSIPListenerRestartsTheCore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
 	var shut error
 	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
 		t.Fatalf("shutdown: %v, %v", err, shut)

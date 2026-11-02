@@ -24,8 +24,7 @@ const (
 
 	minTimerC = 3*time.Minute + time.Second
 
-	// MaxBreadth is the Max-Breadth given to requests without one, and the most a request may
-	// carry (RFC 5393 §5.3.3).
+	// RFC 5393 section 5.3.3
 	MaxBreadth = 60
 )
 
@@ -94,32 +93,24 @@ type RecordRoute struct {
 type Options struct {
 	RecordRoute *RecordRoute
 
-	// Timeout is how long the branch waits: for any response to an INVITE, for the final response to another
-	// request, unless AnyResponse stops it on a provisional response too. Zero waits as long as the transaction.
 	Timeout     time.Duration
 	AnyResponse bool
 
 	NoAnswer time.Duration
 
-	// OnReply decides on each reply of the branch, ctx being the trace of the request the branch forwards.
 	OnReply func(ctx context.Context, r Reply) Verdict
 
 	Dialog *Dialog
 }
 
-// Branch is one target of a request (RFC 3261 §16.5): the request to send it, already retargeted,
-// and where to send it.
+// RFC 3261 section 16.5
 type Branch struct {
 	Request *sip.Request
 	Target  Target
 	Options Options
 
-	// Retry holds branches to the same UA instance over its other flows, tried in turn in place
-	// of this one while it fails with 430 (Flow Failed) (RFC 5626 §7).
 	Retry []Branch
 
-	// Key identifies what the branch reaches, such as a registered contact, so that the callee
-	// legs of its dialog can be released by key (Dialog.ReleaseCallee). It must be comparable.
 	Key any
 }
 
@@ -130,8 +121,6 @@ type Reply struct {
 
 	Responded bool
 
-	// Provisional reports that a provisional response, 100 (Trying) included, came on the branch before the final
-	// response or the failure of the reply.
 	Provisional bool
 }
 
@@ -265,20 +254,12 @@ func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {
 	return out, removed, nil
 }
 
-// Forward forwards a request to one target, as Fork does.
 func (p *Proxy) Forward(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request, to Target, opts Options) error {
 	return p.Fork(ctx, tx, [][]Branch{{{Request: req, Target: to, Options: opts}}})
 }
 
-// Fork forwards a request to several targets (RFC 3261 §16.6). The groups are tried one after
-// another, each once every branch of the one before ended without a 2xx or 6xx; the branches of a
-// group run in parallel. Responses come back as in RFC 3261 §16.7: provisional responses and 2xx
-// responses to an INVITE are relayed at once, and the best final response once nothing is left to try.
-//
-// Every branch of a fork carries the same tracked Dialog, or none; on an initial INVITE, the
-// Dialog follows each early dialog the branches create, and the one answered.
-//
-// ctx is the trace of the request, which the branches are part of: that of the handler's call that received it.
+// RFC 3261 section 16.6
+// RFC 3261 section 16.7
 func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, groups [][]Branch) error {
 	total := 0
 
@@ -384,9 +365,6 @@ func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, gro
 		}
 	}
 
-	// Branches that cannot be sent answer with an error, like any other, once one branch is out: the owner and
-	// the dialog then learn of every branch. Until then, a fork none of whose branches could be sent fails as a
-	// whole.
 	var failures []failure
 
 	for {
@@ -419,7 +397,6 @@ func (p *Proxy) Fork(ctx context.Context, tx *transaction.ServerTransaction, gro
 		firstErr = failures[0].err
 	}
 
-	// The failures are not dispatched: the error answers for them.
 	c.mu.Lock()
 	c.groups, c.waiting = nil, nil
 
@@ -494,7 +471,7 @@ func (p *Proxy) prepareBranch(c *responseContext, in *sip.Request, spec Branch, 
 	return b, nil
 }
 
-// RFC 5393 §5.3.3
+// RFC 5393 section 5.3.3
 func incomingBreadth(req *sip.Request) (int, error) {
 	if !req.Header.Has("Max-Breadth") {
 		return MaxBreadth, nil
@@ -508,9 +485,7 @@ func incomingBreadth(req *sip.Request) (int, error) {
 	return min(n, MaxBreadth), nil
 }
 
-// loopKey is the second part of the Via branch of the requests forwarded for req: it varies with
-// what decides where the request goes, but not with the method (RFC 5393 §4.2.1). The secret keeps
-// it to this proxy.
+// RFC 5393 section 4.2.1
 func (p *Proxy) loopKey(req *sip.Request) string {
 	h := sha256.New()
 
@@ -538,8 +513,7 @@ func setBranch(out *sip.Request, loop string) {
 	_ = out.Header.SetTopVia(top)
 }
 
-// looped reports a request that already went through this proxy with nothing changed that
-// decides where it goes: a loop, not a spiral (RFC 5393 §4.2.2).
+// RFC 5393 section 4.2.2
 func looped(req *sip.Request, loop string) bool {
 	vias, err := req.Header.Vias()
 	if err != nil {
@@ -571,8 +545,7 @@ func (p *Proxy) Relay(ctx context.Context, tx *transaction.ServerTransaction, re
 	return c.relay(ctx, res.Clone())
 }
 
-// Reached stops the Timeout of the branch of tx with key (Branch.Key): the request reached its target, which waits
-// for others, as an AS that sent it on does (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func (p *Proxy) Reached(tx *transaction.ServerTransaction, key any) {
 	p.mu.Lock()
 	c := p.contexts[tx]
@@ -607,8 +580,6 @@ func (p *Proxy) Proxied(tx *transaction.ServerTransaction) bool {
 	return ok
 }
 
-// Cancel cancels the request of tx, for the CANCEL cancel, ctx being the trace of the CANCEL: the CANCELs of its
-// branches link to it.
 func (p *Proxy) Cancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
 	var reason []sip.Field
 
@@ -643,14 +614,12 @@ func (p *Proxy) Cancel(ctx context.Context, tx *transaction.ServerTransaction, c
 	p.forget(c)
 }
 
-// ForwardAck forwards the ACK of a 2xx, in the trace of ctx: that of the handler's call that received it.
 func (p *Proxy) ForwardAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) error {
 	out, err := p.prepareAck(ctx, ack, to, d)
 	if err != nil {
 		return err
 	}
 
-	// In the order of its flow: before the requests forwarded after it.
 	return p.layer.QueueAck(ctx, out, func(err error) {
 		if err != nil {
 			p.log.Debug("forwarding an ACK failed", slog.String("request", out.StartLine()), slog.Any("error", err))
@@ -658,7 +627,6 @@ func (p *Proxy) ForwardAck(ctx context.Context, ack *sip.Request, to Target, d *
 	})
 }
 
-// SendAck forwards ack like ForwardAck, but returns once it is sent.
 func (p *Proxy) SendAck(ctx context.Context, ack *sip.Request, to Target, d *Dialog) error {
 	out, err := p.prepareAck(ctx, ack, to, d)
 	if err != nil {
@@ -705,8 +673,6 @@ func (p *Proxy) prepare(req *sip.Request, to Target) (*sip.Request, error) {
 		return nil, err
 	}
 
-	// Fork checked the Max-Breadth of the request that formed the response context. One that is invalid here, on
-	// an ACK or a request a dialog generates, is replaced rather than refused.
 	breadth, err := incomingBreadth(out)
 	if err != nil {
 		breadth = MaxBreadth

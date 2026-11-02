@@ -19,10 +19,9 @@ import {
 import { expandID, sameIdentity, userLabel } from "@/utils/mcptt";
 import { useSnackbar } from "@/contexts/SnackbarContext";
 
-// DEFAULT_DURATION_MIN is the maximum duration of a new group's calls.
 const DEFAULT_DURATION_MIN = 10;
 
-// DEFAULT_HANG_TIME_S is T4 (Inactivity) when none is set (TS 24.380 Table 11.1.3-1).
+// TS 24.380 clause 11.1.3 table 11.1.3-1
 export const DEFAULT_HANG_TIME_S = 30;
 
 export default function GroupDialog({
@@ -43,7 +42,6 @@ export default function GroupDialog({
   const [duration, setDuration] = useState(
     String(group ? group.maximum_duration_ms / 60000 : DEFAULT_DURATION_MIN),
   );
-  // An empty hang time is the server's default, which a group without one keeps following.
   const [hang, setHang] = useState(
     group?.hang_timer_ms === undefined
       ? ""
@@ -94,7 +92,6 @@ export default function GroupDialog({
       maximum_duration_ms: Math.round(minutes * 60000),
       hang_timer_ms: defaultHang ? undefined : Math.round(seconds * 1000),
       release_on_initiator_leave: releaseOnLeave,
-      // An update keeps the members as they are, and their affiliations.
       members: group
         ? group.members.map((m) => ({
             mcptt_id: m.mcptt_id,

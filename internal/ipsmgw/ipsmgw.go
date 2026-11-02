@@ -1,7 +1,3 @@
-// Package ipsmgw is the built-in IP-SM-GW of the IMS (TS 23.204; TS 24.341 §5.3.3): an AS on ISC for transport
-// layer interworking. Through the IMS, it is an AS like any other, which the S-CSCF reaches over SIP by the iFCs of the
-// HSS: in memory, on the network it shares with the I-CSCF and S-CSCF, by the host name of the AS (Host). It
-// registers itself at the HSS for the users able to receive short messages over IP (TS 24.341 §5.3.3.2).
 package ipsmgw
 
 import (
@@ -28,14 +24,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Port is the SIP port of the IP-SM-GW on each of the IMS's SIP addresses, in memory.
 const Port = config.IPSMGWPort
 
-// Host is the host name of the IP-SM-GW of the IMS of homeDomain: its name in the iFCs. Under the home domain, it
-// is the IMS's own: no other server is reached by it.
 func Host(homeDomain string) string { return "ipsmgw." + homeDomain }
 
-// Store keeps the registrations of the IP-SM-GW, and the users the HSS has it registered for, across restarts.
 type Store interface {
 	IPSMGWRegistrations(ctx context.Context) ([]db.IPSMGWRegistration, error)
 	PutIPSMGWRegistration(ctx context.Context, r db.IPSMGWRegistration) error
@@ -46,32 +38,24 @@ type Store interface {
 }
 
 type Config struct {
-	// Addresses are the IMS's SIP addresses: the IP-SM-GW has its port on each, in memory, and takes requests from
-	// them only, its S-CSCF's.
-	Addresses []netip.Addr
-	// Transaction is the base of the configuration of the transaction layer: its Network the in-memory network of the
-	// IMS. Start sets its Logger, Filter and OnServerDone.
+	Addresses   []netip.Addr
 	Transaction transaction.Config
-	// HomeDomain is the IMS's, which the host of the IP-SM-GW is under.
-	HomeDomain string
-	Store      Store
-	HSS        HSS
-	SMSCs      SMSCs
-	Router     Router
-	Nodes      Nodes
-	Metrics    *Metrics
-	// Number is the IP-SM-GW number of the settings, "" if unset.
-	Number func() string
-	Logger *slog.Logger
+	HomeDomain  string
+	Store       Store
+	HSS         HSS
+	SMSCs       SMSCs
+	Router      Router
+	Nodes       Nodes
+	Metrics     *Metrics
+	Number      func() string
+	Logger      *slog.Logger
 }
 
-// AS is the running IP-SM-GW.
 type AS struct {
-	agent *ua.Agent
-	reg   *registrar
-	hss   *hssSync
-	kill  context.CancelFunc
-	// life is the lifetime of the AS, of the work it does past a request: until Shutdown's deadline. work tracks it.
+	agent   *ua.Agent
+	reg     *registrar
+	hss     *hssSync
+	kill    context.CancelFunc
 	life    context.Context
 	work    sync.WaitGroup
 	locals  []netip.AddrPort
@@ -81,8 +65,6 @@ type AS struct {
 	nodes   Nodes
 	number  func() string
 	home    string
-	// plmn is the MCC and MNC of the home domain, of 6 digits: the prefix of the MT Correlation IDs of the users of no
-	// IMSI known.
 	plmn    string
 	corr    correlations
 	pending pendingReports
@@ -90,8 +72,6 @@ type AS struct {
 	log     *slog.Logger
 }
 
-// Start starts the IP-SM-GW: it restores the registrations it had when it stopped, and checks the HSS registrations
-// of their users; Resubscribe subscribes to their reg event packages once the core runs.
 func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -138,7 +118,6 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 
 	tc := cfg.Transaction
 	tc.Logger, tc.Filter, tc.OnServerDone = logger, a.trustDomain, a.logTransaction
-	// Trace context crosses the flows of the trust domain only (W3C Trace Context §6.1).
 	tc.TraceContext = func(f sip.Flow) bool { return a.isTrusted(f.Remote.Addr()) }
 	roleAttrs := []attribute.KeyValue{tracing.RoleKey.String(role)}
 	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return roleAttrs }
@@ -195,7 +174,6 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	return a, nil
 }
 
-// Servers are the addresses of the SIP of the IP-SM-GW, which its host resolves to: in memory through the IMS.
 func (a *AS) Servers() []sip.Server {
 	servers := make([]sip.Server, len(a.locals))
 	for i, l := range a.locals {
@@ -205,23 +183,15 @@ func (a *AS) Servers() []sip.Server {
 	return servers
 }
 
-// Resubscribe subscribes to the reg event package of the registrations of no subscription: those restored; and
-// checks the HSS registrations of the users at once, those that failed while the core was down. The IMS calls it once
-// its core runs, which the SUBSCRIBEs and the updates go through.
 func (a *AS) Resubscribe(ctx context.Context) {
 	a.reg.resubscribeAll(ctx)
 	a.hss.markAll(trace.SpanContextFromContext(ctx), a.reg.userKeys())
 }
 
-// NumberChanged has the HSS registrations of the users updated to the IP-SM-GW number of the settings, ctx being the
-// trace of the change: the updates link to it.
 func (a *AS) NumberChanged(ctx context.Context) {
 	a.hss.markAll(trace.SpanContextFromContext(ctx), a.reg.userKeys())
 }
 
-// Shutdown stops the IP-SM-GW until ctx is done: its timers and its updates of the HSS; then it deregisters at the
-// HSS for its users (hssSync.deregisterAll), and its agent ends its subscriptions. The registrations are kept for the
-// next start, which registers the IP-SM-GW at the HSS again for the users available.
 func (a *AS) Shutdown(ctx context.Context) error {
 	defer a.kill()
 
@@ -232,7 +202,6 @@ func (a *AS) Shutdown(ctx context.Context) error {
 	a.hss.close()
 	a.hss.deregisterAll(ctx)
 
-	// The short messages being submitted get their submit reports, through the agent, before it closes.
 	submitted := make(chan struct{})
 
 	go func() {
@@ -248,8 +217,6 @@ func (a *AS) Shutdown(ctx context.Context) error {
 	return a.agent.Shutdown(ctx)
 }
 
-// onRequest handles the requests outside dialogs, of the trust domain only (trustDomain): the third-party
-// REGISTERs and the MESSAGEs of short messages of the S-CSCF.
 func (a *AS) onRequest(ctx context.Context, r *ua.Request) {
 	switch r.Message().Method {
 	case "REGISTER":
@@ -263,15 +230,13 @@ func (a *AS) onRequest(ctx context.Context, r *ua.Request) {
 	}
 }
 
-// isTrusted reports whether addr is of the trust domain: of the IMS's own addresses.
 func (a *AS) isTrusted(addr netip.Addr) bool {
 	addr = addr.Unmap()
 
 	return slices.ContainsFunc(a.trusted, func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
-// trustDomain lets in the requests of the trust domain only, the IMS's own addresses (TS 24.229 §4.4.1): a request
-// from elsewhere gets a 403. Responses pass: a transaction matches only the requests the IP-SM-GW sent.
+// TS 24.229 clause 4.4.1
 func (a *AS) trustDomain(m sip.Message) error {
 	if req, ok := m.(*sip.Request); ok {
 		if !a.isTrusted(req.Flow.Remote.Addr()) {
@@ -287,8 +252,6 @@ func (a *AS) trustDomain(m sip.Message) error {
 
 var errUntrusted = errors.New("ipsmgw: from outside the IMS")
 
-// logTransaction logs each server transaction once it ends, at debug: its request and response summarised, their
-// bodies never logged.
 func (a *AS) logTransaction(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
 	if !a.log.Enabled(ctx, slog.LevelDebug) {
 		return
@@ -306,10 +269,9 @@ func (a *AS) logTransaction(ctx context.Context, req *sip.Request, res *sip.Resp
 	a.log.DebugContext(ctx, "SIP transaction", attrs...)
 }
 
-// homeRealm is a home domain of TS 23.003 §13.2.
+// TS 23.003 clause 13.2
 var homeRealm = regexp.MustCompile(`^ims\.mnc([0-9]{3})\.mcc([0-9]{3})\.3gppnetwork\.org$`)
 
-// plmnOf is the MCC and the 3-digit MNC of the home domain home, "000000" of another domain.
 func plmnOf(home string) string {
 	m := homeRealm.FindStringSubmatch(strings.ToLower(home))
 	if m == nil {

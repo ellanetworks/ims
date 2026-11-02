@@ -126,7 +126,6 @@ func TestN5NotifyURI(t *testing.T) {
 	}
 }
 
-// A notify port of 0 is the system's choice, which the notification URI then has.
 func TestN5NotifyPortChosen(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+strings.Replace(n5, "port: 7778", "port: 0", 1)))
 	if err != nil {
@@ -138,7 +137,6 @@ func TestN5NotifyPortChosen(t *testing.T) {
 	}
 }
 
-// The MCPTT AS is off without its section, and of its defaults with one of its media address only.
 func TestLoadMCPTT(t *testing.T) {
 	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+mcptt))
 	if err != nil {

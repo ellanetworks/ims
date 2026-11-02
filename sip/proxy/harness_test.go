@@ -54,7 +54,6 @@ type routerConfig struct {
 	track    bool
 	lifetime time.Duration
 
-	// tp traces the router's layer, whose requests then link to their dialogs (Proxy.SpanLinks).
 	tp trace.TracerProvider
 }
 

@@ -11,8 +11,8 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
-// Each message of §8.2.4–§8.2.13 in scope, from its table, and its fields from §8.2.3: the data as coded, each field
-// padded to 32 bits (§8.1.3).
+// TS 24.380 clause 8.2.3
+// TS 24.380 clause 8.1.3
 func TestMessages(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -61,7 +61,7 @@ func TestMessages(t *testing.T) {
 			},
 			0b00010,
 			[]byte{
-				4, 11, 's', 'i', 'p', ':', 'a', 'l', 'i', 'c', 'e', '@', 'x', 0, 0, 0, // padded to 2 + 4n (§8.2.3.6)
+				4, 11, 's', 'i', 'p', ':', 'a', 'l', 'i', 'c', 'e', '@', 'x', 0, 0, 0,
 				5, 2, 0, 1, 8, 2, 0, 7, 14, 6, 0, 0, 0, 9, 0, 0,
 			},
 		},
@@ -108,7 +108,7 @@ func TestMessages(t *testing.T) {
 	}
 }
 
-// §8.1.1: more than one message in a datagram, each an APP packet outside compound packets.
+// TS 24.380 clause 8.1.1
 func TestDatagram(t *testing.T) {
 	var b []byte
 
@@ -136,8 +136,7 @@ func TestDatagram(t *testing.T) {
 	}
 }
 
-// §8.1.4: a message of an unknown subtype is ignored whole; unspecified fields, of a later version or that the
-// message does not carry, are ignored and kept; a syntactically incorrect field is ignored.
+// TS 24.380 clause 8.1.4
 func TestUnknown(t *testing.T) {
 	for _, sub := range []uint8{0b01011, 0b01111, 0b10000, 0b10110, 0b11010} {
 		if _, err := Decode(&rtp.App{Subtype: sub, Name: Name}); !errors.Is(err, ErrUnknown) {
@@ -150,12 +149,12 @@ func TestUnknown(t *testing.T) {
 	}
 
 	app := &rtp.App{Subtype: uint8(Idle), Name: Name, Data: []byte{
-		30, 1, 0xaa, 0, // a later field
-		200, 0, 3, 1, 2, 3, 0, 0, // a field ID of a two-octet length (§8.1.3)
-		0, 2, 9, 0, // Floor Priority, which a Floor Idle does not carry
-		8, 3, 0, 1, 2, 0, 0, 0, // a Message Sequence Number of a wrong length
-		13, 2, 0x80, 0, // the Floor Indicator
-		13, 2, 0x40, 0, // repeated
+		30, 1, 0xaa, 0,
+		200, 0, 3, 1, 2, 3, 0, 0,
+		0, 2, 9, 0,
+		8, 3, 0, 1, 2, 0, 0, 0,
+		13, 2, 0x80, 0,
+		13, 2, 0x40, 0,
 	}}
 
 	m, err := Decode(app)
@@ -187,16 +186,16 @@ func TestUnknown(t *testing.T) {
 	}
 }
 
-// §8.2.3: values outside their coding.
+// TS 24.380 clause 8.2.3
 func TestMalformedFields(t *testing.T) {
 	for _, c := range []struct {
 		t    Type
 		data []byte
 	}{
-		{Taken, []byte{5, 2, 0, 2}},              // Permission to Request the Floor 2
-		{Taken, []byte{4, 0, 0, 0}},              // empty Granted Party's Identity
-		{Taken, []byte{14, 4, 0, 0, 0, 9, 0, 0}}, // Audio SSRC of Granted Participant without spare
-		{Deny, []byte{2, 1, 0, 0}},               // Reject Cause without a cause
+		{Taken, []byte{5, 2, 0, 2}},
+		{Taken, []byte{4, 0, 0, 0}},
+		{Taken, []byte{14, 4, 0, 0, 0, 9, 0, 0}},
+		{Deny, []byte{2, 1, 0, 0}},
 	} {
 		m, err := Decode(&rtp.App{Subtype: uint8(c.t), Name: Name, Data: c.data})
 		if !errors.Is(err, ErrField) || !reflect.DeepEqual(m, Message{Type: c.t}) {

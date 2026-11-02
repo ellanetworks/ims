@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// serverSpans are the ended server spans of method, in the order they ended.
 func serverSpans(sr *tracetest.SpanRecorder, method string) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 
@@ -41,7 +40,6 @@ func wantLinkedTo(t *testing.T, s, to sdktrace.ReadOnlySpan) {
 	}
 }
 
-// A REGISTER from a UE starts a trace of its own: a refresh links to the REGISTER its registration last renewed with.
 func TestRegisterRefreshLinksToTheRegisterItRenews(t *testing.T) {
 	sr, tp := recorder()
 	s, u, _ := newTracedRxIPsecScene(t, tp)
@@ -79,7 +77,6 @@ func TestRegisterRefreshLinksToTheRegisterItRenews(t *testing.T) {
 	wantLinkedTo(t, refresh, registered)
 }
 
-// A request of a call from a UE starts a trace of its own, linked to the INVITE of the call.
 func TestRequestOfACallLinksToItsInvite(t *testing.T) {
 	sr, tp := recorder()
 	s, u, pcrf := newTracedRxIPsecScene(t, tp)

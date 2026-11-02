@@ -23,7 +23,6 @@ func newTracedHarness(t *testing.T) (*harness, *tracetest.SpanRecorder) {
 	return newHarnessTraced(t, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))), spans
 }
 
-// withRegisterAS has the REGISTERs of the MSISDN's profile go to an AS, with the default handling.
 func withRegisterAS(h *harness, as *siptest.Socket, handling cx.DefaultHandling) {
 	h.hss.set(func(h *fakeHSS) {
 		register := "REGISTER"
@@ -35,7 +34,6 @@ func withRegisterAS(h *harness, as *siptest.Socket, handling cx.DefaultHandling)
 	})
 }
 
-// thirdPartyRegister is the next third-party REGISTER the AS gets, past retransmissions of the one before, last.
 func thirdPartyRegister(t *testing.T, as *siptest.Socket, last *sip.Request) (*sip.Request, sip.Flow) {
 	t.Helper()
 
@@ -84,7 +82,6 @@ func spanRole(s sdktrace.ReadOnlySpan) string {
 	return ""
 }
 
-// waitSpan waits for the nth span started with the name and kind, from 0.
 func waitSpan(t *testing.T, spans *tracetest.SpanRecorder, name string, kind trace.SpanKind, n int) sdktrace.ReadOnlySpan {
 	t.Helper()
 
@@ -98,8 +95,7 @@ func waitSpan(t *testing.T, spans *tracetest.SpanRecorder, name string, kind tra
 	return got[n]
 }
 
-// B2, TS 24.229 §5.4.1.7: the third-party REGISTER and the reg event NOTIFY of a registration are in the trace of its
-// REGISTER; a third-party REGISTER that waits for the one before has a trace of its own, linked to its REGISTER's.
+// TS 24.229 clause 5.4.1.7
 func TestThirdPartyRegisterAndNotifyInTheTraceOfTheREGISTER(t *testing.T) {
 	h, spans := newTracedHarness(t)
 
@@ -116,7 +112,6 @@ func TestThirdPartyRegisterAndNotifyInTheTraceOfTheREGISTER(t *testing.T) {
 	wantStatus(t, sub.subscribe("600"), 200)
 	sub.recvNotify()
 
-	// The REGISTER of each registration is the second, protected: the first is challenged.
 	u.register(registerOptions{expires: "600"})
 
 	register := waitSpan(t, spans, "REGISTER", trace.SpanKindServer, 3)
@@ -134,7 +129,6 @@ func TestThirdPartyRegisterAndNotifyInTheTraceOfTheREGISTER(t *testing.T) {
 		}
 	}
 
-	// The AS holds its response: the third-party REGISTER of the next registration waits for it.
 	u.register(registerOptions{expires: "600"})
 
 	queued := waitSpan(t, spans, "REGISTER", trace.SpanKindServer, 5)
@@ -155,8 +149,6 @@ func TestThirdPartyRegisterAndNotifyInTheTraceOfTheREGISTER(t *testing.T) {
 	}
 }
 
-// D5: the expiry of a registration is a trace of its own, linked to the REGISTER that last refreshed it, with the
-// third-party deregistration in it.
 func TestRegistrationExpiryLinksTheREGISTER(t *testing.T) {
 	h, spans := newTracedHarness(t)
 
@@ -195,7 +187,6 @@ func TestRegistrationExpiryLinksTheREGISTER(t *testing.T) {
 	})
 }
 
-// D5: the expiry of a challenge is a trace of its own, linked to the REGISTER challenged.
 func TestChallengeExpiryLinksTheREGISTER(t *testing.T) {
 	h, spans := newTracedHarness(t)
 	u := h.newUE()
@@ -214,9 +205,6 @@ func TestChallengeExpiryLinksTheREGISTER(t *testing.T) {
 	}
 }
 
-// D2: what a REGISTER has the S-CSCF do after its response does not end with its transaction, which on a reliable or
-// in-memory flow ends with the response: the third-party REGISTERs go on, and the deregistration that the AS's
-// failure brings has its Cx request.
 func TestWorkAfterTheResponseOutlivesTheTransaction(t *testing.T) {
 	h := newHarness(t)
 	h.pcscf.endWithResponse.Store(true)
@@ -240,8 +228,6 @@ func TestWorkAfterTheResponseOutlivesTheTransaction(t *testing.T) {
 	h.hss.wantSAR(t, cx.AssignmentAdministrativeDeregistration)
 }
 
-// A request back from an AS whose flow carries no trace context, as one outside the trust domain, is a trace of its
-// own: the request the S-CSCF sends on links to the one it sent the AS.
 func TestRequestBackFromAnASLinksTheRequestSentToIt(t *testing.T) {
 	h, spans := newTracedHarness(t)
 

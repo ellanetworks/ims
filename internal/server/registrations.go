@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// ListRegistrations reads the registrations from the database, which outlives a restart of the core.
 func (v coreView) ListRegistrations(ctx context.Context, search string, page, perPage int) ([]api.RegistrationStatus, int, error) {
 	now := time.Now()
 
@@ -45,9 +44,7 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 	return out, total, nil
 }
 
-// registeredWith fills in, for each unbarred public identity of the page, the other private identities a request to
-// it reaches: those whose registrations hold it, with a live contact, as the S-CSCF routes it (TS 24.229 §5.4.3.3
-// step 8). The whole page takes one read of the database.
+// TS 24.229 clause 5.4.3.3
 func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationStatus, homeDomain string, now time.Time) error {
 	type ref struct{ reg, set, id int }
 
@@ -95,10 +92,6 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 	return nil
 }
 
-// registrationStatus joins what the S-CSCF and the P-CSCF know of a private identity: each registration set the
-// S-CSCF holds with an unexpired contact gives an implicit registration set, with its HSS, its public identities and
-// those contacts, and the P-CSCF gives each contact's flow. A contact bound to several sets is listed in each, with
-// that binding's times (TS 23.228 §5.2.1a.0).
 func registrationStatus(impi string, regs []db.Registration, flows []db.PCSCFRegistration, now time.Time) api.RegistrationStatus {
 	status := api.RegistrationStatus{IMPI: impi, ImplicitRegistrationSets: []api.ImplicitRegistrationSet{}}
 
@@ -143,7 +136,6 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	if params, err := sip.ParseParams(b.Contact.Params); err == nil {
 		d.Q = scscf.QValue(params)
 
-		// RFC 3840 §9: the media feature tags the contact registered for.
 		for _, tag := range []string{"audio", "video"} {
 			if params.Has(tag) {
 				d.Media = append(d.Media, tag)
@@ -167,8 +159,7 @@ func contact(b db.Binding, flows []db.PCSCFRegistration) api.RegisteredContact {
 	return d
 }
 
-// flowOf returns the P-CSCF's registration of a contact: the one whose IMS flow token is in the first URI of the
-// contact's Path (TS 24.229 §5.2.2.1 step 1), or none when another P-CSCF registered it.
+// TS 24.229 clause 5.2.2.1
 func flowOf(c db.Contact, flows []db.PCSCFRegistration) (db.PCSCFRegistration, bool) {
 	hops, err := sip.ParseAddressList(c.Path)
 	if err != nil || len(hops) == 0 || hops[0].URI.User == "" {

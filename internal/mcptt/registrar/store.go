@@ -14,23 +14,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Store keeps the bindings through the IMS across restarts. SaveRegistrations saves the bindings of records, one per
-// client, replacing the client's, and removes those of the clients of deleted.
 type Store interface {
 	SaveRegistrations(ctx context.Context, records []Record, deleted []string) error
 }
 
-// Record is what is kept of a binding through the IMS, for Restore to put it back: the binding, the registration of
-// the UE that the third-party REGISTERs and the reg event documents tell it by (TS 24.229 §5.7.1.3B), the Call-ID and
-// CSeq of its last REGISTER, and the AS URI that subscribes to the reg event package of its IMPU. The access token is
-// not kept: the MCPTT ID it gave is.
 type Record struct {
 	Binding
 
-	// AS is the Request-URI of the third-party REGISTER (TS 24.229 §5.4.1.7).
-	AS sip.URI
-	// Instance and RegID are the "+sip.instance" and "reg-id" of the Contact of the UE's REGISTER (RFC 5626 §4.1,
-	// §4.2), Contact its URI; empty if unknown.
+	AS              sip.URI
 	Instance, RegID string
 	Contact         sip.URI
 	CallID          string
@@ -47,10 +38,6 @@ func (b *binding) record() Record {
 	return r
 }
 
-// persist writes the bindings changed through the IMS to the store, outside the lock, in the trace of ctx, what
-// changed them: of each client changed, its binding, or its removal. The write is bounded by the registrar's lifetime
-// and saveTimeout, the request of the change answered already. A write that fails is logged, and its clients written
-// with the next change.
 func (g *Registrar) persist(ctx context.Context) {
 	g.mu.Lock()
 	clean := len(g.dirty) == 0
@@ -93,7 +80,6 @@ func (g *Registrar) persist(ctx context.Context) {
 	if err := g.cfg.Store.SaveRegistrations(ctx, saved, deleted); err != nil {
 		g.cfg.Logger.WarnContext(ctx, "registrations not saved", slog.Int("clients", len(saved)+len(deleted)), slog.Any("error", err))
 
-		// Saved with the next change, of whatever client.
 		g.mu.Lock()
 
 		for _, r := range saved {
@@ -108,13 +94,8 @@ func (g *Registrar) persist(ctx context.Context) {
 	}
 }
 
-// saveTimeout bounds a write to the store, of the strand of an IMPU.
 const saveTimeout = 5 * time.Second
 
-// Restore puts back the bindings of records through the IMS, before the agent serves: of those not expired, whose
-// users the settings still authorise at their IMPUs, as a refresh would (refresh); the others are removed from the
-// store. Their expiry timers, and those of the sequences of their REGISTERs, are armed on the strands of their IMPUs.
-// It returns the bindings put back; Resubscribe subscribes to the reg event package of their IMPUs.
 func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 	snap := g.cfg.Source.Current()
 	now := g.cfg.Clock.Now()
@@ -162,8 +143,6 @@ func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 			}
 		}
 
-		// The subscription of the IMPU, toward the S-CSCF of its latest registration; of a tel URI, of the SIP URI of
-		// its number if its set has none.
 		impu := subscribed(r.IMPU, r.IMPUs, g.cfg.HomeDomain)
 		if w := g.watches[ik]; r.AS.Scheme != "" && impu.IsSIP() && (w == nil || r.Expires.After(latest[ik])) {
 			g.watches[ik] = &watch{ik: ik, impu: impu, scscf: r.SCSCF, as: r.AS, restored: true}
@@ -173,7 +152,6 @@ func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 		out = append(out, b.public())
 	}
 
-	// Restored, not changed: only those removed are written.
 	for _, b := range out {
 		delete(g.dirty, b.ClientID)
 	}
@@ -185,14 +163,9 @@ func (g *Registrar) Restore(ctx context.Context, records []Record) []Binding {
 	return out
 }
 
-// resubscribePace spaces the SUBSCRIBEs of Resubscribe, of 1,000 IMPUs at most (settings.MaxUsers) over 20 s.
 const resubscribePace = 20 * time.Millisecond
 
-// Resubscribe subscribes to the reg event package of the IMPUs of no subscription, once their S-CSCF is reachable:
-// those Restore put bindings of back, and those whose subscription failed for want of a response (ended), one each
-// resubscribePace, on the strands of the IMPUs (TS 24.229 §5.7.1.1). The first full document of each removes the
-// bindings of the UEs it does not report registered, which deregistered meanwhile (notify), and a refusal of the
-// subscription of bindings restored all the bindings of its IMPU (ended).
+// TS 24.229 clause 5.7.1.1
 func (g *Registrar) Resubscribe(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -228,12 +201,7 @@ func (g *Registrar) Resubscribe(ctx context.Context) {
 	}
 }
 
-// staleIn reconciles the bindings of the IMPU of w restored, not refreshed since, with the full document doc, the
-// first of its subscription: one matched by an active contact of a registration of the IMPU (reports,
-// matchedLoosely) takes the expiry of the contact, if any (RFC 3680 §5.1), of a UE that registered again while the
-// server was down; one matched by none goes, of a UE that deregistered meanwhile, all of them if the registration is
-// not active. Unlike a later document (notify), the first is the IMS's state of a registration the server was told of
-// before it restarted. Called with g.mu held.
+// RFC 3680 section 5.1
 func (g *Registrar) staleIn(w *watch, doc *reginfo.Reginfo, now time.Time, ch *change) {
 	var active []reginfo.Contact
 
@@ -270,9 +238,6 @@ func (g *Registrar) staleIn(w *watch, doc *reginfo.Reginfo, now time.Time, ch *c
 	}
 }
 
-// matchedLoosely reports whether an active contact may be of the registration of b, restored: matchedBy, else of
-// its instance ID, a reg-id on one side only, else of its URI. A binding is removed when none matches, so the match
-// errs on keeping it.
 func (b *binding) matchedLoosely(c reginfo.Contact) bool {
 	if b.matchedBy(c) {
 		return true

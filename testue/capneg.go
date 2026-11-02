@@ -8,26 +8,19 @@ import (
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
-// The answerer side of SDP Capability Negotiation (RFC 5939), which an MTSI client supporting it supports completely
-// (TS 26.114 §6.2.1a.1). The UE never offers capability negotiation: it offers AVPF for video directly (§6.2.1a.2).
-
-// capNegBase is the option tag of the base framework, the only one the UE supports (RFC 5939 §3.3.1).
+// RFC 5939 section 3.3.1
 const capNegBase = "cap-v0"
 
-// capNegAttrs are the capability negotiation attributes, removed from the offer the answer is made to (RFC 5939
-// §3.6.2).
+// RFC 5939 section 3.6.2
 var capNegAttrs = []string{"csup", "creq", "acap", "tcap", "pcfg", "acfg"}
 
-// knownAttrs are the attributes the UE negotiates. A potential configuration needing another one is not supported
-// (RFC 5939 §3.6.2).
 var knownAttrs = map[string]bool{
 	"rtpmap": true, "fmtp": true, "ptime": true, "maxptime": true, "rtcp-fb": true, "extmap": true, "rtcp": true,
 	"curr": true, "des": true, "conf": true, "framerate": true, "imageattr": true,
 	"sendrecv": true, "sendonly": true, "recvonly": true, "inactive": true,
 }
 
-// sessionAttrs are the known attributes that may be at the session level (RFC 3264 §5.1, RFC 8285 §5); the others
-// are media-level only (RFC 5939 §3.6.2 item 3).
+// RFC 5939 section 3.6.2
 var sessionAttrs = map[string]bool{"sendrecv": true, "sendonly": true, "recvonly": true, "inactive": true, "extmap": true}
 
 var supportedProtos = []string{avp, avpf}
@@ -37,13 +30,15 @@ type capability struct {
 	session bool
 }
 
-// capabilities are the tcap and acap capabilities a media description can reference: its own, and the session's
-// (RFC 5939 §3.4.1, §3.4.2).
+// RFC 5939 section 3.4.1
+// RFC 5939 section 3.4.2
 type capabilities struct {
 	transports map[string]capability
 	attributes map[string]capability
 }
 
+// RFC 5939 section 3.4.1
+// RFC 5939 section 3.4.2
 func collectCapabilities(offer *sdp.Session, m *sdp.Media) capabilities {
 	c := capabilities{transports: map[string]capability{}, attributes: map[string]capability{}}
 
@@ -51,7 +46,6 @@ func collectCapabilities(offer *sdp.Session, m *sdp.Media) capabilities {
 		lines   sdp.Lines
 		session bool
 	}{{offer.Lines, true}, {m.Lines, false}} {
-		// RFC 5939 §3.4.2: a=tcap:<trpr-cap-num> <proto-list>, the protocols numbered from the first.
 		for _, v := range level.lines.Attrs("tcap") {
 			fields := strings.Fields(v)
 			if len(fields) < 2 {
@@ -68,7 +62,6 @@ func collectCapabilities(offer *sdp.Session, m *sdp.Media) capabilities {
 			}
 		}
 
-		// RFC 5939 §3.4.1: a=acap:<att-cap-num> <att-par>.
 		for _, v := range level.lines.Attrs("acap") {
 			num, par, ok := strings.Cut(v, " ")
 			if n, err := strconv.Atoi(num); !ok || err != nil || n < 1 {
@@ -82,23 +75,21 @@ func collectCapabilities(offer *sdp.Session, m *sdp.Media) capabilities {
 	return c
 }
 
-// attributeList is one alternative attribute capability list of a potential configuration (RFC 5939 §3.5.1).
+// RFC 5939 section 3.5.1
 type attributeList struct {
 	mandatory, optional []string
 }
 
-// potentialConfig is an a=pcfg attribute (RFC 5939 §3.5.1).
+// RFC 5939 section 3.5.1
 type potentialConfig struct {
-	number int
-	// del is the delete-attributes of the attribute configuration list: "", "m", "s" or "ms".
+	number     int
 	del        string
 	attributes []attributeList
 	transports []string
 	hasAttrs   bool
 }
 
-// parsePotentialConfig parses an a=pcfg value. It is invalid when its syntax is, or it has a list twice or an
-// unsupported mandatory extension (RFC 5939 §3.5.1, §3.6.2).
+// RFC 5939 section 3.5.1
 func parsePotentialConfig(v string) (potentialConfig, bool) {
 	fields := strings.Fields(v)
 	if len(fields) == 0 {
@@ -129,7 +120,6 @@ func parsePotentialConfig(v string) (potentialConfig, bool) {
 				return potentialConfig{}, false
 			}
 		default:
-			// RFC 5939 §3.5.1: an unknown extension is ignored, unless it is mandatory.
 			if strings.HasPrefix(name, "+") {
 				return potentialConfig{}, false
 			}
@@ -185,8 +175,7 @@ func parseAttributeConfig(pc *potentialConfig, list string) bool {
 	return true
 }
 
-// valid tells whether the potential configuration references only capabilities the media description can, and
-// session-level attribute capabilities only of session-level attributes (RFC 5939 §3.6.2 items 3 and 4).
+// RFC 5939 section 3.6.2
 func (pc potentialConfig) valid(caps capabilities) bool {
 	for _, t := range pc.transports {
 		if _, ok := caps.transports[t]; !ok {
@@ -215,13 +204,11 @@ func attrName(par string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// candidate is one alternative of a potential configuration: an attribute list and a transport, either absent.
 type candidate struct {
 	config    potentialConfig
 	attrs     *attributeList
 	transport string
-	// used are the optional attribute capabilities the UE takes.
-	used []string
+	used      []string
 }
 
 func (pc potentialConfig) candidates() []candidate {
@@ -250,8 +237,7 @@ func (pc potentialConfig) candidates() []candidate {
 	return out
 }
 
-// acfg is the actual configuration attribute of the answer: the configuration number, and the lists used, with the
-// alternatives taken and the known optional capabilities only (RFC 5939 §3.5.2).
+// RFC 5939 section 3.5.2
 func (c candidate) acfg() string {
 	out := "a=acfg:" + strconv.Itoa(c.config.number)
 
@@ -276,29 +262,19 @@ func (c candidate) acfg() string {
 	return out
 }
 
-// negotiated is an offer as the potential configurations the answerer selects leave it (RFC 5939 §3.6.2).
+// RFC 5939 section 3.6.2
 type negotiated struct {
-	// offer is the offer the answer is made to, without capability negotiation attributes.
-	offer *sdp.Session
-	// media are the capability negotiation attributes of each m-line's answer: the actual configuration attribute
-	// when it uses a potential configuration, the supported option tags when the media description required
-	// others, nothing otherwise.
-	media [][]string
-	// session are those of the answer's session level: the supported option tags, when the session required others
-	// (RFC 5939 §3.6.2).
+	offer   *sdp.Session
+	media   [][]string
 	session []string
 }
 
-// negotiate selects, for each m-line, the most preferred valid potential configuration the UE supports, accepts
-// telling whether the UE would take the media description, with the payload types the formats it takes have (RFC
-// 5939 §3.6.2). An m-line without one keeps its actual configuration.
+// RFC 5939 section 3.6.2
 func negotiate(offer *sdp.Session, accepts func(*sdp.Media) []uint8) negotiated {
 	n := negotiated{offer: offer.Clone(), media: make([][]string, len(offer.Media))}
 
 	defer stripCapNeg(n.offer)
 
-	// RFC 5939 §3.6.2: a required extension the answerer lacks at the session level rules out every potential
-	// configuration.
 	if !requiredSupported(offer.Lines) {
 		n.session = []string{"a=csup:" + capNegBase}
 		return n
@@ -336,7 +312,7 @@ func negotiate(offer *sdp.Session, accepts func(*sdp.Media) []uint8) negotiated 
 	return n
 }
 
-// requiredSupported tells whether the UE supports every extension a=creq requires (RFC 5939 §3.3.2).
+// RFC 5939 section 3.3.2
 func requiredSupported(ls sdp.Lines) bool {
 	for _, v := range ls.Attrs("creq") {
 		for tag := range strings.SplitSeq(v, ",") {
@@ -349,9 +325,8 @@ func requiredSupported(ls sdp.Lines) bool {
 	return true
 }
 
-// selectConfig returns the most preferred valid and supported potential configuration of the media description: the
-// lowest configuration number, then the alternatives in order (RFC 5939 §3.5.1, §3.6.2). It returns the media
-// description it leads to, and the session-level attributes it adds.
+// RFC 5939 section 3.5.1
+// RFC 5939 section 3.6.2
 func selectConfig(offer *sdp.Session, m *sdp.Media, accepts func(*sdp.Media) []uint8) (candidate, *sdp.Media, []string, bool) {
 	caps := collectCapabilities(offer, m)
 
@@ -366,7 +341,6 @@ func selectConfig(offer *sdp.Session, m *sdp.Media, accepts func(*sdp.Media) []u
 		}
 	}
 
-	// RFC 5939 §3.6.2 item 2: the configuration number is unique within the media description.
 	configs = slices.DeleteFunc(configs, func(pc potentialConfig) bool { return count[pc.number] > 1 || !pc.valid(caps) })
 	slices.SortStableFunc(configs, func(a, b potentialConfig) int { return a.number - b.number })
 
@@ -381,9 +355,7 @@ func selectConfig(offer *sdp.Session, m *sdp.Media, accepts func(*sdp.Media) []u
 	return candidate{}, nil, nil, false
 }
 
-// apply builds the media description of the candidate and checks the UE supports it: its transport, its mandatory
-// attribute capabilities, and the formats any mandatory rtpmap or fmtp names (RFC 5939 §3.6.2). It sets the optional
-// capabilities used.
+// RFC 5939 section 3.6.2
 func (c *candidate) apply(m *sdp.Media, caps capabilities, accepts func(*sdp.Media) []uint8) (*sdp.Media, []string, bool) {
 	media := m.Clone()
 
@@ -430,7 +402,6 @@ func (c *candidate) apply(m *sdp.Media, caps capabilities, accepts func(*sdp.Med
 			}
 		}
 
-		// RFC 5939 §3.5.1, §3.6.2: optional capabilities are taken when known.
 		for _, num := range c.attrs.optional {
 			cp := caps.attributes[num]
 			if !knownAttrs[attrName(cp.value)] || cp.session && !sessionAttrs[attrName(cp.value)] {
@@ -454,7 +425,6 @@ func (c *candidate) apply(m *sdp.Media, caps capabilities, accepts func(*sdp.Med
 		return nil, nil, false
 	}
 
-	// RFC 5939 §3.6.2: a mandatory rtpmap or fmtp capability is for a format negotiated successfully.
 	for _, r := range required {
 		_, value, _ := strings.Cut(r, ":")
 		pt, _, _ := strings.Cut(value, " ")
@@ -467,7 +437,7 @@ func (c *candidate) apply(m *sdp.Media, caps capabilities, accepts func(*sdp.Med
 	return media, sessionAdds, true
 }
 
-// insertAttrs adds the attributes before the attributes already there, in order (RFC 5939 §3.6.2).
+// RFC 5939 section 3.6.2
 func insertAttrs(ls sdp.Lines, attrs []string) sdp.Lines {
 	if len(attrs) == 0 {
 		return ls
@@ -486,7 +456,7 @@ func insertAttrs(ls sdp.Lines, attrs []string) sdp.Lines {
 	return slices.Insert(slices.Clone(ls), at, added...)
 }
 
-// stripCapNeg removes the capability negotiation attributes (RFC 5939 §3.6.2).
+// RFC 5939 section 3.6.2
 func stripCapNeg(s *sdp.Session) {
 	isCapNeg := func(l sdp.Line) bool {
 		if l.Type != 'a' {

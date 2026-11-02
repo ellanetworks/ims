@@ -9,7 +9,7 @@ import (
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
-// TS 24.380 §4.3.3.1: the example media description of a control channel.
+// TS 24.380 clause 4.3.3.1
 func TestChannelExample(t *testing.T) {
 	s := parse(t, "v=0\r\nc=IN IP4 192.0.2.1\r\nm=audio 20030 RTP/AVP 96\r\n"+
 		"m=application 20032 udp MCPTT\r\na=fmtp:MCPTT mc_queueing;mc_priority=5;mc_granted;mc_floor_ssrc=12345678\r\n")
@@ -43,7 +43,7 @@ func TestChannelExample(t *testing.T) {
 	}
 }
 
-// TS 24.379 Table A.1.3-1: a client's offer, the m= line's format in lower case.
+// TS 24.379 clause A.1.3
 func TestClientOfferExample(t *testing.T) {
 	s := parse(t, "v=0\r\nc=IN IP6 5555::aaa:bbb:ccc:eee\r\nm=audio 3456 RTP/AVP 97\r\na=rtpmap:97 AMR\r\n"+
 		"a=fmtp:97 mode-set=0,2,5,7; mode-change-period=2\r\na=maxptime:20\r\ni=speech\r\n"+
@@ -60,8 +60,7 @@ func TestClientOfferExample(t *testing.T) {
 	}
 }
 
-// TS 24.380 §12.1.2.3: the ABNF's ":" separator and the examples' ";" alike; mc_priority 1 to 255; 32-bit SSRCs;
-// unknown parameters kept.
+// TS 24.380 clause 12.1.2.3
 func TestParseParams(t *testing.T) {
 	for _, c := range []struct {
 		in   string
@@ -95,7 +94,6 @@ func TestParseParams(t *testing.T) {
 		}
 	}
 
-	// A malformed value is left out, its parameter absent, the others kept.
 	for _, in := range []string{"mc_priority=0", "mc_priority=256", "mc_priority=", "mc_ssrc=4294967296", "mc_floor_ssrc=x"} {
 		p, err := ParseParams("mc_queueing;" + in)
 		if err == nil || !reflect.DeepEqual(p, Params{Queueing: true}) {
@@ -103,8 +101,6 @@ func TestParseParams(t *testing.T) {
 		}
 	}
 
-	// The first of a parameter given twice counts. Parameters with a ";" keep the ":" of their values; without, ":"
-	// separates only parameters of the present document.
 	for in, want := range map[string]Params{
 		"mc_priority=3;mc_priority=9;x=a:mc_b;mc_granted": {
 			Priority: 3, Granted: true, Other: sdp.FormatParams{{Name: "x", Value: "a:mc_b", HasValue: true}},
@@ -118,7 +114,6 @@ func TestParseParams(t *testing.T) {
 		}
 	}
 
-	// A flag has no value (§12.1.2.3).
 	for _, in := range []string{"mc_queueing=1", "mc_granted=", "mc_implicit_request=yes", "mc_no_floor_ctrl=0"} {
 		if p, err := ParseParams(in); err == nil || !reflect.DeepEqual(p, Params{}) {
 			t.Errorf("%q: %+v, %v", in, p, err)
@@ -126,8 +121,7 @@ func TestParseParams(t *testing.T) {
 	}
 }
 
-// TS 24.380 §14.2: the offer of an initial INVITE has no mc_ssrc, and no floor control parameters with
-// mc_no_floor_ctrl.
+// TS 24.380 clause 14.2
 func TestOffer(t *testing.T) {
 	local := Params{
 		Queueing: true, Priority: 5, Granted: true, ImplicitRequest: true, SSRC: 1, HasSSRC: true,
@@ -144,9 +138,8 @@ func TestOffer(t *testing.T) {
 	}
 }
 
-// TS 24.380 §14.3: the answer has only parameters of the offer; the lower priority, the one offered of a client,
-// none of a receive-only member (§14.3.3); mc_ssrc only with the implicit floor request accepted; mc_floor_ssrc only
-// when offered; none of floor control for mc_no_floor_ctrl, which an answerer without it cannot answer.
+// TS 24.380 clause 14.3
+// TS 24.380 clause 14.3.3
 func TestAnswer(t *testing.T) {
 	local := Params{
 		Queueing: true, Priority: 9, Granted: true, ImplicitRequest: true, SSRC: 7, HasSSRC: true,
@@ -191,8 +184,7 @@ func TestAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.380 §14.4: the offerer discards what it did not offer, but uses mc_ssrc whether offered or not; an
-// mc_priority above the one offered is refused.
+// TS 24.380 clause 14.4
 func TestAccept(t *testing.T) {
 	offer := Params{Queueing: true, Priority: 5, ImplicitRequest: true, HasFloorSSRC: true}
 
@@ -204,8 +196,6 @@ func TestAccept(t *testing.T) {
 		t.Errorf("%s, %v", got, err)
 	}
 
-	// mc_ssrc without the implicit floor request offered (§14.4), and mc_implicit_request from a peer following
-	// §14.3.7, not offered, discarded.
 	got, err = Params{NoFloorControl: true}.Accept(Params{NoFloorControl: true, ImplicitRequest: true, SSRC: 7, HasSSRC: true})
 	if err != nil || got.String() != "mc_ssrc=7;mc_no_floor_ctrl" {
 		t.Errorf("%s, %v", got, err)
@@ -243,8 +233,6 @@ func FuzzFmtp(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, s string) {
-		// What parsed, malformed values left out, round-trips; but a lone parameter whose value holds ":mc_", which
-		// the ":" separator of the ABNF makes ambiguous.
 		p, _ := ParseParams(s)
 		if out := p.String(); !strings.Contains(out, ";") && strings.Contains(strings.ToLower(out), ":mc_") {
 			return
@@ -255,7 +243,6 @@ func FuzzFmtp(f *testing.F) {
 			t.Fatalf("%q: %+v does not round-trip: %+v, %v", s, p, again, err)
 		}
 
-		// An answer by the rules of §14.3 is one the offerer takes as is (§14.4).
 		offer := Offer(p)
 
 		answer, err := Answer(offer, p)

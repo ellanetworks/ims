@@ -14,8 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// SaveRegistrations saves the bindings of records, replacing those of their clients, and removes those of the
-// clients of deleted, in one transaction.
 func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Record, deleted []string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -51,8 +49,6 @@ func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Rec
 	})
 }
 
-// Registrations are the bindings saved. A row whose URIs do not parse, which only a change outside the server or a
-// release of the sip package that parses less makes, is removed.
 func (d *DB) MCPTTRegistrations(ctx context.Context) (_ []registrar.Record, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -108,7 +104,6 @@ func (d *DB) mcpttRegistrations(ctx context.Context) ([]registrar.Record, []stri
 	return out, bad, nil
 }
 
-// parseRecord parses the URIs of r, of uris and the JSON set of its IMPUs, reporting whether they all parse.
 func parseMCPTTRecord(r *registrar.Record, uris []string, set string) bool {
 	var impus []string
 	if err := json.Unmarshal([]byte(set), &impus); err != nil {
@@ -135,7 +130,6 @@ func parseMCPTTRecord(r *registrar.Record, uris []string, set string) bool {
 	return true
 }
 
-// ClearState removes the registrations and affiliations saved: of another mode, the clients register again.
 func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -150,8 +144,6 @@ func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
 	})
 }
 
-// SaveAffiliations replaces the affiliations of the clients of records, and removes those of a record of no groups
-// and no entity-tag, in one transaction.
 func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Record) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -191,8 +183,6 @@ func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Re
 	})
 }
 
-// Affiliations are the affiliations saved, of each client its groups in order. A client of an MCPTT ID or group that
-// does not parse is removed.
 func (d *DB) MCPTTAffiliations(ctx context.Context) (_ []affiliation.Record, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -289,7 +279,6 @@ func (d *DB) mcpttAffiliations(ctx context.Context) ([]affiliation.Record, [][2]
 		return nil, nil, err
 	}
 
-	// A client of a group that does not parse is removed whole, not restored of its other groups.
 	out = slices.DeleteFunc(out, func(r affiliation.Record) bool {
 		return slices.Contains(bad, [2]string{settings.Key(r.MCPTTID), r.ClientID})
 	})
@@ -297,7 +286,6 @@ func (d *DB) mcpttAffiliations(ctx context.Context) ([]affiliation.Record, [][2]
 	return out, bad, nil
 }
 
-// uriString is the text of u, "" of the zero URI.
 func uriString(u sip.URI) string {
 	if u.Scheme == "" {
 		return ""
@@ -306,7 +294,6 @@ func uriString(u sip.URI) string {
 	return u.String()
 }
 
-// parseURI is the URI of s, the zero URI of "".
 func parseURI(s string) (sip.URI, error) {
 	if s == "" {
 		return sip.URI{}, nil

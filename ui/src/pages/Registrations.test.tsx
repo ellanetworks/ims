@@ -76,7 +76,6 @@ const serve = (
   return urls;
 };
 
-// imsiOf is how the table shows a registration: the IMSI of its IMPI.
 const imsiOf = (r: Registration) => r.impi.split("@")[0];
 
 const rowOf = (r: Registration) =>
@@ -92,7 +91,6 @@ const open = async (r: Registration) => {
   return screen.findByRole("dialog");
 };
 
-// fields is the keys and values of a section of the drawer.
 const fields = (drawer: HTMLElement, section: string) =>
   within(within(drawer).getByRole("region", { name: section }))
     .getAllByRole("term")
@@ -221,7 +219,6 @@ describe("Registrations", () => {
       ["Registered", "2026-10-08 12:00:00"],
       ["Expires", "2026-10-08 14:00:00"],
     ]);
-    // The barred IMPU is the device's own, for registering: it is not shown.
     expect(within(drawer).queryByText(/^sip:/)).not.toBeInTheDocument();
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
@@ -230,7 +227,6 @@ describe("Registrations", () => {
     );
   });
 
-  // RFC 5626: a device with several registration flows.
   it("shows the flows of a device", async () => {
     const flows = registration({
       contacts: [

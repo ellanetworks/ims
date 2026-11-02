@@ -17,16 +17,15 @@ type session struct {
 	req      *sip.Request
 	identity string
 
-	// orig marks a request an AS sends on behalf of the served user identity (TS 24.229 §5.3.2.1A).
 	orig bool
 
 	deadline time.Time
 }
 
-// initial serves an initial request. The I-CSCF is the contact point of the network, which takes requests from
-// outside the trust domain (TS 23.228 §4.6.1, TS 24.229 §5.3.2.1): those are only ever terminating, without the header
-// fields that the trust domain asserts and any Route past the I-CSCF; with "orig", they are refused
-// (TS 24.229 §4.4, §5.3.2.1, §5.3.2.1A).
+// TS 23.228 clause 4.6.1
+// TS 24.229 clause 4.4
+// TS 24.229 clause 5.3.2.1
+// TS 24.229 clause 5.3.2.1A
 func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	trusted := i.trusted(req)
 	if !trusted && i.rejectOrig(tx, req) {
@@ -98,9 +97,8 @@ func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 	i.spawn(ctx, tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
-// toPSISubdomain routes a request to a PSI of a subdomain of the I-CSCF to the AS hosting it, which its
-// Request-URI resolves to, without a location query, the Request-URI kept (TS 24.229 §5.3.2.1 steps 1c, 3; TS 23.228
-// §5.4.12.3 b).
+// TS 24.229 clause 5.3.2.1
+// TS 23.228 clause 5.4.12.3
 func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
 	to, err := i.serverTarget(ctx, s.req.Flow, s.req.URI)
 	if err != nil {
@@ -120,10 +118,9 @@ func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
 	i.forward(ctx, s.tx, s.req.Clone(), to, opts)
 }
 
-// originating serves a request that an AS of the trust domain sends on behalf of a user or a PSI to the I-CSCF, with
-// "orig", as an AS that does not know the S-CSCF of the served user does: to that S-CSCF, or to the AS hosting the PSI,
-// as the HSS says. The served user is in P-Served-User, or else P-Asserted-Identity (TS 24.229 §5.3.2.1A, §5.7.3;
-// TS 23.228 §5.4.12.5 c).
+// TS 24.229 clause 5.3.2.1A
+// TS 24.229 clause 5.7.3
+// TS 23.228 clause 5.4.12.5
 func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	served, err := out.Header.Addresses("P-Served-User")
 	if err == nil && len(served) == 0 {
@@ -147,10 +144,10 @@ func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 	i.spawn(ctx, tx, func(ctx context.Context) { i.queryLocation(ctx, s) })
 }
 
-// queryLocation routes a request where the HSS says: to the server it names, ours or another, an AS hosting a PSI
-// or an S-CSCF, whether or not it sets the PSI direct routing flag, which is optional; or to our S-CSCF, capable of
-// what the HSS requires (TS 24.229 §5.3.2.1, §5.3.2.1A; TS 29.228 §6.1.4.1 step 2, TS 29.229 §6.3.59). An originating
-// request has the "orig" parameter in the Route to an S-CSCF.
+// TS 24.229 clause 5.3.2.1
+// TS 24.229 clause 5.3.2.1A
+// TS 29.228 clause 6.1.4.1
+// TS 29.229 clause 6.3.59
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, s.identity, s.orig)
 	if err != nil {
@@ -164,7 +161,6 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 
 	switch {
 	case lia.ServerName != "" && !i.ours(lia.ServerName):
-		// With Originating-Request, the HSS names an S-CSCF, never an AS (TS 29.228 §6.1.4.1 step 2).
 		i.toServer(ctx, s, lia.ServerName, s.orig && !lia.PSIDirectRouting)
 		return
 	case lia.ServerName != "":
@@ -206,9 +202,9 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	i.forward(ctx, s.tx, out, to, opts)
 }
 
-// toServer forwards a request to a server the HSS names that is not our S-CSCF: the AS hosting the PSI, for direct
-// routing, or another S-CSCF, with "orig" for an originating request (TS 24.229 §5.3.2.1, §5.3.2.1A; TS 23.228
-// §5.4.12.2 b).
+// TS 24.229 clause 5.3.2.1
+// TS 24.229 clause 5.3.2.1A
+// TS 23.228 clause 5.4.12.2
 func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool) {
 	u, err := sip.ParseURI(name)
 
@@ -273,9 +269,6 @@ func (i *ICSCF) rejectOrig(tx *transaction.ServerTransaction, req *sip.Request) 
 	return true
 }
 
-// subsequent forwards a request within a dialog to the S-CSCF. The I-CSCF does not record-route: the dialogs of the
-// S-CSCF do not go through it, and one from outside the trust domain would reach the S-CSCF, which takes none from
-// there, as if from the trust domain.
 func (i *ICSCF) subsequent(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
 	if !i.trusted(req) {
 		i.log.DebugContext(ctx, "request within a dialog from outside the trust domain", slog.String("request", req.StartLine()),

@@ -77,7 +77,7 @@ func globalNumber(u sip.URI) (string, bool) {
 	return number, len(number) > 1 && number[0] == '+' && isDigits(number[1:])
 }
 
-// RFC 3966 §5.4
+// RFC 3966 section 5.4
 func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	if n.CountryCode == "" {
 		return u, false
@@ -106,7 +106,7 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	return sip.URI{Scheme: "tel", User: "+" + digits, Params: params}, true
 }
 
-// TS 24.229 §5.4.3.2 step 10
+// TS 24.229 clause 5.4.3.2
 func localNumber(u sip.URI, homeDomain string) bool {
 	number, _, _, ok := telephoneNumber(u)
 	if !ok || strings.HasPrefix(number, "+") {
@@ -118,7 +118,8 @@ func localNumber(u sip.URI, homeDomain string) bool {
 	return u.IsTel() || host == homeDomain || strings.HasSuffix(host, "."+homeDomain)
 }
 
-// TS 24.229 §7.2A.10.3, RFC 3966
+// TS 24.229 clause 7.2A.10.3
+// RFC 3966
 func (n Numbering) homeContext(context, homeDomain string) bool {
 	context = strings.ToLower(strings.TrimSuffix(context, "."))
 
@@ -202,9 +203,6 @@ func identityKeys(u sip.URI, homeDomain string) []string {
 		return keys
 	}
 
-	// A local number has the same two forms, scoped by its phone-context (TS 23.003 §13.4, RFC 3261 §19.1.6,
-	// RFC 3966 §5.1.5): an AS subscribes to the reg event of a tel URI of a local number with its SIP form
-	// (TS 24.229 §5.7.1.1 a).
 	if number, context, ok := localTelephoneNumber(u); ok {
 		tel := sip.URI{Scheme: "tel", User: number}
 		tel.Params.Set("phone-context", context)
@@ -220,8 +218,8 @@ func identityKeys(u sip.URI, homeDomain string) []string {
 	return keys
 }
 
-// localTelephoneNumber is the number, without visual separators, and the phone-context of a tel URI of a local
-// number, or of its SIP form, "user=phone" (RFC 3966 §5.1.5, RFC 3261 §19.1.6).
+// RFC 3966 section 5.1.5
+// RFC 3261 section 19.1.6
 func localTelephoneNumber(u sip.URI) (number, context string, ok bool) {
 	number, context, _, ok = telephoneNumber(u)
 	number = withoutSeparators(number)
@@ -240,8 +238,8 @@ func phoneURI(number, homeDomain string) sip.URI {
 	return u
 }
 
-// assertedAlias is the alias of an asserted identity in the subscription of the served user (TS 24.229 §5.4.3.2
-// step 9, §5.4.3.3).
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func assertedAlias(asserted sip.Address, sub cx.IMSSubscription, homeDomain string) (sip.Address, bool) {
 	number, global := globalNumber(asserted.URI)
 
@@ -297,7 +295,7 @@ func profileIdentity(sub cx.IMSSubscription, key string) (cx.ProfileIdentity, bo
 	return cx.ProfileIdentity{}, false
 }
 
-// TS 29.228 §6.6.4
+// TS 29.228 clause 6.6.4
 func telAlias(sub cx.IMSSubscription, key string) (cx.ProfileIdentity, bool) {
 	for _, profile := range sub.ServiceProfiles {
 		i := -1

@@ -12,16 +12,12 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
-// CallRecords are the records of the calls the IMS keeps.
 type CallRecords interface {
-	// ListCallRecords returns a page of the records the filter selects, the most recently requested first, and their
-	// count.
 	ListCallRecords(ctx context.Context, f db.CallRecordFilter, page, perPage int) ([]db.CallRecord, int, error)
-	// GetCallRecord returns a record, or an error of the kind db.ErrNotFound.
 	GetCallRecord(ctx context.Context, id int64) (db.CallRecord, error)
 }
 
-// CallRecordResponse is a call record (TS 32.298 §5.1.3.1). A value the IMS did not observe is absent.
+// TS 32.298 clause 5.1.3.1
 type CallRecordResponse struct {
 	ID              int64    `json:"id"`
 	ICID            string   `json:"icid"`
@@ -39,11 +35,9 @@ type CallRecordResponse struct {
 	EndedBy         string   `json:"ended_by,omitempty"`
 	Alerted         bool     `json:"alerted"`
 	Media           []string `json:"media"`
-	// InProgress reports a call that has not ended.
-	InProgress bool `json:"in_progress"`
-	Incomplete bool `json:"incomplete"`
-	// DurationMS is how long an answered call that ended lasted, in milliseconds.
-	DurationMS *int64 `json:"duration_ms,omitempty"`
+	InProgress      bool     `json:"in_progress"`
+	Incomplete      bool     `json:"incomplete"`
+	DurationMS      *int64   `json:"duration_ms,omitempty"`
 }
 
 type ListCallRecordsResponse struct {
@@ -120,7 +114,6 @@ func GetCallRecordRetention(cfg Config) http.Handler {
 	})
 }
 
-// UpdateCallRecordRetention changes how long call records are kept, from their next pruning.
 func UpdateCallRecordRetention(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params CallRecordRetention
@@ -156,7 +149,6 @@ func callRecordFilter(w http.ResponseWriter, r *http.Request, cfg Config) (db.Ca
 			return db.CallRecordFilter{}, false
 		}
 
-		// Times are stored in nanoseconds since the epoch.
 		if !time.Unix(0, t.UnixNano()).Equal(t) {
 			writeError(r.Context(), w, http.StatusBadRequest, b.name+" must be from 1678 to 2262", nil, cfg.Logger)
 			return db.CallRecordFilter{}, false

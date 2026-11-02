@@ -13,11 +13,8 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// roster is the state of a resource in the tests: its members, a change adding one.
 type roster []string
 
-// rosterConfig renders the full state as "full <value> <members> seq=<seq>", a change as "add <value> <member>
-// seq=<seq>": the value of each subscription, its filter, shows in what it gets.
 func rosterConfig(partial bool, interval time.Duration) ua.ResourceConfig[roster, string] {
 	cfg := ua.ResourceConfig[roster, string]{
 		Full: func(value any, seq uint32, state roster) (ua.Notification, error) {
@@ -39,7 +36,6 @@ func textNotification(s string) ua.Notification {
 	return ua.Notification{Bodies: []sip.BodyPart{sip.NewBodyPart("text/plain", []byte(s))}}
 }
 
-// newResourceNotifier is an agent binding the SUBSCRIBEs of the "test" event to res, the From user of each its value.
 func newResourceNotifier(t *testing.T, res ua.Source, minExpires time.Duration) *notifierPeer {
 	n := &notifierPeer{subs: make(chan *ua.ServerSubscription, 4), ended: make(chan ua.End, 4)}
 
@@ -65,8 +61,6 @@ func newResourceNotifier(t *testing.T, res ua.Source, minExpires time.Duration) 
 	return n
 }
 
-// rawSubscribe subscribes the raw peer to the "test" event of n, and returns the SUBSCRIBE, its response, and the first
-// NOTIFY.
 func rawSubscribe(t *testing.T, r *raw, n *peer, user, expires string) (*sip.Request, *sip.Response, *sip.Request) {
 	t.Helper()
 
@@ -84,9 +78,8 @@ func rawSubscribe(t *testing.T, r *raw, n *peer, user, expires string) (*sip.Req
 	return req, res, r.nextRequest("NOTIFY")
 }
 
-// RFC 6665 §4.2.2, RFC 4575 §4.4: each change reaches every subscription, rendered for it; a subscriber whose NOTIFY
-// is in flight holds back no other, and gets the changes made meanwhile together, as one NOTIFY of the full state,
-// then partial notifications again.
+// RFC 6665 section 4.2.2
+// RFC 4575 section 4.4
 func TestResourceFanOut(t *testing.T) {
 	res := ua.NewResource(roster{"a"}, rosterConfig(true, 0))
 	n := newResourceNotifier(t, res, 0)
@@ -106,7 +99,6 @@ func TestResourceFanOut(t *testing.T) {
 		t.Fatalf("first NOTIFY %q", first.Body)
 	}
 
-	// Carol leaves her NOTIFY unanswered: the changes reach alice one by one.
 	state := roster{"a"}
 
 	for _, m := range []string{"b", "c", "d"} {
@@ -124,7 +116,6 @@ func TestResourceFanOut(t *testing.T) {
 
 	slow.noRequest()
 
-	// Answered, carol gets the full state, once.
 	slow.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(first, 200, ""))
 
 	full := slow.nextRequest("NOTIFY")
@@ -135,7 +126,6 @@ func TestResourceFanOut(t *testing.T) {
 	slow.sock.Send(sip.UDP, n.p.addr, sip.NewResponse(full, 200, ""))
 	slow.noRequest()
 
-	// Up to date again, she gets the next change as a partial notification.
 	state = append(state[:len(state):len(state)], "e")
 	_ = res.Change(context.Background(), state, "e")
 
@@ -150,8 +140,7 @@ func TestResourceFanOut(t *testing.T) {
 	}
 }
 
-// Without partial notifications, each change sends the full state; a refresh sends it too (RFC 6665 §4.2.1.2), and
-// the subscription ends detached from the resource.
+// RFC 6665 section 4.2.1.2
 func TestResourceFullOnly(t *testing.T) {
 	res := ua.NewResource(roster{"a"}, rosterConfig(false, 0))
 	n := newResourceNotifier(t, res, 0)
@@ -184,8 +173,7 @@ func TestResourceFullOnly(t *testing.T) {
 	}
 }
 
-// RFC 4575 §3.9: the changes within MinInterval of the last one notified come together, at its end, as the full
-// state; the first ones of a subscription go at once.
+// RFC 4575 section 3.9
 func TestResourceRate(t *testing.T) {
 	clock := netOf(t).Clock()
 	res := ua.NewResource(roster{"a"}, rosterConfig(true, 5*time.Second))
@@ -197,7 +185,6 @@ func TestResourceRate(t *testing.T) {
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "full alice [a] seq=0")
 
-	// The first NOTIFY answered, the first change goes at once.
 	netOf(t).Quiesce()
 
 	_ = res.Change(context.Background(), roster{"a", "b"}, "b")
@@ -228,8 +215,8 @@ func TestResourceRate(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.2.1.1, TS 24.379 §9.2.2.3.4 step 3: a SUBSCRIBE, or a refresh, asking for less than the minimum gets a
-// 423 with Min-Expires; a fetch is no subscription, and takes none.
+// RFC 6665 section 4.2.1.1
+// TS 24.379 clause 9.2.2.3.4
 func TestMinExpires(t *testing.T) {
 	res := ua.NewResource(roster{"a"}, rosterConfig(false, 0))
 	n := newResourceNotifier(t, res, 4294967295*time.Second)
@@ -262,7 +249,7 @@ func TestMinExpires(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3: a resource gone terminates its subscriptions with reason noresource, and takes no more.
+// RFC 6665 section 4.1.3
 func TestResourceTerminate(t *testing.T) {
 	res := ua.NewResource(roster{"a"}, rosterConfig(true, 0))
 	n := newResourceNotifier(t, res, 0)
@@ -284,7 +271,6 @@ func TestResourceTerminate(t *testing.T) {
 		t.Error("a change to a terminated resource")
 	}
 
-	// A SUBSCRIBE after it gets its subscription terminated at once.
 	r := newRaw(t)
 	if _, _, notify := rawSubscribe(t, r, n.p, "carol", "600"); notify == nil ||
 		notify.Header.Get("Subscription-State") != "terminated;reason=noresource" {
@@ -292,8 +278,6 @@ func TestResourceTerminate(t *testing.T) {
 	}
 }
 
-// A resource fans out to the subscriptions of several agents; under concurrent changes, each subscriber, applying the
-// partial notifications to the last full state, ends with the state of the resource.
 func TestResourceConverges(t *testing.T) {
 	res := ua.NewResource(roster{}, rosterConfig(true, 0))
 	n1, n2 := newResourceNotifier(t, res, 0), newResourceNotifier(t, res, 0)
@@ -345,7 +329,6 @@ func TestResourceConverges(t *testing.T) {
 		for done := false; !done; {
 			select {
 			case r := <-sb.notifys:
-				// "full <user> [<members>] seq=n" or "add <user> <member> seq=n".
 				body := string(r.Message().Body)
 
 				if strings.HasPrefix(body, "full ") {

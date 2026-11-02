@@ -15,14 +15,12 @@ import (
 	"github.com/ellanetworks/ims/sip/xsd"
 )
 
-// doc is a document with its extension decoded: of the presence, and of the status of each tuple.
 type doc struct {
 	p        pidf.Presence
 	x        Presence
 	statuses []Status
 }
 
-// decode decodes b, an error wrapping ErrValue kept as decode's.
 func decode(b []byte) (doc, error) {
 	p, err := pidf.Decode(b)
 	if err != nil && !errors.Is(err, pidf.ErrValue) {
@@ -44,7 +42,6 @@ func decode(b []byte) (doc, error) {
 	return d, errors.Join(errs...)
 }
 
-// encode sets the extension of d into its document and encodes it.
 func encode(d doc) ([]byte, error) {
 	p := d.p
 	p.Tuples = append([]pidf.Tuple(nil), p.Tuples...)
@@ -78,8 +75,6 @@ func decodeFile(t *testing.T, name string) doc {
 	return d
 }
 
-// roundTrip checks that d encodes, decodes to the same extension and elements not decoded, and encodes again to the
-// same bytes.
 func roundTrip(t *testing.T, d doc) {
 	t.Helper()
 
@@ -106,7 +101,6 @@ func roundTrip(t *testing.T, d doc) {
 	}
 }
 
-// notDecoded are the elements of d's presence and statuses its extension does not decode.
 func notDecoded(d doc) [][]*xmltree.Element {
 	_, used, _ := decodePresence(d.p.Other)
 	out := [][]*xmltree.Element{keep(nil, d.p.Other, used)}
@@ -119,7 +113,6 @@ func notDecoded(d doc) [][]*xmltree.Element {
 	return out
 }
 
-// norm is ss with each expiration as it encodes, for comparison: of "+00:00" and "Z" alike.
 func norm(ss []Status) []Status {
 	n := func(d *xsd.DateTime) *xsd.DateTime {
 		if d == nil {
@@ -174,8 +167,8 @@ const (
 	pid     = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
 )
 
-// The instances of testdata are valid against the schemas of Table 9.3.1.2-1 and RFC 3863 §4.4, the tuple id taken
-// as a string (pidf.Tuple.ID).
+// TS 24.379 clause 9.3.1.2
+// RFC 3863 section 4.4
 func TestDecodeTestdata(t *testing.T) {
 	yes := true
 
@@ -275,9 +268,8 @@ func TestDecodeTestdata(t *testing.T) {
 	}
 }
 
-// §9.2.1.2 step 5: the client publishes the groups the user is interested in at it, without status or expires, and
-// a p-id; §9.2.2.2.3 steps 9, 10, 14a and 18: the participating function reads the entity, the client ID, the groups
-// and the p-id.
+// TS 24.379 clause 9.2.1.2
+// TS 24.379 clause 9.2.2.2.3
 func TestUserPublish(t *testing.T) {
 	p := pidf.Presence{Entity: alice, Tuples: []pidf.Tuple{{ID: client1}}}
 
@@ -332,8 +324,7 @@ func TestUserPublish(t *testing.T) {
 	}
 }
 
-// RFC 3863 §4.2.3: what the extension does not know is kept, and passes on when it sets the elements it decodes; an
-// affiliation with a child to understand is not decoded.
+// RFC 3863 section 4.2.3
 func TestKeep(t *testing.T) {
 	d := decodeFile(t, "extended.xml")
 
@@ -370,7 +361,6 @@ func TestKeep(t *testing.T) {
 
 	roundTrip(t, d)
 
-	// §9.2.2.2.5: a status changed, the rest relayed.
 	d.statuses[0].Affiliations[0].Status = Deaffiliating
 	d.statuses[0].Affiliations[0].Expires = at("2026-10-20T08:01:04Z")
 	d.x.PID = ""
@@ -391,8 +381,6 @@ func TestKeep(t *testing.T) {
 	}
 }
 
-// Table 9.3.1.2-1: an element of the extension not valid against the schema is kept, not decoded, the others
-// decoded; set, the extension passes it on.
 func TestDecodeMalformed(t *testing.T) {
 	good := `<m:affiliation group="sip:g1@x" status="affiliated"/>`
 
@@ -436,7 +424,6 @@ func TestDecodeMalformed(t *testing.T) {
 			t.Errorf("%s: kept %v", c.name, n)
 		}
 
-		// Set and relayed with the element it could not decode.
 		d.statuses[0].Affiliations[0].Status = Deaffiliating
 
 		b, err := encode(d)
@@ -463,8 +450,7 @@ const repeated = `<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:m="urn:3gp
 	`<m:additionalData groupCallOngoing="x"/><m:additionalData/><m:additionalData groupCallOngoing="1"/>` +
 	`</presence>`
 
-// §9.3.1.2: one affiliation per group of a client, per client of a member, one functional alias per ID, one p-id,
-// groupStatus and additionalData: the first well-formed counts.
+// TS 24.379 clause 9.3.1.2
 func TestDecodeRepeated(t *testing.T) {
 	d, err := decode([]byte(repeated))
 	if !errors.Is(err, ErrValue) {
@@ -495,8 +481,7 @@ const mustUnderstand = `<presence xmlns="urn:ietf:params:xml:ns:pidf" xmlns:m="u
 	`<m:functionalAlias functionalAliasID="f"><x:e xmlns:p="urn:ietf:params:xml:ns:pidf" p:mustUnderstand="1"/></m:functionalAlias>` +
 	`</status></tuple></presence>`
 
-// RFC 3863 §4.2.3: an affiliation with a child to understand is unrecognized, not malformed; a mustUnderstand of a
-// child of a child the extension ignores is itself ignored.
+// RFC 3863 section 4.2.3
 func TestMustUnderstand(t *testing.T) {
 	d, err := decode([]byte(mustUnderstand))
 	if err != nil {
@@ -515,7 +500,6 @@ func TestMustUnderstand(t *testing.T) {
 
 	roundTrip(t, d)
 
-	// Not written: DecodeStatus would not decode it.
 	s.Affiliations[0].Other = append(s.Affiliations[0].Other, d.p.Tuples[0].Status.Other[1].Elements()[0])
 	if err := SetStatus(&pidf.Status{}, s); err == nil {
 		t.Error("child to understand set")
@@ -547,7 +531,7 @@ func TestSetErrors(t *testing.T) {
 	}
 }
 
-// §9.2.2.3.10: per-group dynamic data the server owning the group builds.
+// TS 24.379 clause 9.2.2.3.10
 func TestEncodeGroupDynamic(t *testing.T) {
 	no := false
 	d := doc{
@@ -600,7 +584,6 @@ func FuzzPidf(f *testing.F) {
 			return
 		}
 
-		// The document is pidf's to encode: of what it does not, the extension is not tested.
 		if _, err := pidf.Encode(d.p); err != nil {
 			return
 		}

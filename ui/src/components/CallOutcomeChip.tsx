@@ -2,7 +2,6 @@ import { Chip } from "@mui/material";
 import type { CallRecord } from "@/queries/callRecords";
 import { outcomeLabels } from "@/utils/callRecords";
 
-// CallOutcomeChip is how a call ended, or that it is in progress, or that the IMS lost it.
 export default function CallOutcomeChip({ record }: { record: CallRecord }) {
   if (record.incomplete) {
     return <Chip label="incomplete" size="small" variant="outlined" />;
@@ -28,7 +27,6 @@ export default function CallOutcomeChip({ record }: { record: CallRecord }) {
       return <Chip label={outcomeLabels.failed} color="error" size="small" />;
     case undefined:
       return <>—</>;
-    // Not answered, as calls go: cancelled, busy, rejected, no answer or unavailable.
     default:
       return <Chip label={outcomeLabels[record.outcome]} size="small" />;
   }

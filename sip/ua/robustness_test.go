@@ -15,8 +15,8 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// R1: a re-INVITE the application never answers gets a 500 with Retry-After after Policy.AnswerTimeout; an INFO left
-// open when the session ends gets a 487 (RFC 3261 §13.3.1, §15.1.2).
+// RFC 3261 section 13.3.1
+// RFC 3261 section 15.1.2
 func TestUnansweredRequests(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
@@ -40,7 +40,6 @@ func TestUnansweredRequests(t *testing.T) {
 		t.Fatalf("unanswered re-INVITE %d", res.StatusCode)
 	}
 
-	// An INFO of a raw peer left open as bob ends the session.
 	carol := newRaw(t)
 
 	invite := carol.invite(bob, "offer-1")
@@ -72,7 +71,6 @@ func TestUnansweredRequests(t *testing.T) {
 	}
 }
 
-// R3: a BYE Handler.Bye holds gets its 200 when the agent closes, and the session ends by that BYE.
 func TestHeldByeAnsweredOnShutdown(t *testing.T) {
 	ended := make(chan ua.End, 1)
 	held := make(chan *ua.Request, 1)
@@ -116,7 +114,6 @@ func TestHeldByeAnsweredOnShutdown(t *testing.T) {
 	}
 }
 
-// R4: Decorate completes a request sent again after a challenge once, not twice (RFC 3325 §9.1).
 func TestDecorateOnceAfterAChallenge(t *testing.T) {
 	alice := newPeerWith(t, "alice", func(c *ua.Config) {
 		c.Authenticate = func(req *sip.Request, _ *sip.Response) error {
@@ -151,7 +148,7 @@ func TestDecorateOnceAfterAChallenge(t *testing.T) {
 	}
 }
 
-// R5: refreshes turned off with SkipRefreshes resume once it is off again (RFC 4028 §10).
+// RFC 4028 section 10
 func TestRefreshesResume(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{Interval: 120 * time.Second})
@@ -175,8 +172,7 @@ func TestRefreshesResume(t *testing.T) {
 	bob.none()
 }
 
-// R6: once closed, the agent refuses new usages; Shutdown waits for the final response of an INVITE it cancels, a 2xx
-// crossing the CANCEL acknowledged and ended with a BYE (RFC 3261 §15).
+// RFC 3261 section 15
 func TestShutdownWaitsForTheCancelledInvite(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newUAS(t, alice)
@@ -197,7 +193,6 @@ func TestShutdownWaitsForTheCancelledInvite(t *testing.T) {
 	cancel := bob.nextRequest("CANCEL")
 	bob.sock.Send(sip.UDP, bob.to, sip.NewResponse(cancel, 200, ""))
 
-	// The 2xx crosses the CANCEL.
 	bob.answer(invite, 200, "answer-1")
 	bob.nextRequest("ACK")
 
@@ -218,7 +213,7 @@ func TestShutdownWaitsForTheCancelledInvite(t *testing.T) {
 	}
 }
 
-// R7: an extension of Config.Extensions is advertised and accepted in Require; one off gets a 420 (RFC 3261 §8.2.2.3).
+// RFC 3261 section 8.2.2.3
 func TestExtensions(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		bob := newPeerWith(t, "bob", func(c *ua.Config) { c.Extensions.Replaces = on })
@@ -244,8 +239,7 @@ func TestExtensions(t *testing.T) {
 	}
 }
 
-// R8: a re-INVITE that overtakes the ACK of the initial 2xx leaves that 2xx awaiting its ACK, which confirms the
-// session (RFC 3261 §13.3.1.4).
+// RFC 3261 section 13.3.1.4
 func TestReinviteOvertakingTheAck(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice := newRaw(t)
@@ -261,7 +255,6 @@ func TestReinviteOvertakingTheAck(t *testing.T) {
 	reinvite.SetBodies(ua.SDP([]byte(realSDP(4000, 1))))
 	alice.sock.Send(sip.UDP, bob.addr, reinvite)
 
-	// Bob, with ClientPolicy, answers the refresh; the first 2xx is retransmitted still.
 	for {
 		res := alice.response()
 		if strings.HasSuffix(res.Header.Get("CSeq"), "2 INVITE") {
@@ -276,8 +269,7 @@ func TestReinviteOvertakingTheAck(t *testing.T) {
 	}
 }
 
-// R2: Config.StrandFor puts the initial requests the application chooses on one strand, as the INVITEs of a group's
-// participants (TS 24.379 §10.1.1.4.5.1).
+// TS 24.379 clause 10.1.1.4.5.1
 func TestStrandFor(t *testing.T) {
 	strands := make(chan *ua.Strand, 2)
 
@@ -315,7 +307,7 @@ func TestStrandFor(t *testing.T) {
 	}
 }
 
-// R12: the 200 to the NOTIFY that creates the dialog carries the Contact of the agent (RFC 3261 §12.1.1).
+// RFC 3261 section 12.1.1
 func TestContactInTheFirstNotifyResponse(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
@@ -327,9 +319,7 @@ func TestContactInTheFirstNotifyResponse(t *testing.T) {
 	}
 }
 
-// RFC 3261 §9.2: a CANCEL that comes before its INVITE reached its strand, the strand busy, follows it there: the
-// INVITE gets its 487, whether the application answered it first or not. The CANCEL comes before the INVITE reaches
-// its strand in about half of the attempts.
+// RFC 3261 section 9.2
 func TestCancelBeforeTheInviteReachesItsStrand(t *testing.T) {
 	for range 20 {
 		cancelWhileTheStrandIsBusy(t)
@@ -352,7 +342,6 @@ func cancelWhileTheStrandIsBusy(t *testing.T) {
 	st := bob.a.NewStrand()
 	busy.Store(st)
 
-	// The strand stays busy until both requests are sent: no receiving meanwhile, which waits for it.
 	release := make(chan struct{})
 
 	st.Post(func() { <-release })

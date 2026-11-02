@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AccessNetworkInfoTest {
-    // TS 24.229 §7.2A.4.3 item 4, its example.
+    // TS 24.229 clause 7.2A.4.3
     @Test
     fun lte() {
         assertEquals(
@@ -23,7 +23,6 @@ class AccessNetworkInfoTest {
         )
     }
 
-    // Item 11: TAC of 6, NCI of 9.
     @Test
     fun nr() {
         assertEquals(
@@ -32,7 +31,6 @@ class AccessNetworkInfoTest {
         )
     }
 
-    // The cell's identity unknown, of a device without location access: the access type alone.
     @Test
     fun unknown() {
         assertEquals("3GPP-E-UTRAN-FDD", accessNetworkInfo(Cell.Lte(null, null, null, null, tdd = false)))

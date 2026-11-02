@@ -17,8 +17,6 @@ func newParticipant(t *testing.T) (*Participant, *participantOut, *fakeClock) {
 	return newTestParticipant(t, c, out, 7), out, c
 }
 
-// testTimers are a client's configuration of the timers (TS 24.483): T103 as T1, three sends within 6 seconds
-// (Table 11.1.1-1 NOTE 1, NOTE 2).
 var testTimers = ParticipantTimers{T100: time.Second, T101: time.Second, T103: 4 * time.Second}
 
 func newTestParticipant(t *testing.T, c *fakeClock, out *participantOut, ssrc uint32) *Participant {
@@ -32,14 +30,15 @@ func newTestParticipant(t *testing.T, c *fakeClock, out *participantOut, ssrc ui
 	return p
 }
 
-// §11.1.1, TS 24.483: T100 and T101 are configured; counters default (Table 11.2.1-1); §11.1.3, TS 24.484: T7
-// is configured, the others default (Table 11.1.3-1, Table 11.2.3-1).
+// TS 24.380 clause 11.1.1
+// TS 24.380 clause 11.2.1
+// TS 24.380 clause 11.1.3
+// TS 24.380 clause 11.2.3
 func TestTimerConfig(t *testing.T) {
 	if _, err := NewParticipant(ParticipantConfig{Timers: ParticipantTimers{T101: time.Second}}); err == nil {
 		t.Error("participant without T100")
 	}
 
-	// Table 11.1.1-1 NOTE 1.
 	if _, err := NewParticipant(ParticipantConfig{Timers: ParticipantTimers{T100: 2 * time.Second, T101: time.Second}}); err == nil {
 		t.Error("Floor Releases for 6 seconds")
 	}
@@ -74,7 +73,6 @@ func TestTimerConfig(t *testing.T) {
 		t.Error("server with T8 of 0")
 	}
 
-	// Table 11.1.3-1: T3 of 0 for audio cut-in.
 	cutIn := withT7(time.Second)
 	cutIn.T3, cutIn.C7 = 0, 0
 
@@ -99,8 +97,7 @@ func messageTypes(ms []floorctl.Message) []string {
 	return out
 }
 
-// §6.2.4.3.5: a Floor Request in the participant's SSRC, with the location not provided, the priority and the call
-// type configured.
+// TS 24.380 clause 6.2.4.3.5
 func TestPress(t *testing.T) {
 	p, out, _ := newParticipant(t)
 	p.cfg.Priority, p.cfg.Indicator = 3, floorctl.IndicatorEmergency
@@ -119,13 +116,13 @@ func TestPress(t *testing.T) {
 		t.Errorf("state %d", p.state)
 	}
 
-	// The message encodes as one of TS 24.380 §8.2.4.
 	if _, err := sent[0].App(); err != nil {
 		t.Error(err)
 	}
 }
 
-// §6.2.4.4.5, §6.2.4.4.6: T101 repeats the Floor Request, C101 in all, then gives up.
+// TS 24.380 clause 6.2.4.4.5
+// TS 24.380 clause 6.2.4.4.6
 func TestT101(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -141,7 +138,8 @@ func TestT101(t *testing.T) {
 	}
 }
 
-// §6.2.4.6.2, §6.2.4.6.3: T100 repeats the Floor Release, C100 in all, then the participant has no permission.
+// TS 24.380 clause 6.2.4.6.2
+// TS 24.380 clause 6.2.4.6.3
 func TestT100(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -165,7 +163,8 @@ func TestT100(t *testing.T) {
 	}
 }
 
-// §6.2.4.5.4: a Floor Revoke stops the media and releases the floor; §6.2.4.6.4: the Floor Idle ends the release.
+// TS 24.380 clause 6.2.4.5.4
+// TS 24.380 clause 6.2.4.6.4
 func TestRevoke(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -191,8 +190,8 @@ func TestRevoke(t *testing.T) {
 	}
 }
 
-// §6.2.4.2.2: the messages received before the 200 of an originating call are taken after it; §6.2.4.4.2: the 200's
-// mc_granted grants the implicit request, and a later Floor Granted is acknowledged only.
+// TS 24.380 clause 6.2.4.2.2
+// TS 24.380 clause 6.2.4.4.2
 func TestOriginate(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Receive(floorctl.Message{Type: floorctl.Granted, AckRequired: true, GrantedSSRC: ptr[uint32](9)})
@@ -222,7 +221,6 @@ func TestOriginate(t *testing.T) {
 		t.Errorf("mc_granted: state %d, SSRC %d", q.state, out.ssrc)
 	}
 
-	// §6.2.4.5.5, §6.3.4.4.2 1f: the server's Floor Granted after the 200 gives the SSRC to use.
 	q.Receive(floorctl.Message{Type: floorctl.Granted, GrantedSSRC: ptr[uint32](43)})
 
 	if out.ssrc != 43 || !out.transmit {
@@ -237,8 +235,10 @@ func TestOriginate(t *testing.T) {
 	}
 }
 
-// §6.2.4.3.3, §6.2.4.3.6: a Floor Taken, acknowledged if asked, starts T103; its expiry ends the media heard;
-// §6.2.4.3.4: media restarts it; §6.2.4.3.2: a Floor Idle stops it.
+// TS 24.380 clause 6.2.4.3.3
+// TS 24.380 clause 6.2.4.3.6
+// TS 24.380 clause 6.2.4.3.4
+// TS 24.380 clause 6.2.4.3.2
 func TestT103(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -271,7 +271,8 @@ func TestT103(t *testing.T) {
 	}
 }
 
-// §6.2.4.4.11: a Floor Taken while requesting ends the request; §6.2.4.4.8: releasing while requesting.
+// TS 24.380 clause 6.2.4.4.11
+// TS 24.380 clause 6.2.4.4.8
 func TestPendingRequest(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -291,7 +292,8 @@ func TestPendingRequest(t *testing.T) {
 	}
 }
 
-// §6.2.4.7.2, §6.2.4.8.2: the call released, no messages or media.
+// TS 24.380 clause 6.2.4.7.2
+// TS 24.380 clause 6.2.4.8.2
 func TestParticipantRelease(t *testing.T) {
 	p, out, c := newParticipant(t)
 	p.Join()
@@ -309,8 +311,8 @@ func TestParticipantRelease(t *testing.T) {
 	}
 }
 
-// §6.2.4.2.2 2, §6.2.4.3.3 6: a Floor Taken received before the 200 of a call without an implicit request, or
-// joined, is taken after it.
+// TS 24.380 clause 6.2.4.2.2
+// TS 24.380 clause 6.2.4.3.3
 func TestJoinEarly(t *testing.T) {
 	for _, join := range []func(*Participant){(*Participant).Join, func(p *Participant) { p.Originate(Origination{}) }} {
 		p, out, _ := newParticipant(t)
@@ -323,7 +325,7 @@ func TestJoinEarly(t *testing.T) {
 	}
 }
 
-// §6.2.4.5.4 5a i: the Floor Release after a Floor Revoke has the Floor Indicator, its G-bit 0.
+// TS 24.380 clause 6.2.4.5.4
 func TestReleaseAfterRevoke(t *testing.T) {
 	p, out, _ := newParticipant(t)
 	p.Join()

@@ -14,12 +14,10 @@ func TestRegistrationMetrics(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
 
-	// The 401 challenge does not count, the REGISTER that answers it does.
 	u.register(registerOptions{})
 	h.hss.nextSAR(t)
 	wantRegistrations(t, h.cfg.RegistrationAttempts, map[string]float64{"accept": 1, "auth_failure": 0, "reject": 0})
 
-	// A re-registration counts, a de-registration does not.
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES)}), 200)
 	h.hss.wantSAR(t, cx.AssignmentReRegistration)
 	wantStatus(t, u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "0"}), 200)

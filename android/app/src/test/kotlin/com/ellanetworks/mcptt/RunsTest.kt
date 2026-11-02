@@ -13,7 +13,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class RunsTest {
-    /** A run's watcher, registered once at most (ConnectivityManager's NetworkCallback), its teardown slow. */
     private class Watcher {
         var registered = false
         val log = mutableListOf<String>()
@@ -26,7 +25,7 @@ class RunsTest {
                 awaitCancellation()
             } finally {
                 withContext(NonCancellable) {
-                    delay(5_000) // The deregistration.
+                    delay(5_000)
                     registered = false
                     log += "stop $n"
                 }
@@ -34,7 +33,6 @@ class RunsTest {
         }
     }
 
-    // The runs are of backgroundScope: past every teardown (advanceUntilIdle leaves background work).
     private fun TestScope.settle() {
         advanceTimeBy(60_000)
         runCurrent()
@@ -75,7 +73,7 @@ class RunsTest {
         r.start()
         settle()
         r.stop()
-        r.start() // Waits for the teardown, then cancelled before running.
+        r.start()
         r.stop()
         r.start()
         settle()

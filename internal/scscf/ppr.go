@@ -14,29 +14,24 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// CxLockTimeout bounds how long a request of the HSS waits for the registrations it changes, held by a registration
-// that may itself wait for the HSS: the HSS gets an answer before its own timer for it fires, commonly 10 s or more.
 const CxLockTimeout = 5 * time.Second
 
 var (
-	// ErrUserUnknown is a request of the HSS for a private identity the S-CSCF serves no registration or profile of
-	// (TS 29.228 Table 6.2.2.1.1).
+	// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 	ErrUserUnknown = errors.New("scscf: private identity unknown")
 
-	// ErrUnsupportedUserData is a profile push with user information the S-CSCF does not recognise or support
-	// (TS 29.228 Table 6.2.2.1.1).
+	// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 	ErrUnsupportedUserData = errors.New("scscf: unsupported user data")
 
-	// ErrUnableToComply is a profile push the S-CSCF does not apply: one the HSS shall not send, or of a set it does
-	// not hold (TS 29.228 Table 6.2.2.1.1, §6.5.2.1).
+	// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
+	// TS 29.228 clause 6.5.2.1
 	ErrUnableToComply = errors.New("scscf: unable to comply")
 )
 
-// PushProfile applies a profile that the HSS pushes (TS 29.228 §6.2.2.1, §6.5.2.1, §6.6.1; TS 24.229 §5.4.1.8): the
-// user profile replaces that of the implicit set it is of, registered by any private identity, or kept unregistered.
-// The S-CSCF stores the new profile at once, or keeps what it had on an error; then each private identity that
-// registered the set learns of the change. The charging information and the allowed WAF and WWSF identities are not
-// used by the S-CSCF.
+// TS 29.228 clause 6.2.2.1
+// TS 29.228 clause 6.5.2.1
+// TS 29.228 clause 6.6.1
+// TS 24.229 clause 5.4.1.8
 func (r *Registrar) PushProfile(ctx context.Context, ppr cx.PushProfileRequest) error {
 	ctx, done, ok := r.begin(ctx)
 	if !ok {
@@ -78,8 +73,6 @@ func (r *Registrar) PushProfile(ctx context.Context, ppr cx.PushProfileRequest) 
 	return nil
 }
 
-// storePushed stores the profile pushed in place of that of its set, holding the lock of the profiles, and returns
-// the change, nil if none, and whether the registrations of the set are to be shortened.
 func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubscription, data []byte,
 ) (*profileChange, bool, error) {
 	set, regs, err := r.pushedSet(ctx, sub)
@@ -87,7 +80,6 @@ func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubs
 		return nil, false, err
 	}
 
-	// The HSS names a private identity known from an earlier server assignment (TS 29.228 Table 6.2.2.1).
 	if set.ID == 0 || !slices.ContainsFunc(regs, func(reg db.Registration) bool { return reg.IMPI == impi }) &&
 		privateIdentityOf(set.UserData) != impi {
 		if err := r.known(ctx, impi); err != nil {
@@ -102,8 +94,6 @@ func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubs
 	ids := implicitSet(sub)
 	registered := registeredAt(regs, r.clock.Now())
 
-	// TS 29.228 §6.5.2.1: the HSS deregisters the set with an RTR to leave it no identity, or to change its default
-	// identity.
 	if registered {
 		if !hasUnbarred(ids) {
 			return nil, false, fmt.Errorf("%w: profile push that bars every identity of a registered set", ErrUnableToComply)
@@ -122,8 +112,6 @@ func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubs
 	next := set
 	next.Identities, next.UserData = ids, data
 
-	// A set kept for an identity that left it, or for a wildcarded identity it no longer has, goes: the S-CSCF asks the
-	// HSS again at the identity's next request.
 	if u := set.Unregistered; u != nil {
 		if id, err := sip.ParseURI(u.Identity); err != nil || !servesUnregistered(sub, id, u.Wildcard, r.cfg.HomeDomain) {
 			if err := r.cfg.DB.DeleteSet(ctx, set.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
@@ -144,16 +132,12 @@ func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubs
 	return &pc, registered && pc.newAS, nil
 }
 
-// pushedSet is the set the profile pushed is of, and the registrations of it: the set that holds one of its public
-// user identities, or else the set kept unregistered for one of its identities, a PSI's or a wildcarded one's.
 func (r *Registrar) pushedSet(ctx context.Context, sub cx.IMSSubscription) (db.ImplicitSet, []db.Registration, error) {
 	sets, err := r.cfg.DB.FindSets(ctx, identityKeysOf(implicitSet(sub)))
 	if err != nil {
 		return db.ImplicitSet{}, nil, err
 	}
 
-	// TS 29.228 §6.5.2.1: a push is of one set, and adds only identities in no set: the HSS moves an identity in two
-	// steps, out of its set first.
 	if len(sets) > 1 {
 		return db.ImplicitSet{}, nil, fmt.Errorf("%w: profile push with the identities of %d sets", ErrUnableToComply, len(sets))
 	}
@@ -183,8 +167,6 @@ func (r *Registrar) pushedSet(ctx context.Context, sub cx.IMSSubscription) (db.I
 	return sets[0], regs, nil
 }
 
-// known is nil if the S-CSCF holds a registration of the private identity, or a set kept unregistered of its
-// subscription, and ErrUserUnknown otherwise.
 func (r *Registrar) known(ctx context.Context, impi string) error {
 	regs, err := r.cfg.DB.ListRegistrationsByIMPI(ctx, impi)
 	if err != nil {
@@ -207,7 +189,6 @@ func (r *Registrar) known(ctx context.Context, impi string) error {
 	return ErrUserUnknown
 }
 
-// privateIdentityOf is the private identity of the subscription of a profile.
 func privateIdentityOf(data []byte) string {
 	sub, err := cx.ParseUserData(data)
 	if err != nil {
@@ -217,7 +198,6 @@ func privateIdentityOf(data []byte) string {
 	return sub.PrivateIdentity
 }
 
-// profileNames are the public identities of a subscription, by key and as they are, wildcarded ones included.
 func profileNames(sub cx.IMSSubscription) map[string]bool {
 	names := map[string]bool{}
 
@@ -234,7 +214,6 @@ func profileNames(sub cx.IMSSubscription) map[string]bool {
 	return names
 }
 
-// servesUnregistered reports whether the subscription still has a service profile for the identity a set was kept for.
 func servesUnregistered(sub cx.IMSSubscription, u sip.URI, wildcard, homeDomain string) bool {
 	_, ok := serviceProfileOf(sub, u, wildcard, homeDomain)
 	return ok

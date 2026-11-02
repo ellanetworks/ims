@@ -11,10 +11,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// FuzzSettings parses arbitrary settings, and checks of each accepted that its identities are found, its members are
-// users, and the floor timers of its groups are ones floor accepts.
 func FuzzSettings(f *testing.F) {
-	// Valid settings, and invalid ones.
 	b, err := json.Marshal(valid())
 	if err != nil {
 		f.Fatal(err)
@@ -72,7 +69,6 @@ func FuzzSettings(f *testing.F) {
 	})
 }
 
-// decode decodes settings of the JSON of their Go names, of known fields only, and validates them.
 func decode(data []byte) (*Snapshot, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()

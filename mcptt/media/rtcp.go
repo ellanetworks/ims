@@ -5,7 +5,8 @@ import (
 	"errors"
 )
 
-// RTCP packet types whose SSRC fields the relay translates (RFC 3550 §12.1, RFC 4585 §6.1).
+// RFC 3550 section 12.1
+// RFC 4585 section 6.1
 const (
 	rtcpSR    = 200
 	rtcpRR    = 201
@@ -15,15 +16,14 @@ const (
 	rtcpPSFB  = 206
 )
 
-// errRTCP is the error of a datagram that is not RTCP packets the relay can forward.
 var errRTCP = errors.New("media: malformed RTCP")
 
-// rtcpSSRCs appends to senders and sources the offsets in b, RTCP packets, of their SSRC fields: senders, those
-// naming the source that sends the packet or describes itself (the SSRC of an SR or RR, RFC 3550 §6.4; the chunks of
-// an SDES, §6.5; the sources of a BYE, §6.6; the packet sender of feedback, RFC 4585 §6.1); sources, those naming a
-// source reported on (the report blocks of an SR or RR, RFC 3550 §6.4.1; the media source of feedback). Other
-// packets have none it translates: APP is forwarded unchanged (RFC 3550 §7.2). It fails, without allocating, unless
-// the packets' lengths add up to b's (§A.2) and each body holds its fields.
+// RFC 3550 section 6.4
+// RFC 3550 section 6.4.1
+// RFC 3550 section 6.5
+// RFC 3550 section 6.6
+// RFC 3550 section A.2
+// RFC 4585 section 6.1
 func rtcpSSRCs(b []byte, senders, sources []int) ([]int, []int, error) {
 	if len(b) == 0 {
 		return senders, sources, errRTCP
@@ -82,7 +82,6 @@ func rtcpSSRCs(b []byte, senders, sources []int) ([]int, []int, error) {
 
 				senders = append(senders, p)
 
-				// Its items, to a null octet, padded to 32 bits.
 				q := p + 4
 				for {
 					if q >= end {

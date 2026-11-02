@@ -27,7 +27,6 @@ func mustSDP(t *testing.T, lines ...string) *sdp.Session {
 	return s
 }
 
-// rxMediaComponents returns the components as the Rx backend sends them.
 func rxMediaComponents(x sdpExchange, flows map[int]flowNumbers) ([]rx.MediaComponent, error) {
 	c, err := mediaComponents(x, flows)
 
@@ -88,7 +87,7 @@ func TestMediaComponentFromTheCallerSide(t *testing.T) {
 	}
 }
 
-// TS 29.213 Table 6.2.1: UL from the downlink SDP, DL from the uplink SDP.
+// TS 29.213 clause 6.2 table 6.2.1
 func TestBandwidthDirections(t *testing.T) {
 	ue := audioSDP(t, "10.0.0.1", "4000")
 	ue.Media[0].SetBandwidth(sdp.BandwidthAS, 30)
@@ -222,7 +221,7 @@ func TestRemovedMedia(t *testing.T) {
 	}
 }
 
-// TS 29.213 Table 6.2.2: Flow-Number by increasing downlink destination port, kept for the session.
+// TS 29.213 clause 6.2 table 6.2.2
 func TestFlowNumbers(t *testing.T) {
 	offer := audioSDP(t, "10.0.0.1", "4000", "a=rtcp:3999")
 	answer := audioSDP(t, "10.0.0.2", "5000")
@@ -247,7 +246,7 @@ func TestFlowNumbers(t *testing.T) {
 	}
 }
 
-// TS 29.214 Annex A.1: IPv6 sources take the 64-bit prefix.
+// TS 29.214 clause A.1
 func TestIPv6FlowDescriptions(t *testing.T) {
 	offer := audioSDP(t, "2001:db8:1::5", "4000", "a=rtcp-mux")
 	answer := audioSDP(t, "2001:db8:2::7", "5000", "a=rtcp-mux")
@@ -329,7 +328,6 @@ func corpusSDP(t *testing.T, call, name string) *sdp.Session {
 	return s
 }
 
-// The offer and answer of two Crosscall Core-Z5 phones, as the originating P-CSCF sees them.
 func TestMediaComponentFromLivePhones(t *testing.T) {
 	got, err := rxMediaComponents(sdpExchange{
 		offer: corpusSDP(t, crosscallCall, "001-INVITE.sip"), answer: corpusSDP(t, crosscallCall, "006-183-INVITE.sip"), offerFromUE: true,
@@ -357,8 +355,7 @@ func TestMediaComponentFromLivePhones(t *testing.T) {
 	}
 }
 
-// TS 29.213 Table 6.2.1: a Pixel 10a video call to a Crosscall Core-Z5, as the originating P-CSCF sees it. Each m-line
-// is its own component, its bandwidth from its own b= lines, the session-level ones ignored.
+// TS 29.213 clause 6.2 table 6.2.1
 func TestMediaComponentsFromLiveVideoCall(t *testing.T) {
 	got, err := rxMediaComponents(sdpExchange{
 		offer: corpusSDP(t, pixelVideoCall, "001-INVITE.sip"), answer: corpusSDP(t, pixelVideoCall, "006-183-INVITE.sip"),
@@ -402,7 +399,8 @@ func TestMediaComponentsFromLiveVideoCall(t *testing.T) {
 	}
 }
 
-// TS 29.213 Table 6.2.1/6.2.2: TCP media is ENABLED with both directions whatever its direction attribute.
+// TS 29.213 clause 6.2 table 6.2.1
+// TS 29.213 clause 6.2 table 6.2.2
 func TestTCPMedia(t *testing.T) {
 	for _, proto := range []string{"TCP/MSRP", "TCP/TLS/MSRP"} {
 		t.Run(proto, func(t *testing.T) {
@@ -428,7 +426,7 @@ func TestTCPMedia(t *testing.T) {
 	}
 }
 
-// RFC 4571: RTP over TCP has its RTCP over TCP too, on a connection of its own unless muxed.
+// RFC 4571
 func TestRTPOverTCP(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "t=0 0",
 		"m=video 4000 TCP/RTP/AVP 99", "b=AS:500", "a=sendonly")
@@ -458,7 +456,8 @@ func TestRTPOverTCP(t *testing.T) {
 	}
 }
 
-// TS 29.213 Table 6.2.1/6.2.2: a data channel on hold stays ENABLED, its flows over UDP.
+// TS 29.213 clause 6.2 table 6.2.1
+// TS 29.213 clause 6.2 table 6.2.2
 func TestDataChannelMedia(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "t=0 0", "a=sendonly",
 		"m=application 4000 UDP/DTLS/SCTP webrtc-datachannel", "b=AS:500", "a=sctp-port:5000")
@@ -478,7 +477,6 @@ func TestDataChannelMedia(t *testing.T) {
 	}
 }
 
-// Bandwidth comes from the media description only, never from the session level.
 func TestSessionLevelBandwidthIgnored(t *testing.T) {
 	offer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.1", "s=-", "c=IN IP4 10.0.0.1", "b=AS:100", "t=0 0", "m=audio 4000 RTP/AVP 0")
 	answer := mustSDP(t, "v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "b=AS:100", "t=0 0", "m=audio 5000 RTP/AVP 0")
@@ -493,7 +491,7 @@ func TestSessionLevelBandwidthIgnored(t *testing.T) {
 	}
 }
 
-// TS 24.229 §7.2A.5.2.7
+// TS 24.229 clause 7.2A.5.2.7
 func TestChargingInfo(t *testing.T) {
 	gprs := rx.IPCAN3GPPGPRS
 	fiveGS := rx.IPCAN3GPP5GS
@@ -525,17 +523,14 @@ func TestChargingInfo(t *testing.T) {
 			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
 			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
 		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB01;flow-id=({1,1})"`},
-		// TS 29.214 Table E.2-1, TS 24.229 §7.2A.5.2.10
 		"non-3GPP 5GS": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
 			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPP5GS},
 		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=00"`},
-		// TS 24.229 §7.2A.5.2.3: EPC via WLAN has no ecid.
 		"non-3GPP EPS": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: ids(1), AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
 			AccessNetwork: rx.AccessNetwork{IPCANType: &non3GPPEPS},
 		}, ""},
-		// TS 24.229 §7.2A.5.2.10: one item per PDU session, whose identifier comes once per QoS flow.
 		"one item per identifier": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{
 				{Value: []byte{0xab}, Flows: []rx.Flows{{MediaComponentNumber: 1, FlowNumbers: []uint32{1}}}},
@@ -547,7 +542,6 @@ func TestChargingInfo(t *testing.T) {
 			AccessNetworkChargingAddress: netip.MustParseAddr("192.0.2.2"),
 			AccessNetwork:                rx.AccessNetwork{IPCANType: &fiveGS},
 		}, `smf=192.0.2.2;5gs-info="5gs-item=1;5gscid=AB;flow-id=({1,1},{2,1}),5gs-item=2;5gscid=CD;flow-id=({3,1})"`},
-		// TS 24.229 Table 7.2A.5: ecid and 5gscid are 1*HEXDIG.
 		"empty identifier": {rx.AAAnswer{
 			AccessNetworkChargingIdentifiers: []rx.AccessNetworkChargingIdentifier{{}, {Value: []byte{1}}},
 			AccessNetworkChargingAddress:     netip.MustParseAddr("192.0.2.1"),
@@ -573,8 +567,8 @@ func TestChargingInfo(t *testing.T) {
 	}
 }
 
-// TS 24.380 §4.3.3.1, TS 29.213 Table 6.2.2: the MCPTT media plane control channel is one RTCP flow, both ways, on the
-// port of its m-line; the speech next to it keeps its RTP and RTCP flows.
+// TS 24.380 clause 4.3.3.1
+// TS 29.213 clause 6.2 table 6.2.2
 func TestMCPTTControlChannel(t *testing.T) {
 	session := func(addr, audio, control string, dir string) *sdp.Session {
 		return mustSDP(t, "v=0", "o=- 1 1 IN IP4 "+addr, "s=-", "c=IN IP4 "+addr, "t=0 0",

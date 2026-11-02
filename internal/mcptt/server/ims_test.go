@@ -27,21 +27,8 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// core is a stand-in IM CN subsystem: one S-CSCF, P-CSCF of its UEs too, on sip/proxy, as a standard core behaves
-// towards an AS, with the variance of the cores the server meets, by UE (imsUE). It sends the third-party REGISTERs
-// of its UEs (TS 24.229 §5.4.1.7, §5.4.1.7A), of their registration tokens (§5.4.1.7 l) or none, the implicit
-// registration set in the P-Associated-URI of the 200 to the UE's REGISTER (§5.4.1.2.2F b) or, as Kamailio, of the
-// third-party REGISTER itself; its Contact an address, or, as Kamailio, its host name without a port, which the
-// server resolves by its SRV records (RFC 3263 §4.2). It asserts the originating requests of a UE (§5.4.3.2 step 1)
-// by its default public user identity, which need not be the To of its third-party REGISTER, and sends them to the
-// AS over ISC by the originating iFC of MCPTT, with the AS's URI and an original dialog identifier in the Route,
-// P-Served-User, a P-Charging-Vector, and the token in Feature-Caps if any (§5.4.3.2 step 5); a request of the AS
-// without "orig" it serves as terminating, to the registered contact of its Request-URI (§5.4.3.3), the AS's
-// terminating iFC not matching. It record-routes the initial INVITEs, and resolves the PSI domain to the server, as
-// RFC 3263 would. It accepts the reg event subscriptions of the AS (§5.4.2.1.1), with a NOTIFY of the registrations
-// of the user (§5.4.2.1.2), or, as Kamailio, refuses them (403); a network-initiated deregistration
-// (§5.4.1.5) has it send a NOTIFY ending the subscription (RFC 6665 §4.4.1) and a third-party REGISTER of Expires 0
-// (§5.4.1.7 f).
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
 type core struct {
 	t     *testing.T
 	l     *transaction.Layer
@@ -50,10 +37,7 @@ type core struct {
 	as    netip.AddrPort
 	hosts map[string]netip.AddrPort
 
-	mu sync.Mutex
-	// ues are the registered UEs by contact address and by public user identity; fromAS and toAS the requests the
-	// S-CSCF received from the AS and sent it, as they came and went; subs the reg event subscriptions of the AS, by
-	// Call-ID, subscribed their responses.
+	mu           sync.Mutex
 	ues          map[netip.AddrPort]*imsUE
 	impus        map[string]*imsUE
 	fromAS, toAS []*sip.Request
@@ -61,17 +45,11 @@ type core struct {
 	subscribed   []*sip.Response
 	icid         int
 
-	// forge is the registration token of the UEs' requests to the AS, if set: of another registration.
 	forge string
 }
 
-// scscfHost is the host name of the S-CSCF, without a port in the Contact of its third-party REGISTERs as Kamailio's.
 const scscfHost = "scscf.ims.example.com"
 
-// imsUE is a UE as the core registered it: the To of its third-party REGISTER, its implicit registration set of the
-// P-Associated-URI, its default public user identity first, which the core asserts (TS 24.229 §5.2.6.3.1); its
-// token; kamailio, the core is Kamailio's for it (no token, the set in the third-party REGISTER, its Contact by host
-// name, the reg event subscription refused).
 type imsUE struct {
 	impu     string
 	set      []string
@@ -80,7 +58,6 @@ type imsUE struct {
 	kamailio bool
 }
 
-// regSub is a reg event subscription of the AS: of a UE, its dialog.
 type regSub struct {
 	ue                *imsUE
 	callID, tag, from string
@@ -108,7 +85,6 @@ func (c *core) uri() sip.URI {
 	return sip.URI{Scheme: "sip", Host: c.addr.Addr().String(), Port: c.addr.Port()}
 }
 
-// asURI is the URI of the AS in the iFC, the Request-URI of the third-party REGISTERs (TS 24.229 §5.4.1.7 a).
 func (c *core) asURI() string { return "sip:" + c.as.String() }
 
 func (c *core) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
@@ -204,8 +180,8 @@ func (c *core) HandleRequest(ctx context.Context, tx *transaction.ServerTransact
 	}
 }
 
-// subscribe answers a SUBSCRIBE of the AS to the reg event package (TS 24.229 §5.4.2.1.1), after checking it is as
-// §5.7.1.1 a to f has it: within the dialog a refresh, or its end of Expires 0, a 481 once the subscription ended.
+// TS 24.229 clause 5.4.2.1.1
+// TS 24.229 clause 5.7.1.1
 func (c *core) subscribe(tx *transaction.ServerTransaction, req *sip.Request) {
 	to, _ := req.Header.To()
 	from, _ := req.Header.From()
@@ -263,9 +239,7 @@ func (c *core) subscribe(tx *transaction.ServerTransaction, req *sip.Request) {
 	c.notify(sub, "active;expires=3761", "active")
 }
 
-// notify sends the AS a NOTIFY of sub, of Subscription-State state, a full document of the registrations of the
-// public user identities of the UE, each of state, the UE's contact in it (TS 24.229 §5.4.2.1.2 steps 3, 4). Called
-// with c.mu held.
+// TS 24.229 clause 5.4.2.1.2
 func (c *core) notify(sub *regSub, state, regState string) {
 	sub.cseq++
 
@@ -317,7 +291,6 @@ func (c *core) HandleAck(ctx context.Context, ack *sip.Request) {
 
 func (c *core) HandleTransactionError(context.Context, *transaction.ServerTransaction, error) {}
 
-// target is the next hop of out: its top Route, or else its Request-URI, a domain of hosts resolved.
 func (c *core) target(out *sip.Request) proxy.Target {
 	u := out.URI
 	if r, err := out.Header.TopRoute(); err == nil {
@@ -336,9 +309,8 @@ func (c *core) target(out *sip.Request) proxy.Target {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: c.addr, Remote: to}}
 }
 
-// register registers the UE of u, of the registration token, none as Kamailio's, and sends the AS its third-party
-// REGISTER, with the REGISTER of the UE, logging on to MCPTT if logon (its mcptt-info), and its 200 (TS 24.229
-// §5.4.1.7, §5.4.1.7A); the final response of the AS.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
 func (c *core) register(u *imsUser, token string, logon bool) *sip.Response {
 	c.t.Helper()
 
@@ -379,7 +351,6 @@ func (c *core) register(u *imsUser, token string, logon bool) *sip.Response {
 	req.Header.Set("P-Charging-Vector", "icid-value=4a2f;orig-ioi=ims.example.com")
 
 	if u.kamailio {
-		// Kamailio sends one body, the UE's REGISTER, and the implicit set in a header field of its own.
 		req.Header.Set("P-Associated-URI", strings.Join(pau, ", "))
 		req.SetBody("message/sip", reg.Bytes())
 	} else {
@@ -401,9 +372,10 @@ func (c *core) register(u *imsUser, token string, logon bool) *sip.Response {
 	return c.send(u.w.n, req)
 }
 
-// deregister deregisters the UE of u by the network (TS 24.229 §5.4.1.5): the NOTIFY of its registrations terminated
-// ending the subscriptions of the AS (§5.4.2.1.2; RFC 6665 §4.4.1), then the third-party REGISTER of Expires 0, without
-// body or token (§5.4.1.7 f); the final response of the AS.
+// TS 24.229 clause 5.4.1.5
+// TS 24.229 clause 5.4.2.1.2
+// RFC 6665 section 4.4.1
+// TS 24.229 clause 5.4.1.7
 func (c *core) deregister(u *imsUser) *sip.Response {
 	c.t.Helper()
 
@@ -433,7 +405,6 @@ func (c *core) deregister(u *imsUser) *sip.Response {
 	return c.send(u.w.n, req)
 }
 
-// send sends req to the AS, and returns its final response.
 func (c *core) send(n *siptest.Net, req *sip.Request) *sip.Response {
 	c.t.Helper()
 
@@ -470,7 +441,6 @@ func (f *final) HandleResponse(ctx context.Context, res *sip.Response) {
 
 func (f *final) HandleError(context.Context, error) {}
 
-// requests are the requests of method the S-CSCF received from the AS, and sent it, since the last call.
 func (c *core) requests(method string) (from, to []*sip.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -493,7 +463,6 @@ func (c *core) requests(method string) (from, to []*sip.Request) {
 	return from, to
 }
 
-// subscriptions are the responses of the S-CSCF to the SUBSCRIBEs of the AS, since the last call.
 func (c *core) subscriptions() []*sip.Response {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -504,7 +473,7 @@ func (c *core) subscriptions() []*sip.Response {
 	return out
 }
 
-// dns has the S-CSCF's host name at its address, by its SRV record over UDP (RFC 3263 §4.2).
+// RFC 3263 section 4.2
 type dns struct{ core netip.AddrPort }
 
 func (d dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
@@ -523,7 +492,6 @@ func (d dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
-// imsWorld is the server through the IMS: the core, and the clients on UEs behind it.
 type imsWorld struct {
 	t     *testing.T
 	n     *siptest.Net
@@ -534,10 +502,7 @@ type imsWorld struct {
 	users map[string]*imsUser
 }
 
-// imsUser is a client on a UE behind the core, which is its P-CSCF: its requests go there, completed as testue's
-// UE.Originate does (TS 24.229 §5.1.2A.1.1: the Route of its Service-Route, P-Preferred-Identity). impu is the
-// public user identity it registers, set its implicit registration set, its default public user identity first;
-// kamailio, the core behaves as Kamailio's towards the AS for it.
+// TS 24.229 clause 5.1.2A.1.1
 type imsUser struct {
 	*user
 
@@ -548,8 +513,6 @@ type imsUser struct {
 	contact  sip.URI
 }
 
-// newIMSWorld is the server through the core, which serves alice as Ella IMS does, her default public user identity a
-// tel URI and not the To of her third-party REGISTER; bob as Kamailio does; carol as Ella IMS does, of one identity.
 func newIMSWorld(t *testing.T) *imsWorld {
 	t.Helper()
 
@@ -602,8 +565,6 @@ func newIMSWorld(t *testing.T) *imsWorld {
 	return w
 }
 
-// user registers the user of name, its default public user identity alias if not "", the core Kamailio's for it if
-// kamailio.
 func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 	t := w.t
 	u := &imsUser{
@@ -691,15 +652,13 @@ func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 	}
 }
 
-// TS 24.229 §5.4.1.7, §5.7.1.1, §5.7.3, §5.7.2; TS 24.379 §10.1.1.3.1.1, §6.3.2.2.5.2, §6.3.2.2.3: through the IMS,
-// alice's INVITE reaches the participating function over ISC, her MCPTT ID of the binding of the implicit
-// registration set her asserted identity, her default one, is of; the INVITEs of the members go to the S-CSCF of
-// their third-party REGISTERs, bob's by its host name and SRV records (RFC 3263 §4.2), to their IMPU, the
-// participating PSI asserted, without "orig", the ICSI asserted and a P-Charging-Vector of the server's domain. The
-// 200 to alice has the P-Charging-Vector of a terminating UA (§5.7.2). The server subscribes to the reg event
-// package of alice and carol (§5.7.1.1), bob's refused as Kamailio does. The requests of the dialogs follow the
-// Record-Route of the S-CSCF: bob's BYE reaches the server, and the server's BYE reaches carol, of her INVITE's
-// icid-value (§5.7.3), once alice, the initiator, leaves police.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.7.3
+// TS 24.229 clause 5.7.2
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 6.3.2.2.5.2
+// TS 24.379 clause 6.3.2.2.3
 func TestThroughIMS(t *testing.T) {
 	w := newIMSWorld(t)
 	alice, bob, carol := w.users["alice"], w.users["bob"], w.users["carol"]
@@ -733,7 +692,6 @@ func TestThroughIMS(t *testing.T) {
 		t.Errorf("P-Charging-Vector of the 200 %q", v)
 	}
 
-	// The ICSI the originating P-CSCF gives the policy function (TS 29.514 Annex B.1 NOTE 3), percent-encoded.
 	if caps, err := ok.Header.FeatureCaps(); err != nil || len(caps) != 1 ||
 		!slices.Equal(caps[0].Tokens("g.3gpp.icsi-ref"), []string{identity.ICSI}) ||
 		ok.Header.Get("Feature-Caps") != `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"` {
@@ -793,7 +751,6 @@ func TestThroughIMS(t *testing.T) {
 		}
 	}
 
-	// The floor through the media plane.
 	ca.PressPTT()
 	w.n.Advance(time.Second)
 	alice.expect(t, "floor:granted")
@@ -801,7 +758,6 @@ func TestThroughIMS(t *testing.T) {
 	ca.ReleasePTT()
 	w.n.Advance(time.Second)
 
-	// A member's BYE, through the S-CSCF to the session identity, which its domain resolves.
 	w.core.requests("BYE")
 	cb.Leave(context.Background())
 	w.n.Quiesce()
@@ -812,8 +768,6 @@ func TestThroughIMS(t *testing.T) {
 		t.Fatalf("BYEs to the AS %v", byes)
 	}
 
-	// The initiator leaving releases police (TS 24.379 §6.3.8.1 3): the server's BYE to carol goes to the S-CSCF
-	// on the route of her dialog.
 	w.core.requests("BYE")
 	ca.Leave(context.Background())
 	w.n.Quiesce()
@@ -835,10 +789,10 @@ func TestThroughIMS(t *testing.T) {
 	}
 }
 
-// TS 24.229 §4.4.1, §5.7.1.4, §5.7.1.3B; TS 24.379 §10.1.1.3.1.1 step 2a: through the IMS, a request from outside the
-// trust domain gets a 403, whatever it asserts, an initial INVITE or REGISTER as a request within a dialog; an
-// INVITE of the S-CSCF of a registration token not the binding's is not of the client's registration: its user is
-// unknown.
+// TS 24.229 clause 4.4.1
+// TS 24.229 clause 5.7.1.4
+// TS 24.229 clause 5.7.1.3B
+// TS 24.379 clause 10.1.1.3.1.1
 func TestThroughIMSUntrusted(t *testing.T) {
 	w := newIMSWorld(t)
 	p := w.n.Peer()
@@ -888,8 +842,8 @@ func TestThroughIMSUntrusted(t *testing.T) {
 	w.users["bob"].expectNot(t, "incoming")
 }
 
-// TS 24.229 §5.4.1.7 l, §5.7.1.3B: alice's UE registers again, of a new registration token, its REGISTER without
-// mcptt-info (TS 33.180 §5.1.3.2.1): its binding takes the token, and her calls of it are served.
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.7.1.3B
 func TestThroughIMSNewToken(t *testing.T) {
 	w := newIMSWorld(t)
 	alice := w.users["alice"]
@@ -914,9 +868,10 @@ func TestThroughIMSNewToken(t *testing.T) {
 	w.n.Quiesce()
 }
 
-// TS 24.229 §5.4.1.5, §5.4.1.7 f, §5.7.1.1 NOTE 5; RFC 6665 §4.4.1: carol deregistered by the network, of a NOTIFY
-// ending the reg event subscription and a third-party REGISTER of Expires 0, is logged off: alice's call invites bob
-// only, and the server sends no SUBSCRIBE to end the subscription ended.
+// TS 24.229 clause 5.4.1.5
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.7.1.1
+// RFC 6665 section 4.4.1
 func TestThroughIMSNetworkDeregistration(t *testing.T) {
 	w := newIMSWorld(t)
 	alice, bob, carol := w.users["alice"], w.users["bob"], w.users["carol"]

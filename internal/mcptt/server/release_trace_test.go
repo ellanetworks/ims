@@ -10,7 +10,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// spansOf are the spans of rec ended of name and kind.
 func spansOf(rec *tracetest.SpanRecorder, name string, kind oteltrace.SpanKind) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 
@@ -23,7 +22,6 @@ func spansOf(rec *tracetest.SpanRecorder, name string, kind oteltrace.SpanKind) 
 	return out
 }
 
-// detachedFrom checks that s is a root of the role, linked to cause alone.
 func detachedFrom(t *testing.T, s, cause sdktrace.ReadOnlySpan) {
 	t.Helper()
 
@@ -44,8 +42,6 @@ func detachedFrom(t *testing.T, s, cause sdktrace.ReadOnlySpan) {
 	t.Fatalf("%s has no role: %v", s.Name(), s.Attributes())
 }
 
-// The release of a call by T4 (Inactivity) and by TNG3 is a trace of its own, linked to the originator's INVITE,
-// whose BYEs are in it.
 func TestReleaseTraces(t *testing.T) {
 	for _, tc := range []struct {
 		name, group, span string

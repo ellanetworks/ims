@@ -22,9 +22,6 @@ import (
 
 var perf = flag.Bool("perf", false, "measure the registrations and the calls through the IMS, logging and tracing off")
 
-// TestPerformance measures the IMS end to end, in process: UEs over IPsec, through the P-CSCF and the S-CSCF, with
-// the fake HSS over Cx and the fake PCRF over Rx. The allocations are those of the whole process per operation, UEs
-// and fakes included. Run with: go test ./internal/integration -run TestPerformance -perf -v
 func TestPerformance(t *testing.T) {
 	if !*perf {
 		t.Skip("run with -perf")
@@ -32,7 +29,6 @@ func TestPerformance(t *testing.T) {
 
 	s := newSceneWith(t, func(srv *server.Server) { srv.Logger = slog.New(slog.DiscardHandler) })
 
-	// The fakes keep the requests they answer for the tests to look at: none here.
 	go func() {
 		for range s.hss.Requests() {
 		}
@@ -42,7 +38,6 @@ func TestPerformance(t *testing.T) {
 		}
 	}()
 
-	// Pairs of UEs, the first calling the second, spread over the hosts: each UE has its own IPsec flows.
 	pairs := make([]pair, 32)
 
 	for i := range pairs {
@@ -52,11 +47,9 @@ func TestPerformance(t *testing.T) {
 
 		pairs[i] = pair{from: s.quietCaller(i%subscribers, from), to: to.msisdn + ";user=phone"}
 
-		// The callee answers every call: ringing with a reliable 180, then a 200.
 		go answer(t, s.quietCaller((i+1)%subscribers, to))
 	}
 
-	// A first call of each pair, unmeasured: the TCP connections, Rx sessions and caches of a first call.
 	var warm sync.WaitGroup
 
 	for _, p := range pairs {
@@ -120,7 +113,6 @@ func TestPerformance(t *testing.T) {
 		})
 	}
 
-	// Last: the registrations, by a second device of a subscriber, so that the calls run with no device leaving.
 	t.Run("registrations", func(t *testing.T) {
 		u := s.quietDevice(4, subscriberAt(2), testue.Config{IMEI: "35693803564399"})
 
@@ -154,7 +146,6 @@ type pair struct {
 	to   string
 }
 
-// perfSubscriber is the i-th subscriber of the benchmark, apart from those of the tests.
 func perfSubscriber(i int) subscriber {
 	imsi := fmt.Sprintf("001010000%06d", 1000+i)
 
@@ -167,7 +158,6 @@ func perfSubscriber(i int) subscriber {
 	}
 }
 
-// hss is the subscription of sub in the HSS.
 func (sub subscriber) hss() hsstest.Subscriber {
 	return hsstest.Subscriber{
 		IMPI: sub.impi, IMSI: sub.imsi, K: testK, OPc: testOPc, SQN: 32,
@@ -175,7 +165,6 @@ func (sub subscriber) hss() hsstest.Subscriber {
 	}
 }
 
-// latencies are the durations of the operations of a benchmark run.
 type latencies struct {
 	mu sync.Mutex
 	d  []time.Duration
@@ -203,7 +192,6 @@ func (l *latencies) at(q float64) time.Duration {
 	return l.d[min(len(l.d)-1, int(q*float64(len(l.d))))]
 }
 
-// report logs a result: its operations per second, the latencies of one, and the allocations of the process for one.
 func report(t *testing.T, what string, r testing.BenchmarkResult, l *latencies) {
 	t.Helper()
 
@@ -214,7 +202,6 @@ func report(t *testing.T, what string, r testing.BenchmarkResult, l *latencies) 
 		l.at(1).Round(time.Microsecond), r.AllocedBytesPerOp(), r.AllocsPerOp())
 }
 
-// perfCall makes a call to target and hangs it up once answered.
 func perfCall(ctx context.Context, u *testue.UE, target string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -240,7 +227,6 @@ func perfCall(ctx context.Context, u *testue.UE, target string) error {
 	}
 }
 
-// answer answers the calls of u, until it closes.
 func answer(t *testing.T, u *testue.UE) {
 	for c := range u.MMTel().Calls() {
 		go func() {
@@ -266,7 +252,6 @@ func answer(t *testing.T, u *testue.UE) {
 	}
 }
 
-// quietCaller is a registered UE taking calls, on host i with the USIM of sub.
 func (s *scene) quietCaller(i int, sub subscriber) *testue.UE {
 	s.t.Helper()
 
@@ -276,8 +261,6 @@ func (s *scene) quietCaller(i int, sub subscriber) *testue.UE {
 	return u
 }
 
-// quietDevice is a UE on host i with the USIM of sub, and its own IMEI unless cfg has one, with its logging and its
-// tracing off.
 func (s *scene) quietDevice(i int, id subscriber, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 

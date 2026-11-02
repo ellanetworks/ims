@@ -13,21 +13,16 @@ import (
 	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
-// profileChange is how a user profile the HSS sent, pushed or downloaded, changed an implicit set (TS 29.228 §6.5.2.1,
-// TS 24.229 §5.4.1.8).
+// TS 29.228 clause 6.5.2.1
+// TS 24.229 clause 5.4.1.8
 type profileChange struct {
-	// set is the set as stored, and before its identities before.
 	set    db.ImplicitSet
 	before []db.PublicIdentity
 
-	// removed are the non-barred identities that left the set, barred those the set bars now, and added the
-	// identities it has non-barred now that it had not, or barred (TS 24.229 §5.4.1.8 steps 1 to 3).
 	removed []db.PublicIdentity
 	barred  []db.PublicIdentity
 	added   []db.PublicIdentity
 
-	// newAS tells that a re-registration of the set now triggers an AS, or an AS for a service profile, that it did
-	// not (TS 24.229 §5.4.1.7).
 	newAS bool
 }
 
@@ -67,9 +62,7 @@ func diffProfile(before []db.PublicIdentity, beforeData []byte, after db.Implici
 	return pc
 }
 
-// current is the change as the identities the set holds now still show it, for a private identity that learns of it
-// after a later change of the set: an identity dropped and back since, or added and dropped since, is left out, and one
-// removed and back barred is barred (TS 29.228 §6.5.2.1).
+// TS 29.228 clause 6.5.2.1
 func (pc profileChange) current(ids []db.PublicIdentity) profileChange {
 	unbarred := func(key string) bool {
 		return slices.ContainsFunc(ids, func(id db.PublicIdentity) bool { return id.Key == key && !id.Barred })
@@ -97,7 +90,6 @@ func (pc profileChange) current(ids []db.PublicIdentity) profileChange {
 	return out
 }
 
-// dropped are the identities that leave the registered non-barred ones: removed or barred.
 func (pc profileChange) dropped() []db.PublicIdentity {
 	return append(slices.Clone(pc.removed), pc.barred...)
 }
@@ -106,14 +98,12 @@ func (pc profileChange) identitiesChanged() bool {
 	return len(pc.removed) > 0 || len(pc.barred) > 0 || len(pc.added) > 0
 }
 
-// registerAS is a third-party registration a re-registration makes: of the identity a service profile registers at the
-// AS (TS 24.229 §5.4.1.7).
+// TS 24.229 clause 5.4.1.7
 type registerAS struct {
 	to, server string
 }
 
-// registerASs are the third-party registrations that a re-registration may make, of the service profiles with a
-// non-barred identity, as thirdParties evaluates their iFCs (TS 24.229 §5.4.1.7).
+// TS 24.229 clause 5.4.1.7
 func registerASs(sub cx.IMSSubscription) []registerAS {
 	var out []registerAS
 
@@ -139,8 +129,7 @@ func registerASs(sub cx.IMSSubscription) []registerAS {
 	return out
 }
 
-// spreadProfile has the private identities that registered the set, but for one, learn of its change, each holding
-// its lock; and forgets what the S-CSCF kept for the ASs of the identities that left it (TS 29.228 §6.5.2.1).
+// TS 29.228 clause 6.5.2.1
 func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except string, shorten bool) {
 	if dropped := pc.dropped(); len(dropped) > 0 {
 		r.forgetASs(identityKeysOf(dropped))
@@ -171,9 +160,7 @@ func (r *Registrar) spreadProfile(ctx context.Context, pc profileChange, except 
 	}
 }
 
-// profileEffects applies the change of the profile of a set to the registration of the set by a private identity,
-// whose lock the caller holds (TS 24.229 §5.4.1.8): it releases the calls of the identities removed, shortens the
-// registration if asked, and tells the reg event subscribers.
+// TS 24.229 clause 5.4.1.8
 func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileChange, shorten bool) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {
@@ -186,7 +173,6 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 		return nil
 	}
 
-	// The tasks of the private identities run in no order: a later change of the set may have been applied already.
 	pc = pc.current(st.regs[i].Identities)
 
 	if reg, ok := withIdentities(st.regs[i], pc.set.Identities); ok {
@@ -221,9 +207,6 @@ func (r *Registrar) profileEffects(ctx context.Context, impi string, pc profileC
 	return r.notifySubscriptions(ctx, impi, ch)
 }
 
-// withIdentities is the registration with the registered identity, and that of each binding, among the set's: the
-// default identity stands for one that left, at the HSS and as the one the reg event reports as registered. It reports
-// whether that changed the registration.
 func withIdentities(reg db.Registration, ids []db.PublicIdentity) (db.Registration, bool) {
 	def := defaultIdentity(ids)
 	if def.Key == "" {
@@ -247,8 +230,8 @@ func withIdentities(reg db.Registration, ids []db.PublicIdentity) (db.Registrati
 	return reg, changed
 }
 
-// releaseRemoved releases the calls of the bindings for the identities removed from the set, in the form of the set
-// their request named (TS 24.229 §5.4.1.8 step 3, §5.4.5.1.2). The identities barred keep theirs (NOTE 2).
+// TS 24.229 clause 5.4.1.8
+// TS 24.229 clause 5.4.5.1.2
 func (r *Registrar) releaseRemoved(ctx context.Context, st *state, pc profileChange, live []db.Binding) {
 	if len(pc.removed) == 0 {
 		return
@@ -269,9 +252,8 @@ func (r *Registrar) releaseRemoved(ctx context.Context, st *state, pc profileCha
 	}})
 }
 
-// profileNotice is the change of the registration state that the reg event reports of the change of a set's profile
-// (TS 24.229 §5.4.1.8 step 4, §5.4.2.1.2): the identities added as created, those dropped as rejected, with every
-// contact of the set, of every private identity that registered it; and the subscriptions to a dropped identity end.
+// TS 24.229 clause 5.4.1.8
+// TS 24.229 clause 5.4.2.1.2
 func (r *Registrar) profileNotice(ctx context.Context, impi string, pc profileChange) change {
 	ch := change{created: map[string]bool{}}
 
@@ -297,7 +279,6 @@ func (r *Registrar) profileNotice(ctx context.Context, impi string, pc profileCh
 	ch.rejected = rejection{impi: impi, identities: dropped, bindings: bindings}
 	ch.reason = reasonRejected
 
-	// A subscription is to the identity of the set its Request-URI names, in the first of its forms the set held.
 	ch.ended = func(resource string) bool {
 		u, err := sip.ParseURI(resource)
 		if err != nil {
@@ -313,7 +294,7 @@ func (r *Registrar) profileNotice(ctx context.Context, impi string, pc profileCh
 	return ch
 }
 
-// defaultIdentity is the first identity of the set that is not barred (TS 29.228 §6.5.1.1).
+// TS 29.228 clause 6.5.1.1
 func defaultIdentity(set []db.PublicIdentity) db.PublicIdentity {
 	for _, id := range set {
 		if !id.Barred {
@@ -324,20 +305,15 @@ func defaultIdentity(set []db.PublicIdentity) db.PublicIdentity {
 	return db.PublicIdentity{}
 }
 
-// move is a registered set that holds identities the HSS's answer to a server assignment puts in another set: the
-// removal of them from it, the first step of the move, did not reach the S-CSCF (TS 29.228 §6.5.2.1). The HSS is the
-// master of the profiles: the set loses them as a push of it without them would have it (TS 24.229 §5.4.1.8).
+// TS 29.228 clause 6.5.2.1
+// TS 24.229 clause 5.4.1.8
 type move struct {
 	pc    profileChange
 	taken []string
 
-	// deregistered tells that the set has no unbarred identity left, or another default identity: the HSS would have
-	// deregistered it instead (TS 29.228 §6.5.2.1).
 	deregistered bool
 }
 
-// moves are the registered sets, other than set, that hold identities of set; registered by other than the stale
-// registrations, which set replaces. The caller holds the lock of the profiles.
 func (r *Registrar) moves(ctx context.Context, set db.ImplicitSet, stale []db.Registration) ([]move, error) {
 	sets, err := r.cfg.DB.FindSets(ctx, identityKeysOf(set.Identities))
 	if err != nil {
@@ -395,8 +371,6 @@ func (r *Registrar) moves(ctx context.Context, set db.ImplicitSet, stale []db.Re
 	return out, nil
 }
 
-// withoutIdentities is the subscription without the public user identities of the keys, nor the service profiles left
-// without an identity.
 func withoutIdentities(sub cx.IMSSubscription, keys []string) cx.IMSSubscription {
 	profiles := make([]cx.ServiceProfile, 0, len(sub.ServiceProfiles))
 
@@ -416,8 +390,6 @@ func withoutIdentities(sub cx.IMSSubscription, keys []string) cx.IMSSubscription
 	return sub
 }
 
-// applyMoves has the private identities that registered the sets the identities moved from learn of it: as of a push
-// of the set without them, or of a deregistration of the set by the HSS, without a Cx request for it: the HSS moved on.
 func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 	for _, m := range moves {
 		r.log.WarnContext(ctx, "the HSS's profile moved identities from another registered set", slog.String("impi", impi),
@@ -450,9 +422,7 @@ func (r *Registrar) applyMoves(ctx context.Context, impi string, moves []move) {
 	}
 }
 
-// terminateMoved ends the registration of a set by a private identity, whose lock the caller holds, as a
-// network-initiated deregistration does (TS 24.229 §5.4.1.5): the identities the set had, those moved included, are
-// reported terminated.
+// TS 24.229 clause 5.4.1.5
 func (r *Registrar) terminateMoved(ctx context.Context, impi string, pc profileChange) []*outgoing {
 	st, err := r.load(ctx, impi)
 	if err != nil {

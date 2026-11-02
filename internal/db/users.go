@@ -9,7 +9,6 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// Role is what a user of the API may do. The values are Ella Core's.
 type Role int
 
 const (
@@ -19,10 +18,9 @@ const (
 )
 
 type User struct {
-	ID    int64
-	Email string
-	Role  Role
-	// PasswordHash is the bcrypt hash of the password.
+	ID           int64
+	Email        string
+	Role         Role
 	PasswordHash string
 }
 
@@ -43,7 +41,6 @@ func (d *DB) CountUsers(ctx context.Context) (_ int, err error) {
 	return n, nil
 }
 
-// CreateUser stores a user, or returns ErrDuplicate when one has the same email, whatever its case.
 func (d *DB) CreateUser(ctx context.Context, u NewUser) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -60,7 +57,6 @@ func (d *DB) CreateUser(ctx context.Context, u NewUser) (_ int64, err error) {
 	return res.LastInsertId()
 }
 
-// GetUser returns the user with an email, whatever its case.
 func (d *DB) GetUser(ctx context.Context, email string) (_ User, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -73,7 +69,6 @@ func (d *DB) GetUserByID(ctx context.Context, id int64) (_ User, err error) {
 	return getUser(d.read.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, id))
 }
 
-// ListUsers returns a page of the users, oldest first, and their total.
 func (d *DB) ListUsers(ctx context.Context, page, perPage int) (_ []User, _ int, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -108,7 +103,6 @@ func (d *DB) ListUsers(ctx context.Context, page, perPage int) (_ []User, _ int,
 	return users, total, nil
 }
 
-// UpdateUserRole changes the role of a user and ends all of its sessions.
 func (d *DB) UpdateUserRole(ctx context.Context, id int64, role Role) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -123,8 +117,6 @@ func (d *DB) UpdateUserRole(ctx context.Context, id int64, role Role) (err error
 	})
 }
 
-// UpdateUserPassword changes the password of a user and ends all of its sessions but the one whose token hash is
-// keepSession, if any.
 func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash string, keepSession []byte) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -139,7 +131,6 @@ func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash stri
 	})
 }
 
-// DeleteUser deletes a user with its sessions and API tokens.
 func (d *DB) DeleteUser(ctx context.Context, id int64) (err error) {
 	defer d.observe(poolWrite, &err)()
 

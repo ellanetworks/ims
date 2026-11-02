@@ -17,7 +17,6 @@ import { formatClock, formatDate, formatTimestamp } from "@/utils/dates";
 import { mediaText } from "@/utils/labels";
 import { subscriberOf } from "@/utils/registrations";
 
-// identityRow is a party's private identity: its IMSI when derived from one, else the IMPI.
 const identityRow = (party: string, impi?: string): [string, ReactNode] => {
   const subscriber = impi && subscriberOf(impi);
   return [
@@ -47,7 +46,6 @@ function CallRecordDetail({
   const call: [string, ReactNode][] = [
     ["Outcome", <CallOutcomeChip key="outcome" record={record} />],
   ];
-  // The final status tells why a call was not answered; for an answered call, it is 200.
   if (!answered && record.sip_status !== undefined) {
     call.push(["SIP Status", String(record.sip_status)]);
   }
@@ -70,13 +68,11 @@ function CallRecordDetail({
     identityRow("Caller", record.caller_impi),
     ["Callee", callee],
   ];
-  // What the caller dialled, when the IMS routed the call elsewhere, such as a local number made international.
   if (dialled !== callee) {
     parties.push(["Dialled", dialled]);
   }
   parties.push(identityRow("Callee", record.callee_impi));
 
-  // The date shows once; a time on another day shows in full.
   const day = formatDate(record.requested_at);
   const at = (iso?: string) =>
     !iso
@@ -100,7 +96,6 @@ function CallRecordDetail({
   ];
 
   return (
-    // One key column width for all sections, so that their values line up.
     <Stack
       spacing={3}
       sx={{ p: 3, "& dl": { gridTemplateColumns: "8.5rem 1fr" } }}

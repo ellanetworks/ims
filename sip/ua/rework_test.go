@@ -15,12 +15,10 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// realSDP is an SDP description on loopback, of the origin version given.
 func realSDP(port, version int) string {
 	return fmt.Sprintf("v=0\r\no=- 7 %d IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\n", version, port)
 }
 
-// raw is a peer that sends and receives messages itself.
 type raw struct {
 	t    *testing.T
 	sock *siptest.Peer
@@ -46,7 +44,6 @@ func (r *raw) invite(to *peer, body string, header ...sip.Field) *sip.Request {
 	return req
 }
 
-// response is the next response other than 100.
 func (r *raw) response() *sip.Response {
 	r.t.Helper()
 
@@ -58,7 +55,6 @@ func (r *raw) response() *sip.Response {
 	}
 }
 
-// inDialog builds a request of the raw peer within the dialog a response created.
 func (r *raw) inDialog(method string, invite *sip.Request, res *sip.Response, seq uint32) *sip.Request {
 	contact, _ := res.Header.Contacts()
 	req := siptest.NewRequest(method, contact[0].URI.String(), sip.UDP, r.sock.Addr())
@@ -77,7 +73,7 @@ func (r *raw) ack(invite *sip.Request, res *sip.Response) {
 	r.sock.Send(sip.UDP, netip.AddrPortFrom(netip.MustParseAddr(contact[0].URI.Host), contact[0].URI.Port), ack)
 }
 
-// RFC 3261 §12.1.1: every response that creates or confirms the dialog carries the Record-Route of the INVITE.
+// RFC 3261 section 12.1.1
 func TestRecordRouteInEachResponse(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -96,8 +92,8 @@ func TestRecordRouteInEachResponse(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15.1.2, RFC 3262 §3: a BYE in the early dialog ends the session; the 2xx held for its PRACK gives way to a
-// 487.
+// RFC 3261 section 15.1.2
+// RFC 3262 section 3
 func TestByeWhile2xxHeld(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -132,7 +128,6 @@ func TestByeWhile2xxHeld(t *testing.T) {
 	}
 }
 
-// Shutdown ends the sessions of the agent: the peer gets a BYE.
 func TestShutdown(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	established(t, alice, bob)
@@ -153,8 +148,6 @@ func TestShutdown(t *testing.T) {
 	}
 }
 
-// Shutdown returns the context's error when the BYE outlives ctx, the session ended all the same; later calls return
-// nil.
 func TestShutdownDeadline(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newUAS(t, alice)
@@ -168,7 +161,6 @@ func TestShutdownDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// bob never answers the BYE.
 	if err := alice.a.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Shutdown: %v, want %v", err, context.DeadlineExceeded)
 	}
@@ -184,7 +176,6 @@ func TestShutdownDeadline(t *testing.T) {
 	}
 }
 
-// Shutdown returns the context's error when a strand outlives ctx, its handler still running.
 func TestShutdownDeadlineOfAStrand(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 
@@ -209,7 +200,8 @@ func TestShutdownDeadlineOfAStrand(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4, RFC 3264 §6: an offer of a 2xx refused is answered with its streams refused, then the BYE.
+// RFC 3261 section 13.2.2.4
+// RFC 3264 section 6
 func TestRejectOfferInTheAck(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -234,7 +226,7 @@ func TestRejectOfferInTheAck(t *testing.T) {
 	}
 }
 
-// RFC 3264 §4: an ACK without the answer to the offer of the 2xx ends the session.
+// RFC 3264 section 4
 func TestAckWithoutAnswer(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -256,7 +248,7 @@ func TestAckWithoutAnswer(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15: the BYE of a UAS waits for the ACK of its 2xx.
+// RFC 3261 section 15
 func TestUasByeBeforeAck(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -285,7 +277,7 @@ func TestUasByeBeforeAck(t *testing.T) {
 	}
 }
 
-// RFC 3261 §8.2.2.2: the same request reaching the agent on another path gets a 482.
+// RFC 3261 section 8.2.2.2
 func TestMergedRequest(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	r := newRaw(t)
@@ -304,7 +296,6 @@ func TestMergedRequest(t *testing.T) {
 	}
 }
 
-// The session keeps its Contact: the one of its 2xx goes in the requests that refresh its target.
 func TestSessionContact(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	focus := fmt.Sprintf("<sip:focus@%s>;isfocus", bob.addr)
@@ -332,8 +323,8 @@ func TestSessionContact(t *testing.T) {
 	}
 }
 
-// RFC 3264 §8, RFC 4028 §7.4: refreshes are answered by the agent: an unchanged offer with the last answer, a
-// re-INVITE without an offer with the last description.
+// RFC 3264 section 8
+// RFC 4028 section 7.4
 func TestRefreshAnsweredByTheAgent(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -371,7 +362,6 @@ func TestRefreshAnsweredByTheAgent(t *testing.T) {
 
 	<-done
 
-	// Bob gets alice's answer in the ACK; the application saw no request.
 	if e := bob.next("answer"); string(e.sdp) != offer {
 		t.Errorf("bob answer %q", e.sdp)
 	}
@@ -384,7 +374,7 @@ func sessionBody(res *sip.Response) []byte {
 	return p.Body
 }
 
-// RFC 3261 §22.2: a challenged INVITE is sent again with credentials and the next CSeq.
+// RFC 3261 section 22.2
 func TestAuthentication(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -413,7 +403,6 @@ func TestAuthentication(t *testing.T) {
 	alice.next("established")
 }
 
-// Requests outside dialogs: sent with Agent.Request, received with OnRequest.
 func TestRequestOutsideDialogs(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
@@ -446,7 +435,7 @@ func TestRequestOutsideDialogs(t *testing.T) {
 	}
 }
 
-// RFC 3261 §8.2.2.3: Require is checked on requests within dialogs too, and every unsupported tag listed.
+// RFC 3261 section 8.2.2.3
 func TestRequireInDialog(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -463,7 +452,6 @@ func TestRequireInDialog(t *testing.T) {
 	bob.none()
 }
 
-// A Change keeps its repeated header fields.
 func TestChangeRepeatedHeaderFields(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)

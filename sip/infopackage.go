@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// InfoPackage is an Info-Package value, or an element of Recv-Info (RFC 6086 §7.2).
+// RFC 6086 section 7.2
 type InfoPackage struct {
 	Name   string
 	Params Params
@@ -24,7 +24,7 @@ func (p InfoPackage) String() string {
 	return p.Name + p.Params.String()
 }
 
-// InfoPackage is the package of an INFO request, which names one (RFC 6086 §4.2.1).
+// RFC 6086 section 4.2.1
 func (fs Header) InfoPackage() (InfoPackage, bool, error) {
 	v, ok, err := fs.single("Info-Package")
 	if !ok || err != nil {
@@ -36,8 +36,7 @@ func (fs Header) InfoPackage() (InfoPackage, bool, error) {
 	return p, true, err
 }
 
-// RecvInfo are the packages the sender accepts INFO requests for. An empty Recv-Info is present and lists none,
-// which differs from no Recv-Info (RFC 6086 §5.2.2).
+// RFC 6086 section 5.2.2
 func (fs Header) RecvInfo() ([]InfoPackage, bool, error) {
 	if !fs.Has("Recv-Info") {
 		return nil, false, nil
@@ -57,7 +56,7 @@ func (fs Header) RecvInfo() ([]InfoPackage, bool, error) {
 	return out, true, nil
 }
 
-// AcceptsInfo reports whether a Recv-Info list names a package, compared octet by octet (RFC 6086 §7.2).
+// RFC 6086 section 7.2
 func AcceptsInfo(recv []InfoPackage, name string) bool {
 	return slices.ContainsFunc(recv, func(p InfoPackage) bool { return p.Name == name })
 }

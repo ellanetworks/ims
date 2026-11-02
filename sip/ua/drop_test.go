@@ -15,7 +15,7 @@ import (
 
 func allFlows(sip.Flow) bool { return true }
 
-// TS 24.229 §5.1.1.4.1: Drop ends a confirmed session at once, without a BYE.
+// TS 24.229 clause 5.1.1.4.1
 func TestDropConfirmed(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	established(t, alice, bob)
@@ -29,7 +29,6 @@ func TestDropConfirmed(t *testing.T) {
 	alice.none()
 }
 
-// Drop ends an INVITE of the peer not answered yet without a final response.
 func TestDropIncoming(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice.invite(bob, "offer-1")
@@ -54,7 +53,6 @@ func TestDropIncoming(t *testing.T) {
 	alice.none()
 }
 
-// Drop ends an INVITE of the agent not answered yet without a CANCEL.
 func TestDropOutgoing(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice.invite(bob, "offer-1")
@@ -80,8 +78,6 @@ func TestDropOutgoing(t *testing.T) {
 	bob.none()
 }
 
-// An INVITE that reached the agent but not its strand when Drop ran is processed no further: no session, no
-// application event, no response.
 func TestDropArrivingInvite(t *testing.T) {
 	var busy atomic.Pointer[ua.Strand]
 
@@ -113,7 +109,6 @@ func TestDropArrivingInvite(t *testing.T) {
 
 	bob.none()
 
-	// The 100 of the transaction, if sent before Drop: nothing it queued is sent after.
 	for {
 		r, ok := alice.sock.RecvWithin(50 * time.Millisecond)
 		if !ok {
@@ -126,7 +121,6 @@ func TestDropArrivingInvite(t *testing.T) {
 	}
 }
 
-// Drop waits for no strand: a handler may call it, its own session ending once it returns.
 func TestDropFromAHandler(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 

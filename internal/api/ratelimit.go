@@ -8,12 +8,8 @@ import (
 	"time"
 )
 
-// maxRateKeys bounds the clients that a rate limiter tracks. Once it tracks that many in their windows, it refuses
-// new ones, rather than grow without bound.
 const maxRateKeys = 10_000
 
-// rateLimiter allows each key at most limit events per fixed window. It forgets the windows that are over once per
-// window, as it is called, so that it needs no goroutine.
 type rateLimiter struct {
 	limit  int
 	window time.Duration
@@ -33,7 +29,6 @@ func newRateLimiter(limit int, window time.Duration, now func() time.Time) *rate
 	return &rateLimiter{limit: limit, window: window, now: now, windows: map[string]*rateWindow{}}
 }
 
-// allow counts an event of key, and reports whether it is within the limit.
 func (l *rateLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -48,7 +43,6 @@ func (l *rateLimiter) allow(key string) bool {
 	return w.count <= l.limit
 }
 
-// exceeded reports whether key has reached its limit, without counting an event.
 func (l *rateLimiter) exceeded(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -58,7 +52,6 @@ func (l *rateLimiter) exceeded(key string) bool {
 	return w == nil || w.count >= l.limit
 }
 
-// reset forgets the events of key.
 func (l *rateLimiter) reset(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -66,7 +59,6 @@ func (l *rateLimiter) reset(key string) {
 	delete(l.windows, key)
 }
 
-// current returns the window of key, a new one if its last is over, or nil when it tracks too many keys to add it.
 func (l *rateLimiter) current(key string) *rateWindow {
 	now := l.now()
 
@@ -94,7 +86,6 @@ func (l *rateLimiter) current(key string) *rateWindow {
 	return w
 }
 
-// clientIP is the address of the direct peer of a request. X-Forwarded-For is not trusted.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -104,8 +95,6 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// clientKey is the key of the client of a request for rate limiting: its IPv4 address, or the /64 of its IPv6
-// address, since a single host commonly has a whole /64.
 func clientKey(r *http.Request) string {
 	addr, err := netip.ParseAddr(clientIP(r))
 	if err != nil {

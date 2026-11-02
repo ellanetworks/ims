@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-// XML Schema Part 2 §3.2.7.1, §3.2.7.3, Appendix D.3.1.
+// XML Schema Part 2 section 3.2.7.1
+// XML Schema Part 2 section 3.2.7.3
+// XML Schema Part 2 section D.3.1
 func TestParseDateTime(t *testing.T) {
 	for in, want := range map[string]struct {
 		t     time.Time
@@ -59,7 +61,9 @@ func TestDateTimeString(t *testing.T) {
 	}
 }
 
-// §3.2.2.1, §3.3.22.1, §4.3.6.
+// XML Schema Part 2 section 3.2.2.1
+// XML Schema Part 2 section 3.3.22.1
+// XML Schema Part 2 section 4.3.6
 func TestValues(t *testing.T) {
 	for in, want := range map[string]int{"true": 1, "1": 1, " false\t": 0, "0": 0, "TRUE": -1, "yes": -1, " true": -1, "": -1} {
 		v, ok := ParseBoolean(in)

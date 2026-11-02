@@ -4,7 +4,6 @@ import {
   Videocam as VideocamIcon,
 } from "@mui/icons-material";
 
-// MediaIcons shows media as icons: a phone for voice, a camera for video.
 export default function MediaIcons({ media }: { media: string[] }) {
   return (
     <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>

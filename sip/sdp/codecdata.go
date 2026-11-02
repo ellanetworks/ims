@@ -22,7 +22,7 @@ func (m *Media) CodecData(direction, kind string) []byte {
 	return m.appendCodecLines(b, true)
 }
 
-// TS 29.214 §5.3.7
+// TS 29.214 clause 5.3.7
 func (m *Media) CodecLines() string {
 	return string(m.appendCodecLines(make([]byte, 0, 512), false))
 }

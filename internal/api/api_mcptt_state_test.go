@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// fakeMCPTTState is the live state of an AS, or err.
 type fakeMCPTTState struct {
 	regs  []MCPTTRegistration
 	affs  []MCPTTAffiliation
@@ -34,7 +33,6 @@ func (f fakeMCPTTState) Call(_ context.Context, id string) (MCPTTCall, bool, err
 	return f.calls[i], true, nil
 }
 
-// withState is e serving state, of e's settings.
 func (e *mcpttEnv) withState(state MCPTTState) *mcpttEnv {
 	e.h = testHandler(e.t, Config{MCPTT: e.live, MCPTTState: state, Logger: slog.New(slog.DiscardHandler)})
 	return e
@@ -71,7 +69,6 @@ func liveState() fakeMCPTTState {
 	}
 }
 
-// The registrations by MCPTT ID and client ID, filtered by user, paged.
 func TestMCPTTRegistrations(t *testing.T) {
 	e := newMCPTTEnv(t).withState(liveState())
 
@@ -88,7 +85,6 @@ func TestMCPTTRegistrations(t *testing.T) {
 	}
 }
 
-// The affiliations by group, of whether the server affiliated the client implicitly, as the state has it.
 func TestMCPTTAffiliations(t *testing.T) {
 	e := newMCPTTEnv(t).withState(liveState())
 	e.provision()
@@ -112,7 +108,6 @@ func TestMCPTTAffiliations(t *testing.T) {
 	}
 }
 
-// The calls, oldest first, filtered by group and participant; one by its ID.
 func TestMCPTTCalls(t *testing.T) {
 	e := newMCPTTEnv(t).withState(liveState())
 
@@ -152,7 +147,6 @@ func TestMCPTTCalls(t *testing.T) {
 	e.fails(http.StatusNotFound, "GET", "/api/v1/mcptt/calls/gone", "", "call not found")
 }
 
-// The state of an AS that does not answer is unavailable.
 func TestMCPTTStateUnavailable(t *testing.T) {
 	e := newMCPTTEnv(t).withState(fakeMCPTTState{err: errors.New("MCPTT is restarting")})
 

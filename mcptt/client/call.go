@@ -25,86 +25,55 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// reportInterval is the least time between two reports of the media heard to the floor participant: well below
-// T103 (TS 24.380 §11.1.1), as the server's (media.Config).
 const reportInterval = 200 * time.Millisecond
 
-// sessionExpires is the session interval the client asks for, and the most it accepts: RFC 4028's minimum (§4), so
-// that a call the network released without telling the client (TS 24.229 §5.2.8.1.2, the P-CSCF's BYE toward the
-// server alone) ends within it, its refresh refused or never coming (RFC 4028 §10). A UE learns of the release of the
-// call's bearer from its modem (TS 24.229 §6.1.1); an Android app cannot.
+// RFC 4028 section 4
 const sessionExpires = 90
 
-// Call is a call of the client: a prearranged group call it placed (Client.Call) or it is invited to
-// (Client.OnInvite). Its methods may be called from any goroutine: they act on the strand of the call, in order.
 type Call struct {
-	c        *Client
-	st       *ua.Strand
-	incoming bool
-	manual   bool
-	// group is the group called, or the calling group of an invitation; caller the calling user of an invitation.
+	c             *Client
+	st            *ua.Strand
+	incoming      bool
+	manual        bool
 	group, caller sip.URI
 
-	// audio, rtcp and control are the sockets of the call; ssrc the client's own SSRC in it; speech the de-jitter
-	// buffer of the speech heard.
 	audio, rtcp, control media.Conn
 	ssrc                 uint32
 	sdpID                uint64
 	speech               *jitter.Buffer
 
-	// The state of the strand.
-	out *ua.Outgoing
-	// req is the INVITE of an invitation, until answered.
-	req  *ua.Request
-	sess *ua.Session
-	// local are the fmtp:MCPTT parameters of the client's offer; answer the SDP answer of an invitation.
-	local  controlchannel.Params
-	answer []byte
-	n      negotiated
-	// taken is the answer to the offer taken, bad its error.
-	taken bool
-	bad   error
-	part  *floor.Participant
-	// early are the floor control messages before the participant of a call placed, the answer that configures it.
-	early []floorctl.Message
-	src   speaker
-	// established, leaving, ended, failed: the call established, left before, released, its INVITE failed;
-	// announced, reported: EventIncoming and EventEnded sent.
+	out                                                      *ua.Outgoing
+	req                                                      *ua.Request
+	sess                                                     *ua.Session
+	local                                                    controlchannel.Params
+	answer                                                   []byte
+	n                                                        negotiated
+	taken                                                    bool
+	bad                                                      error
+	part                                                     *floor.Participant
+	early                                                    []floorctl.Message
+	src                                                      speaker
 	established, leaving, ended, failed, announced, reported bool
 
-	sent atomic.Int64
-	// placed is when the call was placed, pressed when the PTT was last pressed: for the access times (TS 22.179
-	// §6.15.3.1, KPI 1 and 2).
+	sent            atomic.Int64
 	placed, pressed time.Time
-	// released tells the PTT released before the call was established: the floor of its implicit request released
-	// once the participant has it (TS 24.380 §6.2.4.4.8).
-	released bool
+	released        bool
 
-	// mu guards what the readers of the sockets share: rx is the AMR-WB payload type of the call, once negotiated;
-	// cmr the last codec mode request heard.
-	mu      sync.Mutex
-	closed  bool
-	rx      *audioFormat
-	cmr     uint8
-	heard   map[uint32]*Heard
-	order   []uint32
-	parties map[uint32]string
-	// dropped are the reasons of the audio dropped so far, each logged once a call.
-	dropped map[string]bool
-	// lastReport is when media was last reported.
+	mu         sync.Mutex
+	closed     bool
+	rx         *audioFormat
+	cmr        uint8
+	heard      map[uint32]*Heard
+	order      []uint32
+	parties    map[uint32]string
+	dropped    map[string]bool
 	lastReport time.Time
 }
 
-// Heard is what the sink heard of a talker in a call.
 type Heard struct {
-	// SSRC is the RTP SSRC of its media; Party the MCPTT ID of the Floor Taken that announced it (TS 24.380
-	// §8.2.3.6, §8.2.3.16), "" without one.
-	SSRC    uint32
-	Party   string
-	Packets int
-	// Bursts are the talk bursts heard; the packets lost, by where: at the start of a burst (its first, marked,
-	// RFC 4867 §4.1, missing), at the end of the one before (missing before a marked first), within one (TS 22.179
-	// R-6.15.3.2-016, -017).
+	SSRC                                       uint32
+	Party                                      string
+	Packets                                    int
 	Bursts, InitialLost, TrailingLost, MidLost int
 
 	seen    bool
@@ -112,8 +81,7 @@ type Heard struct {
 	lastTS  uint32
 }
 
-// track counts the packet p, of frames 20 ms frames, in the bursts and the losses: a burst starts after a silence,
-// its timestamp further ahead than its sequence number (RFC 3550 §5.1).
+// RFC 3550 section 5.1
 func (h *Heard) track(p rtp.Packet, frames int) {
 	if !h.seen {
 		h.seen, h.Bursts = true, 1
@@ -124,11 +92,9 @@ func (h *Heard) track(p rtp.Packet, frames int) {
 
 	gap := int(p.Sequence - h.lastSeq - 1)
 	if gap > 1<<15 {
-		// Reordered or duplicated: not a loss.
 		return
 	}
 
-	// A frame of 20 ms (RFC 4867 §4.1).
 	step := uint32(max(frames, 1)) * (amr.WB.ClockRate / 50)
 	silence := p.Timestamp-h.lastTS > uint32(gap+1)*step
 
@@ -155,7 +121,6 @@ func (c *Client) newCall(st *ua.Strand, incoming bool) (*Call, error) {
 		cmr: amr.NoModeRequest,
 	}
 
-	// The audio, its RTCP (RFC 3550 §11), the control channel.
 	cs, err := c.listen(call.receiveAudio, func([]byte, netip.AddrPort) {}, call.receiveControl)
 	if err != nil {
 		c.freeSSRC(call.ssrc)
@@ -168,10 +133,9 @@ func (c *Client) newCall(st *ua.Strand, incoming bool) (*Call, error) {
 	return call, nil
 }
 
-// Call places a prearranged group call to group (TS 24.379 §10.1.1.2.1.1): an INVITE to the participating function
-// with the MCPTT feature tags and ICSI, the mcptt-info of the group and client, the SDP offer of the speech and the
-// control channel (§6.2.1), the implicit floor request and mc_granted as configured (TS 24.380 §14.2). The call
-// reports its establishment or failure in events. ctx carries the trace of the INVITE, as of the requests of sip/ua.
+// TS 24.379 clause 10.1.1.2.1.1
+// TS 24.379 clause 6.2.1
+// TS 24.380 clause 14.2
 func (c *Client) Call(ctx context.Context, group sip.URI) (*Call, error) {
 	call, err := c.newCall(c.cfg.Agent.NewStrand(), false)
 	if err != nil {
@@ -181,12 +145,10 @@ func (c *Client) Call(ctx context.Context, group sip.URI) (*Call, error) {
 	call.group = group
 	call.placed = c.clock.Now()
 
-	// The PTT pressed to place it (TS 24.380 §14.2.5): its access time from now, KPI 2.
 	if c.cfg.ImplicitRequest {
 		call.pressed = call.placed
 	}
 
-	// One call a group: the group's call the one the user is in (TS 24.379 §10.1.1.2.1.2 step 1c).
 	if !c.claim(call) {
 		call.closeMedia()
 		return nil, ErrInCall
@@ -208,7 +170,7 @@ func (c *Client) Call(ctx context.Context, group sip.URI) (*Call, error) {
 	return nil, err
 }
 
-// invite is the INVITE of a call placed (TS 24.379 §10.1.1.2.1.1).
+// TS 24.379 clause 10.1.1.2.1.1
 func (call *Call) invite() (*sip.Request, error) {
 	c := call.c
 
@@ -222,7 +184,6 @@ func (call *Call) invite() (*sip.Request, error) {
 		return nil, err
 	}
 
-	// Step 14.
 	info, err := mcpttinfo.Encode(mcpttinfo.Info{Params: &mcpttinfo.Params{
 		SessionType: mcpttinfo.SessionPrearranged,
 		RequestURI:  mcpttinfo.URI(call.group.String()),
@@ -232,11 +193,9 @@ func (call *Call) invite() (*sip.Request, error) {
 		return nil, err
 	}
 
-	// Steps 4, 5, 7, 10; the Session-Expires of step 9, a recommendation, the agent's (ua.SessionTimer).
 	req := sip.NewRequest("INVITE", c.cfg.ParticipatingPSI)
 	req.Header.Set("To", sip.Address{URI: c.cfg.ParticipatingPSI}.String())
 	req.Header.Set("Contact", c.contact().String())
-	// Step 9: the refresher left to the server, as recommended.
 	req.Header.Set("Session-Expires", sip.SessionExpires{Seconds: sessionExpires}.String())
 
 	for _, v := range AcceptContact() {
@@ -260,7 +219,6 @@ func (call *Call) uacHandler() ua.Handler {
 		},
 		Established: func(ctx context.Context, s *ua.Session, msg sip.Message) {
 			call.sess = s
-			// The 2xx confirms the session before it reports its answer.
 			if _, remote, ok := s.Negotiated(); ok {
 				call.takeAnswer(remote)
 			}
@@ -277,8 +235,7 @@ func (call *Call) uacHandler() ua.Handler {
 	}
 }
 
-// takeAnswer takes the answer to the offer of the call, once: the media to send to, and the floor participant of
-// the parameters negotiated (TS 24.380 §14.4).
+// TS 24.380 clause 14.4
 func (call *Call) takeAnswer(b []byte) {
 	if call.taken || call.ended {
 		return
@@ -295,7 +252,6 @@ func (call *Call) takeAnswer(b []byte) {
 	call.n = n
 	call.hear(n.format)
 
-	// The SSRC the server assigned the client's messages, or the client's own (§8.1.2, §14.4).
 	ssrc := call.ssrc
 	if n.control.HasFloorSSRC {
 		ssrc = n.control.FloorSSRC
@@ -312,8 +268,8 @@ func (call *Call) takeAnswer(b []byte) {
 	call.early = nil
 }
 
-// originated is the 2xx of the call placed (TS 24.379 §10.1.1.2.1.1): the floor participant told (TS 24.380
-// §6.2.4.2.2).
+// TS 24.379 clause 10.1.1.2.1.1
+// TS 24.380 clause 6.2.4.2.2
 func (call *Call) originated(ctx context.Context, res *sip.Response) {
 	switch {
 	case call.ended:
@@ -352,13 +308,12 @@ func (call *Call) originated(ctx context.Context, res *sip.Response) {
 		call.released = false
 		call.part.Unpress()
 	case call.c.cfg.ImplicitRequest && !cc.ImplicitRequest && !call.pressed.IsZero():
-		// The implicit request not accepted (§14.3.5), the PTT still held: its Floor Request (TS 24.380 §6.2.4.3.5).
 		call.part.Press()
 	}
 }
 
-// newParticipant makes the floor participant of the call (TS 24.380 §6.2.1), its messages of ssrc, requesting
-// priority: the user's, within the one negotiated (§14.3.3).
+// TS 24.380 clause 6.2.1
+// TS 24.380 clause 14.3.3
 func (call *Call) newParticipant(ssrc uint32, priority uint8) bool {
 	p, err := floor.NewParticipant(floor.ParticipantConfig{
 		Clock:    strandClock{st: call.st, clock: call.c.clock},
@@ -377,14 +332,13 @@ func (call *Call) newParticipant(ssrc uint32, priority uint8) bool {
 	return true
 }
 
-// OnInvite takes an invitation to a call (TS 24.379 §10.1.1.2.1.2), for the OnInvite of the agent: answered at once
-// in automatic commencement (§6.2.3.1.2), or once the user accepts in manual commencement (§6.2.3.2.2), as the
-// Answer-Mode of the INVITE asks or, without one, as the client is configured: the client allows both (steps 7b,
-// 8b). Its offer needs AMR-WB speech and a control channel (§6.2.2).
+// TS 24.379 clause 10.1.1.2.1.2
+// TS 24.379 clause 6.2.3.1.2
+// TS 24.379 clause 6.2.3.2.2
+// TS 24.379 clause 6.2.2
 func (c *Client) OnInvite(r *ua.Request) ua.Handler {
 	call, err := c.newCall(r.Strand(), true)
 	if err != nil {
-		// Step 1a: not enough resources.
 		_ = r.Reject(480)
 		return ua.Handler{}
 	}
@@ -394,9 +348,6 @@ func (c *Client) OnInvite(r *ua.Request) ua.Handler {
 	call.sess.SetPolicy(ua.ClientPolicy)
 
 	code := call.invited(r)
-	// §10.1.1.2.1.2 step 1c: an invitation to a group the client already has a call of, placing it or in it, the
-	// other: refused, so that the client is in the group's call once (the INVITE it placed joins the call, §10.1.1.4.2
-	// step 15).
 	if code == 0 && !c.claim(call) {
 		code = 486
 	}
@@ -418,13 +369,11 @@ func (c *Client) OnInvite(r *ua.Request) ua.Handler {
 		return h
 	}
 
-	// §6.2.3.2.2 step 1: the Contact of the 183 with the MCPTT feature tags.
 	_ = r.Progress(ua.Reply{Code: 183, Header: sip.Header{{Name: "Contact", Value: c.contact().String()}}})
 
 	return h
 }
 
-// invited answers the offer of an invitation, or returns the code to reject it with.
 func (call *Call) invited(r *ua.Request) int {
 	c := call.c
 	req := r.Message()
@@ -490,9 +439,8 @@ func contentURI(c *mcpttinfo.Content) sip.URI {
 	return u
 }
 
-// accept sends the 200 of an invitation (TS 24.379 §6.2.3.1.1): the Contact with the MCPTT feature tags, the
-// session timer refreshed by the client (steps 2 to 5; the agent requires timer of a UAC that supports it), the SDP
-// answer; the call is then established for the floor participant (TS 24.380 §6.2.4.2.3 NOTE).
+// TS 24.379 clause 6.2.3.1.1
+// TS 24.380 clause 6.2.4.2.3
 func (call *Call) accept() {
 	r := call.req
 	if r == nil || call.ended {
@@ -501,7 +449,6 @@ func (call *Call) accept() {
 
 	call.req = nil
 
-	// The interval asked for, reduced to the client's, never below the Min-SE (RFC 4028 §9).
 	h := r.Message().Header
 	se := sip.SessionExpires{Seconds: sessionExpires, Refresher: sip.RefresherUAS}
 
@@ -529,7 +476,7 @@ func (call *Call) accept() {
 	call.part.Join()
 }
 
-// decline declines an invitation (TS 24.379 §6.2.3.2.2 step 2).
+// TS 24.379 clause 6.2.3.2.2
 func (call *Call) decline() {
 	r := call.req
 	if r == nil || call.ended {
@@ -541,7 +488,6 @@ func (call *Call) decline() {
 	_ = r.Reject(480, identity.Warning(call.c.contact().URI.Host, identity.WarnUserDeclined))
 }
 
-// answered is the ACK of the 200 of an invitation.
 func (call *Call) answered(context.Context, *ua.Session, sip.Message) {
 	if call.ended {
 		return
@@ -551,8 +497,8 @@ func (call *Call) answered(context.Context, *ua.Session, sip.Message) {
 	call.c.emit(Event{Kind: EventEstablished, Call: call})
 }
 
-// endedBy is the end of the session: by the server's BYE (TS 24.379 §10.1.1.2.3.3, §6.2.6), the client's, or a
-// failure.
+// TS 24.379 clause 10.1.1.2.3.3
+// TS 24.379 clause 6.2.6
 func (call *Call) endedBy(_ context.Context, _ *ua.Session, e ua.End) {
 	call.release()
 
@@ -564,13 +510,12 @@ func (call *Call) endedBy(_ context.Context, _ *ua.Session, e ua.End) {
 	call.c.emit(Event{Kind: EventEnded, Call: call, End: e})
 }
 
-// PressPTT is the user's request to talk (TS 24.380 §6.2.4.3.5).
+// TS 24.380 clause 6.2.4.3.5
 func (call *Call) PressPTT() {
 	call.st.Post(func() {
 		switch {
 		case call.ended:
 		case !call.established:
-			// Held again before the call is up: its implicit request stands.
 			call.released = false
 		case call.part != nil:
 			call.pressed = call.c.clock.Now()
@@ -579,13 +524,13 @@ func (call *Call) PressPTT() {
 	})
 }
 
-// ReleasePTT is the user's end of talk (TS 24.380 §6.2.4.4.8, §6.2.4.5.3).
+// TS 24.380 clause 6.2.4.4.8
+// TS 24.380 clause 6.2.4.5.3
 func (call *Call) ReleasePTT() {
 	call.st.Post(func() {
 		switch {
 		case call.ended:
 		case !call.established:
-			// Released before the call is up: the floor its implicit request gets released at once (originated).
 			call.released = true
 		case call.part != nil:
 			call.part.Unpress()
@@ -593,15 +538,15 @@ func (call *Call) ReleasePTT() {
 	})
 }
 
-// Accept accepts an invitation in manual commencement (TS 24.379 §6.2.3.2.2).
+// TS 24.379 clause 6.2.3.2.2
 func (call *Call) Accept() { call.st.Post(call.accept) }
 
-// Decline declines an invitation in manual commencement, with a 480 (TS 24.379 §6.2.3.2.2 step 2).
+// TS 24.379 clause 6.2.3.2.2
 func (call *Call) Decline() { call.st.Post(call.decline) }
 
-// Leave leaves the call (TS 24.379 §10.1.1.2.3.1, §6.2.4.1): the floor participant and the media released, a BYE
-// sent; a call placed not yet established is cancelled (§6.2.5.1 step 1), an invitation not answered declined. ctx
-// carries the trace of the BYE or CANCEL; a call placed that is established first ends in the trace of its 2xx.
+// TS 24.379 clause 10.1.1.2.3.1
+// TS 24.379 clause 6.2.4.1
+// TS 24.379 clause 6.2.5.1
 func (call *Call) Leave(ctx context.Context) { call.st.Post(func() { call.leave(ctx) }) }
 
 func (call *Call) leave(ctx context.Context) {
@@ -610,11 +555,9 @@ func (call *Call) leave(ctx context.Context) {
 	case call.req != nil:
 		call.decline()
 	case call.sess != nil && (call.established || call.incoming || call.sess.State() == ua.Confirmed):
-		// TS 24.380 §6.2.2 step 1 before the BYE.
 		call.release()
 		_ = call.sess.Bye(ctx, ua.Change{}, nil)
 	case call.out != nil:
-		// The 2xx may come first: the session is then ended once established.
 		call.leaving = true
 		if call.out.Cancel(ctx, ua.Change{}) != nil {
 			return
@@ -624,7 +567,7 @@ func (call *Call) leave(ctx context.Context) {
 	}
 }
 
-// release releases the media of the call: the floor participant (TS 24.380 §6.2.2), the speech sent, the sockets.
+// TS 24.380 clause 6.2.2
 func (call *Call) release() {
 	if call.ended {
 		return
@@ -651,8 +594,7 @@ func (call *Call) closeMedia() {
 	call.c.unclaim(call)
 }
 
-// logMedia logs the speech of the call: the packets it sent and heard, the jitter of the path from the server, the
-// de-jitter buffer's delay and counts (TS 26.114 §8.2.2).
+// TS 26.114 clause 8.2.2
 func (call *Call) logMedia() {
 	var heard, bursts, initial, trailing, mid int
 	for _, h := range call.Heard() {
@@ -671,21 +613,17 @@ func (call *Call) logMedia() {
 		slog.Int("initial_lost", initial), slog.Int("trailing_lost", trailing), slog.Int("mid_lost", mid))
 }
 
-// Incoming reports whether the client was invited to the call; Manual whether the user is to accept it.
 func (call *Call) Incoming() bool { return call.incoming }
 
 func (call *Call) Manual() bool { return call.manual }
 
-// Group is the group called or, of an invitation, the calling group of its mcptt-info (TS 24.379 F.1.3); Caller the
-// calling user of an invitation.
+// TS 24.379 clause F.1.3
 func (call *Call) Group() sip.URI { return call.group }
 
 func (call *Call) Caller() sip.URI { return call.caller }
 
-// Sent is the number of RTP packets of speech the client sent.
 func (call *Call) Sent() int { return int(call.sent.Load()) }
 
-// Heard is what the sink heard, by talker in the order first heard.
 func (call *Call) Heard() []Heard {
 	call.mu.Lock()
 	defer call.mu.Unlock()
@@ -701,7 +639,6 @@ func (call *Call) Heard() []Heard {
 	return out
 }
 
-// participantOut is the floor participant's output: the control channel, the speech sent, the user.
 type participantOut struct{ call *Call }
 
 func (o participantOut) Send(msg floorctl.Message) { o.call.sendFloor(msg) }
@@ -713,7 +650,6 @@ func (o participantOut) Notify(n floor.Notice) {
 	case floor.NoticeRequestTimeout:
 		o.call.probe()
 	case floor.NoticeGranted:
-		// KPI 1, or 2 of a call placed with the implicit request.
 		if call := o.call; !call.pressed.IsZero() {
 			call.c.cfg.Logger.Info("floor granted", slog.Duration("access", call.c.clock.Now().Sub(call.pressed)))
 			call.pressed = time.Time{}
@@ -723,9 +659,9 @@ func (o participantOut) Notify(n floor.Notice) {
 	o.call.c.emit(Event{Kind: EventFloor, Call: o.call, Floor: n})
 }
 
-// probe refreshes the session at once, a floor request unanswered (TS 24.380 §6.2.4.4.6): an UPDATE without an offer
-// (RFC 3311, RFC 4028 §7.4). The call the network released ends with its 481, or without a response (RFC 5057), as
-// the session timer would end it later.
+// TS 24.380 clause 6.2.4.4.6
+// RFC 3311
+// RFC 4028 section 7.4
 func (call *Call) probe() {
 	if call.ended || call.sess == nil || !call.established {
 		return
@@ -736,7 +672,7 @@ func (call *Call) probe() {
 	}
 }
 
-// sendFloor sends a floor control message to the server's control channel, one APP packet (TS 24.380 §8.1.1).
+// TS 24.380 clause 8.1.1
 func (call *Call) sendFloor(msg floorctl.Message) {
 	if call.ended {
 		return
@@ -752,10 +688,8 @@ func (call *Call) sendFloor(msg floorctl.Message) {
 	}
 }
 
-// receiveControl is a datagram on the control channel: its floor control messages, to the floor participant. An
-// unknown message is ignored whole (TS 24.380 §8.1.4), logged.
+// TS 24.380 clause 8.1.4
 func (call *Call) receiveControl(b []byte, from netip.AddrPort) {
-	// The packets before a malformed one count.
 	ps, err := rtp.ParseRTCP(b)
 	if err != nil {
 		call.c.cfg.Logger.Debug("floor control datagram malformed", slog.String("from", from.String()), slog.Any("error", err))
@@ -775,7 +709,6 @@ func (call *Call) receiveControl(b []byte, from netip.AddrPort) {
 			continue
 		}
 
-		// The talker a Floor Taken announces (§8.2.3.6, §8.2.3.16): its party, and its speech to play first.
 		if msg.Type == floorctl.Taken && msg.GrantedSSRC != nil {
 			call.mu.Lock()
 			call.parties[*msg.GrantedSSRC] = msg.GrantedPartyID
@@ -798,7 +731,6 @@ func (call *Call) receiveFloor(msg floorctl.Message) {
 	}
 }
 
-// hear makes f the AMR-WB payload type of the speech heard, once negotiated.
 func (call *Call) hear(f audioFormat) {
 	call.mu.Lock()
 	defer call.mu.Unlock()
@@ -806,10 +738,10 @@ func (call *Call) hear(f audioFormat) {
 	call.rx = &f
 }
 
-// receiveAudio is a datagram on the audio port: RTP media of the payload type negotiated, its frames to the de-jitter
-// buffer (RFC 4867 §4.3, §4.4), recorded by its SSRC, and reported to the floor participant at most once per report
-// interval (TS 24.380 §6.2.4.3.4). A payload that does not parse is discarded (RFC 4867 §4.3.2). What is dropped is
-// logged, once a call for each reason.
+// RFC 4867 section 4.3
+// RFC 4867 section 4.4
+// RFC 4867 section 4.3.2
+// TS 24.380 clause 6.2.4.3.4
 func (call *Call) receiveAudio(b []byte, from netip.AddrPort) {
 	p, err := rtp.Parse(b)
 	if err != nil || len(p.Payload) == 0 {
@@ -850,7 +782,6 @@ func (call *Call) receiveAudio(b []byte, from netip.AddrPort) {
 
 	call.speech.Put(p.SSRC, p.Timestamp, payload.Frames, now)
 
-	// RFC 4867 §4.3.1: a codec mode request for the client's encoder, within the mode-set, valid until the next.
 	request := -1
 	if payload.CMR != call.cmr && slices.Contains(call.rx.modes(), int(payload.CMR)) {
 		call.cmr, request = payload.CMR, int(payload.CMR)
@@ -901,7 +832,6 @@ func (call *Call) receiveAudio(b []byte, from netip.AddrPort) {
 	})
 }
 
-// dropAudio logs audio of from dropped for why, the first time a call; call.mu held.
 func (call *Call) dropAudio(from netip.AddrPort, why string, err error) {
 	if call.dropped[why] {
 		return
@@ -915,43 +845,33 @@ func (call *Call) dropAudio(from netip.AddrPort, why string, err error) {
 	call.c.cfg.Logger.Debug("audio dropped", slog.String("reason", why), slog.String("from", from.String()), slog.Any("error", err))
 }
 
-// NextSpeech is the speech heard for the next 20 ms, for the decoder, in the storage format of RFC 4867 §5.3: a frame
-// of the talker, SPEECH_LOST for one missing, NO_DATA in silence. The platform takes one each 20 ms of its playout.
+// RFC 4867 section 5.3
 func (call *Call) NextSpeech() []byte {
 	b, _ := amr.WB.AppendStorage(nil, call.speech.Get(call.c.clock.Now()))
 
 	return b
 }
 
-// SpeechDelay is the buffering delay of the speech heard, and its counts.
 func (call *Call) SpeechDelay() (time.Duration, jitter.Stats) {
 	return call.speech.Delay(), call.speech.Stats()
 }
 
-// speaker is the speech the client sends: its frames from the encoder while the floor participant transmits, of the
-// payload type negotiated and the SSRC granted (TS 24.380 §6.2.4.4.2 step 7).
+// TS 24.380 clause 6.2.4.4.2
 type speaker struct {
-	on    bool
-	ssrc  uint32
-	seq   uint16
-	ts0   uint32
-	epoch time.Time
-	// silent is set when the frame before was no speech: the next speech frame starts a talkspurt (RFC 4867 §4.1).
+	on     bool
+	ssrc   uint32
+	seq    uint16
+	ts0    uint32
+	epoch  time.Time
 	silent bool
 
-	// base is the timestamp of the first frame of the transmission, n the frames since; next the timestamp after the
-	// last frame sent.
-	base uint32
-	n    int
-	next uint32
-	sent bool
-	// started is when the transmission started: the delay to its first frame logged, of the capture (TS 22.179
-	// R-6.15.3.2-016).
+	base    uint32
+	n       int
+	next    uint32
+	sent    bool
 	started time.Time
 }
 
-// transmit starts the transmission of the speech with ssrc, the client's own if the server assigned none, or stops
-// it, and tells the platform, its encoder at the mode negotiated.
 func (call *Call) transmit(on bool, ssrc uint32) {
 	src := &call.src
 
@@ -976,8 +896,6 @@ func (call *Call) transmit(on bool, ssrc uint32) {
 		return
 	}
 
-	// The timestamp of the first frame is the sampling instant on the clock of the call (RFC 3550 §5.1), after the
-	// frames already sent.
 	now := call.c.clock.Now()
 
 	src.on, src.silent, src.n, src.started = true, true, 0, now
@@ -997,11 +915,11 @@ var (
 	errNotNegotiated = errors.New("client: speech of a call not established")
 )
 
-// SendSpeech sends a frame of the encoder, in the storage format of RFC 4867 §5.3, while the client transmits
-// (EventTransmit): each one 20 ms after the one before, its timestamp 320 after (RFC 3550 §5.1), one frame per
-// packet (TS 26.179 §4.1.3: ptime 20). A NO_DATA frame of DTX takes its 20 ms without a packet (RFC 4867 §4.3.2); a
-// speech frame after silence starts a talkspurt, the marker bit set (§4.1). Frames while the client does not transmit
-// are dropped.
+// RFC 4867 section 5.3
+// RFC 4867 section 4.3.2
+// RFC 4867 section 4.1
+// RFC 3550 section 5.1
+// TS 26.179 clause 4.1.3
 func (call *Call) SendSpeech(frame []byte) error {
 	f, n, err := amr.WB.ParseStorage(frame)
 	if err != nil || n != len(frame) || f.Type == amr.FrameSpeechLost {

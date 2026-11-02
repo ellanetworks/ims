@@ -44,7 +44,7 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.1: only REQUESTED_SERVICE_TEMPORARILY_NOT_AUTHORIZED holds the same service information back.
+// TS 29.214 clause 4.4.1
 func TestClassifyRetryInterval(t *testing.T) {
 	temporary := &rx.AAError{
 		ResultError:   rx.ResultError{Result: tgpp.Result{Code: tgpp.ResultRequestedServiceTemporarilyNotAuthorized, Experimental: true}},
@@ -94,7 +94,8 @@ func TestRefRoundTrip(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.6.2, §4.4.6.5
+// TS 29.214 clause 4.4.6.2
+// TS 29.214 clause 4.4.6.5
 func TestEvent(t *testing.T) {
 	e := event(rx.ReAuthRequest{
 		SpecificActions: []rx.SpecificAction{rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer},
@@ -125,7 +126,9 @@ func TestEvent(t *testing.T) {
 	}
 }
 
-// TS 29.214 §4.4.2, §5.3.13, §5.3.48: a failed modification loses only the components reported INACTIVE.
+// TS 29.214 clause 4.4.2
+// TS 29.214 clause 5.3.13
+// TS 29.214 clause 5.3.48
 func TestEventFailedResourcesAllocation(t *testing.T) {
 	active, inactive := rx.MediaComponentActive, rx.MediaComponentInactive
 	failed := []rx.SpecificAction{rx.ActionIndicationOfFailedResourcesAllocation}
@@ -191,7 +194,6 @@ func TestChargingAccess(t *testing.T) {
 	}
 }
 
-// Stored sessions survive a change of the PCRF realm: each keeps its PCRF.
 func TestEndpoint(t *testing.T) {
 	b := New(Config{Realm: func() string { return "EPC.Example.org" }})
 
@@ -258,7 +260,7 @@ func TestInboundNeedsASink(t *testing.T) {
 	}
 }
 
-// RFC 6733 §8.4: only an unanswered request, or one answered with a retry, is transient.
+// RFC 6733 section 8.4
 func TestClassifyTransient(t *testing.T) {
 	result := func(code uint32) error { return &rx.ResultError{Result: tgpp.Result{Code: code}} }
 

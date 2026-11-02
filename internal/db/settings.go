@@ -51,7 +51,6 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 	return s, nil
 }
 
-// peers are in the order they were created in, which their UUIDv7 IDs sort in.
 func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 	rows, err := d.conn.QueryContext(ctx, `SELECT id, host, address, port, transport, applications, priority,
 		service_centres FROM diameter_peers ORDER BY id`)
@@ -100,7 +99,6 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 	return peers, nil
 }
 
-// routes are in the order of settings.RoutedApplications.
 func (d *DB) routes(ctx context.Context) ([]settings.Route, error) {
 	rows, err := d.conn.QueryContext(ctx, `SELECT application, realm FROM diameter_routes`)
 	if err != nil {

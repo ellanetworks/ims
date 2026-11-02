@@ -12,22 +12,19 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Authenticator runs the AKA challenges of the network (TS 33.203 §6.1): the ISIM, or the USIM without one (§8), of
-// the UICC; the USIM checks the network's AUTN and its SQN itself (TS 33.102 §6.3.3).
+// TS 33.203 clause 6.1
 type Authenticator interface {
-	// Authenticate runs the challenge RAND, AUTN: RES, CK and IK; or AUTS alone, on a synchronisation failure
-	// (TS 33.102 §6.3.5); or ErrMACFailure when the AUTN is not the network's.
 	Authenticate(rand, autn []byte) (AKAResult, error)
 }
 
-// AKAResult is the outcome of an AKA run (TS 31.102 §7.1.2.1, TS 31.103 §7.1.2.1).
+// TS 31.102 clause 7.1.2.1
+// TS 31.103 clause 7.1.2.1
 type AKAResult struct {
 	RES, CK, IK []byte
 
 	AUTS []byte
 }
 
-// ErrMACFailure is the error of an Authenticator that found the AUTN of a challenge not to be the network's.
 var ErrMACFailure = errors.New("ue: MAC failure")
 
 const (
@@ -41,7 +38,7 @@ const (
 
 var ErrNoChallenge = errors.New("ue: no AKAv1-MD5 challenge in the 401")
 
-// challenge is the AKAv1-MD5 challenge of a 401 (RFC 3310 §3.2): its nonce is RAND ‖ AUTN.
+// RFC 3310 section 3.2
 type challenge struct {
 	realm string
 	nonce string
@@ -101,7 +98,7 @@ func cnonce() string {
 	return hex.EncodeToString(b)
 }
 
-// emptyAuthorization is the Authorization of an initial REGISTER (TS 24.229 §5.1.1.2.2).
+// TS 24.229 clause 5.1.1.2.2
 func emptyAuthorization(impi, domain string) string {
 	return sip.Auth{Scheme: "Digest", Params: sip.Params{
 		{Name: "username", Value: sip.Quote(impi)},
@@ -113,8 +110,9 @@ func emptyAuthorization(impi, domain string) string {
 	}}.String()
 }
 
-// answer is the Authorization answering a challenge (RFC 3310 §3.3, §3.4; TS 24.229 §5.1.1.5.1): the digest with RES as
-// the password, or with AUTS on a synchronisation failure, or an empty response on a MAC failure.
+// RFC 3310 section 3.3
+// RFC 3310 section 3.4
+// TS 24.229 clause 5.1.1.5.1
 func answer(impi, domain string, ch challenge, password []byte, auts []byte, emptyResponse bool) string {
 	uri := "sip:" + domain
 

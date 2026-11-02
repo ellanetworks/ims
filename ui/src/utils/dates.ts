@@ -25,16 +25,12 @@ const MONTHS = [
   "Dec",
 ];
 
-// formatDate is the local date of a timestamp, as YYYY-MM-DD.
 export const formatDate = (iso: string): string =>
   formatTimestamp(iso).split(" ")[0];
 
-// formatClock is the local time of day of a timestamp, as HH:MM:SS.
 export const formatClock = (iso: string): string =>
   formatTimestamp(iso).split(" ")[1] ?? iso;
 
-// formatRecentTimestamp is a timestamp as short as it can be: its time of day today, its date without the year
-// this year, else in full.
 export const formatRecentTimestamp = (
   iso: string,
   now: Date = new Date(),

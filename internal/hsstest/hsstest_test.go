@@ -473,9 +473,9 @@ func TestUnregisteredUser(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.1.2.1: an HSS with the P-CSCF-Restoration-mechanism feature advertises it, unregisters the identity
-// without user data on the indication, or refuses it when no serving node of the user supports the restoration; one
-// without the feature does not advertise it (TS 29.229 Table 7.1.1, §6.2.2.12).
+// TS 29.228 clause 6.1.2.1
+// TS 29.229 clause 7.1.1 table 7.1.1
+// TS 29.229 clause 6.2.2.12
 func TestPCSCFRestoration(t *testing.T) {
 	c := newClient(t)
 
@@ -818,8 +818,9 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// TS 23.228 §5.4.12.2, TS 29.228 §6.1.2, §6.1.4.1: a PSI user, its wildcarded PSIs, its profile for SAR
-// UNREGISTERED_USER without a private identity, and direct routing to its AS.
+// TS 23.228 clause 5.4.12.2
+// TS 29.228 clause 6.1.2
+// TS 29.228 clause 6.1.4.1
 func TestPSI(t *testing.T) {
 	c := newClient(t)
 
@@ -848,12 +849,10 @@ func TestPSI(t *testing.T) {
 		t.Fatalf("user data %+v, %v, want the PSI user's profile with its iFC", sub, err)
 	}
 
-	// TS 29.228 Table 6.1.2.2
 	if saa.WildcardedPublicIdentity != psi {
 		t.Errorf("SAA Wildcarded-Public-Identity %q, want %q", saa.WildcardedPublicIdentity, psi)
 	}
 
-	// TS 29.228 §6.1.4.1 step 2: the AS name, the flag only if the HSS sets it.
 	c.hss.Update("psi@"+realm, func(s *Subscriber) { s.AS = "sip:as." + realm })
 
 	if lia, err := c.lir("sip:group7@" + realm); err != nil || lia.ServerName != "sip:as."+realm || lia.PSIDirectRouting {

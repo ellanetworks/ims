@@ -21,8 +21,6 @@ func mustURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// What is saved of a binding is what is read, to the millisecond; a client saved again is replaced, one deleted
-// removed.
 func TestRegistrations(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -67,8 +65,6 @@ func TestRegistrations(t *testing.T) {
 	}
 }
 
-// What is saved of the affiliations of a client is what is read, its groups in order; a record of no groups and no
-// entity-tag removes them.
 func TestAffiliations(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)
@@ -108,7 +104,6 @@ func TestAffiliations(t *testing.T) {
 	}
 }
 
-// A row whose URIs do not parse is left out, and removed: the others are restored.
 func TestUnparsableState(t *testing.T) {
 	ctx := t.Context()
 	d := openTestDB(t)

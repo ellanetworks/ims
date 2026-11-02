@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// recorder is a store that records its calls, and fails them with err.
 type recorder struct {
 	mu    sync.Mutex
 	calls []string
@@ -42,7 +41,6 @@ func (r *recorder) UpdateGroup(_ context.Context, g settings.Group, users []sett
 	return r.record("update group %s%s", g.URI, affiliations(users))
 }
 
-// affiliations are the implicit affiliations of users, of a change of a group or member: none if empty.
 func affiliations(users []settings.User) string {
 	var b strings.Builder
 
@@ -81,8 +79,6 @@ func (r *recorder) DeleteMember(_ context.Context, group, id string) error {
 	return r.record("delete member %s %s", group, id)
 }
 
-// example are alice, bob and carol, members of fire, affiliated to it on registration: alice required, bob of a tel
-// IMPU too, carol receive-only.
 func example(t *testing.T) settings.Settings {
 	t.Helper()
 
@@ -140,12 +136,10 @@ func mustURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// err2 and err3 are the errors of calls of two and three results.
 func err2[T any](_ T, err error) error { return err }
 
 func err3[T, U any](_ T, _ U, err error) error { return err }
 
-// changeError is err, a ChangeError of kind and of the problems want, each as its Error.
 func changeError(t *testing.T, err, kind error, want ...string) {
 	t.Helper()
 
@@ -173,8 +167,6 @@ func TestNewLiveInvalid(t *testing.T) {
 	}
 }
 
-// A change is for the calls after it: a call holding the snapshot before keeps it. Get has the settings as written,
-// Current their snapshot, the defaults applied.
 func TestChange(t *testing.T) {
 	ctx := t.Context()
 	l, r := newLive(t)
@@ -185,7 +177,6 @@ func TestChange(t *testing.T) {
 		ImplicitAffiliations: []string{"sip:fire@MCPTT.example.com"},
 	}
 
-	// An affiliation to a group of which dave is not a member yet.
 	changeError(t, err2(l.CreateUser(ctx, dave)), settings.ErrConflict,
 		"implicit-affiliations[0]: sip:fire@mcptt.example.com is a group sip:dave@mcptt.example.com is not a member of")
 
@@ -205,7 +196,6 @@ func TestChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The store and Get have the identities as their user and group have them.
 	want := []string{
 		"create user sip:dave@mcptt.example.com []",
 		"put member sip:fire@mcptt.example.com sip:dave@mcptt.example.com",
@@ -224,7 +214,6 @@ func TestChange(t *testing.T) {
 		t.Errorf("dave's entry %+v", e)
 	}
 
-	// As written: the defaults are the snapshot's.
 	if s.Users[3].MaxAffiliationsN2 != nil {
 		t.Errorf("N2 %v", *s.Users[3].MaxAffiliationsN2)
 	}
@@ -240,8 +229,6 @@ func TestChange(t *testing.T) {
 	}
 }
 
-// A change with an error of its own is invalid; one that only conflicts with the rest, a conflict; the errors of
-// the documents it conflicts with name them.
 func TestRefused(t *testing.T) {
 	ctx := t.Context()
 	l, r := newLive(t)
@@ -254,7 +241,6 @@ func TestRefused(t *testing.T) {
 	changeError(t, err2(l.CreateUser(ctx, settings.User{MCPTTUserID: "sip:alice@mcptt.example.com", IMPUs: []string{"tel:+1"}})),
 		settings.ErrConflict, "mcptt-user-id: sip:alice@mcptt.example.com is also the user sip:alice@mcptt.example.com")
 
-	// An IMPU of a group's URI: found at the group, validated after the users.
 	changeError(t, err2(l.CreateUser(ctx, settings.User{MCPTTUserID: "sip:dave@mcptt.example.com", IMPUs: []string{"sip:fire@mcptt.example.com"}})),
 		settings.ErrConflict, "the group sip:fire@mcptt.example.com: uri: sip:fire@mcptt.example.com is also an IMPU of sip:dave@mcptt.example.com")
 
@@ -265,7 +251,6 @@ func TestRefused(t *testing.T) {
 		settings.ErrInvalid, "user-priority: 256 is not within 0 and 255 (TS 24.481 §7.2.4.2)",
 		"uri: sip:x@mcptt.example.com is not a configured user")
 
-	// An implicit affiliation of a member the group no longer has.
 	fire := example(t).Groups[0]
 	fire.List.Entries = fire.List.Entries[1:]
 	changeError(t, err2(l.UpdateGroup(ctx, fire, settings.Implicit{"sip:alice@mcptt.example.com": true})), settings.ErrConflict,
@@ -297,7 +282,6 @@ func TestRefused(t *testing.T) {
 	}
 }
 
-// A change the store fails to save does not take effect.
 func TestStoreFails(t *testing.T) {
 	l, r := newLive(t)
 	before := l.Current()
@@ -313,7 +297,6 @@ func TestStoreFails(t *testing.T) {
 	}
 }
 
-// A member put again keeps its place; deleted members and users go, and the groups once no user is affiliated.
 func TestMembers(t *testing.T) {
 	ctx := t.Context()
 	l, r := newLive(t)
@@ -353,7 +336,6 @@ func TestMembers(t *testing.T) {
 	}
 }
 
-// Changes and reads at once (go test -race).
 func TestConcurrent(t *testing.T) {
 	ctx := t.Context()
 	l, _ := newLive(t)
@@ -387,7 +369,6 @@ func TestConcurrent(t *testing.T) {
 	}
 }
 
-// The server serves MaxUsers users at most.
 func TestMaxUsers(t *testing.T) {
 	s := example(t)
 	for i := len(s.Users); i < settings.MaxUsers; i++ {
@@ -405,7 +386,6 @@ func TestMaxUsers(t *testing.T) {
 		settings.ErrConflict, "1001 users: the server serves at most 1000")
 }
 
-// A removal of a member, of no body, that makes its group invalid is a conflict with the group.
 func TestDeleteMemberConflict(t *testing.T) {
 	ctx := t.Context()
 	l, _ := newLive(t)
@@ -423,8 +403,6 @@ func TestDeleteMemberConflict(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// A member removed, a user or a group deleted, takes its implicit affiliations or memberships with it, in the same
-// change.
 func TestCascades(t *testing.T) {
 	ctx := t.Context()
 
@@ -474,7 +452,6 @@ func TestCascades(t *testing.T) {
 		l, r := newLive(t)
 		held := l.Get()
 
-		// carol leaves fire; bob stays, no longer implicitly affiliated.
 		fire := example(t).Groups[0]
 		fire.List.Entries = fire.List.Entries[:2]
 
@@ -536,8 +513,6 @@ func TestCascades(t *testing.T) {
 	})
 }
 
-// OnChange is told the snapshots before and after each change that took effect, each change's before the after of
-// the one before it; not of a change refused.
 func TestOnChange(t *testing.T) {
 	l, _ := newLive(t)
 

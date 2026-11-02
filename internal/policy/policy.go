@@ -1,4 +1,3 @@
-// Package policy is the P-CSCF's view of the PCRF or PCF, independent of Rx (TS 29.214) and N5 (TS 29.514).
 package policy
 
 import (
@@ -12,19 +11,13 @@ var (
 	ErrRefused     = errors.New("refused by the policy function")
 	ErrUnreachable = errors.New("policy function unreachable")
 	ErrMalformed   = errors.New("malformed answer from the policy function")
-	// ErrUnknownSession: the policy function no longer knows the session (TS 29.214 §4.4.1 DIAMETER_UNKNOWN_SESSION_ID,
-	// TS 29.514 §5.7.3 APPLICATION_SESSION_CONTEXT_NOT_FOUND).
+	// TS 29.214 clause 4.4.1
+	// TS 29.514 clause 5.7.3
 	ErrUnknownSession = errors.New("session unknown to the policy function")
-	// ErrSessionLost: the policy function holding the session cannot be reached and lets no other take it over, so
-	// the service of the session ends and its termination is not sent again (RFC 6733 §8.18 REFUSE_SERVICE).
+	// RFC 6733 section 8.18
 	ErrSessionLost = errors.New("session lost with its policy function")
 )
 
-// Error carries a backend error with its class: ErrRefused, ErrUnreachable, ErrMalformed, ErrUnknownSession,
-// ErrSessionLost or none.
-// Transient means the policy function may not have handled the request, so sending it again may succeed.
-// RetryAfter holds back the same service information; Backoff holds back any request to an overloaded policy
-// function.
 type Error struct {
 	Kind       error
 	Result     string
@@ -57,7 +50,6 @@ func (e *Error) Unwrap() []error {
 	return errs
 }
 
-// ResultOf returns the policy function's result for err, if it answered.
 func ResultOf(err error) (string, bool) {
 	var e *Error
 	if errors.As(err, &e) && e.Result != "" {
@@ -67,14 +59,12 @@ func ResultOf(err error) (string, bool) {
 	return "", false
 }
 
-// Transient reports whether the request that failed with err may succeed if sent again.
 func Transient(err error) bool {
 	var e *Error
 
 	return errors.As(err, &e) && e.Transient
 }
 
-// RetryAfter returns how long the same service information must not be sent again after err.
 func RetryAfter(err error) time.Duration {
 	var e *Error
 	if errors.As(err, &e) {
@@ -84,7 +74,7 @@ func RetryAfter(err error) time.Duration {
 	return 0
 }
 
-// Backoff returns how long the policy function asked to receive no request after err (TS 29.500 §6.4.2).
+// TS 29.500 clause 6.4.2
 func Backoff(err error) time.Duration {
 	var e *Error
 	if errors.As(err, &e) {
@@ -94,30 +84,23 @@ func Backoff(err error) time.Duration {
 	return 0
 }
 
-// Backend opens, modifies and closes sessions with one policy function. The id names a session locally and on
-// the P-CSCF's side of the interface; the ref is the backend's state for it, kept across restarts. Endpoint
-// identifies the policy function itself, not its local configuration, so stored sessions survive renames.
 type Backend interface {
 	Endpoint() string
 	NewSessionID() string
 	Bind(s Sink)
 
-	// TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
 	OpenSignalling(ctx context.Context, id string, s Signalling, wait bool) (ref string, err error)
-	// TS 29.214 §4.4.1, §4.4.2, TS 29.514 §4.2.2.2, §4.2.3.2
 	Authorize(ctx context.Context, id, ref string, r Request) (Grant, error)
-	// TS 29.214 §4.4.4, TS 29.514 §4.2.4.2
 	Terminate(ctx context.Context, id, ref string, cause Termination, wait bool) error
 }
 
-// Sink receives what the policy function reports about the P-CSCF's sessions. ctx is the trace of the report, without
-// its cancellation: the work it starts outlives the request that reports it.
 type Sink interface {
 	Notify(ctx context.Context, id string, e Event) bool
 	Abort(ctx context.Context, id string, a Abort) (terminate func(), known bool)
 }
 
-// TS 29.214 §4.4.5, TS 29.514 §4.2.6.7
+// TS 29.214 clause 4.4.5
+// TS 29.514 clause 4.2.6.7
 type Signalling struct {
 	UE netip.Addr
 }
@@ -132,8 +115,8 @@ type Request struct {
 	MCPTT       *MCPTTPriority
 }
 
-// MCPTTPriority is the authorised MCPTT Resource-Priority of a call (TS 29.214 Annex A.13.2, TS 29.514 Annex
-// B.10.2): an RFC 8101 namespace, and its priority value, 0 the lowest to 15 the highest.
+// TS 29.214 clause A.13.2
+// TS 29.514 clause B.10.2
 type MCPTTPriority struct {
 	Namespace string
 	Level     uint8
@@ -182,7 +165,8 @@ const (
 	ProtocolUDP Protocol = 17
 )
 
-// TS 29.213 §6.2, TS 29.513 §7.2.3. Bandwidths are in bit/s.
+// TS 29.213 clause 6.2
+// TS 29.513 clause 7.2.3
 type MediaComponent struct {
 	Number         uint32
 	Type           MediaType
@@ -201,7 +185,6 @@ type SubComponent struct {
 	Usage      FlowUsage
 }
 
-// Flow is an IP flow: uplink flows leave the UE.
 type Flow struct {
 	Uplink          bool
 	Protocol        Protocol
@@ -210,7 +193,8 @@ type Flow struct {
 	DestinationPort uint16
 }
 
-// TS 29.214 §5.3.7, TS 29.514 §5.6.3.2 (CodecData). Uplink means the SDP came from the UE.
+// TS 29.214 clause 5.3.7
+// TS 29.514 clause 5.6.3.2
 type Codec struct {
 	Uplink bool
 	Answer bool
@@ -253,7 +237,10 @@ const (
 	AccessOther
 )
 
-// TS 29.214 §5.3.2, §5.3.3, TS 29.514 §5.6.2.32 (AccessNetChargingIdentifier), TS 29.512 (AccNetChargingAddress)
+// TS 29.214 clause 5.3.2
+// TS 29.214 clause 5.3.3
+// TS 29.514 clause 5.6.2.32
+// TS 29.512
 type Charging struct {
 	Address     netip.Addr
 	Access      Access
@@ -299,8 +286,6 @@ func (k EventKind) MarshalText() ([]byte, error) {
 	return []byte(k.String()), nil
 }
 
-// Event is a notification for one session. Components lists the media components it is about, all of them when
-// empty; Charging is set with EventChargingCorrelation.
 type Event struct {
 	Kinds      []EventKind
 	Components []uint32
@@ -319,7 +304,8 @@ func (e Event) Has(kinds ...EventKind) bool {
 	return false
 }
 
-// TS 29.214 §4.4.6.1, TS 29.514 §4.2.5.3
+// TS 29.214 clause 4.4.6.1
+// TS 29.514 clause 4.2.5.3
 type Abort struct {
 	Cause                 string
 	InsufficientResources bool

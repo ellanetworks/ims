@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-// ErrIdentityConflict is a public identity that a set holds, of a registration, which another set would take, or a
-// registration without a set whose identities are in several sets: the HSS removes an identity from its set before it
-// adds it to another (TS 29.228 §6.5.2.1).
+// TS 29.228 clause 6.5.2.1
 var ErrIdentityConflict = errors.New("public identity in another implicit registration set")
 
 type PublicIdentity struct {
@@ -22,34 +20,23 @@ type PublicIdentity struct {
 	Barred      bool
 }
 
-// ImplicitSet is an implicit registration set and its user profile, as the HSS downloaded or pushed it (TS 29.228
-// §6.5.1.1, §6.5.2.1): one for all the private identities that register it (TS 23.228 §4.3.3.4). A public identity is
-// in one set at most.
+// TS 29.228 clause 6.5.1.1
+// TS 29.228 clause 6.5.2.1
+// TS 23.228 clause 4.3.3.4
 type ImplicitSet struct {
-	ID int64
-	// Identities are the public user identities of the set, in the order of the profile: the first not barred is the
-	// default one.
-	Identities []PublicIdentity
-	UserData   []byte
-	// HSS is the HSS that serves the set, where the S-CSCF sends its Cx requests (TS 29.229 §5.5).
-	HSS HSS
-	// Unregistered, when set, tells that the S-CSCF keeps the set for a public identity that is not registered, until
-	// it clears its name at the HSS (TS 23.228 §5.12.1, TS 29.228 §6.1.2.1): no registration refers to it.
+	ID           int64
+	Identities   []PublicIdentity
+	UserData     []byte
+	HSS          HSS
 	Unregistered *Unregistered
 }
 
-// Unregistered is what the S-CSCF keeps of a set downloaded for a public identity, a user's or a PSI's, that is not
-// registered (SAR UNREGISTERED_USER).
 type Unregistered struct {
-	// Identity is the canonical public identity of the SAR, and Wildcard the wildcarded identity the HSS said it falls
-	// in, if any (TS 29.228 Table 6.1.2.2).
 	Identity  string
 	Wildcard  string
 	ExpiresAt time.Time
 }
 
-// Registration is the registration of an implicit set by a private identity. Identities, UserData and HSS are those
-// of the set as read: SaveRegistration stores them only for a registration without a set yet.
 type Registration struct {
 	ID         int64
 	IMPI       string
@@ -61,17 +48,15 @@ type Registration struct {
 	Bindings   []Binding
 }
 
-// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its answers, and the Cx features it
-// supports, from the Supported-Features of its SAA (TS 29.229 §7.2). Empty is unknown.
+// TS 29.229 clause 7.2
 type HSS struct {
 	Host     string
 	Realm    string
 	Features uint32
 }
 
-// Contact is what a binding binds a registration set to (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6): a
-// registration flow, identified by its Instance and RegID, when the multiple registration mechanism
-// applies, or else a contact address, identified by its URI; with its parameters and the Path to it.
+// RFC 5626 section 6
+// TS 24.229 clause 5.4.1.2.2
 type Contact struct {
 	URI      string
 	Instance string
@@ -80,7 +65,6 @@ type Contact struct {
 	Path     string
 }
 
-// Flow reports whether the contact is a registration flow (RFC 5626).
 func (c Contact) Flow() bool {
 	return c.RegID != 0
 }
@@ -92,8 +76,7 @@ const (
 	BindingRefreshed  BindingEvent = "refreshed"
 )
 
-// Binding is the binding of a registration set to a contact (TS 24.229 §5.4.1.2.2 steps 6 to 8): its ID
-// is stable over refreshes, and over a flow replaced in place.
+// TS 24.229 clause 5.4.1.2.2
 type Binding struct {
 	ID           int64
 	Contact      Contact
@@ -115,8 +98,6 @@ const (
 		impu, registered_at`
 )
 
-// SaveSet stores the set, and its identities in place of those it had. An identity that a set no registration refers
-// to holds, one kept unregistered, leaves it; one that a registered set holds is ErrIdentityConflict.
 func (d *DB) SaveSet(ctx context.Context, s ImplicitSet) (_ ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -213,7 +194,6 @@ func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error
 	return s, nil
 }
 
-// GetSet returns the set with the ID.
 func (d *DB) GetSet(ctx context.Context, id int64) (_ ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -229,7 +209,6 @@ func (d *DB) GetSet(ctx context.Context, id int64) (_ ImplicitSet, err error) {
 	return sets[0], nil
 }
 
-// FindSets returns the sets that hold one of the identity keys as one of their public user identities.
 func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -251,7 +230,6 @@ func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err 
 	return sets, nil
 }
 
-// ListUnregisteredSets returns the sets kept unregistered, by expiry.
 func (d *DB) ListUnregisteredSets(ctx context.Context) (_ []ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -264,8 +242,6 @@ func (d *DB) ListUnregisteredSets(ctx context.Context) (_ []ImplicitSet, err err
 	return sets, nil
 }
 
-// FindUnregisteredSets returns the sets kept unregistered that may serve a public identity: those that hold one of its
-// keys, those kept for one of its forms, and those kept for a wildcarded identity, which the caller matches.
 func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -290,7 +266,6 @@ func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []Impli
 	return sets, nil
 }
 
-// DeleteSet removes a set no registration refers to.
 func (d *DB) DeleteSet(ctx context.Context, id int64) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -370,8 +345,6 @@ func querySets(ctx context.Context, q *sql.DB, query string, args ...any) ([]Imp
 	return sets, nil
 }
 
-// SaveRegistration stores the registration and its bindings, in place of those it had. A registration without a set
-// is of the set that holds its identities, or else of a new set of its Identities, UserData and HSS.
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registration, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -399,11 +372,6 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 	return r, nil
 }
 
-// SaveAssignment stores the set that a server assignment answered for, as SaveSet does, and the registration of it by
-// a private identity, as SaveRegistration does, at once: in place of the registrations replaced, of the same private
-// identity, which it deletes, with their sets when no registration refers to them anymore; and after the sets losing,
-// registered, which give up identities of s, stored first. A set is never stored without the registration it is
-// stored for.
 func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, replaced []int64, losing []ImplicitSet,
 ) (_ ImplicitSet, _ Registration, err error) {
 	defer d.observe(poolWrite, &err)()
@@ -509,7 +477,6 @@ func saveRegistration(ctx context.Context, tx *sql.Tx, r Registration) (Registra
 	return r, nil
 }
 
-// setOf is the set of a registration without one: the set that holds its identities, or else a new one.
 func setOf(ctx context.Context, tx *sql.Tx, r Registration) (int64, error) {
 	var found int64
 
@@ -544,8 +511,6 @@ func setOf(ctx context.Context, tx *sql.Tx, r Registration) (int64, error) {
 	return saved.ID, nil
 }
 
-// saveBinding stores b over the registration's binding to the same contact: the same flow, or the same
-// URI, and returns its ID.
 func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Binding) (int64, error) {
 	conflict := `ON CONFLICT (registration_id, uri) WHERE reg_id IS NULL DO UPDATE SET instance_id = excluded.instance_id`
 	if b.Contact.Flow() {
@@ -568,7 +533,6 @@ func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Bindin
 	return id, err
 }
 
-// DeleteRegistration removes the registration, and its set when no other registration refers to it.
 func (d *DB) DeleteRegistration(ctx context.Context, id int64) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -614,7 +578,6 @@ func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) (_ []Regi
 	return regs, nil
 }
 
-// ListRegistrationsBySet returns the registrations of the set, by every private identity.
 func (d *DB) ListRegistrationsBySet(ctx context.Context, setID int64) (_ []Registration, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -640,7 +603,6 @@ func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) (_ []R
 	return regs, nil
 }
 
-// ListRegistrationsByIdentities returns the registrations holding any of the identity keys, each once.
 func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (_ []Registration, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -773,7 +735,6 @@ func queryRegistrations(ctx context.Context, q *sql.DB, query string, args ...an
 	return regs, nil
 }
 
-// loadIdentities returns the identities of the sets, by set.
 func loadIdentities(ctx context.Context, q *sql.DB, sets []any) (map[int64][]PublicIdentity, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT set_id, uri, key, display_name, barred FROM set_identities
@@ -849,7 +810,6 @@ func scanRegistration(row scanner) (Registration, error) {
 	return r, nil
 }
 
-// GetBinding returns the binding with the ID, and the private identity of its registration set.
 func (d *DB) GetBinding(ctx context.Context, id int64) (_ Binding, _ string, err error) {
 	defer d.observe(poolWrite, &err)()
 

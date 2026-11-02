@@ -19,7 +19,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// fakeRouter is the HSS of the IP-SM-GW over S6c.
 type fakeRouter struct {
 	mu       sync.Mutex
 	requests []s6c.RoutingRequest
@@ -52,7 +51,6 @@ type fakeAnswer struct {
 	err error
 }
 
-// fakeNodes are the MMEs and SMSFs of the IP-SM-GW over SGd, by host.
 type fakeNodes struct {
 	mu        sync.Mutex
 	answers   map[string]fakeAnswer
@@ -96,8 +94,6 @@ func envelope() tgpp.Envelope {
 	}
 }
 
-// routingInfo sends the IP-SM-GW the Send Routing Info for SM of the SMS-GMSC for the MSISDN of serviceInfo, and
-// returns its answer.
 func (w *world) routingInfo() *diameter.Message {
 	w.t.Helper()
 
@@ -111,8 +107,6 @@ func (w *world) routingInfo() *diameter.Message {
 	return w.a.RoutingInfo(w.t.Context(), ims, req)
 }
 
-// forward sends the IP-SM-GW the MT Forward Short Message of the SMS-GMSC to corr, and returns a channel of its
-// answer, which waits for the delivery.
 func (w *world) forward(corr string, timer time.Duration) <-chan *diameter.Message {
 	w.t.Helper()
 
@@ -130,7 +124,6 @@ func (w *world) forward(corr string, timer time.Duration) <-chan *diameter.Messa
 	return ch
 }
 
-// available registers alice, of the MSISDN of serviceInfo, able to receive short messages over IP.
 func (w *world) available() {
 	w.t.Helper()
 
@@ -142,7 +135,6 @@ func (w *world) available() {
 	w.hss.waitUpdates(w.t, update{msisdn: "15551230001", number: "15550000100"})
 }
 
-// delivered takes the MESSAGE of a short message delivered over IMS, answers it code, and returns it and its RP-DATA.
 func (w *world) delivered(code int) (*sip.Request, *sms.RPData) {
 	w.t.Helper()
 
@@ -163,7 +155,6 @@ func (w *world) delivered(code int) (*sip.Request, *sms.RPData) {
 	return req, data
 }
 
-// report sends the delivery report rp of the UE, of an In-Reply-To of callID if not "".
 func (w *world) report(rp sms.RPMessage, callID string) {
 	w.t.Helper()
 
@@ -194,8 +185,9 @@ func answerOf(t *testing.T, ch <-chan *diameter.Message) *diameter.Message {
 	}
 }
 
-// The IP-SM-GW asks the HSS, and answers with itself, of an MT Correlation ID of the HPLMN (TS 23.204 §6.4 step 3c;
-// TS 23.040 §3.2.7a), the MWD Status of the HSS transferred (TS 29.338 §5.2.1.4).
+// TS 23.204 clause 6.4
+// TS 23.040 clause 3.2.7a
+// TS 29.338 clause 5.2.1.4
 func TestRoutingInfo(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -220,8 +212,7 @@ func TestRoutingInfo(t *testing.T) {
 	}
 }
 
-// An error of the HSS is returned as such, unless the IP-SM-GW has a public user identity of the MSISDN (TS 24.341
-// §5.3.3.3).
+// TS 24.341 clause 5.3.3.3
 func TestRoutingInfoError(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.err = &s6c.ResultError{Result: tgpp.Experimental(tgpp.ResultErrorAbsentUser), MWDStatus: s6c.MWDStatusMNRF}
@@ -239,8 +230,8 @@ func TestRoutingInfoError(t *testing.T) {
 	}
 }
 
-// A short message goes over IMS to a user able to receive it, and the SMS-GMSC gets the SMS-DELIVER-REPORT of the
-// UE's RP-ACK (TS 24.341 §5.3.3.4.2; TS 23.204 §6.5).
+// TS 24.341 clause 5.3.3.4.2
+// TS 23.204 clause 6.5
 func TestDeliveredOverIMS(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -282,8 +273,8 @@ func TestDeliveredOverIMS(t *testing.T) {
 	}
 }
 
-// A user registered of its IMSI, without an MSISDN in the service information, is found of the IMSI the HSS gives
-// (TS 24.341 §5.3.3.2, §5.3.3.3), and the short message goes over IMS.
+// TS 24.341 clause 5.3.3.2
+// TS 24.341 clause 5.3.3.3
 func TestDeliveredOverIMSOfIMSI(t *testing.T) {
 	for name, hss := range map[string]func(*world){
 		"routing": func(w *world) { w.router.routing = mmeRouting() },
@@ -327,7 +318,6 @@ func deliveredOverIMSOfIMSI(t *testing.T, hss func(*world)) {
 	}
 }
 
-// A delivery report without In-Reply-To is of the short message of its reference to the sender.
 func TestDeliveryReportByReference(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -344,7 +334,8 @@ func TestDeliveryReportByReference(t *testing.T) {
 	}
 }
 
-// A full memory stops the delivery, and is reported to the HSS (TS 23.204 §6.5a step 4; TS 23.040 §11.1).
+// TS 23.204 clause 6.5a
+// TS 23.040 clause 11.1
 func TestMemoryCapacityExceeded(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -377,7 +368,8 @@ func TestMemoryCapacityExceeded(t *testing.T) {
 	}
 }
 
-// A failure over IMS falls back to the MME, of the IMSI (TS 23.204 §6.5a; TS 29.311 Table 6.1.4.4.1.1).
+// TS 23.204 clause 6.5a
+// TS 29.311 clause 6.1.4.4.1 table 6.1.4.4.1.1
 func TestFallbackToNAS(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -399,8 +391,7 @@ func TestFallbackToNAS(t *testing.T) {
 	}
 }
 
-// Every domain absent: the HSS gets the outcomes, and the SMS-GMSC the absent user of the last attempt; no delivery
-// report within the timer is an absent user over IMS (TS 23.040 §11.1).
+// TS 23.040 clause 11.1
 func TestAbsentEverywhere(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -419,7 +410,6 @@ func TestAbsentEverywhere(t *testing.T) {
 		t.Fatalf("TFA = %v", err)
 	}
 
-	// The MME that failed, for the HSS to answer with another if it has one (TS 29.338 §5.2.3.4).
 	rep := w.router.reports[0]
 	if rep.MSISDN != "15551230001" || rep.IPSMGW == nil || rep.IPSMGW.Cause != s6c.DeliveryCauseAbsentUser ||
 		rep.IPSMGW.AbsentDiagnostic == nil || *rep.IPSMGW.AbsentDiagnostic != tgpp.AbsentUserNoResponseIPSMGW ||
@@ -428,17 +418,14 @@ func TestAbsentEverywhere(t *testing.T) {
 		t.Fatalf("report = %+v", rep)
 	}
 
-	// Not reachable for IP: a NOTIFY of the UE reachable again has the HSS told again (TS 23.204 §6.5b).
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
 	w.notify(w.lastSub, "active;expires=600", doc(5, "sip:alice@"+home, true))
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001", number: "15550000100"})
 }
 
-// An MT Correlation ID the IP-SM-GW did not give is invalid.
 func TestUnknownCorrelationID(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 
-	// Invalid: a System Failure (TS 23.040 §8.1.4).
 	_, err := sgd.ParseMTForwardShortMessageAnswer(answerOf(t, w.forward("001010123456789", time.Second)))
 	if r, ok := tgpp.ResultOf(err); !ok || r.Code != diameter.ResultUnableToComply {
 		t.Fatalf("TFA = %v", err)
@@ -451,7 +438,7 @@ func TestPLMNOf(t *testing.T) {
 	}
 }
 
-// An error of the HSS other than an absent user is forwarded, whatever the registrations (TS 29.338 §5.2.1.4).
+// TS 29.338 clause 5.2.1.4
 func TestRoutingInfoBarred(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.available()
@@ -462,9 +449,8 @@ func TestRoutingInfoBarred(t *testing.T) {
 	}
 }
 
-// Of a UE not able to receive short messages over IP, the report has IMS absent, deregistered for IMS, for the HSS to
-// set the UNRI (TS 23.204 §6.5a step 17); the serving nodes the HSS answers with are tried at once (TS 29.338
-// §5.2.3.3).
+// TS 23.204 clause 6.5a
+// TS 29.338 clause 5.2.3.3
 func TestNotOverIMSAndAlertRetry(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -491,7 +477,7 @@ func TestNotOverIMSAndAlertRetry(t *testing.T) {
 	}
 }
 
-// A request of no intended delivery gets the IMSI of the HSS, of no MT Correlation ID (TS 23.040 §8.1.4).
+// TS 23.040 clause 8.1.4
 func TestRoutingInfoDeliveryNotIntended(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()
@@ -511,7 +497,7 @@ func TestRoutingInfoDeliveryNotIntended(t *testing.T) {
 	}
 }
 
-// A delivery report that does not decode is a protocol error of the UE (TS 23.040 §11.1).
+// TS 23.040 clause 11.1
 func TestUndecodableDeliveryReport(t *testing.T) {
 	w := newWorld(t, newFakeStore())
 	w.router.routing = mmeRouting()

@@ -71,8 +71,7 @@ func (r *Registrar) serverAssignment(ctx context.Context, to db.HSS, impi string
 	})
 }
 
-// serverAssignmentOf sends the SAR req with the S-CSCF's name, and the features it supports: the HSS answers with
-// those it supports, which the HSS returned holds (TS 29.229 §7.2).
+// TS 29.229 clause 7.2
 func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.ServerAssignmentRequest,
 ) (cx.ServerAssignment, db.HSS, error) {
 	req.ServerName = r.serverName
@@ -80,7 +79,6 @@ func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.Se
 	available := req.UserDataAlreadyAvailable
 
 	ans, from, err := r.cx(ctx, to, func(env tgpp.Envelope) (*diameter.Message, error) {
-		// A request that falls back to the realm may reach another HSS, which sends its own user data.
 		req.UserDataAlreadyAvailable = available && env.DestinationHost != ""
 
 		return cx.NewServerAssignmentRequest(env, req)
@@ -99,10 +97,8 @@ func (r *Registrar) serverAssignmentOf(ctx context.Context, to db.HSS, req cx.Se
 	return saa, from, nil
 }
 
-// cx sends a Cx request to the HSS that serves the registration, or, unknown, to the realm of the HSS, and returns
-// the HSS that answered (TS 29.229 §5.5). When the HSS of the registration cannot be reached, a new request goes to
-// the realm: Cx keeps no session state, and an HSS the S-CSCF cannot reach is no longer one it knows. An HSS that
-// does not answer in time is not taken as unreachable: its connection's watchdog decides (RFC 3539 §3.10).
+// TS 29.229 clause 5.5
+// RFC 3539 section 3.10
 func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope) (*diameter.Message, error),
 ) (*diameter.Message, db.HSS, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.cfg.CxTimeout)
@@ -134,9 +130,7 @@ func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope)
 	return ans, db.HSS{Host: origin.OriginHost, Realm: origin.OriginRealm}, nil
 }
 
-// cxBound sends a request to the HSS of a registration. An HSS behind an agent may be in another realm than the
-// configured one, which then has no route of its own: the request goes through the configured realm, still to the
-// HSS (TS 29.229 §5.5).
+// TS 29.229 clause 5.5
 func (r *Registrar) cxBound(ctx context.Context, to db.HSS, build func(tgpp.Envelope) (*diameter.Message, error),
 ) (*diameter.Message, error) {
 	ans, err := r.cxTo(ctx, to, build)
@@ -169,8 +163,8 @@ func (r *Registrar) cxTo(ctx context.Context, to db.HSS, build func(tgpp.Envelop
 	return r.cfg.Diameter.Send(ctx, req, diameter.FailFast())
 }
 
-// undeliverable reports whether a request did not reach its HSS: no connection to it, no route, no Cx on it, or an
-// agent or the HSS itself answering that it cannot serve it (RFC 6733 §7.1.3, RFC 3539 §3.10).
+// RFC 6733 section 7.1.3
+// RFC 3539 section 3.10
 func undeliverable(ans *diameter.Message, err error) bool {
 	if err != nil {
 		return errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver) ||
@@ -212,7 +206,7 @@ func refused(err error) bool {
 		tgpp.ResultErrorRoamingNotAllowed, tgpp.ResultErrorAuthSchemeNotSupported)
 }
 
-// refusedIdentity reports that the HSS knows no such public identity (TS 29.229 §6.2.2.1).
+// TS 29.229 clause 6.2.2.1
 func refusedIdentity(err error) bool {
 	return resultIs(err, tgpp.ResultErrorUserUnknown)
 }

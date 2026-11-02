@@ -177,12 +177,14 @@ func (m *Media) PayloadTypes(encoding string) []uint8 {
 	return out
 }
 
-// IsRTP reports whether the media is carried over RTP, and so has RTCP next to it (RFC 3550, RFC 8866 §5.14).
+// RFC 3550
+// RFC 8866 section 5.14
 func (d MediaDesc) IsRTP() bool {
 	return isRTP(d.Proto)
 }
 
-// IsTCP reports whether the media runs over TCP, the lowest layer its proto names (RFC 8866 §5.14, RFC 4145).
+// RFC 8866 section 5.14
+// RFC 4145
 func (d MediaDesc) IsTCP() bool {
 	transport, _, _ := strings.Cut(d.Proto, "/")
 

@@ -7,14 +7,10 @@ import (
 	"time"
 )
 
-// registeredWhere selects the registrations with a binding unexpired at the first argument, and that the search in
-// the second argument matches: a part of the private identity or of one of the public identities, or all if empty.
 const registeredWhere = `FROM registrations r JOIN bindings b ON b.registration_id = r.id
 	WHERE b.expires_at > ? AND (? = '' OR r.impi LIKE ? ESCAPE '\' OR EXISTS (
 		SELECT 1 FROM set_identities i WHERE i.set_id = r.set_id AND i.uri LIKE ? ESCAPE '\'))`
 
-// ListRegisteredIMPIs returns a page of the private identities registered at now, in order, and their count. A
-// search matches a part of the private identity or of one of its public identities, and an empty one matches all.
 func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Time, page, perPage int) (_ []string, _ int, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -52,8 +48,6 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 	return impis, total, nil
 }
 
-// CountRegisteredIMPIs returns how many private identities are registered at now. It reads on a reader, so that
-// counting for the metrics never holds up the writer that the call path uses.
 func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -66,8 +60,6 @@ func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, er
 	return n, nil
 }
 
-// ListPCSCFRegistrationsByIMPI returns the P-CSCF's registrations of a private identity, one per UE address. It
-// skips those it cannot parse, which ListPCSCFRegistrations deletes.
 func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) (_ []PCSCFRegistration, err error) {
 	defer d.observe(poolWrite, &err)()
 

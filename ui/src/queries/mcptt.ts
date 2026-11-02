@@ -2,7 +2,6 @@ import { ApiError, apiFetch, withQuery, type Page } from "@/queries/utils";
 
 const API = "/api/v1/mcptt";
 
-// MCPTTStatus is what the built-in MCPTT AS runs: its server name and PSIs, which the HSS routes to it.
 export interface MCPTTStatus {
   mode: "ims" | "direct";
   name: string;
@@ -12,7 +11,6 @@ export interface MCPTTStatus {
   media_control: string;
 }
 
-// getMCPTTStatus is the status of the MCPTT AS, or null if the IMS runs none, which the server answers with 404.
 export const getMCPTTStatus = async (): Promise<MCPTTStatus | null> => {
   try {
     return await apiFetch<MCPTTStatus>(API);
@@ -22,8 +20,6 @@ export const getMCPTTStatus = async (): Promise<MCPTTStatus | null> => {
   }
 };
 
-// ServiceConfiguration is what an operator sets of the organisation's service; the server fixes the rest. The
-// domain is the IMS home domain until set; the transmit time limit 30 s if absent.
 export interface ServiceConfiguration {
   domain: string;
   transmit_time_limit_ms?: number;
@@ -39,8 +35,6 @@ export interface MCPTTUser {
 export interface Member {
   mcptt_id: string;
   recvonly: boolean;
-  // implicit_affiliation is of the user's profile: the group is one of its implicit affiliations. Absent from a
-  // request, it stays as it is.
   implicit_affiliation?: boolean;
 }
 
@@ -70,7 +64,6 @@ export interface Affiliation {
   client_id: string;
   group_id: string;
   status: AffiliationStatus;
-  // How the client was affiliated: by the server, from the user's implicit affiliations; false if by the client.
   implicit: boolean;
 }
 
@@ -95,7 +88,6 @@ export interface GroupCall {
 
 const MAX_PER_PAGE = 100;
 
-// listAll is every item of a paged list, a page of the most items after another.
 export async function listAll<T>(
   path: string,
   params: Record<string, string | undefined> = {},
@@ -172,7 +164,6 @@ export const listAffiliations = (): Promise<Affiliation[]> =>
 export const listGroupCalls = (): Promise<GroupCall[]> =>
   listAll<GroupCall>(`${API}/calls`);
 
-// The query keys of the MCPTT settings and live state.
 export const mcpttKeys = {
   status: ["mcptt", "status"],
   serviceConfiguration: ["mcptt", "service-configuration"],

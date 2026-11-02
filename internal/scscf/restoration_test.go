@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// newRestorationHarness registers the UE with an HSS of the features.
 func newRestorationHarness(t *testing.T, features cx.Features) *sessionHarness {
 	t.Helper()
 
@@ -25,19 +24,15 @@ func newRestorationHarness(t *testing.T, features cx.Features) *sessionHarness {
 	return sh
 }
 
-// pcscfSource is the Response-Source of the P-CSCF's 404 (Not Found) for no binding (TS 24.229 §7.2.17).
+// TS 24.229 clause 7.2.17
 var pcscfSource = sip.Field{Name: "Response-Source", Value: "fe=<urn:3gpp:fe:p-cscf.term>"}
 
-// pcscfNotFound sends a terminating INVITE, which the P-CSCF answers with a 404 (Not Found) for no binding, and
-// returns the final response upstream.
 func (sh *sessionHarness) pcscfNotFound(t *testing.T) *sip.Response {
 	t.Helper()
 
 	return sh.notFound(t, pcscfSource)
 }
 
-// notFound sends a terminating INVITE, answered with a 404 (Not Found) with the fields, and returns the final response
-// upstream.
 func (sh *sessionHarness) notFound(t *testing.T, fields ...sip.Field) *sip.Response {
 	t.Helper()
 
@@ -49,9 +44,8 @@ func (sh *sessionHarness) notFound(t *testing.T, fields ...sip.Field) *sip.Respo
 	return final(t, sh.icscf)
 }
 
-// TS 24.229 §5.4.3.3, TS 23.380 §5.4.2.1 steps 3 to 6: the 404 of a P-CSCF that has no binding for the UE has the
-// S-CSCF answer 480 upstream, and unregister the public identity at the HSS with the P-CSCF restoration indication,
-// keeping its profile for the requests to it until the UE registers again.
+// TS 24.229 clause 5.4.3.3
+// TS 23.380 clause 5.4.2.1
 func TestPCSCFRestoration(t *testing.T) {
 	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
 
@@ -74,14 +68,12 @@ func TestPCSCFRestoration(t *testing.T) {
 		t.Fatalf("unregistered sets = %+v, %v; want the set kept for %s", sets, err, testIMPU)
 	}
 
-	// The identity is served unregistered, with the profile kept.
 	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("INVITE", testTel))
 	wantStatus(t, final(t, sh.icscf), 480)
 	sh.hss.noCx(t)
 }
 
-// TS 29.229 Table 7.1.1: the S-CSCF does not ask an HSS without the feature for the restoration. The binding the
-// P-CSCF does not have is deregistered all the same.
+// TS 29.229 clause 7.1.1 table 7.1.1
 func TestPCSCFRestorationUnsupported(t *testing.T) {
 	sh := newRestorationHarness(t, 0)
 
@@ -98,8 +90,7 @@ func TestPCSCFRestorationUnsupported(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.1.2.1: an HSS none of whose serving nodes for the user supports the restoration refuses it, and keeps
-// the registration: the S-CSCF deregisters the identity instead.
+// TS 29.228 clause 6.1.2.1
 func TestPCSCFRestorationNoServingNode(t *testing.T) {
 	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
 	sh.hss.set(func(f *fakeHSS) { f.restorationResult = tgpp.ResultErrorServingNodeFeatureUnsupported })
@@ -121,8 +112,7 @@ func TestPCSCFRestorationNoServingNode(t *testing.T) {
 	}
 }
 
-// A 404 (Not Found) of the UE is relayed, and starts no restoration: one without a Response-Source, and one that
-// another entity gives as its Response-Source (TS 24.229 §7.2.17.5).
+// TS 24.229 clause 7.2.17.5
 func TestPCSCFRestorationNotForTheUE(t *testing.T) {
 	for name, fields := range map[string][]sip.Field{
 		"without a Response-Source":      nil,
@@ -141,8 +131,8 @@ func TestPCSCFRestorationNotForTheUE(t *testing.T) {
 	}
 }
 
-// TS 23.380 §5.4.1: no restoration while the UE has another registration flow. The flow the P-CSCF has no binding
-// for is deregistered, and the request goes on over the other (RFC 5626 §7).
+// TS 23.380 clause 5.4.1
+// RFC 5626 section 7
 func TestPCSCFRestorationOtherFlow(t *testing.T) {
 	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
 
@@ -150,7 +140,6 @@ func TestPCSCFRestorationOtherFlow(t *testing.T) {
 	flowA := "sip:a@" + sh.term.Addr().String()
 	flowB := "sip:b@" + sh.term.Addr().String()
 
-	// The flows come after the contact address of the instance, and before it (RFC 5626 §7).
 	sh.clock.Advance(time.Second)
 	sh.ue.register(registerOptions{contact: sh.ue.flowContact(flowA, "1")})
 	sh.hss.wantSAR(t, cx.AssignmentReRegistration)
@@ -186,7 +175,6 @@ func TestPCSCFRestorationOtherFlow(t *testing.T) {
 		reply(t, sh.term, got, f, tc.code, "", fields...)
 	}
 
-	// The failed flow's 430 may be the best response, as a 480 (RFC 5626 §11.5): not the P-CSCF's 404.
 	if res := final(t, sh.icscf); res.StatusCode != 480 && res.StatusCode != 486 {
 		t.Fatalf("got %q, want 480 or 486", res.StartLine())
 	}
@@ -196,8 +184,7 @@ func TestPCSCFRestorationOtherFlow(t *testing.T) {
 	sh.hss.noCx(t)
 }
 
-// RFC 3680 §5.1: the subscribers to the reg event learn that the contact was deactivated, which has a UE register
-// again (TS 24.229 §5.1.1.6).
+// RFC 3680 section 5.1
 func TestPCSCFRestorationNotify(t *testing.T) {
 	h := newHarness(t)
 	h.hss.set(func(f *fakeHSS) { f.features = cx.FeaturePCSCFRestoration })

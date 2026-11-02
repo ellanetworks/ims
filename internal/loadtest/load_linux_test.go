@@ -1,15 +1,5 @@
 //go:build linux && (amd64 || arm64)
 
-// Package loadtest loads a running Ella IMS from another host: phones over IPsec, with a fake HSS over Cx and a fake
-// PCRF over Rx that it configures the IMS with. It measures the numbers of the performance reference: the
-// registrations per second, the memory per registered subscriber, and the calls per second.
-//
-// The UEs bind addresses of -ue-net, which the host takes as its own (AnyIP), and which the IMS host routes back:
-//
-//	load host: ip route add local 10.64.0.0/14 dev lo
-//	IMS host:  ip route add 10.64.0.0/14 via <load host>
-//
-// Build it with go test -c ./internal/loadtest, and run it as root with -load.
 package loadtest
 
 import (
@@ -113,7 +103,6 @@ func TestLoad(t *testing.T) {
 			Logger:     quiet,
 		})
 
-		// The fakes keep the requests they answer for the tests to look at: none here.
 		go func() {
 			for range hss.Requests() {
 			}
@@ -156,9 +145,8 @@ func TestLoad(t *testing.T) {
 		u, err := testue.New(testue.Config{
 			IMSI: sub.imsi, IMEI: sub.imei, K: testK, OPc: testOPc,
 			PCSCF: netip.AddrPortFrom(ims, pcscfPort), Local: addr, Kernel: kernel,
-			MMTel:  testue.MMTelConfig{AcceptCalls: true},
-			Logger: quiet,
-			// Nothing reads the events: a small buffer, for the garbage collector to scan little.
+			MMTel:       testue.MMTelConfig{AcceptCalls: true},
+			Logger:      quiet,
 			EventBuffer: 16,
 			Trace:       trace(i),
 		})
@@ -201,8 +189,6 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-// cycleAll deregisters and registers again the registered UEs, one at a time each, at each rate of -cycle-rates in
-// turn, and returns those registered at the end.
 func cycleAll(t *testing.T, api string, registered []int) []int {
 	t.Helper()
 
@@ -238,7 +224,6 @@ func cycleAll(t *testing.T, api string, registered []int) []int {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 
-			// The initial registration, of a UE that deregistered first: the registered UEs stay as many.
 			err := uesOf(k).Deregister(ctx)
 
 			began := time.Now()
@@ -277,7 +262,6 @@ func cycleAll(t *testing.T, api string, registered []int) []int {
 	return slices.DeleteFunc(slices.Clone(registered), func(i int) bool { return slices.Contains(lost, i) })
 }
 
-// configure points the IMS at the fake HSS over Cx and the fake PCRF over Rx, in place of its peers.
 func configure(t *testing.T, api string, hss *hsstest.HSS, pcrf *pcrftest.PCRF) {
 	t.Helper()
 
@@ -291,7 +275,6 @@ func configure(t *testing.T, api string, hss *hsstest.HSS, pcrf *pcrftest.PCRF) 
 
 	call(t, http.MethodGet, api+"/diameter/peers", nil, &peers)
 
-	// The policy over Rx needs a peer serving Rx: none while the peers change.
 	call(t, http.MethodPut, api+"/policy", map[string]any{"interface": "none"}, nil)
 
 	for _, p := range peers.Result.Items {
@@ -382,7 +365,6 @@ func call(t *testing.T, method, url string, body, out any) {
 	}
 }
 
-// scrape is the IMS's metrics without labels, and the sums of those with.
 func scrape(t *testing.T, api string) map[string]float64 {
 	t.Helper()
 
@@ -450,7 +432,6 @@ func (s subscriber) hss() hsstest.Subscriber {
 	}
 }
 
-// registerAll registers the UEs at each rate of -reg-rates in turn, and returns the subscribers registered.
 func registerAll(t *testing.T, ues []*testue.UE) []int {
 	t.Helper()
 
@@ -507,12 +488,9 @@ func registerAll(t *testing.T, ues []*testue.UE) []int {
 	return registered
 }
 
-// callAll makes calls between the registered subscribers at each rate of -cps in turn, while they re-register every
-// -rereg, and reports their setups and the IMS's CPU.
 func callAll(t *testing.T, api string, registered []int) {
 	t.Helper()
 
-	// The registered subscribers are free to call, two by two: the caller and the callee of a call, until it ends.
 	var (
 		mu   sync.Mutex
 		free = slices.Clone(registered)
@@ -545,7 +523,6 @@ func callAll(t *testing.T, api string, registered []int) {
 
 	var bg sync.WaitGroup
 
-	// Re-registrations in the background, at the rate of the population re-registering every -rereg.
 	var rereg latencies
 
 	if *reregEach > 0 {
@@ -625,7 +602,6 @@ func callAll(t *testing.T, api string, registered []int) {
 				return
 			}
 
-			// TS 32.409 §4.1.2.6: from the INVITE to the first 180 or 2xx.
 			at, ok := established.Load(callID)
 			if !ok {
 				l.fail(errors.New("no 180 or 2xx traced"))
@@ -637,7 +613,6 @@ func callAll(t *testing.T, api string, registered []int) {
 			select {
 			case <-time.After(*hold):
 			case <-c.Done():
-				// TS 32.454 §5.2.1: a call that ended before its caller hung up.
 				dropped.Add(1)
 				return
 			}
@@ -652,7 +627,6 @@ func callAll(t *testing.T, api string, registered []int) {
 			}
 		})
 
-		// The IMS at the end of the calls' arrivals, before those in progress end.
 		elapsed := time.Since(started)
 		m := scrape(t, api)
 
@@ -671,13 +645,12 @@ func callAll(t *testing.T, api string, registered []int) {
 }
 
 var (
-	// registeredAt is when each UE last received a 2xx to a REGISTER, in Unix nanoseconds; established, when the
-	// calling UE received the first 180 or 2xx to an INVITE, by Call-ID.
 	registeredAt []atomic.Int64
 	established  sync.Map
 )
 
-// trace records the responses of the UE i that end a registration or establish a call (TS 32.409 §4.1.1.1, §4.1.2.6).
+// TS 32.409 clause 4.1.1.1
+// TS 32.409 clause 4.1.2.6
 func trace(i int) func(m sip.Message, _ sip.Flow, sent bool) {
 	return func(m sip.Message, _ sip.Flow, sent bool) {
 		res, ok := m.(*sip.Response)
@@ -699,7 +672,6 @@ func trace(i int) func(m sip.Message, _ sip.Flow, sent bool) {
 	}
 }
 
-// registrationTime is the time from began to the 2xx of the UE i's REGISTER: without the SUBSCRIBE after it.
 func registrationTime(i int, began time.Time) time.Duration {
 	return time.Unix(0, registeredAt[i].Load()).Sub(began)
 }
@@ -716,15 +688,12 @@ func uesOf(i int) *testue.UE {
 	return uesAll[i]
 }
 
-// run calls f n times, at rate a second, each in its own goroutine, and waits for them to return.
 func run(t *testing.T, rate float64, n int, f func(int)) {
 	t.Helper()
 
 	start(rate, n, f)()
 }
 
-// start calls f n times, at rate a second, each in its own goroutine, and returns once it called the last, with a
-// function that waits for them to return.
 func start(rate float64, n int, f func(int)) func() {
 	var wg sync.WaitGroup
 
@@ -758,7 +727,6 @@ func parseRates(t *testing.T, s string) []float64 {
 	return out
 }
 
-// answer answers the calls of u, until it closes.
 func answer(u *testue.UE) {
 	for c := range u.MMTel().Calls() {
 		go func() {
@@ -781,7 +749,6 @@ func answer(u *testue.UE) {
 	}
 }
 
-// latencies are the durations of the operations that succeeded, and the errors of those that failed.
 type latencies struct {
 	mu     sync.Mutex
 	d      []time.Duration
@@ -826,7 +793,6 @@ func (l *latencies) at(q float64) time.Duration {
 	return l.d[min(len(l.d)-1, int(q*float64(len(l.d))))]
 }
 
-// report logs the operations: n attempted over elapsed, those that failed, and the latencies of the others.
 func (l *latencies) report(t *testing.T, what string, n int, elapsed time.Duration) {
 	t.Helper()
 

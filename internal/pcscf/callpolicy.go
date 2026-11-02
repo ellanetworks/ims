@@ -46,31 +46,24 @@ type callPolicy struct {
 	call   *call
 	dialog *proxy.Dialog
 
-	mu      sync.Mutex
-	session *policySession
-	busy    bool
-	queue   []func()
-	done    map[int]bool
-	early   map[string]bool
-	forked  bool
-	flows   map[int]flowNumbers
-	// active holds the media type of each component the last authorization did not remove.
-	active map[uint32]policy.MediaType
-	// components are the media components the last authorization did not remove, which a priority update sends
-	// again.
+	mu         sync.Mutex
+	session    *policySession
+	busy       bool
+	queue      []func()
+	done       map[int]bool
+	early      map[string]bool
+	forked     bool
+	flows      map[int]flowNumbers
+	active     map[uint32]policy.MediaType
 	components []policy.MediaComponent
-	// priority is the most recently received authorised MCPTT Resource-Priority; granted is the one the last
-	// authorization sent.
-	priority *policy.MCPTTPriority
-	granted  *policy.MCPTTPriority
-	charging string
-	access   policy.Access
-	loss     transaction.Timer
-	lost     []uint32
-	ended    bool
-	// orphaned is set when the policy function of the call is lost (RFC 6733 §8.18 REFUSE_SERVICE): the call ends
-	// once the exchange in progress completes.
-	orphaned atomic.Bool
+	priority   *policy.MCPTTPriority
+	granted    *policy.MCPTTPriority
+	charging   string
+	access     policy.Access
+	loss       transaction.Timer
+	lost       []uint32
+	ended      bool
+	orphaned   atomic.Bool
 }
 
 func (p *PCSCF) newCallPolicy(k regKey, identities []string, service string) *callPolicy {
@@ -112,8 +105,11 @@ type answerJob struct {
 	final   bool
 }
 
-// TS 29.214 Annex A.1, A.3, A.13, TS 29.213 Annex B.2, TS 29.513 §7.2.3. priority tells that the response changed
-// the authorised MCPTT priority.
+// TS 29.214 clause A.1
+// TS 29.214 clause A.3
+// TS 29.214 clause A.13
+// TS 29.213 clause B.2
+// TS 29.513 clause 7.2.3
 func (p *PCSCF) mediaReply(ctx context.Context, tx *transaction.ServerTransaction, d *proxy.Dialog, rep proxy.Reply, initial, priority bool) proxy.Verdict {
 	c := callOf(d)
 	if c == nil || c.policy == nil || rep.Response == nil {
@@ -158,15 +154,17 @@ func (p *PCSCF) mediaReply(ctx context.Context, tx *transaction.ServerTransactio
 	return proxy.Relay
 }
 
-// TS 24.229 §5.2.7.3
+// TS 24.229 clause 5.2.7.3
 func (p *PCSCF) chargeUEResponse(c *call, res *sip.Response) {
 	if c.ue == proxy.Callee && reliable(res) {
 		chargeResponse(c, res)
 	}
 }
 
-// RFC 3262 §5, RFC 3264, TS 29.214 Annex A.1, A.13. priority tells that the request changed the authorised MCPTT
-// priority.
+// RFC 3262 section 5
+// RFC 3264
+// TS 29.214 clause A.1
+// TS 29.214 clause A.13
 func (p *PCSCF) mediaRequest(ctx context.Context, d *proxy.Dialog, out *sip.Request, priority bool, forward, reject func()) bool {
 	c := callOf(d)
 	if c == nil || c.policy == nil {
@@ -296,7 +294,8 @@ func (p *PCSCF) drain(cr *callPolicy, run func()) {
 	}
 }
 
-// TS 29.214 Annex A.1, A.3
+// TS 29.214 clause A.1
+// TS 29.214 clause A.3
 func (p *PCSCF) responseAnswer(ctx context.Context, c *call, d *proxy.Dialog, res *sip.Response, initial bool) *answerJob {
 	if res.StatusCode <= 100 || res.StatusCode >= 300 {
 		return nil
@@ -353,7 +352,9 @@ func (p *PCSCF) parseExchange(ctx context.Context, c *call, d *proxy.Dialog, ex 
 	return &sdpExchange{offer: o, answer: a, offerFromUE: ex.Offer.From == c.ue}
 }
 
-// TS 24.229 §5.2.7.2, TS 29.214 §4.4.1, TS 29.514 §4.2.2.2
+// TS 24.229 clause 5.2.7.2
+// TS 29.214 clause 4.4.1
+// TS 29.514 clause 4.2.2.2
 func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job answerJob, res *sip.Response) bool {
 	err := p.callAAR(ctx, c, d, &job)
 	if err == nil {
@@ -381,8 +382,6 @@ func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job ans
 		attrs = append(attrs, slog.Any("removed_media", removed))
 	}
 
-	// RFC 6733 §8.18 REFUSE_SERVICE: the PCRF of the call is lost, and the service ends with it: once the exchange
-	// in progress completes, or at once for media of an early dialog, which nothing authorizes.
 	if errors.Is(err, policy.ErrSessionLost) {
 		p.log.WarnContext(ctx, "policy session of the call lost with its policy function: releasing the call", attrs...)
 		c.policy.orphaned.Store(true)
@@ -409,7 +408,6 @@ func (p *PCSCF) authorize(ctx context.Context, c *call, d *proxy.Dialog, job ans
 	return false
 }
 
-// releaseOrphaned ends, both ways, a call whose policy function is lost.
 func (p *PCSCF) releaseOrphaned(ctx context.Context, c *call, d *proxy.Dialog) {
 	if !c.policy.orphaned.Load() {
 		return
@@ -423,7 +421,7 @@ func (p *PCSCF) releaseOrphaned(ctx context.Context, c *call, d *proxy.Dialog) {
 	}
 }
 
-// RFC 3262 §3
+// RFC 3262 section 3
 func reliable(res *sip.Response) bool {
 	return res.IsSuccess() || res.Header.Has("RSeq")
 }
@@ -433,14 +431,12 @@ type grantResult struct {
 	err   error
 }
 
-// handoff passes the answer of a media authorization to the exchange waiting for it, unless the exchange gave up.
 type handoff struct {
 	mu        sync.Mutex
 	c         chan grantResult
 	abandoned bool
 }
 
-// give reports whether the exchange takes the answer.
 func (h *handoff) give(r grantResult) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -454,7 +450,6 @@ func (h *handoff) give(r grantResult) bool {
 	return true
 }
 
-// abandon gives up on the answer, unless it just came.
 func (h *handoff) abandon() (grantResult, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -468,14 +463,20 @@ func (h *handoff) abandon() (grantResult, bool) {
 	}
 }
 
-// TS 29.214 §4.4.1, §4.4.2, §4.4.4, Annex A.3, TS 29.514 §4.2.2.2, §4.2.3.2
+// TS 29.214 clause 4.4.1
+// TS 29.214 clause 4.4.2
+// TS 29.214 clause 4.4.4
+// TS 29.214 clause A.3
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
 func (p *PCSCF) callAAR(ctx context.Context, c *call, d *proxy.Dialog, job *answerJob) error {
 	return p.callAARBy(ctx, c, d, job, time.Now().Add(p.policy.cfg.CallTimeout), false)
 }
 
-// TS 24.229 §5.2.9.1, §5.2.9.2, TS 29.214 Annex A.13.1 NOTE 1, TS 29.514 Annex B.10.1 NOTE 1: an authorised MCPTT
-// Resource-Priority that changes without an SDP answer updates the session of the call, with the media the last
-// authorization left. A failure leaves the call as it is.
+// TS 24.229 clause 5.2.9.1
+// TS 24.229 clause 5.2.9.2
+// TS 29.214 clause A.13.1
+// TS 29.514 clause B.10.1
 func (p *PCSCF) updatePriority(ctx context.Context, c *call, d *proxy.Dialog) {
 	err := p.callAAR(ctx, c, d, nil)
 	if err == nil || errors.Is(err, errCallEnded) {
@@ -501,10 +502,6 @@ func (p *PCSCF) updatePriority(ctx context.Context, c *call, d *proxy.Dialog) {
 	p.log.WarnContext(ctx, "MCPTT priority update failed", attrs...)
 }
 
-// callAARBy authorizes the media of job, waiting for the policy function until deadline. A recovery opens a new
-// session for a call whose session the policy function lost: media the exchange removes has nothing to remove
-// there, so it is left out. Without a job, it sends the authorised MCPTT priority to an open session that does not
-// have it yet.
 func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *answerJob, deadline time.Time, recovery bool) error {
 	cr := c.policy
 
@@ -606,7 +603,6 @@ func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *an
 			s.ended = true
 			p.policy.forget(s)
 
-			// The next exchange opens a new session, even when this answer came after the caller gave up.
 			cr.mu.Lock()
 			if cr.session == s {
 				cr.session = nil
@@ -614,13 +610,9 @@ func (p *PCSCF) callAARBy(ctx context.Context, c *call, d *proxy.Dialog, job *an
 			cr.mu.Unlock()
 		}
 
-		// The session takes the next request before the exchange learns of the answer: the exchange's next one,
-		// an SDP answer that follows at once, would otherwise find this one still pending and go unauthorised.
 		s.mu.Unlock()
 		s.pending.Store(false)
 
-		// A session lost after the exchange gave up on its answer still ends the call (RFC 6733 §8.18), once the
-		// session is released.
 		if !result.give(grantResult{g, err}) && errors.Is(err, policy.ErrSessionLost) {
 			cr.orphaned.Store(true)
 			p.releaseOrphaned(ctx, c, d)
@@ -703,9 +695,6 @@ func samePriority(a, b *policy.MCPTTPriority) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
-// fromNetwork takes what a request or response of the call d that comes from the network side, the trust domain,
-// tells the policy function, before the P-CSCF screens it toward the UE: the ICSI and the MCPTT Resource-Priority.
-// It reports whether the authorised MCPTT priority changed.
 func (p *PCSCF) fromNetwork(d *proxy.Dialog, m sip.Message) bool {
 	c := callOf(d)
 	if c == nil || c.policy == nil {
@@ -719,11 +708,10 @@ func (p *PCSCF) fromNetwork(d *proxy.Dialog, m sip.Message) bool {
 	return c.policy.receivedPriority(m)
 }
 
-// receivedPriority keeps the MCPTT Resource-Priority of a request or of a 1xx or 2xx response from the network
-// side of the call, and reports whether it changes the authorised one. Only the trust domain authorises one: the
-// P-CSCF knows no priority privileges of its users, and the MCPTT server sets the priority of every participant
-// (TS 24.229 §3.1, TS 23.379 §10.6.2.6.1.1). A message without one leaves the most recently received
-// (TS 24.229 §5.2.9.1, §5.2.9.2).
+// TS 24.229 clause 3.1
+// TS 23.379 clause 10.6.2.6.1.1
+// TS 24.229 clause 5.2.9.1
+// TS 24.229 clause 5.2.9.2
 func (cr *callPolicy) receivedPriority(m sip.Message) bool {
 	if cr == nil {
 		return false
@@ -760,9 +748,9 @@ func (cr *callPolicy) receivedPriority(m sip.Message) bool {
 	return true
 }
 
-// TS 29.214 Annex A.13.2, RFC 8101 §3.2: the first r-value of an MCPTT namespace, with its priority value from 0
-// to 15. Resource-Priority header fields that are malformed, or repeat a namespace (RFC 4412 §3.1), count for
-// nothing.
+// TS 29.214 clause A.13.2
+// RFC 8101 section 3.2
+// RFC 4412 section 3.1
 func mcpttPriority(h sip.Header) *policy.MCPTTPriority {
 	rs, err := h.ResourcePriorities()
 	if err != nil {
@@ -786,8 +774,7 @@ func mcpttPriority(h sip.Header) *policy.MCPTTPriority {
 	return nil
 }
 
-// icsiFromNetwork keeps, for an originating call, the ICSI of the first 18x or 2xx response that has one in
-// Feature-Caps (TS 29.214 Annex A.1 NOTE 3).
+// TS 29.214 clause A.1
 func (p *PCSCF) icsiFromNetwork(c *call, res *sip.Response) {
 	if c.ue != proxy.Caller || res.StatusCode/10 != 18 && !res.IsSuccess() {
 		return
@@ -815,9 +802,7 @@ func activeComponents(components []policy.MediaComponent) map[uint32]policy.Medi
 	return out
 }
 
-// callEnded ends the policy session of the call (TS 29.213 Annex B.4.1), in the trace of ctx, what ended it: a
-// request, a response or a release; a call that ended by itself, as on its expiry, in a trace of its own, linked to
-// its INVITE.
+// TS 29.213 clause B.4.1
 func (p *PCSCF) callEnded(ctx context.Context, c *call) {
 	if c.policy == nil {
 		return
@@ -854,7 +839,7 @@ type retryHold struct {
 	digest string
 }
 
-// TS 29.214 §4.4.1: in the trace of ctx, the exchange that needs it.
+// TS 29.214 clause 4.4.1
 func (c *policyClient) authorize(ctx context.Context, s *policySession, r policy.Request) (policy.Grant, error) {
 	b, err := json.Marshal(struct {
 		Components []policy.MediaComponent
@@ -896,10 +881,13 @@ func (c *policyClient) authorize(ctx context.Context, s *policySession, r policy
 	return g, err
 }
 
-// TS 24.229 Table 7.2A.5: eps-item and 5gs-item are a single DIGIT.
+// TS 24.229 clause 7.2A.5.2.1 table 7.2A.5
 const maxItems = 9
 
-// TS 24.229 §7.2A.5.2.7, §7.2A.5.2.10, TS 29.214 §5.3.3, Annex B
+// TS 24.229 clause 7.2A.5.2.7
+// TS 24.229 clause 7.2A.5.2.10
+// TS 29.214 clause 5.3.3
+// TS 29.214 annex B
 func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
 	if len(c.Identifiers) == 0 || !c.Address.IsValid() {
 		return ""
@@ -940,9 +928,9 @@ func chargingInfo(c policy.Charging, flows map[int]flowNumbers) string {
 	return gateway + "=" + sip.FormatHost(c.Address.Unmap()) + ";" + list + `="` + strings.Join(items, ",") + `"`
 }
 
-// chargingIDs merges the identifiers that share a value: TS 24.229 §7.2A.5.2.7 and §7.2A.5.2.10 have one item
-// per EPS bearer or PDU session, while identifiers can come per QoS flow (TS 29.514 §5.6.2.32). An empty
-// identifier has no 1*HEXDIG encoding and is dropped.
+// TS 24.229 clause 7.2A.5.2.7
+// TS 24.229 clause 7.2A.5.2.10
+// TS 29.514 clause 5.6.2.32
 func chargingIDs(ids []policy.ChargingID) []policy.ChargingID {
 	var out []policy.ChargingID
 
@@ -1001,9 +989,8 @@ func flowIDs(fs []policy.Flows, numbers map[int]flowNumbers) string {
 	return "(" + strings.Join(tuples, ",") + ")"
 }
 
-// chargingLocked keeps the access network charging information of an answer or a notification. One that does
-// not say which IP-CAN it comes from keeps the one reported before: IP-CAN-Type is optional in the RAR and in an
-// update AAA (TS 29.214 §5.6.3, §4.4.2).
+// TS 29.214 clause 5.6.3
+// TS 29.214 clause 4.4.2
 func (cr *callPolicy) chargingLocked(c policy.Charging) {
 	if c.Access == policy.AccessUnknown {
 		c.Access = cr.access
@@ -1016,7 +1003,8 @@ func (cr *callPolicy) chargingLocked(c policy.Charging) {
 	}
 }
 
-// TS 24.229 §5.2.7.2, §5.2.7.3
+// TS 24.229 clause 5.2.7.2
+// TS 24.229 clause 5.2.7.3
 func (cr *callPolicy) takeCharging() string {
 	if cr == nil {
 		return ""
@@ -1046,7 +1034,11 @@ func chargeResponse(c *call, res *sip.Response) {
 	cv.setResponse(res)
 }
 
-// TS 29.214 §4.4.6.2, §4.4.6.5, TS 29.514 §4.2.5.2, TS 24.229 §5.2.7.4, §5.2.8.1
+// TS 29.214 clause 4.4.6.2
+// TS 29.214 clause 4.4.6.5
+// TS 29.514 clause 4.2.5.2
+// TS 24.229 clause 5.2.7.4
+// TS 24.229 clause 5.2.8.1
 func (p *PCSCF) callNotify(ctx context.Context, s *policySession, e policy.Event) {
 	cr := s.call
 
@@ -1115,10 +1107,9 @@ func (p *PCSCF) mediaLossExpired(ctx context.Context, cr *callPolicy) error {
 	return p.releaseCall(ctx, cr.call, cr.dialog, false)
 }
 
-// lossReleases tells whether losing the bearers of the lost components (all of them when none is named) ends the
-// call, or only its video. The call goes on as voice when the lost components still in the session are all video and
-// some other media remains (GSMA IR.94 §2.4.1, NG.114 §4.6.2); otherwise the P-CSCF releases it (TS 24.229
-// §5.2.8.1.2).
+// GSMA IR.94 section 2.4.1
+// GSMA NG.114 section 4.6.2
+// TS 24.229 clause 5.2.8.1.2
 func lossReleases(active map[uint32]policy.MediaType, lost []uint32) (release, video bool) {
 	if len(lost) == 0 {
 		return len(active) > 0, false
@@ -1152,7 +1143,8 @@ func lossReleases(active map[uint32]policy.MediaType, lost []uint32) (release, v
 	return true, false
 }
 
-// TS 24.229 §5.2.8.1.1, §5.2.8.1.2
+// TS 24.229 clause 5.2.8.1.1
+// TS 24.229 clause 5.2.8.1.2
 func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signalling bool) error {
 	cause, _ := sip.NewReason("SIP", 503, "")
 
@@ -1182,7 +1174,8 @@ func (p *PCSCF) releaseCall(ctx context.Context, c *call, d *proxy.Dialog, signa
 	return nil
 }
 
-// TS 29.214 §5.4, RFC 4006 §8.46
+// TS 29.214 clause 5.4
+// RFC 4006 section 8.46
 func subscribers(identities []string) []policy.Subscriber {
 	var out []policy.Subscriber
 
@@ -1205,9 +1198,9 @@ func subscribers(identities []string) []policy.Subscriber {
 	return out
 }
 
-// TS 29.214 Annex A.1 NOTE 3, RFC 6809
+// TS 29.214 clause A.1
+// RFC 6809
 func icsiRef(h sip.Header) string {
-	// Malformed indicators are left out; the others count.
 	caps, _ := h.FeatureCaps()
 
 	for _, c := range caps {

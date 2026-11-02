@@ -8,7 +8,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/floorctl"
 )
 
-// fakeClock is a clock of fake time: timers fire by advance, in order.
 type fakeClock struct {
 	now    time.Duration
 	seq    int
@@ -43,7 +42,6 @@ func (t *fakeTimer) Stop() bool {
 	return true
 }
 
-// advance moves the time by d, firing the timers due, then running after each.
 func (c *fakeClock) advance(d time.Duration, after func()) {
 	end := c.now + d
 
@@ -73,13 +71,11 @@ func (c *fakeClock) advance(d time.Duration, after func()) {
 	c.now = end
 }
 
-// sent is a message the server sent a member.
 type sent struct {
 	to  string
 	msg floorctl.Message
 }
 
-// serverOut records what the server does; to, when set, delivers its messages.
 type serverOut struct {
 	sent         []sent
 	forward      map[string]bool
@@ -113,7 +109,6 @@ func (o *serverOut) Inactive() {
 	}
 }
 
-// take returns the messages sent since the last take, as "to:type" with the fields tests check.
 func (o *serverOut) take() []sent {
 	s := o.sent
 	o.sent = nil
@@ -139,7 +134,6 @@ func member(id string, ssrc uint32) MemberConfig {
 	return MemberConfig{ID: id, AudioSSRC: ssrc, FloorSSRC: ssrc + 1000, HasFloorSSRC: true}
 }
 
-// types are the "to:message" of ss.
 func types(ss []sent) []string {
 	var out []string
 	for _, s := range ss {
@@ -172,7 +166,6 @@ func name(t floorctl.Type) string {
 	return "?"
 }
 
-// only are the messages of ss to id.
 func only(ss []sent, id string) []sent {
 	var out []sent
 
@@ -193,7 +186,6 @@ func want(t *testing.T, got []sent, w ...string) {
 	}
 }
 
-// participantOut records what a participant does.
 type participantOut struct {
 	sent     []floorctl.Message
 	notices  []NoticeKind
@@ -213,7 +205,6 @@ func (o *participantOut) Transmit(on bool, ssrc uint32) { o.transmit, o.ssrc = o
 
 func (o *participantOut) Notify(n Notice) { o.notices = append(o.notices, n.Kind) }
 
-// withT7 are the default timers, with T7.
 func withT7(t7 time.Duration) ServerTimers {
 	t := DefaultServerTimers
 	t.T7 = t7

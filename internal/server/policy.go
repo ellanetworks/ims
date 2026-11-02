@@ -22,7 +22,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// policyFunction is the PCRF or PCF of the P-CSCF, if any, with the server of the PCF's notifications.
 type policyFunction struct {
 	backend policy.Backend
 	rx      *rxpolicy.Backend
@@ -48,8 +47,6 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 		return pf, nil
 	}
 
-	// The API checks policies against the configuration file, which may since have changed. Policy sessions then
-	// wait for the file or the policy to be fixed, rather than the IMS and its API.
 	if err := checkPolicy(cfg, s); err != nil {
 		logger.ErrorContext(ctx, "no policy function: the P-CSCF runs without policy sessions", slog.Any("error", err))
 		return pf, nil
@@ -57,7 +54,6 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 
 	n := cfg.N5
 
-	// Listening first: the notification URI has the port bound, the system's choice of a port of 0.
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", netip.AddrPortFrom(n.Notify.Address, uint16(n.Notify.Port)).String())
@@ -87,8 +83,6 @@ func newPolicyFunction(ctx context.Context, cfg config.Config, s settings.Settin
 	return pf, nil
 }
 
-// checkSettings checks, before they are saved, what settings need of the configuration file and the host, so that
-// the IMS can apply them.
 func checkSettings(ctx context.Context, cfg config.Config, s settings.Settings) error {
 	if err := checkPolicy(cfg, s); err != nil {
 		return err
@@ -109,8 +103,6 @@ func checkSettings(ctx context.Context, cfg config.Config, s settings.Settings) 
 	return nil
 }
 
-// checkPolicy checks the policy settings against the configuration file, which says where to hear from a PCF and
-// with which certificates.
 func checkPolicy(cfg config.Config, s settings.Settings) error {
 	if s.Policy.Interface != settings.PolicyN5 {
 		return nil
@@ -128,8 +120,6 @@ func checkPolicy(cfg config.Config, s settings.Settings) error {
 	return nil
 }
 
-// n5Credentials loads the TLS credentials of N5, if any. The PCF checks the certificate against the host of the
-// notification URIs, so the certificate must be valid for it.
 func n5Credentials(n config.N5, notifyURI string, logger *slog.Logger) (*sbitls.Credentials, error) {
 	if n.TLS == nil {
 		return nil, nil
@@ -174,7 +164,6 @@ func (pf *policyFunction) address() string {
 	return pf.ln.Addr().String()
 }
 
-// close stops the notification server and the N5 client, once the P-CSCF has ended its sessions.
 func (pf *policyFunction) close(ctx context.Context) error {
 	var err error
 
@@ -182,7 +171,6 @@ func (pf *policyFunction) close(ctx context.Context) error {
 		err = pf.notify.Shutdown(ctx)
 	}
 
-	// A listener that was never served is not the server's to close.
 	if pf.ln != nil {
 		if e := pf.ln.Close(); !errors.Is(e, net.ErrClosed) {
 			err = errors.Join(err, e)

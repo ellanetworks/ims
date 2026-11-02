@@ -479,7 +479,6 @@ func TestReceivedTargetRefreshRules(t *testing.T) {
 		{"NOTIFY", "<sip:alice@10.0.0.3>", 200, "sip:alice@10.0.0.3"},
 		{"SUBSCRIBE", "<sip:alice@10.0.0.4>", 202, "sip:alice@10.0.0.4"},
 		{"MESSAGE", "<sip:alice@10.0.0.5>", 200, "sip:alice@10.0.0.4"},
-		// RFC 6141 §4.6: an error response leaves the target.
 		{"UPDATE", "<sip:alice@10.0.0.6>", 491, "sip:alice@10.0.0.4"},
 		{"INVITE", "<sip:alice@10.0.0.7>", 180, "sip:alice@10.0.0.4"},
 	} {
@@ -505,8 +504,7 @@ func TestReceivedTargetRefreshRules(t *testing.T) {
 	}
 }
 
-// RFC 6141 §4.6: a reliable 1xx to a re-INVITE refreshes the target; the 2xx to an UPDATE sent within it, then the
-// 2xx to the re-INVITE, leave the later target.
+// RFC 6141 section 4.6
 func TestTargetRefreshByReliableProvisionalAndOrder(t *testing.T) {
 	req := parse[*sip.Request](t, invite)
 	res := sip.NewResponse(req, 200, "")
@@ -550,7 +548,8 @@ func TestTargetRefreshByReliableProvisionalAndOrder(t *testing.T) {
 	}
 }
 
-// RFC 6141 §4.7, §4.9: an unreliable 1xx refreshes no target, a reliable one does.
+// RFC 6141 section 4.7
+// RFC 6141 section 4.9
 func TestUACTargetRefreshByProvisional(t *testing.T) {
 	req := parse[*sip.Request](t, invite)
 
@@ -595,8 +594,8 @@ func TestPrepareResponseOtherRequests(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.2.6.3.6, §5.2.6.4.6: a 2xx or a reliable 1xx to a target refresh request carries its Record-Route; an error
-// response does not.
+// TS 24.229 clause 5.2.6.3.6
+// TS 24.229 clause 5.2.6.4.6
 func TestPrepareResponseTargetRefresh(t *testing.T) {
 	req := parse[*sip.Request](t, invite)
 	res := sip.NewResponse(req, 200, "")
@@ -689,8 +688,7 @@ func TestEarlyDialogTermination(t *testing.T) {
 	}
 }
 
-// RFC 5057 §4: a BYE ends the INVITE usage, not the dialog its other usages share; the usage manager terminates the
-// dialog once the last one ended, then the dialog refuses requests with a 481.
+// RFC 5057 section 4
 func TestByeLeavesTheDialog(t *testing.T) {
 	d := newUAC(t)
 
@@ -1031,7 +1029,8 @@ func TestRestoreErrors(t *testing.T) {
 	}
 }
 
-// RFC 4538 §3, RFC 3891 §3: the tags are those the peer sees, so that the peer finds its own dialog.
+// RFC 4538 section 3
+// RFC 3891 section 3
 func TestTargetDialogAndReplacesDesignateThePeerDialog(t *testing.T) {
 	uac := newUAC(t)
 

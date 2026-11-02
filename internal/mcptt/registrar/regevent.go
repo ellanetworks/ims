@@ -15,42 +15,28 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// watch is the subscription of the server to the reg event package of an IMPU it has bindings of through the IMS
-// (TS 24.229 §5.7.1.1; RFC 3680), toward the S-CSCF of its latest third-party REGISTER, as the AS of its
-// Request-URI: from the first binding of the IMPU to its last. ik is the key of the IMPU, the To of the third-party
-// REGISTERs, and impu the SIP URI subscribed to (subscribed). Its fields but those are under g.mu.
+// TS 24.229 clause 5.7.1.1
+// RFC 3680
 type watch struct {
 	impu, scscf, as sip.URI
 	ik              string
-	// aliases are the keys of the public user identities the documents report registered, of a <registration>
-	// active (RFC 3680 §5.1): those the user owns (TS 24.229 §5.4.2.1.2 step 3), its clients served at them
-	// (Resolve).
-	aliases map[string]bool
+	aliases         map[string]bool
 
-	sub *ua.Subscription
-	// active: a NOTIFY of Subscription-State active came (RFC 6665 §4.1.3), whose documents tell the contacts that
-	// go; until, a deregistration removes all the bindings of the IMPU.
-	active bool
-	// version is that of the last document, once one came (RFC 3680 §5.2).
+	sub       *ua.Subscription
+	active    bool
 	version   uint32
 	versioned bool
 	stopped   bool
-	// restored: of bindings Restore put back, until the first full document, which removes those it does not report
-	// registered (staleIn); a subscription of them that fails is made again, after retry, attempts the failures.
-	restored bool
-	attempts int
+	restored  bool
+	attempts  int
 }
 
-// watching is the subscription to make, and those to end, of a change: a subscription for an IMPU with bindings, of
-// a SIP URI to subscribe to, through the IMS with an agent, if it has none or one toward another S-CSCF, which it
-// replaces; the end of those of the IMPUs left without bindings, and of those replaced. Called with g.mu held.
 func (g *Registrar) watching(ch *change) (start *watch, stop []*ua.Subscription) {
 	if g.cfg.Mode != ThroughIMS {
 		return nil, nil
 	}
 
 	end := func(w *watch) {
-		// One still being sent is unsubscribed once sent.
 		w.stopped = true
 		if w.sub != nil {
 			stop = append(stop, w.sub)
@@ -71,7 +57,6 @@ func (g *Registrar) watching(ch *change) (start *watch, stop []*ua.Subscription)
 		}
 
 		if old != nil {
-			// The bindings restored of the IMPU are reconciled by the subscription that replaces theirs.
 			w.restored = old.restored
 			end(old)
 		}
@@ -83,12 +68,10 @@ func (g *Registrar) watching(ch *change) (start *watch, stop []*ua.Subscription)
 	return start, stop
 }
 
-// has reports whether the IMPU of key ik has bindings. Called with g.mu held.
 func (g *Registrar) has(ik string) bool { return len(g.impus[ik]) > 0 }
 
-// subscribe sends the SUBSCRIBE of w on the strand of its IMPU (TS 24.229 §5.7.1.1 a to f), of the default duration
-// (RFC 3680 §4.4), which the agent refreshes. A SUBSCRIBE that cannot be sent leaves the IMPU without subscription,
-// until its next third-party REGISTER; its error is returned.
+// TS 24.229 clause 5.7.1.1
+// RFC 3680 section 4.4
 func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) error {
 	domain := g.cfg.Source.Current().ServiceConfiguration().Domain
 
@@ -138,18 +121,12 @@ func (g *Registrar) subscribe(ctx context.Context, st *ua.Strand, w *watch) erro
 	return nil
 }
 
-// unsubscribe ends a subscription (RFC 6665 §4.1.2.3); one ended already needs nothing.
+// RFC 6665 section 4.1.2.3
 func unsubscribe(ctx context.Context, s *ua.Subscription) {
 	_ = s.Unsubscribe(ctx, ua.Change{})
 }
 
-// ended forgets the subscription, ended by its notifier, a refusal or an unsubscribe: the next third-party REGISTER
-// of the IMPU subscribes again. Of bindings restored, not reconciled yet: a 480, of an IMPU the S-CSCF has no binding
-// of (TS 24.229 §5.4.2.1.1 step 0), removes them; a 403, of a subscriber not authorised (step 1), leaves the
-// registration state unknown, the bindings kept until they expire or a third-party REGISTER changes them, and is not
-// sent again (RFC 3261 §21.4.4); another refusal, of an S-CSCF unavailable, subscribes again later. A failure of no
-// response, of an S-CSCF unreachable, as while the core of the IMS restarts, or of an expiry not refreshed,
-// subscribes again later, restored or not, as Resubscribe does once the core runs again.
+// TS 24.229 clause 5.4.2.1.1
 func (g *Registrar) ended(ctx context.Context, st *ua.Strand, w *watch, e ua.End) {
 	var (
 		ch    change
@@ -197,14 +174,11 @@ func (g *Registrar) ended(ctx context.Context, st *ua.Strand, w *watch, e ua.End
 	g.apply(ctx, st, g.cfg.Clock.Now(), &ch)
 }
 
-// The bounds of the waits between the subscriptions of bindings restored that failed.
 const (
 	minRetry = 30 * time.Second
 	maxRetry = 10 * time.Minute
 )
 
-// retry schedules the subscription of w again, of bindings restored: after the Retry-After of res, if any, else
-// doubling from minRetry to maxRetry, on its strand. It returns the wait. Called with g.mu held.
 func (g *Registrar) retry(ctx context.Context, st *ua.Strand, w *watch, res *sip.Response) time.Duration {
 	after := min(minRetry<<min(w.attempts, 5), maxRetry)
 
@@ -232,8 +206,6 @@ func (g *Registrar) retry(ctx context.Context, st *ua.Strand, w *watch, res *sip
 	return after
 }
 
-// unrestored removes the bindings of the IMPU of w restored, not reconciled since, of its S-CSCF: the registration
-// of the IMPU is gone. Called with g.mu held.
 func (g *Registrar) unrestored(w *watch, ch *change) {
 	for _, b := range g.impus[w.ik] {
 		if b.restored && b.SCSCF.Equivalent(w.scscf) {
@@ -242,19 +214,14 @@ func (g *Registrar) unrestored(w *watch, ch *change) {
 	}
 }
 
-// drop removes w, unless replaced. Called with g.mu held.
 func (g *Registrar) drop(w *watch) {
 	if g.watches[w.ik] == w {
 		delete(g.watches, w.ik)
 	}
 }
 
-// notify handles a NOTIFY of w (TS 24.229 §5.7.1.1; RFC 3680 §5.2): of a document not older than the last, the
-// bindings of the contacts of the IMPU it reports terminated go, their clients logged off, and all of them with the
-// registration of the IMPU itself terminated, or back to init (§4.7.1: no contact is registered). Only the contacts
-// a document reports go: one a full document leaves out stays until it expires, should the S-CSCF tell it apart
-// from the binding otherwise than the server does. A NOTIFY from outside the trust domain gets a 403; a document
-// that does not decode, a 400, which leaves the bindings. The 200 has the P-Charging-Vector of §5.7.1.1.
+// TS 24.229 clause 5.7.1.1
+// RFC 3680 section 5.2
 func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.Subscription, r *ua.Request) {
 	req := r.Message()
 	snap := g.cfg.Source.Current()
@@ -273,8 +240,6 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 		return
 	}
 
-	// A document the server cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2): its
-	// Subscription-State applies (§4.1.3), and a refresh asks for the full state again (RFC 3680 §5.2).
 	var (
 		doc        *reginfo.Reginfo
 		unreadable bool
@@ -305,10 +270,6 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 	case ua.SubscriptionActive:
 		w.active = true
 	case ua.SubscriptionTerminated:
-		// RFC 6665 §4.1.3, §4.4.1: the subscription ends with this NOTIFY, and nothing is left to unsubscribe
-		// (TS 24.229 §5.7.1.1 NOTE 5); the next third-party REGISTER of the IMPU subscribes again. Of bindings
-		// restored, not reconciled by a document: "noresource" and "rejected", of a registration gone, remove them
-		// (§3.2.4); another reason subscribes again. Of a document unreadable, but "rejected", a new subscription.
 		w.stopped, w.sub = true, nil
 		g.drop(w)
 
@@ -323,8 +284,6 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 				g.retry(ctx, st, again, nil)
 			}
 		case unreadable && reason(r.Message()) != "rejected" && g.has(w.ik):
-			// What the document told is unknown: a new subscription tells it again, once the NOTIFY is answered, in a
-			// trace of its own.
 			again := &watch{ik: w.ik, impu: w.impu, scscf: w.scscf, as: w.as}
 			g.watches[w.ik] = again
 
@@ -342,7 +301,6 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 		}
 	}
 
-	// A subscription replaced, or ended, tells nothing more.
 	if doc != nil && !stopped && (!w.versioned || doc.Version > w.version) {
 		w.version, w.versioned = doc.Version, true
 		w.registered(doc)
@@ -369,7 +327,7 @@ func (g *Registrar) notify(ctx context.Context, st *ua.Strand, w *watch, s *ua.S
 	g.apply(ctx, st, now, &ch)
 }
 
-// registered updates the aliases of w of doc: those of a full document replace them (RFC 3680 §5.2).
+// RFC 3680 section 5.2
 func (w *watch) registered(doc *reginfo.Reginfo) {
 	if w.aliases == nil || doc.State == reginfo.Full {
 		w.aliases = map[string]bool{}
@@ -389,11 +347,8 @@ func (w *watch) registered(doc *reginfo.Reginfo) {
 	}
 }
 
-// reports reports whether aor, of a <registration> of a document of w, is of the IMPU of w (RFC 3680 §5.1: the
-// registrations of the document are of their aor, which the S-CSCF reports of each registered IMPU of the user, TS
-// 24.229 §5.4.2.1.2 step 3): the IMPU itself, the URI subscribed to, of a tel URI the SIP URI of its number, or an IMPU
-// of the implicit registration set of a binding of it, registered and deregistered together (TS 23.228 §4.3.3.2),
-// as an S-CSCF may report the tel URI of a SIP URI, or the other way round. Called with g.mu held.
+// RFC 3680 section 5.1
+// TS 23.228 clause 4.3.3.2
 func (g *Registrar) reports(w *watch, aor string) bool {
 	u, err := sip.ParseURI(aor)
 	if err != nil {
@@ -420,7 +375,6 @@ func (g *Registrar) reports(w *watch, aor string) bool {
 	return false
 }
 
-// deregistered removes the bindings of the IMPU of w that doc reports deregistered (reports). Called with g.mu held.
 func (g *Registrar) deregistered(w *watch, doc *reginfo.Reginfo, ch *change) {
 	ik := w.ik
 
@@ -448,10 +402,8 @@ func (g *Registrar) deregistered(w *watch, doc *reginfo.Reginfo, ch *change) {
 	}
 }
 
-// terminatedBy reports whether a contact reported terminated is of the registration of b: of the "id" its
-// registration token (TS 24.229 §5.4.1.7 NOTE 4), which an S-CSCF may make it, else of its instance ID and reg-id
-// (§5.4.2.1.2: unknown-params of the contact), else of its URI. A contact last updated by a REGISTER of b's Call-ID of a lower CSeq than b's (RFC 3680 §5.1) is of an earlier
-// registration of the UE, whose NOTIFY came late.
+// TS 24.229 clause 5.4.1.7
+// RFC 3680 section 5.1
 func (b *binding) terminatedBy(c reginfo.Contact) bool {
 	if b.callID != "" && c.CallID == b.callID && c.CSeq != nil && *c.CSeq < uint64(b.cseq) {
 		return false
@@ -460,7 +412,6 @@ func (b *binding) terminatedBy(c reginfo.Contact) bool {
 	return b.matchedBy(c)
 }
 
-// reason is the reason of the Subscription-State of a NOTIFY, "" if none.
 func reason(n *sip.Request) string {
 	ss, err := sip.ParseSubscriptionState(n.Header.Get("Subscription-State"))
 	if err != nil {
@@ -470,8 +421,6 @@ func reason(n *sip.Request) string {
 	return ss.Reason
 }
 
-// matchedBy reports whether a contact of a reg event document is of the registration of b: of the "id" its
-// registration token, else of its instance ID and reg-id, else of its URI (terminatedBy).
 func (b *binding) matchedBy(c reginfo.Contact) bool {
 	if b.reg.token != "" && c.ID == b.reg.token {
 		return true

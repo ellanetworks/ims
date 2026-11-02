@@ -18,7 +18,6 @@ import {
 } from "@/queries/utils";
 import { decodeAccessToken } from "@/utils/jwt";
 
-// Permission is what the server checks on a route. The UI only hides what a role cannot do; the server enforces it.
 export type Permission =
   | "operator:read"
   | "operator:update"
@@ -38,7 +37,6 @@ export type Permission =
   | "mcptt:update"
   | "user:admin";
 
-// readPermissions are reading every setting and every state of the IMS.
 const readPermissions: Permission[] = [
   "operator:read",
   "diameter:read",
@@ -51,7 +49,6 @@ const readPermissions: Permission[] = [
   "mcptt:read",
 ];
 
-// operatePermissions are changing the settings of the IMS, and acting on its registrations.
 const operatePermissions: Permission[] = [
   "operator:update",
   "diameter:update",
@@ -88,22 +85,16 @@ export const authFor = (
   logout,
 });
 
-// Refresh the access token this long before it expires, no sooner than MIN_REFRESH_DELAY_MS, and RETRY_DELAY_MS after
-// a refresh that failed without ending the session.
 const REFRESH_LEEWAY_MS = 120_000;
 const MIN_REFRESH_DELAY_MS = 5_000;
 const RETRY_DELAY_MS = 30_000;
 
-// AuthProvider renders its children once it has an access token from the session cookie, which it refreshes before
-// it expires, when the tab becomes visible again, and when the server refuses it. When the session is over, it goes
-// to the login page.
 export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
   const [auth, setAuth] = useState<Auth | null>(null);
 
-  // navigate changes with the location: the session reads both through refs, so that it starts once.
   const navigateRef = useRef(navigate);
   const fromRef = useRef(location.pathname + location.search);
   useEffect(() => {
@@ -136,14 +127,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       timer = window.setTimeout(() => void renew(), delay);
     };
 
-    // renew resolves to whether there is a new access token. Only a refused refresh ends the session: when the
-    // server is unreachable or failing, the current token stays until the next attempt.
     const renew = (): Promise<boolean> => {
       if (over) return Promise.resolve(false);
       inflight ??= (async () => {
         try {
           const { token } = await refresh();
-          // A session stopped meanwhile, as React's StrictMode does once, leaves the state alone.
           if (over) return false;
           const claims = decodeAccessToken(token);
           if (!claims) {
@@ -194,7 +182,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVisible);
       setAccessTokenRenewer(null);
     };
-    // The query client is stable, so the session starts once. react-hooks requires it, and this rule calls it extra.
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [queryClient]);
 

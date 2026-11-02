@@ -55,9 +55,8 @@ func (u URI) equal(v URI) bool {
 		slices.Equal(u.Params, v.Params)
 }
 
-// Equivalent reports whether u and v are equivalent: SIP URIs by RFC 3261 §19.1.4, escapes equivalent to the
-// characters they encode but of reserved ones; tel URIs by RFC 3966 §4; others when equal but for the case of the
-// scheme.
+// RFC 3261 section 19.1.4
+// RFC 3966 section 4
 func (u URI) Equivalent(v URI) bool {
 	if !strings.EqualFold(u.Scheme, v.Scheme) {
 		return false
@@ -79,9 +78,7 @@ func (u URI) Equivalent(v URI) bool {
 	return paramsEquivalent(u.Params, v.Params) && paramsEquivalent(v.Params, u.Params)
 }
 
-// telEquivalent is the comparison of tel URIs of RFC 3966 §4: both global or both local numbers, their digits
-// without visual separators, the same parameters whatever their order, the phone-context of digits without visual
-// separators too; case-insensitive.
+// RFC 3966 section 4
 func telEquivalent(u, v URI) bool {
 	digits := func(s string) string { return strings.ToLower(withoutVisualSeparators(s)) }
 

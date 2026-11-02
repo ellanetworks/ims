@@ -14,7 +14,6 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// registerTCP registers u over TCP, and returns the flow of its protected REGISTER, as the P-CSCF sees it.
 func registerTCP(t *testing.T, n *network, u *testUE) sip.Flow {
 	t.Helper()
 
@@ -33,7 +32,6 @@ func registerTCP(t *testing.T, n *network, u *testUE) sip.Flow {
 	return f
 }
 
-// flowFailedWithin waits for the deregistration of u's failed flow.
 func flowFailedWithin(t *testing.T, u *testUE, d time.Duration) Event {
 	t.Helper()
 
@@ -57,8 +55,7 @@ func flowFailedWithin(t *testing.T, u *testUE, d time.Duration) Event {
 	}
 }
 
-// RFC 3261 §18.2.2: the connection of a reregistration lost before its response, the P-CSCF sends it on a new one, to
-// the sent-by of the request, which the UE takes: the registration goes on.
+// RFC 3261 section 18.2.2
 func TestReregistrationConnectionLost(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP})
@@ -81,7 +78,7 @@ func TestReregistrationConnectionLost(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.4.1: a reregistration timer F ends leaves the contact bound to nothing: the UE is to register again.
+// TS 24.229 clause 5.1.1.4.1
 func TestReregistrationTimeout(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{T1: 10 * time.Millisecond})
@@ -96,7 +93,8 @@ func TestReregistrationTimeout(t *testing.T) {
 	}
 }
 
-// RFC 5626 §3, §4.4: the TCP connection of an outbound registration is its flow; its loss is the flow's failure.
+// RFC 5626 section 3
+// RFC 5626 section 4.4
 func TestOutboundConnectionLost(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP, RegID: 1})
@@ -118,7 +116,6 @@ func TestOutboundConnectionLost(t *testing.T) {
 	flowFailedWithin(t, u, time.Second)
 }
 
-// Without outbound, the registration outlives its connection: the P-CSCF reaches the UE on one of its own.
 func TestConnectionLostWithoutOutbound(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP})
@@ -139,7 +136,6 @@ func TestConnectionLostWithoutOutbound(t *testing.T) {
 	}
 }
 
-// message sends a MESSAGE through the P-CSCF, and returns the outcome of its transaction.
 func message(u *testUE) <-chan error {
 	done := make(chan error, 1)
 
@@ -154,8 +150,7 @@ func message(u *testUE) <-chan error {
 	return done
 }
 
-// TS 24.229 §5.1.1.4.1, NOTE 13: the flow of the registration failing, the UE stops processing its transactions,
-// which end at once, dropped.
+// TS 24.229 clause 5.1.1.4.1
 func TestFlowFailedDropsTransactions(t *testing.T) {
 	saved := pongTimeout
 	pongTimeout = 100 * time.Millisecond
@@ -185,8 +180,7 @@ func TestFlowFailedDropsTransactions(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.2A.1.6: timer F in Trying of a request through the P-CSCF leaves the contact bound to nothing and the
-// P-CSCF unavailable; a registration through it makes it available again.
+// TS 24.229 clause 5.1.2A.1.6
 func TestRequestTimeoutUnbinds(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{T1: 10 * time.Millisecond})
@@ -210,7 +204,6 @@ func TestRequestTimeoutUnbinds(t *testing.T) {
 		t.Fatalf("P-CSCF %v unavailable, state %v", e.UnavailablePCSCF, u.State().UnavailablePCSCFs)
 	}
 
-	// TS 24.229 §5.1.9: no initial registration through it, until a new discovery clears the marks.
 	if err := u.Register(t.Context()); !errors.Is(err, ErrPCSCFUnavailable) {
 		t.Fatalf("Register = %v, want the P-CSCF unavailable", err)
 	}
@@ -223,8 +216,7 @@ func TestRequestTimeoutUnbinds(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.2A.1.6 B: the P-CSCF marked is the one the contact was registered through, though the owner selected
-// another one for its next registration.
+// TS 24.229 clause 5.1.2A.1.6
 func TestRequestFailureMarksTheRegisteredPCSCF(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -249,8 +241,7 @@ func TestRequestFailureMarksTheRegisteredPCSCF(t *testing.T) {
 	}
 }
 
-// The flow of the registration failing after a request's failure unbound the contact, its transactions are dropped
-// all the same (TS 24.229 §5.1.1.4.1).
+// TS 24.229 clause 5.1.1.4.1
 func TestFlowFailedAfterARequestFailure(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -278,8 +269,8 @@ func TestFlowFailedAfterARequestFailure(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.9: a mark lasts the retry delay of RFC 5626 §4.5, of base-time 30 s and max-time 1800 s, plus 5
-// minutes.
+// TS 24.229 clause 5.1.9
+// RFC 5626 section 4.5
 func TestMarkDuration(t *testing.T) {
 	for failures, w := range map[int]time.Duration{1: time.Minute, 2: 2 * time.Minute, 5: 960 * time.Second, 6: 1800 * time.Second, 40: 1800 * time.Second} {
 		for range 50 {
@@ -290,8 +281,7 @@ func TestMarkDuration(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.2A.1.6: only a timeout or a fatal transport error of a request other than a REGISTER, through the
-// P-CSCF, in Trying of a non-INVITE or in Calling of an INVITE, leaves the contact bound to nothing.
+// TS 24.229 clause 5.1.2A.1.6
 func TestRequestFailureRule(t *testing.T) {
 	timeout, transport := transaction.ErrTimeout, fmt.Errorf("%w: lost", transaction.ErrTransport)
 

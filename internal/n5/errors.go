@@ -13,10 +13,11 @@ import (
 	"time"
 )
 
-// Op names a service operation of Npcf_PolicyAuthorization.
 type Op string
 
-// TS 29.514 §4.2.2, §4.2.3, §4.2.4
+// TS 29.514 clause 4.2.2
+// TS 29.514 clause 4.2.3
+// TS 29.514 clause 4.2.4
 const (
 	OpCreate Op = "create"
 	OpModify Op = "modify"
@@ -24,13 +25,12 @@ const (
 )
 
 var (
-	// ErrMalformedResponse: the PCF accepted the request, but its response breaks TS 29.514.
 	ErrMalformedResponse = errors.New("malformed response from the PCF")
-	// ErrConnect: no connection to the PCF, so the request was not sent.
-	ErrConnect = errors.New("cannot connect to the PCF")
+	ErrConnect           = errors.New("cannot connect to the PCF")
 )
 
-// TS 29.514 §5.7.3, TS 29.500 §5.2.7.2
+// TS 29.514 clause 5.7.3
+// TS 29.500 clause 5.2.7.2
 const (
 	CauseInvalidServiceInformation                = "INVALID_SERVICE_INFORMATION"
 	CauseFilterRestrictions                       = "FILTER_RESTRICTIONS"
@@ -41,12 +41,10 @@ const (
 	CauseAppSessionContextNotFound                = "APPLICATION_SESSION_CONTEXT_NOT_FOUND"
 	CausePDUSessionNotAvailable                   = "PDU_SESSION_NOT_AVAILABLE"
 
-	// TS 29.500 Table 5.2.7.2-1: a notification for a context the consumer does not know.
+	// TS 29.500 clause 5.2.7.2 table 5.2.7.2-1
 	CauseResourceContextNotFound = "RESOURCE_CONTEXT_NOT_FOUND"
 )
 
-// Error is a failed operation. Status is set when an HTTP response came back, from the PCF or an intermediary;
-// otherwise Err says why there is none. A response that is not what TS 29.514 defines wraps ErrMalformedResponse.
 type Error struct {
 	Op         Op
 	Status     int
@@ -83,7 +81,7 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// Cause returns the application error of the ProblemDetails, if any (TS 29.514 §5.7.3).
+// TS 29.514 clause 5.7.3
 func (e *Error) Cause() string {
 	if e.Problem == nil {
 		return ""
@@ -92,7 +90,6 @@ func (e *Error) Cause() string {
 	return e.Problem.Cause
 }
 
-// transportError wraps a request that got no response, telling apart one that never reached the PCF.
 func transportError(op Op, err error) *Error {
 	var oe *net.OpError
 
@@ -107,9 +104,6 @@ func transportError(op Op, err error) *Error {
 	return &Error{Op: op, Err: err}
 }
 
-// notEstablished reports the error with which net/http's HTTP/2 client fails the first request of a connection
-// that closed before the request was written, as when a TLS 1.3 server refuses the client certificate once the
-// client finished its handshake. The error is not exported, and it hides the cause.
 func notEstablished(err error) bool {
 	for ; err != nil; err = errors.Unwrap(err) {
 		if err.Error() == "http2: client conn could not be established" {
@@ -120,13 +114,10 @@ func notEstablished(err error) bool {
 	return false
 }
 
-// RFC 8446 §6.2: the alerts with which a server refuses a client certificate.
+// RFC 8446 section 6.2
 var certificateAlerts = []uint64{42, 43, 44, 45, 46, 48, 49, 116}
 
-// rejectedCertificate reports whether the PCF refused the client certificate. In TLS 1.3 the client completes its
-// handshake before the server checks its certificate (RFC 8446 §4.4.2.4), so the refusal arrives as an alert after
-// the request was written, but the PCF never received the request. crypto/tls reports a received alert as a
-// net.OpError "remote error" around its unexported alert code.
+// RFC 8446 section 4.4.2.4
 func rejectedCertificate(oe *net.OpError) bool {
 	if oe.Op != "remote error" || oe.Err == nil {
 		return false
@@ -137,10 +128,10 @@ func rejectedCertificate(oe *net.OpError) bool {
 	return v.Kind() == reflect.Uint8 && slices.Contains(certificateAlerts, v.Uint())
 }
 
-// maxRetryAfter caps a Retry-After, in seconds; a larger one is read as this.
 const maxRetryAfter = 1<<32 - 1
 
-// retryAfter reads a Retry-After header: seconds, or an HTTP-date (TS 29.500 §5.2.2.2, RFC 9110 §10.2.3).
+// TS 29.500 clause 5.2.2.2
+// RFC 9110 section 10.2.3
 func retryAfter(h http.Header, now time.Time) time.Duration {
 	v := strings.TrimSpace(h.Get("Retry-After"))
 	if v == "" {
@@ -163,8 +154,8 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 	return 0
 }
 
-// WriteProblem answers a request with an error status and its ProblemDetails (TS 29.500 §5.2.7, TS 29.514
-// §5.2.2.2). A zero Status is 500.
+// TS 29.500 clause 5.2.7
+// TS 29.514 clause 5.2.2.2
 func WriteProblem(w http.ResponseWriter, p ProblemDetails) {
 	if p.Status == 0 {
 		p.Status = http.StatusInternalServerError

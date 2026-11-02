@@ -34,17 +34,15 @@ var (
 
 	ErrTimeout = errors.New("sip/transaction: timeout")
 
-	// ErrTransport is the error of a client transaction whose request the network did not take: a connection that
-	// could not be opened or written, an ICMP error (RFC 3261 §17.1.4, §18.4). A fatal transport error, which the TU
-	// treats as a 503 (Service Unavailable), a timeout as a 408 (§8.1.3.1).
+	// RFC 3261 section 17.1.4
+	// RFC 3261 section 18.4
+	// RFC 3261 section 8.1.3.1
 	ErrTransport = errors.New("sip/transaction: transport error")
 
-	// ErrDropped is the error of a transaction the layer's user dropped with its flow (Layer.Drop).
 	ErrDropped = errors.New("sip/transaction: dropped")
 
 	ErrTerminated = errors.New("sip/transaction: transaction terminated")
-	// ErrCanceled is the cause of the end of the context of an INVITE server transaction its client cancelled.
-	ErrCanceled = errors.New("sip/transaction: canceled")
+	ErrCanceled   = errors.New("sip/transaction: canceled")
 
 	ErrFinalResponseSent = errors.New("sip/transaction: final response already sent")
 
@@ -57,24 +55,11 @@ var (
 	ErrInvalidResponse = errors.New("sip/transaction: response not allowed")
 )
 
-// Handler is the user of the server transactions.
-//
-// The ctx of HandleRequest and HandleTransactionError is the transaction's, as an HTTP request's is: it carries the
-// server span of the transaction, and is cancelled once the transaction ends, or once a CANCEL arrives for its INVITE;
-// context.Cause tells which: ErrTerminated for an end with a final response, ErrCanceled, ErrTimeout, ErrTransport,
-// ErrDropped or ErrClosed. Work that outlives the transaction, as a registrar's after its 200, binds itself to a lifetime
-// of its own with lifetime.With, which keeps the trace.
-//
-// The server span of an INVITE ends with its first final response: an INVITE left unanswered keeps it open, which
-// ua bounds with its answer timeout and proxy with Timer C.
 type Handler interface {
 	HandleRequest(ctx context.Context, tx *ServerTransaction, req *sip.Request)
 
-	// HandleCancel is told of a CANCEL of the INVITE of tx, ctx being the CANCEL's transaction's.
 	HandleCancel(ctx context.Context, tx *ServerTransaction, cancel *sip.Request)
 
-	// HandleAck is told of an ACK to a 2xx, which has no transaction (RFC 3261 §17.1.1.3), in a span of its own. ctx
-	// ends once HandleAck returns.
 	HandleAck(ctx context.Context, ack *sip.Request)
 
 	HandleTransactionError(ctx context.Context, tx *ServerTransaction, err error)
@@ -92,52 +77,28 @@ type Config struct {
 
 	ResponseFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 
-	// OnServerDone is called once per server transaction, with its first final
-	// response, or with a nil response if it ended without one. ctx is the
-	// transaction's, for the trace of what it logs.
 	OnServerDone func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
 
-	// OnListenerFailed is told of a listener of the layer that failed for good, with the error
-	// (transport.Config.OnListenerFailed): the layer no longer serves local, which it can listen on again.
 	OnListenerFailed func(local netip.AddrPort, err error)
 
-	// OnClientError is told of each client transaction that failed, with its request, the state it failed in, and
-	// the error: ErrTimeout of Timer B or F, ErrTransport, ErrDropped, ErrClosed. A UE acts on those of Trying and
-	// Calling (TS 24.229 §5.1.2A.1.6).
 	OnClientError func(req *sip.Request, in State, err error)
 
-	// OnConnectionLost is told of a TCP connection of flow f that ended, with why, wrapping
-	// transport.ErrConnectionLost (transport.Config.OnConnectionLost).
 	OnConnectionLost func(f sip.Flow, err error)
 
 	T1, T2, T4 time.Duration
 
 	Clock Clock
 
-	// Scheduler starts the tasks of the layer and of the agents on it; GoScheduler without one.
 	Scheduler Scheduler
 
-	// Network carries the messages between the addresses the layer serves or attaches and those of the other layers
-	// on it; without one, the layer has a network of its own.
 	Network *Network
 
-	// TracerProvider traces the transactions, with the global provider when nil.
 	TracerProvider trace.TracerProvider
 
-	// TraceContext reports whether the requests of a flow carry W3C trace context (traceparent and tracestate): those
-	// received on it are continued, and those sent on it carry theirs. A flow that does not is a trust boundary, such
-	// as one with a UE: the trace context of its requests is ignored, and its requests carry none. Without it, no flow
-	// does.
 	TraceContext func(f sip.Flow) bool
 
-	// SpanAttributes are attributes of the spans of the transactions of flow f, as the role of the element that serves
-	// its local address.
 	SpanAttributes func(f sip.Flow) []attribute.KeyValue
 
-	// SpanLinks are the span contexts that the server span of req links to when req starts a trace of its own, as one
-	// from outside the trust domain does: what it continues, such as the INVITE of its dialog, or the REGISTER a
-	// refresh renews. A request that continues the trace of its peer needs none: the trace's root has them. It is
-	// called before the request is handled, without the layer's locks; it must not block.
 	SpanLinks func(req *sip.Request) []trace.SpanContext
 }
 
@@ -168,12 +129,8 @@ type Layer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// locals are the addresses the layer listens on or serves, read without a lock on every send and response; they
-	// change under mu, a copy replacing them.
 	locals atomic.Pointer[addrSet]
 
-	// mu guards the transactions, qmu the queues of the flows, so that the sends of a flow do not wait on the matching
-	// of messages: closed changes with both held, and is read with either; mu is never taken with qmu held.
 	mu      sync.Mutex
 	closed  bool
 	clients map[clientKey]*ClientTransaction
@@ -184,7 +141,6 @@ type Layer struct {
 	lanes    map[sip.Flow]*lane
 	outboxes map[sip.Flow]*outbox
 
-	// drained, while not nil, closes once the outboxes are empty, for Shutdown.
 	drained chan struct{}
 	wg      sync.WaitGroup
 }
@@ -299,12 +255,10 @@ func New(cfg Config) *Layer {
 	return l
 }
 
-// Clock is the clock of the timers of the layer, for the timers of its users to run on the same one.
 func (l *Layer) Clock() Clock {
 	return l.clock
 }
 
-// Scheduler starts the tasks of the layer, for the agents on it to start theirs on the same one.
 func (l *Layer) Scheduler() Scheduler {
 	return l.sched
 }
@@ -330,7 +284,6 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 	return bound, nil
 }
 
-// Ping sends a keep-alive on flow f and waits for its answer (transport.Transport.Ping).
 func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
 	if l.tr == nil {
 		return errors.New("sip/transaction: no transport")
@@ -339,7 +292,6 @@ func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
 	return l.tr.Ping(ctx, f)
 }
 
-// Sockets are the sockets of the transport listening on local (transport.Transport.Sockets).
 func (l *Layer) Sockets(local netip.AddrPort) ([]syscall.RawConn, error) {
 	if l.tr == nil {
 		return nil, errors.New("sip/transaction: no transport")
@@ -348,21 +300,18 @@ func (l *Layer) Sockets(local netip.AddrPort) ([]syscall.RawConn, error) {
 	return l.tr.Sockets(local)
 }
 
-// addLocal adds a to the local addresses. Called with l.mu held.
 func (l *Layer) addLocal(a netip.AddrPort) {
 	locals := maps.Clone(*l.locals.Load())
 	locals[a] = struct{}{}
 	l.locals.Store(&locals)
 }
 
-// removeLocal removes a from the local addresses. Called with l.mu held.
 func (l *Layer) removeLocal(a netip.AddrPort) {
 	locals := maps.Clone(*l.locals.Load())
 	delete(locals, a)
 	l.locals.Store(&locals)
 }
 
-// listenerFailed forgets a listener the transport dropped, and tells the layer's user.
 func (l *Layer) listenerFailed(local netip.AddrPort, err error) {
 	l.mu.Lock()
 
@@ -379,8 +328,7 @@ func (l *Layer) listenerFailed(local netip.AddrPort, err error) {
 	}
 }
 
-// connectionLost tells the layer's user of a TCP connection that ended. The transactions that sent on it wait for
-// their responses, which can come on another connection (RFC 3261 §18.2.2), or for their timers.
+// RFC 3261 section 18.2.2
 func (l *Layer) connectionLost(f sip.Flow, err error) {
 	l.mu.Lock()
 	closed := l.closed
@@ -391,9 +339,7 @@ func (l *Layer) connectionLost(f sip.Flow, err error) {
 	}
 }
 
-// Drop ends at once every transaction whose flow match reports, with ErrDropped, sending nothing more on its behalf:
-// what it had queued to send is not sent, and its responses are refused. The layer's user knows the flow failed, and
-// stops processing its transactions (TS 24.229 §5.1.1.4.1).
+// TS 24.229 clause 5.1.1.4.1
 func (l *Layer) Drop(match func(sip.Flow) bool) {
 	l.mu.Lock()
 
@@ -437,13 +383,11 @@ func (l *Layer) Drop(match func(sip.Flow) bool) {
 	}
 }
 
-// isLocalAddr reports whether the layer listens on a, or serves it.
 func (l *Layer) isLocalAddr(a netip.AddrPort) bool {
 	_, ok := (*l.locals.Load())[a]
 	return ok
 }
 
-// SendAck sends the ACK of a 2xx, with the trace context of ctx when its flow carries trace context.
 func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
 	if ack.Method != "ACK" {
 		return errNotAck(ack)
@@ -455,13 +399,10 @@ func (l *Layer) SendAck(ctx context.Context, ack *sip.Request) error {
 	return l.sendInOrder(ack, false)
 }
 
-// SendResponse sends res outside any transaction, in the order of its flow. ctx is the trace of the work that sends
-// it.
 func (l *Layer) SendResponse(_ context.Context, res *sip.Response) error {
 	return l.sendInOrder(res, false)
 }
 
-// SendOnFlow sends m as it is, on its flow, outside any transaction. ctx is the trace of the work that sends it.
 func (l *Layer) SendOnFlow(_ context.Context, m sip.Message) error {
 	return l.sendInOrder(m, true)
 }
@@ -680,7 +621,6 @@ func (l *Layer) handleRequest(req *sip.Request) {
 		return
 	}
 
-	// The trace the request continues, and what it links to if it starts one, found before the transaction is locked.
 	parent, links := l.parent(req)
 
 	tx := newServer(l, req)
@@ -761,8 +701,6 @@ func (l *Layer) sendStateless(req *sip.Request, res *sip.Response) {
 	})
 }
 
-// Go runs f on the layer's scheduler, in the trace of ctx, with a context that ends once the layer closes rather than
-// with ctx: what a request causes outlives its transaction.
 func (l *Layer) Go(ctx context.Context, f func(ctx context.Context)) error {
 	if !l.enter() {
 		return ErrClosed

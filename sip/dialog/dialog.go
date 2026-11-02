@@ -66,9 +66,8 @@ func tag(a sip.Address, err error) string {
 	return a.Tag()
 }
 
-// Dialog is the state of a dialog (RFC 3261 §12): its identifiers, route set, targets and CSeq spaces. It serves the
-// usages that share it (RFC 5057 §4): a BYE ends the INVITE usage only, and the usage manager ends the dialog with
-// Terminate once its last usage ended; an early dialog ends with the failure of the request that created it.
+// RFC 3261 section 12
+// RFC 5057 section 4
 type Dialog struct {
 	mu sync.Mutex
 
@@ -85,7 +84,6 @@ type Dialog struct {
 	remoteSeq     uint32
 	haveRemoteSeq bool
 
-	// refreshSeq is the CSeq of the last target refresh request of the peer applied to the target.
 	refreshSeq uint32
 
 	origin sip.CSeq
@@ -285,25 +283,24 @@ func (d *Dialog) ID() ID {
 	return d.id
 }
 
-// TargetDialog identifies the dialog to its peer in a request outside it, with the tags as the peer sees them
-// (RFC 4538 §3).
+// RFC 4538 section 3
 func (d *Dialog) TargetDialog() sip.TargetDialog {
 	id := d.ID()
 	return sip.TargetDialog{CallID: id.CallID, LocalTag: id.RemoteTag, RemoteTag: id.LocalTag}
 }
 
-// Replaces asks the peer to replace the dialog: its to-tag is the peer's local tag (RFC 3891 §3).
+// RFC 3891 section 3
 func (d *Dialog) Replaces(earlyOnly bool) sip.Replaces {
 	id := d.ID()
 	return sip.Replaces{CallID: id.CallID, ToTag: id.RemoteTag, FromTag: id.LocalTag, EarlyOnly: earlyOnly}
 }
 
-// TargetID is the ID, for the recipient of a request, of the dialog its Target-Dialog designates (RFC 4538 §4).
+// RFC 4538 section 4
 func TargetID(td sip.TargetDialog) ID {
 	return ID{CallID: td.CallID, LocalTag: td.LocalTag, RemoteTag: td.RemoteTag}
 }
 
-// ReplacesID is the ID, for the recipient of an INVITE, of the dialog its Replaces designates (RFC 3891 §3).
+// RFC 3891 section 3
 func ReplacesID(r sip.Replaces) ID {
 	return ID{CallID: r.CallID, LocalTag: r.ToTag, RemoteTag: r.FromTag}
 }
@@ -378,10 +375,9 @@ func CopyRecordRoute(res *sip.Response, req *sip.Request) {
 	res.Header.InsertTop(rr...)
 }
 
-// PrepareResponse records a response the UA sends to a request of the peer within the dialog: the response to the
-// creating request copies its Record-Route and moves the state; a 1xx or a 2xx to a target refresh request copies
-// its Record-Route too, whose entries the P-CSCF rewrites (TS 24.229 §5.2.6.3.6, §5.2.6.4.6); a reliable 1xx or a 2xx
-// to it replaces the remote target with its Contact, unless a later one did (RFC 6141 §4.6).
+// TS 24.229 clause 5.2.6.3.6
+// TS 24.229 clause 5.2.6.4.6
+// RFC 6141 section 4.6
 func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	cseq, err := req.Header.CSeq()
 	if err != nil || res.StatusCode <= 100 {
@@ -421,7 +417,8 @@ func (d *Dialog) PrepareResponse(req *sip.Request, res *sip.Response) {
 	}
 }
 
-// refreshes reports a response that refreshes the target of a dialog: a reliable 1xx or a 2xx (RFC 6141 §4.6, §4.7).
+// RFC 6141 section 4.6
+// RFC 6141 section 4.7
 func refreshes(res *sip.Response) bool {
 	return res.IsSuccess() || res.IsProvisional() && res.Header.HasOptionTag("Require", sip.OptionTag100rel) && res.Header.Has("RSeq")
 }
@@ -449,7 +446,6 @@ func (d *Dialog) ReceiveRequest(req *sip.Request) error {
 		return err
 	}
 
-	// The Contact of a target refresh request applies once a reliable 1xx or a 2xx to it is sent (PrepareResponse).
 	if isTargetRefresh(req.Method) {
 		if _, _, err := optionalContact(req.Header); err != nil {
 			return &sip.StatusError{StatusCode: 400, Err: err}
@@ -511,7 +507,6 @@ func (d *Dialog) ReceiveResponse(res *sip.Response) error {
 			d.state = Terminated
 		}
 	case creating && d.state == Early:
-		// RFC 6141 §4.9: an unreliable 1xx does not refresh the target of the early dialog it created.
 		if hasTarget && refreshes(res) {
 			d.target = target
 		}

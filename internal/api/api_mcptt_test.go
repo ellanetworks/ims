@@ -28,10 +28,8 @@ type mcpttEnv struct {
 	path string
 }
 
-// homeDomain is the IMS's, of the database's default operator.
 const homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 
-// newMCPTTEnv is the API of the MCPTT settings of a new database, its seed.
 func newMCPTTEnv(t *testing.T) *mcpttEnv {
 	t.Helper()
 
@@ -60,7 +58,6 @@ func newMCPTTEnv(t *testing.T) *mcpttEnv {
 	return &mcpttEnv{t: t, h: h, db: d, live: l, path: path}
 }
 
-// do sends a request of body, if any, and returns the status and the result or error of the response.
 func (e *mcpttEnv) do(method, path, body string) (int, json.RawMessage) {
 	e.t.Helper()
 
@@ -89,7 +86,6 @@ func (e *mcpttEnv) do(method, path, body string) (int, json.RawMessage) {
 	return rec.Code, resp.Result
 }
 
-// ok sends a request that must succeed with status, and decodes its result into v, if any.
 func (e *mcpttEnv) ok(status int, method, path, body string, v any) {
 	e.t.Helper()
 
@@ -105,7 +101,6 @@ func (e *mcpttEnv) ok(status int, method, path, body string, v any) {
 	}
 }
 
-// fails sends a request that must fail with status and the error message want.
 func (e *mcpttEnv) fails(status int, method, path, body, want string) {
 	e.t.Helper()
 
@@ -129,7 +124,6 @@ const (
 		{"mcptt_id": "sip:bob@MCPTT.example.com", "recvonly": true}]}`
 )
 
-// provision provisions alice and bob, members of fire, alice affiliated to it.
 func (e *mcpttEnv) provision() {
 	e.t.Helper()
 
@@ -140,20 +134,16 @@ func (e *mcpttEnv) provision() {
 		`{"alias": "Alice", "impus": ["sip:alice@ims.example.com"], "implicit_affiliations": ["sip:fire@mcptt.example.com"]}`, nil)
 }
 
-// member is m of its implicit affiliation, as a response has it.
 func member(m MCPTTMember, implicit bool) MCPTTMember {
 	m.ImplicitAffiliation = &implicit
 	return m
 }
 
-// A system provisioned in order, as stored: the absent optional fields absent, the identities as their user and
-// group have them; and as the database has it.
 func TestProvision(t *testing.T) {
 	e := newMCPTTEnv(t)
 
 	var sc MCPTTServiceConfiguration
 
-	// The domain of the organisation is the home domain's until set.
 	e.ok(http.StatusOK, "GET", "/api/v1/mcptt/service-configuration", "", &sc)
 
 	if sc != (MCPTTServiceConfiguration{Domain: homeDomain}) {
@@ -167,7 +157,6 @@ func TestProvision(t *testing.T) {
 		t.Errorf("service configuration %+v", sc)
 	}
 
-	// The rest fixed, to the defaults of TS 24.380 Table 11.1.3-1, T7 the server's.
 	if on := e.live.Current().ServiceConfiguration().OnNetwork; *on.FCTimersCounters.T7 != mcpttsettings.DefaultT7 ||
 		*on.TransmitTime.TimeLimit != 20*time.Second {
 		t.Errorf("snapshot %+v", on)
@@ -232,7 +221,7 @@ func TestProvision(t *testing.T) {
 	}
 }
 
-// A creation answers with the Location of what it created (RFC 9110 §15.3.2).
+// RFC 9110 section 15.3.2
 func TestLocation(t *testing.T) {
 	e := newMCPTTEnv(t)
 
@@ -249,8 +238,6 @@ func TestLocation(t *testing.T) {
 	}
 }
 
-// A member is added after the others, replaced where it is, and removed, of its implicit affiliation as the request
-// has it, or as it was; a user deleted leaves its groups, and a group deleted the implicit affiliations of its users.
 func TestMembers(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.provision()
@@ -303,8 +290,6 @@ func TestMembers(t *testing.T) {
 	}
 }
 
-// The problems of a refused change are at the fields of the request body: 400 of the body itself, 409 of what it
-// conflicts with, 404 of a path of nothing.
 func TestRefused(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.provision()
@@ -345,7 +330,6 @@ func TestRefused(t *testing.T) {
 			"maximum_duration_ms: 9223372036854775807 is out of range",
 		},
 		{
-			// A field the server fixes.
 			400, "PUT", "/api/v1/mcptt/groups/sip:fire@mcptt.example.com/members/sip:bob@mcptt.example.com", `{"user_priority": 1}`,
 			"Invalid request data",
 		},
@@ -373,15 +357,14 @@ func TestRefused(t *testing.T) {
 	}
 }
 
-// User parts are case-sensitive (RFC 3261 §19.1.4): sip:ALICE is another user, whose IMPU alice's may be too (TS
-// 23.280 §8.3.1).
+// RFC 3261 section 19.1.4
+// TS 23.280 clause 8.3.1
 func TestCaseSensitiveUser(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.provision()
 	e.ok(http.StatusCreated, "POST", "/api/v1/mcptt/users", `{"mcptt_id": "sip:ALICE@mcptt.example.com", "impus": ["sip:alice@ims.example.com"]}`, nil)
 }
 
-// A change that cannot be saved answers 500, and does not take effect.
 func TestSaveFails(t *testing.T) {
 	e := newMCPTTEnv(t)
 
@@ -408,7 +391,6 @@ func TestMCPTTStatus(t *testing.T) {
 	}
 }
 
-// Without the MCPTT AS, its paths, its status among them, are not found, and the public status does not tell.
 func TestMCPTTDisabled(t *testing.T) {
 	h := testHandler(t, Config{Logger: slog.New(slog.DiscardHandler)})
 
@@ -429,7 +411,6 @@ func TestMCPTTDisabled(t *testing.T) {
 	}
 }
 
-// The fields of the paths of the settings.
 func TestField(t *testing.T) {
 	for in, want := range map[string]string{
 		"":                                    "",
@@ -450,7 +431,6 @@ func TestField(t *testing.T) {
 	}
 }
 
-// stored checks that the settings the database has are those the API serves.
 func (e *mcpttEnv) stored() {
 	e.t.Helper()
 
@@ -459,7 +439,6 @@ func (e *mcpttEnv) stored() {
 		e.t.Fatal(err)
 	}
 
-	// The domain of the organisation the home domain's is stored empty.
 	if stored.ServiceConfiguration.Domain == "" {
 		stored.ServiceConfiguration.Domain = homeDomain
 	}
@@ -469,7 +448,6 @@ func (e *mcpttEnv) stored() {
 	}
 }
 
-// normal is s of its empty lists nil, as the database has them.
 func normal(s mcpttsettings.Settings) mcpttsettings.Settings {
 	s.Users = slices.Clone(s.Users)
 	for i := range s.Users {
@@ -506,7 +484,6 @@ func normal(s mcpttsettings.Settings) mcpttsettings.Settings {
 	return s
 }
 
-// After every kind of change, the database has the settings the API serves.
 func TestStoredAsServed(t *testing.T) {
 	e := newMCPTTEnv(t)
 
@@ -534,7 +511,6 @@ func TestStoredAsServed(t *testing.T) {
 	}
 }
 
-// Changes at once, through the API, are each applied and stored.
 func TestConcurrentChanges(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.provision()
@@ -573,7 +549,6 @@ func TestConcurrentChanges(t *testing.T) {
 	e.stored()
 }
 
-// A "/" of the user part of an MCPTT ID is percent-encoded in the path, which it is the identity of.
 func TestEncodedPath(t *testing.T) {
 	e := newMCPTTEnv(t)
 	e.ok(http.StatusCreated, "POST", "/api/v1/mcptt/users", `{"mcptt_id": "sip:a/b@mcptt.example.com", "impus": ["sip:ab@ims.example.com"]}`, nil)
@@ -594,10 +569,8 @@ func TestEncodedPath(t *testing.T) {
 	}
 }
 
-// unusedStore is the store of settings no change reaches.
 type unusedStore struct{ mcpttsettings.Store }
 
-// The server serves settings.MaxUsers users at most: one more is a conflict.
 func TestMaxUsersThroughAPI(t *testing.T) {
 	e := newMCPTTEnv(t)
 
@@ -608,7 +581,6 @@ func TestMaxUsersThroughAPI(t *testing.T) {
 		})
 	}
 
-	// A refused change is not stored: the store is never called.
 	l, err := mcpttsettings.NewLive(unusedStore{}, s)
 	if err != nil {
 		t.Fatal(err)

@@ -11,7 +11,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// bridged sets up a call from alice to bob through b, and returns the sessions of alice and bob.
 func bridged(t *testing.T, alice, bob *party) (as, bs *ua.Session) {
 	t.Helper()
 
@@ -33,8 +32,7 @@ func newCall(t *testing.T, cfg b2bua.RelayConfig) (alice, bob *party, b *b2b) {
 	return alice, bob, b
 }
 
-// A re-INVITE of either side reaches the other with its offer, and the answer comes back; a 491 of the other side
-// goes back as it is (RFC 3261 §14.1).
+// RFC 3261 section 14.1
 func TestRelayReinvite(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -76,7 +74,6 @@ func TestRelayReinvite(t *testing.T) {
 		t.Fatalf("alice's re-INVITE: %d", res.StatusCode)
 	}
 
-	// From bob, refused by alice with a 491; bob, retrying no glare, gets it.
 	pol := bs.Policy()
 	pol.RetryGlare = false
 	bs.SetPolicy(pol)
@@ -93,9 +90,8 @@ func TestRelayReinvite(t *testing.T) {
 	}
 }
 
-// RFC 4028 §7.4: a refresh is answered on its own leg; RFC 3261 §14.2: a re-INVITE without an offer that asks for
-// more gets the offer of the other side, fetched with a re-INVITE without one; the answer in the ACK goes back in the
-// ACK.
+// RFC 4028 section 7.4
+// RFC 3261 section 14.2
 func TestRelayReinviteWithoutOffer(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -104,7 +100,6 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 	done := make(chan *sip.Response, 2)
 	f := func(res *sip.Response, _ error) { done <- res }
 
-	// A refresh is answered on alice's leg.
 	if err := as.Reinvite(context.Background(), ua.Change{}, f); err != nil {
 		t.Fatal(err)
 	}
@@ -113,12 +108,10 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 		t.Fatalf("refresh %d %q", res.StatusCode, res.Body)
 	}
 
-	// Its 2xx offers the session as it was, which alice answers in the ACK.
 	_ = alice.next("offer").offer.Answer(context.Background(), ua.Change{Bodies: sdpOf("offer-1")})
 
 	bob.none()
 
-	// One asking for more goes across, and fetches the offer of bob.
 	info := sip.NewBodyPart("application/vnd.3gpp.mcptt-info+xml", []byte("<mcpttinfo/>"))
 
 	if err := as.Reinvite(context.Background(), ua.Change{Bodies: []sip.BodyPart{info}}, f); err != nil {
@@ -148,8 +141,6 @@ func TestRelayReinviteWithoutOffer(t *testing.T) {
 	}
 }
 
-// An UPDATE and an INFO go across with their bodies, byte-exact, and their responses come back; a refresh is
-// answered on its own leg.
 func TestRelayRequests(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{})
 	alice.invite(b.uri(), "offer-1", alice.handler())
@@ -193,8 +184,7 @@ func TestRelayRequests(t *testing.T) {
 	}
 }
 
-// The parts of an INVITE other than its session description cross byte-exact (TS 24.379 §6.3.2.1.5); Media makes the
-// session descriptions of each leg.
+// TS 24.379 clause 6.3.2.1.5
 func TestBridgeBodiesAndMedia(t *testing.T) {
 	alice, bob, b := newCall(t, b2bua.RelayConfig{Media: anchor{}})
 
@@ -224,7 +214,6 @@ func TestBridgeBodiesAndMedia(t *testing.T) {
 	}
 }
 
-// anchor is the Media of a B2BUA anchoring the media: it marks the descriptions it makes.
 type anchor struct{}
 
 func (anchor) Offer(x *b2bua.Exchange) ([]byte, error) {
@@ -237,7 +226,7 @@ func (anchor) Answer(_ *b2bua.Exchange, _ *ua.Session, sdp []byte) ([]byte, erro
 
 func (anchor) End(*b2bua.Exchange, *ua.Session) {}
 
-// RFC 3261 §15: a 2xx of bob crossing the CANCEL of alice is acknowledged, and his session ended with a BYE.
+// RFC 3261 section 15
 func TestBridge2xxCrossingCancel(t *testing.T) {
 	n := newNet(t)
 	bob := n.Peer()

@@ -18,7 +18,6 @@ class UrisTest {
         assertEquals("sip:lab@mcptt.example", groupUri("lab", id))
         assertEquals("sip:fire@other.example", groupUri("fire@other.example", id))
         assertEquals("sip:fire@other.example", groupUri("sip:fire@other.example", id))
-        // No MCPTT ID yet: the name as typed, its domain missing.
         assertEquals("sip:lab", groupUri("lab", ""))
     }
 

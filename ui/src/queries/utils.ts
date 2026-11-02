@@ -1,7 +1,5 @@
 export type ApiErrorKind = "network" | "auth" | "forbidden" | "http";
 
-// The access token is kept in memory only, never in storage, so that a script injected into the page cannot read it
-// after a reload.
 let accessToken: string | null = null;
 
 export function setAccessToken(token: string | null) {
@@ -10,8 +8,6 @@ export function setAccessToken(token: string | null) {
 
 let renewAccessToken: (() => Promise<boolean>) | null = null;
 
-// setAccessTokenRenewer sets what renews the access token when the server refuses it, as when it expired while the
-// computer slept. It resolves to whether there is a new one; when the session is over, it ends it.
 export function setAccessTokenRenewer(renew: (() => Promise<boolean>) | null) {
   renewAccessToken = renew;
 }
@@ -19,7 +15,6 @@ export function setAccessTokenRenewer(renew: (() => Promise<boolean>) | null) {
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
-  // detail is the technical line under the message, such as "HTTP 500 Internal Server Error".
   readonly detail?: string;
 
   constructor(
@@ -51,7 +46,6 @@ export interface PageParams {
 interface ApiFetchOptions {
   method?: string;
   body?: unknown;
-  // anonymous requests send no access token: those of the session itself, which the cookie authenticates.
   anonymous?: boolean;
 }
 
@@ -95,7 +89,6 @@ export async function apiFetch<T>(
     const detail =
       `HTTP ${response.status} ${response.statusText}`.trimEnd() +
       ` · ${method} ${url}`;
-    // A refused access token is renewed once, and the request retried. A failed login sends none.
     if (response.status === 401 && token) {
       if (!retried && (await renewAccessToken?.())) {
         return apiFetch<T>(url, options, true);
@@ -119,7 +112,6 @@ export async function apiFetch<T>(
   return data.result as T;
 }
 
-// withQuery adds query parameters to a path: a list is repeated, and an empty value dropped.
 export function withQuery(
   path: string,
   params: Record<string, string | number | string[] | undefined>,

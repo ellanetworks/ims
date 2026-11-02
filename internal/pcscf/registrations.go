@@ -27,22 +27,20 @@ type RegistrationStore interface {
 	ListPCSCFSubscriptions(context.Context) ([]db.PCSCFSubscription, error)
 }
 
-// flowID identifies a registration flow of a UE (RFC 5626 §4.2): its instance ID and reg-id. The zero
-// value is a registration without the multiple registration mechanism.
+// RFC 5626 section 4.2
 type flowID struct {
 	instance string
 	regID    int64
 }
 
-// regKey identifies a registration through the P-CSCF: a UE, by its private identity and address, and
-// one of its registration flows (TS 24.229 §5.2.2.1, TS 33.203 §6.1 NOTE 2).
+// TS 24.229 clause 5.2.2.1
+// TS 33.203 clause 6.1
 type regKey struct {
 	impi string
 	ue   netip.Addr
 	flow flowID
 }
 
-// cause is the span context of what last set the expiry of the registration of k.
 func (rs *registrations) cause(k regKey) trace.SpanContext {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -72,7 +70,6 @@ type retired struct {
 const pendingToken = DefaultAwaitAuth
 
 type registrations struct {
-	// ctx bounds the writes to the store and the expiries, cancelled when the P-CSCF gives up on them.
 	ctx      context.Context
 	store    RegistrationStore
 	log      *slog.Logger
@@ -80,7 +77,6 @@ type registrations struct {
 	grace    time.Duration
 	detached tracing.Detached
 
-	// expired is called, in the trace of the expiry, with a registration that expired.
 	expired func(context.Context, db.PCSCFRegistration)
 
 	lost atomic.Int64
@@ -92,10 +88,9 @@ type registrations struct {
 	bySource map[netip.AddrPort]map[*db.PCSCFRegistration]struct{}
 	byIMPI   map[string]map[*db.PCSCFRegistration]struct{}
 	timers   map[regKey]transaction.Timer
-	// causes are the span contexts of what set the expiry of each registration, to which its expiry links.
-	causes  map[regKey]trace.SpanContext
-	retired map[string]retired
-	pending map[regKey]retired
+	causes   map[regKey]trace.SpanContext
+	retired  map[string]retired
+	pending  map[regKey]retired
 }
 
 func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock, grace time.Duration, logger *slog.Logger,
@@ -119,9 +114,7 @@ func newRegistrations(ctx context.Context, store RegistrationStore, clock Clock,
 	}
 }
 
-// restore loads the stored registrations after a restart. It deletes those expired, and those that usable refuses,
-// whose UE the P-CSCF can no longer reach: they are no bindings, and an initial request to them gets the 404 of
-// TS 24.229 §5.2.6.4.1, which starts the P-CSCF restoration.
+// TS 24.229 clause 5.2.6.4.1
 func (rs *registrations) restore(ctx context.Context, usable func(*db.PCSCFRegistration) bool,
 ) (expired, lost []db.PCSCFRegistration, err error) {
 	if rs.store == nil {
@@ -250,7 +243,6 @@ func (rs *registrations) armLocked(k regKey, at time.Time) {
 	rs.timers[k] = rs.clock.AfterFunc(at.Sub(rs.clock.Now()), func() { rs.expire(k) })
 }
 
-// expire ends the registration k when it expired: in a trace of its own, linked to what set its expiry.
 func (rs *registrations) expire(k regKey) {
 	rs.mu.Lock()
 
@@ -304,8 +296,7 @@ func (rs *registrations) close() {
 	}
 }
 
-// token is the IMS flow token of the registration k: its own, so that each registration flow has
-// one (TS 24.229 §5.2.2.1 step 1).
+// TS 24.229 clause 5.2.2.1
 func (rs *registrations) token(k regKey) string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -332,7 +323,6 @@ func (rs *registrations) token(k regKey) string {
 	return token
 }
 
-// save stores r, which ctx registered.
 func (rs *registrations) save(ctx context.Context, r db.PCSCFRegistration) {
 	r = clone(&r)
 	r.UEAddress = netip.AddrPortFrom(r.UEAddress.Addr().Unmap(), r.UEAddress.Port())
@@ -407,7 +397,6 @@ func (rs *registrations) removeLocked(ctx context.Context, k regKey) (db.PCSCFRe
 	return clone(r), true
 }
 
-// update changes the registrations of impi as ctx tells.
 func (rs *registrations) update(ctx context.Context, impi string, f func(r *db.PCSCFRegistration) bool) []db.PCSCFRegistration {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

@@ -20,14 +20,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestShortMessageSubmitIsInItsTrace checks that the MO-Forward of a short message to the SMSC is in the trace of the
-// MESSAGE that carried it, though it runs past the 202 that ended the MESSAGE's transaction.
 func TestShortMessageSubmitIsInItsTrace(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 
 	smsc := newFakePeerWithHandler(t, "smsc.epc.mnc001.mcc001.3gppnetwork.org", smscRealm,
 		diameter.HandlerFunc(func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
-			// Past the end of the MESSAGE's transaction, in memory at its 202.
 			time.Sleep(50 * time.Millisecond)
 
 			ans, err := sgd.NewMOForwardShortMessageAnswer(req, c.LocalIdentity(), []byte{0x01, 0x00})
@@ -48,7 +45,6 @@ func TestShortMessageSubmitIsInItsTrace(t *testing.T) {
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "smsc")
 
-	// The S-CSCF as the IP-SM-GW sees it: of the IMS's addresses, in memory.
 	scscf := newPeer(t, srv, netip.AddrPortFrom(loopback, uint16(unusedPort(t))))
 
 	rpdu, err := (&sms.RPData{
@@ -81,7 +77,6 @@ func TestShortMessageSubmitIsInItsTrace(t *testing.T) {
 		t.Fatalf("MESSAGE answered %d, want 202", res.StatusCode)
 	}
 
-	// The submit report, of the SMSC's RP-ACK.
 	answer, _ := scscf.RecvRequest()
 	scscf.Send(sip.UDP, netip.AddrPortFrom(loopback, ipsmgw.Port), sip.NewResponse(answer, 200, "OK"))
 

@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/sdp"
 )
 
-// callee is one UAS behind a forking proxy, answering the INVITE in its own dialog.
 type callee struct {
 	t      *testing.T
 	p      *peer
@@ -113,7 +112,7 @@ func earlyTags(c *Call) []string {
 	return out
 }
 
-// RFC 3261 §13.2.2.4
+// RFC 3261 section 13.2.2.4
 func TestForkedCallAnsweredBySecondCallee(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)
@@ -149,7 +148,6 @@ func TestForkedCallAnsweredBySecondCallee(t *testing.T) {
 		t.Errorf("remote description %s, want %s from %s", got, want, b.tag)
 	}
 
-	// A 2xx from the other callee confirms a second dialog that the caller acknowledges and ends.
 	a.response(200, false, true)
 
 	if ack := p.request("ACK"); toTag(t, ack) != a.tag {
@@ -167,7 +165,6 @@ func TestForkedCallAnsweredBySecondCallee(t *testing.T) {
 		t.Fatalf("call %s with %s after the second 2xx", c.State(), c.ID().RemoteTag)
 	}
 
-	// The retransmitted 2xx of the kept dialog is acknowledged again, still to that dialog.
 	b.response(200, false, true)
 
 	if ack := p.request("ACK"); toTag(t, ack) != b.tag {
@@ -175,7 +172,7 @@ func TestForkedCallAnsweredBySecondCallee(t *testing.T) {
 	}
 }
 
-// RFC 3262 §4: each early dialog has its own RSeq space and gets its own PRACK.
+// RFC 3262 section 4
 func TestForkedReliableProvisionals(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)
@@ -221,7 +218,7 @@ func TestForkedReliableProvisionals(t *testing.T) {
 	}
 }
 
-// RFC 6228 §4
+// RFC 6228 section 4
 func TestEarlyDialogTerminated(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)
@@ -245,7 +242,6 @@ func TestEarlyDialogTerminated(t *testing.T) {
 		t.Fatalf("call %s after a 199", c.State())
 	}
 
-	// An unreliable 199 for a dialog never established is discarded.
 	p.callee(invite, "callee-c", 41004).response(199, false, false)
 	b.response(180, false, false)
 
@@ -266,8 +262,7 @@ func TestEarlyDialogTerminated(t *testing.T) {
 	}
 }
 
-// RFC 3261 §15: a callee does not end its early dialog with a BYE, and one that does leaves the
-// other dialogs of the forked INVITE.
+// RFC 3261 section 15
 func TestByeOnEarlyDialog(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)
@@ -293,7 +288,6 @@ func TestByeOnEarlyDialog(t *testing.T) {
 
 	uetest.Eventually(t, "one early dialog", func() bool { return len(c.EarlyDialogs()) == 1 })
 
-	// The dialog of a, the call's until then, gave way to b's.
 	if got := earlyTags(c); got[0] != b.tag || c.ID().RemoteTag != b.tag {
 		t.Fatalf("early dialogs %v, call dialog with %s; want %s", got, c.ID().RemoteTag, b.tag)
 	}
@@ -348,8 +342,6 @@ func TestContactParams(t *testing.T) {
 	}
 }
 
-// The UE sets its instance, its reg-id and the feature tags of its services: ContactParams cannot claim a medium the
-// UE does not take.
 func TestContactParamsOwnedByTheUE(t *testing.T) {
 	for _, name := range []string{"+sip.instance", "+g.3gpp.icsi-ref", "+g.3gpp.smsip", "audio", "video", "reg-id"} {
 		cfg := Config{
@@ -371,7 +363,7 @@ func (c *Call) hasLeg(tag string) bool {
 	return slices.ContainsFunc(c.legs, func(l *leg) bool { return l.s.ID().RemoteTag == tag })
 }
 
-// RFC 6228 §4: a reliable 199 for a dialog never established is acknowledged, and ends that dialog at once.
+// RFC 6228 section 4
 func TestReliable199ForUnknownDialog(t *testing.T) {
 	p, c, invite := forkedInvite(t)
 
@@ -390,7 +382,7 @@ func TestReliable199ForUnknownDialog(t *testing.T) {
 	}
 }
 
-// RFC 6228 §4: losing an early dialog leaves the INVITE pending; another callee can still answer.
+// RFC 6228 section 4
 func TestLostEarlyDialog(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)
@@ -418,7 +410,8 @@ func TestLostEarlyDialog(t *testing.T) {
 	}
 }
 
-// RFC 3261 §9.1, §13.2.2.4: a 2xx that crosses the caller's CANCEL confirms a dialog the caller then ends.
+// RFC 3261 section 9.1
+// RFC 3261 section 13.2.2.4
 func TestAnswerCrossingCancel(t *testing.T) {
 	ctx := testContext(t)
 	p, c, invite := forkedInvite(t)

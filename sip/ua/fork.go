@@ -8,20 +8,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// forkSet are the requests of one initial INVITE of the peer, answered in one early dialog or several: the first,
-// and the forks of Request.Fork, each the initial INVITE of a session of its own. One final response answers the
-// INVITE, for them all; chosen is the member whose 2xx answered it.
 type forkSet struct {
 	members []*Request
 	chosen  *Request
 }
 
-// Fork answers the initial INVITE r in another early dialog: a session of its own, with handler h, on the strand
-// of r, whose To tag differs (RFC 3261 §12.1.1), as a B2BUA mirroring the early dialogs of its other leg does. The
-// request it returns sends that dialog's provisional responses and its final response; that response answers the
-// INVITE for all its dialogs: a 2xx confirms its own and ends the others, each with a 199 when the INVITE supports
-// it (RFC 6228), and another one ends them all. A CANCEL ends them all; a BYE in one of them ends that one, the
-// INVITE answered with a 487 once none is left.
+// RFC 3261 section 12.1.1
+// RFC 6228
 func (r *Request) Fork(h Handler) (*Request, error) {
 	var f *Request
 
@@ -59,7 +52,6 @@ func (r *Request) Fork(h Handler) (*Request, error) {
 	return f, err
 }
 
-// toTag is the To tag of the responses to the request: that of its dialog.
 func (r *Request) toTag() string {
 	if r.tag != "" {
 		return r.tag
@@ -68,13 +60,10 @@ func (r *Request) toTag() string {
 	return r.tx.ToTag()
 }
 
-// forked reports whether the initial INVITE of r has several members.
 func (r *Request) forked() bool {
 	return r.forks != nil && len(r.forks.members) > 1
 }
 
-// Chosen is the session in which a 2xx answered the initial INVITE r, held for a PRACK or sent: of r or of one of its
-// forks; nil before.
 func (r *Request) Chosen() *Session {
 	return get(r.st, func() *Session {
 		if r.forks == nil || r.forks.chosen == nil {
@@ -85,13 +74,10 @@ func (r *Request) Chosen() *Session {
 	})
 }
 
-// live reports whether the request is a member of its INVITE whose early dialog goes on: no final response sent,
-// or a 2xx held for a PRACK.
 func (r *Request) live() bool {
 	return (!r.final || r.held != nil) && r.s.state == Early
 }
 
-// others are the members of the INVITE of r, r aside, still live.
 func (r *Request) others() []*Request {
 	if !r.forked() {
 		return nil
@@ -108,7 +94,6 @@ func (r *Request) others() []*Request {
 	return out
 }
 
-// leave takes a member out of its INVITE, which its other members answer: its dialog ended alone.
 func (r *Request) leave() {
 	r.final = true
 	r.held = nil
@@ -123,14 +108,12 @@ func (r *Request) leave() {
 	}
 }
 
-// settle ends the other members of the INVITE of r as r sends res, its final response: before a 2xx, each with a 199
-// when the INVITE supports it (RFC 6228 §6); with a failure, all with it.
+// RFC 6228 section 6
 func (r *Request) settle(res *sip.Response) {
 	if r.forks == nil {
 		return
 	}
 
-	// The deadline of the INVITE, armed on its first member, ends with its answer.
 	for _, m := range r.forks.members {
 		m.answerBy.stop()
 	}
@@ -159,8 +142,7 @@ func (r *Request) settle(res *sip.Response) {
 	}
 }
 
-// drop ends the early dialog of r alone, its other members left to answer the INVITE: with a 199 carrying c when the
-// INVITE supports it (RFC 6228 §6). ctx is the trace of the BYE of the application that drops it.
+// RFC 6228 section 6
 func (r *Request) drop(ctx context.Context, c Change) {
 	r.leave()
 
@@ -178,7 +160,6 @@ func supports199(req *sip.Request) bool {
 	return req.Header.HasOptionTag("Supported", sip.OptionTag199) || req.Header.HasOptionTag("Require", sip.OptionTag199)
 }
 
-// group are the members of the INVITE of r, live, for a CANCEL or an error of its transaction.
 func (r *Request) group() []*Request {
 	if !r.forked() {
 		return []*Request{r}
@@ -195,7 +176,6 @@ func (r *Request) group() []*Request {
 	return out
 }
 
-// addFork adds the session of a fork of an INVITE of the peer to the tables.
 func (a *Agent) addFork(s *Session) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

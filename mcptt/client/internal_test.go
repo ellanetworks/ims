@@ -11,9 +11,9 @@ import (
 
 var addr = netip.MustParseAddr("192.0.2.1")
 
-// TS 24.379 §6.2.1, TS 26.179 §4.1.3, TS 24.380 §14.2: the offer of a call: the speech in AMR-WB, i=speech, its b=AS
-// of 23.85 kbit/s (TS 24.229 §6.1.1, TS 26.114 Tables K.5, K.6), ptime 20 and maxptime 240; the control channel with
-// mc_implicit_request, mc_granted and mc_floor_ssrc.
+// TS 24.379 clause 6.2.1
+// TS 26.179 clause 4.1.3
+// TS 24.380 clause 14.2
 func TestOffer(t *testing.T) {
 	b, err := offer(addr, 7, 30000, 30002, controlchannel.Params{
 		ImplicitRequest: true, Granted: true, FloorSSRC: 1234, HasFloorSSRC: true,
@@ -40,11 +40,10 @@ func TestOffer(t *testing.T) {
 	}
 }
 
-// TS 24.379 §6.2.2, RFC 3264 §6, RFC 4867 §8.3.1, TS 24.380 §14.3: the answer to an offer of the server: the first
-// AMR-WB payload type the source can send, its octet-align and mode-set kept, the unknown parameters and the
-// server's mode-change-period removed, the client's mode-change-capability and max-red declared, in the direction
-// reversed, the b=AS of its highest mode (TS 26.114 Table K.7); other streams refused; the control channel answered
-// with mc_priority as offered (§14.3.3) and the client's mc_floor_ssrc.
+// TS 24.379 clause 6.2.2
+// RFC 3264 section 6
+// RFC 4867 section 8.3.1
+// TS 24.380 clause 14.3
 func TestAnswerOffer(t *testing.T) {
 	o := "v=0\r\no=- 1 1 IN IP4 192.0.2.100\r\ns=-\r\nc=IN IP4 192.0.2.100\r\nt=0 0\r\n" +
 		"m=audio 20000 RTP/AVP 98 97 96\r\na=rtpmap:98 AMR-WB/16000/1\r\na=fmtp:98 octet-align=1;crc=1\r\n" +
@@ -80,12 +79,10 @@ func TestAnswerOffer(t *testing.T) {
 		t.Errorf("offered %+v", n.offered)
 	}
 
-	// Without a control channel, or without AMR-WB to send, no answer.
 	for _, bad := range []string{
 		strings.Split(o, "m=application")[0],
 		strings.Replace(o, "a=fmtp:97 octet-align=1;mode-set=0,1;mode-change-period=2;max-red=40;x-vendor=1\r\n"+
 			"a=rtpmap:96 AMR-WB/16000/1\r\n", "a=fmtp:97 interleaving=4\r\n", 1),
-		// RTP/SAVP refused [PM 9].
 		strings.Replace(o, "RTP/AVP 98 97 96", "RTP/SAVP 98 97 96", 1),
 	} {
 		if _, _, err := answerOffer([]byte(bad), addr, 7, 30000, 30002, controlchannel.Params{}); err == nil {
@@ -94,8 +91,8 @@ func TestAnswerOffer(t *testing.T) {
 	}
 }
 
-// TS 24.380 §14.4, RFC 4867 §8.3.1: the answer to the client's offer: mc_ssrc taken though not offered, parameters
-// not offered discarded; an answer in octet-aligned mode, or without the control channel, refused.
+// TS 24.380 clause 14.4
+// RFC 4867 section 8.3.1
 func TestTakeAnswer(t *testing.T) {
 	local := controlchannel.Params{ImplicitRequest: true, FloorSSRC: 4, HasFloorSSRC: true}
 	a := "v=0\r\no=- 1 1 IN IP4 192.0.2.100\r\ns=-\r\nc=IN IP4 192.0.2.100\r\nt=0 0\r\n" +
@@ -122,8 +119,7 @@ func TestTakeAnswer(t *testing.T) {
 	}
 }
 
-// TS 22.179 R-6.15.3.2-016, -017: the losses of the speech heard, by where they fall: a burst whose marked first packet
-// is missing lost its start; missing before a marked first, the end of the burst before; within, mid-burst.
+// TS 22.179 clause 6.15.3.2
 func TestHeardTrack(t *testing.T) {
 	var h Heard
 
@@ -131,14 +127,11 @@ func TestHeardTrack(t *testing.T) {
 		h.track(rtp.Packet{Sequence: seq, Timestamp: ts, Marker: marker}, 1)
 	}
 
-	// Burst 1: 10, 11, 13 (12 lost mid-burst).
 	pkt(10, 0, true)
 	pkt(11, 320, false)
 	pkt(13, 960, false)
-	// Burst 2 after a silence, its first two (14, 15) lost: 16 unmarked.
 	pkt(16, 960+320*20, false)
 	pkt(17, 960+320*21, false)
-	// Burst 3 after a silence, the end of burst 2 lost (18): 19 marked.
 	pkt(19, 960+320*50, true)
 
 	if h.Bursts != 3 || h.MidLost != 1 || h.InitialLost != 2 || h.TrailingLost != 1 {

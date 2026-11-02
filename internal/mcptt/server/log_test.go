@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/client"
 )
 
-// logs is a log written to from the strands of the agent.
 type logs struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -32,7 +31,6 @@ func (l *logs) String() string {
 	return l.buf.String()
 }
 
-// records are the records of message msg.
 func (l *logs) records(t *testing.T, msg string) []map[string]any {
 	t.Helper()
 
@@ -52,8 +50,6 @@ func (l *logs) records(t *testing.T, msg string) []map[string]any {
 	return out
 }
 
-// The records of a call carry its group, its MCPTT session identity and the Call-ID of the originator's INVITE, the
-// records of a member its MCPTT ID; the access token of a service authorisation is never logged.
 func TestCallLogs(t *testing.T) {
 	var token string
 

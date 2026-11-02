@@ -6,16 +6,17 @@ import (
 	"testing"
 )
 
-// RFC 3550 §5.1, §5.3.1: the fixed header, two CSRCs, a header extension, padding.
+// RFC 3550 section 5.1
+// RFC 3550 section 5.3.1
 func TestParse(t *testing.T) {
 	b := []byte{
-		0xb2, 0xe0, 0x12, 0x34, // V=2 P X CC=2; M PT=96; sequence
-		0x00, 0x00, 0x03, 0xe8, // timestamp
-		0xde, 0xad, 0xbe, 0xef, // SSRC
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, // CSRCs
-		0xbe, 0xde, 0x00, 0x01, 0x10, 0xaa, 0x00, 0x00, // extension: profile, 1 word
-		0x01, 0x02, 0x03, // payload
-		0x00, 0x00, 0x03, // padding
+		0xb2, 0xe0, 0x12, 0x34,
+		0x00, 0x00, 0x03, 0xe8,
+		0xde, 0xad, 0xbe, 0xef,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+		0xbe, 0xde, 0x00, 0x01, 0x10, 0xaa, 0x00, 0x00,
+		0x01, 0x02, 0x03,
+		0x00, 0x00, 0x03,
 	}
 
 	p, err := Parse(b)
@@ -44,10 +45,10 @@ func TestParse(t *testing.T) {
 	for _, b := range [][]byte{
 		b[:11],
 		append([]byte{0x40}, b[1:12]...),
-		{0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // padding of 0
-		{0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9}, // padding beyond the payload
-		{0x81, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},             // truncated CSRC list
-		{0x90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, // truncated extension
+		{0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9},
+		{0x81, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{0x90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 	} {
 		if p, err := Parse(b); err == nil {
 			t.Errorf("Parse(% x) = %+v", b, p)
@@ -65,7 +66,7 @@ func TestParse(t *testing.T) {
 	}
 }
 
-// RFC 5761 §4: RTCP packet types 192–223; RTP with or without the marker outside.
+// RFC 5761 section 4
 func TestIsRTCP(t *testing.T) {
 	for b1, want := range map[byte]bool{191: false, 192: true, 200: true, 204: true, 223: true, 224: false, 0x80 | 8: false, 0: false} {
 		if IsRTCP([]byte{0x80, b1}) != want {

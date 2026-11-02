@@ -13,7 +13,6 @@ import (
 
 var callT0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
-// callRecordsDB is a database with an answered call, a busy one and one in progress, an hour apart.
 func callRecordsDB(t *testing.T) (*db.DB, []*db.CallRecord) {
 	t.Helper()
 

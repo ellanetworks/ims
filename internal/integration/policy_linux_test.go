@@ -26,27 +26,23 @@ const (
 	policyN5TLS = "n5-tls"
 )
 
-// forEachPolicy runs a test against a fake PCRF over Rx, and a fake PCF over N5 without and with TLS.
 func forEachPolicy(t *testing.T, f func(t *testing.T, iface string)) {
 	for _, iface := range []string{policyRx, policyN5, policyN5TLS} {
 		t.Run(iface, func(t *testing.T) { f(t, iface) })
 	}
 }
 
-// policyRef is a policy session: its local ID, and over N5 its context.
 type policyRef struct {
 	id  string
 	uri string
 }
 
-// mediaSession is a call session as the policy function saw it.
 type mediaSession struct {
 	ue       netip.Addr
 	requests []mediaRequest
 	ended    bool
 }
 
-// mediaRequest is the service information of a call session after one request.
 type mediaRequest struct {
 	ue        netip.Addr
 	audio     bool
@@ -55,31 +51,19 @@ type mediaRequest struct {
 	flows     []string
 }
 
-// fakePolicy drives the fake PCRF or PCF of a scene. Termination causes are only on Rx.
 type fakePolicy interface {
-	// signalling returns the session the next request opens for the IMS signalling of the UE.
 	signalling(ue netip.Addr) policyRef
-	// wantEnd fails unless the next request ends the session.
 	wantEnd(ref policyRef, cause rx.TerminationCause)
-	// none fails on any request within d.
 	none(d time.Duration)
-	// pathLost reports the loss of the signalling path.
 	pathLost(ref policyRef)
-	// abort has the policy function end the session.
 	abort(ref policyRef) error
 
 	refuseMedia()
-	// calls reads requests until want call sessions were seen and every one of them ended, skipping signalling.
 	calls(want int) map[string]*mediaSession
-	// noCallEnd fails on the end of any call session within d.
 	noCallEnd(d time.Duration)
-	// firstCall waits for the first request of a call session of the UE, of any UE if ue is the zero Addr.
 	firstCall(ue netip.Addr) policyRef
-	// wantCallEnd waits for the end of the call session, skipping other requests.
 	wantCallEnd(ref policyRef, cause rx.TerminationCause)
-	// mediaLost reports the loss of the resources of a media component.
 	mediaLost(ref policyRef, component uint32)
-	// mediaRemoved waits for a request of the session removing the media component, skipping other requests.
 	mediaRemoved(ref policyRef, component uint32)
 }
 
@@ -152,7 +136,8 @@ func (p *rxPolicy) refuseMedia() {
 	p.s.pcrf.RefuseMedia(tgpp.Result{Code: tgpp.ResultRequestedServiceNotAuthorized, Experimental: true, VendorID: tgpp.VendorID})
 }
 
-// TS 29.214 Annex A.1, A.3: INITIAL with the bearer events, then UPDATEs without them.
+// TS 29.214 clause A.1
+// TS 29.214 clause A.3
 func (p *rxPolicy) calls(want int) map[string]*mediaSession {
 	p.s.t.Helper()
 
@@ -306,7 +291,7 @@ func (p *rxPolicy) mediaLost(ref policyRef, component uint32) {
 	}
 }
 
-// TS 29.213 Table 6.2.1: a port 0 m-line is a REMOVED component.
+// TS 29.213 clause 6.2 table 6.2.1
 func (p *rxPolicy) mediaRemoved(ref policyRef, component uint32) {
 	p.s.t.Helper()
 
@@ -334,7 +319,6 @@ type n5Policy struct {
 	s *scene
 }
 
-// localID is the session ID the P-CSCF put at the end of the notifUri of a context.
 func localID(c pcftest.Context) string {
 	return path.Base(c.NotifURI)
 }
@@ -343,7 +327,7 @@ func ueOf(c pcftest.Context) netip.Addr {
 	return cmp.Or(c.UEIPv4, c.UEIPv6)
 }
 
-// TS 29.514 §4.2.6.7
+// TS 29.514 clause 4.2.6.7
 func (p *n5Policy) signalling(ue netip.Addr) policyRef {
 	p.s.t.Helper()
 
@@ -382,7 +366,7 @@ func (p *n5Policy) none(d time.Duration) {
 	}
 }
 
-// TS 29.514 §4.2.5.10
+// TS 29.514 clause 4.2.5.10
 func (p *n5Policy) pathLost(ref policyRef) {
 	p.s.t.Helper()
 
@@ -394,7 +378,7 @@ func (p *n5Policy) pathLost(ref policyRef) {
 	}
 }
 
-// TS 29.514 §4.2.5.3
+// TS 29.514 clause 4.2.5.3
 func (p *n5Policy) abort(ref policyRef) error {
 	res, err := p.s.pcf.Terminate(p.s.ctx(), ref.uri, n5.TerminationPDUSessionTermination)
 	if err == nil && res.Status != http.StatusNoContent {
@@ -408,7 +392,8 @@ func (p *n5Policy) refuseMedia() {
 	p.s.pcf.RefuseMedia(pcftest.Failure{Status: http.StatusForbidden, Cause: n5.CauseRequestedServiceNotAuthorized})
 }
 
-// TS 29.514 §4.2.2.2, §4.2.3.2: a create with the call's event subscription, then patches.
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
 func (p *n5Policy) calls(want int) map[string]*mediaSession {
 	p.s.t.Helper()
 
@@ -526,7 +511,7 @@ func (p *n5Policy) wantCallEnd(ref policyRef, _ rx.TerminationCause) {
 	}
 }
 
-// TS 29.514 §4.2.5.8
+// TS 29.514 clause 4.2.5.8
 func (p *n5Policy) mediaLost(ref policyRef, component uint32) {
 	p.s.t.Helper()
 
@@ -541,7 +526,7 @@ func (p *n5Policy) mediaLost(ref policyRef, component uint32) {
 	}
 }
 
-// TS 29.513 Table 7.2.3-1: a port 0 m-line is a REMOVED component.
+// TS 29.513 clause 7.2.3 table 7.2.3-1
 func (p *n5Policy) mediaRemoved(ref policyRef, component uint32) {
 	p.s.t.Helper()
 

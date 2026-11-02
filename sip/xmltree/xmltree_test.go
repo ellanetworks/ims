@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// Namespaces in XML 1.0: names resolve to their namespaces, whatever the prefixes; Marshal declares the default
-// namespace where it changes and prefixes for the attributes of other namespaces.
 func TestNamespaces(t *testing.T) {
 	root, err := Parse([]byte(`<a:r xmlns:a="urn:a" xmlns="urn:d" xmlns:b="urn:b" b:x="1" y="2" xml:lang="en">` +
 		`<c b:z="3"><a:e/></c><f xmlns=""/>t</a:r>`))
@@ -54,7 +52,8 @@ func TestNamespaces(t *testing.T) {
 	}
 }
 
-// XML 1.0 §2.4, §3.3.3: markup characters escaped; whitespace in attributes kept from normalization.
+// XML 1.0 section 2.4
+// XML 1.0 section 3.3.3
 func TestEscape(t *testing.T) {
 	e := New("", "e", Text("a < b & c > d\r\n"))
 	e.Attr = []xml.Attr{{Name: xml.Name{Local: "v"}, Value: "\"q\"\t\n<&"}}
@@ -86,7 +85,6 @@ func TestEscape(t *testing.T) {
 	}
 }
 
-// Comments and processing instructions are left out; adjacent text joins.
 func TestParseText(t *testing.T) {
 	root, err := Parse([]byte("<?xml version=\"1.0\"?>\n<!-- c --><e>a<!-- c -->b<?pi x?><![CDATA[<c>]]></e>\n"))
 	if err != nil {
@@ -111,19 +109,18 @@ func TestParseErrors(t *testing.T) {
 		"<a:b:c xmlns:a='urn:a'/>",
 		"<a b:c:d='1' xmlns:b='urn:b'/>",
 		strings.Repeat("<a>", maxDepth+1) + strings.Repeat("</a>", maxDepth+1),
-		// XML 1.0: well-formedness constraints.
-		`<a x="1" x="2"/>`,             // Unique Att Spec
-		`<a x="<"/>`,                   // No < in Attribute Values
-		`<a>&e;</a>`,                   // Entity Declared
-		`<a>&#0;</a>`,                  // Legal Character
-		`<a>&#xD800;</a>`,              // Legal Character
-		`<a>]]></a>`,                   // §2.4
-		`<a><!-- x -- y --></a>`,       // §2.5
-		`<a><!-- x ---></a>`,           // §2.5
-		`<a><?xml version="1.0"?></a>`, // §2.6: the target xml reserved
+		`<a x="1" x="2"/>`,
+		`<a x="<"/>`,
+		`<a>&e;</a>`,
+		`<a>&#0;</a>`,
+		`<a>&#xD800;</a>`,
+		`<a>]]></a>`,
+		`<a><!-- x -- y --></a>`,
+		`<a><!-- x ---></a>`,
+		`<a><?xml version="1.0"?></a>`,
 		`<?xml version="1.0"?><?xml version="1.0"?><a/>`,
-		` <?xml version="1.0"?><a/>`,   // §2.8: the declaration at the start
-		`<?xml encoding="UTF-8"?><a/>`, // version first
+		` <?xml version="1.0"?><a/>`,
+		`<?xml encoding="UTF-8"?><a/>`,
 		`<?xml version="2.0"?><a/>`,
 		`<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>`,
 		`<?xml version="1.0" standalone="maybe"?><a/>`,
@@ -133,23 +130,22 @@ func TestParseErrors(t *testing.T) {
 		`<a b="1"c="2"/>`,
 		"<a>\x01</a>",
 		"<a>\xff</a>",
-		// Namespaces in XML 1.0: namespace constraints.
-		`<a><foo:b/></a>`,        // Prefix Declared
-		`<a foo:x="1"/>`,         // Prefix Declared
-		`<a xmlns:p=""/>`,        // No Prefix Undeclaring
-		`<a xmlns:xml="urn:x"/>`, // Reserved Prefixes
-		`<a xmlns:p="http://www.w3.org/XML/1998/namespace"/>`,  // Reserved Prefixes
-		`<a xmlns="http://www.w3.org/XML/1998/namespace"/>`,    // Reserved Prefixes
-		`<a xmlns:xmlns="http://www.w3.org/2000/xmlns/"/>`,     // Reserved Prefixes
-		`<a xmlns:p="http://www.w3.org/2000/xmlns/"/>`,         // Reserved Prefixes
-		`<xmlns:a xmlns:xmlns="urn:x"/>`,                       // element of the xmlns prefix
-		`<a xmlns:p="urn:x" xmlns:q="urn:x" p:x="1" q:x="2"/>`, // Attributes Unique (§6.3)
+		`<a><foo:b/></a>`,
+		`<a foo:x="1"/>`,
+		`<a xmlns:p=""/>`,
+		`<a xmlns:xml="urn:x"/>`,
+		`<a xmlns:p="http://www.w3.org/XML/1998/namespace"/>`,
+		`<a xmlns="http://www.w3.org/XML/1998/namespace"/>`,
+		`<a xmlns:xmlns="http://www.w3.org/2000/xmlns/"/>`,
+		`<a xmlns:p="http://www.w3.org/2000/xmlns/"/>`,
+		`<xmlns:a xmlns:xmlns="urn:x"/>`,
+		`<a xmlns:p="urn:x" xmlns:q="urn:x" p:x="1" q:x="2"/>`,
 		`<:a/>`,
 		`<a:/>`,
-		`<a xmlns:="urn:x"/>`,      // PrefixedAttName (Namespaces §3 [2])
-		`<a><?p:q x?></a>`,         // Namespaces §7
-		`<a>&#x110000;</a>`,        // above the Char range
-		`<a>&#99999999999999;</a>`, // overflowing
+		`<a xmlns:="urn:x"/>`,
+		`<a><?p:q x?></a>`,
+		`<a>&#x110000;</a>`,
+		`<a>&#99999999999999;</a>`,
 	} {
 		if e, err := Parse([]byte(in)); err == nil {
 			t.Errorf("Parse(%q) = %#v", in, e)
@@ -161,8 +157,9 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
-// XML 1.0 §2.11, §3.3.3, §4.3.3: line ends normalized; white space in attribute values normalized but of character
-// references; a byte order mark; the xml prefix bound; a declaration, version 1.x, and US-ASCII.
+// XML 1.0 section 2.11
+// XML 1.0 section 3.3.3
+// XML 1.0 section 4.3.3
 func TestNormalization(t *testing.T) {
 	root, err := Parse([]byte("\xef\xbb\xbf<?xml version='1.1' encoding='us-ascii' standalone='no' ?>\r\n" +
 		"<a v=\"x\ty\r\nz&#9;&#xA;&#xD;\" xml:lang='en' xmlns:xml='http://www.w3.org/XML/1998/namespace'>1\r\n2\r3&#xD;</a>"))
@@ -191,7 +188,6 @@ func TestNormalization(t *testing.T) {
 		t.Errorf("Parse(Marshal) %#v, %v", again, err)
 	}
 
-	// Names of the 5th edition (§2.3): U+203F is a NameChar, U+00AA is not.
 	if _, err := Parse([]byte("<a\u203f/>")); err != nil {
 		t.Error(err)
 	}
@@ -201,7 +197,8 @@ func TestNormalization(t *testing.T) {
 	}
 }
 
-// Namespaces in XML 1.0 §3, §6.3: what Marshal cannot write as a namespace-well-formed document.
+// Namespaces in XML 1.0 section 3
+// Namespaces in XML 1.0 section 6.3
 func TestMarshalErrors(t *testing.T) {
 	attr := func(space, local string) *Element {
 		return &Element{Name: xml.Name{Local: "e"}, Attr: []xml.Attr{{Name: xml.Name{Space: space, Local: local}}}}
@@ -223,8 +220,8 @@ func TestMarshalErrors(t *testing.T) {
 	}
 }
 
-// Namespaces in XML 1.0 §3: an element of the xml namespace, its prefix bound by definition; XML 1.0 §4.1: a character
-// reference of any number of digits.
+// Namespaces in XML 1.0 section 3
+// XML 1.0 section 4.1
 func TestXMLPrefix(t *testing.T) {
 	root, err := Parse([]byte(`<a xmlns="urn:a"><xml:e>&#x0000000041;&#00066;</xml:e></a>`))
 	if err != nil {

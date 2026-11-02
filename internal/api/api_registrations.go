@@ -15,41 +15,31 @@ const (
 
 var (
 	ErrNotRegistered = errors.New("not registered")
-	// ErrUnavailable is for while the IMS restarts to apply its settings.
-	ErrUnavailable = errors.New("unavailable")
+	ErrUnavailable   = errors.New("unavailable")
 )
 
 type Registrations interface {
-	// ListRegistrations returns a page of the private identities registered with the IMS, in order, and their count.
-	// A search matches a part of the private identity or of one of its public identities.
 	ListRegistrations(ctx context.Context, search string, page, perPage int) ([]RegistrationStatus, int, error)
 	Reauthenticate(ctx context.Context, impi string) error
 }
 
-// RegistrationStatus is a private identity registered with the IMS: its registered implicit registration sets.
 type RegistrationStatus struct {
 	IMPI                     string
 	ImplicitRegistrationSets []ImplicitRegistrationSet
 }
 
-// ImplicitRegistrationSet is an implicit registration set of the private identity, which registers and deregisters as
-// one (TS 23.228 §5.2.1a.0): its public identities, the contacts bound to them (TS 24.229 §5.4.1.2.2 step 6), and the
-// HSS the S-CSCF sends its Cx requests for them to (TS 29.229 §5.5).
+// TS 23.228 clause 5.2.1a.0
 type ImplicitRegistrationSet struct {
 	HSS        HSS
 	Identities []RegisteredIdentity
 	Contacts   []RegisteredContact
 }
 
-// HSS is the Diameter identity of an HSS, from the Origin-Host and Origin-Realm of its last answer. Empty is unknown.
 type HSS struct {
 	Host  string
 	Realm string
 }
 
-// RegisteredIdentity is a public identity of the private identity. RegisteredWith lists the other private
-// identities registered with it, a public identity shared within the IMS subscription (TS 23.228 §4.3.3.4):
-// a request to it reaches their contacts too (TS 24.229 §5.4.3.3 step 8).
 type RegisteredIdentity struct {
 	URI            string
 	DisplayName    string
@@ -57,8 +47,8 @@ type RegisteredIdentity struct {
 	RegisteredWith []string
 }
 
-// SignallingPath is the state of a device's IMS signalling path, which the P-CSCF learns from the policy function
-// (TS 29.214 §4.4.5, TS 29.514 §4.2.6.7).
+// TS 29.214 clause 4.4.5
+// TS 29.514 clause 4.2.6.7
 type SignallingPath string
 
 const (
@@ -67,10 +57,6 @@ const (
 	SignallingPathLost        SignallingPath = "lost"
 )
 
-// RegisteredContact is a contact bound to the private identity's public identities: the instance ID of the device
-// that registered it (TS 23.003 §13.8), its reg-id when it is one of the device's registration flows (RFC 5626),
-// its q-value (RFC 3841 §7.2.3), the media it registered for (RFC 3840), and its flow to the P-CSCF, if the P-CSCF
-// knows it.
 type RegisteredContact struct {
 	Contact        string
 	Instance       string

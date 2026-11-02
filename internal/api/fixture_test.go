@@ -19,16 +19,12 @@ import (
 
 var testNow = time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
 
-// testAPI is an API on a database of its own, with only what authentication needs.
 type testAPI struct {
 	handler http.Handler
 	store   *db.DB
-	// token is the access token of the admin, which do sends.
-	token string
-	// now is the time of the API's clock.
-	now time.Time
-	// logs are the API's logs, as JSON lines.
-	logs bytes.Buffer
+	token   string
+	now     time.Time
+	logs    bytes.Buffer
 }
 
 const (
@@ -38,7 +34,6 @@ const (
 
 var testJWTSecret = []byte("0123456789abcdef0123456789abcdef")
 
-// testConfig is the configuration of an API on a store, with authentication at the cheapest bcrypt cost.
 func testConfig(t *testing.T, store *db.DB) api.Config {
 	t.Helper()
 
@@ -73,7 +68,6 @@ func newTestAPI(t *testing.T) *testAPI {
 	return a
 }
 
-// newUninitializedAPI returns an API without users, whose clock is a.now.
 func newUninitializedAPI(t *testing.T) *testAPI {
 	t.Helper()
 
@@ -89,7 +83,6 @@ func newUninitializedAPI(t *testing.T) *testAPI {
 	return a
 }
 
-// initialize creates the first user, an admin, and returns its access token.
 func initialize(t *testing.T, h http.Handler) string {
 	t.Helper()
 
@@ -110,7 +103,6 @@ func initialize(t *testing.T, h http.Handler) string {
 	return resp.Result.Token
 }
 
-// request is a request with a bearer token, unless token is empty.
 func request(method, path, body, token string) *http.Request {
 	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	if token != "" {
@@ -127,14 +119,12 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// do sends a request as the admin, and returns its status, and its result or error.
 func (a *testAPI) do(t *testing.T, method, path, body string) (int, json.RawMessage, string) {
 	t.Helper()
 
 	return a.doAs(t, a.token, method, path, body)
 }
 
-// doAs sends a request with a bearer token, or none when token is empty.
 func (a *testAPI) doAs(t *testing.T, token, method, path, body string) (int, json.RawMessage, string) {
 	t.Helper()
 

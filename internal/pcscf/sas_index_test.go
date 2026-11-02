@@ -12,8 +12,6 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 )
 
-// The indexes of the sets by UE and by private identity hold the sets, and only them, through challenges,
-// registrations, re-authentications, a subscriber's second UE and expiries.
 func TestSetIndexes(t *testing.T) {
 	a := newAssociations(context.Background(), IPsec{
 		Kernel: ipsectest.NewKernel(), Grace: time.Millisecond, AwaitAuth: time.Millisecond, ServerPort: 5100,
@@ -90,7 +88,6 @@ func TestSetIndexes(t *testing.T) {
 		check("re-authenticated")
 	}
 
-	// A subscriber's second UE, at another address: the first's sets are shortened, not removed.
 	register(testIMPI, ue1, 42000, nil)
 	register(testIMPI, ue2, 42010, nil)
 	check("second UE")

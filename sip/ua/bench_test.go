@@ -20,7 +20,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// benchAgent is an agent on loopback UDP for the benchmarks.
 type benchAgent struct {
 	a    *ua.Agent
 	addr netip.AddrPort
@@ -29,7 +28,6 @@ type benchAgent struct {
 func newBenchAgent(b *testing.B, name string, configure func(*ua.Config)) *benchAgent {
 	b.Helper()
 
-	// A free UDP port may have its TCP twin taken: another one, then.
 	for range 64 {
 		if ba, err := tryBenchAgent(b, name, configure); err == nil {
 			return ba
@@ -100,7 +98,6 @@ func tryBenchAgent(b *testing.B, name string, configure func(*ua.Config)) (*benc
 
 const benchSDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0\r\n"
 
-// callee answers every INVITE with a 200.
 func callee(b *testing.B) *benchAgent {
 	return newBenchAgent(b, "bob", func(c *ua.Config) {
 		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
@@ -110,7 +107,6 @@ func callee(b *testing.B) *benchAgent {
 	})
 }
 
-// call makes a call from caller to callee, and hangs it up once established: INVITE, 200, ACK, BYE, 200.
 func call(b *testing.B, caller, to *benchAgent) {
 	uri := sip.URI{Scheme: "sip", User: "bob", Host: to.addr.Addr().String(), Port: to.addr.Port()}
 	req := sip.NewRequest("INVITE", uri)
@@ -139,7 +135,6 @@ func call(b *testing.B, caller, to *benchAgent) {
 	}
 }
 
-// BenchmarkCall: one call after the other, set up and hung up; ns/op is the duration of a call.
 func BenchmarkCall(b *testing.B) {
 	alice, bob := newBenchAgent(b, "alice", nil), callee(b)
 
@@ -151,7 +146,6 @@ func BenchmarkCall(b *testing.B) {
 	}
 }
 
-// BenchmarkCallsParallel: calls set up and hung up by 64 concurrent callers on one agent, to one agent.
 func BenchmarkCallsParallel(b *testing.B) {
 	alice, bob := newBenchAgent(b, "alice", nil), callee(b)
 
@@ -184,7 +178,6 @@ func BenchmarkCallsParallel(b *testing.B) {
 	b.ReportMetric(float64(b.N)/time.Since(start).Seconds(), "calls/s")
 }
 
-// BenchmarkEstablishedSessions: the memory and the goroutines of established sessions, both sides counted.
 func BenchmarkEstablishedSessions(b *testing.B) {
 	const n = 2000
 
@@ -233,7 +226,6 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 		wg.Wait()
 		b.StopTimer()
 
-		// Let the transactions end their retransmissions, and the strands go idle.
 		time.Sleep(200 * time.Millisecond)
 		runtime.GC()
 
@@ -254,11 +246,8 @@ func BenchmarkEstablishedSessions(b *testing.B) {
 	}
 }
 
-// BenchmarkFanOut: one agent calling 2000 agents at once, 10 calls each, in 200 groups of 100 on a strand each, then
-// ending the calls of every group in one go: the INVITEs and the BYEs of the controlling function of group calls
-// (TS 24.379 §10.1.1.2.1, §10.1.1.4.2), and the bursts of their responses on its socket. ns/op is a round, its calls
-// set up and ended; rtx counts the retransmissions of a round, the sender's (Timer A, E) and its peers' 2xx to INVITE
-// (Timer G), each a datagram lost or late.
+// TS 24.379 clause 10.1.1.2.1
+// TS 24.379 clause 10.1.1.4.2
 func BenchmarkFanOut(b *testing.B) {
 	const (
 		agents  = 2000
@@ -324,7 +313,6 @@ func BenchmarkFanOut(b *testing.B) {
 				req.SetBodies(ua.SDP([]byte(benchSDP)))
 
 				if _, err := hub.a.Invite(context.Background(), req, ua.Handler{
-					// On the strand of the group, as its release.
 					Established: func(_ context.Context, s *ua.Session, _ sip.Message) {
 						sessions[g] = append(sessions[g], s)
 
@@ -361,7 +349,6 @@ func BenchmarkFanOut(b *testing.B) {
 		setup += mid.Sub(start)
 		release += time.Since(mid)
 
-		// The INVITE and the BYE of each call, the 2xx to each INVITE: the rest are retransmissions.
 		rtx += sent.Load() + received.Load() - 3*groups*members
 	}
 
@@ -370,7 +357,6 @@ func BenchmarkFanOut(b *testing.B) {
 	b.ReportMetric(float64(release.Milliseconds())/float64(b.N), "release-ms")
 }
 
-// netAgent is an agent on the in-memory net of a benchmark.
 func netAgent(b *testing.B, n *siptest.Net, name string, configure func(*ua.Config)) (*ua.Agent, netip.AddrPort) {
 	b.Helper()
 
@@ -416,9 +402,8 @@ func netAgent(b *testing.B, n *siptest.Net, name string, configure func(*ua.Conf
 	return a, addr
 }
 
-// BenchmarkResourceChange: one change of a resource fanned out to the NOTIFYs of its 1000 subscriptions, each
-// rendered for its subscriber, sent and answered: affiliation and conference notifications to a large group
-// (TS 24.379 §9.2.2.3.5, §10.1.3).
+// TS 24.379 clause 9.2.2.3.5
+// TS 24.379 clause 10.1.3
 func BenchmarkResourceChange(b *testing.B) {
 	const subscribers = 1000
 
@@ -478,7 +463,6 @@ func BenchmarkResourceChange(b *testing.B) {
 		state = append(state[:len(state):len(state)], m)
 		_ = res.Change(context.Background(), state, m)
 
-		// Every subscriber notified before the next change, each NOTIFY a partial one.
 		n.Quiesce()
 
 		if got := notified.Load(); got != subscribers {

@@ -109,8 +109,6 @@ const (
 	EventStarted EventKind = iota
 	EventAnswered
 	EventEnded
-	// EventNegotiated is an offer/answer exchange of the session, once the dialog is answered: the one it was
-	// answered with, then each that completes (RFC 3264).
 	EventNegotiated
 )
 
@@ -148,26 +146,20 @@ func (c EndCause) String() string {
 }
 
 type DialogEvent struct {
-	Kind   EventKind
-	Dialog *Dialog
-	// Code is the final status of the initial INVITE that the proxy sent toward the caller, or 0 if it sent none.
-	Code int
-	// Tag is the To tag of the response of an error Code, as the proxy received it, or "" for one the proxy made.
-	Tag string
-	By  Side
-	End EndCause
-	// Exchange is the exchange of an EventNegotiated.
+	Kind     EventKind
+	Dialog   *Dialog
+	Code     int
+	Tag      string
+	By       Side
+	End      EndCause
 	Exchange Exchange
 }
 
 type DialogConfig struct {
-	// Target is where req, a request the dialog generates toward toward, goes; ctx is its trace.
 	Target func(ctx context.Context, toward Side, req *sip.Request) (Target, error)
 
 	Value any
 
-	// OnEvent is told of the events of the dialog; ctx is the trace of what caused it: the request or response, or the
-	// Release, and none for a timer of the dialog's, as its expiry.
 	OnEvent func(ctx context.Context, e DialogEvent)
 }
 
@@ -193,10 +185,8 @@ type party struct {
 	route   []sip.Address
 	sdp     negotiation
 
-	// out is where requests toward a callee go: the target of the branch its responses came on.
 	out Target
 
-	// via is the branch of a forked INVITE an early dialog came on.
 	via *branch
 }
 
@@ -217,7 +207,6 @@ func (k txKey) oa() offeranswer.Key {
 	return offeranswer.Key{From: k.from.oa(), Seq: k.seq, Method: k.method}
 }
 
-// negotiation is the offer/answer state of a dialog, with the number of its last exchange.
 type negotiation struct {
 	offeranswer.Negotiation
 
@@ -245,9 +234,6 @@ type Dialog struct {
 
 	mu sync.Mutex
 
-	// invite is the span context of the INVITE that created the dialog: the trace of the requests the dialog sends as
-	// part of it, such as a BYE to a 2xx that came after a release, and what the requests of the dialog that start a
-	// trace of their own link to.
 	invite trace.SpanContext
 
 	begun    bool
@@ -301,9 +287,6 @@ func (p *Proxy) NewDialog(cfg DialogConfig) *Dialog {
 	}
 }
 
-// SpanLinks is the span context of the INVITE that created the dialog of req, an in-dialog request through the proxy,
-// found by the Route the proxy record-routed: what a request of a dialog that starts a trace of its own, as one from a
-// UE, links to (transaction.Config.SpanLinks).
 func (p *Proxy) SpanLinks(req *sip.Request) []trace.SpanContext {
 	routes, err := req.Header.Routes()
 	if err != nil {
@@ -354,7 +337,6 @@ func (p *Proxy) forgetDialog(d *Dialog) {
 	}
 }
 
-// publish queues e, of the trace of ctx, for flush.
 func (d *Dialog) publish(ctx context.Context, e DialogEvent) {
 	if d.p.onDialog != nil || d.cfg.OnEvent != nil {
 		e.Dialog = d
@@ -362,7 +344,6 @@ func (d *Dialog) publish(ctx context.Context, e DialogEvent) {
 	}
 }
 
-// queuedEvent is an event waiting for flush, with the trace of what caused it.
 type queuedEvent struct {
 	ctx context.Context
 	e   DialogEvent
@@ -399,7 +380,6 @@ func (d *Dialog) flush() {
 	d.mu.Unlock()
 }
 
-// trace sets the trace of the INVITE that creates the dialog, from the first fork of it.
 func (d *Dialog) trace(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -409,7 +389,6 @@ func (d *Dialog) trace(ctx context.Context) {
 	}
 }
 
-// inviteSpanContext is the span context of the INVITE that created the dialog.
 func (d *Dialog) inviteSpanContext() trace.SpanContext {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -417,7 +396,6 @@ func (d *Dialog) inviteSpanContext() trace.SpanContext {
 	return d.invite
 }
 
-// inviteTrace is the trace of the INVITE that created the dialog.
 func (d *Dialog) inviteTrace() context.Context {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -447,7 +425,8 @@ func (d *Dialog) State() DialogState {
 	return d.state
 }
 
-// TS 24.229 §5.2.8.1.3, §5.4.5.1.3
+// TS 24.229 clause 5.2.8.1.3
+// TS 24.229 clause 5.4.5.1.3
 func (d *Dialog) Released() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -516,7 +495,8 @@ func (d *Dialog) Session() (offer, answer Body, answered bool) {
 	return sdpBody(o), sdpBody(a), o.Data != nil && !pending
 }
 
-// RFC 3264, TS 29.214 Annex A.3.2
+// RFC 3264
+// TS 29.214 clause A.3.2
 func (d *Dialog) Exchange(m sip.Message) (Exchange, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -529,7 +509,8 @@ func (d *Dialog) Exchange(m sip.Message) (Exchange, bool) {
 	return n.exchange()
 }
 
-// RFC 3262 §5, RFC 3264
+// RFC 3262 section 5
+// RFC 3264
 func (d *Dialog) PendingOffer(req *sip.Request) (Body, bool) {
 	if req.Method != "PRACK" && req.Method != "ACK" {
 		return Body{}, false
@@ -634,7 +615,6 @@ func calleeRoute(rr []sip.Address, own func(sip.Address) bool) []sip.Address {
 	return out
 }
 
-// begin starts the dialog on the initial INVITE, before any branch of it is sent.
 func (d *Dialog) begin(ctx context.Context, tx *transaction.ServerTransaction, c *responseContext, out *sip.Request, rr *RecordRoute) error {
 	from, err := out.Header.From()
 	if err != nil {
@@ -929,7 +909,6 @@ func (d *Dialog) response(ctx context.Context, req *sip.Request, r Reply) {
 	d.flush()
 }
 
-// inviteResponse follows a provisional or 2xx response to the initial INVITE on branch b.
 func (d *Dialog) inviteResponse(ctx context.Context, b *branch, res *sip.Response) {
 	to, _ := res.Header.To()
 	tag := to.Tag()
@@ -939,7 +918,6 @@ func (d *Dialog) inviteResponse(ctx context.Context, b *branch, res *sip.Respons
 	switch {
 	case res.StatusCode <= 100:
 	case res.StatusCode == 199:
-		// RFC 6228 §6
 		if d.state == Early {
 			d.dropEarly(func(t string, _ *party) bool { return t == tag })
 		}
@@ -1015,7 +993,6 @@ func (d *Dialog) inviteResponse(ctx context.Context, b *branch, res *sip.Respons
 		d.code = res.StatusCode
 		d.publish(ctx, DialogEvent{Kind: EventAnswered, Code: res.StatusCode})
 
-		// The session is the exchange the 2xx completes, or else the one its early dialog had.
 		seq := d.sdp.seq
 		if d.responseBody(ctx, &d.sdp, Callee, d.inviteTx, res); d.sdp.seq == seq {
 			d.negotiated(ctx, &d.sdp)
@@ -1030,8 +1007,7 @@ func (d *Dialog) inviteResponse(ctx context.Context, b *branch, res *sip.Respons
 	d.flush()
 }
 
-// branchFailed drops the early dialogs that came on branch b, ended by its final response
-// (RFC 6228 §6). The other branches of a forked INVITE go on.
+// RFC 6228 section 6
 func (d *Dialog) branchFailed(b *branch) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1057,8 +1033,6 @@ func (d *Dialog) dropEarly(drop func(tag string, pt *party) bool) {
 	}
 }
 
-// failed ends the dialog on the final response the INVITE got once every branch failed: res, from
-// downstream or generated by the proxy.
 func (d *Dialog) failed(ctx context.Context, res *sip.Response, downstream bool) {
 	d.mu.Lock()
 
@@ -1093,7 +1067,7 @@ func (d *Dialog) failed(ctx context.Context, res *sip.Response, downstream bool)
 	d.flush()
 }
 
-// RFC 3261 §13.2.2.4
+// RFC 3261 section 13.2.2.4
 func (d *Dialog) close(res *sip.Response, tag string, out Target) (*closingLeg, bool) {
 	if leg, ok := d.closing[tag]; ok {
 		return leg, false
@@ -1199,7 +1173,8 @@ func (d *Dialog) byeWithReason(toward Side, callee *party) *sip.Request {
 	return bye
 }
 
-// TS 24.229 §5.2.8.1, §5.4.5.1
+// TS 24.229 clause 5.2.8.1
+// TS 24.229 clause 5.4.5.1
 func (d *Dialog) Release(ctx context.Context, r Release) error {
 	return d.release(ctx, r, EndReleased)
 }
@@ -1295,10 +1270,7 @@ func (d *Dialog) release(ctx context.Context, r Release, cause EndCause) error {
 	return nil
 }
 
-// ReleaseCallee releases what of the dialog reaches the branches with key (Branch.Key): the whole
-// dialog once one of them answered; while early, only those branches, cancelled with the Reason of r
-// (RFC 3261 §16.10), unless no other branch is left to answer, when the whole dialog is released. It
-// returns ErrNotReached when the dialog does not reach key, or no longer can.
+// RFC 3261 section 16.10
 func (d *Dialog) ReleaseCallee(ctx context.Context, key any, r Release) error {
 	d.mu.Lock()
 
@@ -1323,7 +1295,6 @@ func (d *Dialog) ReleaseCallee(ctx context.Context, key any, r Release) error {
 
 	switch found, others := c.withdraw(ctx, key, reasonFields(r.Reason)); {
 	case !found:
-		// The branch may have answered since the state was read.
 		d.mu.Lock()
 		answered := d.state != Early && d.answerKey == key
 		d.mu.Unlock()
@@ -1340,7 +1311,6 @@ func (d *Dialog) ReleaseCallee(ctx context.Context, key any, r Release) error {
 	return nil
 }
 
-// releaseCode is the status of the final response a release sends the caller of an early dialog.
 func releaseCode(r Release) int {
 	if r.Code == 0 {
 		return 500
@@ -1358,7 +1328,7 @@ func releaseResponse(c *responseContext, r Release) *sip.Response {
 	return res
 }
 
-// TS 24.229 §5.2.8.1.4
+// TS 24.229 clause 5.2.8.1.4
 func (d *Dialog) Discard(ctx context.Context) {
 	d.mu.Lock()
 
@@ -1403,7 +1373,6 @@ func (d *Dialog) arm(after time.Duration) {
 
 	d.timerGen++
 	gen := d.timerGen
-	// A timer of the proxy is the cause of what it does: its work has no trace of the request that armed it.
 	d.timer = d.p.clock.AfterFunc(after, func() { d.expire(context.Background(), gen) })
 }
 
@@ -1441,7 +1410,7 @@ func (d *Dialog) expire(ctx context.Context, gen int) {
 	d.flush()
 }
 
-// RFC 3261 §13.3.1.4
+// RFC 3261 section 13.3.1.4
 func (d *Dialog) noAckFired(ctx context.Context) {
 	d.mu.Lock()
 
@@ -1455,7 +1424,7 @@ func (d *Dialog) noAckFired(ctx context.Context) {
 	d.flush()
 }
 
-// TS 24.229 §5.2.8.1.2
+// TS 24.229 clause 5.2.8.1.2
 func (d *Dialog) build(method string, toward Side, callee *party, seq uint32) *sip.Request {
 	sender, recipient := &d.caller, callee
 	route := calleeRoute(callee.route, d.own)
@@ -1504,8 +1473,6 @@ func randomSeq() uint32 {
 	return binary.BigEndian.Uint32(b[:])%(1<<31-1) + 1
 }
 
-// target is where a request the dialog generates goes; toward the callee, after the branch the
-// callee answered on.
 func (d *Dialog) target(ctx context.Context, toward Side, callee *party, req *sip.Request) (Target, error) {
 	if d.cfg.Target != nil {
 		return d.cfg.Target(ctx, toward, req)
@@ -1524,7 +1491,6 @@ func (d *Dialog) target(ctx context.Context, toward Side, callee *party, req *si
 	return Target{Flow: sip.Flow{Transport: tr, Local: base.Flow.Local, Remote: dest}, SentBy: base.SentBy}, nil
 }
 
-// send sends a request the dialog generates, in the trace of ctx; callee, toward the callee, is the one it goes to.
 func (d *Dialog) send(ctx context.Context, req *sip.Request, toward Side, callee *party) {
 	to, err := d.target(ctx, toward, callee, req)
 	if err != nil {
@@ -1539,7 +1505,6 @@ func (d *Dialog) send(ctx context.Context, req *sip.Request, toward Side, callee
 		return
 	}
 
-	// A request the dialog generates of itself, as on its expiry, links to the INVITE.
 	if !trace.SpanContextFromContext(ctx).IsValid() {
 		ctx = transaction.WithLinks(ctx, d.inviteSpanContext())
 	}
@@ -1578,7 +1543,8 @@ func (d *Dialog) requestBody(ctx context.Context, n *negotiation, from Side, key
 	}
 }
 
-// RFC 3264, RFC 6337 §3.1: an exchange completed, or its answer changed.
+// RFC 3264
+// RFC 6337 section 3.1
 func (d *Dialog) answered(ctx context.Context, n *negotiation) {
 	d.exchanges++
 	n.seq = d.exchanges
@@ -1597,7 +1563,6 @@ func (n *negotiation) exchange() (Exchange, bool) {
 	return Exchange{Offer: sdpBody(offer), Answer: sdpBody(answer), Seq: n.seq}, true
 }
 
-// negotiated publishes the exchange of n, if complete.
 func (d *Dialog) negotiated(ctx context.Context, n *negotiation) {
 	if x, ok := n.exchange(); ok {
 		d.publish(ctx, DialogEvent{Kind: EventNegotiated, Exchange: x})
@@ -1615,7 +1580,8 @@ func (d *Dialog) responseBody(ctx context.Context, n *negotiation, from Side, ke
 	}
 }
 
-// RFC 5621: the SDP may be one part of a multipart body (TS 24.379 §6.5), next to SDP of other dispositions.
+// RFC 5621
+// TS 24.379 clause 6.5
 func sessionBody(from Side, e sip.Envelope) (Body, bool) {
 	p, ok, err := e.Content().FindFunc(sip.BodyPart.IsSession)
 	if err != nil || !ok || len(p.Body) == 0 {

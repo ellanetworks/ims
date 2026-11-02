@@ -7,7 +7,6 @@ import org.junit.Test
 import kotlin.time.Duration.Companion.seconds
 
 class EventTest {
-    // The events as the session encodes them: mcptt/mobile/contract_test.go's, in its order.
     @Test
     fun decodes() {
         val want = listOf(
@@ -42,8 +41,6 @@ class EventTest {
         assertEquals(want, events())
     }
 
-    // Every notice and cause the app knows is one the session sends: a rename on either side fails here, not as an
-    // event dropped (mcptt/mobile/contract_test.go's TestContractExhaustive, the other side).
     @Test
     fun exhaustive() {
         val events = events()

@@ -16,12 +16,8 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// imsAPI is the API of the IMS, on the core network (compose.yaml, ims/ims-*.yaml).
 const imsAPI = "10.80.0.5:5020"
 
-// httpGet GETs path of the HTTP server at addr from the namespace of the Open5GS container, on the core network: the
-// status code and the body, with the bearer token unless empty. The test binary runs with no network of its own
-// (run.sh).
 func httpGet(t *testing.T, core *netns, addr, path, token string) (int, []byte) {
 	t.Helper()
 
@@ -30,7 +26,6 @@ func httpGet(t *testing.T, core *netns, addr, path, token string) (int, []byte) 
 		err error
 	)
 
-	// The dial happens on the thread in the namespace: no http.Client, which dials on goroutines of its own.
 	core.Do(func() {
 		var c net.Conn
 
@@ -73,7 +68,6 @@ func httpGet(t *testing.T, core *netns, addr, path, token string) (int, []byte) 
 	return res.StatusCode, body
 }
 
-// apiResult is the result of the response body of a GET of path of the IMS's API (openapi.yaml).
 func apiResult[T any](t *testing.T, path string, body []byte) T {
 	t.Helper()
 
@@ -88,9 +82,6 @@ func apiResult[T any](t *testing.T, path string, body []byte) T {
 	return resp.Result
 }
 
-// poll GETs path of the IMS's API every 200 ms until pred holds of the result, and returns it; for at most wait, a
-// 503 retried: the MCPTT AS not answering, restarting or its calls busy. The sip: IDs of path's query are escaped by
-// the caller (url.QueryEscape).
 func poll[T any](t *testing.T, core *netns, path string, pred func(T) bool) T {
 	t.Helper()
 
@@ -126,12 +117,10 @@ func poll[T any](t *testing.T, core *netns, path string, pred func(T) bool) T {
 	}
 }
 
-// page is a page of a list of the API, the fields the tests read.
 type page[T any] struct {
 	Items []T `json:"items"`
 }
 
-// callRecord is a call record of the API (openapi.yaml), the fields the tests read.
 type callRecord struct {
 	SessionID  string `json:"session_id"`
 	Outcome    string `json:"outcome"`
@@ -140,11 +129,8 @@ type callRecord struct {
 	DurationMS *int64 `json:"duration_ms"`
 }
 
-// callRecordsPath lists the call records.
 const callRecordsPath = "/api/v1/call-records?per_page=100"
 
-// wantCallRecord waits for the one record of the call c made to end, and checks that it was answered and ended by
-// endedBy.
 func wantCallRecord(t *testing.T, core *netns, c *testue.Call, endedBy string) {
 	t.Helper()
 

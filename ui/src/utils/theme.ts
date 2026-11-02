@@ -2,8 +2,6 @@ import { createTheme } from "@mui/material/styles";
 import type {} from "@mui/x-data-grid/themeAugmentation";
 import { dark, light, type Tokens } from "@/utils/tokens";
 
-// The theme is Ella Core's, so that the two products look alike.
-
 declare module "@mui/material/styles" {
   interface CssThemeVariables {
     enabled: true;
@@ -21,8 +19,6 @@ declare module "@mui/material/styles" {
 }
 
 const paletteFor = (tokens: Tokens) => ({
-  // MUI defaults to 3, which lets getContrastText return white on backgrounds
-  // that only reach 3:1 — below the 4.5:1 WCAG 1.4.3 needs for chip-sized text.
   contrastThreshold: 4.5,
   primary: { main: tokens.primary },
   success: { main: tokens.success },

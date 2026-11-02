@@ -14,7 +14,6 @@ type Diameter interface {
 	Peers() []diameter.PeerStatus
 }
 
-// DiameterStatus is the identity of the IMS, derived from the operator settings, which its peers must know it by.
 type DiameterStatus struct {
 	Host  string `json:"host"`
 	Realm string `json:"realm"`
@@ -27,9 +26,6 @@ func GetDiameterStatus(cfg Config) http.Handler {
 	})
 }
 
-// DiameterPeerParams are what an operator sets of a peer. Host is optional: empty takes the one the peer gives in
-// its capabilities exchange. Port defaults to 3868, transport to tcp, and priority to 10. ServiceCentres are those
-// of an SMSC serving sgd.
 type DiameterPeerParams struct {
 	Host           string   `json:"host"`
 	Address        string   `json:"address"`
@@ -46,9 +42,6 @@ type DiameterPeer struct {
 	Status DiameterPeerStatus `json:"status"`
 }
 
-// DiameterPeerStatus is the connection to a peer. State is down until the IMS has tried it. Host and realm are
-// the ones the peer gave in its last capabilities exchange, the host else the configured one. Error is why the
-// last connection failed.
 type DiameterPeerStatus struct {
 	State         string `json:"state"`
 	Since         string `json:"since,omitempty"`
@@ -87,7 +80,6 @@ func GetDiameterPeer(cfg Config) http.Handler {
 	})
 }
 
-// CreateDiameterPeer adds a peer, which the IMS then connects to.
 func CreateDiameterPeer(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params DiameterPeerParams
@@ -109,7 +101,6 @@ func CreateDiameterPeer(cfg Config) http.Handler {
 	})
 }
 
-// UpdateDiameterPeer replaces a peer, which the IMS then reconnects to.
 func UpdateDiameterPeer(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params DiameterPeerParams
@@ -250,14 +241,10 @@ func peerStatus(p settings.Peer, statuses map[string]diameter.PeerStatus) Diamet
 	return status
 }
 
-// DiameterRouteParams are what an operator sets of a route: the realm of the HSS or the PCRF. Empty is the realm of
-// cx for sh and s6c, and the home domain otherwise.
 type DiameterRouteParams struct {
 	Realm string `json:"realm"`
 }
 
-// DiameterRoute is where the requests of an application go: to the destination realm, through its peers in the
-// order they are tried.
 type DiameterRoute struct {
 	Application      string `json:"application"`
 	Realm            string `json:"realm"`
@@ -307,7 +294,6 @@ func GetDiameterRoute(cfg Config) http.Handler {
 	})
 }
 
-// UpdateDiameterRoute sets the realm of an application's requests, which the IMS applies to the next request.
 func UpdateDiameterRoute(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params DiameterRouteParams

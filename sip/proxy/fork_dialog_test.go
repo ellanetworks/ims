@@ -64,7 +64,7 @@ func (s *forkScene) noEvent() {
 	}
 }
 
-// invite199 is an INVITE whose caller takes 199 responses (RFC 6228 §4).
+// RFC 6228 section 4
 func (s *forkScene) invite199() *sip.Request {
 	req := s.request("INVITE")
 	req.Header.Add("Supported", "199")
@@ -72,7 +72,6 @@ func (s *forkScene) invite199() *sip.Request {
 	return req
 }
 
-// next199 receives the next response other than 100 and wants it a 199.
 func (s *forkScene) next199() *sip.Response {
 	s.t.Helper()
 
@@ -90,7 +89,8 @@ func (s *forkScene) next199() *sip.Response {
 	}
 }
 
-// RFC 6228 §6, TS 24.229 §5.4.3.3
+// RFC 6228 section 6
+// TS 24.229 clause 5.4.3.3
 func TestForkedDialogBranchFails(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -134,7 +134,6 @@ func TestForkedDialogBranchFails(t *testing.T) {
 		t.Errorf("callee contact %s", got)
 	}
 
-	// A release reaches the callee that answered, on its branch.
 	if err := d.Release(context.Background(), proxy.Release{Toward: proxy.Callee}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +151,6 @@ func toTagOfRequest(req *sip.Request) string {
 	return to.Tag()
 }
 
-// The dialog fails with the INVITE, once every branch failed, on the best final response.
 func TestForkedDialogAllFail(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -242,8 +240,7 @@ func TestForkedDialogCancelled(t *testing.T) {
 	}
 }
 
-// RFC 6228 §6: no 199 when the caller does not take them, requires reliable provisional responses,
-// or the final response goes upstream at once.
+// RFC 6228 section 6
 func TestNo199(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -301,7 +298,6 @@ func TestNo199(t *testing.T) {
 	})
 }
 
-// A device that rang out before the next group gets its early dialog ended with a 199.
 func TestForkGroupStep199(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{1, 1}, proxy.Options{NoAnswer: 20 * time.Second}, true)
 
@@ -333,8 +329,7 @@ func TestForkGroupStep199(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4: the caller ends a second 2xx with an ACK and a BYE that go through the proxy
-// to the callee that sent it, leaving the dialog to the first.
+// RFC 3261 section 13.2.2.4
 func TestForkedDialogSecondAnswer(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -406,7 +401,7 @@ func TestForkedDialogSecondAnswer(t *testing.T) {
 	}
 }
 
-// inDialog builds a request of the caller in the dialog the response res created (RFC 3261 §12.2.1.1).
+// RFC 3261 section 12.2.1.1
 func (s *forkScene) inDialog(method string, invite *sip.Request, res *sip.Response, seq uint32) *sip.Request {
 	s.t.Helper()
 
@@ -448,7 +443,6 @@ func released480() proxy.Release {
 
 const reason480 = `SIP;cause=480;text="Temporarily Unavailable"`
 
-// Releasing one callee of an early forked dialog cancels its branch only; the others ring on.
 func TestReleaseCalleeEarly(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -488,7 +482,6 @@ func TestReleaseCalleeEarly(t *testing.T) {
 	s.nextEvent(proxy.EventAnswered)
 }
 
-// Releasing the last callee left to answer releases the whole dialog.
 func TestReleaseCalleeLast(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -520,7 +513,6 @@ func TestReleaseCalleeLast(t *testing.T) {
 	}
 }
 
-// A callee of a group not yet reached never gets the request.
 func TestReleaseCalleePending(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{1, 1}, proxy.Options{}, true)
 
@@ -544,7 +536,6 @@ func TestReleaseCalleePending(t *testing.T) {
 	g[1][0].RecvNone(quiet)
 }
 
-// Once answered, the dialog reaches only the callee that answered; releasing it sends the BYE.
 func TestReleaseCalleeAnswered(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -595,8 +586,7 @@ func TestReleaseCalleeAnswered(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.5.1.1: a withdrawn branch stands for its release, a 480, not for a CANCEL of the
-// caller's: its early dialog ends with a 199 for 480, and the caller gets the other branches' answer.
+// TS 24.229 clause 5.4.5.1.1
 func TestReleaseCalleeThenOthersFail(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -626,7 +616,6 @@ func TestReleaseCalleeThenOthersFail(t *testing.T) {
 	}
 }
 
-// When the withdrawn branch is the best answer left, the caller gets its 480 and Reason.
 func TestReleaseCalleeOnlyAnswer(t *testing.T) {
 	s, g := newForkSceneTracking(t, []int{2}, proxy.Options{}, true)
 
@@ -653,8 +642,6 @@ func TestReleaseCalleeOnlyAnswer(t *testing.T) {
 	}
 }
 
-// A callee that is only the 430 retry of a branch not yet sent is withdrawn too: the branch fails
-// without trying it.
 func TestReleaseCalleeRetryOfPendingBranch(t *testing.T) {
 	flow := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 

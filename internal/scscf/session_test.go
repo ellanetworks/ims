@@ -39,14 +39,12 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 	return newSessionHarnessWith(t, nil)
 }
 
-// newSessionHarnessWith changes the harness before the UE registers.
 func newSessionHarnessWith(t *testing.T, setup func(h *harness)) *sessionHarness {
 	t.Helper()
 
 	return newSessionHarnessOn(t, newHarness(t), setup)
 }
 
-// newSessionHarnessOn is newSessionHarnessWith on the harness h.
 func newSessionHarnessOn(t *testing.T, h *harness, setup func(h *harness)) *sessionHarness {
 	t.Helper()
 
@@ -574,8 +572,6 @@ func (sh *sessionHarness) addBinding(t *testing.T, uri, params string) {
 	}
 }
 
-// requestsTo reads what the S-CSCF sends toward the UEs until it has n requests of the method, and returns their
-// sorted Request-URIs.
 func (sh *sessionHarness) requestsTo(t *testing.T, method string, n int) []string {
 	t.Helper()
 
@@ -592,8 +588,7 @@ func (sh *sessionHarness) requestsTo(t *testing.T, method string, n int) []strin
 	return uris
 }
 
-// RFC 3841 §7.2.4: a preference without "require" orders the contacts it does not match after the others, in the
-// same group; "require" with "explicit" drops them.
+// RFC 3841 section 7.2.4
 func TestTerminatingAcceptContact(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.ue.register(registerOptions{contact: "<" + sh.ue.contact + ">;+g.3gpp.icsi-ref=" + mmtelParam})
@@ -648,7 +643,7 @@ func TestTerminatingAcceptContact(t *testing.T) {
 	}
 }
 
-// TS 29.228 Annex B.2.1: a request to an identity its set bars reaches no one.
+// TS 29.228 clause B.2.1
 func TestTerminatingBarredIdentity(t *testing.T) {
 	sh := newSessionHarness(t)
 
@@ -862,7 +857,6 @@ func TestInDialogNotThroughTheSCSCF(t *testing.T) {
 	}
 }
 
-// callTo makes a call from the UE that the callee answers from contact.
 func (sh *sessionHarness) callTo(t *testing.T, contact string) (*sip.Request, *sip.Response) {
 	t.Helper()
 
@@ -897,8 +891,8 @@ func parseURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// RFC 3261 §16.12, RFC 3263 §4: a request whose route set is exhausted goes to the host of its Request-URI, the
-// remote target, which a domain name can name, such as the Contact of an AS (TS 24.229 §5.7.4).
+// RFC 3261 section 16.12
+// RFC 3263 section 4
 func TestInDialogToDomainName(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.dns.add("mcptt.example.com", loopback)
@@ -948,7 +942,7 @@ func TestInDialogToUnknownDomainName(t *testing.T) {
 	sh.icscf.RecvNone(50 * time.Millisecond)
 }
 
-// RFC 3261 §16.12: a request with a Route goes to its first value, which a domain name can name.
+// RFC 3261 section 16.12
 func TestTerminatingWithRouteToDomainName(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.dns.add("as.example.com", loopback)
@@ -1134,7 +1128,6 @@ func TestIdentityKeys(t *testing.T) {
 	}
 }
 
-// The first contact of the target set is the one a request that does not fork goes to.
 func TestTargetSetOrder(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
 	binding := func(uri, params string, registered int) db.Binding {
@@ -1186,7 +1179,6 @@ func TestTargetSetOrder(t *testing.T) {
 		{"instance compared with case", []db.Binding{instance}, predicates(`*;+sip.instance="<URN:GSMA:IMEI:35622410-483840-0>";require;explicit`), ""},
 		{"every term of a predicate", []db.Binding{videoCapable, audioOnly}, accept(";video;require"), "sip:videocapable@ue"},
 		{"negated value", []db.Binding{videoCapable, audioOnly}, accept(`;video="!TRUE"`), "sip:audioonly@ue"},
-		// TS 24.379 §6.2.1: an MCPTT request reaches MCPTT clients only, whatever the ICSI's escaping.
 		{"MCPTT client required", []db.Binding{voice, mcptt}, mcpttOnly, "sip:mcptt@ue"},
 		{"no MCPTT client", []db.Binding{voice}, mcpttOnly, ""},
 		{"malformed predicate left out", []db.Binding{voice, mcptt}, predicates(`*;+g.3gpp.mcptt;require;explicit`, `*;audio;+sip.x="#>=y";require`), "sip:mcptt@ue"},
@@ -1223,7 +1215,9 @@ func contactURIs(set [][]target) [][]string {
 	return out
 }
 
-// TS 24.229 §5.4.3.3 steps 8 to 10, RFC 3841, RFC 5626 §7
+// TS 24.229 clause 5.4.3.3
+// RFC 3841
+// RFC 5626 section 7
 func TestTargetSetGroups(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
 	binding := func(uri, imei, params string, registered int) db.Binding {
@@ -1266,7 +1260,6 @@ func TestTargetSetGroups(t *testing.T) {
 		{"no-fork", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "no-fork"), "[[sip:tablet@ue]]"},
 		{"sequential", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "proxy, sequential"), "[[sip:tablet@ue] [sip:phone@ue] [sip:desk@ue]]"},
 		{"parallel", []db.Binding{phone, tablet, desk}, header("Request-Disposition", "parallel"), "[[sip:tablet@ue sip:phone@ue sip:desk@ue]]"},
-		// RFC 3841 §7.2.4: the caller's preferences order the contacts of a q-value, without splitting them.
 		{"partial matches ring together", []db.Binding{phone, tablet}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:phone@ue]]"},
 		{"best match first", []db.Binding{tablet, binding("sip:newer@ue", "3", ";audio", 9)}, header("Accept-Contact", "*;audio;video"), "[[sip:tablet@ue sip:newer@ue]]"},
 		{"numeric term on a missing tag", []db.Binding{phone, tablet}, header("Reject-Contact", `*;video;+sip.foo="#>=2"`), "[[sip:tablet@ue sip:phone@ue]]"},
@@ -1281,7 +1274,6 @@ func TestTargetSetGroups(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			set, step := targetSet([]db.Registration{{Bindings: tt.bindings}}, testEpoch, tt.h)
-			// Without directives, the groups are the S-CSCF's own, and step from one to the next.
 			wantStep := len(set) > 0 && !tt.h.Has("Request-Disposition") && !tt.h.Has("d")
 
 			if got := fmt.Sprint(contactURIs(set)); got != tt.want || step != wantStep {
@@ -1291,10 +1283,9 @@ func TestTargetSetGroups(t *testing.T) {
 	}
 }
 
-// RFC 5626 §7: the flows of an outbound UA instance are tried in turn on a 430.
+// RFC 5626 section 7
 func TestTargetSetFlows(t *testing.T) {
 	at := func(s int) time.Time { return testEpoch.Add(time.Duration(s) * time.Second) }
-	// flow is a binding of instance 1: a flow with its reg-id, or a contact address without.
 	flow := func(uri string, regID int64, registered int) db.Binding {
 		return db.Binding{
 			Contact:      db.Contact{URI: uri, Instance: "urn:gsma:imei:1", RegID: regID},
@@ -1307,11 +1298,8 @@ func TestTargetSetFlows(t *testing.T) {
 		bindings []db.Binding
 		want     string
 	}{
-		// a is the most recent flow, b another flow, and d no flow at all.
 		{"outbound", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:b@ue", 2, 2), flow("sip:d@ue", 0, 0)}, "sip:a@ue [sip:b@ue]"},
-		// Only an outbound flow has other flows to replace it on a 430.
 		{"most recent without outbound", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:d@ue", 0, 4)}, "sip:d@ue []"},
-		// Flows may share a URI (RFC 5626 §6).
 		{"flows on one URI", []db.Binding{flow("sip:a@ue", 1, 3), flow("sip:a@ue", 2, 2)}, "sip:a@ue [sip:a@ue]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1407,7 +1395,6 @@ func TestInDialogDoubleRecordRoute(t *testing.T) {
 	}
 }
 
-// receive takes the next n requests the S-CSCF sends toward the UEs, by Request-URI.
 func (sh *sessionHarness) receive(t *testing.T, n int) map[string]received {
 	t.Helper()
 
@@ -1426,7 +1413,8 @@ type received struct {
 	f   sip.Flow
 }
 
-// TS 23.228 §4.2.7.2, TS 24.229 §5.4.3.3 step 10
+// TS 23.228 clause 4.2.7.2
+// TS 24.229 clause 5.4.3.3
 func TestTerminatingForks(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.ue.register(registerOptions{contact: "<" + sh.ue.contact + ">;+g.3gpp.icsi-ref=" + mmtelParam})
@@ -1474,7 +1462,6 @@ func TestTerminatingForks(t *testing.T) {
 	}
 }
 
-// Contacts with a lower q-value get the request once the others rang for a while.
 func TestTerminatingGroups(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.addBinding(t, "sip:desk@127.0.0.1:5999", ";q=0.5")
@@ -1492,7 +1479,6 @@ func TestTerminatingGroups(t *testing.T) {
 		t.Fatalf("got %s", res.StartLine())
 	}
 
-	// RFC 3261 §16.8: the phone rang, so it is cancelled, and the next group starts on its final response.
 	sh.sipClock.Advance(DefaultGroupNoAnswer)
 
 	cancel, cf := sh.term.RecvRequest()
@@ -1519,7 +1505,7 @@ func TestTerminatingGroups(t *testing.T) {
 	}
 }
 
-// RFC 3841 §9.1
+// RFC 3841 section 9.1
 func TestTerminatingNoFork(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.addBinding(t, "sip:tablet@127.0.0.1:5999", "")
@@ -1535,8 +1521,7 @@ func TestTerminatingNoFork(t *testing.T) {
 	sh.term.RecvNone(50 * time.Millisecond)
 }
 
-// RFC 3841 §7.2.4: a contact with every feature of an explicit predicate scores exactly 1, whatever the number of
-// terms.
+// RFC 3841 section 7.2.4
 func TestCallerPreferenceFullMatch(t *testing.T) {
 	for n := 1; n <= 12; n++ {
 		var params, accept []string
@@ -1560,7 +1545,6 @@ func TestCallerPreferenceFullMatch(t *testing.T) {
 	}
 }
 
-// A group none of whose contacts can be reached is no group: the last group left rings without a step.
 func TestTerminatingLastUsableGroup(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.addBinding(t, "not a URI", ";q=0.5")
@@ -1582,8 +1566,7 @@ func TestTerminatingLastUsableGroup(t *testing.T) {
 	sh.term.RecvNone(50 * time.Millisecond)
 }
 
-// TS 24.229 §5.4.3.2 step 1: a UE may assert an identity of another of its registration sets than the one
-// whose Service-Route it uses; the served user's own binding counts.
+// TS 24.229 clause 5.4.3.2
 func TestOriginatingFromAnotherSet(t *testing.T) {
 	sh := newSessionHarness(t)
 

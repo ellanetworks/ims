@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// uas is a raw peer answering the INVITE of an agent: its To tag, its Contact.
 type uas struct {
 	*raw
 	to  netip.AddrPort
@@ -28,7 +27,6 @@ func (u *uas) uri() string {
 	return "sip:bob@" + u.sock.Addr().String()
 }
 
-// answer sends a response to req, with the To tag of the UAS unless code is 100, the Contact, and an SDP body.
 func (u *uas) answer(req *sip.Request, code int, body string, header ...sip.Field) *sip.Response {
 	res := sip.NewResponse(req, code, "")
 
@@ -50,7 +48,6 @@ func (u *uas) answer(req *sip.Request, code int, body string, header ...sip.Fiel
 	return res
 }
 
-// inviteTo makes alice invite the raw UAS, and returns the INVITE as received.
 func inviteRaw(t *testing.T, alice *peer, u *uas, sdp string, h ua.Handler) (*ua.Outgoing, *sip.Request) {
 	t.Helper()
 
@@ -71,8 +68,7 @@ func inviteRaw(t *testing.T, alice *peer, u *uas, sdp string, h ua.Handler) (*ua
 	return o, u.nextRequest("INVITE")
 }
 
-// RFC 3261 §11.2: an OPTIONS within or outside a dialog, without a handler, gets a 200 with the capabilities of the
-// agent; a method it does not allow gets a 405 with Allow, not a usage-destroying 405 for one it advertises (S9).
+// RFC 3261 section 11.2
 func TestOptions(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
@@ -111,7 +107,6 @@ func TestOptions(t *testing.T) {
 		t.Fatalf("INFO %d", res.StatusCode)
 	}
 
-	// RFC 5057 Table 2: a 405 to INFO leaves the session.
 	if as.State() != ua.Confirmed {
 		t.Fatalf("session %s after a 405 to INFO", as.State())
 	}
@@ -130,8 +125,8 @@ func TestOptions(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4, §15: a 2xx to a re-INVITE that comes after the session ended is acknowledged, on the dialog
-// kept for it; the BYE that ended the session is not sent again (S11).
+// RFC 3261 section 13.2.2.4
+// RFC 3261 section 15
 func TestLateReinvite2xx(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newUAS(t, alice)
@@ -160,7 +155,6 @@ func TestLateReinvite2xx(t *testing.T) {
 		t.Fatalf("re-INVITE done %+v, want ErrState", r)
 	}
 
-	// The 2xx crosses the BYE.
 	res := sip.NewResponse(reinvite, 200, "")
 	res.Header.Set("To", ok.Header.Get("To"))
 	res.Header.Set("Contact", "<"+bob.uri()+">")
@@ -174,8 +168,7 @@ func TestLateReinvite2xx(t *testing.T) {
 	bob.noRequest()
 }
 
-// RFC 3261 §15: closing, an agent whose 2xx awaits its ACK sends its BYE once the ACK comes; an INVITE it has not
-// answered gets a 503 (S12).
+// RFC 3261 section 15
 func TestShutdownWaitsForTheAck(t *testing.T) {
 	answer := make(chan bool, 2)
 
@@ -231,7 +224,6 @@ func TestShutdownWaitsForTheAck(t *testing.T) {
 		}
 	}
 
-	// No BYE before the ACK.
 	alice.noRequest()
 
 	alice.ack(invite, ok)
@@ -246,8 +238,8 @@ func TestShutdownWaitsForTheAck(t *testing.T) {
 	}
 }
 
-// RFC 6141 §3.3, §3.8: a re-INVITE whose offer was answered in a reliable 1xx, PRACKed, has changed the session: its
-// CANCEL gets a 2xx, not a 487 (S13).
+// RFC 6141 section 3.3
+// RFC 6141 section 3.8
 func TestCancelAfterTheChangeApplied(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -282,7 +274,7 @@ func TestCancelAfterTheChangeApplied(t *testing.T) {
 	}
 }
 
-// Reply.AfterPrack holds the 2xx for the PRACK of a reliable 1xx without SDP (TS 24.379 §6.3.2.2.5.2) (S14).
+// TS 24.379 clause 6.3.2.2.5.2
 func TestAfterPrack(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})
 	alice := newRaw(t)
@@ -324,8 +316,8 @@ func TestAfterPrack(t *testing.T) {
 	}
 }
 
-// RFC 4028 §7.1, §7.3: the initial INVITE carries the Min-SE of the agent above 90 s and the option tags of 100rel
-// and timer beside those of the application; a 422 is retried while its Min-SE rises (S15).
+// RFC 4028 section 7.1
+// RFC 4028 section 7.3
 func TestMinSE(t *testing.T) {
 	alice := newPeerWith(t, "alice", func(c *ua.Config) {
 		c.SessionTimer = ua.SessionTimer{Interval: 300 * time.Second, MinSE: 120 * time.Second}
@@ -368,7 +360,6 @@ func TestMinSE(t *testing.T) {
 		}
 	}
 
-	// The same Min-SE again: no retry.
 	res := sip.NewResponse(invite, 422, "")
 	_ = res.Header.SetToTag(sip.NewTag())
 	res.Header.Set("Min-SE", "900")
@@ -380,8 +371,8 @@ func TestMinSE(t *testing.T) {
 	}
 }
 
-// RFC 6228 §4, §8: a reliable 199 of a dialog the agent did not know, without a Contact, as a forking proxy sends it,
-// is PRACKed to the Request-URI of the INVITE; an offer in it, with no streams, is answered refused (S17).
+// RFC 6228 section 4
+// RFC 6228 section 8
 func TestReliable199WithoutContact(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	bob := newUAS(t, alice)
@@ -405,8 +396,7 @@ func TestReliable199WithoutContact(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.2.2.4: the offer of a 2xx the application leaves unanswered is refused in the ACK after 32*T1, and the
-// session ends with a BYE; an offer of a 2xx to a re-INVITE the application refuses leaves the session (S18).
+// RFC 3261 section 13.2.2.4
 func TestOfferOf2xx(t *testing.T) {
 	clock := netOf(t).Clock()
 	alice := newPeer(t, "alice", clock, ua.SessionTimer{})
@@ -431,7 +421,6 @@ func TestOfferOf2xx(t *testing.T) {
 		t.Errorf("ended %+v", e.end)
 	}
 
-	// A re-INVITE without an offer, whose 2xx offer alice refuses: the session goes on.
 	carol := newUAS(t, alice)
 	_, invite = inviteRaw(t, alice, carol, realSDP(4000, 1), alice.handler())
 	ok := carol.answer(invite, 200, realSDP(5000, 1))
@@ -468,7 +457,6 @@ func TestOfferOf2xx(t *testing.T) {
 	}
 }
 
-// An Outgoing answered can no longer be cancelled; the BYE of a session is sent again after a challenge (S20).
 func TestCancelAfterTheAnswerAndChallengedBye(t *testing.T) {
 	alice := newPeerWith(t, "alice", func(c *ua.Config) {
 		c.Authenticate = func(req *sip.Request, _ *sip.Response) error {
@@ -510,7 +498,6 @@ func TestCancelAfterTheAnswerAndChallengedBye(t *testing.T) {
 	}
 }
 
-// The failure of an INVITE comes before the end of its early sessions, which carries the response (A13).
 func TestFailedBeforeEnded(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 

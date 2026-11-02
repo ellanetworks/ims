@@ -35,13 +35,10 @@ const signallingLabels: Record<SignallingPath, string> = {
   lost: "Lost",
 };
 
-// contactRows are the fields of a contact of a device, or of one of its registration flows.
 const contactRows = (contact: RegisteredContact): [string, ReactNode][] => [
   ["Address", contact.address ?? "—"],
   ["Transport", contact.transport?.toUpperCase() ?? "—"],
-  // Without the P-CSCF's flow, whether IPsec protects the contact is unknown.
   ["IPsec", contact.address ? (contact.protected ? "Yes" : "No") : "—"],
-  // RFC 3840 §9: the media the contact registered for, as it declared them.
   ["Media", mediaText(contact.media)],
   [
     "Signalling",
@@ -58,8 +55,6 @@ const contactRows = (contact: RegisteredContact): [string, ReactNode][] => [
   ["Expires", formatTimestamp(contact.expires_at)],
 ];
 
-// DeviceSection lists a device's fields, and those of each of its registration flows (RFC 5626) when it has
-// several.
 function DeviceSection({ device, index }: { device: Device; index: number }) {
   const [first] = device.contacts;
   const imei = imeiOf(first);
@@ -166,7 +161,6 @@ function RegistrationDetail({
   );
 
   return (
-    // One key column width for all sections, so that their values line up.
     <Stack
       spacing={3}
       sx={{ p: 3, "& dl": { gridTemplateColumns: "7.5rem 1fr" } }}

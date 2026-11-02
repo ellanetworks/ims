@@ -177,7 +177,6 @@ func TestRegisterHeaderFieldsFromTheUE(t *testing.T) {
 		t.Errorf("P-Visited-Network-ID = %q, want %q", v, homeDomain)
 	}
 
-	// TS 24.229 §5.2.2.1 step 3: the P-CSCF's own icid-value, and a type 1 orig-ioi.
 	if cv, ok := parseChargingVector(req.Header.Get("P-Charging-Vector")); !ok || cv.icid == "1234" ||
 		cv.origIOI != homeDomain || cv.termIOI != "" || len(req.Header.Values("P-Charging-Vector")) != 1 {
 		t.Errorf("P-Charging-Vector = %q, want a new icid-value and orig-ioi=%s", req.Header.Values("P-Charging-Vector"), homeDomain)

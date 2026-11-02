@@ -12,14 +12,13 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// UnsignedToken is an access token for tests and the lab, while no identity management server issues them [PM 4]:
-// an Unsecured JWT (RFC 7519 §6.1), of alg "none" and without signature, with the claims TS 33.180 requires: exp,
-// scope of the MCPTT service and client_id (Table B.2.2.2-1, B.4.2.2), and mcptt_id (Table B.2.2.3-1). Only a
-// server that does not validate tokens, as registrar.Unvalidated, takes it.
+// RFC 7519 section 6.1
+// TS 33.180 clause B.2.2.2
+// TS 33.180 clause B.2.2.3
+// TS 33.180 clause B.4.2.2
 func UnsignedToken(mcpttID, clientID string, exp time.Time) string {
 	enc := base64.RawURLEncoding.EncodeToString
 
-	// A map of strings and a number marshals.
 	claims, _ := json.Marshal(map[string]any{
 		"exp":       exp.Unix(),
 		"scope":     tokenScope,
@@ -30,13 +29,11 @@ func UnsignedToken(mcpttID, clientID string, exp time.Time) string {
 	return enc([]byte(`{"alg":"none"}`)) + "." + enc(claims) + "."
 }
 
-// tokenScope is the scope of an access token of the MCPTT service (TS 33.180 B.4.2.2).
+// TS 33.180 clause B.4.2.2
 const tokenScope = "3gpp:mc:ptt_service"
 
-// tokenLifetime is the lifetime of the UnsignedToken the client makes for each REGISTER without Config.Token.
 const tokenLifetime = time.Hour
 
-// token is the access token of a REGISTER: the configured one, or an UnsignedToken of the user and client.
 func (c *Client) token() string {
 	if c.cfg.Token != "" {
 		return c.cfg.Token
@@ -45,16 +42,14 @@ func (c *Client) token() string {
 	return UnsignedToken(c.cfg.MCPTTID.String(), c.cfg.ClientID, c.clock.Now().Add(tokenLifetime))
 }
 
-// registration is the state of the REGISTERs of the client (RFC 3261 §10.2.4): one Call-ID, the CSeq incremented.
+// RFC 3261 section 10.2.4
 type registration struct {
 	callID  string
 	cseq    uint32
 	refresh *ua.Timer
 }
 
-// RegisterBodies are the bodies of the client's REGISTERs (TS 24.379 §7.2.1): the mcptt-info of its access token
-// and client ID, confidentiality and integrity protection disabled [PM 9]. Through the IMS, the UE hosting the client
-// puts them in its own REGISTERs.
+// TS 24.379 clause 7.2.1
 func (c *Client) RegisterBodies() []sip.BodyPart {
 	b, err := mcpttinfo.Encode(mcpttinfo.Info{Params: &mcpttinfo.Params{
 		AccessToken: mcpttinfo.Text(c.token()),
@@ -67,16 +62,12 @@ func (c *Client) RegisterBodies() []sip.BodyPart {
 	return []sip.BodyPart{sip.NewBodyPart(mcpttinfo.ContentType, b)}
 }
 
-// Register registers the client with the server as its registrar, in direct mode [PM 14] (TS 24.379 §7.2.1): its
-// Contact with the MCPTT feature tags, for expires, its service authorisation in the mcptt-info body. done receives
-// the final response, or the error of the transaction. The client refreshes the registration halfway through the
-// duration the 200 grants its contact, each response told in an EventRegistration, in a trace of its own; Unregister
-// ends it. ctx carries the trace of the REGISTER, as of the requests of sip/ua.
+// TS 24.379 clause 7.2.1
 func (c *Client) Register(ctx context.Context, expires time.Duration, done func(res *sip.Response, err error)) error {
 	return c.register(ctx, expires, done)
 }
 
-// Unregister removes the registration (RFC 3261 §10.2.2): logging off (TS 23.280 §5.2.5).
+// RFC 3261 section 10.2.2
 func (c *Client) Unregister(ctx context.Context, done func(res *sip.Response, err error)) error {
 	return c.register(ctx, 0, done)
 }
@@ -122,8 +113,7 @@ func (c *Client) register(ctx context.Context, expires time.Duration, done func(
 	}, ua.On(c.st))
 }
 
-// granted is the duration the 200 of a REGISTER grants the contact (RFC 3261 §10.2.4): its expires parameter, or
-// the Expires of the 200, or the one asked for.
+// RFC 3261 section 10.2.4
 func granted(res *sip.Response, contact sip.Address, asked time.Duration) time.Duration {
 	if cs, err := res.Header.Contacts(); err == nil {
 		for _, a := range cs {
@@ -146,8 +136,6 @@ func granted(res *sip.Response, contact sip.Address, asked time.Duration) time.D
 	return asked
 }
 
-// scheduleRefresh refreshes the registration halfway through d, the duration the 200 to the REGISTER of cseq
-// granted, unless a later REGISTER went since: a refresh or the removal of Unregister.
 func (c *Client) scheduleRefresh(cseq uint32, d, expires time.Duration) {
 	if d <= 0 {
 		return
@@ -165,7 +153,6 @@ func (c *Client) scheduleRefresh(cseq uint32, d, expires time.Duration) {
 	}
 
 	c.reg.refresh = c.st.AfterFunc(d/2, func() {
-		// A refresh is a trace of its own.
 		err := c.register(context.Background(), expires, func(res *sip.Response, err error) {
 			c.emit(Event{Kind: EventRegistration, Response: res, Err: err})
 		})

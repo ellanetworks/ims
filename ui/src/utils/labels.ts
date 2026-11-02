@@ -28,6 +28,5 @@ export const mediaLabels: Record<string, string> = {
   video: "Video",
 };
 
-// mediaText is media as the parties declared them, "Voice, Video", or "—" for none.
 export const mediaText = (media: string[]): string =>
   media.map((m) => mediaLabels[m] ?? m).join(", ") || "—";

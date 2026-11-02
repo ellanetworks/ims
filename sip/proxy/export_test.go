@@ -32,7 +32,6 @@ func (p *Proxy) Responded() bool {
 	return len(p.contexts) > 0
 }
 
-// ReachAll reaches the branches without a key of every request the proxy forwards (Reached).
 func (p *Proxy) ReachAll() {
 	p.mu.Lock()
 
@@ -48,7 +47,6 @@ func (p *Proxy) ReachAll() {
 	}
 }
 
-// HandleResponse hands res to the live branch of tx with key, as its client transaction would.
 func (p *Proxy) HandleResponse(tx *transaction.ServerTransaction, key any, res *sip.Response) {
 	p.mu.Lock()
 	c := p.contexts[tx]

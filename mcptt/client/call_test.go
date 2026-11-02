@@ -24,7 +24,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// call has a call to fire placed by a, which b is invited to by the stand-in, established.
 func call(t *testing.T, e *env, a, b *user) (*client.Call, *client.Call) {
 	t.Helper()
 
@@ -35,7 +34,6 @@ func call(t *testing.T, e *env, a, b *user) (*client.Call, *client.Call) {
 
 	e.n.Quiesce()
 
-	// The Floor Idle of the server and the ACK of the 200 race.
 	es := b.expectUnordered(t, "incoming", "floor:idle", "established")
 	cb := es[0].Call
 
@@ -46,10 +44,10 @@ func call(t *testing.T, e *env, a, b *user) (*client.Call, *client.Call) {
 	return ca, cb
 }
 
-// RFC 4867 §4.1, §4.3.2, §5.3, RFC 3550 §5.1: the frames of the encoder sent one per packet, their timestamps 320
-// apart; a NO_DATA frame of DTX takes its 20 ms without a packet, and the speech after it starts a talkspurt; frames
-// not of AMR-WB, or SPEECH_LOST, refused. The member plays them out of its de-jitter buffer, the frames missing as
-// SPEECH_LOST.
+// RFC 4867 section 4.1
+// RFC 4867 section 4.3.2
+// RFC 4867 section 5.3
+// RFC 3550 section 5.1
 func TestSpeechFrames(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -119,7 +117,6 @@ func TestSpeechFrames(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// The member's playout, from the buffering delay on.
 	e.n.Advance(60 * time.Millisecond)
 
 	var played []byte
@@ -132,17 +129,14 @@ func TestSpeechFrames(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.2.1, TS 24.380 §6.2.4: a prearranged group call through a stand-in controlling function. The
-// caller's INVITE answered once the member invited accepted automatically; a press of the caller granted, its media
-// heard by the member with the SSRC the server assigned, the talker announced; the release idles the floor; the
-// caller leaves, which releases the call.
+// TS 24.379 clause 10.1.1.2.1
+// TS 24.380 clause 6.2.4
 func TestGroupCall(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
 	s := e.standIn(b)
 	a := e.user("alice", 1, s.addr, nil)
 
-	// The RTP the caller sends, from its audio port.
 	var (
 		mu   sync.Mutex
 		sent []rtp.Packet
@@ -176,7 +170,6 @@ func TestGroupCall(t *testing.T) {
 
 	a.expect(t, "floor:granted", "transmit:on")
 
-	// The first frame goes with the grant (TS 24.380 §6.2.4.4.2 step 7), and races the Floor Taken.
 	es = b.expectUnordered(t, "floor:taken", "heard")
 	talker := s.originLeg.AudioSSRC()
 
@@ -186,7 +179,6 @@ func TestGroupCall(t *testing.T) {
 		}
 	}
 
-	// 50 frames a second, for a second.
 	for range 50 {
 		e.n.Advance(20 * time.Millisecond)
 	}
@@ -196,7 +188,6 @@ func TestGroupCall(t *testing.T) {
 		t.Fatalf("heard %+v, %d sent", heard, ca.Sent())
 	}
 
-	// The floor idle after the drain of the talker's media (TS 24.380 Annex A.3.2 steps 9 to 12).
 	ca.ReleasePTT()
 	e.n.Advance(time.Second)
 
@@ -207,8 +198,6 @@ func TestGroupCall(t *testing.T) {
 		t.Errorf("media after the release: %d sent", ca.Sent())
 	}
 
-	// RFC 4867 §4.1, RFC 3550 §5.1: the talkspurt marked on its first packet, the sequence numbers consecutive, the
-	// timestamps 320 apart, a frame of 20 ms at 16 kHz.
 	mu.Lock()
 	if len(sent) != 51 {
 		t.Fatalf("%d packets sent", len(sent))
@@ -222,7 +211,6 @@ func TestGroupCall(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// The member talks in turn.
 	cb.PressPTT()
 	e.n.Advance(100 * time.Millisecond)
 
@@ -256,8 +244,10 @@ func TestGroupCall(t *testing.T) {
 	}
 }
 
-// TS 24.380 §6.2.4.2.2, §14.2.4, §14.2.5: an INVITE that is an implicit floor request, granted in its 200 with
-// mc_granted: the caller talks at once, with the SSRC of mc_ssrc (§14.4).
+// TS 24.380 clause 6.2.4.2.2
+// TS 24.380 clause 14.2.4
+// TS 24.380 clause 14.2.5
+// TS 24.380 clause 14.4
 func TestImplicitGranted(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -290,8 +280,6 @@ func TestImplicitGranted(t *testing.T) {
 	b.expect(t, "ended")
 }
 
-// A controlling function that starts the floor control after the 200 of mc_granted: the caller's first frames,
-// before its media is forwarded, are lost; the talker is heard from the next.
 func TestFloorAfterOK(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -318,8 +306,8 @@ func TestFloorAfterOK(t *testing.T) {
 	b.expect(t, "ended")
 }
 
-// TS 24.379 §10.1.1.2.1.2 step 8, §6.2.3.2.2: an invitation with Answer-Mode Manual waits for the user, a 183 sent;
-// declined, it gets a 480 with the warning text 110; accepted, it is established.
+// TS 24.379 clause 10.1.1.2.1.2
+// TS 24.379 clause 6.2.3.2.2
 func TestManualCommencement(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -352,7 +340,6 @@ func TestManualCommencement(t *testing.T) {
 
 	b.expect(t, "ended")
 
-	// Again, accepted.
 	s.declined = nil
 	s.invite(s.members[0])
 	e.n.Quiesce()
@@ -365,9 +352,7 @@ func TestManualCommencement(t *testing.T) {
 	a.expect(t, "established", "floor:idle")
 }
 
-// checkInvite checks the INVITE of a call (TS 24.379 §10.1.1.2.1.1): the Contact with the MCPTT feature tags, the
-// Accept-Contact of each, required and explicit, the ICSI in P-Preferred-Service, timer supported, the mcptt-info of
-// the group and the client.
+// TS 24.379 clause 10.1.1.2.1.1
 func checkInvite(t *testing.T, req *sip.Request) {
 	t.Helper()
 
@@ -414,8 +399,7 @@ func checkInvite(t *testing.T, req *sip.Request) {
 	}
 }
 
-// checkOK checks the 200 of an invitation answered automatically (TS 24.379 §6.2.3.1.1): timer required, the
-// Contact with the MCPTT feature tags, the session refreshed by the client.
+// TS 24.379 clause 6.2.3.1.1
 func checkOK(t *testing.T, res *sip.Response) {
 	t.Helper()
 
@@ -434,7 +418,8 @@ func checkOK(t *testing.T, res *sip.Response) {
 	}
 }
 
-// TS 24.379 §10.1.1.2.3.1, §6.2.4.1: a member leaves the call: a BYE, its call ended, the others' going on.
+// TS 24.379 clause 10.1.1.2.3.1
+// TS 24.379 clause 6.2.4.1
 func TestMemberLeaves(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -464,8 +449,7 @@ func TestMemberLeaves(t *testing.T) {
 	a.expect(t, "ended")
 }
 
-// TS 24.379 §6.2.5.1 step 1: the caller leaves before the call is established: a CANCEL, and the INVITE fails with
-// its 487.
+// TS 24.379 clause 6.2.5.1
 func TestCancel(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -500,8 +484,7 @@ func TestCancel(t *testing.T) {
 	b.expect(t, "ended")
 }
 
-// TS 24.380 §6.2.4.2.2 step 2: floor control messages before the 200 of an implicit floor request wait for the
-// participant: the Floor Granted sent before the 200 grants the caller once established.
+// TS 24.380 clause 6.2.4.2.2
 func TestFloorBeforeOK(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -526,8 +509,8 @@ func TestFloorBeforeOK(t *testing.T) {
 	b.expect(t, "ended")
 }
 
-// RFC 3264 §6, TS 24.379 §6.2.1: an answer without the AMR-WB payload type offered: the call fails, its session
-// ended with a BYE, which releases the call.
+// RFC 3264 section 6
+// TS 24.379 clause 6.2.1
 func TestBadAnswer(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -546,7 +529,6 @@ func TestBadAnswer(t *testing.T) {
 		t.Errorf("failed with %v, %v", es[0].Response, es[0].Err)
 	}
 
-	// The Floor Idle of the server races its BYE: after the call ended, the client drops it.
 	got := kinds(b.events.take())
 	rest := slices.DeleteFunc(slices.Sorted(slices.Values(got)), func(k string) bool { return k == "floor:idle" })
 
@@ -559,8 +541,7 @@ func TestBadAnswer(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.2.1.2 step 1a: an invitation without ports left is rejected with a 480; a call placed fails
-// with ErrNoPort, the ports of a call all within the range.
+// TS 24.379 clause 10.1.1.2.1.2
 func TestNoPort(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, func(c *client.Config) { c.MinPort, c.MaxPort = 30000, 30005 })
@@ -590,8 +571,6 @@ func TestNoPort(t *testing.T) {
 	b.expect(t)
 }
 
-// The media and floor control a call drops are logged at debug: audio once a call for each reason, a floor control
-// message each time.
 func TestDropsLogged(t *testing.T) {
 	var logs syncBuffer
 
@@ -640,7 +619,6 @@ func TestDropsLogged(t *testing.T) {
 	}
 }
 
-// syncBuffer is a buffer the readers of the sockets write to.
 type syncBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -660,8 +638,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// TS 24.379 §10.1.1.2.1.2 step 1c: one call a group. An invitation to the group of a call the client is in is refused
-// with a 486, and the client places no second call to it; once the call ends, the group is free again.
+// TS 24.379 clause 10.1.1.2.1.2
 func TestOneCallAGroup(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -689,16 +666,14 @@ func TestOneCallAGroup(t *testing.T) {
 	a.expect(t, "ended")
 	b.expect(t, "ended")
 
-	// The group free again: the call not refused by the client (the stand-in serves one call; not run further).
 	if _, err := b.Call(context.Background(), mustURI(t, fire)); errors.Is(err, client.ErrInCall) {
 		t.Errorf("a call after the end: %v", err)
 	}
 }
 
-// RFC 4028: the client asks for a session interval of 90 s in its INVITE, the refresher left to the server (TS 24.379
-// §10.1.1.2.1.1 step 9), and answers an INVITE asking for none with 90 s, refreshed by itself. A floor request left
-// unanswered (TS 24.380 §6.2.4.4.6) refreshes the session at once, with an UPDATE: the call lives on, the server
-// answering it.
+// RFC 4028
+// TS 24.379 clause 10.1.1.2.1.1
+// TS 24.380 clause 6.2.4.4.6
 func TestSessionTimerAndProbe(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -716,7 +691,6 @@ func TestSessionTimerAndProbe(t *testing.T) {
 		t.Errorf("bob's Session-Expires %+v %v %v", se, ok, err)
 	}
 
-	// Bob's floor control lost on the way.
 	e.m.Lose(func(from, _ netip.AddrPort, _ []byte) bool { return from == netip.MustParseAddrPort("192.0.2.2:30002") })
 
 	cb.PressPTT()
@@ -731,7 +705,6 @@ func TestSessionTimerAndProbe(t *testing.T) {
 		t.Errorf("%d UPDATEs", n)
 	}
 
-	// The server no longer knows bob's leg: the next unanswered request ends his call with the 481 of its probe.
 	s.forget.Store(true)
 	cb.PressPTT()
 
@@ -748,10 +721,10 @@ func TestSessionTimerAndProbe(t *testing.T) {
 	a.expect(t, "ended")
 }
 
-// TS 24.380 §14.2.5, §6.2.4.4.8: the PTT pressed to place a call with the implicit floor request, released before the
-// call is established: the floor granted in the 200 is released at once, no speech sent.
-// TS 24.380 §14.3.5, §6.2.4.3.5: a call placed by the PTT, its implicit floor request not accepted, the PTT still
-// held: the client requests the floor, granted; released, released.
+// TS 24.380 clause 14.2.5
+// TS 24.380 clause 6.2.4.4.8
+// TS 24.380 clause 14.3.5
+// TS 24.380 clause 6.2.4.3.5
 func TestImplicitNotAccepted(t *testing.T) {
 	e := newEnv(t)
 	b := e.user("bob", 2, netip.AddrPort{}, nil)
@@ -767,7 +740,6 @@ func TestImplicitNotAccepted(t *testing.T) {
 
 	e.n.Quiesce()
 
-	// The Floor Idle of the call's start (§6.3.4.2.2) races the request, which it may precede: left out.
 	es := slices.DeleteFunc(a.events.take(), func(e client.Event) bool { return e.Kind == client.EventFloor && e.Floor.Kind == floor.NoticeIdle })
 	if got := kinds(es); !slices.Equal(got, []string{"established", "floor:granted", "transmit:on"}) {
 		t.Fatalf("events %v", got)

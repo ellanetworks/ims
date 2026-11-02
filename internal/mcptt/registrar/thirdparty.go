@@ -14,42 +14,12 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// registrationToken is the Contact parameter of TS 24.229 §7.9.7, as a feature tag.
+// TS 24.229 clause 7.9.7
 const registrationToken = "g.3gpp.registration-token"
 
-// thirdParty answers a third-party REGISTER of the S-CSCF (TS 24.229 §5.7.1.1): To the IMPU, Contact the S-CSCF with
-// the registration token, the expiration the S-CSCF granted, and a message/sip body of the client's REGISTER
-// (§5.4.1.7, §5.4.1.7A). Its 200 has the same expiration (§5.7.1.1) and, of a service authorisation, the mcptt-info
-// of §7.3.2 step 6; a failed authorisation gets a 403, which the S-CSCF's default handling does not act on
-// (§5.4.1.7), with the warning text of TS 24.379 §7.3.3 step 6, the one of a failed service authorisation. Every
-// response has the P-Charging-Vector of §5.7.1.1.
-//
-// The client is served at the implicit registration set of the IMPU (Resolve): the P-Associated-URI of the 200 to
-// the client's REGISTER (§5.4.1.2.2F b), of its message/sip body (§5.4.1.7A); else the P-Associated-URI of the
-// third-party REGISTER itself, as an S-CSCF that sends no 200 adds it; the To always.
-//
-// The registration of the UE among those of the IMPU is that of its registration token, which the S-CSCF may give
-// (§5.4.1.7 l), else of the instance ID or Contact URI of the client's REGISTER (§5.7.1.3B NOTE; RFC 5626 §4.1): a
-// REGISTER of the client without mcptt-info, as a reregistration may be (TS 33.180 §5.1.3.2.1), refreshes the
-// bindings of its registration, if they are still authorised; without the MCPTT feature tags, it logs the client of
-// its registration off (TS 24.379 §7.2.1 NOTE 1), not those of the other UEs of the IMPU. A REGISTER that tells no
-// registration, of neither token nor body, refreshes all the bindings of the IMPU. A token is the same until the UE is
-// deregistered (§5.4.1.7 l): a REGISTER of the instance ID or Contact of a binding and of another token is a new
-// registration of its UE, whose deregistration the server missed, or which another S-CSCF serves; the binding takes
-// its token and S-CSCF.
-//
-// The third-party REGISTERs of the REGISTERs of a UE may come out of order: the S-CSCF sends each once its REGISTER is
-// answered, and TS 24.229 orders them no further. The REGISTERs of the UE are, of one Call-ID and a CSeq incremented
-// (RFC 3261 §10.2.4): a third-party REGISTER of a client's REGISTER of the Call-ID of the last applied at the IMPU, and
-// a CSeq not higher, was sent before it, and is ignored (§10.3 step 7), with a 200 as the S-CSCF needs no other: a
-// refusal of a 5xx may end the registration (TS 24.229 §5.4.1.7). The last is kept until its registration expires, whether it
-// bound, refreshed or logged off: an earlier REGISTER with mcptt-info does not log the client of a later log-off on
-// again. The third-party REGISTERs themselves tell no order: an S-CSCF may make each of a new Call-ID.
-//
-// A deregistration, of an expiration of zero, carries neither body nor token (§5.4.1.7 g, l), and contacts of the
-// IMPU may stay registered after it (NOTE 2): the server subscribes to the reg event package of each IMPU it has
-// bindings of (§5.7.1.1), and the NOTIFYs tell which contacts went. Without that subscription, not yet active,
-// refused or failed, a deregistration removes all the bindings of the IMPU.
+// TS 24.229 clause 5.7.1.1
+// TS 24.229 clause 5.4.1.7
+// TS 24.229 clause 5.4.1.7A
 func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *settings.Snapshot, now time.Time) {
 	req := r.Message()
 
@@ -106,8 +76,6 @@ func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *setting
 	if secs == 0 {
 		g.mu.Lock()
 
-		// A deregistration of a token or body, not of §5.4.1.7, tells its registration; another is told by the
-		// NOTIFYs of an active subscription.
 		if w := g.watches[ik]; ue.known() || w == nil || !w.active {
 			g.unbindIMPU(ik, ue, &ch)
 		}
@@ -167,7 +135,6 @@ func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *setting
 			g.mu.Unlock()
 			g.reject(r, snap, failed, header...)
 
-			// The bindings no longer authorised went: their clients logged off, and their rows.
 			g.apply(ctx, r.Strand(), now, &ch)
 
 			return
@@ -196,16 +163,12 @@ func (g *Registrar) thirdParty(ctx context.Context, r *ua.Request, snap *setting
 	g.apply(ctx, r.Strand(), now, &ch)
 }
 
-// ueReg is the registration of a UE through the IMS, among those of its IMPU (TS 24.229 §5.7.1.3B): its
-// registration token (§5.4.1.7 l), the instance ID (RFC 5626 §4.1) and reg-id (§4.2) and Contact URI of its REGISTER,
-// each "" or zero if unknown.
+// TS 24.229 clause 5.7.1.3B
 type ueReg struct {
 	token, instance, regID string
 	contact                sip.URI
 }
 
-// ueOf is the registration of a third-party REGISTER, of token and the client's REGISTER reg, nil if none: of the
-// Contact of reg of the MCPTT feature tag, else its first.
 func ueOf(token string, reg *sip.Request) ueReg {
 	u := ueReg{token: token}
 	if reg == nil {
@@ -227,11 +190,8 @@ func ueOf(token string, reg *sip.Request) ueReg {
 
 func (u ueReg) known() bool { return u.token != "" || u.instance != "" || u.contact.Scheme != "" }
 
-// same reports whether u and o are one registration: of the same token, else of the same instance ID and reg-id,
-// else of the same Contact URI (RFC 3261 §19.1.4); not if they have nothing to compare. Of different tokens, the same
-// instance ID and reg-id, or Contact, is a new registration of the UE (§5.4.1.7 l: the token is the same until the UE
-// is deregistered). An instance's flows of different reg-ids are registrations of their own, the S-CSCF's (TS 24.229
-// §5.4.1.2.2 step 5 d; RFC 5626 §4.2): the MCPTT client's and VoLTE's of one device, of its IMEI (§5.1.1.2.1).
+// RFC 3261 section 19.1.4
+// TS 24.229 clause 5.4.1.7
 func (u ueReg) same(o ueReg) bool {
 	switch {
 	case u.token != "" && u.token == o.token:
@@ -245,8 +205,7 @@ func (u ueReg) same(o ueReg) bool {
 	return false
 }
 
-// adopt takes the registration ue of a REGISTER of the UE of b, client its REGISTER if the third-party REGISTER has
-// it: a new token (§5.4.1.7 l), and what it tells of the UE.
+// TS 24.229 clause 5.4.1.7
 func (b *binding) adopt(ue ueReg, client *sip.Request) {
 	if ue.token != "" {
 		b.reg.token, b.Token = ue.token, ue.token
@@ -263,7 +222,6 @@ func (b *binding) adopt(ue ueReg, client *sip.Request) {
 	b.registered(client)
 }
 
-// registered takes the Call-ID and CSeq of client, the REGISTER of the UE of b, if any.
 func (b *binding) registered(client *sip.Request) {
 	if client == nil {
 		return
@@ -275,11 +233,9 @@ func (b *binding) registered(client *sip.Request) {
 	}
 }
 
-// seqKey is the dialog of REGISTERs of a UE at an IMPU, by IMPU key and Call-ID (RFC 3261 §10.2.4).
+// RFC 3261 section 10.2.4
 type seqKey struct{ impu, callID string }
 
-// sequence is the last REGISTER of a UE applied at an IMPU: its CSeq, of the Call-ID of its key, until the
-// registration it made expires.
 type sequence struct {
 	key     seqKey
 	cseq    uint32
@@ -287,8 +243,6 @@ type sequence struct {
 	timer   *ua.Timer
 }
 
-// sequenceOf is the sequence of client, the REGISTER of a UE at the IMPU of key ik; false if client is nil or of no
-// Call-ID or CSeq.
 func sequenceOf(ik string, client *sip.Request) (*sequence, bool) {
 	if client == nil {
 		return nil, false
@@ -302,8 +256,7 @@ func sequenceOf(ik string, client *sip.Request) (*sequence, bool) {
 	return nil, false
 }
 
-// outOfOrder reports whether s is of a REGISTER of the UE not later than the last applied of its Call-ID (RFC 3261
-// §10.3 step 7).
+// RFC 3261 section 10.3
 func (g *Registrar) outOfOrder(s *sequence) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -313,8 +266,6 @@ func (g *Registrar) outOfOrder(s *sequence) bool {
 	return last != nil && s.cseq <= last.cseq
 }
 
-// sequenced makes s, of a registration expiring at expires, the last REGISTER applied of its Call-ID, its timer to
-// arm. Called with g.mu held.
 func (g *Registrar) sequenced(s *sequence, expires time.Time, ch *change) {
 	if last := g.sequences[s.key]; last != nil && last.timer != nil {
 		last.timer.Stop()
@@ -325,7 +276,6 @@ func (g *Registrar) sequenced(s *sequence, expires time.Time, ch *change) {
 	ch.sequences = append(ch.sequences, s)
 }
 
-// forget removes s, its registration expired, unless a later REGISTER replaced it.
 func (g *Registrar) forget(s *sequence) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -335,14 +285,14 @@ func (g *Registrar) forget(s *sequence) {
 	}
 }
 
-// instanceID is the instance ID of a "+sip.instance" value: the URN of the quoted string, without its angle brackets
-// (RFC 5626 §4.1).
+// RFC 5626 section 4.1
 func instanceID(v string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
 }
 
-// sameInstance compares instance IDs as URNs (RFC 5626 §4.1): the "urn" and NID case-insensitively (RFC 8141 §3),
-// the NSS exactly but of a UUID, of hexadecimal digits of either case (RFC 4122 §3).
+// RFC 5626 section 4.1
+// RFC 8141 section 3
+// RFC 4122 section 3
 func sameInstance(a, b string) bool {
 	pa, pb := strings.SplitN(a, ":", 3), strings.SplitN(b, ":", 3)
 	if len(pa) != 3 || len(pb) != 3 || !strings.EqualFold(pa[0], pb[0]) || !strings.EqualFold(pa[1], pb[1]) {
@@ -356,9 +306,8 @@ func sameInstance(a, b string) bool {
 	return pa[2] == pb[2]
 }
 
-// implicitSet is the implicit registration set of impu, the To of a third-party REGISTER, impu first: of the
-// P-Associated-URI of the 200 to the client's REGISTER in a message/sip body (§5.4.1.7A, §5.4.1.2.2F b), else of
-// the P-Associated-URI of the third-party REGISTER; impu alone without either.
+// TS 24.229 clause 5.4.1.7A
+// TS 24.229 clause 5.4.1.2.2F
 func implicitSet(req *sip.Request, impu sip.URI) []sip.URI {
 	pau := req.Header
 	if res := registerResponse(req); res != nil && res.Header.Has("P-Associated-URI") {
@@ -377,12 +326,8 @@ func implicitSet(req *sip.Request, impu sip.URI) []sip.URI {
 	return set
 }
 
-// subscribed is the IMPU of the reg event subscription of impu, the To of the third-party REGISTER, of the implicit
-// registration set set, of the IMS of home domain home (§5.7.1.1 a, c: "a SIP URI that contains the public user
-// identity" received in the To): impu itself, a SIP URI; of a tel URI, the SIP URI of its number at home (numberURI;
-// §4.2 NOTE 4, TS 23.003 §13.4), not another SIP URI of the set, a different public user identity, which may be of
-// another service profile, without the AS in its iFCs (§5.7.1.1 NOTE 3); a SIP URI of the set only of a tel URI of
-// no number. Zero if none.
+// TS 24.229 clause 5.7.1.1
+// TS 23.003 clause 13.4
 func subscribed(impu sip.URI, set []sip.URI, home string) sip.URI {
 	if impu.IsSIP() {
 		return impu
@@ -399,12 +344,10 @@ func subscribed(impu sip.URI, set []sip.URI, home string) sip.URI {
 	return sip.URI{}
 }
 
-// numberURI is the SIP URI of the tel URI u at the host home, which the S-CSCF of home resolves to the registration of
-// u: of "user=phone", of the userinfo of the tel URI (TS 23.003 §13.4: "a SIP URI that includes a "user=phone" URI
-// parameter and a "userinfo" part that shall follow the same format as the Tel URI"; RFC 3261 §19.1.6). Its number
-// is without visual separators (RFC 3966 §5.1.1); of a global number, without parameters; of a local number, with
-// the phone-context that scopes it (RFC 3966 §5.1.5), and its "#" escaped (RFC 3261 §25.1: no "user" character).
-// Zero of another URI, of a number that is neither, or without home.
+// TS 23.003 clause 13.4
+// RFC 3261 section 19.1.6
+// RFC 3966 section 5.1.1
+// RFC 3966 section 5.1.5
 func numberURI(u sip.URI, home string) sip.URI {
 	if !u.IsTel() || home == "" {
 		return sip.URI{}
@@ -428,8 +371,7 @@ func numberURI(u sip.URI, home string) sip.URI {
 	return s
 }
 
-// registerResponse is the 200 to the client's REGISTER of the message/sip bodies of a third-party REGISTER
-// (§5.4.1.7A), nil if none.
+// TS 24.229 clause 5.4.1.7A
 func registerResponse(req *sip.Request) *sip.Response {
 	for _, m := range messages(req) {
 		if res, ok := m.(*sip.Response); ok && res.StatusCode/100 == 2 {
@@ -440,7 +382,7 @@ func registerResponse(req *sip.Request) *sip.Response {
 	return nil
 }
 
-// messages are the messages of the message/sip bodies of a third-party REGISTER (§5.4.1.7A).
+// TS 24.229 clause 5.4.1.7A
 func messages(req *sip.Request) []sip.Message {
 	parts, err := req.Content().Parts()
 	if err != nil {
@@ -462,7 +404,6 @@ func messages(req *sip.Request) []sip.Message {
 	return out
 }
 
-// withContact is u of the Contact c.
 func (u ueReg) withContact(c sip.Address) ueReg {
 	u.contact = c.URI
 	if v, ok := c.Params.Get("+sip.instance"); ok {
@@ -479,8 +420,6 @@ func (u ueReg) withoutToken() ueReg {
 	return u
 }
 
-// unbindIMPU removes the bindings of the IMPU of key ik of the registration ue, all if ue is unknown, logging their
-// clients off. Called with g.mu held.
 func (g *Registrar) unbindIMPU(ik string, ue ueReg, ch *change) {
 	for _, b := range g.impus[ik] {
 		if !ue.known() || b.reg.same(ue) {
@@ -489,9 +428,6 @@ func (g *Registrar) unbindIMPU(ik string, ue ueReg, ch *change) {
 	}
 }
 
-// refresh refreshes by update the bindings of the IMPU of key ik of the registration ue, all if ue is unknown, whose
-// users the configuration still authorises at it; the others go. It reports false if the IMPU had such bindings,
-// and none stays. Called with g.mu held.
 func (g *Registrar) refresh(snap *settings.Snapshot, ik string, ue ueReg, ch *change, update func(*binding)) bool {
 	found, kept := false, false
 
@@ -517,8 +453,7 @@ func (g *Registrar) refresh(snap *settings.Snapshot, ik string, ue ueReg, ch *ch
 	return kept || !found
 }
 
-// clientRegister is the client's REGISTER of the message/sip bodies of a third-party REGISTER (TS 24.229 §5.4.1.7A),
-// nil if none.
+// TS 24.229 clause 5.4.1.7A
 func clientRegister(req *sip.Request) *sip.Request {
 	for _, m := range messages(req) {
 		if reg, ok := m.(*sip.Request); ok && reg.Method == "REGISTER" {
@@ -529,7 +464,7 @@ func clientRegister(req *sip.Request) *sip.Request {
 	return nil
 }
 
-// mcptt reports whether a REGISTER of a client has a Contact of the MCPTT feature tag (TS 24.379 §7.2.1).
+// TS 24.379 clause 7.2.1
 func mcptt(reg *sip.Request) bool {
 	contacts, err := reg.Header.Contacts()
 	return err == nil && slices.ContainsFunc(contacts, isMCPTT)
@@ -540,15 +475,14 @@ func isMCPTT(c sip.Address) bool {
 	return fs.Has(strings.TrimPrefix(identity.FeatureTag, "+"))
 }
 
-// charging are the charging values of a third-party REGISTER to store (TS 24.229 §5.7.1.1).
+// TS 24.229 clause 5.7.1.1
 func charging(req *sip.Request) Charging {
 	c := identity.ChargingOf(req.Header)
 
 	return Charging{ICID: c.ICID, OrigIOI: c.OrigIOI, FunctionAddresses: req.Header.Get("P-Charging-Function-Addresses")}
 }
 
-// chargingVector is the P-Charging-Vector of the response to a third-party REGISTER (TS 24.229 §5.7.1.1): its
-// icid-value and orig-ioi, and a type 3 term-ioi of the organisation's domain; "" without an icid-value.
+// TS 24.229 clause 5.7.1.1
 func chargingVector(req *sip.Request, snap *settings.Snapshot) string {
 	c := identity.ChargingOf(req.Header)
 	if c.ICID == "" {

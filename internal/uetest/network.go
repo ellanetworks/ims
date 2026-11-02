@@ -1,5 +1,3 @@
-// Package uetest is the network of UE tests: a P-CSCF on sockets that challenges a UE with IMS AKA (TS 33.203 §6.1),
-// agrees ipsec-3gpp with it (§7.2) and registers it, on behalf of the S-CSCF.
 package uetest
 
 import (
@@ -19,7 +17,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// The subscriber of the network: its USIM's identities, key and OPc, the IMEI of its UE.
 const (
 	IMSI   = "001010123456789"
 	Domain = "ims.mnc001.mcc001.3gppnetwork.org"
@@ -35,9 +32,6 @@ var (
 	OPc      = []byte("fedcba9876543210")
 )
 
-// Network is the network of a UE under test: a P-CSCF with its unprotected socket PCSCF, its protected server port
-// PS and its two protected client ports PCs, PC the one of the latest SAs, which challenges with vectors of K and SQN
-// and registers the UE.
 type Network struct {
 	T      *testing.T
 	SQN    uint64
@@ -58,12 +52,10 @@ type Network struct {
 	RegEvent   bool
 }
 
-// New is a network on the loopback address.
 func New(t *testing.T) *Network {
 	return NewAt(t, Loopback)
 }
 
-// NewAt is a network on addr.
 func NewAt(t *testing.T, addr netip.Addr) *Network {
 	return &Network{
 		T:     t,
@@ -101,8 +93,6 @@ func (n *Network) Recv(s *siptest.Socket) (*sip.Request, sip.Flow) {
 	}
 }
 
-// RecvNone fails on a request new to the network, or a response, on s within d: a retransmission of a request it
-// received already, which a short T1 can send before its answer arrives, is none.
 func (n *Network) RecvNone(s *siptest.Socket, d time.Duration) {
 	n.T.Helper()
 
@@ -208,7 +198,6 @@ func (n *Network) OK(req *sip.Request, f sip.Flow, from *siptest.Socket, expires
 	n.Reply(from, f, res)
 }
 
-// AuthParams are the parameters of the Authorization of req.
 func AuthParams(t *testing.T, req *sip.Request) map[string]string {
 	t.Helper()
 
@@ -225,7 +214,7 @@ func AuthParams(t *testing.T, req *sip.Request) map[string]string {
 	return out
 }
 
-// Verify reports whether the Authorization parameters ps answer with xres (RFC 3310 §3.4).
+// RFC 3310 section 3.4
 func Verify(ps map[string]string, xres []byte) bool {
 	h := func(parts ...[]byte) string {
 		m := md5.New()
@@ -242,7 +231,6 @@ func Verify(ps map[string]string, xres []byte) bool {
 	return ps["qop"] == "auth" && h([]byte(ha1+":"+ps["nonce"]+":"+ps["nc"]+":"+ps["cnonce"]+":auth:"+ha2)) == ps["response"]
 }
 
-// Start runs f in a goroutine with a timeout, its error on the channel.
 func Start(f func(ctx context.Context) error) chan error {
 	done := make(chan error, 1)
 
@@ -256,7 +244,6 @@ func Start(f func(ctx context.Context) error) chan error {
 	return done
 }
 
-// Wait waits for the error of Start.
 func Wait(t *testing.T, done chan error) error {
 	t.Helper()
 
@@ -270,7 +257,6 @@ func Wait(t *testing.T, done chan error) error {
 	return nil
 }
 
-// Register registers u: a challenge on the unprotected port, the 200 on the protected one.
 func (n *Network) Register(u interface{ Register(context.Context) error }) {
 	n.T.Helper()
 
@@ -324,7 +310,6 @@ func (n *Network) Request(from *siptest.Socket, set ipsec.Set) {
 	}
 }
 
-// Eventually waits for f to hold, failing t after 10 s.
 func Eventually(t *testing.T, what string, f func() bool) {
 	t.Helper()
 

@@ -356,7 +356,7 @@ func TestServerCancel(t *testing.T) {
 	h.tu.None(quiet)
 }
 
-// RFC 3261 §9.2
+// RFC 3261 section 9.2
 func TestServerCancelTagOfARelayedResponse(t *testing.T) {
 	h := newHarness(t)
 	tx, req := h.serve("INVITE", sip.UDP)

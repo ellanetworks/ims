@@ -72,7 +72,6 @@ type sipServer struct {
 	listeners   []api.SIPEndpoint
 }
 
-// timers override the defaults of the SIP components' timers.
 type timers struct {
 	minExpires       time.Duration
 	reauthInterval   time.Duration
@@ -91,10 +90,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
-	// Trust goes by role and source address. To the P-CSCF, the core is the IMS's own addresses, its I-CSCF and
-	// S-CSCF: the UEs it serves are never in it. The I-CSCF and the S-CSCF take the other nodes of the trust domain
-	// too, the ASs and peers of the trusted networks (TS 24.229 §4.4). Within the security domain, protection is at the
-	// IP layer and optional (TS 33.210 §4.1, §5.6.2 Zb): the trusted networks are the operator's to protect.
 	pcscfDomain := trust.New(cfg.SIP.Addresses, nil)
 	domain := trust.New(cfg.SIP.Addresses, cfg.SIP.TrustedNetworks)
 	resolver := ases.resolver
@@ -135,8 +130,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			failed(local, err)
 		},
 		TracerProvider: tp,
-		// Trace context crosses the flows of the trust domain of the role, which UEs are never in (W3C Trace Context
-		// §6.1).
 		TraceContext: func(f sip.Flow) bool {
 			if r := roles.name(f.Local.Port()); r == rolePCSCF || r == rolePCSCFProtected {
 				return pcscfDomain.Trusted(f.Remote.Addr())
@@ -158,7 +151,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		OnServerDone: func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
 			roles.logTransaction(ctx, req, res, elapsed)
 
-			// The P-CSCF's responses to UEs, rather than to the nodes of the IMS.
 			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
 				m.sipResponse(req, res)
 			}
@@ -191,8 +183,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		}
 	}
 
-	// The I-CSCF and the S-CSCF have sockets of their own for the ASs: the ISC interface, and the AS hosting a PSI
-	// that the I-CSCF routes to directly (TS 23.218 §6.2.2, TS 23.228 §5.4.12.2).
 	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
@@ -203,7 +193,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		return nil, errors.Join(err, s.Close(ctx))
 	}
 
-	// The built-in ASs reach the I-CSCF and the S-CSCF on the in-memory network, as these reach them.
 	for _, a := range append(s.bound(roleICSCF), s.bound(roleSCSCF)...) {
 		if err := s.layer.Serve(a); err != nil {
 			return nil, errors.Join(fmt.Errorf("serve %s in memory: %w", a, err), s.Close(ctx))
@@ -369,7 +358,6 @@ func (s *sipServer) Reauthenticate(ctx context.Context, impi string) error {
 	return err
 }
 
-// Close stops SIP. The P-CSCF ends its policy sessions until ctx is done, or Close returns the context's error.
 func (s *sipServer) Close(ctx context.Context) error {
 	if s.cx != nil {
 		s.cx.bind(nil)
@@ -475,12 +463,10 @@ func (d *dispatcher) logTransaction(ctx context.Context, req *sip.Request, res *
 	d.log.LogAttrs(ctx, level, "SIP transaction", attrs...)
 }
 
-// is reports whether the role served on the port is role.
 func (d *dispatcher) is(port uint16, role string) bool {
 	return d.name(port) == role
 }
 
-// name is the role of port, "" if none.
 func (d *dispatcher) name(port uint16) string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -495,8 +481,6 @@ func (d *dispatcher) role(f sip.Flow) transaction.Handler {
 	return d.roles[f.Local.Port()]
 }
 
-// spanLinks are what req links to when it starts a trace of its own (transaction.Config.SpanLinks): those the role on
-// its port tells, if it tells any.
 func (d *dispatcher) spanLinks(req *sip.Request) []trace.SpanContext {
 	if l, ok := d.role(req.Flow).(interface {
 		SpanLinks(req *sip.Request) []trace.SpanContext
@@ -556,8 +540,6 @@ type scscfHandler struct {
 	fallback  transaction.Handler
 }
 
-// SpanLinks are what a request of a dialog through the S-CSCF links to when it starts a trace of its own, as one back
-// from an AS outside the trust domain (transaction.Config.SpanLinks): the INVITE of the dialog.
 func (h *scscfHandler) SpanLinks(req *sip.Request) []trace.SpanContext {
 	return h.proxy.SpanLinks(req)
 }
@@ -757,7 +739,6 @@ func (h *placeholderHandler) holdInvite(ctx context.Context, tx *transaction.Ser
 		return
 	}
 
-	// The timer keeps the INVITE's span context only, for its log.
 	sc := trace.SpanContextFromContext(ctx)
 
 	h.invites[tx] = time.AfterFunc(h.inviteTimeout, func() {
@@ -799,8 +780,6 @@ func (h *placeholderHandler) respond(ctx context.Context, tx *transaction.Server
 	}
 }
 
-// builtinASs are the built-in ASs as the cores reach them: the in-memory network they share with the I-CSCF and the
-// S-CSCF, and the resolver of their hosts. Both outlive the cores.
 type builtinASs struct {
 	network  *transaction.Network
 	resolver *as.Resolver

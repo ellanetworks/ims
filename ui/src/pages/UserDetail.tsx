@@ -27,7 +27,6 @@ export default function UserDetail() {
     null,
   );
 
-  // An admin manages its own account on its profile: the server refuses it here.
   const self = email.toLowerCase() === auth.email.toLowerCase();
 
   const user = useQuery({

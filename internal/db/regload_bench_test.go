@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// BenchmarkLoadRegistration runs the three statements of ListRegistrationsByIMPI against 20,000 registrations, with
-// and without an index of bindings by registration and the driver's statement cache.
 func BenchmarkLoadRegistration(b *testing.B) {
 	const n = 20000
 
@@ -42,7 +40,6 @@ INSERT INTO bindings (registration_id, uri, instance_id, reg_id, params, path, c
 SELECT i, 'sip:ue'||i||'@10.0.0.1:5060', '<urn:gsma:imei:'||i||'>', 1, ';+sip.instance="<urn:gsma:imei:x>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";video', '<sip:pcscf;lr>', 'callid'||i, 1, 9000000000000000000, 'registered','sip:'||i, 1 FROM n`, n)
 				must(b, err)
 
-				// Without the index: the bindings only by flow or by URI, as the partial indexes have them.
 				if !index {
 					_, err = d.conn.ExecContext(ctx, `DROP INDEX bindings_registration`)
 					must(b, err)

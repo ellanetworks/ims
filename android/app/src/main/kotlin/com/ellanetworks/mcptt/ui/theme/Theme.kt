@@ -10,13 +10,8 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-/** The theme the app shows: the system's, or light or dark whatever the system's. */
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
-/**
- * The Ella brand theme, light or dark by [mode]: Material's scheme, type and shapes, the extended colours, and the
- * system bars' icons in contrast with it. No dynamic colour: the fleet's phones look alike.
- */
 @Composable
 fun EllaTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
     val dark = when (mode) {
@@ -44,9 +39,7 @@ fun EllaTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Uni
     }
 }
 
-/** The theme's values beyond MaterialTheme's. */
 object EllaTheme {
-    /** The extended colours of the theme. */
     val colors: EllaColors
         @Composable
         @ReadOnlyComposable

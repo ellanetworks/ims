@@ -12,7 +12,7 @@ import (
 
 func ptr(n uint64) *uint64 { return &n }
 
-// The instances of testdata are valid against the schema of RFC 3680 §5.4.
+// RFC 3680 section 5.4
 func TestDecodeTestdata(t *testing.T) {
 	for _, c := range []struct {
 		file string
@@ -142,7 +142,6 @@ func TestEncode(t *testing.T) {
 		`<contact id="76" state="active" event="registered" expires="3600" retry-after="30" callid="abc@10.0.0.1" cseq="42" q="0.5">`,
 		`<display-name xml:lang="en">Joe &lt;Bloggs&gt; &amp; "Co"</display-name>`,
 		`<unknown-param name="+sip.instance">"&lt;urn:gsma:imei:35622410-483840-0&gt;"</unknown-param>`,
-		// The optional attributes absent are left out.
 		`<contact id="77" state="terminated" event="expired"><uri>`,
 	} {
 		if !strings.Contains(s, want) {
@@ -150,7 +149,6 @@ func TestEncode(t *testing.T) {
 		}
 	}
 
-	// The children of a contact in the order of the schema (§5.4).
 	if uri, dn, up := strings.Index(s, "<uri>"), strings.Index(s, "<display-name"), strings.Index(s, "<unknown-param"); uri >= dn || dn >= up {
 		t.Errorf("order of the children of <contact>: %s", s)
 	}
@@ -158,7 +156,6 @@ func TestEncode(t *testing.T) {
 	roundTrip(t, in)
 }
 
-// Encode writes only what Decode reads.
 func TestEncodeInvalid(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -191,8 +188,8 @@ func TestEncodeInvalid(t *testing.T) {
 	}
 }
 
-// RFC 3680 §5.1, §5.4: documents not valid in what is read are refused, whole: of a contact skipped, a full document
-// would tell a subscriber it is gone (§5.2).
+// RFC 3680 section 5.1
+// RFC 3680 section 5.4
 func TestDecodeInvalid(t *testing.T) {
 	const ns = `xmlns="urn:ietf:params:xml:ns:reginfo"`
 
@@ -284,8 +281,7 @@ const extended = `<?xml version="1.0" encoding="US-ASCII"?>
   <ere:registration aor="sip:ignored@home1.net" id="x" state="active"/>
 </reginfo>`
 
-// The elements and attributes of other namespaces are ignored (§5.1): TS 24.229 §5.4.2.1.2's GRUUs and wildcarded
-// identities among them.
+// RFC 3680 section 5.1
 func TestDecodeIgnoresExtensions(t *testing.T) {
 	r, err := Decode([]byte(extended))
 	if err != nil {
@@ -325,7 +321,6 @@ func sipBody(t *testing.T, path string) []byte {
 
 const corpus = "../internal/corpus/testdata"
 
-// The NOTIFYs of the corpus, of Ella IMS's S-CSCF to live UEs.
 func TestDecodeCorpus(t *testing.T) {
 	var files []string
 
@@ -380,7 +375,6 @@ func TestDecodeCorpus(t *testing.T) {
 	}
 }
 
-// A re-registration from a new address: the old contact ends in the same NOTIFY.
 func TestDecodeCorpusValues(t *testing.T) {
 	r, err := Decode(sipBody(t, corpus+"/ella/live/4g/motorola-xt2417/reregister/004-NOTIFY.sip"))
 	if err != nil {
@@ -447,7 +441,6 @@ func FuzzDecode(f *testing.F) {
 			return
 		}
 
-		// What decodes is of the values of the schema, and encodes to a document that decodes the same.
 		if r.State != Full && r.State != Partial {
 			t.Fatalf("state %q", r.State)
 		}

@@ -20,7 +20,6 @@ export default function Initialize() {
   const [submitting, setSubmitting] = useState(false);
   const { showSnackbar } = useSnackbar();
 
-  // An initialized system has its users log in.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -30,9 +29,7 @@ export default function Initialize() {
           navigate("/login", { replace: true });
           return;
         }
-      } catch {
-        // The form shows the error of the submission, if the server stays unreachable.
-      }
+      } catch {}
       if (!cancelled) setChecking(false);
     })();
     return () => {

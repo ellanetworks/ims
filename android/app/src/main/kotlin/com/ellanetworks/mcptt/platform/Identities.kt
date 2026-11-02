@@ -2,19 +2,14 @@ package com.ellanetworks.mcptt.platform
 
 import java.net.InetAddress
 
-/**
- * The user's IMS identities (TS 24.229 §5.1.1.1A): of the ISIM (TS 31.103 §4.2.2–4.2.4), or derived from the IMSI
- * without one (TS 23.003 §13.2–13.4B). [pcscfs] are the ISIM's P-CSCF addresses (§4.2.8), the first the preferred.
- */
+// TS 24.229 clause 5.1.1.1A
+// TS 31.103 clause 4.2.2
+// TS 31.103 clause 4.2.3
+// TS 31.103 clause 4.2.4
 data class Identities(val impi: String, val impus: List<String>, val homeDomain: String, val pcscfs: List<String> = emptyList(), val isim: Boolean) {
-    /** The default public user identity: the first of EF_IMPU (TS 31.103 §4.2.4). */
     val impu: String
         get() = impus.first()
 
-    /**
-     * The MCPTT public user identity, sip:mcptt-<MSISDN>@<domain>: a record of EF_IMPU after the default one, of an
-     * implicit registration set of its own, which the app registers beside the phone's IMS client (TS 24.229 §3.1).
-     */
     val mcpttImpu: String?
         get() = impus.firstOrNull(::isMcpttIdentity)
 
@@ -27,7 +22,9 @@ data class Identities(val impi: String, val impus: List<String>, val homeDomain:
 
         private const val MCPTT_USER_PREFIX = "mcptt-"
 
-        /** The identities of the IMSI, of its MNC's length (TS 23.003 §13.2, §13.3, §13.4B). */
+        // TS 23.003 clause 13.2
+        // TS 23.003 clause 13.3
+        // TS 23.003 clause 13.4B
         fun fromImsi(imsi: String, mncLength: Int): Identities {
             require(imsi.length in 6..15 && imsi.all(Char::isDigit) && mncLength in 2..3) { "IMSI $imsi" }
             val mcc = imsi.substring(0, 3)
@@ -37,10 +34,7 @@ data class Identities(val impi: String, val impus: List<String>, val homeDomain:
             return Identities(impi, listOf("sip:$impi"), domain, isim = false)
         }
 
-        /**
-         * A P-CSCF address of EF_P-CSCF (TS 31.103 §4.2.8): its type '00' an FQDN, '01' IPv4, '02' IPv6; IPv4 and IPv6
-         * either as text or as their octets.
-         */
+        // TS 31.103 clause 4.2.8
         fun pcscf(value: ByteArray): String? {
             if (value.isEmpty()) return null
             val addr = value.copyOfRange(1, value.size)

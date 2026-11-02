@@ -15,7 +15,8 @@ const mcpttInfo = `<?xml version="1.0"?>` + "\r\n" +
 	`<mcpttinfo xmlns="urn:3gpp:ns:mcpttInfo:1.0"><mcptt-Params><session-type>prearranged</session-type>` +
 	`</mcptt-Params></mcpttinfo>`
 
-// TS 24.379 table A.1.3-1, with the part separators and line ends of RFC 2046 §5.1.1.
+// TS 24.379 clause A.1.3 table A.1.3-1
+// RFC 2046 section 5.1.1
 var mcpttInvite = "--boundary1\r\n" +
 	"Content-Type: application/sdp\r\n\r\n" + mcpttSDP + "\r\n" +
 	"--boundary1\r\n" +
@@ -244,7 +245,6 @@ func TestByContentID(t *testing.T) {
 		}
 	}
 
-	// TS 24.379 §17.2.2.2.1: a cid URL may refer to a MIME body section holding several bodies.
 	p, ok, err := m.ByContentID("cid:bodies@ims-op.net")
 	if err != nil || !ok || p.MediaType() != "multipart/mixed" {
 		t.Fatalf("body section: %s, %v", p.MediaType(), ok)
@@ -419,8 +419,10 @@ func TestParsedPartsDoNotGrowIntoTheBody(t *testing.T) {
 	}
 }
 
-// RFC 5621 §6, RFC 2046 §5.1.4: the last alternative is the preferred one. RFC 3959: an early-session SDP is not the
-// session description. RFC 5621 §9.4: a by-reference part is only processed through its reference.
+// RFC 5621 section 6
+// RFC 2046 section 5.1.4
+// RFC 3959
+// RFC 5621 section 9.4
 func TestFindSessionDescription(t *testing.T) {
 	early := NewBodyPart("application/sdp", []byte("early"))
 	early.Header.Add("Content-Disposition", "early-session")

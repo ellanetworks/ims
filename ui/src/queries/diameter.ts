@@ -7,7 +7,6 @@ export interface DiameterIdentity {
 
 export type DiameterApplication = "cx" | "rx" | "sh" | "s6c" | "sgd";
 
-// SGd requests go to hosts: the SMSC of a service centre address, or the MME or SMSF the HSS names.
 export type DiameterRouteApplication = Exclude<DiameterApplication, "sgd">;
 
 export type DiameterTransport = "tcp" | "sctp";
@@ -15,7 +14,6 @@ export type DiameterTransport = "tcp" | "sctp";
 export type DiameterPeerState =
   "down" | "connecting" | "open" | "suspect" | "reopen" | "closing";
 
-// An empty host takes the Origin-Host the peer gives in its capabilities exchange.
 export interface DiameterPeerParams {
   host: string;
   address: string;
@@ -23,7 +21,6 @@ export interface DiameterPeerParams {
   transport?: DiameterTransport;
   applications: DiameterApplication[];
   priority?: number;
-  // The service centre addresses of an SMSC serving sgd.
   service_centres?: string[];
 }
 
@@ -41,8 +38,6 @@ export interface DiameterPeer extends DiameterPeerParams {
   status: DiameterPeerStatus;
 }
 
-// DiameterRoute is where an application's requests go: to destination_realm, through its peers in the order they
-// are tried. An empty realm is the realm of cx for sh and s6c, and the home domain otherwise.
 export interface DiameterRoute {
   application: DiameterRouteApplication;
   realm: string;
@@ -55,7 +50,6 @@ export interface DiameterRoute {
   }[];
 }
 
-// peerName is how a peer is known: its configured host, else the one it gave, else its address.
 export const peerName = (peer: DiameterPeer): string =>
   peer.host || peer.status.host || peer.address;
 

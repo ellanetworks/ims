@@ -32,7 +32,6 @@ func (u *UE) Register(ctx context.Context) error {
 	u.op.Lock()
 	defer u.op.Unlock()
 
-	// TS 24.229 §5.1.9: no initial registration through a P-CSCF marked unavailable.
 	u.mu.Lock()
 	pcscf, marked := u.pcscf, u.markedLocked(u.pcscf)
 	u.mu.Unlock()
@@ -70,9 +69,6 @@ func (u *UE) Reregister(ctx context.Context) error {
 	err := u.refresh(ctx, false)
 	u.op.Unlock()
 
-	// TS 24.229 §5.1.1.4.1: a reregistration that timer F ended, or a fatal transport error (NOTE 13: by other means
-	// than timer F), is followed by an initial registration: the owner registers again, on a new flow. Out of the
-	// operation, which the handlers that Drop waits for may take.
 	if errors.Is(err, transaction.ErrTimeout) || errors.Is(err, transaction.ErrTransport) {
 		u.flowFailed(err)
 	}
@@ -162,14 +158,13 @@ func (u *UE) port(protected bool) uint16 {
 	return u.unprotected.Port()
 }
 
-// contact is the Contact the UE registers (TS 24.229 §5.1.1.2.1): its instance, the feature tags of its enabled
-// services, its reg-id (RFC 5626 §4.2), the ContactParams.
+// TS 24.229 clause 5.1.1.2.1
+// RFC 5626 section 4.2
 func (u *UE) contact(port uint16) string {
 	uri := sip.URI{Scheme: "sip", User: u.user, Host: sip.FormatHost(u.cfg.Local), Port: port}
 
 	params := sip.Params{{Name: "+sip.instance", Value: sip.Quote("<" + u.cfg.InstanceID + ">")}}
 
-	// New checked the feature tags encode.
 	tags, _ := featureSet(u.enabled()).Params()
 	params = append(params, tags...)
 
@@ -180,8 +175,7 @@ func (u *UE) contact(port uint16) string {
 	return sip.Address{URI: uri, Params: append(params, u.cfg.ContactParams...)}.String()
 }
 
-// RegisterContact is the Contact of the UE's REGISTERs now (TS 24.229 §5.1.1.2.1), at its protected server port, or at
-// its unprotected port before its first registration or with Plain.
+// TS 24.229 clause 5.1.1.2.1
 func (u *UE) RegisterContact() (sip.Address, error) {
 	return sip.ParseAddress(u.contact(u.port(!u.cfg.Plain && u.portS != 0)))
 }
@@ -246,7 +240,6 @@ func (u *UE) newRegister(p *procedure, protected bool) *sip.Request {
 
 	req.Header.Add("Authorization", p.auth)
 
-	// The bodies the enabled services carry in a REGISTER (TS 24.379 §7.2.1), none in one that deregisters.
 	if !p.dereg {
 		var bodies []sip.BodyPart
 
@@ -329,8 +322,6 @@ func (u *UE) run(ctx context.Context, p *procedure) error {
 				return fail(err)
 			}
 
-			// The UICC checks the challenge (TS 33.203 §6.1.1); one with an invalid MAC or SQN is answered with new
-			// spi_uc, spi_us and port_uc, without temporary SAs (TS 24.229 §5.1.1.5.3).
 			r, err := u.cfg.AKA.Authenticate(ch.rand, ch.autn)
 
 			switch {
@@ -504,7 +495,6 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 		impus = u.state.IMPUs
 	}
 
-	// The P-CSCF the contact is bound through, which a registration resets the failures of (RFC 5626 §4.5).
 	u.registeredVia = u.pcscf
 	delete(u.marks, u.pcscf)
 
@@ -536,12 +526,11 @@ func (u *UE) succeeded(p *procedure, temp *saSet, res *sip.Response) {
 	u.keepaliveLocked()
 }
 
-// pongTimeout is how long a keep-alive waits for its answer (RFC 5626 §4.4.1: 10 seconds); tests shorten it.
+// RFC 5626 section 4.4.1
 var pongTimeout = 10 * time.Second
 
-// keepaliveLocked schedules the next keep-alive of the registration's flow, if its 200 had a Flow-Timer (RFC 5626
-// §4.4.1): between 80% and 100% of it, at random. Without one, none: the UE is behind no NAT (TS 24.229 §5.1.1.2.1
-// d, the P-CSCF sending a Flow-Timer only to a UE behind one).
+// RFC 5626 section 4.4.1
+// TS 24.229 clause 5.1.1.2.1
 func (u *UE) keepaliveLocked() {
 	u.stopKeepaliveLocked()
 
@@ -560,7 +549,8 @@ func (u *UE) stopKeepaliveLocked() {
 	}
 }
 
-// keepalive pings the flow of the registration; its failure ends the registration (RFC 5626 §4.4.1, §4.5).
+// RFC 5626 section 4.4.1
+// RFC 5626 section 4.5
 func (u *UE) keepalive() {
 	flow, _, err := u.requestFlow(u.cfg.Transport)
 	if err == nil {
@@ -583,11 +573,10 @@ func (u *UE) keepalive() {
 	}
 }
 
-// flowFailed ends the registration whose flow failed: its SAs go, the UE stops processing the dialogs and
-// transactions of the flow, sending nothing on their behalf (TS 24.229 §5.1.1.4.1, NOTE 13), and the owner registers
-// again (RFC 5626 §4.4, §4.5), Register forming a new flow. Not called from a handler, whose strand Drop waits for.
+// TS 24.229 clause 5.1.1.4.1
+// RFC 5626 section 4.4
+// RFC 5626 section 4.5
 func (u *UE) flowFailed(err error) {
-	// The dialogs of the flow are stopped even when another failure, of a request, unbound the contact first.
 	bound := u.unbind()
 
 	u.mu.Lock()
@@ -605,7 +594,6 @@ func (u *UE) flowFailed(err error) {
 	}
 }
 
-// unbind ends the registration, its SAs gone, and reports whether there was one.
 func (u *UE) unbind() bool {
 	u.mu.Lock()
 
@@ -628,12 +616,7 @@ func (u *UE) unbind() bool {
 	return true
 }
 
-// requestFailed is a request of the UE through the P-CSCF failing in its transaction: other than a REGISTER, timer F
-// or a fatal transport error in Trying of a non-INVITE, timer B or a fatal transport error in Calling of an INVITE,
-// leave the contact bound to no public user identity and mark the P-CSCF unavailable (TS 24.229 §5.1.2A.1.6): the
-// registration ends, its flow dead with the multiple registration mechanism, and the owner registers again, through
-// another P-CSCF if it has one. The dialogs are left to the owner. It runs on a goroutine of its own: the transaction
-// tells it on a strand, whose handlers ending the registration waits for.
+// TS 24.229 clause 5.1.2A.1.6
 func (u *UE) requestFailed(req *sip.Request, in transaction.State, err error) {
 	if req.Method == "REGISTER" || !errors.Is(err, transaction.ErrTimeout) && !errors.Is(err, transaction.ErrTransport) {
 		return
@@ -644,7 +627,6 @@ func (u *UE) requestFailed(req *sip.Request, in transaction.State, err error) {
 	}
 
 	go func() {
-		// The P-CSCF the contact was registered through (§5.1.2A.1.6 B), which the request went to a port of.
 		u.mu.Lock()
 
 		pcscf := u.registeredVia
@@ -662,9 +644,8 @@ func (u *UE) requestFailed(req *sip.Request, in transaction.State, err error) {
 	}()
 }
 
-// connectionLost is a TCP connection of the UE ending, of flow f: that of an outbound registration is its flow, which
-// failed (RFC 5626 §3, §4.4). Without outbound, the registration outlives its connections, the P-CSCF opening one of
-// its own to reach the UE.
+// RFC 5626 section 3
+// RFC 5626 section 4.4
 func (u *UE) connectionLost(f sip.Flow, err error) {
 	u.mu.Lock()
 	outbound := !u.closed && u.state.Registered && u.state.Outbound
@@ -681,10 +662,7 @@ func (u *UE) connectionLost(f sip.Flow, err error) {
 	u.flowFailed(err)
 }
 
-// listenerFailed is a listener of the UE failing for good, of its unprotected port or of a protected one, as when the
-// platform destroyed its sockets with the network they were bound to: the flow of the registration failed, as on a
-// keep-alive not answered (TS 24.229 §5.1.1.4.1 NOTE 13: by other means than timer F). The UE listens on the port
-// again before its next registration.
+// TS 24.229 clause 5.1.1.4.1
 func (u *UE) listenerFailed(local netip.AddrPort, err error) {
 	u.mu.Lock()
 
@@ -699,8 +677,6 @@ func (u *UE) listenerFailed(local netip.AddrPort, err error) {
 	u.flowFailed(fmt.Errorf("ue: listener %s failed: %w", local, err))
 }
 
-// reopen listens again on the ports whose listeners failed, before a registration: the unprotected port as it was,
-// the protected server port and the client ports anew, as for a new UE. Called with u.op held.
 func (u *UE) reopen() error {
 	u.mu.Lock()
 	failed := u.failed
@@ -727,7 +703,6 @@ func (u *UE) reopen() error {
 	return nil
 }
 
-// ownFlow reports whether a contact's parameters name the UE's flow, when it registers one.
 func (u *UE) ownFlow(params sip.Params) bool {
 	if u.cfg.RegID == 0 {
 		return true
@@ -777,7 +752,6 @@ func (u *UE) scheduleLocked(remaining time.Duration) {
 		return
 	}
 
-	// The refresh is a trace of its own: the timer is its cause.
 	u.reregTimer = u.layer.Clock().AfterFunc(reregisterIn(remaining), func() {
 		err := u.Reregister(context.Background())
 		if err != nil && !errors.Is(err, ErrNotRegistered) && !errors.Is(err, ErrClosed) && !errors.Is(err, transaction.ErrClosed) {

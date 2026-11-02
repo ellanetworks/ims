@@ -11,11 +11,10 @@ import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.net.InetAddress
 
-/** An endpoint of an SA set (the Go package mobile's saEndpointJSON). */
 @Serializable
 data class SaEndpoint(val addr: String, val portC: Int, val portS: Int, val spiC: Long, val spiS: Long)
 
-/** The SA set of Platform.InstallSA (TS 33.203 §7.1), its keys those of the SAs (Annex I), in hex. */
+// TS 33.203 clause 7.1
 @Serializable
 data class SaSet(
     val id: String,
@@ -33,19 +32,13 @@ data class SaSet(
     }
 }
 
-/**
- * The SAs of the UE's registrations as IpSecManager's transport-mode transforms (TS 33.203 §7.1): the inbound SPIs
- * reserved for the UE's Security-Client, each set's four SAs, and the transforms of a socket on a protected port.
- * IpSecManager applies one transform a direction to a socket, the latest: port_us, the same across sets (§7.4 NOTE
- * 10), carries the newest set's only.
- */
+// TS 33.203 clause 7.1
 class Ipsec(private val context: Context) {
     private val ism = context.getSystemService(IpSecManager::class.java)
 
     private val spis = HashMap<Long, SecurityParameterIndex>()
     private val sets = HashMap<String, Installed>()
 
-    /** The four SAs of a set: by the UE's port, the transforms of its socket out and in. */
     private class Installed(
         val portC: Int,
         val portS: Int,
@@ -56,7 +49,7 @@ class Ipsec(private val context: Context) {
         val owned: List<AutoCloseable>,
     )
 
-    /** Reserves an inbound SPI to the device's address [local], for the Security-Client (§7.2). */
+    // TS 33.203 clause 7.2
     @Synchronized
     fun allocateSpi(local: String): Long {
         val spi = ism.allocateSecurityParameterIndex(InetAddress.getByName(local))
@@ -65,13 +58,12 @@ class Ipsec(private val context: Context) {
         return v
     }
 
-    /** Releases an SPI of allocateSpi, its SAs removed or never installed. */
     @Synchronized
     fun releaseSpi(spi: Long) {
         spis.remove(spi)?.close()
     }
 
-    /** Builds the four SAs of a set (§7.1), the inbound SPIs those reserved, the outbound the P-CSCF's. */
+    // TS 33.203 clause 7.1
     @Synchronized
     fun install(set: SaSet) {
         require(set.id !in sets) { "SA set ${set.id} installed" }
@@ -92,7 +84,6 @@ class Ipsec(private val context: Context) {
             sets[set.id] = Installed(
                 portC = set.local.portC,
                 portS = set.local.portS,
-                // UE port_c to P-CSCF port_s, and back; UE port_s to P-CSCF port_c, and back.
                 outS = transform(local, outSpiS),
                 inC = transform(remote, inSpiC),
                 inS = transform(remote, inSpiS),
@@ -105,7 +96,6 @@ class Ipsec(private val context: Context) {
         }
     }
 
-    /** Applies the SAs of set [id] to socket [fd], valid during the call only, bound to the UE's [port] of the set. */
     @Synchronized
     fun protect(id: String, fd: Int, port: Int) {
         val s = requireNotNull(sets[id]) { "SA set $id not installed" }
@@ -114,14 +104,12 @@ class Ipsec(private val context: Context) {
             s.portS -> s.outC to s.inS
             else -> throw IllegalArgumentException("port $port not of SA set $id")
         }
-        // A duplicate is the same socket: its transforms the socket's.
         ParcelFileDescriptor.fromFd(fd).use { dup ->
             ism.applyTransportModeTransform(dup.fileDescriptor, IpSecManager.DIRECTION_OUT, out)
             ism.applyTransportModeTransform(dup.fileDescriptor, IpSecManager.DIRECTION_IN, inbound)
         }
     }
 
-    /** Removes the SAs of set [id]; its inbound SPIs stay reserved until released. */
     @Synchronized
     fun remove(id: String) {
         val s = sets.remove(id) ?: return
@@ -140,20 +128,14 @@ class Ipsec(private val context: Context) {
         val b = IpSecTransform.Builder(context)
         b.setAuthentication(
             when (integrity) {
-                // IK extended to 160 bits by the session (Annex I).
                 "hmac-sha-1-96" -> IpSecAlgorithm(IpSecAlgorithm.AUTH_HMAC_SHA1, ik, TRUNCATION_BITS)
-
                 "hmac-md5-96" -> IpSecAlgorithm(IpSecAlgorithm.AUTH_HMAC_MD5, ik, TRUNCATION_BITS)
-
                 else -> throw IllegalArgumentException("integrity $integrity")
             },
         )
         when (encryption) {
             "aes-cbc" -> b.setEncryption(IpSecAlgorithm(IpSecAlgorithm.CRYPT_AES_CBC, ck))
-
-            // No encryption set: ESP with the null cipher.
             "null" -> Unit
-
             else -> throw IllegalArgumentException("encryption $encryption")
         }
         return b

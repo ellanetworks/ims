@@ -28,7 +28,6 @@ func decodeFile(t *testing.T, name string) Settings {
 	return s
 }
 
-// stable checks that s encodes, decodes to what encodes again the same: the elements kept, malformed, too.
 func stable(t *testing.T, s Settings) {
 	t.Helper()
 
@@ -48,7 +47,7 @@ func stable(t *testing.T, s Settings) {
 	}
 }
 
-// RFC 4354 §6.2: an entity of the four settings.
+// RFC 4354 section 6.2
 func TestExample62(t *testing.T) {
 	s := decodeFile(t, "rfc4354-6.2.xml")
 
@@ -61,7 +60,7 @@ func TestExample62(t *testing.T) {
 	stable(t, s)
 }
 
-// TS 24.379 §7.4.1.2.2: the selected MCPTT user profile index and the multiplex support kept in the entity's Other.
+// TS 24.379 clause 7.4.1.2.2
 func TestMCPTT(t *testing.T) {
 	s := decodeFile(t, "ts24379-7.4.1.2.2.xml")
 
@@ -75,7 +74,7 @@ func TestMCPTT(t *testing.T) {
 	stable(t, s)
 }
 
-// RFC 4354 §6.1: the extension attributes, of any namespace, and elements where the schema allows them.
+// RFC 4354 section 6.1
 func TestExtensions(t *testing.T) {
 	s := decodeFile(t, "extensions.xml")
 
@@ -104,7 +103,7 @@ func TestExtensions(t *testing.T) {
 	stable(t, s)
 }
 
-// RFC 4354 §6.1: a malformed element kept, not decoded; the first of an element given once counting.
+// RFC 4354 section 6.1
 func TestMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, body string
@@ -129,7 +128,6 @@ func TestMalformed(t *testing.T) {
 		{"children of a value", `<entity id="a"><isb-settings><incoming-session-barring active="1"><x/></incoming-session-barring></isb-settings></entity>`, func(s Settings) bool {
 			return s.Entities[0].IncomingSessionBarring == nil
 		}},
-		// TS 24.379 §7.3.2 6) a) names the settings "auto-answer" and "manual-answer"; RFC 4354 §6.1 codes them.
 		{"answer mode", `<entity id="a"><am-settings><answer-mode>auto-answer</answer-mode></am-settings></entity>`, func(s Settings) bool {
 			return s.Entities[0].AnswerMode == nil && len(s.Entities[0].Other) == 1
 		}},
@@ -143,7 +141,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, s)
 	}
 
-	// Given more than once: the first counts, malformed or not, the others kept, malformed.
 	s, err := Decode([]byte(`<poc-settings xmlns="urn:oma:params:xml:ns:poc:poc-settings"><entity id="a">` +
 		`<am-settings><answer-mode>manual</answer-mode></am-settings><am-settings><answer-mode>automatic</answer-mode></am-settings>` +
 		`<isb-settings/><isb-settings><incoming-session-barring active="true"/></isb-settings>` +
@@ -224,7 +221,6 @@ func FuzzDecode(f *testing.F) {
 
 		stable(t, s)
 
-		// A document decoded without error encodes to one decoded without error.
 		if err == nil {
 			out, _ := Encode(s)
 			if _, err := Decode(out); err != nil {

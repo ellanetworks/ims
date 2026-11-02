@@ -15,16 +15,9 @@ import (
 var (
 	ErrInUse = errors.New("sip/transaction: address in use")
 
-	// ErrRefused is the error of a send over TCP to an address a closed network does not have.
 	ErrRefused = errors.New("sip/transaction: connection refused")
 )
 
-// A Network carries messages in memory between layers. Each address on it is served by a layer (Layer.Serve), or
-// attached to one for a peer that takes its messages itself (Layer.Attach); a layer also delivers in memory to the
-// addresses it listens on. A message to an address of the network is
-// delivered in memory, without loss, in the order of its flow, so the transactions on it are reliable. A message to
-// another address goes to the transport of the layer, unless the network is closed: then it is lost over UDP, as to a
-// host that is gone, and refused over TCP.
 type Network struct {
 	closed bool
 
@@ -32,18 +25,15 @@ type Network struct {
 	endpoints map[netip.AddrPort]endpoint
 }
 
-// endpoint is an address of a network: served by layer, or attached to it with receive.
 type endpoint struct {
 	layer   *Layer
 	receive func(sip.Message)
 }
 
-// NewNetwork makes a network whose layers send to other addresses through their transport.
 func NewNetwork() *Network {
 	return &Network{endpoints: make(map[netip.AddrPort]endpoint)}
 }
 
-// NewClosedNetwork makes a network that keeps every message: the in-memory network of tests.
 func NewClosedNetwork() *Network {
 	n := NewNetwork()
 	n.closed = true
@@ -77,7 +67,6 @@ func (n *Network) lookup(addr netip.AddrPort) (endpoint, bool) {
 	return ep, ok
 }
 
-// unbind removes the addresses of l, once closed.
 func (n *Network) unbind(l *Layer) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -89,7 +78,6 @@ func (n *Network) unbind(l *Layer) {
 	}
 }
 
-// Serve serves local in memory: the layers of its network send to it without a transport.
 func (l *Layer) Serve(local netip.AddrPort) error {
 	local = unmap(local)
 
@@ -109,8 +97,6 @@ func (l *Layer) Serve(local netip.AddrPort) error {
 	return nil
 }
 
-// Attach attaches addr to the network of the layer for a peer: receive takes the messages to addr, and the peer
-// sends from addr through the layer (SendOnFlow). It returns the function that detaches it.
 func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), error) {
 	addr = unmap(addr)
 
@@ -136,8 +122,6 @@ func (l *Layer) Attach(addr netip.AddrPort, receive func(sip.Message)) (func(), 
 	}, nil
 }
 
-// endpoint is the endpoint of addr in memory: on the network of the layer, or an address the layer listens on, which
-// it delivers to itself.
 func (l *Layer) endpoint(addr netip.AddrPort) (endpoint, bool) {
 	if ep, ok := l.network.lookup(addr); ok {
 		return ep, true
@@ -146,14 +130,11 @@ func (l *Layer) endpoint(addr netip.AddrPort) (endpoint, bool) {
 	return endpoint{layer: l}, addr.IsValid() && l.isLocalAddr(unmap(addr))
 }
 
-// inMemory reports whether addr is reached in memory.
 func (l *Layer) inMemory(addr netip.AddrPort) bool {
 	_, ok := l.endpoint(addr)
 	return ok
 }
 
-// sendsFrom reports whether the layer sends from local: an address it serves or listens on, or one of a peer attached
-// to it.
 func (l *Layer) sendsFrom(local netip.AddrPort) bool {
 	if l.isLocalAddr(local) {
 		return true
@@ -164,7 +145,6 @@ func (l *Layer) sendsFrom(local netip.AddrPort) bool {
 	return ok && ep.layer == l
 }
 
-// reliable reports whether the transactions on f need no retransmissions: over TCP, or in memory.
 func (l *Layer) reliable(f sip.Flow) bool {
 	return f.Transport == sip.TCP || l.inMemory(f.Remote)
 }
@@ -196,7 +176,6 @@ func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	return l.tr.Send(ctx, m)
 }
 
-// deliver passes a copy of m to the endpoint of its remote address, on the lane of its flow.
 func (l *Layer) deliver(m sip.Message) error {
 	f := m.Env().Flow
 	f.Local, f.Remote = unmap(f.Local), unmap(f.Remote)
@@ -223,7 +202,6 @@ func (l *Layer) deliver(m sip.Message) error {
 	c.Env().Flow = sip.Flow{Transport: f.Transport, Local: f.Remote, Remote: f.Local}
 
 	return l.post(f, func() {
-		// The endpoint as the message arrives: one detached or closed meanwhile is gone, the message lost.
 		to, ok := l.endpoint(f.Remote)
 		if !ok {
 			return

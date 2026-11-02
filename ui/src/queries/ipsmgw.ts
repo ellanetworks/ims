@@ -1,7 +1,5 @@
 import { apiFetch } from "@/queries/utils";
 
-// IPSMGW is the built-in IP-SM-GW: its E.164 number, empty until set, and its name, the SIP URI the iFCs of the HSS
-// route to it by.
 export interface IPSMGW {
   number: string;
   name: string;

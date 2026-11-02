@@ -290,7 +290,7 @@ func TestDiameterPeersOpen(t *testing.T) {
 	}
 }
 
-// RFC 6733 §2.6: a peer configured without a host is known by the Origin-Host of its capabilities exchange.
+// RFC 6733 section 2.6
 func TestDiameterPeerWithoutHost(t *testing.T) {
 	core := newFakePeer(t, "mmec01.mmegi0001.mme.epc.mnc001.mcc001.3gppnetwork.org", "epc.mnc001.mcc001.3gppnetwork.org",
 		settings.ApplicationCx)
@@ -517,8 +517,7 @@ func TestDiameterRejectsUnknownPeers(t *testing.T) {
 	}
 }
 
-// RFC 6733 §5.6.4: the IMS, with the higher Origin-Host, wins: it answers the
-// HSS's connection and drops its own.
+// RFC 6733 section 5.6.4
 func TestDiameterElection(t *testing.T) {
 	const hssHost = "hss.ims.mnc001.mcc001.3gppnetwork.org"
 
@@ -762,7 +761,6 @@ func resultCode(t *testing.T, m *diameter.Message) uint32 {
 	return r.Code
 }
 
-// While a realm changes, a peer is on the routes to both the old realm and the new one.
 func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 	previous := settings.Settings{
 		Operator: settings.Operator{MCC: "001", MNC: "01"},
@@ -800,7 +798,6 @@ func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 	}
 }
 
-// An SMSC, and an MME or SMSF, serve sgd: SGd requests go to the host of a peer, through no route.
 func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
 	st := settings.Settings{
 		Operator: settings.Operator{MCC: "001", MNC: "01"},
@@ -835,7 +832,7 @@ func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
 	}
 }
 
-// TS 29.228 Table 6.2.2.1.1
+// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 func TestPPRResults(t *testing.T) {
 	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
 
@@ -869,14 +866,12 @@ func TestPPRResults(t *testing.T) {
 			false,
 			tgpp.ResultErrorNotSupportedUserData,
 		},
-		// The S-CSCF ignores SIP Digest authentication data: the user is unknown all the same.
 		{
 			"SIP Digest authentication data",
 			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData},
 			true,
 			tgpp.ResultErrorUserUnknown,
 		},
-		// TS 29.229 §7.2.1
 		{
 			"required feature",
 			cx.PushProfileRequest{PrivateIdentity: testIMPI, UserData: userData, Features: 1, FeaturesRequired: true},
@@ -901,8 +896,7 @@ func TestPPRResults(t *testing.T) {
 	}
 }
 
-// TS 29.229 §6.1.12: a PPA of success, with the Vendor-Specific-Application-Id of Cx and Auth-Session-State
-// NO_STATE_MAINTAINED, without Supported-Features, the S-CSCF supporting none.
+// TS 29.229 clause 6.1.12
 func TestPPASuccess(t *testing.T) {
 	hss := newFakePeer(t, "hss.ims.mnc001.mcc001.3gppnetwork.org", imsRealm, settings.ApplicationCx)
 

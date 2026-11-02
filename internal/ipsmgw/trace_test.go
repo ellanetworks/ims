@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// served are the span contexts of the server spans of the requests of method the IP-SM-GW received, in order.
 func served(spans *tracetest.SpanRecorder, method string) []trace.SpanContext {
 	var out []trace.SpanContext
 
@@ -26,8 +25,6 @@ func served(spans *tracetest.SpanRecorder, method string) []trace.SpanContext {
 	return out
 }
 
-// detachedSpans waits for len(causes) ended spans named name, and checks that each is the root of a trace of its own,
-// of the IP-SM-GW's role, linked to the corresponding span of causes.
 func detachedSpans(t *testing.T, spans *tracetest.SpanRecorder, name string, causes ...trace.SpanContext) []sdktrace.ReadOnlySpan {
 	t.Helper()
 
@@ -73,8 +70,6 @@ func detachedSpans(t *testing.T, spans *tracetest.SpanRecorder, name string, cau
 	return got
 }
 
-// An update of the HSS is a trace of its own, linked to the request that caused it: the NOTIFY that made the user
-// available, the REGISTER that deregistered it.
 func TestHSSUpdateLinkedToItsCause(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	w := newWorldTraced(t, newFakeStore(), sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
@@ -83,7 +78,6 @@ func TestHSSUpdateLinkedToItsCause(t *testing.T) {
 	w.register(impu, 600, "application/3gpp-ims+xml", serviceInfo)
 	sub := w.subscribed()
 
-	// Pending, so that a deregistration ends the registration at once.
 	w.notify(sub, "pending;expires=600", doc(0, impu, true))
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
 
@@ -101,8 +95,6 @@ func TestHSSUpdateLinkedToItsCause(t *testing.T) {
 	detachedSpans(t, spans, "ip-sm-gw hss update", notified[0], registers[1])
 }
 
-// A subscription the S-CSCF deactivates is made again in a trace of its own, linked to the NOTIFY, of the SUBSCRIBE
-// in it (D5); an expiry, in a trace linked to the REGISTER that armed it.
 func TestDetachedWorkLinkedToItsCause(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	w := newWorldTraced(t, newFakeStore(), sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
@@ -118,7 +110,6 @@ func TestDetachedWorkLinkedToItsCause(t *testing.T) {
 
 	var subscribe sdktrace.ReadWriteSpan
 
-	// The client span ends with its transaction, past the response.
 	for _, s := range spans.Started() {
 		if s.Name() == "SUBSCRIBE" && s.SpanKind() == trace.SpanKindClient && s.Parent().SpanID() == resub.SpanContext().SpanID() {
 			subscribe = s
@@ -133,8 +124,6 @@ func TestDetachedWorkLinkedToItsCause(t *testing.T) {
 	detachedSpans(t, spans, "registration expiry", served(spans, "REGISTER")[0])
 }
 
-// The writes of the registrations are bounded, alive past the transaction that caused them, and made outside the
-// registrar's lock.
 func TestWritesBoundedOutsideTheLock(t *testing.T) {
 	store := newFakeStore()
 	w := newWorld(t, store)
@@ -161,7 +150,6 @@ func TestWritesBoundedOutsideTheLock(t *testing.T) {
 			fail(fmt.Sprintf("context ended: %v", context.Cause(ctx)))
 		}
 
-		// The lock is free but for a moment of another goroutine: a write under it never gets it.
 		free := false
 
 		for range 1000 {

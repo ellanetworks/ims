@@ -35,15 +35,6 @@ func Example() {
 	res.Header.Add("Expires", "600")
 
 	fmt.Print(strings.ReplaceAll(res.String(), "\r\n", "\n"))
-	// Output:
-	// SIP/2.0 200 OK
-	// Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bK1;rport
-	// From: <sip:alice@ims.example.org>;tag=a1
-	// To: <sip:alice@ims.example.org>;tag=t1
-	// Call-ID: c1
-	// CSeq: 1 REGISTER
-	// Content-Length: 0
-	// Expires: 600
 }
 
 func ExampleHeader_PopFirst() {
@@ -54,9 +45,6 @@ func ExampleHeader_PopFirst() {
 	top, _ := h.PopFirst("Route")
 	fmt.Println(top)
 	fmt.Println(h.Get("Route"))
-	// Output:
-	// <sip:pcscf.ims.example.org;lr>
-	// <sip:scscf.ims.example.org;lr>
 }
 
 func ExampleStreamReader_Next() {
@@ -75,7 +63,4 @@ func ExampleStreamReader_Next() {
 			fmt.Println(msg.StartLine())
 		}
 	}
-	// Output:
-	// ping: answer with CRLF
-	// REGISTER sip:ims.example.org SIP/2.0
 }

@@ -17,7 +17,6 @@ import (
 
 const bobIMPU = "sip:bob@" + homeDomain
 
-// pushed is a PPR of the first implicit set of testSubscriptions, as the change makes it.
 func pushed(t *testing.T, change func(sub *cx.IMSSubscription)) cx.PushProfileRequest {
 	t.Helper()
 
@@ -42,7 +41,8 @@ func (h *harness) push(ppr cx.PushProfileRequest) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 1, §5.4.2.1.2 step 4e IV
+// TS 24.229 clause 5.4.1.8
+// TS 24.229 clause 5.4.2.1.2
 func TestPushProfileAddsIdentity(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -68,7 +68,8 @@ func TestPushProfileAddsIdentity(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TS 24.229 §5.4.1.8 step 2, TS 29.228 §6.5.2.1: an identity leaves the set, or is barred in it.
+// TS 24.229 clause 5.4.1.8
+// TS 29.228 clause 6.5.2.1
 func TestPushProfileRemovesIdentity(t *testing.T) {
 	for name, change := range map[string]func(sub *cx.IMSSubscription){
 		"removed": func(sub *cx.IMSSubscription) {
@@ -100,7 +101,6 @@ func TestPushProfileRemovesIdentity(t *testing.T) {
 				}
 			}
 
-			// The identity is reported gone once (§5.4.2.1.2 step 4e I).
 			u.register(registerOptions{})
 			h.hss.nextSAR(t)
 
@@ -111,7 +111,7 @@ func TestPushProfileRemovesIdentity(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 1: an identity unbarred joins the registered ones.
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileUnbarsIdentity(t *testing.T) {
 	h := newHarness(t)
 	h.hss.set(func(f *fakeHSS) { f.subscriptions[0].ServiceProfiles[1].PublicIdentities[0].Barred = true })
@@ -126,8 +126,8 @@ func TestPushProfileUnbarsIdentity(t *testing.T) {
 	wantContact(t, n.contact(t, testAlias, u.contact), reginfo.Active, reginfo.Created)
 }
 
-// TS 29.228 §6.5.2.1, §6.2.2.1: the HSS uses an RTR to change the default identity or to leave none; the S-CSCF keeps
-// what it had.
+// TS 29.228 clause 6.5.2.1
+// TS 29.228 clause 6.2.2.1
 func TestPushProfileRejected(t *testing.T) {
 	for name, change := range map[string]func(sub *cx.IMSSubscription){
 		"default changed": func(sub *cx.IMSSubscription) { sub.ServiceProfiles[0].PublicIdentities[0].Barred = false },
@@ -161,7 +161,7 @@ func TestPushProfileRejected(t *testing.T) {
 	}
 }
 
-// TS 29.228 Table 6.2.2.1.1
+// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 func TestPushProfileErrors(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -201,8 +201,7 @@ func TestPushProfileErrors(t *testing.T) {
 	h.hss.noCx(t)
 }
 
-// TS 29.228 §6.2.2.1: the HSS names one of the private identities that share the set; the profile is that of every
-// registration of the set.
+// TS 29.228 clause 6.2.2.1
 func TestPushProfileSharedSet(t *testing.T) {
 	h := newHarness(t)
 
@@ -228,7 +227,7 @@ func TestPushProfileSharedSet(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 3: the calls of an identity that leaves the set are released, those of the others go on.
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileReleasesCallsOfRemovedIdentity(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -248,7 +247,6 @@ func TestPushProfileReleasesCallsOfRemovedIdentity(t *testing.T) {
 	bye(t, sh.icscf)
 }
 
-// An iFC that does not fire on REGISTER applies to the next requests, without a NOTIFY or a re-registration.
 func TestPushProfileFilterCriteria(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -273,8 +271,7 @@ func TestPushProfileFilterCriteria(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 4 b: an AS the REGISTER now triggers has the S-CSCF shorten the registration, so that the
-// re-registration reaches it.
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileRegisterAS(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.ReauthExpires = 2 * time.Minute
@@ -303,7 +300,6 @@ func TestPushProfileRegisterAS(t *testing.T) {
 
 	as.RecvNone(50 * time.Millisecond)
 
-	// The HSS gives the profile it pushed at the re-registration.
 	h.hss.set(func(f *fakeHSS) { f.userData = ppr.UserData })
 
 	res := u.send(registerOptions{auth: u.protected(testNonce(), testVector.XRES), expires: "3600"})
@@ -318,13 +314,12 @@ func TestPushProfileRegisterAS(t *testing.T) {
 		t.Fatalf("AS got %s, want a third-party REGISTER", req.StartLine())
 	}
 
-	// The same profile again changes nothing.
 	h.push(ppr)
 	pcscfSub.recvNotify()
 	pcscfSub.noNotify()
 }
 
-// TS 29.228 §6.6.1: the HSS pushes the profile of an identity that the S-CSCF keeps unregistered.
+// TS 29.228 clause 6.6.1
 func TestPushProfileUnregistered(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
@@ -412,7 +407,6 @@ func TestMayRegister(t *testing.T) {
 	}
 }
 
-// eventually polls cond until it holds, for a change the S-CSCF makes in the background.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 
@@ -429,7 +423,8 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 const confPSI = "sip:conf@" + homeDomain
 
-// TS 29.228 §6.6.1, §6.2.2.1: the HSS pushes the profile of a PSI the S-CSCF keeps unregistered.
+// TS 29.228 clause 6.6.1
+// TS 29.228 clause 6.2.2.1
 func TestPushProfilePSI(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
@@ -479,7 +474,7 @@ func TestPushProfilePSI(t *testing.T) {
 	sh.hss.noCx(t)
 }
 
-// TS 24.229 §5.4.1.8 step 2, NOTE 2: barring an identity leaves its calls in progress.
+// TS 24.229 clause 5.4.1.8
 func TestPushProfileBarringKeepsCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -495,7 +490,7 @@ func TestPushProfileBarringKeepsCalls(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.2.2.1: on an error the S-CSCF keeps what it had: no call is released.
+// TS 29.228 clause 6.2.2.1
 func TestPushProfileFailureKeepsCalls(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -518,7 +513,7 @@ func TestPushProfileFailureKeepsCalls(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.2.1.2 step 3: the NOTIFY of a change of a shared set lists the contacts of every user of it.
+// TS 24.229 clause 5.4.2.1.2
 func TestPushProfileSharedSetNotify(t *testing.T) {
 	h := newHarness(t)
 	p := h.newPCSCF()
@@ -560,7 +555,7 @@ func TestPushProfileSharedSetNotify(t *testing.T) {
 	}
 }
 
-// TS 29.228 Table 6.2.2.1.1: a private identity the S-CSCF knows, with a profile of a set it does not hold.
+// TS 29.228 clause 6.2.2.1 table 6.2.2.1.1
 func TestPushProfileUnknownSet(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -580,7 +575,7 @@ func TestPushProfileUnknownSet(t *testing.T) {
 	}
 }
 
-// RFC 3680 §5.1: an identity added by the push that shortens the registration is created, the others shortened.
+// RFC 3680 section 5.1
 func TestPushProfileAddsIdentityAndRegisterAS(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -601,8 +596,7 @@ func TestPushProfileAddsIdentityAndRegisterAS(t *testing.T) {
 	wantContact(t, n.contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Shortened)
 }
 
-// TS 24.229 §5.4.1.7: an AS already triggered for one service profile, now for another, gets a third-party REGISTER of
-// the other's identity: the registration is shortened.
+// TS 24.229 clause 5.4.1.7
 func TestPushProfileRegisterASForAnotherProfile(t *testing.T) {
 	as := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 	trigger := iscTrigger(as, cx.DefaultHandlingSessionContinued, methodSPT("REGISTER"))
@@ -624,7 +618,7 @@ func TestPushProfileRegisterASForAnotherProfile(t *testing.T) {
 	wantContact(t, s.recvNotify().contact(t, testMSISDN, u.contact), reginfo.Active, reginfo.Shortened)
 }
 
-// TS 29.228 §6.5.2.1: the subscriptions to an identity removed end; the others go on.
+// TS 29.228 clause 6.5.2.1
 func TestPushProfileEndsSubscriptionsToRemovedIdentity(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -656,7 +650,7 @@ func TestPushProfileEndsSubscriptionsToRemovedIdentity(t *testing.T) {
 	h.waitSubscriptions(1)
 }
 
-// TS 29.228 §6.5.2.1: the identity a UE registered, removed, gives way to the default identity.
+// TS 29.228 clause 6.5.2.1
 func TestPushProfileRemovesRegisteredIdentity(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -672,8 +666,6 @@ func TestPushProfileRemovesRegisteredIdentity(t *testing.T) {
 	})
 }
 
-// reRegisterWith refreshes the registration of the UE, the HSS downloading the first implicit set of
-// testSubscriptions as change makes it (TS 29.228 §6.6).
 func (sh *sessionHarness) reRegisterWith(t *testing.T, change func(sub *cx.IMSSubscription)) {
 	t.Helper()
 
@@ -687,12 +679,12 @@ func (sh *sessionHarness) reRegisterWith(t *testing.T, change func(sub *cx.IMSSu
 
 	sh.hss.set(func(f *fakeHSS) { f.userData, f.override = data, true })
 
-	// Every re-registration notifies the HSS (TS 23.228 §5.2.2.4 step 6), a refresh without a challenge included.
 	wantStatus(t, sh.ue.send(registerOptions{auth: sh.ue.protected(testNonce(), testVector.XRES)}), 200)
 	sh.hss.wantSAR(t, cx.AssignmentReRegistration)
 }
 
-// TS 24.229 §5.4.1.8, TS 29.228 §6.6: a profile the HSS downloads with a re-registration changes it as a push does.
+// TS 24.229 clause 5.4.1.8
+// TS 29.228 clause 6.6
 func TestReRegistrationProfileChange(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -711,8 +703,7 @@ func TestReRegistrationProfileChange(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 2, NOTE 2: an identity barred, or another identity removed, with a re-registration leaves
-// the calls in progress.
+// TS 24.229 clause 5.4.1.8
 func TestReRegistrationProfileChangeKeepsCalls(t *testing.T) {
 	for name, change := range map[string]func(sub *cx.IMSSubscription){
 		"barred":          func(sub *cx.IMSSubscription) { sub.ServiceProfiles[0].PublicIdentities[2].Barred = true },
@@ -731,8 +722,7 @@ func TestReRegistrationProfileChangeKeepsCalls(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.8 step 3: an identity removed with a re-registration releases its calls, not those of the other
-// identities of the contact.
+// TS 24.229 clause 5.4.1.8
 func TestReRegistrationReleasesCallsOfRemovedIdentity(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -756,7 +746,6 @@ func TestReRegistrationReleasesCallsOfRemovedIdentity(t *testing.T) {
 	sh.icscf.RecvNone(50 * time.Millisecond)
 }
 
-// A refresh while the HSS cannot be reached keeps the registration, with the profile held.
 func TestReRegistrationHSSDown(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -770,7 +759,7 @@ func TestReRegistrationHSSDown(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.1.2.1: a profile kept unregistered outlives a restart, and is released at the HSS when it expires.
+// TS 29.228 clause 6.1.2.1
 func TestUnregisteredProfileAfterRestart(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.wantSAR(t, cx.AssignmentRegistration)
@@ -805,8 +794,7 @@ func TestUnregisteredProfileAfterRestart(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.5.2.1: a push that adds an identity of another set, whose removal from it the HSS did not push first,
-// is refused: the other set keeps it.
+// TS 29.228 clause 6.5.2.1
 func TestPushProfileOfSeveralSets(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -833,8 +821,6 @@ func TestPushProfileOfSeveralSets(t *testing.T) {
 	}
 }
 
-// tabletWith is a UE of another private identity, whose subscription at the HSS is a set of its identity and the
-// identities given: as the HSS has it once it moved them from the set of the harness's UE (TS 29.228 §6.5.2.1).
 func (sh *sessionHarness) tabletWith(identities ...string) *ue {
 	const tabletIMPU = "sip:tablet@" + homeDomain
 
@@ -856,9 +842,8 @@ func (sh *sessionHarness) tabletWith(identities ...string) *ue {
 	return tablet
 }
 
-// TS 29.228 §6.5.2.1, TS 24.229 §5.4.1.8 steps 2 to 4: the HSS's answer to a registration puts in the new set an
-// identity that another registered set still holds, its removal from it lost: it leaves that set as a push would have
-// it, with its calls, and the others of the set go on.
+// TS 29.228 clause 6.5.2.1
+// TS 24.229 clause 5.4.1.8
 func TestRegisterMovesIdentityFromAnotherRegisteredSet(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -909,8 +894,7 @@ func TestRegisterMovesIdentityFromAnotherRegisteredSet(t *testing.T) {
 	sh.hss.noCx(t)
 }
 
-// TS 29.228 §6.5.2.1: the default identity of a registered set moved, the set is deregistered as the HSS would have
-// with an RTR, without a Cx request for it.
+// TS 29.228 clause 6.5.2.1
 func TestRegisterMovesDefaultIdentityFromAnotherRegisteredSet(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -935,13 +919,11 @@ func TestRegisterMovesDefaultIdentityFromAnotherRegisteredSet(t *testing.T) {
 	sh.hss.noCx(t)
 }
 
-// TS 29.228 §6.5.2.1: the HSS's answer wins over a set of the same private identity too: the set kept unregistered
-// that the registration takes over gets the identity of the registered set.
+// TS 29.228 clause 6.5.2.1
 func TestRegisterMovesIdentityFromOwnRegisteredSet(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
 
-	// The set of the second identity is kept unregistered.
 	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", secondIMPU))
 	final(t, sh.icscf)
 
@@ -972,8 +954,6 @@ func TestRegisterMovesIdentityFromOwnRegisteredSet(t *testing.T) {
 	}
 }
 
-// A registration of a set that an expired registration of the private identity, not yet removed, refers to takes it
-// over: the set stays, with its new identity.
 func TestRegisterSetOfExpiredRegistration(t *testing.T) {
 	const third = "sip:third@" + homeDomain
 
@@ -1008,8 +988,7 @@ func TestRegisterSetOfExpiredRegistration(t *testing.T) {
 	}
 }
 
-// TS 29.228 §6.5.2.1: the private identities learn of the changes of a set in no order; each applies the set as it is
-// by then. An identity removed, then back, keeps its calls.
+// TS 29.228 clause 6.5.2.1
 func TestPushProfilesOutOfOrder(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)
@@ -1034,8 +1013,6 @@ func TestPushProfilesOutOfOrder(t *testing.T) {
 	}
 }
 
-// A request to an identity whose registration expired, not yet removed, is served with the profile the HSS sends,
-// which is not kept: the set of the registration keeps its identities.
 func TestUnregisteredProfileOfExpiredRegistration(t *testing.T) {
 	sh := newSessionHarness(t)
 	sh.hss.nextSAR(t)

@@ -14,8 +14,6 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// writeMCPTTSettingsError answers a failed change of settings: with its problems for the client's mistakes, each at the
-// field of the request body, own of the body's document, or with a generic message if it could not be saved.
 func writeMCPTTSettingsError(ctx context.Context, w http.ResponseWriter, err error, failed string, own func(string) string, logger *slog.Logger) {
 	status := http.StatusInternalServerError
 
@@ -49,19 +47,15 @@ func writeMCPTTSettingsError(ctx context.Context, w http.ResponseWriter, err err
 	writeError(ctx, w, status, strings.Join(msgs, "; "), nil, logger)
 }
 
-// invalidMCPTT answers a request body invalid by itself.
 func invalidMCPTT(ctx context.Context, w http.ResponseWriter, message string, logger *slog.Logger) {
 	writeError(ctx, w, http.StatusBadRequest, message, nil, logger)
 }
 
-// mcpttPrefixes are the paths of the settings that are another path of the request bodies, longest first.
 var mcpttPrefixes = []struct{ from, to string }{
 	{"on-network.transmit-time.time-limit", "transmit_time_limit_ms"},
 	{"list.entries", "members"},
 }
 
-// mcpttNames are the keys of the settings that are another field of the request bodies; the others are those of the
-// keys, in snake case.
 var mcpttNames = map[string]string{
 	"mcptt-user-id":               "mcptt_id",
 	"user-alias":                  "alias",
@@ -70,7 +64,6 @@ var mcpttNames = map[string]string{
 	"on-network-recvonly":         "recvonly",
 }
 
-// mcpttMemberField is the field of a member's request body of the path of a settings.FieldError of the member.
 func mcpttMemberField(path string) string {
 	if path == "uri" {
 		return "mcptt_id"
@@ -81,8 +74,6 @@ func mcpttMemberField(path string) string {
 
 var mcpttIndex = regexp.MustCompile(`\[\d+\]$`)
 
-// mcpttField is the field of a request body of the path of a settings.FieldError: members[2].user_priority of
-// list.entries[2].user-priority. The uri of a group is its group_id, that of a member its mcptt_id.
 func mcpttField(path string) string {
 	for _, p := range mcpttPrefixes {
 		if rest, ok := strings.CutPrefix(path, p.from); ok {
@@ -118,10 +109,8 @@ func mcpttField(path string) string {
 	return strings.Join(segs, ".")
 }
 
-// maxMS is the most milliseconds a duration holds.
 const maxMS = math.MaxInt64 / int64(time.Millisecond)
 
-// duration is the duration of ms milliseconds of the field name, or the problem with it.
 func duration(name string, ms int64) (time.Duration, string) {
 	if ms > maxMS || ms < -maxMS {
 		return 0, name + ": " + strconv.FormatInt(ms, 10) + " is out of range"
@@ -130,7 +119,6 @@ func duration(name string, ms int64) (time.Duration, string) {
 	return time.Duration(ms) * time.Millisecond, ""
 }
 
-// optionalDuration is duration, of an optional field: nil if absent.
 func optionalDuration(name string, ms *int64) (*time.Duration, string) {
 	if ms == nil {
 		return nil, ""
@@ -153,13 +141,11 @@ func optionalMilliseconds(d *time.Duration) *int64 {
 	return &ms
 }
 
-// paged are the items of page of perPage of items.
 func paged[T any](items []T, page, perPage int) []T {
 	start := min((page-1)*perPage, len(items))
 	return items[start:min(start+perPage, len(items))]
 }
 
-// orEmpty is s, empty rather than nil, for a JSON array.
 func orEmpty[T any](s []T) []T {
 	if s == nil {
 		return []T{}

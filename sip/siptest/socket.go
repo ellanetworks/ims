@@ -36,7 +36,6 @@ type Socket struct {
 	opened int
 	wg     sync.WaitGroup
 
-	// stun counts the STUN Binding requests received on UDP, which the socket answers unless mute.
 	stun int
 	mute bool
 }
@@ -164,7 +163,6 @@ func (s *Socket) Recv() Received {
 	}
 }
 
-// RecvWithin is the next message received within d, ok false without one.
 func (s *Socket) RecvWithin(d time.Duration) (Received, bool) {
 	select {
 	case r := <-s.recv:
@@ -242,7 +240,6 @@ func (s *Socket) accept() {
 	}
 }
 
-// STUNRequests is the number of STUN Binding requests received on UDP: keep-alives (RFC 5626 §4.4.2).
 func (s *Socket) STUNRequests() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -250,7 +247,6 @@ func (s *Socket) STUNRequests() int {
 	return s.stun
 }
 
-// MuteSTUN stops or resumes the answers to the STUN Binding requests.
 func (s *Socket) MuteSTUN(mute bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -258,8 +254,7 @@ func (s *Socket) MuteSTUN(mute bool) {
 	s.mute = mute
 }
 
-// stunRequest answers a STUN Binding request (RFC 5389 §7.3) with a response of its transaction ID, reporting
-// whether b is one.
+// RFC 5389 section 7.3
 func (s *Socket) stunRequest(b []byte, src netip.AddrPort) bool {
 	if len(b) < 20 || binary.BigEndian.Uint16(b[0:2]) != 0x0001 || binary.BigEndian.Uint32(b[4:8]) != 0x2112A442 {
 		return false

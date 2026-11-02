@@ -26,7 +26,6 @@ var (
 	roleKey = attribute.Key("test.role")
 )
 
-// remoteParent is the trace context a peer sends.
 var remoteParent = trace.NewSpanContext(trace.SpanContextConfig{
 	TraceID:    trace.TraceID{0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47, 0x36},
 	SpanID:     trace.SpanID{0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7},
@@ -47,14 +46,12 @@ type traceHarness struct {
 	untrusted *siptest.Peer
 }
 
-// newTraceHarness serves servedA and servedB, with a peer of the trust domain and one outside it, as a UE.
 func newTraceHarness(t *testing.T) *traceHarness {
 	t.Helper()
 
 	return newTraceHarnessLinked(t, nil)
 }
 
-// newTraceHarnessLinked is newTraceHarness, with links the Config.SpanLinks of the layer.
 func newTraceHarnessLinked(t *testing.T, links func(*sip.Request) []trace.SpanContext) *traceHarness {
 	t.Helper()
 
@@ -84,7 +81,6 @@ func newTraceHarnessLinked(t *testing.T, links func(*sip.Request) []trace.SpanCo
 	}
 }
 
-// ended waits for n spans to end, and returns them.
 func (h *traceHarness) ended(n int) []sdktrace.ReadOnlySpan {
 	h.t.Helper()
 
@@ -191,7 +187,6 @@ func TestServerSpanContinuesTraceOfTrustDomain(t *testing.T) {
 		t.Fatalf("tracestate vendor=%q", got)
 	}
 
-	// A 4xx is the client's: not an error of the server.
 	if s.Status().Code != codes.Unset {
 		t.Fatalf("status %v", s.Status())
 	}
@@ -229,7 +224,6 @@ func TestServerSpanOfUntrustedFlowStartsATrace(t *testing.T) {
 	}
 
 	wantAttr(t, s, "error.type", "500")
-	// A UE's address is not recorded.
 	wantNoAttr(t, s, "network.peer.address")
 }
 
@@ -276,7 +270,6 @@ func TestClientSpanStripsTraceContextAtTrustBoundary(t *testing.T) {
 	ctx, parent := h.tracer.Start(context.Background(), "parent")
 	defer parent.End()
 
-	// A request forwarded to a UE, which carries the trace context of the previous hop.
 	out := tracedRequest("MESSAGE", servedA, untrustedPeer)
 	out.Flow = sip.Flow{Transport: sip.UDP, Local: servedA, Remote: untrustedPeer}
 
@@ -359,7 +352,6 @@ func TestInMemoryHopIsOneTrace(t *testing.T) {
 	wantAttr(t, server, roleKey, servedB.String())
 }
 
-// request sends a request from the layer, in the trace of ctx.
 func (h *traceHarness) request(ctx context.Context, method string, from, to netip.AddrPort) *siptest.Responses {
 	h.t.Helper()
 
@@ -476,7 +468,6 @@ func TestHandlerContextEndsWithTheTransaction(t *testing.T) {
 
 	h.respond(got, 200)
 
-	// Timer J (RFC 3261 §17.2.2), zero on a reliable flow, ends the transaction.
 	h.clock.Advance(64 * t1)
 
 	select {
@@ -520,7 +511,6 @@ func TestHandlerContextEndsWithACancel(t *testing.T) {
 
 type ctxKey struct{}
 
-// capture is a client handler that keeps the context of its calls.
 type capture struct{ ctxs chan context.Context }
 
 func (c capture) HandleResponse(ctx context.Context, _ *sip.Response) { c.ctxs <- ctx }
@@ -665,7 +655,6 @@ func TestResponsesCarryNoTraceContext(t *testing.T) {
 
 	got := h.tu.NextRequest()
 
-	// A response relayed from the core, which carries its trace context.
 	res := sip.NewResponse(got.Req, 200, "")
 	res.Header.Set("traceparent", remoteTraceparent)
 	res.Header.Set("tracestate", "vendor=1")
@@ -717,7 +706,6 @@ func TestRequestStartingATraceLinksToWhatItContinues(t *testing.T) {
 		return []trace.SpanContext{dialogSpan, {}}
 	})
 
-	// From a UE: a trace of its own, linked to its dialog.
 	h.untrusted.Send(sip.UDP, servedA, tracedRequest("BYE", untrustedPeer, servedA))
 	h.respond(h.tu.NextRequest(), 200)
 
@@ -730,7 +718,6 @@ func TestRequestStartingATraceLinksToWhatItContinues(t *testing.T) {
 		t.Fatalf("links %v, want the dialog's", got)
 	}
 
-	// From the trust domain: a child of its peer's span, which has the links.
 	h.trusted.Send(sip.UDP, servedA, tracedRequest("BYE", trustedPeer, servedA))
 	h.respond(h.tu.NextRequest(), 200)
 

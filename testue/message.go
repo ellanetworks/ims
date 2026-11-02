@@ -12,13 +12,11 @@ import (
 
 const SMSContentType = "application/vnd.3gpp.sms"
 
-// SMS is the SMS over IP service of a UE (TS 24.341): MESSAGEs of RP messages, sent and received. It has no ICSI:
-// the UE registers it as g.3gpp.smsip (§5.3.1.2), and takes the MESSAGEs with its Content-Type.
+// TS 24.341
 type SMS struct {
 	u *UE
 }
 
-// service is SMS over IP as a service of the UE.
 func (s *SMS) service() ue.Service {
 	smsip := sip.FeatureSet{sip.NewFeature("+g.3gpp.smsip")}
 
@@ -34,15 +32,15 @@ func (s *SMS) service() ue.Service {
 	}
 }
 
-// received answers a MESSAGE of the network (TS 24.341 §5.3.2.1).
+// TS 24.341 clause 5.3.2.1
 func (s *SMS) received(r *ua.Request) {
 	s.u.event(ue.Event{Request: r.Message().Clone()})
 
 	_ = r.Respond(ua.Reply{Code: 200})
 }
 
-// Send sends an RP message in a MESSAGE to the PSI of the SMSC or to target (TS 24.229 §5.1.2A.1, TS 24.341 §5.3.1.2),
-// and returns its final response. headers replace those of the same name.
+// TS 24.229 clause 5.1.2A.1
+// TS 24.341 clause 5.3.1.2
 func (s *SMS) Send(ctx context.Context, target string, body []byte, headers ...sip.Field) (*sip.Response, error) {
 	u := s.u
 

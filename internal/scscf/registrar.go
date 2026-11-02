@@ -40,8 +40,6 @@ const (
 	DefaultMinExpires = 60 * time.Second
 	DefaultMaxExpires = 3600 * time.Second
 
-	// backgroundTimeout bounds the work the registrar does on its own, once it holds the lock it needs: its database
-	// operations and Cx requests, each of which CxTimeout bounds besides.
 	backgroundTimeout = time.Minute
 
 	tracerScope = "github.com/ellanetworks/ims/internal/scscf"
@@ -67,7 +65,7 @@ func (systemClock) AfterFunc(d time.Duration, f func()) transaction.Timer {
 	return time.AfterFunc(d, f)
 }
 
-// Resolver locates the servers of a URI (RFC 3263 §4); sip.Resolver is one.
+// RFC 3263 section 4
 type Resolver interface {
 	Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error)
 }
@@ -81,26 +79,17 @@ type Config struct {
 	ReauthInterval time.Duration
 	ReauthExpires  time.Duration
 
-	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
-	HSSRealm func() string
-	// CxTimeout bounds a Cx request, its fallback to the realm included. Zero is DefaultCxTimeout.
+	HSSRealm  func() string
 	CxTimeout time.Duration
 	Diameter  Diameter
 	DB        *db.DB
 
-	// ASTimeout is how long an AS has to respond before the default handling of its iFC applies. Zero is
-	// DefaultASTimeout.
 	ASTimeout time.Duration
 
-	// Trust is the trust domain, which the ASs the S-CSCF sends to are in (TS 24.229 §5.7.3).
-	Trust *trust.Domain
-	// Resolver locates the ASs the iFCs name, and the next hops of requests, by domain name (RFC 3263): the IMS's
-	// resolves the hosts of its built-in ASs to them in memory (package as). Nil asks the system's resolver.
+	Trust    *trust.Domain
 	Resolver Resolver
 
-	// Records, if any, keeps a record of each call.
-	Records *callrecords.Recorder
-	// RegistrationAttempts, if any, counts the registration attempts the S-CSCF answers.
+	Records              *callrecords.Recorder
 	RegistrationAttempts *regmetrics.Registrations
 
 	Layer     *transaction.Layer
@@ -126,23 +115,16 @@ type Registrar struct {
 	challenges map[authKey]*challenge
 	authAt     map[authKey]authenticated
 
-	// reauth counts the re-authentications the network asked for, per private identity.
 	reauth map[string]uint64
 	sweep  transaction.Timer
 
-	// peers are the ASs of each public identity, by its key and the AS's SIP URI; fetching the downloads of
-	// unregistered profiles in progress, by canonical public identity, which requests for the same identity wait for.
 	peers    map[string]map[string]*asPeer
 	fetching map[string]*fetch
 
-	// profiles serialises the changes of the profiles of the implicit sets, which several private identities share:
-	// each reads the set, and stores it changed, holding it.
 	profiles chan struct{}
 
 	calls *calls
 
-	// causes are the span contexts of the REGISTERs that made or refreshed the bindings, by private identity and
-	// binding: what their expiry links to. They are kept in memory only, and go with the bindings (load).
 	causes map[string]map[int64]trace.SpanContext
 }
 
@@ -154,11 +136,9 @@ type challenge struct {
 	vector  authVector
 	resyncs int
 	timer   transaction.Timer
-	// hss is the HSS that gave the vector, and initial tells that the REGISTER challenged was unprotected.
 	hss     db.HSS
 	initial bool
 
-	// cause is the span context of the REGISTER challenged.
 	cause trace.SpanContext
 }
 
@@ -195,7 +175,6 @@ func New(cfg Config) *Registrar {
 		cfg.MaxExpires = max(DefaultMaxExpires, cfg.MinExpires)
 	}
 
-	// The registrar's lifetime: the root of the work it does on its own, which Close ends.
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var tp trace.TracerProvider
@@ -242,7 +221,6 @@ func (r *Registrar) Register(ctx context.Context, req *sip.Request, respond func
 
 	defer done()
 
-	// The third-party REGISTERs of a successful registration (TS 24.229 §5.4.1.7) go once the UE has its response.
 	responded := make(chan struct{})
 	res, out := r.register(ctx, req, responded)
 
@@ -342,8 +320,6 @@ func (r *Registrar) unlock(impi string) {
 	delete(r.busy, impi)
 }
 
-// lockProfiles takes the lock of the profiles of the implicit sets. It is taken after that of a private identity,
-// never before, and held only over database operations.
 func (r *Registrar) lockProfiles(ctx context.Context) error {
 	select {
 	case r.profiles <- struct{}{}:
@@ -357,10 +333,8 @@ func (r *Registrar) unlockProfiles() {
 	<-r.profiles
 }
 
-// authKey identifies what the S-CSCF authenticates: a private identity's registration, or each of its
-// registration flows, a registered contact of its own (TS 33.203 §6.1 NOTE 2). A flow is a public user
-// identity's: two UAs of one private identity and instance ID register flows of their own when they register
-// public user identities of different sets (TS 24.229 §3.1, §5.4.1.2.2 step 6d).
+// TS 33.203 clause 6.1
+// TS 24.229 clause 5.4.1.2.2
 type authKey struct {
 	impi     string
 	impu     string
@@ -368,8 +342,6 @@ type authKey struct {
 	regID    int64
 }
 
-// authenticated is when a registration or flow last authenticated, and how many re-authentications of
-// its private identity the network had asked for by then.
 type authenticated struct {
 	at     time.Time
 	reauth uint64
@@ -387,8 +359,7 @@ func (r *Registrar) putChallenge(k authKey, ch *challenge) {
 	r.challenges[k] = ch
 }
 
-// challengeExpired ends a challenge that the UE did not answer in time (TS 24.229 §5.4.1.2.2 step 9): a trace of its
-// own, linked to the REGISTER challenged.
+// TS 24.229 clause 5.4.1.2.2
 func (r *Registrar) challengeExpired(k authKey, ch *challenge) {
 	impi := k.impi
 
@@ -442,8 +413,6 @@ func (r *Registrar) pendingChallenge(k authKey) *challenge {
 	return r.challenges[k]
 }
 
-// challengeOf returns the pending challenge of the private identity that the credentials answer, of any public
-// user identity or flow.
 func (r *Registrar) challengeOf(impi string, c *credentials) (authKey, *challenge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -483,7 +452,6 @@ func (r *Registrar) runSweep() {
 
 	defer r.wg.Done()
 
-	// The sweep, which runs every second, has no trace: the expiry of each private identity it finds has its own.
 	r.sweepExpired()
 	r.releaseUnregistered()
 
@@ -510,9 +478,6 @@ func (r *Registrar) sweepExpired() {
 	}
 }
 
-// expire ends what expired of the registrations and reg event subscriptions of a private identity, which the caller
-// locked, and unlocks it: a trace of its own, linked to the REGISTERs that made or last refreshed the bindings
-// expired.
 func (r *Registrar) expire(impi string) {
 	ctx, cancel := context.WithTimeout(r.ctx, backgroundTimeout)
 	st, err := r.load(ctx, impi)
@@ -562,8 +527,6 @@ func (r *Registrar) expire(impi string) {
 	}()
 }
 
-// sweepIMPI removes the expired bindings and reg event subscriptions of a private identity, and returns the NOTIFYs
-// to send, the registration sets ended and the first failure.
 func (r *Registrar) sweepIMPI(ctx context.Context, st *state, impi string) ([]*outgoing, []db.Registration, error) {
 	out := r.expireSubscriptions(ctx, st, impi)
 
@@ -606,7 +569,6 @@ func (r *Registrar) sweepIMPI(ctx context.Context, st *state, impi string) ([]*o
 	return append(out, r.notifyChange(ctx, impi, ch)...), deregistered, failed
 }
 
-// expiryCauses are the span contexts of the REGISTERs of the bindings of st that expired.
 func (r *Registrar) expiryCauses(st *state) []trace.SpanContext {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -624,7 +586,6 @@ func (r *Registrar) expiryCauses(st *state) []trace.SpanContext {
 	return out
 }
 
-// noteCauses keeps the span context of the REGISTER that made or refreshed the bindings of a private identity.
 func (r *Registrar) noteCauses(ctx context.Context, impi string, bindings []int64) {
 	sc := trace.SpanContextFromContext(ctx)
 	if !sc.IsValid() || len(bindings) == 0 {
@@ -643,7 +604,6 @@ func (r *Registrar) noteCauses(ctx context.Context, impi string, bindings []int6
 	}
 }
 
-// pruneCauses forgets the span contexts of the bindings of a private identity that are gone from st, as read.
 func (r *Registrar) pruneCauses(st *state) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -726,8 +686,7 @@ func without(all, kept []db.Binding) []db.Binding {
 	return out
 }
 
-// serviceRoute is the S-CSCF's Service-Route for a binding: a URI of its own, so that the originating
-// requests sent with it name the binding (TS 24.229 §5.4.1.2.2F c).
+// TS 24.229 clause 5.4.1.2.2F
 func serviceRoute(name sip.URI, bindingID int64) string {
 	u := name.Clone()
 	u.User = "orig-" + strconv.FormatInt(bindingID, 10)

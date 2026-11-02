@@ -7,7 +7,6 @@ import {
 } from "@mui/material";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 
-// PasswordField is a password input that can show what it holds.
 export default function PasswordField({ slotProps, ...props }: TextFieldProps) {
   const [shown, setShown] = useState(false);
 

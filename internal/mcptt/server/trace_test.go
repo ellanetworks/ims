@@ -12,7 +12,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// spansOf are the spans of rec ended of name and kind.
 func spansOf(rec *tracetest.SpanRecorder, name string, kind oteltrace.SpanKind) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 
@@ -25,7 +24,6 @@ func spansOf(rec *tracetest.SpanRecorder, name string, kind oteltrace.SpanKind) 
 	return out
 }
 
-// detachedFrom checks that s is a root of the role, linked to cause alone.
 func detachedFrom(t *testing.T, s, cause sdktrace.ReadOnlySpan) {
 	t.Helper()
 
@@ -46,8 +44,6 @@ func detachedFrom(t *testing.T, s, cause sdktrace.ReadOnlySpan) {
 	t.Fatalf("%s has no role: %v", s.Name(), s.Attributes())
 }
 
-// A reg event document the server cannot read, of a subscription the notifier terminated, has the server subscribe
-// again once the NOTIFY is answered: a trace of its own, linked to the NOTIFY, the SUBSCRIBE in it.
 func TestUnreadableDocumentResubscribeTrace(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	h := newTracedHarness(t, registrar.ThroughIMS, nil, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
@@ -82,7 +78,6 @@ func TestUnreadableDocumentResubscribeTrace(t *testing.T) {
 	notifies := spansOf(rec, "NOTIFY", oteltrace.SpanKindServer)
 	again := spansOf(rec, "reg event resubscribe", oteltrace.SpanKindInternal)
 
-	// The first of each subscription, and the unreadable one.
 	if len(notifies) != 3 || len(again) != 1 {
 		t.Fatalf("%d NOTIFYs served, %d resubscribes", len(notifies), len(again))
 	}
@@ -99,8 +94,6 @@ func TestUnreadableDocumentResubscribeTrace(t *testing.T) {
 	}
 }
 
-// The write of the affiliations of a PUBLISH, which follows its 200, is in the PUBLISH's trace, bounded, and not
-// cancelled by the end of its transaction.
 func TestPublishWriteTrace(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	st := newMemState()

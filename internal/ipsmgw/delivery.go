@@ -14,9 +14,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// pendingReport is a short message the IP-SM-GW delivered in a SIP MESSAGE, which waits for the delivery report of
-// the UE (TS 24.341 §5.3.3.4.1): by the Call-ID of the MESSAGE, which the In-Reply-To of the report has, else by the
-// RP message reference and the public user identities of the user.
+// TS 24.341 clause 5.3.3.4.1
 type pendingReport struct {
 	callID    string
 	reference uint8
@@ -24,7 +22,6 @@ type pendingReport struct {
 	report    chan sms.RPMessage
 }
 
-// pendingReports are the short messages that wait for a delivery report.
 type pendingReports struct {
 	mu   sync.Mutex
 	byID map[string]*pendingReport
@@ -49,7 +46,7 @@ func (p *pendingReports) remove(r *pendingReport) {
 	delete(p.byID, r.callID)
 }
 
-// reference is the RP message reference of the next short message (TS 24.011 §8.2.3).
+// TS 24.011 clause 8.2.3
 func (p *pendingReports) reference() uint8 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -59,7 +56,6 @@ func (p *pendingReports) reference() uint8 {
 	return p.next
 }
 
-// byCallID is the short message of the MESSAGE of callID, if it waits.
 func (p *pendingReports) byCallID(callID string) (*pendingReport, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -69,7 +65,6 @@ func (p *pendingReports) byCallID(callID string) (*pendingReport, bool) {
 	return r, ok
 }
 
-// of is the short message of the RP message reference ref to one of ids, if it waits.
 func (p *pendingReports) of(ref uint8, ids []sip.URI) (*pendingReport, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -89,7 +84,6 @@ func (p *pendingReports) of(ref uint8, ids []sip.URI) (*pendingReport, bool) {
 	return nil, false
 }
 
-// deliver hands the delivery report rp to r, once.
 func (r *pendingReport) deliver(rp sms.RPMessage) {
 	select {
 	case r.report <- rp:
@@ -97,12 +91,9 @@ func (r *pendingReport) deliver(rp sms.RPMessage) {
 	}
 }
 
-// deliverIMS delivers the short message in a SIP MESSAGE to the user of reg (TS 24.341 §5.3.3.4.2): to its tel URI
-// if any, else its IMPU, through its S-CSCF, to the contacts of the smsip feature tag, not forked, of the IP-SM-GW
-// asserted; of an RP-DATA of the service centre address. The outcome is the delivery report of the UE: of an RP-ACK,
-// the SMS-DELIVER-REPORT it carries; of an RP-ERROR, the failure of TS 23.040 §11.1. A failure response to the
-// MESSAGE is the error of TS 29.311 Table 6.1.4.4.1.1, as TS 24.341 §5.3.3.4.2 has it; no report before ctx is done,
-// an absent subscriber (TS 23.040 §11.1: SIP transaction timeout).
+// TS 24.341 clause 5.3.3.4.2
+// TS 23.040 clause 11.1
+// TS 29.311 clause 6.1.4.4.1 table 6.1.4.4.1.1
 func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardShortMessage) outcome {
 	ref := a.pending.reference()
 
@@ -137,7 +128,6 @@ func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardSh
 	route := reg.scscf.Clone()
 	route.Params.Set("lr", "")
 	req.Header.Set("Route", sip.Address{URI: route}.String())
-	// The Call-ID the In-Reply-To of the delivery report has.
 	req.Header.Set("Call-ID", sip.NewTag())
 	req.SetBody(ContentType, body)
 
@@ -184,17 +174,17 @@ func (a *AS) deliverIMS(ctx context.Context, reg registration, m sgd.MTForwardSh
 	}
 }
 
-// absentOverIMS is the outcome of no delivery report: an absent subscriber, of no response via the IP-SM-GW (TS
-// 23.040 §11.1, §3.3.1 Table 1).
+// TS 23.040 clause 11.1
+// TS 23.040 clause 3.3.1 table 1
 func absentOverIMS() outcome {
 	d := tgpp.AbsentUserNoResponseIPSMGW
 
 	return outcome{domain: domainIMS, result: tgpp.Experimental(tgpp.ResultErrorAbsentUser), absent: &d}
 }
 
-// sipFailure is the outcome of a failure response to the MESSAGE of a short message (TS 29.311 Table 6.1.4.4.1.1),
-// its user error the Diameter error of the same name (TS 29.338 Table 6.2.2.1/2), a System Failure
-// DIAMETER_UNABLE_TO_COMPLY (RFC 6733 §7.1.5).
+// TS 29.311 clause 6.1.4.4.1 table 6.1.4.4.1.1
+// TS 29.338 clause 6.2.2.1
+// RFC 6733 section 7.1.5
 func sipFailure(code int) outcome {
 	o := outcome{domain: domainIMS}
 
@@ -214,9 +204,7 @@ func sipFailure(code int) outcome {
 	return o
 }
 
-// reportOutcome is the outcome of the delivery report of the UE (TS 23.040 §11.1): of an RP-ACK, a success of its
-// SMS-DELIVER-REPORT; of an RP-ERROR of cause #22, the memory capacity exceeded, of another, an equipment protocol
-// error, each of the SMS-DELIVER-REPORT it carries as the diagnostic.
+// TS 23.040 clause 11.1
 func reportOutcome(rp sms.RPMessage) outcome {
 	o := outcome{domain: domainIMS}
 

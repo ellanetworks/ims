@@ -11,7 +11,7 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// replaces is a Replaces header field designating the dialog id of the recipient (RFC 3891 §3).
+// RFC 3891 section 3
 func replaces(id dialog.ID, earlyOnly bool) sip.Field {
 	return sip.Field{Name: "Replaces", Value: sip.Replaces{CallID: id.CallID, ToTag: id.LocalTag, FromTag: id.RemoteTag, EarlyOnly: earlyOnly}.String()}
 }
@@ -23,7 +23,7 @@ type replacing struct {
 	same bool
 }
 
-// RFC 3891 §3: an INVITE with Replaces finds the session it replaces, on its strand, or the code to reject it with.
+// RFC 3891 section 3
 func TestReplaces(t *testing.T) {
 	clock := netOf(t).Clock()
 	found := make(chan replacing, 1)
@@ -64,7 +64,6 @@ func TestReplaces(t *testing.T) {
 	bs = <-first
 	id := bs.ID()
 
-	// Bob's session is early until alice's ACK; an early dialog the agent did not initiate is not replaced.
 	if netOf(t).Quiesce(); bs.State() != ua.Confirmed {
 		t.Fatal("bob's session not confirmed")
 	}
@@ -82,7 +81,6 @@ func TestReplaces(t *testing.T) {
 
 		r := <-found
 
-		// The final responses of the earlier INVITEs, not acknowledged, come again.
 		res := carol.response()
 		for res.Header.CallID() != invite.Header.CallID() {
 			res = carol.response()
@@ -118,7 +116,6 @@ func TestReplaces(t *testing.T) {
 		t.Errorf("two Replaces: %d, want 400", r.code)
 	}
 
-	// A dialog that just ended is declined (RFC 3891 §3), for 64*T1.
 	_ = bs.Bye(context.Background(), ua.Change{}, nil)
 
 	alice.next("ended")
@@ -134,7 +131,7 @@ func TestReplaces(t *testing.T) {
 	}
 }
 
-// RFC 4538 §4: a request outside a dialog with a Target-Dialog of one of the agent's sessions finds it, on its strand.
+// RFC 4538 section 4
 func TestTargetDialog(t *testing.T) {
 	refers := make(chan *ua.Request, 1)
 

@@ -7,9 +7,6 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTSettings are the settings of the running MCPTT AS, which persists and applies a change before it returns, with
-// what it stored. A change fails with a ChangeError of the MCPTT settings package, or another error if it could not
-// be saved.
 type MCPTTSettings interface {
 	Get() mcpttsettings.Settings
 	UpdateServiceConfiguration(ctx context.Context, c mcpttsettings.ServiceConfiguration) error
@@ -23,9 +20,6 @@ type MCPTTSettings interface {
 	DeleteMember(ctx context.Context, group, id string) (mcpttsettings.Group, error)
 }
 
-// MCPTTStatus is what the MCPTT AS runs: its mode; its name and PSIs, of the home domain, which the HSS gives the
-// IMS (the server name of its iFCs, the PSIs it routes to it); the addresses of its SIP, UDP and TCP, in memory
-// through the IMS; and that of its floor control channels.
 type MCPTTStatus struct {
 	Mode             string   `json:"mode"`
 	Name             string   `json:"name"`
@@ -35,14 +29,12 @@ type MCPTTStatus struct {
 	MediaControl     string   `json:"media_control"`
 }
 
-// GetMCPTTStatus serves what the MCPTT AS runs.
 func GetMCPTTStatus(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeResponse(r.Context(), w, cfg.MCPTTStatus(), http.StatusOK, cfg.Logger)
 	})
 }
 
-// mcpttOnly is h when the IMS runs the MCPTT AS, and a 404 otherwise.
 func mcpttOnly(cfg Config, h func(Config) http.Handler) http.Handler {
 	if cfg.MCPTT == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

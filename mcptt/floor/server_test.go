@@ -7,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/floorctl"
 )
 
-// started is a server of members a, b and c, the floor idle, what it sent at start taken.
 func started(t *testing.T) (*Server, *serverOut, *fakeClock, []*Member) {
 	t.Helper()
 
@@ -19,7 +18,6 @@ func started(t *testing.T) (*Server, *serverOut, *fakeClock, []*Member) {
 	return s, out, c, ms
 }
 
-// granted is started with the floor granted to a.
 func granted(t *testing.T) (*Server, *serverOut, *fakeClock, []*Member) {
 	t.Helper()
 
@@ -30,8 +28,7 @@ func granted(t *testing.T) (*Server, *serverOut, *fakeClock, []*Member) {
 	return s, out, c, ms
 }
 
-// §6.3.4.2.2: the originator's implicit request granted in its 200 by mc_granted, or as a Floor Request; without
-// one, or denied for want of another participant (§6.3.4.3.3), the floor idle.
+// TS 24.380 clause 6.3.4.2.2
 func TestStart(t *testing.T) {
 	for _, c := range []struct {
 		name              string
@@ -63,7 +60,6 @@ func TestStart(t *testing.T) {
 			sent := out.take()
 			want(t, sent, c.want...)
 
-			// §6.3.5.2.2 3b i, NOTE 4: the implicit request of the negotiated maximum priority, with mc_granted or not.
 			if len(sent) > 0 && sent[0].msg.Type == floorctl.Granted && *sent[0].msg.Priority != 3 {
 				t.Errorf("granted priority %d", *sent[0].msg.Priority)
 			}
@@ -71,7 +67,7 @@ func TestStart(t *testing.T) {
 	}
 }
 
-// §6.3.5.2.2: a member joining a started call is told the floor's state; its implicit request granted when idle.
+// TS 24.380 clause 6.3.5.2.2
 func TestJoin(t *testing.T) {
 	s, out, _, ms := started(t)
 
@@ -95,9 +91,7 @@ func TestJoin(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.2: the Floor Granted carries T2, the granted priority, the Audio SSRC; the Floor Taken the granted
-// party, the next sequence number, the permission to request, the Audio SSRC; each in the SSRC the member assigned
-// (§8.1.2, §14.3.8), the server's own otherwise.
+// TS 24.380 clause 6.3.4.4.2
 func TestGrant(t *testing.T) {
 	s, out, _ := newServer(t)
 	a := member("a", 100)
@@ -124,7 +118,7 @@ func TestGrant(t *testing.T) {
 	}
 }
 
-// §6.3.4.3.3: a request in an idle floor denied of a receive-only member (cause #5).
+// TS 24.380 clause 6.3.4.3.3
 func TestRequestReceiveOnly(t *testing.T) {
 	s, out, _ := newServer(t)
 	s.Join(member("a", 100), false)
@@ -145,7 +139,7 @@ func TestRequestReceiveOnly(t *testing.T) {
 	}
 }
 
-// §6.3.5.4.4: in a taken floor, a receive-only member is denied with cause #5.
+// TS 24.380 clause 6.3.5.4.4
 func TestRequestTakenReceiveOnly(t *testing.T) {
 	s, out, _, _ := granted(t)
 
@@ -162,7 +156,7 @@ func TestRequestTakenReceiveOnly(t *testing.T) {
 	}
 }
 
-// §6.3.4.3.4: T7 repeats the Floor Idle, C7 in all, each of the next sequence number.
+// TS 24.380 clause 6.3.4.3.4
 func TestT7(t *testing.T) {
 	s, out, c, _ := started(t)
 	s.cfg.Timers.C7 = 3
@@ -177,7 +171,7 @@ func TestT7(t *testing.T) {
 	}
 }
 
-// §6.3.4.3.5: T4 tells the call; restarted unless the call releases.
+// TS 24.380 clause 6.3.4.3.5
 func TestT4(t *testing.T) {
 	s, out, c, _ := started(t)
 	s.cfg.Timers.C7 = 1
@@ -198,7 +192,8 @@ func TestT4(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.3: T1, without media, ends the grant; §6.3.4.4.5: media restarts it.
+// TS 24.380 clause 6.3.4.4.3
+// TS 24.380 clause 6.3.4.4.5
 func TestT1(t *testing.T) {
 	s, out, c, ms := granted(t)
 
@@ -218,13 +213,15 @@ func TestT1(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.4, §6.3.4.5.2: T2, from the first media, revokes with cause #2; §6.3.5.6.3: T8 repeats the Floor Revoke;
-// §6.3.4.5.3: media forwarded in the grace period; §6.3.4.5.5: T3 ends it.
+// TS 24.380 clause 6.3.4.4.4
+// TS 24.380 clause 6.3.4.5.2
+// TS 24.380 clause 6.3.5.6.3
+// TS 24.380 clause 6.3.4.5.3
+// TS 24.380 clause 6.3.4.5.5
 func TestT2T3(t *testing.T) {
 	s, out, c, ms := granted(t)
 	a := ms[0]
 
-	// Media every second, T1 never expiring.
 	tick := func(n int) {
 		for range n {
 			c.advance(time.Second, nil)
@@ -254,8 +251,8 @@ func TestT2T3(t *testing.T) {
 	}
 }
 
-// §6.3.5.6.3 NOTE, Table 11.1.3-1: in the grace period, Floor Revokes are resent until T3 ends it, however many; the
-// talker not disconnected.
+// TS 24.380 clause 6.3.5.6.3
+// TS 24.380 clause 11.1.3
 func TestGraceLongerThanRevokes(t *testing.T) {
 	s, out, c, ms := granted(t)
 	s.cfg.Timers.T2, s.cfg.Timers.T3 = time.Second, 5*time.Second
@@ -275,7 +272,8 @@ func TestGraceLongerThanRevokes(t *testing.T) {
 	}
 }
 
-// §6.3.5.6.5, §6.3.4.5.4: a Floor Release in the grace period ends it.
+// TS 24.380 clause 6.3.5.6.5
+// TS 24.380 clause 6.3.4.5.4
 func TestReleasePendingRevoke(t *testing.T) {
 	s, out, c, ms := granted(t)
 	s.cfg.Timers.T2 = time.Second
@@ -296,7 +294,7 @@ func TestReleasePendingRevoke(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.8: a Floor Request of the granted member is granted again, with the time left to talk.
+// TS 24.380 clause 6.3.4.4.8
 func TestRequestGranted(t *testing.T) {
 	_, out, c, ms := granted(t)
 	ms[0].Media()
@@ -316,8 +314,9 @@ func TestRequestGranted(t *testing.T) {
 	}
 }
 
-// §6.3.5.4.6: media without permission revoked with cause #3, not forwarded; §6.3.5.7.3: T8 repeats it;
-// §6.3.5.7.4: a Floor Release answered with the floor's state.
+// TS 24.380 clause 6.3.5.4.6
+// TS 24.380 clause 6.3.5.7.3
+// TS 24.380 clause 6.3.5.7.4
 func TestMediaWithoutPermission(t *testing.T) {
 	s, out, c, ms := granted(t)
 	b := ms[1]
@@ -342,8 +341,9 @@ func TestMediaWithoutPermission(t *testing.T) {
 	}
 }
 
-// §6.3.5.3.8: media after a Floor Release revoked; §6.3.5.3.7, §6.3.5.4.5: a Floor Release without permission
-// answered with the floor's state.
+// TS 24.380 clause 6.3.5.3.8
+// TS 24.380 clause 6.3.5.3.7
+// TS 24.380 clause 6.3.5.4.5
 func TestMediaAfterRelease(t *testing.T) {
 	s, out, c, ms := granted(t)
 	a, b := ms[0], ms[1]
@@ -368,7 +368,7 @@ func TestMediaAfterRelease(t *testing.T) {
 	want(t, out.take(), "a:Revoke")
 }
 
-// §6.3.5.5.3: a Floor Release asking for an acknowledgement gets a Floor Ack of the controlling function.
+// TS 24.380 clause 6.3.5.5.3
 func TestReleaseAck(t *testing.T) {
 	s, out, c, ms := granted(t)
 	ms[0].Receive(floorctl.Message{Type: floorctl.Release, AckRequired: true})
@@ -382,7 +382,8 @@ func TestReleaseAck(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.11: the granted member leaving releases the floor; §6.3.3: no more messages to it.
+// TS 24.380 clause 6.3.4.4.11
+// TS 24.380 clause 6.3.3
 func TestLeave(t *testing.T) {
 	s, out, _, ms := granted(t)
 	ms[0].Leave()
@@ -400,7 +401,8 @@ func TestLeave(t *testing.T) {
 	}
 }
 
-// §6.3.4.6.2, §6.3.5.8.2: the call released, no messages, media or timers.
+// TS 24.380 clause 6.3.4.6.2
+// TS 24.380 clause 6.3.5.8.2
 func TestRelease(t *testing.T) {
 	s, out, c, ms := granted(t)
 	s.Release()
@@ -418,7 +420,7 @@ func TestRelease(t *testing.T) {
 	}
 }
 
-// §6.3.2.2: an implicit request of the originator alone granted when the first invited member joins.
+// TS 24.380 clause 6.3.2.2
 func TestStartPending(t *testing.T) {
 	s, out, _ := newServer(t)
 	s.Join(member("a", 100), true)
@@ -432,8 +434,7 @@ func TestStartPending(t *testing.T) {
 	want(t, out.take(), "a:Granted", "b:Taken")
 }
 
-// Annex A.3.2 steps 9 to 12: the media of a member that released the floor still distributed for the drain, its
-// late media not revoked; a request in the drain granted again.
+// TS 24.380 clause A.3.2
 func TestDrain(t *testing.T) {
 	s, out, c, ms := granted(t)
 	a := ms[0]
@@ -459,8 +460,7 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// §6.3.5.7.3 NOTE: a member that keeps sending media after the Floor Revokes is given up on, the call asked to
-// disconnect it; one that stopped is not, the Floor Revoke resent (§6.3.5.7.3 step 1).
+// TS 24.380 clause 6.3.5.7.3
 func TestRevokesGiveUp(t *testing.T) {
 	s, out, c, ms := granted(t)
 	b := ms[1]
@@ -474,7 +474,6 @@ func TestRevokesGiveUp(t *testing.T) {
 		c.advance(t8/2, nil)
 	}
 
-	// Media after the second; it stops after the third. (a's grant ends meanwhile: T1.)
 	want(t, out.take(), "b:Revoke", "b:Revoke", "b:Revoke")
 	c.advance(5*t8, nil)
 	want(t, only(out.take(), "b"), "b:Revoke", "b:Revoke", "b:Revoke", "b:Revoke", "b:Revoke")
@@ -496,8 +495,7 @@ func TestRevokesGiveUp(t *testing.T) {
 	}
 }
 
-// §6.3.4.4.2 3a iii: the Floor Taken carries the location of the granted member's request, "not provided" of an
-// implicit request.
+// TS 24.380 clause 6.3.4.4.2
 func TestTakenLocation(t *testing.T) {
 	_, out, _, ms := started(t)
 	loc := floorctl.Field{ID: floorctl.FieldLocation, Value: []byte{3, 0x13, 0x00, 0x14}}

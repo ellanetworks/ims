@@ -58,7 +58,6 @@ function MemberRow({
   member: Member;
   name: string;
   affiliations: Affiliation[];
-  // onEdit and onRemove are absent for a role that cannot change the group, which sees the row read only.
   onEdit?: () => void;
   onRemove?: () => void;
 }) {

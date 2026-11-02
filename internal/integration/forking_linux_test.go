@@ -18,20 +18,13 @@ import (
 
 const groupNoAnswer = 2 * time.Second
 
-// devices is a caller, and the callee's phone and second device on the same number, all
-// registered.
 type devices struct {
 	s             *scene
 	caller        *testue.UE
 	phone, second *testue.UE
 }
 
-// twoDevices gives the callee's number a second device with its own USIM, such as a watch: a
-// private identity of its own whose implicit registration set holds the callee's number. Both
-// register; a call to the number reaches the contacts of both (TS 24.229 §5.4.3.3 step 8).
-//
-// Two devices sharing one private identity need the multiple registration mechanism (RFC 5626);
-// without it, a new contact replaces the previous one (TS 24.229 §5.4.1.2.2 step 4A).
+// TS 24.229 clause 5.4.3.3
 func twoDevices(t *testing.T, s *scene, callerCfg, secondCfg testue.Config) devices {
 	t.Helper()
 
@@ -55,7 +48,6 @@ func twoDevices(t *testing.T, s *scene, callerCfg, secondCfg testue.Config) devi
 	return d
 }
 
-// ringing has both devices take the call and ring.
 func (d devices) ringing(t *testing.T, ctx context.Context, ac *testue.Call) (*testue.Call, *testue.Call) {
 	t.Helper()
 
@@ -85,7 +77,9 @@ func reason(t *testing.T, c *testue.Call) string {
 
 const completedElsewhere = `SIP;cause=200;text="Call completed elsewhere"`
 
-// TS 23.228 §4.2.7.2, TS 24.229 §5.4.3.3, RFC 3261 §16.7
+// TS 23.228 clause 4.2.7.2
+// TS 24.229 clause 5.4.3.3
+// RFC 3261 section 16.7
 func TestRingAllDevices(t *testing.T) {
 	sc := newScene(t)
 	d := twoDevices(t, sc, testue.Config{}, testue.Config{})
@@ -135,9 +129,6 @@ func TestRingAllDevices(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// RFC 6228 §6: the caller learns, with a 199 for the phone's early dialog, that it ended, while the other
-		// device rings on. The S-CSCF's Reason does not reach the UE: the P-CSCF removes it from responses leaving
-		// the trust domain (TS 24.229 §4.4.7).
 		r := next199(t, ac)
 		if to, _ := r.Header.To(); to.Tag() != pc.ID().LocalTag || r.Header.Has("Reason") {
 			t.Errorf("199 to %q with Reason %q, want the phone's %q without", to.Tag(), r.Header.Get("Reason"), pc.ID().LocalTag)
@@ -217,7 +208,6 @@ func TestRingAllDevices(t *testing.T) {
 		ctx := s.ctx()
 		ac := invite(t, d.caller, phone(1), testue.CallOptions{Headers: []sip.Field{{Name: "Request-Disposition", Value: "no-fork"}}})
 
-		// The second device registered last.
 		sc := incoming(t, d.second, ac)
 
 		select {
@@ -234,8 +224,7 @@ func TestRingAllDevices(t *testing.T) {
 	})
 }
 
-// Both devices answer at once: the caller keeps one call, and ends the other dialog (RFC 3261
-// §13.2.2.4). Every QoS session of the call ends with it.
+// RFC 3261 section 13.2.2.4
 func TestRingAllDevicesAnsweredTwice(t *testing.T) {
 	forEachPolicy(t, func(t *testing.T, iface string) {
 		s := newPolicyScene(t, iface, nil)
@@ -255,7 +244,6 @@ func TestRingAllDevicesAnsweredTwice(t *testing.T) {
 			t.Fatalf("Wait = %v, %v, want 200", res, err)
 		}
 
-		// The device that lost may find its call cancelled before or while it answers.
 		for range 2 {
 			if err := <-answers; err != nil {
 				t.Logf("Answer: %v", err)
@@ -287,15 +275,14 @@ func TestRingAllDevicesAnsweredTwice(t *testing.T) {
 
 		ended(t, kept, testue.RemoteBye)
 
-		// The caller's, and one for each device that rang.
 		if sessions := s.pol.calls(3); len(sessions) != 3 {
 			t.Fatalf("call sessions %+v, want three", sessions)
 		}
 	})
 }
 
-// Devices with a lower q-value, or matching the caller's preferences less, ring once the others
-// rang for a while (TS 23.228 §4.2.7.2, RFC 3841 §7.2.4).
+// TS 23.228 clause 4.2.7.2
+// RFC 3841 section 7.2.4
 func TestRingDevicesInTurn(t *testing.T) {
 	configure := func(srv *server.Server) { srv.GroupNoAnswer = groupNoAnswer }
 
@@ -306,8 +293,6 @@ func TestRingDevicesInTurn(t *testing.T) {
 		turn(t, s, d, testue.CallOptions{}, d.phone, d.second)
 	})
 
-	// RFC 3841 §7.2.4: a preference without "require" orders the devices of a q-value, without splitting them:
-	// a video call rings the voice-only device together with the video one.
 	t.Run("caller preferences", func(t *testing.T) {
 		s := newSceneWith(t, configure)
 		d := twoDevices(t, s, testue.Config{MMTel: testue.MMTelConfig{Video: true}}, testue.Config{MMTel: testue.MMTelConfig{Video: true}})
@@ -328,7 +313,6 @@ func TestRingDevicesInTurn(t *testing.T) {
 	})
 }
 
-// turn calls the devices' number: first rings alone, then gives way to then, which answers.
 func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, then *testue.UE) {
 	t.Helper()
 
@@ -368,8 +352,6 @@ func turn(t *testing.T, s *scene, d devices, opts testue.CallOptions, first, the
 	ended(t, tc, testue.RemoteBye)
 }
 
-// The API lists each identity of a shared number with the other identities it reaches, and each contact with the
-// q-value it rings by.
 func TestListSharedNumber(t *testing.T) {
 	s := newScene(t)
 	twoDevices(t, s, testue.Config{}, testue.Config{ContactParams: sip.Params{{Name: "q", Value: "0.5"}}})
@@ -410,7 +392,6 @@ func TestListSharedNumber(t *testing.T) {
 	}
 }
 
-// next199 waits for the next 199 (Early Dialog Terminated) the caller receives.
 func next199(t *testing.T, c *testue.Call) *sip.Response {
 	t.Helper()
 

@@ -13,13 +13,10 @@ import (
 	"github.com/ellanetworks/ims/mcptt/floor"
 )
 
-// The JSON of the session, in testdata/contract, the app's tests read too (android/app/src/test): the events as the
-// session encodes them, the settings as the app does.
 var update = flag.Bool("update", false, "write testdata/contract")
 
 func ptr[T any](v T) *T { return &v }
 
-// contractEvents is an event of each type and kind, in the order of the app's EventTest.
 var contractEvents = []event{
 	{Type: "registration", Registered: true, IMPU: "sip:001010000000001@ims.mnc001.mcc001.3gppnetwork.org"},
 	{Type: "registration", Error: "mobile: register: timeout"},
@@ -67,11 +64,8 @@ func TestContractEvents(t *testing.T) {
 	golden(t, "events.jsonl", b.Bytes())
 }
 
-// causes are the ends of a call, as cause's doc and EventFailed's name them.
 var causes = []string{"local", "remote", "rejected", "missed", "error"}
 
-// TestContractExhaustive: the contract's events have every floor notice and every cause, so that the app decodes
-// each (its EventTest asserts its enums' entries all decoded).
 func TestContractExhaustive(t *testing.T) {
 	notice, cause := map[string]bool{}, map[string]bool{}
 
@@ -95,7 +89,6 @@ func TestContractExhaustive(t *testing.T) {
 	}
 }
 
-// TestContractSettings: the app's settings are the session's, every field and none other.
 func TestContractSettings(t *testing.T) {
 	text, err := os.ReadFile(filepath.Join("testdata", "contract", "settings.json"))
 	if err != nil {
@@ -125,7 +118,6 @@ func TestContractSettings(t *testing.T) {
 		t.Errorf("the app's settings %v, want %v", got, want)
 	}
 
-	// On this host's address, not the device's.
 	set.Local = "127.0.0.1"
 
 	s, err := newSession(newPlatform(), set)

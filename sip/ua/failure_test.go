@@ -10,8 +10,8 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// RFC 3261 §13.2.2.4, §13.3.1.4: a 2xx the agent cannot acknowledge, its Prepare failing for the ACK, loses the
-// session: the agent ends it with a BYE rather than keep a session its peer is about to end.
+// RFC 3261 section 13.2.2.4
+// RFC 3261 section 13.3.1.4
 func TestAckNotPrepared(t *testing.T) {
 	errNoFlow := errors.New("no flow")
 
@@ -43,9 +43,8 @@ func TestAckNotPrepared(t *testing.T) {
 	}
 }
 
-// RFC 4575 §4.4, RFC 6665 §4.1.3: a partial notification the application fails to render gives way to the full state;
-// a full state it fails to render ends the subscription, with a terminated NOTIFY without state for the subscriber to
-// retry later, rather than leave it with a state the notifier no longer has.
+// RFC 4575 section 4.4
+// RFC 6665 section 4.1.3
 func TestNotifyNotRendered(t *testing.T) {
 	errRender := errors.New("render")
 
@@ -92,7 +91,6 @@ func TestNotifyNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The partial for "worse" renders; the next partial fails, and so does the full state, which has "worse".
 	if got := r.nextRequest("NOTIFY"); string(got.Body) != "add carol worse seq=2" {
 		t.Fatalf("NOTIFY %q", got.Body)
 	} else {

@@ -22,8 +22,6 @@ const technicalDetail = (error: unknown): string | undefined => {
   return undefined;
 };
 
-// ErrorAlert is a failure to load a resource, as in Ella Core: what happened, a retry, and the technical details on
-// demand.
 export default function ErrorAlert({
   resource,
   error,

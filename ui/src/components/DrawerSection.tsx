@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Box, Typography } from "@mui/material";
 
-// DrawerSection is a titled section of a drawer.
 export default function DrawerSection({
   id,
   title,

@@ -49,7 +49,6 @@ type hssAnswer struct {
 	caps   *cx.ServerCapabilities
 	gate   chan struct{}
 
-	// direct sets the PSI direct routing indication of the LIA (TS 29.229 §6.3.59).
 	direct bool
 }
 
@@ -302,13 +301,10 @@ type harnessOptions struct {
 
 	down bool
 
-	// hosts are the addresses of the domain names the resolver knows; psiSubdomains the PSI subdomains of the
-	// I-CSCF.
 	hosts         map[string][]netip.Addr
 	psiSubdomains []string
 }
 
-// fakeDNS knows the addresses of some hosts, and no SRV record.
 type fakeDNS map[string][]netip.Addr
 
 func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
@@ -323,7 +319,6 @@ func (d fakeDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, e
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
-// newAS is a server the HSS can name, such as an AS hosting a PSI.
 func (h *harness) newAS(addr netip.Addr) *fakeSCSCF {
 	sock := siptest.NewSocket(h.t, netip.AddrPortFrom(addr, 0))
 	return &fakeSCSCF{t: h.t, sock: sock, name: "sip:" + sock.Addr().String(), seen: map[string]bool{}}

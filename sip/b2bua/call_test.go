@@ -12,8 +12,7 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// controller is a B2BUA inviting the members of a group for each INVITE, as a controlling function (TS 24.379
-// §6.3.3): the INVITE is answered with the first member's 200, or, all failing, with the best of their failures.
+// TS 24.379 clause 6.3.3
 type controller struct {
 	*party
 
@@ -77,8 +76,6 @@ func (c *controller) invite(_ context.Context, r *ua.Request) ua.Handler {
 	return ua.Handler{}
 }
 
-// One leg to many: the first member to answer answers the caller; the others go on in the call, and its end ends
-// them all.
 func TestOneToMany(t *testing.T) {
 	n := newNet(t)
 	bob, carol := newParty(t, n, "bob", nil), newParty(t, n, "carol", nil)
@@ -121,7 +118,7 @@ func TestOneToMany(t *testing.T) {
 
 func e(ev event) *ua.Session { return ev.s }
 
-// RFC 3261 §16.7 step 6: all members failing, the caller gets the best of their failures, with all their Warnings.
+// RFC 3261 section 16.7
 func TestOneToManyFailing(t *testing.T) {
 	n := newNet(t)
 	bob, carol := newParty(t, n, "bob", nil), newParty(t, n, "carol", nil)
@@ -139,8 +136,7 @@ func TestOneToManyFailing(t *testing.T) {
 	}
 }
 
-// TS 24.379 §10.1.1.3.1.2: a long-lived leg serves a series of calls, attached to each in turn; a call ends as its
-// last leg leaves it.
+// TS 24.379 clause 10.1.1.3.1.2
 func TestLegAcrossCalls(t *testing.T) {
 	n := newNet(t)
 	bob, carol := newParty(t, n, "bob", nil), newParty(t, n, "carol", nil)
@@ -155,7 +151,6 @@ func TestLegAcrossCalls(t *testing.T) {
 		cfg.Policy = ua.Policy{}
 	})
 
-	// The pre-established session: alice's INVITE answered by the server, its leg on a call of its own.
 	server.mu.Lock()
 	server.onInvite = func(r *ua.Request) ua.Handler {
 		call := b2bua.NewCall(server.a, r.Strand(), b2bua.CallHandler{Ended: func(_ context.Context, c *b2bua.Call) { ended <- c }})
@@ -174,7 +169,6 @@ func TestLegAcrossCalls(t *testing.T) {
 
 	n.Quiesce()
 
-	// Each call: dialled on the strand of the long-lived leg, which joins it.
 	for _, to := range []*party{bob, carol} {
 		done := make(chan struct{})
 
@@ -201,7 +195,6 @@ func TestLegAcrossCalls(t *testing.T) {
 		n.Quiesce()
 		<-done
 
-		// The former call, left by the long-lived leg, ends.
 		select {
 		case <-ended:
 		default:
@@ -224,8 +217,7 @@ func TestLegAcrossCalls(t *testing.T) {
 	alice.none()
 }
 
-// RFC 3262 §4: the extensions the caller lacks are not advertised to the callee: without 100rel, bob cannot answer
-// in a reliable 1xx, and offers in his 2xx, which the caller answers in her ACK.
+// RFC 3262 section 4
 func TestBridgeCallerWithout100rel(t *testing.T) {
 	n := newNet(t)
 
@@ -276,7 +268,6 @@ func TestBridgeCallerWithout100rel(t *testing.T) {
 	bob.next("established")
 }
 
-// The BYE of the callee ends the caller's session too, and each leg refreshes its own session timer.
 func TestBridgeByeOfCallee(t *testing.T) {
 	n := newNet(t)
 
@@ -287,7 +278,6 @@ func TestBridgeByeOfCallee(t *testing.T) {
 	alice.invite(b.uri(), "offer-1", alice.handler())
 	_, bs := bridged(t, alice, bob)
 
-	// Past bob's interval, his leg refreshed and alice's not involved.
 	n.Advance(200 * time.Second)
 
 	alice.none()

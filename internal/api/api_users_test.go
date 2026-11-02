@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 )
 
-// createUser creates a user, as the admin, with testPassword.
 func (a *testAPI) createUser(t *testing.T, email string, role db.Role) {
 	t.Helper()
 
@@ -23,7 +22,6 @@ func (a *testAPI) createUser(t *testing.T, email string, role db.Role) {
 	}
 }
 
-// createToken creates an API token at path, as a token, and returns it.
 func (a *testAPI) createToken(t *testing.T, token, path, body string) string {
 	t.Helper()
 
@@ -35,8 +33,6 @@ func (a *testAPI) createToken(t *testing.T, token, path, body string) string {
 	return decode[api.CreateAPITokenResponse](t, result).Token
 }
 
-// userLogin creates a user, logs it in, and returns its access token.
-// userToken creates a Network Manager, and an API token of it, which it returns.
 func (a *testAPI) userToken(t *testing.T, email string) string {
 	t.Helper()
 
@@ -215,7 +211,6 @@ func TestAPITokens(t *testing.T) {
 		t.Fatalf("tokens = %+v", tokens)
 	}
 
-	// The listing above used the token.
 	if tokens := listTokens(t, a, a.token, "/api/v1/users/app@example.com/api-tokens"); tokens[0].LastUsedAt != "2026-09-29T10:00:00.000Z" {
 		t.Fatalf("last used = %q", tokens[0].LastUsedAt)
 	}
@@ -314,8 +309,6 @@ func TestMaxNumAPITokens(t *testing.T) {
 	}
 }
 
-// TestAPITokensCannotCreateCredentials checks that an API token cannot create other API tokens, which would outlive
-// its revocation, change a password, or manage users, but can do the rest of what its role allows.
 func TestAPITokensCannotCreateCredentials(t *testing.T) {
 	a := newTestAPI(t)
 	app := a.userToken(t, "app@example.com")

@@ -21,14 +21,12 @@ type subEvent struct {
 	end    ua.End
 }
 
-// subscriber is an agent subscribing to a raw notifier.
 type subscriber struct {
 	t      *testing.T
 	p      *peer
 	events chan subEvent
 	fork   atomic.Bool
 
-	// verdict, when set, is the code Notify answers the NOTIFYs with.
 	verdict atomic.Int32
 }
 
@@ -106,7 +104,6 @@ func (sb *subscriber) none() {
 	}
 }
 
-// notifier is a raw notifier of the reg event package.
 type notifier struct {
 	t    *testing.T
 	sock *siptest.Peer
@@ -127,7 +124,6 @@ func (sb *subscriber) subscribe(n *notifier) *ua.Subscription {
 	return sb.subscribeWith(n, nil)
 }
 
-// subscribeWith subscribes with bodies, such as a filter.
 func (sb *subscriber) subscribeWith(n *notifier, bodies []sip.BodyPart) *ua.Subscription {
 	sb.t.Helper()
 
@@ -148,7 +144,6 @@ func (sb *subscriber) subscribeWith(n *notifier, bodies []sip.BodyPart) *ua.Subs
 	return s
 }
 
-// recvSubscribe is the next SUBSCRIBE the notifier receives.
 func (n *notifier) recvSubscribe() *sip.Request {
 	n.t.Helper()
 
@@ -177,7 +172,6 @@ func (n *notifier) respond(req *sip.Request, code int, expires string) {
 	n.sock.Send(sip.UDP, n.flow.Remote, res)
 }
 
-// notifyRequest is the next NOTIFY of the notifier tag for the subscription.
 func (n *notifier) notifyRequest(tag, event, state string) *sip.Request {
 	n.seq++
 
@@ -197,7 +191,6 @@ func (n *notifier) notifyRequest(tag, event, state string) *sip.Request {
 	return req
 }
 
-// notify sends a NOTIFY of the notifier tag, and returns its response.
 func (n *notifier) notify(tag, state string) *sip.Response {
 	n.t.Helper()
 
@@ -219,8 +212,7 @@ func (n *notifier) send(req *sip.Request) *sip.Response {
 	}
 }
 
-// RFC 6665 §4.1: the 2xx accepts the subscription, its first NOTIFY creates the dialog; refreshed at half its
-// duration, ended by a terminated NOTIFY.
+// RFC 6665 section 4.1
 func TestSubscription(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -282,7 +274,7 @@ func TestSubscription(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.4: a NOTIFY may come before the 2xx.
+// RFC 6665 section 4.1.2.4
 func TestNotifyBeforeTheResponse(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := sb.subscribe(n)
@@ -307,7 +299,7 @@ func TestNotifyBeforeTheResponse(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.4: without a NOTIFY within Timer N, the subscription fails; a NOTIFY afterwards gets a 481.
+// RFC 6665 section 4.1.2.4
 func TestNoNotify(t *testing.T) {
 	clock := netOf(t).Clock()
 	sb, n := newSubscriber(t, clock), newNotifier(t)
@@ -331,7 +323,7 @@ func TestNoNotify(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.1: a SUBSCRIBE refused ends the subscription.
+// RFC 6665 section 4.1.2.1
 func TestSubscriptionRejected(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
@@ -343,7 +335,8 @@ func TestSubscriptionRejected(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.3, §8.2.1: a NOTIFY of another event gets a 489; one of no subscription a 481.
+// RFC 6665 section 4.1.3
+// RFC 6665 section 8.2.1
 func TestNotifyMismatch(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
@@ -367,7 +360,7 @@ func TestNotifyMismatch(t *testing.T) {
 	sb.none()
 }
 
-// RFC 6665 §4.1.2.3: Unsubscribe sends Expires 0; the terminated NOTIFY ends the subscription.
+// RFC 6665 section 4.1.2.3
 func TestUnsubscribe(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := sb.subscribe(n)
@@ -399,8 +392,7 @@ func TestUnsubscribe(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.2.2: a refresh refused with 481 ends the subscription; with 500 the subscription lasts until its
-// expiry, the refresh tried again meanwhile.
+// RFC 6665 section 4.1.2.2
 func TestRefreshFailures(t *testing.T) {
 	for _, code := range []int{481, 500} {
 		clock := netOf(t).Clock()
@@ -432,11 +424,9 @@ func TestRefreshFailures(t *testing.T) {
 			continue
 		}
 
-		// Timer N does not end it: the 500 brings no NOTIFY.
 		advance(clock, 40*time.Second, sb.p)
 		sb.none()
 
-		// The automatic refreshes, at 300 s, then halfway to the expiry, fail too; the subscription expires.
 		for _, step := range []time.Duration{260 * time.Second, 150 * time.Second} {
 			advance(clock, step, sb.p)
 			n.respond(n.recvSubscribe(), 500, "")
@@ -450,7 +440,7 @@ func TestRefreshFailures(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.1.4: a NOTIFY of another notifier gets a 481, unless Handler.Forked keeps its subscription.
+// RFC 6665 section 4.1.4
 func TestForkedSubscription(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	first := sb.subscribe(n)
@@ -482,7 +472,6 @@ func TestForkedSubscription(t *testing.T) {
 	}
 }
 
-// Shutdown unsubscribes, and ends the subscriptions.
 func TestShutdownUnsubscribes(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	sb.subscribe(n)
@@ -516,7 +505,6 @@ func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
 }
 
-// Unsubscribe before the first NOTIFY ends the subscription at once; its NOTIFY then gets a 481.
 func TestUnsubscribeBeforeNotify(t *testing.T) {
 	sb, n := newSubscriber(t, nil), newNotifier(t)
 	s := sb.subscribe(n)

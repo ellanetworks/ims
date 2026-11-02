@@ -8,7 +8,6 @@ import { RoleID } from "@/queries/users";
 export const adminAuth = authFor("admin@example.com", RoleID.Admin);
 export const readOnlyAuth = authFor("ro@example.com", RoleID.ReadOnly);
 
-// renderWithClient renders ui logged in, as an admin unless auth says otherwise.
 export const renderWithClient = (ui: ReactElement, auth: Auth = adminAuth) => {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },

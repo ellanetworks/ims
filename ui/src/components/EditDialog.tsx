@@ -17,7 +17,6 @@ interface EditDialogProps {
   onSubmit: () => void;
   onClose: () => void;
   children: ReactNode;
-  // The labels of the submit button and of its error, for a dialog that does not update.
   submitLabel?: string;
   pendingLabel?: string;
   failure?: string;

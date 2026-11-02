@@ -12,7 +12,6 @@ const peer = (id: string, transport?: "tcp" | "sctp"): Peer => ({
   transport,
 });
 
-// The server restarts on the same changes (settings.SameNode).
 describe("changesTransports", () => {
   it("is false for a TCP peer added beside a TCP one", () => {
     expect(changesTransports([peer("a")], undefined, peer("b", "tcp"))).toBe(

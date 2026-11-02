@@ -7,27 +7,20 @@ import (
 	"time"
 )
 
-// IPSMGWRegistration is a registration of the IP-SM-GW: of the third-party REGISTERs of an IMPU (TS 24.341
-// §5.3.3.2), and whether a contact of the IMPU can receive short messages over IP. Its URIs are as received.
+// TS 24.341 clause 5.3.3.2
 type IPSMGWRegistration struct {
-	// IMPUKey is the canonical form of IMPU, which the registration is found by.
-	IMPUKey string
-	IMPU    string
-	// IMPUs are those of the implicit registration set of IMPU.
-	IMPUs []string
-	// MSISDN and IMSI are the user's identities, of the third-party REGISTER, each "" if unknown.
-	MSISDN string
-	IMSI   string
-	// SCSCF is the Contact of the third-party REGISTER, and AS its Request-URI: the S-CSCF the reg event
-	// subscription goes to, and the URI of the IP-SM-GW it comes from.
+	IMPUKey   string
+	IMPU      string
+	IMPUs     []string
+	MSISDN    string
+	IMSI      string
 	SCSCF     string
 	AS        string
 	ExpiresAt time.Time
 	Available bool
 }
 
-// IPSMGWHSSRegistration is a user the HSS has the IP-SM-GW registered for (TS 29.328 §6.1.2.1 step 4b), by the
-// identity it was registered with, the MSISDN, else the IMPU, and the number it was given.
+// TS 29.328 clause 6.1.2.1
 type IPSMGWHSSRegistration struct {
 	UserKey string
 	MSISDN  string
@@ -76,7 +69,6 @@ func (d *DB) IPSMGWRegistrations(ctx context.Context) (_ []IPSMGWRegistration, e
 	return out, nil
 }
 
-// PutIPSMGWRegistration stores r, replacing the registration of its IMPU.
 func (d *DB) PutIPSMGWRegistration(ctx context.Context, r IPSMGWRegistration) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -129,7 +121,6 @@ func (d *DB) IPSMGWHSSRegistrations(ctx context.Context) (_ []IPSMGWHSSRegistrat
 	return out, nil
 }
 
-// PutIPSMGWHSSRegistration stores r, replacing the one of its user.
 func (d *DB) PutIPSMGWHSSRegistration(ctx context.Context, r IPSMGWHSSRegistration) (err error) {
 	defer d.observe(poolWrite, &err)()
 

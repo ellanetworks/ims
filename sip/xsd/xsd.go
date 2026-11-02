@@ -1,5 +1,3 @@
-// Package xsd is the lexical spaces of the XML Schema Part 2 datatypes the documents of SIP bodies use: values as an
-// XML document has them, to and from Go's.
 package xsd
 
 import (
@@ -9,12 +7,10 @@ import (
 	"time"
 )
 
-// Collapse is s without the leading and trailing white space the whiteSpace facet collapse removes (§4.3.6): of
-// #x20, #x9, #xA and #xD, not other Unicode spaces. The values of the types with that facet but xs:string have no
-// inner white space.
+// XML Schema Part 2 section 4.3.6
 func Collapse(s string) string { return strings.Trim(s, " \t\n\r") }
 
-// ParseBoolean parses an xs:boolean (§3.2.2.1): true, false, 1 or 0.
+// XML Schema Part 2 section 3.2.2.1
 func ParseBoolean(s string) (v, ok bool) {
 	switch Collapse(s) {
 	case "true", "1":
@@ -26,11 +22,10 @@ func ParseBoolean(s string) (v, ok bool) {
 	return false, false
 }
 
-// FormatBoolean is the canonical xs:boolean of v (§3.2.2.2).
+// XML Schema Part 2 section 3.2.2.2
 func FormatBoolean(v bool) string { return strconv.FormatBool(v) }
 
-// ParseUnsignedInt parses an xs:unsignedInt (§3.3.22.1): decimal digits, of 32 bits, after an optional "+", which
-// the lexical space it derives from, of xs:nonNegativeInteger, allows (§3.3.20.1).
+// XML Schema Part 2 section 3.3.22.1
 func ParseUnsignedInt(s string) (uint32, bool) {
 	s = strings.TrimPrefix(Collapse(s), "+")
 	if s == "" || strings.Trim(s, "0123456789") != "" {
@@ -42,16 +37,13 @@ func ParseUnsignedInt(s string) (uint32, bool) {
 	return uint32(n), err == nil
 }
 
-// DateTime is an xs:dateTime (§3.2.7): an instant, of a timezone or not. Of a value without one, Time is in UTC,
-// the local time of an unspecified locality.
+// XML Schema Part 2 section 3.2.7
 type DateTime struct {
 	time.Time
 	Zoned bool
 }
 
-// ParseDateTime parses an xs:dateTime (§3.2.7.1) of a year of four digits, 0001 to 9999: '24:00:00', the first
-// instant of the next day, and a leap second, of a seconds field of 60 (Appendix D.3.1), are taken, but into the
-// year 10000.
+// XML Schema Part 2 section 3.2.7.1
 func ParseDateTime(s string) (DateTime, error) {
 	s = Collapse(s)
 	in := s
@@ -121,8 +113,6 @@ func ParseDateTime(s string) (DateTime, error) {
 		return DateTime{}, fmt.Errorf("xsd: dateTime %q", in)
 	}
 
-	// time.Date normalizes 24:00:00 and a second 60 into the next day and minute: of 9999-12-31, into a year of five
-	// digits, out of the years taken.
 	d.Time = time.Date(year, time.Month(month), day, hour, minute, sec, nsec, loc)
 	if d.Year() > 9999 {
 		return DateTime{}, fmt.Errorf("xsd: dateTime %q after the year 9999", in)
@@ -135,8 +125,6 @@ func daysIn(month, year int) int {
 	return time.Date(year, time.Month(month)+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
 
-// String is the xs:dateTime of d, of a year of four digits, its timezone as Time has it if Zoned; the empty string
-// if its year is not 0001 to 9999.
 func (d DateTime) String() string {
 	if y := d.Year(); y < 1 || y > 9999 {
 		return ""

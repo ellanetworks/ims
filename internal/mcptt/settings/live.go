@@ -13,10 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// Store persists the changes of Live, each before it takes effect, in one transaction. A user or group is found by
-// the identity of its MCPTT ID or URI, as Key has it. Of a change of a group or member, users are the users whose
-// implicit affiliations it changes, which it stores too. A user deleted goes from the groups it is a member of; a
-// group deleted, or a member removed, from the implicit affiliations of its users.
 type Store interface {
 	UpdateSystem(ctx context.Context, s System) error
 	UpdateServiceConfiguration(ctx context.Context, c ServiceConfiguration) error
@@ -30,26 +26,19 @@ type Store interface {
 	DeleteMember(ctx context.Context, group, mcpttID string) error
 }
 
-// Live serves the current settings to the running server and persists changes before they take effect: the Source
-// of the functions. Each change is validated with the rest of the settings, as New validates them, and is for the
-// calls and requests after it; a call keeps the snapshot it started with, but for its group deleted or its members
-// removed, which OnChange applies to it.
 type Live struct {
 	store    Store
 	onChange func(ctx context.Context, before, after *Snapshot)
 
-	// mu serializes the changes, each from the settings before it.
 	mu      sync.Mutex
 	current atomic.Pointer[state]
 }
 
-// state are settings as written and their snapshot.
 type state struct {
 	written Settings
 	snap    *Snapshot
 }
 
-// NewLive serves initial, the settings of store, which must be valid.
 func NewLive(store Store, initial Settings) (*Live, error) {
 	snap, err := New(initial)
 	if err != nil {
@@ -62,15 +51,10 @@ func NewLive(store Store, initial Settings) (*Live, error) {
 	return l, nil
 }
 
-// OnChange makes f called after each change, once it took effect, with the snapshots of the settings before and after
-// it; before the first change. The changes are serialized: each call's before is the after of the one before it. ctx
-// is the trace of the change, which the work f starts outlives.
 func (l *Live) OnChange(f func(ctx context.Context, before, after *Snapshot)) { l.onChange = f }
 
-// Current is the snapshot of the current settings.
 func (l *Live) Current() *Snapshot { return l.current.Load().snap }
 
-// Get are the current settings as written, without the defaults New applies. Their slices must not be modified.
 func (l *Live) Get() Settings { return l.current.Load().written }
 
 func (l *Live) UpdateSystem(ctx context.Context, s System) error {
@@ -87,7 +71,6 @@ func (l *Live) UpdateServiceConfiguration(ctx context.Context, c ServiceConfigur
 	}, func() error { return l.store.UpdateServiceConfiguration(ctx, c) })
 }
 
-// CreateUser adds u, after the other users, and returns it as stored.
 func (l *Live) CreateUser(ctx context.Context, u User) (User, error) {
 	err := l.change(ctx, func(next *Settings) (string, error) {
 		u.ImplicitAffiliations = next.groupURIs(u.ImplicitAffiliations)
@@ -99,8 +82,6 @@ func (l *Live) CreateUser(ctx context.Context, u User) (User, error) {
 	return u, err
 }
 
-// UpdateUser replaces the user of u's MCPTT ID with u, which keeps the MCPTT ID as the user has it, and returns it as
-// stored.
 func (l *Live) UpdateUser(ctx context.Context, u User) (User, error) {
 	err := l.change(ctx, func(next *Settings) (string, error) {
 		i := next.UserIndex(u.MCPTTUserID)
@@ -119,8 +100,6 @@ func (l *Live) UpdateUser(ctx context.Context, u User) (User, error) {
 	return u, err
 }
 
-// DeleteUser deletes the user of MCPTT ID id, and removes it from the groups it is a member of. What the removal makes
-// invalid of a group is a conflict.
 func (l *Live) DeleteUser(ctx context.Context, id string) error {
 	var written string
 
@@ -146,12 +125,8 @@ func (l *Live) DeleteUser(ctx context.Context, id string) error {
 	}, func() error { return l.store.DeleteUser(ctx, written) })
 }
 
-// Implicit is, of members by MCPTT ID, whether the group is an implicit affiliation of their user: true makes it one,
-// after the user's others, false not one. A member absent keeps what its user has.
 type Implicit map[string]bool
 
-// CreateGroup adds g, after the other groups, makes it an implicit affiliation of its members as implicit has it, and
-// returns it as stored.
 func (l *Live) CreateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
 	var users []User
 
@@ -172,9 +147,6 @@ func (l *Live) CreateGroup(ctx context.Context, g Group, implicit Implicit) (Gro
 	return g, err
 }
 
-// UpdateGroup replaces the group of g's URI with g, members included, which keeps the URI as the group has it, and
-// returns it as stored. The group goes from the implicit affiliations of the members it no longer has, and is one of
-// its members' as implicit has it.
 func (l *Live) UpdateGroup(ctx context.Context, g Group, implicit Implicit) (Group, error) {
 	var users []User
 
@@ -210,7 +182,6 @@ func (l *Live) UpdateGroup(ctx context.Context, g Group, implicit Implicit) (Gro
 	return g, err
 }
 
-// DeleteGroup deletes the group of URI uri, and removes it from the implicit affiliations of its users.
 func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 	var written string
 
@@ -233,9 +204,6 @@ func (l *Live) DeleteGroup(ctx context.Context, uri string) error {
 	}, func() error { return l.store.DeleteGroup(ctx, written) })
 }
 
-// PutMember adds e to the members of the group of URI group, after the others, or replaces the member of its MCPTT
-// ID where it is; the group is an implicit affiliation of its user if implicit is true, not one if false, as it was
-// if nil. It returns the group as stored, and whether e was added.
 func (l *Live) PutMember(ctx context.Context, group string, e Entry, implicit *bool) (Group, bool, error) {
 	var (
 		written string
@@ -281,9 +249,6 @@ func (l *Live) PutMember(ctx context.Context, group string, e Entry, implicit *b
 	return stored, added, err
 }
 
-// DeleteMember removes the member of MCPTT ID id from the group of URI group, and the group from the implicit
-// affiliations of its user, and returns the group as stored. What the removal makes invalid of the group is a
-// conflict: the request has no body.
 func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error) {
 	var (
 		written, member string
@@ -316,8 +281,6 @@ func (l *Live) DeleteMember(ctx context.Context, group, id string) (Group, error
 	return stored, err
 }
 
-// change makes the next settings with edit, which returns the path of the document it changes, validates them, then
-// saves and applies them.
 func (l *Live) change(ctx context.Context, edit func(next *Settings) (string, error), save func() error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -347,8 +310,6 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) (string, er
 	return nil
 }
 
-// refusal is the ChangeError of the errors of New of next, of a change of the document at path doc: its errors at
-// their path within it, and those of the documents it conflicts with.
 func refusal(next Settings, doc string, err error) error {
 	var errs []error
 	if j, ok := err.(interface{ Unwrap() []error }); ok {
@@ -385,7 +346,6 @@ func refusal(next Settings, doc string, err error) error {
 	return ce
 }
 
-// within is path relative to the document at doc, and whether it is of it.
 func within(path, doc string) (string, bool) {
 	switch {
 	case doc == "":
@@ -399,7 +359,6 @@ func within(path, doc string) (string, bool) {
 	return "", false
 }
 
-// describe is what the document of path is, such as the user sip:a@example.com, and path within it.
 func (s Settings) describe(path string) (string, string) {
 	for _, d := range []struct {
 		prefix string
@@ -431,23 +390,18 @@ func (s Settings) describe(path string) (string, string) {
 	return "", path
 }
 
-// UserIndex is the index of the user of MCPTT ID id, of its identity as Key has it; -1 if none.
 func (s Settings) UserIndex(id string) int {
 	k := keyOf(id)
 
 	return slices.IndexFunc(s.Users, func(u User) bool { return k != "" && keyOf(u.MCPTTUserID) == k })
 }
 
-// GroupIndex is the index of the group of URI uri, of its identity as Key has it; -1 if none.
 func (s Settings) GroupIndex(uri string) int {
 	k := keyOf(uri)
 
 	return slices.IndexFunc(s.Groups, func(g Group) bool { return k != "" && keyOf(g.URI) == k })
 }
 
-// affiliate makes the group of URI group an implicit affiliation of the user of MCPTT ID id, after its others, if on,
-// or not one; and marks the user's index changed if it changes. Of no such user, it does nothing: a member of no
-// user is an error of its group.
 func (s *Settings) affiliate(id, group string, on bool, changed map[int]bool) {
 	i := s.UserIndex(id)
 	if i < 0 {
@@ -466,7 +420,6 @@ func (s *Settings) affiliate(id, group string, on bool, changed map[int]bool) {
 		return
 	}
 
-	// The users of the settings before are shared: cloned once, on the first change.
 	if len(changed) == 0 {
 		s.Users = slices.Clone(s.Users)
 	}
@@ -475,7 +428,6 @@ func (s *Settings) affiliate(id, group string, on bool, changed map[int]bool) {
 	changed[i] = true
 }
 
-// usersAt are the users of the indexes changed, in order.
 func (s Settings) usersAt(changed map[int]bool) []User {
 	var users []User
 
@@ -488,7 +440,6 @@ func (s Settings) usersAt(changed map[int]bool) []User {
 	return users
 }
 
-// memberURIs are entries, each of the MCPTT ID as its user has it, as the store has them.
 func (s Settings) memberURIs(entries []Entry) []Entry {
 	entries = slices.Clone(entries)
 	if len(entries) == 0 {
@@ -509,7 +460,6 @@ func (s Settings) memberURIs(entries []Entry) []Entry {
 	return entries
 }
 
-// groupURIs are uris, each of the URI as its group has it, as the store has them.
 func (s Settings) groupURIs(uris []string) []string {
 	uris = slices.Clone(uris)
 
@@ -522,7 +472,6 @@ func (s Settings) groupURIs(uris []string) []string {
 	return uris
 }
 
-// keyOf is the key of the identity of the URI s, "" if s is not one.
 func keyOf(s string) string {
 	u, err := sip.ParseURI(s)
 	if err != nil {

@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// referee is an agent accepting REFERs with accept, its subscriptions recorded.
 type referee struct {
 	p     *peer
 	subs  chan *ua.ServerSubscription
@@ -62,9 +61,10 @@ func (s *subscriberOf) refer(t *testing.T, to *peer, header ...sip.Field) *ua.Su
 	return sub
 }
 
-// RFC 3515 §2.4.4–§2.4.7: a REFER outside a dialog creates an implicit subscription to its refer event, whose
-// NOTIFYs report the referred request in sipfrag: 100 Trying at once, then its progress, its final status
-// terminating the subscription with reason noresource.
+// RFC 3515 section 2.4.4
+// RFC 3515 section 2.4.5
+// RFC 3515 section 2.4.6
+// RFC 3515 section 2.4.7
 func TestRefer(t *testing.T) {
 	rf := newReferee(t, func(*ua.Request) ua.ReferAcceptance { return ua.ReferAcceptance{} })
 	sb := newSubscriberOf(t, nil)
@@ -104,8 +104,9 @@ func TestRefer(t *testing.T) {
 	}
 }
 
-// RFC 4488: a REFER with Refer-Sub: false, accepted without a subscription, gets a 200 with Refer-Sub: false; RFC 7614:
-// one requiring explicitsub gets the Refer-Events-At of its state, and creates none. RFC 7647 §5: never a 202.
+// RFC 4488
+// RFC 7614
+// RFC 7647 section 5
 func TestReferWithoutSubscription(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -168,8 +169,8 @@ func TestReferWithoutSubscription(t *testing.T) {
 	}
 }
 
-// A REFER within the dialog of a session creates its implicit subscription in that dialog, with the id of its CSeq
-// (RFC 3515 §2.4.6); a BYE ends the INVITE usage only, the subscription going on until its final NOTIFY (RFC 5057).
+// RFC 3515 section 2.4.6
+// RFC 5057
 func TestReferInTheSessionDialog(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 
@@ -215,7 +216,6 @@ func TestReferInTheSessionDialog(t *testing.T) {
 		t.Fatalf("REFER %d", res.StatusCode)
 	}
 
-	// The NOTIFYs come in the session's dialog, to alice's Handler.Request.
 	n := alice.next("request").req
 	if ev := n.Message().Header.Get("Event"); !strings.HasPrefix(ev, "refer;id=") {
 		t.Fatalf("Event %q", ev)

@@ -30,7 +30,6 @@ export const DEFAULT_PRIORITY = 10;
 
 const APPLICATIONS: DiameterApplication[] = ["cx", "rx", "sh", "s6c", "sgd"];
 
-// A new peer is an HSS and a PCRF, as a core is.
 const DEFAULT_APPLICATIONS: DiameterApplication[] = ["cx", "rx"];
 
 const E164 = /^\d{1,15}$/;
@@ -87,7 +86,6 @@ export default function DiameterPeerDialog({
       apps.includes(app) ? apps.filter((a) => a !== app) : [...apps, app],
     );
 
-  // The server compares applications in order, so an unchanged set keeps the stored order.
   const ordered =
     peer && sameApplications(applications, peer.applications)
       ? peer.applications
@@ -110,7 +108,6 @@ export default function DiameterPeerDialog({
     transport,
     applications: ordered,
     priority: priorityNumber,
-    // Absent clears them.
     ...(centres.length > 0 && { service_centres: centres }),
   };
 

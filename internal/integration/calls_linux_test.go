@@ -252,7 +252,10 @@ func absent(t *testing.T, what string, h sip.Header, names ...string) {
 	}
 }
 
-// TS 24.229 §5.2.6.4.1, §5.2.6.4.3, §5.4.3.2, §5.4.3.3
+// TS 24.229 clause 5.2.6.4.1
+// TS 24.229 clause 5.2.6.4.3
+// TS 24.229 clause 5.4.3.2
+// TS 24.229 clause 5.4.3.3
 func checkCallee(t *testing.T, bc *testue.Call, from, to int) {
 	t.Helper()
 
@@ -283,7 +286,10 @@ func checkCallee(t *testing.T, bc *testue.Call, from, to int) {
 	}
 }
 
-// TS 24.229 §5.2.6.3.4, §5.2.6.4.4, §5.4.3.3, RFC 5009
+// TS 24.229 clause 5.2.6.3.4
+// TS 24.229 clause 5.2.6.4.4
+// TS 24.229 clause 5.4.3.3
+// RFC 5009
 func checkCaller(t *testing.T, e events, to int) {
 	t.Helper()
 
@@ -326,7 +332,8 @@ func recordRoutes(m sip.Message) []sip.URI {
 	return out
 }
 
-// TS 24.229 §5.2.6.4.5, §5.2.6.4.6
+// TS 24.229 clause 5.2.6.4.5
+// TS 24.229 clause 5.2.6.4.6
 func refreshRoutes(t *testing.T, e events, dialog []sip.URI) {
 	t.Helper()
 
@@ -354,7 +361,8 @@ func refreshRoutes(t *testing.T, e events, dialog []sip.URI) {
 	}
 }
 
-// RFC 3261 §8.1.2, RFC 3263 §4.1
+// RFC 3261 section 8.1.2
+// RFC 3263 section 4.1
 func routeTransport(route sip.URI, fallback sip.Transport) sip.Transport {
 	if v, ok := route.Params.Get("transport"); ok && v != "" {
 		return sip.Transport(strings.ToUpper(v))
@@ -482,7 +490,8 @@ func testCall(t *testing.T, tr sip.Transport, v6, fixtures bool) {
 	})
 }
 
-// TS 33.203 §7.1, RFC 3261 §18.1.1
+// TS 33.203 clause 7.1
+// RFC 3261 section 18.1.1
 func TestCallBetweenPhonesBendingTheTransportRules(t *testing.T) {
 	s := newScene(t)
 	a := s.caller(0, false, testue.Config{Transport: sip.UDP, LargeUDP: true})
@@ -521,7 +530,6 @@ func TestCallBetweenPhonesBendingTheTransportRules(t *testing.T) {
 		t.Errorf("caller received the BYE %+v, want it over UDP on its port_us %d", byes, sa.Local.PortS)
 	}
 
-	// The call ends with the BYE; its 200 is on its way.
 	eventually(t, "the 200 to the BYE", func() bool { return len(s.sent(0, "BYE", 200)) > 0 })
 
 	if oks := s.sent(0, "BYE", 200); len(oks) == 0 || oks[0].transport != sip.UDP ||
@@ -731,7 +739,7 @@ func TestCallDialling(t *testing.T) {
 	})
 }
 
-// TS 24.229 §5.4.1.4 step 5: a UE that deregisters during a call has the S-CSCF release it.
+// TS 24.229 clause 5.4.1.4
 func TestCallReleasedOnDeregistration(t *testing.T) {
 	s := newScene(t)
 	a := s.caller(0, false, testue.Config{})
@@ -744,8 +752,6 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The BYE toward the deregistered UE races the 200 that removes its security associations
-	// (TS 24.229 §5.2.5.1 NOTE 3): only the caller's is certain to arrive.
 	ended(t, ac, testue.RemoteBye)
 
 	if r := ac.Reasons(); len(r) != 1 || r[0].String() != `SIP;cause=480;text="Temporarily Unavailable"` {
@@ -753,8 +759,6 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 	}
 }
 
-// restartIMS stops and starts the IMS again, on the same database. lose has the kernel of the IMS lose its
-// security associations in between, as a restart of its container does.
 func (s *scene) restartIMS(lose bool) {
 	s.t.Helper()
 
@@ -773,10 +777,10 @@ func (s *scene) restartIMS(lose bool) {
 	s.diameterOpen("hss", "pcrf")
 }
 
-// A UE whose security associations survive a restart of the IMS is still reached. One whose security associations
-// the restart lost is no binding of the P-CSCF (TS 24.229 §5.2.5.1 step 2), which answers a request toward it with a
-// 404 (Not Found): the S-CSCF answers 480 (Temporarily Unavailable) at once, and starts the HSS based P-CSCF
-// restoration, which has the UE register again (TS 24.229 §5.2.6.4.1, §5.4.3.3, TS 23.380 §5.4.2.1).
+// TS 24.229 clause 5.2.5.1
+// TS 24.229 clause 5.2.6.4.1
+// TS 24.229 clause 5.4.3.3
+// TS 23.380 clause 5.4.2.1
 func TestCallAfterARestart(t *testing.T) {
 	sc := newScene(t)
 	sc.hss.SupportRestoration(true)
@@ -800,7 +804,6 @@ func TestCallAfterARestart(t *testing.T) {
 
 	sc.restartIMS(true)
 
-	// The caller registers after the restart; b, and c, lost their security associations.
 	d := sc.caller(3, false, testue.Config{Transport: sip.UDP})
 
 	t.Run("security associations lost", func(t *testing.T) {
@@ -826,8 +829,6 @@ func TestCallAfterARestart(t *testing.T) {
 			}
 		}
 
-		// The core releases b's IMS PDN connection, with reactivation requested: b connects again, without its security
-		// associations, and registers anew.
 		if err := b.Close(); err != nil {
 			t.Fatal(err)
 		}

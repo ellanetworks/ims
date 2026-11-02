@@ -70,8 +70,7 @@ func (fs Header) CallID() string {
 	return fs.Get("Call-ID")
 }
 
-// ICID is the icid-value of the P-Charging-Vector header field, the IMS charging identifier, unquoted, or "" if
-// it has none or the field is malformed (RFC 7315 §5.6).
+// RFC 7315 section 5.6
 func (fs Header) ICID() string {
 	ps, err := ParseParams(fs.Get("P-Charging-Vector"))
 	if err != nil {
@@ -87,8 +86,8 @@ func (fs Header) MaxForwards() (int, error) {
 	return fs.uint("Max-Forwards", 255)
 }
 
-// MaxBreadth is the Max-Breadth header field value, a positive integer (RFC 5393 §5.3.1). A value too large for an
-// int32 reads as math.MaxInt32: a proxy overwrites a value above its maximum anyway (RFC 5393 §5.3.3).
+// RFC 5393 section 5.3.1
+// RFC 5393 section 5.3.3
 func (fs Header) MaxBreadth() (int, error) {
 	v, err := fs.first("Max-Breadth")
 	if err != nil {
@@ -207,7 +206,8 @@ func (fs Header) To() (Address, error) {
 	return fs.address("To")
 }
 
-// RFC 3515 §2.1. In MCPTT the target may be a cid URL to a body of the REFER (TS 24.379 §10.1.2.2.2.1).
+// RFC 3515 section 2.1
+// TS 24.379 clause 10.1.2.2.2.1
 func (fs Header) ReferTo() (Address, error) {
 	return fs.address("Refer-To")
 }

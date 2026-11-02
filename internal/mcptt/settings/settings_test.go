@@ -20,7 +20,6 @@ func mustURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// valid are settings New accepts, of which each case of TestInvalid changes a part.
 func valid() Settings {
 	return Settings{
 		System: System{ParticipatingPSI: "sip:pf@example.com", ControllingPSI: "sip:cf@example.com"},
@@ -45,13 +44,11 @@ func TestValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The defaults of TS 24.484 §8.4.2.7 and TS 26.179 §4.1.1.
 	g := s.Group(mustURI(t, "sip:g@example.com"))
 	if *s.ServiceConfiguration().OnNetwork.NumLevelsPriorityHierarchy != 4 || len(g.Encodings) != 1 || g.Encodings[0] != "AMR-WB" {
 		t.Errorf("defaults: %+v, %v", s.ServiceConfiguration().OnNetwork, g.Encodings)
 	}
 
-	// Those of TS 24.380 Table 11.1.3-1 and Table 11.2.3-1.
 	want := floor.DefaultServerTimers
 	want.T7 = time.Second
 
@@ -59,7 +56,6 @@ func TestValid(t *testing.T) {
 		t.Errorf("server timers %+v", timers)
 	}
 
-	// T7, of no default of the table, the server's.
 	c := valid()
 	c.ServiceConfiguration.OnNetwork.FCTimersCounters.T7 = nil
 
@@ -75,7 +71,6 @@ func TestValid(t *testing.T) {
 		t.Errorf("N6 %d of a user without", n)
 	}
 
-	// Identities in their canonical form (TS 23.003 §13.4): of the user and host only, the user part as it is.
 	for _, id := range []string{"tel:+1", "sip:A@example.com", "sip:a@example.org"} {
 		if s.User(mustURI(t, id)) != nil {
 			t.Errorf("user %s found", id)
@@ -88,7 +83,6 @@ func TestValid(t *testing.T) {
 		}
 	}
 
-	// RFC 3261 §19.1.4: escapes of unreserved characters are the characters, of reserved ones not.
 	if u := s.User(mustURI(t, "sip:%61@example.com;transport=tcp")); u == nil || u.ID().String() != "sip:a@example.com" {
 		t.Errorf("escaped user: %+v", u)
 	}
@@ -98,8 +92,6 @@ func TestValid(t *testing.T) {
 	}
 }
 
-// An explicit zero is not an absent element: T3 of a group with audio cut-in, C7 of one Floor Idle, T4 releasing the
-// call at once (TS 24.380 Table 11.1.3-1, Table 11.2.3-1), N2 of no groups (TS 24.484 §8.3.2.1).
 func TestZeros(t *testing.T) {
 	c := valid()
 	fc := &c.ServiceConfiguration.OnNetwork.FCTimersCounters
@@ -127,7 +119,7 @@ func TestZeros(t *testing.T) {
 	}
 }
 
-// RFC 3966 §4: tel URIs are compared without their visual separators, their parameters in any order.
+// RFC 3966 section 4
 func TestTelIMPU(t *testing.T) {
 	c := valid()
 	c.Users[0].IMPUs = []string{"tel:+1-555-0100;phone-context=+1;ext=1"}
@@ -147,7 +139,6 @@ func TestTelIMPU(t *testing.T) {
 	}
 }
 
-// New takes a copy: a change of the settings after it does not change the snapshot.
 func TestNewCopies(t *testing.T) {
 	c := valid()
 
@@ -245,7 +236,6 @@ func TestInvalid(t *testing.T) {
 			[]string{"users[0].impus[1]: \"mailto:a@example.com\" is not a SIP or tel URI", "users[0].impus[2]: sip:a@IMS.example.com is listed twice"},
 		},
 		{"N2", func(c *Settings) { c.Users[0].MaxAffiliationsN2 = ptr(-1) }, []string{"users[0].max-affiliations-n2: -1 is negative"}},
-		// TS 24.484 §8.3.2.1: a positiveInteger.
 		{"N6", func(c *Settings) { c.Users[0].MaxSimultaneousCallsN6 = ptr(0) }, []string{"users[0].max-simultaneous-calls-n6: 0 is not positive"}},
 		{"implicit affiliations", func(c *Settings) {
 			c.Groups = append(c.Groups, Group{

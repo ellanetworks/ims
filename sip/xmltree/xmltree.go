@@ -1,10 +1,3 @@
-// Package xmltree is an XML element tree for the documents of SIP bodies: it keeps the elements, attributes and
-// namespaces a document format does not know, its extensions and those of later versions, so that a document decoded
-// encodes with them (RFC 3863 §4.2, TS 24.379 F.1.3), and an extension decodes from them.
-//
-// Names carry namespace URIs, not prefixes: Parse resolves the prefixes of a document and Marshal declares its own.
-// Character data and attribute values are as XML 1.0 gives them to the application: references replaced, line ends
-// and attribute values normalized.
 package xmltree
 
 import (
@@ -14,15 +7,12 @@ import (
 	"unicode/utf8"
 )
 
-// Node is a child of an element: an *Element or Text.
 type Node interface{ node() }
 
-// Text is character data.
 type Text string
 
 func (Text) node() {}
 
-// Element is an XML element. Attr holds no namespace declarations: names hold the namespaces they resolve to.
 type Element struct {
 	Name     xml.Name
 	Attr     []xml.Attr
@@ -31,12 +21,10 @@ type Element struct {
 
 func (*Element) node() {}
 
-// New returns the element space:local with children.
 func New(space, local string, children ...Node) *Element {
 	return &Element{Name: xml.Name{Space: space, Local: local}, Children: children}
 }
 
-// Text is the character data of e's children, without that of their descendants.
 func (e *Element) Text() string {
 	var b strings.Builder
 
@@ -49,7 +37,6 @@ func (e *Element) Text() string {
 	return b.String()
 }
 
-// Elements are e's child elements, in order.
 func (e *Element) Elements() []*Element {
 	var es []*Element
 
@@ -62,7 +49,6 @@ func (e *Element) Elements() []*Element {
 	return es
 }
 
-// HasElements reports whether e has child elements.
 func (e *Element) HasElements() bool {
 	for _, c := range e.Children {
 		if _, ok := c.(*Element); ok {
@@ -73,7 +59,6 @@ func (e *Element) HasElements() bool {
 	return false
 }
 
-// AttrValue is the value of e's attribute space:local.
 func (e *Element) AttrValue(space, local string) (string, bool) {
 	for _, a := range e.Attr {
 		if a.Name.Space == space && a.Name.Local == local {
@@ -84,7 +69,6 @@ func (e *Element) AttrValue(space, local string) (string, bool) {
 	return "", false
 }
 
-// Clone is a deep copy of e.
 func (e *Element) Clone() *Element {
 	c := &Element{Name: e.Name, Attr: append([]xml.Attr(nil), e.Attr...)}
 
@@ -99,13 +83,9 @@ func (e *Element) Clone() *Element {
 	return c
 }
 
-// XMLNamespace is the namespace of the xml prefix (Namespaces in XML 1.0 §3).
+// Namespaces in XML 1.0 section 3
 const XMLNamespace = "http://www.w3.org/XML/1998/namespace"
 
-// Marshal is the document of root, in UTF-8 with an XML declaration. Each element declares its namespace as the
-// default one where it changes; attributes of other namespaces get prefixes Marshal chooses. An element of the xml
-// or xmlns namespace, an attribute of the xmlns namespace or named xmlns, two attributes of one name, or a name or
-// character XML does not allow is an error.
 func Marshal(root *Element) ([]byte, error) {
 	w := writer{buf: []byte(xml.Header)}
 	if err := w.element(root, scope{}); err != nil {
@@ -129,8 +109,6 @@ func (w *writer) element(e *Element, sc scope) error {
 		return fmt.Errorf("element <%s> of namespace %q", e.Name.Local, e.Name.Space)
 	}
 
-	// An element of the xml namespace has its prefix, bound by definition; it cannot be the default namespace
-	// (Namespaces in XML 1.0 §3).
 	name := e.Name.Local
 	if e.Name.Space == XMLNamespace {
 		name = "xml:" + name
@@ -218,7 +196,6 @@ func (w *writer) element(e *Element, sc scope) error {
 	return nil
 }
 
-// clone is a copy of the prefixes of a scope, keyed by prefix in Parse and by namespace in Marshal.
 func clone(m map[string]string) map[string]string {
 	c := make(map[string]string, len(m)+1)
 	for k, v := range m {
@@ -236,8 +213,8 @@ func (w *writer) attr(name, value string) {
 	w.buf = append(w.buf, '"')
 }
 
-// escape writes s with the characters that markup, line-end handling (§2.11) or attribute-value normalization
-// (§3.3.3) would change as references.
+// XML 1.0 section 2.11
+// XML 1.0 section 3.3.3
 func (w *writer) escape(s string, attr bool) {
 	for _, r := range s {
 		switch {
@@ -261,7 +238,7 @@ func (w *writer) escape(s string, attr bool) {
 	}
 }
 
-// validChars reports whether s is UTF-8 of the characters of XML 1.0 §2.2.
+// XML 1.0 section 2.2
 func validChars(s string) bool {
 	if !utf8.ValidString(s) {
 		return false
@@ -276,13 +253,13 @@ func validChars(s string) bool {
 	return true
 }
 
-// isChar is the Char production (§2.2).
+// XML 1.0 section 2.2
 func isChar(r rune) bool {
 	return r == 0x09 || r == 0x0A || r == 0x0D || r >= 0x20 && r <= 0xD7FF || r >= 0xE000 && r <= 0xFFFD ||
 		r >= 0x10000 && r <= 0x10FFFF
 }
 
-// isNameStartChar is the NameStartChar production (§2.3).
+// XML 1.0 section 2.3
 func isNameStartChar(r rune) bool {
 	switch {
 	case r == ':' || r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z':
@@ -315,13 +292,13 @@ var nameStartRanges = [][2]rune{
 	{0x10000, 0xEFFFF},
 }
 
-// isNameChar is the NameChar production (§2.3).
+// XML 1.0 section 2.3
 func isNameChar(r rune) bool {
 	return isNameStartChar(r) || r == '-' || r == '.' || r >= '0' && r <= '9' || r == 0xB7 ||
 		r >= 0x300 && r <= 0x36F || r == 0x203F || r == 0x2040
 }
 
-// isNCName is the NCName production of Namespaces in XML 1.0 §3: a Name without a colon.
+// Namespaces in XML 1.0 section 3
 func isNCName(s string) bool {
 	for i, r := range s {
 		if r == ':' || !isNameChar(r) || i == 0 && !isNameStartChar(r) {

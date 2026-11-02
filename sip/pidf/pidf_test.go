@@ -28,7 +28,6 @@ func decodeFile(t *testing.T, name string) Presence {
 	return p
 }
 
-// stable checks that p encodes, decodes to what encodes again the same: the elements kept, malformed, too.
 func stable(t *testing.T, p Presence) {
 	t.Helper()
 
@@ -48,7 +47,7 @@ func stable(t *testing.T, p Presence) {
 	}
 }
 
-// RFC 3863 §4.3.1: status extensions, contact priority, notes in languages, a timestamp, a note of the presentity.
+// RFC 3863 section 4.3.1
 func TestExample431(t *testing.T) {
 	p := decodeFile(t, "rfc3863-4.3.1.xml")
 
@@ -80,7 +79,7 @@ func TestExample431(t *testing.T) {
 	stable(t, p)
 }
 
-// RFC 3863 §4.3.2: a prefixed namespace; extensions of the tuple and of the presence; a contact's white space.
+// RFC 3863 section 4.3.2
 func TestExample432(t *testing.T) {
 	p := decodeFile(t, "rfc3863-4.3.2.xml")
 
@@ -92,7 +91,8 @@ func TestExample432(t *testing.T) {
 	stable(t, p)
 }
 
-// RFC 3863 §4.2.3, §4.3.3: mustUnderstand on an element nested in an extension.
+// RFC 3863 section 4.2.3
+// RFC 3863 section 4.3.3
 func TestExample433(t *testing.T) {
 	p := decodeFile(t, "rfc3863-4.3.3.xml")
 
@@ -108,7 +108,8 @@ func TestExample433(t *testing.T) {
 	stable(t, p)
 }
 
-// TS 24.379 §9.3.1.2: tuples of status extensions only, no <basic> (RFC 3863 §4.1.3); extensions of the presence.
+// TS 24.379 clause 9.3.1.2
+// RFC 3863 section 4.1.3
 func TestMCPTT(t *testing.T) {
 	for _, f := range []string{"ts24379-user-affiliation.xml", "ts24379-group-dynamic.xml"} {
 		p := decodeFile(t, f)
@@ -126,7 +127,6 @@ func TestMCPTT(t *testing.T) {
 		stable(t, p)
 	}
 
-	// §9.3.1.2 5: the tuple id is the MCPTT client ID, a URN: not an xs:ID, an arbitrary string (RFC 3863 §4.1.2).
 	p, err := Decode([]byte(`<presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:a@x">` +
 		`<tuple id="urn:uuid:00000000-0000-1000-8000-0123456789ab"><status><basic>open</basic></status></tuple></presence>`))
 	if err != nil || p.Tuples[0].ID != "urn:uuid:00000000-0000-1000-8000-0123456789ab" {
@@ -136,7 +136,7 @@ func TestMCPTT(t *testing.T) {
 	stable(t, p)
 }
 
-// RFC 3863 §4.4: a malformed element kept, not decoded; the first of an element given once counting.
+// RFC 3863 section 4.4
 func TestMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, tuple string
@@ -173,7 +173,6 @@ func TestMalformed(t *testing.T) {
 		stable(t, p)
 	}
 
-	// Given more than once: the first counts, the others kept, malformed.
 	p, err := Decode([]byte(`<presence xmlns="urn:ietf:params:xml:ns:pidf" entity="pres:a@x"><tuple id="t">` +
 		`<status><basic>open</basic><basic>closed</basic></status><status><basic>closed</basic></status>` +
 		`<contact>a</contact><contact>b</contact></tuple></presence>`))
@@ -183,7 +182,9 @@ func TestMalformed(t *testing.T) {
 	}
 }
 
-// RFC 3863 §4.1.7, RFC 3339 §5.6, §5.7: a timestamp has a timezone; a leap second is one.
+// RFC 3863 section 4.1.7
+// RFC 3339 section 5.6
+// RFC 3339 section 5.7
 func TestTimestamp(t *testing.T) {
 	for in, ok := range map[string]bool{
 		"2001-10-27T16:49:29Z": true, "2016-12-31T23:59:60Z": true, "2001-10-27T16:49:29.5+09:00": true,
@@ -202,7 +203,7 @@ func TestTimestamp(t *testing.T) {
 	}
 }
 
-// RFC 3863 §4.1.5: a priority out of range, or not of the schema's qvalue, ignored.
+// RFC 3863 section 4.1.5
 func TestPriority(t *testing.T) {
 	for in, want := range map[string]int{
 		"0": 0, "0.": 0, "0.021": 21, "0.5": 500, "1": 1000, "1.00": 1000, "1.000": 1000,
@@ -297,7 +298,6 @@ func FuzzDecode(f *testing.F) {
 
 		stable(t, p)
 
-		// A document without error encodes into one without error.
 		if err == nil {
 			out, _ := Encode(p)
 			if _, err := Decode(out); err != nil {

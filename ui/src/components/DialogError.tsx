@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Alert, Collapse } from "@mui/material";
 
-// DialogError is why a dialog's action failed, as in Ella Core: above the form, until dismissed or the next failure.
 export default function DialogError({
   error,
   prefix,

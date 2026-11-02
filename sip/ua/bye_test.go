@@ -10,8 +10,8 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// A BYE carries the change of the application (TS 24.379 §6.3.2.1.6: P-Asserted-Identity, mcptt-info), and its done
-// receives the final response. The End of the peer has its Reason (RFC 3326).
+// TS 24.379 clause 6.3.2.1.6
+// RFC 3326
 func TestByeWithChange(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -48,8 +48,7 @@ func TestByeWithChange(t *testing.T) {
 	}
 }
 
-// Handler.Bye: the application answers the BYE, once the other leg ended, and the session ends with the response;
-// left unanswered, the agent answers after 32*T1, before the peer gives up (TS 24.379 §6.3.2.1.6).
+// TS 24.379 clause 6.3.2.1.6
 func TestByeHandler(t *testing.T) {
 	clock := netOf(t).Clock()
 	byes := make(chan *ua.Request, 2)
@@ -114,7 +113,6 @@ func TestByeHandler(t *testing.T) {
 	}
 }
 
-// Handler.Decorate completes every message of the session, those the agent makes on its own included.
 func TestDecorate(t *testing.T) {
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {

@@ -7,7 +7,6 @@ import (
 	"syscall"
 )
 
-// openFileLimit is the process's limit of open files, 0 if unknown.
 func openFileLimit() int {
 	var r syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &r); err != nil {

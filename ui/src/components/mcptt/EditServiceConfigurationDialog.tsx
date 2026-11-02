@@ -9,7 +9,7 @@ import {
 } from "@/queries/mcptt";
 import { useSnackbar } from "@/contexts/SnackbarContext";
 
-// DEFAULT_TRANSMIT_TIME_LIMIT_MS is T2 (Stop talking) when none is set (TS 24.380 Table 11.1.3-1).
+// TS 24.380 clause 11.1.3 table 11.1.3-1
 export const DEFAULT_TRANSMIT_TIME_LIMIT_MS = 30000;
 
 const DOMAIN =
@@ -29,7 +29,6 @@ function useUpdate(onClose: () => void) {
   });
 }
 
-// EditDomainDialog edits the domain of the organisation: the IMS home domain unless set.
 export function EditDomainDialog({
   config,
   homeDomain,
@@ -77,7 +76,6 @@ export function EditDomainDialog({
   );
 }
 
-// EditTalkTimeDialog edits the transmit time limit, T2: how long one may talk at a time.
 export function EditTalkTimeDialog({
   config,
   onClose,

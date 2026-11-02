@@ -1,4 +1,3 @@
-// Package rxpolicy is the policy backend over Rx (TS 29.214).
 package rxpolicy
 
 import (
@@ -24,8 +23,7 @@ type Diameter interface {
 
 type Config struct {
 	Diameter Diameter
-	// Realm is the realm of the PCRF, which the Diameter node routes Rx to.
-	Realm func() string
+	Realm    func() string
 }
 
 type Backend struct {
@@ -39,8 +37,6 @@ func New(cfg Config) *Backend {
 	return &Backend{cfg: cfg}
 }
 
-// Endpoint is Rx: each session keeps the PCRF that holds it in its ref, so stored sessions survive a change of the
-// PCRF realm and go on to their PCRF.
 func (b *Backend) Endpoint() string {
 	return "rx"
 }
@@ -58,9 +54,10 @@ func (b *Backend) Bind(s policy.Sink) {
 	b.sink.Store(&s)
 }
 
-// session is what the P-CSCF keeps of an Rx session, its ref: the PCRF that holds it, how the PCRF binds it
-// (RFC 6733 §8.17, §8.18), the Class AVPs to send back (§8.20), and the features negotiated at its establishment
-// (TS 29.214 §5.4.1).
+// RFC 6733 section 8.17
+// RFC 6733 section 8.18
+// RFC 6733 section 8.20
+// TS 29.214 clause 5.4.1
 type session struct {
 	Class    [][]byte                       `json:"class,omitempty"`
 	PCRF     string                         `json:"pcrf,omitempty"`
@@ -86,11 +83,9 @@ func (s session) ref() (string, error) {
 	return string(b), err
 }
 
-// answered is the session as the PCRF that answered an AA-Request holds it.
 func (s session) answered(ans *diameter.Message, a rx.AAAnswer) session {
 	origin := tgpp.ParseEnvelope(ans).Origin
 
-	// RFC 6733 §8.20: the Class of a PCRF is its own; another PCRF that takes the session over replaces it.
 	if len(a.Class) > 0 || !strings.EqualFold(origin.OriginHost, s.PCRF) {
 		s.Class = a.Class
 	}
@@ -101,8 +96,7 @@ func (s session) answered(ans *diameter.Message, a rx.AAAnswer) session {
 	return s
 }
 
-// undelivered is a request of a session that no path reaches its PCRF with, and that no other PCRF took: the session
-// is lost, or, with ALLOW_SERVICE, goes on unbound as if the request succeeded (RFC 6733 §8.18).
+// RFC 6733 section 8.18
 type undelivered struct {
 	allow bool
 	err   error
@@ -116,15 +110,11 @@ func (e *undelivered) Unwrap() error {
 	return e.err
 }
 
-// send sends a request of a session: to the PCRF that holds it, unless bound is false, else to the PCRF realm
-// (RFC 6733 §8.17).
-//
-// A request its PCRF is too busy for stays pending: the error is transient and the caller sends it again later
-// (RFC 6733 §7.1.3). A request with no connection or no path to its PCRF is undelivered: its Destination-Host fixes
-// its destination (§5.5.4). It goes once to the realm if the PCRF allows it (§8.18), and the session then belongs to
-// the PCRF that answers; otherwise the session is lost or, with ALLOW_SERVICE, goes on unbound. With TRY_AGAIN, a
-// pending request goes to the realm too. A PCRF that does not answer in time is neither: its connection's watchdog
-// decides (RFC 3539 §3.10).
+// RFC 6733 section 8.17
+// RFC 6733 section 7.1.3
+// RFC 6733 section 5.5.4
+// RFC 6733 section 8.18
+// RFC 3539 section 3.10
 func (b *Backend) send(ctx context.Context, id string, s session, bound bool,
 	build func(tgpp.Envelope) (*diameter.Message, error), wait bool,
 ) (*diameter.Message, error) {
@@ -160,9 +150,7 @@ func (b *Backend) send(ctx context.Context, id string, s session, bound bool,
 	return nil, &undelivered{allow: s.Failover.AllowsService(), err: deliveryError(ans, err)}
 }
 
-// sendBound sends a request to the PCRF of the session. A PCRF behind an agent may be in another realm than the
-// configured one, which then has no route of its own: the request goes through the configured realm, still to the
-// PCRF (TS 29.213 §7.3.5).
+// TS 29.213 clause 7.3.5
 func (b *Backend) sendBound(ctx context.Context, env tgpp.Envelope, s session,
 	build func(tgpp.Envelope) (*diameter.Message, error), wait bool,
 ) (*diameter.Message, error) {
@@ -202,15 +190,12 @@ func (b *Backend) do(ctx context.Context, env tgpp.Envelope, build func(tgpp.Env
 type failure int
 
 const (
-	// settled: the PCRF answered, or the request failed for another reason than its delivery.
 	settled failure = iota
 	pending
 	unreachable
 )
 
-// deliveryFailure classifies how a request did not reach its PCRF. Pending: no connection to it now, or the PCRF
-// answering it is too busy (RFC 6733 §7.1.3: it got the request). Unreachable: no path to it, or an agent answering
-// that it cannot deliver the request.
+// RFC 6733 section 7.1.3
 func deliveryFailure(ans *diameter.Message, err error) failure {
 	switch {
 	case errors.Is(err, diameter.ErrUnableToDeliver), errors.Is(err, diameter.ErrApplicationUnsupported):
@@ -257,9 +242,8 @@ func protocolError(ans *diameter.Message) uint32 {
 	return code
 }
 
-// TS 29.214 §4.4.5, §5.3.13: the AF signalling component, Media-Component-Number 0, of one Media-Sub-Component of
-// Flow-Number 0 and Flow-Usage AF_SIGNALLING, "the rest of AVPs within the Media-Component-Description and
-// Media-Sub-Component AVPs shall not be used": no Media-Type.
+// TS 29.214 clause 4.4.5
+// TS 29.214 clause 5.3.13
 func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signalling, wait bool) (string, error) {
 	initial := rx.RequestInitial
 	signalling := rx.FlowUsageAFSignalling
@@ -290,18 +274,20 @@ func (b *Backend) OpenSignalling(ctx context.Context, id string, s policy.Signal
 	return session{}.answered(ans, a).ref()
 }
 
-// TS 29.214 §5.4.1: the features an AA-Request of a call advertises.
+// TS 29.214 clause 5.4.1
 const callFeatures = rx.FeatureRel8 | rx.FeatureMCPTT
 
-// TS 29.214 §5.3.13, §5.4.1: FAILED_RESOURCES_ALLOCATION is a Rel8 feature, advertised in the same AA-Request.
+// TS 29.214 clause 5.3.13
+// TS 29.214 clause 5.4.1
 var callActions = []rx.SpecificAction{
 	rx.ActionChargingCorrelationExchange, rx.ActionIndicationOfLossOfBearer, rx.ActionIndicationOfReleaseOfBearer,
 	rx.ActionIndicationOfFailedResourcesAllocation,
 }
 
-// TS 29.214 §4.4.1, §4.4.2, Annex A.3. An update goes to the PCRF of the session. One that cannot reach the PCRF of
-// a session that allows the service succeeds, unbound (RFC 6733 §8.18 ALLOW_SERVICE: "assume that
-// re-authorization succeeded").
+// TS 29.214 clause 4.4.1
+// TS 29.214 clause 4.4.2
+// TS 29.214 clause A.3
+// RFC 6733 section 8.18
 func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Request) (policy.Grant, error) {
 	s, err := decodeRef(ref)
 	if err != nil {
@@ -363,9 +349,8 @@ func (b *Backend) Authorize(ctx context.Context, id, ref string, r policy.Reques
 	return policy.Grant{Ref: next, Charging: AnswerCharging(a)}, nil
 }
 
-// TS 29.214 Annex A.13.2: the MCPTT namespace in MCPTT-Identifier, and its priority value as is in
-// Reservation-Priority, DEFAULT (0) the lowest. An initial request sends them before the PCRF tells whether it
-// supports MCPTT; a later one only to a PCRF that does (§5.4.1).
+// TS 29.214 clause A.13.2
+// TS 29.214 clause 5.4.1
 func mcptt(r *rx.AARequest, p *policy.MCPTTPriority, supported bool) {
 	if p == nil || !supported {
 		return
@@ -375,8 +360,6 @@ func mcptt(r *rx.AARequest, p *policy.MCPTTPriority, supported bool) {
 	r.ReservationPriority = new(rx.ReservationPriority(p.Level))
 }
 
-// unbound is the grant of a session whose PCRF could not be reached but allows the service: the next requests go to
-// the PCRF realm.
 func unbound(s session) (policy.Grant, error) {
 	s.PCRF, s.Realm = "", ""
 
@@ -388,8 +371,8 @@ func unbound(s session) (policy.Grant, error) {
 	return policy.Grant{Ref: ref}, nil
 }
 
-// TS 29.214 §4.4.4. An STR its PCRF does not get ends the session there too (RFC 6733 §8.18): it is not sent again,
-// and, with ALLOW_SERVICE, succeeds.
+// TS 29.214 clause 4.4.4
+// RFC 6733 section 8.18
 func (b *Backend) Terminate(ctx context.Context, id, ref string, cause policy.Termination, wait bool) error {
 	s, err := decodeRef(ref)
 	if err != nil {
@@ -419,7 +402,7 @@ func (b *Backend) Terminate(ctx context.Context, id, ref string, cause policy.Te
 	return nil
 }
 
-// TS 29.214 §4.4.6.3
+// TS 29.214 clause 4.4.6.3
 func (b *Backend) ReAuth(ctx context.Context, id string, r rx.ReAuthRequest) bool {
 	s := b.sink.Load()
 	if s == nil {
@@ -429,7 +412,7 @@ func (b *Backend) ReAuth(ctx context.Context, id string, r rx.ReAuthRequest) boo
 	return (*s).Notify(context.WithoutCancel(ctx), id, event(r))
 }
 
-// TS 29.214 §4.4.6.1
+// TS 29.214 clause 4.4.6.1
 func (b *Backend) AbortSession(ctx context.Context, id string, r rx.AbortSessionRequest) (terminate func(), known bool) {
 	s := b.sink.Load()
 	if s == nil {
@@ -447,7 +430,9 @@ func framed(r *rx.AARequest, ue netip.Addr) {
 	}
 }
 
-// TS 29.214 §4.4.1, §4.4.4, §4.4.5
+// TS 29.214 clause 4.4.1
+// TS 29.214 clause 4.4.4
+// TS 29.214 clause 4.4.5
 func classify(err error) error {
 	e := &policy.Error{Err: err}
 
@@ -484,7 +469,9 @@ func classify(err error) error {
 	return e
 }
 
-// RFC 6733 §7.1.3, §7.1.4, §8.4.2: any answer ends the request at the PCRF, except one that asks for a retry.
+// RFC 6733 section 7.1.3
+// RFC 6733 section 7.1.4
+// RFC 6733 section 8.4.2
 func unanswered(err error) bool {
 	var lost *undelivered
 
@@ -522,9 +509,11 @@ func forking(f policy.Forking) rx.SIPForkingIndication {
 	return rx.ForkingSingleDialogue
 }
 
-// event returns what the RAR reports (TS 29.214 §4.4.6.2, §4.4.6.5). A FAILED_RESOURCES_ALLOCATION is about the
-// media components whose PCC/QoS rules are INACTIVE, the default without Media-Component-Status (§4.4.2, §5.3.48):
-// a failed modification keeps the previous rules active (TS 29.212 §4.5.12). No flows means every media component.
+// TS 29.214 clause 4.4.6.2
+// TS 29.214 clause 4.4.6.5
+// TS 29.214 clause 4.4.2
+// TS 29.214 clause 5.3.48
+// TS 29.212 clause 4.5.12
 func event(r rx.ReAuthRequest) policy.Event {
 	var e policy.Event
 
@@ -570,7 +559,8 @@ func eventKind(a rx.SpecificAction) policy.EventKind {
 	return policy.EventOther
 }
 
-// AnswerCharging returns the access network charging information of an AA-Answer (TS 29.214 §5.3.2, §5.3.3).
+// TS 29.214 clause 5.3.2
+// TS 29.214 clause 5.3.3
 func AnswerCharging(a rx.AAAnswer) policy.Charging {
 	return charging(a.AccessNetworkChargingIdentifiers, a.AccessNetworkChargingAddress, a.AccessNetwork)
 }
@@ -580,8 +570,6 @@ func charging(ids []rx.AccessNetworkChargingIdentifier, addr netip.Addr, n rx.Ac
 
 	switch {
 	case n.IPCANType == nil:
-	// TS 24.229 §7.2A.5.2.10 covers 5GS whatever its access (TS 29.214 Table E.2-1). EPS over non-3GPP access
-	// is §7.2A.5.2.3, which defines no ecid.
 	case *n.IPCANType == rx.IPCAN3GPPEPS:
 		c.Access = policy.AccessEPS
 	case *n.IPCANType == rx.IPCAN3GPP5GS, *n.IPCANType == rx.IPCANNon3GPP5GS:
@@ -603,7 +591,8 @@ func charging(ids []rx.AccessNetworkChargingIdentifier, addr netip.Addr, n rx.Ac
 	return c
 }
 
-// SubscriptionIDs returns the Subscription-Id AVPs for the subscribers (TS 29.214 §5.4, RFC 4006 §8.46).
+// TS 29.214 clause 5.4
+// RFC 4006 section 8.46
 func SubscriptionIDs(subs []policy.Subscriber) []rx.SubscriptionID {
 	var out []rx.SubscriptionID
 
@@ -619,7 +608,7 @@ func SubscriptionIDs(subs []policy.Subscriber) []rx.SubscriptionID {
 	return out
 }
 
-// MediaComponents returns the Media-Component-Description AVPs for the components (TS 29.214 §5.3.7).
+// TS 29.214 clause 5.3.7
 func MediaComponents(cs []policy.MediaComponent) []rx.MediaComponent {
 	if cs == nil {
 		return nil
@@ -683,7 +672,7 @@ func mediaComponent(c policy.MediaComponent) rx.MediaComponent {
 	return out
 }
 
-// TS 29.214 §5.3.8
+// TS 29.214 clause 5.3.8
 func flowDescription(f policy.Flow) string {
 	d := rx.FlowDescription{
 		Direction: rx.FlowDirectionOut, Protocol: rx.Protocol(f.Protocol),

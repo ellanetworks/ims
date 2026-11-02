@@ -24,10 +24,10 @@ import (
 )
 
 const (
-	// TS 29.500 §5.2.2.2: the User-Agent starts with the NF type (TS 29.510 NFType).
+	// TS 29.500 clause 5.2.2.2
 	DefaultUserAgent = "PCSCF"
 
-	// TS 29.500 §5.2.6: a PING at most every 60 s on each connection.
+	// TS 29.500 clause 5.2.6
 	MinPingInterval = 60 * time.Second
 
 	dialTimeout  = 5 * time.Second
@@ -36,26 +36,17 @@ const (
 )
 
 type Config struct {
-	// PCF is the API root of the PCF, http://host[:port][/prefix] or https://host[:port][/prefix] (TS 29.501
-	// §4.4.1).
-	PCF string
-	// TLS are the credentials of the client over https, and must be nil over http.
-	TLS *sbitls.Credentials
-	// UserAgent defaults to DefaultUserAgent.
-	UserAgent string
-	// PingInterval is how long a connection may stay silent before a PING checks it (TS 29.500 §5.2.6).
-	// It defaults to, and is at least, MinPingInterval.
-	PingInterval time.Duration
-	// Observe, if set, is called after each request with how long it took, and with the status of the response
-	// or, when none came, the error.
-	Observe func(status int, err error, elapsed time.Duration)
-	// TracerProvider traces the requests, which carry their trace context to the PCF; none when nil.
+	PCF            string
+	TLS            *sbitls.Credentials
+	UserAgent      string
+	PingInterval   time.Duration
+	Observe        func(status int, err error, elapsed time.Duration)
 	TracerProvider trace.TracerProvider
 }
 
-// Client invokes Npcf_PolicyAuthorization on one PCF, over HTTP/2: with prior knowledge for http (RFC 9113 §3.3),
-// and over mutually authenticated TLS for https (TS 33.501 §13.1.0). Requests share one connection, and more open
-// when the PCF's stream limit is reached (TS 29.500 §5.2.6).
+// RFC 9113 section 3.3
+// TS 33.501 clause 13.1.0
+// TS 29.500 clause 5.2.6
 type Client struct {
 	root      *url.URL
 	userAgent string
@@ -104,7 +95,6 @@ func New(cfg Config) (*Client, error) {
 
 		c.transport.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
 	} else {
-		// HTTP/2 only, which ALPN negotiates (RFC 9113 §3.2).
 		protocols.SetHTTP2(true)
 
 		c.transport.DialTLSContext = c.dialTLS
@@ -130,8 +120,6 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// dialTLS connects to addr over TLS. A handshake that fails, like a dial, leaves the request unsent. The
-// connection must carry HTTP/2: net/http would otherwise fall back to HTTP/1.1 on it.
 func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -145,7 +133,6 @@ func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, e
 		return nil, fmt.Errorf("%w: %w", ErrConnect, err)
 	}
 
-	// TS 29.500 §5.2.1, RFC 9113 §3.2
 	if p := conn.(*tls.Conn).ConnectionState().NegotiatedProtocol; p != "h2" {
 		_ = conn.Close()
 		return nil, fmt.Errorf("%w: %s did not negotiate HTTP/2 (ALPN %q)", ErrConnect, addr, p)
@@ -154,9 +141,8 @@ func (c *Client) dialTLS(ctx context.Context, network, addr string) (net.Conn, e
 	return conn, nil
 }
 
-// RFC 9110 §15.4: follow 307 and 308, which repeat the request, and nothing that turns it into a GET. A 303 to
-// a create is an answer, not a redirection (TS 29.514 §5.3.2.3.1). Redirections keep the scheme of the PCF URI,
-// so that they cannot take a request off TLS.
+// RFC 9110 section 15.4
+// TS 29.514 clause 5.3.2.3.1
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	if s := req.Response.StatusCode; s != http.StatusTemporaryRedirect && s != http.StatusPermanentRedirect {
 		return http.ErrUseLastResponse
@@ -173,32 +159,24 @@ func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// Close drops idle connections. Requests in progress go on.
 func (c *Client) Close() {
 	c.transport.CloseIdleConnections()
 }
 
-// Result is what the PCF answered to an operation that succeeded. A body that cannot be read leaves BodyErr set
-// rather than failing the operation, which the PCF has carried out (TS 29.500 §5.2.7.3).
+// TS 29.500 clause 5.2.7.3
 type Result struct {
-	// URI is the Individual Application Session Context: its Location after a create, and after a modification
-	// the URI a permanent redirection moved it to (TS 29.500 §6.10.9).
-	URI string
-	// Features are the features negotiated at creation (TS 29.514 §5.8).
-	Features SupportedFeatures
-	// Notification is the evsNotif of the response, if any.
+	URI          string
+	Features     SupportedFeatures
 	Notification *EventsNotification
 	BodyErr      error
 }
 
-// Created is the result of a create. Existing means the PCF already held an equal context (303), and URI is
-// that context.
 type Created struct {
 	Result
 	Existing bool
 }
 
-// Create provisions service information in a new application session context (TS 29.514 §4.2.2.2).
+// TS 29.514 clause 4.2.2.2
 func (c *Client) Create(ctx context.Context, asc *AppSessionContext) (Created, error) {
 	if err := validateCreate(asc); err != nil {
 		return Created{}, err
@@ -233,7 +211,7 @@ func (c *Client) Create(ctx context.Context, asc *AppSessionContext) (Created, e
 	return out, nil
 }
 
-// Modify patches the service information of an application session context (TS 29.514 §4.2.3.2).
+// TS 29.514 clause 4.2.3.2
 func (c *Client) Modify(ctx context.Context, uri string, p Patch) (Result, error) {
 	target, err := c.resource(uri, "")
 	if err != nil {
@@ -257,8 +235,7 @@ func (c *Client) Modify(ctx context.Context, uri string, p Patch) (Result, error
 	return out, nil
 }
 
-// Delete ends an application session context (TS 29.514 §4.2.4.2). With ev, the PCF reports those events in
-// the response.
+// TS 29.514 clause 4.2.4.2
 func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData) (Result, error) {
 	target, err := c.resource(uri, DeleteSegment)
 	if err != nil {
@@ -294,8 +271,8 @@ func (c *Client) Delete(ctx context.Context, uri string, ev *EventsSubscReqData)
 	return resp.result(false), nil
 }
 
-// TS 29.514 §5.6.2.3: notifUri and suppFeat are required, and exactly one UE address; §4.2.2.2: an events
-// subscription names its events and its notification URI.
+// TS 29.514 clause 5.6.2.3
+// TS 29.514 clause 4.2.2.2
 func validateCreate(asc *AppSessionContext) error {
 	if asc == nil || asc.AscReqData == nil {
 		return errors.New("create: no ascReqData")
@@ -321,8 +298,6 @@ func validateCreate(asc *AppSessionContext) error {
 	return nil
 }
 
-// resource returns the URI of an application session context, or of one of its custom operations. It takes an
-// absolute URI, or an absolute path on the PCF's authority.
 func (c *Client) resource(uri, operation string) (string, error) {
 	ref, err := url.Parse(uri)
 	if err != nil || !ref.IsAbs() && !strings.HasPrefix(uri, "/") {
@@ -372,7 +347,6 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 	c.report(resp, err, time.Since(start))
 
 	if err != nil {
-		// A redirection that was not followed still answered the request.
 		if resp != nil {
 			return nil, &Error{Op: op, Status: resp.StatusCode, Err: err}
 		}
@@ -394,7 +368,6 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 
 	if err != nil {
 		if r.success() {
-			// The operation succeeded; only its body is lost.
 			r.body, r.bodyErr = nil, err
 			return r, nil
 		}
@@ -405,7 +378,6 @@ func (c *Client) do(ctx context.Context, op Op, method, target, contentType stri
 	return r, nil
 }
 
-// report tells Observe of a request, answered with resp or not with err.
 func (c *Client) report(resp *http.Response, err error, elapsed time.Duration) {
 	if c.observe == nil {
 		return
@@ -419,7 +391,7 @@ func (c *Client) report(resp *http.Response, err error, elapsed time.Duration) {
 	c.observe(status, err, elapsed)
 }
 
-// permanentURL returns the URI a request ended at, following only permanent redirections (RFC 9110 §15.4.9).
+// RFC 9110 section 15.4.9
 func permanentURL(final *http.Request) *url.URL {
 	var hops []*http.Request
 
@@ -442,12 +414,13 @@ func permanentURL(final *http.Request) *url.URL {
 	return u
 }
 
-// TS 29.500 Table 5.2.7.1-1 NOTE 2: a 2xx the operation does not define counts as its 200, or its 204 if empty.
+// TS 29.500 clause 5.2.7.1 table 5.2.7.1-1
 func (r *response) success() bool {
 	return r.status >= 200 && r.status < 300
 }
 
-// err is the error for a status the operation does not succeed with (TS 29.500 §5.2.7, TS 29.514 §5.7).
+// TS 29.500 clause 5.2.7
+// TS 29.514 clause 5.7
 func (r *response) err() error {
 	e := &Error{Op: r.op, Status: r.status, RetryAfter: retryAfter(r.header, r.now)}
 
@@ -462,7 +435,6 @@ func (r *response) err() error {
 	return e
 }
 
-// problemDetails reads what it can of a ProblemDetails, so that one bad attribute does not hide the cause.
 func problemDetails(b []byte) *ProblemDetails {
 	var p ProblemDetails
 	if json.Unmarshal(b, &p) == nil {
@@ -492,9 +464,7 @@ func (r *response) malformed(err error) error {
 	return &Error{Op: r.op, Status: r.status, Err: fmt.Errorf("%w: %w", ErrMalformedResponse, err)}
 }
 
-// location returns the Individual Application Session Context the Location header points to,
-// {apiRoot}/npcf-policyauthorization/v1/app-sessions/{appSessionId} (TS 29.514 §5.3.3.2). The OpenAPI
-// description of the 201 also allows the URI of its events subscription, which stands for the same context.
+// TS 29.514 clause 5.3.3.2
 func (r *response) location() (string, error) {
 	loc := r.header.Get("Location")
 	if loc == "" {
@@ -523,8 +493,7 @@ func (r *response) location() (string, error) {
 	return u.String(), nil
 }
 
-// result reads what the client uses from an AppSessionContext body (TS 29.514 §5.2.2.2): the events reported
-// and, after a create, the negotiated features.
+// TS 29.514 clause 5.2.2.2
 func (r *response) result(create bool) Result {
 	var out Result
 
@@ -584,7 +553,7 @@ func (r *response) result(create bool) Result {
 	return out
 }
 
-// features returns the features the PCF negotiated, in ascRespData.suppFeat (TS 29.514 §5.8).
+// TS 29.514 clause 5.8
 func features(resp json.RawMessage) (SupportedFeatures, error) {
 	f, err := suppFeat("ascRespData", resp)
 	if err != nil || f == nil {
@@ -614,7 +583,6 @@ func suppFeat(name string, raw json.RawMessage) (*SupportedFeatures, error) {
 	return v.SuppFeat, nil
 }
 
-// mediaType returns the JSON media type of the body, if it has one.
 func mediaType(h http.Header) string {
 	t, _, err := mime.ParseMediaType(h.Get("Content-Type"))
 	if err != nil {
@@ -631,7 +599,7 @@ func mediaType(h http.Header) string {
 
 type templateKey struct{}
 
-// template is the URI template of the resource of an operation (TS 29.514 §5.3.1), under the API root.
+// TS 29.514 clause 5.3.1
 func (o Op) template() string {
 	switch o {
 	case OpCreate:
@@ -650,7 +618,6 @@ func templateOf(ctx context.Context) string {
 	return t
 }
 
-// templated sets the URI template of a request on its client span (url.template), which names the span.
 type templated struct{ next http.RoundTripper }
 
 func (t templated) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -10,15 +10,15 @@ import (
 	"strings"
 )
 
-// baseFeatureTags are the feature tags whose feature parameter has neither a "+" nor a "sip." prefix (RFC 3840 §5,
-// §10). All but language and type are in the SIP tree.
+// RFC 3840 section 5
+// RFC 3840 section 10
 var baseFeatureTags = []string{
 	"audio", "automata", "class", "duplex", "data", "control", "mobility", "description", "events", "priority",
 	"methods", "schemes", "application", "video", "language", "type", "isfocus", "actor", "text", "extensions",
 }
 
-// urnFeatureTags carry URNs, percent-encoded where RFC 3840 does not allow their characters (TS 24.229 §7.2A.8.2,
-// §7.2A.9.2).
+// TS 24.229 clause 7.2A.8.2
+// TS 24.229 clause 7.2A.9.2
 var urnFeatureTags = []string{"g.3gpp.icsi-ref", "g.3gpp.iari-ref"}
 
 type FeatureKind int
@@ -29,32 +29,28 @@ const (
 	FeatureNumeric
 )
 
-// FeatureValue is a simple filter of a feature predicate term (RFC 3840 §5, §9): an equality over a token or boolean
-// (case-insensitive), an equality over a string (case-sensitive), or a numeric comparison, which may be negated.
+// RFC 3840 section 5
+// RFC 3840 section 9
 type FeatureValue struct {
 	Negated bool
 	Kind    FeatureKind
 
-	// Text is the token, or the string without its angle brackets and quoting. The URN of a URN tag is decoded.
 	Text string
 
-	// Min and Max bound a numeric value, inclusive: equal for =, infinite for >= and <=.
 	Min, Max float64
 }
 
-// FeatureTerm constrains one feature tag: the disjunction of its values (RFC 3840 §5).
+// RFC 3840 section 5
 type FeatureTerm struct {
-	// Tag is the lower-cased feature tag: sip.audio, language, g.3gpp.icsi-ref.
 	Tag    string
 	Values []FeatureValue
 }
 
-// FeatureSet is a feature predicate: the conjunction of terms on distinct feature tags, as the feature parameters of
-// a Contact, an Accept-Contact or Reject-Contact value, or a Feature-Caps value express it (RFC 3840 §9, RFC 3841
-// §10, RFC 6809 §6).
+// RFC 3840 section 9
+// RFC 3841 section 10
+// RFC 6809 section 6
 type FeatureSet []FeatureTerm
 
-// NewFeature is a term with token values, TRUE when there is none. tag is a feature tag, or a feature parameter name.
 func NewFeature(tag string, tokens ...string) FeatureTerm {
 	if len(tokens) == 0 {
 		tokens = []string{"TRUE"}
@@ -68,13 +64,11 @@ func NewFeature(tag string, tokens ...string) FeatureTerm {
 	return t
 }
 
-// NewStringFeature is a term with a string value, compared case-sensitively.
 func NewStringFeature(tag, s string) FeatureTerm {
 	return FeatureTerm{Tag: normalizeFeatureTag(tag), Values: []FeatureValue{{Kind: FeatureString, Text: s}}}
 }
 
 func normalizeFeatureTag(tag string) string {
-	// A feature parameter: "+g.3gpp.mcptt", or a base tag ("audio" for sip.audio).
 	if strings.HasPrefix(tag, "+") || isBaseFeatureTag(tag) {
 		return featureTag(tag)
 	}
@@ -86,14 +80,13 @@ func isBaseFeatureTag(name string) bool {
 	return slices.ContainsFunc(baseFeatureTags, func(b string) bool { return strings.EqualFold(b, name) })
 }
 
-// IsFeatureParam reports whether a header field parameter is a feature parameter: a base tag, or a name with a
-// leading "+" (RFC 3841 §7.2.1).
+// RFC 3841 section 7.2.1
 func IsFeatureParam(name string) bool {
 	return strings.HasPrefix(name, "+") || isBaseFeatureTag(name)
 }
 
-// featureTag is the feature tag of a feature parameter (RFC 3840 §5). Feature-capability indicators (RFC 6809 §6.3)
-// are mapped the same way: their names are media feature tag names with a mandatory "+".
+// RFC 3840 section 5
+// RFC 6809 section 6.3
 func featureTag(param string) string {
 	name := strings.ToLower(param)
 
@@ -108,7 +101,7 @@ func featureTag(param string) string {
 	return "sip." + name
 }
 
-// featureParam is the feature parameter of a feature tag (RFC 3840 §5).
+// RFC 3840 section 5
 func featureParam(tag string) string {
 	if rest, ok := strings.CutPrefix(tag, "sip."); ok && isBaseFeatureTag(rest) {
 		return rest
@@ -121,9 +114,7 @@ func featureParam(tag string) string {
 	return "+" + strings.NewReplacer("/", "'", ":", "!").Replace(tag)
 }
 
-// ParseFeatureSet extracts the feature parameters of header field parameters (RFC 3841 §7.2.3): the base tags, and
-// the "+" parameters whose tag is not already there. A malformed feature parameter is left out and reported in the
-// error, next to the others.
+// RFC 3841 section 7.2.3
 func ParseFeatureSet(ps Params) (FeatureSet, error) {
 	var (
 		fs   FeatureSet
@@ -143,7 +134,6 @@ func ParseFeatureSet(ps Params) (FeatureSet, error) {
 					continue
 				}
 
-				// RFC 3841 §7.2.3 step 3: "+video" next to "video" is dropped.
 				if isBaseFeatureTag(rest) && fs.Has(featureTag(rest)) {
 					continue
 				}
@@ -167,8 +157,7 @@ func ParseFeatureSet(ps Params) (FeatureSet, error) {
 	return fs, errors.Join(errs...)
 }
 
-// RFC 3840 §9: no value is TRUE; a string-value is one string; otherwise a list of tag-values. Unquoted values are
-// accepted too.
+// RFC 3840 section 9
 func parseFeatureValues(tag, v string) ([]FeatureValue, error) {
 	if v == "" {
 		return []FeatureValue{{Kind: FeatureToken, Text: "TRUE"}}, nil
@@ -202,7 +191,7 @@ func parseFeatureValues(tag, v string) ([]FeatureValue, error) {
 	return out, nil
 }
 
-// RFC 3840 §9: string-value = "<" *(qdtext-no-abkt / quoted-pair ) ">".
+// RFC 3840 section 9
 func parseFeatureString(raw string) (string, error) {
 	if len(raw) < 2 || raw[len(raw)-1] != '>' {
 		return "", fmt.Errorf("unterminated string-value %q", raw)
@@ -249,7 +238,6 @@ func parseFeatureValue(tag, s string) (FeatureValue, error) {
 		return fv, nil
 	}
 
-	// Lenient: any visible character but the quoting and list ones, so that URNs sent unescaped still match.
 	if s == "" || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r > 0x7e || strings.ContainsRune(`"<>\`, r) }) {
 		return FeatureValue{}, fmt.Errorf("invalid token value %q", s)
 	}
@@ -265,7 +253,7 @@ func parseFeatureValue(tag, s string) (FeatureValue, error) {
 	return fv, nil
 }
 
-// RFC 3840 §9: ftag-name = ALPHA *( ALPHA / DIGIT / "!" / "'" / "." / "-" / "%" ).
+// RFC 3840 section 9
 func isFtagName(s string) bool {
 	if s == "" || !isAlpha(s[0]) {
 		return false
@@ -280,12 +268,12 @@ func isFtagName(s string) bool {
 	return true
 }
 
-// RFC 3840 §9: token-nobang.
+// RFC 3840 section 9
 func isTokenNoBang(c byte) bool {
 	return isAlnum(c) || strings.IndexByte("-.%*_+`'~", c) >= 0
 }
 
-// RFC 3840 §9: numeric = "#" (">=" / "<=" / "=" / number ":") number, number = [ "+" / "-" ] 1*DIGIT ["." 0*DIGIT].
+// RFC 3840 section 9
 func parseFeatureNumeric(s string) (float64, float64, error) {
 	switch {
 	case strings.HasPrefix(s, ">="):
@@ -409,8 +397,8 @@ func (fv FeatureValue) appendTo(b []byte, tag string) ([]byte, error) {
 	return b, nil
 }
 
-// Param is the feature parameter of the term (RFC 3840 §9): bare for TRUE, a quoted list otherwise. A string value
-// is alone and not negated (RFC 3840 §5).
+// RFC 3840 section 9
+// RFC 3840 section 5
 func (t FeatureTerm) Param() (Param, error) {
 	if !isFtagName(strings.TrimPrefix(featureParam(t.Tag), "+")) || len(t.Values) == 0 {
 		return Param{}, fmt.Errorf("feature tag %q without a valid name or value", t.Tag)
@@ -444,7 +432,6 @@ func (t FeatureTerm) Param() (Param, error) {
 	return p, nil
 }
 
-// Params are the feature parameters of the set.
 func (fs FeatureSet) Params() (Params, error) {
 	var ps Params
 
@@ -474,7 +461,6 @@ func (fs FeatureSet) Has(tag string) bool {
 	return ok
 }
 
-// Tokens are the token and string values of a tag that are not negated, such as the ICSIs of g.3gpp.icsi-ref.
 func (fs FeatureSet) Tokens(tag string) []string {
 	t, _ := fs.Term(tag)
 
@@ -489,7 +475,7 @@ func (fs FeatureSet) Tokens(tag string) []string {
 	return out
 }
 
-// intersects reports whether a value satisfies both simple filters, as RFC 2533 matching asks.
+// RFC 2533
 func (fv FeatureValue) intersects(o FeatureValue) bool {
 	switch {
 	case fv.Negated && o.Negated:
@@ -509,7 +495,6 @@ func (fv FeatureValue) intersects(o FeatureValue) bool {
 	return strings.EqualFold(fv.Text, o.Text)
 }
 
-// within reports whether every value fv admits is one o, taken as not negated, admits.
 func (fv FeatureValue) within(o FeatureValue) bool {
 	if fv.Kind != o.Kind {
 		return false
@@ -525,25 +510,21 @@ func (fv FeatureValue) within(o FeatureValue) bool {
 	return strings.EqualFold(fv.Text, o.Text)
 }
 
-// matches reports whether a value satisfies both terms, on the same tag.
 func (t FeatureTerm) matches(o FeatureTerm) bool {
 	return slices.ContainsFunc(t.Values, func(a FeatureValue) bool {
 		return slices.ContainsFunc(o.Values, a.intersects)
 	})
 }
 
-// CallerPreference is an Accept-Contact or Reject-Contact value (RFC 3841 §10).
+// RFC 3841 section 10
 type CallerPreference struct {
 	Features FeatureSet
 
-	// Require and Explicit only apply to Accept-Contact.
 	Require, Explicit bool
 
-	// Params are the other parameters.
 	Params Params
 }
 
-// Value is the header field value: "*" and the parameters.
 func (p CallerPreference) Value() (string, error) {
 	ps, err := p.Features.Params()
 	if err != nil {
@@ -569,8 +550,6 @@ func (fs Header) RejectContact() ([]CallerPreference, error) {
 	return fs.callerPreferences("Reject-Contact")
 }
 
-// callerPreferences parses the predicates of a header field. A predicate with a malformed term is left out whole,
-// and reported in the error: without the term, it would match contacts the caller did not mean.
 func (fs Header) callerPreferences(name string) ([]CallerPreference, error) {
 	var (
 		out  []CallerPreference
@@ -609,8 +588,7 @@ func (fs Header) callerPreferences(name string) ([]CallerPreference, error) {
 	return out, errors.Join(errs...)
 }
 
-// FeatureCaps are the feature-capability indicators of the Feature-Caps values (RFC 6809 §6): one set for each
-// entity that inserted one. Malformed indicators are left out and reported in the error.
+// RFC 6809 section 6
 func (fs Header) FeatureCaps() ([]FeatureSet, error) {
 	var (
 		out  []FeatureSet
@@ -635,7 +613,7 @@ func (fs Header) FeatureCaps() ([]FeatureSet, error) {
 	return out, errors.Join(errs...)
 }
 
-// FeatureCapsValue is a Feature-Caps value of feature-capability indicators (RFC 6809 §6.2).
+// RFC 6809 section 6.2
 func FeatureCapsValue(fs FeatureSet) (string, error) {
 	ps, err := fs.Params()
 	if err != nil {
@@ -649,7 +627,6 @@ func FeatureCapsValue(fs FeatureSet) (string, error) {
 	return "*" + ps.String(), nil
 }
 
-// "*" *(SEMI param), as in Accept-Contact, Reject-Contact and Feature-Caps.
 func starParams(v string) (Params, error) {
 	star, ps, err := ParseTokenParams(v)
 	if err != nil {
@@ -663,15 +640,12 @@ func starParams(v string) (Params, error) {
 	return ps, nil
 }
 
-// Features is the feature set of a Contact (RFC 3840 §9), without its malformed feature parameters, which the error
-// reports.
+// RFC 3840 section 9
 func (a Address) Features() (FeatureSet, error) {
 	return ParseFeatureSet(a.Params)
 }
 
-// RejectedBy reports whether a Reject-Contact predicate discards a contact with these features: one whose tags all
-// appear in the contact's features, and match them (RFC 3841 §7.2.4). A contact without features is immune. A
-// predicate without feature parameters constrains nothing and is ignored.
+// RFC 3841 section 7.2.4
 func (fs FeatureSet) RejectedBy(rejects []CallerPreference) bool {
 	if len(fs) == 0 {
 		return false
@@ -685,9 +659,7 @@ func (fs FeatureSet) RejectedBy(rejects []CallerPreference) bool {
 	})
 }
 
-// Preference is the caller preference Qa of a contact with these features against Accept-Contact predicates
-// (RFC 3841 §7.2.4). ok is false when a predicate with the require flag drops the contact. A contact without features
-// is immune, with a Qa of 1. A predicate without feature parameters is ignored.
+// RFC 3841 section 7.2.4
 func (fs FeatureSet) Preference(accepts []CallerPreference) (qa float64, ok bool) {
 	if len(fs) == 0 || !slices.ContainsFunc(accepts, func(p CallerPreference) bool { return len(p.Features) > 0 }) {
 		return 1, true
@@ -720,7 +692,6 @@ func (fs FeatureSet) Preference(accepts []CallerPreference) (qa float64, ok bool
 			continue
 		}
 
-		// 1/N for each term the contact has, counted rather than summed so that a full match is exactly 1.
 		score := float64(present) / float64(len(p.Features))
 
 		if present < len(p.Features) && p.Explicit {
@@ -735,7 +706,6 @@ func (fs FeatureSet) Preference(accepts []CallerPreference) (qa float64, ok bool
 		m++
 	}
 
-	// No predicate is left to match: the contact comes after those that match one.
 	if m == 0 {
 		return 0, true
 	}

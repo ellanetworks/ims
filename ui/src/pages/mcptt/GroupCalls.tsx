@@ -25,7 +25,6 @@ import {
   userLabel,
 } from "@/utils/mcptt";
 
-// useNow is the time, every second: the elapsed times tick between the refreshes.
 function useNow() {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

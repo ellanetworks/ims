@@ -21,8 +21,8 @@ type SCSCF struct {
 	Listeners []netip.AddrPort
 }
 
-// pathURI is the P-CSCF's URI in the Path of a registration: its IMS flow token, and "ob" (TS 24.229
-// §5.2.2.1 step 1, RFC 5626 §5.1).
+// TS 24.229 clause 5.2.2.1
+// RFC 5626 section 5.1
 func pathURI(token string, addr netip.Addr, port uint16) sip.URI {
 	u := sip.URI{Scheme: "sip", User: token, Host: sip.FormatHost(addr.Unmap()), Port: port}
 	u.Params.Set("lr", "")
@@ -88,8 +88,6 @@ func (p *PCSCF) target(u sip.URI, local netip.Addr) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(local, p.cfg.Port), Remote: dest}}, true
 }
 
-// forward forwards a request, or answers it when it cannot, with reject if any, and reports whether it forwarded
-// it. One answered already, such as with the 487 to a CANCEL that came first, is neither.
 func (p *PCSCF) forward(ctx context.Context, tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, opts proxy.Options,
 	reject func(*sip.Response),
 ) bool {
@@ -201,8 +199,6 @@ func (p *PCSCF) HandleAck(ctx context.Context, ack *sip.Request) {
 		}
 	}
 
-	// Sent once the policy function answered, after HandleAck returned: the proxy takes ctx for its trace, not its
-	// cancellation.
 	send := func() {
 		if err := p.cfg.Proxy.SendAck(ctx, out, to, d); err != nil {
 			p.log.DebugContext(ctx, "ACK not forwarded", slog.String("call-id", ack.Header.CallID()), slog.Any("error", err))
@@ -267,12 +263,6 @@ func (p *PCSCF) ueTarget(ctx context.Context, req, out *sip.Request, removed []s
 		return proxy.Target{}, sip.NewResponse(req, 403, "")
 	}
 
-	// A request toward a registration flow the P-CSCF has no binding for, as one lost in a restart, gets a 404 (Not
-	// Found), with the P-CSCF as its Response-Source, which tells it from a 404 of the UE (TS 24.229 §5.2.6.4.1,
-	// §7.2.17.5). To an initial request, the S-CSCF tries the UE's other flows, answers 480 (Temporarily Unavailable)
-	// upstream when none is left, and starts the HSS based P-CSCF restoration, so that the UE registers again
-	// (§4.14.2, §5.4.3.3); within a dialog, the 404 ends the dialog (RFC 5057 §5.1). A request toward a binding whose
-	// flow is gone gets the 430 of RFC 5626 §5.3.1, so that the S-CSCF can try the UE's other flows (RFC 5626 §7).
 	f, ok := p.regs.flow(flowToken(removed))
 	if !ok {
 		res := sip.NewResponse(req, 404, "")
@@ -330,7 +320,7 @@ func (p *PCSCF) toCore(ctx context.Context, tx *transaction.ServerTransaction, r
 	})
 }
 
-// TS 29.214 Annex A.1
+// TS 29.214 clause A.1
 func (p *PCSCF) forwardInDialog(ctx context.Context, tx *transaction.ServerTransaction, req, out *sip.Request, to proxy.Target, d *proxy.Dialog,
 	priority bool, onReply func(context.Context, proxy.Reply) proxy.Verdict,
 ) {
@@ -342,7 +332,8 @@ func (p *PCSCF) forwardInDialog(ctx context.Context, tx *transaction.ServerTrans
 	}
 }
 
-// TS 24.229 §5.2.6.3.5, §5.2.6.3.9
+// TS 24.229 clause 5.2.6.3.5
+// TS 24.229 clause 5.2.6.3.9
 func (p *PCSCF) coreTarget(ctx context.Context, req, out *sip.Request, removed []sip.URI, d *proxy.Dialog) (proxy.Target, *sip.Response) {
 	if !p.ownFlow(req, flowToken(removed)) {
 		p.log.DebugContext(ctx, "in-dialog request on another UE's flow", slog.String("source", req.Flow.Remote.String()))
@@ -384,7 +375,11 @@ func (p *PCSCF) ownFlow(req *sip.Request, token string) bool {
 	return !f.protected && f.ue.Port() == req.Flow.Remote.Port()
 }
 
-// TS 24.229 §5.2.6.3.5, §5.2.6.3.6, §5.2.6.4.5, §5.2.6.4.6, RFC 3261 §16.6 step 4
+// TS 24.229 clause 5.2.6.3.5
+// TS 24.229 clause 5.2.6.3.6
+// TS 24.229 clause 5.2.6.4.5
+// TS 24.229 clause 5.2.6.4.6
+// RFC 3261 section 16.6
 func recordRouteRefresh(out *sip.Request, removed []sip.URI) {
 	switch out.Method {
 	case "INVITE", "UPDATE", "SUBSCRIBE", "NOTIFY":

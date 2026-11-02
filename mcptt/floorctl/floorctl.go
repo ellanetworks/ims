@@ -1,9 +1,3 @@
-// Package floorctl is the coding of the floor control messages of MCPTT (TS 24.380 §8.2): RTCP APP packets of name
-// "MCPT", each message a subtype and the fields of §8.2.3.
-//
-// The fields of on-network floor control with a controlling function are typed; those of the non-controlling
-// function, functional aliases, locations, multi-talker and queued floor request cancellation are kept as Other, as
-// any field of a later version (§8.1.4).
 package floorctl
 
 import (
@@ -14,12 +8,10 @@ import (
 	"github.com/ellanetworks/ims/mcptt/rtp"
 )
 
-// Name is the name of the floor control APP packets (§8.2.1).
+// TS 24.380 clause 8.2.1
 var Name = [4]byte{'M', 'C', 'P', 'T'}
 
-// Type is a floor control message, its subtype without the acknowledgement bit (Table 8.2.2.1-1). The messages of
-// multi-talker (§8.2.14), queued floor request cancellation (§8.2.15), unicast media flow control (§8.2.16) and
-// floor revoke request (§8.2.17) are out of scope: Decode takes them as unknown.
+// TS 24.380 clause 8.2.2.1
 type Type uint8
 
 const (
@@ -35,10 +27,10 @@ const (
 	Ack                  Type = 0b01010
 )
 
-// ackBit is the first bit of the subtype, set when the sender asks for a Floor Ack (§8.2.2.1).
+// TS 24.380 clause 8.2.2.1
 const ackBit = 0b10000
 
-// FieldID is the ID of a field (Table 8.2.3.1-2).
+// TS 24.380 clause 8.2.3.1
 type FieldID uint8
 
 const (
@@ -71,70 +63,51 @@ const (
 )
 
 const (
-	// fieldIDs is the number of field IDs of the present version.
 	fieldIDs = 26
-	// longFieldID is the first field ID with a two-octet length (§8.1.3).
+	// TS 24.380 clause 8.1.3
 	longFieldID FieldID = 192
 )
 
-// Message is a floor control message. A nil or empty field is absent.
 type Message struct {
-	Type Type
-	// AckRequired is the acknowledgement bit, of the messages that have one (§8.2.2.1).
+	Type        Type
 	AckRequired bool
-	// SSRC is the RTCP SSRC of the sender (§8.1.2).
-	SSRC uint32
+	SSRC        uint32
 
-	// Priority is the Floor Priority (§8.2.3.2): requested, granted.
-	Priority *uint8
-	// Duration is the time in seconds the granted party may send (§8.2.3.3).
-	Duration *uint16
-	// RejectCause is the Reject Cause of a Floor Deny or Floor Revoke (§8.2.3.4).
-	RejectCause *RejectCause
-	// QueueInfo is the Queue Info (§8.2.3.5).
-	QueueInfo *QueueInfo
-	// GrantedPartyID is the Granted Party's Identity, an MCPTT ID (§8.2.3.6).
+	Priority       *uint8
+	Duration       *uint16
+	RejectCause    *RejectCause
+	QueueInfo      *QueueInfo
 	GrantedPartyID string
-	// Permission is the Permission to Request the Floor (§8.2.3.7).
-	Permission *bool
-	// UserID is an MCPTT ID (§8.2.3.8).
-	UserID string
-	// QueueSize is the Queue Size (§8.2.3.9).
-	QueueSize *uint16
-	// SequenceNumber is the Message Sequence Number (§8.2.3.10).
+	Permission     *bool
+	UserID         string
+	QueueSize      *uint16
 	SequenceNumber *uint16
-	// QueuedUserID is the Queued User ID, an MCPTT ID (§8.2.3.11).
-	QueuedUserID string
-	// Source is the Source of a Floor Ack (§8.2.3.12).
-	Source *Source
-	// MessageType is the message a Floor Ack acknowledges (§8.2.3.14).
-	MessageType *Type
-	// Indicator is the Floor Indicator (§8.2.3.15).
-	Indicator *Indicator
-	// GrantedSSRC is the Audio SSRC of Granted Participant (§8.2.3.16).
-	GrantedSSRC *uint32
+	QueuedUserID   string
+	Source         *Source
+	MessageType    *Type
+	Indicator      *Indicator
+	GrantedSSRC    *uint32
 
-	// Other are the fields not typed above, in order: of a later version, or of the features out of scope.
 	Other []Field
 }
 
-// Field is a field as coded (§8.1.3): its ID and value, without padding.
+// TS 24.380 clause 8.1.3
 type Field struct {
 	ID    FieldID
 	Value []byte
 }
 
-// RejectCause is the Reject Cause field (§8.2.3.4).
+// TS 24.380 clause 8.2.3.4
 type RejectCause struct {
-	Cause Cause
-	// Phrase is text, as an SDES CNAME (RFC 3550 §6.5.1).
+	Cause  Cause
 	Phrase string
 }
 
-// Cause is a <Reject Cause> value: of a Floor Deny (§8.2.6.2) or of a Floor Revoke (§8.2.10.2).
+// TS 24.380 clause 8.2.6.2
+// TS 24.380 clause 8.2.10.2
 type Cause uint16
 
-// Causes of a Floor Deny (§8.2.6.2).
+// TS 24.380 clause 8.2.6.2
 const (
 	DenyAnotherHasPermission Cause = 1
 	DenyInternalError        Cause = 2
@@ -146,7 +119,7 @@ const (
 	DenyOther                Cause = 255
 )
 
-// Causes of a Floor Revoke (§8.2.10.2).
+// TS 24.380 clause 8.2.10.2
 const (
 	RevokeOnlyOneClient     Cause = 1
 	RevokeMediaBurstTooLong Cause = 2
@@ -157,9 +130,8 @@ const (
 	RevokeOther             Cause = 255
 )
 
-// QueueInfo is the Queue Info field (§8.2.3.5).
+// TS 24.380 clause 8.2.3.5
 type QueueInfo struct {
-	// Position is the position in the queue, QueueNotQueued or QueueUnknown.
 	Position uint8
 	Priority uint8
 }
@@ -169,7 +141,7 @@ const (
 	QueueUnknown   uint8 = 255
 )
 
-// Source is the Source field (§8.2.3.12).
+// TS 24.380 clause 8.2.3.12
 type Source uint16
 
 const (
@@ -179,23 +151,22 @@ const (
 	SourceNonControlling Source = 3
 )
 
-// Indicator is the Floor Indicator bit map (§8.2.3.15), bit A the most significant.
+// TS 24.380 clause 8.2.3.15
 type Indicator uint16
 
 const (
-	IndicatorNormal         Indicator = 1 << (15 - iota)
-	IndicatorBroadcast                // B
-	IndicatorSystem                   // C
-	IndicatorEmergency                // D
-	IndicatorImminentPeril            // E
-	IndicatorQueueing                 // F
-	IndicatorDualFloor                // G
-	IndicatorTemporaryGroup           // H
-	IndicatorMultiTalker              // I
+	IndicatorNormal Indicator = 1 << (15 - iota)
+	IndicatorBroadcast
+	IndicatorSystem
+	IndicatorEmergency
+	IndicatorImminentPeril
+	IndicatorQueueing
+	IndicatorDualFloor
+	IndicatorTemporaryGroup
+	IndicatorMultiTalker
 )
 
-// messages are the fields each message carries (Tables 8.2.4-1 to 8.2.17-1), and whether it has the acknowledgement
-// bit (Table 8.2.2.1-1).
+// TS 24.380 clause 8.2.2.1
 var messages = map[Type]struct {
 	ack    bool
 	fields []FieldID
@@ -221,16 +192,13 @@ var messages = map[Type]struct {
 	Ack: {false, []FieldID{FieldSource, FieldMessageType, FieldTrackInfo, FieldLocation}},
 }
 
-// ErrUnknown is the error of a message whose subtype is unknown, to be ignored whole (§8.1.4).
+// TS 24.380 clause 8.1.4
 var ErrUnknown = errors.New("floorctl: unknown message")
 
-// ErrField is wrapped by the errors of the fields Decode leaves out, malformed (§8.1.4): the message it returns is
-// usable without them.
+// TS 24.380 clause 8.1.4
 var ErrField = errors.New("floorctl: malformed field")
 
-// Decode decodes the floor control message app. A malformed field is left out, with an error wrapping ErrField; of a
-// typed field given twice, the first well-formed counts. Fields the message does not carry and the repeated ones are kept as
-// Other, to be ignored (§8.1.4).
+// TS 24.380 clause 8.1.4
 func Decode(app *rtp.App) (Message, error) {
 	if app.Name != Name {
 		return Message{}, fmt.Errorf("floorctl: APP name %q", app.Name[:])
@@ -274,7 +242,7 @@ func Decode(app *rtp.App) (Message, error) {
 	return m, errors.Join(errs...)
 }
 
-// nextField reads the field at the start of b, and the octets it takes with its padding (§8.1.3).
+// TS 24.380 clause 8.1.3
 func nextField(b []byte) (Field, int, error) {
 	id := FieldID(b[0])
 
@@ -311,7 +279,6 @@ func typed(id FieldID) bool {
 	return true
 }
 
-// set decodes the typed field f into m.
 func (m *Message) set(f Field) error {
 	v := f.Value
 
@@ -333,7 +300,6 @@ func (m *Message) set(f Field) error {
 
 		return nil
 	case FieldGrantedSSRC:
-		// The value and 16 spare bits (§8.2.3.16).
 		if len(v) != 6 {
 			return fmt.Errorf("length %d", len(v))
 		}
@@ -373,7 +339,6 @@ func (m *Message) set(f Field) error {
 		s := Source(u)
 		m.Source = &s
 	case FieldMessageType:
-		// The subtype of the message acknowledged, its first bit zero, preceded by three zero bits (§8.2.3.14).
 		if v[0] > 0b01111 {
 			return fmt.Errorf("message type %08b", v[0])
 		}
@@ -399,8 +364,6 @@ func (m *Message) id(id FieldID) *string {
 	return &m.QueuedUserID
 }
 
-// App is the APP packet of m: its typed fields in the order of the field IDs, then Other. A field the message does
-// not carry, or the acknowledgement bit on a message without one, is an error.
 func (m *Message) App() (*rtp.App, error) {
 	spec, ok := messages[m.Type]
 	if !ok {
@@ -447,7 +410,6 @@ func carries(fields []FieldID, id FieldID) bool {
 	return false
 }
 
-// fields are the typed fields of m that are present, coded.
 func (m *Message) fields() []Field {
 	var fs []Field
 
@@ -516,7 +478,7 @@ func (m *Message) fields() []Field {
 	return fs
 }
 
-// appendField appends f with its padding (§8.1.3).
+// TS 24.380 clause 8.1.3
 func appendField(dst []byte, f Field) ([]byte, error) {
 	start := len(dst)
 

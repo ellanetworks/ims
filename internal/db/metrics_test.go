@@ -20,7 +20,6 @@ func TestMetricsCountFailuresOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A record that is not there is an answer, not a failure.
 	if err := d.DeletePeer(ctx, "missing"); err == nil {
 		t.Fatal("DeletePeer of a missing peer succeeded")
 	}
@@ -39,7 +38,6 @@ func TestMetricsCountFailuresOnly(t *testing.T) {
 		}
 	}
 
-	// A call on a closed database fails.
 	if err := d.conn.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +66,6 @@ func TestMetricsLint(t *testing.T) {
 	}
 }
 
-// TestEveryCallIsObserved checks that each exported method of DB that calls the database starts with
-// defer d.observe(...)(), so that a new one cannot be left out of the metrics.
 func TestEveryCallIsObserved(t *testing.T) {
 	unobserved := map[string]bool{"Close": true, "Collectors": true, "Ping": true}
 

@@ -55,9 +55,7 @@ type Config struct {
 
 	Registrations RegistrationStore
 
-	// Records, if any, keeps a record of each call from a UE.
-	Records *callrecords.Recorder
-	// RegistrationAttempts, if any, counts the registration attempts the P-CSCF answers.
+	Records              *callrecords.Recorder
 	RegistrationAttempts *regmetrics.Registrations
 
 	Trust *trust.Domain
@@ -70,14 +68,11 @@ type Config struct {
 const tracerName = "github.com/ellanetworks/ims/internal/pcscf"
 
 type PCSCF struct {
-	cfg   Config
-	log   *slog.Logger
-	clock Clock
-	// ctx is the P-CSCF's lifetime: it bounds the writes to the stores and the detached work, cancelled when Close
-	// gives up on them.
-	ctx    context.Context
-	cancel context.CancelFunc
-	// detached traces the work that starts later than its cause, as a timer fires.
+	cfg      Config
+	log      *slog.Logger
+	clock    Clock
+	ctx      context.Context
+	cancel   context.CancelFunc
 	detached tracing.Detached
 	sas      *associations
 	regs     *registrations
@@ -159,11 +154,9 @@ func (p *PCSCF) Restore(ctx context.Context) error {
 	return nil
 }
 
-// secured reports whether the P-CSCF can still reach and authenticate the UE of a restored registration r: one of
-// no IPsec, or one of the security associations it registered over. Registration and security associations begin
-// and end together (TS 24.229 §5.2.5.1 step 2, TS 33.203 §7.4): without them, every request of the UE is dropped
-// and none reaches it, so a registration whose sets were lost, by the kernel in a restart that did not keep them,
-// is no binding, and a terminating request gets a 404, which starts the P-CSCF restoration (TS 24.229 §5.2.6.4.1).
+// TS 24.229 clause 5.2.5.1
+// TS 33.203 clause 7.4
+// TS 24.229 clause 5.2.6.4.1
 func (p *PCSCF) secured(r *db.PCSCFRegistration) bool {
 	if !r.Protected {
 		return true
@@ -172,15 +165,9 @@ func (p *PCSCF) secured(r *db.PCSCFRegistration) bool {
 	return p.sas != nil && p.sas.hasSets(regKeyOf(r))
 }
 
-// Close stops the P-CSCF: it ends its policy sessions and saves its security associations. When ctx is done first,
-// it gives up on both, cancelling the requests and writes in progress, and the writes that follow, and returns the
-// context's error. Otherwise what the P-CSCF still saves after, of a registration that completes while SIP stops, is
-// saved.
 func (p *PCSCF) Close(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, p.cancel)
 
-	// What the policy function reports from now on is left to the restart: an abort answered here could not end
-	// the session (TS 29.514 §4.2.5.3).
 	if p.policy != nil {
 		p.cfg.Policy.Backend.Bind(nil)
 	}
@@ -196,8 +183,6 @@ func (p *PCSCF) Close(ctx context.Context) error {
 		p.sas.close()
 	}
 
-	// The context's end is its done channel closing, before its AfterFuncs start: stop can still stop p.cancel once what
-	// waited on ctx gave up. The context's error tells it.
 	if !stop() || ctx.Err() != nil {
 		p.cancel()
 		return ctx.Err()
@@ -260,7 +245,8 @@ func (p *PCSCF) Filter(m sip.Message) error {
 	return nil
 }
 
-// TS 24.229 §5.2.6.3.1, §5.2.2 NOTE 3
+// TS 24.229 clause 5.2.6.3.1
+// TS 24.229 clause 5.2.2
 func protectedRPort(req *sip.Request, portUS uint16) {
 	via, err := req.Header.TopVia()
 	if err != nil {
@@ -288,9 +274,6 @@ func (p *PCSCF) ResponseFlow(req *sip.Request, res *sip.Response) (sip.Flow, boo
 	return f, true, nil
 }
 
-// SpanLinks are what a request from a UE, whose trace context the P-CSCF does not continue, links to
-// (transaction.Config.SpanLinks): a REGISTER the REGISTER its registration last renewed with, a request of a call the
-// INVITE of the call.
 func (p *PCSCF) SpanLinks(req *sip.Request) []trace.SpanContext {
 	if req.Method != "REGISTER" {
 		return p.cfg.Proxy.SpanLinks(req)
@@ -341,8 +324,6 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 	}
 
 	if p.sas != nil {
-		// TS 24.229 §5.2.2.2 step 1, TS 33.203 §6.1 NOTE 2: a REGISTER is protected by its own flow's
-		// security associations only; one for another flow over them needs a challenge, and gets its own.
 		if v, ok := p.sas.lookup(req.Flow); ok && v.flow == r.flow {
 			r.in = &v
 
@@ -354,9 +335,6 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 		}
 	}
 
-	// RFC 5626 §3.1, §4.2: each registration flow is a network flow of its own. A REGISTER for another flow
-	// of the private identity over one that a registration uses is refused: the requests from it could not
-	// be told apart (TS 24.229 §5.2.2.1 NOTE 16).
 	if r.in == nil {
 		if other, ok := p.regs.fromSource(req.Flow.Remote); ok && other.IMPI == r.impi && regKeyOf(&other) != r.key() {
 			p.log.DebugContext(ctx, "REGISTER for another flow over a registered one", slog.String("impi", r.impi),
@@ -379,7 +357,6 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 
 	fromUE(out)
 
-	// TS 24.229 §5.2.2.1 step 1: an IMS flow token per registration flow, and "ob" (RFC 5626 §5.1).
 	r.token = p.regs.token(r.key())
 	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port).String()+">")
 	addRequestOptionTag(out, "Require", "path")
@@ -388,7 +365,6 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 		out.Header.Set("P-Visited-Network-ID", p.cfg.HomeDomain)
 	}
 
-	// TS 24.229 §5.2.2.1 step 3: a new icid-value, and a type 1 orig-ioi without term-ioi.
 	p.newChargingVector(req.Flow.Local.Addr()).set(out)
 
 	to := proxy.Target{Flow: sip.Flow{
@@ -429,7 +405,6 @@ func (r *registration) key() regKey {
 	return regKey{r.impi, r.ue, r.flow}
 }
 
-// registrationFlow is the registration flow a REGISTER is for: that of its Contact, or none.
 func registrationFlow(req *sip.Request) flowID {
 	contacts, err := req.Header.Contacts()
 	if err != nil {
@@ -445,8 +420,8 @@ func registrationFlow(req *sip.Request) flowID {
 	return flowID{}
 }
 
-// contactFlow is the registration flow a Contact names: its instance ID and reg-id, both present and
-// valid (RFC 5626 §4.2, §11.1: a reg-id is 1 to 2^31 - 1), or none, like the S-CSCF's.
+// RFC 5626 section 4.2
+// RFC 5626 section 11.1
 func contactFlow(params sip.Params) flowID {
 	v, ok := params.Get("+sip.instance")
 	if !ok {
@@ -743,8 +718,6 @@ func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Respo
 		return false
 	}
 
-	// A new registration renews the subscription to the reg event package, unless it is a flow that
-	// adds to the UE's others.
 	if !known && (r.flow == flowID{} || !others) {
 		p.subs.stop(ctx, r.impi)
 	}
@@ -756,7 +729,9 @@ func (p *PCSCF) registered(ctx context.Context, req *sip.Request, res *sip.Respo
 	return false
 }
 
-// TS 24.229 §5.2.10.1, TS 29.214 Annex A.4, TS 29.213 Annex B.0
+// TS 24.229 clause 5.2.10.1
+// TS 29.214 clause A.4
+// TS 29.213 clause B.0
 func emergency(req *sip.Request, res *sip.Response) bool {
 	requested, _ := req.Header.Contacts()
 	granted, _ := res.Header.Contacts()
@@ -835,7 +810,6 @@ func (p *PCSCF) HandleTransactionError(ctx context.Context, tx *transaction.Serv
 	p.cfg.Fallback.HandleTransactionError(ctx, tx, err)
 }
 
-// respond answers a request with a response of the P-CSCF's.
 func (p *PCSCF) respond(ctx context.Context, tx *transaction.ServerTransaction, res *sip.Response) {
 	p.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)
 	p.logRejectedRegister(ctx, tx.Request(), res)
@@ -845,8 +819,6 @@ func (p *PCSCF) respond(ctx context.Context, tx *transaction.ServerTransaction, 
 	}
 }
 
-// logRejectedRegister logs a final answer to a REGISTER other than a success or a challenge, whoever made it, so
-// that the operator sees why a UE does not register. The node that refused it logs the details.
 func (p *PCSCF) logRejectedRegister(ctx context.Context, req *sip.Request, res *sip.Response) {
 	if req.Method != "REGISTER" || res.StatusCode < 300 || res.StatusCode == 401 {
 		return
@@ -1028,7 +1000,6 @@ func registrationOutcome(req *sip.Request, res *sip.Response) outcome {
 		matched bool
 	)
 
-	// TS 24.229 §5.2.5.1 step 1A: the 200 lists the other flows too, maybe at the same URI (RFC 5626 §6).
 	for _, g := range granted {
 		if !slices.ContainsFunc(requested, func(c sip.Address) bool {
 			return c.URI.String() == g.URI.String() && contactFlow(c.Params) == contactFlow(g.Params)
@@ -1078,7 +1049,7 @@ func parseSeconds(s string) (uint64, error) {
 	return n, nil
 }
 
-// RFC 3329 §2.3.1
+// RFC 3329 section 2.3.1
 func (p *PCSCF) secAgreeRequired(req *sip.Request) *sip.Response {
 	code := 421
 
@@ -1135,8 +1106,13 @@ func addOptionTag(res *sip.Response, name, tag string) {
 	res.Header.Add(name, tag)
 }
 
-// TS 24.229 §5.2.1, RFC 3325, RFC 3329 §2.3.1, RFC 5009 §5.2.6.4.2, §8.1. Resource-Priority goes on: §4.4.6
-// leaves what the UE sends to the P-CSCF's procedures, and the UE sends it for priority (§5.1).
+// TS 24.229 clause 5.2.1
+// RFC 3325
+// RFC 3329 section 2.3.1
+// TS 24.229 clause 5.2.6.4.2
+// RFC 5009 section 8.1
+// TS 24.229 clause 4.4.6
+// TS 24.229 clause 5.1
 func fromUE(req *sip.Request) {
 	pani := ueAccessNetworkInfo(req.Header)
 	early := earlyMediaSupported(req.Header) && slices.Contains([]string{"INVITE", "PRACK", "UPDATE"}, req.Method)
@@ -1164,7 +1140,11 @@ func fromUE(req *sip.Request) {
 	}
 }
 
-// TS 24.229 §5.2.1 steps 1-3, §5.2.6.4.4, §5.2.6.4.2, §4.4.7, §4.4.6
+// TS 24.229 clause 5.2.1
+// TS 24.229 clause 5.2.6.4.4
+// TS 24.229 clause 5.2.6.4.2
+// TS 24.229 clause 4.4.7
+// TS 24.229 clause 4.4.6
 func fromUEResponse(res *sip.Response) {
 	pani := ueAccessNetworkInfo(res.Header)
 	reasons := res.Header.Values("Reason")

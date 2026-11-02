@@ -18,7 +18,6 @@ import (
 
 var t0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
-// tickClock is a second later at each reading, so that each event has its own time.
 type tickClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -33,7 +32,6 @@ func (c *tickClock) Now() time.Time {
 	return c.now
 }
 
-// at is the time of the nth event.
 func at(n int) time.Time {
 	return t0.Add(time.Duration(n) * time.Second)
 }
@@ -86,7 +84,6 @@ func attempt(icid string) Attempt {
 	}
 }
 
-// attempted is the record of attempt, opened at the first event.
 func attempted(icid string) db.CallRecord {
 	return db.CallRecord{
 		ICID: icid, SessionID: "call-" + icid,
@@ -414,7 +411,6 @@ func TestRecorderCloseOpen(t *testing.T) {
 	}
 }
 
-// TestRecorderSavesOpenCalls checks that a call is saved before it ends, so that a crash leaves a record of it.
 func TestRecorderSavesOpenCalls(t *testing.T) {
 	store := &testStore{saved: make(chan []db.CallRecord, 10)}
 	r := newTestRecorder(t, store)
@@ -439,8 +435,6 @@ func TestRecorderSavesOpenCalls(t *testing.T) {
 	}
 }
 
-// TestRecorderNeverWaitsOnTheStore checks that reporting does not wait for the records to be saved, and that
-// the records changed meanwhile are saved as they last are.
 func TestRecorderNeverWaitsOnTheStore(t *testing.T) {
 	d := openDB(t)
 	store := &testStore{next: d, gate: make(chan struct{})}
@@ -485,9 +479,6 @@ func TestRecorderNeverWaitsOnTheStore(t *testing.T) {
 	}
 }
 
-// TestRecorderDropsWhatItCannotKeep checks that the records of ended calls the store has not saved are bounded:
-// past the bound, the records of the calls that end are dropped, and those of calls in progress are kept. Once
-// the store catches up, the records the dropped calls left open are closed as incomplete.
 func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	d := openDB(t)
 	store := &testStore{next: d}
@@ -531,8 +522,6 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	}
 }
 
-// TestRecorderSupersedesARetriedAttempt checks that the record of a failed attempt is deleted when the caller
-// tries it again with its Call-ID, whether the recorder still keeps the record or only the database has it.
 func TestRecorderSupersedesARetriedAttempt(t *testing.T) {
 	for _, kept := range []bool{true, false} {
 		t.Run(fmt.Sprintf("kept %t", kept), func(t *testing.T) {
@@ -556,7 +545,6 @@ func TestRecorderSupersedesARetriedAttempt(t *testing.T) {
 			r.Attempt(retry("ICID2"))
 			r.Answered("ICID2", 200)
 
-			// Another caller's Call-ID, and an answered call of the session, are left as they are.
 			other := retry("ICID3")
 			other.IMPI = "bob@example.org"
 			r.Attempt(other)
@@ -572,8 +560,6 @@ func TestRecorderSupersedesARetriedAttempt(t *testing.T) {
 	}
 }
 
-// TestRecorderSupersedesAnAttemptInProgress checks that an attempt the caller tries again before its end is
-// discarded once it fails.
 func TestRecorderSupersedesAnAttemptInProgress(t *testing.T) {
 	d := openDB(t)
 	r := newTestRecorder(t, d)
@@ -608,8 +594,6 @@ func TestRecorderRejectingRequest(t *testing.T) {
 		r.Attempt(attempt(icid))
 	}
 
-	// A 503 reaches the caller as a 500 (RFC 3261 §16.7 step 6).
-	// A 503 reaches the caller as a 500 of the proxy's, of another tag (RFC 3261 §16.7 step 6).
 	r.RejectingRequest(invite("MAPPED", "<tel:+15551230002>"), 503, "icscf")
 	r.RejectingRequest(invite("REINVITE", "<tel:+15551230002>;tag=b"), 500, "scscf")
 
@@ -667,8 +651,6 @@ func TestRecorderRetriesAFailedTransaction(t *testing.T) {
 	}
 }
 
-// TestRecorderDropsWhatCannotBeSaved checks that a record the store refuses is not saved again and again, and
-// does not keep the others from being saved.
 func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 	d := openDB(t)
 
@@ -682,7 +664,6 @@ func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 	r.Attempt(attempt("TAKEN"))
 	r.Attempt(attempt("ICID1"))
 
-	// Until both were tried.
 	for tried := map[string]bool{}; !tried["TAKEN"] || !tried["ICID1"]; {
 		for _, rec := range <-store.saved {
 			tried[rec.ICID] = true
@@ -774,8 +755,6 @@ func TestNilRecorder(t *testing.T) {
 	_ = r.Close(context.Background())
 }
 
-// TestRecorderCloseGivesUp checks that Close does not wait past its context on a store that does not answer, and
-// returns the context's error.
 func TestRecorderCloseGivesUp(t *testing.T) {
 	store := &testStore{gate: make(chan struct{})}
 	r := newTestRecorder(t, store)
@@ -799,8 +778,6 @@ func TestRecorderCloseGivesUp(t *testing.T) {
 	}
 }
 
-// testStore saves to next, if any, once gate, if any, is closed. It fails the first fail transactions, and sends
-// a copy of each batch it saves to saved, if any.
 type testStore struct {
 	next  Store
 	gate  chan struct{}
@@ -810,7 +787,6 @@ type testStore struct {
 	fail int
 }
 
-// pause makes the store wait to save until resume.
 func (s *testStore) pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

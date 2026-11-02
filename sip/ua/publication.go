@@ -10,33 +10,18 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// PublicationHandler receives the events of a publication. Each function is optional; they run as the functions of
-// a Handler do. No event follows Ended.
 type PublicationHandler struct {
-	// Published reports a 2xx to a PUBLISH: its SIP-ETag and Expires (RFC 3903 §5).
 	Published func(ctx context.Context, p *Publication, res *sip.Response)
 
-	// Ended reports the end of the publication:
-	//   - EndRemoved by Remove, End.Response its 2xx;
-	//   - EndRejected by a final response other than 2xx, End.Response telling which, once the publication was sent
-	//     again as an initial one after a 412 (RFC 3903 §5);
-	//   - EndExpired when its refreshes failed until it expired;
-	//   - EndTimeout by the error of a PUBLISH;
-	//   - EndClosed as the agent closes, after the PUBLISH removing it.
 	Ended func(ctx context.Context, p *Publication, e End)
 }
 
-// Publication is event state the agent publishes, as an event publication agent (RFC 3903 §4), for one Request-URI
-// and event package: its entity-tag, its expiry, and its state, which the agent sends again when the compositor lost
-// it. The agent refreshes it before it expires. Its PUBLISHes go one at a time (§4), the changes made meanwhile sent
-// after, the last state only. Its state belongs to its strand.
+// RFC 3903 section 4
 type Publication struct {
 	a  *Agent
 	st *Strand
 	h  PublicationHandler
 
-	// tmpl is the PUBLISH as built, before Prepare, without bodies; state the bodies of the state published,
-	// attached those sent with each PUBLISH (WithBodies).
 	tmpl     *sip.Request
 	state    []sip.BodyPart
 	attached []sip.BodyPart
@@ -51,16 +36,10 @@ type Publication struct {
 	ended    bool
 	value    any
 
-	// closing marks the removal of Shutdown, which Shutdown waits for.
 	closing bool
 }
 
-// Publish publishes event state (RFC 3903 §4.2): req carries the Request-URI, To, Event, Expires (up to 2^32-1, as
-// TS 24.379 §9.2.2.2.6), the Route and the header fields of the application, and the state in its bodies. The agent
-// adds what req leaves out: the From tag, a Call-ID, CSeq and Max-Forwards. It answers 401 and 407 challenges
-// through Config.Authenticate, and a 423 with its Min-Expires.
-//
-// The PUBLISH, its retries and what its response causes are part of the trace of ctx.
+// RFC 3903 section 4.2
 func (a *Agent) Publish(ctx context.Context, req *sip.Request, h PublicationHandler, opts ...Option) (*Publication, error) {
 	if req.Method != "PUBLISH" {
 		return nil, fmt.Errorf("sip/ua: Publish of a %s request", req.Method)
@@ -97,17 +76,14 @@ func (a *Agent) Publish(ctx context.Context, req *sip.Request, h PublicationHand
 	return p, nil
 }
 
-// Strand is the strand of the publication.
 func (p *Publication) Strand() *Strand {
 	return p.st
 }
 
-// ETag is the entity-tag of the publication, empty before its first 2xx.
 func (p *Publication) ETag() string {
 	return get(p.st, func() string { return p.etag })
 }
 
-// Expires is when the publication expires without a refresh, on the clock of the agent.
 func (p *Publication) Expires() time.Time {
 	return get(p.st, func() time.Time { return p.expiresAt })
 }
@@ -123,8 +99,7 @@ func (p *Publication) SetValue(v any) {
 	})
 }
 
-// Modify publishes the new state bodies (RFC 3903 §4.4); done receives the final response of its PUBLISH, or ErrStale
-// when a later Modify replaced it before it went. The PUBLISH is part of the trace of ctx.
+// RFC 3903 section 4.4
 func (p *Publication) Modify(ctx context.Context, bodies []sip.BodyPart, done func(res *sip.Response, err error)) error {
 	if len(bodies) == 0 {
 		return errors.New("sip/ua: a modifying PUBLISH carries the state (RFC 3903 §4.4)")
@@ -141,8 +116,7 @@ func (p *Publication) Modify(ctx context.Context, bodies []sip.BodyPart, done fu
 	})
 }
 
-// Remove removes the publication (RFC 3903 §4.5); it ends with the response, EndRemoved. The PUBLISH is part of the
-// trace of ctx.
+// RFC 3903 section 4.5
 func (p *Publication) Remove(ctx context.Context, done func(res *sip.Response, err error)) error {
 	return p.st.do(func() error {
 		if p.ended {
@@ -153,7 +127,6 @@ func (p *Publication) Remove(ctx context.Context, done func(res *sip.Response, e
 	})
 }
 
-// queue sends a PUBLISH, or keeps it for after the one in flight, in place of one kept already.
 func (p *Publication) queue(c *publishRequest) error {
 	if p.inflight == nil {
 		return p.send(c)
@@ -172,8 +145,6 @@ func (p *Publication) queue(c *publishRequest) error {
 	return nil
 }
 
-// publishRequest is a PUBLISH of the publication: initial, refreshing (no bodies), modifying or removing. It may wait
-// for the one in flight, and goes in the trace of ctx: that of what made it.
 type publishRequest struct {
 	ctx     context.Context
 	p       *Publication
@@ -187,7 +158,7 @@ type publishRequest struct {
 	final   bool
 }
 
-// build makes the PUBLISH with the next CSeq, the entity-tag of the publication unless initial (RFC 3903 §4.1).
+// RFC 3903 section 4.1
 func (c *publishRequest) build() {
 	p := c.p
 
@@ -250,7 +221,6 @@ func (c *publishRequest) response(ctx context.Context, res *sip.Response) {
 	case res.IsSuccess():
 		p.succeeded(ctx, c, res)
 	case res.StatusCode == 412 && !c.initial && !c.remove:
-		// RFC 3903 §5: the compositor lost the state: the entity-tag goes, and the state is published anew.
 		p.etag = ""
 		p.emitDone(c.done, res, nil)
 
@@ -270,14 +240,14 @@ func (c *publishRequest) response(ctx context.Context, res *sip.Response) {
 			return
 		}
 
-		// The refresh failed: tried again halfway to the expiry.
 		p.retryRefresh(ctx)
 	}
 
 	p.sendNext()
 }
 
-// retry prepares a PUBLISH to send again after a 401 or 407 (RFC 3261 §22.2) or a 423 (RFC 3903 §6 step 4).
+// RFC 3261 section 22.2
+// RFC 3903 section 6
 func (c *publishRequest) retry(res *sip.Response) bool {
 	p := c.p
 
@@ -329,8 +299,8 @@ func (c *publishRequest) error(ctx context.Context, err error) {
 	p.sendNext()
 }
 
-// succeeded applies a 2xx: its entity-tag replaces the previous one, its Expires sets the expiry and the refresh
-// (RFC 3903 §4.1, §5), traces of their own linked to ctx, that of the 2xx.
+// RFC 3903 section 4.1
+// RFC 3903 section 5
 func (p *Publication) succeeded(ctx context.Context, c *publishRequest, res *sip.Response) {
 	if etag, ok, err := res.Header.SIPETag(); ok && err == nil {
 		p.etag = etag
@@ -368,7 +338,7 @@ func (p *Publication) succeeded(ctx context.Context, c *publishRequest, res *sip
 	p.expiry = p.st.detached(ctx, d, "publication expiry", func(ctx context.Context) { p.end(ctx, End{Cause: EndExpired}) })
 }
 
-// autoRefresh refreshes the publication, without a body (RFC 3903 §4.3), unless a PUBLISH is in flight or waiting.
+// RFC 3903 section 4.3
 func (p *Publication) autoRefresh(ctx context.Context) {
 	if p.ended || p.inflight != nil || p.next != nil {
 		return
@@ -379,8 +349,6 @@ func (p *Publication) autoRefresh(ctx context.Context) {
 	}
 }
 
-// retryRefresh tries a failed refresh again halfway to the expiry, while that leaves time for one, in a trace of its
-// own linked to ctx, that of the refresh that failed.
 func (p *Publication) retryRefresh(ctx context.Context) {
 	left := p.expiresAt.Sub(p.a.clock.Now())
 	if p.ended || left < 2*64*p.a.layer.T1() {
@@ -391,7 +359,6 @@ func (p *Publication) retryRefresh(ctx context.Context) {
 	p.refresh = p.st.detached(ctx, left/2, "publication refresh", p.autoRefresh)
 }
 
-// sendNext sends the PUBLISH that waited for the one in flight.
 func (p *Publication) sendNext() {
 	c := p.next
 	if c == nil || p.ended || p.inflight != nil {
@@ -412,7 +379,6 @@ func (p *Publication) emitDone(done func(*sip.Response, error), res *sip.Respons
 	}
 }
 
-// end ends the publication, once.
 func (p *Publication) end(ctx context.Context, e End) {
 	p.st.check()
 
@@ -445,8 +411,6 @@ func (p *Publication) end(ctx context.Context, e End) {
 	})
 }
 
-// close removes the publication as the agent closes; Shutdown waits for the removal. ctx is the trace of the
-// shutdown.
 func (p *Publication) close(ctx context.Context) {
 	if p.ended || p.closing {
 		return

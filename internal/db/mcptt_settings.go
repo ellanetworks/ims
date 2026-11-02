@@ -14,13 +14,9 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// GetSettings are the settings as written: the users and groups in the order they were created in, the IMPUs,
-// implicit affiliations, encodings and members of each in their order. A member and an implicit affiliation are the
-// MCPTT ID of the user and the URI of the group as those have them.
 func (d *DB) GetMCPTTSettings(ctx context.Context) (_ settings.Settings, err error) {
 	defer d.observe(poolWrite, &err)()
 
-	// One snapshot of the database (https://sqlite.org/isolation.html), not one per statement.
 	tx, err := d.conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return settings.Settings{}, fmt.Errorf("get MCPTT settings: %w", err)
@@ -35,8 +31,7 @@ func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error
 	var s settings.Settings
 
 	var (
-		t2 sql.NullInt64
-		// users and groups are the indexes of the users and groups, by row id.
+		t2            sql.NullInt64
 		users, groups = map[int64]int{}, map[int64]int{}
 	)
 
@@ -67,7 +62,6 @@ func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error
 		return settings.Settings{}, err
 	}
 
-	// The groups are prearranged groups, the only kind supported.
 	err = queryRows(ctx, tx, "get MCPTT groups", `SELECT id, uri, display_name, t4_ns, tng3_ns, release_on_initiator_leave
 		FROM mcptt_groups ORDER BY id`, func(rows *sql.Rows) error {
 		var (
@@ -169,13 +163,10 @@ func getMCPTTSettings(ctx context.Context, tx *sql.Tx) (settings.Settings, error
 	return s, nil
 }
 
-// errOrphan is of a row whose user or group is not in the database, which only a change outside the server makes:
-// the foreign keys of the sqlite3 shell are off by default (https://sqlite.org/foreignkeys.html §2).
 var errOrphan = errors.New("of no user or group")
 
 func orphan(what, value string) error { return fmt.Errorf("%s %s: %w", what, value, errOrphan) }
 
-// rows calls scan for each row of query.
 func queryRows(ctx context.Context, tx *sql.Tx, what, query string, scan func(*sql.Rows) error) error {
 	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
@@ -206,7 +197,6 @@ func (d *DB) UpdateMCPTTServiceConfiguration(ctx context.Context, c settings.Ser
 	return oneRow(res, err, "update MCPTT service configuration")
 }
 
-// one is the error of an update of a row of one, res of err: of no row, the row was deleted outside the server.
 func oneRow(res sql.Result, err error, what string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, err)
@@ -219,7 +209,6 @@ func oneRow(res sql.Result, err error, what string) error {
 	return nil
 }
 
-// CreateUser adds u, its implicit affiliations groups of the database; ErrDuplicate if a user has its MCPTT ID.
 func (d *DB) CreateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -244,7 +233,6 @@ func (d *DB) CreateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	})
 }
 
-// UpdateUser replaces the user of u's MCPTT ID with u; ErrNotFound if there is none.
 func (d *DB) UpdateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -267,7 +255,6 @@ func (d *DB) UpdateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	})
 }
 
-// putUserLists inserts the IMPUs and replaces the implicit affiliations of u, of row id.
 func putMCPTTUserLists(ctx context.Context, tx *sql.Tx, id int64, u settings.User) error {
 	for i, impu := range u.IMPUs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mcptt_user_impus (user_id, position, impu) VALUES (?, ?, ?)`,
@@ -279,7 +266,6 @@ func putMCPTTUserLists(ctx context.Context, tx *sql.Tx, id int64, u settings.Use
 	return putMCPTTImplicitAffiliations(ctx, tx, id, u)
 }
 
-// putMCPTTAffiliationsOf replaces the implicit affiliations of users, of a change of a group or member.
 func putMCPTTAffiliationsOf(ctx context.Context, tx *sql.Tx, users []settings.User) error {
 	for _, u := range users {
 		id, err := mcpttRowID(ctx, tx, "mcptt_users", u.MCPTTUserID)
@@ -295,7 +281,6 @@ func putMCPTTAffiliationsOf(ctx context.Context, tx *sql.Tx, users []settings.Us
 	return nil
 }
 
-// putMCPTTImplicitAffiliations replaces the implicit affiliations of u, of row id: groups it is a member of.
 func putMCPTTImplicitAffiliations(ctx context.Context, tx *sql.Tx, id int64, u settings.User) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_user_implicit_affiliations WHERE user_id = ?`, id); err != nil {
 		return err
@@ -316,7 +301,6 @@ func putMCPTTImplicitAffiliations(ctx context.Context, tx *sql.Tx, id int64, u s
 	return nil
 }
 
-// DeleteUser deletes the user of MCPTT ID mcpttID, and its memberships; ErrNotFound if there is none.
 func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -332,8 +316,6 @@ func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
 	})
 }
 
-// CreateGroup adds g, its members users of the database, and replaces the implicit affiliations of users; ErrDuplicate
-// if a group has its URI.
 func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -363,8 +345,6 @@ func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group, users []set
 	})
 }
 
-// UpdateGroup replaces the group of g's URI with g, members included, and the implicit affiliations of users;
-// ErrNotFound if there is none. A member removed goes from the implicit affiliations of its user.
 func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -380,7 +360,6 @@ func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []set
 			return err
 		}
 
-		// The members kept are updated, not deleted: their implicit affiliations go with their rows.
 		kept := make([]any, 0, len(g.List.Entries)+1)
 		kept = append(kept, id)
 
@@ -406,7 +385,6 @@ func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []set
 	})
 }
 
-// putGroupLists inserts or updates the members of g, of row id.
 func putMCPTTGroupLists(ctx context.Context, tx *sql.Tx, id int64, g settings.Group) error {
 	for i, e := range g.List.Entries {
 		if err := putMCPTTMember(ctx, tx, id, i, e); err != nil {
@@ -430,8 +408,6 @@ func putMCPTTMember(ctx context.Context, tx *sql.Tx, groupID int64, position int
 	return err
 }
 
-// DeleteGroup deletes the group of URI uri, its members and their implicit affiliations to it; ErrNotFound if there
-// is none.
 func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -447,8 +423,6 @@ func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
 	})
 }
 
-// PutMember adds e to the members of the group of URI group, after the others, or replaces the member of its MCPTT ID
-// where it is, and replaces the implicit affiliations of users; ErrNotFound if there is no such group.
 func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -463,7 +437,6 @@ func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry,
 			return fmt.Errorf("member %s: %w", e.URI, err)
 		}
 
-		// Where the member is, or after the others.
 		var position int
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT position FROM mcptt_group_members
 			WHERE group_id = ? AND user_id = ?), (SELECT COALESCE(MAX(position), -1) + 1 FROM mcptt_group_members
@@ -479,8 +452,6 @@ func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry,
 	})
 }
 
-// DeleteMember removes the member of MCPTT ID mcpttID from the group of URI group, and the group from the implicit
-// affiliations of its user; ErrNotFound if either is not.
 func (d *DB) DeleteMCPTTMember(ctx context.Context, group, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -508,7 +479,6 @@ func (d *DB) DeleteMCPTTMember(ctx context.Context, group, mcpttID string) (err 
 	})
 }
 
-// rowID is the id of the row of table, users or groups, of the identity of uri; ErrNotFound if none.
 func mcpttRowID(ctx context.Context, tx *sql.Tx, table, uri string) (int64, error) {
 	k, err := mcpttKey(uri)
 	if err != nil {
@@ -527,7 +497,6 @@ func mcpttRowID(ctx context.Context, tx *sql.Tx, table, uri string) (int64, erro
 	return id, nil
 }
 
-// key is the key of the identity of uri (settings.Key).
 func mcpttKey(uri string) (string, error) {
 	u, err := sip.ParseURI(uri)
 	if err != nil {
@@ -542,7 +511,6 @@ func mcpttKey(uri string) (string, error) {
 	return k, nil
 }
 
-// duplicate is err, ErrDuplicate if it is of a unique key.
 func duplicate(err error) error {
 	if se := (sqlite3.Error{}); errors.As(err, &se) && se.ExtendedCode == sqlite3.ErrConstraintUnique {
 		return ErrDuplicate
@@ -551,7 +519,6 @@ func duplicate(err error) error {
 	return err
 }
 
-// jsonInts is ids as a JSON array, for json_each.
 func jsonInts(ids []any) string {
 	var b strings.Builder
 

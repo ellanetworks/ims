@@ -15,21 +15,12 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// The S-CSCF keeps the user profile that SAR UNREGISTERED_USER downloads for a public identity that is not
-// registered, a user's or a PSI's, as an implicit set kept unregistered: for the later requests of the identities of
-// the set, or of the wildcarded identity it falls in, rather than ask again, for a registration period, then clears its
-// name at the HSS (TS 23.228 §5.12.1 steps 6 and 7, TS 24.229 §5.4.3.2 NOTE 24, §5.4.3.3 NOTE 27, TS 29.228 §6.5.1.5).
-
-// fetch is a download of the profile of a public identity that is not registered, in progress, which requests for the
-// same identity wait for.
 type fetch struct {
 	ready chan struct{}
 	set   db.ImplicitSet
 	err   error
 }
 
-// unregisteredProfile is the set kept of the public identity u unregistered, and its subscription: the one kept, or
-// else the one the HSS sends.
 func (r *Registrar) unregisteredProfile(ctx context.Context, u sip.URI) (db.ImplicitSet, cx.IMSSubscription, error) {
 	set, ok, err := r.keptSet(ctx, u)
 	if err != nil {
@@ -50,8 +41,6 @@ func (r *Registrar) unregisteredProfile(ctx context.Context, u sip.URI) (db.Impl
 	return set, sub, nil
 }
 
-// keptSet is the set kept unregistered, unexpired, that holds u, or that was kept for it or for a wildcarded identity
-// it falls in.
 func (r *Registrar) keptSet(ctx context.Context, u sip.URI) (db.ImplicitSet, bool, error) {
 	now := r.clock.Now()
 	keys := identityKeys(u, r.cfg.HomeDomain)
@@ -75,7 +64,6 @@ func (r *Registrar) keptSet(ctx context.Context, u sip.URI) (db.ImplicitSet, boo
 	return db.ImplicitSet{}, false, nil
 }
 
-// fetchOnce downloads the profile of u, or waits for the download in progress.
 func (r *Registrar) fetchOnce(ctx context.Context, u sip.URI) (db.ImplicitSet, error) {
 	id := canonicalIdentity(u)
 
@@ -109,14 +97,12 @@ func (r *Registrar) fetchOnce(ctx context.Context, u sip.URI) (db.ImplicitSet, e
 	return f.set, f.err
 }
 
-// TS 29.228 §6.1.2.1
+// TS 29.228 clause 6.1.2.1
 func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string) (db.ImplicitSet, error) {
 	req := cx.ServerAssignmentRequest{PublicIdentities: []string{id}, Type: cx.AssignmentUnregisteredUser}
 
 	saa, from, err := r.serverAssignmentOf(ctx, db.HSS{}, req)
 
-	// The identity falls in a wildcarded identity that is registered: the S-CSCF asks again as if it had been given
-	// the wildcarded identity.
 	if se, ok := errors.AsType[*cx.ServerAssignmentError](err); ok && se.IsExperimental(tgpp.ResultErrorInAssignmentType) &&
 		se.WildcardedPublicIdentity != "" {
 		req.WildcardedPublicIdentity = se.WildcardedPublicIdentity
@@ -151,7 +137,6 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 
 	defer r.unlockProfiles()
 
-	// The set of a profile kept, expired, is the same set downloaded again.
 	sets, err := r.cfg.DB.ListUnregisteredSets(ctx)
 	if err != nil {
 		return db.ImplicitSet{}, err
@@ -169,8 +154,6 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 
 	saved, err := r.cfg.DB.SaveSet(ctx, next)
 
-	// A registered set holds an identity of the profile, as one whose contacts expired, not yet removed: the request is
-	// served with the profile, which is not kept.
 	if errors.Is(err, db.ErrIdentityConflict) {
 		r.log.DebugContext(ctx, "unregistered profile with an identity of a registered set: not kept", slog.String("impu", id),
 			slog.Any("error", err))
@@ -181,9 +164,8 @@ func (r *Registrar) fetchUnregistered(ctx context.Context, u sip.URI, id string)
 	return saved, err
 }
 
-// releaseUnregistered drops the sets kept unregistered for a registration period, and clears the S-CSCF's name for
-// their identities at the HSS: TIMEOUT_DEREGISTRATION takes an unregistered identity to not registered (TS 23.228
-// §5.12.1, TS 29.228 §6.1.2.1). An identity registered since keeps the assignment of its registration.
+// TS 23.228 clause 5.12.1
+// TS 29.228 clause 6.1.2.1
 func (r *Registrar) releaseUnregistered() {
 	now := r.clock.Now()
 
@@ -206,8 +188,6 @@ func (r *Registrar) releaseUnregistered() {
 	}
 }
 
-// releaseSet releases a set kept unregistered whose registration period ended: a trace of its own. The request that
-// had the S-CSCF keep it is long gone, and no span context of it is kept.
 func (r *Registrar) releaseSet(s db.ImplicitSet, now time.Time) {
 	ctx, span := r.detached.Start(r.ctx, "unregistered profile release")
 
@@ -254,8 +234,7 @@ func (r *Registrar) release(ctx context.Context, s db.ImplicitSet, now time.Time
 	return nil
 }
 
-// dropUnregistered forgets the sets kept unregistered of a private identity's subscription, or that hold one of the
-// public identities, that the HSS deregistered (TS 29.228 §6.1.3), without telling the HSS.
+// TS 29.228 clause 6.1.3
 func (r *Registrar) dropUnregistered(ctx context.Context, impi string, identities []string) {
 	keys := make([]string, 0, len(identities))
 

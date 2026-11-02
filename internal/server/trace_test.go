@@ -17,8 +17,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestDiameterIsTraced checks that the IMS traces its Diameter requests with its provider, and that the HSS continues
-// the IMS's trace.
 func TestDiameterIsTraced(t *testing.T) {
 	imsSpans, hssSpans := tracetest.NewSpanRecorder(), tracetest.NewSpanRecorder()
 
@@ -71,9 +69,6 @@ func TestDiameterIsTraced(t *testing.T) {
 	}
 }
 
-// TestRegisterIsOneTrace checks that a UE's REGISTER is one trace through the P-CSCF, I-CSCF and S-CSCF, with their
-// Diameter requests in it, which starts at the P-CSCF: the UE is outside the trust domain, and its trace context is
-// neither continued nor sent back to it.
 func TestRegisterIsOneTrace(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 
@@ -96,7 +91,6 @@ func TestRegisterIsOneTrace(t *testing.T) {
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, peer.ID)
 
-	// The UE is outside the IMS's addresses, as UEs are.
 	ue := newPeer(t, srv, netip.MustParseAddrPort("127.0.0.2:6000"))
 	register := newRegister(ue.Addr())
 	register.Header.Add("Expires", "600")
@@ -152,7 +146,6 @@ func TestRegisterIsOneTrace(t *testing.T) {
 		}
 	}
 
-	// under reports whether s descends from ancestor.
 	under := func(s, ancestor sdktrace.ReadOnlySpan) bool {
 		for p, ok := s, true; ok; p, ok = byID[p.Parent().SpanID()] {
 			if p.Parent().SpanID() == ancestor.SpanContext().SpanID() {
@@ -178,8 +171,6 @@ func TestRegisterIsOneTrace(t *testing.T) {
 	}
 }
 
-// TestTelemetryOffTracesNothing checks that an IMS with telemetry off traces nothing, its REGISTER, Diameter and API
-// requests included, even when a dependency sets the global provider.
 func TestTelemetryOffTracesNothing(t *testing.T) {
 	global := tracetest.NewSpanRecorder()
 
@@ -231,8 +222,6 @@ func TestTelemetryOffTracesNothing(t *testing.T) {
 	}
 }
 
-// TestSettingsChangeIsLinkedToTheAPIRequest checks that the core restart a change of settings causes is a trace of
-// its own, of the IMS, linked to the request that changed them, and that its work is in that trace.
 func TestSettingsChangeIsLinkedToTheAPIRequest(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))

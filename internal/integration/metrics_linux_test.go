@@ -10,7 +10,6 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// peerRequests is the number of requests to the policy function of iface that the IMS counted with a result.
 func (s *scene) peerRequests(t *testing.T, iface, result string) float64 {
 	t.Helper()
 

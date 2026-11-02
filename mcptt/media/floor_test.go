@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/sip/siptest"
 )
 
-// strand serializes the floor machines' inputs, as a call's strand does.
 type strand struct {
 	sync.Mutex
 	c *siptest.Clock
@@ -31,7 +30,6 @@ func (s *strand) AfterFunc(d time.Duration, f func()) floor.Timer {
 
 func (s *strand) Now() time.Time { return s.c.Now() }
 
-// floorOut is the floor control server's output on the media of the call.
 type floorOut struct {
 	t    *testing.T
 	call *media.Call
@@ -50,8 +48,9 @@ func (o *floorOut) Inactive() {}
 
 func (o *floorOut) Disconnect(*floor.Member) {}
 
-// TS 24.380 §6.3.4.4.5, §6.3.4.4.3, §6.3.5.4.6: the floor control server on the media plane. A Floor Request over the
-// control channel granted, the talker's media distributed, its end detected by T1; media without permission revoked.
+// TS 24.380 clause 6.3.4.4.5
+// TS 24.380 clause 6.3.4.4.3
+// TS 24.380 clause 6.3.5.4.6
 func TestFloorOnMedia(t *testing.T) {
 	e := newEnv(t)
 	st := &strand{c: e.n.Clock()}
@@ -117,7 +116,6 @@ func TestFloorOnMedia(t *testing.T) {
 		t.Fatalf("b received %+v", got)
 	}
 
-	// Media of a, 50 packets a second for 2 seconds, to b and c; then silence: T1 ends the grant.
 	for i := range 100 {
 		_ = a.audio.WriteTo(packet(t, a.leg.AudioSSRC(), uint16(i), 1), a.leg.Audio())
 
@@ -134,7 +132,6 @@ func TestFloorOnMedia(t *testing.T) {
 		t.Fatalf("b received %+v after the silence", got)
 	}
 
-	// Media of b without permission: revoked, not distributed.
 	floorMsg(a, floorctl.Message{Type: floorctl.Request})
 	e.n.Quiesce()
 	received(t, b)
@@ -154,7 +151,6 @@ func TestFloorOnMedia(t *testing.T) {
 	}
 }
 
-// rewire replaces the leg of cl with one reporting to the floor machines.
 func rewire(e *env, call *media.Call, cl *client, onFloor func(floorctl.Message), onMedia func()) *media.Leg {
 	e.t.Helper()
 
@@ -170,7 +166,6 @@ func rewire(e *env, call *media.Call, cl *client, onFloor func(floorctl.Message)
 	return l
 }
 
-// received are the floor control messages cl's control socket received since the last call.
 func received(t *testing.T, cl *client) []floorctl.Message {
 	t.Helper()
 

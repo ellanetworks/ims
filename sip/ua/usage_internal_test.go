@@ -7,7 +7,8 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// RFC 5057 Table 2, §5.2, notes 3, 8, 12.
+// RFC 5057 section 5.1 table 2
+// RFC 5057 section 5.2
 func TestFailureOf(t *testing.T) {
 	for _, c := range []struct {
 		method string

@@ -10,13 +10,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// TestNewProvider checks that the spans name the IMS and its version, and that the OTEL_* environment variables do
-// not apply: the configuration file is the only one.
 func TestNewProvider(t *testing.T) {
 	t.Setenv("OTEL_SERVICE_NAME", "ims-west")
 	t.Setenv("OTEL_TRACES_SAMPLER", "always_off")
 
-	// No collector listens on port 1, so that the test exports nothing.
 	tp, err := NewProvider(t.Context(), "127.0.0.1:1", "v1.2.3", slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)

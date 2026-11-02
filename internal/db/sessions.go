@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Session is a login of a user to the UI. Only the SHA-256 hash of its token is stored.
 type Session struct {
 	ID        int64
 	UserID    int64
@@ -24,8 +23,6 @@ type NewSession struct {
 	ExpiresAt time.Time
 }
 
-// CreateSession stores a session, deletes the oldest sessions of its user beyond the newest maxPerUser, and returns
-// its ID.
 func (d *DB) CreateSession(ctx context.Context, s NewSession, maxPerUser int) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -52,7 +49,6 @@ func (d *DB) CreateSession(ctx context.Context, s NewSession, maxPerUser int) (_
 	return id, err
 }
 
-// GetSessionByTokenHash returns a session, whether or not it has expired.
 func (d *DB) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (_ Session, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -60,7 +56,6 @@ func (d *DB) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (_ Ses
 		tokenHash))
 }
 
-// GetSession returns a session, whether or not it has expired.
 func (d *DB) GetSession(ctx context.Context, id int64) (_ Session, err error) {
 	defer d.observe(poolRead, &err)()
 
@@ -90,8 +85,6 @@ func getSession(row *sql.Row) (Session, error) {
 	return s, nil
 }
 
-// DeleteSessionByTokenHash deletes a session. Deleting one that does not exist is not an error, so that logging out
-// twice is not one either.
 func (d *DB) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) (err error) {
 	defer d.observe(poolWrite, &err)()
 
@@ -102,7 +95,6 @@ func (d *DB) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) (er
 	return nil
 }
 
-// DeleteExpiredSessions deletes the sessions that expire at or before now.
 func (d *DB) DeleteExpiredSessions(ctx context.Context, now time.Time) (err error) {
 	defer d.observe(poolWrite, &err)()
 

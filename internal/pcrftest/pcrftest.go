@@ -27,7 +27,6 @@ type Config struct {
 	IMSHost  string
 	IMSRealm string
 
-	// IMSAddress is the address the IMS connects from, if not Address: an IMS on another host.
 	IMSAddress netip.Addr
 
 	UEs []netip.Addr
@@ -118,7 +117,6 @@ func New(t testing.TB, cfg Config) *PCRF {
 	return p
 }
 
-// Stop disconnects the PCRF from its peers and stops it, as a lost PCRF.
 func (p *PCRF) Stop(t testing.TB) {
 	t.Helper()
 
@@ -176,8 +174,9 @@ func (p *PCRF) Next(t testing.TB) Request {
 	return Request{}
 }
 
-// TS 29.214 §4.4.1, §4.4.2, §5.4. Like the Open5GS PCRF, every AA-Request must bind to a UE and carry
-// Flow-Descriptions its SMF accepts.
+// TS 29.214 clause 4.4.1
+// TS 29.214 clause 4.4.2
+// TS 29.214 clause 5.4
 func (p *PCRF) aa(ctx context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
 	aar, err := rx.ParseAARequest(req)
 	if err != nil {
@@ -272,7 +271,6 @@ func samePrefix64(a, b netip.Addr) bool {
 	return pa == pb
 }
 
-// The Flow-Description checks of the Open5GS PCRF and SMF (lib/proto/types.c, lib/ipfw/ogs-ipfw.c).
 func checkFlows(r rx.AARequest, ue netip.Addr) error {
 	for _, c := range r.MediaComponents {
 		for _, s := range c.SubComponents {
@@ -325,7 +323,7 @@ func (p *PCRF) sessionTermination(_ context.Context, c *diameter.Conn, req *diam
 	return must(rx.NewSessionTerminationAnswer(req, c.LocalIdentity(), rx.SessionTerminationAnswer{}))
 }
 
-// TS 29.214 §5.4
+// TS 29.214 clause 5.4
 func (p *PCRF) RefuseMedia(r tgpp.Result) {
 	p.RefuseWhen(func(aar rx.AARequest) *tgpp.Result {
 		if Signalling(aar) {
@@ -350,7 +348,6 @@ func (p *PCRF) AnswerWith(f func(rx.AARequest) rx.AAAnswer) {
 	p.answer = f
 }
 
-// HoldAA delays every AA-Answer until release is called.
 func (p *PCRF) HoldAA() (release func()) {
 	hold := make(chan struct{})
 
@@ -373,8 +370,7 @@ func (p *PCRF) HoldAA() (release func()) {
 	}
 }
 
-// Signalling reports whether r is the AA-Request of the AF signalling (TS 29.214 §4.4.5): media component 0, with
-// only AF_SIGNALLING sub-components.
+// TS 29.214 clause 4.4.5
 func Signalling(r rx.AARequest) bool {
 	for _, c := range r.MediaComponents {
 		if c.Number != 0 || len(c.SubComponents) == 0 {
@@ -418,7 +414,7 @@ func (p *PCRF) do(ctx context.Context, req *diameter.Message) (*diameter.Message
 	return p.node.Do(ctx, imsPeer, req)
 }
 
-// TS 29.214 §4.4.6.1
+// TS 29.214 clause 4.4.6.1
 func (p *PCRF) ASR(ctx context.Context, session string, cause rx.AbortCause) (rx.AbortSessionAnswer, error) {
 	req, err := rx.NewAbortSessionRequest(p.envelope(session), rx.AbortSessionRequest{Cause: cause})
 	if err != nil {
@@ -433,12 +429,12 @@ func (p *PCRF) ASR(ctx context.Context, session string, cause rx.AbortCause) (rx
 	return rx.ParseAbortSessionAnswer(ans)
 }
 
-// TS 29.214 §4.4.6.3
+// TS 29.214 clause 4.4.6.3
 func (p *PCRF) RAR(ctx context.Context, session string, actions ...rx.SpecificAction) (rx.ReAuthAnswer, error) {
 	return p.ReAuth(ctx, session, rx.ReAuthRequest{SpecificActions: actions})
 }
 
-// TS 29.214 §4.4.6.2
+// TS 29.214 clause 4.4.6.2
 func (p *PCRF) ReAuth(ctx context.Context, session string, r rx.ReAuthRequest) (rx.ReAuthAnswer, error) {
 	req, err := rx.NewReAuthRequest(p.envelope(session), r)
 	if err != nil {
@@ -453,7 +449,6 @@ func (p *PCRF) ReAuth(ctx context.Context, session string, r rx.ReAuthRequest) (
 	return rx.ParseReAuthAnswer(ans)
 }
 
-// imsAddresses are the addresses of the IMS peer: none for the fake's own.
 func imsAddresses(a netip.Addr) []netip.Addr {
 	if !a.IsValid() {
 		return nil

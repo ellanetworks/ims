@@ -1,13 +1,3 @@
-// Package conferenceinfo is the conference information document of the conference event package,
-// application/conference-info+xml (RFC 4575).
-//
-// Decode keeps the extension elements (RFC 4575 §6: the xs:any of other namespaces), and the elements it cannot
-// decode, malformed or repeated, as Other, and the extension attributes (xs:anyAttribute) as Attr; Encode writes them
-// back. An extension, such as TS 24.379 §10.1.3.6.1's <functional-alias> of an <endpoint>, decodes from them and
-// sets them. Apply builds the conference state of a subscription from its full and partial notifications (§4.6).
-//
-// An element of the schema left out decodes as the zero value of its field, and the zero value encodes as no
-// element: an empty string is no element, so an element of an empty string is not told from none.
 package conferenceinfo
 
 import (
@@ -26,22 +16,17 @@ const (
 	Namespace   = "urn:ietf:params:xml:ns:conference-info"
 )
 
-// maxSize bounds a document: the roster of a large group call (TS 24.379 §6.3.3.4, a <user> per participant) fits.
 const maxSize = 1 << 20
 
-// Info is the <conference-info> root element (§5.2): the conference, and the version of the document.
+// RFC 4575 section 5.2
 type Info struct {
-	// Version orders the notifications of a subscription (§4.3, §5.2): the root carries it, the only element whose
-	// version is meaningful.
 	Version uint32
 	Conference
 }
 
-// Conference is a conference-type (§5.2): the root, or a sidebar of <sidebars-by-val> (§5.9.2).
+// RFC 4575 section 5.2
 type Conference struct {
-	// Entity is the conference URI.
-	Entity string
-	// State is that of the document or sidebar: full, partial or deleted (§4.4).
+	Entity          string
 	State           State
 	Description     *Description
 	Host            *Host
@@ -49,14 +34,11 @@ type Conference struct {
 	Users           *Users
 	SidebarsByRef   *URIs
 	SidebarsByVal   *Sidebars
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions of other namespaces, and the elements of
-	// the conference-info namespace unknown, malformed or repeated.
-	Other []*xmltree.Element
+	Attr            []xml.Attr
+	Other           []*xmltree.Element
 }
 
-// State is the value of a 'state' attribute (§4.4); empty without one, which is full.
+// RFC 4575 section 4.4
 type State string
 
 const (
@@ -65,48 +47,39 @@ const (
 	Deleted State = "deleted"
 )
 
-// Description is a <conference-description> (§5.3).
+// RFC 4575 section 5.3
 type Description struct {
-	DisplayText string
-	Subject     string
-	FreeText    string
-	Keywords    []string
-	ConfURIs    *URIs
-	ServiceURIs *URIs
-	// MaximumUserCount is nil without one.
+	DisplayText      string
+	Subject          string
+	FreeText         string
+	Keywords         []string
+	ConfURIs         *URIs
+	ServiceURIs      *URIs
 	MaximumUserCount *uint32
 	AvailableMedia   *AvailableMedia
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Attr             []xml.Attr
+	Other            []*xmltree.Element
 }
 
-// URIs is a uris-type (§6): <conf-uris>, <service-uris>, the <uris> of <host-info>, <associated-aors>,
-// <sidebars-by-ref>. Its entries are keyed by URI (§4.5, §5.3.1): one at least, but of state deleted, whose children
-// are left out (§4.4).
+// RFC 4575 section 5.3.1
 type URIs struct {
 	State   State
 	Entries []URI
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: malformed or repeated entries.
-	Other []*xmltree.Element
+	Attr    []xml.Attr
+	Other   []*xmltree.Element
 }
 
-// URI is an <entry> of a uris-type.
 type URI struct {
 	URI         string
 	DisplayText string
 	Purpose     Purpose
 	Modified    *Execution
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Attr        []xml.Attr
+	Other       []*xmltree.Element
 }
 
-// Purpose is the <purpose> of a URI: what accessing it does (§5.3.1, §5.3.2; registry of §9.5).
+// RFC 4575 section 5.3.1
+// RFC 4575 section 5.3.2
 type Purpose string
 
 const (
@@ -117,29 +90,23 @@ const (
 	Event         Purpose = "event"
 )
 
-// AvailableMedia is an <available-media> (§5.3.4): its entries keyed by label.
+// RFC 4575 section 5.3.4
 type AvailableMedia struct {
 	Entries []Medium
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: malformed or repeated entries.
-	Other []*xmltree.Element
+	Attr    []xml.Attr
+	Other   []*xmltree.Element
 }
 
-// Medium is an <entry> of <available-media>, a conference-medium-type.
 type Medium struct {
 	Label       string
 	DisplayText string
-	// Type is the SDP media type, required.
-	Type   string
-	Status MediaStatus
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Type        string
+	Status      MediaStatus
+	Attr        []xml.Attr
+	Other       []*xmltree.Element
 }
 
-// MediaStatus is a direction of SDP from the participant's point of view (§5.3.4, §5.8.5); empty without one.
+// RFC 4575 section 5.8.5
 type MediaStatus string
 
 const (
@@ -149,67 +116,54 @@ const (
 	Inactive MediaStatus = "inactive"
 )
 
-// Host is a <host-info> (§5.4).
+// RFC 4575 section 5.4
 type Host struct {
 	DisplayText string
 	WebPage     string
 	URIs        *URIs
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Attr        []xml.Attr
+	Other       []*xmltree.Element
 }
 
-// ConferenceState is a <conference-state> (§5.5); a field is nil without its element.
+// RFC 4575 section 5.5
 type ConferenceState struct {
 	UserCount *uint32
 	Active    *bool
 	Locked    *bool
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Attr      []xml.Attr
+	Other     []*xmltree.Element
 }
 
-// Users is a <users> (§5.6): its users keyed by entity.
+// RFC 4575 section 5.6
 type Users struct {
 	State State
 	Users []User
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, malformed or repeated users.
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// User is a <user> (§5.6).
+// RFC 4575 section 5.6
 type User struct {
-	// Entity is the URI of the user, unique among the users (§5.6): the key of the user (§4.5).
 	Entity         string
 	State          State
 	DisplayText    string
 	AssociatedAORs *URIs
 	Roles          *Roles
-	// Languages are language tags (§5.6.4).
-	Languages     []string
-	CascadedFocus string
-	Endpoints     []Endpoint
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Languages      []string
+	CascadedFocus  string
+	Endpoints      []Endpoint
+	Attr           []xml.Attr
+	Other          []*xmltree.Element
 }
 
-// Roles is a <roles> (§5.6.3), a user-roles-type: at least one role.
+// RFC 4575 section 5.6.3
 type Roles struct {
-	// Entries are human-readable strings.
 	Entries []string
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
+	Attr    []xml.Attr
 }
 
-// Endpoint is an <endpoint> (§5.7).
+// RFC 4575 section 5.7
 type Endpoint struct {
-	// Entity is unique among the endpoints of the user (§5.7): the key of the endpoint (§4.5).
 	Entity              string
 	State               State
 	DisplayText         string
@@ -221,13 +175,11 @@ type Endpoint struct {
 	DisconnectionInfo   *Execution
 	Media               []Media
 	CallInfo            *CallInfo
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the extensions, such as TS 24.379 §10.1.3.6.1's.
-	Other []*xmltree.Element
+	Attr                []xml.Attr
+	Other               []*xmltree.Element
 }
 
-// EndpointStatus is the <status> of an endpoint (§5.7.3); empty without one.
+// RFC 4575 section 5.7.3
 type EndpointStatus string
 
 const (
@@ -242,7 +194,7 @@ const (
 	Disconnected  EndpointStatus = "disconnected"
 )
 
-// JoiningMethod is a <joining-method> (§5.7.4); empty without one.
+// RFC 4575 section 5.7.4
 type JoiningMethod string
 
 const (
@@ -251,7 +203,7 @@ const (
 	FocusOwner JoiningMethod = "focus-owner"
 )
 
-// DisconnectionMethod is a <disconnection-method> (§5.7.6); empty without one.
+// RFC 4575 section 5.7.6
 type DisconnectionMethod string
 
 const (
@@ -261,72 +213,54 @@ const (
 	Busy     DisconnectionMethod = "busy"
 )
 
-// Execution is an execution-type (§5.7.2, §5.7.5, §5.7.7): <referred>, <joining-info>, <disconnection-info>, the
-// <modified> of a URI. The type has no extension point: an element with a child it does not define is malformed.
+// RFC 4575 section 5.7.2
+// RFC 4575 section 5.7.5
+// RFC 4575 section 5.7.7
 type Execution struct {
-	When *xsd.DateTime
-	// Reason is, as RECOMMENDED, a Reason header field value (RFC 3326).
+	When   *xsd.DateTime
 	Reason string
 	By     string
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
+	Attr   []xml.Attr
 }
 
-// CallInfo is a <call-info> (§5.7.9).
+// RFC 4575 section 5.7.9
 type CallInfo struct {
-	SIP *SIPDialog
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: the signaling of other protocols.
+	SIP   *SIPDialog
+	Attr  []xml.Attr
 	Other []*xmltree.Element
 }
 
-// SIPDialog is the <sip> of a call-info: the identifier of the endpoint's dialog with the focus.
 type SIPDialog struct {
 	DisplayText string
 	CallID      string
 	FromTag     string
 	ToTag       string
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	Attr        []xml.Attr
+	Other       []*xmltree.Element
 }
 
-// Media is a <media> of an endpoint (§5.8).
+// RFC 4575 section 5.8
 type Media struct {
-	// ID is unique among the media of the endpoint: the key of the media (§4.5).
 	ID          string
 	DisplayText string
 	Type        string
 	Label       string
-	// SrcID is, for RTP, the SSRC of the stream the endpoint sends (§5.8.4).
-	SrcID  string
-	Status MediaStatus
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order.
-	Other []*xmltree.Element
+	SrcID       string
+	Status      MediaStatus
+	Attr        []xml.Attr
+	Other       []*xmltree.Element
 }
 
-// Sidebars is a <sidebars-by-val> (§5.9.2): its sidebars keyed by entity (§4.5).
+// RFC 4575 section 5.9.2
 type Sidebars struct {
 	State   State
 	Entries []Conference
-	// Attr are the attributes of other namespaces: the extensions.
-	Attr []xml.Attr
-	// Other are the child elements not decoded, in order: malformed or repeated entries.
-	Other []*xmltree.Element
+	Attr    []xml.Attr
+	Other   []*xmltree.Element
 }
 
-// ErrValue is wrapped by the errors of the elements Decode does not decode, malformed (RFC 4575 §6): the document it
-// returns is usable without them, and keeps them.
 var ErrValue = errors.New("malformed element")
 
-// Decode decodes the document b. A malformed element is kept in the Other of its parent, with an error wrapping
-// ErrValue: an element without a key (§4.5) or of a key not unique among its siblings, the first counting. An
-// element given more than the schema allows is kept the same way, the first counting, malformed or not, but an
-// optional one of the zero value, as none. A root without entity or version (§4.3) is an error.
 func Decode(b []byte) (Info, error) {
 	if len(b) > maxSize {
 		return Info{}, fmt.Errorf("conferenceinfo: document of %d bytes exceeds %d", len(b), maxSize)
@@ -374,7 +308,6 @@ func (d *decoder) fail(element, format string, a ...any) {
 	d.errs = append(d.errs, fmt.Errorf("conferenceinfo: <%s>: %w: %s", element, ErrValue, fmt.Sprintf(format, a...)))
 }
 
-// known is the name of e in the conference-info namespace, or "".
 func known(e *xmltree.Element) string {
 	if e.Name.Space != Namespace {
 		return ""
@@ -383,12 +316,8 @@ func known(e *xmltree.Element) string {
 	return e.Name.Local
 }
 
-// seen are the names of the child elements given at most once already met: true of those decoded, false of those
-// malformed.
 type seen map[string]bool
 
-// once reports whether x, of the conference-info namespace, is the first of its name among its siblings, which the
-// schema allows once: a repeated one is not, with an error, the first counting.
 func (d *decoder) once(s seen, x *xmltree.Element) bool {
 	if _, ok := s[x.Name.Local]; ok {
 		d.fail(x.Name.Local, "given more than once")
@@ -400,15 +329,12 @@ func (d *decoder) once(s seen, x *xmltree.Element) bool {
 	return true
 }
 
-// decoded records x decoded, but if given forgot it.
 func (s seen) decoded(x *xmltree.Element) {
 	if _, ok := s[x.Name.Local]; ok {
 		s[x.Name.Local] = true
 	}
 }
 
-// given forgets x, an optional element decoded, if v, its value, is the zero value: Encode writes no element of it,
-// so it is as if not given (see the package documentation), and a sibling of its name may follow.
 func given[T comparable](s seen, x *xmltree.Element, v T) bool {
 	var zero T
 	if v == zero {
@@ -433,7 +359,6 @@ func (d *decoder) state(e *xmltree.Element) (State, bool) {
 	return "", false
 }
 
-// conference decodes a conference-type: the root, or an <entry> of <sidebars-by-val>.
 func (d *decoder) conference(e *xmltree.Element) (Conference, bool) {
 	entity, _ := e.AttrValue("", "entity")
 	if entity = xsd.Collapse(entity); entity == "" {
@@ -520,8 +445,7 @@ func (d *decoder) description(e *xmltree.Element, v **Description) bool {
 	return true
 }
 
-// uris decodes a uris-type: at least one entry, of a URI unique among them (§4.5, §5.3.1), but of state deleted,
-// whose entries are left out (§4.4).
+// RFC 4575 section 5.3.1
 func (d *decoder) uris(e *xmltree.Element, v **URIs) bool {
 	state, ok := d.state(e)
 	if !ok {
@@ -591,7 +515,7 @@ func (d *decoder) uri(e *xmltree.Element) (URI, bool) {
 	return u, true
 }
 
-// availableMedia decodes an <available-media>: at least one entry, of a label unique among them (§5.3.4).
+// RFC 4575 section 5.3.4
 func (d *decoder) availableMedia(e *xmltree.Element, v **AvailableMedia) bool {
 	a := AvailableMedia{Attr: extensions(e)}
 
@@ -749,8 +673,7 @@ func (d *decoder) users(e *xmltree.Element, v **Users) bool {
 	return true
 }
 
-// key is the entity attribute of a user or endpoint, which the schema leaves optional: it is their key (§4.5), to be
-// unique among their siblings (§5.6, §5.7).
+// RFC 4575 section 4.5
 func (d *decoder) key(e *xmltree.Element) (string, bool) {
 	entity, ok := e.AttrValue("", "entity")
 	if !ok {
@@ -811,7 +734,6 @@ func (d *decoder) user(e *xmltree.Element) (User, bool) {
 	return u, true
 }
 
-// roles decodes a <roles>: at least one <entry> of a string, and nothing else.
 func (d *decoder) roles(e *xmltree.Element, v **Roles) bool {
 	r := Roles{Attr: extensions(e)}
 
@@ -892,7 +814,6 @@ func (d *decoder) endpoint(e *xmltree.Element) (Endpoint, bool) {
 	return ep, true
 }
 
-// execution decodes an execution-type: <when>, <reason> and <by>, each at most once, and nothing else.
 func (d *decoder) execution(e *xmltree.Element, v **Execution) bool {
 	x := Execution{Attr: extensions(e)}
 
@@ -1017,7 +938,7 @@ func (d *decoder) media(e *xmltree.Element) (Media, bool) {
 	return m, true
 }
 
-// sidebars decodes a <sidebars-by-val>: its entries of an entity unique among them (§4.5).
+// RFC 4575 section 5.9.2
 func (d *decoder) sidebars(e *xmltree.Element, v **Sidebars) bool {
 	state, ok := d.state(e)
 	if !ok {
@@ -1046,8 +967,6 @@ func (d *decoder) sidebars(e *xmltree.Element, v **Sidebars) bool {
 	return true
 }
 
-// extensions are the attributes of e of a namespace, other than conference-info's: the extensions of the schema's
-// xs:anyAttribute. Those of no namespace the schema does not define are left out.
 func extensions(e *xmltree.Element) []xml.Attr {
 	var as []xml.Attr
 
@@ -1060,7 +979,6 @@ func extensions(e *xmltree.Element) []xml.Attr {
 	return as
 }
 
-// text decodes an element of an xs:string.
 func (d *decoder) text(e *xmltree.Element, v *string) bool {
 	if e.HasElements() {
 		d.fail(e.Name.Local, "elements in a string")
@@ -1072,7 +990,6 @@ func (d *decoder) text(e *xmltree.Element, v *string) bool {
 	return true
 }
 
-// anyURI decodes an element of an xs:anyURI.
 func (d *decoder) anyURI(e *xmltree.Element, v *string) bool {
 	if !d.text(e, v) {
 		return false
@@ -1083,7 +1000,6 @@ func (d *decoder) anyURI(e *xmltree.Element, v *string) bool {
 	return true
 }
 
-// list decodes an element of an xs:list: its items separated by white space.
 func (d *decoder) list(e *xmltree.Element, v *[]string) bool {
 	var s string
 	if !d.text(e, &s) {
@@ -1095,7 +1011,6 @@ func (d *decoder) list(e *xmltree.Element, v *[]string) bool {
 	return true
 }
 
-// unsigned decodes an element of an xs:unsignedInt.
 func (d *decoder) unsigned(e *xmltree.Element, v **uint32) bool {
 	n, ok := xsd.ParseUnsignedInt(e.Text())
 	if !ok || e.HasElements() {
@@ -1108,7 +1023,6 @@ func (d *decoder) unsigned(e *xmltree.Element, v **uint32) bool {
 	return true
 }
 
-// boolean decodes an element of an xs:boolean.
 func (d *decoder) boolean(e *xmltree.Element, v **bool) bool {
 	b, ok := xsd.ParseBoolean(e.Text())
 	if !ok || e.HasElements() {
@@ -1121,8 +1035,6 @@ func (d *decoder) boolean(e *xmltree.Element, v **bool) bool {
 	return true
 }
 
-// dateTime decodes an element of an xs:dateTime (§5.7.2, §5.7.5, §5.7.7: of a timezone or not, UTC as RECOMMENDED).
-// One of the year 9999 that its timezone or 24:00:00 carries into 10000 is malformed: Encode cannot write it.
 func (d *decoder) dateTime(e *xmltree.Element, v **xsd.DateTime) bool {
 	t, err := xsd.ParseDateTime(e.Text())
 	if err != nil || t.String() == "" || e.HasElements() {
@@ -1142,7 +1054,6 @@ var (
 	}
 )
 
-// enum decodes an element of an enumeration of values.
 func enum[T ~string](d *decoder, e *xmltree.Element, v *T, values ...T) bool {
 	t := T(xsd.Collapse(e.Text()))
 	if !slices.Contains(values, t) || e.HasElements() {

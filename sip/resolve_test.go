@@ -61,24 +61,18 @@ func TestResolve(t *testing.T) {
 		queries []string
 		bad     bool
 	}{
-		// RFC 3263 §4.2: an IP address needs no DNS.
 		{uri: "sip:10.0.0.7:5090;transport=tcp", want: []string{"TCP 10.0.0.7:5090"}},
-		// RFC 3263 §4.2: a port skips SRV.
 		{uri: "sip:tcp.example.com:5099", want: []string{"UDP 10.0.0.9:5099"}, queries: []string{"A tcp.example.com"}},
-		// RFC 3263 §4.1: no NAPTR, the SRV records of UDP then TCP.
 		{
 			uri: "sip:tcp.example.com", want: []string{"TCP 10.0.0.2:5070", "TCP 10.0.0.1:5071", "TCP [2001:db8::1]:5071"},
 			queries: []string{"SRV _sip._udp.tcp.example.com", "SRV _sip._tcp.tcp.example.com", "A as2.example.com", "A as1.example.com"},
 		},
 		{uri: "sip:as@udp.example.com", want: []string{"UDP 10.0.0.1:5080", "UDP [2001:db8::1]:5080"}},
-		// RFC 3263 §4.2: the transport of the URI, its SRV records only.
 		{uri: "sip:udp.example.com;transport=tcp", bad: true},
-		// RFC 3263 §4.2: no SRV record, the address records at the default port.
 		{
 			uri: "sip:plain.example.com", want: []string{"UDP 10.0.0.3:5060"},
 			queries: []string{"SRV _sip._udp.plain.example.com", "SRV _sip._tcp.plain.example.com", "A plain.example.com"},
 		},
-		// RFC 2782: a target of "." means no service.
 		{uri: "sip:down.example.com", bad: true},
 		{uri: "sips:as1.example.com", bad: true},
 		{uri: "sip:as1.example.com;transport=sctp", bad: true},

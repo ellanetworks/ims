@@ -1,14 +1,3 @@
-// Package reginfo is the registration information document of the reg event package, application/reginfo+xml
-// (RFC 3680 §5): the body of the NOTIFYs of a registrar (TS 24.229 §5.4.2.1.2), and of those its subscribers read,
-// UEs (§5.1.1.3), P-CSCFs (§5.2.3) and application servers (§5.7.1.1).
-//
-// The elements and attributes of other namespaces are ignored (§5.1), the extensions of the contacts among them, such
-// as the GRUUs of RFC 5628; the parameters of a contact that RFC 3261 does not define, such as +sip.instance, are its
-// unknown-params.
-//
-// Decode refuses a document not valid against the schema of §5.4 in what it reads, as a whole: a subscriber flushes
-// its state of a full document and builds it again of the document (§5.2), so a contact or registration skipped would
-// be one it believes gone. Encode writes what Decode reads.
 package reginfo
 
 import (
@@ -27,11 +16,9 @@ const (
 	Namespace   = "urn:ietf:params:xml:ns:reginfo"
 )
 
-// maxSize bounds a document: the contacts of the registrations of an implicit registration set.
 const maxSize = 1 << 20
 
-// State is the value of the "state" attribute of <reginfo>: whether the document has the full state, or the changes
-// since the previous one (§5.1).
+// RFC 3680 section 5.1
 type State string
 
 const (
@@ -39,7 +26,7 @@ const (
 	Partial State = "partial"
 )
 
-// RegState is the state of a registration or contact (§4.7.1): init of a registration only.
+// RFC 3680 section 4.7.1
 type RegState string
 
 const (
@@ -48,7 +35,7 @@ const (
 	Terminated RegState = "terminated"
 )
 
-// Event is the event that put a contact in its state (§4.7.1, Figure 2).
+// RFC 3680 section 4.7.1
 type Event string
 
 const (
@@ -63,50 +50,38 @@ const (
 	Rejected     Event = "rejected"
 )
 
-// Reginfo is the <reginfo> root element.
 type Reginfo struct {
-	// Version orders the documents of a subscription (§5.2); 32 bits (§5.1).
 	Version       uint32
 	State         State
 	Registrations []Registration
 }
 
-// Registration is a <registration>: the state of an address-of-record (§5.1).
+// RFC 3680 section 5.1
 type Registration struct {
-	AOR string
-	// ID identifies the registration within the subscription (§5.1).
+	AOR      string
 	ID       string
 	State    RegState
 	Contacts []Contact
 }
 
-// Contact is a <contact>.
 type Contact struct {
-	// ID identifies the contact within the subscription (§5.1).
-	ID    string
-	State RegState
-	Event Event
-	URI   string
-	// DisplayName is the <display-name>, of the language DisplayLang; "" if absent.
-	DisplayName, DisplayLang string
-	// Expires, of an active contact, is the number of seconds until it expires; RetryAfter, of a probation, when to
-	// register again; DurationRegistered, how long it has been bound. Nil if absent.
+	ID                                      string
+	State                                   RegState
+	Event                                   Event
+	URI                                     string
+	DisplayName, DisplayLang                string
 	Expires, RetryAfter, DurationRegistered *uint64
-	// Q is the priority of the contact among the others, as in the Contact; "" if absent.
-	Q string
-	// CallID and CSeq are those of the REGISTER that last updated the contact; "" and nil if absent.
-	CallID string
-	CSeq   *uint64
-	// UnknownParams are the Contact header field parameters RFC 3261 does not define, in order.
-	UnknownParams []Param
+	Q                                       string
+	CallID                                  string
+	CSeq                                    *uint64
+	UnknownParams                           []Param
 }
 
-// Param is an <unknown-param>: a parameter name, and its value as in the Contact, quotes included; "" of none.
 type Param struct {
 	Name, Value string
 }
 
-// Param is the value of the unknown-param name of c, its name compared case-insensitively (RFC 3261 §7.3.1).
+// RFC 3261 section 7.3.1
 func (c Contact) Param(name string) (string, bool) {
 	for _, p := range c.UnknownParams {
 		if strings.EqualFold(p.Name, name) {
@@ -117,7 +92,6 @@ func (c Contact) Param(name string) (string, bool) {
 	return "", false
 }
 
-// Decode decodes a registration information document.
 func Decode(b []byte) (Reginfo, error) {
 	if len(b) > maxSize {
 		return Reginfo{}, fmt.Errorf("reginfo: document of %d bytes exceeds %d", len(b), maxSize)
@@ -265,13 +239,11 @@ type number struct {
 	v    **uint64
 }
 
-// numbers are the xs:unsignedLong attributes of c, in the order Encode writes them.
 func (c *Contact) numbers() []number {
 	return []number{{"expires", &c.Expires}, {"retry-after", &c.RetryAfter}, {"duration-registered", &c.DurationRegistered}}
 }
 
-// valid reports whether the attributes of c are of the values of the schema, and those its event requires given
-// (§5.1).
+// RFC 3680 section 5.1
 func (c *Contact) valid() error {
 	switch {
 	case c.State != Active && c.State != Terminated:
@@ -296,7 +268,7 @@ func validEvent(e Event) bool {
 	return false
 }
 
-// children are the child elements of e of the namespace: those of others are ignored (§5.1).
+// RFC 3680 section 5.1
 func children(e *xmltree.Element) []*xmltree.Element {
 	var out []*xmltree.Element
 
@@ -309,7 +281,6 @@ func children(e *xmltree.Element) []*xmltree.Element {
 	return out
 }
 
-// parseUnsignedLong parses an xs:unsignedLong: decimal digits, after an optional "+".
 func parseUnsignedLong(s string) (uint64, error) {
 	s = strings.TrimPrefix(xsd.Collapse(s), "+")
 	if s == "" || strings.Trim(s, "0123456789") != "" {
@@ -319,7 +290,6 @@ func parseUnsignedLong(s string) (uint64, error) {
 	return strconv.ParseUint(s, 10, 64)
 }
 
-// Encode encodes r, which must be valid as Decode reads it.
 func Encode(r Reginfo) ([]byte, error) {
 	if r.State != Full && r.State != Partial {
 		return nil, fmt.Errorf("reginfo: state %q", r.State)
@@ -370,7 +340,7 @@ func (reg *Registration) element() (*xmltree.Element, error) {
 	return e, nil
 }
 
-// element is the <contact> of c: its children in the order of the schema (§5.4).
+// RFC 3680 section 5.4
 func (c *Contact) element() (*xmltree.Element, error) {
 	if err := c.valid(); err != nil {
 		return nil, err

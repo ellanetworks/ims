@@ -17,8 +17,10 @@ func mcpttRequest(initial bool, p *policy.MCPTTPriority) policy.Request {
 	return r
 }
 
-// TS 29.514 §4.2.2.19, §4.2.3.19, Annex B.10.1 NOTE 1, Annex B.10.2: the MCPTT namespace in mcpttId and the
-// priority value n in resPrio as PRIO_(n+1), at the creation and whenever the priority changes.
+// TS 29.514 clause 4.2.2.19
+// TS 29.514 clause 4.2.3.19
+// TS 29.514 clause B.10.1
+// TS 29.514 clause B.10.2
 func TestAnnexB10MCPTTPriority(t *testing.T) {
 	f := newFixtureWith(t, pcftest.Config{Features: n5.Features(n5.FeatureIMSSBI, n5.FeatureMCPTT, n5.FeaturePatchCorrection)})
 	id := f.b.NewSessionID()
@@ -66,7 +68,7 @@ func TestAnnexB10MCPTTPriority(t *testing.T) {
 	f.noRequest()
 }
 
-// TS 29.514 Annex B.10.2: mcpttq, its lowest value PRIO_1.
+// TS 29.514 clause B.10.2
 func TestAnnexB10MCPTTQueueing(t *testing.T) {
 	f := newFixtureWith(t, pcftest.Config{Features: n5.Features(n5.FeatureIMSSBI, n5.FeatureMCPTT, n5.FeaturePatchCorrection)})
 
@@ -79,8 +81,8 @@ func TestAnnexB10MCPTTQueueing(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.2.19, §5.8: the create sends the MCPTT priority before the PCF tells its features; a PCF that does
-// not support MCPTT gets no update of it.
+// TS 29.514 clause 4.2.2.19
+// TS 29.514 clause 5.8
 func TestAnnexB10MCPTTPriorityNotNegotiated(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()

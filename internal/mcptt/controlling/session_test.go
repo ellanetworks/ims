@@ -6,7 +6,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// TS 24.229 §5.7.1.9: the Feature-Caps of the ICSI goes in target refresh requests and their 1xx or 2xx responses.
+// TS 24.229 clause 5.7.1.9
 func TestOfTargetRefresh(t *testing.T) {
 	req := func(method string) *sip.Request {
 		r := sip.NewRequest(method, sip.URI{Scheme: "sip", User: "u", Host: "example.com"})

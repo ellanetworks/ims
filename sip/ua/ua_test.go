@@ -30,7 +30,6 @@ type event struct {
 	err   error
 }
 
-// peer is an agent on the net of its test, recording the events of its sessions.
 type peer struct {
 	t      *testing.T
 	name   string
@@ -38,17 +37,14 @@ type peer struct {
 	addr   netip.AddrPort
 	events chan event
 
-	// tr is the transport of the requests of the peer, UDP unless set before any.
 	tr sip.Transport
 
 	mu       sync.Mutex
 	onInvite func(r *ua.Request)
 }
 
-// nets are the nets of the tests running, one per test: its agents and raw peers.
 var nets sync.Map
 
-// netOf is the net of the test.
 func netOf(t *testing.T) *siptest.Net {
 	if n, ok := nets.Load(t); ok {
 		return n.(*siptest.Net)
@@ -61,7 +57,6 @@ func netOf(t *testing.T) *siptest.Net {
 	return n
 }
 
-// newPeer makes a peer with the session timer given. clock is the clock of the test's net or nil, which is the same.
 func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.SessionTimer) *peer {
 	t.Helper()
 
@@ -71,7 +66,6 @@ func newPeer(t *testing.T, name string, clock transaction.Clock, timer ua.Sessio
 	})
 }
 
-// newPeerWith makes a peer on the test's net, configured by configure.
 func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	t.Helper()
 
@@ -115,7 +109,6 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 		t.Fatal(err)
 	}
 
-	// Shutdown waits for the transactions it starts, as long as 64*T1 for those of raw peers that never answer.
 	t.Cleanup(func() {
 		n.Await(func() { _ = a.Shutdown(context.Background()) }, 2*64*transaction.DefaultT1)
 	})
@@ -125,7 +118,6 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	return p
 }
 
-// prepare sends to the host and port of the top Route, or else of the Request-URI.
 func (p *peer) prepare(req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
@@ -172,7 +164,6 @@ func (p *peer) handler() ua.Handler {
 	}
 }
 
-// advance advances the clock of the net, which runs each timer due once what the previous one started is done.
 func advance(clock *siptest.Clock, d time.Duration, _ ...*peer) {
 	clock.Advance(d)
 }
@@ -194,8 +185,6 @@ func (p *peer) next(kind string) event {
 	}
 }
 
-// nextAll takes events of the given kinds in any order, as the events of different sessions or of an outgoing INVITE
-// are.
 func (p *peer) nextAll(kinds ...string) map[string]event {
 	p.t.Helper()
 
@@ -221,7 +210,6 @@ func (p *peer) nextAll(kinds ...string) map[string]event {
 	return got
 }
 
-// none checks that the peer has no event once the net is quiet.
 func (p *peer) none() {
 	p.t.Helper()
 	netOf(p.t).Quiesce()
@@ -261,7 +249,6 @@ func sdpOf(s string) []sip.BodyPart {
 	return []sip.BodyPart{ua.SDP([]byte(s))}
 }
 
-// established sets up a session from alice to bob, offer in the INVITE.
 func established(t *testing.T, alice, bob *peer) (*ua.Session, *ua.Session) {
 	t.Helper()
 
@@ -345,7 +332,7 @@ func TestCall(t *testing.T) {
 	}
 }
 
-// RFC 3262: an answer in a reliable 183, the 2xx held until its PRACK.
+// RFC 3262
 func TestReliableProvisional(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -374,7 +361,7 @@ func TestReliableProvisional(t *testing.T) {
 	alice.none()
 }
 
-// RFC 3261 §13.2.1: an INVITE without an offer gets it in the 2xx, and the answer in the ACK.
+// RFC 3261 section 13.2.1
 func TestLateOffer(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 
@@ -501,7 +488,6 @@ func TestReinviteAndUpdate(t *testing.T) {
 		t.Fatalf("re-INVITE %d", res.StatusCode)
 	}
 
-	// An UPDATE without an offer is answered by the agent.
 	if err := as.Update(context.Background(), ua.Change{}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
@@ -512,8 +498,6 @@ func TestReinviteAndUpdate(t *testing.T) {
 
 	bob.none()
 
-	// An UPDATE with an offer goes to the application. A second one waits for it; once the first exchange
-	// completed, its offer no longer builds on the session (RFC 3264 §8): it goes stale, unsent.
 	if err := as.Update(context.Background(), ua.Change{Bodies: sdpOf("offer-3")}, func(res *sip.Response, err error) { done <- res }); err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +532,6 @@ func TestReinviteAndUpdate(t *testing.T) {
 	}
 }
 
-// A request the application does not handle: 405 with Allow.
 func TestOtherRequests(t *testing.T) {
 	alice, bob := newPeer(t, "alice", nil, ua.SessionTimer{}), newPeer(t, "bob", nil, ua.SessionTimer{})
 	as, _ := established(t, alice, bob)
@@ -575,7 +558,8 @@ func TestOtherRequests(t *testing.T) {
 	}
 }
 
-// RFC 3261 §8.2.2.3, RFC 4028 §9.
+// RFC 3261 section 8.2.2.3
+// RFC 4028 section 9
 func TestInviteRefused(t *testing.T) {
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{MinSE: 1800 * time.Second})
 
@@ -606,7 +590,7 @@ func TestInviteRefused(t *testing.T) {
 	bob.none()
 }
 
-// RFC 3261 §13.2.2.4: the 2xx of a second dialog of a forked INVITE is acknowledged, and the dialog ended with a BYE.
+// RFC 3261 section 13.2.2.4
 func TestForking(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{})
 	fork := netOf(t).Peer()
@@ -638,7 +622,6 @@ func TestForking(t *testing.T) {
 	respond(180, "one", "")
 	respond(180, "two", "")
 
-	// The events of two sessions come in any order: each is told apart by its tag.
 	byTag := map[string]*ua.Session{}
 
 	for range 2 {
@@ -678,7 +661,7 @@ func TestForking(t *testing.T) {
 	}
 }
 
-// RFC 3261 §13.3.1.4: the 2xx is retransmitted until the ACK; without one, the session ends with a BYE.
+// RFC 3261 section 13.3.1.4
 func TestNoAck(t *testing.T) {
 	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
@@ -732,7 +715,7 @@ func TestNoAck(t *testing.T) {
 	}
 }
 
-// RFC 3262 §3: the reliable 1xx is retransmitted until its PRACK; without one, the INVITE gets a 500.
+// RFC 3262 section 3
 func TestNoPrack(t *testing.T) {
 	clock := netOf(t).Clock()
 	bob := newPeer(t, "bob", clock, ua.SessionTimer{})
@@ -789,9 +772,8 @@ func TestNoPrack(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: re-INVITEs crossing each other both get a 491, and are retried after random delays, the callee's
-// first. Once the callee's retry completed its exchange, the caller's fixed offer is stale (RFC 3264 §8): it is not
-// sent, unless Modify builds it anew.
+// RFC 3261 section 14.1
+// RFC 3264 section 8
 func TestGlare(t *testing.T) {
 	for _, build := range []bool{false, true} {
 		t.Run(fmt.Sprintf("build=%v", build), func(t *testing.T) {
@@ -831,7 +813,6 @@ func TestGlare(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Each re-INVITE meets the other in progress, and gets a 491.
 			netOf(t).Quiesce()
 
 			if ua.Reinviting(as) || ua.Reinviting(bs) {
@@ -899,8 +880,6 @@ func TestSessionTimer(t *testing.T) {
 	alice.next("answer")
 	bob.next("established")
 
-	// Bob, the UAS, refreshes by default, with an UPDATE since alice allows it. Without the refresh, alice would end
-	// the session 88 s in (RFC 4028 §10).
 	for range 10 {
 		advance(clock, 10*time.Second, alice, bob)
 	}
@@ -908,7 +887,6 @@ func TestSessionTimer(t *testing.T) {
 	alice.none()
 	bob.none()
 
-	// Without refreshes, the session expires.
 	_ = bob.a.Layer().Close()
 
 	advance(clock, 120*time.Second, alice, bob)
@@ -918,7 +896,7 @@ func TestSessionTimer(t *testing.T) {
 	}
 }
 
-// RFC 4028 §7.3: an INVITE refused with a 422 is sent again with the Min-SE.
+// RFC 4028 section 7.3
 func TestSessionIntervalTooSmall(t *testing.T) {
 	alice := newPeer(t, "alice", nil, ua.SessionTimer{Interval: 120 * time.Second})
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{MinSE: 1800 * time.Second})

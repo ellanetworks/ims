@@ -23,19 +23,14 @@ const (
 
 var ue = netip.MustParseAddr("10.45.0.2")
 
-// pcrfCluster is several PCRFs of one realm: a request to a Destination-Host goes to that PCRF, one routed by realm
-// to the first PCRF up. Each AA-Answer carries the cluster's Session-Binding and Session-Server-Failover.
 type pcrfCluster struct {
-	mu    sync.Mutex
-	nodes []string
-	down  map[string]bool
-	busy  map[string]bool
-	hung  map[string]bool
-	gone  map[string]bool
-	// behind are the PCRFs reached through an agent, in their own realm: a request to one of them needs a route,
-	// which only the configured realm has.
-	behind map[string]string
-	// class is the Class each PCRF puts in its AA-Answers, if any.
+	mu       sync.Mutex
+	nodes    []string
+	down     map[string]bool
+	busy     map[string]bool
+	hung     map[string]bool
+	gone     map[string]bool
+	behind   map[string]string
 	class    map[string]string
 	binding  diameter.SessionBinding
 	failover diameter.SessionServerFailover
@@ -172,7 +167,6 @@ func audio() []policy.MediaComponent {
 	return []policy.MediaComponent{{Number: 1, Type: policy.MediaAudio, Status: policy.FlowEnabled}}
 }
 
-// openCall opens a call's session, which pcrf1 takes.
 func openCall(t *testing.T, b *Backend) string {
 	t.Helper()
 
@@ -190,7 +184,7 @@ func update(t *testing.T, b *Backend, ref string) (policy.Grant, error) {
 	return b.Authorize(t.Context(), "call", ref, policy.Request{UE: ue, Components: audio()})
 }
 
-// RFC 6733 §8.17: by default, the requests of a session after its first go to the PCRF that answered it.
+// RFC 6733 section 8.17
 func TestSessionStaysOnItsPCRF(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.RefuseService)
 
@@ -214,7 +208,7 @@ func TestSessionStaysOnItsPCRF(t *testing.T) {
 	)
 }
 
-// RFC 6733 §8.17: the RE_AUTH and STR bits send those requests by realm.
+// RFC 6733 section 8.17
 func TestSessionBindingBits(t *testing.T) {
 	c, b := newPCRFCluster(diameter.SessionBindingReAuth|diameter.SessionBindingSTR, diameter.RefuseService)
 
@@ -236,10 +230,8 @@ func TestSessionBindingBits(t *testing.T) {
 	)
 }
 
-// RFC 6733 §8.18 REFUSE_SERVICE, the default: a session that no path reaches its PCRF with is lost, without
-// another attempt.
-// RFC 6733 §5.5.4, §8.18 REFUSE_SERVICE: a request to the PCRF of the session with no connection or no path to it is
-// undelivered, and with the default Session-Server-Failover it is not sent again.
+// RFC 6733 section 8.18
+// RFC 6733 section 5.5.4
 func TestUnreachablePCRFRefusesService(t *testing.T) {
 	for name, lose := range map[string]func(c *pcrfCluster){
 		"no connection": func(c *pcrfCluster) { c.down[pcrf1] = true },
@@ -270,8 +262,7 @@ func TestUnreachablePCRFRefusesService(t *testing.T) {
 	}
 }
 
-// RFC 6733 §7.1.3: a PCRF that is too busy has the request, and has not lost the session: the requests stay pending,
-// to be sent again.
+// RFC 6733 section 7.1.3
 func TestPendingPCRFKeepsTheSession(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.RefuseService)
 
@@ -302,7 +293,7 @@ func TestPendingPCRFKeepsTheSession(t *testing.T) {
 	)
 }
 
-// RFC 6733 §8.18 TRY_AGAIN: once more by realm, and the session goes on with the PCRF that answers.
+// RFC 6733 section 8.18
 func TestLostPCRFTriesAgain(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.TryAgain)
 
@@ -333,8 +324,7 @@ func TestLostPCRFTriesAgain(t *testing.T) {
 	}
 }
 
-// RFC 3539 §3.10: a PCRF that keeps its connection but answers nothing is not failed over on a timer, even with
-// TRY_AGAIN: the request is sent again later, its watchdog deciding whether the PCRF is lost.
+// RFC 3539 section 3.10
 func TestHungPCRFIsNotFailedOver(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.TryAgain)
 
@@ -354,7 +344,7 @@ func TestHungPCRFIsNotFailedOver(t *testing.T) {
 	wantRx(t, c.take(), rxSent{rx.CommandSessionTermination, pcrf1, pcrf1})
 }
 
-// RFC 6733 §8.18 ALLOW_SERVICE: the session goes on, unbound: the next request goes by realm.
+// RFC 6733 section 8.18
 func TestLostPCRFAllowsService(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.AllowService)
 
@@ -383,13 +373,12 @@ func TestLostPCRFAllowsService(t *testing.T) {
 
 	c.set(func(c *pcrfCluster) { c.down[pcrf1] = true })
 
-	// RFC 6733 §8.18 ALLOW_SERVICE: "If STR message delivery fails, terminate the session."
 	if err := b.Terminate(t.Context(), "call", ref, policy.TerminationLogout, false); err != nil {
 		t.Fatalf("Terminate = %v, want it to succeed", err)
 	}
 }
 
-// RFC 6733 §8.20: a PCRF that takes a session over does not get the Class of the PCRF it took it from.
+// RFC 6733 section 8.20
 func TestRebindingDropsTheClass(t *testing.T) {
 	c, b := newPCRFCluster(0, diameter.TryAgain)
 	c.set(func(c *pcrfCluster) { c.class[pcrf1] = "pcrf1-state" })
@@ -420,8 +409,7 @@ func TestRebindingDropsTheClass(t *testing.T) {
 	}
 }
 
-// TS 29.213 §7.3.5: a PCRF behind an agent, in a realm the P-CSCF has no route for, is still reached through the
-// configured realm.
+// TS 29.213 clause 7.3.5
 func TestPCRFBehindAnAgentInAnotherRealm(t *testing.T) {
 	const realm = "pcrf.example.net"
 

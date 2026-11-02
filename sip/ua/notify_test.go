@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// notifierPeer is an agent accepting SUBSCRIBEs to the "test" event, its state a counter body.
 type notifierPeer struct {
 	p     *peer
 	subs  chan *ua.ServerSubscription
@@ -67,7 +66,6 @@ func (n *notifierPeer) body(seq uint32) sip.BodyPart {
 	return sip.NewBodyPart("text/plain", fmt.Appendf(nil, "%s seq=%d", n.version, seq))
 }
 
-// subscriberOf is a subscriber recording the NOTIFYs of its subscriptions.
 type subscriberOf struct {
 	p       *peer
 	notifys chan *ua.Request
@@ -143,8 +141,7 @@ func checkNotify(t *testing.T, req *sip.Request, state, body string) {
 	}
 }
 
-// RFC 6665 §4.2: the notifier answers 200 with the duration, sends the state at once, on each change, after each
-// refresh, and a terminated NOTIFY when the subscriber unsubscribes.
+// RFC 6665 section 4.2
 func TestNotifier(t *testing.T) {
 	n := newNotifierAgent(t, nil)
 	sb := newSubscriberOf(t, nil)
@@ -153,7 +150,6 @@ func TestNotifier(t *testing.T) {
 
 	s := <-n.subs
 
-	// The duration asked for is cut to the one granted.
 	checkNotify(t, nextNotify(t, sb.notifys), "active;expires=600", "v0 seq=0")
 
 	if d := sub.Duration(); d != 600*time.Second {
@@ -197,8 +193,9 @@ func TestNotifier(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.2.1.3, §4.2.2: a pending subscription is activated or rejected with NOTIFYs; one not refreshed
-// expires with a terminated NOTIFY, reason timeout (§4.2.1.4).
+// RFC 6665 section 4.2.1.3
+// RFC 6665 section 4.2.2
+// RFC 6665 section 4.2.1.4
 func TestNotifierPendingAndExpiry(t *testing.T) {
 	clock := netOf(t).Clock()
 	n := newNotifierAgent(t, clock)
@@ -219,7 +216,6 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 
 	checkNotify(t, nextNotify(t, sb.notifys), "active", "v0 seq=1")
 
-	// The subscriber refreshes at 300 s; dropping it once its 200 is sent, the notifier sees no refresh.
 	netOf(t).Quiesce()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -227,10 +223,8 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 
 	_ = sb.p.a.Layer().Shutdown(ctx)
 
-	// The notifier takes the 200 before the clock jumps past its Timer F.
 	netOf(t).Quiesce()
 
-	// Its terminated NOTIFY goes unanswered: the subscription ends with its transaction (Timer F).
 	advance(clock, 601*time.Second, sb.p, n.p)
 	advance(clock, 33*time.Second, sb.p, n.p)
 
@@ -238,7 +232,6 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 		t.Errorf("notifier ended %+v", e)
 	}
 
-	// Rejection after the fact.
 	n2 := newNotifierAgent(t, nil)
 	sb2 := newSubscriberOf(t, nil)
 
@@ -266,8 +259,7 @@ func TestNotifierPendingAndExpiry(t *testing.T) {
 	}
 }
 
-// One NOTIFY at a time; a full state queued makes the NOTIFYs queued before it obsolete; a 481 to a NOTIFY ends the
-// subscription (RFC 6665 §4.2.2).
+// RFC 6665 section 4.2.2
 func TestNotifierQueue(t *testing.T) {
 	n := newNotifierAgent(t, nil)
 	alice := newRaw(t)
@@ -312,7 +304,7 @@ func TestNotifierQueue(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.4.3: a SUBSCRIBE with Expires 0 fetches the state: the NOTIFY terminates the subscription at once.
+// RFC 6665 section 4.4.3
 func TestNotifierFetch(t *testing.T) {
 	n := newNotifierAgent(t, nil)
 	sb := newSubscriberOf(t, nil)
@@ -326,8 +318,7 @@ func TestNotifierFetch(t *testing.T) {
 	}
 }
 
-// RFC 6665 §4.4.2: closing, the notifier terminates its subscriptions with reason deactivated, for the subscribers
-// to subscribe again elsewhere.
+// RFC 6665 section 4.4.2
 func TestNotifierShutdown(t *testing.T) {
 	n := newNotifierAgent(t, nil)
 	sb := newSubscriberOf(t, nil)

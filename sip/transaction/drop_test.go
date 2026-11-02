@@ -11,7 +11,7 @@ import (
 
 func all(sip.Flow) bool { return true }
 
-// TS 24.229 §5.1.1.4.1: a dropped client transaction ends at once, its user told, and sends nothing more.
+// TS 24.229 clause 5.1.1.4.1
 func TestDropClient(t *testing.T) {
 	for _, method := range []string{"INVITE", "OPTIONS"} {
 		t.Run(method, func(t *testing.T) {
@@ -32,7 +32,6 @@ func TestDropClient(t *testing.T) {
 	}
 }
 
-// A dropped server transaction ends at once, its user told, and refuses its responses.
 func TestDropServer(t *testing.T) {
 	h := newHarness(t)
 	tx, _ := h.serve("INVITE", sip.UDP)
@@ -50,7 +49,6 @@ func TestDropServer(t *testing.T) {
 	h.peer.RecvNone(quiet)
 }
 
-// Drop leaves the transactions of the other flows alone.
 func TestDropOtherFlow(t *testing.T) {
 	h := newHarness(t)
 	tx, rs, sent := h.request("OPTIONS", sip.UDP)
@@ -62,8 +60,6 @@ func TestDropOtherFlow(t *testing.T) {
 	wantState(t, tx, transaction.Completed)
 }
 
-// OnClientError tells the state a client transaction failed in: Timer F in Trying, or in Proceeding once a
-// provisional response came (TS 24.229 §5.1.2A.1.6 acts on Trying only).
 func TestOnClientError(t *testing.T) {
 	type failure struct {
 		method string

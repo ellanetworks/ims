@@ -7,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// indexed checks that the indexes of g are those of its bindings, a client bound at one IMPU at most.
 func indexed(t *testing.T, g *Registrar) {
 	t.Helper()
 
@@ -34,9 +33,6 @@ func indexed(t *testing.T, g *Registrar) {
 	}
 }
 
-// The bindings are found by IMPU, user and client as they change: a client bound again at another IMPU, or by
-// another user, leaves its former binding (TS 24.379 §7.3.2 step 4), and the last binding of an IMPU or a user
-// leaves no empty index.
 func TestIndexes(t *testing.T) {
 	g := New(Config{})
 	alice, bob := uri(t, "sip:alice@mcptt.example.com"), uri(t, "sip:bob@mcptt.example.com")
@@ -63,7 +59,6 @@ func TestIndexes(t *testing.T) {
 		t.Fatalf("alice: %d bindings, bound at c1 %v, bob at c1 %v", n, g.Bound(alice, "c1"), g.Bound(bob, "c1"))
 	}
 
-	// c1 at another IMPU, then of bob.
 	bind("sip:a2@ims.example.com", "c1", alice.String())
 
 	if g.bindings[a1.key] != nil || len(g.impus[a1.key.impu]) != 1 {

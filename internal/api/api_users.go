@@ -46,7 +46,6 @@ type ListUsersResponse struct {
 	TotalCount int    `json:"total_count"`
 }
 
-// APIToken is an API token without its secret, which only its creation returns.
 type APIToken struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -56,8 +55,7 @@ type APIToken struct {
 }
 
 type CreateAPITokenParams struct {
-	Name string `json:"name"`
-	// ExpiresAt is an RFC 3339 time, or empty for a token that does not expire.
+	Name      string `json:"name"`
 	ExpiresAt string `json:"expires_at"`
 }
 
@@ -79,7 +77,6 @@ func GetMyUser(a *auth) http.Handler {
 	})
 }
 
-// UpdateMyPassword changes the password of the caller, and ends its other sessions.
 func UpdateMyPassword(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -97,8 +94,6 @@ func UpdateMyPassword(a *auth) http.Handler {
 			return
 		}
 
-		// The wrong current passwords count with the failed logins of the account, so that a stolen access token cannot
-		// guess the password here instead.
 		account := strings.ToLower(u.Email)
 		if !a.allowAccount(r.Context(), w, account) {
 			return
@@ -110,7 +105,6 @@ func UpdateMyPassword(a *auth) http.Handler {
 			return
 		}
 
-		// Not 401, which tells the UI that its session is over.
 		if !ok {
 			a.failures.allow(account)
 			writeError(r.Context(), w, http.StatusBadRequest, "Current password is incorrect", nil, cfg.Logger)
@@ -126,7 +120,6 @@ func UpdateMyPassword(a *auth) http.Handler {
 	})
 }
 
-// setPassword stores the new password of a user and ends its sessions but keepSession, or writes the error.
 func (a *auth) setPassword(w http.ResponseWriter, r *http.Request, u db.User, password string, keepSession []byte) bool {
 	if msg, ok := validPassword(password); !ok {
 		writeError(r.Context(), w, http.StatusBadRequest, msg, nil, a.cfg.Logger)
@@ -249,8 +242,6 @@ func GetUser(a *auth) http.Handler {
 	})
 }
 
-// UpdateUser changes the role of a user, and ends its sessions. An admin cannot change its own role, so that there is
-// always an admin.
 func UpdateUser(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -292,8 +283,6 @@ func UpdateUser(a *auth) http.Handler {
 	})
 }
 
-// UpdateUserPassword sets the password of a user, and ends all of its sessions. An admin changes its own password with
-// UpdateMyPassword, which needs the current one.
 func UpdateUserPassword(a *auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var params UpdateUserPasswordParams
@@ -321,7 +310,6 @@ func UpdateUserPassword(a *auth) http.Handler {
 	})
 }
 
-// DeleteUser deletes a user, with its sessions and API tokens. An admin cannot delete itself.
 func DeleteUser(a *auth) http.Handler {
 	cfg := a.cfg
 
@@ -353,8 +341,6 @@ func DeleteUser(a *auth) http.Handler {
 	})
 }
 
-// tokenOwner returns the user whose API tokens a request is about: the caller, or the user of the path for a request
-// under /users/{email}.
 type tokenOwner func(w http.ResponseWriter, r *http.Request) (db.User, bool)
 
 func myself(cfg Config) tokenOwner {
@@ -409,7 +395,6 @@ func ListAPITokens(a *auth, owner tokenOwner) http.Handler {
 	})
 }
 
-// CreateAPIToken creates an API token, which the response holds: the only time it is shown.
 func CreateAPIToken(a *auth, owner tokenOwner) http.Handler {
 	cfg := a.cfg
 

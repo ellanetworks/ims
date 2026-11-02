@@ -43,7 +43,6 @@ class PttTest {
         }
     }
 
-    // Held to talk, released to stop (TS 24.380 §6.2.4.4, §6.2.4.5.3).
     @Test
     fun holdTalksReleaseStops() {
         ptt()
@@ -53,7 +52,6 @@ class PttTest {
         assertEquals(listOf("press", "release c1"), presses)
     }
 
-    // A press refused (no call to talk in) has nothing to release.
     @Test
     fun refusedPressReleasesNothing() {
         ptt(id = null)
@@ -64,7 +62,6 @@ class PttTest {
         assertEquals(listOf("press"), presses)
     }
 
-    // A finger moving off the button keeps talking until it lifts.
     @Test
     fun movingOffKeepsTalking() {
         ptt()
@@ -77,7 +74,6 @@ class PttTest {
         assertEquals(listOf("press", "release c1"), presses)
     }
 
-    // TalkBack and Switch Access cannot hold: a click starts, another stops.
     @Test
     fun accessibilityClickToggles() {
         ptt()

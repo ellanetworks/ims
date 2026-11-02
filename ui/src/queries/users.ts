@@ -31,7 +31,6 @@ export interface User {
 export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 72;
 
-// passwordError is why a new password is not valid, the server's rule: 8 to 72 bytes.
 export const passwordError = (password: string): string | undefined => {
   const bytes = new TextEncoder().encode(password).length;
   if (bytes < MIN_PASSWORD_LENGTH) {

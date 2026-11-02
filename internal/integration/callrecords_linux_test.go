@@ -13,8 +13,6 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// callRecord waits for the call c made to end in the call records, and returns its record, which must be the
-// only one of the call: the nodes on its path all add to one record.
 func (s *scene) callRecord(c *testue.Call) api.CallRecordResponse {
 	s.t.Helper()
 
@@ -61,8 +59,6 @@ func (s *scene) callRecords() []api.CallRecordResponse {
 	return body.Result.Items
 }
 
-// TestCallRecordOfACall follows a call between two UEs through both P-CSCFs, the S-CSCF and the I-CSCF, to the
-// one record of it.
 func TestCallRecordOfACall(t *testing.T) {
 	s := newScene(t)
 	a := s.caller(0, false, testue.Config{})
@@ -117,7 +113,6 @@ func TestCallRecordOfABusyCall(t *testing.T) {
 	}
 }
 
-// TestCallRecordOfACallToAnUnknownNumber checks the record of a call the IMS refuses itself.
 func TestCallRecordOfACallToAnUnknownNumber(t *testing.T) {
 	s := newScene(t)
 	a := s.caller(0, false, testue.Config{})
@@ -130,7 +125,6 @@ func TestCallRecordOfACallToAnUnknownNumber(t *testing.T) {
 	}
 }
 
-// TestCallRecordOfACallAnsweredByASecondDevice checks that the record names the device that answered.
 func TestCallRecordOfACallAnsweredByASecondDevice(t *testing.T) {
 	s := newScene(t)
 	d := twoDevices(t, s, testue.Config{}, testue.Config{})
@@ -160,8 +154,6 @@ func TestCallRecordOfACallAnsweredByASecondDevice(t *testing.T) {
 	}
 }
 
-// TestCallRecordOfACallReleasedOnDeregistration checks that a call the IMS releases is recorded as ended by the
-// network, though the caller gets the BYE from the callee's side.
 func TestCallRecordOfACallReleasedOnDeregistration(t *testing.T) {
 	s := newScene(t)
 	a := s.caller(0, false, testue.Config{})

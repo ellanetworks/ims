@@ -44,7 +44,6 @@ func pair(t *testing.T) (*UE, *UE) {
 	return pairWith(t, Config{}, Config{})
 }
 
-// pairWith makes two UEs calling each other directly, configured with ca and cb.
 func pairWith(t *testing.T, ca, cb Config) (*UE, *UE) {
 	t.Helper()
 
@@ -451,7 +450,6 @@ func waitEvents(t *testing.T, c *Call, want string, format func([]string) string
 	t.Fatalf("saw %s, want %s", format(got), want)
 }
 
-// advance advances the clock of the calls by d, in steps the agents follow.
 func advance(clock *siptest.Clock, d time.Duration) {
 	for step := 5 * time.Second; d > 0; d -= step {
 		clock.Advance(min(step, d))
@@ -459,7 +457,7 @@ func advance(clock *siptest.Clock, d time.Duration) {
 	}
 }
 
-// RFC 4028 §10: the caller, refresher, refreshes at half the interval.
+// RFC 4028 section 10
 func TestSessionRefresh(t *testing.T) {
 	ctx := testContext(t)
 	clock := siptest.NewClock()
@@ -476,8 +474,7 @@ func TestSessionRefresh(t *testing.T) {
 	}
 }
 
-// RFC 4028 §10: without the refreshes of the caller, the refresher, the callee ends the session with a BYE before it
-// expires.
+// RFC 4028 section 10
 func TestSessionExpiry(t *testing.T) {
 	ctx := testContext(t)
 	clock := siptest.NewClock()
@@ -492,7 +489,7 @@ func TestSessionExpiry(t *testing.T) {
 	ended(t, ac, RemoteBye)
 }
 
-// RFC 4028 §10: without the network of the caller, both ends see the session expire.
+// RFC 4028 section 10
 func TestSessionExpiryWithoutNetwork(t *testing.T) {
 	ctx := testContext(t)
 	clock := siptest.NewClock()
@@ -508,8 +505,7 @@ func TestSessionExpiryWithoutNetwork(t *testing.T) {
 	ended(t, ac, Expired)
 }
 
-// RFC 3261 §14.1: a re-INVITE refused with 491 is made once more, after up to 2 s for the callee, which does not own
-// the Call-ID; a second 491 is the caller's.
+// RFC 3261 section 14.1
 func TestReinviteGlare(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
@@ -545,7 +541,7 @@ func TestReinviteGlare(t *testing.T) {
 	}
 }
 
-// RFC 3261 §14.1: once the other offer is done, the re-INVITE made once more succeeds.
+// RFC 3261 section 14.1
 func TestReinviteGlareRetried(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
@@ -661,7 +657,6 @@ func setToTag(t *testing.T, h *sip.Header, tag string) {
 	h.Set("To", to.String())
 }
 
-// What the P-CSCF delivered to the callee when an iPhone 11 called a Crosscall Core-Z5.
 const iphoneCaller = "iphone-11/call_callee_bye/"
 
 func TestCalleeAgainstIPhoneCaller(t *testing.T) {
@@ -730,7 +725,6 @@ func TestCalleeAgainstIPhoneCaller(t *testing.T) {
 
 	assertQoS(t, "200 UPDATE", audio(t, sdpOf(t, res.Body)), "curr:qos local sendrecv", "curr:qos remote sendrecv")
 
-	// The iPhone supports timer but asks for no session interval.
 	if got := res.Header.Get("Session-Expires"); got != "" {
 		t.Errorf("200 UPDATE Session-Expires = %q, want none", got)
 	}
@@ -786,8 +780,6 @@ func dialogTag(t *testing.T, res *sip.Response) string {
 	return to.Tag()
 }
 
-// What the P-CSCF delivered to the caller when a Crosscall Core-Z5 called a Motorola XT2417,
-// which sends its 180 reliably.
 const motorolaCallee = "crosscall-core-z5/call_to_motorola-xt2417_callee_bye/"
 
 func TestCallerAgainstMotorolaCallee(t *testing.T) {
@@ -896,7 +888,6 @@ func TestNoPrack(t *testing.T) {
 			continue
 		}
 
-		// RFC 3262 §3: a 5xx.
 		if res.StatusCode != 500 {
 			t.Fatalf("got %s, want 500", res.StartLine())
 		}
@@ -1070,7 +1061,7 @@ func TestAnswerWithoutPreconditions(t *testing.T) {
 	}
 }
 
-// RFC 3264 §8.2: a stream the answer rejects stays at its position with port 0 in later offers.
+// RFC 3264 section 8.2
 func TestRejectedStreamStaysRejected(t *testing.T) {
 	m := newMedia(loopback, 40000, false, false)
 
@@ -1095,7 +1086,7 @@ func TestRejectedStreamStaysRejected(t *testing.T) {
 	}
 }
 
-// RFC 3312 §5: preconditions are met once every active stream has its resources at both ends.
+// RFC 3312 section 5
 func TestPreconditionsPerStream(t *testing.T) {
 	m := newMedia(loopback, 40000, true, false)
 	m.streams = append(m.streams, newStream(sdp.Audio, offered))
@@ -1152,6 +1143,7 @@ func TestHoldWhileHeld(t *testing.T) {
 	}
 }
 
+// RFC 4028 section 8.1
 func TestSessionTimerWithoutTimerSupport(t *testing.T) {
 	ctx := testContext(t)
 	p := newPeer(t, Config{})
@@ -1159,7 +1151,6 @@ func TestSessionTimerWithoutTimerSupport(t *testing.T) {
 	invite := p.capture(iphoneCaller + "003-INVITE.sip").(*sip.Request)
 	invite.Header.Del("Supported")
 	invite.Header.Add("Supported", "100rel")
-	// RFC 4028 §8.1: a proxy may ask for a session timer that the UAC does not support.
 	invite.Header.Set("Session-Expires", "1800")
 	p.send(invite)
 
@@ -1304,6 +1295,7 @@ func TestCalleeReportsItsResources(t *testing.T) {
 	}
 }
 
+// RFC 3311 section 5.1
 func TestUpdateGlare(t *testing.T) {
 	ctx := testContext(t)
 	a, b := pair(t)
@@ -1312,7 +1304,6 @@ func TestUpdateGlare(t *testing.T) {
 
 	ac.RefuseOffers(true)
 
-	// RFC 3311 §5.1: made once more, then the 491 is the caller's.
 	err := bc.update(ctx, bc.leg, true, nil)
 	if rerr, ok := errors.AsType[*ue.ResponseError](err); !ok || rerr.Response.StatusCode != 491 {
 		t.Fatalf("UPDATE with an offer = %v, want 491", err)

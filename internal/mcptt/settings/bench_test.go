@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// BenchmarkNew validates settings of the most users the server serves, each a member of one of 10 groups of 100:
-// what every change of Live validates whole.
 func BenchmarkNew(b *testing.B) {
 	s := Settings{
 		System: System{ParticipatingPSI: "sip:pf@example.com", ControllingPSI: "sip:cf@example.com"},

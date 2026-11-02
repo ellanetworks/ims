@@ -8,10 +8,7 @@ import (
 	mcpttsettings "github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// MCPTTGroup is an MCPTT group: of the <list-service> of its group document (TS 24.481 §7.2) and the server's local
-// policy for it, what an operator sets. The group is a prearranged group, the only kind supported, of AMR-WB (TS
-// 26.179 §4.1.1); the server fixes the rest of the document to its defaults: no limit of participants, no minimum
-// to start nor of affiliated members, no required member.
+// TS 24.481 clause 7.2
 type MCPTTGroup struct {
 	GroupID                 string        `json:"group_id"`
 	DisplayName             string        `json:"display_name"`
@@ -21,10 +18,6 @@ type MCPTTGroup struct {
 	Members                 []MCPTTMember `json:"members"`
 }
 
-// MCPTTMember is an <entry> of the group's list: an MCPTT user, receive-only or not, of the lowest priority, neither
-// required nor required to be affiliated. ImplicitAffiliation is of the user's profile, not of the entry: whether the
-// group is one of the user's implicit affiliations (TS 24.484 §8.3.2.7). Of a request, absent keeps what the user
-// has; removing a member removes it.
 type MCPTTMember struct {
 	MCPTTID             string `json:"mcptt_id"`
 	RecvOnly            bool   `json:"recvonly"`
@@ -38,7 +31,6 @@ type MCPTTGroups struct {
 	TotalCount int          `json:"total_count"`
 }
 
-// ListMCPTTGroups returns a page of the groups, in the order they were created in.
 func ListMCPTTGroups(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page, perPage, ok := pagination(w, r, cfg)
@@ -95,7 +87,6 @@ func CreateMCPTTGroup(cfg Config) http.Handler {
 	})
 }
 
-// UpdateMCPTTGroup replaces the group of the path, members included. The group ID of the body, if any, is the group's.
 func UpdateMCPTTGroup(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("group_id")
@@ -128,7 +119,6 @@ func UpdateMCPTTGroup(cfg Config) http.Handler {
 	})
 }
 
-// DeleteMCPTTGroup deletes the group of the path, which goes from the implicit affiliations of its users.
 func DeleteMCPTTGroup(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.MCPTT.DeleteGroup(r.Context(), r.PathValue("group_id")); err != nil {
@@ -140,8 +130,6 @@ func DeleteMCPTTGroup(cfg Config) http.Handler {
 	})
 }
 
-// PutMCPTTMember adds the user of the path to the members of the group, after the others, with a 201, or replaces the
-// member where it is; the group as it is then. The MCPTT ID of the body, if any, is the path's.
 func PutMCPTTMember(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		group, id := r.PathValue("group_id"), r.PathValue("mcptt_id")
@@ -173,7 +161,6 @@ func PutMCPTTMember(cfg Config) http.Handler {
 	})
 }
 
-// DeleteMCPTTMember removes the user of the path from the members of the group; the group as it is then.
 func DeleteMCPTTMember(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		group := r.PathValue("group_id")
@@ -188,7 +175,6 @@ func DeleteMCPTTMember(cfg Config) http.Handler {
 	})
 }
 
-// mcpttImplicit is the implicit affiliation of the members that have one.
 func mcpttImplicit(members []MCPTTMember) mcpttsettings.Implicit {
 	implicit := mcpttsettings.Implicit{}
 
@@ -201,7 +187,6 @@ func mcpttImplicit(members []MCPTTMember) mcpttsettings.Implicit {
 	return implicit
 }
 
-// mcpttGroupSettings is the group of p, or the problem with its durations.
 func mcpttGroupSettings(p MCPTTGroup) (mcpttsettings.Group, string) {
 	g := mcpttsettings.Group{
 		URI: p.GroupID, DisplayName: p.DisplayName, InviteMembers: true, ReleaseOnInitiatorLeave: p.ReleaseOnInitiatorLeave,
@@ -232,7 +217,6 @@ func mcpttEntrySettings(m MCPTTMember) mcpttsettings.Entry {
 	return mcpttsettings.Entry{URI: m.MCPTTID, ReceiveOnly: m.RecvOnly}
 }
 
-// mcpttGroupResponse is g, its members' implicit affiliations those of their users of s.
 func mcpttGroupResponse(g mcpttsettings.Group, s mcpttsettings.Settings) MCPTTGroup {
 	resp := MCPTTGroup{
 		GroupID: g.URI, DisplayName: g.DisplayName, HangTimerMS: optionalMilliseconds(g.T4),

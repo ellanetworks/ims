@@ -34,7 +34,6 @@ func (r *Registrar) Terminate(ctx context.Context, rtr cx.RegistrationTerminatio
 		keys = append(keys, identityKeyOf(impu))
 	}
 
-	// The unregistered profiles of the identities, or of the subscription, go as well (TS 29.228 §6.1.3).
 	for _, impi := range impis {
 		r.dropUnregistered(ctx, impi, rtr.PublicIdentities)
 	}
@@ -117,8 +116,6 @@ func (r *Registrar) terminate(ctx context.Context, impi string, keys []string, r
 		return r.notifyChange(ctx, impi, ch), nil
 	}
 
-	// TS 29.228 §6.1.3: NEW_SERVER_ASSIGNED only has the S-CSCF remove what it has of the identities. The new S-CSCF
-	// registered them at the ASs: a third-party deregistration would undo it.
 	for _, rm := range ch.removed {
 		if rm.ended {
 			r.forgetASs(setKeys(rm.reg))

@@ -1,14 +1,3 @@
-// Package affiliation is the affiliation state of the MCPTT server (TS 24.379 §9.2.2), in the two views the
-// specification has: the participating function's, by served user, client and group (§9.2.2.2.2), and the
-// controlling function's, by group, user and client (§9.2.2.3.2). They are two types: co-located here [PM 11], the
-// participating function's PUBLISH towards the server owning a group (§9.2.2.2.6), and the NOTIFY of its outcome
-// (§9.2.2.2.7), are a call of an Owner, which the Controlling is and a SIP binding can be in its place.
-//
-// Time is the caller's, of the agent's clock: each operation takes it. The state is safe for concurrent use, each
-// change atomic; the publications towards the owner a change makes follow it, outside the lock, and one whose
-// outcome another change made stale is published again, so that the owner ends with the clients of the last. S1
-// notifies no subscriber: the notifications of §9.2.2.2.5 and §9.2.2.3.5, and the refreshes of
-// the publications towards a server owning a group before they expire, come with S2.
 package affiliation
 
 import (
@@ -26,7 +15,7 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// Status is an affiliation status (TS 24.379 §9.2.2.2.2).
+// TS 24.379 clause 9.2.2.2.2
 type Status string
 
 const (
@@ -36,61 +25,45 @@ const (
 	Deaffiliated  Status = "deaffiliated"
 )
 
-// MaxExpires is the expiration interval of an affiliation the clients and the participating function ask for, 2^32-1
-// seconds (TS 24.379 §9.2.1.2 5a, §9.2.2.2.6 step 4), and that the servers require (§9.2.2.2.3 step 5, §9.2.2.3.3
-// step 3).
+// TS 24.379 clause 9.2.1.2
+// TS 24.379 clause 9.2.2.2.6
+// TS 24.379 clause 9.2.2.2.3
+// TS 24.379 clause 9.2.2.3.3
 const MaxExpires = 4294967295 * time.Second
 
-// deaffiliating is how long a de-affiliating entry waits for the outcome: twice timer F (TS 24.379 §9.2.2.2.3 step 14
-// a ii B, step 15), of the default T1 (RFC 3261 Table 4).
+// TS 24.379 clause 9.2.2.2.3
 const deaffiliating = 2 * 64 * transaction.DefaultT1
 
-// ErrTooManyAffiliations refuses an implicit affiliation beyond N2 (TS 24.379 §9.2.2.2.12 step 10), which a request
-// gets a 486 for, with the warning text identity.WarnTooManyAffiliations.
+// TS 24.379 clause 9.2.2.2.12
 var ErrTooManyAffiliations = errors.New("affiliation: N2 affiliations reached")
 
-// Owner is the server owning the groups (TS 24.379 §9.2.2.3). Publish is the participating function's affiliation
-// of user to group (§9.2.2.2.6): the clients the user is affiliated at, none to de-affiliate it. It returns what the
-// owner's notification would carry (§9.2.2.2.7): the clients it holds the user affiliated at; an error is a refusal,
-// as a final response other than 2xx, or timer F.
-//
-// Publish runs on the strand of the change of the affiliations, outside the state's lock, once the request of the
-// change, if any, is answered, and must not block: the strand is an IMPU's, whose next requests wait for it.
-// The in-process Controlling returns at once; a SIP binding [PM 11] waits for no response on the strand, and applies
-// the outcome when it comes, which needs an asynchronous Owner.
+// TS 24.379 clause 9.2.2.3
+// TS 24.379 clause 9.2.2.2.6
+// TS 24.379 clause 9.2.2.2.7
 type Owner interface {
 	Publish(now time.Time, group, user sip.URI, clients []string) ([]string, error)
 }
 
-// Participating is the affiliation state of the participating function: its MCPTT user information entries, each of
-// MCPTT client information entries, each of MCPTT group information entries (TS 24.379 §9.2.2.2.2). An entry whose
-// expiration time passed is as one absent, and goes at the next change of its user.
+// TS 24.379 clause 9.2.2.2.2
 type Participating struct {
 	owner Owner
 	log   *slog.Logger
 	store Store
-	// life is the lifetime of the writes to the store, which outlive the requests that caused them.
-	life context.Context
+	life  context.Context
 
-	// saving serializes the writes to the store, each of the state after the one before it.
 	saving sync.Mutex
 
-	mu sync.Mutex
-	// dirty are the clients changed since the last write to the store, with their user.
+	mu    sync.Mutex
 	dirty map[clientRef]sip.URI
 	users map[string]*user
-	// etags are the clients of the entity-tags of their last publications (RFC 3903 §6).
 	etags map[string]clientRef
-	// seq numbers the publications towards the owner, and last is the number of the last of each user and group:
-	// an outcome is of the current affiliations if no publication followed its own.
-	seq  uint64
-	last map[groupRef]uint64
+	seq   uint64
+	last  map[groupRef]uint64
 }
 
 type groupRef struct{ user, group string }
 
-// job is a publication towards the owner (TS 24.379 §9.2.2.2.6): of the user's clients affiliating or affiliated to
-// the group, numbered seq.
+// TS 24.379 clause 9.2.2.2.6
 type job struct {
 	ref     groupRef
 	user    sip.URI
@@ -112,25 +85,16 @@ type client struct {
 	etag   string
 }
 
-// entry is an MCPTT group information entry. The affiliating p-id and the next publishing time are of the
-// notifications and refreshes of S2.
 type entry struct {
-	group   sip.URI
-	key     string
-	status  Status
-	expires time.Time
-	pid     string
-	// implicit marks the entry an implicit affiliation by a request added (§9.2.2.2.12), until its outcome.
-	implicit bool
-	// configured marks the entry the implicit affiliation to configured groups added (§9.2.2.2.15), the server's,
-	// until a publication of the client lists the group (§9.2.2.2.3 step 14 a i), which makes it the client's:
-	// Reconfigure de-affiliates only the server's.
+	group      sip.URI
+	key        string
+	status     Status
+	expires    time.Time
+	pid        string
+	implicit   bool
 	configured bool
 }
 
-// Group is the affiliation status of a client to a group. Configured tells the server affiliated the client to it
-// by the implicit affiliation to configured groups (TS 24.379 §9.2.2.2.15), and the client's publications did not
-// list it since.
 type Group struct {
 	ID         sip.URI
 	Status     Status
@@ -138,8 +102,6 @@ type Group struct {
 	Configured bool
 }
 
-// NewParticipating is the participating function's state, publishing to owner, logging to log (slog.Default() if
-// nil).
 func NewParticipating(owner Owner, log *slog.Logger) *Participating {
 	if log == nil {
 		log = slog.Default()
@@ -151,33 +113,20 @@ func NewParticipating(owner Owner, log *slog.Logger) *Participating {
 	}
 }
 
-// Store keeps the affiliations of the clients across restarts. SaveAffiliations replaces the affiliations of the
-// clients of records, and removes those of a record of no groups and no entity-tag.
 type Store interface {
 	SaveAffiliations(ctx context.Context, records []Record) error
 }
 
-// Record is what is kept of the affiliations of a client of a user: the groups it is affiliating or affiliated to, in
-// order, of the explicit affiliations and the configured implicit ones (Group.Configured); and the entity-tag of its
-// last publication.
-// The de-affiliating entries, and the implicit affiliations of a request (§9.2.2.2.12), last no longer than a restart.
 type Record struct {
 	MCPTTID  sip.URI
 	ClientID string
 	ETag     string
 	Groups   []Group
-	// PIDs are the affiliating p-ids of Groups, by index.
-	PIDs []string
+	PIDs     []string
 }
 
-// SetStore makes the state kept in store, from its next change, by writes bound to life, the server's lifetime; before
-// the state is used.
 func (p *Participating) SetStore(life context.Context, store Store) { p.store, p.life = store, life }
 
-// Restore puts the affiliations of records not expired, of the clients bound reports bound, and publishes them to
-// the owner, as the changes that made them did: its outcome makes them affiliated, or removes those it refuses, of a
-// group no longer configured or of a user no longer a member of it. The records of the others are removed. Before the
-// state is used.
 func (p *Participating) Restore(ctx context.Context, now time.Time, records []Record, bound func(id sip.URI, client string) bool) {
 	var jobs []job
 
@@ -237,9 +186,7 @@ func (p *Participating) Restore(ctx context.Context, now time.Time, records []Re
 	p.persist(ctx, now)
 }
 
-// Revoke removes the entries of the groups eligible no longer reports eligible for their users (TS 24.379 §9.2.2.3.8),
-// of a change of the settings: a group deleted, or a member removed from it. The server owning the group removed them
-// already (Controlling.Revoke).
+// TS 24.379 clause 9.2.2.3.8
 func (p *Participating) Revoke(ctx context.Context, now time.Time, eligible func(group, user sip.URI) bool) {
 	p.mu.Lock()
 
@@ -259,16 +206,12 @@ func (p *Participating) Revoke(ctx context.Context, now time.Time, eligible func
 	p.persist(ctx, now)
 }
 
-// touch marks client of u changed, for the store, if any. Called with p.mu held.
 func (p *Participating) touch(u *user, client string) {
 	if p.store != nil {
 		p.dirty[clientRef{user: settings.Key(u.id), client: client}] = u.id
 	}
 }
 
-// persist writes the clients changed to the store, if any: their affiliations of a Record, outside the lock, in the
-// trace of ctx, what changed them, bounded by the lifetime of the store and saveTimeout: the request of the change
-// may be answered already. A write that fails is logged, and its clients written with the next change.
 func (p *Participating) persist(ctx context.Context, now time.Time) {
 	p.mu.Lock()
 	clean := len(p.dirty) == 0
@@ -326,10 +269,8 @@ func (p *Participating) persist(ctx context.Context, now time.Time) {
 	}
 }
 
-// saveTimeout bounds a write to the store, of the strand of an IMPU.
 const saveTimeout = 5 * time.Second
 
-// Groups are the entries of client of user not expired, in order.
 func (p *Participating) Groups(now time.Time, id sip.URI, clientID string) []Group {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -347,14 +288,12 @@ func (p *Participating) Groups(now time.Time, id sip.URI, clientID string) []Gro
 	return out
 }
 
-// Affiliations are the entries of a client not expired, of its user, in order.
 type Affiliations struct {
 	User   sip.URI
 	Client string
 	Groups []Group
 }
 
-// Snapshot is the state: of each client with entries not expired, its entries, in no order of the clients.
 func (p *Participating) Snapshot(now time.Time) []Affiliations {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -380,8 +319,7 @@ func (p *Participating) Snapshot(now time.Time) []Affiliations {
 	return out
 }
 
-// Affiliated is the affiliation status determination (TS 24.379 §9.2.2.2.11): whether the user is affiliated to
-// group at client, its entry affiliating or affiliated.
+// TS 24.379 clause 9.2.2.2.11
 func (p *Participating) Affiliated(now time.Time, id sip.URI, clientID string, group sip.URI) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -396,8 +334,7 @@ func (p *Participating) Affiliated(now time.Time, id sip.URI, clientID string, g
 	return e != nil && (e.status == Affiliating || e.status == Affiliated)
 }
 
-// Publication is an affiliation status change of a client (TS 24.379 §9.2.1.2): the groups of its per-user
-// affiliation information, in order, its p-id, and the candidate expiration interval, zero to de-affiliate all.
+// TS 24.379 clause 9.2.1.2
 type Publication struct {
 	User    *settings.User
 	Client  string
@@ -406,10 +343,8 @@ type Publication struct {
 	Expires time.Duration
 }
 
-// Publish applies a publication (TS 24.379 §9.2.2.2.3 steps 11 to 17), and records etag as the entity-tag of the
-// client's publication, none of an expiration of zero (RFC 3903 §6 step 5: no state is stored). N2 is enforced by
-// the policy of step 14 c: the groups the user is affiliated to already stay, the new ones go, the last of the
-// publication first.
+// TS 24.379 clause 9.2.2.2.3
+// RFC 3903 section 6
 func (p *Participating) Publish(ctx context.Context, now time.Time, pub Publication, etag string) {
 	p.flush(ctx, now, p.apply(now, pub, etag))
 	p.persist(ctx, now)
@@ -437,7 +372,6 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 			}
 		}
 
-		// Step 14 a i, ii.
 		for _, e := range served {
 			if !now.Before(e.expires) {
 				continue
@@ -451,7 +385,6 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 					n.status, n.pid = Affiliating, pub.PID
 				}
 
-				// The client lists the group: the affiliation is its own, no longer the configuration's.
 				n.expires, n.configured = now.Add(pub.Expires), false
 			case e.status == Affiliated || e.status == Affiliating:
 				n.status, n.expires = Deaffiliating, now.Add(deaffiliating)
@@ -460,7 +393,6 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 			cand = append(cand, &n)
 		}
 
-		// Step 14 a iii.
 		for _, g := range groups {
 			if find(cand, g.key, now) == nil {
 				g.status, g.expires, g.pid = Affiliating, now.Add(pub.Expires), pub.PID
@@ -468,10 +400,8 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 			}
 		}
 
-		// Steps 14 b, c.
 		cand = u.limit(pub.User, c.id, cand, served, now)
 	} else {
-		// Step 15.
 		for _, e := range served {
 			n := *e
 			n.status, n.expires = Deaffiliating, now.Add(deaffiliating)
@@ -481,12 +411,10 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 		etag = ""
 	}
 
-	// Step 16.
 	c.groups = cand
 	p.setETag(u, c, etag)
 	p.touch(u, c.id)
 
-	// Step 17.
 	var jobs []job
 
 	for _, n := range cand {
@@ -504,7 +432,7 @@ func (p *Participating) apply(now time.Time, pub Publication, etag string) []job
 	return jobs
 }
 
-// ETag is the client of user an entity-tag of its last publication designates (RFC 3903 §6 step 3).
+// RFC 3903 section 6
 func (p *Participating) ETag(id sip.URI, etag string) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -526,17 +454,12 @@ func (p *Participating) setETag(u *user, c *client, etag string) {
 	}
 }
 
-// ImplicitConfigured is the implicit affiliation to configured groups (TS 24.379 §9.2.2.2.15) of client of a user
-// once service authorisation succeeded: to its <ImplicitAffiliations>, which it is not affiliated to at the client
-// already, within N2 by the policy of step 9 c, the last groups of the configuration going first. The candidate
-// expiration interval, which the clause leaves open, is MaxExpires, as of an explicit affiliation: the affiliations
-// last until the client logs off (TS 23.280 §5.2.5).
+// TS 24.379 clause 9.2.2.2.15
 func (p *Participating) ImplicitConfigured(ctx context.Context, now time.Time, cfg *settings.User, clientID string) {
 	p.flush(ctx, now, p.implicitConfigured(now, cfg, clientID, nil))
 	p.persist(ctx, now)
 }
 
-// implicitConfigured affiliates client to the groups of cfg's <ImplicitAffiliations> not of had, which may be nil.
 func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, clientID string, had map[string]bool) []job {
 	groups := cfg.ImplicitGroups()
 	if len(groups) == 0 {
@@ -549,7 +472,6 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 	u := p.user(cfg.ID())
 	c := u.client(clientID)
 
-	// Step 8.
 	var cand []*entry
 
 	for _, e := range c.groups {
@@ -574,12 +496,10 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 		return nil
 	}
 
-	// Steps 9, 10.
 	served := c.groups
 	c.groups = u.limit(cfg, c.id, cand, served, now)
 	p.touch(u, c.id)
 
-	// Step 11.
 	var jobs []job
 
 	for _, g := range groups {
@@ -593,16 +513,6 @@ func (p *Participating) implicitConfigured(now time.Time, cfg *settings.User, cl
 	return jobs
 }
 
-// Reconfigure applies the change of the <ImplicitAffiliations> of a user from before to cfg (TS 24.484 §8.3.2.1) to
-// client of the user, whose service authorisation stands, at once: the groups of before no longer of cfg that the
-// implicit affiliation to configured groups affiliated the client to de-affiliated, as by the client's publication not
-// listing them (§9.2.2.2.3 step 14 a ii), and published to the server owning each group (§9.2.2.2.6); then the groups
-// of cfg not of before affiliated, as at service authorisation (ImplicitConfigured). §9.2.2.2.15 runs at service
-// authorisation, and the specs leave a change of the profile to the clients authorised already open: by local policy,
-// it applies at once, to the groups the change adds or removes only. A group the client left by its publication
-// (§9.2.2.2.3 step 14 a ii) stays left through a change that does not touch it, and is affiliated again by one that
-// adds it back: the operator's latest act. The groups the client listed itself stay (§9.2.2.2.3), those of the
-// implicit affiliations of requests too (§9.2.2.2.12).
 func (p *Participating) Reconfigure(ctx context.Context, now time.Time, before, cfg *settings.User, clientID string) {
 	had := implicitKeys(before)
 
@@ -611,7 +521,6 @@ func (p *Participating) Reconfigure(ctx context.Context, now time.Time, before, 
 	p.persist(ctx, now)
 }
 
-// implicitKeys are the keys of the groups of the <ImplicitAffiliations> of u.
 func implicitKeys(u *settings.User) map[string]bool {
 	keys := map[string]bool{}
 	for _, g := range u.ImplicitGroups() {
@@ -621,8 +530,6 @@ func implicitKeys(u *settings.User) map[string]bool {
 	return keys
 }
 
-// unconfigure de-affiliates the configured entries of client of the groups of had no longer of cfg's
-// <ImplicitAffiliations>.
 func (p *Participating) unconfigure(now time.Time, had map[string]bool, cfg *settings.User, clientID string) []job {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -654,9 +561,7 @@ func (p *Participating) unconfigure(now time.Time, had map[string]bool, cfg *set
 	return jobs
 }
 
-// ImplicitAffiliate is the affiliation status change by implicit affiliation (TS 24.379 §9.2.2.2.12) of client of a
-// user to group, for a request that requires it: an affiliating entry, unless one is there. It reports whether it
-// added one, and fails with ErrTooManyAffiliations beyond N2 (step 10). CompleteImplicit and CancelImplicit end it.
+// TS 24.379 clause 9.2.2.2.12
 func (p *Participating) ImplicitAffiliate(now time.Time, cfg *settings.User, clientID string, group sip.URI) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -665,7 +570,6 @@ func (p *Participating) ImplicitAffiliate(now time.Time, cfg *settings.User, cli
 	c := u.client(clientID)
 	k := settings.Key(group)
 
-	// Step 7.
 	if c.find(k, now) != nil {
 		return false, nil
 	}
@@ -673,19 +577,16 @@ func (p *Participating) ImplicitAffiliate(now time.Time, cfg *settings.User, cli
 	cand := slices.DeleteFunc(slices.Clone(c.groups), func(e *entry) bool { return e.key == k })
 	cand = append(cand, &entry{group: group, key: k, status: Affiliating, expires: now.Add(MaxExpires), implicit: true})
 
-	// Steps 8 to 10.
 	if limited := u.limit(cfg, c.id, cand, c.groups, now); find(limited, k, now) == nil {
 		return false, ErrTooManyAffiliations
 	}
 
-	// Step 11.
 	c.groups = cand
 
 	return true, nil
 }
 
-// CompleteImplicit is the implicit affiliation status change completion (TS 24.379 §9.2.2.2.13): the entry
-// ImplicitAffiliate added affiliated, on the 2xx of the controlling function.
+// TS 24.379 clause 9.2.2.2.13
 func (p *Participating) CompleteImplicit(ctx context.Context, now time.Time, id sip.URI, clientID string, group sip.URI) {
 	p.mu.Lock()
 
@@ -700,8 +601,7 @@ func (p *Participating) CompleteImplicit(ctx context.Context, now time.Time, id 
 	p.persist(ctx, now)
 }
 
-// CancelImplicit is the implicit affiliation status change cancellation (TS 24.379 §9.2.2.2.14): the entry
-// ImplicitAffiliate added removed, of a request rejected, or of a 4xx to 6xx of the controlling function.
+// TS 24.379 clause 9.2.2.2.14
 func (p *Participating) CancelImplicit(now time.Time, id sip.URI, clientID string, group sip.URI) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -725,9 +625,8 @@ func (p *Participating) implicit(id sip.URI, clientID string, group sip.URI, now
 	return nil
 }
 
-// LogOff removes the client of a user, its service authorisation gone: all its affiliations are revoked (TS 23.280
-// §5.2.5; TS 24.379 §7.3.5 step 3 NOTE), and the server owning each group it was affiliated to is told
-// (§9.2.2.2.6).
+// TS 23.280 clause 5.2.5
+// TS 24.379 clause 7.3.5
 func (p *Participating) LogOff(ctx context.Context, now time.Time, id sip.URI, clientID string) {
 	p.flush(ctx, now, p.logOff(now, id, clientID))
 	p.persist(ctx, now)
@@ -766,10 +665,7 @@ func (p *Participating) logOff(now time.Time, id sip.URI, clientID string) []job
 	return jobs
 }
 
-// job is the affiliation of the user to group towards its owner (TS 24.379 §9.2.2.2.6), of step 10: every client of
-// the user affiliating or affiliated to the group, those of the implicit affiliations of requests (§9.2.2.2.12)
-// included, since the owner replaces the clients of the user with those it receives (§9.2.2.3.3 step 11). Called with
-// p.mu held.
+// TS 24.379 clause 9.2.2.2.6
 func (p *Participating) job(now time.Time, u *user, group sip.URI) job {
 	k := settings.Key(group)
 
@@ -790,9 +686,6 @@ func (p *Participating) job(now time.Time, u *user, group sip.URI) job {
 	return job{ref: ref, user: u.id, group: group, clients: clients, seq: p.seq}
 }
 
-// flush sends the publications of a change to the owner, outside the lock, and applies their outcomes; one made
-// stale by a publication of the user and group that followed it, which may have reached the owner first, is sent
-// again with the current clients.
 func (p *Participating) flush(ctx context.Context, now time.Time, jobs []job) {
 	for len(jobs) > 0 {
 		j := jobs[0]
@@ -813,10 +706,7 @@ func (p *Participating) flush(ctx context.Context, now time.Time, jobs []job) {
 	}
 }
 
-// outcome applies the outcome of a publication (TS 24.379 §9.2.2.2.7): of the clients the owner holds, the
-// affiliating entries affiliated; the affiliated and de-affiliating entries of the others de-affiliated. A refusal
-// removes the entries of the group (§9.2.2.2.6, last paragraph). The entries of the implicit affiliations of requests
-// are left to their requests (§9.2.2.2.13, §9.2.2.2.14). Of a stale publication, it returns the one to send again.
+// TS 24.379 clause 9.2.2.2.7
 func (p *Participating) outcome(now time.Time, j job, held []string, err error) (job, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -827,7 +717,6 @@ func (p *Participating) outcome(now time.Time, j job, held []string, err error) 
 	case p.last[j.ref] != j.seq && u != nil:
 		return p.job(now, u, j.group), true
 	case p.last[j.ref] != j.seq:
-		// The user's clients are all gone since: their last publication, of none, follows.
 		u = &user{id: j.user}
 		return p.job(now, u, j.group), true
 	case u == nil:
@@ -883,9 +772,9 @@ func (u *user) client(id string) *client {
 	return c
 }
 
-// limit reduces the candidate list of a client to N2 (TS 24.379 §9.2.2.2.3 step 14 b, c; §9.2.2.2.12 steps 8, 9;
-// §9.2.2.2.15 step 9): the groups the user is affiliated to already, at the client or at its others, stay; of those
-// the candidates add, the last go first. A change that lowered N2 limits the affiliations to come.
+// TS 24.379 clause 9.2.2.2.3
+// TS 24.379 clause 9.2.2.2.12
+// TS 24.379 clause 9.2.2.2.15
 func (u *user) limit(cfg *settings.User, clientID string, cand, served []*entry, now time.Time) []*entry {
 	n2, limited := cfg.N2()
 	if !limited {
@@ -930,7 +819,6 @@ func (u *user) limit(cfg *settings.User, clientID string, cand, served []*entry,
 	return out
 }
 
-// prune removes the entries of u whose expiration time passed.
 func (u *user) prune(now time.Time) {
 	for _, c := range u.clients {
 		c.groups = slices.DeleteFunc(c.groups, func(e *entry) bool { return !now.Before(e.expires) })
@@ -939,12 +827,10 @@ func (u *user) prune(now time.Time) {
 
 func (c *client) find(k string, now time.Time) *entry { return find(c.groups, k, now) }
 
-// view is the Group of e.
 func (e *entry) view() Group {
 	return Group{ID: e.group, Status: e.status, Expires: e.expires, Configured: e.configured}
 }
 
-// find is the entry of group key k of es not expired, nil if none.
 func find(es []*entry, k string, now time.Time) *entry {
 	for _, e := range es {
 		if e.key == k && now.Before(e.expires) {

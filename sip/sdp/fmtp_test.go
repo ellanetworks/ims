@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// RFC 4855 §3, the fmtp:MCPTT examples of TS 24.380 §4.3.3.1 and TS 24.379: parameters with and without values, a trailing
-// separator, whitespace, names compared case-insensitively.
+// RFC 4855 section 3
+// TS 24.380 clause 4.3.3.1
+// TS 24.379
 func TestFormatParams(t *testing.T) {
 	for _, c := range []struct {
 		in, out string
@@ -65,8 +66,8 @@ func TestMediaFormatParams(t *testing.T) {
 	}
 }
 
-// RFC 5576 §4.1, TS 24.379 §6.2.1 step 2 i): the SSRC an MCPTT client would like for its RTP, and the attributes of
-// other sources.
+// RFC 5576 section 4.1
+// TS 24.379 clause 6.2.1
 func TestSourceAttrs(t *testing.T) {
 	s, err := Parse([]byte("v=0\r\nm=audio 4000 RTP/AVP 96\r\na=ssrc:4294967295 cname:user@example.com\r\n" +
 		"a=ssrc:12 fmtp:96 a=b\r\na=ssrc:12 x\r\na=ssrc:4294967296 cname:x\r\na=ssrc:-1 cname:x\r\na=ssrc:7\r\n"))

@@ -14,8 +14,6 @@ type specOperation struct {
 	Security *[]map[string][]string `yaml:"security"`
 }
 
-// bearer is whether an operation of the spec needs a bearer token: whether its security, or the spec's when it has
-// none, names BearerAuth.
 func (o specOperation) bearer(global []map[string][]string) bool {
 	security := global
 	if o.Security != nil {
@@ -49,7 +47,6 @@ func loadSpec(t *testing.T, a *testAPI) (map[string]specOperation, []map[string]
 
 	for path, methods := range spec.Paths {
 		for method, node := range methods {
-			// Not an operation, but the parameters of all of the path's.
 			if method == "parameters" {
 				continue
 			}
@@ -66,8 +63,6 @@ func loadSpec(t *testing.T, a *testAPI) (map[string]specOperation, []map[string]
 	return ops, spec.Security
 }
 
-// TestRoutesMatchSpec checks that the spec documents every route, with the authentication the route needs, and no
-// other.
 func TestRoutesMatchSpec(t *testing.T) {
 	a := newTestAPI(t)
 	ops, global := loadSpec(t, a)
@@ -103,7 +98,6 @@ func TestRoutesMatchSpec(t *testing.T) {
 	}
 }
 
-// TestProtectedRoutesRequireToken checks every route that needs a bearer token against requests without a valid one.
 func TestProtectedRoutesRequireToken(t *testing.T) {
 	a := newTestAPI(t)
 
@@ -169,7 +163,6 @@ func TestSecurityHeaders(t *testing.T) {
 
 		for name, want := range map[string]string{
 			"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
-			// Only with TLS.
 			"Strict-Transport-Security": "",
 		} {
 			if got := h.Get(name); got != want {

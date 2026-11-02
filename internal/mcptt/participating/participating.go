@@ -1,15 +1,3 @@
-// Package participating is the participating MCPTT function (TS 24.379 §6.3.2) of the calls of its served users: the
-// originating (§10.1.1.3.1.1) and terminating (§10.1.1.3.2) procedures of on-demand prearranged group calls, for the
-// users the registrar bound (§7.3).
-//
-// It reaches the controlling function through Controlling, the MCPTT-3 reference point: in process, the two
-// functions co-located and the SIP hop between them elided [PM 11]. What it hands over is the SIP request it would
-// send, and what it would answer, so that a SIP binding of MCPTT-3 only has to send them. With the hop elided, the
-// media of a served user is the controlling function's, not relayed (§6.3.2.1.1.1 NOTE 3), and the forwarding of
-// TS 24.380 §6.4 and the mapping of the MCPTT session identities (§4.5) are the identity.
-//
-// It keeps no state of its own: the bindings are the registrar's, the affiliations the affiliation state's. Its
-// procedures run on the strand of the call they are of.
 package participating
 
 import (
@@ -28,27 +16,24 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// Bindings are the service authorisations of the registrar (TS 24.379 §7.3.2 step 4).
+// TS 24.379 clause 7.3.2
 type Bindings interface {
 	Resolve(req *sip.Request, ids []sip.URI, client string) (registrar.Binding, bool)
 	Bindings(id sip.URI) []registrar.Binding
 }
 
-// Affiliations are the participating function's affiliation state (TS 24.379 §9.2.2.2.11).
+// TS 24.379 clause 9.2.2.2.11
 type Affiliations interface {
 	Affiliated(now time.Time, id sip.URI, clientID string, group sip.URI) bool
 }
 
-// Router routes the INVITE the function sends a member (TS 24.379 §6.3.2.2.5.2 steps 4, 11) to the clients of its
-// bindings bs, those affiliated to the calling group, by ClientID: one INVITE per branch, of its Request-URI and its
-// Route, a copy of req; none if it has no route to any. The first branch to accept joins the member to the call, the
-// others ended (RFC 3261 §13.2.2.4).
+// TS 24.379 clause 6.3.2.2.5.2
+// RFC 3261 section 13.2.2.4
 type Router interface {
 	Route(req *sip.Request, bs []registrar.Binding) []*sip.Request
 }
 
-// Direct routes to the contact each client registered [PM 14] (RFC 3261 §10.3): the server is its registrar, which
-// reaches each of its bindings.
+// RFC 3261 section 10.3
 type Direct struct{}
 
 func (Direct) Route(req *sip.Request, bs []registrar.Binding) []*sip.Request {
@@ -68,29 +53,14 @@ func (Direct) Route(req *sip.Request, bs []registrar.Binding) []*sip.Request {
 	return out
 }
 
-// IMS routes through the IM CN subsystem, the server an application server: a request to a client is "an initial
-// request to a served public user identity" (TS 24.229 §5.7.3), to the IMPU of its binding (TS 24.379 §6.3.2.2.5.2
-// step 4: "shall set the Request-URI to the public user identity associated to the MCPTT ID"), routed to the S-CSCF
-// the IMPU is registered at, the Contact of its third-party REGISTER (TS 24.229 §5.4.1.7 d; §5.7.3 NOTE 6), which
-// serves it as terminating: no "orig" in the Route. Every binding through the IMS has the S-CSCF of its registration,
-// so the entry point of the network, which §5.7.3 allows instead, is not needed.
-//
-// One INVITE goes to each implicit registration set of the bindings, bindings whose sets overlap one set: the S-CSCF
-// binds the contacts of a registration to each non-barred IMPU of its set (TS 24.229 §5.4.1.2.2 step 2a), and an
-// INVITE to one IMPU targets all the contacts registered for it (§5.4.3.3 step 8 d), forked or searched in sequence
-// (step 10 a). Its Request-URI is the IMPU of the binding of the set that expires last, of the latest registration,
-// and its Route that binding's S-CSCF.
-//
-// The Route is loose (RFC 3261 §16.12, §19.1.1): the Contact of the S-CSCF, not a route, has no "lr", and an S-CSCF
-// routes loosely as any RFC 3261 proxy. The request, of an IMS communication service of an ICSI, has the ICSI
-// asserted (TS 24.229 §5.7.1.9), the server being of the trust domain (§5.7.3), and the P-Charging-Vector of §5.7.3,
-// of the type 3 orig-ioi of the organisation's domain.
+// TS 24.229 clause 5.7.3
+// TS 24.379 clause 6.3.2.2.5.2
+// TS 24.229 clause 5.4.1.7
 type IMS struct{ Source settings.Source }
 
 func (r IMS) Route(req *sip.Request, bs []registrar.Binding) []*sip.Request {
 	domain := r.Source.Current().ServiceConfiguration().Domain
 
-	// The sets, each of the binding that expires last.
 	type set struct {
 		b    registrar.Binding
 		keys map[string]bool
@@ -156,35 +126,23 @@ func (r IMS) Route(req *sip.Request, bs []registrar.Binding) []*sip.Request {
 	return out
 }
 
-// Controlling is the controlling function as the participating function reaches it, over MCPTT-3.
 type Controlling interface {
-	// Group takes the "SIP INVITE request for controlling MCPTT function of an MCPTT group" (TS 24.379 §6.3.1.1)
-	// the function sends on receipt of the INVITE of a served user's client, on the strand of the group's call.
 	Group(ctx context.Context, o *Origination)
-	// GroupCalls are the groups of the group calls of user, which it takes part in or is invited to: those the
-	// function counts against <MaxSimultaneousCallsN6> (§10.1.1.3.1.1 step 5), the controlling function's with the
-	// hop elided, since the function keeps no state of its own.
 	GroupCalls(user sip.URI) []sip.URI
 }
 
-// Origination is a group call of a served user (TS 24.379 §10.1.1.3.1.1): the INVITE of its client, and the one the
-// function sends the controlling function on receipt of it.
+// TS 24.379 clause 10.1.1.3.1.1
 type Origination struct {
-	// Request is the client's INVITE, whose session is the call's leg to the client.
-	Request *ua.Request
-	// Invite is the INVITE to the controlling function.
-	Invite *sip.Request
-	// Charging are those of the P-Charging-Vector of Request, through the IMS; of no icid-value in direct mode.
+	Request  *ua.Request
+	Invite   *sip.Request
 	Charging identity.Charging
 
 	psi sip.URI
 	ioi string
 }
 
-// Reply is a response of the controlling function to Invite as the function sends it to the client (§6.3.2.1.5,
-// §10.1.1.3.1.1): its Warning header fields, P-Answer-State, mcptt-info and the MCPTT session identity of its
-// Contact as received (steps 4, 6, 6A; §6.3.2.1.5.2 step 7), the P-Asserted-Identity the participating function's
-// (step 5); through the IMS, the P-Charging-Vector of a response of the AS (Charged).
+// TS 24.379 clause 6.3.2.1.5
+// TS 24.379 clause 10.1.1.3.1.1
 func (o *Origination) Reply(rp ua.Reply) ua.Reply {
 	rp.Header = rp.Header.Clone()
 	rp.Header.Del("P-Asserted-Identity")
@@ -194,11 +152,9 @@ func (o *Origination) Reply(rp ua.Reply) ua.Reply {
 	return rp
 }
 
-// Charged completes the header h of a message of the server in a dialog of charging values c, through the IMS,
-// with a P-Charging-Vector when it has none: of a response, the icid-value and orig-ioi of the request and the type 3
-// term-ioi ioi (TS 24.229 §5.7.2 for a terminating UA, §5.7.5.1); of a request, the icid-value of the initial request
-// of the dialog and the type 3 orig-ioi ioi (§5.7.2, §5.7.3). Nothing without an icid-value: in direct mode, no
-// P-Charging-Vector came [PM 14].
+// TS 24.229 clause 5.7.2
+// TS 24.229 clause 5.7.5.1
+// TS 24.229 clause 5.7.3
 func Charged(h *sip.Header, c identity.Charging, ioi string, response bool) {
 	if c.ICID == "" || h.Has("P-Charging-Vector") {
 		return
@@ -212,24 +168,18 @@ func Charged(h *sip.Header, c identity.Charging, ioi string, response bool) {
 	h.Set("P-Charging-Vector", v)
 }
 
-// Config configures the function.
 type Config struct {
 	Source       settings.Source
 	Bindings     Bindings
 	Affiliations Affiliations
-	// Router reaches the clients; without one, the function invites none.
-	Router      Router
-	Controlling Controlling
-	// Clock is the agent's.
-	Clock interface{ Now() time.Time }
-	// Logger is the log of the function; slog.Default() if nil.
-	Logger *slog.Logger
+	Router       Router
+	Controlling  Controlling
+	Clock        interface{ Now() time.Time }
+	Logger       *slog.Logger
 }
 
-// Participating is the participating function.
 type Participating struct{ cfg Config }
 
-// New is the participating function.
 func New(cfg Config) *Participating {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -238,9 +188,8 @@ func New(cfg Config) *Participating {
 	return &Participating{cfg: cfg}
 }
 
-// Originate is the "SIP INVITE request for originating participating MCPTT function" r of a served user (TS 24.379
-// §6.3.1.1), originator the IMS public user identities of its originator (registrar.Resolve). Only on-demand
-// prearranged group calls (§10.1.1.3.1.1) are served; another session type gets a 403.
+// TS 24.379 clause 6.3.1.1
+// TS 24.379 clause 10.1.1.3.1.1
 func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator []sip.URI) {
 	req := r.Message()
 	snap := p.cfg.Source.Current()
@@ -248,8 +197,6 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 	charging, ioi := identity.ChargingOf(req.Header), snap.ServiceConfiguration().Domain
 	log := p.cfg.Logger.With(slog.String("call_id", req.Header.CallID()))
 
-	// The refusals are logged with their reason, the warning text if any (the INVITE's transaction is logged with
-	// its final response).
 	reject := func(code int, reason string, header ...sip.Field) {
 		log.DebugContext(ctx, "group call refused", slog.Int("code", code), slog.String("reason", reason))
 
@@ -267,16 +214,12 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 	params := info.Params
 	clientID, _ := textOf(params.ClientID)
 
-	// Steps 2, 2a: the calling user, of the unexpired binding of its client at the asserted identity, of its
-	// registration (registrar.Resolve).
 	b, ok := p.cfg.Bindings.Resolve(req, originator, clientID)
 	if !ok {
 		reject(404, identity.WarnUserUnknown, identity.Warning(host, identity.WarnUserUnknown))
 		return
 	}
 
-	// Step 4: the speech offered (TS 24.379 §6.2.1 step 2), its codec for the controlling function to choose
-	// (§10.1.1.4.2 step 2). Step 3: every user may make prearranged group calls.
 	offer, ok := r.Offer()
 	if !ok || !speechOffered(offer) {
 		reject(488, "no speech offered")
@@ -290,9 +233,6 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 		log = log.With(slog.String("group", group.String()))
 	}
 
-	// Step 5: the user's group calls within <MaxSimultaneousCallsN6>, this one beside them, a call of the same group
-	// being the same call, which the user joins (§10.1.1.4.2 step 15). NOTE 3's exception for priority calls comes
-	// with them (S3).
 	if u := snap.User(b.MCPTTID); u != nil {
 		if n, limited := u.N6(); limited && p.calls(b.MCPTTID, group) >= n {
 			reject(486, identity.WarnTooManyCalls, identity.Warning(host, identity.WarnTooManyCalls))
@@ -300,14 +240,11 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 		}
 	}
 
-	// Steps 6, 7: no implicit affiliation, but for priority and remotely initiated calls (S3). The controlling
-	// function of each configured group is this server's (step 1; NOTE 9).
 	if !okGroup || snap.Group(group) == nil {
 		reject(404, identity.WarnNoControlling, identity.Warning(host, identity.WarnNoControlling))
 		return
 	}
 
-	// Step 5: the calling user ID.
 	params.CallingUserID = mcpttinfo.URI(b.MCPTTID.String())
 
 	body, err := mcpttinfo.Encode(info)
@@ -321,7 +258,6 @@ func (p *Participating) Originate(ctx context.Context, r *ua.Request, originator
 	})
 }
 
-// calls is the number of group calls of user but that of group.
 func (p *Participating) calls(user, group sip.URI) int {
 	n := 0
 
@@ -334,11 +270,8 @@ func (p *Participating) calls(user, group sip.URI) int {
 	return n
 }
 
-// toControlling is the INVITE to the controlling function of the INVITE req of a client (TS 24.379 §6.3.2.1.3,
-// §10.1.1.3.1.1 steps 2 to 8): to the controlling PSI, the Accept-Contact, Reject-Contact, Session-Expires and
-// Resource-Priority of req, the participating PSI asserted, the MCPTT feature tag in its Contact and its ICSI
-// asserted, the SDP offer and the resource-lists as received, the mcptt-info body given; no Answer-Mode or
-// Priv-Answer-Mode.
+// TS 24.379 clause 6.3.2.1.3
+// TS 24.379 clause 10.1.1.3.1.1
 func (p *Participating) toControlling(snap *settings.Snapshot, req *sip.Request, offer, info []byte) *sip.Request {
 	psi := snap.ParticipatingPSI()
 
@@ -361,43 +294,26 @@ func (p *Participating) toControlling(snap *settings.Snapshot, req *sip.Request,
 	return out
 }
 
-// resourceLists is the MIME type of a resource list (RFC 5366), copied as received (TS 24.379 §6.3.2.1.3 step 7,
-// §6.3.2.2.9).
+// RFC 5366
 const resourceLists = "application/resource-lists+xml"
 
-// Termination is what the function does with a "SIP INVITE request for terminating participating MCPTT function":
-// the INVITEs it sends the clients of the member (Router), or the response it refuses the request with.
 type Termination struct {
-	// Invites are the INVITEs to the clients; none when refused.
-	Invites []*sip.Request
-	// Unconfirmed is the 183 (Session Progress) with P-Answer-State Unconfirmed the function answers the request
-	// with in automatic commencement (TS 24.379 §6.3.2.2.5.2 step 1): an unconfirmed indication to the controlling
-	// function.
+	Invites     []*sip.Request
 	Unconfirmed bool
-	// Code and Header are the final response refusing the request.
-	Code   int
-	Header sip.Header
+	Code        int
+	Header      sip.Header
 }
 
-// Terminate is the "SIP INVITE request for terminating participating MCPTT function" req of the controlling
-// function (TS 24.379 §10.1.1.3.2), inviting a served user: the INVITEs to the clients of the user that are
-// affiliated to the calling group, in automatic commencement (§6.3.2.2.5.2). An affiliation is of a client
-// (§9.2.2.2.11), and a user may be bound at several (§7.3.2 step 4a): each affiliated client is invited, the user
-// one participant, of the first to accept (Router).
-//
-// The Answer-Mode Indication of the client's service settings (§7.3.3, §7.3.4) is not published yet (S3): every
-// client is taken as auto-answer, by local policy, instead of the 480 of step 3, and its INVITE asks for Answer-Mode
-// Auto (§6.3.2.2.5.2 step 8).
+// TS 24.379 clause 10.1.1.3.2
+// TS 24.379 clause 6.3.2.2.5.2
 func (p *Participating) Terminate(req *sip.Request) Termination {
 	snap := p.cfg.Source.Current()
 	host := snap.ParticipatingPSI().Host
 
-	// Step 2.
 	if !focus(req) {
 		return refused(403, identity.Warning(host, identity.WarnFocusNotAssigned))
 	}
 
-	// Steps 4, 5: the binding of the called user, at a client affiliated to the calling group.
 	info, raw, ok := infoOf(req)
 	if !ok {
 		return refused(404)
@@ -411,7 +327,6 @@ func (p *Participating) Terminate(req *sip.Request) Termination {
 		return refused(404)
 	}
 
-	// Step 6, §6.3.2.2.9 1b: an MKFC-GKTPs element is not forwarded.
 	if info.Params.MKFCGKTPs != nil {
 		info.Params.MKFCGKTPs = nil
 
@@ -421,7 +336,6 @@ func (p *Participating) Terminate(req *sip.Request) Termination {
 		}
 	}
 
-	// §6.3.2.2.3; §6.3.2.2.5.2 steps 3 to 11: the Request-URI and To each branch's.
 	out := sip.NewRequest("INVITE", bs[0].IMPU)
 	out.Header.Set("From", req.Header.Get("From"))
 	out.Header.Set("To", sip.Address{URI: bs[0].IMPU}.String())
@@ -449,7 +363,6 @@ func (p *Participating) Terminate(req *sip.Request) Termination {
 	return Termination{Invites: invites, Unconfirmed: true}
 }
 
-// affiliated are the unexpired bindings of user id at its clients affiliated to group, by client ID.
 func (p *Participating) affiliated(id, group sip.URI) []registrar.Binding {
 	now := p.cfg.Clock.Now()
 
@@ -465,7 +378,6 @@ func refused(code int, header ...sip.Field) Termination {
 	return Termination{Code: code, Header: sip.Header(header)}
 }
 
-// focus reports whether the Contact of req has the isfocus feature tag.
 func focus(req *sip.Request) bool {
 	cs, err := req.Header.Contacts()
 	if err != nil || len(cs) != 1 {
@@ -485,7 +397,6 @@ func copyFields(to, from *sip.Request, names ...string) {
 	}
 }
 
-// infoOf is the mcptt-info of req with its parameters, decoded and as received.
 func infoOf(req *sip.Request) (mcpttinfo.Info, []byte, bool) {
 	part, ok, err := req.Content().Find(mcpttinfo.ContentType)
 	if !ok || err != nil {
@@ -500,7 +411,6 @@ func infoOf(req *sip.Request) (mcpttinfo.Info, []byte, bool) {
 	return info, part.Body, true
 }
 
-// sessionSDP is the SDP body of req.
 func sessionSDP(req *sip.Request) ([]byte, bool) {
 	part, ok, err := req.Content().Find(sdp.ContentType)
 	if !ok || err != nil {
@@ -533,7 +443,6 @@ func textOf(c *mcpttinfo.Content) (string, bool) {
 	return c.Text()
 }
 
-// speechOffered reports whether an SDP offer has a stream of MCPTT speech: an RTP audio stream not refused.
 func speechOffered(b []byte) bool {
 	s, err := sdp.Parse(b)
 	if err != nil {

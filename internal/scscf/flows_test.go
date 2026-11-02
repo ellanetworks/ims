@@ -28,8 +28,8 @@ func (h *harness) onlyBinding() db.Binding {
 	return reg.Bindings[0]
 }
 
-// RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6d: a contact is a flow when it has an instance ID and a
-// reg-id and the first Path URI has "ob"; the reg-id is ignored otherwise.
+// RFC 5626 section 6
+// TS 24.229 clause 5.4.1.2.2
 func TestRegisteredBinding(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -56,8 +56,7 @@ func TestRegisteredBinding(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6: the Contact URI does not identify a flow; a flow that registers a new one keeps its
-// binding.
+// RFC 5626 section 6
 func TestFlowNewURI(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -86,7 +85,6 @@ func TestBadRegID(t *testing.T) {
 	}
 }
 
-// contacts lists the contacts bound to the test IMPU, by URI and reg-id.
 func (h *harness) contacts() []string {
 	h.t.Helper()
 
@@ -116,8 +114,8 @@ const (
 	flowB = "sip:001010000000001@127.0.0.1:5102"
 )
 
-// TS 24.229 §5.4.1.2.1 step 3, §5.4.1.2.2 step 6d: a new flow adds to the others; a contact address
-// without reg-id replaces them all (step 4A).
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowsAddUp(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -135,7 +133,7 @@ func TestFlowsAddUp(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 2: a new flow needs no initial registration, a new contact address does.
+// TS 24.229 clause 5.4.1.2.2
 func TestProtectedRegisterNewFlow(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -150,8 +148,7 @@ func TestProtectedRegisterNewFlow(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d, NOTE 6: a flow registered over the same Path is refreshed; over a new
-// one it is replaced, registered anew.
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowRefreshAndReplace(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -178,8 +175,8 @@ func TestFlowRefreshAndReplace(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.1, §5.4.1.2.2: a UE has at most maxFlowsPerInstance flows; it can still refresh
-// them.
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowLimit(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -197,7 +194,9 @@ func TestFlowLimit(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.1 step 4B, §5.4.1.2.2 step 3, RFC 5626 §6
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2
+// RFC 5626 section 6
 func TestFirstHopLacksOutbound(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -208,7 +207,6 @@ func TestFirstHopLacksOutbound(t *testing.T) {
 	o.auth = u.protected(nonce, testVector.XRES)
 	wantStatus(t, u.send(o), 439)
 
-	// Without "outbound" in Supported, the reg-id is ignored.
 	o.supported = ""
 	u.register(o)
 
@@ -217,13 +215,14 @@ func TestFirstHopLacksOutbound(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.1 step 6, §5.4.1.2.2F h, RFC 5626 §6
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2F
+// RFC 5626 section 6
 func TestRequireOutbound(t *testing.T) {
 	h, u := flowsHarness(t)
 
 	o := registerOptions{contact: u.flowContact(flowA, "1"), auth: u.unprotected()}
 
-	// RFC 3261 §8.2.4: not to a UE whose Supported does not list outbound, such as a Pixel 10a.
 	res := u.send(o)
 	wantStatus(t, res, 401)
 	h.hss.nextMAR(t)
@@ -255,7 +254,7 @@ func TestRequireOutbound(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6
+// RFC 5626 section 6
 func TestSeveralContactsWithRegID(t *testing.T) {
 	_, u := flowsHarness(t)
 
@@ -263,8 +262,7 @@ func TestSeveralContactsWithRegID(t *testing.T) {
 	wantStatus(t, u.send(registerOptions{contact: contact, auth: u.unprotected()}), 400)
 }
 
-// TS 24.229 §5.4.1.4 step 6a ii, step 10: a flow deregisters alone, and the 200 lists it with its
-// reg-id and expiry 0.
+// TS 24.229 clause 5.4.1.4
 func TestDeregisterFlow(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -293,8 +291,7 @@ func TestDeregisterFlow(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d ii b: a replaced flow is notified as terminated, its successor as a
-// new contact.
+// TS 24.229 clause 5.4.1.2.2
 func TestFlowReplaceNotify(t *testing.T) {
 	h := newHarness(t)
 	u := h.newUE()
@@ -326,8 +323,8 @@ func TestFlowReplaceNotify(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6: the registrar MUST NOT require outbound when no reg-id is used, even when the first
-// hop added "ob" (TS 24.229 §5.4.1.2.1 step 6 defers to it).
+// RFC 5626 section 6
+// TS 24.229 clause 5.4.1.2.1
 func TestNoRequireOutboundWithoutFlow(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -340,7 +337,7 @@ func TestNoRequireOutboundWithoutFlow(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6: the response to a flow's deregistration requires outbound too.
+// RFC 5626 section 6
 func TestFlowDeregistrationRequiresOutbound(t *testing.T) {
 	_, u := flowsHarness(t)
 
@@ -352,8 +349,7 @@ func TestFlowDeregistrationRequiresOutbound(t *testing.T) {
 	}
 }
 
-// RFC 5626 §6: a REGISTER with a reg-id may deregister other Contacts besides; only several Contacts
-// registering, one with a reg-id, are refused.
+// RFC 5626 section 6
 func TestRegIDOnAZeroExpiryContact(t *testing.T) {
 	_, u := flowsHarness(t)
 
@@ -363,7 +359,7 @@ func TestRegIDOnAZeroExpiryContact(t *testing.T) {
 	}
 }
 
-// RFC 3261 §10.3 step 7: a deregistration older than the REGISTER that made the binding fails.
+// RFC 3261 section 10.3
 func TestStaleDeregistration(t *testing.T) {
 	h, u := flowsHarness(t)
 
@@ -381,8 +377,7 @@ func TestStaleDeregistration(t *testing.T) {
 	}
 }
 
-// TS 33.203 §6.1 NOTE 2: each flow is a registered contact of its own, authenticated on its own; two
-// flows of a private identity can be challenged at the same time.
+// TS 33.203 clause 6.1
 func TestFlowsAuthenticateTogether(t *testing.T) {
 	h, one := flowsHarness(t)
 	two := h.newUE()
@@ -402,7 +397,6 @@ func TestFlowsAuthenticateTogether(t *testing.T) {
 	}
 }
 
-// A re-authentication the network asks for applies to each flow, until it authenticates again.
 func TestReauthenticateEachFlow(t *testing.T) {
 	h, one := flowsHarness(t)
 	two := h.newUE()
@@ -421,9 +415,9 @@ func TestReauthenticateEachFlow(t *testing.T) {
 	wantStatus(t, res, 401)
 }
 
-// TS 24.229 §5.4.1.2.2 step 6d, RFC 5626 §6: a flow is bound per registration set. Replacing it for one
-// public user identity leaves the other set's binding, which is replaced in turn when that identity
-// registers over the new flow; each set has its own Service-Route (§5.4.1.2.2F c).
+// TS 24.229 clause 5.4.1.2.2
+// TS 24.229 clause 5.4.1.2.2F
+// RFC 5626 section 6
 func TestFlowPerRegistrationSet(t *testing.T) {
 	h, u := flowsHarness(t)
 	contact := u.flowContact(flowA, "1")
@@ -461,9 +455,7 @@ func TestFlowPerRegistrationSet(t *testing.T) {
 	}
 }
 
-// TS 24.229 §3.1, §5.4.1.2.2 step 6d: the phone's IMS client and an MCPTT client of one device register
-// public user identities of different sets with the same private identity, instance ID and reg-id. They
-// are challenged and authenticated at the same time, each on its own flow, and neither replaces the other.
+// TS 24.229 clause 5.4.1.2.2
 func TestUAsOfOneInstanceRegisterSetsOfTheirOwn(t *testing.T) {
 	h, one := flowsHarness(t)
 	two := h.newUE()

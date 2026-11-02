@@ -16,18 +16,18 @@ func capNegOffer(t *testing.T, session string, video ...string) *sdp.Session {
 
 const h264CBP = "a=rtpmap:99 H264/90000\r\na=fmtp:99 profile-level-id=42e01f;packetization-mode=1"
 
-// RFC 5939 §3.5.2, §3.6.2, TS 26.114 §6.2.1a.3
+// RFC 5939 section 3.5.2
+// RFC 5939 section 3.6.2
+// TS 26.114 clause 6.2.1a.3
 func TestCapabilityNegotiation(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		session string
-		video   []string
-		// proto and acfg of the answered video, "" for none; formats its payload types, "" when declined.
+		name                 string
+		session              string
+		video                []string
 		proto, acfg, formats string
-		// feedback are the answered rtcp-fb values; csup the answer's csup at the session or media level.
-		feedback    string
-		sessionCSup bool
-		mediaCSup   bool
+		feedback             string
+		sessionCSup          bool
+		mediaCSup            bool
 	}{
 		{
 			name:  "AVPF as a potential configuration",
@@ -76,8 +76,6 @@ func TestCapabilityNegotiation(t *testing.T) {
 			proto: avpf, acfg: "1 t=1 a=2", formats: "99", feedback: "* nack",
 		},
 		{
-			// RFC 5939 §3.13.1: only the formats of the m= line are offered; a capability remapping one deletes the
-			// media attributes.
 			name: "media attributes deleted, the format a capability",
 			video: []string{
 				"m=video 6000 RTP/AVP 99", "a=rtpmap:99 VP8/90000", "a=tcap:1 RTP/AVPF",

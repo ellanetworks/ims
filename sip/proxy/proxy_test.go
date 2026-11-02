@@ -525,8 +525,6 @@ func TestTimerC(t *testing.T) {
 		t.Fatalf("OnReply saw %v before Timer C, want [180 183]", got)
 	}
 
-	// RFC 3261 §16.8: the branch had a provisional response, so it is cancelled, and its final response,
-	// whatever it is, reaches the caller as a 408.
 	clock.Advance(transaction.DefaultT1)
 
 	fc, cf := s.forwarded()
@@ -536,7 +534,6 @@ func TestTimerC(t *testing.T) {
 
 	s.caller.RecvNone(quiet)
 
-	// The cancelled branch is live until its final response: a provisional response still reaches the caller.
 	reply(t, s.callee, fwd, f, 180)
 	wantResponse(t, s.caller, 180)
 	reply(t, s.callee, fc, cf, 200)
@@ -698,7 +695,6 @@ func testTimerCThen2xx(t *testing.T, tr sip.Transport) {
 		t.Fatalf("got %s, want CANCEL", fc.Method)
 	}
 
-	// The callee answers before the CANCEL reaches it: the call is answered (RFC 3261 §16.7 step 5).
 	reply(t, s.callee, fwd, f, 200, "Contact", "<"+target(s.callee, tr)+">")
 	wantResponse(t, s.caller, 200)
 }

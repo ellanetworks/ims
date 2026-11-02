@@ -136,7 +136,6 @@ func TestPCSCFSubscriptionLifecycle(t *testing.T) {
 	}
 }
 
-// A UE has a registration per flow (RFC 5626), besides one without; saving a flow again updates it.
 func TestPCSCFRegistrationFlows(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)

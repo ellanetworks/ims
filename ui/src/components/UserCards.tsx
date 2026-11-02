@@ -152,12 +152,9 @@ export function UserPasswordCard({
   );
 }
 
-// tokenQueryKey is the key of the API tokens of the logged-in user when email is undefined, else of that user.
 export const tokenQueryKey = (email?: string) =>
   email === undefined ? ["apiTokens", "me"] : ["apiTokens", "user", email];
 
-// UserAPITokensCard lists the API tokens of the logged-in user when email is undefined, else of that user, and creates
-// and deletes them.
 export function UserAPITokensCard({
   tokens,
   email,
@@ -171,7 +168,6 @@ export function UserAPITokensCard({
   const [deleting, setDeleting] = useState<APIToken | null>(null);
   const { showSnackbar } = useSnackbar();
   const copy = useCopyToClipboard();
-  // The time the expiry of the tokens is shown against.
   const [now] = useState(() => Date.now());
 
   const remove = useMutation({
@@ -361,7 +357,6 @@ export function UserAPITokensCard({
   );
 }
 
-// localDate is a date of the browser's time zone as YYYY-MM-DD, the value of a date input.
 export const localDate = (d: Date) =>
   [
     d.getFullYear(),
@@ -369,7 +364,6 @@ export const localDate = (d: Date) =>
     String(d.getDate()).padStart(2, "0"),
   ].join("-");
 
-// endOfDay is the end of a YYYY-MM-DD date in the browser's time zone: the start of the next day.
 export const endOfDay = (date: string) => {
   const [year, month, day] = date.split("-").map(Number);
   return new Date(year, month - 1, day + 1);
@@ -391,7 +385,6 @@ function CreateAPITokenDialog({
   const [min] = useState(() => localDate(new Date()));
 
   const mutation = useMutation({
-    // The token works through its expiry date, in the browser's time zone.
     mutationFn: () =>
       createAPIToken(
         name.trim(),

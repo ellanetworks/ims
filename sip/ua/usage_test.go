@@ -9,8 +9,9 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// RFC 5057 §5.1–§5.3: the failure of a request within the dialog of a session affects what Table 2 says, for the
-// usage the request belongs to: INFO belongs to the INVITE session, MESSAGE to none.
+// RFC 5057 section 5.1
+// RFC 5057 section 5.2
+// RFC 5057 section 5.3
 func TestFailureEffects(t *testing.T) {
 	for _, c := range []struct {
 		method string

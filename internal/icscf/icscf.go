@@ -21,7 +21,6 @@ const (
 
 	budgetMargin = 4
 
-	// resolveTimeout bounds the DNS queries that locate a server the HSS names.
 	resolveTimeout = 4 * time.Second
 )
 
@@ -37,7 +36,7 @@ type SCSCF struct {
 	Listeners    []netip.AddrPort
 }
 
-// Resolver locates the servers of a URI (RFC 3263 §4); sip.Resolver is one.
+// RFC 3263 section 4
 type Resolver interface {
 	Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error)
 }
@@ -49,26 +48,17 @@ type Config struct {
 	Proxy *proxy.Proxy
 	Port  uint16
 
-	// Trust is the trust domain, which the servers the HSS names are in (TS 24.229 §5.7.3).
 	Trust *trust.Domain
 	SCSCF SCSCF
 
-	// Resolver locates the servers the HSS names by domain name (RFC 3263): the IMS's resolves the hosts of its
-	// built-in ASs to them in memory (package as). Nil asks the system's resolver.
-	Resolver Resolver
-	// PSISubdomain reports whether a host is a PSI subdomain of the I-CSCF, which it routes to the AS hosting it,
-	// as Resolver resolves it, without a location query (TS 24.229 §5.3.2.1 step 3): those of the built-in ASs. Nil
-	// has none.
+	Resolver     Resolver
 	PSISubdomain func(host string) bool
 
-	// HSSRealm is the realm of the HSS, which the Diameter node routes Cx to.
 	HSSRealm  func() string
 	Diameter  Diameter
 	CxTimeout time.Duration
 
-	// Records, if any, keeps a record of each call.
-	Records *callrecords.Recorder
-	// RegistrationAttempts, if any, counts the registration attempts the I-CSCF answers.
+	Records              *callrecords.Recorder
 	RegistrationAttempts *regmetrics.Registrations
 
 	Logger *slog.Logger
@@ -189,7 +179,6 @@ func (i *ICSCF) forward(ctx context.Context, tx *transaction.ServerTransaction, 
 	i.answer(ctx, tx, code)
 }
 
-// answer answers a request with a response of the I-CSCF's, through the proxy if it has begun forwarding it.
 func (i *ICSCF) answer(ctx context.Context, tx *transaction.ServerTransaction, code int) {
 	res := sip.NewResponse(tx.Request(), code, "")
 
@@ -203,7 +192,6 @@ func (i *ICSCF) answer(ctx context.Context, tx *transaction.ServerTransaction, c
 	i.send(tx, res)
 }
 
-// respond answers a request with a response of the I-CSCF's.
 func (i *ICSCF) respond(tx *transaction.ServerTransaction, res *sip.Response) {
 	i.cfg.Records.RejectingRequest(tx.Request(), res.StatusCode, tx.ToTag())
 	i.cfg.RegistrationAttempts.Answered(tx.Request(), res, false)

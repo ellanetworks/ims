@@ -98,14 +98,11 @@ export const toInstant = (value: string): string => {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
 };
 
-// toNextMinute is the start of the minute after that of a datetime-local value, the exclusive end of a range
-// that includes the value's minute.
 export const toNextMinute = (value: string): string => {
   const at = toInstant(value);
   return at ? new Date(new Date(at).getTime() + 60_000).toISOString() : "";
 };
 
-// lastInstant is the last millisecond before an exclusive end.
 const lastInstant = (end: string | undefined): string | undefined => {
   if (!end) return end;
   const parsed = new Date(end);
@@ -162,7 +159,6 @@ export const timeRangeFilter = (value: TimeRangeValue): TimeRangeFilter => {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-// toDateInputValue is the local date of an instant, as a date input value.
 const toDateInputValue = (stampValue: string | undefined): string => {
   if (!stampValue) return "";
   const parsed = new Date(stampValue);
@@ -172,7 +168,6 @@ const toDateInputValue = (stampValue: string | undefined): string => {
   )}`;
 };
 
-// localDay is the start of the local day of a date input value, offset by days.
 const localDay = (value: string, days = 0): Date | undefined => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return undefined;
@@ -180,21 +175,15 @@ const localDay = (value: string, days = 0): Date | undefined => {
   return new Date(y, m - 1, d + days);
 };
 
-// fromFirstDateInputValue is the first instant of the local day of a date input value.
 export const fromFirstDateInputValue = (value: string): string =>
   localDay(value)?.toISOString() ?? "";
 
-// toLastDateInputValue is the local date of the last day of a range of an exclusive end, as a date input value.
 export const toLastDateInputValue = (end: string | undefined): string =>
   toDateInputValue(lastInstant(end));
 
-// fromLastDateInputValue is the exclusive end of a range whose last day is that of a date input value: the next
-// local midnight.
 export const fromLastDateInputValue = (value: string): string =>
   localDay(value, 1)?.toISOString() ?? "";
 
-// toLastInputValue is the local minute of the last instant of a range of an exclusive end, as a datetime-local
-// value.
 export const toLastInputValue = (end: string | undefined): string =>
   toInputValue(lastInstant(end));
 

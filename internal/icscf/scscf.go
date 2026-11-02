@@ -19,7 +19,6 @@ func (i *ICSCF) ours(name string) bool {
 	return err == nil && i.cfg.SCSCF.Name.Equivalent(u)
 }
 
-// assigned is the S-CSCF a REGISTER goes to: ours, the only one of the network, whatever S-CSCF the HSS names.
 func (i *ICSCF) assigned(name, impu string) sip.URI {
 	if i.ours(name) {
 		u, _ := sip.ParseURI(name)
@@ -81,9 +80,7 @@ func (i *ICSCF) target(in sip.Flow, u sip.URI) (proxy.Target, bool) {
 	}}, true
 }
 
-// serverTarget is the flow to a server the HSS names, from the I-CSCF's address of the request's flow: the first
-// address the URI resolves to (RFC 3263 §4) in that address family and in the trust domain. The trust domain goes by
-// the address, whatever the form of the URI.
+// RFC 3263 section 4
 func (i *ICSCF) serverTarget(ctx context.Context, in sip.Flow, u sip.URI) (proxy.Target, error) {
 	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()

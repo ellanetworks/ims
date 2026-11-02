@@ -27,15 +27,10 @@ type Subscription struct {
 	ID      dialog.ID
 }
 
-// subscription is the reg event subscription of the UE (TS 24.229 §5.1.1.3), on a ua.Subscription.
-//
-// u.sub is set before the SUBSCRIBE goes, s once Subscribe returned: both under u.mu, which the agent is never
-// called with.
+// TS 24.229 clause 5.1.1.3
 type subscription struct {
 	s *ua.Subscription
 
-	// accepted receives the final response to the initial SUBSCRIBE, or the error that ended it first; dropped marks
-	// a subscription the UE forgot before Subscribe returned.
 	accepted chan error
 	dropped  bool
 
@@ -66,7 +61,6 @@ func (u *UE) Subscription() Subscription {
 	return out
 }
 
-// current is the subscription of the UE, once Subscribe returned it.
 func (u *UE) current() (*subscription, *ua.Subscription) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -85,8 +79,7 @@ func (u *UE) Resubscribe(ctx context.Context) error {
 	return u.resubscribe(ctx)
 }
 
-// resubscribe refreshes the subscription, or makes a new one without it, or when the refresh ends it (RFC 6665
-// §4.1.2.2).
+// RFC 6665 section 4.1.2.2
 func (u *UE) resubscribe(ctx context.Context) error {
 	_, s := u.current()
 	if s == nil {
@@ -205,8 +198,7 @@ func (u *UE) subscribe(ctx context.Context) error {
 	}
 }
 
-// outboundRoute is the Route to the P-CSCF the UE preloads in its initial requests (TS 24.229 §5.1.2A.1.1), on the
-// flow of its transport.
+// TS 24.229 clause 5.1.2A.1.1
 func (u *UE) outboundRoute() (sip.URI, error) {
 	flow, _, err := u.requestFlow(u.cfg.Transport)
 	if err != nil {
@@ -252,8 +244,7 @@ func (u *UE) endSubscription(sub *subscription) {
 	}
 }
 
-// stopSubscriptionLocked forgets the subscription of the UE, with its registration: no SIP procedure, the network
-// ended it too (TS 24.229 §5.1.1.7 NOTE 3, NOTE 4); the agent drops it once the lock is released.
+// TS 24.229 clause 5.1.1.7
 func (u *UE) stopSubscriptionLocked() func() {
 	sub := u.sub
 	u.sub = nil
@@ -271,7 +262,8 @@ func (u *UE) stopSubscriptionLocked() func() {
 	return func() { s.Drop(context.Background()) }
 }
 
-// regEventHandler handles the events of the reg event subscription sub (RFC 6665, RFC 3680).
+// RFC 6665
+// RFC 3680
 func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	return ua.SubscriptionHandler{
 		Accepted: func(context.Context, *ua.Subscription, *sip.Response) {
@@ -301,7 +293,6 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 				u.sub = nil
 			}
 
-			// RFC 6665 §4.1.3: a subscription deactivated, or timed out, is made again at once.
 			reason := e.State.Reason
 			resubscribe := e.Cause == ua.EndTerminated && current && u.state.Registered &&
 				(reason == sip.SubscriptionDeactivated || reason == sip.SubscriptionTimeout)
@@ -318,10 +309,10 @@ func (u *UE) regEventHandler(sub *subscription) ua.SubscriptionHandler {
 	}
 }
 
-// notify handles a NOTIFY of the reg event subscription (RFC 3680 §5), which the agent answers 200; one of a document
-// the UE cannot read, 400, which keeps the subscription (RFC 6665 §4.2.2): its Subscription-State applies, and the UE
-// asks for the full state again (RFC 3680 §5.2), refreshing the subscription, or making a new one of one it ended
-// for no reason the agent subscribes again of (Ended) or a change of authorisation (RFC 6665 §4.1.3).
+// RFC 3680 section 5
+// RFC 3680 section 5.2
+// RFC 6665 section 4.2.2
+// RFC 6665 section 4.1.3
 func (u *UE) notify(sub *subscription, r *ua.Request) {
 	req := r.Message()
 	ss, _, _ := req.Header.SubscriptionState()
@@ -541,13 +532,10 @@ func (u *UE) applyLocked(info reginfo.Reginfo, subTerminated bool) (action, []fu
 	return action{}, nil
 }
 
-// duration is n seconds of a document, an xs:unsignedLong, bounded to what a time.Duration holds.
 func duration(n uint64) time.Duration {
 	return time.Duration(min(n, uint64(math.MaxInt64/time.Second))) * time.Second
 }
 
-// forgetLocked forgets the registration; the subscription it returns to unsubscribe from goes once the lock is
-// released.
 func (u *UE) forgetLocked() func() {
 	u.stopTimersLocked()
 	u.stopKeepaliveLocked()
@@ -557,8 +545,6 @@ func (u *UE) forgetLocked() func() {
 	return u.stopSubscriptionLocked()
 }
 
-// act tears the registration down, once the NOTIFY that told it is answered, over the SAs it deletes; then registers
-// or subscribes again.
 func (u *UE) act(a action, answered <-chan struct{}) {
 	if a.teardown {
 		if answered != nil {
@@ -580,7 +566,6 @@ func (u *UE) act(a action, answered <-chan struct{}) {
 
 	var err error
 
-	// Each is a trace of its own, as it starts after the NOTIFY or the end of the subscription that caused it.
 	switch {
 	case a.teardown && a.reregister:
 		err = u.Register(context.Background())

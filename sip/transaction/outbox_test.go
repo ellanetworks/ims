@@ -12,15 +12,12 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
-// RFC 3261 §12.2.2: the requests of a flow leave in the order the layer took them, so that a dialog's CSeq order
-// survives; an ACK queued before a request leaves before it.
+// RFC 3261 section 12.2.2
 func TestRequestsLeaveInOrder(t *testing.T) {
 	for _, tr := range transports {
 		t.Run(string(tr), func(t *testing.T) {
 			h := newHarness(t)
 
-			// Over UDP, a burst the kernel may drop under load, which the fake clock never retransmits: fewer
-			// requests prove the same order.
 			n := 300
 			if tr == sip.UDP {
 				n = 50
@@ -65,7 +62,6 @@ func TestRequestsLeaveInOrder(t *testing.T) {
 	}
 }
 
-// Shutdown sends the messages the layer took before closing the transport.
 func TestShutdownSendsWhatItTook(t *testing.T) {
 	h := newHarness(t)
 
@@ -89,8 +85,6 @@ func TestShutdownSendsWhatItTook(t *testing.T) {
 	}
 }
 
-// Shutdown returns the context's error when what the layer took is not sent in time, and closes the layer all the
-// same.
 func TestShutdownDeadline(t *testing.T) {
 	h := newHarness(t)
 

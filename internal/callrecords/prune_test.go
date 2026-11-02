@@ -47,7 +47,6 @@ func TestPrune(t *testing.T) {
 		t.Fatalf("first prune %+v, want at once, of the records older than 90 days or past %d", c, MaxRecords)
 	}
 
-	// A new retention applies from a later prune.
 	retention.Store(int64(day))
 
 	for c := range store {
@@ -58,7 +57,6 @@ func TestPrune(t *testing.T) {
 
 	cancel()
 
-	// Prune may prune again before it sees ctx done.
 	for {
 		select {
 		case <-store:

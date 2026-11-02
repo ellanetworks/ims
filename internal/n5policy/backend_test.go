@@ -102,7 +102,6 @@ func newFixtureWith(t *testing.T, cfg pcftest.Config) *fixture {
 	return newTracedFixture(t, cfg, nil)
 }
 
-// newTracedFixture is a fixture whose backend and notification server trace with tp, when set.
 func newTracedFixture(t *testing.T, cfg pcftest.Config, tp trace.TracerProvider) *fixture {
 	t.Helper()
 
@@ -183,7 +182,8 @@ func callRequest(initial bool, cs ...policy.MediaComponent) policy.Request {
 	}
 }
 
-// TS 29.514 §4.2.6.7, §4.2.4.2
+// TS 29.514 clause 4.2.6.7
+// TS 29.514 clause 4.2.4.2
 func TestSignalling(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -238,7 +238,9 @@ func TestNewSessionIDIsURLSafe(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.2.2, §4.2.3.2, TS 29.513 §7.2.3
+// TS 29.514 clause 4.2.2.2
+// TS 29.514 clause 4.2.3.2
+// TS 29.513 clause 7.2.3
 func TestCall(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -277,14 +279,12 @@ func TestCall(t *testing.T) {
 		t.Errorf("create %s with sipForkInd", b)
 	}
 
-	// The same service information: no PATCH.
 	if g2, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio())); err != nil || g2.Ref != g.Ref {
 		t.Fatalf("Authorize unchanged = %+v, %v", g2, err)
 	}
 
 	f.noRequest()
 
-	// TS 29.514 Annex B.3.2: forking.
 	fork := callRequest(false, audio(), video())
 	fork.Forking = policy.ForkingSeveralDialogues
 
@@ -296,7 +296,6 @@ func TestCall(t *testing.T) {
 		t.Fatalf("got %s, want SEVERAL_DIALOGUES with both components", r)
 	}
 
-	// The video is removed: it stays at the PCF, REMOVED; sipForkInd goes.
 	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio(),
 		policy.MediaComponent{Number: 2, Type: policy.MediaVideo, Status: policy.FlowRemoved})); err != nil {
 		t.Fatalf("Authorize removed: %v", err)
@@ -325,7 +324,7 @@ func TestCall(t *testing.T) {
 	}
 }
 
-// TS 29.500 §6.10.9: a context moved for good is patched and deleted at its new URI.
+// TS 29.500 clause 6.10.9
 func TestMovedContext(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -423,7 +422,7 @@ func TestErrors(t *testing.T) {
 	}
 }
 
-// TS 29.514 §4.2.5.3
+// TS 29.514 clause 4.2.5.3
 func TestTerminateNotification(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -451,7 +450,6 @@ func TestTerminateNotification(t *testing.T) {
 	}
 }
 
-// A context the P-CSCF no longer has a session for is deleted when the PCF terminates it.
 func TestTerminateOrphan(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -487,7 +485,6 @@ func TestTerminateOrphan(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// A local ID the P-CSCF never issued does not get a context deleted, even one of the PCF.
 	other := f.pcf.URL() + n5.AppSessionsPath + "/elsewhere"
 	if s := post(SessionsPath+"/gone/terminate", other); s != http.StatusBadRequest {
 		t.Fatalf("terminate of an unknown session = %d, want 400", s)
@@ -495,7 +492,6 @@ func TestTerminateOrphan(t *testing.T) {
 
 	f.noRequest()
 
-	// A create that got no answer: its context is deleted at the resUri, if that is one of the PCF's.
 	lost := f.b.NewSessionID()
 
 	f.pcf.RefuseWhen(func(pcftest.Request) *pcftest.Failure { return &pcftest.Failure{Drop: true} })
@@ -521,7 +517,6 @@ func TestTerminateOrphan(t *testing.T) {
 		t.Fatalf("terminate after an unanswered create = %d, want 204", s)
 	}
 
-	// pcftest answers 404 to a context it never had, before recording a request.
 	for deadline := time.Now().Add(5 * time.Second); f.b.Status().Result != "404 APPLICATION_SESSION_CONTEXT_NOT_FOUND"; {
 		if time.Now().After(deadline) {
 			t.Fatalf("status %+v, want the delete of %s answered", f.b.Status(), other)
@@ -530,7 +525,6 @@ func TestTerminateOrphan(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Once.
 	if s := post(SessionsPath+"/"+lost+"/terminate", other); s != http.StatusBadRequest {
 		t.Fatalf("second terminate after an unanswered create = %d, want 400", s)
 	}
@@ -544,7 +538,9 @@ func h2c() *http.Client {
 	return &http.Client{Transport: &http.Transport{Protocols: &p}, Timeout: 5 * time.Second}
 }
 
-// TS 29.514 §4.2.5.2, §4.2.5.8, §4.2.5.10
+// TS 29.514 clause 4.2.5.2
+// TS 29.514 clause 4.2.5.8
+// TS 29.514 clause 4.2.5.10
 func TestNotify(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -603,7 +599,6 @@ func TestNotify(t *testing.T) {
 		})
 	}
 
-	// Routed on the local ID only: evSubsUri does not stand for it.
 	body, _ := json.Marshal(n5.EventsNotification{EvSubsURI: g.Ref + "/events-subscription", EvNotifs: failed})
 	req, _ := http.NewRequestWithContext(f.ctx(), http.MethodPost, f.notify+SessionsPath+"/other/notify", bytes.NewReader(body))
 	req.Header.Set("Content-Type", n5.ContentJSON)
@@ -666,7 +661,7 @@ func TestNotificationRequests(t *testing.T) {
 	}
 }
 
-// TS 29.514 Annex B.3.1: every update while the early dialogues fork says SEVERAL_DIALOGUES.
+// TS 29.514 clause B.3.1
 func TestForkingGoesOn(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -693,7 +688,7 @@ func TestForkingGoesOn(t *testing.T) {
 	}
 }
 
-// After a PATCH that got no answer, the next one fits whatever the PCF holds (TS 29.500 §5.2.7.2).
+// TS 29.500 clause 5.2.7.2
 func TestResyncAfterAnUnansweredPatch(t *testing.T) {
 	f := newFixture(t)
 	id := f.b.NewSessionID()
@@ -717,7 +712,6 @@ func TestResyncAfterAnUnansweredPatch(t *testing.T) {
 	f.pcf.Next(t)
 	f.pcf.RefuseWhen(nil)
 
-	// The same service information as before the fork: an incremental patch would be empty.
 	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio())); err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +723,6 @@ func TestResyncAfterAnUnansweredPatch(t *testing.T) {
 		}
 	}
 
-	// Answered: back to incremental patches.
 	if _, err := f.b.Authorize(f.ctx(), id, g.Ref, callRequest(false, audio())); err != nil {
 		t.Fatal(err)
 	}

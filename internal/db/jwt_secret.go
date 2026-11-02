@@ -8,13 +8,11 @@ import (
 
 const jwtSecretLength = 32
 
-// JWTSecret returns the key that signs the UI's access tokens. The first call generates and stores it, so that the
-// tokens outlive a restart.
 func (d *DB) JWTSecret(ctx context.Context) (_ []byte, err error) {
 	defer d.observe(poolWrite, &err)()
 
 	candidate := make([]byte, jwtSecretLength)
-	_, _ = rand.Read(candidate) // It never fails.
+	_, _ = rand.Read(candidate)
 
 	if _, err := d.conn.ExecContext(ctx, `INSERT OR IGNORE INTO jwt_secret (id, secret) VALUES (1, ?)`,
 		candidate); err != nil {

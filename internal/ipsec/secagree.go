@@ -173,7 +173,8 @@ func (p Policy) Validate() error {
 	return fmt.Errorf("unknown encryption policy %q", p.Encryption)
 }
 
-// RFC 3329 §2.3.1, TS 33.203 §7.2
+// RFC 3329 section 2.3.1
+// TS 33.203 clause 7.2
 func (p Policy) Mechanisms() []sip.SecurityMechanism {
 	encryptions := []Encryption{EncryptionNull}
 

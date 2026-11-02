@@ -8,8 +8,6 @@ import (
 //go:embed VERSION
 var version string
 
-// GitCommit is the git commit hash, set at build time with
-// -ldflags "-X github.com/ellanetworks/ims/version.GitCommit=<hash>".
 var GitCommit string
 
 type Info struct {

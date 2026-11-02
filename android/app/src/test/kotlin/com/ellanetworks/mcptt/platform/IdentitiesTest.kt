@@ -5,7 +5,6 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class IdentitiesTest {
-    // TS 23.003 §13.2–13.4B, its examples.
     @Test
     fun fromImsi() {
         val ids = Identities.fromImsi("234150999999999", 2)
@@ -16,7 +15,6 @@ class IdentitiesTest {
         assertEquals("ims.mnc123.mcc310.3gppnetwork.org", Identities.fromImsi("310123000000001", 3).homeDomain)
     }
 
-    // The MCPTT identity is the EF_IMPU record sip:mcptt-<MSISDN>@<domain>, whatever its place; without one, none.
     @Test
     fun mcpttImpu() {
         val domain = "ims.mnc001.mcc001.3gppnetwork.org"
@@ -30,7 +28,7 @@ class IdentitiesTest {
         assertNull(Identities.fromImsi("001010000000001", 2).mcpttImpu)
     }
 
-    // TS 31.103 §4.2.8: an FQDN, IPv4 or IPv6, as text or octets.
+    // TS 31.103 clause 4.2.8
     @Test
     fun pcscfs() {
         assertEquals("pcscf.ims.example", Identities.pcscf(byteArrayOf(0) + "pcscf.ims.example".encodeToByteArray()))

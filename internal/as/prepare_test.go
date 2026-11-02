@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// A request goes from the address of its next hop's family.
 func TestPrepare(t *testing.T) {
 	v4, v6 := netip.MustParseAddrPort("192.0.2.1:5060"), netip.MustParseAddrPort("[2001:db8::1]:5060")
 	p := Prepare(context.Background(), []netip.AddrPort{v4, v6}, &sip.Resolver{DNS: dns{}})
@@ -21,7 +20,6 @@ func TestPrepare(t *testing.T) {
 	}{
 		{"sip:a@198.51.100.1:5070", v4},
 		{"sip:a@[2001:db8::2];transport=tcp", v6},
-		// RFC 3263 §4.2: by the SRV records of a domain name, an S-CSCF's of the third-party REGISTERs.
 		{"sip:scscf.ims.example.com", v4},
 	} {
 		req := &sip.Request{Method: "OPTIONS", URI: uri(t, tc.uri)}
@@ -42,7 +40,6 @@ func TestPrepare(t *testing.T) {
 		t.Error("IPv6 next hop from IPv4 only")
 	}
 
-	// The top Route, a domain name, before the Request-URI.
 	req := &sip.Request{Method: "INVITE", URI: uri(t, "sip:bob@ims.example.com")}
 	req.Header.Set("Route", "<sip:scscf.ims.example.com;lr>")
 
@@ -55,8 +52,6 @@ func TestPrepare(t *testing.T) {
 	}
 }
 
-// The DNS queries of a next hop end with the lifetime of the server: after the deadline of its shutdown, a BYE to a
-// next hop named by a domain name fails at once, whatever the DNS.
 func TestPrepareLifetime(t *testing.T) {
 	life, kill := context.WithCancel(context.Background())
 	p := Prepare(life, []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:5060")}, &sip.Resolver{DNS: unanswered{}})
@@ -68,8 +63,6 @@ func TestPrepareLifetime(t *testing.T) {
 	}
 }
 
-// unanswered is a DNS that answers no query: each fails once its ctx is done, as one unreachable does at its
-// timeout.
 type unanswered struct{}
 
 func (unanswered) LookupSRV(ctx context.Context, _, _, _ string) (string, []*net.SRV, error) {
@@ -82,7 +75,6 @@ func (unanswered) LookupNetIP(ctx context.Context, _, _ string) ([]netip.Addr, e
 	return nil, ctx.Err()
 }
 
-// dns has scscf.ims.example.com at 192.0.2.9, port 6060 over UDP by its SRV record.
 type dns struct{}
 
 func (dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {

@@ -151,7 +151,6 @@ func (n *Netns) Do(f func()) {
 	<-done
 }
 
-// Sysctl sets a sysctl of the namespace, key as in /proc/sys with dots ("net.ipv4.ip_local_port_range").
 func (n *Netns) Sysctl(t testing.TB, key, value string) {
 	t.Helper()
 
@@ -201,8 +200,6 @@ func Link(t testing.TB, a, b *Netns, aAddrs, bAddrs []netip.Prefix) {
 func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
 	t.Helper()
 
-	// A bridge without an address of its own takes the lowest of its ports', and changes it as ports are attached:
-	// the hosts that resolved it before would send to a port's address, dropped, until their ARP entry goes stale.
 	n.IP(t, "link", "add", name, "address", localMAC(t), "type", "bridge")
 	t.Cleanup(func() { n.del(t, name) })
 
@@ -241,7 +238,6 @@ func (n *Netns) up(t testing.TB, dev string, addrs []netip.Prefix) {
 	n.IP(t, "link", "set", dev, "up")
 }
 
-// localMAC is a random unicast, locally administered MAC address.
 func localMAC(t testing.TB) string {
 	t.Helper()
 

@@ -13,8 +13,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracedCall rings and answers a call through a traced router, whose flows carry no trace context: each request
-// starts a trace of its own, as one from a UE does at the P-CSCF.
 func tracedCall(t *testing.T) (*call, *tracetest.SpanRecorder, sdktrace.ReadOnlySpan) {
 	t.Helper()
 

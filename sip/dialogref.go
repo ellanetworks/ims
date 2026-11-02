@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// TargetDialog is a Target-Dialog value (RFC 4538 §7). The tags are those of the dialog seen by the recipient of the
-// request (RFC 4538 §3).
+// RFC 4538 section 7
+// RFC 4538 section 3
 type TargetDialog struct {
 	CallID    string
 	LocalTag  string
@@ -38,7 +38,6 @@ func ParseTargetDialog(s string) (TargetDialog, error) {
 		}
 	}
 
-	// RFC 4538 §4: without both tags, the header field is ignored.
 	if local != 1 || remote != 1 || !isToken(td.LocalTag) || !isToken(td.RemoteTag) {
 		return TargetDialog{}, fmt.Errorf("Target-Dialog %q: local-tag and remote-tag are required", s)
 	}
@@ -61,8 +60,8 @@ func (fs Header) TargetDialog() (TargetDialog, bool, error) {
 	return td, true, err
 }
 
-// Replaces is a Replaces value (RFC 3891 §6.1). ToTag is the local tag of the dialog for the recipient, FromTag its
-// remote tag (RFC 3891 §3).
+// RFC 3891 section 6.1
+// RFC 3891 section 3
 type Replaces struct {
 	CallID    string
 	ToTag     string
@@ -71,6 +70,7 @@ type Replaces struct {
 	Params    Params
 }
 
+// RFC 3891 section 6.1
 func ParseReplaces(s string) (Replaces, error) {
 	callID, ps, err := parseCallIDParams(s)
 	if err != nil {
@@ -100,7 +100,6 @@ func ParseReplaces(s string) (Replaces, error) {
 		}
 	}
 
-	// RFC 3891 §6.1: exactly one of each; a tag of 0 stands for an RFC 2543 dialog.
 	if to != 1 || from != 1 || !isToken(r.ToTag) || !isToken(r.FromTag) {
 		return Replaces{}, fmt.Errorf("Replaces %q: want one to-tag and one from-tag", s)
 	}
@@ -117,7 +116,7 @@ func (r Replaces) String() string {
 	return s + r.Params.String()
 }
 
-// Replaces is the Replaces of an INVITE, which carries at most one (RFC 3891 §3).
+// RFC 3891 section 3
 func (fs Header) Replaces() (Replaces, bool, error) {
 	v, ok, err := fs.single("Replaces")
 	if !ok || err != nil {
@@ -129,7 +128,7 @@ func (fs Header) Replaces() (Replaces, bool, error) {
 	return r, true, err
 }
 
-// callid *(SEMI param), with the callid of RFC 3261 §25.1: word ["@" word].
+// RFC 3261 section 25.1
 func parseCallIDParams(s string) (string, Params, error) {
 	callID, rest, _ := strings.Cut(trimWSP(s), ";")
 	callID = trimWSP(callID)
@@ -152,7 +151,7 @@ func isCallID(s string) bool {
 	return isWord(word) && (!strings.Contains(s, "@") || isWord(host))
 }
 
-// RFC 3261 §25.1: word.
+// RFC 3261 section 25.1
 func isWord(s string) bool {
 	if s == "" {
 		return false

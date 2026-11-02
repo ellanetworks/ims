@@ -12,7 +12,6 @@ import (
 	"github.com/ellanetworks/ims/sip/mcpttinfo"
 )
 
-// testConfig is bob, a member of fire.
 func testConfig() settings.Settings {
 	return settings.Settings{
 		System: settings.System{
@@ -42,7 +41,6 @@ func (b bindings) Resolve(*sip.Request, []sip.URI, string) (registrar.Binding, b
 
 func (b bindings) Bindings(sip.URI) []registrar.Binding { return b }
 
-// affiliated has the clients of the IDs given affiliated to every group.
 type affiliated map[string]bool
 
 func (a affiliated) Affiliated(_ time.Time, _ sip.URI, client string, _ sip.URI) bool {
@@ -64,11 +62,8 @@ func mustURI(t *testing.T, s string) sip.URI {
 	return u
 }
 
-// TS 24.379 §10.1.1.3.2 steps 2, 4, 5, §6.3.2.2.5.2: the INVITE of the controlling function without isfocus gets a 403
-// with the warning text 104, one for a user without a binding at a client affiliated to the calling group a 404; one
-// for a user bound goes to the contact of each of its affiliated clients (§9.2.2.2.11, §7.3.2 step 4a), by client ID,
-// with Answer-Mode Auto, its mcptt-info and the session identity of the controlling function as received, the 183
-// Unconfirmed of automatic commencement.
+// TS 24.379 clause 10.1.1.3.2
+// TS 24.379 clause 6.3.2.2.5.2
 func TestTerminate(t *testing.T) {
 	snap, err := settings.New(testConfig())
 	if err != nil {
@@ -155,10 +150,9 @@ func TestTerminate(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.3, §5.4.1.7 d; TS 24.379 §6.3.2.2.5.2 step 4: through the IMS, the INVITE to a client goes to the
-// IMPU of its binding, routed loosely to the S-CSCF of its third-party REGISTER, without "orig"; one INVITE per
-// implicit registration set, whose IMPUs share the registered contacts (TS 24.229 §5.4.1.2.2 step 2a, §5.4.3.3 step
-// 8 d), to the IMPU of the binding that expires last; a binding without an S-CSCF is unreachable.
+// TS 24.229 clause 5.7.3
+// TS 24.229 clause 5.4.1.7
+// TS 24.379 clause 6.3.2.2.5.2
 func TestIMSRoute(t *testing.T) {
 	snap, err := settings.New(testConfig())
 	if err != nil {
@@ -212,9 +206,9 @@ func TestIMSRoute(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.7.2, §5.7.3, §5.7.5.1: through the IMS, a response of the server has the icid-value and orig-ioi of
-// the request and a type 3 term-ioi, a subsequent request the icid-value of the dialog and a type 3 orig-ioi; in
-// direct mode, nothing.
+// TS 24.229 clause 5.7.2
+// TS 24.229 clause 5.7.3
+// TS 24.229 clause 5.7.5.1
 func TestCharged(t *testing.T) {
 	c := identity.Charging{ICID: "4a2f", OrigIOI: "ims.example.com"}
 

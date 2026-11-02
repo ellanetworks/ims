@@ -29,26 +29,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/**
- * The MCPTT service in the foreground: the session runs while it does, registered to be reached for calls with the app
- * in the background and the device asleep.
- *
- * Its types: specialUse always, the standby of no call (no other type covers a client kept registered without push,
- * and specialUse may start at boot: Android 15 bans phoneCall and microphone there); microphone once the app has
- * been visible, or the user has answered from the notification (the while-in-use rule's moments), kept while the
- * service runs so that the user talks with the app in the background (decision 13); phoneCall while a call lasts.
- * Its notification is the status, or the call's (CallStyle) during a call.
- */
 class SessionService : LifecycleService() {
     private val app: McpttApp
         get() = application as McpttApp
 
-    /** The service holds the microphone type: the process captures in the background. */
     private var microphone = false
     private var last: Notification? = null
     private var inCall = false
 
-    /** The selected group, of the settings: the PTT key's. */
     @Volatile
     private var group: String? = null
     private val keys by lazy { PttKeys(this, app.sessions.ptt) { group } }
@@ -58,7 +46,6 @@ class SessionService : LifecycleService() {
         running = true
         channels()
         foreground(status(app.sessions.status.value, null))
-        // Made while the app is visible: its moment.
         if (visible) microphone()
         app.sessions.start()
         lifecycleScope.launch { app.sessions.calls.ended.collect(::ended) }
@@ -95,7 +82,6 @@ class SessionService : LifecycleService() {
 
             ACTION_LEAVE -> id?.let(app.sessions.calls::leave)
         }
-        // Restarted by the system if it kills the process: the user wants the service until they stop it.
         return START_STICKY
     }
 
@@ -107,10 +93,6 @@ class SessionService : LifecycleService() {
         super.onDestroy()
     }
 
-    /**
-     * At a moment of the while-in-use rule: the microphone type added, if the user allows the app to record. Asked
-     * again while not held, the system having refused it at an earlier moment.
-     */
     private fun microphone() {
         if (app.sessions.microphone.value) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
@@ -118,11 +100,6 @@ class SessionService : LifecycleService() {
         foreground(last ?: status(app.sessions.status.value, null))
     }
 
-    /**
-     * In the foreground of the types of now. A type the system refuses, of the microphone (the while-in-use rule) or a
-     * call's, is left out this time: the microphone asked for again at the next change, its grant kept by the system
-     * once given to the running service.
-     */
     private fun foreground(n: Notification) {
         last = n
         val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
@@ -142,7 +119,6 @@ class SessionService : LifecycleService() {
         }
         app.sessions.microphone.value = held != null && held and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
         if (held == null) {
-            // Not in the foreground, of even specialUse: stopped, before the system's ForegroundServiceDidNotStartInTime.
             Log.e(TAG, "foreground refused: stopping")
             stopSelf()
         }
@@ -170,7 +146,6 @@ class SessionService : LifecycleService() {
                 description = getString(R.string.channel_missed_description)
             },
         )
-        // High: shown over the screen at the press, the user talking to no one otherwise.
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_PTT, getString(R.string.channel_ptt), NotificationManager.IMPORTANCE_HIGH).apply {
                 description = getString(R.string.channel_ptt_description)
@@ -180,7 +155,6 @@ class SessionService : LifecycleService() {
 
     private fun open(): PendingIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
 
-    /** The status notification: the registration, and the selected group once registered. */
     private fun status(status: Status, group: String?): Notification = NotificationCompat.Builder(this, CHANNEL)
         .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle(getString(R.string.app_name))
@@ -197,7 +171,6 @@ class SessionService : LifecycleService() {
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .build()
 
-    /** The call's notification: an incoming call's to answer or decline, over the lock screen; an ongoing one's. */
     private fun call(c: CallInfo): Notification {
         val group = Person.Builder().setName(groupName(c.group)).setUri(c.group).setImportant(true).build()
         val style = if (c.state == CallInfo.State.RINGING) {
@@ -217,7 +190,6 @@ class SessionService : LifecycleService() {
         return b.build()
     }
 
-    /** A call missed (an invitation not answered) or lost (the network ended it): a notification of its own. */
     private fun ended(e: Ended) {
         val (title, text) = when {
             e.cause == Event.Cause.MISSED ->
@@ -239,10 +211,6 @@ class SessionService : LifecycleService() {
         getSystemService(NotificationManager::class.java).notify(e.call.id.hashCode(), n)
     }
 
-    /**
-     * A press refused for the microphone the service does not hold (started in the background, as at boot or restarted
-     * by the system): the app to open once, a moment of the while-in-use rule. One notification, replaced.
-     */
     private fun unrecordable() {
         val n = NotificationCompat.Builder(this, CHANNEL_PTT)
             .setSmallIcon(R.drawable.ic_notification)
@@ -266,7 +234,6 @@ class SessionService : LifecycleService() {
 
     private fun action(action: String, id: String): PendingIntent = PendingIntent.getService(
         this,
-        // One of each action and call: of the action alone, the calls' extras would replace each other's.
         (action + id).hashCode(),
         Intent(this, SessionService::class.java).setAction(action).putExtra(EXTRA_CALL, id),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -292,22 +259,16 @@ class SessionService : LifecycleService() {
         @Volatile
         private var visible = false
 
-        /** Starts the service: at boot, or from the UI, [visible] (a moment of the while-in-use rule). */
         fun start(context: Context, visible: Boolean = false) {
             val i = Intent(context, SessionService::class.java)
             if (visible) i.action = ACTION_VISIBLE
             ContextCompat.startForegroundService(context, i)
         }
 
-        /** Stops the service, and the session with it: not started if not running (startService would). */
         fun stop(context: Context) {
             context.stopService(Intent(context, SessionService::class.java))
         }
 
-        /**
-         * The app is visible, or no more: a moment of the while-in-use rule, the service taking the microphone type,
-         * now if it runs, else when it starts.
-         */
         fun visible(context: Context, now: Boolean) {
             visible = now
             (context.applicationContext as McpttApp).sessions.visible.value = now
@@ -316,14 +277,8 @@ class SessionService : LifecycleService() {
     }
 }
 
-/** What the service's notification shows: the status, or the [call]'s, and the selected group. */
 internal data class Shown(val status: Status, val call: CallInfo?, val group: String?)
 
-/**
- * What the notification shows of [status], [calls] and [group]: the call to answer first, else the active one, else one
- * calling, else one held; of each, the newest. Of the call, what its notification shows alone, so that a change of
- * route or talk time leaves the notification as it is (the system limits an app's rate of updates, dropping some).
- */
 internal fun shown(status: Status, calls: List<CallInfo>, group: String?): Shown {
     val call = listOf(CallInfo.State.RINGING, CallInfo.State.ACTIVE, CallInfo.State.CALLING, CallInfo.State.HELD)
         .firstNotNullOfOrNull { state -> calls.lastOrNull { it.state == state } }
@@ -333,7 +288,6 @@ internal fun shown(status: Status, calls: List<CallInfo>, group: String?): Shown
     return Shown(status, shown, group)
 }
 
-/** The status of the notification. */
 fun Status.text(): Int = when (this) {
     Status.Stopped -> R.string.status_stopped
     is Status.Unconfigured -> R.string.status_unconfigured

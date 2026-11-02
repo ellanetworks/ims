@@ -135,7 +135,6 @@ func TestSameIdentity(t *testing.T) {
 		t.Fatal("a numbering change changed the identity")
 	}
 
-	// A 2-digit MNC is padded, so 01 and 001 are the same network.
 	if padded := (Operator{MCC: "001", MNC: "001"}); !o.SameIdentity(padded) {
 		t.Fatal("MNC 01 and 001 differ")
 	}
@@ -694,8 +693,6 @@ func TestSameNode(t *testing.T) {
 	}
 }
 
-// TestLiveChangeContext checks that the check of a change gets its context, and that Take returns the span context of
-// each change since the last Take, once.
 func TestLiveChangeContext(t *testing.T) {
 	type key struct{}
 
@@ -723,7 +720,6 @@ func TestLiveChangeContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A change of no trace has no cause to keep.
 	if err := live.UpdateIPSMGW(t.Context(), IPSMGW{Number: "15550003"}); err != nil {
 		t.Fatal(err)
 	}

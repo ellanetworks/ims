@@ -19,7 +19,6 @@ import (
 	"github.com/ellanetworks/ims/testue"
 )
 
-// The SMF's metrics, in the network namespace of the Open5GS container (open5gs/config/open5gs/smf.yaml).
 const smfMetrics = "127.0.0.4:9090"
 
 func needs5G(t *testing.T) {
@@ -41,7 +40,6 @@ func pidOf(t *testing.T, env string) int {
 	return pid
 }
 
-// smfGet returns the body of the response of the SMF's metrics server to a GET of path.
 func smfGet(t *testing.T, core *netns, path string) []byte {
 	t.Helper()
 
@@ -53,8 +51,6 @@ func smfGet(t *testing.T, core *netns, path string) []byte {
 	return body
 }
 
-// qosFlows returns the number of QoS flows at the SMF. Open5GS labels the gauge with the 5QI of the PDU session,
-// not of the flow, so only the total says that a flow was added (open5gs src/smf/context.c smf_qos_flow_add).
 func qosFlows(t *testing.T, core *netns) int {
 	t.Helper()
 
@@ -84,7 +80,6 @@ func qosFlows(t *testing.T, core *netns) int {
 	return n
 }
 
-// fiveQIs returns the 5QIs of the QoS flows of the PDU sessions of each SUPI at the SMF (open5gs src/smf/pdu-info.c).
 func fiveQIs(t *testing.T, core *netns) map[string][]int {
 	t.Helper()
 
@@ -136,7 +131,6 @@ func waitQoSFlows(t *testing.T, core *netns, want int) {
 	}
 }
 
-// inUE runs a command of the UE container, in its namespaces.
 func inUE(t *testing.T, i int, args ...string) string {
 	t.Helper()
 
@@ -151,7 +145,6 @@ func inUE(t *testing.T, i int, args ...string) string {
 func tryInUE(t *testing.T, i int, args ...string) (string, error) {
 	t.Helper()
 
-	// Not t.Context(): cleanups run after it is done.
 	c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -161,8 +154,8 @@ func tryInUE(t *testing.T, i int, args ...string) (string, error) {
 	return string(out), err
 }
 
-// TS 29.514 §4.2.2.2, TS 29.513 §7.2.3: the call's audio gets a QoS flow on each side, released with the call. The
-// Open5GS PCF gives AUDIO the 5QI 1 (src/pcf/npcf-handler.c), the PCC rule e2e/provision.js provisions.
+// TS 29.514 clause 4.2.2.2
+// TS 29.513 clause 7.2.3
 func TestCallQoSFlow(t *testing.T) {
 	needs5G(t)
 
@@ -184,13 +177,9 @@ func TestCallQoSFlow(t *testing.T) {
 	waitQoSFlows(t, core, before)
 }
 
-// IR.94 §2.2.2, NG.114 §4.5.3, TS 29.513 §7.2.3: the video of a call gets a QoS flow of its own on each side, besides
-// the audio's, whether the call starts with video or has it added by re-INVITE. The Open5GS PCF gives VIDEO the 5QI 2
-// (src/pcf/npcf-handler.c), the PCC rule e2e/provision.js provisions.
-//
-// The removal of video is not checked: the Open5GS PCF keeps the PCC rule of a media component a PATCH sets to
-// REMOVED (pcf_npcf_policyauthorization_handle_update, open5gs 4107085), so the QoS flow stays until the call ends.
-// internal/integration checks the P-CSCF's REMOVED (TestCallVideoBearerLost).
+// GSMA IR.94 section 2.2.2
+// GSMA NG.114 section 4.5.3
+// TS 29.513 clause 7.2.3
 func TestVideoCallQoSFlows(t *testing.T) {
 	needs5G(t)
 
@@ -237,21 +226,14 @@ func hangUp(t *testing.T, ac, bc *testue.Call) {
 	ended(t, bc, testue.RemoteBye)
 }
 
-// TS 29.514 §4.2.5.3, TS 24.229 §5.2.8.1.2: the release of the callee's PDU session terminates its application
-// session context, and the P-CSCF releases the call toward the caller.
-//
-// Skipped: the Open5GS PCF can abort on this delete (open5gs 4107085, src/pcf). Its SM policy delete sends terminate,
-// but frees the session only after the BSF deregistration; a delete in between defers freeing the app session until
-// the SMF answers its notification (client_delete_notify_cb, src/pcf/sbi-path.c), and the session removal frees it
-// first: a double free.
+// TS 29.514 clause 4.2.5.3
+// TS 24.229 clause 5.2.8.1.2
 func TestCallEndsWithThePDUSession(t *testing.T) {
 	needs5G(t)
 	t.Skip("the Open5GS PCF can crash on the delete that follows terminate (double free of the app session)")
 
 	a, b := pair(t, sip.UDP)
 
-	// UERANSIM establishes the session again by itself, with another address: the route to the IMS goes with
-	// the old one.
 	t.Cleanup(func() {
 		tun := os.Getenv("E2E_TUN")
 

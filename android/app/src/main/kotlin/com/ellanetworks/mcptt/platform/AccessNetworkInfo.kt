@@ -1,23 +1,17 @@
 package com.ellanetworks.mcptt.platform
 
-/** A cell the device is on, of the radio and duplex its access type names (TS 24.229 §7.2A.4.2). */
+// TS 24.229 clause 7.2A.4.2
 sealed interface Cell {
     val mcc: String?
     val mnc: String?
     val tdd: Boolean
 
-    /** An E-UTRAN cell: its TAC of 16 bits on EPC, 24 on 5GC, and its ECI of 28. */
     data class Lte(override val mcc: String?, override val mnc: String?, val tac: Int?, val eci: Int?, override val tdd: Boolean) : Cell
 
-    /** An NR cell: its TAC of 24 bits, and its NCI of 36. */
     data class Nr(override val mcc: String?, override val mnc: String?, val tac: Int?, val nci: Long?, override val tdd: Boolean) : Cell
 }
 
-/**
- * The P-Access-Network-Info of [cell] (TS 24.229 §7.2A.4.3): its access type, and its utran-cell-id-3gpp when the
- * cell's identity is known: MCC, MNC, the TAC (4 hexadecimal digits on EPC, 6 on 5GC, item 4; 6 for NR, item 11) and
- * the ECI (7) or NCI (9), in upper-case hexadecimal. The access type alone when it is not (access-info is optional).
- */
+// TS 24.229 clause 7.2A.4.3
 fun accessNetworkInfo(cell: Cell, fiveGc: Boolean = false): String {
     val type = when (cell) {
         is Cell.Lte -> if (cell.tdd) "3GPP-E-UTRAN-TDD" else "3GPP-E-UTRAN-FDD"
@@ -43,10 +37,11 @@ fun accessNetworkInfo(cell: Cell, fiveGc: Boolean = false): String {
 
 private fun hex(v: Long, digits: Int) = v.toString(16).uppercase().padStart(digits, '0')
 
-/** Whether E-UTRA band [band] is TDD (TS 36.101 Table 5.5-1: bands 33 to 54). */
+// TS 36.101 clause 5.5 table 5.5-1
 fun lteTdd(band: Int): Boolean = band in 33..54
 
-/** Whether NR band [band] is TDD (TS 38.101-1 Table 5.2-1, TS 38.101-2 Table 5.2-1: the TDD bands, and FR2's). */
+// TS 38.101-1 clause 5.2 table 5.2-1
+// TS 38.101-2 clause 5.2 table 5.2-1
 fun nrTdd(band: Int): Boolean = band in NR_TDD || band >= 257
 
 private val NR_TDD = setOf(34, 38, 39, 40, 41, 46, 47, 48, 50, 51, 53, 54, 77, 78, 79, 90, 96, 101, 102, 104)

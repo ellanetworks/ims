@@ -8,9 +8,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// benchSubscription is the subscription of an MCPTT user with MMTel and presence: its IMPU, MSISDN and tel URI in
-// one service profile, and the iFCs of an MCPTT participating server, a TAS, a presence server and a third-party
-// registration (TS 24.379 §4.2, TS 24.229 §5.4.3.2).
 func benchSubscription() cx.IMSSubscription {
 	originating := cx.SessionCaseOriginatingRegistered
 	registered := cx.ProfilePartRegistered
@@ -59,7 +56,6 @@ func benchSubscription() cx.IMSSubscription {
 	}
 }
 
-// benchInvite is an originating MCPTT INVITE as the S-CSCF gets it from the P-CSCF.
 func benchInvite() *sip.Request {
 	req := sip.NewRequest("INVITE", sip.URI{Scheme: "sip", User: "mcptt-orig-part-server", Host: "mcptt." + homeDomain})
 	req.Header = nil
@@ -92,8 +88,7 @@ func benchInvite() *sip.Request {
 	return req
 }
 
-// BenchmarkTriggerPoints: an INVITE checked against each iFC of an MCPTT user's profile, as the chain of the
-// S-CSCF checks them over its returns from the ASs (TS 29.228 Annex B.2.3).
+// TS 29.228 clause B.2.3
 func BenchmarkTriggerPoints(b *testing.B) {
 	p := benchSubscription().ServiceProfiles[0]
 	ifcs := filterCriteria(p, true)
@@ -110,7 +105,6 @@ func BenchmarkTriggerPoints(b *testing.B) {
 			}
 		}
 
-		// The MCPTT participating server alone: the TAS is for MMTel.
 		if len(matched) != 1 || matched[0] != 4 {
 			b.Fatalf("iFCs %v matched, want 4", matched)
 		}
@@ -119,9 +113,7 @@ func BenchmarkTriggerPoints(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(len(ifcs)), "ns/ifc")
 }
 
-// BenchmarkOriginatingChain: what the S-CSCF does with the user data of a registration for each originating
-// request: the alias of P-Asserted-Identity, the service profile of the served user, its iFCs, and the trigger
-// points checked (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func BenchmarkOriginatingChain(b *testing.B) {
 	userData, err := cx.MarshalUserData(benchSubscription())
 	if err != nil {

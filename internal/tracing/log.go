@@ -7,7 +7,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LogHandler is h, with the trace_id and span_id of the span of each record's context, which join a log to its trace.
 func LogHandler(h slog.Handler) slog.Handler {
 	return logHandler{h}
 }

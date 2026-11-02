@@ -24,7 +24,7 @@ type sdpExchange struct {
 	offerFromUE   bool
 }
 
-// TS 29.213 Table 6.2.1: the m-lines sent with Flow-Status REMOVED.
+// TS 29.213 clause 6.2 table 6.2.1
 func (x sdpExchange) removed() []string {
 	var out []string
 
@@ -53,7 +53,10 @@ func (x sdpExchange) downlink() *sdp.Session {
 	return x.offer
 }
 
-// TS 29.213 §6.2, TS 29.214 §5.3.7, Annex A.1, TS 29.513 §7.2.3
+// TS 29.213 clause 6.2
+// TS 29.214 clause 5.3.7
+// TS 29.214 clause A.1
+// TS 29.513 clause 7.2.3
 func mediaComponents(x sdpExchange, flows map[int]flowNumbers) ([]policy.MediaComponent, error) {
 	if len(x.offer.Media) != len(x.answer.Media) {
 		return nil, errMediaMismatch
@@ -144,7 +147,7 @@ func mediaComponent(x sdpExchange, i int, flows map[int]flowNumbers) (policy.Med
 	return c, nil
 }
 
-// TS 29.213 Table 6.2.1 NOTE 5
+// TS 29.213 clause 6.2 table 6.2.1
 func negotiatedDirection(x sdpExchange, i int) sdp.Direction {
 	if x.offer.MediaDirection(i) == sdp.Inactive {
 		return sdp.Inactive
@@ -153,7 +156,7 @@ func negotiatedDirection(x sdpExchange, i int) sdp.Direction {
 	return x.answer.MediaDirection(i)
 }
 
-// TS 29.213 Table 6.2.1
+// TS 29.213 clause 6.2 table 6.2.1
 func flowStatus(dir sdp.Direction, fromUE, enabled bool) policy.FlowStatus {
 	switch {
 	case enabled:
@@ -190,24 +193,22 @@ func policyMediaType(t string) policy.MediaType {
 	return policy.MediaOther
 }
 
-// mediaTransport is how the IP flows of a media component are laid out (TS 29.213 Table 6.2.2).
+// TS 29.213 clause 6.2 table 6.2.2
 type mediaTransport struct {
 	muxed, tcp bool
 
-	// rtp media has RTCP next to it, on the next port unless muxed (RFC 3550, RFC 3605).
 	rtp bool
 
-	// rtcpOnly media is one RTCP flow, both ways: the MCPTT media plane control channel.
 	rtcpOnly bool
 }
 
-// TS 24.380 §4.3.3.1: m=application <RTCP port> udp MCPTT, a port carrying RTCP APP packets only.
+// TS 24.380 clause 4.3.3.1
 func mcpttControl(d sdp.MediaDesc) bool {
 	return strings.EqualFold(d.Type, "application") && strings.EqualFold(d.Proto, "udp") &&
 		slices.ContainsFunc(d.Formats, func(f string) bool { return strings.EqualFold(f, "MCPTT") })
 }
 
-// TS 29.213 Table 6.2.1: the transports sent with Flow-Status ENABLED whatever the SDP direction.
+// TS 29.213 clause 6.2 table 6.2.1
 func enabledTransport(d sdp.MediaDesc) bool {
 	return d.IsTCP() || strings.EqualFold(d.Proto, "UDP/DTLS/SCTP")
 }
@@ -216,7 +217,8 @@ func bandwidth(s *sdp.Session, i int, typ string) (uint64, bool) {
 	return s.Media[i].Bandwidth(typ)
 }
 
-// TS 29.213 Table 6.2.2, TS 29.214 Annex A.1
+// TS 29.213 clause 6.2 table 6.2.2
+// TS 29.214 clause A.1
 func subComponents(x sdpExchange, i int, dir sdp.Direction, t mediaTransport, flows map[int]flowNumbers) ([]policy.SubComponent, error) {
 	muxed, tcp := t.muxed, t.tcp
 
@@ -260,7 +262,6 @@ func subComponents(x sdpExchange, i int, dir sdp.Direction, t mediaTransport, fl
 
 	numbers := flowNumbers{sendrecv: dir == sdp.SendRecv}
 
-	// One flow: RTP and RTCP muxed, media without RTCP, or RTCP alone.
 	if muxed || !t.rtp {
 		numbers.rtp = 1
 		if seen {
@@ -335,7 +336,7 @@ func ipFlows(proto policy.Protocol, ue, remote sdp.Endpoint, uplink, downlink bo
 	return out
 }
 
-// TS 29.214 Annex A.1
+// TS 29.214 clause A.1
 func sourcePrefix(a netip.Addr) netip.Prefix {
 	if a.Is4() {
 		return netip.PrefixFrom(a, 32)

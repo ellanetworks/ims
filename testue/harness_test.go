@@ -19,7 +19,6 @@ var (
 	testOPc  = uetest.OPc
 )
 
-// network is the network of the UEs of the tests.
 type network struct{ *uetest.Network }
 
 func newNetwork(t *testing.T) *network { return &network{uetest.New(t)} }

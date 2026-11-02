@@ -5,27 +5,26 @@ import (
 	"fmt"
 )
 
-// Frame types of AMR and AMR-WB beyond the speech modes (RFC 4867 §4.3.2; TS 26.101, TS 26.201 Table 1a).
+// RFC 4867 section 4.3.2
+// TS 26.101
+// TS 26.201 clause 4.1.1
 const (
-	// FrameSpeechLost is a speech frame lost in transmission, AMR-WB only.
 	FrameSpeechLost = 14
-	// FrameNoData is no frame: none produced (DTX) or none sent.
-	FrameNoData = 15
+	FrameNoData     = 15
 )
 
-// NoModeRequest is the CMR of no codec mode request (RFC 4867 §4.3.1).
+// RFC 4867 section 4.3.1
 const NoModeRequest = 15
 
-// Frame is a frame of a single channel: its frame type FT, its quality indicator Q, and its bits d(0)..d(K-1)
-// packed from the most significant bit of the first octet, the last octet padded with zeros (RFC 4867 §4.3.3).
+// RFC 4867 section 4.3.3
 type Frame struct {
 	Type uint8
 	Good bool
 	Bits []byte
 }
 
-// Payload is the RTP payload of a single-channel session, without interleaving or frame CRCs (RFC 4867 §4.3, §4.4):
-// a codec mode request (15 for none) and the frames of consecutive 20 ms frame-blocks.
+// RFC 4867 section 4.3
+// RFC 4867 section 4.4
 type Payload struct {
 	CMR    uint8
 	Frames []Frame
@@ -36,8 +35,6 @@ var (
 	ErrShort     = errors.New("amr: payload shorter than its table of contents")
 )
 
-// Bits is the number of bits of a frame of type ft of c, and whether c has that frame type: those of the speech
-// modes, of SID (FT 8 for AMR, 39 bits; FT 9 for AMR-WB, 40 bits), none for SPEECH_LOST (AMR-WB) and NO_DATA.
 func (c Codec) Bits(ft uint8) (int, bool) {
 	switch {
 	case int(ft) < len(c.FrameBits):
@@ -64,8 +61,7 @@ func (c Codec) check(f Frame) (int, error) {
 	return n, nil
 }
 
-// ParseStorage is the first frame of b in the storage format (RFC 4867 §5.3): its header octet with FT and Q, then
-// its bits, octet-aligned. It returns the octets the frame took.
+// RFC 4867 section 5.3
 func (c Codec) ParseStorage(b []byte) (Frame, int, error) {
 	if len(b) == 0 {
 		return Frame{}, 0, ErrShort
@@ -88,7 +84,7 @@ func (c Codec) ParseStorage(b []byte) (Frame, int, error) {
 	return f, size, nil
 }
 
-// AppendStorage appends f in the storage format to dst (RFC 4867 §5.3).
+// RFC 4867 section 5.3
 func (c Codec) AppendStorage(dst []byte, f Frame) ([]byte, error) {
 	if _, err := c.check(f); err != nil {
 		return dst, err
@@ -102,8 +98,9 @@ func (c Codec) AppendStorage(dst []byte, f Frame) ([]byte, error) {
 	return append(append(dst, h), f.Bits...), nil
 }
 
-// ParsePayload is the RTP payload b in the bandwidth-efficient mode (RFC 4867 §4.3) or the octet-aligned mode
-// (§4.4). A frame type for future use makes the whole payload discarded (§4.3.2).
+// RFC 4867 section 4.3
+// RFC 4867 section 4.4
+// RFC 4867 section 4.3.2
 func (c Codec) ParsePayload(b []byte, octetAligned bool) (Payload, error) {
 	r := bitReader{b: b}
 
@@ -165,8 +162,8 @@ func (c Codec) ParsePayload(b []byte, octetAligned bool) (Payload, error) {
 	return p, nil
 }
 
-// AppendPayload appends p as an RTP payload in the bandwidth-efficient or the octet-aligned mode to dst (RFC 4867
-// §4.3.4, §4.4.4 in normal order), padded to an octet with zeros.
+// RFC 4867 section 4.3.4
+// RFC 4867 section 4.4.4
 func (c Codec) AppendPayload(dst []byte, p Payload, octetAligned bool) ([]byte, error) {
 	if len(p.Frames) == 0 {
 		return dst, errors.New("amr: payload without a frame")
@@ -224,7 +221,6 @@ func boolBit(b bool) uint32 {
 	return 0
 }
 
-// bitReader reads bits from the most significant bit of each octet; past the end, zeros.
 type bitReader struct {
 	b   []byte
 	pos int
@@ -250,7 +246,6 @@ func (r *bitReader) read(n int) uint32 {
 
 func (r *bitReader) align() { r.pos = (r.pos + 7) / 8 * 8 }
 
-// bitWriter appends bits from the most significant bit of each octet.
 type bitWriter struct {
 	b []byte
 	n int

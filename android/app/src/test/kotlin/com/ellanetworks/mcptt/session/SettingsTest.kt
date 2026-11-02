@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SettingsTest {
-    // The settings as the session reads them: mcptt/mobile/contract_test.go checks this file against its settings.
     @Test
     fun encodes() {
         val s = Settings(

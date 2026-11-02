@@ -1,8 +1,5 @@
 //go:build e2e && linux
 
-// Package e2e runs the scenarios of MMTel and MCPTT through Ella IMS and Open5GS (compose.yaml): each subscriber a
-// testue UE in the network namespace of a UE of the RAN simulator; for MCPTT, an MCPTT client on its agent, the IMS
-// the MCPTT AS's by its iFCs (provision.js). Run through run.sh, after up.sh.
 package e2e
 
 import (
@@ -29,7 +26,6 @@ const homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
 
 var pcscf = netip.MustParseAddrPort("10.80.0.5:5060")
 
-// subscriber is a subscriber of provision.js, in the UE container whose PID is in pidEnv.
 type subscriber struct {
 	imsi, msisdn, imei string
 	pidEnv             string
@@ -130,7 +126,6 @@ func tunAddr() (netip.Addr, error) {
 	return netip.Addr{}, errors.New("no IPv4 address on " + tunDevice)
 }
 
-// newUE makes the test UE of subscriber i in its UE container, from cfg with the subscriber, network and transport set.
 func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE {
 	t.Helper()
 
@@ -139,7 +134,6 @@ func newUE(t *testing.T, i int, tr sip.Transport, cfg testue.Config) *testue.UE 
 	return u
 }
 
-// newUEIn is newUE, and the UE's network namespace and its address there.
 func newUEIn(t *testing.T, i int, tr sip.Transport, cfg testue.Config) (*testue.UE, *netns, netip.Addr) {
 	t.Helper()
 
@@ -270,7 +264,6 @@ func pair(t *testing.T, tr sip.Transport) (*testue.UE, *testue.UE) {
 	return pairWith(t, tr, testue.Config{})
 }
 
-// pairWith registers the two subscribers' UEs, both configured from cfg.
 func pairWith(t *testing.T, tr sip.Transport, cfg testue.Config) (*testue.UE, *testue.UE) {
 	a, b := newUE(t, 0, tr, cfg), newUE(t, 1, tr, cfg)
 	register(t, a)
@@ -288,8 +281,6 @@ func TestRegister(t *testing.T) {
 }
 
 func TestCall(t *testing.T) {
-	// The Open5GS HSS provisions numbers as tel:<digits>, without the "+"
-	// TS 23.003 §13.4 requires, so calls by number cannot reach the callee.
 	targets := map[string]string{
 		"sip-msisdn": "sip:" + subscribers[1].msisdn + "@" + homeDomain,
 	}

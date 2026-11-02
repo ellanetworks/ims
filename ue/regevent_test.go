@@ -103,7 +103,6 @@ func (no *notifier) notify(state string, info reginfo.Reginfo) *sip.Response {
 
 	no.send(no.request(state, info))
 
-	// A short T1 can retransmit a request answered already, such as the SUBSCRIBE, before its answer arrives.
 	for {
 		r := no.n.PS.Recv()
 
@@ -170,8 +169,6 @@ func (no *notifier) request(state string, info reginfo.Reginfo) *sip.Request {
 	req.Header.Set("Call-ID", no.sub.Header.CallID())
 	req.Header.Set("CSeq", strconv.Itoa(no.cseq)+" NOTIFY")
 	req.Header.Set("Contact", scscfContact)
-	// The P-CSCF record-routes the NOTIFY, which makes the route set of the subscriber (RFC 6665 §4.4.1,
-	// TS 24.229 §5.2.6.3.5).
 	req.Header.Add("Record-Route", pcscfRR)
 	req.Header.Add("Event", "reg")
 	req.Header.Add("Subscription-State", state)
@@ -248,7 +245,6 @@ func TestSubscribeAfterRegistration(t *testing.T) {
 
 	no.active()
 
-	// RFC 6665 §4.4.1: the NOTIFY makes the dialog.
 	if s := u.Subscription(); s.ID.RemoteTag != no.toTag {
 		t.Fatalf("subscription = %+v", s)
 	}
@@ -362,7 +358,6 @@ func TestResubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// RFC 6665 §4.4.1: its NOTIFY makes the dialog.
 	no.active()
 
 	if s := u.Subscription(); !s.Active || s.ID.CallID != req.Header.CallID() {
@@ -461,7 +456,6 @@ func TestDeactivated(t *testing.T) {
 	}
 }
 
-// deregistration is the reason of the first event of u that tells its registration ended.
 func deregistration(t *testing.T, u *testUE) Deregistration {
 	t.Helper()
 
@@ -479,9 +473,8 @@ func deregistration(t *testing.T, u *testUE) Deregistration {
 	}
 }
 
-// TS 24.229 §5.1.1.7 2), §5.4.1.2.2 step 2: a registration of the private user identity without the multiple
-// registration mechanism, from another contact, replaces the UE's binding, the registration staying active; the UE
-// is deregistered, unregistered, and does not register again by itself.
+// TS 24.229 clause 5.1.1.7
+// TS 24.229 clause 5.4.1.2.2
 func TestBindingReplaced(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, kernel := n.newUE(Config{T1: 10 * time.Millisecond})
@@ -578,6 +571,8 @@ func TestOneIMPUTerminated(t *testing.T) {
 	}
 }
 
+// TS 24.229 clause 5.1.1.6.1
+// TS 24.229 clause 5.1.1.7
 func TestDeregistrationEndsTheSubscription(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -598,7 +593,6 @@ func TestDeregistrationEndsTheSubscription(t *testing.T) {
 		t.Fatal("subscription active after deregistration")
 	}
 
-	// TS 24.229 §5.1.1.6.1, §5.1.1.7: the subscription is considered ended, as if unsubscribed, without a SUBSCRIBE.
 	n.RecvNone(n.PS, 300*time.Millisecond)
 	n.RecvNone(n.PC, 0)
 }
@@ -683,8 +677,8 @@ func TestReginfoVersions(t *testing.T) {
 	no.accept(req, f)
 }
 
-// A document the UE cannot read is answered 400, which keeps the subscription (RFC 6665 §4.2.2), and a refresh asks
-// for the full state again (RFC 3680 §5.2); the registration stays.
+// RFC 6665 section 4.2.2
+// RFC 3680 section 5.2
 func TestReginfoUnreadable(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{})

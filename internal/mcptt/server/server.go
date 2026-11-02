@@ -1,7 +1,3 @@
-// Package server is the wiring of the MCPTT server on a sip/ua agent: the functions of the requests, by the
-// distinction of TS 24.379 §6.3.1, and their strands. S1 has registration and service authorisation (§7.3), the
-// affiliation PUBLISH (§9.2.2.2.3), and the on-demand prearranged group calls (§10.1.1) of the participating and
-// controlling functions, co-located [PM 11]; the conference event package comes in S2.
 package server
 
 import (
@@ -24,47 +20,24 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// strands is the number of strands the requests outside calls share: those of an IMS public user identity go on one,
-// in order.
 const strands = 64
 
 type Config struct {
-	// UA configures the agent; New sets its StrandFor, OnInvite and OnRequest, adds REGISTER, PUBLISH and SUBSCRIBE
-	// to its Allow, and, of its SessionTimer, the refresher "uac" of the 200s of the calls (TS 24.379 §6.3.3.2.3.2
-	// step 2) and their interval of 1800 s (RFC 4028 §4) when it has none. Through the IMS, its Contact is that of the
-	// server's subscriptions to the reg event package, which go to the S-CSCF of the third-party REGISTERs by their
-	// Route, as the INVITEs to the members do (participating.IMS): Prepare sends a request to its first Route, and
-	// in direct mode to the host of the Request-URI, the contact of a client (Prepare). Through the IMS, the
-	// transaction layer the agent makes of UA.Transaction is filtered by the trust domain: UA.Layer is not allowed.
-	// UA.Logger is the log of the server too, and of the layer of UA.Transaction without one; slog.Default() if nil.
-	// New has the layer log each server transaction once it ends (logTransaction), after its OnServerDone if any.
-	UA     ua.Config
-	Source settings.Source
-	Mode   registrar.Mode
-	// TrustedNetworks are the IMS core's nodes, the S-CSCFs among them: the trust domain of TS 24.229 §4.4.1, whose
-	// requests only the server takes through the IMS, required then; unused in direct mode [PM 14]. They must not
-	// cover the UEs.
+	UA              ua.Config
+	Source          settings.Source
+	Mode            registrar.Mode
 	TrustedNetworks []netip.Prefix
-	// HomeDomain is the IMS's, through the IMS: the host of the SIP URI of a telephone number, "user=phone", that the
-	// server subscribes with to the reg event package of an IMPU of a tel URI (TS 24.229 §5.7.1.1 a; TS 23.003 §13.4).
-	HomeDomain string
-	// Tokens checks the access tokens; registrar.Unvalidated if nil.
-	Tokens registrar.TokenCheck
-	// Media is the media plane of the calls, closed by Shutdown; without one, the server takes no call: an INVITE gets
-	// a 500.
-	Media *media.Relay
-	// State, if any, keeps the registrations and the affiliations across restarts, through the IMS: Restore puts them
-	// back.
-	State State
+	HomeDomain      string
+	Tokens          registrar.TokenCheck
+	Media           *media.Relay
+	State           State
 }
 
-// State keeps the bindings of the registrar and the affiliations of the participating function.
 type State interface {
 	registrar.Store
 	affiliation.Store
 }
 
-// Server is the MCPTT server: its agent, the participating and controlling functions, co-located [PM 11].
 type Server struct {
 	cfg   Config
 	agent *ua.Agent
@@ -74,7 +47,6 @@ type Server struct {
 	controlling *affiliation.Controlling
 	part        *affiliation.Participating
 
-	// calls are the participating and controlling functions of the calls.
 	partCalls *participating.Participating
 	ctrlCalls *controlling.Controlling
 
@@ -82,7 +54,6 @@ type Server struct {
 	strands [strands]*ua.Strand
 }
 
-// New makes the server and its agent, which the caller serves.
 func New(cfg Config) (*Server, error) {
 	if cfg.Mode == registrar.ThroughIMS {
 		switch {
@@ -107,7 +78,6 @@ func New(cfg Config) (*Server, error) {
 
 	if cfg.Mode == registrar.ThroughIMS {
 		u.Transaction.Filter = s.trustDomain(u.Transaction.Filter)
-		// Trace context crosses the flows of the trust domain only (W3C Trace Context §6.1); in direct mode, none.
 		u.Transaction.TraceContext = func(f sip.Flow) bool { return s.trusted(f.Remote.Addr()) }
 	}
 
@@ -162,7 +132,6 @@ func New(cfg Config) (*Server, error) {
 		TracerProvider: a.Layer().TracerProvider(),
 	})
 
-	// Direct mode reaches the clients at their contacts [PM 14]; through the IMS, at their S-CSCF.
 	var router participating.Router = participating.IMS{Source: cfg.Source}
 	if cfg.Mode == registrar.Direct {
 		router = participating.Direct{}
@@ -180,19 +149,15 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// hop is MCPTT-3 in process: the participating function's requests to the controlling function, the SIP hop elided
-// [PM 11].
 type hop struct{ s *Server }
 
 func (h hop) Group(ctx context.Context, o *participating.Origination) { h.s.ctrlCalls.Group(ctx, o) }
 
 func (h hop) GroupCalls(user sip.URI) []sip.URI { return h.s.ctrlCalls.GroupCalls(user) }
 
-// defaultSessionInterval is the session interval of the calls without one configured (RFC 4028 §4: 1800 s
-// recommended).
+// RFC 4028 section 4
 const defaultSessionInterval = 1800 * time.Second
 
-// bindings are the registrar's, as the participating function reads them.
 type bindings struct{ *registrar.Registrar }
 
 func (b bindings) Resolve(req *sip.Request, ids []sip.URI, client string) (sip.URI, bool) {
@@ -200,15 +165,8 @@ func (b bindings) Resolve(req *sip.Request, ids []sip.URI, client string) (sip.U
 	return r.MCPTTID, ok
 }
 
-// Agent is the agent of the server.
 func (s *Server) Agent() *ua.Agent { return s.agent }
 
-// Restore puts back the registrations and affiliations of State, before the agent serves: the bindings registrar
-// Restore keeps, and the affiliations of their clients as kept, configured or not, published to the controlling
-// function. The implicit affiliation to configured groups runs at service authorisation (TS 24.379 §9.2.2.2.15),
-// which a restore is not, and the settings change only through settings.Live while the server runs: none changed
-// while it was down, and a configured group a client left by its publication (§9.2.2.2.3 step 14 a ii) stays left.
-// Resubscribe follows, once the agent serves.
 func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, affiliations []affiliation.Record) {
 	restored := s.reg.Restore(ctx, registrations)
 
@@ -226,12 +184,6 @@ func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, 
 	s.log.InfoContext(ctx, "registrations restored", slog.Int("bindings", len(bound)))
 }
 
-// Revoke applies the change of the settings from before to after, of settings.Live's OnChange, to the registrations,
-// affiliations and calls at once: the affiliations to the groups no longer of their users removed, the clients of the
-// users no longer authorised at their IMPUs logged off, those of the others affiliated to the configured groups the
-// change adds to their users and de-affiliated from those it removes (registrar.Revoke), and the members no longer of
-// a group removed from its call, the call of a group deleted released (controlling.Revoke). It waits for none of the
-// strands it posts to.
 func (s *Server) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	s.controlling.Revoke()
 	s.part.Revoke(ctx, s.agent.Layer().Clock().Now(), s.controlling.Eligible)
@@ -239,13 +191,8 @@ func (s *Server) Revoke(ctx context.Context, before, after *settings.Snapshot) {
 	s.ctrlCalls.Revoke(ctx)
 }
 
-// Resubscribe subscribes to the reg event package of the IMPUs of the bindings restored, once the agent serves
-// (registrar.Resubscribe).
 func (s *Server) Resubscribe(ctx context.Context) { s.reg.Resubscribe(ctx) }
 
-// Shutdown stops the server: the timers of the registrar, so that no binding expires nor subscription is made while
-// the agent closes, then the agent, ending its sessions and subscriptions until ctx is done, and the media relay last,
-// which the handlers use while the agent closes.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.reg.Close()
 
@@ -258,25 +205,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Registrar is the registrar and service authorisation.
 func (s *Server) Registrar() *registrar.Registrar { return s.reg }
 
-// Participating and Controlling are the affiliation states of the functions.
 func (s *Server) Participating() *affiliation.Participating { return s.part }
 
 func (s *Server) Controlling() *affiliation.Controlling { return s.controlling }
 
-// Calls is the controlling function of the group calls.
 func (s *Server) Calls() *controlling.Controlling { return s.ctrlCalls }
 
-// Now is the time of the agent's clock, the server's.
 func (s *Server) Now() time.Time { return s.agent.Layer().Clock().Now() }
 
-// strandFor is the strand of the IMS public user identity of a REGISTER or a PUBLISH outside a dialog (the
-// architecture's strands of the user, by its identity known before its body is read): To of a REGISTER, the
-// originator of a PUBLISH. An INVITE is on the strand of the call of its group, of the <mcptt-request-uri> of its
-// mcptt-info, or of the session of the MCPTT session identity of its Request-URI (TS 24.379 §4.5, §10.1.1.4.2 step 9).
-// The others get one of their own.
 func (s *Server) strandFor(req *sip.Request) *ua.Strand {
 	var id sip.URI
 
@@ -304,12 +242,10 @@ func (s *Server) strandFor(req *sip.Request) *ua.Strand {
 	return s.impuStrand(settings.Key(id))
 }
 
-// impuStrand is the strand of the IMS public user identity of key k, of its REGISTERs and PUBLISHes.
 func (s *Server) impuStrand(k string) *ua.Strand {
 	return s.strands[maphash.String(s.seed, k)%strands]
 }
 
-// callStrand is the strand of the call of an initial INVITE, nil if none.
 func (s *Server) callStrand(req *sip.Request) *ua.Strand {
 	if st, ok := s.ctrlCalls.SessionStrand(req.URI); ok {
 		return st
@@ -342,8 +278,8 @@ func (s *Server) callStrand(req *sip.Request) *ua.Strand {
 	return s.ctrlCalls.Strand(group)
 }
 
-// target is what a Request-URI identifies (TS 24.379 §6.3.1): a public service identity of a function, a group, an
-// MCPTT session identity, or none of the server's (§6.3.7.1).
+// TS 24.379 clause 6.3.1
+// TS 24.379 clause 6.3.7.1
 type target int
 
 const (
@@ -367,8 +303,6 @@ func (s *Server) target(u sip.URI) target {
 	case k == settings.Key(snap.ParticipatingPSI()):
 		return targetParticipating
 	case k == settings.Key(snap.ControllingPSI()):
-		// An MCPTT session identity, a "gr" of the controlling PSI, of no session: not allocated, or released (TS
-		// 24.379 §6.3.7.1; §10.1.1.4.5.1 step 2: "not present").
 		if _, ok := u.Params.Get(controlling.SessionParam); ok {
 			return targetNone
 		}
@@ -381,17 +315,8 @@ func (s *Server) target(u sip.URI) target {
 	return targetNone
 }
 
-// onInvite distinguishes the initial INVITEs (TS 24.379 §6.3.1.1). One to the participating PSI is a "SIP INVITE
-// request for originating participating MCPTT function". The controlling function takes only what the participating
-// function hands it in process: an INVITE from outside to the controlling PSI or a group, of another participating
-// function or a non-controlling function [PM 11], gets a 403, as one to the session identity of a session, a rejoin
-// (§10.1.1.4.5), not supported yet; one to a session identity of no session (§10.1.1.4.5.1 step 2) or another
-// Request-URI a 404 (§6.3.7.1). Through the IMS, an INVITE comes from the S-CSCF, over
-// ISC by the originating iFC of the MCPTT AS (TS 24.229 §5.4.3.2 step 5): one from outside the trust domain gets a
-// 403 (trustDomain). The server answers it
-// as a UA (§5.7.2), the INVITEs it sends the members its own (§5.7.5.1: an initiating B2BUA): they do not carry the
-// original dialog identifier of the S-CSCF in its Route, which §5.7.5.1 makes optional, and its Record-Route, copied into the
-// responses (RFC 3261 §12.1.1), routes the requests of the dialog.
+// TS 24.379 clause 6.3.1.1
+// TS 24.379 clause 6.3.7.1
 func (s *Server) onInvite(ctx context.Context, r *ua.Request) ua.Handler {
 	req := r.Message()
 
@@ -407,9 +332,8 @@ func (s *Server) onInvite(ctx context.Context, r *ua.Request) ua.Handler {
 	return ua.Handler{}
 }
 
-// originator are the IMS public user identities of the originator of a request: of P-Asserted-Identity through the
-// IMS, from the trust domain only (TS 24.229 §5.7.1.4 b i; RFC 3325 §5), of From in direct mode [PM 14], where
-// nothing asserts one.
+// TS 24.229 clause 5.7.1.4
+// RFC 3325 section 5
 func (s *Server) originator(req *sip.Request) []sip.URI {
 	if s.cfg.Mode == registrar.Direct {
 		from, err := req.Header.From()
@@ -437,9 +361,6 @@ func (s *Server) originator(req *sip.Request) []sip.URI {
 	return out
 }
 
-// onRequest handles the requests outside dialogs. Through the IMS, they come from the trust domain only
-// (trustDomain): the originator of a PUBLISH is the one its P-Asserted-Identity asserts (TS 24.379 §9.2.2.2.3 step
-// 2).
 func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 	req := r.Message()
 
@@ -451,7 +372,6 @@ func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 			Request: r, Config: s.cfg.Source.Current(), Now: s.agent.Layer().Clock().Now(), Originator: s.originator(req),
 		}, bindings{s.reg})
 	case "SUBSCRIBE":
-		// §6.3.1.4, §6.3.7.1: the conference event package comes in S2, and no other package is served.
 		if s.target(req.URI) == targetNone {
 			_ = r.Reject(404)
 			return
@@ -465,21 +385,14 @@ func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 	}
 }
 
-// trusted reports whether a is of the trust domain (TS 24.229 §4.4.1): of TrustedNetworks.
+// TS 24.229 clause 4.4.1
 func (s *Server) trusted(a netip.Addr) bool {
 	a = a.Unmap()
 
 	return slices.ContainsFunc(s.cfg.TrustedNetworks, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
-// trustDomain is the filter of the transaction layer through the IMS, after next if any: a request from outside the
-// trust domain gets a 403, an ACK is dropped (TS 24.229 §4.4.1). Every request of the server's users comes through
-// the S-CSCF, those within a dialog too, on the route it recorded (RFC 3261 §12.2.1.1): one from elsewhere would
-// bypass the P-CSCF and S-CSCF (their policy, charging and checks of SDP), as a re-INVITE of a UE sent to the
-// server's address to redirect its media. A third-party REGISTER is of an S-CSCF (§5.4.1.7), the asserted identity
-// of a request, its served user, is of the trust domain only (§5.7.1.4 b i; RFC 3325 §5), and the server, without
-// credentials of the users, cannot challenge a request as §5.7.1.4 b ii has an AS do. Responses pass: a transaction
-// matches only the requests the server sent.
+// TS 24.229 clause 4.4.1
 func (s *Server) trustDomain(next func(sip.Message) error) func(sip.Message) error {
 	return func(m sip.Message) error {
 		if req, ok := m.(*sip.Request); ok && !s.trusted(req.Flow.Remote.Addr()) {
@@ -499,8 +412,6 @@ func (s *Server) trustDomain(next func(sip.Message) error) func(sip.Message) err
 
 var errUntrusted = errors.New("server: from outside sip.trusted_networks")
 
-// logTransaction logs each server transaction once it ends, after next if any, as Ella IMS does: of the requests of
-// a call, at info, the others at debug. Its request and response are summarised, their bodies never logged.
 func (s *Server) logTransaction(
 	next func(context.Context, *sip.Request, *sip.Response, time.Duration),
 ) func(context.Context, *sip.Request, *sip.Response, time.Duration) {

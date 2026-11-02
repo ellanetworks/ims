@@ -1,4 +1,3 @@
-// Package n5 is the NF service consumer side of Npcf_PolicyAuthorization (TS 29.514) over cleartext HTTP/2.
 package n5
 
 import (
@@ -8,7 +7,9 @@ import (
 	"strings"
 )
 
-// TS 29.514 §5.3.1, §5.5.2.2, §5.5.3.2. The PCF notifies at {notifUri}/notify and {notifUri}/terminate.
+// TS 29.514 clause 5.3.1
+// TS 29.514 clause 5.5.2.2
+// TS 29.514 clause 5.5.3.2
 const (
 	AppSessionsPath           = "/npcf-policyauthorization/v1/app-sessions"
 	EventsSubscriptionSegment = "events-subscription"
@@ -17,14 +18,14 @@ const (
 	TerminateSegment          = "terminate"
 )
 
-// TS 29.514 §5.2.2.2
+// TS 29.514 clause 5.2.2.2
 const (
 	ContentJSON       = "application/json"
 	ContentMergePatch = "application/merge-patch+json"
 	ContentProblem    = "application/problem+json"
 )
 
-// TS 29.514 §5.8
+// TS 29.514 clause 5.8
 const (
 	FeatureIMSSBI              = 5
 	FeatureNetLoc              = 6
@@ -35,8 +36,8 @@ const (
 	FeaturePatchCorrection     = 28
 )
 
-// SupportedFeatures is a feature bitmask in hexadecimal, the highest-numbered features first (TS 29.571 §5.2.2,
-// TS 29.500 §6.6.2). Feature n is bit n-1.
+// TS 29.571 clause 5.2.2
+// TS 29.500 clause 6.6.2
 type SupportedFeatures string
 
 func Features(n ...int) SupportedFeatures {
@@ -73,14 +74,13 @@ func (f SupportedFeatures) Valid() bool {
 	return err == nil
 }
 
-// Has reports whether feature n is set. A malformed bitmask has none.
 func (f SupportedFeatures) Has(n int) bool {
 	b, err := f.bits()
 
 	return err == nil && n > 0 && b.Bit(n-1) == 1
 }
 
-// Intersect returns the features set in both, as the PCF negotiates them (TS 29.500 §6.6.2).
+// TS 29.500 clause 6.6.2
 func (f SupportedFeatures) Intersect(g SupportedFeatures) SupportedFeatures {
 	a, errA := f.bits()
 	b, errB := g.bits()
@@ -92,17 +92,15 @@ func (f SupportedFeatures) Intersect(g SupportedFeatures) SupportedFeatures {
 	return SupportedFeatures(new(big.Int).And(a, b).Text(16))
 }
 
-// BitRate is a bit rate in bit/s, encoded as a TS 29.571 §5.2.2 BitRate string.
+// TS 29.571 clause 5.2.2
 type BitRate uint64
 
 var bitRateUnits = map[string]uint64{"bps": 1, "Kbps": 1e3, "Mbps": 1e6, "Gbps": 1e9, "Tbps": 1e12}
 
-// MarshalText writes the rate in bps, so that no precision is lost.
 func (r BitRate) MarshalText() ([]byte, error) {
 	return []byte(strconv.FormatUint(uint64(r), 10) + " bps"), nil
 }
 
-// UnmarshalText reads `^\d+(\.\d+)? (bps|Kbps|Mbps|Gbps|Tbps)$`, rounding a fraction of a bit/s to the nearest.
 func (r *BitRate) UnmarshalText(text []byte) error {
 	num, unit, ok := strings.Cut(string(text), " ")
 	mult, known := bitRateUnits[unit]

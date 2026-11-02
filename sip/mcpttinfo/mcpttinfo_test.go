@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/xmltree"
 )
 
-// The instances of testdata are valid against the schema of F.1.2.
 func TestDecodeTestdata(t *testing.T) {
 	for _, c := range []struct {
 		file  string
@@ -114,15 +113,12 @@ func TestDecodeTestdata(t *testing.T) {
 	}
 }
 
-// roundTrip checks that info encodes, decodes to itself, and encodes again to the same bytes.
 func roundTrip(t *testing.T, info Info) {
 	t.Helper()
 
 	roundTripKept(t, info, nil)
 }
 
-// roundTripKept is roundTrip of the info Decode returned with decodeErr: the malformed elements it kept give the same
-// error again.
 func roundTripKept(t *testing.T, info Info, decodeErr error) {
 	t.Helper()
 
@@ -145,8 +141,9 @@ func roundTripKept(t *testing.T, info Info, decodeErr error) {
 	}
 }
 
-// TS 24.379 §10.1.1.3.1.1 steps 2 and 5, §6.3.2.1.3 step 8, F.1.3: the participating function sets
-// <mcptt-calling-user-id> in the body it copies from the client's INVITE; what it does not know passes on.
+// TS 24.379 clause 10.1.1.3.1.1
+// TS 24.379 clause 6.3.2.1.3
+// TS 24.379 clause F.1.3
 func TestRelaySetElement(t *testing.T) {
 	b, err := os.ReadFile("testdata/prearranged.xml")
 	if err != nil {
@@ -181,8 +178,6 @@ func TestRelaySetElement(t *testing.T) {
 	}
 }
 
-// F.1.3 2, 3: a malformed element is kept, not decoded, the others decoded; of an element given twice, the first
-// well-formed counts and the others are kept. A relay that sets an element passes them on.
 func TestDecodeMalformed(t *testing.T) {
 	for _, c := range []struct {
 		name, elem string
@@ -220,7 +215,6 @@ func TestDecodeMalformed(t *testing.T) {
 			t.Errorf("%s: %+v", c.name, info.Params)
 		}
 
-		// §10.1.1.3.1.1 step 5: set, and relayed with the element it could not decode.
 		info.Params.CallingUserID = URI("sip:bob@x")
 
 		out, err := Encode(info)
@@ -260,7 +254,6 @@ func TestDecodeMalformed(t *testing.T) {
 	}
 }
 
-// F.1.2: the <anyExt> alternative of contentType, for a value of a later release.
 func TestContentExtension(t *testing.T) {
 	info, err := Decode([]byte(`<mcpttinfo xmlns="urn:3gpp:ns:mcpttInfo:1.0"><mcptt-Params>` +
 		`<emergency-ind><anyExt><later>x</later></anyExt></emergency-ind></mcptt-Params></mcpttinfo>`))
@@ -280,7 +273,6 @@ func TestContentExtension(t *testing.T) {
 	roundTrip(t, info)
 }
 
-// F.1.3 8: an <emergency-ind> of "false" cancels an emergency call; absent, it does not.
 func TestBool(t *testing.T) {
 	var absent *Content
 

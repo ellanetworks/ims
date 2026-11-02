@@ -34,19 +34,13 @@ type registerRequest struct {
 	path      string
 	out       []*outgoing
 
-	// regID is set when a Contact has a reg-id, used or not, and outbound when the UE supports
-	// outbound (RFC 5626 §4.2.1).
 	regID, outbound bool
 
-	// authFailed reports that the UE failed IMS-AKA.
 	authFailed bool
 
-	// hss is the HSS that authenticated the UE in this request, if it did, and initial tells that the challenge it
-	// answered was to an unprotected REGISTER, the initial registration procedure (TS 24.229 §5.4.1.1 item 1).
 	hss     db.HSS
 	initial bool
 
-	// event is the registration the REGISTER made, changed or ended, for the ASs (TS 24.229 §5.4.1.7).
 	event *registration
 }
 
@@ -54,14 +48,12 @@ type contactRequest struct {
 	addr    sip.Address
 	expires time.Duration
 
-	// instance is the contact's instance ID (RFC 5626 §4.1), and regID its reg-id when the multiple
-	// registration mechanism applies to it (RFC 5626 §6), or else 0.
 	instance string
 	regID    int64
 }
 
-// binds reports whether stored is the binding the contact names: the same flow, or the same contact
-// address (RFC 5626 §6, RFC 3261 §10.3).
+// RFC 5626 section 6
+// RFC 3261 section 10.3
 func (c contactRequest) binds(stored db.Contact) bool {
 	if c.regID != 0 {
 		return stored.RegID == c.regID && stored.Instance == c.instance
@@ -76,8 +68,6 @@ func (c contactRequest) binds(stored db.Contact) bool {
 	return err == nil && u.Equivalent(c.addr.URI)
 }
 
-// authKey is what the REGISTER authenticates: its flow of the public user identity, or the private identity's
-// registration.
 func (rr *registerRequest) authKey() authKey {
 	for _, c := range rr.contacts {
 		if c.regID != 0 {
@@ -88,14 +78,13 @@ func (rr *registerRequest) authKey() authKey {
 	return authKey{impi: rr.impi}
 }
 
-// flows reports whether the REGISTER registers or deregisters a flow: whether the multiple
-// registration mechanism applies to it (RFC 5626 §6).
+// RFC 5626 section 6
 func (rr *registerRequest) flows() bool {
 	return slices.ContainsFunc(rr.contacts, func(c contactRequest) bool { return c.regID != 0 })
 }
 
-// firstHopLacksOutbound reports whether the UE asks for outbound through a first hop that does not
-// support it (RFC 5626 §6, TS 24.229 §5.4.1.2.2 steps 3 and 4B).
+// RFC 5626 section 6
+// TS 24.229 clause 5.4.1.2.2
 func (rr *registerRequest) firstHopLacksOutbound() bool {
 	return rr.regID && rr.outbound && !outbound(rr.path)
 }
@@ -114,8 +103,6 @@ func (rr *registerRequest) deregister() bool {
 	return true
 }
 
-// register handles a REGISTER: the third-party REGISTERs of the registration event it makes, if any, are held until
-// responded closes.
 func (r *Registrar) register(ctx context.Context, req *sip.Request, responded <-chan struct{}) (*sip.Response, []*outgoing) {
 	rr, res := r.parse(req)
 	if res != nil {
@@ -149,7 +136,6 @@ func (r *Registrar) handleRegister(ctx context.Context, rr *registerRequest, res
 
 	res := r.handleLocked(ctx, rr)
 
-	// Queued with the private identity locked, the third-party REGISTERs follow the order of the registration events.
 	if res.StatusCode == 200 && rr.event != nil {
 		rr.event.res = res
 		r.notifyASs(ctx, *rr.event, responded)
@@ -167,8 +153,6 @@ func (r *Registrar) handleLocked(ctx context.Context, rr *registerRequest) *sip.
 		return r.answer(ctx, rr, rr.authKey(), ch)
 	}
 
-	// A response to the challenge of another public user identity of the private identity does not answer it
-	// (TS 24.229 §5.4.1.2.2 step 4).
 	if k, ch := r.challengeOf(rr.impi, rr.creds); ch != nil {
 		return r.answer(ctx, rr, k, ch)
 	}
@@ -190,7 +174,6 @@ func (r *Registrar) reauthDue(rr *registerRequest) bool {
 	requested := r.reauth[rr.impi]
 	r.mu.Unlock()
 
-	// A re-authentication the network asked for applies to each flow until it authenticates again.
 	if last.reauth < requested {
 		return true
 	}
@@ -265,8 +248,6 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 			}
 		}
 
-		// RFC 5626 §6: a REGISTER with a reg-id registers a single flow, and may deregister Contacts with
-		// a zero expiry besides.
 		if flowing && registering > 1 {
 			return nil, sip.NewResponse(req, 400, "Several Contacts With reg-id")
 		}
@@ -297,9 +278,8 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 	return rr, nil
 }
 
-// flow sets the contact's instance ID and, when the multiple registration mechanism applies, its
-// reg-id: it does when the contact has both and the first hop added "ob" to its Path; a reg-id is
-// ignored otherwise (RFC 5626 §6, TS 24.229 §5.4.1.2.2 step 6d).
+// RFC 5626 section 6
+// TS 24.229 clause 5.4.1.2.2
 func (c *contactRequest) flow(req *sip.Request, path string) *sip.Response {
 	if v, ok := c.addr.Params.Get("+sip.instance"); ok {
 		c.instance = strings.TrimSuffix(strings.TrimPrefix(sip.Unquote(v), "<"), ">")
@@ -310,7 +290,6 @@ func (c *contactRequest) flow(req *sip.Request, path string) *sip.Response {
 		return nil
 	}
 
-	// RFC 5626 §11.1: 1 to 2^31 - 1
 	n, err := strconv.ParseInt(v, 10, 32)
 	if err != nil || n < 1 {
 		return sip.NewResponse(req, 400, "Bad reg-id")
@@ -323,15 +302,14 @@ func (c *contactRequest) flow(req *sip.Request, path string) *sip.Response {
 	return nil
 }
 
-// outbound reports whether the first hop of a Path added "ob" to its URI (RFC 5626 §5.1).
+// RFC 5626 section 5.1
 func outbound(path string) bool {
 	hops, err := sip.ParseAddressList(path)
 
 	return err == nil && len(hops) > 0 && hops[0].URI.Params.Has("ob")
 }
 
-// contactExpires is the expiry a Contact asks for: its "expires" parameter, or else that of the
-// request (RFC 3261 §10.2.1.1).
+// RFC 3261 section 10.2.1.1
 func contactExpires(c sip.Address, expires uint32) uint32 {
 	if v, ok := c.Params.Get("expires"); ok {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
@@ -385,8 +363,7 @@ func slicesContainsURI(addrs []sip.Address, u sip.URI) bool {
 	return false
 }
 
-// knownHSS is the HSS stored for the Public Identity of a REGISTER, the last that answered for its registration set,
-// if it has one (TS 29.229 §5.5).
+// TS 29.229 clause 5.5
 func (r *Registrar) knownHSS(ctx context.Context, rr *registerRequest) db.HSS {
 	st, err := r.load(ctx, rr.impi)
 	if err != nil {
@@ -427,8 +404,6 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 	res := sip.NewResponse(rr.req, 401, "")
 	res.Header.Add("WWW-Authenticate", wwwAuthenticate(r.cfg.HomeDomain, nonce, v))
 
-	// TS 24.229 §5.4.1.2.1 step 6, "as described in RFC 5626": only for a flow, of a UE that supports outbound
-	// (RFC 5626 §6; RFC 3261 §8.2.4: no extension the request's Supported does not list).
 	if rr.flows() && rr.outbound {
 		res.Header.Add("Require", "outbound")
 	}
@@ -505,8 +480,6 @@ func (r *Registrar) authenticated(ctx context.Context, rr *registerRequest) *sip
 		return firstHopLacksOutbound(rr)
 	}
 
-	// TS 24.229 §5.4.1.2.2 step 4A: without the multiple registration mechanism, a new contact
-	// replaces the others of the private identity.
 	return r.assign(ctx, rr, st, set, !rr.flows())
 }
 
@@ -536,8 +509,6 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 		return firstHopLacksOutbound(rr)
 	}
 
-	// TS 24.229 §5.4.1.2.2 step 2: a new contact address registers through an initial registration;
-	// a new flow does not need one.
 	for _, c := range rr.contacts {
 		if _, ok := st.contact(c); c.expires != 0 && c.regID == 0 && !ok {
 			r.log.DebugContext(ctx, "protected REGISTER from an unregistered contact", slog.String("impi", rr.impi),
@@ -547,8 +518,6 @@ func (r *Registrar) refresh(ctx context.Context, rr *registerRequest) *sip.Respo
 		}
 	}
 
-	// TS 23.228 §5.2.2.4 step 6: a re-registration notifies the HSS too, which may send a profile that changed since
-	// (TS 29.228 §6.6).
 	return r.assign(ctx, rr, st, set, false)
 }
 
@@ -565,14 +534,12 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		to = set.HSS
 	}
 
-	// The user data the set holds came from its HSS: another HSS sends its own.
 	available := registered && len(set.UserData) > 0 && to.Host != "" && strings.EqualFold(to.Host, set.HSS.Host)
 
 	saa, from, err := r.serverAssignment(ctx, to, rr.impi, []string{rr.impu}, t, available)
 
 	switch {
 	case err == nil:
-	// A registered set keeps the profile it holds while its HSS cannot be reached.
 	case registered && !refused(err) && !permanent(err):
 		r.log.WarnContext(ctx, "HSS unreachable on re-registration: the profile held is kept", slog.String("impi", rr.impi),
 			slog.String("impu", rr.impu), slog.Any("error", err))
@@ -632,7 +599,6 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 		return sip.NewResponse(rr.req, 403, "")
 	}
 
-	// The set is stored with its registration, holding the lock of the profiles from its reading on.
 	if err := r.lockProfiles(ctx); err != nil {
 		return retryLater(rr.req)
 	}
@@ -648,7 +614,6 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	reg.Identities, reg.UserData, reg.HSS = pc.set.Identities, pc.set.UserData, pc.set.HSS
 	stale := st.overlapping(reg)
 
-	// The HSS's answer wins over a registered set that still holds identities of it (TS 29.228 §6.5.2.1).
 	moves, err := r.moves(ctx, pc.set, stale)
 	if err != nil {
 		r.unlockProfiles()
@@ -682,11 +647,9 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 	ch.removed = append(ch.removed, removed...)
 
-	// The other private identities that registered the set learn of the change now; this one with its registration.
 	r.spreadProfile(ctx, pc, rr.impi, false)
 	r.applyMoves(ctx, rr.impi, moves)
 
-	// TS 24.229 §5.4.1.8: a profile the HSS changed with the re-registration changes the registration.
 	if registered && pc.identitiesChanged() {
 		r.releaseRemoved(ctx, st, pc, st.live(reg.Bindings))
 
@@ -704,11 +667,8 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 	return res
 }
 
-// assignedSet is the set a server assignment answered for, to store with its registration: with the profile it
-// downloaded, if any, from the HSS that answered, and taken over from any set kept unregistered (TS 29.228 §6.1.2.1);
-// and how that changed it. A registration not yet of a set is of the set with the default identity of the profile,
-// which the HSS does not change while the set is registered (TS 29.228 §6.5.2.1), or else of a set kept unregistered
-// that holds an identity of it, or else of a new set. The caller holds the lock of the profiles.
+// TS 29.228 clause 6.1.2.1
+// TS 29.228 clause 6.5.2.1
 func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, sub *cx.IMSSubscription, data []byte,
 	from db.HSS,
 ) (profileChange, error) {
@@ -752,9 +712,6 @@ func (r *Registrar) assignedSet(ctx context.Context, reg db.Registration, sub *c
 	return diffProfile(cur.Identities, cur.UserData, next, *sub), nil
 }
 
-// bind stores the bindings of the REGISTER to the registration, and the registration with the set it registers, in
-// place of the stale ones, expired, that held its identities, and after the sets losing identities to it
-// (db.SaveAssignment): set becomes the set as stored.
 func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, reg db.Registration,
 	initial bool, set *db.ImplicitSet, stale []db.Registration, losing []db.ImplicitSet,
 ) (*sip.Response, []removal) {
@@ -784,8 +741,6 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			case c.expires == 0:
 				deregistered = append(deregistered, bindings[i])
 			case c.regID != 0 && !sameFirstHop(bindings[i].Contact.Path, rr.path):
-				// TS 24.229 §5.4.1.2.2 step 6d, NOTE 6: the flow registers over a new Path from the
-				// P-CSCF, a new flow in place of the old one.
 				replaced = append(replaced, bindings[i])
 				event, registeredAt = db.BindingRegistered, now
 			}
@@ -797,8 +752,6 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 			continue
 		}
 
-		// TS 24.229 §5.4.1.1 item 1, §3.1: a REGISTER that went through the initial registration procedure, as one
-		// from a UE that restarted, or that adds a contact, is an initial registration for the ASs.
 		if event == db.BindingRegistered || rr.initial {
 			regType = cx.RegistrationTypeInitial
 		}
@@ -823,7 +776,6 @@ func (r *Registrar) bind(ctx context.Context, rr *registerRequest, st *state, re
 
 	reg.Bindings = bindings
 
-	// The calls of the flows replaced are those set up before the new flows are stored.
 	var replacedCalls map[bindingKey]map[*proxy.Dialog]proxy.Side
 
 	if len(replaced) > 0 {
@@ -931,7 +883,6 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 		}
 	}
 
-	// RFC 3261 §10.3 step 7: a binding is removed only by a REGISTER newer than the one that made it.
 	for _, b := range removed {
 		if b.CallID == rr.callID && b.CSeq >= int64(rr.cseq) {
 			r.log.DebugContext(ctx, "out of order REGISTER", slog.String("impi", rr.impi), slog.String("call-id", rr.callID))
@@ -966,12 +917,12 @@ func (r *Registrar) unbind(ctx context.Context, rr *registerRequest, st *state, 
 	return r.ok(ctx, rr, *set, removed)
 }
 
-// maxFlowsPerInstance is how many registration flows a UE, a private identity and instance ID, may
-// have for a public user identity (TS 24.229 §5.4.1.2.1, §5.4.1.2.2).
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2
 const maxFlowsPerInstance = 4
 
-// flowLimit refuses a REGISTER that adds a flow to a UE that has the most it may have already
-// (TS 24.229 §5.4.1.2.1, §5.4.1.2.2).
+// TS 24.229 clause 5.4.1.2.1
+// TS 24.229 clause 5.4.1.2.2
 func (r *Registrar) flowLimit(ctx context.Context, rr *registerRequest) *sip.Response {
 	if !rr.flows() || rr.deregister() {
 		return nil
@@ -1018,8 +969,7 @@ func firstHopLacksOutbound(rr *registerRequest) *sip.Response {
 	return sip.NewResponse(rr.req, 439, "")
 }
 
-// sameFirstHop reports whether two Paths start with the same URI: that of the P-CSCF, with its flow
-// token (TS 24.229 §5.4.1.2.2 NOTE 6).
+// TS 24.229 clause 5.4.1.2.2
 func sameFirstHop(a, b string) bool {
 	x, err := sip.ParseAddressList(a)
 	if err != nil || len(x) == 0 {
@@ -1055,7 +1005,6 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 		}
 	}
 
-	// TS 24.229 §5.4.1.2.2F h; RFC 5626 §6, in the response to a deregistration too.
 	if rr.flows() && rr.outbound {
 		res.Header.Add("Require", "outbound")
 	}
@@ -1071,7 +1020,6 @@ func (r *Registrar) ok(ctx context.Context, rr *registerRequest, reg db.Registra
 		for _, b := range liveAt(other.Bindings, now) {
 			expires := int(b.ExpiresAt.Sub(now) / time.Second)
 
-			// TS 24.229 §5.4.1.7 e: the third-party REGISTERs carry the expiry of the 200.
 			if ev := rr.event; ev != nil && len(ev.bindings) > 0 && b.ID == ev.bindings[0] {
 				ev.expires = expires
 			}

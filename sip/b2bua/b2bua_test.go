@@ -19,7 +19,6 @@ import (
 const wait = 5 * time.Second
 
 func init() {
-	// Calls, legs and relays are used on their strands only.
 	ua.CheckStrands(true)
 }
 
@@ -34,7 +33,6 @@ type event struct {
 	msg   sip.Message
 }
 
-// party is a user agent on the net, recording the events of its sessions.
 type party struct {
 	t      *testing.T
 	net    *siptest.Net
@@ -98,7 +96,6 @@ func newParty(t *testing.T, n *siptest.Net, name string, configure func(*ua.Conf
 	return p
 }
 
-// prepare sends to the host and port of the top Route, or else of the Request-URI.
 func (p *party) prepare(req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
@@ -146,7 +143,6 @@ func (p *party) handler() ua.Handler {
 	}
 }
 
-// next is the next event, of kind.
 func (p *party) next(kind string) event {
 	p.t.Helper()
 	p.net.Quiesce()
@@ -164,7 +160,6 @@ func (p *party) next(kind string) event {
 	}
 }
 
-// none checks that the party has no event once the net is quiet.
 func (p *party) none() {
 	p.t.Helper()
 	p.net.Quiesce()
@@ -176,7 +171,6 @@ func (p *party) none() {
 	}
 }
 
-// invite sends an INVITE to target, with the SDP sdp unless empty.
 func (p *party) invite(target string, sdp string, h ua.Handler, header ...sip.Field) *ua.Outgoing {
 	p.t.Helper()
 
@@ -201,7 +195,6 @@ func (p *party) invite(target string, sdp string, h ua.Handler, header ...sip.Fi
 	return o
 }
 
-// b2b is a B2BUA bridging each INVITE it gets to bob.
 type b2b struct {
 	*party
 
@@ -273,7 +266,6 @@ func hasSDP(m sip.Message, want string) bool {
 
 var netAddr = netip.MustParseAddrPort("192.0.2.2:5060")
 
-// nextAll takes events of the given kinds in any order, as those of different early dialogs are.
 func (p *party) nextAll(kinds ...string) map[string]event {
 	p.t.Helper()
 	p.net.Quiesce()
@@ -298,8 +290,6 @@ func (p *party) nextAll(kinds ...string) map[string]event {
 	return got
 }
 
-// settled checks that nothing is left in the agents of the parties once their transactions and lingering dialogs
-// timed out: every leg ended, every INVITE answered.
 func settled(t *testing.T, n *siptest.Net, parties ...*party) {
 	t.Helper()
 
@@ -313,14 +303,12 @@ func settled(t *testing.T, n *siptest.Net, parties ...*party) {
 	}
 }
 
-// peekKind is the kind of the next event of the party, once the net is quiet, for loops that skip some.
 func (p *party) peekKind() string {
 	p.t.Helper()
 	p.net.Quiesce()
 
 	select {
 	case e := <-p.events:
-		// Put back in front: the channel is drained by the next call to next.
 		rest := []event{e}
 
 		for len(p.events) > 0 {

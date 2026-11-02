@@ -25,8 +25,8 @@ const (
 	maxBodyDepth = 4
 )
 
-// ParseMediaType parses a Content-Type value (RFC 3261 §20.15, RFC 2045 §5.1). The media type is returned lower-cased,
-// parameter values as they appear, quotes included.
+// RFC 3261 section 20.15
+// RFC 2045 section 5.1
 func ParseMediaType(s string) (string, Params, error) {
 	typ, rest, _ := strings.Cut(trimWSP(s), "/")
 	typ, rest = strings.TrimRight(typ, " \t"), trimLeftWSP(rest)
@@ -48,8 +48,6 @@ func isMultipart(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "multipart/")
 }
 
-// BodyPart is one MIME body: a part of a multipart body, or the whole body of a message. Header holds its Content-*
-// header fields.
 type BodyPart struct {
 	Header Header
 	Body   []byte
@@ -62,8 +60,7 @@ func NewBodyPart(contentType string, body []byte) BodyPart {
 	return BodyPart{Header: h, Body: body}
 }
 
-// MediaType is the lower-cased media type of the part: text/plain without Content-Type (RFC 2045 §5.2), empty if
-// Content-Type is malformed.
+// RFC 2045 section 5.2
 func (p BodyPart) MediaType() string {
 	if !p.Header.Has("Content-Type") {
 		return "text/plain"
@@ -77,8 +74,8 @@ func (p BodyPart) MediaType() string {
 	return mt
 }
 
-// ContentID is the Content-ID of the part, the msg-id without angle brackets nor comments (RFC 2045 §7, RFC 5322
-// §3.6.4).
+// RFC 2045 section 7
+// RFC 5322 section 3.6.4
 func (p BodyPart) ContentID() string {
 	v := trimWSP(p.Header.Get("Content-ID"))
 
@@ -95,13 +92,12 @@ func (p *BodyPart) SetContentID(id string) {
 	p.Header.Set("Content-ID", "<"+id+">")
 }
 
-// NewContentID returns a fresh Content-ID for a part, for use in a cid URL (RFC 2392).
 func NewContentID(host string) string {
 	return rand.Text() + "@" + host
 }
 
-// Disposition is the Content-Disposition of the part, or its default: session for SDP, render otherwise
-// (RFC 3261 §20.11, RFC 5621 §8.2).
+// RFC 3261 section 20.11
+// RFC 5621 section 8.2
 func (p BodyPart) Disposition() (string, Params, error) {
 	v := p.Header.Get("Content-Disposition")
 	if v == "" {
@@ -120,8 +116,9 @@ func (p BodyPart) Disposition() (string, Params, error) {
 	return strings.ToLower(d), ps, nil
 }
 
-// Optional reports whether the part has handling=optional: a recipient that does not understand it can ignore it
-// rather than reject the message (RFC 3261 §20.11, RFC 5621 §8.1–8.2).
+// RFC 3261 section 20.11
+// RFC 5621 section 8.1
+// RFC 5621 section 8.2
 func (p BodyPart) Optional() bool {
 	_, ps, err := p.Disposition()
 	if err != nil {
@@ -133,20 +130,16 @@ func (p BodyPart) Optional() bool {
 	return strings.EqualFold(v, "optional")
 }
 
-// IsSession reports whether the part is a session description of the message: SDP with the session disposition, not
-// an early-session one (RFC 3959) or one meant for another request.
 func (p BodyPart) IsSession() bool {
 	d, _, err := p.Disposition()
 	return err == nil && d == DispositionSession && p.MediaType() == "application/sdp"
 }
 
-// Multipart parses the part as a multipart body.
 func (p BodyPart) Multipart() (*Multipart, error) {
 	return parseMultipart(p.Header.ContentType(), p.Body)
 }
 
-// checkEncoding reports a part whose Body is not its content: SIP bodies are binary (RFC 3261 §7.4), and a content
-// coding or a transfer encoding would have to be undone first.
+// RFC 3261 section 7.4
 func (p BodyPart) checkEncoding() error {
 	if p.Header.Has("Content-Type") && p.MediaType() == "" {
 		return fmt.Errorf("malformed Content-Type %q", p.Header.ContentType())
@@ -168,7 +161,8 @@ func (p BodyPart) checkEncoding() error {
 	}
 }
 
-// Multipart is a multipart body (RFC 2046 §5.1, RFC 5621).
+// RFC 2046 section 5.1
+// RFC 5621
 type Multipart struct {
 	Subtype string
 	Parts   []BodyPart
@@ -176,8 +170,7 @@ type Multipart struct {
 	boundary string
 }
 
-// NewMultipart builds a multipart/mixed body. SDP bodies come first, because SIP entities that do not understand
-// multipart look at the first body only (TS 24.379 §6.5).
+// TS 24.379 clause 6.5
 func NewMultipart(parts ...BodyPart) *Multipart {
 	ordered := make([]BodyPart, 0, len(parts))
 	for _, p := range parts {
@@ -195,8 +188,7 @@ func NewMultipart(parts ...BodyPart) *Multipart {
 	return &Multipart{Subtype: "mixed", Parts: ordered}
 }
 
-// collides reports whether a delimiter with boundary b could appear in body (RFC 2046 §5.1.1): the body starts right
-// after a CRLF in a multipart body.
+// RFC 2046 section 5.1.1
 func collides(b string, body []byte) bool {
 	dash := "--" + b
 	return bytes.HasPrefix(body, []byte(dash)) || bytes.Contains(body, []byte("\r\n"+dash))
@@ -211,9 +203,7 @@ func newBoundary(parts []BodyPart) string {
 	}
 }
 
-// parseMultipart parses a multipart body (RFC 2046 §5.1.1). The parts alias body, so that each part keeps its exact
-// octets, as signatures over them need (TS 24.379 §6.6.3), without room to grow into the octets that follow. The
-// preamble and the epilogue are dropped.
+// RFC 2046 section 5.1.1
 func parseMultipart(contentType string, body []byte) (*Multipart, error) {
 	mt, ps, err := ParseMediaType(contentType)
 	if err != nil {
@@ -238,7 +228,6 @@ func parseMultipart(contentType string, body []byte) (*Multipart, error) {
 	dash := []byte("--" + boundary)
 	delim := []byte("\r\n--" + boundary)
 
-	// pos is the start of a dash-boundary. The first one may start the body, with no CRLF before it.
 	pos := 0
 	if !bytes.HasPrefix(body, dash) {
 		if pos = bytes.Index(body, delim); pos < 0 {
@@ -290,7 +279,6 @@ func parseMultipart(contentType string, body []byte) (*Multipart, error) {
 	return m, nil
 }
 
-// delimiterEnd skips the transport padding and the CRLF after a delimiter.
 func delimiterEnd(b []byte) (int, bool) {
 	i := 0
 	for i < len(b) && isWSP(b[i]) {
@@ -326,7 +314,7 @@ func parsePart(b []byte) (BodyPart, error) {
 	return BodyPart{Header: fields, Body: body}, nil
 }
 
-// RFC 2046 §5.1.1
+// RFC 2046 section 5.1.1
 func validBoundary(s string) bool {
 	if s == "" || len(s) > 70 || s[len(s)-1] == ' ' {
 		return false
@@ -346,8 +334,6 @@ func isAlnum(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-// Encode returns the Content-Type and the octets of the body. The boundary is the one the body was parsed with, unless
-// a part now contains it.
 func (m *Multipart) Encode() (contentType string, body []byte) {
 	if !validBoundary(m.boundary) || slices.ContainsFunc(m.Parts, func(p BodyPart) bool { return collides(m.boundary, p.Body) }) {
 		m.boundary = newBoundary(m.Parts)
@@ -385,8 +371,6 @@ func (m *Multipart) Encode() (contentType string, body []byte) {
 	return "multipart/" + sub + ";boundary=" + boundary, body
 }
 
-// Parts returns the parts of a multipart body, the body itself otherwise, none if empty. Nested multipart parts are
-// returned as they are.
 func (p BodyPart) Parts() ([]BodyPart, error) {
 	if len(p.Body) == 0 {
 		return nil, nil
@@ -414,17 +398,16 @@ func (p BodyPart) Parts() ([]BodyPart, error) {
 	return m.Parts, nil
 }
 
-// Find returns the first body of the media type that a recipient processes by its disposition: the body itself or
-// a part of it (RFC 5621 §9.3).
+// RFC 5621 section 9.3
 func (p BodyPart) Find(mediaType string) (BodyPart, bool, error) {
 	mediaType = strings.ToLower(mediaType)
 
 	return p.FindFunc(func(q BodyPart) bool { return q.MediaType() == mediaType })
 }
 
-// FindFunc returns the first body for which match is true among those a recipient processes by their disposition:
-// the body itself or a part of it. In a multipart/alternative body, the last alternatives are the preferred ones
-// (RFC 2046 §5.1.4, RFC 5621 §6). By-reference parts are only processed through their reference (RFC 5621 §9.4).
+// RFC 2046 section 5.1.4
+// RFC 5621 section 6
+// RFC 5621 section 9.4
 func (p BodyPart) FindFunc(match func(BodyPart) bool) (BodyPart, bool, error) {
 	if len(p.Body) == 0 {
 		return BodyPart{}, false, nil
@@ -433,8 +416,8 @@ func (p BodyPart) FindFunc(match func(BodyPart) bool) (BodyPart, bool, error) {
 	return p.find(match, false, 0)
 }
 
-// ByContentID returns the body a cid URL (RFC 2392) or a Content-ID refers to: the body itself or a part of it. The
-// target may be by-reference, or itself multipart, as with REFER to a list of bodies (TS 24.379 §17.2.2.2.1).
+// RFC 2392
+// TS 24.379 clause 17.2.2.2.1
 func (p BodyPart) ByContentID(id string) (BodyPart, bool, error) {
 	id, ok := normalizeContentID(id)
 	if !ok || len(p.Body) == 0 {
@@ -487,7 +470,6 @@ func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (
 	return m.find(match, byReference, depth+1)
 }
 
-// normalizeContentID accepts a cid URL, with or without angle brackets, or a Content-ID.
 func normalizeContentID(id string) (string, bool) {
 	id = trimWSP(id)
 
@@ -512,7 +494,6 @@ func isContentField(name string) bool {
 	return strings.HasPrefix(long, "content-") && long != "content-length"
 }
 
-// Content is the body of the message as one MIME body, with the Content-* header fields of the message.
 func (e Envelope) Content() BodyPart {
 	var h Header
 
@@ -525,15 +506,13 @@ func (e Envelope) Content() BodyPart {
 	return BodyPart{Header: h, Body: e.Body[:len(e.Body):len(e.Body)]}
 }
 
-// SetBodies replaces the body of the message and its Content-* header fields. One part is sent as is, several as a
-// multipart/mixed body (TS 24.379 §6.5). A Content-Disposition for the multipart body as a whole (RFC 5621 §8.2) can
-// be added after.
+// TS 24.379 clause 6.5
+// RFC 5621 section 8.2
 func (e *Envelope) SetBodies(parts ...BodyPart) {
 	switch len(parts) {
 	case 0:
 		e.SetBody("", nil)
 	case 1:
-		// RFC 3261 §20.15: a body has a Content-Type, text/plain by default (RFC 2045 §5.2).
 		ct := parts[0].Header.ContentType()
 		if ct == "" {
 			ct = "text/plain"

@@ -175,7 +175,6 @@ func audio(flows ...string) []rx.MediaComponent {
 	return []rx.MediaComponent{{Number: 1, Type: new(rx.MediaAudio), SubComponents: []rx.MediaSubComponent{{FlowNumber: 1, FlowDescriptions: flows}}}}
 }
 
-// The Open5GS PCRF binds every AA-Request and refuses Flow-Descriptions its SMF cannot use.
 func TestAARChecks(t *testing.T) {
 	ue := netip.MustParseAddr("10.0.0.2")
 	update := rx.RequestUpdate

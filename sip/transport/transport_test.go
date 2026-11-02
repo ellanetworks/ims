@@ -588,7 +588,6 @@ func TestDialHook(t *testing.T) {
 	}
 }
 
-// Control runs on the UDP and TCP sockets the transport listens on, and on those it dials, with their local address.
 func TestControlHook(t *testing.T) {
 	type call struct{ network, address string }
 
@@ -644,7 +643,6 @@ func TestDialCrossesPeerDial(t *testing.T) {
 	peerConn := make(chan net.Conn, 1)
 
 	tr, _ := siptest.NewTransport(t, transport.Config{
-		// The peer dials the flow first, and the transport dials it before accepting the peer's connection.
 		Dial: func(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
 			pd := net.Dialer{LocalAddr: net.TCPAddrFromAddrPort(peer)}
 
@@ -719,7 +717,6 @@ func TestTrace(t *testing.T) {
 	}
 }
 
-// Sockets are the UDP socket and the TCP listener of a local address, bound to it.
 func TestSockets(t *testing.T) {
 	tr, _ := siptest.NewTransport(t, transport.Config{})
 	local := siptest.Listen(t, tr, lo)
@@ -755,8 +752,7 @@ func TestSockets(t *testing.T) {
 	}
 }
 
-// RFC 5626 §4.4.2: a STUN Binding request on UDP, answered by the other end's response; none from a socket that does
-// not answer.
+// RFC 5626 section 4.4.2
 func TestPingUDP(t *testing.T) {
 	a, _ := siptest.NewTransport(t, transport.Config{})
 	b, _ := siptest.NewTransport(t, transport.Config{})
@@ -780,7 +776,7 @@ func TestPingUDP(t *testing.T) {
 	}
 }
 
-// RFC 5626 §4.4.1: a double CRLF on the TCP connection of the flow, answered by a CRLF; no connection, no ping.
+// RFC 5626 section 4.4.1
 func TestPingTCP(t *testing.T) {
 	a, _ := siptest.NewTransport(t, transport.Config{})
 	b, _ := siptest.NewTransport(t, transport.Config{})
@@ -831,7 +827,6 @@ type listenerFailure struct {
 	err   error
 }
 
-// failures has a transport report its listener failures on the channel it returns.
 func failures(cfg *transport.Config) <-chan listenerFailure {
 	ch := make(chan listenerFailure, 4)
 	cfg.OnListenerFailed = func(local netip.AddrPort, err error) { ch <- listenerFailure{local, err} }
@@ -852,9 +847,6 @@ func awaitFailure(t *testing.T, ch <-chan listenerFailure) listenerFailure {
 	return listenerFailure{}
 }
 
-// A listening socket that stopped listening, as one Android destroyed with its network (accept fails with EINVAL),
-// never recovers: its listener is closed, forgotten and reported, rather than accept retried; sends from it fail, and
-// its address can be listened on again.
 func TestBrokenListenerIsDropped(t *testing.T) {
 	var logs syncBuffer
 
@@ -868,7 +860,6 @@ func TestBrokenListenerIsDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
 	var shut error
 	if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
 		t.Fatalf("shutdown: %v, %v", err, shut)
@@ -907,7 +898,6 @@ func TestBrokenListenerIsDropped(t *testing.T) {
 	}
 }
 
-// Closing the transport closes its listeners: no failure.
 func TestCloseIsNoListenerFailure(t *testing.T) {
 	cfg := transport.Config{}
 	failed := failures(&cfg)
@@ -923,7 +913,6 @@ func TestCloseIsNoListenerFailure(t *testing.T) {
 	}
 }
 
-// A port held by another socket is told as such; an address no more local is not (EADDRNOTAVAIL: a network gone).
 func TestListenHeldOrNotLocal(t *testing.T) {
 	tr, _ := siptest.NewTransport(t, transport.Config{})
 
@@ -939,15 +928,13 @@ func TestListenHeldOrNotLocal(t *testing.T) {
 		t.Errorf("held: %v", err)
 	}
 
-	// TEST-NET-1 (RFC 5737): no address of the host.
 	_, err = tr.Listen(context.Background(), netip.MustParseAddrPort("192.0.2.1:5060"))
 	if !errors.Is(err, syscall.EADDRNOTAVAIL) || strings.Contains(err.Error(), "port held") {
 		t.Errorf("not local: %v", err)
 	}
 }
 
-// The end of a connection is told, with its flow, so that a UE detects the failure of its outbound registration's
-// flow (RFC 5626 §4.4); the transport's own closing is not.
+// RFC 5626 section 4.4
 func TestConnectionLost(t *testing.T) {
 	type lost struct {
 		f   sip.Flow

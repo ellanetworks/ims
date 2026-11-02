@@ -18,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// saves records the contexts of the writes to the store, and their errors then.
 type saves struct {
 	mu   sync.Mutex
 	ctxs []context.Context
@@ -34,7 +33,6 @@ func (s *saves) SaveRegistrations(ctx context.Context, _ []Record, _ []string) e
 	return nil
 }
 
-// loggedOff records the contexts of the log-offs.
 type loggedOff struct {
 	reconfigured
 
@@ -49,9 +47,6 @@ func (l *loggedOff) LogOff(ctx context.Context, _ time.Time, _ sip.URI, _ string
 	l.ctxs = append(l.ctxs, ctx)
 }
 
-// The expiry of a binding is a trace of its own, linked to the REGISTER that armed it, of the role, bound to the
-// registrar's lifetime: its log-off is written after the REGISTER's transaction ended, and its work is cancelled with
-// the registrar. The write of the REGISTER is in its trace, and survives its transaction.
 func TestExpiryTrace(t *testing.T) {
 	n := siptest.NewNet(t)
 	addr := n.Addr()
@@ -72,7 +67,6 @@ func TestExpiryTrace(t *testing.T) {
 	store, offs := &saves{}, &loggedOff{}
 	st := a.NewStrand()
 
-	// Without an agent, as in tests: the lifetime is the registrar's, ended by Close.
 	g := New(Config{
 		Mode: ThroughIMS, Store: store, StrandOf: func(string) *ua.Strand { return st }, Affiliations: offs,
 		Clock: a.Layer().Clock(), TracerProvider: tp, Logger: slog.New(slog.DiscardHandler),
@@ -90,7 +84,6 @@ func TestExpiryTrace(t *testing.T) {
 	}, &ch)
 	g.mu.Unlock()
 
-	// The REGISTER's transaction ends once answered: its context is done before the change is applied.
 	ctx, end := context.WithCancel(context.Background())
 	ctx, register := tp.Tracer("test").Start(ctx, "REGISTER")
 

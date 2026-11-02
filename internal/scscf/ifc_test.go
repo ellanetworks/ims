@@ -10,9 +10,8 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// The trigger point of TS 29.228 Annex C, in CNF and in DNF: Method = "INVITE" OR Method = "MESSAGE" OR
-// (Method = "SUBSCRIBE" AND NOT Header = "from" Content = "joe").
 const (
+	// TS 29.228 annex C
 	annexCCNF = `<?xml version="1.0" encoding="UTF-8"?>
 <IMSSubscription xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 xsi:noNamespaceSchemaLocation="CxDataType.xsd">
@@ -129,7 +128,7 @@ func annexCRequest(method, from string) *sip.Request {
 	return req
 }
 
-// TS 29.228 Annex C
+// TS 29.228 annex C
 func TestAnnexCTriggerPoint(t *testing.T) {
 	tests := []struct {
 		method, from string
@@ -171,7 +170,8 @@ func TestAnnexCTriggerPoint(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// TS 29.228 Annex B.2.3, Annex F
+// TS 29.228 clause B.2.3
+// TS 29.228 annex F
 func TestServicePointTriggers(t *testing.T) {
 	invite := annexCRequest("INVITE", "<sip:ann@homedomain.com>")
 	invite.URI = sip.URI{Scheme: "sip", User: "conf", Host: "mcptt.homedomain.com", Port: 5062}
@@ -206,14 +206,12 @@ func TestServicePointTriggers(t *testing.T) {
 		{"each value of a list", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "Supported", Content: ptr(`^100rel$`)},
 		}, true},
-		// TS 29.228 Annex F: no SWS around the separators, each LWS a SP, but in a quoted string.
 		{"SWS removed", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "P-Early-Media", Content: ptr(`^supported;"quoted text"$`)},
 		}, true},
 		{"a header that is no list", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "^Date$", Content: ptr(`^Sat, 13 Nov 2010`)},
 		}, true},
-		// RFC 3261 §25.1: LWS is SP, HTAB and line folding; the white space of UTF-8 text is part of the value.
 		{"tabs are LWS", trigger{req: invite}, cx.ServicePointTrigger{
 			SIPHeader: &cx.HeaderMatch{Header: "^Subject$", Content: ptr(`^Group call, now$`)},
 		}, true},
@@ -258,11 +256,10 @@ func TestServicePointTriggers(t *testing.T) {
 	}
 }
 
-// TS 29.228 Annex B.2.2: an SPT in two groups, and the profile parts.
+// TS 29.228 clause B.2.2
 func TestFilterCriteria(t *testing.T) {
 	invite := annexCRequest("INVITE", "<sip:ann@homedomain.com>")
 
-	// (A + B).(A + C), A true: met in CNF; A.B + A.C, B and C false: not met in DNF.
 	spts := []cx.ServicePointTrigger{
 		{Groups: []int32{0, 1}, Method: ptr("INVITE")},
 		{Groups: []int32{0}, Method: ptr("MESSAGE")},
@@ -307,8 +304,7 @@ func TestFilterCriteria(t *testing.T) {
 	}
 }
 
-// TS 29.228 Annex F: an SPT that cannot be evaluated leaves out its iFC, rather than match every request when
-// negated.
+// TS 29.228 annex F
 func TestInvalidExpression(t *testing.T) {
 	r := New(Config{Logger: slog.New(slog.DiscardHandler)})
 
@@ -324,7 +320,8 @@ func TestInvalidExpression(t *testing.T) {
 	}
 }
 
-// TS 23.003 §13.4, §13.5
+// TS 23.003 clause 13.4
+// TS 23.003 clause 13.5
 func TestWildcardedPSI(t *testing.T) {
 	sub := cx.IMSSubscription{PrivateIdentity: "psi@homedomain.com", ServiceProfiles: []cx.ServiceProfile{
 		{PublicIdentities: []cx.ProfileIdentity{{Identity: "sip:chatlist!.*!@example.com", Type: cx.IdentityWildcardedPSI}}},
@@ -339,7 +336,6 @@ func TestWildcardedPSI(t *testing.T) {
 		{"sip:chatlistAbC@example.com", true},
 		{"sip:chat@example.com", false},
 		{"sip:chatlist1@example.org", false},
-		// The canonical form of the identity: no port or parameters, the domain in lower case.
 		{"sip:chatlist1@Example.COM:5060;transport=tcp", true},
 	} {
 		u, err := sip.ParseURI(tt.uri)
@@ -352,7 +348,6 @@ func TestWildcardedPSI(t *testing.T) {
 		}
 	}
 
-	// TS 29.228 Table 6.1.2.2: the wildcarded identity the HSS names picks the profile.
 	other := cx.ServiceProfile{PublicIdentities: []cx.ProfileIdentity{{Identity: "sip:group!.*!@example.com", Type: cx.IdentityWildcardedPSI}}}
 	sub.ServiceProfiles = append(sub.ServiceProfiles, other)
 
@@ -362,7 +357,8 @@ func TestWildcardedPSI(t *testing.T) {
 	}
 }
 
-// TS 29.229 §6.3.2, TS 23.003 §13.4
+// TS 29.229 clause 6.3.2
+// TS 23.003 clause 13.4
 func TestCanonicalIdentity(t *testing.T) {
 	for _, tt := range []struct{ in, want string }{
 		{"sip:Alice@Example.COM:5060;transport=tcp?subject=x", "sip:Alice@example.com"},
@@ -382,8 +378,7 @@ func TestCanonicalIdentity(t *testing.T) {
 	}
 }
 
-// referenceMatches is the evaluation of a trigger point as TS 29.228 Annex B.2.2 states it: every SPT checked, its
-// value put in each of its groups, and the groups combined.
+// TS 29.228 clause B.2.2
 func referenceMatches(t trigger, tp *cx.TriggerPoint) bool {
 	if tp == nil {
 		return true
@@ -419,8 +414,7 @@ func referenceMatches(t trigger, tp *cx.TriggerPoint) bool {
 	return tp.ConjunctiveNormalForm
 }
 
-// TS 29.228 Annex B.2.2: the SPTs checked lazily, group by group, give the trigger point the value of its definition,
-// with SPTs in several groups, in none, and more of them than matches keeps on the stack.
+// TS 29.228 clause B.2.2
 func TestTriggerPointGroups(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	tr := trigger{req: annexCRequest("INVITE", "<sip:ann@homedomain.com>")}

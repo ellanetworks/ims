@@ -17,7 +17,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// benchAgent is an agent on the in-memory net of a benchmark: the stack measured without sockets.
 func benchAgent(b *testing.B, n *siptest.Net, name string, onInvite func(a *ua.Agent) func(*ua.Request) ua.Handler) (*ua.Agent, netip.AddrPort) {
 	b.Helper()
 
@@ -71,11 +70,9 @@ func benchAgent(b *testing.B, n *siptest.Net, name string, onInvite func(a *ua.A
 
 const benchSDP = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0\r\n"
 
-// bridgedNet is a caller, a B2BUA bridging each INVITE to a callee, and the callee, answering each with a 200.
 func bridgedNet(b *testing.B) (alice *ua.Agent, b2b netip.AddrPort) {
 	b.Helper()
 
-	// The strand checks of the tests cost a stack trace per job.
 	ua.CheckStrands(false)
 	b.Cleanup(func() { ua.CheckStrands(true) })
 
@@ -109,7 +106,6 @@ func bridgedNet(b *testing.B) (alice *ua.Agent, b2b netip.AddrPort) {
 	return alice, b2b
 }
 
-// invite sends an INVITE from alice to the B2BUA, its session to established.
 func invite(b *testing.B, alice *ua.Agent, b2b netip.AddrPort, i int64, h ua.Handler) {
 	uri := sip.URI{Scheme: "sip", User: "bob", Host: b2b.Addr().String(), Port: b2b.Port()}
 	req := sip.NewRequest("INVITE", uri)
@@ -123,8 +119,6 @@ func invite(b *testing.B, alice *ua.Agent, b2b netip.AddrPort, i int64, h ua.Han
 	}
 }
 
-// BenchmarkBridgedCalls: calls set up through a B2BUA and hung up, by 64 concurrent callers: INVITE, 200, ACK, BYE,
-// 200 on each leg. Each MCPTT call crosses several such hops (participating, controlling, participating).
 func BenchmarkBridgedCalls(b *testing.B) {
 	alice, b2b := bridgedNet(b)
 
@@ -168,8 +162,6 @@ func BenchmarkBridgedCalls(b *testing.B) {
 	b.ReportMetric(float64(b.N)/time.Since(start).Seconds(), "calls/s")
 }
 
-// BenchmarkBridgedSessions: the memory of established bridged calls: the caller's session, the two of the B2BUA and
-// its relay, and the callee's, all counted.
 func BenchmarkBridgedSessions(b *testing.B) {
 	const n = 1000
 

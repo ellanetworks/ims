@@ -15,7 +15,7 @@ class ApduTest {
         for (bad in listOf(null, "", "90", "9000F", "zz00")) assertNull(bad, Response.parse(bad))
     }
 
-    // TS 31.103 §4.2.2: EF_IMPI, an NAI TLV of tag '80', padded with 'FF'.
+    // TS 31.103 clause 4.2.2
     @Test
     fun tlvs() {
         val impi = "001010000000001@ims.mnc001.mcc001.3gppnetwork.org"
@@ -31,7 +31,7 @@ class ApduTest {
         assertNull(tlv(ByteArray(8) { -1 }, 0x80))
     }
 
-    // ETSI TS 102 221 §11.1.1.4.3: the file descriptor of a linear fixed EF, its record length and count.
+    // ETSI TS 102 221 clause 11.1.1.4.3
     @Test
     fun records() {
         val fcp = "621e8205422100400583026f04a5038001718a01058b036f0602800200808800".hexToByteArrayOrNull()!!

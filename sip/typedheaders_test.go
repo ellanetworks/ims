@@ -34,7 +34,8 @@ func TestOptionTags(t *testing.T) {
 	}
 }
 
-// RFC 5373 §6, TS 24.379 §6.3.2.2.5.2.
+// RFC 5373 section 6
+// TS 24.379 clause 6.3.2.2.5.2
 func TestAnswerMode(t *testing.T) {
 	a, ok, err := header("Answer-Mode", "auto;require").AnswerMode()
 	if !ok || err != nil || !a.Is(AnswerModeAuto) || !a.Require() || a.String() != "auto;require" {
@@ -60,7 +61,8 @@ func TestAnswerMode(t *testing.T) {
 	}
 }
 
-// RFC 4412 §3.1, RFC 8101.
+// RFC 4412 section 3.1
+// RFC 8101
 func TestResourcePriority(t *testing.T) {
 	rs, err := header("Resource-Priority", "mcpttp.13, dsn.flash", "Resource-Priority", "MCPTTQ.4").ResourcePriorities()
 	if err != nil || len(rs) != 3 || rs[0] != (ResourcePriority{ResourcePriorityMCPTTP, "13"}) ||
@@ -83,7 +85,8 @@ func TestResourcePriority(t *testing.T) {
 	}
 }
 
-// RFC 4538 §7, RFC 3891 §6.1.
+// RFC 4538 section 7
+// RFC 3891 section 6.1
 func TestTargetDialogAndReplaces(t *testing.T) {
 	td, ok, err := header("Target-Dialog", "fa77as7dad8-sd98ajzz@host.example.com;local-tag=kkaz-;remote-tag=6544").TargetDialog()
 	if !ok || err != nil || td.CallID != "fa77as7dad8-sd98ajzz@host.example.com" || td.LocalTag != "kkaz-" || td.RemoteTag != "6544" {
@@ -116,7 +119,8 @@ func TestTargetDialogAndReplaces(t *testing.T) {
 	}
 }
 
-// RFC 4488 §4, RFC 5318 §5.
+// RFC 4488 section 4
+// RFC 5318 section 5
 func TestReferSubAndRefusedURIs(t *testing.T) {
 	for v, want := range map[string]bool{"false": false, "TRUE": true, "false;x=1": false} {
 		if sub, ok, err := header("Refer-Sub", v).ReferSub(); !ok || err != nil || sub.Subscribe != want {
@@ -142,7 +146,9 @@ func TestReferSubAndRefusedURIs(t *testing.T) {
 	}
 }
 
-// RFC 4028 §4, §5, TS 24.379 Annex A.
+// RFC 4028 section 4
+// RFC 4028 section 5
+// TS 24.379 annex A
 func TestSessionExpires(t *testing.T) {
 	se, ok, err := header("x", "3600;Refresher=UAC;x=1").SessionExpires()
 	if !ok || err != nil || se.Seconds != 3600 || se.Refresher != RefresherUAC || se.String() != "3600;refresher=uac;x=1" {
@@ -164,7 +170,7 @@ func TestSessionExpires(t *testing.T) {
 	}
 }
 
-// RFC 6665 §8.2.
+// RFC 6665 section 8.2
 func TestEventHeaders(t *testing.T) {
 	e, ok, err := header("o", "conference;id=7;x").Event()
 	if !ok || err != nil || e.Package != "conference" || e.ID != "7" || e.String() != "conference;id=7;x" {
@@ -198,7 +204,6 @@ func TestEventHeaders(t *testing.T) {
 		t.Errorf("Subscription-State %+v, %v, %v", ss, ok, err)
 	}
 
-	// TS 24.379 §9.2.1.6: the longest subscription.
 	active, err := ParseSubscriptionState("active;expires=4294967295")
 	if err != nil || active.Expires == nil || *active.Expires != 4294967295 || active.String() != "active;expires=4294967295" {
 		t.Errorf("Subscription-State %+v, %v", active, err)
@@ -217,8 +222,7 @@ func TestEventHeaders(t *testing.T) {
 	}
 }
 
-// RFC 6086 §7.2, TS 24.379 Annex J.
-// RFC 6665 §4.1.3
+// RFC 6665 section 4.1.3
 func TestResubscribe(t *testing.T) {
 	for _, c := range []struct {
 		state string
@@ -266,7 +270,7 @@ func TestInfoPackages(t *testing.T) {
 	}
 }
 
-// RFC 6050 §4.4.
+// RFC 6050 section 4.4
 func TestServices(t *testing.T) {
 	ids, err := header("P-Asserted-Service", "urn:urn-7:3gpp-service.ims.icsi.MCPTT").AssertedServices()
 	if err != nil || !slices.Equal(ids, []string{"urn:urn-7:3gpp-service.ims.icsi.mcptt"}) {

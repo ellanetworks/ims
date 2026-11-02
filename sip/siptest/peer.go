@@ -17,7 +17,6 @@ type Peer struct {
 	recv  chan Received
 	done  chan struct{}
 
-	// net, for a peer of a Net, is quiesced before the peer looks at what it received.
 	net *Net
 }
 
@@ -88,7 +87,6 @@ func (p *Peer) RecvResponse() (*sip.Response, sip.Flow) {
 	return res, r.Flow
 }
 
-// RecvNone checks that nothing arrives within d; on a Net, that nothing arrived once the net is quiet.
 func (p *Peer) RecvNone(d time.Duration) {
 	p.t.Helper()
 
@@ -126,8 +124,6 @@ func (p *Peer) deliver(m sip.Message) {
 	}
 }
 
-// RecvWithin takes what the peer received within d, if anything; on a Net, what it received once the net is quiet,
-// or else within d.
 func (p *Peer) RecvWithin(d time.Duration) (Received, bool) {
 	p.t.Helper()
 	p.quiesce()

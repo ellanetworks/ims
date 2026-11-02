@@ -50,8 +50,6 @@ const (
 
 const subscribers = 4
 
-// hosts are the UE hosts on the bridge: one per subscriber, and one more for a second device on a subscriber's
-// number.
 const hosts = subscribers + 1
 
 type subscriber struct {
@@ -134,7 +132,6 @@ func newSceneWith(t *testing.T, configure func(*server.Server)) *scene {
 	return newPolicyScene(t, policyRx, configure)
 }
 
-// newPolicyScene starts the IMS with a fake PCRF over Rx, or a fake PCF over N5.
 func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) *scene {
 	t.Helper()
 
@@ -200,7 +197,6 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		pol = settings.Policy{Interface: settings.PolicyN5, PCFURI: s.pcf.URL()}
 		n5 = &config.N5{Notify: config.N5Notify{Address: netip.MustParseAddr("127.0.0.1"), Port: 0}}
 	case policyN5TLS:
-		// Both ends by IP address, and the notification URIs by default.
 		ca := sbitlstest.NewCA(t, "ca")
 		pcfCert := ca.Issue(t, "pcf", sbitlstest.Leaf{Hosts: []string{"127.0.0.1"}})
 		ims := ca.Issue(t, "ims", sbitlstest.Leaf{Hosts: []string{"127.0.0.1"}})
@@ -264,9 +260,6 @@ func (s *scene) host(i int) *host {
 
 	h := &host{ns: netnstest.New(s.t)}
 
-	// The ports of the UEs of a host come from a block of their own in the test process: the IMS, in one namespace
-	// for all the tests, may still hold a connection to the ports of an earlier test's UE (TIME_WAIT, LAST_ACK), and
-	// would fail to dial the same 4-tuple again (EADDRNOTAVAIL).
 	lo := portsFrom + int(portBlocks.Add(1)-1)%portBlockCount*portBlock
 	h.ns.Sysctl(s.t, "net.ipv4.ip_local_port_range", fmt.Sprintf("%d %d", lo, lo+portBlock-1))
 
@@ -287,7 +280,6 @@ func (s *scene) host(i int) *host {
 	return h
 }
 
-// The blocks of ports of the UE hosts: portBlockCount blocks of portBlock ports from portsFrom, reused in turn.
 const (
 	portsFrom      = 20000
 	portBlock      = 128
@@ -312,7 +304,6 @@ func (s *scene) newUEAt(i int, v6 bool, cfg testue.Config) *testue.UE {
 	return s.newDevice(i, subscriberAt(i), v6, cfg)
 }
 
-// newDevice is a UE on host i with the USIM of sub, and its own IMEI unless cfg has one.
 func (s *scene) newDevice(i int, sub subscriber, v6 bool, cfg testue.Config) *testue.UE {
 	s.t.Helper()
 
@@ -359,7 +350,6 @@ func (s *scene) ctx() context.Context {
 	return ctx
 }
 
-// seed writes the Diameter peers, their routes and the policy into the database, before the IMS starts on it.
 func seed(t *testing.T, path string, peers []settings.Peer, routes []settings.Route, pol settings.Policy) {
 	t.Helper()
 
@@ -389,7 +379,7 @@ func seed(t *testing.T, path string, peers []settings.Peer, routes []settings.Ro
 	}
 }
 
-// RFC 6733 §5.6.1
+// RFC 6733 section 5.6.1
 func (s *scene) diameterOpen(ids ...string) {
 	s.t.Helper()
 
@@ -860,7 +850,6 @@ func TestListRegistrations(t *testing.T) {
 		t.Fatalf("q %v, want 1 for a contact without a q-value", d.Q)
 	case err != nil || address.Addr() != ueAddrsAt(0)[0].Addr():
 		t.Fatalf("address %q, want the UE's %s", d.Address, ueAddrsAt(0)[0].Addr())
-	// A REGISTER over 1300 bytes goes over TCP (RFC 3261 §18.1.1), and the scene's PCRF monitors the signalling.
 	case !d.Protected || d.Transport != "udp" && d.Transport != "tcp" || d.SignallingPath != "monitored":
 		t.Fatalf("contact = %+v, want protected, with its signalling path monitored", d)
 	}

@@ -11,7 +11,6 @@ const samples = 320
 
 var t0 = time.Unix(1_800_000_000, 0)
 
-// speech is a 12.65 kbit/s frame of AMR-WB, its first octet n.
 func speech(n int) amr.Frame {
 	bits, _ := amr.WB.Bits(2)
 	b := make([]byte, (bits+7)/8)
@@ -22,8 +21,6 @@ func speech(n int) amr.Frame {
 
 func newBuffer() *Buffer { return New(Config{Codec: amr.WB}) }
 
-// play takes n frames from b, one each 20 ms from at: the first octet of each speech frame, -1 for SPEECH_LOST, -2
-// for NO_DATA.
 func play(b *Buffer, at time.Time, n int) []int {
 	out := make([]int, n)
 
@@ -55,7 +52,6 @@ func equal(a, b []int) bool {
 	return true
 }
 
-// A talkspurt in time plays in order after the buffering delay, then silence.
 func TestInOrder(t *testing.T) {
 	b := newBuffer()
 
@@ -72,7 +68,7 @@ func TestInOrder(t *testing.T) {
 	}
 }
 
-// TS 26.114 §8.2.2: frames out of order and duplicated play once, in order.
+// TS 26.114 clause 8.2.2
 func TestReorderedAndDuplicated(t *testing.T) {
 	b := newBuffer()
 
@@ -89,7 +85,7 @@ func TestReorderedAndDuplicated(t *testing.T) {
 	}
 }
 
-// A missing speech frame with later ones buffered is SPEECH_LOST, for the decoder to conceal (RFC 4867 §5.3).
+// RFC 4867 section 5.3
 func TestLoss(t *testing.T) {
 	b := newBuffer()
 
@@ -106,7 +102,7 @@ func TestLoss(t *testing.T) {
 	}
 }
 
-// A packet of several frames (maxptime, RFC 4867 §4.3.5.2) plays a frame each 20 ms; its NO_DATA frames are DTX.
+// RFC 4867 section 4.3.5.2
 func TestFramesOfAPacket(t *testing.T) {
 	b := newBuffer()
 	sid := amr.Frame{Type: amr.WB.SID, Good: true, Bits: make([]byte, 5)}
@@ -119,8 +115,7 @@ func TestFramesOfAPacket(t *testing.T) {
 	}
 }
 
-// A frame after its playout is late, and the next talkspurt starts with a longer delay (TS 26.114 §8.2.3.1
-// guideline 2).
+// TS 26.114 clause 8.2.3.1
 func TestLateRaisesTheDelay(t *testing.T) {
 	b := newBuffer()
 	before := b.Delay()
@@ -139,7 +134,7 @@ func TestLateRaisesTheDelay(t *testing.T) {
 	}
 }
 
-// The interarrival jitter (RFC 3550 §6.4.1) raises the delay, within MaxDelay.
+// RFC 3550 section 6.4.1
 func TestJitterRaisesTheDelay(t *testing.T) {
 	b := newBuffer()
 
@@ -153,9 +148,7 @@ func TestJitterRaisesTheDelay(t *testing.T) {
 	}
 }
 
-// Another SSRC is another talker, a stream of its own: the talker of the floor plays first; the previous talker's tail
-// is not wiped by the new one, nor the new one's by a late packet of the previous (RFC 3550 §3: one SSRC, one
-// timeline).
+// RFC 3550 section 3
 func TestTalkers(t *testing.T) {
 	b := newBuffer()
 	b.SetTalker(2)
@@ -173,7 +166,6 @@ func TestTalkers(t *testing.T) {
 	}
 }
 
-// Two talkers (dual floor, TS 24.380 §6.2.4.5.7): their packets interleaved, the talker of the floor plays whole.
 func TestInterleavedTalkers(t *testing.T) {
 	b := newBuffer()
 	b.SetTalker(7)
@@ -188,7 +180,6 @@ func TestInterleavedTalkers(t *testing.T) {
 	}
 }
 
-// A frame of a talkspurt ended, arriving after it, is late: the next talkspurt does not start from it.
 func TestStragglerAfterTheTalkspurt(t *testing.T) {
 	b := newBuffer()
 
@@ -214,7 +205,6 @@ func TestStragglerAfterTheTalkspurt(t *testing.T) {
 	}
 }
 
-// Nothing taking the frames out, the buffer keeps MaxDelay of them, and playout starts the delay behind the newest.
 func TestNotPlaying(t *testing.T) {
 	b := newBuffer()
 
@@ -230,8 +220,8 @@ func TestNotPlaying(t *testing.T) {
 	}
 }
 
-// Redundant copies (RFC 4867 §4.5) of frames played are duplicates, not late; a talkspurt ending without SID loses
-// no frame; NO_DATA has its quality bit set (TS 26.201 Table 1c).
+// RFC 4867 section 4.5
+// TS 26.201 clause 4.1.3
 func TestCopiesAndEnds(t *testing.T) {
 	b := newBuffer()
 
@@ -256,7 +246,6 @@ func TestCopiesAndEnds(t *testing.T) {
 	}
 }
 
-// A talker whose clock runs ahead keeps the buffer within MaxDelay, dropping its oldest frames.
 func TestOverflow(t *testing.T) {
 	b := New(Config{Codec: amr.WB, MaxDelay: 100 * time.Millisecond})
 

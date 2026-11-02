@@ -14,8 +14,8 @@ import (
 	"github.com/ellanetworks/ims/sip/reginfo"
 )
 
-// TS 33.203 §7.1, §7.2: the UE's SPIs are the platform's, all released once the UE deregistered; the sockets of both
-// protected ports, UDP and TCP listener, protected by the SAs once installed.
+// TS 33.203 clause 7.1
+// TS 33.203 clause 7.2
 func TestSPIsAndSocketsOfThePlatform(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -48,7 +48,6 @@ func TestSPIsAndSocketsOfThePlatform(t *testing.T) {
 		{port: set.Local.PortS, typ: syscall.SOCK_DGRAM},
 		{port: set.Local.PortS, typ: syscall.SOCK_STREAM},
 	}
-	// A request too large for UDP is tried over TCP first (RFC 3261 §18.1.1), its connection protected too.
 	for _, w := range want {
 		if !slices.Contains(got, w) {
 			t.Errorf("protected %+v, without %+v", got, w)
@@ -74,7 +73,7 @@ func TestSPIsAndSocketsOfThePlatform(t *testing.T) {
 	}
 }
 
-// TS 33.203 §7.1: a TCP connection the UE dials from port_uc is protected before it connects.
+// TS 33.203 clause 7.1
 func TestDialledConnectionProtected(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{Transport: sip.TCP})
@@ -106,7 +105,7 @@ func TestDialledConnectionProtected(t *testing.T) {
 	}
 }
 
-// TS 24.229 §7.2A.4: the access network info set, the next requests carry it.
+// TS 24.229 clause 7.2A.4
 func TestAccessNetworkInfoChanged(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{})
@@ -130,8 +129,7 @@ func TestAccessNetworkInfoChanged(t *testing.T) {
 	}
 }
 
-// RFC 3680 §5.1: a contact on probation ends the registration, its retry-after told; the UE does not register again by
-// itself.
+// RFC 3680 section 5.1
 func TestProbation(t *testing.T) {
 	n := newRegEventNetwork(t)
 	u, _ := n.newUE(Config{T1: 10 * time.Millisecond})
@@ -172,8 +170,8 @@ func TestProbation(t *testing.T) {
 	}
 }
 
-// okOutbound answers the protected REGISTER req with a 200 of an outbound registration (RFC 5626 §6) and a
-// Flow-Timer of flowTimer seconds (§4.4.1).
+// RFC 5626 section 6
+// RFC 5626 section 4.4.1
 func okOutbound(n *network, req *sip.Request, f sip.Flow, flowTimer int) {
 	res := sip.NewResponse(req, 200, "")
 
@@ -204,7 +202,8 @@ func registerOutbound(t *testing.T, n *network, u *testUE, flowTimer int) {
 	}
 }
 
-// RFC 5626 §4.4.1, §4.4.2: a registration with a Flow-Timer kept alive by STUN on its flow, at least that often.
+// RFC 5626 section 4.4.1
+// RFC 5626 section 4.4.2
 func TestFlowTimer(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{RegID: 1})
@@ -221,7 +220,8 @@ func TestFlowTimer(t *testing.T) {
 	}
 }
 
-// RFC 5626 §4.4.1, §4.5: a keep-alive not answered ends the registration, its flow failed.
+// RFC 5626 section 4.4.1
+// RFC 5626 section 4.5
 func TestFlowFailed(t *testing.T) {
 	saved := pongTimeout
 	pongTimeout = 100 * time.Millisecond
@@ -258,9 +258,8 @@ func TestFlowFailed(t *testing.T) {
 	}
 }
 
-// TS 24.229 §5.1.1.4.1 NOTE 13, RFC 5626 §4.5: a listener of the UE failing for good, its unprotected port or a protected
-// one, as when the platform destroys its sockets with the network, ends the registration, its flow failed; the next
-// registration listens again on the port, the unprotected one as it was, a protected one anew.
+// TS 24.229 clause 5.1.1.4.1
+// RFC 5626 section 4.5
 func TestListenerFailed(t *testing.T) {
 	for name, port := range map[string]func(*testUE, SASet) uint16{
 		"unprotected": func(u *testUE, _ SASet) uint16 { return u.Unprotected().Port() },
@@ -280,7 +279,6 @@ func TestListenerFailed(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Linux: a listening socket shut down is no longer listening; accept fails with EINVAL.
 			var shut error
 			if err := rcs[1].Control(func(fd uintptr) { shut = syscall.Shutdown(int(fd), syscall.SHUT_RD) }); err != nil || shut != nil {
 				t.Fatalf("shutdown: %v, %v", err, shut)
@@ -318,7 +316,7 @@ func TestListenerFailed(t *testing.T) {
 	}
 }
 
-// Without a Flow-Timer, no keep-alive (TS 24.229 §5.1.1.2.1 d).
+// TS 24.229 clause 5.1.1.2.1
 func TestNoFlowTimer(t *testing.T) {
 	n := newNetwork(t)
 	u, _ := n.newUE(Config{RegID: 1})

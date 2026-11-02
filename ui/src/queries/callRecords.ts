@@ -24,21 +24,17 @@ export const CALL_OUTCOMES: CallOutcome[] = [
   "failed",
 ];
 
-// CallRecord is a call a registered UE made (TS 32.298 §5.1.3.1). A value the IMS did not observe is absent.
+// TS 32.298 clause 5.1.3.1
 export interface CallRecord {
   id: number;
   icid: string;
   session_id: string;
-  // The identities asserted for the caller.
   calling_party: string[];
   caller_impi?: string;
-  // The Request-URI the caller sent, as dialled.
   requested_party: string;
-  // The Request-URI the IMS routed the call to, normalised.
   called_party?: string;
   callee_impi?: string;
   requested_at: string;
-  // When the caller got the final response, a 2xx or an error.
   delivery_start_at?: string;
   delivery_end_at?: string;
   sip_status?: number;
@@ -47,14 +43,12 @@ export interface CallRecord {
   alerted: boolean;
   media: string[];
   in_progress: boolean;
-  // Closed without the end of the call.
   incomplete: boolean;
   duration_ms?: number;
 }
 
 export interface ListCallRecordsParams extends PageParams {
   search?: string;
-  // Bounds of the request time, as RFC 3339 times, both included.
   start?: string;
   end?: string;
   outcomes?: CallOutcome[];

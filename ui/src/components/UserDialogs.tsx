@@ -109,8 +109,6 @@ export function EditRoleDialog({
   );
 }
 
-// PasswordDialog changes the password of the logged-in user when email is undefined, with its current password, and
-// otherwise sets the password of that user.
 export function PasswordDialog({
   email,
   onClose,

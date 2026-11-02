@@ -27,14 +27,14 @@ import (
 
 const maxNotification = 1 << 20
 
-// TS 29.500 Table 5.2.7.2-1
+// TS 29.500 clause 5.2.7.2 table 5.2.7.2-1
 const (
 	causeInvalidMsgFormat   = "INVALID_MSG_FORMAT"
 	causeMandatoryIEMissing = "MANDATORY_IE_MISSING"
 )
 
-// ServeHTTP receives the PCF's notifications (TS 29.514 §4.2.5.2, §4.2.5.3): POST {notifUri}/notify and
-// {notifUri}/terminate, where notifUri ends with the local ID of the session.
+// TS 29.514 clause 4.2.5.2
+// TS 29.514 clause 4.2.5.3
 func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest, ok := strings.CutPrefix(r.URL.Path, SessionsPath+"/")
 	id, op, _ := strings.Cut(rest, "/")
@@ -71,7 +71,6 @@ func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// routed names the server span of a notification by its route, which ServeHTTP finds rather than a mux.
 func routed(r *http.Request, op string) {
 	route := SessionsPath + "/{id}/" + op
 
@@ -80,7 +79,7 @@ func routed(r *http.Request, op string) {
 	span.SetAttributes(semconv.HTTPRoute(route))
 }
 
-// readJSON reads a JSON body (TS 29.500 §5.2.7.2).
+// TS 29.500 clause 5.2.7.2
 func readJSON(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	if t, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || t != n5.ContentJSON {
 		n5.WriteProblem(w, n5.ProblemDetails{Status: http.StatusUnsupportedMediaType, Detail: "want " + n5.ContentJSON})
@@ -105,14 +104,13 @@ func invalid(cause, detail string) n5.ProblemDetails {
 	return n5.ProblemDetails{Status: http.StatusBadRequest, Cause: cause, Detail: detail}
 }
 
-// TS 29.500 Table 5.2.7.2-1, §6.2.3: the PCF ends a subscription the P-CSCF does not know.
+// TS 29.500 clause 5.2.7.2 table 5.2.7.2-1
+// TS 29.500 clause 6.2.3
 func unknownContext(w http.ResponseWriter) {
 	n5.WriteProblem(w, n5.ProblemDetails{Status: http.StatusBadRequest, Cause: n5.CauseResourceContextNotFound})
 }
 
-// TS 29.514 §4.2.5.3: answer 204, then delete the context. The session is routed on its local ID, which only the
-// PCF that holds its notifUri knows. A context the P-CSCF lost track of is deleted all the same: one it still holds
-// the URI of, or the one an unanswered create made, at the resUri of the configured PCF.
+// TS 29.514 clause 4.2.5.3
 func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var t n5.TerminationInfo
 
@@ -146,7 +144,6 @@ func (b *Backend) terminated(ctx context.Context, w http.ResponseWriter, sink po
 	}
 
 	if !ok && b.lostOne(id) {
-		// The PCF names its contexts other than pcf_uri does: Open5GS takes resUri from its first SBI server.
 		attrs = append(attrs, slog.String("pcf_uri", b.root.String()))
 		b.log.WarnContext(ctx, "PCF terminates an application session context the P-CSCF lost, at a resUri outside pcf_uri: "+
 			"not deleting it", attrs...)
@@ -175,7 +172,6 @@ func noContent(w http.ResponseWriter) {
 	}
 }
 
-// state returns the URI of a context the backend still holds for id.
 func (b *Backend) state(id string) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -188,8 +184,6 @@ func (b *Backend) state(id string) (string, bool) {
 	return s.uri, true
 }
 
-// ours reports whether uri is an Individual Application Session Context of the configured PCF, so that a
-// notification cannot make the P-CSCF send requests elsewhere.
 func (b *Backend) ours(uri string) bool {
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme != b.root.Scheme || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
@@ -197,7 +191,6 @@ func (b *Backend) ours(uri string) bool {
 		return false
 	}
 
-	// The delete URI is built by joining paths, which resolves dot segments: the path must have none.
 	if path.Clean(u.Path) != u.Path {
 		return false
 	}
@@ -224,7 +217,6 @@ func sameHost(a, b *url.URL) bool {
 		return false
 	}
 
-	// Addresses compare as addresses: [::1] is [0::1].
 	ah, aErr := netip.ParseAddr(a.Hostname())
 	bh, bErr := netip.ParseAddr(b.Hostname())
 
@@ -235,8 +227,6 @@ func sameHost(a, b *url.URL) bool {
 	return strings.EqualFold(a.Hostname(), b.Hostname())
 }
 
-// deleteOrphan deletes, after the 204 of the termination that cause is of, a context the P-CSCF no longer has: a trace
-// of its own, linked to the termination.
 func (b *Backend) deleteOrphan(cause context.Context, id, uri string) {
 	link := trace.SpanContextFromContext(cause)
 
@@ -267,7 +257,7 @@ func (b *Backend) deleteOrphan(cause context.Context, id, uri string) {
 	}()
 }
 
-// TS 29.514 §4.2.5.2: the session is routed on its local ID.
+// TS 29.514 clause 4.2.5.2
 func (b *Backend) notified(ctx context.Context, w http.ResponseWriter, sink policy.Sink, id string, body []byte) {
 	var n struct {
 		n5.EventsNotification
@@ -297,9 +287,8 @@ func (b *Backend) notified(ctx context.Context, w http.ResponseWriter, sink poli
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// event returns what the notification reports. A FAILED_RESOURCES_ALLOCATION is about the media components whose
-// PCC rules went INACTIVE (TS 29.514 §4.2.5.8); without failedResourcAllocReports, as for the signalling path
-// (§4.2.5.10), it is about the flows it names. No flows means every media component.
+// TS 29.514 clause 4.2.5.8
+// TS 29.514 clause 4.2.5.10
 func event(n n5.EventsNotification) policy.Event {
 	var e policy.Event
 
@@ -326,7 +315,6 @@ func event(n n5.EventsNotification) policy.Event {
 	return e
 }
 
-// failedComponents returns the media components whose resources are lost, nil for all of them, and whether any is.
 func failedComponents(reports []n5.ResourcesAllocationInfo, flows []n5.Flows) ([]uint32, bool) {
 	if len(reports) == 0 {
 		return components(flows), true
@@ -365,18 +353,15 @@ func components(flows []n5.Flows) []uint32 {
 	return out
 }
 
-// Server is the notification server.
 type Server struct {
 	*http.Server
 }
 
-// NewServer returns the notification server: HTTP/2 only, with prior knowledge without credentials (RFC 9113
-// §3.3), and over TLS with them, where the PCF must present a certificate (TS 33.501 §13.1.0). tp, when set, traces
-// the notifications.
+// RFC 9113 section 3.3
+// TS 33.501 clause 13.1.0
 func NewServer(h http.Handler, creds *sbitls.Credentials, tp trace.TracerProvider, logger *slog.Logger) *Server {
 	var protocols http.Protocols
 
-	// The PCF is a network function of the operator's: its trace context is continued.
 	if tp != nil {
 		h = otelhttp.NewHandler(h, "", otelhttp.WithTracerProvider(tp), otelhttp.WithPropagators(tracing.Propagator))
 	}
@@ -400,7 +385,6 @@ func NewServer(h http.Handler, creds *sbitls.Credentials, tp trace.TracerProvide
 	return &Server{Server: srv}
 }
 
-// Serve accepts connections on ln, and serves them over TLS if the server has credentials.
 func (s *Server) Serve(ln net.Listener) error {
 	if s.TLSConfig != nil {
 		return s.ServeTLS(ln, "", "")

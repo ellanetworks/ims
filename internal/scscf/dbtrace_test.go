@@ -14,9 +14,6 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// TestTraceRegistrationStatements lists the SQL statements one registration, a reg-event SUBSCRIBE, a
-// re-registration and a deregistration run, by the method of internal/db that ran them. Investigation only:
-// go test -tags sqlite_trace -run TestTraceRegistrationStatements -v ./internal/scscf
 func TestTraceRegistrationStatements(t *testing.T) {
 	probe, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {

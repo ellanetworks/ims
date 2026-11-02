@@ -8,8 +8,6 @@ import (
 	"github.com/ellanetworks/ims/mcptt/floorctl"
 )
 
-// loop is a call of floor participants and a server, their messages delivered as on a network: queued, then
-// delivered in order by flush.
 type loop struct {
 	t       *testing.T
 	c       *fakeClock
@@ -56,8 +54,6 @@ func (l *loop) flush() {
 
 func (l *loop) advance(d time.Duration) { l.c.advance(d, l.flush) }
 
-// start establishes the call: the originator first, without an implicit request, then the invited members; the
-// floor idle.
 func (l *loop) start(ids ...string) {
 	for i, id := range ids {
 		cl := l.clients[id]
@@ -79,7 +75,7 @@ func (l *loop) state(id string) (participantState, memberState) {
 	return cl.p.state, cl.m.state
 }
 
-// TS 24.380 Annex A.3.2: a floor request when the floor is idle, granted; media; released.
+// TS 24.380 clause A.3.2
 func TestAnnexA32(t *testing.T) {
 	l := newLoop(t, "a", "b", "c")
 	l.start("a", "b", "c")
@@ -90,7 +86,6 @@ func TestAnnexA32(t *testing.T) {
 
 	l.out.take()
 
-	// Steps 1–5.
 	l.clients["a"].p.Press()
 	l.flush()
 
@@ -111,14 +106,11 @@ func TestAnnexA32(t *testing.T) {
 		t.Fatalf("a transmits %v with %d, forwarded %v", a.out.transmit, a.out.ssrc, l.out.forward["a"])
 	}
 
-	// Steps 6, 7.
 	a.m.Media()
 
-	// Steps 8–12.
 	a.p.Unpress()
 	l.flush()
 
-	// Steps 9, 11: its last media still distributed, not revoked.
 	if len(l.out.take()) != 0 || !l.out.forward["a"] {
 		t.Fatal("the floor idle before the last media")
 	}
@@ -143,7 +135,7 @@ func TestAnnexA32(t *testing.T) {
 	}
 }
 
-// TS 24.380 Annex A.3.3: a floor request when the floor is taken, queueing not applied: denied.
+// TS 24.380 clause A.3.3
 func TestAnnexA33(t *testing.T) {
 	l := newLoop(t, "a", "b", "c")
 	l.start("a", "b", "c")
@@ -172,8 +164,9 @@ func TestAnnexA33(t *testing.T) {
 	}
 }
 
-// TS 24.380 §6.3.4.4.4, §6.2.4.5.4, §6.3.4.5.4: the talker past T2 revoked; its client releases the floor, idle for
-// every member.
+// TS 24.380 clause 6.3.4.4.4
+// TS 24.380 clause 6.2.4.5.4
+// TS 24.380 clause 6.3.4.5.4
 func TestLoopRevoke(t *testing.T) {
 	l := newLoop(t, "a", "b")
 	l.start("a", "b")

@@ -12,8 +12,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TestRequestOfADialogLinksToItsOrigin checks that a request of a dialog that starts a trace of its own, as one from
-// outside the trust domain, links to the request that created the dialog.
 func TestRequestOfADialogLinksToItsOrigin(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))

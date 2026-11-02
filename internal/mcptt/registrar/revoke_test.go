@@ -13,7 +13,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// reconfigured records the Reconfigure calls of Revoke.
 type reconfigured struct {
 	mu    sync.Mutex
 	calls []reconfiguration
@@ -30,9 +29,6 @@ func (r *reconfigured) Reconfigure(_ context.Context, _ time.Time, before, user 
 
 func (r *reconfigured) LogOff(context.Context, time.Time, sip.URI, string) {}
 
-// Revoke hands the change of a user's settings, before and after, to the clients its bindings keep authorised; not to
-// a binding expired that its timer has not removed yet (RFC 3261 §10.3), whose client would be affiliated for
-// MaxExpires although unreachable.
 func TestRevokeReconfigures(t *testing.T) {
 	n := siptest.NewNet(t)
 	addr := n.Addr()

@@ -10,7 +10,6 @@ import (
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
-// event is an event of the session, in JSON to Platform.Event (the package doc lists them).
 type event struct {
 	Version int    `json:"version"`
 	Type    string `json:"type"`
@@ -27,10 +26,9 @@ type event struct {
 	Manual bool   `json:"manual,omitempty"`
 	Cause  string `json:"cause,omitempty"`
 
-	Notice string `json:"notice,omitempty"`
-	Party  string `json:"party,omitempty"`
-	// Duration is the seconds a granted talker may transmit (TS 24.380 §8.2.3.3).
-	Duration *int `json:"duration,omitempty"`
+	Notice   string `json:"notice,omitempty"`
+	Party    string `json:"party,omitempty"`
+	Duration *int   `json:"duration,omitempty"`
 
 	On   *bool `json:"on,omitempty"`
 	Mode *int  `json:"mode,omitempty"`
@@ -39,8 +37,6 @@ type event struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// events is the queue of the session's events: one goroutine gives them to the platform, in order, so that neither
-// the protocol's goroutines wait for the app (ua strands must not block) nor the app sees them concurrently.
 type events struct {
 	p Platform
 
@@ -102,7 +98,6 @@ func (e *events) run() {
 	}
 }
 
-// close delivers the events queued, then stops; it does not wait for them, so that the app may call it from Event.
 func (e *events) close() {
 	e.mu.Lock()
 	e.closed = true
@@ -119,9 +114,6 @@ var notices = map[floor.NoticeKind]string{
 	floor.NoticeRevoked: "revoked", floor.NoticeRequestTimeout: "timeout", floor.NoticeMediaEnded: "media-ended",
 }
 
-// cause is how a call ended, for the app's DisconnectCause: "local" (the user left), "remote" (the server ended it),
-// "rejected" (its INVITE refused, with its status), "missed" (an invitation cancelled before it was answered),
-// "error" (a timeout, a dialog lost or expired).
 func cause(e ua.End, incoming bool) string {
 	switch e.Cause {
 	case ua.EndBye:
@@ -143,7 +135,6 @@ func cause(e ua.End, incoming bool) string {
 	return "error"
 }
 
-// clientEvent turns an event of the client into the session's, the calls' state kept for State.
 func (s *Session) clientEvent(e client.Event) {
 	if e.Call == nil {
 		return

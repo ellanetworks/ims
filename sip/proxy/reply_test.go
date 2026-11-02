@@ -339,8 +339,7 @@ func TestNonInviteTimeoutAfterTrying(t *testing.T) {
 	}
 }
 
-// With AnyResponse, a 100 stops the Timeout of a request other than an INVITE, and the final response that follows
-// tells of it (TS 24.229 §5.4.3.2: a 1xx from the AS).
+// TS 24.229 clause 5.4.3.2
 func TestNonInviteAnyResponse(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 1)
@@ -376,7 +375,7 @@ func TestNonInviteAnyResponse(t *testing.T) {
 	}
 }
 
-// The Timeout of a branch no longer applies once the request reached its target (TS 24.229 §5.4.3.2).
+// TS 24.229 clause 5.4.3.2
 func TestReachedStopsTimeout(t *testing.T) {
 	clock := siptest.NewClock()
 	replies := make(chan held, 1)

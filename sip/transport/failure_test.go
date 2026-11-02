@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// The socket's own errors end its listener, ECONNABORTED too of a UDP socket, which Linux sets only on destroying it;
-// the others are retried, after a wait doubled from 5 ms to at most a second, as net/http's Server.
 func TestSocketErrors(t *testing.T) {
 	opErr := func(op string, errno syscall.Errno) error {
 		return &net.OpError{Op: op, Net: "tcp4", Err: os.NewSyscallError(op, errno)}

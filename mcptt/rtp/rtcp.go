@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// RTCP packet types (RFC 3550 §12.1).
+// RFC 3550 section 12.1
 const (
 	TypeSR   = 200
 	TypeRR   = 201
@@ -15,19 +15,15 @@ const (
 	TypeAPP  = 204
 )
 
-// RTCPPacket is one packet of an RTCP datagram: *SenderReport, *ReceiverReport, *SourceDescription, *Goodbye, *App or
-// *RawRTCP.
 type RTCPPacket interface {
-	// body appends the packet's body to dst and returns its count field.
 	body(dst []byte) ([]byte, uint8, error)
 	packetType() uint8
 }
 
-// ReceptionReport is a report block of an SR or RR (RFC 3550 §6.4.1).
+// RFC 3550 section 6.4.1
 type ReceptionReport struct {
-	SSRC         uint32
-	FractionLost uint8
-	// CumulativeLost is the signed 24-bit cumulative number of packets lost.
+	SSRC             uint32
+	FractionLost     uint8
 	CumulativeLost   int32
 	HighestSequence  uint32
 	Jitter           uint32
@@ -37,7 +33,7 @@ type ReceptionReport struct {
 
 const reportSize = 24
 
-// SenderReport is an SR (RFC 3550 §6.4.1).
+// RFC 3550 section 6.4.1
 type SenderReport struct {
 	SSRC        uint32
 	NTPTime     uint64
@@ -45,18 +41,17 @@ type SenderReport struct {
 	PacketCount uint32
 	OctetCount  uint32
 	Reports     []ReceptionReport
-	// Extension is the profile-specific extension, a multiple of 4 octets.
-	Extension []byte
+	Extension   []byte
 }
 
-// ReceiverReport is an RR (RFC 3550 §6.4.2).
+// RFC 3550 section 6.4.2
 type ReceiverReport struct {
 	SSRC      uint32
 	Reports   []ReceptionReport
 	Extension []byte
 }
 
-// SDESType is the type of an SDES item (RFC 3550 §6.5).
+// RFC 3550 section 6.5
 type SDESType uint8
 
 const (
@@ -67,55 +62,48 @@ const (
 	SDESLoc   SDESType = 5
 	SDESTool  SDESType = 6
 	SDESNote  SDESType = 7
-	// SDESPriv is a PRIV item: its Text holds the prefix length, the prefix and the value (§6.5.8).
+	// RFC 3550 section 6.5.8
 	SDESPriv SDESType = 8
 )
 
-// SourceDescription is an SDES (RFC 3550 §6.5).
+// RFC 3550 section 6.5
 type SourceDescription struct {
 	Chunks []SDESChunk
 }
 
-// SDESChunk is the items of one source.
 type SDESChunk struct {
 	Source uint32
 	Items  []SDESItem
 }
 
-// SDESItem is an item of a chunk; its Text is at most 255 octets.
 type SDESItem struct {
 	Type SDESType
 	Text string
 }
 
-// Goodbye is a BYE (RFC 3550 §6.6).
+// RFC 3550 section 6.6
 type Goodbye struct {
 	Sources []uint32
-	// Reason is at most 255 octets.
-	Reason string
+	Reason  string
 }
 
-// App is an APP (RFC 3550 §6.7).
+// RFC 3550 section 6.7
 type App struct {
-	// Subtype is 5 bits.
 	Subtype uint8
 	SSRC    uint32
 	Name    [4]byte
-	// Data is a multiple of 4 octets.
-	Data []byte
+	Data    []byte
 }
 
-// RawRTCP is a packet of a type the package does not decode.
 type RawRTCP struct {
 	Type  uint8
 	Count uint8
 	Body  []byte
 }
 
-// ParseRTCP parses the RTCP packets of b: a compound packet (RFC 3550 §6.1), or the packets of the media plane control
-// protocols of TS 24.380 §8.1.1, outside compound packets. The packets' lengths add up to b's (§A.2). A packet's
-// padding is stripped. On an error, the packets before it are returned: after a packet of a malformed body, those
-// after it too, its length framing them.
+// RFC 3550 section 6.1
+// RFC 3550 section A.2
+// TS 24.380 clause 8.1.1
 func ParseRTCP(b []byte) ([]RTCPPacket, error) {
 	var (
 		ps   []RTCPPacket
@@ -251,7 +239,7 @@ func parseReports(count uint8, b []byte) ([]ReceptionReport, []byte, error) {
 	return rs, ext, nil
 }
 
-// parseSDES parses the chunks of an SDES: each a source and items to a null octet, padded to 32 bits (§6.5).
+// RFC 3550 section 6.5
 func parseSDES(count uint8, b []byte) (*SourceDescription, error) {
 	sd := &SourceDescription{}
 
@@ -314,7 +302,7 @@ func parseBYE(count uint8, b []byte) (*Goodbye, error) {
 	return bye, nil
 }
 
-// AppendRTCP appends the packets ps to dst, padding a packet whose body is not a multiple of 32 bits (§6.4.1).
+// RFC 3550 section 6.4.1
 func AppendRTCP(dst []byte, ps ...RTCPPacket) ([]byte, error) {
 	for _, p := range ps {
 		start := len(dst)

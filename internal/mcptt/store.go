@@ -11,9 +11,6 @@ import (
 	"github.com/ellanetworks/ims/internal/mcptt/settings"
 )
 
-// store is the IMS's database as the AS's: the store of its settings and of its runtime state. home is the IMS's
-// home domain, the domain of the organisation the database stores as empty, which follows the home domain
-// (NewSettings).
 type store struct {
 	d    *db.DB
 	home string
@@ -24,7 +21,6 @@ var (
 	_ server.State   = store{}
 )
 
-// UpdateSystem stores nothing: the PSIs are of the home domain (System).
 func (store) UpdateSystem(context.Context, settings.System) error { return nil }
 
 func (s store) UpdateServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) error {
