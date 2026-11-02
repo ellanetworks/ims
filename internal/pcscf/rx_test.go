@@ -228,9 +228,9 @@ func (s *regScene) record() (db.PCSCFRegistration, bool) {
 func (s *regScene) wantSession(id string) {
 	s.t.Helper()
 
-	eventually(s.t, "the Rx session "+id+" on the stored record", func() bool {
+	eventually(s.t, "the Rx session "+id+" open on the stored record", func() bool {
 		regs, err := s.store.ListPCSCFRegistrations(context.Background())
-		return err == nil && len(regs) == 1 && regs[0].Policy.ID == id
+		return err == nil && len(regs) == 1 && regs[0].Policy.ID == id && (id == "") == (regs[0].Policy.Ref == "")
 	})
 }
 
