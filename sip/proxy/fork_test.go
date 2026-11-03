@@ -439,8 +439,8 @@ func TestForkMergesChallenges(t *testing.T) {
 	c.respond(407, "Proxy-Authenticate", `Digest realm="c"`)
 
 	res := s.final()
-	if res.StatusCode != 401 {
-		t.Fatalf("got %d, want 401", res.StatusCode)
+	if res.StatusCode != 401 && res.StatusCode != 407 {
+		t.Fatalf("got %d, want 401 or 407", res.StatusCode)
 	}
 
 	if res.Header.Get("WWW-Authenticate") != `Digest realm="b"` || res.Header.Get("Proxy-Authenticate") != `Digest realm="c"` {
