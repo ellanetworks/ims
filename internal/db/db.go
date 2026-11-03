@@ -405,6 +405,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	read.SetMaxOpenConns(maxReaders)
+	read.SetMaxIdleConns(maxReaders)
 
 	if err := read.PingContext(ctx); err != nil {
 		_ = read.Close()
