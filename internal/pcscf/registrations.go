@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -403,11 +404,8 @@ func (rs *registrations) update(ctx context.Context, impi string, f func(r *db.P
 
 	var removed []db.PCSCFRegistration
 
-	for k, r := range rs.byKey {
-		if k.impi != impi {
-			continue
-		}
-
+	for _, r := range slices.Collect(maps.Keys(rs.byIMPI[impi])) {
+		k := regKeyOf(r)
 		c := clone(r)
 
 		if !f(&c) {
