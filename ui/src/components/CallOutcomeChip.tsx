@@ -1,6 +1,26 @@
-import { Chip } from "@mui/material";
-import type { CallRecord } from "@/queries/callRecords";
+import { Chip, type ChipProps } from "@mui/material";
+import type { CallOutcome, CallRecord } from "@/queries/callRecords";
 import { outcomeLabels } from "@/utils/callRecords";
+
+export const outcomeColors: Record<CallOutcome, ChipProps["color"]> = {
+  answered: "success",
+  cancelled: "default",
+  busy: "default",
+  rejected: "default",
+  no_answer: "default",
+  unavailable: "default",
+  failed: "error",
+};
+
+export function OutcomeChip({ outcome }: { outcome: CallOutcome }) {
+  return (
+    <Chip
+      label={outcomeLabels[outcome]}
+      color={outcomeColors[outcome]}
+      size="small"
+    />
+  );
+}
 
 export default function CallOutcomeChip({ record }: { record: CallRecord }) {
   if (record.incomplete) {
@@ -18,16 +38,5 @@ export default function CallOutcomeChip({ record }: { record: CallRecord }) {
     return <Chip label={label} color="info" size="small" />;
   }
 
-  switch (record.outcome) {
-    case "answered":
-      return (
-        <Chip label={outcomeLabels.answered} color="success" size="small" />
-      );
-    case "failed":
-      return <Chip label={outcomeLabels.failed} color="error" size="small" />;
-    case undefined:
-      return <>—</>;
-    default:
-      return <Chip label={outcomeLabels[record.outcome]} size="small" />;
-  }
+  return record.outcome ? <OutcomeChip outcome={record.outcome} /> : <>—</>;
 }

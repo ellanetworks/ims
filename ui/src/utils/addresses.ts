@@ -11,3 +11,13 @@ export const portOf = (addrPort: string): number =>
 
 export const formatEndpoint = (address: string, port: number): string =>
   address.includes(":") ? `[${address}]:${port}` : `${address}:${port}`;
+
+export const pcscfAddresses = (
+  listeners: { role: string; address: string }[],
+): { ip: string; port: number }[] => {
+  const seen = new Set<string>();
+  return listeners
+    .filter((l) => l.role === "pcscf")
+    .map((l) => ({ ip: hostOf(l.address), port: portOf(l.address) }))
+    .filter(({ ip }) => !seen.has(ip) && seen.add(ip));
+};

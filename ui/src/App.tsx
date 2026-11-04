@@ -4,6 +4,7 @@ import Layout from "@/components/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/contexts/AuthContext";
 import Calls from "@/pages/Calls";
 import Cores from "@/pages/Cores";
+import Dashboard from "@/pages/Dashboard";
 import Initialize from "@/pages/Initialize";
 import Login from "@/pages/Login";
 import Operator from "@/pages/Operator";
@@ -34,6 +35,7 @@ export default function App() {
 
 const pages: { path: string; element: ReactElement; permission: Permission }[] =
   [
+    { path: "/dashboard", element: <Dashboard />, permission: "diameter:read" },
     { path: "/cores", element: <Cores />, permission: "diameter:read" },
     { path: "/operator", element: <Operator />, permission: "operator:read" },
     {
@@ -58,7 +60,7 @@ const pages: { path: string; element: ReactElement; permission: Permission }[] =
 
 function Pages() {
   const auth = useAuth();
-  const home = auth.can("diameter:read") ? "/cores" : "/profile";
+  const home = auth.can("diameter:read") ? "/dashboard" : "/profile";
 
   return (
     <Routes>

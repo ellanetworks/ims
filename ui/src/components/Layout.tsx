@@ -23,6 +23,7 @@ import {
   Brightness6 as ThemeIcon,
   BugReport as BugReportIcon,
   Check as CheckIcon,
+  Dashboard as DashboardIcon,
   DarkMode as DarkModeIcon,
   Feed as FeedIcon,
   Hub as HubIcon,
@@ -87,6 +88,12 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
+  {
+    to: "/dashboard",
+    label: "Dashboard",
+    icon: <DashboardIcon color="primary" />,
+    permission: "diameter:read",
+  },
   {
     to: "/cores",
     label: "Cores",

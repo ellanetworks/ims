@@ -54,6 +54,8 @@ export interface ListCallRecordsParams extends PageParams {
   outcomes?: CallOutcome[];
 }
 
+export type CallRecordCounts = Record<CallOutcome, number>;
+
 export interface CallRecordRetention {
   days: number;
 }
@@ -69,6 +71,16 @@ export const listCallRecords = (
       start: params.start,
       end: params.end,
       outcome: params.outcomes,
+    }),
+  );
+
+export const countCallRecords = (
+  params: Pick<ListCallRecordsParams, "start" | "end"> = {},
+): Promise<CallRecordCounts> =>
+  apiFetch<CallRecordCounts>(
+    withQuery("/api/v1/call-records/counts", {
+      start: params.start,
+      end: params.end,
     }),
   );
 
