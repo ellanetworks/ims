@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -166,7 +165,7 @@ func TestPolicySignallingReopenedAfterRestart(t *testing.T) {
 			return ok && reg.Policy.ID == session.id
 		})
 
-		s.srv.Shutdown(context.Background())
+		s.shutdown()
 		s.pol.none(100 * time.Millisecond)
 
 		s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(t), BcryptCost: bcrypt.MinCost}

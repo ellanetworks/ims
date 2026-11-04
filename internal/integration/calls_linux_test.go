@@ -763,7 +763,7 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 func (s *scene) restartIMS(lose bool) {
 	s.t.Helper()
 
-	s.srv.Shutdown(context.Background())
+	s.shutdown()
 
 	if lose {
 		s.ims.IP(s.t, "xfrm", "state", "flush")

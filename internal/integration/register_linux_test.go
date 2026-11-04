@@ -237,7 +237,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		t.Fatalf("Start: %v", err)
 	}
 
-	t.Cleanup(func() { s.srv.Shutdown(context.Background()) })
+	t.Cleanup(s.shutdown)
 
 	if s.pcrf != nil {
 		s.diameterOpen("hss", "pcrf")
@@ -250,6 +250,11 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 	s.ue = s.host(0).ns
 
 	return s
+}
+
+func (s *scene) shutdown() {
+	apitest.CloseIdleConnections(s.srv.APIAddr().String())
+	s.srv.Shutdown(context.Background())
 }
 
 func (s *scene) host(i int) *host {

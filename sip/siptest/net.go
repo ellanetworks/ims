@@ -126,6 +126,7 @@ func (n *Net) Await(f func(), limit time.Duration) {
 
 		if d, ok := n.clock.Next(); ok && n.clock.Elapsed()+d-start <= limit {
 			n.clock.Advance(d)
+
 			progress = time.Now()
 
 			continue
