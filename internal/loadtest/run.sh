@@ -10,6 +10,7 @@
 #   IMS_VM, LOAD_VM  the multipass VMs of the IMS and of the UEs (ims-perf, ims-load)
 #   IMS_BIN          an IMS binary to deploy before the run, else the deployed one
 #   MAX_CONNS        the IMS's IMS_MAX_CONNS (1048576)
+#   GOMEMLIMIT       the GOMEMLIMIT of the UEs (7GiB)
 #   PERF             seconds into the run to record perf on both VMs for 8 s, none if empty
 #
 # The IMS VM has /home/ubuntu/start.sh, which starts the IMS on a fresh database, and a route to the UEs' addresses
@@ -55,7 +56,7 @@ trap 'kill $fakes 2>/dev/null || true' EXIT
 for _ in $(seq 20); do grep -q 'fakes up' "$out/fakes.log" && break; sleep 0.5; done
 grep -q 'fakes up' "$out/fakes.log" || { cat "$out/fakes.log"; exit 1; }
 
-on "$load_vm" 30 sudo systemd-run --unit=load -p LimitNOFILE=1048576 -p RuntimeMaxSec="$limit" --setenv=GOMEMLIMIT=7GiB \
+on "$load_vm" 30 sudo systemd-run --unit=load -p LimitNOFILE=1048576 -p RuntimeMaxSec="$limit" --setenv=GOMEMLIMIT="${GOMEMLIMIT:-7GiB}" \
 	--working-directory=/home/ubuntu bash -c "./loadtest.test -test.run TestLoad -test.v -test.timeout ${secs}s -role ues -load \
 	-ims $ims_ip -local $load_ip $(printf '%q ' "$@") > run.log 2>&1" >/dev/null
 
