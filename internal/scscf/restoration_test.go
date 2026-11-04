@@ -7,6 +7,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -61,11 +62,19 @@ func TestPCSCFRestoration(t *testing.T) {
 		t.Fatalf("SAR = %+v, want the restoration of %s", sar, testIMPU)
 	}
 
-	eventually(t, "the registration removed", func() bool { return len(sh.registrations(testIMPI)) == 0 })
+	var sets []db.ImplicitSet
 
-	sets, err := sh.db.ListUnregisteredSets(t.Context())
-	if err != nil || len(sets) != 1 || sets[0].Unregistered.Identity != testIMPU || len(sets[0].UserData) == 0 {
-		t.Fatalf("unregistered sets = %+v, %v; want the set kept for %s", sets, err, testIMPU)
+	eventually(t, "the unregistered set kept", func() bool {
+		sets, _ = sh.db.ListUnregisteredSets(t.Context())
+		return len(sets) > 0
+	})
+
+	if len(sets) != 1 || sets[0].Unregistered.Identity != testIMPU || len(sets[0].UserData) == 0 {
+		t.Fatalf("unregistered sets = %+v; want the set kept for %s", sets, testIMPU)
+	}
+
+	if regs := sh.registrations(testIMPI); len(regs) != 0 {
+		t.Fatalf("registrations = %+v, want none", regs)
 	}
 
 	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("INVITE", testTel))

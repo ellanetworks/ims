@@ -26,10 +26,11 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestMetrics(t *testing.T) {
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 

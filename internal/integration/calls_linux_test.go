@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/ue"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func (s *scene) caller(i int, v6 bool, cfg testue.Config) *testue.UE {
@@ -762,14 +763,14 @@ func TestCallReleasedOnDeregistration(t *testing.T) {
 func (s *scene) restartIMS(lose bool) {
 	s.t.Helper()
 
-	s.srv.Shutdown(context.Background())
+	s.shutdown()
 
 	if lose {
 		s.ims.IP(s.t, "xfrm", "state", "flush")
 		s.ims.IP(s.t, "xfrm", "policy", "flush")
 	}
 
-	s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(s.t)}
+	s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(s.t), BcryptCost: bcrypt.MinCost}
 	if err := s.srv.Start(s.t.Context()); err != nil {
 		s.t.Fatalf("Start: %v", err)
 	}

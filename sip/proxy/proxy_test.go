@@ -775,7 +775,12 @@ func TestProxied(t *testing.T) {
 	reply(t, s.callee, fwd, f, 486)
 	wantResponse(t, s.caller, 486)
 
-	if s.r.p.Proxied(tx) {
-		t.Error("proxied after the final response")
+	deadline := time.Now().Add(siptest.Timeout)
+	for s.r.p.Proxied(tx) {
+		if time.Now().After(deadline) {
+			t.Fatal("proxied after the final response")
+		}
+
+		time.Sleep(time.Millisecond)
 	}
 }

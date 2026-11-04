@@ -20,6 +20,7 @@ import (
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/settings"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type testIMS struct {
@@ -139,7 +140,7 @@ func freeOn(ctx context.Context, lc *net.ListenConfig, network, host string, por
 }
 
 func TestServerStartShutdown(t *testing.T) {
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 
@@ -198,7 +199,7 @@ func TestStartNeedsIPsec(t *testing.T) {
 		t.Skip("root can install SAs")
 	}
 
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler)}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost}
 
 	err := srv.Start(t.Context())
 	if err == nil {
