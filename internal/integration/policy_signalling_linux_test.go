@@ -12,6 +12,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/server"
 	"github.com/ellanetworks/ims/testue"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // TS 29.214 clause 4.4.5
@@ -168,7 +169,7 @@ func TestPolicySignallingReopenedAfterRestart(t *testing.T) {
 		s.srv.Shutdown(context.Background())
 		s.pol.none(100 * time.Millisecond)
 
-		s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(t)}
+		s.srv = &server.Server{Config: s.srv.Config, Logger: testLogger(t), BcryptCost: bcrypt.MinCost}
 		if err := s.srv.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}

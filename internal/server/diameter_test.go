@@ -27,6 +27,7 @@ import (
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/settings"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -161,7 +162,7 @@ func startIMSWith(t *testing.T, cfg testIMS, kernel *ipsectest.Kernel) *Server {
 
 	cfg.seed(t)
 
-	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: kernel, TracerProvider: cfg.TracerProvider}
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: kernel, TracerProvider: cfg.TracerProvider}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -391,7 +392,7 @@ func TestDiameterShutdownSendsDPR(t *testing.T) {
 
 	cfg.seed(t)
 
-	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -570,7 +571,7 @@ func TestDiameterHandshakeTimeout(t *testing.T) {
 			cfg.seed(t)
 
 			srv := &Server{
-				Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel(),
+				Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel(), BcryptCost: bcrypt.MinCost,
 				DiameterHandshakeTimeout: timeout,
 			}
 			if err := srv.Start(t.Context()); err != nil {

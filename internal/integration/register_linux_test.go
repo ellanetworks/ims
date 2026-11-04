@@ -37,6 +37,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/testue"
 	"github.com/ellanetworks/ims/ue"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -226,7 +227,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		SCSCF:    config.SCSCF{Port: 5080},
 		Diameter: config.Diameter{Address: s.hss.Addr().Addr()},
 		N5:       n5,
-	}, Logger: testLogger(t)}
+	}, Logger: testLogger(t), BcryptCost: bcrypt.MinCost}
 
 	if configure != nil {
 		configure(s.srv)

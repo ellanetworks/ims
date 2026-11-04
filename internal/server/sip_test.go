@@ -14,12 +14,13 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func startServer(t *testing.T) *Server {
 	t.Helper()
 
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestSIPPlaceholder(t *testing.T) {
 }
 
 func TestSIPShutdownClosesListeners(t *testing.T) {
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 	if err := srv.Start(ctx); err != nil {
@@ -223,7 +224,7 @@ func TestSIPListenFailureFailsStart(t *testing.T) {
 
 	cfg.seed(t)
 
-	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 
 	ctx := context.Background()
 
@@ -361,7 +362,7 @@ func TestSCSCFAnswersOptions(t *testing.T) {
 
 // TS 24.229 clause 4.4
 func TestTrustByRole(t *testing.T) {
-	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), IPsec: ipsectest.NewKernel()}
+	srv := &Server{Config: testConfig(t).seeded(t), Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
 	srv.Config.SIP.TrustedNetworks = []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}
 
 	if err := srv.Start(context.Background()); err != nil {
