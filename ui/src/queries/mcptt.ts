@@ -106,6 +106,18 @@ export async function listAll<T>(
   }
 }
 
+const countOf = async (collection: string): Promise<number> => {
+  const { total_count } = await apiFetch<Page<unknown>>(
+    withQuery(`${API}/${collection}`, { per_page: 1 }),
+  );
+  return total_count;
+};
+
+export const countClientRegistrations = (): Promise<number> =>
+  countOf("registrations");
+
+export const countGroupCalls = (): Promise<number> => countOf("calls");
+
 const one = (collection: string, id: string) =>
   `${API}/${collection}/${encodeURIComponent(id)}`;
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"testing"
 	"time"
@@ -237,6 +238,42 @@ func TestListCallRecords(t *testing.T) {
 
 	if ids(page) != idsOf([]*CallRecord{answered}) || total != 4 {
 		t.Fatalf("page 2 = %s of %d, want %s of 4", ids(page), total, idsOf([]*CallRecord{answered}))
+	}
+}
+
+func TestCountCallRecords(t *testing.T) {
+	d := openTestDB(t)
+
+	saveCalls(t, d,
+		ended(attempt("AAAA", callT0), 200, OutcomeAnswered, PartyCaller),
+		ended(attempt("BBBB", callT0.Add(time.Hour)), 486, OutcomeBusy, PartyCallee),
+		ended(attempt("CCCC", callT0.Add(2*time.Hour)), 486, OutcomeBusy, PartyCallee),
+		attempt("DDDD", callT0.Add(3*time.Hour)),
+	)
+
+	cases := []struct {
+		name   string
+		filter CallRecordFilter
+		want   map[CallOutcome]int
+	}{
+		{"all, without the ringing", CallRecordFilter{}, map[CallOutcome]int{OutcomeAnswered: 1, OutcomeBusy: 2}},
+		{"start", CallRecordFilter{Start: callT0.Add(time.Hour)}, map[CallOutcome]int{OutcomeBusy: 2}},
+		{"end", CallRecordFilter{End: callT0.Add(time.Hour)}, map[CallOutcome]int{OutcomeAnswered: 1}},
+		{"search", CallRecordFilter{Search: "bbbb"}, map[CallOutcome]int{OutcomeBusy: 1}},
+		{"none", CallRecordFilter{Start: callT0.Add(4 * time.Hour)}, map[CallOutcome]int{}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := d.CountCallRecords(t.Context(), c.filter)
+			if err != nil {
+				t.Fatalf("CountCallRecords: %v", err)
+			}
+
+			if !maps.Equal(got, c.want) {
+				t.Fatalf("counts = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

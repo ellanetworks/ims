@@ -38,7 +38,7 @@ import {
 import { getIPSMGW } from "@/queries/ipsmgw";
 import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
-import { formatEndpoint, hostOf, portOf } from "@/utils/addresses";
+import { formatEndpoint, pcscfAddresses } from "@/utils/addresses";
 import { formatTimestamp } from "@/utils/dates";
 import { applicationLabels, policyLabels } from "@/utils/labels";
 import { changesTransports, RESTART_WARNING } from "@/utils/restart";
@@ -71,14 +71,6 @@ function Copyable({ value, label }: { value: string; label: string }) {
 // TS 24.229 clause 9.2.1
 // RFC 3261 section 19.1.2
 const SIP_PORT = 5060;
-
-const pcscfAddresses = (listeners: { role: string; address: string }[]) => {
-  const seen = new Set<string>();
-  return listeners
-    .filter((l) => l.role === "pcscf")
-    .map((l) => ({ ip: hostOf(l.address), port: portOf(l.address) }))
-    .filter(({ ip }) => !seen.has(ip) && seen.add(ip));
-};
 
 const routeHelp: Record<DiameterRoute["application"], string> = {
   cx: "The realm of your HSS, where Cx requests go.",

@@ -542,6 +542,73 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/call-records/counts:
+    get:
+      tags: [Call records]
+      operationId: countCallRecords
+      summary: Count the call records by outcome
+      description: Calls without an outcome yet, still ringing, are left out.
+      parameters:
+        - name: search
+          in: query
+          description: Substring of the ICID or of an identity of the caller or the callee.
+          schema:
+            type: string
+        - name: start
+          in: query
+          description: Earliest request time, inclusive.
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          description: Latest request time, exclusive.
+          schema:
+            type: string
+            format: date-time
+        - name: outcome
+          in: query
+          description: Outcomes to include.
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/CallOutcome"
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The number of call records of each outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [answered, cancelled, busy, rejected, no_answer, unavailable, failed]
+                    properties:
+                      answered:
+                        type: integer
+                      cancelled:
+                        type: integer
+                      busy:
+                        type: integer
+                      rejected:
+                        type: integer
+                      no_answer:
+                        type: integer
+                      unavailable:
+                        type: integer
+                      failed:
+                        type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/call-records/{id}:
     get:
       tags: [Call records]
