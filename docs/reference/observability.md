@@ -24,6 +24,7 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_peer_request_duration_seconds` | Histogram | Duration of requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface. |
 | `ellaims_ipsmgw_short_messages_total` | Counter | Short messages the IP-SM-GW carried, by direction (`mo`, `mt`), domain (`smsc` for `mo`; `ims`, `mme`, `sgsn`, `smsf_3gpp`, `smsf_non_3gpp`, `none` for `mt`, the last tried) and result (`success`, `failure`). |
 | `ellaims_api_request_duration_seconds` | Histogram | Duration of API requests, by method, route (`/api/v1/users/{email}`) and status code. Requests to `/api/v1/pprof/` and to no route are left out. |
+| `ellaims_oidc_logins_total` | Counter | Logins through the identity provider, by outcome: `success`, or a [login error](api/auth.md#errors). |
 | `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`. |
 | `ellaims_database_query_errors_total` | Counter | Failed database calls, by connection pool. |
 | `ellaims_database_storage_bytes` | Gauge | Size of the database on disk, by file: `main`, `wal`. |
@@ -68,6 +69,17 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | --- | --- |
 | `trace_id` | Trace ID of the span the event happened in. Absent outside a span. |
 | `span_id` | Span ID of the span the event happened in. Absent outside a span. |
+
+### Audit events
+
+Audit events are logs at level `info` with `msg` set to `audit event`.
+
+| Field | Description |
+| --- | --- |
+| `action` | What was done, such as `auth_login` or `auth_oidc_login`. |
+| `actor` | Email of the user who did it. Empty when unknown. |
+| `ip` | Address the request came from. |
+| `details` | What was done, in words. |
 
 ## Profiles
 

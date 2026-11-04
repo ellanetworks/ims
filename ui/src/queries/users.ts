@@ -26,6 +26,9 @@ export const roleDescriptions: Record<RoleID, string> = {
 export interface User {
   email: string;
   role_id: RoleID;
+  role_pinned: boolean;
+  password_set: boolean;
+  oidc_linked: boolean;
 }
 
 export const MIN_PASSWORD_LENGTH = 8;
@@ -58,17 +61,32 @@ export const listUsers = ({ page = 1, perPage = 25 }: PageParams = {}) =>
 
 export const getUser = (email: string) => apiFetch<User>(userPath(email));
 
-export const createUser = (email: string, password: string, roleId: RoleID) =>
+export const createUser = (
+  email: string,
+  password: string,
+  roleId: RoleID,
+  rolePinned?: boolean,
+) =>
   apiFetch<void>("/api/v1/users", {
     method: "POST",
-    body: { email, password, role_id: roleId },
+    body: { email, password, role_id: roleId, role_pinned: rolePinned },
   });
 
-export const updateUserRole = (email: string, roleId: RoleID) =>
+export const updateUserRole = (
+  email: string,
+  roleId: RoleID,
+  rolePinned?: boolean,
+) =>
   apiFetch<void>(userPath(email), {
     method: "PUT",
-    body: { role_id: roleId },
+    body: { role_id: roleId, role_pinned: rolePinned },
   });
+
+export const removeUserPassword = (email: string) =>
+  apiFetch<void>(`${userPath(email)}/password`, { method: "DELETE" });
+
+export const unlinkUser = (email: string) =>
+  apiFetch<void>(`${userPath(email)}/oidc`, { method: "DELETE" });
 
 export const updateUserPassword = (email: string, password: string) =>
   apiFetch<void>(`${userPath(email)}/password`, {

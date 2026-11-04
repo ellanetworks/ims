@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/oidc"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,7 +33,9 @@ type Config struct {
 	MCPTTState     MCPTTState
 	MCPTTStatus    func() MCPTTStatus
 	Auth           AuthStore
+	OIDC           OIDC
 	JWTSecret      []byte
+	OIDCCookieKey  []byte
 	SecureCookie   bool
 	BcryptCost     int
 	TracerProvider trace.TracerProvider
@@ -133,6 +136,9 @@ func routes(cfg Config, a *auth) []route {
 		{"POST /api/v1/auth/login", public, Login(a)},
 		{"POST /api/v1/auth/refresh", public, Refresh(a)},
 		{"POST /api/v1/auth/logout", public, Logout(a)},
+		{"GET /api/v1/auth/oidc", public, GetOIDCLogin(cfg)},
+		{"GET /api/v1/auth/oidc/login", public, StartOIDCLogin(a)},
+		{"GET " + oidc.CallbackPath, public, OIDCCallback(a)},
 
 		{"GET /api/v1/operator", PermReadOperator, GetOperator(cfg)},
 		{"PUT /api/v1/operator", PermUpdateOperator, UpdateOperator(cfg)},
@@ -175,6 +181,9 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/call-records/{id}", PermReadCallRecords, GetCallRecord(cfg)},
 		{"GET /api/v1/ip-sm-gw", PermReadIPSMGW, GetIPSMGW(cfg)},
 		{"PUT /api/v1/ip-sm-gw", PermUpdateIPSMGW, UpdateIPSMGW(cfg)},
+		{"GET /api/v1/oidc", PermReadOIDC, a.needsLogin(GetOIDC(cfg))},
+		{"PUT /api/v1/oidc", PermUpdateOIDC, a.needsLogin(UpdateOIDC(a))},
+		{"POST /api/v1/oidc/discovery", PermUpdateOIDC, a.needsLogin(DiscoverOIDC(cfg))},
 
 		{"GET /api/v1/users/me", PermSelf, GetMyUser(a)},
 		{"PUT /api/v1/users/me/password", PermSelf, a.needsLogin(UpdateMyPassword(a))},
@@ -188,6 +197,8 @@ func routes(cfg Config, a *auth) []route {
 		{"PUT /api/v1/users/{email}", PermManageUsers, a.needsLogin(UpdateUser(a))},
 		{"DELETE /api/v1/users/{email}", PermManageUsers, a.needsLogin(DeleteUser(a))},
 		{"PUT /api/v1/users/{email}/password", PermManageUsers, a.needsLogin(UpdateUserPassword(a))},
+		{"DELETE /api/v1/users/{email}/password", PermManageUsers, a.needsLogin(DeleteUserPassword(a))},
+		{"DELETE /api/v1/users/{email}/oidc", PermManageUsers, a.needsLogin(DeleteUserOIDCLink(a))},
 		{"GET /api/v1/users/{email}/api-tokens", PermManageUsers, a.needsLogin(ListAPITokens(a, userOfPath(cfg)))},
 		{"POST /api/v1/users/{email}/api-tokens", PermManageUsers, a.needsLogin(CreateAPIToken(a, userOfPath(cfg)))},
 		{"DELETE /api/v1/users/{email}/api-tokens/{id}", PermManageUsers, a.needsLogin(DeleteAPIToken(a, userOfPath(cfg)))},

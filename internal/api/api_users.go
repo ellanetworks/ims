@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
@@ -16,18 +15,23 @@ const (
 )
 
 type User struct {
-	Email  string  `json:"email"`
-	RoleID db.Role `json:"role_id"`
+	Email       string  `json:"email"`
+	RoleID      db.Role `json:"role_id"`
+	RolePinned  bool    `json:"role_pinned"`
+	PasswordSet bool    `json:"password_set"`
+	OIDCLinked  bool    `json:"oidc_linked"`
 }
 
 type CreateUserParams struct {
-	Email    string  `json:"email"`
-	Password string  `json:"password"`
-	RoleID   db.Role `json:"role_id"`
+	Email      string  `json:"email"`
+	Password   string  `json:"password"`
+	RoleID     db.Role `json:"role_id"`
+	RolePinned bool    `json:"role_pinned"`
 }
 
 type UpdateUserParams struct {
-	RoleID db.Role `json:"role_id"`
+	RoleID     db.Role `json:"role_id"`
+	RolePinned *bool   `json:"role_pinned"`
 }
 
 type UpdateUserPasswordParams struct {
@@ -73,7 +77,14 @@ type ListAPITokensResponse struct {
 func GetMyUser(a *auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, _ := PrincipalFrom(r.Context())
-		writeResponse(r.Context(), w, User{Email: p.Email, RoleID: p.Role}, http.StatusOK, a.cfg.Logger)
+
+		u, err := a.cfg.Auth.GetUserByID(r.Context(), p.UserID)
+		if err != nil {
+			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to retrieve user", err, a.cfg.Logger)
+			return
+		}
+
+		writeResponse(r.Context(), w, userResponse(u), http.StatusOK, a.cfg.Logger)
 	})
 }
 
@@ -94,7 +105,14 @@ func UpdateMyPassword(a *auth) http.Handler {
 			return
 		}
 
-		account := strings.ToLower(u.Email)
+		if u.PasswordHash == "" {
+			writeError(r.Context(), w, http.StatusConflict, "You have no password, since you sign in with single sign-on", nil,
+				cfg.Logger)
+
+			return
+		}
+
+		account := lowerASCII(u.Email)
 		if !a.allowAccount(r.Context(), w, account) {
 			return
 		}
@@ -166,7 +184,7 @@ func ListUsers(a *auth) http.Handler {
 
 		resp := ListUsersResponse{Items: make([]User, 0, len(users)), Page: page, PerPage: perPage, TotalCount: total}
 		for _, u := range users {
-			resp.Items = append(resp.Items, User{Email: u.Email, RoleID: u.Role})
+			resp.Items = append(resp.Items, userResponse(u))
 		}
 
 		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
@@ -193,33 +211,35 @@ func CreateUser(a *auth) http.Handler {
 			return
 		}
 
-		if msg, ok := validPassword(params.Password); !ok {
+		if msg, ok := validPassword(params.Password); params.Password != "" && !ok {
 			writeError(r.Context(), w, http.StatusBadRequest, msg, nil, cfg.Logger)
 			return
 		}
 
-		n, err := cfg.Auth.CountUsers(r.Context())
-		if err != nil {
-			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to count users", err, cfg.Logger)
+		var (
+			hash string
+			err  error
+		)
+
+		if params.Password != "" {
+			if hash, err = a.hashPassword(r.Context(), params.Password); err != nil {
+				writeError(r.Context(), w, http.StatusInternalServerError, "Failed to hash password", err, cfg.Logger)
+				return
+			}
+		}
+
+		_, err = cfg.Auth.CreateUser(r.Context(), db.NewUser{
+			Email: email, Role: params.RoleID, RolePinned: params.RolePinned, PasswordHash: hash,
+		}, MaxNumUsers)
+		if errors.Is(err, db.ErrDuplicate) {
+			writeError(r.Context(), w, http.StatusConflict, "User already exists", nil, cfg.Logger)
 			return
 		}
 
-		if n >= MaxNumUsers {
+		if errors.Is(err, db.ErrTooManyUsers) {
 			writeError(r.Context(), w, http.StatusBadRequest, fmt.Sprintf("Maximum number of users reached (%d)", MaxNumUsers), nil,
 				cfg.Logger)
 
-			return
-		}
-
-		hash, err := a.hashPassword(r.Context(), params.Password)
-		if err != nil {
-			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to hash password", err, cfg.Logger)
-			return
-		}
-
-		_, err = cfg.Auth.CreateUser(r.Context(), db.NewUser{Email: email, Role: params.RoleID, PasswordHash: hash})
-		if errors.Is(err, db.ErrDuplicate) {
-			writeError(r.Context(), w, http.StatusConflict, "User already exists", nil, cfg.Logger)
 			return
 		}
 
@@ -229,7 +249,8 @@ func CreateUser(a *auth) http.Handler {
 		}
 
 		p, _ := PrincipalFrom(r.Context())
-		a.audit(r, "create_user", p.Email, fmt.Sprintf("User %s created with role %d", email, params.RoleID))
+		a.audit(r, "create_user", p.Email, fmt.Sprintf("User %s created with role %d, pinned %t", email, params.RoleID,
+			params.RolePinned))
 		writeResponse(r.Context(), w, SuccessResponse{Message: "User created successfully"}, http.StatusCreated, cfg.Logger)
 	})
 }
@@ -237,7 +258,7 @@ func CreateUser(a *auth) http.Handler {
 func GetUser(a *auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if u, ok := lookupUser(w, r, a.cfg); ok {
-			writeResponse(r.Context(), w, User{Email: u.Email, RoleID: u.Role}, http.StatusOK, a.cfg.Logger)
+			writeResponse(r.Context(), w, userResponse(u), http.StatusOK, a.cfg.Logger)
 		}
 	})
 }
@@ -267,9 +288,24 @@ func UpdateUser(a *auth) http.Handler {
 			return
 		}
 
-		err := cfg.Auth.UpdateUserRole(r.Context(), u.ID, params.RoleID)
+		pinned := u.RolePinned
+		if params.RolePinned != nil {
+			pinned = *params.RolePinned
+		}
+
+		if params.RoleID != u.Role && !pinned && a.roleFromGroups(u) {
+			writeError(r.Context(), w, http.StatusConflict, "This user's role comes from their identity provider groups. Pin the role to change it.", nil, cfg.Logger)
+			return
+		}
+
+		err := cfg.Auth.UpdateUserRole(r.Context(), u.ID, params.RoleID, pinned)
 		if errors.Is(err, db.ErrNotFound) {
 			writeError(r.Context(), w, http.StatusNotFound, "User not found", nil, cfg.Logger)
+			return
+		}
+
+		if errors.Is(err, db.ErrLastPasswordAdmin) {
+			writeError(r.Context(), w, http.StatusConflict, lastPasswordAdmin, nil, cfg.Logger)
 			return
 		}
 
@@ -278,7 +314,7 @@ func UpdateUser(a *auth) http.Handler {
 			return
 		}
 
-		a.audit(r, "update_user", p.Email, fmt.Sprintf("Role of %s set to %d", u.Email, params.RoleID))
+		a.audit(r, "update_user", p.Email, fmt.Sprintf("Role of %s set to %d, pinned %t", u.Email, params.RoleID, pinned))
 		writeResponse(r.Context(), w, SuccessResponse{Message: "User updated successfully"}, http.StatusOK, cfg.Logger)
 	})
 }
@@ -331,6 +367,11 @@ func DeleteUser(a *auth) http.Handler {
 			return
 		}
 
+		if errors.Is(err, db.ErrLastPasswordAdmin) {
+			writeError(r.Context(), w, http.StatusConflict, lastPasswordAdmin, nil, cfg.Logger)
+			return
+		}
+
 		if err != nil {
 			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to delete user", err, cfg.Logger)
 			return
@@ -339,6 +380,97 @@ func DeleteUser(a *auth) http.Handler {
 		a.audit(r, "delete_user", p.Email, "User "+u.Email+" deleted")
 		writeResponse(r.Context(), w, SuccessResponse{Message: "User deleted successfully"}, http.StatusOK, cfg.Logger)
 	})
+}
+
+const lastPasswordAdmin = "At least one admin must keep a password"
+
+func userResponse(u db.User) User {
+	return User{
+		Email: u.Email, RoleID: u.Role, RolePinned: u.RolePinned, PasswordSet: u.PasswordHash != "",
+		OIDCLinked: u.HasIdentity,
+	}
+}
+
+func (a *auth) roleFromGroups(u db.User) bool {
+	o := a.cfg.OIDC.Get()
+
+	return o.Enabled && len(o.GroupRoles) > 0 && u.HasIdentity && !u.RolePinned
+}
+
+func DeleteUserPassword(a *auth) http.Handler {
+	cfg := a.cfg
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, ok := otherUser(w, r, cfg)
+		if !ok {
+			return
+		}
+
+		err := cfg.Auth.UpdateUserPassword(r.Context(), u.ID, "", nil)
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(r.Context(), w, http.StatusNotFound, "User not found", nil, cfg.Logger)
+			return
+		}
+
+		if errors.Is(err, db.ErrLastPasswordAdmin) {
+			writeError(r.Context(), w, http.StatusConflict, lastPasswordAdmin, nil, cfg.Logger)
+			return
+		}
+
+		if errors.Is(err, db.ErrNoPassword) {
+			writeError(r.Context(), w, http.StatusConflict, "The user has no password", nil, cfg.Logger)
+			return
+		}
+
+		if err != nil {
+			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to remove the password", err, cfg.Logger)
+			return
+		}
+
+		p, _ := PrincipalFrom(r.Context())
+		a.audit(r, "delete_user_password", p.Email, "Password of "+u.Email+" removed")
+		writeResponse(r.Context(), w, SuccessResponse{Message: "Password removed successfully"}, http.StatusOK, cfg.Logger)
+	})
+}
+
+func DeleteUserOIDCLink(a *auth) http.Handler {
+	cfg := a.cfg
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, ok := otherUser(w, r, cfg)
+		if !ok {
+			return
+		}
+
+		err := cfg.Auth.DeleteIdentities(r.Context(), u.ID)
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(r.Context(), w, http.StatusNotFound, "The user is not linked to the identity provider", nil, cfg.Logger)
+			return
+		}
+
+		if err != nil {
+			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to unlink the user", err, cfg.Logger)
+			return
+		}
+
+		p, _ := PrincipalFrom(r.Context())
+		a.audit(r, "delete_user_oidc_link", p.Email, "User "+u.Email+" unlinked from the identity provider")
+		writeResponse(r.Context(), w, SuccessResponse{Message: "User unlinked successfully"}, http.StatusOK, cfg.Logger)
+	})
+}
+
+func otherUser(w http.ResponseWriter, r *http.Request, cfg Config) (db.User, bool) {
+	u, ok := lookupUser(w, r, cfg)
+	if !ok {
+		return db.User{}, false
+	}
+
+	if p, _ := PrincipalFrom(r.Context()); u.ID == p.UserID {
+		writeError(r.Context(), w, http.StatusForbidden, "Cannot modify your own account", nil, cfg.Logger)
+		return db.User{}, false
+	}
+
+	return u, true
 }
 
 type tokenOwner func(w http.ResponseWriter, r *http.Request) (db.User, bool)

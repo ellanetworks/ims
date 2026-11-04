@@ -1,0 +1,4 @@
+services:
+  ella-ims:
+    volumes:
+      - ${ELLA_E2E_IMS_BINARY:-../.build/ims}:/bin/ims:ro

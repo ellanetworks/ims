@@ -114,7 +114,7 @@ func TestDatabaseIsPrivate(t *testing.T) {
 
 	t.Cleanup(func() { _ = d.Close() })
 
-	if _, err := d.CreateUser(context.Background(), NewUser{Email: "a@example.com", Role: RoleAdmin}); err != nil {
+	if _, err := d.CreateUser(context.Background(), NewUser{Email: "a@example.com", Role: RoleAdmin}, 100); err != nil {
 		t.Fatal(err)
 	}
 

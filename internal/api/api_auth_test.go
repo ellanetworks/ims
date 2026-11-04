@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -117,7 +118,7 @@ func TestInitialize(t *testing.T) {
 	token, _ := a.login(t, "admin@example.com", "correct horse")
 
 	code, result, _ := a.doAs(t, token, http.MethodGet, "/api/v1/users/me", "")
-	if got := decode[api.User](t, result); code != http.StatusOK || got != (api.User{Email: "admin@example.com", RoleID: 1}) {
+	if got := decode[api.User](t, result); code != http.StatusOK || got != (api.User{Email: "admin@example.com", RoleID: 1, PasswordSet: true}) {
 		t.Fatalf("GET /api/v1/users/me = %d %+v", code, got)
 	}
 }
@@ -186,6 +187,26 @@ func TestLogin(t *testing.T) {
 
 	if code, _, _ := a.doAs(t, "", http.MethodPost, "/api/v1/auth/login", `{"email": "`+testAdmin+`"}`); code != http.StatusBadRequest {
 		t.Fatalf("login without password = %d, want %d", code, http.StatusBadRequest)
+	}
+}
+
+func TestLoginWithoutAPasswordIsRefused(t *testing.T) {
+	a := newTestAPI(t)
+
+	if _, err := a.store.CreateUser(context.Background(), db.NewUser{Email: "sso@example.com", Role: db.RoleAdmin}, api.MaxNumUsers); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, unknownEmail := a.doAs(t, "", http.MethodPost, "/api/v1/auth/login",
+		`{"email": "nobody@example.com", "password": "wrong password"}`)
+
+	for _, password := range []string{"wrong password", testPassword} {
+		code, _, msg := a.doAs(t, "", http.MethodPost, "/api/v1/auth/login",
+			`{"email": "sso@example.com", "password": "`+password+`"}`)
+		if code != http.StatusUnauthorized || msg != unknownEmail {
+			t.Fatalf("login without a password = %d %q, want %d %q like an unknown email", code, msg,
+				http.StatusUnauthorized, unknownEmail)
+		}
 	}
 }
 

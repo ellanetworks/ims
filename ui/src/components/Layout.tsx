@@ -27,6 +27,7 @@ import {
   Feed as FeedIcon,
   Hub as HubIcon,
   Info as InfoIcon,
+  Key as KeyIcon,
   LightMode as LightModeIcon,
   Logout as LogoutIcon,
   Menu as MenuIcon,
@@ -42,11 +43,10 @@ import DeploymentIdentity from "@/components/DeploymentIdentity";
 import Footer from "@/components/Footer";
 import Logo from "@/components/Logo";
 import { useAuth, type Permission } from "@/contexts/AuthContext";
+import { DOCS_URL } from "@/utils/docs";
 import { MAX_WIDTH, PAGE_PADDING_X } from "@/utils/layout";
 
 const drawerWidth = 250;
-
-const DOCS_URL = "https://docs.ellanetworks.com/ims/";
 
 const NEW_ISSUE_URL = "https://github.com/ellanetworks/ims/issues/new/choose";
 
@@ -125,6 +125,12 @@ const systemItems: NavItem[] = [
     label: "Users",
     icon: <AdminPanelSettingsIcon color="primary" />,
     permission: "user:admin",
+  },
+  {
+    to: "/single-sign-on",
+    label: "Single Sign-On",
+    icon: <KeyIcon color="primary" />,
+    permission: "oidc:read",
   },
 ];
 

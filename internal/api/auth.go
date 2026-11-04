@@ -43,13 +43,16 @@ const (
 
 type AuthStore interface {
 	CountUsers(ctx context.Context) (int, error)
-	CreateUser(ctx context.Context, u db.NewUser) (int64, error)
+	CreateUser(ctx context.Context, u db.NewUser, maxUsers int) (int64, error)
 	GetUser(ctx context.Context, email string) (db.User, error)
 	GetUserByID(ctx context.Context, id int64) (db.User, error)
 	ListUsers(ctx context.Context, page, perPage int) ([]db.User, int, error)
-	UpdateUserRole(ctx context.Context, id int64, role db.Role) error
+	UpdateUserRole(ctx context.Context, id int64, role db.Role, pinned bool) error
 	UpdateUserPassword(ctx context.Context, id int64, passwordHash string, keepSession []byte) error
 	DeleteUser(ctx context.Context, id int64) error
+	DeleteIdentities(ctx context.Context, userID int64) error
+	LogInWithOIDC(ctx context.Context, l db.OIDCLogin) (db.OIDCLoginResult, error)
+	UseOIDCState(ctx context.Context, stateHash []byte, expiresAt, now time.Time) error
 
 	CreateSession(ctx context.Context, s db.NewSession, maxPerUser int) (int64, error)
 	GetSession(ctx context.Context, id int64) (db.Session, error)
@@ -89,6 +92,8 @@ const (
 	PermSelf                      Permission = "user:self"
 	PermManageUsers               Permission = "user:admin"
 	PermReadProfiles              Permission = "pprof:read"
+	PermReadOIDC                  Permission = "oidc:read"
+	PermUpdateOIDC                Permission = "oidc:update"
 )
 
 var readPermissions = []Permission{
@@ -102,7 +107,7 @@ var operatePermissions = []Permission{
 }
 
 var permissions = map[db.Role][]Permission{
-	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers, PermReadProfiles}),
+	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers, PermReadProfiles, PermReadOIDC, PermUpdateOIDC}),
 	db.RoleReadOnly:       readPermissions,
 	db.RoleNetworkManager: slices.Concat(readPermissions, operatePermissions),
 }
@@ -379,21 +384,30 @@ func (a *auth) needsLogin(next http.Handler) http.Handler {
 }
 
 func (a *auth) startSession(w http.ResponseWriter, r *http.Request, u db.User) (int64, error) {
+	raw, s := a.newSession(db.SessionPassword, SessionTokenDuration)
+	s.UserID = u.ID
+
+	id, err := a.cfg.Auth.CreateSession(r.Context(), s, MaxSessionsPerUser)
+	if err != nil {
+		return 0, err
+	}
+
+	a.setSessionCookie(w, raw, s.ExpiresAt)
+
+	return id, nil
+}
+
+func (a *auth) newSession(method db.SessionMethod, lifetime time.Duration) ([]byte, db.NewSession) {
 	raw := make([]byte, sessionTokenLength)
 	_, _ = rand.Read(raw)
 
 	hash := sha256.Sum256(raw)
 	now := a.cfg.Now()
-	expiresAt := now.Add(SessionTokenDuration)
 
-	id, err := a.cfg.Auth.CreateSession(r.Context(), db.NewSession{
-		UserID: u.ID, TokenHash: hash[:], CreatedAt: now,
-		ExpiresAt: expiresAt,
-	}, MaxSessionsPerUser)
-	if err != nil {
-		return 0, err
-	}
+	return raw, db.NewSession{TokenHash: hash[:], Method: method, CreatedAt: now, ExpiresAt: now.Add(lifetime)}
+}
 
+func (a *auth) setSessionCookie(w http.ResponseWriter, raw []byte, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     a.cookieName(),
 		Value:    base64.RawURLEncoding.EncodeToString(raw),
@@ -403,8 +417,6 @@ func (a *auth) startSession(w http.ResponseWriter, r *http.Request, u db.User) (
 		Secure:   a.cfg.SecureCookie,
 		SameSite: http.SameSiteLaxMode,
 	})
-
-	return id, nil
 }
 
 func (a *auth) cookieName() string {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -56,8 +57,13 @@ func (d *DB) observe(pool string, err *error) func() {
 }
 
 func failed(err error) bool {
-	return err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrIdentityConflict) &&
-		!errors.Is(err, ErrSubscriptionExists) && !errors.Is(err, ErrDuplicateICID) && !errors.Is(err, ErrDuplicate)
+	return err != nil && !slices.ContainsFunc(outcomes, func(o error) bool { return errors.Is(err, o) })
+}
+
+var outcomes = []error{
+	ErrNotFound, ErrIdentityConflict, ErrSubscriptionExists, ErrDuplicateICID, ErrDuplicate, ErrLastPasswordAdmin,
+	ErrTooManyUsers, ErrNoPassword, ErrOIDCDisabled, ErrOIDCChanged, ErrNotLinked, ErrNoUser, ErrNoRole,
+	ErrLinkedElsewhere, ErrStateUsed,
 }
 
 func (d *DB) Collectors() []prometheus.Collector {

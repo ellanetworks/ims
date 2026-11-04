@@ -10,7 +10,8 @@ import (
 )
 
 type RequestMetrics struct {
-	duration *prometheus.HistogramVec
+	duration   *prometheus.HistogramVec
+	oidcLogins *prometheus.CounterVec
 }
 
 func NewRequestMetrics() *RequestMetrics {
@@ -24,11 +25,21 @@ func NewRequestMetrics() *RequestMetrics {
 			NativeHistogramMaxBucketNumber:  100,
 			NativeHistogramMinResetDuration: time.Hour,
 		}, []string{"method", "route", "code"}),
+		oidcLogins: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ellaims_oidc_logins_total",
+			Help: "OIDC logins, by outcome.",
+		}, []string{"outcome"}),
 	}
 }
 
 func (m *RequestMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.duration}
+	return []prometheus.Collector{m.duration, m.oidcLogins}
+}
+
+func (m *RequestMetrics) oidcLogin(outcome string) {
+	if m != nil {
+		m.oidcLogins.WithLabelValues(outcome).Inc()
+	}
 }
 
 func (m *RequestMetrics) instrument(pattern string, next http.Handler) http.Handler {

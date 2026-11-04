@@ -26,6 +26,8 @@ Besides Ella IMS itself, the I-CSCF and the S-CSCF trust the networks in `sip.tr
 
 Everyone who uses the UI or the API is a user with a role. See [Roles](../reference/api/index.md#roles). Programs, such as a monitoring system, use an API token instead of a password.
 
+Users can also log in through the organization's identity provider. See [Single sign-on](single_sign_on.md).
+
 Until Ella IMS is initialized, anyone who reaches the UI can make themselves Admin, so initialize it right after installing.
 
 ## HTTPS

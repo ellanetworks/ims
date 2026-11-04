@@ -63,6 +63,9 @@ func TestRoles(t *testing.T) {
 		"GET /api/v1/call-records/{id}":                             all,
 		"GET /api/v1/ip-sm-gw":                                      all,
 		"PUT /api/v1/ip-sm-gw":                                      operator,
+		"GET /api/v1/oidc":                                          admin,
+		"PUT /api/v1/oidc":                                          admin,
+		"POST /api/v1/oidc/discovery":                               admin,
 		"GET /api/v1/users/me":                                      all,
 		"PUT /api/v1/users/me/password":                             all,
 		"GET /api/v1/users/me/api-tokens":                           all,
@@ -74,6 +77,8 @@ func TestRoles(t *testing.T) {
 		"PUT /api/v1/users/{email}":                                 admin,
 		"DELETE /api/v1/users/{email}":                              admin,
 		"PUT /api/v1/users/{email}/password":                        admin,
+		"DELETE /api/v1/users/{email}/password":                     admin,
+		"DELETE /api/v1/users/{email}/oidc":                         admin,
 		"GET /api/v1/users/{email}/api-tokens":                      admin,
 		"POST /api/v1/users/{email}/api-tokens":                     admin,
 		"DELETE /api/v1/users/{email}/api-tokens/{id}":              admin,
@@ -124,7 +129,7 @@ func TestRoles(t *testing.T) {
 		id, err := store.CreateUser(t.Context(), db.NewUser{
 			Email: strings.Repeat("x", int(role)) + "@example.com",
 			Role:  role, PasswordHash: "unused",
-		})
+		}, MaxNumUsers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +140,7 @@ func TestRoles(t *testing.T) {
 		}
 
 		sessionID, err := store.CreateSession(t.Context(), db.NewSession{
-			UserID: id, TokenHash: []byte{byte(role)},
+			UserID: id, TokenHash: []byte{byte(role)}, Method: db.SessionPassword,
 			CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 		}, MaxSessionsPerUser)
 		if err != nil {

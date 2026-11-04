@@ -35,7 +35,9 @@ export type Permission =
   | "ip_sm_gw:update"
   | "mcptt:read"
   | "mcptt:update"
-  | "user:admin";
+  | "user:admin"
+  | "oidc:read"
+  | "oidc:update";
 
 const readPermissions: Permission[] = [
   "operator:read",
@@ -60,7 +62,13 @@ const operatePermissions: Permission[] = [
 ];
 
 const permissions: Record<RoleID, Permission[]> = {
-  [RoleID.Admin]: [...readPermissions, ...operatePermissions, "user:admin"],
+  [RoleID.Admin]: [
+    ...readPermissions,
+    ...operatePermissions,
+    "user:admin",
+    "oidc:read",
+    "oidc:update",
+  ],
   [RoleID.ReadOnly]: readPermissions,
   [RoleID.NetworkManager]: [...readPermissions, ...operatePermissions],
 };

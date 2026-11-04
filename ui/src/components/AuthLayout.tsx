@@ -13,6 +13,7 @@ export default function AuthLayout({
   title,
   intro,
   submitLabel,
+  submitVariant = "contained",
   submitting,
   valid,
   onSubmit,
@@ -21,6 +22,7 @@ export default function AuthLayout({
   title: string;
   intro?: string;
   submitLabel: string;
+  submitVariant?: "contained" | "outlined";
   submitting: boolean;
   valid: boolean;
   onSubmit: () => void;
@@ -68,7 +70,7 @@ export default function AuthLayout({
         {children}
         <Button
           type="submit"
-          variant="contained"
+          variant={submitVariant}
           color="success"
           fullWidth
           disabled={!valid || submitting}
