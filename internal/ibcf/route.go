@@ -112,7 +112,7 @@ func (r *route) addresses(trunk string) []netip.Addr {
 func (b *IBCF) resolveTrunk(ctx context.Context, t settings.Trunk, u sip.URI) ([]sip.Server, error) {
 	allowed := b.transports(t)
 
-	servers, err := b.cfg.Resolve(ctx, u, allowed)
+	servers, err := b.resolve(ctx, u, allowed)
 	if err != nil {
 		return nil, err
 	}

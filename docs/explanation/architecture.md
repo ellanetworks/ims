@@ -11,7 +11,7 @@ description: How Ella IMS is built, and how it works with the core network.
 
 An IP Multimedia Subsystem (IMS) is what lets phones on a 4G or 5G network make voice and video calls. The core network gives each phone an IP connection to the IMS. Over that connection, the phone registers and places calls with SIP, and the IMS routes them.
 
-Ella IMS handles the signalling only. The voice and video of a call go between the phones, through the core network.
+Ella IMS handles the signalling. The voice and video of a call go between the phones, through the core network. Calls over SIP trunks are the exception: their voice goes through Ella IMS.
 
 ## Three CSCFs in one process
 
@@ -34,6 +34,6 @@ Ella Core provides both. For how it works with an IMS, see Ella Core's [IMS Inte
 
 ## Who can call whom
 
-Ella IMS connects calls only between the subscribers its HSS knows. It has no gateway to the PSTN or to other operators.
+Ella IMS connects calls between the subscribers its HSS knows. Calls to and from other numbers go over SIP trunks, to carriers such as PSTN providers or other operators. See [SIP Trunks](sip_trunks.md).
 
 Ella IMS does not handle emergency calls.

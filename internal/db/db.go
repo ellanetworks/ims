@@ -169,6 +169,9 @@ var migrations = []string{
 		alerted INTEGER NOT NULL CHECK (alerted IN (0, 1)),
 		media TEXT,
 		incomplete INTEGER NOT NULL CHECK (incomplete IN (0, 1)),
+		trunk_id TEXT,
+		direction TEXT CHECK (direction IN ('off-net-out', 'off-net-in')),
+		CHECK ((trunk_id IS NULL) = (direction IS NULL)),
 		CHECK ((sip_status IS NULL) = (outcome IS NULL)),
 		CHECK ((sip_status IS NULL) = (delivery_start_at IS NULL)),
 		CHECK ((outcome = 'answered') = (sip_status BETWEEN 200 AND 299)),
@@ -224,8 +227,7 @@ var migrations = []string{
 		trusted INTEGER NOT NULL CHECK (trusted IN (0, 1)),
 		keepalive_interval_s INTEGER NOT NULL CHECK (keepalive_interval_s = 0 OR keepalive_interval_s BETWEEN 5 AND 3600),
 		enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-		tls_required INTEGER NOT NULL CHECK (tls_required IN (0, 1)),
-		tls_require_client_certificate INTEGER NOT NULL CHECK (tls_require_client_certificate IN (0, 1))
+		tls_required INTEGER NOT NULL CHECK (tls_required IN (0, 1))
 	);
 	CREATE TABLE sip_trunk_addresses (
 		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
@@ -241,18 +243,18 @@ var migrations = []string{
 		cidr TEXT NOT NULL UNIQUE,
 		PRIMARY KEY (trunk_id, position)
 	) WITHOUT ROWID;
-	CREATE TABLE sip_trunk_tls_certificates (
+	CREATE TABLE sip_trunk_tls_ca_certificates (
 		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
-		kind TEXT NOT NULL CHECK (kind IN ('ca', 'pinned')),
 		position INTEGER NOT NULL,
 		der BLOB NOT NULL CHECK (length(der) BETWEEN 1 AND 16384),
-		PRIMARY KEY (trunk_id, kind, position)
+		PRIMARY KEY (trunk_id, position)
 	) WITHOUT ROWID;
-	CREATE TABLE sip_trunk_tls_fingerprints (
+	CREATE TABLE sip_trunk_tls_pins (
 		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
 		position INTEGER NOT NULL,
 		sha256 BLOB NOT NULL CHECK (length(sha256) = 32),
-		PRIMARY KEY (trunk_id, position)
+		PRIMARY KEY (trunk_id, position),
+		UNIQUE (trunk_id, sha256)
 	) WITHOUT ROWID;
 	CREATE TABLE sip_trunk_tls_identities (
 		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,

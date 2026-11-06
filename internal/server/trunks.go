@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/ibcf"
@@ -34,6 +36,15 @@ func (i ibcfSender) Send(ctx context.Context, req *sip.Request, to sip.Server) (
 	return c.sip.ibcf.Send(ctx, req, to)
 }
 
+func (i ibcfSender) Transports(t settings.Trunk) []sip.Transport {
+	c := i.s.core.Load()
+	if c == nil || c.sip.ibcf == nil {
+		return nil
+	}
+
+	return c.sip.ibcf.Transports(t)
+}
+
 // TS 24.229 clause 4.4.1
 func (s *Server) guardTrunks(ctx context.Context, live *settings.Live) {
 	domain := trust.New(s.Config.SIP.Addresses, s.Config.SIP.TrustedNetworks)
@@ -59,47 +70,36 @@ func (s *Server) guardTrunks(ctx context.Context, live *settings.Live) {
 }
 
 // TS 23.228 clause I.2
-func (s *sipServer) startTrGW(cfg *config.TrGW, m *trgw.Metrics) (*ibcf.MediaConfig, error) {
-	if cfg == nil {
-		return nil, nil //nolint:nilnil
+func (s *sipServer) startTrGW(cfg config.Config, timeout time.Duration, m *trgw.Metrics) (*ibcf.MediaConfig, error) {
+	var addrs []trgw.Address
+
+	for _, a := range cfg.SIP.Addresses {
+		addrs = append(addrs, trgw.Address{Bind: a})
 	}
 
-	var (
-		addrs        []trgw.Address
-		phone, trunk []netip.Addr
-	)
-
-	for _, a := range cfg.PhoneAddresses {
-		addrs, phone = append(addrs, trgw.Address{Bind: a.Address, Advertise: a.Advertise}), append(phone, a.Address)
+	for _, a := range cfg.IBCF.External.Addresses {
+		addrs = append(addrs, trgw.Address{Bind: a.Address, Advertise: a.Advertise})
 	}
 
-	for _, a := range cfg.TrunkAddresses {
-		addrs, trunk = append(addrs, trgw.Address{Bind: a.Address, Advertise: a.Advertise}), append(trunk, a.Address)
-	}
-
-	g, err := trgw.New(trgw.WithAddresses(addrs...), trgw.WithPortRange(uint16(cfg.MinPort), uint16(cfg.MaxPort)),
-		trgw.WithMediaTimeout(*cfg.MediaTimeout), trgw.WithMetrics(m))
+	g, err := trgw.New(trgw.WithAddresses(addrs...), trgw.WithPortRange(uint16(cfg.IBCF.Media.MinPort), uint16(cfg.IBCF.Media.MaxPort)),
+		trgw.WithMediaTimeout(timeout), trgw.WithMetrics(m))
 	if err != nil {
 		return nil, fmt.Errorf("start the TrGW: %w", err)
 	}
 
 	s.trgw = g
 
-	return &ibcf.MediaConfig{Gateway: g, Phone: phone, Trunk: trunk}, nil
+	return &ibcf.MediaConfig{Gateway: g, Phone: slices.Clone(cfg.SIP.Addresses), Trunk: cfg.IBCF.External.Addrs()}, nil
 }
 
 // SIPconnect 2.0 section 17.2
 func ibcfTLS(ext config.IBCFExternal) ([]netip.AddrPort, *tls.Certificate, error) {
-	if ext.TLS == nil {
-		return nil, nil, nil
-	}
-
 	addrs := make([]netip.AddrPort, 0, len(ext.Addresses))
 	for _, a := range ext.Addresses {
-		addrs = append(addrs, netip.AddrPortFrom(a, uint16(ext.TLS.Port)))
+		addrs = append(addrs, netip.AddrPortFrom(a.Address, config.IBCFTLSPort))
 	}
 
-	if ext.TLS.Cert == "" {
+	if !ext.Certificate() {
 		return addrs, nil, nil
 	}
 

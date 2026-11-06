@@ -23,12 +23,14 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_peer_requests_total` | Counter | Requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface (`cx`, `rx`, `n5`, `sh`, `s6c`, `sgd`) and result (`success`, `failure`, `error`, `timeout`). |
 | `ellaims_peer_request_duration_seconds` | Histogram | Duration of requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface. |
 | `ellaims_ipsmgw_short_messages_total` | Counter | Short messages the IP-SM-GW carried, by direction (`mo`, `mt`), domain (`smsc` for `mo`; `ims`, `mme`, `sgsn`, `smsf_3gpp`, `smsf_non_3gpp`, `none` for `mt`, the last tried) and result (`success`, `failure`). |
-| `ellaims_trunk_up` | Gauge | 1 if a SIP trunk answers its OPTIONS keepalives, 0 if it is down, by trunk ID. A trunk without keepalives, or not probed yet, has no series. |
+| `ellaims_trunk_up` | Gauge | 1 if a SIP trunk answers its OPTIONS keepalives, 0 if it is down, by trunk ID. A trunk without keepalives, disabled, or not probed yet, has no series. |
+| `ellaims_trunk_calls_total` | Counter | Calls over a SIP trunk that ended, by the ID of the trunk that gave the final answer, direction (`inbound`, `outbound`) and outcome, as `ellaims_calls_total`. |
+| `ellaims_trunk_active_calls` | Gauge | Calls over a SIP trunk in progress, by trunk ID and direction. |
 | `ellaims_trunk_failovers_total` | Counter | Calls to a SIP trunk retried on its next server or the next trunk of their route after a transport error, a timeout or a 503, by the ID of the trunk that failed. |
-| `ellaims_trgw_relays` | Gauge | Media relays the TrGW holds open, by trunk ID. |
-| `ellaims_trgw_packets_relayed_total` | Counter | RTP and RTCP packets the TrGW relayed, by trunk ID, the leg they arrived on (`phone`, `trunk`) and protocol. |
-| `ellaims_trgw_packets_dropped_total` | Counter | RTP and RTCP packets the TrGW dropped, by trunk ID, leg and reason: `unexpected_source`, `no_remote`, `no_destination`, `direction`, `malformed`, `send_error`. |
-| `ellaims_trgw_packets_lost_total` | Counter | RTP packets lost before reaching the TrGW, from gaps in sequence numbers, by trunk ID and leg. |
+| `ellaims_trunk_media_relays` | Gauge | Media streams that the media relay of SIP trunks relays now, by trunk ID. |
+| `ellaims_trunk_media_packets_relayed_total` | Counter | RTP and RTCP packets that the media relay of SIP trunks relayed, by trunk ID, the leg they arrived on (`phone`, `trunk`) and protocol. |
+| `ellaims_trunk_media_packets_dropped_total` | Counter | RTP and RTCP packets that the media relay of SIP trunks dropped, by trunk ID, leg and reason: `unexpected_source`, `no_remote`, `no_destination`, `direction`, `malformed`, `send_error`. |
+| `ellaims_trunk_media_packets_lost_total` | Counter | RTP packets lost before reaching the media relay of SIP trunks, from gaps in sequence numbers, by trunk ID and leg. |
 | `ellaims_api_request_duration_seconds` | Histogram | Duration of API requests, by method, route (`/api/v1/users/{email}`) and status code. Requests to `/api/v1/pprof/` and to no route are left out. |
 | `ellaims_oidc_logins_total` | Counter | Logins through the identity provider, by outcome: `success`, or a [login error](api/auth.md#errors). |
 | `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`. |
@@ -48,7 +50,7 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | Sampling | Parent-based, always on for a trace the IMS starts |
 | Propagation | W3C Trace Context |
 | Error status | HTTP and SIP: a server span from a 5xx response, a client span from a 4xx, except a SIP 401 or 407 challenge. Diameter: a client span from a Result-Code from 3000. |
-| SIP trust domain | Trace context is read and sent on SIP only within the trust domain: the IMS's own addresses, and for the I-CSCF, the S-CSCF and the MCPTT AS, `sip.trusted_networks`. It never reaches a phone. |
+| SIP trust domain | Trace context is read and sent on SIP only within the trust domain: the IMS's own addresses, and for the I-CSCF, the S-CSCF and the MCPTT AS, `sip.trusted_networks`. It never reaches a phone or a SIP trunk. |
 
 ### Spans
 
@@ -58,16 +60,27 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | `{method} {url.template}` | Client | A request to the PCF on N5. |
 | `POST /n5/v1/sessions/{id}/{notify,terminate}` | Server | A notification from the PCF on N5. |
 | `Cx/{command}`, `Sh/{command}`, `Rx/{command}`, `S6c/{command}`, `SGd/{command}` | Server, Client | A Diameter request. |
-| `{method}`, such as `INVITE` | Server, Client | A SIP transaction, until its final response. A request from a phone starts a trace, linked to the INVITE of its call or the REGISTER it renews. |
-| `registration expiry`, `media loss`, … | Internal | Work that starts later than its cause, as on a timer or after a settings change: a new trace, linked to its cause. |
+| `{method}`, such as `INVITE` | Server, Client | A SIP transaction, until its final response. A request from a phone or a SIP trunk starts a trace, linked to the INVITE of its call or the REGISTER it renews. Out-of-dialog OPTIONS to and from SIP trunks have no span. |
+| `registration expiry`, `media loss`, `media timeout`, … | Internal | Work that starts later than its cause, as on a timer or after a settings change: a new trace, linked to its cause. `media timeout`: the IBCF ends a call whose media stopped, linked to its INVITE. |
+
+### Events
+
+| Event | Span | Attributes |
+| --- | --- | --- |
+| `sip.provisional_response` | SIP | `sip.response.status_code` |
+| `sip.retransmission` | SIP | |
+| `sip.resolution` | The IBCF's SIP span of a call to a SIP trunk, when resolving a trunk address fails or takes over 1 s | `server.address`, `error.type` (`timeout`, `not_found`, `_OTHER`) when it fails |
 
 ### Attributes
 
 | Attribute | Values |
 | --- | --- |
-| `ella.ims.role` | `pcscf`, `icscf`, `scscf`, `mcptt`, `ipsmgw`, or `ims` for work of the IMS as a whole |
+| `ella.ims.role` | `pcscf`, `icscf`, `scscf`, `ibcf`, `mcptt`, `ipsmgw`, or `ims` for work of the IMS as a whole |
 | `sip.call_id` | The Call-ID of a SIP span |
-| `ella.ims.icid` | The ICID of P-Charging-Vector of a SIP span, which joins it to its [call record](api/call_records.md) |
+| `ella.ims.icid` | The ICID of P-Charging-Vector of a SIP span within the trust domain, or of the call on the IBCF's INVITE, which joins it to its [call record](api/call_records.md) |
+| `ella.ims.trunk.id` | The ID of the SIP trunk of an IBCF span on the trunk side |
+| `network.peer.address`, `network.peer.port` | The peer of a SIP span within the trust domain or on the trunk side |
+| `server.address` | The trunk address host of an IBCF client span to a SIP trunk, else the peer's IP address |
 
 ## Logs
 

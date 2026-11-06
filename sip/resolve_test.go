@@ -275,6 +275,22 @@ func TestResolveNAPTR(t *testing.T) {
 		{name: "sips IP", uri: "sips:[2001:db8::7]", want: []string{"TLS [2001:db8::7]:5061"}, queries: []string{}},
 		{name: "IP", uri: "sip:192.0.2.7", want: []string{"UDP 192.0.2.7:5060"}, queries: []string{}},
 		{
+			name: "IP without UDP", uri: "sip:192.0.2.7", transports: []Transport{TCP, TLS},
+			want: []string{"TCP 192.0.2.7:5060"}, queries: []string{},
+		},
+		{
+			name: "IP over TLS only", uri: "sip:192.0.2.7", transports: []Transport{TLS},
+			want: []string{"TLS 192.0.2.7:5061"}, queries: []string{},
+		},
+		{
+			name: "port without UDP", uri: "sip:carrier.example.com:5099", transports: []Transport{TCP},
+			want: []string{"TCP 192.0.2.9:5099"}, queries: []string{"A carrier.example.com"},
+		},
+		{
+			name: "explicit UDP kept", uri: "sip:192.0.2.7;transport=udp", transports: []Transport{TCP},
+			want: []string{"UDP 192.0.2.7:5060"}, queries: []string{},
+		},
+		{
 			name: "no usable NAPTR falls back to SRV", uri: "sip:sctp.example.com",
 			want: []string{"UDP 192.0.2.1:5080"},
 			queries: []string{

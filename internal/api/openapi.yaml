@@ -2766,10 +2766,7 @@ components:
           minimum: 0
           maximum: 15
           default: 7
-          description: >-
-            Fewest digits a number dialled without the international or national prefix needs to be routed to a
-            SIP trunk when the HSS doesn't know it. Shorter numbers, such as service codes, get 404. 0 never routes
-            such numbers to a trunk. A number whose phone-context is + and the country code never goes to a trunk.
+          description: Fewest digits of a number without prefix that can be routed to a SIP trunk, 0 to 15; 0 never. Default 7.
 
     OperatorResult:
       type: object
@@ -3002,24 +2999,18 @@ components:
 
     SIPTrunkParams:
       type: object
-      required: [name, addresses, domain, enabled]
+      required: [name, addresses]
       properties:
         name:
           type: string
           minLength: 1
           maxLength: 64
           description: Unique among trunks, ignoring case. Printable, without leading or trailing spaces.
-          examples: [Telnyx]
+          examples: [Carrier]
         addresses:
           type: array
           minItems: 1
-          description: >-
-            Where requests to the carrier go, in order, each once. A domain name is preferred over an IP address.
-            What is left out, DNS decides, as RFC 3263 has it: a host alone takes the transport, port and addresses
-            from NAPTR, SRV, then A and AAAA records; a host and a transport, from SRV, then A and AAAA records; a
-            host and a port, from A and AAAA records, over UDP. An IP address without a port takes the default port
-            of the transport, and UDP without a transport. The default port is 5060 for udp and tcp, and 5061 for
-            tls. A trusted trunk skips UDP records and takes TCP where UDP would be the default.
+          description: Addresses of the carrier, in the order requests try them; DNS (RFC 3263) fills in what is absent.
           items:
             type: object
             additionalProperties: false
@@ -3028,7 +3019,7 @@ components:
               host:
                 type: string
                 description: A domain name, or a specific IPv4 or IPv6 address.
-                examples: [sip.telnyx.com]
+                examples: [sip.carrier.example]
               port:
                 type: integer
                 minimum: 1
@@ -3037,110 +3028,69 @@ components:
               transport:
                 type: string
                 enum: [udp, tcp, tls]
-                description: >-
-                  Absent when DNS decides it. tls needs tls.ca_certificates, tls.pinned_certificates or
-                  tls.pinned_fingerprints. Required to be tls when tls.required is set. Must not be udp when trusted
-                  is set.
+                description: Absent when DNS decides it; tls only with tls.ca_certificates or tls.pins; not udp on a trusted trunk.
         inbound_cidrs:
           type: array
-          description: >-
-            The networks requests from the carrier come from. A bare address is a network of that one address. No
-            two networks may overlap, in this trunk or across trunks. Absent or empty accepts no requests from the
-            carrier.
+          description: Source networks of the carrier, not overlapping any other; default the IP addresses among the hosts.
           items:
             type: string
-            examples: [192.76.120.10/32]
+            examples: [198.51.100.10/32]
         domain:
           type: string
-          description: >-
-            The carrier's domain name, or a specific IPv4 or IPv6 address, bare, without brackets: the host of the
-            Request-URI of requests to the carrier.
-          examples: [sip.telnyx.com]
+          description: Host of the Request-URI towards the carrier; default the first domain name among the hosts.
+          examples: [sip.carrier.example]
         trusted:
           type: boolean
           default: false
-          description: >-
-            Whether the carrier is in the trust domain, by an interconnect agreement. The IMS then keeps
-            P-Asserted-Identity and the other trust domain header fields to and from the carrier. A trusted trunk
-            never uses UDP: no address may have udp as transport, and an address without a transport is reached
-            over TCP or TLS only.
+          description: Whether the carrier is in the trust domain; a trusted trunk never uses UDP.
         keepalive_interval:
           type: integer
           minimum: 0
           maximum: 3600
           default: 30
-          description: >-
-            Seconds between the OPTIONS requests that check the carrier is up, 5 to 3600. 0 sends no OPTIONS
-            requests: the trunk then stays unknown, and routes use it.
+          description: Seconds between OPTIONS keepalives, 5 to 3600; 0 sends none.
         enabled:
           type: boolean
-          description: Whether routes may use the trunk. Required, on update too.
+          default: true
+          description: Whether routes may use the trunk. Absent, true, on update too.
         tls:
           $ref: "#/components/schemas/SIPTrunkTLSParams"
 
     SIPTrunkTLSParams:
       type: object
-      description: >-
-        How Ella IMS authenticates the carrier over TLS, as SIPconnect 2.0 section 17.2 has it: by a CA, by a pinned
-        certificate, or by a pinned fingerprint, any of which is enough. Absent for a trunk without TLS. Ella IMS's own
-        certificate is in the configuration file.
+      description: TLS authentication of the carrier, by CA or pin. Absent for a trunk without TLS.
       properties:
         required:
           type: boolean
           default: false
-          description: >-
-            Whether the carrier must use TLS. Every address must then have tls as transport, and requests from the
-            inbound CIDRs over UDP or TCP are refused.
-        require_client_certificate:
-          type: boolean
-          default: false
-          description: >-
-            Whether the carrier must present a certificate when it opens a TLS connection to Ella IMS, for TLS
-            mutual authentication. Without one, a certificate the carrier presents is still checked.
+          description: Whether the carrier must use TLS, with mutual authentication.
         ca_certificates:
           type: string
-          description: >-
-            PEM-encoded CA certificates, at most 32, that the carrier's certificate must chain to. Not expired when
-            added. Needs identities.
-        pinned_certificates:
-          type: string
-          description: >-
-            PEM-encoded certificates, at most 32, that the carrier presents itself. Not expired when added.
-        pinned_fingerprints:
+          description: PEM-encoded CA certificates the carrier's certificate must chain to, at most 32.
+        pins:
           type: array
           maxItems: 32
-          description: >-
-            SHA-256 fingerprints of certificates that the carrier presents itself, as 32 hex bytes, with or without
-            colons.
+          description: Carrier certificates, as PEM or SHA-256 fingerprints, at most 32; returned as fingerprints.
           items:
             type: string
             examples: ["2C:54:DF:66:29:19:96:C5:C8:A5:E8:4B:7A:32:FE:71:02:38:11:62:D4:D9:2E:2C:A1:C4:E7:8C:0D:D5:B1:C5"]
         identities:
           type: array
           maxItems: 16
-          description: >-
-            The domain names one of which the carrier's certificate must hold, as a SIP URI or DNS name in its
-            subjectAltName, or as its common name when it has no subjectAltName. Required with ca_certificates.
-            Without identities, a domain name the request goes to is the identity.
+          description: Domain names the carrier's certificate must hold one of, at most 16; default the domain and host names.
           items:
             type: string
-            examples: [sip.telnyx.com]
+            examples: [sip.carrier.example]
 
     SIPTrunkTLS:
       allOf:
         - $ref: "#/components/schemas/SIPTrunkTLSParams"
         - type: object
-          required: [required, require_client_certificate, ca_certificates, pinned_certificates, pinned_fingerprints,
-            identities, ca_certificate_details, pinned_certificate_details]
+          required: [required, ca_certificates, pins, identities, ca_certificate_details]
           properties:
             ca_certificate_details:
               type: array
               description: The CA certificates, in the order of ca_certificates.
-              items:
-                $ref: "#/components/schemas/CertificateSummary"
-            pinned_certificate_details:
-              type: array
-              description: The pinned certificates, in the order of pinned_certificates.
               items:
                 $ref: "#/components/schemas/CertificateSummary"
 
@@ -3151,7 +3101,7 @@ components:
       properties:
         subject:
           type: string
-          examples: ["CN=sip.telnyx.com,O=Telnyx"]
+          examples: ["CN=sip.carrier.example,O=Carrier"]
         issuer:
           type: string
         dns_names:
@@ -3187,7 +3137,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/SIPTrunkParams"
         - type: object
-          required: [id, inbound_cidrs, trusted, keepalive_interval, tls, status]
+          required: [id, inbound_cidrs, domain, trusted, keepalive_interval, enabled, tls, status]
           properties:
             id:
               type: string
@@ -3205,10 +3155,7 @@ components:
         state:
           type: string
           enum: [unknown, up, down]
-          description: >-
-            Whether the carrier answers OPTIONS requests, and so whether routes use an enabled trunk. up: it answers;
-            routes use it. down: it does not; routes skip it. unknown: not probed, because keepalive_interval is 0
-            or the first OPTIONS request has not been answered yet; routes use it.
+          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off."
         since:
           type: string
           format: date-time
@@ -3228,10 +3175,7 @@ components:
           type: string
           pattern: "^(\\+[1-9][0-9]{0,14})?$"
           default: ""
-          description: >-
-            The start of the E.164 numbers the route takes, with +. Unique among routes. Absent or empty is the
-            default route, of numbers no other route takes. A number takes the route of the longest prefix it
-            starts with.
+          description: E.164 prefix of the route, unique; empty for the default route. Longest prefix wins.
           examples: ["+1"]
         trunks:
           type: array
@@ -3433,6 +3377,13 @@ components:
         duration_ms:
           type: integer
           description: Duration of an answered call that ended, in milliseconds.
+        trunk_id:
+          type: string
+          description: ID of the SIP trunk that gave the final answer. Absent for an on-net call.
+        direction:
+          type: string
+          enum: [off-net-out, off-net-in]
+          description: "off-net-out: to a SIP trunk. off-net-in: from a SIP trunk. Absent for an on-net call."
 
     CallRecordRetention:
       type: object

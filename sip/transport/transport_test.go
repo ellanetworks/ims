@@ -223,6 +223,101 @@ func TestMaxConnections(t *testing.T) {
 	}
 }
 
+func TestMaxConnectionsPerAddress(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{MaxConnectionsPerAddress: 2})
+	local := siptest.Listen(t, tr, lo)
+
+	var open []net.Conn
+
+	for i := range 2 {
+		c := dialTCP(t, local)
+		if _, err := c.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bK" + strconv.Itoa(i)))); err != nil {
+			t.Fatal(err)
+		}
+
+		rec.NextRequest()
+
+		open = append(open, c)
+	}
+
+	refused := func() error {
+		d := net.Dialer{Timeout: siptest.Timeout}
+
+		extra, err := d.DialContext(context.Background(), "tcp", local.String())
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = extra.Close() }()
+
+		_ = extra.SetReadDeadline(time.Now().Add(siptest.Timeout))
+		_, err = extra.Read(make([]byte, 1))
+
+		return err
+	}
+
+	if err := refused(); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("third connection from the address: %v, want a reset", err)
+	}
+
+	_ = open[0].Close()
+
+	deadline := time.Now().Add(siptest.Timeout)
+
+	for {
+		c := dialTCP(t, local)
+		if _, err := c.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bKagain"))); err != nil {
+			t.Fatal(err)
+		}
+
+		_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := c.Read(make([]byte, 1)); errors.Is(err, os.ErrDeadlineExceeded) {
+			rec.NextRequest()
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("no connection accepted after one from the address closed")
+		}
+	}
+}
+
+func TestAcceptFilter(t *testing.T) {
+	allowed := netip.MustParseAddr("127.0.0.2")
+
+	tr, rec := siptest.NewTransport(t, transport.Config{Accept: func(_, remote netip.AddrPort) bool { return remote.Addr() == allowed }})
+	local := siptest.Listen(t, tr, lo)
+
+	dial := func(from netip.Addr) net.Conn {
+		d := net.Dialer{Timeout: siptest.Timeout, LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(from, 0))}
+
+		c, err := d.DialContext(context.Background(), "tcp", local.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Cleanup(func() { _ = c.Close() })
+
+		return c
+	}
+
+	refused := dial(lo)
+	_ = refused.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+	if _, err := refused.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("connection from %s: %v, want a reset", lo, err)
+	}
+
+	ok := dial(allowed)
+	if _, err := ok.Write([]byte(options("SIP/2.0/TCP 127.0.0.2:1;branch=z9hG4bKok"))); err != nil {
+		t.Fatal(err)
+	}
+
+	if req := rec.NextRequest(); req.Flow.Remote.Addr() != allowed {
+		t.Errorf("request from %s", req.Flow.Remote)
+	}
+}
+
 func TestListenRefusesHeldPort(t *testing.T) {
 	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
 		var lc net.ListenConfig

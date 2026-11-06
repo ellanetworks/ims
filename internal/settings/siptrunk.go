@@ -125,6 +125,8 @@ func (t Trunk) Validate() error {
 		return invalidf("name must be 1 to %d printable characters, without leading or trailing spaces", maxTrunkName)
 	case len(t.Addresses) == 0:
 		return invalidf("addresses must list at least one address")
+	case t.Domain == "":
+		return invalidf("domain is required when no address has a domain name as host")
 	case !isSIPHost(t.Domain):
 		return invalidf("domain must be a domain name or a specific IPv4 or IPv6 address")
 	case t.KeepaliveInterval != 0 && (t.KeepaliveInterval < MinKeepaliveInterval ||
@@ -176,11 +178,56 @@ func (t Trunk) validateTLS() error {
 		case t.TLS.Required && a.Transport != SIPTransportTLS:
 			return invalidf("addresses must all have tls as transport when tls.required is set, not %s", a)
 		case a.Transport == SIPTransportTLS && !t.TLS.Trusts():
-			return invalidf("addresses over tls need tls.ca_certificates, tls.pinned_certificates or tls.pinned_fingerprints")
+			return invalidf("addresses over tls need tls.ca_certificates or tls.pins")
 		}
 	}
 
 	return nil
+}
+
+func (t Trunk) WithDefaults() Trunk {
+	var names []string
+
+	for _, a := range t.Addresses {
+		if isSIPHostname(a.Host) && !slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, a.Host) }) {
+			names = append(names, a.Host)
+		}
+	}
+
+	if t.Domain == "" && len(names) > 0 {
+		t.Domain = names[0]
+	}
+
+	if len(t.InboundCIDRs) == 0 {
+		t.InboundCIDRs = nil
+
+		for _, a := range t.Addresses {
+			ip, err := netip.ParseAddr(a.Host)
+			if err != nil {
+				continue
+			}
+
+			if p := netip.PrefixFrom(ip, ip.BitLen()); !slices.Contains(t.InboundCIDRs, p) {
+				t.InboundCIDRs = append(t.InboundCIDRs, p)
+			}
+		}
+	}
+
+	if len(t.TLS.Identities) == 0 && t.TLS.Trusts() {
+		t.TLS.Identities = nil
+
+		if isSIPHostname(t.Domain) {
+			t.TLS.Identities = append(t.TLS.Identities, t.Domain)
+		}
+
+		for _, n := range names {
+			if !slices.ContainsFunc(t.TLS.Identities, func(id string) bool { return strings.EqualFold(id, n) }) {
+				t.TLS.Identities = append(t.TLS.Identities, n)
+			}
+		}
+	}
+
+	return t
 }
 
 func errKeepalive() error {

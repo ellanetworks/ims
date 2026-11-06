@@ -165,15 +165,26 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 func (p *Relay) dial(ctx context.Context, l *Leg, out *sip.Request) error {
 	in := p.a.in.Message()
 
+	if p.initial != nil && p.initial.To != l {
+		p.end(p.initial, nil)
+		p.initial = &Exchange{From: p.a, To: l, Method: "INVITE", Initial: true, Offer: p.initial.Offer}
+
+		sdp, err := p.begin(p.initial)
+		if err != nil {
+			l.state = ua.Terminated
+			l.removed(ctx)
+
+			return err
+		}
+
+		p.sdp = sdp
+	}
+
 	p.cfg.Headers.copyHeader(&out.Header, p.a, l, in)
 	p.mapDialogs(in, &out.Header)
 
 	own, _ := out.Content().Parts()
 	out.SetBodies(p.cfg.Headers.bodies(p.a, l, in, own, p.sdp)...)
-
-	if p.initial != nil {
-		p.initial.To = l
-	}
 
 	return l.dial(ctx, out, p.opts...)
 }
@@ -498,7 +509,7 @@ func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Re
 	var sdp []byte
 
 	if body := sessionSDP(res.Envelope); body != nil && p.initial != nil && !pr.answered {
-		answer, err := p.answerOf(p.initial, s, body)
+		answer, err := p.answerOf(p.initial, pr, body)
 		if err != nil {
 			p.abandon(ctx, 488)
 			return
@@ -542,7 +553,7 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 		return true
 	}
 
-	x := &Exchange{From: p.b, To: p.a, Method: "INVITE", Initial: true, Offer: o.SDP()}
+	x := &Exchange{From: p.b, To: p.a, Method: "INVITE", Initial: true, Offer: o.SDP(), Dialog: pr.b}
 
 	sdp, err := p.begin(x)
 	if err != nil {
@@ -574,7 +585,7 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 	op := pr.op
 	to := p.other(l)
-	op.x = &Exchange{From: l, To: to, Method: "INVITE", Offer: o.SDP()}
+	op.x = &Exchange{From: l, To: to, Method: "INVITE", Offer: o.SDP(), Dialog: pr.b}
 
 	sdp, err := p.begin(op.x)
 	if err != nil {
@@ -621,7 +632,7 @@ func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 			return
 		}
 
-		answer, err := p.answerOf(op.x, target, body)
+		answer, err := p.answerOf(op.x, pr, body)
 		if err == nil {
 			err = o.Answer(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
 		}
@@ -630,7 +641,7 @@ func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 			o.Reject(ctx)
 			p.end(op.x, nil)
 		} else {
-			p.end(op.x, target)
+			p.end(op.x, pr)
 		}
 
 		op.join(err)
@@ -673,7 +684,7 @@ func (p *Relay) answer(ctx context.Context, l *Leg, s *ua.Session, sdp []byte) {
 		return
 	}
 
-	answer, err := p.answerOf(x, s, sdp)
+	answer, err := p.answerOf(x, pr, sdp)
 	if err == nil {
 		err = o.Answer(ctx, ua.Change{Bodies: []sip.BodyPart{ua.SDP(answer)}})
 	}
@@ -686,13 +697,13 @@ func (p *Relay) answer(ctx context.Context, l *Leg, s *ua.Session, sdp []byte) {
 		return
 	}
 
-	p.end(x, s)
+	p.end(x, pr)
 }
 
 // RFC 3264 section 8
 func (p *Relay) propagate(ctx context.Context, l *Leg, pr *pair, sdp []byte) {
 	to := pr.other(p, l)
-	x := &Exchange{From: l, To: p.other(l), Method: "INVITE", Offer: sdp}
+	x := &Exchange{From: l, To: p.other(l), Method: "INVITE", Offer: sdp, Dialog: pr.b}
 
 	p.report(to.Modify(ctx, ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
 		offer, err := p.begin(x)
@@ -708,10 +719,10 @@ func (p *Relay) propagate(ctx context.Context, l *Leg, pr *pair, sdp []byte) {
 		}
 
 		if body := sessionSDP(res.Envelope); body != nil {
-			_, _ = p.answerOf(x, to, body)
+			_, _ = p.answerOf(x, pr, body)
 		}
 
-		p.end(x, to)
+		p.end(x, pr)
 	}))
 }
 
@@ -742,7 +753,7 @@ func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 		sdp = pr.answer
 
 		if body := sessionSDP(res.Envelope); body != nil {
-			answer, err := p.answerOf(p.initial, pr.b, body)
+			answer, err := p.answerOf(p.initial, pr, body)
 			if err != nil {
 				p.abandon(ctx, 488)
 				return
@@ -784,7 +795,8 @@ func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 		return
 	}
 
-	p.end(p.initial, pr.b)
+	p.end(p.initial, pr)
+	p.dialog(pr, ua.Confirmed)
 }
 
 func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error) {
@@ -821,6 +833,8 @@ func (p *Relay) earlyEnded(ctx context.Context, l *Leg, s *ua.Session, e ua.End)
 		pr.offer = nil
 		p.end(pr.x, nil)
 	}
+
+	p.dialog(pr, ua.Terminated)
 
 	c := ua.Reasons(e.Reasons()...)
 
@@ -993,7 +1007,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 	var sdp []byte
 
 	if offered {
-		op.x = &Exchange{From: from, To: o, Method: req.Method, Offer: offer}
+		op.x = &Exchange{From: from, To: o, Method: req.Method, Offer: offer, Dialog: pr.b}
 
 		var err error
 		if sdp, err = p.begin(op.x); err != nil {
@@ -1016,7 +1030,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 			p.end(op.x, nil)
 
 			if res != nil && res.IsSuccess() && offered {
-				p.restore(ctx, from, o, to)
+				p.restore(ctx, from, o, to, pr)
 			}
 		case res == nil && (errors.Is(err, ua.ErrPending) || errors.Is(err, ua.ErrStale) || errors.Is(err, ua.ErrCancelled)):
 			p.end(op.x, nil)
@@ -1036,11 +1050,11 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 			var answer []byte
 
 			if body := sessionSDP(res.Envelope); body != nil && op.x != nil {
-				a, err := p.answerOf(op.x, to, body)
+				a, err := p.answerOf(op.x, pr, body)
 				if err != nil {
 					p.end(op.x, nil)
 					p.report(r.Reject(488))
-					p.restore(ctx, from, o, to)
+					p.restore(ctx, from, o, to, pr)
 
 					return
 				}
@@ -1051,12 +1065,12 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 			if err := r.Respond(p.reply(o, res, res.StatusCode, answer)); err != nil {
 				p.report(err)
 				p.end(op.x, nil)
-				p.restore(ctx, from, o, to)
+				p.restore(ctx, from, o, to, pr)
 
 				return
 			}
 
-			p.end(op.x, to)
+			p.end(op.x, pr)
 		}
 	}
 
@@ -1085,7 +1099,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 }
 
 // RFC 3264 section 8
-func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session) {
+func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session, pr *pair) {
 	s := from.Session()
 	if s == nil {
 		return
@@ -1096,7 +1110,7 @@ func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session) {
 		return
 	}
 
-	x := &Exchange{From: from, To: o, Method: "INVITE", Offer: remote}
+	x := &Exchange{From: from, To: o, Method: "INVITE", Offer: remote, Dialog: pr.b}
 
 	err := to.Modify(ctx, ua.Modification{Method: "INVITE", Build: func() (ua.Change, error) {
 		sdp, err := p.begin(x)
@@ -1115,10 +1129,10 @@ func (p *Relay) restore(ctx context.Context, from, o *Leg, to *ua.Session) {
 		}
 
 		if body := sessionSDP(res.Envelope); body != nil {
-			_, _ = p.answerOf(x, to, body)
+			_, _ = p.answerOf(x, pr, body)
 		}
 
-		p.end(x, to)
+		p.end(x, pr)
 	})
 	p.report(err)
 }

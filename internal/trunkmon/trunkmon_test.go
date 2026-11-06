@@ -15,6 +15,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -89,6 +90,7 @@ type sent struct {
 }
 
 type fakeSender struct {
+	noTLS  bool
 	mu     sync.Mutex
 	reply  func(ctx context.Context, to sip.Server) (int, error)
 	sent   []sent
@@ -137,6 +139,24 @@ func (s *fakeSender) Send(ctx context.Context, req *sip.Request, to sip.Server) 
 	}
 
 	return sip.NewResponse(req, code, ""), nil
+}
+
+func (s *fakeSender) Transports(t settings.Trunk) []sip.Transport {
+	var out []sip.Transport
+
+	switch {
+	case t.TLS.Required:
+	case t.Trusted:
+		out = []sip.Transport{sip.TCP}
+	default:
+		out = []sip.Transport{sip.UDP, sip.TCP}
+	}
+
+	if t.TLS.Trusts() && !s.noTLS {
+		out = append(out, sip.TLS)
+	}
+
+	return out
 }
 
 func (s *fakeSender) count() int {
@@ -304,11 +324,31 @@ func (h *harness) state(id string) settings.TrunkState {
 }
 
 func (h *harness) gauge(id string) float64 {
-	return testutil.ToFloat64(h.metrics.up.WithLabelValues(id))
+	h.t.Helper()
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(h.metrics.Collectors()...)
+
+	families, err := reg.Gather()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+
+	for _, f := range families {
+		for _, m := range f.GetMetric() {
+			if m.GetLabel()[0].GetValue() == id {
+				return m.GetGauge().GetValue()
+			}
+		}
+	}
+
+	h.t.Fatalf("no ellaims_trunk_up series for %s", id)
+
+	return 0
 }
 
 func (h *harness) series() int {
-	return testutil.CollectAndCount(h.metrics.up)
+	return testutil.CollectAndCount(h.metrics)
 }
 
 func TestUpOn200(t *testing.T) {
@@ -773,7 +813,7 @@ func TestConcurrentAccess(t *testing.T) {
 					_ = settings.StatusOf(mon, id).Usable()
 				}
 
-				_ = testutil.CollectAndCount(metrics.up)
+				_ = testutil.CollectAndCount(metrics)
 			}
 		})
 	}
@@ -866,7 +906,7 @@ func TestTransportsPerTrunk(t *testing.T) {
 		},
 	}
 
-	pinned := settings.TrunkTLS{PinnedFingerprints: [][32]byte{{1}}}
+	pinned := settings.TrunkTLS{Pins: [][32]byte{{1}}}
 
 	for _, c := range []struct {
 		name    string
@@ -944,24 +984,31 @@ func TestTransportsPerTrunk(t *testing.T) {
 		},
 		{
 			"TLS required host", false,
-			settings.TrunkTLS{Required: true, PinnedFingerprints: pinned.PinnedFingerprints},
+			settings.TrunkTLS{Required: true, Pins: pinned.Pins},
 			settings.TrunkAddress{Host: "both.example"},
 			"TLS 192.0.2.13:5061",
 			[]sip.Transport{sip.TLS},
 		},
 		{
 			"TLS required IP", true,
-			settings.TrunkTLS{Required: true, PinnedFingerprints: pinned.PinnedFingerprints},
+			settings.TrunkTLS{Required: true, Pins: pinned.Pins},
 			settings.TrunkAddress{Host: "198.51.100.7", Transport: settings.SIPTransportTLS},
 			"TLS 198.51.100.7:5061",
 			[]sip.Transport{sip.TLS},
 		},
 		{
-			"explicit transport", true,
+			"TLS required IP without transport", true,
+			settings.TrunkTLS{Required: true, Pins: pinned.Pins},
+			settings.TrunkAddress{Host: "198.51.100.7"},
+			"TLS 198.51.100.7:5061",
+			[]sip.Transport{sip.TLS},
+		},
+		{
+			"explicit transport", false,
 			settings.TrunkTLS{},
-			settings.TrunkAddress{Host: "198.51.100.7", Transport: settings.SIPTransportUDP},
-			"UDP 198.51.100.7:5060",
-			[]sip.Transport{sip.UDP},
+			settings.TrunkAddress{Host: "198.51.100.7", Transport: settings.SIPTransportTCP},
+			"TCP 198.51.100.7:5060",
+			[]sip.Transport{sip.UDP, sip.TCP},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1010,5 +1057,60 @@ func TestTransportsPerTrunk(t *testing.T) {
 				t.Fatalf("resolved with %v, want %v", seen[0], c.allowed)
 			}
 		})
+	}
+}
+
+func TestTLSPreferredWithoutTLSListener(t *testing.T) {
+	dns := fakeDNS{
+		naptr: map[string][]sip.NAPTR{
+			"carrier.example": {
+				{Order: 10, Flags: "s", Service: "SIPS+D2T", Replacement: "_sips._tcp.carrier.example."},
+				{Order: 20, Flags: "s", Service: "SIP+D2U", Replacement: "_sip._udp.carrier.example."},
+			},
+		},
+		srv: map[string][]*net.SRV{
+			"_sips._tcp.carrier.example": {{Target: "edge.carrier.example", Port: 5061}},
+			"_sip._udp.carrier.example":  {{Target: "edge.carrier.example", Port: 5060}},
+		},
+		hosts: map[string]netip.Addr{"edge.carrier.example": netip.MustParseAddr("192.0.2.13")},
+	}
+
+	tr := trunk("a", 30*time.Second)
+	tr.Addresses = []settings.TrunkAddress{{Host: "carrier.example"}}
+	tr.TLS = settings.TrunkTLS{Pins: [][32]byte{{1}}}
+
+	sender := newFakeSender(200)
+	sender.noTLS = true
+	sender.use(func(_ context.Context, to sip.Server) (int, error) {
+		if to.Transport == sip.TLS {
+			return 0, errors.New("no TLS listener")
+		}
+
+		return 200, nil
+	})
+
+	resolve := func(ctx context.Context, u sip.URI, trs []sip.Transport) ([]sip.Server, error) {
+		return (&sip.Resolver{DNS: dns, Transports: trs}).Resolve(ctx, u)
+	}
+
+	clock := newFakeClock()
+
+	mon, err := Start(Config{Settings: newFakeSettings(tr), Resolve: resolve, Sender: sender, Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = mon.Shutdown(context.Background()) }()
+
+	eventually(t, "a probe", func() bool { return len(clock.pending()) == 1 })
+
+	for _, s := range sender.all() {
+		if s.to.Transport == sip.TLS {
+			t.Fatalf("probed %s %s without a TLS listener", s.to.Transport, s.to.Addr)
+		}
+	}
+
+	if st := mon.TrunkStatus("a").State; st != settings.TrunkUp {
+		t.Fatalf("state %s, want up", st)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/lifetime"
 )
 
 type key struct {
@@ -22,8 +23,37 @@ type leg struct {
 	call  *call
 	trunk bool
 
-	mu   sync.Mutex
-	flow sip.Flow
+	mu      sync.Mutex
+	flow    sip.Flow
+	server  string
+	targets map[string]sip.Flow
+}
+
+func (l *leg) serverName(remote netip.AddrPort) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.server, l.server != "" && unmap(l.flow.Remote) == unmap(remote)
+}
+
+func (l *leg) target(u sip.URI) (sip.Flow, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	f, ok := l.targets[u.String()]
+
+	return f, ok
+}
+
+func (l *leg) setTarget(u sip.URI, f sip.Flow) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.targets == nil {
+		l.targets = map[string]sip.Flow{}
+	}
+
+	l.targets[u.String()] = f
 }
 
 func (l *leg) dialogFlow() sip.Flow {
@@ -33,11 +63,11 @@ func (l *leg) dialogFlow() sip.Flow {
 	return l.flow
 }
 
-func (l *leg) setFlow(f sip.Flow) {
+func (l *leg) setFlow(f sip.Flow, server string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.flow = f
+	l.flow, l.server = f, server
 }
 
 type legs struct {
@@ -120,7 +150,7 @@ var errNoLeg = errors.New("ibcf: request of no call leg")
 // RFC 3261 section 8.1.2
 // RFC 3261 section 12.2.1.1
 // SIPconnect 2.0 section 17.1.1.2
-func (b *IBCF) prepare(req *sip.Request) error {
+func (b *IBCF) prepare(ctx context.Context, req *sip.Request) error {
 	l := b.legs.sending(req)
 	if l == nil {
 		return errNoLeg
@@ -132,7 +162,7 @@ func (b *IBCF) prepare(req *sip.Request) error {
 		var err error
 
 		if l.trunk {
-			f = b.trunkFlow(l, f, target)
+			f = b.trunkFlow(ctx, l, f, target)
 		} else if f, err = b.internalFlow(target); err != nil {
 			return err
 		}
@@ -163,14 +193,18 @@ func (b *IBCF) internalFlow(target sip.URI) (sip.Flow, error) {
 }
 
 // SIPconnect 2.0 section 17.1.1.2
-func (b *IBCF) trunkFlow(l *leg, dialog sip.Flow, u sip.URI) sip.Flow {
+func (b *IBCF) trunkFlow(ctx context.Context, l *leg, dialog sip.Flow, u sip.URI) sip.Flow {
 	if dialog.Transport != sip.UDP && dialog.Remote.IsValid() {
 		return dialog
 	}
 
+	if f, ok := l.target(u); ok {
+		return f
+	}
+
 	t, known := l.call.owner()
 
-	ctx, cancel := context.WithTimeout(b.life, resolveTimeout)
+	ctx, cancel := context.WithTimeout(lifetime.With(b.life, ctx), resolveTimeout)
 	defer cancel()
 
 	servers, err := b.resolveTrunk(ctx, t, u)
@@ -184,7 +218,10 @@ func (b *IBCF) trunkFlow(l *leg, dialog sip.Flow, u sip.URI) sip.Flow {
 		}
 
 		if local, ok := b.local(srv.Transport, srv.Addr.Addr()); ok {
-			return sip.Flow{Transport: srv.Transport, Local: local, Remote: srv.Addr}
+			f := sip.Flow{Transport: srv.Transport, Local: local, Remote: srv.Addr}
+			l.setTarget(u, f)
+
+			return f
 		}
 	}
 

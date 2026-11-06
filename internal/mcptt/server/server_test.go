@@ -140,7 +140,7 @@ func (h *harness) start(state State) {
 
 func (h *harness) now() time.Time { return h.s.Agent().Layer().Clock().Now() }
 
-func (h *harness) prepare(req *sip.Request) error {
+func (h *harness) prepare(_ context.Context, req *sip.Request) error {
 	tr, to, err := sip.NextHop(req)
 	if err != nil {
 		return err

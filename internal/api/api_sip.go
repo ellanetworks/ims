@@ -12,6 +12,7 @@ type SIP interface {
 type SIPEndpoint struct {
 	Role    string
 	Address netip.AddrPort
+	TLS     bool
 }
 
 type SIPListener struct {
@@ -37,7 +38,12 @@ func GetSIPStatus(cfg Config) http.Handler {
 		}
 
 		for _, l := range cfg.SIP.Listeners() {
-			resp.Listeners = append(resp.Listeners, SIPListener{Role: l.Role, Address: l.Address.String(), Transports: []string{"udp", "tcp"}})
+			transports := []string{"udp", "tcp"}
+			if l.TLS {
+				transports = []string{"tls"}
+			}
+
+			resp.Listeners = append(resp.Listeners, SIPListener{Role: l.Role, Address: l.Address.String(), Transports: transports})
 		}
 
 		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)

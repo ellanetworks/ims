@@ -148,7 +148,7 @@ func run(ctx context.Context, o options) error {
 	agent, err := ua.New(ua.Config{
 		Transaction: transaction.Config{Logger: logger},
 		Logger:      logger,
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			l, _ := local.Load().(netip.AddrPort)
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: l, Remote: o.server}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, l).String())

@@ -361,10 +361,44 @@ func (t *Transport) ListenTLS(ctx context.Context, local netip.AddrPort, cfg *tl
 	return l.local, nil
 }
 
+func (t *Transport) ClientTLS(ctx context.Context, local netip.AddrPort) (netip.AddrPort, error) {
+	local = unmap(local)
+	if !local.Addr().IsValid() || local.Addr().IsUnspecified() || local.Addr().Zone() != "" {
+		return netip.AddrPort{}, fmt.Errorf("sip/transport: TLS from %s: a specific IP address is required", local)
+	}
+
+	if local.Port() == 0 {
+		tl, err := listen.TCP(ctx, local, t.control)
+		if err != nil {
+			return netip.AddrPort{}, fmt.Errorf("sip/transport: TLS from %s: %w", local, err)
+		}
+
+		local = unmap(tl.Addr().(*net.TCPAddr).AddrPort())
+
+		_ = tl.Close()
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return netip.AddrPort{}, ErrClosed
+	}
+
+	if _, ok := t.secure[local]; ok {
+		return netip.AddrPort{}, fmt.Errorf("sip/transport: already using %s for TLS", local)
+	}
+
+	t.secure[local] = &listener{local: local}
+
+	return local, nil
+}
+
 func (t *Transport) startHandshake(l *listener, f sip.Flow, nc *net.TCPConn) bool {
 	t.mu.Lock()
 
 	if t.closed {
+		t.releaseLocked(f.Remote.Addr())
 		t.mu.Unlock()
 
 		_ = nc.Close()
@@ -373,6 +407,7 @@ func (t *Transport) startHandshake(l *listener, f sip.Flow, nc *net.TCPConn) boo
 	}
 
 	if len(t.conns)+int(t.handshaking.Load()) >= t.maxConns {
+		t.releaseLocked(f.Remote.Addr())
 		t.mu.Unlock()
 		t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
 
@@ -404,6 +439,8 @@ func (t *Transport) serverHandshake(l *listener, f sip.Flow, nc *net.TCPConn) {
 
 	if err != nil {
 		t.log.Debug("SIP TLS handshake failed", slog.String("flow", f.String()), slog.Any("error", err))
+
+		t.release(f.Remote.Addr())
 
 		_ = nc.Close()
 

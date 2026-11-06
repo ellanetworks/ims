@@ -587,7 +587,7 @@ func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 	a, err := ua.New(ua.Config{
 		Transaction: w.n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: u.contact},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: u.addr, Remote: w.core.addr}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, u.addr).String())
 

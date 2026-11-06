@@ -50,6 +50,8 @@ type Attempt struct {
 	RequestURI string
 	IMPI       string
 	Asserted   []string
+	Trunk      string
+	Direction  db.CallDirection
 }
 
 type Routing struct {
@@ -182,7 +184,7 @@ func (r *Recorder) Attempt(a Attempt) {
 
 	c := &call{rec: db.CallRecord{
 		ICID: a.ICID, SessionID: a.CallID, CallingParty: slices.Clone(a.Asserted), CallerIMPI: a.IMPI,
-		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(),
+		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(), Trunk: a.Trunk, Direction: a.Direction,
 	}}
 	r.calls[a.ICID] = c
 	r.metrics.active.Inc()
@@ -236,6 +238,14 @@ func (r *Recorder) Routed(icid string, rt Routing) {
 	r.update(icid, func(c *call, _ time.Time) {
 		c.rec.CallingParty = asserted
 		c.rec.CalledParty = rt.RequestURI
+	})
+}
+
+func (r *Recorder) Trunk(icid, trunk string, d db.CallDirection) {
+	r.update(icid, func(c *call, _ time.Time) {
+		if c.rec.Direction == "" || c.rec.Direction == d {
+			c.rec.Trunk, c.rec.Direction = trunk, d
+		}
 	})
 }
 

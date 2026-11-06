@@ -56,11 +56,9 @@ func testTrunks(t *testing.T) (settings.Trunk, settings.Trunk) {
 		},
 		Domain: "sip.telnyx.com", Trusted: true, KeepaliveInterval: 30 * time.Second, Enabled: true,
 		TLS: settings.TrunkTLS{
-			RequireClientCertificate: true,
-			CACertificates:           [][]byte{testCertificate(t, "Telnyx CA", true), testCertificate(t, "Telnyx CA 2", true)},
-			PinnedCertificates:       [][]byte{pinned},
-			PinnedFingerprints:       [][sha256.Size]byte{sha256.Sum256(pinned), {1, 2, 3}},
-			Identities:               []string{"sip.telnyx.com", "telnyx.com"},
+			CACertificates: [][]byte{testCertificate(t, "Telnyx CA", true), testCertificate(t, "Telnyx CA 2", true)},
+			Pins:           [][sha256.Size]byte{sha256.Sum256(pinned), {1, 2, 3}},
+			Identities:     []string{"sip.telnyx.com", "telnyx.com"},
 		},
 	}
 	sbc := settings.Trunk{
@@ -123,8 +121,8 @@ func TestSIPTrunks(t *testing.T) {
 	var n int
 	if err := d.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_addresses WHERE trunk_id = ?) +
 		(SELECT count(*) FROM sip_trunk_inbound_cidrs WHERE trunk_id = ?) +
-		(SELECT count(*) FROM sip_trunk_tls_certificates WHERE trunk_id = ?) +
-		(SELECT count(*) FROM sip_trunk_tls_fingerprints WHERE trunk_id = ?) +
+		(SELECT count(*) FROM sip_trunk_tls_ca_certificates WHERE trunk_id = ?) +
+		(SELECT count(*) FROM sip_trunk_tls_pins WHERE trunk_id = ?) +
 		(SELECT count(*) FROM sip_trunk_tls_identities WHERE trunk_id = ?)`,
 		telnyx.ID, telnyx.ID, telnyx.ID, telnyx.ID, telnyx.ID).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d rows of the deleted trunk remain (%v)", n, err)
@@ -160,9 +158,8 @@ func TestSIPTrunkTLS(t *testing.T) {
 
 	telnyx.Addresses = []settings.TrunkAddress{{Host: "sip.telnyx.com", Transport: settings.SIPTransportTLS}}
 	telnyx.TLS = settings.TrunkTLS{
-		Required:           true,
-		PinnedCertificates: [][]byte{telnyx.TLS.CACertificates[1], telnyx.TLS.PinnedCertificates[0]},
-		PinnedFingerprints: telnyx.TLS.PinnedFingerprints[1:],
+		Required: true,
+		Pins:     telnyx.TLS.Pins[1:],
 	}
 
 	if err := d.UpdateTrunk(t.Context(), telnyx); err != nil {
@@ -185,15 +182,21 @@ func TestSIPTrunkTLS(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_tls_certificates) +
-		(SELECT count(*) FROM sip_trunk_tls_fingerprints) + (SELECT count(*) FROM sip_trunk_tls_identities)`).Scan(&n); err != nil || n != 0 {
+	if err := d.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_tls_ca_certificates) +
+		(SELECT count(*) FROM sip_trunk_tls_pins) + (SELECT count(*) FROM sip_trunk_tls_identities)`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d TLS rows remain (%v)", n, err)
 	}
 
-	telnyx.TLS.PinnedCertificates = [][]byte{make([]byte, settings.MaxTrunkCertificateDER+1)}
+	telnyx.TLS.CACertificates = [][]byte{make([]byte, settings.MaxTrunkCertificateDER+1)}
 
 	if err := d.UpdateTrunk(t.Context(), telnyx); !isConstraint(err, sqlite3.ErrConstraintCheck) {
 		t.Fatalf("UpdateTrunk with an oversized certificate = %v, want a CHECK failure", err)
+	}
+
+	telnyx.TLS = settings.TrunkTLS{Pins: [][sha256.Size]byte{{1}, {1}}}
+
+	if err := d.UpdateTrunk(t.Context(), telnyx); !isConstraint(err, sqlite3.ErrConstraintUnique) {
+		t.Fatalf("UpdateTrunk with a pin twice = %v, want a UNIQUE failure", err)
 	}
 }
 
@@ -398,7 +401,7 @@ func TestLiveSIPTrunksOnTheDatabase(t *testing.T) {
 	telnyx.Enabled = false
 	telnyx.KeepaliveInterval = time.Hour
 	telnyx.InboundCIDRs = telnyx.InboundCIDRs[:1]
-	telnyx.TLS.PinnedFingerprints = telnyx.TLS.PinnedFingerprints[1:]
+	telnyx.TLS.Pins = telnyx.TLS.Pins[1:]
 	telnyx.TLS.CACertificates = telnyx.TLS.CACertificates[:1]
 
 	if err := live.UpdateTrunk(t.Context(), telnyx); err != nil {
@@ -430,7 +433,7 @@ func TestLiveSIPTrunksOnTheDatabase(t *testing.T) {
 	}
 
 	if len(stored.Trunks) != 2 || len(stored.SIPRoutes) != 1 || stored.Trunks[1].KeepaliveInterval != 0 ||
-		len(stored.Trunks[0].TLS.CACertificates) != 1 || len(stored.Trunks[0].TLS.PinnedFingerprints) != 1 {
+		len(stored.Trunks[0].TLS.CACertificates) != 1 || len(stored.Trunks[0].TLS.Pins) != 1 {
 		t.Fatalf("stored = %+v %+v, want two trunks, the SBC without keepalive, and +1555", stored.Trunks, stored.SIPRoutes)
 	}
 

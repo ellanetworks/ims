@@ -177,7 +177,7 @@ func (g *Gateway) Allocate(ctx context.Context, a Allocation) (*Relay, error) {
 		return nil, ErrClosed
 	}
 
-	r := &Relay{gw: g, metrics: g.metrics.trunk(a.TrunkID), onTimeout: a.OnMediaTimeout, done: make(chan struct{})}
+	r := &Relay{gw: g, trunk: a.TrunkID, onTimeout: a.OnMediaTimeout, done: make(chan struct{})}
 
 	for i, p := range pools {
 		rtp, rtcp, err := p.open()
@@ -203,7 +203,7 @@ func (g *Gateway) Allocate(ctx context.Context, a Allocation) (*Relay, error) {
 		r.legs[i] = newLeg(i, p, rtp, rtcp)
 	}
 
-	r.metrics.relays.Inc()
+	r.metrics = g.metrics.open(a.TrunkID)
 	r.start(g.mediaTimeout)
 
 	g.mu.Lock()
@@ -225,6 +225,10 @@ func (g *Gateway) isClosed() bool {
 	defer g.mu.Unlock()
 
 	return g.closed
+}
+
+func (g *Gateway) Configure(trunks []string) {
+	g.metrics.Configure(trunks)
 }
 
 func (g *Gateway) Close() error {

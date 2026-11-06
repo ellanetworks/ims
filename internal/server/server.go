@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -41,6 +42,8 @@ const (
 	roleIMS    = "ims"
 )
 
+const trunkMediaTimeout = 60 * time.Second
+
 const (
 	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime +
 		tracesFlushTime + time.Second
@@ -67,10 +70,14 @@ type Server struct {
 	NoAnswerTimeout  time.Duration
 	MediaLossTimeout time.Duration
 	GroupNoAnswer    time.Duration
-	ASTimeout        time.Duration
-	PruneInterval    time.Duration
-	BcryptCost       int
-	TracerProvider   trace.TracerProvider
+
+	TrunkMediaTimeout      time.Duration
+	TrunkKeepaliveFailures int
+
+	ASTimeout      time.Duration
+	PruneInterval  time.Duration
+	BcryptCost     int
+	TracerProvider trace.TracerProvider
 
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
@@ -223,7 +230,7 @@ func (s *Server) Start(ctx context.Context) error {
 			Resolve:  ibcf.SystemResolve,
 			Sender:   ibcfSender{s},
 			Metrics:  s.metrics.trunks,
-			Failures: cfg.IBCF.Keepalive.Failures,
+			Failures: s.TrunkKeepaliveFailures,
 			Logger:   s.Logger,
 		}); err != nil {
 			_ = s.records.Close(ctx)
@@ -743,6 +750,7 @@ func (s *Server) timers() timers {
 		mediaLossTimeout: s.MediaLossTimeout,
 		groupNoAnswer:    s.GroupNoAnswer,
 		asTimeout:        s.ASTimeout,
+		trunkMedia:       cmp.Or(s.TrunkMediaTimeout, trunkMediaTimeout),
 	}
 }
 

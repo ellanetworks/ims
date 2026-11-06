@@ -38,8 +38,9 @@ type Metrics struct {
 	dropped *prometheus.CounterVec
 	lost    *prometheus.CounterVec
 
-	mu     sync.Mutex
-	trunks map[string]*trunkMetrics
+	mu         sync.Mutex
+	trunks     map[string]*trunkMetrics
+	configured map[string]bool
 }
 
 type legMetrics struct {
@@ -51,29 +52,30 @@ type legMetrics struct {
 type trunkMetrics struct {
 	relays prometheus.Gauge
 	legs   [legs]legMetrics
+	open   int
 }
 
 func NewMetrics() *Metrics {
 	return &Metrics{
 		relays: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "ellaims_trgw_relays",
-			Help: "Media relays the TrGW holds open, by trunk ID.",
+			Name: "ellaims_trunk_media_relays",
+			Help: "Media streams that the media relay of SIP trunks relays now, by trunk ID.",
 		}, []string{"trunk"}),
 		relayed: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "ellaims_trgw_packets_relayed_total",
-			Help: "RTP and RTCP packets the TrGW relayed, by trunk ID, by the leg they arrived on (phone or trunk) " +
+			Name: "ellaims_trunk_media_packets_relayed_total",
+			Help: "RTP and RTCP packets that the media relay of SIP trunks relayed, by trunk ID, by the leg they arrived on (phone or trunk) " +
 				"and by protocol.",
 		}, []string{"trunk", "leg", "protocol"}),
 		dropped: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "ellaims_trgw_packets_dropped_total",
-			Help: "RTP and RTCP packets the TrGW dropped, by trunk ID, by the leg they arrived on and by reason: " +
+			Name: "ellaims_trunk_media_packets_dropped_total",
+			Help: "RTP and RTCP packets that the media relay of SIP trunks dropped, by trunk ID, by the leg they arrived on and by reason: " +
 				"unexpected_source (not from the remote address of the leg), no_remote (the leg has no remote " +
 				"address yet), no_destination (the other leg has no remote address yet), direction (on hold or " +
 				"inactive), malformed, and send_error.",
 		}, []string{"trunk", "leg", "reason"}),
 		lost: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "ellaims_trgw_packets_lost_total",
-			Help: "RTP packets lost before reaching the TrGW, from gaps in RTP sequence numbers, by trunk ID and by " +
+			Name: "ellaims_trunk_media_packets_lost_total",
+			Help: "RTP packets lost before reaching the media relay of SIP trunks, from gaps in RTP sequence numbers, by trunk ID and by " +
 				"the leg they were sent on.",
 		}, []string{"trunk", "leg"}),
 		trunks: map[string]*trunkMetrics{},
@@ -84,10 +86,60 @@ func (m *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.relays, m.relayed, m.dropped, m.lost}
 }
 
+func (m *Metrics) Configure(trunks []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.configured = make(map[string]bool, len(trunks))
+
+	for _, id := range trunks {
+		m.configured[id] = true
+		m.trunkLocked(id)
+	}
+
+	for id, t := range m.trunks {
+		if !m.configured[id] && t.open == 0 {
+			m.forgetLocked(id)
+		}
+	}
+}
+
+func (m *Metrics) open(name string) *trunkMetrics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t := m.trunkLocked(name)
+	t.open++
+	t.relays.Inc()
+
+	return t
+}
+
+func (m *Metrics) close(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t := m.trunks[name]
+	if t == nil {
+		return
+	}
+
+	t.open--
+	t.relays.Dec()
+
+	if t.open == 0 && m.configured != nil && !m.configured[name] {
+		m.forgetLocked(name)
+	}
+}
+
 func (m *Metrics) trunk(name string) *trunkMetrics {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.trunkLocked(name)
+}
+
+func (m *Metrics) trunkLocked(name string) *trunkMetrics {
 	if t := m.trunks[name]; t != nil {
 		return t
 	}
@@ -115,6 +167,10 @@ func (m *Metrics) Forget(trunk string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.forgetLocked(trunk)
+}
+
+func (m *Metrics) forgetLocked(trunk string) {
 	delete(m.trunks, trunk)
 
 	labels := prometheus.Labels{"trunk": trunk}

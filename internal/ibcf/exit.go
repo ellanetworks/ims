@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/b2bua"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
@@ -75,8 +77,12 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 	}
 
 	c := &call{
-		b: b, outbound: true, initial: in, icid: icidOf(in.Header), route: b.newRoute(trunks),
-		exit: exit{number: in.URI, caller: caller, privacy: privacy},
+		b: b, outbound: true, initial: in, in: r, icid: icidOf(in.Header), cause: trace.SpanContextFromContext(ctx),
+		route: b.newRoute(trunks), exit: exit{number: in.URI, caller: caller, privacy: privacy},
+	}
+
+	if c.icid != "" {
+		trace.SpanFromContext(ctx).SetAttributes(tracing.ICIDKey.String(c.icid))
 	}
 
 	if !b.legs.add(key{in.Header.CallID(), tagOf(in), false}, &leg{call: c}) {
@@ -86,9 +92,9 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 
 	out := b.attempt(ctx, c)
 	if out == nil {
-		b.release(c)
-
 		_ = r.Reject(503)
+
+		b.release(c)
 
 		return
 	}
@@ -108,9 +114,13 @@ func (b *IBCF) failover(ctx context.Context, c *call, f b2bua.Failure) *sip.Requ
 	}
 
 	t, _ := c.owner()
-	b.cfg.Metrics.failover(t.ID)
 
-	return b.attempt(ctx, c)
+	next := b.attempt(ctx, c)
+	if _, ok := b.cfg.Settings().Trunk(t.ID); ok && next != nil {
+		b.cfg.Metrics.failover(t.ID)
+	}
+
+	return next
 }
 
 // RFC 3263 section 4.3
@@ -133,6 +143,8 @@ func (b *IBCF) attempt(ctx context.Context, c *call) *sip.Request {
 
 		c.mu.Unlock()
 
+		c.own(next.trunk)
+
 		out, err := b.toTrunk(c, next, callID, fromTag)
 		if err != nil {
 			b.log.DebugContext(ctx, "INVITE to the SIP trunk not built", slog.String("trunk", next.trunk.Name), slog.Any("error", err))
@@ -149,7 +161,7 @@ func (b *IBCF) attempt(ctx context.Context, c *call) *sip.Request {
 			}
 		}
 
-		l.setFlow(sip.Flow{Transport: next.server.Transport, Local: next.local, Remote: next.server.Addr})
+		l.setFlow(sip.Flow{Transport: next.server.Transport, Local: next.local, Remote: next.server.Addr}, next.addr.Host)
 
 		return out
 	}
@@ -159,7 +171,7 @@ func (b *IBCF) bridge(ctx context.Context, r *ua.Request, c *call, out *sip.Requ
 	bc := b.begin(r, c)
 
 	if b.cfg.Media != nil {
-		c.media = &media{c: c, cfg: *b.cfg.Media, call: bc}
+		c.media = newMedia(c, *b.cfg.Media, bc)
 	}
 
 	if _, err := b2bua.Bridge(ctx, bc, r, out, b.relay(c)); err != nil {

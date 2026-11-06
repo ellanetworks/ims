@@ -945,3 +945,60 @@ func TestMediaTimeoutOff(t *testing.T) {
 	default:
 	}
 }
+
+func TestMediaTimeoutPeerDoesNotReceive(t *testing.T) {
+	r, _, trunk, expired := answered(t, 100*time.Millisecond)
+
+	setRemote(t, r.Trunk(), trunk.remote(SendOnly))
+
+	stop := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(stop) {
+		send(t, trunk.rtp, rtpPacket(t, 104, 1, []byte{1}), r.Trunk().LocalRTP())
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	select {
+	case <-expired:
+		t.Fatal("media timeout of a phone that has no one to send to")
+	default:
+	}
+}
+
+func TestMetricsConfigure(t *testing.T) {
+	g, m := newGateway(t, 4)
+
+	series := func() int {
+		n := 0
+
+		for _, c := range m.Collectors() {
+			n += testutil.CollectAndCount(c)
+		}
+
+		return n
+	}
+
+	g.Configure([]string{testTrunk, "other"})
+
+	perTrunk := series() / 2
+	if perTrunk == 0 {
+		t.Fatal("no series for the configured trunks")
+	}
+
+	r := allocate(t, g)
+
+	g.Configure([]string{"other"})
+
+	if got := series(); got != 2*perTrunk {
+		t.Fatalf("%d series while the deleted trunk relays media, want %d", got, 2*perTrunk)
+	}
+
+	_ = r.Close()
+
+	if got := series(); got != perTrunk {
+		t.Fatalf("%d series once the deleted trunk's relay closed, want %d", got, perTrunk)
+	}
+
+	if got := testutil.ToFloat64(m.relays.WithLabelValues("other")); got != 0 {
+		t.Fatalf("relays of other %v, want 0", got)
+	}
+}

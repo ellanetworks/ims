@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ func TestTrunkValidate(t *testing.T) {
 			},
 			"addresses must not use udp when trusted is set, not 192.0.2.1 over udp",
 		},
-		"no domain":     {func(t *Trunk) { t.Domain = "" }, "domain must be a domain name or a specific IPv4 or IPv6 address"},
+		"no domain":     {func(t *Trunk) { t.Domain = "" }, "domain is required when no address has a domain name as host"},
 		"domain is URI": {func(t *Trunk) { t.Domain = "sip:sip.telnyx.com" }, "domain must be a domain name or a specific IPv4 or IPv6 address"},
 		"short keepalive": {
 			func(t *Trunk) { t.KeepaliveInterval = 4 * time.Second }, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds",
@@ -446,5 +447,53 @@ func TestLiveTrunksKeepSettingsWhenTheStoreFails(t *testing.T) {
 
 	if n := len(live.Get().Trunks); n != 0 {
 		t.Fatalf("%d trunks, want none", n)
+	}
+}
+
+func TestTrunkWithDefaults(t *testing.T) {
+	fp := [32]byte{1}
+
+	for _, tt := range []struct {
+		name string
+		in   Trunk
+		want Trunk
+	}{
+		{
+			"by DNS name",
+			Trunk{Addresses: []TrunkAddress{{Host: "sip.telnyx.com"}, {Host: "192.0.2.1"}, {Host: "2001:db8::1"}, {Host: "SIP.telnyx.com", Port: 5061}}},
+			Trunk{
+				Addresses:    []TrunkAddress{{Host: "sip.telnyx.com"}, {Host: "192.0.2.1"}, {Host: "2001:db8::1"}, {Host: "SIP.telnyx.com", Port: 5061}},
+				Domain:       "sip.telnyx.com",
+				InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32"), netip.MustParsePrefix("2001:db8::1/128")},
+			},
+		},
+		{
+			"TLS identities",
+			Trunk{Domain: "telnyx.com", Addresses: []TrunkAddress{{Host: "sip.telnyx.com"}, {Host: "sip2.telnyx.com"}}, TLS: TrunkTLS{Pins: [][32]byte{fp}}},
+			Trunk{
+				Domain: "telnyx.com", Addresses: []TrunkAddress{{Host: "sip.telnyx.com"}, {Host: "sip2.telnyx.com"}},
+				TLS: TrunkTLS{Pins: [][32]byte{fp}, Identities: []string{"telnyx.com", "sip.telnyx.com", "sip2.telnyx.com"}},
+			},
+		},
+		{
+			"given",
+			Trunk{
+				Domain: "telnyx.com", Addresses: []TrunkAddress{{Host: "192.0.2.1"}}, InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+				TLS: TrunkTLS{Pins: [][32]byte{fp}, Identities: []string{"sbc.telnyx.com"}},
+			},
+			Trunk{
+				Domain: "telnyx.com", Addresses: []TrunkAddress{{Host: "192.0.2.1"}}, InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+				TLS: TrunkTLS{Pins: [][32]byte{fp}, Identities: []string{"sbc.telnyx.com"}},
+			},
+		},
+		{
+			"by address without TLS",
+			Trunk{Addresses: []TrunkAddress{{Host: "192.0.2.1"}}},
+			Trunk{Addresses: []TrunkAddress{{Host: "192.0.2.1"}}, InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}},
+		},
+	} {
+		if got := tt.in.WithDefaults(); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: WithDefaults = %+v, want %+v", tt.name, got, tt.want)
+		}
 	}
 }

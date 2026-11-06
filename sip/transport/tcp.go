@@ -35,6 +35,7 @@ type conn struct {
 	tcp     *net.TCPConn
 	err     error
 	inbound bool
+	slot    bool
 	peers   []*x509.Certificate
 
 	wmu      sync.Mutex
@@ -267,6 +268,10 @@ func (t *Transport) accept(l *listener) {
 
 		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
 
+		if !t.admit(f, nc) {
+			continue
+		}
+
 		if l.tls != nil {
 			f.Transport = sip.TLS
 			if !t.startHandshake(l, f, nc) {
@@ -279,6 +284,52 @@ func (t *Transport) accept(l *listener) {
 		if !t.register(f, nc, nc, nil) {
 			return
 		}
+	}
+}
+
+func (t *Transport) admit(f sip.Flow, nc *net.TCPConn) bool {
+	if t.acceptFunc != nil && !t.acceptFunc(f.Local, f.Remote) {
+		t.log.Debug("SIP connection refused: source not allowed", slog.String("flow", f.String()))
+
+		_ = nc.SetLinger(0)
+		_ = nc.Close()
+
+		return false
+	}
+
+	a := f.Remote.Addr()
+
+	t.mu.Lock()
+
+	if t.maxPerAddr > 0 && t.inbound[a] >= t.maxPerAddr {
+		t.mu.Unlock()
+		t.log.Warn("SIP connection refused: too many connections from the address", slog.String("flow", f.String()),
+			slog.Int("limit", t.maxPerAddr))
+
+		_ = nc.SetLinger(0)
+		_ = nc.Close()
+
+		return false
+	}
+
+	t.inbound[a]++
+	t.mu.Unlock()
+
+	return true
+}
+
+func (t *Transport) release(a netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.releaseLocked(a)
+}
+
+func (t *Transport) releaseLocked(a netip.Addr) {
+	if n := t.inbound[a]; n > 1 {
+		t.inbound[a] = n - 1
+	} else {
+		delete(t.inbound, a)
 	}
 }
 
@@ -295,6 +346,7 @@ func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []
 	t.mu.Lock()
 
 	if t.closed {
+		t.releaseLocked(f.Remote.Addr())
 		t.mu.Unlock()
 
 		_ = raw.Close()
@@ -304,6 +356,7 @@ func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []
 
 	if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
 		if f.Transport == sip.TLS {
+			t.releaseLocked(f.Remote.Addr())
 			t.mu.Unlock()
 			t.log.Debug("SIP TLS connection refused: a dial on the flow is pending", slog.String("flow", f.String()))
 			c.abort()
@@ -311,6 +364,7 @@ func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []
 			return true
 		}
 
+		old.slot = true
 		t.adopt(old, raw, nc)
 		t.mu.Unlock()
 
@@ -318,6 +372,7 @@ func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []
 	}
 
 	if len(t.conns)+int(t.handshaking.Load()) >= t.maxConns {
+		t.releaseLocked(f.Remote.Addr())
 		t.mu.Unlock()
 		t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
 		c.abort()
@@ -329,6 +384,7 @@ func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []
 		old.close()
 	}
 
+	c.slot = true
 	t.conns[f] = c
 
 	if len(peers) > 0 {
@@ -461,6 +517,12 @@ func (t *Transport) forget(c *conn, cause error) {
 	}
 
 	t.unindex(c)
+
+	if c.slot {
+		c.slot = false
+		t.releaseLocked(c.flow.Remote.Addr())
+	}
+
 	close(c.done)
 
 	closed := t.closed

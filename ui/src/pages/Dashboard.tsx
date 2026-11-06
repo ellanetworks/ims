@@ -21,10 +21,11 @@ import {
 import Grid from "@mui/material/Grid";
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
-import { OutcomeChip, outcomeColors } from "@/components/CallOutcomeChip";
+import { OutcomeChip } from "@/components/CallOutcomeChip";
 import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
+import { useAuth } from "@/contexts/AuthContext";
 import { useMCPTTStatus } from "@/hooks/useMCPTT";
 import {
   CALL_OUTCOMES,
@@ -41,9 +42,9 @@ import {
 import { getMetrics, sumOf } from "@/queries/metrics";
 import { getOperator } from "@/queries/operator";
 import { getSIPStatus } from "@/queries/sip";
+import { listSIPTrunks } from "@/queries/sipTrunks";
 import { pcscfAddresses } from "@/utils/addresses";
 import { formatDateTime } from "@/utils/dates";
-import { applicationLabels } from "@/utils/labels";
 
 export const DASHBOARD_REFRESH_MS = 5000;
 
@@ -166,38 +167,43 @@ function Panel({
 
 interface KpiCardProps {
   title: string;
-  hint: string;
+  hint?: string;
   value?: string;
+  alert?: boolean;
   loading?: boolean;
   error?: boolean;
   to?: string;
 }
 
-function KpiCard({ title, hint, value, to, ...state }: KpiCardProps) {
-  const content = <Typography variant="h4">{value}</Typography>;
+function KpiCard({ title, hint, value, alert, to, ...state }: KpiCardProps) {
+  const content = (
+    <Typography variant="h4" color={alert ? "error" : undefined}>
+      {value}
+    </Typography>
+  );
 
-  if (to) {
-    return (
-      <Tooltip title={hint} arrow describeChild>
-        <CardActionArea
-          component={RouterLink}
-          to={to}
-          sx={{ height: "100%", borderRadius: 3 }}
-        >
-          <Panel title={title} {...state}>
-            {content}
-          </Panel>
-        </CardActionArea>
-      </Tooltip>
-    );
-  }
-
-  return (
-    <Tooltip title={hint} arrow describeChild>
-      <Panel title={title} tabIndex={0} {...state}>
+  const card = to ? (
+    <CardActionArea
+      component={RouterLink}
+      to={to}
+      sx={{ height: "100%", borderRadius: 3 }}
+    >
+      <Panel title={title} {...state}>
         {content}
       </Panel>
+    </CardActionArea>
+  ) : (
+    <Panel title={title} tabIndex={0} {...state}>
+      {content}
+    </Panel>
+  );
+
+  return hint ? (
+    <Tooltip title={hint} arrow describeChild>
+      {card}
     </Tooltip>
+  ) : (
+    card
   );
 }
 
@@ -270,43 +276,20 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ShareBar({ share, color }: { share: number; color: string }) {
-  return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-      <Box
-        aria-hidden
-        sx={{
-          flexGrow: 1,
-          height: 8,
-          borderRadius: 4,
-          bgcolor: "action.hover",
-          overflow: "hidden",
-        }}
-      >
-        <Box sx={{ width: `${share}%`, height: "100%", bgcolor: color }} />
-      </Box>
-      <Typography
-        variant="body2"
-        color="textSecondary"
-        sx={{ minWidth: 40, textAlign: "right" }}
-      >
-        {Math.round(share)}%
-      </Typography>
-    </Box>
-  );
-}
-
 const THIRD = { xs: 12, md: 4 };
 
 const HALF = { xs: 12, md: 6 };
 
 const QUARTER = { xs: 12, sm: 6, md: 3 };
 
+const TRAFFIC_THIRD = { xs: 12, sm: 6, md: 4 };
+
 const failedToLoad = (q: { error: Error | null; data: unknown }) =>
   !!q.error && q.data === undefined;
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const auth = useAuth();
 
   const operator = useQuery({ queryKey: ["operator"], queryFn: getOperator });
   const sip = useQuery({ queryKey: ["sip"], queryFn: getSIPStatus });
@@ -315,6 +298,14 @@ export default function Dashboard() {
     queryFn: listDiameterPeers,
     refetchInterval: DASHBOARD_REFRESH_MS,
   });
+  const trunks = useQuery({
+    queryKey: ["sip-trunks"],
+    queryFn: listSIPTrunks,
+    enabled: auth.can("sip_trunk:read"),
+    refetchInterval: DASHBOARD_REFRESH_MS,
+  });
+  const hasTrunks = (trunks.data?.length ?? 0) > 0;
+  const trafficSize = hasTrunks ? QUARTER : TRAFFIC_THIRD;
   const ipsmgw = useQuery({ queryKey: ["ip-sm-gw"], queryFn: getIPSMGW });
   const mcptt = useMCPTTStatus();
   const mcpttOn = !!mcptt.status;
@@ -345,6 +336,7 @@ export default function Dashboard() {
   const samples = metrics.data ?? [];
   const registered = sumOf(samples, "ellaims_registered_subscribers");
   const activeCalls = sumOf(samples, "ellaims_active_calls");
+  const activeTrunkCalls = sumOf(samples, "ellaims_trunk_active_calls");
   const memory = sumOf(samples, "process_resident_memory_bytes");
   const database = sumOf(samples, "ellaims_database_storage_bytes");
   const startedAt = sumOf(samples, "process_start_time_seconds");
@@ -373,7 +365,7 @@ export default function Dashboard() {
       <PageHeader id="dashboard-title" title="Dashboard" />
 
       <Section title="Overview" first>
-        <Grid size={THIRD}>
+        <Grid size={hasTrunks ? HALF : { xs: 12, md: 8 }}>
           <Panel
             title="This IMS"
             to="/cores"
@@ -402,58 +394,30 @@ export default function Dashboard() {
             </Fields>
           </Panel>
         </Grid>
-        <Grid size={{ xs: 12, md: 8 }}>
-          <Panel
+        <Grid size={hasTrunks ? QUARTER : THIRD}>
+          <KpiCard
             title="Diameter Peers"
             to="/cores"
             loading={peers.isPending}
             error={failedToLoad(peers)}
-            alignTop
-          >
-            <TableContainer>
-              <Table size="small" aria-label="Diameter Peers">
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={headSx}>Host</TableCell>
-                    <TableCell sx={headSx}>Roles</TableCell>
-                    <TableCell sx={headSx}>State</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(peers.data ?? []).map((peer) => (
-                    <TableRow key={peer.id}>
-                      <TableCell sx={{ overflowWrap: "anywhere" }}>
-                        <DomainName name={peerName(peer)} />
-                      </TableCell>
-                      <TableCell>
-                        {peer.applications
-                          .map((app) => applicationLabels[app])
-                          .join(", ")}
-                      </TableCell>
-                      <TableCell>
-                        <PeerStateChip
-                          state={peer.status.state}
-                          error={peer.status.error}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {peers.data?.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={3}>
-                        <Hint>No peers.</Hint>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Panel>
+            value={count(peers.data?.length)}
+            alert={peers.data?.some((p) => p.status.state !== "open")}
+          />
         </Grid>
+        {hasTrunks && (
+          <Grid size={QUARTER}>
+            <KpiCard
+              title="SIP Trunks"
+              to="/sip-trunks"
+              value={count(trunks.data?.length)}
+              alert={trunks.data?.some((t) => t.status.state === "down")}
+            />
+          </Grid>
+        )}
       </Section>
 
       <Section title="Traffic">
-        <Grid size={QUARTER}>
+        <Grid size={trafficSize}>
           <KpiCard
             title="Registered Subscribers"
             hint="Subscribers with a registration that has not expired."
@@ -462,7 +426,7 @@ export default function Dashboard() {
             value={count(registered)}
           />
         </Grid>
-        <Grid size={QUARTER}>
+        <Grid size={trafficSize}>
           <KpiCard
             title="Active Calls"
             hint="Calls in progress, ringing or answered."
@@ -471,7 +435,17 @@ export default function Dashboard() {
             value={count(activeCalls)}
           />
         </Grid>
-        <Grid size={HALF}>
+        {hasTrunks && (
+          <Grid size={trafficSize}>
+            <KpiCard
+              title="Active Trunk Calls"
+              to="/calls"
+              {...metricCard}
+              value={count(activeTrunkCalls)}
+            />
+          </Grid>
+        )}
+        <Grid size={trafficSize}>
           <Panel
             title="Calls in the Last 24 Hours"
             to={lastDayLink()}
@@ -487,56 +461,37 @@ export default function Dashboard() {
                     <TableCell sx={headSx} align="right">
                       Calls
                     </TableCell>
-                    <TableCell sx={{ ...headSx, width: "50%" }}>
-                      Share
-                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {byOutcome &&
-                    outcomes.map((outcome) => {
-                      const color = outcomeColors[outcome];
-                      return (
-                        <TableRow
-                          key={outcome}
-                          hover
-                          onClick={() => navigate(lastDayLink(outcome))}
-                          sx={{ cursor: "pointer" }}
-                        >
-                          <TableCell>
-                            <Box
-                              component={RouterLink}
-                              to={lastDayLink(outcome)}
-                              onClick={(e) => e.stopPropagation()}
-                              sx={{ textDecoration: "none" }}
-                            >
-                              <OutcomeChip outcome={outcome} />
-                            </Box>
-                          </TableCell>
-                          <TableCell align="right">
-                            {nf.format(byOutcome[outcome])}
-                          </TableCell>
-                          <TableCell>
-                            <ShareBar
-                              share={
-                                total ? (100 * byOutcome[outcome]) / total : 0
-                              }
-                              color={
-                                color === "default"
-                                  ? "grey.500"
-                                  : `${color}.main`
-                              }
-                            />
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
+                    outcomes.map((outcome) => (
+                      <TableRow
+                        key={outcome}
+                        hover
+                        onClick={() => navigate(lastDayLink(outcome))}
+                        sx={{ cursor: "pointer" }}
+                      >
+                        <TableCell>
+                          <Box
+                            component={RouterLink}
+                            to={lastDayLink(outcome)}
+                            onClick={(e) => e.stopPropagation()}
+                            sx={{ textDecoration: "none" }}
+                          >
+                            <OutcomeChip outcome={outcome} />
+                          </Box>
+                        </TableCell>
+                        <TableCell align="right">
+                          {nf.format(byOutcome[outcome])}
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   <TableRow>
                     <TableCell sx={{ fontWeight: 600 }}>Total</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 600 }}>
                       {nf.format(total)}
                     </TableCell>
-                    <TableCell />
                   </TableRow>
                 </TableBody>
               </Table>

@@ -1,42 +1,62 @@
 package trunkmon
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"sync/atomic"
+
+	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+var trunkUpDesc = prometheus.NewDesc(
+	"ellaims_trunk_up",
+	"Whether a SIP trunk answers OPTIONS keepalives (1) or is down (0), by trunk ID. A trunk without keepalives, "+
+		"disabled, or not probed yet, has no series.",
+	[]string{"trunk"}, nil,
+)
 
 type Metrics struct {
-	up *prometheus.GaugeVec
+	mon atomic.Pointer[Monitor]
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{
-		up: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "ellaims_trunk_up",
-			Help: "Whether a SIP trunk answers OPTIONS keepalives (1) or is down (0), by trunk ID. A trunk without " +
-				"keepalives, or not probed yet, has no series.",
-		}, []string{"trunk"}),
-	}
+	return &Metrics{}
 }
 
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.up}
+	return []prometheus.Collector{m}
 }
 
-func (m *Metrics) set(trunk string, up bool) {
-	if m == nil {
+func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
+	ch <- trunkUpDesc
+}
+
+func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
+	mon := m.mon.Load()
+	if mon == nil {
 		return
 	}
 
-	v := 0.0
-	if up {
-		v = 1
-	}
+	for id, up := range mon.known() {
+		v := 0.0
+		if up {
+			v = 1
+		}
 
-	m.up.WithLabelValues(trunk).Set(v)
+		ch <- prometheus.MustNewConstMetric(trunkUpDesc, prometheus.GaugeValue, v, id)
+	}
 }
 
-func (m *Metrics) Forget(trunk string) {
-	if m == nil {
-		return
+func (m *Monitor) known() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]bool, len(m.states))
+
+	for id, st := range m.states {
+		if _, probed := m.probes[id]; probed && (st.State == settings.TrunkUp || st.State == settings.TrunkDown) {
+			out[id] = st.State == settings.TrunkUp
+		}
 	}
 
-	m.up.DeleteLabelValues(trunk)
+	return out
 }

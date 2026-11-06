@@ -13,16 +13,19 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
-	"go.opentelemetry.io/otel/attribute"
 )
 
-const role = "ibcf"
+const (
+	role       = "ibcf"
+	tracerName = "github.com/ellanetworks/ims/internal/ibcf"
+)
 
 const resolveTimeout = 4 * time.Second
 
@@ -30,6 +33,8 @@ const resolveTimeout = 4 * time.Second
 const timerC = 3*time.Minute + 10*time.Second
 
 const answerTimeout = 10 * time.Minute
+
+const maxConnectionsPerSource = 64
 
 // RFC 4028 section 7
 // RFC 4028 section 9
@@ -57,6 +62,7 @@ type Config struct {
 	Changed  func() <-chan struct{}
 	Resolve  ResolveFunc
 	Metrics  *Metrics
+	Records  *callrecords.Recorder
 	Media    *MediaConfig
 
 	Transaction transaction.Config
@@ -65,16 +71,17 @@ type Config struct {
 }
 
 type IBCF struct {
-	cfg     Config
-	log     *slog.Logger
-	agent   *ua.Agent
-	amu     sync.Mutex
-	addrs   atomic.Pointer[addrs]
-	legs    *legs
-	peers   *peers
-	persist *persister
-	life    context.Context
-	kill    context.CancelFunc
+	cfg      Config
+	log      *slog.Logger
+	agent    *ua.Agent
+	amu      sync.Mutex
+	addrs    atomic.Pointer[addrs]
+	legs     *legs
+	peers    *peers
+	persist  *persister
+	detached tracing.Detached
+	life     context.Context
+	kill     context.CancelFunc
 }
 
 func Start(ctx context.Context, cfg Config) (*IBCF, error) {
@@ -115,9 +122,15 @@ func start(ctx context.Context, cfg Config, bind bool) (_ *IBCF, err error) {
 	tc.Filter = b.filter
 	tc.OnServerDone = b.logTransaction
 	tc.TraceContext = func(f sip.Flow) bool { return b.isInternal(f.Local) && cfg.Trust.Trusted(f.Remote.Addr()) }
-	roleAttrs := []attribute.KeyValue{tracing.RoleKey.String(role)}
-	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return roleAttrs }
+	tc.SpanAttributes = b.spanAttributes
+	tc.Untraced = b.untraced
+	b.detached = tracing.NewDetached(tc.TracerProvider, tracerName, role)
 	tc.Transport.TLSClientOptions = b.tlsClient
+	tc.Transport.Accept = b.accept
+
+	if tc.Transport.MaxConnectionsPerAddress == 0 {
+		tc.Transport.MaxConnectionsPerAddress = maxConnectionsPerSource
+	}
 
 	for _, a := range cfg.Advertised {
 		tc.Aliases = append(tc.Aliases, a.String())
@@ -144,6 +157,11 @@ func start(ctx context.Context, cfg Config, bind bool) (_ *IBCF, err error) {
 			err = errors.Join(err, b.Shutdown(ctx))
 		}
 	}()
+
+	changed := b.configure()
+	if changed != nil {
+		go b.watch(changed)
+	}
 
 	if !bind {
 		b.addrs.Store(&addrs{internal: cfg.Internal, external: cfg.External})
@@ -226,6 +244,39 @@ func (b *IBCF) listen(_ context.Context, want []netip.AddrPort, bind func(netip.
 	return out, nil
 }
 
+func (b *IBCF) configure() <-chan struct{} {
+	var changed <-chan struct{}
+	if b.cfg.Changed != nil {
+		changed = b.cfg.Changed()
+	}
+
+	trunks := b.cfg.Settings().Trunks
+	ids := make([]string, 0, len(trunks))
+
+	for _, t := range trunks {
+		ids = append(ids, t.ID)
+	}
+
+	b.cfg.Metrics.configure(ids)
+
+	if b.cfg.Media != nil && b.cfg.Media.Gateway != nil {
+		b.cfg.Media.Gateway.Configure(ids)
+	}
+
+	return changed
+}
+
+func (b *IBCF) watch(changed <-chan struct{}) {
+	for {
+		select {
+		case <-b.life.Done():
+			return
+		case <-changed:
+			changed = b.configure()
+		}
+	}
+}
+
 func (b *IBCF) Internal() []netip.AddrPort { return slices.Clone(b.ls().internal) }
 
 func (b *IBCF) External() []netip.AddrPort { return slices.Clone(b.ls().external) }
@@ -294,14 +345,33 @@ var errForbidden = errors.New("ibcf: request from an unknown source")
 
 var errUnknownSource = errors.New("ibcf: request from no SIP trunk")
 
-// TS 24.229 clause 4.4.1
-// TS 24.229 clause 5.10.1
 func (b *IBCF) filter(m sip.Message) error {
 	req, ok := m.(*sip.Request)
 	if !ok {
 		return nil
 	}
 
+	err := b.admit(req)
+	if err == nil {
+		b.noteEnding(req)
+	}
+
+	return err
+}
+
+func (b *IBCF) noteEnding(req *sip.Request) {
+	if req.Method != "BYE" && req.Method != "CANCEL" {
+		return
+	}
+
+	if l := b.legs.received(req); l != nil {
+		l.call.ending(l.trunk, req.Method)
+	}
+}
+
+// TS 24.229 clause 4.4.1
+// TS 24.229 clause 5.10.1
+func (b *IBCF) admit(req *sip.Request) error {
 	f := req.Flow
 
 	switch {
@@ -312,10 +382,29 @@ func (b *IBCF) filter(m sip.Message) error {
 
 		return b.forbid(req)
 	case b.isExternal(f.Local):
-		return b.fromTrunk(req)
+		err := b.fromTrunk(req)
+		if errors.Is(err, errUnknownSource) && f.Transport != sip.UDP {
+			b.agent.Layer().CloseFlow(f)
+		}
+
+		return err
 	}
 
 	return nil
+}
+
+// TS 24.229 clause 4.4.1
+// TS 24.229 clause 5.10.1
+func (b *IBCF) accept(local, remote netip.AddrPort) bool {
+	switch {
+	case b.isInternal(local):
+		return b.cfg.Trust.Trusted(remote.Addr())
+	case b.isExternal(local):
+		_, ok := b.trunkOf(remote.Addr())
+		return ok
+	}
+
+	return false
 }
 
 func (b *IBCF) fromTrunk(req *sip.Request) error {

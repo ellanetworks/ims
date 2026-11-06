@@ -85,32 +85,23 @@ func TestSIPTrunkTLS(t *testing.T) {
 	tlsOnly := []map[string]any{{"host": "sip.telnyx.com", "transport": "tls"}, {"host": "192.0.2.1", "port": 5061, "transport": "tls"}}
 
 	created := createTrunk(t, cfg, tlsTrunkBody(t, tlsOnly, map[string]any{
-		"required": true, "require_client_certificate": true,
-		"ca_certificates":     "\n" + ca.pem(),
-		"pinned_certificates": pinned.pem(),
-		"pinned_fingerprints": []string{strings.ToLower(settings.FormatFingerprint(fp))},
-		"identities":          []string{"sip.telnyx.com"},
+		"required":        true,
+		"ca_certificates": "\n" + ca.pem(),
+		"pins":            []string{pinned.pem(), strings.ToLower(settings.FormatFingerprint(fp))},
 	}))
 
 	wantTLS := SIPTrunkTLS{
 		SIPTrunkTLSParams: SIPTrunkTLSParams{
-			Required: true, RequireClientCertificate: true,
-			CACertificates:     ca.pem(),
-			PinnedCertificates: pinned.pem(),
-			PinnedFingerprints: []string{settings.FormatFingerprint(fp)},
-			Identities:         []string{"sip.telnyx.com"},
+			Required:       true,
+			CACertificates: ca.pem(),
+			Pins:           []string{settings.FormatFingerprint(sha256.Sum256(pinned.der)), settings.FormatFingerprint(fp)},
+			Identities:     []string{"sip.telnyx.com"},
 		},
 		CACertificateDetails: []CertificateSummary{{
 			Subject: "CN=Telnyx CA,O=Telnyx", Issuer: "CN=Telnyx CA,O=Telnyx", DNSNames: []string{}, URIs: []string{},
 			IPAddresses: []string{}, Identities: []string{}, CA: true,
 			NotBefore: "2026-01-01T00:00:00.000Z", NotAfter: "2036-01-01T00:00:00.000Z",
 			SHA256Fingerprint: settings.FormatFingerprint(sha256.Sum256(ca.der)),
-		}},
-		PinnedCertificateDetails: []CertificateSummary{{
-			Subject: "CN=sip.telnyx.com,O=Telnyx", Issuer: "CN=sip.telnyx.com,O=Telnyx", DNSNames: []string{"sip.telnyx.com"},
-			URIs: []string{"sip:sip.telnyx.com"}, IPAddresses: []string{"192.0.2.1"}, Identities: []string{"sip.telnyx.com"},
-			NotBefore: "2026-01-01T00:00:00.000Z", NotAfter: "2036-01-01T00:00:00.000Z",
-			SHA256Fingerprint: settings.FormatFingerprint(sha256.Sum256(pinned.der)),
 		}},
 	}
 	if !reflect.DeepEqual(created.TLS, wantTLS) {
@@ -122,8 +113,8 @@ func TestSIPTrunkTLS(t *testing.T) {
 	}
 
 	stored, _ := cfg.Settings.Get().Trunk(created.ID)
-	if !stored.TLS.Required || len(stored.TLS.CACertificates) != 1 || len(stored.TLS.PinnedCertificates) != 1 ||
-		stored.TLS.PinnedFingerprints[0] != fp {
+	if !stored.TLS.Required || len(stored.TLS.CACertificates) != 1 || len(stored.TLS.Pins) != 2 ||
+		stored.TLS.Pins[0] != sha256.Sum256(pinned.der) || stored.TLS.Pins[1] != fp {
 		t.Fatalf("stored = %+v", stored.TLS)
 	}
 
@@ -132,14 +123,14 @@ func TestSIPTrunkTLS(t *testing.T) {
 		t.Fatalf("GET = %d %s, want %+v", code, body, created)
 	}
 
-	if !strings.Contains(string(body), `"sha256_fingerprint":"`+settings.FormatFingerprint(sha256.Sum256(pinned.der))+`"`) {
+	if !strings.Contains(string(body), `"pins":["`+settings.FormatFingerprint(sha256.Sum256(pinned.der))+`"`) {
 		t.Fatalf("GET = %s, want the fingerprint of the pinned certificate", body)
 	}
 
 	code, body = serve(t, cfg, http.MethodPut, "/api/v1/sip-trunks/"+created.ID,
 		tlsTrunkBody(t, []map[string]any{{"host": "sip.telnyx.com", "transport": "tcp"}}, nil))
 	if got := decodeResult[SIPTrunk](t, body); code != http.StatusOK || got.TLS.Required || got.TLS.CACertificates != "" ||
-		len(got.TLS.PinnedCertificateDetails) != 0 {
+		len(got.TLS.Pins) != 0 || len(got.TLS.CACertificateDetails) != 0 {
 		t.Fatalf("PUT without tls = %d %s, want TLS removed", code, body)
 	}
 
@@ -150,7 +141,6 @@ func TestSIPTrunkTLS(t *testing.T) {
 
 func TestSIPTrunkTLSRejected(t *testing.T) {
 	notAfter := time.Now().Add(24 * time.Hour)
-	ca := newAPITestCert(t, "Telnyx CA", true, notAfter)
 	leaf := newAPITestCert(t, "sip.telnyx.com", false, notAfter)
 	expired := newAPITestCert(t, "old.telnyx.com", false, time.Now().Add(-time.Hour))
 
@@ -169,16 +159,18 @@ func TestSIPTrunkTLSRejected(t *testing.T) {
 		tls       map[string]any
 		want      string
 	}{
-		{"bad PEM", tlsOnly, map[string]any{"pinned_certificates": "MIIB"}, "tls.pinned_certificates must be PEM-encoded certificates"},
-		{"private key", tlsOnly, map[string]any{"pinned_certificates": leaf.pem() + key}, "tls.pinned_certificates must hold only CERTIFICATE PEM blocks, not PRIVATE KEY"},
+		{"bad PEM", tlsOnly, map[string]any{"ca_certificates": "MIIB"}, "tls.ca_certificates must be PEM-encoded certificates"},
+		{"bad PEM pin", tlsOnly, map[string]any{"pins": []string{"-----BEGIN CERTIFICATE-----\nMIIB"}}, "tls.pins must be PEM-encoded certificates"},
+		{"private key", tlsOnly, map[string]any{"pins": []string{leaf.pem() + key}}, "tls.pins must hold only CERTIFICATE PEM blocks, not PRIVATE KEY"},
 		{"bad DER", tlsOnly, map[string]any{"ca_certificates": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("x")})), "identities": []string{"sip.telnyx.com"}}, "tls.ca_certificates holds a certificate that does not parse"},
-		{"bad fingerprint", tlsOnly, map[string]any{"pinned_fingerprints": []string{"AB:CD"}}, `tls.pinned_fingerprints must be SHA-256 fingerprints of 32 hex bytes, not "AB:CD"`},
-		{"CA without identities", tlsOnly, map[string]any{"ca_certificates": ca.pem()}, "tls.identities must list the carrier's domain names when tls.ca_certificates is set"},
+		{"bad fingerprint", tlsOnly, map[string]any{"pins": []string{"AB:CD"}}, `tls.pins must hold PEM certificates or SHA-256 fingerprints of 32 hex bytes, not "AB:CD"`},
+		{"pin twice", tlsOnly, map[string]any{"pins": []string{leaf.pem(), settings.FormatFingerprint(sha256.Sum256(leaf.der))}}, "tls.pins lists "},
 		{"leaf as CA", tlsOnly, map[string]any{"ca_certificates": leaf.pem(), "identities": []string{"sip.telnyx.com"}}, "tls.ca_certificates must hold CA certificates"},
-		{"required with tcp", tcp, map[string]any{"required": true, "pinned_certificates": leaf.pem()}, "addresses must all have tls as transport when tls.required is set, not sip.telnyx.com over tcp"},
-		{"tls without trust", tlsOnly, map[string]any{"identities": []string{"sip.telnyx.com"}}, "tls must have ca_certificates, pinned_certificates or pinned_fingerprints"},
-		{"expired", tlsOnly, map[string]any{"pinned_certificates": leaf.pem() + expired.pem()}, "tls.pinned_certificates holds CN=old.telnyx.com,O=Telnyx, which expired on "},
-		{"details on input", tlsOnly, map[string]any{"pinned_certificates": leaf.pem(), "pinned_certificate_details": []any{}}, "Invalid request data"},
+		{"required with tcp", tcp, map[string]any{"required": true, "pins": []string{leaf.pem()}}, "addresses must all have tls as transport when tls.required is set, not sip.telnyx.com over tcp"},
+		{"tls without trust", tlsOnly, map[string]any{"identities": []string{"sip.telnyx.com"}}, "tls must have ca_certificates or pins"},
+		{"expired", tlsOnly, map[string]any{"pins": []string{leaf.pem(), expired.pem()}}, "tls.pins holds CN=old.telnyx.com,O=Telnyx, which expired on "},
+		{"details on input", tlsOnly, map[string]any{"pins": []string{leaf.pem()}, "ca_certificate_details": []any{}}, "Invalid request data"},
+		{"removed field", tlsOnly, map[string]any{"pinned_fingerprints": []string{}}, "Invalid request data"},
 	}
 
 	for _, tt := range tests {

@@ -40,6 +40,8 @@ func (m *recorder) End(x *b2bua.Exchange, s *ua.Session) {
 	m.log("end %s %s %v", x.Method, x.Offer, s != nil)
 }
 
+func (m *recorder) Dialog(*ua.Session, ua.State) {}
+
 func (m *recorder) take() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

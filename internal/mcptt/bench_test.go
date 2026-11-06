@@ -262,7 +262,7 @@ func (l *load) newUser(tb testing.TB, i int, logger *slog.Logger) *benchUser {
 		Transaction: transaction.Config{Logger: logger},
 		Logger:      logger,
 		Contact:     contact,
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: local, Remote: l.server}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, local).String())
 

@@ -28,18 +28,15 @@ type SIPTrunkParams struct {
 }
 
 type SIPTrunkTLSParams struct {
-	Required                 bool     `json:"required"`
-	RequireClientCertificate bool     `json:"require_client_certificate"`
-	CACertificates           string   `json:"ca_certificates"`
-	PinnedCertificates       string   `json:"pinned_certificates"`
-	PinnedFingerprints       []string `json:"pinned_fingerprints"`
-	Identities               []string `json:"identities"`
+	Required       bool     `json:"required"`
+	CACertificates string   `json:"ca_certificates"`
+	Pins           []string `json:"pins"`
+	Identities     []string `json:"identities"`
 }
 
 type SIPTrunkTLS struct {
 	SIPTrunkTLSParams
-	CACertificateDetails     []CertificateSummary `json:"ca_certificate_details"`
-	PinnedCertificateDetails []CertificateSummary `json:"pinned_certificate_details"`
+	CACertificateDetails []CertificateSummary `json:"ca_certificate_details"`
 }
 
 type CertificateSummary struct {
@@ -165,11 +162,7 @@ func trunkSettings(params SIPTrunkParams) (settings.Trunk, error) {
 		t.KeepaliveInterval = d
 	}
 
-	if params.Enabled == nil {
-		return settings.Trunk{}, settings.Invalidf("enabled is required")
-	}
-
-	t.Enabled = *params.Enabled
+	t.Enabled = params.Enabled == nil || *params.Enabled
 
 	if ip, err := netip.ParseAddr(params.Domain); err == nil && ip.Zone() == "" {
 		t.Domain = ip.Unmap().String()
@@ -211,14 +204,13 @@ func trunkSettings(params SIPTrunkParams) (settings.Trunk, error) {
 		t.TLS = tls
 	}
 
-	return t, nil
+	return t.WithDefaults(), nil
 }
 
 func trunkTLSSettings(params SIPTrunkTLSParams) (settings.TrunkTLS, error) {
 	tls := settings.TrunkTLS{
-		Required:                 params.Required,
-		RequireClientCertificate: params.RequireClientCertificate,
-		Identities:               append([]string(nil), params.Identities...),
+		Required:   params.Required,
+		Identities: append([]string(nil), params.Identities...),
 	}
 
 	var err error
@@ -227,22 +219,19 @@ func trunkTLSSettings(params SIPTrunkTLSParams) (settings.TrunkTLS, error) {
 		return settings.TrunkTLS{}, err
 	}
 
-	if tls.PinnedCertificates, err = settings.ParseCertificatesPEM("tls.pinned_certificates", params.PinnedCertificates); err != nil {
-		return settings.TrunkTLS{}, err
+	if len(params.Pins) > settings.MaxTrunkPins {
+		return settings.TrunkTLS{}, settings.Invalidf("tls.pins must list at most %d pins", settings.MaxTrunkPins)
 	}
 
-	if len(params.PinnedFingerprints) > settings.MaxTrunkFingerprints {
-		return settings.TrunkTLS{}, settings.Invalidf("tls.pinned_fingerprints must list at most %d fingerprints",
-			settings.MaxTrunkFingerprints)
-	}
+	now := time.Now()
 
-	for _, s := range params.PinnedFingerprints {
-		fp, err := settings.ParseFingerprint(s)
+	for _, s := range params.Pins {
+		fp, err := settings.ParsePin(s, now)
 		if err != nil {
 			return settings.TrunkTLS{}, err
 		}
 
-		tls.PinnedFingerprints = append(tls.PinnedFingerprints, fp)
+		tls.Pins = append(tls.Pins, fp)
 	}
 
 	return tls, nil
@@ -300,19 +289,16 @@ func trunkResponse(t settings.Trunk, states settings.TrunkStates) SIPTrunk {
 func trunkTLSResponse(t settings.TrunkTLS) SIPTrunkTLS {
 	resp := SIPTrunkTLS{
 		SIPTrunkTLSParams: SIPTrunkTLSParams{
-			Required:                 t.Required,
-			RequireClientCertificate: t.RequireClientCertificate,
-			CACertificates:           settings.EncodeCertificatesPEM(t.CACertificates),
-			PinnedCertificates:       settings.EncodeCertificatesPEM(t.PinnedCertificates),
-			PinnedFingerprints:       []string{},
-			Identities:               []string{},
+			Required:       t.Required,
+			CACertificates: settings.EncodeCertificatesPEM(t.CACertificates),
+			Pins:           []string{},
+			Identities:     []string{},
 		},
-		CACertificateDetails:     certificateSummaries(t.CACertificates),
-		PinnedCertificateDetails: certificateSummaries(t.PinnedCertificates),
+		CACertificateDetails: certificateSummaries(t.CACertificates),
 	}
 
-	for _, fp := range t.PinnedFingerprints {
-		resp.PinnedFingerprints = append(resp.PinnedFingerprints, settings.FormatFingerprint(fp))
+	for _, fp := range t.Pins {
+		resp.Pins = append(resp.Pins, settings.FormatFingerprint(fp))
 	}
 
 	resp.Identities = append(resp.Identities, t.Identities...)

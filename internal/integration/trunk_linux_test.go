@@ -101,7 +101,7 @@ func newCarrier(t *testing.T, addr netip.AddrPort) *carrier {
 	return c
 }
 
-func (c *carrier) prepare(req *sip.Request) error {
+func (c *carrier) prepare(_ context.Context, req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
 		target = r.URI
@@ -213,15 +213,12 @@ func newMediaScene(t *testing.T, timeout time.Duration) *scene {
 
 	return newSceneWith(t, func(srv *server.Server) {
 		srv.Config.IBCF = &config.IBCF{
-			Port:      5085,
-			External:  config.IBCFExternal{Addresses: []netip.Addr{ibcfExternal.Addr()}, Port: int(ibcfExternal.Port())},
-			Keepalive: config.IBCFKeepalive{Failures: 1},
+			Port:     5085,
+			External: config.IBCFExternal{Addresses: []config.IBCFAddress{{Address: ibcfExternal.Addr()}}},
+			Media:    config.IBCFMedia{MinPort: 10000, MaxPort: 10999},
 		}
-		srv.Config.TrGW = &config.TrGW{
-			PhoneAddresses: []config.TrGWAddress{{Address: imsAddrs[0].Addr()}, {Address: imsAddrs[1].Addr()}},
-			TrunkAddresses: []config.TrGWAddress{{Address: ibcfExternal.Addr()}},
-			MinPort:        10000, MaxPort: 10999, MediaTimeout: &timeout,
-		}
+		srv.TrunkMediaTimeout = timeout
+		srv.TrunkKeepaliveFailures = 1
 	})
 }
 

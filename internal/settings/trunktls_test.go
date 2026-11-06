@@ -91,24 +91,21 @@ func TestTrunkTLSValidate(t *testing.T) {
 	ca := newTestCert(t, "Carrier CA", true, nil, inAYear())
 	leaf := newTestCert(t, "sip.telnyx.com", false, &ca, inAYear(), "sip.telnyx.com")
 	other := newTestCert(t, "sbc.example.org", false, nil, inAYear(), "sbc.example.org")
-	expired := newTestCert(t, "old.telnyx.com", false, nil, time.Now().Add(-time.Hour))
 	fp := sha256.Sum256(leaf.der)
 
 	for name, tr := range map[string]Trunk{
-		"CA":                    tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}}),
-		"pinned certificate":    tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{leaf.der, other.der}}),
-		"pinned fingerprint":    tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}, Required: true}),
-		"client certificate":    tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}, RequireClientCertificate: true}),
-		"expired, already kept": tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{expired.der}}),
+		"CA":            tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}}),
+		"pins":          tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp, sha256.Sum256(other.der)}}),
+		"required pins": tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp}, Required: true}),
 		"mixed transports": func() Trunk {
-			tr := tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}})
+			tr := tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp}})
 			tr.Addresses = append(tr.Addresses, TrunkAddress{Host: "sip.telnyx.com", Transport: SIPTransportTCP})
 
 			return tr
 		}(),
 		"inbound only": func() Trunk {
 			tr := telnyx()
-			tr.TLS = TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}, RequireClientCertificate: true}
+			tr.TLS = TrunkTLS{Pins: [][sha256.Size]byte{fp}}
 
 			return tr
 		}(),
@@ -121,7 +118,7 @@ func TestTrunkTLSValidate(t *testing.T) {
 	many := func(n int) [][]byte {
 		var ders [][]byte
 		for range n {
-			ders = append(ders, newTestCert(t, "x", false, nil, inAYear()).der)
+			ders = append(ders, newTestCert(t, "x", true, nil, inAYear()).der)
 		}
 
 		return ders
@@ -132,16 +129,16 @@ func TestTrunkTLSValidate(t *testing.T) {
 		want  string
 	}{
 		"bad certificate": {
-			tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{[]byte("not DER")}}),
-			"tls.pinned_certificates holds a certificate that does not parse",
+			tlsTrunk(TrunkTLS{CACertificates: [][]byte{[]byte("not DER")}}),
+			"tls.ca_certificates holds a certificate that does not parse",
 		},
 		"leaf as CA": {
 			tlsTrunk(TrunkTLS{CACertificates: [][]byte{leaf.der}, Identities: []string{"sip.telnyx.com"}}),
-			"tls.ca_certificates must hold CA certificates, and CN=sip.telnyx.com is not one: pin it in tls.pinned_certificates instead",
+			"tls.ca_certificates must hold CA certificates, and CN=sip.telnyx.com is not one: pin it in tls.pins instead",
 		},
 		"CA without identities": {
 			tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}}),
-			"tls.identities must list the carrier's domain names when tls.ca_certificates is set",
+			"tls.identities must list the carrier's domain names when tls.ca_certificates is set and the trunk has none",
 		},
 		"identity is URI": {
 			tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip:sip.telnyx.com"}}),
@@ -152,16 +149,16 @@ func TestTrunkTLSValidate(t *testing.T) {
 			"tls.identities lists SIP.telnyx.com twice",
 		},
 		"certificate twice": {
-			tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{leaf.der, leaf.der}}),
-			"tls.pinned_certificates holds CN=sip.telnyx.com twice",
+			tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der, ca.der}, Identities: []string{"sip.telnyx.com"}}),
+			"tls.ca_certificates holds CN=Carrier CA twice",
 		},
-		"fingerprint twice": {
-			tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp, fp}}),
-			"tls.pinned_fingerprints lists " + FormatFingerprint(fp) + " twice",
+		"pin twice": {
+			tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp, fp}}),
+			"tls.pins lists " + FormatFingerprint(fp) + " twice",
 		},
 		"required with tcp": {
 			func() Trunk {
-				tr := tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}, Required: true})
+				tr := tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp}, Required: true})
 				tr.Addresses = append(tr.Addresses, TrunkAddress{Host: "sip.telnyx.com", Port: 5060, Transport: SIPTransportTCP})
 
 				return tr
@@ -170,7 +167,7 @@ func TestTrunkTLSValidate(t *testing.T) {
 		},
 		"required without transport": {
 			func() Trunk {
-				tr := tlsTrunk(TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{fp}, Required: true})
+				tr := tlsTrunk(TrunkTLS{Pins: [][sha256.Size]byte{fp}, Required: true})
 				tr.Addresses = []TrunkAddress{{Host: "sip.telnyx.com"}}
 
 				return tr
@@ -179,36 +176,27 @@ func TestTrunkTLSValidate(t *testing.T) {
 		},
 		"tls without trust": {
 			tlsTrunk(TrunkTLS{}),
-			"addresses over tls need tls.ca_certificates, tls.pinned_certificates or tls.pinned_fingerprints",
+			"addresses over tls need tls.ca_certificates or tls.pins",
 		},
 		"required without trust": {
 			tlsTrunk(TrunkTLS{Required: true}),
-			"tls must have ca_certificates, pinned_certificates or pinned_fingerprints",
-		},
-		"client certificate without trust": {
-			func() Trunk {
-				tr := telnyx()
-				tr.TLS = TrunkTLS{RequireClientCertificate: true}
-
-				return tr
-			}(),
-			"tls must have ca_certificates, pinned_certificates or pinned_fingerprints",
+			"tls must have ca_certificates or pins",
 		},
 		"too many certificates": {
-			tlsTrunk(TrunkTLS{PinnedCertificates: many(MaxTrunkCertificates + 1)}),
-			"tls.pinned_certificates must hold at most 32 certificates",
+			tlsTrunk(TrunkTLS{CACertificates: many(MaxTrunkCertificates + 1), Identities: []string{"sip.telnyx.com"}}),
+			"tls.ca_certificates must hold at most 32 certificates",
 		},
-		"too many fingerprints": {
-			tlsTrunk(TrunkTLS{PinnedFingerprints: make([][sha256.Size]byte, MaxTrunkFingerprints+1)}),
-			"tls.pinned_fingerprints must list at most 32 fingerprints",
+		"too many pins": {
+			tlsTrunk(TrunkTLS{Pins: make([][sha256.Size]byte, MaxTrunkPins+1)}),
+			"tls.pins must list at most 32 pins",
 		},
 		"too many identities": {
 			tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: strings.Split(strings.Repeat("a.example.org,", MaxTrunkIdentities+1), ",")}),
 			"tls.identities must list at most 16 identities",
 		},
 		"oversized certificate": {
-			tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{make([]byte, MaxTrunkCertificateDER+1)}}),
-			"tls.pinned_certificates must hold certificates of at most 16384 bytes",
+			tlsTrunk(TrunkTLS{CACertificates: [][]byte{make([]byte, MaxTrunkCertificateDER+1)}, Identities: []string{"sip.telnyx.com"}}),
+			"tls.ca_certificates must hold certificates of at most 16384 bytes",
 		},
 	}
 
@@ -244,63 +232,73 @@ func TestParseCertificatesPEM(t *testing.T) {
 	withHeaders := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: leaf.der}))
 
 	for in, want := range map[string]string{
-		withKey:            "tls.pinned_certificates must hold only CERTIFICATE PEM blocks, not PRIVATE KEY",
-		bundle + "garbage": "tls.pinned_certificates must be PEM-encoded certificates",
-		"MIIB":             "tls.pinned_certificates must be PEM-encoded certificates",
-		withHeaders:        "tls.pinned_certificates must hold PEM blocks without headers",
+		withKey:            "tls.ca_certificates must hold only CERTIFICATE PEM blocks, not PRIVATE KEY",
+		bundle + "garbage": "tls.ca_certificates must be PEM-encoded certificates",
+		"MIIB":             "tls.ca_certificates must be PEM-encoded certificates",
+		withHeaders:        "tls.ca_certificates must hold PEM blocks without headers",
 	} {
-		if _, err := ParseCertificatesPEM("tls.pinned_certificates", in); !errors.Is(err, ErrInvalid) || err.Error() != want {
+		if _, err := ParseCertificatesPEM("tls.ca_certificates", in); !errors.Is(err, ErrInvalid) || err.Error() != want {
 			t.Errorf("ParseCertificatesPEM = %v, want %q", err, want)
 		}
 	}
 }
 
-func TestParseFingerprint(t *testing.T) {
+func TestParsePin(t *testing.T) {
 	leaf := newTestCert(t, "sip.telnyx.com", false, nil, inAYear())
+	expired := newTestCert(t, "old.telnyx.com", false, nil, time.Now().Add(-time.Hour))
 	fp := sha256.Sum256(leaf.der)
 	formatted := FormatFingerprint(fp)
+	now := time.Now()
 
 	if len(formatted) != 95 || strings.ToUpper(formatted) != formatted {
 		t.Fatalf("FormatFingerprint = %q, want 32 upper-case hex bytes separated by colons", formatted)
 	}
 
-	for _, s := range []string{formatted, strings.ToLower(strings.ReplaceAll(formatted, ":", "")), " " + formatted + " "} {
-		if got, err := ParseFingerprint(s); err != nil || got != fp {
-			t.Errorf("ParseFingerprint(%q) = %x, %v", s, got, err)
+	for _, s := range []string{
+		formatted,
+		strings.ToLower(strings.ReplaceAll(formatted, ":", "")),
+		" " + formatted + " ",
+		EncodeCertificatesPEM([][]byte{leaf.der}),
+		"\n" + EncodeCertificatesPEM([][]byte{leaf.der, expired.der}),
+	} {
+		if got, err := ParsePin(s, now); err != nil || got != fp {
+			t.Errorf("ParsePin(%q) = %x, %v", s, got, err)
 		}
 	}
 
-	for _, s := range []string{"", "AB:CD", formatted + ":00", strings.Replace(formatted, "A", "G", 1)} {
-		if _, err := ParseFingerprint(s); !errors.Is(err, ErrInvalid) {
-			t.Errorf("ParseFingerprint(%q) = %v, want invalid", s, err)
+	for in, want := range map[string]string{
+		"":                                      "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		"AB:CD":                                 "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		formatted + ":00":                       "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		strings.Replace(formatted, "A", "G", 1): "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		"-----BEGIN CERTIFICATE-----\nMIIB":     "tls.pins must be PEM-encoded certificates",
+		EncodeCertificatesPEM([][]byte{[]byte("not DER")}): "tls.pins holds a certificate that does not parse",
+		EncodeCertificatesPEM([][]byte{expired.der}):       "tls.pins holds CN=old.telnyx.com, which expired on ",
+	} {
+		if _, err := ParsePin(in, now); !errors.Is(err, ErrInvalid) || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("ParsePin(%q) = %v, want %q", in, err, want)
 		}
 	}
 }
 
 func TestLiveTrunkTLSExpiry(t *testing.T) {
-	current := newTestCert(t, "sip.telnyx.com", false, nil, inAYear(), "sip.telnyx.com")
-	expired := newTestCert(t, "old.telnyx.com", false, nil, time.Now().Add(-time.Hour))
 	expiredCA := newTestCert(t, "Old CA", true, nil, time.Now().Add(-time.Hour))
+	currentCA := newTestCert(t, "New CA", true, nil, inAYear())
 
 	live := NewLive(&fakeStore{}, validSettings(), nil)
 
-	for _, tt := range []struct {
-		tls  TrunkTLS
-		want string
-	}{
-		{TrunkTLS{PinnedCertificates: [][]byte{current.der, expired.der}}, "tls.pinned_certificates holds CN=old.telnyx.com, which expired on "},
-		{TrunkTLS{CACertificates: [][]byte{expiredCA.der}, Identities: []string{"sip.telnyx.com"}}, "tls.ca_certificates holds CN=Old CA, which expired on "},
-	} {
-		if _, err := live.CreateTrunk(t.Context(), tlsTrunk(tt.tls)); !errors.Is(err, ErrInvalid) || !strings.HasPrefix(err.Error(), tt.want) {
-			t.Errorf("CreateTrunk with an expired certificate = %v, want %q", err, tt.want)
-		}
+	expired := TrunkTLS{CACertificates: [][]byte{expiredCA.der}, Identities: []string{"sip.telnyx.com"}}
+
+	if _, err := live.CreateTrunk(t.Context(), tlsTrunk(expired)); !errors.Is(err, ErrInvalid) ||
+		!strings.HasPrefix(err.Error(), "tls.ca_certificates holds CN=Old CA, which expired on ") {
+		t.Errorf("CreateTrunk with an expired certificate = %v, want invalid", err)
 	}
 
 	if n := len(live.Get().Trunks); n != 0 {
 		t.Fatalf("%d trunks, want none", n)
 	}
 
-	kept := tlsTrunk(TrunkTLS{PinnedCertificates: [][]byte{expired.der}})
+	kept := tlsTrunk(expired)
 	kept.ID = "0192a000-0000-7000-8000-000000000011"
 
 	initial := validSettings()
@@ -313,17 +311,23 @@ func TestLiveTrunkTLSExpiry(t *testing.T) {
 		t.Fatalf("UpdateTrunk keeping an expired certificate: %v", err)
 	}
 
-	kept.TLS.PinnedCertificates = append(kept.TLS.PinnedCertificates, expiredCA.der)
+	added := kept
+	added.TLS.CACertificates = [][]byte{currentCA.der, expiredCA.der}
 
-	if err := live.UpdateTrunk(t.Context(), kept); !errors.Is(err, ErrInvalid) ||
-		!strings.HasPrefix(err.Error(), "tls.pinned_certificates holds CN=Old CA, which expired on ") {
-		t.Fatalf("UpdateTrunk adding an expired certificate = %v, want invalid", err)
+	if err := live.UpdateTrunk(t.Context(), added); err != nil {
+		t.Fatalf("UpdateTrunk adding a certificate and keeping an expired one: %v", err)
 	}
 
-	kept.TLS.PinnedCertificates = [][]byte{current.der}
+	kept.TLS.CACertificates = [][]byte{currentCA.der}
 
 	if err := live.UpdateTrunk(t.Context(), kept); err != nil {
 		t.Fatalf("UpdateTrunk replacing the expired certificate: %v", err)
+	}
+
+	kept.TLS.CACertificates = [][]byte{currentCA.der, expiredCA.der}
+
+	if err := live.UpdateTrunk(t.Context(), kept); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("UpdateTrunk adding back an expired certificate = %v, want invalid", err)
 	}
 }
 
@@ -334,9 +338,9 @@ func TestTrunkTLSOptions(t *testing.T) {
 	selfSigned := newTestCert(t, "sbc.example.org", false, nil, inAYear(), "sbc.example.org")
 	ella := newTestCert(t, "ims.example.org", false, nil, inAYear(), "ims.example.org")
 
-	byCA := TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}, RequireClientCertificate: true}
-	byPin := TrunkTLS{PinnedCertificates: [][]byte{selfSigned.der}}
-	byFingerprint := TrunkTLS{PinnedFingerprints: [][sha256.Size]byte{sha256.Sum256(selfSigned.der)}, Identities: []string{"sbc.example.org"}}
+	byCA := TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}, Required: true}
+	byPin := TrunkTLS{Pins: [][sha256.Size]byte{sha256.Sum256(selfSigned.der)}}
+	byFingerprint := TrunkTLS{Pins: [][sha256.Size]byte{sha256.Sum256(selfSigned.der)}, Identities: []string{"sbc.example.org"}}
 
 	o, err := byCA.ClientOptions("sip.telnyx.com")
 	if err != nil || o.Roots == nil || o.ServerName != "sip.telnyx.com" || len(o.Identities) != 1 || o.RequireClientCertificate || len(o.Certificates) != 0 {
@@ -346,6 +350,10 @@ func TestTrunkTLSOptions(t *testing.T) {
 	in, err := byCA.InboundOptions()
 	if err != nil || in.Roots == nil || in.ServerName != "" || !in.RequireClientCertificate {
 		t.Fatalf("InboundOptions = %+v, %v", in, err)
+	}
+
+	if in, err := byPin.InboundOptions(); err != nil || in.RequireClientCertificate {
+		t.Fatalf("InboundOptions without required TLS = %+v, %v", in, err)
 	}
 
 	if _, err := (TrunkTLS{}).ClientOptions("sip.telnyx.com"); !errors.Is(err, ErrInvalid) {
@@ -408,7 +416,7 @@ func TestTrunkTLSInboundHandshake(t *testing.T) {
 	ella := newTestCert(t, "ims.example.org", false, nil, inAYear(), "ims.example.org")
 	ellaFP := sha256.Sum256(ella.der)
 
-	trunk := TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}, RequireClientCertificate: true}
+	trunk := TrunkTLS{CACertificates: [][]byte{ca.der}, Identities: []string{"sip.telnyx.com"}, Required: true}
 
 	in, err := trunk.InboundOptions()
 	if err != nil {

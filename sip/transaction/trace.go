@@ -142,6 +142,21 @@ func WithLinks(ctx context.Context, scs ...trace.SpanContext) context.Context {
 	return context.WithValue(ctx, linksKey{}, links)
 }
 
+type spanlessKey struct{}
+
+func WithoutSpan(ctx context.Context) context.Context {
+	return context.WithValue(ctx, spanlessKey{}, true)
+}
+
+func spanless(ctx context.Context) bool {
+	v, _ := ctx.Value(spanlessKey{}).(bool)
+	return v
+}
+
+func (l *Layer) spanless(req *sip.Request) bool {
+	return l.skipSpan != nil && l.skipSpan(req)
+}
+
 func linksOf(ctx context.Context) []trace.Link {
 	links, _ := ctx.Value(linksKey{}).([]trace.Link)
 	return links
@@ -176,7 +191,7 @@ func (l *Layer) remote(req *sip.Request) context.Context {
 	return propagator.Extract(context.Background(), headerCarrier{&req.Header})
 }
 
-func (l *Layer) requestAttributes(req *sip.Request) []attribute.KeyValue {
+func (l *Layer) requestAttributes(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.NetworkProtocolName("sip"),
 		methodKey.String(spanName(req.Method)),
@@ -197,17 +212,19 @@ func (l *Layer) requestAttributes(req *sip.Request) []attribute.KeyValue {
 		attrs = append(attrs, callIDKey.String(id))
 	}
 
-	if id := req.Header.ICID(); id != "" {
+	traced := l.traces(req.Flow)
+
+	if id := req.Header.ICID(); id != "" && traced {
 		attrs = append(attrs, icidKey.String(id))
 	}
 
-	if l.traces(req.Flow) && req.Flow.Remote.IsValid() {
+	if traced && req.Flow.Remote.IsValid() {
 		attrs = append(attrs, semconv.NetworkPeerAddress(req.Flow.Remote.Addr().Unmap().String()),
 			semconv.NetworkPeerPort(int(req.Flow.Remote.Port())))
 	}
 
 	if l.attributes != nil {
-		attrs = append(attrs, l.attributes(req.Flow)...)
+		attrs = append(attrs, l.attributes(req, kind)...)
 	}
 
 	return attrs
@@ -297,7 +314,7 @@ func (l *Layer) handleAck(ack *sip.Request, invite trace.SpanContext) {
 	}
 
 	opts := []trace.SpanStartOption{
-		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(ack)...),
+		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(ack, trace.SpanKindServer)...),
 		trace.WithLinks(validLinks(links)...),
 	}
 

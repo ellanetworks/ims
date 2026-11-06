@@ -73,10 +73,17 @@ func (l *Layer) Request(ctx context.Context, req *sip.Request, h ClientHandler) 
 		return nil, err
 	}
 
-	spanCtx, s := l.tracer.Start(ctx, spanName(req.Method), trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(l.requestAttributes(req)...), trace.WithLinks(linksOf(ctx)...))
+	spanCtx := ctx
 
-	tx.ctx, tx.span = spanCtx, span{Span: s}
+	if !spanless(ctx) {
+		var s trace.Span
+
+		spanCtx, s = l.tracer.Start(ctx, spanName(req.Method), trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(l.requestAttributes(req, trace.SpanKindClient)...), trace.WithLinks(linksOf(ctx)...))
+		tx.span = span{Span: s}
+	}
+
+	tx.ctx = spanCtx
 	tx.finish = func(err error) { tx.span.end(nil, err, clientFailed(tx.cancelled)) }
 
 	l.propagate(spanCtx, req)

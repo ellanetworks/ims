@@ -14,7 +14,14 @@ export default function EditNumberingDialog({
 }) {
   const queryClient = useQueryClient();
   const { showSnackbar } = useSnackbar();
-  const [numbering, setNumbering] = useState(operator.numbering);
+  const [numbering, setNumbering] = useState({
+    country_code: operator.numbering.country_code,
+    national_prefix: operator.numbering.national_prefix,
+    international_prefix: operator.numbering.international_prefix,
+  });
+  const [minDigits, setMinDigits] = useState(
+    String(operator.numbering.min_national_digits),
+  );
 
   const mutation = useMutation({
     mutationFn: updateOperator,
@@ -41,7 +48,14 @@ export default function EditNumberingDialog({
         : undefined),
   };
 
-  const valid = Object.values(errors).every((e) => e === undefined);
+  const minDigitsError =
+    /^\d{1,2}$/.test(minDigits) && Number(minDigits) <= 15
+      ? undefined
+      : "0 to 15";
+
+  const valid =
+    minDigitsError === undefined &&
+    Object.values(errors).every((e) => e === undefined);
 
   const field = (name: keyof typeof numbering) => ({
     value: numbering[name],
@@ -57,7 +71,12 @@ export default function EditNumberingDialog({
       valid={valid}
       pending={mutation.isPending}
       error={mutation.error}
-      onSubmit={() => mutation.mutate({ ...operator, numbering })}
+      onSubmit={() =>
+        mutation.mutate({
+          ...operator,
+          numbering: { ...numbering, min_national_digits: Number(minDigits) },
+        })
+      }
       onClose={onClose}
     >
       <TextField label="Country Code" {...field("country_code")} required />
@@ -65,6 +84,14 @@ export default function EditNumberingDialog({
       <TextField
         label="International Prefix"
         {...field("international_prefix")}
+      />
+      <TextField
+        label="Minimum National Digits"
+        value={minDigits}
+        onChange={(e) => setMinDigits(e.target.value.trim())}
+        error={minDigitsError !== undefined}
+        helperText={minDigitsError}
+        required
       />
     </EditDialog>
   );

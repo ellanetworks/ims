@@ -23,7 +23,7 @@ func TestPrepare(t *testing.T) {
 		{"sip:scscf.ims.example.com", v4},
 	} {
 		req := &sip.Request{Method: "OPTIONS", URI: uri(t, tc.uri)}
-		if err := p(req); err != nil {
+		if err := p(t.Context(), req); err != nil {
 			t.Fatal(err)
 		}
 
@@ -36,18 +36,18 @@ func TestPrepare(t *testing.T) {
 		}
 	}
 
-	if err := Prepare(context.Background(), []netip.AddrPort{v4}, &sip.Resolver{DNS: dns{}})(&sip.Request{Method: "OPTIONS", URI: uri(t, "sip:[2001:db8::2]")}); err == nil {
+	if err := Prepare(context.Background(), []netip.AddrPort{v4}, &sip.Resolver{DNS: dns{}})(t.Context(), &sip.Request{Method: "OPTIONS", URI: uri(t, "sip:[2001:db8::2]")}); err == nil {
 		t.Error("IPv6 next hop from IPv4 only")
 	}
 
 	req := &sip.Request{Method: "INVITE", URI: uri(t, "sip:bob@ims.example.com")}
 	req.Header.Set("Route", "<sip:scscf.ims.example.com;lr>")
 
-	if err := p(req); err != nil || req.Flow.Remote != netip.MustParseAddrPort("192.0.2.9:6060") || req.Flow.Transport != sip.UDP {
+	if err := p(t.Context(), req); err != nil || req.Flow.Remote != netip.MustParseAddrPort("192.0.2.9:6060") || req.Flow.Transport != sip.UDP {
 		t.Errorf("to the Route: %+v, %v", req.Flow, err)
 	}
 
-	if err := p(&sip.Request{Method: "OPTIONS", URI: uri(t, "sip:unknown.example.com")}); err == nil {
+	if err := p(t.Context(), &sip.Request{Method: "OPTIONS", URI: uri(t, "sip:unknown.example.com")}); err == nil {
 		t.Error("to a domain without records")
 	}
 }
@@ -58,7 +58,7 @@ func TestPrepareLifetime(t *testing.T) {
 
 	kill()
 
-	if err := p(&sip.Request{Method: "BYE", URI: uri(t, "sip:scscf.ims.example.com")}); !errors.Is(err, context.Canceled) {
+	if err := p(t.Context(), &sip.Request{Method: "BYE", URI: uri(t, "sip:scscf.ims.example.com")}); !errors.Is(err, context.Canceled) {
 		t.Errorf("after the lifetime: %v", err)
 	}
 }

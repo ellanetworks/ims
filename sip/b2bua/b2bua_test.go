@@ -96,7 +96,7 @@ func newParty(t *testing.T, n *siptest.Net, name string, configure func(*ua.Conf
 	return p
 }
 
-func (p *party) prepare(req *sip.Request) error {
+func (p *party) prepare(_ context.Context, req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
 		target = r.URI
@@ -200,6 +200,7 @@ type b2b struct {
 
 	ended   chan *b2bua.Call
 	relays  chan *b2bua.Relay
+	errs    chan error
 	strands []*ua.Strand
 	cfg     b2bua.RelayConfig
 }
@@ -209,7 +210,7 @@ func newB2B(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayConfi
 }
 
 func newB2BWith(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayConfig, configure func(*ua.Config)) *b2b {
-	b := &b2b{ended: make(chan *b2bua.Call, 16), relays: make(chan *b2bua.Relay, 16), cfg: cfg}
+	b := &b2b{ended: make(chan *b2bua.Call, 16), relays: make(chan *b2bua.Relay, 16), errs: make(chan error, 16), cfg: cfg}
 
 	b.party = newParty(t, n, "b2b", func(c *ua.Config) {
 		c.Policy = ua.Policy{}
@@ -219,7 +220,15 @@ func newB2BWith(t *testing.T, n *siptest.Net, to func() *party, cfg b2bua.RelayC
 		}
 
 		c.OnInvite = func(_ context.Context, r *ua.Request) ua.Handler {
-			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{Ended: func(_ context.Context, c *b2bua.Call) { b.ended <- c }})
+			call := b2bua.NewCall(b.a, r.Strand(), b2bua.CallHandler{
+				Ended: func(_ context.Context, c *b2bua.Call) { b.ended <- c },
+				Error: func(_ *b2bua.Call, err error) {
+					select {
+					case b.errs <- err:
+					default:
+					}
+				},
+			})
 			b.strands = append(b.strands, r.Strand())
 
 			target := to()
@@ -254,6 +263,20 @@ func (b *b2b) callEnded(t *testing.T) {
 	case <-b.ended:
 	default:
 		t.Fatal("the call did not end")
+	}
+}
+
+func (b *b2b) noErrors(t *testing.T) {
+	t.Helper()
+	b.net.Quiesce()
+
+	for {
+		select {
+		case err := <-b.errs:
+			t.Errorf("call error: %v", err)
+		default:
+			return
+		}
 	}
 }
 

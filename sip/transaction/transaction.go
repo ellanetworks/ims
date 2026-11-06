@@ -98,9 +98,11 @@ type Config struct {
 
 	TraceContext func(f sip.Flow) bool
 
-	SpanAttributes func(f sip.Flow) []attribute.KeyValue
+	SpanAttributes func(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue
 
 	SpanLinks func(req *sip.Request) []trace.SpanContext
+
+	Untraced func(req *sip.Request) bool
 }
 
 type Layer struct {
@@ -122,8 +124,9 @@ type Layer struct {
 	tp           trace.TracerProvider
 	tracer       trace.Tracer
 	traceContext func(f sip.Flow) bool
-	attributes   func(f sip.Flow) []attribute.KeyValue
+	attributes   func(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue
 	spanLinks    func(req *sip.Request) []trace.SpanContext
+	skipSpan     func(req *sip.Request) bool
 
 	t1, t2, t4, t100 time.Duration
 
@@ -193,6 +196,7 @@ func New(cfg Config) *Layer {
 		traceContext:  cfg.TraceContext,
 		attributes:    cfg.SpanAttributes,
 		spanLinks:     cfg.SpanLinks,
+		skipSpan:      cfg.Untraced,
 		t1:            cfg.T1,
 		t2:            cfg.T2,
 		t4:            cfg.T4,
@@ -287,6 +291,19 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 
 func (l *Layer) ListenTLS(ctx context.Context, local netip.AddrPort, cfg *tls.Config) (netip.AddrPort, error) {
 	bound, err := l.tr.ListenTLS(ctx, local, cfg)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	l.mu.Lock()
+	l.addLocal(bound)
+	l.mu.Unlock()
+
+	return bound, nil
+}
+
+func (l *Layer) ClientTLS(ctx context.Context, local netip.AddrPort) (netip.AddrPort, error) {
+	bound, err := l.tr.ClientTLS(ctx, local)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}

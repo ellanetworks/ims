@@ -15,7 +15,7 @@ import (
 
 const (
 	MaxTrunkCertificates   = 32
-	MaxTrunkFingerprints   = 32
+	MaxTrunkPins           = 32
 	MaxTrunkIdentities     = 16
 	MaxTrunkCertificateDER = 16 << 10
 )
@@ -24,20 +24,18 @@ const (
 // SIPconnect 2.0 section 17.2
 // SIPconnect 2.0 section 17.5
 type TrunkTLS struct {
-	Required                 bool
-	RequireClientCertificate bool
-	CACertificates           [][]byte
-	PinnedCertificates       [][]byte
-	PinnedFingerprints       [][sha256.Size]byte
-	Identities               []string
+	Required       bool
+	CACertificates [][]byte
+	Pins           [][sha256.Size]byte
+	Identities     []string
 }
 
 func (t TrunkTLS) Trusts() bool {
-	return len(t.CACertificates) > 0 || len(t.PinnedCertificates) > 0 || len(t.PinnedFingerprints) > 0
+	return len(t.CACertificates) > 0 || len(t.Pins) > 0
 }
 
 func (t TrunkTLS) configured() bool {
-	return t.Trusts() || t.Required || t.RequireClientCertificate || len(t.Identities) > 0
+	return t.Trusts() || t.Required || len(t.Identities) > 0
 }
 
 // SIPconnect 2.0 section 17.2
@@ -45,25 +43,19 @@ func (t TrunkTLS) Validate() error {
 	switch {
 	case len(t.CACertificates) > MaxTrunkCertificates:
 		return invalidf("tls.ca_certificates must hold at most %d certificates", MaxTrunkCertificates)
-	case len(t.PinnedCertificates) > MaxTrunkCertificates:
-		return invalidf("tls.pinned_certificates must hold at most %d certificates", MaxTrunkCertificates)
-	case len(t.PinnedFingerprints) > MaxTrunkFingerprints:
-		return invalidf("tls.pinned_fingerprints must list at most %d fingerprints", MaxTrunkFingerprints)
+	case len(t.Pins) > MaxTrunkPins:
+		return invalidf("tls.pins must list at most %d pins", MaxTrunkPins)
 	case len(t.Identities) > MaxTrunkIdentities:
 		return invalidf("tls.identities must list at most %d identities", MaxTrunkIdentities)
 	}
 
-	if err := validateCertificates("tls.ca_certificates", t.CACertificates, true); err != nil {
+	if err := validateCertificates("tls.ca_certificates", t.CACertificates); err != nil {
 		return err
 	}
 
-	if err := validateCertificates("tls.pinned_certificates", t.PinnedCertificates, false); err != nil {
-		return err
-	}
-
-	for i, fp := range t.PinnedFingerprints {
-		if slices.Contains(t.PinnedFingerprints[:i], fp) {
-			return invalidf("tls.pinned_fingerprints lists %s twice", FormatFingerprint(fp))
+	for i, fp := range t.Pins {
+		if slices.Contains(t.Pins[:i], fp) {
+			return invalidf("tls.pins lists %s twice", FormatFingerprint(fp))
 		}
 	}
 
@@ -79,15 +71,15 @@ func (t TrunkTLS) Validate() error {
 
 	switch {
 	case t.configured() && !t.Trusts():
-		return invalidf("tls must have ca_certificates, pinned_certificates or pinned_fingerprints")
+		return invalidf("tls must have ca_certificates or pins")
 	case len(t.CACertificates) > 0 && len(t.Identities) == 0:
-		return invalidf("tls.identities must list the carrier's domain names when tls.ca_certificates is set")
+		return invalidf("tls.identities must list the carrier's domain names when tls.ca_certificates is set and the trunk has none")
 	}
 
 	return nil
 }
 
-func validateCertificates(field string, ders [][]byte, ca bool) error {
+func validateCertificates(field string, ders [][]byte) error {
 	for i, der := range ders {
 		if len(der) > MaxTrunkCertificateDER {
 			return invalidf("%s must hold certificates of at most %d bytes", field, MaxTrunkCertificateDER)
@@ -98,8 +90,8 @@ func validateCertificates(field string, ders [][]byte, ca bool) error {
 			return invalidf("%s holds a certificate that does not parse: %v", field, err)
 		}
 
-		if ca && (!c.BasicConstraintsValid || !c.IsCA) {
-			return invalidf("%s must hold CA certificates, and %s is not one: pin it in tls.pinned_certificates instead",
+		if !c.BasicConstraintsValid || !c.IsCA {
+			return invalidf("%s must hold CA certificates, and %s is not one: pin it in tls.pins instead",
 				field, c.Subject)
 		}
 
@@ -112,27 +104,18 @@ func validateCertificates(field string, ders [][]byte, ca bool) error {
 }
 
 func (t TrunkTLS) checkCurrent(prev TrunkTLS, now time.Time) error {
-	for _, l := range []struct {
-		field     string
-		ders, old [][]byte
-	}{
-		{"tls.ca_certificates", t.CACertificates, prev.CACertificates},
-		{"tls.pinned_certificates", t.PinnedCertificates, prev.PinnedCertificates},
-	} {
-		for _, der := range l.ders {
-			if slices.ContainsFunc(l.old, func(o []byte) bool { return bytes.Equal(o, der) }) {
-				continue
-			}
+	for _, der := range t.CACertificates {
+		if slices.ContainsFunc(prev.CACertificates, func(o []byte) bool { return bytes.Equal(o, der) }) {
+			continue
+		}
 
-			c, err := x509.ParseCertificate(der)
-			if err != nil {
-				continue
-			}
+		c, err := x509.ParseCertificate(der)
+		if err != nil {
+			continue
+		}
 
-			if now.After(c.NotAfter) {
-				return invalidf("%s holds %s, which expired on %s", l.field, c.Subject,
-					c.NotAfter.UTC().Format(time.RFC3339))
-			}
+		if now.After(c.NotAfter) {
+			return invalidf("tls.ca_certificates holds %s, which expired on %s", c.Subject, c.NotAfter.UTC().Format(time.RFC3339))
 		}
 	}
 
@@ -180,13 +163,35 @@ func EncodeCertificatesPEM(ders [][]byte) string {
 	return b.String()
 }
 
-func ParseFingerprint(s string) ([sha256.Size]byte, error) {
-	fp, err := transport.ParseFingerprint(s)
-	if err != nil {
-		return fp, invalidf("tls.pinned_fingerprints must be SHA-256 fingerprints of %d hex bytes, not %q", sha256.Size, s)
+func ParsePin(s string, now time.Time) ([sha256.Size]byte, error) {
+	if !strings.HasPrefix(strings.TrimSpace(s), "-----BEGIN") {
+		fp, err := transport.ParseFingerprint(s)
+		if err != nil {
+			return fp, invalidf("tls.pins must hold PEM certificates or SHA-256 fingerprints of %d hex bytes, not %q", sha256.Size, s)
+		}
+
+		return fp, nil
 	}
 
-	return fp, nil
+	ders, err := ParseCertificatesPEM("tls.pins", s)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+
+	if len(ders) == 0 || len(ders[0]) > MaxTrunkCertificateDER {
+		return [sha256.Size]byte{}, invalidf("tls.pins must hold PEM certificates of at most %d bytes", MaxTrunkCertificateDER)
+	}
+
+	c, err := x509.ParseCertificate(ders[0])
+	if err != nil {
+		return [sha256.Size]byte{}, invalidf("tls.pins holds a certificate that does not parse: %v", err)
+	}
+
+	if now.After(c.NotAfter) {
+		return [sha256.Size]byte{}, invalidf("tls.pins holds %s, which expired on %s", c.Subject, c.NotAfter.UTC().Format(time.RFC3339))
+	}
+
+	return transport.Fingerprint(c), nil
 }
 
 func FormatFingerprint(fp [sha256.Size]byte) string {
@@ -217,24 +222,25 @@ func (t TrunkTLS) ClientOptions(serverName string) (transport.TLSOptions, error)
 }
 
 // SIPconnect 2.0 section 17.2
+// SIPconnect 2.0 section 17.5
 func (t TrunkTLS) InboundOptions() (transport.TLSOptions, error) {
 	o, err := t.options()
 	if err != nil {
 		return transport.TLSOptions{}, err
 	}
 
-	o.RequireClientCertificate = t.RequireClientCertificate
+	o.RequireClientCertificate = t.Required
 
 	return o, nil
 }
 
 func (t TrunkTLS) options() (transport.TLSOptions, error) {
 	if !t.Trusts() {
-		return transport.TLSOptions{}, invalidf("tls must have ca_certificates, pinned_certificates or pinned_fingerprints")
+		return transport.TLSOptions{}, invalidf("tls must have ca_certificates or pins")
 	}
 
 	o := transport.TLSOptions{
-		PinnedFingerprints: slices.Clone(t.PinnedFingerprints),
+		PinnedFingerprints: slices.Clone(t.Pins),
 		Identities:         slices.Clone(t.Identities),
 	}
 
@@ -249,15 +255,6 @@ func (t TrunkTLS) options() (transport.TLSOptions, error) {
 
 			o.Roots.AddCert(c)
 		}
-	}
-
-	for _, der := range t.PinnedCertificates {
-		c, err := x509.ParseCertificate(der)
-		if err != nil {
-			return transport.TLSOptions{}, fmt.Errorf("tls.pinned_certificates: %w", err)
-		}
-
-		o.PinnedCertificates = append(o.PinnedCertificates, c)
 	}
 
 	return o, nil

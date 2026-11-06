@@ -124,6 +124,33 @@ func TestRecorder(t *testing.T) {
 			},
 		},
 		{
+			name: "to a SIP trunk, failed over to the second",
+			report: func(r *Recorder, icid string) {
+				r.Attempt(attempt(icid))
+				r.Trunk(icid, "first", db.DirectionOffNetOut)
+				r.Trunk(icid, "second", db.DirectionOffNetOut)
+				r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.Trunk, w.Direction = "second", db.DirectionOffNetOut
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 486, db.OutcomeBusy, db.PartyCallee, at(4)
+			},
+		},
+		{
+			name: "from a SIP trunk, forwarded to another",
+			report: func(r *Recorder, icid string) {
+				a := attempt(icid)
+				a.Trunk, a.Direction = "in", db.DirectionOffNetIn
+				r.Attempt(a)
+				r.Trunk(icid, "out", db.DirectionOffNetOut)
+				r.Ended(icid, End{Code: 487, By: proxy.Caller, Cause: proxy.EndFailed})
+			},
+			want: func(w *db.CallRecord) {
+				w.Trunk, w.Direction = "in", db.DirectionOffNetIn
+				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 487, db.OutcomeCancelled, db.PartyCaller, at(3)
+			},
+		},
+		{
 			name: "answered, in progress",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))

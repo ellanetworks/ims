@@ -2,6 +2,7 @@ package ibcf
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"net"
 	"net/netip"
@@ -19,6 +20,9 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/transport"
 	"github.com/ellanetworks/ims/sip/ua"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type realParty struct {
@@ -27,6 +31,7 @@ type realParty struct {
 	udp    netip.AddrPort
 	tls    netip.AddrPort
 	events chan event
+	secure netip.AddrPort
 }
 
 func newRealParty(t *testing.T, ip string, serve *tls.Config, client func(sip.Flow) (transport.TLSOptions, error)) *realParty {
@@ -91,7 +96,7 @@ func newRealParty(t *testing.T, ip string, serve *tls.Config, client func(sip.Fl
 	return p
 }
 
-func (p *realParty) prepare(req *sip.Request) error {
+func (p *realParty) prepare(_ context.Context, req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
 		target = r.URI
@@ -100,6 +105,10 @@ func (p *realParty) prepare(req *sip.Request) error {
 	tr, dest, err := sip.Destination(target)
 	if err != nil {
 		return err
+	}
+
+	if dest == p.secure {
+		tr = sip.TLS
 	}
 
 	local := p.udp
@@ -161,20 +170,27 @@ func (s *tlsScene) settings() settings.Settings {
 func newTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk settings.Trunk) *tlsScene {
 	t.Helper()
 
+	return newTracedTLSScene(t, ca, certificate, trunk, nil)
+}
+
+func newTracedTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk settings.Trunk, tp trace.TracerProvider) *tlsScene {
+	t.Helper()
+
 	s := &tlsScene{t: t, ca: ca}
 	s.ibcfC = s.ca.Issue(t, "ibcf", sbitlstest.Leaf{Hosts: []string{"ibcf.example"}})
 	s.ims = newRealParty(t, "127.0.0.1", nil, nil)
 	s.st = settings.Settings{Trunks: []settings.Trunk{trunk}, SIPRoutes: []settings.SIPRoute{{ID: "default", Trunks: []string{trunk.ID}}}}
 
 	cfg := Config{
-		HomeDomain: home,
-		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		TLS:        []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		ICSCF:      []netip.AddrPort{s.ims.udp},
-		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
-		BGCF:       bgcf.New(s.settings, nil),
-		Settings:   s.settings,
+		HomeDomain:  home,
+		Internal:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		External:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		TLS:         []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		ICSCF:       []netip.AddrPort{s.ims.udp},
+		Trust:       trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
+		BGCF:        bgcf.New(s.settings, nil),
+		Settings:    s.settings,
+		Transaction: transaction.Config{TracerProvider: tp},
 	}
 
 	if certificate {
@@ -297,12 +313,45 @@ func TestTLSOutgoingCA(t *testing.T) {
 	}
 }
 
+func TestTLSNoTraceContextTowardsTheTrunk(t *testing.T) {
+	ca, ibcfCA := sbitlstest.NewCA(t, "carriers"), sbitlstest.NewCA(t, "ims")
+	_, serve := carrierTLS(t, ca, ibcfCA, "carrier.example")
+	carrier := newRealParty(t, "127.0.0.3", serve, nil)
+
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	trunk := tlsTrunk(carrier.tls, settings.TrunkTLS{CACertificates: [][]byte{ca.Cert.Raw}, Identities: []string{"carrier.example"}})
+
+	s := newTracedTLSScene(t, ibcfCA, true, trunk, tp)
+	s.call()
+
+	in := carrier.next("invite").req
+	_ = in.Accept(sdpOf("answer-1")...)
+
+	e := s.ims.next("established")
+	carrier.next("established")
+
+	_ = e.s.Bye(context.Background(), ua.Change{}, nil)
+
+	bye := carrier.next("bye").msg
+
+	for _, m := range []sip.Message{in.Message(), bye} {
+		if h := m.Env().Header; h.Has("traceparent") || h.Has("tracestate") {
+			t.Errorf("trace context sent to the trunk over TLS: %s", m.StartLine())
+		}
+	}
+
+	if spans := spansOf(rec, role, "INVITE", trace.SpanKindClient); len(spans) == 0 {
+		t.Fatal("no INVITE span to the trunk")
+	}
+}
+
 func TestTLSOutgoingPinned(t *testing.T) {
 	ca, ibcfCA := sbitlstest.NewCA(t, "carriers"), sbitlstest.NewCA(t, "ims")
 	cert, serve := carrierTLS(t, ca, ibcfCA, "carrier.example")
 	carrier := newRealParty(t, "127.0.0.3", serve, nil)
 
-	s := newTLSScene(t, ibcfCA, true, tlsTrunk(carrier.tls, settings.TrunkTLS{PinnedCertificates: [][]byte{cert.Cert.Certificate[0]}}))
+	s := newTLSScene(t, ibcfCA, true, tlsTrunk(carrier.tls, settings.TrunkTLS{Pins: [][32]byte{sha256.Sum256(cert.Cert.Certificate[0])}}))
 
 	s.call()
 
@@ -322,7 +371,7 @@ func TestTLSIncomingMutual(t *testing.T) {
 	})
 
 	s := newTLSScene(t, ibcfCA, true, tlsTrunk(carrier.tls, settings.TrunkTLS{
-		Required: true, RequireClientCertificate: true, PinnedCertificates: [][]byte{cert.Cert.Certificate[0]},
+		Required: true, Pins: [][32]byte{sha256.Sum256(cert.Cert.Certificate[0])},
 	}))
 
 	dial := func(p *realParty, tr sip.Transport) {
@@ -425,6 +474,12 @@ func TestTLSPersistentWithoutCertificate(t *testing.T) {
 	trunk := tlsTrunk(addr, settings.TrunkTLS{Required: true, CACertificates: [][]byte{ca.Cert.Raw}, Identities: []string{"carrier.example"}})
 
 	s := newTLSScene(t, sbitlstest.NewCA(t, "ims"), false, trunk)
+
+	if c, err := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", s.ibcf.TLS()[0].String()); err == nil {
+		_ = c.Close()
+
+		t.Fatal("a TLS listener without a certificate")
+	}
 
 	var first net.Conn
 

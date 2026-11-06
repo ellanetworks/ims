@@ -13,6 +13,7 @@
 ## Key Features
 
 - Voice & Video calls
+- SIP Trunks: connect your private network to the public phone network
 - SIM-based phone authentication with your existing HSS (IMS-AKA over Cx)
 - IPsec between phones and the IMS
 - Voice QoS from the 4G or 5G core (PCRF over Rx, or PCF over N5 with optional mutual TLS)

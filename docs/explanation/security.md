@@ -22,6 +22,16 @@ Phones are never trusted: the P-CSCF takes a phone's identity from its authentic
 
 Besides Ella IMS itself, the I-CSCF and the S-CSCF trust the networks in `sip.trusted_networks`, such as those of Application Servers. Trust goes by source address, so protect these networks, and keep the phones out of them.
 
+## SIP trunks
+
+Carriers are outside the trust domain, unless a trunk is marked trusted. Ella IMS knows a carrier by the source address of its requests, and ignores requests from any other address.
+
+Only subscribers' calls leave for a SIP trunk. Application Servers can't send calls to a trunk directly.
+
+Little crosses the border. Information internal to the IMS, such as the phone's location, never leaves. Header fields that could make a phone answer by itself or steer a call never come in. Only a trusted carrier can assert the caller's number.
+
+With TLS, Ella IMS checks the carrier's certificate on every connection it opens. A trunk with `tls.required` also needs a certificate on the connections the carrier opens, for mutual authentication. Without it, a connection the carrier opens is authenticated by its source address only.
+
 ## Users of the UI and API
 
 Everyone who uses the UI or the API is a user with a role. See [Roles](../reference/api/index.md#roles). Programs, such as a monitoring system, use an API token instead of a password.

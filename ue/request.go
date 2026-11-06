@@ -21,7 +21,7 @@ func (u *UE) requestTransport(req *sip.Request) sip.Transport {
 }
 
 // TS 24.229 clause 5.1.2A.1
-func (u *UE) prepare(req *sip.Request) error {
+func (u *UE) prepare(_ context.Context, req *sip.Request) error {
 	flow, verify, err := u.requestFlow(u.requestTransport(req))
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func (u *UE) respondHeaders(_ *sip.Request, res *sip.Response) {
 
 // TS 24.229 clause 5.1.2A.1
 func (u *UE) Send(ctx context.Context, req *sip.Request) (*sip.Response, error) {
-	if err := u.prepare(req); err != nil {
+	if err := u.prepare(ctx, req); err != nil {
 		return nil, err
 	}
 

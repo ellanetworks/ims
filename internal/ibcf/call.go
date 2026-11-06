@@ -8,18 +8,23 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/settings"
-	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/b2bua"
+	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type call struct {
 	b        *IBCF
 	outbound bool
 	initial  *sip.Request
+	in       *ua.Request
 	icid     string
+	cause    trace.SpanContext
 	route    *route
 	exit     exit
 
@@ -32,6 +37,18 @@ type call struct {
 	callID  string
 	fromTag string
 	ended   bool
+	metered string
+	outcome outcome
+}
+
+type outcome struct {
+	alerted   bool
+	settled   bool
+	rejected  int
+	tag       string
+	cancelled bool
+	bye       proxy.Side
+	network   bool
 }
 
 type exit struct {
@@ -106,14 +123,153 @@ func (b *IBCF) begin(r *ua.Request, c *call) *b2bua.Call {
 
 func (b *IBCF) release(c *call) {
 	c.mu.Lock()
+	done := c.ended
 	c.ended = true
+	metered := c.metered
+	c.metered = ""
+	o := c.outcome
 	c.mu.Unlock()
+
+	if done {
+		return
+	}
 
 	if c.media != nil {
 		c.media.close()
 	}
 
 	b.legs.remove(c)
+
+	e := o.end(c.status())
+
+	if metered != "" {
+		var result db.CallOutcome
+		if e.Code >= 200 {
+			result = callrecords.Outcome(e.Code, callrecords.EndedBy(e.Cause, e.By), o.alerted)
+		}
+
+		b.cfg.Metrics.leave(metered, c.direction(), result)
+	}
+
+	if !c.outbound {
+		b.cfg.Records.Ended(c.icid, e)
+	}
+}
+
+func (c *call) status() int {
+	if c.in == nil {
+		return 0
+	}
+
+	return c.in.Status()
+}
+
+func (o outcome) end(code int) callrecords.End {
+	e := callrecords.End{Code: code, Cause: proxy.EndReleased}
+
+	switch {
+	case code >= 200 && code < 300 && o.bye != 0 && !o.network:
+		e.By, e.Cause = o.bye, proxy.EndBye
+	case code < 300:
+	case o.cancelled:
+		e.By, e.Cause = proxy.Caller, proxy.EndFailed
+	case o.rejected == code:
+		e.By, e.Cause, e.Tag = proxy.Callee, proxy.EndFailed, o.tag
+	}
+
+	return e
+}
+
+func (c *call) direction() string {
+	if c.outbound {
+		return outbound
+	}
+
+	return inbound
+}
+
+func (c *call) own(t settings.Trunk) {
+	c.mu.Lock()
+	prev := c.metered
+	ended := c.ended
+	c.metered = t.ID
+	c.mu.Unlock()
+
+	if ended || prev == t.ID {
+		return
+	}
+
+	if prev != "" {
+		c.b.cfg.Metrics.leave(prev, c.direction(), "")
+	}
+
+	c.b.cfg.Metrics.enter(t.ID, c.direction())
+
+	if c.outbound {
+		c.b.cfg.Records.Trunk(c.icid, t.ID, db.DirectionOffNetOut)
+	}
+}
+
+func (c *call) ending(fromTrunk bool, method string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	caller := fromTrunk != c.outbound
+
+	switch {
+	case method == "CANCEL":
+		c.outcome.cancelled = c.outcome.cancelled || caller
+	case c.outcome.bye == 0 && !c.outcome.network:
+		c.outcome.bye = proxy.Callee
+		if caller {
+			c.outcome.bye = proxy.Caller
+		}
+	}
+}
+
+func (c *call) released() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.outcome.bye == 0 {
+		c.outcome.network = true
+	}
+}
+
+func (c *call) progressed(res *sip.Response, code int) {
+	c.mu.Lock()
+
+	if c.outcome.settled {
+		c.mu.Unlock()
+		return
+	}
+
+	alerting := code == 180 && !c.outcome.alerted
+	c.outcome.alerted = c.outcome.alerted || code == 180
+	c.outcome.settled = code >= 200
+
+	if code >= 300 {
+		to, _ := res.Header.To()
+		c.outcome.rejected, c.outcome.tag = code, to.Tag()
+	}
+
+	c.mu.Unlock()
+
+	switch {
+	case c.outbound:
+	case alerting:
+		c.b.cfg.Records.Alerted(c.icid)
+	case code/100 == 2:
+		c.b.cfg.Records.Answered(c.icid, code)
+
+		if _, offered, _ := c.initial.Content().FindFunc(sip.BodyPart.IsSession); !offered {
+			return
+		}
+
+		if part, ok, _ := res.Content().FindFunc(sip.BodyPart.IsSession); ok {
+			c.b.cfg.Records.Media(c.icid, callrecords.AcceptedMedia(part.Body))
+		}
+	}
 }
 
 // RFC 3261 section 8.1.3.5
@@ -136,12 +292,21 @@ var towardsTrunk = []string{
 	"recv-info", "info-package", "retry-after", "subject", "s", "priority", "p-asserted-identity",
 }
 
-// TS 24.229 clause 4.4
-// TS 24.229 clause 5.10.3.2
+// RFC 3261 section 20
+// RFC 3323 section 4.2
+// RFC 5373 section 7
+// RFC 6086 section 7
+// SIPconnect 2.0 section 10.1.4
 var fromTrunk = []string{
-	"p-charging-function-addresses", "p-visited-network-id", "p-private-network-indication", "p-served-user",
-	"p-profile-key", "p-called-party-id", "remote-party-id", "p-charge-info",
+	"privacy", "accept", "accept-encoding", "accept-language", "reason", "session-id", "recv-info", "info-package",
+	"retry-after", "subject", "s", "priority", "warning",
 }
+
+// TS 24.229 clause 4.4.1
+// TS 24.229 clause 4.4.2
+// TS 24.229 clause 4.4.11
+// TS 24.229 clause 5.10.3.2
+var fromTrustedTrunk = []string{"p-asserted-identity", "p-charging-vector", "p-early-media"}
 
 // TS 24.229 clause 4.4
 // TS 24.229 clause 4.4.7
@@ -182,14 +347,7 @@ func (c *call) crosses(_, to *b2bua.Leg, m sip.Message, f sip.Field) bool {
 }
 
 func (c *call) fromTrunk(name string, trusted bool) bool {
-	switch {
-	case slices.Contains(fromTrunk, name):
-		return false
-	case name == "p-charging-vector", name == "p-asserted-identity":
-		return trusted
-	}
-
-	return trusted || !trust.Boundary(name)
+	return slices.Contains(fromTrunk, name) || trusted && slices.Contains(fromTrustedTrunk, name)
 }
 
 // TS 24.229 clause 4.5.2
@@ -209,6 +367,10 @@ func (c *call) response(_, to *b2bua.Leg, res *sip.Response, rp *ua.Reply) {
 	cseq, err := res.Header.CSeq()
 	if err == nil && c.media != nil && cseq.Method == "INVITE" && rp.Code/100 == 2 {
 		c.media.answer()
+	}
+
+	if err == nil && cseq.Method == "INVITE" && !to.Outgoing() && rp.Code > 100 {
+		c.progressed(res, rp.Code)
 	}
 
 	if to.Outgoing() || err != nil || cseq.Method != "INVITE" && cseq.Method != "UPDATE" || rp.Code <= 100 || rp.Code >= 300 {

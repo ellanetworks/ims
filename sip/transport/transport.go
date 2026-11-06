@@ -67,6 +67,10 @@ type Config struct {
 
 	MaxConnections int
 
+	MaxConnectionsPerAddress int
+
+	Accept func(local, remote netip.AddrPort) bool
+
 	IdleTimeout         time.Duration
 	FirstMessageTimeout time.Duration
 	DialTimeout         time.Duration
@@ -91,6 +95,8 @@ type Transport struct {
 	control      func(network, address string, c syscall.RawConn) error
 	maxSize      int
 	maxConns     int
+	maxPerAddr   int
+	acceptFunc   func(local, remote netip.AddrPort) bool
 	idleTimeout  time.Duration
 	firstTimeout time.Duration
 	dialTimeout  time.Duration
@@ -111,6 +117,7 @@ type Transport struct {
 	secure    map[netip.AddrPort]*listener
 	conns     map[sip.Flow]*conn
 	peers     map[peerKey][]*conn
+	inbound   map[netip.Addr]int
 	wg        sync.WaitGroup
 
 	handshaking atomic.Int64
@@ -138,6 +145,8 @@ func New(cfg Config) *Transport {
 		control:      cfg.Control,
 		maxSize:      cfg.MaxMessageSize,
 		maxConns:     cfg.MaxConnections,
+		maxPerAddr:   cfg.MaxConnectionsPerAddress,
+		acceptFunc:   cfg.Accept,
 		idleTimeout:  cfg.IdleTimeout,
 		firstTimeout: cfg.FirstMessageTimeout,
 		dialTimeout:  cfg.DialTimeout,
@@ -152,6 +161,7 @@ func New(cfg Config) *Transport {
 		secure:       make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
 		peers:        make(map[peerKey][]*conn),
+		inbound:      make(map[netip.Addr]int),
 		pongs:        newPongs(),
 	}
 
@@ -573,7 +583,9 @@ func (t *Transport) fail(l *listener, err error) {
 }
 
 func (l *listener) close() {
-	_ = l.tcp.Close()
+	if l.tcp != nil {
+		_ = l.tcp.Close()
+	}
 
 	if l.udp != nil {
 		_ = l.udp.Close()

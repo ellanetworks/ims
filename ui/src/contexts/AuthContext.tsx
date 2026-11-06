@@ -26,6 +26,8 @@ export type Permission =
   | "policy:read"
   | "policy:update"
   | "sip:read"
+  | "sip_trunk:read"
+  | "sip_trunk:update"
   | "registration:read"
   | "registration:reauthenticate"
   | "call_record:read"
@@ -44,6 +46,7 @@ const readPermissions: Permission[] = [
   "diameter:read",
   "policy:read",
   "sip:read",
+  "sip_trunk:read",
   "registration:read",
   "call_record:read",
   "call_record:read_retention",
@@ -55,6 +58,7 @@ const operatePermissions: Permission[] = [
   "operator:update",
   "diameter:update",
   "policy:update",
+  "sip_trunk:update",
   "registration:reauthenticate",
   "call_record:update_retention",
   "ip_sm_gw:update",

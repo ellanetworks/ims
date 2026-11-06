@@ -41,6 +41,7 @@ func TestGetSIPStatus(t *testing.T) {
 		SIP: fakeSIP{
 			{Role: "pcscf", Address: netip.MustParseAddrPort("10.0.0.5:5060")},
 			{Role: "icscf", Address: netip.MustParseAddrPort("[2001:db8::5]:5070")},
+			{Role: "ibcf-external-tls", Address: netip.MustParseAddrPort("192.0.2.5:5061"), TLS: true},
 		},
 		Settings: newFakeSettings(),
 	})
@@ -53,6 +54,7 @@ func TestGetSIPStatus(t *testing.T) {
 		Listeners: []SIPListener{
 			{Role: "pcscf", Address: "10.0.0.5:5060", Transports: []string{"udp", "tcp"}},
 			{Role: "icscf", Address: "[2001:db8::5]:5070", Transports: []string{"udp", "tcp"}},
+			{Role: "ibcf-external-tls", Address: "192.0.2.5:5061", Transports: []string{"tls"}},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

@@ -68,6 +68,7 @@ type remote struct {
 
 type Relay struct {
 	gw        *Gateway
+	trunk     string
 	metrics   *trunkMetrics
 	legs      [legs]*Leg
 	onTimeout func(*Relay)
@@ -145,9 +146,9 @@ func (r *Relay) checkMedia() {
 	now := time.Now().UnixNano()
 	next := r.timeout
 
-	for _, l := range r.legs {
-		rm := l.remote.Load()
-		if rm == nil || !rm.known || rm.Direction != SendRecv {
+	for i, l := range r.legs {
+		rm, to := l.remote.Load(), r.legs[1-i].remote.Load()
+		if rm == nil || !rm.known || rm.Direction != SendRecv || to == nil || !to.known || !to.Direction.receives() {
 			continue
 		}
 
@@ -199,7 +200,7 @@ func (r *Relay) close(reason error) bool {
 		l.pool.release(l.localRTP.Port())
 	}
 
-	r.metrics.relays.Dec()
+	r.gw.metrics.close(r.trunk)
 	r.gw.forget(r)
 	close(r.done)
 

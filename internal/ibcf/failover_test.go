@@ -35,8 +35,7 @@ func withSecondTrunk(s *scene, sameTrunk bool) *party {
 }
 
 func TestExitFailoverToNextTrunk(t *testing.T) {
-	s := newScene(t, false)
-	s.ibcf.cfg.Metrics = NewMetrics()
+	s := newSceneWith(t, false, func(c *Config) { c.Metrics = NewMetrics() })
 	second := withSecondTrunk(s, false)
 
 	s.call("offer-1")
@@ -97,7 +96,12 @@ func TestExitNoFailoverOn486(t *testing.T) {
 }
 
 func TestExitAllTrunksFail(t *testing.T) {
-	s := newScene(t, false)
+	s := newSceneWith(t, false, func(c *Config) { c.Metrics = NewMetrics() })
+
+	if n := testutil.CollectAndCount(s.ibcf.cfg.Metrics.failovers); n != 1 {
+		t.Fatalf("%d failover series, want the configured trunk's", n)
+	}
+
 	second := withSecondTrunk(s, false)
 
 	s.call("offer-1")
@@ -107,6 +111,28 @@ func TestExitAllTrunksFail(t *testing.T) {
 
 	if e := s.ims.until("failed"); e.res == nil || e.res.StatusCode != 500 {
 		t.Fatalf("got %v, want 500", e.res)
+	}
+
+	for trunk, want := range map[string]float64{"carrier": 1, "second": 0} {
+		if got := testutil.ToFloat64(s.ibcf.cfg.Metrics.failovers.WithLabelValues(trunk)); got != want {
+			t.Errorf("failovers of %s %v, want %v", trunk, got, want)
+		}
+	}
+}
+
+func TestMetricsConfigure(t *testing.T) {
+	m := NewMetrics()
+	m.configure([]string{"a", "b"})
+	m.failover("a")
+
+	if n := testutil.CollectAndCount(m.failovers); n != 2 {
+		t.Fatalf("%d series, want one for each configured trunk", n)
+	}
+
+	m.configure([]string{"b"})
+
+	if n := testutil.CollectAndCount(m.failovers); n != 1 {
+		t.Fatalf("%d series after a trunk was deleted, want 1", n)
 	}
 }
 

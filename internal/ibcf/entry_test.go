@@ -43,6 +43,10 @@ func TestEntryCall(t *testing.T) {
 		t.Errorf("P-Charging-Vector %q, want a new ICID", values(m, "P-Charging-Vector"))
 	}
 
+	if got := values(m, "Accept-Contact"); got != acceptMMTel {
+		t.Errorf("Accept-Contact %q, want %q", got, acceptMMTel)
+	}
+
 	if values(m, "Privacy") != "none" || !hasSDP(m, "offer-1") {
 		t.Errorf("INVITE to the I-CSCF: %s", m)
 	}

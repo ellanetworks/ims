@@ -21,8 +21,8 @@ func (i *ICSCF) breakout(ctx context.Context, s *session) bool {
 	case s.onNet:
 		i.log.DebugContext(ctx, "unknown on-net number not routed to the IBCF", slog.String("request-uri", s.req.URI.String()))
 		return false
-	case !i.trusted(s.req):
-		i.log.DebugContext(ctx, "unknown number from outside the trust domain not routed to the IBCF",
+	case !i.fromSCSCF(s.req.Flow):
+		i.log.DebugContext(ctx, "unknown number from another node than the S-CSCF not routed to the IBCF",
 			slog.String("request-uri", s.req.URI.String()), slog.String("source", s.req.Flow.Remote.String()))
 
 		return false
@@ -58,6 +58,14 @@ func (i *ICSCF) breakout(ctx context.Context, s *session) bool {
 	i.forward(ctx, s.tx, out, to, opts)
 
 	return true
+}
+
+func (i *ICSCF) fromSCSCF(in sip.Flow) bool {
+	return slices.ContainsFunc(i.cfg.SCSCF.Listeners, func(l netip.AddrPort) bool { return unmapped(l) == unmapped(in.Remote) })
+}
+
+func unmapped(a netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
 }
 
 func (i *ICSCF) fromIBCF(in sip.Flow) bool {

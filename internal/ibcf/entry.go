@@ -5,10 +5,16 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 
+	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TS 24.229 clause 4.5.2
@@ -52,13 +58,13 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 
 	fromTag := sip.NewTag()
 
-	out, err := b.toIMS(in, t.Trusted, number, icscf.Local, fromTag)
+	out, err := b.toIMS(in, t, number, icscf.Local, fromTag)
 	if err != nil {
 		_ = r.Reject(483)
 		return
 	}
 
-	c := &call{b: b, trunk: t, signal: in.Flow.Local.Addr(), initial: in}
+	c := &call{b: b, trunk: t, signal: in.Flow.Local.Addr(), initial: in, in: r, cause: trace.SpanContextFromContext(ctx)}
 
 	if t.Trusted {
 		c.icid = icidOf(in.Header)
@@ -69,7 +75,9 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 		out.Header.Set("P-Charging-Vector", "icid-value="+c.icid)
 	}
 
-	if !b.legs.add(key{in.Header.CallID(), tagOf(in), false}, &leg{call: c, trunk: true, flow: in.Flow}) {
+	trace.SpanFromContext(ctx).SetAttributes(tracing.ICIDKey.String(c.icid))
+
+	if !b.legs.add(key{in.Header.CallID(), tagOf(in), false}, &leg{call: c, trunk: true, flow: b.trunkDialogFlow(ctx, t, in)}) {
 		_ = r.Reject(482)
 		return
 	}
@@ -82,7 +90,32 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 		return
 	}
 
+	c.own(t)
+
+	identities := identitiesOf(out)
+	b.cfg.Records.Attempt(callrecords.Attempt{
+		ICID: c.icid, CallID: in.Header.CallID(), RequestURI: in.URI.String(), Asserted: identities,
+		Trunk: t.ID, Direction: db.DirectionOffNetIn,
+	})
+	b.cfg.Records.Routed(c.icid, callrecords.Routing{Asserted: identities, RequestURI: out.URI.String()})
+
 	b.bridge(ctx, r, c, out)
+}
+
+func identitiesOf(out *sip.Request) []string {
+	asserted, _ := out.Header.Addresses("P-Asserted-Identity")
+	if len(asserted) == 0 {
+		if from, err := out.Header.From(); err == nil {
+			asserted = []sip.Address{from}
+		}
+	}
+
+	ids := make([]string, 0, len(asserted))
+	for _, a := range asserted {
+		ids = append(ids, a.URI.String())
+	}
+
+	return ids
 }
 
 // TS 24.229 clause 5.10.3.2
@@ -98,11 +131,17 @@ func (b *IBCF) icscf() (sip.Flow, bool) {
 	return sip.Flow{}, false
 }
 
+// TS 24.173 clause 5.2
+const acceptMMTel = `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"`
+
 // TS 24.229 clause 4.4
+// TS 24.173 clause 5.2
 // SIPconnect 2.0 section 9
 // SIPconnect 2.0 section 10.1.3
 // SIPconnect 2.0 section 10.1.4
-func (b *IBCF) toIMS(in *sip.Request, trusted bool, number string, local netip.AddrPort, fromTag string) (*sip.Request, error) {
+func (b *IBCF) toIMS(in *sip.Request, t settings.Trunk, number string, local netip.AddrPort, fromTag string) (*sip.Request, error) {
+	trusted := t.Trusted
+
 	out := sip.NewRequest("INVITE", phoneURI(number, b.cfg.HomeDomain))
 
 	from, err := in.Header.From()
@@ -120,6 +159,10 @@ func (b *IBCF) toIMS(in *sip.Request, trusted bool, number string, local netip.A
 
 	if !trusted {
 		from.URI, to.URI = trust.StripURI(from.URI), trust.StripURI(to.URI)
+
+		if from.URI.IsSIP() && b.underHome(from.URI.Host) {
+			from.URI.Host = host(t.Domain)
+		}
 	}
 
 	from.Params.Set("tag", fromTag)
@@ -128,6 +171,7 @@ func (b *IBCF) toIMS(in *sip.Request, trusted bool, number string, local netip.A
 	out.Header.Add("To", to.String())
 	out.Header.Add("Call-ID", sip.NewTag())
 	out.Header.Add("Contact", b.contact(local, sip.UDP).String())
+	out.Header.Add("Accept-Contact", acceptMMTel)
 
 	if trusted {
 		for _, a := range assertedOf(in.Header) {
@@ -140,6 +184,50 @@ func (b *IBCF) toIMS(in *sip.Request, trusted bool, number string, local netip.A
 	}
 
 	return out, nil
+}
+
+func (b *IBCF) underHome(h string) bool {
+	h, home := strings.ToLower(strings.TrimSuffix(h, ".")), strings.ToLower(b.cfg.HomeDomain)
+
+	return h == home || strings.HasSuffix(h, "."+home)
+}
+
+// RFC 3263 section 4.1
+// SIPconnect 2.0 section 17.1.1.2
+// SIPconnect 2.0 section 17.2
+func (b *IBCF) trunkDialogFlow(ctx context.Context, t settings.Trunk, in *sip.Request) sip.Flow {
+	f := in.Flow
+
+	if f.Transport != sip.TLS || t.TLS.Required {
+		return f
+	}
+
+	if _, ours := b.peers.get(f.Remote); ours {
+		return f
+	}
+
+	unset := sip.Flow{Transport: sip.TLS, Local: f.Local}
+
+	contacts, err := in.Header.Contacts()
+	if err != nil || len(contacts) != 1 {
+		return unset
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	servers, err := b.resolve(ctx, contacts[0].URI, []sip.Transport{sip.TLS})
+	if err != nil {
+		return unset
+	}
+
+	for _, srv := range servers {
+		if srv.Transport == sip.TLS && inTrunk(t, nil, srv.Addr.Addr()) && srv.Addr.Addr().Unmap().Is4() == f.Local.Addr().Unmap().Is4() {
+			return sip.Flow{Transport: sip.TLS, Local: f.Local, Remote: unmap(srv.Addr)}
+		}
+	}
+
+	return unset
 }
 
 // RFC 3325 section 5

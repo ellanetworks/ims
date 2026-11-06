@@ -81,6 +81,10 @@ func (r *Resolver) resolve(ctx context.Context, u URI) ([]Server, error) {
 		return nil, err
 	}
 
+	if !explicit && !r.supports(tr, secure) {
+		tr = r.preferred(tr)
+	}
+
 	if a, ok := HostAddr(target(u)); ok {
 		port := u.Port
 		if port == 0 {
@@ -174,6 +178,15 @@ func (r *Resolver) supports(tr Transport, secure bool) bool {
 	}
 
 	return slices.Contains(r.Transports, tr)
+}
+
+// RFC 3263 section 4.1
+func (r *Resolver) preferred(tr Transport) Transport {
+	if i := slices.IndexFunc(r.Transports, func(t Transport) bool { return t == TCP || t == TLS }); i >= 0 {
+		return r.Transports[i]
+	}
+
+	return tr
 }
 
 // RFC 3263 section 4.1

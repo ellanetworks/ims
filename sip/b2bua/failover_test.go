@@ -23,7 +23,7 @@ func newSerial(t *testing.T, n *siptest.Net, cfg b2bua.RelayConfig, targets ...s
 
 	s.party = newParty(t, n, "b2b", func(c *ua.Config) {
 		c.Policy = ua.Policy{}
-		c.Prepare = func(req *sip.Request) error {
+		c.Prepare = func(ctx context.Context, req *sip.Request) error {
 			target := req.URI
 			if r, err := req.Header.TopRoute(); err == nil {
 				target = r.URI
@@ -160,7 +160,7 @@ func TestFailoverOn503(t *testing.T) {
 	alice.next("answer")
 	carol.next("established")
 
-	checkEvents(t, m, "offer INVITE offer-1", "answer answer-1", "end INVITE offer-1 true")
+	checkEvents(t, m, "offer INVITE offer-1", "end INVITE offer-1 false", "offer INVITE offer-1", "answer answer-1", "end INVITE offer-1 true")
 
 	_ = as.Bye(context.Background(), ua.Change{}, nil)
 
@@ -318,7 +318,7 @@ func TestCancelDuringFailover(t *testing.T) {
 	dave.none()
 	b.callEnded(t)
 
-	checkEvents(t, m, "offer INVITE offer-1", "end INVITE offer-1 false")
+	checkEvents(t, m, "offer INVITE offer-1", "end INVITE offer-1 false", "offer INVITE offer-1", "end INVITE offer-1 false")
 	settled(t, n, alice, bob, carol, dave, b.party)
 }
 

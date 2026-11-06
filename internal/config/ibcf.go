@@ -10,48 +10,66 @@ import (
 
 const (
 	defaultIBCFPort         = 5085
-	defaultIBCFExternalPort = 5060
-	defaultKeepaliveFails   = 2
-	maxKeepaliveFails       = 10
+	defaultIBCFMediaMinPort = 10000
+	defaultIBCFMediaMaxPort = 19999
+	minIBCFMediaPort        = 1024
 )
 
 // RFC 3261 section 18.2.1
-const defaultIBCFTLSPort = 5061
+const (
+	IBCFExternalPort = 5060
+	IBCFTLSPort      = 5061
+)
 
 type IBCF struct {
-	Port      int           `yaml:"port"`
-	External  IBCFExternal  `yaml:"external"`
-	Keepalive IBCFKeepalive `yaml:"keepalive"`
-}
-
-type IBCFKeepalive struct {
-	Failures int `yaml:"failures"`
+	Port     int          `yaml:"port"`
+	External IBCFExternal `yaml:"external"`
+	Media    IBCFMedia    `yaml:"media"`
 }
 
 type IBCFExternal struct {
-	Addresses           []netip.Addr `yaml:"addresses"`
-	AdvertisedAddresses []netip.Addr `yaml:"advertised_addresses"`
-	Port                int          `yaml:"port"`
-	TLS                 *IBCFTLS     `yaml:"tls"`
+	Addresses []IBCFAddress `yaml:"addresses"`
+	TLS       *IBCFTLS      `yaml:"tls"`
+}
+
+type IBCFAddress struct {
+	Address   netip.Addr `yaml:"address"`
+	Advertise netip.Addr `yaml:"advertise"`
 }
 
 type IBCFTLS struct {
-	Port int    `yaml:"port"`
 	Cert string `yaml:"cert"`
 	Key  string `yaml:"key"`
 }
 
-func (e IBCFExternal) Advertised() map[netip.Addr]netip.Addr {
-	if len(e.AdvertisedAddresses) == 0 || len(e.AdvertisedAddresses) != len(e.Addresses) {
-		return nil
-	}
+type IBCFMedia struct {
+	MinPort int `yaml:"min_port"`
+	MaxPort int `yaml:"max_port"`
+}
 
-	out := make(map[netip.Addr]netip.Addr, len(e.Addresses))
-	for i, a := range e.Addresses {
-		out[a] = e.AdvertisedAddresses[i]
+func (e IBCFExternal) Addrs() []netip.Addr {
+	out := make([]netip.Addr, 0, len(e.Addresses))
+	for _, a := range e.Addresses {
+		out = append(out, a.Address)
 	}
 
 	return out
+}
+
+func (e IBCFExternal) Advertised() map[netip.Addr]netip.Addr {
+	out := map[netip.Addr]netip.Addr{}
+
+	for _, a := range e.Addresses {
+		if a.Advertise.IsValid() {
+			out[a.Address] = a.Advertise
+		}
+	}
+
+	return out
+}
+
+func (e IBCFExternal) Certificate() bool {
+	return e.TLS != nil && e.TLS.Cert != ""
 }
 
 func (b *IBCF) applyDefaults() {
@@ -59,37 +77,32 @@ func (b *IBCF) applyDefaults() {
 		b.Port = defaultIBCFPort
 	}
 
-	if b.External.Port == 0 {
-		b.External.Port = defaultIBCFExternalPort
+	if b.Media.MinPort == 0 {
+		b.Media.MinPort = defaultIBCFMediaMinPort
 	}
 
-	if b.External.TLS != nil && b.External.TLS.Port == 0 {
-		b.External.TLS.Port = defaultIBCFTLSPort
-	}
-
-	if b.Keepalive.Failures == 0 {
-		b.Keepalive.Failures = defaultKeepaliveFails
+	if b.Media.MaxPort == 0 {
+		b.Media.MaxPort = defaultIBCFMediaMaxPort
 	}
 
 	for i, a := range b.External.Addresses {
-		b.External.Addresses[i] = a.Unmap()
-	}
-
-	for i, a := range b.External.AdvertisedAddresses {
-		b.External.AdvertisedAddresses[i] = a.Unmap()
+		b.External.Addresses[i] = IBCFAddress{Address: a.Address.Unmap(), Advertise: a.Advertise.Unmap()}
 	}
 }
 
 func (c Config) validateIBCF(b IBCF) error {
 	ext := b.External
 
-	if len(ext.Addresses) == 0 {
+	switch n := len(ext.Addresses); {
+	case n == 0:
 		return errors.New("ibcf.external.addresses needs at least one address")
+	case n > 2:
+		return errors.New("ibcf.external.addresses lists at most one IPv4 and one IPv6 address")
 	}
 
-	seen := make(map[netip.Addr]bool, len(ext.Addresses))
+	for i, e := range ext.Addresses {
+		a := e.Address
 
-	for _, a := range ext.Addresses {
 		switch {
 		case !a.IsValid():
 			return errors.New("ibcf.external.addresses: an address is empty")
@@ -97,108 +110,135 @@ func (c Config) validateIBCF(b IBCF) error {
 			return fmt.Errorf("ibcf.external.addresses: %s must be a specific address, since it is given to SIP trunks", a)
 		case a.Zone() != "":
 			return fmt.Errorf("ibcf.external.addresses: %s must not have a zone", a)
-		case seen[a]:
-			return fmt.Errorf("ibcf.external.addresses: %s is listed twice", a)
+		case slices.ContainsFunc(ext.Addresses[:i], func(o IBCFAddress) bool { return o.Address.Is4() == a.Is4() }):
+			return errors.New("ibcf.external.addresses lists at most one IPv4 and one IPv6 address")
 		case slices.Contains(c.SIP.Addresses, a):
 			return fmt.Errorf("ibcf.external.addresses: %s is in sip.addresses: carriers must not reach the CSCFs", a)
 		case slices.ContainsFunc(c.SIP.TrustedNetworks, func(p netip.Prefix) bool { return p.Contains(a) }):
 			return fmt.Errorf("ibcf.external.addresses: %s is in sip.trusted_networks", a)
 		}
 
-		seen[a] = true
-	}
-
-	if err := ext.validateAdvertised(); err != nil {
-		return err
-	}
-
-	if ext.Port < 1 || ext.Port > 65535 {
-		return fmt.Errorf("ibcf.external.port %d is out of range", ext.Port)
+		switch adv := e.Advertise; {
+		case !adv.IsValid():
+		case adv.IsUnspecified():
+			return fmt.Errorf("ibcf.external.addresses: advertise %s must be a specific address, since carriers send to it", adv)
+		case adv.Zone() != "":
+			return fmt.Errorf("ibcf.external.addresses: advertise %s must not have a zone", adv)
+		case adv.Is4() != a.Is4():
+			return fmt.Errorf("ibcf.external.addresses: advertise %s is not of the family of %s", adv, a)
+		}
 	}
 
 	if err := ext.validateTLS(); err != nil {
 		return err
 	}
 
-	if f := b.Keepalive.Failures; f < 1 || f > maxKeepaliveFails {
-		return fmt.Errorf("ibcf.keepalive.failures %d must be between 1 and %d", f, maxKeepaliveFails)
+	if err := b.Media.validate(); err != nil {
+		return err
 	}
 
-	taken := []struct {
-		name string
-		addr netip.Addr
-		port int
-	}{
-		{"api.port", c.API.Address.Unmap(), c.API.Port},
-		{"diameter.port", c.Diameter.Address.Unmap(), c.Diameter.Port},
+	addrs := ext.Addrs()
+
+	taken := []portOn{
+		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
+		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
 	}
 
 	if m := c.MCPTT; m != nil {
-		taken = append(taken, struct {
-			name string
-			addr netip.Addr
-			port int
-		}{"mcptt.media.control_port", m.Media.Address, m.Media.ControlPort})
+		taken = append(taken, portOn{"mcptt.media.control_port", []netip.Addr{m.Media.Address}, m.Media.ControlPort})
 	}
 
 	for _, t := range taken {
-		for _, a := range ext.Addresses {
-			for _, p := range ext.ports() {
-				if t.port == p.port && overlaps(a, t.addr) {
+		for _, a := range addrs {
+			for _, p := range externalPorts() {
+				if t.port == p.port && slices.ContainsFunc(t.addrs, func(b netip.Addr) bool { return overlaps(a, b) }) {
 					return fmt.Errorf("%s and %s are both %d on %s", p.name, t.name, t.port, a)
 				}
 			}
 		}
 	}
 
-	for _, p := range ext.ports() {
-		if c.MCPTT != nil && p.port >= c.MCPTT.Media.MinPort && p.port <= c.MCPTT.Media.MaxPort {
-			for _, a := range ext.Addresses {
-				if overlaps(a, c.MCPTT.Media.Address) {
+	if m := c.MCPTT; m != nil {
+		for _, p := range externalPorts() {
+			if p.port < m.Media.MinPort || p.port > m.Media.MaxPort {
+				continue
+			}
+
+			for _, a := range addrs {
+				if overlaps(a, m.Media.Address) {
 					return fmt.Errorf("%s %d is in the range of the legs' ports of mcptt.media on %s", p.name, p.port, a)
 				}
 			}
 		}
 	}
 
+	return c.ibcfMediaPortsFree(b)
+}
+
+func externalPorts() []namedPort {
+	return []namedPort{{"the IBCF SIP port", IBCFExternalPort}, {"the IBCF SIP TLS port", IBCFTLSPort}}
+}
+
+type portOn struct {
+	name  string
+	addrs []netip.Addr
+	port  int
+}
+
+// RFC 3550 section 11
+func (m IBCFMedia) validate() error {
+	switch {
+	case m.MinPort < minIBCFMediaPort || m.MinPort > 65535 || m.MaxPort > 65535:
+		return fmt.Errorf("ibcf.media.min_port %d and ibcf.media.max_port %d must be between %d and 65535", m.MinPort, m.MaxPort, minIBCFMediaPort)
+	case m.MinPort%2 != 0:
+		return fmt.Errorf("ibcf.media.min_port %d is odd: RTP takes even ports (RFC 3550 §11)", m.MinPort)
+	case m.MaxPort <= m.MinPort:
+		return fmt.Errorf("ibcf.media.max_port %d leaves no pair of ports above ibcf.media.min_port %d", m.MaxPort, m.MinPort)
+	}
+
 	return nil
 }
 
-// RFC 3261 section 18.2.1
-func (e IBCFExternal) validateAdvertised() error {
-	adv := e.AdvertisedAddresses
+func (c Config) ibcfMediaPortsFree(b IBCF) error {
+	m := b.Media
+	ext := b.External.Addrs()
 
-	switch {
-	case len(adv) == 0:
-		return nil
-	case len(adv) != len(e.Addresses):
-		return fmt.Errorf("ibcf.external.advertised_addresses lists %d addresses, want one for each of the %d of ibcf.external.addresses",
-			len(adv), len(e.Addresses))
+	ports := []portOn{
+		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
+		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
 	}
 
-	for i, a := range adv {
-		switch {
-		case !a.IsValid(), a.IsUnspecified():
-			return fmt.Errorf("ibcf.external.advertised_addresses: %s must be a specific address, since carriers send to it", a)
-		case a.Zone() != "":
-			return fmt.Errorf("ibcf.external.advertised_addresses: %s must not have a zone", a)
-		case a.Is4() != e.Addresses[i].Is4():
-			return fmt.Errorf("ibcf.external.advertised_addresses: %s is not of the family of %s", a, e.Addresses[i])
-		case slices.Contains(adv[:i], a):
-			return fmt.Errorf("ibcf.external.advertised_addresses: %s is listed twice", a)
+	for _, p := range externalPorts() {
+		ports = append(ports, portOn{p.name, ext, p.port})
+	}
+
+	for _, p := range c.sipPorts() {
+		ports = append(ports, portOn{p.name, c.SIP.Addresses, p.port})
+	}
+
+	ports = append(ports, portOn{"the IP-SM-GW port", c.SIP.Addresses, IPSMGWPort})
+
+	if c.MCPTT != nil {
+		ports = append(ports, portOn{"mcptt.media.control_port", []netip.Addr{c.MCPTT.Media.Address}, c.MCPTT.Media.ControlPort})
+	}
+
+	if c.N5 != nil && c.N5.Notify.Port != 0 {
+		ports = append(ports, portOn{"n5.notify.port", []netip.Addr{c.N5.Notify.Address}, c.N5.Notify.Port})
+	}
+
+	for _, a := range slices.Concat(c.SIP.Addresses, ext) {
+		for _, p := range ports {
+			if p.port >= m.MinPort && p.port <= m.MaxPort && slices.ContainsFunc(p.addrs, func(b netip.Addr) bool { return overlaps(a, b) }) {
+				return fmt.Errorf("%s %d is in the range of ibcf.media ports on %s", p.name, p.port, a)
+			}
+		}
+
+		if mc := c.MCPTT; mc != nil && overlaps(a, mc.Media.Address) && mc.Media.MinPort <= m.MaxPort && m.MinPort <= mc.Media.MaxPort {
+			return fmt.Errorf("the ranges of ibcf.media ports and mcptt.media ports overlap on %s", a)
 		}
 	}
 
 	return nil
-}
-
-func (e IBCFExternal) ports() []namedPort {
-	out := []namedPort{{"ibcf.external.port", e.Port}}
-	if e.TLS != nil {
-		out = append(out, namedPort{"ibcf.external.tls.port", e.TLS.Port})
-	}
-
-	return out
 }
 
 // SIPconnect 2.0 section 17.2
@@ -208,10 +248,6 @@ func (e IBCFExternal) validateTLS() error {
 	switch {
 	case t == nil:
 		return nil
-	case t.Port < 1 || t.Port > 65535:
-		return fmt.Errorf("ibcf.external.tls.port %d is out of range", t.Port)
-	case t.Port == e.Port:
-		return fmt.Errorf("ibcf.external.tls.port and ibcf.external.port are both %d", t.Port)
 	case (t.Cert == "") != (t.Key == ""):
 		return errors.New("ibcf.external.tls.cert and ibcf.external.tls.key must both be set, or neither")
 	}

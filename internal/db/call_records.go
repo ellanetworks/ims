@@ -26,6 +26,13 @@ const (
 	OutcomeFailed      CallOutcome = "failed"
 )
 
+type CallDirection string
+
+const (
+	DirectionOffNetOut CallDirection = "off-net-out"
+	DirectionOffNetIn  CallDirection = "off-net-in"
+)
+
 type CallParty string
 
 const (
@@ -53,6 +60,8 @@ type CallRecord struct {
 	Alerted         bool
 	Media           []string
 	Incomplete      bool
+	Trunk           string
+	Direction       CallDirection
 }
 
 type CallRecordFilter struct {
@@ -63,7 +72,8 @@ type CallRecordFilter struct {
 
 const (
 	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
-		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete`
+		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete, trunk_id,
+		direction`
 
 	callRecordBatch = 1000
 )
@@ -147,13 +157,14 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 	mutable := []any{
 		calling, nullableString(r.CalledParty), nullableString(r.CalleeIMPI), nullableTime(r.DeliveryStartAt),
 		nullableTime(r.DeliveryEndAt), nullableInt(int64(r.SIPStatus)), nullableString(string(r.Outcome)),
-		nullableString(string(r.EndedBy)), r.Alerted, media, r.Incomplete,
+		nullableString(string(r.EndedBy)), r.Alerted, media, r.Incomplete, nullableString(r.Trunk),
+		nullableString(string(r.Direction)),
 	}
 
 	if r.ID != 0 {
 		res, err := tx.ExecContext(ctx, `UPDATE call_records SET calling_party = ?, called_party = ?, callee_impi = ?,
 			delivery_start_at = ?, delivery_end_at = ?, sip_status = ?, outcome = ?, ended_by = ?, alerted = ?,
-			media = ?, incomplete = ? WHERE id = ?`,
+			media = ?, incomplete = ?, trunk_id = ?, direction = ? WHERE id = ?`,
 			append(mutable, r.ID)...)
 		if err != nil {
 			return err
@@ -169,7 +180,7 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 
 	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
 		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
-		ended_by, alerted, media, incomplete) VALUES (`+placeholders(16)+`) RETURNING id`,
+		ended_by, alerted, media, incomplete, trunk_id, direction) VALUES (`+placeholders(18)+`) RETURNING id`,
 		append([]any{
 			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
 			r.RequestedAt.UTC().UnixNano(),
@@ -397,13 +408,14 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 		callerIMPI, calledParty, calleeIMPI       sql.NullString
 		calling, media                            sql.NullString
 		outcome, endedBy                          sql.NullString
+		trunk, direction                          sql.NullString
 		requestedAt                               int64
 		deliveryStartAt, deliveryEndAt, sipStatus sql.NullInt64
 	)
 
 	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
 		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
-		&r.Incomplete); err != nil {
+		&r.Incomplete, &trunk, &direction); err != nil {
 		return CallRecord{}, err
 	}
 
@@ -412,6 +424,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	r.DeliveryStartAt, r.DeliveryEndAt = timeOf(deliveryStartAt), timeOf(deliveryEndAt)
 	r.SIPStatus = int(sipStatus.Int64)
 	r.Outcome, r.EndedBy = CallOutcome(outcome.String), CallParty(endedBy.String)
+	r.Trunk, r.Direction = trunk.String, CallDirection(direction.String)
 
 	for _, l := range []struct {
 		dst *[]string

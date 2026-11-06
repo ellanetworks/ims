@@ -193,7 +193,7 @@ func newTracedWorld(t *testing.T, configure func(name string, cfg *client.Config
 		UA: ua.Config{
 			Transaction: n.Config(transaction.Config{TracerProvider: tp}),
 			Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: "mcptt", Host: w.addr.Addr().String(), Port: w.addr.Port()}},
-			Prepare: func(req *sip.Request) error {
+			Prepare: func(_ context.Context, req *sip.Request) error {
 				tr, to, err := sip.NextHop(req)
 				if err != nil {
 					return err
@@ -242,7 +242,7 @@ func (w *world) user(name string, i int, configure func(string, *client.Config))
 	cfg := ua.Config{
 		Transaction: w.n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: u.addr.Addr().String(), Port: u.addr.Port()}},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: u.addr, Remote: w.addr}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, u.addr).String())
 			w.trace.add("%s>server %s", name, req.Method)

@@ -1216,6 +1216,13 @@ func TestTargetSetOrder(t *testing.T) {
 	audioOnly := binding("sip:audioonly@ue", `;video="FALSE";+g.3gpp.icsi-ref=`+mmtelParam, 3)
 	mcptt := binding("sip:mcptt@ue", `;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`, 0)
 
+	const imei = "<urn:gsma:imei:35633228-076423-0>"
+
+	stackVoice := binding("sip:volte@ue", `;+sip.instance="`+imei+`";audio;video;+g.3gpp.icsi-ref=`+mmtelParam, 4)
+	stackVoice.Contact.Instance = imei
+	stackRCS := binding("sip:rcs@ue", `;+sip.instance="`+imei+`";reg-id=1`, 5)
+	stackRCS.Contact.Instance, stackRCS.Contact.RegID = imei, 1
+
 	predicates := func(values ...string) sip.Header {
 		var h sip.Header
 		for _, v := range values {
@@ -1251,6 +1258,8 @@ func TestTargetSetOrder(t *testing.T) {
 		{"negated value", []db.Binding{videoCapable, audioOnly}, accept(`;video="!TRUE"`), "sip:audioonly@ue"},
 		{"MCPTT client required", []db.Binding{voice, mcptt}, mcpttOnly, "sip:mcptt@ue"},
 		{"no MCPTT client", []db.Binding{voice}, mcpttOnly, ""},
+		{"one instance, newest stack without preferences", []db.Binding{stackVoice, stackRCS}, nil, "sip:rcs@ue"},
+		{"one instance, MMTel stack for an MMTel call", []db.Binding{stackVoice, stackRCS}, accept(""), "sip:volte@ue"},
 		{"malformed predicate left out", []db.Binding{voice, mcptt}, predicates(`*;+g.3gpp.mcptt;require;explicit`, `*;audio;+sip.x="#>=y";require`), "sip:mcptt@ue"},
 	}
 

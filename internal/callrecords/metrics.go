@@ -5,7 +5,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var outcomes = []db.CallOutcome{
+var Outcomes = []db.CallOutcome{
 	db.OutcomeAnswered, db.OutcomeCancelled, db.OutcomeBusy, db.OutcomeRejected, db.OutcomeNoAnswer,
 	db.OutcomeUnavailable, db.OutcomeFailed,
 }
@@ -27,7 +27,7 @@ func newMetrics() metrics {
 		}, []string{"outcome"}),
 	}
 
-	for _, o := range outcomes {
+	for _, o := range Outcomes {
 		m.calls.WithLabelValues(string(o))
 	}
 

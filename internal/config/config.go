@@ -42,7 +42,6 @@ type Config struct {
 	N5        *N5       `yaml:"n5"`
 	MCPTT     *MCPTT    `yaml:"mcptt"`
 	IBCF      *IBCF     `yaml:"ibcf"`
-	TrGW      *TrGW     `yaml:"trgw"`
 	Telemetry Telemetry `yaml:"telemetry"`
 }
 
@@ -193,8 +192,6 @@ func Load(path string) (Config, error) {
 		cfg.IBCF.applyDefaults()
 	}
 
-	cfg.applyTrGWDefaults()
-
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -252,10 +249,6 @@ func (c Config) validate() error {
 		if err := c.validateIBCF(*c.IBCF); err != nil {
 			return err
 		}
-	}
-
-	if err := c.validateTrGW(); err != nil {
-		return err
 	}
 
 	if c.N5 == nil {
@@ -322,22 +315,20 @@ func (c Config) validateN5(n N5) error {
 	}
 
 	if c.IBCF != nil {
+		ext := c.IBCF.External.Addrs()
+
 		taken = append(taken, struct {
 			name string
 			addr []netip.Addr
 			port int
-		}{"ibcf.port", c.SIP.Addresses, c.IBCF.Port}, struct {
-			name string
-			addr []netip.Addr
-			port int
-		}{"ibcf.external.port", c.IBCF.External.Addresses, c.IBCF.External.Port})
+		}{"ibcf.port", c.SIP.Addresses, c.IBCF.Port})
 
-		if t := c.IBCF.External.TLS; t != nil {
+		for _, p := range externalPorts() {
 			taken = append(taken, struct {
 				name string
 				addr []netip.Addr
 				port int
-			}{"ibcf.external.tls.port", c.IBCF.External.Addresses, t.Port})
+			}{p.name, ext, p.port})
 		}
 	}
 

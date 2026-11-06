@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 type sent struct {
@@ -55,6 +56,10 @@ func (b *IBCF) Send(ctx context.Context, req *sip.Request, srv sip.Server) (*sip
 	}
 
 	done := make(sender, 1)
+
+	if b.untraced(out) {
+		ctx = transaction.WithoutSpan(ctx)
+	}
 
 	if _, err := b.agent.Layer().Request(ctx, out, done); err != nil {
 		return nil, err

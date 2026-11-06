@@ -42,6 +42,7 @@ import {
   type CallOutcome,
   type CallRecord,
 } from "@/queries/callRecords";
+import { listSIPTrunks } from "@/queries/sipTrunks";
 import {
   callerOf,
   calleeOf,
@@ -72,7 +73,9 @@ const outcomesOf = (param: string): CallOutcome[] =>
     .split(",")
     .filter((o): o is CallOutcome => CALL_OUTCOMES.includes(o as CallOutcome));
 
-const columns: GridColDef<CallRecord>[] = [
+const columnsFor = (
+  trunkName: (id: string) => string,
+): GridColDef<CallRecord>[] => [
   {
     field: "requested_at",
     headerName: "Time",
@@ -112,6 +115,14 @@ const columns: GridColDef<CallRecord>[] = [
       row.duration_ms !== undefined ? formatDuration(row.duration_ms) : "—",
   },
   {
+    field: "trunk_id",
+    headerName: "Trunk",
+    flex: 1,
+    minWidth: 150,
+    valueGetter: (_value, row) =>
+      row.trunk_id ? trunkName(row.trunk_id) : "—",
+  },
+  {
     field: "media",
     headerName: "Media",
     width: 120,
@@ -133,7 +144,8 @@ const gridSx = {
 };
 
 export default function Calls() {
-  const editable = useAuth().can("call_record:update_retention");
+  const auth = useAuth();
+  const editable = auth.can("call_record:update_retention");
   const [search, setSearch] = useSearchParamState("search");
   const [outcomeParam, setOutcomeParam] = useSearchParamState("outcome");
   const [timeRange, setTimeRange] = useTimeRangeSearchParams({
@@ -185,6 +197,16 @@ export default function Calls() {
     refetchInterval: (query) =>
       query.state.data?.in_progress ? CALLS_REFRESH_MS : false,
   });
+
+  const trunks = useQuery({
+    queryKey: ["sip-trunks"],
+    queryFn: listSIPTrunks,
+    enabled: auth.can("sip_trunk:read"),
+  });
+  const columns = useMemo(
+    () => columnsFor((id) => trunks.data?.find((t) => t.id === id)?.name ?? id),
+    [trunks.data],
+  );
 
   const shown = selected ? (record.data ?? selected) : null;
 

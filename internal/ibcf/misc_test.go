@@ -81,8 +81,6 @@ func TestRouteTargets(t *testing.T) {
 				{Transport: sip.UDP, Addr: netip.MustParseAddrPort("198.51.100.1:5080")},
 				{Transport: sip.TLS, Addr: netip.MustParseAddrPort("198.51.100.1:5061")},
 			}, nil
-		case "sip:198.51.100.7":
-			return []sip.Server{{Transport: sip.UDP, Addr: netip.MustParseAddrPort("198.51.100.7:5060")}}, nil
 		default:
 			return SystemResolve(context.Background(), u, trs)
 		}
@@ -101,7 +99,7 @@ func TestRouteTargets(t *testing.T) {
 		got = append(got, tg.trunk.ID+" "+string(tg.server.Transport)+" "+tg.server.Addr.String())
 	}
 
-	want := []string{"a UDP 198.51.100.1:5080", "b TCP 198.51.100.8:5060"}
+	want := []string{"a UDP 198.51.100.1:5080", "b TCP 198.51.100.7:5060", "b TCP 198.51.100.8:5060"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("targets %q, want %q", got, want)
 	}

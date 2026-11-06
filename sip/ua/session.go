@@ -229,6 +229,10 @@ func (s *Session) State() State {
 	return get(s.st, func() State { return s.state })
 }
 
+func (s *Session) ByePending() bool {
+	return get(s.st, func() bool { return s.inBye != nil })
+}
+
 func (s *Session) Value() any {
 	return get(s.st, func() any { return s.value })
 }

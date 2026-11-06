@@ -17,12 +17,12 @@ func TestAckNotPrepared(t *testing.T) {
 
 	alice := newPeerWith(t, "alice", func(c *ua.Config) {
 		prepare := c.Prepare
-		c.Prepare = func(req *sip.Request) error {
+		c.Prepare = func(ctx context.Context, req *sip.Request) error {
 			if req.Method == "ACK" {
 				return errNoFlow
 			}
 
-			return prepare(req)
+			return prepare(ctx, req)
 		}
 	})
 	bob := newPeer(t, "bob", nil, ua.SessionTimer{})

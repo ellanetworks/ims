@@ -18,14 +18,13 @@ func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
 	)
 
 	err := d.queryEach(ctx, "get SIP trunks", `SELECT id, name, domain, trusted, keepalive_interval_s, enabled,
-		tls_required, tls_require_client_certificate FROM sip_trunks ORDER BY id`, func(rows *sql.Rows) error {
+		tls_required FROM sip_trunks ORDER BY id`, func(rows *sql.Rows) error {
 		var (
 			t         settings.Trunk
 			keepalive int64
 		)
 
-		if err := rows.Scan(&t.ID, &t.Name, &t.Domain, &t.Trusted, &keepalive, &t.Enabled, &t.TLS.Required,
-			&t.TLS.RequireClientCertificate); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Domain, &t.Trusted, &keepalive, &t.Enabled, &t.TLS.Required); err != nil {
 			return err
 		}
 
@@ -101,30 +100,23 @@ func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
 }
 
 func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[string]int) error {
-	err := d.queryEach(ctx, "get SIP trunk TLS certificates", `SELECT trunk_id, kind, der FROM sip_trunk_tls_certificates
-		ORDER BY trunk_id, kind, position`, func(rows *sql.Rows) error {
+	err := d.queryEach(ctx, "get SIP trunk TLS CA certificates", `SELECT trunk_id, der FROM sip_trunk_tls_ca_certificates
+		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var (
-			id, kind string
-			der      []byte
+			id  string
+			der []byte
 		)
 
-		if err := rows.Scan(&id, &kind, &der); err != nil {
+		if err := rows.Scan(&id, &der); err != nil {
 			return err
 		}
 
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("a TLS certificate of no SIP trunk: %s", id)
+			return fmt.Errorf("a TLS CA certificate of no SIP trunk: %s", id)
 		}
 
-		switch kind {
-		case "ca":
-			trunks[i].TLS.CACertificates = append(trunks[i].TLS.CACertificates, der)
-		case "pinned":
-			trunks[i].TLS.PinnedCertificates = append(trunks[i].TLS.PinnedCertificates, der)
-		default:
-			return fmt.Errorf("SIP trunk %s: a TLS certificate of kind %q", id, kind)
-		}
+		trunks[i].TLS.CACertificates = append(trunks[i].TLS.CACertificates, der)
 
 		return nil
 	})
@@ -132,7 +124,7 @@ func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[st
 		return err
 	}
 
-	err = d.queryEach(ctx, "get SIP trunk TLS fingerprints", `SELECT trunk_id, sha256 FROM sip_trunk_tls_fingerprints
+	err = d.queryEach(ctx, "get SIP trunk TLS pins", `SELECT trunk_id, sha256 FROM sip_trunk_tls_pins
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var (
 			id string
@@ -146,15 +138,15 @@ func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[st
 
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("a TLS fingerprint of no SIP trunk: %s", id)
+			return fmt.Errorf("a TLS pin of no SIP trunk: %s", id)
 		}
 
 		if len(b) != len(fp) {
-			return fmt.Errorf("SIP trunk %s: a TLS fingerprint of %d bytes", id, len(b))
+			return fmt.Errorf("SIP trunk %s: a TLS pin of %d bytes", id, len(b))
 		}
 
 		copy(fp[:], b)
-		trunks[i].TLS.PinnedFingerprints = append(trunks[i].TLS.PinnedFingerprints, fp)
+		trunks[i].TLS.Pins = append(trunks[i].TLS.Pins, fp)
 
 		return nil
 	})
@@ -253,8 +245,8 @@ func (d *DB) CreateTrunk(ctx context.Context, t settings.Trunk) (err error) {
 
 	return d.inTx(ctx, "create SIP trunk", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunks (id, name, domain, trusted, keepalive_interval_s, enabled,
-			tls_required, tls_require_client_certificate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.Name, t.Domain, t.Trusted,
-			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required, t.TLS.RequireClientCertificate); err != nil {
+			tls_required) VALUES (?, ?, ?, ?, ?, ?, ?)`, t.ID, t.Name, t.Domain, t.Trusted,
+			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required); err != nil {
 			return err
 		}
 
@@ -267,8 +259,8 @@ func (d *DB) UpdateTrunk(ctx context.Context, t settings.Trunk) (err error) {
 
 	return d.inTx(ctx, "update SIP trunk", func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE sip_trunks SET name = ?, domain = ?, trusted = ?, keepalive_interval_s = ?,
-			enabled = ?, tls_required = ?, tls_require_client_certificate = ? WHERE id = ?`, t.Name, t.Domain, t.Trusted,
-			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required, t.TLS.RequireClientCertificate, t.ID)
+			enabled = ?, tls_required = ? WHERE id = ?`, t.Name, t.Domain, t.Trusted,
+			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required, t.ID)
 		if err != nil {
 			return err
 		}
@@ -288,7 +280,7 @@ func (d *DB) UpdateTrunk(ctx context.Context, t settings.Trunk) (err error) {
 }
 
 var trunkListTables = []string{
-	"sip_trunk_addresses", "sip_trunk_inbound_cidrs", "sip_trunk_tls_certificates", "sip_trunk_tls_fingerprints",
+	"sip_trunk_addresses", "sip_trunk_inbound_cidrs", "sip_trunk_tls_ca_certificates", "sip_trunk_tls_pins",
 	"sip_trunk_tls_identities",
 }
 
@@ -307,17 +299,15 @@ func putTrunkLists(ctx context.Context, tx *sql.Tx, t settings.Trunk) error {
 		}
 	}
 
-	for kind, ders := range map[string][][]byte{"ca": t.TLS.CACertificates, "pinned": t.TLS.PinnedCertificates} {
-		for i, der := range ders {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunk_tls_certificates (trunk_id, kind, position, der)
-				VALUES (?, ?, ?, ?)`, t.ID, kind, i, der); err != nil {
-				return err
-			}
+	for i, der := range t.TLS.CACertificates {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunk_tls_ca_certificates (trunk_id, position, der) VALUES (?, ?, ?)`,
+			t.ID, i, der); err != nil {
+			return err
 		}
 	}
 
-	for i, fp := range t.TLS.PinnedFingerprints {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunk_tls_fingerprints (trunk_id, position, sha256) VALUES (?, ?, ?)`,
+	for i, fp := range t.TLS.Pins {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunk_tls_pins (trunk_id, position, sha256) VALUES (?, ?, ?)`,
 			t.ID, i, fp[:]); err != nil {
 			return err
 		}

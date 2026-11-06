@@ -25,7 +25,7 @@ func benchAgent(b *testing.B, n *siptest.Net, name string, onInvite func(a *ua.A
 	var a *ua.Agent
 
 	cfg := ua.Config{
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			target := req.URI
 			if r, err := req.Header.TopRoute(); err == nil {
 				target = r.URI

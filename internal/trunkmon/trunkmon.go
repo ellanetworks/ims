@@ -36,6 +36,7 @@ func systemResolve(ctx context.Context, u sip.URI, transports []sip.Transport) (
 
 type Sender interface {
 	Send(ctx context.Context, req *sip.Request, to sip.Server) (*sip.Response, error)
+	Transports(t settings.Trunk) []sip.Transport
 }
 
 type Timer interface {
@@ -130,6 +131,10 @@ func Start(cfg Config) (*Monitor, error) {
 		kill:   kill,
 		probes: map[string]*probe{},
 		states: map[string]settings.TrunkStatus{},
+	}
+
+	if cfg.Metrics != nil {
+		cfg.Metrics.mon.Store(m)
 	}
 
 	m.wg.Add(1)
@@ -258,7 +263,6 @@ func (m *Monitor) remove(id string) {
 	}
 
 	delete(m.states, id)
-	m.cfg.Metrics.Forget(id)
 }
 
 func (p *probe) stop() {
@@ -351,7 +355,6 @@ func (m *Monitor) record(p *probe, alive bool) {
 
 func (m *Monitor) transition(t settings.Trunk, to settings.TrunkState) {
 	m.states[t.ID] = settings.TrunkStatus{State: to, Since: m.cfg.Clock.Now()}
-	m.cfg.Metrics.set(t.ID, to == settings.TrunkUp)
 
 	level := slog.LevelInfo
 	if to == settings.TrunkDown {
@@ -366,7 +369,7 @@ func (m *Monitor) transition(t settings.Trunk, to settings.TrunkState) {
 func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
 	home := m.cfg.Settings.Get().Operator.HomeDomain()
 
-	allowed := transports(t)
+	allowed := m.cfg.Sender.Transports(t)
 
 	for _, a := range t.Addresses {
 		servers, err := m.resolve(ctx, a, allowed)
@@ -391,52 +394,17 @@ func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
 	return false
 }
 
-func transports(t settings.Trunk) []sip.Transport {
-	var out []sip.Transport
-
-	switch {
-	case t.TLS.Required:
-		return []sip.Transport{sip.TLS}
-	case t.Trusted:
-		out = []sip.Transport{sip.TCP}
-	default:
-		out = []sip.Transport{sip.UDP, sip.TCP}
-	}
-
-	if t.TLS.Trusts() {
-		out = append(out, sip.TLS)
-	}
-
-	return out
-}
-
 func (m *Monitor) resolve(ctx context.Context, a settings.TrunkAddress, allowed []sip.Transport) ([]sip.Server, error) {
-	if a.Transport != "" {
-		return m.lookup(ctx, addressURI(a), []sip.Transport{sip.Transport(strings.ToUpper(string(a.Transport)))})
-	}
-
 	servers, err := m.lookup(ctx, addressURI(a), allowed)
-	if servers = permitted(servers, allowed); len(servers) > 0 {
-		return servers, nil
+	if err != nil {
+		return nil, err
 	}
 
-	for _, tr := range allowed {
-		forced := a
-		forced.Transport = settings.SIPTransport(strings.ToLower(string(tr)))
-
-		found, ferr := m.lookup(ctx, addressURI(forced), allowed)
-		if found = permitted(found, allowed); len(found) > 0 {
-			return found, nil
-		}
-
-		err = errors.Join(err, ferr)
+	if servers = permitted(servers, allowed); len(servers) == 0 {
+		return nil, errNoServer
 	}
 
-	if err == nil {
-		err = errNoServer
-	}
-
-	return nil, err
+	return servers, nil
 }
 
 var errNoServer = errors.New("trunkmon: no server over a transport the trunk allows")

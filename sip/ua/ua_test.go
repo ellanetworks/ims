@@ -118,7 +118,7 @@ func newPeerWith(t *testing.T, name string, configure func(*ua.Config)) *peer {
 	return p
 }
 
-func (p *peer) prepare(req *sip.Request) error {
+func (p *peer) prepare(_ context.Context, req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
 		target = r.URI

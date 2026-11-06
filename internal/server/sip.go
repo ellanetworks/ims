@@ -88,6 +88,7 @@ type timers struct {
 	mediaLossTimeout time.Duration
 	groupNoAnswer    time.Duration
 	asTimeout        time.Duration
+	trunkMedia       time.Duration
 }
 
 func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live func() settings.Settings,
@@ -148,8 +149,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 			return domain.Trusted(f.Remote.Addr())
 		},
 		SpanLinks: roles.spanLinks,
-		SpanAttributes: func(f sip.Flow) []attribute.KeyValue {
-			switch r := roles.name(f.Local.Port()); r {
+		SpanAttributes: func(req *sip.Request, _ trace.SpanKind) []attribute.KeyValue {
+			switch r := roles.name(req.Flow.Local.Port()); r {
 			case rolePCSCF, rolePCSCFProtected:
 				return []attribute.KeyValue{tracing.RoleKey.String(rolePCSCF)}
 			case "":
@@ -213,7 +214,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	breakout := bgcf.New(live, states)
 
 	if cfg.IBCF != nil {
-		if err := s.startIBCF(ctx, cfg, homeDomain, domain, breakout, live, changed, ases, m, failed, tp, logger); err != nil {
+		if err := s.startIBCF(ctx, cfg, tm, homeDomain, domain, breakout, live, changed, ases, records, m, failed, tp, logger); err != nil {
 			return nil, errors.Join(err, s.Close(ctx))
 		}
 	}
@@ -337,8 +338,9 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 
 // TS 23.228 clause 4.14
 // TS 24.229 clause 5.10.1
-func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain string, domain *trust.Domain, breakout *bgcf.BGCF,
-	live func() settings.Settings, changed func() <-chan struct{}, ases builtinASs, m *metrics, failed func(local netip.AddrPort, err error), tp trace.TracerProvider,
+func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers, homeDomain string, domain *trust.Domain, breakout *bgcf.BGCF,
+	live func() settings.Settings, changed func() <-chan struct{}, ases builtinASs, records *callrecords.Recorder, m *metrics,
+	failed func(local netip.AddrPort, err error), tp trace.TracerProvider,
 	logger *slog.Logger,
 ) error {
 	internal := make([]netip.AddrPort, 0, len(cfg.SIP.Addresses))
@@ -347,8 +349,8 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain
 	}
 
 	external := make([]netip.AddrPort, 0, len(cfg.IBCF.External.Addresses))
-	for _, a := range cfg.IBCF.External.Addresses {
-		external = append(external, netip.AddrPortFrom(a, uint16(cfg.IBCF.External.Port)))
+	for _, a := range cfg.IBCF.External.Addrs() {
+		external = append(external, netip.AddrPortFrom(a, config.IBCFExternalPort))
 	}
 
 	secure, cert, err := ibcfTLS(cfg.IBCF.External)
@@ -356,7 +358,7 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain
 		return err
 	}
 
-	media, err := s.startTrGW(cfg.TrGW, m.trgw)
+	media, err := s.startTrGW(cfg, tm.trunkMedia, m.trunkMedia)
 	if err != nil {
 		return err
 	}
@@ -375,6 +377,7 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain
 		BGCF:        breakout,
 		Settings:    live,
 		Metrics:     m.ibcf,
+		Records:     records,
 		Media:       media,
 		Transaction: transaction.Config{
 			Network:        ases.network,
@@ -401,7 +404,11 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain
 	}
 
 	for _, a := range b.TLS() {
-		s.listeners = append(s.listeners, api.SIPEndpoint{Role: roleIBCFExternalTLS, Address: a})
+		if cert == nil {
+			break
+		}
+
+		s.listeners = append(s.listeners, api.SIPEndpoint{Role: roleIBCFExternalTLS, Address: a, TLS: true})
 	}
 
 	return nil

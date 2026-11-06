@@ -48,6 +48,8 @@ This path returns the list of call records, most recently requested first.
 | `in_progress`       | boolean | Whether the call has not ended. |
 | `incomplete`        | boolean | Whether the record was closed without the end of the call. |
 | `duration_ms`       | int     | Duration of an answered call that ended, in milliseconds. |
+| `trunk_id`          | string  | ID of the SIP trunk that gave the final answer. Absent for an on-net call. |
+| `direction`         | string  | `off-net-out` (to a SIP trunk) or `off-net-in` (from a SIP trunk). Absent for an on-net call. |
 
 A value the IMS did not observe is absent. Times are RFC 3339.
 

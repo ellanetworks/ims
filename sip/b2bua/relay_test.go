@@ -226,6 +226,8 @@ func (anchor) Answer(_ *b2bua.Exchange, _ *ua.Session, sdp []byte) ([]byte, erro
 
 func (anchor) End(*b2bua.Exchange, *ua.Session) {}
 
+func (anchor) Dialog(*ua.Session, ua.State) {}
+
 // RFC 3261 section 15
 func TestBridge2xxCrossingCancel(t *testing.T) {
 	n := newNet(t)
@@ -282,4 +284,29 @@ func TestBridge2xxCrossingCancel(t *testing.T) {
 	alice.next("failed")
 	b.callEnded(t)
 	settled(t, n, alice, b.party)
+	b.noErrors(t)
+}
+
+func TestRelayByeOnce(t *testing.T) {
+	for _, from := range []string{"caller", "callee"} {
+		t.Run(from, func(t *testing.T) {
+			alice, bob, b := newCall(t, b2bua.RelayConfig{})
+			alice.invite(b.uri(), "offer-1", alice.handler())
+			as, bs := bridged(t, alice, bob)
+
+			s := as
+			if from == "callee" {
+				s = bs
+			}
+
+			if err := s.Bye(context.Background(), ua.Change{}, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			alice.next("ended")
+			bob.next("ended")
+			b.callEnded(t)
+			b.noErrors(t)
+		})
+	}
 }

@@ -25,6 +25,7 @@ var (
 
 type peer struct {
 	trunk      string
+	address    settings.TrunkAddress
 	serverName string
 }
 
@@ -53,7 +54,19 @@ func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Serve
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.peers[srv.Addr] = peer{trunk: t.ID, serverName: name}
+	p.peers[unmap(srv.Addr)] = peer{trunk: t.ID, address: addr, serverName: name}
+}
+
+func (p *peers) prune(trunks []settings.Trunk) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for a, pr := range p.peers {
+		i := slices.IndexFunc(trunks, func(t settings.Trunk) bool { return t.ID == pr.trunk })
+		if i < 0 || !trunks[i].TLS.Trusts() || !slices.Contains(trunks[i].Addresses, pr.address) {
+			delete(p.peers, a)
+		}
+	}
 }
 
 func (p *peers) get(a netip.AddrPort) (peer, bool) {
@@ -147,8 +160,12 @@ func (b *IBCF) serverConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 func (b *IBCF) listenTLS(ctx context.Context, want []netip.AddrPort) error {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12, GetConfigForClient: b.serverConfig}
 
-	_, err := b.listen(ctx, want, func(a netip.AddrPort) (netip.AddrPort, error) { return b.agent.Layer().ListenTLS(ctx, a, cfg) },
-		func(x *addrs, a netip.AddrPort) { x.secure = append(x.secure, a) })
+	bind := func(a netip.AddrPort) (netip.AddrPort, error) { return b.agent.Layer().ListenTLS(ctx, a, cfg) }
+	if b.cfg.Certificate == nil {
+		bind = func(a netip.AddrPort) (netip.AddrPort, error) { return b.agent.Layer().ClientTLS(ctx, a) }
+	}
+
+	_, err := b.listen(ctx, want, bind, func(x *addrs, a netip.AddrPort) { x.secure = append(x.secure, a) })
 
 	return err
 }
@@ -171,6 +188,10 @@ func (b *IBCF) transports(t settings.Trunk) []sip.Transport {
 	}
 
 	return out
+}
+
+func (b *IBCF) Transports(t settings.Trunk) []sip.Transport {
+	return b.transports(t)
 }
 
 func usesTLS(t settings.Trunk) bool {
@@ -230,6 +251,8 @@ func (p *persister) run() {
 }
 
 func (p *persister) apply() {
+	p.b.peers.prune(p.b.cfg.Settings().Trunks)
+
 	want := map[sip.Flow]bool{}
 
 	if p.b.cfg.Certificate == nil && len(p.b.ls().secure) > 0 {

@@ -58,6 +58,10 @@ export default function Operator() {
                     "International Prefix",
                     orNA(data.numbering.international_prefix),
                   ],
+                  [
+                    "Minimum National Digits",
+                    data.numbering.min_national_digits,
+                  ],
                 ]}
               />
             ),

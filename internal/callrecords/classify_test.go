@@ -1,6 +1,8 @@
 package callrecords
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +89,20 @@ func TestDuration(t *testing.T) {
 
 	if _, ok := Duration(db.CallRecord{Outcome: db.OutcomeBusy, DeliveryStartAt: start}); ok {
 		t.Fatal("an unanswered call has a duration")
+	}
+}
+
+func TestAcceptedMedia(t *testing.T) {
+	answer := strings.Join([]string{
+		"v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
+		"m=audio 5000 RTP/AVP 116", "m=video 0 RTP/AVP 99", "m=audio 5002 RTP/AVP 116", "m=text 5004 RTP/AVP 98",
+	}, "\r\n") + "\r\n"
+
+	if got := AcceptedMedia([]byte(answer)); !slices.Equal(got, []string{"audio", "text"}) {
+		t.Fatalf("AcceptedMedia = %v, want audio and text, not the rejected video", got)
+	}
+
+	if got := AcceptedMedia([]byte("not SDP")); got != nil {
+		t.Fatalf("AcceptedMedia of no SDP = %v", got)
 	}
 }

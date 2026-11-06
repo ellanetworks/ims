@@ -59,9 +59,8 @@ func TestSIPTrunks(t *testing.T) {
 			Enabled:           new(true),
 		},
 		TLS: SIPTrunkTLS{
-			SIPTrunkTLSParams:        SIPTrunkTLSParams{PinnedFingerprints: []string{}, Identities: []string{}},
-			CACertificateDetails:     []CertificateSummary{},
-			PinnedCertificateDetails: []CertificateSummary{},
+			SIPTrunkTLSParams:    SIPTrunkTLSParams{Pins: []string{}, Identities: []string{}},
+			CACertificateDetails: []CertificateSummary{},
 		},
 		Status: SIPTrunkStatus{State: settings.TrunkUnknown},
 	}
@@ -102,6 +101,26 @@ func TestSIPTrunks(t *testing.T) {
 
 	if code, _ := serve(t, cfg, http.MethodGet, "/api/v1/sip-trunks/"+sbc.ID, ""); code != http.StatusNotFound {
 		t.Fatalf("GET deleted trunk = %d, want 404", code)
+	}
+}
+
+func TestSIPTrunkDefaults(t *testing.T) {
+	cfg := Config{Settings: newFakeSettings()}
+
+	got := createTrunk(t, cfg, `{"name": "Carrier", "addresses": [{"host": "sip.carrier.example", "transport": "tls"},
+		{"host": "192.0.2.10", "transport": "tls"}, {"host": "2001:db8::10", "transport": "tls"}], "trusted": true,
+		"tls": {"pins": ["`+strings.Repeat("ab", 32)+`"]}}`)
+
+	if !*got.Enabled || got.Domain != "sip.carrier.example" ||
+		!reflect.DeepEqual(got.InboundCIDRs, []string{"192.0.2.10/32", "2001:db8::10/128"}) ||
+		!reflect.DeepEqual(got.TLS.Identities, []string{"sip.carrier.example"}) ||
+		!reflect.DeepEqual(got.TLS.Pins, []string{strings.TrimSuffix(strings.Repeat("AB:", 32), ":")}) {
+		t.Fatalf("created = %+v, want it enabled with the defaults resolved", got)
+	}
+
+	stored, _ := cfg.Settings.Get().Trunk(got.ID)
+	if stored.Domain != "sip.carrier.example" || len(stored.InboundCIDRs) != 2 || len(stored.TLS.Identities) != 1 || !stored.Enabled {
+		t.Fatalf("stored = %+v, want the defaults stored", stored)
 	}
 }
 
@@ -199,21 +218,20 @@ func TestSIPTrunksRejected(t *testing.T) {
 		{"bad port", http.MethodPost, "", strings.Replace(sbcTrunk, "5080", "65536", 1), 400, "addresses must have a port between 1 and 65535, or none"},
 		{"zero port", http.MethodPost, "", strings.Replace(sbcTrunk, "5080", "0", 1), 400, "addresses must have a port between 1 and 65535, or none"},
 		{"sctp", http.MethodPost, "", strings.Replace(sbcTrunk, `"udp"`, `"sctp"`, 1), 400, `addresses must have udp, tcp or tls as transport, or none, not "sctp"`},
-		{"tls without trust", http.MethodPost, "", strings.Replace(sbcTrunk, `"udp"`, `"tls"`, 1), 400, "addresses over tls need tls.ca_certificates, tls.pinned_certificates or tls.pinned_fingerprints"},
+		{"tls without trust", http.MethodPost, "", strings.Replace(sbcTrunk, `"udp"`, `"tls"`, 1), 400, "addresses over tls need tls.ca_certificates or tls.pins"},
 		{"same host twice for DNS", http.MethodPost, "", strings.Replace(sbcTrunk, `[{"host": "::ffff:10.0.0.5", "port": 5080, "transport": "udp"}]`, `[{"host": "sbc.example.org"}, {"host": "sbc.example.org"}]`, 1), 400, "addresses lists sbc.example.org twice"},
 		{"same address twice", http.MethodPost, "", strings.Replace(sbcTrunk, `"transport": "udp"}`, `"transport": "udp"}, {"host": "10.0.0.5", "port": 5080, "transport": "udp"}`, 1), 400, "addresses lists 10.0.0.5:5080 over udp twice"},
 		{"bad CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "10.0.0.0/33", 1), 400, `inbound_cidrs must be IPv4 or IPv6 networks, not "10.0.0.0/33"`},
 		{"host bits", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "10.0.0.1/24", 1), 400, "inbound_cidrs must be network addresses: 10.0.0.0/24, not 10.0.0.1/24"},
 		{"overlapping CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "192.76.120.0/24", 1), 409, "Inbound CIDR 192.76.120.0/24 overlaps 192.76.120.10/32 of SIP trunk Telnyx"},
 		{"same CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "64.16.250.10/32", 1), 409, "Inbound CIDR 64.16.250.10/32 overlaps 64.16.250.10/32 of SIP trunk Telnyx"},
-		{"no domain", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `""`, 1), 400, "domain must be a domain name or a specific IPv4 or IPv6 address"},
+		{"no domain", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `""`, 1), 400, "domain is required when no address has a domain name as host"},
+		{"no domain field", http.MethodPost, "", strings.Replace(sbcTrunk, `, "domain": "sbc.example.org"`, "", 1), 400, "domain is required when no address has a domain name as host"},
 		{"wrapping keepalive", http.MethodPost, "", strings.Replace(sbcTrunk, `"keepalive_interval": 60`, `"keepalive_interval": 36028797018963998`, 1), 400, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds"},
 		{"negative keepalive", http.MethodPost, "", strings.Replace(sbcTrunk, `"keepalive_interval": 60`, `"keepalive_interval": -30`, 1), 400, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds"},
 		{"numeric domain", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `"10.0.0.256"`, 1), 400, "domain must be a domain name or a specific IPv4 or IPv6 address"},
 		{"numeric host", http.MethodPost, "", strings.Replace(sbcTrunk, "::ffff:10.0.0.5", "192.168.1.010", 1), 400, `addresses must have a domain name or a specific IPv4 or IPv6 address as host, not "192.168.1.010"`},
 		{"short keepalive", http.MethodPost, "", strings.Replace(sbcTrunk, `"keepalive_interval": 60`, `"keepalive_interval": 4`, 1), 400, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds"},
-		{"no enabled", http.MethodPost, "", strings.Replace(sbcTrunk, `, "enabled": false`, "", 1), 400, "enabled is required"},
-		{"no enabled on update", http.MethodPut, "/" + "{telnyx}", strings.Replace(telnyxTrunk, `, "enabled": true`, "", 1), 400, "enabled is required"},
 		{"domain URI", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `"sip:sbc.example.org"`, 1), 400, "domain must be a domain name or a specific IPv4 or IPv6 address"},
 		{"update unknown", http.MethodPut, "/0192", sbcTrunk, 404, "SIP trunk not found"},
 		{"delete unknown", http.MethodDelete, "/0192", "", 404, "SIP trunk not found"},

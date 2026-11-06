@@ -25,11 +25,12 @@ func TestTrunkTLS(t *testing.T) {
 		srv.Config.IBCF = &config.IBCF{
 			Port: 5085,
 			External: config.IBCFExternal{
-				Addresses: []netip.Addr{ibcfExternal.Addr()}, Port: int(ibcfExternal.Port()),
-				TLS: &config.IBCFTLS{Port: 5061, Cert: ibcfCert.Files.Cert, Key: ibcfCert.Files.Key},
+				Addresses: []config.IBCFAddress{{Address: ibcfExternal.Addr()}},
+				TLS:       &config.IBCFTLS{Cert: ibcfCert.Files.Cert, Key: ibcfCert.Files.Key},
 			},
-			Keepalive: config.IBCFKeepalive{Failures: 1},
+			Media: config.IBCFMedia{MinPort: 10000, MaxPort: 10999},
 		}
+		srv.TrunkKeepaliveFailures = 1
 	})
 
 	serve, err := transport.NewTLSServerConfig(transport.TLSOptions{

@@ -14,6 +14,9 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/ua"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -24,6 +27,12 @@ var (
 func mediaScene(t *testing.T, timeout time.Duration) *scene {
 	t.Helper()
 
+	return tracedMediaScene(t, timeout, nil)
+}
+
+func tracedMediaScene(t *testing.T, timeout time.Duration, tp trace.TracerProvider) *scene {
+	t.Helper()
+
 	g, err := trgw.New(trgw.WithAddresses(trgw.Address{Bind: trgwPhone}, trgw.Address{Bind: trgwTrunk}),
 		trgw.WithPortRange(31000, 31999), trgw.WithMediaTimeout(timeout))
 	if err != nil {
@@ -32,7 +41,7 @@ func mediaScene(t *testing.T, timeout time.Duration) *scene {
 
 	t.Cleanup(func() { _ = g.Close() })
 
-	return newSceneWith(t, false, func(cfg *Config) {
+	return newTracedScene(t, false, tp, func(cfg *Config) {
 		cfg.Media = &MediaConfig{Gateway: g, Phone: []netip.Addr{trgwPhone}, Trunk: []netip.Addr{trgwTrunk}}
 	})
 }
@@ -340,6 +349,45 @@ func TestMediaTimeoutReleasesTheCall(t *testing.T) {
 	}
 
 	s.ims.until("bye")
+}
+
+func TestMediaTimeoutSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	s := tracedMediaScene(t, 300*time.Millisecond, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	phone, carrier := newEndpoint(t), newEndpoint(t)
+
+	s.call(phone.sdp(1, "sendrecv"))
+
+	in := s.carrier.next("invite").req
+	_ = in.Accept(sdpOf(carrier.sdp(1, "sendrecv"))...)
+
+	s.ims.next("established")
+	s.ims.next("answer")
+	s.carrier.next("established")
+
+	time.Sleep(time.Second)
+
+	s.carrier.until("bye")
+	s.ims.until("bye")
+	s.net.Quiesce()
+
+	timeout := oneSpan(t, rec, role, "media timeout", trace.SpanKindInternal)
+	invite := oneSpan(t, rec, role, "INVITE", trace.SpanKindServer)
+
+	if timeout.Parent().IsValid() || len(timeout.Links()) != 1 || timeout.Links()[0].SpanContext.SpanID() != invite.SpanContext().SpanID() {
+		t.Fatalf("media timeout span: parent %v, links %v, want a new trace linked to the INVITE", timeout.Parent(), timeout.Links())
+	}
+
+	byes := spansOf(rec, role, "BYE", trace.SpanKindClient)
+	if len(byes) != 2 {
+		t.Fatalf("%d BYE spans, want 2", len(byes))
+	}
+
+	for _, b := range byes {
+		if b.Parent().SpanID() != timeout.SpanContext().SpanID() {
+			t.Errorf("BYE span parent %v, want the media timeout span", b.Parent())
+		}
+	}
 }
 
 func TestMediaEarly(t *testing.T) {

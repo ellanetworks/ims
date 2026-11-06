@@ -12,11 +12,14 @@ import (
 
 	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -61,15 +64,47 @@ type party struct {
 
 	mu       sync.Mutex
 	onInvite func(r *ua.Request) ua.Handler
+	seen     []sip.Message
+}
+
+func (p *party) observe(m sip.Message) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.seen = append(p.seen, m)
+
+	return nil
+}
+
+func (p *party) received() []sip.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return slices.Clone(p.seen)
 }
 
 func newParty(t *testing.T, n *siptest.Net, name string, addr netip.AddrPort) *party {
 	t.Helper()
 
+	return newTracedParty(t, n, name, addr, nil)
+}
+
+func newTracedParty(t *testing.T, n *siptest.Net, name string, addr netip.AddrPort, tp trace.TracerProvider) *party {
+	t.Helper()
+
 	p := &party{t: t, net: n, name: name, addr: addr, tr: sip.UDP, events: make(chan event, 256)}
 
+	tc := transaction.Config{Filter: p.observe}
+
+	if tp != nil {
+		roleAttrs := []attribute.KeyValue{tracing.RoleKey.String(name)}
+		tc.TracerProvider = tp
+		tc.TraceContext = func(sip.Flow) bool { return true }
+		tc.SpanAttributes = func(*sip.Request, trace.SpanKind) []attribute.KeyValue { return roleAttrs }
+	}
+
 	a, err := ua.New(ua.Config{
-		Transaction: n.Config(transaction.Config{}),
+		Transaction: n.Config(tc),
 		Prepare:     p.prepare,
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", User: name, Host: addr.Addr().String(), Port: addr.Port()}},
 		Policy:      ua.Policy{AnswerRefreshes: true, RetryGlare: true, AnswerTimeout: time.Hour},
@@ -105,7 +140,7 @@ func newParty(t *testing.T, n *siptest.Net, name string, addr netip.AddrPort) *p
 	return p
 }
 
-func (p *party) prepare(req *sip.Request) error {
+func (p *party) prepare(_ context.Context, req *sip.Request) error {
 	target := req.URI
 	if r, err := req.Header.TopRoute(); err == nil {
 		target = r.URI
@@ -268,6 +303,12 @@ func newScene(t *testing.T, trusted bool) *scene {
 func newSceneWith(t *testing.T, trusted bool, configure func(*Config)) *scene {
 	t.Helper()
 
+	return newTracedScene(t, trusted, nil, configure)
+}
+
+func newTracedScene(t *testing.T, trusted bool, tp trace.TracerProvider, configure func(*Config)) *scene {
+	t.Helper()
+
 	n := siptest.NewNet(t)
 
 	s := &scene{t: t, net: n}
@@ -281,9 +322,9 @@ func newSceneWith(t *testing.T, trusted bool, configure func(*Config)) *scene {
 	}
 	s.st = settings.Settings{Trunks: []settings.Trunk{s.trunk}, SIPRoutes: []settings.SIPRoute{{ID: "default", Trunks: []string{"carrier"}}}}
 
-	s.ims = newParty(t, n, "ims", imsAddr)
+	s.ims = newTracedParty(t, n, "ims", imsAddr, tp)
 
-	s.carrier = newParty(t, n, "carrier", carrierAddr)
+	s.carrier = newTracedParty(t, n, "carrier", carrierAddr, tp)
 	if trusted {
 		s.carrier.tr = sip.TCP
 	}
@@ -296,7 +337,7 @@ func newSceneWith(t *testing.T, trusted bool, configure func(*Config)) *scene {
 		Trust:       trust.New([]netip.Addr{imsAddr.Addr()}, nil),
 		BGCF:        bgcf.New(s.settings, nil),
 		Settings:    s.settings,
-		Transaction: n.Config(transaction.Config{}),
+		Transaction: n.Config(transaction.Config{TracerProvider: tp}),
 	}
 
 	if configure != nil {

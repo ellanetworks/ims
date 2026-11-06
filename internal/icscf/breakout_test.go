@@ -40,7 +40,7 @@ func TestUnknownNumberRoutedToIBCF(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, harnessOptions{bgcf: usBGCF(), ibcf: true})
-			u := h.newUE(loopback)
+			u := h.fromSCSCF()
 
 			h.hss.answerLIR(userUnknownAnswer())
 
@@ -83,6 +83,10 @@ func TestUnknownNumberRoutedToIBCF(t *testing.T) {
 	}
 }
 
+func (h *harness) fromSCSCF() *ue {
+	return &ue{h: h, sock: h.scscf.sock}
+}
+
 func TestUnknownNumberNotRoutedToIBCF(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -102,6 +106,10 @@ func TestUnknownNumberNotRoutedToIBCF(t *testing.T) {
 		{
 			name: "from outside the trust domain", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: offNet, want: 404,
 			source: func(h *harness) *ue { return h.newUE(untrusted) },
+		},
+		{
+			name: "from the trust domain, not the S-CSCF", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: offNet, want: 404,
+			source: func(h *harness) *ue { return h.newUE(loopback) },
 		},
 		{
 			name: "identity not registered", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: offNet, want: 480,
@@ -128,7 +136,7 @@ func TestUnknownNumberNotRoutedToIBCF(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, tt.opts)
 
-			u := h.newUE(loopback)
+			u := h.fromSCSCF()
 			if tt.source != nil {
 				u = tt.source(h)
 			}
@@ -168,7 +176,7 @@ func TestUnknownNumberNotRoutedToIBCF(t *testing.T) {
 
 func TestOriginatingUnknownUserNotRoutedToIBCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{bgcf: usBGCF(), ibcf: true})
-	u := h.newUE(loopback)
+	u := h.fromSCSCF()
 
 	h.hss.answerLIR(userUnknownAnswer())
 
@@ -205,7 +213,7 @@ func TestRoutedToIBCFFromTheSCSCF(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, harnessOptions{bgcf: usBGCF(), ibcf: true})
-			u := h.newUE(loopback)
+			u := h.fromSCSCF()
 
 			if u.sock.Addr().Addr() != h.ibcf.sock.Addr().Addr() || u.sock.Addr() == h.ibcf.sock.Addr() {
 				t.Fatalf("source %s, want the address of the IBCF %s on another port", u.sock.Addr(), h.ibcf.sock.Addr())
