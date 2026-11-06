@@ -25,6 +25,7 @@ tags:
   - name: Diameter
   - name: Policy
   - name: SIP
+  - name: SIP trunks
   - name: Registrations
   - name: Call records
   - name: IP-SM-GW
@@ -372,6 +373,260 @@ paths:
                 properties:
                   result:
                     $ref: "#/components/schemas/SIPStatus"
+
+  /api/v1/sip-trunks:
+    get:
+      tags: [SIP trunks]
+      operationId: listSIPTrunks
+      summary: List the SIP trunks
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The trunks, ordered by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SIPTrunk"
+    post:
+      tags: [SIP trunks]
+      operationId: createSIPTrunk
+      summary: Create a SIP trunk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPTrunkParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "201":
+          description: The SIP trunk created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-trunks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [SIP trunks]
+      operationId: getSIPTrunk
+      summary: Get a SIP trunk
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP trunk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [SIP trunks]
+      operationId: updateSIPTrunk
+      summary: Update a SIP trunk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPTrunkParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP trunk as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [SIP trunks]
+      operationId: deleteSIPTrunk
+      summary: Delete a SIP trunk
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-routes:
+    get:
+      tags: [SIP trunks]
+      operationId: listSIPRoutes
+      summary: List the SIP routes
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The routes, ordered by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SIPRoute"
+    post:
+      tags: [SIP trunks]
+      operationId: createSIPRoute
+      summary: Create a SIP route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "201":
+          description: The SIP route created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-routes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [SIP trunks]
+      operationId: getSIPRoute
+      summary: Get a SIP route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [SIP trunks]
+      operationId: updateSIPRoute
+      summary: Update a SIP route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP route as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [SIP trunks]
+      operationId: deleteSIPRoute
+      summary: Delete a SIP route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/registrations:
     get:
@@ -2506,6 +2761,15 @@ components:
         international_prefix:
           type: string
           pattern: "^[0-9]{0,4}$"
+        min_national_digits:
+          type: integer
+          minimum: 0
+          maximum: 15
+          default: 7
+          description: >-
+            Fewest digits a number dialled without the international or national prefix needs to be routed to a
+            SIP trunk when the HSS doesn't know it. Shorter numbers, such as service codes, get 404. 0 never routes
+            such numbers to a trunk. A number whose phone-context is + and the country code never goes to a trunk.
 
     OperatorResult:
       type: object
@@ -2735,6 +2999,265 @@ components:
                 type: array
                 items:
                   type: string
+
+    SIPTrunkParams:
+      type: object
+      required: [name, addresses, domain, enabled]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Unique among trunks, ignoring case. Printable, without leading or trailing spaces.
+          examples: [Telnyx]
+        addresses:
+          type: array
+          minItems: 1
+          description: >-
+            Where requests to the carrier go, in order, each once. A domain name is preferred over an IP address.
+            What is left out, DNS decides, as RFC 3263 has it: a host alone takes the transport, port and addresses
+            from NAPTR, SRV, then A and AAAA records; a host and a transport, from SRV, then A and AAAA records; a
+            host and a port, from A and AAAA records, over UDP. An IP address without a port takes the default port
+            of the transport, and UDP without a transport. The default port is 5060 for udp and tcp, and 5061 for
+            tls. A trusted trunk skips UDP records and takes TCP where UDP would be the default.
+          items:
+            type: object
+            additionalProperties: false
+            required: [host]
+            properties:
+              host:
+                type: string
+                description: A domain name, or a specific IPv4 or IPv6 address.
+                examples: [sip.telnyx.com]
+              port:
+                type: integer
+                minimum: 1
+                maximum: 65535
+                description: Absent when DNS decides it, or when it is the default of the transport for an IP address.
+              transport:
+                type: string
+                enum: [udp, tcp, tls]
+                description: >-
+                  Absent when DNS decides it. tls needs tls.ca_certificates, tls.pinned_certificates or
+                  tls.pinned_fingerprints. Required to be tls when tls.required is set. Must not be udp when trusted
+                  is set.
+        inbound_cidrs:
+          type: array
+          description: >-
+            The networks requests from the carrier come from. A bare address is a network of that one address. No
+            two networks may overlap, in this trunk or across trunks. Absent or empty accepts no requests from the
+            carrier.
+          items:
+            type: string
+            examples: [192.76.120.10/32]
+        domain:
+          type: string
+          description: >-
+            The carrier's domain name, or a specific IPv4 or IPv6 address, bare, without brackets: the host of the
+            Request-URI of requests to the carrier.
+          examples: [sip.telnyx.com]
+        trusted:
+          type: boolean
+          default: false
+          description: >-
+            Whether the carrier is in the trust domain, by an interconnect agreement. The IMS then keeps
+            P-Asserted-Identity and the other trust domain header fields to and from the carrier. A trusted trunk
+            never uses UDP: no address may have udp as transport, and an address without a transport is reached
+            over TCP or TLS only.
+        keepalive_interval:
+          type: integer
+          minimum: 0
+          maximum: 3600
+          default: 30
+          description: >-
+            Seconds between the OPTIONS requests that check the carrier is up, 5 to 3600. 0 sends no OPTIONS
+            requests: the trunk then stays unknown, and routes use it.
+        enabled:
+          type: boolean
+          description: Whether routes may use the trunk. Required, on update too.
+        tls:
+          $ref: "#/components/schemas/SIPTrunkTLSParams"
+
+    SIPTrunkTLSParams:
+      type: object
+      description: >-
+        How Ella IMS authenticates the carrier over TLS, as SIPconnect 2.0 section 17.2 has it: by a CA, by a pinned
+        certificate, or by a pinned fingerprint, any of which is enough. Absent for a trunk without TLS. Ella IMS's own
+        certificate is in the configuration file.
+      properties:
+        required:
+          type: boolean
+          default: false
+          description: >-
+            Whether the carrier must use TLS. Every address must then have tls as transport, and requests from the
+            inbound CIDRs over UDP or TCP are refused.
+        require_client_certificate:
+          type: boolean
+          default: false
+          description: >-
+            Whether the carrier must present a certificate when it opens a TLS connection to Ella IMS, for TLS
+            mutual authentication. Without one, a certificate the carrier presents is still checked.
+        ca_certificates:
+          type: string
+          description: >-
+            PEM-encoded CA certificates, at most 32, that the carrier's certificate must chain to. Not expired when
+            added. Needs identities.
+        pinned_certificates:
+          type: string
+          description: >-
+            PEM-encoded certificates, at most 32, that the carrier presents itself. Not expired when added.
+        pinned_fingerprints:
+          type: array
+          maxItems: 32
+          description: >-
+            SHA-256 fingerprints of certificates that the carrier presents itself, as 32 hex bytes, with or without
+            colons.
+          items:
+            type: string
+            examples: ["2C:54:DF:66:29:19:96:C5:C8:A5:E8:4B:7A:32:FE:71:02:38:11:62:D4:D9:2E:2C:A1:C4:E7:8C:0D:D5:B1:C5"]
+        identities:
+          type: array
+          maxItems: 16
+          description: >-
+            The domain names one of which the carrier's certificate must hold, as a SIP URI or DNS name in its
+            subjectAltName, or as its common name when it has no subjectAltName. Required with ca_certificates.
+            Without identities, a domain name the request goes to is the identity.
+          items:
+            type: string
+            examples: [sip.telnyx.com]
+
+    SIPTrunkTLS:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkTLSParams"
+        - type: object
+          required: [required, require_client_certificate, ca_certificates, pinned_certificates, pinned_fingerprints,
+            identities, ca_certificate_details, pinned_certificate_details]
+          properties:
+            ca_certificate_details:
+              type: array
+              description: The CA certificates, in the order of ca_certificates.
+              items:
+                $ref: "#/components/schemas/CertificateSummary"
+            pinned_certificate_details:
+              type: array
+              description: The pinned certificates, in the order of pinned_certificates.
+              items:
+                $ref: "#/components/schemas/CertificateSummary"
+
+    CertificateSummary:
+      type: object
+      required: [subject, issuer, dns_names, uris, ip_addresses, identities, ca, not_before, not_after,
+        sha256_fingerprint]
+      properties:
+        subject:
+          type: string
+          examples: ["CN=sip.telnyx.com,O=Telnyx"]
+        issuer:
+          type: string
+        dns_names:
+          type: array
+          items:
+            type: string
+        uris:
+          type: array
+          items:
+            type: string
+        ip_addresses:
+          type: array
+          items:
+            type: string
+        identities:
+          type: array
+          description: The identities that Ella IMS matches against tls.identities.
+          items:
+            type: string
+        ca:
+          type: boolean
+        not_before:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        sha256_fingerprint:
+          type: string
+          description: The SHA-256 fingerprint of the certificate, as upper-case hex bytes separated by colons.
+
+    SIPTrunk:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkParams"
+        - type: object
+          required: [id, inbound_cidrs, trusted, keepalive_interval, tls, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: A UUIDv7.
+            tls:
+              $ref: "#/components/schemas/SIPTrunkTLS"
+            status:
+              $ref: "#/components/schemas/SIPTrunkStatus"
+
+    SIPTrunkStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unknown, up, down]
+          description: >-
+            Whether the carrier answers OPTIONS requests, and so whether routes use an enabled trunk. up: it answers;
+            routes use it. down: it does not; routes skip it. unknown: not probed, because keepalive_interval is 0
+            or the first OPTIONS request has not been answered yet; routes use it.
+        since:
+          type: string
+          format: date-time
+          description: The time of the last state change.
+
+    SIPTrunkResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/SIPTrunk"
+
+    SIPRouteParams:
+      type: object
+      required: [trunks]
+      properties:
+        prefix:
+          type: string
+          pattern: "^(\\+[1-9][0-9]{0,14})?$"
+          default: ""
+          description: >-
+            The start of the E.164 numbers the route takes, with +. Unique among routes. Absent or empty is the
+            default route, of numbers no other route takes. A number takes the route of the longest prefix it
+            starts with.
+          examples: ["+1"]
+        trunks:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: The identifiers of the SIP trunks of the route, in the order calls try them.
+          items:
+            type: string
+            format: uuid
+
+    SIPRoute:
+      allOf:
+        - $ref: "#/components/schemas/SIPRouteParams"
+        - type: object
+          required: [id, prefix]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: A UUIDv7.
+
+    SIPRouteResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/SIPRoute"
 
     Registration:
       type: object

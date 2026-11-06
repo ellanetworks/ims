@@ -128,7 +128,19 @@ func TestDestinations(t *testing.T) {
 		got, err := udpDestination(via)
 		check("UDP", got, err, tc.udp)
 
-		got, err = tcpDestination(via)
+		got, err = tcpDestination(via, sip.TCP)
 		check("TCP", got, err, tc.tcp)
+	}
+}
+
+func TestTLSDestinationDefaultsTo5061(t *testing.T) {
+	via, err := sip.ParseVia("SIP/2.0/TLS 10.0.0.1;received=10.0.0.2;rport=6401")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tcpDestination(via, sip.TLS)
+	if err != nil || got.String() != "10.0.0.2:5061" {
+		t.Errorf("got %s, %v, want 10.0.0.2:5061", got, err)
 	}
 }

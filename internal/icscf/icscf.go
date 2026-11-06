@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -53,6 +54,9 @@ type Config struct {
 
 	Resolver     Resolver
 	PSISubdomain func(host string) bool
+
+	BGCF *bgcf.BGCF
+	IBCF []netip.AddrPort
 
 	HSSRealm  func() string
 	Diameter  Diameter

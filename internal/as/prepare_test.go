@@ -65,6 +65,11 @@ func TestPrepareLifetime(t *testing.T) {
 
 type unanswered struct{}
 
+func (unanswered) LookupNAPTR(ctx context.Context, _ string) ([]sip.NAPTR, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (unanswered) LookupSRV(ctx context.Context, _, _, _ string) (string, []*net.SRV, error) {
 	<-ctx.Done()
 	return "", nil, ctx.Err()
@@ -76,6 +81,10 @@ func (unanswered) LookupNetIP(ctx context.Context, _, _ string) ([]netip.Addr, e
 }
 
 type dns struct{}
+
+func (dns) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
 
 func (dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	if service == "sip" && proto == "udp" && name == "scscf.ims.example.com" {

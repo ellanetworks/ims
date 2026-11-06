@@ -80,6 +80,8 @@ const (
 	PermReadPolicy                Permission = "policy:read"
 	PermUpdatePolicy              Permission = "policy:update"
 	PermReadSIP                   Permission = "sip:read"
+	PermReadSIPTrunks             Permission = "sip_trunk:read"
+	PermUpdateSIPTrunks           Permission = "sip_trunk:update"
 	PermReadRegistrations         Permission = "registration:read"
 	PermReauthenticate            Permission = "registration:reauthenticate"
 	PermReadCallRecords           Permission = "call_record:read"
@@ -97,13 +99,13 @@ const (
 )
 
 var readPermissions = []Permission{
-	PermReadOperator, PermReadDiameter, PermReadPolicy, PermReadSIP, PermReadRegistrations, PermReadCallRecords,
-	PermReadCallRecordRetention, PermReadIPSMGW, PermReadMCPTT, PermSelf,
+	PermReadOperator, PermReadDiameter, PermReadPolicy, PermReadSIP, PermReadSIPTrunks, PermReadRegistrations,
+	PermReadCallRecords, PermReadCallRecordRetention, PermReadIPSMGW, PermReadMCPTT, PermSelf,
 }
 
 var operatePermissions = []Permission{
-	PermUpdateOperator, PermUpdateDiameter, PermUpdatePolicy, PermReauthenticate, PermUpdateCallRecordRetention,
-	PermUpdateIPSMGW, PermUpdateMCPTT,
+	PermUpdateOperator, PermUpdateDiameter, PermUpdatePolicy, PermUpdateSIPTrunks, PermReauthenticate,
+	PermUpdateCallRecordRetention, PermUpdateIPSMGW, PermUpdateMCPTT,
 }
 
 var permissions = map[db.Role][]Permission{

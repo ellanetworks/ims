@@ -1,0 +1,350 @@
+package ibcf
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"log/slog"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/b2bua"
+	"github.com/ellanetworks/ims/sip/ua"
+)
+
+const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
+
+// TS 23.228 clause 4.14
+// TS 24.229 clause 5.10.2.2
+// SIPconnect 2.0 section 10.2
+func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
+	in := r.Message()
+
+	if !slices.Contains(b.cfg.ICSCF, unmap(in.Flow.Remote)) {
+		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the I-CSCF", slog.String("source", in.Flow.Remote.String()))
+
+		_ = r.Reject(403)
+
+		return
+	}
+
+	number, ok := globalNumber(in.URI)
+	if !ok {
+		_ = r.Reject(404)
+		return
+	}
+
+	trunks, err := b.cfg.BGCF.Trunks(number)
+
+	switch {
+	case errors.Is(err, bgcf.ErrNoRoute):
+		b.log.DebugContext(ctx, "no SIP route for the number", slog.String("number", number))
+
+		_ = r.Reject(404)
+
+		return
+	case err != nil:
+		b.log.WarnContext(ctx, "SIP route selection failed", slog.String("number", number), slog.Any("error", err))
+
+		_ = r.Reject(500)
+
+		return
+	}
+
+	privacy, err := in.Header.Privacy()
+	if err != nil {
+		_ = r.Reject(400)
+		return
+	}
+
+	if unsupported := unsupportedPrivacy(privacy); unsupported != "" {
+		_ = r.Respond(ua.Reply{Code: 500, Reason: "Privacy Failure: " + unsupported})
+		return
+	}
+
+	caller, ok := callerOf(in.Header)
+	if !ok {
+		b.log.InfoContext(ctx, "off-net call of a caller without an E.164 number", slog.Any("p-asserted-identity", in.Header.Values("P-Asserted-Identity")))
+
+		_ = r.Reject(403)
+
+		return
+	}
+
+	c := &call{
+		b: b, outbound: true, initial: in, icid: icidOf(in.Header), route: b.newRoute(trunks),
+		exit: exit{number: in.URI, caller: caller, privacy: privacy},
+	}
+
+	if !b.legs.add(key{in.Header.CallID(), tagOf(in), false}, &leg{call: c}) {
+		_ = r.Reject(482)
+		return
+	}
+
+	out := b.attempt(ctx, c)
+	if out == nil {
+		b.release(c)
+
+		_ = r.Reject(503)
+
+		return
+	}
+
+	b.bridge(ctx, r, c, out)
+}
+
+func tagOf(req *sip.Request) string {
+	from, _ := req.Header.From()
+	return from.Tag()
+}
+
+// RFC 3263 section 4.3
+func (b *IBCF) failover(ctx context.Context, c *call, f b2bua.Failure) *sip.Request {
+	if !f.ServerFailed() {
+		return nil
+	}
+
+	t, _ := c.owner()
+	b.cfg.Metrics.failover(t.ID)
+
+	return b.attempt(ctx, c)
+}
+
+// RFC 3263 section 4.3
+// SIPconnect 2.0 section 17.1.1.2
+func (b *IBCF) attempt(ctx context.Context, c *call) *sip.Request {
+	for {
+		next, ok := c.route.next(ctx)
+		if !ok {
+			return nil
+		}
+
+		c.mu.Lock()
+
+		if c.callID == "" || c.trunk.ID != next.trunk.ID {
+			c.callID, c.fromTag = sip.NewTag(), sip.NewTag()
+		}
+
+		c.trunk, c.signal = next.trunk, next.local.Addr()
+		callID, fromTag := c.callID, c.fromTag
+
+		c.mu.Unlock()
+
+		out, err := b.toTrunk(c, next, callID, fromTag)
+		if err != nil {
+			b.log.DebugContext(ctx, "INVITE to the SIP trunk not built", slog.String("trunk", next.trunk.Name), slog.Any("error", err))
+			return nil
+		}
+
+		k := key{callID, fromTag, true}
+		l := b.legs.get(k)
+
+		if l == nil {
+			l = &leg{call: c, trunk: true}
+			if !b.legs.add(k, l) {
+				continue
+			}
+		}
+
+		l.setFlow(sip.Flow{Transport: next.server.Transport, Local: next.local, Remote: next.server.Addr})
+
+		return out
+	}
+}
+
+func (b *IBCF) bridge(ctx context.Context, r *ua.Request, c *call, out *sip.Request) {
+	bc := b.begin(r, c)
+
+	if b.cfg.Media != nil {
+		c.media = &media{c: c, cfg: *b.cfg.Media, call: bc}
+	}
+
+	if _, err := b2bua.Bridge(ctx, bc, r, out, b.relay(c)); err != nil {
+		b.log.DebugContext(ctx, "call not bridged", slog.String("call_id", r.Message().Header.CallID()), slog.Any("error", err))
+	}
+}
+
+// RFC 3323 section 5
+func unsupportedPrivacy(p sip.Privacy) string {
+	if !p.Has(sip.PrivacyCritical) {
+		return ""
+	}
+
+	for _, v := range p {
+		switch strings.ToLower(v) {
+		case sip.PrivacyNone, sip.PrivacyCritical, sip.PrivacyID, sip.PrivacyUser, sip.PrivacyHeader, sip.PrivacyHistory:
+		default:
+			return v
+		}
+	}
+
+	return ""
+}
+
+// TS 24.229 clause 5.10.8
+// SIPconnect 2.0 section 9
+// SIPconnect 2.0 section 10.2.1
+// SIPconnect 2.0 section 10.2.2
+// SIPconnect 2.0 section 10.2.3
+// SIPconnect 2.0 section 10.2.4
+// SIPconnect 2.0 section 10.2.5
+// RFC 3325 section 7
+func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Request, error) {
+	in, x, t := c.initial, c.exit, next.trunk
+
+	uri := sip.URI{Scheme: "sip", User: subscriber(x.number, t.Trusted), Host: host(t.Domain)}
+	uri.Params.Set("user", "phone")
+
+	out := sip.NewRequest("INVITE", uri)
+
+	asserted := sip.Address{Display: x.caller.Display, URI: phoneURI(x.caller.URI.User, b.cfg.HomeDomain)}
+	hidden := !x.privacy.Has(sip.PrivacyNone) && (x.privacy.Has(sip.PrivacyID) || x.privacy.Has(sip.PrivacyUser))
+
+	from := asserted
+	if hidden {
+		from, _ = sip.ParseAddress(anonymous)
+	}
+
+	from = from.Clone()
+	from.Params.Set("tag", fromTag)
+
+	out.Header.Add("From", from.String())
+	out.Header.Add("To", "<"+uri.String()+">")
+	out.Header.Add("Call-ID", callID)
+
+	if t.Trusted || !x.privacy.Has(sip.PrivacyID) || x.privacy.Has(sip.PrivacyNone) {
+		out.Header.Add("P-Asserted-Identity", asserted.String())
+	}
+
+	out.Header.Add("Contact", b.contact(next.local, next.server.Transport).String())
+
+	if err := forwards(in, out); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+// RFC 3261 section 19.1.6
+// TS 24.229 clause 4.4.12
+// SIPconnect 2.0 section 9
+func subscriber(u sip.URI, trusted bool) string {
+	number, _ := globalNumber(u)
+
+	var first, rest []sip.Param
+
+	if !u.IsTel() {
+		return number
+	}
+
+	for _, p := range u.Params {
+		name := strings.ToLower(p.Name)
+
+		switch {
+		case name == "phone-context":
+		case !trusted && (name == "cpc" || name == "oli"):
+		case name == "isub" || name == "postd":
+			first = append(first, sip.Param{Name: name, Value: strings.ToLower(p.Value)})
+		default:
+			rest = append(rest, sip.Param{Name: name, Value: strings.ToLower(p.Value)})
+		}
+	}
+
+	slices.SortStableFunc(first, func(a, b sip.Param) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortStableFunc(rest, func(a, b sip.Param) int { return cmp.Compare(a.Name, b.Name) })
+
+	var sb strings.Builder
+
+	sb.WriteString(number)
+
+	for _, p := range append(first, rest...) {
+		sb.WriteString(";" + p.Name)
+
+		if p.Value != "" {
+			sb.WriteString("=" + p.Value)
+		}
+	}
+
+	return sb.String()
+}
+
+var errLoop = errors.New("ibcf: Max-Forwards exhausted")
+
+func forwards(in, out *sip.Request) error {
+	v := in.Header.Get("Max-Forwards")
+	if v == "" {
+		return nil
+	}
+
+	mf, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || mf <= 0 {
+		return errLoop
+	}
+
+	out.Header.Set("Max-Forwards", strconv.Itoa(mf-1))
+
+	return nil
+}
+
+func phoneURI(number, home string) sip.URI {
+	u := sip.URI{Scheme: "sip", User: number, Host: home}
+	u.Params.Set("user", "phone")
+
+	return u
+}
+
+// SIPconnect 2.0 section 9
+func callerOf(h sip.Header) (sip.Address, bool) {
+	asserted, err := h.Addresses("P-Asserted-Identity")
+	if err != nil {
+		return sip.Address{}, false
+	}
+
+	var found sip.Address
+
+	ok := false
+
+	for _, a := range asserted {
+		number, global := globalNumber(a.URI)
+		if !global {
+			continue
+		}
+
+		if !ok || a.URI.IsTel() {
+			found = sip.Address{Display: a.Display, URI: sip.URI{Scheme: "tel", User: number}}
+			ok = true
+		}
+	}
+
+	return found, ok
+}
+
+// SIPconnect 2.0 section 9
+func globalNumber(u sip.URI) (string, bool) {
+	switch {
+	case u.IsTel():
+		return bgcf.Number(u)
+	case !u.IsSIP():
+		return "", false
+	}
+
+	user, _, _ := strings.Cut(u.User, ";")
+
+	number := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("-.()", r) {
+			return -1
+		}
+
+		return r
+	}, user)
+
+	digits, ok := strings.CutPrefix(number, "+")
+	if !ok || digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return "", false
+	}
+
+	return number, true
+}

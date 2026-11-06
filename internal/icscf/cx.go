@@ -96,3 +96,9 @@ func locationFailure(err error) int {
 		return 404
 	}
 }
+
+func userUnknown(err error) bool {
+	var re *cx.ResultError
+
+	return errors.As(err, &re) && re.IsExperimental(tgpp.ResultErrorUserUnknown)
+}

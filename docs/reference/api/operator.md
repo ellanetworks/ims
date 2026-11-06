@@ -24,6 +24,7 @@ This path returns the operator settings.
 | `numbering.country_code`         | string | Country code. |
 | `numbering.national_prefix`      | string | National prefix. |
 | `numbering.international_prefix` | string | International prefix. |
+| `numbering.min_national_digits`  | integer | Fewest digits a number dialled without a prefix needs to be routed to a SIP trunk. |
 
 ### Sample Response
 
@@ -35,7 +36,8 @@ This path returns the operator settings.
         "numbering": {
             "country_code": "1",
             "national_prefix": "1",
-            "international_prefix": "011"
+            "international_prefix": "011",
+            "min_national_digits": 7
         }
     }
 }
@@ -59,6 +61,7 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
 | `numbering.country_code`         | string | Yes      | 1 to 3 digits, not starting with 0. |
 | `numbering.national_prefix`      | string | Yes      | Up to 4 digits. Differs from `international_prefix` unless empty. |
 | `numbering.international_prefix` | string | Yes      | Up to 4 digits. |
+| `numbering.min_national_digits`  | integer | No      | 0 to 15. Default `7`. A number dialled without the international or national prefix gets the country code prepended. If the HSS doesn't know it, it is routed to a SIP trunk only when it has at least this many digits; shorter numbers, such as service codes, get 404. `0` never routes such numbers to a trunk. A number without a prefix whose `phone-context` is `+` and the country code never goes to a trunk. |
 
 ### Sample Request
 
@@ -69,7 +72,8 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
     "numbering": {
         "country_code": "1",
         "national_prefix": "1",
-        "international_prefix": "011"
+        "international_prefix": "011",
+        "min_national_digits": 7
     }
 }
 ```
@@ -84,7 +88,8 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
         "numbering": {
             "country_code": "1",
             "national_prefix": "1",
-            "international_prefix": "011"
+            "international_prefix": "011",
+            "min_national_digits": 7
         }
     }
 }

@@ -186,9 +186,10 @@ var migrations = []string{
 		mnc TEXT NOT NULL,
 		country_code TEXT NOT NULL,
 		national_prefix TEXT NOT NULL,
-		international_prefix TEXT NOT NULL
+		international_prefix TEXT NOT NULL,
+		min_national_digits INTEGER NOT NULL CHECK (min_national_digits BETWEEN 0 AND 15)
 	);
-	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011');
+	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011', 7);
 	CREATE TABLE diameter_peers (
 		id TEXT PRIMARY KEY,
 		host TEXT NOT NULL COLLATE NOCASE,
@@ -216,6 +217,61 @@ var migrations = []string{
 		retention_days INTEGER NOT NULL
 	);
 	INSERT INTO call_record_settings VALUES (1, 90);
+	CREATE TABLE sip_trunks (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		domain TEXT NOT NULL,
+		trusted INTEGER NOT NULL CHECK (trusted IN (0, 1)),
+		keepalive_interval_s INTEGER NOT NULL CHECK (keepalive_interval_s = 0 OR keepalive_interval_s BETWEEN 5 AND 3600),
+		enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+		tls_required INTEGER NOT NULL CHECK (tls_required IN (0, 1)),
+		tls_require_client_certificate INTEGER NOT NULL CHECK (tls_require_client_certificate IN (0, 1))
+	);
+	CREATE TABLE sip_trunk_addresses (
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		host TEXT NOT NULL,
+		port INTEGER CHECK (port BETWEEN 1 AND 65535),
+		transport TEXT CHECK (transport IN ('udp', 'tcp', 'tls')),
+		PRIMARY KEY (trunk_id, position)
+	) WITHOUT ROWID;
+	CREATE TABLE sip_trunk_inbound_cidrs (
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		cidr TEXT NOT NULL UNIQUE,
+		PRIMARY KEY (trunk_id, position)
+	) WITHOUT ROWID;
+	CREATE TABLE sip_trunk_tls_certificates (
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK (kind IN ('ca', 'pinned')),
+		position INTEGER NOT NULL,
+		der BLOB NOT NULL CHECK (length(der) BETWEEN 1 AND 16384),
+		PRIMARY KEY (trunk_id, kind, position)
+	) WITHOUT ROWID;
+	CREATE TABLE sip_trunk_tls_fingerprints (
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		sha256 BLOB NOT NULL CHECK (length(sha256) = 32),
+		PRIMARY KEY (trunk_id, position)
+	) WITHOUT ROWID;
+	CREATE TABLE sip_trunk_tls_identities (
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		identity TEXT NOT NULL,
+		PRIMARY KEY (trunk_id, position)
+	) WITHOUT ROWID;
+	CREATE TABLE sip_routes (
+		id TEXT PRIMARY KEY,
+		prefix TEXT NOT NULL UNIQUE
+	);
+	CREATE TABLE sip_route_trunks (
+		route_id TEXT NOT NULL REFERENCES sip_routes (id) ON DELETE CASCADE,
+		position INTEGER NOT NULL,
+		trunk_id TEXT NOT NULL REFERENCES sip_trunks (id),
+		PRIMARY KEY (route_id, position),
+		UNIQUE (route_id, trunk_id)
+	) WITHOUT ROWID;
+	CREATE INDEX sip_route_trunks_trunk ON sip_route_trunks (trunk_id);
 	-- The MCPTT application server (mcptt_*.go). Its settings, but its PSIs, which are of the home domain, and but what
 	-- the server fixes to the defaults of the MCPTT settings package (the floor control timers but T2, a user's N2 and
 	-- N6, a group's call rules and encodings, a member's priority and acknowledgement): an optional element absent

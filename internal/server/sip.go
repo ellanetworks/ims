@@ -15,15 +15,18 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/as"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
+	"github.com/ellanetworks/ims/internal/trgw"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -54,10 +57,13 @@ var knownMethods = map[string]bool{
 }
 
 const (
-	rolePCSCF          = "pcscf"
-	rolePCSCFProtected = "pcscf-protected"
-	roleICSCF          = "icscf"
-	roleSCSCF          = "scscf"
+	rolePCSCF           = "pcscf"
+	rolePCSCFProtected  = "pcscf-protected"
+	roleICSCF           = "icscf"
+	roleSCSCF           = "scscf"
+	roleIBCF            = "ibcf"
+	roleIBCFExternal    = "ibcf-external"
+	roleIBCFExternalTLS = "ibcf-external-tls"
 )
 
 type sipServer struct {
@@ -68,6 +74,8 @@ type sipServer struct {
 	cx          *cxHandler
 	rx          *rxHandler
 	pcscf       atomic.Pointer[pcscf.PCSCF]
+	ibcf        *ibcf.IBCF
+	trgw        *trgw.Gateway
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
 }
@@ -82,7 +90,9 @@ type timers struct {
 	asTimeout        time.Duration
 }
 
-func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
+func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live func() settings.Settings,
+	changed func() <-chan struct{}, states settings.TrunkStates,
+	numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
 	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, tp trace.TracerProvider,
@@ -199,12 +209,19 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		}
 	}
 
+	homeDomain := op.HomeDomain()
+	breakout := bgcf.New(live, states)
+
+	if cfg.IBCF != nil {
+		if err := s.startIBCF(ctx, cfg, homeDomain, domain, breakout, live, changed, ases, m, failed, tp, logger); err != nil {
+			return nil, errors.Join(err, s.Close(ctx))
+		}
+	}
+
 	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close(ctx))
 	}
-
-	homeDomain := op.HomeDomain()
 
 	s.registrar = scscf.New(scscf.Config{
 		HomeDomain: homeDomain,
@@ -286,6 +303,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Listeners: s.bound(roleSCSCF),
 		},
 		PSISubdomain:         resolver.Has,
+		BGCF:                 breakout,
+		IBCF:                 s.bound(roleIBCF),
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		Records:              records,
@@ -314,6 +333,78 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	s.registrar.Start()
 
 	return s, nil
+}
+
+// TS 23.228 clause 4.14
+// TS 24.229 clause 5.10.1
+func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, homeDomain string, domain *trust.Domain, breakout *bgcf.BGCF,
+	live func() settings.Settings, changed func() <-chan struct{}, ases builtinASs, m *metrics, failed func(local netip.AddrPort, err error), tp trace.TracerProvider,
+	logger *slog.Logger,
+) error {
+	internal := make([]netip.AddrPort, 0, len(cfg.SIP.Addresses))
+	for _, a := range cfg.SIP.Addresses {
+		internal = append(internal, netip.AddrPortFrom(a, uint16(cfg.IBCF.Port)))
+	}
+
+	external := make([]netip.AddrPort, 0, len(cfg.IBCF.External.Addresses))
+	for _, a := range cfg.IBCF.External.Addresses {
+		external = append(external, netip.AddrPortFrom(a, uint16(cfg.IBCF.External.Port)))
+	}
+
+	secure, cert, err := ibcfTLS(cfg.IBCF.External)
+	if err != nil {
+		return err
+	}
+
+	media, err := s.startTrGW(cfg.TrGW, m.trgw)
+	if err != nil {
+		return err
+	}
+
+	b, err := ibcf.Start(ctx, ibcf.Config{
+		HomeDomain:  homeDomain,
+		Internal:    internal,
+		External:    external,
+		Advertised:  cfg.IBCF.External.Advertised(),
+		TLS:         secure,
+		Certificate: cert,
+		Changed:     changed,
+		Resolve:     ibcf.SystemResolve,
+		ICSCF:       s.bound(roleICSCF),
+		Trust:       domain,
+		BGCF:        breakout,
+		Settings:    live,
+		Metrics:     m.ibcf,
+		Media:       media,
+		Transaction: transaction.Config{
+			Network:        ases.network,
+			TracerProvider: tp,
+			OnListenerFailed: func(local netip.AddrPort, err error) {
+				logger.Error("IBCF listener failed: the core restarts", slog.String("address", local.String()), slog.Any("error", err))
+				failed(local, err)
+			},
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return fmt.Errorf("start the IBCF: %w", err)
+	}
+
+	s.ibcf = b
+
+	for _, a := range b.Internal() {
+		s.listeners = append(s.listeners, api.SIPEndpoint{Role: roleIBCF, Address: a})
+	}
+
+	for _, a := range b.External() {
+		s.listeners = append(s.listeners, api.SIPEndpoint{Role: roleIBCFExternal, Address: a})
+	}
+
+	for _, a := range b.TLS() {
+		s.listeners = append(s.listeners, api.SIPEndpoint{Role: roleIBCFExternalTLS, Address: a})
+	}
+
+	return nil
 }
 
 func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr, port int) (uint16, error) {
@@ -373,8 +464,16 @@ func (s *sipServer) Close(ctx context.Context) error {
 
 	var err error
 
+	if s.ibcf != nil {
+		err = s.ibcf.Shutdown(ctx)
+	}
+
+	if s.trgw != nil {
+		err = errors.Join(err, s.trgw.Close())
+	}
+
 	if p := s.pcscf.Load(); p != nil {
-		err = p.Close(ctx)
+		err = errors.Join(err, p.Close(ctx))
 	}
 
 	if s.layer != nil {

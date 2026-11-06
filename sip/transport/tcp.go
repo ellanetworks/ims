@@ -2,12 +2,16 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -24,15 +28,24 @@ var crlf = []byte("\r\n")
 const drainTimeout = time.Second
 
 type conn struct {
-	flow  sip.Flow
-	ready chan struct{}
-	nc    *net.TCPConn
-	err   error
+	flow    sip.Flow
+	ready   chan struct{}
+	done    chan struct{}
+	nc      net.Conn
+	tcp     *net.TCPConn
+	err     error
+	inbound bool
+	peers   []*x509.Certificate
 
-	wmu    sync.Mutex
-	active atomic.Int64
-	limit  atomic.Int64
-	closed atomic.Bool
+	wmu      sync.Mutex
+	active   atomic.Int64
+	limit    atomic.Int64
+	closed   atomic.Bool
+	received atomic.Bool
+}
+
+func newConn(f sip.Flow) *conn {
+	return &conn{flow: f, ready: make(chan struct{}), done: make(chan struct{})}
 }
 
 func (c *conn) touch() {
@@ -46,14 +59,14 @@ func (c *conn) lastActive() time.Time {
 func (c *conn) close() {
 	c.closed.Store(true)
 
-	if c.nc != nil {
-		_ = c.nc.Close()
+	if c.tcp != nil {
+		_ = c.tcp.Close()
 	}
 }
 
 func (c *conn) abort() {
-	if c.nc != nil {
-		_ = c.nc.SetLinger(0)
+	if c.tcp != nil {
+		_ = c.tcp.SetLinger(0)
 	}
 
 	c.close()
@@ -75,7 +88,14 @@ func (t *Transport) write(c *conn, b []byte) error {
 	return nil
 }
 
-func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, error) {
+func (t *Transport) conn(ctx context.Context, f sip.Flow, dial, request bool) (*conn, error) {
+	strict := request && f.Transport == sip.TLS
+
+	var v *verifier
+	if strict {
+		v = t.reuseVerifier(f)
+	}
+
 	t.mu.Lock()
 
 	if t.closed {
@@ -90,6 +110,16 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		ok = false
 	}
 
+	if ok && strict && c.inbound && !v.accepts(c) {
+		t.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrUnauthorizedConnection, f)
+	}
+
+	if !ok && f.Transport == sip.TLS {
+		c = t.reusable(f, v, strict)
+		ok = c != nil
+	}
+
 	switch {
 	case ok:
 		t.mu.Unlock()
@@ -97,7 +127,7 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		t.mu.Unlock()
 		return nil, errNoConn
 	default:
-		c = &conn{flow: f, ready: make(chan struct{})}
+		c = newConn(f)
 		t.conns[f] = c
 		t.wg.Add(1)
 		t.mu.Unlock()
@@ -147,6 +177,12 @@ func (t *Transport) dial(c *conn) {
 		t.awaitAccept(c)
 	}
 
+	sc := nc
+
+	if err == nil && c.flow.Transport == sip.TLS {
+		sc, err = t.clientHandshake(nc, c.flow)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -171,9 +207,16 @@ func (t *Transport) dial(c *conn) {
 		return
 	}
 
-	c.nc = nc.(*net.TCPConn)
+	c.tcp = nc.(*net.TCPConn)
+	c.nc = sc
+
+	if tc, ok := sc.(*tls.Conn); ok {
+		c.peers = tc.ConnectionState().PeerCertificates
+	}
+
 	c.limit.Store(int64(t.idleTimeout))
 	c.touch()
+	t.index(c)
 	t.wg.Add(1)
 
 	go t.readTCP(c)
@@ -223,53 +266,89 @@ func (t *Transport) accept(l *listener) {
 		backoff = 0
 
 		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
-		c := &conn{flow: f, ready: make(chan struct{}), nc: nc}
-		c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
-		c.touch()
-		close(c.ready)
 
-		t.mu.Lock()
+		if l.tls != nil {
+			f.Transport = sip.TLS
+			if !t.startHandshake(l, f, nc) {
+				return
+			}
 
-		if t.closed {
-			t.mu.Unlock()
+			continue
+		}
 
-			_ = nc.Close()
-
+		if !t.register(f, nc, nc, nil) {
 			return
 		}
-
-		if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
-			t.adopt(old, nc)
-			t.mu.Unlock()
-
-			continue
-		}
-
-		if len(t.conns) >= t.maxConns {
-			t.mu.Unlock()
-			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
-			c.abort()
-
-			continue
-		}
-
-		if old := t.conns[f]; old != nil {
-			old.close()
-		}
-
-		t.conns[f] = c
-		t.wg.Add(1)
-
-		go t.readTCP(c)
-
-		t.mu.Unlock()
-
-		t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
 	}
 }
 
-func (t *Transport) adopt(c *conn, nc *net.TCPConn) {
+func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []*x509.Certificate) bool {
+	c := newConn(f)
 	c.nc = nc
+	c.tcp = raw
+	c.inbound = true
+	c.peers = peers
+	c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
+	c.touch()
+	close(c.ready)
+
+	t.mu.Lock()
+
+	if t.closed {
+		t.mu.Unlock()
+
+		_ = raw.Close()
+
+		return false
+	}
+
+	if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
+		if f.Transport == sip.TLS {
+			t.mu.Unlock()
+			t.log.Debug("SIP TLS connection refused: a dial on the flow is pending", slog.String("flow", f.String()))
+			c.abort()
+
+			return true
+		}
+
+		t.adopt(old, raw, nc)
+		t.mu.Unlock()
+
+		return true
+	}
+
+	if len(t.conns)+int(t.handshaking.Load()) >= t.maxConns {
+		t.mu.Unlock()
+		t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
+		c.abort()
+
+		return true
+	}
+
+	if old := t.conns[f]; old != nil {
+		old.close()
+	}
+
+	t.conns[f] = c
+
+	if len(peers) > 0 {
+		t.index(c)
+	}
+
+	t.wg.Add(1)
+
+	go t.readTCP(c)
+
+	t.mu.Unlock()
+
+	t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
+
+	return true
+}
+
+func (t *Transport) adopt(c *conn, raw *net.TCPConn, nc net.Conn) {
+	c.nc = nc
+	c.tcp = raw
 	c.limit.Store(int64(t.idleTimeout))
 	c.touch()
 	close(c.ready)
@@ -357,7 +436,10 @@ func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
 		return
 	}
 
-	_ = c.nc.CloseWrite()
+	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+
 	_ = c.nc.SetReadDeadline(time.Now().Add(drainTimeout))
 	_, _ = io.CopyN(io.Discard, c.nc, int64(t.maxSize))
 }
@@ -377,6 +459,9 @@ func (t *Transport) forget(c *conn, cause error) {
 	if t.conns[c.flow] == c {
 		delete(t.conns, c.flow)
 	}
+
+	t.unindex(c)
+	close(c.done)
 
 	closed := t.closed
 	t.mu.Unlock()
@@ -399,7 +484,9 @@ func (r idleReader) Read(p []byte) (int, error) {
 
 		n, err := r.c.nc.Read(p)
 		if n > 0 {
+			r.c.received.Store(true)
 			r.c.touch()
+
 			return n, nil
 		}
 
@@ -409,4 +496,60 @@ func (r idleReader) Read(p []byte) (int, error) {
 
 		return n, err
 	}
+}
+
+type peerKey struct {
+	local netip.AddrPort
+	addr  netip.Addr
+}
+
+func keyOf(f sip.Flow) peerKey {
+	return peerKey{local: f.Local, addr: f.Remote.Addr()}
+}
+
+func (t *Transport) index(c *conn) {
+	if c.flow.Transport != sip.TLS {
+		return
+	}
+
+	k := keyOf(c.flow)
+	t.peers[k] = append(t.peers[k], c)
+}
+
+func (t *Transport) unindex(c *conn) {
+	if c.flow.Transport != sip.TLS {
+		return
+	}
+
+	k := keyOf(c.flow)
+
+	cs := slices.DeleteFunc(t.peers[k], func(x *conn) bool { return x == c })
+	if len(cs) == 0 {
+		delete(t.peers, k)
+	} else {
+		t.peers[k] = cs
+	}
+}
+
+// SIPconnect 2.0 section 17.1.1.2
+// SIPconnect 2.0 section 17.2
+// RFC 5922 section 7.4
+func (t *Transport) reusable(f sip.Flow, v *verifier, strict bool) *conn {
+	var found *conn
+
+	for _, c := range t.peers[keyOf(f)] {
+		if c.closed.Load() || c.nc == nil || strict && !v.accepts(c) {
+			continue
+		}
+
+		if !c.inbound {
+			return c
+		}
+
+		if found == nil {
+			found = c
+		}
+	}
+
+	return found
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -290,6 +291,7 @@ type harness struct {
 	hss   *fakeHSS
 	icscf netip.AddrPort
 	scscf *fakeSCSCF
+	ibcf  *fakeSCSCF
 	ic    *ICSCF
 }
 
@@ -303,9 +305,17 @@ type harnessOptions struct {
 
 	hosts         map[string][]netip.Addr
 	psiSubdomains []string
+
+	bgcf       *bgcf.BGCF
+	ibcf       bool
+	ibcfMapped bool
 }
 
 type fakeDNS map[string][]netip.Addr
+
+func (d fakeDNS) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
 
 func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	return "", nil, &net.DNSError{Err: "no such host", Name: "_" + service + "._" + proto + "." + name, IsNotFound: true}
@@ -372,6 +382,19 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 	h.scscf = &fakeSCSCF{t: t, sock: sock, name: name, seen: map[string]bool{}}
 	scscfName, _ := sip.ParseURI(name)
 
+	var ibcf []netip.AddrPort
+
+	if o.ibcf {
+		h.ibcf = h.newAS(loopback)
+
+		addr := h.ibcf.sock.Addr()
+		if o.ibcfMapped {
+			addr = netip.AddrPortFrom(netip.AddrFrom16(addr.Addr().As16()), addr.Port())
+		}
+
+		ibcf = append(ibcf, addr)
+	}
+
 	late := &lateHandler{}
 
 	layer, _ := siptest.NewLayer(t, transaction.Config{
@@ -396,6 +419,8 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		HSSRealm:  func() string { return homeDomain },
 		Diameter:  loop,
 		CxTimeout: cxTimeout,
+		BGCF:      o.bgcf,
+		IBCF:      ibcf,
 		Logger:    testLogger(),
 	})
 	late.h.Store(h.ic)

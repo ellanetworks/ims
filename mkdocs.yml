@@ -80,6 +80,7 @@ nav:
       - Diameter: reference/api/diameter.md
       - Policy: reference/api/policy.md
       - SIP: reference/api/sip.md
+      - SIP Trunks: reference/api/sip_trunks.md
       - Registrations: reference/api/registrations.md
       - Call Records: reference/api/call_records.md
       - IP-SM-GW: reference/api/ip_sm_gw.md

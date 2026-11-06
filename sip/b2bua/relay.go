@@ -29,6 +29,8 @@ type RelayConfig struct {
 	RelayRefresh func(from *Leg, r *ua.Request) bool
 
 	Final func(res *sip.Response, err error) ua.Reply
+
+	Failover func(ctx context.Context, failed *Leg, f Failure) *sip.Request
 }
 
 // RFC 7092 section 3.1
@@ -40,12 +42,16 @@ type Relay struct {
 
 	open []*Exchange
 
-	initial  *Exchange
-	rel100   bool
-	final    bool
-	failCode int
-	sticky   sip.Header
-	timerC   *ua.Timer
+	initial    *Exchange
+	sdp        []byte
+	opts       []ua.Option
+	rel100     bool
+	final      bool
+	progressed bool
+	failCode   int
+	failures   []Failure
+	sticky     sip.Header
+	timerC     *ua.Timer
 }
 
 type pair struct {
@@ -111,15 +117,12 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 		}
 	}
 
-	cfg.Headers.copyHeader(&out.Header, a, b, in)
-	p.mapDialogs(in, &out.Header)
-
 	sdp, offered := r.Offer()
 
 	if offered {
 		p.initial = &Exchange{From: a, To: b, Method: "INVITE", Initial: true, Offer: sdp}
 
-		if sdp, err = p.begin(p.initial); err != nil {
+		if p.sdp, err = p.begin(p.initial); err != nil {
 			b.removed(ctx)
 
 			_ = r.Reject(488)
@@ -127,9 +130,6 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 			return p, err
 		}
 	}
-
-	own, _ := out.Content().Parts()
-	out.SetBodies(cfg.Headers.bodies(a, b, in, own, sdp)...)
 
 	var without []string
 
@@ -145,17 +145,92 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 		opts = append([]ua.Option{ua.WithoutOptionTags(without...)}, opts...)
 	}
 
-	if err := b.dial(ctx, out, opts...); err != nil {
-		p.endAll()
+	p.opts = opts
 
-		_ = r.Reject(500)
+	if err := p.dial(ctx, b, out); err != nil {
+		if p.failover(ctx, b, Failure{Err: err}) {
+			return p, nil
+		}
 
-		return p, err
+		p.giveUp(ctx)
+
+		return p, p.failures[len(p.failures)-1].Err
 	}
 
 	p.armTimerC(ctx)
 
 	return p, nil
+}
+
+func (p *Relay) dial(ctx context.Context, l *Leg, out *sip.Request) error {
+	in := p.a.in.Message()
+
+	p.cfg.Headers.copyHeader(&out.Header, p.a, l, in)
+	p.mapDialogs(in, &out.Header)
+
+	own, _ := out.Content().Parts()
+	out.SetBodies(p.cfg.Headers.bodies(p.a, l, in, own, p.sdp)...)
+
+	if p.initial != nil {
+		p.initial.To = l
+	}
+
+	return l.dial(ctx, out, p.opts...)
+}
+
+// RFC 3261 section 16.6
+// RFC 3263 section 4.3
+func (p *Relay) failover(ctx context.Context, l *Leg, f Failure) bool {
+	p.failures = append(p.failures, f)
+
+	for p.retryable() && (f.Response == nil || f.Response.StatusCode < 600) {
+		out := p.cfg.Failover(ctx, l, f)
+		if out == nil || !p.retryable() {
+			return false
+		}
+
+		next, err := p.a.call.leg(l.h)
+		if err != nil {
+			return false
+		}
+
+		next.value, next.relay = l.value, p
+		l.relay, p.b = nil, next
+
+		if err := p.dial(ctx, next, out); err != nil {
+			l, f = next, Failure{Err: err}
+			p.failures = append(p.failures, f)
+
+			continue
+		}
+
+		p.armTimerC(ctx)
+
+		return true
+	}
+
+	return false
+}
+
+func (p *Relay) retryable() bool {
+	return p.cfg.Failover != nil && !p.final && !p.progressed && p.failCode == 0 && p.a.state == ua.Early
+}
+
+// RFC 3261 section 16.7
+func (p *Relay) giveUp(ctx context.Context) {
+	f := chosen(p.failures)
+
+	final := p.cfg.Final
+	if final == nil {
+		final = FinalFor
+	}
+
+	rp := final(f.Response, f.Err)
+	if f.Response != nil && rp.Code == f.Response.StatusCode {
+		rp = p.reply(p.b, f.Response, rp.Code, nil)
+	}
+
+	p.respond(ctx, nil, rp)
 }
 
 // TS 24.379 clause 10.1.1.3.1.2
@@ -437,6 +512,7 @@ func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Re
 	rp := p.reply(l, res, res.StatusCode, sdp)
 	rp.Reliable = reliable
 
+	p.progressed = true
 	p.report(pr.in.Progress(rp))
 }
 
@@ -484,6 +560,7 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 		rp := p.reply(l, res, res.StatusCode, sdp)
 		rp.Reliable = true
 
+		p.progressed = true
 		p.report(pr.in.Progress(rp))
 
 		return true
@@ -720,17 +797,9 @@ func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error
 		return
 	}
 
-	final := p.cfg.Final
-	if final == nil {
-		final = FinalFor
+	if !p.failover(ctx, l, Failure{Response: res, Err: err}) {
+		p.giveUp(ctx)
 	}
-
-	rp := final(res, err)
-	if res != nil && rp.Code == res.StatusCode {
-		rp = p.reply(l, res, rp.Code, nil)
-	}
-
-	p.respond(ctx, nil, rp)
 }
 
 func (p *Relay) abandon(ctx context.Context, code int) {

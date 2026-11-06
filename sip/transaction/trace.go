@@ -189,7 +189,7 @@ func (l *Layer) requestAttributes(req *sip.Request) []attribute.KeyValue {
 	switch req.Flow.Transport {
 	case sip.UDP:
 		attrs = append(attrs, semconv.NetworkTransportUDP)
-	case sip.TCP:
+	case sip.TCP, sip.TLS:
 		attrs = append(attrs, semconv.NetworkTransportTCP)
 	}
 

@@ -476,6 +476,10 @@ func (c *core) subscriptions() []*sip.Response {
 // RFC 3263 section 4.2
 type dns struct{ core netip.AddrPort }
 
+func (d dns) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
 func (d dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	if service == "sip" && proto == "udp" && name == scscfHost {
 		return "", []*net.SRV{{Target: "scscf1.ims.example.com.", Port: d.core.Port()}}, nil

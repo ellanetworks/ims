@@ -48,16 +48,16 @@ func udpDestination(via sip.Via) (netip.AddrPort, error) {
 		port = p
 	}
 
-	return netip.AddrPortFrom(a, defaultPortIfZero(port)), nil
+	return netip.AddrPortFrom(a, defaultPortIfZero(port, sip.UDP)), nil
 }
 
-func tcpDestination(via sip.Via) (netip.AddrPort, error) {
+func tcpDestination(via sip.Via, tr sip.Transport) (netip.AddrPort, error) {
 	a, err := viaAddr(via)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
 
-	return netip.AddrPortFrom(a, defaultPortIfZero(via.Port)), nil
+	return netip.AddrPortFrom(a, defaultPortIfZero(via.Port, tr)), nil
 }
 
 func viaAddr(via sip.Via) (netip.Addr, error) {
@@ -78,9 +78,9 @@ func viaAddr(via sip.Via) (netip.Addr, error) {
 	return a.Unmap(), nil
 }
 
-func defaultPortIfZero(p uint16) uint16 {
+func defaultPortIfZero(p uint16, tr sip.Transport) uint16 {
 	if p == 0 {
-		return sip.DefaultPort
+		return sip.DefaultPortFor(tr)
 	}
 
 	return p

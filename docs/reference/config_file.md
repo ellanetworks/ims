@@ -51,11 +51,31 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
         - `min_port` (int, optional): The first port of the voice legs. Even. Default `20000`.
         - `max_port` (int, optional): The last port of the voice legs. Default `20999`.
         - `control_port` (int, optional): The port of the floor control channels, outside the voice legs' range. Default `21000`.
+- `ibcf` (object, optional): The IBCF, the border towards SIP trunks. When absent, the IBCF doesn't run, opens no ports, and calls to numbers outside the HSS get 404.
+    - `port` (int, optional): The SIP port on each of `sip.addresses`, where the I-CSCF sends calls to SIP trunks. Default `5085`.
+    - `external` (object): Where carriers send calls and the IBCF sends calls to carriers.
+        - `addresses` (list of strings): The IP addresses, given to carriers. At least one; specific addresses, not `0.0.0.0` or `::`, and neither in `sip.addresses` nor in `sip.trusted_networks`. SIP trunks are reached from the address of their family.
+        - `advertised_addresses` (list of strings, optional): The public addresses carriers send to when Ella IMS is behind a 1:1 NAT, such as a cloud VM: one for each of `addresses`, in the same order and of the same family. The IBCF puts them in the Via and Contact header fields towards carriers, and keeps binding `addresses`. The NAT must keep the ports. Default: `addresses`.
+        - `port` (int, optional): The SIP port, UDP and TCP. Default `5060`. Must differ from `api.port`, `diameter.port` and `mcptt.media.control_port`, and be outside the MCPTT media ports, on the same address.
+        - `tls` (object, optional): SIP over TLS towards SIP trunks, on each of `addresses`. When absent, the IBCF uses no TLS, and trunks that require it are not used.
+            - `port` (int, optional): The TLS port. Default `5061`. Must differ from `port`.
+            - `cert` (string, optional): The path to the PEM certificate chain of the IBCF, the leaf first, presented to carriers as server and as client. Read when the core starts.
+            - `key` (string, optional): The path to the PEM private key. Set with `cert`, or neither. Without a certificate, the IBCF accepts no TLS connection: it opens and keeps open a TLS connection to each enabled trunk that uses TLS, and the carrier sends its calls over it (SIPconnect 2.0 section 17.2).
+    - `keepalive` (object, optional): The OPTIONS keepalives of SIP trunks.
+        - `failures` (int, optional): Keepalive rounds without an answer before a trunk is down, from `1` to `10`. Default `2`.
+- `trgw` (object, optional): The TrGW, the media relay of calls over SIP trunks. Only with `ibcf`, which always relays media through it: phones and carriers only see the TrGW's addresses. Only audio is relayed; other media of a call over a trunk are rejected.
+    - `phone_addresses` (list of objects, optional): The addresses the phones send media to. Default: `sip.addresses`.
+        - `address` (string): The IP address of the media sockets. A specific address.
+        - `advertise` (string, optional): The IP address in the SDP, of the same family. Default `address`.
+    - `trunk_addresses` (list of objects, optional): The addresses carriers send media to, as `phone_addresses`. Default: `ibcf.external.addresses`, advertised as `ibcf.external.advertised_addresses`. No address can be on both lists.
+    - `min_port` (int, optional): The first port of the media sockets. Even, from `1024`. Default `10000`.
+    - `max_port` (int, optional): The last port. Default `19999`. Each audio stream takes two ports on a phone address and two on a trunk address. The range must not hold a SIP, API or Diameter port, `ibcf.external.port`, `mcptt.media.control_port` or MCPTT media ports on the same address.
+    - `media_timeout` (duration, optional): How long an answered call may go without RTP from a side that sends and receives before the IBCF ends it, e.g. `60s`. `0` never ends calls for lack of media. Default `60s`.
 - `telemetry` (object, optional): The [traces](observability.md#traces).
     - `enabled` (boolean, optional): Export traces. Default `false`.
     - `otlp_endpoint` (string): The `host:port` of an OTLP/gRPC collector, over plain gRPC. Required when `enabled` is `true`.
 
-The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`) must all differ, must not be `5100`, which the built-in IP-SM-GW takes, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
+The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`, `ibcf.port`) must all differ, must not be `5100`, which the built-in IP-SM-GW takes, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
 
 ## Example
 
@@ -78,6 +98,22 @@ icscf:
   port: 5070
 scscf:
   port: 5080
+ibcf:
+  port: 5085
+  external:
+    addresses: [203.0.113.5]
+    advertised_addresses: [198.51.100.5]
+    port: 5060
+    tls:
+      port: 5061
+      cert: /etc/ims/tls/ibcf.crt
+      key: /etc/ims/tls/ibcf.key
+  keepalive:
+    failures: 2
+trgw:
+  min_port: 10000
+  max_port: 19999
+  media_timeout: 60s
 diameter:
   address: 10.3.0.5
   port: 3868

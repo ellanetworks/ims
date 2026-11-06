@@ -87,3 +87,19 @@ func TestStripResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestOverlaps(t *testing.T) {
+	d := New([]netip.Addr{netip.MustParseAddr("10.0.0.5")}, []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")})
+
+	for p, want := range map[string]bool{
+		"10.0.0.0/8":      true,
+		"10.0.0.5/32":     true,
+		"10.0.0.6/32":     false,
+		"192.0.2.128/25":  true,
+		"198.51.100.0/24": false,
+	} {
+		if got := d.Overlaps(netip.MustParsePrefix(p)); got != want {
+			t.Errorf("Overlaps(%s) = %t, want %t", p, got, want)
+		}
+	}
+}

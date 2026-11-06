@@ -17,9 +17,12 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/trgw"
+	"github.com/ellanetworks/ims/internal/trunkmon"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/version"
 	"github.com/prometheus/client_golang/prometheus"
@@ -61,6 +64,9 @@ type metrics struct {
 	peerDuration *prometheus.HistogramVec
 	ipsmgw       *ipsmgw.Metrics
 	requests     *api.RequestMetrics
+	ibcf         *ibcf.Metrics
+	trunks       *trunkmon.Metrics
+	trgw         *trgw.Metrics
 }
 
 func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]settings.Peer, []diameter.PeerStatus),
@@ -70,6 +76,9 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		registrations: regmetrics.New(),
 		ipsmgw:        ipsmgw.NewMetrics(),
 		requests:      api.NewRequestMetrics(),
+		ibcf:          ibcf.NewMetrics(),
+		trunks:        trunkmon.NewMetrics(),
+		trgw:          trgw.NewMetrics(),
 		sipResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_sip_responses_total",
 			Help: "Final responses the P-CSCF sent to UEs, by method and status class.",
@@ -138,6 +147,9 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(m.registrations.Collectors()...)
 	m.registry.MustRegister(m.ipsmgw.Collectors()...)
 	m.registry.MustRegister(m.requests.Collectors()...)
+	m.registry.MustRegister(m.ibcf.Collectors()...)
+	m.registry.MustRegister(m.trunks.Collectors()...)
+	m.registry.MustRegister(m.trgw.Collectors()...)
 
 	return m
 }

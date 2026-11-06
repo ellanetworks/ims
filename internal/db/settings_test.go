@@ -19,7 +19,7 @@ func TestDefaultSettings(t *testing.T) {
 
 	want := settings.Operator{
 		MCC: "001", MNC: "01",
-		Numbering: settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"},
+		Numbering: settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011", MinNationalDigits: 7},
 	}
 	if got.Operator != want {
 		t.Fatalf("operator = %+v, want %+v", got.Operator, want)
@@ -43,7 +43,7 @@ func TestUpdateOperator(t *testing.T) {
 
 	o := settings.Operator{
 		MCC: "208", MNC: "10",
-		Numbering: settings.Numbering{CountryCode: "33", NationalPrefix: "0", InternationalPrefix: "00"},
+		Numbering: settings.Numbering{CountryCode: "33", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 9},
 	}
 
 	if err := d.UpdateOperator(t.Context(), o); err != nil {

@@ -29,7 +29,7 @@ func newPongs() *pongs {
 // RFC 5389 section 7.1
 func (t *Transport) Ping(ctx context.Context, f sip.Flow) error {
 	switch f.Transport {
-	case sip.TCP:
+	case sip.TCP, sip.TLS:
 		return t.pingTCP(ctx, f)
 	case sip.UDP:
 		return t.pingUDP(ctx, f)
@@ -39,11 +39,15 @@ func (t *Transport) Ping(ctx context.Context, f sip.Flow) error {
 }
 
 func (t *Transport) pingTCP(ctx context.Context, f sip.Flow) error {
-	c, err := t.conn(ctx, f, false)
+	c, err := t.conn(ctx, f, false, false)
 	if err != nil {
 		return fmt.Errorf("sip/transport: keep-alive on %s: %w", f, err)
 	}
 
+	return t.pingConn(ctx, c, f)
+}
+
+func (t *Transport) pingConn(ctx context.Context, c *conn, f sip.Flow) error {
 	ch := make(chan struct{}, 1)
 
 	t.pongs.mu.Lock()

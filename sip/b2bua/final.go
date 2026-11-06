@@ -1,15 +1,55 @@
 package b2bua
 
 import (
+	"errors"
 	"slices"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/sip/ua"
 )
 
 type Failure struct {
 	Response *sip.Response
 	Err      error
+}
+
+// RFC 3263 section 4.3
+func (f Failure) ServerFailed() bool {
+	if f.Response != nil {
+		return f.Response.StatusCode == 503
+	}
+
+	return errors.Is(f.Err, transaction.ErrTransport) || errors.Is(f.Err, transaction.ErrTimeout)
+}
+
+// RFC 3261 section 16.7
+// RFC 3261 section 16.9
+func chosen(failures []Failure) Failure {
+	best, code := -1, 0
+
+	for i, f := range failures {
+		var c int
+
+		switch {
+		case f.Response != nil:
+			c = relayable(f.Response.StatusCode)
+		case errors.Is(f.Err, transaction.ErrTransport):
+			c = relayable(503)
+		default:
+			continue
+		}
+
+		if best < 0 || better(c, code) {
+			best, code = i, c
+		}
+	}
+
+	if best < 0 {
+		return failures[len(failures)-1]
+	}
+
+	return failures[best]
 }
 
 // RFC 3261 section 16.7

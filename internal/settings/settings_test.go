@@ -43,6 +43,18 @@ func (f *fakeStore) UpdatePolicy(_ context.Context, p Policy) error { return f.s
 func (f *fakeStore) UpdateCallRecords(_ context.Context, c CallRecords) error { return f.save(c) }
 func (f *fakeStore) UpdateIPSMGW(_ context.Context, g IPSMGW) error           { return f.save(g) }
 
+func (f *fakeStore) CreateTrunk(_ context.Context, t Trunk) error { return f.save(t) }
+
+func (f *fakeStore) UpdateTrunk(_ context.Context, t Trunk) error { return f.save(t) }
+
+func (f *fakeStore) DeleteTrunk(_ context.Context, id string) error { return f.save(id) }
+
+func (f *fakeStore) CreateSIPRoute(_ context.Context, r SIPRoute) error { return f.save(r) }
+
+func (f *fakeStore) UpdateSIPRoute(_ context.Context, r SIPRoute) error { return f.save(r) }
+
+func (f *fakeStore) DeleteSIPRoute(_ context.Context, id string) error { return f.save(id) }
+
 func validSettings() Settings {
 	return Settings{
 		Operator: validOperator(), Routes: []Route{{Application: ApplicationCx}, {Application: ApplicationRx}},
@@ -66,6 +78,8 @@ func TestValidate(t *testing.T) {
 		"long prefix":          func(o *Operator) { o.Numbering.InternationalPrefix = "00000" },
 		"non-digit prefix":     func(o *Operator) { o.Numbering.NationalPrefix = "0x" },
 		"same prefixes":        func(o *Operator) { o.Numbering.NationalPrefix, o.Numbering.InternationalPrefix = "0", "0" },
+		"negative min digits":  func(o *Operator) { o.Numbering.MinNationalDigits = -1 },
+		"min digits over 15":   func(o *Operator) { o.Numbering.MinNationalDigits = 16 },
 	}
 
 	if err := validSettings().Validate(); err != nil {

@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -282,6 +283,27 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 	l.mu.Unlock()
 
 	return bound, nil
+}
+
+func (l *Layer) ListenTLS(ctx context.Context, local netip.AddrPort, cfg *tls.Config) (netip.AddrPort, error) {
+	bound, err := l.tr.ListenTLS(ctx, local, cfg)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	l.mu.Lock()
+	l.addLocal(bound)
+	l.mu.Unlock()
+
+	return bound, nil
+}
+
+func (l *Layer) Persist(f sip.Flow, ka transport.KeepAlive) (func(), error) {
+	if l.tr == nil {
+		return nil, errors.New("sip/transaction: no transport")
+	}
+
+	return l.tr.Persist(f, ka)
 }
 
 func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
@@ -723,7 +745,7 @@ func (l *Layer) isStatelessAck(ack *sip.Request) bool {
 }
 
 func (l *Layer) checkFlow(f sip.Flow) error {
-	if f.Transport != sip.UDP && f.Transport != sip.TCP {
+	if f.Transport != sip.UDP && f.Transport != sip.TCP && f.Transport != sip.TLS {
 		return fmt.Errorf("sip/transaction: %w %q", transport.ErrUnsupportedTransport, f.Transport)
 	}
 
@@ -776,7 +798,7 @@ func (l *Layer) handleResponse(res *sip.Response) {
 }
 
 func (l *Layer) isLocal(via sip.Via) bool {
-	return l.IsLocal(via.Host, via.Port)
+	return l.IsLocal(via.Host, sentByPort(via))
 }
 
 func (l *Layer) IsLocal(host string, port uint16) bool {
@@ -807,7 +829,7 @@ func sentByKey(via sip.Via) string {
 
 func sentByPort(via sip.Via) uint16 {
 	if via.Port == 0 {
-		return sip.DefaultPort
+		return sip.DefaultPortFor(via.Transport)
 	}
 
 	return via.Port

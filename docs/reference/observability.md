@@ -23,6 +23,12 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_peer_requests_total` | Counter | Requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface (`cx`, `rx`, `n5`, `sh`, `s6c`, `sgd`) and result (`success`, `failure`, `error`, `timeout`). |
 | `ellaims_peer_request_duration_seconds` | Histogram | Duration of requests to the HSS, the policy function, the SMSCs and the MMEs and SMSFs, by interface. |
 | `ellaims_ipsmgw_short_messages_total` | Counter | Short messages the IP-SM-GW carried, by direction (`mo`, `mt`), domain (`smsc` for `mo`; `ims`, `mme`, `sgsn`, `smsf_3gpp`, `smsf_non_3gpp`, `none` for `mt`, the last tried) and result (`success`, `failure`). |
+| `ellaims_trunk_up` | Gauge | 1 if a SIP trunk answers its OPTIONS keepalives, 0 if it is down, by trunk ID. A trunk without keepalives, or not probed yet, has no series. |
+| `ellaims_trunk_failovers_total` | Counter | Calls to a SIP trunk retried on its next server or the next trunk of their route after a transport error, a timeout or a 503, by the ID of the trunk that failed. |
+| `ellaims_trgw_relays` | Gauge | Media relays the TrGW holds open, by trunk ID. |
+| `ellaims_trgw_packets_relayed_total` | Counter | RTP and RTCP packets the TrGW relayed, by trunk ID, the leg they arrived on (`phone`, `trunk`) and protocol. |
+| `ellaims_trgw_packets_dropped_total` | Counter | RTP and RTCP packets the TrGW dropped, by trunk ID, leg and reason: `unexpected_source`, `no_remote`, `no_destination`, `direction`, `malformed`, `send_error`. |
+| `ellaims_trgw_packets_lost_total` | Counter | RTP packets lost before reaching the TrGW, from gaps in sequence numbers, by trunk ID and leg. |
 | `ellaims_api_request_duration_seconds` | Histogram | Duration of API requests, by method, route (`/api/v1/users/{email}`) and status code. Requests to `/api/v1/pprof/` and to no route are left out. |
 | `ellaims_oidc_logins_total` | Counter | Logins through the identity provider, by outcome: `success`, or a [login error](api/auth.md#errors). |
 | `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`. |

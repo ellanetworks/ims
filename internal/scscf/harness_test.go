@@ -84,6 +84,10 @@ func (d *fakeDNS) add(host string, addrs ...netip.Addr) {
 	d.hosts[host] = addrs
 }
 
+func (d *fakeDNS) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
 func (d *fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	return "", nil, &net.DNSError{Err: "no such host", Name: "_" + service + "._" + proto + "." + name, IsNotFound: true}
 }

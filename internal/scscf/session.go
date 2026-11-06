@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
@@ -357,8 +358,10 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	out.Header.Del("P-Served-User")
 	withoutRegistrationToken(&out.Header)
 
-	if u, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain); ok {
-		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()))
+	u, onNet, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain)
+	if ok {
+		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()),
+			slog.Bool("on-net", onNet))
 		out.URI = u
 	}
 
@@ -381,6 +384,10 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	route := sip.URI{Scheme: "sip", Host: sip.FormatHost(to.Flow.Remote.Addr()), Port: to.Flow.Remote.Port()}
 	if to.Flow.Transport != sip.UDP {
 		route.Params.Set("transport", strings.ToLower(string(to.Flow.Transport)))
+	}
+
+	if onNet {
+		route.Params.Set(bgcf.OnNetParam, "")
 	}
 
 	route.Params.Set("lr", "")
