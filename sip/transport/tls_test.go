@@ -1287,8 +1287,76 @@ func TestTLSPersistentConnectionAfterCloseNotify(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _ = io.Copy(io.Discard, first.NetConn())
+	if _, err := io.Copy(io.Discard, first); err != nil {
+		t.Errorf("connection not closed with close_notify: %v", err)
+	}
+
 	_ = first.NetConn().Close()
 
 	readKeepalive(t, peer.next(t))
+}
+
+func TestTLSAuthenticated(t *testing.T) {
+	p := newPKI(t)
+
+	var opts atomic.Pointer[transport.TLSOptions]
+	opts.Store(&transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"})
+
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		func(sip.Flow) (transport.TLSOptions, error) { return *opts.Load(), nil })
+	peer := newRawServer(t, &tls.Config{Certificates: []tls.Certificate{p.server.tls}}, client.local)
+	f := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}
+
+	if client.tr.Authenticated(f) {
+		t.Fatal("flow without a connection authenticated")
+	}
+
+	if _, err := client.send(t, peer.addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	peer.next(t)
+
+	if !client.tr.Authenticated(f) {
+		t.Fatal("connection the settings trust not authenticated")
+	}
+
+	opts.Store(&transport.TLSOptions{Roots: pool(p.other), ServerName: "sip.carrier.example"})
+
+	if client.tr.Authenticated(f) {
+		t.Fatal("connection the settings no longer trust authenticated")
+	}
+
+	if client.tr.Authenticated(sip.Flow{Transport: sip.TCP, Local: client.local, Remote: peer.addr()}) {
+		t.Fatal("TCP flow authenticated")
+	}
+}
+
+func TestTLSInboundConnectionClosedGracefullyAfterCloseNotify(t *testing.T) {
+	p := newPKI(t)
+	server := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.server.tls}}), nil)
+
+	raw, err := dialRaw(t, server.local, &tls.Config{RootCAs: pool(p.ca), ServerName: "sip.carrier.example", MaxVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := raw.Write([]byte(options("SIP/2.0/TLS 127.0.0.1:5061;branch=z9hG4bK1"))); err != nil {
+		t.Fatal(err)
+	}
+
+	server.rec.NextRequest()
+
+	if err := raw.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	rest, err := io.ReadAll(raw.NetConn())
+	if err != nil {
+		t.Fatalf("inbound connection reset after close_notify: %v", err)
+	}
+
+	if len(rest) == 0 || rest[0] != 21 {
+		t.Fatalf("inbound connection closed without close_notify: % x", rest)
+	}
 }

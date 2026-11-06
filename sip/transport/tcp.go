@@ -25,7 +25,10 @@ var errNoConn = errors.New("no connection for the flow")
 
 var crlf = []byte("\r\n")
 
-const drainTimeout = time.Second
+const (
+	drainTimeout = time.Second
+	flushPoll    = 10 * time.Millisecond
+)
 
 type conn struct {
 	flow    sip.Flow
@@ -60,17 +63,33 @@ func (c *conn) lastActive() time.Time {
 func (c *conn) close() {
 	c.closed.Store(true)
 
-	if c.tcp != nil {
-		_ = c.tcp.Close()
+	if c.tcp == nil {
+		return
 	}
+
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		go closeTLS(tc, c.tcp)
+		return
+	}
+
+	_ = c.tcp.Close()
+}
+
+// RFC 8446 section 6.1
+func closeTLS(tc *tls.Conn, raw *net.TCPConn) {
+	timer := time.AfterFunc(drainTimeout, func() { _ = raw.Close() })
+	defer timer.Stop()
+
+	_ = tc.Close()
 }
 
 func (c *conn) abort() {
+	c.closed.Store(true)
+
 	if c.tcp != nil {
 		_ = c.tcp.SetLinger(0)
+		_ = c.tcp.Close()
 	}
-
-	c.close()
 }
 
 func (t *Transport) write(c *conn, b []byte) error {
@@ -512,8 +531,8 @@ func (t *Transport) readTCP(c *conn) {
 			return
 		default:
 			switch {
-			case errors.Is(err, io.EOF) && c.flow.Transport == sip.TLS:
-				c.abort()
+			case errors.Is(err, io.EOF) && c.flow.Transport == sip.TLS && !c.inbound:
+				t.abortFlushed(c)
 			case errors.Is(err, io.EOF):
 			case !errors.Is(err, net.ErrClosed):
 				t.log.Debug("SIP connection closed", slog.String("flow", c.flow.String()), slog.Any("error", err))
@@ -524,6 +543,30 @@ func (t *Transport) readTCP(c *conn) {
 			return
 		}
 	}
+}
+
+// RFC 8446 section 6.1
+func (t *Transport) abortFlushed(c *conn) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		_ = tc.CloseWrite()
+	}
+
+	if rc, err := c.tcp.SyscallConn(); err == nil {
+		deadline := time.Now().Add(drainTimeout)
+
+		for time.Now().Before(deadline) {
+			if n, err := sockopt.Unsent(rc); err != nil || n == 0 {
+				break
+			}
+
+			time.Sleep(flushPoll)
+		}
+	}
+
+	c.abort()
 }
 
 func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {

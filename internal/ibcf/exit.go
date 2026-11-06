@@ -27,8 +27,8 @@ const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
 func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 	in := r.Message()
 
-	if src := unmap(in.Flow.Remote); !slices.Contains(b.cfg.SCSCF, src) && !slices.Contains(b.cfg.ICSCF, src) {
-		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the S-CSCF or the I-CSCF", slog.String("source", in.Flow.Remote.String()))
+	if !slices.Contains(b.cfg.ICSCF, unmap(in.Flow.Remote)) {
+		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the I-CSCF", slog.String("source", in.Flow.Remote.String()))
 
 		_ = r.Reject(403)
 
@@ -332,6 +332,7 @@ func forwarderOf(h sip.Header) (forwarder, bool) {
 // SIPconnect 2.0 section 11.1
 // TS 24.604 clause 4.5.2.6.2.2
 // RFC 3325 section 7
+// TS 24.229 clause 4.4.2
 func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Request, error) {
 	in, x, t := c.initial, c.exit, next.trunk
 
@@ -416,15 +417,13 @@ func (b *IBCF) served(f forwarder, privacy sip.Privacy, trusted bool) (sip.URI, 
 }
 
 // RFC 3325 section 7
-// RFC 3323 section 4.2
-// RFC 3323 section 5
 // TS 24.604 clause 4.5.2.6.2.2
 func forwarderIdentity(p sip.Privacy, private bool) sip.Privacy {
 	if !private {
-		return without(p, sip.PrivacyID, sip.PrivacyHeader)
+		return p
 	}
 
-	return append(without(p, sip.PrivacyID, sip.PrivacyHeader, sip.PrivacyNone), sip.PrivacyID)
+	return append(without(p, sip.PrivacyID, sip.PrivacyNone), sip.PrivacyID)
 }
 
 // RFC 3323 section 5

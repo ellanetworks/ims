@@ -965,7 +965,7 @@ func (p *Relay) relayRefresh(l *Leg, r *ua.Request) bool {
 		return f(l, r)
 	}
 
-	parts, _ := r.Message().Content().Parts()
+	parts, _ := r.Message().Content().Split()
 
 	return slices.ContainsFunc(parts, func(part sip.BodyPart) bool { return !part.IsSession() })
 }

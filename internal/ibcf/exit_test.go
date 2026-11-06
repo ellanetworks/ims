@@ -249,7 +249,11 @@ func TestExitOfferAfterOptionalPartOfUnknownEncoding(t *testing.T) {
 		req.Header.Add(fl.Name, fl.Value)
 	}
 
-	req.SetBodies(optional, ua.SDP([]byte("offer-1")))
+	packed := sip.NewBodyPart("application/dtmf-relay", []byte{0x1f, 0x8b, 0x08, 0x00})
+	packed.Header.Set("Content-Encoding", "gzip")
+	packed.Header.Set("Content-Disposition", "info-package;handling=optional")
+
+	req.SetBodies(optional, ua.SDP([]byte("offer-1")), packed)
 
 	if _, err := s.ims.a.Invite(context.Background(), req, s.ims.handler()); err != nil {
 		t.Fatal(err)
@@ -258,6 +262,11 @@ func TestExitOfferAfterOptionalPartOfUnknownEncoding(t *testing.T) {
 	in := s.carrier.next("invite").req
 	if m := in.Message(); !hasSDP(m, "offer-1") {
 		t.Fatalf("trunk INVITE without the offer: %s", m)
+	}
+
+	parts, _ := in.Message().Content().Split()
+	if len(parts) != 2 || string(parts[1].Body) != string(packed.Body) || parts[1].Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("trunk INVITE parts %+v", parts)
 	}
 
 	_ = in.Accept(sdpOf("answer-1")...)
@@ -436,7 +445,16 @@ func TestExitForwarded(t *testing.T) {
 			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "id;history")),
 			from:    "sip:anonymous@anonymous.invalid",
 			served:  "sip:anonymous@anonymous.invalid",
+			privacy: "id",
+		},
+		{
+			name:    "caller with identity privacy to a trusted trunk",
+			trusted: true,
+			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "id")),
+			from:    "sip:anonymous@anonymous.invalid",
+			served:  "sip:" + bob + "@" + home + ";user=phone",
 			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+			privacy: "id",
 		},
 		{
 			name:    "caller with header privacy",
@@ -445,7 +463,24 @@ func TestExitForwarded(t *testing.T) {
 			from:    "sip:anonymous@anonymous.invalid",
 			served:  "sip:" + bob + "@" + home + ";user=phone",
 			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
-			privacy: "user",
+			privacy: "header;user",
+		},
+		{
+			name:    "caller with header privacy to an untrusted trunk",
+			trusted: false,
+			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "header")),
+			from:    "sip:anonymous@anonymous.invalid",
+			served:  "sip:anonymous@anonymous.invalid",
+			privacy: "header",
+		},
+		{
+			name:    "private forwarder and a caller with header privacy",
+			trusted: true,
+			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "header")),
+			from:    "sip:anonymous@anonymous.invalid",
+			served:  "sip:" + bob + "@" + home + ";user=phone?Privacy=history",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+			privacy: "header;id",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -732,18 +767,17 @@ func TestExitSource(t *testing.T) {
 	other := []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:5070")}
 
 	tests := []struct {
-		name         string
-		icscf, scscf []netip.AddrPort
-		accepted     bool
+		name     string
+		icscf    []netip.AddrPort
+		accepted bool
 	}{
-		{name: "S-CSCF", icscf: other, scscf: []netip.AddrPort{imsAddr}, accepted: true},
-		{name: "I-CSCF", icscf: []netip.AddrPort{imsAddr}, scscf: other, accepted: true},
-		{name: "other node", icscf: other, scscf: other},
+		{name: "I-CSCF", icscf: []netip.AddrPort{imsAddr}, accepted: true},
+		{name: "other node", icscf: other},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := newSceneWith(t, false, func(c *Config) { c.ICSCF, c.SCSCF = tt.icscf, tt.scscf })
+			s := newSceneWith(t, false, func(c *Config) { c.ICSCF = tt.icscf })
 
 			s.call("offer-1")
 

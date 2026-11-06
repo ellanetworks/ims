@@ -41,6 +41,11 @@ func TestScreen(t *testing.T) {
 			parts: []sip.BodyPart{sdp, part("application/x-unknown", gzip,
 				sip.Field{Name: "Content-Disposition", Value: "render;handling=optional"})},
 		},
+		{name: "required 3GPP IM CN subsystem XML body", parts: []sip.BodyPart{sdp, part("application/3gpp-ims+xml")}, code: 415},
+		{
+			name:  "optional 3GPP IM CN subsystem XML body",
+			parts: []sip.BodyPart{sdp, part("application/3gpp-ims+xml", sip.Field{Name: "Content-Disposition", Value: "render;handling=optional"})},
+		},
 		{
 			name:  "required early session",
 			parts: []sip.BodyPart{sdp, part("application/sdp", sip.Field{Name: "Content-Disposition", Value: "early-session"})},

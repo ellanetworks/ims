@@ -55,7 +55,6 @@ type Config struct {
 	Certificate *tls.Certificate
 
 	ICSCF []netip.AddrPort
-	SCSCF []netip.AddrPort
 
 	Trust    *trust.Domain
 	BGCF     *bgcf.BGCF
@@ -89,8 +88,8 @@ func New(ctx context.Context, cfg Config) (*IBCF, error) {
 		return nil, errors.New("start the IBCF: no internal address")
 	case len(cfg.External) == 0:
 		return nil, errors.New("start the IBCF: no external address")
-	case len(cfg.ICSCF) == 0 || len(cfg.SCSCF) == 0:
-		return nil, errors.New("start the IBCF: no I-CSCF or S-CSCF")
+	case len(cfg.ICSCF) == 0:
+		return nil, errors.New("start the IBCF: no I-CSCF")
 	case cfg.HomeDomain == "":
 		return nil, errors.New("start the IBCF: no home domain")
 	case cfg.BGCF == nil || cfg.Settings == nil || cfg.Trust == nil:
@@ -109,7 +108,7 @@ func New(ctx context.Context, cfg Config) (*IBCF, error) {
 	}
 
 	cfg.Internal, cfg.External, cfg.TLS = unmapAll(cfg.Internal), unmapAll(cfg.External), unmapAll(cfg.TLS)
-	cfg.SCSCF, cfg.ICSCF = unmapAll(cfg.SCSCF), unmapAll(cfg.ICSCF)
+	cfg.ICSCF = unmapAll(cfg.ICSCF)
 
 	life, kill := context.WithCancel(context.Background())
 	b := &IBCF{cfg: cfg, log: logger, legs: newLegs(), peers: newPeers(), life: life, kill: kill}
@@ -346,7 +345,7 @@ func (b *IBCF) fromTrunk(req *sip.Request) error {
 	if l := b.legs.received(req); l != nil && l.trunk {
 		t, known := l.call.owner()
 
-		if p, ok := b.peers.get(f.Remote); ok && f.Transport == sip.TLS && p.trunk == t.ID {
+		if p, ok := b.peerOf(f); ok && p.trunk == t.ID {
 			known = append(known, remote)
 		}
 

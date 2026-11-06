@@ -3048,7 +3048,7 @@ components:
           minimum: 0
           maximum: 3600
           default: 30
-          description: Seconds between OPTIONS requests to the carrier, 5 to 3600; 0 sends none.
+          description: Seconds between keepalives to the carrier, 5 to 3600; 0 sends no OPTIONS requests.
         enabled:
           type: boolean
           default: true

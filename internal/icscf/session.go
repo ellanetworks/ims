@@ -64,8 +64,17 @@ func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, 
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
-		i.terminating(ctx, tx, out, trusted && slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has(BreakoutParam) }))
+		i.terminating(ctx, tx, out, out.Method == "INVITE" && i.fromSCSCF(req) &&
+			slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has(BreakoutParam) }))
 	}
+}
+
+func (i *ICSCF) fromSCSCF(req *sip.Request) bool {
+	src := netip.AddrPortFrom(req.Flow.Remote.Addr().Unmap(), req.Flow.Remote.Port())
+
+	return slices.ContainsFunc(i.cfg.SCSCF.Listeners, func(l netip.AddrPort) bool {
+		return netip.AddrPortFrom(l.Addr().Unmap(), l.Port()) == src
+	})
 }
 
 func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, breakout bool) {

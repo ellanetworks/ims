@@ -334,7 +334,6 @@ func newTracedScene(t *testing.T, trusted bool, tp trace.TracerProvider, configu
 		Internal:   []netip.AddrPort{internalAddr},
 		External:   []netip.AddrPort{externalAddr},
 		ICSCF:      []netip.AddrPort{imsAddr},
-		SCSCF:      []netip.AddrPort{imsAddr},
 		Trust:      trust.New([]netip.Addr{imsAddr.Addr()}, nil),
 		BGCF:       bgcf.New(s.settings, nil),
 		Settings:   s.settings,

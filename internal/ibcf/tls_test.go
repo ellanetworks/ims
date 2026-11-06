@@ -62,10 +62,12 @@ func newRealParty(t *testing.T, ip string, serve *tls.Config, client func(sip.Fl
 	}
 
 	a, err := ua.New(ua.Config{
-		Transaction: transaction.Config{Transport: transport.Config{TLSClientOptions: client}},
-		Prepare:     p.prepare,
-		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: ip}},
-		Policy:      ua.ClientPolicy,
+		Transaction: transaction.Config{Transport: transport.Config{TLSClientOptions: client}, OnConnectionLost: func(f sip.Flow, _ error) {
+			p.a.Drop(context.Background(), func(g sip.Flow) bool { return g == f })
+		}},
+		Prepare: p.prepare,
+		Contact: sip.Address{URI: sip.URI{Scheme: "sip", Host: ip}},
+		Policy:  ua.ClientPolicy,
 		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
 			p.events <- event{kind: "invite", req: r, msg: r.Message()}
 			return h()
@@ -74,6 +76,8 @@ func newRealParty(t *testing.T, ip string, serve *tls.Config, client func(sip.Fl
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	p.a = a
 
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -91,8 +95,6 @@ func newRealParty(t *testing.T, ip string, serve *tls.Config, client func(sip.Fl
 			t.Fatal(err)
 		}
 	}
-
-	p.a = a
 
 	return p
 }
@@ -194,7 +196,6 @@ func newResolvingTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, tru
 		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
 		TLS:        []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
 		ICSCF:      []netip.AddrPort{s.ims.udp},
-		SCSCF:      []netip.AddrPort{s.ims.udp},
 		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
 		BGCF:       bgcf.New(s.settings, nil),
 		Settings:   s.settings,
@@ -605,5 +606,82 @@ func TestPeersKeepFirstTrunk(t *testing.T) {
 
 	if pr, _ := p.get(srv.Addr); pr.trunk != "first" || pr.serverName != "carrier.example" {
 		t.Errorf("peer %+v", pr)
+	}
+}
+
+func TestTLSInboundOnServerOfNewOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		trusted bool
+	}{
+		{"new owner trusts the server", true},
+		{"new owner does not trust the server", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ca, ibcfCA, otherCA := sbitlstest.NewCA(t, "carriers"), sbitlstest.NewCA(t, "ims"), sbitlstest.NewCA(t, "others")
+			_, serve := carrierTLS(t, ca, ibcfCA, "carrier.example")
+			carrier := newRealParty(t, "127.0.0.3", serve, func(sip.Flow) (transport.TLSOptions, error) {
+				return transport.TLSOptions{Roots: sbitlstest.Pool(ibcfCA), Identities: []string{"ibcf.example"}}, nil
+			})
+
+			elsewhere := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+
+			previous := tlsTrunk(carrier.tls, settings.TrunkTLS{CACertificates: [][]byte{ca.Cert.Raw}, Identities: []string{"carrier.example"}})
+			previous.ID, previous.Name, previous.InboundCIDRs = "previous", "Previous", elsewhere
+
+			s := newTLSScene(t, ibcfCA, true, previous)
+			s.call()
+
+			_ = carrier.next("invite").req.Reject(486)
+			s.ims.next("failed")
+
+			owner := previous
+			owner.ID, owner.Name = "owner", "Owner"
+
+			if !tc.trusted {
+				owner.TLS.CACertificates = [][]byte{otherCA.Cert.Raw}
+			}
+
+			s.mu.Lock()
+			s.st.Trunks = []settings.Trunk{owner, previous}
+			s.mu.Unlock()
+
+			if !s.ibcf.noteServer(owner, owner.Addresses[0], sip.Server{Transport: sip.TLS, Addr: carrier.tls}) {
+				t.Fatal("the first trunk did not take the server over")
+			}
+
+			to := s.ibcf.TLS()[0]
+			carrier.secure = to
+
+			uri := sip.URI{Scheme: "sip", User: alice, Host: to.Addr().String(), Port: to.Port()}
+			uri.Params.Set("user", "phone")
+
+			req := sip.NewRequest("INVITE", uri)
+			req.Header.Add("From", "<sip:"+carol+"@carrier.example;user=phone>")
+			req.Header.Add("To", "<sip:"+alice+"@carrier.example;user=phone>")
+			req.SetBodies(ua.SDP([]byte("offer-1")))
+
+			if _, err := carrier.a.Invite(context.Background(), req, ua.Handler{
+				Failed: func(_ context.Context, _ *ua.Outgoing, res *sip.Response, _ error) {
+					carrier.events <- event{kind: "failed", res: res}
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if !tc.trusted {
+				if e := carrier.next("failed"); e.res != nil {
+					t.Fatalf("got %d, want the connection closed", e.res.StatusCode)
+				}
+
+				s.ims.none(100 * time.Millisecond)
+
+				return
+			}
+
+			if in := s.ims.next("invite").req.Message(); in.Flow.Transport != sip.UDP {
+				t.Fatalf("INVITE over %s", in.Flow.Transport)
+			}
+		})
 	}
 }

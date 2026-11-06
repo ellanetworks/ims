@@ -117,11 +117,14 @@ func TestUnknownNumberNotBrokenOut(t *testing.T) {
 	tests := []struct {
 		name   string
 		source func(h *harness) *ue
+		method string
 		opts   harnessOptions
 		answer *hssAnswer
 		want   int
 	}{
 		{name: "from outside the trust domain", source: func(h *harness) *ue { return h.newUE(untrusted) }, want: 404},
+		{name: "from a trusted node other than the S-CSCF", source: func(h *harness) *ue { return h.newUE(loopback) }, want: 404},
+		{name: "MESSAGE from the S-CSCF", source: (*harness).fromSCSCF, method: "MESSAGE", want: 404},
 		{name: "no IBCF", source: (*harness).fromSCSCF, opts: harnessOptions{noIBCF: true}, want: 404},
 		{
 			name: "identity not registered", source: (*harness).fromSCSCF, want: 480,
@@ -142,11 +145,20 @@ func TestUnknownNumberNotBrokenOut(t *testing.T) {
 
 			h.hss.answerLIR(answer)
 
-			req := u.invite(offNet, breakoutRoute(h))
+			method := tt.method
+			if method == "" {
+				method = "INVITE"
+			}
+
+			req := siptest.NewRequest(method, offNet, sip.UDP, u.sock.Addr())
+			breakoutRoute(h)(req)
 			u.send(req)
 			h.hss.nextLIR(t)
 
-			u.ack(req, u.wantFinal(tt.want))
+			if res := u.wantFinal(tt.want); method == "INVITE" {
+				u.ack(req, res)
+			}
+
 			h.ibcf.RecvNone(quiet)
 			h.scscf.sock.RecvNone(quiet)
 		})

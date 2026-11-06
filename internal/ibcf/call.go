@@ -412,6 +412,7 @@ var errBody = errors.New("ibcf: required message body refused at the border")
 
 // TS 24.229 clause 5.10.6.3
 // TS 29.162 clause 9.1.4
+// TS 24.229 clause 7.6.1
 func crossing(_, _ *b2bua.Leg, _ sip.Message, p sip.BodyPart) bool {
 	return slices.Contains(crossingBodies, p.MediaType())
 }

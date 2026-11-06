@@ -54,7 +54,7 @@ func TestExitHeaderAllowlist(t *testing.T) {
 	}
 }
 
-func TestExitOnlyFromSCSCF(t *testing.T) {
+func TestExitOnlyFromICSCF(t *testing.T) {
 	s := newScene(t, false)
 	rogue := newParty(t, s.net, "rogue", netip.MustParseAddrPort("10.0.0.9:5060"))
 
@@ -63,7 +63,6 @@ func TestExitOnlyFromSCSCF(t *testing.T) {
 		Internal:   []netip.AddrPort{netip.MustParseAddrPort("10.0.0.2:5085")},
 		External:   []netip.AddrPort{netip.MustParseAddrPort("203.0.113.2:5060")},
 		ICSCF:      []netip.AddrPort{imsAddr},
-		SCSCF:      []netip.AddrPort{imsAddr},
 		Trust:      trust.New(nil, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}),
 		BGCF:       bgcf.New(s.settings, nil),
 		Settings:   s.settings,

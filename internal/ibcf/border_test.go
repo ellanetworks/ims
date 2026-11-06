@@ -37,7 +37,6 @@ func TestConnectionsFromUnknownSource(t *testing.T) {
 		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
 		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
 		ICSCF:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
-		SCSCF:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
 		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
 		BGCF:       bgcf.New(get, nil),
 		Settings:   get,

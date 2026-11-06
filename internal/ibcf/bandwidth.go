@@ -160,6 +160,10 @@ func (l *bwLine) keys(formats []string) []bwKey {
 	var keys []bwKey
 
 	for _, pt := range pts {
+		if slices.ContainsFunc(keys, func(k bwKey) bool { return k.pt == pt }) {
+			continue
+		}
+
 		for _, dir := range l.dirs() {
 			keys = append(keys, bwKey{pt: pt, dir: dir})
 		}

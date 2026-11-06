@@ -27,7 +27,7 @@ This path returns the list of SIP trunks, ordered by identifier.
 | `inbound_cidrs`        | array   | Networks that requests from the carrier come from. Empty if not set. |
 | `domain`               | string  | Host of the Request-URI of requests to the carrier. Empty if not set. |
 | `trusted`              | boolean | Whether the carrier is in the trust domain. |
-| `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier. `0`: none. |
+| `keepalive_interval`   | int     | Seconds between keepalives to the carrier. `0`: no OPTIONS requests. |
 | `enabled`              | boolean | Whether the trunk carries calls, in both directions. |
 | `tls`                  | object  | TLS with the carrier. See [TLS](#tls). |
 | `tls.required`         | boolean | Whether the carrier must use TLS, with a certificate. |

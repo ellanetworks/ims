@@ -63,6 +63,7 @@ On the **SIP Trunks** page, click **Create Route**. Leave **Prefix** empty, sele
 ## 6. Check the trunk is up
 
 On the **SIP Trunks** page, the trunk's **State** should be `up` within a minute.
+
 ## 7. Place a test call
 
 From a registered phone, call an outside number in international format, e.g. `+15555550100`. Then call one of your numbers from an outside phone.

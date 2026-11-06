@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -504,6 +505,25 @@ func TestRecalculateBandwidthInfo(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestRecalculateBandwidthInfoRepeatedFormat(t *testing.T) {
+	body := "v=0\r\no=- 1 1 IN IP6 ::1\r\ns=-\r\nc=IN IP6 ::1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 97 97 101\r\n" +
+		"a=rtpmap:97 AMR/8000\r\na=rtpmap:101 telephone-event/8000\r\n" +
+		"a=bw-info:* send MaxSupBw=40;IpVer=6\r\na=bw-info:101 send MaxSupBw=32;IpVer=4\r\n"
+
+	s, err := sdp.Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	maxRate, minRate := packetRates(s.Media[0])
+	recalculate(s.Media[0], true, maxRate, minRate)
+
+	want := []string{"97 send MaxSupBw=32;IpVer=4;MaxPRate=50", "101 send MaxSupBw=40;IpVer=6", "101 send MaxSupBw=32;IpVer=4"}
+	if got := s.Media[0].Attrs("bw-info"); !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

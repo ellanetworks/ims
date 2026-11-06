@@ -7,7 +7,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-// TS 24.229 clause 5.3.2.1
 // TS 24.229 clause 5.4.3.2
 func breakout(out *sip.Request, onNet bool) bool {
 	number, global := globalNumber(out.URI)

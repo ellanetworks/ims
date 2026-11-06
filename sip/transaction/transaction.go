@@ -461,6 +461,14 @@ func (l *Layer) CloseFlow(f sip.Flow) {
 	l.tr.CloseFlow(f)
 }
 
+func (l *Layer) Authenticated(f sip.Flow) bool {
+	if l.tr == nil || l.inMemory(f.Remote) {
+		return false
+	}
+
+	return l.tr.Authenticated(f)
+}
+
 func (l *Layer) Close() error {
 	l.mu.Lock()
 

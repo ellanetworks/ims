@@ -145,15 +145,22 @@ func (b *IBCF) trunkFor(f sip.Flow) (settings.Trunk, bool) {
 		return t, true
 	}
 
-	if f.Transport != sip.TLS {
-		return settings.Trunk{}, false
-	}
-
-	if p, ok := b.peers.get(f.Remote); ok {
+	if p, ok := b.peerOf(f); ok {
 		return b.trunkByID(p.trunk)
 	}
 
 	return settings.Trunk{}, false
+}
+
+// SIPconnect 2.0 section 17.2
+func (b *IBCF) peerOf(f sip.Flow) (peer, bool) {
+	if f.Transport != sip.TLS {
+		return peer{}, false
+	}
+
+	p, ok := b.peers.get(f.Remote)
+
+	return p, ok && b.cfg.Layer.Authenticated(f)
 }
 
 // SIPconnect 2.0 section 17.2

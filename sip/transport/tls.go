@@ -194,6 +194,32 @@ func (t *Transport) reuseVerifier(f sip.Flow) *verifier {
 }
 
 // SIPconnect 2.0 section 17.2
+func (t *Transport) Authenticated(f sip.Flow) bool {
+	f = normalize(f)
+	if f.Transport != sip.TLS {
+		return false
+	}
+
+	v := t.reuseVerifier(f)
+
+	t.mu.Lock()
+	c := t.conns[f]
+	t.mu.Unlock()
+
+	if c == nil {
+		return false
+	}
+
+	select {
+	case <-c.ready:
+	default:
+		return false
+	}
+
+	return c.err == nil && !c.closed.Load() && v.accepts(c)
+}
+
+// SIPconnect 2.0 section 17.2
 // RFC 5922 section 7.3
 // RFC 5922 section 7.4
 func (v verifier) verify(cs tls.ConnectionState) error {
